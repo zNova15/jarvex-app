@@ -163,7 +163,8 @@ function MaterialesPage({ showToast }) {
     try {
       if (editingId) {
         // EDITAR — preserva stock_actual y alerta
-        await updateMaterial(editingId, {
+        const oldData = materiales.find(m => m.id === editingId);
+        const newFields = {
           nombre_material: form.nombre_material,
           categoria: form.categoria || 'General',
           unidad: form.unidad,
@@ -171,10 +172,12 @@ function MaterialesPage({ showToast }) {
           stock_minimo: parseFloat(form.stock_minimo) || 0,
           precio_unitario_estimado: parseFloat(form.precio) || null,
           proveedor_principal_id: form.proveedor_id || null,
-        });
+        };
+        await updateMaterial(editingId, newFields);
+        try { await window.__logAudit?.({ action:'update', table:'materiales', recordId:editingId, oldData, newData:newFields }); } catch(e) {}
         showToast(`Material "${form.nombre_material}" actualizado`, 'green');
       } else {
-        await createMaterial({
+        const created = await createMaterial({
           obra_id: obraId,
           nombre_material: form.nombre_material,
           categoria: form.categoria || 'General',
@@ -187,6 +190,7 @@ function MaterialesPage({ showToast }) {
           alerta: 'ok',
           estado: 'activo',
         });
+        try { await window.__logAudit?.({ action:'insert', table:'materiales', recordId:created?.id, newData:created }); } catch(e) {}
         showToast(`Material "${form.nombre_material}" creado`, 'green');
       }
       setModal(null);
@@ -204,7 +208,7 @@ function MaterialesPage({ showToast }) {
     }
     const material = materiales.find(m => m.id === form.material_id);
     try {
-      await movHook.create({
+      const movCreated = await movHook.create({
         obra_id: obraId,
         material_id: form.material_id,
         fecha: form.fecha,
@@ -218,6 +222,7 @@ function MaterialesPage({ showToast }) {
         precio_unitario_real: parseFloat(form.precio) || null,
         observaciones: form.observaciones || null,
       });
+      try { await window.__logAudit?.({ action:'insert', table:'movimientos_materiales', recordId:movCreated?.id, newData:movCreated, reason:`${tipo} de ${parseFloat(form.cantidad)} ${material.unidad} de ${material.nombre_material}` }); } catch(e) {}
       // Actualizar stock local optimistamente
       const delta = tipo === 'ingreso' ? parseFloat(form.cantidad) : -parseFloat(form.cantidad);
       const nuevoStock = (material.stock_actual ?? 0) + delta;
@@ -506,17 +511,20 @@ function HerramientasPage({ showToast }) {
     }
     try {
       if (editingId) {
-        await updateHerr(editingId, {
+        const oldData = herramientas.find(h => h.id === editingId);
+        const newFields = {
           nombre_herramienta: form.nombre_herramienta,
           tipo_herramienta: form.tipo_herramienta || 'manual',
           marca: form.marca || null,
           modelo: form.modelo || null,
           serie: form.serie || null,
           estado_actual: form.estado_actual || 'bueno',
-        });
+        };
+        await updateHerr(editingId, newFields);
+        try { await window.__logAudit?.({ action:'update', table:'herramientas', recordId:editingId, oldData, newData:newFields }); } catch(e) {}
         showToast(`Herramienta "${form.nombre_herramienta}" actualizada`, 'green');
       } else {
-        await createHerr({
+        const created = await createHerr({
           obra_id: obraId,
           nombre_herramienta: form.nombre_herramienta,
           tipo_herramienta: form.tipo_herramienta || 'manual',
@@ -527,6 +535,7 @@ function HerramientasPage({ showToast }) {
           ubicacion_actual: 'almacen',
           disponible: true,
         });
+        try { await window.__logAudit?.({ action:'insert', table:'herramientas', recordId:created?.id, newData:created }); } catch(e) {}
         showToast(`Herramienta "${form.nombre_herramienta}" creada`, 'green');
       }
       setModal(null); setForm({}); setEditingId(null);
@@ -542,7 +551,7 @@ function HerramientasPage({ showToast }) {
     }
     const herr = herramientas.find(h => h.id === form.herramienta_id);
     try {
-      await movHook.create({
+      const movCreated = await movHook.create({
         obra_id: obraId,
         herramienta_id: form.herramienta_id,
         fecha: form.fecha,
@@ -553,6 +562,7 @@ function HerramientasPage({ showToast }) {
         estado_devolucion: form.accion === 'entrada' ? form.estado : null,
         observaciones: form.observaciones || null,
       });
+      try { await window.__logAudit?.({ action:'insert', table:'movimientos_herramientas', recordId:movCreated?.id, newData:movCreated, reason:`${form.accion} de "${herr.nombre_herramienta}"` }); } catch(e) {}
       // Optimistic update local
       const updates = {};
       if (form.accion === 'salida') {
@@ -731,6 +741,7 @@ function PersonalPage({ showToast }) {
   const [modal, setModal] = uS(null);
   const [form, setForm] = uS({});
   const [editingId, setEditingId] = uS(null);
+  const [reniecBusy, setReniecBusy] = uS(false);
   const [obraId, setObraId] = uS(null);
 
   uE(() => {
@@ -746,6 +757,25 @@ function PersonalPage({ showToast }) {
   }, []);
 
   const { data: personal, loading, create: createPersonal, update: updatePersonal } = window.__hooks.usePersonal(obraId);
+
+  const consultarRENIEC = async () => {
+    const dni = (form.dni || '').trim();
+    if (!/^\d{8}$/.test(dni)) { showToast('Ingresa primero un DNI de 8 dígitos', 'red'); return; }
+    setReniecBusy(true);
+    try {
+      const data = await window.__identity.consultarDNI(dni);
+      setForm(prev => ({
+        ...prev,
+        nombres: prev.nombres?.trim() || data.nombres || prev.nombres,
+        apellidos: prev.apellidos?.trim() || data.apellidos || prev.apellidos,
+      }));
+      showToast(`RENIEC: ${data.nombreCompleto || 'datos cargados'}`, 'green');
+    } catch (e) {
+      showToast(e.message || 'Error al consultar RENIEC', 'red');
+    } finally {
+      setReniecBusy(false);
+    }
+  };
 
   const filtered = uM(() => {
     if (!personal) return [];
@@ -791,7 +821,8 @@ function PersonalPage({ showToast }) {
     }
     try {
       if (editingId) {
-        await updatePersonal(editingId, {
+        const oldData = personal.find(p => p.id === editingId);
+        const newFields = {
           nombres: form.nombres.trim(),
           apellidos: form.apellidos.trim(),
           dni,
@@ -800,10 +831,12 @@ function PersonalPage({ showToast }) {
           fecha_ingreso: form.fecha_ingreso || null,
           telefono: form.telefono?.trim() || null,
           estado: form.estado || 'activo',
-        });
+        };
+        await updatePersonal(editingId, newFields);
+        try { await window.__logAudit?.({ action:'update', table:'personal', recordId:editingId, oldData, newData:newFields }); } catch(e) {}
         showToast(`Trabajador "${form.nombres} ${form.apellidos}" actualizado`, 'green');
       } else {
-        await createPersonal({
+        const created = await createPersonal({
           obra_id: obraId,
           nombres: form.nombres.trim(),
           apellidos: form.apellidos.trim(),
@@ -814,6 +847,7 @@ function PersonalPage({ showToast }) {
           telefono: form.telefono?.trim() || null,
           estado: 'activo',
         });
+        try { await window.__logAudit?.({ action:'insert', table:'personal', recordId:created?.id, newData:created }); } catch(e) {}
         showToast(`Trabajador "${form.nombres} ${form.apellidos}" registrado`, 'green');
       }
       setModal(null); setForm({}); setEditingId(null);
@@ -879,7 +913,15 @@ function PersonalPage({ showToast }) {
         <div className="g2">
           <div><label className="flabel">Nombres *</label><input className="fi" value={form.nombres||''} onChange={e=>setForm({...form, nombres:e.target.value})}/></div>
           <div><label className="flabel">Apellidos *</label><input className="fi" value={form.apellidos||''} onChange={e=>setForm({...form, apellidos:e.target.value})}/></div>
-          <div><label className="flabel">DNI *</label><input className="fi" placeholder="8 dígitos" inputMode="numeric" maxLength={8} value={form.dni||''} onChange={e=>setForm({...form, dni:e.target.value.replace(/\D/g,'').slice(0,8)})}/></div>
+          <div>
+            <label className="flabel">DNI *</label>
+            <div style={{ display:'flex', gap:6 }}>
+              <input className="fi" placeholder="8 dígitos" inputMode="numeric" maxLength={8} value={form.dni||''} onChange={e=>setForm({...form, dni:e.target.value.replace(/\D/g,'').slice(0,8)})} style={{ flex:1 }}/>
+              <button type="button" className="btn btn-blue btn-sm" disabled={reniecBusy || (form.dni||'').length !== 8} onClick={consultarRENIEC} title="Consultar datos en RENIEC">
+                <JxIcon name="search" size={12}/>{reniecBusy ? '...' : 'RENIEC'}
+              </button>
+            </div>
+          </div>
           <div><label className="flabel">Teléfono</label><input className="fi" placeholder="9 dígitos" inputMode="numeric" maxLength={9} value={form.telefono||''} onChange={e=>setForm({...form, telefono:e.target.value.replace(/\D/g,'').slice(0,9)})}/></div>
           <div><label className="flabel">Cargo</label>
             <select className="fi" value={form.cargo||''} onChange={e=>setForm({...form, cargo:e.target.value})}>
@@ -1080,6 +1122,22 @@ function AsistenciaPage({ showToast }) {
         }
       }
       refresh();
+      // Audit: una sola entrada por sesión masiva — el detalle queda en new_data
+      try {
+        await window.__logAudit?.({
+          action: 'insert',
+          table: 'asistencia',
+          recordId: null,
+          newData: {
+            fecha: date,
+            ok: okCount,
+            errores: errCount,
+            evidencia_id: evidId,
+            registros: rows.map(r => ({ personal_id: r.personal_id, estado: r.estado_asistencia, ingreso: r.hora_ingreso, salida: r.hora_salida })),
+          },
+          reason: `Asistencia diaria masiva (${okCount} trabajadores)`,
+        });
+      } catch (e) {}
       showToast(
         `Asistencia diaria guardada · ${okCount} registros${errCount ? ` · ${errCount} con error` : ''}`,
         errCount ? 'amber' : 'green'
@@ -1112,13 +1170,15 @@ function AsistenciaPage({ showToast }) {
       const horas = editForm.estado_asistencia === 'falta'
         ? 0
         : calcularHoras(editForm.hora_ingreso, editForm.hora_salida);
-      await updateAsistencia(editingAsist.id, {
+      const newFields = {
         estado_asistencia: editForm.estado_asistencia,
         hora_ingreso: editForm.estado_asistencia === 'falta' ? null : editForm.hora_ingreso,
         hora_salida:  editForm.estado_asistencia === 'falta' ? null : editForm.hora_salida,
         horas_trabajadas: horas,
         observaciones: editForm.observaciones?.trim() || null,
-      });
+      };
+      await updateAsistencia(editingAsist.id, newFields);
+      try { await window.__logAudit?.({ action:'update', table:'asistencia', recordId:editingAsist.id, oldData:editingAsist, newData:newFields, reason:`Corrección manual de asistencia (${editForm.personal_nombre})` }); } catch(e) {}
       refresh();
       showToast('Asistencia actualizada', 'green');
       setModal(null); setEditingAsist(null); setEditForm({});

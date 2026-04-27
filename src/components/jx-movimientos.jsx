@@ -325,6 +325,7 @@ function ProveedoresPage({ showToast }) {
   const [modal, setModal] = uSM(false);
   const [form, setForm] = uSM({});
   const [editingId, setEditingId] = uSM(null);
+  const [sunatBusy, setSunatBusy] = uSM(false);
 
   const filtered = uMM(() => {
     if (!q) return provs;
@@ -334,6 +335,27 @@ function ProveedoresPage({ showToast }) {
       (p.ruc || '').toLowerCase().includes(ql)
     );
   }, [q, provs]);
+
+  const consultarSUNAT = async () => {
+    const ruc = (form.ruc || '').trim();
+    if (!/^\d{11}$/.test(ruc)) { showToast('Ingresa primero un RUC de 11 dígitos', 'red'); return; }
+    setSunatBusy(true);
+    try {
+      const data = await window.__identity.consultarRUC(ruc);
+      // Auto-rellenar campos vacíos del form (no pisa lo que el usuario ya escribió)
+      setForm(prev => ({
+        ...prev,
+        razon_social: prev.razon_social?.trim() || data.razonSocial || prev.razon_social,
+        direccion: prev.direccion?.trim() || data.direccion || prev.direccion,
+      }));
+      const estado = data.estado ? ` · ${data.estado}` : '';
+      showToast(`SUNAT: ${data.razonSocial || 'datos cargados'}${estado}`, 'green');
+    } catch (e) {
+      showToast(e.message || 'Error al consultar SUNAT', 'red');
+    } finally {
+      setSunatBusy(false);
+    }
+  };
 
   const openEditProv = (p) => {
     setForm({
@@ -364,7 +386,7 @@ function ProveedoresPage({ showToast }) {
       const now = new Date().toISOString();
       if (editingId) {
         const existing = await window.__db.proveedores.get(editingId);
-        await window.__db.proveedores.update(editingId, {
+        const newFields = {
           razon_social: razon,
           ruc,
           contacto: form.contacto?.trim() || null,
@@ -374,15 +396,20 @@ function ProveedoresPage({ showToast }) {
           direccion: form.direccion?.trim() || null,
           observaciones: form.observaciones?.trim() || null,
           estado: form.estado || 'activo',
+        };
+        await window.__db.proveedores.update(editingId, {
+          ...newFields,
           updated_at: now,
           updated_by: auth?.profile?.id || 'offline',
           version: (existing?.version ?? 0) + 1,
           sync_status: existing?.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
         });
+        try { await window.__logAudit?.({ action:'update', table:'proveedores', recordId:editingId, oldData:existing, newData:newFields }); } catch(e) {}
         showToast(`Proveedor "${razon}" actualizado`, 'green');
       } else {
-        await window.__db.proveedores.add({
-          id: window.__newId(),
+        const newId = window.__newId();
+        const record = {
+          id: newId,
           razon_social: razon,
           ruc,
           contacto: form.contacto?.trim() || null,
@@ -397,7 +424,9 @@ function ProveedoresPage({ showToast }) {
           updated_at: now,
           version: 1,
           created_by: auth?.profile?.id || 'offline',
-        });
+        };
+        await window.__db.proveedores.add(record);
+        try { await window.__logAudit?.({ action:'insert', table:'proveedores', recordId:newId, newData:record }); } catch(e) {}
         showToast(`Proveedor "${razon}" creado`, 'green');
       }
       setModal(false); setForm({}); setEditingId(null);
@@ -468,7 +497,15 @@ function ProveedoresPage({ showToast }) {
       {modal && <Modal title={editingId ? 'Editar Proveedor' : 'Nuevo Proveedor'} icon="truck" onClose={()=>{setModal(false); setEditingId(null); setForm({});}}>
         <div className="g2">
           <div style={{ gridColumn:'1/-1' }}><label className="flabel">Razón Social *</label><input className="fi" placeholder="Nombre de la empresa" value={form.razon_social||''} onChange={e=>setForm({...form, razon_social:e.target.value})}/></div>
-          <div><label className="flabel">RUC *</label><input className="fi" placeholder="20XXXXXXXXX" inputMode="numeric" maxLength={11} value={form.ruc||''} onChange={e=>setForm({...form, ruc:e.target.value.replace(/\D/g,'').slice(0,11)})}/></div>
+          <div>
+            <label className="flabel">RUC *</label>
+            <div style={{ display:'flex', gap:6 }}>
+              <input className="fi" placeholder="20XXXXXXXXX" inputMode="numeric" maxLength={11} value={form.ruc||''} onChange={e=>setForm({...form, ruc:e.target.value.replace(/\D/g,'').slice(0,11)})} style={{ flex:1 }}/>
+              <button type="button" className="btn btn-blue btn-sm" disabled={sunatBusy || (form.ruc||'').length !== 11} onClick={consultarSUNAT} title="Consultar datos en SUNAT">
+                <JxIcon name="search" size={12}/>{sunatBusy ? '...' : 'SUNAT'}
+              </button>
+            </div>
+          </div>
           <div><label className="flabel">Tipo de Proveedor</label>
             <select className="fi" value={form.tipo_proveedor||''} onChange={e=>setForm({...form, tipo_proveedor:e.target.value})}>
               <option value="">— Selecciona —</option>

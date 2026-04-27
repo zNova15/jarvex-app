@@ -36,28 +36,62 @@ const fmtPct = (n) => Number(n || 0).toFixed(1) + '%';
 
 // ─── OBRAS PAGE ───────────────────────────────────────────
 function ObrasPage({ showToast }) {
-  const { data: obras, loading, create: createObra } = window.__hooks.useObras();
+  const { data: obras, loading, create: createObra, update: updateObra } = window.__hooks.useObras();
   const [modal, setModal] = uSO(null);
   const [form, setForm] = uSO({});
+  const [editingId, setEditingId] = uSO(null);
+
+  const openEditObra = (o) => {
+    setForm({
+      nombre_obra: o.nombre_obra || '',
+      cliente: o.cliente || '',
+      ubicacion: o.ubicacion || '',
+      estado: o.estado || 'planificacion',
+      fecha_inicio: o.fecha_inicio || '',
+      fecha_fin_estimada: o.fecha_fin_estimada || '',
+      presupuesto_total: o.presupuesto_total ?? '',
+      observaciones: o.observaciones || '',
+    });
+    setEditingId(o.id);
+    setModal('editar');
+  };
 
   const handleSubmit = async () => {
     if (!form.nombre_obra) { showToast('Falta el nombre de la obra', 'red'); return; }
     try {
-      await createObra({
-        nombre_obra: form.nombre_obra,
-        cliente: form.cliente || null,
-        ubicacion: form.ubicacion || null,
-        estado: form.estado || 'planificacion',
-        fecha_inicio: form.fecha_inicio || null,
-        fecha_fin_estimada: form.fecha_fin_estimada || null,
-        presupuesto_total: parseFloat(form.presupuesto_total) || null,
-        observaciones: form.observaciones || null,
-        avance_fisico: 0,
-        avance_financiero: 0,
-        costo_real_acumulado: 0,
-      });
-      showToast(`Obra "${form.nombre_obra}" creada`, 'green');
-      setModal(null); setForm({});
+      if (editingId) {
+        const oldObra = obras.find(o => o.id === editingId);
+        const newFields = {
+          nombre_obra: form.nombre_obra,
+          cliente: form.cliente || null,
+          ubicacion: form.ubicacion || null,
+          estado: form.estado || 'planificacion',
+          fecha_inicio: form.fecha_inicio || null,
+          fecha_fin_estimada: form.fecha_fin_estimada || null,
+          presupuesto_total: parseFloat(form.presupuesto_total) || null,
+          observaciones: form.observaciones || null,
+        };
+        await updateObra(editingId, newFields);
+        try { await window.__logAudit?.({ action:'update', table:'obras', recordId:editingId, oldData:oldObra, newData:newFields }); } catch(e) {}
+        showToast(`Obra "${form.nombre_obra}" actualizada`, 'green');
+      } else {
+        const created = await createObra({
+          nombre_obra: form.nombre_obra,
+          cliente: form.cliente || null,
+          ubicacion: form.ubicacion || null,
+          estado: form.estado || 'planificacion',
+          fecha_inicio: form.fecha_inicio || null,
+          fecha_fin_estimada: form.fecha_fin_estimada || null,
+          presupuesto_total: parseFloat(form.presupuesto_total) || null,
+          observaciones: form.observaciones || null,
+          avance_fisico: 0,
+          avance_financiero: 0,
+          costo_real_acumulado: 0,
+        });
+        try { await window.__logAudit?.({ action:'insert', table:'obras', recordId:created?.id, newData:created }); } catch(e) {}
+        showToast(`Obra "${form.nombre_obra}" creada`, 'green');
+      }
+      setModal(null); setForm({}); setEditingId(null);
     } catch (e) {
       showToast('Error: ' + e.message, 'red');
     }
@@ -71,7 +105,7 @@ function ObrasPage({ showToast }) {
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div><div className="pg-title">Obras / Proyectos</div><div className="pg-sub">{obras.length} proyectos · {activas} activos</div></div>
-        <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setModal('nueva');}}><JxIcon name="plus" size={13}/>Nueva Obra</button>
+        <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setEditingId(null); setModal('nueva');}}><JxIcon name="plus" size={13}/>Nueva Obra</button>
       </div>
 
       {obras.length === 0 ? (
@@ -84,8 +118,8 @@ function ObrasPage({ showToast }) {
           const margen = pres > 0 ? ((pres - real) / pres * 100).toFixed(1) : 0;
           const over = real > pres;
           return (
-            <div key={o.id} className="card card-p card-hover" style={{cursor:'pointer'}}>
-              <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',marginBottom:12}}>
+            <div key={o.id} className="card card-p card-hover">
+              <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',marginBottom:12, gap:10}}>
                 <div style={{flex:1,paddingRight:12}}>
                   <div style={{fontSize:14,fontWeight:700,color:'var(--tp)',marginBottom:4,lineHeight:1.3}}>{o.nombre_obra}</div>
                   <div style={{fontSize:11.5,color:'var(--tm)',display:'flex',gap:12,flexWrap:'wrap'}}>
@@ -93,7 +127,12 @@ function ObrasPage({ showToast }) {
                     {o.ubicacion && <span><JxIcon name="map" size={11}/> {o.ubicacion}</span>}
                   </div>
                 </div>
-                <span className={`badge ${EST_OBRA[o.estado]||'b-gray'}`} style={{flexShrink:0}}>{EST_OBRA_LBL[o.estado] || o.estado}</span>
+                <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:6,flexShrink:0}}>
+                  <span className={`badge ${EST_OBRA[o.estado]||'b-gray'}`}>{EST_OBRA_LBL[o.estado] || o.estado}</span>
+                  <button className="btn btn-ghost btn-xs" title="Editar obra" onClick={(e)=>{ e.stopPropagation(); openEditObra(o); }}>
+                    <JxIcon name="edit" size={11}/>
+                  </button>
+                </div>
               </div>
 
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:14}}>
@@ -134,14 +173,15 @@ function ObrasPage({ showToast }) {
       </div>
       )}
 
-      {modal === 'nueva' && <Modal title="Nueva Obra" icon="building" onClose={()=>setModal(null)}>
+      {(modal === 'nueva' || modal === 'editar') && <Modal title={editingId ? 'Editar Obra' : 'Nueva Obra'} icon="building" onClose={()=>{setModal(null); setEditingId(null); setForm({});}}>
         <div className="g2">
           <div style={{gridColumn:'1/-1'}}><label className="flabel">Nombre de la obra *</label><input className="fi" placeholder="Ej: Edificio Las Palmas" value={form.nombre_obra||''} onChange={e=>setForm({...form, nombre_obra:e.target.value})}/></div>
           <div><label className="flabel">Cliente</label><input className="fi" placeholder="Razón social" value={form.cliente||''} onChange={e=>setForm({...form, cliente:e.target.value})}/></div>
           <div><label className="flabel">Estado</label>
             <select className="fi" value={form.estado||'planificacion'} onChange={e=>setForm({...form, estado:e.target.value})}>
               <option value="planificacion">Planificación</option><option value="activo">Activo</option>
-              <option value="pausado">Pausado</option>
+              <option value="pausado">Pausado</option><option value="finalizada">Finalizada</option>
+              <option value="cancelada">Cancelada</option>
             </select>
           </div>
           <div style={{gridColumn:'1/-1'}}><label className="flabel">Ubicación</label><input className="fi" placeholder="Distrito, dirección" value={form.ubicacion||''} onChange={e=>setForm({...form, ubicacion:e.target.value})}/></div>
@@ -151,8 +191,8 @@ function ObrasPage({ showToast }) {
           <div style={{gridColumn:'1/-1'}}><label className="flabel">Observaciones</label><textarea className="fi" value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})}/></div>
         </div>
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={()=>setModal(null)}>Cancelar</button>
-          <button className="btn btn-amber" onClick={handleSubmit}><JxIcon name="check" size={13}/>Crear Obra</button>
+          <button className="btn btn-ghost" onClick={()=>{setModal(null); setEditingId(null); setForm({});}}>Cancelar</button>
+          <button className="btn btn-amber" onClick={handleSubmit}><JxIcon name="check" size={13}/>{editingId ? 'Guardar Cambios' : 'Crear Obra'}</button>
         </div>
       </Modal>}
     </div>
