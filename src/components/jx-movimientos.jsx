@@ -324,6 +324,7 @@ function ProveedoresPage({ showToast }) {
   const [q, setQ] = uSM('');
   const [modal, setModal] = uSM(false);
   const [form, setForm] = uSM({});
+  const [editingId, setEditingId] = uSM(null);
 
   const filtered = uMM(() => {
     if (!q) return provs;
@@ -334,35 +335,72 @@ function ProveedoresPage({ showToast }) {
     );
   }, [q, provs]);
 
+  const openEditProv = (p) => {
+    setForm({
+      razon_social: p.razon_social || '',
+      ruc: p.ruc || '',
+      contacto: p.contacto || '',
+      telefono: p.telefono || '',
+      correo: p.correo || '',
+      tipo_proveedor: p.tipo_proveedor || '',
+      direccion: p.direccion || '',
+      observaciones: p.observaciones || '',
+      estado: p.estado || 'activo',
+    });
+    setEditingId(p.id);
+    setModal(true);
+  };
+
   const handleSubmit = async () => {
     const razon = (form.razon_social || '').trim();
     const ruc = (form.ruc || '').trim();
     if (!razon) { showToast('Falta la razón social', 'red'); return; }
     if (!ruc) { showToast('Falta el RUC', 'red'); return; }
     if (!/^\d{11}$/.test(ruc)) { showToast('El RUC debe tener exactamente 11 dígitos numéricos', 'red'); return; }
-    // Validar RUC único local
-    const existe = provs.find(p => p.ruc === ruc);
+    // Validar RUC único local (excluyendo el propio si edita)
+    const existe = provs.find(p => p.ruc === ruc && p.id !== editingId);
     if (existe) { showToast('RUC ya registrado', 'red'); return; }
     try {
-      await window.__db.proveedores.add({
-        id: window.__newId(),
-        razon_social: razon,
-        ruc,
-        contacto: form.contacto?.trim() || null,
-        telefono: form.telefono?.trim() || null,
-        correo: form.correo?.trim() || null,
-        tipo_proveedor: form.tipo_proveedor || null,
-        direccion: form.direccion?.trim() || null,
-        observaciones: form.observaciones?.trim() || null,
-        estado: 'activo',
-        sync_status: 'pending_create',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        version: 1,
-        created_by: auth?.profile?.id || 'offline',
-      });
-      showToast(`Proveedor "${razon}" creado`, 'green');
-      setModal(false); setForm({});
+      const now = new Date().toISOString();
+      if (editingId) {
+        const existing = await window.__db.proveedores.get(editingId);
+        await window.__db.proveedores.update(editingId, {
+          razon_social: razon,
+          ruc,
+          contacto: form.contacto?.trim() || null,
+          telefono: form.telefono?.trim() || null,
+          correo: form.correo?.trim() || null,
+          tipo_proveedor: form.tipo_proveedor || null,
+          direccion: form.direccion?.trim() || null,
+          observaciones: form.observaciones?.trim() || null,
+          estado: form.estado || 'activo',
+          updated_at: now,
+          updated_by: auth?.profile?.id || 'offline',
+          version: (existing?.version ?? 0) + 1,
+          sync_status: existing?.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+        });
+        showToast(`Proveedor "${razon}" actualizado`, 'green');
+      } else {
+        await window.__db.proveedores.add({
+          id: window.__newId(),
+          razon_social: razon,
+          ruc,
+          contacto: form.contacto?.trim() || null,
+          telefono: form.telefono?.trim() || null,
+          correo: form.correo?.trim() || null,
+          tipo_proveedor: form.tipo_proveedor || null,
+          direccion: form.direccion?.trim() || null,
+          observaciones: form.observaciones?.trim() || null,
+          estado: 'activo',
+          sync_status: 'pending_create',
+          created_at: now,
+          updated_at: now,
+          version: 1,
+          created_by: auth?.profile?.id || 'offline',
+        });
+        showToast(`Proveedor "${razon}" creado`, 'green');
+      }
+      setModal(false); setForm({}); setEditingId(null);
       window.__db.proveedores.toArray().then(setProvs);
     } catch (e) {
       if (String(e?.message || '').includes('23505') || String(e?.name || '') === 'ConstraintError') {
@@ -381,7 +419,7 @@ function ProveedoresPage({ showToast }) {
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div><div className="pg-title">Proveedores</div><div className="pg-sub">{provs.length} proveedores · {activos} activos</div></div>
-        <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setModal(true);}}><JxIcon name="plus" size={13}/>Nuevo Proveedor</button>
+        <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setEditingId(null); setModal(true);}}><JxIcon name="plus" size={13}/>Nuevo Proveedor</button>
       </div>
 
       <div style={{ display:'flex', gap:8, marginBottom:14 }}>
@@ -401,7 +439,12 @@ function ProveedoresPage({ showToast }) {
                 <div style={{ fontSize:14, fontWeight:700, color:'var(--tp)', marginBottom:3 }}>{p.razon_social}</div>
                 <div style={{ fontSize:11, color:'var(--tm)' }}>RUC: <span className="col-m" style={{ color:'var(--ts)' }}>{p.ruc}</span></div>
               </div>
-              <span className={`badge ${p.estado==='activo'?'b-green':'b-gray'}`} style={{ textTransform:'capitalize', flexShrink:0 }}>{p.estado || 'activo'}</span>
+              <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:6, flexShrink:0 }}>
+                <span className={`badge ${p.estado==='activo'?'b-green':'b-gray'}`} style={{ textTransform:'capitalize' }}>{p.estado || 'activo'}</span>
+                <button className="btn btn-ghost btn-xs" title="Editar proveedor" onClick={()=>openEditProv(p)}>
+                  <JxIcon name="edit" size={11}/>
+                </button>
+              </div>
             </div>
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:8 }}>
               <div style={{ fontSize:11.5 }}>
@@ -422,7 +465,7 @@ function ProveedoresPage({ showToast }) {
       </div>
       )}
 
-      {modal && <Modal title="Nuevo Proveedor" icon="truck" onClose={()=>setModal(false)}>
+      {modal && <Modal title={editingId ? 'Editar Proveedor' : 'Nuevo Proveedor'} icon="truck" onClose={()=>{setModal(false); setEditingId(null); setForm({});}}>
         <div className="g2">
           <div style={{ gridColumn:'1/-1' }}><label className="flabel">Razón Social *</label><input className="fi" placeholder="Nombre de la empresa" value={form.razon_social||''} onChange={e=>setForm({...form, razon_social:e.target.value})}/></div>
           <div><label className="flabel">RUC *</label><input className="fi" placeholder="20XXXXXXXXX" inputMode="numeric" maxLength={11} value={form.ruc||''} onChange={e=>setForm({...form, ruc:e.target.value.replace(/\D/g,'').slice(0,11)})}/></div>
@@ -440,10 +483,18 @@ function ProveedoresPage({ showToast }) {
           <div style={{ gridColumn:'1/-1' }}><label className="flabel">Correo Electrónico</label><input className="fi" type="email" placeholder="correo@empresa.com" value={form.correo||''} onChange={e=>setForm({...form, correo:e.target.value})}/></div>
           <div style={{ gridColumn:'1/-1' }}><label className="flabel">Dirección</label><input className="fi" placeholder="Av. / Calle, número, distrito" value={form.direccion||''} onChange={e=>setForm({...form, direccion:e.target.value})}/></div>
           <div style={{ gridColumn:'1/-1' }}><label className="flabel">Observaciones</label><textarea className="fi" placeholder="Condiciones de pago, tiempos de entrega, etc." value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})}/></div>
+          {editingId && (
+            <div><label className="flabel">Estado</label>
+              <select className="fi" value={form.estado||'activo'} onChange={e=>setForm({...form, estado:e.target.value})}>
+                <option value="activo">Activo</option>
+                <option value="inactivo">Inactivo</option>
+              </select>
+            </div>
+          )}
         </div>
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={()=>setModal(false)}>Cancelar</button>
-          <button className="btn btn-amber" onClick={handleSubmit}><JxIcon name="check" size={13}/>Guardar Proveedor</button>
+          <button className="btn btn-ghost" onClick={()=>{setModal(false); setEditingId(null); setForm({});}}>Cancelar</button>
+          <button className="btn btn-amber" onClick={handleSubmit}><JxIcon name="check" size={13}/>{editingId ? 'Guardar Cambios' : 'Guardar Proveedor'}</button>
         </div>
       </Modal>}
     </div>

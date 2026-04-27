@@ -87,7 +87,8 @@ function Modal({ title, icon, onClose, children, wide }) {
 // ─── MATERIALES PAGE ────────────────────────────────────
 function MaterialesPage({ showToast }) {
   const [q, setQ] = uS('');
-  const [modal, setModal] = uS(null); // 'ingreso' | 'salida' | 'nuevo'
+  const [modal, setModal] = uS(null); // 'ingreso' | 'salida' | 'nuevo' | 'editar'
+  const [editingId, setEditingId] = uS(null); // id del material en edición
   const [obraId, setObraId] = uS(null);
 
   // Detectar obra activa — reintenta cada 500ms hasta encontrarla (mientras sincroniza)
@@ -107,7 +108,7 @@ function MaterialesPage({ showToast }) {
   }, []);
 
   // Hook real de materiales
-  const { data: materiales, loading, create: createMaterial, refresh } = window.__hooks.useMateriales(obraId);
+  const { data: materiales, loading, create: createMaterial, update: updateMaterial, refresh } = window.__hooks.useMateriales(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
   const movHook = window.__hooks.useMovimientosMateriales(obraId);
 
@@ -140,28 +141,57 @@ function MaterialesPage({ showToast }) {
     setModal(type);
   };
 
+  const openEditMaterial = (m) => {
+    setForm({
+      nombre_material: m.nombre_material || '',
+      categoria: m.categoria || '',
+      unidad: m.unidad || '',
+      stock_inicial: m.stock_inicial ?? '',
+      stock_minimo: m.stock_minimo ?? '',
+      precio: m.precio_unitario_estimado ?? '',
+      proveedor_id: m.proveedor_principal_id || null,
+    });
+    setEditingId(m.id);
+    setModal('editar');
+  };
+
   const handleSubmitMaterial = async () => {
     if (!form.nombre_material || !form.unidad) {
       showToast('Completa nombre y unidad', 'red');
       return;
     }
     try {
-      await createMaterial({
-        obra_id: obraId,
-        nombre_material: form.nombre_material,
-        categoria: form.categoria || 'General',
-        unidad: form.unidad,
-        stock_inicial: parseFloat(form.stock_inicial) || 0,
-        stock_actual: parseFloat(form.stock_inicial) || 0,
-        stock_minimo: parseFloat(form.stock_minimo) || 0,
-        precio_unitario_estimado: parseFloat(form.precio) || null,
-        proveedor_principal_id: form.proveedor_id || null,
-        alerta: 'ok',
-        estado: 'activo',
-      });
-      showToast(`Material "${form.nombre_material}" creado`, 'green');
+      if (editingId) {
+        // EDITAR — preserva stock_actual y alerta
+        await updateMaterial(editingId, {
+          nombre_material: form.nombre_material,
+          categoria: form.categoria || 'General',
+          unidad: form.unidad,
+          stock_inicial: parseFloat(form.stock_inicial) || 0,
+          stock_minimo: parseFloat(form.stock_minimo) || 0,
+          precio_unitario_estimado: parseFloat(form.precio) || null,
+          proveedor_principal_id: form.proveedor_id || null,
+        });
+        showToast(`Material "${form.nombre_material}" actualizado`, 'green');
+      } else {
+        await createMaterial({
+          obra_id: obraId,
+          nombre_material: form.nombre_material,
+          categoria: form.categoria || 'General',
+          unidad: form.unidad,
+          stock_inicial: parseFloat(form.stock_inicial) || 0,
+          stock_actual: parseFloat(form.stock_inicial) || 0,
+          stock_minimo: parseFloat(form.stock_minimo) || 0,
+          precio_unitario_estimado: parseFloat(form.precio) || null,
+          proveedor_principal_id: form.proveedor_id || null,
+          alerta: 'ok',
+          estado: 'activo',
+        });
+        showToast(`Material "${form.nombre_material}" creado`, 'green');
+      }
       setModal(null);
       setForm({});
+      setEditingId(null);
     } catch (e) {
       showToast('Error: ' + e.message, 'red');
     }
@@ -252,7 +282,7 @@ function MaterialesPage({ showToast }) {
               <th>Material</th><th>Categoría</th><th>Unidad</th>
               <th style={{textAlign:'right'}}>Stock Actual</th><th style={{textAlign:'right'}}>Stock Mín.</th>
               <th style={{textAlign:'right'}}>Entradas</th><th style={{textAlign:'right'}}>Salidas</th>
-              <th>Estado</th><th>Sync</th>
+              <th>Estado</th><th>Sync</th><th style={{textAlign:'center'}}>Acciones</th>
             </tr></thead>
             <tbody>
               {filtered.map(m => {
@@ -275,6 +305,11 @@ function MaterialesPage({ showToast }) {
                     <td>{m.sync_status && m.sync_status !== 'synced'
                       ? <span className="badge b-amber" title={m.sync_status}>⏱ pendiente</span>
                       : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}
+                    </td>
+                    <td style={{textAlign:'center'}}>
+                      <button className="btn btn-ghost btn-xs" title="Editar material" onClick={()=>openEditMaterial(m)}>
+                        <JxIcon name="edit" size={11}/>
+                      </button>
                     </td>
                   </tr>
                 );
@@ -350,8 +385,8 @@ function MaterialesPage({ showToast }) {
         </div>
       </Modal>}
 
-      {/* Modal Nuevo Material */}
-      {modal==='nuevo' && <Modal title="Nuevo Material" icon="package" onClose={()=>setModal(null)}>
+      {/* Modal Nuevo / Editar Material */}
+      {(modal==='nuevo' || modal==='editar') && <Modal title={editingId ? 'Editar Material' : 'Nuevo Material'} icon="package" onClose={()=>{setModal(null); setEditingId(null); setForm({});}}>
         <div className="g2">
           <div style={{gridColumn:'1/-1'}}><label className="flabel">Nombre del material *</label><input className="fi" placeholder="Ej: Cemento Sol Tipo I" value={form.nombre_material||''} onChange={e=>setForm({...form, nombre_material:e.target.value})}/></div>
           <div><label className="flabel">Categoría</label>
@@ -380,8 +415,8 @@ function MaterialesPage({ showToast }) {
           </div>
         </div>
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={()=>setModal(null)}>Cancelar</button>
-          <button className="btn btn-amber" onClick={handleSubmitMaterial}><JxIcon name="check" size={13}/>Crear Material</button>
+          <button className="btn btn-ghost" onClick={()=>{setModal(null); setEditingId(null); setForm({});}}>Cancelar</button>
+          <button className="btn btn-amber" onClick={handleSubmitMaterial}><JxIcon name="check" size={13}/>{editingId ? 'Guardar Cambios' : 'Crear Material'}</button>
         </div>
       </Modal>}
     </div>
@@ -393,6 +428,7 @@ function HerramientasPage({ showToast }) {
   const [q, setQ] = uS('');
   const [modal, setModal] = uS(null);
   const [form, setForm] = uS({});
+  const [editingId, setEditingId] = uS(null);
   const [obraId, setObraId] = uS(null);
 
   uE(() => {
@@ -407,7 +443,7 @@ function HerramientasPage({ showToast }) {
     return () => { cancelled = true; };
   }, []);
 
-  const { data: herramientas, loading, create: createHerr, refresh } = window.__hooks.useHerramientas(obraId);
+  const { data: herramientas, loading, create: createHerr, update: updateHerr, refresh } = window.__hooks.useHerramientas(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
   const movHook = window.__hooks.useMovimientosHerramientas(obraId);
 
@@ -450,25 +486,50 @@ function HerramientasPage({ showToast }) {
     setModal('mov');
   };
 
+  const openEditHerr = (h) => {
+    setForm({
+      nombre_herramienta: h.nombre_herramienta || '',
+      tipo_herramienta: h.tipo_herramienta || 'manual',
+      marca: h.marca || '',
+      modelo: h.modelo || '',
+      serie: h.serie || '',
+      estado_actual: h.estado_actual || 'bueno',
+    });
+    setEditingId(h.id);
+    setModal('editar');
+  };
+
   const handleSubmitHerr = async () => {
     if (!form.nombre_herramienta) {
       showToast('Falta nombre', 'red');
       return;
     }
     try {
-      await createHerr({
-        obra_id: obraId,
-        nombre_herramienta: form.nombre_herramienta,
-        tipo_herramienta: form.tipo_herramienta || 'manual',
-        marca: form.marca || null,
-        modelo: form.modelo || null,
-        serie: form.serie || null,
-        estado_actual: form.estado_actual || 'bueno',
-        ubicacion_actual: 'almacen',
-        disponible: true,
-      });
-      showToast(`Herramienta "${form.nombre_herramienta}" creada`, 'green');
-      setModal(null); setForm({});
+      if (editingId) {
+        await updateHerr(editingId, {
+          nombre_herramienta: form.nombre_herramienta,
+          tipo_herramienta: form.tipo_herramienta || 'manual',
+          marca: form.marca || null,
+          modelo: form.modelo || null,
+          serie: form.serie || null,
+          estado_actual: form.estado_actual || 'bueno',
+        });
+        showToast(`Herramienta "${form.nombre_herramienta}" actualizada`, 'green');
+      } else {
+        await createHerr({
+          obra_id: obraId,
+          nombre_herramienta: form.nombre_herramienta,
+          tipo_herramienta: form.tipo_herramienta || 'manual',
+          marca: form.marca || null,
+          modelo: form.modelo || null,
+          serie: form.serie || null,
+          estado_actual: form.estado_actual || 'bueno',
+          ubicacion_actual: 'almacen',
+          disponible: true,
+        });
+        showToast(`Herramienta "${form.nombre_herramienta}" creada`, 'green');
+      }
+      setModal(null); setForm({}); setEditingId(null);
     } catch (e) {
       showToast('Error: ' + e.message, 'red');
     }
@@ -567,6 +628,7 @@ function HerramientasPage({ showToast }) {
             <thead><tr>
               <th>Herramienta</th><th>Tipo</th><th>Marca / Modelo</th><th>Estado</th>
               <th>Ubicación</th><th>Disponible</th><th>Últ. Movimiento</th><th>Sync</th>
+              <th style={{textAlign:'center'}}>Acciones</th>
             </tr></thead>
             <tbody>
               {filtered.map(h => {
@@ -585,6 +647,11 @@ function HerramientasPage({ showToast }) {
                     <td>{h.sync_status && h.sync_status !== 'synced'
                       ? <span className="badge b-amber">⏱</span>
                       : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}</td>
+                    <td style={{textAlign:'center'}}>
+                      <button className="btn btn-ghost btn-xs" title="Editar herramienta" onClick={()=>openEditHerr(h)}>
+                        <JxIcon name="edit" size={11}/>
+                      </button>
+                    </td>
                   </tr>
                 );
               })}
@@ -628,8 +695,8 @@ function HerramientasPage({ showToast }) {
         </div>
       </Modal>}
 
-      {/* Modal Nueva Herramienta */}
-      {modal==='nuevo' && <Modal title="Nueva Herramienta" icon="tool" onClose={()=>setModal(null)}>
+      {/* Modal Nueva / Editar Herramienta */}
+      {(modal==='nuevo' || modal==='editar') && <Modal title={editingId ? 'Editar Herramienta' : 'Nueva Herramienta'} icon="tool" onClose={()=>{setModal(null); setEditingId(null); setForm({});}}>
         <div className="g2">
           <div style={{gridColumn:'1/-1'}}><label className="flabel">Nombre *</label><input className="fi" placeholder="Ej: Amoladora 7&quot;" value={form.nombre_herramienta||''} onChange={e=>setForm({...form, nombre_herramienta:e.target.value})}/></div>
           <div><label className="flabel">Tipo</label>
@@ -650,8 +717,8 @@ function HerramientasPage({ showToast }) {
           <div style={{gridColumn:'1/-1'}}><label className="flabel">N° Serie</label><input className="fi" placeholder="Ej: BS-2024-001" value={form.serie||''} onChange={e=>setForm({...form, serie:e.target.value})}/></div>
         </div>
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={()=>setModal(null)}>Cancelar</button>
-          <button className="btn btn-amber" onClick={handleSubmitHerr}><JxIcon name="check" size={13}/>Crear Herramienta</button>
+          <button className="btn btn-ghost" onClick={()=>{setModal(null); setEditingId(null); setForm({});}}>Cancelar</button>
+          <button className="btn btn-amber" onClick={handleSubmitHerr}><JxIcon name="check" size={13}/>{editingId ? 'Guardar Cambios' : 'Crear Herramienta'}</button>
         </div>
       </Modal>}
     </div>
@@ -663,6 +730,7 @@ function PersonalPage({ showToast }) {
   const [q, setQ] = uS('');
   const [modal, setModal] = uS(null);
   const [form, setForm] = uS({});
+  const [editingId, setEditingId] = uS(null);
   const [obraId, setObraId] = uS(null);
 
   uE(() => {
@@ -677,7 +745,7 @@ function PersonalPage({ showToast }) {
     return () => { cancelled = true; };
   }, []);
 
-  const { data: personal, loading, create: createPersonal } = window.__hooks.usePersonal(obraId);
+  const { data: personal, loading, create: createPersonal, update: updatePersonal } = window.__hooks.usePersonal(obraId);
 
   const filtered = uM(() => {
     if (!personal) return [];
@@ -696,25 +764,59 @@ function PersonalPage({ showToast }) {
     retirado:   { class:'b-red',    label:'Retirado' },
   };
 
+  const openEditPersonal = (p) => {
+    setForm({
+      nombres: p.nombres || '',
+      apellidos: p.apellidos || '',
+      dni: p.dni || '',
+      cargo: p.cargo || '',
+      area: p.area || '',
+      fecha_ingreso: p.fecha_ingreso || '',
+      telefono: p.telefono || '',
+      estado: p.estado || 'activo',
+    });
+    setEditingId(p.id);
+    setModal('editar');
+  };
+
   const handleSubmit = async () => {
-    if (!form.nombres || !form.apellidos || !form.dni) {
+    const dni = (form.dni || '').trim();
+    if (!form.nombres?.trim() || !form.apellidos?.trim() || !dni) {
       showToast('Faltan campos obligatorios (nombres, apellidos, DNI)', 'red');
       return;
     }
+    if (!/^\d{8}$/.test(dni)) {
+      showToast('El DNI debe tener exactamente 8 dígitos numéricos', 'red');
+      return;
+    }
     try {
-      await createPersonal({
-        obra_id: obraId,
-        nombres: form.nombres,
-        apellidos: form.apellidos,
-        dni: form.dni,
-        cargo: form.cargo || null,
-        area: form.area || null,
-        fecha_ingreso: form.fecha_ingreso || new Date().toISOString().slice(0,10),
-        telefono: form.telefono || null,
-        estado: 'activo',
-      });
-      showToast(`Trabajador "${form.nombres} ${form.apellidos}" registrado`, 'green');
-      setModal(null); setForm({});
+      if (editingId) {
+        await updatePersonal(editingId, {
+          nombres: form.nombres.trim(),
+          apellidos: form.apellidos.trim(),
+          dni,
+          cargo: form.cargo || null,
+          area: form.area || null,
+          fecha_ingreso: form.fecha_ingreso || null,
+          telefono: form.telefono?.trim() || null,
+          estado: form.estado || 'activo',
+        });
+        showToast(`Trabajador "${form.nombres} ${form.apellidos}" actualizado`, 'green');
+      } else {
+        await createPersonal({
+          obra_id: obraId,
+          nombres: form.nombres.trim(),
+          apellidos: form.apellidos.trim(),
+          dni,
+          cargo: form.cargo || null,
+          area: form.area || null,
+          fecha_ingreso: form.fecha_ingreso || new Date().toISOString().slice(0,10),
+          telefono: form.telefono?.trim() || null,
+          estado: 'activo',
+        });
+        showToast(`Trabajador "${form.nombres} ${form.apellidos}" registrado`, 'green');
+      }
+      setModal(null); setForm({}); setEditingId(null);
     } catch (e) {
       showToast('Error: ' + (e.message?.includes('UNIQUE') ? 'Ya existe un trabajador con ese DNI' : e.message), 'red');
     }
@@ -743,6 +845,7 @@ function PersonalPage({ showToast }) {
           <thead><tr>
             <th>Nombre Completo</th><th>DNI</th><th>Cargo</th><th>Área</th>
             <th>F. Ingreso</th><th>Estado</th><th>Teléfono</th><th>Sync</th>
+            <th style={{textAlign:'center'}}>Acciones</th>
           </tr></thead>
           <tbody>
             {filtered.map(p => {
@@ -759,6 +862,11 @@ function PersonalPage({ showToast }) {
                   <td>{p.sync_status && p.sync_status !== 'synced'
                     ? <span className="badge b-amber">⏱</span>
                     : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}</td>
+                  <td style={{textAlign:'center'}}>
+                    <button className="btn btn-ghost btn-xs" title="Editar trabajador" onClick={()=>openEditPersonal(p)}>
+                      <JxIcon name="edit" size={11}/>
+                    </button>
+                  </td>
                 </tr>
               );
             })}
@@ -767,12 +875,12 @@ function PersonalPage({ showToast }) {
       </div>
       )}
 
-      {modal === 'nuevo' && <Modal title="Nuevo Trabajador" icon="user" onClose={()=>setModal(null)}>
+      {(modal === 'nuevo' || modal === 'editar') && <Modal title={editingId ? 'Editar Trabajador' : 'Nuevo Trabajador'} icon="user" onClose={()=>{setModal(null); setEditingId(null); setForm({});}}>
         <div className="g2">
           <div><label className="flabel">Nombres *</label><input className="fi" value={form.nombres||''} onChange={e=>setForm({...form, nombres:e.target.value})}/></div>
           <div><label className="flabel">Apellidos *</label><input className="fi" value={form.apellidos||''} onChange={e=>setForm({...form, apellidos:e.target.value})}/></div>
-          <div><label className="flabel">DNI *</label><input className="fi" placeholder="8 dígitos" value={form.dni||''} onChange={e=>setForm({...form, dni:e.target.value})}/></div>
-          <div><label className="flabel">Teléfono</label><input className="fi" placeholder="9 dígitos" value={form.telefono||''} onChange={e=>setForm({...form, telefono:e.target.value})}/></div>
+          <div><label className="flabel">DNI *</label><input className="fi" placeholder="8 dígitos" inputMode="numeric" maxLength={8} value={form.dni||''} onChange={e=>setForm({...form, dni:e.target.value.replace(/\D/g,'').slice(0,8)})}/></div>
+          <div><label className="flabel">Teléfono</label><input className="fi" placeholder="9 dígitos" inputMode="numeric" maxLength={9} value={form.telefono||''} onChange={e=>setForm({...form, telefono:e.target.value.replace(/\D/g,'').slice(0,9)})}/></div>
           <div><label className="flabel">Cargo</label>
             <select className="fi" value={form.cargo||''} onChange={e=>setForm({...form, cargo:e.target.value})}>
               <option value="">— Selecciona —</option>
@@ -789,11 +897,21 @@ function PersonalPage({ showToast }) {
               <option>Topografía</option><option>Administración</option>
             </select>
           </div>
-          <div style={{gridColumn:'1/-1'}}><label className="flabel">Fecha de ingreso</label><input className="fi" type="date" value={form.fecha_ingreso||''} onChange={e=>setForm({...form, fecha_ingreso:e.target.value})}/></div>
+          <div><label className="flabel">Fecha de ingreso</label><input className="fi" type="date" value={form.fecha_ingreso||''} onChange={e=>setForm({...form, fecha_ingreso:e.target.value})}/></div>
+          {editingId && (
+            <div><label className="flabel">Estado</label>
+              <select className="fi" value={form.estado||'activo'} onChange={e=>setForm({...form, estado:e.target.value})}>
+                <option value="activo">Activo</option>
+                <option value="inactivo">Inactivo</option>
+                <option value="suspendido">Suspendido</option>
+                <option value="retirado">Retirado</option>
+              </select>
+            </div>
+          )}
         </div>
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={()=>setModal(null)}>Cancelar</button>
-          <button className="btn btn-amber" onClick={handleSubmit}><JxIcon name="check" size={13}/>Registrar Trabajador</button>
+          <button className="btn btn-ghost" onClick={()=>{setModal(null); setEditingId(null); setForm({});}}>Cancelar</button>
+          <button className="btn btn-amber" onClick={handleSubmit}><JxIcon name="check" size={13}/>{editingId ? 'Guardar Cambios' : 'Registrar Trabajador'}</button>
         </div>
       </Modal>}
     </div>
@@ -804,11 +922,14 @@ function PersonalPage({ showToast }) {
 function AsistenciaPage({ showToast }) {
   const today = new Date().toISOString().slice(0, 10);
   const [date, setDate] = uS(today);
-  const [modal, setModal] = uS(null);
-  const [form, setForm] = uS({});
+  const [modal, setModal] = uS(null); // null | 'masivo' | 'editar'
+  const [editingAsist, setEditingAsist] = uS(null); // asistencia individual en edición
+  const [editForm, setEditForm] = uS({}); // form del modal de edición individual
+  const [rows, setRows] = uS([]); // estado de las filas en el modal masivo
   const [photoBlob, setPhotoBlob] = uS(null);
   const [photoUrl, setPhotoUrl] = uS(null);
   const [obraId, setObraId] = uS(null);
+  const [busy, setBusy] = uS(false);
 
   uE(() => {
     let cancelled = false;
@@ -823,14 +944,14 @@ function AsistenciaPage({ showToast }) {
   }, []);
 
   const { data: personal } = window.__hooks.usePersonal(obraId);
-  const { data: asistencias, loading, create: createAsistencia, refresh } = window.__hooks.useAsistencia(obraId);
+  const { data: asistencias, loading, create: createAsistencia, update: updateAsistencia, refresh } = window.__hooks.useAsistencia(obraId);
 
   // Asistencia del día seleccionado
   const delDia = uM(() => asistencias?.filter(a => a.fecha === date) ?? [], [asistencias, date]);
 
   // KPIs del día
   const kpis = uM(() => {
-    const total = personal?.length ?? 0;
+    const total = personal?.filter(p => p.estado === 'activo').length ?? 0;
     const presentes = delDia.filter(a => a.estado_asistencia === 'asistio').length;
     const tardanzas = delDia.filter(a => a.estado_asistencia === 'tardanza').length;
     const faltas    = delDia.filter(a => a.estado_asistencia === 'falta').length;
@@ -847,13 +968,15 @@ function AsistenciaPage({ showToast }) {
     descanso: { class:'b-gray',   label:'Descanso' },
   };
 
-  // Mapear personal con su asistencia del día (los que no tienen registro = sin marcar)
+  // Mapear personal activo con su asistencia del día
   const personalConAsistencia = uM(() => {
     if (!personal) return [];
-    return personal.map(p => {
-      const reg = delDia.find(a => a.personal_id === p.id);
-      return { ...p, asistencia: reg };
-    });
+    return personal
+      .filter(p => p.estado === 'activo')
+      .map(p => {
+        const reg = delDia.find(a => a.personal_id === p.id);
+        return { ...p, asistencia: reg };
+      });
   }, [personal, delDia]);
 
   const calcularHoras = (entrada, salida) => {
@@ -864,78 +987,145 @@ function AsistenciaPage({ showToast }) {
     return Math.max(0, Math.round(diff * 100) / 100);
   };
 
-  const openRegistrar = (personalSel = null) => {
-    setForm({
-      personal_id: personalSel?.id || '',
-      fecha: date,
-      hora_ingreso: '07:00',
-      hora_salida: '17:00',
-      estado_asistencia: 'asistio',
-    });
-    setPhotoBlob(null);
-    setPhotoUrl(null);
-    setModal('registrar');
-  };
-
   const handlePhotoChange = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 8 * 1024 * 1024) {
-      showToast('Foto muy grande (máx 8 MB)', 'red');
-      return;
-    }
+    if (file.size > 8 * 1024 * 1024) { showToast('Foto muy grande (máx 8 MB)', 'red'); return; }
     setPhotoBlob(file);
     setPhotoUrl(URL.createObjectURL(file));
   };
 
-  const handleSubmit = async () => {
-    if (!form.personal_id) {
-      showToast('Selecciona un trabajador', 'red');
-      return;
-    }
-    // Validar duplicado
-    if (asistencias.find(a => a.personal_id === form.personal_id && a.fecha === form.fecha)) {
-      showToast('Ya existe asistencia registrada para ese trabajador en esa fecha', 'red');
-      return;
-    }
-    try {
-      const horas = calcularHoras(form.hora_ingreso, form.hora_salida);
-      const nuevaAsist = await createAsistencia({
-        obra_id: obraId,
-        personal_id: form.personal_id,
-        fecha: form.fecha,
-        hora_ingreso: form.estado_asistencia === 'falta' ? null : form.hora_ingreso,
-        hora_salida:  form.estado_asistencia === 'falta' ? null : form.hora_salida,
-        horas_trabajadas: form.estado_asistencia === 'falta' ? 0 : horas,
-        estado_asistencia: form.estado_asistencia,
-        observaciones: form.observaciones || null,
-      });
+  // ── MODAL MASIVO ────────────────────────────────────────
+  const openMasivo = () => {
+    // Pre-llenar las filas con personal activo, marcando "asistio" por defecto
+    // o el estado existente si ya hay asistencia para esa fecha
+    const initialRows = personalConAsistencia.map(p => {
+      const a = p.asistencia;
+      return {
+        personal_id: p.id,
+        nombre: `${p.nombres || ''} ${p.apellidos || ''}`.trim(),
+        cargo: p.cargo || '—',
+        existing_id: a?.id || null,
+        estado_asistencia: a?.estado_asistencia || 'asistio',
+        hora_ingreso: a?.hora_ingreso || '07:00',
+        hora_salida:  a?.hora_salida  || '17:00',
+        observaciones: a?.observaciones || '',
+      };
+    });
+    setRows(initialRows);
+    setPhotoBlob(null);
+    setPhotoUrl(null);
+    setModal('masivo');
+  };
 
-      // Si hay foto, guardar evidencia
+  const updateRow = (idx, patch) => {
+    setRows(prev => prev.map((r, i) => i === idx ? { ...r, ...patch } : r));
+  };
+
+  const aplicarATodos = (estado) => {
+    setRows(prev => prev.map(r => ({ ...r, estado_asistencia: estado })));
+  };
+
+  const handleSubmitMasivo = async () => {
+    if (rows.length === 0) {
+      showToast('No hay personal activo para registrar', 'red');
+      return;
+    }
+    setBusy(true);
+    try {
+      // 1. Subir UNA evidencia compartida si hay foto
+      let evidId = null;
       if (photoBlob) {
-        const evidId = window.__newId();
+        evidId = window.__newId();
         await window.__saveEvidenciaLocal({
           id: evidId,
           obra_id: obraId,
           tipo_evidencia: 'foto_asistencia',
           modulo_relacionado: 'asistencia',
-          registro_relacionado_id: nuevaAsist.id,
-          nombre_archivo: `asistencia_${form.fecha}_${form.personal_id.slice(0,8)}.jpg`,
+          registro_relacionado_id: null, // diaria, no atada a un solo trabajador
+          nombre_archivo: `asistencia_diaria_${date}.jpg`,
           mime_type: photoBlob.type || 'image/jpeg',
           blob: photoBlob,
-          fecha: form.fecha,
-          created_by: nuevaAsist.created_by,
+          fecha: date,
+          created_by: window.__useAuth?.()?.profile?.id || 'offline',
         });
-        // Actualizar asistencia con evidencia_id
-        await window.__db.asistencia.update(nuevaAsist.id, { evidencia_id: evidId });
-        refresh();
       }
 
-      const personalNombre = personal.find(p => p.id === form.personal_id);
-      showToast(`Asistencia registrada · ${personalNombre?.nombres} ${personalNombre?.apellidos}`, 'green');
-      setModal(null); setForm({}); setPhotoBlob(null); setPhotoUrl(null);
+      // 2. Crear o actualizar cada asistencia
+      let okCount = 0;
+      let errCount = 0;
+      for (const r of rows) {
+        try {
+          const horas = r.estado_asistencia === 'falta' ? 0 : calcularHoras(r.hora_ingreso, r.hora_salida);
+          const payload = {
+            obra_id: obraId,
+            personal_id: r.personal_id,
+            fecha: date,
+            hora_ingreso: r.estado_asistencia === 'falta' ? null : r.hora_ingreso,
+            hora_salida:  r.estado_asistencia === 'falta' ? null : r.hora_salida,
+            horas_trabajadas: horas,
+            estado_asistencia: r.estado_asistencia,
+            observaciones: r.observaciones?.trim() || null,
+            evidencia_id: evidId || null,
+          };
+          if (r.existing_id) {
+            await updateAsistencia(r.existing_id, payload);
+          } else {
+            await createAsistencia(payload);
+          }
+          okCount++;
+        } catch (e) {
+          errCount++;
+          console.warn('asistencia row failed', r.personal_id, e);
+        }
+      }
+      refresh();
+      showToast(
+        `Asistencia diaria guardada · ${okCount} registros${errCount ? ` · ${errCount} con error` : ''}`,
+        errCount ? 'amber' : 'green'
+      );
+      setModal(null); setPhotoBlob(null); setPhotoUrl(null); setRows([]);
     } catch (e) {
       showToast('Error: ' + e.message, 'red');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // ── MODAL EDITAR INDIVIDUAL ─────────────────────────────
+  const openEditar = (asistencia, p) => {
+    setEditingAsist(asistencia);
+    setEditForm({
+      personal_nombre: `${p.nombres} ${p.apellidos}`.trim(),
+      estado_asistencia: asistencia.estado_asistencia || 'asistio',
+      hora_ingreso: asistencia.hora_ingreso || '07:00',
+      hora_salida:  asistencia.hora_salida  || '17:00',
+      observaciones: asistencia.observaciones || '',
+    });
+    setModal('editar');
+  };
+
+  const handleSubmitEditar = async () => {
+    if (!editingAsist) return;
+    setBusy(true);
+    try {
+      const horas = editForm.estado_asistencia === 'falta'
+        ? 0
+        : calcularHoras(editForm.hora_ingreso, editForm.hora_salida);
+      await updateAsistencia(editingAsist.id, {
+        estado_asistencia: editForm.estado_asistencia,
+        hora_ingreso: editForm.estado_asistencia === 'falta' ? null : editForm.hora_ingreso,
+        hora_salida:  editForm.estado_asistencia === 'falta' ? null : editForm.hora_salida,
+        horas_trabajadas: horas,
+        observaciones: editForm.observaciones?.trim() || null,
+      });
+      refresh();
+      showToast('Asistencia actualizada', 'green');
+      setModal(null); setEditingAsist(null); setEditForm({});
+    } catch (e) {
+      showToast('Error: ' + e.message, 'red');
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -946,10 +1136,12 @@ function AsistenciaPage({ showToast }) {
   return (
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
-        <div><div className="pg-title">Control de Asistencia</div><div className="pg-sub">Registro diario del personal en obra</div></div>
+        <div><div className="pg-title">Control de Asistencia</div><div className="pg-sub">Registro diario masivo · 1 evidencia por día</div></div>
         <div style={{display:'flex',gap:8,alignItems:'center'}}>
           <input className="fi" type="date" value={date} onChange={e=>setDate(e.target.value)} style={{width:'auto'}}/>
-          <button className="btn btn-amber btn-sm" onClick={()=>openRegistrar()}><JxIcon name="plus" size={13}/>Registrar Asistencia</button>
+          <button className="btn btn-amber btn-sm" onClick={openMasivo}>
+            <JxIcon name="users" size={13}/>Registrar Asistencia Diaria
+          </button>
         </div>
       </div>
 
@@ -990,7 +1182,11 @@ function AsistenciaPage({ showToast }) {
                   <td>{e ? <span className={`badge ${e.class}`}>{e.label}</span> : <span className="badge b-gray">Sin marcar</span>}</td>
                   <td>{a?.evidencia_id ? <span className="badge b-blue"><JxIcon name="camera" size={10}/> Foto</span> : <span className="col-m">—</span>}</td>
                   <td>
-                    {!a && <button className="btn btn-amber btn-xs" onClick={()=>openRegistrar(p)}><JxIcon name="plus" size={10}/>Marcar</button>}
+                    {a && (
+                      <button className="btn btn-ghost btn-xs" title="Editar asistencia" onClick={()=>openEditar(a, p)}>
+                        <JxIcon name="edit" size={11}/>
+                      </button>
+                    )}
                   </td>
                 </tr>
               );
@@ -1002,48 +1198,124 @@ function AsistenciaPage({ showToast }) {
         </div>
       </div>
 
-      {modal === 'registrar' && <Modal title="Registrar Asistencia" icon="calendar" onClose={()=>{setModal(null); setPhotoBlob(null); setPhotoUrl(null);}}>
-        <div className="g2">
-          <div style={{gridColumn:'1/-1'}}><label className="flabel">Trabajador *</label>
-            <select className="fi" value={form.personal_id||''} onChange={e=>setForm({...form, personal_id:e.target.value})}>
-              <option value="">Selecciona...</option>
-              {personal.map(p => <option key={p.id} value={p.id}>{p.nombres} {p.apellidos} · {p.cargo}</option>)}
-            </select>
+      {/* ── MODAL MASIVO — registro diario de toda la cuadrilla ── */}
+      {modal === 'masivo' && <Modal title={`Asistencia Diaria · ${date}`} icon="users" onClose={()=>{setModal(null); setPhotoBlob(null); setPhotoUrl(null); setRows([]);}}>
+        {rows.length === 0 ? (
+          <div style={{padding:'30px 0', textAlign:'center', color:'var(--tm)'}}>
+            <JxIcon name="users" size={32} color="var(--tm)"/>
+            <p style={{fontSize:13, marginTop:8}}>No hay personal activo en esta obra. Registra trabajadores primero.</p>
           </div>
-          <div><label className="flabel">Fecha</label><input className="fi" type="date" value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
-          <div><label className="flabel">Estado</label>
-            <select className="fi" value={form.estado_asistencia||''} onChange={e=>setForm({...form, estado_asistencia:e.target.value})}>
-              <option value="asistio">Asistió</option><option value="tardanza">Tardanza</option>
-              <option value="falta">Falta</option><option value="permiso">Permiso</option><option value="descanso">Descanso</option>
-            </select>
+        ) : (
+        <>
+          <div style={{display:'flex', gap:8, marginBottom:12, flexWrap:'wrap', alignItems:'center'}}>
+            <span style={{fontSize:11.5, color:'var(--tm)'}}>Aplicar a todos:</span>
+            <button className="btn btn-green btn-xs" onClick={()=>aplicarATodos('asistio')}>✓ Asistió</button>
+            <button className="btn btn-ghost btn-xs" onClick={()=>aplicarATodos('tardanza')}>Tardanza</button>
+            <button className="btn btn-red btn-xs" onClick={()=>aplicarATodos('falta')}>Falta</button>
+            <button className="btn btn-blue btn-xs" onClick={()=>aplicarATodos('permiso')}>Permiso</button>
+            <button className="btn btn-ghost btn-xs" onClick={()=>aplicarATodos('descanso')}>Descanso</button>
           </div>
-          {form.estado_asistencia !== 'falta' && <>
-            <div><label className="flabel">Hora ingreso</label><input className="fi" type="time" value={form.hora_ingreso||''} onChange={e=>setForm({...form, hora_ingreso:e.target.value})}/></div>
-            <div><label className="flabel">Hora salida</label><input className="fi" type="time" value={form.hora_salida||''} onChange={e=>setForm({...form, hora_salida:e.target.value})}/></div>
-          </>}
-        </div>
 
-        <div style={{marginTop:14}}>
-          <label className="flabel">Evidencia (foto)</label>
-          {photoUrl ? (
-            <div style={{position:'relative', display:'inline-block'}}>
-              <img src={photoUrl} alt="evidencia" style={{maxHeight:160, borderRadius:8, border:'1px solid var(--border)'}}/>
-              <button onClick={()=>{setPhotoBlob(null); setPhotoUrl(null);}}
-                      style={{position:'absolute', top:6, right:6, background:'rgba(231,76,60,0.9)', color:'white', border:'none', borderRadius:'50%', width:24, height:24, cursor:'pointer'}}>×</button>
-            </div>
-          ) : (
-            <label style={{display:'block', border:'1.5px dashed var(--border-h)', borderRadius:8, padding:'18px', textAlign:'center', color:'var(--tm)', fontSize:12, cursor:'pointer'}}>
-              <JxIcon name="camera" size={20} color="var(--tm)"/>
-              <div style={{marginTop:6}}>Tomar foto o seleccionar archivo</div>
-              <input type="file" accept="image/*" capture="environment" onChange={handlePhotoChange} style={{display:'none'}}/>
-            </label>
-          )}
-        </div>
+          <div style={{maxHeight:'45vh', overflowY:'auto', border:'1px solid var(--border)', borderRadius:8}}>
+            <table className="tbl" style={{minWidth:560}}>
+              <thead><tr>
+                <th>Trabajador</th><th>Estado</th><th>Ingreso</th><th>Salida</th><th>Observaciones</th>
+              </tr></thead>
+              <tbody>
+                {rows.map((r, i) => {
+                  const isFalta = r.estado_asistencia === 'falta';
+                  return (
+                    <tr key={r.personal_id}>
+                      <td className="col-p" style={{fontSize:12}}>
+                        {r.nombre}
+                        {r.cargo !== '—' && <div style={{fontSize:10.5, color:'var(--tm)'}}>{r.cargo}</div>}
+                      </td>
+                      <td>
+                        <select className="fi" style={{padding:'5px 8px', fontSize:11.5}}
+                                value={r.estado_asistencia}
+                                onChange={e=>updateRow(i, { estado_asistencia: e.target.value })}>
+                          <option value="asistio">Asistió</option>
+                          <option value="tardanza">Tardanza</option>
+                          <option value="falta">Falta</option>
+                          <option value="permiso">Permiso</option>
+                          <option value="descanso">Descanso</option>
+                        </select>
+                      </td>
+                      <td>
+                        <input className="fi" type="time" disabled={isFalta} style={{padding:'5px 8px', fontSize:11.5, opacity: isFalta ? 0.4 : 1}}
+                               value={r.hora_ingreso}
+                               onChange={e=>updateRow(i, { hora_ingreso: e.target.value })}/>
+                      </td>
+                      <td>
+                        <input className="fi" type="time" disabled={isFalta} style={{padding:'5px 8px', fontSize:11.5, opacity: isFalta ? 0.4 : 1}}
+                               value={r.hora_salida}
+                               onChange={e=>updateRow(i, { hora_salida: e.target.value })}/>
+                      </td>
+                      <td>
+                        <input className="fi" placeholder="—" style={{padding:'5px 8px', fontSize:11.5}}
+                               value={r.observaciones}
+                               onChange={e=>updateRow(i, { observaciones: e.target.value })}/>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
 
-        <div style={{marginTop:14}}><label className="flabel">Observaciones</label><textarea className="fi" value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})} placeholder="Opcional..."/></div>
+          <div style={{marginTop:16}}>
+            <label className="flabel">Evidencia diaria (foto del formato físico firmado)</label>
+            {photoUrl ? (
+              <div style={{position:'relative', display:'inline-block'}}>
+                <img src={photoUrl} alt="evidencia diaria" style={{maxHeight:180, borderRadius:8, border:'1px solid var(--border)'}}/>
+                <button onClick={()=>{setPhotoBlob(null); setPhotoUrl(null);}}
+                        style={{position:'absolute', top:6, right:6, background:'rgba(231,76,60,0.9)', color:'white', border:'none', borderRadius:'50%', width:24, height:24, cursor:'pointer'}}>×</button>
+              </div>
+            ) : (
+              <label style={{display:'block', border:'1.5px dashed var(--border-h)', borderRadius:8, padding:'16px', textAlign:'center', color:'var(--tm)', fontSize:12, cursor:'pointer'}}>
+                <JxIcon name="camera" size={20} color="var(--tm)"/>
+                <div style={{marginTop:6}}>Subir foto del formato firmado del día</div>
+                <div style={{marginTop:2, fontSize:10.5}}>(Una sola foto para toda la cuadrilla)</div>
+                <input type="file" accept="image/*" capture="environment" onChange={handlePhotoChange} style={{display:'none'}}/>
+              </label>
+            )}
+          </div>
+        </>
+        )}
+
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={()=>{setModal(null); setPhotoBlob(null); setPhotoUrl(null);}}>Cancelar</button>
-          <button className="btn btn-amber" onClick={handleSubmit}><JxIcon name="check" size={13}/>Registrar</button>
+          <button className="btn btn-ghost" disabled={busy} onClick={()=>{setModal(null); setPhotoBlob(null); setPhotoUrl(null); setRows([]);}}>Cancelar</button>
+          <button className="btn btn-amber" disabled={busy || rows.length === 0} onClick={handleSubmitMasivo}>
+            <JxIcon name="check" size={13}/>{busy ? 'Guardando…' : `Guardar ${rows.length} registros`}
+          </button>
+        </div>
+      </Modal>}
+
+      {/* ── MODAL EDITAR INDIVIDUAL ── */}
+      {modal === 'editar' && <Modal title={`Editar Asistencia · ${editForm.personal_nombre || ''}`} icon="edit" onClose={()=>{setModal(null); setEditingAsist(null); setEditForm({});}}>
+        <div className="g2">
+          <div style={{gridColumn:'1/-1'}}><label className="flabel">Estado</label>
+            <select className="fi" value={editForm.estado_asistencia||'asistio'} onChange={e=>setEditForm({...editForm, estado_asistencia:e.target.value})}>
+              <option value="asistio">Asistió</option>
+              <option value="tardanza">Tardanza</option>
+              <option value="falta">Falta</option>
+              <option value="permiso">Permiso</option>
+              <option value="descanso">Descanso</option>
+            </select>
+          </div>
+          {editForm.estado_asistencia !== 'falta' && <>
+            <div><label className="flabel">Hora ingreso</label><input className="fi" type="time" value={editForm.hora_ingreso||''} onChange={e=>setEditForm({...editForm, hora_ingreso:e.target.value})}/></div>
+            <div><label className="flabel">Hora salida</label><input className="fi" type="time" value={editForm.hora_salida||''} onChange={e=>setEditForm({...editForm, hora_salida:e.target.value})}/></div>
+          </>}
+          <div style={{gridColumn:'1/-1'}}><label className="flabel">Observaciones</label>
+            <textarea className="fi" value={editForm.observaciones||''} onChange={e=>setEditForm({...editForm, observaciones:e.target.value})} placeholder="Opcional..."/>
+          </div>
+        </div>
+        <div className="modal-actions">
+          <button className="btn btn-ghost" disabled={busy} onClick={()=>{setModal(null); setEditingAsist(null); setEditForm({});}}>Cancelar</button>
+          <button className="btn btn-amber" disabled={busy} onClick={handleSubmitEditar}>
+            <JxIcon name="check" size={13}/>{busy ? 'Guardando…' : 'Guardar Cambios'}
+          </button>
         </div>
       </Modal>}
     </div>

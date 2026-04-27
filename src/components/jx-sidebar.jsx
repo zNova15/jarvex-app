@@ -48,6 +48,8 @@ const NAV = [
 ];
 
 function Sidebar({ current, onNav, collapsed, onToggle }) {
+  const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
+  const { isPrueba } = appMode;
   const [hovered, setHovered] = useState(null);
   const isMobile = useIsMobile();
   const auth = window.__useAuth ? window.__useAuth() : null;
@@ -197,6 +199,27 @@ function Sidebar({ current, onNav, collapsed, onToggle }) {
           );
         })}
       </nav>
+
+      {/* Mode badge */}
+      {!navCollapsed && (
+        <div style={{ padding: '8px 14px 0' }}>
+          <div
+            className={`badge ${isPrueba ? 'b-amber' : 'b-green'}`}
+            style={{
+              width: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: 10.5,
+              fontWeight: 700,
+              letterSpacing: 0.5,
+              padding: '5px 8px',
+            }}
+            title={isPrueba ? 'Modo prueba activo' : 'Modo producción activo'}>
+            {isPrueba ? '🧪 MODO PRUEBA' : '🔒 PRODUCCIÓN'}
+          </div>
+        </div>
+      )}
 
       {/* User profile */}
       <div style={{ padding: navCollapsed ? '12px 8px' : '12px 14px', borderTop: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', gap: 10 }}>

@@ -4,6 +4,7 @@ import Chart from 'chart.js/auto';
 import { AuthContext, useAuthProvider, useAuth } from './hooks/useAuth';
 import { useSync } from './hooks/useSync';
 import { useOnline } from './hooks/useOnline';
+import { useAppMode } from './hooks/useAppMode';
 import { useRealtimeNotifications } from './hooks/useRealtimeNotifications';
 import {
   useObras, usePersonal, useMateriales, useHerramientas,
@@ -27,6 +28,7 @@ window.__newId = newId;
 window.__useAuth = useAuth;
 window.__useSync = useSync;
 window.__useOnline = useOnline;
+window.__useAppMode = useAppMode;
 window.__useRealtimeNotifications = useRealtimeNotifications;
 window.__hooks = {
   useObras, usePersonal, useMateriales, useHerramientas,

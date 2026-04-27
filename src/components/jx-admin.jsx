@@ -1,4 +1,5 @@
 import React from "react";
+import { listAuditLogs } from "../lib/audit";
 const { useState: uSAd, useMemo: uMAd, useEffect: uEAd } = React;
 
 // ── Constantes ────────────────────────────────────────────
@@ -477,6 +478,7 @@ function ConfiguracionPage({ showToast }) {
     { id:'obras',   label:'Obras',    icon:'hardHat' },
     { id:'sistema', label:'Sistema',  icon:'settings' },
     { id:'notif',   label:'Notificaciones', icon:'bell' },
+    { id:'auditoria', label:'Auditoría', icon:'shield' },
   ];
   return (
     <div className="page-wrap">
@@ -500,6 +502,7 @@ function ConfiguracionPage({ showToast }) {
       {tab === 'obras'    && <ObrasTab showToast={showToast} isAdmin={isAdmin}/>}
       {tab === 'sistema'  && <SistemaTab showToast={showToast}/>}
       {tab === 'notif'    && <NotifTab showToast={showToast}/>}
+      {tab === 'auditoria'&& <AuditoriaTab showToast={showToast} isAdmin={isAdmin}/>}
     </div>
   );
 }
@@ -610,10 +613,16 @@ function ObrasTab({ showToast, isAdmin }) {
 }
 
 function SistemaTab({ showToast }) {
+  const auth = window.__useAuth ? window.__useAuth() : {};
+  const isAdmin = auth?.profile?.rol === 'admin';
+  const appMode = window.__useAppMode ? window.__useAppMode() : { mode: 'prueba', setMode: ()=>{}, isPrueba: true };
+  const { mode, setMode, isPrueba } = appMode;
+
   const [counts, setCounts] = uSAd({});
   const [online, setOnline] = uSAd(navigator.onLine);
   const [confirm, setConfirm] = uSAd(null);
   const [busy, setBusy] = uSAd(false);
+  const [tableConfirm, setTableConfirm] = uSAd(null);
 
   uEAd(() => {
     const load = async () => {
@@ -663,8 +672,58 @@ function SistemaTab({ showToast }) {
 
   const totalLocal = Object.values(counts).reduce((a,b)=>a+(b||0),0);
 
+  const clearTable = async (tableName) => {
+    setBusy(true);
+    try {
+      await window.__db[tableName].clear();
+      setCounts(c => ({ ...c, [tableName]: 0 }));
+      showToast?.(`Tabla \`${tableName}\` vaciada localmente`, 'green');
+    } catch(e) {
+      showToast?.('Error: '+(e.message||e),'red');
+    } finally {
+      setBusy(false);
+      setTableConfirm(null);
+    }
+  };
+
   return (
     <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
+      <div className="card card-p" style={{ gridColumn:'1 / -1', borderLeft: isPrueba ? '3px solid var(--amber)' : '3px solid var(--green)' }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12, flexWrap:'wrap', gap:10 }}>
+          <div style={{ fontSize:13, fontWeight:700, display:'flex', alignItems:'center', gap:8 }}>
+            <JxIcon name={isPrueba ? 'alert' : 'lock'} size={14} color={isPrueba ? 'var(--amber)' : 'var(--green)'}/>
+            Modo de Operación
+            <span className={`badge ${isPrueba ? 'b-amber' : 'b-green'}`} style={{ marginLeft:6 }}>
+              {isPrueba ? '🧪 PRUEBA' : '🔒 PRODUCCIÓN'}
+            </span>
+          </div>
+          <div style={{ display:'flex', gap:8 }} title={isAdmin ? '' : 'Solo el administrador puede cambiar el modo'}>
+            <button
+              className={`btn btn-sm ${mode==='prueba' ? 'btn-amber' : 'btn-ghost'}`}
+              disabled={!isAdmin || mode==='prueba'}
+              onClick={()=>{ setMode('prueba'); showToast?.('Modo prueba activado','amber'); }}>
+              🧪 Prueba
+            </button>
+            <button
+              className={`btn btn-sm ${mode==='produccion' ? 'btn-amber' : 'btn-ghost'}`}
+              disabled={!isAdmin || mode==='produccion'}
+              onClick={()=>{ setMode('produccion'); showToast?.('Modo producción activado','green'); }}>
+              🔒 Producción
+            </button>
+          </div>
+        </div>
+        <div style={{ fontSize:12.5, color:'var(--ts)', lineHeight:1.5 }}>
+          {isPrueba
+            ? 'Modo prueba activo. Permite borrar datos en bloque para reiniciar. No usar en producción.'
+            : 'Modo producción activo. Eliminación masiva deshabilitada para prevenir pérdida accidental de datos.'}
+        </div>
+        {!isAdmin && (
+          <div style={{ fontSize:11.5, color:'var(--tm)', marginTop:8, fontStyle:'italic' }}>
+            Solo el administrador puede cambiar el modo.
+          </div>
+        )}
+      </div>
+
       <div className="card card-p">
         <div style={{ fontSize:13, fontWeight:700, marginBottom:14 }}>Información del Sistema</div>
         <div style={{ display:'flex', flexDirection:'column', gap:8, fontSize:12.5 }}>
@@ -697,14 +756,39 @@ function SistemaTab({ showToast }) {
       <div className="card card-p">
         <div style={{ fontSize:13, fontWeight:700, marginBottom:14 }}>Registros locales por tabla</div>
         <div style={{ maxHeight:380, overflowY:'auto' }}>
-          {DB_TABLES_LIST.map(t => (
-            <div key={t} style={{ display:'flex', justifyContent:'space-between', padding:'7px 0', borderBottom:'1px solid rgba(255,255,255,0.04)', fontSize:12 }}>
-              <span style={{ color:'var(--tm)', fontFamily:'monospace' }}>{t}</span>
-              <span style={{ color:counts[t]>0?'var(--ts)':'var(--tm)', fontWeight:counts[t]>0?600:400 }}>{counts[t] ?? 0}</span>
-            </div>
-          ))}
+          {DB_TABLES_LIST.map(t => {
+            const n = counts[t] ?? 0;
+            return (
+              <div key={t} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'7px 0', borderBottom:'1px solid rgba(255,255,255,0.04)', fontSize:12, gap:8 }}>
+                <span style={{ color:'var(--tm)', fontFamily:'monospace', flex:1, overflow:'hidden', textOverflow:'ellipsis' }}>{t}</span>
+                <span style={{ color:n>0?'var(--ts)':'var(--tm)', fontWeight:n>0?600:400, minWidth:36, textAlign:'right' }}>{n}</span>
+                {isPrueba && n > 0 && (
+                  <button
+                    className="btn btn-red btn-xs"
+                    title={`Borrar todos los registros locales de ${t}`}
+                    onClick={()=>setTableConfirm(t)}>
+                    <JxIcon name="trash" size={11}/>
+                  </button>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
+
+      {tableConfirm && (
+        <Modal title={`Vaciar tabla: ${tableConfirm}`} icon="alert" onClose={()=>setTableConfirm(null)}>
+          <div style={{ fontSize:13, color:'var(--ts)', marginBottom:12 }}>
+            ¿Borrar TODOS los registros de la tabla <code style={{ color:'var(--amber)' }}>{tableConfirm}</code> en este dispositivo? Esto NO afecta los datos en Supabase si ya fueron sincronizados. Modo: prueba.
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={()=>setTableConfirm(null)}>Cancelar</button>
+            <button className="btn btn-red" disabled={busy} onClick={()=>clearTable(tableConfirm)}>
+              {busy?'Procesando...':'Vaciar tabla'}
+            </button>
+          </div>
+        </Modal>
+      )}
 
       {confirm && (
         <Modal title={confirm==='cache'?'Limpiar caché local':'Cerrar sesiones offline'} icon="alert" onClose={()=>setConfirm(null)}>
@@ -769,4 +853,195 @@ function NotifTab({ showToast }) {
   );
 }
 
-Object.assign(window, { UsuariosPage, RolesPage, ConfiguracionPage });
+// ── AUDITORÍA TAB ─────────────────────────────────────────────────
+const AUDIT_TABLES = [
+  'profiles','obras','obra_usuarios','personal','materiales','herramientas',
+  'proveedores','partidas','insumos_partida','cronograma',
+  'asistencia','movimientos_materiales','movimientos_herramientas',
+  'avance_obra','incidencias','evidencias',
+];
+
+const ACTION_BADGE = {
+  insert: 'b-green',
+  update: 'b-amber',
+  delete: 'b-red',
+};
+
+const ACTION_LABEL = {
+  insert: 'Insert',
+  update: 'Update',
+  delete: 'Delete',
+};
+
+function fmtDateTime(iso) {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString('es-PE', { dateStyle:'short', timeStyle:'medium' });
+  } catch (e) { return iso; }
+}
+
+function AuditoriaTab({ showToast, isAdmin }) {
+  const [logs, setLogs] = uSAd([]);
+  const [loading, setLoading] = uSAd(true);
+  const [filterTable, setFilterTable] = uSAd('');
+  const [filterUser, setFilterUser] = uSAd('');
+  const [selected, setSelected] = uSAd(null);
+
+  const reload = async () => {
+    setLoading(true);
+    try {
+      const rows = await listAuditLogs({
+        table: filterTable || undefined,
+        limit: 100,
+      });
+      setLogs(rows);
+    } catch (e) {
+      showToast?.('Error cargando logs: '+(e.message||e), 'red');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  uEAd(() => {
+    if (isAdmin) reload();
+    else setLoading(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterTable, isAdmin]);
+
+  const filtered = uMAd(() => {
+    const q = filterUser.trim().toLowerCase();
+    if (!q) return logs;
+    return logs.filter(l =>
+      (l.user_email || '').toLowerCase().includes(q) ||
+      (l.user_id || '').toLowerCase().includes(q)
+    );
+  }, [logs, filterUser]);
+
+  if (!isAdmin) {
+    return (
+      <div className="card card-p" style={{ textAlign:'center', color:'var(--tm)' }}>
+        <JxIcon name="lock" size={28} color="var(--tm)"/>
+        <div style={{ marginTop:10, fontSize:13 }}>
+          Solo administradores pueden ver el log de auditoría.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {/* Filtros */}
+      <div className="card card-p" style={{ marginBottom:12, display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
+        <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+          <JxIcon name="filter" size={13} color="var(--tm)"/>
+          <select value={filterTable} onChange={e=>setFilterTable(e.target.value)}
+                  style={{ background:'var(--bg-s)', color:'var(--ts)', border:'1px solid var(--border)', borderRadius:6, padding:'6px 8px', fontSize:12 }}>
+            <option value="">Todas las tablas</option>
+            {AUDIT_TABLES.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+        <div style={{ display:'flex', alignItems:'center', gap:6, flex:1, minWidth:200 }}>
+          <JxIcon name="search" size={13} color="var(--tm)"/>
+          <input value={filterUser} onChange={e=>setFilterUser(e.target.value)}
+                 placeholder="Buscar por email o ID de usuario"
+                 style={{ background:'var(--bg-s)', color:'var(--ts)', border:'1px solid var(--border)', borderRadius:6, padding:'6px 8px', fontSize:12, width:'100%' }}/>
+        </div>
+        <button className="btn btn-amber btn-sm" onClick={reload} disabled={loading}>
+          <JxIcon name="settings" size={13}/>{loading?'Cargando...':'Refrescar'}
+        </button>
+      </div>
+
+      {/* Tabla */}
+      <div className="card" style={{ overflow:'hidden' }}>
+        <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+          <div style={{ fontSize:13, fontWeight:700 }}>Registro de auditoría</div>
+          <div style={{ fontSize:11, color:'var(--tm)' }}>
+            {filtered.length} {filtered.length === 1 ? 'evento' : 'eventos'} · últimos 100
+          </div>
+        </div>
+
+        {loading ? (
+          <div style={{ padding:24, textAlign:'center', color:'var(--tm)', fontSize:12 }}>Cargando…</div>
+        ) : filtered.length === 0 ? (
+          <div style={{ padding:24, textAlign:'center', color:'var(--tm)', fontSize:12 }}>
+            No hay eventos de auditoría con los filtros actuales.
+          </div>
+        ) : (
+          <div style={{ maxHeight:520, overflowY:'auto' }}>
+            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+              <thead style={{ position:'sticky', top:0, background:'var(--bg-s)', zIndex:1 }}>
+                <tr style={{ textAlign:'left', color:'var(--tm)' }}>
+                  <th style={{ padding:'8px 10px', fontWeight:600 }}>Fecha/hora</th>
+                  <th style={{ padding:'8px 10px', fontWeight:600 }}>Usuario</th>
+                  <th style={{ padding:'8px 10px', fontWeight:600 }}>Acción</th>
+                  <th style={{ padding:'8px 10px', fontWeight:600 }}>Tabla</th>
+                  <th style={{ padding:'8px 10px', fontWeight:600 }}>Registro</th>
+                  <th style={{ padding:'8px 10px', fontWeight:600 }}>Motivo</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map(l => (
+                  <tr key={l.id}
+                      onClick={()=>setSelected(l)}
+                      style={{ borderTop:'1px solid rgba(255,255,255,0.04)', cursor:'pointer' }}
+                      onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.03)'}
+                      onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
+                    <td style={{ padding:'8px 10px', color:'var(--ts)', whiteSpace:'nowrap' }}>{fmtDateTime(l.created_at)}</td>
+                    <td style={{ padding:'8px 10px', color:'var(--ts)' }}>{l.user_email || l.user_id || '—'}</td>
+                    <td style={{ padding:'8px 10px' }}>
+                      <span className={`badge ${ACTION_BADGE[l.action] || 'b-gray'}`}>{ACTION_LABEL[l.action] || l.action}</span>
+                    </td>
+                    <td style={{ padding:'8px 10px', color:'var(--ts)', fontFamily:'monospace' }}>{l.table_name}</td>
+                    <td style={{ padding:'8px 10px', color:'var(--tm)', fontFamily:'monospace', fontSize:11 }}>
+                      {l.record_id ? l.record_id.slice(0,8)+'…' : '—'}
+                    </td>
+                    <td style={{ padding:'8px 10px', color:'var(--tm)', maxWidth:240, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                      {l.reason || '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {selected && (
+        <Modal title={`Auditoría · ${selected.table_name} · ${ACTION_LABEL[selected.action] || selected.action}`}
+               icon="shield" onClose={()=>setSelected(null)}>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, fontSize:12, marginBottom:12 }}>
+            <div><span style={{ color:'var(--tm)' }}>Fecha:</span> <span style={{ color:'var(--ts)' }}>{fmtDateTime(selected.created_at)}</span></div>
+            <div><span style={{ color:'var(--tm)' }}>Usuario:</span> <span style={{ color:'var(--ts)' }}>{selected.user_email || selected.user_id || '—'}</span></div>
+            <div><span style={{ color:'var(--tm)' }}>Tabla:</span> <span style={{ color:'var(--ts)', fontFamily:'monospace' }}>{selected.table_name}</span></div>
+            <div><span style={{ color:'var(--tm)' }}>Registro:</span> <span style={{ color:'var(--ts)', fontFamily:'monospace', fontSize:11 }}>{selected.record_id || '—'}</span></div>
+            <div style={{ gridColumn:'1 / -1' }}>
+              <span style={{ color:'var(--tm)' }}>Motivo:</span> <span style={{ color:'var(--ts)' }}>{selected.reason || '—'}</span>
+            </div>
+          </div>
+
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+            <div>
+              <div style={{ fontSize:11, fontWeight:700, color:'var(--tm)', marginBottom:6, textTransform:'uppercase', letterSpacing:0.5 }}>old_data</div>
+              <pre style={{ background:'rgba(0,0,0,0.25)', borderRadius:6, padding:10, fontSize:11, color:'var(--ts)', maxHeight:360, overflow:'auto', margin:0, whiteSpace:'pre-wrap', wordBreak:'break-word' }}>
+{selected.old_data ? JSON.stringify(selected.old_data, null, 2) : '— (sin datos previos)'}
+              </pre>
+            </div>
+            <div>
+              <div style={{ fontSize:11, fontWeight:700, color:'var(--tm)', marginBottom:6, textTransform:'uppercase', letterSpacing:0.5 }}>new_data</div>
+              <pre style={{ background:'rgba(0,0,0,0.25)', borderRadius:6, padding:10, fontSize:11, color:'var(--ts)', maxHeight:360, overflow:'auto', margin:0, whiteSpace:'pre-wrap', wordBreak:'break-word' }}>
+{selected.new_data ? JSON.stringify(selected.new_data, null, 2) : '— (sin datos nuevos)'}
+              </pre>
+            </div>
+          </div>
+
+          <div className="modal-actions" style={{ marginTop:14 }}>
+            <button className="btn btn-ghost" onClick={()=>setSelected(null)}>Cerrar</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+Object.assign(window, { UsuariosPage, RolesPage, ConfiguracionPage, AuditoriaTab });
