@@ -185,7 +185,7 @@ function S10Flow({ obraId, userId, userName, showToast, onReset, hist, setHist }
   const [progress, setProgress] = uSI({ phase:'', current:0, total:0 });
   const [result, setResult] = uSI(null);
 
-  // Parse al subir archivo
+  // Parse al subir archivo — auto-detecta si es APU, lista de insumos o Gantt
   uEI(() => {
     if (!file) { setParsed(null); setParseErr(null); return; }
     if (file.size > 25 * 1024 * 1024) {
@@ -193,130 +193,233 @@ function S10Flow({ obraId, userId, userName, showToast, onReset, hist, setHist }
     }
     setParsing(true); setParseErr(null);
     const t0 = performance.now();
-    window.__apu.parseAPUFile(file)
+    window.__apu.parseS10File(file)
       .then(p => {
-        const enriched = window.__apu.enrichJerarquia(p.partidas);
-        setParsed({ ...p, partidas: enriched, parseMs: Math.round(performance.now() - t0) });
+        if (p.tipo === 'desconocido') {
+          setParseErr('No reconocí este archivo S10. Asegúrate que sea un APU completo, una lista de insumos o un cronograma Gantt.');
+          setParsed(null);
+          return;
+        }
+        setParsed({ ...p, parseMs: Math.round(performance.now() - t0) });
       })
       .catch(e => { setParseErr(e.message || 'Error al leer el archivo'); setParsed(null); })
       .finally(() => setParsing(false));
   }, [file]);
 
-  // Importación masiva en chunks
+  // ── Import APU (partidas + insumos_partida) ──────────────────
+  async function importAPU() {
+    const now = new Date().toISOString();
+    setProgress({ phase:'Limpiando datos previos…', current:0, total:1 });
+    await window.__db.partidas.where('obra_id').equals(obraId).delete();
+    await window.__db.insumos_partida.where('obra_id').equals(obraId).delete();
+
+    const partidaRecords = [];
+    const insumoRecords = [];
+
+    parsed.data.forEach((p, i) => {
+      const id = window.__newId();
+      const cantidad = Number(p.cantidad) || 0;
+      const total = Number(p.costo_total) || 0;
+      const pu = cantidad > 0 ? +(total / cantidad).toFixed(6) : 0;
+      partidaRecords.push({
+        id, obra_id: obraId,
+        codigo_delfin: p.codigo,
+        nombre_partida: p.descripcion || p.codigo,
+        unidad: p.unidad || 'und',
+        metrado_contratado: cantidad,
+        precio_unitario_pres: pu,
+        costo_total_presupuestado: total,
+        estado: 'pendiente',
+        nivel: p.nivel ?? 1,
+        parent_codigo: p.parent_codigo ?? null,
+        orden: i,
+        created_by: userId, updated_by: userId,
+        created_at: now, updated_at: now,
+        version: 1, sync_status: 'pending_create', last_synced_at: null,
+        idempotency_key: `${userId}_partidas_${id}`,
+      });
+      p.insumos.forEach(ins => {
+        const insId = window.__newId();
+        insumoRecords.push({
+          id: insId, obra_id: obraId, partida_id: id,
+          insumo_codigo: ins.codigo,
+          nombre_insumo: ins.descripcion,
+          tipo_insumo: ins.categoria,
+          unidad: ins.unidad,
+          cantidad_presupuestada: Number(ins.cantidad) || 0,
+          precio_presupuestado: Number(ins.precio_unitario) || 0,
+          created_by: userId, updated_by: userId,
+          created_at: now, updated_at: now,
+          version: 1, sync_status: 'pending_create', last_synced_at: null,
+          idempotency_key: `${userId}_insumos_partida_${insId}`,
+        });
+      });
+    });
+
+    const PCH = 50, ICH = 200;
+    setProgress({ phase:'Insertando partidas…', current:0, total: partidaRecords.length });
+    for (let i = 0; i < partidaRecords.length; i += PCH) {
+      await window.__db.partidas.bulkAdd(partidaRecords.slice(i, i + PCH));
+      setProgress({ phase:'Insertando partidas…', current: Math.min(i + PCH, partidaRecords.length), total: partidaRecords.length });
+      await new Promise(r => setTimeout(r, 0));
+    }
+    setProgress({ phase:'Insertando insumos…', current:0, total: insumoRecords.length });
+    for (let i = 0; i < insumoRecords.length; i += ICH) {
+      await window.__db.insumos_partida.bulkAdd(insumoRecords.slice(i, i + ICH));
+      setProgress({ phase:'Insertando insumos…', current: Math.min(i + ICH, insumoRecords.length), total: insumoRecords.length });
+      await new Promise(r => setTimeout(r, 0));
+    }
+    return {
+      tipo: 'apu',
+      ok: partidaRecords.length,
+      detalle: `${partidaRecords.length} partidas y ${insumoRecords.length} insumos`,
+      errors: 0, errorList: [],
+    };
+  }
+
+  // ── Import Lista de Insumos (materiales del almacén) ─────────
+  async function importInsumos() {
+    const now = new Date().toISOString();
+    // Solo importamos los de tipo 'material'. Mano de obra y equipo viven
+    // en la tabla personal/herramientas y no se cargan desde aquí.
+    const materialesNuevos = parsed.data.filter(i => i.categoria === 'material');
+    if (!materialesNuevos.length) {
+      throw new Error('No hay insumos de tipo "material" en el archivo.');
+    }
+
+    // Cargar materiales existentes de esta obra para upsert por codigo_s10
+    const existentes = await window.__db.materiales.where('obra_id').equals(obraId).toArray();
+    const porCodigo = new Map(existentes.filter(m => m.codigo_s10).map(m => [m.codigo_s10, m]));
+
+    let creados = 0, actualizados = 0;
+    setProgress({ phase:'Cargando insumos…', current:0, total: materialesNuevos.length });
+
+    for (let i = 0; i < materialesNuevos.length; i++) {
+      const ins = materialesNuevos[i];
+      const existente = porCodigo.get(ins.codigo);
+      if (existente) {
+        // Actualizar precio y nombre, preservar stock_actual
+        await window.__db.materiales.update(existente.id, {
+          nombre_material: ins.descripcion,
+          precio_unitario_estimado: Number(ins.precio_unitario) || 0,
+          updated_at: now, updated_by: userId,
+          version: (existente.version ?? 0) + 1,
+          sync_status: existente.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+        });
+        actualizados++;
+      } else {
+        const id = window.__newId();
+        await window.__db.materiales.add({
+          id, obra_id: obraId,
+          nombre_material: ins.descripcion,
+          codigo_s10: ins.codigo,
+          categoria: 'General',
+          unidad: ins.unidad || 'und',
+          stock_inicial: 0,
+          stock_actual: 0,
+          stock_minimo: 0,
+          precio_unitario_estimado: Number(ins.precio_unitario) || 0,
+          alerta: 'sin_stock',
+          estado: 'activo',
+          created_by: userId, updated_by: userId,
+          created_at: now, updated_at: now,
+          version: 1, sync_status: 'pending_create', last_synced_at: null,
+          idempotency_key: `${userId}_materiales_${id}`,
+        });
+        creados++;
+      }
+      if (i % 25 === 0) {
+        setProgress({ phase:'Cargando insumos…', current: i+1, total: materialesNuevos.length });
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+    return {
+      tipo: 'insumos',
+      ok: creados + actualizados,
+      detalle: `${creados} materiales nuevos, ${actualizados} actualizados`,
+      errors: 0, errorList: [],
+    };
+  }
+
+  // ── Import Cronograma Gantt (actualiza partidas con fechas) ──
+  async function importGantt() {
+    const now = new Date().toISOString();
+    const partidasObra = await window.__db.partidas.where('obra_id').equals(obraId).toArray();
+    if (!partidasObra.length) {
+      throw new Error('No hay partidas en esta obra. Importa primero el APU (presupuesto) antes del cronograma.');
+    }
+    const porCodigo = new Map(partidasObra.map(p => [p.codigo_delfin, p]));
+
+    let actualizadas = 0;
+    const noEncontradas = [];
+    setProgress({ phase:'Aplicando cronograma…', current:0, total: parsed.data.length });
+
+    for (let i = 0; i < parsed.data.length; i++) {
+      const t = parsed.data[i];
+      const p = porCodigo.get(t.codigo);
+      if (!p) {
+        noEncontradas.push({ row: t.codigo, error: `Tarea "${t.descripcion}" no encontrada en partidas` });
+        continue;
+      }
+      await window.__db.partidas.update(p.id, {
+        fecha_inicio_planificada: t.fecha_inicio,
+        fecha_fin_planificada:    t.fecha_fin,
+        duracion_dias: t.duracion_dias,
+        predecesoras: t.predecesoras,
+        // Si reportan avance > 0 y no tienen estado, marcar 'en_ejecucion'
+        ...(t.porcentaje_avance > 0 && p.estado === 'pendiente' ? { estado: 'en_ejecucion' } : {}),
+        updated_at: now, updated_by: userId,
+        version: (p.version ?? 0) + 1,
+        sync_status: p.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      actualizadas++;
+      if (i % 25 === 0) {
+        setProgress({ phase:'Aplicando cronograma…', current: i+1, total: parsed.data.length });
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+    return {
+      tipo: 'gantt',
+      ok: actualizadas,
+      detalle: `${actualizadas} partidas con fechas planificadas${noEncontradas.length ? ` · ${noEncontradas.length} no encontradas` : ''}`,
+      errors: noEncontradas.length,
+      errorList: noEncontradas.slice(0, 20),
+    };
+  }
+
+  // ── Dispatcher de import según tipo ──────────────────────────
   const runImport = async () => {
     if (!obraId) { showToast('No hay obra activa', 'red'); return; }
     if (!parsed) return;
     setImp(true);
-    const now = new Date().toISOString();
 
     try {
-      // 1) Borrar partidas e insumos previos de la obra
-      setProgress({ phase:'Limpiando datos previos…', current:0, total:1 });
-      await window.__db.partidas.where('obra_id').equals(obraId).delete();
-      await window.__db.insumos_partida.where('obra_id').equals(obraId).delete();
+      let res;
+      if (parsed.tipo === 'apu') res = await importAPU();
+      else if (parsed.tipo === 'insumos') res = await importInsumos();
+      else if (parsed.tipo === 'gantt') res = await importGantt();
+      else throw new Error('Tipo de archivo no soportado');
 
-      // 2) Construir registros
-      const partidaRecords = [];
-      const insumoRecords = [];
-      const idByCodigo = new Map();
-
-      parsed.partidas.forEach((p, i) => {
-        const id = window.__newId();
-        idByCodigo.set(p.codigo, id);
-        const cantidad = Number(p.cantidad) || 0;
-        const total = Number(p.costo_total) || 0;
-        const pu = cantidad > 0 ? +(total / cantidad).toFixed(6) : 0;
-        partidaRecords.push({
-          id,
-          obra_id: obraId,
-          codigo_delfin: p.codigo,
-          nombre_partida: p.descripcion || p.codigo,
-          unidad: p.unidad || 'und',
-          metrado_contratado: cantidad,
-          precio_unitario_pres: pu,
-          costo_total_presupuestado: total,
-          estado: 'pendiente',
-          nivel: p.nivel ?? 1,
-          parent_codigo: p.parent_codigo ?? null,
-          orden: i,
-          created_by: userId,
-          updated_by: userId,
-          created_at: now,
-          updated_at: now,
-          version: 1,
-          sync_status: 'pending_create',
-          last_synced_at: null,
-          idempotency_key: `${userId}_partidas_${id}`,
-        });
-
-        p.insumos.forEach(ins => {
-          const insId = window.__newId();
-          insumoRecords.push({
-            id: insId,
-            obra_id: obraId,
-            partida_id: id,
-            insumo_codigo: ins.codigo,
-            nombre_insumo: ins.descripcion,
-            tipo_insumo: ins.categoria,
-            unidad: ins.unidad,
-            cantidad_presupuestada: Number(ins.cantidad) || 0,
-            precio_presupuestado: Number(ins.precio_unitario) || 0,
-            // costo_presupuestado es columna GENERATED en SQL — no se setea
-            created_by: userId,
-            updated_by: userId,
-            created_at: now,
-            updated_at: now,
-            version: 1,
-            sync_status: 'pending_create',
-            last_synced_at: null,
-            idempotency_key: `${userId}_insumos_partida_${insId}`,
-          });
-        });
-      });
-
-      // 3) Insertar en chunks (50 partidas, 200 insumos por batch)
-      const PARTIDA_CHUNK = 50;
-      const INSUMO_CHUNK = 200;
-
-      setProgress({ phase:'Insertando partidas…', current:0, total: partidaRecords.length });
-      for (let i = 0; i < partidaRecords.length; i += PARTIDA_CHUNK) {
-        const slice = partidaRecords.slice(i, i + PARTIDA_CHUNK);
-        await window.__db.partidas.bulkAdd(slice);
-        setProgress({ phase:'Insertando partidas…', current: Math.min(i + PARTIDA_CHUNK, partidaRecords.length), total: partidaRecords.length });
-        await new Promise(r => setTimeout(r, 0));
-      }
-
-      setProgress({ phase:'Insertando insumos…', current:0, total: insumoRecords.length });
-      for (let i = 0; i < insumoRecords.length; i += INSUMO_CHUNK) {
-        const slice = insumoRecords.slice(i, i + INSUMO_CHUNK);
-        await window.__db.insumos_partida.bulkAdd(slice);
-        setProgress({ phase:'Insertando insumos…', current: Math.min(i + INSUMO_CHUNK, insumoRecords.length), total: insumoRecords.length });
-        await new Promise(r => setTimeout(r, 0));
-      }
-
-      const res = { ok: partidaRecords.length, insumos: insumoRecords.length, errors: 0, errorList: [] };
       setResult(res);
 
-      // Historial
       const entry = {
         fecha: fmtDate(),
-        modulo: `S10 APU · ${partidaRecords.length} partidas / ${insumoRecords.length} insumos`,
-        total: partidaRecords.length,
-        ok: partidaRecords.length,
-        errores: 0,
+        modulo: `S10 ${parsed.tipo.toUpperCase()} · ${res.detalle}`,
+        total: res.ok + (res.errors || 0),
+        ok: res.ok,
+        errores: res.errors || 0,
         user: userName,
       };
       const newHist = [entry, ...hist].slice(0, 50);
       setHist(newHist);
       localStorage.setItem('importaciones_historial', JSON.stringify(newHist));
 
-      showToast(`Importadas ${partidaRecords.length} partidas y ${insumoRecords.length} insumos`, 'green');
-      // Notificar a la app que la obra cambió (refresca listas)
+      showToast(`Importación ${parsed.tipo}: ${res.detalle}`, res.errors ? 'amber' : 'green');
       try { window.dispatchEvent(new CustomEvent('obra_activa_change', { detail:{ obraId } })); } catch {}
     } catch (e) {
       console.error('[S10 import]', e);
       showToast(`Error en la importación: ${e.message || e}`, 'red');
-      setResult({ ok:0, insumos:0, errors:1, errorList:[{ row:'-', error: e.message || String(e) }] });
+      setResult({ tipo: parsed?.tipo || '?', ok:0, detalle: e.message, errors:1, errorList:[{ row:'-', error: e.message || String(e) }] });
     } finally {
       setImp(false);
     }
@@ -330,26 +433,24 @@ function S10Flow({ obraId, userId, userName, showToast, onReset, hist, setHist }
       </div>
       <div>
         <div style={{ fontSize:22, fontWeight:800, color:'var(--tp)', marginBottom:6 }}>
-          {result.errors ? 'Importación fallida' : '¡Presupuesto S10 importado!'}
+          {result.errors === 1 && result.ok === 0 ? 'Importación fallida' : '¡Importación completa!'}
         </div>
         <div style={{ fontSize:13, color:'var(--tm)', maxWidth:520 }}>
-          {result.errors
-            ? 'Ocurrió un error durante la importación. Los datos pueden estar parcialmente cargados.'
-            : `Se cargaron ${result.ok} partidas y ${result.insumos} insumos en la obra activa.`}
+          {result.detalle || `Se procesaron ${result.ok} registros.`}
         </div>
       </div>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:12, width:'100%', maxWidth:520 }}>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:12, width:'100%', maxWidth:420 }}>
         <div className="card card-p" style={{ textAlign:'center' }}>
           <div style={{ fontSize:24, fontWeight:800, color:'var(--green)' }}>{result.ok}</div>
-          <div style={{ fontSize:11, color:'var(--tm)', marginTop:2 }}>Partidas</div>
+          <div style={{ fontSize:11, color:'var(--tm)', marginTop:2 }}>
+            {result.tipo === 'apu' ? 'Partidas' : result.tipo === 'insumos' ? 'Materiales' : result.tipo === 'gantt' ? 'Tareas aplicadas' : 'OK'}
+          </div>
         </div>
         <div className="card card-p" style={{ textAlign:'center' }}>
-          <div style={{ fontSize:24, fontWeight:800, color:'var(--blue)' }}>{result.insumos}</div>
-          <div style={{ fontSize:11, color:'var(--tm)', marginTop:2 }}>Insumos</div>
-        </div>
-        <div className="card card-p" style={{ textAlign:'center' }}>
-          <div style={{ fontSize:24, fontWeight:800, color: result.errors?'var(--red)':'var(--tp)' }}>{result.errors}</div>
-          <div style={{ fontSize:11, color:'var(--tm)', marginTop:2 }}>Errores</div>
+          <div style={{ fontSize:24, fontWeight:800, color: result.errors?'var(--red)':'var(--tp)' }}>{result.errors || 0}</div>
+          <div style={{ fontSize:11, color:'var(--tm)', marginTop:2 }}>
+            {result.tipo === 'gantt' ? 'No encontradas' : 'Errores'}
+          </div>
         </div>
       </div>
       {result.errorList.length > 0 && (
@@ -381,19 +482,37 @@ function S10Flow({ obraId, userId, userName, showToast, onReset, hist, setHist }
         <div>
           <div style={{ fontSize:15, fontWeight:700, color:'var(--tp)', marginBottom:6 }}>Importación nativa desde S10</div>
           <div style={{ fontSize:12.5, color:'var(--tm)', marginBottom:18 }}>
-            Vas a cargar TODAS las partidas y sus insumos directamente desde un Excel exportado por S10 — sin mapeo manual.
+            Sube un Excel exportado de S10. La app detecta automáticamente el tipo de archivo:
           </div>
 
-          <div className="card card-p" style={{ background:'rgba(242,183,5,0.06)', border:'1px solid rgba(242,183,5,0.3)', marginBottom:14 }}>
-            <div style={{ fontSize:12.5, fontWeight:700, color:'var(--amber)', marginBottom:8, display:'flex', alignItems:'center', gap:6 }}>
-              <JxIcon name="alert" size={14} color="var(--amber)"/> Atención
+          <div style={{ display:'grid', gridTemplateColumns:'1fr', gap:10, marginBottom:14 }}>
+            <div className="card card-p" style={{ borderLeft:'3px solid #0070C0' }}>
+              <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)', marginBottom:4, display:'flex', alignItems:'center', gap:6 }}>
+                <JxIcon name="dollar" size={13} color="#0070C0"/> Presupuesto APU
+              </div>
+              <div style={{ fontSize:11.5, color:'var(--tm)' }}>
+                "Análisis de Precios Unitarios" o "Consolidado de Materiales del Presupuesto" — partidas + insumos por partida.
+                <strong style={{ color:'var(--amber)' }}> Reemplaza</strong> las partidas existentes de la obra.
+              </div>
             </div>
-            <ul style={{ fontSize:12, color:'var(--ts)', lineHeight:1.7, paddingLeft:16, margin:0 }}>
-              <li><strong>Las partidas existentes en esta obra serán reemplazadas.</strong></li>
-              <li>Todos los insumos asociados a esas partidas también se borrarán.</li>
-              <li>Esta operación es <strong>local</strong>: se sincronizará al servidor en el próximo sync.</li>
-              <li>Se procesarán partidas, sub-partidas y todos sus insumos (mano de obra, materiales, equipos, etc).</li>
-            </ul>
+            <div className="card card-p" style={{ borderLeft:'3px solid var(--blue)' }}>
+              <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)', marginBottom:4, display:'flex', alignItems:'center', gap:6 }}>
+                <JxIcon name="package" size={13} color="var(--blue)"/> Lista de Insumos
+              </div>
+              <div style={{ fontSize:11.5, color:'var(--tm)' }}>
+                Listado consolidado con precios unitarios. Carga los <strong>materiales</strong> al almacén
+                (upsert por código S10, stock inicial 0).
+              </div>
+            </div>
+            <div className="card card-p" style={{ borderLeft:'3px solid var(--green)' }}>
+              <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)', marginBottom:4, display:'flex', alignItems:'center', gap:6 }}>
+                <JxIcon name="gantt" size={13} color="var(--green)"/> Cronograma Gantt
+              </div>
+              <div style={{ fontSize:11.5, color:'var(--tm)' }}>
+                Tareas con fechas planificadas. Aplica <strong>fecha_inicio</strong>, <strong>fecha_fin</strong> y
+                duración a las partidas existentes (matching por código). Requiere haber importado el APU primero.
+              </div>
+            </div>
           </div>
 
           {!obraId && (
@@ -404,7 +523,7 @@ function S10Flow({ obraId, userId, userName, showToast, onReset, hist, setHist }
 
           <label style={{ display:'flex', gap:8, alignItems:'center', fontSize:12.5, color:'var(--ts)', cursor:'pointer', marginBottom:18 }}>
             <input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />
-            Entiendo y deseo continuar — reemplazaré las partidas e insumos de la obra activa.
+            Entiendo el comportamiento de cada tipo y deseo continuar.
           </label>
 
           <div style={{ display:'flex', justifyContent:'space-between' }}>
@@ -442,7 +561,12 @@ function S10Flow({ obraId, userId, userName, showToast, onReset, hist, setHist }
           {parsed && !parsing && (
             <div style={{ marginTop:14, background:'rgba(46,204,113,0.08)', border:'1px solid rgba(46,204,113,0.25)', borderRadius:8, padding:'12px 16px', fontSize:12.5, color:'var(--green)', display:'flex', gap:10, alignItems:'center' }}>
               <JxIcon name="checkCircle" size={14} color="var(--green)"/>
-              <span><strong>{parsed.summary.total}</strong> partidas detectadas · <strong>{parsed.summary.totalInsumos}</strong> insumos · parseado en {parsed.parseMs}ms</span>
+              <span>
+                {parsed.tipo === 'apu' && <><strong>APU detectado:</strong> {parsed.summary.partidas} partidas · {parsed.summary.insumos} insumos</>}
+                {parsed.tipo === 'insumos' && <><strong>Lista de insumos:</strong> {parsed.summary.total} ({parsed.summary.materiales} materiales · {parsed.summary.mano_obra} MO · {parsed.summary.equipo} equipo)</>}
+                {parsed.tipo === 'gantt' && <><strong>Cronograma Gantt:</strong> {parsed.summary.total} tareas · {parsed.summary.fecha_inicio} → {parsed.summary.fecha_fin}</>}
+                <span style={{ color:'var(--tm)' }}> · parseado en {parsed.parseMs}ms</span>
+              </span>
             </div>
           )}
 
@@ -453,76 +577,172 @@ function S10Flow({ obraId, userId, userName, showToast, onReset, hist, setHist }
         </div>
       )}
 
-      {/* Step 2 — Preview */}
+      {/* Step 2 — Preview (UI por tipo) */}
       {step === 2 && parsed && (
         <div>
-          <div style={{ fontSize:15, fontWeight:700, color:'var(--tp)', marginBottom:6 }}>Preview de partidas detectadas</div>
+          <div style={{ fontSize:15, fontWeight:700, color:'var(--tp)', marginBottom:6 }}>
+            Preview — {parsed.tipo === 'apu' ? 'Presupuesto APU' : parsed.tipo === 'insumos' ? 'Lista de Insumos' : 'Cronograma Gantt'}
+          </div>
           <div style={{ fontSize:12.5, color:'var(--tm)', marginBottom:18 }}>
-            Verifica que los datos correspondan al presupuesto. Si todo se ve bien, continúa.
+            {parsed.tipo === 'apu' && 'Verifica las partidas y el detalle de insumos por categoría.'}
+            {parsed.tipo === 'insumos' && 'Estos insumos se cargarán como Materiales del almacén (solo los de tipo material). El stock inicial será 0.'}
+            {parsed.tipo === 'gantt' && 'Las fechas se aplicarán a las partidas existentes que coincidan en código. Las que no se encuentren se reportarán al final.'}
           </div>
 
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12, marginBottom:14 }}>
-            <div className="card card-p" style={{ textAlign:'center' }}>
-              <div style={{ fontSize:22, fontWeight:800, color:'var(--tp)' }}>{parsed.summary.total}</div>
-              <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'uppercase' }}>Partidas</div>
-            </div>
-            <div className="card card-p" style={{ textAlign:'center' }}>
-              <div style={{ fontSize:22, fontWeight:800, color:'var(--green)' }}>{parsed.summary.conInsumos}</div>
-              <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'uppercase' }}>Con insumos</div>
-            </div>
-            <div className="card card-p" style={{ textAlign:'center' }}>
-              <div style={{ fontSize:22, fontWeight:800, color:'var(--blue)' }}>{parsed.summary.totalInsumos}</div>
-              <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'uppercase' }}>Insumos</div>
-            </div>
-            <div className="card card-p" style={{ textAlign:'center' }}>
-              <div style={{ fontSize:22, fontWeight:800, color: parsed.summary.errores ? 'var(--red)':'var(--tp)' }}>{parsed.summary.errores}</div>
-              <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'uppercase' }}>Errores</div>
-            </div>
-          </div>
-
-          {parsed.summary.total < 5 && (
-            <div style={{ background:'rgba(231,76,60,0.08)', border:'1px solid rgba(231,76,60,0.3)', borderRadius:8, padding:'10px 14px', fontSize:12, color:'var(--red)', marginBottom:14 }}>
-              ⚠ Solo se detectaron {parsed.summary.total} partidas. Verifica que el archivo sea un export de S10 válido.
-            </div>
+          {/* === APU PREVIEW === */}
+          {parsed.tipo === 'apu' && (
+            <>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:12, marginBottom:14 }}>
+                <div className="card card-p" style={{ textAlign:'center' }}>
+                  <div style={{ fontSize:22, fontWeight:800, color:'var(--tp)' }}>{parsed.summary.partidas}</div>
+                  <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'uppercase' }}>Partidas</div>
+                </div>
+                <div className="card card-p" style={{ textAlign:'center' }}>
+                  <div style={{ fontSize:22, fontWeight:800, color:'var(--blue)' }}>{parsed.summary.insumos}</div>
+                  <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'uppercase' }}>Insumos</div>
+                </div>
+                <div className="card card-p" style={{ textAlign:'center' }}>
+                  <div style={{ fontSize:22, fontWeight:800, color: parsed.summary.errores ? 'var(--red)':'var(--tp)' }}>{parsed.summary.errores}</div>
+                  <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'uppercase' }}>Errores</div>
+                </div>
+              </div>
+              {parsed.summary.partidas < 5 && (
+                <div style={{ background:'rgba(231,76,60,0.08)', border:'1px solid rgba(231,76,60,0.3)', borderRadius:8, padding:'10px 14px', fontSize:12, color:'var(--red)', marginBottom:14 }}>
+                  ⚠ Solo se detectaron {parsed.summary.partidas} partidas. Verifica que el archivo sea un export S10 válido.
+                </div>
+              )}
+              <div className="card" style={{ overflow:'hidden', marginBottom:14 }}>
+                <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', fontSize:11.5, fontWeight:600, color:'var(--tm)' }}>
+                  <JxIcon name="eye" size={13}/> Primeras 10 partidas
+                </div>
+                <div style={{ overflowX:'auto', maxHeight:380 }}>
+                  <table className="tbl">
+                    <thead><tr>
+                      <th style={{ minWidth:120 }}>Código</th><th>Descripción</th>
+                      <th style={{ textAlign:'right' }}>Nivel</th>
+                      <th style={{ textAlign:'right' }}>Metrado</th><th>Unid.</th>
+                      <th style={{ textAlign:'right' }}>Costo Total</th>
+                      <th style={{ textAlign:'right' }}>Insumos</th>
+                    </tr></thead>
+                    <tbody>
+                      {parsed.data.slice(0, 10).map((p, i) => (
+                        <tr key={i}>
+                          <td className="col-m" style={{ fontFamily:'monospace', fontSize:11 }}>{p.codigo}</td>
+                          <td style={{ fontSize:11.5 }}>{p.descripcion}</td>
+                          <td className="col-num" style={{ textAlign:'right' }}>{p.nivel}</td>
+                          <td className="col-num" style={{ textAlign:'right' }}>{p.cantidad ?? '—'}</td>
+                          <td>{p.unidad ?? '—'}</td>
+                          <td className="col-num" style={{ textAlign:'right' }}>{p.costo_total != null ? Number(p.costo_total).toFixed(2) : '—'}</td>
+                          <td className="col-num" style={{ textAlign:'right' }}>{p.insumos.length}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
           )}
 
-          <div className="card" style={{ overflow:'hidden', marginBottom:14 }}>
-            <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', fontSize:11.5, fontWeight:600, color:'var(--tm)' }}>
-              <JxIcon name="eye" size={13}/> Primeras 10 partidas
-            </div>
-            <div style={{ overflowX:'auto', maxHeight:380 }}>
-              <table className="tbl">
-                <thead>
-                  <tr>
-                    <th style={{ minWidth:120 }}>Código</th>
-                    <th>Descripción</th>
-                    <th style={{ textAlign:'right' }}>Nivel</th>
-                    <th style={{ textAlign:'right' }}>Metrado</th>
-                    <th>Unid.</th>
-                    <th style={{ textAlign:'right' }}>Costo Total</th>
-                    <th style={{ textAlign:'right' }}>Insumos</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {parsed.partidas.slice(0, 10).map((p, i) => (
-                    <tr key={i}>
-                      <td className="col-m" style={{ fontFamily:'monospace', fontSize:11 }}>{p.codigo}</td>
-                      <td style={{ fontSize:11.5 }}>{p.descripcion}</td>
-                      <td className="col-num" style={{ textAlign:'right' }}>{p.nivel}</td>
-                      <td className="col-num" style={{ textAlign:'right' }}>{p.cantidad ?? '—'}</td>
-                      <td>{p.unidad ?? '—'}</td>
-                      <td className="col-num" style={{ textAlign:'right' }}>{p.costo_total != null ? p.costo_total.toFixed(2) : '—'}</td>
-                      <td className="col-num" style={{ textAlign:'right' }}>{p.insumos.length}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          {/* === INSUMOS PREVIEW === */}
+          {parsed.tipo === 'insumos' && (
+            <>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12, marginBottom:14 }}>
+                <div className="card card-p" style={{ textAlign:'center' }}>
+                  <div style={{ fontSize:22, fontWeight:800, color:'var(--tp)' }}>{parsed.summary.total}</div>
+                  <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'uppercase' }}>Total</div>
+                </div>
+                <div className="card card-p" style={{ textAlign:'center' }}>
+                  <div style={{ fontSize:22, fontWeight:800, color:'var(--blue)' }}>{parsed.summary.materiales}</div>
+                  <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'uppercase' }}>Materiales</div>
+                </div>
+                <div className="card card-p" style={{ textAlign:'center' }}>
+                  <div style={{ fontSize:22, fontWeight:800, color:'var(--green)' }}>{parsed.summary.mano_obra}</div>
+                  <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'uppercase' }}>Mano de Obra</div>
+                </div>
+                <div className="card card-p" style={{ textAlign:'center' }}>
+                  <div style={{ fontSize:22, fontWeight:800, color:'var(--orange)' }}>{parsed.summary.equipo}</div>
+                  <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'uppercase' }}>Equipo</div>
+                </div>
+              </div>
+              <div className="card" style={{ overflow:'hidden', marginBottom:14 }}>
+                <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', fontSize:11.5, fontWeight:600, color:'var(--tm)' }}>
+                  <JxIcon name="eye" size={13}/> Primeros 15 materiales (lo que se importará al almacén)
+                </div>
+                <div style={{ overflowX:'auto', maxHeight:380 }}>
+                  <table className="tbl">
+                    <thead><tr>
+                      <th>Código</th><th>Descripción</th>
+                      <th style={{ textAlign:'right' }}>Cant. Total</th>
+                      <th style={{ textAlign:'right' }}>Precio Unit.</th>
+                      <th style={{ textAlign:'right' }}>Total Pres.</th>
+                    </tr></thead>
+                    <tbody>
+                      {parsed.data.filter(i => i.categoria === 'material').slice(0, 15).map((ins, i) => (
+                        <tr key={i}>
+                          <td className="col-m" style={{ fontFamily:'monospace', fontSize:11 }}>{ins.codigo}</td>
+                          <td style={{ fontSize:11.5 }}>{ins.descripcion}</td>
+                          <td className="col-num" style={{ textAlign:'right' }}>{Number(ins.cantidad_total).toFixed(2)}</td>
+                          <td className="col-num" style={{ textAlign:'right' }}>S/ {Number(ins.precio_unitario).toFixed(2)}</td>
+                          <td className="col-num" style={{ textAlign:'right' }}>S/ {Number(ins.total).toFixed(0)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* === GANTT PREVIEW === */}
+          {parsed.tipo === 'gantt' && (
+            <>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:12, marginBottom:14 }}>
+                <div className="card card-p" style={{ textAlign:'center' }}>
+                  <div style={{ fontSize:22, fontWeight:800, color:'var(--tp)' }}>{parsed.summary.total}</div>
+                  <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'uppercase' }}>Tareas</div>
+                </div>
+                <div className="card card-p" style={{ textAlign:'center' }}>
+                  <div style={{ fontSize:14, fontWeight:700, color:'var(--blue)', marginTop:6 }}>{parsed.summary.fecha_inicio || '—'}</div>
+                  <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:6, textTransform:'uppercase' }}>Inicio</div>
+                </div>
+                <div className="card card-p" style={{ textAlign:'center' }}>
+                  <div style={{ fontSize:14, fontWeight:700, color:'var(--orange)', marginTop:6 }}>{parsed.summary.fecha_fin || '—'}</div>
+                  <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:6, textTransform:'uppercase' }}>Fin</div>
+                </div>
+              </div>
+              <div className="card" style={{ overflow:'hidden', marginBottom:14 }}>
+                <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', fontSize:11.5, fontWeight:600, color:'var(--tm)' }}>
+                  <JxIcon name="eye" size={13}/> Primeras 12 tareas del cronograma
+                </div>
+                <div style={{ overflowX:'auto', maxHeight:380 }}>
+                  <table className="tbl">
+                    <thead><tr>
+                      <th style={{ minWidth:120 }}>Código</th><th>Descripción</th>
+                      <th style={{ textAlign:'right' }}>Días</th>
+                      <th>Inicio</th><th>Fin</th>
+                      <th style={{ textAlign:'right' }}>Avance</th>
+                    </tr></thead>
+                    <tbody>
+                      {parsed.data.slice(0, 12).map((t, i) => (
+                        <tr key={i}>
+                          <td className="col-m" style={{ fontFamily:'monospace', fontSize:11 }}>{t.codigo}</td>
+                          <td style={{ fontSize:11.5 }}>{t.descripcion}</td>
+                          <td className="col-num" style={{ textAlign:'right' }}>{t.duracion_dias ?? '—'}</td>
+                          <td className="col-m" style={{ fontSize:11 }}>{t.fecha_inicio || '—'}</td>
+                          <td className="col-m" style={{ fontSize:11 }}>{t.fecha_fin || '—'}</td>
+                          <td className="col-num" style={{ textAlign:'right' }}>{Number(t.porcentaje_avance || 0).toFixed(0)}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          )}
 
           <div style={{ display:'flex', justifyContent:'space-between' }}>
             <button className="btn btn-ghost" onClick={()=>setStep(1)}><JxIcon name="chevL" size={14}/>Atrás</button>
-            <button className="btn btn-amber" disabled={parsed.summary.total === 0} onClick={()=>setStep(3)}>Siguiente <JxIcon name="chevR" size={14}/></button>
+            <button className="btn btn-amber" onClick={()=>setStep(3)}>Siguiente <JxIcon name="chevR" size={14}/></button>
           </div>
         </div>
       )}
@@ -532,29 +752,53 @@ function S10Flow({ obraId, userId, userName, showToast, onReset, hist, setHist }
         <div>
           <div style={{ fontSize:15, fontWeight:700, color:'var(--tp)', marginBottom:6 }}>Confirmar y ejecutar importación</div>
           <div style={{ fontSize:12.5, color:'var(--tm)', marginBottom:18 }}>
-            Al confirmar, se reemplazarán las partidas e insumos existentes en la obra activa.
+            {parsed.tipo === 'apu' && 'Al confirmar, se reemplazarán las partidas e insumos existentes en la obra activa.'}
+            {parsed.tipo === 'insumos' && 'Al confirmar, se cargarán los materiales al almacén. Los que ya existan (mismo código S10) se actualizarán; los demás se crearán con stock 0.'}
+            {parsed.tipo === 'gantt' && 'Al confirmar, se aplicarán las fechas planificadas a las partidas existentes que coincidan en código. No se crearán partidas nuevas.'}
           </div>
 
           <div className="card card-p" style={{ marginBottom:16 }}>
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
-              {[
-                { label:'Origen', val:'S10 Costos · APU', icon:'dollar', color:'#0070C0' },
-                { label:'Archivo', val:file?.name, icon:'file', color:'var(--green)' },
-                { label:'Obra destino', val: obraId ? `${obraId.slice(0,8)}…` : '—', icon:'building', color:'var(--orange)' },
-                { label:'Partidas', val: parsed.summary.total, icon:'list', color:'var(--tp)' },
-                { label:'Insumos', val: parsed.summary.totalInsumos, icon:'package', color:'var(--blue)' },
-                { label:'Modo', val:'Reemplazar (delete + bulkAdd)', icon:'refresh', color:'var(--amber)' },
-              ].map((r,i)=>(
-                <div key={i} style={{ display:'flex', gap:10, alignItems:'center' }}>
-                  <div style={{ width:32, height:32, borderRadius:7, background:`${r.color}18`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                    <JxIcon name={r.icon} size={14} color={r.color}/>
+              {(() => {
+                const filas = [
+                  { label:'Origen', val: parsed.tipo === 'apu' ? 'S10 · Presupuesto APU'
+                                       : parsed.tipo === 'insumos' ? 'S10 · Lista de Insumos'
+                                       : 'S10 · Cronograma Gantt',
+                    icon:'dollar', color:'#0070C0' },
+                  { label:'Archivo', val:file?.name, icon:'file', color:'var(--green)' },
+                  { label:'Obra destino', val: obraId ? `${obraId.slice(0,8)}…` : '—', icon:'building', color:'var(--orange)' },
+                ];
+                if (parsed.tipo === 'apu') {
+                  filas.push(
+                    { label:'Partidas', val: parsed.summary.partidas, icon:'list', color:'var(--tp)' },
+                    { label:'Insumos', val: parsed.summary.insumos, icon:'package', color:'var(--blue)' },
+                    { label:'Modo', val:'Reemplazar partidas e insumos', icon:'refresh', color:'var(--amber)' },
+                  );
+                } else if (parsed.tipo === 'insumos') {
+                  filas.push(
+                    { label:'Materiales a cargar', val: parsed.summary.materiales, icon:'package', color:'var(--blue)' },
+                    { label:'Mano de obra (no se importa)', val: parsed.summary.mano_obra, icon:'users', color:'var(--tm)' },
+                    { label:'Modo', val:'Upsert por código S10', icon:'refresh', color:'var(--amber)' },
+                  );
+                } else if (parsed.tipo === 'gantt') {
+                  filas.push(
+                    { label:'Tareas', val: parsed.summary.total, icon:'gantt', color:'var(--tp)' },
+                    { label:'Rango fechas', val: `${parsed.summary.fecha_inicio} → ${parsed.summary.fecha_fin}`, icon:'calendar', color:'var(--blue)' },
+                    { label:'Modo', val:'Update partidas por código', icon:'refresh', color:'var(--amber)' },
+                  );
+                }
+                return filas.map((r,i)=>(
+                  <div key={i} style={{ display:'flex', gap:10, alignItems:'center' }}>
+                    <div style={{ width:32, height:32, borderRadius:7, background:`${r.color}18`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                      <JxIcon name={r.icon} size={14} color={r.color}/>
+                    </div>
+                    <div>
+                      <div style={{ fontSize:10, color:'var(--tm)', textTransform:'uppercase', letterSpacing:'.06em' }}>{r.label}</div>
+                      <div style={{ fontSize:13, fontWeight:600, color:'var(--tp)' }}>{r.val}</div>
+                    </div>
                   </div>
-                  <div>
-                    <div style={{ fontSize:10, color:'var(--tm)', textTransform:'uppercase', letterSpacing:'.06em' }}>{r.label}</div>
-                    <div style={{ fontSize:13, fontWeight:600, color:'var(--tp)' }}>{r.val}</div>
-                  </div>
-                </div>
-              ))}
+                ));
+              })()}
             </div>
           </div>
 
@@ -574,7 +818,11 @@ function S10Flow({ obraId, userId, userName, showToast, onReset, hist, setHist }
             <button className="btn btn-amber" onClick={runImport} disabled={importing} style={{ minWidth:240, justifyContent:'center' }}>
               {importing
                 ? <><span style={{ width:14,height:14,borderRadius:'50%',border:'2px solid rgba(0,0,0,0.3)',borderTopColor:'rgba(0,0,0,0.8)',display:'inline-block',animation:'spin .7s linear infinite' }}/>Importando…</>
-                : <><JxIcon name="upload" size={14}/>Importar {parsed.summary.total} partidas</>}
+                : <><JxIcon name="upload" size={14}/>{
+                    parsed.tipo === 'apu' ? `Importar ${parsed.summary.partidas} partidas`
+                    : parsed.tipo === 'insumos' ? `Cargar ${parsed.summary.materiales} materiales`
+                    : `Aplicar cronograma a ${parsed.summary.total} tareas`
+                  }</>}
             </button>
           </div>
         </div>
