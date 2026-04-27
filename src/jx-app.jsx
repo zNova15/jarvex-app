@@ -213,27 +213,6 @@ function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStat
             </div>
           )}
         </div>
-        <div style={{ position:'relative' }}>
-          <div onClick={()=>setMenu(m=>!m)}
-               style={{ width:30, height:30, borderRadius:'50%', background:'linear-gradient(135deg,#223247,#1C2D40)', border:'1.5px solid rgba(242,183,5,0.35)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:700, color:'var(--amber)', cursor:'pointer', textTransform:'uppercase' }}>
-            {initials}
-          </div>
-          {menu && (
-            <div style={{ position:'absolute', top:38, right:0, background:'var(--bg-c)', border:'1px solid var(--border)', borderRadius:8, padding:6, minWidth:200, boxShadow:'0 8px 24px rgba(0,0,0,0.4)', zIndex:100 }}>
-              <div style={{ padding:'10px 12px', borderBottom:'1px solid var(--border)' }}>
-                <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)' }}>{profile?.nombres} {profile?.apellidos}</div>
-                <div style={{ fontSize:11, color:'var(--tm)' }}>{profile?.email}</div>
-                <div style={{ fontSize:10, color:'var(--amber)', marginTop:4, textTransform:'uppercase', letterSpacing:'0.05em' }}>{profile?.rol}</div>
-              </div>
-              <div onClick={()=>{setMenu(false); onLogout();}}
-                   style={{ padding:'10px 12px', cursor:'pointer', display:'flex', alignItems:'center', gap:8, color:'var(--ts)', fontSize:12.5, borderRadius:6 }}
-                   onMouseEnter={e=>e.currentTarget.style.background='var(--bg-c2)'}
-                   onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
-                <JxIcon name="logout" size={13}/> Cerrar sesión
-              </div>
-            </div>
-          )}
-        </div>
       </div>
     </div>
   );

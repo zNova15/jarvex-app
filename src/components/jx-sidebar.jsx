@@ -36,6 +36,20 @@ const NAV = [
 
 function Sidebar({ current, onNav, collapsed, onToggle }) {
   const [hovered, setHovered] = useState(null);
+  const auth = window.__useAuth ? window.__useAuth() : null;
+  const profile = auth?.profile;
+  const initials = profile
+    ? ((profile.nombres?.[0] || '') + (profile.apellidos?.[0] || '')).toUpperCase() || (profile.email?.[0] || '?').toUpperCase()
+    : '··';
+  const fullName = profile
+    ? `${profile.nombres || ''} ${profile.apellidos || ''}`.trim() || profile.email
+    : 'Usuario';
+  const ROL_LABEL = {
+    admin: 'Administrador', gerente: 'Gerente', ingeniero_residente: 'Ing. Residente',
+    supervisor: 'Supervisor', almacenero: 'Almacenero', asistente_admin: 'Asist. Admin',
+    solo_lectura: 'Solo lectura',
+  };
+  const rolLabel = ROL_LABEL[profile?.rol] || profile?.rol || '—';
 
   const sideStyle = {
     width: collapsed ? 58 : 252,
@@ -54,13 +68,13 @@ function Sidebar({ current, onNav, collapsed, onToggle }) {
   return (
     <aside style={sideStyle}>
       {/* Logo */}
-      <div style={{ padding: collapsed ? '14px 8px' : '14px 16px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', justifyContent: collapsed ? 'center' : 'flex-start', gap: 10, minHeight: 64 }}>
+      <div style={{ padding: collapsed ? '14px 8px' : '14px 16px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', justifyContent: collapsed ? 'center' : 'flex-start', gap: 12, minHeight: 64 }}>
         <img
-          src="/jarvex-logo.png"
+          src="/jarvex-icon.png"
           alt="JARVEX"
           onClick={collapsed ? onToggle : undefined}
           style={{
-            height: collapsed ? 36 : 46,
+            height: collapsed ? 32 : 40,
             width: 'auto',
             objectFit: 'contain',
             flexShrink: 0,
@@ -68,6 +82,12 @@ function Sidebar({ current, onNav, collapsed, onToggle }) {
           }}
           title={collapsed ? 'Expandir' : ''}
         />
+        {!collapsed && (
+          <div style={{ overflow: 'hidden', whiteSpace: 'nowrap' }}>
+            <div style={{ fontSize: 15, fontWeight: 800, color: '#F0F2F5', letterSpacing: -.4, lineHeight: 1.1 }}>JARVEX</div>
+            <div style={{ fontSize: 9.5, color: '#6B7A8D', fontWeight: 500, letterSpacing: .04, lineHeight: 1.3, marginTop: 2 }}>TECNOLOGÍA · INGENIERÍA</div>
+          </div>
+        )}
       </div>
 
       {/* Nav items */}
@@ -125,15 +145,20 @@ function Sidebar({ current, onNav, collapsed, onToggle }) {
       {/* User profile */}
       <div style={{ padding: collapsed ? '12px 8px' : '12px 14px', borderTop: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', gap: 10 }}>
         <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'linear-gradient(135deg,#223247,#1C2D40)', border: '1.5px solid rgba(242,183,5,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, color: '#F2B705', flexShrink: 0 }}>
-          MG
+          {initials}
         </div>
         {!collapsed && (
           <>
             <div style={{ flex: 1, overflow: 'hidden' }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: '#BFC7D1', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>Ing. Miguel García</div>
-              <div style={{ fontSize: 10.5, color: '#4A5A6A' }}>Administrador</div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#BFC7D1', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={profile?.email}>{fullName}</div>
+              <div style={{ fontSize: 10.5, color: '#4A5A6A', textTransform: 'capitalize' }}>{rolLabel}</div>
             </div>
-            <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#4A5A6A', padding: 4, display: 'flex' }} title="Cerrar sesión">
+            <button
+              onClick={() => auth?.logout?.()}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#4A5A6A', padding: 4, display: 'flex' }}
+              title="Cerrar sesión"
+              onMouseEnter={e => e.currentTarget.style.color = '#E74C3C'}
+              onMouseLeave={e => e.currentTarget.style.color = '#4A5A6A'}>
               <JxIcon name="logout" size={14} />
             </button>
           </>
