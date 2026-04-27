@@ -94,15 +94,58 @@ function UsuariosPage({ showToast }) {
     setBusy(true);
     try {
       const sb = window.__supabase;
-      const { error } = await sb.auth.signUp({
+
+      // 1. Guardar la sesión del admin — signUp puede auto-loguear al usuario nuevo
+      //    y reemplazar la sesión actual, lo que rompería el UPDATE posterior bajo RLS.
+      const { data: { session: adminSession } } = await sb.auth.getSession();
+
+      // 2. Crear el usuario en auth.users (el trigger handle_new_user crea el row en profiles)
+      const { data: signUpData, error: signUpErr } = await sb.auth.signUp({
         email: form.email,
         password: form.password,
         options: { data: { nombres: form.nombres, apellidos: form.apellidos } }
       });
-      if (error) throw error;
-      if (form.rol && form.rol !== 'solo_lectura') {
-        await sb.from('profiles').update({ rol: form.rol }).eq('email', form.email);
+      if (signUpErr) throw signUpErr;
+      const newUserId = signUpData?.user?.id;
+      if (!newUserId) throw new Error('No se obtuvo el ID del usuario creado');
+
+      // 3. Restaurar la sesión del admin (si signUp la reemplazó)
+      if (adminSession?.access_token && adminSession?.refresh_token) {
+        const { data: { session: nowSession } } = await sb.auth.getSession();
+        if (nowSession?.user?.id !== adminSession.user.id) {
+          await sb.auth.setSession({
+            access_token: adminSession.access_token,
+            refresh_token: adminSession.refresh_token,
+          });
+        }
       }
+
+      // 4. Esperar a que el trigger cree el row en profiles (puede tardar ms)
+      let profileExists = false;
+      for (let i = 0; i < 15; i++) {
+        const { data: prof } = await sb.from('profiles').select('id').eq('id', newUserId).maybeSingle();
+        if (prof) { profileExists = true; break; }
+        await new Promise(r => setTimeout(r, 250));
+      }
+
+      // 5. Hacer el upsert/update con nombres, apellidos y rol — siempre por id
+      const profileData = {
+        id: newUserId,
+        email: form.email,
+        nombres: form.nombres || null,
+        apellidos: form.apellidos || null,
+        rol: form.rol || 'solo_lectura',
+        activo: true,
+      };
+      const { error: upErr } = profileExists
+        ? await sb.from('profiles').update({
+            nombres: profileData.nombres,
+            apellidos: profileData.apellidos,
+            rol: profileData.rol,
+          }).eq('id', newUserId)
+        : await sb.from('profiles').upsert(profileData, { onConflict: 'id' });
+      if (upErr) throw upErr;
+
       showToast?.('Usuario creado','green');
       setModalNew(false);
       setForm({ email:'', password:'', nombres:'', apellidos:'', rol:'solo_lectura' });
@@ -117,8 +160,15 @@ function UsuariosPage({ showToast }) {
     setBusy(true);
     try {
       const sb = window.__supabase;
-      const { error } = await sb.from('profiles').update({ rol: newRol }).eq('id', modalRol.id);
+      const { data, error } = await sb
+        .from('profiles')
+        .update({ rol: newRol })
+        .eq('id', modalRol.id)
+        .select();
       if (error) throw error;
+      if (!data || data.length === 0) {
+        throw new Error('No se pudo actualizar (sin permisos o RLS bloqueó la operación)');
+      }
       showToast?.('Rol actualizado','green');
       setModalRol(null);
       reload();
