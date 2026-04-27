@@ -205,7 +205,7 @@ async function buildEjecutivoPDF(obra) {
   // Use the helper to build a base PDF with branding header, then append narrative content
   const doc = window.__reports.generatePDF({
     titulo: 'Reporte Ejecutivo General',
-    subtitulo: `Obra: ${obra.nombre || '—'}    Cliente: ${obra.cliente || '—'}`,
+    subtitulo: `Obra: ${(obra.nombre_obra || obra.nombre) || '—'}    Cliente: ${obra.cliente || '—'}`,
     columnas: ['Indicador', 'Valor'],
     filas: [
       ['Avance físico promedio', `${avgAvance.toFixed(1)}%`],
@@ -251,7 +251,7 @@ async function buildValorizacionPDF(obra) {
   const total = valorizables.reduce((a, p) => a + Number(p.metrado_ejecutado || 0) * Number(p.precio_unitario || 0), 0);
 
   const doc = window.__reports.generatePDF({
-    titulo: `Valorización de Obra — ${obra.nombre || ''}`,
+    titulo: `Valorización de Obra — ${(obra.nombre_obra || obra.nombre) || ''}`,
     subtitulo: `Cliente: ${obra.cliente || '—'}    Ubicación: ${obra.ubicacion || obra.direccion || '—'}`,
     columnas: ['Código', 'Partida', 'Unidad', 'Metrado Ejec', 'P. Unitario', 'Subtotal'],
     filas,
@@ -272,9 +272,11 @@ function saveHistorial(arr) {
 // ── COMPONENT ─────────────────────────────────────────────
 function ReportesPage({ showToast }) {
   const [tab, setTab] = uSR('generar');
-  const obras = window.__hooks.useObras() || [];
+  // useObras() retorna { data, loading, create, ... } — extraer el array
+  const obrasHook = (window.__hooks && window.__hooks.useObras) ? window.__hooks.useObras() : null;
+  const obras = obrasHook?.data || [];
   const auth = (window.__useAuth && window.__useAuth()) || {};
-  const userName = auth.user?.email || auth.user?.nombre || 'Usuario';
+  const userName = auth.user?.email || auth.user?.nombre || auth.profile?.email || 'Usuario';
 
   const [obraId, setObraId] = uSR('');
   const [periodo, setPeriodo] = uSR('mes_actual');
@@ -295,7 +297,7 @@ function ReportesPage({ showToast }) {
     setBusy(card.id);
     try {
       const period = getPeriodDates(periodo, customFrom, customTo);
-      const slug = slugify(obraActual.nombre);
+      const slug = slugify((obraActual.nombre_obra || obraActual.nombre));
       const stamp = fechaStamp();
       const baseFilename = `JARVEX_${card.id}_${slug}_${stamp}`;
 
@@ -318,7 +320,7 @@ function ReportesPage({ showToast }) {
       if (wantsPdf) {
         const doc = pdfDoc || window.__reports.generatePDF({
           titulo: card.titulo,
-          subtitulo: `Obra: ${obraActual.nombre || '—'}    Período: ${period.from} a ${period.to}`,
+          subtitulo: `Obra: ${(obraActual.nombre_obra || obraActual.nombre) || '—'}    Período: ${period.from} a ${period.to}`,
           columnas,
           filas,
           footer: `Generado por ${userName} — JARVEX`,
@@ -330,7 +332,7 @@ function ReportesPage({ showToast }) {
           user: userName,
           formato: 'PDF',
           size: '—',
-          obra: obraActual.nombre,
+          obra: (obraActual.nombre_obra || obraActual.nombre),
         };
         const updated = [newEntry, ...historial].slice(0, 100);
         setHistorial(updated);
@@ -350,7 +352,7 @@ function ReportesPage({ showToast }) {
           user: userName,
           formato: 'Excel',
           size: '—',
-          obra: obraActual.nombre,
+          obra: (obraActual.nombre_obra || obraActual.nombre),
         };
         const updated = [newEntry, ...historial].slice(0, 100);
         setHistorial(updated);
@@ -397,7 +399,7 @@ function ReportesPage({ showToast }) {
             <label className="flabel">Obra / Proyecto</label>
             <select className="fi" value={obraId} onChange={e => setObraId(e.target.value)}>
               {obras.length === 0 && <option value="">— Sin obras —</option>}
-              {obras.map(o => <option key={o.id} value={o.id}>{o.nombre}</option>)}
+              {obras.map(o => <option key={o.id} value={o.id}>{o.nombre_obra || o.nombre}</option>)}
             </select>
           </div>
           <div>
