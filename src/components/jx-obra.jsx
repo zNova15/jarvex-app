@@ -202,6 +202,330 @@ function ObrasPage({ showToast }) {
 }
 
 // ─── PARTIDAS PAGE ────────────────────────────────────────
+// Construye un árbol jerárquico a partir de codigo_delfin (ej "02.01.01.01.05.01")
+// Las partidas reales (de la tabla) son las hojas; los nodos intermedios se infieren.
+function buildPartidasTree(partidas) {
+  const root = { code: '', label: 'Root', children: new Map(), partidas: [], depth: 0 };
+  if (!partidas || !partidas.length) return root;
+
+  for (const p of partidas) {
+    const code = (p.codigo_delfin || '').trim();
+    if (!code) {
+      // Sin código: cuelgan de root como hojas sueltas
+      root.partidas.push(p);
+      continue;
+    }
+    const segs = code.split('.');
+    let cur = root;
+    for (let i = 0; i < segs.length; i++) {
+      const prefix = segs.slice(0, i + 1).join('.');
+      let child = cur.children.get(prefix);
+      if (!child) {
+        child = { code: prefix, label: prefix, children: new Map(), partidas: [], depth: i + 1 };
+        cur.children.set(prefix, child);
+      }
+      cur = child;
+    }
+    // La hoja "real" (la partida) se asocia al nodo del prefijo completo
+    cur.partida = p;
+  }
+  return root;
+}
+
+// Calcula agregados recursivos (presupuesto, real, % avance ponderado, conteo de hojas)
+function computeAggregates(node) {
+  let presupuesto = 0;
+  let real = 0;
+  let avancePonderado = 0; // Σ(% × costoPres)
+  let costoForAvance = 0;
+  let leafCount = 0;
+
+  // hojas directas (partidas sin código)
+  for (const p of node.partidas) {
+    const ctP = Number(p.costo_total_presupuestado || 0);
+    const ctR = Number(p.costo_real_acumulado || 0);
+    presupuesto += ctP;
+    real += ctR;
+    const av = Number(p.porcentaje_avance || 0);
+    avancePonderado += av * ctP;
+    costoForAvance += ctP;
+    leafCount += 1;
+  }
+
+  // partida asociada al nodo
+  if (node.partida) {
+    const ctP = Number(node.partida.costo_total_presupuestado || 0);
+    const ctR = Number(node.partida.costo_real_acumulado || 0);
+    presupuesto += ctP;
+    real += ctR;
+    const av = Number(node.partida.porcentaje_avance || 0);
+    avancePonderado += av * ctP;
+    costoForAvance += ctP;
+    leafCount += 1;
+  }
+
+  for (const child of node.children.values()) {
+    const ag = computeAggregates(child);
+    presupuesto += ag.presupuesto;
+    real += ag.real;
+    avancePonderado += ag.avanceWeighted;
+    costoForAvance += ag.costoForAvance;
+    leafCount += ag.leafCount;
+  }
+
+  const avancePct = costoForAvance > 0 ? avancePonderado / costoForAvance : 0;
+  node.agg = { presupuesto, real, avancePct, leafCount };
+  return { presupuesto, real, avanceWeighted: avancePonderado, costoForAvance, leafCount };
+}
+
+// Encuentra todos los códigos de nodos que tienen al menos una hoja matching
+// Devuelve un Set de códigos que deben mostrarse (incluyendo ancestros)
+function filterTreeMatches(node, predicate, ancestorPath, visibleCodes) {
+  let anyMatch = false;
+  // hoja propia
+  if (node.partida && predicate(node.partida)) {
+    anyMatch = true;
+    for (const c of ancestorPath) visibleCodes.add(c);
+    visibleCodes.add(node.code);
+  }
+  for (const p of node.partidas) {
+    if (predicate(p)) {
+      anyMatch = true;
+      for (const c of ancestorPath) visibleCodes.add(c);
+      visibleCodes.add(node.code);
+    }
+  }
+  ancestorPath.push(node.code);
+  for (const child of node.children.values()) {
+    if (filterTreeMatches(child, predicate, ancestorPath, visibleCodes)) {
+      anyMatch = true;
+      visibleCodes.add(node.code);
+    }
+  }
+  ancestorPath.pop();
+  return anyMatch;
+}
+
+function highlightText(text, terms) {
+  if (!text || !terms || !terms.length) return text;
+  const lower = text.toLowerCase();
+  // marcar rangos
+  const ranges = [];
+  for (const t of terms) {
+    if (!t) continue;
+    let idx = 0;
+    while ((idx = lower.indexOf(t, idx)) !== -1) {
+      ranges.push([idx, idx + t.length]);
+      idx += t.length;
+    }
+  }
+  if (!ranges.length) return text;
+  ranges.sort((a, b) => a[0] - b[0]);
+  // merge
+  const merged = [ranges[0]];
+  for (let i = 1; i < ranges.length; i++) {
+    const last = merged[merged.length - 1];
+    if (ranges[i][0] <= last[1]) last[1] = Math.max(last[1], ranges[i][1]);
+    else merged.push(ranges[i]);
+  }
+  const out = [];
+  let cursor = 0;
+  merged.forEach(([s, e], i) => {
+    if (s > cursor) out.push(text.slice(cursor, s));
+    out.push(<mark key={i} style={{ background: 'rgba(245,158,11,0.35)', color: 'inherit', padding: '0 2px', borderRadius: 3 }}>{text.slice(s, e)}</mark>);
+    cursor = e;
+  });
+  if (cursor < text.length) out.push(text.slice(cursor));
+  return out;
+}
+
+// Mini barra de progreso
+function MiniBar({ value, label, color, title }) {
+  const v = Math.max(0, Math.min(100, Number(value) || 0));
+  return (
+    <div title={title || `${label}: ${v.toFixed(1)}%`} style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 70 }}>
+      <div style={{ flex: 1, height: 5, background: 'rgba(255,255,255,0.08)', borderRadius: 4, overflow: 'hidden' }}>
+        <div style={{ height: '100%', width: `${v}%`, background: color, borderRadius: 4 }}/>
+      </div>
+      <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--tm)', minWidth: 28, textAlign: 'right' }}>{v.toFixed(0)}%</span>
+    </div>
+  );
+}
+
+// Fila de hoja (partida real)
+function PartidaLeafRow({ partida: p, depth, searchTerms, isAdmin, onEdit, consumoMap }) {
+  const ctPres = Number(p.costo_total_presupuestado || 0);
+  const ctReal = Number(p.costo_real_acumulado || 0);
+  const av = Number(p.porcentaje_avance || 0);
+  const avFin = ctPres > 0 ? (ctReal / ctPres) * 100 : 0;
+  const avCons = consumoMap?.[p.id];
+  const colorAv = av >= 100 ? 'var(--green)' : p.estado === 'atrasado' ? 'var(--red)' : 'var(--blue)';
+  const colorFin = avFin > 100 ? 'var(--red)' : avFin >= 80 ? 'var(--amber)' : 'var(--green)';
+  const colorCons = avCons == null ? 'var(--tm)' : avCons > 100 ? 'var(--red)' : avCons >= 80 ? 'var(--amber)' : 'var(--green)';
+
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: '1fr 110px 110px 220px 90px 60px',
+        gap: 8,
+        alignItems: 'center',
+        padding: '8px 12px',
+        paddingLeft: 12 + depth * 18,
+        borderBottom: '1px solid rgba(255,255,255,0.04)',
+        fontSize: 12,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+        <span style={{ width: 14, display: 'inline-block' }}/>
+        <span style={{ color: 'var(--amber)', fontFamily: 'monospace', fontSize: 11, flexShrink: 0 }}>
+          {highlightText(p.codigo_delfin || '—', searchTerms)}
+        </span>
+        <span style={{ color: 'var(--tp)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.nombre_partida}>
+          {highlightText(p.nombre_partida || '', searchTerms)}
+        </span>
+        {p.unidad && <span className="tag" style={{ fontSize: 10, flexShrink: 0 }}>{Number(p.metrado_contratado||0).toLocaleString('es-PE')} {p.unidad}</span>}
+      </div>
+      <div style={{ textAlign: 'right', color: 'var(--tp)' }}>{fmtS(ctPres)}</div>
+      <div style={{ textAlign: 'right', color: ctReal > ctPres ? 'var(--red)' : 'var(--tp)' }}>{fmtS(ctReal)}</div>
+      <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+        <MiniBar value={av} label="Reportado" color={colorAv} title={`Avance reportado: ${av.toFixed(1)}%`}/>
+        <MiniBar value={avFin} label="Financiero" color={colorFin} title={`Avance financiero: ${avFin.toFixed(1)}% (S/ ${ctReal.toLocaleString()} de S/ ${ctPres.toLocaleString()})`}/>
+        <MiniBar value={avCons || 0} label="Consumo" color={colorCons} title={avCons == null ? 'Avance por consumo: sin datos' : `Avance por consumo: ${Number(avCons).toFixed(1)}%`}/>
+      </div>
+      <div><span className={`badge ${EST_PART[p.estado] || 'b-gray'}`} style={{ fontSize: 10 }}>{EST_LBL[p.estado] || p.estado}</span></div>
+      <div style={{ textAlign: 'center' }}>
+        {isAdmin && (
+          <button className="btn btn-ghost btn-xs" title="Editar partida" onClick={() => onEdit(p)}>
+            <JxIcon name="edit" size={11}/>
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Nodo del árbol (capítulo / sub-capítulo); renderiza hojas también
+function TreeNode({ node, visibleCodes, expanded, onToggle, searchTerms, isAdmin, onEdit, consumoMap }) {
+  if (visibleCodes && !visibleCodes.has(node.code)) return null;
+
+  const isOpen = expanded.has(node.code);
+  const hasChildren = node.children.size > 0;
+  const isLeafOnly = !hasChildren && node.partida; // nodo terminal con partida real
+  const depth = node.depth;
+
+  // Si solo es la hoja (sin hijos), renderizamos como PartidaLeafRow
+  if (isLeafOnly && !hasChildren) {
+    return (
+      <PartidaLeafRow
+        partida={node.partida}
+        depth={depth}
+        searchTerms={searchTerms}
+        isAdmin={isAdmin}
+        onEdit={onEdit}
+        consumoMap={consumoMap}
+      />
+    );
+  }
+
+  const agg = node.agg || { presupuesto: 0, real: 0, avancePct: 0, leafCount: 0 };
+  // Etiqueta del nodo: si tiene partida asociada, usar su nombre; sino código
+  const label = node.partida?.nombre_partida || `Capítulo ${node.code}`;
+  const bgIntensity = Math.max(0, 0.18 - depth * 0.03);
+
+  return (
+    <>
+      <div
+        onClick={() => hasChildren && onToggle(node.code)}
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 110px 110px 220px 90px 60px',
+          gap: 8,
+          alignItems: 'center',
+          padding: '8px 12px',
+          paddingLeft: 12 + depth * 18,
+          borderBottom: '1px solid rgba(255,255,255,0.05)',
+          background: `rgba(245,158,11,${bgIntensity})`,
+          cursor: hasChildren ? 'pointer' : 'default',
+          fontSize: 12,
+          fontWeight: depth <= 2 ? 700 : 600,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+          {hasChildren ? (
+            <JxIcon name={isOpen ? 'chevD' : 'chevR'} size={12} color="var(--amber)"/>
+          ) : (
+            <span style={{ width: 12, display: 'inline-block' }}/>
+          )}
+          <span style={{ color: 'var(--amber)', fontFamily: 'monospace', fontSize: 11, flexShrink: 0 }}>
+            {highlightText(node.code, searchTerms)}
+          </span>
+          <span style={{ color: 'var(--tp)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={label}>
+            {highlightText(label, searchTerms)}
+          </span>
+          <span style={{ fontSize: 10, color: 'var(--tm)', fontWeight: 500, flexShrink: 0 }}>
+            ({agg.leafCount} {agg.leafCount === 1 ? 'partida' : 'partidas'})
+          </span>
+        </div>
+        <div style={{ textAlign: 'right', color: 'var(--tp)' }}>{fmtSk(agg.presupuesto)}</div>
+        <div style={{ textAlign: 'right', color: agg.real > agg.presupuesto ? 'var(--red)' : 'var(--tp)' }}>{fmtSk(agg.real)}</div>
+        <div>
+          <MiniBar
+            value={agg.avancePct}
+            label="Avance ponderado"
+            color={agg.avancePct >= 100 ? 'var(--green)' : agg.avancePct >= 50 ? 'var(--blue)' : 'var(--amber)'}
+            title={`Avance ponderado por costo: ${agg.avancePct.toFixed(1)}%`}
+          />
+        </div>
+        <div></div>
+        <div></div>
+      </div>
+      {isOpen && (
+        <>
+          {/* partida asociada al nodo (raro, pero posible) */}
+          {node.partida && hasChildren && (
+            <PartidaLeafRow
+              partida={node.partida}
+              depth={depth + 1}
+              searchTerms={searchTerms}
+              isAdmin={isAdmin}
+              onEdit={onEdit}
+              consumoMap={consumoMap}
+            />
+          )}
+          {Array.from(node.children.values())
+            .sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }))
+            .map(child => (
+              <TreeNode
+                key={child.code}
+                node={child}
+                visibleCodes={visibleCodes}
+                expanded={expanded}
+                onToggle={onToggle}
+                searchTerms={searchTerms}
+                isAdmin={isAdmin}
+                onEdit={onEdit}
+                consumoMap={consumoMap}
+              />
+            ))}
+          {/* hojas sueltas (sin código) */}
+          {node.partidas.map(p => (
+            <PartidaLeafRow
+              key={p.id}
+              partida={p}
+              depth={depth + 1}
+              searchTerms={searchTerms}
+              isAdmin={isAdmin}
+              onEdit={onEdit}
+              consumoMap={consumoMap}
+            />
+          ))}
+        </>
+      )}
+    </>
+  );
+}
+
 function PartidasPage({ showToast }) {
   const obraId = useObraActiva();
   const { data: partidas, loading, create: createPartida, update: updatePartida } = window.__hooks.usePartidas(obraId);
@@ -211,6 +535,33 @@ function PartidasPage({ showToast }) {
   const [modal, setModal] = uSO(null);
   const [form, setForm] = uSO({});
   const [editingId, setEditingId] = uSO(null);
+  const [expanded, setExpanded] = uSO(() => new Set());
+  const [soloActivas, setSoloActivas] = uSO(false);
+  const [estadoFilter, setEstadoFilter] = uSO('todos');
+  const [consumoMap, setConsumoMap] = uSO({}); // partida_id -> avance_consumo_pct
+
+  // Poll vista de Supabase (avance por consumo) — graceful si offline / vista no existe
+  uEO(() => {
+    if (!obraId) return;
+    let cancelled = false;
+    const fetchConsumo = async () => {
+      try {
+        const sb = window.__supabase;
+        if (!sb) return;
+        const { data, error } = await sb
+          .from('v_partidas_avance_consumo')
+          .select('partida_id, avance_consumo_pct')
+          .eq('obra_id', obraId);
+        if (error || cancelled || !data) return;
+        const map = {};
+        for (const r of data) map[r.partida_id] = Number(r.avance_consumo_pct) || 0;
+        setConsumoMap(map);
+      } catch (e) { /* offline o vista no disponible: ignorar */ }
+    };
+    fetchConsumo();
+    const id = setInterval(fetchConsumo, 30000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [obraId]);
 
   const openEditPartida = (p) => {
     setForm({
@@ -228,15 +579,61 @@ function PartidasPage({ showToast }) {
     setModal('editar');
   };
 
-  const filtered = uMO(() => {
+  // Filtros base sobre la lista plana (estado / solo activas)
+  const partidasFiltered = uMO(() => {
     if (!partidas) return [];
-    if (!q) return partidas;
-    return partidas.filter(p =>
-      p.nombre_partida?.toLowerCase().includes(q.toLowerCase()) ||
-      p.codigo_delfin?.toLowerCase().includes(q.toLowerCase()) ||
-      p.categoria?.toLowerCase().includes(q.toLowerCase())
-    );
-  }, [q, partidas]);
+    return partidas.filter(p => {
+      if (soloActivas && p.estado === 'terminado') return false;
+      if (estadoFilter !== 'todos' && p.estado !== estadoFilter) return false;
+      return true;
+    });
+  }, [partidas, soloActivas, estadoFilter]);
+
+  // Construir árbol y agregados (memoizado)
+  const tree = uMO(() => {
+    const t = buildPartidasTree(partidasFiltered);
+    computeAggregates(t);
+    return t;
+  }, [partidasFiltered]);
+
+  // Búsqueda: términos separados por espacio, todos deben aparecer
+  const searchTerms = uMO(() => {
+    return q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  }, [q]);
+
+  const visibleCodes = uMO(() => {
+    if (!searchTerms.length) return null; // null = no filtrar por búsqueda
+    const predicate = (p) => {
+      const code = (p.codigo_delfin || '').toLowerCase();
+      const name = (p.nombre_partida || '').toLowerCase();
+      return searchTerms.every(t => code.includes(t) || name.includes(t));
+    };
+    const set = new Set();
+    filterTreeMatches(tree, predicate, [], set);
+    return set;
+  }, [tree, searchTerms]);
+
+  // Auto-expandir nodos cuando hay búsqueda activa
+  const effectiveExpanded = uMO(() => {
+    if (!visibleCodes) return expanded;
+    return visibleCodes; // mostrar el camino completo
+  }, [visibleCodes, expanded]);
+
+  const toggleNode = (code) => {
+    setExpanded(prev => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code); else next.add(code);
+      return next;
+    });
+  };
+
+  const expandAll = () => {
+    const all = new Set();
+    const walk = (n) => { if (n.code) all.add(n.code); for (const c of n.children.values()) walk(c); };
+    walk(tree);
+    setExpanded(all);
+  };
+  const collapseAll = () => setExpanded(new Set());
 
   const totalPres = partidas?.reduce((s,p) => s + Number(p.costo_total_presupuestado || 0), 0) ?? 0;
   const totalReal = partidas?.reduce((s,p) => s + Number(p.costo_real_acumulado || 0), 0) ?? 0;
@@ -313,77 +710,76 @@ function PartidasPage({ showToast }) {
         ))}
       </div>
 
-      <div style={{display:'flex',gap:8,marginBottom:14}}>
-        <div className="search-bar"><JxIcon name="search" size={14} color="var(--tm)"/><input placeholder="Buscar partida…" value={q} onChange={e=>setQ(e.target.value)}/></div>
+      <div style={{display:'flex',gap:8,marginBottom:14,flexWrap:'wrap',alignItems:'center'}}>
+        <div className="search-bar" style={{flex:'1 1 280px'}}><JxIcon name="search" size={14} color="var(--tm)"/><input placeholder="Buscar por código, nombre o palabra clave…" value={q} onChange={e=>setQ(e.target.value)}/></div>
+        <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'var(--tm)',cursor:'pointer'}}>
+          <input type="checkbox" checked={soloActivas} onChange={e=>setSoloActivas(e.target.checked)}/>
+          Solo activas
+        </label>
+        <select className="fi" style={{maxWidth:160,fontSize:12}} value={estadoFilter} onChange={e=>setEstadoFilter(e.target.value)}>
+          <option value="todos">Todos los estados</option>
+          <option value="pendiente">Pendiente</option>
+          <option value="en_ejecucion">En Ejecución</option>
+          <option value="atrasado">Atrasado</option>
+          <option value="terminado">Terminado</option>
+          <option value="observado">Observado</option>
+        </select>
+        <button className="btn btn-ghost btn-xs" onClick={expandAll} title="Expandir todo"><JxIcon name="chevD" size={11}/> Expandir</button>
+        <button className="btn btn-ghost btn-xs" onClick={collapseAll} title="Colapsar todo"><JxIcon name="chevR" size={11}/> Colapsar</button>
       </div>
 
       {partidas.length === 0 ? (
         <div className="card card-p empty-state"><JxIcon name="list" size={40} color="var(--tm)"/><p>No hay partidas. Click en "Nueva Partida".</p></div>
+      ) : partidasFiltered.length === 0 ? (
+        <div className="card card-p empty-state"><JxIcon name="filter" size={40} color="var(--tm)"/><p>Ningún resultado con los filtros actuales.</p></div>
       ) : (
-      <div className="card" style={{overflow:'hidden'}}>
-        <div style={{overflowX:'auto'}}>
-          <table className="tbl">
-            <thead><tr>
-              <th>Cód.</th><th>Partida</th><th>Cat.</th><th>Und.</th>
-              <th style={{textAlign:'right'}}>Met. Cont.</th><th style={{textAlign:'right'}}>Met. Ejec.</th>
-              <th style={{textAlign:'right'}}>% Av.</th>
-              <th style={{textAlign:'right'}}>C. Pres.</th><th style={{textAlign:'right'}}>C. Real</th>
-              <th style={{textAlign:'right'}}>Diferencia</th><th>Estado</th>
-              {isAdmin && <th style={{textAlign:'center'}}>Acciones</th>}
-            </tr></thead>
-            <tbody>
-              {filtered.map(p => {
-                const ctPres = Number(p.costo_total_presupuestado || 0);
-                const ctReal = Number(p.costo_real_acumulado || 0);
-                const diff = ctReal - ctPres;
-                const diffPct = ctPres > 0 ? ((diff / ctPres) * 100).toFixed(1) : 0;
-                const av = Number(p.porcentaje_avance || 0);
-                return (
-                  <tr key={p.id}>
-                    <td className="col-m">{p.codigo_delfin || '—'}</td>
-                    <td className="col-p">{p.nombre_partida}</td>
-                    <td><span className="tag">{p.categoria || '—'}</span></td>
-                    <td className="col-m">{p.unidad}</td>
-                    <td style={{textAlign:'right'}} className="col-num">{Number(p.metrado_contratado || 0).toLocaleString('es-PE')}</td>
-                    <td style={{textAlign:'right'}} className="col-num">{Number(p.metrado_ejecutado || 0).toLocaleString('es-PE')}</td>
-                    <td style={{textAlign:'right'}}>
-                      <div style={{display:'flex',alignItems:'center',gap:6,justifyContent:'flex-end'}}>
-                        <div style={{width:50,height:5,background:'rgba(255,255,255,0.08)',borderRadius:4,overflow:'hidden'}}>
-                          <div style={{height:'100%',width:`${av}%`,background:av===100?'var(--green)':p.estado==='atrasado'?'var(--red)':'var(--blue)',borderRadius:4}}/>
-                        </div>
-                        <span className="col-num" style={{fontSize:12,fontWeight:600,color:av===100?'var(--green)':p.estado==='atrasado'?'var(--red)':'var(--tp)'}}>{av.toFixed(0)}%</span>
-                      </div>
-                    </td>
-                    <td style={{textAlign:'right'}} className="col-num">{fmtS(ctPres)}</td>
-                    <td style={{textAlign:'right'}} className="col-num">{fmtS(ctReal)}</td>
-                    <td style={{textAlign:'right'}} className="col-num">
-                      {ctReal > 0 ? <span style={{color:diff>0?'var(--red)':'var(--green)',fontWeight:600}}>{diff>0?'+':''}{Math.round(diff).toLocaleString()} ({diffPct}%)</span> : <span style={{color:'var(--tm)'}}>—</span>}
-                    </td>
-                    <td><span className={`badge ${EST_PART[p.estado]||'b-gray'}`}>{EST_LBL[p.estado] || p.estado}</span></td>
-                    {isAdmin && <td style={{textAlign:'center'}}>
-                      <button className="btn btn-ghost btn-xs" title="Editar partida" onClick={()=>openEditPartida(p)}>
-                        <JxIcon name="edit" size={11}/>
-                      </button>
-                    </td>}
-                  </tr>
-                );
-              })}
-            </tbody>
-            <tfoot>
-              <tr>
-                <td colSpan={7} style={{padding:'12px 14px',fontWeight:700,color:'var(--ts)',fontSize:12,background:'rgba(0,0,0,0.15)'}}>TOTALES</td>
-                <td style={{textAlign:'right',padding:'12px 14px',fontWeight:700,color:'var(--tp)',background:'rgba(0,0,0,0.15)'}} className="col-num">{fmtS(totalPres)}</td>
-                <td style={{textAlign:'right',padding:'12px 14px',fontWeight:700,color:'var(--tp)',background:'rgba(0,0,0,0.15)'}} className="col-num">{fmtS(totalReal)}</td>
-                <td style={{textAlign:'right',padding:'12px 14px',fontWeight:700,background:'rgba(0,0,0,0.15)'}} className="col-num">
-                  <span style={{color:(totalReal-totalPres)>0?'var(--red)':'var(--green)'}}>{(totalReal-totalPres)>0?'+':''}{Math.round(totalReal-totalPres).toLocaleString()}</span>
-                </td>
-                <td style={{background:'rgba(0,0,0,0.15)'}}></td>
-                {isAdmin && <td style={{background:'rgba(0,0,0,0.15)'}}></td>}
-              </tr>
-            </tfoot>
-          </table>
+        <div className="card" style={{overflow:'hidden'}}>
+          <div style={{padding:'8px 12px',background:'rgba(0,0,0,0.18)',fontSize:11,color:'var(--tm)',fontWeight:600,letterSpacing:0.4,textTransform:'uppercase',borderBottom:'1px solid rgba(255,255,255,0.05)'}}>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 110px 110px 220px 90px 60px',gap:8,alignItems:'center'}}>
+              <div>Código / Partida</div>
+              <div style={{textAlign:'right'}}>Presupuesto</div>
+              <div style={{textAlign:'right'}}>Real</div>
+              <div style={{textAlign:'center'}}>Avance: Reportado · Financiero · Consumo</div>
+              <div>Estado</div>
+              <div style={{textAlign:'center'}}>{isAdmin ? 'Acc.' : ''}</div>
+            </div>
+          </div>
+          <div style={{maxHeight:'calc(100vh - 360px)',overflowY:'auto'}}>
+            {Array.from(tree.children.values()).sort((a,b)=>a.code.localeCompare(b.code,undefined,{numeric:true})).map(node => (
+              <TreeNode
+                key={node.code}
+                node={node}
+                visibleCodes={visibleCodes}
+                expanded={effectiveExpanded}
+                onToggle={toggleNode}
+                searchTerms={searchTerms}
+                isAdmin={isAdmin}
+                onEdit={openEditPartida}
+                consumoMap={consumoMap}
+              />
+            ))}
+            {/* Hojas sin código */}
+            {tree.partidas.map(p => (
+              <PartidaLeafRow
+                key={p.id}
+                partida={p}
+                depth={1}
+                searchTerms={searchTerms}
+                isAdmin={isAdmin}
+                onEdit={openEditPartida}
+                consumoMap={consumoMap}
+              />
+            ))}
+          </div>
+          <div style={{padding:'10px 14px',background:'rgba(0,0,0,0.18)',borderTop:'1px solid rgba(255,255,255,0.05)',display:'grid',gridTemplateColumns:'1fr 110px 110px auto',gap:8,fontSize:12,fontWeight:700,color:'var(--tp)'}}>
+            <div style={{color:'var(--ts)'}}>TOTALES</div>
+            <div style={{textAlign:'right'}}>{fmtS(totalPres)}</div>
+            <div style={{textAlign:'right'}}>{fmtS(totalReal)}</div>
+            <div style={{color:(totalReal-totalPres)>0?'var(--red)':'var(--green)'}}>
+              {(totalReal-totalPres)>0?'+':''}{Math.round(totalReal-totalPres).toLocaleString()}
+            </div>
+          </div>
         </div>
-      </div>
       )}
 
       {(modal === 'nueva' || modal === 'editar') && <Modal title={editingId ? 'Editar Partida' : 'Nueva Partida'} icon="list" onClose={()=>{setModal(null); setEditingId(null); setForm({});}}>

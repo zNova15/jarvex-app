@@ -93,6 +93,8 @@ function MaterialesPage({ showToast }) {
   const [editingId, setEditingId] = uS(null); // id del material en edición
   const [obraId, setObraId] = uS(null);
   const [requestTarget, setRequestTarget] = uS(null); // material para "Solicitar Cambio"
+  const [partidasObra, setPartidasObra] = uS([]);     // partidas de la obra (para sugerir)
+  const [insumosObra, setInsumosObra] = uS([]);       // insumos_partida de la obra
 
   // Detectar obra activa — respeta localStorage 'obra_activa_id', si no usa la primera
   uE(() => {
@@ -114,6 +116,27 @@ function MaterialesPage({ showToast }) {
 
   // Hook real de materiales
   const { data: materiales, loading, create: createMaterial, update: updateMaterial, refresh } = window.__hooks.useMateriales(obraId);
+
+  // Cargar partidas + insumos_partida de la obra (para sugerir partida en salida)
+  uE(() => {
+    if (!obraId) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const [parts, inss] = await Promise.all([
+          window.__db.partidas.where('obra_id').equals(obraId).toArray(),
+          window.__db.insumos_partida.where('obra_id').equals(obraId).toArray(),
+        ]);
+        if (!cancelled) {
+          setPartidasObra((parts || []).filter(p => !p.deleted_at && p.estado !== 'terminado'));
+          setInsumosObra(inss || []);
+        }
+      } catch (e) { /* tabla puede no existir aún */ }
+    };
+    load();
+    const t = setInterval(load, 5000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [obraId]);
   const { data: personal } = window.__hooks.usePersonal(obraId);
   const movHook = window.__hooks.useMovimientosMateriales(obraId);
 
@@ -212,6 +235,7 @@ function MaterialesPage({ showToast }) {
       return;
     }
     const material = materiales.find(m => m.id === form.material_id);
+    const cantNum = parseFloat(form.cantidad) || 0;
     try {
       const movCreated = await movHook.create({
         obra_id: obraId,
@@ -219,15 +243,62 @@ function MaterialesPage({ showToast }) {
         fecha: form.fecha,
         hora: form.hora,
         tipo_movimiento: tipo === 'ingreso' ? 'entrada' : 'salida',
-        cantidad: parseFloat(form.cantidad),
+        cantidad: cantNum,
         unidad: material.unidad,
         responsable_id: form.responsable_id || null,
         proveedor_id: form.proveedor_id || null,
         documento_asociado: form.documento || null,
+        partida_id: form.partida_id || null,
         precio_unitario_real: parseFloat(form.precio) || null,
         observaciones: form.observaciones || null,
       });
-      try { await window.__logAudit?.({ action:'insert', table:'movimientos_materiales', recordId:movCreated?.id, newData:movCreated, reason:`${tipo} de ${parseFloat(form.cantidad)} ${material.unidad} de ${material.nombre_material}` }); } catch(e) {}
+      try { await window.__logAudit?.({ action:'insert', table:'movimientos_materiales', recordId:movCreated?.id, newData:movCreated, reason:`${tipo} de ${cantNum} ${material.unidad} de ${material.nombre_material}` }); } catch(e) {}
+
+      // Si es SALIDA y hay partida asociada, actualizar el consumo del insumo
+      // y el costo real acumulado de la partida correspondiente.
+      if (tipo === 'salida' && form.partida_id) {
+        try {
+          const sugerencia = partidasSugeridas.find(ps => ps.partida.id === form.partida_id);
+          // Buscar el insumo material de esa partida que matchea el material
+          // (puede que la sugerencia ya lo haya identificado).
+          let insumoTarget = sugerencia?.insumo;
+          if (!insumoTarget) {
+            const palabras = String(material.nombre_material || '')
+              .toLowerCase()
+              .split(/[^a-záéíóúñ0-9]+/)
+              .filter(p => p.length >= 4);
+            insumoTarget = insumosObra.find(i =>
+              i.partida_id === form.partida_id &&
+              i.tipo_insumo === 'material' &&
+              palabras.length > 0 &&
+              palabras.every(w => String(i.nombre_insumo || '').toLowerCase().includes(w))
+            );
+          }
+          if (insumoTarget) {
+            const nuevoUsado = Number(insumoTarget.cantidad_real_usada || 0) + cantNum;
+            await window.__db.insumos_partida.update(insumoTarget.id, {
+              cantidad_real_usada: nuevoUsado,
+              sync_status: insumoTarget.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+              updated_at: new Date().toISOString(),
+              version: (insumoTarget.version ?? 0) + 1,
+            });
+          }
+          // Actualizar costo_real_acumulado de la partida si hay precio
+          const precioReal = parseFloat(form.precio) || 0;
+          if (precioReal > 0) {
+            const partidaActual = partidasObra.find(p => p.id === form.partida_id);
+            if (partidaActual) {
+              const nuevoCosto = Number(partidaActual.costo_real_acumulado || 0) + (cantNum * precioReal);
+              await window.__db.partidas.update(form.partida_id, {
+                costo_real_acumulado: nuevoCosto,
+                sync_status: partidaActual.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+                updated_at: new Date().toISOString(),
+                version: (partidaActual.version ?? 0) + 1,
+              });
+            }
+          }
+        } catch(e) { console.warn('No se pudo actualizar el avance de la partida:', e?.message); }
+      }
       // Actualizar stock local optimistamente
       const delta = tipo === 'ingreso' ? parseFloat(form.cantidad) : -parseFloat(form.cantidad);
       const nuevoStock = (material.stock_actual ?? 0) + delta;
@@ -260,6 +331,37 @@ function MaterialesPage({ showToast }) {
   }
 
   const matSeleccionado = form.material_id ? materiales.find(m => m.id === form.material_id) : null;
+
+  // Partidas sugeridas: aquellas cuyo APU contiene un insumo material que matchea
+  // el nombre del material seleccionado (palabras clave). Ordenadas por % consumido
+  // descendente (las más urgentes arriba).
+  const partidasSugeridas = uM(() => {
+    if (!matSeleccionado || !partidasObra.length || !insumosObra.length) return [];
+    const palabras = String(matSeleccionado.nombre_material || '')
+      .toLowerCase()
+      .split(/[^a-záéíóúñ0-9]+/)
+      .filter(p => p.length >= 4);  // descartar palabras cortas tipo "de", "tipo"
+    if (!palabras.length) return [];
+
+    // Para cada partida, buscar si tiene un insumo material cuyo nombre contenga
+    // todas las palabras clave del material seleccionado
+    const matches = [];
+    for (const p of partidasObra) {
+      const insumosDeP = insumosObra.filter(i => i.partida_id === p.id && i.tipo_insumo === 'material');
+      const insumoMatch = insumosDeP.find(i => {
+        const nom = String(i.nombre_insumo || '').toLowerCase();
+        return palabras.every(w => nom.includes(w));
+      });
+      if (insumoMatch) {
+        const presup = Number(insumoMatch.cantidad_presupuestada || 0);
+        const usado  = Number(insumoMatch.cantidad_real_usada || 0);
+        const pct    = presup > 0 ? Math.min(100, (usado / presup) * 100) : 0;
+        matches.push({ partida: p, insumo: insumoMatch, presup, usado, pct });
+      }
+    }
+    // Ordenar por % descendente, max 8 sugerencias
+    return matches.sort((a, b) => b.pct - a.pct).slice(0, 8);
+  }, [matSeleccionado, partidasObra, insumosObra]);
 
   return (
     <div className="page-wrap">
@@ -392,6 +494,38 @@ function MaterialesPage({ showToast }) {
                 {matSeleccionado.stock_actual >= (parseFloat(form.cantidad)||0) ? '✓' : '⚠'} {matSeleccionado.stock_actual} {matSeleccionado.unidad} disponibles
               </div>
             ) : <div className="fi" style={{color:'var(--tm)'}}>—</div>}
+          </div>
+          <div style={{ gridColumn:'1/-1' }}>
+            <label className="flabel">Partida (¿a qué se va a usar?)</label>
+            <select className="fi" value={form.partida_id||''} onChange={e=>setForm({...form, partida_id:e.target.value||null})}>
+              <option value="">— Asignar después / no aplica —</option>
+              {partidasSugeridas.length > 0 && (
+                <optgroup label="🎯 Partidas que usan este material">
+                  {partidasSugeridas.map(({ partida, presup, usado, pct, insumo }) => (
+                    <option key={partida.id} value={partida.id}>
+                      {partida.codigo_delfin} — {partida.nombre_partida?.slice(0,55)} · {usado.toFixed(0)}/{presup.toFixed(0)} {insumo.unidad} ({pct.toFixed(0)}%)
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {partidasObra.length > 0 && (
+                <optgroup label="Otras partidas activas">
+                  {partidasObra
+                    .filter(p => !partidasSugeridas.find(ps => ps.partida.id === p.id))
+                    .slice(0, 50)
+                    .map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.codigo_delfin} — {p.nombre_partida?.slice(0,55)}
+                      </option>
+                    ))}
+                </optgroup>
+              )}
+            </select>
+            {partidasSugeridas.length > 0 && form.material_id && (
+              <div style={{ fontSize:11, color:'var(--tm)', marginTop:4 }}>
+                💡 Hay {partidasSugeridas.length} partida{partidasSugeridas.length>1?'s':''} que usa{partidasSugeridas.length===1?'':'n'} este material según el APU.
+              </div>
+            )}
           </div>
         </div>
         <div style={{marginTop:14}}><label className="flabel">Observaciones</label><textarea className="fi" value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})} placeholder="Notas adicionales…"/></div>

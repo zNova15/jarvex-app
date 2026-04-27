@@ -19,6 +19,7 @@ import { db, newId } from './db/jarvex.db';
 import { supabase } from './lib/supabase';
 import { generatePDF, downloadPDF, generateExcel } from './lib/reports';
 import { parseExcelFile, downloadTemplate, MODULES as IMPORT_MODULES } from './lib/excel';
+import { parseAPUFile, enrichJerarquia, buildArbol } from './lib/apuParser';
 import { consultarRUC, consultarDNI } from './lib/identity';
 import { logAudit } from './lib/audit';
 import {
@@ -54,6 +55,7 @@ window.__hooks = {
 window.__saveEvidenciaLocal = saveEvidenciaLocal;
 window.__reports = { generatePDF, downloadPDF, generateExcel };
 window.__excel = { parseExcelFile, downloadTemplate, MODULES: IMPORT_MODULES };
+window.__apu = { parseAPUFile, enrichJerarquia, buildArbol };
 window.__identity = { consultarRUC, consultarDNI };
 window.__logAudit = logAudit;
 window.__changeRequests = {

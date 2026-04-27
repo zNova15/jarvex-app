@@ -23,7 +23,7 @@ function useObraActiva() {
 // ── SOURCES ──────────────────────────────────────────────────
 const SOURCES = [
   { id:'excel',     label:'Excel / CSV',     icon:'chart',  color:'#1E7145', desc:'Importa desde hojas de cálculo .xlsx, .xls o archivos .csv', ext:'.xlsx,.xls,.csv', badge:'Universal',  enabled:true  },
-  { id:'s10',       label:'S10 Costos',      icon:'dollar', color:'#0070C0', desc:'Importa presupuestos, partidas e insumos directamente desde S10 Perú', ext:'.s10, .xlsx', badge:'Construcción Perú', enabled:false },
+  { id:'s10',       label:'S10 Costos',      icon:'dollar', color:'#0070C0', desc:'Importa presupuestos, partidas e insumos directamente desde S10 Perú', ext:'.xlsx, .xls', badge:'Construcción Perú', enabled:true  },
   { id:'delfin',    label:'Delfín ERP',      icon:'users',  color:'#7030A0', desc:'Importa personal, planillas y asistencia desde Delfín / Delfín+', ext:'.xlsx, .csv', badge:'RRHH Perú', enabled:false },
   { id:'msproject', label:'MS Project',      icon:'gantt',  color:'#217346', desc:'Importa cronograma y tareas desde Microsoft Project', ext:'.mpp, .xml, .xlsx', badge:'Cronograma', enabled:false },
   { id:'autocad',   label:'AutoCAD / Revit', icon:'layers', color:'#E84142', desc:'Importa metrados desde planillas de cómputo en DXF/Excel', ext:'.xlsx, .csv', badge:'Metrados', enabled:false },
@@ -123,7 +123,7 @@ function Steps({ current, steps, onJump }) {
 }
 
 // ── DROP ZONE ────────────────────────────────────────────────
-function DropZone({ onFile, file }) {
+function DropZone({ onFile, file, accept = '.xlsx,.xls,.csv' }) {
   const [drag, setDrag] = uSI(false);
   const ref = uRI(null);
 
@@ -158,13 +158,427 @@ function DropZone({ onFile, file }) {
         background:drag?'rgba(242,183,5,0.05)':'transparent',
         transition:'all .2s',
       }}>
-      <input ref={ref} type="file" accept=".xlsx,.xls,.csv" style={{ display:'none' }}
+      <input ref={ref} type="file" accept={accept} style={{ display:'none' }}
         onChange={e=>{ if(e.target.files[0]) onFile(e.target.files[0]); }}/>
       <JxIcon name="upload" size={32} color={drag?'var(--amber)':'var(--tm)'}/>
       <div style={{ marginTop:10, fontSize:14, fontWeight:600, color:drag?'var(--amber)':'var(--ts)' }}>
         {drag ? 'Suelta el archivo aquí' : 'Arrastra tu archivo o haz clic para seleccionar'}
       </div>
-      <div style={{ marginTop:6, fontSize:11.5, color:'var(--tm)' }}>Formatos: .xlsx, .xls, .csv · Máximo 10MB</div>
+      <div style={{ marginTop:6, fontSize:11.5, color:'var(--tm)' }}>Formatos: {accept} · Máximo 10MB</div>
+    </div>
+  );
+}
+
+// ── S10 (APU) IMPORT FLOW ────────────────────────────────────
+// Flujo distinto al genérico: no requiere mapeo manual, importa
+// partidas + insumos desde un export de "Análisis de Precios
+// Unitarios" de S10. Sustituye TODO el contenido de partidas/
+// insumos_partida de la obra activa.
+function S10Flow({ obraId, userId, userName, showToast, onReset, hist, setHist }) {
+  const [step, setStep] = uSI(0); // 0 aviso, 1 archivo, 2 preview, 3 confirmar
+  const [confirmed, setConfirmed] = uSI(false);
+  const [file, setFile] = uSI(null);
+  const [parsing, setParsing] = uSI(false);
+  const [parsed, setParsed] = uSI(null); // { partidas, summary }
+  const [parseErr, setParseErr] = uSI(null);
+  const [importing, setImp] = uSI(false);
+  const [progress, setProgress] = uSI({ phase:'', current:0, total:0 });
+  const [result, setResult] = uSI(null);
+
+  // Parse al subir archivo
+  uEI(() => {
+    if (!file) { setParsed(null); setParseErr(null); return; }
+    if (file.size > 25 * 1024 * 1024) {
+      setParseErr('El archivo excede 25MB'); setParsed(null); return;
+    }
+    setParsing(true); setParseErr(null);
+    const t0 = performance.now();
+    window.__apu.parseAPUFile(file)
+      .then(p => {
+        const enriched = window.__apu.enrichJerarquia(p.partidas);
+        setParsed({ ...p, partidas: enriched, parseMs: Math.round(performance.now() - t0) });
+      })
+      .catch(e => { setParseErr(e.message || 'Error al leer el archivo'); setParsed(null); })
+      .finally(() => setParsing(false));
+  }, [file]);
+
+  // Importación masiva en chunks
+  const runImport = async () => {
+    if (!obraId) { showToast('No hay obra activa', 'red'); return; }
+    if (!parsed) return;
+    setImp(true);
+    const now = new Date().toISOString();
+
+    try {
+      // 1) Borrar partidas e insumos previos de la obra
+      setProgress({ phase:'Limpiando datos previos…', current:0, total:1 });
+      await window.__db.partidas.where('obra_id').equals(obraId).delete();
+      await window.__db.insumos_partida.where('obra_id').equals(obraId).delete();
+
+      // 2) Construir registros
+      const partidaRecords = [];
+      const insumoRecords = [];
+      const idByCodigo = new Map();
+
+      parsed.partidas.forEach((p, i) => {
+        const id = window.__newId();
+        idByCodigo.set(p.codigo, id);
+        const cantidad = Number(p.cantidad) || 0;
+        const total = Number(p.costo_total) || 0;
+        const pu = cantidad > 0 ? +(total / cantidad).toFixed(6) : 0;
+        partidaRecords.push({
+          id,
+          obra_id: obraId,
+          codigo_delfin: p.codigo,
+          nombre_partida: p.descripcion || p.codigo,
+          unidad: p.unidad || 'und',
+          metrado_contratado: cantidad,
+          precio_unitario_pres: pu,
+          costo_total_presupuestado: total,
+          estado: 'pendiente',
+          nivel: p.nivel ?? 1,
+          parent_codigo: p.parent_codigo ?? null,
+          orden: i,
+          created_by: userId,
+          updated_by: userId,
+          created_at: now,
+          updated_at: now,
+          version: 1,
+          sync_status: 'pending_create',
+          last_synced_at: null,
+          idempotency_key: `${userId}_partidas_${id}`,
+        });
+
+        p.insumos.forEach(ins => {
+          const insId = window.__newId();
+          insumoRecords.push({
+            id: insId,
+            obra_id: obraId,
+            partida_id: id,
+            insumo_codigo: ins.codigo,
+            nombre_insumo: ins.descripcion,
+            tipo_insumo: ins.categoria,
+            unidad: ins.unidad,
+            cantidad_presupuestada: Number(ins.cantidad) || 0,
+            precio_presupuestado: Number(ins.precio_unitario) || 0,
+            // costo_presupuestado es columna GENERATED en SQL — no se setea
+            created_by: userId,
+            updated_by: userId,
+            created_at: now,
+            updated_at: now,
+            version: 1,
+            sync_status: 'pending_create',
+            last_synced_at: null,
+            idempotency_key: `${userId}_insumos_partida_${insId}`,
+          });
+        });
+      });
+
+      // 3) Insertar en chunks (50 partidas, 200 insumos por batch)
+      const PARTIDA_CHUNK = 50;
+      const INSUMO_CHUNK = 200;
+
+      setProgress({ phase:'Insertando partidas…', current:0, total: partidaRecords.length });
+      for (let i = 0; i < partidaRecords.length; i += PARTIDA_CHUNK) {
+        const slice = partidaRecords.slice(i, i + PARTIDA_CHUNK);
+        await window.__db.partidas.bulkAdd(slice);
+        setProgress({ phase:'Insertando partidas…', current: Math.min(i + PARTIDA_CHUNK, partidaRecords.length), total: partidaRecords.length });
+        await new Promise(r => setTimeout(r, 0));
+      }
+
+      setProgress({ phase:'Insertando insumos…', current:0, total: insumoRecords.length });
+      for (let i = 0; i < insumoRecords.length; i += INSUMO_CHUNK) {
+        const slice = insumoRecords.slice(i, i + INSUMO_CHUNK);
+        await window.__db.insumos_partida.bulkAdd(slice);
+        setProgress({ phase:'Insertando insumos…', current: Math.min(i + INSUMO_CHUNK, insumoRecords.length), total: insumoRecords.length });
+        await new Promise(r => setTimeout(r, 0));
+      }
+
+      const res = { ok: partidaRecords.length, insumos: insumoRecords.length, errors: 0, errorList: [] };
+      setResult(res);
+
+      // Historial
+      const entry = {
+        fecha: fmtDate(),
+        modulo: `S10 APU · ${partidaRecords.length} partidas / ${insumoRecords.length} insumos`,
+        total: partidaRecords.length,
+        ok: partidaRecords.length,
+        errores: 0,
+        user: userName,
+      };
+      const newHist = [entry, ...hist].slice(0, 50);
+      setHist(newHist);
+      localStorage.setItem('importaciones_historial', JSON.stringify(newHist));
+
+      showToast(`Importadas ${partidaRecords.length} partidas y ${insumoRecords.length} insumos`, 'green');
+      // Notificar a la app que la obra cambió (refresca listas)
+      try { window.dispatchEvent(new CustomEvent('obra_activa_change', { detail:{ obraId } })); } catch {}
+    } catch (e) {
+      console.error('[S10 import]', e);
+      showToast(`Error en la importación: ${e.message || e}`, 'red');
+      setResult({ ok:0, insumos:0, errors:1, errorList:[{ row:'-', error: e.message || String(e) }] });
+    } finally {
+      setImp(false);
+    }
+  };
+
+  // ── RESULT SCREEN ──────────────────────────────────────────
+  if (result) return (
+    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', padding:'30px 20px', gap:18, textAlign:'center' }}>
+      <div style={{ width:72, height:72, borderRadius:'50%', background: result.errors ? 'rgba(231,76,60,0.15)' : 'rgba(46,204,113,0.15)', border:`2px solid ${result.errors ? 'var(--red)':'var(--green)'}`, display:'flex', alignItems:'center', justifyContent:'center' }}>
+        <JxIcon name={result.errors?'alert':'checkCircle'} size={32} color={result.errors?'var(--red)':'var(--green)'}/>
+      </div>
+      <div>
+        <div style={{ fontSize:22, fontWeight:800, color:'var(--tp)', marginBottom:6 }}>
+          {result.errors ? 'Importación fallida' : '¡Presupuesto S10 importado!'}
+        </div>
+        <div style={{ fontSize:13, color:'var(--tm)', maxWidth:520 }}>
+          {result.errors
+            ? 'Ocurrió un error durante la importación. Los datos pueden estar parcialmente cargados.'
+            : `Se cargaron ${result.ok} partidas y ${result.insumos} insumos en la obra activa.`}
+        </div>
+      </div>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:12, width:'100%', maxWidth:520 }}>
+        <div className="card card-p" style={{ textAlign:'center' }}>
+          <div style={{ fontSize:24, fontWeight:800, color:'var(--green)' }}>{result.ok}</div>
+          <div style={{ fontSize:11, color:'var(--tm)', marginTop:2 }}>Partidas</div>
+        </div>
+        <div className="card card-p" style={{ textAlign:'center' }}>
+          <div style={{ fontSize:24, fontWeight:800, color:'var(--blue)' }}>{result.insumos}</div>
+          <div style={{ fontSize:11, color:'var(--tm)', marginTop:2 }}>Insumos</div>
+        </div>
+        <div className="card card-p" style={{ textAlign:'center' }}>
+          <div style={{ fontSize:24, fontWeight:800, color: result.errors?'var(--red)':'var(--tp)' }}>{result.errors}</div>
+          <div style={{ fontSize:11, color:'var(--tm)', marginTop:2 }}>Errores</div>
+        </div>
+      </div>
+      {result.errorList.length > 0 && (
+        <details style={{ width:'100%', maxWidth:560, textAlign:'left' }}>
+          <summary style={{ cursor:'pointer', fontSize:12, color:'var(--red)', fontWeight:600 }}>Ver errores</summary>
+          <div style={{ maxHeight:200, overflow:'auto', background:'var(--bg-c)', border:'1px solid var(--border)', borderRadius:8, padding:10, marginTop:6 }}>
+            {result.errorList.map((e, i) => (
+              <div key={i} style={{ fontSize:11.5, padding:'4px 0', color:'var(--ts)' }}>
+                <strong style={{ color:'var(--red)' }}>{e.row}:</strong> {e.error}
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+      <div style={{ display:'flex', gap:10 }}>
+        <button className="btn btn-ghost" onClick={onReset}><JxIcon name="arrowIn" size={13}/>Nueva Importación</button>
+      </div>
+    </div>
+  );
+
+  const STEPS = ['Aviso', 'Archivo', 'Preview', 'Confirmar'];
+
+  return (
+    <div>
+      <Steps current={step} steps={STEPS} onJump={(i)=> i < step && !importing ? setStep(i) : null}/>
+
+      {/* Step 0 — Aviso */}
+      {step === 0 && (
+        <div>
+          <div style={{ fontSize:15, fontWeight:700, color:'var(--tp)', marginBottom:6 }}>Importación nativa desde S10</div>
+          <div style={{ fontSize:12.5, color:'var(--tm)', marginBottom:18 }}>
+            Vas a cargar TODAS las partidas y sus insumos directamente desde un Excel exportado por S10 — sin mapeo manual.
+          </div>
+
+          <div className="card card-p" style={{ background:'rgba(242,183,5,0.06)', border:'1px solid rgba(242,183,5,0.3)', marginBottom:14 }}>
+            <div style={{ fontSize:12.5, fontWeight:700, color:'var(--amber)', marginBottom:8, display:'flex', alignItems:'center', gap:6 }}>
+              <JxIcon name="alert" size={14} color="var(--amber)"/> Atención
+            </div>
+            <ul style={{ fontSize:12, color:'var(--ts)', lineHeight:1.7, paddingLeft:16, margin:0 }}>
+              <li><strong>Las partidas existentes en esta obra serán reemplazadas.</strong></li>
+              <li>Todos los insumos asociados a esas partidas también se borrarán.</li>
+              <li>Esta operación es <strong>local</strong>: se sincronizará al servidor en el próximo sync.</li>
+              <li>Se procesarán partidas, sub-partidas y todos sus insumos (mano de obra, materiales, equipos, etc).</li>
+            </ul>
+          </div>
+
+          {!obraId && (
+            <div style={{ background:'rgba(231,76,60,0.08)', border:'1px solid rgba(231,76,60,0.3)', borderRadius:8, padding:'10px 14px', fontSize:12, color:'var(--red)', marginBottom:14 }}>
+              ⚠ No hay obra activa. Activa una obra antes de importar.
+            </div>
+          )}
+
+          <label style={{ display:'flex', gap:8, alignItems:'center', fontSize:12.5, color:'var(--ts)', cursor:'pointer', marginBottom:18 }}>
+            <input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />
+            Entiendo y deseo continuar — reemplazaré las partidas e insumos de la obra activa.
+          </label>
+
+          <div style={{ display:'flex', justifyContent:'space-between' }}>
+            <button className="btn btn-ghost" onClick={onReset}><JxIcon name="chevL" size={14}/>Cancelar</button>
+            <button className="btn btn-amber" disabled={!confirmed || !obraId} onClick={()=>setStep(1)} style={{ opacity:(confirmed && obraId)?1:.4 }}>
+              Siguiente <JxIcon name="chevR" size={14}/>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Step 1 — Archivo */}
+      {step === 1 && (
+        <div>
+          <div style={{ fontSize:15, fontWeight:700, color:'var(--tp)', marginBottom:6 }}>Sube el Excel exportado por S10</div>
+          <div style={{ fontSize:12.5, color:'var(--tm)', marginBottom:18 }}>
+            Acepta el export de "Análisis de Precios Unitarios" o "Consolidado de Materiales" (.xlsx / .xls).
+          </div>
+
+          <DropZone onFile={setFile} file={file} accept=".xlsx,.xls"/>
+
+          {parsing && (
+            <div style={{ marginTop:14, background:'rgba(52,152,219,0.08)', border:'1px solid rgba(52,152,219,0.25)', borderRadius:8, padding:'10px 14px', fontSize:12, color:'var(--blue)' }}>
+              <span style={{ display:'inline-block', width:12,height:12,borderRadius:'50%',border:'2px solid rgba(52,152,219,0.4)',borderTopColor:'var(--blue)',marginRight:8,animation:'spin .7s linear infinite', verticalAlign:'middle' }}/>
+              Analizando estructura del archivo…
+            </div>
+          )}
+
+          {parseErr && (
+            <div style={{ marginTop:14, background:'rgba(231,76,60,0.08)', border:'1px solid rgba(231,76,60,0.3)', borderRadius:8, padding:'10px 14px', fontSize:12, color:'var(--red)' }}>
+              ⚠ {parseErr}
+            </div>
+          )}
+
+          {parsed && !parsing && (
+            <div style={{ marginTop:14, background:'rgba(46,204,113,0.08)', border:'1px solid rgba(46,204,113,0.25)', borderRadius:8, padding:'12px 16px', fontSize:12.5, color:'var(--green)', display:'flex', gap:10, alignItems:'center' }}>
+              <JxIcon name="checkCircle" size={14} color="var(--green)"/>
+              <span><strong>{parsed.summary.total}</strong> partidas detectadas · <strong>{parsed.summary.totalInsumos}</strong> insumos · parseado en {parsed.parseMs}ms</span>
+            </div>
+          )}
+
+          <div style={{ display:'flex', justifyContent:'space-between', marginTop:20 }}>
+            <button className="btn btn-ghost" onClick={()=>setStep(0)}><JxIcon name="chevL" size={14}/>Atrás</button>
+            <button className="btn btn-amber" disabled={!parsed} onClick={()=>setStep(2)} style={{ opacity:parsed?1:.4 }}>Siguiente <JxIcon name="chevR" size={14}/></button>
+          </div>
+        </div>
+      )}
+
+      {/* Step 2 — Preview */}
+      {step === 2 && parsed && (
+        <div>
+          <div style={{ fontSize:15, fontWeight:700, color:'var(--tp)', marginBottom:6 }}>Preview de partidas detectadas</div>
+          <div style={{ fontSize:12.5, color:'var(--tm)', marginBottom:18 }}>
+            Verifica que los datos correspondan al presupuesto. Si todo se ve bien, continúa.
+          </div>
+
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12, marginBottom:14 }}>
+            <div className="card card-p" style={{ textAlign:'center' }}>
+              <div style={{ fontSize:22, fontWeight:800, color:'var(--tp)' }}>{parsed.summary.total}</div>
+              <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'uppercase' }}>Partidas</div>
+            </div>
+            <div className="card card-p" style={{ textAlign:'center' }}>
+              <div style={{ fontSize:22, fontWeight:800, color:'var(--green)' }}>{parsed.summary.conInsumos}</div>
+              <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'uppercase' }}>Con insumos</div>
+            </div>
+            <div className="card card-p" style={{ textAlign:'center' }}>
+              <div style={{ fontSize:22, fontWeight:800, color:'var(--blue)' }}>{parsed.summary.totalInsumos}</div>
+              <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'uppercase' }}>Insumos</div>
+            </div>
+            <div className="card card-p" style={{ textAlign:'center' }}>
+              <div style={{ fontSize:22, fontWeight:800, color: parsed.summary.errores ? 'var(--red)':'var(--tp)' }}>{parsed.summary.errores}</div>
+              <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'uppercase' }}>Errores</div>
+            </div>
+          </div>
+
+          {parsed.summary.total < 5 && (
+            <div style={{ background:'rgba(231,76,60,0.08)', border:'1px solid rgba(231,76,60,0.3)', borderRadius:8, padding:'10px 14px', fontSize:12, color:'var(--red)', marginBottom:14 }}>
+              ⚠ Solo se detectaron {parsed.summary.total} partidas. Verifica que el archivo sea un export de S10 válido.
+            </div>
+          )}
+
+          <div className="card" style={{ overflow:'hidden', marginBottom:14 }}>
+            <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', fontSize:11.5, fontWeight:600, color:'var(--tm)' }}>
+              <JxIcon name="eye" size={13}/> Primeras 10 partidas
+            </div>
+            <div style={{ overflowX:'auto', maxHeight:380 }}>
+              <table className="tbl">
+                <thead>
+                  <tr>
+                    <th style={{ minWidth:120 }}>Código</th>
+                    <th>Descripción</th>
+                    <th style={{ textAlign:'right' }}>Nivel</th>
+                    <th style={{ textAlign:'right' }}>Metrado</th>
+                    <th>Unid.</th>
+                    <th style={{ textAlign:'right' }}>Costo Total</th>
+                    <th style={{ textAlign:'right' }}>Insumos</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {parsed.partidas.slice(0, 10).map((p, i) => (
+                    <tr key={i}>
+                      <td className="col-m" style={{ fontFamily:'monospace', fontSize:11 }}>{p.codigo}</td>
+                      <td style={{ fontSize:11.5 }}>{p.descripcion}</td>
+                      <td className="col-num" style={{ textAlign:'right' }}>{p.nivel}</td>
+                      <td className="col-num" style={{ textAlign:'right' }}>{p.cantidad ?? '—'}</td>
+                      <td>{p.unidad ?? '—'}</td>
+                      <td className="col-num" style={{ textAlign:'right' }}>{p.costo_total != null ? p.costo_total.toFixed(2) : '—'}</td>
+                      <td className="col-num" style={{ textAlign:'right' }}>{p.insumos.length}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div style={{ display:'flex', justifyContent:'space-between' }}>
+            <button className="btn btn-ghost" onClick={()=>setStep(1)}><JxIcon name="chevL" size={14}/>Atrás</button>
+            <button className="btn btn-amber" disabled={parsed.summary.total === 0} onClick={()=>setStep(3)}>Siguiente <JxIcon name="chevR" size={14}/></button>
+          </div>
+        </div>
+      )}
+
+      {/* Step 3 — Confirmar e importar */}
+      {step === 3 && parsed && (
+        <div>
+          <div style={{ fontSize:15, fontWeight:700, color:'var(--tp)', marginBottom:6 }}>Confirmar y ejecutar importación</div>
+          <div style={{ fontSize:12.5, color:'var(--tm)', marginBottom:18 }}>
+            Al confirmar, se reemplazarán las partidas e insumos existentes en la obra activa.
+          </div>
+
+          <div className="card card-p" style={{ marginBottom:16 }}>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
+              {[
+                { label:'Origen', val:'S10 Costos · APU', icon:'dollar', color:'#0070C0' },
+                { label:'Archivo', val:file?.name, icon:'file', color:'var(--green)' },
+                { label:'Obra destino', val: obraId ? `${obraId.slice(0,8)}…` : '—', icon:'building', color:'var(--orange)' },
+                { label:'Partidas', val: parsed.summary.total, icon:'list', color:'var(--tp)' },
+                { label:'Insumos', val: parsed.summary.totalInsumos, icon:'package', color:'var(--blue)' },
+                { label:'Modo', val:'Reemplazar (delete + bulkAdd)', icon:'refresh', color:'var(--amber)' },
+              ].map((r,i)=>(
+                <div key={i} style={{ display:'flex', gap:10, alignItems:'center' }}>
+                  <div style={{ width:32, height:32, borderRadius:7, background:`${r.color}18`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                    <JxIcon name={r.icon} size={14} color={r.color}/>
+                  </div>
+                  <div>
+                    <div style={{ fontSize:10, color:'var(--tm)', textTransform:'uppercase', letterSpacing:'.06em' }}>{r.label}</div>
+                    <div style={{ fontSize:13, fontWeight:600, color:'var(--tp)' }}>{r.val}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {importing && (
+            <div style={{ marginBottom:14 }}>
+              <div style={{ fontSize:12, color:'var(--ts)', marginBottom:6 }}>
+                {progress.phase} {progress.total > 0 && `${progress.current}/${progress.total}`}
+              </div>
+              <div style={{ width:'100%', height:8, background:'var(--bg-c)', borderRadius:4, overflow:'hidden' }}>
+                <div style={{ width:`${progress.total?(progress.current/progress.total*100):0}%`, height:'100%', background:'var(--amber)', transition:'width .2s' }}/>
+              </div>
+            </div>
+          )}
+
+          <div style={{ display:'flex', justifyContent:'space-between' }}>
+            <button className="btn btn-ghost" onClick={()=>setStep(2)} disabled={importing}><JxIcon name="chevL" size={14}/>Atrás</button>
+            <button className="btn btn-amber" onClick={runImport} disabled={importing} style={{ minWidth:240, justifyContent:'center' }}>
+              {importing
+                ? <><span style={{ width:14,height:14,borderRadius:'50%',border:'2px solid rgba(0,0,0,0.3)',borderTopColor:'rgba(0,0,0,0.8)',display:'inline-block',animation:'spin .7s linear infinite' }}/>Importando…</>
+                : <><JxIcon name="upload" size={14}/>Importar {parsed.summary.total} partidas</>}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -374,7 +788,21 @@ function ImportarPage({ showToast }) {
       </div>
 
       {/* ───────── TAB: IMPORTAR ───────── */}
-      {tab === 'importar' && (
+      {tab === 'importar' && srcId === 's10' && step >= 1 && (
+        <div style={{ maxWidth:880, margin:'0 auto' }}>
+          <S10Flow
+            obraId={obraId}
+            userId={userId}
+            userName={auth?.profile?.nombre || auth?.profile?.email || 'offline'}
+            showToast={showToast}
+            onReset={reset}
+            hist={hist}
+            setHist={setHist}
+          />
+        </div>
+      )}
+
+      {tab === 'importar' && !(srcId === 's10' && step >= 1) && (
         <div style={{ maxWidth:880, margin:'0 auto' }}>
           <Steps current={step} steps={STEPS} onJump={(i)=>setStep(i)}/>
 
