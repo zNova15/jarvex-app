@@ -326,11 +326,12 @@ function MaterialesPage({ showToast }) {
     sin_stock: { class: 'b-gray',   label: 'Sin stock' },
   };
 
-  if (loading || !obraId) {
-    return <div className="page-wrap"><div className="empty-state"><JxIcon name="package" size={32} color="var(--tm)"/><p>Cargando materiales…</p></div></div>;
-  }
-
-  const matSeleccionado = form.material_id ? materiales.find(m => m.id === form.material_id) : null;
+  // ⚠️ Hooks SIEMPRE antes de cualquier early return (regla de React).
+  // Calculamos matSeleccionado y partidasSugeridas aunque la página esté
+  // cargando — son no-ops inofensivos en ese caso.
+  const matSeleccionado = form.material_id && Array.isArray(materiales)
+    ? materiales.find(m => m.id === form.material_id)
+    : null;
 
   // Partidas sugeridas: aquellas cuyo APU contiene un insumo material que matchea
   // el nombre del material seleccionado (palabras clave). Ordenadas por % consumido
@@ -362,6 +363,10 @@ function MaterialesPage({ showToast }) {
     // Ordenar por % descendente, max 8 sugerencias
     return matches.sort((a, b) => b.pct - a.pct).slice(0, 8);
   }, [matSeleccionado, partidasObra, insumosObra]);
+
+  if (loading || !obraId) {
+    return <div className="page-wrap"><div className="empty-state"><JxIcon name="package" size={32} color="var(--tm)"/><p>Cargando materiales…</p></div></div>;
+  }
 
   return (
     <div className="page-wrap">
