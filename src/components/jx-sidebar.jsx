@@ -54,21 +54,20 @@ function Sidebar({ current, onNav, collapsed, onToggle }) {
   return (
     <aside style={sideStyle}>
       {/* Logo */}
-      <div style={{ padding: collapsed ? '18px 14px' : '18px 16px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', gap: 10, minHeight: 64 }}>
-        <div style={{ flexShrink: 0, width: 30, height: 30, background: 'linear-gradient(135deg,#F2B705,#F28C28)', borderRadius: 7, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 13, color: '#0c1118', letterSpacing: -.5 }}>JX</div>
-        {!collapsed && (
-          <div style={{ overflow: 'hidden', whiteSpace: 'nowrap' }}>
-            <div style={{ fontSize: 13.5, fontWeight: 800, color: '#F0F2F5', letterSpacing: -.3 }}>JARVEX</div>
-            <div style={{ fontSize: 9.5, color: '#6B7A8D', fontWeight: 500, letterSpacing: .04, lineHeight: 1.2 }}>TECNOLOGÍA · INGENIERÍA</div>
-          </div>
-        )}
-        <button
-          onClick={onToggle}
-          style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: '#6B7A8D', padding: 4, borderRadius: 4, flexShrink: 0, display: 'flex', alignItems: 'center' }}
-          title={collapsed ? 'Expandir' : 'Colapsar'}
-        >
-          <JxIcon name={collapsed ? 'chevR' : 'menu'} size={15} />
-        </button>
+      <div style={{ padding: collapsed ? '14px 8px' : '14px 16px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', justifyContent: collapsed ? 'center' : 'flex-start', gap: 10, minHeight: 64 }}>
+        <img
+          src="/jarvex-logo.png"
+          alt="JARVEX"
+          onClick={collapsed ? onToggle : undefined}
+          style={{
+            height: collapsed ? 36 : 46,
+            width: 'auto',
+            objectFit: 'contain',
+            flexShrink: 0,
+            cursor: collapsed ? 'pointer' : 'default',
+          }}
+          title={collapsed ? 'Expandir' : ''}
+        />
       </div>
 
       {/* Nav items */}
