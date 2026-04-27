@@ -1,6 +1,17 @@
 import React from "react";
 const { useState: uSA, useEffect: uEA, useCallback: uCA } = React;
 
+// Hook compartido: detecta viewport móvil
+function useIsMobileApp() {
+  const [m, setM] = uSA(() => typeof window !== 'undefined' ? window.innerWidth <= 768 : false);
+  uEA(() => {
+    const onR = () => setM(window.innerWidth <= 768);
+    window.addEventListener('resize', onR);
+    return () => window.removeEventListener('resize', onR);
+  }, []);
+  return m;
+}
+
 // ── TOAST ─────────────────────────────────────────────────
 function Toast({ message, type, onDone }) {
   uEA(() => { const t = setTimeout(onDone, 3200); return () => clearTimeout(t); }, []);
@@ -135,7 +146,7 @@ function LoginScreen({ onLogin }) {
 }
 
 // ── HEADER BAR ────────────────────────────────────────────
-function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStatus, onSync }) {
+function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStatus, onSync, isMobile }) {
   const pageLabels = {
     dashboard:'Dashboard',obras:'Obras / Proyectos',reportes:'Reportes',
     personal:'Personal',asistencia:'Asistencia',materiales:'Materiales',
@@ -158,18 +169,18 @@ function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStat
   const [menu, setMenu] = uSA(false);
 
   return (
-    <div style={{ height:58, background:'#0D1822', borderBottom:'1px solid rgba(255,255,255,0.06)', display:'flex', alignItems:'center', paddingLeft:16, paddingRight:20, gap:12, flexShrink:0, zIndex:5 }}>
-      <button onClick={onToggleSidebar} className="btn btn-ghost btn-icon"><JxIcon name="menu" size={16}/></button>
-      <div style={{ fontSize:14, fontWeight:600, color:'var(--tp)' }}>{pageLabels[page] || page}</div>
-      <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:10 }}>
+    <div style={{ height:58, background:'#0D1822', borderBottom:'1px solid rgba(255,255,255,0.06)', display:'flex', alignItems:'center', paddingLeft: isMobile ? 10 : 16, paddingRight: isMobile ? 10 : 20, gap: isMobile ? 8 : 12, flexShrink:0, zIndex:5 }}>
+      <button onClick={onToggleSidebar} className="btn btn-ghost btn-icon" aria-label="Abrir menú"><JxIcon name="menu" size={16}/></button>
+      <div style={{ fontSize: isMobile ? 13 : 14, fontWeight:600, color:'var(--tp)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', minWidth:0 }}>{pageLabels[page] || page}</div>
+      <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap: isMobile ? 6 : 10, flexShrink:0 }}>
         {syncStatus && (
-          <div onClick={onSync} title="Click para sincronizar ahora"
-               style={{ display:'flex', alignItems:'center', gap:6, padding:'4px 10px', borderRadius:20, fontSize:11.5, fontWeight:600, cursor:'pointer', background: syncStatus.bg }}>
+          <div onClick={onSync} title={isMobile ? syncStatus.label : 'Click para sincronizar ahora'}
+               style={{ display:'flex', alignItems:'center', gap:6, padding: isMobile ? '6px' : '4px 10px', borderRadius:20, fontSize:11.5, fontWeight:600, cursor:'pointer', background: syncStatus.bg }}>
             <div style={{ width:7, height:7, borderRadius:'50%', background: syncStatus.color, ...(syncStatus.syncing ? {animation:'pulse 1.2s ease-in-out infinite'} : {}) }}/>
-            <span style={{ color: syncStatus.color }}>{syncStatus.label}</span>
+            {!isMobile && <span style={{ color: syncStatus.color }}>{syncStatus.label}</span>}
           </div>
         )}
-        {obraActiva && (
+        {obraActiva && !isMobile && (
           <div style={{ fontSize:12, color:'var(--tm)', display:'flex', alignItems:'center', gap:5 }}>
             <span className="dot-pulse"/>Obra: {obraActiva.nombre_obra}
           </div>
@@ -186,7 +197,7 @@ function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStat
             )}
           </button>
           {notifOpen && (
-            <div style={{ position:'absolute', top:42, right:0, width:360, maxHeight:480, overflow:'auto', background:'var(--bg-c)', border:'1px solid var(--border)', borderRadius:10, boxShadow:'0 8px 32px rgba(0,0,0,0.5)', zIndex:100 }}>
+            <div style={{ position:'absolute', top:42, right: isMobile ? -10 : 0, width: isMobile ? 'calc(100vw - 16px)' : 360, maxWidth: isMobile ? 'calc(100vw - 16px)' : 360, maxHeight:480, overflow:'auto', background:'var(--bg-c)', border:'1px solid var(--border)', borderRadius:10, boxShadow:'0 8px 32px rgba(0,0,0,0.5)', zIndex:100 }}>
               <div style={{ padding:'12px 14px', borderBottom:'1px solid var(--border)', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
                 <div style={{ fontSize:13, fontWeight:700, color:'var(--tp)' }}>Notificaciones</div>
                 {notifs.notifications.length > 0 && (
@@ -237,10 +248,20 @@ function ComingSoon({ page }) {
 // ── MAIN APP ──────────────────────────────────────────────
 function App() {
   const auth = window.__useAuth();   // hook expuesto desde main.jsx
+  const isMobile = useIsMobileApp();
   const [page, setPage]             = uSA('dashboard');
-  const [collapsed, setCollapsed]   = uSA(false);
+  // En móvil arrancamos con el drawer cerrado (collapsed=true).
+  // En desktop arrancamos con el sidebar expandido (collapsed=false).
+  const [collapsed, setCollapsed]   = uSA(() =>
+    typeof window !== 'undefined' && window.innerWidth <= 768
+  );
   const [toast, setToast]           = uSA(null);
   const [obraActiva, setObraActiva] = uSA(null);
+
+  // Si el viewport cambia entre móvil/desktop, ajustamos el estado del sidebar.
+  uEA(() => {
+    setCollapsed(isMobile);
+  }, [isMobile]);
   const sync = window.__useSync ? window.__useSync() : { syncing:false, pending:0 };
   const online = window.__useOnline ? window.__useOnline() : true;
 
@@ -314,7 +335,8 @@ function App() {
                 profile={auth.profile}
                 obraActiva={obraActiva}
                 syncStatus={syncStatus}
-                onSync={()=>sync.sync && sync.sync()}/>
+                onSync={()=>sync.sync && sync.sync()}
+                isMobile={isMobile}/>
         <div style={{ flex:1, overflow:'hidden', background:'var(--bg-p)' }} key={page}>
           {renderPage()}
         </div>

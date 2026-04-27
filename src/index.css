@@ -138,3 +138,96 @@ textarea.fi { resize: vertical; min-height: 80px; }
 .coming-soon { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 14px; color: var(--tm); }
 .coming-soon h2 { font-size: 18px; font-weight: 700; color: var(--ts); }
 .coming-soon p { font-size: 13px; }
+
+/* ═══════════════════════════════════════════════════════════════════
+   MOBILE — pantallas ≤ 768px
+   ═══════════════════════════════════════════════════════════════════ */
+@media (max-width: 768px) {
+  /* Page wrap — menos padding, más espacio útil */
+  .page-wrap { padding: 14px 12px; }
+  .pg-hd { margin-bottom: 16px; }
+  .pg-title { font-size: 18px; }
+  .pg-sub { font-size: 11.5px; }
+  .frow-sb.pg-hd { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .frow-sb.pg-hd > * { width: 100%; }
+
+  /* Cards — padding reducido */
+  .card-p { padding: 14px; }
+  .kpi-card { padding: 14px; }
+  .kpi-val { font-size: 22px; margin: 6px 0 3px; }
+  .chart-card { padding: 14px; }
+
+  /* Grids reutilizables — colapsan a 1 columna */
+  .g2, .g3, .g4 { grid-template-columns: 1fr !important; gap: 10px !important; }
+
+  /* Override de grids INLINE (estilos React style={{ gridTemplateColumns:... }})
+     React serializa camelCase → kebab-case, así que el atributo CSS final es
+     "grid-template-columns:" (sin espacio o con espacio). */
+  [style*="grid-template-columns:repeat(4"],
+  [style*="grid-template-columns: repeat(4"],
+  [style*="grid-template-columns:repeat(3"],
+  [style*="grid-template-columns: repeat(3"] {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+  [style*="grid-template-columns:repeat(2"],
+  [style*="grid-template-columns: repeat(2"],
+  [style*="grid-template-columns:1fr 1fr"],
+  [style*="grid-template-columns: 1fr 1fr"] {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Tablas — scroll horizontal cuando excedan el ancho.
+     El padre .card recibe overflow-x para permitirlo sin romper el border-radius. */
+  .card:has(> .tbl) { overflow-x: auto; }
+  .card > .tbl { min-width: 540px; }
+  .tbl thead th { padding: 9px 10px; font-size: 10px; }
+  .tbl tbody td { padding: 9px 10px; font-size: 12px; }
+
+  /* Botones — mejor tamaño táctil */
+  .btn { padding: 10px 14px; font-size: 13px; }
+  .btn-sm { padding: 8px 12px; font-size: 12.5px; }
+  .btn-xs { padding: 6px 10px; font-size: 11.5px; }
+  .btn-icon { padding: 9px; }
+
+  /* Forms — campos un poco más grandes para los pulgares */
+  .fi { padding: 11px 13px; font-size: 14px; }
+
+  /* Modal — full-bleed con menos padding */
+  .modal { padding: 18px 16px; width: min(100vw - 16px, 600px); max-height: 92vh; border-radius: 10px; }
+  .modal-hd { font-size: 15px; margin-bottom: 16px; }
+  .modal-actions { flex-direction: column-reverse; gap: 8px; margin-top: 16px; padding-top: 14px; }
+  .modal-actions .btn { width: 100%; justify-content: center; }
+
+  /* Search bar — full width */
+  .search-bar { max-width: none; }
+
+  /* KPI cambios y badges algo más cómodos */
+  .badge { padding: 3px 8px; font-size: 10.5px; }
+
+  /* Banner padding más compacto */
+  .alert-banner, .info-banner { padding: 10px 12px; font-size: 12px; }
+
+  /* Scrollbars iOS — más finos */
+  ::-webkit-scrollbar { width: 3px; height: 3px; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   MOBILE PEQUEÑO — pantallas ≤ 480px
+   ═══════════════════════════════════════════════════════════════════ */
+@media (max-width: 480px) {
+  /* Stats de 4 columnas → 2; de 3 → 2 también */
+  [style*="grid-template-columns:repeat(4"],
+  [style*="grid-template-columns: repeat(4"] {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+  [style*="grid-template-columns:repeat(3"],
+  [style*="grid-template-columns: repeat(3"] {
+    grid-template-columns: 1fr !important;
+  }
+
+  .pg-title { font-size: 17px; }
+  .kpi-val { font-size: 20px; }
+
+  /* Modal sin radio en pantallas chicas */
+  .modal { border-radius: 8px; padding: 14px 12px; }
+}
