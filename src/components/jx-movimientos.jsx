@@ -307,6 +307,10 @@ function MovHerramientasPage({ showToast }) {
 
 // ─── PROVEEDORES PAGE ─────────────────────────────────────
 function ProveedoresPage({ showToast }) {
+  // Hooks SIEMPRE al top-level del componente, nunca dentro de handlers/callbacks
+  // (llamarlos en un onClick rompe las reglas de React → minified error #321).
+  const auth = window.__useAuth ? window.__useAuth() : null;
+
   const [provs, setProvs] = uSM([]);
   const [loading, setLoading] = uSM(true);
 
@@ -331,23 +335,25 @@ function ProveedoresPage({ showToast }) {
   }, [q, provs]);
 
   const handleSubmit = async () => {
-    if (!form.razon_social) { showToast('Falta la razón social', 'red'); return; }
-    if (!form.ruc) { showToast('Falta el RUC', 'red'); return; }
+    const razon = (form.razon_social || '').trim();
+    const ruc = (form.ruc || '').trim();
+    if (!razon) { showToast('Falta la razón social', 'red'); return; }
+    if (!ruc) { showToast('Falta el RUC', 'red'); return; }
+    if (!/^\d{11}$/.test(ruc)) { showToast('El RUC debe tener exactamente 11 dígitos numéricos', 'red'); return; }
     // Validar RUC único local
-    const existe = provs.find(p => p.ruc === form.ruc);
+    const existe = provs.find(p => p.ruc === ruc);
     if (existe) { showToast('RUC ya registrado', 'red'); return; }
     try {
-      const auth = window.__useAuth ? window.__useAuth() : null;
       await window.__db.proveedores.add({
         id: window.__newId(),
-        razon_social: form.razon_social,
-        ruc: form.ruc,
-        contacto: form.contacto || null,
-        telefono: form.telefono || null,
-        correo: form.correo || null,
+        razon_social: razon,
+        ruc,
+        contacto: form.contacto?.trim() || null,
+        telefono: form.telefono?.trim() || null,
+        correo: form.correo?.trim() || null,
         tipo_proveedor: form.tipo_proveedor || null,
-        direccion: form.direccion || null,
-        observaciones: form.observaciones || null,
+        direccion: form.direccion?.trim() || null,
+        observaciones: form.observaciones?.trim() || null,
         estado: 'activo',
         sync_status: 'pending_create',
         created_at: new Date().toISOString(),
@@ -355,7 +361,7 @@ function ProveedoresPage({ showToast }) {
         version: 1,
         created_by: auth?.profile?.id || 'offline',
       });
-      showToast(`Proveedor "${form.razon_social}" creado`, 'green');
+      showToast(`Proveedor "${razon}" creado`, 'green');
       setModal(false); setForm({});
       window.__db.proveedores.toArray().then(setProvs);
     } catch (e) {
@@ -419,7 +425,7 @@ function ProveedoresPage({ showToast }) {
       {modal && <Modal title="Nuevo Proveedor" icon="truck" onClose={()=>setModal(false)}>
         <div className="g2">
           <div style={{ gridColumn:'1/-1' }}><label className="flabel">Razón Social *</label><input className="fi" placeholder="Nombre de la empresa" value={form.razon_social||''} onChange={e=>setForm({...form, razon_social:e.target.value})}/></div>
-          <div><label className="flabel">RUC *</label><input className="fi" placeholder="20XXXXXXXXX" value={form.ruc||''} onChange={e=>setForm({...form, ruc:e.target.value})}/></div>
+          <div><label className="flabel">RUC *</label><input className="fi" placeholder="20XXXXXXXXX" inputMode="numeric" maxLength={11} value={form.ruc||''} onChange={e=>setForm({...form, ruc:e.target.value.replace(/\D/g,'').slice(0,11)})}/></div>
           <div><label className="flabel">Tipo de Proveedor</label>
             <select className="fi" value={form.tipo_proveedor||''} onChange={e=>setForm({...form, tipo_proveedor:e.target.value})}>
               <option value="">— Selecciona —</option>
