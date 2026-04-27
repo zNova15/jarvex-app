@@ -86,17 +86,22 @@ function Modal({ title, icon, onClose, children, wide }) {
 
 // ─── MATERIALES PAGE ────────────────────────────────────
 function MaterialesPage({ showToast }) {
+  const auth = window.__useAuth ? window.__useAuth() : null;
+  const isAdmin = auth?.profile?.rol === 'admin';
   const [q, setQ] = uS('');
   const [modal, setModal] = uS(null); // 'ingreso' | 'salida' | 'nuevo' | 'editar'
   const [editingId, setEditingId] = uS(null); // id del material en edición
   const [obraId, setObraId] = uS(null);
+  const [requestTarget, setRequestTarget] = uS(null); // material para "Solicitar Cambio"
 
-  // Detectar obra activa — reintenta cada 500ms hasta encontrarla (mientras sincroniza)
+  // Detectar obra activa — respeta localStorage 'obra_activa_id', si no usa la primera
   uE(() => {
     let cancelled = false;
     const findObra = async () => {
       const obras = await window.__db.obras.toArray();
-      const activa = obras.find(o => !o.deleted_at);
+      const stored = window.__getObraActivaId?.();
+      const activa = (stored && obras.find(o => o.id === stored && !o.deleted_at))
+                  || obras.find(o => !o.deleted_at);
       if (activa) {
         if (!cancelled) setObraId(activa.id);
       } else if (!cancelled) {
@@ -312,9 +317,15 @@ function MaterialesPage({ showToast }) {
                       : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}
                     </td>
                     <td style={{textAlign:'center'}}>
-                      <button className="btn btn-ghost btn-xs" title="Editar material" onClick={()=>openEditMaterial(m)}>
-                        <JxIcon name="edit" size={11}/>
-                      </button>
+                      {isAdmin ? (
+                        <button className="btn btn-ghost btn-xs" title="Editar material" onClick={()=>openEditMaterial(m)}>
+                          <JxIcon name="edit" size={11}/>
+                        </button>
+                      ) : (
+                        <button className="btn btn-ghost btn-xs" title="Solicitar cambio" onClick={()=>setRequestTarget(m)}>
+                          <JxIcon name="alert" size={11}/>
+                        </button>
+                      )}
                     </td>
                   </tr>
                 );
@@ -424,23 +435,45 @@ function MaterialesPage({ showToast }) {
           <button className="btn btn-amber" onClick={handleSubmitMaterial}><JxIcon name="check" size={13}/>{editingId ? 'Guardar Cambios' : 'Crear Material'}</button>
         </div>
       </Modal>}
+
+      {requestTarget && (
+        <RequestChangeModal
+          table="materiales"
+          record={requestTarget}
+          recordLabel={requestTarget.nombre_material}
+          fields={[
+            { key: 'nombre_material', label: 'Nombre del material' },
+            { key: 'categoria', label: 'Categoría' },
+            { key: 'unidad', label: 'Unidad' },
+            { key: 'stock_minimo', label: 'Stock mínimo', type: 'number' },
+            { key: 'precio_unitario_estimado', label: 'Precio estimado (S/)', type: 'number' },
+          ]}
+          showToast={showToast}
+          onClose={() => setRequestTarget(null)}
+        />
+      )}
     </div>
   );
 }
 
 // ─── HERRAMIENTAS PAGE ──────────────────────────────────
 function HerramientasPage({ showToast }) {
+  const auth = window.__useAuth ? window.__useAuth() : null;
+  const isAdmin = auth?.profile?.rol === 'admin';
   const [q, setQ] = uS('');
   const [modal, setModal] = uS(null);
   const [form, setForm] = uS({});
   const [editingId, setEditingId] = uS(null);
   const [obraId, setObraId] = uS(null);
+  const [requestTarget, setRequestTarget] = uS(null);
 
   uE(() => {
     let cancelled = false;
     const find = async () => {
       const obras = await window.__db.obras.toArray();
-      const a = obras.find(o => !o.deleted_at);
+      const stored = window.__getObraActivaId?.();
+      const a = (stored && obras.find(o => o.id === stored && !o.deleted_at))
+             || obras.find(o => !o.deleted_at);
       if (a) { if (!cancelled) setObraId(a.id); }
       else if (!cancelled) setTimeout(find, 500);
     };
@@ -658,9 +691,15 @@ function HerramientasPage({ showToast }) {
                       ? <span className="badge b-amber">⏱</span>
                       : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}</td>
                     <td style={{textAlign:'center'}}>
-                      <button className="btn btn-ghost btn-xs" title="Editar herramienta" onClick={()=>openEditHerr(h)}>
-                        <JxIcon name="edit" size={11}/>
-                      </button>
+                      {isAdmin ? (
+                        <button className="btn btn-ghost btn-xs" title="Editar herramienta" onClick={()=>openEditHerr(h)}>
+                          <JxIcon name="edit" size={11}/>
+                        </button>
+                      ) : (
+                        <button className="btn btn-ghost btn-xs" title="Solicitar cambio" onClick={()=>setRequestTarget(h)}>
+                          <JxIcon name="alert" size={11}/>
+                        </button>
+                      )}
                     </td>
                   </tr>
                 );
@@ -731,24 +770,49 @@ function HerramientasPage({ showToast }) {
           <button className="btn btn-amber" onClick={handleSubmitHerr}><JxIcon name="check" size={13}/>{editingId ? 'Guardar Cambios' : 'Crear Herramienta'}</button>
         </div>
       </Modal>}
+
+      {requestTarget && (
+        <RequestChangeModal
+          table="herramientas"
+          record={requestTarget}
+          recordLabel={requestTarget.nombre_herramienta}
+          fields={[
+            { key: 'nombre_herramienta', label: 'Nombre' },
+            { key: 'marca', label: 'Marca' },
+            { key: 'modelo', label: 'Modelo' },
+            { key: 'serie', label: 'N° Serie' },
+            { key: 'estado_actual', label: 'Estado actual', options: [
+              { value: 'nuevo', label: 'Nuevo' }, { value: 'bueno', label: 'Bueno' },
+              { value: 'regular', label: 'Regular' }, { value: 'malo', label: 'Malo' },
+            ]},
+          ]}
+          showToast={showToast}
+          onClose={() => setRequestTarget(null)}
+        />
+      )}
     </div>
   );
 }
 
 // ─── PERSONAL PAGE ──────────────────────────────────────
 function PersonalPage({ showToast }) {
+  const auth = window.__useAuth ? window.__useAuth() : null;
+  const isAdmin = auth?.profile?.rol === 'admin';
   const [q, setQ] = uS('');
   const [modal, setModal] = uS(null);
   const [form, setForm] = uS({});
   const [editingId, setEditingId] = uS(null);
   const [reniecBusy, setReniecBusy] = uS(false);
   const [obraId, setObraId] = uS(null);
+  const [requestTarget, setRequestTarget] = uS(null);
 
   uE(() => {
     let cancelled = false;
     const find = async () => {
       const obras = await window.__db.obras.toArray();
-      const a = obras.find(o => !o.deleted_at);
+      const stored = window.__getObraActivaId?.();
+      const a = (stored && obras.find(o => o.id === stored && !o.deleted_at))
+             || obras.find(o => !o.deleted_at);
       if (a) { if (!cancelled) setObraId(a.id); }
       else if (!cancelled) setTimeout(find, 500);
     };
@@ -897,9 +961,15 @@ function PersonalPage({ showToast }) {
                     ? <span className="badge b-amber">⏱</span>
                     : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}</td>
                   <td style={{textAlign:'center'}}>
-                    <button className="btn btn-ghost btn-xs" title="Editar trabajador" onClick={()=>openEditPersonal(p)}>
-                      <JxIcon name="edit" size={11}/>
-                    </button>
+                    {isAdmin ? (
+                      <button className="btn btn-ghost btn-xs" title="Editar trabajador" onClick={()=>openEditPersonal(p)}>
+                        <JxIcon name="edit" size={11}/>
+                      </button>
+                    ) : (
+                      <button className="btn btn-ghost btn-xs" title="Solicitar cambio" onClick={()=>setRequestTarget(p)}>
+                        <JxIcon name="alert" size={11}/>
+                      </button>
+                    )}
                   </td>
                 </tr>
               );
@@ -956,6 +1026,28 @@ function PersonalPage({ showToast }) {
           <button className="btn btn-amber" onClick={handleSubmit}><JxIcon name="check" size={13}/>{editingId ? 'Guardar Cambios' : 'Registrar Trabajador'}</button>
         </div>
       </Modal>}
+
+      {requestTarget && (
+        <RequestChangeModal
+          table="personal"
+          record={requestTarget}
+          recordLabel={`${requestTarget.nombres || ''} ${requestTarget.apellidos || ''}`.trim() || requestTarget.dni}
+          fields={[
+            { key: 'nombres', label: 'Nombres' },
+            { key: 'apellidos', label: 'Apellidos' },
+            { key: 'dni', label: 'DNI' },
+            { key: 'cargo', label: 'Cargo' },
+            { key: 'area', label: 'Área' },
+            { key: 'telefono', label: 'Teléfono' },
+            { key: 'estado', label: 'Estado', options: [
+              { value: 'activo', label: 'Activo' }, { value: 'inactivo', label: 'Inactivo' },
+              { value: 'suspendido', label: 'Suspendido' }, { value: 'retirado', label: 'Retirado' },
+            ]},
+          ]}
+          showToast={showToast}
+          onClose={() => setRequestTarget(null)}
+        />
+      )}
     </div>
   );
 }
@@ -977,7 +1069,9 @@ function AsistenciaPage({ showToast }) {
     let cancelled = false;
     const find = async () => {
       const obras = await window.__db.obras.toArray();
-      const a = obras.find(o => !o.deleted_at);
+      const stored = window.__getObraActivaId?.();
+      const a = (stored && obras.find(o => o.id === stored && !o.deleted_at))
+             || obras.find(o => !o.deleted_at);
       if (a) { if (!cancelled) setObraId(a.id); }
       else if (!cancelled) setTimeout(find, 500);
     };

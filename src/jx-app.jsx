@@ -51,6 +51,172 @@ function CircuitBg() {
   );
 }
 
+// ── RESET PASSWORD MODAL (solicitar enlace) ───────────────
+function ResetPasswordRequestModal({ initialEmail, onClose }) {
+  const [email, setEmail] = uSA(initialEmail || '');
+  const [loading, setLoading] = uSA(false);
+  const [err, setErr] = uSA('');
+  const [sent, setSent] = uSA(false);
+
+  const handleSend = async () => {
+    setErr('');
+    const e = (email || '').trim();
+    if (!e) { setErr('Ingresa tu correo electrónico.'); return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) { setErr('Correo electrónico inválido.'); return; }
+    setLoading(true);
+    try {
+      const sb = window.__supabase;
+      if (!sb) throw new Error('Supabase no disponible (modo offline).');
+      const { error } = await sb.auth.resetPasswordForEmail(e, {
+        redirectTo: window.location.origin + '/?reset=1',
+      });
+      if (error) throw error;
+      setSent(true);
+    } catch (ex) {
+      const msg = ex?.message || '';
+      if (/invalid email/i.test(msg)) setErr('El correo es inválido.');
+      else if (/not found|no user/i.test(msg)) setErr('No existe una cuenta con ese correo.');
+      else if (/rate limit/i.test(msg)) setErr('Demasiados intentos. Intenta de nuevo en unos minutos.');
+      else setErr(msg || 'Error al enviar el enlace de recuperación.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(8,12,18,0.7)', backdropFilter:'blur(6px)', zIndex:9000, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+      <div style={{ width:'100%', maxWidth:420, background:'#1C2D40', border:'1px solid rgba(255,255,255,0.1)', borderRadius:14, padding:'28px 28px 22px', boxShadow:'0 24px 80px rgba(0,0,0,0.6)' }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
+          <div style={{ fontSize:17, fontWeight:800, color:'#F0F2F5' }}>Recuperar Contraseña</div>
+          <button onClick={onClose} style={{ background:'none', border:'none', color:'#5A6A7A', cursor:'pointer', padding:4 }}>
+            <JxIcon name="x" size={16}/>
+          </button>
+        </div>
+
+        {sent ? (
+          <div>
+            <div style={{ background:'rgba(46,204,113,0.08)', border:'1px solid rgba(46,204,113,0.25)', borderRadius:8, padding:'14px 16px', fontSize:12.5, color:'#7BD99B', marginBottom:14, lineHeight:1.5 }}>
+              Te enviamos un enlace a <strong>{email}</strong>. Revisa tu correo (y la carpeta de spam) y sigue las instrucciones.
+            </div>
+            <button onClick={onClose} className="btn btn-amber" style={{ width:'100%', justifyContent:'center', padding:'12px' }}>Cerrar</button>
+          </div>
+        ) : (
+          <>
+            <div style={{ fontSize:12.5, color:'#5A6A7A', marginBottom:14, lineHeight:1.5 }}>
+              Ingresa tu correo y te enviaremos un enlace para restablecer tu contraseña.
+            </div>
+            {err && <div style={{ background:'rgba(231,76,60,0.1)', border:'1px solid rgba(231,76,60,0.25)', borderRadius:8, padding:'10px 14px', fontSize:12.5, color:'#EF6B5E', marginBottom:14, display:'flex', gap:8, alignItems:'center' }}>
+              <JxIcon name="alertCircle" size={14} color="#EF6B5E"/>{err}
+            </div>}
+            <div style={{ marginBottom:18 }}>
+              <label className="flabel">Correo Electrónico</label>
+              <input className="fi" type="email" placeholder="usuario@jarvex.pe" value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleSend()} autoFocus/>
+            </div>
+            <div style={{ display:'flex', gap:8 }}>
+              <button onClick={onClose} className="btn btn-ghost" style={{ flex:1, justifyContent:'center', padding:'12px' }}>Cancelar</button>
+              <button onClick={handleSend} disabled={loading} className="btn btn-amber" style={{ flex:1, justifyContent:'center', padding:'12px', opacity:loading?0.75:1 }}>
+                {loading ? 'Enviando…' : 'Enviar enlace'}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── RESET PASSWORD SCREEN (después de click en enlace de email) ───
+function ResetPasswordScreen() {
+  const [pass, setPass] = uSA('');
+  const [pass2, setPass2] = uSA('');
+  const [loading, setLoading] = uSA(false);
+  const [err, setErr] = uSA('');
+  const [done, setDone] = uSA(false);
+  const [ready, setReady] = uSA(false);
+
+  // Supabase recovery token llega en hash o como query — el SDK lo procesa
+  // automáticamente en background si detectSessionInUrl está habilitado.
+  uEA(() => {
+    const sb = window.__supabase;
+    if (!sb) { setReady(true); return; }
+    // Esperar a que la sesión de recovery se establezca
+    let cancelled = false;
+    const check = async () => {
+      try { await sb.auth.getSession(); } catch {}
+      if (!cancelled) setReady(true);
+    };
+    check();
+    const sub = sb.auth.onAuthStateChange((event) => {
+      if (event === 'PASSWORD_RECOVERY' || event === 'SIGNED_IN') setReady(true);
+    });
+    return () => { cancelled = true; sub?.data?.subscription?.unsubscribe?.(); };
+  }, []);
+
+  const handleSubmit = async () => {
+    setErr('');
+    if (!pass || pass.length < 8) { setErr('La contraseña debe tener al menos 8 caracteres.'); return; }
+    if (pass !== pass2) { setErr('Las contraseñas no coinciden.'); return; }
+    setLoading(true);
+    try {
+      const sb = window.__supabase;
+      const { error } = await sb.auth.updateUser({ password: pass });
+      if (error) throw error;
+      setDone(true);
+      setTimeout(() => {
+        window.history.replaceState({}, '', '/');
+        window.location.reload();
+      }, 1800);
+    } catch (ex) {
+      setErr(ex?.message || 'No se pudo cambiar la contraseña. El enlace puede haber expirado.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ minHeight:'100vh', background:'#0D1520', display:'flex', alignItems:'center', justifyContent:'center', position:'relative', overflow:'hidden' }}>
+      <CircuitBg/>
+      <div style={{ position:'relative', zIndex:1, width:'100%', maxWidth:420, padding:'0 20px' }}>
+        <div style={{ background:'rgba(28,45,64,0.85)', backdropFilter:'blur(20px)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:16, padding:'40px 36px', boxShadow:'0 24px 80px rgba(0,0,0,0.6)' }}>
+          <div style={{ textAlign:'center', marginBottom:24 }}>
+            <img src="/jarvex-logo.png" alt="JARVEX" style={{ height:60, objectFit:'contain', marginBottom:6 }} onError={e=>{ e.target.style.display='none'; }}/>
+            <div style={{ fontSize:11, color:'#405565', letterSpacing:'.16em', fontWeight:600, textTransform:'uppercase' }}>Restablecer Contraseña</div>
+          </div>
+
+          {done ? (
+            <div style={{ background:'rgba(46,204,113,0.08)', border:'1px solid rgba(46,204,113,0.25)', borderRadius:8, padding:'14px 16px', fontSize:13, color:'#7BD99B', textAlign:'center', lineHeight:1.5 }}>
+              Contraseña actualizada. Redirigiendo al inicio de sesión…
+            </div>
+          ) : (
+            <>
+              <div style={{ fontSize:12.5, color:'#5A6A7A', marginBottom:18, textAlign:'center' }}>
+                Ingresa tu nueva contraseña dos veces.
+              </div>
+              {err && <div style={{ background:'rgba(231,76,60,0.1)', border:'1px solid rgba(231,76,60,0.25)', borderRadius:8, padding:'10px 14px', fontSize:12.5, color:'#EF6B5E', marginBottom:14, display:'flex', gap:8, alignItems:'center' }}>
+                <JxIcon name="alertCircle" size={14} color="#EF6B5E"/>{err}
+              </div>}
+              <div style={{ marginBottom:14 }}>
+                <label className="flabel">Nueva Contraseña</label>
+                <input className="fi" type="password" placeholder="Mínimo 8 caracteres" value={pass} onChange={e=>setPass(e.target.value)} disabled={!ready}/>
+              </div>
+              <div style={{ marginBottom:20 }}>
+                <label className="flabel">Confirmar Contraseña</label>
+                <input className="fi" type="password" placeholder="Repite la contraseña" value={pass2} onChange={e=>setPass2(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleSubmit()} disabled={!ready}/>
+              </div>
+              <button onClick={handleSubmit} disabled={loading || !ready} className="btn btn-amber" style={{ width:'100%', justifyContent:'center', padding:'13px', fontSize:14, opacity:(loading || !ready)?0.75:1 }}>
+                {loading ? 'Actualizando…' : (ready ? 'Cambiar Contraseña' : 'Verificando enlace…')}
+              </button>
+              <div style={{ textAlign:'center', marginTop:14 }}>
+                <a href="#" style={{ fontSize:12, color:'#3498DB', textDecoration:'none' }} onClick={e=>{ e.preventDefault(); window.history.replaceState({}, '', '/'); window.location.reload(); }}>Volver al inicio de sesión</a>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── LOGIN SCREEN ──────────────────────────────────────────
 function LoginScreen({ onLogin }) {
   const [email, setEmail]   = uSA('admin@jarvex.pe');
@@ -58,6 +224,7 @@ function LoginScreen({ onLogin }) {
   const [loading, setLoad]  = uSA(false);
   const [err, setErr]       = uSA('');
   const [showPass, setShow] = uSA(false);
+  const [resetOpen, setResetOpen] = uSA(false);
 
   const handleLogin = async () => {
     if (!email) { setErr('Ingresa tu correo electrónico.'); return; }
@@ -131,7 +298,7 @@ function LoginScreen({ onLogin }) {
           </button>
 
           <div style={{ textAlign:'center', marginTop:16 }}>
-            <a href="#" style={{ fontSize:12, color:'#3498DB', textDecoration:'none' }} onClick={e=>e.preventDefault()}>¿Olvidaste tu contraseña?</a>
+            <a href="#" style={{ fontSize:12, color:'#3498DB', textDecoration:'none' }} onClick={e=>{ e.preventDefault(); setResetOpen(true); }}>¿Olvidaste tu contraseña?</a>
           </div>
         </div>
 
@@ -141,6 +308,7 @@ function LoginScreen({ onLogin }) {
       </div>
 
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      {resetOpen && <ResetPasswordRequestModal initialEmail={email} onClose={()=>setResetOpen(false)}/>}
     </div>
   );
 }
@@ -157,6 +325,7 @@ function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStat
     costos:'Costos',incidencias:'Incidencias',usuarios:'Usuarios',roles:'Roles y Permisos',
     configuracion:'Configuración',
     conflictos:'Bandeja de Conflictos',
+    solicitudes:'Solicitudes de Cambio',
   };
 
   const notifs = window.__useRealtimeNotifications ? window.__useRealtimeNotifications() : { notifications:[], unreadCount:0, markAllRead:()=>{}, clearAll:()=>{} };
@@ -167,6 +336,18 @@ function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStat
     : '··';
 
   const [menu, setMenu] = uSA(false);
+
+  // Selector de obra activa (FEATURE 3)
+  const obraHook = window.__useObraActiva ? window.__useObraActiva() : { obras:[], obraId:null, obra:null, setObraActiva:()=>{} };
+  const [obraDropdownOpen, setObraDropdownOpen] = uSA(false);
+  const handleSelectObra = (id) => {
+    setObraDropdownOpen(false);
+    if (id === obraHook.obraId) return;
+    if (window.__setObraActivaId) window.__setObraActivaId(id);
+    // Reload de toda la app: la mayoría de componentes leen la obra al montar.
+    setTimeout(() => window.location.reload(), 100);
+  };
+  const obraDisplay = obraHook.obra || obraActiva;
 
   return (
     <div style={{ height:58, background:'#0D1822', borderBottom:'1px solid rgba(255,255,255,0.06)', display:'flex', alignItems:'center', paddingLeft: isMobile ? 10 : 16, paddingRight: isMobile ? 10 : 20, gap: isMobile ? 8 : 12, flexShrink:0, zIndex:5 }}>
@@ -180,9 +361,36 @@ function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStat
             {!isMobile && <span style={{ color: syncStatus.color }}>{syncStatus.label}</span>}
           </div>
         )}
-        {obraActiva && !isMobile && (
-          <div style={{ fontSize:12, color:'var(--tm)', display:'flex', alignItems:'center', gap:5 }}>
-            <span className="dot-pulse"/>Obra: {obraActiva.nombre_obra}
+        {obraDisplay && !isMobile && (
+          <div style={{ position:'relative' }}>
+            <button
+              onClick={()=>setObraDropdownOpen(o=>!o)}
+              title="Cambiar obra activa"
+              style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 10px', borderRadius:8, fontSize:12, color:'var(--ts)', background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)', cursor:'pointer' }}>
+              <span className="dot-pulse"/>
+              <span style={{ maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>Obra: {obraDisplay.nombre_obra}</span>
+              <span style={{ fontSize:10, color:'var(--tm)' }}>▾</span>
+            </button>
+            {obraDropdownOpen && (
+              <>
+                <div onClick={()=>setObraDropdownOpen(false)} style={{ position:'fixed', inset:0, zIndex:90 }}/>
+                <div style={{ position:'absolute', top:38, right:0, width:300, maxHeight:380, overflow:'auto', background:'var(--bg-c)', border:'1px solid var(--border)', borderRadius:10, boxShadow:'0 8px 32px rgba(0,0,0,0.5)', zIndex:100 }}>
+                  <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', fontSize:11, color:'var(--tm)', fontWeight:700, letterSpacing:'.05em', textTransform:'uppercase' }}>Cambiar Obra Activa</div>
+                  {(obraHook.obras || []).length === 0 ? (
+                    <div style={{ padding:'18px 14px', fontSize:12, color:'var(--tm)', textAlign:'center' }}>No hay obras disponibles</div>
+                  ) : (obraHook.obras.map(o => (
+                    <button key={o.id} onClick={()=>handleSelectObra(o.id)}
+                      style={{ display:'flex', alignItems:'center', gap:10, width:'100%', padding:'11px 14px', background: o.id === obraHook.obraId ? 'rgba(242,183,5,0.08)':'none', border:'none', borderBottom:'1px solid var(--border)', cursor:'pointer', textAlign:'left' }}>
+                      <JxIcon name={o.id === obraHook.obraId ? 'checkCircle' : 'building'} size={13} color={o.id === obraHook.obraId ? 'var(--amber)' : 'var(--tm)'}/>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ fontSize:12.5, color:'var(--tp)', fontWeight: o.id === obraHook.obraId ? 700:500, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{o.nombre_obra}</div>
+                        {o.estado && <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'capitalize' }}>{o.estado}</div>}
+                      </div>
+                    </button>
+                  )))}
+                </div>
+              </>
+            )}
           </div>
         )}
         <div style={{ position:'relative' }}>
@@ -245,9 +453,23 @@ function ComingSoon({ page }) {
   );
 }
 
+// ── Detectar flujo de reset (Supabase recovery) ───────────
+function isResetFlow() {
+  if (typeof window === 'undefined') return false;
+  try {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('reset') === '1') return true;
+    const hash = window.location.hash || '';
+    if (hash.includes('access_token=') && hash.includes('type=recovery')) return true;
+    if (hash.includes('type=recovery')) return true;
+  } catch {}
+  return false;
+}
+
 // ── MAIN APP ──────────────────────────────────────────────
 function App() {
   const auth = window.__useAuth();   // hook expuesto desde main.jsx
+  const [resetFlow] = uSA(() => isResetFlow());
   const isMobile = useIsMobileApp();
   const [page, setPage]             = uSA('dashboard');
   // En móvil arrancamos con el drawer cerrado (collapsed=true).
@@ -268,12 +490,25 @@ function App() {
   const showToast = uCA((msg, type='amber') => setToast({ msg, type, key: Date.now() }), []);
 
   // Cargar obra activa desde Dexie cuando hay sesión
+  // Respeta localStorage.obra_activa_id si existe (FEATURE 3)
   uEA(() => {
     if (!auth?.profile) return;
+    const storedId = window.__getObraActivaId ? window.__getObraActivaId() : null;
     window.__db.obras.toArray().then(obras => {
-      const activa = obras.find(o => !o.deleted_at);
+      const visibles = obras.filter(o => !o.deleted_at);
+      const activa = (storedId && visibles.find(o => o.id === storedId)) || visibles[0];
       if (activa) setObraActiva(activa);
     });
+    const onChange = () => {
+      const id = window.__getObraActivaId ? window.__getObraActivaId() : null;
+      window.__db.obras.toArray().then(obras => {
+        const visibles = obras.filter(o => !o.deleted_at);
+        const activa = (id && visibles.find(o => o.id === id)) || visibles[0];
+        if (activa) setObraActiva(activa);
+      });
+    };
+    window.addEventListener('obra_activa_change', onChange);
+    return () => window.removeEventListener('obra_activa_change', onChange);
   }, [auth?.profile, sync.lastSync]);
 
   let syncStatus = null;
@@ -307,9 +542,14 @@ function App() {
       case 'roles':         return <RolesPage showToast={showToast}/>;
       case 'configuracion': return <ConfiguracionPage showToast={showToast}/>;
       case 'conflictos':    return <ConflictsPage showToast={showToast}/>;
+      case 'solicitudes':   return <SolicitudesPage showToast={showToast}/>;
       default:              return <ComingSoon page={page}/>;
     }
   };
+
+  // Si la URL indica un flujo de recuperación de contraseña, mostrar la pantalla
+  // de reset ANTES de Login/App (incluso si hay sesión transitoria por el token).
+  if (resetFlow) return <ResetPasswordScreen/>;
 
   if (auth?.loading) {
     return (

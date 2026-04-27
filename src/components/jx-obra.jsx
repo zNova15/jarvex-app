@@ -14,7 +14,9 @@ function useObraActiva() {
     let cancelled = false;
     const find = async () => {
       const obras = await window.__db.obras.toArray();
-      const a = obras.find(o => !o.deleted_at);
+      const stored = window.__getObraActivaId?.();
+      const a = (stored && obras.find(o => o.id === stored && !o.deleted_at))
+             || obras.find(o => !o.deleted_at);
       if (a) { if (!cancelled) setObraId(a.id); }
       else if (!cancelled) setTimeout(find, 500);
     };
@@ -202,10 +204,29 @@ function ObrasPage({ showToast }) {
 // ─── PARTIDAS PAGE ────────────────────────────────────────
 function PartidasPage({ showToast }) {
   const obraId = useObraActiva();
-  const { data: partidas, loading, create: createPartida } = window.__hooks.usePartidas(obraId);
+  const { data: partidas, loading, create: createPartida, update: updatePartida } = window.__hooks.usePartidas(obraId);
+  const auth = window.__useAuth ? window.__useAuth() : null;
+  const isAdmin = auth?.profile?.rol === 'admin';
   const [q, setQ] = uSO('');
   const [modal, setModal] = uSO(null);
   const [form, setForm] = uSO({});
+  const [editingId, setEditingId] = uSO(null);
+
+  const openEditPartida = (p) => {
+    setForm({
+      codigo_delfin: p.codigo_delfin || '',
+      nombre_partida: p.nombre_partida || '',
+      categoria: p.categoria || '',
+      unidad: p.unidad || '',
+      metrado_contratado: p.metrado_contratado ?? '',
+      precio_unitario_pres: p.precio_unitario_pres ?? '',
+      fecha_inicio_planificada: p.fecha_inicio_planificada || '',
+      fecha_fin_planificada: p.fecha_fin_planificada || '',
+      estado: p.estado || 'pendiente',
+    });
+    setEditingId(p.id);
+    setModal('editar');
+  };
 
   const filtered = uMO(() => {
     if (!partidas) return [];
@@ -232,21 +253,41 @@ function PartidasPage({ showToast }) {
     try {
       const cantidad = parseFloat(form.metrado_contratado) || 0;
       const precio = parseFloat(form.precio_unitario_pres) || 0;
-      await createPartida({
-        obra_id: obraId,
-        codigo_delfin: form.codigo_delfin || null,
-        nombre_partida: form.nombre_partida,
-        categoria: form.categoria || 'General',
-        unidad: form.unidad || 'und',
-        metrado_contratado: cantidad,
-        precio_unitario_pres: precio,
-        costo_total_presupuestado: cantidad * precio,
-        fecha_inicio_planificada: form.fecha_inicio_planificada || null,
-        fecha_fin_planificada: form.fecha_fin_planificada || null,
-        estado: 'pendiente',
-      });
-      showToast(`Partida "${form.nombre_partida}" creada`, 'green');
-      setModal(null); setForm({});
+      if (editingId) {
+        const oldData = partidas.find(p => p.id === editingId);
+        const newFields = {
+          codigo_delfin: form.codigo_delfin || null,
+          nombre_partida: form.nombre_partida,
+          categoria: form.categoria || 'General',
+          unidad: form.unidad || 'und',
+          metrado_contratado: cantidad,
+          precio_unitario_pres: precio,
+          costo_total_presupuestado: cantidad * precio,
+          fecha_inicio_planificada: form.fecha_inicio_planificada || null,
+          fecha_fin_planificada: form.fecha_fin_planificada || null,
+          estado: form.estado || 'pendiente',
+        };
+        await updatePartida(editingId, newFields);
+        try { await window.__logAudit?.({ action:'update', table:'partidas', recordId:editingId, oldData, newData:newFields }); } catch(e) {}
+        showToast(`Partida "${form.nombre_partida}" actualizada`, 'green');
+      } else {
+        const created = await createPartida({
+          obra_id: obraId,
+          codigo_delfin: form.codigo_delfin || null,
+          nombre_partida: form.nombre_partida,
+          categoria: form.categoria || 'General',
+          unidad: form.unidad || 'und',
+          metrado_contratado: cantidad,
+          precio_unitario_pres: precio,
+          costo_total_presupuestado: cantidad * precio,
+          fecha_inicio_planificada: form.fecha_inicio_planificada || null,
+          fecha_fin_planificada: form.fecha_fin_planificada || null,
+          estado: 'pendiente',
+        });
+        try { await window.__logAudit?.({ action:'insert', table:'partidas', recordId:created?.id, newData:created }); } catch(e) {}
+        showToast(`Partida "${form.nombre_partida}" creada`, 'green');
+      }
+      setModal(null); setForm({}); setEditingId(null);
     } catch (e) {
       showToast('Error: ' + e.message, 'red');
     }
@@ -258,7 +299,7 @@ function PartidasPage({ showToast }) {
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div><div className="pg-title">Partidas de Obra</div><div className="pg-sub">{partidas.length} partidas · {fmtSk(totalReal)} ejecutado de {fmtSk(totalPres)}</div></div>
-        <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setModal('nueva');}}><JxIcon name="plus" size={13}/>Nueva Partida</button>
+        <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setEditingId(null); setModal('nueva');}}><JxIcon name="plus" size={13}/>Nueva Partida</button>
       </div>
 
       <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:18}}>
@@ -288,6 +329,7 @@ function PartidasPage({ showToast }) {
               <th style={{textAlign:'right'}}>% Av.</th>
               <th style={{textAlign:'right'}}>C. Pres.</th><th style={{textAlign:'right'}}>C. Real</th>
               <th style={{textAlign:'right'}}>Diferencia</th><th>Estado</th>
+              {isAdmin && <th style={{textAlign:'center'}}>Acciones</th>}
             </tr></thead>
             <tbody>
               {filtered.map(p => {
@@ -318,6 +360,11 @@ function PartidasPage({ showToast }) {
                       {ctReal > 0 ? <span style={{color:diff>0?'var(--red)':'var(--green)',fontWeight:600}}>{diff>0?'+':''}{Math.round(diff).toLocaleString()} ({diffPct}%)</span> : <span style={{color:'var(--tm)'}}>—</span>}
                     </td>
                     <td><span className={`badge ${EST_PART[p.estado]||'b-gray'}`}>{EST_LBL[p.estado] || p.estado}</span></td>
+                    {isAdmin && <td style={{textAlign:'center'}}>
+                      <button className="btn btn-ghost btn-xs" title="Editar partida" onClick={()=>openEditPartida(p)}>
+                        <JxIcon name="edit" size={11}/>
+                      </button>
+                    </td>}
                   </tr>
                 );
               })}
@@ -331,6 +378,7 @@ function PartidasPage({ showToast }) {
                   <span style={{color:(totalReal-totalPres)>0?'var(--red)':'var(--green)'}}>{(totalReal-totalPres)>0?'+':''}{Math.round(totalReal-totalPres).toLocaleString()}</span>
                 </td>
                 <td style={{background:'rgba(0,0,0,0.15)'}}></td>
+                {isAdmin && <td style={{background:'rgba(0,0,0,0.15)'}}></td>}
               </tr>
             </tfoot>
           </table>
@@ -338,7 +386,7 @@ function PartidasPage({ showToast }) {
       </div>
       )}
 
-      {modal === 'nueva' && <Modal title="Nueva Partida" icon="list" onClose={()=>setModal(null)}>
+      {(modal === 'nueva' || modal === 'editar') && <Modal title={editingId ? 'Editar Partida' : 'Nueva Partida'} icon="list" onClose={()=>{setModal(null); setEditingId(null); setForm({});}}>
         <div className="g2">
           <div><label className="flabel">Código</label><input className="fi" placeholder="Ej: 03.01.01" value={form.codigo_delfin||''} onChange={e=>setForm({...form, codigo_delfin:e.target.value})}/></div>
           <div><label className="flabel">Categoría</label>
@@ -362,10 +410,19 @@ function PartidasPage({ showToast }) {
           <div><label className="flabel">Costo total (calc.)</label><div className="fi" style={{color:'var(--amber)',fontWeight:600}}>{fmtS((parseFloat(form.metrado_contratado)||0) * (parseFloat(form.precio_unitario_pres)||0))}</div></div>
           <div><label className="flabel">Fecha inicio plan.</label><input className="fi" type="date" value={form.fecha_inicio_planificada||''} onChange={e=>setForm({...form, fecha_inicio_planificada:e.target.value})}/></div>
           <div><label className="flabel">Fecha fin plan.</label><input className="fi" type="date" value={form.fecha_fin_planificada||''} onChange={e=>setForm({...form, fecha_fin_planificada:e.target.value})}/></div>
+          {editingId && <div><label className="flabel">Estado</label>
+            <select className="fi" value={form.estado||'pendiente'} onChange={e=>setForm({...form, estado:e.target.value})}>
+              <option value="pendiente">Pendiente</option>
+              <option value="en_ejecucion">En Ejecución</option>
+              <option value="atrasado">Atrasado</option>
+              <option value="terminado">Terminado</option>
+              <option value="observado">Observado</option>
+            </select>
+          </div>}
         </div>
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={()=>setModal(null)}>Cancelar</button>
-          <button className="btn btn-amber" onClick={handleSubmit}><JxIcon name="check" size={13}/>Crear Partida</button>
+          <button className="btn btn-ghost" onClick={()=>{setModal(null); setEditingId(null); setForm({});}}>Cancelar</button>
+          <button className="btn btn-amber" onClick={handleSubmit}><JxIcon name="check" size={13}/>{editingId ? 'Guardar Cambios' : 'Crear Partida'}</button>
         </div>
       </Modal>}
     </div>
@@ -471,12 +528,28 @@ function CronogramaPage() {
 function AvancePage({ showToast }) {
   const obraId = useObraActiva();
   const { data: partidas } = window.__hooks.usePartidas(obraId);
-  const { data: registros, loading, create: createAvance, refresh } = window.__hooks.useAvanceObra(obraId);
+  const { data: registros, loading, create: createAvance, update: updateAvance, refresh } = window.__hooks.useAvanceObra(obraId);
   const { data: obras } = window.__hooks.useObras();
   const obraActiva = obras?.find(o => o.id === obraId);
+  const auth = window.__useAuth ? window.__useAuth() : null;
+  const isAdmin = auth?.profile?.rol === 'admin';
 
   const [modal, setModal] = uSO(false);
   const [form, setForm] = uSO({});
+  const [editingId, setEditingId] = uSO(null);
+
+  const openEditAvance = (r) => {
+    setForm({
+      fecha: r.fecha || '',
+      partida_id: r.partida_id || '',
+      metrado_ejecutado: r.metrado_ejecutado ?? '',
+      porcentaje_avance_reportado: r.porcentaje_avance_reportado ?? '',
+      personal_asignado: r.personal_asignado ?? '',
+      observaciones: r.observaciones || '',
+    });
+    setEditingId(r.id);
+    setModal(true);
+  };
 
   const calcSemana = (fecha) => {
     if (!obraActiva?.fecha_inicio || !fecha) return '';
@@ -493,6 +566,20 @@ function AvancePage({ showToast }) {
     }
     const partida = partidas.find(p => p.id === form.partida_id);
     try {
+      if (editingId) {
+        // Solo editamos campos seguros (no recalculamos avance de partida)
+        const oldData = registros.find(r => r.id === editingId);
+        const newFields = {
+          porcentaje_avance_reportado: parseFloat(form.porcentaje_avance_reportado) || null,
+          personal_asignado: parseInt(form.personal_asignado) || null,
+          observaciones: form.observaciones || null,
+        };
+        await updateAvance(editingId, newFields);
+        try { await window.__logAudit?.({ action:'update', table:'avance_obra', recordId:editingId, oldData, newData:newFields, reason:'Edición de campos seguros (observaciones / % reportado / personal)' }); } catch(e) {}
+        showToast('Avance actualizado', 'green');
+        setModal(false); setForm({}); setEditingId(null);
+        return;
+      }
       await createAvance({
         obra_id: obraId,
         partida_id: form.partida_id,
@@ -525,6 +612,7 @@ function AvancePage({ showToast }) {
 
   const openModal = () => {
     setForm({ fecha: new Date().toISOString().slice(0,10) });
+    setEditingId(null);
     setModal(true);
   };
 
@@ -571,6 +659,7 @@ function AvancePage({ showToast }) {
             <th>Fecha</th><th>Semana</th><th>Partida Ejecutada</th>
             <th style={{textAlign:'right'}}>Metrado</th><th style={{textAlign:'right'}}>% Reportado</th>
             <th style={{textAlign:'right'}}>Personal</th><th>Observaciones</th><th>Sync</th>
+            {isAdmin && <th style={{textAlign:'center'}}>Acciones</th>}
           </tr></thead>
           <tbody>
             {ordenados.map(r => {
@@ -585,6 +674,11 @@ function AvancePage({ showToast }) {
                   <td style={{textAlign:'right'}} className="col-num">{r.personal_asignado || '—'}</td>
                   <td className="col-m">{r.observaciones || '—'}</td>
                   <td>{r.sync_status && r.sync_status !== 'synced' ? <span className="badge b-amber">⏱</span> : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}</td>
+                  {isAdmin && <td style={{textAlign:'center'}}>
+                    <button className="btn btn-ghost btn-xs" title="Editar campos seguros (observaciones, % reportado, personal)" onClick={()=>openEditAvance(r)}>
+                      <JxIcon name="edit" size={11}/>
+                    </button>
+                  </td>}
                 </tr>
               );
             })}
@@ -593,24 +687,27 @@ function AvancePage({ showToast }) {
       </div>
       )}
 
-      {modal && <Modal title="Registrar Avance de Obra" icon="hardHat" onClose={()=>setModal(false)}>
+      {modal && <Modal title={editingId ? 'Editar Avance (campos seguros)' : 'Registrar Avance de Obra'} icon="hardHat" onClose={()=>{setModal(false); setEditingId(null); setForm({});}}>
+        {editingId && <div style={{padding:'10px 12px',background:'rgba(242,183,5,0.08)',border:'1px solid rgba(242,183,5,0.3)',borderRadius:6,fontSize:11.5,color:'var(--tm)',marginBottom:14}}>
+          Por integridad de datos, el <strong>metrado ejecutado</strong>, <strong>fecha</strong> y <strong>partida</strong> son inmutables (afectan el % avance de la partida). Solo se pueden editar observaciones, % reportado y personal asignado.
+        </div>}
         <div className="g2">
-          <div><label className="flabel">Fecha</label><input className="fi" type="date" value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
+          <div><label className="flabel">Fecha</label><input className="fi" type="date" value={form.fecha||''} disabled={!!editingId} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
           <div><label className="flabel">Semana (auto)</label><div className="fi" style={{color:'var(--amber)'}}>{calcSemana(form.fecha)}</div></div>
           <div style={{gridColumn:'1/-1'}}><label className="flabel">Partida ejecutada *</label>
-            <select className="fi" value={form.partida_id||''} onChange={e=>setForm({...form, partida_id:e.target.value})}>
+            <select className="fi" value={form.partida_id||''} disabled={!!editingId} onChange={e=>setForm({...form, partida_id:e.target.value})}>
               <option value="">Selecciona...</option>
               {partidas.map(p => <option key={p.id} value={p.id}>{p.codigo_delfin ? `${p.codigo_delfin} — ` : ''}{p.nombre_partida} ({p.unidad})</option>)}
             </select>
           </div>
-          <div><label className="flabel">Metrado ejecutado *</label><input className="fi" type="number" step="0.01" min="0" value={form.metrado_ejecutado||''} onChange={e=>setForm({...form, metrado_ejecutado:e.target.value})}/></div>
+          <div><label className="flabel">Metrado ejecutado *</label><input className="fi" type="number" step="0.01" min="0" value={form.metrado_ejecutado||''} disabled={!!editingId} onChange={e=>setForm({...form, metrado_ejecutado:e.target.value})}/></div>
           <div><label className="flabel">% Avance reportado</label><input className="fi" type="number" min="0" max="100" step="1" placeholder="0-100" value={form.porcentaje_avance_reportado||''} onChange={e=>setForm({...form, porcentaje_avance_reportado:e.target.value})}/></div>
           <div><label className="flabel">Personal asignado</label><input className="fi" type="number" min="0" value={form.personal_asignado||''} onChange={e=>setForm({...form, personal_asignado:e.target.value})}/></div>
         </div>
         <div style={{marginTop:14}}><label className="flabel">Observaciones</label><textarea className="fi" placeholder="Descripción del avance, materiales usados, inconvenientes..." value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})}/></div>
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={()=>setModal(false)}>Cancelar</button>
-          <button className="btn btn-amber" onClick={handleSubmit}><JxIcon name="check" size={13}/>Guardar Avance</button>
+          <button className="btn btn-ghost" onClick={()=>{setModal(false); setEditingId(null); setForm({});}}>Cancelar</button>
+          <button className="btn btn-amber" onClick={handleSubmit}><JxIcon name="check" size={13}/>{editingId ? 'Guardar Cambios' : 'Guardar Avance'}</button>
         </div>
       </Modal>}
     </div>

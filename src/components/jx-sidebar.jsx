@@ -43,6 +43,7 @@ const NAV = [
   { section: 'ADMINISTRACIÓN' },
   { id: 'usuarios', label: 'Usuarios', icon: 'user' },
   { id: 'roles', label: 'Roles y Permisos', icon: 'shield' },
+  { id: 'solicitudes', label: 'Solicitudes', icon: 'shield' },
   { id: 'configuracion', label: 'Configuración', icon: 'settings' },
   { id: 'conflictos', label: 'Conflictos Sync', icon: 'alert' },
 ];
@@ -54,6 +55,23 @@ function Sidebar({ current, onNav, collapsed, onToggle }) {
   const isMobile = useIsMobile();
   const auth = window.__useAuth ? window.__useAuth() : null;
   const profile = auth?.profile;
+  const isAdmin = profile?.rol === 'admin';
+
+  // Poll de solicitudes pendientes (solo admin)
+  const [pendingReqCount, setPendingReqCount] = useState(0);
+  useEffect(() => {
+    if (!isAdmin) { setPendingReqCount(0); return; }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const n = await window.__changeRequests?.countPending?.();
+        if (!cancelled) setPendingReqCount(n || 0);
+      } catch (e) { /* ignore */ }
+    };
+    poll();
+    const id = setInterval(poll, 30000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [isAdmin]);
   const initials = profile
     ? ((profile.nombres?.[0] || '') + (profile.apellidos?.[0] || '')).toUpperCase() || (profile.email?.[0] || '?').toUpperCase()
     : '··';
@@ -190,11 +208,22 @@ function Sidebar({ current, onNav, collapsed, onToggle }) {
                 whiteSpace: 'nowrap',
                 justifyContent: navCollapsed ? 'center' : 'flex-start',
                 margin: '1px 0',
+                position: 'relative',
               }}
             >
               <JxIcon name={item.icon} size={isMobile ? 17 : 15} color={isActive ? '#F2B705' : isHov ? '#BFC7D1' : '#556070'} />
               {!navCollapsed && <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.label}</span>}
-              {!navCollapsed && isActive && <div style={{ marginLeft: 'auto', width: 5, height: 5, borderRadius: '50%', background: '#F2B705', flexShrink: 0 }} />}
+              {item.id === 'solicitudes' && isAdmin && pendingReqCount > 0 && !navCollapsed && (
+                <span style={{ marginLeft: 'auto', minWidth: 18, height: 18, borderRadius: 9, background: '#F2B705', color: '#0D1822', fontSize: 10, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 6px', flexShrink: 0 }}>
+                  {pendingReqCount > 99 ? '99+' : pendingReqCount}
+                </span>
+              )}
+              {item.id === 'solicitudes' && isAdmin && pendingReqCount > 0 && navCollapsed && (
+                <span style={{ position: 'absolute', top: 6, right: 8, minWidth: 14, height: 14, borderRadius: 7, background: '#F2B705', color: '#0D1822', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px' }}>
+                  {pendingReqCount > 9 ? '9+' : pendingReqCount}
+                </span>
+              )}
+              {item.id !== 'solicitudes' && !navCollapsed && isActive && <div style={{ marginLeft: 'auto', width: 5, height: 5, borderRadius: '50%', background: '#F2B705', flexShrink: 0 }} />}
             </button>
           );
         })}

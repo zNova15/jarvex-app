@@ -111,7 +111,9 @@ function DashboardPage() {
     let cancelled = false;
     const find = async () => {
       const obras = await window.__db.obras.toArray();
-      const a = obras.find(o => !o.deleted_at);
+      const stored = window.__getObraActivaId?.();
+      const a = (stored && obras.find(o => o.id === stored && !o.deleted_at))
+             || obras.find(o => !o.deleted_at);
       if (a) { if (!cancelled) setObraId(a.id); }
       else if (!cancelled) setTimeout(find, 500);
     };

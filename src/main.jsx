@@ -6,6 +6,7 @@ import { useSync } from './hooks/useSync';
 import { useOnline } from './hooks/useOnline';
 import { useAppMode } from './hooks/useAppMode';
 import { useRealtimeNotifications } from './hooks/useRealtimeNotifications';
+import { useObraActiva, getObraActivaIdSync, setObraActivaId } from './hooks/useObraActiva';
 import {
   useObras, usePersonal, useMateriales, useHerramientas,
   useMovimientosMateriales, useMovimientosHerramientas,
@@ -20,6 +21,15 @@ import { generatePDF, downloadPDF, generateExcel } from './lib/reports';
 import { parseExcelFile, downloadTemplate, MODULES as IMPORT_MODULES } from './lib/excel';
 import { consultarRUC, consultarDNI } from './lib/identity';
 import { logAudit } from './lib/audit';
+import {
+  createChangeRequest,
+  listChangeRequests,
+  approveChangeRequest,
+  rejectChangeRequest,
+  cancelChangeRequest,
+  syncPendingChangeRequests,
+  countPendingChangeRequests,
+} from './lib/changeRequests';
 import './index.css';
 
 // Chart.js + DB + hooks expuestos globalmente para los componentes JSX heredados
@@ -32,6 +42,9 @@ window.__useSync = useSync;
 window.__useOnline = useOnline;
 window.__useAppMode = useAppMode;
 window.__useRealtimeNotifications = useRealtimeNotifications;
+window.__useObraActiva = useObraActiva;
+window.__getObraActivaId = getObraActivaIdSync;
+window.__setObraActivaId = setObraActivaId;
 window.__hooks = {
   useObras, usePersonal, useMateriales, useHerramientas,
   useMovimientosMateriales, useMovimientosHerramientas,
@@ -43,10 +56,20 @@ window.__reports = { generatePDF, downloadPDF, generateExcel };
 window.__excel = { parseExcelFile, downloadTemplate, MODULES: IMPORT_MODULES };
 window.__identity = { consultarRUC, consultarDNI };
 window.__logAudit = logAudit;
+window.__changeRequests = {
+  create: createChangeRequest,
+  list: listChangeRequests,
+  approve: approveChangeRequest,
+  reject: rejectChangeRequest,
+  cancel: cancelChangeRequest,
+  sync: syncPendingChangeRequests,
+  countPending: countPendingChangeRequests,
+};
 
 // ── Importar componentes (se auto-registran en window.*) ─────────────
 import './components/jx-icons.jsx';
 import './components/jx-sidebar.jsx';
+import './components/jx-solicitudes.jsx';
 import './components/jx-dashboard.jsx';
 import './components/jx-almacen.jsx';
 import './components/jx-obra.jsx';

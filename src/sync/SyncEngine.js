@@ -1,6 +1,7 @@
 import { db, SYNC_STATUS, getLastSync, setLastSync } from '../db/jarvex.db';
 import { supabase } from '../lib/supabase';
 import { syncPendingAuditLogs } from '../lib/audit';
+import { syncPendingChangeRequests } from '../lib/changeRequests';
 
 // Tablas transaccionales que participan en la cola de sync
 const TRANSACTIONAL_TABLES = [
@@ -56,6 +57,7 @@ export async function syncAll() {
   try {
     await pushPendingOperations();
     await pushPendingAuditLogs();
+    await pushPendingChangeRequests();
     await pullMasterTables();
     await pullTransactionalChanges();
 
@@ -77,6 +79,17 @@ async function pushPendingAuditLogs() {
     if (n > 0) console.log(`[SyncEngine] ${n} audit logs sincronizados`);
   } catch (e) {
     console.warn('[SyncEngine] pushPendingAuditLogs:', e?.message || e);
+  }
+}
+
+// ── PUSH: solicitudes de cambio pendientes ────────────────────────────
+
+async function pushPendingChangeRequests() {
+  try {
+    const n = await syncPendingChangeRequests();
+    if (n > 0) console.log(`[SyncEngine] ${n} change requests sincronizadas`);
+  } catch (e) {
+    console.warn('[SyncEngine] pushPendingChangeRequests:', e?.message || e);
   }
 }
 

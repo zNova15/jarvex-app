@@ -566,6 +566,7 @@ function EmpresaTab() {
 function ObrasTab({ showToast, isAdmin }) {
   const { data: obras } = window.__hooks.useObras();
   const [activeId, setActiveId] = uSAd(() => localStorage.getItem('obra_activa_id') || null);
+  const [usuariosObra, setUsuariosObra] = uSAd(null); // { id, nombre_obra } | null
 
   const setActive = (id) => {
     localStorage.setItem('obra_activa_id', id);
@@ -600,6 +601,11 @@ function ObrasTab({ showToast, isAdmin }) {
               {isActive && <span className="badge b-amber">Activa</span>}
               {isAdmin && (
                 <>
+                  <button className="btn btn-ghost btn-xs"
+                          title="Gestionar usuarios asignados a esta obra"
+                          onClick={(e)=>{ e.stopPropagation(); setUsuariosObra({ id:o.id, nombre_obra: o.nombre_obra || o.nombre || 'Obra' }); }}>
+                    <JxIcon name="users" size={11}/>
+                  </button>
                   <button className="btn btn-ghost btn-xs" onClick={(e)=>{e.stopPropagation(); showToast?.('Editar desde módulo Obras','amber');}}><JxIcon name="edit" size={11}/></button>
                   <button className="btn btn-red btn-xs" onClick={(e)=>{e.stopPropagation(); showToast?.('Archivar desde módulo Obras','amber');}}><JxIcon name="archive" size={11}/></button>
                 </>
@@ -608,7 +614,252 @@ function ObrasTab({ showToast, isAdmin }) {
           </div>
         );
       })}
+
+      {usuariosObra && (
+        <ObraUsuariosModal
+          obra={usuariosObra}
+          isAdmin={isAdmin}
+          showToast={showToast}
+          onClose={()=>setUsuariosObra(null)}
+        />
+      )}
     </div>
+  );
+}
+
+// ── Modal: Usuarios asignados a una obra ─────────────────────────
+function ObraUsuariosModal({ obra, isAdmin, showToast, onClose }) {
+  const [asignaciones, setAsignaciones] = uSAd([]);    // obra_usuarios + profile join
+  const [profiles, setProfiles] = uSAd([]);            // profiles activos globales
+  const [loading, setLoading] = uSAd(true);
+  const [busy, setBusy] = uSAd(false);
+  const [adding, setAdding] = uSAd(false);
+  const [form, setForm] = uSAd({ usuario_id:'', rol_obra:'solo_lectura' });
+
+  const reload = async () => {
+    try {
+      const sb = window.__supabase;
+      if (!sb) { setLoading(false); return; }
+      const [{ data: ou, error: e1 }, { data: ps, error: e2 }] = await Promise.all([
+        sb.from('obra_usuarios')
+          .select('id, obra_id, usuario_id, rol_obra, activo, profiles:usuario_id (nombres, apellidos, email, rol)')
+          .eq('obra_id', obra.id),
+        sb.from('profiles').select('*').eq('activo', true).order('apellidos'),
+      ]);
+      if (e1) console.warn('obra_usuarios', e1);
+      if (e2) console.warn('profiles', e2);
+      setAsignaciones(ou || []);
+      setProfiles(ps || []);
+    } catch (e) {
+      console.warn('ObraUsuariosModal reload', e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  uEAd(() => { reload(); /* eslint-disable-next-line */ }, [obra?.id]);
+
+  const idsAsignadosActivos = uMAd(
+    () => new Set((asignaciones||[]).filter(a => a.activo !== false).map(a => a.usuario_id)),
+    [asignaciones]
+  );
+  const profilesDisponibles = uMAd(
+    () => (profiles||[]).filter(p => !idsAsignadosActivos.has(p.id)),
+    [profiles, idsAsignadosActivos]
+  );
+
+  const handleAsignar = async () => {
+    if (!form.usuario_id) { showToast?.('Selecciona un usuario','red'); return; }
+    setBusy(true);
+    try {
+      const sb = window.__supabase;
+      // Buscar si ya existe asignación inactiva → reactivar; si no, insertar
+      const existente = (asignaciones||[]).find(a => a.usuario_id === form.usuario_id);
+      if (existente) {
+        const { error } = await sb.from('obra_usuarios')
+          .update({ activo:true, rol_obra: form.rol_obra })
+          .eq('id', existente.id);
+        if (error) throw error;
+        try { await window.__logAudit?.({ action:'update', table:'obra_usuarios', recordId: existente.id,
+          newData:{ activo:true, rol_obra: form.rol_obra }, reason:'Reactivación de usuario en obra' }); } catch(e){}
+      } else {
+        const { data, error } = await sb.from('obra_usuarios')
+          .insert({ obra_id: obra.id, usuario_id: form.usuario_id, rol_obra: form.rol_obra, activo:true })
+          .select().single();
+        if (error) throw error;
+        try { await window.__logAudit?.({ action:'insert', table:'obra_usuarios', recordId: data?.id,
+          newData: data, reason:'Asignación de usuario a obra' }); } catch(e){}
+      }
+      showToast?.('Usuario asignado','green');
+      setAdding(false);
+      setForm({ usuario_id:'', rol_obra:'solo_lectura' });
+      await reload();
+    } catch (e) {
+      showToast?.('Error al asignar: '+(e.message||e),'red');
+    } finally { setBusy(false); }
+  };
+
+  const handleQuitar = async (a) => {
+    if (!a?.id) return;
+    setBusy(true);
+    try {
+      const sb = window.__supabase;
+      const { error } = await sb.from('obra_usuarios').update({ activo:false }).eq('id', a.id);
+      if (error) throw error;
+      try { await window.__logAudit?.({ action:'update', table:'obra_usuarios', recordId:a.id,
+        newData:{ activo:false }, reason:'Desasignación de usuario de obra' }); } catch(e){}
+      showToast?.('Usuario removido de la obra','amber');
+      await reload();
+    } catch (e) {
+      showToast?.('Error al quitar: '+(e.message||e),'red');
+    } finally { setBusy(false); }
+  };
+
+  const handleCambiarRolObra = async (a, nuevoRol) => {
+    if (!a?.id || !nuevoRol || nuevoRol === a.rol_obra) return;
+    setBusy(true);
+    try {
+      const sb = window.__supabase;
+      const { error } = await sb.from('obra_usuarios').update({ rol_obra: nuevoRol }).eq('id', a.id);
+      if (error) throw error;
+      try { await window.__logAudit?.({ action:'update', table:'obra_usuarios', recordId:a.id,
+        newData:{ rol_obra: nuevoRol }, reason:`Cambio de rol_obra a ${nuevoRol}` }); } catch(e){}
+      showToast?.('Rol actualizado','green');
+      await reload();
+    } catch (e) {
+      showToast?.('Error: '+(e.message||e),'red');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <Modal title={`Usuarios asignados a ${obra.nombre_obra}`} icon="users" onClose={onClose} wide>
+      {loading ? (
+        <div style={{ padding:20, textAlign:'center', color:'var(--tm)', fontSize:12 }}>Cargando…</div>
+      ) : (
+        <>
+          <div style={{ marginBottom:14 }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
+              <div style={{ fontSize:12, color:'var(--tm)' }}>
+                {asignaciones.filter(a => a.activo !== false).length} usuario(s) activo(s)
+                {asignaciones.some(a => a.activo === false) && ` · ${asignaciones.filter(a => a.activo === false).length} inactivo(s)`}
+              </div>
+              {isAdmin && !adding && (
+                <button className="btn btn-amber btn-sm" onClick={()=>setAdding(true)}>
+                  <JxIcon name="plus" size={12}/>Asignar usuario
+                </button>
+              )}
+            </div>
+
+            {adding && isAdmin && (
+              <div style={{ background:'rgba(242,183,5,0.06)', border:'1px solid rgba(242,183,5,0.25)',
+                            borderRadius:8, padding:12, marginBottom:12, display:'grid',
+                            gridTemplateColumns:'1.4fr 1fr auto auto', gap:8, alignItems:'end' }}>
+                <div>
+                  <label className="flabel">Usuario</label>
+                  <select className="fi" value={form.usuario_id}
+                          onChange={e=>setForm({...form, usuario_id:e.target.value})}>
+                    <option value="">— Selecciona —</option>
+                    {profilesDisponibles.map(p => (
+                      <option key={p.id} value={p.id}>
+                        {(p.nombres||'')} {(p.apellidos||'')} · {p.email}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="flabel">Rol en la obra</label>
+                  <select className="fi" value={form.rol_obra}
+                          onChange={e=>setForm({...form, rol_obra:e.target.value})}>
+                    {ROL_KEYS.map(r => <option key={r} value={r}>{ROL_LABELS[r]}</option>)}
+                  </select>
+                </div>
+                <button className="btn btn-amber btn-sm" disabled={busy} onClick={handleAsignar}>
+                  <JxIcon name="check" size={12}/>Asignar
+                </button>
+                <button className="btn btn-ghost btn-sm" disabled={busy}
+                        onClick={()=>{ setAdding(false); setForm({ usuario_id:'', rol_obra:'solo_lectura' }); }}>
+                  Cancelar
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div style={{ maxHeight:380, overflowY:'auto', border:'1px solid var(--border)', borderRadius:8 }}>
+            {asignaciones.length === 0 ? (
+              <div style={{ padding:24, textAlign:'center', color:'var(--tm)', fontSize:12 }}>
+                No hay usuarios asignados a esta obra todavía.
+              </div>
+            ) : (
+              <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+                <thead>
+                  <tr style={{ background:'var(--bg-s)', textAlign:'left', color:'var(--tm)' }}>
+                    <th style={{ padding:'8px 12px' }}>Nombre</th>
+                    <th style={{ padding:'8px 12px' }}>Email</th>
+                    <th style={{ padding:'8px 12px' }}>Rol en obra</th>
+                    <th style={{ padding:'8px 12px' }}>Estado</th>
+                    {isAdmin && <th style={{ padding:'8px 12px', width:60 }}></th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {asignaciones.map(a => {
+                    const p = a.profiles || {};
+                    const inactivo = a.activo === false;
+                    return (
+                      <tr key={a.id} style={{ borderTop:'1px solid var(--border)', opacity: inactivo ? 0.5 : 1 }}>
+                        <td style={{ padding:'8px 12px', color:'var(--ts)', fontWeight:500 }}>
+                          {(p.nombres||'')} {(p.apellidos||'')}
+                        </td>
+                        <td style={{ padding:'8px 12px', color:'var(--tm)' }}>{p.email||'—'}</td>
+                        <td style={{ padding:'8px 12px' }}>
+                          {isAdmin && !inactivo ? (
+                            <select className="fi" style={{ padding:'4px 6px', fontSize:11 }}
+                                    value={a.rol_obra || 'solo_lectura'}
+                                    disabled={busy}
+                                    onChange={e=>handleCambiarRolObra(a, e.target.value)}>
+                              {ROL_KEYS.map(r => <option key={r} value={r}>{ROL_LABELS[r]}</option>)}
+                            </select>
+                          ) : (
+                            <span className={`badge ${ROL_COLORS_ADM[a.rol_obra]||'b-gray'}`}>
+                              {ROL_LABELS[a.rol_obra]||a.rol_obra||'—'}
+                            </span>
+                          )}
+                        </td>
+                        <td style={{ padding:'8px 12px' }}>
+                          <span className={`badge ${inactivo?'b-gray':'b-green'}`}>
+                            {inactivo ? 'Inactivo' : 'Activo'}
+                          </span>
+                        </td>
+                        {isAdmin && (
+                          <td style={{ padding:'8px 12px', textAlign:'right' }}>
+                            {!inactivo && (
+                              <button className="btn btn-red btn-xs" disabled={busy}
+                                      title="Quitar usuario de esta obra"
+                                      onClick={()=>handleQuitar(a)}>
+                                <JxIcon name="x" size={11}/>
+                              </button>
+                            )}
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {!isAdmin && (
+            <div style={{ marginTop:10, fontSize:11, color:'var(--tm)', fontStyle:'italic' }}>
+              Solo el administrador puede modificar asignaciones.
+            </div>
+          )}
+
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={onClose}>Cerrar</button>
+          </div>
+        </>
+      )}
+    </Modal>
   );
 }
 

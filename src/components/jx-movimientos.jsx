@@ -11,7 +11,9 @@ function useObraActiva() {
     let cancelled = false;
     const find = async () => {
       const obras = await window.__db.obras.toArray();
-      const a = obras.find(o => !o.deleted_at);
+      const stored = window.__getObraActivaId?.();
+      const a = (stored && obras.find(o => o.id === stored && !o.deleted_at))
+             || obras.find(o => !o.deleted_at);
       if (a) { if (!cancelled) setObraId(a.id); }
       else if (!cancelled) setTimeout(find, 500);
     };
@@ -42,12 +44,105 @@ const EST_HER = {
   mantenimiento: 'b-orange', baja: 'b-gray',
 };
 
+// ─── Helpers de reverso ──────────────────────────────────
+// Calcula el delta de stock que produjo el movimiento original sobre el material.
+// Para reversar, aplicamos el delta opuesto.
+function deltaStockMaterial(tipo, cantidad) {
+  const c = Number(cantidad || 0);
+  switch (tipo) {
+    case 'entrada':    return  c;
+    case 'devolucion': return  c; // entra al almacén
+    case 'salida':     return -c;
+    case 'merma':      return -c;
+    case 'ajuste':     return  0; // ajuste manual: stock ya fue editado fuera
+    default:           return 0;
+  }
+}
+
+// Invierte el tipo de movimiento de materiales (para crear reverso)
+function invertirTipoMaterial(tipo) {
+  switch (tipo) {
+    case 'entrada':    return 'salida';
+    case 'salida':     return 'entrada';
+    case 'devolucion': return 'salida';
+    case 'merma':      return 'entrada';
+    case 'ajuste':     return 'ajuste';
+    default:           return 'ajuste';
+  }
+}
+
+// Invierte la acción de movimiento de herramientas
+function invertirAccionHerramienta(accion) {
+  switch (accion) {
+    case 'salida':        return 'entrada';     // devolución
+    case 'entrada':       return 'salida';
+    case 'mantenimiento': return 'entrada';
+    case 'baja':          return 'reposicion';
+    case 'reposicion':    return 'baja';
+    default:              return 'entrada';
+  }
+}
+
+// ─── MODAL REVERSO ───────────────────────────────────────
+function ReversoModal({ mov, tipo /* 'mat' | 'her' */, lookupNombre, onClose, onConfirm }) {
+  const [motivo, setMotivo] = uSM('');
+  const [busy, setBusy] = uSM(false);
+  const [err, setErr] = uSM('');
+
+  const submit = async () => {
+    setErr('');
+    if ((motivo || '').trim().length < 10) {
+      setErr('El motivo debe tener al menos 10 caracteres.');
+      return;
+    }
+    setBusy(true);
+    try {
+      await onConfirm(motivo.trim());
+    } catch (e) {
+      setErr(e?.message || 'Error al reversar el movimiento.');
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title="Reversar Movimiento" icon="arrowOut" onClose={onClose}>
+      <div style={{ background:'rgba(231,76,60,0.06)', border:'1px solid rgba(231,76,60,0.2)', borderRadius:8, padding:'12px 14px', fontSize:12.5, color:'var(--ts)', marginBottom:14, lineHeight:1.5 }}>
+        ¿Reversar este movimiento? Se creará un movimiento opuesto que cancela el original. Esta acción es trazable y aparecerá en auditoría.
+      </div>
+      <div style={{ marginBottom:12, fontSize:12, color:'var(--tm)' }}>
+        <div><strong style={{ color:'var(--ts)' }}>Movimiento:</strong> {tipo === 'mat'
+          ? `${(MOV_MAT_TIPO[mov.tipo_movimiento]||{}).lbl || mov.tipo_movimiento} de ${Number(mov.cantidad||0)} ${mov.unidad||''} de ${lookupNombre(mov)}`
+          : `${(MOV_HER_ACCION[mov.accion]||{}).lbl || mov.accion} de ${lookupNombre(mov)}`}</div>
+        <div style={{ marginTop:4 }}><strong style={{ color:'var(--ts)' }}>Fecha:</strong> {mov.fecha} {mov.hora || ''}</div>
+      </div>
+      {err && <div style={{ background:'rgba(231,76,60,0.1)', border:'1px solid rgba(231,76,60,0.25)', borderRadius:8, padding:'10px 12px', fontSize:12, color:'var(--red)', marginBottom:10 }}>{err}</div>}
+      <div>
+        <label className="flabel">Motivo del reverso *</label>
+        <textarea className="fi" rows={3} placeholder="Ej.: Se registró por error 100 bolsas en lugar de 10"
+                  value={motivo} onChange={e=>setMotivo(e.target.value)} autoFocus/>
+        <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:4 }}>Mínimo 10 caracteres. Quedará en auditoría.</div>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose} disabled={busy}>Cancelar</button>
+        <button className="btn btn-red" onClick={submit} disabled={busy}>
+          <JxIcon name="arrowOut" size={13}/>{busy ? 'Reversando…' : 'Confirmar Reverso'}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 // ─── MOV. MATERIALES PAGE ─────────────────────────────────
 function MovMaterialesPage({ showToast }) {
   const obraId = useObraActiva();
-  const { data: movs, loading } = window.__hooks.useMovimientosMateriales(obraId);
+  const auth = window.__useAuth ? window.__useAuth() : null;
+  const movHook = window.__hooks.useMovimientosMateriales(obraId);
+  const { data: movs, loading } = movHook;
   const { data: materiales } = window.__hooks.useMateriales(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
+
+  const [reversoTarget, setReversoTarget] = uSM(null);
+  const isAdmin = auth?.profile?.rol === 'admin';
 
   const [provs, setProvs] = uSM([]);
   const [partidas, setPartidas] = uSM([]);
@@ -102,6 +197,77 @@ function MovMaterialesPage({ showToast }) {
       .reduce((s, m) => s + (Number(m.precio_unitario_real || 0) * Number(m.cantidad || 0)), 0),
   }), [sorted]);
 
+  // ── Reversar movimiento de materiales ───────────────────
+  const handleReversoMaterial = async (motivo) => {
+    if (!reversoTarget) return;
+    const original = reversoTarget;
+    const material = materiales?.find(m => m.id === original.material_id);
+    if (!material) throw new Error('Material no encontrado.');
+    if (original.reversed_by_id) throw new Error('Este movimiento ya fue reversado.');
+    if (original.reverses_id)    throw new Error('No se puede reversar un movimiento que ya es un reverso.');
+
+    const tipoInv = invertirTipoMaterial(original.tipo_movimiento);
+    // Crear movimiento de reverso (positivo, mismo cantidad pero tipo invertido)
+    const nowIso = new Date().toISOString();
+    const fecha = nowIso.slice(0, 10);
+    const hora = nowIso.slice(11, 16);
+    const reverso = await movHook.create({
+      obra_id: original.obra_id,
+      material_id: original.material_id,
+      fecha, hora,
+      tipo_movimiento: tipoInv,
+      cantidad: Math.abs(Number(original.cantidad || 0)),
+      unidad: original.unidad || material.unidad,
+      responsable_id: original.responsable_id || null,
+      proveedor_id: original.proveedor_id || null,
+      documento_asociado: original.documento_asociado || null,
+      precio_unitario_real: original.precio_unitario_real ?? null,
+      observaciones: 'REVERSO: ' + motivo,
+      reverses_id: original.id,
+    });
+
+    // Marcar el original
+    try {
+      await movHook.update(original.id, { reversed_by_id: reverso.id });
+    } catch (e) {
+      // fallback directo a Dexie si update tira por algún wasAlreadyPending edge case
+      await window.__db.movimientos_materiales.update(original.id, { reversed_by_id: reverso.id });
+    }
+
+    // Ajustar stock del material: aplicar delta opuesto al original
+    const deltaOriginal = deltaStockMaterial(original.tipo_movimiento, original.cantidad);
+    const deltaReverso = -deltaOriginal;
+    const nuevoStock = (material.stock_actual ?? 0) + deltaReverso;
+    const min = Number(material.stock_minimo || 0);
+    const nuevaAlerta = nuevoStock <= 0 ? 'sin_stock'
+      : (min > 0 && nuevoStock <= min * 0.5) ? 'critico'
+      : (min > 0 && nuevoStock <= min) ? 'reponer' : 'ok';
+    await window.__db.materiales.update(original.material_id, {
+      stock_actual: nuevoStock,
+      alerta: nuevaAlerta,
+    });
+
+    try {
+      await window.__logAudit?.({
+        action: 'insert',
+        table: 'movimientos_materiales',
+        recordId: reverso.id,
+        newData: reverso,
+        reason: `Reverso del movimiento ${original.id}: ${motivo}`,
+      });
+    } catch (e) {}
+
+    setReversoTarget(null);
+    movHook.refresh && movHook.refresh();
+    showToast('Movimiento reversado correctamente', 'green');
+  };
+
+  const reversedSet = uMM(() => {
+    const s = new Set();
+    (movs || []).forEach(m => { if (m.reverses_id) s.add(m.reverses_id); });
+    return s;
+  }, [movs]);
+
   if (loading || !obraId) return <div className="page-wrap"><div className="empty-state"><JxIcon name="arrowIn" size={32} color="var(--tm)"/><p>Cargando movimientos…</p></div></div>;
 
   return (
@@ -141,6 +307,7 @@ function MovMaterialesPage({ showToast }) {
               <th style={{ textAlign:'right' }}>Cantidad</th>
               <th>Responsable</th><th>Documento</th>
               <th style={{ textAlign:'right' }}>Precio</th><th>Sync</th>
+              {isAdmin && <th style={{ textAlign:'center' }}>Acción</th>}
             </tr></thead>
             <tbody>
               {filtered.map(m=>{
@@ -148,10 +315,18 @@ function MovMaterialesPage({ showToast }) {
                 const mat = lookupMat(m.material_id);
                 const pers = lookupPers(m.responsable_id);
                 const prov = lookupProv(m.proveedor_id);
+                const yaReversado = !!m.reversed_by_id || reversedSet.has(m.id);
+                const esReverso = !!m.reverses_id;
+                const reversoOriginalShort = esReverso ? String(m.reverses_id).slice(0, 6) : '';
+                const puedeReversar = isAdmin && !yaReversado && !esReverso;
                 return (
-                  <tr key={m.id}>
+                  <tr key={m.id} style={{ opacity: yaReversado ? 0.55 : 1 }}>
                     <td className="col-m">{m.fecha || '—'}<br/><span style={{ fontSize:11 }}>{m.hora || ''}</span></td>
-                    <td><span className={`badge ${t.cls}`}><JxIcon name={t.icon} size={10}/>{t.lbl}</span></td>
+                    <td>
+                      <span className={`badge ${t.cls}`}><JxIcon name={t.icon} size={10}/>{t.lbl}</span>
+                      {yaReversado && <div style={{ marginTop:4 }}><span className="badge b-gray" title="Este movimiento fue reversado">Reversado</span></div>}
+                      {esReverso && <div style={{ marginTop:4 }}><span className="badge b-amber" title={`Reverso del movimiento ${m.reverses_id}`}>Reverso de #{reversoOriginalShort}</span></div>}
+                    </td>
                     <td className="col-p">{mat?.nombre_material || '(material eliminado)'}</td>
                     <td style={{ textAlign:'right' }} className="col-num">{Number(m.cantidad || 0).toLocaleString('es-PE')} <span style={{ color:'var(--tm)', fontSize:11 }}>{m.unidad || mat?.unidad || ''}</span></td>
                     <td>{pers ? `${pers.nombres} ${pers.apellidos}` : (prov?.razon_social || '—')}</td>
@@ -161,6 +336,17 @@ function MovMaterialesPage({ showToast }) {
                       ? <span className="badge b-amber" title={m.sync_status}>⏱</span>
                       : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}
                     </td>
+                    {isAdmin && (
+                      <td style={{ textAlign:'center' }}>
+                        {puedeReversar ? (
+                          <button className="btn btn-red btn-xs" title="Reversar movimiento" onClick={()=>setReversoTarget(m)}>
+                            <JxIcon name="arrowOut" size={10}/>Reversar
+                          </button>
+                        ) : (
+                          <span style={{ fontSize:10, color:'var(--tm)' }}>—</span>
+                        )}
+                      </td>
+                    )}
                   </tr>
                 );
               })}
@@ -172,6 +358,16 @@ function MovMaterialesPage({ showToast }) {
         </div>
       </div>
       )}
+
+      {reversoTarget && (
+        <ReversoModal
+          mov={reversoTarget}
+          tipo="mat"
+          lookupNombre={(m)=>lookupMat(m.material_id)?.nombre_material || '(material)'}
+          onClose={()=>setReversoTarget(null)}
+          onConfirm={handleReversoMaterial}
+        />
+      )}
     </div>
   );
 }
@@ -179,9 +375,14 @@ function MovMaterialesPage({ showToast }) {
 // ─── MOV. HERRAMIENTAS PAGE ───────────────────────────────
 function MovHerramientasPage({ showToast }) {
   const obraId = useObraActiva();
-  const { data: movs, loading } = window.__hooks.useMovimientosHerramientas(obraId);
+  const auth = window.__useAuth ? window.__useAuth() : null;
+  const movHook = window.__hooks.useMovimientosHerramientas(obraId);
+  const { data: movs, loading } = movHook;
   const { data: herramientas } = window.__hooks.useHerramientas(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
+
+  const [reversoTarget, setReversoTarget] = uSM(null);
+  const isAdmin = auth?.profile?.rol === 'admin';
 
   const [q, setQ] = uSM('');
   const [accion, setAccion] = uSM('todas');
@@ -224,6 +425,70 @@ function MovHerramientasPage({ showToast }) {
   const danadasRecientes = uMM(() =>
     sorted.filter(m => m.estado_devolucion === 'malo' && (m.fecha || '') >= sevenDaysAgo)
   , [sorted]);
+
+  // ── Reversar movimiento de herramientas ──────────────────
+  const reversedSet = uMM(() => {
+    const s = new Set();
+    (movs || []).forEach(m => { if (m.reverses_id) s.add(m.reverses_id); });
+    return s;
+  }, [movs]);
+
+  const handleReversoHerramienta = async (motivo) => {
+    if (!reversoTarget) return;
+    const original = reversoTarget;
+    if (original.reversed_by_id) throw new Error('Este movimiento ya fue reversado.');
+    if (original.reverses_id)    throw new Error('No se puede reversar un movimiento que ya es un reverso.');
+
+    const nowIso = new Date().toISOString();
+    const fecha = nowIso.slice(0, 10);
+    const hora = nowIso.slice(11, 16);
+    const accionInv = invertirAccionHerramienta(original.accion);
+
+    const reverso = await movHook.create({
+      obra_id: original.obra_id,
+      herramienta_id: original.herramienta_id,
+      fecha, hora,
+      accion: accionInv,
+      responsable_id: original.responsable_id || null,
+      estado_salida: original.estado_salida || null,
+      estado_devolucion: original.estado_devolucion || null,
+      observaciones: 'REVERSO: ' + motivo,
+      reverses_id: original.id,
+    });
+
+    try {
+      await movHook.update(original.id, { reversed_by_id: reverso.id });
+    } catch (e) {
+      await window.__db.movimientos_herramientas.update(original.id, { reversed_by_id: reverso.id });
+    }
+
+    // Ajustar estado/disponibilidad de la herramienta de forma simple:
+    // si el reverso es 'entrada' (devolución) → disponible=true; si es 'salida' → disponible=false.
+    try {
+      const h = herramientas?.find(x => x.id === original.herramienta_id);
+      if (h) {
+        const patch = {};
+        if (accionInv === 'entrada' || accionInv === 'reposicion') patch.disponible = true;
+        if (accionInv === 'salida' || accionInv === 'mantenimiento') patch.disponible = false;
+        if (accionInv === 'baja') patch.estado_actual = 'baja';
+        if (Object.keys(patch).length) await window.__db.herramientas.update(h.id, patch);
+      }
+    } catch (e) {}
+
+    try {
+      await window.__logAudit?.({
+        action: 'insert',
+        table: 'movimientos_herramientas',
+        recordId: reverso.id,
+        newData: reverso,
+        reason: `Reverso del movimiento ${original.id}: ${motivo}`,
+      });
+    } catch (e) {}
+
+    setReversoTarget(null);
+    movHook.refresh && movHook.refresh();
+    showToast('Movimiento reversado correctamente', 'green');
+  };
 
   if (loading || !obraId) return <div className="page-wrap"><div className="empty-state"><JxIcon name="tool" size={32} color="var(--tm)"/><p>Cargando movimientos…</p></div></div>;
 
@@ -270,6 +535,7 @@ function MovHerramientasPage({ showToast }) {
               <th>Fecha / Hora</th><th>Herramienta</th><th>Acción</th>
               <th>Responsable</th><th>Estado Salida</th><th>Estado Devol.</th>
               <th>Observaciones</th><th>Sync</th>
+              {isAdmin && <th style={{ textAlign:'center' }}>Acción</th>}
             </tr></thead>
             <tbody>
               {filtered.map(m=>{
@@ -277,11 +543,19 @@ function MovHerramientasPage({ showToast }) {
                 const h = lookupHerr(m.herramienta_id);
                 const p = lookupPers(m.responsable_id);
                 const danado = m.estado_devolucion === 'malo';
+                const yaReversado = !!m.reversed_by_id || reversedSet.has(m.id);
+                const esReverso = !!m.reverses_id;
+                const reversoOriginalShort = esReverso ? String(m.reverses_id).slice(0, 6) : '';
+                const puedeReversar = isAdmin && !yaReversado && !esReverso;
                 return (
-                  <tr key={m.id} style={{ background: danado ? 'rgba(231,76,60,0.06)' : '' }}>
+                  <tr key={m.id} style={{ background: danado ? 'rgba(231,76,60,0.06)' : '', opacity: yaReversado ? 0.55 : 1 }}>
                     <td className="col-m">{m.fecha || '—'}<br/><span style={{ fontSize:11 }}>{m.hora || ''}</span></td>
                     <td className="col-p">{h?.nombre_herramienta || '(herramienta eliminada)'}</td>
-                    <td><span className={`badge ${a.cls}`}><JxIcon name={a.icon} size={10}/>{a.lbl}</span></td>
+                    <td>
+                      <span className={`badge ${a.cls}`}><JxIcon name={a.icon} size={10}/>{a.lbl}</span>
+                      {yaReversado && <div style={{ marginTop:4 }}><span className="badge b-gray" title="Movimiento reversado">Reversado</span></div>}
+                      {esReverso && <div style={{ marginTop:4 }}><span className="badge b-amber" title={`Reverso del movimiento ${m.reverses_id}`}>Reverso de #{reversoOriginalShort}</span></div>}
+                    </td>
                     <td>{p ? `${p.nombres} ${p.apellidos}` : '—'}</td>
                     <td>{m.estado_salida ? <span className={`badge ${EST_HER[m.estado_salida]||'b-gray'}`} style={{ textTransform:'capitalize' }}>{m.estado_salida}</span> : <span className="col-m">—</span>}</td>
                     <td>{m.estado_devolucion ? <span className={`badge ${EST_HER[m.estado_devolucion]||'b-gray'}`} style={{ textTransform:'capitalize' }}>{m.estado_devolucion}</span> : <span className="col-m">—</span>}</td>
@@ -290,6 +564,17 @@ function MovHerramientasPage({ showToast }) {
                       ? <span className="badge b-amber" title={m.sync_status}>⏱</span>
                       : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}
                     </td>
+                    {isAdmin && (
+                      <td style={{ textAlign:'center' }}>
+                        {puedeReversar ? (
+                          <button className="btn btn-red btn-xs" title="Reversar movimiento" onClick={()=>setReversoTarget(m)}>
+                            <JxIcon name="arrowOut" size={10}/>Reversar
+                          </button>
+                        ) : (
+                          <span style={{ fontSize:10, color:'var(--tm)' }}>—</span>
+                        )}
+                      </td>
+                    )}
                   </tr>
                 );
               })}
@@ -301,6 +586,16 @@ function MovHerramientasPage({ showToast }) {
         </div>
       </div>
       )}
+
+      {reversoTarget && (
+        <ReversoModal
+          mov={reversoTarget}
+          tipo="her"
+          lookupNombre={(m)=>lookupHerr(m.herramienta_id)?.nombre_herramienta || '(herramienta)'}
+          onClose={()=>setReversoTarget(null)}
+          onConfirm={handleReversoHerramienta}
+        />
+      )}
     </div>
   );
 }
@@ -310,9 +605,11 @@ function ProveedoresPage({ showToast }) {
   // Hooks SIEMPRE al top-level del componente, nunca dentro de handlers/callbacks
   // (llamarlos en un onClick rompe las reglas de React → minified error #321).
   const auth = window.__useAuth ? window.__useAuth() : null;
+  const isAdmin = auth?.profile?.rol === 'admin';
 
   const [provs, setProvs] = uSM([]);
   const [loading, setLoading] = uSM(true);
+  const [requestTarget, setRequestTarget] = uSM(null);
 
   uEM(() => {
     const load = () => window.__db.proveedores.toArray().then(d => { setProvs(d); setLoading(false); });
@@ -470,9 +767,15 @@ function ProveedoresPage({ showToast }) {
               </div>
               <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:6, flexShrink:0 }}>
                 <span className={`badge ${p.estado==='activo'?'b-green':'b-gray'}`} style={{ textTransform:'capitalize' }}>{p.estado || 'activo'}</span>
-                <button className="btn btn-ghost btn-xs" title="Editar proveedor" onClick={()=>openEditProv(p)}>
-                  <JxIcon name="edit" size={11}/>
-                </button>
+                {isAdmin ? (
+                  <button className="btn btn-ghost btn-xs" title="Editar proveedor" onClick={()=>openEditProv(p)}>
+                    <JxIcon name="edit" size={11}/>
+                  </button>
+                ) : (
+                  <button className="btn btn-ghost btn-xs" title="Solicitar cambio" onClick={()=>setRequestTarget(p)}>
+                    <JxIcon name="alert" size={11}/>
+                  </button>
+                )}
               </div>
             </div>
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:8 }}>
@@ -534,6 +837,28 @@ function ProveedoresPage({ showToast }) {
           <button className="btn btn-amber" onClick={handleSubmit}><JxIcon name="check" size={13}/>{editingId ? 'Guardar Cambios' : 'Guardar Proveedor'}</button>
         </div>
       </Modal>}
+
+      {requestTarget && (
+        <RequestChangeModal
+          table="proveedores"
+          record={requestTarget}
+          recordLabel={requestTarget.razon_social || requestTarget.ruc}
+          fields={[
+            { key: 'razon_social', label: 'Razón Social' },
+            { key: 'ruc', label: 'RUC' },
+            { key: 'tipo_proveedor', label: 'Tipo' },
+            { key: 'contacto', label: 'Contacto' },
+            { key: 'telefono', label: 'Teléfono' },
+            { key: 'correo', label: 'Correo' },
+            { key: 'direccion', label: 'Dirección' },
+            { key: 'estado', label: 'Estado', options: [
+              { value: 'activo', label: 'Activo' }, { value: 'inactivo', label: 'Inactivo' },
+            ]},
+          ]}
+          showToast={showToast}
+          onClose={() => setRequestTarget(null)}
+        />
+      )}
     </div>
   );
 }

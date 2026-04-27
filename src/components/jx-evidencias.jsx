@@ -142,7 +142,9 @@ function EvidenciasPage({ showToast }) {
     let cancelled = false;
     const findObra = async () => {
       const obras = await window.__db.obras.toArray();
-      const activa = obras.find(o => !o.deleted_at);
+      const stored = window.__getObraActivaId?.();
+      const activa = (stored && obras.find(o => o.id === stored && !o.deleted_at))
+                  || obras.find(o => !o.deleted_at);
       if (activa && !cancelled) setObraId(activa.id);
       else if (!cancelled) setTimeout(findObra, 500);
     };

@@ -15,7 +15,9 @@ function useObraActiva() {
     let cancelled = false;
     const find = async () => {
       const obras = await window.__db.obras.toArray();
-      const a = obras.find(o => !o.deleted_at);
+      const stored = window.__getObraActivaId?.();
+      const a = (stored && obras.find(o => o.id === stored && !o.deleted_at))
+             || obras.find(o => !o.deleted_at);
       if (a) { if (!cancelled) setObraId(a.id); }
       else if (!cancelled) setTimeout(find, 500);
     };
@@ -278,9 +280,23 @@ function CostosPage() {
 function IncidenciasPage({ showToast }) {
   const obraId = useObraActiva();
   const { data: incidencias, loading, create: createInc, update: updateInc } = window.__hooks.useIncidencias(obraId);
+  const auth = window.__useAuth ? window.__useAuth() : null;
+  const isAdmin = auth?.profile?.rol === 'admin';
   const [modal, setModal] = uSG(null);
   const [form, setForm] = uSG({});
   const [filtro, setFiltro] = uSG('todas');
+  const [editingId, setEditingId] = uSG(null);
+
+  const openEditIncidencia = (i) => {
+    setForm({
+      tipo_incidencia: i.tipo_incidencia || 'seguridad',
+      severidad: i.severidad || 'media',
+      descripcion: i.descripcion || '',
+      estado: i.estado || 'abierta',
+    });
+    setEditingId(i.id);
+    setModal('editar');
+  };
 
   const SEVERIDAD = {
     baja:    { color:'var(--blue)',   bg:'rgba(52,152,219,0.08)', label:'Baja' },
@@ -315,16 +331,35 @@ function IncidenciasPage({ showToast }) {
   const handleCrear = async () => {
     if (!form.descripcion) { showToast('Falta descripción', 'red'); return; }
     try {
-      await createInc({
-        obra_id: obraId,
-        tipo_incidencia: form.tipo_incidencia || 'seguridad',
-        severidad: form.severidad || 'media',
-        descripcion: form.descripcion,
-        modulo_origen: form.tipo_incidencia,
-        estado: 'abierta',
-      });
-      showToast('Incidencia creada', 'green');
-      setModal(null); setForm({});
+      if (editingId) {
+        const oldData = incidencias.find(x => x.id === editingId);
+        const nuevoEstado = form.estado || 'abierta';
+        const newFields = {
+          tipo_incidencia: form.tipo_incidencia || 'seguridad',
+          severidad: form.severidad || 'media',
+          descripcion: form.descripcion,
+          modulo_origen: form.tipo_incidencia || oldData?.modulo_origen || null,
+          estado: nuevoEstado,
+          resuelto_en: (nuevoEstado === 'resuelta' || nuevoEstado === 'cerrada')
+            ? (oldData?.resuelto_en || new Date().toISOString())
+            : null,
+        };
+        await updateInc(editingId, newFields);
+        try { await window.__logAudit?.({ action:'update', table:'incidencias', recordId:editingId, oldData, newData:newFields }); } catch(e) {}
+        showToast('Incidencia actualizada', 'green');
+      } else {
+        const created = await createInc({
+          obra_id: obraId,
+          tipo_incidencia: form.tipo_incidencia || 'seguridad',
+          severidad: form.severidad || 'media',
+          descripcion: form.descripcion,
+          modulo_origen: form.tipo_incidencia,
+          estado: 'abierta',
+        });
+        try { await window.__logAudit?.({ action:'insert', table:'incidencias', recordId:created?.id, newData:created }); } catch(e) {}
+        showToast('Incidencia creada', 'green');
+      }
+      setModal(null); setForm({}); setEditingId(null);
     } catch (e) {
       showToast('Error: ' + e.message, 'red');
     }
@@ -332,10 +367,12 @@ function IncidenciasPage({ showToast }) {
 
   const cambiarEstado = async (inc, nuevoEstado) => {
     try {
-      await updateInc(inc.id, {
+      const newFields = {
         estado: nuevoEstado,
         resuelto_en: (nuevoEstado === 'resuelta' || nuevoEstado === 'cerrada') ? new Date().toISOString() : null,
-      });
+      };
+      await updateInc(inc.id, newFields);
+      try { await window.__logAudit?.({ action:'update', table:'incidencias', recordId:inc.id, oldData:inc, newData:newFields, reason:`Cambio de estado: ${inc.estado} → ${nuevoEstado}` }); } catch(e) {}
       showToast(`Incidencia marcada como "${ESTADO[nuevoEstado].label}"`, 'green');
     } catch (e) {
       showToast('Error: ' + e.message, 'red');
@@ -348,7 +385,7 @@ function IncidenciasPage({ showToast }) {
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div><div className="pg-title">Incidencias</div><div className="pg-sub">{incidencias.length} registradas · {stats.abiertas} abiertas · {stats.criticas} críticas</div></div>
-        <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setModal('nueva');}}><JxIcon name="plus" size={13}/>Nueva Incidencia</button>
+        <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setEditingId(null); setModal('nueva');}}><JxIcon name="plus" size={13}/>Nueva Incidencia</button>
       </div>
 
       <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:18}}>
@@ -393,10 +430,13 @@ function IncidenciasPage({ showToast }) {
                     <div style={{fontSize:11,color:'var(--tm)'}}>{i.created_at?.slice(0,16).replace('T',' ')} · módulo: {i.modulo_origen || '—'}</div>
                   </div>
                 </div>
-                <div style={{display:'flex',gap:6,flexShrink:0}}>
+                <div style={{display:'flex',gap:6,flexShrink:0,alignItems:'center'}}>
                   {i.estado === 'abierta' && <button className="btn btn-blue btn-xs" onClick={()=>cambiarEstado(i,'en_revision')}>En revisión</button>}
                   {(i.estado === 'abierta' || i.estado === 'en_revision') && <button className="btn btn-green btn-xs" onClick={()=>cambiarEstado(i,'resuelta')}>Resolver</button>}
                   {i.estado === 'resuelta' && <button className="btn btn-ghost btn-xs" onClick={()=>cambiarEstado(i,'cerrada')}>Cerrar</button>}
+                  {isAdmin && <button className="btn btn-ghost btn-xs" title="Editar incidencia" onClick={()=>openEditIncidencia(i)}>
+                    <JxIcon name="edit" size={11}/>
+                  </button>}
                 </div>
               </div>
             </div>
@@ -405,7 +445,7 @@ function IncidenciasPage({ showToast }) {
       </div>
       )}
 
-      {modal === 'nueva' && <Modal title="Nueva Incidencia" icon="alertCircle" onClose={()=>setModal(null)}>
+      {(modal === 'nueva' || modal === 'editar') && <Modal title={editingId ? 'Editar Incidencia' : 'Nueva Incidencia'} icon="alertCircle" onClose={()=>{setModal(null); setEditingId(null); setForm({});}}>
         <div className="g2">
           <div><label className="flabel">Tipo</label>
             <select className="fi" value={form.tipo_incidencia||''} onChange={e=>setForm({...form, tipo_incidencia:e.target.value})}>
@@ -420,11 +460,19 @@ function IncidenciasPage({ showToast }) {
               <option value="alta">Alta</option><option value="critica">Crítica</option>
             </select>
           </div>
+          {editingId && <div style={{gridColumn:'1/-1'}}><label className="flabel">Estado</label>
+            <select className="fi" value={form.estado||'abierta'} onChange={e=>setForm({...form, estado:e.target.value})}>
+              <option value="abierta">Abierta</option>
+              <option value="en_revision">En Revisión</option>
+              <option value="resuelta">Resuelta</option>
+              <option value="cerrada">Cerrada</option>
+            </select>
+          </div>}
           <div style={{gridColumn:'1/-1'}}><label className="flabel">Descripción *</label><textarea className="fi" rows={4} placeholder="Describe la incidencia..." value={form.descripcion||''} onChange={e=>setForm({...form, descripcion:e.target.value})}/></div>
         </div>
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={()=>setModal(null)}>Cancelar</button>
-          <button className="btn btn-amber" onClick={handleCrear}><JxIcon name="check" size={13}/>Crear Incidencia</button>
+          <button className="btn btn-ghost" onClick={()=>{setModal(null); setEditingId(null); setForm({});}}>Cancelar</button>
+          <button className="btn btn-amber" onClick={handleCrear}><JxIcon name="check" size={13}/>{editingId ? 'Guardar Cambios' : 'Crear Incidencia'}</button>
         </div>
       </Modal>}
     </div>
