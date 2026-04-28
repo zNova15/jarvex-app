@@ -198,7 +198,7 @@ function MaterialesPage({ showToast }) {
     if (!confirm(`¿Eliminar el material "${m.nombre_material}"?\n\nEsta acción se sincronizará al servidor. Los movimientos históricos no se verán afectados.`)) return;
     try {
       await updateMaterial(m.id, { deleted_at: new Date().toISOString() });
-      try { await window.__logAudit?.({ action:'delete', table:'materiales', recordId:m.id, oldData:m, reason:'Eliminación manual (modo prueba)' }); } catch(e) {}
+      try { await window.__logAudit?.({ action:'delete', table:'materiales', recordId:m.id, oldData:m, reason:'Eliminación manual (modo edición)' }); } catch(e) {}
       showToast(`Material "${m.nombre_material}" eliminado`, 'amber');
     } catch (e) { showToast('Error al eliminar: ' + (e.message||e), 'red'); }
   };
@@ -451,7 +451,7 @@ function MaterialesPage({ showToast }) {
                             <JxIcon name="edit" size={11}/>
                           </button>
                           {canDelete && (
-                            <button className="btn btn-red btn-xs" title="Eliminar (solo modo prueba)" onClick={()=>handleDeleteMaterial(m)} style={{ marginLeft:4 }}>
+                            <button className="btn btn-red btn-xs" title="Eliminar (solo modo edición)" onClick={()=>handleDeleteMaterial(m)} style={{ marginLeft:4 }}>
                               <JxIcon name="trash" size={11}/>
                             </button>
                           )}
@@ -721,7 +721,7 @@ function HerramientasPage({ showToast }) {
     if (!confirm(`¿Eliminar la herramienta "${h.nombre_herramienta}"?\n\nEsta acción se sincronizará al servidor.`)) return;
     try {
       await updateHerr(h.id, { deleted_at: new Date().toISOString() });
-      try { await window.__logAudit?.({ action:'delete', table:'herramientas', recordId:h.id, oldData:h, reason:'Eliminación manual (modo prueba)' }); } catch(e) {}
+      try { await window.__logAudit?.({ action:'delete', table:'herramientas', recordId:h.id, oldData:h, reason:'Eliminación manual (modo edición)' }); } catch(e) {}
       showToast(`Herramienta "${h.nombre_herramienta}" eliminada`, 'amber');
     } catch (e) { showToast('Error al eliminar: ' + (e.message||e), 'red'); }
   };
@@ -893,7 +893,7 @@ function HerramientasPage({ showToast }) {
                             <JxIcon name="edit" size={11}/>
                           </button>
                           {canDelete && (
-                            <button className="btn btn-red btn-xs" title="Eliminar (solo modo prueba)" onClick={()=>handleDeleteHerr(h)} style={{ marginLeft:4 }}>
+                            <button className="btn btn-red btn-xs" title="Eliminar (solo modo edición)" onClick={()=>handleDeleteHerr(h)} style={{ marginLeft:4 }}>
                               <JxIcon name="trash" size={11}/>
                             </button>
                           )}
@@ -1036,6 +1036,9 @@ function PersonalPage({ showToast }) {
   }, []);
 
   const { data: personal, loading, create: createPersonal, update: updatePersonal } = window.__hooks.usePersonal(obraId);
+  const { data: obrasAll } = window.__hooks.useObras();
+  const obrasActivas = uM(() => (obrasAll || []).filter(o => !o.deleted_at), [obrasAll]);
+  const obraNombre = (id) => obrasActivas.find(o => o.id === id)?.nombre_obra || '—';
 
   const consultarRENIEC = async () => {
     const dni = (form.dni || '').trim();
@@ -1083,6 +1086,7 @@ function PersonalPage({ showToast }) {
       fecha_ingreso: p.fecha_ingreso || '',
       telefono: p.telefono || '',
       estado: p.estado || 'activo',
+      obra_id: p.obra_id || obraId || '',
     });
     setEditingId(p.id);
     setModal('editar');
@@ -1093,7 +1097,7 @@ function PersonalPage({ showToast }) {
     if (!confirm(`¿Eliminar al trabajador "${p.nombres} ${p.apellidos}"?\n\nLas asistencias y movimientos históricos no se borran.`)) return;
     try {
       await updatePersonal(p.id, { deleted_at: new Date().toISOString() });
-      try { await window.__logAudit?.({ action:'delete', table:'personal', recordId:p.id, oldData:p, reason:'Eliminación manual (modo prueba)' }); } catch(e) {}
+      try { await window.__logAudit?.({ action:'delete', table:'personal', recordId:p.id, oldData:p, reason:'Eliminación manual (modo edición)' }); } catch(e) {}
       showToast(`Trabajador "${p.nombres} ${p.apellidos}" eliminado`, 'amber');
     } catch (e) { showToast('Error al eliminar: ' + (e.message||e), 'red'); }
   };
@@ -1120,6 +1124,7 @@ function PersonalPage({ showToast }) {
           fecha_ingreso: form.fecha_ingreso || null,
           telefono: form.telefono?.trim() || null,
           estado: form.estado || 'activo',
+          obra_id: form.obra_id || oldData?.obra_id || obraId,
         };
         await updatePersonal(editingId, newFields);
         try { await window.__logAudit?.({ action:'update', table:'personal', recordId:editingId, oldData, newData:newFields }); } catch(e) {}
@@ -1193,7 +1198,7 @@ function PersonalPage({ showToast }) {
                           <JxIcon name="edit" size={11}/>
                         </button>
                         {canDelete && (
-                          <button className="btn btn-red btn-xs" title="Eliminar (solo modo prueba)" onClick={()=>handleDeletePersonal(p)} style={{ marginLeft:4 }}>
+                          <button className="btn btn-red btn-xs" title="Eliminar (solo modo edición)" onClick={()=>handleDeletePersonal(p)} style={{ marginLeft:4 }}>
                             <JxIcon name="trash" size={11}/>
                           </button>
                         )}
@@ -1251,6 +1256,25 @@ function PersonalPage({ showToast }) {
                 <option value="suspendido">Suspendido</option>
                 <option value="retirado">Retirado</option>
               </select>
+            </div>
+          )}
+          {editingId && isAdmin && (
+            <div style={{ gridColumn:'1 / -1' }}>
+              <label className="flabel">
+                <JxIcon name="building" size={11}/> Obra asignada
+              </label>
+              <select className="fi"
+                value={form.obra_id || ''}
+                onChange={e=>setForm({...form, obra_id:e.target.value})}>
+                {obrasActivas.map(o => (
+                  <option key={o.id} value={o.id}>
+                    {o.nombre_obra || o.nombre || '(sin nombre)'}{o.cliente ? ` — ${o.cliente}` : ''}
+                  </option>
+                ))}
+              </select>
+              <div style={{ fontSize:11, color:'var(--tm)', marginTop:4 }}>
+                Cambia esto para mover al trabajador a otra obra. Su asistencia y movimientos históricos quedan asociados a su obra anterior.
+              </div>
             </div>
           )}
         </div>

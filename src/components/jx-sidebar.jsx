@@ -288,8 +288,8 @@ function Sidebar({ current, onNav, collapsed, onToggle }) {
               letterSpacing: 0.5,
               padding: '5px 8px',
             }}
-            title={isPrueba ? 'Modo prueba activo' : 'Modo producción activo'}>
-            {isPrueba ? '🧪 MODO PRUEBA' : '🔒 PRODUCCIÓN'}
+            title={isPrueba ? 'Modo edición activo' : 'Modo producción activo'}>
+            {isPrueba ? '✏️ MODO EDICIÓN' : '🔒 PRODUCCIÓN'}
           </div>
         </div>
       )}

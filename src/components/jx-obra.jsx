@@ -63,7 +63,7 @@ function ObrasPage({ showToast }) {
     if (!confirm(`¿Eliminar la obra "${o.nombre_obra}"?\n\nESTO ES IRREVERSIBLE. Todos los registros asociados (partidas, materiales, asistencia, movimientos) quedarán huérfanos.\n\nSolo úsalo para limpiar pruebas.`)) return;
     try {
       await updateObra(o.id, { deleted_at: new Date().toISOString() });
-      try { await window.__logAudit?.({ action:'delete', table:'obras', recordId:o.id, oldData:o, reason:'Eliminación manual (modo prueba)' }); } catch(e) {}
+      try { await window.__logAudit?.({ action:'delete', table:'obras', recordId:o.id, oldData:o, reason:'Eliminación manual (modo edición)' }); } catch(e) {}
       showToast(`Obra "${o.nombre_obra}" eliminada`, 'amber');
     } catch (e) { showToast('Error al eliminar: ' + (e.message||e), 'red'); }
   };
@@ -161,7 +161,7 @@ function ObrasPage({ showToast }) {
                       <JxIcon name="edit" size={11}/>
                     </button>
                     {canDelete && (
-                      <button className="btn btn-red btn-xs" title="Eliminar (solo modo prueba)" onClick={(e)=>{ e.stopPropagation(); handleDeleteObra(o); }}>
+                      <button className="btn btn-red btn-xs" title="Eliminar (solo modo edición)" onClick={(e)=>{ e.stopPropagation(); handleDeleteObra(o); }}>
                         <JxIcon name="trash" size={11}/>
                       </button>
                     )}

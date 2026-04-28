@@ -369,8 +369,53 @@ const PERM_MATRIX = {
   solo_lectura: PERM_MATRIX_MODULES.map(m => m === 'Usuarios/Config' ? 'x' : 'r'),
 };
 
+// Storage local de overrides de permisos por rol (UI-level)
+const PERM_STORAGE_KEY = 'jx_perm_overrides_v1';
+function loadPermOverrides() {
+  try { return JSON.parse(localStorage.getItem(PERM_STORAGE_KEY) || '{}'); }
+  catch { return {}; }
+}
+function savePermOverrides(obj) {
+  try { localStorage.setItem(PERM_STORAGE_KEY, JSON.stringify(obj)); } catch {}
+  try { window.dispatchEvent(new CustomEvent('jx_perms_changed', { detail: obj })); } catch {}
+}
+// Devuelve la matriz efectiva: defaults + overrides aplicados
+function getEffectivePermMatrix() {
+  const ov = loadPermOverrides();
+  const out = {};
+  ROL_KEYS.forEach(r => {
+    const base = (PERM_MATRIX[r] || PERM_MATRIX_MODULES.map(()=>'r')).slice();
+    const rolOv = ov[r] || {};
+    PERM_MATRIX_MODULES.forEach((mod, i) => {
+      if (rolOv[mod] && ['w','r','x'].includes(rolOv[mod])) base[i] = rolOv[mod];
+    });
+    out[r] = base;
+  });
+  return out;
+}
+// Exponer para que otras pantallas puedan consultar
+window.__getEffectivePermMatrix = getEffectivePermMatrix;
+window.__hasPerm = function(rol, modulo, nivel = 'r') {
+  if (!rol) return false;
+  if (rol === 'admin') return true;
+  const m = getEffectivePermMatrix()[rol] || [];
+  const idx = PERM_MATRIX_MODULES.indexOf(modulo);
+  if (idx < 0) return false;
+  const v = m[idx];
+  if (nivel === 'w') return v === 'w';
+  if (nivel === 'r') return v === 'w' || v === 'r';
+  return v !== 'x';
+};
+
 function RolesPage() {
   const [counts, setCounts] = uSAd({});
+  const auth = window.__useAuth ? window.__useAuth() : {};
+  const isAdmin = auth?.profile?.rol === 'admin';
+  const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: false };
+  const canEdit = isAdmin && appMode.isPrueba;
+  const [overrides, setOverrides] = uSAd(loadPermOverrides());
+  const matrix = uMAd(() => getEffectivePermMatrix(), [overrides]);
+
   uEAd(() => {
     const load = async () => {
       try {
@@ -387,26 +432,55 @@ function RolesPage() {
     return () => clearInterval(t);
   }, []);
 
-  const Cell = ({ v }) => {
-    if (v === 'w') return (
-      <div style={{ display:'flex', justifyContent:'center' }}>
-        <span style={{ width:22, height:22, borderRadius:5, background:'rgba(46,204,113,0.18)', border:'1px solid rgba(46,204,113,0.4)', display:'flex', alignItems:'center', justifyContent:'center' }}>
-          <JxIcon name="check" size={12} color="var(--green)"/>
-        </span>
-      </div>
-    );
-    if (v === 'r') return (
-      <div style={{ display:'flex', justifyContent:'center' }}>
-        <span style={{ width:22, height:22, borderRadius:5, background:'rgba(242,183,5,0.18)', border:'1px solid rgba(242,183,5,0.4)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:13 }}>
-          👁
-        </span>
-      </div>
+  const cycle = (rol, modIdx) => {
+    if (!canEdit) return;
+    if (rol === 'admin') return; // admin nunca pierde permisos
+    const mod = PERM_MATRIX_MODULES[modIdx];
+    const cur = matrix[rol][modIdx];
+    const next = cur === 'w' ? 'r' : cur === 'r' ? 'x' : 'w';
+    const ov = { ...overrides };
+    ov[rol] = { ...(ov[rol] || {}), [mod]: next };
+    setOverrides(ov);
+    savePermOverrides(ov);
+    try { window.__logAudit?.({ action:'update', table:'permisos', recordId:`${rol}:${mod}`,
+      oldData:{ valor: cur }, newData:{ valor: next }, reason:`Cambio permiso ${rol} → ${mod}` }); } catch {}
+  };
+
+  const resetAll = () => {
+    if (!canEdit) return;
+    if (!confirm('¿Restaurar TODOS los permisos a los valores por defecto del sistema? Se eliminarán todas las personalizaciones.')) return;
+    setOverrides({});
+    savePermOverrides({});
+    try { window.__logAudit?.({ action:'delete', table:'permisos', recordId:'all', reason:'Reset matriz de permisos a defaults' }); } catch {}
+  };
+
+  const tieneOverrides = uMAd(() => {
+    return Object.keys(overrides).some(r => Object.keys(overrides[r] || {}).length > 0);
+  }, [overrides]);
+
+  const Cell = ({ v, rol, modIdx, custom }) => {
+    const cursor = canEdit && rol !== 'admin' ? 'pointer' : 'default';
+    const ring = custom ? 'inset 0 0 0 1px rgba(242,183,5,0.55)' : 'none';
+    const onClick = () => cycle(rol, modIdx);
+    const inner = v === 'w' ? (
+      <span style={{ width:22, height:22, borderRadius:5, background:'rgba(46,204,113,0.18)', border:'1px solid rgba(46,204,113,0.4)', display:'flex', alignItems:'center', justifyContent:'center', boxShadow:ring }}>
+        <JxIcon name="check" size={12} color="var(--green)"/>
+      </span>
+    ) : v === 'r' ? (
+      <span style={{ width:22, height:22, borderRadius:5, background:'rgba(242,183,5,0.18)', border:'1px solid rgba(242,183,5,0.4)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:13, boxShadow:ring }}>
+        👁
+      </span>
+    ) : (
+      <span style={{ width:22, height:22, borderRadius:5, background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)', display:'flex', alignItems:'center', justifyContent:'center', color:'rgba(255,255,255,0.25)', fontSize:12, boxShadow:ring }}>
+        ✗
+      </span>
     );
     return (
-      <div style={{ display:'flex', justifyContent:'center' }}>
-        <span style={{ width:22, height:22, borderRadius:5, background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)', display:'flex', alignItems:'center', justifyContent:'center', color:'rgba(255,255,255,0.25)', fontSize:12 }}>
-          ✗
-        </span>
+      <div style={{ display:'flex', justifyContent:'center' }}
+           onClick={onClick}
+           title={canEdit && rol !== 'admin' ? `Click para cambiar (w → 👁 → ✗ → w)${custom ? ' · personalizado' : ''}` : (rol==='admin' ? 'El admin siempre tiene acceso completo' : 'Activa Modo Edición para cambiar permisos')}
+           style={{ cursor }}>
+        {inner}
       </div>
     );
   };
@@ -416,14 +490,33 @@ function RolesPage() {
       <div className="pg-hd frow-sb">
         <div>
           <div className="pg-title">Roles y Permisos</div>
-          <div className="pg-sub">Matriz informativa de permisos por rol del sistema</div>
+          <div className="pg-sub">
+            {canEdit
+              ? 'Click en cada celda para alternar permiso (w → 👁 → ✗). El admin siempre tiene acceso total.'
+              : 'Matriz de permisos por rol. Activa Modo Edición (siendo admin) para personalizar.'}
+          </div>
         </div>
+        {canEdit && tieneOverrides && (
+          <button className="btn btn-ghost btn-sm" onClick={resetAll} title="Restaurar a valores por defecto">
+            <JxIcon name="refresh" size={12}/> Restaurar defaults
+          </button>
+        )}
       </div>
 
-      <div className="card card-p" style={{ marginBottom:16, background:'rgba(52,152,219,0.08)', border:'1px solid rgba(52,152,219,0.25)' }}>
+      <div className="card card-p" style={{ marginBottom:16, background: canEdit ? 'rgba(242,183,5,0.07)' : 'rgba(52,152,219,0.08)', border: canEdit ? '1px solid rgba(242,183,5,0.3)' : '1px solid rgba(52,152,219,0.25)' }}>
         <div style={{ fontSize:12.5, color:'var(--ts)', display:'flex', gap:10, alignItems:'flex-start' }}>
-          <JxIcon name="info" size={14} color="var(--blue)"/>
-          <span>Esta matriz refleja los permisos configurados en las políticas RLS de Supabase. Para modificarlos, edita las policies SQL.</span>
+          <JxIcon name={canEdit ? 'alert' : 'info'} size={14} color={canEdit ? 'var(--amber)' : 'var(--blue)'}/>
+          <span>
+            {canEdit ? (
+              <>
+                <strong>Modo edición activo.</strong> Los cambios se guardan localmente y controlan qué módulos ven los usuarios en la app.
+                {' '}<strong style={{ color:'var(--amber)' }}>Importante:</strong> la seguridad real a nivel de base de datos sigue dependiendo de las políticas RLS de Supabase — esta matriz es una capa de UI/UX adicional.
+                {tieneOverrides && <> Las celdas con borde ámbar son personalizaciones tuyas.</>}
+              </>
+            ) : (
+              <>Esta matriz controla qué módulos ven los usuarios según su rol. Activa <strong>Modo Edición</strong> en Configuración → Sistema para personalizar.</>
+            )}
+          </span>
         </div>
       </div>
 
@@ -449,7 +542,15 @@ function RolesPage() {
         {PERM_MATRIX_MODULES.map((mod, i) => (
           <div key={mod} style={{ display:'grid', gridTemplateColumns:`200px repeat(${ROL_KEYS.length},1fr)`, borderBottom:'1px solid rgba(255,255,255,0.04)', background:i%2?'rgba(0,0,0,0.06)':'transparent', alignItems:'center' }}>
             <div style={{ padding:'10px 14px', fontSize:12.5, color:'var(--ts)' }}>{mod}</div>
-            {ROL_KEYS.map(r => <div key={r} style={{ padding:'8px 4px' }}><Cell v={PERM_MATRIX[r][i]}/></div>)}
+            {ROL_KEYS.map(r => {
+              const ovRol = overrides[r] || {};
+              const custom = Object.prototype.hasOwnProperty.call(ovRol, mod);
+              return (
+                <div key={r} style={{ padding:'8px 4px' }}>
+                  <Cell v={matrix[r][i]} rol={r} modIdx={i} custom={custom}/>
+                </div>
+              );
+            })}
           </div>
         ))}
         <div style={{ display:'flex', gap:18, padding:'12px 16px', background:'rgba(0,0,0,0.15)', fontSize:11.5, color:'var(--tm)' }}>
@@ -945,15 +1046,15 @@ function SistemaTab({ showToast }) {
             <JxIcon name={isPrueba ? 'alert' : 'lock'} size={14} color={isPrueba ? 'var(--amber)' : 'var(--green)'}/>
             Modo de Operación
             <span className={`badge ${isPrueba ? 'b-amber' : 'b-green'}`} style={{ marginLeft:6 }}>
-              {isPrueba ? '🧪 PRUEBA' : '🔒 PRODUCCIÓN'}
+              {isPrueba ? '✏️ EDICIÓN' : '🔒 PRODUCCIÓN'}
             </span>
           </div>
           <div style={{ display:'flex', gap:8 }} title={isAdmin ? '' : 'Solo el administrador puede cambiar el modo'}>
             <button
               className={`btn btn-sm ${mode==='prueba' ? 'btn-amber' : 'btn-ghost'}`}
               disabled={!isAdmin || mode==='prueba'}
-              onClick={()=>{ setMode('prueba'); showToast?.('Modo prueba activado','amber'); }}>
-              🧪 Prueba
+              onClick={()=>{ setMode('prueba'); showToast?.('Modo edición activado','amber'); }}>
+              ✏️ Edición
             </button>
             <button
               className={`btn btn-sm ${mode==='produccion' ? 'btn-amber' : 'btn-ghost'}`}
@@ -965,8 +1066,8 @@ function SistemaTab({ showToast }) {
         </div>
         <div style={{ fontSize:12.5, color:'var(--ts)', lineHeight:1.5 }}>
           {isPrueba
-            ? 'Modo prueba activo. Permite borrar datos en bloque para reiniciar. No usar en producción.'
-            : 'Modo producción activo. Eliminación masiva deshabilitada para prevenir pérdida accidental de datos.'}
+            ? 'Modo edición activo. El admin puede eliminar registros en bloque o individualmente, ajustar configuraciones avanzadas y reiniciar tablas. Cambia a producción cuando termines de configurar la obra.'
+            : 'Modo producción activo. Eliminación masiva deshabilitada para prevenir pérdida accidental. Edición y consulta normales siguen disponibles según rol.'}
         </div>
         {!isAdmin && (
           <div style={{ fontSize:11.5, color:'var(--tm)', marginTop:8, fontStyle:'italic' }}>
@@ -1030,7 +1131,7 @@ function SistemaTab({ showToast }) {
       {tableConfirm && (
         <Modal title={`Vaciar tabla: ${tableConfirm}`} icon="alert" onClose={()=>setTableConfirm(null)}>
           <div style={{ fontSize:13, color:'var(--ts)', marginBottom:12 }}>
-            ¿Borrar TODOS los registros de la tabla <code style={{ color:'var(--amber)' }}>{tableConfirm}</code> en este dispositivo? Esto NO afecta los datos en Supabase si ya fueron sincronizados. Modo: prueba.
+            ¿Borrar TODOS los registros de la tabla <code style={{ color:'var(--amber)' }}>{tableConfirm}</code> en este dispositivo ({(counts[tableConfirm]||0).toLocaleString()} registros)? Esto NO afecta los datos en Supabase si ya fueron sincronizados. Solo disponible en modo edición.
           </div>
           <div className="modal-actions">
             <button className="btn btn-ghost" onClick={()=>setTableConfirm(null)}>Cancelar</button>
@@ -1042,16 +1143,46 @@ function SistemaTab({ showToast }) {
       )}
 
       {confirm && (
-        <Modal title={confirm==='cache'?'Limpiar caché local':'Cerrar sesiones offline'} icon="alert" onClose={()=>setConfirm(null)}>
-          <div style={{ fontSize:13, color:'var(--ts)', marginBottom:12 }}>
-            {confirm === 'cache'
-              ? '¿Seguro que deseas borrar todos los datos locales? Se recargará la app y se sincronizará desde Supabase.'
-              : '¿Cerrar todas las sesiones offline guardadas? Tendrás que volver a iniciar sesión.'}
-          </div>
+        <Modal title={confirm==='cache'?'⚠️ Limpiar caché local':'Cerrar sesiones offline'} icon="alert" onClose={()=>setConfirm(null)}>
+          {confirm === 'cache' ? (
+            <div style={{ fontSize:13, color:'var(--ts)', marginBottom:12, lineHeight:1.55 }}>
+              <div style={{ background:'rgba(229,57,53,0.10)', border:'1px solid rgba(229,57,53,0.35)', borderRadius:8, padding:'10px 12px', marginBottom:12 }}>
+                <div style={{ fontWeight:700, color:'var(--red)', marginBottom:6, display:'flex', alignItems:'center', gap:6 }}>
+                  <JxIcon name="alert" size={13} color="var(--red)"/> Acción IRREVERSIBLE en este dispositivo
+                </div>
+                <div style={{ fontSize:12, color:'var(--ts)' }}>
+                  Vas a borrar <strong>{totalLocal.toLocaleString()} registros</strong> de <strong>{DB_TABLES_LIST.length} tablas</strong> de la base local (IndexedDB).
+                </div>
+              </div>
+
+              <div style={{ fontSize:12.5, fontWeight:600, color:'var(--tp)', marginBottom:6 }}>Esto borrará localmente:</div>
+              <ul style={{ margin:'0 0 12px 18px', padding:0, fontSize:12, color:'var(--tm)', lineHeight:1.7 }}>
+                <li>Todas las <strong>obras, partidas, materiales, herramientas y personal</strong> guardados en este equipo.</li>
+                <li>Todo el <strong>historial de movimientos</strong>, asistencia, valorizaciones y cronograma.</li>
+                <li>Cola de <strong>cambios pendientes de sincronizar</strong> (si hay algo offline sin subir, se pierde).</li>
+                <li>Auditoría local, solicitudes de cambio y notificaciones.</li>
+              </ul>
+
+              <div style={{ fontSize:12.5, fontWeight:600, color:'var(--green)', marginBottom:6 }}>NO se borra:</div>
+              <ul style={{ margin:'0 0 12px 18px', padding:0, fontSize:12, color:'var(--tm)', lineHeight:1.7 }}>
+                <li>Los datos en <strong>Supabase</strong> (la nube). Lo ya sincronizado se vuelve a bajar al recargar.</li>
+                <li>Tu cuenta de usuario ni los permisos.</li>
+              </ul>
+
+              <div style={{ background:'rgba(255,179,0,0.10)', border:'1px solid rgba(255,179,0,0.35)', borderRadius:8, padding:'10px 12px', fontSize:12, color:'var(--ts)' }}>
+                <strong style={{ color:'var(--amber)' }}>Antes de borrar:</strong> verifica que estés <strong>online</strong> y que la última sincronización haya terminado.
+                Si estás offline o tienes cambios sin subir, esos datos <strong>se perderán</strong>.
+              </div>
+            </div>
+          ) : (
+            <div style={{ fontSize:13, color:'var(--ts)', marginBottom:12 }}>
+              ¿Cerrar todas las sesiones offline guardadas en este dispositivo? Cualquier usuario que use la app sin internet tendrá que volver a iniciar sesión la próxima vez.
+            </div>
+          )}
           <div className="modal-actions">
             <button className="btn btn-ghost" onClick={()=>setConfirm(null)}>Cancelar</button>
             <button className="btn btn-red" disabled={busy} onClick={confirm==='cache'?clearLocal:clearAuth}>
-              {busy?'Procesando...':'Confirmar'}
+              {busy?'Procesando...':(confirm==='cache'?'Sí, borrar todo':'Confirmar')}
             </button>
           </div>
         </Modal>

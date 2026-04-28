@@ -18,6 +18,21 @@ export function useOfflineData(tabla, queryFn = null, deps = []) {
 
   const refresh = useCallback(() => setTick(t => t + 1), []);
 
+  // Refresh externo: importaciones masivas y sync remoto disparan
+  // 'jx_data_changed' (con detail.tabla) o 'jx_sync_pull' (sin detail).
+  useEffect(() => {
+    const onChange = (e) => {
+      const t = e?.detail?.tabla;
+      if (!t || t === tabla) refresh();
+    };
+    window.addEventListener('jx_data_changed', onChange);
+    window.addEventListener('jx_sync_pull', refresh);
+    return () => {
+      window.removeEventListener('jx_data_changed', onChange);
+      window.removeEventListener('jx_sync_pull', refresh);
+    };
+  }, [tabla, refresh]);
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);

@@ -38,6 +38,8 @@ function useObraActiva() {
 }
 
 // ─── INSUMOS POR PARTIDA ──────────────────────────────────
+// Comparativa Presupuestado (desde APU/Delphin → tabla insumos_partida)
+// vs Real (desde movimientos de materiales con partida_id asignado).
 function InsumosPage({ showToast }) {
   const obraId = useObraActiva();
   const { data: partidas } = window.__hooks.usePartidas(obraId);
@@ -45,55 +47,123 @@ function InsumosPage({ showToast }) {
   const { data: movimientos } = window.__hooks.useMovimientosMateriales(obraId);
 
   const [partidaSel, setPartidaSel] = uSG(null);
+  const [insumosPres, setInsumosPres] = uSG([]);
 
   uEG(() => {
     if (!partidaSel && partidas?.length > 0) setPartidaSel(partidas[0].id);
   }, [partidas]);
 
+  // Cargar insumos presupuestados desde la tabla insumos_partida (importados desde APU)
+  uEG(() => {
+    let cancelled = false;
+    if (!partidaSel) { setInsumosPres([]); return; }
+    (async () => {
+      try {
+        const rows = await window.__db.insumos_partida
+          .where('partida_id').equals(partidaSel)
+          .filter(r => !r.deleted_at)
+          .toArray();
+        if (!cancelled) setInsumosPres(rows);
+      } catch { if (!cancelled) setInsumosPres([]); }
+    })();
+    return () => { cancelled = true; };
+  }, [partidaSel]);
+
   const partida = partidas?.find(p => p.id === partidaSel);
 
-  const insumosCalc = uMG(() => {
-    if (!partida || !movimientos) return [];
+  // Real consumido desde movimientos
+  const realPorMaterial = uMG(() => {
+    if (!partida || !movimientos) return new Map();
     const movs = movimientos.filter(m => m.partida_id === partida.id && m.tipo_movimiento === 'salida');
-    const agrupado = {};
+    const agrupado = new Map();
     movs.forEach(m => {
       const key = m.material_id;
-      if (!agrupado[key]) {
-        const mat = materiales.find(x => x.id === m.material_id);
-        agrupado[key] = {
-          material_id: m.material_id,
-          nombre: mat?.nombre_material || '?',
-          unidad: mat?.unidad || '',
-          cantidad_real: 0,
-          costo_real: 0,
-        };
-      }
-      agrupado[key].cantidad_real += Number(m.cantidad);
-      agrupado[key].costo_real += Number(m.cantidad) * Number(m.precio_unitario_real || 0);
+      const cur = agrupado.get(key) || {
+        material_id: m.material_id,
+        cantidad_real: 0,
+        costo_real: 0,
+      };
+      cur.cantidad_real += Number(m.cantidad) || 0;
+      cur.costo_real += (Number(m.cantidad) || 0) * (Number(m.precio_unitario_real) || 0);
+      agrupado.set(key, cur);
     });
-    return Object.values(agrupado);
-  }, [partida, movimientos, materiales]);
+    return agrupado;
+  }, [partida, movimientos]);
+
+  // Filas combinadas: 1 fila por insumo presupuestado + 1 fila por consumido sin presupuesto
+  const filas = uMG(() => {
+    const rows = [];
+    // Map para emparejar: clave = código de insumo (ej: "M01")
+    const realPorCodigo = new Map();
+    realPorMaterial.forEach((r, matId) => {
+      const mat = materiales?.find(x => x.id === matId);
+      const codigo = mat?.codigo_s10 || mat?.id;
+      realPorCodigo.set(codigo, { ...r, mat });
+    });
+
+    insumosPres.forEach(ins => {
+      const matchReal = realPorCodigo.get(ins.insumo_codigo);
+      const cantPres = Number(ins.cantidad_presupuestada) || 0;
+      const precPres = Number(ins.precio_presupuestado) || 0;
+      const costoPres = cantPres * precPres;
+      const cantReal = matchReal?.cantidad_real || 0;
+      const costoReal = matchReal?.costo_real || 0;
+      rows.push({
+        codigo: ins.insumo_codigo,
+        nombre: ins.nombre_insumo,
+        tipo: ins.tipo_insumo,
+        unidad: ins.unidad,
+        cantPres, precPres, costoPres,
+        cantReal, costoReal,
+        desv: costoReal - costoPres,
+        existeEnAlmacen: !!matchReal?.mat,
+      });
+      if (matchReal) realPorCodigo.delete(ins.insumo_codigo);
+    });
+
+    // Materiales consumidos que NO estaban en el APU
+    realPorCodigo.forEach((r, codigo) => {
+      rows.push({
+        codigo: codigo || '—',
+        nombre: r.mat?.nombre_material || '(material)',
+        tipo: 'material',
+        unidad: r.mat?.unidad || '',
+        cantPres: 0, precPres: 0, costoPres: 0,
+        cantReal: r.cantidad_real, costoReal: r.costo_real,
+        desv: r.costo_real,
+        sinPresupuestar: true,
+        existeEnAlmacen: true,
+      });
+    });
+
+    return rows;
+  }, [insumosPres, realPorMaterial, materiales]);
 
   if (!obraId) return <div className="page-wrap"><div className="empty-state"><JxIcon name="layers" size={32} color="var(--tm)"/><p>Cargando insumos…</p></div></div>;
 
   if (!partidas?.length) {
     return (
       <div className="page-wrap">
-        <div className="pg-hd"><div><div className="pg-title">Insumos por Partida</div><div className="pg-sub">Recursos consumidos por partida</div></div></div>
-        <div className="card card-p empty-state"><JxIcon name="layers" size={40} color="var(--tm)"/><p>No hay partidas. Crea partidas primero en el módulo "Partidas".</p></div>
+        <div className="pg-hd"><div><div className="pg-title">Insumos por Partida</div><div className="pg-sub">Recursos presupuestados vs consumidos</div></div></div>
+        <div className="card card-p empty-state"><JxIcon name="layers" size={40} color="var(--tm)"/><p>No hay partidas. Crea partidas primero en el módulo "Partidas" o impórtalas desde Delphin.</p></div>
       </div>
     );
   }
 
-  const totalReal = insumosCalc.reduce((s,i) => s + i.costo_real, 0);
+  const totalPres = filas.reduce((s,r) => s + r.costoPres, 0);
+  const totalReal = filas.reduce((s,r) => s + r.costoReal, 0);
   const presupuesto = Number(partida?.costo_total_presupuestado || 0);
-  const desv = totalReal - presupuesto;
-  const desvPct = presupuesto > 0 ? (desv / presupuesto * 100) : 0;
+  const desv = totalReal - totalPres;
+  const desvPct = totalPres > 0 ? (desv / totalPres * 100) : 0;
+  const sinAPU = insumosPres.length === 0;
 
   return (
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
-        <div><div className="pg-title">Insumos por Partida</div><div className="pg-sub">Recursos consumidos (calculado desde movimientos asociados a la partida)</div></div>
+        <div>
+          <div className="pg-title">Insumos por Partida</div>
+          <div className="pg-sub">Comparativa <strong>presupuestado</strong> (APU/Delphin) vs <strong>real</strong> (movimientos)</div>
+        </div>
         <select className="fi" style={{width:'auto', maxWidth:380}} value={partidaSel||''} onChange={e=>setPartidaSel(e.target.value)}>
           {partidas.map(p => <option key={p.id} value={p.id}>{p.codigo_delfin ? p.codigo_delfin + ' — ' : ''}{p.nombre_partida}</option>)}
         </select>
@@ -102,36 +172,61 @@ function InsumosPage({ showToast }) {
       {partida && (
       <>
         <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:18}}>
-          <div className="card card-p"><div style={{fontSize:11,color:'var(--tm)'}}>Costo Presupuestado</div><div style={{fontSize:22,fontWeight:800,color:'var(--blue)',margin:'6px 0 2px'}}>{fmtSk(presupuesto)}</div></div>
-          <div className="card card-p"><div style={{fontSize:11,color:'var(--tm)'}}>Costo Real (movs)</div><div style={{fontSize:22,fontWeight:800,color:'var(--amber)',margin:'6px 0 2px'}}>{fmtSk(totalReal)}</div></div>
-          <div className="card card-p"><div style={{fontSize:11,color:'var(--tm)'}}>Desviación</div><div style={{fontSize:22,fontWeight:800,color:desv>0?'var(--red)':'var(--green)',margin:'6px 0 2px'}}>{desv>0?'+':''}{fmtSk(desv)}</div><div style={{fontSize:11,color:'var(--tm)'}}>{desvPct.toFixed(1)}%</div></div>
+          <div className="card card-p"><div style={{fontSize:11,color:'var(--tm)'}}>Costo Presupuestado (APU)</div><div style={{fontSize:22,fontWeight:800,color:'var(--blue)',margin:'6px 0 2px'}}>{fmtSk(totalPres || presupuesto)}</div><div style={{fontSize:11,color:'var(--tm)'}}>{insumosPres.length} insumos</div></div>
+          <div className="card card-p"><div style={{fontSize:11,color:'var(--tm)'}}>Costo Real (movs)</div><div style={{fontSize:22,fontWeight:800,color:'var(--amber)',margin:'6px 0 2px'}}>{fmtSk(totalReal)}</div><div style={{fontSize:11,color:'var(--tm)'}}>{realPorMaterial.size} materiales consumidos</div></div>
+          <div className="card card-p"><div style={{fontSize:11,color:'var(--tm)'}}>Desviación</div><div style={{fontSize:22,fontWeight:800,color:desv>0?'var(--red)':'var(--green)',margin:'6px 0 2px'}}>{desv>0?'+':''}{fmtSk(desv)}</div><div style={{fontSize:11,color:'var(--tm)'}}>{totalPres>0 ? `${desvPct.toFixed(1)}%` : '—'}</div></div>
           <div className="card card-p"><div style={{fontSize:11,color:'var(--tm)'}}>% Avance</div><div style={{fontSize:22,fontWeight:800,color:'var(--green)',margin:'6px 0 2px'}}>{Number(partida.porcentaje_avance||0).toFixed(0)}%</div></div>
         </div>
 
-        {insumosCalc.length === 0 ? (
-          <div className="card card-p empty-state"><JxIcon name="layers" size={40} color="var(--tm)"/><p>No hay insumos consumidos para esta partida.<br/>Registra movimientos de materiales asociándolos a esta partida.</p></div>
+        {sinAPU && (
+          <div className="card card-p" style={{ background:'rgba(52,152,219,0.06)', border:'1px solid rgba(52,152,219,0.25)', marginBottom:14, fontSize:12.5, color:'var(--ts)' }}>
+            <strong style={{ color:'var(--blue)' }}>ℹ Esta partida no tiene insumos presupuestados.</strong>{' '}
+            Importa el APU desde el módulo <strong>Importar → Delphin</strong> (Análisis de Precios Unitarios) para ver la comparativa presupuesto vs real, o registra movimientos de materiales asociándolos a esta partida para ver consumo real.
+          </div>
+        )}
+
+        {filas.length === 0 ? (
+          <div className="card card-p empty-state"><JxIcon name="layers" size={40} color="var(--tm)"/><p>No hay insumos presupuestados ni movimientos para esta partida.</p></div>
         ) : (
         <div className="card" style={{overflow:'hidden'}}>
           <table className="tbl">
             <thead><tr>
-              <th>Material</th><th>Unidad</th>
-              <th style={{textAlign:'right'}}>Cantidad usada</th>
+              <th>Código</th>
+              <th>Insumo</th>
+              <th>Tipo</th>
+              <th>Unidad</th>
+              <th style={{textAlign:'right'}}>Cant. Pres.</th>
+              <th style={{textAlign:'right'}}>Cant. Real</th>
+              <th style={{textAlign:'right'}}>Costo Pres.</th>
               <th style={{textAlign:'right'}}>Costo Real</th>
+              <th style={{textAlign:'right'}}>Desv.</th>
             </tr></thead>
             <tbody>
-              {insumosCalc.map(i => (
-                <tr key={i.material_id}>
-                  <td className="col-p">{i.nombre}</td>
-                  <td className="col-m">{i.unidad}</td>
-                  <td style={{textAlign:'right'}} className="col-num">{i.cantidad_real.toLocaleString('es-PE')}</td>
-                  <td style={{textAlign:'right'}} className="col-num">{fmtS(i.costo_real)}</td>
+              {filas.map((r, i) => (
+                <tr key={(r.codigo || '_') + '_' + i} style={r.sinPresupuestar ? { background:'rgba(255,179,0,0.06)' } : null}>
+                  <td className="col-m" style={{ fontFamily:'monospace', fontSize:11 }}>{r.codigo}</td>
+                  <td className="col-p">
+                    {r.nombre}
+                    {r.sinPresupuestar && <span className="badge b-amber" style={{ marginLeft:6, fontSize:9 }}>Sin APU</span>}
+                  </td>
+                  <td className="col-m" style={{ textTransform:'capitalize' }}>{r.tipo || '—'}</td>
+                  <td className="col-m">{r.unidad || '—'}</td>
+                  <td style={{textAlign:'right'}} className="col-num">{r.cantPres ? r.cantPres.toLocaleString('es-PE') : '—'}</td>
+                  <td style={{textAlign:'right'}} className="col-num">{r.cantReal ? r.cantReal.toLocaleString('es-PE') : '—'}</td>
+                  <td style={{textAlign:'right'}} className="col-num">{r.costoPres ? fmtS(r.costoPres) : '—'}</td>
+                  <td style={{textAlign:'right'}} className="col-num">{r.costoReal ? fmtS(r.costoReal) : '—'}</td>
+                  <td style={{textAlign:'right', color: r.desv>0?'var(--red)':r.desv<0?'var(--green)':'var(--tm)'}} className="col-num">
+                    {r.desv === 0 ? '—' : (r.desv > 0 ? '+' : '') + fmtS(r.desv)}
+                  </td>
                 </tr>
               ))}
             </tbody>
             <tfoot>
               <tr>
-                <td colSpan={3} style={{padding:'12px 14px',fontWeight:700,color:'var(--ts)',background:'rgba(0,0,0,0.15)'}}>TOTAL</td>
-                <td style={{textAlign:'right',padding:'12px 14px',fontWeight:700,color:'var(--tp)',background:'rgba(0,0,0,0.15)'}} className="col-num">{fmtS(totalReal)}</td>
+                <td colSpan={6} style={{padding:'12px 14px',fontWeight:700,color:'var(--ts)',background:'rgba(0,0,0,0.15)'}}>TOTAL</td>
+                <td style={{textAlign:'right',padding:'12px 14px',fontWeight:700,color:'var(--blue)',background:'rgba(0,0,0,0.15)'}} className="col-num">{fmtS(totalPres)}</td>
+                <td style={{textAlign:'right',padding:'12px 14px',fontWeight:700,color:'var(--amber)',background:'rgba(0,0,0,0.15)'}} className="col-num">{fmtS(totalReal)}</td>
+                <td style={{textAlign:'right',padding:'12px 14px',fontWeight:700,color:desv>0?'var(--red)':'var(--green)',background:'rgba(0,0,0,0.15)'}} className="col-num">{desv>0?'+':''}{fmtS(desv)}</td>
               </tr>
             </tfoot>
           </table>

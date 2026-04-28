@@ -168,7 +168,7 @@ function MovMaterialesPage({ showToast }) {
     if (!confirm(`¿Eliminar este movimiento?\n\n${m.tipo_movimiento} de ${cant} ${m.unidad || ''} de ${nombre}\nFecha: ${fecha}\n\nEl stock NO se reajusta — usa "Reversar" si quieres compensar el stock.`)) return;
     try {
       await updateMov(m.id, { deleted_at: new Date().toISOString() });
-      try { await window.__logAudit?.({ action:'delete', table:'movimientos_materiales', recordId:m.id, oldData:m, reason:'Eliminación manual (modo prueba)' }); } catch(e) {}
+      try { await window.__logAudit?.({ action:'delete', table:'movimientos_materiales', recordId:m.id, oldData:m, reason:'Eliminación manual (modo edición)' }); } catch(e) {}
       showToast('Movimiento eliminado', 'amber');
     } catch (e) { showToast('Error al eliminar: ' + (e.message||e), 'red'); }
   };
@@ -377,7 +377,7 @@ function MovMaterialesPage({ showToast }) {
                           <span style={{ fontSize:10, color:'var(--tm)' }}>—</span>
                         )}
                         {canDelete && (
-                          <button className="btn btn-ghost btn-xs" title="Eliminar (solo modo prueba)" onClick={()=>handleDeleteMov(m)} style={{ marginLeft:4, color:'var(--red)' }}>
+                          <button className="btn btn-ghost btn-xs" title="Eliminar (solo modo edición)" onClick={()=>handleDeleteMov(m)} style={{ marginLeft:4, color:'var(--red)' }}>
                             <JxIcon name="trash" size={10}/>
                           </button>
                         )}
@@ -429,7 +429,7 @@ function MovHerramientasPage({ showToast }) {
     if (!confirm(`¿Eliminar este movimiento?\n\n${m.accion} de "${nombre}"\nFecha: ${m.fecha}\n\nEl estado de la herramienta NO se reajusta — usa "Reversar" si quieres compensar.`)) return;
     try {
       await updateMov(m.id, { deleted_at: new Date().toISOString() });
-      try { await window.__logAudit?.({ action:'delete', table:'movimientos_herramientas', recordId:m.id, oldData:m, reason:'Eliminación manual (modo prueba)' }); } catch(e) {}
+      try { await window.__logAudit?.({ action:'delete', table:'movimientos_herramientas', recordId:m.id, oldData:m, reason:'Eliminación manual (modo edición)' }); } catch(e) {}
       showToast('Movimiento eliminado', 'amber');
     } catch (e) { showToast('Error al eliminar: ' + (e.message||e), 'red'); }
   };
@@ -643,7 +643,7 @@ function MovHerramientasPage({ showToast }) {
                           <span style={{ fontSize:10, color:'var(--tm)' }}>—</span>
                         )}
                         {canDelete && (
-                          <button className="btn btn-ghost btn-xs" title="Eliminar (solo modo prueba)" onClick={()=>handleDeleteMov(m)} style={{ marginLeft:4, color:'var(--red)' }}>
+                          <button className="btn btn-ghost btn-xs" title="Eliminar (solo modo edición)" onClick={()=>handleDeleteMov(m)} style={{ marginLeft:4, color:'var(--red)' }}>
                             <JxIcon name="trash" size={10}/>
                           </button>
                         )}
@@ -757,7 +757,7 @@ function ProveedoresPage({ showToast }) {
         updated_by: auth?.profile?.id || 'offline',
         version: (p.version ?? 0) + 1,
       });
-      try { await window.__logAudit?.({ action:'delete', table:'proveedores', recordId:p.id, oldData:p, reason:'Eliminación manual (modo prueba)' }); } catch(e) {}
+      try { await window.__logAudit?.({ action:'delete', table:'proveedores', recordId:p.id, oldData:p, reason:'Eliminación manual (modo edición)' }); } catch(e) {}
       showToast(`Proveedor "${p.razon_social}" eliminado`, 'amber');
       window.__db.proveedores.toArray().then(arr => setProvs(arr.filter(x => !x.deleted_at)));
     } catch (e) { showToast('Error al eliminar: ' + (e.message||e), 'red'); }
@@ -866,7 +866,7 @@ function ProveedoresPage({ showToast }) {
                       <JxIcon name="edit" size={11}/>
                     </button>
                     {canDelete && (
-                      <button className="btn btn-red btn-xs" title="Eliminar (solo modo prueba)" onClick={()=>handleDeleteProv(p)}>
+                      <button className="btn btn-red btn-xs" title="Eliminar (solo modo edición)" onClick={()=>handleDeleteProv(p)}>
                         <JxIcon name="trash" size={11}/>
                       </button>
                     )}

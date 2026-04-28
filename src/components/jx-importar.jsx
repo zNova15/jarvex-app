@@ -33,7 +33,7 @@ function useObraActiva() {
 // ── SOURCES ──────────────────────────────────────────────────
 const SOURCES = [
   { id:'excel',     label:'Excel / CSV',     icon:'chart',  color:'#1E7145', desc:'Importa desde hojas de cálculo .xlsx, .xls o archivos .csv', ext:'.xlsx,.xls,.csv', badge:'Universal',  enabled:true  },
-  { id:'s10',       label:'S10 Costos',      icon:'dollar', color:'#0070C0', desc:'Importa presupuestos, partidas e insumos directamente desde S10 Perú', ext:'.xlsx, .xls', badge:'Construcción Perú', enabled:true  },
+  { id:'s10',       label:'Delphin',         icon:'dollar', color:'#0070C0', desc:'Importa presupuestos, partidas e insumos directamente desde Delphin', ext:'.xlsx, .xls', badge:'Construcción Perú', enabled:true  },
   { id:'delfin',    label:'Delfín ERP',      icon:'users',  color:'#7030A0', desc:'Importa personal, planillas y asistencia desde Delfín / Delfín+', ext:'.xlsx, .csv', badge:'RRHH Perú', enabled:false },
   { id:'msproject', label:'MS Project',      icon:'gantt',  color:'#217346', desc:'Importa cronograma y tareas desde Microsoft Project', ext:'.mpp, .xml, .xlsx', badge:'Cronograma', enabled:false },
   { id:'autocad',   label:'AutoCAD / Revit', icon:'layers', color:'#E84142', desc:'Importa metrados desde planillas de cómputo en DXF/Excel', ext:'.xlsx, .csv', badge:'Metrados', enabled:false },
@@ -608,7 +608,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
 
       const entry = {
         fecha: fmtDate(),
-        modulo: `S10 ${parsed.tipo.toUpperCase()} · ${res.detalle}`,
+        modulo: `Delphin ${parsed.tipo.toUpperCase()} · ${res.detalle}`,
         total: res.ok + (res.errors || 0),
         ok: res.ok,
         errores: res.errors || 0,
@@ -620,6 +620,15 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
 
       showToast(`Importación ${parsed.tipo}: ${res.detalle}`, res.errors ? 'amber' : 'green');
       try { window.dispatchEvent(new CustomEvent('obra_activa_change', { detail:{ obraId } })); } catch {}
+      // Refrescar hooks (partidas/insumos_partida/materiales) ya cargados en otras pantallas
+      try {
+        const tablasAfectadas = parsed.tipo === 'apu' ? ['partidas','insumos_partida']
+                              : parsed.tipo === 'insumos' ? ['materiales']
+                              : ['partidas'];
+        tablasAfectadas.forEach(tb => window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla: tb } })));
+      } catch {}
+      // Pedir un sync inmediato (push de los nuevos registros pending_create)
+      try { window.dispatchEvent(new Event('online')); } catch {}
     } catch (e) {
       console.error('[S10 import]', e);
       showToast(`Error en la importación: ${e.message || e}`, 'red');
@@ -684,9 +693,9 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       {/* Step 0 — Aviso */}
       {step === 0 && (
         <div>
-          <div style={{ fontSize:15, fontWeight:700, color:'var(--tp)', marginBottom:6 }}>Importación nativa desde S10</div>
+          <div style={{ fontSize:15, fontWeight:700, color:'var(--tp)', marginBottom:6 }}>Importación nativa desde Delphin</div>
           <div style={{ fontSize:12.5, color:'var(--tm)', marginBottom:18 }}>
-            Sube un Excel exportado de S10. La app detecta automáticamente el tipo de archivo:
+            Sube un Excel exportado de Delphin. La app detecta automáticamente el tipo de archivo:
           </div>
 
           <div style={{ display:'grid', gridTemplateColumns:'1fr', gap:10, marginBottom:14 }}>
@@ -705,7 +714,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
               </div>
               <div style={{ fontSize:11.5, color:'var(--tm)' }}>
                 Listado consolidado con precios unitarios. Carga los <strong>materiales</strong> al almacén
-                (upsert por código S10, stock inicial 0).
+                (upsert por código, stock inicial 0).
               </div>
             </div>
             <div className="card card-p" style={{ borderLeft:'3px solid var(--green)' }}>
@@ -762,7 +771,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       {/* Step 1 — Archivo */}
       {step === 1 && (
         <div>
-          <div style={{ fontSize:15, fontWeight:700, color:'var(--tp)', marginBottom:6 }}>Sube el Excel exportado por S10</div>
+          <div style={{ fontSize:15, fontWeight:700, color:'var(--tp)', marginBottom:6 }}>Sube el Excel exportado por Delphin</div>
           <div style={{ fontSize:12.5, color:'var(--tm)', marginBottom:18 }}>
             Acepta el export de "Análisis de Precios Unitarios" o "Consolidado de Materiales" (.xlsx / .xls).
           </div>
@@ -1090,7 +1099,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
             {parsed.tipo === 'apu' && (
               <>Al confirmar se aplicarán las acciones elegidas: <strong style={{ color:'var(--green)' }}>importar {actionSummary.aImportar} nuevas</strong> · <strong style={{ color:'var(--amber)' }}>reemplazar {actionSummary.aReemplazar}</strong> · <strong style={{ color:'var(--ts)' }}>saltar {actionSummary.aSaltar}</strong>.</>
             )}
-            {parsed.tipo === 'insumos' && 'Al confirmar, se cargarán los materiales al almacén. Los que ya existan (mismo código S10) se actualizarán; los demás se crearán con stock 0.'}
+            {parsed.tipo === 'insumos' && 'Al confirmar, se cargarán los materiales al almacén. Los que ya existan (mismo código) se actualizarán; los demás se crearán con stock 0.'}
             {parsed.tipo === 'gantt' && 'Al confirmar, se aplicarán las fechas planificadas a las partidas existentes que coincidan en código. No se crearán partidas nuevas.'}
           </div>
 
@@ -1098,9 +1107,9 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
               {(() => {
                 const filas = [
-                  { label:'Origen', val: parsed.tipo === 'apu' ? 'S10 · Presupuesto APU'
-                                       : parsed.tipo === 'insumos' ? 'S10 · Lista de Insumos'
-                                       : 'S10 · Cronograma Gantt',
+                  { label:'Origen', val: parsed.tipo === 'apu' ? 'Delphin · Presupuesto APU'
+                                       : parsed.tipo === 'insumos' ? 'Delphin · Lista de Insumos'
+                                       : 'Delphin · Cronograma Gantt',
                     icon:'dollar', color:'#0070C0' },
                   { label:'Archivo', val:file?.name, icon:'file', color:'var(--green)' },
                   { label:'Obra destino', val: obraDestino ? (obraDestino.nombre_obra || obraDestino.nombre) : (obraId ? `${obraId.slice(0,8)}…` : '—'), icon:'building', color:'var(--orange)' },
@@ -1115,7 +1124,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                   filas.push(
                     { label:'Materiales a cargar', val: parsed.summary.materiales, icon:'package', color:'var(--blue)' },
                     { label:'Mano de obra (no se importa)', val: parsed.summary.mano_obra, icon:'users', color:'var(--tm)' },
-                    { label:'Modo', val:'Upsert por código S10', icon:'refresh', color:'var(--amber)' },
+                    { label:'Modo', val:'Upsert por código', icon:'refresh', color:'var(--amber)' },
                   );
                 } else if (parsed.tipo === 'gantt') {
                   filas.push(
