@@ -87,12 +87,24 @@ import './jx-app.jsx';
 function Root() {
   const auth = useAuthProvider();
 
+  // Sync inicial al montar (puede no traer datos si aún no hay sesión)
   React.useEffect(() => {
     if (navigator.onLine) {
       syncAll();
       uploadPendingEvidencias();
     }
   }, []);
+
+  // Re-sync cuando se completa el login (obtenemos sesión + RLS pasa a traer todo)
+  React.useEffect(() => {
+    if (auth?.profile?.id && navigator.onLine) {
+      // pequeño delay para que la sesión Supabase termine de propagarse
+      setTimeout(() => {
+        syncAll();
+        uploadPendingEvidencias();
+      }, 500);
+    }
+  }, [auth?.profile?.id]);
 
   const App = window.App;
   if (!App) return <div style={{ color: '#fff', padding: 20 }}>Cargando JARVEX...</div>;

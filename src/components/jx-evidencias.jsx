@@ -140,16 +140,26 @@ function EvidenciasPage({ showToast }) {
   // Detectar obra activa
   uEE(() => {
     let cancelled = false;
+    let attempts = 0;
     const findObra = async () => {
+      attempts++;
       const obras = await window.__db.obras.toArray();
       const stored = window.__getObraActivaId?.();
       const activa = (stored && obras.find(o => o.id === stored && !o.deleted_at))
                   || obras.find(o => !o.deleted_at);
-      if (activa && !cancelled) setObraId(activa.id);
-      else if (!cancelled) setTimeout(findObra, 500);
+      if (activa) { if (!cancelled) setObraId(activa.id); return; }
+      if (cancelled || attempts >= 10) return;
+      setTimeout(findObra, 500);
     };
     findObra();
-    return () => { cancelled = true; };
+    const onChange = () => { attempts = 0; findObra(); };
+    window.addEventListener('jarvex_master_updated', onChange);
+    window.addEventListener('obra_activa_change', onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('jarvex_master_updated', onChange);
+      window.removeEventListener('obra_activa_change', onChange);
+    };
   }, []);
 
   const { data: evidencias, loading, refresh } = window.__hooks.useEvidencias(obraId);
@@ -190,7 +200,8 @@ function EvidenciasPage({ showToast }) {
       });
   }, [evidencias, cat, q]);
 
-  if (loading || !obraId) {
+  if (!obraId) return <SinObraEmpty icon="image"/>;
+  if (loading) {
     return <div className="page-wrap"><div className="empty-state"><JxIcon name="image" size={32} color="var(--tm)"/><p>Cargando evidencias…</p></div></div>;
   }
 

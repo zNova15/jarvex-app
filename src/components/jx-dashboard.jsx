@@ -131,16 +131,26 @@ function DashboardPage() {
 
   uED(() => {
     let cancelled = false;
+    let attempts = 0;
     const find = async () => {
+      attempts++;
       const obras = await window.__db.obras.toArray();
       const stored = window.__getObraActivaId?.();
       const a = (stored && obras.find(o => o.id === stored && !o.deleted_at))
              || obras.find(o => !o.deleted_at);
-      if (a) { if (!cancelled) setObraId(a.id); }
-      else if (!cancelled) setTimeout(find, 500);
+      if (a) { if (!cancelled) setObraId(a.id); return; }
+      if (cancelled || attempts >= 10) return;
+      setTimeout(find, 500);
     };
     find();
-    return () => { cancelled = true; };
+    const onChange = () => { attempts = 0; find(); };
+    window.addEventListener('jarvex_master_updated', onChange);
+    window.addEventListener('obra_activa_change', onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('jarvex_master_updated', onChange);
+      window.removeEventListener('obra_activa_change', onChange);
+    };
   }, []);
 
   // Refresca la vista ponderada de Supabase cada 15s

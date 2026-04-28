@@ -7,21 +7,32 @@ const EST_LBL  = { terminado:'Terminado', en_ejecucion:'En Ejecución', atrasado
 const EST_OBRA = { activo:'b-green', planificacion:'b-blue', pausado:'b-yellow', terminado:'b-gray', cancelado:'b-red' };
 const EST_OBRA_LBL = { activo:'Activo', planificacion:'Planificación', pausado:'Pausado', terminado:'Terminado', cancelado:'Cancelado' };
 
-// Helper para detectar obra activa
+// Helper para detectar obra activa con tope de reintentos + reanudar
+// cuando el realtime traiga una obra nueva (evento 'jarvex_master_updated').
 function useObraActiva() {
   const [obraId, setObraId] = uSO(null);
   uEO(() => {
     let cancelled = false;
+    let attempts = 0;
     const find = async () => {
+      attempts++;
       const obras = await window.__db.obras.toArray();
       const stored = window.__getObraActivaId?.();
       const a = (stored && obras.find(o => o.id === stored && !o.deleted_at))
              || obras.find(o => !o.deleted_at);
-      if (a) { if (!cancelled) setObraId(a.id); }
-      else if (!cancelled) setTimeout(find, 500);
+      if (a) { if (!cancelled) setObraId(a.id); return; }
+      if (cancelled || attempts >= 10) return;
+      setTimeout(find, 500);
     };
     find();
-    return () => { cancelled = true; };
+    const onChange = () => { attempts = 0; find(); };
+    window.addEventListener('jarvex_master_updated', onChange);
+    window.addEventListener('obra_activa_change', onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('jarvex_master_updated', onChange);
+      window.removeEventListener('obra_activa_change', onChange);
+    };
   }, []);
   return obraId;
 }
@@ -711,7 +722,8 @@ function PartidasPage({ showToast }) {
     }
   };
 
-  if (loading || !obraId) return <div className="page-wrap"><div className="empty-state"><JxIcon name="list" size={32} color="var(--tm)"/><p>Cargando partidas…</p></div></div>;
+  if (!obraId) return <SinObraEmpty icon="list"/>;
+  if (loading) return <div className="page-wrap"><div className="empty-state"><JxIcon name="list" size={32} color="var(--tm)"/><p>Cargando partidas…</p></div></div>;
 
   return (
     <div className="page-wrap">
@@ -1104,7 +1116,8 @@ function CronogramaPage() {
   }, [filtered.length]);
 
   // Loading / empty
-  if (loading || !obraId) {
+  if (!obraId) return <SinObraEmpty icon="gantt"/>;
+  if (loading) {
     return <div className="page-wrap"><div className="empty-state"><JxIcon name="gantt" size={32} color="var(--tm)"/><p>Cargando cronograma…</p></div></div>;
   }
   if (!partidasConFechas.length) {
@@ -1419,7 +1432,8 @@ function AvancePage({ showToast }) {
     setModal(true);
   };
 
-  if (loading || !obraId) return <div className="page-wrap"><div className="empty-state"><JxIcon name="hardHat" size={32} color="var(--tm)"/><p>Cargando avance…</p></div></div>;
+  if (!obraId) return <SinObraEmpty icon="hardHat"/>;
+  if (loading) return <div className="page-wrap"><div className="empty-state"><JxIcon name="hardHat" size={32} color="var(--tm)"/><p>Cargando avance…</p></div></div>;
 
   // Stats
   const ordenados = [...registros].sort((a,b) => (b.fecha || '').localeCompare(a.fecha || ''));
@@ -1526,7 +1540,8 @@ function ComparativoPage() {
 
   const semaforo = (diff) => diff <= 0 ? {cls:'b-green',lbl:'OK',ic:'checkCircle'} : diff <= 10 ? {cls:'b-yellow',lbl:'Alerta',ic:'alertCircle'} : {cls:'b-red',lbl:'Exceso',ic:'alert'};
 
-  if (loading || !obraId) return <div className="page-wrap"><div className="empty-state"><JxIcon name="compare" size={32} color="var(--tm)"/><p>Cargando comparativo…</p></div></div>;
+  if (!obraId) return <SinObraEmpty icon="compare"/>;
+  if (loading) return <div className="page-wrap"><div className="empty-state"><JxIcon name="compare" size={32} color="var(--tm)"/><p>Cargando comparativo…</p></div></div>;
 
   const totalPres = partidas.reduce((s,p) => s + Number(p.costo_total_presupuestado || 0), 0);
   const totalReal = partidas.reduce((s,p) => s + Number(p.costo_real_acumulado || 0), 0);

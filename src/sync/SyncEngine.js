@@ -264,3 +264,29 @@ window.addEventListener('online', () => {
   console.log('[SyncEngine] Online — syncing...');
   setTimeout(syncAll, 1000); // pequeño delay para estabilizar la conexión
 });
+
+// ── Sync periódico cada 60s como respaldo del realtime ──────────────
+// Aunque tenemos suscripciones realtime para obras/materiales/etc, hay
+// casos en que el canal pierde mensajes (reconexión, latencia, sleep
+// del navegador). Este intervalo asegura que como mucho cada minuto
+// veamos lo que el resto del equipo ha hecho.
+let _periodicId = null;
+function startPeriodicSync() {
+  if (_periodicId) return;
+  _periodicId = setInterval(() => {
+    if (!navigator.onLine) return;
+    if (document.visibilityState !== 'visible') return; // no malgastar batería en background
+    syncAll();
+  }, 60_000);
+}
+
+// Arrancar al cargar el módulo
+if (typeof window !== 'undefined') {
+  startPeriodicSync();
+  // Re-sincronizar cuando el usuario vuelve a la pestaña tras estar en otra
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && navigator.onLine) {
+      setTimeout(syncAll, 500);
+    }
+  });
+}

@@ -4,21 +4,34 @@ const { useState: uSM, useMemo: uMM, useEffect: uEM } = React;
 // Helper formato moneda
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 
-// Helper detectar obra activa
+// Helper detectar obra activa.
+// Después de 10 intentos (5s) sin encontrar obras, deja de buscar y retorna null.
+// Reanuda al recibir el evento 'jarvex_master_updated' del realtime
+// (ej. cuando otro usuario crea una obra) o 'obra_activa_change'.
 function useObraActiva() {
   const [obraId, setObraId] = uSM(null);
   uEM(() => {
     let cancelled = false;
+    let attempts = 0;
     const find = async () => {
+      attempts++;
       const obras = await window.__db.obras.toArray();
       const stored = window.__getObraActivaId?.();
       const a = (stored && obras.find(o => o.id === stored && !o.deleted_at))
              || obras.find(o => !o.deleted_at);
-      if (a) { if (!cancelled) setObraId(a.id); }
-      else if (!cancelled) setTimeout(find, 500);
+      if (a) { if (!cancelled) setObraId(a.id); return; }
+      if (cancelled || attempts >= 10) return;
+      setTimeout(find, 500);
     };
     find();
-    return () => { cancelled = true; };
+    const onChange = () => { attempts = 0; find(); };
+    window.addEventListener('jarvex_master_updated', onChange);
+    window.addEventListener('obra_activa_change', onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('jarvex_master_updated', onChange);
+      window.removeEventListener('obra_activa_change', onChange);
+    };
   }, []);
   return obraId;
 }
@@ -137,12 +150,28 @@ function MovMaterialesPage({ showToast }) {
   const obraId = useObraActiva();
   const auth = window.__useAuth ? window.__useAuth() : null;
   const movHook = window.__hooks.useMovimientosMateriales(obraId);
-  const { data: movs, loading } = movHook;
+  const { data: movs, loading, update: updateMov } = movHook;
   const { data: materiales } = window.__hooks.useMateriales(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
+  const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
 
   const [reversoTarget, setReversoTarget] = uSM(null);
   const isAdmin = auth?.profile?.rol === 'admin';
+  const canDelete = isAdmin && appMode.isPrueba;
+
+  const handleDeleteMov = async (m) => {
+    if (!canDelete) return;
+    const fecha = m.fecha || '';
+    const cant = m.cantidad || 0;
+    const mat = materiales?.find(x => x.id === m.material_id);
+    const nombre = mat?.nombre_material || '(material)';
+    if (!confirm(`¿Eliminar este movimiento?\n\n${m.tipo_movimiento} de ${cant} ${m.unidad || ''} de ${nombre}\nFecha: ${fecha}\n\nEl stock NO se reajusta — usa "Reversar" si quieres compensar el stock.`)) return;
+    try {
+      await updateMov(m.id, { deleted_at: new Date().toISOString() });
+      try { await window.__logAudit?.({ action:'delete', table:'movimientos_materiales', recordId:m.id, oldData:m, reason:'Eliminación manual (modo prueba)' }); } catch(e) {}
+      showToast('Movimiento eliminado', 'amber');
+    } catch (e) { showToast('Error al eliminar: ' + (e.message||e), 'red'); }
+  };
 
   const [provs, setProvs] = uSM([]);
   const [partidas, setPartidas] = uSM([]);
@@ -166,7 +195,8 @@ function MovMaterialesPage({ showToast }) {
 
   const sorted = uMM(() => {
     if (!movs) return [];
-    return [...movs].sort((a, b) => {
+    // Excluir movimientos eliminados (soft delete)
+    return movs.filter(m => !m.deleted_at).sort((a, b) => {
       const fa = (a.fecha || '') + ' ' + (a.hora || '');
       const fb = (b.fecha || '') + ' ' + (b.hora || '');
       return fb.localeCompare(fa);
@@ -268,7 +298,8 @@ function MovMaterialesPage({ showToast }) {
     return s;
   }, [movs]);
 
-  if (loading || !obraId) return <div className="page-wrap"><div className="empty-state"><JxIcon name="arrowIn" size={32} color="var(--tm)"/><p>Cargando movimientos…</p></div></div>;
+  if (!obraId) return <SinObraEmpty icon="arrowIn"/>;
+  if (loading) return <div className="page-wrap"><div className="empty-state"><JxIcon name="arrowIn" size={32} color="var(--tm)"/><p>Cargando movimientos…</p></div></div>;
 
   return (
     <div className="page-wrap">
@@ -337,13 +368,18 @@ function MovMaterialesPage({ showToast }) {
                       : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}
                     </td>
                     {isAdmin && (
-                      <td style={{ textAlign:'center' }}>
+                      <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
                         {puedeReversar ? (
                           <button className="btn btn-red btn-xs" title="Reversar movimiento" onClick={()=>setReversoTarget(m)}>
                             <JxIcon name="arrowOut" size={10}/>Reversar
                           </button>
                         ) : (
                           <span style={{ fontSize:10, color:'var(--tm)' }}>—</span>
+                        )}
+                        {canDelete && (
+                          <button className="btn btn-ghost btn-xs" title="Eliminar (solo modo prueba)" onClick={()=>handleDeleteMov(m)} style={{ marginLeft:4, color:'var(--red)' }}>
+                            <JxIcon name="trash" size={10}/>
+                          </button>
                         )}
                       </td>
                     )}
@@ -377,12 +413,26 @@ function MovHerramientasPage({ showToast }) {
   const obraId = useObraActiva();
   const auth = window.__useAuth ? window.__useAuth() : null;
   const movHook = window.__hooks.useMovimientosHerramientas(obraId);
-  const { data: movs, loading } = movHook;
+  const { data: movs, loading, update: updateMov } = movHook;
   const { data: herramientas, update: updateHerr } = window.__hooks.useHerramientas(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
+  const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
 
   const [reversoTarget, setReversoTarget] = uSM(null);
   const isAdmin = auth?.profile?.rol === 'admin';
+  const canDelete = isAdmin && appMode.isPrueba;
+
+  const handleDeleteMov = async (m) => {
+    if (!canDelete) return;
+    const herr = herramientas?.find(h => h.id === m.herramienta_id);
+    const nombre = herr?.nombre_herramienta || '(herramienta)';
+    if (!confirm(`¿Eliminar este movimiento?\n\n${m.accion} de "${nombre}"\nFecha: ${m.fecha}\n\nEl estado de la herramienta NO se reajusta — usa "Reversar" si quieres compensar.`)) return;
+    try {
+      await updateMov(m.id, { deleted_at: new Date().toISOString() });
+      try { await window.__logAudit?.({ action:'delete', table:'movimientos_herramientas', recordId:m.id, oldData:m, reason:'Eliminación manual (modo prueba)' }); } catch(e) {}
+      showToast('Movimiento eliminado', 'amber');
+    } catch (e) { showToast('Error al eliminar: ' + (e.message||e), 'red'); }
+  };
 
   const [q, setQ] = uSM('');
   const [accion, setAccion] = uSM('todas');
@@ -392,7 +442,8 @@ function MovHerramientasPage({ showToast }) {
 
   const sorted = uMM(() => {
     if (!movs) return [];
-    return [...movs].sort((a, b) => {
+    // Excluir movimientos eliminados (soft delete)
+    return movs.filter(m => !m.deleted_at).sort((a, b) => {
       const fa = (a.fecha || '') + ' ' + (a.hora || '');
       const fb = (b.fecha || '') + ' ' + (b.hora || '');
       return fb.localeCompare(fa);
@@ -507,7 +558,8 @@ function MovHerramientasPage({ showToast }) {
     showToast('Movimiento reversado correctamente', 'green');
   };
 
-  if (loading || !obraId) return <div className="page-wrap"><div className="empty-state"><JxIcon name="tool" size={32} color="var(--tm)"/><p>Cargando movimientos…</p></div></div>;
+  if (!obraId) return <SinObraEmpty icon="tool"/>;
+  if (loading) return <div className="page-wrap"><div className="empty-state"><JxIcon name="tool" size={32} color="var(--tm)"/><p>Cargando movimientos…</p></div></div>;
 
   return (
     <div className="page-wrap">
@@ -582,13 +634,18 @@ function MovHerramientasPage({ showToast }) {
                       : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}
                     </td>
                     {isAdmin && (
-                      <td style={{ textAlign:'center' }}>
+                      <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
                         {puedeReversar ? (
                           <button className="btn btn-red btn-xs" title="Reversar movimiento" onClick={()=>setReversoTarget(m)}>
                             <JxIcon name="arrowOut" size={10}/>Reversar
                           </button>
                         ) : (
                           <span style={{ fontSize:10, color:'var(--tm)' }}>—</span>
+                        )}
+                        {canDelete && (
+                          <button className="btn btn-ghost btn-xs" title="Eliminar (solo modo prueba)" onClick={()=>handleDeleteMov(m)} style={{ marginLeft:4, color:'var(--red)' }}>
+                            <JxIcon name="trash" size={10}/>
+                          </button>
                         )}
                       </td>
                     )}

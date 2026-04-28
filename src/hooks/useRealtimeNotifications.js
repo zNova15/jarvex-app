@@ -123,6 +123,63 @@ export function useRealtimeNotifications() {
         });
       });
 
+    // ── Sincronización LIVE de tablas master ──
+    // Cuando otro usuario crea/edita/borra una obra, material, herramienta,
+    // personal, proveedor o partida, replicamos el cambio en Dexie local
+    // para que el usuario actual lo vea sin recargar.
+    const liveSyncTables = ['obras', 'materiales', 'herramientas', 'personal', 'proveedores', 'partidas'];
+
+    const applyLiveSync = async (table, eventType, row) => {
+      if (!row?.id) return;
+      try {
+        const db = window.__db;
+        if (!db || !db[table]) return;
+        if (eventType === 'DELETE') {
+          await db[table].delete(row.id);
+        } else {
+          // Si tiene deleted_at, lo borramos del cache local también
+          if (row.deleted_at) {
+            await db[table].delete(row.id);
+          } else {
+            // Marcar como synced para que el motor de sync no intente reenviarlo
+            await db[table].put({ ...row, sync_status: 'synced', last_synced_at: new Date().toISOString() });
+          }
+        }
+        // Avisar a la app que hubo cambios en una tabla master
+        window.dispatchEvent(new CustomEvent('jarvex_master_updated', { detail: { table, eventType, row } }));
+      } catch (e) {
+        console.warn('[realtime] live sync', table, e?.message || e);
+      }
+    };
+
+    for (const tabla of liveSyncTables) {
+      try {
+        // INSERT, UPDATE, DELETE en una sola suscripción
+        channel.on('postgres_changes',
+          { event: '*', schema: 'public', table: tabla },
+          (payload) => {
+            // Ignorar el eco de uno mismo (operaciones que el usuario actual hizo)
+            if ((payload.new || payload.old)?.created_by === profile.id ||
+                (payload.new || payload.old)?.updated_by === profile.id) {
+              // Pero igual aplicamos para que el sync_status quede bien
+            }
+            applyLiveSync(tabla, payload.eventType || payload.event,
+              payload.new && Object.keys(payload.new).length ? payload.new : payload.old);
+
+            // Notificación visible solo para obra recién creada (lo demás es ruidoso)
+            if (tabla === 'obras' && payload.eventType === 'INSERT' && payload.new?.created_by !== profile.id) {
+              addNotif({
+                tipo: 'obra_nueva', icon: 'building', color: '#3498DB',
+                titulo: 'Nueva obra registrada',
+                descripcion: payload.new?.nombre_obra || '—',
+              });
+            }
+          });
+      } catch (e) {
+        console.warn(`[realtime] no se pudo suscribir a ${tabla}:`, e?.message || e);
+      }
+    }
+
     // ── Change requests: sólo admins, sin filtro de obra ──
     if (isAdmin) {
       try {

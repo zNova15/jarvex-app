@@ -98,22 +98,30 @@ function MaterialesPage({ showToast }) {
   const [partidasObra, setPartidasObra] = uS([]);     // partidas de la obra (para sugerir)
   const [insumosObra, setInsumosObra] = uS([]);       // insumos_partida de la obra
 
-  // Detectar obra activa — respeta localStorage 'obra_activa_id', si no usa la primera
+  // Detectar obra activa con tope de reintentos + reanudar al recibir
+  // 'jarvex_master_updated' o 'obra_activa_change'.
   uE(() => {
     let cancelled = false;
+    let attempts = 0;
     const findObra = async () => {
+      attempts++;
       const obras = await window.__db.obras.toArray();
       const stored = window.__getObraActivaId?.();
       const activa = (stored && obras.find(o => o.id === stored && !o.deleted_at))
                   || obras.find(o => !o.deleted_at);
-      if (activa) {
-        if (!cancelled) setObraId(activa.id);
-      } else if (!cancelled) {
-        setTimeout(findObra, 500);
-      }
+      if (activa) { if (!cancelled) setObraId(activa.id); return; }
+      if (cancelled || attempts >= 10) return;
+      setTimeout(findObra, 500);
     };
     findObra();
-    return () => { cancelled = true; };
+    const onChange = () => { attempts = 0; findObra(); };
+    window.addEventListener('jarvex_master_updated', onChange);
+    window.addEventListener('obra_activa_change', onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('jarvex_master_updated', onChange);
+      window.removeEventListener('obra_activa_change', onChange);
+    };
   }, []);
 
   // Hook real de materiales
@@ -376,7 +384,8 @@ function MaterialesPage({ showToast }) {
     return matches.sort((a, b) => b.pct - a.pct).slice(0, 8);
   }, [matSeleccionado, partidasObra, insumosObra]);
 
-  if (loading || !obraId) {
+  if (!obraId) return <SinObraEmpty icon="package"/>;
+  if (loading) {
     return <div className="page-wrap"><div className="empty-state"><JxIcon name="package" size={32} color="var(--tm)"/><p>Cargando materiales…</p></div></div>;
   }
 
@@ -629,16 +638,26 @@ function HerramientasPage({ showToast }) {
 
   uE(() => {
     let cancelled = false;
+    let attempts = 0;
     const find = async () => {
+      attempts++;
       const obras = await window.__db.obras.toArray();
       const stored = window.__getObraActivaId?.();
       const a = (stored && obras.find(o => o.id === stored && !o.deleted_at))
              || obras.find(o => !o.deleted_at);
-      if (a) { if (!cancelled) setObraId(a.id); }
-      else if (!cancelled) setTimeout(find, 500);
+      if (a) { if (!cancelled) setObraId(a.id); return; }
+      if (cancelled || attempts >= 10) return;
+      setTimeout(find, 500);
     };
     find();
-    return () => { cancelled = true; };
+    const onChange = () => { attempts = 0; find(); };
+    window.addEventListener('jarvex_master_updated', onChange);
+    window.addEventListener('obra_activa_change', onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('jarvex_master_updated', onChange);
+      window.removeEventListener('obra_activa_change', onChange);
+    };
   }, []);
 
   const { data: herramientas, loading, create: createHerr, update: updateHerr, refresh } = window.__hooks.useHerramientas(obraId);
@@ -816,7 +835,8 @@ function HerramientasPage({ showToast }) {
     }
   };
 
-  if (loading || !obraId) {
+  if (!obraId) return <SinObraEmpty icon="tool"/>;
+  if (loading) {
     return <div className="page-wrap"><div className="empty-state"><JxIcon name="tool" size={32} color="var(--tm)"/><p>Cargando herramientas…</p></div></div>;
   }
 
@@ -993,16 +1013,26 @@ function PersonalPage({ showToast }) {
 
   uE(() => {
     let cancelled = false;
+    let attempts = 0;
     const find = async () => {
+      attempts++;
       const obras = await window.__db.obras.toArray();
       const stored = window.__getObraActivaId?.();
       const a = (stored && obras.find(o => o.id === stored && !o.deleted_at))
              || obras.find(o => !o.deleted_at);
-      if (a) { if (!cancelled) setObraId(a.id); }
-      else if (!cancelled) setTimeout(find, 500);
+      if (a) { if (!cancelled) setObraId(a.id); return; }
+      if (cancelled || attempts >= 10) return;
+      setTimeout(find, 500);
     };
     find();
-    return () => { cancelled = true; };
+    const onChange = () => { attempts = 0; find(); };
+    window.addEventListener('jarvex_master_updated', onChange);
+    window.addEventListener('obra_activa_change', onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('jarvex_master_updated', onChange);
+      window.removeEventListener('obra_activa_change', onChange);
+    };
   }, []);
 
   const { data: personal, loading, create: createPersonal, update: updatePersonal } = window.__hooks.usePersonal(obraId);
@@ -1115,7 +1145,8 @@ function PersonalPage({ showToast }) {
     }
   };
 
-  if (loading || !obraId) {
+  if (!obraId) return <SinObraEmpty icon="users"/>;
+  if (loading) {
     return <div className="page-wrap"><div className="empty-state"><JxIcon name="users" size={32} color="var(--tm)"/><p>Cargando personal…</p></div></div>;
   }
 
@@ -1269,16 +1300,26 @@ function AsistenciaPage({ showToast }) {
 
   uE(() => {
     let cancelled = false;
+    let attempts = 0;
     const find = async () => {
+      attempts++;
       const obras = await window.__db.obras.toArray();
       const stored = window.__getObraActivaId?.();
       const a = (stored && obras.find(o => o.id === stored && !o.deleted_at))
              || obras.find(o => !o.deleted_at);
-      if (a) { if (!cancelled) setObraId(a.id); }
-      else if (!cancelled) setTimeout(find, 500);
+      if (a) { if (!cancelled) setObraId(a.id); return; }
+      if (cancelled || attempts >= 10) return;
+      setTimeout(find, 500);
     };
     find();
-    return () => { cancelled = true; };
+    const onChange = () => { attempts = 0; find(); };
+    window.addEventListener('jarvex_master_updated', onChange);
+    window.addEventListener('obra_activa_change', onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('jarvex_master_updated', onChange);
+      window.removeEventListener('obra_activa_change', onChange);
+    };
   }, []);
 
   const { data: personal } = window.__hooks.usePersonal(obraId);
@@ -1485,7 +1526,8 @@ function AsistenciaPage({ showToast }) {
     }
   };
 
-  if (loading || !obraId) {
+  if (!obraId) return <SinObraEmpty icon="calendar"/>;
+  if (loading) {
     return <div className="page-wrap"><div className="empty-state"><JxIcon name="calendar" size={32} color="var(--tm)"/><p>Cargando asistencia…</p></div></div>;
   }
 

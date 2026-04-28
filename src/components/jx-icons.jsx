@@ -64,4 +64,26 @@ const JxIcon = ({ name, size = 16, color = 'currentColor', strokeWidth = 1.6 }) 
   );
 };
 
-Object.assign(window, { JxIcon });
+// Empty state cuando no hay obra activa (usado por componentes que dependen
+// de obraId). Más informativo que "Cargando…" infinito.
+const SinObraEmpty = ({ icon = 'building' }) => (
+  <div className="page-wrap">
+    <div className="empty-state" style={{ paddingTop: 60 }}>
+      <JxIcon name={icon} size={36} color="rgba(242,183,5,0.55)" />
+      <p style={{ fontSize: 14, color: 'var(--ts)', marginTop: 14, fontWeight: 600 }}>
+        Esperando obra activa
+      </p>
+      <p style={{ fontSize: 12.5, color: 'var(--tm)', marginTop: 6, lineHeight: 1.5, maxWidth: 380, margin: '6px auto 0' }}>
+        No hay obras visibles para tu usuario. Posibles razones:<br />
+        · Aún no se ha creado ninguna obra (créala en <strong>Obras / Proyectos</strong>).<br />
+        · Tu sesión está sincronizando — espera unos segundos.<br />
+        · No estás asignado a ninguna obra (pide al admin que te asigne).
+      </p>
+      <button className="btn btn-amber btn-sm" style={{ marginTop: 16 }} onClick={() => window.location.reload()}>
+        <JxIcon name="check" size={12} /> Recargar
+      </button>
+    </div>
+  </div>
+);
+
+Object.assign(window, { JxIcon, SinObraEmpty });
