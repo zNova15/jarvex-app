@@ -1,13 +1,13 @@
 // ═══════════════════════════════════════════════════════════════════
 // JARVEX — Consulta de identidad peruana (SUNAT + RENIEC)
-// API pública apis.net.pe v1 (sin token, rate-limited).
-// La v2 cambió de política y ahora exige token de Decolecta — la v1
-// sigue siendo gratuita y abierta. Si en el futuro la v1 también se
-// cierra: swap a apisperu.com (con JWT) o decolecta con APIKEY.
+// Llama a nuestros endpoints serverless de Vercel (/api/sunat,
+// /api/reniec) que internamente hacen el fetch a apis.net.pe v1.
+// Esto evita el bloqueo de CORS del browser (apis.net.pe no envía
+// Access-Control-Allow-Origin).
 // ═══════════════════════════════════════════════════════════════════
 
-const API_BASE = 'https://api.apis.net.pe/v1';
-const REQ_TIMEOUT_MS = 8000;
+const API_BASE = '/api'; // mismo origin que la SPA → sin CORS
+const REQ_TIMEOUT_MS = 10000;
 
 function timeoutFetch(url, opts = {}) {
   const controller = new AbortController();
@@ -28,17 +28,17 @@ export async function consultarRUC(ruc) {
 
   let res;
   try {
-    res = await timeoutFetch(`${API_BASE}/ruc?numero=${r}`);
+    res = await timeoutFetch(`${API_BASE}/sunat?ruc=${r}`);
   } catch (e) {
     if (e.name === 'AbortError') throw new Error('SUNAT tardó demasiado en responder');
     throw new Error('No se pudo conectar a SUNAT');
   }
 
-  if (res.status === 404) throw new Error('RUC no encontrado en SUNAT');
-  if (res.status === 422) throw new Error('RUC inválido según SUNAT');
-  if (res.status === 429) throw new Error('Demasiadas consultas a SUNAT — espera un momento');
-  if (res.status === 401) throw new Error('La API ahora requiere token. Avisa al admin.');
-  if (!res.ok) throw new Error(`SUNAT respondió ${res.status}`);
+  if (!res.ok) {
+    let body = null;
+    try { body = await res.json(); } catch (e) {}
+    throw new Error(body?.error || `SUNAT respondió ${res.status}`);
+  }
 
   const data = await res.json();
   // apis.net.pe v1 devuelve `nombre` como razón social. Mantenemos compat
@@ -68,17 +68,17 @@ export async function consultarDNI(dni) {
 
   let res;
   try {
-    res = await timeoutFetch(`${API_BASE}/dni?numero=${d}`);
+    res = await timeoutFetch(`${API_BASE}/reniec?dni=${d}`);
   } catch (e) {
     if (e.name === 'AbortError') throw new Error('RENIEC tardó demasiado en responder');
     throw new Error('No se pudo conectar a RENIEC');
   }
 
-  if (res.status === 404) throw new Error('DNI no encontrado en RENIEC');
-  if (res.status === 422) throw new Error('DNI inválido según RENIEC');
-  if (res.status === 429) throw new Error('Demasiadas consultas a RENIEC — espera un momento');
-  if (res.status === 401) throw new Error('La API ahora requiere token. Avisa al admin.');
-  if (!res.ok) throw new Error(`RENIEC respondió ${res.status}`);
+  if (!res.ok) {
+    let body = null;
+    try { body = await res.json(); } catch (e) {}
+    throw new Error(body?.error || `RENIEC respondió ${res.status}`);
+  }
 
   const data = await res.json();
   return {

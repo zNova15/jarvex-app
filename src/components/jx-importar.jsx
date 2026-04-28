@@ -184,7 +184,7 @@ function DropZone({ onFile, file, accept = '.xlsx,.xls,.csv' }) {
 // partidas + insumos desde un export de "Análisis de Precios
 // Unitarios" de S10. Sustituye TODO el contenido de partidas/
 // insumos_partida de la obra activa.
-function S10Flow({ obraId, userId, userName, showToast, onReset, hist, setHist }) {
+function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, hist, setHist }) {
   const [step, setStep] = uSI(0); // 0 aviso, 1 archivo, 2 preview, 3 confirmar
   const [confirmed, setConfirmed] = uSI(false);
   const [file, setFile] = uSI(null);
@@ -194,6 +194,30 @@ function S10Flow({ obraId, userId, userName, showToast, onReset, hist, setHist }
   const [importing, setImp] = uSI(false);
   const [progress, setProgress] = uSI({ phase:'', current:0, total:0 });
   const [result, setResult] = uSI(null);
+
+  // Selector de obra destino — el usuario puede cambiarlo antes de importar
+  const [obrasDisponibles, setObrasDisponibles] = uSI([]);
+  const [obraId, setObraId] = uSI(defaultObraId || null);
+  uEI(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const todas = await window.__db.obras.toArray();
+        const visibles = (todas || []).filter(o => !o.deleted_at);
+        if (cancelled) return;
+        setObrasDisponibles(visibles);
+        // Si no había obra seleccionada o la actual no existe, usa la primera
+        if (!obraId || !visibles.find(o => o.id === obraId)) {
+          if (visibles.length) setObraId(visibles[0].id);
+        }
+      } catch (e) {}
+    };
+    load();
+    const t = setInterval(load, 5000);
+    return () => { cancelled = true; clearInterval(t); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const obraDestino = obrasDisponibles.find(o => o.id === obraId);
 
   // ── Comparación APU (solo aplica a tipo 'apu') ─────────────
   const [comparing, setComparing] = uSI(false);
@@ -695,11 +719,31 @@ function S10Flow({ obraId, userId, userName, showToast, onReset, hist, setHist }
             </div>
           </div>
 
-          {!obraId && (
-            <div style={{ background:'rgba(231,76,60,0.08)', border:'1px solid rgba(231,76,60,0.3)', borderRadius:8, padding:'10px 14px', fontSize:12, color:'var(--red)', marginBottom:14 }}>
-              ⚠ No hay obra activa. Activa una obra antes de importar.
-            </div>
-          )}
+          {/* Selector de obra destino — el usuario decide a cuál importa */}
+          <div className="card card-p" style={{ marginBottom:14, background:'rgba(52,152,219,0.06)', border:'1px solid rgba(52,152,219,0.25)' }}>
+            <label className="flabel" style={{ marginBottom:6, display:'block' }}>
+              <JxIcon name="building" size={12}/> Obra destino
+            </label>
+            {obrasDisponibles.length === 0 ? (
+              <div style={{ fontSize:12, color:'var(--red)', marginTop:4 }}>
+                ⚠ No hay obras creadas. Ve a <strong>Obras / Proyectos</strong> y crea una antes de importar.
+              </div>
+            ) : (
+              <>
+                <select className="fi" value={obraId || ''} onChange={e => setObraId(e.target.value || null)}>
+                  {obrasDisponibles.map(o => (
+                    <option key={o.id} value={o.id}>
+                      {o.nombre_obra || o.nombre || '(sin nombre)'}
+                      {o.cliente ? ` — ${o.cliente}` : ''}
+                    </option>
+                  ))}
+                </select>
+                <div style={{ fontSize:11.5, color:'var(--tm)', marginTop:6 }}>
+                  Los datos importados se asociarán a esta obra. {obrasDisponibles.length} obra{obrasDisponibles.length === 1 ? '' : 's'} disponible{obrasDisponibles.length === 1 ? '' : 's'}.
+                </div>
+              </>
+            )}
+          </div>
 
           <label style={{ display:'flex', gap:8, alignItems:'center', fontSize:12.5, color:'var(--ts)', cursor:'pointer', marginBottom:18 }}>
             <input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />
@@ -1059,7 +1103,7 @@ function S10Flow({ obraId, userId, userName, showToast, onReset, hist, setHist }
                                        : 'S10 · Cronograma Gantt',
                     icon:'dollar', color:'#0070C0' },
                   { label:'Archivo', val:file?.name, icon:'file', color:'var(--green)' },
-                  { label:'Obra destino', val: obraId ? `${obraId.slice(0,8)}…` : '—', icon:'building', color:'var(--orange)' },
+                  { label:'Obra destino', val: obraDestino ? (obraDestino.nombre_obra || obraDestino.nombre) : (obraId ? `${obraId.slice(0,8)}…` : '—'), icon:'building', color:'var(--orange)' },
                 ];
                 if (parsed.tipo === 'apu') {
                   filas.push(

@@ -32,11 +32,10 @@ export default defineConfig({
               expiration: { maxEntries: 200, maxAgeSeconds: 7 * 24 * 60 * 60 },
             },
           },
-          // SUNAT/RENIEC: NO cachear — siempre red (las respuestas pueden
-          // cambiar, los endpoints pueden cambiar de política como acabó
-          // pasando con apis.net.pe v2)
+          // SUNAT/RENIEC y otros endpoints serverless propios: NO cachear
+          // (las respuestas vienen del proxy /api/*, siempre frescas).
           {
-            urlPattern: /^https:\/\/api\.apis\.net\.pe\//,
+            urlPattern: /\/api\/(sunat|reniec)/,
             handler: 'NetworkOnly',
           },
         ],
