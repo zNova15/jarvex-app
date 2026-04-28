@@ -1322,30 +1322,19 @@ function ImportarPage({ showToast }) {
     </div>
   );
 
-  // Guard de rol DESPUÉS de todos los hooks (regla de React).
-  // Importar requiere admin: las RLS de partidas/materiales/etc.
-  // bloquean INSERTs para roles bajos y la importación fallaría
-  // silenciosamente al hacer push.
-  if (auth?.profile && !isAdmin) {
-    return (
-      <div className="page-wrap">
-        <div className="empty-state" style={{ paddingTop: 60 }}>
-          <JxIcon name="lock" size={36} color="rgba(242,183,5,0.55)"/>
-          <p style={{ fontSize: 14, color: 'var(--ts)', marginTop: 14, fontWeight: 600 }}>
-            Importación restringida al administrador
-          </p>
-          <p style={{ fontSize: 12.5, color: 'var(--tm)', marginTop: 6, lineHeight: 1.5, maxWidth: 420, margin: '6px auto 0' }}>
-            Tu rol actual (<strong>{auth.profile.rol || '—'}</strong>) no tiene permiso para importar masivamente.<br/>
-            Las políticas de seguridad del servidor solo permiten al admin crear partidas, materiales y cronogramas en bloque.<br/>
-            Pídele al admin que importe el archivo desde su sesión.
-          </p>
-        </div>
-      </div>
-    );
-  }
+  // Banner informativo si el usuario no es admin (en lugar de bloquear).
+  // Las RLS de Supabase rechazarán INSERTs si no tiene permiso, pero al
+  // menos puede ver la pantalla.
+  const showNoAdminBanner = auth?.profile && !isAdmin;
 
   return (
     <div className="page-wrap">
+      {showNoAdminBanner && (
+        <div className="alert-banner" style={{ marginBottom:14, background:'rgba(242,183,5,0.08)', border:'1px solid rgba(242,183,5,0.25)', color:'var(--amber)' }}>
+          <JxIcon name="alert" size={14} color="var(--amber)"/>
+          <span>Tu rol ({auth.profile.rol || '—'}) probablemente no tenga permiso para guardar la importación al servidor. Si falla, pide al admin que importe.</span>
+        </div>
+      )}
       <div className="pg-hd frow-sb">
         <div>
           <div className="pg-title">Importar Datos</div>

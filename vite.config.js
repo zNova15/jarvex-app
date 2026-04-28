@@ -11,9 +11,17 @@ export default defineConfig({
       workbox: {
         // skipWaiting + clientsClaim para que el SW nuevo tome control
         // inmediatamente sin esperar a que el usuario cierre la pestaña.
-        // Esencial cuando se cierran APIs externas (caso SUNAT v2 → v1).
         skipWaiting: true,
         clientsClaim: true,
+        // Limpia precaches viejos al activar el nuevo SW. Sin esto, los
+        // usuarios existentes pueden quedar con index.html viejo apuntando
+        // a bundles JS que ya no existen en el server → pantalla negra.
+        cleanupOutdatedCaches: true,
+        // index.html SIEMPRE desde la red si hay conexión. Si falla, usa
+        // el cacheado. Esto evita que un usuario con SW viejo quede
+        // bloqueado en una versión que ya no funciona.
+        navigateFallback: '/index.html',
+        navigateFallbackDenylist: [/^\/api/, /^\/auth/],
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
         runtimeCaching: [
           {
