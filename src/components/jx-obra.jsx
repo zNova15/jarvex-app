@@ -385,7 +385,7 @@ function MiniBar({ value, label, color, title }) {
 }
 
 // Fila de hoja (partida real)
-function PartidaLeafRow({ partida: p, depth, searchTerms, isAdmin, onEdit, consumoMap }) {
+function PartidaLeafRow({ partida: p, depth, searchTerms, isAdmin, onEdit, onVerAPU, consumoMap }) {
   const ctPres = Number(p.costo_total_presupuestado || 0);
   const ctReal = Number(p.costo_real_acumulado || 0);
   const av = Number(p.porcentaje_avance || 0);
@@ -447,9 +447,12 @@ function PartidaLeafRow({ partida: p, depth, searchTerms, isAdmin, onEdit, consu
           </span>
         )}
       </div>
-      <div style={{ textAlign: 'center' }}>
+      <div style={{ textAlign: 'center', whiteSpace:'nowrap' }}>
+        <button className="btn btn-ghost btn-xs" title="Ver APU (insumos: MO, materiales, equipo)" onClick={() => onVerAPU?.(p)}>
+          <JxIcon name="eye" size={11}/>
+        </button>
         {isAdmin && (
-          <button className="btn btn-ghost btn-xs" title="Editar partida" onClick={() => onEdit(p)}>
+          <button className="btn btn-ghost btn-xs" title="Editar partida" onClick={() => onEdit(p)} style={{ marginLeft:2 }}>
             <JxIcon name="edit" size={11}/>
           </button>
         )}
@@ -459,7 +462,7 @@ function PartidaLeafRow({ partida: p, depth, searchTerms, isAdmin, onEdit, consu
 }
 
 // Nodo del árbol (capítulo / sub-capítulo); renderiza hojas también
-function TreeNode({ node, visibleCodes, expanded, onToggle, searchTerms, isAdmin, onEdit, consumoMap }) {
+function TreeNode({ node, visibleCodes, expanded, onToggle, searchTerms, isAdmin, onEdit, onVerAPU, consumoMap }) {
   if (visibleCodes && !visibleCodes.has(node.code)) return null;
 
   const isOpen = expanded.has(node.code);
@@ -476,6 +479,7 @@ function TreeNode({ node, visibleCodes, expanded, onToggle, searchTerms, isAdmin
         searchTerms={searchTerms}
         isAdmin={isAdmin}
         onEdit={onEdit}
+        onVerAPU={onVerAPU}
         consumoMap={consumoMap}
       />
     );
@@ -543,6 +547,7 @@ function TreeNode({ node, visibleCodes, expanded, onToggle, searchTerms, isAdmin
               searchTerms={searchTerms}
               isAdmin={isAdmin}
               onEdit={onEdit}
+              onVerAPU={onVerAPU}
               consumoMap={consumoMap}
             />
           )}
@@ -558,6 +563,7 @@ function TreeNode({ node, visibleCodes, expanded, onToggle, searchTerms, isAdmin
                 searchTerms={searchTerms}
                 isAdmin={isAdmin}
                 onEdit={onEdit}
+              onVerAPU={onVerAPU}
                 consumoMap={consumoMap}
               />
             ))}
@@ -570,6 +576,7 @@ function TreeNode({ node, visibleCodes, expanded, onToggle, searchTerms, isAdmin
               searchTerms={searchTerms}
               isAdmin={isAdmin}
               onEdit={onEdit}
+              onVerAPU={onVerAPU}
               consumoMap={consumoMap}
             />
           ))}
@@ -592,6 +599,28 @@ function PartidasPage({ showToast }) {
   const [soloActivas, setSoloActivas] = uSO(false);
   const [estadoFilter, setEstadoFilter] = uSO('todos');
   const [consumoMap, setConsumoMap] = uSO({}); // partida_id -> avance_consumo_pct
+  const [verAPU, setVerAPU] = uSO(null); // partida cuyos insumos estamos viendo
+  const [insumosDetalle, setInsumosDetalle] = uSO([]); // insumos de la partida activa
+  const [loadingInsumos, setLoadingInsumos] = uSO(false);
+
+  // Cargar los insumos de la partida cuando se abre el modal "Ver APU"
+  uEO(() => {
+    if (!verAPU?.id) { setInsumosDetalle([]); return; }
+    let cancelled = false;
+    setLoadingInsumos(true);
+    (async () => {
+      try {
+        const arr = await window.__db.insumos_partida.where('partida_id').equals(verAPU.id).toArray();
+        if (!cancelled) setInsumosDetalle(arr || []);
+      } catch (e) {
+        console.warn('Error cargando insumos:', e);
+        if (!cancelled) setInsumosDetalle([]);
+      } finally {
+        if (!cancelled) setLoadingInsumos(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [verAPU?.id]);
 
   // Poll vista de Supabase (avance por consumo) — graceful si offline / vista no existe
   uEO(() => {
@@ -809,6 +838,7 @@ function PartidasPage({ showToast }) {
                 searchTerms={searchTerms}
                 isAdmin={isAdmin}
                 onEdit={openEditPartida}
+                onVerAPU={setVerAPU}
                 consumoMap={consumoMap}
               />
             ))}
@@ -821,6 +851,7 @@ function PartidasPage({ showToast }) {
                 searchTerms={searchTerms}
                 isAdmin={isAdmin}
                 onEdit={openEditPartida}
+                onVerAPU={setVerAPU}
                 consumoMap={consumoMap}
               />
             ))}
@@ -835,6 +866,118 @@ function PartidasPage({ showToast }) {
           </div>
         </div>
       )}
+
+      {/* ── Modal "Ver APU" — detalle de insumos por categoría ── */}
+      {verAPU && <Modal
+        title={`APU · ${verAPU.codigo_delfin || ''} — ${verAPU.nombre_partida || ''}`}
+        icon="list"
+        onClose={()=>setVerAPU(null)}
+      >
+        {(() => {
+          const cantidadPartida = Number(verAPU.metrado_contratado || 0);
+          const totalPartida = Number(verAPU.costo_total_presupuestado || 0);
+          // Agrupar por tipo_insumo
+          const grupos = { mano_obra: [], material: [], equipo: [], subcontrato: [], subpartida: [] };
+          for (const i of insumosDetalle) {
+            const k = i.tipo_insumo || 'material';
+            if (!grupos[k]) grupos[k] = [];
+            grupos[k].push(i);
+          }
+          const totalGrupo = (arr) => arr.reduce((s, x) =>
+            s + (Number(x.cantidad_presupuestada || 0) * Number(x.precio_presupuestado || 0)), 0
+          );
+          const TIPO_LABEL = {
+            mano_obra: 'MANO DE OBRA',
+            material: 'MATERIALES',
+            equipo: 'EQUIPO',
+            subcontrato: 'SUBCONTRATO',
+            subpartida: 'SUBPARTIDA',
+          };
+          const ORDEN = ['mano_obra', 'material', 'equipo', 'subcontrato', 'subpartida'];
+
+          return (
+            <>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:14 }}>
+                <div className="card card-p" style={{ textAlign:'center' }}>
+                  <div style={{ fontSize:11, color:'var(--tm)' }}>Metrado</div>
+                  <div style={{ fontSize:18, fontWeight:700, color:'var(--tp)', marginTop:3 }}>
+                    {cantidadPartida.toLocaleString('es-PE')} <span style={{ fontSize:12, color:'var(--tm)' }}>{verAPU.unidad || 'und'}</span>
+                  </div>
+                </div>
+                <div className="card card-p" style={{ textAlign:'center' }}>
+                  <div style={{ fontSize:11, color:'var(--tm)' }}>Precio Unitario</div>
+                  <div style={{ fontSize:18, fontWeight:700, color:'var(--amber)', marginTop:3 }}>
+                    {fmtS(verAPU.precio_unitario_pres || 0)}
+                  </div>
+                </div>
+                <div className="card card-p" style={{ textAlign:'center' }}>
+                  <div style={{ fontSize:11, color:'var(--tm)' }}>Costo Total</div>
+                  <div style={{ fontSize:18, fontWeight:700, color:'var(--green)', marginTop:3 }}>
+                    {fmtS(totalPartida)}
+                  </div>
+                </div>
+              </div>
+
+              {loadingInsumos ? (
+                <div style={{ padding:24, textAlign:'center', color:'var(--tm)', fontSize:12.5 }}>Cargando insumos…</div>
+              ) : insumosDetalle.length === 0 ? (
+                <div style={{ padding:24, textAlign:'center', color:'var(--tm)', fontSize:12.5, background:'rgba(242,183,5,0.06)', borderRadius:8 }}>
+                  Esta partida no tiene insumos cargados.<br/>
+                  <span style={{ fontSize:11 }}>Reimporta el APU desde S10 para cargar el detalle.</span>
+                </div>
+              ) : (
+                <div className="card" style={{ overflow:'hidden' }}>
+                  {ORDEN.map(tipo => {
+                    const arr = grupos[tipo] || [];
+                    if (!arr.length) return null;
+                    const tot = totalGrupo(arr);
+                    return (
+                      <div key={tipo}>
+                        <div style={{ background:'rgba(0,0,0,0.18)', padding:'8px 14px', display:'flex', justifyContent:'space-between', alignItems:'center', borderTop:'1px solid var(--border)' }}>
+                          <span style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', color:'var(--amber)' }}>{TIPO_LABEL[tipo]}</span>
+                          <span style={{ fontSize:12, fontWeight:700, color:'var(--tp)' }}>{tot.toFixed(2)}</span>
+                        </div>
+                        <table className="tbl" style={{ width:'100%' }}>
+                          <thead>
+                            <tr>
+                              <th style={{ width:90 }}>Código</th>
+                              <th>Descripción</th>
+                              <th style={{ width:60 }}>Unid.</th>
+                              <th style={{ width:80, textAlign:'right' }}>Cantidad</th>
+                              <th style={{ width:80, textAlign:'right' }}>Costo</th>
+                              <th style={{ width:90, textAlign:'right' }}>Total</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {arr.map(i => {
+                              const cant = Number(i.cantidad_presupuestada || 0);
+                              const pre  = Number(i.precio_presupuestado || 0);
+                              return (
+                                <tr key={i.id}>
+                                  <td className="col-m" style={{ fontFamily:'monospace', fontSize:11 }}>{i.insumo_codigo || '—'}</td>
+                                  <td className="col-p" style={{ fontSize:12 }}>{i.nombre_insumo || '—'}</td>
+                                  <td className="col-m">{i.unidad || '—'}</td>
+                                  <td style={{ textAlign:'right' }} className="col-num">{cant.toLocaleString('es-PE', { maximumFractionDigits: 4 })}</td>
+                                  <td style={{ textAlign:'right' }} className="col-num">{pre.toFixed(2)}</td>
+                                  <td style={{ textAlign:'right' }} className="col-num"><strong>{(cant * pre).toFixed(2)}</strong></td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })}
+                  <div style={{ background:'rgba(242,183,5,0.06)', padding:'10px 14px', display:'flex', justifyContent:'space-between', borderTop:'1px solid var(--border)' }}>
+                    <span style={{ fontSize:12, fontWeight:700, color:'var(--ts)' }}>TOTAL</span>
+                    <span style={{ fontSize:14, fontWeight:800, color:'var(--green)' }}>{fmtS(totalPartida)}</span>
+                  </div>
+                </div>
+              )}
+            </>
+          );
+        })()}
+      </Modal>}
 
       {(modal === 'nueva' || modal === 'editar') && <Modal title={editingId ? 'Editar Partida' : 'Nueva Partida'} icon="list" onClose={()=>{setModal(null); setEditingId(null); setForm({});}}>
         <div className="g2">
