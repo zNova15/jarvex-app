@@ -1,10 +1,12 @@
 // ═══════════════════════════════════════════════════════════════════
 // JARVEX — Consulta de identidad peruana (SUNAT + RENIEC)
-// API pública apis.net.pe (sin token, rate-limited).
-// Si en el futuro hace falta más cuota, swap a apisperu.com (con JWT).
+// API pública apis.net.pe v1 (sin token, rate-limited).
+// La v2 cambió de política y ahora exige token de Decolecta — la v1
+// sigue siendo gratuita y abierta. Si en el futuro la v1 también se
+// cierra: swap a apisperu.com (con JWT) o decolecta con APIKEY.
 // ═══════════════════════════════════════════════════════════════════
 
-const API_BASE = 'https://api.apis.net.pe/v2';
+const API_BASE = 'https://api.apis.net.pe/v1';
 const REQ_TIMEOUT_MS = 8000;
 
 function timeoutFetch(url, opts = {}) {
@@ -26,7 +28,7 @@ export async function consultarRUC(ruc) {
 
   let res;
   try {
-    res = await timeoutFetch(`${API_BASE}/sunat/ruc?numero=${r}`);
+    res = await timeoutFetch(`${API_BASE}/ruc?numero=${r}`);
   } catch (e) {
     if (e.name === 'AbortError') throw new Error('SUNAT tardó demasiado en responder');
     throw new Error('No se pudo conectar a SUNAT');
@@ -35,10 +37,12 @@ export async function consultarRUC(ruc) {
   if (res.status === 404) throw new Error('RUC no encontrado en SUNAT');
   if (res.status === 422) throw new Error('RUC inválido según SUNAT');
   if (res.status === 429) throw new Error('Demasiadas consultas a SUNAT — espera un momento');
+  if (res.status === 401) throw new Error('La API ahora requiere token. Avisa al admin.');
   if (!res.ok) throw new Error(`SUNAT respondió ${res.status}`);
 
   const data = await res.json();
-  // apis.net.pe v2 devuelve campos en camelCase
+  // apis.net.pe v1 devuelve `nombre` como razón social. Mantenemos compat
+  // con `razonSocial` por si en el futuro vuelve a estar.
   return {
     ruc: data.numeroDocumento || r,
     razonSocial: data.razonSocial || data.nombre || '',
@@ -54,7 +58,7 @@ export async function consultarRUC(ruc) {
 
 /**
  * Consulta RENIEC por DNI (8 dígitos).
- * Retorna { nombres, apellidoPaterno, apellidoMaterno, ... }
+ * Retorna { nombres, apellidoPaterno, apellidoMaterno, apellidos, nombreCompleto }
  * o lanza Error con mensaje legible.
  */
 export async function consultarDNI(dni) {
@@ -64,7 +68,7 @@ export async function consultarDNI(dni) {
 
   let res;
   try {
-    res = await timeoutFetch(`${API_BASE}/reniec/dni?numero=${d}`);
+    res = await timeoutFetch(`${API_BASE}/dni?numero=${d}`);
   } catch (e) {
     if (e.name === 'AbortError') throw new Error('RENIEC tardó demasiado en responder');
     throw new Error('No se pudo conectar a RENIEC');
@@ -73,6 +77,7 @@ export async function consultarDNI(dni) {
   if (res.status === 404) throw new Error('DNI no encontrado en RENIEC');
   if (res.status === 422) throw new Error('DNI inválido según RENIEC');
   if (res.status === 429) throw new Error('Demasiadas consultas a RENIEC — espera un momento');
+  if (res.status === 401) throw new Error('La API ahora requiere token. Avisa al admin.');
   if (!res.ok) throw new Error(`RENIEC respondió ${res.status}`);
 
   const data = await res.json();
