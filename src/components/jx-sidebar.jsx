@@ -77,6 +77,7 @@ const NAV = [
   { section: 'GESTIÓN DE OBRA' },
   { id: 'partidas', label: 'Partidas', icon: 'list' },
   { id: 'insumos', label: 'Insumos por Partida', icon: 'layers' },
+  { id: 'versiones', label: 'Versiones de Presupuesto', icon: 'compare' },
   { id: 'cronograma', label: 'Cronograma / Gantt', icon: 'gantt' },
   { id: 'avance', label: 'Avance de Obra', icon: 'hardHat' },
   { id: 'comparativo', label: 'Planificado vs Real', icon: 'compare' },

@@ -191,6 +191,8 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
   const [include, setInclude] = uSI({ materiales:true, mano_obra:true, equipos:true });
   // Permitir actualizar nombre/presupuesto de la obra desde el flujo de import
   const [updateObra, setUpdateObra] = uSI({ habilitado:false, nombre:'', presupuesto:'' });
+  // Guardar también como nueva versión de presupuesto (hasta 5 por obra)
+  const [saveVersion, setSaveVersion] = uSI({ habilitado:false, nombre:'', tipo:'inicial', notas:'' });
   const [step, setStep] = uSI(0); // 0 aviso, 1 archivo, 2 preview, 3 confirmar
   const [confirmed, setConfirmed] = uSI(false);
   const [file, setFile] = uSI(null);
@@ -738,6 +740,72 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       else if (parsed.tipo === 'gantt') res = await importGantt();
       else throw new Error('Tipo de archivo no soportado');
 
+      // Guardar como versión de presupuesto si el usuario lo pidió (solo APU)
+      if (parsed.tipo === 'apu' && saveVersion.habilitado && obraDestino) {
+        try {
+          const versExistentes = await window.__db.presupuestos_versiones
+            .where('obra_id').equals(obraDestino.id)
+            .filter(v => !v.deleted_at)
+            .toArray();
+          const numerosUsados = versExistentes.map(v => v.numero);
+          let numero = 1;
+          while (numerosUsados.includes(numero) && numero <= 5) numero++;
+          if (numero > 5) {
+            showToast('Ya hay 5 versiones de presupuesto. Elimina una antes de crear otra.', 'amber');
+          } else {
+            const partidasGuardadas = await window.__db.partidas
+              .where('obra_id').equals(obraDestino.id)
+              .filter(p => !p.deleted_at)
+              .toArray();
+            const now = new Date().toISOString();
+            const versionId = window.__newId();
+            const monto = partidasGuardadas.reduce((s, p) => s + Number(p.costo_total_presupuestado || 0), 0);
+            await window.__db.presupuestos_versiones.add({
+              id: versionId, obra_id: obraDestino.id,
+              numero, nombre: saveVersion.nombre.trim() || `v${numero} APU importado`,
+              tipo: saveVersion.tipo,
+              descripcion: saveVersion.notas || null,
+              fecha: now.slice(0,10),
+              monto_total: monto,
+              bloqueado: false,
+              archivo_origen: file?.name || null,
+              notas: saveVersion.notas || null,
+              created_by: userId, updated_by: userId,
+              created_at: now, updated_at: now,
+              version: 1, sync_status: 'pending_create', last_synced_at: null,
+              idempotency_key: `${userId}_pres_ver_${versionId}`,
+            });
+            const partidasVersion = partidasGuardadas.map(p => {
+              const id = window.__newId();
+              return {
+                id, version_id: versionId, obra_id: obraDestino.id,
+                codigo: p.codigo_delfin || '',
+                nombre_partida: p.nombre_partida,
+                unidad: p.unidad,
+                metrado: Number(p.metrado_contratado || 0),
+                precio_unitario: Number(p.precio_unitario_pres || 0),
+                costo_total: Number(p.costo_total_presupuestado || 0),
+                nivel: p.nivel ?? 1,
+                parent_codigo: p.parent_codigo ?? null,
+                orden: p.orden ?? 0,
+                created_by: userId, updated_by: userId,
+                created_at: now, updated_at: now,
+                version: 1, sync_status: 'pending_create', last_synced_at: null,
+                idempotency_key: `${userId}_part_ver_${id}`,
+              };
+            });
+            if (partidasVersion.length) await window.__db.partidas_versionadas.bulkAdd(partidasVersion);
+            try { await window.__logAudit?.({ action:'insert', table:'presupuestos_versiones', recordId: versionId,
+              newData:{ numero, nombre: saveVersion.nombre, partidas: partidasVersion.length, monto, archivo: file?.name },
+              reason: 'Versión creada durante importación de APU' }); } catch {}
+            res.detalle += ` · v${numero} guardada (${partidasVersion.length} partidas)`;
+          }
+        } catch (e) {
+          console.warn('[guardar versión]', e);
+          showToast('Importación OK, pero no se guardó la versión: ' + (e.message||e), 'amber');
+        }
+      }
+
       setResult(res);
 
       const entry = {
@@ -757,7 +825,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       // Refrescar hooks (partidas/insumos_partida/materiales/personal/herramientas) ya cargados en otras pantallas
       try {
         let tablasAfectadas;
-        if (parsed.tipo === 'apu') tablasAfectadas = ['partidas','insumos_partida','obras'];
+        if (parsed.tipo === 'apu') tablasAfectadas = ['partidas','insumos_partida','obras','presupuestos_versiones','partidas_versionadas'];
         else if (parsed.tipo === 'insumos') {
           tablasAfectadas = [];
           if (include.materiales) tablasAfectadas.push('materiales');
@@ -1097,6 +1165,53 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                       </div>
                     );
                   })()}
+
+                  {/* Guardar como versión de presupuesto */}
+                  <div className="card card-p" style={{ marginBottom:14, borderLeft:'3px solid var(--green)' }}>
+                    <label style={{ display:'flex', gap:10, alignItems:'flex-start', cursor:'pointer' }}>
+                      <input type="checkbox" checked={saveVersion.habilitado}
+                        onChange={e=>setSaveVersion({...saveVersion, habilitado:e.target.checked,
+                          nombre: saveVersion.nombre || `${(parsed?.summary?.partidas || 0)} partidas — ${file?.name || 'APU importado'}`})}/>
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontSize:13, fontWeight:700, color:'var(--tp)', display:'flex', alignItems:'center', gap:6 }}>
+                          <JxIcon name="compare" size={13} color="var(--green)"/>
+                          Guardar también como versión de presupuesto
+                        </div>
+                        <div style={{ fontSize:11.5, color:'var(--tm)', marginTop:3 }}>
+                          Crea una versión congelada (v1, v2, … hasta v5) para comparar después con futuras propuestas o el costo real ejecutado.
+                          La versión "Real" en uso sigue siendo las partidas que se importan ahora.
+                        </div>
+                      </div>
+                    </label>
+
+                    {saveVersion.habilitado && (
+                      <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr', gap:10, marginTop:12, paddingTop:12, borderTop:'1px solid var(--border)' }}>
+                        <div>
+                          <label className="flabel">Nombre de la versión *</label>
+                          <input className="fi" value={saveVersion.nombre}
+                            placeholder='ej: "v1 Inicial firmado por cliente"'
+                            onChange={e=>setSaveVersion({...saveVersion, nombre:e.target.value})}/>
+                        </div>
+                        <div>
+                          <label className="flabel">Tipo</label>
+                          <select className="fi" value={saveVersion.tipo}
+                            onChange={e=>setSaveVersion({...saveVersion, tipo:e.target.value})}>
+                            <option value="inicial">Inicial</option>
+                            <option value="modificado">Modificado</option>
+                            <option value="propuesta">Propuesta</option>
+                            <option value="adicional">Adicional</option>
+                            <option value="real">Real</option>
+                          </select>
+                        </div>
+                        <div style={{ gridColumn:'1 / -1' }}>
+                          <label className="flabel">Notas (opcional)</label>
+                          <input className="fi" value={saveVersion.notas}
+                            placeholder="Contexto: motivo del cambio, fecha de firma, etc."
+                            onChange={e=>setSaveVersion({...saveVersion, notas:e.target.value})}/>
+                        </div>
+                      </div>
+                    )}
+                  </div>
 
                   {/* Filtros */}
                   <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap', marginBottom:10 }}>

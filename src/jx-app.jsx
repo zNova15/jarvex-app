@@ -321,6 +321,7 @@ function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStat
     'mov-materiales':'Movimiento de Materiales','herramientas':'Herramientas',
     'mov-herramientas':'Movimiento de Herramientas',proveedores:'Proveedores',
     evidencias:'Evidencias',partidas:'Partidas',insumos:'Insumos por Partida',
+    versiones:'Versiones de Presupuesto',
     cronograma:'Cronograma / Gantt',avance:'Avance de Obra',comparativo:'Planificado vs Real',
     costos:'Costos',incidencias:'Incidencias',usuarios:'Usuarios',roles:'Roles y Permisos',
     configuracion:'Configuración',
@@ -565,6 +566,7 @@ function App() {
       case 'proveedores':   return <ProveedoresPage showToast={showToast}/>;
       case 'partidas':      return <PartidasPage showToast={showToast}/>;
       case 'insumos':       return <InsumosPage showToast={showToast}/>;
+      case 'versiones':     return <VersionesPage showToast={showToast}/>;
       case 'cronograma':    return <CronogramaPage showToast={showToast}/>;
       case 'avance':        return <AvancePage showToast={showToast}/>;
       case 'comparativo':   return <ComparativoPage showToast={showToast}/>;

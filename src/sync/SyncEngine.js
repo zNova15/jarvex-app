@@ -17,6 +17,8 @@ const TRANSACTIONAL_TABLES = [
   'proveedores',
   'partidas',
   'insumos_partida',
+  'presupuestos_versiones',
+  'partidas_versionadas',
   'asistencia',
   'movimientos_materiales',
   'movimientos_herramientas',
@@ -27,14 +29,16 @@ const TRANSACTIONAL_TABLES = [
 
 // Tablas maestras que se descargan del servidor en cada sync.
 const MASTER_TABLES = [
-  { tabla: 'obras',          query: () => supabase.from('obras').select('*').is('deleted_at', null) },
-  { tabla: 'personal',       query: () => supabase.from('personal').select('*').is('deleted_at', null) },
-  { tabla: 'materiales',     query: () => supabase.from('materiales').select('*').is('deleted_at', null) },
-  { tabla: 'herramientas',   query: () => supabase.from('herramientas').select('*').is('deleted_at', null) },
-  { tabla: 'proveedores',    query: () => supabase.from('proveedores').select('*').is('deleted_at', null) },
-  { tabla: 'partidas',       query: () => supabase.from('partidas').select('*').is('deleted_at', null) },
-  { tabla: 'insumos_partida',query: () => supabase.from('insumos_partida').select('*') },
-  { tabla: 'profiles',       query: () => supabase.from('profiles').select('*') },
+  { tabla: 'obras',                  query: () => supabase.from('obras').select('*').is('deleted_at', null) },
+  { tabla: 'personal',               query: () => supabase.from('personal').select('*').is('deleted_at', null) },
+  { tabla: 'materiales',             query: () => supabase.from('materiales').select('*').is('deleted_at', null) },
+  { tabla: 'herramientas',           query: () => supabase.from('herramientas').select('*').is('deleted_at', null) },
+  { tabla: 'proveedores',            query: () => supabase.from('proveedores').select('*').is('deleted_at', null) },
+  { tabla: 'partidas',               query: () => supabase.from('partidas').select('*').is('deleted_at', null) },
+  { tabla: 'insumos_partida',        query: () => supabase.from('insumos_partida').select('*') },
+  { tabla: 'presupuestos_versiones', query: () => supabase.from('presupuestos_versiones').select('*').is('deleted_at', null) },
+  { tabla: 'partidas_versionadas',   query: () => supabase.from('partidas_versionadas').select('*').is('deleted_at', null) },
+  { tabla: 'profiles',               query: () => supabase.from('profiles').select('*') },
 ];
 
 let syncInProgress = false;

@@ -191,6 +191,22 @@ export function useEvidencias(obra_id) {
   , [obra_id]);
 }
 
+export function usePresupuestosVersiones(obra_id) {
+  return useOfflineData('presupuestos_versiones', q =>
+    obra_id
+      ? q.where('obra_id').equals(obra_id).filter(v => !v.deleted_at).toArray()
+      : q.filter(v => !v.deleted_at).toArray()
+  , [obra_id]);
+}
+
+export function usePartidasVersionadas(version_id) {
+  return useOfflineData('partidas_versionadas', q =>
+    version_id
+      ? q.where('version_id').equals(version_id).filter(p => !p.deleted_at).toArray()
+      : []
+  , [version_id]);
+}
+
 export function useConflicts() {
   const [conflicts, setConflicts] = useState([]);
 

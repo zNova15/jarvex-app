@@ -585,4 +585,426 @@ function IncidenciasPage({ showToast }) {
   );
 }
 
-Object.assign(window, { InsumosPage, CostosPage, IncidenciasPage });
+// ─── VERSIONES DE PRESUPUESTO ─────────────────────────────
+// Permite mantener hasta 5 versiones de presupuesto por obra y compararlas
+// lado a lado. La tabla `partidas` actual sigue siendo la versión "Real" en uso.
+const TIPO_LABEL = { inicial:'Inicial', modificado:'Modificado', propuesta:'Propuesta', adicional:'Adicional', real:'Real' };
+const TIPO_COLOR = { inicial:'var(--blue)', modificado:'var(--amber)', propuesta:'var(--ts)', adicional:'var(--orange)', real:'var(--green)' };
+
+function VersionesPage({ showToast }) {
+  const obraId = useObraActiva();
+  const auth = window.__useAuth?.();
+  const isAdmin = auth?.profile?.rol === 'admin';
+  const userId = auth?.profile?.id || 'offline';
+  const appMode = window.__useAppMode?.() || { isPrueba: false };
+
+  const { data: versiones } = window.__hooks.usePresupuestosVersiones(obraId);
+  const { data: obras } = window.__hooks.useObras();
+  const obra = (obras || []).find(o => o.id === obraId);
+
+  const [selectedIds, setSelectedIds] = uSG([]); // hasta 5 versiones a comparar
+  const [partidasPorVersion, setPartidasPorVersion] = uSG({}); // { vId: [...partidas] }
+  const [modalNueva, setModalNueva] = uSG(false);
+  const [form, setForm] = uSG({ nombre:'', tipo:'inicial', descripcion:'', fecha:new Date().toISOString().slice(0,10) });
+
+  // Auto-seleccionar todas las versiones existentes (hasta 5) al cargar
+  uEG(() => {
+    if (versiones && versiones.length && selectedIds.length === 0) {
+      const ordenadas = [...versiones].sort((a,b) => (a.numero||0) - (b.numero||0));
+      setSelectedIds(ordenadas.slice(0,5).map(v => v.id));
+    }
+  }, [versiones]);
+
+  // Cargar partidas de cada versión seleccionada
+  uEG(() => {
+    let cancelled = false;
+    (async () => {
+      const out = {};
+      for (const vid of selectedIds) {
+        try {
+          const rows = await window.__db.partidas_versionadas
+            .where('version_id').equals(vid)
+            .filter(p => !p.deleted_at)
+            .toArray();
+          out[vid] = rows;
+        } catch (e) { out[vid] = []; }
+      }
+      if (!cancelled) setPartidasPorVersion(out);
+    })();
+    return () => { cancelled = true; };
+  }, [selectedIds.join(',')]);
+
+  // Construir matriz de comparación: 1 fila por código, 1 columna por versión
+  const matriz = uMG(() => {
+    const porCodigo = new Map();
+    selectedIds.forEach(vid => {
+      const partidas = partidasPorVersion[vid] || [];
+      partidas.forEach(p => {
+        const cur = porCodigo.get(p.codigo) || {
+          codigo: p.codigo,
+          nombre: p.nombre_partida,
+          unidad: p.unidad,
+          orden: p.orden ?? 0,
+          values: {}, // vid → { metrado, costo }
+        };
+        cur.nombre = cur.nombre || p.nombre_partida;
+        cur.values[vid] = { metrado: Number(p.metrado || 0), costo: Number(p.costo_total || 0) };
+        porCodigo.set(p.codigo, cur);
+      });
+    });
+    return Array.from(porCodigo.values()).sort((a,b) => (a.codigo || '').localeCompare(b.codigo || '', 'es', { numeric:true }));
+  }, [selectedIds, partidasPorVersion]);
+
+  const versionesSel = uMG(
+    () => selectedIds.map(id => (versiones || []).find(v => v.id === id)).filter(Boolean),
+    [selectedIds, versiones]
+  );
+
+  const totalesPorVersion = uMG(() => {
+    const out = {};
+    selectedIds.forEach(vid => {
+      const partidas = partidasPorVersion[vid] || [];
+      out[vid] = partidas.reduce((s, p) => s + Number(p.costo_total || 0), 0);
+    });
+    return out;
+  }, [selectedIds, partidasPorVersion]);
+
+  const toggleSel = (id) => {
+    setSelectedIds(cur => {
+      if (cur.includes(id)) return cur.filter(x => x !== id);
+      if (cur.length >= 5) return cur; // máx 5
+      return [...cur, id];
+    });
+  };
+
+  const crearVersionDesdePartidas = async () => {
+    if (!obraId) { showToast?.('No hay obra activa', 'red'); return; }
+    if (!form.nombre.trim()) { showToast?.('Ingresa un nombre', 'red'); return; }
+    const numerosUsados = (versiones || []).map(v => v.numero);
+    let numero = 1;
+    while (numerosUsados.includes(numero) && numero <= 5) numero++;
+    if (numero > 5) { showToast?.('Ya hay 5 versiones. Elimina una primero.', 'red'); return; }
+
+    const partidasReal = await window.__db.partidas
+      .where('obra_id').equals(obraId)
+      .filter(p => !p.deleted_at)
+      .toArray();
+
+    const now = new Date().toISOString();
+    const versionId = window.__newId();
+    const monto = partidasReal.reduce((s, p) => s + Number(p.costo_total_presupuestado || 0), 0);
+
+    try {
+      await window.__db.presupuestos_versiones.add({
+        id: versionId, obra_id: obraId,
+        numero, nombre: form.nombre.trim(), tipo: form.tipo,
+        descripcion: form.descripcion || null,
+        fecha: form.fecha || now.slice(0,10),
+        monto_total: monto,
+        bloqueado: false,
+        archivo_origen: 'partidas_actuales',
+        notas: null,
+        created_by: userId, updated_by: userId,
+        created_at: now, updated_at: now,
+        version: 1, sync_status: 'pending_create', last_synced_at: null,
+        idempotency_key: `${userId}_pres_ver_${versionId}`,
+      });
+
+      const partidasVersion = partidasReal.map(p => {
+        const id = window.__newId();
+        return {
+          id, version_id: versionId, obra_id: obraId,
+          codigo: p.codigo_delfin || '',
+          nombre_partida: p.nombre_partida,
+          unidad: p.unidad,
+          metrado: Number(p.metrado_contratado || 0),
+          precio_unitario: Number(p.precio_unitario_pres || 0),
+          costo_total: Number(p.costo_total_presupuestado || 0),
+          nivel: p.nivel ?? 1,
+          parent_codigo: p.parent_codigo ?? null,
+          orden: p.orden ?? 0,
+          created_by: userId, updated_by: userId,
+          created_at: now, updated_at: now,
+          version: 1, sync_status: 'pending_create', last_synced_at: null,
+          idempotency_key: `${userId}_part_ver_${id}`,
+        };
+      });
+      if (partidasVersion.length) {
+        await window.__db.partidas_versionadas.bulkAdd(partidasVersion);
+      }
+      try { await window.__logAudit?.({ action:'insert', table:'presupuestos_versiones', recordId: versionId,
+        newData:{ numero, nombre: form.nombre, partidas: partidasVersion.length, monto } }); } catch {}
+      try {
+        window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'presupuestos_versiones' } }));
+        window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'partidas_versionadas' } }));
+        window.dispatchEvent(new Event('online'));
+      } catch {}
+      showToast?.(`Versión v${numero} "${form.nombre}" creada con ${partidasVersion.length} partidas`, 'green');
+      setModalNueva(false);
+      setForm({ nombre:'', tipo:'inicial', descripcion:'', fecha:new Date().toISOString().slice(0,10) });
+    } catch (e) {
+      showToast?.('Error: ' + (e.message || e), 'red');
+    }
+  };
+
+  const eliminarVersion = async (v) => {
+    if (!isAdmin || !appMode.isPrueba) return;
+    if (!confirm(`¿Eliminar la versión "${v.nombre}" (v${v.numero})? Las partidas versionadas se borran. La versión "Real" en partidas no se toca.`)) return;
+    try {
+      const partidas = await window.__db.partidas_versionadas.where('version_id').equals(v.id).toArray();
+      const ids = partidas.map(p => p.id);
+      const now = new Date().toISOString();
+      for (const id of ids) {
+        await window.__db.partidas_versionadas.update(id, { deleted_at: now, sync_status: 'pending_delete' });
+      }
+      await window.__db.presupuestos_versiones.update(v.id, { deleted_at: now, sync_status: 'pending_delete' });
+      try { await window.__logAudit?.({ action:'delete', table:'presupuestos_versiones', recordId: v.id, oldData: v, reason: 'Eliminación manual' }); } catch {}
+      setSelectedIds(cur => cur.filter(x => x !== v.id));
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'presupuestos_versiones' } })); } catch {}
+      showToast?.(`Versión "${v.nombre}" eliminada`, 'amber');
+    } catch (e) {
+      showToast?.('Error: ' + (e.message || e), 'red');
+    }
+  };
+
+  const toggleBloqueada = async (v) => {
+    if (!isAdmin) return;
+    try {
+      await window.__db.presupuestos_versiones.update(v.id, {
+        bloqueado: !v.bloqueado,
+        sync_status: v.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+        updated_at: new Date().toISOString(),
+        version: (v.version ?? 0) + 1,
+      });
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'presupuestos_versiones' } })); } catch {}
+      showToast?.(v.bloqueado ? 'Versión desbloqueada' : 'Versión bloqueada', 'green');
+    } catch (e) {
+      showToast?.('Error: ' + (e.message || e), 'red');
+    }
+  };
+
+  if (!obraId) return <div className="page-wrap"><div className="empty-state"><JxIcon name="compare" size={32} color="var(--tm)"/><p>Selecciona una obra para gestionar versiones de presupuesto.</p></div></div>;
+
+  const totalReal = (matriz || []).reduce((s, r) => s + Math.max(...Object.values(r.values).map(v => v.costo || 0), 0), 0);
+  const noHayVersiones = !versiones || versiones.length === 0;
+
+  return (
+    <div className="page-wrap">
+      <div className="pg-hd frow-sb">
+        <div>
+          <div className="pg-title">Versiones de Presupuesto</div>
+          <div className="pg-sub">
+            {obra?.nombre_obra || ''} · Hasta 5 versiones (Inicial → Modificado → Propuesta → Adicional → Real). Compara las que necesites lado a lado.
+          </div>
+        </div>
+        {isAdmin && (versiones?.length || 0) < 5 && (
+          <button className="btn btn-amber btn-sm" onClick={()=>setModalNueva(true)}>
+            <JxIcon name="plus" size={13}/> Nueva versión desde partidas actuales
+          </button>
+        )}
+      </div>
+
+      {noHayVersiones ? (
+        <div className="card card-p empty-state">
+          <JxIcon name="compare" size={40} color="var(--tm)"/>
+          <p style={{ maxWidth:480 }}>
+            Aún no hay versiones de presupuesto guardadas para esta obra.<br/>
+            Crea la primera (típicamente "v1 Inicial cliente") tomando una foto de las partidas actuales,
+            o usa el flujo de Importar APU desde Delphin con la opción "Guardar como versión".
+          </p>
+        </div>
+      ) : (
+        <>
+          {/* Selector de versiones a comparar */}
+          <div className="card card-p" style={{ marginBottom:14 }}>
+            <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)', marginBottom:8 }}>
+              <JxIcon name="check" size={12}/> Versiones (selecciona hasta 5 para comparar — {selectedIds.length}/5)
+            </div>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(220px, 1fr))', gap:10 }}>
+              {[...versiones].sort((a,b) => (a.numero||0) - (b.numero||0)).map(v => {
+                const sel = selectedIds.includes(v.id);
+                const monto = totalesPorVersion[v.id];
+                return (
+                  <div key={v.id}
+                    style={{ position:'relative', borderRadius:8,
+                             border:`1.5px solid ${sel ? TIPO_COLOR[v.tipo] || 'var(--amber)' : 'var(--border)'}`,
+                             background: sel ? `${(TIPO_COLOR[v.tipo] || 'var(--amber)')}14` : 'transparent',
+                             padding:10 }}>
+                    <label style={{ display:'flex', gap:8, alignItems:'flex-start', cursor:'pointer' }}>
+                      <input type="checkbox" checked={sel} onChange={()=>toggleSel(v.id)}/>
+                      <div style={{ flex:1 }}>
+                        <div style={{ display:'flex', alignItems:'center', gap:6, fontSize:11, color:'var(--tm)' }}>
+                          <span style={{ background: TIPO_COLOR[v.tipo], color:'#fff', padding:'1px 6px', borderRadius:4, fontSize:10, fontWeight:700 }}>
+                            v{v.numero}
+                          </span>
+                          <span style={{ textTransform:'uppercase', letterSpacing:'.04em' }}>{TIPO_LABEL[v.tipo] || v.tipo}</span>
+                          {v.bloqueado && <JxIcon name="lock" size={10} color="var(--amber)"/>}
+                        </div>
+                        <div style={{ fontSize:13, fontWeight:700, color:'var(--tp)', marginTop:3 }}>{v.nombre}</div>
+                        <div style={{ fontSize:11, color:'var(--tm)', marginTop:2 }}>
+                          {v.fecha || '—'} · S/ {(monto ?? Number(v.monto_total||0)).toLocaleString('es-PE', { maximumFractionDigits: 0 })}
+                        </div>
+                      </div>
+                    </label>
+                    {isAdmin && (
+                      <div style={{ display:'flex', gap:4, marginTop:6, justifyContent:'flex-end' }}>
+                        <button className="btn btn-ghost btn-xs" title={v.bloqueado ? 'Desbloquear' : 'Bloquear (no se podrá editar)'} onClick={()=>toggleBloqueada(v)}>
+                          <JxIcon name={v.bloqueado ? 'lock' : 'check'} size={10}/>
+                        </button>
+                        {appMode.isPrueba && (
+                          <button className="btn btn-red btn-xs" title="Eliminar versión (solo modo edición)" onClick={()=>eliminarVersion(v)}>
+                            <JxIcon name="trash" size={10}/>
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Matriz comparativa */}
+          {versionesSel.length === 0 ? (
+            <div className="card card-p empty-state">
+              <JxIcon name="compare" size={32} color="var(--tm)"/>
+              <p>Selecciona al menos una versión arriba para verla.</p>
+            </div>
+          ) : (
+            <>
+              {/* KPIs por versión */}
+              <div style={{ display:'grid', gridTemplateColumns:`repeat(${versionesSel.length}, 1fr)`, gap:12, marginBottom:14 }}>
+                {versionesSel.map((v, i) => {
+                  const monto = totalesPorVersion[v.id] ?? Number(v.monto_total || 0);
+                  const prev = i > 0 ? (totalesPorVersion[versionesSel[i-1].id] ?? Number(versionesSel[i-1].monto_total||0)) : null;
+                  const delta = prev !== null ? monto - prev : null;
+                  const deltaPct = prev !== null && prev !== 0 ? (delta / prev * 100) : null;
+                  return (
+                    <div key={v.id} className="card card-p" style={{ borderTop:`3px solid ${TIPO_COLOR[v.tipo] || 'var(--amber)'}` }}>
+                      <div style={{ fontSize:10.5, color:'var(--tm)', textTransform:'uppercase', letterSpacing:'.05em' }}>
+                        v{v.numero} · {TIPO_LABEL[v.tipo] || v.tipo}
+                      </div>
+                      <div style={{ fontSize:13, fontWeight:600, color:'var(--ts)', marginTop:2, marginBottom:6 }}>{v.nombre}</div>
+                      <div style={{ fontSize:20, fontWeight:800, color: TIPO_COLOR[v.tipo] || 'var(--amber)' }}>
+                        S/ {monto.toLocaleString('es-PE', { maximumFractionDigits: 0 })}
+                      </div>
+                      <div style={{ fontSize:11, color:'var(--tm)', marginTop:4 }}>
+                        {(partidasPorVersion[v.id] || []).length} partidas
+                        {delta !== null && (
+                          <span style={{ marginLeft:8, color: delta >= 0 ? 'var(--red)' : 'var(--green)', fontWeight:600 }}>
+                            {delta >= 0 ? '+' : ''}S/ {delta.toLocaleString('es-PE', { maximumFractionDigits: 0 })}
+                            {' '}({deltaPct >= 0 ? '+' : ''}{(deltaPct ?? 0).toFixed(1)}%)
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Tabla matriz */}
+              <div className="card" style={{ overflow:'auto' }}>
+                <table className="tbl" style={{ minWidth: 600 + versionesSel.length * 140 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ minWidth:120 }}>Código</th>
+                      <th style={{ minWidth:280 }}>Partida</th>
+                      <th>Unidad</th>
+                      {versionesSel.map(v => (
+                        <th key={v.id} style={{ minWidth:140, textAlign:'right' }}>
+                          v{v.numero} · {TIPO_LABEL[v.tipo] || v.tipo}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {matriz.length === 0 ? (
+                      <tr><td colSpan={3 + versionesSel.length} style={{ padding:'20px', textAlign:'center', color:'var(--tm)' }}>
+                        Las versiones seleccionadas no tienen partidas guardadas.
+                      </td></tr>
+                    ) : matriz.map(row => (
+                      <tr key={row.codigo}>
+                        <td className="col-m" style={{ fontFamily:'monospace', fontSize:11 }}>{row.codigo}</td>
+                        <td className="col-p">{row.nombre}</td>
+                        <td className="col-m">{row.unidad || '—'}</td>
+                        {versionesSel.map((v, i) => {
+                          const cell = row.values[v.id];
+                          const prev = i > 0 ? row.values[versionesSel[i-1].id] : null;
+                          const delta = cell && prev ? (cell.costo - prev.costo) : null;
+                          return (
+                            <td key={v.id} style={{ textAlign:'right', whiteSpace:'nowrap' }} className="col-num">
+                              {cell ? (
+                                <>
+                                  <div style={{ fontSize:12, fontWeight:600 }}>S/ {cell.costo.toLocaleString('es-PE', { maximumFractionDigits: 0 })}</div>
+                                  {delta !== null && delta !== 0 && (
+                                    <div style={{ fontSize:10, color: delta > 0 ? 'var(--red)' : 'var(--green)', marginTop:1 }}>
+                                      {delta > 0 ? '+' : ''}S/ {delta.toLocaleString('es-PE', { maximumFractionDigits: 0 })}
+                                    </div>
+                                  )}
+                                </>
+                              ) : <span style={{ color:'var(--tm)' }}>—</span>}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr style={{ background:'rgba(0,0,0,0.18)', fontWeight:700 }}>
+                      <td colSpan={3} style={{ padding:'10px 14px' }}>TOTAL</td>
+                      {versionesSel.map(v => (
+                        <td key={v.id} style={{ textAlign:'right', padding:'10px 14px', color: TIPO_COLOR[v.tipo] || 'var(--amber)' }}>
+                          S/ {(totalesPorVersion[v.id] || 0).toLocaleString('es-PE', { maximumFractionDigits: 0 })}
+                        </td>
+                      ))}
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </>
+          )}
+        </>
+      )}
+
+      {modalNueva && (
+        <Modal title="Nueva versión de presupuesto" icon="plus" onClose={()=>setModalNueva(false)}>
+          <div style={{ fontSize:12, color:'var(--tm)', marginBottom:12 }}>
+            Toma una foto del estado actual de las partidas y la guarda como una versión congelada.
+            Útil cuando el cliente aprueba una propuesta o se firma un adicional.
+          </div>
+          <div className="g2">
+            <div style={{ gridColumn:'1 / -1' }}>
+              <label className="flabel">Nombre *</label>
+              <input className="fi" value={form.nombre} placeholder='ej: "v1 Inicial firmado por cliente"'
+                onChange={e=>setForm({...form, nombre:e.target.value})}/>
+            </div>
+            <div>
+              <label className="flabel">Tipo</label>
+              <select className="fi" value={form.tipo} onChange={e=>setForm({...form, tipo:e.target.value})}>
+                {Object.entries(TIPO_LABEL).map(([k,v]) => <option key={k} value={k}>{v}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="flabel">Fecha</label>
+              <input className="fi" type="date" value={form.fecha} onChange={e=>setForm({...form, fecha:e.target.value})}/>
+            </div>
+            <div style={{ gridColumn:'1 / -1' }}>
+              <label className="flabel">Descripción / Notas</label>
+              <textarea className="fi" rows={3} value={form.descripcion}
+                placeholder="Contexto: por qué se crea esta versión, qué cambió respecto a la anterior, etc."
+                onChange={e=>setForm({...form, descripcion:e.target.value})}/>
+            </div>
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={()=>setModalNueva(false)}>Cancelar</button>
+            <button className="btn btn-amber" onClick={crearVersionDesdePartidas}>
+              <JxIcon name="check" size={13}/> Crear versión
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+Object.assign(window, { InsumosPage, CostosPage, IncidenciasPage, VersionesPage });
