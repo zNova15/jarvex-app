@@ -9,6 +9,11 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.ico', 'icons/*.png'],
       workbox: {
+        // skipWaiting + clientsClaim para que el SW nuevo tome control
+        // inmediatamente sin esperar a que el usuario cierre la pestaña.
+        // Esencial cuando se cierran APIs externas (caso SUNAT v2 → v1).
+        skipWaiting: true,
+        clientsClaim: true,
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
         runtimeCaching: [
           {
@@ -18,6 +23,13 @@ export default defineConfig({
               cacheName: 'evidencias-cache',
               expiration: { maxEntries: 200, maxAgeSeconds: 7 * 24 * 60 * 60 },
             },
+          },
+          // SUNAT/RENIEC: NO cachear — siempre red (las respuestas pueden
+          // cambiar, los endpoints pueden cambiar de política como acabó
+          // pasando con apis.net.pe v2)
+          {
+            urlPattern: /^https:\/\/api\.apis\.net\.pe\//,
+            handler: 'NetworkOnly',
           },
         ],
       },

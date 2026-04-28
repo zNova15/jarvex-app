@@ -50,9 +50,23 @@ const fmtPct = (n) => Number(n || 0).toFixed(1) + '%';
 // ─── OBRAS PAGE ───────────────────────────────────────────
 function ObrasPage({ showToast }) {
   const { data: obras, loading, create: createObra, update: updateObra } = window.__hooks.useObras();
+  const auth = window.__useAuth ? window.__useAuth() : null;
+  const isAdmin = auth?.profile?.rol === 'admin';
+  const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
+  const canDelete = isAdmin && appMode.isPrueba;
   const [modal, setModal] = uSO(null);
   const [form, setForm] = uSO({});
   const [editingId, setEditingId] = uSO(null);
+
+  const handleDeleteObra = async (o) => {
+    if (!canDelete) return;
+    if (!confirm(`¿Eliminar la obra "${o.nombre_obra}"?\n\nESTO ES IRREVERSIBLE. Todos los registros asociados (partidas, materiales, asistencia, movimientos) quedarán huérfanos.\n\nSolo úsalo para limpiar pruebas.`)) return;
+    try {
+      await updateObra(o.id, { deleted_at: new Date().toISOString() });
+      try { await window.__logAudit?.({ action:'delete', table:'obras', recordId:o.id, oldData:o, reason:'Eliminación manual (modo prueba)' }); } catch(e) {}
+      showToast(`Obra "${o.nombre_obra}" eliminada`, 'amber');
+    } catch (e) { showToast('Error al eliminar: ' + (e.message||e), 'red'); }
+  };
 
   const openEditObra = (o) => {
     setForm({
@@ -142,9 +156,16 @@ function ObrasPage({ showToast }) {
                 </div>
                 <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:6,flexShrink:0}}>
                   <span className={`badge ${EST_OBRA[o.estado]||'b-gray'}`}>{EST_OBRA_LBL[o.estado] || o.estado}</span>
-                  <button className="btn btn-ghost btn-xs" title="Editar obra" onClick={(e)=>{ e.stopPropagation(); openEditObra(o); }}>
-                    <JxIcon name="edit" size={11}/>
-                  </button>
+                  <div style={{ display:'flex', gap:4 }}>
+                    <button className="btn btn-ghost btn-xs" title="Editar obra" onClick={(e)=>{ e.stopPropagation(); openEditObra(o); }}>
+                      <JxIcon name="edit" size={11}/>
+                    </button>
+                    {canDelete && (
+                      <button className="btn btn-red btn-xs" title="Eliminar (solo modo prueba)" onClick={(e)=>{ e.stopPropagation(); handleDeleteObra(o); }}>
+                        <JxIcon name="trash" size={11}/>
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
 
