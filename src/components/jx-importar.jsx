@@ -185,6 +185,109 @@ function S10Flow({ obraId, userId, userName, showToast, onReset, hist, setHist }
   const [progress, setProgress] = uSI({ phase:'', current:0, total:0 });
   const [result, setResult] = uSI(null);
 
+  // ── Comparación APU (solo aplica a tipo 'apu') ─────────────
+  const [comparing, setComparing] = uSI(false);
+  const [compareErr, setCompareErr] = uSI(null);
+  // comparison: { codigo, descripcion, costo_total, cantidad, unidad, existente, status, action }
+  // status:  'nueva' | 'duplicada_igual' | 'duplicada_distinta'
+  // action:  'importar' | 'reemplazar' | 'saltar'
+  const [comparison, setComparison] = uSI([]);
+  const [filterText, setFilterText] = uSI('');
+  const [filterMode, setFilterMode] = uSI('todas'); // 'todas' | 'nuevas' | 'duplicadas'
+  const [page, setPage] = uSI(0);
+  const PAGE_SIZE = 100;
+
+  // Cargar partidas existentes y comparar al entrar a step 2 con tipo apu
+  uEI(() => {
+    let cancelled = false;
+    if (step !== 2 || !parsed || parsed.tipo !== 'apu' || !obraId) return;
+    setComparing(true); setCompareErr(null);
+    (async () => {
+      try {
+        const all = await window.__db.partidas.where('obra_id').equals(obraId).toArray();
+        const vivas = all.filter(p => !p.deleted_at);
+        const porCodigo = new Map(vivas.map(p => [p.codigo_delfin, p]));
+        const eqNum = (a, b) => {
+          const na = Number(a) || 0, nb = Number(b) || 0;
+          return Math.abs(na - nb) < 0.01;
+        };
+        const cmp = parsed.data.map(p => {
+          const cantidad = Number(p.cantidad) || 0;
+          const total = Number(p.costo_total) || 0;
+          const existente = porCodigo.get(p.codigo) || null;
+          let status = 'nueva';
+          if (existente) {
+            const sameNombre = (existente.nombre_partida || '').trim() === (p.descripcion || p.codigo || '').trim();
+            const sameTotal  = eqNum(existente.costo_total_presupuestado, total);
+            const sameMetra  = eqNum(existente.metrado_contratado, cantidad);
+            status = (sameNombre && sameTotal && sameMetra) ? 'duplicada_igual' : 'duplicada_distinta';
+          }
+          const action = status === 'nueva' ? 'importar'
+                       : status === 'duplicada_igual' ? 'saltar'
+                       : 'reemplazar';
+          return {
+            codigo: p.codigo,
+            descripcion: p.descripcion || p.codigo,
+            cantidad, costo_total: total, unidad: p.unidad || 'und',
+            existente, status, action,
+          };
+        });
+        if (!cancelled) { setComparison(cmp); setPage(0); }
+      } catch (e) {
+        if (!cancelled) setCompareErr(e.message || 'Error al comparar partidas');
+      } finally {
+        if (!cancelled) setComparing(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [step, parsed, obraId]);
+
+  // KPIs
+  const kpis = uMI(() => {
+    let nuevas = 0, iguales = 0, distintas = 0;
+    comparison.forEach(c => {
+      if (c.status === 'nueva') nuevas++;
+      else if (c.status === 'duplicada_igual') iguales++;
+      else distintas++;
+    });
+    return { nuevas, iguales, distintas, total: comparison.length };
+  }, [comparison]);
+
+  // Filtrado
+  const filtered = uMI(() => {
+    const q = filterText.trim().toLowerCase();
+    return comparison.filter(c => {
+      if (filterMode === 'nuevas' && c.status !== 'nueva') return false;
+      if (filterMode === 'duplicadas' && c.status === 'nueva') return false;
+      if (q) {
+        const hay = (c.codigo + ' ' + c.descripcion).toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [comparison, filterText, filterMode]);
+
+  // Resumen de acciones
+  const actionSummary = uMI(() => {
+    let aImportar = 0, aReemplazar = 0, aSaltar = 0;
+    comparison.forEach(c => {
+      if (c.action === 'importar') aImportar++;
+      else if (c.action === 'reemplazar') aReemplazar++;
+      else aSaltar++;
+    });
+    return { aImportar, aReemplazar, aSaltar, aProcesar: aImportar + aReemplazar };
+  }, [comparison]);
+
+  const setActionForRow = (codigo, action) => {
+    setComparison(prev => prev.map(c => c.codigo === codigo ? { ...c, action } : c));
+  };
+  const bulkAction = (predicate, action) => {
+    setComparison(prev => prev.map(c => predicate(c) ? { ...c, action } : c));
+  };
+
+  // Reset paginación al cambiar filtro
+  uEI(() => { setPage(0); }, [filterText, filterMode]);
+
   // Parse al subir archivo — auto-detecta si es APU, lista de insumos o Gantt
   uEI(() => {
     if (!file) { setParsed(null); setParseErr(null); return; }
@@ -207,16 +310,52 @@ function S10Flow({ obraId, userId, userName, showToast, onReset, hist, setHist }
   }, [file]);
 
   // ── Import APU (partidas + insumos_partida) ──────────────────
+  // Respeta las acciones elegidas por partida en el step Preview.
   async function importAPU() {
     const now = new Date().toISOString();
-    setProgress({ phase:'Limpiando datos previos…', current:0, total:1 });
-    await window.__db.partidas.where('obra_id').equals(obraId).delete();
-    await window.__db.insumos_partida.where('obra_id').equals(obraId).delete();
+    const errorList = [];
 
+    // Mapas auxiliares
+    const accionPorCodigo = new Map(comparison.map(c => [c.codigo, c.action]));
+    const existentePorCodigo = new Map(
+      comparison.filter(c => c.existente).map(c => [c.codigo, c.existente])
+    );
+
+    // 1) Identificar las partidas a reemplazar (borrar existentes + sus insumos)
+    const aReemplazar = comparison.filter(c => c.action === 'reemplazar' && c.existente);
+    const aImportar   = comparison.filter(c => c.action === 'importar');
+
+    // ── Fase 1: borrar partidas a reemplazar y sus insumos ─────
+    if (aReemplazar.length) {
+      setProgress({ phase:`Borrando ${aReemplazar.length} partidas a reemplazar…`, current:0, total: aReemplazar.length });
+      const PCH_DEL = 50;
+      for (let i = 0; i < aReemplazar.length; i += PCH_DEL) {
+        const chunk = aReemplazar.slice(i, i + PCH_DEL);
+        const ids = chunk.map(c => c.existente.id);
+        try {
+          await window.__db.partidas.bulkDelete(ids);
+          await window.__db.insumos_partida.where('partida_id').anyOf(ids).delete();
+        } catch (e) {
+          errorList.push({ row: chunk[0].codigo, error: `Error borrando lote: ${e.message || e}` });
+        }
+        setProgress({ phase:`Borrando ${aReemplazar.length} partidas a reemplazar…`, current: Math.min(i + PCH_DEL, aReemplazar.length), total: aReemplazar.length });
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+
+    // ── Fase 2: construir registros a insertar (importar + reemplazar) ──
     const partidaRecords = [];
     const insumoRecords = [];
+    // Map codigo->parsedRow para acceder a insumos
+    const parsedPorCodigo = new Map(parsed.data.map(p => [p.codigo, p]));
+    // Mantener orden global tomado del archivo
+    const ordenPorCodigo = new Map();
+    parsed.data.forEach((p, i) => ordenPorCodigo.set(p.codigo, i));
 
-    parsed.data.forEach((p, i) => {
+    const aInsertarCmps = [...aImportar, ...aReemplazar];
+    aInsertarCmps.forEach(c => {
+      const p = parsedPorCodigo.get(c.codigo);
+      if (!p) return;
       const id = window.__newId();
       const cantidad = Number(p.cantidad) || 0;
       const total = Number(p.costo_total) || 0;
@@ -232,13 +371,13 @@ function S10Flow({ obraId, userId, userName, showToast, onReset, hist, setHist }
         estado: 'pendiente',
         nivel: p.nivel ?? 1,
         parent_codigo: p.parent_codigo ?? null,
-        orden: i,
+        orden: ordenPorCodigo.get(p.codigo) ?? 0,
         created_by: userId, updated_by: userId,
         created_at: now, updated_at: now,
         version: 1, sync_status: 'pending_create', last_synced_at: null,
         idempotency_key: `${userId}_partidas_${id}`,
       });
-      p.insumos.forEach(ins => {
+      (p.insumos || []).forEach(ins => {
         const insId = window.__newId();
         insumoRecords.push({
           id: insId, obra_id: obraId, partida_id: id,
@@ -256,24 +395,53 @@ function S10Flow({ obraId, userId, userName, showToast, onReset, hist, setHist }
       });
     });
 
+    // ── Fase 3: insertar partidas (chunked) ─────────────────────
     const PCH = 50, ICH = 200;
-    setProgress({ phase:'Insertando partidas…', current:0, total: partidaRecords.length });
-    for (let i = 0; i < partidaRecords.length; i += PCH) {
-      await window.__db.partidas.bulkAdd(partidaRecords.slice(i, i + PCH));
-      setProgress({ phase:'Insertando partidas…', current: Math.min(i + PCH, partidaRecords.length), total: partidaRecords.length });
-      await new Promise(r => setTimeout(r, 0));
+    let partidasInsertadas = 0;
+    if (partidaRecords.length) {
+      const phaseLabel = aReemplazar.length
+        ? `Insertando ${aImportar.length} nuevas + ${aReemplazar.length} reemplazadas…`
+        : `Insertando ${aImportar.length} partidas nuevas…`;
+      setProgress({ phase: phaseLabel, current:0, total: partidaRecords.length });
+      for (let i = 0; i < partidaRecords.length; i += PCH) {
+        const chunk = partidaRecords.slice(i, i + PCH);
+        try {
+          await window.__db.partidas.bulkAdd(chunk);
+          partidasInsertadas += chunk.length;
+        } catch (e) {
+          errorList.push({ row: chunk[0]?.codigo_delfin || '-', error: `Error insertando partidas: ${e.message || e}` });
+        }
+        setProgress({ phase: phaseLabel, current: Math.min(i + PCH, partidaRecords.length), total: partidaRecords.length });
+        await new Promise(r => setTimeout(r, 0));
+      }
     }
-    setProgress({ phase:'Insertando insumos…', current:0, total: insumoRecords.length });
-    for (let i = 0; i < insumoRecords.length; i += ICH) {
-      await window.__db.insumos_partida.bulkAdd(insumoRecords.slice(i, i + ICH));
-      setProgress({ phase:'Insertando insumos…', current: Math.min(i + ICH, insumoRecords.length), total: insumoRecords.length });
-      await new Promise(r => setTimeout(r, 0));
+
+    // ── Fase 4: insertar insumos (chunked) ─────────────────────
+    let insumosInsertados = 0;
+    if (insumoRecords.length) {
+      const phaseLabel = `Insertando ${insumoRecords.length} insumos…`;
+      setProgress({ phase: phaseLabel, current:0, total: insumoRecords.length });
+      for (let i = 0; i < insumoRecords.length; i += ICH) {
+        const chunk = insumoRecords.slice(i, i + ICH);
+        try {
+          await window.__db.insumos_partida.bulkAdd(chunk);
+          insumosInsertados += chunk.length;
+        } catch (e) {
+          errorList.push({ row: chunk[0]?.insumo_codigo || '-', error: `Error insertando insumos: ${e.message || e}` });
+        }
+        setProgress({ phase: phaseLabel, current: Math.min(i + ICH, insumoRecords.length), total: insumoRecords.length });
+        await new Promise(r => setTimeout(r, 0));
+      }
     }
+
+    const aSaltar = comparison.length - aImportar.length - aReemplazar.length;
+    const detalle = `${aImportar.length} nuevas, ${aReemplazar.length} reemplazadas, ${aSaltar} saltadas, ${insumosInsertados} insumos${errorList.length ? `, ${errorList.length} errores` : ''}`;
     return {
       tipo: 'apu',
-      ok: partidaRecords.length,
-      detalle: `${partidaRecords.length} partidas y ${insumoRecords.length} insumos`,
-      errors: 0, errorList: [],
+      ok: partidasInsertadas,
+      detalle,
+      errors: errorList.length,
+      errorList: errorList.slice(0, 20),
     };
   }
 
@@ -391,7 +559,9 @@ function S10Flow({ obraId, userId, userName, showToast, onReset, hist, setHist }
   const runImport = async () => {
     if (!obraId) { showToast('No hay obra activa', 'red'); return; }
     if (!parsed) return;
+    showToast('Importación iniciada — no cierres esta ventana', 'amber');
     setImp(true);
+    setProgress({ phase:'Preparando…', current:0, total:0 });
 
     try {
       let res;
@@ -589,57 +759,163 @@ function S10Flow({ obraId, userId, userName, showToast, onReset, hist, setHist }
             {parsed.tipo === 'gantt' && 'Las fechas se aplicarán a las partidas existentes que coincidan en código. Las que no se encuentren se reportarán al final.'}
           </div>
 
-          {/* === APU PREVIEW === */}
+          {/* === APU PREVIEW (wizard de comparación) === */}
           {parsed.tipo === 'apu' && (
             <>
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:12, marginBottom:14 }}>
-                <div className="card card-p" style={{ textAlign:'center' }}>
-                  <div style={{ fontSize:22, fontWeight:800, color:'var(--tp)' }}>{parsed.summary.partidas}</div>
-                  <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'uppercase' }}>Partidas</div>
-                </div>
-                <div className="card card-p" style={{ textAlign:'center' }}>
-                  <div style={{ fontSize:22, fontWeight:800, color:'var(--blue)' }}>{parsed.summary.insumos}</div>
-                  <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'uppercase' }}>Insumos</div>
-                </div>
-                <div className="card card-p" style={{ textAlign:'center' }}>
-                  <div style={{ fontSize:22, fontWeight:800, color: parsed.summary.errores ? 'var(--red)':'var(--tp)' }}>{parsed.summary.errores}</div>
-                  <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'uppercase' }}>Errores</div>
-                </div>
-              </div>
-              {parsed.summary.partidas < 5 && (
-                <div style={{ background:'rgba(231,76,60,0.08)', border:'1px solid rgba(231,76,60,0.3)', borderRadius:8, padding:'10px 14px', fontSize:12, color:'var(--red)', marginBottom:14 }}>
-                  ⚠ Solo se detectaron {parsed.summary.partidas} partidas. Verifica que el archivo sea un export S10 válido.
+              {comparing && (
+                <div style={{ marginBottom:14, background:'rgba(52,152,219,0.08)', border:'1px solid rgba(52,152,219,0.25)', borderRadius:8, padding:'10px 14px', fontSize:12, color:'var(--blue)' }}>
+                  <span style={{ display:'inline-block', width:12,height:12,borderRadius:'50%',border:'2px solid rgba(52,152,219,0.4)',borderTopColor:'var(--blue)',marginRight:8,animation:'spin .7s linear infinite', verticalAlign:'middle' }}/>
+                  Comparando {parsed.summary.partidas} partidas con la obra…
                 </div>
               )}
-              <div className="card" style={{ overflow:'hidden', marginBottom:14 }}>
-                <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', fontSize:11.5, fontWeight:600, color:'var(--tm)' }}>
-                  <JxIcon name="eye" size={13}/> Primeras 10 partidas
+              {compareErr && (
+                <div style={{ marginBottom:14, background:'rgba(231,76,60,0.08)', border:'1px solid rgba(231,76,60,0.3)', borderRadius:8, padding:'10px 14px', fontSize:12, color:'var(--red)' }}>
+                  ⚠ {compareErr}
                 </div>
-                <div style={{ overflowX:'auto', maxHeight:380 }}>
-                  <table className="tbl">
-                    <thead><tr>
-                      <th style={{ minWidth:120 }}>Código</th><th>Descripción</th>
-                      <th style={{ textAlign:'right' }}>Nivel</th>
-                      <th style={{ textAlign:'right' }}>Metrado</th><th>Unid.</th>
-                      <th style={{ textAlign:'right' }}>Costo Total</th>
-                      <th style={{ textAlign:'right' }}>Insumos</th>
-                    </tr></thead>
-                    <tbody>
-                      {parsed.data.slice(0, 10).map((p, i) => (
-                        <tr key={i}>
-                          <td className="col-m" style={{ fontFamily:'monospace', fontSize:11 }}>{p.codigo}</td>
-                          <td style={{ fontSize:11.5 }}>{p.descripcion}</td>
-                          <td className="col-num" style={{ textAlign:'right' }}>{p.nivel}</td>
-                          <td className="col-num" style={{ textAlign:'right' }}>{p.cantidad ?? '—'}</td>
-                          <td>{p.unidad ?? '—'}</td>
-                          <td className="col-num" style={{ textAlign:'right' }}>{p.costo_total != null ? Number(p.costo_total).toFixed(2) : '—'}</td>
-                          <td className="col-num" style={{ textAlign:'right' }}>{p.insumos.length}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+              )}
+
+              {!comparing && !compareErr && (
+                <>
+                  {/* KPIs */}
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:12, marginBottom:14 }}>
+                    <div className="card card-p" style={{ textAlign:'center', borderLeft:'3px solid var(--green)' }}>
+                      <div style={{ fontSize:22, fontWeight:800, color:'var(--green)' }}>{kpis.nuevas}</div>
+                      <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'uppercase' }}>Nuevas</div>
+                    </div>
+                    <div className="card card-p" style={{ textAlign:'center', borderLeft:'3px solid var(--tm)' }}>
+                      <div style={{ fontSize:22, fontWeight:800, color:'var(--ts)' }}>{kpis.iguales}</div>
+                      <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'uppercase' }}>Duplicadas iguales</div>
+                    </div>
+                    <div className="card card-p" style={{ textAlign:'center', borderLeft:'3px solid var(--amber)' }}>
+                      <div style={{ fontSize:22, fontWeight:800, color:'var(--amber)' }}>{kpis.distintas}</div>
+                      <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'uppercase' }}>Duplicadas distintas</div>
+                    </div>
+                  </div>
+
+                  {/* Filtros */}
+                  <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap', marginBottom:10 }}>
+                    <div style={{ position:'relative', flex:'1 1 220px', minWidth:200 }}>
+                      <span style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)' }}>
+                        <JxIcon name="search" size={13} color="var(--tm)"/>
+                      </span>
+                      <input
+                        className="fi"
+                        placeholder="Buscar por código o descripción…"
+                        value={filterText}
+                        onChange={e=>setFilterText(e.target.value)}
+                        style={{ paddingLeft:30, width:'100%' }}
+                      />
+                    </div>
+                    <select className="fi" value={filterMode} onChange={e=>setFilterMode(e.target.value)} style={{ minWidth:160 }}>
+                      <option value="todas">Mostrar: todas</option>
+                      <option value="nuevas">Solo nuevas</option>
+                      <option value="duplicadas">Solo duplicadas</option>
+                    </select>
+                  </div>
+
+                  {/* Bulk actions */}
+                  <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:10 }}>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={()=>bulkAction(c => c.status === 'nueva', 'importar')}
+                      title="Marcar todas las partidas nuevas como Importar"
+                    >
+                      <JxIcon name="plus" size={12}/> Importar todas las nuevas ({kpis.nuevas})
+                    </button>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={()=>bulkAction(c => c.status === 'duplicada_igual', 'saltar')}
+                    >
+                      <JxIcon name="x" size={12}/> Saltar todas las iguales ({kpis.iguales})
+                    </button>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={()=>bulkAction(c => c.status === 'duplicada_distinta', 'reemplazar')}
+                    >
+                      <JxIcon name="refresh" size={12}/> Reemplazar todas las distintas ({kpis.distintas})
+                    </button>
+                  </div>
+
+                  {/* Resumen actual de acciones */}
+                  <div style={{ fontSize:11.5, color:'var(--tm)', marginBottom:10 }}>
+                    Acciones actuales: <strong style={{ color:'var(--green)' }}>{actionSummary.aImportar} importar</strong>
+                    {' · '}<strong style={{ color:'var(--amber)' }}>{actionSummary.aReemplazar} reemplazar</strong>
+                    {' · '}<strong style={{ color:'var(--ts)' }}>{actionSummary.aSaltar} saltar</strong>
+                    {' · '}<span>{filtered.length} visibles tras filtro</span>
+                  </div>
+
+                  {/* Tabla paginada */}
+                  <div className="card" style={{ overflow:'hidden', marginBottom:14 }}>
+                    <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', fontSize:11.5, fontWeight:600, color:'var(--tm)', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                      <div><JxIcon name="list" size={13}/> Partidas del archivo ({filtered.length})</div>
+                      {filtered.length > PAGE_SIZE && (
+                        <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                          <button className="btn btn-ghost btn-sm" disabled={page === 0} onClick={()=>setPage(p=>Math.max(0, p-1))}>
+                            <JxIcon name="chevL" size={12}/>
+                          </button>
+                          <span style={{ fontSize:11 }}>Pág {page+1} / {Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))}</span>
+                          <button className="btn btn-ghost btn-sm" disabled={(page+1) * PAGE_SIZE >= filtered.length} onClick={()=>setPage(p=>p+1)}>
+                            <JxIcon name="chevR" size={12}/>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ overflowX:'auto', maxHeight:480 }}>
+                      <table className="tbl">
+                        <thead><tr>
+                          <th style={{ minWidth:130 }}>Estado</th>
+                          <th style={{ minWidth:120 }}>Código</th>
+                          <th>Descripción</th>
+                          <th style={{ textAlign:'right' }}>Costo total</th>
+                          <th style={{ minWidth:200 }}>Acción</th>
+                        </tr></thead>
+                        <tbody>
+                          {filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((c, i) => {
+                            const badgeClass = c.status === 'nueva' ? 'b-green'
+                                             : c.status === 'duplicada_igual' ? 'b-gray'
+                                             : 'b-amber';
+                            const badgeText = c.status === 'nueva' ? 'Nueva'
+                                            : c.status === 'duplicada_igual' ? 'Duplicada igual'
+                                            : 'Duplicada distinta';
+                            return (
+                              <tr key={c.codigo + '_' + i}>
+                                <td>
+                                  <span className={`badge ${badgeClass}`}>{badgeText}</span>
+                                </td>
+                                <td className="col-m" style={{ fontFamily:'monospace', fontSize:11 }}>{c.codigo}</td>
+                                <td style={{ fontSize:11.5 }}>{c.descripcion}</td>
+                                <td className="col-num" style={{ textAlign:'right' }}>
+                                  <div>S/ {c.costo_total.toFixed(2)}</div>
+                                  {c.existente && (
+                                    <div style={{ fontSize:10, color: c.status === 'duplicada_distinta' ? 'var(--amber)' : 'var(--tm)' }}>
+                                      actual: S/ {Number(c.existente.costo_total_presupuestado || 0).toFixed(2)}
+                                    </div>
+                                  )}
+                                </td>
+                                <td>
+                                  <select
+                                    className="fi"
+                                    value={c.action}
+                                    onChange={e=>setActionForRow(c.codigo, e.target.value)}
+                                    style={{ fontSize:11.5, padding:'4px 6px' }}
+                                  >
+                                    <option value="importar" disabled={!!c.existente}>Importar como nueva</option>
+                                    <option value="reemplazar" disabled={!c.existente}>Reemplazar existente</option>
+                                    <option value="saltar">Saltar</option>
+                                  </select>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                          {filtered.length === 0 && (
+                            <tr><td colSpan={5} style={{ padding:'20px', textAlign:'center', color:'var(--tm)', fontSize:12 }}>No hay partidas que coincidan con el filtro.</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </>
+              )}
             </>
           )}
 
@@ -742,7 +1018,12 @@ function S10Flow({ obraId, userId, userName, showToast, onReset, hist, setHist }
 
           <div style={{ display:'flex', justifyContent:'space-between' }}>
             <button className="btn btn-ghost" onClick={()=>setStep(1)}><JxIcon name="chevL" size={14}/>Atrás</button>
-            <button className="btn btn-amber" onClick={()=>setStep(3)}>Siguiente <JxIcon name="chevR" size={14}/></button>
+            <button
+              className="btn btn-amber"
+              disabled={parsed.tipo === 'apu' && comparing}
+              style={{ opacity:(parsed.tipo === 'apu' && comparing)?0.4:1 }}
+              onClick={()=>setStep(3)}
+            >Siguiente <JxIcon name="chevR" size={14}/></button>
           </div>
         </div>
       )}
@@ -752,7 +1033,9 @@ function S10Flow({ obraId, userId, userName, showToast, onReset, hist, setHist }
         <div>
           <div style={{ fontSize:15, fontWeight:700, color:'var(--tp)', marginBottom:6 }}>Confirmar y ejecutar importación</div>
           <div style={{ fontSize:12.5, color:'var(--tm)', marginBottom:18 }}>
-            {parsed.tipo === 'apu' && 'Al confirmar, se reemplazarán las partidas e insumos existentes en la obra activa.'}
+            {parsed.tipo === 'apu' && (
+              <>Al confirmar se aplicarán las acciones elegidas: <strong style={{ color:'var(--green)' }}>importar {actionSummary.aImportar} nuevas</strong> · <strong style={{ color:'var(--amber)' }}>reemplazar {actionSummary.aReemplazar}</strong> · <strong style={{ color:'var(--ts)' }}>saltar {actionSummary.aSaltar}</strong>.</>
+            )}
             {parsed.tipo === 'insumos' && 'Al confirmar, se cargarán los materiales al almacén. Los que ya existan (mismo código S10) se actualizarán; los demás se crearán con stock 0.'}
             {parsed.tipo === 'gantt' && 'Al confirmar, se aplicarán las fechas planificadas a las partidas existentes que coincidan en código. No se crearán partidas nuevas.'}
           </div>
@@ -770,9 +1053,9 @@ function S10Flow({ obraId, userId, userName, showToast, onReset, hist, setHist }
                 ];
                 if (parsed.tipo === 'apu') {
                   filas.push(
-                    { label:'Partidas', val: parsed.summary.partidas, icon:'list', color:'var(--tp)' },
-                    { label:'Insumos', val: parsed.summary.insumos, icon:'package', color:'var(--blue)' },
-                    { label:'Modo', val:'Reemplazar partidas e insumos', icon:'refresh', color:'var(--amber)' },
+                    { label:'Importar nuevas', val: actionSummary.aImportar, icon:'plus', color:'var(--green)' },
+                    { label:'Reemplazar', val: actionSummary.aReemplazar, icon:'refresh', color:'var(--amber)' },
+                    { label:'Saltar', val: actionSummary.aSaltar, icon:'x', color:'var(--ts)' },
                   );
                 } else if (parsed.tipo === 'insumos') {
                   filas.push(
@@ -803,23 +1086,32 @@ function S10Flow({ obraId, userId, userName, showToast, onReset, hist, setHist }
           </div>
 
           {importing && (
-            <div style={{ marginBottom:14 }}>
-              <div style={{ fontSize:12, color:'var(--ts)', marginBottom:6 }}>
-                {progress.phase} {progress.total > 0 && `${progress.current}/${progress.total}`}
+            <div className="card card-p" style={{ marginBottom:14, borderLeft:'3px solid var(--amber)' }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
+                <div style={{ fontSize:13, fontWeight:600, color:'var(--tp)' }}>
+                  <span style={{ display:'inline-block', width:12,height:12,borderRadius:'50%',border:'2px solid rgba(242,183,5,0.4)',borderTopColor:'var(--amber)',marginRight:8,animation:'spin .7s linear infinite', verticalAlign:'middle' }}/>
+                  {progress.phase || 'Procesando…'}
+                </div>
+                <div style={{ fontSize:12, color:'var(--tm)', fontVariantNumeric:'tabular-nums' }}>
+                  {progress.total > 0 ? `${progress.current} / ${progress.total}` : ''}
+                </div>
               </div>
-              <div style={{ width:'100%', height:8, background:'var(--bg-c)', borderRadius:4, overflow:'hidden' }}>
+              <div style={{ width:'100%', height:10, background:'var(--bg-c)', borderRadius:5, overflow:'hidden' }}>
                 <div style={{ width:`${progress.total?(progress.current/progress.total*100):0}%`, height:'100%', background:'var(--amber)', transition:'width .2s' }}/>
+              </div>
+              <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:6 }}>
+                No cierres esta ventana hasta que termine.
               </div>
             </div>
           )}
 
           <div style={{ display:'flex', justifyContent:'space-between' }}>
             <button className="btn btn-ghost" onClick={()=>setStep(2)} disabled={importing}><JxIcon name="chevL" size={14}/>Atrás</button>
-            <button className="btn btn-amber" onClick={runImport} disabled={importing} style={{ minWidth:240, justifyContent:'center' }}>
+            <button className="btn btn-amber" onClick={runImport} disabled={importing || (parsed.tipo === 'apu' && actionSummary.aProcesar === 0)} style={{ minWidth:240, justifyContent:'center', opacity: (parsed.tipo === 'apu' && actionSummary.aProcesar === 0) ? 0.4 : 1 }}>
               {importing
                 ? <><span style={{ width:14,height:14,borderRadius:'50%',border:'2px solid rgba(0,0,0,0.3)',borderTopColor:'rgba(0,0,0,0.8)',display:'inline-block',animation:'spin .7s linear infinite' }}/>Importando…</>
                 : <><JxIcon name="upload" size={14}/>{
-                    parsed.tipo === 'apu' ? `Importar ${parsed.summary.partidas} partidas`
+                    parsed.tipo === 'apu' ? `Importar ${actionSummary.aProcesar} partidas`
                     : parsed.tipo === 'insumos' ? `Cargar ${parsed.summary.materiales} materiales`
                     : `Aplicar cronograma a ${parsed.summary.total} tareas`
                   }</>}

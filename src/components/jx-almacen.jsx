@@ -88,6 +88,8 @@ function Modal({ title, icon, onClose, children, wide }) {
 function MaterialesPage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
   const isAdmin = auth?.profile?.rol === 'admin';
+  const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
+  const canDelete = isAdmin && appMode.isPrueba;
   const [q, setQ] = uS('');
   const [modal, setModal] = uS(null); // 'ingreso' | 'salida' | 'nuevo' | 'editar'
   const [editingId, setEditingId] = uS(null); // id del material en edición
@@ -181,6 +183,16 @@ function MaterialesPage({ showToast }) {
     });
     setEditingId(m.id);
     setModal('editar');
+  };
+
+  const handleDeleteMaterial = async (m) => {
+    if (!canDelete) return;
+    if (!confirm(`¿Eliminar el material "${m.nombre_material}"?\n\nEsta acción se sincronizará al servidor. Los movimientos históricos no se verán afectados.`)) return;
+    try {
+      await updateMaterial(m.id, { deleted_at: new Date().toISOString() });
+      try { await window.__logAudit?.({ action:'delete', table:'materiales', recordId:m.id, oldData:m, reason:'Eliminación manual (modo prueba)' }); } catch(e) {}
+      showToast(`Material "${m.nombre_material}" eliminado`, 'amber');
+    } catch (e) { showToast('Error al eliminar: ' + (e.message||e), 'red'); }
   };
 
   const handleSubmitMaterial = async () => {
@@ -423,11 +435,18 @@ function MaterialesPage({ showToast }) {
                       ? <span className="badge b-amber" title={m.sync_status}>⏱ pendiente</span>
                       : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}
                     </td>
-                    <td style={{textAlign:'center'}}>
+                    <td style={{textAlign:'center', whiteSpace:'nowrap'}}>
                       {isAdmin ? (
-                        <button className="btn btn-ghost btn-xs" title="Editar material" onClick={()=>openEditMaterial(m)}>
-                          <JxIcon name="edit" size={11}/>
-                        </button>
+                        <>
+                          <button className="btn btn-ghost btn-xs" title="Editar material" onClick={()=>openEditMaterial(m)}>
+                            <JxIcon name="edit" size={11}/>
+                          </button>
+                          {canDelete && (
+                            <button className="btn btn-red btn-xs" title="Eliminar (solo modo prueba)" onClick={()=>handleDeleteMaterial(m)} style={{ marginLeft:4 }}>
+                              <JxIcon name="trash" size={11}/>
+                            </button>
+                          )}
+                        </>
                       ) : (
                         <button className="btn btn-ghost btn-xs" title="Solicitar cambio" onClick={()=>setRequestTarget(m)}>
                           <JxIcon name="alert" size={11}/>
@@ -599,6 +618,8 @@ function MaterialesPage({ showToast }) {
 function HerramientasPage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
   const isAdmin = auth?.profile?.rol === 'admin';
+  const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
+  const canDelete = isAdmin && appMode.isPrueba;
   const [q, setQ] = uS('');
   const [modal, setModal] = uS(null);
   const [form, setForm] = uS({});
@@ -676,6 +697,16 @@ function HerramientasPage({ showToast }) {
     setModal('editar');
   };
 
+  const handleDeleteHerr = async (h) => {
+    if (!canDelete) return;
+    if (!confirm(`¿Eliminar la herramienta "${h.nombre_herramienta}"?\n\nEsta acción se sincronizará al servidor.`)) return;
+    try {
+      await updateHerr(h.id, { deleted_at: new Date().toISOString() });
+      try { await window.__logAudit?.({ action:'delete', table:'herramientas', recordId:h.id, oldData:h, reason:'Eliminación manual (modo prueba)' }); } catch(e) {}
+      showToast(`Herramienta "${h.nombre_herramienta}" eliminada`, 'amber');
+    } catch (e) { showToast('Error al eliminar: ' + (e.message||e), 'red'); }
+  };
+
   const handleSubmitHerr = async () => {
     if (!form.nombre_herramienta) {
       showToast('Falta nombre', 'red');
@@ -735,25 +766,31 @@ function HerramientasPage({ showToast }) {
         observaciones: form.observaciones || null,
       });
       try { await window.__logAudit?.({ action:'insert', table:'movimientos_herramientas', recordId:movCreated?.id, newData:movCreated, reason:`${form.accion} de "${herr.nombre_herramienta}"` }); } catch(e) {}
-      // Optimistic update local
-      const updates = {};
+      // Sincronizar estado de la herramienta (disponible ↔ ubicacion_actual SIEMPRE
+      // consistentes). Vía updateHerr → marca sync_status='pending_update' para
+      // que Supabase reciba el cambio en el próximo sync.
+      const updates = { fecha_ultimo_movimiento: form.fecha };
       if (form.accion === 'salida') {
         updates.disponible = false;
         updates.ubicacion_actual = 'en_uso';
         updates.ultimo_responsable_id = form.responsable_id;
-        updates.fecha_ultimo_movimiento = form.fecha;
       } else if (form.accion === 'entrada') {
+        // Devolución: la herramienta vuelve al almacén y queda disponible
         updates.disponible = true;
         updates.ubicacion_actual = 'almacen';
-        updates.fecha_ultimo_movimiento = form.fecha;
+        updates.ultimo_responsable_id = null;
         if (form.estado) updates.estado_actual = form.estado;
+        // Si el estado de devolución es 'malo' → mandar a mantenimiento
+        if (form.estado === 'malo') {
+          updates.disponible = false;
+          updates.ubicacion_actual = 'mantenimiento';
+        }
       } else if (form.accion === 'mantenimiento') {
         updates.disponible = false;
         updates.ubicacion_actual = 'mantenimiento';
         updates.estado_actual = 'mantenimiento';
       }
-      await window.__db.herramientas.update(form.herramienta_id, updates);
-      refresh();
+      await updateHerr(form.herramienta_id, updates);
 
       // Si devolución con estado peor → crear incidencia
       if (form.accion === 'entrada' && form.estado === 'malo' && herr.estado_actual !== 'malo') {
@@ -829,11 +866,18 @@ function HerramientasPage({ showToast }) {
                     <td>{h.sync_status && h.sync_status !== 'synced'
                       ? <span className="badge b-amber">⏱</span>
                       : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}</td>
-                    <td style={{textAlign:'center'}}>
+                    <td style={{textAlign:'center', whiteSpace:'nowrap'}}>
                       {isAdmin ? (
-                        <button className="btn btn-ghost btn-xs" title="Editar herramienta" onClick={()=>openEditHerr(h)}>
-                          <JxIcon name="edit" size={11}/>
-                        </button>
+                        <>
+                          <button className="btn btn-ghost btn-xs" title="Editar herramienta" onClick={()=>openEditHerr(h)}>
+                            <JxIcon name="edit" size={11}/>
+                          </button>
+                          {canDelete && (
+                            <button className="btn btn-red btn-xs" title="Eliminar (solo modo prueba)" onClick={()=>handleDeleteHerr(h)} style={{ marginLeft:4 }}>
+                              <JxIcon name="trash" size={11}/>
+                            </button>
+                          )}
+                        </>
                       ) : (
                         <button className="btn btn-ghost btn-xs" title="Solicitar cambio" onClick={()=>setRequestTarget(h)}>
                           <JxIcon name="alert" size={11}/>
@@ -937,6 +981,8 @@ function HerramientasPage({ showToast }) {
 function PersonalPage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
   const isAdmin = auth?.profile?.rol === 'admin';
+  const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
+  const canDelete = isAdmin && appMode.isPrueba;
   const [q, setQ] = uS('');
   const [modal, setModal] = uS(null);
   const [form, setForm] = uS({});
@@ -1010,6 +1056,16 @@ function PersonalPage({ showToast }) {
     });
     setEditingId(p.id);
     setModal('editar');
+  };
+
+  const handleDeletePersonal = async (p) => {
+    if (!canDelete) return;
+    if (!confirm(`¿Eliminar al trabajador "${p.nombres} ${p.apellidos}"?\n\nLas asistencias y movimientos históricos no se borran.`)) return;
+    try {
+      await updatePersonal(p.id, { deleted_at: new Date().toISOString() });
+      try { await window.__logAudit?.({ action:'delete', table:'personal', recordId:p.id, oldData:p, reason:'Eliminación manual (modo prueba)' }); } catch(e) {}
+      showToast(`Trabajador "${p.nombres} ${p.apellidos}" eliminado`, 'amber');
+    } catch (e) { showToast('Error al eliminar: ' + (e.message||e), 'red'); }
   };
 
   const handleSubmit = async () => {
@@ -1099,11 +1155,18 @@ function PersonalPage({ showToast }) {
                   <td>{p.sync_status && p.sync_status !== 'synced'
                     ? <span className="badge b-amber">⏱</span>
                     : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}</td>
-                  <td style={{textAlign:'center'}}>
+                  <td style={{textAlign:'center', whiteSpace:'nowrap'}}>
                     {isAdmin ? (
-                      <button className="btn btn-ghost btn-xs" title="Editar trabajador" onClick={()=>openEditPersonal(p)}>
-                        <JxIcon name="edit" size={11}/>
-                      </button>
+                      <>
+                        <button className="btn btn-ghost btn-xs" title="Editar trabajador" onClick={()=>openEditPersonal(p)}>
+                          <JxIcon name="edit" size={11}/>
+                        </button>
+                        {canDelete && (
+                          <button className="btn btn-red btn-xs" title="Eliminar (solo modo prueba)" onClick={()=>handleDeletePersonal(p)} style={{ marginLeft:4 }}>
+                            <JxIcon name="trash" size={11}/>
+                          </button>
+                        )}
+                      </>
                     ) : (
                       <button className="btn btn-ghost btn-xs" title="Solicitar cambio" onClick={()=>setRequestTarget(p)}>
                         <JxIcon name="alert" size={11}/>

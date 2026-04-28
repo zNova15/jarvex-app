@@ -606,13 +606,15 @@ function ProveedoresPage({ showToast }) {
   // (llamarlos en un onClick rompe las reglas de React → minified error #321).
   const auth = window.__useAuth ? window.__useAuth() : null;
   const isAdmin = auth?.profile?.rol === 'admin';
+  const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
+  const canDelete = isAdmin && appMode.isPrueba;
 
   const [provs, setProvs] = uSM([]);
   const [loading, setLoading] = uSM(true);
   const [requestTarget, setRequestTarget] = uSM(null);
 
   uEM(() => {
-    const load = () => window.__db.proveedores.toArray().then(d => { setProvs(d); setLoading(false); });
+    const load = () => window.__db.proveedores.toArray().then(d => { setProvs((d||[]).filter(x => !x.deleted_at)); setLoading(false); });
     load();
     const interval = setInterval(load, 2000);
     return () => clearInterval(interval);
@@ -668,6 +670,23 @@ function ProveedoresPage({ showToast }) {
     });
     setEditingId(p.id);
     setModal(true);
+  };
+
+  const handleDeleteProv = async (p) => {
+    if (!canDelete) return;
+    if (!confirm(`¿Eliminar el proveedor "${p.razon_social}"?\n\nLas referencias históricas en movimientos no se verán afectadas.`)) return;
+    try {
+      await window.__db.proveedores.update(p.id, {
+        deleted_at: new Date().toISOString(),
+        sync_status: p.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+        updated_at: new Date().toISOString(),
+        updated_by: auth?.profile?.id || 'offline',
+        version: (p.version ?? 0) + 1,
+      });
+      try { await window.__logAudit?.({ action:'delete', table:'proveedores', recordId:p.id, oldData:p, reason:'Eliminación manual (modo prueba)' }); } catch(e) {}
+      showToast(`Proveedor "${p.razon_social}" eliminado`, 'amber');
+      window.__db.proveedores.toArray().then(arr => setProvs(arr.filter(x => !x.deleted_at)));
+    } catch (e) { showToast('Error al eliminar: ' + (e.message||e), 'red'); }
   };
 
   const handleSubmit = async () => {
@@ -768,9 +787,16 @@ function ProveedoresPage({ showToast }) {
               <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:6, flexShrink:0 }}>
                 <span className={`badge ${p.estado==='activo'?'b-green':'b-gray'}`} style={{ textTransform:'capitalize' }}>{p.estado || 'activo'}</span>
                 {isAdmin ? (
-                  <button className="btn btn-ghost btn-xs" title="Editar proveedor" onClick={()=>openEditProv(p)}>
-                    <JxIcon name="edit" size={11}/>
-                  </button>
+                  <div style={{ display:'flex', gap:4 }}>
+                    <button className="btn btn-ghost btn-xs" title="Editar proveedor" onClick={()=>openEditProv(p)}>
+                      <JxIcon name="edit" size={11}/>
+                    </button>
+                    {canDelete && (
+                      <button className="btn btn-red btn-xs" title="Eliminar (solo modo prueba)" onClick={()=>handleDeleteProv(p)}>
+                        <JxIcon name="trash" size={11}/>
+                      </button>
+                    )}
+                  </div>
                 ) : (
                   <button className="btn btn-ghost btn-xs" title="Solicitar cambio" onClick={()=>setRequestTarget(p)}>
                     <JxIcon name="alert" size={11}/>
