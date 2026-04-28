@@ -359,7 +359,18 @@ function PartidaLeafRow({ partida: p, depth, searchTerms, isAdmin, onEdit, consu
   const av = Number(p.porcentaje_avance || 0);
   const avFin = ctPres > 0 ? (ctReal / ctPres) * 100 : 0;
   const avCons = consumoMap?.[p.id];
-  const colorAv = av >= 100 ? 'var(--green)' : p.estado === 'atrasado' ? 'var(--red)' : 'var(--blue)';
+
+  // Atraso vs cronograma: fecha_fin_planificada < hoy && avance < 80
+  const today = new Date().toISOString().slice(0, 10);
+  const isAtrasada = p.fecha_fin_planificada
+    && p.fecha_fin_planificada < today
+    && av < 80
+    && p.estado !== 'terminado';
+  const diasVencidos = isAtrasada
+    ? Math.floor((new Date(today) - new Date(p.fecha_fin_planificada)) / 86400000)
+    : 0;
+
+  const colorAv = av >= 100 ? 'var(--green)' : (isAtrasada || p.estado === 'atrasado') ? 'var(--red)' : 'var(--blue)';
   const colorFin = avFin > 100 ? 'var(--red)' : avFin >= 80 ? 'var(--amber)' : 'var(--green)';
   const colorCons = avCons == null ? 'var(--tm)' : avCons > 100 ? 'var(--red)' : avCons >= 80 ? 'var(--amber)' : 'var(--green)';
 
@@ -373,8 +384,11 @@ function PartidaLeafRow({ partida: p, depth, searchTerms, isAdmin, onEdit, consu
         padding: '8px 12px',
         paddingLeft: 12 + depth * 18,
         borderBottom: '1px solid rgba(255,255,255,0.04)',
+        borderLeft: isAtrasada ? '3px solid var(--red)' : '3px solid transparent',
+        background: isAtrasada ? 'rgba(231,76,60,0.04)' : 'transparent',
         fontSize: 12,
       }}
+      title={isAtrasada ? `⚠ Atrasada ${diasVencidos} día${diasVencidos === 1 ? '' : 's'} (fecha fin planificada: ${p.fecha_fin_planificada})` : undefined}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
         <span style={{ width: 14, display: 'inline-block' }}/>
@@ -393,7 +407,14 @@ function PartidaLeafRow({ partida: p, depth, searchTerms, isAdmin, onEdit, consu
         <MiniBar value={avFin} label="Financiero" color={colorFin} title={`Avance financiero: ${avFin.toFixed(1)}% (S/ ${ctReal.toLocaleString()} de S/ ${ctPres.toLocaleString()})`}/>
         <MiniBar value={avCons || 0} label="Consumo" color={colorCons} title={avCons == null ? 'Avance por consumo: sin datos' : `Avance por consumo: ${Number(avCons).toFixed(1)}%`}/>
       </div>
-      <div><span className={`badge ${EST_PART[p.estado] || 'b-gray'}`} style={{ fontSize: 10 }}>{EST_LBL[p.estado] || p.estado}</span></div>
+      <div style={{ display:'flex', flexDirection:'column', gap:3, alignItems:'flex-start' }}>
+        <span className={`badge ${EST_PART[p.estado] || 'b-gray'}`} style={{ fontSize: 10 }}>{EST_LBL[p.estado] || p.estado}</span>
+        {isAtrasada && (
+          <span className="badge b-red" style={{ fontSize: 9, padding:'2px 6px' }} title={`${diasVencidos} día${diasVencidos === 1 ? '' : 's'} vencidos`}>
+            ⚠ {diasVencidos}d
+          </span>
+        )}
+      </div>
       <div style={{ textAlign: 'center' }}>
         {isAdmin && (
           <button className="btn btn-ghost btn-xs" title="Editar partida" onClick={() => onEdit(p)}>
@@ -826,94 +847,480 @@ function PartidasPage({ showToast }) {
 }
 
 // ─── CRONOGRAMA / GANTT PAGE ──────────────────────────────
+const DAY_MS = 24 * 60 * 60 * 1000;
+const MES_ABBR = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+const DOW_ABBR = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
+
+function parseDate(s) {
+  if (!s) return null;
+  // Use local-midnight to avoid TZ shift on YYYY-MM-DD strings
+  const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime();
+  const t = new Date(s).getTime();
+  return isNaN(t) ? null : t;
+}
+function startOfDay(ms) {
+  const d = new Date(ms);
+  d.setHours(0,0,0,0);
+  return d.getTime();
+}
+function diffDays(aMs, bMs) {
+  return Math.round((startOfDay(bMs) - startOfDay(aMs)) / DAY_MS);
+}
+
+function calcEstadoCron(p, todayMs) {
+  const ini = parseDate(p.fecha_inicio_planificada);
+  const fin = parseDate(p.fecha_fin_planificada);
+  const av = Number(p.porcentaje_avance || 0);
+  if (ini == null || fin == null) return 'sin_planificar';
+  if (av >= 100) return 'terminada';
+  if (fin < todayMs && av < 80) return 'atrasada';
+  if (ini <= todayMs && todayMs <= fin) {
+    return av > 0 ? 'en_curso' : 'en_curso_sin_avance';
+  }
+  if (ini > todayMs) return 'futura';
+  return 'normal';
+}
+
+const ESTADO_CRON_COLOR = {
+  terminada:           { bar:'var(--green)',  fill:'var(--green)',  label:'Terminada' },
+  en_curso:            { bar:'var(--blue)',   fill:'var(--blue)',   label:'En curso' },
+  en_curso_sin_avance: { bar:'var(--amber)',  fill:'var(--amber)',  label:'En curso s/avance' },
+  atrasada:            { bar:'var(--red)',    fill:'var(--red)',    label:'Atrasada' },
+  futura:              { bar:'rgba(255,255,255,0.18)', fill:'rgba(255,255,255,0.35)', label:'Futura' },
+  normal:              { bar:'rgba(255,255,255,0.22)', fill:'rgba(255,255,255,0.45)', label:'Normal' },
+  sin_planificar:      { bar:'rgba(255,255,255,0.10)', fill:'rgba(255,255,255,0.25)', label:'Sin planificar' },
+};
+
 function CronogramaPage() {
   const obraId = useObraActiva();
-  const { data: partidas, loading } = window.__hooks.usePartidas(obraId);
+  const { data: partidasRaw, loading } = window.__hooks.usePartidas(obraId);
 
-  if (loading || !obraId) return <div className="page-wrap"><div className="empty-state"><JxIcon name="gantt" size={32} color="var(--tm)"/><p>Cargando cronograma…</p></div></div>;
+  const [zoomMode, setZoomMode] = uSO(null); // 'dia' | 'semana' | 'mes' | null=auto
+  const [q, setQ] = uSO('');
+  const [soloActivas, setSoloActivas] = uSO(false);
+  const [soloAtrasadas, setSoloAtrasadas] = uSO(false);
+  const [scrollTop, setScrollTop] = uSO(0);
+  const [viewportH, setViewportH] = uSO(560);
+  const scrollRef = React.useRef(null);
 
-  // Calcular rango de semanas a partir de fechas planificadas
-  const partidasConFechas = partidas.filter(p => p.fecha_inicio_planificada && p.fecha_fin_planificada);
+  const todayMs = uMO(() => startOfDay(Date.now()), []);
 
-  if (partidasConFechas.length === 0) {
+  const partidasConFechas = uMO(() => {
+    if (!partidasRaw) return [];
+    return partidasRaw
+      .filter(p => p.fecha_inicio_planificada && p.fecha_fin_planificada && parseDate(p.fecha_inicio_planificada) != null && parseDate(p.fecha_fin_planificada) != null)
+      .slice()
+      .sort((a, b) => {
+        const ai = parseDate(a.fecha_inicio_planificada);
+        const bi = parseDate(b.fecha_inicio_planificada);
+        if (ai !== bi) return ai - bi;
+        return String(a.codigo_delfin || '').localeCompare(String(b.codigo_delfin || ''), 'es', { numeric: true });
+      });
+  }, [partidasRaw]);
+
+  // Rango global
+  const range = uMO(() => {
+    if (partidasConFechas.length === 0) return null;
+    let minMs = Infinity, maxMs = -Infinity;
+    for (const p of partidasConFechas) {
+      const ini = parseDate(p.fecha_inicio_planificada);
+      const fin = parseDate(p.fecha_fin_planificada);
+      if (ini < minMs) minMs = ini;
+      if (fin > maxMs) maxMs = fin;
+    }
+    const startMs = startOfDay(minMs);
+    const endMs = startOfDay(maxMs);
+    const totalDays = Math.max(1, diffDays(startMs, endMs) + 1);
+    return { startMs, endMs, totalDays };
+  }, [partidasConFechas]);
+
+  // Zoom auto
+  const zoom = uMO(() => {
+    if (zoomMode) return zoomMode;
+    if (!range) return 'semana';
+    return range.totalDays > 60 ? 'semana' : 'dia';
+  }, [zoomMode, range]);
+
+  // Tamaño de celda según zoom
+  const cellW = zoom === 'dia' ? 26 : zoom === 'semana' ? 22 : 60;
+
+  // Construir columnas (cells) para el header
+  const columns = uMO(() => {
+    if (!range) return [];
+    const cols = [];
+    if (zoom === 'dia') {
+      for (let i = 0; i < range.totalDays; i++) {
+        const ms = range.startMs + i * DAY_MS;
+        const d = new Date(ms);
+        const isToday = startOfDay(ms) === todayMs;
+        const isMonthStart = d.getDate() === 1 || i === 0;
+        cols.push({
+          left: i * cellW,
+          width: cellW,
+          label: String(d.getDate()),
+          subLabel: isMonthStart ? `${MES_ABBR[d.getMonth()]} ${d.getFullYear()}` : '',
+          isToday,
+          isWeekend: d.getDay() === 0 || d.getDay() === 6,
+        });
+      }
+    } else if (zoom === 'semana') {
+      // semanas que arrancan en lunes; alineado al inicio
+      let i = 0, dayIdx = 0;
+      while (dayIdx < range.totalDays) {
+        const ms = range.startMs + dayIdx * DAY_MS;
+        const d = new Date(ms);
+        const daysLeft = range.totalDays - dayIdx;
+        const dow = (d.getDay() + 6) % 7; // 0=lun
+        const daysInWeek = Math.min(7 - dow, daysLeft);
+        const isToday = todayMs >= ms && todayMs < ms + daysInWeek * DAY_MS;
+        cols.push({
+          left: i * cellW,
+          width: cellW,
+          label: 'S' + Math.floor(dayIdx / 7 + 1),
+          subLabel: d.getDate() === 1 || dayIdx === 0 ? `${MES_ABBR[d.getMonth()]} ${d.getFullYear()}` : '',
+          isToday,
+          isWeekend: false,
+          dayStart: dayIdx,
+          dayCount: daysInWeek,
+        });
+        dayIdx += daysInWeek;
+        i++;
+      }
+    } else { // mes
+      let i = 0;
+      let cursor = new Date(range.startMs);
+      cursor.setDate(1);
+      while (cursor.getTime() <= range.endMs) {
+        const monthStartMs = startOfDay(cursor.getTime());
+        const next = new Date(cursor);
+        next.setMonth(next.getMonth() + 1);
+        const monthEndMs = startOfDay(next.getTime()) - DAY_MS;
+        const isToday = todayMs >= monthStartMs && todayMs <= monthEndMs;
+        cols.push({
+          left: i * cellW,
+          width: cellW,
+          label: MES_ABBR[cursor.getMonth()],
+          subLabel: String(cursor.getFullYear()),
+          isToday,
+          isWeekend: false,
+        });
+        cursor = next;
+        i++;
+      }
+    }
+    return cols;
+  }, [range, zoom, cellW, todayMs]);
+
+  // Conversión día → píxel (timeline)
+  const dayToPx = (dayIdx) => {
+    if (!range) return 0;
+    if (zoom === 'dia') return dayIdx * cellW;
+    if (zoom === 'semana') {
+      // Cada celda = una semana parcial alineada a lunes
+      // Buscamos en columns la celda cuyo dayStart <= dayIdx < dayStart+dayCount
+      for (const c of columns) {
+        if (dayIdx >= c.dayStart && dayIdx < c.dayStart + c.dayCount) {
+          return c.left + ((dayIdx - c.dayStart) / c.dayCount) * c.width;
+        }
+      }
+      // fuera de rango → al final
+      return columns.length * cellW;
+    }
+    // mes: aproximación lineal por días dentro del mes correspondiente
+    const targetMs = range.startMs + dayIdx * DAY_MS;
+    let acc = 0;
+    let cursor = new Date(range.startMs);
+    cursor.setDate(1);
+    let cIdx = 0;
+    while (cursor.getTime() <= range.endMs) {
+      const monthStartMs = startOfDay(cursor.getTime());
+      const next = new Date(cursor);
+      next.setMonth(next.getMonth() + 1);
+      const monthEndMs = startOfDay(next.getTime());
+      const monthDays = Math.round((monthEndMs - monthStartMs) / DAY_MS);
+      if (targetMs >= monthStartMs && targetMs < monthEndMs) {
+        const offsetDays = (targetMs - monthStartMs) / DAY_MS;
+        return acc + (offsetDays / monthDays) * cellW;
+      }
+      acc += cellW;
+      cursor = next;
+      cIdx++;
+    }
+    return acc;
+  };
+
+  // Filtros
+  const filtered = uMO(() => {
+    if (!partidasConFechas.length) return [];
+    const tokens = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return partidasConFechas.filter(p => {
+      const cod = String(p.codigo_delfin || '').toLowerCase();
+      const nom = String(p.nombre_partida || '').toLowerCase();
+      const hay = (cod + ' ' + nom);
+      for (const t of tokens) if (!hay.includes(t)) return false;
+
+      const av = Number(p.porcentaje_avance || 0);
+      const fin = parseDate(p.fecha_fin_planificada);
+      if (soloActivas && av >= 100) return false;
+      if (soloAtrasadas && !(fin < todayMs && av < 80)) return false;
+      return true;
+    });
+  }, [partidasConFechas, q, soloActivas, soloAtrasadas, todayMs]);
+
+  // Estadísticas
+  const stats = uMO(() => {
+    let atrasadas = 0, enCurso = 0, futuras = 0, terminadas = 0;
+    for (const p of partidasConFechas) {
+      const e = calcEstadoCron(p, todayMs);
+      if (e === 'atrasada') atrasadas++;
+      else if (e === 'en_curso' || e === 'en_curso_sin_avance') enCurso++;
+      else if (e === 'futura') futuras++;
+      else if (e === 'terminada') terminadas++;
+    }
+    return { atrasadas, enCurso, futuras, terminadas, total: partidasConFechas.length };
+  }, [partidasConFechas, todayMs]);
+
+  // Virtualización
+  const ROW_H = 30;
+  const BUFFER = 20;
+  const totalContentH = filtered.length * ROW_H;
+  const startIdx = Math.max(0, Math.floor(scrollTop / ROW_H) - BUFFER);
+  const endIdx = Math.min(filtered.length, Math.ceil((scrollTop + viewportH) / ROW_H) + BUFFER);
+  const visibleRows = filtered.slice(startIdx, endIdx);
+
+  uEO(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => setScrollTop(el.scrollTop);
+    const onResize = () => setViewportH(el.clientHeight);
+    el.addEventListener('scroll', onScroll, { passive: true });
+    onResize();
+    window.addEventListener('resize', onResize);
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', onResize);
+    };
+  }, [filtered.length]);
+
+  // Loading / empty
+  if (loading || !obraId) {
+    return <div className="page-wrap"><div className="empty-state"><JxIcon name="gantt" size={32} color="var(--tm)"/><p>Cargando cronograma…</p></div></div>;
+  }
+  if (!partidasConFechas.length) {
     return (
       <div className="page-wrap">
         <div className="pg-hd"><div><div className="pg-title">Cronograma / Gantt</div><div className="pg-sub">No hay partidas con fechas planificadas</div></div></div>
-        <div className="card card-p empty-state"><JxIcon name="gantt" size={40} color="var(--tm)"/><p>Crea partidas con fecha de inicio y fin planificada para ver el Gantt.</p></div>
+        <div className="card card-p empty-state" style={{borderColor:'var(--amber)',background:'rgba(242,183,5,0.04)'}}>
+          <JxIcon name="alert" size={40} color="var(--amber)"/>
+          <p style={{color:'var(--ts)',fontWeight:600,margin:'8px 0 4px'}}>Importa el Gantt para ver el cronograma.</p>
+          <p style={{color:'var(--tm)',fontSize:12}}>Ve a <strong>Importar</strong> y carga el archivo de cronograma desde S10. Las partidas necesitan <em>fecha_inicio_planificada</em> y <em>fecha_fin_planificada</em>.</p>
+        </div>
       </div>
     );
   }
 
-  const fechaMin = partidasConFechas.reduce((min, p) => p.fecha_inicio_planificada < min ? p.fecha_inicio_planificada : min, partidasConFechas[0].fecha_inicio_planificada);
-  const fechaMax = partidasConFechas.reduce((max, p) => p.fecha_fin_planificada > max ? p.fecha_fin_planificada : max, partidasConFechas[0].fecha_fin_planificada);
-  const startMs = new Date(fechaMin).getTime();
-  const endMs = new Date(fechaMax).getTime();
-  const totalDays = Math.ceil((endMs - startMs) / (1000*60*60*24)) + 1;
-  const totalWeeks = Math.max(1, Math.ceil(totalDays / 7));
-  const todayMs = Date.now();
-  const todayWeek = Math.floor((todayMs - startMs) / (1000*60*60*24*7)) + 1;
+  const todayDayIdx = range ? diffDays(range.startMs, todayMs) : -1;
+  const todayPx = (todayDayIdx >= 0 && todayDayIdx <= range.totalDays) ? dayToPx(todayDayIdx) : -1;
+  const timelineW = columns.reduce((acc, c) => Math.max(acc, c.left + c.width), 0);
+  const labelW = 320;
 
-  const weeks = Array.from({length: totalWeeks}, (_, i) => 'S' + (i+1));
-  const cellW = 32, rowH = 38, labelW = 220;
-
-  const COLORS = { terminado:'#2ECC71', en_ejecucion:'#3498DB', atrasado:'#E74C3C', pendiente:'rgba(255,255,255,0.12)', observado:'#F1C40F' };
+  const fechaIniStr = new Date(range.startMs).toISOString().slice(0,10);
+  const fechaFinStr = new Date(range.endMs).toISOString().slice(0,10);
 
   return (
     <div className="page-wrap">
-      <div className="pg-hd frow-sb">
-        <div><div className="pg-title">Cronograma / Gantt</div><div className="pg-sub">{partidasConFechas.length} partidas · Semana actual: S{todayWeek > 0 ? todayWeek : 1} de {totalWeeks}</div></div>
-        <div style={{display:'flex',gap:8}}>
-          <span className="badge b-green">Terminado</span>
-          <span className="badge b-blue">En Ejecución</span>
-          <span className="badge b-red">Atrasado</span>
-          <span className="badge b-gray">Pendiente</span>
+      <div className="pg-hd frow-sb" style={{flexWrap:'wrap',gap:12}}>
+        <div>
+          <div className="pg-title">Cronograma / Gantt</div>
+          <div className="pg-sub">
+            Inicio: {fechaIniStr} · Fin: {fechaFinStr} · Hoy: día {Math.max(0, todayDayIdx)+1} de {range.totalDays}
+          </div>
+          <div className="pg-sub" style={{marginTop:2,fontSize:11.5}}>
+            <strong style={{color:'var(--ts)'}}>{stats.total}</strong> partidas ·{' '}
+            <span style={{color:'var(--red)'}}>{stats.atrasadas} atrasadas</span> ·{' '}
+            <span style={{color:'var(--blue)'}}>{stats.enCurso} en curso</span> ·{' '}
+            <span style={{color:'var(--tm)'}}>{stats.futuras} futuras</span>
+            {stats.terminadas > 0 && <> · <span style={{color:'var(--green)'}}>{stats.terminadas} terminadas</span></>}
+          </div>
+        </div>
+        <div style={{display:'flex',gap:6,alignItems:'center'}}>
+          <span style={{fontSize:11,color:'var(--tm)'}}>Vista:</span>
+          {['dia','semana','mes'].map(m => (
+            <button
+              key={m}
+              className={'btn btn-xs ' + (zoom === m ? 'btn-amber' : 'btn-ghost')}
+              onClick={() => setZoomMode(m)}
+              title={`Cambiar zoom a ${m}`}
+            >
+              {m === 'dia' ? 'Día' : m === 'semana' ? 'Semana' : 'Mes'}
+            </button>
+          ))}
         </div>
       </div>
 
-      <div className="card" style={{overflow:'hidden'}}>
-        <div style={{overflowX:'auto'}}>
-          <div style={{minWidth: labelW + totalWeeks*cellW + 40}}>
-            <div style={{display:'flex',borderBottom:'1px solid var(--border)',background:'rgba(0,0,0,0.2)'}}>
-              <div style={{width:labelW,minWidth:labelW,padding:'10px 14px',fontSize:10.5,fontWeight:700,letterSpacing:'.08em',textTransform:'uppercase',color:'var(--tm)',borderRight:'1px solid var(--border)',flexShrink:0}}>Partida</div>
-              <div style={{display:'flex',flex:1}}>
-                {weeks.map((w,i)=>(
-                  <div key={i} style={{width:cellW,minWidth:cellW,textAlign:'center',fontSize:9.5,color:i+1===todayWeek?'var(--amber)':'var(--tm)',fontWeight:i+1===todayWeek?700:400,padding:'10px 0',background:i+1===todayWeek?'rgba(242,183,5,0.06)':'transparent',borderRight:'1px solid rgba(255,255,255,0.03)'}}>{w}</div>
-                ))}
-              </div>
-            </div>
+      {/* Filtros */}
+      <div className="card card-p" style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'center',padding:'10px 14px'}}>
+        <div className="search-bar" style={{flex:'1 1 280px'}}>
+          <JxIcon name="search" size={14} color="var(--tm)"/>
+          <input placeholder="Buscar por código o nombre…" value={q} onChange={e=>setQ(e.target.value)}/>
+        </div>
+        <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'var(--ts)',cursor:'pointer'}}>
+          <input type="checkbox" checked={soloActivas} onChange={e=>setSoloActivas(e.target.checked)}/>
+          Solo activas
+        </label>
+        <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'var(--ts)',cursor:'pointer'}}>
+          <input type="checkbox" checked={soloAtrasadas} onChange={e=>setSoloAtrasadas(e.target.checked)}/>
+          Solo atrasadas
+        </label>
+        <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
+          <span className="badge b-green">Terminada</span>
+          <span className="badge b-blue">En curso</span>
+          <span className="badge b-amber">Sin avance</span>
+          <span className="badge b-red">Atrasada</span>
+          <span className="badge b-gray">Futura</span>
+        </div>
+      </div>
 
-            {partidasConFechas.map((p, idx) => {
-              const inicioMs = new Date(p.fecha_inicio_planificada).getTime();
-              const finMs = new Date(p.fecha_fin_planificada).getTime();
-              const inicioWeek = Math.max(0, Math.floor((inicioMs - startMs) / (1000*60*60*24*7)));
-              const durWeeks = Math.max(1, Math.ceil((finMs - inicioMs) / (1000*60*60*24*7)));
-              const avancePct = Number(p.porcentaje_avance || 0) / 100;
-              const realWeeks = avancePct > 0 ? durWeeks * avancePct : 0;
-              const color = COLORS[p.estado] || COLORS.pendiente;
-              return (
-                <div key={p.id} style={{display:'flex',alignItems:'center',borderBottom:'1px solid rgba(255,255,255,0.03)',height:rowH,background:idx%2===0?'transparent':'rgba(0,0,0,0.07)'}}>
-                  <div style={{width:labelW,minWidth:labelW,padding:'0 14px',borderRight:'1px solid var(--border)',flexShrink:0,overflow:'hidden'}}>
-                    <div style={{fontSize:12,fontWeight:500,color:'var(--ts)',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',display:'flex',alignItems:'center',gap:6}}>
-                      <span style={{fontSize:9,color:'var(--tm)',fontWeight:700,flexShrink:0}}>{p.codigo_delfin || ''}</span>
-                      {p.nombre_partida}
-                    </div>
-                  </div>
-                  <div style={{position:'relative',flex:1,height:'100%',display:'flex',alignItems:'center'}}>
-                    {todayWeek > 0 && todayWeek <= totalWeeks && <div style={{position:'absolute',left:(todayWeek-1)*cellW,width:cellW,height:'100%',background:'rgba(242,183,5,0.04)',pointerEvents:'none'}}/>}
-                    <div style={{position:'absolute',left:inicioWeek*cellW,width:durWeeks*cellW-3,height:14,background:color,borderRadius:4,opacity:0.2}}/>
-                    <div style={{position:'absolute',left:inicioWeek*cellW,width:durWeeks*cellW-3,height:14,border:`1px solid ${color}`,borderRadius:4,opacity:0.4}}/>
-                    {realWeeks > 0 && <div style={{position:'absolute',left:inicioWeek*cellW,width:realWeeks*cellW-3,height:14,background:color,borderRadius:4,display:'flex',alignItems:'center',paddingLeft:6}}>
-                      <span style={{fontSize:8.5,fontWeight:700,color:'rgba(0,0,0,0.7)',whiteSpace:'nowrap'}}>{Math.round(avancePct*100)}%</span>
-                    </div>}
-                  </div>
+      {/* Gantt */}
+      <div className="card" style={{overflow:'hidden',marginTop:12}}>
+        {/* Header sticky */}
+        <div style={{display:'flex',borderBottom:'1px solid var(--border)',background:'rgba(0,0,0,0.25)',position:'sticky',top:0,zIndex:5}}>
+          <div style={{width:labelW,minWidth:labelW,padding:'8px 14px',fontSize:10.5,fontWeight:700,letterSpacing:'.08em',textTransform:'uppercase',color:'var(--tm)',borderRight:'1px solid var(--border)',flexShrink:0,display:'flex',alignItems:'center',gap:6}}>
+            <JxIcon name="gantt" size={12} color="var(--amber)"/> Partida
+          </div>
+          <div style={{flex:1,overflow:'hidden'}}>
+            <div style={{position:'relative',width:timelineW,height:46}}>
+              {columns.map((c, i) => (
+                <div key={i} style={{
+                  position:'absolute',
+                  left:c.left, width:c.width, height:'100%',
+                  borderRight:'1px solid rgba(255,255,255,0.04)',
+                  background: c.isToday ? 'rgba(242,183,5,0.10)' : (c.isWeekend ? 'rgba(0,0,0,0.18)' : 'transparent'),
+                  display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
+                  fontSize: zoom === 'mes' ? 11 : 9.5,
+                  color: c.isToday ? 'var(--amber)' : 'var(--tm)',
+                  fontWeight: c.isToday ? 700 : 500,
+                }}>
+                  {c.subLabel && <div style={{fontSize:9,color:'var(--tm)',opacity:0.85}}>{c.subLabel}</div>}
+                  <div>{c.label}</div>
                 </div>
-              );
-            })}
+              ))}
+            </div>
           </div>
         </div>
-        <div style={{padding:'12px 16px',borderTop:'1px solid var(--border)',display:'flex',gap:16,fontSize:11.5,color:'var(--tm)',alignItems:'center'}}>
-          <span>Leyenda: <strong style={{color:'rgba(255,255,255,0.3)'}}>borde</strong> = planificado · <strong style={{color:'var(--ts)'}}>relleno</strong> = ejecutado real</span>
-          <span style={{marginLeft:'auto'}}>Semana actual marcada en <span style={{color:'var(--amber)'}}>ámbar</span></span>
+
+        {/* Body scrollable */}
+        <div ref={scrollRef} style={{display:'flex',maxHeight:'62vh',overflow:'auto',position:'relative'}}>
+          {/* Sticky left col */}
+          <div style={{width:labelW,minWidth:labelW,borderRight:'1px solid var(--border)',position:'sticky',left:0,zIndex:3,background:'var(--bg-c)'}}>
+            <div style={{height:totalContentH,position:'relative'}}>
+              {visibleRows.map((p, i) => {
+                const idx = startIdx + i;
+                return (
+                  <div key={p.id} style={{
+                    position:'absolute',top:idx*ROW_H,left:0,right:0,height:ROW_H,
+                    padding:'0 12px',display:'flex',alignItems:'center',gap:6,
+                    borderBottom:'1px solid rgba(255,255,255,0.03)',
+                    background: idx % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.015)',
+                    fontSize:11.5,color:'var(--ts)',whiteSpace:'nowrap',overflow:'hidden',
+                  }}>
+                    <span style={{fontSize:9.5,color:'var(--tm)',fontWeight:700,flexShrink:0,fontFamily:'ui-monospace,monospace'}}>{p.codigo_delfin || ''}</span>
+                    <span style={{overflow:'hidden',textOverflow:'ellipsis'}}>{p.nombre_partida}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Timeline area */}
+          <div style={{flex:1,position:'relative'}}>
+            <div style={{width:timelineW,height:totalContentH,position:'relative'}}>
+              {/* columnas (líneas verticales y resaltado weekend/today) */}
+              {columns.map((c, i) => (
+                <div key={i} style={{
+                  position:'absolute',left:c.left,top:0,width:c.width,height:'100%',
+                  borderRight:'1px solid rgba(255,255,255,0.03)',
+                  background: c.isWeekend ? 'rgba(0,0,0,0.12)' : 'transparent',
+                  pointerEvents:'none',
+                }}/>
+              ))}
+
+              {/* línea HOY */}
+              {todayPx >= 0 && (
+                <div style={{
+                  position:'absolute',left:todayPx,top:0,width:2,height:'100%',
+                  background:'var(--red)',opacity:0.7,zIndex:2,pointerEvents:'none',
+                }}/>
+              )}
+
+              {/* filas + barras (virtualizadas) */}
+              {visibleRows.map((p, i) => {
+                const idx = startIdx + i;
+                const ini = parseDate(p.fecha_inicio_planificada);
+                const fin = parseDate(p.fecha_fin_planificada);
+                const iniDay = Math.max(0, diffDays(range.startMs, ini));
+                const finDay = Math.min(range.totalDays, diffDays(range.startMs, fin) + 1);
+                const left = dayToPx(iniDay);
+                const right = dayToPx(finDay);
+                const width = Math.max(3, right - left);
+                const av = Math.max(0, Math.min(100, Number(p.porcentaje_avance || 0)));
+                const estado = calcEstadoCron(p, todayMs);
+                const col = ESTADO_CRON_COLOR[estado] || ESTADO_CRON_COLOR.normal;
+                const dur = p.duracion_dias || (diffDays(ini, fin) + 1);
+                const tooltip = `${p.codigo_delfin || ''} · ${p.nombre_partida || ''}\n${p.fecha_inicio_planificada} → ${p.fecha_fin_planificada}\nDuración: ${dur} días · Avance: ${av.toFixed(1)}%\nEstado: ${col.label}`;
+
+                return (
+                  <div key={p.id}
+                    title={tooltip}
+                    style={{
+                      position:'absolute',top:idx*ROW_H,left:0,height:ROW_H,width:'100%',
+                      borderBottom:'1px solid rgba(255,255,255,0.03)',
+                      background: idx % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.015)',
+                    }}>
+                    <div style={{
+                      position:'absolute',
+                      left, width,
+                      top:(ROW_H - 16)/2, height:16,
+                      borderRadius:4,
+                      background:'rgba(255,255,255,0.04)',
+                      border:`1px solid ${col.bar}`,
+                      boxShadow: estado === 'atrasada' ? '0 0 0 1px rgba(231,76,60,0.25)' : 'none',
+                      overflow:'hidden',
+                    }}>
+                      {/* relleno avance */}
+                      <div style={{
+                        position:'absolute',left:0,top:0,bottom:0,
+                        width: (av/100) * width,
+                        background: col.fill,
+                        opacity: estado === 'futura' ? 0.45 : 0.85,
+                      }}/>
+                      {/* etiqueta % si hay espacio */}
+                      {width > 36 && (
+                        <span style={{
+                          position:'absolute',left:6,top:0,bottom:0,
+                          display:'flex',alignItems:'center',
+                          fontSize:9.5,fontWeight:700,
+                          color: estado === 'terminada' || estado === 'en_curso' ? 'rgba(0,0,0,0.75)' : 'var(--ts)',
+                          textShadow:'0 1px 1px rgba(0,0,0,0.35)',
+                          pointerEvents:'none',
+                          whiteSpace:'nowrap',
+                        }}>{Math.round(av)}%</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        {/* Pie con stats */}
+        <div style={{padding:'10px 16px',borderTop:'1px solid var(--border)',display:'flex',gap:14,fontSize:11.5,color:'var(--tm)',alignItems:'center',flexWrap:'wrap'}}>
+          <span><strong style={{color:'var(--ts)'}}>{filtered.length}</strong> de {stats.total} partidas mostradas</span>
+          <span>·</span>
+          <span><span style={{color:'var(--red)'}}>{stats.atrasadas}</span> atrasadas</span>
+          <span style={{marginLeft:'auto',color:'var(--tm)'}}>Línea roja vertical = hoy</span>
         </div>
       </div>
     </div>

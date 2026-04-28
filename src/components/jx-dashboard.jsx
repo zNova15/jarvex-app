@@ -104,8 +104,30 @@ const ACT_ICONS  = { out: 'arrowOut', in: 'arrowIn', ok: 'checkCircle', alert: '
 
 const { useState: uSD, useEffect: uED, useMemo: uMD } = React;
 
+// ── Helpers ──
+function fmtSoles(n) {
+  const v = Number(n || 0);
+  if (Math.abs(v) >= 1_000_000) return 'S/ ' + (v / 1_000_000).toFixed(2) + 'M';
+  if (Math.abs(v) >= 1_000) return 'S/ ' + (v / 1_000).toFixed(1) + 'K';
+  return 'S/ ' + v.toFixed(0);
+}
+function avanceColor(pct) {
+  if (pct >= 80) return '#2ECC71';
+  if (pct >= 50) return '#F2B705';
+  return '#E74C3C';
+}
+function diasUrgenciaColor(dias) {
+  if (dias == null) return 'var(--tm)';
+  if (dias < 0) return '#E74C3C';
+  if (dias < 15) return '#E74C3C';
+  if (dias <= 30) return '#F2B705';
+  return '#2ECC71';
+}
+
 function DashboardPage() {
   const [obraId, setObraId] = uSD(null);
+  const [vistaPonderada, setVistaPonderada] = uSD(null); // KPI desde Supabase view (opcional)
+  const [vistaTick, setVistaTick] = uSD(0);
 
   uED(() => {
     let cancelled = false;
@@ -120,6 +142,27 @@ function DashboardPage() {
     find();
     return () => { cancelled = true; };
   }, []);
+
+  // Refresca la vista ponderada de Supabase cada 15s
+  uED(() => {
+    if (!obraId) return;
+    let cancelled = false;
+    const fetchView = async () => {
+      try {
+        const sb = window.__supabase;
+        if (!sb) return;
+        const { data, error } = await sb
+          .from('v_obras_avance_ponderado')
+          .select('*')
+          .eq('obra_id', obraId)
+          .single();
+        if (!cancelled && !error && data) setVistaPonderada(data);
+      } catch (_) { /* offline o vista inexistente: ignorar */ }
+    };
+    fetchView();
+    const id = setInterval(() => { setVistaTick(t => t + 1); fetchView(); }, 15000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [obraId]);
 
   const { data: obras } = window.__hooks.useObras();
   const { data: personal } = window.__hooks.usePersonal(obraId);
@@ -145,12 +188,58 @@ function DashboardPage() {
     const matsSinStock = materiales.filter(m => m.alerta === 'sin_stock').length;
     const matsOk = materiales.filter(m => m.alerta === 'ok' || !m.alerta).length;
     const herrEnUso = herramientas.filter(h => h.ubicacion_actual === 'en_uso').length;
-    const partidasAtrasadas = partidas.filter(p => p.estado === 'atrasado');
     const incAbiertas = incidencias.filter(i => i.estado === 'abierta').length;
 
+    // ── Cálculos partidas / cronograma / costos ──
     const totalPres = partidas.reduce((s,p) => s + Number(p.costo_total_presupuestado || 0), 0);
     const totalReal = partidas.reduce((s,p) => s + Number(p.costo_real_acumulado || 0), 0);
     const sobrecosto = totalReal - totalPres;
+
+    // Avance ponderado por costo (fallback cliente)
+    let avancePonderadoLocal = 0;
+    if (totalPres > 0) {
+      const num = partidas.reduce((s,p) => s + (Number(p.porcentaje_avance || 0) * Number(p.costo_total_presupuestado || 0)), 0);
+      avancePonderadoLocal = num / totalPres;
+    }
+
+    const partidasTerminadas = partidas.filter(p => p.estado === 'terminado' || Number(p.porcentaje_avance || 0) >= 100).length;
+    const partidasEnEjecucion = partidas.filter(p => p.estado === 'en_ejecucion').length;
+    const partidasPendientes = partidas.filter(p => p.estado === 'pendiente' || (!p.estado && Number(p.porcentaje_avance || 0) === 0)).length;
+    const partidasObservadas = partidas.filter(p => p.estado === 'observado').length;
+
+    // Atrasadas: estado=atrasado O fecha_fin_planificada < today && avance < 80
+    const partidasAtrasadasArr = partidas.filter(p => {
+      if (p.estado === 'atrasado') return true;
+      if (p.estado === 'terminado') return false;
+      const ff = p.fecha_fin_planificada;
+      if (!ff) return false;
+      return ff < today && Number(p.porcentaje_avance || 0) < 80;
+    });
+    const partidasAtrasadas = partidasAtrasadasArr;
+
+    // Top 5 atrasadas: ordenar por días vencidos desc
+    const topAtrasadas = partidasAtrasadasArr
+      .map(p => {
+        const ff = p.fecha_fin_planificada;
+        let diasVencidos = null;
+        if (ff) {
+          const d1 = new Date(ff + 'T00:00:00');
+          const d2 = new Date(today + 'T00:00:00');
+          diasVencidos = Math.floor((d2 - d1) / 86400000);
+        }
+        return { ...p, _diasVencidos: diasVencidos };
+      })
+      .sort((a,b) => (b._diasVencidos || 0) - (a._diasVencidos || 0))
+      .slice(0, 5);
+
+    // Días al vencimiento de la obra
+    let diasAlVencimiento = null;
+    const ffObra = obraActiva?.fecha_fin_estimada;
+    if (ffObra) {
+      const d1 = new Date(ffObra + 'T00:00:00');
+      const d2 = new Date(today + 'T00:00:00');
+      diasAlVencimiento = Math.floor((d1 - d2) / 86400000);
+    }
 
     return {
       obrasActivas: obras.filter(o => o.estado === 'activo').length,
@@ -163,11 +252,28 @@ function DashboardPage() {
       avanceFisico: Number(obraActiva?.avance_fisico || 0),
       partidasAtrasadas: partidasAtrasadas.length,
       partidasAtrasadasNombres: partidasAtrasadas.slice(0,2).map(p => p.nombre_partida).join(' · ') || '—',
+      topAtrasadas,
+      partidasTerminadas, partidasEnEjecucion, partidasPendientes, partidasObservadas,
+      partidasTotal: partidas.length,
+      avancePonderadoLocal,
+      diasAlVencimiento,
+      ffObra,
       totalPres, totalReal, sobrecosto,
       pctPresupuesto: totalPres > 0 ? (totalReal / totalPres * 100) : 0,
       incAbiertas,
     };
   }, [obras, personal, materiales, herramientas, partidas, asistencia, incidencias, obraActiva, today]);
+
+  // KPI ponderado: Supabase view o fallback cliente
+  const avancePonderadoPct = vistaPonderada
+    ? Number(vistaPonderada.avance_ponderado_pct || 0)
+    : kpis.avancePonderadoLocal;
+  const partidasTerminadasView = vistaPonderada
+    ? Number(vistaPonderada.partidas_terminadas || kpis.partidasTerminadas)
+    : kpis.partidasTerminadas;
+  const totalPartidasView = vistaPonderada
+    ? Number(vistaPonderada.total_partidas || kpis.partidasTotal)
+    : kpis.partidasTotal;
 
   // Datos para gráficos
   const partidaChart = uMD(() => {
@@ -244,12 +350,189 @@ function DashboardPage() {
         <KpiCard label="Materiales en Alerta" value={String(kpis.materialesAlerta)} icon="package" color={kpis.materialesAlerta>0?'#E74C3C':'#2ECC71'} sub={`${kpis.matsCritico} críticos · ${kpis.matsReponer} por reponer`}/>
         <KpiCard label="Herramientas en Uso" value={String(kpis.herrEnUso)} unit={`/${kpis.herrTotal}`} icon="tool" color="#F28C28"/>
       </div>
-      <div className="g4" style={{ marginBottom: 22 }}>
-        <KpiCard label="Avance General de Obra" value={kpis.avanceFisico.toFixed(0)} unit="%" icon="hardHat" color="#F2B705"/>
-        <KpiCard label="Partidas Atrasadas" value={String(kpis.partidasAtrasadas)} icon="gantt" color={kpis.partidasAtrasadas>0?'#E74C3C':'#2ECC71'} sub={kpis.partidasAtrasadasNombres}/>
-        <KpiCard label="Presupuesto Ejecutado" value={'S/ ' + (kpis.totalReal/1000).toFixed(0) + 'K'} icon="dollar" color="#2ECC71" sub={`de S/ ${(kpis.totalPres/1000).toFixed(0)}K · ${kpis.pctPresupuesto.toFixed(1)}%`}/>
-        <KpiCard label={kpis.sobrecosto>=0?"Sobrecosto":"Ahorro"} value={'S/ ' + Math.abs(kpis.sobrecosto/1000).toFixed(1) + 'K'} icon={kpis.sobrecosto>=0?"trendUp":"trendDown"} color={kpis.sobrecosto>=0?'#E74C3C':'#2ECC71'}/>
-      </div>
+      {/* ── KPIs principales obra activa: avance, costo, atrasos, vencimiento ── */}
+      {obraActiva ? (
+        <>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--tm)', textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 10 }}>
+            Obra activa · {obraActiva.nombre_obra}
+          </div>
+          <div className="g4" style={{ marginBottom: 14 }}>
+            {/* 1. Avance Físico ponderado */}
+            <div className="kpi-card">
+              <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between' }}>
+                <div style={{ fontSize: 11.5, color:'var(--tm)', fontWeight: 500 }}>Avance Físico (ponderado)</div>
+                <div style={{ width:32, height:32, borderRadius:8, background: avanceColor(avancePonderadoPct)+'1a', display:'flex', alignItems:'center', justifyContent:'center' }}>
+                  <JxIcon name="hardHat" size={15} color={avanceColor(avancePonderadoPct)}/>
+                </div>
+              </div>
+              <div className="kpi-val" style={{ color: avanceColor(avancePonderadoPct) }}>
+                {avancePonderadoPct.toFixed(1)}<span style={{ fontSize:14, fontWeight:500, color:'var(--tm)', marginLeft:4 }}>%</span>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--tm)', marginBottom: 8 }}>
+                {partidasTerminadasView} de {totalPartidasView} partidas terminadas
+                {vistaPonderada ? '' : ' · cálculo local'}
+              </div>
+              <div className="progress-bar">
+                <div className="progress-fill" style={{ width: Math.min(100, avancePonderadoPct) + '%', background: avanceColor(avancePonderadoPct) }}/>
+              </div>
+            </div>
+
+            {/* 2. Costo ejecutado vs presupuesto */}
+            <div className="kpi-card">
+              <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between' }}>
+                <div style={{ fontSize: 11.5, color:'var(--tm)', fontWeight: 500 }}>Costo Ejecutado / Presupuesto</div>
+                <div style={{ width:32, height:32, borderRadius:8, background:'#2ECC711a', display:'flex', alignItems:'center', justifyContent:'center' }}>
+                  <JxIcon name="dollar" size={15} color="#2ECC71"/>
+                </div>
+              </div>
+              <div className="kpi-val">
+                {kpis.pctPresupuesto.toFixed(1)}<span style={{ fontSize:14, fontWeight:500, color:'var(--tm)', marginLeft:4 }}>%</span>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--tm)', marginBottom: 8 }}>
+                {fmtSoles(kpis.totalReal)} de {fmtSoles(kpis.totalPres)}
+              </div>
+              <div className="progress-bar">
+                <div className="progress-fill" style={{ width: Math.min(100, kpis.pctPresupuesto) + '%', background: kpis.pctPresupuesto > 100 ? '#E74C3C' : '#2ECC71' }}/>
+              </div>
+            </div>
+
+            {/* 3. Partidas atrasadas */}
+            <div className="kpi-card">
+              <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between' }}>
+                <div style={{ fontSize: 11.5, color:'var(--tm)', fontWeight: 500 }}>Partidas Atrasadas</div>
+                <div style={{ width:32, height:32, borderRadius:8, background: (kpis.partidasAtrasadas>0?'#E74C3C':'#2ECC71')+'1a', display:'flex', alignItems:'center', justifyContent:'center' }}>
+                  <JxIcon name="alertCircle" size={15} color={kpis.partidasAtrasadas>0?'#E74C3C':'#2ECC71'}/>
+                </div>
+              </div>
+              <div className="kpi-val" style={{ color: kpis.partidasAtrasadas > 0 ? '#E74C3C' : 'var(--tp)' }}>
+                {kpis.partidasAtrasadas}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--tm)' }}>
+                {kpis.partidasAtrasadas > 0 ? 'Necesitan atención' : 'Sin atrasos · al día'}
+              </div>
+            </div>
+
+            {/* 4. Días al vencimiento */}
+            <div className="kpi-card">
+              <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between' }}>
+                <div style={{ fontSize: 11.5, color:'var(--tm)', fontWeight: 500 }}>Días al Vencimiento</div>
+                <div style={{ width:32, height:32, borderRadius:8, background: diasUrgenciaColor(kpis.diasAlVencimiento)+'1a', display:'flex', alignItems:'center', justifyContent:'center' }}>
+                  <JxIcon name="calendar" size={15} color={diasUrgenciaColor(kpis.diasAlVencimiento)}/>
+                </div>
+              </div>
+              <div className="kpi-val" style={{ color: diasUrgenciaColor(kpis.diasAlVencimiento) }}>
+                {kpis.diasAlVencimiento == null
+                  ? '—'
+                  : (kpis.diasAlVencimiento < 0 ? Math.abs(kpis.diasAlVencimiento) : kpis.diasAlVencimiento)}
+                <span style={{ fontSize:13, fontWeight:500, color:'var(--tm)', marginLeft:4 }}>
+                  {kpis.diasAlVencimiento == null ? '' : (kpis.diasAlVencimiento < 0 ? ' días vencida' : ' días')}
+                </span>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--tm)' }}>
+                {kpis.ffObra ? `Fin estimado: ${kpis.ffObra}` : 'Sin fecha estimada'}
+              </div>
+            </div>
+          </div>
+
+          {/* Sobrecosto / extra */}
+          <div className="g4" style={{ marginBottom: 22 }}>
+            <KpiCard label="Avance Reportado (obra)" value={kpis.avanceFisico.toFixed(0)} unit="%" icon="chart" color="#3498DB" sub="Reportado manual en obra"/>
+            <KpiCard label={kpis.sobrecosto>=0?"Sobrecosto":"Ahorro"} value={fmtSoles(Math.abs(kpis.sobrecosto))} icon={kpis.sobrecosto>=0?"alert":"checkCircle"} color={kpis.sobrecosto>=0?'#E74C3C':'#2ECC71'} sub={kpis.sobrecosto>=0?"Real > presupuesto":"Bajo presupuesto"}/>
+            <KpiCard label="Partidas en Ejecución" value={String(kpis.partidasEnEjecucion)} icon="hardHat" color="#3498DB" sub={`${kpis.partidasPendientes} pendientes · ${kpis.partidasObservadas} observadas`}/>
+            <KpiCard label="Incidencias Abiertas" value={String(kpis.incAbiertas)} icon="alert" color={kpis.incAbiertas>0?'#F28C28':'#2ECC71'}/>
+          </div>
+
+          {/* ── Top 5 atrasadas + Distribución por estado ── */}
+          {(kpis.topAtrasadas.length > 0 || kpis.partidasTotal > 0) && (
+            <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16, marginBottom: 16 }}>
+              <div className="card card-p">
+                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <JxIcon name="alertCircle" size={14} color="#E74C3C"/>Top 5 Partidas Atrasadas
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--tm)', marginBottom: 12 }}>Ordenadas por días vencidos</div>
+                {kpis.topAtrasadas.length === 0 ? (
+                  <div className="empty-state" style={{ padding: '30px 0' }}>
+                    <JxIcon name="checkCircle" size={28} color="#2ECC71"/>
+                    <p>Ninguna partida atrasada · todo al día</p>
+                  </div>
+                ) : (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ color: 'var(--tm)', textAlign: 'left', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: '.04em' }}>
+                          <th style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)' }}>Código</th>
+                          <th style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)' }}>Partida</th>
+                          <th style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)' }}>Fin plan.</th>
+                          <th style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)', textAlign: 'right' }}>Días</th>
+                          <th style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)', textAlign: 'right' }}>Avance</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {kpis.topAtrasadas.map(p => {
+                          const av = Number(p.porcentaje_avance || 0);
+                          const clickable = !!window.__setPage;
+                          return (
+                            <tr key={p.id}
+                                onClick={clickable ? () => window.__setPage('partidas') : undefined}
+                                style={{ cursor: clickable ? 'pointer' : 'default' }}>
+                              <td style={{ padding: '8px', borderBottom: '1px solid var(--border)', color: 'var(--ts)', fontFamily: 'monospace', fontSize: 11 }}>{p.codigo_partida || '—'}</td>
+                              <td style={{ padding: '8px', borderBottom: '1px solid var(--border)', color: 'var(--tp)' }}>{p.nombre_partida}</td>
+                              <td style={{ padding: '8px', borderBottom: '1px solid var(--border)', color: 'var(--ts)' }}>{p.fecha_fin_planificada || '—'}</td>
+                              <td style={{ padding: '8px', borderBottom: '1px solid var(--border)', textAlign: 'right', color: '#E74C3C', fontWeight: 600 }}>
+                                {p._diasVencidos != null ? `+${p._diasVencidos}d` : '—'}
+                              </td>
+                              <td style={{ padding: '8px', borderBottom: '1px solid var(--border)', textAlign: 'right', color: avanceColor(av), fontWeight: 600 }}>{av.toFixed(0)}%</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              <div className="card card-p">
+                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <JxIcon name="chart" size={14} color="var(--amber)"/>Distribución de Partidas
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--tm)', marginBottom: 14 }}>Por estado</div>
+                {kpis.partidasTotal === 0 ? (
+                  <div className="empty-state" style={{ padding: '30px 0' }}>Sin partidas</div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {[
+                      { label: 'Terminadas', n: kpis.partidasTerminadas, color: '#2ECC71' },
+                      { label: 'En ejecución', n: kpis.partidasEnEjecucion, color: '#3498DB' },
+                      { label: 'Pendientes', n: kpis.partidasPendientes, color: '#7A8A9A' },
+                      { label: 'Atrasadas', n: kpis.partidasAtrasadas, color: '#E74C3C' },
+                      { label: 'Observadas', n: kpis.partidasObservadas, color: '#F2B705' },
+                    ].map(row => {
+                      const pct = kpis.partidasTotal > 0 ? (row.n / kpis.partidasTotal * 100) : 0;
+                      return (
+                        <div key={row.label}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, marginBottom: 4, color: 'var(--ts)' }}>
+                            <span>{row.label}</span>
+                            <span style={{ color: 'var(--tm)' }}>{row.n} <span style={{ opacity: .6 }}>({pct.toFixed(0)}%)</span></span>
+                          </div>
+                          <div className="progress-bar">
+                            <div className="progress-fill" style={{ width: pct + '%', background: row.color }}/>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="card card-p" style={{ marginBottom: 22, textAlign: 'center', padding: '32px 20px' }}>
+          <JxIcon name="building" size={32} color="var(--tm)"/>
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ts)', marginTop: 8 }}>Sin obra activa</div>
+          <div style={{ fontSize: 12, color: 'var(--tm)', marginTop: 4 }}>Selecciona o crea una obra para ver KPIs y cronograma.</div>
+        </div>
+      )}
 
       {/* Charts */}
       <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16, marginBottom: 16 }}>
