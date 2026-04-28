@@ -47,9 +47,11 @@ SELECT
     WHEN p.fecha_inicio_planificada IS NULL OR p.fecha_fin_planificada IS NULL THEN NULL
     WHEN CURRENT_DATE < p.fecha_inicio_planificada THEN 0
     WHEN CURRENT_DATE > p.fecha_fin_planificada THEN 100
+    -- En Postgres, (DATE - DATE) devuelve INTEGER (días), no INTERVAL.
+    -- Por eso casteamos directo a numeric sin EXTRACT.
     ELSE ROUND(
-      (EXTRACT(EPOCH FROM (CURRENT_DATE - p.fecha_inicio_planificada))::numeric
-       / NULLIF(EXTRACT(EPOCH FROM (p.fecha_fin_planificada - p.fecha_inicio_planificada))::numeric, 0))
+      ((CURRENT_DATE - p.fecha_inicio_planificada)::numeric
+       / NULLIF((p.fecha_fin_planificada - p.fecha_inicio_planificada)::numeric, 0))
       * 100, 1
     )
   END                                   AS avance_esperado_pct
