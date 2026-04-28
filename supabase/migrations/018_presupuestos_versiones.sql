@@ -84,14 +84,16 @@ CREATE POLICY "part_ver: crea"       ON partidas_versionadas FOR INSERT WITH CHE
 CREATE POLICY "part_ver: actualiza"  ON partidas_versionadas FOR UPDATE USING ((SELECT auth.uid()) IS NOT NULL);
 CREATE POLICY "part_ver: elimina"    ON partidas_versionadas FOR DELETE USING (is_admin());
 
--- Triggers updated_at
+-- Triggers updated_at (idempotente)
+DROP TRIGGER IF EXISTS trg_pres_versiones_updated_at ON presupuestos_versiones;
 CREATE TRIGGER trg_pres_versiones_updated_at
   BEFORE UPDATE ON presupuestos_versiones
-  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
+DROP TRIGGER IF EXISTS trg_partidas_ver_updated_at ON partidas_versionadas;
 CREATE TRIGGER trg_partidas_ver_updated_at
   BEFORE UPDATE ON partidas_versionadas
-  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 -- ── Vista de comparativa (derivada): hasta 5 columnas por código ────
 -- Esta view permite a la app obtener una matriz con todas las partidas
