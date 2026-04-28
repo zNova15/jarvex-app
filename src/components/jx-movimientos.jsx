@@ -378,7 +378,7 @@ function MovHerramientasPage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
   const movHook = window.__hooks.useMovimientosHerramientas(obraId);
   const { data: movs, loading } = movHook;
-  const { data: herramientas } = window.__hooks.useHerramientas(obraId);
+  const { data: herramientas, update: updateHerr } = window.__hooks.useHerramientas(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
 
   const [reversoTarget, setReversoTarget] = uSM(null);
@@ -462,18 +462,35 @@ function MovHerramientasPage({ showToast }) {
       await window.__db.movimientos_herramientas.update(original.id, { reversed_by_id: reverso.id });
     }
 
-    // Ajustar estado/disponibilidad de la herramienta de forma simple:
-    // si el reverso es 'entrada' (devolución) → disponible=true; si es 'salida' → disponible=false.
+    // Ajustar estado/disponibilidad de la herramienta. Usar updateHerr (vía hook)
+    // para que sync_status='pending_update' y el cambio llegue a Supabase.
     try {
       const h = herramientas?.find(x => x.id === original.herramienta_id);
       if (h) {
-        const patch = {};
-        if (accionInv === 'entrada' || accionInv === 'reposicion') patch.disponible = true;
-        if (accionInv === 'salida' || accionInv === 'mantenimiento') patch.disponible = false;
-        if (accionInv === 'baja') patch.estado_actual = 'baja';
-        if (Object.keys(patch).length) await window.__db.herramientas.update(h.id, patch);
+        const patch = { fecha_ultimo_movimiento: fecha };
+        if (accionInv === 'entrada' || accionInv === 'reposicion') {
+          patch.disponible = true;
+          patch.ubicacion_actual = 'almacen';
+          patch.ultimo_responsable_id = null;
+        }
+        if (accionInv === 'salida') {
+          patch.disponible = false;
+          patch.ubicacion_actual = 'en_uso';
+          patch.ultimo_responsable_id = original.responsable_id || null;
+        }
+        if (accionInv === 'mantenimiento') {
+          patch.disponible = false;
+          patch.ubicacion_actual = 'mantenimiento';
+          patch.estado_actual = 'mantenimiento';
+        }
+        if (accionInv === 'baja') {
+          patch.disponible = false;
+          patch.ubicacion_actual = 'baja';
+          patch.estado_actual = 'baja';
+        }
+        await updateHerr(h.id, patch);
       }
-    } catch (e) {}
+    } catch (e) { console.warn('No se pudo sincronizar el estado de la herramienta tras reverso:', e?.message); }
 
     try {
       await window.__logAudit?.({

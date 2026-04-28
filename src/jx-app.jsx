@@ -489,6 +489,39 @@ function App() {
 
   const showToast = uCA((msg, type='amber') => setToast({ msg, type, key: Date.now() }), []);
 
+  // Escucha eventos de notificaciones realtime y muestra toast in-app inmediato
+  uEA(() => {
+    if (!auth?.profile) return;
+    const onNotif = (e) => {
+      const n = e?.detail;
+      if (!n) return;
+      const txt = `${n.titulo}${n.descripcion ? ' — ' + n.descripcion : ''}`;
+      const tipo = n.tipo === 'change_request' ? 'amber' : n.tipo === 'incidencia' ? 'red' : 'blue';
+      showToast(txt, tipo);
+    };
+    window.addEventListener('jarvex_new_notif', onNotif);
+    return () => window.removeEventListener('jarvex_new_notif', onNotif);
+  }, [auth?.profile, showToast]);
+
+  // Pedir permiso de notificaciones del navegador una sola vez tras el login.
+  // Si el usuario ya respondió (granted o denied), no se vuelve a preguntar.
+  uEA(() => {
+    if (!auth?.profile) return;
+    if (typeof Notification === 'undefined') return;
+    if (Notification.permission !== 'default') return;
+    const flagKey = 'jarvex_notif_asked';
+    if (localStorage.getItem(flagKey)) return;
+    // Esperamos 8 segundos tras login para no saturar la primera impresión
+    const t = setTimeout(() => {
+      try {
+        Notification.requestPermission().finally(() => {
+          localStorage.setItem(flagKey, '1');
+        });
+      } catch (e) {}
+    }, 8000);
+    return () => clearTimeout(t);
+  }, [auth?.profile]);
+
   // Cargar obra activa desde Dexie cuando hay sesión
   // Respeta localStorage.obra_activa_id si existe (FEATURE 3)
   uEA(() => {

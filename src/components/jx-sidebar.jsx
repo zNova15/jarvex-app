@@ -14,6 +14,49 @@ function useIsMobile() {
   return isMobile;
 }
 
+// Hook: gestiona el prompt de instalación PWA del navegador.
+// Retorna { canInstall, isInstalled, promptInstall }.
+function usePwaInstall() {
+  const [deferredPrompt, setDeferredPrompt] = useState(null);
+  const [isInstalled, setIsInstalled] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    // standalone (Android/Chrome) o navigator.standalone (iOS Safari)
+    return window.matchMedia?.('(display-mode: standalone)').matches
+        || window.navigator.standalone === true;
+  });
+
+  useEffect(() => {
+    const onBeforeInstall = (e) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+    const onAppInstalled = () => {
+      setIsInstalled(true);
+      setDeferredPrompt(null);
+    };
+    window.addEventListener('beforeinstallprompt', onBeforeInstall);
+    window.addEventListener('appinstalled', onAppInstalled);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onBeforeInstall);
+      window.removeEventListener('appinstalled', onAppInstalled);
+    };
+  }, []);
+
+  const promptInstall = async () => {
+    if (!deferredPrompt) return false;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    setDeferredPrompt(null);
+    return outcome === 'accepted';
+  };
+
+  return {
+    canInstall: !!deferredPrompt && !isInstalled,
+    isInstalled,
+    promptInstall,
+  };
+}
+
 const NAV = [
   { section: 'GENERAL' },
   { id: 'importar', label: 'Importar Datos', icon: 'upload' },
@@ -53,6 +96,7 @@ function Sidebar({ current, onNav, collapsed, onToggle }) {
   const { isPrueba } = appMode;
   const [hovered, setHovered] = useState(null);
   const isMobile = useIsMobile();
+  const pwa = usePwaInstall();
   const auth = window.__useAuth ? window.__useAuth() : null;
   const profile = auth?.profile;
   const isAdmin = profile?.rol === 'admin';
@@ -247,6 +291,19 @@ function Sidebar({ current, onNav, collapsed, onToggle }) {
             title={isPrueba ? 'Modo prueba activo' : 'Modo producción activo'}>
             {isPrueba ? '🧪 MODO PRUEBA' : '🔒 PRODUCCIÓN'}
           </div>
+        </div>
+      )}
+
+      {/* PWA install — solo si el browser lo permite y no está instalada */}
+      {pwa.canInstall && !navCollapsed && (
+        <div style={{ padding: '8px 14px', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+          <button
+            onClick={async () => { await pwa.promptInstall(); }}
+            className="btn btn-amber btn-sm"
+            style={{ width: '100%', justifyContent: 'center', fontSize: 11.5 }}
+            title="Instala JARVEX como app nativa">
+            <JxIcon name="download" size={12}/> Instalar JARVEX
+          </button>
         </div>
       )}
 

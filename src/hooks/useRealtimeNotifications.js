@@ -165,7 +165,12 @@ export function useRealtimeNotifications() {
     });
     setUnreadCount(c => c + 1);
 
-    // Browser notification si tiene permiso
+    // Toast in-app inmediato (escuchado por App en jx-app.jsx)
+    try {
+      window.dispatchEvent(new CustomEvent('jarvex_new_notif', { detail: notif }));
+    } catch (e) {}
+
+    // Browser notification si tiene permiso (push del sistema operativo)
     if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
       new Notification('JARVEX', { body: `${n.titulo} — ${n.descripcion}`, icon: '/icons/icon-192.png' });
     }
