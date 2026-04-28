@@ -320,17 +320,36 @@ export function parseInsumosList(rows) {
 // Inicio/Fin en formato Excel serial number (días desde 1900-01-01).
 // ═══════════════════════════════════════════════════════════════════
 
-// Convierte un Excel serial date a ISO string (YYYY-MM-DD).
-// Excel cuenta días desde 1900-01-01 con el bug del año bisiesto 1900.
-// Offset 25569 = días entre 1900-01-01 y 1970-01-01 (incluyendo bug).
+// Convierte un Excel serial date / string a ISO string (YYYY-MM-DD).
+// Acepta:
+//   - número serial Excel (días desde 1900-01-01, con bug bisiesto 1900)
+//   - string ISO "YYYY-MM-DD..."
+//   - string formato regional dd/mm/yyyy o dd-mm-yyyy (export MS Project)
+//   - Date object
 export function excelDateToISO(serial) {
   if (serial == null || serial === '') return null;
+  if (serial instanceof Date) {
+    if (isNaN(serial.getTime())) return null;
+    return serial.toISOString().slice(0, 10);
+  }
+  if (typeof serial === 'string') {
+    const s = serial.trim();
+    if (!s) return null;
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+    // dd/mm/yyyy o dd-mm-yyyy (formato regional MS Project es-PE)
+    const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+    if (m) {
+      const dd = parseInt(m[1], 10);
+      const mm = parseInt(m[2], 10);
+      let yyyy = parseInt(m[3], 10);
+      if (yyyy < 100) yyyy += 2000;
+      if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) {
+        return `${yyyy.toString().padStart(4,'0')}-${mm.toString().padStart(2,'0')}-${dd.toString().padStart(2,'0')}`;
+      }
+    }
+  }
   const n = Number(serial);
   if (!Number.isFinite(n) || n <= 0) return null;
-  // Aceptar también string ISO directo si llega
-  if (typeof serial === 'string' && /^\d{4}-\d{2}-\d{2}/.test(serial)) {
-    return serial.slice(0, 10);
-  }
   const ms = (n - 25569) * 86400 * 1000;
   const d = new Date(ms);
   if (isNaN(d.getTime())) return null;

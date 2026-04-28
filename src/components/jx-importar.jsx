@@ -35,7 +35,7 @@ const SOURCES = [
   { id:'excel',     label:'Excel / CSV',     icon:'chart',  color:'#1E7145', desc:'Importa desde hojas de cálculo .xlsx, .xls o archivos .csv', ext:'.xlsx,.xls,.csv', badge:'Universal',  enabled:true  },
   { id:'s10',       label:'Delphin',         icon:'dollar', color:'#0070C0', desc:'Importa presupuestos, partidas e insumos directamente desde Delphin', ext:'.xlsx, .xls', badge:'Construcción Perú', enabled:true  },
   { id:'delfin',    label:'Delfín ERP',      icon:'users',  color:'#7030A0', desc:'Importa personal, planillas y asistencia desde Delfín / Delfín+', ext:'.xlsx, .csv', badge:'RRHH Perú', enabled:false },
-  { id:'msproject', label:'MS Project',      icon:'gantt',  color:'#217346', desc:'Importa cronograma y tareas desde Microsoft Project', ext:'.mpp, .xml, .xlsx', badge:'Cronograma', enabled:false },
+  { id:'msproject', label:'MS Project',      icon:'gantt',  color:'#217346', desc:'Importa cronograma desde Microsoft Project (Excel exportado: Numeración / Inicio / Fin / Duración)', ext:'.xlsx, .xls', badge:'Cronograma', enabled:true  },
   { id:'autocad',   label:'AutoCAD / Revit', icon:'layers', color:'#E84142', desc:'Importa metrados desde planillas de cómputo en DXF/Excel', ext:'.xlsx, .csv', badge:'Metrados', enabled:false },
 ];
 
@@ -184,7 +184,13 @@ function DropZone({ onFile, file, accept = '.xlsx,.xls,.csv' }) {
 // partidas + insumos desde un export de "Análisis de Precios
 // Unitarios" de S10. Sustituye TODO el contenido de partidas/
 // insumos_partida de la obra activa.
-function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, hist, setHist }) {
+function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, hist, setHist, sourceId = 's10' }) {
+  const isProject = sourceId === 'msproject';
+  const sourceName = isProject ? 'MS Project' : 'Delphin';
+  // Selección de qué importar (insumos): por defecto todo lo que existe
+  const [include, setInclude] = uSI({ materiales:true, mano_obra:true, equipos:true });
+  // Permitir actualizar nombre/presupuesto de la obra desde el flujo de import
+  const [updateObra, setUpdateObra] = uSI({ habilitado:false, nombre:'', presupuesto:'' });
   const [step, setStep] = uSI(0); // 0 aviso, 1 archivo, 2 preview, 3 confirmar
   const [confirmed, setConfirmed] = uSI(false);
   const [file, setFile] = uSI(null);
@@ -333,7 +339,14 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
     window.__apu.parseS10File(file)
       .then(p => {
         if (p.tipo === 'desconocido') {
-          setParseErr('No reconocí este archivo S10. Asegúrate que sea un APU completo, una lista de insumos o un cronograma Gantt.');
+          setParseErr(isProject
+            ? 'No reconocí este archivo. Asegúrate que sea un Excel exportado de MS Project con columnas Numeración / Descripción / Inicio / Fin.'
+            : 'No reconocí este archivo. Asegúrate que sea un APU completo, una lista de insumos o un cronograma Gantt exportado de Delphin.');
+          setParsed(null);
+          return;
+        }
+        if (isProject && p.tipo !== 'gantt') {
+          setParseErr(`MS Project solo importa cronograma. Este archivo se detectó como "${p.tipo}". Usa la opción Delphin para APU/Insumos, o exporta el cronograma desde MS Project.`);
           setParsed(null);
           return;
         }
@@ -479,67 +492,161 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
     };
   }
 
-  // ── Import Lista de Insumos (materiales del almacén) ─────────
+  // ── Import Lista de Insumos — selectivo por categoría ────────
+  // Materiales → tabla materiales (upsert por codigo)
+  // Mano de obra → tabla personal (cargo + DNI placeholder MO-{codigo})
+  // Equipos → tabla herramientas
   async function importInsumos() {
     const now = new Date().toISOString();
-    // Solo importamos los de tipo 'material'. Mano de obra y equipo viven
-    // en la tabla personal/herramientas y no se cargan desde aquí.
-    const materialesNuevos = parsed.data.filter(i => i.categoria === 'material');
-    if (!materialesNuevos.length) {
-      throw new Error('No hay insumos de tipo "material" en el archivo.');
+    const errorList = [];
+    let creadosMat = 0, actualizadosMat = 0;
+    let creadosMO = 0, saltadosMO = 0;
+    let creadosEq = 0, saltadosEq = 0;
+
+    if (!include.materiales && !include.mano_obra && !include.equipos) {
+      throw new Error('No seleccionaste ninguna categoría para importar.');
     }
 
-    // Cargar materiales existentes de esta obra para upsert por codigo_s10
-    const existentes = await window.__db.materiales.where('obra_id').equals(obraId).toArray();
-    const porCodigo = new Map(existentes.filter(m => m.codigo_s10).map(m => [m.codigo_s10, m]));
-
-    let creados = 0, actualizados = 0;
-    setProgress({ phase:'Cargando insumos…', current:0, total: materialesNuevos.length });
-
-    for (let i = 0; i < materialesNuevos.length; i++) {
-      const ins = materialesNuevos[i];
-      const existente = porCodigo.get(ins.codigo);
-      if (existente) {
-        // Actualizar precio y nombre, preservar stock_actual
-        await window.__db.materiales.update(existente.id, {
-          nombre_material: ins.descripcion,
-          precio_unitario_estimado: Number(ins.precio_unitario) || 0,
-          updated_at: now, updated_by: userId,
-          version: (existente.version ?? 0) + 1,
-          sync_status: existente.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
-        });
-        actualizados++;
-      } else {
-        const id = window.__newId();
-        await window.__db.materiales.add({
-          id, obra_id: obraId,
-          nombre_material: ins.descripcion,
-          codigo_s10: ins.codigo,
-          categoria: 'General',
-          unidad: ins.unidad || 'und',
-          stock_inicial: 0,
-          stock_actual: 0,
-          stock_minimo: 0,
-          precio_unitario_estimado: Number(ins.precio_unitario) || 0,
-          alerta: 'sin_stock',
-          estado: 'activo',
-          created_by: userId, updated_by: userId,
-          created_at: now, updated_at: now,
-          version: 1, sync_status: 'pending_create', last_synced_at: null,
-          idempotency_key: `${userId}_materiales_${id}`,
-        });
-        creados++;
-      }
-      if (i % 25 === 0) {
-        setProgress({ phase:'Cargando insumos…', current: i+1, total: materialesNuevos.length });
-        await new Promise(r => setTimeout(r, 0));
+    // ─── Materiales ───────────────────────────────────────────
+    if (include.materiales) {
+      const materialesNuevos = parsed.data.filter(i => i.categoria === 'material');
+      if (materialesNuevos.length) {
+        const existentes = await window.__db.materiales.where('obra_id').equals(obraId).toArray();
+        const porCodigo = new Map(existentes.filter(m => m.codigo_s10).map(m => [m.codigo_s10, m]));
+        setProgress({ phase:'Cargando materiales…', current:0, total: materialesNuevos.length });
+        for (let i = 0; i < materialesNuevos.length; i++) {
+          const ins = materialesNuevos[i];
+          try {
+            const existente = porCodigo.get(ins.codigo);
+            if (existente) {
+              await window.__db.materiales.update(existente.id, {
+                nombre_material: ins.descripcion,
+                precio_unitario_estimado: Number(ins.precio_unitario) || 0,
+                updated_at: now, updated_by: userId,
+                version: (existente.version ?? 0) + 1,
+                sync_status: existente.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+              });
+              actualizadosMat++;
+            } else {
+              const id = window.__newId();
+              await window.__db.materiales.add({
+                id, obra_id: obraId,
+                nombre_material: ins.descripcion,
+                codigo_s10: ins.codigo,
+                categoria: 'General',
+                unidad: ins.unidad || 'und',
+                stock_inicial: 0, stock_actual: 0, stock_minimo: 0,
+                precio_unitario_estimado: Number(ins.precio_unitario) || 0,
+                alerta: 'sin_stock', estado: 'activo',
+                created_by: userId, updated_by: userId,
+                created_at: now, updated_at: now,
+                version: 1, sync_status: 'pending_create', last_synced_at: null,
+                idempotency_key: `${userId}_materiales_${id}`,
+              });
+              creadosMat++;
+            }
+          } catch (e) {
+            errorList.push({ row: ins.codigo, error: `material: ${e.message || e}` });
+          }
+          if (i % 25 === 0) {
+            setProgress({ phase:'Cargando materiales…', current: i+1, total: materialesNuevos.length });
+            await new Promise(r => setTimeout(r, 0));
+          }
+        }
       }
     }
+
+    // ─── Mano de Obra (→ personal con cargo presupuestado) ────
+    if (include.mano_obra) {
+      const moNuevos = parsed.data.filter(i => i.categoria === 'mano_obra');
+      if (moNuevos.length) {
+        const personalExistente = await window.__db.personal.where('obra_id').equals(obraId).toArray();
+        const dnisExistentes = new Set(personalExistente.map(p => p.dni));
+        setProgress({ phase:'Cargando mano de obra…', current:0, total: moNuevos.length });
+        for (let i = 0; i < moNuevos.length; i++) {
+          const ins = moNuevos[i];
+          // DNI placeholder único por insumo dentro de la obra
+          const dniPlaceholder = `MO-${ins.codigo}`;
+          if (dnisExistentes.has(dniPlaceholder)) { saltadosMO++; continue; }
+          try {
+            const id = window.__newId();
+            await window.__db.personal.add({
+              id, obra_id: obraId,
+              nombres: '(Plantilla)',
+              apellidos: ins.descripcion,
+              dni: dniPlaceholder,
+              cargo: ins.descripcion,
+              area: 'Mano de obra (presupuestada)',
+              fecha_ingreso: now.slice(0,10),
+              estado: 'inactivo', // plantilla, hasta que admin asigne un real
+              telefono: null,
+              observaciones: `Plantilla generada del APU. Insumo ${ins.codigo}. Cantidad presupuestada: ${ins.cantidad_total}. Costo: S/${Number(ins.total).toFixed(2)}`,
+              created_by: userId, updated_by: userId,
+              created_at: now, updated_at: now,
+              version: 1, sync_status: 'pending_create', last_synced_at: null,
+              idempotency_key: `${userId}_personal_${id}`,
+            });
+            dnisExistentes.add(dniPlaceholder);
+            creadosMO++;
+          } catch (e) {
+            errorList.push({ row: ins.codigo, error: `mano_obra: ${e.message || e}` });
+          }
+          if (i % 10 === 0) {
+            setProgress({ phase:'Cargando mano de obra…', current: i+1, total: moNuevos.length });
+            await new Promise(r => setTimeout(r, 0));
+          }
+        }
+      }
+    }
+
+    // ─── Equipos (→ herramientas) ─────────────────────────────
+    if (include.equipos) {
+      const eqNuevos = parsed.data.filter(i => i.categoria === 'equipo');
+      if (eqNuevos.length) {
+        const herrExistentes = await window.__db.herramientas.where('obra_id').equals(obraId).toArray();
+        const porNombre = new Set(herrExistentes.map(h => (h.nombre_herramienta||'').trim().toUpperCase()));
+        setProgress({ phase:'Cargando equipos…', current:0, total: eqNuevos.length });
+        for (let i = 0; i < eqNuevos.length; i++) {
+          const ins = eqNuevos[i];
+          const nombre = (ins.descripcion || '').trim();
+          if (porNombre.has(nombre.toUpperCase())) { saltadosEq++; continue; }
+          try {
+            const id = window.__newId();
+            await window.__db.herramientas.add({
+              id, obra_id: obraId,
+              nombre_herramienta: nombre,
+              tipo_herramienta: 'maquinaria_liviana',
+              estado_actual: 'bueno',
+              ubicacion_actual: 'almacen',
+              disponible: true,
+              observaciones: `Importado del APU. Código: ${ins.codigo}. Cantidad presupuestada: ${ins.cantidad_total}. Costo: S/${Number(ins.total).toFixed(2)}`,
+              created_by: userId, updated_by: userId,
+              created_at: now, updated_at: now,
+              version: 1, sync_status: 'pending_create', last_synced_at: null,
+              idempotency_key: `${userId}_herramientas_${id}`,
+            });
+            porNombre.add(nombre.toUpperCase());
+            creadosEq++;
+          } catch (e) {
+            errorList.push({ row: ins.codigo, error: `equipo: ${e.message || e}` });
+          }
+          if (i % 10 === 0) {
+            setProgress({ phase:'Cargando equipos…', current: i+1, total: eqNuevos.length });
+            await new Promise(r => setTimeout(r, 0));
+          }
+        }
+      }
+    }
+
+    const partes = [];
+    if (include.materiales) partes.push(`${creadosMat} materiales nuevos / ${actualizadosMat} actualizados`);
+    if (include.mano_obra) partes.push(`${creadosMO} cargos MO ${saltadosMO ? `(${saltadosMO} ya existían)` : ''}`);
+    if (include.equipos) partes.push(`${creadosEq} equipos ${saltadosEq ? `(${saltadosEq} ya existían)` : ''}`);
     return {
       tipo: 'insumos',
-      ok: creados + actualizados,
-      detalle: `${creados} materiales nuevos, ${actualizados} actualizados`,
-      errors: 0, errorList: [],
+      ok: creadosMat + actualizadosMat + creadosMO + creadosEq,
+      detalle: partes.join(' · '),
+      errors: errorList.length, errorList: errorList.slice(0, 20),
     };
   }
 
@@ -598,6 +705,33 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
     setProgress({ phase:'Preparando…', current:0, total:0 });
 
     try {
+      // Si el usuario habilitó la actualización de obra (solo APU), aplicarla primero
+      if (parsed.tipo === 'apu' && updateObra.habilitado && obraDestino) {
+        const now = new Date().toISOString();
+        const patch = {};
+        const newNombre = updateObra.nombre.trim();
+        const newPres = updateObra.presupuesto !== '' ? Number(updateObra.presupuesto) : null;
+        if (newNombre && newNombre !== obraDestino.nombre_obra) patch.nombre_obra = newNombre;
+        if (newPres !== null && !Number.isNaN(newPres) && newPres !== Number(obraDestino.presupuesto_total || 0)) {
+          patch.presupuesto_total = newPres;
+        }
+        if (Object.keys(patch).length) {
+          try {
+            await window.__db.obras.update(obraDestino.id, {
+              ...patch,
+              updated_at: now, updated_by: userId,
+              version: (obraDestino.version ?? 0) + 1,
+              sync_status: obraDestino.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+            });
+            try { await window.__logAudit?.({ action:'update', table:'obras', recordId: obraDestino.id,
+              oldData: obraDestino, newData: patch, reason:'Actualizado durante importación de APU' }); } catch {}
+          } catch (e) {
+            console.warn('[update obra]', e);
+            showToast('No se pudo actualizar la obra: ' + (e.message||e), 'red');
+          }
+        }
+      }
+
       let res;
       if (parsed.tipo === 'apu') res = await importAPU();
       else if (parsed.tipo === 'insumos') res = await importInsumos();
@@ -608,7 +742,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
 
       const entry = {
         fecha: fmtDate(),
-        modulo: `Delphin ${parsed.tipo.toUpperCase()} · ${res.detalle}`,
+        modulo: `${sourceName} ${parsed.tipo.toUpperCase()} · ${res.detalle}`,
         total: res.ok + (res.errors || 0),
         ok: res.ok,
         errores: res.errors || 0,
@@ -620,11 +754,16 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
 
       showToast(`Importación ${parsed.tipo}: ${res.detalle}`, res.errors ? 'amber' : 'green');
       try { window.dispatchEvent(new CustomEvent('obra_activa_change', { detail:{ obraId } })); } catch {}
-      // Refrescar hooks (partidas/insumos_partida/materiales) ya cargados en otras pantallas
+      // Refrescar hooks (partidas/insumos_partida/materiales/personal/herramientas) ya cargados en otras pantallas
       try {
-        const tablasAfectadas = parsed.tipo === 'apu' ? ['partidas','insumos_partida']
-                              : parsed.tipo === 'insumos' ? ['materiales']
-                              : ['partidas'];
+        let tablasAfectadas;
+        if (parsed.tipo === 'apu') tablasAfectadas = ['partidas','insumos_partida','obras'];
+        else if (parsed.tipo === 'insumos') {
+          tablasAfectadas = [];
+          if (include.materiales) tablasAfectadas.push('materiales');
+          if (include.mano_obra) tablasAfectadas.push('personal');
+          if (include.equipos) tablasAfectadas.push('herramientas');
+        } else tablasAfectadas = ['partidas'];
         tablasAfectadas.forEach(tb => window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla: tb } })));
       } catch {}
       // Pedir un sync inmediato (push de los nuevos registros pending_create)
@@ -693,37 +832,45 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       {/* Step 0 — Aviso */}
       {step === 0 && (
         <div>
-          <div style={{ fontSize:15, fontWeight:700, color:'var(--tp)', marginBottom:6 }}>Importación nativa desde Delphin</div>
+          <div style={{ fontSize:15, fontWeight:700, color:'var(--tp)', marginBottom:6 }}>Importación nativa desde {sourceName}</div>
           <div style={{ fontSize:12.5, color:'var(--tm)', marginBottom:18 }}>
-            Sube un Excel exportado de Delphin. La app detecta automáticamente el tipo de archivo:
+            {isProject
+              ? 'Sube un Excel exportado de MS Project (File → Save As → Excel Workbook). El .mpp binario no es compatible — exporta a Excel primero.'
+              : 'Sube un Excel exportado de Delphin. La app detecta automáticamente el tipo de archivo:'}
           </div>
 
           <div style={{ display:'grid', gridTemplateColumns:'1fr', gap:10, marginBottom:14 }}>
-            <div className="card card-p" style={{ borderLeft:'3px solid #0070C0' }}>
-              <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)', marginBottom:4, display:'flex', alignItems:'center', gap:6 }}>
-                <JxIcon name="dollar" size={13} color="#0070C0"/> Presupuesto APU
-              </div>
-              <div style={{ fontSize:11.5, color:'var(--tm)' }}>
-                "Análisis de Precios Unitarios" o "Consolidado de Materiales del Presupuesto" — partidas + insumos por partida.
-                <strong style={{ color:'var(--amber)' }}> Reemplaza</strong> las partidas existentes de la obra.
-              </div>
-            </div>
-            <div className="card card-p" style={{ borderLeft:'3px solid var(--blue)' }}>
-              <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)', marginBottom:4, display:'flex', alignItems:'center', gap:6 }}>
-                <JxIcon name="package" size={13} color="var(--blue)"/> Lista de Insumos
-              </div>
-              <div style={{ fontSize:11.5, color:'var(--tm)' }}>
-                Listado consolidado con precios unitarios. Carga los <strong>materiales</strong> al almacén
-                (upsert por código, stock inicial 0).
-              </div>
-            </div>
+            {!isProject && (
+              <>
+                <div className="card card-p" style={{ borderLeft:'3px solid #0070C0' }}>
+                  <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)', marginBottom:4, display:'flex', alignItems:'center', gap:6 }}>
+                    <JxIcon name="dollar" size={13} color="#0070C0"/> Presupuesto APU
+                  </div>
+                  <div style={{ fontSize:11.5, color:'var(--tm)' }}>
+                    "Análisis de Precios Unitarios" o "Consolidado de Materiales del Presupuesto" — partidas + insumos por partida.
+                    <strong style={{ color:'var(--amber)' }}> Reemplaza</strong> las partidas existentes de la obra.
+                  </div>
+                </div>
+                <div className="card card-p" style={{ borderLeft:'3px solid var(--blue)' }}>
+                  <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)', marginBottom:4, display:'flex', alignItems:'center', gap:6 }}>
+                    <JxIcon name="package" size={13} color="var(--blue)"/> Lista de Insumos
+                  </div>
+                  <div style={{ fontSize:11.5, color:'var(--tm)' }}>
+                    Listado consolidado con precios unitarios. Permite elegir qué cargar al almacén:
+                    <strong> materiales</strong>, <strong>mano de obra (→ Personal)</strong> y/o <strong>equipos (→ Herramientas)</strong>.
+                  </div>
+                </div>
+              </>
+            )}
             <div className="card card-p" style={{ borderLeft:'3px solid var(--green)' }}>
               <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)', marginBottom:4, display:'flex', alignItems:'center', gap:6 }}>
                 <JxIcon name="gantt" size={13} color="var(--green)"/> Cronograma Gantt
               </div>
               <div style={{ fontSize:11.5, color:'var(--tm)' }}>
-                Tareas con fechas planificadas. Aplica <strong>fecha_inicio</strong>, <strong>fecha_fin</strong> y
-                duración a las partidas existentes (matching por código). Requiere haber importado el APU primero.
+                {isProject
+                  ? <>Tareas con fechas planificadas (columnas <strong>Numeración / Inicio / Fin / Duración</strong>). Aplica <strong>fecha_inicio</strong>, <strong>fecha_fin</strong> y duración a las partidas existentes (matching por código jerárquico). Requiere haber importado las partidas primero.</>
+                  : <>Tareas con fechas planificadas. Aplica <strong>fecha_inicio</strong>, <strong>fecha_fin</strong> y duración a las partidas existentes (matching por código). Requiere haber importado el APU primero.</>
+                }
               </div>
             </div>
           </div>
@@ -771,9 +918,11 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       {/* Step 1 — Archivo */}
       {step === 1 && (
         <div>
-          <div style={{ fontSize:15, fontWeight:700, color:'var(--tp)', marginBottom:6 }}>Sube el Excel exportado por Delphin</div>
+          <div style={{ fontSize:15, fontWeight:700, color:'var(--tp)', marginBottom:6 }}>Sube el Excel exportado por {sourceName}</div>
           <div style={{ fontSize:12.5, color:'var(--tm)', marginBottom:18 }}>
-            Acepta el export de "Análisis de Precios Unitarios" o "Consolidado de Materiales" (.xlsx / .xls).
+            {isProject
+              ? 'Acepta el export de MS Project en formato Excel (.xlsx / .xls) con columnas Numeración, Descripción, Duración, Inicio, Fin.'
+              : 'Acepta el export de "Análisis de Precios Unitarios" o "Consolidado de Materiales" (.xlsx / .xls).'}
           </div>
 
           <DropZone onFile={setFile} file={file} accept=".xlsx,.xls"/>
@@ -854,6 +1003,100 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                       <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'uppercase' }}>Duplicadas distintas</div>
                     </div>
                   </div>
+
+                  {/* Coherencia presupuesto + actualización de obra */}
+                  {(() => {
+                    const totalAPU = (parsed?.data || []).reduce((s, p) => s + (Number(p.costo_total) || 0), 0);
+                    const presObra = Number(obraDestino?.presupuesto_total || 0);
+                    const ratio = presObra > 0 ? totalAPU / presObra : null;
+                    const incoherente = presObra > 0 && (ratio > 1.05 || ratio < 0.5);
+                    const newPres = updateObra.habilitado && updateObra.presupuesto !== ''
+                      ? Number(updateObra.presupuesto) : presObra;
+                    const newNombre = updateObra.habilitado && updateObra.nombre.trim()
+                      ? updateObra.nombre.trim() : (obraDestino?.nombre_obra || '');
+                    return (
+                      <div className="card card-p" style={{ marginBottom:14, borderLeft: incoherente && !updateObra.habilitado ? '3px solid var(--red)' : '3px solid var(--blue)' }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', flexWrap:'wrap', gap:14, marginBottom:10 }}>
+                          <div>
+                            <div style={{ fontSize:13, fontWeight:700, color:'var(--tp)', marginBottom:4, display:'flex', alignItems:'center', gap:6 }}>
+                              <JxIcon name="dollar" size={13} color="var(--blue)"/> Coherencia presupuestal
+                            </div>
+                            <div style={{ fontSize:11.5, color:'var(--tm)' }}>
+                              Verifica que el presupuesto de la obra cuadre con el total del APU antes de importar.
+                            </div>
+                          </div>
+                          {!updateObra.habilitado && (
+                            <button className="btn btn-ghost btn-sm"
+                              onClick={()=>setUpdateObra({ habilitado:true,
+                                nombre: obraDestino?.nombre_obra || '',
+                                presupuesto: presObra > 0 ? String(presObra) : String(totalAPU.toFixed(2)) })}>
+                              <JxIcon name="edit" size={12}/> Actualizar nombre / costo de la obra
+                            </button>
+                          )}
+                        </div>
+
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:updateObra.habilitado?12:0 }}>
+                          <div style={{ background:'rgba(255,255,255,0.03)', borderRadius:8, padding:'10px 12px' }}>
+                            <div style={{ fontSize:10.5, color:'var(--tm)', textTransform:'uppercase' }}>Presup. Obra</div>
+                            <div style={{ fontSize:18, fontWeight:800, color:'var(--blue)', marginTop:2 }}>
+                              {presObra > 0 ? `S/ ${presObra.toLocaleString('es-PE', { maximumFractionDigits: 0 })}` : '— sin definir —'}
+                            </div>
+                          </div>
+                          <div style={{ background:'rgba(255,255,255,0.03)', borderRadius:8, padding:'10px 12px' }}>
+                            <div style={{ fontSize:10.5, color:'var(--tm)', textTransform:'uppercase' }}>Total APU</div>
+                            <div style={{ fontSize:18, fontWeight:800, color:'var(--amber)', marginTop:2 }}>
+                              S/ {totalAPU.toLocaleString('es-PE', { maximumFractionDigits: 0 })}
+                            </div>
+                          </div>
+                          <div style={{ background:'rgba(255,255,255,0.03)', borderRadius:8, padding:'10px 12px' }}>
+                            <div style={{ fontSize:10.5, color:'var(--tm)', textTransform:'uppercase' }}>Diferencia</div>
+                            <div style={{ fontSize:18, fontWeight:800, color: presObra > 0 ? (incoherente?'var(--red)':'var(--green)') : 'var(--tm)', marginTop:2 }}>
+                              {presObra > 0
+                                ? `${(totalAPU - presObra) >= 0 ? '+' : ''}S/ ${(totalAPU - presObra).toLocaleString('es-PE', { maximumFractionDigits: 0 })} (${((ratio - 1) * 100).toFixed(1)}%)`
+                                : '— sin presupuesto registrado —'}
+                            </div>
+                          </div>
+                        </div>
+
+                        {incoherente && !updateObra.habilitado && (
+                          <div style={{ background:'rgba(231,76,60,0.10)', border:'1px solid rgba(231,76,60,0.35)', borderRadius:8, padding:'10px 12px', marginTop:10, fontSize:12, color:'var(--ts)' }}>
+                            <strong style={{ color:'var(--red)' }}>⚠ Incoherencia detectada.</strong>{' '}
+                            {ratio > 1.05
+                              ? <>El APU suma <strong>{(ratio*100).toFixed(0)}%</strong> del presupuesto registrado de la obra. ¿Estás seguro de que la obra es de S/ {presObra.toLocaleString('es-PE')} y no de S/ {totalAPU.toLocaleString('es-PE', { maximumFractionDigits: 0 })}?</>
+                              : <>El APU es solo el <strong>{(ratio*100).toFixed(0)}%</strong> del presupuesto registrado. Puede que falte importar más partidas.</>}
+                            {' '}Click en <strong>Actualizar nombre / costo</strong> para alinear el presupuesto.
+                          </div>
+                        )}
+                        {presObra === 0 && totalAPU > 0 && !updateObra.habilitado && (
+                          <div style={{ background:'rgba(242,183,5,0.08)', border:'1px solid rgba(242,183,5,0.35)', borderRadius:8, padding:'10px 12px', marginTop:10, fontSize:12, color:'var(--ts)' }}>
+                            <strong style={{ color:'var(--amber)' }}>ℹ La obra no tiene presupuesto registrado.</strong>{' '}
+                            Click en <strong>Actualizar nombre / costo</strong> para fijarlo en S/ {totalAPU.toLocaleString('es-PE', { maximumFractionDigits: 0 })}.
+                          </div>
+                        )}
+
+                        {updateObra.habilitado && (
+                          <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr auto', gap:10, alignItems:'flex-end', borderTop:'1px solid var(--border)', paddingTop:12 }}>
+                            <div>
+                              <label className="flabel">Nombre de la obra</label>
+                              <input className="fi" value={updateObra.nombre}
+                                onChange={e=>setUpdateObra({...updateObra, nombre:e.target.value})}
+                                placeholder={obraDestino?.nombre_obra || 'Nombre…'}/>
+                            </div>
+                            <div>
+                              <label className="flabel">Presupuesto total (S/)</label>
+                              <input className="fi" type="number" min="0" step="0.01"
+                                value={updateObra.presupuesto}
+                                onChange={e=>setUpdateObra({...updateObra, presupuesto:e.target.value})}
+                                placeholder="0.00"/>
+                            </div>
+                            <button className="btn btn-ghost btn-sm" onClick={()=>setUpdateObra({ habilitado:false, nombre:'', presupuesto:'' })}>
+                              Cancelar
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {/* Filtros */}
                   <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap', marginBottom:10 }}>
@@ -1003,6 +1246,44 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                   <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2, textTransform:'uppercase' }}>Equipo</div>
                 </div>
               </div>
+
+              {/* Selector de qué importar */}
+              <div className="card card-p" style={{ marginBottom:14, background:'rgba(242,183,5,0.05)', border:'1px solid rgba(242,183,5,0.3)' }}>
+                <div style={{ fontSize:13, fontWeight:700, color:'var(--tp)', marginBottom:8, display:'flex', alignItems:'center', gap:6 }}>
+                  <JxIcon name="check" size={13} color="var(--amber)"/> ¿Qué quieres importar?
+                </div>
+                <div style={{ fontSize:11.5, color:'var(--tm)', marginBottom:12 }}>
+                  Marca solo lo que necesites. Cada categoría va a su tabla destino.
+                </div>
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10 }}>
+                  <label style={{ display:'flex', gap:10, alignItems:'flex-start', cursor: parsed.summary.materiales > 0 ? 'pointer' : 'not-allowed', opacity: parsed.summary.materiales > 0 ? 1 : 0.4, padding:10, border:`1.5px solid ${include.materiales?'var(--blue)':'var(--border)'}`, borderRadius:8, background: include.materiales?'rgba(52,152,219,0.06)':'transparent' }}>
+                    <input type="checkbox" disabled={!parsed.summary.materiales} checked={include.materiales}
+                      onChange={e=>setInclude({...include, materiales:e.target.checked})}/>
+                    <div style={{ flex:1 }}>
+                      <div style={{ fontSize:12.5, fontWeight:700, color:'var(--blue)' }}>Materiales</div>
+                      <div style={{ fontSize:11, color:'var(--tm)', marginTop:2 }}>{parsed.summary.materiales} insumos → tabla <strong>Materiales</strong> (upsert por código, stock 0)</div>
+                    </div>
+                  </label>
+
+                  <label style={{ display:'flex', gap:10, alignItems:'flex-start', cursor: parsed.summary.mano_obra > 0 ? 'pointer' : 'not-allowed', opacity: parsed.summary.mano_obra > 0 ? 1 : 0.4, padding:10, border:`1.5px solid ${include.mano_obra?'var(--green)':'var(--border)'}`, borderRadius:8, background: include.mano_obra?'rgba(46,204,113,0.06)':'transparent' }}>
+                    <input type="checkbox" disabled={!parsed.summary.mano_obra} checked={include.mano_obra}
+                      onChange={e=>setInclude({...include, mano_obra:e.target.checked})}/>
+                    <div style={{ flex:1 }}>
+                      <div style={{ fontSize:12.5, fontWeight:700, color:'var(--green)' }}>Mano de Obra</div>
+                      <div style={{ fontSize:11, color:'var(--tm)', marginTop:2 }}>{parsed.summary.mano_obra} cargos → tabla <strong>Personal</strong> como plantillas (estado: inactivo, asigna persona real luego)</div>
+                    </div>
+                  </label>
+
+                  <label style={{ display:'flex', gap:10, alignItems:'flex-start', cursor: parsed.summary.equipo > 0 ? 'pointer' : 'not-allowed', opacity: parsed.summary.equipo > 0 ? 1 : 0.4, padding:10, border:`1.5px solid ${include.equipos?'var(--orange)':'var(--border)'}`, borderRadius:8, background: include.equipos?'rgba(255,107,46,0.06)':'transparent' }}>
+                    <input type="checkbox" disabled={!parsed.summary.equipo} checked={include.equipos}
+                      onChange={e=>setInclude({...include, equipos:e.target.checked})}/>
+                    <div style={{ flex:1 }}>
+                      <div style={{ fontSize:12.5, fontWeight:700, color:'var(--orange)' }}>Equipos</div>
+                      <div style={{ fontSize:11, color:'var(--tm)', marginTop:2 }}>{parsed.summary.equipo} insumos → tabla <strong>Herramientas</strong> (sin duplicar por nombre)</div>
+                    </div>
+                  </label>
+                </div>
+              </div>
               <div className="card" style={{ overflow:'hidden', marginBottom:14 }}>
                 <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', fontSize:11.5, fontWeight:600, color:'var(--tm)' }}>
                   <JxIcon name="eye" size={13}/> Primeros 15 materiales (lo que se importará al almacén)
@@ -1099,7 +1380,15 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
             {parsed.tipo === 'apu' && (
               <>Al confirmar se aplicarán las acciones elegidas: <strong style={{ color:'var(--green)' }}>importar {actionSummary.aImportar} nuevas</strong> · <strong style={{ color:'var(--amber)' }}>reemplazar {actionSummary.aReemplazar}</strong> · <strong style={{ color:'var(--ts)' }}>saltar {actionSummary.aSaltar}</strong>.</>
             )}
-            {parsed.tipo === 'insumos' && 'Al confirmar, se cargarán los materiales al almacén. Los que ya existan (mismo código) se actualizarán; los demás se crearán con stock 0.'}
+            {parsed.tipo === 'insumos' && (() => {
+              const sel = [];
+              if (include.materiales) sel.push(`${parsed.summary.materiales} materiales`);
+              if (include.mano_obra) sel.push(`${parsed.summary.mano_obra} cargos MO → Personal`);
+              if (include.equipos) sel.push(`${parsed.summary.equipo} equipos → Herramientas`);
+              return sel.length
+                ? `Se importarán: ${sel.join(' · ')}.`
+                : 'No hay categorías seleccionadas. Vuelve atrás y elige al menos una.';
+            })()}
             {parsed.tipo === 'gantt' && 'Al confirmar, se aplicarán las fechas planificadas a las partidas existentes que coincidan en código. No se crearán partidas nuevas.'}
           </div>
 
@@ -1107,9 +1396,9 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
               {(() => {
                 const filas = [
-                  { label:'Origen', val: parsed.tipo === 'apu' ? 'Delphin · Presupuesto APU'
-                                       : parsed.tipo === 'insumos' ? 'Delphin · Lista de Insumos'
-                                       : 'Delphin · Cronograma Gantt',
+                  { label:'Origen', val: parsed.tipo === 'apu' ? `${sourceName} · Presupuesto APU`
+                                       : parsed.tipo === 'insumos' ? `${sourceName} · Lista de Insumos`
+                                       : `${sourceName} · Cronograma Gantt`,
                     icon:'dollar', color:'#0070C0' },
                   { label:'Archivo', val:file?.name, icon:'file', color:'var(--green)' },
                   { label:'Obra destino', val: obraDestino ? (obraDestino.nombre_obra || obraDestino.nombre) : (obraId ? `${obraId.slice(0,8)}…` : '—'), icon:'building', color:'var(--orange)' },
@@ -1122,9 +1411,9 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                   );
                 } else if (parsed.tipo === 'insumos') {
                   filas.push(
-                    { label:'Materiales a cargar', val: parsed.summary.materiales, icon:'package', color:'var(--blue)' },
-                    { label:'Mano de obra (no se importa)', val: parsed.summary.mano_obra, icon:'users', color:'var(--tm)' },
-                    { label:'Modo', val:'Upsert por código', icon:'refresh', color:'var(--amber)' },
+                    { label:'Materiales', val: include.materiales ? `${parsed.summary.materiales} a cargar` : 'omitir', icon:'package', color: include.materiales ? 'var(--blue)' : 'var(--tm)' },
+                    { label:'Mano de obra', val: include.mano_obra ? `${parsed.summary.mano_obra} → Personal` : 'omitir', icon:'users', color: include.mano_obra ? 'var(--green)' : 'var(--tm)' },
+                    { label:'Equipos', val: include.equipos ? `${parsed.summary.equipo} → Herramientas` : 'omitir', icon:'tools', color: include.equipos ? 'var(--orange)' : 'var(--tm)' },
                   );
                 } else if (parsed.tipo === 'gantt') {
                   filas.push(
@@ -1170,12 +1459,21 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
 
           <div style={{ display:'flex', justifyContent:'space-between' }}>
             <button className="btn btn-ghost" onClick={()=>setStep(2)} disabled={importing}><JxIcon name="chevL" size={14}/>Atrás</button>
-            <button className="btn btn-amber" onClick={runImport} disabled={importing || (parsed.tipo === 'apu' && actionSummary.aProcesar === 0)} style={{ minWidth:240, justifyContent:'center', opacity: (parsed.tipo === 'apu' && actionSummary.aProcesar === 0) ? 0.4 : 1 }}>
+            <button className="btn btn-amber" onClick={runImport}
+              disabled={importing
+                || (parsed.tipo === 'apu' && actionSummary.aProcesar === 0)
+                || (parsed.tipo === 'insumos' && !include.materiales && !include.mano_obra && !include.equipos)}
+              style={{ minWidth:240, justifyContent:'center', opacity: ((parsed.tipo === 'apu' && actionSummary.aProcesar === 0) || (parsed.tipo === 'insumos' && !include.materiales && !include.mano_obra && !include.equipos)) ? 0.4 : 1 }}>
               {importing
                 ? <><span style={{ width:14,height:14,borderRadius:'50%',border:'2px solid rgba(0,0,0,0.3)',borderTopColor:'rgba(0,0,0,0.8)',display:'inline-block',animation:'spin .7s linear infinite' }}/>Importando…</>
                 : <><JxIcon name="upload" size={14}/>{
                     parsed.tipo === 'apu' ? `Importar ${actionSummary.aProcesar} partidas`
-                    : parsed.tipo === 'insumos' ? `Cargar ${parsed.summary.materiales} materiales`
+                    : parsed.tipo === 'insumos' ? (() => {
+                        const t = (include.materiales ? parsed.summary.materiales : 0)
+                                + (include.mano_obra ? parsed.summary.mano_obra : 0)
+                                + (include.equipos ? parsed.summary.equipo : 0);
+                        return `Importar ${t} insumos seleccionados`;
+                      })()
                     : `Aplicar cronograma a ${parsed.summary.total} tareas`
                   }</>}
             </button>
@@ -1403,7 +1701,7 @@ function ImportarPage({ showToast }) {
       </div>
 
       {/* ───────── TAB: IMPORTAR ───────── */}
-      {tab === 'importar' && srcId === 's10' && step >= 1 && (
+      {tab === 'importar' && (srcId === 's10' || srcId === 'msproject') && step >= 1 && (
         <div style={{ maxWidth:880, margin:'0 auto' }}>
           <S10Flow
             obraId={obraId}
@@ -1413,11 +1711,12 @@ function ImportarPage({ showToast }) {
             onReset={reset}
             hist={hist}
             setHist={setHist}
+            sourceId={srcId}
           />
         </div>
       )}
 
-      {tab === 'importar' && !(srcId === 's10' && step >= 1) && (
+      {tab === 'importar' && !((srcId === 's10' || srcId === 'msproject') && step >= 1) && (
         <div style={{ maxWidth:880, margin:'0 auto' }}>
           <Steps current={step} steps={STEPS} onJump={(i)=>setStep(i)}/>
 
