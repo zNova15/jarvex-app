@@ -3,8 +3,20 @@ import { supabase } from '../lib/supabase';
 import { syncPendingAuditLogs } from '../lib/audit';
 import { syncPendingChangeRequests } from '../lib/changeRequests';
 
-// Tablas transaccionales que participan en la cola de sync
+// Tablas que el cliente PUSHEA al servidor cuando hay cambios locales.
+// Antes solo eran las "transaccionales" (movimientos, asistencia, etc.)
+// — eso causaba que las obras/materiales/herramientas/etc. CREADAS o
+// EDITADAS localmente NUNCA llegaran a Supabase, así otros usuarios
+// jamás las veían. Ahora todas las tablas con sync_status pendientes
+// participan del push.
 const TRANSACTIONAL_TABLES = [
+  'obras',
+  'personal',
+  'materiales',
+  'herramientas',
+  'proveedores',
+  'partidas',
+  'insumos_partida',
   'asistencia',
   'movimientos_materiales',
   'movimientos_herramientas',
@@ -13,15 +25,16 @@ const TRANSACTIONAL_TABLES = [
   'evidencias',
 ];
 
-// Tablas maestras que se descargan del servidor (pull-only en Fase 1)
+// Tablas maestras que se descargan del servidor en cada sync.
 const MASTER_TABLES = [
-  { tabla: 'obras',       query: () => supabase.from('obras').select('*').is('deleted_at', null) },
-  { tabla: 'personal',    query: () => supabase.from('personal').select('*').is('deleted_at', null) },
-  { tabla: 'materiales',  query: () => supabase.from('materiales').select('*').is('deleted_at', null) },
-  { tabla: 'herramientas',query: () => supabase.from('herramientas').select('*').is('deleted_at', null) },
-  { tabla: 'proveedores', query: () => supabase.from('proveedores').select('*').is('deleted_at', null) },
-  { tabla: 'partidas',    query: () => supabase.from('partidas').select('*').is('deleted_at', null) },
-  { tabla: 'profiles',    query: () => supabase.from('profiles').select('*') },
+  { tabla: 'obras',          query: () => supabase.from('obras').select('*').is('deleted_at', null) },
+  { tabla: 'personal',       query: () => supabase.from('personal').select('*').is('deleted_at', null) },
+  { tabla: 'materiales',     query: () => supabase.from('materiales').select('*').is('deleted_at', null) },
+  { tabla: 'herramientas',   query: () => supabase.from('herramientas').select('*').is('deleted_at', null) },
+  { tabla: 'proveedores',    query: () => supabase.from('proveedores').select('*').is('deleted_at', null) },
+  { tabla: 'partidas',       query: () => supabase.from('partidas').select('*').is('deleted_at', null) },
+  { tabla: 'insumos_partida',query: () => supabase.from('insumos_partida').select('*') },
+  { tabla: 'profiles',       query: () => supabase.from('profiles').select('*') },
 ];
 
 let syncInProgress = false;
@@ -54,17 +67,31 @@ export async function syncAll() {
   syncInProgress = true;
   emit({ syncing: true, error: null });
 
+  console.log('[SyncEngine] === syncAll() iniciado ===');
+  const t0 = performance.now();
+
   try {
+    console.log('[SyncEngine] 1/5 push de operaciones pendientes…');
     await pushPendingOperations();
+
+    console.log('[SyncEngine] 2/5 push de audit logs…');
     await pushPendingAuditLogs();
+
+    console.log('[SyncEngine] 3/5 push de change requests…');
     await pushPendingChangeRequests();
+
+    console.log('[SyncEngine] 4/5 pull de master tables (obras, materiales, partidas, etc.)…');
     await pullMasterTables();
+
+    console.log('[SyncEngine] 5/5 pull de transactional (movimientos, asistencia, evidencias)…');
     await pullTransactionalChanges();
 
     const pending = await getPendingCount();
+    const ms = Math.round(performance.now() - t0);
+    console.log(`[SyncEngine] ✓ syncAll OK en ${ms}ms · pending=${pending}`);
     emit({ syncing: false, pending, lastSync: new Date(), error: null });
   } catch (err) {
-    console.error('[SyncEngine] Error:', err);
+    console.error('[SyncEngine] ✗ Error en syncAll:', err);
     emit({ syncing: false, error: err.message });
   } finally {
     syncInProgress = false;
@@ -196,9 +223,16 @@ async function pullMasterTables() {
     }
 
     const { data, error } = await q;
-    if (error) continue;
-    if (!data?.length) continue;
+    if (error) {
+      console.warn(`[SyncEngine] pull ${tabla} ERROR:`, error.message, '— posible causa: RLS o falta de permisos');
+      continue;
+    }
+    if (!data?.length) {
+      console.log(`[SyncEngine] pull ${tabla}: 0 registros nuevos`);
+      continue;
+    }
 
+    console.log(`[SyncEngine] pull ${tabla}: ${data.length} registros recibidos`);
     await db[tabla].bulkPut(data);
     await setLastSync(tabla, new Date().toISOString());
   }
