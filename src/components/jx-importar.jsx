@@ -987,7 +987,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
         <div className="card card-p" style={{ textAlign:'center' }}>
           <div style={{ fontSize:24, fontWeight:800, color:'var(--green)' }}>{result.ok}</div>
           <div style={{ fontSize:11, color:'var(--tm)', marginTop:2 }}>
-            {result.tipo === 'apu' ? 'Partidas' : result.tipo === 'insumos' ? 'Materiales' : result.tipo === 'gantt' ? 'Tareas aplicadas' : 'OK'}
+            {result.tipo === 'apu' ? 'Partidas' : result.tipo === 'insumos' ? 'Insumos importados (total)' : result.tipo === 'gantt' ? 'Tareas aplicadas' : 'OK'}
           </div>
         </div>
         <div className="card card-p" style={{ textAlign:'center' }}>

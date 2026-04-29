@@ -91,12 +91,13 @@ function MaterialesPage({ showToast }) {
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
   const canDelete = isAdmin && appMode.isPrueba;
   const [q, setQ] = uS('');
-  const [modal, setModal] = uS(null); // 'ingreso' | 'salida' | 'nuevo' | 'editar'
+  const [modal, setModal] = uS(null); // 'ingreso' | 'salida' | 'nuevo' | 'editar' | 'sync'
   const [editingId, setEditingId] = uS(null); // id del material en edición
   const [obraId, setObraId] = uS(null);
   const [requestTarget, setRequestTarget] = uS(null); // material para "Solicitar Cambio"
   const [partidasObra, setPartidasObra] = uS([]);     // partidas de la obra (para sugerir)
   const [insumosObra, setInsumosObra] = uS([]);       // insumos_partida de la obra
+  const [syncPreview, setSyncPreview] = uS(null);     // preview de sincronización con APU
 
   // Detectar obra activa con tope de reintentos + reanudar al recibir
   // 'jarvex_master_updated' o 'obra_activa_change'.
@@ -169,6 +170,95 @@ function MaterialesPage({ showToast }) {
   const alertasCount = uM(() =>
     materiales?.filter(m => m.alerta === 'critico' || m.alerta === 'sin_stock').length ?? 0,
   [materiales]);
+
+  // ── Sincronización de unidades/categorías desde APU (insumos_partida) ──
+  // Cruza materiales con insumos_partida (tipo_insumo='material') por código
+  // y prepara un preview de lo que cambiaría.
+  const escanearSyncDesdeAPU = () => {
+    if (!materiales || !insumosObra) {
+      showToast('No hay datos para sincronizar', 'red');
+      return;
+    }
+    // Mapa código → { unidad, tipo, descripcion } desde el APU
+    const apuMap = new Map();
+    insumosObra.forEach(ip => {
+      if (!ip.insumo_codigo) return;
+      if (!apuMap.has(ip.insumo_codigo)) {
+        apuMap.set(ip.insumo_codigo, {
+          unidad: (ip.unidad || '').trim(),
+          tipo: ip.tipo_insumo,
+          descripcion: ip.nombre_insumo,
+        });
+      }
+    });
+
+    const cambios = [];
+    const sinMatch = [];
+    materiales.forEach(m => {
+      if (!m.codigo_s10) { sinMatch.push({ m, motivo:'sin_codigo' }); return; }
+      const apu = apuMap.get(m.codigo_s10);
+      if (!apu) { sinMatch.push({ m, motivo:'no_encontrado' }); return; }
+      const patches = {};
+      // Unidad: aplicar si la del APU existe y la actual está vacía o es 'und' default
+      if (apu.unidad && apu.unidad !== m.unidad && (m.unidad === 'und' || !m.unidad)) {
+        patches.unidad = apu.unidad;
+      }
+      // Categoría: aplicar si APU dice algo distinto a 'General'
+      if (apu.tipo === 'material' && m.categoria === 'General') {
+        // Heurística: usar la unidad como pista de categoría
+        const u = apu.unidad?.toLowerCase() || '';
+        let cat = 'General';
+        if (/^kg$|^t$|^bls$|^bl$/.test(u)) cat = 'Cemento/Áridos';
+        else if (/^m$|^ml$|^m2$|^m3$|^m³$/.test(u)) cat = 'Estructura';
+        else if (/^und$|^pza$|^und\.$/.test(u)) cat = 'Insumos';
+        else if (/^gln$|^lt$|^l$/.test(u)) cat = 'Líquidos';
+        if (cat !== 'General') patches.categoria = cat;
+      }
+      if (Object.keys(patches).length > 0) {
+        cambios.push({ id: m.id, nombre: m.nombre_material, codigo: m.codigo_s10,
+          actual:{ unidad: m.unidad, categoria: m.categoria },
+          nuevo: patches,
+        });
+      }
+    });
+
+    setSyncPreview({
+      total: materiales.length,
+      conMatch: materiales.length - sinMatch.length,
+      sinMatch: sinMatch.length,
+      sinCodigo: sinMatch.filter(x => x.motivo === 'sin_codigo').length,
+      cambios,
+      apuVacio: insumosObra.length === 0,
+    });
+    setModal('sync');
+  };
+
+  const aplicarSyncDesdeAPU = async () => {
+    if (!syncPreview || !syncPreview.cambios.length) return;
+    const now = new Date().toISOString();
+    let aplicados = 0, errores = 0;
+    for (const c of syncPreview.cambios) {
+      try {
+        const m = materiales.find(x => x.id === c.id);
+        if (!m) continue;
+        await window.__db.materiales.update(c.id, {
+          ...c.nuevo,
+          updated_at: now,
+          updated_by: auth?.profile?.id ?? 'offline',
+          version: (m.version ?? 0) + 1,
+          sync_status: m.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+        });
+        try { await window.__logAudit?.({ action:'update', table:'materiales', recordId: c.id,
+          oldData: c.actual, newData: c.nuevo, reason:'Sincronización desde APU' }); } catch {}
+        aplicados++;
+      } catch (e) { errores++; }
+    }
+    try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'materiales' } })); } catch {}
+    try { window.dispatchEvent(new Event('online')); } catch {}
+    showToast(`${aplicados} materiales actualizados${errores ? ` · ${errores} con error` : ''}`, 'green');
+    setModal(null);
+    setSyncPreview(null);
+  };
 
   const openModal = (type) => {
     setForm({
@@ -396,7 +486,13 @@ function MaterialesPage({ showToast }) {
           <div className="pg-title">Materiales</div>
           <div className="pg-sub">{materiales.length} materiales registrados · {alertasCount} alertas activas</div>
         </div>
-        <div style={{ display:'flex', gap:8 }}>
+        <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+          {isAdmin && insumosObra.length > 0 && (
+            <button className="btn btn-ghost btn-sm" onClick={escanearSyncDesdeAPU}
+              title="Cruza materiales con insumos del APU y aplica unidades/categorías que estén vacías o por defecto">
+              <JxIcon name="refresh" size={13}/>Sincronizar desde APU
+            </button>
+          )}
           <button className="btn btn-ghost btn-sm" onClick={()=>openModal('salida')}><JxIcon name="arrowOut" size={13}/>Registrar Salida</button>
           <button className="btn btn-ghost btn-sm" onClick={()=>openModal('ingreso')}><JxIcon name="arrowIn" size={13}/>Registrar Ingreso</button>
           <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setModal('nuevo');}}><JxIcon name="plus" size={13}/>Nuevo Material</button>
@@ -568,6 +664,84 @@ function MaterialesPage({ showToast }) {
         </div>
       </Modal>}
 
+      {/* Modal Sincronizar desde APU */}
+      {modal === 'sync' && syncPreview && (
+        <Modal title="Sincronizar materiales desde APU" icon="refresh" onClose={()=>{ setModal(null); setSyncPreview(null); }} wide>
+          <div style={{ fontSize:12.5, color:'var(--ts)', marginBottom:14 }}>
+            Cruza tus <strong>{syncPreview.total} materiales</strong> contra los <strong>insumos del APU</strong> de esta obra (matching por código).
+            Aplica unidades del APU cuando el material tiene <code>und</code> o vacío, y sugiere categoría según la unidad.
+          </div>
+
+          {syncPreview.apuVacio && (
+            <div style={{ background:'rgba(231,76,60,0.10)', border:'1px solid rgba(231,76,60,0.35)', borderRadius:8, padding:'10px 12px', marginBottom:12, fontSize:12, color:'var(--red)' }}>
+              ⚠ Esta obra no tiene insumos importados desde APU. Importa primero el APU desde Delphin.
+            </div>
+          )}
+
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:14 }}>
+            <div className="card card-p" style={{ textAlign:'center' }}>
+              <div style={{ fontSize:18, fontWeight:800, color:'var(--green)' }}>{syncPreview.conMatch}</div>
+              <div style={{ fontSize:10.5, color:'var(--tm)' }}>con match en APU</div>
+            </div>
+            <div className="card card-p" style={{ textAlign:'center' }}>
+              <div style={{ fontSize:18, fontWeight:800, color:'var(--amber)' }}>{syncPreview.cambios.length}</div>
+              <div style={{ fontSize:10.5, color:'var(--tm)' }}>se actualizarán</div>
+            </div>
+            <div className="card card-p" style={{ textAlign:'center' }}>
+              <div style={{ fontSize:18, fontWeight:800, color:'var(--tm)' }}>{syncPreview.sinMatch}</div>
+              <div style={{ fontSize:10.5, color:'var(--tm)' }}>sin match</div>
+            </div>
+            <div className="card card-p" style={{ textAlign:'center' }}>
+              <div style={{ fontSize:18, fontWeight:800, color:'var(--tm)' }}>{syncPreview.sinCodigo}</div>
+              <div style={{ fontSize:10.5, color:'var(--tm)' }}>sin código_s10</div>
+            </div>
+          </div>
+
+          {syncPreview.cambios.length > 0 ? (
+            <div className="card" style={{ overflow:'auto', maxHeight:340, marginBottom:12 }}>
+              <table className="tbl" style={{ fontSize:11 }}>
+                <thead>
+                  <tr>
+                    <th>Material</th>
+                    <th>Código</th>
+                    <th>Cambio</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {syncPreview.cambios.slice(0, 100).map(c => (
+                    <tr key={c.id}>
+                      <td className="col-p">{c.nombre}</td>
+                      <td className="col-m" style={{ fontFamily:'monospace' }}>{c.codigo}</td>
+                      <td className="col-m" style={{ fontSize:10.5 }}>
+                        {c.nuevo.unidad && <span>unidad: <s style={{ color:'var(--tm)' }}>{c.actual.unidad || '—'}</s> → <strong style={{ color:'var(--green)' }}>{c.nuevo.unidad}</strong></span>}
+                        {c.nuevo.unidad && c.nuevo.categoria && <span> · </span>}
+                        {c.nuevo.categoria && <span>cat: <s style={{ color:'var(--tm)' }}>{c.actual.categoria}</s> → <strong style={{ color:'var(--blue)' }}>{c.nuevo.categoria}</strong></span>}
+                      </td>
+                    </tr>
+                  ))}
+                  {syncPreview.cambios.length > 100 && (
+                    <tr><td colSpan={3} style={{ padding:10, textAlign:'center', color:'var(--tm)' }}>… {syncPreview.cambios.length - 100} más</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div style={{ background:'rgba(46,204,113,0.08)', border:'1px solid rgba(46,204,113,0.3)', borderRadius:8, padding:'10px 12px', marginBottom:12, fontSize:12, color:'var(--green)' }}>
+              Todo está al día — no hay cambios que aplicar.
+            </div>
+          )}
+
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={()=>{ setModal(null); setSyncPreview(null); }}>Cerrar</button>
+            {syncPreview.cambios.length > 0 && (
+              <button className="btn btn-amber" onClick={aplicarSyncDesdeAPU}>
+                <JxIcon name="check" size={13}/> Aplicar {syncPreview.cambios.length} cambios
+              </button>
+            )}
+          </div>
+        </Modal>
+      )}
+
       {/* Modal Nuevo / Editar Material */}
       {(modal==='nuevo' || modal==='editar') && <Modal title={editingId ? 'Editar Material' : 'Nuevo Material'} icon="package" onClose={()=>{setModal(null); setEditingId(null); setForm({});}}>
         <div className="g2">
@@ -635,6 +809,21 @@ function HerramientasPage({ showToast }) {
   const [editingId, setEditingId] = uS(null);
   const [obraId, setObraId] = uS(null);
   const [requestTarget, setRequestTarget] = uS(null);
+  const [insumosObra, setInsumosObra] = uS([]);
+  const [syncPreview, setSyncPreview] = uS(null);
+
+  // Cargar insumos del APU para sync
+  uE(() => {
+    if (!obraId) { setInsumosObra([]); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const ins = await window.__db.insumos_partida.where('obra_id').equals(obraId).filter(i => !i.deleted_at).toArray();
+        if (!cancelled) setInsumosObra(ins);
+      } catch { if (!cancelled) setInsumosObra([]); }
+    })();
+    return () => { cancelled = true; };
+  }, [obraId]);
 
   uE(() => {
     let cancelled = false;
@@ -676,6 +865,91 @@ function HerramientasPage({ showToast }) {
 
   const enUso = herramientas?.filter(h => h.ubicacion_actual === 'en_uso').length ?? 0;
   const disponibles = herramientas?.filter(h => h.disponible).length ?? 0;
+
+  // ── Sync herramientas desde APU (matching por nombre, sugerir tipo) ──
+  const detectarTipoHerr = (descripcion, unidadAPU) => {
+    const s = (descripcion || '').toLowerCase();
+    const u = (unidadAPU || '').toLowerCase();
+    if (/excavadora|retroexcavadora|cargador frontal|volquete|tractor|motoniveladora|rodillo|grua|gr[uú]a|pavimentadora|bulldozer|cami[óo]n/i.test(s)) return 'maquinaria_pesada';
+    if (/taladro|amoladora|sierra|cierra|esmeril|cortadora|pulidora|lijadora|atornillador|caladora|fresadora/i.test(s)) return 'electrica';
+    if (/teodolito|nivel\b|estaci[óo]n total|gps|distan?ci[óo]metro|laser|cinta m[ée]trica|prisma|tr[ií]pode/i.test(s)) return 'medicion';
+    if (/casco|chaleco|guante|extintor|arn[ée]s|botas?|lentes|m[áa]scara|epp/i.test(s)) return 'seguridad';
+    if (/martillo|pala|pico|carretilla|llave|alicate|destornillador|wincha|escalera|andamio/i.test(s)) return 'manual';
+    return 'maquinaria_liviana';
+  };
+
+  const escanearSyncDesdeAPUHerr = () => {
+    if (!herramientas || !insumosObra) {
+      showToast('No hay datos para sincronizar', 'red');
+      return;
+    }
+    // Equipos del APU (tipo_insumo === 'equipo')
+    const equiposAPU = insumosObra.filter(i => i.tipo_insumo === 'equipo');
+    const apuPorNombre = new Map();
+    equiposAPU.forEach(e => {
+      const nom = (e.nombre_insumo || '').trim().toUpperCase();
+      if (nom && !apuPorNombre.has(nom)) {
+        apuPorNombre.set(nom, { unidad: e.unidad, codigo: e.insumo_codigo });
+      }
+    });
+
+    const cambios = [];
+    const sinMatch = [];
+    herramientas.forEach(h => {
+      const nom = (h.nombre_herramienta || '').trim().toUpperCase();
+      const apu = apuPorNombre.get(nom);
+      const patches = {};
+      const tipoSugerido = detectarTipoHerr(h.nombre_herramienta, apu?.unidad);
+      // Solo sugerir cambio de tipo si actualmente es 'maquinaria_liviana' (default) y la heurística da otra cosa
+      if (h.tipo_herramienta === 'maquinaria_liviana' && tipoSugerido !== 'maquinaria_liviana') {
+        patches.tipo_herramienta = tipoSugerido;
+      }
+      if (Object.keys(patches).length > 0) {
+        cambios.push({ id: h.id, nombre: h.nombre_herramienta,
+          actual: { tipo: h.tipo_herramienta },
+          nuevo: patches,
+          conMatchAPU: !!apu,
+        });
+      }
+      if (!apu) sinMatch.push(h);
+    });
+
+    setSyncPreview({
+      total: herramientas.length,
+      conMatch: herramientas.length - sinMatch.length,
+      sinMatch: sinMatch.length,
+      cambios,
+      apuVacio: equiposAPU.length === 0,
+    });
+    setModal('sync');
+  };
+
+  const aplicarSyncDesdeAPUHerr = async () => {
+    if (!syncPreview || !syncPreview.cambios.length) return;
+    const now = new Date().toISOString();
+    let aplicados = 0, errores = 0;
+    for (const c of syncPreview.cambios) {
+      try {
+        const h = herramientas.find(x => x.id === c.id);
+        if (!h) continue;
+        await window.__db.herramientas.update(c.id, {
+          ...c.nuevo,
+          updated_at: now,
+          updated_by: auth?.profile?.id ?? 'offline',
+          version: (h.version ?? 0) + 1,
+          sync_status: h.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+        });
+        try { await window.__logAudit?.({ action:'update', table:'herramientas', recordId: c.id,
+          oldData: c.actual, newData: c.nuevo, reason:'Sincronización desde APU' }); } catch {}
+        aplicados++;
+      } catch (e) { errores++; }
+    }
+    try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'herramientas' } })); } catch {}
+    try { window.dispatchEvent(new Event('online')); } catch {}
+    showToast(`${aplicados} herramientas actualizadas${errores ? ` · ${errores} con error` : ''}`, 'green');
+    setModal(null);
+    setSyncPreview(null);
+  };
 
   const ESTADO_STYLE = {
     nuevo:          { class:'b-green',  label:'Nuevo' },
@@ -847,7 +1121,13 @@ function HerramientasPage({ showToast }) {
           <div className="pg-title">Herramientas</div>
           <div className="pg-sub">{herramientas.length} herramientas · {enUso} en uso · {disponibles} disponibles</div>
         </div>
-        <div style={{display:'flex',gap:8}}>
+        <div style={{display:'flex',gap:8, flexWrap:'wrap'}}>
+          {isAdmin && insumosObra.length > 0 && (
+            <button className="btn btn-ghost btn-sm" onClick={escanearSyncDesdeAPUHerr}
+              title="Cruza herramientas con equipos del APU y sugiere recategorización por unidad/keywords">
+              <JxIcon name="refresh" size={13}/>Sincronizar desde APU
+            </button>
+          )}
           <button className="btn btn-green btn-sm" onClick={()=>openMov('entrada')}><JxIcon name="arrowIn" size={13}/>Registrar Devolución</button>
           <button className="btn btn-ghost btn-sm" onClick={()=>openMov('salida')}><JxIcon name="arrowOut" size={13}/>Registrar Salida</button>
           <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setModal('nuevo');}}><JxIcon name="plus" size={13}/>Nueva Herramienta</button>
@@ -946,6 +1226,67 @@ function HerramientasPage({ showToast }) {
           <button className="btn btn-amber" onClick={handleSubmitMov}><JxIcon name="check" size={13}/>Registrar</button>
         </div>
       </Modal>}
+
+      {/* Modal Sincronizar herramientas desde APU */}
+      {modal === 'sync' && syncPreview && (
+        <Modal title="Sincronizar herramientas desde APU" icon="refresh" onClose={()=>{ setModal(null); setSyncPreview(null); }} wide>
+          <div style={{ fontSize:12.5, color:'var(--ts)', marginBottom:14 }}>
+            Cruza tus <strong>{syncPreview.total} herramientas</strong> con los <strong>equipos del APU</strong> y sugiere recategorización por keywords del nombre.
+          </div>
+
+          {syncPreview.apuVacio && (
+            <div style={{ background:'rgba(231,76,60,0.10)', border:'1px solid rgba(231,76,60,0.35)', borderRadius:8, padding:'10px 12px', marginBottom:12, fontSize:12, color:'var(--red)' }}>
+              ⚠ El APU de esta obra no tiene equipos registrados.
+            </div>
+          )}
+
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:14 }}>
+            <div className="card card-p" style={{ textAlign:'center' }}>
+              <div style={{ fontSize:18, fontWeight:800, color:'var(--green)' }}>{syncPreview.conMatch}</div>
+              <div style={{ fontSize:10.5, color:'var(--tm)' }}>con match en APU</div>
+            </div>
+            <div className="card card-p" style={{ textAlign:'center' }}>
+              <div style={{ fontSize:18, fontWeight:800, color:'var(--amber)' }}>{syncPreview.cambios.length}</div>
+              <div style={{ fontSize:10.5, color:'var(--tm)' }}>se actualizarán</div>
+            </div>
+            <div className="card card-p" style={{ textAlign:'center' }}>
+              <div style={{ fontSize:18, fontWeight:800, color:'var(--tm)' }}>{syncPreview.sinMatch}</div>
+              <div style={{ fontSize:10.5, color:'var(--tm)' }}>sin match (nombre)</div>
+            </div>
+          </div>
+
+          {syncPreview.cambios.length > 0 ? (
+            <div className="card" style={{ overflow:'auto', maxHeight:340, marginBottom:12 }}>
+              <table className="tbl" style={{ fontSize:11 }}>
+                <thead><tr><th>Herramienta</th><th>Cambio</th></tr></thead>
+                <tbody>
+                  {syncPreview.cambios.slice(0, 100).map(c => (
+                    <tr key={c.id}>
+                      <td className="col-p">{c.nombre}</td>
+                      <td className="col-m" style={{ fontSize:10.5 }}>
+                        tipo: <s style={{ color:'var(--tm)' }}>{c.actual.tipo}</s> → <strong style={{ color:'var(--orange)' }}>{c.nuevo.tipo_herramienta}</strong>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div style={{ background:'rgba(46,204,113,0.08)', border:'1px solid rgba(46,204,113,0.3)', borderRadius:8, padding:'10px 12px', marginBottom:12, fontSize:12, color:'var(--green)' }}>
+              Todo está al día — no hay cambios sugeridos.
+            </div>
+          )}
+
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={()=>{ setModal(null); setSyncPreview(null); }}>Cerrar</button>
+            {syncPreview.cambios.length > 0 && (
+              <button className="btn btn-amber" onClick={aplicarSyncDesdeAPUHerr}>
+                <JxIcon name="check" size={13}/> Aplicar {syncPreview.cambios.length} cambios
+              </button>
+            )}
+          </div>
+        </Modal>
+      )}
 
       {/* Modal Nueva / Editar Herramienta */}
       {(modal==='nuevo' || modal==='editar') && <Modal title={editingId ? 'Editar Herramienta' : 'Nueva Herramienta'} icon="tool" onClose={()=>{setModal(null); setEditingId(null); setForm({});}}>
