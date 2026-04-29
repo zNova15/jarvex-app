@@ -19,6 +19,7 @@ const TRANSACTIONAL_TABLES = [
   'insumos_partida',
   'presupuestos_versiones',
   'partidas_versionadas',
+  'insumos_partida_versionadas',
   'asistencia',
   'movimientos_materiales',
   'movimientos_herramientas',
@@ -37,7 +38,8 @@ const MASTER_TABLES = [
   { tabla: 'partidas',               query: () => supabase.from('partidas').select('*').is('deleted_at', null) },
   { tabla: 'insumos_partida',        query: () => supabase.from('insumos_partida').select('*') },
   { tabla: 'presupuestos_versiones', query: () => supabase.from('presupuestos_versiones').select('*').is('deleted_at', null) },
-  { tabla: 'partidas_versionadas',   query: () => supabase.from('partidas_versionadas').select('*').is('deleted_at', null) },
+  { tabla: 'partidas_versionadas',         query: () => supabase.from('partidas_versionadas').select('*').is('deleted_at', null) },
+  { tabla: 'insumos_partida_versionadas',  query: () => supabase.from('insumos_partida_versionadas').select('*').is('deleted_at', null) },
   { tabla: 'profiles',               query: () => supabase.from('profiles').select('*') },
 ];
 

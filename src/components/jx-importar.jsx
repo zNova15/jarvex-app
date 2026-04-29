@@ -862,8 +862,11 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
               version: 1, sync_status: 'pending_create', last_synced_at: null,
               idempotency_key: `${userId}_pres_ver_${versionId}`,
             });
+            // Mapeo partida_id → partida_versionada_id para luego copiar insumos
+            const idMap = new Map();
             const partidasVersion = partidasGuardadas.map(p => {
               const id = window.__newId();
+              idMap.set(p.id, id);
               return {
                 id, version_id: versionId, obra_id: obraDestino.id,
                 codigo: p.codigo_delfin || '',
@@ -882,10 +885,42 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
               };
             });
             if (partidasVersion.length) await window.__db.partidas_versionadas.bulkAdd(partidasVersion);
+
+            // Snapshot de insumos por partida del APU recién importado
+            let insumosCopiados = 0;
+            try {
+              const insumosReal = await window.__db.insumos_partida.where('obra_id').equals(obraDestino.id).filter(i => !i.deleted_at).toArray();
+              const insumosVersion = insumosReal
+                .filter(i => idMap.has(i.partida_id))
+                .map(i => {
+                  const insId = window.__newId();
+                  return {
+                    id: insId, version_id: versionId,
+                    partida_versionada_id: idMap.get(i.partida_id),
+                    obra_id: obraDestino.id,
+                    insumo_codigo: i.insumo_codigo || null,
+                    nombre_insumo: i.nombre_insumo,
+                    tipo_insumo: i.tipo_insumo || null,
+                    unidad: i.unidad || null,
+                    cantidad_presupuestada: Number(i.cantidad_presupuestada || 0),
+                    precio_presupuestado: Number(i.precio_presupuestado || 0),
+                    costo_total: Number(i.cantidad_presupuestada || 0) * Number(i.precio_presupuestado || 0),
+                    created_by: userId, updated_by: userId,
+                    created_at: now, updated_at: now,
+                    version: 1, sync_status: 'pending_create', last_synced_at: null,
+                    idempotency_key: `${userId}_insv_${insId}`,
+                  };
+                });
+              if (insumosVersion.length) {
+                await window.__db.insumos_partida_versionadas.bulkAdd(insumosVersion);
+                insumosCopiados = insumosVersion.length;
+              }
+            } catch (e) { console.warn('[snapshot insumos versión]', e); }
+
             try { await window.__logAudit?.({ action:'insert', table:'presupuestos_versiones', recordId: versionId,
-              newData:{ numero, nombre: saveVersion.nombre, partidas: partidasVersion.length, monto, archivo: file?.name },
+              newData:{ numero, nombre: saveVersion.nombre, partidas: partidasVersion.length, insumos: insumosCopiados, monto, archivo: file?.name },
               reason: 'Versión creada durante importación de APU' }); } catch {}
-            res.detalle += ` · v${numero} guardada (${partidasVersion.length} partidas)`;
+            res.detalle += ` · v${numero} guardada (${partidasVersion.length} partidas${insumosCopiados ? `, ${insumosCopiados} insumos` : ''})`;
           }
         } catch (e) {
           console.warn('[guardar versión]', e);

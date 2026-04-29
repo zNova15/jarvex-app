@@ -25,6 +25,41 @@ const ROL_COLORS_ADM = {
 
 const ROL_KEYS = ['admin','gerente','ingeniero_residente','supervisor','almacenero','asistente_admin','solo_lectura'];
 
+// ── Roles Custom (definidos por el admin, persistidos en localStorage) ──
+// Cada rol custom: { key, label, color }
+//   - key   : identificador único en snake_case (no debe colisionar con ROL_KEYS)
+//   - label : nombre legible
+//   - color : una de las clases b-* o color hex (default: b-gray)
+const CUSTOM_ROLES_KEY = 'jx_custom_roles_v1';
+function loadCustomRoles() {
+  try { return JSON.parse(localStorage.getItem(CUSTOM_ROLES_KEY) || '[]'); }
+  catch { return []; }
+}
+function saveCustomRoles(list) {
+  try { localStorage.setItem(CUSTOM_ROLES_KEY, JSON.stringify(list)); } catch {}
+  try { window.dispatchEvent(new CustomEvent('jx_roles_changed', { detail: list })); } catch {}
+}
+function getAllRolKeys() {
+  const customs = loadCustomRoles().map(r => r.key);
+  return [...ROL_KEYS, ...customs];
+}
+function getAllRolLabels() {
+  const labels = { ...ROL_LABELS };
+  loadCustomRoles().forEach(r => { labels[r.key] = r.label; });
+  return labels;
+}
+function getAllRolColors() {
+  const colors = { ...ROL_COLORS_ADM };
+  loadCustomRoles().forEach(r => { colors[r.key] = r.color || 'b-gray'; });
+  return colors;
+}
+
+// Exponer para otros componentes
+window.__roles = {
+  loadCustomRoles, saveCustomRoles,
+  getAllRolKeys, getAllRolLabels, getAllRolColors,
+};
+
 const initialsOf = (n='', a='') => ((n[0]||'') + (a[0]||'')).toUpperCase() || '??';
 
 // ── USUARIOS PAGE ─────────────────────────────────────────
@@ -250,7 +285,7 @@ function UsuariosPage({ showToast }) {
                       </div>
                     </td>
                     <td className="col-m">{u.email}</td>
-                    <td><span className={`badge ${ROL_COLORS_ADM[u.rol]||'b-gray'}`}>{ROL_LABELS[u.rol]||u.rol||'—'}</span></td>
+                    <td><span className={`badge ${getAllRolColors()[u.rol]||'b-gray'}`}>{getAllRolLabels()[u.rol]||u.rol||'—'}</span></td>
                     <td><span className={`badge ${activo?'b-green':'b-gray'}`}>{activo?'Activo':'Inactivo'}</span></td>
                     <td className="col-m">{obras}</td>
                     <td>
@@ -291,7 +326,7 @@ function UsuariosPage({ showToast }) {
             <div style={{ gridColumn:'1 / -1' }}>
               <label className="flabel">Rol</label>
               <select className="fi" value={form.rol} onChange={e=>setForm({...form, rol:e.target.value})}>
-                {ROL_KEYS.map(r => <option key={r} value={r}>{ROL_LABELS[r]}</option>)}
+                {getAllRolKeys().map(r => <option key={r} value={r}>{getAllRolLabels()[r]}</option>)}
               </select>
             </div>
           </div>
@@ -307,13 +342,13 @@ function UsuariosPage({ showToast }) {
       {modalRol && (
         <Modal title={`Cambiar Rol: ${modalRol.nombres||''} ${modalRol.apellidos||''}`} icon="edit" onClose={()=>setModalRol(null)}>
           <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-            <div style={{ fontSize:12, color:'var(--tm)', marginBottom:8 }}>Rol actual: <strong style={{ color:'var(--ts)' }}>{ROL_LABELS[modalRol.rol]||modalRol.rol||'—'}</strong></div>
-            {ROL_KEYS.map(r => (
+            <div style={{ fontSize:12, color:'var(--tm)', marginBottom:8 }}>Rol actual: <strong style={{ color:'var(--ts)' }}>{getAllRolLabels()[modalRol.rol]||modalRol.rol||'—'}</strong></div>
+            {getAllRolKeys().map(r => (
               <button key={r} className={`btn ${r===modalRol.rol?'btn-amber':'btn-ghost'}`}
                       disabled={busy}
                       onClick={()=>handleChangeRol(r)}
                       style={{ justifyContent:'flex-start' }}>
-                <span className={`badge ${ROL_COLORS_ADM[r]}`} style={{ marginRight:8 }}>{ROL_LABELS[r]}</span>
+                <span className={`badge ${getAllRolColors()[r]||'b-gray'}`} style={{ marginRight:8 }}>{getAllRolLabels()[r]}</span>
               </button>
             ))}
           </div>
@@ -380,16 +415,21 @@ function savePermOverrides(obj) {
   try { window.dispatchEvent(new CustomEvent('jx_perms_changed', { detail: obj })); } catch {}
 }
 // Devuelve la matriz efectiva: defaults + overrides aplicados
+// Incluye roles built-in + custom (custom default = solo lectura en todo)
 function getEffectivePermMatrix() {
   const ov = loadPermOverrides();
   const out = {};
-  ROL_KEYS.forEach(r => {
-    const base = (PERM_MATRIX[r] || PERM_MATRIX_MODULES.map(()=>'r')).slice();
+  const todasKeys = getAllRolKeys();
+  todasKeys.forEach(r => {
+    // Custom roles → default todo en 'r' (solo lectura), excepto Usuarios/Config en 'x'
+    const baseDefault = ROL_KEYS.includes(r)
+      ? (PERM_MATRIX[r] || PERM_MATRIX_MODULES.map(()=>'r')).slice()
+      : PERM_MATRIX_MODULES.map(m => m === 'Usuarios/Config' ? 'x' : 'r');
     const rolOv = ov[r] || {};
     PERM_MATRIX_MODULES.forEach((mod, i) => {
-      if (rolOv[mod] && ['w','r','x'].includes(rolOv[mod])) base[i] = rolOv[mod];
+      if (rolOv[mod] && ['w','r','x'].includes(rolOv[mod])) baseDefault[i] = rolOv[mod];
     });
-    out[r] = base;
+    out[r] = baseDefault;
   });
   return out;
 }
@@ -414,7 +454,13 @@ function RolesPage() {
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: false };
   const canEdit = isAdmin && appMode.isPrueba;
   const [overrides, setOverrides] = uSAd(loadPermOverrides());
-  const matrix = uMAd(() => getEffectivePermMatrix(), [overrides]);
+  const [customRoles, setCustomRoles] = uSAd(loadCustomRoles());
+  const [showAddRole, setShowAddRole] = uSAd(false);
+  const [newRoleForm, setNewRoleForm] = uSAd({ key:'', label:'', color:'b-gray' });
+  const matrix = uMAd(() => getEffectivePermMatrix(), [overrides, customRoles]);
+  const todasRolKeys = uMAd(() => getAllRolKeys(), [customRoles]);
+  const todasRolLabels = uMAd(() => getAllRolLabels(), [customRoles]);
+  const todasRolColors = uMAd(() => getAllRolColors(), [customRoles]);
 
   uEAd(() => {
     const load = async () => {
@@ -423,14 +469,59 @@ function RolesPage() {
         if (!sb) return;
         const { data } = await sb.from('profiles').select('rol');
         const c = {};
-        ROL_KEYS.forEach(r => { c[r] = (data||[]).filter(p=>p.rol===r).length; });
+        todasRolKeys.forEach(r => { c[r] = (data||[]).filter(p=>p.rol===r).length; });
         setCounts(c);
       } catch (e) {}
     };
     load();
     const t = setInterval(load, 10000);
     return () => clearInterval(t);
-  }, []);
+  }, [todasRolKeys.join(',')]);
+
+  const crearRolCustom = () => {
+    if (!canEdit) return;
+    const key = (newRoleForm.key || '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+    const label = (newRoleForm.label || '').trim();
+    if (!key || !label) { alert('Ingresa key y nombre del rol'); return; }
+    if (todasRolKeys.includes(key)) { alert(`Ya existe un rol con key "${key}"`); return; }
+    const next = [...customRoles, { key, label, color: newRoleForm.color || 'b-gray' }];
+    setCustomRoles(next);
+    saveCustomRoles(next);
+    try { window.__logAudit?.({ action:'insert', table:'roles_custom', recordId: key,
+      newData:{ key, label, color: newRoleForm.color }, reason:'Creación de rol custom' }); } catch {}
+    setShowAddRole(false);
+    setNewRoleForm({ key:'', label:'', color:'b-gray' });
+  };
+
+  const eliminarRolCustom = (key) => {
+    if (!canEdit) return;
+    if (ROL_KEYS.includes(key)) { alert('No se pueden eliminar roles del sistema'); return; }
+    const usuariosConRol = counts[key] || 0;
+    if (usuariosConRol > 0) {
+      if (!confirm(`Hay ${usuariosConRol} usuario(s) con este rol. Si lo eliminas tendrás que reasignarlos manualmente. ¿Continuar?`)) return;
+    } else {
+      if (!confirm(`¿Eliminar el rol "${todasRolLabels[key]}"?`)) return;
+    }
+    const next = customRoles.filter(r => r.key !== key);
+    setCustomRoles(next);
+    saveCustomRoles(next);
+    // También limpiar overrides del rol borrado
+    const ov = { ...overrides };
+    delete ov[key];
+    setOverrides(ov);
+    savePermOverrides(ov);
+    try { window.__logAudit?.({ action:'delete', table:'roles_custom', recordId: key,
+      reason:'Eliminación de rol custom' }); } catch {}
+  };
+
+  const editarRolCustom = (key, patch) => {
+    if (!canEdit) return;
+    const next = customRoles.map(r => r.key === key ? { ...r, ...patch } : r);
+    setCustomRoles(next);
+    saveCustomRoles(next);
+    try { window.__logAudit?.({ action:'update', table:'roles_custom', recordId: key,
+      newData: patch, reason:'Edición de rol custom' }); } catch {}
+  };
 
   const cycle = (rol, modIdx) => {
     if (!canEdit) return;
@@ -520,29 +611,93 @@ function RolesPage() {
         </div>
       </div>
 
-      <div style={{ display:'grid', gridTemplateColumns:`repeat(${ROL_KEYS.length},1fr)`, gap:8, marginBottom:16 }}>
-        {ROL_KEYS.map(r => (
-          <div key={r} className="card card-p" style={{ textAlign:'center' }}>
-            <div style={{ fontSize:10.5, color:'var(--tm)', textTransform:'uppercase', letterSpacing:'.06em' }}>{ROL_LABELS[r]}</div>
-            <div style={{ fontSize:22, fontWeight:800, color:'var(--amber)', margin:'4px 0' }}>{counts[r] ?? 0}</div>
-            <div style={{ fontSize:10.5, color:'var(--tm)' }}>usuarios</div>
-          </div>
-        ))}
+      {/* Cards de conteo por rol — un grid scrollable horizontalmente si hay muchos */}
+      <div style={{ display:'flex', gap:8, marginBottom:16, overflowX:'auto', paddingBottom:4 }}>
+        {todasRolKeys.map(r => {
+          const esCustom = !ROL_KEYS.includes(r);
+          return (
+            <div key={r} className="card card-p" style={{ textAlign:'center', minWidth:130, position:'relative', borderTop: esCustom ? '2px solid var(--amber)' : 'none' }}>
+              <div style={{ fontSize:10.5, color:'var(--tm)', textTransform:'uppercase', letterSpacing:'.06em' }}>
+                {todasRolLabels[r]}
+                {esCustom && <span style={{ marginLeft:4, fontSize:9, color:'var(--amber)' }}>custom</span>}
+              </div>
+              <div style={{ fontSize:22, fontWeight:800, color:'var(--amber)', margin:'4px 0' }}>{counts[r] ?? 0}</div>
+              <div style={{ fontSize:10.5, color:'var(--tm)' }}>usuarios</div>
+              {esCustom && canEdit && (
+                <button className="btn btn-ghost btn-xs"
+                  title="Eliminar este rol custom"
+                  onClick={()=>eliminarRolCustom(r)}
+                  style={{ position:'absolute', top:4, right:4, padding:'2px 4px' }}>
+                  <JxIcon name="trash" size={10}/>
+                </button>
+              )}
+            </div>
+          );
+        })}
+        {canEdit && (
+          <button className="card card-p"
+            onClick={()=>setShowAddRole(true)}
+            style={{ minWidth:130, border:'2px dashed var(--border)', background:'transparent', color:'var(--tm)', cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center' }}>
+            <JxIcon name="plus" size={16}/>
+            <div style={{ fontSize:11, marginTop:4 }}>Crear rol custom</div>
+          </button>
+        )}
       </div>
 
-      <div className="card" style={{ overflow:'hidden' }}>
-        <div style={{ display:'grid', gridTemplateColumns:`200px repeat(${ROL_KEYS.length},1fr)`, borderBottom:'1px solid var(--border)', background:'rgba(0,0,0,0.18)' }}>
+      {showAddRole && canEdit && (
+        <div className="card card-p" style={{ marginBottom:16, borderLeft:'3px solid var(--amber)' }}>
+          <div style={{ fontSize:13, fontWeight:700, color:'var(--tp)', marginBottom:10 }}>Nuevo rol custom</div>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1.4fr 1fr auto auto', gap:10, alignItems:'flex-end' }}>
+            <div>
+              <label className="flabel">Key (sin espacios)</label>
+              <input className="fi" value={newRoleForm.key}
+                placeholder="ej: jefe_calidad"
+                onChange={e=>setNewRoleForm({...newRoleForm, key:e.target.value})}/>
+            </div>
+            <div>
+              <label className="flabel">Nombre legible</label>
+              <input className="fi" value={newRoleForm.label}
+                placeholder="ej: Jefe de Calidad"
+                onChange={e=>setNewRoleForm({...newRoleForm, label:e.target.value})}/>
+            </div>
+            <div>
+              <label className="flabel">Color del badge</label>
+              <select className="fi" value={newRoleForm.color}
+                onChange={e=>setNewRoleForm({...newRoleForm, color:e.target.value})}>
+                <option value="b-gray">Gris</option>
+                <option value="b-blue">Azul</option>
+                <option value="b-green">Verde</option>
+                <option value="b-amber">Ámbar</option>
+                <option value="b-red">Rojo</option>
+                <option value="b-yellow">Amarillo</option>
+              </select>
+            </div>
+            <button className="btn btn-amber btn-sm" onClick={crearRolCustom}>
+              <JxIcon name="check" size={12}/> Crear
+            </button>
+            <button className="btn btn-ghost btn-sm" onClick={()=>{ setShowAddRole(false); setNewRoleForm({ key:'', label:'', color:'b-gray' }); }}>
+              Cancelar
+            </button>
+          </div>
+          <div style={{ fontSize:11, color:'var(--tm)', marginTop:6 }}>
+            Default: solo lectura en todos los módulos (sin acceso a Usuarios/Config). Click en celdas para editar permisos después.
+          </div>
+        </div>
+      )}
+
+      <div className="card" style={{ overflow:'auto' }}>
+        <div style={{ display:'grid', gridTemplateColumns:`200px repeat(${todasRolKeys.length},minmax(110px,1fr))`, borderBottom:'1px solid var(--border)', background:'rgba(0,0,0,0.18)' }}>
           <div style={{ padding:'10px 14px', fontSize:10.5, fontWeight:700, color:'var(--tm)', textTransform:'uppercase', letterSpacing:'.08em' }}>Módulo</div>
-          {ROL_KEYS.map(r => (
+          {todasRolKeys.map(r => (
             <div key={r} style={{ padding:'10px 4px', fontSize:10.5, fontWeight:700, color:'var(--tm)', textTransform:'uppercase', textAlign:'center' }}>
-              {ROL_LABELS[r]}
+              {todasRolLabels[r]}
             </div>
           ))}
         </div>
         {PERM_MATRIX_MODULES.map((mod, i) => (
-          <div key={mod} style={{ display:'grid', gridTemplateColumns:`200px repeat(${ROL_KEYS.length},1fr)`, borderBottom:'1px solid rgba(255,255,255,0.04)', background:i%2?'rgba(0,0,0,0.06)':'transparent', alignItems:'center' }}>
+          <div key={mod} style={{ display:'grid', gridTemplateColumns:`200px repeat(${todasRolKeys.length},minmax(110px,1fr))`, borderBottom:'1px solid rgba(255,255,255,0.04)', background:i%2?'rgba(0,0,0,0.06)':'transparent', alignItems:'center' }}>
             <div style={{ padding:'10px 14px', fontSize:12.5, color:'var(--ts)' }}>{mod}</div>
-            {ROL_KEYS.map(r => {
+            {todasRolKeys.map(r => {
               const ovRol = overrides[r] || {};
               const custom = Object.prototype.hasOwnProperty.call(ovRol, mod);
               return (
@@ -871,7 +1026,7 @@ function ObraUsuariosModal({ obra, isAdmin, showToast, onClose }) {
                   <label className="flabel">Rol en la obra</label>
                   <select className="fi" value={form.rol_obra}
                           onChange={e=>setForm({...form, rol_obra:e.target.value})}>
-                    {ROL_KEYS.map(r => <option key={r} value={r}>{ROL_LABELS[r]}</option>)}
+                    {getAllRolKeys().map(r => <option key={r} value={r}>{getAllRolLabels()[r]}</option>)}
                   </select>
                 </div>
                 <button className="btn btn-amber btn-sm" disabled={busy} onClick={handleAsignar}>
@@ -917,11 +1072,11 @@ function ObraUsuariosModal({ obra, isAdmin, showToast, onClose }) {
                                     value={a.rol_obra || 'solo_lectura'}
                                     disabled={busy}
                                     onChange={e=>handleCambiarRolObra(a, e.target.value)}>
-                              {ROL_KEYS.map(r => <option key={r} value={r}>{ROL_LABELS[r]}</option>)}
+                              {getAllRolKeys().map(r => <option key={r} value={r}>{getAllRolLabels()[r]}</option>)}
                             </select>
                           ) : (
                             <span className={`badge ${ROL_COLORS_ADM[a.rol_obra]||'b-gray'}`}>
-                              {ROL_LABELS[a.rol_obra]||a.rol_obra||'—'}
+                              {getAllRolLabels()[a.rol_obra]||a.rol_obra||'—'}
                             </span>
                           )}
                         </td>

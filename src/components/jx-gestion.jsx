@@ -244,16 +244,52 @@ function CostosPage() {
   const { data: partidas } = window.__hooks.usePartidas(obraId);
   const { data: obras } = window.__hooks.useObras();
   const { data: movimientos } = window.__hooks.useMovimientosMateriales(obraId);
+  const { data: versiones } = window.__hooks.usePresupuestosVersiones(obraId);
 
   const obra = obras?.find(o => o.id === obraId);
 
+  // Selector de fuente de "Planificado": partidas actuales o una versión específica
+  const [fuentePlan, setFuentePlan] = uSG('actual'); // 'actual' | versionId
+  const [partidasVer, setPartidasVer] = uSG([]);
+
+  // Auto-seleccionar la versión más reciente cuando hay versiones y aún no se eligió manualmente
+  uEG(() => {
+    if (fuentePlan === 'actual' && versiones && versiones.length > 0) {
+      const ultima = [...versiones].sort((a,b) => (b.numero||0) - (a.numero||0))[0];
+      // No la activamos por defecto — el usuario decide. Solo dejamos disponible el toggle.
+    }
+  }, [versiones]);
+
+  // Cargar partidas de la versión seleccionada (si aplica)
+  uEG(() => {
+    let cancelled = false;
+    (async () => {
+      if (fuentePlan === 'actual') { setPartidasVer([]); return; }
+      try {
+        const rows = await window.__db.partidas_versionadas
+          .where('version_id').equals(fuentePlan)
+          .filter(p => !p.deleted_at)
+          .toArray();
+        if (!cancelled) setPartidasVer(rows);
+      } catch { if (!cancelled) setPartidasVer([]); }
+    })();
+    return () => { cancelled = true; };
+  }, [fuentePlan]);
+
+  const versionActiva = uMG(() => (versiones || []).find(v => v.id === fuentePlan), [versiones, fuentePlan]);
+
+  // Totales: pres viene de la fuente elegida, real siempre viene de partidas reales
   const totales = uMG(() => {
     if (!partidas) return { pres:0, real:0 };
-    return {
-      pres: partidas.reduce((s,p) => s + Number(p.costo_total_presupuestado || 0), 0),
-      real: partidas.reduce((s,p) => s + Number(p.costo_real_acumulado || 0), 0),
-    };
-  }, [partidas]);
+    let pres;
+    if (fuentePlan === 'actual') {
+      pres = partidas.reduce((s,p) => s + Number(p.costo_total_presupuestado || 0), 0);
+    } else {
+      pres = (partidasVer || []).reduce((s,p) => s + Number(p.costo_total || 0), 0);
+    }
+    const real = partidas.reduce((s,p) => s + Number(p.costo_real_acumulado || 0), 0);
+    return { pres, real };
+  }, [partidas, partidasVer, fuentePlan]);
 
   const porCategoria = uMG(() => {
     if (!partidas) return [];
@@ -295,7 +331,25 @@ function CostosPage() {
   return (
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
-        <div><div className="pg-title">Análisis de Costos</div><div className="pg-sub">{obra?.nombre_obra || ''} · Presupuesto vs Ejecutado</div></div>
+        <div>
+          <div className="pg-title">Análisis de Costos</div>
+          <div className="pg-sub">
+            {obra?.nombre_obra || ''} · {fuentePlan === 'actual'
+              ? 'Presupuesto = partidas actuales · Ejecutado = movimientos'
+              : `Presupuesto = ${versionActiva?.nombre || 'versión'} · Ejecutado = movimientos`}
+          </div>
+        </div>
+        {versiones && versiones.length > 0 && (
+          <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+            <label style={{ fontSize:11, color:'var(--tm)' }}>Comparar contra:</label>
+            <select className="fi" value={fuentePlan} onChange={e=>setFuentePlan(e.target.value)} style={{ minWidth:200 }}>
+              <option value="actual">Partidas actuales (Real en uso)</option>
+              {[...versiones].sort((a,b) => (a.numero||0) - (b.numero||0)).map(v => (
+                <option key={v.id} value={v.id}>v{v.numero} · {v.nombre}</option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:20}}>
@@ -604,6 +658,8 @@ function VersionesPage({ showToast }) {
 
   const [selectedIds, setSelectedIds] = uSG([]); // hasta 5 versiones a comparar
   const [partidasPorVersion, setPartidasPorVersion] = uSG({}); // { vId: [...partidas] }
+  const [insumosPorPartidaVer, setInsumosPorPartidaVer] = uSG({}); // { vId: { codigo: [...insumos] } }
+  const [partidaInsumosOpen, setPartidaInsumosOpen] = uSG(null); // codigo abierto para ver insumos
   const [modalNueva, setModalNueva] = uSG(false);
   const [form, setForm] = uSG({ nombre:'', tipo:'inicial', descripcion:'', fecha:new Date().toISOString().slice(0,10) });
 
@@ -615,21 +671,40 @@ function VersionesPage({ showToast }) {
     }
   }, [versiones]);
 
-  // Cargar partidas de cada versión seleccionada
+  // Cargar partidas + insumos de cada versión seleccionada
   uEG(() => {
     let cancelled = false;
     (async () => {
-      const out = {};
+      const outPart = {};
+      const outIns = {};
       for (const vid of selectedIds) {
         try {
           const rows = await window.__db.partidas_versionadas
             .where('version_id').equals(vid)
             .filter(p => !p.deleted_at)
             .toArray();
-          out[vid] = rows;
-        } catch (e) { out[vid] = []; }
+          outPart[vid] = rows;
+          // mapeo partida_versionada_id → codigo
+          const idToCodigo = new Map(rows.map(r => [r.id, r.codigo]));
+          // insumos versionados de esta versión, agrupados por codigo de partida
+          const insRows = await window.__db.insumos_partida_versionadas
+            .where('version_id').equals(vid)
+            .filter(i => !i.deleted_at)
+            .toArray();
+          const porCodigo = {};
+          insRows.forEach(i => {
+            const cod = idToCodigo.get(i.partida_versionada_id);
+            if (!cod) return;
+            if (!porCodigo[cod]) porCodigo[cod] = [];
+            porCodigo[cod].push(i);
+          });
+          outIns[vid] = porCodigo;
+        } catch (e) { outPart[vid] = []; outIns[vid] = {}; }
       }
-      if (!cancelled) setPartidasPorVersion(out);
+      if (!cancelled) {
+        setPartidasPorVersion(outPart);
+        setInsumosPorPartidaVer(outIns);
+      }
     })();
     return () => { cancelled = true; };
   }, [selectedIds.join(',')]);
@@ -754,8 +829,11 @@ function VersionesPage({ showToast }) {
         idempotency_key: `${userId}_pres_ver_${versionId}`,
       });
 
+      // Mapear partida_id → partida_versionada_id (lo necesitamos para snapshot de insumos)
+      const idMap = new Map();
       const partidasVersion = partidasReal.map(p => {
         const id = window.__newId();
+        idMap.set(p.id, id);
         return {
           id, version_id: versionId, obra_id: obraId,
           codigo: p.codigo_delfin || '',
@@ -776,14 +854,47 @@ function VersionesPage({ showToast }) {
       if (partidasVersion.length) {
         await window.__db.partidas_versionadas.bulkAdd(partidasVersion);
       }
+
+      // Snapshot de insumos por partida (si la obra tiene APU importado)
+      let insumosCopiados = 0;
+      try {
+        const insumosReal = await window.__db.insumos_partida.where('obra_id').equals(obraId).filter(i => !i.deleted_at).toArray();
+        const insumosVersion = insumosReal
+          .filter(i => idMap.has(i.partida_id))
+          .map(i => {
+            const id = window.__newId();
+            return {
+              id, version_id: versionId,
+              partida_versionada_id: idMap.get(i.partida_id),
+              obra_id: obraId,
+              insumo_codigo: i.insumo_codigo || null,
+              nombre_insumo: i.nombre_insumo,
+              tipo_insumo: i.tipo_insumo || null,
+              unidad: i.unidad || null,
+              cantidad_presupuestada: Number(i.cantidad_presupuestada || 0),
+              precio_presupuestado: Number(i.precio_presupuestado || 0),
+              costo_total: Number(i.cantidad_presupuestada || 0) * Number(i.precio_presupuestado || 0),
+              created_by: userId, updated_by: userId,
+              created_at: now, updated_at: now,
+              version: 1, sync_status: 'pending_create', last_synced_at: null,
+              idempotency_key: `${userId}_insv_${id}`,
+            };
+          });
+        if (insumosVersion.length) {
+          await window.__db.insumos_partida_versionadas.bulkAdd(insumosVersion);
+          insumosCopiados = insumosVersion.length;
+        }
+      } catch (e) { console.warn('[snapshot insumos]', e); }
+
       try { await window.__logAudit?.({ action:'insert', table:'presupuestos_versiones', recordId: versionId,
-        newData:{ numero, nombre: form.nombre, partidas: partidasVersion.length, monto } }); } catch {}
+        newData:{ numero, nombre: form.nombre, partidas: partidasVersion.length, insumos: insumosCopiados, monto } }); } catch {}
       try {
         window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'presupuestos_versiones' } }));
         window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'partidas_versionadas' } }));
+        window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'insumos_partida_versionadas' } }));
         window.dispatchEvent(new Event('online'));
       } catch {}
-      showToast?.(`Versión v${numero} "${form.nombre}" creada con ${partidasVersion.length} partidas`, 'green');
+      showToast?.(`Versión v${numero} "${form.nombre}" creada con ${partidasVersion.length} partidas${insumosCopiados ? ` y ${insumosCopiados} insumos` : ''}`, 'green');
       setModalNueva(false);
       setForm({ nombre:'', tipo:'inicial', descripcion:'', fecha:new Date().toISOString().slice(0,10) });
     } catch (e) {
@@ -1008,40 +1119,133 @@ function VersionesPage({ showToast }) {
                       const expanded = expandidos.has(row.codigo);
                       const indent = (row.nivel - 1) * 14;
                       const esCapitulo = row.nivel <= 2;
+                      const insumosOpen = partidaInsumosOpen === row.codigo;
+                      // ¿alguna versión tiene insumos para esta partida?
+                      const tieneInsumos = versionesSel.some(v => (insumosPorPartidaVer[v.id]?.[row.codigo] || []).length > 0);
+                      // Construir matriz de insumos por código si está expandida
+                      let insumosFilas = [];
+                      if (insumosOpen) {
+                        const porCodInsumo = new Map();
+                        versionesSel.forEach(v => {
+                          (insumosPorPartidaVer[v.id]?.[row.codigo] || []).forEach(ins => {
+                            const k = ins.insumo_codigo || ins.nombre_insumo;
+                            const cur = porCodInsumo.get(k) || {
+                              codigo: ins.insumo_codigo,
+                              nombre: ins.nombre_insumo,
+                              tipo: ins.tipo_insumo,
+                              unidad: ins.unidad,
+                              values: {},
+                            };
+                            cur.values[v.id] = {
+                              cantidad: Number(ins.cantidad_presupuestada || 0),
+                              costo: Number(ins.costo_total || (ins.cantidad_presupuestada * ins.precio_presupuestado) || 0),
+                            };
+                            porCodInsumo.set(k, cur);
+                          });
+                        });
+                        insumosFilas = Array.from(porCodInsumo.values()).sort((a,b) =>
+                          (a.tipo||'').localeCompare(b.tipo||'') || (a.codigo||'').localeCompare(b.codigo||'')
+                        );
+                      }
                       return (
-                        <tr key={row.codigo} style={esCapitulo ? { background:'rgba(255,255,255,0.025)', fontWeight:600 } : null}>
-                          <td className="col-m" style={{ fontFamily:'monospace', fontSize:11, paddingLeft: 8 + indent }}>
-                            {conHijos && (
-                              <button onClick={()=>toggleExpand(row.codigo)}
-                                style={{ background:'none', border:'none', cursor:'pointer', color:'var(--amber)', marginRight:4, padding:0, fontSize:11 }}>
-                                {expanded ? '▼' : '▶'}
-                              </button>
-                            )}
-                            {!conHijos && <span style={{ display:'inline-block', width:14 }}/>}
-                            {row.codigo}
-                          </td>
-                          <td className="col-p" style={{ fontWeight: esCapitulo ? 600 : 400 }}>{row.nombre}</td>
-                          <td className="col-m">{row.unidad || '—'}</td>
-                          {versionesSel.map((v, i) => {
-                            const cell = row.values[v.id];
-                            const prev = i > 0 ? row.values[versionesSel[i-1].id] : null;
-                            const delta = cell && prev ? (cell.costo - prev.costo) : null;
-                            return (
-                              <td key={v.id} style={{ textAlign:'right', whiteSpace:'nowrap' }} className="col-num">
-                                {cell ? (
-                                  <>
-                                    <div style={{ fontSize:12, fontWeight:esCapitulo?700:600 }}>S/ {cell.costo.toLocaleString('es-PE', { maximumFractionDigits: 0 })}</div>
-                                    {delta !== null && delta !== 0 && (
-                                      <div style={{ fontSize:10, color: delta > 0 ? 'var(--red)' : 'var(--green)', marginTop:1 }}>
-                                        {delta > 0 ? '+' : ''}S/ {delta.toLocaleString('es-PE', { maximumFractionDigits: 0 })}
-                                      </div>
-                                    )}
-                                  </>
-                                ) : <span style={{ color:'var(--tm)' }}>—</span>}
+                        <React.Fragment key={row.codigo}>
+                          <tr style={esCapitulo ? { background:'rgba(255,255,255,0.025)', fontWeight:600 } : null}>
+                            <td className="col-m" style={{ fontFamily:'monospace', fontSize:11, paddingLeft: 8 + indent }}>
+                              {conHijos && (
+                                <button onClick={()=>toggleExpand(row.codigo)}
+                                  style={{ background:'none', border:'none', cursor:'pointer', color:'var(--amber)', marginRight:4, padding:0, fontSize:11 }}>
+                                  {expanded ? '▼' : '▶'}
+                                </button>
+                              )}
+                              {!conHijos && <span style={{ display:'inline-block', width:14 }}/>}
+                              {row.codigo}
+                            </td>
+                            <td className="col-p" style={{ fontWeight: esCapitulo ? 600 : 400 }}>
+                              {row.nombre}
+                              {tieneInsumos && (
+                                <button
+                                  onClick={()=>setPartidaInsumosOpen(insumosOpen ? null : row.codigo)}
+                                  title="Ver/ocultar insumos por partida"
+                                  style={{ background:'none', border:'1px solid var(--border)', borderRadius:4, padding:'1px 6px', marginLeft:6, fontSize:10, cursor:'pointer', color: insumosOpen ? 'var(--amber)' : 'var(--tm)' }}>
+                                  {insumosOpen ? '▾ insumos' : '▸ insumos'}
+                                </button>
+                              )}
+                            </td>
+                            <td className="col-m">{row.unidad || '—'}</td>
+                            {versionesSel.map((v, i) => {
+                              const cell = row.values[v.id];
+                              const prev = i > 0 ? row.values[versionesSel[i-1].id] : null;
+                              const delta = cell && prev ? (cell.costo - prev.costo) : null;
+                              return (
+                                <td key={v.id} style={{ textAlign:'right', whiteSpace:'nowrap' }} className="col-num">
+                                  {cell ? (
+                                    <>
+                                      <div style={{ fontSize:12, fontWeight:esCapitulo?700:600 }}>S/ {cell.costo.toLocaleString('es-PE', { maximumFractionDigits: 0 })}</div>
+                                      {delta !== null && delta !== 0 && (
+                                        <div style={{ fontSize:10, color: delta > 0 ? 'var(--red)' : 'var(--green)', marginTop:1 }}>
+                                          {delta > 0 ? '+' : ''}S/ {delta.toLocaleString('es-PE', { maximumFractionDigits: 0 })}
+                                        </div>
+                                      )}
+                                    </>
+                                  ) : <span style={{ color:'var(--tm)' }}>—</span>}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                          {insumosOpen && insumosFilas.length > 0 && (
+                            <tr>
+                              <td colSpan={3 + versionesSel.length} style={{ padding:0, background:'rgba(52,152,219,0.04)' }}>
+                                <div style={{ padding:'6px 14px 10px 28px', fontSize:11 }}>
+                                  <div style={{ fontWeight:700, color:'var(--blue)', marginBottom:4 }}>
+                                    Insumos comparados ({insumosFilas.length})
+                                  </div>
+                                  <table className="tbl" style={{ fontSize:10.5 }}>
+                                    <thead>
+                                      <tr>
+                                        <th style={{ minWidth:70 }}>Cód.</th>
+                                        <th>Insumo</th>
+                                        <th>Tipo</th>
+                                        <th>Unid.</th>
+                                        {versionesSel.map(v => (
+                                          <th key={v.id} style={{ textAlign:'right' }}>v{v.numero}</th>
+                                        ))}
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {insumosFilas.map((ins, k) => (
+                                        <tr key={k}>
+                                          <td className="col-m" style={{ fontFamily:'monospace' }}>{ins.codigo || '—'}</td>
+                                          <td>{ins.nombre}</td>
+                                          <td className="col-m" style={{ textTransform:'capitalize' }}>{(ins.tipo || '').replace('_',' ') || '—'}</td>
+                                          <td className="col-m">{ins.unidad || '—'}</td>
+                                          {versionesSel.map((v, i) => {
+                                            const cell = ins.values[v.id];
+                                            const prev = i > 0 ? ins.values[versionesSel[i-1].id] : null;
+                                            const delta = cell && prev ? (cell.costo - prev.costo) : null;
+                                            return (
+                                              <td key={v.id} style={{ textAlign:'right' }} className="col-num">
+                                                {cell ? (
+                                                  <>
+                                                    <div>S/ {cell.costo.toLocaleString('es-PE', { maximumFractionDigits: 0 })}</div>
+                                                    {delta !== null && delta !== 0 && (
+                                                      <div style={{ fontSize:9, color: delta > 0 ? 'var(--red)' : 'var(--green)' }}>
+                                                        {delta > 0 ? '+' : ''}{delta.toLocaleString('es-PE', { maximumFractionDigits: 0 })}
+                                                      </div>
+                                                    )}
+                                                  </>
+                                                ) : <span style={{ color:'var(--tm)' }}>—</span>}
+                                              </td>
+                                            );
+                                          })}
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
                               </td>
-                            );
-                          })}
-                        </tr>
+                            </tr>
+                          )}
+                        </React.Fragment>
                       );
                     })}
                   </tbody>
