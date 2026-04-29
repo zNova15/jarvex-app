@@ -635,6 +635,7 @@ function VersionesPage({ showToast }) {
   }, [selectedIds.join(',')]);
 
   // Construir matriz de comparación: 1 fila por código, 1 columna por versión
+  // Incluye nivel jerárquico (nº de puntos en código) para soportar colapso.
   const matriz = uMG(() => {
     const porCodigo = new Map();
     selectedIds.forEach(vid => {
@@ -645,7 +646,8 @@ function VersionesPage({ showToast }) {
           nombre: p.nombre_partida,
           unidad: p.unidad,
           orden: p.orden ?? 0,
-          values: {}, // vid → { metrado, costo }
+          nivel: ((p.codigo || '').match(/\./g) || []).length + 1,
+          values: {},
         };
         cur.nombre = cur.nombre || p.nombre_partida;
         cur.values[vid] = { metrado: Number(p.metrado || 0), costo: Number(p.costo_total || 0) };
@@ -654,6 +656,48 @@ function VersionesPage({ showToast }) {
     });
     return Array.from(porCodigo.values()).sort((a,b) => (a.codigo || '').localeCompare(b.codigo || '', 'es', { numeric:true }));
   }, [selectedIds, partidasPorVersion]);
+
+  // Estado del árbol colapsable
+  const [filtroTexto, setFiltroTexto] = uSG('');
+  const [nivelMax, setNivelMax] = uSG(2); // por defecto solo capítulos y subcapítulos
+  const [expandidos, setExpandidos] = uSG(new Set()); // códigos expandidos manualmente
+
+  // Filas visibles: respeta nivelMax + expansiones manuales + filtro texto
+  const filasVisibles = uMG(() => {
+    const q = filtroTexto.trim().toLowerCase();
+    const matchesText = (row) => !q || (row.codigo + ' ' + (row.nombre||'')).toLowerCase().includes(q);
+    return matriz.filter(row => {
+      if (q) return matchesText(row); // si hay filtro, ignoro nivelMax
+      if (row.nivel <= nivelMax) return true;
+      // Filas más profundas: visibles solo si algún ancestro está en `expandidos`
+      let parent = row.codigo.split('.').slice(0, -1).join('.');
+      while (parent) {
+        if (expandidos.has(parent)) return true;
+        parent = parent.split('.').slice(0, -1).join('.');
+      }
+      return false;
+    });
+  }, [matriz, nivelMax, expandidos, filtroTexto]);
+
+  // Determina si un código tiene hijos en la matriz (para mostrar el chevron)
+  const tieneHijos = uMG(() => {
+    const padres = new Set();
+    matriz.forEach(r => {
+      const parent = r.codigo.split('.').slice(0, -1).join('.');
+      if (parent) padres.add(parent);
+    });
+    return padres;
+  }, [matriz]);
+
+  const toggleExpand = (codigo) => {
+    setExpandidos(prev => {
+      const next = new Set(prev);
+      if (next.has(codigo)) next.delete(codigo); else next.add(codigo);
+      return next;
+    });
+  };
+  const expandirTodo = () => setExpandidos(new Set(Array.from(tieneHijos)));
+  const colapsarTodo = () => setExpandidos(new Set());
 
   const versionesSel = uMG(
     () => selectedIds.map(id => (versiones || []).find(v => v.id === id)).filter(Boolean),
@@ -805,13 +849,23 @@ function VersionesPage({ showToast }) {
       </div>
 
       {noHayVersiones ? (
-        <div className="card card-p empty-state">
+        <div className="card card-p" style={{ textAlign:'center', padding:'40px 20px' }}>
           <JxIcon name="compare" size={40} color="var(--tm)"/>
-          <p style={{ maxWidth:480 }}>
-            Aún no hay versiones de presupuesto guardadas para esta obra.<br/>
-            Crea la primera (típicamente "v1 Inicial cliente") tomando una foto de las partidas actuales,
-            o usa el flujo de Importar APU desde Delphin con la opción "Guardar como versión".
+          <div style={{ fontSize:15, fontWeight:700, color:'var(--tp)', marginTop:14, marginBottom:6 }}>Aún no hay versiones</div>
+          <p style={{ maxWidth:560, margin:'0 auto 18px', fontSize:12.5, color:'var(--tm)', lineHeight:1.5 }}>
+            Una versión es una <strong>foto congelada</strong> de tus partidas en un momento dado (ej: lo que firmó el cliente, una propuesta, un adicional).
+            Te sirve para comparar después contra otras versiones o el costo real ejecutado.
           </p>
+          <div style={{ display:'flex', gap:10, justifyContent:'center', flexWrap:'wrap' }}>
+            {isAdmin && (
+              <button className="btn btn-amber" onClick={()=>setModalNueva(true)}>
+                <JxIcon name="plus" size={13}/> Crear v1 desde mis partidas actuales
+              </button>
+            )}
+            <a className="btn btn-ghost" href="#" onClick={(e)=>{ e.preventDefault(); window.location.hash = '#importar'; window.dispatchEvent(new HashChangeEvent('hashchange')); }}>
+              <JxIcon name="upload" size={13}/> Ir a Importar APU (con opción de guardar versión)
+            </a>
+          </div>
         </div>
       ) : (
         <>
@@ -902,12 +956,35 @@ function VersionesPage({ showToast }) {
                 })}
               </div>
 
+              {/* Controles de árbol */}
+              <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap', marginBottom:10 }}>
+                <input className="fi" placeholder="Buscar partida (código o nombre)…"
+                  value={filtroTexto} onChange={e=>setFiltroTexto(e.target.value)}
+                  style={{ flex:'1 1 220px', minWidth:200 }}/>
+                <select className="fi" value={nivelMax} onChange={e=>setNivelMax(Number(e.target.value))} style={{ minWidth:140 }}>
+                  <option value={1}>Solo capítulos (nivel 1)</option>
+                  <option value={2}>Hasta nivel 2</option>
+                  <option value={3}>Hasta nivel 3</option>
+                  <option value={4}>Hasta nivel 4</option>
+                  <option value={9}>Todo expandido</option>
+                </select>
+                <button className="btn btn-ghost btn-sm" onClick={expandirTodo}>
+                  <JxIcon name="chevD" size={11}/> Expandir todo
+                </button>
+                <button className="btn btn-ghost btn-sm" onClick={colapsarTodo}>
+                  <JxIcon name="chevR" size={11}/> Colapsar todo
+                </button>
+                <span style={{ fontSize:11, color:'var(--tm)' }}>
+                  {filasVisibles.length} / {matriz.length} partidas
+                </span>
+              </div>
+
               {/* Tabla matriz */}
               <div className="card" style={{ overflow:'auto' }}>
                 <table className="tbl" style={{ minWidth: 600 + versionesSel.length * 140 }}>
                   <thead>
                     <tr>
-                      <th style={{ minWidth:120 }}>Código</th>
+                      <th style={{ minWidth:140 }}>Código</th>
                       <th style={{ minWidth:280 }}>Partida</th>
                       <th>Unidad</th>
                       {versionesSel.map(v => (
@@ -922,32 +999,51 @@ function VersionesPage({ showToast }) {
                       <tr><td colSpan={3 + versionesSel.length} style={{ padding:'20px', textAlign:'center', color:'var(--tm)' }}>
                         Las versiones seleccionadas no tienen partidas guardadas.
                       </td></tr>
-                    ) : matriz.map(row => (
-                      <tr key={row.codigo}>
-                        <td className="col-m" style={{ fontFamily:'monospace', fontSize:11 }}>{row.codigo}</td>
-                        <td className="col-p">{row.nombre}</td>
-                        <td className="col-m">{row.unidad || '—'}</td>
-                        {versionesSel.map((v, i) => {
-                          const cell = row.values[v.id];
-                          const prev = i > 0 ? row.values[versionesSel[i-1].id] : null;
-                          const delta = cell && prev ? (cell.costo - prev.costo) : null;
-                          return (
-                            <td key={v.id} style={{ textAlign:'right', whiteSpace:'nowrap' }} className="col-num">
-                              {cell ? (
-                                <>
-                                  <div style={{ fontSize:12, fontWeight:600 }}>S/ {cell.costo.toLocaleString('es-PE', { maximumFractionDigits: 0 })}</div>
-                                  {delta !== null && delta !== 0 && (
-                                    <div style={{ fontSize:10, color: delta > 0 ? 'var(--red)' : 'var(--green)', marginTop:1 }}>
-                                      {delta > 0 ? '+' : ''}S/ {delta.toLocaleString('es-PE', { maximumFractionDigits: 0 })}
-                                    </div>
-                                  )}
-                                </>
-                              ) : <span style={{ color:'var(--tm)' }}>—</span>}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    ))}
+                    ) : filasVisibles.length === 0 ? (
+                      <tr><td colSpan={3 + versionesSel.length} style={{ padding:'20px', textAlign:'center', color:'var(--tm)' }}>
+                        Sin coincidencias para "{filtroTexto}".
+                      </td></tr>
+                    ) : filasVisibles.map(row => {
+                      const conHijos = tieneHijos.has(row.codigo);
+                      const expanded = expandidos.has(row.codigo);
+                      const indent = (row.nivel - 1) * 14;
+                      const esCapitulo = row.nivel <= 2;
+                      return (
+                        <tr key={row.codigo} style={esCapitulo ? { background:'rgba(255,255,255,0.025)', fontWeight:600 } : null}>
+                          <td className="col-m" style={{ fontFamily:'monospace', fontSize:11, paddingLeft: 8 + indent }}>
+                            {conHijos && (
+                              <button onClick={()=>toggleExpand(row.codigo)}
+                                style={{ background:'none', border:'none', cursor:'pointer', color:'var(--amber)', marginRight:4, padding:0, fontSize:11 }}>
+                                {expanded ? '▼' : '▶'}
+                              </button>
+                            )}
+                            {!conHijos && <span style={{ display:'inline-block', width:14 }}/>}
+                            {row.codigo}
+                          </td>
+                          <td className="col-p" style={{ fontWeight: esCapitulo ? 600 : 400 }}>{row.nombre}</td>
+                          <td className="col-m">{row.unidad || '—'}</td>
+                          {versionesSel.map((v, i) => {
+                            const cell = row.values[v.id];
+                            const prev = i > 0 ? row.values[versionesSel[i-1].id] : null;
+                            const delta = cell && prev ? (cell.costo - prev.costo) : null;
+                            return (
+                              <td key={v.id} style={{ textAlign:'right', whiteSpace:'nowrap' }} className="col-num">
+                                {cell ? (
+                                  <>
+                                    <div style={{ fontSize:12, fontWeight:esCapitulo?700:600 }}>S/ {cell.costo.toLocaleString('es-PE', { maximumFractionDigits: 0 })}</div>
+                                    {delta !== null && delta !== 0 && (
+                                      <div style={{ fontSize:10, color: delta > 0 ? 'var(--red)' : 'var(--green)', marginTop:1 }}>
+                                        {delta > 0 ? '+' : ''}S/ {delta.toLocaleString('es-PE', { maximumFractionDigits: 0 })}
+                                      </div>
+                                    )}
+                                  </>
+                                ) : <span style={{ color:'var(--tm)' }}>—</span>}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
                   </tbody>
                   <tfoot>
                     <tr style={{ background:'rgba(0,0,0,0.18)', fontWeight:700 }}>

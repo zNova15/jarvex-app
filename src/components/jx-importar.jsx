@@ -187,12 +187,39 @@ function DropZone({ onFile, file, accept = '.xlsx,.xls,.csv' }) {
 function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, hist, setHist, sourceId = 's10' }) {
   const isProject = sourceId === 'msproject';
   const sourceName = isProject ? 'MS Project' : 'Delphin';
-  // Selección de qué importar (insumos): por defecto todo lo que existe
-  const [include, setInclude] = uSI({ materiales:true, mano_obra:true, equipos:true });
+  // Selección de qué importar (insumos):
+  // - materiales y equipos: por defecto SÍ (van a sus tablas con un buen mapeo)
+  // - mano_obra: por defecto NO (crea plantillas en Personal que el usuario debe editar luego)
+  const [include, setInclude] = uSI({ materiales:true, mano_obra:false, equipos:true });
   // Permitir actualizar nombre/presupuesto de la obra desde el flujo de import
   const [updateObra, setUpdateObra] = uSI({ habilitado:false, nombre:'', presupuesto:'' });
   // Guardar también como nueva versión de presupuesto (hasta 5 por obra)
   const [saveVersion, setSaveVersion] = uSI({ habilitado:false, nombre:'', tipo:'inicial', notas:'' });
+
+  // Auto-habilitar saveVersion en el primer APU importado a una obra (no hay versiones aún)
+  uEI(() => {
+    if (!obraId || parsed?.tipo !== 'apu') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const ya = await window.__db.presupuestos_versiones
+          .where('obra_id').equals(obraId)
+          .filter(v => !v.deleted_at)
+          .toArray();
+        if (cancelled) return;
+        if (ya.length === 0 && !saveVersion.habilitado) {
+          // Primera importación de APU → sugerir crear v1 Inicial
+          setSaveVersion({
+            habilitado: true,
+            nombre: `v1 Inicial — ${file?.name || 'APU importado'}`,
+            tipo: 'inicial',
+            notas: 'Primera versión guardada automáticamente al importar el APU.',
+          });
+        }
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [obraId, parsed?.tipo]);
   const [step, setStep] = uSI(0); // 0 aviso, 1 archivo, 2 preview, 3 confirmar
   const [confirmed, setConfirmed] = uSI(false);
   const [file, setFile] = uSI(null);
@@ -335,6 +362,18 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
     if (!file) { setParsed(null); setParseErr(null); return; }
     if (file.size > 25 * 1024 * 1024) {
       setParseErr('El archivo excede 25MB'); setParsed(null); return;
+    }
+    // Bloquear .mpp explícitamente con mensaje útil
+    const ext = (file.name || '').toLowerCase().split('.').pop();
+    if (ext === 'mpp') {
+      setParseErr('No puedo leer archivos .mpp directamente (formato binario propietario de Microsoft). En MS Project ve a File → Save As → Excel Workbook (.xlsx), exporta y sube ese Excel aquí.');
+      setParsed(null);
+      return;
+    }
+    if (!['xlsx','xls','xlsm'].includes(ext)) {
+      setParseErr(`Formato no soportado: .${ext}. Solo acepto .xlsx / .xls (Excel).`);
+      setParsed(null);
+      return;
     }
     setParsing(true); setParseErr(null);
     const t0 = performance.now();
@@ -494,20 +533,53 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
     };
   }
 
+  // ── Categorización por keywords para herramientas/equipos ────
+  // Mapea descripción del insumo a uno de los 6 tipos válidos del schema.
+  function categorizarHerramienta(descripcion) {
+    const s = (descripcion || '').toLowerCase();
+    // Maquinaria pesada
+    if (/excavadora|retroexcavadora|cargador frontal|volquete|tractor|motoniveladora|rodillo|grua|gr[uú]a|pavimentadora|tolva|camion |cami[óo]n |bulldozer/i.test(s))
+      return 'maquinaria_pesada';
+    // Eléctrica / herramientas con motor
+    if (/taladro|amoladora|sierra|cierra|esmeril|cortadora|pulidora|lijadora|atornillador|caladora|fresadora|barrenadora/i.test(s))
+      return 'electrica';
+    // Medición / topografía
+    if (/teodolito|nivel\b|estaci[óo]n total|gps|distan?ciometro|distan?ci[óo]metro|laser\b|cinta m[ée]trica|prisma|tr[ií]pode|escu[áa]dra|nivel láser/i.test(s))
+      return 'medicion';
+    // EPP / Seguridad
+    if (/casco|chaleco|guante|extintor|arn[ée]s|botas?|lentes|m[áa]scara|proteccion|protecci[óo]n|epp/i.test(s))
+      return 'seguridad';
+    // Manual
+    if (/martillo|pala|pico|carretilla|llave|alicate|destornillador|wincha|plomada|nivel manual|cuchara|brocha|rodillo de pintura|escalera|andamio/i.test(s))
+      return 'manual';
+    // Maquinaria liviana (default para vibradores, mezcladoras, compresores, etc.)
+    return 'maquinaria_liviana';
+  }
+
   // ── Import Lista de Insumos — selectivo por categoría ────────
-  // Materiales → tabla materiales (upsert por codigo)
-  // Mano de obra → tabla personal (cargo + DNI placeholder MO-{codigo})
-  // Equipos → tabla herramientas
   async function importInsumos() {
     const now = new Date().toISOString();
     const errorList = [];
-    let creadosMat = 0, actualizadosMat = 0;
+    let creadosMat = 0, actualizadosMat = 0, conUnidad = 0, sinUnidad = 0;
     let creadosMO = 0, saltadosMO = 0;
     let creadosEq = 0, saltadosEq = 0;
+    const tiposEqContador = {};
 
     if (!include.materiales && !include.mano_obra && !include.equipos) {
       throw new Error('No seleccionaste ninguna categoría para importar.');
     }
+
+    // ── Cargar mapa unidad-por-codigo desde insumos_partida (si APU previo) ──
+    // El "Lista de Insumos" no trae unidad, pero el APU sí. Cruzamos por código.
+    const unidadPorCodigoAPU = new Map();
+    try {
+      const insumosPart = await window.__db.insumos_partida.where('obra_id').equals(obraId).toArray();
+      insumosPart.forEach(ip => {
+        const cod = ip.insumo_codigo;
+        const u = (ip.unidad || '').trim();
+        if (cod && u && !unidadPorCodigoAPU.has(cod)) unidadPorCodigoAPU.set(cod, u);
+      });
+    } catch (e) { /* sin problema, queda mapa vacío */ }
 
     // ─── Materiales ───────────────────────────────────────────
     if (include.materiales) {
@@ -518,11 +590,15 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
         setProgress({ phase:'Cargando materiales…', current:0, total: materialesNuevos.length });
         for (let i = 0; i < materialesNuevos.length; i++) {
           const ins = materialesNuevos[i];
+          // Resolver unidad: 1) la del insumo, 2) la del APU por código, 3) 'und' como último recurso
+          const unidadResuelta = (ins.unidad && ins.unidad.trim()) || unidadPorCodigoAPU.get(ins.codigo) || 'und';
+          if (unidadResuelta !== 'und') conUnidad++; else sinUnidad++;
           try {
             const existente = porCodigo.get(ins.codigo);
             if (existente) {
               await window.__db.materiales.update(existente.id, {
                 nombre_material: ins.descripcion,
+                unidad: unidadResuelta, // ← actualizar unidad si la encontramos
                 precio_unitario_estimado: Number(ins.precio_unitario) || 0,
                 updated_at: now, updated_by: userId,
                 version: (existente.version ?? 0) + 1,
@@ -536,7 +612,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                 nombre_material: ins.descripcion,
                 codigo_s10: ins.codigo,
                 categoria: 'General',
-                unidad: ins.unidad || 'und',
+                unidad: unidadResuelta,
                 stock_inicial: 0, stock_actual: 0, stock_minimo: 0,
                 precio_unitario_estimado: Number(ins.precio_unitario) || 0,
                 alerta: 'sin_stock', estado: 'activo',
@@ -558,31 +634,30 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       }
     }
 
-    // ─── Mano de Obra (→ personal con cargo presupuestado) ────
+    // ─── Mano de Obra (→ personal como plantillas inactivas) ───
     if (include.mano_obra) {
       const moNuevos = parsed.data.filter(i => i.categoria === 'mano_obra');
       if (moNuevos.length) {
         const personalExistente = await window.__db.personal.where('obra_id').equals(obraId).toArray();
         const dnisExistentes = new Set(personalExistente.map(p => p.dni));
-        setProgress({ phase:'Cargando mano de obra…', current:0, total: moNuevos.length });
+        setProgress({ phase:'Cargando cargos MO…', current:0, total: moNuevos.length });
         for (let i = 0; i < moNuevos.length; i++) {
           const ins = moNuevos[i];
-          // DNI placeholder único por insumo dentro de la obra
           const dniPlaceholder = `MO-${ins.codigo}`;
           if (dnisExistentes.has(dniPlaceholder)) { saltadosMO++; continue; }
           try {
             const id = window.__newId();
             await window.__db.personal.add({
               id, obra_id: obraId,
-              nombres: '(Plantilla)',
+              nombres: '[CARGO]',
               apellidos: ins.descripcion,
               dni: dniPlaceholder,
               cargo: ins.descripcion,
-              area: 'Mano de obra (presupuestada)',
+              area: 'Plantilla MO (no es persona real)',
               fecha_ingreso: now.slice(0,10),
-              estado: 'inactivo', // plantilla, hasta que admin asigne un real
+              estado: 'inactivo',
               telefono: null,
-              observaciones: `Plantilla generada del APU. Insumo ${ins.codigo}. Cantidad presupuestada: ${ins.cantidad_total}. Costo: S/${Number(ins.total).toFixed(2)}`,
+              observaciones: `⚠ PLANTILLA — no es una persona real. Generada del APU para reflejar el cargo presupuestado. Insumo ${ins.codigo}. Cantidad: ${ins.cantidad_total}. Costo: S/${Number(ins.total).toFixed(2)}. Edita y reemplaza con un trabajador real (DNI válido) cuando lo asignes.`,
               created_by: userId, updated_by: userId,
               created_at: now, updated_at: now,
               version: 1, sync_status: 'pending_create', last_synced_at: null,
@@ -594,14 +669,14 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
             errorList.push({ row: ins.codigo, error: `mano_obra: ${e.message || e}` });
           }
           if (i % 10 === 0) {
-            setProgress({ phase:'Cargando mano de obra…', current: i+1, total: moNuevos.length });
+            setProgress({ phase:'Cargando cargos MO…', current: i+1, total: moNuevos.length });
             await new Promise(r => setTimeout(r, 0));
           }
         }
       }
     }
 
-    // ─── Equipos (→ herramientas) ─────────────────────────────
+    // ─── Equipos (→ herramientas con categoría detectada) ─────
     if (include.equipos) {
       const eqNuevos = parsed.data.filter(i => i.categoria === 'equipo');
       if (eqNuevos.length) {
@@ -612,16 +687,18 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
           const ins = eqNuevos[i];
           const nombre = (ins.descripcion || '').trim();
           if (porNombre.has(nombre.toUpperCase())) { saltadosEq++; continue; }
+          const tipoDetectado = categorizarHerramienta(nombre);
+          tiposEqContador[tipoDetectado] = (tiposEqContador[tipoDetectado] || 0) + 1;
           try {
             const id = window.__newId();
             await window.__db.herramientas.add({
               id, obra_id: obraId,
               nombre_herramienta: nombre,
-              tipo_herramienta: 'maquinaria_liviana',
+              tipo_herramienta: tipoDetectado,
               estado_actual: 'bueno',
               ubicacion_actual: 'almacen',
               disponible: true,
-              observaciones: `Importado del APU. Código: ${ins.codigo}. Cantidad presupuestada: ${ins.cantidad_total}. Costo: S/${Number(ins.total).toFixed(2)}`,
+              observaciones: `Importado del APU. Código: ${ins.codigo}. Cantidad: ${ins.cantidad_total}. Costo: S/${Number(ins.total).toFixed(2)}. Categoría detectada por keywords; revisa y ajusta si no es correcta.`,
               created_by: userId, updated_by: userId,
               created_at: now, updated_at: now,
               version: 1, sync_status: 'pending_create', last_synced_at: null,
@@ -640,10 +717,20 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       }
     }
 
+    // Resumen claro y separado por categoría (no totales acumulados confusos)
     const partes = [];
-    if (include.materiales) partes.push(`${creadosMat} materiales nuevos / ${actualizadosMat} actualizados`);
-    if (include.mano_obra) partes.push(`${creadosMO} cargos MO ${saltadosMO ? `(${saltadosMO} ya existían)` : ''}`);
-    if (include.equipos) partes.push(`${creadosEq} equipos ${saltadosEq ? `(${saltadosEq} ya existían)` : ''}`);
+    if (include.materiales) {
+      const totalMat = creadosMat + actualizadosMat;
+      partes.push(`Materiales: ${creadosMat} nuevos + ${actualizadosMat} actualizados = ${totalMat}` +
+                  (sinUnidad > 0 ? ` (⚠ ${sinUnidad} sin unidad detectada — tip: importa primero el APU)` : ''));
+    }
+    if (include.mano_obra) {
+      partes.push(`Cargos MO (plantillas): ${creadosMO} creados${saltadosMO ? `, ${saltadosMO} ya existían` : ''}`);
+    }
+    if (include.equipos) {
+      const tiposStr = Object.entries(tiposEqContador).map(([k,v]) => `${v} ${k}`).join(', ');
+      partes.push(`Equipos: ${creadosEq} creados${saltadosEq ? `, ${saltadosEq} ya existían` : ''}${tiposStr ? ` — ${tiposStr}` : ''}`);
+    }
     return {
       tipo: 'insumos',
       ok: creadosMat + actualizadosMat + creadosMO + creadosEq,
@@ -901,9 +988,24 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       {step === 0 && (
         <div>
           <div style={{ fontSize:15, fontWeight:700, color:'var(--tp)', marginBottom:6 }}>Importación nativa desde {sourceName}</div>
+          {isProject && (
+            <div style={{ background:'rgba(231,76,60,0.10)', border:'1px solid rgba(231,76,60,0.4)', borderRadius:8, padding:'12px 14px', marginBottom:14 }}>
+              <div style={{ fontSize:12.5, fontWeight:700, color:'var(--red)', marginBottom:6, display:'flex', alignItems:'center', gap:6 }}>
+                <JxIcon name="alert" size={13} color="var(--red)"/> Importante: el archivo .mpp NO se puede subir directamente
+              </div>
+              <div style={{ fontSize:12, color:'var(--ts)', lineHeight:1.5 }}>
+                MS Project guarda en formato binario propietario que ningún navegador puede leer. <strong>Antes de subir aquí</strong>:
+                <ol style={{ margin:'6px 0 0 18px', padding:0 }}>
+                  <li>Abre tu archivo en MS Project</li>
+                  <li><strong>File → Save As → Excel Workbook (.xlsx)</strong></li>
+                  <li>Sube ese Excel aquí (debe traer columnas: <em>Numeración, Descripción, Duración, Inicio, Fin</em>)</li>
+                </ol>
+              </div>
+            </div>
+          )}
           <div style={{ fontSize:12.5, color:'var(--tm)', marginBottom:18 }}>
             {isProject
-              ? 'Sube un Excel exportado de MS Project (File → Save As → Excel Workbook). El .mpp binario no es compatible — exporta a Excel primero.'
+              ? 'Acepta solo el cronograma Gantt (.xlsx). Para presupuesto/insumos/APU, usa la opción Delphin.'
               : 'Sube un Excel exportado de Delphin. La app detecta automáticamente el tipo de archivo:'}
           </div>
 
@@ -1380,12 +1482,17 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                     </div>
                   </label>
 
-                  <label style={{ display:'flex', gap:10, alignItems:'flex-start', cursor: parsed.summary.mano_obra > 0 ? 'pointer' : 'not-allowed', opacity: parsed.summary.mano_obra > 0 ? 1 : 0.4, padding:10, border:`1.5px solid ${include.mano_obra?'var(--green)':'var(--border)'}`, borderRadius:8, background: include.mano_obra?'rgba(46,204,113,0.06)':'transparent' }}>
+                  <label style={{ display:'flex', gap:10, alignItems:'flex-start', cursor: parsed.summary.mano_obra > 0 ? 'pointer' : 'not-allowed', opacity: parsed.summary.mano_obra > 0 ? 1 : 0.4, padding:10, border:`1.5px solid ${include.mano_obra?'var(--amber)':'var(--border)'}`, borderRadius:8, background: include.mano_obra?'rgba(242,183,5,0.08)':'transparent' }}>
                     <input type="checkbox" disabled={!parsed.summary.mano_obra} checked={include.mano_obra}
                       onChange={e=>setInclude({...include, mano_obra:e.target.checked})}/>
                     <div style={{ flex:1 }}>
-                      <div style={{ fontSize:12.5, fontWeight:700, color:'var(--green)' }}>Mano de Obra</div>
-                      <div style={{ fontSize:11, color:'var(--tm)', marginTop:2 }}>{parsed.summary.mano_obra} cargos → tabla <strong>Personal</strong> como plantillas (estado: inactivo, asigna persona real luego)</div>
+                      <div style={{ fontSize:12.5, fontWeight:700, color:'var(--amber)' }}>
+                        Cargos MO (plantillas) <span style={{ fontSize:9, background:'var(--amber)', color:'#000', padding:'1px 5px', borderRadius:3, marginLeft:4 }}>NO RECOMENDADO</span>
+                      </div>
+                      <div style={{ fontSize:11, color:'var(--tm)', marginTop:2 }}>
+                        {parsed.summary.mano_obra} cargos → crea registros con nombres="[CARGO]" en <strong>Personal</strong> (estado: inactivo).
+                        <strong style={{ color:'var(--amber)' }}> No son personas reales</strong> — son tipos de cargo presupuestados. Mejor registrar al trabajador real con DNI cuando lo asignes.
+                      </div>
                     </div>
                   </label>
 
@@ -1394,7 +1501,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                       onChange={e=>setInclude({...include, equipos:e.target.checked})}/>
                     <div style={{ flex:1 }}>
                       <div style={{ fontSize:12.5, fontWeight:700, color:'var(--orange)' }}>Equipos</div>
-                      <div style={{ fontSize:11, color:'var(--tm)', marginTop:2 }}>{parsed.summary.equipo} insumos → tabla <strong>Herramientas</strong> (sin duplicar por nombre)</div>
+                      <div style={{ fontSize:11, color:'var(--tm)', marginTop:2 }}>{parsed.summary.equipo} insumos → tabla <strong>Herramientas</strong>. Categoría se detecta por keywords (manual / eléctrica / maquinaria liviana o pesada / medición / seguridad).</div>
                     </div>
                   </label>
                 </div>
