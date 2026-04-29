@@ -196,30 +196,6 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
   // Guardar también como nueva versión de presupuesto (hasta 5 por obra)
   const [saveVersion, setSaveVersion] = uSI({ habilitado:false, nombre:'', tipo:'inicial', notas:'' });
 
-  // Auto-habilitar saveVersion en el primer APU importado a una obra (no hay versiones aún)
-  uEI(() => {
-    if (!obraId || parsed?.tipo !== 'apu') return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const ya = await window.__db.presupuestos_versiones
-          .where('obra_id').equals(obraId)
-          .filter(v => !v.deleted_at)
-          .toArray();
-        if (cancelled) return;
-        if (ya.length === 0 && !saveVersion.habilitado) {
-          // Primera importación de APU → sugerir crear v1 Inicial
-          setSaveVersion({
-            habilitado: true,
-            nombre: `v1 Inicial — ${file?.name || 'APU importado'}`,
-            tipo: 'inicial',
-            notas: 'Primera versión guardada automáticamente al importar el APU.',
-          });
-        }
-      } catch {}
-    })();
-    return () => { cancelled = true; };
-  }, [obraId, parsed?.tipo]);
   const [step, setStep] = uSI(0); // 0 aviso, 1 archivo, 2 preview, 3 confirmar
   const [confirmed, setConfirmed] = uSI(false);
   const [file, setFile] = uSI(null);
@@ -253,6 +229,32 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const obraDestino = obrasDisponibles.find(o => o.id === obraId);
+
+  // Auto-habilitar saveVersion en el primer APU importado a una obra
+  // (debe ir DESPUÉS de declarar parsed/file/obraId — usar antes está en TDZ)
+  uEI(() => {
+    if (!obraId || parsed?.tipo !== 'apu') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const ya = await window.__db.presupuestos_versiones
+          .where('obra_id').equals(obraId)
+          .filter(v => !v.deleted_at)
+          .toArray();
+        if (cancelled) return;
+        if (ya.length === 0 && !saveVersion.habilitado) {
+          setSaveVersion({
+            habilitado: true,
+            nombre: `v1 Inicial — ${file?.name || 'APU importado'}`,
+            tipo: 'inicial',
+            notas: 'Primera versión guardada automáticamente al importar el APU.',
+          });
+        }
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [obraId, parsed?.tipo]);
 
   // ── Comparación APU (solo aplica a tipo 'apu') ─────────────
   const [comparing, setComparing] = uSI(false);
