@@ -85,6 +85,29 @@ function Modal({ title, icon, onClose, children, wide }) {
 }
 
 // ─── MATERIALES PAGE ────────────────────────────────────
+// ── Categorías de materiales: built-in + custom (localStorage) ──
+const CATEGORIAS_BUILTIN = [
+  'Cemento','Acero','Albañilería','Agregados',
+  'Ferretería','Eléctrico','Sanitario','Acabados','Otro',
+  // Las que la IA puede usar también
+  'General',
+];
+const CATS_STORAGE_KEY = 'jx_categorias_materiales_v1';
+function loadCustomCats() {
+  try { return JSON.parse(localStorage.getItem(CATS_STORAGE_KEY) || '[]'); }
+  catch { return []; }
+}
+function saveCustomCats(list) {
+  try { localStorage.setItem(CATS_STORAGE_KEY, JSON.stringify(list)); } catch {}
+  try { window.dispatchEvent(new CustomEvent('jx_categorias_changed', { detail:list })); } catch {}
+}
+function getAllCategorias() {
+  const base = new Set(CATEGORIAS_BUILTIN);
+  loadCustomCats().forEach(c => base.add(c));
+  return Array.from(base).sort();
+}
+window.__categoriasMat = { loadCustomCats, saveCustomCats, getAllCategorias };
+
 function MaterialesPage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
   const myRol = auth?.profile?.rol;
@@ -105,6 +128,10 @@ function MaterialesPage({ showToast }) {
   const [precioForm, setPrecioForm] = uS({ precio_nuevo:'', motivo:'manual', documento_ref:'', notas:'' });
   const [historialTarget, setHistorialTarget] = uS(null); // material para ver historial
   const [historialData, setHistorialData] = uS([]);
+  // Filtros + categorías custom
+  const [filtroCategoria, setFiltroCategoria] = uS('todas');
+  const [filtroEstado, setFiltroEstado] = uS('todos');
+  const [customCats, setCustomCats] = uS(loadCustomCats());
 
   // Detectar obra activa con tope de reintentos + reanudar al recibir
   // 'jarvex_master_updated' o 'obra_activa_change'.
@@ -165,18 +192,54 @@ function MaterialesPage({ showToast }) {
   // Estado del form
   const [form, setForm] = uS({});
 
+  // Categorías disponibles (built-in + custom + las que ya existen en BD)
+  const categoriasDisponibles = uM(() => {
+    const set = new Set(getAllCategorias());
+    (materiales || []).forEach(m => { if (m.categoria) set.add(m.categoria); });
+    return Array.from(set).sort();
+  }, [materiales, customCats]);
+
   const filtered = uM(() => {
     if (!materiales) return [];
-    if (!q) return materiales;
-    return materiales.filter(m =>
-      m.nombre_material?.toLowerCase().includes(q.toLowerCase()) ||
-      m.categoria?.toLowerCase().includes(q.toLowerCase())
-    );
-  }, [q, materiales]);
+    return materiales.filter(m => {
+      // Búsqueda
+      if (q) {
+        const ql = q.toLowerCase();
+        const matchQ = m.nombre_material?.toLowerCase().includes(ql)
+          || m.categoria?.toLowerCase().includes(ql)
+          || m.codigo_s10?.toLowerCase().includes(ql);
+        if (!matchQ) return false;
+      }
+      // Filtro categoría
+      if (filtroCategoria !== 'todas' && m.categoria !== filtroCategoria) return false;
+      // Filtro estado de stock
+      if (filtroEstado !== 'todos') {
+        if (filtroEstado === 'sin_unidad' && m.unidad && m.unidad !== 'und') return false;
+        if (filtroEstado === 'sin_unidad' && !m.unidad) {} // pasa
+        else if (filtroEstado !== 'sin_unidad' && m.alerta !== filtroEstado) return false;
+      }
+      return true;
+    });
+  }, [q, materiales, filtroCategoria, filtroEstado]);
 
   const alertasCount = uM(() =>
     materiales?.filter(m => m.alerta === 'critico' || m.alerta === 'sin_stock').length ?? 0,
   [materiales]);
+
+  // Crear nueva categoría custom
+  const crearCategoriaCustom = (nombre) => {
+    const n = (nombre || '').trim();
+    if (!n) return false;
+    if (categoriasDisponibles.includes(n)) {
+      showToast(`La categoría "${n}" ya existe`, 'amber');
+      return false;
+    }
+    const next = [...customCats, n];
+    setCustomCats(next);
+    saveCustomCats(next);
+    showToast(`Categoría "${n}" creada`, 'green');
+    return true;
+  };
 
   // ── Sincronización de unidades + precios desde APU (insumos_partida) ──
   // Cruza por código y aplica unidad y/o precio según el modo elegido.
@@ -187,28 +250,66 @@ function MaterialesPage({ showToast }) {
       showToast('No hay datos para sincronizar', 'red');
       return;
     }
-    // Mapa código → { unidad, precio_unitario, tipo, descripcion } desde el APU
-    const apuMap = new Map();
+    // Normalizador de nombre para matching robusto: uppercase, sin acentos,
+    // colapsa espacios y caracteres especiales.
+    const normalizar = (s) => (s || '')
+      .toString()
+      .normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]+/g, ' ')
+      .trim();
+
+    // Mapa código → datos del APU
+    const apuPorCodigo = new Map();
+    // Mapa nombre normalizado → datos del APU (fallback)
+    const apuPorNombre = new Map();
+
     insumosObra.forEach(ip => {
-      if (!ip.insumo_codigo) return;
       const u = (ip.unidad || '').trim();
       const p = Number(ip.precio_presupuestado) || 0;
-      const cur = apuMap.get(ip.insumo_codigo);
-      if (!cur) {
-        apuMap.set(ip.insumo_codigo, { unidad: u, precio: p, tipo: ip.tipo_insumo });
-      } else {
-        // si ya hay entrada pero esta tiene mejor info, completa
-        if (!cur.unidad && u) cur.unidad = u;
-        if (!cur.precio && p) cur.precio = p;
+      const data = { unidad: u, precio: p, tipo: ip.tipo_insumo, nombre: ip.nombre_insumo };
+
+      if (ip.insumo_codigo) {
+        const cur = apuPorCodigo.get(ip.insumo_codigo);
+        if (!cur) apuPorCodigo.set(ip.insumo_codigo, { ...data });
+        else {
+          if (!cur.unidad && u) cur.unidad = u;
+          if (!cur.precio && p) cur.precio = p;
+        }
+      }
+      // Indexar también por nombre como fallback
+      const nomKey = normalizar(ip.nombre_insumo);
+      if (nomKey) {
+        const cur = apuPorNombre.get(nomKey);
+        if (!cur) apuPorNombre.set(nomKey, { ...data });
+        else {
+          if (!cur.unidad && u) cur.unidad = u;
+          if (!cur.precio && p) cur.precio = p;
+        }
       }
     });
 
+    console.log('[Sync APU] Insumos APU indexados:', insumosObra.length,
+      '· por código:', apuPorCodigo.size, '· por nombre:', apuPorNombre.size);
+
     const cambios = [];
     const sinMatch = [];
+    let matchPorCodigo = 0, matchPorNombre = 0;
+
     materiales.forEach(m => {
-      if (!m.codigo_s10) { sinMatch.push({ m, motivo:'sin_codigo' }); return; }
-      const apu = apuMap.get(m.codigo_s10);
-      if (!apu) { sinMatch.push({ m, motivo:'no_encontrado' }); return; }
+      // 1) Intentar match por código primero
+      let apu = m.codigo_s10 ? apuPorCodigo.get(m.codigo_s10) : null;
+      if (apu) matchPorCodigo++;
+      // 2) Fallback: match por nombre normalizado
+      if (!apu) {
+        const nomKey = normalizar(m.nombre_material);
+        if (nomKey) apu = apuPorNombre.get(nomKey);
+        if (apu) matchPorNombre++;
+      }
+      if (!apu) {
+        sinMatch.push({ m, motivo: m.codigo_s10 ? 'no_encontrado' : 'sin_codigo' });
+        return;
+      }
       const patches = {};
       // Unidad
       if ((syncMode === 'unidades' || syncMode === 'ambos') && apu.unidad && apu.unidad !== m.unidad && (m.unidad === 'und' || !m.unidad)) {
@@ -220,16 +321,24 @@ function MaterialesPage({ showToast }) {
         patches.precio_unitario_estimado = apu.precio;
       }
       if (Object.keys(patches).length > 0) {
-        cambios.push({ id: m.id, nombre: m.nombre_material, codigo: m.codigo_s10,
+        cambios.push({ id: m.id, nombre: m.nombre_material, codigo: m.codigo_s10 || '(sin código)',
           actual:{ unidad: m.unidad, precio: precioActual },
           nuevo: patches,
         });
       }
     });
 
+    console.log('[Sync APU] Resultado:', {
+      total: materiales.length,
+      matchPorCodigo, matchPorNombre,
+      cambios: cambios.length,
+      sinMatch: sinMatch.length,
+    });
+
     setSyncPreview({
       total: materiales.length,
-      conMatch: materiales.length - sinMatch.length,
+      conMatch: matchPorCodigo + matchPorNombre,
+      matchPorCodigo, matchPorNombre,
       sinMatch: sinMatch.length,
       sinCodigo: sinMatch.filter(x => x.motivo === 'sin_codigo').length,
       cambios,
@@ -249,7 +358,6 @@ function MaterialesPage({ showToast }) {
       showToast('No hay materiales para categorizar', 'red');
       return;
     }
-    // Solo materiales con categoría 'General' o vacía
     const aClasificar = materiales.filter(m => !m.categoria || m.categoria === 'General');
     if (!aClasificar.length) {
       showToast('Todos los materiales ya tienen categoría asignada', 'amber');
@@ -258,11 +366,20 @@ function MaterialesPage({ showToast }) {
     setIaModal('running');
     setIaProgress({ current:0, total: aClasificar.length });
 
-    const BATCH = 50;
+    // Optimización: batches grandes (100) en paralelo (6 a la vez).
+    // Para 376 items: 4 batches de 100, pero solo 4 en flight → 1-2 min en lugar de 8.
+    const BATCH = 100;
+    const PARALLEL = 6;
+    const chunks = [];
+    for (let i = 0; i < aClasificar.length; i += BATCH) {
+      chunks.push(aClasificar.slice(i, i + BATCH));
+    }
+
     const all = [];
     let errorMsg = null;
-    for (let i = 0; i < aClasificar.length; i += BATCH) {
-      const chunk = aClasificar.slice(i, i + BATCH);
+    let completados = 0;
+
+    const procesarChunk = async (chunk) => {
       try {
         const resp = await fetch('/api/categorize', {
           method: 'POST',
@@ -274,17 +391,26 @@ function MaterialesPage({ showToast }) {
         });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({}));
-          errorMsg = err.error || `HTTP ${resp.status}`;
-          break;
+          throw new Error(err.error || `HTTP ${resp.status}`);
         }
         const data = await resp.json();
         all.push(...(data.results || []));
-        setIaProgress({ current: Math.min(i + BATCH, aClasificar.length), total: aClasificar.length });
+        completados += chunk.length;
+        setIaProgress({ current: Math.min(completados, aClasificar.length), total: aClasificar.length });
       } catch (e) {
-        errorMsg = e.message;
-        break;
+        if (!errorMsg) errorMsg = e.message;
       }
-    }
+    };
+
+    // Pool de promesas: máximo PARALLEL concurrentes
+    let nextIdx = 0;
+    const workers = Array(Math.min(PARALLEL, chunks.length)).fill(0).map(async () => {
+      while (nextIdx < chunks.length && !errorMsg) {
+        const myIdx = nextIdx++;
+        await procesarChunk(chunks[myIdx]);
+      }
+    });
+    await Promise.all(workers);
 
     if (errorMsg) {
       setIaModal(null);
@@ -292,7 +418,6 @@ function MaterialesPage({ showToast }) {
       return;
     }
 
-    // Construir preview con cambios
     const cambios = all.map(r => {
       const m = materiales.find(x => x.id === r.id);
       return m ? {
@@ -306,16 +431,14 @@ function MaterialesPage({ showToast }) {
   };
 
   const aplicarCategorizacionIA = async () => {
-    console.log('[IA Materiales] Aplicar click. iaResults:', iaResults?.length, iaResults);
+    console.log('[IA Materiales] Aplicar click. iaResults:', iaResults?.length);
     if (!iaResults || !iaResults.length) {
       showToast('No hay cambios para aplicar', 'amber');
       return;
     }
     const now = new Date().toISOString();
-    let aplicados = 0, saltados = 0;
-    const erroresList = [];
+    const userId = auth?.profile?.id ?? 'offline';
 
-    // Leer SIEMPRE fresh desde IndexedDB para evitar closure stale
     let materialesFresh;
     try {
       materialesFresh = await window.__db.materiales.toArray();
@@ -325,39 +448,59 @@ function MaterialesPage({ showToast }) {
       return;
     }
     const byId = new Map(materialesFresh.map(m => [m.id, m]));
-    console.log('[IA Materiales] Total en DB:', materialesFresh.length, 'cambios a aplicar:', iaResults.length);
 
+    // Construir registros a actualizar (skip no-ops y no-encontrados)
+    const records = [];
+    let saltados = 0;
     for (const c of iaResults) {
       const m = byId.get(c.id);
-      if (!m) { saltados++; console.warn('[IA] no encontrado en DB:', c.id, c.nombre); continue; }
-      // Skip no-op
+      if (!m) { saltados++; continue; }
       if (m.categoria === c.nuevo) { saltados++; continue; }
-      try {
-        await window.__db.materiales.update(c.id, {
-          categoria: c.nuevo,
-          updated_at: now,
-          updated_by: auth?.profile?.id ?? 'offline',
-          version: (m.version ?? 0) + 1,
-          sync_status: m.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
-        });
-        try { await window.__logAudit?.({ action:'update', table:'materiales', recordId: c.id,
-          oldData:{ categoria: c.actual }, newData:{ categoria: c.nuevo }, reason:'Categorización IA (Claude)' }); } catch {}
-        aplicados++;
-      } catch (e) {
-        console.error('[IA Materiales] Update fallo para', c.id, c.nombre, e);
-        erroresList.push({ id: c.id, error: e.message || String(e) });
-      }
+      records.push({
+        ...m,
+        categoria: c.nuevo,
+        updated_at: now,
+        updated_by: userId,
+        version: (m.version ?? 0) + 1,
+        sync_status: m.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
     }
+
+    if (!records.length) {
+      showToast(`Nada que aplicar · ${saltados} sin cambios`, 'amber');
+      setIaModal(null);
+      setIaResults([]);
+      return;
+    }
+
+    // bulkPut en una sola transacción → MUCHO más rápido que update individual
+    let aplicados = 0;
+    try {
+      await window.__db.materiales.bulkPut(records);
+      aplicados = records.length;
+    } catch (e) {
+      console.error('[IA Materiales] bulkPut fallo:', e);
+      showToast('Error al guardar: ' + (e.message||e), 'red');
+      return;
+    }
+
+    // Audit log en background (no bloquea la UI)
+    setTimeout(() => {
+      Promise.all(records.map(r => {
+        const orig = byId.get(r.id);
+        return window.__logAudit?.({
+          action: 'update', table: 'materiales', recordId: r.id,
+          oldData: { categoria: orig?.categoria || 'General' },
+          newData: { categoria: r.categoria },
+          reason: 'Categorización IA (Claude)',
+        }).catch(() => {});
+      }));
+    }, 0);
 
     try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'materiales' } })); } catch {}
     try { window.dispatchEvent(new Event('online')); } catch {}
 
-    console.log('[IA Materiales] Resumen:', { aplicados, saltados, errores: erroresList.length });
-    if (erroresList.length) {
-      showToast(`${aplicados} aplicados · ${erroresList.length} errores · ${saltados} saltados (revisa consola)`, 'amber');
-    } else {
-      showToast(`${aplicados} materiales categorizados${saltados ? ` · ${saltados} sin cambios` : ''}`, 'green');
-    }
+    showToast(`${aplicados} materiales categorizados${saltados ? ` · ${saltados} sin cambios` : ''}`, 'green');
     setIaModal(null);
     setIaResults([]);
   };
@@ -744,8 +887,28 @@ function MaterialesPage({ showToast }) {
         </div>
       </div>
 
-      <div style={{ display:'flex', gap:8, marginBottom:14 }}>
-        <div className="search-bar"><JxIcon name="search" size={14} color="var(--tm)"/><input placeholder="Buscar por nombre o categoría…" value={q} onChange={e=>setQ(e.target.value)}/></div>
+      <div style={{ display:'flex', gap:8, marginBottom:14, flexWrap:'wrap', alignItems:'center' }}>
+        <div className="search-bar" style={{ flex:'1 1 220px' }}><JxIcon name="search" size={14} color="var(--tm)"/><input placeholder="Buscar por nombre, código o categoría…" value={q} onChange={e=>setQ(e.target.value)}/></div>
+        <select className="fi" value={filtroCategoria} onChange={e=>setFiltroCategoria(e.target.value)} style={{ minWidth:160 }}>
+          <option value="todas">Todas las categorías</option>
+          {categoriasDisponibles.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <select className="fi" value={filtroEstado} onChange={e=>setFiltroEstado(e.target.value)} style={{ minWidth:140 }}>
+          <option value="todos">Todos los estados</option>
+          <option value="ok">✓ OK</option>
+          <option value="reponer">⚠ Reponer</option>
+          <option value="critico">🔴 Crítico</option>
+          <option value="sin_stock">⚪ Sin stock</option>
+          <option value="sin_unidad">⚠ Sin unidad detectada</option>
+        </select>
+        {(filtroCategoria !== 'todas' || filtroEstado !== 'todos' || q) && (
+          <button className="btn btn-ghost btn-sm" onClick={()=>{ setQ(''); setFiltroCategoria('todas'); setFiltroEstado('todos'); }}>
+            <JxIcon name="x" size={11}/> Limpiar
+          </button>
+        )}
+        <span style={{ fontSize:11, color:'var(--tm)', marginLeft:4 }}>
+          {filtered.length} de {materiales.length}
+        </span>
       </div>
 
       {materiales.length === 0 ? (
@@ -1167,7 +1330,10 @@ function MaterialesPage({ showToast }) {
           <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:14 }}>
             <div className="card card-p" style={{ textAlign:'center' }}>
               <div style={{ fontSize:18, fontWeight:800, color:'var(--green)' }}>{syncPreview.conMatch}</div>
-              <div style={{ fontSize:10.5, color:'var(--tm)' }}>con match en APU</div>
+              <div style={{ fontSize:10.5, color:'var(--tm)' }}>match total</div>
+              <div style={{ fontSize:9, color:'var(--tm)', marginTop:2 }}>
+                {syncPreview.matchPorCodigo || 0} código · {syncPreview.matchPorNombre || 0} nombre
+              </div>
             </div>
             <div className="card card-p" style={{ textAlign:'center' }}>
               <div style={{ fontSize:18, fontWeight:800, color:'var(--amber)' }}>{syncPreview.cambios.length}</div>
@@ -1233,11 +1399,20 @@ function MaterialesPage({ showToast }) {
         <div className="g2">
           <div style={{gridColumn:'1/-1'}}><label className="flabel">Nombre del material *</label><input className="fi" placeholder="Ej: Cemento Sol Tipo I" value={form.nombre_material||''} onChange={e=>setForm({...form, nombre_material:e.target.value})}/></div>
           <div><label className="flabel">Categoría</label>
-            <select className="fi" value={form.categoria||''} onChange={e=>setForm({...form, categoria:e.target.value})}>
+            <select className="fi" value={form.categoria||''} onChange={e=>{
+              const v = e.target.value;
+              if (v === '__nueva__') {
+                const nombre = window.prompt('Nombre de la nueva categoría:');
+                if (nombre && crearCategoriaCustom(nombre)) {
+                  setForm({...form, categoria: nombre.trim()});
+                }
+                return;
+              }
+              setForm({...form, categoria: v});
+            }}>
               <option value="">— Selecciona —</option>
-              <option>Cemento</option><option>Acero</option><option>Albañilería</option>
-              <option>Agregados</option><option>Ferretería</option><option>Eléctrico</option>
-              <option>Sanitario</option><option>Acabados</option><option>Otro</option>
+              {categoriasDisponibles.map(c => <option key={c} value={c}>{c}</option>)}
+              <option value="__nueva__" style={{ fontStyle:'italic', color:'var(--amber)' }}>+ Crear nueva categoría…</option>
             </select>
           </div>
           <div><label className="flabel">Unidad *</label>
@@ -1347,7 +1522,6 @@ function HerramientasPage({ showToast }) {
       showToast('No hay herramientas para categorizar', 'red');
       return;
     }
-    // Solo herramientas con tipo 'maquinaria_liviana' (default genérico)
     const aClasificar = herramientas.filter(h => h.tipo_herramienta === 'maquinaria_liviana');
     if (!aClasificar.length) {
       showToast('Todas las herramientas ya tienen un tipo específico', 'amber');
@@ -1356,11 +1530,18 @@ function HerramientasPage({ showToast }) {
     setIaModalH('running');
     setIaProgressH({ current:0, total: aClasificar.length });
 
-    const BATCH = 50;
+    // Batches grandes en paralelo
+    const BATCH = 100;
+    const PARALLEL = 6;
+    const chunks = [];
+    for (let i = 0; i < aClasificar.length; i += BATCH) {
+      chunks.push(aClasificar.slice(i, i + BATCH));
+    }
     const all = [];
     let errorMsg = null;
-    for (let i = 0; i < aClasificar.length; i += BATCH) {
-      const chunk = aClasificar.slice(i, i + BATCH);
+    let completados = 0;
+
+    const procesarChunk = async (chunk) => {
       try {
         const resp = await fetch('/api/categorize', {
           method: 'POST',
@@ -1372,14 +1553,23 @@ function HerramientasPage({ showToast }) {
         });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({}));
-          errorMsg = err.error || `HTTP ${resp.status}`;
-          break;
+          throw new Error(err.error || `HTTP ${resp.status}`);
         }
         const data = await resp.json();
         all.push(...(data.results || []));
-        setIaProgressH({ current: Math.min(i + BATCH, aClasificar.length), total: aClasificar.length });
-      } catch (e) { errorMsg = e.message; break; }
-    }
+        completados += chunk.length;
+        setIaProgressH({ current: Math.min(completados, aClasificar.length), total: aClasificar.length });
+      } catch (e) { if (!errorMsg) errorMsg = e.message; }
+    };
+
+    let nextIdx = 0;
+    const workers = Array(Math.min(PARALLEL, chunks.length)).fill(0).map(async () => {
+      while (nextIdx < chunks.length && !errorMsg) {
+        const myIdx = nextIdx++;
+        await procesarChunk(chunks[myIdx]);
+      }
+    });
+    await Promise.all(workers);
 
     if (errorMsg) {
       setIaModalH(null);
@@ -1401,14 +1591,12 @@ function HerramientasPage({ showToast }) {
   };
 
   const aplicarCategorizacionIAH = async () => {
-    console.log('[IA Herramientas] Aplicar click. iaResultsH:', iaResultsH?.length);
     if (!iaResultsH || !iaResultsH.length) {
       showToast('No hay cambios para aplicar', 'amber');
       return;
     }
     const now = new Date().toISOString();
-    let aplicados = 0, saltados = 0;
-    const erroresList = [];
+    const userId = auth?.profile?.id ?? 'offline';
 
     let herramientasFresh;
     try {
@@ -1420,35 +1608,53 @@ function HerramientasPage({ showToast }) {
     }
     const byId = new Map(herramientasFresh.map(h => [h.id, h]));
 
+    const records = [];
+    let saltados = 0;
     for (const c of iaResultsH) {
       const h = byId.get(c.id);
       if (!h) { saltados++; continue; }
       if (h.tipo_herramienta === c.nuevo) { saltados++; continue; }
-      try {
-        await window.__db.herramientas.update(c.id, {
-          tipo_herramienta: c.nuevo,
-          updated_at: now,
-          updated_by: auth?.profile?.id ?? 'offline',
-          version: (h.version ?? 0) + 1,
-          sync_status: h.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
-        });
-        try { await window.__logAudit?.({ action:'update', table:'herramientas', recordId: c.id,
-          oldData:{ tipo_herramienta: c.actual }, newData:{ tipo_herramienta: c.nuevo }, reason:'Categorización IA (Claude)' }); } catch {}
-        aplicados++;
-      } catch (e) {
-        console.error('[IA Herr] Update fallo para', c.id, c.nombre, e);
-        erroresList.push({ id: c.id, error: e.message || String(e) });
-      }
+      records.push({
+        ...h,
+        tipo_herramienta: c.nuevo,
+        updated_at: now,
+        updated_by: userId,
+        version: (h.version ?? 0) + 1,
+        sync_status: h.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
     }
+
+    if (!records.length) {
+      showToast(`Nada que aplicar · ${saltados} sin cambios`, 'amber');
+      setIaModalH(null);
+      setIaResultsH([]);
+      return;
+    }
+
+    try {
+      await window.__db.herramientas.bulkPut(records);
+    } catch (e) {
+      console.error('[IA Herr] bulkPut fallo:', e);
+      showToast('Error al guardar: ' + (e.message||e), 'red');
+      return;
+    }
+
+    setTimeout(() => {
+      Promise.all(records.map(r => {
+        const orig = byId.get(r.id);
+        return window.__logAudit?.({
+          action:'update', table:'herramientas', recordId: r.id,
+          oldData:{ tipo_herramienta: orig?.tipo_herramienta },
+          newData:{ tipo_herramienta: r.tipo_herramienta },
+          reason:'Categorización IA (Claude)',
+        }).catch(() => {});
+      }));
+    }, 0);
 
     try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'herramientas' } })); } catch {}
     try { window.dispatchEvent(new Event('online')); } catch {}
 
-    if (erroresList.length) {
-      showToast(`${aplicados} aplicados · ${erroresList.length} errores · ${saltados} saltados`, 'amber');
-    } else {
-      showToast(`${aplicados} herramientas categorizadas${saltados ? ` · ${saltados} sin cambios` : ''}`, 'green');
-    }
+    showToast(`${records.length} herramientas categorizadas${saltados ? ` · ${saltados} sin cambios` : ''}`, 'green');
     setIaModalH(null);
     setIaResultsH([]);
   };
