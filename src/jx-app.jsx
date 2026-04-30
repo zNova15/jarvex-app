@@ -659,6 +659,7 @@ function App() {
       case 'comparativo-periodos':   return <ComparativoPeriodosPage showToast={showToast}/>;
       case 'busqueda':               return <BusquedaGlobalPage showToast={showToast}/>;
       case 'kpis-obra':              return <KPIsObraPage showToast={showToast}/>;
+      case 'cumplimiento-cronograma': return <CumplimientoCronogramaPage showToast={showToast}/>;
       case 'conflictos':    return <ConflictsPage showToast={showToast}/>;
       case 'solicitudes':   return <SolicitudesPage showToast={showToast}/>;
       default:              return <ComingSoon page={page}/>;
