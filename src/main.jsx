@@ -19,12 +19,16 @@ import {
   useValorizaciones,
   useCuentasBancarias, useCronogramaPagos, useMovimientosBancarios,
   useActivosPesados, useHorasMaquina,
+  useCharlasSeguridad, useIperc, useEppEntregas, useInspeccionesSeguridad, useCapacitaciones,
+  useSubcontratistas, useSubcontratos, useSubcontratoValorizaciones,
+  usePersonalContrato, usePlanillas, usePlanillaBoletas,
 } from './hooks/useOfflineData';
 import { syncAll } from './sync/SyncEngine';
 import { uploadPendingEvidencias, saveEvidenciaLocal } from './sync/EvidenceUploader';
 import { db, newId } from './db/jarvex.db';
 import { supabase } from './lib/supabase';
 import { generatePDF, downloadPDF, generateExcel } from './lib/reports';
+import * as contabilidadPdfs from './lib/contabilidad-pdfs';
 import { parseExcelFile, downloadTemplate, MODULES as IMPORT_MODULES } from './lib/excel';
 import { parseAPUFile, parseS10File, enrichJerarquia, buildArbol, parseAPU, parseInsumosList, parseGantt, detectS10Type, excelDateToISO } from './lib/apuParser';
 import { consultarRUC, consultarDNI } from './lib/identity';
@@ -65,9 +69,13 @@ window.__hooks = {
   useValorizaciones,
   useCuentasBancarias, useCronogramaPagos, useMovimientosBancarios,
   useActivosPesados, useHorasMaquina,
+  useCharlasSeguridad, useIperc, useEppEntregas, useInspeccionesSeguridad, useCapacitaciones,
+  useSubcontratistas, useSubcontratos, useSubcontratoValorizaciones,
+  usePersonalContrato, usePlanillas, usePlanillaBoletas,
 };
 window.__saveEvidenciaLocal = saveEvidenciaLocal;
 window.__reports = { generatePDF, downloadPDF, generateExcel };
+window.__pdfs = { ...(window.__pdfs || {}), ...contabilidadPdfs };
 window.__excel = { parseExcelFile, downloadTemplate, MODULES: IMPORT_MODULES };
 window.__apu = {
   parseAPUFile, parseS10File, enrichJerarquia, buildArbol,
@@ -103,6 +111,9 @@ import './components/jx-compras.jsx';
 import './components/jx-valorizaciones.jsx';
 import './components/jx-tesoreria.jsx';
 import './components/jx-activos.jsx';
+import './components/jx-ssoma.jsx';
+import './components/jx-subcontratos.jsx';
+import './components/jx-planillas.jsx';
 import './components/jx-conflicts.jsx';
 import './jx-app.jsx';
 

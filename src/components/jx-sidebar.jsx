@@ -90,7 +90,17 @@ const NAV = [
   { id: 'comparativo', label: 'Planificado vs Real', icon: 'compare' },
   { id: 'costos', label: 'Costos', icon: 'dollar' },
   { id: 'valorizaciones', label: 'Valorizaciones', icon: 'dollar' },
+  { id: 'subcontratistas', label: 'Subcontratistas', icon: 'users' },
+  { id: 'subcontratos', label: 'Subcontratos', icon: 'package' },
   { id: 'incidencias', label: 'Incidencias', icon: 'alert' },
+
+  { section: 'SSOMA / SEGURIDAD' },
+  { id: 'charlas-seguridad', label: 'Charlas de 5 minutos', icon: 'alert' },
+  { id: 'iperc', label: 'IPERC (riesgos)', icon: 'alert' },
+  { id: 'epp', label: 'Entregas EPP', icon: 'check' },
+
+  { section: 'RRHH' },
+  { id: 'planillas', label: 'Planillas / Sueldos', icon: 'user' },
 
   { section: 'CONTABILIDAD' },
   { id: 'cont-dashboard', label: 'Dashboard Contable', icon: 'dashboard' },

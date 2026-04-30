@@ -35,6 +35,13 @@ const TRANSACTIONAL_TABLES = [
   'cuentas_bancarias', 'movimientos_bancarios', 'cronograma_pagos',
   // Activos pesados
   'activos_pesados', 'horas_maquina', 'consumos_combustible', 'mantenimientos_maquinaria',
+  // SSOMA
+  'charlas_seguridad', 'charla_asistentes', 'iperc',
+  'epp_entregas', 'inspecciones_seguridad', 'capacitaciones',
+  // Subcontratos
+  'subcontratistas', 'subcontratos', 'subcontrato_valorizaciones',
+  // Planillas
+  'personal_contrato', 'planillas', 'planilla_boletas',
   'asistencia',
   'movimientos_materiales',
   'movimientos_herramientas',
@@ -81,6 +88,21 @@ const MASTER_TABLES = [
   { tabla: 'horas_maquina',          query: () => supabase.from('horas_maquina').select('*').is('deleted_at', null) },
   { tabla: 'consumos_combustible',   query: () => supabase.from('consumos_combustible').select('*').is('deleted_at', null) },
   { tabla: 'mantenimientos_maquinaria', query: () => supabase.from('mantenimientos_maquinaria').select('*').is('deleted_at', null) },
+  // SSOMA
+  { tabla: 'charlas_seguridad',         query: () => supabase.from('charlas_seguridad').select('*').is('deleted_at', null) },
+  { tabla: 'charla_asistentes',         query: () => supabase.from('charla_asistentes').select('*').is('deleted_at', null) },
+  { tabla: 'iperc',                     query: () => supabase.from('iperc').select('*').is('deleted_at', null) },
+  { tabla: 'epp_entregas',              query: () => supabase.from('epp_entregas').select('*').is('deleted_at', null) },
+  { tabla: 'inspecciones_seguridad',    query: () => supabase.from('inspecciones_seguridad').select('*').is('deleted_at', null) },
+  { tabla: 'capacitaciones',            query: () => supabase.from('capacitaciones').select('*').is('deleted_at', null) },
+  // Subcontratos
+  { tabla: 'subcontratistas',           query: () => supabase.from('subcontratistas').select('*').is('deleted_at', null) },
+  { tabla: 'subcontratos',              query: () => supabase.from('subcontratos').select('*').is('deleted_at', null) },
+  { tabla: 'subcontrato_valorizaciones',query: () => supabase.from('subcontrato_valorizaciones').select('*').is('deleted_at', null) },
+  // Planillas
+  { tabla: 'personal_contrato',         query: () => supabase.from('personal_contrato').select('*').is('deleted_at', null) },
+  { tabla: 'planillas',                 query: () => supabase.from('planillas').select('*').is('deleted_at', null) },
+  { tabla: 'planilla_boletas',          query: () => supabase.from('planilla_boletas').select('*').is('deleted_at', null) },
   { tabla: 'profiles',               query: () => supabase.from('profiles').select('*') },
 ];
 

@@ -302,6 +302,93 @@ export function useHorasMaquina(activo_id) {
   , [activo_id]);
 }
 
+// ── SSOMA ───────────────────────────────────────────────────────────
+export function useCharlasSeguridad(obra_id) {
+  return useOfflineData('charlas_seguridad', q =>
+    obra_id
+      ? q.where('obra_id').equals(obra_id).filter(c => !c.deleted_at).toArray()
+      : q.filter(c => !c.deleted_at).toArray()
+  , [obra_id]);
+}
+
+export function useIperc(obra_id) {
+  return useOfflineData('iperc', q =>
+    obra_id
+      ? q.where('obra_id').equals(obra_id).filter(i => !i.deleted_at).toArray()
+      : q.filter(i => !i.deleted_at).toArray()
+  , [obra_id]);
+}
+
+export function useEppEntregas(obra_id) {
+  return useOfflineData('epp_entregas', q =>
+    obra_id
+      ? q.where('obra_id').equals(obra_id).filter(e => !e.deleted_at).toArray()
+      : q.filter(e => !e.deleted_at).toArray()
+  , [obra_id]);
+}
+
+export function useInspeccionesSeguridad(obra_id) {
+  return useOfflineData('inspecciones_seguridad', q =>
+    obra_id
+      ? q.where('obra_id').equals(obra_id).filter(i => !i.deleted_at).toArray()
+      : q.filter(i => !i.deleted_at).toArray()
+  , [obra_id]);
+}
+
+export function useCapacitaciones(obra_id) {
+  return useOfflineData('capacitaciones', q =>
+    obra_id
+      ? q.where('obra_id').equals(obra_id).filter(c => !c.deleted_at).toArray()
+      : q.filter(c => !c.deleted_at).toArray()
+  , [obra_id]);
+}
+
+// ── Subcontratos ────────────────────────────────────────────────────
+export function useSubcontratistas() {
+  return useOfflineData('subcontratistas', q => q.filter(s => !s.deleted_at).toArray(), []);
+}
+
+export function useSubcontratos(obra_id) {
+  return useOfflineData('subcontratos', q =>
+    obra_id
+      ? q.where('obra_id').equals(obra_id).filter(s => !s.deleted_at).toArray()
+      : q.filter(s => !s.deleted_at).toArray()
+  , [obra_id]);
+}
+
+export function useSubcontratoValorizaciones(subcontrato_id) {
+  return useOfflineData('subcontrato_valorizaciones', q =>
+    subcontrato_id
+      ? q.where('subcontrato_id').equals(subcontrato_id).filter(v => !v.deleted_at).toArray()
+      : q.filter(v => !v.deleted_at).toArray()
+  , [subcontrato_id]);
+}
+
+// ── Planillas ───────────────────────────────────────────────────────
+export function usePersonalContrato(personal_id) {
+  return useOfflineData('personal_contrato', q =>
+    personal_id
+      ? q.where('personal_id').equals(personal_id).filter(p => !p.deleted_at).toArray()
+      : q.filter(p => !p.deleted_at).toArray()
+  , [personal_id]);
+}
+
+export function usePlanillas(obra_id) {
+  return useOfflineData('planillas', q =>
+    obra_id
+      ? q.where('obra_id').equals(obra_id).filter(p => !p.deleted_at).toArray()
+      : q.filter(p => !p.deleted_at).toArray()
+  , [obra_id]);
+}
+
+export function usePlanillaBoletas(planilla_id) {
+  return useOfflineData('planilla_boletas', q =>
+    planilla_id
+      ? q.where('planilla_id').equals(planilla_id).filter(b => !b.deleted_at).toArray()
+      : q.filter(b => !b.deleted_at).toArray()
+  , [planilla_id]);
+}
+
 export function useConflicts() {
   const [conflicts, setConflicts] = useState([]);
 

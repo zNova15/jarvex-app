@@ -331,6 +331,10 @@ function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStat
     'cuentas-bancarias':'Cuentas Bancarias', 'flujo-caja':'Flujo de Caja / Cronograma de Pagos',
     requisiciones:'Requisiciones', 'ordenes-compra':'Órdenes de Compra',
     valorizaciones:'Valorizaciones', 'activos-pesados':'Activos Pesados / Maquinaria',
+    'charlas-seguridad':'Charlas de Seguridad', iperc:'IPERC — Matriz de Riesgos',
+    epp:'Entregas de EPP',
+    subcontratistas:'Subcontratistas', subcontratos:'Subcontratos',
+    planillas:'Planillas / Sueldos',
     conflictos:'Bandeja de Conflictos',
     solicitudes:'Solicitudes de Cambio',
   };
@@ -593,6 +597,12 @@ function App() {
       case 'ordenes-compra':         return <OrdenesCompraPage showToast={showToast}/>;
       case 'valorizaciones':         return <ValorizacionesPage showToast={showToast}/>;
       case 'activos-pesados':        return <ActivosPesadosPage showToast={showToast}/>;
+      case 'charlas-seguridad':      return <CharlasSeguridadPage showToast={showToast}/>;
+      case 'iperc':                  return <IpercPage showToast={showToast}/>;
+      case 'epp':                    return <EppPage showToast={showToast}/>;
+      case 'subcontratistas':        return <SubcontratistasPage showToast={showToast}/>;
+      case 'subcontratos':           return <SubcontratosPage showToast={showToast}/>;
+      case 'planillas':              return <PlanillasPage showToast={showToast}/>;
       case 'conflictos':    return <ConflictsPage showToast={showToast}/>;
       case 'solicitudes':   return <SolicitudesPage showToast={showToast}/>;
       default:              return <ComingSoon page={page}/>;
