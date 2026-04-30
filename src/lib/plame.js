@@ -280,7 +280,7 @@ export function downloadTxt(filename, content) {
 // ─────────────────────────────────────────────────────────────
 // 4. Generar Boletas PDF (1 trabajador por página)
 // ─────────────────────────────────────────────────────────────
-export function generateBoletasPDF(planilla, boletas, personal, company, obra) {
+export function generateBoletasPDF(planilla, boletas, personal, company, obra, contratos) {
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   const pageWidth = 210;
   const pageHeight = 297;
@@ -288,10 +288,12 @@ export function generateBoletasPDF(planilla, boletas, personal, company, obra) {
   planilla = planilla || {};
   boletas = Array.isArray(boletas) ? boletas : [];
   personal = Array.isArray(personal) ? personal : [];
+  contratos = Array.isArray(contratos) ? contratos : [];
   company = company || {};
   obra = obra || {};
 
-  const periodo = `${MESES[(planilla.periodo_mes || 1) - 1]} ${planilla.periodo_anio || ''}`.trim();
+  const mesIdx = Math.max(0, Math.min(11, (planilla.periodo_mes || 1) - 1));
+  const periodo = `${MESES[mesIdx]} ${planilla.periodo_anio || ''}`.trim();
   const validBoletas = boletas.filter(b => b && Number(b.neto_pagar || 0) > 0);
 
   if (validBoletas.length === 0) {
@@ -345,11 +347,12 @@ export function generateBoletasPDF(planilla, boletas, personal, company, obra) {
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8);
 
+    const contrato = findContrato(contratos, b.personal_id) || {};
     const apellidos = b.apellidos || persona.apellidos || '';
     const nombres = b.nombres || persona.nombres || '';
     const cargo = b.cargo || persona.cargo || '—';
     const dni = b.dni || persona.dni || '—';
-    const tipoPension = String(persona.tipo_pension || '').toUpperCase();
+    const tipoPension = String(contrato.tipo_pension || contrato.regimen_pension || '').toUpperCase();
 
     const col1x = 16, col2x = 110;
     let ly = y + 9;

@@ -364,24 +364,27 @@ function BalanceGeneralPage({ showToast }) {
       }
     });
 
-    const efectivo = ingresosCobrados - costosPagados - gastosPagados;
+    // efectivo se clampa en 0 si es negativo; el déficit va al pasivo
+    const efectivoBruto = ingresosCobrados - costosPagados - gastosPagados;
+    const efectivo = Math.max(0, efectivoBruto);
+    const deficitFinanciamiento = efectivoBruto < 0 ? -efectivoBruto : 0;
 
     // ── Pasivo: cronograma de pagos pendientes ──
     const pagosPendientes = (pagos || []).filter(p =>
-      (p.estado === 'programado' || p.estado === 'pendiente' || p.estado === 'vencido') &&
+      (p.estado === 'programado' || p.estado === 'vencido') &&
       (companyId === 'todas' || p.company_id === companyId || !p.company_id)
     );
     const pasivoCronograma = pagosPendientes.reduce((s, p) => s + Number(p.monto || 0), 0);
 
     // Activo total = efectivo + cuentas por cobrar
     const activoTotal = efectivo + cxc;
-    // Pasivo total = cuentas por pagar (movs) + cronograma pendiente
-    const pasivoTotal = cxp + pasivoCronograma;
+    // Pasivo total = cuentas por pagar (movs) + cronograma pendiente + déficit
+    const pasivoTotal = cxp + pasivoCronograma + deficitFinanciamiento;
     // Patrimonio = Activo - Pasivo (cuadra por construcción)
     const patrimonio  = activoTotal - pasivoTotal;
 
     return {
-      efectivo, cxc, cxp,
+      efectivo, cxc, cxp, deficitFinanciamiento,
       ingresosCobrados, costosPagados, gastosPagados,
       pasivoCronograma,
       activoTotal, pasivoTotal, patrimonio,
@@ -493,6 +496,13 @@ function BalanceGeneralPage({ showToast }) {
                 <td><strong>46</strong> Cuentas por pagar diversas (cronograma)</td>
                 <td style={{ textAlign:'right' }} className="col-num">{fmtCurP(data.pasivoCronograma, moneda)}</td>
               </tr>
+              {data.deficitFinanciamiento > 0 && (
+                <tr>
+                  <td><span className="badge b-red">Pasivo</span></td>
+                  <td><strong>45</strong> Déficit de financiamiento (efectivo neg.)</td>
+                  <td style={{ textAlign:'right' }} className="col-num">{fmtCurP(data.deficitFinanciamiento, moneda)}</td>
+                </tr>
+              )}
               <tr style={{ fontWeight:700 }}>
                 <td>—</td>
                 <td>Total Pasivo</td>

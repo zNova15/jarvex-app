@@ -122,6 +122,7 @@ const NAV = [
   { id: 'cuentas-bancarias', label: 'Cuentas Bancarias', icon: 'dollar' },
   { id: 'flujo-caja', label: 'Flujo de Caja / Pagos', icon: 'calendar' },
   { id: 'plan-cuentas', label: 'Plan de Cuentas (PCGE)', icon: 'list' },
+  { id: 'libro-diario', label: 'Libro Diario / Asientos', icon: 'list' },
   { id: 'balance-general', label: 'Balance General', icon: 'compare' },
   { id: 'estado-resultados', label: 'Estado de Resultados', icon: 'dollar' },
 

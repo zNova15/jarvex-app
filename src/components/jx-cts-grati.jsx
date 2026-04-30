@@ -107,10 +107,12 @@ function useObraActiva() {
     let attempts = 0;
     const find = async () => {
       attempts++;
-      const obras = await window.__db.obras.toArray();
-      const stored = window.__getObraActivaId?.();
-      const a = (stored && obras.find(o => o.id === stored && !o.deleted_at)) || obras.find(o => !o.deleted_at);
-      if (a) { if (!cancelled) setObraId(a.id); return; }
+      try {
+        const obras = await window.__db.obras.toArray();
+        const stored = window.__getObraActivaId?.();
+        const a = (stored && obras.find(o => o.id === stored && !o.deleted_at)) || obras.find(o => !o.deleted_at);
+        if (a) { if (!cancelled) setObraId(a.id); return; }
+      } catch (_) {}
       if (cancelled || attempts >= 10) return;
       setTimeout(find, 500);
     };
@@ -399,7 +401,11 @@ function GratificacionesPage({ showToast }) {
       const remCompAuto = calcRemuneracionComputable(contrato, { incluirSextoGrati: false });
       const remComp = overrides[personal.id]?.remComp ?? remCompAuto;
       const grati = +(remComp * (meses / 6)).toFixed(2);
-      const bonif = +(grati * 0.09).toFixed(2);   // bonif. extraordinaria EsSalud 9%
+      // Bonif. extraordinaria EsSalud 9% (Ley 30334) — solo régimen general,
+      // NO aplica a construcción civil ni regímenes especiales
+      const regimen = String(contrato.regimen_laboral || 'general').toLowerCase();
+      const aplicaBonif = regimen === 'general' || regimen === '';
+      const bonif = aplicaBonif ? +(grati * 0.09).toFixed(2) : 0;
       const total = +(grati + bonif).toFixed(2);
       result[personal.id] = { meses, remComp, grati, bonif, total, fechaIngreso: fechaIng };
     });

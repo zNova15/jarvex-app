@@ -620,6 +620,7 @@ function App() {
       case 'plan-cuentas':           return <PlanCuentasPage showToast={showToast}/>;
       case 'balance-general':        return <BalanceGeneralPage showToast={showToast}/>;
       case 'estado-resultados':      return <EstadoResultadosPage showToast={showToast}/>;
+      case 'libro-diario':           return <LibroDiarioPage showToast={showToast}/>;
       case 'conflictos':    return <ConflictsPage showToast={showToast}/>;
       case 'solicitudes':   return <SolicitudesPage showToast={showToast}/>;
       default:              return <ComingSoon page={page}/>;

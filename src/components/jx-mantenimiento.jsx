@@ -67,13 +67,26 @@ function MantenimientoProgramadoPage({ showToast }) {
     let cancelled = false;
     (async () => {
       const out = {};
-      for (const a of activos) {
-        if (a.deleted_at) continue;
-        try {
-          const hmRows = await window.__db.horas_maquina.where('activo_id').equals(a.id).filter(x=>!x.deleted_at).toArray();
-          const mtRows = await window.__db.mantenimientos_maquinaria.where('activo_id').equals(a.id).filter(x=>!x.deleted_at).toArray();
+      try {
+        const [allHm, allMt] = await Promise.all([
+          window.__db.horas_maquina.filter(x=>!x.deleted_at).toArray(),
+          window.__db.mantenimientos_maquinaria.filter(x=>!x.deleted_at).toArray(),
+        ]);
+        const hmByAct = {};
+        for (const h of allHm) {
+          const k = h.activo_id; if (!k) continue;
+          (hmByAct[k] = hmByAct[k] || []).push(h);
+        }
+        const mtByAct = {};
+        for (const m of allMt) {
+          const k = m.activo_id; if (!k) continue;
+          (mtByAct[k] = mtByAct[k] || []).push(m);
+        }
+        for (const a of activos) {
+          if (a.deleted_at) continue;
+          const hmRows = hmByAct[a.id] || [];
+          const mtRows = mtByAct[a.id] || [];
           const hmAcum = hmRows.reduce((s,h)=>s+Number(h.horas_trabajadas||h.horas||0),0);
-          // último por tipo
           const ultimos = {};
           for (const m of mtRows) {
             const t = m.tipo;
@@ -84,8 +97,8 @@ function MantenimientoProgramadoPage({ showToast }) {
             }
           }
           out[a.id] = { hmAcum, ultimos, mantenimientos: mtRows };
-        } catch { out[a.id] = { hmAcum:0, ultimos:{}, mantenimientos:[] }; }
-      }
+        }
+      } catch { /* deja resumen vacío */ }
       if (!cancelled) setResumen(out);
     })();
     return () => { cancelled = true; };

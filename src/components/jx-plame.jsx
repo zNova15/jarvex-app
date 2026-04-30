@@ -178,7 +178,7 @@ function PlamePage({ showToast }) {
     try {
       const ctx = await cargarContextoExport();
       if (!ctx) throw new Error('No se pudo cargar contexto');
-      generateBoletasPDF(planilla, boletas, ctx.personal, ctx.company, ctx.obra);
+      generateBoletasPDF(planilla, boletas, ctx.personal, ctx.company, ctx.obra, ctx.contratos);
       showToast?.(`Boletas PDF generadas (${totales.validas})`, 'green');
     } catch (e) {
       console.error('[boletas pdf]', e);
