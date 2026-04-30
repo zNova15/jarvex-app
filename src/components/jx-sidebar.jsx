@@ -84,6 +84,7 @@ const NAV = [
 
   { section: 'EJECUTIVO' },
   { id: 'dashboard-ejecutivo', label: 'Dashboard Ejecutivo', icon: 'dashboard' },
+  { id: 'kpis-obra', label: 'KPIs por Obra', icon: 'trending' },
   { id: 'alertas', label: 'Centro de Alertas', icon: 'bell' },
   { id: 'busqueda', label: 'Búsqueda Global', icon: 'search' },
 

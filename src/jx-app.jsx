@@ -658,6 +658,7 @@ function App() {
       case 'flujo-proyectado':       return <FlujoProyectadoPage showToast={showToast}/>;
       case 'comparativo-periodos':   return <ComparativoPeriodosPage showToast={showToast}/>;
       case 'busqueda':               return <BusquedaGlobalPage showToast={showToast}/>;
+      case 'kpis-obra':              return <KPIsObraPage showToast={showToast}/>;
       case 'conflictos':    return <ConflictsPage showToast={showToast}/>;
       case 'solicitudes':   return <SolicitudesPage showToast={showToast}/>;
       default:              return <ComingSoon page={page}/>;

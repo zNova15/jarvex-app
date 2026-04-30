@@ -126,6 +126,7 @@ import './components/jx-asientos.jsx';
 import './components/jx-alertas.jsx';
 import './components/jx-reportes-financieros.jsx';
 import './components/jx-busqueda.jsx';
+import './components/jx-kpis-obra.jsx';
 import './components/jx-conflicts.jsx';
 import './jx-app.jsx';
 
