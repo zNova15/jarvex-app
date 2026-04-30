@@ -123,6 +123,7 @@ import './components/jx-cts-grati.jsx';
 import './components/jx-plame.jsx';
 import './components/jx-plan-cuentas.jsx';
 import './components/jx-asientos.jsx';
+import './components/jx-alertas.jsx';
 import './components/jx-conflicts.jsx';
 import './jx-app.jsx';
 

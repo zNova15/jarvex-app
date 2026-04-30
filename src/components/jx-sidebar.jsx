@@ -84,6 +84,7 @@ const NAV = [
 
   { section: 'EJECUTIVO' },
   { id: 'dashboard-ejecutivo', label: 'Dashboard Ejecutivo', icon: 'dashboard' },
+  { id: 'alertas', label: 'Centro de Alertas', icon: 'bell' },
 
   { section: 'GESTIÓN DE OBRA' },
   { id: 'partidas', label: 'Partidas', icon: 'list' },
