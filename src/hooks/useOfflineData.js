@@ -236,6 +236,72 @@ export function useIntercompanyTransactions() {
   , []);
 }
 
+// ── Compras ──────────────────────────────────────────────────────────
+export function useRequisiciones(obra_id) {
+  return useOfflineData('requisiciones', q =>
+    obra_id
+      ? q.where('obra_id').equals(obra_id).filter(r => !r.deleted_at).toArray()
+      : q.filter(r => !r.deleted_at).toArray()
+  , [obra_id]);
+}
+
+export function useOrdenesCompra(obra_id) {
+  return useOfflineData('ordenes_compra', q =>
+    obra_id
+      ? q.where('obra_id').equals(obra_id).filter(o => !o.deleted_at).toArray()
+      : q.filter(o => !o.deleted_at).toArray()
+  , [obra_id]);
+}
+
+// ── Valorizaciones ──────────────────────────────────────────────────
+export function useValorizaciones(obra_id) {
+  return useOfflineData('valorizaciones', q =>
+    obra_id
+      ? q.where('obra_id').equals(obra_id).filter(v => !v.deleted_at).toArray()
+      : q.filter(v => !v.deleted_at).toArray()
+  , [obra_id]);
+}
+
+// ── Tesorería ───────────────────────────────────────────────────────
+export function useCuentasBancarias(company_id) {
+  return useOfflineData('cuentas_bancarias', q =>
+    company_id
+      ? q.where('company_id').equals(company_id).filter(c => !c.deleted_at).toArray()
+      : q.filter(c => !c.deleted_at).toArray()
+  , [company_id]);
+}
+
+export function useCronogramaPagos(company_id) {
+  return useOfflineData('cronograma_pagos', q =>
+    company_id
+      ? q.where('company_id').equals(company_id).filter(p => !p.deleted_at).toArray()
+      : q.filter(p => !p.deleted_at).toArray()
+  , [company_id]);
+}
+
+export function useMovimientosBancarios(cuenta_id) {
+  return useOfflineData('movimientos_bancarios', q =>
+    cuenta_id
+      ? q.where('cuenta_id').equals(cuenta_id).filter(m => !m.deleted_at).toArray()
+      : q.filter(m => !m.deleted_at).toArray()
+  , [cuenta_id]);
+}
+
+// ── Activos pesados ─────────────────────────────────────────────────
+export function useActivosPesados() {
+  return useOfflineData('activos_pesados', q =>
+    q.filter(a => !a.deleted_at).toArray()
+  , []);
+}
+
+export function useHorasMaquina(activo_id) {
+  return useOfflineData('horas_maquina', q =>
+    activo_id
+      ? q.where('activo_id').equals(activo_id).filter(h => !h.deleted_at).toArray()
+      : q.filter(h => !h.deleted_at).toArray()
+  , [activo_id]);
+}
+
 export function useConflicts() {
   const [conflicts, setConflicts] = useState([]);
 

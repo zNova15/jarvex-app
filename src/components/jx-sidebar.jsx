@@ -74,6 +74,13 @@ const NAV = [
   { id: 'proveedores', label: 'Proveedores', icon: 'truck' },
   { id: 'evidencias', label: 'Evidencias', icon: 'camera' },
 
+  { section: 'COMPRAS / LOGÍSTICA' },
+  { id: 'requisiciones', label: 'Requisiciones', icon: 'list' },
+  { id: 'ordenes-compra', label: 'Órdenes de Compra', icon: 'package' },
+
+  { section: 'MAQUINARIA' },
+  { id: 'activos-pesados', label: 'Equipos Pesados', icon: 'tool' },
+
   { section: 'GESTIÓN DE OBRA' },
   { id: 'partidas', label: 'Partidas', icon: 'list' },
   { id: 'insumos', label: 'Insumos por Partida', icon: 'layers' },
@@ -82,6 +89,7 @@ const NAV = [
   { id: 'avance', label: 'Avance de Obra', icon: 'hardHat' },
   { id: 'comparativo', label: 'Planificado vs Real', icon: 'compare' },
   { id: 'costos', label: 'Costos', icon: 'dollar' },
+  { id: 'valorizaciones', label: 'Valorizaciones', icon: 'dollar' },
   { id: 'incidencias', label: 'Incidencias', icon: 'alert' },
 
   { section: 'CONTABILIDAD' },
@@ -90,6 +98,8 @@ const NAV = [
   { id: 'movimientos-contables', label: 'Movimientos', icon: 'dollar' },
   { id: 'intercompany', label: 'Operaciones entre Empresas', icon: 'compare' },
   { id: 'consolidado', label: 'Consolidado', icon: 'list' },
+  { id: 'cuentas-bancarias', label: 'Cuentas Bancarias', icon: 'dollar' },
+  { id: 'flujo-caja', label: 'Flujo de Caja / Pagos', icon: 'calendar' },
 
   { section: 'ADMINISTRACIÓN' },
   { id: 'usuarios', label: 'Usuarios', icon: 'user' },

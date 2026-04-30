@@ -24,6 +24,17 @@ const TRANSACTIONAL_TABLES = [
   'companies',
   'accounting_movements',
   'intercompany_transactions',
+  // Compras
+  'requisiciones', 'requisicion_items',
+  'cotizaciones', 'cotizacion_items',
+  'ordenes_compra', 'oc_items',
+  'recepciones', 'recepcion_items',
+  // Valorizaciones
+  'valorizaciones', 'valorizacion_partidas', 'valorizacion_adicionales',
+  // Tesorería
+  'cuentas_bancarias', 'movimientos_bancarios', 'cronograma_pagos',
+  // Activos pesados
+  'activos_pesados', 'horas_maquina', 'consumos_combustible', 'mantenimientos_maquinaria',
   'asistencia',
   'movimientos_materiales',
   'movimientos_herramientas',
@@ -48,6 +59,28 @@ const MASTER_TABLES = [
   { tabla: 'companies',                    query: () => supabase.from('companies').select('*').is('deleted_at', null) },
   { tabla: 'accounting_movements',         query: () => supabase.from('accounting_movements').select('*').is('deleted_at', null) },
   { tabla: 'intercompany_transactions',    query: () => supabase.from('intercompany_transactions').select('*').is('deleted_at', null) },
+  // Compras
+  { tabla: 'requisiciones',         query: () => supabase.from('requisiciones').select('*').is('deleted_at', null) },
+  { tabla: 'requisicion_items',     query: () => supabase.from('requisicion_items').select('*').is('deleted_at', null) },
+  { tabla: 'cotizaciones',          query: () => supabase.from('cotizaciones').select('*').is('deleted_at', null) },
+  { tabla: 'cotizacion_items',      query: () => supabase.from('cotizacion_items').select('*').is('deleted_at', null) },
+  { tabla: 'ordenes_compra',        query: () => supabase.from('ordenes_compra').select('*').is('deleted_at', null) },
+  { tabla: 'oc_items',              query: () => supabase.from('oc_items').select('*').is('deleted_at', null) },
+  { tabla: 'recepciones',           query: () => supabase.from('recepciones').select('*').is('deleted_at', null) },
+  { tabla: 'recepcion_items',       query: () => supabase.from('recepcion_items').select('*').is('deleted_at', null) },
+  // Valorizaciones
+  { tabla: 'valorizaciones',         query: () => supabase.from('valorizaciones').select('*').is('deleted_at', null) },
+  { tabla: 'valorizacion_partidas',  query: () => supabase.from('valorizacion_partidas').select('*').is('deleted_at', null) },
+  { tabla: 'valorizacion_adicionales', query: () => supabase.from('valorizacion_adicionales').select('*').is('deleted_at', null) },
+  // Tesorería
+  { tabla: 'cuentas_bancarias',      query: () => supabase.from('cuentas_bancarias').select('*').is('deleted_at', null) },
+  { tabla: 'movimientos_bancarios',  query: () => supabase.from('movimientos_bancarios').select('*').is('deleted_at', null) },
+  { tabla: 'cronograma_pagos',       query: () => supabase.from('cronograma_pagos').select('*').is('deleted_at', null) },
+  // Activos pesados
+  { tabla: 'activos_pesados',        query: () => supabase.from('activos_pesados').select('*').is('deleted_at', null) },
+  { tabla: 'horas_maquina',          query: () => supabase.from('horas_maquina').select('*').is('deleted_at', null) },
+  { tabla: 'consumos_combustible',   query: () => supabase.from('consumos_combustible').select('*').is('deleted_at', null) },
+  { tabla: 'mantenimientos_maquinaria', query: () => supabase.from('mantenimientos_maquinaria').select('*').is('deleted_at', null) },
   { tabla: 'profiles',               query: () => supabase.from('profiles').select('*') },
 ];
 
