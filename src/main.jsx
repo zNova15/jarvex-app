@@ -112,8 +112,12 @@ import './components/jx-valorizaciones.jsx';
 import './components/jx-tesoreria.jsx';
 import './components/jx-activos.jsx';
 import './components/jx-ssoma.jsx';
+import './components/jx-ssoma-extra.jsx';
 import './components/jx-subcontratos.jsx';
+import './components/jx-subcontratos-val.jsx';
 import './components/jx-planillas.jsx';
+import './components/jx-personal-contratos.jsx';
+import './components/jx-dashboard-ejecutivo.jsx';
 import './components/jx-conflicts.jsx';
 import './jx-app.jsx';
 

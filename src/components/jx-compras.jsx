@@ -262,6 +262,17 @@ function RequisicionesPage({ showToast }) {
                       <button className="btn btn-ghost btn-xs" title="Ver / Editar" onClick={()=>verDetalle(r)}>
                         <JxIcon name="eye" size={11}/>
                       </button>
+                      <button className="btn btn-ghost btn-xs" title="Descargar PDF" onClick={async ()=>{
+                        try {
+                          const its = await window.__db.requisicion_items.where('requisicion_id').equals(r.id).filter(x=>!x.deleted_at).toArray();
+                          const obras = await window.__db.obras.toArray();
+                          const obra = obras.find(o => o.id === r.obra_id);
+                          window.__pdfs?.generateRequisicionPdf?.(r, its, obra, '');
+                          showToast('PDF generado', 'green');
+                        } catch (e) { showToast('Error PDF: '+e.message, 'red'); }
+                      }} style={{ marginLeft:4 }}>
+                        <JxIcon name="download" size={11}/>
+                      </button>
                       {isAdmin && (
                         <button className="btn btn-red btn-xs" title="Eliminar" onClick={()=>eliminar(r)} style={{ marginLeft:4 }}>
                           <JxIcon name="trash" size={11}/>
@@ -590,9 +601,23 @@ function OrdenesCompraPage({ showToast }) {
                         {Object.entries(OC_ESTADO_LABEL).map(([k,v]) => <option key={k} value={k}>{v}</option>)}
                       </select>
                     </td>
-                    <td style={{ textAlign:'center' }}>
+                    <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
                       <button className="btn btn-ghost btn-xs" title="Ver / Editar" onClick={()=>verDetalle(oc)}>
                         <JxIcon name="eye" size={11}/>
+                      </button>
+                      <button className="btn btn-ghost btn-xs" title="Descargar PDF" onClick={async ()=>{
+                        try {
+                          const items = await window.__db.oc_items.where('orden_compra_id').equals(oc.id).filter(x=>!x.deleted_at).toArray();
+                          const proveedor = lookupProv(oc.proveedor_id);
+                          const obras = await window.__db.obras.toArray();
+                          const obra = obras.find(o => o.id === oc.obra_id);
+                          const companies = await window.__db.companies.toArray();
+                          const company = companies.find(c => !c.deleted_at && c.status === 'activa');
+                          window.__pdfs?.generateOCPdf?.(oc, items, proveedor, obra, company);
+                          showToast('PDF generado', 'green');
+                        } catch (e) { showToast('Error PDF: '+e.message, 'red'); }
+                      }} style={{ marginLeft:4 }}>
+                        <JxIcon name="download" size={11}/>
                       </button>
                     </td>
                   </tr>

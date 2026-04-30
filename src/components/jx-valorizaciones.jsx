@@ -391,6 +391,16 @@ function ValorizacionesPage({ showToast }) {
                       <button className="btn btn-ghost btn-xs" title="Ver / Editar" onClick={()=>verDetalle(v)}>
                         <JxIcon name="eye" size={11}/>
                       </button>
+                      <button className="btn btn-ghost btn-xs" title="Descargar PDF" onClick={async ()=>{
+                        try {
+                          const partidasVal = await window.__db.valorizacion_partidas.where('valorizacion_id').equals(v.id).filter(x=>!x.deleted_at).toArray();
+                          const company = (companies||[]).find(c => c.id === v.company_id);
+                          window.__pdfs?.generateValorizacionPdf?.(v, partidasVal, obra, company);
+                          showToast('PDF generado', 'green');
+                        } catch (e) { showToast('Error PDF: '+e.message, 'red'); }
+                      }} style={{ marginLeft:4 }}>
+                        <JxIcon name="download" size={11}/>
+                      </button>
                       {!v.accounting_movement_id && ['aprobada','presentada'].includes(v.estado) && (
                         <button className="btn btn-amber btn-xs" title="Generar mov. contable y facturar" onClick={()=>generarMovContable(v)} style={{ marginLeft:4 }}>
                           <JxIcon name="check" size={10}/>$

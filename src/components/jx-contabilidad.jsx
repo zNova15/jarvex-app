@@ -1152,6 +1152,14 @@ function ConsolidadoPage({ showToast }) {
             <option value="PEN">S/ (PEN)</option>
             <option value="USD">USD</option>
           </select>
+          <button className="btn btn-ghost btn-sm" title="Descargar PDF" onClick={()=>{
+            try {
+              window.__pdfs?.generateConsolidadoPdf?.(data, companies, `${moneda} · ${vista}`);
+              showToast?.('PDF generado', 'green');
+            } catch (e) { showToast?.('Error: '+e.message, 'red'); }
+          }}>
+            <JxIcon name="download" size={13}/>PDF
+          </button>
         </div>
       </div>
 

@@ -81,6 +81,9 @@ const NAV = [
   { section: 'MAQUINARIA' },
   { id: 'activos-pesados', label: 'Equipos Pesados', icon: 'tool' },
 
+  { section: 'EJECUTIVO' },
+  { id: 'dashboard-ejecutivo', label: 'Dashboard Ejecutivo', icon: 'dashboard' },
+
   { section: 'GESTIÓN DE OBRA' },
   { id: 'partidas', label: 'Partidas', icon: 'list' },
   { id: 'insumos', label: 'Insumos por Partida', icon: 'layers' },
@@ -92,14 +95,18 @@ const NAV = [
   { id: 'valorizaciones', label: 'Valorizaciones', icon: 'dollar' },
   { id: 'subcontratistas', label: 'Subcontratistas', icon: 'users' },
   { id: 'subcontratos', label: 'Subcontratos', icon: 'package' },
+  { id: 'subcontrato-valorizaciones', label: 'Valorizaciones de Subcontrato', icon: 'dollar' },
   { id: 'incidencias', label: 'Incidencias', icon: 'alert' },
 
   { section: 'SSOMA / SEGURIDAD' },
   { id: 'charlas-seguridad', label: 'Charlas de 5 minutos', icon: 'alert' },
   { id: 'iperc', label: 'IPERC (riesgos)', icon: 'alert' },
   { id: 'epp', label: 'Entregas EPP', icon: 'check' },
+  { id: 'inspecciones-seguridad', label: 'Inspecciones', icon: 'shield' },
+  { id: 'capacitaciones', label: 'Capacitaciones', icon: 'users' },
 
   { section: 'RRHH' },
+  { id: 'personal-contratos', label: 'Contratos Laborales', icon: 'shield' },
   { id: 'planillas', label: 'Planillas / Sueldos', icon: 'user' },
 
   { section: 'CONTABILIDAD' },
