@@ -298,7 +298,7 @@ function AlertasCentralizadasPage({ showToast }) {
 
     // 5. Contratos laborales próximos a vencer (≤30 días)
     (contratos || []).filter(c => !c.deleted_at).forEach(c => {
-      if (c.estado === 'vigente' && c.fecha_fin && c.fecha_fin >= hoy && c.fecha_fin <= en30d) {
+      if ((c.estado === 'vigente' || c.estado === 'activo') && c.fecha_fin && c.fecha_fin >= hoy && c.fecha_fin <= en30d) {
         const dias = daysBetween(hoy, c.fecha_fin);
         out.push({
           id: `contr_${c.id}`,

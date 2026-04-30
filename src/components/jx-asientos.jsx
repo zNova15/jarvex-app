@@ -59,8 +59,8 @@ const cuentaNombre = (codigo) => {
 // ║  LIBRO DIARIO                                              ║
 // ╚════════════════════════════════════════════════════════════╝
 function LibroDiarioPage({ showToast }) {
-  const { data: companies } = window.__hooks.useCompanies();
-  const { data: movs } = window.__hooks.useAccountingMovements();
+  const { data: companies } = (window.__hooks?.useCompanies?.() ?? { data: [] });
+  const { data: movs } = (window.__hooks?.useAccountingMovements?.() ?? { data: [] });
 
   const ahora = new Date();
   const [empresaId, setEmpresaId] = uS('all');

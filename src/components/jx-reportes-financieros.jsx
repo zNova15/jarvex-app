@@ -66,7 +66,20 @@ function FlujoProyectadoPage({ showToast }) {
           (c.currency || 'PEN') === moneda &&
           (companyId === 'todas' || c.company_id === companyId)
         );
-        const saldo = filtradas.reduce((s, c) => s + Number(c.saldo_actual || 0), 0);
+        // saldo_actual NO existe en el schema → calcular como saldo_inicial + Σ movimientos_bancarios
+        const movs = await window.__db.movimientos_bancarios
+          .filter(m => !m.deleted_at).toArray().catch(() => []);
+        const saldo = filtradas.reduce((s, c) => {
+          const inicial = Number(c.saldo_inicial || 0);
+          const delta = movs
+            .filter(m => m.cuenta_id === c.id)
+            .reduce((acc, m) => {
+              const t = String(m.tipo || '').toLowerCase();
+              const monto = Number(m.monto || 0);
+              return acc + (t === 'ingreso' || t === 'abono' ? monto : -monto);
+            }, 0);
+          return s + inicial + delta;
+        }, 0);
         if (!cancelled) setSaldoInicial(saldo);
       } catch (e) {
         if (!cancelled) setSaldoInicial(0);
@@ -165,7 +178,7 @@ function FlujoProyectadoPage({ showToast }) {
     if (moneda === 'PEN') {
       const contratosActivos = (contratos || []).filter(c =>
         !c.deleted_at &&
-        (c.estado === 'activo' || c.activo === true || (!c.estado && !c.fecha_fin)) &&
+        (c.estado === 'vigente' || c.estado === 'activo') &&
         (companyId === 'todas' || c.company_id === companyId || !c.company_id)
       );
       const planillaMensual = contratosActivos.reduce((s, c) =>
@@ -481,8 +494,9 @@ function ComparativoPeriodosPage({ showToast }) {
       if (tipoPeriodo === 'mes') {
         d = new Date(hoy.getFullYear(), hoy.getMonth() - i, 1);
       } else if (tipoPeriodo === 'trimestre') {
-        const qActual = Math.floor(hoy.getMonth() / 3);
-        d = new Date(hoy.getFullYear(), (qActual - i) * 3, 1);
+        const totalQ = hoy.getFullYear() * 4 + Math.floor(hoy.getMonth() / 3);
+        const tq = totalQ - i;
+        d = new Date(Math.floor(tq / 4), (tq % 4) * 3, 1);
       } else {
         d = new Date(hoy.getFullYear() - i, 0, 1);
       }

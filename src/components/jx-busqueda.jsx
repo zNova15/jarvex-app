@@ -338,6 +338,7 @@ function BusquedaGlobalPage() {
       // Cache simple por query
       if (cacheRef.current.key === q && cacheRef.current.data) {
         setResultados(cacheRef.current.data);
+        setLoading(false);
         return;
       }
       setLoading(true);
