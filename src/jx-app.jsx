@@ -622,6 +622,9 @@ function App() {
       case 'estado-resultados':      return <EstadoResultadosPage showToast={showToast}/>;
       case 'libro-diario':           return <LibroDiarioPage showToast={showToast}/>;
       case 'alertas':                return <AlertasCentralizadasPage showToast={showToast}/>;
+      case 'flujo-proyectado':       return <FlujoProyectadoPage showToast={showToast}/>;
+      case 'comparativo-periodos':   return <ComparativoPeriodosPage showToast={showToast}/>;
+      case 'busqueda':               return <BusquedaGlobalPage showToast={showToast}/>;
       case 'conflictos':    return <ConflictsPage showToast={showToast}/>;
       case 'solicitudes':   return <SolicitudesPage showToast={showToast}/>;
       default:              return <ComingSoon page={page}/>;

@@ -85,6 +85,7 @@ const NAV = [
   { section: 'EJECUTIVO' },
   { id: 'dashboard-ejecutivo', label: 'Dashboard Ejecutivo', icon: 'dashboard' },
   { id: 'alertas', label: 'Centro de Alertas', icon: 'bell' },
+  { id: 'busqueda', label: 'Búsqueda Global', icon: 'search' },
 
   { section: 'GESTIÓN DE OBRA' },
   { id: 'partidas', label: 'Partidas', icon: 'list' },
@@ -126,6 +127,8 @@ const NAV = [
   { id: 'libro-diario', label: 'Libro Diario / Asientos', icon: 'list' },
   { id: 'balance-general', label: 'Balance General', icon: 'compare' },
   { id: 'estado-resultados', label: 'Estado de Resultados', icon: 'dollar' },
+  { id: 'flujo-proyectado', label: 'Flujo de Caja Proyectado', icon: 'calendar' },
+  { id: 'comparativo-periodos', label: 'Comparativo Periodos', icon: 'compare' },
 
   { section: 'ADMINISTRACIÓN' },
   { id: 'usuarios', label: 'Usuarios', icon: 'user' },
