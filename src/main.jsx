@@ -13,6 +13,7 @@ import {
   useAsistencia, usePartidas, useAvanceObra, useIncidencias,
   useEvidencias, useConflicts,
   usePresupuestosVersiones, usePartidasVersionadas,
+  useMaterialPreciosHistorial,
 } from './hooks/useOfflineData';
 import { syncAll } from './sync/SyncEngine';
 import { uploadPendingEvidencias, saveEvidenciaLocal } from './sync/EvidenceUploader';
@@ -53,6 +54,7 @@ window.__hooks = {
   useAsistencia, usePartidas, useAvanceObra, useIncidencias,
   useEvidencias, useConflicts,
   usePresupuestosVersiones, usePartidasVersionadas,
+  useMaterialPreciosHistorial,
 };
 window.__saveEvidenciaLocal = saveEvidenciaLocal;
 window.__reports = { generatePDF, downloadPDF, generateExcel };

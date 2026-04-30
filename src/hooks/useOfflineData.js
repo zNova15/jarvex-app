@@ -207,6 +207,14 @@ export function usePartidasVersionadas(version_id) {
   , [version_id]);
 }
 
+export function useMaterialPreciosHistorial(material_id) {
+  return useOfflineData('material_precios_historial', q =>
+    material_id
+      ? q.where('material_id').equals(material_id).filter(p => !p.deleted_at).toArray()
+      : q.filter(p => !p.deleted_at).toArray()
+  , [material_id]);
+}
+
 export function useConflicts() {
   const [conflicts, setConflicts] = useState([]);
 

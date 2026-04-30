@@ -7,8 +7,47 @@ export const db = new Dexie('JarvexDB');
 // propiedades regulares):
 //   - reverses_id: string | null    → id del movimiento original que este reverso cancela
 //   - reversed_by_id: string | null → id del movimiento de reverso que cancela este movimiento
-// Versión 6: agregamos insumos_partida_versionadas para snapshot
-// completo de los insumos cuando se crea una versión.
+// Versión 7: agregamos material_precios_historial para registrar cada
+// cambio de precio de un material (con quién, cuándo, motivo).
+db.version(7).stores({
+  // ── Maestras ──
+  obras:                    'id, estado, deleted_at, sync_status',
+  personal:                 'id, obra_id, dni, estado, deleted_at, sync_status',
+  materiales:               'id, obra_id, categoria, alerta, deleted_at, sync_status',
+  herramientas:             'id, obra_id, estado_actual, disponible, deleted_at, sync_status',
+  proveedores:              'id, ruc, deleted_at, sync_status',
+  partidas:                 'id, obra_id, estado, deleted_at, sync_status',
+  insumos_partida:          'id, obra_id, partida_id, sync_status',
+  cronograma:               'id, obra_id, partida_id, sync_status',
+  profiles:                 'id, rol',
+
+  // ── Presupuestos versionados ──
+  presupuestos_versiones:        'id, obra_id, numero, deleted_at, sync_status',
+  partidas_versionadas:          'id, version_id, obra_id, codigo, deleted_at, sync_status',
+  insumos_partida_versionadas:   'id, version_id, partida_versionada_id, obra_id, deleted_at, sync_status',
+
+  // ── Historial de precios (NUEVO en v7) ──
+  material_precios_historial:    'id, material_id, obra_id, fecha, deleted_at, sync_status',
+
+  // ── Transaccionales ──
+  asistencia:               'id, obra_id, personal_id, fecha, sync_status, idempotency_key',
+  movimientos_materiales:   'id, obra_id, material_id, fecha, sync_status, idempotency_key',
+  movimientos_herramientas: 'id, obra_id, herramienta_id, fecha, sync_status, idempotency_key',
+  avance_obra:              'id, obra_id, partida_id, fecha, sync_status, idempotency_key',
+  incidencias:              'id, obra_id, estado, sync_status',
+  evidencias:               'id, obra_id, modulo_relacionado, registro_relacionado_id, sync_status',
+  evidencias_blobs:         'id',
+
+  // ── Control + colas ──
+  sync_queue:               '++local_seq, tabla, registro_id, operacion, sync_status, created_at',
+  sync_conflicts:           '++local_seq, tabla, registro_id, estado, created_at',
+  sync_metadata:            'tabla',
+  audit_log_pending:        'id, table_name, record_id, user_id, synced, created_at',
+  change_requests_pending:  'id, target_table, target_record_id, requester_id, synced, created_at',
+  auth_cache:               'key',
+});
+
+// Versión 6: insumos_partida_versionadas
 db.version(6).stores({
   // ── Maestras ──
   obras:                    'id, estado, deleted_at, sync_status',

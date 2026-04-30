@@ -87,7 +87,10 @@ function Modal({ title, icon, onClose, children, wide }) {
 // ─── MATERIALES PAGE ────────────────────────────────────
 function MaterialesPage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
+  // Gerencia/contabilidad/admin actualizan precios — almacenero NO
+  const puedeActualizarPrecios = isAdmin || ['gerente','asistente_admin'].includes(myRol);
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
   const canDelete = isAdmin && appMode.isPrueba;
   const [q, setQ] = uS('');
@@ -98,6 +101,10 @@ function MaterialesPage({ showToast }) {
   const [partidasObra, setPartidasObra] = uS([]);     // partidas de la obra (para sugerir)
   const [insumosObra, setInsumosObra] = uS([]);       // insumos_partida de la obra
   const [syncPreview, setSyncPreview] = uS(null);     // preview de sincronización con APU
+  const [precioTarget, setPrecioTarget] = uS(null);   // material en edición de precio
+  const [precioForm, setPrecioForm] = uS({ precio_nuevo:'', motivo:'manual', documento_ref:'', notas:'' });
+  const [historialTarget, setHistorialTarget] = uS(null); // material para ver historial
+  const [historialData, setHistorialData] = uS([]);
 
   // Detectar obra activa con tope de reintentos + reanudar al recibir
   // 'jarvex_master_updated' o 'obra_activa_change'.
@@ -299,13 +306,33 @@ function MaterialesPage({ showToast }) {
   };
 
   const aplicarCategorizacionIA = async () => {
-    if (!iaResults || !iaResults.length) return;
+    console.log('[IA Materiales] Aplicar click. iaResults:', iaResults?.length, iaResults);
+    if (!iaResults || !iaResults.length) {
+      showToast('No hay cambios para aplicar', 'amber');
+      return;
+    }
     const now = new Date().toISOString();
-    let aplicados = 0;
+    let aplicados = 0, saltados = 0;
+    const erroresList = [];
+
+    // Leer SIEMPRE fresh desde IndexedDB para evitar closure stale
+    let materialesFresh;
+    try {
+      materialesFresh = await window.__db.materiales.toArray();
+    } catch (e) {
+      console.error('[IA Materiales] No se pudo leer DB:', e);
+      showToast('Error leyendo materiales: ' + (e.message||e), 'red');
+      return;
+    }
+    const byId = new Map(materialesFresh.map(m => [m.id, m]));
+    console.log('[IA Materiales] Total en DB:', materialesFresh.length, 'cambios a aplicar:', iaResults.length);
+
     for (const c of iaResults) {
+      const m = byId.get(c.id);
+      if (!m) { saltados++; console.warn('[IA] no encontrado en DB:', c.id, c.nombre); continue; }
+      // Skip no-op
+      if (m.categoria === c.nuevo) { saltados++; continue; }
       try {
-        const m = materiales.find(x => x.id === c.id);
-        if (!m) continue;
         await window.__db.materiales.update(c.id, {
           categoria: c.nuevo,
           updated_at: now,
@@ -316,13 +343,114 @@ function MaterialesPage({ showToast }) {
         try { await window.__logAudit?.({ action:'update', table:'materiales', recordId: c.id,
           oldData:{ categoria: c.actual }, newData:{ categoria: c.nuevo }, reason:'Categorización IA (Claude)' }); } catch {}
         aplicados++;
-      } catch (e) {}
+      } catch (e) {
+        console.error('[IA Materiales] Update fallo para', c.id, c.nombre, e);
+        erroresList.push({ id: c.id, error: e.message || String(e) });
+      }
     }
+
     try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'materiales' } })); } catch {}
     try { window.dispatchEvent(new Event('online')); } catch {}
-    showToast(`${aplicados} materiales categorizados con IA`, 'green');
+
+    console.log('[IA Materiales] Resumen:', { aplicados, saltados, errores: erroresList.length });
+    if (erroresList.length) {
+      showToast(`${aplicados} aplicados · ${erroresList.length} errores · ${saltados} saltados (revisa consola)`, 'amber');
+    } else {
+      showToast(`${aplicados} materiales categorizados${saltados ? ` · ${saltados} sin cambios` : ''}`, 'green');
+    }
     setIaModal(null);
     setIaResults([]);
+  };
+
+  // ── Actualizar precio + grabar en historial ──────────────────────
+  const abrirModalPrecio = (m) => {
+    setPrecioTarget(m);
+    setPrecioForm({
+      precio_nuevo: Number(m.precio_unitario_estimado || 0).toFixed(2),
+      motivo: 'manual',
+      documento_ref: '',
+      notas: '',
+    });
+  };
+
+  const guardarNuevoPrecio = async () => {
+    if (!precioTarget) return;
+    const precioNuevo = parseFloat(precioForm.precio_nuevo);
+    if (!Number.isFinite(precioNuevo) || precioNuevo < 0) {
+      showToast('Precio inválido', 'red');
+      return;
+    }
+    const precioAnterior = Number(precioTarget.precio_unitario_estimado || 0);
+    if (Math.abs(precioNuevo - precioAnterior) < 0.0001) {
+      showToast('El precio no cambió', 'amber');
+      return;
+    }
+    const now = new Date().toISOString();
+    const userId = auth?.profile?.id ?? 'offline';
+    const histId = window.__newId();
+
+    try {
+      // 1) Insertar en historial
+      await window.__db.material_precios_historial.add({
+        id: histId,
+        material_id: precioTarget.id,
+        obra_id: precioTarget.obra_id,
+        precio_anterior: precioAnterior,
+        precio_nuevo: precioNuevo,
+        fecha: now.slice(0,10),
+        motivo: precioForm.notas || precioForm.motivo,
+        documento_ref: precioForm.documento_ref || null,
+        fuente: precioForm.motivo === 'manual' ? 'manual' : precioForm.motivo,
+        origen_movimiento_id: null,
+        created_by: userId, updated_by: userId,
+        created_at: now, updated_at: now,
+        version: 1, sync_status: 'pending_create', last_synced_at: null,
+        idempotency_key: `${userId}_mph_${histId}`,
+      });
+
+      // 2) Actualizar material
+      await window.__db.materiales.update(precioTarget.id, {
+        precio_unitario_estimado: precioNuevo,
+        updated_at: now,
+        updated_by: userId,
+        version: (precioTarget.version ?? 0) + 1,
+        sync_status: precioTarget.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+
+      try { await window.__logAudit?.({ action:'update', table:'materiales', recordId: precioTarget.id,
+        oldData:{ precio_unitario_estimado: precioAnterior },
+        newData:{ precio_unitario_estimado: precioNuevo, motivo: precioForm.notas, doc: precioForm.documento_ref },
+        reason:`Cambio de precio: S/${precioAnterior.toFixed(2)} → S/${precioNuevo.toFixed(2)}` }); } catch {}
+
+      try {
+        window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'materiales' } }));
+        window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'material_precios_historial' } }));
+        window.dispatchEvent(new Event('online'));
+      } catch {}
+
+      const delta = precioNuevo - precioAnterior;
+      const pct = precioAnterior > 0 ? (delta/precioAnterior*100).toFixed(1) : '∞';
+      showToast(`${precioTarget.nombre_material}: S/${precioAnterior.toFixed(2)} → S/${precioNuevo.toFixed(2)} (${delta>=0?'+':''}${pct}%)`, 'green');
+      setPrecioTarget(null);
+    } catch (e) {
+      console.error('[precio update]', e);
+      showToast('Error: ' + (e.message||e), 'red');
+    }
+  };
+
+  const verHistorialPrecios = async (m) => {
+    setHistorialTarget(m);
+    try {
+      const rows = await window.__db.material_precios_historial
+        .where('material_id').equals(m.id)
+        .filter(r => !r.deleted_at)
+        .toArray();
+      rows.sort((a,b) => (b.fecha || '').localeCompare(a.fecha || ''));
+      setHistorialData(rows);
+    } catch (e) {
+      console.error('[historial]', e);
+      setHistorialData([]);
+    }
   };
 
   const aplicarSyncDesdeAPU = async () => {
@@ -455,6 +583,25 @@ function MaterialesPage({ showToast }) {
         observaciones: form.observaciones || null,
       });
       try { await window.__logAudit?.({ action:'insert', table:'movimientos_materiales', recordId:movCreated?.id, newData:movCreated, reason:`${tipo} de ${cantNum} ${material.unidad} de ${material.nombre_material}` }); } catch(e) {}
+
+      // Detección de discrepancia de precio (solo en ENTRADAS):
+      // Si el precio real difiere >5% del estimado del material, levantar
+      // alerta para que contabilidad/gerencia revise y actualice si toca.
+      if (tipo === 'ingreso') {
+        const precioReal = parseFloat(form.precio) || 0;
+        const precioEstimado = Number(material.precio_unitario_estimado || 0);
+        if (precioReal > 0 && precioEstimado > 0) {
+          const diffPct = Math.abs(precioReal - precioEstimado) / precioEstimado * 100;
+          if (diffPct >= 5) {
+            try { await window.__logAudit?.({ action:'alert', table:'materiales', recordId: material.id,
+              oldData:{ precio_estimado: precioEstimado },
+              newData:{ precio_real_compra: precioReal, mov_id: movCreated?.id, doc: form.documento },
+              reason:`⚠ Discrepancia precio: estimado S/${precioEstimado.toFixed(2)} vs real S/${precioReal.toFixed(2)} (${diffPct.toFixed(1)}%)` }); } catch {}
+            const direccion = precioReal > precioEstimado ? 'subió' : 'bajó';
+            showToast(`⚠ Precio real ${direccion} ${diffPct.toFixed(1)}% vs estimado. Avisa a contabilidad para actualizar.`, 'amber');
+          }
+        }
+      }
 
       // Si es SALIDA y hay partida asociada, actualizar el consumo del insumo
       // y el costo real acumulado de la partida correspondiente.
@@ -612,6 +759,7 @@ function MaterialesPage({ showToast }) {
           <table className="tbl">
             <thead><tr>
               <th>Material</th><th>Categoría</th><th>Unidad</th>
+              <th style={{textAlign:'right'}}>Precio est.</th>
               <th style={{textAlign:'right'}}>Stock Actual</th><th style={{textAlign:'right'}}>Stock Mín.</th>
               <th style={{textAlign:'right'}}>Entradas</th><th style={{textAlign:'right'}}>Salidas</th>
               <th>Estado</th><th>Sync</th><th style={{textAlign:'center'}}>Acciones</th>
@@ -628,6 +776,11 @@ function MaterialesPage({ showToast }) {
                     <td><span className="tag">{m.categoria || '—'}</span></td>
                     <td className="col-m">{m.unidad}</td>
                     <td style={{textAlign:'right'}} className="col-num">
+                      {Number(m.precio_unitario_estimado || 0) > 0
+                        ? <span>S/ {Number(m.precio_unitario_estimado).toFixed(2)}</span>
+                        : <span style={{ color:'var(--tm)' }}>—</span>}
+                    </td>
+                    <td style={{textAlign:'right'}} className="col-num">
                       <span style={{ color: stockColor, fontWeight: 600 }}>{Number(m.stock_actual ?? 0).toLocaleString('es-PE')}</span>
                     </td>
                     <td style={{textAlign:'right'}} className="col-num">{Number(m.stock_minimo ?? 0).toLocaleString('es-PE')}</td>
@@ -639,6 +792,14 @@ function MaterialesPage({ showToast }) {
                       : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}
                     </td>
                     <td style={{textAlign:'center', whiteSpace:'nowrap'}}>
+                      <button className="btn btn-ghost btn-xs" title="Ver historial de precios" onClick={()=>verHistorialPrecios(m)} style={{ marginRight:4 }}>
+                        <JxIcon name="dollar" size={11}/>
+                      </button>
+                      {puedeActualizarPrecios && (
+                        <button className="btn btn-ghost btn-xs" title="Actualizar precio (gerencia/contabilidad)" onClick={()=>abrirModalPrecio(m)} style={{ marginRight:4, color:'var(--amber)' }}>
+                          <JxIcon name="edit" size={11}/>$
+                        </button>
+                      )}
                       {isAdmin ? (
                         <>
                           <button className="btn btn-ghost btn-xs" title="Editar material" onClick={()=>openEditMaterial(m)}>
@@ -808,6 +969,131 @@ function MaterialesPage({ showToast }) {
               <JxIcon name="refresh" size={13}/> Escanear y mostrar preview
             </button>
           </div>
+        </Modal>
+      )}
+
+      {/* Modal: Actualizar precio */}
+      {precioTarget && (
+        <Modal title={`Actualizar precio — ${precioTarget.nombre_material}`} icon="dollar" onClose={()=>setPrecioTarget(null)}>
+          <div style={{ background:'rgba(52,152,219,0.06)', border:'1px solid rgba(52,152,219,0.25)', borderRadius:8, padding:'10px 12px', marginBottom:14, fontSize:12, color:'var(--ts)' }}>
+            <strong style={{ color:'var(--blue)' }}>Precio actual:</strong> S/ {Number(precioTarget.precio_unitario_estimado || 0).toFixed(2)} por {precioTarget.unidad || 'und'}
+          </div>
+          <div className="g2">
+            <div>
+              <label className="flabel">Nuevo precio unitario (S/) *</label>
+              <input className="fi" type="number" min="0" step="0.0001" value={precioForm.precio_nuevo}
+                onChange={e=>setPrecioForm({...precioForm, precio_nuevo:e.target.value})}/>
+            </div>
+            <div>
+              <label className="flabel">Fuente</label>
+              <select className="fi" value={precioForm.motivo} onChange={e=>setPrecioForm({...precioForm, motivo:e.target.value})}>
+                <option value="manual">Cotización / cambio manual</option>
+                <option value="movimiento">Detectado en compra real</option>
+                <option value="apu">Sincronizado del APU</option>
+                <option value="importacion">Importación / carga inicial</option>
+              </select>
+            </div>
+            <div style={{ gridColumn:'1 / -1' }}>
+              <label className="flabel">Documento de referencia (opcional)</label>
+              <input className="fi" placeholder="N° factura, guía o cotización" value={precioForm.documento_ref}
+                onChange={e=>setPrecioForm({...precioForm, documento_ref:e.target.value})}/>
+            </div>
+            <div style={{ gridColumn:'1 / -1' }}>
+              <label className="flabel">Motivo / notas</label>
+              <textarea className="fi" rows={2} value={precioForm.notas}
+                placeholder="Por qué cambias el precio (ej: nueva cotización del proveedor X, fluctuación del mercado, etc.)"
+                onChange={e=>setPrecioForm({...precioForm, notas:e.target.value})}/>
+            </div>
+          </div>
+          <div style={{ marginTop:10, fontSize:11, color:'var(--tm)' }}>
+            ✓ El cambio queda registrado en el historial. El precio anterior <strong>NO se borra</strong> — queda como referencia.
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={()=>setPrecioTarget(null)}>Cancelar</button>
+            <button className="btn btn-amber" onClick={guardarNuevoPrecio}>
+              <JxIcon name="check" size={13}/> Guardar nuevo precio
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal: Historial de precios */}
+      {historialTarget && (
+        <Modal title={`Historial de precios — ${historialTarget.nombre_material}`} icon="dollar"
+          onClose={()=>{ setHistorialTarget(null); setHistorialData([]); }} wide>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:14 }}>
+            <div className="card card-p" style={{ textAlign:'center' }}>
+              <div style={{ fontSize:11, color:'var(--tm)' }}>Precio actual</div>
+              <div style={{ fontSize:18, fontWeight:800, color:'var(--blue)' }}>
+                S/ {Number(historialTarget.precio_unitario_estimado || 0).toFixed(2)}
+              </div>
+            </div>
+            <div className="card card-p" style={{ textAlign:'center' }}>
+              <div style={{ fontSize:11, color:'var(--tm)' }}>Cambios registrados</div>
+              <div style={{ fontSize:18, fontWeight:800, color:'var(--amber)' }}>
+                {historialData.length}
+              </div>
+            </div>
+            <div className="card card-p" style={{ textAlign:'center' }}>
+              <div style={{ fontSize:11, color:'var(--tm)' }}>Variación total</div>
+              <div style={{ fontSize:18, fontWeight:800, color:'var(--green)' }}>
+                {(() => {
+                  if (historialData.length === 0) return '—';
+                  const primero = historialData[historialData.length - 1];
+                  const ultimoPrecio = Number(historialTarget.precio_unitario_estimado || 0);
+                  const primerPrecio = Number(primero.precio_anterior || 0);
+                  if (primerPrecio === 0) return '—';
+                  const pct = ((ultimoPrecio - primerPrecio) / primerPrecio * 100);
+                  return `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`;
+                })()}
+              </div>
+            </div>
+          </div>
+
+          {historialData.length === 0 ? (
+            <div className="card card-p empty-state">
+              <JxIcon name="dollar" size={32} color="var(--tm)"/>
+              <p>Sin historial de cambios. El primer cambio que hagas quedará registrado aquí.</p>
+            </div>
+          ) : (
+            <div className="card" style={{ overflow:'auto', maxHeight:400 }}>
+              <table className="tbl" style={{ fontSize:11 }}>
+                <thead>
+                  <tr>
+                    <th>Fecha</th>
+                    <th style={{ textAlign:'right' }}>Anterior</th>
+                    <th style={{ textAlign:'right' }}>Nuevo</th>
+                    <th style={{ textAlign:'right' }}>Δ</th>
+                    <th>Fuente</th>
+                    <th>Documento</th>
+                    <th>Motivo</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {historialData.map(h => {
+                    const ant = Number(h.precio_anterior || 0);
+                    const nuevo = Number(h.precio_nuevo || 0);
+                    const delta = nuevo - ant;
+                    const pct = ant > 0 ? (delta/ant*100) : 0;
+                    return (
+                      <tr key={h.id}>
+                        <td className="col-m">{h.fecha}</td>
+                        <td style={{ textAlign:'right' }} className="col-num">S/ {ant.toFixed(2)}</td>
+                        <td style={{ textAlign:'right', fontWeight:600 }} className="col-num">S/ {nuevo.toFixed(2)}</td>
+                        <td style={{ textAlign:'right', color: delta>0?'var(--red)':'var(--green)' }} className="col-num">
+                          {delta>0?'+':''}S/ {delta.toFixed(2)}<br/>
+                          <span style={{ fontSize:9 }}>{pct>0?'+':''}{pct.toFixed(1)}%</span>
+                        </td>
+                        <td className="col-m"><span className="tag">{h.fuente || 'manual'}</span></td>
+                        <td className="col-m" style={{ fontSize:10 }}>{h.documento_ref || '—'}</td>
+                        <td style={{ fontSize:10.5, maxWidth:240 }}>{h.motivo || '—'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </Modal>
       )}
 
@@ -1115,13 +1401,30 @@ function HerramientasPage({ showToast }) {
   };
 
   const aplicarCategorizacionIAH = async () => {
-    if (!iaResultsH || !iaResultsH.length) return;
+    console.log('[IA Herramientas] Aplicar click. iaResultsH:', iaResultsH?.length);
+    if (!iaResultsH || !iaResultsH.length) {
+      showToast('No hay cambios para aplicar', 'amber');
+      return;
+    }
     const now = new Date().toISOString();
-    let aplicados = 0;
+    let aplicados = 0, saltados = 0;
+    const erroresList = [];
+
+    let herramientasFresh;
+    try {
+      herramientasFresh = await window.__db.herramientas.toArray();
+    } catch (e) {
+      console.error('[IA Herr] No se pudo leer DB:', e);
+      showToast('Error leyendo herramientas: ' + (e.message||e), 'red');
+      return;
+    }
+    const byId = new Map(herramientasFresh.map(h => [h.id, h]));
+
     for (const c of iaResultsH) {
+      const h = byId.get(c.id);
+      if (!h) { saltados++; continue; }
+      if (h.tipo_herramienta === c.nuevo) { saltados++; continue; }
       try {
-        const h = herramientas.find(x => x.id === c.id);
-        if (!h) continue;
         await window.__db.herramientas.update(c.id, {
           tipo_herramienta: c.nuevo,
           updated_at: now,
@@ -1132,11 +1435,20 @@ function HerramientasPage({ showToast }) {
         try { await window.__logAudit?.({ action:'update', table:'herramientas', recordId: c.id,
           oldData:{ tipo_herramienta: c.actual }, newData:{ tipo_herramienta: c.nuevo }, reason:'Categorización IA (Claude)' }); } catch {}
         aplicados++;
-      } catch (e) {}
+      } catch (e) {
+        console.error('[IA Herr] Update fallo para', c.id, c.nombre, e);
+        erroresList.push({ id: c.id, error: e.message || String(e) });
+      }
     }
+
     try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'herramientas' } })); } catch {}
     try { window.dispatchEvent(new Event('online')); } catch {}
-    showToast(`${aplicados} herramientas categorizadas con IA`, 'green');
+
+    if (erroresList.length) {
+      showToast(`${aplicados} aplicados · ${erroresList.length} errores · ${saltados} saltados`, 'amber');
+    } else {
+      showToast(`${aplicados} herramientas categorizadas${saltados ? ` · ${saltados} sin cambios` : ''}`, 'green');
+    }
     setIaModalH(null);
     setIaResultsH([]);
   };
