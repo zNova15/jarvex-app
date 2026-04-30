@@ -215,6 +215,27 @@ export function useMaterialPreciosHistorial(material_id) {
   , [material_id]);
 }
 
+// ── Contabilidad ─────────────────────────────────────────────────────
+export function useCompanies() {
+  return useOfflineData('companies', q =>
+    q.filter(c => !c.deleted_at).toArray()
+  , []);
+}
+
+export function useAccountingMovements(company_id) {
+  return useOfflineData('accounting_movements', q =>
+    company_id
+      ? q.where('company_id').equals(company_id).filter(m => !m.deleted_at).toArray()
+      : q.filter(m => !m.deleted_at).toArray()
+  , [company_id]);
+}
+
+export function useIntercompanyTransactions() {
+  return useOfflineData('intercompany_transactions', q =>
+    q.filter(t => !t.deleted_at).toArray()
+  , []);
+}
+
 export function useConflicts() {
   const [conflicts, setConflicts] = useState([]);
 

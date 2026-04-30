@@ -84,6 +84,13 @@ const NAV = [
   { id: 'costos', label: 'Costos', icon: 'dollar' },
   { id: 'incidencias', label: 'Incidencias', icon: 'alert' },
 
+  { section: 'CONTABILIDAD' },
+  { id: 'cont-dashboard', label: 'Dashboard Contable', icon: 'dashboard' },
+  { id: 'empresas', label: 'Empresas', icon: 'building' },
+  { id: 'movimientos-contables', label: 'Movimientos', icon: 'dollar' },
+  { id: 'intercompany', label: 'Operaciones entre Empresas', icon: 'compare' },
+  { id: 'consolidado', label: 'Consolidado', icon: 'list' },
+
   { section: 'ADMINISTRACIÓN' },
   { id: 'usuarios', label: 'Usuarios', icon: 'user' },
   { id: 'roles', label: 'Roles y Permisos', icon: 'shield' },

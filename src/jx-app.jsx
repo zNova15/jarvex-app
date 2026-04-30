@@ -325,6 +325,9 @@ function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStat
     cronograma:'Cronograma / Gantt',avance:'Avance de Obra',comparativo:'Planificado vs Real',
     costos:'Costos',incidencias:'Incidencias',usuarios:'Usuarios',roles:'Roles y Permisos',
     configuracion:'Configuración',
+    'cont-dashboard':'Dashboard Contable', empresas:'Empresas',
+    'movimientos-contables':'Movimientos Contables', intercompany:'Operaciones entre Empresas',
+    consolidado:'Consolidado del Grupo',
     conflictos:'Bandeja de Conflictos',
     solicitudes:'Solicitudes de Cambio',
   };
@@ -576,6 +579,11 @@ function App() {
       case 'usuarios':      return <UsuariosPage showToast={showToast}/>;
       case 'roles':         return <RolesPage showToast={showToast}/>;
       case 'configuracion': return <ConfiguracionPage showToast={showToast}/>;
+      case 'cont-dashboard':         return <ContabilidadDashboardPage showToast={showToast}/>;
+      case 'empresas':               return <EmpresasPage showToast={showToast}/>;
+      case 'movimientos-contables':  return <MovimientosContablesPage showToast={showToast}/>;
+      case 'intercompany':           return <IntercompanyPage showToast={showToast}/>;
+      case 'consolidado':            return <ConsolidadoPage showToast={showToast}/>;
       case 'conflictos':    return <ConflictsPage showToast={showToast}/>;
       case 'solicitudes':   return <SolicitudesPage showToast={showToast}/>;
       default:              return <ComingSoon page={page}/>;

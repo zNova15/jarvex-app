@@ -14,6 +14,7 @@ import {
   useEvidencias, useConflicts,
   usePresupuestosVersiones, usePartidasVersionadas,
   useMaterialPreciosHistorial,
+  useCompanies, useAccountingMovements, useIntercompanyTransactions,
 } from './hooks/useOfflineData';
 import { syncAll } from './sync/SyncEngine';
 import { uploadPendingEvidencias, saveEvidenciaLocal } from './sync/EvidenceUploader';
@@ -55,6 +56,7 @@ window.__hooks = {
   useEvidencias, useConflicts,
   usePresupuestosVersiones, usePartidasVersionadas,
   useMaterialPreciosHistorial,
+  useCompanies, useAccountingMovements, useIntercompanyTransactions,
 };
 window.__saveEvidenciaLocal = saveEvidenciaLocal;
 window.__reports = { generatePDF, downloadPDF, generateExcel };
@@ -88,6 +90,7 @@ import './components/jx-movimientos.jsx';
 import './components/jx-gestion.jsx';
 import './components/jx-admin.jsx';
 import './components/jx-importar.jsx';
+import './components/jx-contabilidad.jsx';
 import './components/jx-conflicts.jsx';
 import './jx-app.jsx';
 

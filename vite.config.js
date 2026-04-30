@@ -9,6 +9,9 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.ico', 'icons/*.png'],
       workbox: {
+        // El bundle creció con Versiones + Contabilidad; el default de 2MiB
+        // ya quedó corto. Subimos a 5MiB para que workbox lo precachee.
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         // skipWaiting + clientsClaim para que el SW nuevo tome control
         // inmediatamente sin esperar a que el usuario cierre la pestaña.
         skipWaiting: true,
