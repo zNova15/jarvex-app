@@ -163,6 +163,48 @@ function Sidebar({ current, onNav, collapsed, onToggle }) {
     const id = setInterval(poll, 30000);
     return () => { cancelled = true; clearInterval(id); };
   }, [isAdmin]);
+
+  // Conteo de alertas críticas (badge en sidebar → "Centro de Alertas")
+  const [alertasCount, setAlertasCount] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    const recompute = async () => {
+      try {
+        const [mats, pagos, contratos, ipercs, conflicts] = await Promise.all([
+          window.__db.materiales.filter(x => !x.deleted_at).toArray().catch(() => []),
+          window.__db.cronograma_pagos.filter(x => !x.deleted_at).toArray().catch(() => []),
+          window.__db.personal_contrato.filter(x => !x.deleted_at).toArray().catch(() => []),
+          window.__db.iperc.filter(x => !x.deleted_at).toArray().catch(() => []),
+          window.__db.sync_conflicts.filter(x => x.estado === 'pendiente').toArray().catch(() => []),
+        ]);
+        const hoy = new Date().toISOString().slice(0, 10);
+        let n = 0;
+        n += mats.filter(m => {
+          const min = Number(m.stock_minimo || m.alerta_minima || 0);
+          return min > 0 && Number(m.stock_actual || 0) <= min;
+        }).length;
+        n += pagos.filter(p => p.estado === 'vencido' || (p.estado === 'programado' && p.fecha_programada && p.fecha_programada < hoy)).length;
+        n += contratos.filter(c => {
+          if (c.estado !== 'vigente' && c.estado !== 'activo') return false;
+          if (!c.fecha_fin) return false;
+          const d = new Date(c.fecha_fin);
+          const diff = (d - new Date()) / 86400000;
+          return diff >= 0 && diff <= 30;
+        }).length;
+        n += ipercs.filter(i => {
+          const c = String(i.clasificacion || '').toLowerCase();
+          return ['alto', 'critico', 'importante', 'intolerable'].includes(c) && i.estado !== 'controlado';
+        }).length;
+        n += conflicts.length;
+        if (!cancelled) setAlertasCount(n);
+      } catch { if (!cancelled) setAlertasCount(0); }
+    };
+    recompute();
+    const id = setInterval(recompute, 60000);
+    const onChange = () => recompute();
+    window.addEventListener('jx_data_changed', onChange);
+    return () => { cancelled = true; clearInterval(id); window.removeEventListener('jx_data_changed', onChange); };
+  }, []);
   const initials = profile
     ? ((profile.nombres?.[0] || '') + (profile.apellidos?.[0] || '')).toUpperCase() || (profile.email?.[0] || '?').toUpperCase()
     : '··';
@@ -314,7 +356,17 @@ function Sidebar({ current, onNav, collapsed, onToggle }) {
                   {pendingReqCount > 9 ? '9+' : pendingReqCount}
                 </span>
               )}
-              {item.id !== 'solicitudes' && !navCollapsed && isActive && <div style={{ marginLeft: 'auto', width: 5, height: 5, borderRadius: '50%', background: '#F2B705', flexShrink: 0 }} />}
+              {item.id === 'alertas' && alertasCount > 0 && !navCollapsed && (
+                <span style={{ marginLeft: 'auto', minWidth: 18, height: 18, borderRadius: 9, background: '#E74C3C', color: '#fff', fontSize: 10, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 6px', flexShrink: 0 }}>
+                  {alertasCount > 99 ? '99+' : alertasCount}
+                </span>
+              )}
+              {item.id === 'alertas' && alertasCount > 0 && navCollapsed && (
+                <span style={{ position: 'absolute', top: 6, right: 8, minWidth: 14, height: 14, borderRadius: 7, background: '#E74C3C', color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px' }}>
+                  {alertasCount > 9 ? '9+' : alertasCount}
+                </span>
+              )}
+              {item.id !== 'solicitudes' && item.id !== 'alertas' && !navCollapsed && isActive && <div style={{ marginLeft: 'auto', width: 5, height: 5, borderRadius: '50%', background: '#F2B705', flexShrink: 0 }} />}
             </button>
           );
         })}

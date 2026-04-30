@@ -519,6 +519,39 @@ function App() {
     return () => window.removeEventListener('jarvex_new_notif', onNotif);
   }, [auth?.profile, showToast]);
 
+  // Atajo Cmd+K / Ctrl+K → abrir búsqueda global
+  uEA(() => {
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setPage('busqueda');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // Navegación cross-página vía CustomEvent (alertas, búsqueda)
+  uEA(() => {
+    const onNav = (e) => {
+      const p = e?.detail?.page;
+      if (p && typeof p === 'string') setPage(p);
+    };
+    window.addEventListener('jx_navigate', onNav);
+    return () => window.removeEventListener('jx_navigate', onNav);
+  }, []);
+
+  // Sincronizar página con hash (#/ruta) — apoyo para deep-links y los smoke tests
+  uEA(() => {
+    const fromHash = () => {
+      const h = (window.location.hash || '').replace(/^#\/?/, '').trim();
+      if (h) setPage(h);
+    };
+    fromHash();
+    window.addEventListener('hashchange', fromHash);
+    return () => window.removeEventListener('hashchange', fromHash);
+  }, []);
+
   // Pedir permiso de notificaciones del navegador una sola vez tras el login.
   // Si el usuario ya respondió (granted o denied), no se vuelve a preguntar.
   uEA(() => {
