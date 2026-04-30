@@ -153,11 +153,79 @@ function MovMaterialesPage({ showToast }) {
   const { data: movs, loading, update: updateMov } = movHook;
   const { data: materiales } = window.__hooks.useMateriales(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
+  const { data: evidencias } = window.__hooks.useEvidencias(obraId);
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
 
   const [reversoTarget, setReversoTarget] = uSM(null);
   const isAdmin = auth?.profile?.rol === 'admin';
   const canDelete = isAdmin && appMode.isPrueba;
+
+  // Mapa movimiento_id → evidencia (guía adjunta)
+  const guiasPorMov = uMM(() => {
+    const map = new Map();
+    (evidencias || []).forEach(e => {
+      if (e.modulo_relacionado === 'movimientos' && e.registro_relacionado_id && !e.deleted_at) {
+        if (!map.has(e.registro_relacionado_id)) map.set(e.registro_relacionado_id, e);
+      }
+    });
+    return map;
+  }, [evidencias]);
+
+  const adjuntarGuia = (movimiento) => async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 15 * 1024 * 1024) {
+      showToast?.('El archivo excede 15MB', 'red');
+      return;
+    }
+    try {
+      await window.__saveEvidenciaLocal({
+        id: window.__newId(),
+        obra_id: obraId,
+        tipo_evidencia: 'guia_remision',
+        modulo_relacionado: 'movimientos',
+        registro_relacionado_id: movimiento.id,
+        nombre_archivo: file.name,
+        mime_type: file.type || 'application/octet-stream',
+        blob: file,
+        fecha: new Date().toISOString().slice(0,10),
+        created_by: auth?.profile?.id ?? 'offline',
+        observaciones: `Guía/factura del movimiento de ${movimiento.tipo_movimiento}`,
+      });
+      try { await window.__logAudit?.({ action:'insert', table:'evidencias', recordId: movimiento.id,
+        newData:{ archivo: file.name, modulo:'movimientos' }, reason:'Adjunto de guía a movimiento' }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'evidencias' } })); } catch {}
+      showToast?.('Guía adjuntada', 'green');
+    } catch (err) {
+      showToast?.('Error al subir: ' + (err.message || err), 'red');
+    }
+    // limpiar input para permitir re-disparar onChange con el mismo archivo
+    if (e.target) e.target.value = '';
+  };
+
+  const verGuia = async (evidencia) => {
+    try {
+      // Si ya está en cloud (uploaded), abrir url
+      if (evidencia.upload_status === 'uploaded' && evidencia.storage_path) {
+        const sb = window.__supabase;
+        if (sb) {
+          const { data } = sb.storage.from('evidencias').getPublicUrl(evidencia.storage_path);
+          if (data?.publicUrl) { window.open(data.publicUrl, '_blank'); return; }
+        }
+      }
+      // Si está local, leer del blob
+      const blobRow = await window.__db.evidencias_blobs.get(evidencia.id);
+      if (blobRow?.blob) {
+        const url = URL.createObjectURL(blobRow.blob);
+        window.open(url, '_blank');
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+        return;
+      }
+      showToast?.('No se encontró el archivo localmente. Sincroniza primero.', 'amber');
+    } catch (err) {
+      showToast?.('Error al abrir: ' + (err.message || err), 'red');
+    }
+  };
 
   const handleDeleteMov = async (m) => {
     if (!canDelete) return;
@@ -337,7 +405,9 @@ function MovMaterialesPage({ showToast }) {
               <th>Fecha / Hora</th><th>Tipo</th><th>Material</th>
               <th style={{ textAlign:'right' }}>Cantidad</th>
               <th>Responsable</th><th>Documento</th>
-              <th style={{ textAlign:'right' }}>Precio</th><th>Sync</th>
+              <th style={{ textAlign:'right' }}>Precio</th>
+              <th style={{ textAlign:'center' }}>Guía</th>
+              <th>Sync</th>
               {isAdmin && <th style={{ textAlign:'center' }}>Acción</th>}
             </tr></thead>
             <tbody>
@@ -363,6 +433,31 @@ function MovMaterialesPage({ showToast }) {
                     <td>{pers ? `${pers.nombres} ${pers.apellidos}` : (prov?.razon_social || '—')}</td>
                     <td className="col-m">{m.documento_asociado || '—'}</td>
                     <td style={{ textAlign:'right' }} className="col-num">{m.precio_unitario_real ? fmtS(m.precio_unitario_real) : '—'}</td>
+                    <td style={{ textAlign:'center' }}>
+                      {(() => {
+                        const guia = guiasPorMov.get(m.id);
+                        if (guia) {
+                          return (
+                            <button className="btn btn-ghost btn-xs" onClick={()=>verGuia(guia)}
+                              title={`Ver: ${guia.nombre_archivo}`}>
+                              <JxIcon name="file" size={11} color="var(--green)"/>
+                            </button>
+                          );
+                        }
+                        // Permitir adjuntar solo en entradas (donde tiene sentido tener factura/guía)
+                        if (m.tipo_movimiento !== 'entrada') {
+                          return <span style={{ fontSize:10, color:'var(--tm)' }}>—</span>;
+                        }
+                        return (
+                          <label className="btn btn-ghost btn-xs" title="Adjuntar guía o factura (solo una vez)" style={{ cursor:'pointer' }}>
+                            <JxIcon name="upload" size={11}/>
+                            <input type="file" accept="image/*,.pdf"
+                              style={{ display:'none' }}
+                              onChange={adjuntarGuia(m)}/>
+                          </label>
+                        );
+                      })()}
+                    </td>
                     <td>{m.sync_status && m.sync_status !== 'synced'
                       ? <span className="badge b-amber" title={m.sync_status}>⏱</span>
                       : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}

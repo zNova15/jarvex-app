@@ -34,9 +34,6 @@ function useObraActiva() {
 const SOURCES = [
   { id:'excel',     label:'Excel / CSV',     icon:'chart',  color:'#1E7145', desc:'Importa desde hojas de cálculo .xlsx, .xls o archivos .csv', ext:'.xlsx,.xls,.csv', badge:'Universal',  enabled:true  },
   { id:'s10',       label:'Delphin',         icon:'dollar', color:'#0070C0', desc:'Importa presupuestos, partidas e insumos directamente desde Delphin', ext:'.xlsx, .xls', badge:'Construcción Perú', enabled:true  },
-  { id:'delfin',    label:'Delfín ERP',      icon:'users',  color:'#7030A0', desc:'Importa personal, planillas y asistencia desde Delfín / Delfín+', ext:'.xlsx, .csv', badge:'RRHH Perú', enabled:false },
-  { id:'msproject', label:'MS Project',      icon:'gantt',  color:'#217346', desc:'Importa cronograma desde Microsoft Project (Excel exportado: Numeración / Inicio / Fin / Duración)', ext:'.xlsx, .xls', badge:'Cronograma', enabled:true  },
-  { id:'autocad',   label:'AutoCAD / Revit', icon:'layers', color:'#E84142', desc:'Importa metrados desde planillas de cómputo en DXF/Excel', ext:'.xlsx, .csv', badge:'Metrados', enabled:false },
 ];
 
 // ── MODULE DESTINATIONS (real ones for Excel) ────────────────
@@ -1960,7 +1957,7 @@ function ImportarPage({ showToast }) {
       </div>
 
       {/* ───────── TAB: IMPORTAR ───────── */}
-      {tab === 'importar' && (srcId === 's10' || srcId === 'msproject') && step >= 1 && (
+      {tab === 'importar' && srcId === 's10' && step >= 1 && (
         <div style={{ maxWidth:880, margin:'0 auto' }}>
           <S10Flow
             obraId={obraId}
@@ -1975,7 +1972,7 @@ function ImportarPage({ showToast }) {
         </div>
       )}
 
-      {tab === 'importar' && !((srcId === 's10' || srcId === 'msproject') && step >= 1) && (
+      {tab === 'importar' && !(srcId === 's10' && step >= 1) && (
         <div style={{ maxWidth:880, margin:'0 auto' }}>
           <Steps current={step} steps={STEPS} onJump={(i)=>setStep(i)}/>
 
@@ -1983,7 +1980,7 @@ function ImportarPage({ showToast }) {
           {step === 0 && (
             <div>
               <div style={{ fontSize:15, fontWeight:700, color:'var(--tp)', marginBottom:4 }}>¿Desde dónde quieres importar?</div>
-              <div style={{ fontSize:12.5, color:'var(--tm)', marginBottom:18 }}>Solo Excel/CSV está disponible. Las demás integraciones llegarán pronto.</div>
+              <div style={{ fontSize:12.5, color:'var(--tm)', marginBottom:18 }}>Excel/CSV (universal) o Delphin (presupuesto + insumos + cronograma).</div>
               <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
                 {SOURCES.map(s => (
                   <button key={s.id} onClick={()=>s.enabled && setSrc(s.id)} disabled={!s.enabled}

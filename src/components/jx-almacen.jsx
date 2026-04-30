@@ -171,24 +171,28 @@ function MaterialesPage({ showToast }) {
     materiales?.filter(m => m.alerta === 'critico' || m.alerta === 'sin_stock').length ?? 0,
   [materiales]);
 
-  // ── Sincronización de unidades/categorías desde APU (insumos_partida) ──
-  // Cruza materiales con insumos_partida (tipo_insumo='material') por código
-  // y prepara un preview de lo que cambiaría.
+  // ── Sincronización de unidades + precios desde APU (insumos_partida) ──
+  // Cruza por código y aplica unidad y/o precio según el modo elegido.
+  const [syncMode, setSyncMode] = uS('ambos'); // 'unidades' | 'precios' | 'ambos'
+
   const escanearSyncDesdeAPU = () => {
     if (!materiales || !insumosObra) {
       showToast('No hay datos para sincronizar', 'red');
       return;
     }
-    // Mapa código → { unidad, tipo, descripcion } desde el APU
+    // Mapa código → { unidad, precio_unitario, tipo, descripcion } desde el APU
     const apuMap = new Map();
     insumosObra.forEach(ip => {
       if (!ip.insumo_codigo) return;
-      if (!apuMap.has(ip.insumo_codigo)) {
-        apuMap.set(ip.insumo_codigo, {
-          unidad: (ip.unidad || '').trim(),
-          tipo: ip.tipo_insumo,
-          descripcion: ip.nombre_insumo,
-        });
+      const u = (ip.unidad || '').trim();
+      const p = Number(ip.precio_presupuestado) || 0;
+      const cur = apuMap.get(ip.insumo_codigo);
+      if (!cur) {
+        apuMap.set(ip.insumo_codigo, { unidad: u, precio: p, tipo: ip.tipo_insumo });
+      } else {
+        // si ya hay entrada pero esta tiene mejor info, completa
+        if (!cur.unidad && u) cur.unidad = u;
+        if (!cur.precio && p) cur.precio = p;
       }
     });
 
@@ -199,24 +203,18 @@ function MaterialesPage({ showToast }) {
       const apu = apuMap.get(m.codigo_s10);
       if (!apu) { sinMatch.push({ m, motivo:'no_encontrado' }); return; }
       const patches = {};
-      // Unidad: aplicar si la del APU existe y la actual está vacía o es 'und' default
-      if (apu.unidad && apu.unidad !== m.unidad && (m.unidad === 'und' || !m.unidad)) {
+      // Unidad
+      if ((syncMode === 'unidades' || syncMode === 'ambos') && apu.unidad && apu.unidad !== m.unidad && (m.unidad === 'und' || !m.unidad)) {
         patches.unidad = apu.unidad;
       }
-      // Categoría: aplicar si APU dice algo distinto a 'General'
-      if (apu.tipo === 'material' && m.categoria === 'General') {
-        // Heurística: usar la unidad como pista de categoría
-        const u = apu.unidad?.toLowerCase() || '';
-        let cat = 'General';
-        if (/^kg$|^t$|^bls$|^bl$/.test(u)) cat = 'Cemento/Áridos';
-        else if (/^m$|^ml$|^m2$|^m3$|^m³$/.test(u)) cat = 'Estructura';
-        else if (/^und$|^pza$|^und\.$/.test(u)) cat = 'Insumos';
-        else if (/^gln$|^lt$|^l$/.test(u)) cat = 'Líquidos';
-        if (cat !== 'General') patches.categoria = cat;
+      // Precio
+      const precioActual = Number(m.precio_unitario_estimado || 0);
+      if ((syncMode === 'precios' || syncMode === 'ambos') && apu.precio > 0 && Math.abs(apu.precio - precioActual) > 0.01) {
+        patches.precio_unitario_estimado = apu.precio;
       }
       if (Object.keys(patches).length > 0) {
         cambios.push({ id: m.id, nombre: m.nombre_material, codigo: m.codigo_s10,
-          actual:{ unidad: m.unidad, categoria: m.categoria },
+          actual:{ unidad: m.unidad, precio: precioActual },
           nuevo: patches,
         });
       }
@@ -229,8 +227,102 @@ function MaterialesPage({ showToast }) {
       sinCodigo: sinMatch.filter(x => x.motivo === 'sin_codigo').length,
       cambios,
       apuVacio: insumosObra.length === 0,
+      modo: syncMode,
     });
     setModal('sync');
+  };
+
+  // ── Categorización por IA (Claude vía /api/categorize) ──
+  const [iaModal, setIaModal] = uS(null); // null | 'preview' | 'running' | 'done'
+  const [iaResults, setIaResults] = uS([]);
+  const [iaProgress, setIaProgress] = uS({ current:0, total:0 });
+
+  const ejecutarCategorizacionIA = async () => {
+    if (!materiales || !materiales.length) {
+      showToast('No hay materiales para categorizar', 'red');
+      return;
+    }
+    // Solo materiales con categoría 'General' o vacía
+    const aClasificar = materiales.filter(m => !m.categoria || m.categoria === 'General');
+    if (!aClasificar.length) {
+      showToast('Todos los materiales ya tienen categoría asignada', 'amber');
+      return;
+    }
+    setIaModal('running');
+    setIaProgress({ current:0, total: aClasificar.length });
+
+    const BATCH = 50;
+    const all = [];
+    let errorMsg = null;
+    for (let i = 0; i < aClasificar.length; i += BATCH) {
+      const chunk = aClasificar.slice(i, i + BATCH);
+      try {
+        const resp = await fetch('/api/categorize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'material',
+            items: chunk.map(m => ({ id: m.id, nombre: m.nombre_material })),
+          }),
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          errorMsg = err.error || `HTTP ${resp.status}`;
+          break;
+        }
+        const data = await resp.json();
+        all.push(...(data.results || []));
+        setIaProgress({ current: Math.min(i + BATCH, aClasificar.length), total: aClasificar.length });
+      } catch (e) {
+        errorMsg = e.message;
+        break;
+      }
+    }
+
+    if (errorMsg) {
+      setIaModal(null);
+      showToast('Error IA: ' + errorMsg, 'red');
+      return;
+    }
+
+    // Construir preview con cambios
+    const cambios = all.map(r => {
+      const m = materiales.find(x => x.id === r.id);
+      return m ? {
+        id: m.id, nombre: m.nombre_material,
+        actual: m.categoria || 'General',
+        nuevo: r.categoria,
+      } : null;
+    }).filter(Boolean);
+    setIaResults(cambios);
+    setIaModal('preview');
+  };
+
+  const aplicarCategorizacionIA = async () => {
+    if (!iaResults || !iaResults.length) return;
+    const now = new Date().toISOString();
+    let aplicados = 0;
+    for (const c of iaResults) {
+      try {
+        const m = materiales.find(x => x.id === c.id);
+        if (!m) continue;
+        await window.__db.materiales.update(c.id, {
+          categoria: c.nuevo,
+          updated_at: now,
+          updated_by: auth?.profile?.id ?? 'offline',
+          version: (m.version ?? 0) + 1,
+          sync_status: m.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+        });
+        try { await window.__logAudit?.({ action:'update', table:'materiales', recordId: c.id,
+          oldData:{ categoria: c.actual }, newData:{ categoria: c.nuevo }, reason:'Categorización IA (Claude)' }); } catch {}
+        aplicados++;
+      } catch (e) {}
+    }
+    try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'materiales' } })); } catch {}
+    try { window.dispatchEvent(new Event('online')); } catch {}
+    showToast(`${aplicados} materiales categorizados con IA`, 'green');
+    setIaModal(null);
+    setIaResults([]);
   };
 
   const aplicarSyncDesdeAPU = async () => {
@@ -488,9 +580,15 @@ function MaterialesPage({ showToast }) {
         </div>
         <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
           {isAdmin && insumosObra.length > 0 && (
-            <button className="btn btn-ghost btn-sm" onClick={escanearSyncDesdeAPU}
-              title="Cruza materiales con insumos del APU y aplica unidades/categorías que estén vacías o por defecto">
+            <button className="btn btn-ghost btn-sm" onClick={()=>setModal('syncOpts')}
+              title="Cruza materiales con insumos del APU y aplica unidades y/o precios">
               <JxIcon name="refresh" size={13}/>Sincronizar desde APU
+            </button>
+          )}
+          {isAdmin && (
+            <button className="btn btn-ghost btn-sm" onClick={ejecutarCategorizacionIA}
+              title="Usa Claude IA para categorizar materiales sin categoría asignada">
+              <JxIcon name="settings" size={13}/>Categorizar con IA
             </button>
           )}
           <button className="btn btn-ghost btn-sm" onClick={()=>openModal('salida')}><JxIcon name="arrowOut" size={13}/>Registrar Salida</button>
@@ -576,7 +674,17 @@ function MaterialesPage({ showToast }) {
           <div><label className="flabel">Fecha</label><input className="fi" type="date" value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
           <div><label className="flabel">Hora</label><input className="fi" type="time" value={form.hora||''} onChange={e=>setForm({...form, hora:e.target.value})}/></div>
           <div><label className="flabel">Material</label>
-            <select className="fi" value={form.material_id||''} onChange={e=>setForm({...form, material_id:e.target.value})}>
+            <select className="fi" value={form.material_id||''}
+              onChange={e=>{
+                const newId = e.target.value;
+                const mat = materiales.find(m => m.id === newId);
+                // Auto-fill precio sólo si el campo está vacío o es 0 (no pisar lo que el usuario haya escrito)
+                const currentPrecio = parseFloat(form.precio);
+                const autofill = mat && (!currentPrecio || currentPrecio === 0)
+                  ? Number(mat.precio_unitario_estimado || 0).toFixed(2)
+                  : form.precio;
+                setForm({...form, material_id: newId, precio: autofill });
+              }}>
               <option value="">Selecciona...</option>
               {materiales.map(m => <option key={m.id} value={m.id}>{m.nombre_material} ({m.unidad})</option>)}
             </select>
@@ -588,8 +696,14 @@ function MaterialesPage({ showToast }) {
               {provs.map(p => <option key={p.id} value={p.id}>{p.razon_social}</option>)}
             </select>
           </div>
-          <div><label className="flabel">Documento / Guía</label><input className="fi" placeholder="N° guía o factura" value={form.documento||''} onChange={e=>setForm({...form, documento:e.target.value})}/></div>
-          <div><label className="flabel">Precio Unitario (S/)</label><input className="fi" type="number" step="0.01" placeholder="0.00" value={form.precio||''} onChange={e=>setForm({...form, precio:e.target.value})}/></div>
+          <div><label className="flabel">Documento / Guía (n°)</label><input className="fi" placeholder="N° guía o factura" value={form.documento||''} onChange={e=>setForm({...form, documento:e.target.value})}/></div>
+          <div>
+            <label className="flabel">Precio Unitario (S/)</label>
+            <input className="fi" type="number" step="0.01" placeholder="0.00" value={form.precio||''} onChange={e=>setForm({...form, precio:e.target.value})}/>
+            <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:3 }}>
+              Auto-llenado del precio estimado del material. Edítalo si la compra fue distinta.
+            </div>
+          </div>
         </div>
         <div style={{marginTop:14}}><label className="flabel">Observaciones</label><textarea className="fi" value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})} placeholder="Notas adicionales…"/></div>
         <div className="modal-actions">
@@ -664,6 +778,92 @@ function MaterialesPage({ showToast }) {
         </div>
       </Modal>}
 
+      {/* Modal: opciones de sincronización (paso previo) */}
+      {modal === 'syncOpts' && (
+        <Modal title="Sincronizar desde APU — opciones" icon="refresh" onClose={()=>setModal(null)}>
+          <div style={{ fontSize:12.5, color:'var(--ts)', marginBottom:14 }}>
+            Elige qué quieres sincronizar contra los insumos del APU (matching por código).
+          </div>
+          <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+            {[
+              { v:'unidades', label:'Solo unidades', desc:'Aplica unidad del APU si el material tiene "und" o vacío.' },
+              { v:'precios',  label:'Solo precios',  desc:'Aplica precio_unitario_estimado del APU al material.' },
+              { v:'ambos',    label:'Unidades + precios', desc:'Lo más completo. Recomendado tras importar APU nuevo.' },
+            ].map(opt => (
+              <label key={opt.v}
+                style={{ display:'flex', gap:10, alignItems:'flex-start', padding:10, cursor:'pointer',
+                  border:`1.5px solid ${syncMode===opt.v?'var(--amber)':'var(--border)'}`, borderRadius:8,
+                  background: syncMode===opt.v?'rgba(242,183,5,0.06)':'transparent' }}>
+                <input type="radio" checked={syncMode===opt.v} onChange={()=>setSyncMode(opt.v)}/>
+                <div>
+                  <div style={{ fontSize:13, fontWeight:700, color:'var(--tp)' }}>{opt.label}</div>
+                  <div style={{ fontSize:11.5, color:'var(--tm)', marginTop:2 }}>{opt.desc}</div>
+                </div>
+              </label>
+            ))}
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={()=>setModal(null)}>Cancelar</button>
+            <button className="btn btn-amber" onClick={escanearSyncDesdeAPU}>
+              <JxIcon name="refresh" size={13}/> Escanear y mostrar preview
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal IA: corriendo */}
+      {iaModal === 'running' && (
+        <Modal title="Categorizando con IA…" icon="settings" onClose={()=>{}}>
+          <div style={{ textAlign:'center', padding:'18px 8px' }}>
+            <div style={{ display:'inline-block', width:24, height:24, borderRadius:'50%', border:'3px solid rgba(242,183,5,0.3)', borderTopColor:'var(--amber)', animation:'spin .8s linear infinite' }}/>
+            <div style={{ fontSize:13, color:'var(--ts)', marginTop:14, marginBottom:6 }}>
+              Claude está analizando los nombres y asignando categoría.
+            </div>
+            <div style={{ fontSize:11.5, color:'var(--tm)', marginBottom:10 }}>
+              {iaProgress.current} / {iaProgress.total} materiales procesados
+            </div>
+            <div style={{ width:'100%', height:8, background:'var(--bg-c)', borderRadius:4, overflow:'hidden' }}>
+              <div style={{ width:`${iaProgress.total ? (iaProgress.current/iaProgress.total*100) : 0}%`, height:'100%', background:'var(--amber)', transition:'width .2s' }}/>
+            </div>
+            <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:10 }}>
+              No cierres esta ventana. Procesa en lotes de 50.
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal IA: preview de resultados */}
+      {iaModal === 'preview' && iaResults.length > 0 && (
+        <Modal title="Categorización IA — preview" icon="settings" onClose={()=>{ setIaModal(null); setIaResults([]); }} wide>
+          <div style={{ fontSize:12.5, color:'var(--ts)', marginBottom:12 }}>
+            Claude propone <strong>{iaResults.length} categorías</strong>. Revisa antes de aplicar.
+          </div>
+          <div className="card" style={{ overflow:'auto', maxHeight:400, marginBottom:12 }}>
+            <table className="tbl" style={{ fontSize:11 }}>
+              <thead><tr><th>Material</th><th>Actual</th><th>Sugerida</th></tr></thead>
+              <tbody>
+                {iaResults.slice(0, 200).map(c => (
+                  <tr key={c.id}>
+                    <td className="col-p">{c.nombre}</td>
+                    <td className="col-m"><span className="tag">{c.actual}</span></td>
+                    <td className="col-m"><span className="badge b-amber">{c.nuevo}</span></td>
+                  </tr>
+                ))}
+                {iaResults.length > 200 && (
+                  <tr><td colSpan={3} style={{ padding:10, textAlign:'center', color:'var(--tm)' }}>… {iaResults.length - 200} más</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={()=>{ setIaModal(null); setIaResults([]); }}>Cancelar</button>
+            <button className="btn btn-amber" onClick={aplicarCategorizacionIA}>
+              <JxIcon name="check" size={13}/> Aplicar {iaResults.length} categorías
+            </button>
+          </div>
+        </Modal>
+      )}
+
       {/* Modal Sincronizar desde APU */}
       {modal === 'sync' && syncPreview && (
         <Modal title="Sincronizar materiales desde APU" icon="refresh" onClose={()=>{ setModal(null); setSyncPreview(null); }} wide>
@@ -714,8 +914,8 @@ function MaterialesPage({ showToast }) {
                       <td className="col-m" style={{ fontFamily:'monospace' }}>{c.codigo}</td>
                       <td className="col-m" style={{ fontSize:10.5 }}>
                         {c.nuevo.unidad && <span>unidad: <s style={{ color:'var(--tm)' }}>{c.actual.unidad || '—'}</s> → <strong style={{ color:'var(--green)' }}>{c.nuevo.unidad}</strong></span>}
-                        {c.nuevo.unidad && c.nuevo.categoria && <span> · </span>}
-                        {c.nuevo.categoria && <span>cat: <s style={{ color:'var(--tm)' }}>{c.actual.categoria}</s> → <strong style={{ color:'var(--blue)' }}>{c.nuevo.categoria}</strong></span>}
+                        {c.nuevo.unidad && c.nuevo.precio_unitario_estimado != null && <span> · </span>}
+                        {c.nuevo.precio_unitario_estimado != null && <span>precio: <s style={{ color:'var(--tm)' }}>S/ {c.actual.precio?.toFixed(2) || '0.00'}</s> → <strong style={{ color:'var(--blue)' }}>S/ {c.nuevo.precio_unitario_estimado.toFixed(2)}</strong></span>}
                       </td>
                     </tr>
                   ))}
@@ -809,21 +1009,6 @@ function HerramientasPage({ showToast }) {
   const [editingId, setEditingId] = uS(null);
   const [obraId, setObraId] = uS(null);
   const [requestTarget, setRequestTarget] = uS(null);
-  const [insumosObra, setInsumosObra] = uS([]);
-  const [syncPreview, setSyncPreview] = uS(null);
-
-  // Cargar insumos del APU para sync
-  uE(() => {
-    if (!obraId) { setInsumosObra([]); return; }
-    let cancelled = false;
-    (async () => {
-      try {
-        const ins = await window.__db.insumos_partida.where('obra_id').equals(obraId).filter(i => !i.deleted_at).toArray();
-        if (!cancelled) setInsumosObra(ins);
-      } catch { if (!cancelled) setInsumosObra([]); }
-    })();
-    return () => { cancelled = true; };
-  }, [obraId]);
 
   uE(() => {
     let cancelled = false;
@@ -866,89 +1051,94 @@ function HerramientasPage({ showToast }) {
   const enUso = herramientas?.filter(h => h.ubicacion_actual === 'en_uso').length ?? 0;
   const disponibles = herramientas?.filter(h => h.disponible).length ?? 0;
 
-  // ── Sync herramientas desde APU (matching por nombre, sugerir tipo) ──
-  const detectarTipoHerr = (descripcion, unidadAPU) => {
-    const s = (descripcion || '').toLowerCase();
-    const u = (unidadAPU || '').toLowerCase();
-    if (/excavadora|retroexcavadora|cargador frontal|volquete|tractor|motoniveladora|rodillo|grua|gr[uú]a|pavimentadora|bulldozer|cami[óo]n/i.test(s)) return 'maquinaria_pesada';
-    if (/taladro|amoladora|sierra|cierra|esmeril|cortadora|pulidora|lijadora|atornillador|caladora|fresadora/i.test(s)) return 'electrica';
-    if (/teodolito|nivel\b|estaci[óo]n total|gps|distan?ci[óo]metro|laser|cinta m[ée]trica|prisma|tr[ií]pode/i.test(s)) return 'medicion';
-    if (/casco|chaleco|guante|extintor|arn[ée]s|botas?|lentes|m[áa]scara|epp/i.test(s)) return 'seguridad';
-    if (/martillo|pala|pico|carretilla|llave|alicate|destornillador|wincha|escalera|andamio/i.test(s)) return 'manual';
-    return 'maquinaria_liviana';
-  };
+  // ── Categorización por IA (Claude vía /api/categorize) ──
+  const [iaModalH, setIaModalH] = uS(null); // null | 'running' | 'preview'
+  const [iaResultsH, setIaResultsH] = uS([]);
+  const [iaProgressH, setIaProgressH] = uS({ current:0, total:0 });
 
-  const escanearSyncDesdeAPUHerr = () => {
-    if (!herramientas || !insumosObra) {
-      showToast('No hay datos para sincronizar', 'red');
+  const ejecutarCategorizacionIAH = async () => {
+    if (!herramientas || !herramientas.length) {
+      showToast('No hay herramientas para categorizar', 'red');
       return;
     }
-    // Equipos del APU (tipo_insumo === 'equipo')
-    const equiposAPU = insumosObra.filter(i => i.tipo_insumo === 'equipo');
-    const apuPorNombre = new Map();
-    equiposAPU.forEach(e => {
-      const nom = (e.nombre_insumo || '').trim().toUpperCase();
-      if (nom && !apuPorNombre.has(nom)) {
-        apuPorNombre.set(nom, { unidad: e.unidad, codigo: e.insumo_codigo });
-      }
-    });
+    // Solo herramientas con tipo 'maquinaria_liviana' (default genérico)
+    const aClasificar = herramientas.filter(h => h.tipo_herramienta === 'maquinaria_liviana');
+    if (!aClasificar.length) {
+      showToast('Todas las herramientas ya tienen un tipo específico', 'amber');
+      return;
+    }
+    setIaModalH('running');
+    setIaProgressH({ current:0, total: aClasificar.length });
 
-    const cambios = [];
-    const sinMatch = [];
-    herramientas.forEach(h => {
-      const nom = (h.nombre_herramienta || '').trim().toUpperCase();
-      const apu = apuPorNombre.get(nom);
-      const patches = {};
-      const tipoSugerido = detectarTipoHerr(h.nombre_herramienta, apu?.unidad);
-      // Solo sugerir cambio de tipo si actualmente es 'maquinaria_liviana' (default) y la heurística da otra cosa
-      if (h.tipo_herramienta === 'maquinaria_liviana' && tipoSugerido !== 'maquinaria_liviana') {
-        patches.tipo_herramienta = tipoSugerido;
-      }
-      if (Object.keys(patches).length > 0) {
-        cambios.push({ id: h.id, nombre: h.nombre_herramienta,
-          actual: { tipo: h.tipo_herramienta },
-          nuevo: patches,
-          conMatchAPU: !!apu,
+    const BATCH = 50;
+    const all = [];
+    let errorMsg = null;
+    for (let i = 0; i < aClasificar.length; i += BATCH) {
+      const chunk = aClasificar.slice(i, i + BATCH);
+      try {
+        const resp = await fetch('/api/categorize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'herramienta',
+            items: chunk.map(h => ({ id: h.id, nombre: h.nombre_herramienta })),
+          }),
         });
-      }
-      if (!apu) sinMatch.push(h);
-    });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          errorMsg = err.error || `HTTP ${resp.status}`;
+          break;
+        }
+        const data = await resp.json();
+        all.push(...(data.results || []));
+        setIaProgressH({ current: Math.min(i + BATCH, aClasificar.length), total: aClasificar.length });
+      } catch (e) { errorMsg = e.message; break; }
+    }
 
-    setSyncPreview({
-      total: herramientas.length,
-      conMatch: herramientas.length - sinMatch.length,
-      sinMatch: sinMatch.length,
-      cambios,
-      apuVacio: equiposAPU.length === 0,
-    });
-    setModal('sync');
+    if (errorMsg) {
+      setIaModalH(null);
+      showToast('Error IA: ' + errorMsg, 'red');
+      return;
+    }
+
+    const cambios = all.map(r => {
+      const h = herramientas.find(x => x.id === r.id);
+      return h ? {
+        id: h.id, nombre: h.nombre_herramienta,
+        actual: h.tipo_herramienta,
+        nuevo: r.categoria,
+      } : null;
+    }).filter(c => c && c.actual !== c.nuevo);
+
+    setIaResultsH(cambios);
+    setIaModalH('preview');
   };
 
-  const aplicarSyncDesdeAPUHerr = async () => {
-    if (!syncPreview || !syncPreview.cambios.length) return;
+  const aplicarCategorizacionIAH = async () => {
+    if (!iaResultsH || !iaResultsH.length) return;
     const now = new Date().toISOString();
-    let aplicados = 0, errores = 0;
-    for (const c of syncPreview.cambios) {
+    let aplicados = 0;
+    for (const c of iaResultsH) {
       try {
         const h = herramientas.find(x => x.id === c.id);
         if (!h) continue;
         await window.__db.herramientas.update(c.id, {
-          ...c.nuevo,
+          tipo_herramienta: c.nuevo,
           updated_at: now,
           updated_by: auth?.profile?.id ?? 'offline',
           version: (h.version ?? 0) + 1,
           sync_status: h.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
         });
         try { await window.__logAudit?.({ action:'update', table:'herramientas', recordId: c.id,
-          oldData: c.actual, newData: c.nuevo, reason:'Sincronización desde APU' }); } catch {}
+          oldData:{ tipo_herramienta: c.actual }, newData:{ tipo_herramienta: c.nuevo }, reason:'Categorización IA (Claude)' }); } catch {}
         aplicados++;
-      } catch (e) { errores++; }
+      } catch (e) {}
     }
     try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'herramientas' } })); } catch {}
     try { window.dispatchEvent(new Event('online')); } catch {}
-    showToast(`${aplicados} herramientas actualizadas${errores ? ` · ${errores} con error` : ''}`, 'green');
-    setModal(null);
-    setSyncPreview(null);
+    showToast(`${aplicados} herramientas categorizadas con IA`, 'green');
+    setIaModalH(null);
+    setIaResultsH([]);
   };
 
   const ESTADO_STYLE = {
@@ -1122,10 +1312,10 @@ function HerramientasPage({ showToast }) {
           <div className="pg-sub">{herramientas.length} herramientas · {enUso} en uso · {disponibles} disponibles</div>
         </div>
         <div style={{display:'flex',gap:8, flexWrap:'wrap'}}>
-          {isAdmin && insumosObra.length > 0 && (
-            <button className="btn btn-ghost btn-sm" onClick={escanearSyncDesdeAPUHerr}
-              title="Cruza herramientas con equipos del APU y sugiere recategorización por unidad/keywords">
-              <JxIcon name="refresh" size={13}/>Sincronizar desde APU
+          {isAdmin && (
+            <button className="btn btn-ghost btn-sm" onClick={ejecutarCategorizacionIAH}
+              title="Usa Claude IA para clasificar herramientas por tipo (manual/eléctrica/maquinaria/medición/seguridad)">
+              <JxIcon name="settings" size={13}/>Categorizar con IA
             </button>
           )}
           <button className="btn btn-green btn-sm" onClick={()=>openMov('entrada')}><JxIcon name="arrowIn" size={13}/>Registrar Devolución</button>
@@ -1227,63 +1417,49 @@ function HerramientasPage({ showToast }) {
         </div>
       </Modal>}
 
-      {/* Modal Sincronizar herramientas desde APU */}
-      {modal === 'sync' && syncPreview && (
-        <Modal title="Sincronizar herramientas desde APU" icon="refresh" onClose={()=>{ setModal(null); setSyncPreview(null); }} wide>
-          <div style={{ fontSize:12.5, color:'var(--ts)', marginBottom:14 }}>
-            Cruza tus <strong>{syncPreview.total} herramientas</strong> con los <strong>equipos del APU</strong> y sugiere recategorización por keywords del nombre.
-          </div>
-
-          {syncPreview.apuVacio && (
-            <div style={{ background:'rgba(231,76,60,0.10)', border:'1px solid rgba(231,76,60,0.35)', borderRadius:8, padding:'10px 12px', marginBottom:12, fontSize:12, color:'var(--red)' }}>
-              ⚠ El APU de esta obra no tiene equipos registrados.
+      {/* Modal IA Herramientas: corriendo */}
+      {iaModalH === 'running' && (
+        <Modal title="Categorizando con IA…" icon="settings" onClose={()=>{}}>
+          <div style={{ textAlign:'center', padding:'18px 8px' }}>
+            <div style={{ display:'inline-block', width:24, height:24, borderRadius:'50%', border:'3px solid rgba(242,183,5,0.3)', borderTopColor:'var(--amber)', animation:'spin .8s linear infinite' }}/>
+            <div style={{ fontSize:13, color:'var(--ts)', marginTop:14, marginBottom:6 }}>
+              Claude está analizando los nombres y asignando tipo.
             </div>
-          )}
-
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:14 }}>
-            <div className="card card-p" style={{ textAlign:'center' }}>
-              <div style={{ fontSize:18, fontWeight:800, color:'var(--green)' }}>{syncPreview.conMatch}</div>
-              <div style={{ fontSize:10.5, color:'var(--tm)' }}>con match en APU</div>
+            <div style={{ fontSize:11.5, color:'var(--tm)', marginBottom:10 }}>
+              {iaProgressH.current} / {iaProgressH.total} herramientas procesadas
             </div>
-            <div className="card card-p" style={{ textAlign:'center' }}>
-              <div style={{ fontSize:18, fontWeight:800, color:'var(--amber)' }}>{syncPreview.cambios.length}</div>
-              <div style={{ fontSize:10.5, color:'var(--tm)' }}>se actualizarán</div>
-            </div>
-            <div className="card card-p" style={{ textAlign:'center' }}>
-              <div style={{ fontSize:18, fontWeight:800, color:'var(--tm)' }}>{syncPreview.sinMatch}</div>
-              <div style={{ fontSize:10.5, color:'var(--tm)' }}>sin match (nombre)</div>
+            <div style={{ width:'100%', height:8, background:'var(--bg-c)', borderRadius:4, overflow:'hidden' }}>
+              <div style={{ width:`${iaProgressH.total ? (iaProgressH.current/iaProgressH.total*100) : 0}%`, height:'100%', background:'var(--amber)', transition:'width .2s' }}/>
             </div>
           </div>
+        </Modal>
+      )}
 
-          {syncPreview.cambios.length > 0 ? (
-            <div className="card" style={{ overflow:'auto', maxHeight:340, marginBottom:12 }}>
-              <table className="tbl" style={{ fontSize:11 }}>
-                <thead><tr><th>Herramienta</th><th>Cambio</th></tr></thead>
-                <tbody>
-                  {syncPreview.cambios.slice(0, 100).map(c => (
-                    <tr key={c.id}>
-                      <td className="col-p">{c.nombre}</td>
-                      <td className="col-m" style={{ fontSize:10.5 }}>
-                        tipo: <s style={{ color:'var(--tm)' }}>{c.actual.tipo}</s> → <strong style={{ color:'var(--orange)' }}>{c.nuevo.tipo_herramienta}</strong>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div style={{ background:'rgba(46,204,113,0.08)', border:'1px solid rgba(46,204,113,0.3)', borderRadius:8, padding:'10px 12px', marginBottom:12, fontSize:12, color:'var(--green)' }}>
-              Todo está al día — no hay cambios sugeridos.
-            </div>
-          )}
-
+      {/* Modal IA Herramientas: preview */}
+      {iaModalH === 'preview' && iaResultsH.length > 0 && (
+        <Modal title="Categorización IA — preview" icon="settings" onClose={()=>{ setIaModalH(null); setIaResultsH([]); }} wide>
+          <div style={{ fontSize:12.5, color:'var(--ts)', marginBottom:12 }}>
+            Claude propone <strong>{iaResultsH.length} cambios de tipo</strong>. Revisa antes de aplicar.
+          </div>
+          <div className="card" style={{ overflow:'auto', maxHeight:400, marginBottom:12 }}>
+            <table className="tbl" style={{ fontSize:11 }}>
+              <thead><tr><th>Herramienta</th><th>Actual</th><th>Sugerido</th></tr></thead>
+              <tbody>
+                {iaResultsH.slice(0, 200).map(c => (
+                  <tr key={c.id}>
+                    <td className="col-p">{c.nombre}</td>
+                    <td className="col-m"><span className="tag">{c.actual}</span></td>
+                    <td className="col-m"><span className="badge b-amber">{c.nuevo}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
           <div className="modal-actions">
-            <button className="btn btn-ghost" onClick={()=>{ setModal(null); setSyncPreview(null); }}>Cerrar</button>
-            {syncPreview.cambios.length > 0 && (
-              <button className="btn btn-amber" onClick={aplicarSyncDesdeAPUHerr}>
-                <JxIcon name="check" size={13}/> Aplicar {syncPreview.cambios.length} cambios
-              </button>
-            )}
+            <button className="btn btn-ghost" onClick={()=>{ setIaModalH(null); setIaResultsH([]); }}>Cancelar</button>
+            <button className="btn btn-amber" onClick={aplicarCategorizacionIAH}>
+              <JxIcon name="check" size={13}/> Aplicar {iaResultsH.length} cambios
+            </button>
           </div>
         </Modal>
       )}
