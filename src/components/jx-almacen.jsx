@@ -709,6 +709,35 @@ function MaterialesPage({ showToast }) {
     }
     const material = materiales.find(m => m.id === form.material_id);
     const cantNum = parseFloat(form.cantidad) || 0;
+
+    // ── Validación de stock para SALIDA ─────────────────────────
+    // Almacenero/supervisor/etc: bloqueado si stock insuficiente
+    // Admin/gerente: warning con confirm para forzar (audit log)
+    let stockForzado = false;
+    if (tipo === 'salida') {
+      const stockActual = Number(material.stock_actual ?? 0);
+      if (cantNum > stockActual) {
+        const faltante = cantNum - stockActual;
+        const puedeForzar = isAdmin || ['gerente'].includes(myRol);
+        if (!puedeForzar) {
+          showToast(`❌ Stock insuficiente: tienes ${stockActual} ${material.unidad} de ${material.nombre_material}. Pide al admin o registra primero el ingreso.`, 'red');
+          return;
+        }
+        const confirmar = confirm(
+          `⚠ STOCK INSUFICIENTE\n\n` +
+          `Material: ${material.nombre_material}\n` +
+          `Stock actual: ${stockActual} ${material.unidad}\n` +
+          `Cantidad pedida: ${cantNum} ${material.unidad}\n` +
+          `Faltante: ${faltante} ${material.unidad}\n\n` +
+          `Como ${myRol}, puedes forzar el registro y dejar el stock en NEGATIVO. ` +
+          `Esto queda registrado en auditoría.\n\n` +
+          `¿Forzar el registro?`
+        );
+        if (!confirmar) return;
+        stockForzado = true;
+      }
+    }
+
     try {
       const movCreated = await movHook.create({
         obra_id: obraId,
@@ -725,7 +754,16 @@ function MaterialesPage({ showToast }) {
         precio_unitario_real: parseFloat(form.precio) || null,
         observaciones: form.observaciones || null,
       });
-      try { await window.__logAudit?.({ action:'insert', table:'movimientos_materiales', recordId:movCreated?.id, newData:movCreated, reason:`${tipo} de ${cantNum} ${material.unidad} de ${material.nombre_material}` }); } catch(e) {}
+      try { await window.__logAudit?.({ action:'insert', table:'movimientos_materiales', recordId:movCreated?.id, newData:movCreated, reason:`${tipo} de ${cantNum} ${material.unidad} de ${material.nombre_material}${stockForzado ? ' (STOCK FORZADO — quedó negativo)' : ''}` }); } catch(e) {}
+
+      // Audit log especial cuando se fuerza salida sin stock
+      if (stockForzado) {
+        try { await window.__logAudit?.({ action:'alert', table:'movimientos_materiales', recordId: movCreated?.id,
+          oldData:{ stock_actual: Number(material.stock_actual ?? 0) },
+          newData:{ cantidad_salida: cantNum, faltante: cantNum - Number(material.stock_actual ?? 0), forzado_por: auth?.profile?.id },
+          reason:`⚠ Salida FORZADA sin stock: ${material.nombre_material} — quedó en negativo` }); } catch {}
+        showToast(`⚠ Salida forzada registrada. Stock quedó en negativo.`, 'amber');
+      }
 
       // Detección de discrepancia de precio (solo en ENTRADAS):
       // Si el precio real difiere >5% del estimado del material, levantar
@@ -1754,6 +1792,44 @@ function HerramientasPage({ showToast }) {
       return;
     }
     const herr = herramientas.find(h => h.id === form.herramienta_id);
+    if (!herr) {
+      showToast('Herramienta no encontrada', 'red');
+      return;
+    }
+
+    // ── Validación de disponibilidad para SALIDA ─────────────
+    let salidaForzada = false;
+    if (form.accion === 'salida') {
+      const noDisponible = !herr.disponible
+        || herr.ubicacion_actual === 'en_uso'
+        || herr.ubicacion_actual === 'mantenimiento'
+        || herr.estado_actual === 'baja'
+        || herr.estado_actual === 'inhabilitado';
+      if (noDisponible) {
+        const myRol2 = auth?.profile?.rol;
+        const puedeForzar = myRol2 === 'admin' || myRol2 === 'gerente';
+        const motivo = herr.ubicacion_actual === 'en_uso' ? 'ya está en uso por otro responsable'
+          : herr.ubicacion_actual === 'mantenimiento' ? 'está en mantenimiento'
+          : herr.estado_actual === 'baja' ? 'está dada de baja'
+          : herr.estado_actual === 'inhabilitado' ? 'está inhabilitada'
+          : 'no está disponible';
+        if (!puedeForzar) {
+          showToast(`❌ "${herr.nombre_herramienta}" ${motivo}. Pide al admin que registre primero la devolución o la salida forzada.`, 'red');
+          return;
+        }
+        const confirmar = confirm(
+          `⚠ HERRAMIENTA NO DISPONIBLE\n\n` +
+          `Herramienta: ${herr.nombre_herramienta}\n` +
+          `Estado actual: ${herr.estado_actual} · ${herr.ubicacion_actual}\n` +
+          `Razón: ${motivo}\n\n` +
+          `Como ${myRol2}, puedes forzar la salida. Esto queda registrado en auditoría.\n\n` +
+          `¿Forzar la salida?`
+        );
+        if (!confirmar) return;
+        salidaForzada = true;
+      }
+    }
+
     try {
       const movCreated = await movHook.create({
         obra_id: obraId,
@@ -1766,7 +1842,14 @@ function HerramientasPage({ showToast }) {
         estado_devolucion: form.accion === 'entrada' ? form.estado : null,
         observaciones: form.observaciones || null,
       });
-      try { await window.__logAudit?.({ action:'insert', table:'movimientos_herramientas', recordId:movCreated?.id, newData:movCreated, reason:`${form.accion} de "${herr.nombre_herramienta}"` }); } catch(e) {}
+      try { await window.__logAudit?.({ action:'insert', table:'movimientos_herramientas', recordId:movCreated?.id, newData:movCreated, reason:`${form.accion} de "${herr.nombre_herramienta}"${salidaForzada ? ' (FORZADA)' : ''}` }); } catch(e) {}
+      if (salidaForzada) {
+        try { await window.__logAudit?.({ action:'alert', table:'movimientos_herramientas', recordId: movCreated?.id,
+          oldData:{ disponible: herr.disponible, ubicacion: herr.ubicacion_actual, estado: herr.estado_actual },
+          newData:{ accion: form.accion, forzado_por: auth?.profile?.id },
+          reason:`⚠ Salida FORZADA de herramienta no disponible: ${herr.nombre_herramienta}` }); } catch {}
+        showToast(`⚠ Salida forzada registrada — herramienta no estaba disponible.`, 'amber');
+      }
       // Sincronizar estado de la herramienta (disponible ↔ ubicacion_actual SIEMPRE
       // consistentes). Vía updateHerr → marca sync_status='pending_update' para
       // que Supabase reciba el cambio en el próximo sync.

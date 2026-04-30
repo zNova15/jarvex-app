@@ -398,52 +398,85 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
 
   // ── Import APU (partidas + insumos_partida) ──────────────────
   // Respeta las acciones elegidas por partida en el step Preview.
+  //
+  // Fix importante: las partidas a "reemplazar" se ACTUALIZAN en el sitio
+  // (mismo ID, sólo se cambian campos). Antes se hard-deleteaban y se
+  // insertaban con un nuevo UUID — eso causaba que tras el siguiente sync
+  // pull las partidas viejas resurgieran del server y las nuevas chocaran
+  // o desaparecieran. Ahora preservamos IDs y dejamos que el sync engine
+  // suba un UPDATE limpio.
   async function importAPU() {
     const now = new Date().toISOString();
     const errorList = [];
 
-    // Mapas auxiliares
-    const accionPorCodigo = new Map(comparison.map(c => [c.codigo, c.action]));
-    const existentePorCodigo = new Map(
-      comparison.filter(c => c.existente).map(c => [c.codigo, c.existente])
-    );
-
-    // 1) Identificar las partidas a reemplazar (borrar existentes + sus insumos)
     const aReemplazar = comparison.filter(c => c.action === 'reemplazar' && c.existente);
     const aImportar   = comparison.filter(c => c.action === 'importar');
-
-    // ── Fase 1: borrar partidas a reemplazar y sus insumos ─────
-    if (aReemplazar.length) {
-      setProgress({ phase:`Borrando ${aReemplazar.length} partidas a reemplazar…`, current:0, total: aReemplazar.length });
-      const PCH_DEL = 50;
-      for (let i = 0; i < aReemplazar.length; i += PCH_DEL) {
-        const chunk = aReemplazar.slice(i, i + PCH_DEL);
-        const ids = chunk.map(c => c.existente.id);
-        try {
-          await window.__db.partidas.bulkDelete(ids);
-          await window.__db.insumos_partida.where('partida_id').anyOf(ids).delete();
-        } catch (e) {
-          errorList.push({ row: chunk[0].codigo, error: `Error borrando lote: ${e.message || e}` });
-        }
-        setProgress({ phase:`Borrando ${aReemplazar.length} partidas a reemplazar…`, current: Math.min(i + PCH_DEL, aReemplazar.length), total: aReemplazar.length });
-        await new Promise(r => setTimeout(r, 0));
-      }
-    }
-
-    // ── Fase 2: construir registros a insertar (importar + reemplazar) ──
-    const partidaRecords = [];
-    const insumoRecords = [];
-    // Map codigo->parsedRow para acceder a insumos
     const parsedPorCodigo = new Map(parsed.data.map(p => [p.codigo, p]));
-    // Mantener orden global tomado del archivo
     const ordenPorCodigo = new Map();
     parsed.data.forEach((p, i) => ordenPorCodigo.set(p.codigo, i));
 
-    const aInsertarCmps = [...aImportar, ...aReemplazar];
-    aInsertarCmps.forEach(c => {
+    // ── Fase 1: ACTUALIZAR partidas a reemplazar (preservando ID) ──
+    let partidasActualizadas = 0;
+    const idsReemplazadas = []; // para soft-delete de insumos viejos
+    if (aReemplazar.length) {
+      setProgress({ phase:`Actualizando ${aReemplazar.length} partidas existentes…`, current:0, total: aReemplazar.length });
+      const updateRecords = [];
+      aReemplazar.forEach(c => {
+        const p = parsedPorCodigo.get(c.codigo);
+        if (!p) return;
+        const cantidad = Number(p.cantidad) || 0;
+        const total = Number(p.costo_total) || 0;
+        const pu = cantidad > 0 ? +(total / cantidad).toFixed(6) : 0;
+        const ex = c.existente;
+        idsReemplazadas.push(ex.id);
+        updateRecords.push({
+          ...ex,
+          codigo_delfin: p.codigo,
+          nombre_partida: p.descripcion || p.codigo,
+          unidad: p.unidad || 'und',
+          metrado_contratado: cantidad,
+          precio_unitario_pres: pu,
+          costo_total_presupuestado: total,
+          // costo_real_acumulado, porcentaje_avance, estado: NO se tocan
+          nivel: p.nivel ?? 1,
+          parent_codigo: p.parent_codigo ?? null,
+          orden: ordenPorCodigo.get(p.codigo) ?? 0,
+          updated_at: now, updated_by: userId,
+          version: (ex.version ?? 0) + 1,
+          sync_status: ex.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+        });
+      });
+      try {
+        await window.__db.partidas.bulkPut(updateRecords);
+        partidasActualizadas = updateRecords.length;
+      } catch (e) {
+        errorList.push({ row: '-', error: `Error actualizando partidas: ${e.message || e}` });
+      }
+      setProgress({ phase:`Actualizadas ${partidasActualizadas} partidas existentes`, current: aReemplazar.length, total: aReemplazar.length });
+      await new Promise(r => setTimeout(r, 0));
+    }
+
+    // ── Fase 1b: SOFT-DELETE insumos viejos de las partidas reemplazadas ──
+    // (sus insumos cambian de archivo a archivo, así que descartamos los anteriores)
+    if (idsReemplazadas.length) {
+      try {
+        await window.__db.insumos_partida
+          .where('partida_id').anyOf(idsReemplazadas)
+          .modify({ deleted_at: now, sync_status: 'pending_delete', updated_at: now });
+      } catch (e) {
+        errorList.push({ row: '-', error: `Error marcando insumos viejos: ${e.message || e}` });
+      }
+    }
+
+    // ── Fase 2: construir registros para INSERT (sólo aImportar) + insumos para todos ──
+    const partidaRecords = [];     // sólo nuevas
+    const insumoRecords = [];      // de aImportar Y aReemplazar
+    const idPorCodigoNuevas = new Map(); // codigo nuevo → id nuevo
+    aImportar.forEach(c => {
       const p = parsedPorCodigo.get(c.codigo);
       if (!p) return;
       const id = window.__newId();
+      idPorCodigoNuevas.set(c.codigo, id);
       const cantidad = Number(p.cantidad) || 0;
       const total = Number(p.costo_total) || 0;
       const pu = cantidad > 0 ? +(total / cantidad).toFixed(6) : 0;
@@ -464,10 +497,23 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
         version: 1, sync_status: 'pending_create', last_synced_at: null,
         idempotency_key: `${userId}_partidas_${id}`,
       });
+    });
+
+    // Helper: para una partida (nueva o reemplazada), saber su id final
+    const idFinalPorCodigo = new Map();
+    aImportar.forEach(c => idFinalPorCodigo.set(c.codigo, idPorCodigoNuevas.get(c.codigo)));
+    aReemplazar.forEach(c => idFinalPorCodigo.set(c.codigo, c.existente.id));
+
+    // Generar insumoRecords para nuevas + reemplazadas
+    [...aImportar, ...aReemplazar].forEach(c => {
+      const p = parsedPorCodigo.get(c.codigo);
+      if (!p) return;
+      const partidaId = idFinalPorCodigo.get(c.codigo);
+      if (!partidaId) return;
       (p.insumos || []).forEach(ins => {
         const insId = window.__newId();
         insumoRecords.push({
-          id: insId, obra_id: obraId, partida_id: id,
+          id: insId, obra_id: obraId, partida_id: partidaId,
           insumo_codigo: ins.codigo,
           nombre_insumo: ins.descripcion,
           tipo_insumo: ins.categoria,
@@ -482,13 +528,11 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       });
     });
 
-    // ── Fase 3: insertar partidas (chunked) ─────────────────────
+    // ── Fase 3: insertar partidas NUEVAS (chunked) ─────────────
     const PCH = 50, ICH = 200;
     let partidasInsertadas = 0;
     if (partidaRecords.length) {
-      const phaseLabel = aReemplazar.length
-        ? `Insertando ${aImportar.length} nuevas + ${aReemplazar.length} reemplazadas…`
-        : `Insertando ${aImportar.length} partidas nuevas…`;
+      const phaseLabel = `Insertando ${aImportar.length} partidas nuevas…`;
       setProgress({ phase: phaseLabel, current:0, total: partidaRecords.length });
       for (let i = 0; i < partidaRecords.length; i += PCH) {
         const chunk = partidaRecords.slice(i, i + PCH);
@@ -522,10 +566,10 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
     }
 
     const aSaltar = comparison.length - aImportar.length - aReemplazar.length;
-    const detalle = `${aImportar.length} nuevas, ${aReemplazar.length} reemplazadas, ${aSaltar} saltadas, ${insumosInsertados} insumos${errorList.length ? `, ${errorList.length} errores` : ''}`;
+    const detalle = `${partidasInsertadas} nuevas, ${partidasActualizadas} actualizadas (preservando ID), ${aSaltar} saltadas, ${insumosInsertados} insumos${errorList.length ? `, ${errorList.length} errores` : ''}`;
     return {
       tipo: 'apu',
-      ok: partidasInsertadas,
+      ok: partidasInsertadas + partidasActualizadas,
       detalle,
       errors: errorList.length,
       errorList: errorList.slice(0, 20),
