@@ -118,6 +118,10 @@ import './components/jx-subcontratos-val.jsx';
 import './components/jx-planillas.jsx';
 import './components/jx-personal-contratos.jsx';
 import './components/jx-dashboard-ejecutivo.jsx';
+import './components/jx-mantenimiento.jsx';
+import './components/jx-cts-grati.jsx';
+import './components/jx-plame.jsx';
+import './components/jx-plan-cuentas.jsx';
 import './components/jx-conflicts.jsx';
 import './jx-app.jsx';
 

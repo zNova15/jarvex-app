@@ -80,6 +80,7 @@ const NAV = [
 
   { section: 'MAQUINARIA' },
   { id: 'activos-pesados', label: 'Equipos Pesados', icon: 'tool' },
+  { id: 'mantenimiento-programado', label: 'Mantenimiento Programado', icon: 'tool' },
 
   { section: 'EJECUTIVO' },
   { id: 'dashboard-ejecutivo', label: 'Dashboard Ejecutivo', icon: 'dashboard' },
@@ -108,6 +109,9 @@ const NAV = [
   { section: 'RRHH' },
   { id: 'personal-contratos', label: 'Contratos Laborales', icon: 'shield' },
   { id: 'planillas', label: 'Planillas / Sueldos', icon: 'user' },
+  { id: 'cts', label: 'CTS', icon: 'dollar' },
+  { id: 'gratificaciones', label: 'Gratificaciones', icon: 'dollar' },
+  { id: 'plame', label: 'PLAME / T-Registro SUNAT', icon: 'list' },
 
   { section: 'CONTABILIDAD' },
   { id: 'cont-dashboard', label: 'Dashboard Contable', icon: 'dashboard' },
@@ -117,6 +121,9 @@ const NAV = [
   { id: 'consolidado', label: 'Consolidado', icon: 'list' },
   { id: 'cuentas-bancarias', label: 'Cuentas Bancarias', icon: 'dollar' },
   { id: 'flujo-caja', label: 'Flujo de Caja / Pagos', icon: 'calendar' },
+  { id: 'plan-cuentas', label: 'Plan de Cuentas (PCGE)', icon: 'list' },
+  { id: 'balance-general', label: 'Balance General', icon: 'compare' },
+  { id: 'estado-resultados', label: 'Estado de Resultados', icon: 'dollar' },
 
   { section: 'ADMINISTRACIÓN' },
   { id: 'usuarios', label: 'Usuarios', icon: 'user' },

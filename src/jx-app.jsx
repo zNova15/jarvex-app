@@ -613,6 +613,13 @@ function App() {
       case 'subcontrato-valorizaciones': return <SubcontratoValorizacionesPage showToast={showToast}/>;
       case 'personal-contratos':     return <PersonalContratosPage showToast={showToast}/>;
       case 'dashboard-ejecutivo':    return <DashboardEjecutivoPage showToast={showToast}/>;
+      case 'mantenimiento-programado': return <MantenimientoProgramadoPage showToast={showToast}/>;
+      case 'cts':                    return <CTSPage showToast={showToast}/>;
+      case 'gratificaciones':        return <GratificacionesPage showToast={showToast}/>;
+      case 'plame':                  return <PlamePage showToast={showToast}/>;
+      case 'plan-cuentas':           return <PlanCuentasPage showToast={showToast}/>;
+      case 'balance-general':        return <BalanceGeneralPage showToast={showToast}/>;
+      case 'estado-resultados':      return <EstadoResultadosPage showToast={showToast}/>;
       case 'conflictos':    return <ConflictsPage showToast={showToast}/>;
       case 'solicitudes':   return <SolicitudesPage showToast={showToast}/>;
       default:              return <ComingSoon page={page}/>;
