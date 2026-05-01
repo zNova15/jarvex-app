@@ -662,37 +662,60 @@ function MaterialesPage({ showToast }) {
       return;
     }
     try {
+      // Helper compartido: nivel de alerta según stock vs mínimo
+      const calcAlerta = (stock, minimo) => {
+        const s = Number(stock) || 0;
+        const m = Number(minimo) || 0;
+        if (m <= 0) return 'ok';
+        if (s <= 0) return 'agotado';
+        if (s <= m * 0.5) return 'critico';
+        if (s <= m) return 'reponer';
+        if (s <= m * 1.2) return 'cerca';
+        return 'ok';
+      };
+
       if (editingId) {
-        // EDITAR — preserva stock_actual y alerta
+        // EDITAR — preserva stock_actual pero recalcula alerta con nuevos parámetros
         const oldData = materiales.find(m => m.id === editingId);
+        const stockActual = Number(oldData?.stock_actual ?? 0);
+        const stockMinimo = parseFloat(form.stock_minimo) || 0;
         const newFields = {
           nombre_material: form.nombre_material,
           categoria: form.categoria || 'General',
           unidad: form.unidad,
           stock_inicial: parseFloat(form.stock_inicial) || 0,
-          stock_minimo: parseFloat(form.stock_minimo) || 0,
+          stock_minimo: stockMinimo,
           precio_unitario_estimado: parseFloat(form.precio) || null,
           proveedor_principal_id: form.proveedor_id || null,
+          alerta: calcAlerta(stockActual, stockMinimo),
         };
         await updateMaterial(editingId, newFields);
         try { await window.__logAudit?.({ action:'update', table:'materiales', recordId:editingId, oldData, newData:newFields }); } catch(e) {}
         showToast(`Material "${form.nombre_material}" actualizado`, 'green');
       } else {
+        const stockInicial = parseFloat(form.stock_inicial) || 0;
+        const stockMinimo = parseFloat(form.stock_minimo) || 0;
+        const alertaInicial = calcAlerta(stockInicial, stockMinimo);
         const created = await createMaterial({
           obra_id: obraId,
           nombre_material: form.nombre_material,
           categoria: form.categoria || 'General',
           unidad: form.unidad,
-          stock_inicial: parseFloat(form.stock_inicial) || 0,
-          stock_actual: parseFloat(form.stock_inicial) || 0,
-          stock_minimo: parseFloat(form.stock_minimo) || 0,
+          stock_inicial: stockInicial,
+          stock_actual: stockInicial,
+          stock_minimo: stockMinimo,
           precio_unitario_estimado: parseFloat(form.precio) || null,
           proveedor_principal_id: form.proveedor_id || null,
-          alerta: 'ok',
+          alerta: alertaInicial,
           estado: 'activo',
         });
+        // Toast adicional si nace con alerta para que el usuario lo sepa
+        if (alertaInicial === 'agotado') showToast(`⚠ "${form.nombre_material}" creado SIN STOCK — abajo del mínimo`, 'red');
+        else if (alertaInicial === 'critico') showToast(`⚠ "${form.nombre_material}" en estado CRÍTICO desde el inicio`, 'red');
+        else if (alertaInicial === 'reponer') showToast(`⚠ "${form.nombre_material}" requiere reposición ya`, 'amber');
+        else if (alertaInicial === 'cerca') showToast(`"${form.nombre_material}" cerca del stock mínimo`, 'amber');
+        else showToast(`Material "${form.nombre_material}" creado`, 'green');
         try { await window.__logAudit?.({ action:'insert', table:'materiales', recordId:created?.id, newData:created }); } catch(e) {}
-        showToast(`Material "${form.nombre_material}" creado`, 'green');
       }
       setModal(null);
       setForm({});
@@ -832,15 +855,31 @@ function MaterialesPage({ showToast }) {
       // Actualizar stock local optimistamente
       const delta = tipo === 'ingreso' ? parseFloat(form.cantidad) : -parseFloat(form.cantidad);
       const nuevoStock = (material.stock_actual ?? 0) + delta;
-      const nuevaAlerta = nuevoStock <= 0 ? 'sin_stock'
-        : nuevoStock <= material.stock_minimo * 0.5 ? 'critico'
-        : nuevoStock <= material.stock_minimo ? 'reponer' : 'ok';
+      const minimo = Number(material.stock_minimo || 0);
+      const nuevaAlerta = nuevoStock <= 0 ? 'agotado'
+        : minimo > 0 && nuevoStock <= minimo * 0.5 ? 'critico'
+        : minimo > 0 && nuevoStock <= minimo ? 'reponer'
+        : minimo > 0 && nuevoStock <= minimo * 1.2 ? 'cerca'
+        : 'ok';
       await window.__db.materiales.update(form.material_id, {
         stock_actual: nuevoStock,
         alerta: nuevaAlerta,
       });
       refresh();
-      showToast(`${tipo === 'ingreso' ? 'Ingreso' : 'Salida'} registrado · ${navigator.onLine ? 'sincronizando…' : 'guardado offline'}`, 'green');
+      const accionLabel = tipo === 'ingreso' ? 'Ingreso' : 'Salida';
+      const sync = navigator.onLine ? 'sincronizando…' : 'guardado offline';
+      // Toast principal + warning de estado si el stock quedó comprometido
+      if (nuevaAlerta === 'agotado') {
+        showToast(`⚠ ${accionLabel} registrado — stock AGOTADO de ${material.nombre_material}`, 'red');
+      } else if (nuevaAlerta === 'critico') {
+        showToast(`⚠ ${accionLabel} registrado — stock CRÍTICO (${nuevoStock} ≤ ${(minimo*0.5).toFixed(1)} mín·0.5)`, 'red');
+      } else if (nuevaAlerta === 'reponer') {
+        showToast(`⚠ ${accionLabel} registrado — alcanzó stock mínimo (${nuevoStock} / ${minimo}). Solicitar reposición`, 'amber');
+      } else if (nuevaAlerta === 'cerca') {
+        showToast(`${accionLabel} registrado — cerca del mínimo (${nuevoStock} / ${minimo}). Considerar reponer pronto`, 'amber');
+      } else {
+        showToast(`${accionLabel} registrado · ${sync}`, 'green');
+      }
       setModal(null);
       setForm({});
     } catch (e) {
@@ -2158,16 +2197,18 @@ function PersonalPage({ showToast }) {
   const obrasActivas = uM(() => (obrasAll || []).filter(o => !o.deleted_at), [obrasAll]);
   const obraNombre = (id) => obrasActivas.find(o => o.id === id)?.nombre_obra || '—';
 
-  const consultarRENIEC = async () => {
-    const dni = (form.dni || '').trim();
+  const consultarRENIEC = async (dniOverride = null) => {
+    const dni = (dniOverride || form.dni || '').trim();
     if (!/^\d{8}$/.test(dni)) { showToast('Ingresa primero un DNI de 8 dígitos', 'red'); return; }
     setReniecBusy(true);
     try {
       const data = await window.__identity.consultarDNI(dni);
+      // Sobrescribir nombres/apellidos siempre — si el usuario está cambiando el DNI
+      // (en edición), espera ver los nombres del nuevo DNI, no los anteriores.
       setForm(prev => ({
         ...prev,
-        nombres: prev.nombres?.trim() || data.nombres || prev.nombres,
-        apellidos: prev.apellidos?.trim() || data.apellidos || prev.apellidos,
+        nombres: data.nombres || '',
+        apellidos: data.apellidos || '',
       }));
       showToast(`RENIEC: ${data.nombreCompleto || 'datos cargados'}`, 'green');
     } catch (e) {
@@ -2176,6 +2217,23 @@ function PersonalPage({ showToast }) {
       setReniecBusy(false);
     }
   };
+
+  // Auto-fetch RENIEC cuando se cambia el DNI a uno nuevo válido (en edición).
+  // Esperamos 600ms tras dejar de tipear para no spammear la API.
+  const [lastDniFetched, setLastDniFetched] = uS(null);
+  uE(() => {
+    if (!editingId) return; // solo en modo edición
+    const dni = (form.dni || '').trim();
+    if (!/^\d{8}$/.test(dni)) return;
+    const original = personal?.find(p => p.id === editingId)?.dni;
+    if (!original || dni === original) return; // mismo DNI → no consultar
+    if (lastDniFetched === dni) return; // ya consultamos este
+    const t = setTimeout(() => {
+      setLastDniFetched(dni);
+      consultarRENIEC(dni);
+    }, 600);
+    return () => clearTimeout(t);
+  }, [form.dni, editingId, personal]);
 
   const filtered = uM(() => {
     if (!personal) return [];
@@ -2474,9 +2532,12 @@ function AsistenciaPage({ showToast }) {
   // Asistencia del día seleccionado
   const delDia = uM(() => asistencias?.filter(a => a.fecha === date) ?? [], [asistencias, date]);
 
+  // Trabajadores con fecha_ingreso ≤ fecha seleccionada (excluye los que aún no ingresaron)
+  const yaIngresoEnFecha = (p) => !p.fecha_ingreso || String(p.fecha_ingreso) <= date;
+
   // KPIs del día
   const kpis = uM(() => {
-    const total = personal?.filter(p => p.estado === 'activo').length ?? 0;
+    const total = personal?.filter(p => p.estado === 'activo' && yaIngresoEnFecha(p)).length ?? 0;
     const presentes = delDia.filter(a => a.estado_asistencia === 'asistio').length;
     const tardanzas = delDia.filter(a => a.estado_asistencia === 'tardanza').length;
     const faltas    = delDia.filter(a => a.estado_asistencia === 'falta').length;
@@ -2494,15 +2555,17 @@ function AsistenciaPage({ showToast }) {
   };
 
   // Mapear personal activo con su asistencia del día
+  // Excluye trabajadores cuya fecha_ingreso es posterior a la fecha seleccionada
+  // (no se les puede tomar asistencia antes de ingresar oficialmente)
   const personalConAsistencia = uM(() => {
     if (!personal) return [];
     return personal
-      .filter(p => p.estado === 'activo')
+      .filter(p => p.estado === 'activo' && yaIngresoEnFecha(p))
       .map(p => {
         const reg = delDia.find(a => a.personal_id === p.id);
         return { ...p, asistencia: reg };
       });
-  }, [personal, delDia]);
+  }, [personal, delDia, date]);
 
   const calcularHoras = (entrada, salida) => {
     if (!entrada || !salida) return 0;

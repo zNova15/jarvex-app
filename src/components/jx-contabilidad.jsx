@@ -225,7 +225,31 @@ function EmpresasPage({ showToast }) {
             </div>
             <div>
               <label className="flabel">RUC</label>
-              <input className="fi" placeholder="11 dígitos" maxLength={11} value={form.ruc||''} onChange={e=>setForm({...form, ruc:e.target.value.replace(/\D/g,'').slice(0,11)})}/>
+              <div style={{ display:'flex', gap:6 }}>
+                <input className="fi" placeholder="11 dígitos" maxLength={11} value={form.ruc||''} onChange={e=>setForm({...form, ruc:e.target.value.replace(/\D/g,'').slice(0,11)})} style={{ flex:1 }}/>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  title="Buscar datos en SUNAT por este RUC"
+                  disabled={!/^\d{11}$/.test(String(form.ruc || ''))}
+                  onClick={async () => {
+                    try {
+                      const data = await window.__identity.consultarRUC(form.ruc);
+                      setForm(prev => ({
+                        ...prev,
+                        legal_name: data.razonSocial || prev.legal_name || '',
+                        name: prev.name || data.razonSocial || '',
+                        notas: [data.direccion, data.estado, data.condicion].filter(Boolean).join(' · ') || prev.notas || '',
+                      }));
+                      showToast(`SUNAT: ${data.razonSocial || 'datos cargados'}`, 'green');
+                    } catch (e) {
+                      showToast(e.message || 'Error consultando SUNAT', 'red');
+                    }
+                  }}
+                  style={{ whiteSpace:'nowrap' }}>
+                  <JxIcon name="search" size={12}/> SUNAT
+                </button>
+              </div>
             </div>
             <div>
               <label className="flabel">Tipo de empresa</label>

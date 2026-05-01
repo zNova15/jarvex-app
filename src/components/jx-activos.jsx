@@ -37,6 +37,7 @@ function ActivosPesadosPage({ showToast }) {
   const [editing, setEditing] = uS(null);
   const [form, setForm] = uS({});
   const [hmModal, setHmModal] = uS(null); // activo seleccionado para registrar HM/comb/mant
+  const [historial, setHistorial] = uS(null); // { activo, hm: [], cb: [], mt: [] }
 
   // KPIs por activo (HM acumuladas, combustible total, mantenim total)
   const [kpisActivo, setKpisActivo] = uS({});
@@ -291,6 +292,20 @@ function ActivosPesadosPage({ showToast }) {
                         <button className="btn btn-amber btn-xs" title="Registrar HM / Comb / Mant" onClick={()=>openHm(a)}>
                           <JxIcon name="plus" size={11}/>
                         </button>
+                        <button className="btn btn-ghost btn-xs" title="Ver historial completo" onClick={async ()=>{
+                          try {
+                            const [hm, cb, mt] = await Promise.all([
+                              window.__db.horas_maquina.where('activo_id').equals(a.id).filter(x=>!x.deleted_at).toArray(),
+                              window.__db.consumos_combustible.where('activo_id').equals(a.id).filter(x=>!x.deleted_at).toArray(),
+                              window.__db.mantenimientos_maquinaria.where('activo_id').equals(a.id).filter(x=>!x.deleted_at).toArray(),
+                            ]);
+                            setHistorial({ activo: a, hm: hm.sort((x,y)=>(y.fecha||'').localeCompare(x.fecha||'')),
+                              cb: cb.sort((x,y)=>(y.fecha||'').localeCompare(x.fecha||'')),
+                              mt: mt.sort((x,y)=>(y.fecha||'').localeCompare(x.fecha||'')) });
+                          } catch (e) { showToast('Error cargando historial: '+(e.message||e), 'red'); }
+                        }} style={{ marginLeft:4 }}>
+                          <JxIcon name="list" size={11}/>
+                        </button>
                         <button className="btn btn-ghost btn-xs" title="Editar" onClick={()=>openEditar(a)} style={{ marginLeft:4 }}>
                           <JxIcon name="edit" size={11}/>
                         </button>
@@ -418,6 +433,107 @@ function ActivosPesadosPage({ showToast }) {
           <div className="modal-actions">
             <button className="btn btn-ghost" onClick={()=>{setHmModal(null); setFormReg({});}}>Cancelar</button>
             <button className="btn btn-amber" onClick={guardarRegistro}><JxIcon name="check" size={13}/>Registrar</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal historial: HM + Combustible + Mantenimientos del activo */}
+      {historial && (
+        <Modal title={`Historial · ${historial.activo.nombre}${historial.activo.placa?` (${historial.activo.placa})`:''}`} icon="list" onClose={()=>setHistorial(null)} wide>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:12, marginBottom:16 }}>
+            <div className="card card-p" style={{ borderLeft:'3px solid var(--blue)' }}>
+              <div style={{ fontSize:11, color:'var(--tm)' }}>HORAS-MÁQUINA</div>
+              <div style={{ fontSize:22, fontWeight:800, color:'var(--blue)' }}>
+                {historial.hm.reduce((s,h)=>s+Number(h.horas_trabajadas||0),0).toFixed(1)}
+              </div>
+              <div style={{ fontSize:11, color:'var(--tm)' }}>{historial.hm.length} registros</div>
+            </div>
+            <div className="card card-p" style={{ borderLeft:'3px solid var(--orange)' }}>
+              <div style={{ fontSize:11, color:'var(--tm)' }}>COMBUSTIBLE</div>
+              <div style={{ fontSize:22, fontWeight:800, color:'var(--orange)' }}>
+                {fmtS(historial.cb.reduce((s,c)=>s+Number(c.total||0),0))}
+              </div>
+              <div style={{ fontSize:11, color:'var(--tm)' }}>{historial.cb.length} cargas · {historial.cb.reduce((s,c)=>s+Number(c.galones||0),0).toFixed(1)} gal</div>
+            </div>
+            <div className="card card-p" style={{ borderLeft:'3px solid var(--red)' }}>
+              <div style={{ fontSize:11, color:'var(--tm)' }}>MANTENIMIENTOS</div>
+              <div style={{ fontSize:22, fontWeight:800, color:'var(--red)' }}>
+                {fmtS(historial.mt.reduce((s,m)=>s+Number(m.costo_total||0),0))}
+              </div>
+              <div style={{ fontSize:11, color:'var(--tm)' }}>{historial.mt.length} servicios</div>
+            </div>
+          </div>
+
+          {/* HM */}
+          <div style={{ marginBottom:18 }}>
+            <div style={{ fontSize:12.5, fontWeight:700, color:'var(--blue)', marginBottom:6 }}>⏱ Registros de Horas-Máquina</div>
+            {historial.hm.length === 0 ? <div style={{ fontSize:11, color:'var(--tm)' }}>Sin registros.</div> : (
+              <div style={{ maxHeight:160, overflow:'auto', border:'1px solid var(--bd)', borderRadius:6 }}>
+                <table className="tbl"><thead><tr>
+                  <th>Fecha</th><th>Obra</th><th style={{textAlign:'right'}}>Horas</th><th>Operador</th><th>Notas</th>
+                </tr></thead><tbody>
+                  {historial.hm.map(h => (
+                    <tr key={h.id}>
+                      <td style={{ fontSize:11 }}>{h.fecha || '—'}</td>
+                      <td style={{ fontSize:11 }}>{lookupOb(h.obra_id)?.nombre_obra || '—'}</td>
+                      <td style={{ textAlign:'right', fontWeight:600, color:'var(--blue)' }}>{Number(h.horas_trabajadas||0).toFixed(1)}</td>
+                      <td style={{ fontSize:11 }}>{h.operador || '—'}</td>
+                      <td style={{ fontSize:11, color:'var(--tm)' }}>{h.notas || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody></table>
+              </div>
+            )}
+          </div>
+
+          {/* Combustible */}
+          <div style={{ marginBottom:18 }}>
+            <div style={{ fontSize:12.5, fontWeight:700, color:'var(--orange)', marginBottom:6 }}>⛽ Cargas de Combustible</div>
+            {historial.cb.length === 0 ? <div style={{ fontSize:11, color:'var(--tm)' }}>Sin registros.</div> : (
+              <div style={{ maxHeight:160, overflow:'auto', border:'1px solid var(--bd)', borderRadius:6 }}>
+                <table className="tbl"><thead><tr>
+                  <th>Fecha</th><th style={{textAlign:'right'}}>Galones</th><th style={{textAlign:'right'}}>Precio/gal</th><th style={{textAlign:'right'}}>Total</th><th>Grifo</th><th>Notas</th>
+                </tr></thead><tbody>
+                  {historial.cb.map(c => (
+                    <tr key={c.id}>
+                      <td style={{ fontSize:11 }}>{c.fecha || '—'}</td>
+                      <td style={{ textAlign:'right' }}>{Number(c.galones||0).toFixed(1)}</td>
+                      <td style={{ textAlign:'right' }}>{fmtS(c.precio_galon||0)}</td>
+                      <td style={{ textAlign:'right', fontWeight:600, color:'var(--orange)' }}>{fmtS(c.total||0)}</td>
+                      <td style={{ fontSize:11 }}>{c.grifo || c.proveedor || '—'}</td>
+                      <td style={{ fontSize:11, color:'var(--tm)' }}>{c.notas || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody></table>
+              </div>
+            )}
+          </div>
+
+          {/* Mantenimientos */}
+          <div>
+            <div style={{ fontSize:12.5, fontWeight:700, color:'var(--red)', marginBottom:6 }}>🔧 Servicios de Mantenimiento</div>
+            {historial.mt.length === 0 ? <div style={{ fontSize:11, color:'var(--tm)' }}>Sin registros.</div> : (
+              <div style={{ maxHeight:160, overflow:'auto', border:'1px solid var(--bd)', borderRadius:6 }}>
+                <table className="tbl"><thead><tr>
+                  <th>Fecha</th><th>Tipo</th><th>Descripción</th><th style={{textAlign:'right'}}>Costo</th><th>Taller</th><th>HM al servicio</th>
+                </tr></thead><tbody>
+                  {historial.mt.map(m => (
+                    <tr key={m.id}>
+                      <td style={{ fontSize:11 }}>{m.fecha || '—'}</td>
+                      <td><span className="tag">{m.tipo || '—'}</span></td>
+                      <td style={{ fontSize:11 }}>{m.descripcion || '—'}</td>
+                      <td style={{ textAlign:'right', fontWeight:600, color:'var(--red)' }}>{fmtS(m.costo_total || ((Number(m.costo_repuestos)||0)+(Number(m.costo_mano_obra)||0)))}</td>
+                      <td style={{ fontSize:11 }}>{m.taller || '—'}</td>
+                      <td style={{ textAlign:'right', fontSize:11 }}>{m.hm_actuales != null ? Number(m.hm_actuales).toFixed(1) : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody></table>
+              </div>
+            )}
+          </div>
+
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={()=>setHistorial(null)}>Cerrar</button>
           </div>
         </Modal>
       )}

@@ -734,14 +734,28 @@ function VersionesPage({ showToast }) {
 
   // Estado del árbol colapsable
   const [filtroTexto, setFiltroTexto] = uSG('');
-  const [nivelMax, setNivelMax] = uSG(2); // por defecto solo capítulos y subcapítulos
+  const [nivelMax, setNivelMax] = uSG(9); // por defecto: TODO expandido para ver cambios reales
   const [expandidos, setExpandidos] = uSG(new Set()); // códigos expandidos manualmente
+  const [soloCambios, setSoloCambios] = uSG(false); // filtra filas donde hay delta entre versiones
 
-  // Filas visibles: respeta nivelMax + expansiones manuales + filtro texto
+  // ¿La fila tiene diferencias entre versiones seleccionadas?
+  const tieneDelta = (row) => {
+    if (selectedIds.length < 2) return true; // no aplica
+    const costos = selectedIds.map(vid => row.values[vid]?.costo);
+    // Hay nuevo o eliminado (alguno undefined)
+    if (costos.some(c => c === undefined) && costos.some(c => c !== undefined)) return true;
+    // Diferencia mayor a 0.01 entre montos
+    const min = Math.min(...costos.filter(c => c !== undefined));
+    const max = Math.max(...costos.filter(c => c !== undefined));
+    return Math.abs(max - min) > 0.01;
+  };
+
+  // Filas visibles: respeta nivelMax + expansiones manuales + filtro texto + soloCambios
   const filasVisibles = uMG(() => {
     const q = filtroTexto.trim().toLowerCase();
     const matchesText = (row) => !q || (row.codigo + ' ' + (row.nombre||'')).toLowerCase().includes(q);
     return matriz.filter(row => {
+      if (soloCambios && !tieneDelta(row)) return false;
       if (q) return matchesText(row); // si hay filtro, ignoro nivelMax
       if (row.nivel <= nivelMax) return true;
       // Filas más profundas: visibles solo si algún ancestro está en `expandidos`
@@ -752,7 +766,7 @@ function VersionesPage({ showToast }) {
       }
       return false;
     });
-  }, [matriz, nivelMax, expandidos, filtroTexto]);
+  }, [matriz, nivelMax, expandidos, filtroTexto, soloCambios, selectedIds]);
 
   // Determina si un código tiene hijos en la matriz (para mostrar el chevron)
   const tieneHijos = uMG(() => {
@@ -1085,8 +1099,18 @@ function VersionesPage({ showToast }) {
                 <button className="btn btn-ghost btn-sm" onClick={colapsarTodo}>
                   <JxIcon name="chevR" size={11}/> Colapsar todo
                 </button>
+                {versionesSel.length >= 2 && (
+                  <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:11, color: soloCambios ? 'var(--amber)' : 'var(--tm)', cursor:'pointer', padding:'4px 8px', border:`1px solid ${soloCambios?'var(--amber)':'var(--bd)'}`, borderRadius:6 }}>
+                    <input type="checkbox" checked={soloCambios} onChange={e=>setSoloCambios(e.target.checked)} style={{ accentColor:'var(--amber)' }}/>
+                    Solo con cambios
+                  </label>
+                )}
                 <span style={{ fontSize:11, color:'var(--tm)' }}>
                   {filasVisibles.length} / {matriz.length} partidas
+                  {versionesSel.length >= 2 && (() => {
+                    const conCambio = matriz.filter(r => tieneDelta(r)).length;
+                    return <> · <strong style={{ color:'var(--amber)' }}>{conCambio} con diferencias</strong></>;
+                  })()}
                 </span>
               </div>
 

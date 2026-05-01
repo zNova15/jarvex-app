@@ -639,9 +639,24 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
     // ─── Materiales ───────────────────────────────────────────
     if (include.materiales) {
       const materialesNuevos = parsed.data.filter(i => i.categoria === 'material');
+      // Normalizador para detectar duplicados aún con códigos distintos.
+      // (S10 puede emitir el mismo material con códigos diferentes entre versiones)
+      const normNombre = (s) => String(s || '')
+        .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim();
       if (materialesNuevos.length) {
-        const existentes = await window.__db.materiales.where('obra_id').equals(obraId).toArray();
+        const existentes = await window.__db.materiales.where('obra_id').equals(obraId).filter(x=>!x.deleted_at).toArray();
         const porCodigo = new Map(existentes.filter(m => m.codigo_s10).map(m => [m.codigo_s10, m]));
+        // Índice secundario por nombre normalizado + unidad (clave compuesta).
+        // Si un material llega con código nuevo pero descripción/unidad ya existente,
+        // se ACTUALIZA en lugar de duplicarse.
+        const porNombreUnidad = new Map();
+        for (const m of existentes) {
+          const k = normNombre(m.nombre_material) + '|' + String(m.unidad || '').toLowerCase();
+          if (!porNombreUnidad.has(k)) porNombreUnidad.set(k, m);
+        }
         setProgress({ phase:'Cargando materiales…', current:0, total: materialesNuevos.length });
         for (let i = 0; i < materialesNuevos.length; i++) {
           const ins = materialesNuevos[i];
@@ -649,7 +664,9 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
           const unidadResuelta = (ins.unidad && ins.unidad.trim()) || unidadPorCodigoAPU.get(ins.codigo) || 'und';
           if (unidadResuelta !== 'und') conUnidad++; else sinUnidad++;
           try {
-            const existente = porCodigo.get(ins.codigo);
+            // 1ro intentar match por código_s10. 2do por nombre+unidad.
+            const claveNombre = normNombre(ins.descripcion) + '|' + String(unidadResuelta).toLowerCase();
+            const existente = porCodigo.get(ins.codigo) || porNombreUnidad.get(claveNombre);
             if (existente) {
               await window.__db.materiales.update(existente.id, {
                 nombre_material: ins.descripcion,
