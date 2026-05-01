@@ -1,6 +1,12 @@
 import React from "react";
 const { useState: uSAL, useEffect: uEAL, useMemo: uMAL, useCallback: uCAL } = React;
 
+// Wrapper para JxIcon que tolera carga diferida del global
+const JxIcon = (props) => {
+  const I = window.JxIcon;
+  return I ? <I {...props} /> : null;
+};
+
 // ═══════════════════════════════════════════════════════════════════
 // JARVEX — Audit Log Viewer (admin only)
 // Lee window.__db.audit_log_pending y opcionalmente Supabase audit_log

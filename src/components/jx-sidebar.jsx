@@ -131,6 +131,7 @@ const NAV = [
   { id: 'estado-resultados', label: 'Estado de Resultados', icon: 'dollar' },
   { id: 'comprobantes', label: 'Comprobantes Electrónicos SUNAT', icon: 'list' },
   { id: 'libros-electronicos', label: 'Libros Electrónicos PLE / PDT', icon: 'list' },
+  { id: 'config-sunat', label: 'Configuración SUNAT', icon: 'settings' },
   { id: 'flujo-proyectado', label: 'Flujo de Caja Proyectado', icon: 'calendar' },
   { id: 'comparativo-periodos', label: 'Comparativo Periodos', icon: 'compare' },
 

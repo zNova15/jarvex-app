@@ -132,6 +132,7 @@ import './components/jx-audit-log.jsx';
 import './components/jx-comprobantes.jsx';
 import './components/jx-libros-electronicos.jsx';
 import './lib/sunat-ubl.js';
+import './components/jx-config-sunat.jsx';
 import './components/jx-conflicts.jsx';
 import './jx-app.jsx';
 
