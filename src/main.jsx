@@ -31,6 +31,7 @@ import { generatePDF, downloadPDF, generateExcel } from './lib/reports';
 import * as contabilidadPdfs from './lib/contabilidad-pdfs';
 import { parseExcelFile, downloadTemplate, MODULES as IMPORT_MODULES } from './lib/excel';
 import { parseAPUFile, parseS10File, enrichJerarquia, buildArbol, parseAPU, parseInsumosList, parseGantt, detectS10Type, excelDateToISO } from './lib/apuParser';
+import { parsePresupuestoPDF, extractTextFromPDF, parsePresupuestoLines, partidasToImportRows } from './lib/pdfBudgetParser';
 import { consultarRUC, consultarDNI } from './lib/identity';
 import { logAudit } from './lib/audit';
 import {
@@ -80,6 +81,9 @@ window.__excel = { parseExcelFile, downloadTemplate, MODULES: IMPORT_MODULES };
 window.__apu = {
   parseAPUFile, parseS10File, enrichJerarquia, buildArbol,
   parseAPU, parseInsumosList, parseGantt, detectS10Type, excelDateToISO,
+};
+window.__pdfBudget = {
+  parsePresupuestoPDF, extractTextFromPDF, parsePresupuestoLines, partidasToImportRows,
 };
 window.__identity = { consultarRUC, consultarDNI };
 window.__logAudit = logAudit;

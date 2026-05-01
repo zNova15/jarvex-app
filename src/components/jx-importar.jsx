@@ -372,14 +372,23 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       setParsed(null);
       return;
     }
-    if (!['xlsx','xls','xlsm'].includes(ext)) {
-      setParseErr(`Formato no soportado: .${ext}. Solo acepto .xlsx / .xls (Excel).`);
+    if (!['xlsx','xls','xlsm','pdf'].includes(ext)) {
+      setParseErr(`Formato no soportado: .${ext}. Acepto .xlsx / .xls (Excel) y .pdf (presupuesto).`);
       setParsed(null);
       return;
     }
     setParsing(true); setParseErr(null);
     const t0 = performance.now();
-    window.__apu.parseS10File(file)
+    // PDF presupuesto: usa parser propio (pdfjs). Devuelve shape compatible con APU
+    // así reusamos todo el flow de comparación + insert.
+    const parserPromise = ext === 'pdf'
+      ? window.__pdfBudget.parsePresupuestoPDF(file).then(r => ({
+          ...r,
+          tipo: 'apu',          // reusar pipeline APU (sin insumos)
+          source_format: 'pdf', // para mostrar en UI
+        }))
+      : window.__apu.parseS10File(file);
+    parserPromise
       .then(p => {
         if (p.tipo === 'desconocido') {
           setParseErr(isProject
@@ -1176,7 +1185,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
               : 'Acepta el export de "Análisis de Precios Unitarios" o "Consolidado de Materiales" (.xlsx / .xls).'}
           </div>
 
-          <DropZone onFile={setFile} file={file} accept=".xlsx,.xls"/>
+          <DropZone onFile={setFile} file={file} accept=".xlsx,.xls,.pdf"/>
 
           {parsing && (
             <div style={{ marginTop:14, background:'rgba(52,152,219,0.08)', border:'1px solid rgba(52,152,219,0.25)', borderRadius:8, padding:'10px 14px', fontSize:12, color:'var(--blue)' }}>

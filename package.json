@@ -12,6 +12,7 @@
     "deploy:prod": "vercel --prod"
   },
   "dependencies": {
+    "@peculiar/x509": "^2.0.0",
     "@supabase/supabase-js": "^2.104.1",
     "chart.js": "^4.5.1",
     "dexie": "^4.4.2",
@@ -19,14 +20,14 @@
     "jspdf-autotable": "^5.0.7",
     "jszip": "^3.10.1",
     "node-forge": "^1.4.0",
-    "@peculiar/x509": "^2.0.0",
-    "xadesjs": "^2.6.7",
+    "pdfjs-dist": "^5.7.284",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "react-router-dom": "^7.14.2",
     "uuid": "^14.0.0",
     "vite-plugin-pwa": "^1.2.0",
     "workbox-window": "^7.4.0",
+    "xadesjs": "^2.6.7",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
