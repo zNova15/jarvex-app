@@ -40,7 +40,15 @@ export async function launchBrowser(opts = {}) {
   page.__consoleErrors = [];
   page.__pageErrors    = [];
   page.on('console', (msg) => {
-    if (msg.type() === 'error') page.__consoleErrors.push(msg.text());
+    if (msg.type() !== 'error') return;
+    const txt = msg.text();
+    // Ruido benigno que ignoramos
+    if (/Failed to load resource.*favicon/i.test(txt)) return;
+    if (/Failed to load resource.*manifest/i.test(txt)) return;
+    if (/Failed to load resource.*\b(400|401)\b/i.test(txt)) return; // intentos auth fallidos del helper
+    if (/DevTools/i.test(txt)) return;
+    if (/Manifest.*icon/i.test(txt)) return;
+    page.__consoleErrors.push(txt);
   });
   page.on('pageerror', (err) => {
     page.__pageErrors.push(String(err?.stack || err?.message || err));
@@ -72,16 +80,47 @@ export async function login(page, email, password) {
   const btn = page.locator('button:has-text("Ingresar al Sistema")').first();
   await btn.click();
 
-  // Esperar a que useAuth tenga profile
-  await page.waitForFunction(
-    () => {
+  // Esperar a que la sesión Supabase esté establecida (o el login falle).
+  // Usamos polling manual porque Playwright.waitForFunction no maneja bien predicates async.
+  const deadline = Date.now() + 30000;
+  let loginState = null;
+  while (Date.now() < deadline) {
+    loginState = await page.evaluate(async () => {
       try {
-        const auth = window.__useAuth?.();
-        return !!auth?.profile?.id;
-      } catch { return false; }
-    },
-    { timeout: 30000 }
-  );
+        const sb = window.__supabase;
+        if (!sb) return { phase: 'no-supabase' };
+        const { data } = await sb.auth.getSession();
+        if (data?.session?.user?.id) {
+          return { phase: 'ok', userId: data.session.user.id };
+        }
+        const txt = document.body.innerText || '';
+        if (/Email o contraseña incorrectos|Invalid login|Invalid email/i.test(txt)) {
+          return { phase: 'rejected', msg: 'credenciales-invalidas' };
+        }
+        return { phase: 'pending' };
+      } catch (e) {
+        return { phase: 'error', err: String(e) };
+      }
+    });
+    if (loginState.phase === 'ok') break;
+    if (loginState.phase === 'rejected') {
+      await capture(page, 'login-rechazado');
+      throw new Error(`Login rechazado por Supabase: ${loginState.msg}. Verificá JX_TEST_EMAIL / JX_TEST_PASSWORD.`);
+    }
+    await page.waitForTimeout(500);
+  }
+  if (loginState?.phase !== 'ok') {
+    await capture(page, 'login-timeout');
+    throw new Error(`Login timeout (${loginState?.phase || 'desconocido'}): la sesión Supabase no se estableció en 30s.`);
+  }
+
+  // Esperar a que el LoginScreen desaparezca (la app re-renderiza tras tener profile)
+  const reactDeadline = Date.now() + 20000;
+  while (Date.now() < reactDeadline) {
+    const stillLogin = await page.locator('input[type="password"]').isVisible().catch(() => false);
+    if (!stillLogin) break;
+    await page.waitForTimeout(300);
+  }
 
   // Pequeño wait para que el sync inicial corra
   await page.waitForTimeout(3000);

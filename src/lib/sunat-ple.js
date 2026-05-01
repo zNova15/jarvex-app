@@ -331,9 +331,12 @@ export function generateRegistroComprasPLE(movs_cost_expense, periodo, ruc) {
     const total    = r2(Number(m.amount || 0));
     let subtotal   = m.subtotal != null  ? Number(m.subtotal)   : null;
     let igv        = m.igv_amount != null ? Number(m.igv_amount) : null;
+    // Detección de operaciones no gravadas: si el cliente identifica con DNI
+    // (boleta consumidor final) o si igv_amount viene 0 explícito, no asumir 18%
+    const noGravado = (m.igv_amount === 0) || (m.tax_exemption_code && m.tax_exemption_code !== '10');
     if (subtotal == null && igv == null) {
-      subtotal = r2(total / 1.18);
-      igv      = r2(total - subtotal);
+      if (noGravado) { subtotal = total; igv = 0; }
+      else { subtotal = r2(total / 1.18); igv = r2(total - subtotal); }
     } else if (subtotal == null) {
       subtotal = r2(total - igv);
     } else if (igv == null) {
@@ -344,14 +347,15 @@ export function generateRegistroComprasPLE(movs_cost_expense, periodo, ruc) {
     totIgv  += igv;
     totImp  += total;
 
-    const docInfo  = splitDoc(m.documento || m.doc_numero || m.factura || '');
-    const tipoComp = tipoCompCode(m.documento || m.tipo_documento || '', '01');
+    const docInfo  = splitDoc(m.document_number || '');
+    const tipoComp = tipoCompCode(m.document_type || '', '01');
     const fEmi     = fmtFechaSunat(m.date || m.created_at);
     const fVcto    = fmtFechaSunat(m.fecha_vencimiento || m.due_date || m.date);
 
-    const provDocTipo = tipoDocIdent(m.proveedor_tipo_doc || (String(m.proveedor_ruc || '').length === 11 ? 'RUC' : 'DNI'));
-    const provDoc     = clean(m.proveedor_ruc || m.proveedor_dni || m.ruc || '');
-    const provName    = clean(m.proveedor || m.proveedor_nombre || m.razon_social || '').slice(0, 100);
+    const provRuc = String(m.third_party_ruc || '');
+    const provDocTipo = tipoDocIdent(provRuc.length === 11 ? 'RUC' : 'DNI');
+    const provDoc     = clean(provRuc);
+    const provName    = clean(m.third_party_name || '').slice(0, 100);
 
     const moneda = String(m.moneda || 'PEN').toUpperCase();
     const tc     = num(Number(m.tipo_cambio || 0), 3);
@@ -486,16 +490,17 @@ export function generateRegistroVentasPLE(movs_income, periodo, ruc) {
     totExo  += exonerado;
     totIna  += inafecto;
 
-    const docInfo  = splitDoc(m.documento || m.doc_numero || m.factura || '');
-    const tipoComp = tipoCompCode(m.documento || m.tipo_documento || '', '01');
+    const docInfo  = splitDoc(m.document_number || '');
+    const tipoComp = tipoCompCode(m.document_type || '', '01');
     const fEmi     = fmtFechaSunat(m.date || m.created_at);
     const fVcto    = fmtFechaSunat(m.fecha_vencimiento || m.due_date || m.date);
 
-    const cliDocTipo = tipoDocIdent(m.cliente_tipo_doc || (String(m.cliente_ruc || '').length === 11 ? 'RUC' : 'DNI'));
-    const cliDoc     = clean(m.cliente_ruc || m.cliente_dni || m.ruc || '');
-    const cliName    = clean(m.cliente || m.cliente_nombre || m.razon_social || m.description || '').slice(0, 100);
+    const cliRuc = String(m.third_party_ruc || '');
+    const cliDocTipo = tipoDocIdent(cliRuc.length === 11 ? 'RUC' : 'DNI');
+    const cliDoc     = clean(cliRuc);
+    const cliName    = clean(m.third_party_name || m.description || '').slice(0, 100);
 
-    const moneda = String(m.moneda || 'PEN').toUpperCase();
+    const moneda = String(m.currency || m.moneda || 'PEN').toUpperCase();
     const tc     = num(Number(m.tipo_cambio || 0), 3);
     const correl = `M${pad4(periodo.anio)}${pad2(periodo.mes)}${String(counter).padStart(5, '0')}`;
     const estado = m.payment_status === 'cancelled' ? '9' : '1';
