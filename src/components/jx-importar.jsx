@@ -43,9 +43,12 @@ const MOD_META = [
   { id:'partidas',     label:'Partidas de Obra',        icon:'list',    color:'#9B59B6', desc:'Códigos, metrados, precios unitarios y cronograma planificado' },
   { id:'proveedores',  label:'Proveedores',             icon:'truck',   color:'#1ABC9C', desc:'RUC, razón social, contacto y condiciones (global, sin obra)' },
   { id:'herramientas', label:'Herramientas y Equipos',  icon:'tool',    color:'#F28C28', desc:'Tipo, marca, modelo, serie, estado actual' },
+  { id:'subcontratistas', label:'Subcontratistas',      icon:'users',   color:'#E74C3C', desc:'RUC, razón social, especialidad, contacto (global)' },
+  { id:'companies',    label:'Empresas',                icon:'building', color:'#F2B705', desc:'RUC, razón social, dirección y ubigeo (multi-empresa)' },
+  { id:'activos_pesados', label:'Activos Pesados / Maquinaria', icon:'tool', color:'#8E44AD', desc:'Placa, marca, modelo, año, propietario (global, sin obra)' },
 ];
 
-const NEEDS_OBRA = (m) => m !== 'proveedores';
+const NEEDS_OBRA = (m) => !['proveedores','subcontratistas','companies','activos_pesados'].includes(m);
 
 // ── UTILS ────────────────────────────────────────────────────
 const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
