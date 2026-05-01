@@ -514,6 +514,22 @@ function App() {
       const txt = `${n.titulo}${n.descripcion ? ' — ' + n.descripcion : ''}`;
       const tipo = n.tipo === 'change_request' ? 'amber' : n.tipo === 'incidencia' ? 'red' : 'blue';
       showToast(txt, tipo);
+      // Browser Notification nativa: si tenemos permiso y la app no está enfocada,
+      // también lanzar una notif del sistema (la PWA la muestra incluso minimizada).
+      try {
+        if (typeof Notification !== 'undefined' &&
+            Notification.permission === 'granted' &&
+            (document.hidden || tipo === 'red')) {
+          const notif = new Notification(n.titulo || 'JARVEX', {
+            body: n.descripcion || '',
+            icon: '/icons/icon-192.png',
+            badge: '/icons/icon-192.png',
+            tag: n.tipo || 'jarvex',
+            requireInteraction: tipo === 'red',
+          });
+          notif.onclick = () => { window.focus(); notif.close(); };
+        }
+      } catch (_) {}
     };
     window.addEventListener('jarvex_new_notif', onNotif);
     return () => window.removeEventListener('jarvex_new_notif', onNotif);
@@ -660,6 +676,7 @@ function App() {
       case 'busqueda':               return <BusquedaGlobalPage showToast={showToast}/>;
       case 'kpis-obra':              return <KPIsObraPage showToast={showToast}/>;
       case 'cumplimiento-cronograma': return <CumplimientoCronogramaPage showToast={showToast}/>;
+      case 'audit-log':              return <AuditLogPage showToast={showToast}/>;
       case 'conflictos':    return <ConflictsPage showToast={showToast}/>;
       case 'solicitudes':   return <SolicitudesPage showToast={showToast}/>;
       default:              return <ComingSoon page={page}/>;

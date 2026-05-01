@@ -299,6 +299,7 @@ function MovimientosContablesPage({ showToast }) {
       date: new Date().toISOString().slice(0,10),
       type: 'income',
       category: '',
+      cuenta_pcge: '',
       description: '',
       amount: '',
       currency: 'PEN',
@@ -322,6 +323,7 @@ function MovimientosContablesPage({ showToast }) {
       date: m.date || '',
       type: m.type,
       category: m.category || '',
+      cuenta_pcge: m.cuenta_pcge || '',
       description: m.description || '',
       amount: m.amount,
       currency: m.currency || 'PEN',
@@ -352,6 +354,7 @@ function MovimientosContablesPage({ showToast }) {
           date: form.date,
           type: form.type,
           category: form.category || null,
+          cuenta_pcge: form.cuenta_pcge || null,
           description: form.description || null,
           amount: monto,
           currency: form.currency || 'PEN',
@@ -375,6 +378,7 @@ function MovimientosContablesPage({ showToast }) {
           date: form.date,
           type: form.type,
           category: form.category || null,
+          cuenta_pcge: form.cuenta_pcge || null,
           description: form.description || null,
           amount: monto,
           currency: form.currency || 'PEN',
@@ -551,6 +555,31 @@ function MovimientosContablesPage({ showToast }) {
             <div>
               <label className="flabel">Categoría</label>
               <input className="fi" placeholder="Ej: Materiales, Salarios, Servicios" value={form.category||''} onChange={e=>setForm({...form, category:e.target.value})}/>
+            </div>
+            <div>
+              <label className="flabel">Cuenta PCGE (opcional)</label>
+              <select className="fi" value={form.cuenta_pcge||''} onChange={e=>setForm({...form, cuenta_pcge:e.target.value})}>
+                <option value="">Auto (según categoría)</option>
+                {form.type === 'income' ? (
+                  <>
+                    <option value="70">70 — Ventas</option>
+                    <option value="704">704 — Prestación de servicios</option>
+                    <option value="75">75 — Otros ingresos de gestión</option>
+                    <option value="77">77 — Ingresos financieros</option>
+                  </>
+                ) : (
+                  <>
+                    <option value="60">60 — Compras (materiales)</option>
+                    <option value="62">62 — Gastos de personal</option>
+                    <option value="63">63 — Servicios prestados por terceros</option>
+                    <option value="64">64 — Tributos y aportes</option>
+                    <option value="65">65 — Otros gastos de gestión</option>
+                    <option value="66">66 — Pérdida medición de activos</option>
+                    <option value="67">67 — Gastos financieros</option>
+                    <option value="68">68 — Valuación y deterioro</option>
+                  </>
+                )}
+              </select>
             </div>
             <div style={{ gridColumn:'1/-1' }}>
               <label className="flabel">Descripción</label>

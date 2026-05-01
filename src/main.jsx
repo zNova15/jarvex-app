@@ -128,6 +128,7 @@ import './components/jx-reportes-financieros.jsx';
 import './components/jx-busqueda.jsx';
 import './components/jx-kpis-obra.jsx';
 import './components/jx-cumplimiento-cronograma.jsx';
+import './components/jx-audit-log.jsx';
 import './components/jx-conflicts.jsx';
 import './jx-app.jsx';
 

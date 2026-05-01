@@ -149,7 +149,8 @@ export function generarAsiento(movimiento) {
         haber: 0,
       });
     }
-    const cuentaIngreso = mapTypeToCategoria('income', m.category);
+    // Si el usuario eligió una cuenta PCGE explícita, úsala; si no, infiere de category
+    const cuentaIngreso = m.cuenta_pcge || mapTypeToCategoria('income', m.category);
     partidas.push({
       cuenta: cuentaIngreso,
       descripcion: desc,
@@ -166,7 +167,7 @@ export function generarAsiento(movimiento) {
     }
   } else {
     // ─── Costo / Gasto ───────────────────────────────────
-    const cuentaGasto = mapTypeToCategoria(tipo, m.category);
+    const cuentaGasto = m.cuenta_pcge || mapTypeToCategoria(tipo, m.category);
     const esPlanilla = cuentaGasto === '62';
 
     partidas.push({

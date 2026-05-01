@@ -138,6 +138,7 @@ const NAV = [
   { id: 'solicitudes', label: 'Solicitudes', icon: 'shield' },
   { id: 'configuracion', label: 'Configuración', icon: 'settings' },
   { id: 'conflictos', label: 'Conflictos Sync', icon: 'alert' },
+  { id: 'audit-log', label: 'Auditoría', icon: 'shield' },
 ];
 
 function Sidebar({ current, onNav, collapsed, onToggle }) {
