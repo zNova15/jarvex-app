@@ -158,7 +158,7 @@ function MovMaterialesPage({ showToast }) {
 
   const [reversoTarget, setReversoTarget] = uSM(null);
   const isAdmin = auth?.profile?.rol === 'admin';
-  const canDelete = isAdmin && appMode.isPrueba;
+  const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
 
   // Mapa movimiento_id → evidencia (guía adjunta)
   const guiasPorMov = uMM(() => {
@@ -515,7 +515,7 @@ function MovHerramientasPage({ showToast }) {
 
   const [reversoTarget, setReversoTarget] = uSM(null);
   const isAdmin = auth?.profile?.rol === 'admin';
-  const canDelete = isAdmin && appMode.isPrueba;
+  const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
 
   const handleDeleteMov = async (m) => {
     if (!canDelete) return;
@@ -776,7 +776,7 @@ function ProveedoresPage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
   const isAdmin = auth?.profile?.rol === 'admin';
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
-  const canDelete = isAdmin && appMode.isPrueba;
+  const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
 
   const [provs, setProvs] = uSM([]);
   const [loading, setLoading] = uSM(true);

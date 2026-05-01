@@ -638,11 +638,15 @@ function ComprobantesElectronicosPage({ showToast }) {
               </select>
             </div>
             <div>
-              <label className="flabel">Serie *</label>
+              {window.JxFieldLabel
+                ? <window.JxFieldLabel text="Serie *" hint="4 caracteres. Factura: F001, F002... · Boleta: B001 · Guías: T001. La serie es independiente por tipo y debe estar autorizada en SUNAT SOL."/>
+                : <label className="flabel">Serie *</label>}
               <input className="fi" value={form.serie || ''} onChange={e=>onSerieChange(e.target.value)} maxLength={4}/>
             </div>
             <div>
-              <label className="flabel">Correlativo *</label>
+              {window.JxFieldLabel
+                ? <window.JxFieldLabel text="Correlativo *" hint="Número secuencial sin saltos. SUNAT exige consecutivos: F001-1, F001-2... El sistema sugiere el siguiente. Si anulás necesitas registrar la anulación."/>
+                : <label className="flabel">Correlativo *</label>}
               <input className="fi" type="number" min="1" value={form.correlativo || ''} onChange={e=>setForm({...form, correlativo: parseInt(e.target.value, 10) || 1})}/>
             </div>
             <div>

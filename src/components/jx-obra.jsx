@@ -52,8 +52,8 @@ function ObrasPage({ showToast }) {
   const { data: obras, loading, create: createObra, update: updateObra } = window.__hooks.useObras();
   const auth = window.__useAuth ? window.__useAuth() : null;
   const isAdmin = auth?.profile?.rol === 'admin';
-  const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
-  const canDelete = isAdmin && appMode.isPrueba;
+  const appMode = window.__useAppMode ? window.__useAppMode() : { isEdicion: true };
+  const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
   const [modal, setModal] = uSO(null);
   const [form, setForm] = uSO({});
   const [editingId, setEditingId] = uSO(null);
@@ -221,7 +221,12 @@ function ObrasPage({ showToast }) {
           <div style={{gridColumn:'1/-1'}}><label className="flabel">Ubicación</label><input className="fi" placeholder="Distrito, dirección" value={form.ubicacion||''} onChange={e=>setForm({...form, ubicacion:e.target.value})}/></div>
           <div><label className="flabel">Fecha inicio</label><input className="fi" type="date" value={form.fecha_inicio||''} onChange={e=>setForm({...form, fecha_inicio:e.target.value})}/></div>
           <div><label className="flabel">Fecha fin estimada</label><input className="fi" type="date" value={form.fecha_fin_estimada||''} onChange={e=>setForm({...form, fecha_fin_estimada:e.target.value})}/></div>
-          <div style={{gridColumn:'1/-1'}}><label className="flabel">Presupuesto total (S/)</label><input className="fi" type="number" step="0.01" placeholder="0.00" value={form.presupuesto_total||''} onChange={e=>setForm({...form, presupuesto_total:e.target.value})}/></div>
+          <div style={{gridColumn:'1/-1'}}>
+            {window.JxFieldLabel
+              ? <window.JxFieldLabel text="Presupuesto total (S/)" hint="Monto contractual SIN IGV de la obra completa. Se compara contra costo ejecutado para calcular margen y avance financiero. Si la obra es a suma alzada usá el monto del contrato; si es por administración, el costo proyectado."/>
+              : <label className="flabel">Presupuesto total (S/)</label>}
+            <input className="fi" type="number" step="0.01" placeholder="0.00" value={form.presupuesto_total||''} onChange={e=>setForm({...form, presupuesto_total:e.target.value})}/>
+          </div>
           <div style={{gridColumn:'1/-1'}}><label className="flabel">Observaciones</label><textarea className="fi" value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})}/></div>
         </div>
         <div className="modal-actions">

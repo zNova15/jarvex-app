@@ -32,6 +32,8 @@ import * as contabilidadPdfs from './lib/contabilidad-pdfs';
 import { parseExcelFile, downloadTemplate, MODULES as IMPORT_MODULES } from './lib/excel';
 import { parseAPUFile, parseS10File, enrichJerarquia, buildArbol, parseAPU, parseInsumosList, parseGantt, detectS10Type, excelDateToISO } from './lib/apuParser';
 import { parsePresupuestoPDF, extractTextFromPDF, parsePresupuestoLines, partidasToImportRows } from './lib/pdfBudgetParser';
+import * as catalogos from './lib/catalogos';
+import { seedDemoData, clearDemoData, countDemoRecords } from './lib/demoSeeder';
 import { consultarRUC, consultarDNI } from './lib/identity';
 import { logAudit } from './lib/audit';
 import {
@@ -85,6 +87,8 @@ window.__apu = {
 window.__pdfBudget = {
   parsePresupuestoPDF, extractTextFromPDF, parsePresupuestoLines, partidasToImportRows,
 };
+window.__catalogos = catalogos;
+window.__demo = { seed: seedDemoData, clear: clearDemoData, count: countDemoRecords };
 window.__identity = { consultarRUC, consultarDNI };
 window.__logAudit = logAudit;
 window.__changeRequests = {
@@ -99,6 +103,7 @@ window.__changeRequests = {
 
 // ── Importar componentes (se auto-registran en window.*) ─────────────
 import './components/jx-icons.jsx';
+import './components/jx-tooltip.jsx';
 import './components/jx-sidebar.jsx';
 import './components/jx-solicitudes.jsx';
 import './components/jx-dashboard.jsx';
@@ -132,6 +137,7 @@ import './components/jx-reportes-financieros.jsx';
 import './components/jx-busqueda.jsx';
 import './components/jx-kpis-obra.jsx';
 import './components/jx-cumplimiento-cronograma.jsx';
+import './components/jx-solicitud-residente.jsx';
 import './components/jx-audit-log.jsx';
 import './components/jx-comprobantes.jsx';
 import './components/jx-libros-electronicos.jsx';

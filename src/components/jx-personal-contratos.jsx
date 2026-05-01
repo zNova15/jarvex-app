@@ -428,7 +428,9 @@ function PersonalContratosPage({ showToast }) {
               />
             </div>
             <div>
-              <label className="flabel">Régimen</label>
+              {window.JxFieldLabel
+                ? <window.JxFieldLabel text="Régimen" hint="Construcción civil: Ley 27735 con tablas FENERC. General: régimen estándar. MYPE: empresas pequeñas con beneficios reducidos. Agrario: Ley 27360 con remuneraciones especiales. Afecta cómo se calcula CTS, gratificaciones y bonificación 9%."/>
+                : <label className="flabel">Régimen</label>}
               <select
                 className="fi"
                 value={form.regimen || 'construccion_civil'}
@@ -442,7 +444,9 @@ function PersonalContratosPage({ showToast }) {
             </div>
 
             <div>
-              <label className="flabel">Tipo de pensión</label>
+              {window.JxFieldLabel
+                ? <window.JxFieldLabel text="Tipo de pensión" hint="ONP: descuento 13% del bruto, va a SBS-ONP. AFP: descuento variable según AFP elegida (aporte 10% + seguro ~1.5% + comisión ~1.5%). El trabajador elige al firmar contrato."/>
+                : <label className="flabel">Tipo de pensión</label>}
               <select
                 className="fi"
                 value={form.tipo_pension || 'ONP'}
@@ -475,7 +479,9 @@ function PersonalContratosPage({ showToast }) {
                   </select>
                 </div>
                 <div>
-                  <label className="flabel">% Aporte obligatorio</label>
+                  {window.JxFieldLabel
+                    ? <window.JxFieldLabel text="% Aporte obligatorio" hint="Aporte al fondo de jubilación. Estándar 10% del sueldo bruto. Va directo al fondo del trabajador (CIC) — no es un descuento perdido."/>
+                    : <label className="flabel">% Aporte obligatorio</label>}
                   <input
                     className="fi" type="number" step="0.01" min="0"
                     value={form.afp_pct_aporte_obligatorio ?? ''}
@@ -483,7 +489,9 @@ function PersonalContratosPage({ showToast }) {
                   />
                 </div>
                 <div>
-                  <label className="flabel">% Seguro</label>
+                  {window.JxFieldLabel
+                    ? <window.JxFieldLabel text="% Seguro (prima)" hint="Prima de invalidez y sobrevivencia. Varía cada 3 meses según licitación SBS. Usual: 1.49% (Habitat/Integra), 1.74% (Prima/Profuturo). Verificar en boleta SBS vigente."/>
+                    : <label className="flabel">% Seguro</label>}
                   <input
                     className="fi" type="number" step="0.01" min="0"
                     value={form.afp_pct_seguro ?? ''}
@@ -491,7 +499,9 @@ function PersonalContratosPage({ showToast }) {
                   />
                 </div>
                 <div>
-                  <label className="flabel">% Comisión</label>
+                  {window.JxFieldLabel
+                    ? <window.JxFieldLabel text="% Comisión por flujo" hint="Comisión que cobra la AFP por administrar el fondo. Habitat 1.47%, Integra 1.55%, Prima 1.60%, Profuturo 1.69%. Algunos eligen 'comisión sobre saldo' que es %0 inicial pero crece."/>
+                    : <label className="flabel">% Comisión</label>}
                   <input
                     className="fi" type="number" step="0.01" min="0"
                     value={form.afp_pct_comision ?? ''}

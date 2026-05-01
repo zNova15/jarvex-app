@@ -676,6 +676,7 @@ function App() {
       case 'busqueda':               return <BusquedaGlobalPage showToast={showToast}/>;
       case 'kpis-obra':              return <KPIsObraPage showToast={showToast}/>;
       case 'cumplimiento-cronograma': return <CumplimientoCronogramaPage showToast={showToast}/>;
+      case 'solicitud-residente':    return <SolicitudResidentePage showToast={showToast}/>;
       case 'audit-log':              return <AuditLogPage showToast={showToast}/>;
       case 'comprobantes':           return <ComprobantesElectronicosPage showToast={showToast}/>;
       case 'libros-electronicos':    return <LibrosElectronicosPage showToast={showToast}/>;

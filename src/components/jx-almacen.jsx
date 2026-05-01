@@ -115,7 +115,7 @@ function MaterialesPage({ showToast }) {
   // Gerencia/contabilidad/admin actualizan precios — almacenero NO
   const puedeActualizarPrecios = isAdmin || ['gerente','asistente_admin'].includes(myRol);
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
-  const canDelete = isAdmin && appMode.isPrueba;
+  const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
   const [q, setQ] = uS('');
   const [modal, setModal] = uS(null); // 'ingreso' | 'salida' | 'nuevo' | 'editar' | 'sync'
   const [editingId, setEditingId] = uS(null); // id del material en edición
@@ -1540,36 +1540,69 @@ function MaterialesPage({ showToast }) {
       )}
 
       {/* Modal Nuevo / Editar Material */}
-      {(modal==='nuevo' || modal==='editar') && <Modal title={editingId ? 'Editar Material' : 'Nuevo Material'} icon="package" onClose={()=>{setModal(null); setEditingId(null); setForm({});}}>
+      {(modal==='nuevo' || modal==='editar') && (() => {
+        const cat = window.__catalogos || {};
+        const matsBase = cat.getMaterialesBase ? cat.getMaterialesBase() : [];
+        const unidadesAll = cat.getAllUnidades ? cat.getAllUnidades() : [];
+        const categoriasAll = cat.getAllCategorias ? cat.getAllCategorias() : categoriasDisponibles;
+        // Sugerencias filtradas por nombre (datalist style)
+        const sugerencias = (form.nombre_material || '').length >= 2
+          ? matsBase.filter(m => m.nombre.toLowerCase().includes(form.nombre_material.toLowerCase())).slice(0, 8)
+          : [];
+        return (
+        <Modal title={editingId ? 'Editar Material' : 'Nuevo Material'} icon="package" onClose={()=>{setModal(null); setEditingId(null); setForm({});}}>
         <div className="g2">
-          <div style={{gridColumn:'1/-1'}}><label className="flabel">Nombre del material *</label><input className="fi" placeholder="Ej: Cemento Sol Tipo I" value={form.nombre_material||''} onChange={e=>setForm({...form, nombre_material:e.target.value})}/></div>
+          <div style={{gridColumn:'1/-1', position:'relative'}}>
+            <label className="flabel">Nombre del material *</label>
+            <input className="fi" placeholder="Ej: Cemento Sol Tipo I (autocompletar desde catálogo)"
+              value={form.nombre_material||''}
+              onChange={e=>setForm({...form, nombre_material:e.target.value})}
+              list="material-sugerencias-jx"/>
+            <datalist id="material-sugerencias-jx">
+              {matsBase.map((m, i) => <option key={i} value={m.nombre}/>)}
+            </datalist>
+            {sugerencias.length > 0 && !editingId && (
+              <div style={{ marginTop:6, padding:8, background:'rgba(52,152,219,0.06)', border:'1px solid rgba(52,152,219,0.25)', borderRadius:6, maxHeight:140, overflow:'auto' }}>
+                <div style={{ fontSize:10.5, color:'var(--tm)', marginBottom:4 }}>Click para autocompletar:</div>
+                {sugerencias.map((s, i) => (
+                  <button key={i} type="button" className="btn btn-ghost btn-xs" style={{ width:'100%', textAlign:'left', justifyContent:'flex-start', marginBottom:2 }}
+                    onClick={()=>setForm({...form, nombre_material: s.nombre, unidad: s.unidad, categoria: s.categoria, precio: s.precio })}>
+                    {s.nombre} <span style={{ color:'var(--tm)', marginLeft:6 }}>· {s.unidad} · S/ {Number(s.precio).toFixed(2)}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <div><label className="flabel">Categoría</label>
-            <select className="fi" value={form.categoria||''} onChange={e=>{
-              const v = e.target.value;
-              if (v === '__nueva__') {
-                const nombre = window.prompt('Nombre de la nueva categoría:');
-                if (nombre && crearCategoriaCustom(nombre)) {
-                  setForm({...form, categoria: nombre.trim()});
-                }
-                return;
-              }
-              setForm({...form, categoria: v});
-            }}>
+            <select className="fi" value={form.categoria||''} onChange={e=>setForm({...form, categoria: e.target.value})}>
               <option value="">— Selecciona —</option>
-              {categoriasDisponibles.map(c => <option key={c} value={c}>{c}</option>)}
-              <option value="__nueva__" style={{ fontStyle:'italic', color:'var(--amber)' }}>+ Crear nueva categoría…</option>
+              {categoriasAll.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
           <div><label className="flabel">Unidad *</label>
             <select className="fi" value={form.unidad||''} onChange={e=>setForm({...form, unidad:e.target.value})}>
               <option value="">— Selecciona —</option>
-              <option>bolsa</option><option>varilla</option><option>m³</option><option>kg</option>
-              <option>unidad</option><option>caja</option><option>galón</option><option>rollo</option>
+              {unidadesAll.map(u => <option key={u.codigo} value={u.codigo}>{u.codigo} — {u.nombre}</option>)}
             </select>
           </div>
-          <div><label className="flabel">Stock inicial</label><input className="fi" type="number" min="0" step="0.01" value={form.stock_inicial||''} onChange={e=>setForm({...form, stock_inicial:e.target.value})}/></div>
-          <div><label className="flabel">Stock mínimo</label><input className="fi" type="number" min="0" step="0.01" value={form.stock_minimo||''} onChange={e=>setForm({...form, stock_minimo:e.target.value})}/></div>
-          <div><label className="flabel">Precio estimado (S/)</label><input className="fi" type="number" step="0.01" placeholder="0.00" value={form.precio||''} onChange={e=>setForm({...form, precio:e.target.value})}/></div>
+          <div>
+            {window.JxFieldLabel
+              ? <window.JxFieldLabel text="Stock inicial" hint="Cantidad que ingresa al almacén al crear el material. Si aún no llegó, dejalo en 0 y registrá un ingreso después."/>
+              : <label className="flabel">Stock inicial</label>}
+            <input className="fi" type="number" min="0" step="0.01" value={form.stock_inicial||''} onChange={e=>setForm({...form, stock_inicial:e.target.value})}/>
+          </div>
+          <div>
+            {window.JxFieldLabel
+              ? <window.JxFieldLabel text="Stock mínimo" hint="Por debajo de este nivel se dispara la alerta de reposición. Si baja al 50% se vuelve CRÍTICO. Recomendado: equivalente a 1-2 semanas de consumo."/>
+              : <label className="flabel">Stock mínimo</label>}
+            <input className="fi" type="number" min="0" step="0.01" value={form.stock_minimo||''} onChange={e=>setForm({...form, stock_minimo:e.target.value})}/>
+          </div>
+          <div>
+            {window.JxFieldLabel
+              ? <window.JxFieldLabel text="Precio estimado (S/)" hint="Precio unitario referencial sin IGV. Se usa para valorizar movimientos cuando no hay OC con precio real."/>
+              : <label className="flabel">Precio estimado (S/)</label>}
+            <input className="fi" type="number" step="0.01" placeholder="0.00" value={form.precio||''} onChange={e=>setForm({...form, precio:e.target.value})}/>
+          </div>
           <div><label className="flabel">Proveedor principal</label>
             <select className="fi" value={form.proveedor_id||''} onChange={e=>setForm({...form, proveedor_id:e.target.value||null})}>
               <option value="">— sin especificar —</option>
@@ -1581,7 +1614,8 @@ function MaterialesPage({ showToast }) {
           <button className="btn btn-ghost" onClick={()=>{setModal(null); setEditingId(null); setForm({});}}>Cancelar</button>
           <button className="btn btn-amber" onClick={handleSubmitMaterial}><JxIcon name="check" size={13}/>{editingId ? 'Guardar Cambios' : 'Crear Material'}</button>
         </div>
-      </Modal>}
+      </Modal>);
+      })()}
 
       {requestTarget && (
         <RequestChangeModal
@@ -1608,7 +1642,7 @@ function HerramientasPage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
   const isAdmin = auth?.profile?.rol === 'admin';
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
-  const canDelete = isAdmin && appMode.isPrueba;
+  const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
   const [q, setQ] = uS('');
   const [modal, setModal] = uS(null);
   const [form, setForm] = uS({});
@@ -2311,7 +2345,7 @@ function PersonalPage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
   const isAdmin = auth?.profile?.rol === 'admin';
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
-  const canDelete = isAdmin && appMode.isPrueba;
+  const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
   const [q, setQ] = uS('');
   const [modal, setModal] = uS(null);
   const [form, setForm] = uS({});

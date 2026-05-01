@@ -650,7 +650,9 @@ function VersionesPage({ showToast }) {
   const auth = window.__useAuth?.();
   const isAdmin = auth?.profile?.rol === 'admin';
   const userId = auth?.profile?.id || 'offline';
-  const appMode = window.__useAppMode?.() || { isPrueba: false };
+  const appMode = window.__useAppMode?.() || { isPrueba: false, isEdicion: false };
+  // Compat: antes isPrueba era el flag para "permitir edición destructiva"
+  const puedeEditar = appMode.isEdicion || appMode.isPrueba;
 
   const { data: versiones } = window.__hooks.usePresupuestosVersiones(obraId);
   const { data: obras } = window.__hooks.useObras();
@@ -917,7 +919,7 @@ function VersionesPage({ showToast }) {
   };
 
   const eliminarVersion = async (v) => {
-    if (!isAdmin || !appMode.isPrueba) return;
+    if (!isAdmin || !puedeEditar) return;
     if (!confirm(`¿Eliminar la versión "${v.nombre}" (v${v.numero})? Las partidas versionadas se borran. La versión "Real" en partidas no se toca.`)) return;
     try {
       const partidas = await window.__db.partidas_versionadas.where('version_id').equals(v.id).toArray();
@@ -1030,7 +1032,7 @@ function VersionesPage({ showToast }) {
                         <button className="btn btn-ghost btn-xs" title={v.bloqueado ? 'Desbloquear' : 'Bloquear (no se podrá editar)'} onClick={()=>toggleBloqueada(v)}>
                           <JxIcon name={v.bloqueado ? 'lock' : 'check'} size={10}/>
                         </button>
-                        {appMode.isPrueba && (
+                        {puedeEditar && (
                           <button className="btn btn-red btn-xs" title="Eliminar versión (solo modo edición)" onClick={()=>eliminarVersion(v)}>
                             <JxIcon name="trash" size={10}/>
                           </button>

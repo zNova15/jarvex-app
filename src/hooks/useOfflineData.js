@@ -1,6 +1,18 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { db, newId, newIdempotencyKey, SYNC_STATUS } from '../db/jarvex.db';
 import { useAuth } from './useAuth';
+import { getCurrentMode } from './useAppMode';
+
+// Filtra registros según el modo actual:
+//   'prueba'    → solo registros con demo === true
+//   'edicion'   → solo registros sin demo (data real)
+//   'produccion'→ solo registros sin demo (data real)
+function filterByMode(rows) {
+  const mode = getCurrentMode();
+  if (!Array.isArray(rows)) return rows;
+  if (mode === 'prueba') return rows.filter(r => r && r.demo === true);
+  return rows.filter(r => !r || !r.demo);
+}
 
 // ── Hook genérico para CRUD offline-first ────────────────────────────
 // Lee de Dexie, escribe a Dexie + encola para sync
@@ -25,11 +37,14 @@ export function useOfflineData(tabla, queryFn = null, deps = []) {
       const t = e?.detail?.tabla;
       if (!t || t === tabla) refresh();
     };
+    const onModeChange = () => refresh();
     window.addEventListener('jx_data_changed', onChange);
     window.addEventListener('jx_sync_pull', refresh);
+    window.addEventListener('app_mode_change', onModeChange);
     return () => {
       window.removeEventListener('jx_data_changed', onChange);
       window.removeEventListener('jx_sync_pull', refresh);
+      window.removeEventListener('app_mode_change', onModeChange);
     };
   }, [tabla, refresh]);
 
@@ -41,7 +56,8 @@ export function useOfflineData(tabla, queryFn = null, deps = []) {
       try {
         const query = db[tabla];
         const result = fn ? await fn(query) : await query.toArray();
-        if (!cancelled) setData(result);
+        // Filtra por modo (prueba/edicion/produccion) — separa data demo de real
+        if (!cancelled) setData(filterByMode(result));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -56,6 +72,8 @@ export function useOfflineData(tabla, queryFn = null, deps = []) {
     const now = new Date().toISOString();
     const id = newId();
     const userId = profile?.id ?? 'offline';
+    // Si estamos en modo prueba, todo lo creado se marca demo:true
+    const isPrueba = getCurrentMode() === 'prueba';
 
     const record = {
       ...fields,
@@ -65,9 +83,10 @@ export function useOfflineData(tabla, queryFn = null, deps = []) {
       created_at: now,
       updated_at: now,
       version: 1,
-      sync_status: SYNC_STATUS.PENDING_CREATE,
+      sync_status: isPrueba ? SYNC_STATUS.SYNCED : SYNC_STATUS.PENDING_CREATE,
       last_synced_at: null,
       idempotency_key: fields.idempotency_key ?? newIdempotencyKey(userId, tabla),
+      ...(isPrueba ? { demo: true } : {}),
     };
 
     await db[tabla].add(record);

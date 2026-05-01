@@ -73,6 +73,7 @@ const NAV = [
   { id: 'evidencias', label: 'Evidencias', icon: 'camera' },
 
   { section: 'COMPRAS / LOGÍSTICA' },
+  { id: 'solicitud-residente', label: 'Solicitud de Materiales', icon: 'plus' },
   { id: 'requisiciones', label: 'Requisiciones', icon: 'list' },
   { id: 'ordenes-compra', label: 'Órdenes de Compra', icon: 'package' },
 
@@ -145,8 +146,8 @@ const NAV = [
 ];
 
 function Sidebar({ current, onNav, collapsed, onToggle }) {
-  const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
-  const { isPrueba } = appMode;
+  const appMode = window.__useAppMode ? window.__useAppMode() : { mode: 'edicion', isPrueba: false, isEdicion: true, isProduccion: false };
+  const { mode, isPrueba, isEdicion, isProduccion } = appMode;
   const [hovered, setHovered] = useState(null);
   const isMobile = useIsMobile();
   const pwa = usePwaInstall();
@@ -382,7 +383,7 @@ function Sidebar({ current, onNav, collapsed, onToggle }) {
       {!navCollapsed && (
         <div style={{ padding: '8px 14px 0' }}>
           <div
-            className={`badge ${isPrueba ? 'b-amber' : 'b-green'}`}
+            className={`badge ${isPrueba ? 'b-purple' : isEdicion ? 'b-amber' : 'b-green'}`}
             style={{
               width: '100%',
               display: 'flex',
@@ -392,9 +393,12 @@ function Sidebar({ current, onNav, collapsed, onToggle }) {
               fontWeight: 700,
               letterSpacing: 0.5,
               padding: '5px 8px',
+              background: isPrueba ? 'rgba(155,89,182,0.18)' : undefined,
+              color: isPrueba ? '#9B59B6' : undefined,
+              border: isPrueba ? '1px solid rgba(155,89,182,0.4)' : undefined,
             }}
-            title={isPrueba ? 'Modo edición activo' : 'Modo producción activo'}>
-            {isPrueba ? '✏️ MODO EDICIÓN' : '🔒 PRODUCCIÓN'}
+            title={isPrueba ? 'Modo prueba — datos demo' : isEdicion ? 'Modo edición sobre data real' : 'Modo producción'}>
+            {isPrueba ? '🧪 MODO PRUEBA' : isEdicion ? '✏️ EDICIÓN' : '🔒 PRODUCCIÓN'}
           </div>
         </div>
       )}

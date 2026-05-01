@@ -231,3 +231,31 @@ textarea.fi { resize: vertical; min-height: 80px; }
   /* Modal sin radio en pantallas chicas */
   .modal { border-radius: 8px; padding: 14px 12px; }
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   TOOLTIP contextual (componente JxTooltip)
+   ═══════════════════════════════════════════════════════════════════ */
+.jx-tt-wrap { position: relative; display: inline-block; }
+.jx-tt {
+  visibility: hidden; opacity: 0;
+  position: absolute; z-index: 9999;
+  background: #1A2333; color: #F0F2F5;
+  font-size: 11.5px; font-weight: 400;
+  padding: 8px 11px; border-radius: 6px;
+  border: 1px solid rgba(155,89,182,0.4);
+  box-shadow: 0 6px 22px rgba(0,0,0,0.45);
+  max-width: 280px; min-width: 180px;
+  line-height: 1.5; white-space: normal;
+  pointer-events: none;
+  transition: opacity .15s, visibility .15s;
+}
+.jx-tt-wrap:hover .jx-tt,
+.jx-tt-wrap:focus-within .jx-tt { visibility: visible; opacity: 1; }
+.jx-tt-top    { bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%); }
+.jx-tt-bottom { top: calc(100% + 6px); left: 50%; transform: translateX(-50%); }
+.jx-tt-right  { left: calc(100% + 6px); top: 50%; transform: translateY(-50%); }
+.jx-tt-left   { right: calc(100% + 6px); top: 50%; transform: translateY(-50%); }
+.jx-tt-icon:hover { background: rgba(155,89,182,0.25) !important; transform: scale(1.08); }
+
+/* Badge color púrpura (modo prueba) */
+.b-purple { background: rgba(155,89,182,0.18); color: #9B59B6; border: 1px solid rgba(155,89,182,0.4); }

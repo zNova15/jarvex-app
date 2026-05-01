@@ -826,6 +826,7 @@ function ConfiguracionPage({ showToast }) {
   const tabs = [
     { id:'empresa', label:'Empresa', icon:'building' },
     { id:'obras',   label:'Obras',    icon:'hardHat' },
+    { id:'catalogos', label:'Catálogos', icon:'layers' },
     { id:'sistema', label:'Sistema',  icon:'settings' },
     { id:'notif',   label:'Notificaciones', icon:'bell' },
     { id:'auditoria', label:'Auditoría', icon:'shield' },
@@ -850,6 +851,7 @@ function ConfiguracionPage({ showToast }) {
 
       {tab === 'empresa'  && <EmpresaTab/>}
       {tab === 'obras'    && <ObrasTab showToast={showToast} isAdmin={isAdmin}/>}
+      {tab === 'catalogos'&& <CatalogosTab showToast={showToast} isAdmin={isAdmin}/>}
       {tab === 'sistema'  && <SistemaTab showToast={showToast}/>}
       {tab === 'notif'    && <NotifTab showToast={showToast}/>}
       {tab === 'auditoria'&& <AuditoriaTab showToast={showToast} isAdmin={isAdmin}/>}
@@ -1213,11 +1215,242 @@ function ObraUsuariosModal({ obra, isAdmin, showToast, onClose }) {
   );
 }
 
+// ─── CATÁLOGOS TAB ────────────────────────────────────────
+// Gestión de Unidades de medida + Categorías + Materiales base.
+// Admin edita; otros roles leen y solicitan cambio.
+function CatalogosTab({ showToast, isAdmin }) {
+  const cat = window.__catalogos || {};
+  const [seccion, setSeccion] = uSAd('unidades');
+  const [unidadesCustom, setUnidadesCustom] = uSAd(cat.loadCustomUnidades?.() || []);
+  const [categoriasCustom, setCategoriasCustom] = uSAd(cat.loadCustomCategorias?.() || []);
+  const [matsCustom, setMatsCustom] = uSAd(cat.loadCustomMateriales?.() || []);
+  const [nuevoUnidad, setNuevoUnidad] = uSAd({ codigo:'', nombre:'', categoria:'longitud' });
+  const [nuevoMat, setNuevoMat] = uSAd({ nombre:'', unidad:'und', categoria:'General', precio:0 });
+  const [nuevaCat, setNuevaCat] = uSAd('');
+
+  const unidadesEstandar = cat.UNIDADES_ESTANDAR || [];
+  const matsBase = cat.MATERIALES_BASE || [];
+  const categoriasBase = cat.CATEGORIAS_MATERIAL || [];
+
+  const agregarUnidad = () => {
+    if (!isAdmin) return;
+    const c = (nuevoUnidad.codigo || '').trim();
+    if (!c || !nuevoUnidad.nombre.trim()) { showToast('Código y nombre requeridos', 'red'); return; }
+    if ([...unidadesEstandar, ...unidadesCustom].some(u => u.codigo === c)) {
+      showToast(`Ya existe la unidad "${c}"`, 'amber'); return;
+    }
+    const nuevo = [...unidadesCustom, { codigo: c, nombre: nuevoUnidad.nombre.trim(), categoria: nuevoUnidad.categoria }];
+    setUnidadesCustom(nuevo); cat.saveCustomUnidades?.(nuevo);
+    try { window.__logAudit?.({ action:'insert', table:'catalogo_unidades', recordId:c, newData:nuevoUnidad, reason:'Nueva unidad custom' }); } catch {}
+    setNuevoUnidad({ codigo:'', nombre:'', categoria:'longitud' });
+    showToast(`Unidad "${c}" agregada`, 'green');
+  };
+  const eliminarUnidad = (codigo) => {
+    if (!isAdmin) return;
+    if (!confirm(`¿Eliminar la unidad custom "${codigo}"?`)) return;
+    const nuevo = unidadesCustom.filter(u => u.codigo !== codigo);
+    setUnidadesCustom(nuevo); cat.saveCustomUnidades?.(nuevo);
+    try { window.__logAudit?.({ action:'delete', table:'catalogo_unidades', recordId:codigo, reason:'Eliminación unidad custom' }); } catch {}
+    showToast(`Unidad eliminada`, 'amber');
+  };
+
+  const agregarCategoria = () => {
+    if (!isAdmin) return;
+    const v = nuevaCat.trim();
+    if (!v) return;
+    if ([...categoriasBase, ...categoriasCustom].includes(v)) { showToast('Ya existe esa categoría', 'amber'); return; }
+    const nuevo = [...categoriasCustom, v];
+    setCategoriasCustom(nuevo); cat.saveCustomCategorias?.(nuevo);
+    try { window.__logAudit?.({ action:'insert', table:'catalogo_categorias', recordId:v, reason:'Nueva categoría material' }); } catch {}
+    setNuevaCat('');
+    showToast(`Categoría "${v}" agregada`, 'green');
+  };
+  const eliminarCategoria = (v) => {
+    if (!isAdmin) return;
+    if (!confirm(`¿Eliminar la categoría custom "${v}"?`)) return;
+    const nuevo = categoriasCustom.filter(c => c !== v);
+    setCategoriasCustom(nuevo); cat.saveCustomCategorias?.(nuevo);
+    showToast('Categoría eliminada', 'amber');
+  };
+
+  const agregarMat = () => {
+    if (!isAdmin) return;
+    if (!nuevoMat.nombre.trim()) { showToast('Nombre requerido', 'red'); return; }
+    const nuevo = [...matsCustom, { ...nuevoMat, nombre: nuevoMat.nombre.trim(), precio: parseFloat(nuevoMat.precio)||0 }];
+    setMatsCustom(nuevo); cat.saveCustomMateriales?.(nuevo);
+    try { window.__logAudit?.({ action:'insert', table:'catalogo_materiales', recordId:nuevoMat.nombre, newData:nuevoMat, reason:'Nuevo material catálogo' }); } catch {}
+    setNuevoMat({ nombre:'', unidad:'und', categoria:'General', precio:0 });
+    showToast(`Material "${nuevoMat.nombre}" agregado al catálogo`, 'green');
+  };
+  const eliminarMat = (nombre) => {
+    if (!isAdmin) return;
+    if (!confirm(`¿Eliminar "${nombre}" del catálogo custom?\n(No afecta materiales ya creados en obras)`)) return;
+    const nuevo = matsCustom.filter(m => m.nombre !== nombre);
+    setMatsCustom(nuevo); cat.saveCustomMateriales?.(nuevo);
+    showToast('Material eliminado del catálogo', 'amber');
+  };
+
+  return (
+    <div>
+      <div className="card card-p" style={{ marginBottom:14, background: isAdmin ? 'rgba(242,183,5,0.06)' : 'rgba(52,152,219,0.06)' }}>
+        <div style={{ fontSize:12.5, color:'var(--ts)' }}>
+          <strong>Catálogos del sistema.</strong> {isAdmin
+            ? 'Como admin podés agregar y eliminar entradas del catálogo. Las entradas estándar (no custom) no se borran.'
+            : 'Solo los administradores pueden modificar los catálogos. Si necesitás agregar una unidad o categoría nueva, andá a "Solicitar Cambio".'}
+        </div>
+      </div>
+
+      <div style={{ display:'flex', gap:6, marginBottom:14 }}>
+        {[
+          { id:'unidades',    l:'Unidades de medida' },
+          { id:'categorias',  l:'Categorías de material' },
+          { id:'materiales',  l:'Materiales base' },
+        ].map(t => (
+          <button key={t.id} className={`btn ${seccion===t.id?'btn-amber':'btn-ghost'} btn-sm`} onClick={()=>setSeccion(t.id)} style={{ border:'none' }}>
+            {t.l}
+          </button>
+        ))}
+      </div>
+
+      {seccion === 'unidades' && (
+        <div>
+          {isAdmin && (
+            <div className="card card-p" style={{ marginBottom:12, display:'grid', gridTemplateColumns:'1fr 2fr 1fr auto', gap:10, alignItems:'end' }}>
+              <div><label className="flabel">Código nuevo *</label><input className="fi" value={nuevoUnidad.codigo} onChange={e=>setNuevoUnidad({...nuevoUnidad, codigo:e.target.value})} placeholder="ej: pza"/></div>
+              <div><label className="flabel">Nombre *</label><input className="fi" value={nuevoUnidad.nombre} onChange={e=>setNuevoUnidad({...nuevoUnidad, nombre:e.target.value})} placeholder="ej: Pieza"/></div>
+              <div><label className="flabel">Categoría</label>
+                <select className="fi" value={nuevoUnidad.categoria} onChange={e=>setNuevoUnidad({...nuevoUnidad, categoria:e.target.value})}>
+                  {Object.keys(cat.CATEGORIAS_UNIDAD_LABEL || {}).map(k => <option key={k} value={k}>{cat.CATEGORIAS_UNIDAD_LABEL[k]}</option>)}
+                </select>
+              </div>
+              <button className="btn btn-amber btn-sm" onClick={agregarUnidad}><JxIcon name="plus" size={11}/>Agregar</button>
+            </div>
+          )}
+          <div className="card" style={{ overflow:'auto' }}>
+            <table className="tbl"><thead><tr>
+              <th>Código</th><th>Nombre</th><th>Categoría</th><th>Tipo</th><th>Acciones</th>
+            </tr></thead><tbody>
+              {[...unidadesEstandar.map(u=>({...u,std:true})), ...unidadesCustom.map(u=>({...u,std:false}))].map(u => (
+                <tr key={u.codigo + u.std}>
+                  <td className="col-m" style={{ fontFamily:'monospace', fontWeight:700 }}>{u.codigo}</td>
+                  <td>{u.nombre}</td>
+                  <td><span className="tag">{cat.CATEGORIAS_UNIDAD_LABEL?.[u.categoria] || u.categoria}</span></td>
+                  <td>{u.std ? <span className="badge b-blue">estándar</span> : <span className="badge b-amber">custom</span>}</td>
+                  <td>{!u.std && isAdmin && <button className="btn btn-red btn-xs" onClick={()=>eliminarUnidad(u.codigo)}><JxIcon name="trash" size={11}/></button>}</td>
+                </tr>
+              ))}
+            </tbody></table>
+          </div>
+        </div>
+      )}
+
+      {seccion === 'categorias' && (
+        <div>
+          {isAdmin && (
+            <div className="card card-p" style={{ marginBottom:12, display:'flex', gap:10, alignItems:'end' }}>
+              <div style={{ flex:1 }}><label className="flabel">Nueva categoría</label><input className="fi" value={nuevaCat} onChange={e=>setNuevaCat(e.target.value)} placeholder="ej: Carpintería metálica"/></div>
+              <button className="btn btn-amber btn-sm" onClick={agregarCategoria}><JxIcon name="plus" size={11}/>Agregar</button>
+            </div>
+          )}
+          <div className="card" style={{ overflow:'auto' }}>
+            <table className="tbl"><thead><tr><th>Categoría</th><th>Tipo</th><th>Acciones</th></tr></thead><tbody>
+              {[...categoriasBase.map(c=>({c,std:true})), ...categoriasCustom.map(c=>({c,std:false}))].map(({c,std}) => (
+                <tr key={c+std}>
+                  <td>{c}</td>
+                  <td>{std ? <span className="badge b-blue">estándar</span> : <span className="badge b-amber">custom</span>}</td>
+                  <td>{!std && isAdmin && <button className="btn btn-red btn-xs" onClick={()=>eliminarCategoria(c)}><JxIcon name="trash" size={11}/></button>}</td>
+                </tr>
+              ))}
+            </tbody></table>
+          </div>
+        </div>
+      )}
+
+      {seccion === 'materiales' && (
+        <div>
+          {isAdmin && (
+            <div className="card card-p" style={{ marginBottom:12, display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr auto', gap:10, alignItems:'end' }}>
+              <div><label className="flabel">Material *</label><input className="fi" value={nuevoMat.nombre} onChange={e=>setNuevoMat({...nuevoMat, nombre:e.target.value})}/></div>
+              <div><label className="flabel">Unidad</label>
+                <select className="fi" value={nuevoMat.unidad} onChange={e=>setNuevoMat({...nuevoMat, unidad:e.target.value})}>
+                  {(cat.getAllUnidades?.() || []).map(u => <option key={u.codigo} value={u.codigo}>{u.codigo} ({u.nombre})</option>)}
+                </select>
+              </div>
+              <div><label className="flabel">Categoría</label>
+                <select className="fi" value={nuevoMat.categoria} onChange={e=>setNuevoMat({...nuevoMat, categoria:e.target.value})}>
+                  {(cat.getAllCategorias?.() || []).map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <div><label className="flabel">Precio est. (S/)</label><input className="fi" type="number" min="0" step="0.01" value={nuevoMat.precio} onChange={e=>setNuevoMat({...nuevoMat, precio:e.target.value})}/></div>
+              <button className="btn btn-amber btn-sm" onClick={agregarMat}><JxIcon name="plus" size={11}/></button>
+            </div>
+          )}
+          <div className="card" style={{ overflow:'auto', maxHeight:600 }}>
+            <table className="tbl"><thead><tr>
+              <th>Material</th><th>Categoría</th><th>Unidad</th><th style={{textAlign:'right'}}>Precio</th><th>Tipo</th><th>Acciones</th>
+            </tr></thead><tbody>
+              {[...matsBase.map(m=>({...m,std:true})), ...matsCustom.map(m=>({...m,std:false}))].map((m, idx) => (
+                <tr key={m.nombre+idx}>
+                  <td>{m.nombre}</td>
+                  <td><span className="tag">{m.categoria}</span></td>
+                  <td className="col-m">{m.unidad}</td>
+                  <td style={{ textAlign:'right' }}>S/ {Number(m.precio||0).toFixed(2)}</td>
+                  <td>{m.std ? <span className="badge b-blue">estándar</span> : <span className="badge b-amber">custom</span>}</td>
+                  <td>{!m.std && isAdmin && <button className="btn btn-red btn-xs" onClick={()=>eliminarMat(m.nombre)}><JxIcon name="trash" size={11}/></button>}</td>
+                </tr>
+              ))}
+            </tbody></table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SistemaTab({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : {};
   const isAdmin = auth?.profile?.rol === 'admin';
-  const appMode = window.__useAppMode ? window.__useAppMode() : { mode: 'prueba', setMode: ()=>{}, isPrueba: true };
-  const { mode, setMode, isPrueba } = appMode;
+  const appMode = window.__useAppMode ? window.__useAppMode() : { mode: 'edicion', setMode: ()=>{}, isPrueba: false, isEdicion: true, isProduccion: false };
+  const { mode, setMode, isPrueba, isEdicion, isProduccion } = appMode;
+  const [demoCount, setDemoCount] = uSAd(0);
+  const [seedBusy, setSeedBusy] = uSAd(false);
+
+  uEAd(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const n = await window.__demo?.count?.();
+        if (!cancelled) setDemoCount(n || 0);
+      } catch {}
+    };
+    refresh();
+    const t = setInterval(refresh, 5000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, []);
+
+  const seedDemo = async () => {
+    if (!isAdmin) return;
+    if (demoCount > 0 && !confirm(`Ya hay ${demoCount} registros demo cargados.\n\n¿Limpiar y recargar de cero?`)) return;
+    setSeedBusy(true);
+    try {
+      if (demoCount > 0) await window.__demo.clear();
+      const stats = await window.__demo.seed();
+      showToast?.(`Demo creado: ${stats.obras} obras + ${stats.personas} trabajadores + ${stats.materiales} materiales`, 'green');
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'all' } })); } catch {}
+    } catch (e) { showToast?.('Error: '+(e.message||e), 'red'); }
+    finally { setSeedBusy(false); }
+  };
+  const clearDemo = async () => {
+    if (!isAdmin) return;
+    if (!confirm(`¿Eliminar TODOS los ${demoCount} registros demo?\n\nLa data real no se toca.`)) return;
+    setSeedBusy(true);
+    try {
+      const r = await window.__demo.clear();
+      showToast?.(`${r.eliminados} registros demo eliminados`, 'amber');
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'all' } })); } catch {}
+    } catch (e) { showToast?.('Error: '+(e.message||e), 'red'); }
+    finally { setSeedBusy(false); }
+  };
 
   const [counts, setCounts] = uSAd({});
   const [online, setOnline] = uSAd(navigator.onLine);
@@ -1289,38 +1522,66 @@ function SistemaTab({ showToast }) {
 
   return (
     <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
-      <div className="card card-p" style={{ gridColumn:'1 / -1', borderLeft: isPrueba ? '3px solid var(--amber)' : '3px solid var(--green)' }}>
+      <div className="card card-p" style={{ gridColumn:'1 / -1', borderLeft: isPrueba ? '3px solid #9B59B6' : isEdicion ? '3px solid var(--amber)' : '3px solid var(--green)' }}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12, flexWrap:'wrap', gap:10 }}>
           <div style={{ fontSize:13, fontWeight:700, display:'flex', alignItems:'center', gap:8 }}>
-            <JxIcon name={isPrueba ? 'alert' : 'lock'} size={14} color={isPrueba ? 'var(--amber)' : 'var(--green)'}/>
+            <JxIcon name={isPrueba ? 'alert' : isEdicion ? 'edit' : 'lock'} size={14}
+              color={isPrueba ? '#9B59B6' : isEdicion ? 'var(--amber)' : 'var(--green)'}/>
             Modo de Operación
-            <span className={`badge ${isPrueba ? 'b-amber' : 'b-green'}`} style={{ marginLeft:6 }}>
-              {isPrueba ? '✏️ EDICIÓN' : '🔒 PRODUCCIÓN'}
+            <span className={`badge ${isPrueba ? 'b-purple' : isEdicion ? 'b-amber' : 'b-green'}`} style={{ marginLeft:6 }}>
+              {isPrueba ? '🧪 PRUEBA' : isEdicion ? '✏️ EDICIÓN' : '🔒 PRODUCCIÓN'}
             </span>
           </div>
-          <div style={{ display:'flex', gap:8 }} title={isAdmin ? '' : 'Solo el administrador puede cambiar el modo'}>
+          <div style={{ display:'flex', gap:8, flexWrap:'wrap' }} title={isAdmin ? '' : 'Solo el administrador puede cambiar el modo'}>
             <button
               className={`btn btn-sm ${mode==='prueba' ? 'btn-amber' : 'btn-ghost'}`}
               disabled={!isAdmin || mode==='prueba'}
-              onClick={()=>{ setMode('prueba'); showToast?.('Modo edición activado','amber'); }}>
+              onClick={()=>{ setMode('prueba'); showToast?.('Modo PRUEBA activado · viendo solo data demo','amber'); }}>
+              🧪 Prueba
+            </button>
+            <button
+              className={`btn btn-sm ${mode==='edicion' ? 'btn-amber' : 'btn-ghost'}`}
+              disabled={!isAdmin || mode==='edicion'}
+              onClick={()=>{ setMode('edicion'); showToast?.('Modo EDICIÓN activado','amber'); }}>
               ✏️ Edición
             </button>
             <button
               className={`btn btn-sm ${mode==='produccion' ? 'btn-amber' : 'btn-ghost'}`}
               disabled={!isAdmin || mode==='produccion'}
-              onClick={()=>{ setMode('produccion'); showToast?.('Modo producción activado','green'); }}>
+              onClick={()=>{ setMode('produccion'); showToast?.('Modo PRODUCCIÓN activado','green'); }}>
               🔒 Producción
             </button>
           </div>
         </div>
         <div style={{ fontSize:12.5, color:'var(--ts)', lineHeight:1.5 }}>
-          {isPrueba
-            ? 'Modo edición activo. El admin puede eliminar registros en bloque o individualmente, ajustar configuraciones avanzadas y reiniciar tablas. Cambia a producción cuando termines de configurar la obra.'
-            : 'Modo producción activo. Eliminación masiva deshabilitada para prevenir pérdida accidental. Edición y consulta normales siguen disponibles según rol.'}
+          {isPrueba && '🧪 Modo prueba activo. Toda la app muestra solamente datos demo precargados. Lo que crees acá NO mezcla con producción ni con tu data real. Ideal para testear antes de operar.'}
+          {isEdicion && '✏️ Modo edición activo sobre data REAL. El admin puede eliminar registros en bloque o individualmente, ajustar configuraciones avanzadas y reiniciar tablas. Cambia a producción cuando termines de configurar.'}
+          {isProduccion && '🔒 Modo producción activo. Eliminación masiva deshabilitada. Edición normal según rol. Es lo que ven tus operarios día a día.'}
         </div>
         {!isAdmin && (
           <div style={{ fontSize:11.5, color:'var(--tm)', marginTop:8, fontStyle:'italic' }}>
             Solo el administrador puede cambiar el modo.
+          </div>
+        )}
+        {/* Sección Demo Data — visible solo en modo prueba o cuando hay registros demo */}
+        {(isPrueba || demoCount > 0) && isAdmin && (
+          <div style={{ marginTop:14, paddingTop:14, borderTop:'1px solid var(--bd)' }}>
+            <div style={{ fontSize:12, fontWeight:700, color:'var(--ts)', marginBottom:8 }}>
+              Datos de prueba ({demoCount} registros)
+            </div>
+            <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+              <button className="btn btn-amber btn-sm" onClick={seedDemo} disabled={seedBusy}>
+                <JxIcon name="plus" size={12}/> {demoCount > 0 ? 'Recargar demo' : 'Generar datos demo'}
+              </button>
+              {demoCount > 0 && (
+                <button className="btn btn-ghost btn-sm" onClick={clearDemo} disabled={seedBusy} style={{ color:'var(--red)' }}>
+                  <JxIcon name="trash" size={12}/> Limpiar demo
+                </button>
+              )}
+            </div>
+            <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:6 }}>
+              Genera ~3 obras + 8 trabajadores + 35 materiales con stock + maquinaria + tesorería + SSOMA + movimientos contables. Solo visibles en modo PRUEBA.
+            </div>
           </div>
         )}
       </div>
