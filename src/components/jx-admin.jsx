@@ -1428,28 +1428,55 @@ function SistemaTab({ showToast }) {
     return () => { cancelled = true; clearInterval(t); };
   }, []);
 
-  const seedDemo = async () => {
+  // Confirmación inline (NO usar window.confirm porque más abajo se shadowea
+  // el global 'confirm' con un useState `confirm`). Modal in-app más confiable.
+  const [demoConfirm, setDemoConfirm] = uSAd(null); // null | 'seed' | 'clear'
+
+  const doSeedDemo = async () => {
     if (!isAdmin) return;
-    if (demoCount > 0 && !confirm(`Ya hay ${demoCount} registros demo cargados.\n\n¿Limpiar y recargar de cero?`)) return;
     setSeedBusy(true);
+    setDemoConfirm(null);
     try {
-      if (demoCount > 0) await window.__demo.clear();
+      if (demoCount > 0) {
+        showToast?.('Limpiando demo viejo…', 'amber');
+        await window.__demo.clear();
+      }
+      showToast?.('Generando datos demo (puede tomar 5-10s)…', 'blue');
       const stats = await window.__demo.seed();
-      showToast?.(`Demo creado: ${stats.obras} obras + ${stats.personas} trabajadores + ${stats.materiales} materiales`, 'green');
+      showToast?.(`✓ Demo creado: ${stats.obras} obras + ${stats.personas} trabajadores + ${stats.materiales} materiales + partidas + asistencia + compras + RRHH + SSOMA`, 'green');
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'all' } })); } catch {}
-    } catch (e) { showToast?.('Error: '+(e.message||e), 'red'); }
+      try {
+        const n = await window.__demo.count();
+        setDemoCount(n || 0);
+      } catch {}
+    } catch (e) { showToast?.('Error: '+(e.message||e), 'red'); console.error('[demo]', e); }
     finally { setSeedBusy(false); }
   };
-  const clearDemo = async () => {
+  const doClearDemo = async () => {
     if (!isAdmin) return;
-    if (!confirm(`¿Eliminar TODOS los ${demoCount} registros demo?\n\nLa data real no se toca.`)) return;
     setSeedBusy(true);
+    setDemoConfirm(null);
     try {
       const r = await window.__demo.clear();
       showToast?.(`${r.eliminados} registros demo eliminados`, 'amber');
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'all' } })); } catch {}
-    } catch (e) { showToast?.('Error: '+(e.message||e), 'red'); }
+      try {
+        const n = await window.__demo.count();
+        setDemoCount(n || 0);
+      } catch {}
+    } catch (e) { showToast?.('Error: '+(e.message||e), 'red'); console.error('[demo]', e); }
     finally { setSeedBusy(false); }
+  };
+
+  // Wrappers: si no hay confirmación necesaria → ejecuta directo
+  const seedDemo = async () => {
+    if (!isAdmin) return;
+    if (demoCount > 0) { setDemoConfirm('seed'); return; }
+    return doSeedDemo();
+  };
+  const clearDemo = async () => {
+    if (!isAdmin || demoCount === 0) return;
+    setDemoConfirm('clear');
   };
 
   const [counts, setCounts] = uSAd({});
@@ -1568,10 +1595,11 @@ function SistemaTab({ showToast }) {
           <div style={{ marginTop:14, paddingTop:14, borderTop:'1px solid var(--bd)' }}>
             <div style={{ fontSize:12, fontWeight:700, color:'var(--ts)', marginBottom:8 }}>
               Datos de prueba ({demoCount} registros)
+              {seedBusy && <span style={{ marginLeft:10, color:'var(--amber)', fontSize:11 }}>· procesando…</span>}
             </div>
             <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
               <button className="btn btn-amber btn-sm" onClick={seedDemo} disabled={seedBusy}>
-                <JxIcon name="plus" size={12}/> {demoCount > 0 ? 'Recargar demo' : 'Generar datos demo'}
+                <JxIcon name="plus" size={12}/> {seedBusy ? 'Procesando…' : demoCount > 0 ? 'Recargar demo' : 'Generar datos demo'}
               </button>
               {demoCount > 0 && (
                 <button className="btn btn-ghost btn-sm" onClick={clearDemo} disabled={seedBusy} style={{ color:'var(--red)' }}>
@@ -1580,11 +1608,51 @@ function SistemaTab({ showToast }) {
               )}
             </div>
             <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:6 }}>
-              Genera ~3 obras + 8 trabajadores + 35 materiales con stock + maquinaria + tesorería + SSOMA + movimientos contables. Solo visibles en modo PRUEBA.
+              Genera 1 obra a mitad de ejecución + 12 trabajadores + 60 materiales con stock variado + 24 partidas con avance + asistencia + compras + valorizaciones + maquinaria + SSOMA + planillas + tesorería. Solo visible en modo PRUEBA.
             </div>
           </div>
         )}
       </div>
+
+      {/* Modal confirmación demo (inline, NO depende de window.confirm ni de un Modal externo) */}
+      {(demoConfirm === 'seed' || demoConfirm === 'clear') && (
+        <div className="overlay" onClick={e => e.target === e.currentTarget && setDemoConfirm(null)}
+          style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:9999 }}>
+          <div className="card card-p" style={{ minWidth:380, maxWidth:520, background:'#1A2333', border:'1px solid var(--bd)', borderRadius:10, boxShadow:'0 12px 48px rgba(0,0,0,0.5)' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12 }}>
+              <JxIcon name="alert" size={18} color={demoConfirm === 'clear' ? 'var(--red)' : 'var(--amber)'}/>
+              <div style={{ fontSize:14, fontWeight:700, color:'var(--tp)' }}>
+                {demoConfirm === 'seed' ? '¿Recargar datos demo?' : '¿Eliminar todos los datos demo?'}
+              </div>
+            </div>
+            <div style={{ fontSize:13, color:'var(--ts)', lineHeight:1.5, marginBottom:14 }}>
+              {demoConfirm === 'seed' && (
+                <>Ya hay <strong style={{ color:'var(--amber)' }}>{demoCount} registros</strong> demo cargados.
+                  Si continuás, se eliminarán y se generarán de cero (toma 5-10s).
+                  <br/><br/>
+                  <span style={{ color:'var(--tm)', fontSize:12 }}>Tu data real (modo edición/producción) NO se toca.</span></>
+              )}
+              {demoConfirm === 'clear' && (
+                <>Vas a eliminar <strong style={{ color:'var(--red)' }}>{demoCount} registros</strong> marcados como demo.
+                  <br/><br/>
+                  <span style={{ color:'var(--tm)', fontSize:12 }}>Tu data real (modo edición/producción) NO se toca. Esta acción NO se puede deshacer.</span></>
+              )}
+            </div>
+            <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
+              <button className="btn btn-ghost btn-sm" onClick={()=>setDemoConfirm(null)}>Cancelar</button>
+              {demoConfirm === 'seed' ? (
+                <button className="btn btn-amber btn-sm" onClick={doSeedDemo}>
+                  <JxIcon name="check" size={12}/>Sí, recargar de cero
+                </button>
+              ) : (
+                <button className="btn btn-red btn-sm" onClick={doClearDemo}>
+                  <JxIcon name="trash" size={12}/>Sí, eliminar todo
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="card card-p">
         <div style={{ fontSize:13, fontWeight:700, marginBottom:14 }}>Información del Sistema</div>
