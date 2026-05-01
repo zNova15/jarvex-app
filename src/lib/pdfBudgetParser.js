@@ -13,13 +13,18 @@ import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc;
 
-const SKIP_LINE = /^(Pág\.\s*\d+|PRESUPUESTO\s+DE\s+OBRA|PROYECTO|PROPIETARIO|UBICACION|UBICACIÓN|FECHA\s+DE\s+PROY|Item|Descripción|Descripcion|Unid\.|Cant\.|Precio|Total|:)$/i;
-const CODE_RE = /^\d+(\.\d+)*$/;
-const NUM_RE  = /^[\d,]+\.\d{1,4}$|^\d+\.\d+$|^[\d,]+$/;
+// Líneas a ignorar: header de página, títulos repetidos en cabeceras
+const SKIP_LINE = /^(Pág\.\s*\d+\s*$|PRESUPUESTO\s+DE\s+OBRA\s*$|Item\s+Descripción\s+Unid\.|Item\s+Descripción|^:$)/i;
+// Línea que empieza con código (XX o XX.XX.XX...)
+const LINE_STARTS_CODE = /^(\d+(?:\.\d+)*)\s+(.*)$/;
+// Token numérico (con miles y decimales)
+const NUM_TOKEN_RE = /^-?[\d,]+(?:\.\d{1,6})?$/;
+// Tokens que pueden ser unidad
 const UNIDADES = new Set([
-  'm','m²','m³','m2','m3','ml','und','glb','kg','kgf','hh','hm',
+  'm','m²','m³','m2','m3','ml','und','unid','glb','kg','kgf','hh','hm',
   'dia','día','mes','gln','p2','pza','pieza','jgo','set','rll',
-  'tn','t','l','lt','bls','pza.','m2.','m3.','vje','par',
+  'tn','t','l','lt','bls','vje','par','pto','und.','glb.','m.l',
+  'm.','m2.','m3.','cm','cm²','cm³','pza.','pulg','"',
 ]);
 
 function parseNumber(s) {
@@ -59,77 +64,127 @@ export async function extractTextFromPDF(file) {
 }
 
 /**
- * Extrae header del presupuesto (proyecto, propietario, ubicación, fecha).
+ * Extrae header del presupuesto.
+ * El formato típico es "PROYECTO : <texto>" en una misma línea, con líneas
+ * de continuación si la descripción wrappeó.
  */
 function extractHeader(lines) {
   const hdr = { proyecto: '', propietario: '', ubicacion: '', fecha: '' };
+  const stripLabel = (ln, label) => ln.replace(new RegExp(`^${label}\\s*:?\\s*`, 'i'), '').trim();
+  let currentField = null;
   for (let i = 0; i < Math.min(40, lines.length); i++) {
     const ln = lines[i];
+    if (LINE_STARTS_CODE.test(ln)) break; // entró a partidas
     const lo = ln.toLowerCase();
-    // Patterns: "PROYECTO :" + texto en líneas siguientes
     if (lo.startsWith('proyecto')) {
-      // toma las siguientes líneas hasta que aparezca otro label o un código de partida
-      let j = i + 1;
-      const buf = [];
-      while (j < lines.length && j < i + 8) {
-        const lj = lines[j];
-        if (/^(propietario|ubicacion|ubicación|fecha|item|:)/i.test(lj)) break;
-        if (CODE_RE.test(lj)) break;
-        buf.push(lj.replace(/^:\s*/, ''));
-        j++;
-      }
-      hdr.proyecto = buf.join(' ').trim();
+      hdr.proyecto = stripLabel(ln, 'proyecto');
+      currentField = 'proyecto';
     } else if (lo.startsWith('propietario')) {
-      hdr.propietario = (lines[i+1] || '').replace(/^:\s*/, '').trim();
+      hdr.propietario = stripLabel(ln, 'propietario');
+      currentField = 'propietario';
     } else if (lo.startsWith('ubicacion') || lo.startsWith('ubicación')) {
-      hdr.ubicacion = (lines[i+1] || '').replace(/^:\s*/, '').trim();
+      hdr.ubicacion = stripLabel(ln, 'ubicaci[oó]n');
+      currentField = 'ubicacion';
     } else if (lo.startsWith('fecha')) {
-      hdr.fecha = (lines[i+1] || '').replace(/^:\s*/, '').trim();
+      hdr.fecha = stripLabel(ln, 'fecha\\s+de\\s+proy\\.?');
+      currentField = 'fecha';
+    } else if (currentField && !lo.startsWith('item') && !lo.startsWith('pág')) {
+      // Continuación del campo previo (wrap)
+      hdr[currentField] = (hdr[currentField] + ' ' + ln).trim();
     }
   }
   return hdr;
 }
 
 /**
- * Parsea las líneas en partidas estructuradas. Cada partida tiene:
- *   { codigo, descripcion, unidad, cantidad, precio, total, leaf }
- * Las hojas tienen unidad+cantidad+precio. Los agrupadores solo total.
+ * Parsea una línea que empieza con código en sus componentes:
+ *   - Hoja:  "01.01 CARTEL DE OBRA und 2.00 1,565.43 3,130.86"
+ *            → { codigo, desc, unidad, cantidad, precio, total }
+ *   - Título: "01 OBRAS PROVISIONALES 8,130.86"
+ *            → { codigo, desc, total } (sin unidad/cantidad/precio)
+ * El truco: parsear de DERECHA a IZQUIERDA porque las descripciones
+ * pueden contener números, comillas, paréntesis, pero la cola
+ * (unidad qty precio total) es predecible.
+ */
+function parseItemLine(codigo, restoStr) {
+  // restoStr es todo lo que viene después del código, en una línea
+  const tokens = restoStr.trim().split(/\s+/);
+  if (tokens.length === 0) return { codigo, descripcion: '', leaf: false, total: null };
+
+  // Caso A: hoja con cola "<unidad> <cant> <precio> <total>"
+  // Tomamos los últimos 4 tokens y vemos si encajan
+  if (tokens.length >= 5) {
+    const tail = tokens.slice(-4);
+    const numTail = tail.slice(1).every(t => NUM_TOKEN_RE.test(t));
+    if (numTail) {
+      // El primer token de tail debe ser unidad. Pero a veces pdf.js
+      // pega la unidad al final de descripción sin espacio (ej "SEGURIDADm").
+      // Si el primer token no es unidad pura, lo manejamos abajo.
+      const tUnit = tail[0].toLowerCase();
+      if (UNIDADES.has(tUnit)) {
+        const desc = tokens.slice(0, -4).join(' ');
+        return {
+          codigo,
+          descripcion: desc,
+          unidad: tail[0],
+          cantidad: parseNumber(tail[1]),
+          precio: parseNumber(tail[2]),
+          total: parseNumber(tail[3]),
+          leaf: true,
+        };
+      }
+      // Probar si la unidad está pegada al último token de descripción
+      // (ej "SEGURIDADm" en vez de "SEGURIDAD m")
+      const m = tail[0].match(/^(.+?)(m³|m²|m2|m3|ml|cm³|cm²|cm|hh|hm|kg|tn|gln|und|glb|jgo|set|rll|pza|bls|vje|par|m|t|l)$/i);
+      if (m && /[A-Za-zÁÉÍÓÚÑ]/.test(m[1])) {
+        const restoDesc = tokens.slice(0, -4).join(' ') + ' ' + m[1];
+        return {
+          codigo,
+          descripcion: restoDesc.trim(),
+          unidad: m[2],
+          cantidad: parseNumber(tail[1]),
+          precio: parseNumber(tail[2]),
+          total: parseNumber(tail[3]),
+          leaf: true,
+        };
+      }
+    }
+  }
+
+  // Caso B: título con un solo número al final (total)
+  const lastTok = tokens[tokens.length - 1];
+  if (NUM_TOKEN_RE.test(lastTok)) {
+    return {
+      codigo,
+      descripcion: tokens.slice(0, -1).join(' '),
+      unidad: null, cantidad: null, precio: null,
+      total: parseNumber(lastTok),
+      leaf: false,
+    };
+  }
+
+  // Caso C: solo descripción (sin total visible — caso raro)
+  return { codigo, descripcion: tokens.join(' '), unidad: null, cantidad: null, precio: null, total: null, leaf: false };
+}
+
+/**
+ * Parsea las líneas extraídas del PDF en partidas estructuradas.
+ * Cada línea con código abre una nueva partida; las líneas siguientes
+ * sin código se appendean a la descripción de la última partida.
  */
 export function parsePresupuestoLines(allLines) {
   const lines = allLines.filter(ln => !SKIP_LINE.test(ln));
   const partidas = [];
-  let i = 0;
-  while (i < lines.length) {
-    const ln = lines[i];
-    if (!CODE_RE.test(ln)) { i++; continue; }
-
-    const codigo = ln;
-    const descParts = [];
-    i++;
-
-    // Descripción: hasta encontrar unidad, número aislado o nuevo código
-    while (i < lines.length) {
-      const nxt = lines[i];
-      if (CODE_RE.test(nxt)) break;
-      if (UNIDADES.has(nxt.toLowerCase())) break;
-      if (NUM_RE.test(nxt)) break;
-      descParts.push(nxt);
-      i++;
-    }
-    const descripcion = descParts.join(' ').replace(/\s+/g, ' ').trim();
-
-    // ¿Sigue una unidad? → es hoja. ¿Sigue número? → es título.
-    if (i < lines.length && UNIDADES.has(lines[i].toLowerCase())) {
-      const unidad = lines[i]; i++;
-      const cantidad = parseNumber(lines[i]); i++;
-      const precio   = parseNumber(lines[i]); i++;
-      const total    = parseNumber(lines[i]); i++;
-      partidas.push({ codigo, descripcion, unidad, cantidad, precio, total, leaf: true });
-    } else if (i < lines.length && NUM_RE.test(lines[i])) {
-      const total = parseNumber(lines[i]); i++;
-      partidas.push({ codigo, descripcion, unidad: null, cantidad: null, precio: null, total, leaf: false });
-    } else {
-      partidas.push({ codigo, descripcion, unidad: null, cantidad: null, precio: null, total: null, leaf: false });
+  let last = null;
+  for (const ln of lines) {
+    const m = ln.match(LINE_STARTS_CODE);
+    if (m) {
+      const partida = parseItemLine(m[1], m[2]);
+      partidas.push(partida);
+      last = partida;
+    } else if (last && !/^(propietario|proyecto|ubicaci[oó]n|fecha|son\s|costo\s+total)/i.test(ln)) {
+      // Continuación de descripción wrappeada
+      last.descripcion = (last.descripcion + ' ' + ln).replace(/\s+/g, ' ').trim();
     }
   }
   return partidas;
