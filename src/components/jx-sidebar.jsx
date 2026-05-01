@@ -129,6 +129,8 @@ const NAV = [
   { id: 'libro-diario', label: 'Libro Diario / Asientos', icon: 'list' },
   { id: 'balance-general', label: 'Balance General', icon: 'compare' },
   { id: 'estado-resultados', label: 'Estado de Resultados', icon: 'dollar' },
+  { id: 'comprobantes', label: 'Comprobantes Electrónicos SUNAT', icon: 'list' },
+  { id: 'libros-electronicos', label: 'Libros Electrónicos PLE / PDT', icon: 'list' },
   { id: 'flujo-proyectado', label: 'Flujo de Caja Proyectado', icon: 'calendar' },
   { id: 'comparativo-periodos', label: 'Comparativo Periodos', icon: 'compare' },
 

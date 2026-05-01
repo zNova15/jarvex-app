@@ -677,6 +677,8 @@ function App() {
       case 'kpis-obra':              return <KPIsObraPage showToast={showToast}/>;
       case 'cumplimiento-cronograma': return <CumplimientoCronogramaPage showToast={showToast}/>;
       case 'audit-log':              return <AuditLogPage showToast={showToast}/>;
+      case 'comprobantes':           return <ComprobantesElectronicosPage showToast={showToast}/>;
+      case 'libros-electronicos':    return <LibrosElectronicosPage showToast={showToast}/>;
       case 'conflictos':    return <ConflictsPage showToast={showToast}/>;
       case 'solicitudes':   return <SolicitudesPage showToast={showToast}/>;
       default:              return <ComingSoon page={page}/>;

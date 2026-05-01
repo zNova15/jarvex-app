@@ -129,6 +129,9 @@ import './components/jx-busqueda.jsx';
 import './components/jx-kpis-obra.jsx';
 import './components/jx-cumplimiento-cronograma.jsx';
 import './components/jx-audit-log.jsx';
+import './components/jx-comprobantes.jsx';
+import './components/jx-libros-electronicos.jsx';
+import './lib/sunat-ubl.js';
 import './components/jx-conflicts.jsx';
 import './jx-app.jsx';
 

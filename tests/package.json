@@ -1,0 +1,19 @@
+{
+  "name": "jarvex-e2e-tests",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Suite E2E de JARVEX con Playwright",
+  "scripts": {
+    "test:e2e": "node e2e/run-all.mjs",
+    "test:e2e:headed": "HEADLESS=false node e2e/run-all.mjs",
+    "test:smoke": "node e2e/01-smoke.test.mjs",
+    "test:nav": "node e2e/02-navegacion.test.mjs",
+    "test:busqueda": "node e2e/03-busqueda.test.mjs",
+    "test:alertas": "node e2e/04-alertas.test.mjs",
+    "install:browsers": "playwright install chromium"
+  },
+  "devDependencies": {
+    "playwright": "^1.49.0"
+  }
+}
