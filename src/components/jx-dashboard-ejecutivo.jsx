@@ -197,13 +197,20 @@ function DashboardEjecutivoPage() {
       });
     });
 
-    // 4. Stock crítico
-    (materiales || []).filter(m => m.alerta === 'critico' || m.alerta === 'sin_stock').forEach(m => {
+    // 4. Stock: incluye agotado, sin_stock, crítico y reponer (en mínimo)
+    (materiales || []).filter(m =>
+      m.alerta === 'agotado' || m.alerta === 'sin_stock' ||
+      m.alerta === 'critico' || m.alerta === 'reponer'
+    ).forEach(m => {
+      const esAgotado = m.alerta === 'agotado' || m.alerta === 'sin_stock';
+      const esCritico = m.alerta === 'critico';
       list.push({
         type: 'stock',
-        icon: 'package', color: '#E74C3C',
-        titulo: `Stock ${m.alerta === 'sin_stock' ? 'agotado' : 'crítico'} — ${m.nombre_material}`,
+        icon: 'package',
+        color: esAgotado ? '#E74C3C' : esCritico ? '#E74C3C' : '#F2B705',
+        titulo: `Stock ${esAgotado ? 'AGOTADO' : esCritico ? 'crítico' : 'en mínimo'} — ${m.nombre_material}`,
         sub: `${m.stock_actual ?? 0} ${m.unidad || ''} · mín ${m.stock_minimo ?? 0}`,
+        prioridad: esAgotado ? 1 : esCritico ? 2 : 3, // para ordenar
       });
     });
 
@@ -220,8 +227,22 @@ function DashboardEjecutivoPage() {
       });
     });
 
+    // Ordenar: alertas con prioridad numérica primero (stock 1=agotado, 2=crítico, 3=mínimo);
+    // las sin prioridad explícita van al final
+    list.sort((a, b) => (a.prioridad || 99) - (b.prioridad || 99));
     return list;
   }, [pagos, ordenes, iperc, materiales, valorizaciones, today]);
+
+  // Conteo rápido para banner: cuántos materiales en cada nivel de alerta
+  const stockCounts = uM(() => {
+    const c = { agotado: 0, critico: 0, reponer: 0 };
+    (materiales || []).forEach(m => {
+      if (m.alerta === 'agotado' || m.alerta === 'sin_stock') c.agotado++;
+      else if (m.alerta === 'critico') c.critico++;
+      else if (m.alerta === 'reponer') c.reponer++;
+    });
+    return c;
+  }, [materiales]);
 
   return (
     <div className="page-wrap">
@@ -340,6 +361,30 @@ function DashboardEjecutivoPage() {
           </div>
         )}
       </div>
+
+      {/* Banner de stock — visible solo si hay agotados o críticos */}
+      {(stockCounts.agotado > 0 || stockCounts.critico > 0 || stockCounts.reponer > 0) && (
+        <div style={{ marginBottom: 18, padding: '14px 18px', borderRadius: 10,
+          background: stockCounts.agotado > 0 ? 'rgba(231,76,60,0.12)' : 'rgba(242,183,5,0.10)',
+          border: `1px solid ${stockCounts.agotado > 0 ? 'rgba(231,76,60,0.4)' : 'rgba(242,183,5,0.35)'}`,
+          display:'flex', gap:14, alignItems:'center' }}>
+          <JxIcon name="package" size={26} color={stockCounts.agotado > 0 ? '#E74C3C' : '#F2B705'}/>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:13, fontWeight:700, color:'var(--tp)' }}>
+              {stockCounts.agotado > 0 ? '⚠ STOCK AGOTADO ' : 'Atención al stock'}
+              {stockCounts.agotado > 0 && <span style={{ color:'var(--red)' }}> — {stockCounts.agotado} material{stockCounts.agotado > 1 ? 'es' : ''} sin stock</span>}
+            </div>
+            <div style={{ fontSize:11.5, color:'var(--tm)', marginTop:4, display:'flex', gap:14, flexWrap:'wrap' }}>
+              {stockCounts.agotado > 0 && <span><strong style={{ color:'#E74C3C' }}>{stockCounts.agotado}</strong> agotados</span>}
+              {stockCounts.critico > 0 && <span><strong style={{ color:'#E74C3C' }}>{stockCounts.critico}</strong> en estado crítico</span>}
+              {stockCounts.reponer > 0 && <span><strong style={{ color:'#F2B705' }}>{stockCounts.reponer}</strong> en mínimo (reponer)</span>}
+            </div>
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={() => { window.location.hash = '#/materiales'; }}>
+            Ver materiales →
+          </button>
+        </div>
+      )}
 
       {/* Alertas */}
       <div style={{ marginBottom: 22 }}>

@@ -890,9 +890,63 @@ function MaterialesPage({ showToast }) {
   // Mapeo alerta → badge styling
   const ALERTA_STYLE = {
     ok:        { class: 'b-green',  label: 'OK' },
+    cerca:     { class: 'b-yellow', label: 'Cerca mín' },
     reponer:   { class: 'b-yellow', label: 'Reponer' },
     critico:   { class: 'b-red',    label: 'Crítico' },
     sin_stock: { class: 'b-gray',   label: 'Sin stock' },
+    agotado:   { class: 'b-red',    label: 'Agotado' },
+  };
+
+  // Crear requisición rápida desde alerta de stock — 1 click para almacenero
+  const solicitarReposicion = async (m) => {
+    if (!confirm(`¿Crear requisición de reposición para "${m.nombre_material}"?\n\nStock actual: ${m.stock_actual} ${m.unidad}\nStock mínimo: ${m.stock_minimo} ${m.unidad}\n\nLa cantidad sugerida será (mínimo × 2 − stock actual). Podés editarla en el módulo Requisiciones.`)) return;
+    try {
+      const cantidadSugerida = Math.max(0, Number(m.stock_minimo || 0) * 2 - Number(m.stock_actual || 0));
+      const now = new Date().toISOString();
+      const userIdLocal = auth?.profile?.id ?? 'offline';
+      // Crear cabecera de requisición
+      const reqId = window.__newId();
+      // Buscar siguiente correlativo de la obra
+      const reqsObra = await window.__db.requisiciones.where('obra_id').equals(obraId).filter(r=>!r.deleted_at).toArray();
+      const sigNum = (reqsObra.length || 0) + 1;
+      const codigo = `REQ-${new Date().getFullYear()}-${String(sigNum).padStart(4, '0')}`;
+      await window.__db.requisiciones.add({
+        id: reqId, obra_id: obraId,
+        codigo, fecha: now.slice(0,10),
+        descripcion: `Reposición automática · ${m.nombre_material}`,
+        prioridad: m.alerta === 'agotado' || m.alerta === 'sin_stock' ? 'urgente'
+                 : m.alerta === 'critico' ? 'alta' : 'media',
+        estado: 'borrador',
+        solicitante_id: userIdLocal,
+        notas: `Generada desde alerta de stock. Mínimo: ${m.stock_minimo}, actual: ${m.stock_actual}`,
+        created_by: userIdLocal, updated_by: userIdLocal,
+        created_at: now, updated_at: now,
+        version: 1, sync_status: 'pending_create', last_synced_at: null,
+        idempotency_key: `${userIdLocal}_requisiciones_${reqId}`,
+      });
+      // Item de requisición con el material
+      const itemId = window.__newId();
+      await window.__db.requisicion_items.add({
+        id: itemId, requisicion_id: reqId,
+        material_id: m.id,
+        descripcion: m.nombre_material,
+        unidad: m.unidad,
+        cantidad: cantidadSugerida,
+        precio_estimado: Number(m.precio_unitario_estimado || 0),
+        notas: `Stock actual ${m.stock_actual} / mínimo ${m.stock_minimo}`,
+        created_at: now, updated_at: now,
+        sync_status: 'pending_create',
+        idempotency_key: `${userIdLocal}_req_items_${itemId}`,
+      });
+      try { await window.__logAudit?.({ action:'insert', table:'requisiciones', recordId:reqId, newData:{ codigo, material: m.nombre_material }, reason:'Reposición automática desde alerta stock' }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'requisiciones' } })); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jarvex_new_notif', {
+        detail: { tipo: 'requisicion', titulo: `Requisición ${codigo} creada`, descripcion: `Reposición de ${m.nombre_material} · ${cantidadSugerida.toFixed(1)} ${m.unidad}` }
+      })); } catch {}
+      showToast(`✓ Requisición ${codigo} creada — revísala en módulo Requisiciones`, 'green');
+    } catch (e) {
+      showToast('Error al crear requisición: ' + (e.message||e), 'red');
+    }
   };
 
   // ⚠️ Hooks SIEMPRE antes de cualquier early return (regla de React).
@@ -1032,6 +1086,20 @@ function MaterialesPage({ showToast }) {
                       : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}
                     </td>
                     <td style={{textAlign:'center', whiteSpace:'nowrap'}}>
+                      {/* Botón "Solicitar reposición" cuando el stock está en mínimo o crítico */}
+                      {['critico','reponer','agotado','sin_stock','cerca'].includes(m.alerta) && (
+                        <button
+                          className="btn btn-xs"
+                          title="Crear requisición de reposición rápida"
+                          onClick={()=>solicitarReposicion(m)}
+                          style={{
+                            marginRight:4,
+                            background: m.alerta === 'critico' || m.alerta === 'agotado' || m.alerta === 'sin_stock' ? 'var(--red)' : 'var(--amber)',
+                            color:'#fff', borderColor:'transparent',
+                          }}>
+                          <JxIcon name="plus" size={11}/> Reponer
+                        </button>
+                      )}
                       <button className="btn btn-ghost btn-xs" title="Ver historial de precios" onClick={()=>verHistorialPrecios(m)} style={{ marginRight:4 }}>
                         <JxIcon name="dollar" size={11}/>
                       </button>
@@ -1835,6 +1903,14 @@ function HerramientasPage({ showToast }) {
       showToast('Herramienta no encontrada', 'red');
       return;
     }
+    // Validar motivo si la devolución es por excepción (otra persona devuelve)
+    const esDevolucion = form.accion === 'entrada';
+    const respOriginalId = herr.ultimo_responsable_id || null;
+    const cambioResponsable = esDevolucion && respOriginalId && form.responsable_id !== respOriginalId;
+    if (cambioResponsable && !(form.motivo_excepcion && form.motivo_excepcion.trim())) {
+      showToast('Debes ingresar el motivo de la excepción cuando otra persona devuelve la herramienta', 'red');
+      return;
+    }
 
     // ── Validación de disponibilidad para SALIDA ─────────────
     let salidaForzada = false;
@@ -1881,7 +1957,31 @@ function HerramientasPage({ showToast }) {
         estado_devolucion: form.accion === 'entrada' ? form.estado : null,
         observaciones: form.observaciones || null,
       });
-      try { await window.__logAudit?.({ action:'insert', table:'movimientos_herramientas', recordId:movCreated?.id, newData:movCreated, reason:`${form.accion} de "${herr.nombre_herramienta}"${salidaForzada ? ' (FORZADA)' : ''}` }); } catch(e) {}
+      try { await window.__logAudit?.({ action:'insert', table:'movimientos_herramientas', recordId:movCreated?.id, newData:movCreated, reason:`${form.accion} de "${herr.nombre_herramienta}"${salidaForzada ? ' (FORZADA)' : ''}${cambioResponsable ? ' (EXCEPCIÓN responsable)' : ''}` }); } catch(e) {}
+      // Audit + notif al admin si fue excepción de devolución (otra persona)
+      if (cambioResponsable) {
+        const respOrig = personal.find(p => p.id === respOriginalId);
+        const respNuevo = personal.find(p => p.id === form.responsable_id);
+        const desc = `Devolvió ${respNuevo?.nombres || ''} ${respNuevo?.apellidos || ''} en lugar de ${respOrig?.nombres || ''} ${respOrig?.apellidos || ''}. Motivo: ${form.motivo_excepcion}`;
+        try {
+          await window.__logAudit?.({
+            action: 'alert', table: 'movimientos_herramientas', recordId: movCreated?.id,
+            oldData: { responsable_original_id: respOriginalId },
+            newData: { responsable_devolucion_id: form.responsable_id, motivo: form.motivo_excepcion },
+            reason: `⚠ Excepción de devolución: ${herr.nombre_herramienta}. ${desc}`,
+          });
+        } catch {}
+        try {
+          window.dispatchEvent(new CustomEvent('jarvex_new_notif', {
+            detail: {
+              tipo: 'excepcion_devolucion',
+              titulo: `Devolución por excepción · ${herr.nombre_herramienta}`,
+              descripcion: desc,
+            }
+          }));
+        } catch {}
+        showToast(`⚠ Devolución registrada como EXCEPCIÓN. Admin notificado.`, 'amber');
+      }
       if (salidaForzada) {
         try { await window.__logAudit?.({ action:'alert', table:'movimientos_herramientas', recordId: movCreated?.id,
           oldData:{ disponible: herr.disponible, ubicacion: herr.ubicacion_actual, estado: herr.estado_actual },
@@ -2024,18 +2124,57 @@ function HerramientasPage({ showToast }) {
       )}
 
       {/* Modal Movimiento (salida/devolución) */}
-      {modal==='mov' && <Modal title={form.accion === 'salida' ? 'Registrar Salida de Herramienta' : form.accion === 'entrada' ? 'Registrar Devolución' : 'Mantenimiento'} icon="tool" onClose={()=>setModal(null)}>
+      {modal==='mov' && (() => {
+        // Para devolución: el responsable original (quien sacó la herramienta).
+        // Auto-fill: si no hay excepción, locked al ultimo_responsable_id.
+        const herrSel = herramientas.find(h => h.id === form.herramienta_id);
+        const respOriginalId = herrSel?.ultimo_responsable_id || null;
+        const respOriginal = respOriginalId ? personal.find(p => p.id === respOriginalId) : null;
+        const esDevolucion = form.accion === 'entrada';
+        const hayExcepcion = !!form.es_excepcion;
+        return (
+        <Modal title={form.accion === 'salida' ? 'Registrar Salida de Herramienta' : form.accion === 'entrada' ? 'Registrar Devolución' : 'Mantenimiento'} icon="tool" onClose={()=>setModal(null)}>
         <div className="g2">
           <div style={{gridColumn:'1/-1'}}><label className="flabel">Herramienta</label>
-            <select className="fi" value={form.herramienta_id||''} onChange={e=>setForm({...form, herramienta_id:e.target.value})}>
+            <select className="fi" value={form.herramienta_id||''} onChange={e=>{
+              const newHerr = herramientas.find(h => h.id === e.target.value);
+              setForm({
+                ...form,
+                herramienta_id: e.target.value,
+                // En devolución, autocompletar responsable con quien la sacó
+                responsable_id: esDevolucion && newHerr?.ultimo_responsable_id
+                  ? newHerr.ultimo_responsable_id
+                  : (form.responsable_id || ''),
+                es_excepcion: false,
+                motivo_excepcion: '',
+              });
+            }}>
               <option value="">Selecciona...</option>
               {herramientas
                 .filter(h => form.accion === 'salida' ? h.disponible : !h.disponible)
                 .map(h => <option key={h.id} value={h.id}>{h.nombre_herramienta} · {h.marca || ''} {h.modelo || ''}</option>)}
             </select>
           </div>
-          <div><label className="flabel">Responsable</label>
-            <select className="fi" value={form.responsable_id||''} onChange={e=>setForm({...form, responsable_id:e.target.value})}>
+          {/* Banner informativo sobre el responsable original (devolución) */}
+          {esDevolucion && respOriginal && (
+            <div style={{ gridColumn:'1/-1', padding:'10px 12px', background:'rgba(52,152,219,0.08)', border:'1px solid rgba(52,152,219,0.25)', borderRadius:8, fontSize:12, color:'var(--ts)' }}>
+              <strong style={{ color:'var(--blue)' }}>Responsable original:</strong> {respOriginal.nombres} {respOriginal.apellidos} ({respOriginal.cargo || 'sin cargo'})
+              <label style={{ display:'flex', alignItems:'center', gap:6, marginTop:6, cursor:'pointer', fontSize:11.5 }}>
+                <input type="checkbox" checked={hayExcepcion}
+                  onChange={e => setForm({
+                    ...form,
+                    es_excepcion: e.target.checked,
+                    responsable_id: e.target.checked ? '' : respOriginalId,
+                  })}
+                  style={{ accentColor:'var(--amber)' }}/>
+                <span>⚠ Excepción: otra persona devuelve la herramienta</span>
+              </label>
+            </div>
+          )}
+          <div><label className="flabel">Responsable {esDevolucion && hayExcepcion ? '(quien devuelve)' : ''}</label>
+            <select className="fi" value={form.responsable_id||''}
+              disabled={esDevolucion && !hayExcepcion && !!respOriginalId}
+              onChange={e=>setForm({...form, responsable_id:e.target.value})}>
               <option value="">Selecciona...</option>
               {personal.map(p => <option key={p.id} value={p.id}>{p.nombres} {p.apellidos} · {p.cargo}</option>)}
             </select>
@@ -2049,13 +2188,26 @@ function HerramientasPage({ showToast }) {
           </div>
           <div><label className="flabel">Fecha</label><input className="fi" type="date" value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
           <div><label className="flabel">Hora</label><input className="fi" type="time" value={form.hora||''} onChange={e=>setForm({...form, hora:e.target.value})}/></div>
+          {esDevolucion && hayExcepcion && (
+            <div style={{ gridColumn:'1/-1' }}>
+              <label className="flabel" style={{ color:'var(--amber)' }}>Motivo de la excepción *</label>
+              <input className="fi" value={form.motivo_excepcion||''}
+                onChange={e=>setForm({...form, motivo_excepcion:e.target.value})}
+                placeholder="Ej: el responsable original está enfermo y no pudo venir hoy"
+                style={{ borderColor:'var(--amber)' }}/>
+              <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:4 }}>
+                Esto queda registrado en auditoría y se notifica al administrador.
+              </div>
+            </div>
+          )}
         </div>
         <div style={{marginTop:14}}><label className="flabel">Observaciones</label><textarea className="fi" value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})} placeholder="Condición de la herramienta, daños, etc."/></div>
         <div className="modal-actions">
           <button className="btn btn-ghost" onClick={()=>setModal(null)}>Cancelar</button>
           <button className="btn btn-amber" onClick={handleSubmitMov}><JxIcon name="check" size={13}/>Registrar</button>
         </div>
-      </Modal>}
+      </Modal>);
+      })()}
 
       {/* Modal IA Herramientas: corriendo */}
       {iaModalH === 'running' && (
