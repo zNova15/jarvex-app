@@ -359,49 +359,103 @@ function UsuariosPage({ showToast }) {
 }
 
 // ── ROLES Y PERMISOS PAGE (matriz informativa) ────────────
-const PERM_MATRIX_MODULES = [
-  'Obras','Personal','Asistencia','Materiales','Mov. Materiales','Herramientas',
-  'Mov. Herramientas','Proveedores','Partidas','Avance','Cronograma','Costos',
-  'Incidencias','Evidencias','Reportes','Usuarios/Config'
+// Estructura por grupos para UX. PERM_MATRIX_MODULES es array plano
+// (compatible con código existente); MODULE_GROUPS define cómo
+// renderizar la tabla con separadores.
+const MODULE_GROUPS = [
+  { group: 'Operaciones diarias', modules: ['Obras','Personal','Asistencia','Materiales','Mov. Materiales','Herramientas','Mov. Herramientas','Proveedores'] },
+  { group: 'Gestión de obra', modules: ['Partidas','Insumos','Versiones presupuesto','Cronograma','Avance','Comparativo','Costos','Valorizaciones','Incidencias','Evidencias'] },
+  { group: 'Compras / Logística', modules: ['Requisiciones','Órdenes de Compra','Cotizaciones','Recepciones'] },
+  { group: 'Subcontratos', modules: ['Subcontratistas','Subcontratos','Valor. Subcontrato'] },
+  { group: 'Maquinaria', modules: ['Activos Pesados','Mantenimiento','Horas Máquina'] },
+  { group: 'SSOMA', modules: ['Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones'] },
+  { group: 'RRHH', modules: ['Contratos Laborales','Planillas','CTS','Gratificaciones'] },
+  { group: 'Contabilidad', modules: ['Empresas','Movs. Contables','Intercompany','Consolidado','Plan de Cuentas','Libro Diario','Balance General','Estado Resultados'] },
+  { group: 'Tesorería', modules: ['Cuentas Bancarias','Flujo de Caja','Flujo Proyectado','Comparativo Periodos'] },
+  { group: 'SUNAT', modules: ['Comprobantes Electrónicos','Libros Electrónicos','PLAME / T-Registro','Config SUNAT'] },
+  { group: 'Ejecutivo / Reportes', modules: ['Dashboard Ejecutivo','KPIs por Obra','Cumplimiento Cronograma','Centro Alertas','Búsqueda Global','Reportes'] },
+  { group: 'Administración', modules: ['Importar','Solicitudes Cambio','Conflictos Sync','Auditoría','Usuarios/Config'] },
 ];
+
+const PERM_MATRIX_MODULES = MODULE_GROUPS.flatMap(g => g.modules);
+
+// Helpers para clasificar módulos
+const READ_DEFAULT_RO = new Set(PERM_MATRIX_MODULES);
 
 // 'w' = write/edit, 'r' = read only, 'x' = no access
 const PERM_MATRIX = {
-  // Admin: w all
-  admin:               PERM_MATRIX_MODULES.map(()=>'w'),
-  // Gerente: w Obras, Personal, Partidas, Avance, Costos, Reportes; r rest; x Usuarios
+  // Admin: w en todo
+  admin: PERM_MATRIX_MODULES.map(() => 'w'),
+
+  // Gerente: w en gestión de obra, contabilidad, tesorería, SUNAT, ejecutivo;
+  // r en resto; x solo en Usuarios/Config
   gerente: PERM_MATRIX_MODULES.map(m => {
     if (m === 'Usuarios/Config') return 'x';
-    return ['Obras','Personal','Partidas','Avance','Costos','Reportes'].includes(m) ? 'w' : 'r';
+    const wList = [
+      'Obras','Personal','Partidas','Avance','Comparativo','Costos','Valorizaciones',
+      'Subcontratistas','Subcontratos','Valor. Subcontrato','Activos Pesados',
+      'Empresas','Movs. Contables','Intercompany','Consolidado','Plan de Cuentas',
+      'Libro Diario','Balance General','Estado Resultados',
+      'Cuentas Bancarias','Flujo de Caja','Flujo Proyectado','Comparativo Periodos',
+      'Comprobantes Electrónicos','Libros Electrónicos','PLAME / T-Registro','Config SUNAT',
+      'Dashboard Ejecutivo','KPIs por Obra','Cumplimiento Cronograma','Centro Alertas',
+      'Reportes','Auditoría','Solicitudes Cambio',
+    ];
+    return wList.includes(m) ? 'w' : 'r';
   }),
-  // Ing Residente: w Personal, Asistencia, Partidas, Avance; r Materiales, Herramientas, Costos; x Usuarios
+
+  // Ing. Residente: w en operaciones de obra, SSOMA y partidas; r resto; x Contabilidad/SUNAT/Usuarios
   ingeniero_residente: PERM_MATRIX_MODULES.map(m => {
     if (m === 'Usuarios/Config') return 'x';
-    if (['Personal','Asistencia','Partidas','Avance'].includes(m)) return 'w';
-    if (['Materiales','Herramientas','Costos'].includes(m)) return 'r';
+    if (['Empresas','Intercompany','Consolidado','Libro Diario','Balance General','Estado Resultados',
+         'Cuentas Bancarias','Flujo de Caja','Comprobantes Electrónicos','Libros Electrónicos',
+         'PLAME / T-Registro','Config SUNAT'].includes(m)) return 'x';
+    if (['Personal','Asistencia','Partidas','Insumos','Cronograma','Avance','Comparativo',
+         'Valorizaciones','Subcontratos','Valor. Subcontrato','Mantenimiento','Horas Máquina',
+         'Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones',
+         'Incidencias','Evidencias','Requisiciones','KPIs por Obra','Cumplimiento Cronograma'].includes(m)) return 'w';
     return 'r';
   }),
-  // Supervisor: w Asistencia, Mov.Materiales, Mov.Herramientas, Avance; r rest; x Usuarios, Costos
+
+  // Supervisor: w asistencia, movimientos, avance, evidencias; r resto operativo; x Contabilidad/SUNAT
   supervisor: PERM_MATRIX_MODULES.map(m => {
-    if (m === 'Usuarios/Config' || m === 'Costos') return 'x';
-    if (['Asistencia','Mov. Materiales','Mov. Herramientas','Avance'].includes(m)) return 'w';
+    if (m === 'Usuarios/Config') return 'x';
+    if (['Costos','Empresas','Intercompany','Consolidado','Libro Diario','Balance General',
+         'Estado Resultados','Plan de Cuentas','Cuentas Bancarias','Flujo de Caja',
+         'Flujo Proyectado','Comparativo Periodos','Movs. Contables','Comprobantes Electrónicos',
+         'Libros Electrónicos','PLAME / T-Registro','Config SUNAT','Planillas','CTS','Gratificaciones',
+         'Contratos Laborales'].includes(m)) return 'x';
+    if (['Asistencia','Mov. Materiales','Mov. Herramientas','Avance','Evidencias','Incidencias',
+         'Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Horas Máquina'].includes(m)) return 'w';
     return 'r';
   }),
-  // Almacenero
+
+  // Almacenero: w solo materiales/herramientas + recepciones; r requisiciones/OC; x resto
   almacenero: PERM_MATRIX_MODULES.map(m => {
-    if (['Partidas','Avance','Costos','Usuarios/Config'].includes(m)) return 'x';
-    if (['Materiales','Mov. Materiales','Herramientas','Mov. Herramientas'].includes(m)) return 'w';
-    if (['Personal','Asistencia'].includes(m)) return 'r';
-    return 'r';
+    if (m === 'Usuarios/Config') return 'x';
+    if (['Materiales','Mov. Materiales','Herramientas','Mov. Herramientas','Recepciones'].includes(m)) return 'w';
+    if (['Requisiciones','Órdenes de Compra','Cotizaciones','Proveedores','Personal','Asistencia',
+         'Activos Pesados','Mantenimiento','Horas Máquina','Evidencias','Incidencias',
+         'EPP','Charlas Seguridad'].includes(m)) return 'r';
+    return 'x';
   }),
-  // Asistente Admin
+
+  // Asistente Admin: w en personal/proveedores/asistencia/SUNAT comprobantes; r contabilidad
   asistente_admin: PERM_MATRIX_MODULES.map(m => {
-    if (m === 'Usuarios/Config' || m === 'Costos') return 'x';
-    if (['Personal','Asistencia','Proveedores'].includes(m)) return 'w';
+    if (m === 'Usuarios/Config') return 'x';
+    if (['Costos','Plan de Cuentas','Libro Diario','Balance General','Estado Resultados',
+         'Empresas','Intercompany','Config SUNAT'].includes(m)) return 'x';
+    if (['Personal','Asistencia','Proveedores','Subcontratistas','Contratos Laborales','Planillas',
+         'CTS','Gratificaciones','Comprobantes Electrónicos','PLAME / T-Registro',
+         'Movs. Contables','Cuentas Bancarias','Solicitudes Cambio','Importar'].includes(m)) return 'w';
     return 'r';
   }),
-  // Solo lectura
-  solo_lectura: PERM_MATRIX_MODULES.map(m => m === 'Usuarios/Config' ? 'x' : 'r'),
+
+  // Solo lectura: r en todo, x en admin/config/auditoría
+  solo_lectura: PERM_MATRIX_MODULES.map(m => {
+    if (['Usuarios/Config','Auditoría','Config SUNAT','Importar'].includes(m)) return 'x';
+    return 'r';
+  }),
 };
 
 // Storage local de overrides de permisos por rol (UI-level)
@@ -694,19 +748,30 @@ function RolesPage() {
             </div>
           ))}
         </div>
-        {PERM_MATRIX_MODULES.map((mod, i) => (
-          <div key={mod} style={{ display:'grid', gridTemplateColumns:`200px repeat(${todasRolKeys.length},minmax(110px,1fr))`, borderBottom:'1px solid rgba(255,255,255,0.04)', background:i%2?'rgba(0,0,0,0.06)':'transparent', alignItems:'center' }}>
-            <div style={{ padding:'10px 14px', fontSize:12.5, color:'var(--ts)' }}>{mod}</div>
-            {todasRolKeys.map(r => {
-              const ovRol = overrides[r] || {};
-              const custom = Object.prototype.hasOwnProperty.call(ovRol, mod);
+        {MODULE_GROUPS.map(grp => (
+          <React.Fragment key={grp.group}>
+            <div style={{ display:'grid', gridTemplateColumns:`200px repeat(${todasRolKeys.length},minmax(110px,1fr))`, background:'rgba(242,183,5,0.07)', borderBottom:'1px solid rgba(242,183,5,0.18)' }}>
+              <div style={{ padding:'8px 14px', fontSize:11, fontWeight:700, color:'var(--amber)', textTransform:'uppercase', letterSpacing:'.07em' }}>{grp.group}</div>
+              <div style={{ gridColumn:`2 / span ${todasRolKeys.length}` }}/>
+            </div>
+            {grp.modules.map((mod) => {
+              const i = PERM_MATRIX_MODULES.indexOf(mod);
               return (
-                <div key={r} style={{ padding:'8px 4px' }}>
-                  <Cell v={matrix[r][i]} rol={r} modIdx={i} custom={custom}/>
+                <div key={mod} style={{ display:'grid', gridTemplateColumns:`200px repeat(${todasRolKeys.length},minmax(110px,1fr))`, borderBottom:'1px solid rgba(255,255,255,0.04)', background:i%2?'rgba(0,0,0,0.06)':'transparent', alignItems:'center' }}>
+                  <div style={{ padding:'10px 14px 10px 24px', fontSize:12.5, color:'var(--ts)' }}>{mod}</div>
+                  {todasRolKeys.map(r => {
+                    const ovRol = overrides[r] || {};
+                    const custom = Object.prototype.hasOwnProperty.call(ovRol, mod);
+                    return (
+                      <div key={r} style={{ padding:'8px 4px' }}>
+                        <Cell v={matrix[r][i]} rol={r} modIdx={i} custom={custom}/>
+                      </div>
+                    );
+                  })}
                 </div>
               );
             })}
-          </div>
+          </React.Fragment>
         ))}
         <div style={{ display:'flex', gap:18, padding:'12px 16px', background:'rgba(0,0,0,0.15)', fontSize:11.5, color:'var(--tm)' }}>
           <span style={{ display:'flex', alignItems:'center', gap:6 }}><span style={{ color:'var(--green)' }}>✓</span> Edición</span>
@@ -719,10 +784,39 @@ function RolesPage() {
 }
 
 // ── CONFIGURACIÓN PAGE ────────────────────────────────────
+// Lista completa de tablas Dexie v10 (datos de negocio + sync queue).
+// Excluye tablas internas: sync_metadata, sync_conflicts, audit_log_pending,
+// change_requests_pending, auth_cache, evidencias_blobs (manejadas aparte).
 const DB_TABLES_LIST = [
+  // Maestras
   'obras','personal','materiales','herramientas','proveedores','partidas',
-  'insumos_partida','cronograma','profiles','asistencia','movimientos_materiales',
-  'movimientos_herramientas','avance_obra','incidencias','evidencias','sync_queue'
+  'insumos_partida','cronograma','profiles',
+  // Versionado de presupuesto
+  'presupuestos_versiones','partidas_versionadas','insumos_partida_versionadas',
+  'material_precios_historial',
+  // Contabilidad
+  'companies','accounting_movements','intercompany_transactions',
+  // Compras
+  'requisiciones','requisicion_items','cotizaciones','cotizacion_items',
+  'ordenes_compra','oc_items','recepciones','recepcion_items',
+  // Valorizaciones
+  'valorizaciones','valorizacion_partidas','valorizacion_adicionales',
+  // Tesorería
+  'cuentas_bancarias','movimientos_bancarios','cronograma_pagos',
+  // Activos / Maquinaria
+  'activos_pesados','horas_maquina','consumos_combustible','mantenimientos_maquinaria',
+  // SSOMA
+  'charlas_seguridad','charla_asistentes','iperc',
+  'epp_entregas','inspecciones_seguridad','capacitaciones',
+  // Subcontratos
+  'subcontratistas','subcontratos','subcontrato_valorizaciones',
+  // Planillas / RRHH
+  'personal_contrato','planillas','planilla_boletas',
+  // Operaciones diarias
+  'asistencia','movimientos_materiales','movimientos_herramientas',
+  'avance_obra','incidencias','evidencias',
+  // Cola de sync (visible para diagnóstico)
+  'sync_queue',
 ];
 
 function ConfiguracionPage({ showToast }) {

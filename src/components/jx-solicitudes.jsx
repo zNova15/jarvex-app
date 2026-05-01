@@ -10,17 +10,60 @@ const STATUS_BADGE = {
 };
 
 const TABLE_LABELS = {
+  // Maestras
   materiales: 'Materiales',
   herramientas: 'Herramientas',
   personal: 'Personal',
   proveedores: 'Proveedores',
   obras: 'Obras',
+  partidas: 'Partidas',
+  // Operaciones
   movimientos_materiales: 'Mov. Materiales',
   movimientos_herramientas: 'Mov. Herramientas',
   asistencia: 'Asistencia',
-  partidas: 'Partidas',
   avance_obra: 'Avance Obra',
   incidencias: 'Incidencias',
+  evidencias: 'Evidencias',
+  // Versionado
+  presupuestos_versiones: 'Versiones Presupuesto',
+  partidas_versionadas: 'Partidas Versionadas',
+  // Contabilidad
+  companies: 'Empresas',
+  accounting_movements: 'Movs. Contables',
+  intercompany_transactions: 'Operaciones Intercompany',
+  // Compras
+  requisiciones: 'Requisiciones',
+  requisicion_items: 'Items de Requisición',
+  cotizaciones: 'Cotizaciones',
+  ordenes_compra: 'Órdenes de Compra',
+  oc_items: 'Items de OC',
+  recepciones: 'Recepciones',
+  // Valorizaciones
+  valorizaciones: 'Valorizaciones',
+  valorizacion_partidas: 'Partidas Valorizadas',
+  // Tesorería
+  cuentas_bancarias: 'Cuentas Bancarias',
+  movimientos_bancarios: 'Movs. Bancarios',
+  cronograma_pagos: 'Cronograma Pagos',
+  // Maquinaria
+  activos_pesados: 'Activos Pesados',
+  horas_maquina: 'Horas Máquina',
+  consumos_combustible: 'Consumos Combustible',
+  mantenimientos_maquinaria: 'Mantenimientos',
+  // SSOMA
+  charlas_seguridad: 'Charlas Seguridad',
+  iperc: 'IPERC',
+  epp_entregas: 'Entregas EPP',
+  inspecciones_seguridad: 'Inspecciones SSOMA',
+  capacitaciones: 'Capacitaciones',
+  // Subcontratos
+  subcontratistas: 'Subcontratistas',
+  subcontratos: 'Subcontratos',
+  subcontrato_valorizaciones: 'Valor. Subcontrato',
+  // RRHH
+  personal_contrato: 'Contratos Laborales',
+  planillas: 'Planillas',
+  planilla_boletas: 'Boletas Planilla',
 };
 
 function fmtDate(ts) {
