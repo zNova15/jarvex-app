@@ -307,17 +307,29 @@ async function pullMasterTables() {
   }
 }
 
+// Tablas hijas/items que NO tienen columna created_by en el schema —
+// el .neq('created_by', userId) provoca HTTP 400 (column does not exist).
+// Para estas saltamos el filtro anti-self.
+const TABLES_WITHOUT_CREATED_BY = new Set([
+  'requisicion_items', 'cotizacion_items', 'oc_items', 'recepcion_items',
+  'valorizacion_partidas', 'valorizacion_adicionales',
+  'charla_asistentes',
+  'insumos_partida', 'insumos_partida_versionadas',
+]);
+
 async function pullTransactionalChanges() {
   const userId = (await supabase.auth.getUser())?.data?.user?.id;
   if (!userId) return;
 
   for (const tabla of TRANSACTIONAL_TABLES) {
     const lastSync = await getLastSync(`${tabla}_pull`);
-    const q = supabase
+    let q = supabase
       .from(tabla)
       .select('*')
-      .gte('updated_at', lastSync ?? '2020-01-01T00:00:00Z')
-      .neq('created_by', userId); // No traer lo que yo mismo creé
+      .gte('updated_at', lastSync ?? '2020-01-01T00:00:00Z');
+    if (!TABLES_WITHOUT_CREATED_BY.has(tabla)) {
+      q = q.neq('created_by', userId); // No traer lo que yo mismo creé
+    }
 
     const { data, error } = await q;
     if (error || !data?.length) continue;
