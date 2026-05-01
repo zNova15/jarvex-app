@@ -2201,6 +2201,7 @@ function PersonalPage({ showToast }) {
       dni: p.dni || '',
       cargo: p.cargo || '',
       area: p.area || '',
+      fecha_nacimiento: p.fecha_nacimiento || '',
       fecha_ingreso: p.fecha_ingreso || '',
       telefono: p.telefono || '',
       estado: p.estado || 'activo',
@@ -2239,6 +2240,7 @@ function PersonalPage({ showToast }) {
           dni,
           cargo: form.cargo || null,
           area: form.area || null,
+          fecha_nacimiento: form.fecha_nacimiento || null,
           fecha_ingreso: form.fecha_ingreso || null,
           telefono: form.telefono?.trim() || null,
           estado: form.estado || 'activo',
@@ -2255,6 +2257,7 @@ function PersonalPage({ showToast }) {
           dni,
           cargo: form.cargo || null,
           area: form.area || null,
+          fecha_nacimiento: form.fecha_nacimiento || null,
           fecha_ingreso: form.fecha_ingreso || new Date().toISOString().slice(0,10),
           telefono: form.telefono?.trim() || null,
           estado: 'activo',
@@ -2365,6 +2368,7 @@ function PersonalPage({ showToast }) {
               <option>Topografía</option><option>Administración</option>
             </select>
           </div>
+          <div><label className="flabel">Fecha de nacimiento</label><input className="fi" type="date" value={form.fecha_nacimiento||''} onChange={e=>setForm({...form, fecha_nacimiento:e.target.value})}/></div>
           <div><label className="flabel">Fecha de ingreso</label><input className="fi" type="date" value={form.fecha_ingreso||''} onChange={e=>setForm({...form, fecha_ingreso:e.target.value})}/></div>
           {editingId && (
             <div><label className="flabel">Estado</label>

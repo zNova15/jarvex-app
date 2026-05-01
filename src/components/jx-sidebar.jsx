@@ -65,8 +65,6 @@ const NAV = [
   { id: 'reportes', label: 'Reportes', icon: 'chart' },
 
   { section: 'CONTROL DE ALMACÉN' },
-  { id: 'personal', label: 'Personal', icon: 'users' },
-  { id: 'asistencia', label: 'Asistencia', icon: 'calendar' },
   { id: 'materiales', label: 'Materiales', icon: 'package' },
   { id: 'mov-materiales', label: 'Mov. de Materiales', icon: 'arrowIn' },
   { id: 'herramientas', label: 'Herramientas', icon: 'tool' },
@@ -111,6 +109,8 @@ const NAV = [
   { id: 'capacitaciones', label: 'Capacitaciones', icon: 'users' },
 
   { section: 'RRHH' },
+  { id: 'personal', label: 'Personal', icon: 'users' },
+  { id: 'asistencia', label: 'Asistencia', icon: 'calendar' },
   { id: 'personal-contratos', label: 'Contratos Laborales', icon: 'shield' },
   { id: 'planillas', label: 'Planillas / Sueldos', icon: 'user' },
   { id: 'cts', label: 'CTS', icon: 'dollar' },

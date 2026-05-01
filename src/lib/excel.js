@@ -83,13 +83,14 @@ export const MODULES = {
   personal: {
     table: 'personal',
     requiredFields: ['nombres','apellidos','dni'],
-    fields: ['nombres','apellidos','dni','cargo','area','fecha_ingreso','telefono'],
+    fields: ['nombres','apellidos','dni','cargo','area','fecha_nacimiento','fecha_ingreso','telefono'],
     transform: (row) => ({
       nombres: String(row.nombres || '').trim(),
       apellidos: String(row.apellidos || '').trim(),
       dni: String(row.dni || '').trim(),
       cargo: row.cargo || null,
       area: row.area || null,
+      fecha_nacimiento: row.fecha_nacimiento || null,
       fecha_ingreso: row.fecha_ingreso || null,
       telefono: row.telefono ? String(row.telefono) : null,
       estado: 'activo',
