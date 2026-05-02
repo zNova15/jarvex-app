@@ -847,7 +847,291 @@ export async function seedDemoData(progressCb) {
     }
   }
 
-  // 20. SETEAR OBRA ACTIVA al cargar el demo
+  // 20. INSUMOS POR PARTIDA (APU detallado)
+  log('Sembrando insumos por partida...');
+  // Plantillas de insumos típicos por categoría de partida
+  const insumosTpl = {
+    concreto: [
+      { categoria: 'material', nombre: 'Cemento Portland Tipo I', unidad: 'bls', cant: 9.7, precio: 28.50 },
+      { categoria: 'material', nombre: 'Arena gruesa', unidad: 'm³', cant: 0.55, precio: 70.00 },
+      { categoria: 'material', nombre: 'Piedra chancada 1/2"', unidad: 'm³', cant: 0.55, precio: 85.00 },
+      { categoria: 'material', nombre: 'Agua potable', unidad: 'm³', cant: 0.18, precio: 12.00 },
+      { categoria: 'mano_obra', nombre: 'Operario', unidad: 'hh', cant: 1.6, precio: 18.50 },
+      { categoria: 'mano_obra', nombre: 'Peón', unidad: 'hh', cant: 8, precio: 14.20 },
+      { categoria: 'equipo', nombre: 'Mezcladora 9 P3', unidad: 'hm', cant: 0.5, precio: 25.00 },
+    ],
+    acero: [
+      { categoria: 'material', nombre: 'Acero corrugado Fy=4200', unidad: 'kg', cant: 1.05, precio: 4.20 },
+      { categoria: 'material', nombre: 'Alambre N°16', unidad: 'kg', cant: 0.04, precio: 5.50 },
+      { categoria: 'mano_obra', nombre: 'Fierrero', unidad: 'hh', cant: 0.04, precio: 18.50 },
+    ],
+    encofrado: [
+      { categoria: 'material', nombre: 'Madera tornillo 2"x4"x10\'', unidad: 'und', cant: 0.30, precio: 22.00 },
+      { categoria: 'material', nombre: 'Triplay fenólico 18mm', unidad: 'und', cant: 0.10, precio: 165.00 },
+      { categoria: 'material', nombre: 'Clavo 3"', unidad: 'kg', cant: 0.20, precio: 5.50 },
+      { categoria: 'mano_obra', nombre: 'Carpintero', unidad: 'hh', cant: 1.0, precio: 18.50 },
+    ],
+    excavacion: [
+      { categoria: 'mano_obra', nombre: 'Peón', unidad: 'hh', cant: 1.5, precio: 14.20 },
+      { categoria: 'equipo', nombre: 'Herramientas manuales', unidad: 'hm', cant: 0.05, precio: 5.00 },
+    ],
+    ladrillo: [
+      { categoria: 'material', nombre: 'Ladrillo King Kong 18 huecos', unidad: 'mll', cant: 0.039, precio: 850.00 },
+      { categoria: 'material', nombre: 'Cemento Portland Tipo I', unidad: 'bls', cant: 0.218, precio: 28.50 },
+      { categoria: 'material', nombre: 'Arena gruesa', unidad: 'm³', cant: 0.030, precio: 70.00 },
+      { categoria: 'mano_obra', nombre: 'Operario albañil', unidad: 'hh', cant: 0.80, precio: 18.50 },
+      { categoria: 'mano_obra', nombre: 'Peón', unidad: 'hh', cant: 0.40, precio: 14.20 },
+    ],
+    default: [
+      { categoria: 'mano_obra', nombre: 'Operario', unidad: 'hh', cant: 0.5, precio: 18.50 },
+      { categoria: 'mano_obra', nombre: 'Peón', unidad: 'hh', cant: 0.5, precio: 14.20 },
+    ],
+  };
+  const matchTpl = (nombre) => {
+    const n = nombre.toLowerCase();
+    if (n.includes('concreto')) return insumosTpl.concreto;
+    if (n.includes('acero') || n.includes('refuerzo')) return insumosTpl.acero;
+    if (n.includes('encofrado')) return insumosTpl.encofrado;
+    if (n.includes('excavac') || n.includes('limpieza') || n.includes('movim. tierra')) return insumosTpl.excavacion;
+    if (n.includes('ladrillo') || n.includes('muro')) return insumosTpl.ladrillo;
+    return insumosTpl.default;
+  };
+  for (const part of partidaIds) {
+    const tpl = matchTpl(part.nombre);
+    for (const ins of tpl) {
+      const cantPres = +(part.metrado * ins.cant).toFixed(2);
+      const cantUsada = +(cantPres * (part.avance || 0) * rndF(0.92, 1.08)).toFixed(2);
+      await db.insumos_partida.add({
+        ...baseFields(), id: newId(),
+        obra_id: obraPrincipal.id,
+        partida_id: part.id,
+        codigo_insumo: ins.nombre.slice(0, 12).toUpperCase().replace(/\s+/g, ''),
+        nombre_insumo: ins.nombre,
+        tipo_insumo: ins.categoria, // 'material' | 'mano_obra' | 'equipo'
+        unidad: ins.unidad,
+        cantidad_presupuestada: cantPres,
+        cantidad_real_usada: cantUsada,
+        precio_presupuestado: ins.precio,
+        precio_real: ins.precio,
+      });
+    }
+  }
+
+  // 21. VERSIONES DE PRESUPUESTO (2 versiones de la obra principal)
+  log('Sembrando versiones de presupuesto...');
+  const totalPartidas = partidaIds.reduce((s, p) => s + (p.metrado * p.precio), 0);
+  const versionId1 = newId();
+  await db.presupuestos_versiones.add({
+    ...baseFields(), id: versionId1,
+    obra_id: obraPrincipal.id,
+    numero: 1,
+    nombre: 'V1 — Presupuesto Inicial Contractual',
+    tipo: 'inicial',
+    fecha: dt(-90),
+    monto_total: totalPartidas,
+    bloqueada: true,
+    notas: 'Versión firmada con el cliente. Línea base contractual.',
+  });
+  const versionId2 = newId();
+  await db.presupuestos_versiones.add({
+    ...baseFields(), id: versionId2,
+    obra_id: obraPrincipal.id,
+    numero: 2,
+    nombre: 'V2 — Adicional N° 1 (cambio en losas)',
+    tipo: 'adicional',
+    fecha: dt(-30),
+    monto_total: +(totalPartidas * 1.045).toFixed(2),
+    bloqueada: false,
+    notas: 'Adicional aprobado: refuerzo en losas niveles 4-5 por cambio de uso a oficinas.',
+  });
+  // Snapshot de partidas en V1 (las primeras 12)
+  for (const part of partidaIds.slice(0, 12)) {
+    await db.partidas_versionadas.add({
+      ...baseFields(), id: newId(),
+      version_id: versionId1,
+      obra_id: obraPrincipal.id,
+      codigo: part.codigo,
+      nombre: part.nombre,
+      unidad: part.unidad,
+      metrado: part.metrado,
+      precio_unitario: part.precio,
+      costo_total: part.metrado * part.precio,
+    });
+  }
+  // V2: las mismas + 2 con monto modificado
+  for (const part of partidaIds.slice(0, 12)) {
+    const factor = part.codigo.startsWith('02.01.04') ? 1.45 : (part.codigo.startsWith('02.02') ? 1.20 : 1.0);
+    await db.partidas_versionadas.add({
+      ...baseFields(), id: newId(),
+      version_id: versionId2,
+      obra_id: obraPrincipal.id,
+      codigo: part.codigo,
+      nombre: part.nombre,
+      unidad: part.unidad,
+      metrado: part.metrado * factor,
+      precio_unitario: part.precio,
+      costo_total: part.metrado * part.precio * factor,
+    });
+  }
+
+  // 22. COTIZACIONES (entre requisiciones y OC) — 2 por requisición aprobada
+  log('Sembrando cotizaciones...');
+  const reqsAprobadas = await db.requisiciones.where('obra_id').equals(obraPrincipal.id).filter(r => r.demo === true && (r.estado === 'cotizando' || r.estado === 'aprobada')).toArray();
+  for (const req of reqsAprobadas) {
+    const reqItems = await db.requisicion_items.where('requisicion_id').equals(req.id).filter(x => x.demo).toArray();
+    if (!reqItems.length) continue;
+    // 2 cotizaciones por requisición de 2 proveedores distintos
+    const provsCot = [...proveedorIds].sort(() => Math.random() - 0.5).slice(0, 2);
+    for (let pIdx = 0; pIdx < provsCot.length; pIdx++) {
+      const cotId = newId();
+      const factor = pIdx === 0 ? 1.0 : rndF(0.92, 1.12);
+      let totalCot = 0;
+      for (const it of reqItems) {
+        const precio = +(Number(it.precio_estimado || 0) * factor).toFixed(2);
+        totalCot += precio * Number(it.cantidad || 0);
+      }
+      await db.cotizaciones.add({
+        ...baseFields(), id: cotId,
+        requisicion_id: req.id,
+        proveedor_id: provsCot[pIdx].id,
+        codigo: `COT-${cotId.slice(0, 6).toUpperCase()}`,
+        fecha: dt(rnd(-20, -3)),
+        validez_dias: 15,
+        moneda: 'PEN',
+        subtotal: +(totalCot).toFixed(2),
+        igv: +(totalCot * 0.18).toFixed(2),
+        total: +(totalCot * 1.18).toFixed(2),
+        estado: pIdx === 0 ? 'recibida' : 'recibida',
+        notas: pIdx === 0 ? 'Mejor precio' : 'Alternativa',
+      });
+      for (const it of reqItems) {
+        await db.cotizacion_items.add({
+          ...baseFields(), id: newId(),
+          cotizacion_id: cotId,
+          requisicion_item_id: it.id,
+          descripcion: it.descripcion,
+          unidad: it.unidad,
+          cantidad: it.cantidad,
+          precio_unitario: +(Number(it.precio_estimado || 0) * factor).toFixed(2),
+          subtotal: +(Number(it.cantidad || 0) * Number(it.precio_estimado || 0) * factor).toFixed(2),
+        });
+      }
+    }
+  }
+
+  // 23. SUBCONTRATO VALORIZACIONES (1 por subcontrato)
+  log('Sembrando valorizaciones de subcontratos...');
+  const subcs = await db.subcontratos.where('obra_id').equals(obraPrincipal.id).filter(s => s.demo).toArray();
+  for (const [idx, sc] of subcs.entries()) {
+    const valSc = +(Number(sc.monto || 0) * 0.30).toFixed(2);
+    const retencion = +(valSc * 0.05).toFixed(2);
+    await db.subcontrato_valorizaciones.add({
+      ...baseFields(), id: newId(),
+      subcontrato_id: sc.id,
+      numero: 1,
+      periodo_anio: new Date().getFullYear(),
+      periodo_mes: new Date().getMonth() + 1,
+      monto_avance: valSc,
+      retencion_acumulada: retencion,
+      monto_neto: +(valSc - retencion).toFixed(2),
+      estado: idx === 0 ? 'aprobada' : 'presentada',
+      notas: 'Valorización mensual del subcontratista',
+    });
+  }
+
+  // 24. EVIDENCIAS (fotos / observaciones por partida y obra)
+  log('Sembrando evidencias...');
+  const evidenciasTipo = [
+    ['avance_obra', 'Vaciado columnas C1-C8 nivel 3', 'Vaciado completo realizado en jornada matutina'],
+    ['avance_obra', 'Encofrado losa nivel 4 — 60% completo', 'Pendiente cierre lateral este'],
+    ['incidencia', 'Demora entrega cemento Pacasmayo', 'Proveedor reporta 2 días de atraso'],
+    ['ssoma', 'Charla seguridad inicio jornada', '12 trabajadores presentes'],
+    ['avance_obra', 'Acero columnas listo para vaciado', 'Inspección OK por residente'],
+    ['materiales', 'Recepción de fierro 1/2"', 'Conforme a OC-2026-0002'],
+    ['ssoma', 'Inspección de andamios nivel 5', 'Todos en buenas condiciones'],
+    ['evidencia_general', 'Foto general avance fachada', 'Mes 3 de obra'],
+  ];
+  for (const [modulo, titulo, descripcion] of evidenciasTipo) {
+    await db.evidencias.add({
+      ...baseFields(), id: newId(),
+      obra_id: obraPrincipal.id,
+      modulo_relacionado: modulo,
+      titulo,
+      descripcion,
+      fecha: dt(rnd(-30, -1)),
+      autor_id: pick(personalObra).id,
+      tipo_archivo: 'imagen',
+      tamano_bytes: rnd(150_000, 800_000),
+      // No adjunta archivo binario — solo metadata
+    });
+  }
+
+  // 25. RECEPCIONES con items (para OC recibidas)
+  log('Sembrando recepciones detalladas...');
+  const ocsRecibidas = await db.ordenes_compra.where('obra_id').equals(obraPrincipal.id).filter(o => o.demo && (o.estado === 'recibida' || o.estado === 'recibida_parcial')).toArray();
+  for (const oc of ocsRecibidas) {
+    const ocItems = await db.oc_items.where('orden_compra_id').equals(oc.id).filter(x => x.demo).toArray();
+    if (!ocItems.length) continue;
+    // Buscar la recepción ya creada o crear una si no existe
+    const existing = await db.recepciones.where('orden_compra_id').equals(oc.id).filter(r => r.demo).toArray();
+    let recId = existing[0]?.id;
+    if (!recId) {
+      recId = newId();
+      await db.recepciones.add({
+        ...baseFields(), id: recId,
+        orden_compra_id: oc.id,
+        fecha: dt(rnd(-25, 0)),
+        observaciones: 'Recibido conforme · todos los items',
+      });
+    }
+    // Crear recepcion_items
+    for (const it of ocItems) {
+      await db.recepcion_items.add({
+        ...baseFields(), id: newId(),
+        recepcion_id: recId,
+        oc_item_id: it.id,
+        material_id: it.material_id,
+        cantidad_recibida: oc.estado === 'recibida_parcial' ? +(Number(it.cantidad) * 0.6).toFixed(2) : Number(it.cantidad),
+        observaciones: '',
+      });
+    }
+  }
+
+  // 26. COMPROBANTES ELECTRÓNICOS (facturas demo)
+  log('Sembrando comprobantes electrónicos...');
+  const comprobantesDemo = [
+    { tipo: '01', serie: 'F001', desc: 'Valorización de obra N°1', cliente: 'Inmobiliaria Demo S.A.C.', cliente_ruc: '20512345001', monto: 485000 },
+    { tipo: '01', serie: 'F001', desc: 'Valorización de obra N°2', cliente: 'Inmobiliaria Demo S.A.C.', cliente_ruc: '20512345001', monto: 532000 },
+    { tipo: '01', serie: 'F001', desc: 'Adicional N°1 — refuerzo losas', cliente: 'Inmobiliaria Demo S.A.C.', cliente_ruc: '20512345001', monto: 215000 },
+    { tipo: '03', serie: 'B001', desc: 'Servicio de excavación adicional', cliente: 'María Pérez García', cliente_ruc: '42158736', monto: 4500 },
+  ];
+  for (let i = 0; i < comprobantesDemo.length; i++) {
+    const c = comprobantesDemo[i];
+    const subtotal = +(c.monto / 1.18).toFixed(2);
+    const igv = +(c.monto - subtotal).toFixed(2);
+    await db.accounting_movements.add({
+      ...baseFields(), id: newId(),
+      company_id: empresaIds[0],
+      obra_id: obraPrincipal.id,
+      type: 'income',
+      date: dt(rnd(-60, -5)),
+      amount: c.monto,
+      subtotal, igv_amount: igv,
+      currency: 'PEN',
+      payment_status: i < 2 ? 'paid' : 'pending',
+      category: 'comprobante_electronico',
+      description: c.desc,
+      third_party_name: c.cliente,
+      third_party_ruc: c.cliente_ruc,
+      document_type: c.tipo === '01' ? 'factura' : 'boleta',
+      document_number: `${c.serie}-${String(i + 1).padStart(8, '0')}`,
+      tipo_comprobante: c.tipo, // factura electrónica
+      // Para que aparezcan en /comprobantes (filtra por type='income' generalmente)
+      meta: JSON.stringify({ items: [{ desc: c.desc, cantidad: 1, precio_unitario: subtotal }] }),
+    });
+  }
+
+  // 27. SETEAR OBRA ACTIVA al cargar el demo
   try {
     if (window.__setObraActivaId) window.__setObraActivaId(obraActivaId);
     window.dispatchEvent(new CustomEvent('obra_activa_change'));

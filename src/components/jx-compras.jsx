@@ -72,10 +72,29 @@ function RequisicionesPage({ showToast }) {
     if (filtroEstado !== 'todos') f = f.filter(r => r.estado === filtroEstado);
     if (busqueda) {
       const q = busqueda.toLowerCase();
-      f = f.filter(r => (r.codigo||'').toLowerCase().includes(q) || (r.notas||'').toLowerCase().includes(q));
+      f = f.filter(r =>
+        (r.codigo||'').toLowerCase().includes(q) ||
+        (r.notas||'').toLowerCase().includes(q) ||
+        (r.descripcion||'').toLowerCase().includes(q)
+      );
     }
     return f.sort((a,b) => (b.fecha||'').localeCompare(a.fecha||''));
   }, [requisiciones, filtroEstado, busqueda]);
+
+  // Conteo de items por requisición (carga async desde Dexie)
+  const [itemsCountById, setItemsCountById] = uS({});
+  uE(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const allItems = await window.__db.requisicion_items.filter(x => !x.deleted_at).toArray();
+        const map = {};
+        for (const it of allItems) map[it.requisicion_id] = (map[it.requisicion_id] || 0) + 1;
+        if (!cancelled) setItemsCountById(map);
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [requisiciones]);
 
   const nextCodigo = uM(() => {
     const yr = new Date().getFullYear();
@@ -241,23 +260,38 @@ function RequisicionesPage({ showToast }) {
           <div style={{ overflowX:'auto' }}>
             <table className="tbl">
               <thead><tr>
-                <th>Código</th><th>Fecha</th><th>Requerida</th>
-                <th>Prioridad</th><th>Estado</th><th>Notas</th>
+                <th>Código</th>
+                <th>Descripción</th>
+                <th style={{ textAlign:'center' }}>Items</th>
+                <th>Fecha</th>
+                <th>Requerida</th>
+                <th>Prioridad</th>
+                <th>Estado</th>
+                <th>Notas / Motivo</th>
                 <th style={{ textAlign:'center' }}>Acciones</th>
               </tr></thead>
               <tbody>
-                {sorted.map(r => (
+                {sorted.map(r => {
+                  const itemsCount = itemsCountById?.[r.id] ?? 0;
+                  return (
                   <tr key={r.id}>
                     <td className="col-m" style={{ fontFamily:'monospace' }}><strong>{r.codigo || '—'}</strong></td>
+                    <td className="col-p" style={{ maxWidth:280 }}>
+                      <div style={{ fontWeight:600, color:'var(--tp)' }}>{r.descripcion || <span style={{ color:'var(--tm)' }}>(sin descripción)</span>}</div>
+                      {r.solicitante_nombre && <div style={{ fontSize:10.5, color:'var(--tm)' }}>Solicitó: {r.solicitante_nombre}</div>}
+                    </td>
+                    <td style={{ textAlign:'center' }}>
+                      <span className="badge b-blue">{itemsCount} {itemsCount === 1 ? 'item' : 'items'}</span>
+                    </td>
                     <td className="col-m">{r.fecha}</td>
-                    <td className="col-m">{r.fecha_requerida || '—'}</td>
-                    <td><span style={{ color: PRIORIDAD_COLOR[r.prioridad], fontWeight:600 }}>{r.prioridad}</span></td>
+                    <td className="col-m">{r.fecha_requerida || r.fecha_necesidad || '—'}</td>
+                    <td><span style={{ color: PRIORIDAD_COLOR[r.prioridad], fontWeight:600, textTransform:'uppercase', fontSize:11 }}>{r.prioridad}</span></td>
                     <td>
                       <select className="fi" value={r.estado} onChange={e=>cambiarEstado(r, e.target.value)} style={{ fontSize:11, padding:'4px 6px' }}>
                         {Object.entries(REQ_ESTADO_LABEL).map(([k,v]) => <option key={k} value={k}>{v}</option>)}
                       </select>
                     </td>
-                    <td style={{ fontSize:11, maxWidth:280 }}>{r.notas || '—'}</td>
+                    <td style={{ fontSize:11, maxWidth:280, whiteSpace:'normal' }}>{r.notas || '—'}</td>
                     <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
                       <button className="btn btn-ghost btn-xs" title="Ver / Editar" onClick={()=>verDetalle(r)}>
                         <JxIcon name="eye" size={11}/>
@@ -280,7 +314,8 @@ function RequisicionesPage({ showToast }) {
                       )}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -403,10 +438,29 @@ function OrdenesCompraPage({ showToast }) {
     if (filtroEstado !== 'todos') f = f.filter(o => o.estado === filtroEstado);
     if (busqueda) {
       const q = busqueda.toLowerCase();
-      f = f.filter(o => (o.codigo||'').toLowerCase().includes(q));
+      f = f.filter(o =>
+        (o.codigo||'').toLowerCase().includes(q) ||
+        (o.proveedor_nombre||'').toLowerCase().includes(q) ||
+        (o.numero_oc||'').toLowerCase().includes(q)
+      );
     }
     return f.sort((a,b) => (b.fecha||'').localeCompare(a.fecha||''));
   }, [ocs, filtroEstado, busqueda]);
+
+  // Conteo de items por OC (carga async)
+  const [ocItemsCount, setOcItemsCount] = uS({});
+  uE(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const all = await window.__db.oc_items.filter(x => !x.deleted_at).toArray();
+        const map = {};
+        for (const it of all) map[it.orden_compra_id] = (map[it.orden_compra_id] || 0) + 1;
+        if (!cancelled) setOcItemsCount(map);
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [ocs]);
 
   const lookupProv = (id) => proveedores.find(p => p.id === id);
 
@@ -584,18 +638,32 @@ function OrdenesCompraPage({ showToast }) {
           <div style={{ overflowX:'auto' }}>
             <table className="tbl">
               <thead><tr>
-                <th>Código</th><th>Fecha</th><th>Proveedor</th>
-                <th>Entrega</th><th style={{ textAlign:'right' }}>Monto</th>
-                <th>Estado</th><th style={{ textAlign:'center' }}>Acciones</th>
+                <th>Código</th>
+                <th>Proveedor</th>
+                <th style={{ textAlign:'center' }}>Items</th>
+                <th>Fecha</th>
+                <th>Entrega</th>
+                <th style={{ textAlign:'right' }}>Monto</th>
+                <th>Estado</th>
+                <th style={{ textAlign:'center' }}>Acciones</th>
               </tr></thead>
               <tbody>
-                {sorted.map(oc => (
+                {sorted.map(oc => {
+                  const itemsN = ocItemsCount[oc.id] ?? 0;
+                  const provLabel = lookupProv(oc.proveedor_id)?.razon_social || oc.proveedor_nombre || '—';
+                  return (
                   <tr key={oc.id}>
-                    <td className="col-m" style={{ fontFamily:'monospace' }}><strong>{oc.codigo}</strong></td>
+                    <td className="col-m" style={{ fontFamily:'monospace' }}>
+                      <strong>{oc.codigo || oc.numero_oc || '—'}</strong>
+                      {oc.numero_oc && oc.numero_oc !== oc.codigo && <div style={{ fontSize:10, color:'var(--tm)' }}>{oc.numero_oc}</div>}
+                    </td>
+                    <td className="col-p" style={{ maxWidth:240, fontWeight:600, color:'var(--tp)' }}>{provLabel}</td>
+                    <td style={{ textAlign:'center' }}>
+                      <span className="badge b-blue">{itemsN} {itemsN === 1 ? 'item' : 'items'}</span>
+                    </td>
                     <td className="col-m">{oc.fecha}</td>
-                    <td className="col-p">{lookupProv(oc.proveedor_id)?.razon_social || '—'}</td>
                     <td className="col-m">{oc.fecha_entrega || '—'}</td>
-                    <td style={{ textAlign:'right', fontWeight:700, color:'var(--blue)' }} className="col-num">{fmtS(oc.monto_total)}</td>
+                    <td style={{ textAlign:'right', fontWeight:700, color:'var(--blue)' }} className="col-num">{fmtS(oc.monto_total || oc.total)}</td>
                     <td>
                       <select className="fi" value={oc.estado} onChange={e=>cambiarEstado(oc, e.target.value)} style={{ fontSize:11, padding:'4px 6px' }}>
                         {Object.entries(OC_ESTADO_LABEL).map(([k,v]) => <option key={k} value={k}>{v}</option>)}
@@ -621,7 +689,8 @@ function OrdenesCompraPage({ showToast }) {
                       </button>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

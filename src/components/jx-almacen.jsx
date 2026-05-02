@@ -117,7 +117,8 @@ function MaterialesPage({ showToast }) {
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
   const [q, setQ] = uS('');
-  const [modal, setModal] = uS(null); // 'ingreso' | 'salida' | 'nuevo' | 'editar' | 'sync'
+  const [modal, setModal] = uS(null); // 'ingreso' | 'salida' | 'nuevo' | 'editar' | 'sync' | 'reposicion'
+  const [reposicionForm, setReposicionForm] = uS(null); // { mat, cantidad, motivo, prioridad }
   const [editingId, setEditingId] = uS(null); // id del material en edición
   const [obraId, setObraId] = uS(null);
   const [requestTarget, setRequestTarget] = uS(null); // material para "Solicitar Cambio"
@@ -898,54 +899,81 @@ function MaterialesPage({ showToast }) {
   };
 
   // Crear requisición rápida desde alerta de stock — 1 click para almacenero
-  const solicitarReposicion = async (m) => {
-    if (!confirm(`¿Crear requisición de reposición para "${m.nombre_material}"?\n\nStock actual: ${m.stock_actual} ${m.unidad}\nStock mínimo: ${m.stock_minimo} ${m.unidad}\n\nLa cantidad sugerida será (mínimo × 2 − stock actual). Podés editarla en el módulo Requisiciones.`)) return;
+  const solicitarReposicion = (m) => {
+    // Abre modal in-app para confirmar y permitir editar cantidad + motivo
+    const cantidadSugerida = Math.max(0, Number(m.stock_minimo || 0) * 2 - Number(m.stock_actual || 0));
+    const prioridad = m.alerta === 'agotado' || m.alerta === 'sin_stock' ? 'urgente'
+                    : m.alerta === 'critico' ? 'alta' : 'media';
+    setReposicionForm({
+      mat: m,
+      cantidad: cantidadSugerida.toFixed(2),
+      motivo: m.alerta === 'agotado' || m.alerta === 'sin_stock'
+        ? `Material AGOTADO. Necesario para continuar con obra. Stock actual: ${m.stock_actual} ${m.unidad}, mínimo: ${m.stock_minimo} ${m.unidad}.`
+        : m.alerta === 'critico'
+          ? `Stock CRÍTICO (≤50% del mínimo). Prevenir desabastecimiento. Stock: ${m.stock_actual}/${m.stock_minimo} ${m.unidad}.`
+          : `Stock alcanzó el mínimo. Reposición preventiva. Stock: ${m.stock_actual}/${m.stock_minimo} ${m.unidad}.`,
+      prioridad,
+      busy: false,
+    });
+    setModal('reposicion');
+  };
+
+  const confirmarReposicion = async () => {
+    if (!reposicionForm) return;
+    const { mat: m, cantidad, motivo, prioridad } = reposicionForm;
+    const cantNum = Number(cantidad);
+    if (!Number.isFinite(cantNum) || cantNum <= 0) {
+      showToast('La cantidad debe ser mayor a 0', 'red'); return;
+    }
+    if (!motivo?.trim() || motivo.trim().length < 10) {
+      showToast('El motivo es obligatorio (mínimo 10 caracteres)', 'red'); return;
+    }
+    setReposicionForm(prev => ({ ...prev, busy: true }));
     try {
-      const cantidadSugerida = Math.max(0, Number(m.stock_minimo || 0) * 2 - Number(m.stock_actual || 0));
       const now = new Date().toISOString();
       const userIdLocal = auth?.profile?.id ?? 'offline';
-      // Crear cabecera de requisición
       const reqId = window.__newId();
-      // Buscar siguiente correlativo de la obra
       const reqsObra = await window.__db.requisiciones.where('obra_id').equals(obraId).filter(r=>!r.deleted_at).toArray();
       const sigNum = (reqsObra.length || 0) + 1;
       const codigo = `REQ-${new Date().getFullYear()}-${String(sigNum).padStart(4, '0')}`;
+      const descripcionLegible = `Reposición de stock · ${m.nombre_material} (${cantNum} ${m.unidad})`;
       await window.__db.requisiciones.add({
         id: reqId, obra_id: obraId,
         codigo, fecha: now.slice(0,10),
-        descripcion: `Reposición automática · ${m.nombre_material}`,
-        prioridad: m.alerta === 'agotado' || m.alerta === 'sin_stock' ? 'urgente'
-                 : m.alerta === 'critico' ? 'alta' : 'media',
-        estado: 'borrador',
+        descripcion: descripcionLegible,
+        prioridad,
+        estado: 'solicitada',
         solicitante_id: userIdLocal,
-        notas: `Generada desde alerta de stock. Mínimo: ${m.stock_minimo}, actual: ${m.stock_actual}`,
+        notas: motivo.trim(),
         created_by: userIdLocal, updated_by: userIdLocal,
         created_at: now, updated_at: now,
         version: 1, sync_status: 'pending_create', last_synced_at: null,
         idempotency_key: `${userIdLocal}_requisiciones_${reqId}`,
       });
-      // Item de requisición con el material
       const itemId = window.__newId();
       await window.__db.requisicion_items.add({
         id: itemId, requisicion_id: reqId,
         material_id: m.id,
         descripcion: m.nombre_material,
         unidad: m.unidad,
-        cantidad: cantidadSugerida,
+        cantidad: cantNum,
         precio_estimado: Number(m.precio_unitario_estimado || 0),
-        notas: `Stock actual ${m.stock_actual} / mínimo ${m.stock_minimo}`,
+        notas: `Stock actual: ${m.stock_actual} ${m.unidad} / mínimo: ${m.stock_minimo} ${m.unidad}`,
         created_at: now, updated_at: now,
         sync_status: 'pending_create',
         idempotency_key: `${userIdLocal}_req_items_${itemId}`,
       });
-      try { await window.__logAudit?.({ action:'insert', table:'requisiciones', recordId:reqId, newData:{ codigo, material: m.nombre_material }, reason:'Reposición automática desde alerta stock' }); } catch {}
+      try { await window.__logAudit?.({ action:'insert', table:'requisiciones', recordId:reqId, newData:{ codigo, material: m.nombre_material, cantidad: cantNum }, reason: motivo.trim() }); } catch {}
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'requisiciones' } })); } catch {}
       try { window.dispatchEvent(new CustomEvent('jarvex_new_notif', {
-        detail: { tipo: 'requisicion', titulo: `Requisición ${codigo} creada`, descripcion: `Reposición de ${m.nombre_material} · ${cantidadSugerida.toFixed(1)} ${m.unidad}` }
+        detail: { tipo: 'requisicion', titulo: `Requisición ${codigo} creada (${prioridad})`, descripcion: descripcionLegible }
       })); } catch {}
-      showToast(`✓ Requisición ${codigo} creada — revísala en módulo Requisiciones`, 'green');
+      showToast(`✓ Requisición ${codigo} creada — ${descripcionLegible}`, 'green');
+      setModal(null);
+      setReposicionForm(null);
     } catch (e) {
       showToast('Error al crear requisición: ' + (e.message||e), 'red');
+      setReposicionForm(prev => ({ ...prev, busy: false }));
     }
   };
 
@@ -1616,6 +1644,60 @@ function MaterialesPage({ showToast }) {
         </div>
       </Modal>);
       })()}
+
+      {/* Modal Solicitar Reposición — con cantidad editable + motivo obligatorio */}
+      {modal === 'reposicion' && reposicionForm && (
+        <Modal title={`Solicitar reposición · ${reposicionForm.mat.nombre_material}`} icon="alert" onClose={()=>{ setModal(null); setReposicionForm(null); }} wide>
+          <div style={{ marginBottom:14, padding:'10px 12px', background: reposicionForm.prioridad === 'urgente' ? 'rgba(231,76,60,0.10)' : 'rgba(242,183,5,0.10)', border:`1px solid ${reposicionForm.prioridad === 'urgente' ? 'rgba(231,76,60,0.4)' : 'rgba(242,183,5,0.4)'}`, borderRadius:8, fontSize:12.5, color:'var(--ts)' }}>
+            <strong style={{ color: reposicionForm.prioridad === 'urgente' ? 'var(--red)' : 'var(--amber)' }}>
+              Prioridad {reposicionForm.prioridad.toUpperCase()}
+            </strong> ·
+            Stock actual: <strong>{reposicionForm.mat.stock_actual} {reposicionForm.mat.unidad}</strong> ·
+            Mínimo: <strong>{reposicionForm.mat.stock_minimo} {reposicionForm.mat.unidad}</strong>
+          </div>
+          <div className="g2">
+            <div>
+              <label className="flabel">Cantidad a solicitar *</label>
+              <input className="fi" type="number" min="0.01" step="0.01"
+                value={reposicionForm.cantidad}
+                onChange={e=>setReposicionForm(prev => ({ ...prev, cantidad: e.target.value }))}/>
+              <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:4 }}>
+                Sugerida: 2× el mínimo menos stock actual = {(Math.max(0, Number(reposicionForm.mat.stock_minimo || 0) * 2 - Number(reposicionForm.mat.stock_actual || 0))).toFixed(2)} {reposicionForm.mat.unidad}
+              </div>
+            </div>
+            <div>
+              <label className="flabel">Prioridad</label>
+              <select className="fi" value={reposicionForm.prioridad}
+                onChange={e=>setReposicionForm(prev => ({ ...prev, prioridad: e.target.value }))}>
+                <option value="baja">Baja</option>
+                <option value="media">Media</option>
+                <option value="alta">Alta</option>
+                <option value="urgente">Urgente</option>
+              </select>
+            </div>
+            <div style={{ gridColumn: '1 / -1' }}>
+              <label className="flabel">Motivo / Justificación *</label>
+              <textarea className="fi" rows={3}
+                value={reposicionForm.motivo}
+                onChange={e=>setReposicionForm(prev => ({ ...prev, motivo: e.target.value }))}
+                placeholder="Mínimo 10 caracteres. Ej: necesario para vaciado losa nivel 4 esta semana"
+                style={{ minHeight:80 }}/>
+              <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:4 }}>
+                Esto se guarda como nota de la requisición y queda visible para el aprobador.
+              </div>
+            </div>
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={()=>{ setModal(null); setReposicionForm(null); }} disabled={reposicionForm.busy}>
+              Cancelar
+            </button>
+            <button className="btn btn-amber" onClick={confirmarReposicion} disabled={reposicionForm.busy}>
+              <JxIcon name="check" size={13}/>
+              {reposicionForm.busy ? 'Creando…' : 'Crear requisición'}
+            </button>
+          </div>
+        </Modal>
+      )}
 
       {requestTarget && (
         <RequestChangeModal
