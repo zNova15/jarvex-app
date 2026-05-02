@@ -4,6 +4,286 @@ const { useState: uSM, useMemo: uMM, useEffect: uEM } = React;
 // Helper formato moneda
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 
+const JxIconRF = (props) => {
+  const I = window.JxIcon;
+  return I ? <I {...props}/> : null;
+};
+
+// ═══════════════════════════════════════════════════════════════════
+// VISUALIZADOR DE REGISTRO FÍSICO
+// Modal compartido para movimientos de materiales y herramientas.
+// Lee evidencias con modulo_relacionado='movimientos_materiales' o
+// 'movimientos_herramientas', muestra thumbnails y permite:
+//   - Filtrar por fecha y por nombre (responsable o material/herramienta)
+//   - Click en thumbnail → ver foto en grande
+//   - Almacenero/operador: 'Solicitar cambio' (crea change_request)
+//   - Admin: ver todo + ir directo al movimiento para editar
+// ═══════════════════════════════════════════════════════════════════
+function RegistroFisicoModal({ modulo, obraId, onClose, showToast }) {
+  const auth = window.__useAuth?.();
+  const rol = auth?.profile?.rol || '';
+  const isAdmin = rol === 'admin';
+  const [evidencias, setEvidencias] = uSM([]);
+  const [movs, setMovs] = uSM([]);
+  const [items, setItems] = uSM([]); // materiales / herramientas
+  const [personal, setPersonal] = uSM([]);
+  const [thumbs, setThumbs] = uSM({}); // { evidId: dataUrl }
+  const [fDesde, setFDesde] = uSM('');
+  const [fHasta, setFHasta] = uSM('');
+  const [fNombre, setFNombre] = uSM('');
+  const [photoOpen, setPhotoOpen] = uSM(null); // dataUrl
+  const [solicitudOpen, setSolicitudOpen] = uSM(null); // {evidencia, mov, motivo}
+  const [loading, setLoading] = uSM(true);
+
+  const tabla = modulo === 'movimientos_materiales' ? 'movimientos_materiales' : 'movimientos_herramientas';
+  const itemsTabla = modulo === 'movimientos_materiales' ? 'materiales' : 'herramientas';
+  const itemNameField = modulo === 'movimientos_materiales' ? 'nombre_material' : 'nombre_herramienta';
+
+  uEM(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [evs, allMovs, allItems, allPers] = await Promise.all([
+          window.__db.evidencias.filter(e => !e.deleted_at && e.modulo_relacionado === modulo && (!obraId || e.obra_id === obraId)).toArray(),
+          window.__db[tabla].filter(m => !m.deleted_at && (!obraId || m.obra_id === obraId)).toArray(),
+          window.__db[itemsTabla].filter(x => !x.deleted_at).toArray(),
+          window.__db.personal.filter(p => !p.deleted_at).toArray(),
+        ]);
+        if (cancelled) return;
+        setEvidencias(evs.sort((a, b) => (b.fecha || '').localeCompare(a.fecha || '')));
+        setMovs(allMovs);
+        setItems(allItems);
+        setPersonal(allPers);
+        // Cargar thumbnails (limit 30 para no saturar)
+        const thumbsMap = {};
+        for (const ev of evs.slice(0, 30)) {
+          try {
+            const blobEntry = await window.__db.evidencias_blobs.get(ev.id);
+            if (blobEntry?.blob) thumbsMap[ev.id] = URL.createObjectURL(blobEntry.blob);
+          } catch {}
+        }
+        if (!cancelled) setThumbs(thumbsMap);
+      } catch (e) { console.error('[regfisico]', e); }
+      finally { if (!cancelled) setLoading(false); }
+    })();
+    return () => {
+      cancelled = true;
+      // Revoke object URLs
+      Object.values(thumbs).forEach(u => { try { URL.revokeObjectURL(u); } catch {} });
+    };
+  }, [modulo, obraId]);
+
+  const lookup = (arr, id, field) => arr.find(x => x.id === id)?.[field] || '—';
+
+  const filtered = uMM(() => {
+    return evidencias.filter(ev => {
+      if (fDesde && (ev.fecha || '') < fDesde) return false;
+      if (fHasta && (ev.fecha || '') > fHasta) return false;
+      if (fNombre) {
+        const q = fNombre.toLowerCase();
+        const mov = movs.find(m => m.id === ev.registro_relacionado_id);
+        const item = mov ? items.find(i => i.id === (mov.material_id || mov.herramienta_id)) : null;
+        const resp = mov ? personal.find(p => p.id === mov.responsable_id) : null;
+        const buf = [
+          item?.[itemNameField] || '',
+          resp ? `${resp.nombres} ${resp.apellidos}` : '',
+          ev.observaciones || '',
+        ].join(' ').toLowerCase();
+        if (!buf.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [evidencias, fDesde, fHasta, fNombre, movs, items, personal]);
+
+  const verFoto = async (ev) => {
+    try {
+      const blobEntry = await window.__db.evidencias_blobs.get(ev.id);
+      if (blobEntry?.blob) {
+        setPhotoOpen({
+          url: URL.createObjectURL(blobEntry.blob),
+          ev,
+        });
+      } else {
+        showToast?.('Foto no disponible localmente', 'amber');
+      }
+    } catch (e) {
+      showToast?.('Error: ' + e.message, 'red');
+    }
+  };
+
+  const enviarSolicitud = async () => {
+    const { evidencia, mov, motivo } = solicitudOpen;
+    if (!motivo || motivo.trim().length < 10) {
+      showToast?.('El motivo debe tener al menos 10 caracteres', 'red');
+      return;
+    }
+    try {
+      const item = mov ? items.find(i => i.id === (mov.material_id || mov.herramienta_id)) : null;
+      const itemName = item?.[itemNameField] || '(item)';
+      await window.__changeRequests.create({
+        table: tabla,
+        recordId: mov?.id,
+        recordLabel: `${mov?.fecha || ''} · ${itemName}`,
+        proposedChanges: {
+          revisar: { old: 'registro original', new: 'verificar y corregir según foto adjunta' },
+          motivo_solicitante: { old: '', new: motivo.trim() },
+          evidencia_id: { old: '', new: evidencia.id },
+        },
+        reason: motivo.trim(),
+      });
+      showToast?.('✓ Solicitud enviada al administrador', 'green');
+      setSolicitudOpen(null);
+    } catch (e) {
+      showToast?.('Error: ' + e.message, 'red');
+    }
+  };
+
+  return (
+    <>
+      <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}
+        style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:9999, padding:20 }}>
+        <div className="card card-p" style={{ width:'100%', maxWidth:1100, maxHeight:'92vh', overflow:'hidden', display:'flex', flexDirection:'column', background:'#1A2333', border:'1px solid var(--bd)', borderRadius:10 }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+            <div style={{ fontSize:15, fontWeight:700 }}>
+              <JxIconRF name="camera" size={16} color="var(--amber)"/>{' '}
+              Visualización de Registro Físico — {modulo === 'movimientos_materiales' ? 'Materiales' : 'Herramientas'}
+            </div>
+            <button className="btn btn-ghost btn-sm" onClick={onClose}><JxIconRF name="x" size={13}/></button>
+          </div>
+          <div style={{ display:'flex', gap:10, flexWrap:'wrap', marginBottom:12 }}>
+            <div><label className="flabel" style={{ fontSize:10 }}>Desde</label>
+              <input className="fi" type="date" value={fDesde} onChange={e=>setFDesde(e.target.value)} style={{ fontSize:12, padding:'6px 8px' }}/>
+            </div>
+            <div><label className="flabel" style={{ fontSize:10 }}>Hasta</label>
+              <input className="fi" type="date" value={fHasta} onChange={e=>setFHasta(e.target.value)} style={{ fontSize:12, padding:'6px 8px' }}/>
+            </div>
+            <div style={{ flex:1, minWidth:200 }}>
+              <label className="flabel" style={{ fontSize:10 }}>Buscar (responsable / item / observación)</label>
+              <input className="fi" value={fNombre} onChange={e=>setFNombre(e.target.value)} placeholder="ej: Carlos Quispe, cemento..." style={{ fontSize:12, padding:'6px 8px' }}/>
+            </div>
+            <div style={{ display:'flex', alignItems:'flex-end' }}>
+              <span style={{ fontSize:11, color:'var(--tm)' }}>{filtered.length} registros con foto</span>
+            </div>
+          </div>
+          <div style={{ flex:1, overflow:'auto', border:'1px solid var(--bd)', borderRadius:6 }}>
+            {loading ? (
+              <div style={{ padding:30, textAlign:'center', color:'var(--tm)' }}>Cargando…</div>
+            ) : filtered.length === 0 ? (
+              <div style={{ padding:30, textAlign:'center', color:'var(--tm)' }}>
+                <JxIconRF name="camera" size={32} color="var(--tm)"/>
+                <div style={{ marginTop:8 }}>Sin registros físicos para el filtro actual.</div>
+              </div>
+            ) : (
+              <table className="tbl" style={{ fontSize:12 }}>
+                <thead><tr>
+                  <th style={{ width:80 }}>Foto</th>
+                  <th>Fecha</th>
+                  <th>{modulo === 'movimientos_materiales' ? 'Material' : 'Herramienta'}</th>
+                  <th>Tipo</th>
+                  <th>Cantidad</th>
+                  <th>Responsable</th>
+                  <th>Observaciones foto</th>
+                  <th style={{ textAlign:'center' }}>Acciones</th>
+                </tr></thead>
+                <tbody>
+                  {filtered.map(ev => {
+                    const mov = movs.find(m => m.id === ev.registro_relacionado_id);
+                    const item = mov ? items.find(i => i.id === (mov.material_id || mov.herramienta_id)) : null;
+                    const resp = mov ? personal.find(p => p.id === mov.responsable_id) : null;
+                    return (
+                      <tr key={ev.id}>
+                        <td>
+                          {thumbs[ev.id]
+                            ? <img src={thumbs[ev.id]} alt="thumb"
+                                onClick={()=>verFoto(ev)}
+                                style={{ width:60, height:60, objectFit:'cover', borderRadius:4, cursor:'pointer', border:'1px solid var(--bd)' }}/>
+                            : <span style={{ color:'var(--tm)' }}>—</span>}
+                        </td>
+                        <td className="col-m">{ev.fecha || mov?.fecha || '—'}</td>
+                        <td>{item?.[itemNameField] || <span style={{ color:'var(--tm)' }}>(eliminado)</span>}</td>
+                        <td>
+                          <span className="badge b-blue">
+                            {mov?.tipo_movimiento || mov?.accion || '—'}
+                          </span>
+                        </td>
+                        <td className="col-num">
+                          {mov?.cantidad != null ? `${mov.cantidad} ${mov.unidad || ''}` : '—'}
+                        </td>
+                        <td>{resp ? `${resp.nombres} ${resp.apellidos}` : '—'}</td>
+                        <td style={{ fontSize:11, color:'var(--tm)', maxWidth:240 }}>{ev.observaciones || '—'}</td>
+                        <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
+                          <button className="btn btn-ghost btn-xs" title="Ver foto" onClick={()=>verFoto(ev)}>
+                            <JxIconRF name="eye" size={11}/>
+                          </button>
+                          {!isAdmin && mov && (
+                            <button
+                              className="btn btn-amber btn-xs"
+                              title="Solicitar al admin que revise/corrija este registro"
+                              style={{ marginLeft:4 }}
+                              onClick={()=>setSolicitudOpen({ evidencia: ev, mov, motivo: '' })}>
+                              <JxIconRF name="alert" size={11}/> Solicitar cambio
+                            </button>
+                          )}
+                          {isAdmin && mov && (
+                            <span style={{ fontSize:10, color:'var(--green)', marginLeft:6 }}>(admin: editá desde la fila del movimiento)</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+          <div style={{ display:'flex', justifyContent:'flex-end', gap:8, marginTop:12 }}>
+            <button className="btn btn-ghost" onClick={onClose}>Cerrar</button>
+          </div>
+        </div>
+      </div>
+
+      {/* Modal foto grande */}
+      {photoOpen && (
+        <div className="overlay" onClick={()=>{ try { URL.revokeObjectURL(photoOpen.url); } catch {}; setPhotoOpen(null); }}
+          style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.85)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:10000, padding:20 }}>
+          <div onClick={e=>e.stopPropagation()} style={{ maxWidth:'90vw', maxHeight:'90vh', display:'flex', flexDirection:'column', alignItems:'center', gap:10 }}>
+            <img src={photoOpen.url} alt="evidencia" style={{ maxWidth:'100%', maxHeight:'80vh', objectFit:'contain', borderRadius:6 }}/>
+            <div style={{ fontSize:12, color:'#ddd' }}>{photoOpen.ev.observaciones || photoOpen.ev.nombre_archivo}</div>
+            <button className="btn btn-amber btn-sm" onClick={()=>{ try { URL.revokeObjectURL(photoOpen.url); } catch {}; setPhotoOpen(null); }}>Cerrar</button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal solicitar cambio */}
+      {solicitudOpen && (
+        <div className="overlay" onClick={e => e.target === e.currentTarget && setSolicitudOpen(null)}
+          style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.65)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:10001, padding:20 }}>
+          <div className="card card-p" style={{ width:'100%', maxWidth:520, background:'#1A2333', border:'1px solid var(--bd)', borderRadius:10 }}>
+            <div style={{ fontSize:14, fontWeight:700, marginBottom:10 }}>Solicitar revisión / corrección</div>
+            <div style={{ fontSize:12, color:'var(--ts)', marginBottom:12, padding:'8px 10px', background:'rgba(242,183,5,0.08)', borderRadius:6 }}>
+              Vas a enviar una solicitud al administrador para que revise este registro físico vs el digital. Si encuentra una diferencia, podrá corregirlo.
+            </div>
+            <label className="flabel">Describí qué está mal *</label>
+            <textarea className="fi" rows={4}
+              value={solicitudOpen.motivo}
+              onChange={e=>setSolicitudOpen(prev => ({ ...prev, motivo: e.target.value }))}
+              placeholder="Mínimo 10 caracteres. Ej: la cantidad registrada (50 kg) no coincide con la guía firmada (45 kg)"
+              style={{ minHeight:90 }}/>
+            <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:4 }}>
+              El admin lo verá en su panel de Solicitudes con tu nombre y la foto del registro físico para verificar.
+            </div>
+            <div style={{ display:'flex', justifyContent:'flex-end', gap:8, marginTop:14 }}>
+              <button className="btn btn-ghost btn-sm" onClick={()=>setSolicitudOpen(null)}>Cancelar</button>
+              <button className="btn btn-amber btn-sm" onClick={enviarSolicitud}>
+                <JxIconRF name="send" size={11}/> Enviar solicitud
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 // Helper detectar obra activa.
 // Después de 10 intentos (5s) sin encontrar obras, deja de buscar y retorna null.
 // Reanuda al recibir el evento 'jarvex_master_updated' del realtime
@@ -255,6 +535,7 @@ function MovMaterialesPage({ showToast }) {
 
   const [q, setQ] = uSM('');
   const [tipo, setTipo] = uSM('todos');
+  const [regFisicoOpen, setRegFisicoOpen] = uSM(false);
 
   const lookupMat = (id) => materiales?.find(m => m.id === id);
   const lookupPers = (id) => personal?.find(p => p.id === id);
@@ -373,7 +654,14 @@ function MovMaterialesPage({ showToast }) {
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div><div className="pg-title">Movimiento de Materiales</div><div className="pg-sub">Historial completo · {sorted.length} movimientos registrados</div></div>
+        <button className="btn btn-ghost btn-sm" onClick={()=>setRegFisicoOpen(true)} title="Ver fotos adjuntas a los movimientos">
+          <JxIcon name="camera" size={13}/> Visualización registro físico
+        </button>
       </div>
+      {regFisicoOpen && (
+        <RegistroFisicoModal modulo="movimientos_materiales" obraId={obraId}
+          onClose={()=>setRegFisicoOpen(false)} showToast={showToast}/>
+      )}
 
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12, marginBottom:18 }}>
         {[
@@ -531,6 +819,7 @@ function MovHerramientasPage({ showToast }) {
 
   const [q, setQ] = uSM('');
   const [accion, setAccion] = uSM('todas');
+  const [regFisicoOpen, setRegFisicoOpen] = uSM(false);
 
   const lookupHerr = (id) => herramientas?.find(h => h.id === id);
   const lookupPers = (id) => personal?.find(p => p.id === id);
@@ -660,7 +949,14 @@ function MovHerramientasPage({ showToast }) {
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div><div className="pg-title">Movimiento de Herramientas</div><div className="pg-sub">Historial de salidas, devoluciones y mantenimientos · {sorted.length} registros</div></div>
+        <button className="btn btn-ghost btn-sm" onClick={()=>setRegFisicoOpen(true)} title="Ver fotos adjuntas a los movimientos">
+          <JxIcon name="camera" size={13}/> Visualización registro físico
+        </button>
       </div>
+      {regFisicoOpen && (
+        <RegistroFisicoModal modulo="movimientos_herramientas" obraId={obraId}
+          onClose={()=>setRegFisicoOpen(false)} showToast={showToast}/>
+      )}
 
       {danadasRecientes.length > 0 && (
         <div className="alert-banner" style={{ marginBottom:14, background:'rgba(231,76,60,0.08)', border:'1px solid rgba(231,76,60,0.25)', borderRadius:8, padding:'10px 14px', display:'flex', alignItems:'center', gap:10, color:'var(--red)', fontSize:12.5 }}>
