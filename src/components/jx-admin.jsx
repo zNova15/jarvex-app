@@ -1510,8 +1510,9 @@ function CatalogosTab({ showToast, isAdmin }) {
 
 function SistemaTab({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : {};
-  const isAdmin = auth?.profile?.rol === 'admin';
-  const appMode = window.__useAppMode ? window.__useAppMode() : { mode: 'edicion', setMode: ()=>{}, isPrueba: false, isEdicion: true, isProduccion: false };
+  // Para Sistema usamos el rol REAL (no el override) — solo admin ve esto
+  const isAdmin = (auth?.profile?._rolReal || auth?.profile?.rol) === 'admin';
+  const appMode = window.__useAppMode ? window.__useAppMode() : { mode: 'edicion', setMode: ()=>{}, isPrueba: false, isEdicion: true, isProduccion: false, isImpersonating: false, roleOverride: null, setRoleOverride: ()=>{}, clearRoleOverride: ()=>{} };
   const { mode, setMode, isPrueba, isEdicion, isProduccion } = appMode;
   const [demoCount, setDemoCount] = uSAd(0);
   const [seedBusy, setSeedBusy] = uSAd(false);
@@ -1693,6 +1694,46 @@ function SistemaTab({ showToast }) {
             🔒 Estás viendo el sistema en modo <strong>PRODUCCIÓN</strong>. Acceso según tu rol ({(window.__useAuth?.()?.profile?.rol || 'operario').replace('_', ' ')}). Si necesitás cambiar configuraciones del sistema o usar el modo prueba/edición, pedile al administrador.
           </>)}
         </div>
+
+        {/* Selector "Ver como rol" — SOLO en modo prueba para admin real */}
+        {isPrueba && isAdmin && (
+          <div style={{ marginTop:14, paddingTop:14, borderTop:'1px solid var(--bd)' }}>
+            <div style={{ fontSize:12, fontWeight:700, color:'var(--ts)', marginBottom:6, display:'flex', alignItems:'center', gap:8 }}>
+              <JxIcon name="users" size={13} color="#9B59B6"/>
+              Probar el sistema como otro rol
+              {appMode.isImpersonating && <span className="badge b-purple">Impersonando: {appMode.roleOverride}</span>}
+            </div>
+            <div style={{ fontSize:11.5, color:'var(--tm)', marginBottom:10 }}>
+              Ver el sistema con los permisos de otro rol sin cambiar tu rol real. Solo afecta lo que VES — internamente seguís siendo admin.
+              Vuelve a admin con un click. Al salir de modo prueba, se restaura automáticamente.
+            </div>
+            <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+              {[
+                { v:null, l:'👑 Admin (yo)', cls:'b-amber' },
+                { v:'gerente', l:'Gerente', cls:'b-blue' },
+                { v:'ingeniero_residente', l:'Ing. Residente', cls:'b-blue' },
+                { v:'supervisor', l:'Supervisor', cls:'b-gray' },
+                { v:'almacenero', l:'Almacenero', cls:'b-gray' },
+                { v:'asistente_admin', l:'Asistente Admin', cls:'b-gray' },
+                { v:'solo_lectura', l:'Solo lectura', cls:'b-gray' },
+              ].map(r => {
+                const active = (appMode.roleOverride || null) === r.v;
+                return (
+                  <button key={r.v || 'admin'}
+                    className={`btn btn-sm ${active ? 'btn-amber' : 'btn-ghost'}`}
+                    disabled={active}
+                    onClick={() => {
+                      appMode.setRoleOverride(r.v);
+                      showToast?.(r.v ? `Viendo como ${r.l}` : 'Volviste a admin', 'amber');
+                    }}>
+                    {r.l}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Sección Demo Data — visible solo en modo prueba o cuando hay registros demo */}
         {(isPrueba || demoCount > 0) && isAdmin && (
           <div style={{ marginTop:14, paddingTop:14, borderTop:'1px solid var(--bd)' }}>

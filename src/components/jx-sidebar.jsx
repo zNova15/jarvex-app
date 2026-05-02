@@ -146,8 +146,8 @@ const NAV = [
 ];
 
 function Sidebar({ current, onNav, collapsed, onToggle }) {
-  const appMode = window.__useAppMode ? window.__useAppMode() : { mode: 'edicion', isPrueba: false, isEdicion: true, isProduccion: false };
-  const { mode, isPrueba, isEdicion, isProduccion } = appMode;
+  const appMode = window.__useAppMode ? window.__useAppMode() : { mode: 'edicion', isPrueba: false, isEdicion: true, isProduccion: false, isImpersonating: false, roleOverride: null, clearRoleOverride: ()=>{} };
+  const { mode, isPrueba, isEdicion, isProduccion, isImpersonating, roleOverride, clearRoleOverride } = appMode;
   const [hovered, setHovered] = useState(null);
   const isMobile = useIsMobile();
   const pwa = usePwaInstall();
@@ -434,6 +434,38 @@ function Sidebar({ current, onNav, collapsed, onToggle }) {
             title={isPrueba ? 'Modo prueba — datos demo' : isEdicion ? 'Modo edición sobre data real' : 'Modo producción'}>
             {isPrueba ? '🧪 MODO PRUEBA' : isEdicion ? '✏️ EDICIÓN' : '🔒 PRODUCCIÓN'}
           </div>
+          {/* Banner impersonación: visible cuando admin está viendo como otro rol */}
+          {isImpersonating && (
+            <div style={{
+              marginTop: 6,
+              padding: '6px 10px',
+              background: 'rgba(231,76,60,0.15)',
+              border: '1px solid rgba(231,76,60,0.5)',
+              borderRadius: 6,
+              fontSize: 10.5,
+              color: '#E74C3C',
+              display: 'flex', flexDirection: 'column', gap: 4,
+            }}>
+              <div style={{ fontWeight:700, display:'flex', alignItems:'center', gap:6 }}>
+                <span>🎭</span>
+                <span>Viendo como <strong>{(roleOverride || '').replace('_', ' ')}</strong></span>
+              </div>
+              <button
+                onClick={() => clearRoleOverride()}
+                style={{
+                  background: 'transparent',
+                  border: '1px solid rgba(231,76,60,0.6)',
+                  color: '#E74C3C',
+                  fontSize: 10,
+                  padding: '3px 6px',
+                  borderRadius: 4,
+                  cursor: 'pointer',
+                  fontWeight: 600,
+                }}>
+                ← Volver a Admin
+              </button>
+            </div>
+          )}
         </div>
       )}
 

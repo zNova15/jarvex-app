@@ -51,28 +51,72 @@ export function useAppMode() {
 
   useEffect(() => {
     const onStorage = (e) => {
-      if (e.key === STORAGE_KEY || e.key === ROLE_KEY) setModeState(readMode());
+      if (e.key === STORAGE_KEY || e.key === ROLE_KEY || e.key === 'jx_role_override') setModeState(readMode());
     };
     const onCustom = () => setModeState(readMode());
     window.addEventListener('storage', onStorage);
     window.addEventListener(EVENT_NAME, onCustom);
+    window.addEventListener('jx_role_override_change', onCustom);
     return () => {
       window.removeEventListener('storage', onStorage);
       window.removeEventListener(EVENT_NAME, onCustom);
+      window.removeEventListener('jx_role_override_change', onCustom);
     };
   }, []);
 
   const setMode = useCallback((newMode) => {
     if (!MODOS_VALIDOS.has(newMode)) return;
     // Bloquea: no-admin no puede cambiar a prueba/edicion
-    if (MODOS_ADMIN_ONLY.has(newMode) && readUserRole() !== 'admin') return;
+    // Para validar usamos el rol REAL (no el override). Si hay override en
+    // localStorage, leemos también jx_user_role_real.
+    try {
+      const rolReal = localStorage.getItem('jx_user_role_real') || readUserRole();
+      if (MODOS_ADMIN_ONLY.has(newMode) && rolReal !== 'admin') return;
+    } catch {}
     try { localStorage.setItem(STORAGE_KEY, newMode); } catch (e) {}
+    // Si salimos de modo prueba → limpiar role override automáticamente
+    if (newMode !== 'prueba') {
+      try {
+        if (localStorage.getItem('jx_role_override')) {
+          localStorage.removeItem('jx_role_override');
+          // Restaurar el rol real efectivo
+          const rolReal = localStorage.getItem('jx_user_role_real');
+          if (rolReal) localStorage.setItem('jx_user_role', rolReal);
+          window.dispatchEvent(new Event('jx_role_override_change'));
+        }
+      } catch {}
+    }
     setModeState(newMode);
     try { window.dispatchEvent(new Event(EVENT_NAME)); } catch (e) {}
   }, []);
 
+  // Helpers para impersonar rol (solo válido si mode='prueba' y user real es admin)
+  const setRoleOverride = useCallback((rol) => {
+    try {
+      const rolReal = localStorage.getItem('jx_user_role_real');
+      if (rolReal !== 'admin') return; // solo admin real puede impersonar
+      const m = localStorage.getItem(STORAGE_KEY);
+      if (m !== 'prueba') return; // solo en modo prueba
+      if (rol && rol !== 'admin') {
+        localStorage.setItem('jx_role_override', rol);
+        localStorage.setItem('jx_user_role', rol);
+      } else {
+        localStorage.removeItem('jx_role_override');
+        localStorage.setItem('jx_user_role', 'admin');
+      }
+      window.dispatchEvent(new Event('jx_role_override_change'));
+      window.dispatchEvent(new Event('app_mode_change'));
+    } catch {}
+  }, []);
+
+  const clearRoleOverride = useCallback(() => setRoleOverride(null), [setRoleOverride]);
+
   const rol = readUserRole();
+  const rolReal = (() => { try { return localStorage.getItem('jx_user_role_real') || rol; } catch { return rol; } })();
   const isAdmin = rol === 'admin';
+  const isAdminReal = rolReal === 'admin';
+  const roleOverride = (() => { try { return localStorage.getItem('jx_role_override') || null; } catch { return null; } })();
+  const isImpersonating = !!roleOverride && mode === 'prueba' && isAdminReal;
 
   return {
     mode,
@@ -80,8 +124,13 @@ export function useAppMode() {
     isPrueba: mode === 'prueba',
     isEdicion: mode === 'edicion',
     isProduccion: mode === 'produccion',
-    canSwitchMode: isAdmin,
+    canSwitchMode: isAdminReal,
     userRole: rol,
+    userRoleReal: rolReal,
+    roleOverride,
+    isImpersonating,
+    setRoleOverride,
+    clearRoleOverride,
   };
 }
 
