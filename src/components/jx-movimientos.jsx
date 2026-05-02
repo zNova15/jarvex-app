@@ -10,51 +10,48 @@ const JxIconRF = (props) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════
-// VISUALIZADOR DE REGISTRO FÍSICO
-// Modal compartido para movimientos de materiales y herramientas.
-// Lee evidencias con modulo_relacionado='movimientos_materiales' o
-// 'movimientos_herramientas', muestra thumbnails y permite:
-//   - Filtrar por fecha y por nombre (responsable o material/herramienta)
-//   - Click en thumbnail → ver foto en grande
-//   - Almacenero/operador: 'Solicitar cambio' (crea change_request)
-//   - Admin: ver todo + ir directo al movimiento para editar
+// REGISTRO FÍSICO DIARIO
+// Flujo: el almacenero al final del día firma su registro físico (hoja
+// con todos los movimientos del día) y sube UNA foto. El admin puede
+// subir/editar libremente.
+//   - tipo_evidencia: 'registro_diario_materiales' | 'registro_diario_herramientas'
+//   - 1 por día por obra para no-admin (validado al subir)
+//   - Modal de visualización: tabla con fecha + foto + autor + notas
+//     + acciones (ver foto / solicitar cambio / eliminar admin)
 // ═══════════════════════════════════════════════════════════════════
-function RegistroFisicoModal({ modulo, obraId, onClose, showToast }) {
+const tipoEvidenciaPara = (modulo) => modulo === 'movimientos_materiales'
+  ? 'registro_diario_materiales' : 'registro_diario_herramientas';
+
+function RegistroFisicoModal({ modulo, obraId, onClose, showToast, refreshKey }) {
   const auth = window.__useAuth?.();
   const rol = auth?.profile?.rol || '';
   const isAdmin = rol === 'admin';
+  const tipoEv = tipoEvidenciaPara(modulo);
   const [evidencias, setEvidencias] = uSM([]);
-  const [movs, setMovs] = uSM([]);
-  const [items, setItems] = uSM([]); // materiales / herramientas
   const [personal, setPersonal] = uSM([]);
-  const [thumbs, setThumbs] = uSM({}); // { evidId: dataUrl }
+  const [thumbs, setThumbs] = uSM({});
   const [fDesde, setFDesde] = uSM('');
   const [fHasta, setFHasta] = uSM('');
   const [fNombre, setFNombre] = uSM('');
-  const [photoOpen, setPhotoOpen] = uSM(null); // dataUrl
-  const [solicitudOpen, setSolicitudOpen] = uSM(null); // {evidencia, mov, motivo}
+  const [photoOpen, setPhotoOpen] = uSM(null);
+  const [solicitudOpen, setSolicitudOpen] = uSM(null);
   const [loading, setLoading] = uSM(true);
-
-  const tabla = modulo === 'movimientos_materiales' ? 'movimientos_materiales' : 'movimientos_herramientas';
-  const itemsTabla = modulo === 'movimientos_materiales' ? 'materiales' : 'herramientas';
-  const itemNameField = modulo === 'movimientos_materiales' ? 'nombre_material' : 'nombre_herramienta';
 
   uEM(() => {
     let cancelled = false;
     (async () => {
       try {
-        const [evs, allMovs, allItems, allPers] = await Promise.all([
-          window.__db.evidencias.filter(e => !e.deleted_at && e.modulo_relacionado === modulo && (!obraId || e.obra_id === obraId)).toArray(),
-          window.__db[tabla].filter(m => !m.deleted_at && (!obraId || m.obra_id === obraId)).toArray(),
-          window.__db[itemsTabla].filter(x => !x.deleted_at).toArray(),
+        const [evs, allPers] = await Promise.all([
+          window.__db.evidencias.filter(e =>
+            !e.deleted_at &&
+            e.tipo_evidencia === tipoEv &&
+            (!obraId || e.obra_id === obraId)
+          ).toArray(),
           window.__db.personal.filter(p => !p.deleted_at).toArray(),
         ]);
         if (cancelled) return;
         setEvidencias(evs.sort((a, b) => (b.fecha || '').localeCompare(a.fecha || '')));
-        setMovs(allMovs);
-        setItems(allItems);
         setPersonal(allPers);
-        // Cargar thumbnails (limit 30 para no saturar)
         const thumbsMap = {};
         for (const ev of evs.slice(0, 30)) {
           try {
@@ -68,12 +65,9 @@ function RegistroFisicoModal({ modulo, obraId, onClose, showToast }) {
     })();
     return () => {
       cancelled = true;
-      // Revoke object URLs
       Object.values(thumbs).forEach(u => { try { URL.revokeObjectURL(u); } catch {} });
     };
-  }, [modulo, obraId]);
-
-  const lookup = (arr, id, field) => arr.find(x => x.id === id)?.[field] || '—';
+  }, [modulo, obraId, refreshKey]);
 
   const filtered = uMM(() => {
     return evidencias.filter(ev => {
@@ -81,28 +75,23 @@ function RegistroFisicoModal({ modulo, obraId, onClose, showToast }) {
       if (fHasta && (ev.fecha || '') > fHasta) return false;
       if (fNombre) {
         const q = fNombre.toLowerCase();
-        const mov = movs.find(m => m.id === ev.registro_relacionado_id);
-        const item = mov ? items.find(i => i.id === (mov.material_id || mov.herramienta_id)) : null;
-        const resp = mov ? personal.find(p => p.id === mov.responsable_id) : null;
+        const autor = personal.find(p => p.id === ev.subido_por || p.id === ev.created_by);
         const buf = [
-          item?.[itemNameField] || '',
-          resp ? `${resp.nombres} ${resp.apellidos}` : '',
+          autor ? `${autor.nombres} ${autor.apellidos}` : '',
           ev.observaciones || '',
+          ev.nombre_archivo || '',
         ].join(' ').toLowerCase();
         if (!buf.includes(q)) return false;
       }
       return true;
     });
-  }, [evidencias, fDesde, fHasta, fNombre, movs, items, personal]);
+  }, [evidencias, fDesde, fHasta, fNombre, personal]);
 
   const verFoto = async (ev) => {
     try {
       const blobEntry = await window.__db.evidencias_blobs.get(ev.id);
       if (blobEntry?.blob) {
-        setPhotoOpen({
-          url: URL.createObjectURL(blobEntry.blob),
-          ev,
-        });
+        setPhotoOpen({ url: URL.createObjectURL(blobEntry.blob), ev });
       } else {
         showToast?.('Foto no disponible localmente', 'amber');
       }
@@ -112,22 +101,21 @@ function RegistroFisicoModal({ modulo, obraId, onClose, showToast }) {
   };
 
   const enviarSolicitud = async () => {
-    const { evidencia, mov, motivo } = solicitudOpen;
+    const { evidencia, motivo } = solicitudOpen;
     if (!motivo || motivo.trim().length < 10) {
       showToast?.('El motivo debe tener al menos 10 caracteres', 'red');
       return;
     }
     try {
-      const item = mov ? items.find(i => i.id === (mov.material_id || mov.herramienta_id)) : null;
-      const itemName = item?.[itemNameField] || '(item)';
       await window.__changeRequests.create({
-        table: tabla,
-        recordId: mov?.id,
-        recordLabel: `${mov?.fecha || ''} · ${itemName}`,
+        table: 'evidencias',
+        recordId: evidencia.id,
+        recordLabel: `Registro diario · ${evidencia.fecha}`,
         proposedChanges: {
           revisar: { old: 'registro original', new: 'verificar y corregir según foto adjunta' },
           motivo_solicitante: { old: '', new: motivo.trim() },
           evidencia_id: { old: '', new: evidencia.id },
+          fecha_registro: { old: '', new: evidencia.fecha },
         },
         reason: motivo.trim(),
       });
@@ -136,6 +124,18 @@ function RegistroFisicoModal({ modulo, obraId, onClose, showToast }) {
     } catch (e) {
       showToast?.('Error: ' + e.message, 'red');
     }
+  };
+
+  const eliminarRegistro = async (ev) => {
+    if (!isAdmin) return;
+    if (!confirm(`¿Eliminar el registro diario del ${ev.fecha}?`)) return;
+    try {
+      await window.__db.evidencias.update(ev.id, { deleted_at: new Date().toISOString() });
+      try { await window.__db.evidencias_blobs.delete(ev.id); } catch {}
+      try { await window.__logAudit?.({ action:'delete', table:'evidencias', recordId:ev.id, oldData:ev, reason:'Admin eliminó registro diario' }); } catch {}
+      setEvidencias(prev => prev.filter(e => e.id !== ev.id));
+      showToast?.('Registro eliminado', 'amber');
+    } catch (e) { showToast?.('Error: ' + e.message, 'red'); }
   };
 
   return (
@@ -158,11 +158,11 @@ function RegistroFisicoModal({ modulo, obraId, onClose, showToast }) {
               <input className="fi" type="date" value={fHasta} onChange={e=>setFHasta(e.target.value)} style={{ fontSize:12, padding:'6px 8px' }}/>
             </div>
             <div style={{ flex:1, minWidth:200 }}>
-              <label className="flabel" style={{ fontSize:10 }}>Buscar (responsable / item / observación)</label>
-              <input className="fi" value={fNombre} onChange={e=>setFNombre(e.target.value)} placeholder="ej: Carlos Quispe, cemento..." style={{ fontSize:12, padding:'6px 8px' }}/>
+              <label className="flabel" style={{ fontSize:10 }}>Buscar (autor / observación)</label>
+              <input className="fi" value={fNombre} onChange={e=>setFNombre(e.target.value)} placeholder="ej: Carlos Quispe..." style={{ fontSize:12, padding:'6px 8px' }}/>
             </div>
             <div style={{ display:'flex', alignItems:'flex-end' }}>
-              <span style={{ fontSize:11, color:'var(--tm)' }}>{filtered.length} registros con foto</span>
+              <span style={{ fontSize:11, color:'var(--tm)' }}>{filtered.length} registros diarios</span>
             </div>
           </div>
           <div style={{ flex:1, overflow:'auto', border:'1px solid var(--bd)', borderRadius:6 }}>
@@ -171,25 +171,22 @@ function RegistroFisicoModal({ modulo, obraId, onClose, showToast }) {
             ) : filtered.length === 0 ? (
               <div style={{ padding:30, textAlign:'center', color:'var(--tm)' }}>
                 <JxIconRF name="camera" size={32} color="var(--tm)"/>
-                <div style={{ marginTop:8 }}>Sin registros físicos para el filtro actual.</div>
+                <div style={{ marginTop:8 }}>No hay registros diarios subidos aún.</div>
+                <div style={{ fontSize:11, marginTop:4 }}>El almacenero sube 1 foto por día con el registro físico firmado.</div>
               </div>
             ) : (
               <table className="tbl" style={{ fontSize:12 }}>
                 <thead><tr>
                   <th style={{ width:80 }}>Foto</th>
                   <th>Fecha</th>
-                  <th>{modulo === 'movimientos_materiales' ? 'Material' : 'Herramienta'}</th>
-                  <th>Tipo</th>
-                  <th>Cantidad</th>
-                  <th>Responsable</th>
-                  <th>Observaciones foto</th>
+                  <th>Subido por</th>
+                  <th>Notas</th>
+                  <th>Tamaño</th>
                   <th style={{ textAlign:'center' }}>Acciones</th>
                 </tr></thead>
                 <tbody>
                   {filtered.map(ev => {
-                    const mov = movs.find(m => m.id === ev.registro_relacionado_id);
-                    const item = mov ? items.find(i => i.id === (mov.material_id || mov.herramienta_id)) : null;
-                    const resp = mov ? personal.find(p => p.id === mov.responsable_id) : null;
+                    const autor = personal.find(p => p.id === ev.subido_por || p.id === ev.created_by);
                     return (
                       <tr key={ev.id}>
                         <td>
@@ -199,33 +196,31 @@ function RegistroFisicoModal({ modulo, obraId, onClose, showToast }) {
                                 style={{ width:60, height:60, objectFit:'cover', borderRadius:4, cursor:'pointer', border:'1px solid var(--bd)' }}/>
                             : <span style={{ color:'var(--tm)' }}>—</span>}
                         </td>
-                        <td className="col-m">{ev.fecha || mov?.fecha || '—'}</td>
-                        <td>{item?.[itemNameField] || <span style={{ color:'var(--tm)' }}>(eliminado)</span>}</td>
-                        <td>
-                          <span className="badge b-blue">
-                            {mov?.tipo_movimiento || mov?.accion || '—'}
-                          </span>
-                        </td>
-                        <td className="col-num">
-                          {mov?.cantidad != null ? `${mov.cantidad} ${mov.unidad || ''}` : '—'}
-                        </td>
-                        <td>{resp ? `${resp.nombres} ${resp.apellidos}` : '—'}</td>
-                        <td style={{ fontSize:11, color:'var(--tm)', maxWidth:240 }}>{ev.observaciones || '—'}</td>
+                        <td className="col-m" style={{ fontWeight:600 }}>{ev.fecha || '—'}</td>
+                        <td>{autor ? `${autor.nombres} ${autor.apellidos}` : <span style={{ color:'var(--tm)' }}>—</span>}</td>
+                        <td style={{ fontSize:11, color:'var(--tm)', maxWidth:280 }}>{ev.observaciones || '—'}</td>
+                        <td style={{ fontSize:11, color:'var(--tm)' }}>{ev.tamano_bytes ? (ev.tamano_bytes/1024).toFixed(0) + ' KB' : '—'}</td>
                         <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
                           <button className="btn btn-ghost btn-xs" title="Ver foto" onClick={()=>verFoto(ev)}>
                             <JxIconRF name="eye" size={11}/>
                           </button>
-                          {!isAdmin && mov && (
+                          {!isAdmin && (
                             <button
                               className="btn btn-amber btn-xs"
                               title="Solicitar al admin que revise/corrija este registro"
                               style={{ marginLeft:4 }}
-                              onClick={()=>setSolicitudOpen({ evidencia: ev, mov, motivo: '' })}>
+                              onClick={()=>setSolicitudOpen({ evidencia: ev, motivo: '' })}>
                               <JxIconRF name="alert" size={11}/> Solicitar cambio
                             </button>
                           )}
-                          {isAdmin && mov && (
-                            <span style={{ fontSize:10, color:'var(--green)', marginLeft:6 }}>(admin: editá desde la fila del movimiento)</span>
+                          {isAdmin && (
+                            <button
+                              className="btn btn-red btn-xs"
+                              title="Eliminar este registro diario"
+                              style={{ marginLeft:4 }}
+                              onClick={()=>eliminarRegistro(ev)}>
+                              <JxIconRF name="trash" size={11}/>
+                            </button>
                           )}
                         </td>
                       </tr>
@@ -425,6 +420,175 @@ function ReversoModal({ mov, tipo /* 'mat' | 'her' */, lookupNombre, onClose, on
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// MODAL "SUBIR REGISTRO DIARIO"
+// El almacenero sube 1 foto/día (validado). Admin puede subir múltiples
+// o reemplazar el del día.
+// ═══════════════════════════════════════════════════════════════════
+function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast }) {
+  const auth = window.__useAuth?.();
+  const userId = auth?.profile?.id ?? 'offline';
+  const rol = auth?.profile?.rol || '';
+  const isAdmin = rol === 'admin';
+  const tipoEv = tipoEvidenciaPara(modulo);
+  const [fecha, setFecha] = uSM(() => new Date().toISOString().slice(0, 10));
+  const [foto, setFoto] = uSM(null); // { blob, url }
+  const [notas, setNotas] = uSM('');
+  const [busy, setBusy] = uSM(false);
+  const [yaExiste, setYaExiste] = uSM(false); // ¿ya hay un registro del día?
+  const [registroExistente, setRegistroExistente] = uSM(null);
+
+  // Validar si ya existe un registro de la fecha seleccionada (anti-duplicado para almacenero)
+  uEM(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const evs = await window.__db.evidencias.filter(e =>
+          !e.deleted_at &&
+          e.tipo_evidencia === tipoEv &&
+          e.fecha === fecha &&
+          (!obraId || e.obra_id === obraId)
+        ).toArray();
+        if (!cancelled) {
+          setYaExiste(evs.length > 0);
+          setRegistroExistente(evs[0] || null);
+        }
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [fecha, modulo, obraId, tipoEv]);
+
+  const onFile = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) {
+      showToast?.('Foto muy grande (máx 8 MB)', 'red');
+      return;
+    }
+    if (foto?.url) try { URL.revokeObjectURL(foto.url); } catch {}
+    setFoto({ blob: file, url: URL.createObjectURL(file) });
+  };
+
+  const handleSubmit = async () => {
+    if (!foto?.blob) { showToast?.('Adjuntá una foto del registro físico', 'red'); return; }
+    if (!fecha) { showToast?.('Seleccioná una fecha', 'red'); return; }
+    // Validación: almacenero NO puede sobreescribir
+    if (yaExiste && !isAdmin) {
+      showToast?.('Ya existe un registro diario para esta fecha. Solo el admin puede reemplazarlo.', 'red');
+      return;
+    }
+    setBusy(true);
+    try {
+      // Si admin y existe → eliminar el anterior antes de subir el nuevo
+      if (yaExiste && isAdmin && registroExistente) {
+        await window.__db.evidencias.update(registroExistente.id, { deleted_at: new Date().toISOString() });
+        try { await window.__db.evidencias_blobs.delete(registroExistente.id); } catch {}
+      }
+      const id = window.__newId();
+      await window.__saveEvidenciaLocal({
+        id, obra_id: obraId,
+        tipo_evidencia: tipoEv,
+        modulo_relacionado: modulo,
+        registro_relacionado_id: null,
+        nombre_archivo: foto.blob.name || `registro_${fecha}.jpg`,
+        mime_type: foto.blob.type || 'image/jpeg',
+        blob: foto.blob,
+        observaciones: notas.trim() || `Registro diario · ${fecha}`,
+        fecha,
+        created_by: userId,
+      });
+      try {
+        await window.__logAudit?.({
+          action: yaExiste ? 'update' : 'insert',
+          table: 'evidencias',
+          recordId: id,
+          newData: { tipo_evidencia: tipoEv, fecha, obra_id: obraId },
+          reason: `${yaExiste ? 'Reemplazado por admin' : 'Subida'} de registro diario · ${modulo}`,
+        });
+      } catch {}
+      showToast?.(`✓ Registro diario subido (${fecha})`, 'green');
+      if (foto?.url) try { URL.revokeObjectURL(foto.url); } catch {}
+      onSaved?.();
+      onClose?.();
+    } catch (e) {
+      showToast?.('Error: ' + (e.message || e), 'red');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cerrar = () => {
+    if (foto?.url) try { URL.revokeObjectURL(foto.url); } catch {}
+    onClose?.();
+  };
+
+  return (
+    <div className="overlay" onClick={e => e.target === e.currentTarget && cerrar()}
+      style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:9999, padding:20 }}>
+      <div className="card card-p" style={{ width:'100%', maxWidth:520, background:'#1A2333', border:'1px solid var(--bd)', borderRadius:10 }}>
+        <div style={{ fontSize:14, fontWeight:700, marginBottom:10, display:'flex', alignItems:'center', gap:8 }}>
+          <JxIconRF name="camera" size={15} color="var(--amber)"/>
+          Subir registro diario · {modulo === 'movimientos_materiales' ? 'Materiales' : 'Herramientas'}
+        </div>
+        <div style={{ fontSize:12, color:'var(--ts)', marginBottom:14, padding:'10px 12px', background:'rgba(155,89,182,0.06)', borderRadius:6 }}>
+          {isAdmin
+            ? 'Como admin podés subir varios o reemplazar el registro del día. Quedan asociados a la fecha y obra activa.'
+            : 'Al final del día firmá tu registro físico, tomá una foto clara y subila aquí. Solo se permite UN registro por día.'}
+        </div>
+
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+          <div>
+            <label className="flabel">Fecha *</label>
+            <input className="fi" type="date" value={fecha} onChange={e=>setFecha(e.target.value)}
+              max={isAdmin ? undefined : new Date().toISOString().slice(0,10)}/>
+          </div>
+          <div style={{ display:'flex', alignItems:'flex-end' }}>
+            {yaExiste ? (
+              <div style={{ fontSize:11, color: isAdmin ? 'var(--amber)' : 'var(--red)', padding:'6px 8px', background:'rgba(231,76,60,0.08)', borderRadius:6 }}>
+                {isAdmin ? '⚠ Ya existe registro este día. Si subís uno nuevo, reemplaza el anterior.' : '⚠ Ya hay registro este día. No podés subir otro.'}
+              </div>
+            ) : <div style={{ fontSize:11, color:'var(--green)' }}>✓ Sin registro previo · podés subir</div>}
+          </div>
+        </div>
+
+        <div style={{ marginTop:14 }}>
+          <label className="flabel">Foto del registro físico (firmado) *</label>
+          <input type="file" accept="image/*" capture="environment" onChange={onFile}
+            disabled={!isAdmin && yaExiste}/>
+          {foto?.url && (
+            <div style={{ marginTop:8, display:'flex', alignItems:'center', gap:10 }}>
+              <img src={foto.url} alt="preview" style={{ width:120, height:120, objectFit:'cover', borderRadius:6, border:'1px solid var(--bd)' }}/>
+              <div style={{ fontSize:11, color:'var(--tm)' }}>
+                {foto.blob.name || 'Foto'}<br/>{(foto.blob.size/1024).toFixed(0)} KB
+              </div>
+              <button className="btn btn-ghost btn-xs" onClick={()=>{ try { URL.revokeObjectURL(foto.url); } catch {}; setFoto(null); }}>
+                <JxIconRF name="x" size={11}/>
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div style={{ marginTop:14 }}>
+          <label className="flabel">Notas (opcional)</label>
+          <textarea className="fi" rows={2} value={notas} onChange={e=>setNotas(e.target.value)}
+            placeholder="Ej: hoja completa firmada por residente · 38 movimientos del día"
+            style={{ minHeight:60 }}/>
+        </div>
+
+        <div style={{ display:'flex', justifyContent:'flex-end', gap:8, marginTop:14 }}>
+          <button className="btn btn-ghost btn-sm" onClick={cerrar} disabled={busy}>Cancelar</button>
+          <button className="btn btn-amber btn-sm"
+            disabled={busy || !foto || (yaExiste && !isAdmin)}
+            onClick={handleSubmit}>
+            <JxIconRF name="check" size={12}/>
+            {busy ? 'Subiendo…' : yaExiste && isAdmin ? 'Reemplazar registro' : 'Subir registro diario'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── MOV. MATERIALES PAGE ─────────────────────────────────
 function MovMaterialesPage({ showToast }) {
   const obraId = useObraActiva();
@@ -536,6 +700,8 @@ function MovMaterialesPage({ showToast }) {
   const [q, setQ] = uSM('');
   const [tipo, setTipo] = uSM('todos');
   const [regFisicoOpen, setRegFisicoOpen] = uSM(false);
+  const [regDiarioOpen, setRegDiarioOpen] = uSM(false);
+  const [rfRefresh, setRfRefresh] = uSM(0);
 
   const lookupMat = (id) => materiales?.find(m => m.id === id);
   const lookupPers = (id) => personal?.find(p => p.id === id);
@@ -654,13 +820,24 @@ function MovMaterialesPage({ showToast }) {
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div><div className="pg-title">Movimiento de Materiales</div><div className="pg-sub">Historial completo · {sorted.length} movimientos registrados</div></div>
-        <button className="btn btn-ghost btn-sm" onClick={()=>setRegFisicoOpen(true)} title="Ver fotos adjuntas a los movimientos">
-          <JxIcon name="camera" size={13}/> Visualización registro físico
-        </button>
+        <div style={{ display:'flex', gap:8 }}>
+          <button className="btn btn-ghost btn-sm" onClick={()=>setRegFisicoOpen(true)} title="Ver registros físicos diarios subidos">
+            <JxIcon name="camera" size={13}/> Visualización registro físico
+          </button>
+          <button className="btn btn-amber btn-sm" onClick={()=>setRegDiarioOpen(true)} title="Subir foto del registro físico firmado del día">
+            <JxIcon name="plus" size={13}/> Subir registro diario
+          </button>
+        </div>
       </div>
       {regFisicoOpen && (
         <RegistroFisicoModal modulo="movimientos_materiales" obraId={obraId}
-          onClose={()=>setRegFisicoOpen(false)} showToast={showToast}/>
+          onClose={()=>setRegFisicoOpen(false)} showToast={showToast} refreshKey={rfRefresh}/>
+      )}
+      {regDiarioOpen && (
+        <RegistroDiarioUploader modulo="movimientos_materiales" obraId={obraId}
+          onClose={()=>setRegDiarioOpen(false)}
+          onSaved={()=>setRfRefresh(k=>k+1)}
+          showToast={showToast}/>
       )}
 
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12, marginBottom:18 }}>
@@ -820,6 +997,8 @@ function MovHerramientasPage({ showToast }) {
   const [q, setQ] = uSM('');
   const [accion, setAccion] = uSM('todas');
   const [regFisicoOpen, setRegFisicoOpen] = uSM(false);
+  const [regDiarioOpen, setRegDiarioOpen] = uSM(false);
+  const [rfRefresh, setRfRefresh] = uSM(0);
 
   const lookupHerr = (id) => herramientas?.find(h => h.id === id);
   const lookupPers = (id) => personal?.find(p => p.id === id);
@@ -949,13 +1128,24 @@ function MovHerramientasPage({ showToast }) {
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div><div className="pg-title">Movimiento de Herramientas</div><div className="pg-sub">Historial de salidas, devoluciones y mantenimientos · {sorted.length} registros</div></div>
-        <button className="btn btn-ghost btn-sm" onClick={()=>setRegFisicoOpen(true)} title="Ver fotos adjuntas a los movimientos">
-          <JxIcon name="camera" size={13}/> Visualización registro físico
-        </button>
+        <div style={{ display:'flex', gap:8 }}>
+          <button className="btn btn-ghost btn-sm" onClick={()=>setRegFisicoOpen(true)} title="Ver registros físicos diarios subidos">
+            <JxIcon name="camera" size={13}/> Visualización registro físico
+          </button>
+          <button className="btn btn-amber btn-sm" onClick={()=>setRegDiarioOpen(true)} title="Subir foto del registro físico firmado del día">
+            <JxIcon name="plus" size={13}/> Subir registro diario
+          </button>
+        </div>
       </div>
       {regFisicoOpen && (
         <RegistroFisicoModal modulo="movimientos_herramientas" obraId={obraId}
-          onClose={()=>setRegFisicoOpen(false)} showToast={showToast}/>
+          onClose={()=>setRegFisicoOpen(false)} showToast={showToast} refreshKey={rfRefresh}/>
+      )}
+      {regDiarioOpen && (
+        <RegistroDiarioUploader modulo="movimientos_herramientas" obraId={obraId}
+          onClose={()=>setRegDiarioOpen(false)}
+          onSaved={()=>setRfRefresh(k=>k+1)}
+          showToast={showToast}/>
       )}
 
       {danadasRecientes.length > 0 && (
