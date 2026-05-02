@@ -734,6 +734,25 @@ function MaterialesPage({ showToast }) {
     const material = materiales.find(m => m.id === form.material_id);
     const cantNum = parseFloat(form.cantidad) || 0;
 
+    // ── Validaciones de sentido común ───────────────────────────
+    if (cantNum <= 0) {
+      showToast('La cantidad debe ser mayor a 0', 'red');
+      return;
+    }
+    const hoy = new Date().toISOString().slice(0, 10);
+    if (form.fecha && form.fecha > hoy) {
+      showToast('No podés registrar un movimiento con fecha futura', 'red');
+      return;
+    }
+    // Si hay responsable, validar que ya haya ingresado a la fecha del mov
+    if (form.responsable_id) {
+      const resp = personal?.find(p => p.id === form.responsable_id);
+      if (resp?.fecha_ingreso && form.fecha && String(resp.fecha_ingreso) > form.fecha) {
+        showToast(`${resp.nombres} aún no había ingresado a la obra el ${form.fecha} (ingreso: ${resp.fecha_ingreso})`, 'red');
+        return;
+      }
+    }
+
     // ── Validación de stock para SALIDA ─────────────────────────
     // Almacenero/supervisor/etc: bloqueado si stock insuficiente
     // Admin/gerente: warning con confirm para forzar (audit log)
@@ -1168,7 +1187,7 @@ function MaterialesPage({ showToast }) {
       {/* Modal Ingreso */}
       {modal==='ingreso' && <Modal title="Registrar Ingreso de Material" icon="arrowIn" onClose={()=>setModal(null)}>
         <div className="g2">
-          <div><label className="flabel">Fecha</label><input className="fi" type="date" value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
+          <div><label className="flabel">Fecha</label><input className="fi" type="date" max={new Date().toISOString().slice(0,10)} value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
           <div><label className="flabel">Hora</label><input className="fi" type="time" value={form.hora||''} onChange={e=>setForm({...form, hora:e.target.value})}/></div>
           <div><label className="flabel">Material</label>
             <select className="fi" value={form.material_id||''}
@@ -1212,7 +1231,7 @@ function MaterialesPage({ showToast }) {
       {/* Modal Salida */}
       {modal==='salida' && <Modal title="Registrar Salida de Material" icon="arrowOut" onClose={()=>setModal(null)}>
         <div className="g2">
-          <div><label className="flabel">Fecha</label><input className="fi" type="date" value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
+          <div><label className="flabel">Fecha</label><input className="fi" type="date" max={new Date().toISOString().slice(0,10)} value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
           <div><label className="flabel">Hora</label><input className="fi" type="time" value={form.hora||''} onChange={e=>setForm({...form, hora:e.target.value})}/></div>
           <div><label className="flabel">Material</label>
             <select className="fi" value={form.material_id||''} onChange={e=>setForm({...form, material_id:e.target.value})}>
@@ -2030,6 +2049,19 @@ function HerramientasPage({ showToast }) {
       showToast('Herramienta no encontrada', 'red');
       return;
     }
+    // ── Validaciones de sentido común ─────────────────────────
+    const hoy = new Date().toISOString().slice(0, 10);
+    if (form.fecha && form.fecha > hoy) {
+      showToast('No podés registrar un movimiento con fecha futura', 'red');
+      return;
+    }
+    if (form.responsable_id) {
+      const resp = personal?.find(p => p.id === form.responsable_id);
+      if (resp?.fecha_ingreso && form.fecha && String(resp.fecha_ingreso) > form.fecha) {
+        showToast(`${resp.nombres} aún no había ingresado a la obra el ${form.fecha} (ingreso: ${resp.fecha_ingreso})`, 'red');
+        return;
+      }
+    }
     // Validar motivo si la devolución es por excepción (otra persona devuelve)
     const esDevolucion = form.accion === 'entrada';
     const respOriginalId = herr.ultimo_responsable_id || null;
@@ -2037,6 +2069,16 @@ function HerramientasPage({ showToast }) {
     if (cambioResponsable && !(form.motivo_excepcion && form.motivo_excepcion.trim())) {
       showToast('Debes ingresar el motivo de la excepción cuando otra persona devuelve la herramienta', 'red');
       return;
+    }
+    // Devolución (entrada) de herramienta que NO está en uso → no tiene sentido
+    if (esDevolucion && herr.disponible === true && !respOriginalId) {
+      const myRol3 = auth?.profile?.rol;
+      const puedeForzar = myRol3 === 'admin' || myRol3 === 'gerente';
+      if (!puedeForzar) {
+        showToast(`❌ "${herr.nombre_herramienta}" no está entregada — no se puede devolver algo que no salió del almacén.`, 'red');
+        return;
+      }
+      if (!confirm(`⚠ "${herr.nombre_herramienta}" no figura como entregada. ¿Registrar devolución igualmente? (queda en auditoría)`)) return;
     }
 
     // ── Validación de disponibilidad para SALIDA ─────────────
@@ -2326,7 +2368,7 @@ function HerramientasPage({ showToast }) {
               <option value="regular">Regular</option><option value="malo">Malo</option>
             </select>
           </div>
-          <div><label className="flabel">Fecha</label><input className="fi" type="date" value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
+          <div><label className="flabel">Fecha</label><input className="fi" type="date" max={new Date().toISOString().slice(0,10)} value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
           <div><label className="flabel">Hora</label><input className="fi" type="time" value={form.hora||''} onChange={e=>setForm({...form, hora:e.target.value})}/></div>
           {esDevolucion && hayExcepcion && (
             <div style={{ gridColumn:'1/-1' }}>
@@ -2486,6 +2528,7 @@ function PersonalPage({ showToast }) {
 
   const { data: personal, loading, create: createPersonal, update: updatePersonal } = window.__hooks.usePersonal(obraId);
   const { data: obrasAll } = window.__hooks.useObras();
+  const { data: herramientas } = window.__hooks.useHerramientas(obraId);
   const obrasActivas = uM(() => (obrasAll || []).filter(o => !o.deleted_at), [obrasAll]);
   const obraNombre = (id) => obrasActivas.find(o => o.id === id)?.nombre_obra || '—';
 
@@ -2580,6 +2623,45 @@ function PersonalPage({ showToast }) {
     if (!/^\d{8}$/.test(dni)) {
       showToast('El DNI debe tener exactamente 8 dígitos numéricos', 'red');
       return;
+    }
+    // ── Validaciones de sentido común ───────────────────────────
+    // DNI único: ningún otro registro activo (no eliminado) puede tener el mismo DNI
+    const dupe = (personal || []).find(p =>
+      p.dni === dni && !p.deleted_at && p.id !== editingId
+    );
+    if (dupe) {
+      showToast(`Ya existe un trabajador con DNI ${dni}: ${dupe.nombres} ${dupe.apellidos}`, 'red');
+      return;
+    }
+    // fecha_ingreso no puede ser anterior a fecha_nacimiento
+    if (form.fecha_nacimiento && form.fecha_ingreso && form.fecha_ingreso < form.fecha_nacimiento) {
+      showToast('La fecha de ingreso no puede ser anterior a la fecha de nacimiento', 'red');
+      return;
+    }
+    // Edad mínima 18 años al ingresar
+    if (form.fecha_nacimiento && form.fecha_ingreso) {
+      const nac = new Date(form.fecha_nacimiento);
+      const ing = new Date(form.fecha_ingreso);
+      const edad = (ing - nac) / (365.25 * 86400 * 1000);
+      if (edad < 18) {
+        if (!confirm(`⚠ Edad al ingreso: ${edad.toFixed(1)} años. La ley peruana exige 18+ para construcción. ¿Registrar igualmente?`)) return;
+      }
+    }
+    // Si está editando y cambia estado de 'activo' → 'inactivo'/'retirado', verificar herramientas pendientes
+    if (editingId) {
+      const original = personal.find(p => p.id === editingId);
+      const dabaActivo = original?.estado === 'activo';
+      const ahoraInactivo = form.estado === 'inactivo' || form.estado === 'retirado';
+      if (dabaActivo && ahoraInactivo) {
+        const herrPendientes = (herramientas || []).filter(h =>
+          !h.deleted_at && h.ultimo_responsable_id === editingId && (h.disponible === false || h.ubicacion_actual === 'en_uso')
+        );
+        if (herrPendientes.length > 0) {
+          const lista = herrPendientes.slice(0, 5).map(h => `· ${h.nombre_herramienta}`).join('\n');
+          showToast(`No podés dar de baja: tiene ${herrPendientes.length} herramienta(s) sin devolver:\n${lista}`, 'red');
+          return;
+        }
+      }
     }
     try {
       if (editingId) {
@@ -2917,6 +2999,12 @@ function AsistenciaPage({ showToast }) {
       showToast('No hay personal activo para registrar', 'red');
       return;
     }
+    // No permitir asistencia con fecha futura
+    const hoy = new Date().toISOString().slice(0, 10);
+    if (date > hoy) {
+      showToast('No podés registrar asistencia de una fecha futura', 'red');
+      return;
+    }
     setBusy(true);
     try {
       // 1. Subir UNA evidencia compartida si hay foto
@@ -3043,7 +3131,7 @@ function AsistenciaPage({ showToast }) {
       <div className="pg-hd frow-sb">
         <div><div className="pg-title">Control de Asistencia</div><div className="pg-sub">Registro diario masivo · 1 evidencia por día</div></div>
         <div style={{display:'flex',gap:8,alignItems:'center'}}>
-          <input className="fi" type="date" value={date} onChange={e=>setDate(e.target.value)} style={{width:'auto'}}/>
+          <input className="fi" type="date" max={new Date().toISOString().slice(0,10)} value={date} onChange={e=>setDate(e.target.value)} style={{width:'auto'}}/>
           <button className="btn btn-amber btn-sm" onClick={openMasivo}>
             <JxIcon name="users" size={13}/>Registrar Asistencia Diaria
           </button>

@@ -85,6 +85,16 @@ function ObrasPage({ showToast }) {
 
   const handleSubmit = async () => {
     if (!form.nombre_obra) { showToast('Falta el nombre de la obra', 'red'); return; }
+    // ── Validaciones de sentido común ─────────────────────────
+    if (form.fecha_inicio && form.fecha_fin_estimada && form.fecha_fin_estimada < form.fecha_inicio) {
+      showToast('La fecha fin estimada no puede ser anterior a la fecha de inicio', 'red');
+      return;
+    }
+    const presup = parseFloat(form.presupuesto_total);
+    if (form.presupuesto_total && (isNaN(presup) || presup < 0)) {
+      showToast('El presupuesto no puede ser negativo', 'red');
+      return;
+    }
     try {
       if (editingId) {
         const oldObra = obras.find(o => o.id === editingId);
