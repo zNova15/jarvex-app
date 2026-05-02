@@ -34,11 +34,13 @@ const obrasDemo = [
     nombre_obra: '🧪 DEMO · Edificio Las Palmeras',
     cliente: 'Inmobiliaria Demo S.A.C.',
     ubicacion: 'San Isidro, Lima · Av. República 123',
-    estado: 'en_ejecucion',
+    estado: 'activo',
     fecha_inicio: dt(-90),
     fecha_fin_estimada: dt(180),
     presupuesto_total: 4_850_000,
     observaciones: 'Obra principal demo · multifamiliar 8 pisos · ~33% avance',
+    avance_fisico: 33,
+    avance_financiero: 30,
     avance_objetivo: 0.33,
     completa: true, // esta es la rica
   },
@@ -51,6 +53,8 @@ const obrasDemo = [
     fecha_fin_estimada: dt(540),
     presupuesto_total: 12_300_000,
     observaciones: 'Obra II-1 hospital, 3 niveles · en planificación',
+    avance_fisico: 0,
+    avance_financiero: 0,
     avance_objetivo: 0,
     completa: false,
   },
@@ -63,6 +67,8 @@ const obrasDemo = [
     fecha_fin_estimada: dt(-30),
     presupuesto_total: 8_900_000,
     observaciones: 'Pavimentación 12 km · finalizada, en liquidación',
+    avance_fisico: 100,
+    avance_financiero: 95,
     avance_objetivo: 1.0,
     completa: false,
   },
@@ -275,7 +281,7 @@ export async function seedDemoData(progressCb) {
       porcentaje_avance: p.avance * 100,
       metrado_ejecutado: p.metrado * p.avance,
       costo_real_acumulado: p.metrado * p.avance * p.precio * rndF(0.92, 1.08),
-      estado: p.avance >= 1.0 ? 'completada' : p.avance > 0 ? 'en_proceso' : 'pendiente',
+      estado: p.avance >= 1.0 ? 'terminado' : p.avance > 0 ? 'en_ejecucion' : 'pendiente',
       fecha_inicio_planificada: dt(-90 + idx * 4),
       fecha_fin_planificada: dt(-30 + idx * 8),
       nivel: segs.length,
@@ -338,7 +344,7 @@ export async function seedDemoData(progressCb) {
   log('Sembrando compras...');
   for (let i = 0; i < 5; i++) {
     const reqId = newId();
-    const estado = pick(['pendiente_aprobacion', 'aprobada', 'cotizando', 'cerrada']);
+    const estado = pick(['solicitada', 'aprobada', 'cotizando', 'ordenada', 'recibida']);
     await db.requisiciones.add({
       ...baseFields(), id: reqId,
       obra_id: obraPrincipal.id,
@@ -379,7 +385,7 @@ export async function seedDemoData(progressCb) {
     const ocId = newId();
     const prov = pick(proveedorIds);
     const fecha = dt(rnd(-45, -3));
-    const estado = pick(['enviada', 'aceptada', 'recibida', 'recibida', 'cerrada']);
+    const estado = pick(['enviada', 'aceptada', 'recibida', 'recibida', 'recibida_parcial']);
     let total = 0;
     const items = [];
     const cantItems = rnd(2, 5);
@@ -416,7 +422,7 @@ export async function seedDemoData(progressCb) {
       });
     }
     // Recepción si está recibida
-    if (estado === 'recibida' || estado === 'cerrada') {
+    if (estado === 'recibida' || estado === 'recibida_parcial') {
       const recId = newId();
       await db.recepciones.add({
         ...baseFields(), id: recId,
