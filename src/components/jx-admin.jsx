@@ -505,8 +505,9 @@ function RolesPage() {
   const [counts, setCounts] = uSAd({});
   const auth = window.__useAuth ? window.__useAuth() : {};
   const isAdmin = auth?.profile?.rol === 'admin';
-  const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: false };
-  const canEdit = isAdmin && appMode.isPrueba;
+  const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: false, isEdicion: false };
+  // Admin puede editar permisos en modo prueba O edición (modo prueba funciona igual que edición pero con data demo)
+  const canEdit = isAdmin && (appMode.isPrueba || appMode.isEdicion);
   const [overrides, setOverrides] = uSAd(loadPermOverrides());
   const [customRoles, setCustomRoles] = uSAd(loadCustomRoles());
   const [showAddRole, setShowAddRole] = uSAd(false);
@@ -1559,37 +1560,39 @@ function SistemaTab({ showToast }) {
               {isPrueba ? '🧪 PRUEBA' : isEdicion ? '✏️ EDICIÓN' : '🔒 PRODUCCIÓN'}
             </span>
           </div>
-          <div style={{ display:'flex', gap:8, flexWrap:'wrap' }} title={isAdmin ? '' : 'Solo el administrador puede cambiar el modo'}>
-            <button
-              className={`btn btn-sm ${mode==='prueba' ? 'btn-amber' : 'btn-ghost'}`}
-              disabled={!isAdmin || mode==='prueba'}
-              onClick={()=>{ setMode('prueba'); showToast?.('Modo PRUEBA activado · viendo solo data demo','amber'); }}>
-              🧪 Prueba
-            </button>
-            <button
-              className={`btn btn-sm ${mode==='edicion' ? 'btn-amber' : 'btn-ghost'}`}
-              disabled={!isAdmin || mode==='edicion'}
-              onClick={()=>{ setMode('edicion'); showToast?.('Modo EDICIÓN activado','amber'); }}>
-              ✏️ Edición
-            </button>
-            <button
-              className={`btn btn-sm ${mode==='produccion' ? 'btn-amber' : 'btn-ghost'}`}
-              disabled={!isAdmin || mode==='produccion'}
-              onClick={()=>{ setMode('produccion'); showToast?.('Modo PRODUCCIÓN activado','green'); }}>
-              🔒 Producción
-            </button>
-          </div>
+          {/* Selector de modo solo visible para admin */}
+          {isAdmin && (
+            <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+              <button
+                className={`btn btn-sm ${mode==='prueba' ? 'btn-amber' : 'btn-ghost'}`}
+                disabled={mode==='prueba'}
+                onClick={()=>{ setMode('prueba'); showToast?.('Modo PRUEBA activado · viendo solo data demo','amber'); }}>
+                🧪 Prueba
+              </button>
+              <button
+                className={`btn btn-sm ${mode==='edicion' ? 'btn-amber' : 'btn-ghost'}`}
+                disabled={mode==='edicion'}
+                onClick={()=>{ setMode('edicion'); showToast?.('Modo EDICIÓN activado','amber'); }}>
+                ✏️ Edición
+              </button>
+              <button
+                className={`btn btn-sm ${mode==='produccion' ? 'btn-amber' : 'btn-ghost'}`}
+                disabled={mode==='produccion'}
+                onClick={()=>{ setMode('produccion'); showToast?.('Modo PRODUCCIÓN activado','green'); }}>
+                🔒 Producción
+              </button>
+            </div>
+          )}
         </div>
         <div style={{ fontSize:12.5, color:'var(--ts)', lineHeight:1.5 }}>
-          {isPrueba && '🧪 Modo prueba activo. Toda la app muestra solamente datos demo precargados. Lo que crees acá NO mezcla con producción ni con tu data real. Ideal para testear antes de operar.'}
-          {isEdicion && '✏️ Modo edición activo sobre data REAL. El admin puede eliminar registros en bloque o individualmente, ajustar configuraciones avanzadas y reiniciar tablas. Cambia a producción cuando termines de configurar.'}
-          {isProduccion && '🔒 Modo producción activo. Eliminación masiva deshabilitada. Edición normal según rol. Es lo que ven tus operarios día a día.'}
+          {isAdmin ? (<>
+            {isPrueba && '🧪 Modo PRUEBA activo. Toda la app muestra SOLO datos demo precargados. Lo que crees aquí NO se mezcla con tu data real. Funciona idéntico al modo Edición pero con data ficticia, ideal para testear todas las funciones del sistema.'}
+            {isEdicion && '✏️ Modo EDICIÓN activo sobre data REAL. Podés eliminar registros, ajustar configuraciones y reiniciar tablas. Cambia a PRODUCCIÓN cuando todo esté listo para tus operarios.'}
+            {isProduccion && '🔒 Modo PRODUCCIÓN activo. Eliminación masiva deshabilitada. Es lo que ven tus operarios día a día. Cambia a EDICIÓN si necesitás corregir algo.'}
+          </>) : (<>
+            🔒 Estás viendo el sistema en modo <strong>PRODUCCIÓN</strong>. Acceso según tu rol ({(window.__useAuth?.()?.profile?.rol || 'operario').replace('_', ' ')}). Si necesitás cambiar configuraciones del sistema o usar el modo prueba/edición, pedile al administrador.
+          </>)}
         </div>
-        {!isAdmin && (
-          <div style={{ fontSize:11.5, color:'var(--tm)', marginTop:8, fontStyle:'italic' }}>
-            Solo el administrador puede cambiar el modo.
-          </div>
-        )}
         {/* Sección Demo Data — visible solo en modo prueba o cuando hay registros demo */}
         {(isPrueba || demoCount > 0) && isAdmin && (
           <div style={{ marginTop:14, paddingTop:14, borderTop:'1px solid var(--bd)' }}>
@@ -1674,12 +1677,17 @@ function SistemaTab({ showToast }) {
           <button className="btn btn-amber btn-sm" onClick={triggerSync}>
             <JxIcon name="refresh" size={13}/>Sincronizar ahora
           </button>
-          <button className="btn btn-red btn-sm" onClick={()=>setConfirm('cache')}>
-            <JxIcon name="trash" size={13}/>Limpiar caché local
-          </button>
-          <button className="btn btn-red btn-sm" onClick={()=>setConfirm('auth')}>
-            <JxIcon name="lock" size={13}/>Cerrar sesiones offline
-          </button>
+          {/* Acciones destructivas solo para admin */}
+          {isAdmin && (
+            <>
+              <button className="btn btn-red btn-sm" onClick={()=>setConfirm('cache')}>
+                <JxIcon name="trash" size={13}/>Limpiar caché local
+              </button>
+              <button className="btn btn-red btn-sm" onClick={()=>setConfirm('auth')}>
+                <JxIcon name="lock" size={13}/>Cerrar sesiones offline
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -1692,7 +1700,7 @@ function SistemaTab({ showToast }) {
               <div key={t} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'7px 0', borderBottom:'1px solid rgba(255,255,255,0.04)', fontSize:12, gap:8 }}>
                 <span style={{ color:'var(--tm)', fontFamily:'monospace', flex:1, overflow:'hidden', textOverflow:'ellipsis' }}>{t}</span>
                 <span style={{ color:n>0?'var(--ts)':'var(--tm)', fontWeight:n>0?600:400, minWidth:36, textAlign:'right' }}>{n}</span>
-                {isPrueba && n > 0 && (
+                {isAdmin && (isPrueba || isEdicion) && n > 0 && (
                   <button
                     className="btn btn-red btn-xs"
                     title={`Borrar todos los registros locales de ${t}`}

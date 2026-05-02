@@ -29,6 +29,21 @@ export function useAuthProvider() {
     });
   }, []);
 
+  // Sincroniza el rol con localStorage para que useAppMode pueda restringir
+  // los modos prueba/edicion solo a admin de forma síncrona.
+  useEffect(() => {
+    try {
+      const rol = profile?.rol || '';
+      const prev = localStorage.getItem('jx_user_role');
+      if (prev !== rol) {
+        if (rol) localStorage.setItem('jx_user_role', rol);
+        else localStorage.removeItem('jx_user_role');
+        // Notificar a useAppMode que recompute
+        window.dispatchEvent(new Event('app_mode_change'));
+      }
+    } catch (e) {}
+  }, [profile]);
+
   async function login(email, password) {
     const result = await authLogin(email, password);
     setUser(result.session?.user ?? null);

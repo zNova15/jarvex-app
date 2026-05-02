@@ -1,18 +1,18 @@
 import { useState, useEffect, useCallback } from 'react';
 
 const STORAGE_KEY = 'app_mode';
+const ROLE_KEY = 'jx_user_role';
 const EVENT_NAME = 'app_mode_change';
 
-// 3 modos:
-//   'prueba'    → muestra SOLO data demo (registros con flag demo:true)
-//   'edicion'   → muestra SOLO data real (sin flag demo); permite editar/eliminar
-//   'produccion'→ muestra SOLO data real; bloqueado borrado/edición destructiva
+// 3 modos (solo admin puede usar 'prueba' y 'edicion'):
+//   'prueba'    → muestra SOLO data demo (registros con flag demo:true). Solo admin.
+//   'edicion'   → muestra SOLO data real (sin flag demo); permite editar/eliminar. Solo admin.
+//   'produccion'→ muestra SOLO data real; bloqueado borrado/edición destructiva. Cualquier rol.
 const MODOS_VALIDOS = new Set(['prueba', 'edicion', 'produccion']);
+const MODOS_ADMIN_ONLY = new Set(['prueba', 'edicion']);
 
 // Migración: antes "prueba" significaba "modo edición sobre data real".
-// Ahora es "modo demo separado". Migramos una vez por sesión a 'edicion'
-// para conservar el comportamiento previo, salvo que el usuario explícitamente
-// haya cambiado a otro modo después de la actualización.
+// Ahora es "modo demo separado". Migramos una vez por sesión a 'edicion'.
 const MIGRATION_KEY = 'jx_appmode_migrated_v3';
 function migrateOnce() {
   try {
@@ -23,13 +23,27 @@ function migrateOnce() {
   } catch (e) {}
 }
 
+function readUserRole() {
+  try { return localStorage.getItem(ROLE_KEY) || ''; }
+  catch { return ''; }
+}
+
 function readMode() {
   try {
     migrateOnce();
     const v = localStorage.getItem(STORAGE_KEY);
-    if (MODOS_VALIDOS.has(v)) return v;
+    const rol = readUserRole();
+    const isAdmin = rol === 'admin';
+    if (MODOS_VALIDOS.has(v)) {
+      // Si el modo guardado requiere admin pero el rol actual no lo es,
+      // forzar 'produccion'. NO sobrescribimos localStorage aquí — eso
+      // podría perder el modo del admin si el rol no se carga aún.
+      if (MODOS_ADMIN_ONLY.has(v) && !isAdmin) return 'produccion';
+      return v;
+    }
   } catch (e) {}
-  return 'edicion';
+  // Default: admin → edicion, no-admin → produccion
+  return readUserRole() === 'admin' ? 'edicion' : 'produccion';
 }
 
 export function useAppMode() {
@@ -37,7 +51,7 @@ export function useAppMode() {
 
   useEffect(() => {
     const onStorage = (e) => {
-      if (e.key === STORAGE_KEY) setModeState(readMode());
+      if (e.key === STORAGE_KEY || e.key === ROLE_KEY) setModeState(readMode());
     };
     const onCustom = () => setModeState(readMode());
     window.addEventListener('storage', onStorage);
@@ -50,10 +64,15 @@ export function useAppMode() {
 
   const setMode = useCallback((newMode) => {
     if (!MODOS_VALIDOS.has(newMode)) return;
+    // Bloquea: no-admin no puede cambiar a prueba/edicion
+    if (MODOS_ADMIN_ONLY.has(newMode) && readUserRole() !== 'admin') return;
     try { localStorage.setItem(STORAGE_KEY, newMode); } catch (e) {}
     setModeState(newMode);
     try { window.dispatchEvent(new Event(EVENT_NAME)); } catch (e) {}
   }, []);
+
+  const rol = readUserRole();
+  const isAdmin = rol === 'admin';
 
   return {
     mode,
@@ -61,6 +80,8 @@ export function useAppMode() {
     isPrueba: mode === 'prueba',
     isEdicion: mode === 'edicion',
     isProduccion: mode === 'produccion',
+    canSwitchMode: isAdmin,
+    userRole: rol,
   };
 }
 
