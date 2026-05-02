@@ -138,6 +138,10 @@ function DashboardPage() {
   const canPartidas = has('Partidas');
   const canCostos   = has('Costos');
   const canObras    = has('Obras');
+  const canMateriales = has('Materiales');
+  const canHerramientas = has('Herramientas');
+  const canPersonal = has('Personal');
+  const canAsistencia = has('Asistencia');
   // Bloque "managerial": agregados de obra (avance, costos, atrasos, distribución, actividad reciente).
   const canManagement = canPartidas || canCostos;
 
@@ -200,6 +204,18 @@ function DashboardPage() {
 
   const today = new Date().toISOString().slice(0, 10);
   const fechaTexto = new Date().toLocaleDateString('es-PE', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
+  // Si el rol no tiene perms para ver NADA del dashboard operativo, sugerimos ir a su módulo
+  const dashboardVacio = !canManagement && !canMateriales && !canHerramientas && !canAsistencia;
+  // Sugerencia de página principal según rol
+  const PAGINA_RECOMENDADA = {
+    contador:        { page: 'cont-dashboard',         label: 'Dashboard Contable' },
+    tesorero:        { page: 'cuentas-bancarias',      label: 'Cuentas Bancarias' },
+    jefe_compras:    { page: 'requisiciones',          label: 'Requisiciones' },
+    rrhh:            { page: 'planillas',              label: 'Planillas' },
+    prevencionista:  { page: 'iperc',                  label: 'IPERC' },
+    maestro_obra:    { page: 'avance',                 label: 'Avance de Obra' },
+  };
+  const pgRec = PAGINA_RECOMENDADA[rol];
 
   // KPIs reales
   const kpis = uMD(() => {
@@ -354,9 +370,9 @@ function DashboardPage() {
             <div className="pg-sub" style={{textTransform:'capitalize'}}>{fechaTexto} · Obra: {obraActiva?.nombre_obra || '—'}</div>
           </div>
           {(() => {
-            const tot = canManagement
-              ? kpis.materialesAlerta + kpis.partidasAtrasadas + kpis.incAbiertas
-              : kpis.materialesAlerta;
+            let tot = 0;
+            if (canMateriales) tot += kpis.materialesAlerta;
+            if (canManagement) tot += kpis.partidasAtrasadas + kpis.incAbiertas;
             return tot > 0 ? (
               <button className="btn btn-amber btn-sm"><JxIcon name="bell" size={13}/> {tot} Alertas</button>
             ) : null;
@@ -364,21 +380,40 @@ function DashboardPage() {
         </div>
       </div>
 
-      {kpis.materialesAlerta > 0 && (
+      {dashboardVacio && pgRec && (
+        <div className="card card-p" style={{ marginBottom: 18, padding: '20px 22px', borderLeft: '3px solid var(--amber)' }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--tp)', marginBottom: 6 }}>
+            Hola{auth?.profile?.nombres ? ', ' + auth.profile.nombres : ''}.
+          </div>
+          <div style={{ fontSize: 12.5, color: 'var(--ts)', marginBottom: 12 }}>
+            Tu rol no usa este Dashboard general. Ve directo a tu módulo principal:
+          </div>
+          <button className="btn btn-amber btn-sm" onClick={() => { try { window.location.hash = '#/' + pgRec.page; } catch {} }}>
+            Ir a {pgRec.label} <JxIcon name="chevR" size={12}/>
+          </button>
+        </div>
+      )}
+
+      {canMateriales && kpis.materialesAlerta > 0 && (
         <div className="alert-banner" style={{marginBottom:18}}>
           <JxIcon name="alert" size={16} color="#E74C3C"/>
           <span><strong>{kpis.matsSinStock + kpis.matsCritico} material{kpis.matsSinStock+kpis.matsCritico>1?'es':''} en estado crítico:</strong> {materiales.filter(m=>m.alerta==='critico'||m.alerta==='sin_stock').slice(0,3).map(m=>`${m.nombre_material} (${m.stock_actual} ${m.unidad})`).join(' · ')}{kpis.materialesAlerta>3?` · y ${kpis.materialesAlerta-3} más`:''}</span>
         </div>
       )}
 
-      <div className={canManagement ? "g4" : "g3"} style={{ marginBottom: 20, display:'grid', gridTemplateColumns: canManagement ? 'repeat(4,1fr)' : 'repeat(3,1fr)', gap:12 }}>
-        {canManagement && (
-          <KpiCard label="Obras Activas" value={String(kpis.obrasActivas)} icon="building" color="#3498DB" sub={`${obras.length} totales`}/>
-        )}
-        <KpiCard label="Personal Presente Hoy" value={String(kpis.presentesHoy)} unit={`/${kpis.personalTotal}`} icon="users" color="#2ECC71" sub={`${kpis.tardanzasHoy} tardanza · ${kpis.faltasHoy} falta`}/>
-        <KpiCard label="Materiales en Alerta" value={String(kpis.materialesAlerta)} icon="package" color={kpis.materialesAlerta>0?'#E74C3C':'#2ECC71'} sub={`${kpis.matsCritico} críticos · ${kpis.matsReponer} por reponer`}/>
-        <KpiCard label="Herramientas en Uso" value={String(kpis.herrEnUso)} unit={`/${kpis.herrTotal}`} icon="tool" color="#F28C28"/>
-      </div>
+      {(() => {
+        const cards = [];
+        if (canManagement) cards.push(<KpiCard key="o" label="Obras Activas" value={String(kpis.obrasActivas)} icon="building" color="#3498DB" sub={`${obras.length} totales`}/>);
+        if (canAsistencia) cards.push(<KpiCard key="p" label="Personal Presente Hoy" value={String(kpis.presentesHoy)} unit={`/${kpis.personalTotal}`} icon="users" color="#2ECC71" sub={`${kpis.tardanzasHoy} tardanza · ${kpis.faltasHoy} falta`}/>);
+        if (canMateriales) cards.push(<KpiCard key="m" label="Materiales en Alerta" value={String(kpis.materialesAlerta)} icon="package" color={kpis.materialesAlerta>0?'#E74C3C':'#2ECC71'} sub={`${kpis.matsCritico} críticos · ${kpis.matsReponer} por reponer`}/>);
+        if (canHerramientas) cards.push(<KpiCard key="h" label="Herramientas en Uso" value={String(kpis.herrEnUso)} unit={`/${kpis.herrTotal}`} icon="tool" color="#F28C28"/>);
+        if (cards.length === 0) return null;
+        return (
+          <div style={{ marginBottom: 20, display:'grid', gridTemplateColumns: `repeat(${cards.length},1fr)`, gap:12 }}>
+            {cards}
+          </div>
+        );
+      })()}
       {/* ── KPIs principales obra activa: avance, costo, atrasos, vencimiento ── */}
       {canManagement && obraActiva ? (
         <>
@@ -563,64 +598,78 @@ function DashboardPage() {
         </div>
       )}
 
-      {/* Charts: Avance por partida + Estado materiales */}
-      <div style={{ display: 'grid', gridTemplateColumns: canPartidas ? '2fr 1fr' : '1fr', gap: 16, marginBottom: 16 }}>
-        {canPartidas && (
-          <div className="chart-card">
-            <div className="chart-title">Avance por Partida</div>
-            <div className="chart-sub">% de avance por partida (presupuesto vs ejecutado)</div>
-            {partidaChart.length > 0 ? (
-              <ChartBar id="part-av" labels={partidaChart.map(p => p.nombre_partida.substring(0,30))}
-                datasets={[
-                  { label:'% Avance', data: partidaChart.map(p => Number(p.porcentaje_avance || 0)), backgroundColor:'rgba(52,152,219,0.6)', borderColor:'rgba(52,152,219,0.8)', borderWidth:1 },
-                ]} height={210}/>
-            ) : <div className="empty-state" style={{padding:'40px 0'}}>Sin partidas con presupuesto</div>}
+      {/* Charts row 1: Avance por partida + Estado materiales (cada uno gateado) */}
+      {(canPartidas || canMateriales) && (() => {
+        const cols = (canPartidas ? 1 : 0) + (canMateriales ? 1 : 0);
+        const tpl = canPartidas && canMateriales ? '2fr 1fr' : '1fr';
+        return (
+          <div style={{ display: 'grid', gridTemplateColumns: tpl, gap: 16, marginBottom: 16 }}>
+            {canPartidas && (
+              <div className="chart-card">
+                <div className="chart-title">Avance por Partida</div>
+                <div className="chart-sub">% de avance por partida (presupuesto vs ejecutado)</div>
+                {partidaChart.length > 0 ? (
+                  <ChartBar id="part-av" labels={partidaChart.map(p => p.nombre_partida.substring(0,30))}
+                    datasets={[
+                      { label:'% Avance', data: partidaChart.map(p => Number(p.porcentaje_avance || 0)), backgroundColor:'rgba(52,152,219,0.6)', borderColor:'rgba(52,152,219,0.8)', borderWidth:1 },
+                    ]} height={210}/>
+                ) : <div className="empty-state" style={{padding:'40px 0'}}>Sin partidas con presupuesto</div>}
+              </div>
+            )}
+            {canMateriales && (
+              <div className="chart-card">
+                <div className="chart-title">Estado de Materiales</div>
+                <div className="chart-sub">Distribución por nivel de alerta</div>
+                {materiales.length > 0 ? (
+                  <ChartDoughnut id="estado-mat"
+                    labels={['Stock OK', 'Por Reponer', 'Crítico', 'Sin Stock']}
+                    data={[kpis.matsOk, kpis.matsReponer, kpis.matsCritico, kpis.matsSinStock]}
+                    colors={['#2ECC71', '#F1C40F', '#F28C28', '#E74C3C']}
+                    height={210}/>
+                ) : <div className="empty-state" style={{padding:'40px 0'}}>Sin materiales</div>}
+              </div>
+            )}
           </div>
-        )}
-        <div className="chart-card">
-          <div className="chart-title">Estado de Materiales</div>
-          <div className="chart-sub">Distribución por nivel de alerta</div>
-          {materiales.length > 0 ? (
-            <ChartDoughnut id="estado-mat"
-              labels={['Stock OK', 'Por Reponer', 'Crítico', 'Sin Stock']}
-              data={[kpis.matsOk, kpis.matsReponer, kpis.matsCritico, kpis.matsSinStock]}
-              colors={['#2ECC71', '#F1C40F', '#F28C28', '#E74C3C']}
-              height={210}/>
-          ) : <div className="empty-state" style={{padding:'40px 0'}}>Sin materiales</div>}
-        </div>
-      </div>
+        );
+      })()}
 
-      <div style={{ display: 'grid', gridTemplateColumns: canCostos ? '1fr 1fr' : '1fr', gap: 16, marginBottom: 16 }}>
-        {canCostos && (
-          <div className="chart-card">
-            <div className="chart-title">Costo por Partida</div>
-            <div className="chart-sub">Presupuestado vs Real (S/)</div>
-            {partidaChart.length > 0 ? (
-              <ChartBar id="costos-part" labels={partidaChart.map(p => p.nombre_partida.substring(0,18))}
-                datasets={[
-                  { label:'Presupuestado', data: partidaChart.map(p => Number(p.costo_total_presupuestado || 0)), backgroundColor:'rgba(52,152,219,0.6)', borderColor:'rgba(52,152,219,0.8)', borderWidth:1 },
-                  { label:'Real', data: partidaChart.map(p => Number(p.costo_real_acumulado || 0)), backgroundColor:'rgba(242,183,5,0.6)', borderColor:'rgba(242,183,5,0.8)', borderWidth:1 },
-                ]} height={195}/>
-            ) : <div className="empty-state" style={{padding:'40px 0'}}>Sin partidas</div>}
-          </div>
-        )}
-        <div className="chart-card">
-          <div className="chart-title">Asistencia Hoy</div>
-          <div className="chart-sub">{fechaTexto.split(',')[0]}</div>
-          <ChartDoughnut id="asist-hoy"
-            labels={['Asistió','Tardanza','Falta','Permiso']}
-            data={[
-              kpis.presentesHoy,
-              kpis.tardanzasHoy,
-              kpis.faltasHoy,
-              kpis.asistHoy.filter(a => a.estado_asistencia === 'permiso').length,
-            ]}
-            colors={['#2ECC71','#F1C40F','#E74C3C','#3498DB']}
-            height={195}/>
+      {/* Charts row 2: Costo por partida + Asistencia hoy */}
+      {(canCostos || canAsistencia) && (
+        <div style={{ display: 'grid', gridTemplateColumns: canCostos && canAsistencia ? '1fr 1fr' : '1fr', gap: 16, marginBottom: 16 }}>
+          {canCostos && (
+            <div className="chart-card">
+              <div className="chart-title">Costo por Partida</div>
+              <div className="chart-sub">Presupuestado vs Real (S/)</div>
+              {partidaChart.length > 0 ? (
+                <ChartBar id="costos-part" labels={partidaChart.map(p => p.nombre_partida.substring(0,18))}
+                  datasets={[
+                    { label:'Presupuestado', data: partidaChart.map(p => Number(p.costo_total_presupuestado || 0)), backgroundColor:'rgba(52,152,219,0.6)', borderColor:'rgba(52,152,219,0.8)', borderWidth:1 },
+                    { label:'Real', data: partidaChart.map(p => Number(p.costo_real_acumulado || 0)), backgroundColor:'rgba(242,183,5,0.6)', borderColor:'rgba(242,183,5,0.8)', borderWidth:1 },
+                  ]} height={195}/>
+              ) : <div className="empty-state" style={{padding:'40px 0'}}>Sin partidas</div>}
+            </div>
+          )}
+          {canAsistencia && (
+            <div className="chart-card">
+              <div className="chart-title">Asistencia Hoy</div>
+              <div className="chart-sub">{fechaTexto.split(',')[0]}</div>
+              <ChartDoughnut id="asist-hoy"
+                labels={['Asistió','Tardanza','Falta','Permiso']}
+                data={[
+                  kpis.presentesHoy,
+                  kpis.tardanzasHoy,
+                  kpis.faltasHoy,
+                  kpis.asistHoy.filter(a => a.estado_asistencia === 'permiso').length,
+                ]}
+                colors={['#2ECC71','#F1C40F','#E74C3C','#3498DB']}
+                height={195}/>
+            </div>
+          )}
         </div>
-      </div>
+      )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: canManagement ? '1fr 1fr' : '1fr', gap: 16 }}>
+      {(canManagement || canHerramientas) && (
+      <div style={{ display: 'grid', gridTemplateColumns: canManagement && canHerramientas ? '1fr 1fr' : '1fr', gap: 16 }}>
         {canManagement && (
           <div className="card card-p">
             <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 14, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -642,16 +691,19 @@ function DashboardPage() {
           </div>
         )}
 
-        <div className="chart-card">
-          <div className="chart-title">Herramientas Más Utilizadas</div>
-          <div className="chart-sub">Total de salidas registradas</div>
-          {topHerramientas.length > 0 ? (
-            <ChartBar id="tools" labels={topHerramientas.map(t => t.nombre)}
-              datasets={[{ label:'Salidas', data: topHerramientas.map(t => t.n), backgroundColor:['rgba(242,183,5,.65)','rgba(242,140,40,.65)','rgba(52,152,219,.65)','rgba(46,204,113,.65)','rgba(149,165,166,.5)'], borderWidth:0 }]}
-              height={210} horizontal={true}/>
-          ) : <div className="empty-state" style={{padding:'40px 0'}}>Sin movimientos de herramientas</div>}
-        </div>
+        {canHerramientas && (
+          <div className="chart-card">
+            <div className="chart-title">Herramientas Más Utilizadas</div>
+            <div className="chart-sub">Total de salidas registradas</div>
+            {topHerramientas.length > 0 ? (
+              <ChartBar id="tools" labels={topHerramientas.map(t => t.nombre)}
+                datasets={[{ label:'Salidas', data: topHerramientas.map(t => t.n), backgroundColor:['rgba(242,183,5,.65)','rgba(242,140,40,.65)','rgba(52,152,219,.65)','rgba(46,204,113,.65)','rgba(149,165,166,.5)'], borderWidth:0 }]}
+                height={210} horizontal={true}/>
+            ) : <div className="empty-state" style={{padding:'40px 0'}}>Sin movimientos de herramientas</div>}
+          </div>
+        )}
       </div>
+      )}
     </div>
   );
 }
