@@ -430,13 +430,16 @@ const PERM_MATRIX = {
     return 'r';
   }),
 
-  // Almacenero: w solo materiales/herramientas + recepciones; r requisiciones/OC; x resto
+  // Almacenero: w en almacén + EPP (entrega); r en compras/maquinaria/personal/asistencia;
+  // x en gestión presupuestal, contabilidad, RRHH, SUNAT, ejecutivo, auditoría
   almacenero: PERM_MATRIX_MODULES.map(m => {
     if (m === 'Usuarios/Config') return 'x';
-    if (['Materiales','Mov. Materiales','Herramientas','Mov. Herramientas','Recepciones'].includes(m)) return 'w';
+    // Write: lo que el almacenero ejecuta directamente
+    if (['Materiales','Mov. Materiales','Herramientas','Mov. Herramientas','Recepciones','EPP'].includes(m)) return 'w';
+    // Lectura: lo que necesita consultar para hacer su trabajo
     if (['Requisiciones','Órdenes de Compra','Cotizaciones','Proveedores','Personal','Asistencia',
-         'Activos Pesados','Mantenimiento','Horas Máquina','Evidencias','Incidencias',
-         'EPP','Charlas Seguridad'].includes(m)) return 'r';
+         'Activos Pesados','Mantenimiento','Horas Máquina','Evidencias','Incidencias'].includes(m)) return 'r';
+    // Resto (RRHH, contabilidad, SUNAT, ejecutivo, SSOMA distinto a EPP, auditoría) → sin acceso
     return 'x';
   }),
 
@@ -489,6 +492,101 @@ function getEffectivePermMatrix() {
 }
 // Exponer para que otras pantallas puedan consultar
 window.__getEffectivePermMatrix = getEffectivePermMatrix;
+
+// Mapping de id de sidebar → módulo en la matriz de permisos.
+// Si el módulo es null/undefined, la página NO está en la matriz y se considera
+// visible para todos (utilities como dashboard, búsqueda, importar, configuración
+// que tiene tabs internas filtradas por rol).
+window.__moduleIdMap = {
+  // Operaciones
+  'obras': 'Obras',
+  'personal': 'Personal',
+  'asistencia': 'Asistencia',
+  'materiales': 'Materiales',
+  'mov-materiales': 'Mov. Materiales',
+  'herramientas': 'Herramientas',
+  'mov-herramientas': 'Mov. Herramientas',
+  'proveedores': 'Proveedores',
+  // Gestión de obra
+  'partidas': 'Partidas',
+  'insumos': 'Insumos',
+  'versiones': 'Versiones presupuesto',
+  'cronograma': 'Cronograma',
+  'avance': 'Avance',
+  'comparativo': 'Comparativo',
+  'costos': 'Costos',
+  'valorizaciones': 'Valorizaciones',
+  'incidencias': 'Incidencias',
+  'evidencias': 'Evidencias',
+  // Compras
+  'solicitud-residente': 'Requisiciones',
+  'requisiciones': 'Requisiciones',
+  'ordenes-compra': 'Órdenes de Compra',
+  // Subcontratos
+  'subcontratistas': 'Subcontratistas',
+  'subcontratos': 'Subcontratos',
+  'subcontrato-valorizaciones': 'Valor. Subcontrato',
+  // Maquinaria
+  'activos-pesados': 'Activos Pesados',
+  'mantenimiento-programado': 'Mantenimiento',
+  // SSOMA
+  'charlas-seguridad': 'Charlas Seguridad',
+  'iperc': 'IPERC',
+  'epp': 'EPP',
+  'inspecciones-seguridad': 'Inspecciones SSOMA',
+  'capacitaciones': 'Capacitaciones',
+  // RRHH
+  'personal-contratos': 'Contratos Laborales',
+  'planillas': 'Planillas',
+  'cts': 'CTS',
+  'gratificaciones': 'Gratificaciones',
+  'plame': 'PLAME / T-Registro',
+  // Contabilidad
+  'cont-dashboard': 'Movs. Contables',
+  'empresas': 'Empresas',
+  'movimientos-contables': 'Movs. Contables',
+  'intercompany': 'Intercompany',
+  'consolidado': 'Consolidado',
+  'plan-cuentas': 'Plan de Cuentas',
+  'libro-diario': 'Libro Diario',
+  'balance-general': 'Balance General',
+  'estado-resultados': 'Estado Resultados',
+  // Tesorería
+  'cuentas-bancarias': 'Cuentas Bancarias',
+  'flujo-caja': 'Flujo de Caja',
+  'flujo-proyectado': 'Flujo Proyectado',
+  'comparativo-periodos': 'Comparativo Periodos',
+  // SUNAT
+  'comprobantes': 'Comprobantes Electrónicos',
+  'libros-electronicos': 'Libros Electrónicos',
+  'config-sunat': 'Config SUNAT',
+  // Ejecutivo
+  'dashboard-ejecutivo': 'Dashboard Ejecutivo',
+  'kpis-obra': 'KPIs por Obra',
+  'cumplimiento-cronograma': 'Cumplimiento Cronograma',
+  'alertas': 'Centro Alertas',
+  'reportes': 'Reportes',
+  // Administración
+  'audit-log': 'Auditoría',
+  'conflictos': 'Conflictos Sync',
+  'solicitudes': 'Solicitudes Cambio',
+  'usuarios': 'Usuarios/Config',
+  'roles': 'Usuarios/Config',
+  'importar': 'Importar',
+  // Items SIN restricción (utilities visibles para todos):
+  'dashboard': null,
+  'busqueda': null,
+  'configuracion': null, // tabs internas se filtran solas
+};
+
+// Helper que devuelve si el rol puede ver el item del sidebar (lectura mínimo)
+window.__canSeeSidebarItem = function(rol, itemId) {
+  if (!rol) return true;
+  if (rol === 'admin') return true;
+  const modulo = window.__moduleIdMap?.[itemId];
+  if (modulo === null || modulo === undefined) return true;
+  return window.__hasPerm?.(rol, modulo, 'r') ?? true;
+};
 window.__hasPerm = function(rol, modulo, nivel = 'r') {
   if (!rol) return false;
   if (rol === 'admin') return true;

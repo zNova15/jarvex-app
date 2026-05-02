@@ -155,6 +155,14 @@ function Sidebar({ current, onNav, collapsed, onToggle }) {
   const profile = auth?.profile;
   const isAdmin = profile?.rol === 'admin';
 
+  // Re-render cuando admin cambia overrides de permisos
+  const [permTick, setPermTick] = useState(0);
+  useEffect(() => {
+    const onPerms = () => setPermTick(t => t + 1);
+    window.addEventListener('jx_perms_changed', onPerms);
+    return () => window.removeEventListener('jx_perms_changed', onPerms);
+  }, []);
+
   // Poll de solicitudes pendientes (solo admin)
   const [pendingReqCount, setPendingReqCount] = useState(0);
   useEffect(() => {
@@ -306,9 +314,35 @@ function Sidebar({ current, onNav, collapsed, onToggle }) {
         )}
       </div>
 
+      {/* Filtra items por permisos del rol y oculta secciones que quedan vacías */}
+      {(() => null)()}
       {/* Nav items */}
       <nav style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '8px 0' }}>
-        {NAV.map((item, i) => {
+        {(() => {
+          const userRol = profile?.rol;
+          // Si aún no cargó el profile, NO filtrar (evita parpadeo en login)
+          // Si cargó pero es admin, NO filtrar (ve todo)
+          if (!userRol || userRol === 'admin') {
+            return NAV.map((it, idx) => ({ ...it, _idx: idx }));
+          }
+          const canSee = (id) => window.__canSeeSidebarItem?.(userRol, id) ?? true;
+          const items = [];
+          for (let i = 0; i < NAV.length; i++) {
+            const it = NAV[i];
+            if (it.section) {
+              // Mirar adelante hasta la próxima sección — si hay al menos 1 item visible, agrego
+              let hasVisible = false;
+              for (let j = i + 1; j < NAV.length && !NAV[j].section; j++) {
+                if (canSee(NAV[j].id)) { hasVisible = true; break; }
+              }
+              if (hasVisible) items.push({ ...it, _idx: i });
+            } else if (canSee(it.id)) {
+              items.push({ ...it, _idx: i });
+            }
+          }
+          return items;
+        })().map((item) => {
+          const i = item._idx;
           if (item.section) {
             if (navCollapsed) return <div key={i} style={{ height: 1, background: 'rgba(255,255,255,0.05)', margin: '8px 10px' }} />;
             return (
