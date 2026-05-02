@@ -119,6 +119,7 @@ function MaterialesPage({ showToast }) {
   const [q, setQ] = uS('');
   const [modal, setModal] = uS(null); // 'ingreso' | 'salida' | 'nuevo' | 'editar' | 'sync' | 'reposicion'
   const [reposicionForm, setReposicionForm] = uS(null); // { mat, cantidad, motivo, prioridad }
+  const [movFoto, setMovFoto] = uS(null); // { blob, url } para adjuntar al movimiento de material
   const [editingId, setEditingId] = uS(null); // id del material en edición
   const [obraId, setObraId] = uS(null);
   const [requestTarget, setRequestTarget] = uS(null); // material para "Solicitar Cambio"
@@ -780,6 +781,27 @@ function MaterialesPage({ showToast }) {
       });
       try { await window.__logAudit?.({ action:'insert', table:'movimientos_materiales', recordId:movCreated?.id, newData:movCreated, reason:`${tipo} de ${cantNum} ${material.unidad} de ${material.nombre_material}${stockForzado ? ' (STOCK FORZADO — quedó negativo)' : ''}` }); } catch(e) {}
 
+      // Adjuntar foto del registro físico (si se cargó una)
+      if (movFoto?.blob && window.__saveEvidenciaLocal) {
+        try {
+          await window.__saveEvidenciaLocal({
+            id: window.__newId(),
+            obra_id: obraId,
+            tipo_evidencia: 'movimiento_material',
+            modulo_relacionado: 'movimientos_materiales',
+            registro_relacionado_id: movCreated?.id,
+            nombre_archivo: movFoto.blob.name || `mov_material_${Date.now()}.jpg`,
+            mime_type: movFoto.blob.type || 'image/jpeg',
+            blob: movFoto.blob,
+            observaciones: `Foto de ${tipo} · ${material.nombre_material} (${cantNum} ${material.unidad})`,
+            fecha: form.fecha,
+            created_by: auth?.profile?.id ?? 'offline',
+          });
+        } catch (e) {
+          showToast('Movimiento OK pero la foto no se guardó: ' + e.message, 'amber');
+        }
+      }
+
       // Audit log especial cuando se fuerza salida sin stock
       if (stockForzado) {
         try { await window.__logAudit?.({ action:'alert', table:'movimientos_materiales', recordId: movCreated?.id,
@@ -883,6 +905,9 @@ function MaterialesPage({ showToast }) {
       }
       setModal(null);
       setForm({});
+      // Limpiar foto adjunta y URL preview
+      if (movFoto?.url) try { URL.revokeObjectURL(movFoto.url); } catch {}
+      setMovFoto(null);
     } catch (e) {
       showToast('Error: ' + e.message, 'red');
     }
@@ -1203,8 +1228,35 @@ function MaterialesPage({ showToast }) {
           </div>
         </div>
         <div style={{marginTop:14}}><label className="flabel">Observaciones</label><textarea className="fi" value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})} placeholder="Notas adicionales…"/></div>
+        <div style={{ marginTop:14, padding:'10px 12px', border:'1px dashed var(--bd)', borderRadius:8 }}>
+          <label className="flabel" style={{ display:'flex', alignItems:'center', gap:6 }}>
+            <JxIcon name="camera" size={13}/> Foto del registro físico (opcional)
+          </label>
+          <input type="file" accept="image/*" capture="environment"
+            onChange={e=>{
+              const file = e.target.files?.[0];
+              if (!file) return;
+              if (file.size > 8 * 1024 * 1024) { showToast('Foto muy grande (máx 8 MB)', 'red'); return; }
+              if (movFoto?.url) try { URL.revokeObjectURL(movFoto.url); } catch {}
+              setMovFoto({ blob: file, url: URL.createObjectURL(file) });
+            }}/>
+          {movFoto?.url && (
+            <div style={{ marginTop:8, display:'flex', alignItems:'center', gap:8 }}>
+              <img src={movFoto.url} alt="preview" style={{ width:80, height:80, objectFit:'cover', borderRadius:6, border:'1px solid var(--bd)' }}/>
+              <div style={{ fontSize:11, color:'var(--tm)' }}>
+                {movFoto.blob.name || 'Foto'} · {(movFoto.blob.size/1024).toFixed(0)} KB
+              </div>
+              <button className="btn btn-ghost btn-xs" onClick={()=>{ try { URL.revokeObjectURL(movFoto.url); } catch {}; setMovFoto(null); }}>
+                <JxIcon name="x" size={11}/>
+              </button>
+            </div>
+          )}
+          <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:4 }}>
+            Útil para adjuntar foto de la guía/factura física o evidencia del ingreso. Queda asociada al movimiento.
+          </div>
+        </div>
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={()=>setModal(null)}>Cancelar</button>
+          <button className="btn btn-ghost" onClick={()=>{ setModal(null); if (movFoto?.url) try { URL.revokeObjectURL(movFoto.url); } catch {}; setMovFoto(null); }}>Cancelar</button>
           <button className="btn btn-amber" onClick={()=>handleSubmitMovimiento('ingreso')}><JxIcon name="check" size={13}/>Registrar Ingreso</button>
         </div>
       </Modal>}
@@ -1224,8 +1276,19 @@ function MaterialesPage({ showToast }) {
           <div><label className="flabel">Responsable</label>
             <select className="fi" value={form.responsable_id||''} onChange={e=>setForm({...form, responsable_id:e.target.value||null})}>
               <option value="">— sin especificar —</option>
-              {personal.map(p => <option key={p.id} value={p.id}>{p.nombres} {p.apellidos} · {p.cargo}</option>)}
+              {personal
+                .filter(p => {
+                  if (p.estado !== 'activo') return false;
+                  const hoy = new Date().toISOString().slice(0, 10);
+                  if (p.fecha_ingreso && String(p.fecha_ingreso) > hoy) return false;
+                  if (p.obra_id && obraId && p.obra_id !== obraId) return false;
+                  return true;
+                })
+                .map(p => <option key={p.id} value={p.id}>{p.nombres} {p.apellidos} · {p.cargo}</option>)}
             </select>
+            <div style={{ fontSize:10, color:'var(--tm)', marginTop:4 }}>
+              Solo trabajadores activos de la obra que ya ingresaron.
+            </div>
           </div>
           <div><label className="flabel">Frente / Zona</label><input className="fi" placeholder="Ej: Frente A, Piso 2" value={form.frente_zona||''} onChange={e=>setForm({...form, frente_zona:e.target.value})}/></div>
           <div><label className="flabel">Stock Disponible</label>
@@ -1269,8 +1332,35 @@ function MaterialesPage({ showToast }) {
           </div>
         </div>
         <div style={{marginTop:14}}><label className="flabel">Observaciones</label><textarea className="fi" value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})} placeholder="Notas adicionales…"/></div>
+        <div style={{ marginTop:14, padding:'10px 12px', border:'1px dashed var(--bd)', borderRadius:8 }}>
+          <label className="flabel" style={{ display:'flex', alignItems:'center', gap:6 }}>
+            <JxIcon name="camera" size={13}/> Foto del registro físico (opcional)
+          </label>
+          <input type="file" accept="image/*" capture="environment"
+            onChange={e=>{
+              const file = e.target.files?.[0];
+              if (!file) return;
+              if (file.size > 8 * 1024 * 1024) { showToast('Foto muy grande (máx 8 MB)', 'red'); return; }
+              if (movFoto?.url) try { URL.revokeObjectURL(movFoto.url); } catch {}
+              setMovFoto({ blob: file, url: URL.createObjectURL(file) });
+            }}/>
+          {movFoto?.url && (
+            <div style={{ marginTop:8, display:'flex', alignItems:'center', gap:8 }}>
+              <img src={movFoto.url} alt="preview" style={{ width:80, height:80, objectFit:'cover', borderRadius:6, border:'1px solid var(--bd)' }}/>
+              <div style={{ fontSize:11, color:'var(--tm)' }}>
+                {movFoto.blob.name || 'Foto'} · {(movFoto.blob.size/1024).toFixed(0)} KB
+              </div>
+              <button className="btn btn-ghost btn-xs" onClick={()=>{ try { URL.revokeObjectURL(movFoto.url); } catch {}; setMovFoto(null); }}>
+                <JxIcon name="x" size={11}/>
+              </button>
+            </div>
+          )}
+          <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:4 }}>
+            Foto de vale/guía firmada por el receptor o evidencia del retiro. Queda asociada al movimiento.
+          </div>
+        </div>
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={()=>setModal(null)}>Cancelar</button>
+          <button className="btn btn-ghost" onClick={()=>{ setModal(null); if (movFoto?.url) try { URL.revokeObjectURL(movFoto.url); } catch {}; setMovFoto(null); }}>Cancelar</button>
           <button className="btn btn-amber" onClick={()=>handleSubmitMovimiento('salida')}><JxIcon name="check" size={13}/>Registrar Salida</button>
         </div>
       </Modal>}
@@ -1731,6 +1821,7 @@ function HerramientasPage({ showToast }) {
   const [editingId, setEditingId] = uS(null);
   const [obraId, setObraId] = uS(null);
   const [requestTarget, setRequestTarget] = uS(null);
+  const [movFoto, setMovFoto] = uS(null); // foto adjunta al movimiento (salida/devolución)
 
   uE(() => {
     let cancelled = false;
@@ -2074,6 +2165,27 @@ function HerramientasPage({ showToast }) {
         observaciones: form.observaciones || null,
       });
       try { await window.__logAudit?.({ action:'insert', table:'movimientos_herramientas', recordId:movCreated?.id, newData:movCreated, reason:`${form.accion} de "${herr.nombre_herramienta}"${salidaForzada ? ' (FORZADA)' : ''}${cambioResponsable ? ' (EXCEPCIÓN responsable)' : ''}` }); } catch(e) {}
+
+      // Adjuntar foto del registro físico (vale firmado, etc) si se cargó
+      if (movFoto?.blob && window.__saveEvidenciaLocal) {
+        try {
+          await window.__saveEvidenciaLocal({
+            id: window.__newId(),
+            obra_id: obraId,
+            tipo_evidencia: 'movimiento_herramienta',
+            modulo_relacionado: 'movimientos_herramientas',
+            registro_relacionado_id: movCreated?.id,
+            nombre_archivo: movFoto.blob.name || `mov_herr_${Date.now()}.jpg`,
+            mime_type: movFoto.blob.type || 'image/jpeg',
+            blob: movFoto.blob,
+            observaciones: `Foto de ${form.accion} · ${herr.nombre_herramienta}`,
+            fecha: form.fecha,
+            created_by: auth?.profile?.id ?? 'offline',
+          });
+        } catch (e) {
+          showToast('Movimiento OK pero la foto no se guardó: ' + e.message, 'amber');
+        }
+      }
       // Audit + notif al admin si fue excepción de devolución (otra persona)
       if (cambioResponsable) {
         const respOrig = personal.find(p => p.id === respOriginalId);
@@ -2292,8 +2404,21 @@ function HerramientasPage({ showToast }) {
               disabled={esDevolucion && !hayExcepcion && !!respOriginalId}
               onChange={e=>setForm({...form, responsable_id:e.target.value})}>
               <option value="">Selecciona...</option>
-              {personal.map(p => <option key={p.id} value={p.id}>{p.nombres} {p.apellidos} · {p.cargo}</option>)}
+              {personal
+                .filter(p => {
+                  if (p.estado !== 'activo') return false;
+                  // Solo trabajadores que ya ingresaron (fecha_ingreso <= hoy)
+                  const hoy = new Date().toISOString().slice(0, 10);
+                  if (p.fecha_ingreso && String(p.fecha_ingreso) > hoy) return false;
+                  // Y de la obra activa (el hook ya filtra pero por si acaso)
+                  if (p.obra_id && obraId && p.obra_id !== obraId) return false;
+                  return true;
+                })
+                .map(p => <option key={p.id} value={p.id}>{p.nombres} {p.apellidos} · {p.cargo}</option>)}
             </select>
+            <div style={{ fontSize:10, color:'var(--tm)', marginTop:4 }}>
+              Solo trabajadores activos de la obra que ya ingresaron a trabajar.
+            </div>
           </div>
           <div><label className="flabel">Estado de {form.accion === 'salida' ? 'Salida' : 'Devolución'}</label>
             <select className="fi" value={form.estado||''} onChange={e=>setForm({...form, estado:e.target.value})}>
@@ -2318,9 +2443,36 @@ function HerramientasPage({ showToast }) {
           )}
         </div>
         <div style={{marginTop:14}}><label className="flabel">Observaciones</label><textarea className="fi" value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})} placeholder="Condición de la herramienta, daños, etc."/></div>
+        <div style={{ marginTop:14, padding:'10px 12px', border:'1px dashed var(--bd)', borderRadius:8 }}>
+          <label className="flabel" style={{ display:'flex', alignItems:'center', gap:6 }}>
+            <JxIcon name="camera" size={13}/> Foto del registro físico (opcional)
+          </label>
+          <input type="file" accept="image/*" capture="environment"
+            onChange={e=>{
+              const file = e.target.files?.[0];
+              if (!file) return;
+              if (file.size > 8 * 1024 * 1024) { showToast('Foto muy grande (máx 8 MB)', 'red'); return; }
+              if (movFoto?.url) try { URL.revokeObjectURL(movFoto.url); } catch {}
+              setMovFoto({ blob: file, url: URL.createObjectURL(file) });
+            }}/>
+          {movFoto?.url && (
+            <div style={{ marginTop:8, display:'flex', alignItems:'center', gap:8 }}>
+              <img src={movFoto.url} alt="preview" style={{ width:80, height:80, objectFit:'cover', borderRadius:6, border:'1px solid var(--bd)' }}/>
+              <div style={{ fontSize:11, color:'var(--tm)' }}>
+                {movFoto.blob.name || 'Foto'} · {(movFoto.blob.size/1024).toFixed(0)} KB
+              </div>
+              <button className="btn btn-ghost btn-xs" onClick={()=>{ try { URL.revokeObjectURL(movFoto.url); } catch {}; setMovFoto(null); }}>
+                <JxIcon name="x" size={11}/>
+              </button>
+            </div>
+          )}
+          <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:4 }}>
+            Útil para vale firmado por el responsable, foto de la herramienta al salir o al devolver. Queda asociada al movimiento.
+          </div>
+        </div>
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={()=>setModal(null)}>Cancelar</button>
-          <button className="btn btn-amber" onClick={handleSubmitMov}><JxIcon name="check" size={13}/>Registrar</button>
+          <button className="btn btn-ghost" onClick={()=>{ setModal(null); if (movFoto?.url) try { URL.revokeObjectURL(movFoto.url); } catch {}; setMovFoto(null); }}>Cancelar</button>
+          <button className="btn btn-amber" onClick={async () => { await handleSubmitMov(); if (movFoto?.url) try { URL.revokeObjectURL(movFoto.url); } catch {}; setMovFoto(null); }}><JxIcon name="check" size={13}/>Registrar</button>
         </div>
       </Modal>);
       })()}
@@ -2570,7 +2722,9 @@ function PersonalPage({ showToast }) {
           fecha_ingreso: form.fecha_ingreso || null,
           telefono: form.telefono?.trim() || null,
           estado: form.estado || 'activo',
-          obra_id: form.obra_id || oldData?.obra_id || obraId,
+          // Forzar mantener la obra original — NUNCA cambiarla en edición
+          // (preserva trazabilidad de asistencia y movimientos históricos)
+          obra_id: oldData?.obra_id || obraId,
         };
         await updatePersonal(editingId, newFields);
         try { await window.__logAudit?.({ action:'update', table:'personal', recordId:editingId, oldData, newData:newFields }); } catch(e) {}
@@ -2709,19 +2863,23 @@ function PersonalPage({ showToast }) {
           {editingId && isAdmin && (
             <div style={{ gridColumn:'1 / -1' }}>
               <label className="flabel">
-                <JxIcon name="building" size={11}/> Obra asignada
+                <JxIcon name="building" size={11}/> Obra asignada {editingId ? '(no editable — el trabajador queda fijo en su obra)' : '*'}
               </label>
               <select className="fi"
                 value={form.obra_id || ''}
-                onChange={e=>setForm({...form, obra_id:e.target.value})}>
+                disabled={!!editingId}
+                onChange={e=>setForm({...form, obra_id:e.target.value})}
+                style={editingId ? { opacity:0.6, cursor:'not-allowed' } : undefined}>
                 {obrasActivas.map(o => (
                   <option key={o.id} value={o.id}>
                     {o.nombre_obra || o.nombre || '(sin nombre)'}{o.cliente ? ` — ${o.cliente}` : ''}
                   </option>
                 ))}
               </select>
-              <div style={{ fontSize:11, color:'var(--tm)', marginTop:4 }}>
-                Cambia esto para mover al trabajador a otra obra. Su asistencia y movimientos históricos quedan asociados a su obra anterior.
+              <div style={{ fontSize:11, color: editingId ? 'var(--amber)' : 'var(--tm)', marginTop:4 }}>
+                {editingId
+                  ? '⚠ La obra del trabajador NO se puede cambiar para mantener trazabilidad de asistencia/herramientas. Si necesita ir a otra obra, dale baja en esta y créalo de nuevo en la otra.'
+                  : 'Una vez creado, el trabajador queda fijo en esta obra (no se puede cambiar después).'}
               </div>
             </div>
           )}
