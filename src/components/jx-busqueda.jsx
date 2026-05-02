@@ -107,6 +107,33 @@ const CAT_COLOR = {
   companies: '#3498DB',
 };
 
+// Mapeo categoría (tabla) → módulo de permisos. Usado para filtrar
+// resultados por rol: solo aparecen categorías sobre las que el usuario
+// tiene lectura.
+const CAT_MODULO = {
+  obras: 'Obras',
+  personal: 'Personal',
+  materiales: 'Materiales',
+  herramientas: 'Herramientas',
+  proveedores: 'Proveedores',
+  partidas: 'Partidas',
+  requisiciones: 'Requisiciones',
+  ordenes_compra: 'Órdenes de Compra',
+  valorizaciones: 'Valorizaciones',
+  subcontratistas: 'Subcontratistas',
+  subcontratos: 'Subcontratos',
+  accounting_movements: 'Movs. Contables',
+  incidencias: 'Incidencias',
+  companies: 'Empresas',
+};
+
+function canSeeCategoria(rol, cat) {
+  if (!rol || rol === 'admin') return true;
+  const modulo = CAT_MODULO[cat];
+  if (!modulo) return true;
+  return window.__hasPerm?.(rol, modulo, 'r') ?? true;
+}
+
 // Carga segura: si la tabla no existe (o Dexie falla), devuelve []
 async function safeAll(tabla) {
   try {
@@ -305,6 +332,8 @@ function saveReciente(q) {
 
 // ── Página principal ─────────────────────────────────────────────────────────
 function BusquedaGlobalPage() {
+  const auth = window.__useAuth?.();
+  const rol = auth?.profile?.rol || '';
   const [query, setQuery] = uSB('');
   const [debounced, setDebounced] = uSB('');
   const [resultados, setResultados] = uSB(null); // { porCategoria, total, ordenCats }
@@ -335,8 +364,9 @@ function BusquedaGlobalPage() {
         setLoading(false);
         return;
       }
-      // Cache simple por query
-      if (cacheRef.current.key === q && cacheRef.current.data) {
+      // Cache simple por query+rol (rol cambia visibilidad de categorías)
+      const cacheKey = `${rol}::${q}`;
+      if (cacheRef.current.key === cacheKey && cacheRef.current.data) {
         setResultados(cacheRef.current.data);
         setLoading(false);
         return;
@@ -366,6 +396,7 @@ function BusquedaGlobalPage() {
       const porCategoria = {};
       const push = (cat, item) => {
         if (!item) return;
+        if (!canSeeCategoria(rol, cat)) return; // filtro por permisos
         if (!porCategoria[cat]) porCategoria[cat] = [];
         porCategoria[cat].push(item);
       };
@@ -404,7 +435,7 @@ function BusquedaGlobalPage() {
       });
 
       const data = { porCategoria, total, ordenCats };
-      cacheRef.current = { key: q, data };
+      cacheRef.current = { key: cacheKey, data };
       setResultados(data);
       setLoading(false);
       saveReciente(q);
@@ -412,7 +443,7 @@ function BusquedaGlobalPage() {
     };
     run();
     return () => { cancelled = true; };
-  }, [debounced]);
+  }, [debounced, rol]);
 
   // Atajo: Enter abre el primer resultado
   const onInputKeyDown = (e) => {

@@ -129,6 +129,18 @@ function DashboardPage() {
   const [vistaPonderada, setVistaPonderada] = uSD(null); // KPI desde Supabase view (opcional)
   const [vistaTick, setVistaTick] = uSD(0);
 
+  // Filtrado por rol: el almacenero / operativos no necesitan ver datos
+  // gerenciales (partidas, costos, avance, atrasos, actividad reciente).
+  const auth = window.__useAuth?.();
+  const rol = auth?.profile?.rol || '';
+  const isAdmin = rol === 'admin';
+  const has = (mod, n='r') => isAdmin || !rol || (window.__hasPerm?.(rol, mod, n) ?? true);
+  const canPartidas = has('Partidas');
+  const canCostos   = has('Costos');
+  const canObras    = has('Obras');
+  // Bloque "managerial": agregados de obra (avance, costos, atrasos, distribución, actividad reciente).
+  const canManagement = canPartidas || canCostos;
+
   uED(() => {
     let cancelled = false;
     let attempts = 0;
@@ -341,9 +353,14 @@ function DashboardPage() {
             <div className="pg-title">Dashboard General</div>
             <div className="pg-sub" style={{textTransform:'capitalize'}}>{fechaTexto} · Obra: {obraActiva?.nombre_obra || '—'}</div>
           </div>
-          {kpis.materialesAlerta + kpis.partidasAtrasadas + kpis.incAbiertas > 0 && (
-            <button className="btn btn-amber btn-sm"><JxIcon name="bell" size={13}/> {kpis.materialesAlerta + kpis.partidasAtrasadas + kpis.incAbiertas} Alertas</button>
-          )}
+          {(() => {
+            const tot = canManagement
+              ? kpis.materialesAlerta + kpis.partidasAtrasadas + kpis.incAbiertas
+              : kpis.materialesAlerta;
+            return tot > 0 ? (
+              <button className="btn btn-amber btn-sm"><JxIcon name="bell" size={13}/> {tot} Alertas</button>
+            ) : null;
+          })()}
         </div>
       </div>
 
@@ -354,14 +371,16 @@ function DashboardPage() {
         </div>
       )}
 
-      <div className="g4" style={{ marginBottom: 20 }}>
-        <KpiCard label="Obras Activas" value={String(kpis.obrasActivas)} icon="building" color="#3498DB" sub={`${obras.length} totales`}/>
+      <div className={canManagement ? "g4" : "g3"} style={{ marginBottom: 20, display:'grid', gridTemplateColumns: canManagement ? 'repeat(4,1fr)' : 'repeat(3,1fr)', gap:12 }}>
+        {canManagement && (
+          <KpiCard label="Obras Activas" value={String(kpis.obrasActivas)} icon="building" color="#3498DB" sub={`${obras.length} totales`}/>
+        )}
         <KpiCard label="Personal Presente Hoy" value={String(kpis.presentesHoy)} unit={`/${kpis.personalTotal}`} icon="users" color="#2ECC71" sub={`${kpis.tardanzasHoy} tardanza · ${kpis.faltasHoy} falta`}/>
         <KpiCard label="Materiales en Alerta" value={String(kpis.materialesAlerta)} icon="package" color={kpis.materialesAlerta>0?'#E74C3C':'#2ECC71'} sub={`${kpis.matsCritico} críticos · ${kpis.matsReponer} por reponer`}/>
         <KpiCard label="Herramientas en Uso" value={String(kpis.herrEnUso)} unit={`/${kpis.herrTotal}`} icon="tool" color="#F28C28"/>
       </div>
       {/* ── KPIs principales obra activa: avance, costo, atrasos, vencimiento ── */}
-      {obraActiva ? (
+      {canManagement && obraActiva ? (
         <>
           <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--tm)', textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 10 }}>
             Obra activa · {obraActiva.nombre_obra}
@@ -536,7 +555,7 @@ function DashboardPage() {
             </div>
           )}
         </>
-      ) : (
+      ) : !canManagement ? null : (
         <div className="card card-p" style={{ marginBottom: 22, textAlign: 'center', padding: '32px 20px' }}>
           <JxIcon name="building" size={32} color="var(--tm)"/>
           <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ts)', marginTop: 8 }}>Sin obra activa</div>
@@ -544,18 +563,20 @@ function DashboardPage() {
         </div>
       )}
 
-      {/* Charts */}
-      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16, marginBottom: 16 }}>
-        <div className="chart-card">
-          <div className="chart-title">Avance por Partida</div>
-          <div className="chart-sub">% de avance por partida (presupuesto vs ejecutado)</div>
-          {partidaChart.length > 0 ? (
-            <ChartBar id="part-av" labels={partidaChart.map(p => p.nombre_partida.substring(0,30))}
-              datasets={[
-                { label:'% Avance', data: partidaChart.map(p => Number(p.porcentaje_avance || 0)), backgroundColor:'rgba(52,152,219,0.6)', borderColor:'rgba(52,152,219,0.8)', borderWidth:1 },
-              ]} height={210}/>
-          ) : <div className="empty-state" style={{padding:'40px 0'}}>Sin partidas con presupuesto</div>}
-        </div>
+      {/* Charts: Avance por partida + Estado materiales */}
+      <div style={{ display: 'grid', gridTemplateColumns: canPartidas ? '2fr 1fr' : '1fr', gap: 16, marginBottom: 16 }}>
+        {canPartidas && (
+          <div className="chart-card">
+            <div className="chart-title">Avance por Partida</div>
+            <div className="chart-sub">% de avance por partida (presupuesto vs ejecutado)</div>
+            {partidaChart.length > 0 ? (
+              <ChartBar id="part-av" labels={partidaChart.map(p => p.nombre_partida.substring(0,30))}
+                datasets={[
+                  { label:'% Avance', data: partidaChart.map(p => Number(p.porcentaje_avance || 0)), backgroundColor:'rgba(52,152,219,0.6)', borderColor:'rgba(52,152,219,0.8)', borderWidth:1 },
+                ]} height={210}/>
+            ) : <div className="empty-state" style={{padding:'40px 0'}}>Sin partidas con presupuesto</div>}
+          </div>
+        )}
         <div className="chart-card">
           <div className="chart-title">Estado de Materiales</div>
           <div className="chart-sub">Distribución por nivel de alerta</div>
@@ -569,18 +590,20 @@ function DashboardPage() {
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
-        <div className="chart-card">
-          <div className="chart-title">Costo por Partida</div>
-          <div className="chart-sub">Presupuestado vs Real (S/)</div>
-          {partidaChart.length > 0 ? (
-            <ChartBar id="costos-part" labels={partidaChart.map(p => p.nombre_partida.substring(0,18))}
-              datasets={[
-                { label:'Presupuestado', data: partidaChart.map(p => Number(p.costo_total_presupuestado || 0)), backgroundColor:'rgba(52,152,219,0.6)', borderColor:'rgba(52,152,219,0.8)', borderWidth:1 },
-                { label:'Real', data: partidaChart.map(p => Number(p.costo_real_acumulado || 0)), backgroundColor:'rgba(242,183,5,0.6)', borderColor:'rgba(242,183,5,0.8)', borderWidth:1 },
-              ]} height={195}/>
-          ) : <div className="empty-state" style={{padding:'40px 0'}}>Sin partidas</div>}
-        </div>
+      <div style={{ display: 'grid', gridTemplateColumns: canCostos ? '1fr 1fr' : '1fr', gap: 16, marginBottom: 16 }}>
+        {canCostos && (
+          <div className="chart-card">
+            <div className="chart-title">Costo por Partida</div>
+            <div className="chart-sub">Presupuestado vs Real (S/)</div>
+            {partidaChart.length > 0 ? (
+              <ChartBar id="costos-part" labels={partidaChart.map(p => p.nombre_partida.substring(0,18))}
+                datasets={[
+                  { label:'Presupuestado', data: partidaChart.map(p => Number(p.costo_total_presupuestado || 0)), backgroundColor:'rgba(52,152,219,0.6)', borderColor:'rgba(52,152,219,0.8)', borderWidth:1 },
+                  { label:'Real', data: partidaChart.map(p => Number(p.costo_real_acumulado || 0)), backgroundColor:'rgba(242,183,5,0.6)', borderColor:'rgba(242,183,5,0.8)', borderWidth:1 },
+                ]} height={195}/>
+            ) : <div className="empty-state" style={{padding:'40px 0'}}>Sin partidas</div>}
+          </div>
+        )}
         <div className="chart-card">
           <div className="chart-title">Asistencia Hoy</div>
           <div className="chart-sub">{fechaTexto.split(',')[0]}</div>
@@ -597,25 +620,27 @@ function DashboardPage() {
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        <div className="card card-p">
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 14, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <JxIcon name="activity" size={14} color="var(--amber)" />Actividad Reciente
-          </div>
-          {movRecientes.length === 0 ? (
-            <div className="empty-state" style={{padding:'30px 0'}}>Sin actividad reciente</div>
-          ) : movRecientes.map((a, i) => (
-            <div key={i} style={{ display: 'flex', gap: 10, paddingBottom: 12, marginBottom: 12, borderBottom: i < movRecientes.length-1 ? '1px solid var(--border)' : 'none' }}>
-              <div style={{ width: 30, height: 30, borderRadius: '50%', background: ACT_COLORS[a.type] + '1a', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 1 }}>
-                <JxIcon name={ACT_ICONS[a.type]} size={13} color={ACT_COLORS[a.type]} />
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 12, color: 'var(--ts)', lineHeight: 1.4 }}>{a.text}</div>
-                <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 3 }}>{a.time}</div>
-              </div>
+      <div style={{ display: 'grid', gridTemplateColumns: canManagement ? '1fr 1fr' : '1fr', gap: 16 }}>
+        {canManagement && (
+          <div className="card card-p">
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 14, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <JxIcon name="activity" size={14} color="var(--amber)" />Actividad Reciente
             </div>
-          ))}
-        </div>
+            {movRecientes.length === 0 ? (
+              <div className="empty-state" style={{padding:'30px 0'}}>Sin actividad reciente</div>
+            ) : movRecientes.map((a, i) => (
+              <div key={i} style={{ display: 'flex', gap: 10, paddingBottom: 12, marginBottom: 12, borderBottom: i < movRecientes.length-1 ? '1px solid var(--border)' : 'none' }}>
+                <div style={{ width: 30, height: 30, borderRadius: '50%', background: ACT_COLORS[a.type] + '1a', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 1 }}>
+                  <JxIcon name={ACT_ICONS[a.type]} size={13} color={ACT_COLORS[a.type]} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 12, color: 'var(--ts)', lineHeight: 1.4 }}>{a.text}</div>
+                  <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 3 }}>{a.time}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
 
         <div className="chart-card">
           <div className="chart-title">Herramientas Más Utilizadas</div>
