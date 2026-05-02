@@ -10,6 +10,12 @@ const ROL_LABELS = {
   supervisor:          'Supervisor',
   almacenero:          'Almacenero',
   asistente_admin:     'Asist. Admin',
+  contador:            'Contador',
+  tesorero:            'Tesorero',
+  jefe_compras:        'Jefe de Compras',
+  rrhh:                'RR.HH.',
+  prevencionista:      'Prevencionista SSOMA',
+  maestro_obra:        'Maestro de Obra',
   solo_lectura:        'Solo Lectura',
 };
 
@@ -20,10 +26,16 @@ const ROL_COLORS_ADM = {
   supervisor:          'b-blue',
   almacenero:          'b-green',
   asistente_admin:     'b-blue',
+  contador:            'b-purple',
+  tesorero:            'b-amber',
+  jefe_compras:        'b-orange',
+  rrhh:                'b-yellow',
+  prevencionista:      'b-red',
+  maestro_obra:        'b-green',
   solo_lectura:        'b-gray',
 };
 
-const ROL_KEYS = ['admin','gerente','ingeniero_residente','supervisor','almacenero','asistente_admin','solo_lectura'];
+const ROL_KEYS = ['admin','gerente','ingeniero_residente','supervisor','almacenero','asistente_admin','contador','tesorero','jefe_compras','rrhh','prevencionista','maestro_obra','solo_lectura'];
 
 // ── Roles Custom (definidos por el admin, persistidos en localStorage) ──
 // Cada rol custom: { key, label, color }
@@ -454,6 +466,78 @@ const PERM_MATRIX = {
          'CTS','Gratificaciones','Comprobantes Electrónicos','PLAME / T-Registro',
          'Movs. Contables','Cuentas Bancarias','Solicitudes Cambio','Importar'].includes(m)) return 'w';
     return 'r';
+  }),
+
+  // Contador: w en contabilidad, plan de cuentas, libros, balance/estado;
+  // r en compras/valorizaciones/proveedores/empresas (necesita verlas);
+  // x en operaciones de obra (almacén/asistencia/SSOMA), tesorería, RRHH, SUNAT
+  contador: PERM_MATRIX_MODULES.map(m => {
+    if (m === 'Usuarios/Config') return 'x';
+    if (['Movs. Contables','Plan de Cuentas','Libro Diario','Balance General','Estado Resultados',
+         'Empresas','Intercompany','Consolidado','Auditoría'].includes(m)) return 'w';
+    if (['Obras','Personal','Proveedores','Subcontratistas','Subcontratos','Valor. Subcontrato',
+         'Requisiciones','Órdenes de Compra','Cotizaciones','Recepciones','Valorizaciones',
+         'Reportes','Comprobantes Electrónicos','Libros Electrónicos'].includes(m)) return 'r';
+    return 'x';
+  }),
+
+  // Tesorero: w en cuentas bancarias, flujo caja, flujo proyectado, comparativo periodos;
+  // r en contabilidad, OCs, valorizaciones (lo que afecta caja); x en operaciones de obra/RRHH
+  tesorero: PERM_MATRIX_MODULES.map(m => {
+    if (m === 'Usuarios/Config') return 'x';
+    if (['Cuentas Bancarias','Flujo de Caja','Flujo Proyectado','Comparativo Periodos'].includes(m)) return 'w';
+    if (['Movs. Contables','Plan de Cuentas','Libro Diario','Balance General','Estado Resultados',
+         'Empresas','Intercompany','Consolidado','Órdenes de Compra','Valorizaciones','Valor. Subcontrato',
+         'Proveedores','Subcontratistas','Subcontratos','Reportes','Obras'].includes(m)) return 'r';
+    return 'x';
+  }),
+
+  // Jefe de Compras: w en requisiciones, OC, cotizaciones, recepciones, proveedores;
+  // r en materiales (saber stock), partidas (saber para qué), incidencias;
+  // x en contabilidad, RRHH, SUNAT, SSOMA, ejecutivo, auditoría
+  jefe_compras: PERM_MATRIX_MODULES.map(m => {
+    if (m === 'Usuarios/Config') return 'x';
+    if (['Requisiciones','Órdenes de Compra','Cotizaciones','Recepciones','Proveedores',
+         'Subcontratistas','Subcontratos'].includes(m)) return 'w';
+    if (['Obras','Materiales','Mov. Materiales','Herramientas','Mov. Herramientas','Partidas',
+         'Insumos','Costos','Incidencias','Evidencias','Personal','Reportes',
+         'Activos Pesados','Solicitudes Cambio'].includes(m)) return 'r';
+    return 'x';
+  }),
+
+  // RR.HH.: w en personal, asistencia, contratos, planillas, CTS, gratificaciones, PLAME;
+  // r en obras (saber dónde está cada uno), proveedores; x compras/contabilidad/almacén/operaciones
+  rrhh: PERM_MATRIX_MODULES.map(m => {
+    if (m === 'Usuarios/Config') return 'x';
+    if (['Personal','Asistencia','Contratos Laborales','Planillas','CTS','Gratificaciones',
+         'PLAME / T-Registro','Capacitaciones'].includes(m)) return 'w';
+    if (['Obras','Subcontratistas','Empresas','Charlas Seguridad','EPP','Inspecciones SSOMA',
+         'IPERC','Solicitudes Cambio','Reportes'].includes(m)) return 'r';
+    return 'x';
+  }),
+
+  // Prevencionista SSOMA: w en charlas, IPERC, EPP, inspecciones, capacitaciones, incidencias;
+  // r en obras, personal (a quién capacita), asistencia; x en compras/contabilidad/almacén destructivo
+  prevencionista: PERM_MATRIX_MODULES.map(m => {
+    if (m === 'Usuarios/Config') return 'x';
+    if (['Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones',
+         'Incidencias','Evidencias'].includes(m)) return 'w';
+    if (['Obras','Personal','Asistencia','Activos Pesados','Mantenimiento','Subcontratistas',
+         'Subcontratos','Reportes'].includes(m)) return 'r';
+    return 'x';
+  }),
+
+  // Maestro de Obra: w en avance, asistencia (quien controla in situ), incidencias;
+  // r en partidas/materiales/herramientas (saber qué hay para trabajar);
+  // x en compras, contabilidad, RRHH formal, ejecutivo
+  maestro_obra: PERM_MATRIX_MODULES.map(m => {
+    if (m === 'Usuarios/Config') return 'x';
+    if (['Asistencia','Avance','Incidencias','Evidencias','Mov. Materiales',
+         'Mov. Herramientas'].includes(m)) return 'w';
+    if (['Obras','Personal','Partidas','Insumos','Cronograma','Materiales','Herramientas',
+         'Charlas Seguridad','EPP','IPERC','Inspecciones SSOMA','Capacitaciones',
+         'Activos Pesados','Comparativo'].includes(m)) return 'r';
+    return 'x';
   }),
 
   // Solo lectura: r en todo, x en admin/config/auditoría

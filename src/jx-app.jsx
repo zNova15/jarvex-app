@@ -355,10 +355,14 @@ function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStat
   const [menu, setMenu] = uSA(false);
 
   // Selector de obra activa (FEATURE 3)
+  // Solo admin y gerente pueden cambiar de obra. Otros roles ven solo la
+  // obra que el admin les asignó (sin dropdown).
   const obraHook = window.__useObraActiva ? window.__useObraActiva() : { obras:[], obraId:null, obra:null, setObraActiva:()=>{} };
   const [obraDropdownOpen, setObraDropdownOpen] = uSA(false);
+  const canSwitchObra = profile?.rol === 'admin' || profile?.rol === 'gerente';
   const handleSelectObra = (id) => {
     setObraDropdownOpen(false);
+    if (!canSwitchObra) return;
     if (id === obraHook.obraId) return;
     if (window.__setObraActivaId) window.__setObraActivaId(id);
     // Reload de toda la app: la mayoría de componentes leen la obra al montar.
@@ -381,14 +385,14 @@ function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStat
         {obraDisplay && !isMobile && (
           <div style={{ position:'relative' }}>
             <button
-              onClick={()=>setObraDropdownOpen(o=>!o)}
-              title="Cambiar obra activa"
-              style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 10px', borderRadius:8, fontSize:12, color:'var(--ts)', background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)', cursor:'pointer' }}>
+              onClick={canSwitchObra ? (()=>setObraDropdownOpen(o=>!o)) : undefined}
+              title={canSwitchObra ? 'Cambiar obra activa' : 'Obra asignada por el administrador'}
+              style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 10px', borderRadius:8, fontSize:12, color:'var(--ts)', background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)', cursor: canSwitchObra ? 'pointer' : 'default' }}>
               <span className="dot-pulse"/>
               <span style={{ maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>Obra: {obraDisplay.nombre_obra}</span>
-              <span style={{ fontSize:10, color:'var(--tm)' }}>▾</span>
+              {canSwitchObra && <span style={{ fontSize:10, color:'var(--tm)' }}>▾</span>}
             </button>
-            {obraDropdownOpen && (
+            {canSwitchObra && obraDropdownOpen && (
               <>
                 <div onClick={()=>setObraDropdownOpen(false)} style={{ position:'fixed', inset:0, zIndex:90 }}/>
                 <div style={{ position:'absolute', top:38, right:0, width:300, maxHeight:380, overflow:'auto', background:'var(--bg-c)', border:'1px solid var(--border)', borderRadius:10, boxShadow:'0 8px 32px rgba(0,0,0,0.5)', zIndex:100 }}>
