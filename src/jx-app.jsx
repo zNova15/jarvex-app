@@ -219,7 +219,8 @@ function ResetPasswordScreen() {
 
 // ── LOGIN SCREEN ──────────────────────────────────────────
 function LoginScreen({ onLogin }) {
-  const [email, setEmail]   = uSA('admin@jarvex.pe');
+  // Email arranca vacío — el placeholder muestra el formato sugerido sin pre-llenar
+  const [email, setEmail]   = uSA('');
   const [pass, setPass]     = uSA('');
   const [loading, setLoad]  = uSA(false);
   const [err, setErr]       = uSA('');

@@ -56,7 +56,11 @@ function RequisicionesPage({ showToast }) {
   const obraId = useObraActiva();
   const auth = window.__useAuth?.();
   const userId = auth?.profile?.id ?? 'offline';
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const rol = auth?.profile?.rol || '';
+  const isAdmin = rol === 'admin';
+  // ¿El rol puede aprobar/cambiar estado de requisiciones?
+  // Solo admin + roles con permiso de write en 'Requisiciones' (ej: ingeniero_residente)
+  const canApprove = isAdmin || (window.__hasPerm?.(rol, 'Requisiciones', 'w') ?? false);
   const { data: requisiciones } = window.__hooks.useRequisiciones(obraId);
   const { data: materiales } = window.__hooks.useMateriales(obraId);
 
@@ -199,6 +203,11 @@ function RequisicionesPage({ showToast }) {
   };
 
   const cambiarEstado = async (r, nuevo) => {
+    // Defensa server-side: aunque la UI lo esconda, validamos el rol
+    if (!canApprove) {
+      showToast('Solo admin o ingeniero residente pueden cambiar el estado', 'red');
+      return;
+    }
     try {
       await window.__db.requisiciones.update(r.id, {
         estado: nuevo,
@@ -206,6 +215,7 @@ function RequisicionesPage({ showToast }) {
         version: (r.version ?? 0) + 1,
         sync_status: r.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
       });
+      try { window.__logAudit?.({ action:'update', table:'requisiciones', recordId:r.id, oldData:{ estado:r.estado }, newData:{ estado:nuevo }, reason:`Cambio de estado de requisición ${r.codigo}` }); } catch {}
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'requisiciones' } })); } catch {}
       showToast(`Estado cambiado a ${REQ_ESTADO_LABEL[nuevo]}`, 'green');
     } catch (e) { showToast('Error: ' + (e.message||e), 'red'); }
@@ -287,9 +297,16 @@ function RequisicionesPage({ showToast }) {
                     <td className="col-m">{r.fecha_requerida || r.fecha_necesidad || '—'}</td>
                     <td><span style={{ color: PRIORIDAD_COLOR[r.prioridad], fontWeight:600, textTransform:'uppercase', fontSize:11 }}>{r.prioridad}</span></td>
                     <td>
-                      <select className="fi" value={r.estado} onChange={e=>cambiarEstado(r, e.target.value)} style={{ fontSize:11, padding:'4px 6px' }}>
-                        {Object.entries(REQ_ESTADO_LABEL).map(([k,v]) => <option key={k} value={k}>{v}</option>)}
-                      </select>
+                      {canApprove ? (
+                        <select className="fi" value={r.estado} onChange={e=>cambiarEstado(r, e.target.value)} style={{ fontSize:11, padding:'4px 6px' }}>
+                          {Object.entries(REQ_ESTADO_LABEL).map(([k,v]) => <option key={k} value={k}>{v}</option>)}
+                        </select>
+                      ) : (
+                        <span className={`badge ${r.estado === 'aprobada' ? 'b-green' : r.estado === 'recibida' ? 'b-green' : r.estado === 'cancelada' ? 'b-red' : 'b-amber'}`}
+                          title="Solo admin o ingeniero residente pueden cambiar el estado">
+                          {REQ_ESTADO_LABEL[r.estado] || r.estado}
+                        </span>
+                      )}
                     </td>
                     <td style={{ fontSize:11, maxWidth:280, whiteSpace:'normal' }}>{r.notas || '—'}</td>
                     <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
@@ -420,7 +437,10 @@ function OrdenesCompraPage({ showToast }) {
   const obraId = useObraActiva();
   const auth = window.__useAuth?.();
   const userId = auth?.profile?.id ?? 'offline';
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const rol = auth?.profile?.rol || '';
+  const isAdmin = rol === 'admin';
+  // ¿Puede aprobar/cambiar estado de OC? (write en 'Órdenes de Compra')
+  const canApproveOC = isAdmin || (window.__hasPerm?.(rol, 'Órdenes de Compra', 'w') ?? false);
   const { data: ocs } = window.__hooks.useOrdenesCompra(obraId);
   const { data: materiales } = window.__hooks.useMateriales(obraId);
   const [proveedores, setProveedores] = uS([]);
@@ -592,12 +612,17 @@ function OrdenesCompraPage({ showToast }) {
   };
 
   const cambiarEstado = async (oc, nuevo) => {
+    if (!canApproveOC) {
+      showToast('Solo admin o gerente pueden cambiar el estado de la OC', 'red');
+      return;
+    }
     try {
       await window.__db.ordenes_compra.update(oc.id, {
         estado: nuevo, updated_at: new Date().toISOString(),
         version: (oc.version ?? 0) + 1,
         sync_status: oc.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
       });
+      try { window.__logAudit?.({ action:'update', table:'ordenes_compra', recordId:oc.id, oldData:{ estado:oc.estado }, newData:{ estado:nuevo }, reason:`Cambio de estado de OC ${oc.codigo}` }); } catch {}
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'ordenes_compra' } })); } catch {}
     } catch (e) { showToast('Error: '+e.message, 'red'); }
   };
@@ -665,9 +690,16 @@ function OrdenesCompraPage({ showToast }) {
                     <td className="col-m">{oc.fecha_entrega || '—'}</td>
                     <td style={{ textAlign:'right', fontWeight:700, color:'var(--blue)' }} className="col-num">{fmtS(oc.monto_total || oc.total)}</td>
                     <td>
-                      <select className="fi" value={oc.estado} onChange={e=>cambiarEstado(oc, e.target.value)} style={{ fontSize:11, padding:'4px 6px' }}>
-                        {Object.entries(OC_ESTADO_LABEL).map(([k,v]) => <option key={k} value={k}>{v}</option>)}
-                      </select>
+                      {canApproveOC ? (
+                        <select className="fi" value={oc.estado} onChange={e=>cambiarEstado(oc, e.target.value)} style={{ fontSize:11, padding:'4px 6px' }}>
+                          {Object.entries(OC_ESTADO_LABEL).map(([k,v]) => <option key={k} value={k}>{v}</option>)}
+                        </select>
+                      ) : (
+                        <span className={`badge ${OC_ESTADO_BADGE[oc.estado] || 'b-gray'}`}
+                          title="Solo admin o gerente pueden cambiar el estado">
+                          {OC_ESTADO_LABEL[oc.estado] || oc.estado}
+                        </span>
+                      )}
                     </td>
                     <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
                       <button className="btn btn-ghost btn-xs" title="Ver / Editar" onClick={()=>verDetalle(oc)}>

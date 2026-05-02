@@ -393,6 +393,8 @@ const PERM_MATRIX = {
     if (m === 'Usuarios/Config') return 'x';
     const wList = [
       'Obras','Personal','Partidas','Avance','Comparativo','Costos','Valorizaciones',
+      // Compras: el gerente aprueba requisiciones y firma OC
+      'Requisiciones','Órdenes de Compra','Cotizaciones','Recepciones','Proveedores',
       'Subcontratistas','Subcontratos','Valor. Subcontrato','Activos Pesados',
       'Empresas','Movs. Contables','Intercompany','Consolidado','Plan de Cuentas',
       'Libro Diario','Balance General','Estado Resultados',
