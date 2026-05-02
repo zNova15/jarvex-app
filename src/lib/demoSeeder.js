@@ -262,6 +262,61 @@ export async function seedDemoData(progressCb) {
     herrIds.push({ id, nombre, en_uso: enUso, resp: respId });
   }
 
+  // 6b. MOVIMIENTOS DE HERRAMIENTAS — historial real
+  log('Sembrando movimientos de herramientas...');
+  for (const h of herrIds) {
+    // Cada herramienta tiene 2-5 movimientos históricos (salidas y devoluciones)
+    const numMovs = rnd(2, 5);
+    let estaFuera = false;
+    for (let i = 0; i < numMovs; i++) {
+      const dia = -60 + i * rnd(7, 14);
+      const fecha = dt(dia);
+      const hora = `${String(rnd(7, 17)).padStart(2,'0')}:${String(rnd(0,59)).padStart(2,'0')}`;
+      // Alternar entrada/salida, sumar mantenimiento ocasional
+      const accion = !estaFuera
+        ? (Math.random() < 0.05 ? 'mantenimiento' : 'salida')
+        : 'entrada';
+      const responsable = estaFuera ? h.resp || pick(personalIds).id : pick(personalIds).id;
+      const estado = accion === 'entrada' ? pick(['bueno', 'bueno', 'regular', 'bueno', 'malo']) : null;
+      await db.movimientos_herramientas.add({
+        ...baseFields(), id: newId(),
+        obra_id: obraPrincipal.id,
+        herramienta_id: h.id,
+        fecha,
+        hora,
+        accion,
+        tipo_movimiento: accion,
+        responsable_id: responsable,
+        estado_salida: accion === 'salida' ? pick(['nuevo', 'bueno']) : null,
+        estado_devolucion: accion === 'entrada' ? estado : null,
+        observaciones: accion === 'salida'
+          ? `Para ${pick(['vaciado', 'encofrado', 'instalación', 'movimiento de tierras'])}`
+          : accion === 'entrada' && estado === 'malo'
+            ? 'Devuelta con daño · enviada a mantenimiento'
+            : '',
+        idempotency_key: `${DEMO_USER}_mov_herr_${h.id}_${i}`,
+      });
+      estaFuera = accion === 'salida';
+    }
+    // Si la herramienta está marcada como en_uso, asegurar que el último mov sea una salida
+    if (h.en_uso && !estaFuera) {
+      const fechaUltima = dt(rnd(-3, -1));
+      await db.movimientos_herramientas.add({
+        ...baseFields(), id: newId(),
+        obra_id: obraPrincipal.id,
+        herramienta_id: h.id,
+        fecha: fechaUltima,
+        hora: '08:30',
+        accion: 'salida',
+        tipo_movimiento: 'salida',
+        responsable_id: h.resp,
+        estado_salida: 'bueno',
+        observaciones: 'Salida actual · herramienta en uso',
+        idempotency_key: `${DEMO_USER}_mov_herr_${h.id}_actual`,
+      });
+    }
+  }
+
   // 7. PARTIDAS (presupuesto + avance)
   log('Sembrando partidas...');
   const partidaIds = [];
