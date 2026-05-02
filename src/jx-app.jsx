@@ -620,7 +620,30 @@ function App() {
   else if (sync.pending > 0) syncStatus = { color:'#F59E0B', label:`${sync.pending} pendiente${sync.pending>1?'s':''}`, bg:'rgba(245,158,11,0.12)' };
   else syncStatus = { color:'#34D399', label:'Sincronizado', bg:'rgba(52,211,153,0.1)' };
 
+  // Guard de acceso por rol: si el rol del usuario no puede ver esta página
+  // (según __canSeeSidebarItem / matriz de permisos), mostramos un mensaje
+  // en vez del componente. Evita que un usuario navegue por URL a páginas
+  // bloqueadas por su rol.
+  const rolActual = auth?.profile?.rol || '';
+  const puedeVerPagina = (p) => {
+    if (!rolActual) return true;
+    if (rolActual === 'admin') return true;
+    return window.__canSeeSidebarItem?.(rolActual, p) ?? true;
+  };
+  const NoAcceso = () => (
+    <div className="page-wrap" style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:'60vh' }}>
+      <div className="card card-p" style={{ maxWidth:480, textAlign:'center', padding:'34px 28px' }}>
+        <JxIcon name="lock" size={32} color="var(--amber)"/>
+        <div style={{ fontSize:16, fontWeight:700, color:'var(--tp)', marginTop:10 }}>Sin acceso a este módulo</div>
+        <div style={{ fontSize:12, color:'var(--tm)', marginTop:6 }}>
+          Tu rol actual no tiene permiso para ver esta página. Si necesitas acceso, contacta al administrador.
+        </div>
+      </div>
+    </div>
+  );
+
   const renderPage = () => {
+    if (!puedeVerPagina(page)) return <NoAcceso/>;
     switch(page) {
       case 'importar':      return <ImportarPage showToast={showToast}/>;
       case 'dashboard':     return <DashboardPage showToast={showToast}/>;

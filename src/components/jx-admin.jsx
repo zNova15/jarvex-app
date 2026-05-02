@@ -43,6 +43,9 @@ const ROL_KEYS = ['admin','gerente','ingeniero_residente','supervisor','almacene
 //   - label : nombre legible
 //   - color : una de las clases b-* o color hex (default: b-gray)
 const CUSTOM_ROLES_KEY = 'jx_custom_roles_v1';
+// Roles built-in que el admin marcó como "ocultos" (lista de keys).
+// 'admin' jamás puede entrar acá. Para restaurarlo basta con sacarlo del set.
+const HIDDEN_BUILTIN_KEY = 'jx_hidden_builtin_roles_v1';
 function loadCustomRoles() {
   try { return JSON.parse(localStorage.getItem(CUSTOM_ROLES_KEY) || '[]'); }
   catch { return []; }
@@ -51,9 +54,21 @@ function saveCustomRoles(list) {
   try { localStorage.setItem(CUSTOM_ROLES_KEY, JSON.stringify(list)); } catch {}
   try { window.dispatchEvent(new CustomEvent('jx_roles_changed', { detail: list })); } catch {}
 }
+function loadHiddenBuiltins() {
+  try { return JSON.parse(localStorage.getItem(HIDDEN_BUILTIN_KEY) || '[]'); }
+  catch { return []; }
+}
+function saveHiddenBuiltins(list) {
+  // Nunca permitimos ocultar 'admin'.
+  const safe = (list || []).filter(k => k && k !== 'admin');
+  try { localStorage.setItem(HIDDEN_BUILTIN_KEY, JSON.stringify(safe)); } catch {}
+  try { window.dispatchEvent(new CustomEvent('jx_roles_changed', { detail: safe })); } catch {}
+}
 function getAllRolKeys() {
+  const hidden = new Set(loadHiddenBuiltins());
+  const builtins = ROL_KEYS.filter(k => !hidden.has(k));
   const customs = loadCustomRoles().map(r => r.key);
-  return [...ROL_KEYS, ...customs];
+  return [...builtins, ...customs];
 }
 function getAllRolLabels() {
   const labels = { ...ROL_LABELS };
@@ -69,6 +84,7 @@ function getAllRolColors() {
 // Exponer para otros componentes
 window.__roles = {
   loadCustomRoles, saveCustomRoles,
+  loadHiddenBuiltins, saveHiddenBuiltins,
   getAllRolKeys, getAllRolLabels, getAllRolColors,
 };
 
@@ -694,10 +710,11 @@ function RolesPage() {
   const canEdit = isAdmin && (appMode.isPrueba || appMode.isEdicion);
   const [overrides, setOverrides] = uSAd(loadPermOverrides());
   const [customRoles, setCustomRoles] = uSAd(loadCustomRoles());
+  const [hiddenBuiltins, setHiddenBuiltins] = uSAd(loadHiddenBuiltins());
   const [showAddRole, setShowAddRole] = uSAd(false);
   const [newRoleForm, setNewRoleForm] = uSAd({ key:'', label:'', color:'b-gray' });
-  const matrix = uMAd(() => getEffectivePermMatrix(), [overrides, customRoles]);
-  const todasRolKeys = uMAd(() => getAllRolKeys(), [customRoles]);
+  const matrix = uMAd(() => getEffectivePermMatrix(), [overrides, customRoles, hiddenBuiltins]);
+  const todasRolKeys = uMAd(() => getAllRolKeys(), [customRoles, hiddenBuiltins]);
   const todasRolLabels = uMAd(() => getAllRolLabels(), [customRoles]);
   const todasRolColors = uMAd(() => getAllRolColors(), [customRoles]);
 
@@ -732,25 +749,46 @@ function RolesPage() {
     setNewRoleForm({ key:'', label:'', color:'b-gray' });
   };
 
-  const eliminarRolCustom = (key) => {
+  const eliminarRol = (key) => {
     if (!canEdit) return;
-    if (ROL_KEYS.includes(key)) { alert('No se pueden eliminar roles del sistema'); return; }
+    if (key === 'admin') { alert('El rol Admin no se puede eliminar.'); return; }
     const usuariosConRol = counts[key] || 0;
-    if (usuariosConRol > 0) {
-      if (!confirm(`Hay ${usuariosConRol} usuario(s) con este rol. Si lo eliminas tendrás que reasignarlos manualmente. ¿Continuar?`)) return;
+    const esBuiltin = ROL_KEYS.includes(key);
+    const advertencia = esBuiltin
+      ? `Vas a OCULTAR el rol del sistema "${todasRolLabels[key]}". Quedará archivado y podrás restaurarlo después.`
+      : `¿Eliminar el rol "${todasRolLabels[key]}"?`;
+    const msg = usuariosConRol > 0
+      ? `${advertencia}\n\nHay ${usuariosConRol} usuario(s) con este rol — tendrás que reasignarlos manualmente. ¿Continuar?`
+      : advertencia;
+    if (!confirm(msg)) return;
+
+    if (esBuiltin) {
+      const next = [...new Set([...hiddenBuiltins, key])];
+      setHiddenBuiltins(next);
+      saveHiddenBuiltins(next);
+      try { window.__logAudit?.({ action:'delete', table:'roles_builtin', recordId: key,
+        reason:'Ocultar rol built-in (admin)' }); } catch {}
     } else {
-      if (!confirm(`¿Eliminar el rol "${todasRolLabels[key]}"?`)) return;
+      const next = customRoles.filter(r => r.key !== key);
+      setCustomRoles(next);
+      saveCustomRoles(next);
+      try { window.__logAudit?.({ action:'delete', table:'roles_custom', recordId: key,
+        reason:'Eliminación de rol custom' }); } catch {}
     }
-    const next = customRoles.filter(r => r.key !== key);
-    setCustomRoles(next);
-    saveCustomRoles(next);
-    // También limpiar overrides del rol borrado
+    // Limpiar overrides del rol eliminado
     const ov = { ...overrides };
     delete ov[key];
     setOverrides(ov);
     savePermOverrides(ov);
-    try { window.__logAudit?.({ action:'delete', table:'roles_custom', recordId: key,
-      reason:'Eliminación de rol custom' }); } catch {}
+  };
+
+  const restaurarBuiltin = (key) => {
+    if (!canEdit) return;
+    const next = hiddenBuiltins.filter(k => k !== key);
+    setHiddenBuiltins(next);
+    saveHiddenBuiltins(next);
+    try { window.__logAudit?.({ action:'update', table:'roles_builtin', recordId: key,
+      reason:'Restaurar rol built-in oculto' }); } catch {}
   };
 
   const editarRolCustom = (key, patch) => {
@@ -862,10 +900,10 @@ function RolesPage() {
               </div>
               <div style={{ fontSize:22, fontWeight:800, color:'var(--amber)', margin:'4px 0' }}>{counts[r] ?? 0}</div>
               <div style={{ fontSize:10.5, color:'var(--tm)' }}>usuarios</div>
-              {esCustom && canEdit && (
+              {canEdit && r !== 'admin' && (
                 <button className="btn btn-ghost btn-xs"
-                  title="Eliminar este rol custom"
-                  onClick={()=>eliminarRolCustom(r)}
+                  title={esCustom ? 'Eliminar este rol custom' : 'Ocultar este rol del sistema (se puede restaurar)'}
+                  onClick={()=>eliminarRol(r)}
                   style={{ position:'absolute', top:4, right:4, padding:'2px 4px' }}>
                   <JxIcon name="trash" size={10}/>
                 </button>
@@ -882,6 +920,27 @@ function RolesPage() {
           </button>
         )}
       </div>
+
+      {canEdit && hiddenBuiltins.length > 0 && (
+        <div className="card card-p" style={{ marginBottom:16, borderLeft:'3px solid var(--blue)' }}>
+          <div style={{ fontSize:12, fontWeight:700, color:'var(--tp)', marginBottom:8, display:'flex', alignItems:'center', gap:8 }}>
+            <JxIcon name="archive" size={13} color="var(--blue)"/> Roles del sistema ocultos ({hiddenBuiltins.length})
+          </div>
+          <div style={{ fontSize:11, color:'var(--tm)', marginBottom:10 }}>
+            Estos roles fueron archivados. No aparecen al asignar rol a un usuario, pero los puedes restaurar cuando quieras.
+          </div>
+          <div style={{ display:'flex', flexWrap:'wrap', gap:8 }}>
+            {hiddenBuiltins.map(k => (
+              <div key={k} style={{ display:'flex', alignItems:'center', gap:6, padding:'4px 8px 4px 10px', background:'rgba(255,255,255,0.04)', border:'1px solid var(--border)', borderRadius:8, fontSize:12 }}>
+                <span className={`badge ${ROL_COLORS_ADM[k]||'b-gray'}`}>{ROL_LABELS[k] || k}</span>
+                <button className="btn btn-ghost btn-xs" title="Restaurar este rol" onClick={()=>restaurarBuiltin(k)}>
+                  <JxIcon name="refresh" size={11}/> Restaurar
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {showAddRole && canEdit && (
         <div className="card card-p" style={{ marginBottom:16, borderLeft:'3px solid var(--amber)' }}>
