@@ -329,6 +329,7 @@ function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStat
     'cont-dashboard':'Dashboard Contable', empresas:'Empresas',
     'movimientos-contables':'Movimientos Contables', intercompany:'Operaciones entre Empresas',
     consolidado:'Consolidado del Grupo',
+    trazabilidad:'Trazabilidad de Cadenas',
     'cuentas-bancarias':'Cuentas Bancarias', 'flujo-caja':'Flujo de Caja / Cronograma de Pagos',
     requisiciones:'Requisiciones', 'ordenes-compra':'Órdenes de Compra',
     valorizaciones:'Valorizaciones', 'activos-pesados':'Activos Pesados / Maquinaria',
@@ -673,6 +674,7 @@ function App() {
       case 'movimientos-contables':  return <MovimientosContablesPage showToast={showToast}/>;
       case 'intercompany':           return <IntercompanyPage showToast={showToast}/>;
       case 'consolidado':            return <ConsolidadoPage showToast={showToast}/>;
+      case 'trazabilidad':           return <TrazabilidadPage showToast={showToast}/>;
       case 'cuentas-bancarias':      return <CuentasBancariasPage showToast={showToast}/>;
       case 'flujo-caja':             return <FlujoCajaPage showToast={showToast}/>;
       case 'requisiciones':          return <RequisicionesPage showToast={showToast}/>;

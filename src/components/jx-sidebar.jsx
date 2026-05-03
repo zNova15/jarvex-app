@@ -123,6 +123,7 @@ const NAV = [
   { id: 'empresas', label: 'Empresas', icon: 'building' },
   { id: 'movimientos-contables', label: 'Movimientos', icon: 'dollar' },
   { id: 'intercompany', label: 'Operaciones entre Empresas', icon: 'compare' },
+  { id: 'trazabilidad', label: 'Trazabilidad de Cadenas', icon: 'compare' },
   { id: 'consolidado', label: 'Consolidado', icon: 'list' },
   { id: 'cuentas-bancarias', label: 'Cuentas Bancarias', icon: 'dollar' },
   { id: 'flujo-caja', label: 'Flujo de Caja / Pagos', icon: 'calendar' },

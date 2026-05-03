@@ -27,6 +27,42 @@ const COMPANY_TYPES = [
   { v: 'inmobiliaria', label: 'Inmobiliaria' },
   { v: 'otro',         label: 'Otro' },
 ];
+
+// Rubro / giro principal — define qué vende la empresa al grupo y al exterior.
+// Sirve para sugerir cadenas de trazabilidad (ej: una "importadora_acero" puede
+// abastecer a una "distribuidora_materiales" la cual abastece a la "ejecutora").
+const RUBROS = [
+  { v: 'importadora_acero',      label: 'Importadora · Acero / Fierro',     fam: 'acero' },
+  { v: 'importadora_cemento',    label: 'Importadora · Cemento / Aglomerantes', fam: 'cemento' },
+  { v: 'importadora_general',    label: 'Importadora · General',            fam: 'general' },
+  { v: 'distribuidora_materiales', label: 'Distribuidora de Materiales',    fam: 'materiales' },
+  { v: 'ferreteria',             label: 'Ferretería',                       fam: 'materiales' },
+  { v: 'transporte',             label: 'Transporte / Flete',               fam: 'transporte' },
+  { v: 'alquiler_maquinaria',    label: 'Alquiler de Maquinaria',           fam: 'maquinaria' },
+  { v: 'venta_maquinaria',       label: 'Venta de Maquinaria',              fam: 'maquinaria' },
+  { v: 'mano_obra',              label: 'Mano de Obra / Subcontratos',      fam: 'mano_obra' },
+  { v: 'supervision',            label: 'Supervisión / Consultoría',        fam: 'servicios' },
+  { v: 'estudios_proyectos',     label: 'Estudios y Proyectos',             fam: 'servicios' },
+  { v: 'ejecutora_obra',         label: 'Ejecutora de Obra (contratista)',  fam: 'ejecutora' },
+  { v: 'contratista_general',    label: 'Contratista General',              fam: 'ejecutora' },
+  { v: 'inmobiliaria',           label: 'Inmobiliaria',                     fam: 'inmobiliaria' },
+  { v: 'otro',                   label: 'Otro',                             fam: 'otro' },
+];
+
+// Rol de la empresa dentro del grupo del usuario (clave para trazabilidad).
+const ROLES_GRUPO = [
+  { v: 'origen',        label: 'Origen (compra a terceros y distribuye al grupo)' },
+  { v: 'intermediaria', label: 'Intermediaria (revende dentro del grupo con margen)' },
+  { v: 'ejecutora',     label: 'Ejecutora (firma contrato con cliente final)' },
+  { v: 'mixta',         label: 'Mixta (cumple varios roles)' },
+];
+
+const REGIMENES = [
+  { v: 'NRUS', label: 'NRUS · Nuevo RUS' },
+  { v: 'RER',  label: 'RER · Régimen Especial' },
+  { v: 'RMT',  label: 'RMT · Régimen MYPE Tributario' },
+  { v: 'RG',   label: 'RG · Régimen General' },
+];
 const OP_TYPES = [
   { v: 'materiales', label: 'Venta de materiales' },
   { v: 'servicio',   label: 'Servicio' },
@@ -64,7 +100,11 @@ function EmpresasPage({ showToast }) {
   }, [movs]);
 
   const openNueva = () => {
-    setForm({ name:'', legal_name:'', ruc:'', company_type:'constructora', status:'activa', notas:'' });
+    setForm({
+      name:'', legal_name:'', ruc:'', company_type:'constructora', status:'activa', notas:'',
+      rubro:'otro', rol_grupo:'mixta', regimen_tributario:'RG', margen_objetivo_pct:'',
+      direccion:'', telefono:'', email:'', representante_legal:'', inicio_actividades:'',
+    });
     setEditingId(null);
     setModal('nueva');
   };
@@ -76,6 +116,15 @@ function EmpresasPage({ showToast }) {
       company_type: c.company_type || 'otro',
       status: c.status || 'activa',
       notas: c.notas || '',
+      rubro: c.rubro || 'otro',
+      rol_grupo: c.rol_grupo || 'mixta',
+      regimen_tributario: c.regimen_tributario || 'RG',
+      margen_objetivo_pct: c.margen_objetivo_pct ?? '',
+      direccion: c.direccion || '',
+      telefono: c.telefono || '',
+      email: c.email || '',
+      representante_legal: c.representante_legal || '',
+      inicio_actividades: c.inicio_actividades || '',
     });
     setEditingId(c.id);
     setModal('editar');
@@ -94,6 +143,16 @@ function EmpresasPage({ showToast }) {
           company_type: form.company_type,
           status: form.status,
           notas: form.notas?.trim() || null,
+          rubro: form.rubro || null,
+          rol_grupo: form.rol_grupo || null,
+          regimen_tributario: form.regimen_tributario || null,
+          margen_objetivo_pct: form.margen_objetivo_pct === '' || form.margen_objetivo_pct == null
+            ? null : Number(form.margen_objetivo_pct),
+          direccion: form.direccion?.trim() || null,
+          telefono: form.telefono?.trim() || null,
+          email: form.email?.trim() || null,
+          representante_legal: form.representante_legal?.trim() || null,
+          inicio_actividades: form.inicio_actividades || null,
           updated_at: now, updated_by: userId,
           version: (orig?.version ?? 0) + 1,
           sync_status: orig?.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
@@ -110,6 +169,16 @@ function EmpresasPage({ showToast }) {
           company_type: form.company_type,
           status: form.status,
           notas: form.notas?.trim() || null,
+          rubro: form.rubro || null,
+          rol_grupo: form.rol_grupo || null,
+          regimen_tributario: form.regimen_tributario || null,
+          margen_objetivo_pct: form.margen_objetivo_pct === '' || form.margen_objetivo_pct == null
+            ? null : Number(form.margen_objetivo_pct),
+          direccion: form.direccion?.trim() || null,
+          telefono: form.telefono?.trim() || null,
+          email: form.email?.trim() || null,
+          representante_legal: form.representante_legal?.trim() || null,
+          inicio_actividades: form.inicio_actividades || null,
           created_by: userId, updated_by: userId,
           created_at: now, updated_at: now,
           version: 1, sync_status: 'pending_create', last_synced_at: null,
@@ -167,10 +236,10 @@ function EmpresasPage({ showToast }) {
           <div style={{ overflowX:'auto' }}>
             <table className="tbl">
               <thead><tr>
-                <th>Empresa</th><th>RUC</th><th>Tipo</th>
+                <th>Empresa</th><th>RUC</th><th>Rubro · Rol</th>
+                <th style={{ textAlign:'right' }}>Margen</th>
                 <th style={{ textAlign:'right' }}>Ingresos</th>
                 <th style={{ textAlign:'right' }}>Costos</th>
-                <th style={{ textAlign:'right' }}>Gastos</th>
                 <th style={{ textAlign:'right' }}>Utilidad</th>
                 <th>Estado</th>
                 {isAdmin && <th style={{ textAlign:'center' }}>Acciones</th>}
@@ -179,18 +248,28 @@ function EmpresasPage({ showToast }) {
                 {sorted.map(c => {
                   const r = resumenes.get(c.id) || { ingresos:0, costos:0, gastos:0 };
                   const utilidad = r.ingresos - r.costos - r.gastos;
-                  const tipoLabel = COMPANY_TYPES.find(t => t.v === c.company_type)?.label || c.company_type;
+                  const rubroLabel = RUBROS.find(t => t.v === c.rubro)?.label || (COMPANY_TYPES.find(t => t.v === c.company_type)?.label || '—');
+                  const rolLabel = ROLES_GRUPO.find(rr => rr.v === c.rol_grupo)?.label?.split('(')[0]?.trim() || '—';
+                  const rolBadge = c.rol_grupo === 'origen' ? 'b-blue'
+                    : c.rol_grupo === 'intermediaria' ? 'b-amber'
+                    : c.rol_grupo === 'ejecutora' ? 'b-green' : 'b-gray';
                   return (
                     <tr key={c.id}>
                       <td className="col-p">
                         <strong>{c.name}</strong>
                         {c.legal_name && <div style={{ fontSize:11, color:'var(--tm)' }}>{c.legal_name}</div>}
+                        {c.regimen_tributario && <div style={{ fontSize:10, color:'var(--tm)', marginTop:2 }}>{c.regimen_tributario}</div>}
                       </td>
                       <td className="col-m">{c.ruc || '—'}</td>
-                      <td><span className="tag">{tipoLabel}</span></td>
+                      <td>
+                        <div style={{ fontSize:11.5 }}>{rubroLabel}</div>
+                        <span className={`badge ${rolBadge}`} style={{ marginTop:3, fontSize:10 }}>{rolLabel}</span>
+                      </td>
+                      <td style={{ textAlign:'right', color: c.margen_objetivo_pct ? 'var(--amber)' : 'var(--tm)' }} className="col-num">
+                        {c.margen_objetivo_pct != null ? `${Number(c.margen_objetivo_pct).toFixed(1)}%` : '—'}
+                      </td>
                       <td style={{ textAlign:'right' }} className="col-num">{fmtCurK(r.ingresos)}</td>
                       <td style={{ textAlign:'right' }} className="col-num">{fmtCurK(r.costos)}</td>
-                      <td style={{ textAlign:'right' }} className="col-num">{fmtCurK(r.gastos)}</td>
                       <td style={{ textAlign:'right', fontWeight:700, color: utilidad>=0?'var(--green)':'var(--red)' }} className="col-num">{fmtCurK(utilidad)}</td>
                       <td><span className={`badge ${c.status==='activa'?'b-green':'b-gray'}`}>{c.status}</span></td>
                       {isAdmin && (
@@ -239,7 +318,8 @@ function EmpresasPage({ showToast }) {
                         ...prev,
                         legal_name: data.razonSocial || prev.legal_name || '',
                         name: prev.name || data.razonSocial || '',
-                        notas: [data.direccion, data.estado, data.condicion].filter(Boolean).join(' · ') || prev.notas || '',
+                        direccion: data.direccion || prev.direccion || '',
+                        notas: [data.estado, data.condicion].filter(Boolean).join(' · ') || prev.notas || '',
                       }));
                       showToast(`SUNAT: ${data.razonSocial || 'datos cargados'}`, 'green');
                     } catch (e) {
@@ -264,6 +344,64 @@ function EmpresasPage({ showToast }) {
                 <option value="inactiva">Inactiva</option>
               </select>
             </div>
+
+            {/* ── Trazabilidad: Rubro + Rol en el grupo ─────────────── */}
+            <div style={{ gridColumn:'1/-1', marginTop:6, fontSize:11, color:'var(--amber)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em', borderTop:'1px dashed var(--border)', paddingTop:10 }}>
+              Trazabilidad — define qué hace y qué lugar ocupa en tu grupo
+            </div>
+            <div>
+              <label className="flabel">Rubro / giro principal</label>
+              <select className="fi" value={form.rubro||'otro'} onChange={e=>setForm({...form, rubro:e.target.value})}>
+                {RUBROS.map(r => <option key={r.v} value={r.v}>{r.label}</option>)}
+              </select>
+              <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>Sirve para sugerir cadenas (ej: importadora → distribuidora → ejecutora).</div>
+            </div>
+            <div>
+              <label className="flabel">Rol en el grupo</label>
+              <select className="fi" value={form.rol_grupo||'mixta'} onChange={e=>setForm({...form, rol_grupo:e.target.value})}>
+                {ROLES_GRUPO.map(r => <option key={r.v} value={r.v}>{r.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="flabel">Régimen tributario</label>
+              <select className="fi" value={form.regimen_tributario||'RG'} onChange={e=>setForm({...form, regimen_tributario:e.target.value})}>
+                {REGIMENES.map(r => <option key={r.v} value={r.v}>{r.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="flabel">Margen objetivo (%)</label>
+              <input className="fi" type="number" min="0" max="200" step="0.1"
+                placeholder="Ej: 20"
+                value={form.margen_objetivo_pct ?? ''}
+                onChange={e=>setForm({...form, margen_objetivo_pct:e.target.value})}/>
+              <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>% de markup por defecto cuando esta empresa revende dentro del grupo.</div>
+            </div>
+
+            {/* ── Datos de contacto / SUNAT ──────────────────────── */}
+            <div style={{ gridColumn:'1/-1', marginTop:6, fontSize:11, color:'var(--amber)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em', borderTop:'1px dashed var(--border)', paddingTop:10 }}>
+              Datos formales
+            </div>
+            <div style={{ gridColumn:'1/-1' }}>
+              <label className="flabel">Dirección fiscal</label>
+              <input className="fi" value={form.direccion||''} onChange={e=>setForm({...form, direccion:e.target.value})} placeholder="Auto-rellenado por SUNAT"/>
+            </div>
+            <div>
+              <label className="flabel">Teléfono</label>
+              <input className="fi" value={form.telefono||''} onChange={e=>setForm({...form, telefono:e.target.value})}/>
+            </div>
+            <div>
+              <label className="flabel">Email</label>
+              <input className="fi" type="email" value={form.email||''} onChange={e=>setForm({...form, email:e.target.value})}/>
+            </div>
+            <div>
+              <label className="flabel">Representante legal</label>
+              <input className="fi" value={form.representante_legal||''} onChange={e=>setForm({...form, representante_legal:e.target.value})}/>
+            </div>
+            <div>
+              <label className="flabel">Inicio de actividades</label>
+              <input className="fi" type="date" value={form.inicio_actividades||''} onChange={e=>setForm({...form, inicio_actividades:e.target.value})}/>
+            </div>
+
             <div style={{ gridColumn:'1/-1' }}>
               <label className="flabel">Notas</label>
               <textarea className="fi" rows={2} value={form.notas||''} onChange={e=>setForm({...form, notas:e.target.value})}/>
@@ -1330,7 +1468,603 @@ function ConsolidadoPage({ showToast }) {
 }
 
 // ╔════════════════════════════════════════════════════════════╗
+// ║  TRAZABILIDAD — CADENAS DE MARKUPS INTERCOMPANY            ║
+// ╚════════════════════════════════════════════════════════════╝
+// Cada cadena modela el flujo de un ítem desde el proveedor externo
+// (precio real) pasando por las empresas del grupo (con markup interno
+// en cada eslabón) hasta la empresa ejecutora del contrato. Se compara
+// con el precio referencial del contrato del cliente para calcular la
+// ganancia efectiva del grupo y la ganancia aparente de la ejecutora.
+function TrazabilidadPage({ showToast }) {
+  const auth = window.__useAuth?.();
+  const isAdmin = auth?.profile?.rol === 'admin';
+  const userId = auth?.profile?.id ?? 'offline';
+  const { data: companies } = window.__hooks.useCompanies();
+  const { data: cadenas } = window.__hooks.useTrazabilidadCadenas();
+  const { data: obras } = window.__hooks.useObras();
+
+  const [modal, setModal] = uSC(false);
+  const [editingId, setEditingId] = uSC(null);
+  const [form, setForm] = uSC(null);
+  const [verCadena, setVerCadena] = uSC(null);
+
+  const companiesActivas = uMC(() => (companies || []).filter(c => c.status === 'activa' && !c.deleted_at), [companies]);
+  const lookupCompany = (id) => companies?.find(c => c.id === id);
+  const lookupObra = (id) => obras?.find(o => o.id === id);
+
+  const sorted = uMC(() => [...(cadenas || [])].sort((a,b) => (b.fecha || '').localeCompare(a.fecha || '')), [cadenas]);
+
+  // ── Cálculos por cadena ──────────────────────────────────────
+  const calcular = (c) => {
+    const cant = Number(c.cantidad || 0);
+    const precioReal = Number(c.precio_real_unitario || 0);
+    const eslabones = Array.isArray(c.eslabones) ? c.eslabones : [];
+    const ultimo = eslabones[eslabones.length - 1];
+    const precioFinal = Number(ultimo?.precio_unit || 0);
+    const presup = Number(c.precio_referencial_contrato || 0);
+    const costoTotalReal = precioReal * cant;
+    const costoCargadoObra = precioFinal * cant;
+    const presupTotal = presup * cant;
+    const gananciaGrupoReal = costoCargadoObra - costoTotalReal;
+    const gananciaEjecutoraAparente = presupTotal - costoCargadoObra;
+    const gananciaTotalEfectiva = presupTotal - costoTotalReal;
+    return {
+      cant, precioReal, precioFinal, presup,
+      costoTotalReal, costoCargadoObra, presupTotal,
+      gananciaGrupoReal, gananciaEjecutoraAparente, gananciaTotalEfectiva,
+    };
+  };
+
+  // ── Sugerencia de precios distribuidos ──────────────────────
+  // Dado precio_real y precio_referencial_contrato, distribuye el markup
+  // entre los eslabones intermedios proporcional a sus margen_objetivo_pct
+  // (o uniformemente si no están definidos). Deja al final un precio_carga
+  // ligeramente menor que el referencial para mantener un margen positivo
+  // pero pequeño en la ejecutora.
+  const sugerirPrecios = () => {
+    if (!form) return;
+    const real = Number(form.precio_real_unitario || 0);
+    const ref  = Number(form.precio_referencial_contrato || 0);
+    if (!(real > 0 && ref > real)) {
+      showToast('Ingresá precio real y precio referencial (ref > real)', 'red');
+      return;
+    }
+    const eslabones = form.eslabones || [];
+    if (eslabones.length === 0) { showToast('Agregá al menos 1 eslabón', 'red'); return; }
+    const margenObjetivoEjecutora = 0.05; // 5% remanente en la ejecutora
+    const precioCargaObra = ref * (1 - margenObjetivoEjecutora);
+    // El precio del último eslabón = precio que paga la ejecutora = precioCargaObra.
+    // Los eslabones intermedios distribuyen markup proporcional.
+    const N = eslabones.length;
+    const margenes = eslabones.map((es, i) => {
+      const c = lookupCompany(es.company_id);
+      const m = Number(c?.margen_objetivo_pct ?? 20);
+      return Math.max(1, m);
+    });
+    const sumaMargenes = margenes.reduce((s, m) => s + m, 0);
+    const totalMarkup = precioCargaObra - real;
+    let acumulado = real;
+    const nuevos = eslabones.map((es, i) => {
+      const share = margenes[i] / sumaMargenes;
+      acumulado = acumulado + totalMarkup * share;
+      return { ...es, precio_unit: Math.round(acumulado * 100) / 100 };
+    });
+    setForm({ ...form, eslabones: nuevos });
+    showToast(`Precios sugeridos. Precio final ${precioCargaObra.toFixed(2)}, ejecutora deja ${(margenObjetivoEjecutora*100).toFixed(0)}% aparente.`, 'green');
+  };
+
+  const openNueva = () => {
+    if (companiesActivas.length === 0) {
+      showToast('Necesitás registrar al menos 1 empresa activa', 'red');
+      return;
+    }
+    setForm({
+      obra_id: obras?.find(o => !o.deleted_at)?.id || '',
+      fecha: new Date().toISOString().slice(0,10),
+      item_nombre: '',
+      cantidad: '',
+      unidad: 'kg',
+      proveedor_externo_nombre: '',
+      proveedor_externo_ruc: '',
+      precio_real_unitario: '',
+      precio_referencial_contrato: '',
+      eslabones: [
+        { company_id: companiesActivas[0]?.id || '', precio_unit: '', factura: '', fecha_op: new Date().toISOString().slice(0,10) },
+      ],
+      ejecutora_company_id: '',
+      estado: 'borrador',
+      notas: '',
+    });
+    setEditingId(null);
+    setModal(true);
+  };
+
+  const openEditar = (c) => {
+    setForm({
+      obra_id: c.obra_id || '',
+      fecha: c.fecha || new Date().toISOString().slice(0,10),
+      item_nombre: c.item_nombre || '',
+      cantidad: c.cantidad ?? '',
+      unidad: c.unidad || 'kg',
+      proveedor_externo_nombre: c.proveedor_externo_nombre || '',
+      proveedor_externo_ruc: c.proveedor_externo_ruc || '',
+      precio_real_unitario: c.precio_real_unitario ?? '',
+      precio_referencial_contrato: c.precio_referencial_contrato ?? '',
+      eslabones: c.eslabones?.length ? c.eslabones : [{ company_id:'', precio_unit:'', factura:'', fecha_op: c.fecha }],
+      ejecutora_company_id: c.ejecutora_company_id || '',
+      estado: c.estado || 'borrador',
+      notas: c.notas || '',
+    });
+    setEditingId(c.id);
+    setModal(true);
+  };
+
+  const guardar = async () => {
+    if (!form.obra_id) { showToast('Seleccioná la obra destino', 'red'); return; }
+    if (!form.item_nombre?.trim()) { showToast('Falta el nombre del ítem', 'red'); return; }
+    const cant = Number(form.cantidad);
+    if (!(cant > 0)) { showToast('Cantidad inválida', 'red'); return; }
+    const eslabones = (form.eslabones || []).filter(e => e.company_id && Number(e.precio_unit) > 0);
+    if (eslabones.length === 0) { showToast('Agregá al menos 1 eslabón con empresa y precio', 'red'); return; }
+
+    const ejecutora = form.ejecutora_company_id || eslabones[eslabones.length - 1].company_id;
+    const now = new Date().toISOString();
+    try {
+      if (editingId) {
+        const orig = await window.__db.trazabilidad_cadenas.get(editingId);
+        await window.__db.trazabilidad_cadenas.update(editingId, {
+          obra_id: form.obra_id,
+          fecha: form.fecha,
+          item_nombre: form.item_nombre.trim(),
+          cantidad: cant,
+          unidad: form.unidad || null,
+          proveedor_externo_nombre: form.proveedor_externo_nombre?.trim() || null,
+          proveedor_externo_ruc: form.proveedor_externo_ruc?.trim() || null,
+          precio_real_unitario: Number(form.precio_real_unitario) || 0,
+          precio_referencial_contrato: Number(form.precio_referencial_contrato) || 0,
+          eslabones: eslabones.map(e => ({
+            company_id: e.company_id,
+            precio_unit: Number(e.precio_unit) || 0,
+            factura: e.factura?.trim() || null,
+            fecha_op: e.fecha_op || form.fecha,
+          })),
+          ejecutora_company_id: ejecutora,
+          estado: form.estado,
+          notas: form.notas?.trim() || null,
+          updated_at: now, updated_by: userId,
+          version: (orig?.version ?? 0) + 1,
+          sync_status: orig?.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+        });
+        try { await window.__logAudit?.({ action:'update', table:'trazabilidad_cadenas', recordId:editingId, oldData:orig, newData:form, reason:'Edición cadena' }); } catch {}
+        showToast('Cadena actualizada', 'green');
+      } else {
+        const id = window.__newId();
+        const rec = {
+          id,
+          obra_id: form.obra_id,
+          fecha: form.fecha,
+          item_nombre: form.item_nombre.trim(),
+          cantidad: cant,
+          unidad: form.unidad || null,
+          proveedor_externo_nombre: form.proveedor_externo_nombre?.trim() || null,
+          proveedor_externo_ruc: form.proveedor_externo_ruc?.trim() || null,
+          precio_real_unitario: Number(form.precio_real_unitario) || 0,
+          precio_referencial_contrato: Number(form.precio_referencial_contrato) || 0,
+          eslabones: eslabones.map(e => ({
+            company_id: e.company_id,
+            precio_unit: Number(e.precio_unit) || 0,
+            factura: e.factura?.trim() || null,
+            fecha_op: e.fecha_op || form.fecha,
+          })),
+          ejecutora_company_id: ejecutora,
+          estado: form.estado,
+          notas: form.notas?.trim() || null,
+          created_at: now, updated_at: now,
+          created_by: userId, updated_by: userId,
+          version: 1, sync_status: 'pending_create', last_synced_at: null,
+          idempotency_key: `${userId}_chain_${id}`,
+        };
+        await window.__db.trazabilidad_cadenas.add(rec);
+        try { await window.__logAudit?.({ action:'insert', table:'trazabilidad_cadenas', recordId:id, newData:rec, reason:`Nueva cadena: ${rec.item_nombre}` }); } catch {}
+        showToast('Cadena creada', 'green');
+      }
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'trazabilidad_cadenas' } })); } catch {}
+      setModal(false); setEditingId(null); setForm(null);
+    } catch (e) {
+      showToast('Error: ' + (e.message || e), 'red');
+    }
+  };
+
+  const eliminar = async (c) => {
+    if (!isAdmin) return;
+    if (!confirm(`¿Eliminar la cadena "${c.item_nombre}"?`)) return;
+    try {
+      await window.__db.trazabilidad_cadenas.update(c.id, {
+        deleted_at: new Date().toISOString(),
+        sync_status: c.sync_status === 'pending_create' ? 'pending_create' : 'pending_delete',
+      });
+      try { await window.__logAudit?.({ action:'delete', table:'trazabilidad_cadenas', recordId:c.id, oldData:c, reason:'Eliminación cadena' }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'trazabilidad_cadenas' } })); } catch {}
+      showToast('Cadena eliminada', 'amber');
+    } catch (e) { showToast('Error: ' + (e.message||e), 'red'); }
+  };
+
+  // ── Resumen global ──────────────────────────────────────────
+  const resumen = uMC(() => {
+    let real = 0, cargada = 0, ref = 0;
+    sorted.forEach(c => {
+      const r = calcular(c);
+      real += r.costoTotalReal;
+      cargada += r.costoCargadoObra;
+      ref += r.presupTotal;
+    });
+    return {
+      real, cargada, ref,
+      gananciaGrupo: cargada - real,
+      gananciaEjec: ref - cargada,
+      gananciaTotal: ref - real,
+    };
+  }, [sorted]);
+
+  return (
+    <div className="page-wrap">
+      <div className="pg-hd frow-sb">
+        <div>
+          <div className="pg-title">Trazabilidad de Cadenas</div>
+          <div className="pg-sub">{sorted.length} cadenas · proveedor externo → empresas del grupo → ejecutora · vs presupuesto</div>
+        </div>
+        <button className="btn btn-amber btn-sm" onClick={openNueva}>
+          <JxIcon name="plus" size={13}/>Nueva Cadena
+        </button>
+      </div>
+
+      <div className="card card-p" style={{ marginBottom:14, background:'rgba(155,89,182,0.06)', border:'1px solid rgba(155,89,182,0.25)', fontSize:12, color:'var(--ts)' }}>
+        <strong style={{ color:'var(--purple,#9B59B6)' }}>ℹ Cómo funciona:</strong> Una cadena registra el camino de un material o servicio
+        desde el <strong>proveedor externo</strong> (precio real) pasando por las empresas de tu grupo (con markup interno) hasta la
+        <strong> empresa ejecutora</strong> que firma el contrato. Se compara contra el <strong>presupuesto referencial</strong> del cliente
+        para ver la ganancia real del grupo y la ganancia aparente que queda en la ejecutora.
+      </div>
+
+      {sorted.length > 0 && (
+        <div className="g4" style={{ marginBottom:16 }}>
+          <div className="kpi-card">
+            <div style={{ fontSize:11.5, color:'var(--tm)' }}>Costo Real Externo</div>
+            <div className="kpi-val" style={{ color:'var(--blue)' }}>{fmtCurK(resumen.real)}</div>
+            <div style={{ fontSize:11, color:'var(--tm)' }}>lo que el grupo pagó afuera</div>
+          </div>
+          <div className="kpi-card">
+            <div style={{ fontSize:11.5, color:'var(--tm)' }}>Costo Cargado Obra</div>
+            <div className="kpi-val" style={{ color:'var(--amber)' }}>{fmtCurK(resumen.cargada)}</div>
+            <div style={{ fontSize:11, color:'var(--tm)' }}>lo que paga la ejecutora al grupo</div>
+          </div>
+          <div className="kpi-card">
+            <div style={{ fontSize:11.5, color:'var(--tm)' }}>Ganancia Aparente Ejecutora</div>
+            <div className="kpi-val" style={{ color: resumen.gananciaEjec>=0?'var(--green)':'var(--red)' }}>{fmtCurK(resumen.gananciaEjec)}</div>
+            <div style={{ fontSize:11, color:'var(--tm)' }}>{resumen.ref>0 ? `${(resumen.gananciaEjec/resumen.ref*100).toFixed(1)}% del presupuesto` : '—'}</div>
+          </div>
+          <div className="kpi-card">
+            <div style={{ fontSize:11.5, color:'var(--tm)' }}>Ganancia Total Grupo</div>
+            <div className="kpi-val" style={{ color: resumen.gananciaTotal>=0?'var(--green)':'var(--red)' }}>{fmtCurK(resumen.gananciaTotal)}</div>
+            <div style={{ fontSize:11, color:'var(--tm)' }}>presupuesto − costo real</div>
+          </div>
+        </div>
+      )}
+
+      {sorted.length === 0 ? (
+        <div className="card card-p empty-state">
+          <JxIcon name="compare" size={40} color="var(--tm)"/>
+          <p style={{ maxWidth:560 }}>
+            No hay cadenas registradas todavía.<br/>
+            Creá la primera para trazar el flujo de un material o servicio desde el proveedor externo hasta la empresa ejecutora,
+            pasando por todas las empresas intermedias de tu grupo. Útil para presupuestos donde la ganancia debe quedar distribuida.
+          </p>
+        </div>
+      ) : (
+        <div className="card" style={{ overflow:'hidden' }}>
+          <div style={{ overflowX:'auto' }}>
+            <table className="tbl">
+              <thead><tr>
+                <th>Fecha</th><th>Ítem · Obra</th><th>Cadena</th>
+                <th style={{ textAlign:'right' }}>Precio real</th>
+                <th style={{ textAlign:'right' }}>Precio cargado</th>
+                <th style={{ textAlign:'right' }}>Presupuesto</th>
+                <th style={{ textAlign:'right' }}>Ganancia grupo</th>
+                <th>Estado</th>
+                <th style={{ textAlign:'center' }}>Acciones</th>
+              </tr></thead>
+              <tbody>
+                {sorted.map(c => {
+                  const r = calcular(c);
+                  const obra = lookupObra(c.obra_id);
+                  return (
+                    <tr key={c.id}>
+                      <td className="col-m">{c.fecha}</td>
+                      <td>
+                        <strong>{c.item_nombre}</strong>
+                        <div style={{ fontSize:10.5, color:'var(--tm)' }}>{c.cantidad} {c.unidad} · {obra?.nombre_obra?.slice(0,40) || '—'}</div>
+                      </td>
+                      <td style={{ fontSize:11 }}>
+                        {(c.eslabones || []).map((e, i, arr) => {
+                          const co = lookupCompany(e.company_id);
+                          return (
+                            <span key={i}>
+                              <span style={{ color: i === arr.length-1 ? 'var(--green)' : 'var(--ts)' }}>{co?.name?.slice(0,16) || '?'}</span>
+                              {i < arr.length-1 && <span style={{ color:'var(--tm)', margin:'0 4px' }}>→</span>}
+                            </span>
+                          );
+                        })}
+                      </td>
+                      <td style={{ textAlign:'right', color:'var(--blue)' }} className="col-num">{fmtCur(r.precioReal)} <div style={{ fontSize:10, color:'var(--tm)' }}>{fmtCurK(r.costoTotalReal)}</div></td>
+                      <td style={{ textAlign:'right', color:'var(--amber)' }} className="col-num">{fmtCur(r.precioFinal)} <div style={{ fontSize:10, color:'var(--tm)' }}>{fmtCurK(r.costoCargadoObra)}</div></td>
+                      <td style={{ textAlign:'right' }} className="col-num">{fmtCur(r.presup)} <div style={{ fontSize:10, color:'var(--tm)' }}>{fmtCurK(r.presupTotal)}</div></td>
+                      <td style={{ textAlign:'right', fontWeight:700, color: r.gananciaGrupoReal>=0?'var(--green)':'var(--red)' }} className="col-num">{fmtCurK(r.gananciaGrupoReal)}</td>
+                      <td><span className={`badge ${c.estado==='confirmada'?'b-green':c.estado==='facturada'?'b-blue':'b-gray'}`}>{c.estado || 'borrador'}</span></td>
+                      <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
+                        <button className="btn btn-ghost btn-xs" title="Ver detalle visual" onClick={()=>setVerCadena(c)}>
+                          <JxIcon name="eye" size={11}/>
+                        </button>
+                        <button className="btn btn-ghost btn-xs" title="Editar" onClick={()=>openEditar(c)} style={{ marginLeft:4 }}>
+                          <JxIcon name="edit" size={11}/>
+                        </button>
+                        {isAdmin && (
+                          <button className="btn btn-red btn-xs" title="Eliminar" onClick={()=>eliminar(c)} style={{ marginLeft:4 }}>
+                            <JxIcon name="trash" size={11}/>
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── MODAL DETALLE VISUAL ─────────────────────────────── */}
+      {verCadena && (
+        <Modal title={`Cadena: ${verCadena.item_nombre}`} icon="compare" onClose={()=>setVerCadena(null)} wide>
+          <CadenaVisual cadena={verCadena} lookupCompany={lookupCompany} lookupObra={lookupObra} calcular={calcular}/>
+        </Modal>
+      )}
+
+      {/* ── MODAL CREAR/EDITAR ───────────────────────────────── */}
+      {modal && form && (
+        <Modal title={editingId ? 'Editar Cadena' : 'Nueva Cadena de Trazabilidad'} icon="compare" onClose={()=>{setModal(false); setEditingId(null); setForm(null);}} wide>
+          <div className="g2">
+            <div>
+              <label className="flabel">Obra destino *</label>
+              <select className="fi" value={form.obra_id||''} onChange={e=>setForm({...form, obra_id:e.target.value})}>
+                <option value="">— Seleccionar —</option>
+                {(obras||[]).filter(o => !o.deleted_at).map(o => <option key={o.id} value={o.id}>{o.nombre_obra}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="flabel">Fecha</label>
+              <input className="fi" type="date" value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/>
+            </div>
+            <div style={{ gridColumn:'1/-1' }}>
+              <label className="flabel">Ítem (material o servicio) *</label>
+              <input className="fi" value={form.item_nombre||''} onChange={e=>setForm({...form, item_nombre:e.target.value})} placeholder="Ej: Fierro corrugado 1/2&quot; ASTM A615 G60"/>
+            </div>
+            <div>
+              <label className="flabel">Cantidad *</label>
+              <input className="fi" type="number" min="0" step="0.01" value={form.cantidad ?? ''} onChange={e=>setForm({...form, cantidad:e.target.value})}/>
+            </div>
+            <div>
+              <label className="flabel">Unidad</label>
+              <select className="fi" value={form.unidad||'kg'} onChange={e=>setForm({...form, unidad:e.target.value})}>
+                <option value="kg">kg</option><option value="m">m</option>
+                <option value="m2">m²</option><option value="m3">m³</option>
+                <option value="und">und</option><option value="bls">bls</option>
+                <option value="gal">gal</option><option value="hr">hr</option>
+              </select>
+            </div>
+
+            {/* ── Origen externo + Presupuesto referencial ── */}
+            <div style={{ gridColumn:'1/-1', marginTop:6, fontSize:11, color:'var(--blue)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em', borderTop:'1px dashed var(--border)', paddingTop:10 }}>
+              Origen y referencia
+            </div>
+            <div>
+              <label className="flabel">Proveedor externo (real)</label>
+              <input className="fi" value={form.proveedor_externo_nombre||''} onChange={e=>setForm({...form, proveedor_externo_nombre:e.target.value})} placeholder="Aceros Arequipa"/>
+            </div>
+            <div>
+              <label className="flabel">RUC proveedor</label>
+              <input className="fi" maxLength={11} value={form.proveedor_externo_ruc||''} onChange={e=>setForm({...form, proveedor_externo_ruc:e.target.value.replace(/\D/g,'').slice(0,11)})}/>
+            </div>
+            <div>
+              <label className="flabel">Precio REAL unitario (S/) *</label>
+              <input className="fi" type="number" min="0" step="0.01" value={form.precio_real_unitario ?? ''} onChange={e=>setForm({...form, precio_real_unitario:e.target.value})} placeholder="5.00"/>
+              <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>Lo que pagó la primera empresa del grupo al proveedor externo.</div>
+            </div>
+            <div>
+              <label className="flabel">Precio referencial contrato (S/) *</label>
+              <input className="fi" type="number" min="0" step="0.01" value={form.precio_referencial_contrato ?? ''} onChange={e=>setForm({...form, precio_referencial_contrato:e.target.value})} placeholder="25.00"/>
+              <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>El precio del cliente final / presupuesto contractual.</div>
+            </div>
+
+            {/* ── Eslabones ── */}
+            <div style={{ gridColumn:'1/-1', marginTop:6, fontSize:11, color:'var(--amber)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em', borderTop:'1px dashed var(--border)', paddingTop:10, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+              <span>Eslabones del grupo (orden = flujo)</span>
+              <button type="button" className="btn btn-ghost btn-xs" onClick={sugerirPrecios} title="Distribuir markup automáticamente según margen objetivo de cada empresa">
+                <JxIcon name="refresh" size={11}/> Sugerir precios
+              </button>
+            </div>
+            <div style={{ gridColumn:'1/-1' }}>
+              {(form.eslabones || []).map((es, i) => {
+                const arr = form.eslabones || [];
+                const ant = i === 0 ? Number(form.precio_real_unitario || 0) : Number(arr[i-1]?.precio_unit || 0);
+                const cur = Number(es.precio_unit || 0);
+                const markupPct = ant > 0 ? ((cur - ant) / ant * 100) : 0;
+                const co = lookupCompany(es.company_id);
+                return (
+                  <div key={i} style={{ display:'grid', gridTemplateColumns:'24px 2fr 1fr 1fr 1fr 32px', gap:8, alignItems:'center', marginBottom:8, padding:'8px 10px', background:'rgba(255,255,255,0.025)', border:'1px solid var(--border)', borderRadius:8 }}>
+                    <div style={{ fontSize:11, fontWeight:700, color:'var(--amber)', textAlign:'center' }}>#{i+1}</div>
+                    <select className="fi" value={es.company_id||''} onChange={e=>{
+                      const nuevos = [...arr]; nuevos[i] = { ...nuevos[i], company_id: e.target.value };
+                      setForm({ ...form, eslabones: nuevos });
+                    }}>
+                      <option value="">— Empresa —</option>
+                      {companiesActivas.map(c => <option key={c.id} value={c.id}>{c.name}{c.rol_grupo?` · ${c.rol_grupo}`:''}</option>)}
+                    </select>
+                    <input className="fi" type="number" min="0" step="0.01" placeholder="Precio unit"
+                      value={es.precio_unit ?? ''} onChange={e=>{
+                        const nuevos = [...arr]; nuevos[i] = { ...nuevos[i], precio_unit: e.target.value };
+                        setForm({ ...form, eslabones: nuevos });
+                      }}/>
+                    <div style={{ fontSize:11, color: markupPct >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                      {ant > 0 && cur > 0 ? `+${markupPct.toFixed(1)}%` : '—'}
+                    </div>
+                    <input className="fi" placeholder="Factura" value={es.factura||''} onChange={e=>{
+                      const nuevos = [...arr]; nuevos[i] = { ...nuevos[i], factura: e.target.value };
+                      setForm({ ...form, eslabones: nuevos });
+                    }}/>
+                    <button type="button" className="btn btn-ghost btn-xs" title="Quitar"
+                      disabled={arr.length === 1}
+                      onClick={()=>{
+                        const nuevos = arr.filter((_, idx) => idx !== i);
+                        setForm({ ...form, eslabones: nuevos.length ? nuevos : [{ company_id:'', precio_unit:'', factura:'', fecha_op: form.fecha }] });
+                      }}>
+                      <JxIcon name="x" size={11}/>
+                    </button>
+                  </div>
+                );
+              })}
+              <button type="button" className="btn btn-ghost btn-sm"
+                onClick={()=>{
+                  const arr = [...(form.eslabones||[])];
+                  arr.push({ company_id:'', precio_unit:'', factura:'', fecha_op: form.fecha });
+                  setForm({ ...form, eslabones: arr });
+                }}>
+                <JxIcon name="plus" size={11}/> Agregar eslabón
+              </button>
+            </div>
+
+            {/* ── Resumen en vivo ── */}
+            {(() => {
+              const cant = Number(form.cantidad || 0);
+              const real = Number(form.precio_real_unitario || 0);
+              const ref = Number(form.precio_referencial_contrato || 0);
+              const last = (form.eslabones || []).filter(e => e.precio_unit).slice(-1)[0];
+              const final = Number(last?.precio_unit || 0);
+              if (!(cant > 0 && real > 0 && final > 0)) return null;
+              const costoReal = real * cant;
+              const cargado = final * cant;
+              const presup = ref * cant;
+              return (
+                <div style={{ gridColumn:'1/-1', background:'rgba(46,204,113,0.06)', border:'1px solid rgba(46,204,113,0.25)', borderRadius:8, padding:'12px 14px', fontSize:12 }}>
+                  <div style={{ fontSize:11, color:'var(--green)', fontWeight:700, textTransform:'uppercase', marginBottom:8 }}>Resumen en vivo</div>
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10 }}>
+                    <div><div style={{ color:'var(--tm)', fontSize:10.5 }}>Costo real</div><div style={{ color:'var(--blue)', fontWeight:700 }}>{fmtCur(costoReal)}</div></div>
+                    <div><div style={{ color:'var(--tm)', fontSize:10.5 }}>Costo cargado a obra</div><div style={{ color:'var(--amber)', fontWeight:700 }}>{fmtCur(cargado)}</div></div>
+                    <div><div style={{ color:'var(--tm)', fontSize:10.5 }}>Ganancia grupo</div><div style={{ color: cargado-costoReal>=0?'var(--green)':'var(--red)', fontWeight:700 }}>{fmtCur(cargado-costoReal)}</div></div>
+                    <div><div style={{ color:'var(--tm)', fontSize:10.5 }}>Ganancia ejecutora aparente</div><div style={{ color: presup-cargado>=0?'var(--green)':'var(--red)', fontWeight:700 }}>{fmtCur(presup-cargado)} {presup>0?`(${((presup-cargado)/presup*100).toFixed(1)}%)`:''}</div></div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            <div>
+              <label className="flabel">Estado</label>
+              <select className="fi" value={form.estado||'borrador'} onChange={e=>setForm({...form, estado:e.target.value})}>
+                <option value="borrador">Borrador</option>
+                <option value="confirmada">Confirmada</option>
+                <option value="facturada">Facturada</option>
+              </select>
+            </div>
+            <div style={{ gridColumn:'1/-1' }}>
+              <label className="flabel">Notas</label>
+              <textarea className="fi" rows={2} value={form.notas||''} onChange={e=>setForm({...form, notas:e.target.value})}/>
+            </div>
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={()=>{setModal(false); setEditingId(null); setForm(null);}}>Cancelar</button>
+            <button className="btn btn-amber" onClick={guardar}>
+              <JxIcon name="check" size={13}/>{editingId ? 'Guardar Cambios' : 'Crear Cadena'}
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// Componente visual de una cadena (para el modal de detalle).
+function CadenaVisual({ cadena, lookupCompany, lookupObra, calcular }) {
+  const r = calcular(cadena);
+  const obra = lookupObra(cadena.obra_id);
+  const eslabones = cadena.eslabones || [];
+  const Box = ({ titulo, sub, precio, total, color, icono }) => (
+    <div style={{ flex:1, minWidth:140, background:'rgba(255,255,255,0.025)', border:`1px solid ${color}55`, borderTop:`3px solid ${color}`, borderRadius:8, padding:'10px 12px', textAlign:'center' }}>
+      <div style={{ fontSize:10.5, color:'var(--tm)', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:4 }}>{titulo}</div>
+      <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)', marginBottom:4 }}>{sub}</div>
+      <div style={{ fontSize:18, fontWeight:800, color }}>{fmtCur(precio)}</div>
+      <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2 }}>{fmtCurK(total)} total</div>
+    </div>
+  );
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+      <div style={{ background:'rgba(155,89,182,0.06)', border:'1px solid rgba(155,89,182,0.25)', borderRadius:8, padding:'10px 14px', fontSize:12 }}>
+        <strong>{cadena.item_nombre}</strong> · {cadena.cantidad} {cadena.unidad} · Obra: {obra?.nombre_obra || '—'} · Fecha: {cadena.fecha}
+      </div>
+      <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+        <Box titulo="Externo" sub={cadena.proveedor_externo_nombre || 'Proveedor externo'} precio={r.precioReal} total={r.costoTotalReal} color="#3498DB"/>
+        {eslabones.map((es, i) => {
+          const co = lookupCompany(es.company_id);
+          const ant = i === 0 ? r.precioReal : Number(eslabones[i-1].precio_unit || 0);
+          const cur = Number(es.precio_unit || 0);
+          const mk = ant > 0 ? ((cur - ant) / ant * 100) : 0;
+          const isUlt = i === eslabones.length - 1;
+          return (
+            <React.Fragment key={i}>
+              <div style={{ color:'var(--tm)', fontSize:18, fontWeight:700 }}>→</div>
+              <div style={{ flex:1, minWidth:140 }}>
+                <Box
+                  titulo={isUlt ? 'Ejecutora' : `Eslabón ${i+1}`}
+                  sub={co?.name || '?'}
+                  precio={cur}
+                  total={cur * r.cant}
+                  color={isUlt ? '#2ECC71' : '#F2B705'}
+                />
+                <div style={{ textAlign:'center', fontSize:10.5, color: mk>=0?'var(--green)':'var(--red)', marginTop:4 }}>
+                  +{mk.toFixed(1)}% markup
+                </div>
+              </div>
+            </React.Fragment>
+          );
+        })}
+        <div style={{ color:'var(--tm)', fontSize:18, fontWeight:700 }}>→</div>
+        <Box titulo="Cliente final" sub="Presupuesto contractual" precio={r.presup} total={r.presupTotal} color="#9B59B6"/>
+      </div>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10 }}>
+        <div className="kpi-card">
+          <div style={{ fontSize:10.5, color:'var(--tm)' }}>Ganancia grupo (real)</div>
+          <div style={{ fontSize:18, fontWeight:800, color: r.gananciaGrupoReal>=0?'var(--green)':'var(--red)' }}>{fmtCur(r.gananciaGrupoReal)}</div>
+          <div style={{ fontSize:10, color:'var(--tm)' }}>cargado − real</div>
+        </div>
+        <div className="kpi-card">
+          <div style={{ fontSize:10.5, color:'var(--tm)' }}>Ganancia ejecutora (aparente)</div>
+          <div style={{ fontSize:18, fontWeight:800, color: r.gananciaEjecutoraAparente>=0?'var(--green)':'var(--red)' }}>{fmtCur(r.gananciaEjecutoraAparente)}</div>
+          <div style={{ fontSize:10, color:'var(--tm)' }}>{r.presupTotal>0 ? `${(r.gananciaEjecutoraAparente/r.presupTotal*100).toFixed(1)}% del presupuesto` : '—'}</div>
+        </div>
+        <div className="kpi-card">
+          <div style={{ fontSize:10.5, color:'var(--tm)' }}>Ganancia total efectiva</div>
+          <div style={{ fontSize:18, fontWeight:800, color: r.gananciaTotalEfectiva>=0?'var(--green)':'var(--red)' }}>{fmtCur(r.gananciaTotalEfectiva)}</div>
+          <div style={{ fontSize:10, color:'var(--tm)' }}>presupuesto − costo real</div>
+        </div>
+      </div>
+      {cadena.notas && (
+        <div style={{ fontSize:11.5, color:'var(--ts)', padding:'8px 10px', background:'rgba(255,255,255,0.025)', border:'1px solid var(--border)', borderRadius:6 }}>
+          <strong>Notas:</strong> {cadena.notas}
+        </div>
+      )}
+    </div>
+  );
+}
+
 Object.assign(window, {
   EmpresasPage, MovimientosContablesPage, IntercompanyPage,
   ContabilidadDashboardPage, ConsolidadoPage,
+  TrazabilidadPage,
 });

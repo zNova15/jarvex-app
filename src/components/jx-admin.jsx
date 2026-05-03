@@ -398,7 +398,7 @@ const MODULE_GROUPS = [
   { group: 'Maquinaria', modules: ['Activos Pesados','Mantenimiento','Horas Máquina'] },
   { group: 'SSOMA', modules: ['Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones'] },
   { group: 'RRHH', modules: ['Contratos Laborales','Planillas','CTS','Gratificaciones'] },
-  { group: 'Contabilidad', modules: ['Empresas','Movs. Contables','Intercompany','Consolidado','Plan de Cuentas','Libro Diario','Balance General','Estado Resultados'] },
+  { group: 'Contabilidad', modules: ['Empresas','Movs. Contables','Intercompany','Trazabilidad','Consolidado','Plan de Cuentas','Libro Diario','Balance General','Estado Resultados'] },
   { group: 'Tesorería', modules: ['Cuentas Bancarias','Flujo de Caja','Flujo Proyectado','Comparativo Periodos'] },
   { group: 'SUNAT', modules: ['Comprobantes Electrónicos','Libros Electrónicos','PLAME / T-Registro','Config SUNAT'] },
   { group: 'Ejecutivo / Reportes', modules: ['Dashboard Ejecutivo','KPIs por Obra','Cumplimiento Cronograma','Centro Alertas','Búsqueda Global','Reportes'] },
@@ -424,7 +424,7 @@ const PERM_MATRIX = {
       // Compras: el gerente aprueba requisiciones y firma OC
       'Requisiciones','Órdenes de Compra','Cotizaciones','Recepciones','Proveedores',
       'Subcontratistas','Subcontratos','Valor. Subcontrato','Activos Pesados',
-      'Empresas','Movs. Contables','Intercompany','Consolidado','Plan de Cuentas',
+      'Empresas','Movs. Contables','Intercompany','Trazabilidad','Consolidado','Plan de Cuentas',
       'Libro Diario','Balance General','Estado Resultados',
       'Cuentas Bancarias','Flujo de Caja','Flujo Proyectado','Comparativo Periodos',
       'Comprobantes Electrónicos','Libros Electrónicos','PLAME / T-Registro','Config SUNAT',
@@ -490,7 +490,7 @@ const PERM_MATRIX = {
   contador: PERM_MATRIX_MODULES.map(m => {
     if (m === 'Usuarios/Config') return 'x';
     if (['Movs. Contables','Plan de Cuentas','Libro Diario','Balance General','Estado Resultados',
-         'Empresas','Intercompany','Consolidado','Auditoría'].includes(m)) return 'w';
+         'Empresas','Intercompany','Trazabilidad','Consolidado','Auditoría'].includes(m)) return 'w';
     if (['Obras','Personal','Proveedores','Subcontratistas','Subcontratos','Valor. Subcontrato',
          'Requisiciones','Órdenes de Compra','Cotizaciones','Recepciones','Valorizaciones',
          'Reportes','Comprobantes Electrónicos','Libros Electrónicos'].includes(m)) return 'r';
@@ -503,7 +503,7 @@ const PERM_MATRIX = {
     if (m === 'Usuarios/Config') return 'x';
     if (['Cuentas Bancarias','Flujo de Caja','Flujo Proyectado','Comparativo Periodos'].includes(m)) return 'w';
     if (['Movs. Contables','Plan de Cuentas','Libro Diario','Balance General','Estado Resultados',
-         'Empresas','Intercompany','Consolidado','Órdenes de Compra','Valorizaciones','Valor. Subcontrato',
+         'Empresas','Intercompany','Trazabilidad','Consolidado','Órdenes de Compra','Valorizaciones','Valor. Subcontrato',
          'Proveedores','Subcontratistas','Subcontratos','Reportes','Obras'].includes(m)) return 'r';
     return 'x';
   }),
@@ -648,6 +648,7 @@ window.__moduleIdMap = {
   'empresas': 'Empresas',
   'movimientos-contables': 'Movs. Contables',
   'intercompany': 'Intercompany',
+  'trazabilidad': 'Trazabilidad',
   'consolidado': 'Consolidado',
   'plan-cuentas': 'Plan de Cuentas',
   'libro-diario': 'Libro Diario',

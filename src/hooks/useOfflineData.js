@@ -255,6 +255,15 @@ export function useIntercompanyTransactions() {
   , []);
 }
 
+// Trazabilidad — cadenas de markups intercompany.
+export function useTrazabilidadCadenas(obra_id) {
+  return useOfflineData('trazabilidad_cadenas', q =>
+    obra_id
+      ? q.where('obra_id').equals(obra_id).filter(c => !c.deleted_at).toArray()
+      : q.filter(c => !c.deleted_at).toArray()
+  , [obra_id]);
+}
+
 // ── Compras ──────────────────────────────────────────────────────────
 export function useRequisiciones(obra_id) {
   return useOfflineData('requisiciones', q =>
