@@ -159,58 +159,34 @@ function UsuariosPage({ showToast }) {
     try {
       const sb = window.__supabase;
 
-      // 1. Guardar la sesión del admin — signUp puede auto-loguear al usuario nuevo
-      //    y reemplazar la sesión actual, lo que rompería el UPDATE posterior bajo RLS.
-      const { data: { session: adminSession } } = await sb.auth.getSession();
+      // Usamos /api/create-user (Admin API con service role) para crear el
+      // usuario con email_confirm:true. Así el usuario nuevo puede loguearse
+      // inmediatamente sin tener que confirmar el email — y se evita el rate
+      // limit de "demasiados intentos" en recuperar contraseña.
+      const { data: { session } } = await sb.auth.getSession();
+      const token = session?.access_token;
+      if (!token) throw new Error('No hay sesión activa. Volvé a loguearte.');
 
-      // 2. Crear el usuario en auth.users (el trigger handle_new_user crea el row en profiles)
-      const { data: signUpData, error: signUpErr } = await sb.auth.signUp({
-        email: form.email,
-        password: form.password,
-        options: { data: { nombres: form.nombres, apellidos: form.apellidos } }
+      const resp = await fetch('/api/create-user', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          email: form.email,
+          password: form.password,
+          nombres: form.nombres || null,
+          apellidos: form.apellidos || null,
+          rol: form.rol || 'solo_lectura',
+        }),
       });
-      if (signUpErr) throw signUpErr;
-      const newUserId = signUpData?.user?.id;
-      if (!newUserId) throw new Error('No se obtuvo el ID del usuario creado');
-
-      // 3. Restaurar la sesión del admin (si signUp la reemplazó)
-      if (adminSession?.access_token && adminSession?.refresh_token) {
-        const { data: { session: nowSession } } = await sb.auth.getSession();
-        if (nowSession?.user?.id !== adminSession.user.id) {
-          await sb.auth.setSession({
-            access_token: adminSession.access_token,
-            refresh_token: adminSession.refresh_token,
-          });
-        }
+      const data = await resp.json();
+      if (!resp.ok) {
+        throw new Error(data.error || data.detail || `HTTP ${resp.status}`);
       }
 
-      // 4. Esperar a que el trigger cree el row en profiles (puede tardar ms)
-      let profileExists = false;
-      for (let i = 0; i < 15; i++) {
-        const { data: prof } = await sb.from('profiles').select('id').eq('id', newUserId).maybeSingle();
-        if (prof) { profileExists = true; break; }
-        await new Promise(r => setTimeout(r, 250));
-      }
-
-      // 5. Hacer el upsert/update con nombres, apellidos y rol — siempre por id
-      const profileData = {
-        id: newUserId,
-        email: form.email,
-        nombres: form.nombres || null,
-        apellidos: form.apellidos || null,
-        rol: form.rol || 'solo_lectura',
-        activo: true,
-      };
-      const { error: upErr } = profileExists
-        ? await sb.from('profiles').update({
-            nombres: profileData.nombres,
-            apellidos: profileData.apellidos,
-            rol: profileData.rol,
-          }).eq('id', newUserId)
-        : await sb.from('profiles').upsert(profileData, { onConflict: 'id' });
-      if (upErr) throw upErr;
-
-      showToast?.('Usuario creado','green');
+      showToast?.(data.message || 'Usuario creado. Ya puede ingresar.', 'green');
       setModalNew(false);
       setForm({ email:'', password:'', nombres:'', apellidos:'', rol:'solo_lectura' });
       reload();
