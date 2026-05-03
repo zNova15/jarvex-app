@@ -50,6 +50,7 @@ const fmtPct = (n) => Number(n || 0).toFixed(1) + '%';
 // ─── OBRAS PAGE ───────────────────────────────────────────
 function ObrasPage({ showToast }) {
   const { data: obras, loading, create: createObra, update: updateObra } = window.__hooks.useObras();
+  const { data: companies } = window.__hooks.useCompanies?.() || { data: [] };
   const auth = window.__useAuth ? window.__useAuth() : null;
   const isAdmin = auth?.profile?.rol === 'admin';
   const appMode = window.__useAppMode ? window.__useAppMode() : { isEdicion: true };
@@ -57,6 +58,19 @@ function ObrasPage({ showToast }) {
   const [modal, setModal] = uSO(null);
   const [form, setForm] = uSO({});
   const [editingId, setEditingId] = uSO(null);
+
+  const companiesActivas = uMO(() => (companies || []).filter(c => c.status === 'activa' && !c.deleted_at), [companies]);
+  const lookupCompany = (id) => companies?.find(c => c.id === id);
+  const ejecutoraDisplay = (o) => {
+    if (o.ejecutora_tipo === 'consorcio') {
+      const miembros = (o.consorcio_miembros || []).map(m => lookupCompany(m.company_id)?.name).filter(Boolean);
+      return o.consorcio_nombre
+        ? `Consorcio ${o.consorcio_nombre}` + (miembros.length ? ` (${miembros.join(' + ')})` : '')
+        : `Consorcio (${miembros.join(' + ') || '—'})`;
+    }
+    if (o.ejecutora_company_id) return lookupCompany(o.ejecutora_company_id)?.name || '—';
+    return '—';
+  };
 
   const handleDeleteObra = async (o) => {
     if (!canDelete) return;
@@ -78,9 +92,26 @@ function ObrasPage({ showToast }) {
       fecha_fin_estimada: o.fecha_fin_estimada || '',
       presupuesto_total: o.presupuesto_total ?? '',
       observaciones: o.observaciones || '',
+      ejecutora_tipo: o.ejecutora_tipo || 'empresa',
+      ejecutora_company_id: o.ejecutora_company_id || '',
+      consorcio_nombre: o.consorcio_nombre || '',
+      consorcio_miembros: Array.isArray(o.consorcio_miembros) && o.consorcio_miembros.length
+        ? o.consorcio_miembros
+        : [{ company_id:'', participacion_pct: '' }, { company_id:'', participacion_pct: '' }],
     });
     setEditingId(o.id);
     setModal('editar');
+  };
+
+  const openNuevaObra = () => {
+    setForm({
+      ejecutora_tipo: 'empresa',
+      ejecutora_company_id: companiesActivas[0]?.id || '',
+      consorcio_nombre: '',
+      consorcio_miembros: [{ company_id:'', participacion_pct:'' }, { company_id:'', participacion_pct:'' }],
+    });
+    setEditingId(null);
+    setModal('nueva');
   };
 
   const handleSubmit = async () => {
@@ -95,6 +126,40 @@ function ObrasPage({ showToast }) {
       showToast('El presupuesto no puede ser negativo', 'red');
       return;
     }
+    // ── Validaciones empresa ejecutora / consorcio ────────────
+    let ejecutoraTipo = form.ejecutora_tipo || 'empresa';
+    let ejecutoraCompanyId = null;
+    let consorcioNombre = null;
+    let consorcioMiembros = null;
+    if (ejecutoraTipo === 'empresa') {
+      if (!form.ejecutora_company_id) {
+        showToast('Seleccioná la empresa ejecutora de la obra', 'red');
+        return;
+      }
+      ejecutoraCompanyId = form.ejecutora_company_id;
+    } else if (ejecutoraTipo === 'consorcio') {
+      const miembrosRaw = (form.consorcio_miembros || []).filter(m => m.company_id);
+      if (miembrosRaw.length < 2) {
+        showToast('Un consorcio necesita al menos 2 empresas', 'red');
+        return;
+      }
+      const ids = miembrosRaw.map(m => m.company_id);
+      if (new Set(ids).size !== ids.length) {
+        showToast('No podés repetir la misma empresa en el consorcio', 'red');
+        return;
+      }
+      const miembros = miembrosRaw.map(m => ({
+        company_id: m.company_id,
+        participacion_pct: Number(m.participacion_pct) || 0,
+      }));
+      const sumaPct = miembros.reduce((s, m) => s + Number(m.participacion_pct || 0), 0);
+      if (Math.abs(sumaPct - 100) > 0.01) {
+        showToast(`Las participaciones deben sumar 100% (van ${sumaPct.toFixed(1)}%)`, 'red');
+        return;
+      }
+      consorcioMiembros = miembros;
+      consorcioNombre = form.consorcio_nombre?.trim() || null;
+    }
     try {
       if (editingId) {
         const oldObra = obras.find(o => o.id === editingId);
@@ -107,6 +172,10 @@ function ObrasPage({ showToast }) {
           fecha_fin_estimada: form.fecha_fin_estimada || null,
           presupuesto_total: parseFloat(form.presupuesto_total) || null,
           observaciones: form.observaciones || null,
+          ejecutora_tipo: ejecutoraTipo,
+          ejecutora_company_id: ejecutoraCompanyId,
+          consorcio_nombre: consorcioNombre,
+          consorcio_miembros: consorcioMiembros,
         };
         await updateObra(editingId, newFields);
         try { await window.__logAudit?.({ action:'update', table:'obras', recordId:editingId, oldData:oldObra, newData:newFields }); } catch(e) {}
@@ -121,6 +190,10 @@ function ObrasPage({ showToast }) {
           fecha_fin_estimada: form.fecha_fin_estimada || null,
           presupuesto_total: parseFloat(form.presupuesto_total) || null,
           observaciones: form.observaciones || null,
+          ejecutora_tipo: ejecutoraTipo,
+          ejecutora_company_id: ejecutoraCompanyId,
+          consorcio_nombre: consorcioNombre,
+          consorcio_miembros: consorcioMiembros,
           avance_fisico: 0,
           avance_financiero: 0,
           costo_real_acumulado: 0,
@@ -142,7 +215,7 @@ function ObrasPage({ showToast }) {
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div><div className="pg-title">Obras / Proyectos</div><div className="pg-sub">{obras.length} proyectos · {activas} activos</div></div>
-        <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setEditingId(null); setModal('nueva');}}><JxIcon name="plus" size={13}/>Nueva Obra</button>
+        <button className="btn btn-amber btn-sm" onClick={openNuevaObra}><JxIcon name="plus" size={13}/>Nueva Obra</button>
       </div>
 
       {obras.length === 0 ? (
@@ -163,6 +236,12 @@ function ObrasPage({ showToast }) {
                     {o.cliente && <span><JxIcon name="user" size={11}/> {o.cliente}</span>}
                     {o.ubicacion && <span><JxIcon name="map" size={11}/> {o.ubicacion}</span>}
                   </div>
+                  {(o.ejecutora_company_id || o.ejecutora_tipo === 'consorcio') && (
+                    <div style={{ fontSize:11, color:'var(--amber)', marginTop:5, display:'flex', alignItems:'center', gap:6 }}>
+                      <JxIcon name={o.ejecutora_tipo === 'consorcio' ? 'users' : 'building'} size={11}/>
+                      <span>Ejecuta: {ejecutoraDisplay(o)}</span>
+                    </div>
+                  )}
                 </div>
                 <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:6,flexShrink:0}}>
                   <span className={`badge ${EST_OBRA[o.estado]||'b-gray'}`}>{EST_OBRA_LBL[o.estado] || o.estado}</span>
@@ -238,6 +317,102 @@ function ObrasPage({ showToast }) {
             <input className="fi" type="number" step="0.01" placeholder="0.00" value={form.presupuesto_total||''} onChange={e=>setForm({...form, presupuesto_total:e.target.value})}/>
           </div>
           <div style={{gridColumn:'1/-1'}}><label className="flabel">Observaciones</label><textarea className="fi" value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})}/></div>
+
+          {/* ── Empresa ejecutora / Consorcio ─────────────────── */}
+          <div style={{gridColumn:'1/-1', marginTop:6, fontSize:11, color:'var(--amber)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em', borderTop:'1px dashed var(--border)', paddingTop:10}}>
+            Quién ejecuta esta obra
+          </div>
+          <div style={{ gridColumn:'1/-1', display:'flex', gap:8 }}>
+            <button type="button"
+              className={`btn btn-sm ${form.ejecutora_tipo === 'empresa' ? 'btn-amber' : 'btn-ghost'}`}
+              onClick={()=>setForm({...form, ejecutora_tipo:'empresa'})}>
+              <JxIcon name="building" size={12}/> Empresa única
+            </button>
+            <button type="button"
+              className={`btn btn-sm ${form.ejecutora_tipo === 'consorcio' ? 'btn-amber' : 'btn-ghost'}`}
+              onClick={()=>setForm({...form, ejecutora_tipo:'consorcio'})}>
+              <JxIcon name="users" size={12}/> Consorcio
+            </button>
+          </div>
+          {form.ejecutora_tipo !== 'consorcio' ? (
+            <div style={{ gridColumn:'1/-1' }}>
+              <label className="flabel">Empresa ejecutora *</label>
+              {companiesActivas.length === 0 ? (
+                <div className="fi" style={{ color:'var(--red)', fontSize:11.5 }}>
+                  No hay empresas activas. Creá primero una empresa en Contabilidad → Empresas.
+                </div>
+              ) : (
+                <select className="fi" value={form.ejecutora_company_id||''} onChange={e=>setForm({...form, ejecutora_company_id:e.target.value})}>
+                  <option value="">— Seleccionar —</option>
+                  {companiesActivas.map(c => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}{c.ruc ? ` · RUC ${c.ruc}` : ''}{c.rol_grupo ? ` · ${c.rol_grupo}` : ''}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>
+                Esta empresa firma el contrato y emite comprobantes. Aparece como contribuyente en facturas vinculadas a esta obra.
+              </div>
+            </div>
+          ) : (
+            <>
+              <div style={{ gridColumn:'1/-1' }}>
+                <label className="flabel">Nombre del consorcio (opcional)</label>
+                <input className="fi" placeholder="Ej: Consorcio Vial Norte"
+                  value={form.consorcio_nombre||''}
+                  onChange={e=>setForm({...form, consorcio_nombre:e.target.value})}/>
+              </div>
+              <div style={{ gridColumn:'1/-1' }}>
+                <label className="flabel">Empresas miembros del consorcio</label>
+                {(form.consorcio_miembros || []).map((m, i) => {
+                  const arr = form.consorcio_miembros || [];
+                  return (
+                    <div key={i} style={{ display:'grid', gridTemplateColumns:'24px 2fr 1fr 32px', gap:8, alignItems:'center', marginBottom:8 }}>
+                      <div style={{ fontSize:11, fontWeight:700, color:'var(--amber)', textAlign:'center' }}>#{i+1}</div>
+                      <select className="fi" value={m.company_id||''} onChange={e=>{
+                        const nuevos = [...arr]; nuevos[i] = { ...nuevos[i], company_id: e.target.value };
+                        setForm({...form, consorcio_miembros: nuevos});
+                      }}>
+                        <option value="">— Empresa —</option>
+                        {companiesActivas.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </select>
+                      <input className="fi" type="number" min="0" max="100" step="0.01" placeholder="% participación"
+                        value={m.participacion_pct ?? ''} onChange={e=>{
+                          const nuevos = [...arr]; nuevos[i] = { ...nuevos[i], participacion_pct: e.target.value };
+                          setForm({...form, consorcio_miembros: nuevos});
+                        }}/>
+                      <button type="button" className="btn btn-ghost btn-xs"
+                        disabled={arr.length <= 2}
+                        onClick={()=>{
+                          const nuevos = arr.filter((_, idx) => idx !== i);
+                          setForm({...form, consorcio_miembros: nuevos.length ? nuevos : [{ company_id:'', participacion_pct:'' }, { company_id:'', participacion_pct:'' }]});
+                        }}>
+                        <JxIcon name="x" size={11}/>
+                      </button>
+                    </div>
+                  );
+                })}
+                <button type="button" className="btn btn-ghost btn-sm"
+                  onClick={()=>{
+                    const arr = [...(form.consorcio_miembros||[])];
+                    arr.push({ company_id:'', participacion_pct:'' });
+                    setForm({ ...form, consorcio_miembros: arr });
+                  }}>
+                  <JxIcon name="plus" size={11}/> Agregar empresa
+                </button>
+                {(() => {
+                  const sum = (form.consorcio_miembros || []).reduce((s, m) => s + (Number(m.participacion_pct) || 0), 0);
+                  const ok = Math.abs(sum - 100) <= 0.01;
+                  return (
+                    <div style={{ marginTop:8, fontSize:11.5, color: ok ? 'var(--green)' : 'var(--amber)' }}>
+                      {ok ? '✓' : '⚠'} Suma de participaciones: {sum.toFixed(2)}% {ok ? '' : '(debe ser 100%)'}
+                    </div>
+                  );
+                })()}
+              </div>
+            </>
+          )}
         </div>
         <div className="modal-actions">
           <button className="btn btn-ghost" onClick={()=>{setModal(null); setEditingId(null); setForm({});}}>Cancelar</button>

@@ -113,6 +113,9 @@ function ComprobantesElectronicosPage({ showToast }) {
 
   const { data: companies } = window.__hooks?.useCompanies?.() || { data: [] };
   const { data: movs } = window.__hooks?.useAccountingMovements?.() || { data: [] };
+  const { data: obras } = window.__hooks?.useObras?.() || { data: [] };
+
+  const lookupObra = (id) => obras?.find(o => o.id === id);
 
   // Proveedores como fuente de "clientes" (filtrar por tipo='cliente' si existe)
   const [provs, setProvs] = uS([]);
@@ -138,6 +141,19 @@ function ComprobantesElectronicosPage({ showToast }) {
   const [modal, setModal] = uS(null); // null | 'nuevo' | 'detalle'
   const [selMov, setSelMov] = uS(null);
   const [form, setForm] = uS({});
+
+  // Obras donde la empresa emisora del form es la ejecutora (o miembro del consorcio).
+  const obrasDeEmpresa = uM(() => {
+    if (!obras) return [];
+    return obras.filter(o => {
+      if (o.deleted_at) return false;
+      if (o.ejecutora_company_id === form.company_id) return true;
+      if (o.ejecutora_tipo === 'consorcio' && Array.isArray(o.consorcio_miembros)) {
+        return o.consorcio_miembros.some(m => m.company_id === form.company_id);
+      }
+      return false;
+    });
+  }, [obras, form.company_id]);
 
   // Construir lista visible: ingresos con document_type factura/boleta/NC/ND
   const comprobantes = uM(() => {
@@ -187,6 +203,7 @@ function ComprobantesElectronicosPage({ showToast }) {
     const meta = COMP_TYPES.find(t => t.v === tipo);
     setForm({
       company_id: empresaDef.id,
+      obra_id: '',
       tipo,
       serie: meta.serie_default,
       correlativo: sugerirCorrelativo(empresaDef.id, meta.serie_default),
@@ -311,6 +328,7 @@ function ComprobantesElectronicosPage({ showToast }) {
       await window.__db.accounting_movements.add({
         id,
         company_id: form.company_id,
+        obra_id: form.obra_id || null,
         date: form.fecha,
         type: 'income',
         category: tipoMeta.label,
@@ -563,7 +581,7 @@ function ComprobantesElectronicosPage({ showToast }) {
                 <th>Tipo</th>
                 <th>Serie - Correlativo</th>
                 <th>Fecha</th>
-                <th>Empresa</th>
+                <th>Empresa · Obra</th>
                 <th>Cliente</th>
                 <th style={{ textAlign:'right' }}>Monto</th>
                 <th>Estado</th>
@@ -572,6 +590,7 @@ function ComprobantesElectronicosPage({ showToast }) {
               <tbody>
                 {comprobantes.map(m => {
                   const c = lookupCompany(m.company_id);
+                  const o = m.obra_id ? lookupObra(m.obra_id) : null;
                   const tipoLabel = COMP_TYPES.find(t => t.v === m._comp.tipo)?.label || m.document_type;
                   return (
                     <tr key={m.id}>
@@ -581,7 +600,10 @@ function ComprobantesElectronicosPage({ showToast }) {
                       </td>
                       <td className="col-m" style={{ fontWeight:600 }}>{m.document_number || '—'}</td>
                       <td className="col-m">{m.date}</td>
-                      <td className="col-p">{c?.name || '—'}</td>
+                      <td className="col-p">
+                        <div>{c?.name || '—'}</div>
+                        {o && <div style={{ fontSize:10, color:'var(--amber)', marginTop:2 }}>📁 {o.nombre_obra?.slice(0,40) || '—'}</div>}
+                      </td>
                       <td>
                         {m.third_party_name || '—'}
                         {m.third_party_ruc && <div style={{ fontSize:10, color:'var(--tm)' }}>{m.third_party_ruc}</div>}
@@ -636,6 +658,22 @@ function ComprobantesElectronicosPage({ showToast }) {
               <select className="fi" value={form.tipo || '01'} onChange={e=>onTipoChange(e.target.value)}>
                 {COMP_TYPES.map(t => <option key={t.v} value={t.v}>{t.v} - {t.label}</option>)}
               </select>
+            </div>
+            <div style={{ gridColumn:'1/-1' }}>
+              <label className="flabel">Obra asociada (opcional)</label>
+              <select className="fi" value={form.obra_id || ''} onChange={e=>setForm({...form, obra_id: e.target.value})}>
+                <option value="">— Sin obra (gasto/ingreso general) —</option>
+                {obrasDeEmpresa.map(o => (
+                  <option key={o.id} value={o.id}>
+                    {o.nombre_obra}{o.cliente ? ` · ${o.cliente}` : ''}{o.ejecutora_tipo === 'consorcio' ? ' · CONSORCIO' : ''}
+                  </option>
+                ))}
+              </select>
+              <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>
+                {obrasDeEmpresa.length === 0
+                  ? 'Esta empresa no es ejecutora de ninguna obra. Asignala desde Obras → editar.'
+                  : `${obrasDeEmpresa.length} obra(s) ejecutadas por esta empresa.`}
+              </div>
             </div>
             <div>
               {window.JxFieldLabel
