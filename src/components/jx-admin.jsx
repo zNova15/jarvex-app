@@ -402,7 +402,7 @@ const MODULE_GROUPS = [
   { group: 'Tesorería', modules: ['Cuentas Bancarias','Flujo de Caja','Flujo Proyectado','Comparativo Periodos'] },
   { group: 'SUNAT', modules: ['Comprobantes Electrónicos','Libros Electrónicos','PLAME / T-Registro','Config SUNAT'] },
   { group: 'Ejecutivo / Reportes', modules: ['Dashboard Ejecutivo','KPIs por Obra','Cumplimiento Cronograma','Centro Alertas','Búsqueda Global','Reportes'] },
-  { group: 'Administración', modules: ['Importar','Solicitudes Cambio','Conflictos Sync','Auditoría','Usuarios/Config'] },
+  { group: 'Administración', modules: ['Importar','Captura Mágica','Solicitudes Cambio','Conflictos Sync','Auditoría','Usuarios/Config'] },
 ];
 
 const PERM_MATRIX_MODULES = MODULE_GROUPS.flatMap(g => g.modules);
@@ -425,7 +425,7 @@ const PERM_MATRIX = {
       'Requisiciones','Órdenes de Compra','Cotizaciones','Recepciones','Proveedores',
       'Subcontratistas','Subcontratos','Valor. Subcontrato','Activos Pesados',
       'Empresas','Movs. Contables','Intercompany','Trazabilidad','Consolidado','Plan de Cuentas',
-      'Libro Diario','Balance General','Estado Resultados',
+      'Libro Diario','Balance General','Estado Resultados','Captura Mágica',
       'Cuentas Bancarias','Flujo de Caja','Flujo Proyectado','Comparativo Periodos',
       'Comprobantes Electrónicos','Libros Electrónicos','PLAME / T-Registro','Config SUNAT',
       'Dashboard Ejecutivo','KPIs por Obra','Cumplimiento Cronograma','Centro Alertas',
@@ -480,7 +480,7 @@ const PERM_MATRIX = {
          'Empresas','Intercompany','Config SUNAT'].includes(m)) return 'x';
     if (['Personal','Asistencia','Proveedores','Subcontratistas','Contratos Laborales','Planillas',
          'CTS','Gratificaciones','Comprobantes Electrónicos','PLAME / T-Registro',
-         'Movs. Contables','Cuentas Bancarias','Solicitudes Cambio','Importar'].includes(m)) return 'w';
+         'Movs. Contables','Cuentas Bancarias','Solicitudes Cambio','Importar','Captura Mágica'].includes(m)) return 'w';
     return 'r';
   }),
 
@@ -490,7 +490,7 @@ const PERM_MATRIX = {
   contador: PERM_MATRIX_MODULES.map(m => {
     if (m === 'Usuarios/Config') return 'x';
     if (['Movs. Contables','Plan de Cuentas','Libro Diario','Balance General','Estado Resultados',
-         'Empresas','Intercompany','Trazabilidad','Consolidado','Auditoría'].includes(m)) return 'w';
+         'Empresas','Intercompany','Trazabilidad','Consolidado','Auditoría','Captura Mágica'].includes(m)) return 'w';
     if (['Obras','Personal','Proveedores','Subcontratistas','Subcontratos','Valor. Subcontrato',
          'Requisiciones','Órdenes de Compra','Cotizaciones','Recepciones','Valorizaciones',
          'Reportes','Comprobantes Electrónicos','Libros Electrónicos'].includes(m)) return 'r';
@@ -514,7 +514,7 @@ const PERM_MATRIX = {
   jefe_compras: PERM_MATRIX_MODULES.map(m => {
     if (m === 'Usuarios/Config') return 'x';
     if (['Requisiciones','Órdenes de Compra','Cotizaciones','Recepciones','Proveedores',
-         'Subcontratistas','Subcontratos'].includes(m)) return 'w';
+         'Subcontratistas','Subcontratos','Captura Mágica'].includes(m)) return 'w';
     if (['Obras','Materiales','Mov. Materiales','Herramientas','Mov. Herramientas','Partidas',
          'Insumos','Costos','Incidencias','Evidencias','Personal','Reportes',
          'Activos Pesados','Solicitudes Cambio'].includes(m)) return 'r';
@@ -676,6 +676,7 @@ window.__moduleIdMap = {
   'usuarios': 'Usuarios/Config',
   'roles': 'Usuarios/Config',
   'importar': 'Importar',
+  'captura-magica': 'Captura Mágica',
   // Items SIN restricción (utilities visibles para todos):
   'dashboard': null,
   'busqueda': null,

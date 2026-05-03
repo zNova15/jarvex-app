@@ -115,6 +115,7 @@ import './components/jx-movimientos.jsx';
 import './components/jx-gestion.jsx';
 import './components/jx-admin.jsx';
 import './components/jx-importar.jsx';
+import './components/jx-captura-magica.jsx';
 import './components/jx-contabilidad.jsx';
 import './components/jx-compras.jsx';
 import './components/jx-valorizaciones.jsx';

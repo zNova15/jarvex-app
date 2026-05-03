@@ -330,6 +330,7 @@ function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStat
     'movimientos-contables':'Movimientos Contables', intercompany:'Operaciones entre Empresas',
     consolidado:'Consolidado del Grupo',
     trazabilidad:'Trazabilidad de Cadenas',
+    'captura-magica':'✨ Captura Mágica',
     'cuentas-bancarias':'Cuentas Bancarias', 'flujo-caja':'Flujo de Caja / Cronograma de Pagos',
     requisiciones:'Requisiciones', 'ordenes-compra':'Órdenes de Compra',
     valorizaciones:'Valorizaciones', 'activos-pesados':'Activos Pesados / Maquinaria',
@@ -647,6 +648,7 @@ function App() {
     if (!puedeVerPagina(page)) return <NoAcceso/>;
     switch(page) {
       case 'importar':      return <ImportarPage showToast={showToast}/>;
+      case 'captura-magica': return <CapturaMagicaPage showToast={showToast}/>;
       case 'dashboard':     return <DashboardPage showToast={showToast}/>;
       case 'obras':         return <ObrasPage showToast={showToast}/>;
       case 'reportes':      return <ReportesPage showToast={showToast}/>;

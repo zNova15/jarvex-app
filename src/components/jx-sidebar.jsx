@@ -60,6 +60,7 @@ function usePwaInstall() {
 const NAV = [
   { section: 'GENERAL' },
   { id: 'importar', label: 'Importar Datos', icon: 'upload' },
+  { id: 'captura-magica', label: '✨ Captura Mágica', icon: 'upload' },
   { id: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
   { id: 'obras', label: 'Obras / Proyectos', icon: 'building' },
   { id: 'reportes', label: 'Reportes', icon: 'chart' },
