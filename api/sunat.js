@@ -82,34 +82,60 @@ export default async function handler(req, res) {
     const data = await upstream.json();
 
     // ── Normalizar respuesta a un shape único ────────────────
-    // decolecta v1/full devuelve snake_case: razon_social, numero_documento,
-    //   direccion, estado, condicion, ubigeo, distrito, provincia, departamento,
-    //   tipo, actividad_economica, numero_trabajadores, tipo_facturacion,
-    //   tipo_contabilidad, comercio_exterior, locales_anexos[], es_agente_retencion,
-    //   es_buen_contribuyente.
-    // apis.net.pe v1 (legacy) devuelve camelCase: numeroDocumento, razonSocial.
-    const actividad = data.actividad_economica || data.actividadEconomica || null;
+    // decolecta v1/full devuelve snake_case y a veces "-" cuando el campo
+    // está vacío en SUNAT (típico en RUC 10 personas naturales).
+    // apis.net.pe v1 (legacy) devuelve camelCase.
+    const limpiarDash = (v) => {
+      if (v == null) return null;
+      const s = String(v).trim();
+      if (!s || s === '-' || s === '_') return null;
+      return s;
+    };
+    const actividadPrincipal = limpiarDash(data.actividad_economica) || limpiarDash(data.actividadEconomica) || null;
+    // Algunos endpoints devuelven actividades secundarias en `actividades_economicas[]`
+    // (no es el caso de decolecta plan free, pero dejamos preparado para futuro).
+    const actividadesArr = Array.isArray(data.actividades_economicas) && data.actividades_economicas.length
+      ? data.actividades_economicas.map(a => typeof a === 'string' ? a : (a.descripcion || a.actividad || '')).filter(Boolean)
+      : (actividadPrincipal ? [actividadPrincipal] : []);
+
+    // Dirección: si decolecta devuelve "-" o vacío, intentamos armar
+    // una dirección de fallback con vía + número + distrito + provincia.
+    const direccionRaw = limpiarDash(data.direccion);
+    let direccionFallback = direccionRaw;
+    if (!direccionRaw) {
+      const partes = [
+        limpiarDash(data.via_tipo) && limpiarDash(data.via_nombre) ? `${data.via_tipo} ${data.via_nombre}` : null,
+        limpiarDash(data.numero) && `Nro ${data.numero}`,
+        limpiarDash(data.manzana) && `Mz ${data.manzana}`,
+        limpiarDash(data.lote) && `Lt ${data.lote}`,
+        limpiarDash(data.distrito),
+        limpiarDash(data.provincia),
+        limpiarDash(data.departamento),
+      ].filter(Boolean);
+      if (partes.length) direccionFallback = partes.join(', ');
+    }
 
     const normalized = {
-      // Campos que ya devolvía el endpoint antes (compat con el frontend):
       numeroDocumento: data.numero_documento || data.numeroDocumento || r,
       razonSocial: data.razon_social || data.razonSocial || data.nombre || '',
-      direccion: data.direccion || '',
+      direccion: direccionFallback || '',
+      direccionExacta: direccionRaw || null, // null si SUNAT no la tiene literal
       estado: data.estado || '',
       condicion: data.condicion || '',
-      tipo: data.tipo || '',
-      departamento: data.departamento || '',
-      provincia: data.provincia || '',
-      distrito: data.distrito || '',
-      // Campos nuevos (presentes solo con token):
-      actividadEconomica: actividad,
+      tipo: limpiarDash(data.tipo) || '',
+      departamento: limpiarDash(data.departamento) || '',
+      provincia: limpiarDash(data.provincia) || '',
+      distrito: limpiarDash(data.distrito) || '',
+      // Actividad económica:
+      actividadEconomica: actividadPrincipal,
+      actividadesEconomicas: actividadesArr,
       ciiu: data.ciiu || null,
-      rubroSugerido: clasificarRubro(actividad),
+      rubroSugerido: clasificarRubro(actividadPrincipal),
       fechaInscripcion: data.fecha_inscripcion || data.fechaInscripcion || null,
       fechaInicioActividades: data.fecha_inicio_actividades || data.fechaInicioActividades || null,
       sistemaEmision: data.sistema_emision || data.sistemaEmision || null,
-      tipoFacturacion: data.tipo_facturacion || null,
-      tipoContabilidad: data.tipo_contabilidad || null,
+      tipoFacturacion: limpiarDash(data.tipo_facturacion) || null,
+      tipoContabilidad: limpiarDash(data.tipo_contabilidad) || null,
       esAgenteRetencion: data.es_agente_retencion ?? null,
       esBuenContribuyente: data.es_buen_contribuyente ?? null,
       ubigeo: data.ubigeo || null,

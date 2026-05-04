@@ -55,6 +55,8 @@ export async function consultarRUC(ruc) {
     // Campos nuevos (presentes solo si APIS_NET_PE_TOKEN está configurado en Vercel
     // y la respuesta vino de v2/full). Pueden ser null en v1.
     actividadEconomica: data.actividadEconomica || null,
+    actividadesEconomicas: Array.isArray(data.actividadesEconomicas) ? data.actividadesEconomicas : [],
+    direccionExacta: data.direccionExacta || null,
     ciiu: data.ciiu || null,
     rubroSugerido: data.rubroSugerido || null,
     fechaInscripcion: data.fechaInscripcion || null,

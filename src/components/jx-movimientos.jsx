@@ -427,9 +427,10 @@ function ReversoModal({ mov, tipo /* 'mat' | 'her' */, lookupNombre, onClose, on
 // ═══════════════════════════════════════════════════════════════════
 // Modo:
 //   'hoy'      → almacenero sube el registro del día actual (no editable)
-//   'atrasado' → almacenero solicita registro de un día anterior con
-//                justificación; queda en estado pendiente_aprobacion
-//                hasta que el admin lo apruebe.
+//   'cambio'   → almacenero pide cambio: puede ser por (a) atraso, día que
+//                no se subió en su momento, o (b) corrección, registro ya
+//                subido con fecha equivocada que hay que reemplazar.
+//                Queda pendiente_aprobacion hasta que el admin apruebe.
 function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast, modo = 'hoy' }) {
   const auth = window.__useAuth?.();
   const userId = auth?.profile?.id ?? 'offline';
@@ -438,15 +439,37 @@ function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast, m
   const tipoEv = tipoEvidenciaPara(modulo);
   const hoy = new Date().toISOString().slice(0, 10);
   const ayer = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-  // En modo 'hoy', fecha forzada al día actual y NO se puede cambiar (salvo admin).
-  // En modo 'atrasado', fecha por defecto ayer; máx ayer (no permite hoy ni futuro).
-  const [fecha, setFecha] = uSM(() => modo === 'atrasado' ? ayer : hoy);
+  // tipoCambio: 'atraso' (subir un día que se olvidó) | 'correccion' (reemplazar un registro existente con fecha equivocada).
+  const [tipoCambio, setTipoCambio] = uSM('atraso');
+  const [fecha, setFecha] = uSM(() => modo === 'cambio' ? ayer : hoy);
   const [motivoAtraso, setMotivoAtraso] = uSM('');
   const [foto, setFoto] = uSM(null);
   const [notas, setNotas] = uSM('');
   const [busy, setBusy] = uSM(false);
   const [yaExiste, setYaExiste] = uSM(false);
   const [registroExistente, setRegistroExistente] = uSM(null);
+  // Para corrección: el almacenero elige cuál registro existente quiere reemplazar.
+  const [registroACorregir, setRegistroACorregir] = uSM(null);
+  const [registrosRecientes, setRegistrosRecientes] = uSM([]);
+
+  // Cargar registros recientes para selector de corrección
+  uEM(() => {
+    if (modo !== 'cambio' || tipoCambio !== 'correccion') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const evs = await window.__db.evidencias.filter(e =>
+          !e.deleted_at &&
+          e.tipo_evidencia === tipoEv &&
+          (!obraId || e.obra_id === obraId)
+        ).toArray();
+        if (cancelled) return;
+        const sorted = evs.sort((a, b) => (b.fecha || '').localeCompare(a.fecha || '')).slice(0, 30);
+        setRegistrosRecientes(sorted);
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [modo, tipoCambio, modulo, obraId, tipoEv]);
 
   // Validar si ya existe un registro de la fecha seleccionada (anti-duplicado para almacenero)
   uEM(() => {
@@ -486,10 +509,18 @@ function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast, m
     if (modo === 'hoy' && !isAdmin && fecha !== hoy) {
       showToast?.('Solo podés subir el registro del día actual', 'red'); return;
     }
-    if (modo === 'atrasado') {
-      if (fecha >= hoy) { showToast?.('Para días atrasados elegí una fecha anterior a hoy', 'red'); return; }
+    if (modo === 'cambio') {
+      if (tipoCambio === 'atraso' && fecha >= hoy) {
+        showToast?.('Para atrasos elegí una fecha anterior a hoy', 'red'); return;
+      }
+      if (tipoCambio === 'correccion' && !registroACorregir) {
+        showToast?.('Elegí qué registro existente querés corregir', 'red'); return;
+      }
       if (!motivoAtraso.trim() || motivoAtraso.trim().length < 10) {
-        showToast?.('Explicá el motivo del atraso (mín 10 caracteres)', 'red'); return;
+        showToast?.(tipoCambio === 'correccion'
+          ? 'Explicá qué hay que corregir (mín 10 caracteres)'
+          : 'Explicá el motivo del atraso (mín 10 caracteres)', 'red');
+        return;
       }
     }
     if (yaExiste && !isAdmin) {
@@ -503,28 +534,31 @@ function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast, m
         try { await window.__db.evidencias_blobs.delete(registroExistente.id); } catch {}
       }
       const id = window.__newId();
-      const esAtrasado = modo === 'atrasado';
-      // Almacenero atrasado → queda pendiente de aprobación admin.
-      // Admin atrasado → entra directo confirmado.
-      const necesitaAprobacion = esAtrasado && !isAdmin;
+      const esCambio = modo === 'cambio';
+      const esCorreccion = esCambio && tipoCambio === 'correccion';
+      // Almacenero pide cambio → queda pendiente de aprobación admin.
+      // Admin sube directamente sin necesidad de aprobación.
+      const necesitaAprobacion = esCambio && !isAdmin;
+      const tipoCambioLabel = esCorreccion ? 'CORRECCIÓN' : (esCambio ? 'ATRASADO' : 'NORMAL');
       const obsBase = notas.trim() || `Registro diario · ${fecha}`;
-      const obsFinal = esAtrasado
-        ? `${obsBase}\n\n⏰ ATRASADO · motivo: ${motivoAtraso.trim()}${necesitaAprobacion ? ' · ⏳ pendiente aprobación admin' : ''}`
+      const obsFinal = esCambio
+        ? `${obsBase}\n\n⏰ ${tipoCambioLabel} · motivo: ${motivoAtraso.trim()}${necesitaAprobacion ? ' · ⏳ pendiente aprobación admin' : ''}${esCorreccion && registroACorregir ? `\n· Reemplaza registro previo del ${registroACorregir.fecha}` : ''}`
         : obsBase;
       await window.__saveEvidenciaLocal({
         id, obra_id: obraId,
         tipo_evidencia: tipoEv,
         modulo_relacionado: modulo,
-        registro_relacionado_id: null,
+        registro_relacionado_id: esCorreccion ? registroACorregir?.id : null,
         nombre_archivo: foto.blob.name || `registro_${fecha}.jpg`,
         mime_type: foto.blob.type || 'image/jpeg',
         blob: foto.blob,
         observaciones: obsFinal,
         fecha,
         created_by: userId,
-        // Campos extra para distinguir atrasados pendientes
-        registro_atrasado: esAtrasado || undefined,
-        motivo_atraso: esAtrasado ? motivoAtraso.trim() : undefined,
+        registro_atrasado: esCambio && !esCorreccion || undefined,
+        registro_correccion: esCorreccion || undefined,
+        registro_id_a_corregir: esCorreccion ? registroACorregir?.id : undefined,
+        motivo_atraso: esCambio ? motivoAtraso.trim() : undefined,
         pendiente_aprobacion: necesitaAprobacion || undefined,
       });
       try {
@@ -532,27 +566,34 @@ function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast, m
           action: yaExiste ? 'update' : 'insert',
           table: 'evidencias',
           recordId: id,
-          newData: { tipo_evidencia: tipoEv, fecha, obra_id: obraId, atrasado: esAtrasado, pendiente: necesitaAprobacion },
+          newData: { tipo_evidencia: tipoEv, fecha, obra_id: obraId, tipo_cambio: tipoCambio, pendiente: necesitaAprobacion },
           reason: necesitaAprobacion
-            ? `Solicitud de registro diario atrasado · ${modulo} · ${fecha}`
+            ? `Solicitud de cambio (${tipoCambioLabel.toLowerCase()}) · ${modulo} · ${fecha}`
             : `${yaExiste ? 'Reemplazado por admin' : 'Subida'} de registro diario · ${modulo}`,
         });
       } catch {}
-      // Crear change request para que el admin lo apruebe en su bandeja
       if (necesitaAprobacion) {
         try {
+          const labelTipo = esCorreccion ? 'corrección' : 'atraso';
           await window.__changeRequests?.create({
             table: 'evidencias',
             recordId: id,
-            recordLabel: `Registro diario atrasado · ${fecha} (${modulo === 'movimientos_materiales' ? 'Materiales' : 'Herramientas'})`,
-            fields: { fecha, motivo_atraso: motivoAtraso.trim(), modulo, obra_id: obraId },
-            reason: `Solicitud de subida atrasada: ${motivoAtraso.trim()}`,
+            recordLabel: `Registro diario ${labelTipo} · ${fecha} (${modulo === 'movimientos_materiales' ? 'Materiales' : 'Herramientas'})`,
+            fields: {
+              fecha,
+              tipo_cambio: tipoCambio,
+              motivo: motivoAtraso.trim(),
+              modulo,
+              obra_id: obraId,
+              ...(esCorreccion && registroACorregir ? { registro_a_corregir_id: registroACorregir.id, fecha_original: registroACorregir.fecha } : {}),
+            },
+            reason: `Solicitud de ${labelTipo}: ${motivoAtraso.trim()}`,
           });
         } catch (e) { console.warn('change request no creada:', e); }
       }
       showToast?.(
         necesitaAprobacion
-          ? `📤 Solicitud enviada · pendiente aprobación admin (${fecha})`
+          ? `📤 Solicitud enviada al admin · ${tipoCambioLabel.toLowerCase()} (${fecha})`
           : `✓ Registro diario subido (${fecha})`,
         necesitaAprobacion ? 'amber' : 'green'
       );
@@ -574,48 +615,100 @@ function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast, m
   return (
     <div className="overlay" onClick={e => e.target === e.currentTarget && cerrar()}
       style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:9999, padding:20 }}>
-      <div className="card card-p" style={{ width:'100%', maxWidth:520, background:'#1A2333', border:'1px solid var(--bd)', borderRadius:10 }}>
+      <div className="card card-p" style={{ width:'100%', maxWidth:560, background:'#1A2333', border:'1px solid var(--bd)', borderRadius:10 }}>
         <div style={{ fontSize:14, fontWeight:700, marginBottom:10, display:'flex', alignItems:'center', gap:8 }}>
-          <JxIconRF name={modo === 'atrasado' ? 'clock' : 'camera'} size={15} color={modo === 'atrasado' ? 'var(--blue)' : 'var(--amber)'}/>
-          {modo === 'atrasado'
-            ? `Solicitar registro atrasado · ${modulo === 'movimientos_materiales' ? 'Materiales' : 'Herramientas'}`
+          <JxIconRF name={modo === 'cambio' ? 'edit' : 'camera'} size={15} color={modo === 'cambio' ? 'var(--blue)' : 'var(--amber)'}/>
+          {modo === 'cambio'
+            ? `Solicitar cambio · ${modulo === 'movimientos_materiales' ? 'Materiales' : 'Herramientas'}`
             : `Subir registro diario · ${modulo === 'movimientos_materiales' ? 'Materiales' : 'Herramientas'}`}
         </div>
-        <div style={{ fontSize:12, color:'var(--ts)', marginBottom:14, padding:'10px 12px', background: modo === 'atrasado' ? 'rgba(52,152,219,0.07)' : 'rgba(155,89,182,0.06)', borderRadius:6 }}>
-          {modo === 'atrasado'
+        <div style={{ fontSize:12, color:'var(--ts)', marginBottom:14, padding:'10px 12px', background: modo === 'cambio' ? 'rgba(52,152,219,0.07)' : 'rgba(155,89,182,0.06)', borderRadius:6 }}>
+          {modo === 'cambio'
             ? (isAdmin
-                ? 'Como admin podés cargar registros atrasados directamente.'
-                : 'Esto generará una solicitud al administrador. Explicá por qué no pudiste subirlo el mismo día. Tendrá que aprobarlo antes de quedar registrado.')
+                ? 'Como admin podés cargar/corregir registros directamente.'
+                : 'Esto generará una solicitud al administrador. Explicá la razón. Tendrá que aprobarlo antes de quedar registrado.')
             : (isAdmin
                 ? 'Como admin podés subir varios o reemplazar el registro del día.'
-                : `Solo podés subir el registro del día de hoy (${hoy}). Si te atrasaste un día, usá "Solicitar día atrasado".`)}
+                : `Solo podés subir el registro del día de hoy (${hoy}). Si te atrasaste o te confundiste, usá "Solicitar cambio".`)}
         </div>
+
+        {/* ── Selector de tipo de cambio (solo modo cambio) ── */}
+        {modo === 'cambio' && (
+          <div style={{ marginBottom:14 }}>
+            <label className="flabel">¿Qué querés hacer?</label>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
+              <button type="button"
+                className={`btn ${tipoCambio === 'atraso' ? 'btn-amber' : 'btn-ghost'} btn-sm`}
+                onClick={()=>{ setTipoCambio('atraso'); setRegistroACorregir(null); setFecha(ayer); }}>
+                <JxIconRF name="clock" size={11}/> Subir día atrasado
+                <div style={{ fontSize:10, fontWeight:400, marginTop:2 }}>Día que se olvidó subir</div>
+              </button>
+              <button type="button"
+                className={`btn ${tipoCambio === 'correccion' ? 'btn-amber' : 'btn-ghost'} btn-sm`}
+                onClick={()=>setTipoCambio('correccion')}>
+                <JxIconRF name="edit" size={11}/> Corregir registro existente
+                <div style={{ fontSize:10, fontWeight:400, marginTop:2 }}>Subido con fecha equivocada</div>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── Selector de registro a corregir ── */}
+        {modo === 'cambio' && tipoCambio === 'correccion' && (
+          <div style={{ marginBottom:14 }}>
+            <label className="flabel">Registro existente a reemplazar *</label>
+            {registrosRecientes.length === 0 ? (
+              <div className="fi" style={{ color:'var(--red)', fontSize:11.5 }}>
+                No hay registros existentes para corregir. Probá "Subir día atrasado" en su lugar.
+              </div>
+            ) : (
+              <select className="fi" value={registroACorregir?.id || ''}
+                onChange={e=>{
+                  const r = registrosRecientes.find(x => x.id === e.target.value);
+                  setRegistroACorregir(r || null);
+                  if (r) setFecha(r.fecha);
+                }}>
+                <option value="">— Seleccionar registro a corregir —</option>
+                {registrosRecientes.map(r => (
+                  <option key={r.id} value={r.id}>
+                    {r.fecha} · {(r.observaciones || '').slice(0, 50)}{(r.observaciones || '').length > 50 ? '…' : ''}
+                  </option>
+                ))}
+              </select>
+            )}
+            <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>
+              El admin va a ver el registro original y el nuevo, y decidirá si reemplaza.
+            </div>
+          </div>
+        )}
 
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
           <div>
-            <label className="flabel">Fecha *</label>
+            <label className="flabel">Fecha del registro *</label>
             {modo === 'hoy' && !isAdmin ? (
               <input className="fi" type="date" value={hoy} disabled readOnly
                 style={{ opacity: 0.7, cursor: 'not-allowed' }}/>
             ) : (
               <input className="fi" type="date" value={fecha} onChange={e=>setFecha(e.target.value)}
-                max={modo === 'atrasado' && !isAdmin ? ayer : (isAdmin ? undefined : hoy)}/>
+                max={modo === 'cambio' && tipoCambio === 'atraso' && !isAdmin ? ayer : (isAdmin ? undefined : hoy)}/>
             )}
           </div>
           <div style={{ display:'flex', alignItems:'flex-end' }}>
-            {yaExiste ? (
+            {yaExiste && tipoCambio !== 'correccion' ? (
               <div style={{ fontSize:11, color: isAdmin ? 'var(--amber)' : 'var(--red)', padding:'6px 8px', background:'rgba(231,76,60,0.08)', borderRadius:6 }}>
-                {isAdmin ? '⚠ Ya existe registro este día. Si subís uno nuevo, reemplaza el anterior.' : '⚠ Ya hay registro este día. No podés subir otro.'}
+                {isAdmin ? '⚠ Ya existe registro este día. Si subís uno nuevo, reemplaza el anterior.' : '⚠ Ya hay registro este día.'}
               </div>
-            ) : <div style={{ fontSize:11, color:'var(--green)' }}>✓ Sin registro previo · podés subir</div>}
+            ) : <div style={{ fontSize:11, color:'var(--green)' }}>✓ Listo · podés subir</div>}
           </div>
         </div>
 
-        {modo === 'atrasado' && (
+        {modo === 'cambio' && (
           <div style={{ marginTop:14 }}>
-            <label className="flabel">Motivo del atraso *</label>
+            <label className="flabel">{tipoCambio === 'correccion' ? 'Razón de la corrección *' : 'Motivo del atraso *'}</label>
             <textarea className="fi" rows={3} value={motivoAtraso} onChange={e=>setMotivoAtraso(e.target.value)}
-              placeholder="Ej: el día anterior se cortó la luz al fin del turno y no pude tomar la foto antes de cerrar."
+              placeholder={tipoCambio === 'correccion'
+                ? 'Ej: subí por error la hoja del 03/04 cuando debía ser del 04/04. La hoja correcta del 04 es la que adjunto ahora.'
+                : 'Ej: el día anterior se cortó la luz al fin del turno y no pude tomar la foto antes de cerrar.'}
               minLength={10}/>
             <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>
               Mínimo 10 caracteres. El admin va a ver este motivo en su bandeja de Solicitudes.
@@ -650,12 +743,12 @@ function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast, m
         <div style={{ display:'flex', justifyContent:'flex-end', gap:8, marginTop:14 }}>
           <button className="btn btn-ghost btn-sm" onClick={cerrar} disabled={busy}>Cancelar</button>
           <button className="btn btn-amber btn-sm"
-            disabled={busy || !foto || (yaExiste && !isAdmin)}
+            disabled={busy || !foto || (yaExiste && tipoCambio !== 'correccion' && !isAdmin)}
             onClick={handleSubmit}>
             <JxIconRF name="check" size={12}/>
             {busy
               ? 'Subiendo…'
-              : modo === 'atrasado' && !isAdmin
+              : modo === 'cambio' && !isAdmin
                 ? 'Enviar solicitud al admin'
                 : yaExiste && isAdmin
                   ? 'Reemplazar registro'
@@ -903,8 +996,8 @@ function MovMaterialesPage({ showToast }) {
           <button className="btn btn-ghost btn-sm" onClick={()=>setRegFisicoOpen(true)} title="Ver registros físicos diarios subidos">
             <JxIcon name="camera" size={13}/> Visualización registro físico
           </button>
-          <button className="btn btn-ghost btn-sm" onClick={()=>setRegAtrasadoOpen(true)} title="Solicitar subida de un registro de día anterior">
-            <JxIcon name="clock" size={13}/> Solicitar día atrasado
+          <button className="btn btn-ghost btn-sm" onClick={()=>setRegAtrasadoOpen(true)} title="Solicitar cambio: día atrasado o corrección de registro">
+            <JxIcon name="edit" size={13}/> Solicitar cambio
           </button>
           <button className="btn btn-amber btn-sm" onClick={()=>setRegDiarioOpen(true)} title="Subir foto del registro físico firmado HOY">
             <JxIcon name="plus" size={13}/> Subir registro diario (hoy)
@@ -924,7 +1017,7 @@ function MovMaterialesPage({ showToast }) {
       )}
       {regAtrasadoOpen && (
         <RegistroDiarioUploader modulo="movimientos_materiales" obraId={obraId}
-          modo="atrasado"
+          modo="cambio"
           onClose={()=>setRegAtrasadoOpen(false)}
           onSaved={()=>setRfRefresh(k=>k+1)}
           showToast={showToast}/>
@@ -1223,8 +1316,8 @@ function MovHerramientasPage({ showToast }) {
           <button className="btn btn-ghost btn-sm" onClick={()=>setRegFisicoOpen(true)} title="Ver registros físicos diarios subidos">
             <JxIcon name="camera" size={13}/> Visualización registro físico
           </button>
-          <button className="btn btn-ghost btn-sm" onClick={()=>setRegAtrasadoOpen(true)} title="Solicitar subida de un registro de día anterior">
-            <JxIcon name="clock" size={13}/> Solicitar día atrasado
+          <button className="btn btn-ghost btn-sm" onClick={()=>setRegAtrasadoOpen(true)} title="Solicitar cambio: día atrasado o corrección de registro">
+            <JxIcon name="edit" size={13}/> Solicitar cambio
           </button>
           <button className="btn btn-amber btn-sm" onClick={()=>setRegDiarioOpen(true)} title="Subir foto del registro físico firmado HOY">
             <JxIcon name="plus" size={13}/> Subir registro diario (hoy)
@@ -1244,7 +1337,7 @@ function MovHerramientasPage({ showToast }) {
       )}
       {regAtrasadoOpen && (
         <RegistroDiarioUploader modulo="movimientos_herramientas" obraId={obraId}
-          modo="atrasado"
+          modo="cambio"
           onClose={()=>setRegAtrasadoOpen(false)}
           onSaved={()=>setRfRefresh(k=>k+1)}
           showToast={showToast}/>

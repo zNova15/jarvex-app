@@ -131,6 +131,7 @@ function EmpresasPage({ showToast }) {
       name:'', legal_name:'', ruc:'', company_type:'constructora', status:'activa', notas:'',
       rubro:'otro', rol_grupo:'mixta', regimen_tributario:'RG', margen_objetivo_pct:'',
       direccion:'', telefono:'', email:'', representante_legal:'', inicio_actividades:'',
+      actividades_economicas: [],
     });
     setEditingId(null);
     setModal('nueva');
@@ -152,6 +153,7 @@ function EmpresasPage({ showToast }) {
       email: c.email || '',
       representante_legal: c.representante_legal || '',
       inicio_actividades: c.inicio_actividades || '',
+      actividades_economicas: Array.isArray(c.actividades_economicas) ? c.actividades_economicas : [],
     });
     setEditingId(c.id);
     setModal('editar');
@@ -180,6 +182,7 @@ function EmpresasPage({ showToast }) {
           email: form.email?.trim() || null,
           representante_legal: form.representante_legal?.trim() || null,
           inicio_actividades: form.inicio_actividades || null,
+          actividades_economicas: Array.isArray(form.actividades_economicas) ? form.actividades_economicas : [],
           updated_at: now, updated_by: userId,
           version: (orig?.version ?? 0) + 1,
           sync_status: orig?.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
@@ -206,6 +209,7 @@ function EmpresasPage({ showToast }) {
           email: form.email?.trim() || null,
           representante_legal: form.representante_legal?.trim() || null,
           inicio_actividades: form.inicio_actividades || null,
+          actividades_economicas: Array.isArray(form.actividades_economicas) ? form.actividades_economicas : [],
           created_by: userId, updated_by: userId,
           created_at: now, updated_at: now,
           version: 1, sync_status: 'pending_create', last_synced_at: null,
@@ -356,18 +360,21 @@ function EmpresasPage({ showToast }) {
                         ...prev,
                         legal_name: data.razonSocial || prev.legal_name || '',
                         name: prev.name || data.razonSocial || '',
+                        // Si decolecta no devolvió dirección literal, usamos la
+                        // armada del fallback (distrito/provincia/dpto).
                         direccion: data.direccion || prev.direccion || '',
                         rubro: data.rubroSugerido || prev.rubro || 'otro',
                         inicio_actividades: data.fechaInicioActividades || prev.inicio_actividades || '',
-                        notas: [
-                          data.actividadEconomica && `Actividad: ${data.actividadEconomica}`,
-                          data.estado, data.condicion,
-                        ].filter(Boolean).join(' · ') || prev.notas || '',
+                        // El campo notas queda libre para el usuario; las
+                        // actividades van a su propio campo.
+                        actividades_economicas: data.actividadesEconomicas?.length
+                          ? data.actividadesEconomicas
+                          : (prev.actividades_economicas || []),
                       }));
                       const detalles = [];
                       if (data.direccion) detalles.push('dirección ✓');
+                      if (data.actividadesEconomicas?.length) detalles.push(`${data.actividadesEconomicas.length} actividad(es)`);
                       if (data.rubroSugerido) detalles.push(`rubro: ${data.rubroSugerido}`);
-                      else if (data.actividadEconomica) detalles.push('actividad detectada');
                       const extra = detalles.length ? ` · ${detalles.join(' · ')}` : '';
                       showToast(`SUNAT: ${data.razonSocial || 'datos cargados'}${extra}`, 'green');
                     } catch (e) {
@@ -448,6 +455,48 @@ function EmpresasPage({ showToast }) {
               <select className="fi" value={form.regimen_tributario||'RG'} onChange={e=>setForm({...form, regimen_tributario:e.target.value})}>
                 {REGIMENES.map(r => <option key={r.v} value={r.v}>{r.label}</option>)}
               </select>
+            </div>
+            <div style={{ gridColumn:'1/-1' }}>
+              <label className="flabel" style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                <span>Actividades económicas</span>
+                <button type="button" className="btn btn-ghost btn-xs"
+                  onClick={()=>{
+                    const arr = [...(form.actividades_economicas || []), ''];
+                    setForm({...form, actividades_economicas: arr});
+                  }}>
+                  <JxIcon name="plus" size={10}/> Agregar
+                </button>
+              </label>
+              {(form.actividades_economicas || []).length === 0 ? (
+                <div className="fi" style={{ color:'var(--tm)', fontSize:11.5, fontStyle:'italic' }}>
+                  Sin actividades. Hacé SUNAT lookup para autorrellenar, o agregalas manualmente.
+                </div>
+              ) : (
+                (form.actividades_economicas || []).map((act, i) => (
+                  <div key={i} style={{ display:'flex', gap:6, marginBottom:6, alignItems:'center' }}>
+                    <span style={{ fontSize:10.5, color:'var(--amber)', fontWeight:700, minWidth:80 }}>
+                      {i === 0 ? 'PRINCIPAL' : `SECUND. ${i}`}
+                    </span>
+                    <input className="fi" value={act}
+                      placeholder={i === 0 ? 'Actividad principal del CIIU' : 'Actividad secundaria'}
+                      onChange={e=>{
+                        const arr = [...(form.actividades_economicas || [])];
+                        arr[i] = e.target.value;
+                        setForm({...form, actividades_economicas: arr});
+                      }} style={{ flex:1, fontSize:11 }}/>
+                    <button type="button" className="btn btn-ghost btn-xs"
+                      onClick={()=>{
+                        const arr = (form.actividades_economicas || []).filter((_, idx) => idx !== i);
+                        setForm({...form, actividades_economicas: arr});
+                      }}>
+                      <JxIcon name="x" size={10}/>
+                    </button>
+                  </div>
+                ))
+              )}
+              <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>
+                Decolecta plan free devuelve solo la actividad principal. Para secundarias: agregalas manualmente o pagá un plan superior.
+              </div>
             </div>
             <div>
               <label className="flabel">Margen objetivo (%)</label>
