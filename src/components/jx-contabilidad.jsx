@@ -109,6 +109,9 @@ function EmpresasPage({ showToast }) {
   const [modal, setModal] = uSC(null); // null | 'nueva' | 'editar'
   const [editingId, setEditingId] = uSC(null);
   const [form, setForm] = uSC({});
+  // Último lookup SUNAT (para mostrar panel diagnóstico con todos los datos extraídos)
+  const [sunatData, setSunatData] = uSC(null);
+  const [sunatLoading, setSunatLoading] = uSC(false);
 
   const resumenes = uMC(() => {
     const map = new Map();
@@ -323,7 +326,7 @@ function EmpresasPage({ showToast }) {
       )}
 
       {(modal === 'nueva' || modal === 'editar') && (
-        <Modal title={editingId ? 'Editar Empresa' : 'Nueva Empresa'} icon="building" onClose={()=>{setModal(null); setEditingId(null);}}>
+        <Modal title={editingId ? 'Editar Empresa' : 'Nueva Empresa'} icon="building" onClose={()=>{setModal(null); setEditingId(null); setSunatData(null);}}>
           <div className="g2">
             <div style={{ gridColumn:'1/-1' }}>
               <label className="flabel">Nombre comercial *</label>
@@ -336,40 +339,79 @@ function EmpresasPage({ showToast }) {
             <div>
               <label className="flabel">RUC</label>
               <div style={{ display:'flex', gap:6 }}>
-                <input className="fi" placeholder="11 dígitos" maxLength={11} value={form.ruc||''} onChange={e=>setForm({...form, ruc:e.target.value.replace(/\D/g,'').slice(0,11)})} style={{ flex:1 }}/>
+                <input className="fi" placeholder="11 dígitos" maxLength={11} value={form.ruc||''}
+                  onChange={e=>{ setForm({...form, ruc:e.target.value.replace(/\D/g,'').slice(0,11)}); setSunatData(null); }}
+                  style={{ flex:1 }}/>
                 <button
                   type="button"
                   className="btn btn-ghost btn-sm"
                   title="Buscar datos en SUNAT por este RUC"
                   disabled={!/^\d{11}$/.test(String(form.ruc || ''))}
                   onClick={async () => {
+                    setSunatLoading(true);
                     try {
                       const data = await window.__identity.consultarRUC(form.ruc);
+                      setSunatData(data);
                       setForm(prev => ({
                         ...prev,
                         legal_name: data.razonSocial || prev.legal_name || '',
                         name: prev.name || data.razonSocial || '',
                         direccion: data.direccion || prev.direccion || '',
-                        // Auto-rellenar rubro si SUNAT lo trae (solo con v2/token)
                         rubro: data.rubroSugerido || prev.rubro || 'otro',
                         inicio_actividades: data.fechaInicioActividades || prev.inicio_actividades || '',
                         notas: [
                           data.actividadEconomica && `Actividad: ${data.actividadEconomica}`,
-                          data.ciiu && `CIIU: ${data.ciiu}`,
                           data.estado, data.condicion,
                         ].filter(Boolean).join(' · ') || prev.notas || '',
                       }));
-                      const extra = data.rubroSugerido ? ` · rubro: ${data.rubroSugerido}` : '';
+                      const detalles = [];
+                      if (data.direccion) detalles.push('dirección ✓');
+                      if (data.rubroSugerido) detalles.push(`rubro: ${data.rubroSugerido}`);
+                      else if (data.actividadEconomica) detalles.push('actividad detectada');
+                      const extra = detalles.length ? ` · ${detalles.join(' · ')}` : '';
                       showToast(`SUNAT: ${data.razonSocial || 'datos cargados'}${extra}`, 'green');
                     } catch (e) {
                       showToast(e.message || 'Error consultando SUNAT', 'red');
-                    }
+                    } finally { setSunatLoading(false); }
                   }}
                   style={{ whiteSpace:'nowrap' }}>
-                  <JxIcon name="search" size={12}/> SUNAT
+                  <JxIcon name="search" size={12}/> {sunatLoading ? '...' : 'SUNAT'}
                 </button>
               </div>
             </div>
+            {/* Panel diagnóstico SUNAT */}
+            {sunatData && (
+              <div style={{ gridColumn:'1/-1', padding:'10px 12px', background:'rgba(46,204,113,0.06)', border:'1px solid rgba(46,204,113,0.25)', borderRadius:8, fontSize:11.5 }}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:6 }}>
+                  <div style={{ fontWeight:700, color:'var(--green)' }}>✓ SUNAT respondió</div>
+                  <div style={{ fontSize:10, color:'var(--tm)', fontFamily:'monospace' }}>{sunatData._source || '?'}</div>
+                </div>
+                {sunatData._source && !sunatData._source.includes('decolecta') && (
+                  <div style={{ fontSize:11, color:'var(--amber)', marginBottom:6, padding:'6px 8px', background:'rgba(242,183,5,0.08)', borderRadius:6 }}>
+                    ⚠ Estás usando v1 (sin token). Para que aparezca el rubro, agregá <code>DECOLECTA_TOKEN</code> en Vercel y forzá redeploy.
+                  </div>
+                )}
+                <div style={{ display:'grid', gridTemplateColumns:'auto 1fr', gap:'2px 10px', color:'var(--ts)' }}>
+                  <span style={{ color:'var(--tm)' }}>Razón social:</span><span>{sunatData.razonSocial || '—'}</span>
+                  <span style={{ color:'var(--tm)' }}>Dirección:</span><span>{sunatData.direccion || '— (no devuelta)'}</span>
+                  <span style={{ color:'var(--tm)' }}>Estado:</span><span>{sunatData.estado || '—'} · {sunatData.condicion || '—'}</span>
+                  {sunatData.actividadEconomica && (<>
+                    <span style={{ color:'var(--tm)' }}>Actividad:</span><span style={{ fontSize:11 }}>{sunatData.actividadEconomica}</span>
+                  </>)}
+                  {sunatData.rubroSugerido && (<>
+                    <span style={{ color:'var(--tm)' }}>Rubro auto:</span><span style={{ color:'var(--amber)', fontWeight:600 }}>{sunatData.rubroSugerido} (aplicado)</span>
+                  </>)}
+                  {sunatData.fechaInicioActividades && (<>
+                    <span style={{ color:'var(--tm)' }}>Inicio activ.:</span><span>{sunatData.fechaInicioActividades}</span>
+                  </>)}
+                </div>
+                {!sunatData.actividadEconomica && (
+                  <div style={{ marginTop:6, fontSize:10.5, color:'var(--tm)' }}>
+                    <em>Esta API no devolvió actividad económica. Probablemente el token decolecta no está activo en Vercel.</em>
+                  </div>
+                )}
+              </div>
+            )}
             <div>
               <label className="flabel">Tipo de empresa</label>
               <select className="fi" value={form.company_type||'otro'} onChange={e=>setForm({...form, company_type:e.target.value})}>
