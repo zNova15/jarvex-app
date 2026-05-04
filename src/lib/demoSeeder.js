@@ -378,7 +378,9 @@ export async function seedDemoData(progressCb) {
   log('Sembrando movimientos materiales...');
   for (let i = 0; i < 80; i++) {
     const mat = pick(materialIds);
-    const tipo = Math.random() < 0.4 ? 'ingreso' : 'salida';
+    // El sistema usa 'entrada' / 'salida' (no 'ingreso'). Se mantiene la
+    // misma proporción 40% entradas / 60% salidas.
+    const tipo = Math.random() < 0.4 ? 'entrada' : 'salida';
     const cant = rndF(1, Math.max(2, mat.stock * 0.3), 1);
     await db.movimientos_materiales.add({
       ...baseFields(), id: newId(),
@@ -388,9 +390,9 @@ export async function seedDemoData(progressCb) {
       tipo_movimiento: tipo,
       cantidad: cant,
       precio_unitario: mat.precio,
-      proveedor_id: tipo === 'ingreso' ? pick(proveedorIds).id : null,
+      proveedor_id: tipo === 'entrada' ? pick(proveedorIds).id : null,
       responsable_id: pick(personalObra).id,
-      observaciones: tipo === 'ingreso' ? 'Compra OC' : 'Salida a obra',
+      observaciones: tipo === 'entrada' ? 'Compra OC' : 'Salida a obra',
       idempotency_key: `${DEMO_USER}_mov_mat_${i}`,
     });
   }

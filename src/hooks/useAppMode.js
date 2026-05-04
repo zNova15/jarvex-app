@@ -34,11 +34,18 @@ function readMode() {
     const v = localStorage.getItem(STORAGE_KEY);
     const rol = readUserRole();
     const isAdmin = rol === 'admin';
+    // Si admin está IMPERSONANDO otro rol (en modo prueba), el rol REAL
+    // sigue siendo admin → debe poder mantener modos restringidos. Sin
+    // este check, al impersonar como almacenero el modo bajaba a
+    // 'produccion' y los datos demo desaparecían (filterByMode filtra
+    // solo los registros sin demo).
+    let rolReal = rol;
+    try { rolReal = localStorage.getItem('jx_user_role_real') || rol; } catch {}
+    const isAdminReal = rolReal === 'admin';
     if (MODOS_VALIDOS.has(v)) {
-      // Si el modo guardado requiere admin pero el rol actual no lo es,
-      // forzar 'produccion'. NO sobrescribimos localStorage aquí — eso
-      // podría perder el modo del admin si el rol no se carga aún.
-      if (MODOS_ADMIN_ONLY.has(v) && !isAdmin) return 'produccion';
+      // Si el modo guardado requiere admin pero ni el rol actual ni el
+      // real son admin, forzar 'produccion'.
+      if (MODOS_ADMIN_ONLY.has(v) && !isAdmin && !isAdminReal) return 'produccion';
       return v;
     }
   } catch (e) {}

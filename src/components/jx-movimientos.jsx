@@ -425,17 +425,27 @@ function ReversoModal({ mov, tipo /* 'mat' | 'her' */, lookupNombre, onClose, on
 // El almacenero sube 1 foto/día (validado). Admin puede subir múltiples
 // o reemplazar el del día.
 // ═══════════════════════════════════════════════════════════════════
-function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast }) {
+// Modo:
+//   'hoy'      → almacenero sube el registro del día actual (no editable)
+//   'atrasado' → almacenero solicita registro de un día anterior con
+//                justificación; queda en estado pendiente_aprobacion
+//                hasta que el admin lo apruebe.
+function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast, modo = 'hoy' }) {
   const auth = window.__useAuth?.();
   const userId = auth?.profile?.id ?? 'offline';
   const rol = auth?.profile?.rol || '';
   const isAdmin = rol === 'admin';
   const tipoEv = tipoEvidenciaPara(modulo);
-  const [fecha, setFecha] = uSM(() => new Date().toISOString().slice(0, 10));
-  const [foto, setFoto] = uSM(null); // { blob, url }
+  const hoy = new Date().toISOString().slice(0, 10);
+  const ayer = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  // En modo 'hoy', fecha forzada al día actual y NO se puede cambiar (salvo admin).
+  // En modo 'atrasado', fecha por defecto ayer; máx ayer (no permite hoy ni futuro).
+  const [fecha, setFecha] = uSM(() => modo === 'atrasado' ? ayer : hoy);
+  const [motivoAtraso, setMotivoAtraso] = uSM('');
+  const [foto, setFoto] = uSM(null);
   const [notas, setNotas] = uSM('');
   const [busy, setBusy] = uSM(false);
-  const [yaExiste, setYaExiste] = uSM(false); // ¿ya hay un registro del día?
+  const [yaExiste, setYaExiste] = uSM(false);
   const [registroExistente, setRegistroExistente] = uSM(null);
 
   // Validar si ya existe un registro de la fecha seleccionada (anti-duplicado para almacenero)
@@ -472,19 +482,35 @@ function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast })
   const handleSubmit = async () => {
     if (!foto?.blob) { showToast?.('Adjuntá una foto del registro físico', 'red'); return; }
     if (!fecha) { showToast?.('Seleccioná una fecha', 'red'); return; }
-    // Validación: almacenero NO puede sobreescribir
+    // Validaciones por modo
+    if (modo === 'hoy' && !isAdmin && fecha !== hoy) {
+      showToast?.('Solo podés subir el registro del día actual', 'red'); return;
+    }
+    if (modo === 'atrasado') {
+      if (fecha >= hoy) { showToast?.('Para días atrasados elegí una fecha anterior a hoy', 'red'); return; }
+      if (!motivoAtraso.trim() || motivoAtraso.trim().length < 10) {
+        showToast?.('Explicá el motivo del atraso (mín 10 caracteres)', 'red'); return;
+      }
+    }
     if (yaExiste && !isAdmin) {
       showToast?.('Ya existe un registro diario para esta fecha. Solo el admin puede reemplazarlo.', 'red');
       return;
     }
     setBusy(true);
     try {
-      // Si admin y existe → eliminar el anterior antes de subir el nuevo
       if (yaExiste && isAdmin && registroExistente) {
         await window.__db.evidencias.update(registroExistente.id, { deleted_at: new Date().toISOString() });
         try { await window.__db.evidencias_blobs.delete(registroExistente.id); } catch {}
       }
       const id = window.__newId();
+      const esAtrasado = modo === 'atrasado';
+      // Almacenero atrasado → queda pendiente de aprobación admin.
+      // Admin atrasado → entra directo confirmado.
+      const necesitaAprobacion = esAtrasado && !isAdmin;
+      const obsBase = notas.trim() || `Registro diario · ${fecha}`;
+      const obsFinal = esAtrasado
+        ? `${obsBase}\n\n⏰ ATRASADO · motivo: ${motivoAtraso.trim()}${necesitaAprobacion ? ' · ⏳ pendiente aprobación admin' : ''}`
+        : obsBase;
       await window.__saveEvidenciaLocal({
         id, obra_id: obraId,
         tipo_evidencia: tipoEv,
@@ -493,20 +519,43 @@ function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast })
         nombre_archivo: foto.blob.name || `registro_${fecha}.jpg`,
         mime_type: foto.blob.type || 'image/jpeg',
         blob: foto.blob,
-        observaciones: notas.trim() || `Registro diario · ${fecha}`,
+        observaciones: obsFinal,
         fecha,
         created_by: userId,
+        // Campos extra para distinguir atrasados pendientes
+        registro_atrasado: esAtrasado || undefined,
+        motivo_atraso: esAtrasado ? motivoAtraso.trim() : undefined,
+        pendiente_aprobacion: necesitaAprobacion || undefined,
       });
       try {
         await window.__logAudit?.({
           action: yaExiste ? 'update' : 'insert',
           table: 'evidencias',
           recordId: id,
-          newData: { tipo_evidencia: tipoEv, fecha, obra_id: obraId },
-          reason: `${yaExiste ? 'Reemplazado por admin' : 'Subida'} de registro diario · ${modulo}`,
+          newData: { tipo_evidencia: tipoEv, fecha, obra_id: obraId, atrasado: esAtrasado, pendiente: necesitaAprobacion },
+          reason: necesitaAprobacion
+            ? `Solicitud de registro diario atrasado · ${modulo} · ${fecha}`
+            : `${yaExiste ? 'Reemplazado por admin' : 'Subida'} de registro diario · ${modulo}`,
         });
       } catch {}
-      showToast?.(`✓ Registro diario subido (${fecha})`, 'green');
+      // Crear change request para que el admin lo apruebe en su bandeja
+      if (necesitaAprobacion) {
+        try {
+          await window.__changeRequests?.create({
+            table: 'evidencias',
+            recordId: id,
+            recordLabel: `Registro diario atrasado · ${fecha} (${modulo === 'movimientos_materiales' ? 'Materiales' : 'Herramientas'})`,
+            fields: { fecha, motivo_atraso: motivoAtraso.trim(), modulo, obra_id: obraId },
+            reason: `Solicitud de subida atrasada: ${motivoAtraso.trim()}`,
+          });
+        } catch (e) { console.warn('change request no creada:', e); }
+      }
+      showToast?.(
+        necesitaAprobacion
+          ? `📤 Solicitud enviada · pendiente aprobación admin (${fecha})`
+          : `✓ Registro diario subido (${fecha})`,
+        necesitaAprobacion ? 'amber' : 'green'
+      );
       if (foto?.url) try { URL.revokeObjectURL(foto.url); } catch {}
       onSaved?.();
       onClose?.();
@@ -527,20 +576,31 @@ function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast })
       style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:9999, padding:20 }}>
       <div className="card card-p" style={{ width:'100%', maxWidth:520, background:'#1A2333', border:'1px solid var(--bd)', borderRadius:10 }}>
         <div style={{ fontSize:14, fontWeight:700, marginBottom:10, display:'flex', alignItems:'center', gap:8 }}>
-          <JxIconRF name="camera" size={15} color="var(--amber)"/>
-          Subir registro diario · {modulo === 'movimientos_materiales' ? 'Materiales' : 'Herramientas'}
+          <JxIconRF name={modo === 'atrasado' ? 'clock' : 'camera'} size={15} color={modo === 'atrasado' ? 'var(--blue)' : 'var(--amber)'}/>
+          {modo === 'atrasado'
+            ? `Solicitar registro atrasado · ${modulo === 'movimientos_materiales' ? 'Materiales' : 'Herramientas'}`
+            : `Subir registro diario · ${modulo === 'movimientos_materiales' ? 'Materiales' : 'Herramientas'}`}
         </div>
-        <div style={{ fontSize:12, color:'var(--ts)', marginBottom:14, padding:'10px 12px', background:'rgba(155,89,182,0.06)', borderRadius:6 }}>
-          {isAdmin
-            ? 'Como admin podés subir varios o reemplazar el registro del día. Quedan asociados a la fecha y obra activa.'
-            : 'Al final del día firmá tu registro físico, tomá una foto clara y subila aquí. Solo se permite UN registro por día.'}
+        <div style={{ fontSize:12, color:'var(--ts)', marginBottom:14, padding:'10px 12px', background: modo === 'atrasado' ? 'rgba(52,152,219,0.07)' : 'rgba(155,89,182,0.06)', borderRadius:6 }}>
+          {modo === 'atrasado'
+            ? (isAdmin
+                ? 'Como admin podés cargar registros atrasados directamente.'
+                : 'Esto generará una solicitud al administrador. Explicá por qué no pudiste subirlo el mismo día. Tendrá que aprobarlo antes de quedar registrado.')
+            : (isAdmin
+                ? 'Como admin podés subir varios o reemplazar el registro del día.'
+                : `Solo podés subir el registro del día de hoy (${hoy}). Si te atrasaste un día, usá "Solicitar día atrasado".`)}
         </div>
 
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
           <div>
             <label className="flabel">Fecha *</label>
-            <input className="fi" type="date" value={fecha} onChange={e=>setFecha(e.target.value)}
-              max={isAdmin ? undefined : new Date().toISOString().slice(0,10)}/>
+            {modo === 'hoy' && !isAdmin ? (
+              <input className="fi" type="date" value={hoy} disabled readOnly
+                style={{ opacity: 0.7, cursor: 'not-allowed' }}/>
+            ) : (
+              <input className="fi" type="date" value={fecha} onChange={e=>setFecha(e.target.value)}
+                max={modo === 'atrasado' && !isAdmin ? ayer : (isAdmin ? undefined : hoy)}/>
+            )}
           </div>
           <div style={{ display:'flex', alignItems:'flex-end' }}>
             {yaExiste ? (
@@ -550,6 +610,18 @@ function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast })
             ) : <div style={{ fontSize:11, color:'var(--green)' }}>✓ Sin registro previo · podés subir</div>}
           </div>
         </div>
+
+        {modo === 'atrasado' && (
+          <div style={{ marginTop:14 }}>
+            <label className="flabel">Motivo del atraso *</label>
+            <textarea className="fi" rows={3} value={motivoAtraso} onChange={e=>setMotivoAtraso(e.target.value)}
+              placeholder="Ej: el día anterior se cortó la luz al fin del turno y no pude tomar la foto antes de cerrar."
+              minLength={10}/>
+            <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>
+              Mínimo 10 caracteres. El admin va a ver este motivo en su bandeja de Solicitudes.
+            </div>
+          </div>
+        )}
 
         <div style={{ marginTop:14 }}>
           <label className="flabel">Foto del registro físico (firmado) *</label>
@@ -581,7 +653,13 @@ function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast })
             disabled={busy || !foto || (yaExiste && !isAdmin)}
             onClick={handleSubmit}>
             <JxIconRF name="check" size={12}/>
-            {busy ? 'Subiendo…' : yaExiste && isAdmin ? 'Reemplazar registro' : 'Subir registro diario'}
+            {busy
+              ? 'Subiendo…'
+              : modo === 'atrasado' && !isAdmin
+                ? 'Enviar solicitud al admin'
+                : yaExiste && isAdmin
+                  ? 'Reemplazar registro'
+                  : 'Subir registro diario'}
           </button>
         </div>
       </div>
@@ -701,6 +779,7 @@ function MovMaterialesPage({ showToast }) {
   const [tipo, setTipo] = uSM('todos');
   const [regFisicoOpen, setRegFisicoOpen] = uSM(false);
   const [regDiarioOpen, setRegDiarioOpen] = uSM(false);
+  const [regAtrasadoOpen, setRegAtrasadoOpen] = uSM(false);
   const [rfRefresh, setRfRefresh] = uSM(0);
 
   const lookupMat = (id) => materiales?.find(m => m.id === id);
@@ -820,12 +899,15 @@ function MovMaterialesPage({ showToast }) {
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div><div className="pg-title">Movimiento de Materiales</div><div className="pg-sub">Historial completo · {sorted.length} movimientos registrados</div></div>
-        <div style={{ display:'flex', gap:8 }}>
+        <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
           <button className="btn btn-ghost btn-sm" onClick={()=>setRegFisicoOpen(true)} title="Ver registros físicos diarios subidos">
             <JxIcon name="camera" size={13}/> Visualización registro físico
           </button>
-          <button className="btn btn-amber btn-sm" onClick={()=>setRegDiarioOpen(true)} title="Subir foto del registro físico firmado del día">
-            <JxIcon name="plus" size={13}/> Subir registro diario
+          <button className="btn btn-ghost btn-sm" onClick={()=>setRegAtrasadoOpen(true)} title="Solicitar subida de un registro de día anterior">
+            <JxIcon name="clock" size={13}/> Solicitar día atrasado
+          </button>
+          <button className="btn btn-amber btn-sm" onClick={()=>setRegDiarioOpen(true)} title="Subir foto del registro físico firmado HOY">
+            <JxIcon name="plus" size={13}/> Subir registro diario (hoy)
           </button>
         </div>
       </div>
@@ -835,7 +917,15 @@ function MovMaterialesPage({ showToast }) {
       )}
       {regDiarioOpen && (
         <RegistroDiarioUploader modulo="movimientos_materiales" obraId={obraId}
+          modo="hoy"
           onClose={()=>setRegDiarioOpen(false)}
+          onSaved={()=>setRfRefresh(k=>k+1)}
+          showToast={showToast}/>
+      )}
+      {regAtrasadoOpen && (
+        <RegistroDiarioUploader modulo="movimientos_materiales" obraId={obraId}
+          modo="atrasado"
+          onClose={()=>setRegAtrasadoOpen(false)}
           onSaved={()=>setRfRefresh(k=>k+1)}
           showToast={showToast}/>
       )}
@@ -998,6 +1088,7 @@ function MovHerramientasPage({ showToast }) {
   const [accion, setAccion] = uSM('todas');
   const [regFisicoOpen, setRegFisicoOpen] = uSM(false);
   const [regDiarioOpen, setRegDiarioOpen] = uSM(false);
+  const [regAtrasadoOpen, setRegAtrasadoOpen] = uSM(false);
   const [rfRefresh, setRfRefresh] = uSM(0);
 
   const lookupHerr = (id) => herramientas?.find(h => h.id === id);
@@ -1128,12 +1219,15 @@ function MovHerramientasPage({ showToast }) {
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div><div className="pg-title">Movimiento de Herramientas</div><div className="pg-sub">Historial de salidas, devoluciones y mantenimientos · {sorted.length} registros</div></div>
-        <div style={{ display:'flex', gap:8 }}>
+        <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
           <button className="btn btn-ghost btn-sm" onClick={()=>setRegFisicoOpen(true)} title="Ver registros físicos diarios subidos">
             <JxIcon name="camera" size={13}/> Visualización registro físico
           </button>
-          <button className="btn btn-amber btn-sm" onClick={()=>setRegDiarioOpen(true)} title="Subir foto del registro físico firmado del día">
-            <JxIcon name="plus" size={13}/> Subir registro diario
+          <button className="btn btn-ghost btn-sm" onClick={()=>setRegAtrasadoOpen(true)} title="Solicitar subida de un registro de día anterior">
+            <JxIcon name="clock" size={13}/> Solicitar día atrasado
+          </button>
+          <button className="btn btn-amber btn-sm" onClick={()=>setRegDiarioOpen(true)} title="Subir foto del registro físico firmado HOY">
+            <JxIcon name="plus" size={13}/> Subir registro diario (hoy)
           </button>
         </div>
       </div>
@@ -1143,7 +1237,15 @@ function MovHerramientasPage({ showToast }) {
       )}
       {regDiarioOpen && (
         <RegistroDiarioUploader modulo="movimientos_herramientas" obraId={obraId}
+          modo="hoy"
           onClose={()=>setRegDiarioOpen(false)}
+          onSaved={()=>setRfRefresh(k=>k+1)}
+          showToast={showToast}/>
+      )}
+      {regAtrasadoOpen && (
+        <RegistroDiarioUploader modulo="movimientos_herramientas" obraId={obraId}
+          modo="atrasado"
+          onClose={()=>setRegAtrasadoOpen(false)}
           onSaved={()=>setRfRefresh(k=>k+1)}
           showToast={showToast}/>
       )}
