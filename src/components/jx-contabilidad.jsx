@@ -81,6 +81,30 @@ function EmpresasPage({ showToast }) {
   const userId = auth?.profile?.id ?? 'offline';
   const { data: companies } = window.__hooks.useCompanies();
   const { data: movs } = window.__hooks.useAccountingMovements();
+  const { data: obras } = window.__hooks.useObras?.() || { data: [] };
+
+  // Roles efectivos por empresa derivados dinámicamente del estado de las obras.
+  // Una empresa es "ejecutora" en una obra si está asignada como ejecutora_company_id
+  // o aparece en consorcio_miembros. Para el resto (proveedora interna), se infiere
+  // por aparecer como eslabón en cadenas de trazabilidad — pero por ahora solo
+  // mostramos las obras donde es ejecutora (caso más común).
+  const rolesPorObra = uMC(() => {
+    const map = new Map(); // company_id → [{ obra_id, nombre, rol }]
+    (obras || []).forEach(o => {
+      if (o.deleted_at) return;
+      const addRol = (cid, rol) => {
+        if (!cid) return;
+        if (!map.has(cid)) map.set(cid, []);
+        map.get(cid).push({ obra_id: o.id, nombre: o.nombre_obra, rol });
+      };
+      if (o.ejecutora_tipo === 'consorcio' && Array.isArray(o.consorcio_miembros)) {
+        o.consorcio_miembros.forEach(m => addRol(m.company_id, 'miembro_consorcio'));
+      } else if (o.ejecutora_company_id) {
+        addRol(o.ejecutora_company_id, 'ejecutora');
+      }
+    });
+    return map;
+  }, [obras]);
 
   const [modal, setModal] = uSC(null); // null | 'nueva' | 'editar'
   const [editingId, setEditingId] = uSC(null);
@@ -253,6 +277,8 @@ function EmpresasPage({ showToast }) {
                   const rolBadge = c.rol_grupo === 'origen' ? 'b-blue'
                     : c.rol_grupo === 'intermediaria' ? 'b-amber'
                     : c.rol_grupo === 'ejecutora' ? 'b-green' : 'b-gray';
+                  const obrasDeRol = rolesPorObra.get(c.id) || [];
+                  const obrasEjecutora = obrasDeRol.filter(x => x.rol === 'ejecutora' || x.rol === 'miembro_consorcio');
                   return (
                     <tr key={c.id}>
                       <td className="col-p">
@@ -263,7 +289,12 @@ function EmpresasPage({ showToast }) {
                       <td className="col-m">{c.ruc || '—'}</td>
                       <td>
                         <div style={{ fontSize:11.5 }}>{rubroLabel}</div>
-                        <span className={`badge ${rolBadge}`} style={{ marginTop:3, fontSize:10 }}>{rolLabel}</span>
+                        <span className={`badge ${rolBadge}`} style={{ marginTop:3, fontSize:10 }}>Global: {rolLabel}</span>
+                        {obrasEjecutora.length > 0 && (
+                          <div style={{ marginTop:4, fontSize:10, color:'var(--green)' }} title={obrasEjecutora.map(x => x.nombre).join('\n')}>
+                            ✓ Ejecutora en {obrasEjecutora.length} obra{obrasEjecutora.length !== 1 ? 's' : ''}
+                          </div>
+                        )}
                       </td>
                       <td style={{ textAlign:'right', color: c.margen_objetivo_pct ? 'var(--amber)' : 'var(--tm)' }} className="col-num">
                         {c.margen_objetivo_pct != null ? `${Number(c.margen_objetivo_pct).toFixed(1)}%` : '—'}

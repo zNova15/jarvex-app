@@ -266,14 +266,46 @@ function CapturaMagicaPage({ showToast }) {
     const r = it.review;
 
     // Validaciones
-    if (!r.company_id) { showToast('Falta empresa compradora del grupo', 'red'); return; }
+    if (r.company_accion === 'crear_nueva') {
+      if (!r.nueva_company_name?.trim()) { showToast('Falta nombre de la empresa nueva', 'red'); return; }
+    } else if (!r.company_id) {
+      showToast('Falta empresa compradora del grupo', 'red'); return;
+    }
     if (!r.serie_correlativo) { showToast('Falta serie-correlativo', 'red'); return; }
     if (!(Number(r.total) > 0)) { showToast('El total debe ser mayor a 0', 'red'); return; }
 
     const now = new Date().toISOString();
     let proveedorIdFinal = r.proveedor_id;
+    let companyIdFinal = r.company_id;
 
     try {
+      // 0) Crear empresa del grupo si nueva
+      if (r.company_accion === 'crear_nueva') {
+        const cid = window.__newId();
+        await window.__db.companies.add({
+          id: cid,
+          name: r.nueva_company_name.trim(),
+          legal_name: r.nueva_company_legal?.trim() || r.nueva_company_name.trim(),
+          ruc: r.nueva_company_ruc || null,
+          company_type: 'comercial',
+          status: 'activa',
+          rubro: r.nueva_company_rubro || null,
+          rol_grupo: r.nueva_company_rol || 'origen',
+          regimen_tributario: 'RG',
+          margen_objetivo_pct: null,
+          direccion: r.nueva_company_direccion || null,
+          notas: 'Creada automáticamente desde Captura Mágica',
+          created_by: userId, updated_by: userId,
+          created_at: now, updated_at: now,
+          version: 1, sync_status: 'pending_create',
+          idempotency_key: `${userId}_company_${cid}`,
+        });
+        try { await window.__logAudit?.({ action:'insert', table:'companies', recordId: cid,
+          newData: { name: r.nueva_company_name, ruc: r.nueva_company_ruc, rol_grupo: r.nueva_company_rol },
+          reason:'Captura mágica · empresa nueva del grupo' }); } catch {}
+        companyIdFinal = cid;
+      }
+
       // 1) Crear proveedor si nuevo
       if (r.proveedor_accion === 'crear_nuevo') {
         if (!r.proveedor_razon_social?.trim()) {
@@ -370,7 +402,7 @@ function CapturaMagicaPage({ showToast }) {
       const tipoAcc = TIPO_DOC_MAP[r.tipo_documento]?.acc || 'factura';
       await window.__db.accounting_movements.add({
         id: accId,
-        company_id: r.company_id,
+        company_id: companyIdFinal,
         obra_id: r.obra_id || null,
         date: r.fecha_emision,
         type: 'cost',
@@ -736,25 +768,104 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, onCh
             {/* RECEPTOR (empresa del grupo) + obra */}
             <div style={{ marginTop:10, padding:'10px 12px', background:'rgba(46,204,113,0.06)', border:'1px solid rgba(46,204,113,0.2)', borderRadius:8 }}>
               <div style={{ fontSize:11, fontWeight:700, color:'var(--green)', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:8 }}>Empresa compradora (tu grupo)</div>
-              {r.receptor_documento && !companiesActivas.find(c => c.ruc === r.receptor_documento) && (
+              {r.receptor_documento && !companiesActivas.find(c => c.ruc === r.receptor_documento) && r.company_accion !== 'crear_nueva' && (
                 <div style={{ fontSize:11, color:'var(--red)', marginBottom:6 }}>⚠ El RUC en la factura ({r.receptor_documento}) no coincide con ninguna de tus empresas.</div>
               )}
-              <div className="g2">
-                <div>
-                  <label className="flabel">Empresa *</label>
-                  <select className="fi" value={r.company_id||''} onChange={e=>upd({ company_id: e.target.value, obra_id:'' })}>
-                    <option value="">— Seleccionar —</option>
-                    {companiesActivas.map(c => <option key={c.id} value={c.id}>{c.name} {c.ruc ? `· ${c.ruc}` : ''}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="flabel">Obra (opcional)</label>
-                  <select className="fi" value={r.obra_id||''} onChange={e=>upd({ obra_id: e.target.value })}>
-                    <option value="">— Sin obra (gasto general) —</option>
-                    {obrasDeEmpresa.map(o => <option key={o.id} value={o.id}>{o.nombre_obra}</option>)}
-                  </select>
-                </div>
+              <div style={{ display:'flex', gap:8, marginBottom:8 }}>
+                <button type="button" className={`btn btn-xs ${r.company_accion !== 'crear_nueva' ? 'btn-amber' : 'btn-ghost'}`}
+                  onClick={()=>upd({ company_accion:'usar_existente' })}>Usar existente</button>
+                <button type="button" className={`btn btn-xs ${r.company_accion === 'crear_nueva' ? 'btn-amber' : 'btn-ghost'}`}
+                  onClick={()=>upd({
+                    company_accion:'crear_nueva',
+                    company_id:'',
+                    nueva_company_ruc: r.receptor_documento || '',
+                    nueva_company_name: r.receptor_razon_social || '',
+                    nueva_company_legal: r.receptor_razon_social || '',
+                    nueva_company_rol: 'origen',
+                    nueva_company_rubro: 'distribuidora_materiales',
+                  })}>+ Crear nueva</button>
               </div>
+              {r.company_accion !== 'crear_nueva' ? (
+                <div className="g2">
+                  <div>
+                    <label className="flabel">Empresa *</label>
+                    <select className="fi" value={r.company_id||''} onChange={e=>upd({ company_id: e.target.value, obra_id:'' })}>
+                      <option value="">— Seleccionar —</option>
+                      {companiesActivas.map(c => <option key={c.id} value={c.id}>{c.name} {c.ruc ? `· ${c.ruc}` : ''}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="flabel">Obra (opcional)</label>
+                    <select className="fi" value={r.obra_id||''} onChange={e=>upd({ obra_id: e.target.value })}>
+                      <option value="">— Sin obra (gasto general) —</option>
+                      {obrasDeEmpresa.map(o => <option key={o.id} value={o.id}>{o.nombre_obra}</option>)}
+                    </select>
+                  </div>
+                </div>
+              ) : (
+                <div className="g2">
+                  <div>
+                    <label className="flabel">RUC *</label>
+                    <div style={{ display:'flex', gap:6 }}>
+                      <input className="fi" maxLength={11} value={r.nueva_company_ruc||''} onChange={e=>upd({ nueva_company_ruc: e.target.value.replace(/\D/g,'').slice(0,11) })}/>
+                      <button type="button" className="btn btn-ghost btn-sm"
+                        disabled={!/^\d{11}$/.test(r.nueva_company_ruc||'')}
+                        title="Buscar datos en SUNAT"
+                        onClick={async () => {
+                          try {
+                            const data = await window.__identity.consultarRUC(r.nueva_company_ruc);
+                            upd({
+                              nueva_company_legal: data.razonSocial || r.nueva_company_legal || '',
+                              nueva_company_name: r.nueva_company_name || data.razonSocial || '',
+                              nueva_company_direccion: data.direccion || r.nueva_company_direccion || '',
+                            });
+                          } catch (e) { /* ignore */ }
+                        }}>
+                      <JxIcon name="search" size={11}/>SUNAT</button>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="flabel">Nombre comercial *</label>
+                    <input className="fi" value={r.nueva_company_name||''} onChange={e=>upd({ nueva_company_name: e.target.value })} placeholder="Ej: Constructora Nova"/>
+                  </div>
+                  <div style={{ gridColumn:'1/-1' }}>
+                    <label className="flabel">Razón social</label>
+                    <input className="fi" value={r.nueva_company_legal||''} onChange={e=>upd({ nueva_company_legal: e.target.value })}/>
+                  </div>
+                  <div style={{ gridColumn:'1/-1' }}>
+                    <label className="flabel">Dirección fiscal</label>
+                    <input className="fi" value={r.nueva_company_direccion||''} onChange={e=>upd({ nueva_company_direccion: e.target.value })}/>
+                  </div>
+                  <div>
+                    <label className="flabel">Rol en el grupo</label>
+                    <select className="fi" value={r.nueva_company_rol||'origen'} onChange={e=>upd({ nueva_company_rol: e.target.value })}>
+                      <option value="origen">Origen / Compradora primaria</option>
+                      <option value="intermediaria">Intermediaria</option>
+                      <option value="ejecutora">Ejecutora (consorcio)</option>
+                      <option value="mixta">Mixta</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="flabel">Rubro</label>
+                    <select className="fi" value={r.nueva_company_rubro||'distribuidora_materiales'} onChange={e=>upd({ nueva_company_rubro: e.target.value })}>
+                      <option value="distribuidora_materiales">Distribuidora de Materiales</option>
+                      <option value="ferreteria">Ferretería</option>
+                      <option value="importadora_acero">Importadora · Acero</option>
+                      <option value="importadora_cemento">Importadora · Cemento</option>
+                      <option value="importadora_general">Importadora · General</option>
+                      <option value="transporte">Transporte / Flete</option>
+                      <option value="alquiler_maquinaria">Alquiler de Maquinaria</option>
+                      <option value="mano_obra">Mano de Obra / Subcontratos</option>
+                      <option value="ejecutora_obra">Ejecutora de Obra</option>
+                      <option value="contratista_general">Contratista General</option>
+                      <option value="otro">Otro</option>
+                    </select>
+                  </div>
+                  <div style={{ gridColumn:'1/-1', fontSize:11, color:'var(--tm)' }}>
+                    Esta empresa se creará al confirmar. Como aún no tiene obras asignadas, el dropdown de obra abajo aparecerá vacío.
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* ITEMS */}

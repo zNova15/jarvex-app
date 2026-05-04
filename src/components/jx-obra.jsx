@@ -52,12 +52,74 @@ function ObrasPage({ showToast }) {
   const { data: obras, loading, create: createObra, update: updateObra } = window.__hooks.useObras();
   const { data: companies } = window.__hooks.useCompanies?.() || { data: [] };
   const auth = window.__useAuth ? window.__useAuth() : null;
+  const userId = auth?.profile?.id ?? 'offline';
   const isAdmin = auth?.profile?.rol === 'admin';
   const appMode = window.__useAppMode ? window.__useAppMode() : { isEdicion: true };
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
   const [modal, setModal] = uSO(null);
   const [form, setForm] = uSO({});
   const [editingId, setEditingId] = uSO(null);
+  // Quick-add empresa: target = 'ejecutora' | { tipo: 'consorcio', idx: N } — dónde asignar la empresa creada
+  const [quickAdd, setQuickAdd] = uSO(null);
+  const [quickForm, setQuickForm] = uSO(null);
+
+  const openQuickAdd = (target) => {
+    setQuickForm({
+      ruc: '',
+      name: '',
+      legal_name: '',
+      direccion: '',
+      rol_grupo: target === 'ejecutora' ? 'ejecutora' : 'ejecutora',
+      rubro: 'ejecutora_obra',
+      es_consorcio: target !== 'ejecutora', // si es para slot de consorcio, marcar como consorcio
+    });
+    setQuickAdd(target);
+  };
+
+  const guardarQuickAdd = async () => {
+    if (!quickForm?.name?.trim()) { showToast?.('Falta nombre comercial', 'red'); return; }
+    const now = new Date().toISOString();
+    const cid = window.__newId();
+    try {
+      await window.__db.companies.add({
+        id: cid,
+        name: quickForm.name.trim(),
+        legal_name: quickForm.legal_name?.trim() || quickForm.name.trim(),
+        ruc: quickForm.ruc?.trim() || null,
+        company_type: quickForm.es_consorcio ? 'otro' : 'constructora',
+        status: 'activa',
+        rubro: quickForm.rubro || 'ejecutora_obra',
+        rol_grupo: quickForm.rol_grupo || 'ejecutora',
+        regimen_tributario: 'RG',
+        margen_objetivo_pct: null,
+        direccion: quickForm.direccion || null,
+        notas: quickForm.es_consorcio ? 'Consorcio (creado desde Obra)' : 'Creada rápidamente desde Obra',
+        created_by: userId, updated_by: userId,
+        created_at: now, updated_at: now,
+        version: 1, sync_status: 'pending_create',
+        idempotency_key: `${userId}_company_${cid}`,
+      });
+      try { await window.__logAudit?.({ action:'insert', table:'companies', recordId: cid,
+        newData: { name: quickForm.name, ruc: quickForm.ruc, rol_grupo: quickForm.rol_grupo },
+        reason:'Quick-add desde Obra' }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'companies' } })); } catch {}
+
+      // Asignar al slot correspondiente
+      if (quickAdd === 'ejecutora') {
+        setForm(f => ({ ...f, ejecutora_company_id: cid }));
+      } else if (quickAdd && typeof quickAdd === 'object' && quickAdd.tipo === 'miembro') {
+        setForm(f => {
+          const arr = [...(f.consorcio_miembros || [])];
+          arr[quickAdd.idx] = { ...arr[quickAdd.idx], company_id: cid };
+          return { ...f, consorcio_miembros: arr };
+        });
+      }
+      showToast?.(`Empresa "${quickForm.name}" creada`, 'green');
+      setQuickAdd(null); setQuickForm(null);
+    } catch (e) {
+      showToast?.('Error: ' + (e.message || e), 'red');
+    }
+  };
 
   const companiesActivas = uMO(() => (companies || []).filter(c => c.status === 'activa' && !c.deleted_at), [companies]);
   const lookupCompany = (id) => companies?.find(c => c.id === id);
@@ -337,12 +399,8 @@ function ObrasPage({ showToast }) {
           {form.ejecutora_tipo !== 'consorcio' ? (
             <div style={{ gridColumn:'1/-1' }}>
               <label className="flabel">Empresa ejecutora *</label>
-              {companiesActivas.length === 0 ? (
-                <div className="fi" style={{ color:'var(--red)', fontSize:11.5 }}>
-                  No hay empresas activas. Creá primero una empresa en Contabilidad → Empresas.
-                </div>
-              ) : (
-                <select className="fi" value={form.ejecutora_company_id||''} onChange={e=>setForm({...form, ejecutora_company_id:e.target.value})}>
+              <div style={{ display:'flex', gap:6 }}>
+                <select className="fi" value={form.ejecutora_company_id||''} onChange={e=>setForm({...form, ejecutora_company_id:e.target.value})} style={{ flex:1 }}>
                   <option value="">— Seleccionar —</option>
                   {companiesActivas.map(c => (
                     <option key={c.id} value={c.id}>
@@ -350,7 +408,10 @@ function ObrasPage({ showToast }) {
                     </option>
                   ))}
                 </select>
-              )}
+                <button type="button" className="btn btn-ghost btn-sm" onClick={()=>openQuickAdd('ejecutora')} title="Crear empresa nueva">
+                  <JxIcon name="plus" size={11}/> Nueva
+                </button>
+              </div>
               <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>
                 Esta empresa firma el contrato y emite comprobantes. Aparece como contribuyente en facturas vinculadas a esta obra.
               </div>
@@ -368,21 +429,25 @@ function ObrasPage({ showToast }) {
                 {(form.consorcio_miembros || []).map((m, i) => {
                   const arr = form.consorcio_miembros || [];
                   return (
-                    <div key={i} style={{ display:'grid', gridTemplateColumns:'24px 2fr 1fr 32px', gap:8, alignItems:'center', marginBottom:8 }}>
+                    <div key={i} style={{ display:'grid', gridTemplateColumns:'24px 2fr auto 1fr 32px', gap:8, alignItems:'center', marginBottom:8 }}>
                       <div style={{ fontSize:11, fontWeight:700, color:'var(--amber)', textAlign:'center' }}>#{i+1}</div>
                       <select className="fi" value={m.company_id||''} onChange={e=>{
                         const nuevos = [...arr]; nuevos[i] = { ...nuevos[i], company_id: e.target.value };
                         setForm({...form, consorcio_miembros: nuevos});
                       }}>
                         <option value="">— Empresa —</option>
-                        {companiesActivas.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                        {companiesActivas.map(c => <option key={c.id} value={c.id}>{c.name}{c.ruc ? ` · ${c.ruc}` : ''}</option>)}
                       </select>
+                      <button type="button" className="btn btn-ghost btn-xs" title="Crear empresa nueva"
+                        onClick={()=>openQuickAdd({ tipo:'miembro', idx: i })}>
+                        <JxIcon name="plus" size={10}/>
+                      </button>
                       <input className="fi" type="number" min="0" max="100" step="0.01" placeholder="% participación"
                         value={m.participacion_pct ?? ''} onChange={e=>{
                           const nuevos = [...arr]; nuevos[i] = { ...nuevos[i], participacion_pct: e.target.value };
                           setForm({...form, consorcio_miembros: nuevos});
                         }}/>
-                      <button type="button" className="btn btn-ghost btn-xs"
+                      <button type="button" className="btn btn-ghost btn-xs" title="Quitar"
                         disabled={arr.length <= 2}
                         onClick={()=>{
                           const nuevos = arr.filter((_, idx) => idx !== i);
@@ -419,6 +484,90 @@ function ObrasPage({ showToast }) {
           <button className="btn btn-amber" onClick={handleSubmit}><JxIcon name="check" size={13}/>{editingId ? 'Guardar Cambios' : 'Crear Obra'}</button>
         </div>
       </Modal>}
+
+      {/* ── SUB-MODAL: QUICK-ADD EMPRESA ────────────────────── */}
+      {quickAdd && quickForm && (
+        <Modal
+          title={quickForm.es_consorcio ? 'Nuevo Consorcio (con RUC)' : 'Nueva Empresa Rápida'}
+          icon={quickForm.es_consorcio ? 'users' : 'building'}
+          onClose={()=>{ setQuickAdd(null); setQuickForm(null); }}>
+          <div style={{ fontSize:11, color:'var(--tm)', marginBottom:10 }}>
+            {quickForm.es_consorcio
+              ? 'Un consorcio se trata como una empresa con su propio RUC. Buscá el RUC del consorcio en SUNAT para auto-rellenar.'
+              : 'Crea rápido una empresa que falte. Podés editar más detalles después en Contabilidad → Empresas.'}
+          </div>
+          <div className="g2">
+            <div>
+              <label className="flabel">RUC</label>
+              <div style={{ display:'flex', gap:6 }}>
+                <input className="fi" maxLength={11} value={quickForm.ruc||''}
+                  onChange={e=>setQuickForm({...quickForm, ruc:e.target.value.replace(/\D/g,'').slice(0,11)})}
+                  style={{ flex:1 }}/>
+                <button type="button" className="btn btn-ghost btn-sm"
+                  disabled={!/^\d{11}$/.test(quickForm.ruc||'')}
+                  title="Buscar en SUNAT"
+                  onClick={async () => {
+                    try {
+                      const data = await window.__identity.consultarRUC(quickForm.ruc);
+                      setQuickForm(q => ({
+                        ...q,
+                        legal_name: data.razonSocial || q.legal_name || '',
+                        name: q.name || data.razonSocial || '',
+                        direccion: data.direccion || q.direccion || '',
+                      }));
+                      showToast?.(`SUNAT: ${data.razonSocial || 'datos cargados'}`, 'green');
+                    } catch (e) { showToast?.(e.message || 'Error SUNAT', 'red'); }
+                  }}>
+                <JxIcon name="search" size={11}/> SUNAT
+                </button>
+              </div>
+            </div>
+            <div>
+              <label className="flabel">Nombre comercial *</label>
+              <input className="fi" value={quickForm.name||''} onChange={e=>setQuickForm({...quickForm, name:e.target.value})}
+                placeholder={quickForm.es_consorcio ? 'Consorcio Vial Norte' : 'Constructora Nova'}/>
+            </div>
+            <div style={{ gridColumn:'1/-1' }}>
+              <label className="flabel">Razón social</label>
+              <input className="fi" value={quickForm.legal_name||''} onChange={e=>setQuickForm({...quickForm, legal_name:e.target.value})}/>
+            </div>
+            <div style={{ gridColumn:'1/-1' }}>
+              <label className="flabel">Dirección</label>
+              <input className="fi" value={quickForm.direccion||''} onChange={e=>setQuickForm({...quickForm, direccion:e.target.value})}/>
+            </div>
+            <div>
+              <label className="flabel">Rol en el grupo</label>
+              <select className="fi" value={quickForm.rol_grupo||'ejecutora'} onChange={e=>setQuickForm({...quickForm, rol_grupo:e.target.value})}>
+                <option value="origen">Origen / Compradora primaria</option>
+                <option value="intermediaria">Intermediaria</option>
+                <option value="ejecutora">Ejecutora</option>
+                <option value="mixta">Mixta</option>
+              </select>
+            </div>
+            <div>
+              <label className="flabel">Rubro</label>
+              <select className="fi" value={quickForm.rubro||'ejecutora_obra'} onChange={e=>setQuickForm({...quickForm, rubro:e.target.value})}>
+                <option value="ejecutora_obra">Ejecutora de Obra</option>
+                <option value="contratista_general">Contratista General</option>
+                <option value="distribuidora_materiales">Distribuidora de Materiales</option>
+                <option value="ferreteria">Ferretería</option>
+                <option value="importadora_acero">Importadora · Acero</option>
+                <option value="importadora_general">Importadora · General</option>
+                <option value="transporte">Transporte</option>
+                <option value="alquiler_maquinaria">Alquiler de Maquinaria</option>
+                <option value="mano_obra">Mano de Obra / Subcontratos</option>
+                <option value="otro">Otro</option>
+              </select>
+            </div>
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={()=>{ setQuickAdd(null); setQuickForm(null); }}>Cancelar</button>
+            <button className="btn btn-amber" onClick={guardarQuickAdd}>
+              <JxIcon name="check" size={13}/> Crear y asignar
+            </button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
