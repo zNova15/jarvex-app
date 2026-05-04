@@ -9,6 +9,44 @@ const RIESGO_COLOR = {
 };
 const TIPOS_EPP = ['Casco','Chaleco reflectivo','Guantes','Botas de seguridad','Lentes','Mascarilla','Arnés','Auriculares','Tapones','Otro'];
 
+// ── Catálogo enriquecido de EPP ──────────────────────────────
+// Cada tipo tiene vida útil estándar (en días) basada en uso normal en obra.
+// Cuando se entrega un EPP, la fecha de vencimiento estimada es
+// fecha_entrega + vida_util_dias. Si tiene daño/percance se reemplaza antes.
+//
+// Las vidas útiles son referenciales según uso típico en obra peruana:
+// - cascos/chalecos/arnés: año de servicio (cambio anual obligatorio según R.M. 050-2013-TR)
+// - botas: 6 meses (depende del trabajo)
+// - guantes nitrilo: 2 semanas (uso intenso de obra)
+// - mascarilla N95: 1-3 días (descartable)
+// - lentes: 3 meses (rayan rápido)
+const CATALOGO_EPP = [
+  { tipo: 'Casco',              vida_util_dias: 365, costo_ref: 25 },
+  { tipo: 'Chaleco reflectivo', vida_util_dias: 365, costo_ref: 18 },
+  { tipo: 'Guantes',            vida_util_dias: 15,  costo_ref: 8 },
+  { tipo: 'Botas de seguridad', vida_util_dias: 180, costo_ref: 80 },
+  { tipo: 'Lentes',             vida_util_dias: 90,  costo_ref: 12 },
+  { tipo: 'Mascarilla',         vida_util_dias: 1,   costo_ref: 2 },
+  { tipo: 'Arnés',              vida_util_dias: 365, costo_ref: 150 },
+  { tipo: 'Auriculares',        vida_util_dias: 365, costo_ref: 35 },
+  { tipo: 'Tapones',            vida_util_dias: 30,  costo_ref: 3 },
+  { tipo: 'Otro',               vida_util_dias: null, costo_ref: 0 },
+];
+const epppTipo = (t) => CATALOGO_EPP.find(c => c.tipo === t) || null;
+const epppVidaTexto = (dias) => {
+  if (dias == null) return '—';
+  if (dias < 7) return `${dias} día${dias !== 1 ? 's' : ''}`;
+  if (dias < 30) return `${Math.round(dias/7)} sem`;
+  if (dias < 365) return `${Math.round(dias/30)} meses`;
+  return `${(dias/365).toFixed(0)} año${dias >= 730 ? 's' : ''}`;
+};
+const sumarDiasISO = (iso, dias) => {
+  if (!iso || dias == null) return null;
+  const d = new Date(iso + 'T00:00:00');
+  d.setDate(d.getDate() + dias);
+  return d.toISOString().slice(0, 10);
+};
+
 function useObraActiva() {
   const [obraId, setObraId] = uS(null);
   uE(() => {
@@ -460,38 +498,205 @@ function EppPage({ showToast }) {
   const { data: entregas } = window.__hooks.useEppEntregas(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
 
-  const [modal, setModal] = uS(null);
-  const [form, setForm] = uS({});
+  const [proveedoresDB, setProveedoresDB] = uS([]);
+  uE(() => {
+    const cargar = () => window.__db?.proveedores?.toArray()
+      .then(d => setProveedoresDB((d || []).filter(x => !x.deleted_at)))
+      .catch(()=>{});
+    cargar();
+    const onCh = () => cargar();
+    window.addEventListener('jx_data_changed', onCh);
+    return () => window.removeEventListener('jx_data_changed', onCh);
+  }, []);
 
-  const sorted = uM(() => [...(entregas||[])].sort((a,b) => (b.fecha||'').localeCompare(a.fecha||'')), [entregas]);
+  // Tab: 'entregas' (a trabajadores) | 'entradas' (compras a proveedor)
+  const [tab, setTab] = uS('entregas');
+  const [modal, setModal] = uS(null); // 'entrega' | 'entrada' | null
+  const [form, setForm] = uS(null);
+  const [detalleOpen, setDetalleOpen] = uS(null);
+
   const lookupP = (id) => personal?.find(p => p.id === id);
+  const lookupProv = (id) => proveedoresDB.find(p => p.id === id);
 
-  const openNueva = () => {
+  // ── Separar entregas vs entradas ────────────────────────────
+  // Las "entradas" son registros con tipo_movimiento='entrada' o personal_id=null.
+  // Las "entregas" son las clásicas con personal_id.
+  const entregasFiltradas = uM(() => {
+    return (entregas || []).filter(e =>
+      !e.deleted_at &&
+      e.tipo_movimiento !== 'entrada' &&
+      !!e.personal_id
+    ).sort((a,b) => (b.fecha||'').localeCompare(a.fecha||''));
+  }, [entregas]);
+
+  const entradasFiltradas = uM(() => {
+    return (entregas || []).filter(e =>
+      !e.deleted_at &&
+      (e.tipo_movimiento === 'entrada' || (!e.personal_id && e.proveedor_id))
+    ).sort((a,b) => (b.fecha||'').localeCompare(a.fecha||''));
+  }, [entregas]);
+
+  // Compatibilidad: una entrega puede ser un solo tipo (campos planos) o
+  // un grupo con `items: [{tipo_epp, cantidad, marca, costo_unitario}]`.
+  const entregaItems = (e) => {
+    if (Array.isArray(e?.items) && e.items.length) return e.items;
+    if (e?.tipo_epp) return [{ tipo_epp: e.tipo_epp, cantidad: e.cantidad, marca: e.marca, costo_unitario: e.costo_unitario, costo_total: e.costo_total }];
+    return [];
+  };
+  const entregaTotalCosto = (e) => {
+    const its = entregaItems(e);
+    return its.reduce((s, it) => s + Number(it.costo_total || (Number(it.cantidad||0) * Number(it.costo_unitario||0))), 0);
+  };
+  const entregaTotalCant = (e) => entregaItems(e).reduce((s, it) => s + Number(it.cantidad||0), 0);
+
+  // ── Stock por tipo ──────────────────────────────────────────
+  // Stock = total entradas - total entregas (suma cantidades).
+  const stockPorTipo = uM(() => {
+    const map = {}; // tipo → { entradas, entregas, stock }
+    CATALOGO_EPP.forEach(c => { map[c.tipo] = { entradas: 0, entregas: 0, stock: 0 }; });
+    (entregas || []).forEach(e => {
+      if (e.deleted_at) return;
+      const its = entregaItems(e);
+      const esEntrada = e.tipo_movimiento === 'entrada' || (!e.personal_id && e.proveedor_id);
+      its.forEach(it => {
+        const t = it.tipo_epp;
+        if (!map[t]) map[t] = { entradas: 0, entregas: 0, stock: 0 };
+        const c = Number(it.cantidad || 0);
+        if (esEntrada) map[t].entradas += c;
+        else map[t].entregas += c;
+        map[t].stock = map[t].entradas - map[t].entregas;
+      });
+    });
+    return map;
+  }, [entregas]);
+
+  // ── Próximos vencimientos por trabajador ────────────────────
+  // Para cada entrega, calcula fecha de vencimiento (entrega + vida_util_dias)
+  // y agrupa los que vencen en los próximos 7 días o ya vencieron.
+  const proximosVencimientos = uM(() => {
+    const hoy = new Date().toISOString().slice(0, 10);
+    const en7d = new Date(Date.now() + 7*86400000).toISOString().slice(0, 10);
+    const list = [];
+    entregasFiltradas.forEach(e => {
+      const its = entregaItems(e);
+      its.forEach(it => {
+        const meta = epppTipo(it.tipo_epp);
+        if (!meta?.vida_util_dias) return;
+        const venceISO = sumarDiasISO(e.fecha, meta.vida_util_dias);
+        if (!venceISO) return;
+        if (venceISO <= en7d) {
+          list.push({
+            personal_id: e.personal_id,
+            tipo_epp: it.tipo_epp,
+            fecha_entrega: e.fecha,
+            fecha_vence: venceISO,
+            vencido: venceISO < hoy,
+          });
+        }
+      });
+    });
+    return list.sort((a, b) => a.fecha_vence.localeCompare(b.fecha_vence));
+  }, [entregasFiltradas]);
+
+  // ── Abrir modales ───────────────────────────────────────────
+  const openNuevaEntrega = () => {
     setForm({
       fecha: new Date().toISOString().slice(0,10),
-      personal_id:'', tipo_epp:'Casco', marca:'', cantidad:1,
-      motivo:'inicial', costo_unitario:'', observaciones:'',
+      personal_id:'',
+      motivo:'inicial',
+      observaciones:'',
+      items: [{ tipo_epp:'Casco', marca:'', cantidad:1, costo_unitario: epppTipo('Casco')?.costo_ref || '' }],
     });
-    setModal(true);
+    setModal('entrega');
+  };
+  const openNuevaEntrada = () => {
+    setForm({
+      fecha: new Date().toISOString().slice(0,10),
+      proveedor_id:'',
+      documento_asociado:'',
+      observaciones:'',
+      items: [{ tipo_epp:'Casco', marca:'', cantidad:10, costo_unitario: epppTipo('Casco')?.costo_ref || '' }],
+    });
+    setModal('entrada');
   };
 
+  const updateItem = (idx, patch) => {
+    setForm(f => {
+      const nuevos = [...(f.items || [])];
+      nuevos[idx] = { ...nuevos[idx], ...patch };
+      // Auto-rellenar costo de referencia al cambiar tipo
+      if (patch.tipo_epp != null) {
+        const ref = epppTipo(patch.tipo_epp)?.costo_ref;
+        if (ref && !nuevos[idx].costo_unitario) nuevos[idx].costo_unitario = ref;
+      }
+      return { ...f, items: nuevos };
+    });
+  };
+  const addItem = () => setForm(f => ({ ...f, items: [...(f.items || []), { tipo_epp:'Casco', marca:'', cantidad:1, costo_unitario: epppTipo('Casco')?.costo_ref || '' }] }));
+  const removeItem = (idx) => setForm(f => {
+    const arr = (f.items || []).filter((_, i) => i !== idx);
+    return { ...f, items: arr.length ? arr : [{ tipo_epp:'Casco', marca:'', cantidad:1, costo_unitario:'' }] };
+  });
+
+  const totalForm = uM(() => {
+    if (!form?.items) return 0;
+    return form.items.reduce((s, it) => s + (Number(it.cantidad)||0) * (Number(it.costo_unitario)||0), 0);
+  }, [form?.items]);
+
+  // ── Guardar ─────────────────────────────────────────────────
   const guardar = async () => {
-    if (!form.personal_id || !form.tipo_epp) { showToast('Trabajador y EPP requeridos', 'red'); return; }
-    const cant = parseInt(form.cantidad)||1;
-    const costo = parseFloat(form.costo_unitario)||0;
+    if (!form) return;
+    if (modal === 'entrega' && !form.personal_id) {
+      showToast('Seleccioná el trabajador', 'red'); return;
+    }
+    const items = (form.items || []).filter(it => it.tipo_epp && Number(it.cantidad) > 0);
+    if (items.length === 0) {
+      showToast('Agregá al menos un EPP con cantidad', 'red'); return;
+    }
+    const totalCant = items.reduce((s,it)=>s+Number(it.cantidad),0);
+    const totalCosto = +items.reduce((s,it)=>s+(Number(it.cantidad)||0)*(Number(it.costo_unitario)||0),0).toFixed(2);
+
+    // Validación stock: en entrega, no podés entregar más de lo que hay en stock
+    if (modal === 'entrega') {
+      for (const it of items) {
+        const stockActual = stockPorTipo[it.tipo_epp]?.stock || 0;
+        if (Number(it.cantidad) > stockActual) {
+          if (!isAdmin && !confirm(`Stock insuficiente de ${it.tipo_epp} (hay ${stockActual}, pedís ${it.cantidad}). ¿Registrar igual?`)) return;
+        }
+      }
+    }
+
     const now = new Date().toISOString();
     try {
       const id = window.__newId();
+      const isEntrada = modal === 'entrada';
+      const itemsNorm = items.map(it => ({
+        tipo_epp: it.tipo_epp,
+        marca: it.marca || null,
+        cantidad: Number(it.cantidad),
+        costo_unitario: Number(it.costo_unitario) || 0,
+        costo_total: +(Number(it.cantidad) * (Number(it.costo_unitario)||0)).toFixed(2),
+        // Guardamos la vida útil aplicada al momento de la entrega para
+        // tener trazabilidad si después cambia el catálogo.
+        vida_util_dias: epppTipo(it.tipo_epp)?.vida_util_dias ?? null,
+      }));
+
       await window.__db.epp_entregas.add({
         id, obra_id: obraId,
-        personal_id: form.personal_id,
+        tipo_movimiento: isEntrada ? 'entrada' : 'entrega',
+        personal_id: isEntrada ? null : form.personal_id,
+        proveedor_id: isEntrada ? (form.proveedor_id || null) : null,
         fecha: form.fecha,
-        tipo_epp: form.tipo_epp,
-        marca: form.marca || null,
-        cantidad: cant,
-        motivo: form.motivo,
-        costo_unitario: costo,
-        costo_total: +(cant * costo).toFixed(2),
+        // Campos legacy para retrocompat con vistas antiguas:
+        tipo_epp: itemsNorm.length === 1 ? itemsNorm[0].tipo_epp : null,
+        marca:    itemsNorm.length === 1 ? itemsNorm[0].marca : null,
+        cantidad: totalCant,
+        costo_unitario: itemsNorm.length === 1 ? itemsNorm[0].costo_unitario : null,
+        costo_total: totalCosto,
+        // Items individuales (nuevo modelo):
+        items: itemsNorm,
+        motivo: isEntrada ? 'compra' : (form.motivo || 'inicial'),
+        documento_asociado: isEntrada ? (form.documento_asociado || null) : null,
         observaciones: form.observaciones || null,
         created_by: userId, updated_by: userId,
         created_at: now, updated_at: now,
@@ -499,86 +704,386 @@ function EppPage({ showToast }) {
         idempotency_key: `${userId}_epp_${id}`,
       });
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'epp_entregas' } })); } catch {}
-      showToast('EPP entregado', 'green');
-      setModal(null);
+      showToast(isEntrada
+        ? `Entrada de ${totalCant} EPP registrada (${fmtS(totalCosto)})`
+        : `Entrega de ${totalCant} EPP a trabajador (${fmtS(totalCosto)})`, 'green');
+      setModal(null); setForm(null);
     } catch (e) { showToast('Error: '+e.message, 'red'); }
   };
 
   if (!obraId) return <div className="page-wrap"><div className="empty-state"><p>Selecciona una obra.</p></div></div>;
 
+  // Costo total
+  const costoEntregas = entregasFiltradas.reduce((s,e)=>s+entregaTotalCosto(e),0);
+  const costoEntradas = entradasFiltradas.reduce((s,e)=>s+entregaTotalCosto(e),0);
+  const stockTotal = Object.values(stockPorTipo).reduce((s, x) => s + Math.max(0, x.stock), 0);
+
   return (
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div>
-          <div className="pg-title">Entregas de EPP</div>
-          <div className="pg-sub">{sorted.length} entregas · costo total {fmtS(sorted.reduce((s,e)=>s+Number(e.costo_total||0),0))}</div>
+          <div className="pg-title">Equipos de Protección Personal (EPP)</div>
+          <div className="pg-sub">
+            {entradasFiltradas.length} compras · {entregasFiltradas.length} entregas · stock {stockTotal} unid · costo entradas {fmtS(costoEntradas)}
+          </div>
         </div>
-        <button className="btn btn-amber btn-sm" onClick={openNueva}><JxIcon name="plus" size={13}/>Nueva Entrega</button>
+        <div style={{ display:'flex', gap:8 }}>
+          <button className="btn btn-ghost btn-sm" onClick={openNuevaEntrada}>
+            <JxIcon name="arrowIn" size={13}/> Nueva Compra
+          </button>
+          <button className="btn btn-amber btn-sm" onClick={openNuevaEntrega}>
+            <JxIcon name="plus" size={13}/> Nueva Entrega
+          </button>
+        </div>
       </div>
 
-      {sorted.length === 0 ? (
-        <div className="card card-p empty-state"><p>Sin entregas de EPP.</p></div>
+      {/* Resumen stock por tipo */}
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(160px, 1fr))', gap:8, marginBottom:14 }}>
+        {CATALOGO_EPP.filter(c => c.tipo !== 'Otro').map(c => {
+          const s = stockPorTipo[c.tipo] || { stock: 0, entradas: 0, entregas: 0 };
+          const sinStock = s.stock <= 0;
+          const bajo = s.stock > 0 && s.stock < 5;
+          return (
+            <div key={c.tipo} className="card card-p" style={{ padding:'10px 12px' }}>
+              <div style={{ fontSize:11, color:'var(--tm)' }}>{c.tipo}</div>
+              <div style={{ fontSize:18, fontWeight:700, color: sinStock ? 'var(--red)' : bajo ? 'var(--amber)' : 'var(--green)', marginTop:2 }}>
+                {s.stock} <span style={{ fontSize:10, color:'var(--tm)', fontWeight:400 }}>en stock</span>
+              </div>
+              <div style={{ fontSize:10, color:'var(--tm)', marginTop:2 }}>
+                Vida útil: {epppVidaTexto(c.vida_util_dias)} · ref. {fmtS(c.costo_ref)}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Alertas de vencimiento próximo */}
+      {proximosVencimientos.length > 0 && (
+        <div className="card card-p" style={{ marginBottom:14, background:'rgba(242,183,5,0.07)', border:'1px solid rgba(242,183,5,0.3)' }}>
+          <div style={{ fontSize:12, fontWeight:700, color:'var(--amber)', marginBottom:6, display:'flex', alignItems:'center', gap:6 }}>
+            <JxIcon name="alert" size={13} color="var(--amber)"/>
+            Reposiciones a programar ({proximosVencimientos.length})
+          </div>
+          <div style={{ display:'flex', flexWrap:'wrap', gap:6, fontSize:11 }}>
+            {proximosVencimientos.slice(0, 12).map((v, i) => {
+              const p = lookupP(v.personal_id);
+              return (
+                <span key={i} style={{ padding:'4px 8px', borderRadius:6, background: v.vencido ? 'rgba(231,76,60,0.15)' : 'rgba(242,183,5,0.12)', border:`1px solid ${v.vencido ? 'rgba(231,76,60,0.3)' : 'rgba(242,183,5,0.25)'}`, color: v.vencido ? 'var(--red)' : 'var(--amber)' }}>
+                  {v.tipo_epp} · {p ? `${p.nombres} ${p.apellidos}`.slice(0, 22) : '?'} · {v.vencido ? 'vencido' : `vence ${v.fecha_vence}`}
+                </span>
+              );
+            })}
+            {proximosVencimientos.length > 12 && <span style={{ color:'var(--tm)' }}>+{proximosVencimientos.length - 12} más</span>}
+          </div>
+        </div>
+      )}
+
+      {/* Tabs */}
+      <div style={{ display:'flex', gap:6, marginBottom:14, borderBottom:'1px solid var(--border)' }}>
+        <button onClick={()=>setTab('entregas')}
+          className={tab === 'entregas' ? 'btn btn-amber btn-sm' : 'btn btn-ghost btn-sm'}
+          style={{ borderRadius:'6px 6px 0 0' }}>
+          Entregas a trabajadores ({entregasFiltradas.length})
+        </button>
+        <button onClick={()=>setTab('entradas')}
+          className={tab === 'entradas' ? 'btn btn-amber btn-sm' : 'btn btn-ghost btn-sm'}
+          style={{ borderRadius:'6px 6px 0 0' }}>
+          Compras / Entradas ({entradasFiltradas.length})
+        </button>
+      </div>
+
+      {/* Tabla */}
+      {tab === 'entregas' ? (
+        entregasFiltradas.length === 0 ? (
+          <div className="card card-p empty-state"><p>Sin entregas de EPP a trabajadores.</p></div>
+        ) : (
+          <div className="card" style={{ overflow:'hidden' }}>
+            <table className="tbl">
+              <thead><tr>
+                <th>Fecha</th><th>Trabajador</th><th>EPP entregados</th>
+                <th>Motivo</th>
+                <th style={{ textAlign:'right' }}>Cant</th>
+                <th style={{ textAlign:'right' }}>Costo total</th>
+                <th>Próximo cambio</th>
+              </tr></thead>
+              <tbody>
+                {entregasFiltradas.map(e => {
+                  const p = lookupP(e.personal_id);
+                  const its = entregaItems(e);
+                  // Próximo cambio = el item con vida_util más corta
+                  const proximos = its.map(it => {
+                    const dias = it.vida_util_dias ?? epppTipo(it.tipo_epp)?.vida_util_dias;
+                    return dias ? sumarDiasISO(e.fecha, dias) : null;
+                  }).filter(Boolean).sort();
+                  const proxFecha = proximos[0] || null;
+                  const hoy = new Date().toISOString().slice(0,10);
+                  const vencido = proxFecha && proxFecha < hoy;
+                  return (
+                    <tr key={e.id} onClick={()=>setDetalleOpen(e)} style={{ cursor:'pointer' }}>
+                      <td className="col-m">{e.fecha}</td>
+                      <td className="col-p">{p ? `${p.nombres} ${p.apellidos}` : '—'}</td>
+                      <td>
+                        {its.slice(0, 3).map((it, i) => (
+                          <span key={i} className="tag" style={{ marginRight:4, marginBottom:2, display:'inline-block' }}>
+                            {it.tipo_epp} ×{it.cantidad}
+                          </span>
+                        ))}
+                        {its.length > 3 && <span style={{ fontSize:10, color:'var(--tm)' }}>+{its.length - 3}</span>}
+                      </td>
+                      <td><span className="tag">{e.motivo}</span></td>
+                      <td style={{ textAlign:'right' }}>{entregaTotalCant(e)}</td>
+                      <td style={{ textAlign:'right' }}>{fmtS(entregaTotalCosto(e))}</td>
+                      <td style={{ fontSize:11, color: vencido ? 'var(--red)' : 'var(--ts)' }}>
+                        {proxFecha ? (vencido ? `⚠ ${proxFecha} (vencido)` : proxFecha) : '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )
       ) : (
-        <div className="card" style={{ overflow:'hidden' }}>
-          <table className="tbl">
+        entradasFiltradas.length === 0 ? (
+          <div className="card card-p empty-state">
+            <p>Sin compras de EPP. Empezá registrando la primera compra al proveedor.</p>
+          </div>
+        ) : (
+          <div className="card" style={{ overflow:'hidden' }}>
+            <table className="tbl">
+              <thead><tr>
+                <th>Fecha</th><th>Proveedor</th><th>EPP comprados</th>
+                <th>Documento</th>
+                <th style={{ textAlign:'right' }}>Cant</th>
+                <th style={{ textAlign:'right' }}>Costo total</th>
+              </tr></thead>
+              <tbody>
+                {entradasFiltradas.map(e => {
+                  const prov = e.proveedor_id ? lookupProv(e.proveedor_id) : null;
+                  const its = entregaItems(e);
+                  return (
+                    <tr key={e.id} onClick={()=>setDetalleOpen(e)} style={{ cursor:'pointer' }}>
+                      <td className="col-m">{e.fecha}</td>
+                      <td className="col-p">{prov?.razon_social || prov?.nombre || '—'}</td>
+                      <td>
+                        {its.slice(0, 3).map((it, i) => (
+                          <span key={i} className="tag" style={{ marginRight:4, marginBottom:2, display:'inline-block' }}>
+                            {it.tipo_epp} ×{it.cantidad}
+                          </span>
+                        ))}
+                        {its.length > 3 && <span style={{ fontSize:10, color:'var(--tm)' }}>+{its.length - 3}</span>}
+                      </td>
+                      <td className="col-m">{e.documento_asociado || '—'}</td>
+                      <td style={{ textAlign:'right' }}>{entregaTotalCant(e)}</td>
+                      <td style={{ textAlign:'right' }}>{fmtS(entregaTotalCosto(e))}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )
+      )}
+
+      {/* ── MODAL DETALLE ─────────────────────────────────────── */}
+      {detalleOpen && (
+        <Modal title={`Detalle · ${detalleOpen.fecha}`} icon="check" onClose={()=>setDetalleOpen(null)}>
+          <div style={{ fontSize:12, marginBottom:12 }}>
+            {detalleOpen.tipo_movimiento === 'entrada' || (!detalleOpen.personal_id && detalleOpen.proveedor_id) ? (
+              <>Compra a <strong>{lookupProv(detalleOpen.proveedor_id)?.razon_social || '—'}</strong>{detalleOpen.documento_asociado && ` · doc ${detalleOpen.documento_asociado}`}</>
+            ) : (
+              <>Entrega a <strong>{(() => { const p = lookupP(detalleOpen.personal_id); return p ? `${p.nombres} ${p.apellidos}` : '—'; })()}</strong> · motivo {detalleOpen.motivo}</>
+            )}
+          </div>
+          <table className="tbl" style={{ fontSize:11.5 }}>
             <thead><tr>
-              <th>Fecha</th><th>Trabajador</th><th>EPP</th><th>Marca</th>
-              <th>Motivo</th>
-              <th style={{ textAlign:'right' }}>Cantidad</th>
-              <th style={{ textAlign:'right' }}>Costo</th>
+              <th>Tipo</th><th>Marca</th>
+              <th style={{ textAlign:'right' }}>Cant</th>
+              <th style={{ textAlign:'right' }}>P.Unit</th>
+              <th style={{ textAlign:'right' }}>Subtotal</th>
+              <th>Vida útil</th>
             </tr></thead>
             <tbody>
-              {sorted.map(e => {
-                const p = lookupP(e.personal_id);
+              {entregaItems(detalleOpen).map((it, i) => {
+                const meta = epppTipo(it.tipo_epp);
+                const vida = it.vida_util_dias ?? meta?.vida_util_dias;
+                const vence = sumarDiasISO(detalleOpen.fecha, vida);
                 return (
-                  <tr key={e.id}>
-                    <td className="col-m">{e.fecha}</td>
-                    <td className="col-p">{p ? `${p.nombres} ${p.apellidos}` : '—'}</td>
-                    <td><span className="tag">{e.tipo_epp}</span></td>
-                    <td>{e.marca || '—'}</td>
-                    <td><span className="tag">{e.motivo}</span></td>
-                    <td style={{ textAlign:'right' }}>{e.cantidad}</td>
-                    <td style={{ textAlign:'right' }}>{fmtS(e.costo_total)}</td>
+                  <tr key={i}>
+                    <td>{it.tipo_epp}</td>
+                    <td>{it.marca || '—'}</td>
+                    <td style={{ textAlign:'right' }}>{it.cantidad}</td>
+                    <td style={{ textAlign:'right' }}>{fmtS(it.costo_unitario)}</td>
+                    <td style={{ textAlign:'right' }}>{fmtS(it.costo_total || (it.cantidad * it.costo_unitario))}</td>
+                    <td style={{ fontSize:10.5, color:'var(--tm)' }}>
+                      {vida ? `${epppVidaTexto(vida)}${vence ? ` · vence ${vence}` : ''}` : '—'}
+                    </td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
-        </div>
+          {detalleOpen.observaciones && (
+            <div style={{ marginTop:10, fontSize:11, color:'var(--ts)', padding:'8px 10px', background:'rgba(255,255,255,0.025)', border:'1px solid var(--border)', borderRadius:6 }}>
+              <strong>Observaciones:</strong> {detalleOpen.observaciones}
+            </div>
+          )}
+        </Modal>
       )}
 
-      {modal && (
-        <Modal title="Nueva Entrega de EPP" icon="check" onClose={()=>setModal(null)}>
-          <div className="g2">
-            <div><label className="flabel">Fecha</label><input className="fi" type="date" value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
-            <div><label className="flabel">Trabajador *</label>
-              <select className="fi" value={form.personal_id||''} onChange={e=>setForm({...form, personal_id:e.target.value})}>
-                <option value="">—</option>
-                {(personal||[]).filter(p=>p.estado==='activo').map(p => <option key={p.id} value={p.id}>{p.nombres} {p.apellidos} · {p.dni}</option>)}
-              </select>
-            </div>
-            <div><label className="flabel">Tipo EPP *</label>
-              <select className="fi" value={form.tipo_epp||'Casco'} onChange={e=>setForm({...form, tipo_epp:e.target.value})}>
-                {TIPOS_EPP.map(t => <option key={t} value={t}>{t}</option>)}
-              </select>
-            </div>
-            <div><label className="flabel">Marca</label><input className="fi" value={form.marca||''} onChange={e=>setForm({...form, marca:e.target.value})}/></div>
-            <div><label className="flabel">Cantidad</label><input className="fi" type="number" min="1" value={form.cantidad||1} onChange={e=>setForm({...form, cantidad:e.target.value})}/></div>
-            <div><label className="flabel">Motivo</label>
-              <select className="fi" value={form.motivo||'inicial'} onChange={e=>setForm({...form, motivo:e.target.value})}>
-                <option value="inicial">Entrega inicial</option>
-                <option value="reposicion">Reposición</option>
-                <option value="cambio">Cambio (deterioro)</option>
-                <option value="perdida">Pérdida</option>
-                <option value="dotacion">Dotación adicional</option>
-              </select>
-            </div>
-            <div><label className="flabel">Costo unitario (S/)</label><input className="fi" type="number" step="0.01" value={form.costo_unitario||''} onChange={e=>setForm({...form, costo_unitario:e.target.value})}/></div>
-            <div style={{gridColumn:'1/-1'}}><label className="flabel">Observaciones</label><textarea className="fi" rows={2} value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})}/></div>
+      {/* ── MODAL NUEVA ENTREGA / ENTRADA ──────────────────────── */}
+      {modal && form && (
+        <Modal title={modal === 'entrada' ? 'Nueva Compra de EPP' : 'Nueva Entrega de EPP'}
+          icon={modal === 'entrada' ? 'arrowIn' : 'check'}
+          onClose={()=>{ setModal(null); setForm(null); }}
+          wide>
+          <div style={{ fontSize:11, color:'var(--tm)', marginBottom:10, padding:'8px 10px', background: modal === 'entrada' ? 'rgba(52,152,219,0.07)' : 'rgba(155,89,182,0.06)', borderRadius:6 }}>
+            {modal === 'entrada'
+              ? 'Registra los EPPs que entran al almacén comprados al proveedor. El stock se incrementa automáticamente y queda historial de precios por fecha.'
+              : 'Registra los EPPs entregados a un trabajador. Podés agregar varios EPPs en una misma entrega. El stock disponible se descuenta. Cada EPP tiene una vida útil estándar — el sistema te avisa cuando toca reponer.'}
           </div>
+
+          <div className="g2" style={{ marginBottom:12 }}>
+            <div>
+              <label className="flabel">Fecha *</label>
+              <input className="fi" type="date" value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/>
+            </div>
+            {modal === 'entrada' ? (
+              <>
+                <div>
+                  <label className="flabel">Proveedor *</label>
+                  <select className="fi" value={form.proveedor_id||''} onChange={e=>setForm({...form, proveedor_id:e.target.value})}>
+                    <option value="">— Seleccionar —</option>
+                    {proveedoresDB.map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.razon_social || p.nombre || '(sin nombre)'}{p.ruc ? ` · ${p.ruc}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ gridColumn:'1/-1' }}>
+                  <label className="flabel">Documento (factura/boleta)</label>
+                  <input className="fi" placeholder="F001-12345" value={form.documento_asociado||''} onChange={e=>setForm({...form, documento_asociado:e.target.value})}/>
+                </div>
+              </>
+            ) : (
+              <>
+                <div>
+                  <label className="flabel">Trabajador *</label>
+                  <select className="fi" value={form.personal_id||''} onChange={e=>setForm({...form, personal_id:e.target.value})}>
+                    <option value="">— Seleccionar —</option>
+                    {(personal||[]).filter(p=>p.estado==='activo').map(p => (
+                      <option key={p.id} value={p.id}>{p.nombres} {p.apellidos} · {p.dni}</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ gridColumn:'1/-1' }}>
+                  <label className="flabel">Motivo</label>
+                  <select className="fi" value={form.motivo||'inicial'} onChange={e=>setForm({...form, motivo:e.target.value})}>
+                    <option value="inicial">Entrega inicial</option>
+                    <option value="reposicion">Reposición (vida útil cumplida)</option>
+                    <option value="cambio">Cambio (deterioro/percance)</option>
+                    <option value="perdida">Pérdida</option>
+                    <option value="dotacion">Dotación adicional</option>
+                  </select>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* ── Tabla de items ──────────────────────────────── */}
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
+            <div style={{ fontSize:11, fontWeight:700, color:'var(--amber)', textTransform:'uppercase', letterSpacing:'.05em' }}>
+              EPP {modal === 'entrada' ? 'comprados' : 'entregados'} ({form.items?.length || 0})
+            </div>
+            <button type="button" className="btn btn-ghost btn-xs" onClick={addItem}>
+              <JxIcon name="plus" size={10}/> Agregar EPP
+            </button>
+          </div>
+          <div style={{ overflow:'auto', maxHeight:340, border:'1px solid var(--border)', borderRadius:6, marginBottom:10 }}>
+            <table className="tbl" style={{ fontSize:11 }}>
+              <thead><tr>
+                <th>Tipo *</th>
+                <th>Marca</th>
+                <th style={{ textAlign:'right' }}>Cant *</th>
+                <th style={{ textAlign:'right' }}>P.Unit (S/)</th>
+                <th style={{ textAlign:'right' }}>Subt</th>
+                <th>Vida útil</th>
+                {modal === 'entrega' && <th>Stock</th>}
+                <th></th>
+              </tr></thead>
+              <tbody>
+                {(form.items || []).map((it, i) => {
+                  const meta = epppTipo(it.tipo_epp);
+                  const subt = (Number(it.cantidad)||0) * (Number(it.costo_unitario)||0);
+                  const stock = stockPorTipo[it.tipo_epp]?.stock || 0;
+                  const insuficiente = modal === 'entrega' && Number(it.cantidad) > stock;
+                  return (
+                    <tr key={i}>
+                      <td>
+                        <select className="fi" style={{ fontSize:11, padding:'4px 6px' }}
+                          value={it.tipo_epp||'Casco'}
+                          onChange={e=>updateItem(i, { tipo_epp: e.target.value, costo_unitario: epppTipo(e.target.value)?.costo_ref || it.costo_unitario })}>
+                          {CATALOGO_EPP.map(c => <option key={c.tipo} value={c.tipo}>{c.tipo}</option>)}
+                        </select>
+                      </td>
+                      <td>
+                        <input className="fi" style={{ fontSize:11, padding:'4px 6px' }}
+                          placeholder="3M / Cofra / etc"
+                          value={it.marca||''}
+                          onChange={e=>updateItem(i, { marca: e.target.value })}/>
+                      </td>
+                      <td>
+                        <input className="fi" style={{ fontSize:11, padding:'4px 6px', width:60, textAlign:'right' }}
+                          type="number" min="1" value={it.cantidad||1}
+                          onChange={e=>updateItem(i, { cantidad: e.target.value })}/>
+                      </td>
+                      <td>
+                        <input className="fi" style={{ fontSize:11, padding:'4px 6px', width:80, textAlign:'right' }}
+                          type="number" step="0.01" min="0" value={it.costo_unitario||''}
+                          onChange={e=>updateItem(i, { costo_unitario: e.target.value })}/>
+                      </td>
+                      <td style={{ textAlign:'right' }}>{fmtS(subt)}</td>
+                      <td style={{ fontSize:10.5, color:'var(--tm)' }}>
+                        {meta?.vida_util_dias ? epppVidaTexto(meta.vida_util_dias) : '—'}
+                      </td>
+                      {modal === 'entrega' && (
+                        <td style={{ fontSize:11, color: insuficiente ? 'var(--red)' : (stock < 5 ? 'var(--amber)' : 'var(--green)') }}>
+                          {stock} {insuficiente && '⚠'}
+                        </td>
+                      )}
+                      <td>
+                        <button type="button" className="btn btn-ghost btn-xs"
+                          disabled={(form.items || []).length <= 1}
+                          onClick={()=>removeItem(i)}>
+                          <JxIcon name="x" size={10}/>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr style={{ fontWeight:700 }}>
+                  <td colSpan={4} style={{ textAlign:'right', padding:'6px 8px' }}>Total:</td>
+                  <td style={{ textAlign:'right', color:'var(--amber)', padding:'6px 8px' }}>{fmtS(totalForm)}</td>
+                  <td colSpan={modal === 'entrega' ? 3 : 2}></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+
+          <div>
+            <label className="flabel">Observaciones</label>
+            <textarea className="fi" rows={2} value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})}/>
+          </div>
+
           <div className="modal-actions">
-            <button className="btn btn-ghost" onClick={()=>setModal(null)}>Cancelar</button>
-            <button className="btn btn-amber" onClick={guardar}><JxIcon name="check" size={13}/>Registrar Entrega</button>
+            <button className="btn btn-ghost" onClick={()=>{ setModal(null); setForm(null); }}>Cancelar</button>
+            <button className="btn btn-amber" onClick={guardar}>
+              <JxIcon name="check" size={13}/>
+              {modal === 'entrada' ? 'Registrar Compra' : 'Registrar Entrega'}
+            </button>
           </div>
         </Modal>
       )}
