@@ -514,8 +514,10 @@ function ObrasPage({ showToast }) {
                         legal_name: data.razonSocial || q.legal_name || '',
                         name: q.name || data.razonSocial || '',
                         direccion: data.direccion || q.direccion || '',
+                        rubro: data.rubroSugerido || q.rubro,
                       }));
-                      showToast?.(`SUNAT: ${data.razonSocial || 'datos cargados'}`, 'green');
+                      const extra = data.rubroSugerido ? ` · rubro auto: ${data.rubroSugerido}` : '';
+                      showToast?.(`SUNAT: ${data.razonSocial || 'datos cargados'}${extra}`, 'green');
                     } catch (e) { showToast?.(e.message || 'Error SUNAT', 'red'); }
                   }}>
                 <JxIcon name="search" size={11}/> SUNAT

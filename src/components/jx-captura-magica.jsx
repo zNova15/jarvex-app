@@ -818,6 +818,7 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, onCh
                               nueva_company_legal: data.razonSocial || r.nueva_company_legal || '',
                               nueva_company_name: r.nueva_company_name || data.razonSocial || '',
                               nueva_company_direccion: data.direccion || r.nueva_company_direccion || '',
+                              nueva_company_rubro: data.rubroSugerido || r.nueva_company_rubro || 'distribuidora_materiales',
                             });
                           } catch (e) { /* ignore */ }
                         }}>

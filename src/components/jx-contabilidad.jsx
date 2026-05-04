@@ -350,9 +350,17 @@ function EmpresasPage({ showToast }) {
                         legal_name: data.razonSocial || prev.legal_name || '',
                         name: prev.name || data.razonSocial || '',
                         direccion: data.direccion || prev.direccion || '',
-                        notas: [data.estado, data.condicion].filter(Boolean).join(' · ') || prev.notas || '',
+                        // Auto-rellenar rubro si SUNAT lo trae (solo con v2/token)
+                        rubro: data.rubroSugerido || prev.rubro || 'otro',
+                        inicio_actividades: data.fechaInicioActividades || prev.inicio_actividades || '',
+                        notas: [
+                          data.actividadEconomica && `Actividad: ${data.actividadEconomica}`,
+                          data.ciiu && `CIIU: ${data.ciiu}`,
+                          data.estado, data.condicion,
+                        ].filter(Boolean).join(' · ') || prev.notas || '',
                       }));
-                      showToast(`SUNAT: ${data.razonSocial || 'datos cargados'}`, 'green');
+                      const extra = data.rubroSugerido ? ` · rubro: ${data.rubroSugerido}` : '';
+                      showToast(`SUNAT: ${data.razonSocial || 'datos cargados'}${extra}`, 'green');
                     } catch (e) {
                       showToast(e.message || 'Error consultando SUNAT', 'red');
                     }

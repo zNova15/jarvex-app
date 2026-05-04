@@ -41,8 +41,7 @@ export async function consultarRUC(ruc) {
   }
 
   const data = await res.json();
-  // apis.net.pe v1 devuelve `nombre` como razón social. Mantenemos compat
-  // con `razonSocial` por si en el futuro vuelve a estar.
+  // El endpoint /api/sunat ahora normaliza la respuesta de v1/v2.
   return {
     ruc: data.numeroDocumento || r,
     razonSocial: data.razonSocial || data.nombre || '',
@@ -53,6 +52,16 @@ export async function consultarRUC(ruc) {
     provincia: data.provincia || '',
     distrito: data.distrito || '',
     tipo: data.tipo || '',
+    // Campos nuevos (presentes solo si APIS_NET_PE_TOKEN está configurado en Vercel
+    // y la respuesta vino de v2/full). Pueden ser null en v1.
+    actividadEconomica: data.actividadEconomica || null,
+    ciiu: data.ciiu || null,
+    rubroSugerido: data.rubroSugerido || null,
+    fechaInscripcion: data.fechaInscripcion || null,
+    fechaInicioActividades: data.fechaInicioActividades || null,
+    sistemaEmision: data.sistemaEmision || null,
+    ubigeo: data.ubigeo || null,
+    _source: data._source || null,
   };
 }
 
