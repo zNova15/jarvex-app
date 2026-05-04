@@ -90,31 +90,87 @@ function CapturaMagicaPage({ showToast }) {
   const { data: movs } = window.__hooks?.useAccountingMovements?.() || { data: [] };
 
   // [items] cada item = { id, file, name, status, base64, mimeType, parsed, error, review }
+  // Se persisten en Dexie (tabla captura_magica_pending) hasta que el usuario
+  // confirma o descarta — sobreviven navegación entre pestañas, recargas, y
+  // cierre del browser.
   const [items, setItems] = uSCM([]);
-  const [reviewing, setReviewing] = uSCM(null); // id del item siendo revisado
+  const [reviewing, setReviewing] = uSCM(null);
   const [proveedoresDB, setProveedoresDB] = uSCM([]);
   const [materialesDB, setMaterialesDB] = uSCM([]);
+  const [restored, setRestored] = uSCM(false);
   const fileInputRef = uRCM(null);
 
-  // Cargar proveedores y materiales
+  // ── Persistencia en Dexie ───────────────────────────────────
+  const saveItemToDB = async (item) => {
+    if (!item) return;
+    try {
+      // No persistimos confirmados (los borramos al confirmar)
+      if (item.status === 'confirmado') return;
+      const { file, ...rest } = item;
+      await window.__db.captura_magica_pending.put({
+        ...rest,
+        // file_blob: persistimos el blob para reconstruir File luego
+        file_blob: file || null,
+        file_name: item.name,
+        updated_at: new Date().toISOString(),
+        created_at: item.created_at || new Date().toISOString(),
+      });
+    } catch (e) { console.warn('[captura-magica] saveItem', e); }
+  };
+
+  const deleteItemFromDB = async (id) => {
+    try { await window.__db.captura_magica_pending.delete(id); } catch {}
+  };
+
+  // Cargar proveedores, materiales, e items pendientes al montar
   uECM(() => {
     let mounted = true;
     const cargar = async () => {
       try {
-        const [p, m] = await Promise.all([
+        const [p, m, pending] = await Promise.all([
           window.__db.proveedores.filter(x => !x.deleted_at).toArray(),
           window.__db.materiales.filter(x => !x.deleted_at).toArray(),
+          window.__db.captura_magica_pending.toArray(),
         ]);
         if (!mounted) return;
         setProveedoresDB(p);
         setMaterialesDB(m);
-      } catch (e) { console.error('[captura-magica] carga DB', e); }
+        // Reconstruir File desde blob persistido. Items que quedaron en
+        // 'procesando' al cerrar la pestaña vuelven a 'pendiente' para
+        // reintentar; el efecto de abajo los reprocesa.
+        const restoredItems = (pending || []).map(it => {
+          let file = null;
+          if (it.file_blob instanceof Blob) {
+            file = new File([it.file_blob], it.file_name || 'comprobante', { type: it.mimeType || 'application/pdf' });
+          }
+          const status = it.status === 'procesando' ? 'pendiente' : it.status;
+          return { ...it, file, status };
+        }).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+        setItems(restoredItems);
+        setRestored(true);
+        // Re-procesar los que quedaron pendientes (sin parsed)
+        for (const it of restoredItems) {
+          if (it.status === 'pendiente' && it.file && !it.parsed) {
+            // disparar async sin bloquear
+            procesarItem(it.id, it.file);
+          }
+        }
+      } catch (e) {
+        console.error('[captura-magica] carga DB', e);
+        setRestored(true);
+      }
     };
     cargar();
     const onCh = () => cargar();
     window.addEventListener('jx_data_changed', onCh);
     return () => { mounted = false; window.removeEventListener('jx_data_changed', onCh); };
   }, []);
+
+  // Cuando el state items cambia, sincronizar en Dexie (después del primer load)
+  uECM(() => {
+    if (!restored) return;
+    items.forEach(it => { saveItemToDB(it); });
+  }, [items, restored]);
 
   // ── Drop zone handlers ──────────────────────────────────────
   const handleFiles = async (fileList) => {
@@ -140,6 +196,7 @@ function CapturaMagicaPage({ showToast }) {
         parsed: null,
         error: null,
         review: null,
+        created_at: new Date().toISOString(),
       });
     }
     if (nuevos.length) {
@@ -203,6 +260,10 @@ function CapturaMagicaPage({ showToast }) {
     // Receptor (empresa del grupo)
     const rucRec = ext.receptor?.documento || '';
     const companyMatch = rucRec ? (companies || []).find(c => c.ruc === rucRec && c.status === 'activa') : null;
+    // Si no hay match pero la factura sí tiene datos del receptor, autoseteamos
+    // el modo "Crear nueva" pre-rellenado para que el usuario solo confirme.
+    const hayDatosReceptor = !!(rucRec || ext.receptor?.razon_social_o_nombre);
+    const autoCrearNueva = hayDatosReceptor && !companyMatch;
     // Obra: si la company tiene 1 obra activa, autoseleccionar
     let obraSugerida = '';
     if (companyMatch) {
@@ -240,9 +301,17 @@ function CapturaMagicaPage({ showToast }) {
       proveedor_razon_social: ext.emisor?.razon_social || '',
       proveedor_direccion: ext.emisor?.direccion || '',
       // Receptor
-      company_id: companyMatch?.id || (companies?.[0]?.id || ''),
+      company_id: companyMatch?.id || '',
+      company_accion: autoCrearNueva ? 'crear_nueva' : 'usar_existente',
       receptor_documento: rucRec,
       receptor_razon_social: ext.receptor?.razon_social_o_nombre || '',
+      // Form pre-rellenado para "crear nueva empresa" con los datos del receptor
+      nueva_company_ruc: rucRec || '',
+      nueva_company_name: ext.receptor?.razon_social_o_nombre || '',
+      nueva_company_legal: ext.receptor?.razon_social_o_nombre || '',
+      nueva_company_direccion: ext.receptor?.direccion || '',
+      nueva_company_rol: 'origen',
+      nueva_company_rubro: 'distribuidora_materiales',
       // Obra
       obra_id: obraSugerida,
       // Items
@@ -450,8 +519,9 @@ function CapturaMagicaPage({ showToast }) {
         });
       } catch (e) { console.warn('[captura-magica] evidencia', e); }
 
-      // Marca como confirmado
+      // Marca como confirmado y borra de Dexie (el usuario ya lo procesó)
       setItems(prev => prev.map(x => x.id === id ? { ...x, status: 'confirmado', accId } : x));
+      deleteItemFromDB(id);
       // Refrescar proveedores/materiales locales
       try {
         const [p, m] = await Promise.all([
@@ -470,6 +540,7 @@ function CapturaMagicaPage({ showToast }) {
 
   const descartarItem = (id) => {
     setItems(prev => prev.filter(x => x.id !== id));
+    deleteItemFromDB(id);
   };
 
   const reviewItem = items.find(x => x.id === reviewing);
@@ -770,6 +841,11 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, onCh
               <div style={{ fontSize:11, fontWeight:700, color:'var(--green)', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:8 }}>Empresa compradora (tu grupo)</div>
               {r.receptor_documento && !companiesActivas.find(c => c.ruc === r.receptor_documento) && r.company_accion !== 'crear_nueva' && (
                 <div style={{ fontSize:11, color:'var(--red)', marginBottom:6 }}>⚠ El RUC en la factura ({r.receptor_documento}) no coincide con ninguna de tus empresas.</div>
+              )}
+              {r.company_accion === 'crear_nueva' && r.receptor_documento && !companiesActivas.find(c => c.ruc === r.receptor_documento) && (
+                <div style={{ fontSize:11, color:'var(--amber)', marginBottom:6 }}>
+                  💡 RUC nuevo detectado en la factura — autocompletamos los datos. Verificá <strong>rol</strong> y <strong>rubro</strong> abajo, o usá SUNAT para más info.
+                </div>
               )}
               <div style={{ display:'flex', gap:8, marginBottom:8 }}>
                 <button type="button" className={`btn btn-xs ${r.company_accion !== 'crear_nueva' ? 'btn-amber' : 'btn-ghost'}`}

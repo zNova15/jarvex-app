@@ -1,15 +1,13 @@
 // Vercel serverless function: /api/sunat?ruc=20100070970
 //
-// Proxy a apis.net.pe para evitar CORS. apis.net.pe NO devuelve los
-// headers Access-Control-Allow-Origin, así que el navegador bloquea el
-// fetch directo. Como esta función corre en el mismo dominio (mismo
-// origin que la SPA), el browser no aplica CORS.
+// Proxy a decolecta.com (sucesor de apis.net.pe) para evitar CORS.
 //
 // Estrategia:
-//   1. Si hay APIS_NET_PE_TOKEN en env → usar v2/sunat/ruc/full (con rubro,
-//      CIIU, fechas, sistema de emisión, comprobantes, etc.). Plan free
-//      apis.net.pe da 100 consultas/mes.
-//   2. Si no → fallback a v1/ruc (gratis, solo razón social + dirección).
+//   1. Si hay DECOLECTA_TOKEN (o APIS_NET_PE_TOKEN como alias legacy) →
+//      decolecta v1/sunat/ruc/full → devuelve actividad económica,
+//      dirección detallada, locales anexos, etc. Plan free 100 cons/mes.
+//   2. Si no → fallback a apis.net.pe v1/ruc legacy (gratis sin token,
+//      solo razón social + dirección).
 
 // ── Mapeo de actividades económicas / CIIU → rubro JARVEX ────
 // El mapeo busca palabras clave en el texto de actividad económica
@@ -50,10 +48,10 @@ export default async function handler(req, res) {
     return res.status(422).json({ error: 'RUC debe tener 11 dígitos numéricos' });
   }
 
-  const token = process.env.APIS_NET_PE_TOKEN;
-  const useV2 = !!token;
-  const url = useV2
-    ? `https://api.apis.net.pe/v2/sunat/ruc/full?numero=${r}`
+  const token = process.env.DECOLECTA_TOKEN || process.env.APIS_NET_PE_TOKEN;
+  const useFull = !!token;
+  const url = useFull
+    ? `https://api.decolecta.com/v1/sunat/ruc/full?numero=${r}`
     : `https://api.apis.net.pe/v1/ruc?numero=${r}`;
 
   try {
@@ -63,19 +61,19 @@ export default async function handler(req, res) {
       signal: ctrl.signal,
       headers: {
         Accept: 'application/json',
-        ...(useV2 ? { Authorization: `Bearer ${token}` } : {}),
+        ...(useFull ? { Authorization: `Bearer ${token}` } : {}),
       },
     });
     clearTimeout(timer);
 
     if (upstream.status === 401) {
-      return res.status(503).json({ error: 'SUNAT requiere token — verifica APIS_NET_PE_TOKEN en Vercel env' });
+      return res.status(503).json({ error: 'SUNAT: token inválido — verifica DECOLECTA_TOKEN en Vercel env' });
     }
     if (upstream.status === 404) {
       return res.status(404).json({ error: 'RUC no encontrado en SUNAT' });
     }
     if (upstream.status === 429) {
-      return res.status(429).json({ error: 'Cuota apis.net.pe agotada (100/mes en plan free) — esperá o paga upgrade' });
+      return res.status(429).json({ error: 'Cuota agotada (100/mes en plan free decolecta) — esperá o paga upgrade' });
     }
     if (!upstream.ok) {
       return res.status(upstream.status).json({ error: `SUNAT respondió ${upstream.status}` });
@@ -83,27 +81,19 @@ export default async function handler(req, res) {
 
     const data = await upstream.json();
 
-    // ── Normalizar respuesta a un shape único, con o sin v2 ────
-    // v1 devuelve: { numeroDocumento, razonSocial, direccion, estado, condicion,
-    //                tipo, departamento, provincia, distrito }
-    // v2 devuelve además: { actividadEconomica, ciiu, comprobantes, sistemaEmision,
-    //                       fechaInscripcion, fechaInicioActividades, etc. }
-    //   Los nombres exactos pueden variar entre versiones de la API; tomamos
-    //   el primero no-vacío para ser tolerantes.
-    const actividad = data.actividadEconomica
-      || data.actividad_economica
-      || data.actividad
-      || (Array.isArray(data.actividadesEconomicas) ? data.actividadesEconomicas[0]?.actividad : null)
-      || (Array.isArray(data.actividadesEconomicas) ? data.actividadesEconomicas[0]?.descripcion : null)
-      || null;
-    const ciiu = data.ciiu
-      || (Array.isArray(data.actividadesEconomicas) ? data.actividadesEconomicas[0]?.ciiu : null)
-      || null;
+    // ── Normalizar respuesta a un shape único ────────────────
+    // decolecta v1/full devuelve snake_case: razon_social, numero_documento,
+    //   direccion, estado, condicion, ubigeo, distrito, provincia, departamento,
+    //   tipo, actividad_economica, numero_trabajadores, tipo_facturacion,
+    //   tipo_contabilidad, comercio_exterior, locales_anexos[], es_agente_retencion,
+    //   es_buen_contribuyente.
+    // apis.net.pe v1 (legacy) devuelve camelCase: numeroDocumento, razonSocial.
+    const actividad = data.actividad_economica || data.actividadEconomica || null;
 
     const normalized = {
-      // Campos que ya devolvía v1 (compat con el frontend actual):
-      numeroDocumento: data.numeroDocumento || r,
-      razonSocial: data.razonSocial || data.nombre || '',
+      // Campos que ya devolvía el endpoint antes (compat con el frontend):
+      numeroDocumento: data.numero_documento || data.numeroDocumento || r,
+      razonSocial: data.razon_social || data.razonSocial || data.nombre || '',
       direccion: data.direccion || '',
       estado: data.estado || '',
       condicion: data.condicion || '',
@@ -111,16 +101,20 @@ export default async function handler(req, res) {
       departamento: data.departamento || '',
       provincia: data.provincia || '',
       distrito: data.distrito || '',
-      // Campos nuevos de v2 (null si solo v1):
+      // Campos nuevos (presentes solo con token):
       actividadEconomica: actividad,
-      ciiu,
+      ciiu: data.ciiu || null,
       rubroSugerido: clasificarRubro(actividad),
-      fechaInscripcion: data.fechaInscripcion || null,
-      fechaInicioActividades: data.fechaInicioActividades || data.fechaInicio || null,
-      sistemaEmision: data.sistemaEmision || null,
-      comprobantes: data.comprobantes || null,
+      fechaInscripcion: data.fecha_inscripcion || data.fechaInscripcion || null,
+      fechaInicioActividades: data.fecha_inicio_actividades || data.fechaInicioActividades || null,
+      sistemaEmision: data.sistema_emision || data.sistemaEmision || null,
+      tipoFacturacion: data.tipo_facturacion || null,
+      tipoContabilidad: data.tipo_contabilidad || null,
+      esAgenteRetencion: data.es_agente_retencion ?? null,
+      esBuenContribuyente: data.es_buen_contribuyente ?? null,
       ubigeo: data.ubigeo || null,
-      _source: useV2 ? 'apis.net.pe/v2/full' : 'apis.net.pe/v1',
+      localesAnexos: Array.isArray(data.locales_anexos) ? data.locales_anexos : null,
+      _source: useFull ? 'decolecta/v1/full' : 'apis.net.pe/v1',
     };
 
     // Cache de 1 hora — los datos de RUC cambian raramente.
