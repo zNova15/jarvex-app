@@ -74,6 +74,7 @@ function PlamePage({ showToast }) {
         if (!cancelled) setBoletas(bols);
       } catch (e) {
         console.error('[plame] cargar boletas', e);
+        try { window.__showToast?.('Error cargando boletas PLAME: ' + (e.message || e), 'red'); } catch {}
         if (!cancelled) setBoletas([]);
       } finally {
         if (!cancelled) setLoading(false);

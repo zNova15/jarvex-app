@@ -157,6 +157,7 @@ function CapturaMagicaPage({ showToast }) {
         }
       } catch (e) {
         console.error('[captura-magica] carga DB', e);
+        try { window.__showToast?.('Error cargando bandeja Captura Mágica: ' + (e.message || e), 'red'); } catch {}
         setRestored(true);
       }
     };

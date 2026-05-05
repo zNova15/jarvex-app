@@ -476,6 +476,160 @@ function ComingSoon({ page }) {
   );
 }
 
+// ── LAZY PAGE WRAPPER ─────────────────────────────────────
+// Carga el chunk dinámicamente y, una vez registrado window[component],
+// renderiza el componente con las props provistas. Mientras tanto muestra
+// un spinner. Patrón window.* preservado (no se refactoriza a ES imports).
+const PAGE_REGISTRY = {
+  // pageId → { chunk: 'jx-XXX', component: 'WindowExportName' }
+  // === jx-obra ===
+  'obras':                  { chunk: 'jx-obra', component: 'ObrasPage' },
+  'partidas':               { chunk: 'jx-obra', component: 'PartidasPage' },
+  'cronograma':             { chunk: 'jx-obra', component: 'CronogramaPage' },
+  'avance':                 { chunk: 'jx-obra', component: 'AvancePage' },
+  'comparativo':            { chunk: 'jx-obra', component: 'ComparativoPage' },
+  // === jx-gestion ===
+  'insumos':                { chunk: 'jx-gestion', component: 'InsumosPage' },
+  'costos':                 { chunk: 'jx-gestion', component: 'CostosPage' },
+  'incidencias':            { chunk: 'jx-gestion', component: 'IncidenciasPage' },
+  'versiones':              { chunk: 'jx-gestion', component: 'VersionesPage' },
+  // === jx-movimientos ===
+  'mov-materiales':         { chunk: 'jx-movimientos', component: 'MovMaterialesPage' },
+  'mov-herramientas':       { chunk: 'jx-movimientos', component: 'MovHerramientasPage' },
+  'proveedores':            { chunk: 'jx-movimientos', component: 'ProveedoresPage' },
+  // === jx-evidencias ===
+  'evidencias':             { chunk: 'jx-evidencias', component: 'EvidenciasPage' },
+  // === jx-reportes ===
+  'reportes':               { chunk: 'jx-reportes', component: 'ReportesPage' },
+  // === jx-admin ===
+  'usuarios':               { chunk: 'jx-admin', component: 'UsuariosPage' },
+  'roles':                  { chunk: 'jx-admin', component: 'RolesPage' },
+  'configuracion':          { chunk: 'jx-admin', component: 'ConfiguracionPage' },
+  // === jx-importar ===
+  'importar':               { chunk: 'jx-importar', component: 'ImportarPage' },
+  // === jx-captura-magica ===
+  'captura-magica':         { chunk: 'jx-captura-magica', component: 'CapturaMagicaPage' },
+  // === jx-contabilidad ===
+  'cont-dashboard':         { chunk: 'jx-contabilidad', component: 'ContabilidadDashboardPage' },
+  'empresas':               { chunk: 'jx-contabilidad', component: 'EmpresasPage' },
+  'movimientos-contables':  { chunk: 'jx-contabilidad', component: 'MovimientosContablesPage' },
+  'intercompany':           { chunk: 'jx-contabilidad', component: 'IntercompanyPage' },
+  'consolidado':            { chunk: 'jx-contabilidad', component: 'ConsolidadoPage' },
+  'trazabilidad':           { chunk: 'jx-contabilidad', component: 'TrazabilidadPage' },
+  // === jx-compras ===
+  'requisiciones':          { chunk: 'jx-compras', component: 'RequisicionesPage' },
+  'ordenes-compra':         { chunk: 'jx-compras', component: 'OrdenesCompraPage' },
+  // === jx-valorizaciones ===
+  'valorizaciones':         { chunk: 'jx-valorizaciones', component: 'ValorizacionesPage' },
+  // === jx-tesoreria ===
+  'cuentas-bancarias':      { chunk: 'jx-tesoreria', component: 'CuentasBancariasPage' },
+  'flujo-caja':             { chunk: 'jx-tesoreria', component: 'FlujoCajaPage' },
+  // === jx-activos ===
+  'activos-pesados':        { chunk: 'jx-activos', component: 'ActivosPesadosPage' },
+  // === jx-ssoma ===
+  'charlas-seguridad':      { chunk: 'jx-ssoma', component: 'CharlasSeguridadPage' },
+  'iperc':                  { chunk: 'jx-ssoma', component: 'IpercPage' },
+  'epp':                    { chunk: 'jx-ssoma', component: 'EppPage' },
+  // === jx-ssoma-extra ===
+  'inspecciones-seguridad': { chunk: 'jx-ssoma-extra', component: 'InspeccionesSeguridadPage' },
+  'capacitaciones':         { chunk: 'jx-ssoma-extra', component: 'CapacitacionesPage' },
+  // === jx-subcontratos ===
+  'subcontratistas':        { chunk: 'jx-subcontratos', component: 'SubcontratistasPage' },
+  'subcontratos':           { chunk: 'jx-subcontratos', component: 'SubcontratosPage' },
+  // === jx-subcontratos-val ===
+  'subcontrato-valorizaciones': { chunk: 'jx-subcontratos-val', component: 'SubcontratoValorizacionesPage' },
+  // === jx-planillas ===
+  'planillas':              { chunk: 'jx-planillas', component: 'PlanillasPage' },
+  // === jx-personal-contratos ===
+  'personal-contratos':     { chunk: 'jx-personal-contratos', component: 'PersonalContratosPage' },
+  // === jx-dashboard-ejecutivo ===
+  'dashboard-ejecutivo':    { chunk: 'jx-dashboard-ejecutivo', component: 'DashboardEjecutivoPage' },
+  // === jx-mantenimiento ===
+  'mantenimiento-programado': { chunk: 'jx-mantenimiento', component: 'MantenimientoProgramadoPage' },
+  // === jx-cts-grati ===
+  'cts':                    { chunk: 'jx-cts-grati', component: 'CTSPage' },
+  'gratificaciones':        { chunk: 'jx-cts-grati', component: 'GratificacionesPage' },
+  // === jx-plame ===
+  'plame':                  { chunk: 'jx-plame', component: 'PlamePage' },
+  // === jx-plan-cuentas ===
+  'plan-cuentas':           { chunk: 'jx-plan-cuentas', component: 'PlanCuentasPage' },
+  'balance-general':        { chunk: 'jx-plan-cuentas', component: 'BalanceGeneralPage' },
+  'estado-resultados':      { chunk: 'jx-plan-cuentas', component: 'EstadoResultadosPage' },
+  // === jx-asientos ===
+  'libro-diario':           { chunk: 'jx-asientos', component: 'LibroDiarioPage' },
+  // === jx-alertas ===
+  'alertas':                { chunk: 'jx-alertas', component: 'AlertasCentralizadasPage' },
+  // === jx-reportes-financieros ===
+  'flujo-proyectado':       { chunk: 'jx-reportes-financieros', component: 'FlujoProyectadoPage' },
+  'comparativo-periodos':   { chunk: 'jx-reportes-financieros', component: 'ComparativoPeriodosPage' },
+  // === jx-busqueda ===
+  'busqueda':               { chunk: 'jx-busqueda', component: 'BusquedaGlobalPage' },
+  // === jx-kpis-obra ===
+  'kpis-obra':              { chunk: 'jx-kpis-obra', component: 'KPIsObraPage' },
+  // === jx-cumplimiento-cronograma ===
+  'cumplimiento-cronograma': { chunk: 'jx-cumplimiento-cronograma', component: 'CumplimientoCronogramaPage' },
+  // === jx-solicitud-residente ===
+  'solicitud-residente':    { chunk: 'jx-solicitud-residente', component: 'SolicitudResidentePage' },
+  // === jx-audit-log ===
+  'audit-log':              { chunk: 'jx-audit-log', component: 'AuditLogPage' },
+  // === jx-comprobantes ===
+  'comprobantes':           { chunk: 'jx-comprobantes', component: 'ComprobantesElectronicosPage' },
+  // === jx-libros-electronicos ===
+  'libros-electronicos':    { chunk: 'jx-libros-electronicos', component: 'LibrosElectronicosPage' },
+  // === jx-config-sunat (incluye lib/sunat-ubl.js) ===
+  'config-sunat':           { chunk: 'jx-config-sunat', component: 'ConfigSUNATPage' },
+  // === jx-conflicts ===
+  'conflictos':             { chunk: 'jx-conflicts', component: 'ConflictsPage' },
+};
+
+function LazyPageSpinner() {
+  return (
+    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', gap:14, color:'var(--tm)' }}>
+      <style>{`@keyframes jxLazySpin { to { transform: rotate(360deg); } }`}</style>
+      <div style={{ width:48, height:48, borderRadius:'50%', border:'3px solid rgba(242,183,5,0.15)', borderTopColor:'#F2B705', animation:'jxLazySpin 0.8s linear infinite' }}/>
+      <div style={{ fontSize:13, color:'var(--tm)' }}>Cargando módulo…</div>
+    </div>
+  );
+}
+
+function LazyPageError({ chunk, error, onRetry }) {
+  return (
+    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', gap:12, color:'var(--tm)', padding:20 }}>
+      <JxIcon name="alertCircle" size={28} color="#EF6B5E"/>
+      <div style={{ fontSize:14, fontWeight:600, color:'var(--ts)' }}>No se pudo cargar el módulo</div>
+      <div style={{ fontSize:12, color:'var(--tm)', maxWidth:360, textAlign:'center' }}>
+        {chunk} · {(error && error.message) || 'error desconocido'}
+      </div>
+      <button className="btn btn-ghost" onClick={onRetry} style={{ marginTop:6 }}>Reintentar</button>
+    </div>
+  );
+}
+
+function LazyPage({ chunk, component, ...props }) {
+  const [, setTick] = uSA(0);
+  const [error, setError] = uSA(null);
+  const ready = !!window[component];
+
+  uEA(() => {
+    if (ready) return;
+    let cancelled = false;
+    setError(null);
+    const loader = window.__loadChunk;
+    if (!loader) { setError(new Error('loader missing')); return; }
+    loader(chunk)
+      .then(() => { if (!cancelled) setTick(t => t + 1); })
+      .catch((err) => { if (!cancelled) setError(err); });
+    return () => { cancelled = true; };
+  }, [chunk, component, ready]);
+
+  if (error) {
+    return <LazyPageError chunk={chunk} error={error} onRetry={() => { setError(null); setTick(t => t + 1); }}/>;
+  }
+  const Comp = window[component];
+  if (!Comp) return <LazyPageSpinner/>;
+  return React.createElement(Comp, props);
+}
+
 // ── Detectar flujo de reset (Supabase recovery) ───────────
 function isResetFlow() {
   if (typeof window === 'undefined') return false;
@@ -511,6 +665,10 @@ function App() {
   const online = window.__useOnline ? window.__useOnline() : true;
 
   const showToast = uCA((msg, type='amber') => setToast({ msg, type, key: Date.now() }), []);
+  // Exponer toast como global para que helpers/loaders sin acceso al closure
+  // (ej. errores en useEffect de páginas heredadas) puedan notificar al usuario
+  // en lugar de solo silenciar con console.error.
+  uEA(() => { window.__showToast = showToast; return () => { if (window.__showToast === showToast) delete window.__showToast; }; }, [showToast]);
 
   // Escucha eventos de notificaciones realtime y muestra toast in-app inmediato
   uEA(() => {
@@ -646,77 +804,21 @@ function App() {
 
   const renderPage = () => {
     if (!puedeVerPagina(page)) return <NoAcceso/>;
+    // Páginas EAGER (en chunk principal): se renderizan directo desde window.*
     switch(page) {
-      case 'importar':      return <ImportarPage showToast={showToast}/>;
-      case 'captura-magica': return <CapturaMagicaPage showToast={showToast}/>;
       case 'dashboard':     return <DashboardPage showToast={showToast}/>;
-      case 'obras':         return <ObrasPage showToast={showToast}/>;
-      case 'reportes':      return <ReportesPage showToast={showToast}/>;
       case 'materiales':    return <MaterialesPage showToast={showToast}/>;
       case 'herramientas':  return <HerramientasPage showToast={showToast}/>;
       case 'personal':      return <PersonalPage showToast={showToast}/>;
       case 'asistencia':    return <AsistenciaPage showToast={showToast}/>;
-      case 'mov-materiales':  return <MovMaterialesPage showToast={showToast}/>;
-      case 'mov-herramientas':return <MovHerramientasPage showToast={showToast}/>;
-      case 'proveedores':   return <ProveedoresPage showToast={showToast}/>;
-      case 'partidas':      return <PartidasPage showToast={showToast}/>;
-      case 'insumos':       return <InsumosPage showToast={showToast}/>;
-      case 'versiones':     return <VersionesPage showToast={showToast}/>;
-      case 'cronograma':    return <CronogramaPage showToast={showToast}/>;
-      case 'avance':        return <AvancePage showToast={showToast}/>;
-      case 'comparativo':   return <ComparativoPage showToast={showToast}/>;
-      case 'costos':        return <CostosPage showToast={showToast}/>;
-      case 'incidencias':   return <IncidenciasPage showToast={showToast}/>;
-      case 'evidencias':    return <EvidenciasPage showToast={showToast}/>;
-      case 'usuarios':      return <UsuariosPage showToast={showToast}/>;
-      case 'roles':         return <RolesPage showToast={showToast}/>;
-      case 'configuracion': return <ConfiguracionPage showToast={showToast}/>;
-      case 'cont-dashboard':         return <ContabilidadDashboardPage showToast={showToast}/>;
-      case 'empresas':               return <EmpresasPage showToast={showToast}/>;
-      case 'movimientos-contables':  return <MovimientosContablesPage showToast={showToast}/>;
-      case 'intercompany':           return <IntercompanyPage showToast={showToast}/>;
-      case 'consolidado':            return <ConsolidadoPage showToast={showToast}/>;
-      case 'trazabilidad':           return <TrazabilidadPage showToast={showToast}/>;
-      case 'cuentas-bancarias':      return <CuentasBancariasPage showToast={showToast}/>;
-      case 'flujo-caja':             return <FlujoCajaPage showToast={showToast}/>;
-      case 'requisiciones':          return <RequisicionesPage showToast={showToast}/>;
-      case 'ordenes-compra':         return <OrdenesCompraPage showToast={showToast}/>;
-      case 'valorizaciones':         return <ValorizacionesPage showToast={showToast}/>;
-      case 'activos-pesados':        return <ActivosPesadosPage showToast={showToast}/>;
-      case 'charlas-seguridad':      return <CharlasSeguridadPage showToast={showToast}/>;
-      case 'iperc':                  return <IpercPage showToast={showToast}/>;
-      case 'epp':                    return <EppPage showToast={showToast}/>;
-      case 'subcontratistas':        return <SubcontratistasPage showToast={showToast}/>;
-      case 'subcontratos':           return <SubcontratosPage showToast={showToast}/>;
-      case 'planillas':              return <PlanillasPage showToast={showToast}/>;
-      case 'inspecciones-seguridad': return <InspeccionesSeguridadPage showToast={showToast}/>;
-      case 'capacitaciones':         return <CapacitacionesPage showToast={showToast}/>;
-      case 'subcontrato-valorizaciones': return <SubcontratoValorizacionesPage showToast={showToast}/>;
-      case 'personal-contratos':     return <PersonalContratosPage showToast={showToast}/>;
-      case 'dashboard-ejecutivo':    return <DashboardEjecutivoPage showToast={showToast}/>;
-      case 'mantenimiento-programado': return <MantenimientoProgramadoPage showToast={showToast}/>;
-      case 'cts':                    return <CTSPage showToast={showToast}/>;
-      case 'gratificaciones':        return <GratificacionesPage showToast={showToast}/>;
-      case 'plame':                  return <PlamePage showToast={showToast}/>;
-      case 'plan-cuentas':           return <PlanCuentasPage showToast={showToast}/>;
-      case 'balance-general':        return <BalanceGeneralPage showToast={showToast}/>;
-      case 'estado-resultados':      return <EstadoResultadosPage showToast={showToast}/>;
-      case 'libro-diario':           return <LibroDiarioPage showToast={showToast}/>;
-      case 'alertas':                return <AlertasCentralizadasPage showToast={showToast}/>;
-      case 'flujo-proyectado':       return <FlujoProyectadoPage showToast={showToast}/>;
-      case 'comparativo-periodos':   return <ComparativoPeriodosPage showToast={showToast}/>;
-      case 'busqueda':               return <BusquedaGlobalPage showToast={showToast}/>;
-      case 'kpis-obra':              return <KPIsObraPage showToast={showToast}/>;
-      case 'cumplimiento-cronograma': return <CumplimientoCronogramaPage showToast={showToast}/>;
-      case 'solicitud-residente':    return <SolicitudResidentePage showToast={showToast}/>;
-      case 'audit-log':              return <AuditLogPage showToast={showToast}/>;
-      case 'comprobantes':           return <ComprobantesElectronicosPage showToast={showToast}/>;
-      case 'libros-electronicos':    return <LibrosElectronicosPage showToast={showToast}/>;
-      case 'config-sunat':           return <ConfigSUNATPage showToast={showToast}/>;
-      case 'conflictos':    return <ConflictsPage showToast={showToast}/>;
       case 'solicitudes':   return <SolicitudesPage showToast={showToast}/>;
-      default:              return <ComingSoon page={page}/>;
     }
+    // Páginas LAZY: el chunk se carga on-demand y luego se renderiza window[component].
+    const entry = PAGE_REGISTRY[page];
+    if (entry) {
+      return <LazyPage chunk={entry.chunk} component={entry.component} showToast={showToast}/>;
+    }
+    return <ComingSoon page={page}/>;
   };
 
   // Si la URL indica un flujo de recuperación de contraseña, mostrar la pantalla

@@ -113,7 +113,10 @@ function PlanillasPage({ showToast }) {
           essalud_empleador: essalud,
           pagado: false,
         });
-      } catch (e) { console.error('[boleta calc]', e); }
+      } catch (e) {
+        console.error('[boleta calc]', e);
+        try { window.__showToast?.('Error en cálculo de boleta: ' + (e.message || e), 'red'); } catch {}
+      }
     }
     return result;
   };

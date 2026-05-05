@@ -120,13 +120,35 @@ export async function extractCertInfo(certPem) {
 //   - C14N (xml-c14n11 o xml-c14n; usamos C14N 1.0 clásico)
 //   - SHA-256 para digest y firma
 export async function signXMLDocument(xmlString, privateKeyPem, certPem) {
-  const { xadesjs, forge } = await loadDeps();
+  // Validaciones tempranas con mensajes claros para debugging.
+  if (!xmlString || typeof xmlString !== 'string') {
+    throw new Error('signXMLDocument: xmlString vacío o no-string');
+  }
+  if (!privateKeyPem || !privateKeyPem.includes('-----BEGIN')) {
+    throw new Error('signXMLDocument: private key PEM inválido (no contiene cabecera "-----BEGIN")');
+  }
+  if (!certPem || !certPem.includes('-----BEGIN CERTIFICATE-----')) {
+    throw new Error('signXMLDocument: certificado PEM inválido (no contiene "-----BEGIN CERTIFICATE-----")');
+  }
 
-  // xadesjs requiere WebCrypto. En browser está en window.crypto. En tests
-  // node se puede polyfillear con @peculiar/webcrypto, pero JARVEX corre
-  // siempre en browser, así que asumimos crypto.subtle.
+  let xadesjs, forge;
+  try {
+    const deps = await loadDeps();
+    xadesjs = deps.xadesjs;
+    forge = deps.forge;
+  } catch (e) {
+    throw new Error(
+      'No se pudo cargar la librería de firma XAdES (xadesjs / node-forge). ' +
+      'Verifica que `xadesjs` y `node-forge` están en package.json y reinstalá dependencias. ' +
+      'Detalle: ' + (e?.message || e)
+    );
+  }
+  if (!xadesjs?.SignedXml) {
+    throw new Error('xadesjs cargó pero falta SignedXml — versión incompatible. Esperado: xadesjs ≥ 2.x');
+  }
+
   if (typeof window === 'undefined' || !window.crypto?.subtle) {
-    throw new Error('WebCrypto no disponible: la firma SUNAT requiere navegador moderno con crypto.subtle');
+    throw new Error('WebCrypto no disponible: la firma SUNAT requiere navegador moderno con crypto.subtle (HTTPS o localhost)');
   }
 
   // Convertir privateKeyPem → CryptoKey (RSASSA-PKCS1-v1_5 / SHA-256)
@@ -146,30 +168,40 @@ export async function signXMLDocument(xmlString, privateKeyPem, certPem) {
   if (parserError) throw new Error('XML inválido: ' + parserError.textContent);
 
   // xadesjs toma un Document y produce un <ds:Signature> Element
-  const xmlSignature = new xadesjs.SignedXml();
-  await xmlSignature.Sign(
-    { name: 'RSASSA-PKCS1-v1_5' },              // signature algo
-    cryptoKey,
-    xmlDoc,
-    {
-      keyValue: cryptoKey,
-      references: [
-        {
-          // Referenciar el documento entero
-          hash: 'SHA-256',
-          transforms: ['enveloped', 'c14n'],
-        },
-      ],
-      signingCertificate: certBase64,
-      signatureAlgorithm: 'RSASSA-PKCS1-v1_5',  // → http://www.w3.org/2001/04/xmldsig-more#rsa-sha256
-      canonicalizationAlgorithm: 'c14n',         // C14N 1.0
-      productionPlace: { country: 'PE' },
-      // SUNAT exige Id="SignatureSP" en el ds:Signature (convención)
-      id: 'SignatureSP',
+  let signatureNode;
+  try {
+    const xmlSignature = new xadesjs.SignedXml();
+    await xmlSignature.Sign(
+      { name: 'RSASSA-PKCS1-v1_5' },              // signature algo
+      cryptoKey,
+      xmlDoc,
+      {
+        keyValue: cryptoKey,
+        references: [
+          {
+            hash: 'SHA-256',
+            transforms: ['enveloped', 'c14n'],
+          },
+        ],
+        signingCertificate: certBase64,
+        signatureAlgorithm: 'RSASSA-PKCS1-v1_5',  // → http://www.w3.org/2001/04/xmldsig-more#rsa-sha256
+        canonicalizationAlgorithm: 'c14n',         // C14N 1.0
+        productionPlace: { country: 'PE' },
+        id: 'SignatureSP',
+      }
+    );
+    signatureNode = xmlSignature.GetXml();
+  } catch (e) {
+    // xadesjs puede explotar con mensajes crípticos. Convertimos a algo accionable.
+    const msg = e?.message || String(e);
+    if (/not supported/i.test(msg) && /RSASSA/i.test(msg)) {
+      throw new Error('Firma SUNAT: el navegador no soporta RSASSA-PKCS1-v1_5/SHA-256 vía WebCrypto. Probá Chrome/Edge actualizado o Firefox.');
     }
-  );
-
-  const signatureNode = xmlSignature.GetXml(); // Element <ds:Signature>
+    if (/key/i.test(msg) && /import/i.test(msg)) {
+      throw new Error('Firma SUNAT: error importando la llave privada del certificado. Verificá que el .pfx y password sean correctos. Detalle: ' + msg);
+    }
+    throw new Error('Firma SUNAT (xadesjs falló): ' + msg);
+  }
   const signatureXml = new XMLSerializer().serializeToString(signatureNode);
 
   // Inyectar dentro de <ext:ExtensionContent>...</ext:ExtensionContent>.

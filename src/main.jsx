@@ -101,51 +101,80 @@ window.__changeRequests = {
   countPending: countPendingChangeRequests,
 };
 
-// ── Importar componentes (se auto-registran en window.*) ─────────────
+// ── Componentes ESENCIALES (eager, van al chunk principal) ───────────
+// - icons / tooltip / sidebar: shell de la app, siempre visibles.
+// - solicitudes: expone RequestChangeModal usado por almacén/movimientos.
+// - dashboard: página de aterrizaje + ChartLine/Bar/Doughnut usados por gestión.
+// - almacen: define el componente Modal usado por DECENAS de páginas como
+//   identificador libre (resuelve a window.Modal). DEBE estar disponible
+//   antes de renderizar cualquier otra página.
+// - jx-app: define window.App, el árbol React raíz.
 import './components/jx-icons.jsx';
 import './components/jx-tooltip.jsx';
 import './components/jx-sidebar.jsx';
 import './components/jx-solicitudes.jsx';
 import './components/jx-dashboard.jsx';
 import './components/jx-almacen.jsx';
-import './components/jx-obra.jsx';
-import './components/jx-evidencias.jsx';
-import './components/jx-reportes.jsx';
-import './components/jx-movimientos.jsx';
-import './components/jx-gestion.jsx';
-import './components/jx-admin.jsx';
-import './components/jx-importar.jsx';
-import './components/jx-captura-magica.jsx';
-import './components/jx-contabilidad.jsx';
-import './components/jx-compras.jsx';
-import './components/jx-valorizaciones.jsx';
-import './components/jx-tesoreria.jsx';
-import './components/jx-activos.jsx';
-import './components/jx-ssoma.jsx';
-import './components/jx-ssoma-extra.jsx';
-import './components/jx-subcontratos.jsx';
-import './components/jx-subcontratos-val.jsx';
-import './components/jx-planillas.jsx';
-import './components/jx-personal-contratos.jsx';
-import './components/jx-dashboard-ejecutivo.jsx';
-import './components/jx-mantenimiento.jsx';
-import './components/jx-cts-grati.jsx';
-import './components/jx-plame.jsx';
-import './components/jx-plan-cuentas.jsx';
-import './components/jx-asientos.jsx';
-import './components/jx-alertas.jsx';
-import './components/jx-reportes-financieros.jsx';
-import './components/jx-busqueda.jsx';
-import './components/jx-kpis-obra.jsx';
-import './components/jx-cumplimiento-cronograma.jsx';
-import './components/jx-solicitud-residente.jsx';
-import './components/jx-audit-log.jsx';
-import './components/jx-comprobantes.jsx';
-import './components/jx-libros-electronicos.jsx';
-import './lib/sunat-ubl.js';
-import './components/jx-config-sunat.jsx';
-import './components/jx-conflicts.jsx';
 import './jx-app.jsx';
+
+// ── Componentes LAZY (se cargan on-demand al navegar a la página) ────
+// Mapeo: chunkName → loader. window.__loadChunk(name) ejecuta la carga
+// y la memoiza en window.__loadedChunks. El componente <LazyPage/> en
+// jx-app.jsx llama a esto antes de renderizar la página.
+const PAGE_CHUNKS = {
+  'jx-obra':                  () => import('./components/jx-obra.jsx'),
+  'jx-evidencias':            () => import('./components/jx-evidencias.jsx'),
+  'jx-reportes':              () => import('./components/jx-reportes.jsx'),
+  'jx-movimientos':           () => import('./components/jx-movimientos.jsx'),
+  'jx-gestion':               () => import('./components/jx-gestion.jsx'),
+  'jx-admin':                 () => import('./components/jx-admin.jsx'),
+  'jx-importar':              () => import('./components/jx-importar.jsx'),
+  'jx-captura-magica':        () => import('./components/jx-captura-magica.jsx'),
+  'jx-contabilidad':          () => import('./components/jx-contabilidad.jsx'),
+  'jx-compras':               () => import('./components/jx-compras.jsx'),
+  'jx-valorizaciones':        () => import('./components/jx-valorizaciones.jsx'),
+  'jx-tesoreria':             () => import('./components/jx-tesoreria.jsx'),
+  'jx-activos':               () => import('./components/jx-activos.jsx'),
+  'jx-ssoma':                 () => import('./components/jx-ssoma.jsx'),
+  'jx-ssoma-extra':           () => import('./components/jx-ssoma-extra.jsx'),
+  'jx-subcontratos':          () => import('./components/jx-subcontratos.jsx'),
+  'jx-subcontratos-val':      () => import('./components/jx-subcontratos-val.jsx'),
+  'jx-planillas':             () => import('./components/jx-planillas.jsx'),
+  'jx-personal-contratos':    () => import('./components/jx-personal-contratos.jsx'),
+  'jx-dashboard-ejecutivo':   () => import('./components/jx-dashboard-ejecutivo.jsx'),
+  'jx-mantenimiento':         () => import('./components/jx-mantenimiento.jsx'),
+  'jx-cts-grati':             () => import('./components/jx-cts-grati.jsx'),
+  'jx-plame':                 () => import('./components/jx-plame.jsx'),
+  'jx-plan-cuentas':          () => import('./components/jx-plan-cuentas.jsx'),
+  'jx-asientos':              () => import('./components/jx-asientos.jsx'),
+  'jx-alertas':               () => import('./components/jx-alertas.jsx'),
+  'jx-reportes-financieros':  () => import('./components/jx-reportes-financieros.jsx'),
+  'jx-busqueda':              () => import('./components/jx-busqueda.jsx'),
+  'jx-kpis-obra':             () => import('./components/jx-kpis-obra.jsx'),
+  'jx-cumplimiento-cronograma': () => import('./components/jx-cumplimiento-cronograma.jsx'),
+  'jx-solicitud-residente':   () => import('./components/jx-solicitud-residente.jsx'),
+  'jx-audit-log':             () => import('./components/jx-audit-log.jsx'),
+  'jx-comprobantes':          () => import('./components/jx-comprobantes.jsx'),
+  'jx-libros-electronicos':   () => import('./components/jx-libros-electronicos.jsx'),
+  'jx-config-sunat':          () => Promise.all([
+    import('./lib/sunat-ubl.js'),
+    import('./components/jx-config-sunat.jsx'),
+  ]),
+  'jx-conflicts':             () => import('./components/jx-conflicts.jsx'),
+};
+
+window.__loadedChunks = new Set();
+const __chunkPromises = new Map();
+window.__loadChunk = (name) => {
+  if (!PAGE_CHUNKS[name]) return Promise.resolve(false);
+  if (window.__loadedChunks.has(name)) return Promise.resolve(true);
+  if (__chunkPromises.has(name)) return __chunkPromises.get(name);
+  const p = PAGE_CHUNKS[name]()
+    .then(() => { window.__loadedChunks.add(name); return true; })
+    .catch((err) => { console.error('[__loadChunk] failed:', name, err); throw err; });
+  __chunkPromises.set(name, p);
+  return p;
+};
 
 function Root() {
   const auth = useAuthProvider();

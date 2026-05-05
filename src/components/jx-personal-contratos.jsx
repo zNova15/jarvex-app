@@ -92,6 +92,7 @@ function PersonalContratosPage({ showToast }) {
       setContratosByPersonal(map);
     } catch (e) {
       console.error('[contratos load]', e);
+      try { window.__showToast?.('No se pudieron cargar los contratos: ' + (e.message || e), 'red'); } catch {}
     } finally {
       setLoadingC(false);
     }

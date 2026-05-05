@@ -1,4 +1,5 @@
 import React from "react";
+import { calcAlerta } from "../lib/stock-utils.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 // ─── DATA ───────────────────────────────────────────────
@@ -663,17 +664,7 @@ function MaterialesPage({ showToast }) {
       return;
     }
     try {
-      // Helper compartido: nivel de alerta según stock vs mínimo
-      const calcAlerta = (stock, minimo) => {
-        const s = Number(stock) || 0;
-        const m = Number(minimo) || 0;
-        if (m <= 0) return 'ok';
-        if (s <= 0) return 'agotado';
-        if (s <= m * 0.5) return 'critico';
-        if (s <= m) return 'reponer';
-        if (s <= m * 1.2) return 'cerca';
-        return 'ok';
-      };
+      // Helper de alerta vive en src/lib/stock-utils.js (testeable, reusable).
 
       if (editingId) {
         // EDITAR — preserva stock_actual pero recalcula alerta con nuevos parámetros

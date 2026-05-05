@@ -48,6 +48,8 @@ const TRANSACTIONAL_TABLES = [
   'avance_obra',
   'incidencias',
   'evidencias',
+  // Trazabilidad
+  'trazabilidad_cadenas',
 ];
 
 // Tablas maestras que se descargan del servidor en cada sync.
@@ -103,6 +105,8 @@ const MASTER_TABLES = [
   { tabla: 'personal_contrato',         query: () => supabase.from('personal_contrato').select('*').is('deleted_at', null) },
   { tabla: 'planillas',                 query: () => supabase.from('planillas').select('*').is('deleted_at', null) },
   { tabla: 'planilla_boletas',          query: () => supabase.from('planilla_boletas').select('*').is('deleted_at', null) },
+  // Trazabilidad
+  { tabla: 'trazabilidad_cadenas',      query: () => supabase.from('trazabilidad_cadenas').select('*').is('deleted_at', null) },
   { tabla: 'profiles',               query: () => supabase.from('profiles').select('*') },
 ];
 
@@ -191,31 +195,49 @@ async function pushPendingChangeRequests() {
 
 // ── PUSH: local → Supabase ────────────────────────────────────────────
 
+// Cuántas tablas pushear en paralelo. 5 es un balance razonable entre
+// velocidad y no saturar Supabase / RLS / la conexión del cliente.
+const PUSH_PARALLELISM = 5;
+
+async function pushTablePending(tabla) {
+  // Mantener el orden create → update → delete dentro de la misma tabla
+  // para respetar dependencias (e.g. crear antes de actualizar).
+  const pendingCreates = await db[tabla]
+    .where('sync_status').equals(SYNC_STATUS.PENDING_CREATE)
+    .toArray();
+
+  for (const record of pendingCreates) {
+    await pushCreate(tabla, record);
+  }
+
+  const pendingUpdates = await db[tabla]
+    .where('sync_status').equals(SYNC_STATUS.PENDING_UPDATE)
+    .toArray();
+
+  for (const record of pendingUpdates) {
+    await pushUpdate(tabla, record);
+  }
+
+  const pendingDeletes = await db[tabla]
+    .where('sync_status').equals(SYNC_STATUS.PENDING_DELETE)
+    .toArray();
+
+  for (const record of pendingDeletes) {
+    await pushDelete(tabla, record);
+  }
+}
+
 async function pushPendingOperations() {
-  for (const tabla of TRANSACTIONAL_TABLES) {
-    const pendingCreates = await db[tabla]
-      .where('sync_status').equals(SYNC_STATUS.PENDING_CREATE)
-      .toArray();
-
-    for (const record of pendingCreates) {
-      await pushCreate(tabla, record);
-    }
-
-    const pendingUpdates = await db[tabla]
-      .where('sync_status').equals(SYNC_STATUS.PENDING_UPDATE)
-      .toArray();
-
-    for (const record of pendingUpdates) {
-      await pushUpdate(tabla, record);
-    }
-
-    const pendingDeletes = await db[tabla]
-      .where('sync_status').equals(SYNC_STATUS.PENDING_DELETE)
-      .toArray();
-
-    for (const record of pendingDeletes) {
-      await pushDelete(tabla, record);
-    }
+  // Procesamos las tablas en lotes de PUSH_PARALLELISM en paralelo.
+  // Usamos allSettled: si una tabla falla, las demás deben continuar.
+  for (let i = 0; i < TRANSACTIONAL_TABLES.length; i += PUSH_PARALLELISM) {
+    const batch = TRANSACTIONAL_TABLES.slice(i, i + PUSH_PARALLELISM);
+    const results = await Promise.allSettled(batch.map(t => pushTablePending(t)));
+    results.forEach((r, idx) => {
+      if (r.status === 'rejected') {
+        console.warn(`[SyncEngine] push ${batch[idx]} falló:`, r.reason?.message || r.reason);
+      }
+    });
   }
 }
 
@@ -309,7 +331,9 @@ async function pullMasterTables() {
 
 // Tablas hijas/items que NO tienen columna created_by en el schema —
 // el .neq('created_by', userId) provoca HTTP 400 (column does not exist).
-// Para estas saltamos el filtro anti-self.
+// Esta lista es solo el seed inicial; tablas nuevas sin created_by se
+// auto-detectan en runtime y se cachean en sync_metadata para no repetir
+// el intento fallido en cada sync.
 const TABLES_WITHOUT_CREATED_BY = new Set([
   'requisicion_items', 'cotizacion_items', 'oc_items', 'recepcion_items',
   'valorizacion_partidas', 'valorizacion_adicionales',
@@ -317,21 +341,89 @@ const TABLES_WITHOUT_CREATED_BY = new Set([
   'insumos_partida', 'insumos_partida_versionadas',
 ]);
 
+// Cache en memoria de tablas detectadas en runtime como sin created_by.
+// Se hidrata desde sync_metadata al primer pull para que sobreviva reloads.
+const _runtimeNoCreatedBy = new Set();
+let _noCreatedByHydrated = false;
+
+const NO_CREATED_BY_META_KEY = '_no_created_by_tables';
+
+async function hydrateNoCreatedByCache() {
+  if (_noCreatedByHydrated) return;
+  _noCreatedByHydrated = true;
+  try {
+    const meta = await db.sync_metadata.get(NO_CREATED_BY_META_KEY);
+    const list = meta?.tables;
+    if (Array.isArray(list)) list.forEach(t => _runtimeNoCreatedBy.add(t));
+  } catch (e) {
+    console.warn('[SyncEngine] hydrateNoCreatedByCache:', e?.message || e);
+  }
+}
+
+async function persistNoCreatedByCache() {
+  try {
+    await db.sync_metadata.put({
+      tabla: NO_CREATED_BY_META_KEY,
+      tables: Array.from(_runtimeNoCreatedBy),
+      last_synced_at: new Date().toISOString(),
+    });
+  } catch (e) {
+    console.warn('[SyncEngine] persistNoCreatedByCache:', e?.message || e);
+  }
+}
+
+function isMissingCreatedByError(error) {
+  if (!error) return false;
+  const msg = (error.message || '').toLowerCase();
+  // PostgREST: 42703 = undefined_column. También matcheamos por mensaje
+  // por si el code no llega.
+  return (
+    error.code === '42703' ||
+    msg.includes('column "created_by" does not exist') ||
+    msg.includes("column 'created_by' does not exist") ||
+    (msg.includes('created_by') && msg.includes('does not exist'))
+  );
+}
+
+function tableSkipsCreatedBy(tabla) {
+  return TABLES_WITHOUT_CREATED_BY.has(tabla) || _runtimeNoCreatedBy.has(tabla);
+}
+
 async function pullTransactionalChanges() {
   const userId = (await supabase.auth.getUser())?.data?.user?.id;
   if (!userId) return;
 
+  await hydrateNoCreatedByCache();
+  let cacheChanged = false;
+
   for (const tabla of TRANSACTIONAL_TABLES) {
     const lastSync = await getLastSync(`${tabla}_pull`);
-    let q = supabase
-      .from(tabla)
-      .select('*')
-      .gte('updated_at', lastSync ?? '2020-01-01T00:00:00Z');
-    if (!TABLES_WITHOUT_CREATED_BY.has(tabla)) {
+    const baseQuery = () =>
+      supabase
+        .from(tabla)
+        .select('*')
+        .gte('updated_at', lastSync ?? '2020-01-01T00:00:00Z');
+
+    let q = baseQuery();
+    const skipCreatedBy = tableSkipsCreatedBy(tabla);
+    if (!skipCreatedBy) {
       q = q.neq('created_by', userId); // No traer lo que yo mismo creé
     }
 
-    const { data, error } = await q;
+    let { data, error } = await q;
+
+    // Auto-retry: si el error es por columna created_by inexistente,
+    // reintentamos sin el filtro y cacheamos el resultado para futuras syncs.
+    if (error && !skipCreatedBy && isMissingCreatedByError(error)) {
+      console.warn(
+        `[SyncEngine] pull ${tabla}: columna created_by ausente — ` +
+        `reintentando sin filtro y cacheando.`
+      );
+      _runtimeNoCreatedBy.add(tabla);
+      cacheChanged = true;
+      ({ data, error } = await baseQuery());
+    }
+
     if (error || !data?.length) continue;
 
     // Solo insertar/actualizar si el registro local NO tiene cambios pendientes
@@ -344,6 +436,8 @@ async function pullTransactionalChanges() {
 
     await setLastSync(`${tabla}_pull`, new Date().toISOString());
   }
+
+  if (cacheChanged) await persistNoCreatedByCache();
 }
 
 // ── Conflictos ────────────────────────────────────────────────────────

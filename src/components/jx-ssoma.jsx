@@ -1,4 +1,5 @@
 import React from "react";
+import { CATALOGO_EPP, epppTipo, epppVidaTexto, sumarDiasISO } from "../lib/epp-utils.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -9,43 +10,7 @@ const RIESGO_COLOR = {
 };
 const TIPOS_EPP = ['Casco','Chaleco reflectivo','Guantes','Botas de seguridad','Lentes','Mascarilla','Arnés','Auriculares','Tapones','Otro'];
 
-// ── Catálogo enriquecido de EPP ──────────────────────────────
-// Cada tipo tiene vida útil estándar (en días) basada en uso normal en obra.
-// Cuando se entrega un EPP, la fecha de vencimiento estimada es
-// fecha_entrega + vida_util_dias. Si tiene daño/percance se reemplaza antes.
-//
-// Las vidas útiles son referenciales según uso típico en obra peruana:
-// - cascos/chalecos/arnés: año de servicio (cambio anual obligatorio según R.M. 050-2013-TR)
-// - botas: 6 meses (depende del trabajo)
-// - guantes nitrilo: 2 semanas (uso intenso de obra)
-// - mascarilla N95: 1-3 días (descartable)
-// - lentes: 3 meses (rayan rápido)
-const CATALOGO_EPP = [
-  { tipo: 'Casco',              vida_util_dias: 365, costo_ref: 25 },
-  { tipo: 'Chaleco reflectivo', vida_util_dias: 365, costo_ref: 18 },
-  { tipo: 'Guantes',            vida_util_dias: 15,  costo_ref: 8 },
-  { tipo: 'Botas de seguridad', vida_util_dias: 180, costo_ref: 80 },
-  { tipo: 'Lentes',             vida_util_dias: 90,  costo_ref: 12 },
-  { tipo: 'Mascarilla',         vida_util_dias: 1,   costo_ref: 2 },
-  { tipo: 'Arnés',              vida_util_dias: 365, costo_ref: 150 },
-  { tipo: 'Auriculares',        vida_util_dias: 365, costo_ref: 35 },
-  { tipo: 'Tapones',            vida_util_dias: 30,  costo_ref: 3 },
-  { tipo: 'Otro',               vida_util_dias: null, costo_ref: 0 },
-];
-const epppTipo = (t) => CATALOGO_EPP.find(c => c.tipo === t) || null;
-const epppVidaTexto = (dias) => {
-  if (dias == null) return '—';
-  if (dias < 7) return `${dias} día${dias !== 1 ? 's' : ''}`;
-  if (dias < 30) return `${Math.round(dias/7)} sem`;
-  if (dias < 365) return `${Math.round(dias/30)} meses`;
-  return `${(dias/365).toFixed(0)} año${dias >= 730 ? 's' : ''}`;
-};
-const sumarDiasISO = (iso, dias) => {
-  if (!iso || dias == null) return null;
-  const d = new Date(iso + 'T00:00:00');
-  d.setDate(d.getDate() + dias);
-  return d.toISOString().slice(0, 10);
-};
+// Catálogo y helpers de EPP viven en src/lib/epp-utils.js (testeables, reusables).
 
 function useObraActiva() {
   const [obraId, setObraId] = uS(null);

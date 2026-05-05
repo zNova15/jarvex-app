@@ -1,4 +1,9 @@
 import React from "react";
+import {
+  calcMesesComputables,
+  rangoPeriodo,
+  calcRemuneracionComputable,
+} from "../lib/payroll-utils.js";
 const { useState: uS, useMemo: uM, useEffect: uE, useCallback: uCb } = React;
 
 // ─── HELPERS ────────────────────────────────────────────
@@ -21,64 +26,7 @@ function savePagados(list) {
   try { localStorage.setItem(LS_KEY, JSON.stringify(list || [])); } catch {}
 }
 
-// Calcula los meses computables (regla: ≥15 días en el mes => mes completo).
-// rango = { startYear, startMonth (1-12), endYear, endMonth (1-12) }
-// fechaIngreso: 'YYYY-MM-DD'
-function calcMesesComputables(fechaIngreso, rango) {
-  if (!fechaIngreso) return 0;
-  const ing = new Date(fechaIngreso + 'T00:00:00');
-  if (Number.isNaN(ing.getTime())) return 0;
-  let meses = 0;
-  for (let y = rango.startYear, m = rango.startMonth; ; ) {
-    const cy = y, cm = m; // mes evaluado
-    const inicioMes = new Date(cy, cm - 1, 1);
-    const finMes    = new Date(cy, cm, 0); // último día
-    // Si el ingreso es posterior al fin de mes, el mes no cuenta.
-    // Si el ingreso es anterior o igual al inicio del mes, cuenta entero.
-    if (ing <= inicioMes) {
-      meses += 1;
-    } else if (ing > finMes) {
-      // No cuenta nada
-    } else {
-      // Ingreso dentro del mes: contar días desde el ingreso hasta finMes
-      const dias = Math.floor((finMes - ing) / (1000*60*60*24)) + 1;
-      if (dias >= 15) meses += 1;
-    }
-    if (cy === rango.endYear && cm === rango.endMonth) break;
-    m += 1;
-    if (m > 12) { m = 1; y += 1; }
-    // Salvaguarda contra bucles infinitos
-    if (y > rango.endYear + 2) break;
-  }
-  return meses;
-}
-
-// Obtiene rango de un periodo de CTS o Grati.
-// tipo: 'cts' | 'grati'  periodo: 'mayo'|'noviembre'|'julio'|'diciembre'
-function rangoPeriodo(tipo, periodo, anio) {
-  if (tipo === 'cts') {
-    if (periodo === 'mayo')      return { startYear: anio - 1, startMonth: 11, endYear: anio,     endMonth: 4 };
-    if (periodo === 'noviembre') return { startYear: anio,     startMonth: 5,  endYear: anio,     endMonth: 10 };
-  } else {
-    if (periodo === 'julio')     return { startYear: anio,     startMonth: 1,  endYear: anio,     endMonth: 6 };
-    if (periodo === 'diciembre') return { startYear: anio,     startMonth: 7,  endYear: anio,     endMonth: 12 };
-  }
-  return { startYear: anio, startMonth: 1, endYear: anio, endMonth: 12 };
-}
-
-// Remuneración computable = sueldo básico + asignación familiar + bonificaciones permanentes
-// Para CTS suma además 1/6 de la última gratificación
-function calcRemuneracionComputable(contrato, opts = {}) {
-  const basico = Number(contrato?.sueldo_basico || 0);
-  const asig   = Number(contrato?.asignacion_familiar || 0);
-  const bonos  = Number(contrato?.bonificaciones_fijas || 0);
-  let base = basico + asig + bonos;
-  if (opts.incluirSextoGrati) {
-    const grati = Number(contrato?.ultima_gratificacion || (basico + asig));
-    base += grati / 6;
-  }
-  return +base.toFixed(2);
-}
+// Helpers CTS/Grati extraídos a src/lib/payroll-utils.js (testeables, reusables).
 
 // Descarga un archivo Excel usando el helper global del proyecto.
 function exportarExcel({ sheetName, columnas, filas, filename }) {
