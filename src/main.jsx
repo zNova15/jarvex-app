@@ -141,6 +141,7 @@ window.__changeRequests = {
 import './components/jx-icons.jsx';
 import './components/jx-tooltip.jsx';
 import './components/jx-modal.jsx';
+import './components/jx-pagination.jsx';
 import './components/jx-sidebar.jsx';
 import './components/jx-solicitudes.jsx';
 import './components/jx-dashboard.jsx';

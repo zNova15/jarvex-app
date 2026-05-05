@@ -1,6 +1,8 @@
 import React from "react";
 import { calcAlerta } from "../lib/stock-utils.js";
 import { ocrAsistencia } from "../lib/ocr-asistencia.js";
+import { usePagination } from "../hooks/usePagination.js";
+import { TablePagination } from "./jx-pagination.jsx";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 // ─── DATA ───────────────────────────────────────────────
@@ -233,6 +235,10 @@ function MaterialesPage({ showToast }) {
       return true;
     });
   }, [q, materiales, filtroCategoria, filtroEstado]);
+
+  // Paginación de materiales — antes se renderizaban TODOS de golpe.
+  // Con 500+ materiales en una obra, el filtro/scroll se sentía pesado.
+  const matPg = usePagination(filtered, 50);
 
   const alertasCount = uM(() =>
     materiales?.filter(m => m.alerta === 'critico' || m.alerta === 'sin_stock').length ?? 0,
@@ -1112,7 +1118,7 @@ function MaterialesPage({ showToast }) {
               <th>Estado</th><th>Sync</th><th style={{textAlign:'center'}}>Acciones</th>
             </tr></thead>
             <tbody>
-              {filtered.map(m => {
+              {matPg.pagedItems.map(m => {
                 const a = ALERTA_STYLE[m.alerta] || ALERTA_STYLE.ok;
                 const stockColor = m.alerta === 'critico' ? 'var(--red)'
                   : m.alerta === 'sin_stock' ? 'var(--tm)'
@@ -1194,8 +1200,9 @@ function MaterialesPage({ showToast }) {
             </tbody>
           </table>
         </div>
-        <div style={{ padding:'12px 16px', borderTop:'1px solid var(--border)', fontSize:11.5, color:'var(--tm)', display:'flex', justifyContent:'space-between' }}>
-          <span>Mostrando {filtered.length} de {materiales.length} materiales</span>
+        <TablePagination {...matPg} />
+        <div style={{ padding:'8px 16px', fontSize:11, color:'var(--tm)' }}>
+          {filtered.length} de {materiales.length} materiales (después de filtros)
         </div>
       </div>
       )}
@@ -1859,6 +1866,8 @@ function HerramientasPage({ showToast }) {
     );
   }, [q, herramientas]);
 
+  const herrPg = usePagination(filtered, 50);
+
   const enUso = herramientas?.filter(h => h.ubicacion_actual === 'en_uso').length ?? 0;
   const disponibles = herramientas?.filter(h => h.disponible).length ?? 0;
 
@@ -2313,7 +2322,7 @@ function HerramientasPage({ showToast }) {
               <th style={{textAlign:'center'}}>Acciones</th>
             </tr></thead>
             <tbody>
-              {filtered.map(h => {
+              {herrPg.pagedItems.map(h => {
                 const e = ESTADO_STYLE[h.estado_actual] || ESTADO_STYLE.bueno;
                 const u = UBIC_STYLE[h.ubicacion_actual] || UBIC_STYLE.almacen;
                 const resp = personal.find(p => p.id === h.ultimo_responsable_id);
@@ -2357,6 +2366,7 @@ function HerramientasPage({ showToast }) {
             </tbody>
           </table>
         </div>
+        <TablePagination {...herrPg} />
       </div>
       )}
 
@@ -2663,6 +2673,8 @@ function PersonalPage({ showToast }) {
     );
   }, [q, personal]);
 
+  const personalPg = usePagination(filtered, 50);
+
   const ESTADO_STYLE = {
     activo:     { class:'b-green',  label:'Activo' },
     inactivo:   { class:'b-gray',   label:'Inactivo' },
@@ -2815,7 +2827,7 @@ function PersonalPage({ showToast }) {
             <th style={{textAlign:'center'}}>Acciones</th>
           </tr></thead>
           <tbody>
-            {filtered.map(p => {
+            {personalPg.pagedItems.map(p => {
               const e = ESTADO_STYLE[p.estado] || ESTADO_STYLE.activo;
               return (
                 <tr key={p.id}>
@@ -2852,6 +2864,7 @@ function PersonalPage({ showToast }) {
             })}
           </tbody>
         </table>
+        <TablePagination {...personalPg} />
       </div>
       )}
 

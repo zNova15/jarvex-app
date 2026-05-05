@@ -1,6 +1,8 @@
 import React from "react";
 import { sugerirCuentaPcge } from "../lib/sugerir-cuenta-pcge.js";
 import { getCurrentMode } from "../hooks/useAppMode";
+import { usePagination } from "../hooks/usePagination.js";
+import { TablePagination } from "./jx-pagination.jsx";
 const { useState: uSC, useMemo: uMC, useEffect: uEC } = React;
 
 // ─── Helpers de formato ──────────────────────────────────────
@@ -633,6 +635,9 @@ function MovimientosContablesPage({ showToast }) {
     return f.sort((a,b) => (b.date||'').localeCompare(a.date||''));
   }, [movs, filtroEmpresa, filtroTipo, filtroEstado, busqueda]);
 
+  // Paginación: tabla puede tener miles de movimientos contables.
+  const movPg = usePagination(filtered, 100);
+
   const openNuevo = () => {
     if (!companiesActivas.length) { showToast('Crea primero una empresa', 'red'); return; }
     setForm({
@@ -835,7 +840,7 @@ function MovimientosContablesPage({ showToast }) {
                 <th style={{ textAlign:'center' }}>Acciones</th>
               </tr></thead>
               <tbody>
-                {filtered.map(m => {
+                {movPg.pagedItems.map(m => {
                   const c = lookupCompany(m.company_id);
                   const isIc = m.is_intercompany;
                   return (
@@ -873,6 +878,7 @@ function MovimientosContablesPage({ showToast }) {
               </tbody>
             </table>
           </div>
+          <TablePagination {...movPg} />
         </div>
       )}
 
