@@ -3506,4 +3506,5 @@ function AsistenciaPage({ showToast }) {
   );
 }
 
-Object.assign(window, { MaterialesPage, HerramientasPage, PersonalPage, AsistenciaPage, Modal });
+// Modal vive ahora en jx-modal.jsx (eager). Acá solo exponemos las páginas.
+Object.assign(window, { MaterialesPage, HerramientasPage, PersonalPage, AsistenciaPage });

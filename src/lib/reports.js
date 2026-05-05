@@ -1,10 +1,32 @@
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
-import * as XLSX from 'xlsx';
+// Generación de PDF/Excel — los imports de jsPDF/xlsx son LAZY (dentro de las
+// funciones) para no agregar ~430KB al bundle principal. Se cargan solo cuando
+// el user hace click en "Exportar PDF" / "Exportar Excel".
 
-export function generatePDF({ titulo, subtitulo, columnas, filas, footer }) {
+let _jsPDF = null;
+let _autoTable = null;
+let _XLSX = null;
+
+async function loadPDF() {
+  if (_jsPDF && _autoTable) return { jsPDF: _jsPDF, autoTable: _autoTable };
+  const [m1, m2] = await Promise.all([
+    import('jspdf'),
+    import('jspdf-autotable'),
+  ]);
+  _jsPDF = m1.default;
+  _autoTable = m2.default;
+  return { jsPDF: _jsPDF, autoTable: _autoTable };
+}
+
+async function loadXLSX() {
+  if (_XLSX) return _XLSX;
+  const mod = await import('xlsx');
+  _XLSX = mod;
+  return _XLSX;
+}
+
+export async function generatePDF({ titulo, subtitulo, columnas, filas, footer }) {
+  const { jsPDF, autoTable } = await loadPDF();
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
-  // Header con branding JARVEX
   doc.setFillColor(14, 22, 32);
   doc.rect(0, 0, 297, 25, 'F');
   doc.setTextColor(242, 183, 5);
@@ -17,7 +39,6 @@ export function generatePDF({ titulo, subtitulo, columnas, filas, footer }) {
   doc.text('Tecnología, Ingeniería y Proyectos E.I.R.L.', 14, 19);
   doc.text(`Generado: ${new Date().toLocaleString('es-PE')}`, 200, 19);
 
-  // Title
   doc.setTextColor(0, 0, 0);
   doc.setFontSize(14);
   doc.setFont('helvetica', 'bold');
@@ -28,7 +49,6 @@ export function generatePDF({ titulo, subtitulo, columnas, filas, footer }) {
     doc.text(subtitulo, 14, 42);
   }
 
-  // Tabla
   autoTable(doc, {
     head: [columnas],
     body: filas,
@@ -57,7 +77,8 @@ export function downloadPDF(doc, filename) {
   doc.save(filename);
 }
 
-export function generateExcel({ sheetName, columnas, filas, filename }) {
+export async function generateExcel({ sheetName, columnas, filas, filename }) {
+  const XLSX = await loadXLSX();
   const ws = XLSX.utils.aoa_to_sheet([columnas, ...filas]);
   const colWidths = columnas.map((col, i) => {
     const maxLen = Math.max(

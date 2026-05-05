@@ -1,4 +1,5 @@
 import React from "react";
+import { useChart } from "../lib/chart-loader";
 const { useEffect, useRef } = React;
 
 // ── Chart defaults ──
@@ -12,9 +13,11 @@ const CHART_DEFAULTS = {
 };
 
 function ChartLine({ id, labels, datasets, height = 200 }) {
+  const Chart = useChart();
   const ref = useRef(null);
   const inst = useRef(null);
   useEffect(() => {
+    if (!Chart) return;
     if (inst.current) inst.current.destroy();
     inst.current = new Chart(ref.current, {
       type: 'line',
@@ -27,14 +30,16 @@ function ChartLine({ id, labels, datasets, height = 200 }) {
       }
     });
     return () => inst.current?.destroy();
-  }, []);
+  }, [Chart]);
   return <div style={{ height }}><canvas ref={ref} /></div>;
 }
 
 function ChartBar({ id, labels, datasets, height = 200, horizontal = false }) {
+  const Chart = useChart();
   const ref = useRef(null);
   const inst = useRef(null);
   useEffect(() => {
+    if (!Chart) return;
     if (inst.current) inst.current.destroy();
     inst.current = new Chart(ref.current, {
       type: 'bar',
@@ -49,14 +54,16 @@ function ChartBar({ id, labels, datasets, height = 200, horizontal = false }) {
       }
     });
     return () => inst.current?.destroy();
-  }, []);
+  }, [Chart]);
   return <div style={{ height }}><canvas ref={ref} /></div>;
 }
 
 function ChartDoughnut({ id, labels, data, colors, height = 180 }) {
+  const Chart = useChart();
   const ref = useRef(null);
   const inst = useRef(null);
   useEffect(() => {
+    if (!Chart) return;
     if (inst.current) inst.current.destroy();
     inst.current = new Chart(ref.current, {
       type: 'doughnut',
@@ -68,7 +75,7 @@ function ChartDoughnut({ id, labels, data, colors, height = 180 }) {
       }
     });
     return () => inst.current?.destroy();
-  }, []);
+  }, [Chart]);
   return <div style={{ height }}><canvas ref={ref} /></div>;
 }
 

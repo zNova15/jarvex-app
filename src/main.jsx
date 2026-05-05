@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import Chart from 'chart.js/auto';
+// Chart.js se carga lazy via src/lib/chart-loader (-250 KB del bundle inicial)
 import { AuthContext, useAuthProvider, useAuth } from './hooks/useAuth';
 import { useSync } from './hooks/useSync';
 import { useOnline } from './hooks/useOnline';
@@ -28,11 +28,12 @@ import { syncAll } from './sync/SyncEngine';
 import { uploadPendingEvidencias, saveEvidenciaLocal } from './sync/EvidenceUploader';
 import { db, newId } from './db/jarvex.db';
 import { supabase } from './lib/supabase';
+// reports.js + excel.js ya hacen lazy load internamente de jsPDF y xlsx —
+// importarlos acá NO trae las libs pesadas al bundle inicial.
 import { generatePDF, downloadPDF, generateExcel } from './lib/reports';
-import * as contabilidadPdfs from './lib/contabilidad-pdfs';
 import { parseExcelFile, downloadTemplate, MODULES as IMPORT_MODULES } from './lib/excel';
-import { parseAPUFile, parseS10File, enrichJerarquia, buildArbol, parseAPU, parseInsumosList, parseGantt, detectS10Type, excelDateToISO } from './lib/apuParser';
-import { parsePresupuestoPDF, extractTextFromPDF, parsePresupuestoLines, partidasToImportRows } from './lib/pdfBudgetParser';
+// contabilidad-pdfs, apuParser, pdfBudgetParser SÍ tienen imports estáticos
+// pesados. Los exponemos via Proxy lazy → solo se cargan al primer uso.
 import * as catalogos from './lib/catalogos';
 import { seedDemoData, clearDemoData, countDemoRecords } from './lib/demoSeeder';
 import { consultarRUC, consultarDNI } from './lib/identity';
@@ -48,8 +49,9 @@ import {
 } from './lib/changeRequests';
 import './index.css';
 
-// Chart.js + DB + hooks expuestos globalmente para los componentes JSX heredados
-window.Chart = Chart;
+// DB + hooks expuestos globalmente para los componentes JSX heredados.
+// (window.Chart ahora se setea lazy desde lib/chart-loader.js cuando algún
+// componente con <canvas> lo necesita.)
 window.__db = db;
 window.__supabase = supabase;
 window.__newId = newId;
@@ -80,15 +82,39 @@ window.__hooks = {
 };
 window.__saveEvidenciaLocal = saveEvidenciaLocal;
 window.__reports = { generatePDF, downloadPDF, generateExcel };
-window.__pdfs = { ...(window.__pdfs || {}), ...contabilidadPdfs };
 window.__excel = { parseExcelFile, downloadTemplate, MODULES: IMPORT_MODULES };
-window.__apu = {
-  parseAPUFile, parseS10File, enrichJerarquia, buildArbol,
-  parseAPU, parseInsumosList, parseGantt, detectS10Type, excelDateToISO,
-};
-window.__pdfBudget = {
-  parsePresupuestoPDF, extractTextFromPDF, parsePresupuestoLines, partidasToImportRows,
-};
+
+// Lazy proxies: window.__pdfs / __apu / __pdfBudget cargan sus módulos solo
+// al primer acceso. Los callers existentes hacen `window.__pdfs?.X?.(args)`
+// y no usan el return value síncrono → seguro convertir a async lazy.
+function lazyModuleProxy(loader) {
+  let cached = null;
+  let loading = null;
+  return new Proxy({}, {
+    get(_target, prop) {
+      // Si ya cargó, llamada directa a la función real (sync).
+      if (cached && typeof cached[prop] === 'function') {
+        return (...args) => cached[prop](...args);
+      }
+      // Primera carga: devolver wrapper async que la llama tras cargar.
+      return async (...args) => {
+        if (!cached) {
+          if (!loading) loading = loader();
+          cached = await loading;
+        }
+        const fn = cached[prop];
+        if (typeof fn !== 'function') {
+          console.warn(`[lazyModuleProxy] ${String(prop)} no es función en módulo cargado`);
+          return undefined;
+        }
+        return fn(...args);
+      };
+    },
+  });
+}
+window.__pdfs = lazyModuleProxy(() => import('./lib/contabilidad-pdfs'));
+window.__apu = lazyModuleProxy(() => import('./lib/apuParser'));
+window.__pdfBudget = lazyModuleProxy(() => import('./lib/pdfBudgetParser'));
 window.__catalogos = catalogos;
 window.__demo = { seed: seedDemoData, clear: clearDemoData, count: countDemoRecords };
 window.__identity = { consultarRUC, consultarDNI };
@@ -106,21 +132,18 @@ window.__changeRequests = {
 // ── Componentes ESENCIALES (eager, van al chunk principal) ───────────
 // - icons / tooltip / sidebar: shell de la app, siempre visibles.
 // - solicitudes: expone RequestChangeModal usado por almacén/movimientos.
-// - dashboard: página de aterrizaje + ChartLine/Bar/Doughnut usados por gestión.
-// - almacen: define el componente Modal usado por DECENAS de páginas como
-//   identificador libre (resuelve a window.Modal). DEBE estar disponible
-//   antes de renderizar cualquier otra página.
+// - dashboard: página de aterrizaje (lazy load Chart.js).
+// - jx-modal: define window.Modal usado por DECENAS de páginas. ~30 líneas.
+//   ANTES estaba dentro de jx-almacen.jsx (3500 líneas eager) — separado para
+//   permitir que jx-almacen pase a lazy.
+// - jx-admin: eager para __canSeeSidebarItem desde el primer render (security).
 // - jx-app: define window.App, el árbol React raíz.
 import './components/jx-icons.jsx';
 import './components/jx-tooltip.jsx';
+import './components/jx-modal.jsx';
 import './components/jx-sidebar.jsx';
 import './components/jx-solicitudes.jsx';
 import './components/jx-dashboard.jsx';
-import './components/jx-almacen.jsx';
-// jx-admin se carga eager (no lazy) para tener __moduleIdMap, __canSeeSidebarItem
-// y __hasPerm disponibles desde el primer render del sidebar. Sin esto, durante
-// el bootstrap el chequeo de permisos no existía y se permitía ver todo —
-// vulnerable a fuga de info para roles distintos de admin.
 import './components/jx-admin.jsx';
 import './jx-app.jsx';
 
@@ -129,6 +152,10 @@ import './jx-app.jsx';
 // y la memoiza en window.__loadedChunks. El componente <LazyPage/> en
 // jx-app.jsx llama a esto antes de renderizar la página.
 const PAGE_CHUNKS = {
+  // jx-almacen ahora es lazy (antes era eager con 3500 líneas → afectaba
+  // initial load ~150 KB gzip). Solo se carga al ir a Materiales/Herramientas/
+  // Personal/Asistencia. window.Modal vive en jx-modal eager.
+  'jx-almacen':               () => import('./components/jx-almacen.jsx'),
   'jx-obra':                  () => import('./components/jx-obra.jsx'),
   'jx-evidencias':            () => import('./components/jx-evidencias.jsx'),
   'jx-reportes':              () => import('./components/jx-reportes.jsx'),

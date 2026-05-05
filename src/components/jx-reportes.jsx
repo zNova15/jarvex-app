@@ -203,7 +203,7 @@ async function buildEjecutivoPDF(obra) {
   const sobre = totalReal - totalPres;
 
   // Use the helper to build a base PDF with branding header, then append narrative content
-  const doc = window.__reports.generatePDF({
+  const doc = await window.__reports.generatePDF({
     titulo: 'Reporte Ejecutivo General',
     subtitulo: `Obra: ${(obra.nombre_obra || obra.nombre) || '—'}    Cliente: ${obra.cliente || '—'}`,
     columnas: ['Indicador', 'Valor'],
@@ -250,7 +250,7 @@ async function buildValorizacionPDF(obra) {
   });
   const total = valorizables.reduce((a, p) => a + Number(p.metrado_ejecutado || 0) * Number(p.precio_unitario || 0), 0);
 
-  const doc = window.__reports.generatePDF({
+  const doc = await window.__reports.generatePDF({
     titulo: `Valorización de Obra — ${(obra.nombre_obra || obra.nombre) || ''}`,
     subtitulo: `Cliente: ${obra.cliente || '—'}    Ubicación: ${obra.ubicacion || obra.direccion || '—'}`,
     columnas: ['Código', 'Partida', 'Unidad', 'Metrado Ejec', 'P. Unitario', 'Subtotal'],
@@ -318,7 +318,7 @@ function ReportesPage({ showToast }) {
       const wantsExcel = (formato === 'excel' || formato === 'ambos') && card.id !== 'ejecutivo' && card.id !== 'valorizacion';
 
       if (wantsPdf) {
-        const doc = pdfDoc || window.__reports.generatePDF({
+        const doc = pdfDoc || await window.__reports.generatePDF({
           titulo: card.titulo,
           subtitulo: `Obra: ${(obraActual.nombre_obra || obraActual.nombre) || '—'}    Período: ${period.from} a ${period.to}`,
           columnas,

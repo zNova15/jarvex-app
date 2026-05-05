@@ -1,6 +1,13 @@
-import * as XLSX from 'xlsx';
+// Lazy load de xlsx (~700 KB). Solo se carga al primer parseExcel/downloadTemplate.
+let _XLSX = null;
+async function loadXLSX() {
+  if (_XLSX) return _XLSX;
+  _XLSX = await import('xlsx');
+  return _XLSX;
+}
 
-export function parseExcelFile(file) {
+export async function parseExcelFile(file) {
+  const XLSX = await loadXLSX();
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -18,7 +25,8 @@ export function parseExcelFile(file) {
   });
 }
 
-export function downloadTemplate(modulo) {
+export async function downloadTemplate(modulo) {
+  const XLSX = await loadXLSX();
   const templates = {
     materiales: {
       headers: ['nombre_material','categoria','unidad','stock_inicial','stock_minimo','precio_unitario_estimado'],

@@ -492,6 +492,11 @@ function ComingSoon({ page }) {
 // un spinner. Patrón window.* preservado (no se refactoriza a ES imports).
 const PAGE_REGISTRY = {
   // pageId → { chunk: 'jx-XXX', component: 'WindowExportName' }
+  // === jx-almacen (lazy) ===
+  'materiales':             { chunk: 'jx-almacen', component: 'MaterialesPage' },
+  'herramientas':           { chunk: 'jx-almacen', component: 'HerramientasPage' },
+  'personal':               { chunk: 'jx-almacen', component: 'PersonalPage' },
+  'asistencia':             { chunk: 'jx-almacen', component: 'AsistenciaPage' },
   // === jx-obra ===
   'obras':                  { chunk: 'jx-obra', component: 'ObrasPage' },
   'partidas':               { chunk: 'jx-obra', component: 'PartidasPage' },
@@ -818,13 +823,10 @@ function App() {
 
   const renderPage = () => {
     if (!puedeVerPagina(page)) return <NoAcceso/>;
-    // Páginas EAGER (en chunk principal): se renderizan directo desde window.*
+    // Páginas EAGER (en chunk principal): dashboard + solicitudes.
+    // Las páginas de almacén ahora son lazy (PAGE_REGISTRY abajo).
     switch(page) {
       case 'dashboard':     return <DashboardPage showToast={showToast}/>;
-      case 'materiales':    return <MaterialesPage showToast={showToast}/>;
-      case 'herramientas':  return <HerramientasPage showToast={showToast}/>;
-      case 'personal':      return <PersonalPage showToast={showToast}/>;
-      case 'asistencia':    return <AsistenciaPage showToast={showToast}/>;
       case 'solicitudes':   return <SolicitudesPage showToast={showToast}/>;
     }
     // Páginas LAZY: el chunk se carga on-demand y luego se renderiza window[component].

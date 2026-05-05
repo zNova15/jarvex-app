@@ -1,6 +1,6 @@
 import React from "react";
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
+import { useChart } from "../lib/chart-loader";
+// jsPDF + autoTable se cargan lazy (paquete A2) — solo cuando se exporta PDF
 
 const { useState: uSF, useMemo: uMF, useEffect: uEF, useRef: uRF } = React;
 
@@ -207,9 +207,10 @@ function FlujoProyectadoPage({ showToast }) {
     return { meses, totalIng, totalEgr, saldoFinal, peor, mejor };
   }, [movs, pagos, valors, contratos, companyId, horizonte, moneda, saldoInicial]);
 
-  // ── Renderizar gráfico Chart.js si está disponible ─────────────
+  // ── Renderizar gráfico Chart.js (lazy load) ─────────────
+  const Chart = useChart();
   uEF(() => {
-    if (!window.Chart || !chartRef.current) return;
+    if (!Chart || !chartRef.current) return;
     const ctx = chartRef.current.getContext('2d');
     if (chartInstanceRef.current) {
       try { chartInstanceRef.current.destroy(); } catch {}
@@ -220,7 +221,7 @@ function FlujoProyectadoPage({ showToast }) {
     const egr = proyeccion.meses.map(m => m.egresos);
     const acc = proyeccion.meses.map(m => m.saldoAcumulado);
     try {
-      chartInstanceRef.current = new window.Chart(ctx, {
+      chartInstanceRef.current = new Chart(ctx, {
         type: 'bar',
         data: {
           labels,
@@ -243,13 +244,18 @@ function FlujoProyectadoPage({ showToast }) {
         chartInstanceRef.current = null;
       }
     };
-  }, [proyeccion, moneda]);
+  }, [Chart, proyeccion, moneda]);
 
   const empresaSel = (companies || []).find(c => c.id === companyId);
   const tituloEmpresa = companyId === 'todas' ? 'Grupo consolidado' : (empresaSel?.name || '—');
 
-  const exportarPDF = () => {
+  const exportarPDF = async () => {
     try {
+      // Lazy load jsPDF + autoTable solo cuando se exporta (~430 KB)
+      const [{ default: jsPDF }, { default: autoTable }] = await Promise.all([
+        import('jspdf'),
+        import('jspdf-autotable'),
+      ]);
       const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
       const W = doc.internal.pageSize.getWidth();
 
@@ -376,7 +382,7 @@ function FlujoProyectadoPage({ showToast }) {
       </div>
 
       {/* Gráfico */}
-      {window.Chart && proyeccion.meses.length > 0 && (
+      {Chart && proyeccion.meses.length > 0 && (
         <div className="card card-p" style={{ marginBottom:14 }}>
           <div style={{ fontWeight:700, fontSize:13, marginBottom:8 }}>Proyección visual</div>
           <div style={{ height:280 }}>
