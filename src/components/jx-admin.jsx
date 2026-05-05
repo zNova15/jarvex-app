@@ -122,8 +122,16 @@ function UsuariosPage({ showToast }) {
 
   uEAd(() => {
     reload();
-    const t = setInterval(reload, 5000);
-    return () => clearInterval(t);
+    // Polling 5s → 60s + reactivo a eventos (-92% queries)
+    const onChange = () => reload();
+    window.addEventListener('jx_data_changed', onChange);
+    window.addEventListener('jx_sync_pull', onChange);
+    const t = setInterval(reload, 60000);
+    return () => {
+      window.removeEventListener('jx_data_changed', onChange);
+      window.removeEventListener('jx_sync_pull', onChange);
+      clearInterval(t);
+    };
   }, []);
 
   const obrasPorUsuario = uMAd(() => {
@@ -743,8 +751,16 @@ function RolesPage() {
       } catch (e) {}
     };
     load();
-    const t = setInterval(load, 10000);
-    return () => clearInterval(t);
+    // 10s → 60s con eventos
+    const onChange = () => load();
+    window.addEventListener('jx_data_changed', onChange);
+    window.addEventListener('jx_sync_pull', onChange);
+    const t = setInterval(load, 60000);
+    return () => {
+      window.removeEventListener('jx_data_changed', onChange);
+      window.removeEventListener('jx_sync_pull', onChange);
+      clearInterval(t);
+    };
   }, [todasRolKeys.join(',')]);
 
   const crearRolCustom = () => {
@@ -1130,8 +1146,16 @@ function EmpresaTab() {
       } catch (e) {}
     };
     load();
-    const t = setInterval(load, 10000);
-    return () => clearInterval(t);
+    // 10s → 60s con eventos
+    const onChange = () => load();
+    window.addEventListener('jx_data_changed', onChange);
+    window.addEventListener('jx_sync_pull', onChange);
+    const t = setInterval(load, 60000);
+    return () => {
+      window.removeEventListener('jx_data_changed', onChange);
+      window.removeEventListener('jx_sync_pull', onChange);
+      clearInterval(t);
+    };
   }, []);
 
   return (
@@ -1682,8 +1706,17 @@ function SistemaTab({ showToast }) {
       } catch {}
     };
     refresh();
-    const t = setInterval(refresh, 5000);
-    return () => { cancelled = true; clearInterval(t); };
+    // 5s → 60s
+    const onChange = () => refresh();
+    window.addEventListener('jx_data_changed', onChange);
+    window.addEventListener('jx_sync_pull', onChange);
+    const t = setInterval(refresh, 60000);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('jx_data_changed', onChange);
+      window.removeEventListener('jx_sync_pull', onChange);
+      clearInterval(t);
+    };
   }, []);
 
   // Confirmación inline (NO usar window.confirm porque más abajo se shadowea
@@ -1759,8 +1792,16 @@ function SistemaTab({ showToast }) {
     const onOff = () => setOnline(false);
     window.addEventListener('online', onOn);
     window.addEventListener('offline', onOff);
-    const t = setInterval(load, 5000);
-    return () => { clearInterval(t); window.removeEventListener('online', onOn); window.removeEventListener('offline', onOff); };
+    // 5s → 30s + reactivo a syncs
+    const onSync = () => load();
+    window.addEventListener('jx_sync_pull', onSync);
+    const t = setInterval(load, 30000);
+    return () => {
+      clearInterval(t);
+      window.removeEventListener('online', onOn);
+      window.removeEventListener('offline', onOff);
+      window.removeEventListener('jx_sync_pull', onSync);
+    };
   }, []);
 
   const triggerSync = () => {

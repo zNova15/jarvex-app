@@ -25,21 +25,25 @@ export function useObraActiva() {
   const [obraId, setObraId] = useState(() => getObraActivaIdSync());
   const [loading, setLoading] = useState(true);
 
-  // Cargar lista de obras y refrescar periódicamente
+  // Cargar lista de obras. Antes hacía polling cada 3s — N componentes
+  // usando el hook = N × queries cada 3s. Ahora reactivo a eventos:
+  //  · jx_data_changed (tabla='obras') cuando otro proceso escribe
+  //  · jx_sync_pull cuando SyncEngine trae nuevas obras
+  //  · jarvex_master_updated (legacy)
+  // Fallback de 60s para casos edge.
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
+      if (cancelled) return;
       try {
         const all = await window.__db.obras.toArray();
         const visibles = all.filter(o => !o.deleted_at);
         if (cancelled) return;
         setObras(visibles);
-        // Si no hay obra activa guardada, usar la primera
         const stored = getObraActivaIdSync();
         if (!stored && visibles.length > 0) {
           setObraId(visibles[0].id);
         } else if (stored && !visibles.find(o => o.id === stored) && visibles.length > 0) {
-          // La obra guardada ya no existe → fallback a la primera
           setObraId(visibles[0].id);
         } else if (stored) {
           setObraId(stored);
@@ -49,8 +53,21 @@ export function useObraActiva() {
       }
     };
     load();
-    const interval = setInterval(load, 3000);
-    return () => { cancelled = true; clearInterval(interval); };
+    const onChange = (e) => {
+      const t = e?.detail?.tabla;
+      if (!t || t === 'obras') load();
+    };
+    window.addEventListener('jx_data_changed', onChange);
+    window.addEventListener('jx_sync_pull', load);
+    window.addEventListener('jarvex_master_updated', load);
+    const interval = setInterval(load, 60_000);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('jx_data_changed', onChange);
+      window.removeEventListener('jx_sync_pull', load);
+      window.removeEventListener('jarvex_master_updated', load);
+      clearInterval(interval);
+    };
   }, []);
 
   // Escuchar cambios de obra activa emitidos por el header u otros componentes

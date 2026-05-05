@@ -127,7 +127,7 @@ function diasUrgenciaColor(dias) {
 function DashboardPage() {
   const [obraId, setObraId] = uSD(null);
   const [vistaPonderada, setVistaPonderada] = uSD(null); // KPI desde Supabase view (opcional)
-  const [vistaTick, setVistaTick] = uSD(0);
+  // vistaTick removido — antes forzaba re-renders extra cada 15s.
 
   // Filtrado por rol: el almacenero / operativos no necesitan ver datos
   // gerenciales (partidas, costos, avance, atrasos, actividad reciente).
@@ -169,11 +169,17 @@ function DashboardPage() {
     };
   }, []);
 
-  // Refresca la vista ponderada de Supabase cada 15s
+  // Refresca la vista ponderada de Supabase. Antes hacía polling cada 15s
+  // forzando un setVistaTick (re-render extra inútil) — ahora:
+  //  · refetch al montar
+  //  · refetch cuando otro proceso dispara jx_sync_pull (datos cambiaron)
+  //  · fallback de 60s si no hubo eventos
+  // Esto baja de 5,760 fetches/día a típicamente <500.
   uED(() => {
     if (!obraId) return;
     let cancelled = false;
     const fetchView = async () => {
+      if (cancelled) return;
       try {
         const sb = window.__supabase;
         if (!sb) return;
@@ -186,8 +192,14 @@ function DashboardPage() {
       } catch (_) { /* offline o vista inexistente: ignorar */ }
     };
     fetchView();
-    const id = setInterval(() => { setVistaTick(t => t + 1); fetchView(); }, 15000);
-    return () => { cancelled = true; clearInterval(id); };
+    const onSync = () => fetchView();
+    window.addEventListener('jx_sync_pull', onSync);
+    const id = setInterval(fetchView, 60_000);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('jx_sync_pull', onSync);
+      clearInterval(id);
+    };
   }, [obraId]);
 
   const { data: obras } = window.__hooks.useObras();

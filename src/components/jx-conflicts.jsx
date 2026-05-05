@@ -16,8 +16,20 @@ function ConflictsPage({ showToast }) {
 
   uEC(() => {
     load();
-    const interval = setInterval(load, 3000);
-    return () => clearInterval(interval);
+    // Antes polling cada 3s. Reemplazado por evento que dispara SyncEngine
+    // cuando detecta conflicto. Fallback de 30s.
+    const onChange = (e) => {
+      const t = e?.detail?.tabla;
+      if (!t || t === 'sync_conflicts') load();
+    };
+    window.addEventListener('jx_data_changed', onChange);
+    window.addEventListener('jx_sync_pull', load);
+    const interval = setInterval(load, 30000);
+    return () => {
+      window.removeEventListener('jx_data_changed', onChange);
+      window.removeEventListener('jx_sync_pull', load);
+      clearInterval(interval);
+    };
   }, []);
 
   const aceptarServidor = async (c) => {

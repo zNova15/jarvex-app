@@ -483,14 +483,46 @@ window.addEventListener('online', () => {
 // casos en que el canal pierde mensajes (reconexión, latencia, sleep
 // del navegador). Este intervalo asegura que como mucho cada minuto
 // veamos lo que el resto del equipo ha hecho.
+//
+// Backoff exponencial: si syncAll falla N veces seguidas, esperamos más entre
+// intentos (60s → 120s → 240s → ... → tope 600s). En cuanto un sync funciona,
+// volvemos a 60s. Esto evita saturar la red cuando hay problemas de conectividad.
 let _periodicId = null;
+let _syncFailures = 0;
+const MIN_INTERVAL_MS = 60_000;
+const MAX_INTERVAL_MS = 600_000;
+
+function nextSyncDelay() {
+  if (_syncFailures === 0) return MIN_INTERVAL_MS;
+  return Math.min(MIN_INTERVAL_MS * Math.pow(2, _syncFailures), MAX_INTERVAL_MS);
+}
+
+function scheduleNextSync() {
+  if (_periodicId) clearTimeout(_periodicId);
+  _periodicId = setTimeout(async () => {
+    _periodicId = null;
+    if (!navigator.onLine) {
+      scheduleNextSync();
+      return;
+    }
+    if (document.visibilityState !== 'visible') {
+      scheduleNextSync();
+      return;
+    }
+    try {
+      await syncAll();
+      _syncFailures = 0;
+    } catch (e) {
+      _syncFailures = Math.min(_syncFailures + 1, 5);
+      console.warn('[SyncEngine] sync failed, backoff:', _syncFailures, 'next in', nextSyncDelay() / 1000, 's');
+    }
+    scheduleNextSync();
+  }, nextSyncDelay());
+}
+
 function startPeriodicSync() {
   if (_periodicId) return;
-  _periodicId = setInterval(() => {
-    if (!navigator.onLine) return;
-    if (document.visibilityState !== 'visible') return; // no malgastar batería en background
-    syncAll();
-  }, 60_000);
+  scheduleNextSync();
 }
 
 // Arrancar al cargar el módulo

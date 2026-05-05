@@ -859,13 +859,29 @@ function MovMaterialesPage({ showToast }) {
   const [provs, setProvs] = uSM([]);
   const [partidas, setPartidas] = uSM([]);
   uEM(() => {
+    let cancelled = false;
     const load = () => {
-      window.__db.proveedores.toArray().then(setProvs);
-      window.__db.partidas.toArray().then(setPartidas);
+      if (cancelled) return;
+      window.__db.proveedores.toArray().then(p => { if (!cancelled) setProvs(p); });
+      window.__db.partidas.toArray().then(p => { if (!cancelled) setPartidas(p); });
     };
     load();
-    const interval = setInterval(load, 2000);
-    return () => clearInterval(interval);
+    // Antes hacía polling cada 2s — reemplazado por listener al evento
+    // jx_data_changed que dispara sync engine + cualquier write local.
+    // Fallback de 30s para casos donde el evento no se haya disparado.
+    const onChange = (e) => {
+      const t = e?.detail?.tabla;
+      if (!t || t === 'proveedores' || t === 'partidas') load();
+    };
+    window.addEventListener('jx_data_changed', onChange);
+    window.addEventListener('jx_sync_pull', load);
+    const interval = setInterval(load, 30000);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('jx_data_changed', onChange);
+      window.removeEventListener('jx_sync_pull', load);
+      clearInterval(interval);
+    };
   }, []);
 
   const [q, setQ] = uSM('');
@@ -1464,10 +1480,30 @@ function ProveedoresPage({ showToast }) {
   const [requestTarget, setRequestTarget] = uSM(null);
 
   uEM(() => {
-    const load = () => window.__db.proveedores.toArray().then(d => { setProvs((d||[]).filter(x => !x.deleted_at)); setLoading(false); });
+    let cancelled = false;
+    const load = () => {
+      if (cancelled) return;
+      window.__db.proveedores.toArray().then(d => {
+        if (cancelled) return;
+        setProvs((d || []).filter(x => !x.deleted_at));
+        setLoading(false);
+      });
+    };
     load();
-    const interval = setInterval(load, 2000);
-    return () => clearInterval(interval);
+    // Antes polling 2s. Ahora reactivo a eventos + fallback 30s.
+    const onChange = (e) => {
+      const t = e?.detail?.tabla;
+      if (!t || t === 'proveedores') load();
+    };
+    window.addEventListener('jx_data_changed', onChange);
+    window.addEventListener('jx_sync_pull', load);
+    const interval = setInterval(load, 30000);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('jx_data_changed', onChange);
+      window.removeEventListener('jx_sync_pull', load);
+      clearInterval(interval);
+    };
   }, []);
 
   const [q, setQ] = uSM('');
