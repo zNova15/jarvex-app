@@ -1,4 +1,5 @@
 import React from "react";
+import { validarComprobanteAI } from "../lib/validar-comprobante-ai.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 // Iconos
@@ -141,6 +142,11 @@ function ComprobantesElectronicosPage({ showToast }) {
   const [modal, setModal] = uS(null); // null | 'nuevo' | 'detalle'
   const [selMov, setSelMov] = uS(null);
   const [form, setForm] = uS({});
+
+  // Pre-SUNAT AI validation modal
+  // { mov, comprobante, validacion: {result, confianza, razonamiento, advertencias} }
+  const [aiCheck, setAiCheck] = uS(null);
+  const [aiLoading, setAiLoading] = uS(false);
 
   // Obras donde la empresa emisora del form es la ejecutora (o miembro del consorcio).
   const obrasDeEmpresa = uM(() => {
@@ -406,7 +412,54 @@ function ComprobantesElectronicosPage({ showToast }) {
     try { return JSON.parse(m.notas); } catch { return {}; }
   };
 
-  const generarXMLDeFila = (m) => {
+  // Construye el payload que mandamos al validador IA (formato del Feature #1).
+  const buildComprobantePayloadAI = (m) => {
+    const company = lookupCompany(m.company_id);
+    const meta = parseMeta(m);
+    const tipo = m._comp?.tipo;
+    const correlNum = m._comp?.correlativo || 1;
+    const serie = m._comp?.serie || (tipo === '03' ? 'B001' : 'F001');
+    const items = (meta.items?.length ? meta.items : [{
+      descripcion: m.description || 'Servicio',
+      cantidad: 1,
+      precio_unitario: Number(m.amount || 0) / 1.18,
+      igv_pct: 18,
+      tax_exemption_code: '10',
+    }]).map(it => ({
+      descripcion: it.descripcion || '',
+      cantidad: Number(it.cantidad) || 0,
+      precio_unitario: Number(it.precio_unitario) || 0,
+      igv_pct: Number(it.igv_pct ?? 18),
+      tax_exemption_code: it.tax_exemption_code || '10',
+    }));
+    let totales;
+    try { totales = window.__sunatUBL?.calcularTotalesIGV?.(items); } catch { totales = null; }
+    const subtotal = totales?.total_gravado ?? items.reduce((s, it) => s + (it.cantidad * it.precio_unitario), 0);
+    const igv = totales?.total_igv ?? Number((subtotal * 0.18).toFixed(2));
+    const total = totales?.total_venta ?? Number((subtotal + igv).toFixed(2));
+    return {
+      tipo,
+      serie,
+      correlativo: correlNum,
+      fecha: m.date,
+      moneda: meta.moneda || m.currency || 'PEN',
+      emisor: {
+        ruc: company?.ruc || '',
+        razon_social: company?.legal_name || company?.name || '',
+      },
+      cliente: {
+        tipo_doc: meta?.cliente?.tipo_documento || '6',
+        documento: meta?.cliente?.documento || m.third_party_ruc || '',
+        razon_social: meta?.cliente?.razon_social || m.third_party_name || '',
+        direccion: meta?.cliente?.direccion || '',
+      },
+      items,
+      totales: { subtotal, igv, total },
+    };
+  };
+
+  // Genera el XML UBL y lo descarga. Si overridden=true, se loguea como override humano.
+  const _emitirXML = (m, { overridden = false } = {}) => {
     const company = lookupCompany(m.company_id);
     if (!company?.ruc) {
       showToast?.('La empresa emisora no tiene RUC configurado', 'red');
@@ -468,10 +521,125 @@ function ComprobantesElectronicosPage({ showToast }) {
       } catch {}
 
       downloadXML(filename, xml);
-      showToast?.(`XML descargado: ${filename}`, 'green');
+      showToast?.(overridden ? `XML descargado bajo tu responsabilidad: ${filename}` : `XML descargado: ${filename}`, overridden ? 'amber' : 'green');
+      try {
+        window.__logAudit?.({
+          action: overridden ? 'update' : 'insert',
+          table: 'accounting_movements',
+          recordId: m.id,
+          newData: { serie, correlativo: correlNum, tipo, filename, overridden },
+          reason: overridden
+            ? 'ai-validar-comprobante: XML emitido bajo override humano (ai-overridden)'
+            : 'ai-validar-comprobante: XML emitido tras validación IA',
+          tag: 'ai-validar-comprobante',
+        });
+      } catch {}
     } catch (e) {
       showToast?.('Error generando XML: ' + (e.message || e), 'red');
     }
+  };
+
+  // Entry point: corre validación IA antes de emitir XML.
+  const generarXMLDeFila = async (m) => {
+    const company = lookupCompany(m.company_id);
+    if (!company?.ruc) {
+      showToast?.('La empresa emisora no tiene RUC configurado', 'red');
+      return;
+    }
+    const payload = buildComprobantePayloadAI(m);
+    setAiLoading(true);
+    let validacion = null;
+    let aiError = null;
+    try {
+      validacion = await validarComprobanteAI(payload);
+    } catch (e) {
+      aiError = e?.message || String(e);
+    } finally {
+      setAiLoading(false);
+    }
+
+    if (aiError) {
+      // IA no disponible (red, cuota, timeout) → no bloqueamos al usuario;
+      // se loguea el skip y se procede con la emisión.
+      showToast?.(`Validador IA no disponible (${aiError}) — emitiendo igualmente`, 'amber');
+      try {
+        window.__logAudit?.({
+          action: 'insert',
+          table: 'audit',
+          recordId: m.id,
+          newData: { motivo: aiError },
+          reason: `ai-validar-comprobante: IA no disponible — ${aiError}`,
+          tag: 'ai-validar-comprobante',
+        });
+      } catch {}
+      _emitirXML(m, { overridden: false });
+      return;
+    }
+
+    const { result, confianza } = validacion;
+    const hasHigh = (result.errors || []).some(e => e.severidad === 'high');
+    try {
+      window.__logAudit?.({
+        action: 'insert',
+        table: 'audit',
+        recordId: m.id,
+        newData: {
+          confianza,
+          valid: result.valid,
+          errores_high: (result.errors || []).filter(e => e.severidad === 'high').length,
+          errores_total: (result.errors || []).length,
+          warnings: (result.warnings || []).length,
+        },
+        reason: `ai-validar-comprobante: sugerencia IA (confianza ${(confianza * 100).toFixed(0)}%, valid=${result.valid})`,
+        tag: 'ai-validar-comprobante',
+      });
+    } catch {}
+
+    if (confianza >= 0.85 && result.valid && !hasHigh) {
+      showToast?.('✓ Validado por IA · emitiendo XML', 'green');
+      _emitirXML(m, { overridden: false });
+      return;
+    }
+
+    // Mostrar modal de revisión
+    setAiCheck({ mov: m, comprobante: payload, validacion });
+  };
+
+  // Acciones del modal de revisión IA
+  const aiCorregir = () => {
+    if (aiCheck) {
+      try {
+        window.__logAudit?.({
+          action: 'insert',
+          table: 'audit',
+          recordId: aiCheck.mov?.id,
+          newData: { decision: 'corregir' },
+          reason: 'ai-validar-comprobante: humano eligió corregir antes de emitir',
+          tag: 'ai-validar-comprobante',
+        });
+      } catch {}
+    }
+    setAiCheck(null);
+  };
+  const aiEmitirIgual = () => {
+    if (!aiCheck) return;
+    try {
+      window.__logAudit?.({
+        action: 'insert',
+        table: 'audit',
+        recordId: aiCheck.mov?.id,
+        newData: {
+          decision: 'override',
+          confianza: aiCheck.validacion?.confianza,
+          errores_high: (aiCheck.validacion?.result?.errors || []).filter(e => e.severidad === 'high').length,
+        },
+        reason: 'ai-validar-comprobante: humano emitió XML pese a observaciones IA (ai-overridden)',
+        tag: 'ai-validar-comprobante',
+      });
+    } catch {}
+    const m = aiCheck.mov;
+    setAiCheck(null);
+    _emitirXML(m, { overridden: true });
   };
 
   // ─── Marcar emitido / anular ───────────────────────────────────────
@@ -838,6 +1006,86 @@ function ComprobantesElectronicosPage({ showToast }) {
             </button>
           </div>
         </Modal>
+      )}
+
+      {/* Modal Revisión IA pre-SUNAT */}
+      {aiCheck && (
+        <Modal title="Revisar antes de enviar a SUNAT" icon="alert" onClose={aiCorregir} wide>
+          <div style={{ padding:'4px 0 14px', fontSize:12, color:'var(--tm)' }}>
+            La IA detectó observaciones en este comprobante. Revisalas antes de generar el XML.
+            {typeof aiCheck.validacion?.confianza === 'number' && (
+              <span style={{ marginLeft:8 }}>
+                <span className="badge b-blue">Confianza IA: {(aiCheck.validacion.confianza * 100).toFixed(0)}%</span>
+              </span>
+            )}
+          </div>
+
+          {aiCheck.validacion?.razonamiento && (
+            <div style={{ padding:'8px 12px', background:'rgba(80,140,255,.08)', borderRadius:6, fontSize:12, marginBottom:10 }}>
+              <strong style={{ color:'var(--tm)', fontSize:10.5, textTransform:'uppercase', letterSpacing:.4 }}>Resumen IA</strong>
+              <div style={{ marginTop:3 }}>{aiCheck.validacion.razonamiento}</div>
+            </div>
+          )}
+
+          {(() => {
+            const errs = aiCheck.validacion?.result?.errors || [];
+            const warns = aiCheck.validacion?.result?.warnings || [];
+            const colorBySev = (sev) => sev === 'high' ? 'var(--red)' : sev === 'medium' ? 'var(--amber)' : 'var(--blue, #4f8fff)';
+            const bgBySev = (sev) => sev === 'high' ? 'rgba(255,80,80,.08)' : sev === 'medium' ? 'rgba(242,183,5,.08)' : 'rgba(80,140,255,.08)';
+            const labelBySev = (sev) => sev === 'high' ? 'CRÍTICO' : sev === 'medium' ? 'REVISAR' : 'INFO';
+            const allItems = [...errs, ...warns];
+            if (allItems.length === 0) {
+              return (
+                <div style={{ padding:'10px 12px', background:'rgba(80,200,120,.08)', borderRadius:6, fontSize:12 }}>
+                  No se reportaron errores específicos, pero la confianza es baja. Verifica los datos antes de emitir.
+                </div>
+              );
+            }
+            return (
+              <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                {allItems.map((it, i) => (
+                  <div key={i} style={{ padding:'8px 12px', background:bgBySev(it.severidad), borderRadius:6, borderLeft:`3px solid ${colorBySev(it.severidad)}` }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
+                      <strong style={{ fontSize:12 }}>{it.campo || '(sin campo)'}</strong>
+                      <span style={{ fontSize:10, fontWeight:700, color:colorBySev(it.severidad), letterSpacing:.4 }}>
+                        {labelBySev(it.severidad)}
+                      </span>
+                    </div>
+                    <div style={{ fontSize:12, marginTop:3 }}>{it.mensaje}</div>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+
+          {Array.isArray(aiCheck.validacion?.advertencias) && aiCheck.validacion.advertencias.length > 0 && (
+            <div style={{ marginTop:10, fontSize:11, color:'var(--tm)' }}>
+              <strong>Advertencias adicionales:</strong>
+              <ul style={{ margin:'4px 0 0 18px', padding:0 }}>
+                {aiCheck.validacion.advertencias.map((a, i) => <li key={i}>{a}</li>)}
+              </ul>
+            </div>
+          )}
+
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={aiCorregir}>
+              Corregir y volver a validar
+            </button>
+            <button className="btn btn-red" onClick={aiEmitirIgual} title="Procede igual — la responsabilidad es tuya">
+              <Icon name="alert" size={13}/>Generar igual (mi responsabilidad)
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {aiLoading && (
+        <div className="overlay" style={{ pointerEvents:'none' }}>
+          <div className="modal" style={{ maxWidth:300, textAlign:'center' }}>
+            <div style={{ padding:'20px 14px', fontSize:13 }}>
+              <Icon name="loader" size={20}/> Validando con IA…
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

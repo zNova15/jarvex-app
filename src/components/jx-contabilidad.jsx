@@ -1,4 +1,5 @@
 import React from "react";
+import { sugerirCuentaPcge } from "../lib/sugerir-cuenta-pcge.js";
 const { useState: uSC, useMemo: uMC, useEffect: uEC } = React;
 
 // ─── Helpers de formato ──────────────────────────────────────
@@ -566,6 +567,53 @@ function MovimientosContablesPage({ showToast }) {
   const [modal, setModal] = uSC(null);
   const [editingId, setEditingId] = uSC(null);
   const [form, setForm] = uSC({});
+  // IA: sugerencia de cuenta PCGE
+  const [aiSugCuenta, setAiSugCuenta] = uSC(null); // { result, confianza, razonamiento, advertencias }
+  const [aiSugLoading, setAiSugLoading] = uSC(false);
+
+  // Política auto-apply: confianza >= 0.85 sin advertencias críticas → aplica directo
+  const aplicarSugerenciaAuto = (sug) => {
+    if (!sug?.result?.cuenta_sugerida) return false;
+    const conf = Number(sug.confianza || 0);
+    const advCriticas = (sug.advertencias || []).some(a => /alucin|inv[aá]lida|no v[aá]lida|fuera de cat/i.test(String(a)));
+    return conf >= 0.85 && !advCriticas;
+  };
+
+  const sugerirCuenta = async () => {
+    if (!form.description?.trim() && !form.category?.trim()) {
+      try { window.__showToast?.('Escribí descripción o categoría primero', 'amber'); } catch {}
+      return;
+    }
+    setAiSugLoading(true);
+    setAiSugCuenta(null);
+    try {
+      const sug = await sugerirCuentaPcge({
+        type: form.type || 'expense',
+        description: form.description || '',
+        category: form.category || '',
+        third_party_name: form.third_party_name || '',
+        document_type: form.document_type || '',
+        sugerencia_actual: form.cuenta_pcge || '',
+      });
+      setAiSugCuenta(sug);
+      try { await window.__logAudit?.({ action:'insert', table:'audit', recordId: 'sugerir-cuenta',
+        newData: { cuenta: sug.result.cuenta_sugerida, confianza: sug.confianza, cached: !!sug._cached },
+        reason: `IA sugerencia cuenta PCGE: ${sug.result.cuenta_sugerida} (${(sug.confianza*100).toFixed(0)}%)` }); } catch {}
+      // Auto-apply si confianza alta
+      if (aplicarSugerenciaAuto(sug)) {
+        setForm(prev => ({ ...prev, cuenta_pcge: sug.result.cuenta_sugerida }));
+        try { window.__showToast?.(`✓ Cuenta ${sug.result.cuenta_sugerida} aplicada por IA (${(sug.confianza*100).toFixed(0)}%)`, 'green'); } catch {}
+        try { await window.__logAudit?.({ action:'update', table:'audit', recordId:'sugerir-cuenta',
+          newData: { cuenta_aplicada: sug.result.cuenta_sugerida, modo: 'auto-apply' },
+          reason: 'IA cuenta PCGE auto-aplicada (confianza alta)' }); } catch {}
+      }
+      // Si confianza baja, el dropdown abajo del campo muestra alternativas
+    } catch (e) {
+      try { window.__showToast?.('Error sugiriendo cuenta: ' + (e.message || e), 'red'); } catch {}
+    } finally {
+      setAiSugLoading(false);
+    }
+  };
 
   const companiesActivas = uMC(() => (companies || []).filter(c => c.status === 'activa'), [companies]);
 
@@ -849,7 +897,16 @@ function MovimientosContablesPage({ showToast }) {
               <input className="fi" placeholder="Ej: Materiales, Salarios, Servicios" value={form.category||''} onChange={e=>setForm({...form, category:e.target.value})}/>
             </div>
             <div>
-              <label className="flabel">Cuenta PCGE (opcional)</label>
+              <label className="flabel" style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:6 }}>
+                <span>Cuenta PCGE (opcional)</span>
+                <button type="button" className="btn btn-ghost btn-xs"
+                  disabled={aiSugLoading || (!form.description?.trim() && !form.category?.trim())}
+                  title="Sugerir cuenta con IA según descripción y tercero"
+                  onClick={sugerirCuenta}
+                  style={{ fontSize:10 }}>
+                  {aiSugLoading ? '⏳ Pensando…' : '✨ Sugerir'}
+                </button>
+              </label>
               <select className="fi" value={form.cuenta_pcge||''} onChange={e=>setForm({...form, cuenta_pcge:e.target.value})}>
                 <option value="">Auto (según categoría)</option>
                 {form.type === 'income' ? (
@@ -872,6 +929,55 @@ function MovimientosContablesPage({ showToast }) {
                   </>
                 )}
               </select>
+              {/* Panel de sugerencia IA */}
+              {aiSugCuenta?.result?.cuenta_sugerida && (
+                <div style={{ marginTop:6, padding:'8px 10px', borderRadius:6, fontSize:11,
+                  background: aplicarSugerenciaAuto(aiSugCuenta) ? 'rgba(46,204,113,0.08)' : 'rgba(242,183,5,0.08)',
+                  border: '1px solid ' + (aplicarSugerenciaAuto(aiSugCuenta) ? 'rgba(46,204,113,0.3)' : 'rgba(242,183,5,0.3)') }}>
+                  <div style={{ color: aplicarSugerenciaAuto(aiSugCuenta) ? 'var(--green)' : 'var(--amber)', fontWeight:600, marginBottom:3 }}>
+                    {aplicarSugerenciaAuto(aiSugCuenta) ? '✓' : '⚠'} IA sugiere: {aiSugCuenta.result.cuenta_sugerida} — {aiSugCuenta.result.descripcion_cuenta}
+                    <span style={{ marginLeft:6, fontWeight:400, color:'var(--tm)' }}>({(aiSugCuenta.confianza*100).toFixed(0)}% confianza{aiSugCuenta._cached ? ' · cached' : ''})</span>
+                  </div>
+                  {aiSugCuenta.razonamiento && (
+                    <div style={{ color:'var(--ts)', marginBottom:5 }}>{aiSugCuenta.razonamiento}</div>
+                  )}
+                  {!aplicarSugerenciaAuto(aiSugCuenta) && (
+                    <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                      <button type="button" className="btn btn-amber btn-xs"
+                        onClick={()=>{
+                          setForm(prev => ({ ...prev, cuenta_pcge: aiSugCuenta.result.cuenta_sugerida }));
+                          try { window.__logAudit?.({ action:'update', table:'audit', recordId:'sugerir-cuenta',
+                            newData: { cuenta_aplicada: aiSugCuenta.result.cuenta_sugerida, modo: 'manual-confirm' },
+                            reason: 'IA cuenta PCGE confirmada por usuario' }); } catch {}
+                          setAiSugCuenta(null);
+                        }}>
+                        Aplicar {aiSugCuenta.result.cuenta_sugerida}
+                      </button>
+                      {(aiSugCuenta.result.alternativas || []).slice(0, 3).map((alt, i) => (
+                        <button type="button" key={i} className="btn btn-ghost btn-xs"
+                          onClick={()=>{
+                            setForm(prev => ({ ...prev, cuenta_pcge: alt.cuenta }));
+                            try { window.__logAudit?.({ action:'update', table:'audit', recordId:'sugerir-cuenta',
+                              newData: { cuenta_aplicada: alt.cuenta, modo: 'alternativa-elegida' },
+                              reason: `IA cuenta PCGE alternativa elegida: ${alt.cuenta}` }); } catch {}
+                            setAiSugCuenta(null);
+                          }}>
+                          {alt.cuenta} — {alt.descripcion?.slice(0,30)}
+                        </button>
+                      ))}
+                      <button type="button" className="btn btn-ghost btn-xs"
+                        onClick={()=>{
+                          try { window.__logAudit?.({ action:'update', table:'audit', recordId:'sugerir-cuenta',
+                            newData: { modo: 'rechazada' },
+                            reason: 'IA cuenta PCGE rechazada por usuario' }); } catch {}
+                          setAiSugCuenta(null);
+                        }}>
+                        Descartar
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
             <div style={{ gridColumn:'1/-1' }}>
               <label className="flabel">Descripción</label>
