@@ -223,7 +223,17 @@ function LoginScreen({ onLogin }) {
   const [email, setEmail]   = uSA('');
   const [pass, setPass]     = uSA('');
   const [loading, setLoad]  = uSA(false);
-  const [err, setErr]       = uSA('');
+  const [err, setErr]       = uSA(() => {
+    // Si la sesión anterior se cerró por inactividad, mostramos motivo aquí
+    try {
+      const reason = sessionStorage.getItem('jx_logout_reason');
+      if (reason === 'inactivity') {
+        sessionStorage.removeItem('jx_logout_reason');
+        return 'Tu sesión se cerró por inactividad (30 min). Volvé a iniciar sesión.';
+      }
+    } catch {}
+    return '';
+  });
   const [showPass, setShow] = uSA(false);
   const [resetOpen, setResetOpen] = uSA(false);
 
@@ -788,9 +798,11 @@ function App() {
   // bloqueadas por su rol.
   const rolActual = auth?.profile?.rol || '';
   const puedeVerPagina = (p) => {
-    if (!rolActual) return true;
+    // Política deny-by-default: si no hay rol o no es canónico, delegamos al
+    // helper que ya hace el chequeo correcto. Antes acá había un short-circuit
+    // a true que era una fuga de info — un usuario sin rol asignado veía todo.
     if (rolActual === 'admin') return true;
-    return window.__canSeeSidebarItem?.(rolActual, p) ?? true;
+    return window.__canSeeSidebarItem?.(rolActual, p) ?? false;
   };
   const NoAcceso = () => (
     <div className="page-wrap" style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:'60vh' }}>

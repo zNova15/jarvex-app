@@ -660,17 +660,51 @@ window.__moduleIdMap = {
   'configuracion': null, // tabs internas se filtran solas
 };
 
-// Helper que devuelve si el rol puede ver el item del sidebar (lectura mínimo)
+// Lista canónica de roles built-in (debe coincidir con ROL_KEYS).
+// Si llega un rol fuera de esta lista (legado, basura), lo tratamos como
+// "sin permisos" — NUNCA como admin.
+const __ROLES_CANONICOS = new Set([
+  'admin','gerente','ingeniero_residente','supervisor','almacenero',
+  'asistente_admin','contador','tesorero','jefe_compras','rrhh',
+  'prevencionista','maestro_obra','solo_lectura',
+]);
+
+// Helper que devuelve si el rol puede ver el item del sidebar (lectura mínimo).
+// Política deny-by-default: si el rol está vacío o no está en la lista canónica,
+// NO se muestra nada salvo los items utility (dashboard/búsqueda/configuración)
+// que están explícitamente marcados como `null` en moduleIdMap.
 window.__canSeeSidebarItem = function(rol, itemId) {
-  if (!rol) return true;
-  if (rol === 'admin') return true;
   const modulo = window.__moduleIdMap?.[itemId];
-  if (modulo === null || modulo === undefined) return true;
-  return window.__hasPerm?.(rol, modulo, 'r') ?? true;
+  // Items utility (sin restricción) siempre visibles
+  if (modulo === null) return true;
+  // Sin rol válido → no se ve nada que requiera permisos
+  if (!rol || !__ROLES_CANONICOS.has(rol)) {
+    if (rol && !__ROLES_CANONICOS.has(rol)) {
+      console.warn('[__canSeeSidebarItem] Rol no canónico bloqueado:', rol);
+    }
+    // Permitimos roles custom (los que el admin define desde RolesPage):
+    // si está en customRoles, dejamos pasar al chequeo de permisos.
+    try {
+      const customRoles = JSON.parse(localStorage.getItem('jx_custom_roles_v1') || '[]');
+      const isCustom = Array.isArray(customRoles) && customRoles.some(r => r.key === rol || r.id === rol);
+      if (!isCustom) return false;
+    } catch { return false; }
+  }
+  if (rol === 'admin') return true;
+  if (modulo === undefined) return false;
+  return window.__hasPerm?.(rol, modulo, 'r') ?? false;
 };
 window.__hasPerm = function(rol, modulo, nivel = 'r') {
   if (!rol) return false;
   if (rol === 'admin') return true;
+  // Roles no canónicos solo pasan si fueron registrados como custom.
+  if (!__ROLES_CANONICOS.has(rol)) {
+    try {
+      const customRoles = JSON.parse(localStorage.getItem('jx_custom_roles_v1') || '[]');
+      const isCustom = Array.isArray(customRoles) && customRoles.some(r => r.key === rol || r.id === rol);
+      if (!isCustom) return false;
+    } catch { return false; }
+  }
   const m = getEffectivePermMatrix()[rol] || [];
   const idx = PERM_MATRIX_MODULES.indexOf(modulo);
   if (idx < 0) return false;

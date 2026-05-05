@@ -117,6 +117,11 @@ import './components/jx-sidebar.jsx';
 import './components/jx-solicitudes.jsx';
 import './components/jx-dashboard.jsx';
 import './components/jx-almacen.jsx';
+// jx-admin se carga eager (no lazy) para tener __moduleIdMap, __canSeeSidebarItem
+// y __hasPerm disponibles desde el primer render del sidebar. Sin esto, durante
+// el bootstrap el chequeo de permisos no existía y se permitía ver todo —
+// vulnerable a fuga de info para roles distintos de admin.
+import './components/jx-admin.jsx';
 import './jx-app.jsx';
 
 // ── Componentes LAZY (se cargan on-demand al navegar a la página) ────
@@ -209,6 +214,22 @@ function Root() {
       <App />
     </AuthContext.Provider>
   );
+}
+
+// ── Auto-reload cuando el Service Worker se actualiza ─────────────
+// El SW está configurado con skipWaiting+clientsClaim, pero la página
+// abierta sigue corriendo el bundle viejo hasta un reload manual.
+// 'controllerchange' dispara cuando el SW nuevo toma control → forzamos
+// recarga para que el usuario reciba la versión nueva sin tener que
+// pulsar Ctrl+Shift+R.
+if ('serviceWorker' in navigator) {
+  let swReloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (swReloaded) return;
+    swReloaded = true;
+    console.log('[SW] Nueva versión activa — recargando...');
+    window.location.reload();
+  });
 }
 
 // Dar un tick para que todos los window.* estén registrados
