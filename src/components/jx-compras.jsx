@@ -109,6 +109,7 @@ function RequisicionesPage({ showToast }) {
   const openNueva = () => {
     setForm({
       codigo: nextCodigo,
+      descripcion: '',
       fecha: new Date().toISOString().slice(0,10),
       fecha_requerida: '',
       prioridad: 'normal',
@@ -124,6 +125,7 @@ function RequisicionesPage({ showToast }) {
     setEditing(r);
     setForm({
       codigo: r.codigo,
+      descripcion: r.descripcion || '',
       fecha: r.fecha,
       fecha_requerida: r.fecha_requerida || '',
       prioridad: r.prioridad,
@@ -164,6 +166,7 @@ function RequisicionesPage({ showToast }) {
         await window.__db.requisiciones.add({
           id: reqIdFinal, obra_id: obraId,
           codigo: form.codigo,
+          descripcion: form.descripcion || null,
           fecha: form.fecha,
           fecha_requerida: form.fecha_requerida || null,
           solicitante_id: userId,
@@ -219,6 +222,102 @@ function RequisicionesPage({ showToast }) {
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'requisiciones' } })); } catch {}
       showToast(`Estado cambiado a ${REQ_ESTADO_LABEL[nuevo]}`, 'green');
     } catch (e) { showToast('Error: ' + (e.message||e), 'red'); }
+  };
+
+  // Genera una Orden de Compra (estado 'borrador') a partir de una requisición.
+  // Copia los items y se queda esperando que el usuario asigne el proveedor
+  // y los precios. Marca la requisición como 'ordenada' (referencia al OC).
+  const generarOCDesdeRequisicion = async (r) => {
+    try {
+      const reqItems = await window.__db.requisicion_items
+        .where('requisicion_id').equals(r.id)
+        .filter(x => !x.deleted_at)
+        .toArray();
+      if (!reqItems.length) {
+        showToast('Esta requisición no tiene items', 'red');
+        return;
+      }
+      // Verificar si ya hay una OC vinculada (para evitar duplicar)
+      const ocsExistentes = await window.__db.ordenes_compra
+        .filter(o => !o.deleted_at && o.requisicion_id === r.id).toArray();
+      if (ocsExistentes.length > 0) {
+        const seguir = confirm(`Esta requisición ya tiene ${ocsExistentes.length} OC asociada(s). ¿Crear otra de todos modos?`);
+        if (!seguir) return;
+      }
+      // Calcular siguiente código de OC
+      const yr = new Date().getFullYear();
+      const todasOC = await window.__db.ordenes_compra.toArray();
+      const count = todasOC.filter(o => (o.codigo || '').startsWith(`OC-${yr}`)).length + 1;
+      const codigo = `OC-${yr}-${String(count).padStart(3, '0')}`;
+      const ocId = window.__newId();
+      const now = new Date().toISOString();
+      // Subtotal estimado con precios estimados de la requisición
+      let subtotal = 0;
+      reqItems.forEach(it => {
+        const p = Number(it.precio_estimado || 0);
+        const c = Number(it.cantidad || 0);
+        subtotal += p * c;
+      });
+      const igv = +(subtotal * 0.18).toFixed(2);
+      await window.__db.ordenes_compra.add({
+        id: ocId, obra_id: obraId,
+        codigo,
+        // Vinculamos a la requisición de origen para trazabilidad
+        requisicion_id: r.id,
+        requisicion_codigo: r.codigo,
+        proveedor_id: null, // hay que asignarlo después
+        fecha: now.slice(0,10),
+        fecha_entrega: r.fecha_requerida || r.fecha_necesidad || null,
+        moneda: 'PEN',
+        condicion_pago: 'contado',
+        estado: 'borrador',
+        monto_subtotal: +subtotal.toFixed(2),
+        monto_igv: igv,
+        monto_total: +(subtotal + igv).toFixed(2),
+        observaciones: `Generada desde Requisición ${r.codigo}${r.descripcion ? ' · ' + r.descripcion : ''}`,
+        created_by: userId, updated_by: userId,
+        created_at: now, updated_at: now,
+        version: 1, sync_status: 'pending_create', last_synced_at: null,
+        idempotency_key: `${userId}_oc_${ocId}`,
+      });
+      // Items
+      for (const it of reqItems) {
+        const id = window.__newId();
+        await window.__db.oc_items.add({
+          id, orden_compra_id: ocId,
+          material_id: it.material_id || null,
+          nombre_libre: it.material_id ? null : (it.nombre_libre || it.descripcion || null),
+          unidad: it.unidad || null,
+          cantidad: Number(it.cantidad),
+          cantidad_recibida: 0,
+          precio_unitario: Number(it.precio_estimado || 0),
+          subtotal: +(Number(it.cantidad) * Number(it.precio_estimado || 0)).toFixed(2),
+          requisicion_item_id: it.id,
+          created_at: now, updated_at: now,
+          version: 1, sync_status: 'pending_create', last_synced_at: null,
+          idempotency_key: `${userId}_oc_item_${id}`,
+        });
+      }
+      // Marcar requisición como ordenada
+      await window.__db.requisiciones.update(r.id, {
+        estado: 'ordenada',
+        oc_id: ocId,
+        oc_codigo: codigo,
+        updated_at: now,
+        version: (r.version ?? 0) + 1,
+        sync_status: r.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      try { await window.__logAudit?.({ action:'insert', table:'ordenes_compra', recordId: ocId,
+        newData: { codigo, requisicion: r.codigo, items: reqItems.length },
+        reason: `OC generada desde requisición ${r.codigo}` }); } catch {}
+      try {
+        window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'ordenes_compra' } }));
+        window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'requisiciones' } }));
+      } catch {}
+      showToast(`✓ OC ${codigo} generada · asigná el proveedor en Órdenes de Compra`, 'green');
+    } catch (e) {
+      showToast('Error: ' + (e.message || e), 'red');
+    }
   };
 
   const eliminar = async (r) => {
@@ -313,7 +412,7 @@ function RequisicionesPage({ showToast }) {
                       <button className="btn btn-ghost btn-xs" title="Ver / Editar" onClick={()=>verDetalle(r)}>
                         <JxIcon name="eye" size={11}/>
                       </button>
-                      <button className="btn btn-ghost btn-xs" title="Descargar PDF" onClick={async ()=>{
+                      <button className="btn btn-ghost btn-xs" title="Descargar PDF para imprimir y firmar" onClick={async ()=>{
                         try {
                           const its = await window.__db.requisicion_items.where('requisicion_id').equals(r.id).filter(x=>!x.deleted_at).toArray();
                           const obras = await window.__db.obras.toArray();
@@ -324,6 +423,13 @@ function RequisicionesPage({ showToast }) {
                       }} style={{ marginLeft:4 }}>
                         <JxIcon name="download" size={11}/>
                       </button>
+                      {/* Generar OC desde requisición — solo si hay items y no fue cancelada */}
+                      {canApprove && r.estado !== 'cancelada' && r.estado !== 'recibida' && (
+                        <button className="btn btn-ghost btn-xs" title="Generar Orden de Compra a partir de esta requisición"
+                          onClick={()=>generarOCDesdeRequisicion(r)} style={{ marginLeft:4 }}>
+                          <JxIcon name="package" size={11}/> OC
+                        </button>
+                      )}
                       {isAdmin && (
                         <button className="btn btn-red btn-xs" title="Eliminar" onClick={()=>eliminar(r)} style={{ marginLeft:4 }}>
                           <JxIcon name="trash" size={11}/>
@@ -345,6 +451,17 @@ function RequisicionesPage({ showToast }) {
             <div>
               <label className="flabel">Código</label>
               <input className="fi" value={form.codigo||''} onChange={e=>setForm({...form, codigo:e.target.value})}/>
+            </div>
+            <div>
+              <label className="flabel">Estado</label>
+              <select className="fi" value={form.estado||'borrador'} onChange={e=>setForm({...form, estado:e.target.value})} disabled={!canApprove && editing}>
+                {Object.entries(REQ_ESTADO_LABEL).map(([k,v]) => <option key={k} value={k}>{v}</option>)}
+              </select>
+            </div>
+            <div style={{ gridColumn:'1/-1' }}>
+              <label className="flabel">Descripción / Nombre de la solicitud</label>
+              <input className="fi" value={form.descripcion||''} onChange={e=>setForm({...form, descripcion:e.target.value})}
+                placeholder="Ej: Materiales para vaciado de losa nivel 3 - Semana 18"/>
             </div>
             <div>
               <label className="flabel">Fecha</label>
@@ -439,12 +556,53 @@ function OrdenesCompraPage({ showToast }) {
   const userId = auth?.profile?.id ?? 'offline';
   const rol = auth?.profile?.rol || '';
   const isAdmin = rol === 'admin';
-  // ¿Puede aprobar/cambiar estado de OC? (write en 'Órdenes de Compra')
   const canApproveOC = isAdmin || (window.__hasPerm?.(rol, 'Órdenes de Compra', 'w') ?? false);
   const { data: ocs } = window.__hooks.useOrdenesCompra(obraId);
   const { data: materiales } = window.__hooks.useMateriales(obraId);
   const [proveedores, setProveedores] = uS([]);
   uE(() => { window.__db.proveedores.toArray().then(setProveedores); }, []);
+  const fileInputRef = React.useRef(null);
+
+  // Cancelar OC con motivo obligatorio. Restaura la requisición de origen
+  // a estado 'aprobada' si la OC venía de una requisición.
+  const cancelarOC = async (oc) => {
+    const motivo = prompt(`Motivo de cancelación de la OC ${oc.codigo}:\n(ej: "el solicitante dijo que era otro tipo", "se confundió de proveedor")`);
+    if (!motivo || motivo.trim().length < 5) {
+      showToast('Motivo requerido (mín 5 caracteres)', 'red');
+      return;
+    }
+    try {
+      const now = new Date().toISOString();
+      await window.__db.ordenes_compra.update(oc.id, {
+        estado: 'cancelada',
+        motivo_cancelacion: motivo.trim(),
+        cancelado_por: userId,
+        cancelado_at: now,
+        updated_at: now,
+        version: (oc.version ?? 0) + 1,
+        sync_status: oc.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      // Liberar la requisición de origen si está marcada como ordenada
+      if (oc.requisicion_id) {
+        const req = await window.__db.requisiciones.get(oc.requisicion_id);
+        if (req && req.estado === 'ordenada') {
+          await window.__db.requisiciones.update(oc.requisicion_id, {
+            estado: 'aprobada',
+            oc_id: null, oc_codigo: null,
+            updated_at: now,
+            version: (req.version ?? 0) + 1,
+            sync_status: req.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+          });
+          try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'requisiciones' } })); } catch {}
+        }
+      }
+      try { await window.__logAudit?.({ action:'update', table:'ordenes_compra', recordId: oc.id,
+        oldData:{ estado: oc.estado }, newData:{ estado:'cancelada', motivo },
+        reason: `Cancelación OC ${oc.codigo}: ${motivo}` }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'ordenes_compra' } })); } catch {}
+      showToast(`OC ${oc.codigo} cancelada`, 'amber');
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
 
   const [modal, setModal] = uS(null);
   const [editing, setEditing] = uS(null);
@@ -705,7 +863,7 @@ function OrdenesCompraPage({ showToast }) {
                       <button className="btn btn-ghost btn-xs" title="Ver / Editar" onClick={()=>verDetalle(oc)}>
                         <JxIcon name="eye" size={11}/>
                       </button>
-                      <button className="btn btn-ghost btn-xs" title="Descargar PDF" onClick={async ()=>{
+                      <button className="btn btn-ghost btn-xs" title="Descargar PDF para imprimir y firmar" onClick={async ()=>{
                         try {
                           const items = await window.__db.oc_items.where('orden_compra_id').equals(oc.id).filter(x=>!x.deleted_at).toArray();
                           const proveedor = lookupProv(oc.proveedor_id);
@@ -714,11 +872,25 @@ function OrdenesCompraPage({ showToast }) {
                           const companies = await window.__db.companies.toArray();
                           const company = companies.find(c => !c.deleted_at && c.status === 'activa');
                           window.__pdfs?.generateOCPdf?.(oc, items, proveedor, obra, company);
-                          showToast('PDF generado', 'green');
+                          showToast('PDF generado · imprimí y hacé firmar', 'green');
                         } catch (e) { showToast('Error PDF: '+e.message, 'red'); }
                       }} style={{ marginLeft:4 }}>
                         <JxIcon name="download" size={11}/>
                       </button>
+                      {/* Adjuntar OC firmada */}
+                      {oc.estado !== 'cancelada' && (
+                        <button className="btn btn-ghost btn-xs" title="Adjuntar OC firmada (PDF/foto)"
+                          onClick={()=>fileInputRef.current?.openForOC(oc)} style={{ marginLeft:4 }}>
+                          <JxIcon name="upload" size={11}/>
+                        </button>
+                      )}
+                      {/* Cancelar OC */}
+                      {canApproveOC && oc.estado !== 'cancelada' && oc.estado !== 'recibida' && (
+                        <button className="btn btn-red btn-xs" title="Cancelar OC (con motivo)"
+                          onClick={()=>cancelarOC(oc)} style={{ marginLeft:4 }}>
+                          <JxIcon name="x" size={11}/>
+                        </button>
+                      )}
                     </td>
                   </tr>
                   );
@@ -728,6 +900,47 @@ function OrdenesCompraPage({ showToast }) {
           </div>
         </div>
       )}
+
+      {/* Input file invisible para adjuntar OC firmada */}
+      <input ref={(el) => {
+        if (el && !el.openForOC) {
+          el.openForOC = (oc) => {
+            el._targetOc = oc;
+            el.click();
+          };
+        }
+        if (typeof fileInputRef === 'object' && fileInputRef !== null) fileInputRef.current = el;
+      }}
+        type="file" accept="application/pdf,image/*" style={{ display:'none' }}
+        onChange={async (e) => {
+          const f = e.target.files?.[0];
+          const oc = e.target._targetOc;
+          if (!f || !oc) return;
+          if (f.size > 10 * 1024 * 1024) { showToast('Archivo muy grande (máx 10 MB)', 'red'); return; }
+          try {
+            const evId = window.__newId();
+            await window.__saveEvidenciaLocal?.({
+              id: evId, obra_id: oc.obra_id,
+              tipo_evidencia: 'oc_firmada',
+              modulo_relacionado: 'ordenes_compra',
+              registro_relacionado_id: oc.id,
+              nombre_archivo: f.name, mime_type: f.type, blob: f,
+              fecha: new Date().toISOString().slice(0,10),
+              observaciones: `OC firmada · ${oc.codigo}`,
+              created_by: userId,
+            });
+            await window.__db.ordenes_compra.update(oc.id, {
+              estado: oc.estado === 'borrador' ? 'enviada' : oc.estado,
+              oc_firmada_evidencia_id: evId,
+              updated_at: new Date().toISOString(),
+              version: (oc.version ?? 0) + 1,
+              sync_status: oc.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+            });
+            try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'ordenes_compra' } })); } catch {}
+            showToast(`✓ OC firmada adjuntada · ${oc.codigo}`, 'green');
+          } catch (err) { showToast('Error: ' + (err.message || err), 'red'); }
+          e.target.value = ''; // limpiar input
+        }}/>
 
       {modal && (
         <Modal title={editing ? `OC ${form.codigo}` : 'Nueva Orden de Compra'} icon="package" onClose={()=>{setModal(null); setEditing(null); setItems([]);}} wide>
