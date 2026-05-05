@@ -68,9 +68,19 @@ Responde SOLO con JSON válido (sin markdown, sin texto extra) con esta estructu
   "advertencias": [string]
 }`;
 
+import { requireAuth, rateLimit, sanitizeError, validateFileBytes } from './_lib.js';
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Solo POST' });
+  }
+
+  try {
+    await requireAuth(req);
+    rateLimit(req, { windowMs: 60_000, max: 30 });
+  } catch (e) {
+    const s = sanitizeError(e, 'No autorizado');
+    return res.status(s.status).json(s.body);
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -109,6 +119,20 @@ export default async function handler(req, res) {
   // Validar que sea base64 razonablemente válido (caracteres permitidos)
   if (!/^[A-Za-z0-9+/=]+$/.test(cleanBase64)) {
     return res.status(422).json({ error: 'El archivo no es base64 válido' });
+  }
+
+  // Validar magic bytes — no confiar en mimeType declarado por el cliente.
+  // Un attacker puede mandar un .exe disfrazado como image/png.
+  try {
+    const buf = Buffer.from(cleanBase64, 'base64');
+    const v = validateFileBytes(buf, mimeType);
+    if (!v.ok) {
+      return res.status(415).json({
+        error: v.reason || `El contenido del archivo no coincide con el tipo declarado (${mimeType}). Real: ${v.actualType || 'desconocido'}.`,
+      });
+    }
+  } catch (e) {
+    return res.status(422).json({ error: 'No se pudo decodificar base64' });
   }
 
   // Construir el bloque de contenido según sea PDF o imagen
@@ -152,9 +176,11 @@ export default async function handler(req, res) {
 
     if (!upstream.ok) {
       const errText = await upstream.text();
+      console.error('[captura-magica] upstream error:', upstream.status, errText.slice(0, 200));
+      const isProd = process.env.NODE_ENV === 'production';
       return res.status(upstream.status).json({
         error: `Claude API respondió ${upstream.status}`,
-        detail: errText.slice(0, 500),
+        ...(isProd ? {} : { detail: errText.slice(0, 500) }),
       });
     }
 
@@ -180,16 +206,19 @@ export default async function handler(req, res) {
       });
     }
 
+    const isProd = process.env.NODE_ENV === 'production';
     return res.status(200).json({
       extracted,
       model: data.model,
       usage: data.usage,
-      raw_text_preview: text.slice(0, 300),
+      // raw_text_preview solo en dev — en prod se omite para no fugar info
+      ...(isProd ? {} : { raw_text_preview: text.slice(0, 300) }),
     });
   } catch (e) {
     if (e.name === 'AbortError') {
       return res.status(504).json({ error: 'Claude tardó demasiado (>90s)' });
     }
-    return res.status(502).json({ error: 'Error consultando Claude', detail: e.message });
+    const sanitized = sanitizeError(e, 'Error consultando Claude');
+    return res.status(sanitized.status).json(sanitized.body);
   }
 }

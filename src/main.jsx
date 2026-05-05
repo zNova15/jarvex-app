@@ -134,7 +134,10 @@ const PAGE_CHUNKS = {
   'jx-reportes':              () => import('./components/jx-reportes.jsx'),
   'jx-movimientos':           () => import('./components/jx-movimientos.jsx'),
   'jx-gestion':               () => import('./components/jx-gestion.jsx'),
-  'jx-admin':                 () => import('./components/jx-admin.jsx'),
+  // jx-admin se carga eager arriba (`import './components/jx-admin.jsx'`)
+  // — exponemos el chunk acá vacío para que __loadChunk('jx-admin')
+  // siga funcionando sin disparar el warning de "ineffective dynamic import".
+  'jx-admin':                 () => Promise.resolve(true),
   'jx-importar':              () => import('./components/jx-importar.jsx'),
   'jx-captura-magica':        () => import('./components/jx-captura-magica.jsx'),
   'jx-contabilidad':          () => import('./components/jx-contabilidad.jsx'),

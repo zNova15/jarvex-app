@@ -36,8 +36,10 @@ export async function ocrAsistencia(file, personalConocido = [], fecha = null) {
 
   const base64 = await fileToBase64(file);
 
-  const res = await fetch('/api/ocr-asistencia', {
+  const { apiFetch } = await import('./api-client');
+  const res = await apiFetch('/api/ocr-asistencia', {
     method: 'POST',
+    timeout: 90000,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       file: base64,

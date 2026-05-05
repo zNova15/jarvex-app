@@ -43,9 +43,21 @@ Responde SOLO con JSON válido: {"results":[{"id":"<id>","categoria":"<una_categ
 Responde SOLO con JSON válido: {"results":[{"id":"<id>","categoria":"<una_categoria_exacta>"}]}`;
 }
 
+// Sanitización: cada nombre que se concatena al prompt se filtra para evitar
+// prompt injection (\n, comillas raras, caracteres de control, etc.).
+import { requireAuth, rateLimit, sanitizeError, sanitizeForPrompt } from './_lib.js';
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Solo POST' });
+  }
+
+  try {
+    await requireAuth(req);
+    rateLimit(req, { windowMs: 60_000, max: 60 });
+  } catch (e) {
+    const s = sanitizeError(e, 'No autorizado');
+    return res.status(s.status).json(s.body);
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -68,7 +80,9 @@ export default async function handler(req, res) {
 
   const validas = type === 'herramienta' ? CATEGORIAS_HERRAMIENTA : CATEGORIAS_MATERIAL;
   const userMessage = `Clasifica los siguientes ${items.length} ${type === 'material' ? 'materiales' : 'herramientas'}:\n\n` +
-    items.map(i => `id="${i.id}" nombre="${i.nombre}"`).join('\n') +
+    items.map(i =>
+      `id="${sanitizeForPrompt(i.id, 60)}" nombre="${sanitizeForPrompt(i.nombre, 200)}"`
+    ).join('\n') +
     `\n\nCategorías válidas: ${validas.join(', ')}.`;
 
   try {

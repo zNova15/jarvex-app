@@ -6,6 +6,13 @@
 // el browser no aplica CORS al llamarla, y SUNAT recibe la petición desde
 // un entorno server (sin restricciones de same-origin).
 //
+// SECURITY:
+// - Requiere usuario autenticado.
+// - CORS restringido a dominios permitidos (no wildcard).
+// - Rate limit suave (10 envíos / minuto / IP).
+
+import { requireAuth, rateLimit, sanitizeError, setCorsHeaders } from './_lib.js';
+//
 // Entrada (JSON):
 //   { soapEnvelope: string, ambiente: 'homologacion' | 'produccion' }
 //
@@ -22,12 +29,9 @@ const ENDPOINTS = {
 const SOAP_ACTION = 'urn:sendBill';
 
 export default async function handler(req, res) {
-  // CORS — la SPA está en el mismo origen, pero por seguridad permitimos
-  // explícitamente el dominio de prod y wildcard sólo para preflight de
-  // mismo-origen. Si se monta en otro dominio, ajustar.
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  // CORS controlado: solo dominios autorizados (jarvex-app.vercel.app +
+  // localhost). Era wildcard '*' que es inseguro contra CSRF.
+  setCorsHeaders(req, res);
 
   if (req.method === 'OPTIONS') {
     return res.status(204).end();
@@ -36,12 +40,24 @@ export default async function handler(req, res) {
     return res.status(405).json({ ok: false, code: 'METHOD', message: 'Solo POST' });
   }
 
+  try {
+    await requireAuth(req);
+    rateLimit(req, { windowMs: 60_000, max: 10 });
+  } catch (e) {
+    const sanitized = sanitizeError(e, 'No autorizado');
+    return res.status(sanitized.status).json({ ok: false, ...sanitized.body });
+  }
+
   // Body: Vercel parsea JSON automáticamente cuando Content-Type es JSON.
   const body = req.body && typeof req.body === 'object' ? req.body : await readJsonBody(req);
   const { soapEnvelope, ambiente } = body || {};
 
   if (typeof soapEnvelope !== 'string' || !soapEnvelope.trim()) {
     return res.status(400).json({ ok: false, code: 'BAD_BODY', message: 'soapEnvelope requerido' });
+  }
+  // Validación liviana: tiene pinta de SOAP envelope?
+  if (soapEnvelope.length > 5_000_000 || !/<\w+:?Envelope/i.test(soapEnvelope)) {
+    return res.status(400).json({ ok: false, code: 'BAD_BODY', message: 'soapEnvelope debe ser un SOAP envelope válido (<5MB)' });
   }
   const url = ENDPOINTS[ambiente];
   if (!url) {
@@ -76,7 +92,14 @@ export default async function handler(req, res) {
     if (e.name === 'AbortError') {
       return res.status(504).json({ ok: false, code: 'TIMEOUT', message: 'SUNAT tardó más de 30s' });
     }
-    return res.status(502).json({ ok: false, code: 'UPSTREAM', message: 'No se pudo conectar a SUNAT', detail: String(e.message || e) });
+    console.error('[sunat-bill] upstream error:', e?.message);
+    const isProd = process.env.NODE_ENV === 'production';
+    return res.status(502).json({
+      ok: false,
+      code: 'UPSTREAM',
+      message: 'No se pudo conectar a SUNAT',
+      ...(isProd ? {} : { detail: String(e.message || e) }),
+    });
   }
 }
 

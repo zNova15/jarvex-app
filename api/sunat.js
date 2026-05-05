@@ -2,12 +2,20 @@
 //
 // Proxy a decolecta.com (sucesor de apis.net.pe) para evitar CORS.
 //
+// SECURITY:
+// - Requiere usuario autenticado (Authorization: Bearer <jwt>).
+// - Rate limit: 30 consultas / minuto / IP.
+// - Validación de dígito verificador del RUC antes de consultar (ahorra cuota).
+// - Errores upstream sanitizados — no se filtra info del token.
+//
 // Estrategia:
 //   1. Si hay DECOLECTA_TOKEN (o APIS_NET_PE_TOKEN como alias legacy) →
 //      decolecta v1/sunat/ruc/full → devuelve actividad económica,
 //      dirección detallada, locales anexos, etc. Plan free 100 cons/mes.
 //   2. Si no → fallback a apis.net.pe v1/ruc legacy (gratis sin token,
 //      solo razón social + dirección).
+
+import { requireAuth, rateLimit, sanitizeError, isValidRUC, setCorsHeaders } from './_lib.js';
 
 // ── Mapeo de actividades económicas / CIIU → rubro JARVEX ────
 // El mapeo busca palabras clave en el texto de actividad económica
@@ -41,20 +49,26 @@ function clasificarRubro(actividadTexto) {
 }
 
 export default async function handler(req, res) {
-  const { ruc } = req.query || {};
-  const r = String(ruc || '').trim();
-
-  if (!/^\d{11}$/.test(r)) {
-    return res.status(422).json({ error: 'RUC debe tener 11 dígitos numéricos' });
-  }
-
-  const token = process.env.DECOLECTA_TOKEN || process.env.APIS_NET_PE_TOKEN;
-  const useFull = !!token;
-  const url = useFull
-    ? `https://api.decolecta.com/v1/sunat/ruc/full?numero=${r}`
-    : `https://api.apis.net.pe/v1/ruc?numero=${r}`;
+  setCorsHeaders(req, res);
+  if (req.method === 'OPTIONS') return res.status(204).end();
 
   try {
+    await requireAuth(req);
+    rateLimit(req, { windowMs: 60_000, max: 30 });
+
+    const { ruc } = req.query || {};
+    const r = String(ruc || '').trim();
+
+    if (!isValidRUC(r)) {
+      return res.status(422).json({ error: 'RUC inválido (formato o dígito verificador)' });
+    }
+
+    const token = process.env.DECOLECTA_TOKEN || process.env.APIS_NET_PE_TOKEN;
+    const useFull = !!token;
+    const url = useFull
+      ? `https://api.decolecta.com/v1/sunat/ruc/full?numero=${r}`
+      : `https://api.apis.net.pe/v1/ruc?numero=${r}`;
+
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 10000);
     const upstream = await fetch(url, {
@@ -67,7 +81,9 @@ export default async function handler(req, res) {
     clearTimeout(timer);
 
     if (upstream.status === 401) {
-      return res.status(503).json({ error: 'SUNAT: token inválido — verifica DECOLECTA_TOKEN en Vercel env' });
+      // No filtrar nombre de la env var al cliente
+      console.error('[sunat] upstream 401 — verificá DECOLECTA_TOKEN en Vercel');
+      return res.status(503).json({ error: 'SUNAT temporalmente no disponible — avisá al admin' });
     }
     if (upstream.status === 404) {
       return res.status(404).json({ error: 'RUC no encontrado en SUNAT' });
@@ -146,12 +162,15 @@ export default async function handler(req, res) {
     // Cache de 1 hora — los datos de RUC cambian raramente.
     // Importante: con plan free de 100 cons/mes, esto evita gastar el cuota
     // si consultás varias veces el mismo RUC en una hora.
-    res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate=86400');
+    // Cache 5 min (no 1h): los datos de RUC pueden cambiar (cambio de
+    // condición, domicilio) y un cache muy largo desinforma. SWR de 1h.
+    res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=3600');
     return res.status(200).json(normalized);
   } catch (e) {
     if (e.name === 'AbortError') {
       return res.status(504).json({ error: 'SUNAT tardó demasiado' });
     }
-    return res.status(502).json({ error: 'No se pudo conectar a SUNAT', detail: e.message });
+    const sanitized = sanitizeError(e, 'No se pudo conectar a SUNAT');
+    return res.status(sanitized.status).json(sanitized.body);
   }
 }

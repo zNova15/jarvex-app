@@ -103,8 +103,10 @@ export async function sendBillToSUNAT({ zipBase64, zipFilename, ruc, sol_user, s
 
   let proxyResp;
   try {
-    proxyResp = await fetch('/api/sunat-bill', {
+    const { apiFetch } = await import('./api-client');
+    proxyResp = await apiFetch('/api/sunat-bill', {
       method: 'POST',
+      timeout: 60000,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ soapEnvelope, ambiente }),
     });

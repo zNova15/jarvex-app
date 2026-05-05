@@ -49,23 +49,20 @@ export async function sugerirCuentaPcge(payload) {
     return { ...hit.v, _cached: true };
   }
 
-  // Llamada al endpoint
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 35000);
+  // Llamada al endpoint con auth automática
+  const { apiFetch } = await import('./api-client');
   let resp;
   try {
-    resp = await fetch('/api/sugerir-cuenta-pcge', {
+    resp = await apiFetch('/api/sugerir-cuenta-pcge', {
       method: 'POST',
-      signal: ctrl.signal,
+      timeout: 35000,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
   } catch (e) {
-    clearTimeout(timer);
     if (e.name === 'AbortError') throw new Error('La sugerencia de cuenta tardó demasiado');
     throw new Error('No se pudo consultar la sugerencia: ' + (e.message || e));
   }
-  clearTimeout(timer);
 
   if (!resp.ok) {
     let body = null;

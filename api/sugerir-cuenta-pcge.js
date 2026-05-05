@@ -1,3 +1,5 @@
+import { requireAuth, rateLimit, sanitizeError, sanitizeForPrompt } from './_lib.js';
+
 // Vercel serverless function: POST /api/sugerir-cuenta-pcge
 //
 // Body: {
@@ -89,6 +91,14 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Solo POST' });
   }
 
+  try {
+    await requireAuth(req);
+    rateLimit(req, { windowMs: 60_000, max: 60 });
+  } catch (e) {
+    const s = sanitizeError(e, 'No autorizado');
+    return res.status(s.status).json(s.body);
+  }
+
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     return res.status(503).json({
@@ -98,11 +108,12 @@ export default async function handler(req, res) {
 
   const body = req.body || {};
   const type = ['income', 'cost', 'expense'].includes(body.type) ? body.type : 'expense';
-  const description = String(body.description || '').slice(0, 500);
-  const category = String(body.category || '').slice(0, 100);
-  const thirdPartyName = String(body.third_party_name || '').slice(0, 200);
-  const documentType = String(body.document_type || '').slice(0, 50);
-  const sugerenciaActual = String(body.sugerencia_actual || '').slice(0, 5);
+  // Sanitización: caracteres de control y newlines fuera para evitar prompt injection.
+  const description = sanitizeForPrompt(body.description, 500);
+  const category = sanitizeForPrompt(body.category, 100);
+  const thirdPartyName = sanitizeForPrompt(body.third_party_name, 200);
+  const documentType = sanitizeForPrompt(body.document_type, 50);
+  const sugerenciaActual = sanitizeForPrompt(body.sugerencia_actual, 5);
 
   if (!description && !category) {
     return res.status(422).json({ error: 'Se requiere al menos description o category' });
@@ -141,9 +152,11 @@ export default async function handler(req, res) {
 
     if (!upstream.ok) {
       const errText = await upstream.text();
+      console.error('[sugerir-cuenta-pcge] upstream error:', upstream.status, errText.slice(0, 200));
+      const isProd = process.env.NODE_ENV === 'production';
       return res.status(upstream.status).json({
         error: `Claude respondió ${upstream.status}`,
-        detail: errText.slice(0, 400),
+        ...(isProd ? {} : { detail: errText.slice(0, 400) }),
       });
     }
 

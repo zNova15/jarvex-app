@@ -6,14 +6,14 @@
 // Access-Control-Allow-Origin).
 // ═══════════════════════════════════════════════════════════════════
 
+import { apiFetch } from './api-client';
+
 const API_BASE = '/api'; // mismo origin que la SPA → sin CORS
 const REQ_TIMEOUT_MS = 10000;
 
+// Wrapper que delega en apiFetch (token JWT automático) + timeout corto.
 function timeoutFetch(url, opts = {}) {
-  const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), REQ_TIMEOUT_MS);
-  return fetch(url, { ...opts, signal: controller.signal })
-    .finally(() => clearTimeout(id));
+  return apiFetch(url, { ...opts, timeout: REQ_TIMEOUT_MS });
 }
 
 /**

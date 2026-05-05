@@ -32,7 +32,10 @@ export default defineConfig({
             handler: 'CacheFirst',
             options: {
               cacheName: 'evidencias-cache',
-              expiration: { maxEntries: 200, maxAgeSeconds: 7 * 24 * 60 * 60 },
+              // 1 día máx (antes era 7d). Si una evidencia se borra del server,
+              // el SW sigue sirviendo la versión local pero por menos tiempo.
+              // Logout también borra esta cache desde el cliente (useAuth.js).
+              expiration: { maxEntries: 200, maxAgeSeconds: 24 * 60 * 60 },
             },
           },
           // SUNAT/RENIEC y otros endpoints serverless propios: NO cachear
@@ -61,5 +64,13 @@ export default defineConfig({
   ],
   resolve: {
     alias: { '@': '/src' },
+  },
+  // En producción, esbuild elimina console.* y debugger del bundle.
+  // Esto evita filtrar info de debug (warns, paths internos, IDs) a usuarios
+  // que abran DevTools. Los console.error sí se mantienen para reportar
+  // problemas reales en runtime via Sentry/Datadog si se conecta a futuro.
+  esbuild: {
+    drop: process.env.NODE_ENV === 'production' ? ['console', 'debugger'] : [],
+    pure: process.env.NODE_ENV === 'production' ? ['console.log', 'console.warn', 'console.info', 'console.debug'] : [],
   },
 })

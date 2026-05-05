@@ -1,3 +1,5 @@
+import { apiFetch } from './api-client';
+
 // Wrapper de /api/sugerir-cadena-trazabilidad — Claude Sonnet sugiere
 // distribución de precios entre eslabones intercompany.
 //
@@ -17,22 +19,18 @@ export async function sugerirCadenaTrazabilidad(payload) {
     throw new Error('Faltan eslabones (mín. 2: primaria + ejecutora)');
   }
 
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 35000);
   let resp;
   try {
-    resp = await fetch('/api/sugerir-cadena-trazabilidad', {
+    resp = await apiFetch('/api/sugerir-cadena-trazabilidad', {
       method: 'POST',
-      signal: ctrl.signal,
+      timeout: 35000,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
   } catch (e) {
-    clearTimeout(timer);
     if (e.name === 'AbortError') throw new Error('La IA tardó demasiado en responder');
     throw new Error('No se pudo consultar la IA: ' + (e.message || e));
   }
-  clearTimeout(timer);
 
   if (!resp.ok) {
     let body = null;

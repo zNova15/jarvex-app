@@ -1,15 +1,28 @@
 // Vercel serverless function: /api/reniec?dni=12345678
 // Proxy a apis.net.pe v1 para evitar CORS.
+//
+// SECURITY:
+// - Requiere usuario autenticado (Authorization: Bearer <jwt>).
+// - Rate limit: 30 consultas / minuto / IP (mitigación contra enumeración masiva).
+// - Validación de formato DNI antes de pegarle a RENIEC (ahorra cuota).
+
+import { requireAuth, rateLimit, sanitizeError, isValidDNI, setCorsHeaders } from './_lib.js';
 
 export default async function handler(req, res) {
-  const { dni } = req.query || {};
-  const d = String(dni || '').trim();
-
-  if (!/^\d{8}$/.test(d)) {
-    return res.status(422).json({ error: 'DNI debe tener 8 dígitos numéricos' });
-  }
+  setCorsHeaders(req, res);
+  if (req.method === 'OPTIONS') return res.status(204).end();
 
   try {
+    await requireAuth(req);
+    rateLimit(req, { windowMs: 60_000, max: 30 });
+
+    const { dni } = req.query || {};
+    const d = String(dni || '').trim();
+
+    if (!isValidDNI(d)) {
+      return res.status(422).json({ error: 'DNI debe tener 8 dígitos numéricos válidos' });
+    }
+
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 8000);
     const upstream = await fetch(`https://api.apis.net.pe/v1/dni?numero=${d}`, {
@@ -35,9 +48,7 @@ export default async function handler(req, res) {
     res.setHeader('Cache-Control', 's-maxage=86400, stale-while-revalidate=604800');
     return res.status(200).json(data);
   } catch (e) {
-    if (e.name === 'AbortError') {
-      return res.status(504).json({ error: 'RENIEC tardó demasiado' });
-    }
-    return res.status(502).json({ error: 'No se pudo conectar a RENIEC', detail: e.message });
+    const sanitized = sanitizeError(e, 'No se pudo conectar a RENIEC');
+    return res.status(sanitized.status).json(sanitized.body);
   }
 }

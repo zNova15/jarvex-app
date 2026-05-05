@@ -60,9 +60,19 @@ Devuelve SOLO JSON válido (sin markdown, sin texto extra) con esta estructura e
 
 Coloca en errors[] todo lo "high" y "medium". Coloca en warnings[] los "low". confianza alta (>=0.85) cuando los datos son completos y validables sin ambigüedad.`;
 
+import { requireAuth, rateLimit, sanitizeError } from './_lib.js';
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Solo POST' });
+  }
+
+  try {
+    await requireAuth(req);
+    rateLimit(req, { windowMs: 60_000, max: 60 });
+  } catch (e) {
+    const s = sanitizeError(e, 'No autorizado');
+    return res.status(s.status).json(s.body);
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -111,9 +121,11 @@ export default async function handler(req, res) {
 
     if (!upstream.ok) {
       const errText = await upstream.text();
+      console.error('[validar-comprobante] upstream error:', upstream.status, errText.slice(0, 200));
+      const isProd = process.env.NODE_ENV === 'production';
       return res.status(upstream.status).json({
         error: `Claude API respondió ${upstream.status}`,
-        detail: errText.slice(0, 500),
+        ...(isProd ? {} : { detail: errText.slice(0, 500) }),
       });
     }
 

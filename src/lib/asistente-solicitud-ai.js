@@ -2,6 +2,8 @@
 // libre del residente en una solicitud de materiales estructurada usando
 // Claude Sonnet, matchando contra el catálogo de la obra activa.
 
+import { apiFetch } from './api-client';
+
 const TIMEOUT_MS = 90 * 1000;  // Sonnet con catálogos grandes puede tardar
 
 /**
@@ -20,23 +22,18 @@ export async function asistenteSolicitudMaterialesAI(payload) {
     throw new Error('Sin conexión — el asistente IA requiere internet');
   }
 
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
-
   let resp;
   try {
-    resp = await fetch('/api/asistente-solicitud-mat', {
+    resp = await apiFetch('/api/asistente-solicitud-mat', {
       method: 'POST',
-      signal: ctrl.signal,
+      timeout: TIMEOUT_MS,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
   } catch (e) {
-    clearTimeout(timer);
     if (e?.name === 'AbortError') throw new Error('El asistente tardó demasiado en responder');
     throw new Error('No se pudo consultar al asistente: ' + (e?.message || e));
   }
-  clearTimeout(timer);
 
   if (!resp.ok) {
     let body = null;

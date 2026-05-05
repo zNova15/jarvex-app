@@ -1,3 +1,5 @@
+import { requireAuth, rateLimit, sanitizeError, sanitizeForPrompt } from './_lib.js';
+
 // Vercel serverless: POST /api/sugerir-cadena-trazabilidad
 //
 // Sugiere distribución de precios entre eslabones de una cadena intercompany.
@@ -73,6 +75,14 @@ Confianza:
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Solo POST' });
 
+  try {
+    await requireAuth(req);
+    rateLimit(req, { windowMs: 60_000, max: 30 });
+  } catch (e) {
+    const s = sanitizeError(e, 'No autorizado');
+    return res.status(s.status).json(s.body);
+  }
+
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return res.status(503).json({ error: 'ANTHROPIC_API_KEY no configurada' });
 
@@ -82,15 +92,20 @@ export default async function handler(req, res) {
   const cantidad = Number(body.cantidad) || 1;
   const moneda = body.moneda === 'USD' ? 'USD' : 'PEN';
   const eslabones = Array.isArray(body.eslabones) ? body.eslabones : [];
-  const itemNombre = String(body.item_nombre || '').slice(0, 200);
+  const itemNombre = sanitizeForPrompt(body.item_nombre, 200);
 
   if (!precioCompra || precioCompra <= 0) return res.status(422).json({ error: 'precio_compra inválido' });
   if (!precioObjetivo || precioObjetivo <= 0) return res.status(422).json({ error: 'precio_objetivo inválido' });
   if (eslabones.length < 2) return res.status(422).json({ error: 'Se necesitan al menos 2 eslabones (primaria + ejecutora)' });
 
-  const eslabonesDesc = eslabones.map((e, i) =>
-    `${i + 1}. [${e.posicion}] ${e.name} (id=${e.company_id}, rol=${e.rol_grupo || '—'}, margen objetivo: ${e.margen_objetivo_pct ?? '—'}%)`
-  ).join('\n');
+  const eslabonesDesc = eslabones.map((e, i) => {
+    const pos = sanitizeForPrompt(e.posicion, 30);
+    const name = sanitizeForPrompt(e.name, 100);
+    const cid = sanitizeForPrompt(e.company_id, 50);
+    const rol = sanitizeForPrompt(e.rol_grupo, 30) || '—';
+    const margen = Number(e.margen_objetivo_pct) || '—';
+    return `${i + 1}. [${pos}] ${name} (id=${cid}, rol=${rol}, margen objetivo: ${margen}%)`;
+  }).join('\n');
 
   const userMessage = [
     `Item: ${itemNombre || '(sin nombre)'}, cantidad ${cantidad} (moneda ${moneda})`,
@@ -125,9 +140,11 @@ export default async function handler(req, res) {
 
     if (!upstream.ok) {
       const errText = await upstream.text();
+      console.error('[sugerir-cadena] upstream error:', upstream.status, errText.slice(0, 200));
+      const isProd = process.env.NODE_ENV === 'production';
       return res.status(upstream.status).json({
         error: `Claude respondió ${upstream.status}`,
-        detail: errText.slice(0, 400),
+        ...(isProd ? {} : { detail: errText.slice(0, 400) }),
       });
     }
 

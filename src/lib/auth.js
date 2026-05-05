@@ -56,11 +56,35 @@ export async function login(email, password) {
   }
 }
 
+// Borra storage local sensible al cerrar sesión.
+// - localStorage: roles, overrides, búsquedas recientes
+// - IndexedDB auth_cache: tokens y profile cacheados
+// - Service Worker caches: evidencias firmadas con tokens viejos
+async function fullLocalCleanup() {
+  try { await clearCachedSession(); } catch {}
+  // localStorage keys que el cliente setea con info por-usuario
+  const keysToClear = [
+    'jx_user_role', 'jx_user_role_real', 'jx_role_override',
+    'jx_recent_searches', 'jx_recent_global', 'jx_perm_overrides_v1',
+    'app_mode', 'obra_activa_id', 'jarvex_notif_asked',
+    'jx_pcge_suggestions_v1', // cache de IA por-usuario
+  ];
+  for (const k of keysToClear) {
+    try { localStorage.removeItem(k); } catch {}
+  }
+  // SW caches con datos potencialmente sensibles
+  if (typeof caches !== 'undefined') {
+    try {
+      await caches.delete('evidencias-cache');
+    } catch {}
+  }
+}
+
 export async function logout() {
   try {
     await supabase.auth.signOut();
   } finally {
-    await clearCachedSession();
+    await fullLocalCleanup();
   }
 }
 

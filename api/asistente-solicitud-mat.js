@@ -167,9 +167,19 @@ function buildUserMessage(body) {
   return partes.join('\n');
 }
 
+import { requireAuth, rateLimit, sanitizeError } from './_lib.js';
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Solo POST' });
+  }
+
+  try {
+    await requireAuth(req);
+    rateLimit(req, { windowMs: 60_000, max: 30 });
+  } catch (e) {
+    const s = sanitizeError(e, 'No autorizado');
+    return res.status(s.status).json(s.body);
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -217,9 +227,11 @@ export default async function handler(req, res) {
       if (status === 401) userMsg = 'Token Anthropic inválido — revisar ANTHROPIC_API_KEY';
       else if (status === 429) userMsg = 'Cuota Anthropic agotada o rate limit — esperá 1 min y reintentá';
       else if (status === 529) userMsg = 'Anthropic sobrecargado — reintentá en unos segundos';
+      console.error('[asistente-solicitud-mat] upstream error:', status, errText.slice(0, 200));
+      const isProd = process.env.NODE_ENV === 'production';
       return res.status(status).json({
         error: userMsg,
-        detail: errText.slice(0, 400),
+        ...(isProd ? {} : { detail: errText.slice(0, 400) }),
       });
     }
 

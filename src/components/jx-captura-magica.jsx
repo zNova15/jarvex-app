@@ -241,8 +241,10 @@ function CapturaMagicaPage({ showToast }) {
     setItems(prev => prev.map(x => x.id === id ? { ...x, status: 'procesando' } : x));
     try {
       const base64 = await fileToBase64(file);
-      const resp = await fetch('/api/captura-magica', {
+      const { apiFetch } = await import('../lib/api-client');
+      const resp = await apiFetch('/api/captura-magica', {
         method: 'POST',
+        timeout: 90000,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file: base64, mimeType: file.type }),
       });

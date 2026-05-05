@@ -393,8 +393,10 @@ function MaterialesPage({ showToast }) {
 
     const procesarChunk = async (chunk) => {
       try {
-        const resp = await fetch('/api/categorize', {
+        const { apiFetch } = await import('../lib/api-client');
+        const resp = await apiFetch('/api/categorize', {
           method: 'POST',
+          timeout: 60000,
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             type: 'material',
@@ -1891,8 +1893,10 @@ function HerramientasPage({ showToast }) {
 
     const procesarChunk = async (chunk) => {
       try {
-        const resp = await fetch('/api/categorize', {
+        const { apiFetch } = await import('../lib/api-client');
+        const resp = await apiFetch('/api/categorize', {
           method: 'POST',
+          timeout: 60000,
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             type: 'herramienta',

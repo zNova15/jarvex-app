@@ -65,9 +65,19 @@ Responde SOLO con JSON válido (sin markdown, sin texto extra) con esta estructu
   "advertencias": [string]
 }`;
 
+import { requireAuth, rateLimit, sanitizeError, sanitizeForPrompt, validateFileBytes } from './_lib.js';
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Solo POST' });
+  }
+
+  try {
+    await requireAuth(req);
+    rateLimit(req, { windowMs: 60_000, max: 30 });
+  } catch (e) {
+    const s = sanitizeError(e, 'No autorizado');
+    return res.status(s.status).json(s.body);
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -109,13 +119,27 @@ export default async function handler(req, res) {
     return res.status(422).json({ error: 'El archivo no es base64 válido' });
   }
 
+  // Validar magic bytes — no confiar en mimeType declarado
+  try {
+    const buf = Buffer.from(cleanBase64, 'base64');
+    const v = validateFileBytes(buf, mimeType);
+    if (!v.ok) {
+      return res.status(415).json({
+        error: v.reason || `Tipo de archivo inválido (declarado: ${mimeType}, real: ${v.actualType || 'desconocido'})`,
+      });
+    }
+  } catch (e) {
+    return res.status(422).json({ error: 'No se pudo decodificar base64' });
+  }
+
   // Limitar el array de personalConocido a algo razonable (50 trabajadores)
   // y proyectar solo los campos que necesitamos (no fugar datos extra).
+  // Sanitizamos nombres/apellidos para evitar prompt injection.
   const personalSlim = personalConocido.slice(0, 50).map(p => ({
-    id: p?.id ?? null,
-    nombres: p?.nombres ?? '',
-    apellidos: p?.apellidos ?? '',
-    dni: p?.dni ?? null,
+    id: sanitizeForPrompt(p?.id, 50) || null,
+    nombres: sanitizeForPrompt(p?.nombres, 100),
+    apellidos: sanitizeForPrompt(p?.apellidos, 100),
+    dni: /^\d{8}$/.test(p?.dni || '') ? p.dni : null,
   }));
 
   const isPdf = mimeType === 'application/pdf';
@@ -165,9 +189,11 @@ Responde SOLO con el JSON, sin texto adicional ni markdown.`;
 
     if (!upstream.ok) {
       const errText = await upstream.text();
+      console.error('[ocr-asistencia] upstream error:', upstream.status, errText.slice(0, 200));
+      const isProd = process.env.NODE_ENV === 'production';
       return res.status(upstream.status).json({
         error: `Claude API respondió ${upstream.status}`,
-        detail: errText.slice(0, 500),
+        ...(isProd ? {} : { detail: errText.slice(0, 500) }),
       });
     }
 
