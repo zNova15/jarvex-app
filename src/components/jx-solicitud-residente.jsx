@@ -1,4 +1,5 @@
 import React from "react";
+import { asistenteSolicitudMaterialesAI } from "../lib/asistente-solicitud-ai.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 // ═══════════════════════════════════════════════════════════════════
@@ -33,6 +34,11 @@ function SolicitudResidentePage({ showToast }) {
   const [items, setItems] = uS([{ id: 1, material_id: '', material_nombre: '', cantidad: '', notas: '' }]);
   const [previewing, setPreviewing] = uS(false);
   const [submitBusy, setSubmitBusy] = uS(false);
+  // Asistente IA: descripción libre del residente → solicitud estructurada
+  const [aiPrompt, setAiPrompt] = uS('');
+  const [aiBusy, setAiBusy] = uS(false);
+  const [aiResult, setAiResult] = uS(null); // { result, confianza, razonamiento, advertencias }
+  const [aiPriority, setAiPriority] = uS('normal');
 
   // Obra activa
   uE(() => {
@@ -109,6 +115,137 @@ function SolicitudResidentePage({ showToast }) {
   const addItem = () => setItems(prev => [...prev, { id: Date.now(), material_id: '', material_nombre: '', cantidad: '', notas: '' }]);
   const removeItem = (id) => setItems(prev => prev.length === 1 ? prev : prev.filter(it => it.id !== id));
   const updateItem = (id, patch) => setItems(prev => prev.map(it => it.id === id ? { ...it, ...patch } : it));
+
+  // ── Asistente IA ────────────────────────────────────────────
+  // Política auto-apply: confianza ≥0.85 sin advertencias críticas → aplica
+  // directo al form. Sino, muestra panel de revisión.
+  const aplicarAuto = (sug) => {
+    if (!sug || !Array.isArray(sug.result?.items)) return false;
+    const conf = Number(sug.confianza || 0);
+    const advCriticas = (sug.advertencias || []).some(a => /no encontr|inv[aá]lid|critic/i.test(String(a)));
+    return conf >= 0.85 && !advCriticas && sug.result.items.length > 0;
+  };
+
+  const aplicarSugerenciaIA = (sug) => {
+    if (!sug?.result) return;
+    // Volcar items al form
+    const nuevosItems = sug.result.items.map((it, i) => ({
+      id: Date.now() + i,
+      material_id: it.material_id || '',
+      material_nombre: it.material_id ? (matsArr.find(m => m.id === it.material_id)?.nombre_material || it.nombre_match) : it.nombre_match,
+      cantidad: String(it.cantidad ?? ''),
+      notas: [it.notas, it.accion === 'crear_nuevo' ? '⚠ Material nuevo (no en catálogo)' : null].filter(Boolean).join(' · '),
+    }));
+    if (nuevosItems.length === 0) return;
+    setItems(nuevosItems);
+    if (sug.result.descripcion_estructurada && !descripcion.trim()) {
+      setDescripcion(sug.result.descripcion_estructurada);
+    }
+    if (sug.result.fecha_necesidad_sugerida) {
+      // Solo si el formato es válido YYYY-MM-DD y no es pasado
+      const f = sug.result.fecha_necesidad_sugerida;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(f)) {
+        const hoy = new Date().toISOString().slice(0,10);
+        if (f >= hoy) setFechaNecesidad(f);
+      }
+    }
+    if (sug.result.prioridad_sugerida) setAiPriority(sug.result.prioridad_sugerida);
+  };
+
+  const generarConIA = async () => {
+    if (!obraId) { showToast('Cargando obra activa…', 'amber'); return; }
+    if (!aiPrompt.trim() || aiPrompt.trim().length < 5) {
+      showToast('Escribí qué necesitás (mín 5 caracteres)', 'red');
+      return;
+    }
+    setAiBusy(true);
+    setAiResult(null);
+    try {
+      // Catálogo de materiales de la obra (para matching)
+      const materialesObra = matsArr.map(m => ({
+        id: m.id,
+        nombre_material: m.nombre_material,
+        unidad: m.unidad,
+        stock_actual: m.stock_actual,
+        stock_minimo: m.stock_minimo,
+        categoria: m.categoria,
+        precio_unitario_estimado: m.precio_unitario_estimado,
+      }));
+
+      // Histórico: últimas 8 solicitudes con sus items
+      let historico = [];
+      let partidasObra = [];
+      let proveedores = [];
+      let nombreObra = '';
+      try {
+        const reqs = await window.__db.requisiciones
+          .where('obra_id').equals(obraId)
+          .filter(r => !r.deleted_at)
+          .toArray();
+        const recientes = reqs.sort((a, b) => (b.fecha || '').localeCompare(a.fecha || '')).slice(0, 8);
+        for (const r of recientes) {
+          const its = await window.__db.requisicion_items
+            .where('requisicion_id').equals(r.id)
+            .filter(x => !x.deleted_at)
+            .toArray();
+          historico.push({
+            descripcion: r.descripcion || r.notas || '',
+            items: its.map(it => ({
+              material_id: it.material_id,
+              nombre_match: it.descripcion || matsArr.find(m => m.id === it.material_id)?.nombre_material || '',
+              cantidad: it.cantidad,
+              unidad: it.unidad,
+            })),
+          });
+        }
+        // Partidas
+        const ps = await window.__db.partidas.where('obra_id').equals(obraId).filter(p => !p.deleted_at).toArray();
+        partidasObra = ps.slice(0, 50).map(p => ({ id: p.id, codigo_delfin: p.codigo_delfin, nombre_partida: p.nombre_partida }));
+        // Proveedores
+        const provs = await window.__db.proveedores.filter(p => !p.deleted_at && p.estado !== 'inactivo').toArray();
+        proveedores = provs.slice(0, 30).map(p => ({ id: p.id, razon_social: p.razon_social, ruc: p.ruc }));
+        // Obra
+        const obra = await window.__db.obras.get(obraId);
+        nombreObra = obra?.nombre_obra || '';
+      } catch (e) { /* ignore — el asistente igual puede trabajar sin contexto extra */ }
+
+      const sug = await asistenteSolicitudMaterialesAI({
+        descripcion: aiPrompt.trim(),
+        materiales_obra: materialesObra,
+        historico_solicitudes: historico,
+        partidas_obra: partidasObra,
+        proveedores,
+        fecha_actual: new Date().toISOString().slice(0, 10),
+        nombre_obra: nombreObra,
+      });
+      setAiResult(sug);
+      try {
+        await window.__logAudit?.({
+          action: 'insert', table: 'audit', recordId: 'asistente-solicitud-mat',
+          newData: {
+            confianza: sug.confianza,
+            items_count: sug.result.items.length,
+            descripcion_input: aiPrompt.slice(0, 100),
+            obra_id: obraId,
+          },
+          reason: `IA Asistente Solicitud · ${sug.result.items.length} items · confianza ${(sug.confianza*100).toFixed(0)}%`,
+        });
+      } catch {}
+
+      if (aplicarAuto(sug)) {
+        aplicarSugerenciaIA(sug);
+        showToast(`✓ ${sug.result.items.length} items generados por IA (${(sug.confianza*100).toFixed(0)}% confianza)`, 'green');
+        setAiPrompt('');
+      } else {
+        // Mantener el panel visible para que el usuario revise
+        showToast(`Generado con confianza ${(sug.confianza*100).toFixed(0)}% — revisar antes de aplicar`, 'amber');
+      }
+    } catch (e) {
+      showToast('Asistente IA: ' + (e.message || e), 'red');
+    } finally {
+      setAiBusy(false);
+    }
+  };
 
   const handleMaterialChange = (rowId, value) => {
     const mat = matsByName.get(value.toLowerCase());
@@ -243,6 +380,92 @@ function SolicitudResidentePage({ showToast }) {
             </ul>
           </div>
         </div>
+      </div>
+
+      {/* ── Asistente IA (Captura por descripción libre) ──────── */}
+      <div className="card card-p" style={{ marginBottom:14, background:'rgba(155,89,182,0.07)', border:'1px solid rgba(155,89,182,0.3)' }}>
+        <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:10, marginBottom:8 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            <span style={{ fontSize:16 }}>✨</span>
+            <div>
+              <div style={{ fontSize:13, fontWeight:700, color:'#9B59B6' }}>Asistente IA · Generar solicitud por descripción</div>
+              <div style={{ fontSize:11, color:'var(--tm)' }}>Describí qué necesitás en lenguaje natural — la IA arma los items, cantidades y prioridad.</div>
+            </div>
+          </div>
+          {aiResult && (
+            <button
+              type="button"
+              className="btn btn-ghost btn-xs"
+              onClick={()=>{ setAiResult(null); setAiPrompt(''); }}
+              title="Cerrar panel del asistente">
+              ✕
+            </button>
+          )}
+        </div>
+        <div style={{ display:'flex', gap:8, alignItems:'flex-start' }}>
+          <textarea className="fi" rows={2}
+            value={aiPrompt}
+            onChange={e=>setAiPrompt(e.target.value)}
+            placeholder='Ej: "Para vaciado de losa nivel 3 esta semana — necesito cemento, fierro 1/2 y 5/8, agregados, alambre #16 y triplay para encofrado."'
+            style={{ flex:1, fontSize:12.5 }}
+            disabled={aiBusy}/>
+          <button className="btn btn-amber btn-sm"
+            onClick={generarConIA}
+            disabled={aiBusy || aiPrompt.trim().length < 5}
+            style={{ minWidth:140, alignSelf:'stretch' }}>
+            {aiBusy ? '⏳ Generando…' : '✨ Generar'}
+          </button>
+        </div>
+
+        {/* Panel de revisión cuando confianza < 0.85 (auto-apply ya volcó al form en confianza alta) */}
+        {aiResult && !aplicarAuto(aiResult) && (
+          <div style={{ marginTop:10, padding:'10px 12px', background:'rgba(255,255,255,0.04)', borderRadius:8, border:'1px solid var(--border)' }}>
+            <div style={{ fontSize:11, color: 'var(--amber)', fontWeight:600, marginBottom:6 }}>
+              ⚠ Revisar antes de aplicar — confianza {(aiResult.confianza*100).toFixed(0)}%
+            </div>
+            {aiResult.razonamiento && (
+              <div style={{ fontSize:11, color:'var(--ts)', marginBottom:8 }}>{aiResult.razonamiento}</div>
+            )}
+            {aiResult.advertencias?.length > 0 && (
+              <div style={{ fontSize:10.5, color:'var(--amber)', marginBottom:8 }}>
+                {aiResult.advertencias.map((a, i) => <div key={i}>• {a}</div>)}
+              </div>
+            )}
+            <div style={{ marginTop:6, marginBottom:8, fontSize:11, color:'var(--tm)' }}>
+              <strong>Items propuestos ({aiResult.result.items.length}):</strong>
+            </div>
+            <div style={{ overflowX:'auto', maxHeight:220 }}>
+              <table className="tbl" style={{ fontSize:11 }}>
+                <thead><tr>
+                  <th>Material</th><th>Cant</th><th>Unid</th><th>Acción</th><th>Conf</th>
+                </tr></thead>
+                <tbody>
+                  {aiResult.result.items.map((it, i) => (
+                    <tr key={i}>
+                      <td style={{ maxWidth:240 }}>{it.nombre_match}</td>
+                      <td style={{ textAlign:'right' }}>{it.cantidad}</td>
+                      <td>{it.unidad}</td>
+                      <td>
+                        <span className={`badge ${it.accion === 'crear_nuevo' ? 'b-amber' : 'b-green'}`} style={{ fontSize:10 }}>
+                          {it.accion === 'crear_nuevo' ? 'Nuevo' : 'Existe'}
+                        </span>
+                      </td>
+                      <td style={{ fontSize:10, color:'var(--tm)' }}>{Math.round((it.confianza_item || 0) * 100)}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ marginTop:10, display:'flex', gap:8, justifyContent:'flex-end' }}>
+              <button className="btn btn-ghost btn-sm" onClick={()=>{ setAiResult(null); }}>
+                Descartar
+              </button>
+              <button className="btn btn-amber btn-sm" onClick={()=>{ aplicarSugerenciaIA(aiResult); setAiResult(null); setAiPrompt(''); showToast('Items aplicados al form', 'green'); }}>
+                <JxIcon name="check" size={12}/> Aplicar al form
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Encabezado de la solicitud */}
