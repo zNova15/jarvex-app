@@ -309,27 +309,55 @@ async function pushDelete(tabla, record) {
 
 // ── PULL: Supabase → local ────────────────────────────────────────────
 
+// Tablas que sabemos que NO existen en Supabase server (todavía). Se omiten
+// del pull para evitar 404s en cada sync. El user debe correr la migración
+// SQL de docs/migrations.sql para crearlas → luego sacarlas de esta lista.
+const TABLAS_NO_EN_SERVER = new Set([
+  // Si alguna tabla local todavía no fue creada en Supabase, agregala acá.
+]);
+
+// Cache de tablas que dieron 404 en este runtime → no las volvemos a pegar
+// hasta que se recargue la página (evita spam de errores en consola).
+const _tablasCon404 = new Set();
+
 async function pullMasterTables() {
   for (const { tabla, query } of MASTER_TABLES) {
-    const lastSync = await getLastSync(tabla);
-    let q = query();
-    if (lastSync) {
-      q = q.gte('updated_at', lastSync);
+    if (TABLAS_NO_EN_SERVER.has(tabla) || _tablasCon404.has(tabla)) {
+      continue; // skip silencioso
     }
+    try {
+      const lastSync = await getLastSync(tabla);
+      let q = query();
+      if (lastSync) {
+        q = q.gte('updated_at', lastSync);
+      }
 
-    const { data, error } = await q;
-    if (error) {
-      console.warn(`[SyncEngine] pull ${tabla} ERROR:`, error.message, '— posible causa: RLS o falta de permisos');
-      continue;
-    }
-    if (!data?.length) {
-      console.log(`[SyncEngine] pull ${tabla}: 0 registros nuevos`);
-      continue;
-    }
+      const { data, error } = await q;
+      if (error) {
+        // Detectar tabla inexistente (404 / PGRST205): la marcamos para
+        // skip durante esta sesión y NO romper el resto del sync.
+        const code = error.code || '';
+        const msg = String(error.message || '').toLowerCase();
+        if (code === 'PGRST205' || msg.includes('could not find the table') || msg.includes('not found')) {
+          _tablasCon404.add(tabla);
+          console.warn(`[SyncEngine] tabla "${tabla}" no existe en Supabase remoto — se omitirá hasta el próximo reload. Correr migrations.sql para crearla.`);
+          continue;
+        }
+        console.warn(`[SyncEngine] pull ${tabla} ERROR:`, error.message, '— posible causa: RLS o falta de permisos');
+        continue;
+      }
+      if (!data?.length) {
+        console.log(`[SyncEngine] pull ${tabla}: 0 registros nuevos`);
+        continue;
+      }
 
-    console.log(`[SyncEngine] pull ${tabla}: ${data.length} registros recibidos`);
-    await db[tabla].bulkPut(data);
-    await setLastSync(tabla, new Date().toISOString());
+      console.log(`[SyncEngine] pull ${tabla}: ${data.length} registros recibidos`);
+      await db[tabla].bulkPut(data);
+      await setLastSync(tabla, new Date().toISOString());
+    } catch (e) {
+      // Network errors u otros — no romper sync entero
+      console.warn(`[SyncEngine] pull ${tabla} excepción:`, e?.message || e);
+    }
   }
 }
 
