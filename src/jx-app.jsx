@@ -867,7 +867,6 @@ function App() {
                 syncStatus={syncStatus}
                 onSync={()=>sync.sync && sync.sync()}
                 isMobile={isMobile}/>
-        <SyncBlockedBanner profile={auth.profile}/>
         <div style={{ flex:1, overflow:'hidden', background:'var(--bg-p)' }} key={page}>
           {renderPage()}
         </div>
@@ -877,42 +876,26 @@ function App() {
   );
 }
 
-// Banner persistente que aparece cuando el SyncEngine detecta que las RLS de
-// Supabase están bloqueando el push de datos. Sin esto, el user crea registros
-// que NUNCA se sincronizan al server y, si limpia cache local, se pierden.
-function SyncBlockedBanner({ profile }) {
-  const [blocked, setBlocked] = uSA(null);
-  uEA(() => {
-    const onBlock = (e) => {
-      setBlocked({
-        tabla: e.detail?.tabla,
-        operacion: e.detail?.operacion,
-        message: e.detail?.message,
-        ts: Date.now(),
-      });
-    };
-    window.addEventListener('jx_sync_blocked_rls', onBlock);
-    return () => window.removeEventListener('jx_sync_blocked_rls', onBlock);
-  }, []);
-  if (!blocked) return null;
-  const rol = profile?.rol || 'tu rol';
-  return (
-    <div style={{
-      background: 'rgba(231,76,60,0.15)', borderBottom: '2px solid rgba(231,76,60,0.6)',
-      color: '#FFD3CE', padding: '10px 18px', fontSize: 12.5,
-      display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap',
-    }}>
-      <div style={{ flex: 1, minWidth: 200 }}>
-        <strong style={{ color: '#FF8B7E' }}>⚠ Sync bloqueado por permisos del servidor.</strong>
-        {' '}Tu cuenta ({rol}) no puede crear/actualizar <code style={{ background: 'rgba(0,0,0,0.3)', padding: '1px 5px', borderRadius: 3 }}>{blocked.tabla}</code> en
-        Supabase. Los datos se guardan localmente pero NO se sincronizan — avisale al admin.
-      </div>
-      <button onClick={() => setBlocked(null)}
-        style={{ background: 'transparent', color: '#FFD3CE', border: '1px solid rgba(255,211,206,0.4)', padding: '4px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer' }}>
-        Cerrar
-      </button>
-    </div>
-  );
+// Listener vanilla (sin hooks) que escucha el evento jx_sync_blocked_rls
+// y dispara un toast nativo del browser (alert) o usa el showToast global
+// si está disponible. Antes era un componente con hooks, pero estaba
+// causando errores de useState en producción al renderizar — pasamos a
+// vanilla JS para evitar cualquier issue de hook order/dispatcher.
+if (typeof window !== 'undefined' && !window.__jx_rls_listener_attached) {
+  window.__jx_rls_listener_attached = true;
+  let lastShown = 0;
+  window.addEventListener('jx_sync_blocked_rls', (e) => {
+    const now = Date.now();
+    if (now - lastShown < 30_000) return; // no más de 1 toast cada 30s
+    lastShown = now;
+    const tabla = e.detail?.tabla || 'desconocida';
+    const msg = `⚠ Sync bloqueado: tu cuenta no puede modificar "${tabla}" en el servidor. Avisale al admin (los datos se guardan localmente pero NO se sincronizan).`;
+    if (typeof window.__showToast === 'function') {
+      window.__showToast(msg, 'red');
+    } else {
+      console.error('[RLS bloqueado]', msg);
+    }
+  });
 }
 
 // En el build de Vite, main.jsx monta el árbol con AuthContext.
