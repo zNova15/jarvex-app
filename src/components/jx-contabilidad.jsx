@@ -1740,10 +1740,32 @@ function TrazabilidadPage({ showToast }) {
   const [editingId, setEditingId] = uSC(null);
   const [form, setForm] = uSC(null);
   const [verCadena, setVerCadena] = uSC(null);
+  // Toggle visualización del resumen: precios con o sin IGV
+  const [conIgv, setConIgv] = uSC(false);
+  const IGV_RATE = 0.18;
 
   const companiesActivas = uMC(() => (companies || []).filter(c => c.status === 'activa' && !c.deleted_at), [companies]);
   const lookupCompany = (id) => companies?.find(c => c.id === id);
   const lookupObra = (id) => obras?.find(o => o.id === id);
+
+  // Obra activa del header — su ejecutora se usa para bloquear el dropdown.
+  // Si es consorcio, devolvemos el primer miembro (caso raro; user puede
+  // ajustar manualmente si necesita otro miembro como ejecutora).
+  const obraActivaId = uMC(() => {
+    try { return window.__getObraActivaId?.() || null; } catch { return null; }
+  }, [obras]);
+  const obraActiva = uMC(() => (obras || []).find(o => o.id === obraActivaId) || null, [obras, obraActivaId]);
+  const ejecutoraDeObra = uMC(() => {
+    if (!obraActiva) return null;
+    if (obraActiva.ejecutora_company_id) {
+      return companies?.find(c => c.id === obraActiva.ejecutora_company_id) || null;
+    }
+    if (obraActiva.ejecutora_tipo === 'consorcio' && Array.isArray(obraActiva.consorcio_miembros)) {
+      const m = obraActiva.consorcio_miembros[0];
+      return m?.company_id ? companies?.find(c => c.id === m.company_id) || null : null;
+    }
+    return null;
+  }, [obraActiva, companies]);
 
   const sorted = uMC(() => [...(cadenas || [])].sort((a,b) => (b.fecha || '').localeCompare(a.fecha || '')), [cadenas]);
 
@@ -1826,29 +1848,31 @@ function TrazabilidadPage({ showToast }) {
     showToast(`Precios sugeridos (local). Precio final unit. promedio ${precioCargaObra.toFixed(2)}.`, 'green');
   };
 
-  // ── Sugerencia de precios con IA (Claude Sonnet) ────────────
+  // ── Análisis IA de coherencia (rubro empresa vs material) ───
+  // Reemplaza al viejo "Sugerir precios con IA" — ese se duplicaba con la
+  // sugerencia local. Ahora la IA hace algo que la heurística NO puede:
+  // analizar si los rubros de las empresas tienen sentido con los items
+  // que están comprando, y advertir sobre riesgos SUNAT.
   const [iaSugiriendo, setIaSugiriendo] = uSC(false);
-  const sugerirPreciosIA = async () => {
+  const [iaAnalisis, setIaAnalisis] = uSC(null);
+  const analizarCoherenciaIA = async () => {
     if (!form) return;
     const tots = totalesItems();
-    const real = tots.precio_real_prom;
-    const ref  = tots.precio_ref_prom;
-    if (!(real > 0 && ref > 0)) { showToast('Completá items con precios real y referencial', 'red'); return; }
+    if (tots.precio_real_prom <= 0) { showToast('Completá items con precio real', 'red'); return; }
     const eslabones = form.eslabones || [];
-    if (eslabones.length < 2) { showToast('Necesitás al menos 2 eslabones (primaria + ejecutora)', 'red'); return; }
+    if (eslabones.length < 2) { showToast('Necesitás al menos 2 eslabones', 'red'); return; }
     if (eslabones.some(e => !e.company_id)) { showToast('Asigná empresa a cada eslabón antes', 'red'); return; }
     setIaSugiriendo(true);
     try {
-      const mod = await import('../lib/sugerir-cadena-ai.js');
+      const mod = await import('../lib/analizar-coherencia-ai.js');
       const ejecutoraId = form.ejecutora_company_id || eslabones[eslabones.length - 1].company_id;
-      const itemsResumen = (form.items || []).filter(it => Number(it.cantidad) > 0)
-        .map(it => `${it.descripcion} ${it.cantidad}${it.unidad}`).join(', ');
       const payload = {
-        precio_compra: real,
-        precio_objetivo: ref,
-        cantidad: tots.cant || 1,
-        moneda: 'PEN',
-        item_nombre: itemsResumen.slice(0, 200),
+        items: (form.items || []).filter(it => Number(it.cantidad) > 0).map(it => ({
+          descripcion: it.descripcion,
+          unidad: it.unidad,
+          cantidad: Number(it.cantidad),
+          precio_unit: Number(it.precio_real_unitario) || 0,
+        })),
         eslabones: eslabones.map((e, i) => {
           const c = lookupCompany(e.company_id);
           const isUlt = i === eslabones.length - 1;
@@ -1857,25 +1881,25 @@ function TrazabilidadPage({ showToast }) {
             company_id: e.company_id,
             name: c?.name || '?',
             rol_grupo: c?.rol_grupo,
-            margen_objetivo_pct: Number(c?.margen_objetivo_pct ?? null),
+            // Pasamos el rubro real desde companies — Claude lo cruza con el material.
+            rubro: c?.rubro || c?.actividad_economica || c?.rol_grupo,
             posicion: isPrim ? 'primaria' : (isUlt || e.company_id === ejecutoraId) ? 'ejecutora' : 'secundaria',
           };
         }),
+        proveedor_externo: {
+          nombre: form.proveedor_externo_nombre,
+          ruc: form.proveedor_externo_ruc,
+        },
+        precio_compra: tots.precio_real_prom,
+        precio_objetivo: tots.precio_ref_prom,
       };
-      const resp = await mod.sugerirCadenaTrazabilidad(payload);
-      const nuevos = eslabones.map((es, i) => {
-        const paso = resp.result.pasos[i];
-        return { ...es, precio_unit: Math.round(Number(paso?.precio_unit_venta || 0) * 100) / 100 };
-      });
-      setForm({ ...form, eslabones: nuevos });
-      const conf = Math.round((resp.confianza || 0) * 100);
-      showToast(`✨ IA sugerió cadena (confianza ${conf}%)${resp.advertencias?.length ? ' · con advertencias' : ''}`, conf >= 85 ? 'green' : 'amber');
-      if (resp.advertencias?.length) {
-        console.warn('[trazabilidad IA] advertencias:', resp.advertencias);
-      }
+      const resp = await mod.analizarCoherenciaCadena(payload);
+      setIaAnalisis(resp);
+      const tone = resp.resultado === 'incoherente' ? 'red' : resp.resultado === 'advertencia' ? 'amber' : 'green';
+      const emoji = resp.resultado === 'incoherente' ? '🚨' : resp.resultado === 'advertencia' ? '⚠️' : '✅';
+      showToast(`${emoji} Análisis IA: ${resp.resultado.toUpperCase()} (${resp.hallazgos?.length || 0} hallazgos)`, tone);
     } catch (e) {
-      showToast('IA falló: ' + (e.message || e) + ' · usando sugerencia local', 'amber');
-      sugerirPrecios();
+      showToast('IA falló: ' + (e.message || e), 'red');
     } finally {
       setIaSugiriendo(false);
     }
@@ -1936,23 +1960,38 @@ function TrazabilidadPage({ showToast }) {
       showToast('Necesitás registrar al menos 1 empresa activa', 'red');
       return;
     }
-    const obraActivaId = window.__getObraActivaId?.() || (obras || []).find(o => !o.deleted_at)?.id || '';
-    if (!obraActivaId) {
+    const obraId = obraActivaId || (obras || []).find(o => !o.deleted_at)?.id || '';
+    if (!obraId) {
       showToast('Seleccioná una obra activa primero (en el selector de arriba)', 'red');
       return;
     }
+    if (!ejecutoraDeObra) {
+      showToast('La obra activa no tiene empresa ejecutora asignada — editala primero', 'red');
+      return;
+    }
+    // Empresas mixtas (NO ejecutora) son las que pueden ser primaria/secundaria.
+    const mixtas = companiesActivas.filter(c => c.id !== ejecutoraDeObra.id);
+    if (mixtas.length === 0) {
+      showToast('No hay empresas mixtas disponibles. Registrá al menos una empresa que no sea la ejecutora.', 'red');
+      return;
+    }
+    const today = new Date().toISOString().slice(0,10);
     setForm({
-      obra_id: obraActivaId, // se guarda pero NO se muestra (usa la obra activa del header)
-      fecha: new Date().toISOString().slice(0,10),
-      comprobante_origen_id: '', // movimiento contable (factura del proveedor) que origina la cadena
+      obra_id: obraId,
+      fecha: today,
+      comprobante_origen_id: '',
       proveedor_externo_nombre: '',
       proveedor_externo_ruc: '',
-      // Multi-items: cada uno con cantidad + precios.
       items: [itemVacio()],
       eslabones: [
-        { company_id: companiesActivas[0]?.id || '', precio_unit: '', factura: '', fecha_op: new Date().toISOString().slice(0,10) },
+        // Eslabón 0 = primaria (la que compró al proveedor). Precio = factura.
+        // Su precio_unit se prellena al elegir comprobante origen.
+        { company_id: mixtas[0]?.id || '', precio_unit: '', factura: '', fecha_op: today },
+        // Eslabón 1 = ejecutora (lock con la de la obra). Precio = lo que paga
+        // al recibir → se setea con la sugerencia local/IA.
+        { company_id: ejecutoraDeObra.id, precio_unit: '', factura: '', fecha_op: today },
       ],
-      ejecutora_company_id: '',
+      ejecutora_company_id: ejecutoraDeObra.id,
       estado: 'borrador',
       notas: '',
     });
@@ -2026,15 +2065,33 @@ function TrazabilidadPage({ showToast }) {
         precio_referencial_contrato: '',
       }];
     }
-    setForm(f => ({
-      ...f,
-      comprobante_origen_id: compId,
-      proveedor_externo_nombre: comp.third_party_name || f.proveedor_externo_nombre,
-      proveedor_externo_ruc: comp.third_party_ruc || f.proveedor_externo_ruc,
-      fecha: comp.date || f.fecha,
-      items: items.length ? items : f.items,
-    }));
-    showToast(`Importados ${items.length} item(s) del comprobante ${comp.document_number || ''}`, 'green');
+    // La empresa primaria (eslabón 0) ya pagó la factura — su precio_unit
+    // = precio promedio ponderado de la factura. NO se le aplica markup.
+    const cantTotal = items.reduce((s, it) => s + Number(it.cantidad || 0), 0);
+    const totalReal = items.reduce((s, it) => s + Number(it.cantidad || 0) * Number(it.precio_real_unitario || 0), 0);
+    const precioPromPrimaria = cantTotal > 0 ? +(totalReal / cantTotal).toFixed(4) : 0;
+
+    setForm(f => {
+      const eslabones = [...(f.eslabones || [])];
+      if (eslabones[0]) {
+        eslabones[0] = {
+          ...eslabones[0],
+          precio_unit: precioPromPrimaria,
+          factura: comp.document_number || eslabones[0].factura,
+          fecha_op: comp.date || eslabones[0].fecha_op,
+        };
+      }
+      return {
+        ...f,
+        comprobante_origen_id: compId,
+        proveedor_externo_nombre: comp.third_party_name || f.proveedor_externo_nombre,
+        proveedor_externo_ruc: comp.third_party_ruc || f.proveedor_externo_ruc,
+        fecha: comp.date || f.fecha,
+        items: items.length ? items : f.items,
+        eslabones,
+      };
+    });
+    showToast(`Importados ${items.length} item(s) del comprobante ${comp.document_number || ''}. Empresa primaria pre-llenada.`, 'green');
   };
 
   const updateItem = (idx, patch) => {
@@ -2445,7 +2502,7 @@ function TrazabilidadPage({ showToast }) {
             <div style={{ gridColumn:'1/-1', marginTop:6, fontSize:11, color:'var(--purple, #9B59B6)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em', borderTop:'1px dashed var(--border)', paddingTop:10 }}>
               Configuración de la cadena
             </div>
-            <div style={{ gridColumn:'1/-1', display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10 }}>
+            <div style={{ gridColumn:'1/-1', display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(200px, 1fr))', gap:10 }}>
               <div>
                 <label className="flabel">Empresa Primaria *</label>
                 <select className="fi" value={(form.eslabones || [])[0]?.company_id || ''} onChange={e => {
@@ -2455,11 +2512,14 @@ function TrazabilidadPage({ showToast }) {
                   setForm({ ...form, eslabones: arr });
                 }}>
                   <option value="">— Compradora externa —</option>
-                  {companiesActivas.filter(c => c.rol_grupo !== 'ejecutora').map(c => (
-                    <option key={c.id} value={c.id}>{c.name}{c.rol_grupo ? ` · ${c.rol_grupo}` : ''}</option>
-                  ))}
+                  {/* Excluye la ejecutora de la obra activa: solo mixtas pueden ser primaria */}
+                  {companiesActivas
+                    .filter(c => c.id !== form.ejecutora_company_id)
+                    .map(c => (
+                      <option key={c.id} value={c.id}>{c.name}{c.rol_grupo ? ` · ${c.rol_grupo}` : ''}</option>
+                    ))}
                 </select>
-                <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>Compra al proveedor externo.</div>
+                <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>Compra al proveedor externo. La ejecutora no aparece acá.</div>
               </div>
               <div>
                 <label className="flabel"># empresas intermedias</label>
@@ -2470,33 +2530,29 @@ function TrazabilidadPage({ showToast }) {
                 <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>0 = primaria vende directo a la ejecutora.</div>
               </div>
               <div>
-                <label className="flabel">Empresa Ejecutora *</label>
-                <select className="fi" value={form.ejecutora_company_id || ''} onChange={e => {
-                  const arr = [...(form.eslabones || [])];
-                  // Aseguramos que el último eslabón coincida con la ejecutora
-                  if (arr.length === 0) arr.push({ company_id: e.target.value, precio_unit:'', factura:'', fecha_op: form.fecha });
-                  else arr[arr.length - 1] = { ...arr[arr.length - 1], company_id: e.target.value };
-                  setForm({ ...form, ejecutora_company_id: e.target.value, eslabones: arr });
-                }}>
-                  <option value="">— Seleccionar —</option>
-                  {companiesActivas.filter(c => c.rol_grupo === 'ejecutora' || c.rol_grupo === 'mixta' || !c.rol_grupo).map(c => (
-                    <option key={c.id} value={c.id}>{c.name}{c.rol_grupo ? ` · ${c.rol_grupo}` : ''}</option>
-                  ))}
-                </select>
-                <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>Firma contrato con cliente final.</div>
+                <label className="flabel">Empresa Ejecutora 🔒</label>
+                <input className="fi" disabled
+                  value={ejecutoraDeObra?.name || lookupCompany(form.ejecutora_company_id)?.name || '—'}
+                  style={{ opacity: 0.85, cursor: 'not-allowed', background: 'rgba(46,204,113,0.07)' }}
+                />
+                <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>
+                  Bloqueada con la ejecutora de la obra activa
+                  {obraActiva ? ` (${obraActiva.nombre_obra?.slice(0, 30) || ''})` : ''}.
+                </div>
               </div>
             </div>
 
             {/* ── Eslabones ── */}
             <div style={{ gridColumn:'1/-1', marginTop:6, fontSize:11, color:'var(--amber)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em', borderTop:'1px dashed var(--border)', paddingTop:10, display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:6 }}>
               <span>Eslabones del grupo (orden = flujo)</span>
-              <div style={{ display:'flex', gap:6 }}>
-                <button type="button" className="btn btn-ghost btn-xs" onClick={sugerirPrecios} title="Distribuir markup automáticamente según margen objetivo de cada empresa">
-                  <JxIcon name="refresh" size={11}/> Sugerir local
+              <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                <button type="button" className="btn btn-ghost btn-xs" onClick={sugerirPrecios}
+                  title="Distribuir markup automáticamente según margen objetivo de cada empresa">
+                  <JxIcon name="refresh" size={11}/> Sugerir precios
                 </button>
-                <button type="button" className="btn btn-amber btn-xs" onClick={sugerirPreciosIA} disabled={iaSugiriendo}
-                  title="IA distribuye markup considerando rol y margen objetivo de cada empresa">
-                  {iaSugiriendo ? '⏳ Pensando…' : '✨ Sugerir con IA'}
+                <button type="button" className="btn btn-amber btn-xs" onClick={analizarCoherenciaIA} disabled={iaSugiriendo}
+                  title="Claude analiza si los rubros de las empresas tienen sentido con los items de la cadena (compliance SUNAT)">
+                  {iaSugiriendo ? '⏳ Analizando…' : '🧠 Análisis IA de coherencia'}
                 </button>
               </div>
             </div>
@@ -2512,16 +2568,18 @@ function TrazabilidadPage({ showToast }) {
                 const rol = isPrim ? 'PRIMARIA' : isUlt ? 'EJECUTORA' : 'SECUNDARIA';
                 const rolColor = isPrim ? 'var(--blue)' : isUlt ? 'var(--green)' : 'var(--amber)';
                 return (
-                  <div key={i} style={{ display:'grid', gridTemplateColumns:'90px 2fr 1fr 1fr 1fr 32px', gap:8, alignItems:'center', marginBottom:8, padding:'8px 10px', background:'rgba(255,255,255,0.025)', border:'1px solid var(--border)', borderRadius:8 }}>
+                  <div key={i} style={{ display:'grid', gridTemplateColumns:'90px minmax(160px, 2fr) minmax(100px, 1fr) 60px minmax(100px, 1fr) 32px', gap:8, alignItems:'center', marginBottom:8, padding:'8px 10px', background:'rgba(255,255,255,0.025)', border:'1px solid var(--border)', borderRadius:8 }}>
                     <div style={{ fontSize:9.5, fontWeight:700, color:rolColor, textAlign:'center', padding:'2px 4px', background:`${rolColor}1A`, borderRadius:4 }}>
                       #{i+1} {rol}
                     </div>
-                    <select className="fi" value={es.company_id||''} onChange={e=>{
+                    <select className="fi" value={es.company_id||''} disabled={isUlt} onChange={e=>{
                       const nuevos = [...arr]; nuevos[i] = { ...nuevos[i], company_id: e.target.value };
                       setForm({ ...form, eslabones: nuevos });
-                    }}>
+                    }} style={isUlt ? { opacity: 0.85, cursor: 'not-allowed', background: 'rgba(46,204,113,0.07)' } : {}}>
                       <option value="">— Empresa —</option>
-                      {companiesActivas.map(c => <option key={c.id} value={c.id}>{c.name}{c.rol_grupo?` · ${c.rol_grupo}`:''}</option>)}
+                      {companiesActivas
+                        .filter(c => isUlt ? c.id === form.ejecutora_company_id : c.id !== form.ejecutora_company_id)
+                        .map(c => <option key={c.id} value={c.id}>{c.name}{c.rol_grupo?` · ${c.rol_grupo}`:''}</option>)}
                     </select>
                     <input className="fi" type="number" min="0" step="0.01" placeholder="Precio unit"
                       value={es.precio_unit ?? ''} onChange={e=>{
@@ -2563,13 +2621,25 @@ function TrazabilidadPage({ showToast }) {
               const final = Number(last?.precio_unit || 0);
               if (!(tots.cant > 0 && tots.precio_real_prom > 0 && final > 0)) return null;
               const factor = tots.precio_real_prom > 0 ? final / tots.precio_real_prom : 1;
-              const costoReal = tots.total_real;
-              const cargado = costoReal * factor;
-              const presup = tots.total_ref;
+              // Toggle IGV: si conIgv = true, multiplicamos los netos por 1.18
+              const mul = conIgv ? (1 + IGV_RATE) : 1;
+              const costoReal = tots.total_real * mul;
+              const cargado = (tots.total_real * factor) * mul;
+              const presup = tots.total_ref * mul;
               return (
                 <div style={{ gridColumn:'1/-1', background:'rgba(46,204,113,0.06)', border:'1px solid rgba(46,204,113,0.25)', borderRadius:8, padding:'12px 14px', fontSize:12 }}>
-                  <div style={{ fontSize:11, color:'var(--green)', fontWeight:700, textTransform:'uppercase', marginBottom:8 }}>Resumen en vivo</div>
-                  <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10 }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8, flexWrap:'wrap', gap:6 }}>
+                    <div style={{ fontSize:11, color:'var(--green)', fontWeight:700, textTransform:'uppercase' }}>
+                      Resumen en vivo · {conIgv ? 'CON IGV (18%)' : 'SIN IGV (neto)'}
+                    </div>
+                    <button type="button"
+                      className={`btn btn-xs ${conIgv ? 'btn-amber' : 'btn-ghost'}`}
+                      onClick={() => setConIgv(v => !v)}
+                      title="Alternar entre precios netos y precios con IGV incluido">
+                      {conIgv ? '✓ Con IGV' : '+ IGV'}
+                    </button>
+                  </div>
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(140px, 1fr))', gap:10 }}>
                     <div><div style={{ color:'var(--tm)', fontSize:10.5 }}>Costo real</div><div style={{ color:'var(--blue)', fontWeight:700 }}>{fmtCur(costoReal)}</div></div>
                     <div><div style={{ color:'var(--tm)', fontSize:10.5 }}>Costo cargado a obra</div><div style={{ color:'var(--amber)', fontWeight:700 }}>{fmtCur(cargado)}</div></div>
                     <div><div style={{ color:'var(--tm)', fontSize:10.5 }}>Ganancia grupo</div><div style={{ color: cargado-costoReal>=0?'var(--green)':'var(--red)', fontWeight:700 }}>{fmtCur(cargado-costoReal)}</div></div>
@@ -2600,6 +2670,81 @@ function TrazabilidadPage({ showToast }) {
           </div>
         </Modal>
       )}
+
+      {/* Modal de resultado del análisis IA de coherencia */}
+      {iaAnalisis && (
+        <Modal title={
+          iaAnalisis.resultado === 'incoherente' ? '🚨 Cadena INCOHERENTE'
+          : iaAnalisis.resultado === 'advertencia' ? '⚠️ Cadena con advertencias'
+          : '✅ Cadena coherente'
+        } icon="alert" onClose={() => setIaAnalisis(null)} wide>
+          <div style={{
+            padding: '12px 14px',
+            background: iaAnalisis.resultado === 'incoherente' ? 'rgba(231,76,60,0.1)'
+                       : iaAnalisis.resultado === 'advertencia' ? 'rgba(242,183,5,0.1)'
+                       : 'rgba(46,204,113,0.1)',
+            border: `1px solid ${iaAnalisis.resultado === 'incoherente' ? 'rgba(231,76,60,0.4)'
+                       : iaAnalisis.resultado === 'advertencia' ? 'rgba(242,183,5,0.4)'
+                       : 'rgba(46,204,113,0.4)'}`,
+            borderRadius: 8,
+            marginBottom: 12,
+          }}>
+            <div style={{ fontSize: 13, lineHeight: 1.5, color: 'var(--ts)' }}>
+              {iaAnalisis.resumen}
+            </div>
+            <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 6 }}>
+              Confianza del análisis: <strong>{Math.round((iaAnalisis.confianza || 0) * 100)}%</strong>
+            </div>
+          </div>
+
+          {Array.isArray(iaAnalisis.hallazgos) && iaAnalisis.hallazgos.length > 0 && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--amber)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
+                Hallazgos ({iaAnalisis.hallazgos.length})
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {iaAnalisis.hallazgos.map((h, i) => (
+                  <div key={i} style={{
+                    padding: '10px 12px',
+                    background: 'rgba(255,255,255,0.025)',
+                    border: `1px solid ${h.severidad === 'alta' ? 'rgba(231,76,60,0.4)' : h.severidad === 'media' ? 'rgba(242,183,5,0.3)' : 'var(--border)'}`,
+                    borderRadius: 6,
+                    fontSize: 12,
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, flexWrap: 'wrap', gap: 6 }}>
+                      <strong style={{ color: h.severidad === 'alta' ? 'var(--red)' : h.severidad === 'media' ? 'var(--amber)' : 'var(--tp)' }}>
+                        {h.severidad === 'alta' ? '🔴' : h.severidad === 'media' ? '🟡' : '🔵'} {h.empresa}
+                      </strong>
+                      <span style={{ fontSize: 10.5, color: 'var(--tm)' }}>↔ {h.material}</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--ts)', marginBottom: 6 }}>{h.motivo}</div>
+                    <div style={{ fontSize: 11.5, color: 'var(--green)', borderTop: '1px dashed var(--border)', paddingTop: 6 }}>
+                      💡 <strong>Sugerencia:</strong> {h.sugerencia}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {Array.isArray(iaAnalisis.advertencias_sunat) && iaAnalisis.advertencias_sunat.length > 0 && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--red)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 6 }}>
+                ⚖️ Advertencias SUNAT
+              </div>
+              <ul style={{ fontSize: 12, color: 'var(--ts)', paddingLeft: 20, margin: 0 }}>
+                {iaAnalisis.advertencias_sunat.map((a, i) => (
+                  <li key={i} style={{ marginBottom: 4 }}>{a}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div className="modal-actions">
+            <button className="btn btn-amber" onClick={() => setIaAnalisis(null)}>Entendido</button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -2609,6 +2754,12 @@ function CadenaVisual({ cadena, lookupCompany, lookupObra, calcular }) {
   const r = calcular(cadena);
   const obra = lookupObra(cadena.obra_id);
   const eslabones = cadena.eslabones || [];
+
+  // Toggle precios netos vs con IGV
+  const [conIgv, setConIgv] = uSC(false);
+  const IGV_RATE = 0.18;
+  const mul = conIgv ? (1 + IGV_RATE) : 1;
+  const ap = (n) => Number(n || 0) * mul;
 
   // Cargar facturas internas vinculadas a esta cadena
   const [facturas, setFacturas] = uSC([]);
@@ -2686,22 +2837,37 @@ function CadenaVisual({ cadena, lookupCompany, lookupObra, calcular }) {
       <div style={{ background:'rgba(155,89,182,0.06)', border:'1px solid rgba(155,89,182,0.25)', borderRadius:8, padding:'10px 14px', fontSize:12 }}>
         <strong>{cadena.item_nombre}</strong> · {cadena.cantidad} {cadena.unidad} · Obra: {obra?.nombre_obra || '—'} · Fecha: {cadena.fecha}
       </div>
+      {/* Toggle IGV global del detalle */}
+      <div style={{ display:'flex', justifyContent:'flex-end', alignItems:'center', gap:8, fontSize:11 }}>
+        <span style={{ color:'var(--tm)' }}>Precios:</span>
+        <button type="button"
+          className={`btn btn-xs ${conIgv ? 'btn-ghost' : 'btn-amber'}`}
+          onClick={() => setConIgv(false)}>
+          Sin IGV
+        </button>
+        <button type="button"
+          className={`btn btn-xs ${conIgv ? 'btn-amber' : 'btn-ghost'}`}
+          onClick={() => setConIgv(true)}>
+          Con IGV
+        </button>
+      </div>
+
       {/* Items individuales (multi-items) */}
       {Array.isArray(r.items) && r.items.length > 0 && (
         <div style={{ background:'rgba(52,152,219,0.05)', border:'1px solid rgba(52,152,219,0.25)', borderRadius:8, padding:'10px 12px' }}>
           <div style={{ fontSize:11, color:'var(--blue)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.05em', marginBottom:6 }}>
-            Items del comprobante origen ({r.items.length})
+            Items del comprobante origen ({r.items.length}) · {conIgv ? 'CON IGV' : 'NETO'}
           </div>
-          <div style={{ overflowX:'auto' }}>
-            <table className="tbl" style={{ fontSize:11 }}>
+          <div style={{ overflowX:'auto', WebkitOverflowScrolling:'touch' }}>
+            <table className="tbl" style={{ fontSize:11, minWidth:560 }}>
               <thead><tr>
-                <th>Descripción</th>
+                <th style={{ minWidth:120 }}>Descripción</th>
                 <th>Und</th>
                 <th style={{ textAlign:'right' }}>Cant.</th>
-                <th style={{ textAlign:'right' }}>Precio real</th>
-                <th style={{ textAlign:'right' }}>Subtotal real</th>
-                <th style={{ textAlign:'right' }}>Precio ref.</th>
-                <th style={{ textAlign:'right' }}>Subtotal ref.</th>
+                <th style={{ textAlign:'right' }}>P. real</th>
+                <th style={{ textAlign:'right' }}>Subt. real</th>
+                <th style={{ textAlign:'right' }}>P. ref.</th>
+                <th style={{ textAlign:'right' }}>Subt. ref.</th>
               </tr></thead>
               <tbody>
                 {r.items.map((it, i) => {
@@ -2712,10 +2878,10 @@ function CadenaVisual({ cadena, lookupCompany, lookupObra, calcular }) {
                       <td style={{ fontWeight:600 }}>{it.descripcion || '—'}</td>
                       <td>{it.unidad || '—'}</td>
                       <td style={{ textAlign:'right' }}>{Number(it.cantidad || 0).toFixed(2)}</td>
-                      <td style={{ textAlign:'right', color:'var(--blue)' }}>{fmtCur(it.precio_real_unitario || 0)}</td>
-                      <td style={{ textAlign:'right', color:'var(--blue)' }}>{fmtCur(subReal)}</td>
-                      <td style={{ textAlign:'right', color:'var(--purple, #9B59B6)' }}>{fmtCur(it.precio_referencial_contrato || 0)}</td>
-                      <td style={{ textAlign:'right', color:'var(--purple, #9B59B6)' }}>{fmtCur(subRef)}</td>
+                      <td style={{ textAlign:'right', color:'var(--blue)' }}>{fmtCur(ap(it.precio_real_unitario))}</td>
+                      <td style={{ textAlign:'right', color:'var(--blue)' }}>{fmtCur(ap(subReal))}</td>
+                      <td style={{ textAlign:'right', color:'var(--purple, #9B59B6)' }}>{fmtCur(ap(it.precio_referencial_contrato || 0))}</td>
+                      <td style={{ textAlign:'right', color:'var(--purple, #9B59B6)' }}>{fmtCur(ap(subRef))}</td>
                     </tr>
                   );
                 })}
@@ -2723,9 +2889,9 @@ function CadenaVisual({ cadena, lookupCompany, lookupObra, calcular }) {
               <tfoot>
                 <tr style={{ background:'rgba(0,0,0,0.10)', fontWeight:700 }}>
                   <td colSpan={4} style={{ textAlign:'right' }}>TOTALES:</td>
-                  <td style={{ textAlign:'right', color:'var(--blue)' }}>{fmtCur(r.costoTotalReal)}</td>
+                  <td style={{ textAlign:'right', color:'var(--blue)' }}>{fmtCur(ap(r.costoTotalReal))}</td>
                   <td/>
-                  <td style={{ textAlign:'right', color:'var(--purple, #9B59B6)' }}>{fmtCur(r.presupTotal)}</td>
+                  <td style={{ textAlign:'right', color:'var(--purple, #9B59B6)' }}>{fmtCur(ap(r.presupTotal))}</td>
                 </tr>
               </tfoot>
             </table>
@@ -2734,7 +2900,7 @@ function CadenaVisual({ cadena, lookupCompany, lookupObra, calcular }) {
       )}
 
       <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
-        <Box titulo="Externo" sub={cadena.proveedor_externo_nombre || 'Proveedor externo'} precio={r.precioReal} total={r.costoTotalReal} color="#3498DB"/>
+        <Box titulo="Externo" sub={cadena.proveedor_externo_nombre || 'Proveedor externo'} precio={ap(r.precioReal)} total={ap(r.costoTotalReal)} color="#3498DB"/>
         {eslabones.map((es, i) => {
           const co = lookupCompany(es.company_id);
           const ant = i === 0 ? r.precioReal : Number(eslabones[i-1].precio_unit || 0);
@@ -2748,8 +2914,8 @@ function CadenaVisual({ cadena, lookupCompany, lookupObra, calcular }) {
                 <Box
                   titulo={isUlt ? 'Ejecutora' : `Eslabón ${i+1}`}
                   sub={co?.name || '?'}
-                  precio={cur}
-                  total={cur * r.cant}
+                  precio={ap(cur)}
+                  total={ap(cur * r.cant)}
                   color={isUlt ? '#2ECC71' : '#F2B705'}
                 />
                 <div style={{ textAlign:'center', fontSize:10.5, color: mk>=0?'var(--green)':'var(--red)', marginTop:4 }}>
@@ -2760,22 +2926,22 @@ function CadenaVisual({ cadena, lookupCompany, lookupObra, calcular }) {
           );
         })}
         <div style={{ color:'var(--tm)', fontSize:18, fontWeight:700 }}>→</div>
-        <Box titulo="Cliente final" sub="Presupuesto contractual" precio={r.presup} total={r.presupTotal} color="#9B59B6"/>
+        <Box titulo="Cliente final" sub="Presupuesto contractual" precio={ap(r.presup)} total={ap(r.presupTotal)} color="#9B59B6"/>
       </div>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10 }}>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(200px, 1fr))', gap:10 }}>
         <div className="kpi-card">
           <div style={{ fontSize:10.5, color:'var(--tm)' }}>Ganancia grupo (real)</div>
-          <div style={{ fontSize:18, fontWeight:800, color: r.gananciaGrupoReal>=0?'var(--green)':'var(--red)' }}>{fmtCur(r.gananciaGrupoReal)}</div>
+          <div style={{ fontSize:18, fontWeight:800, color: r.gananciaGrupoReal>=0?'var(--green)':'var(--red)' }}>{fmtCur(ap(r.gananciaGrupoReal))}</div>
           <div style={{ fontSize:10, color:'var(--tm)' }}>cargado − real</div>
         </div>
         <div className="kpi-card">
           <div style={{ fontSize:10.5, color:'var(--tm)' }}>Ganancia ejecutora (aparente)</div>
-          <div style={{ fontSize:18, fontWeight:800, color: r.gananciaEjecutoraAparente>=0?'var(--green)':'var(--red)' }}>{fmtCur(r.gananciaEjecutoraAparente)}</div>
+          <div style={{ fontSize:18, fontWeight:800, color: r.gananciaEjecutoraAparente>=0?'var(--green)':'var(--red)' }}>{fmtCur(ap(r.gananciaEjecutoraAparente))}</div>
           <div style={{ fontSize:10, color:'var(--tm)' }}>{r.presupTotal>0 ? `${(r.gananciaEjecutoraAparente/r.presupTotal*100).toFixed(1)}% del presupuesto` : '—'}</div>
         </div>
         <div className="kpi-card">
           <div style={{ fontSize:10.5, color:'var(--tm)' }}>Ganancia total efectiva</div>
-          <div style={{ fontSize:18, fontWeight:800, color: r.gananciaTotalEfectiva>=0?'var(--green)':'var(--red)' }}>{fmtCur(r.gananciaTotalEfectiva)}</div>
+          <div style={{ fontSize:18, fontWeight:800, color: r.gananciaTotalEfectiva>=0?'var(--green)':'var(--red)' }}>{fmtCur(ap(r.gananciaTotalEfectiva))}</div>
           <div style={{ fontSize:10, color:'var(--tm)' }}>presupuesto − costo real</div>
         </div>
       </div>
