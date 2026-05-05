@@ -8,6 +8,20 @@ import { db, newId } from '../db/jarvex.db';
 import { supabase } from './supabase';
 
 const VALID_ACTIONS = ['insert', 'update', 'delete'];
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Supabase audit_log.record_id es uuid. Cualquier string no-UUID rompe el insert
+// con 22P02 / "invalid input syntax for type uuid". Defensivo: si no es UUID,
+// guardamos el valor original en new_data.record_key y mandamos record_id=null.
+function sanitizeRecordId(recordId, newData) {
+  if (recordId == null || recordId === '') return { recordId: null, newData };
+  if (typeof recordId === 'string' && UUID_RE.test(recordId)) {
+    return { recordId, newData };
+  }
+  // No es UUID: preservar el valor en new_data para no perder info
+  const merged = { ...(newData || {}), record_key: String(recordId) };
+  return { recordId: null, newData: merged };
+}
 
 async function getCurrentUser() {
   try {
@@ -45,6 +59,10 @@ export async function logAudit({ action, table, recordId, oldData = null, newDat
     return;
   }
 
+  const sanitized = sanitizeRecordId(recordId, newData);
+  recordId = sanitized.recordId;
+  newData = sanitized.newData;
+
   const { id: userId, email: userEmail } = await getCurrentUser();
   const createdAt = new Date().toISOString();
 
@@ -53,7 +71,7 @@ export async function logAudit({ action, table, recordId, oldData = null, newDat
     user_email: userEmail,
     action,
     table_name: table,
-    record_id: recordId || null,
+    record_id: recordId,
     old_data: oldData,
     new_data: newData,
     reason: reason || null,
@@ -77,7 +95,7 @@ export async function logAudit({ action, table, recordId, oldData = null, newDat
       created_at: createdAt,
       action,
       table_name: table,
-      record_id: recordId || null,
+      record_id: recordId,
       old_data: oldData,
       new_data: newData,
       reason: reason || null,
@@ -111,14 +129,17 @@ export async function syncPendingAuditLogs() {
 
   let synced = 0;
   for (const row of pending) {
+    // Sanitizar record_id en retry: filas viejas pueden tener strings no-UUID
+    // (ej: "almacenero:Obras", nombres de catálogo) que rompen el insert.
+    const sanitized = sanitizeRecordId(row.record_id, row.new_data);
     const payload = {
       user_id: row.user_id,
       user_email: row.user_email,
       action: row.action,
       table_name: row.table_name,
-      record_id: row.record_id,
+      record_id: sanitized.recordId,
       old_data: row.old_data,
-      new_data: row.new_data,
+      new_data: sanitized.newData,
       reason: row.reason,
       created_at: row.created_at,
     };

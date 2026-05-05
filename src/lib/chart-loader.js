@@ -28,9 +28,21 @@ export function loadChart() {
 }
 
 export function useChart() {
-  const [Chart, setChart] = useState(_chartRef);
+  // ⚠ IMPORTANTE: useState(_chartRef) directo es UN BUG porque cuando
+  // _chartRef ya tiene la clase Chart (función), React lo trata como lazy
+  // initializer y la invoca SIN `new` → tira "Class constructor Chart
+  // cannot be invoked without 'new'" en cualquier remount del componente
+  // (StrictMode, navegación entre páginas, etc.).
+  // Solución: lazy init function `() => _chartRef` que retorna la clase
+  // sin que React intente ejecutarla.
+  const [Chart, setChart] = useState(() => _chartRef);
   useEffect(() => {
-    if (_chartRef) return;
+    if (_chartRef) {
+      // Si ya está cargado pero el state aún es null (caso de remount
+      // tras el primer load), forzamos refresh.
+      setChart(() => _chartRef);
+      return;
+    }
     let cancelled = false;
     loadChart().then(c => { if (!cancelled) setChart(() => c); });
     return () => { cancelled = true; };

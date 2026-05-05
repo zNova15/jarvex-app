@@ -839,8 +839,8 @@ function RolesPage() {
     ov[rol] = { ...(ov[rol] || {}), [mod]: next };
     setOverrides(ov);
     savePermOverrides(ov);
-    try { window.__logAudit?.({ action:'update', table:'permisos', recordId:`${rol}:${mod}`,
-      oldData:{ valor: cur }, newData:{ valor: next }, reason:`Cambio permiso ${rol} → ${mod}` }); } catch {}
+    try { window.__logAudit?.({ action:'update', table:'permisos', recordId: null,
+      oldData:{ valor: cur }, newData:{ rol, modulo: mod, valor: next }, reason:`Cambio permiso ${rol} → ${mod}` }); } catch {}
   };
 
   const resetAll = () => {
@@ -848,7 +848,7 @@ function RolesPage() {
     if (!confirm('¿Restaurar TODOS los permisos a los valores por defecto del sistema? Se eliminarán todas las personalizaciones.')) return;
     setOverrides({});
     savePermOverrides({});
-    try { window.__logAudit?.({ action:'delete', table:'permisos', recordId:'all', reason:'Reset matriz de permisos a defaults' }); } catch {}
+    try { window.__logAudit?.({ action:'delete', table:'permisos', recordId: null, reason:'Reset matriz de permisos a defaults' }); } catch {}
   };
 
   const tieneOverrides = uMAd(() => {
