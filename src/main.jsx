@@ -32,8 +32,12 @@ import { supabase } from './lib/supabase';
 // importarlos acá NO trae las libs pesadas al bundle inicial.
 import { generatePDF, downloadPDF, generateExcel } from './lib/reports';
 import { parseExcelFile, downloadTemplate, MODULES as IMPORT_MODULES } from './lib/excel';
-// contabilidad-pdfs, apuParser, pdfBudgetParser SÍ tienen imports estáticos
-// pesados. Los exponemos via Proxy lazy → solo se cargan al primer uso.
+// contabilidad-pdfs / apuParser / pdfBudgetParser: imports estáticos. Vite
+// los pondrá en su propio chunk porque sus deps (jsPDF, xlsx) ya son lazy
+// desde reports.js, así que no engordan el bundle inicial.
+import * as contabilidadPdfs from './lib/contabilidad-pdfs';
+import { parseAPUFile, parseS10File, enrichJerarquia, buildArbol, parseAPU, parseInsumosList, parseGantt, detectS10Type, excelDateToISO } from './lib/apuParser';
+import { parsePresupuestoPDF, extractTextFromPDF, parsePresupuestoLines, partidasToImportRows } from './lib/pdfBudgetParser';
 import * as catalogos from './lib/catalogos';
 import { seedDemoData, clearDemoData, countDemoRecords } from './lib/demoSeeder';
 import { consultarRUC, consultarDNI } from './lib/identity';
@@ -82,39 +86,15 @@ window.__hooks = {
 };
 window.__saveEvidenciaLocal = saveEvidenciaLocal;
 window.__reports = { generatePDF, downloadPDF, generateExcel };
+window.__pdfs = { ...(window.__pdfs || {}), ...contabilidadPdfs };
 window.__excel = { parseExcelFile, downloadTemplate, MODULES: IMPORT_MODULES };
-
-// Lazy proxies: window.__pdfs / __apu / __pdfBudget cargan sus módulos solo
-// al primer acceso. Los callers existentes hacen `window.__pdfs?.X?.(args)`
-// y no usan el return value síncrono → seguro convertir a async lazy.
-function lazyModuleProxy(loader) {
-  let cached = null;
-  let loading = null;
-  return new Proxy({}, {
-    get(_target, prop) {
-      // Si ya cargó, llamada directa a la función real (sync).
-      if (cached && typeof cached[prop] === 'function') {
-        return (...args) => cached[prop](...args);
-      }
-      // Primera carga: devolver wrapper async que la llama tras cargar.
-      return async (...args) => {
-        if (!cached) {
-          if (!loading) loading = loader();
-          cached = await loading;
-        }
-        const fn = cached[prop];
-        if (typeof fn !== 'function') {
-          console.warn(`[lazyModuleProxy] ${String(prop)} no es función en módulo cargado`);
-          return undefined;
-        }
-        return fn(...args);
-      };
-    },
-  });
-}
-window.__pdfs = lazyModuleProxy(() => import('./lib/contabilidad-pdfs'));
-window.__apu = lazyModuleProxy(() => import('./lib/apuParser'));
-window.__pdfBudget = lazyModuleProxy(() => import('./lib/pdfBudgetParser'));
+window.__apu = {
+  parseAPUFile, parseS10File, enrichJerarquia, buildArbol,
+  parseAPU, parseInsumosList, parseGantt, detectS10Type, excelDateToISO,
+};
+window.__pdfBudget = {
+  parsePresupuestoPDF, extractTextFromPDF, parsePresupuestoLines, partidasToImportRows,
+};
 window.__catalogos = catalogos;
 window.__demo = { seed: seedDemoData, clear: clearDemoData, count: countDemoRecords };
 window.__identity = { consultarRUC, consultarDNI };
@@ -215,6 +195,70 @@ window.__loadChunk = (name) => {
   return p;
 };
 
+// Error Boundary — atrapa cualquier error de render que rompa el árbol y
+// muestra una pantalla de fallback en vez de pantalla negra. El user puede
+// recargar (limpia caches) o ver el detalle del error.
+class AppErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error('[AppErrorBoundary]', error, info);
+    // En prod podemos enviarlo a un endpoint de logging si lo configuramos.
+  }
+  hardReload = async () => {
+    try {
+      // Limpia caches del SW + service worker registrations
+      if ('caches' in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map(k => caches.delete(k)));
+      }
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map(r => r.unregister()));
+      }
+    } catch {}
+    // Cache-bust del HTML
+    window.location.replace(window.location.pathname + '?cb=' + Date.now());
+  };
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ minHeight: '100vh', background: '#0D1520', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div style={{ maxWidth: 520, background: 'rgba(28,45,64,0.85)', border: '1px solid rgba(231,76,60,0.4)', borderRadius: 12, padding: '32px 28px', color: '#F0F2F5' }}>
+            <div style={{ fontSize: 18, fontWeight: 800, color: '#EF6B5E', marginBottom: 10 }}>⚠ La app encontró un error</div>
+            <div style={{ fontSize: 13, color: '#BFC7D1', marginBottom: 20, lineHeight: 1.5 }}>
+              Algo se rompió al cargar la pantalla. Suele resolverse limpiando el cache y recargando.
+              Si persiste, copiá el detalle abajo y avisanos.
+            </div>
+            <details style={{ fontSize: 11, color: '#7A8A9A', background: 'rgba(0,0,0,0.3)', padding: 10, borderRadius: 6, marginBottom: 16, maxHeight: 200, overflow: 'auto' }}>
+              <summary style={{ cursor: 'pointer', marginBottom: 6 }}>Ver detalle técnico</summary>
+              <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0 }}>
+                {String(this.state.error?.stack || this.state.error?.message || this.state.error)}
+              </pre>
+            </details>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <button onClick={this.hardReload}
+                style={{ background: '#F2B705', color: '#0D1520', border: 'none', padding: '10px 18px', borderRadius: 8, fontWeight: 700, cursor: 'pointer' }}>
+                🔄 Limpiar cache y recargar
+              </button>
+              <button onClick={() => window.location.reload()}
+                style={{ background: 'transparent', color: '#BFC7D1', border: '1px solid rgba(255,255,255,0.15)', padding: '10px 18px', borderRadius: 8, cursor: 'pointer' }}>
+                Recargar simple
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 function Root() {
   const auth = useAuthProvider();
 
@@ -241,9 +285,11 @@ function Root() {
   if (!App) return <div style={{ color: '#fff', padding: 20 }}>Cargando JARVEX...</div>;
 
   return (
-    <AuthContext.Provider value={auth}>
-      <App />
-    </AuthContext.Provider>
+    <AppErrorBoundary>
+      <AuthContext.Provider value={auth}>
+        <App />
+      </AuthContext.Provider>
+    </AppErrorBoundary>
   );
 }
 
