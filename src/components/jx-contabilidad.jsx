@@ -1,5 +1,6 @@
 import React from "react";
 import { sugerirCuentaPcge } from "../lib/sugerir-cuenta-pcge.js";
+import { getCurrentMode } from "../hooks/useAppMode";
 const { useState: uSC, useMemo: uMC, useEffect: uEC } = React;
 
 // ─── Helpers de formato ──────────────────────────────────────
@@ -712,6 +713,7 @@ function MovimientosContablesPage({ showToast }) {
         showToast('Movimiento actualizado', 'green');
       } else {
         const id = window.__newId();
+        const isPrueba = getCurrentMode() === 'prueba';
         await window.__db.accounting_movements.add({
           id,
           company_id: form.company_id,
@@ -734,8 +736,11 @@ function MovimientosContablesPage({ showToast }) {
           notas: form.notas || null,
           created_by: userId, updated_by: userId,
           created_at: now, updated_at: now,
-          version: 1, sync_status: 'pending_create', last_synced_at: null,
+          version: 1,
+          sync_status: isPrueba ? 'synced' : 'pending_create',
+          last_synced_at: null,
           idempotency_key: `${userId}_acc_mov_${id}`,
+          ...(isPrueba ? { demo: true } : {}),
         });
         try { await window.__logAudit?.({ action:'insert', table:'accounting_movements', recordId:id, newData:form }); } catch {}
         showToast('Movimiento registrado', 'green');
@@ -1096,6 +1101,9 @@ function IntercompanyPage({ showToast }) {
     const buyerMovId  = window.__newId();
     const ictxId      = window.__newId();
     const opLabel = OP_TYPES.find(o => o.v === form.operation_type)?.label || form.operation_type;
+    const isPrueba = getCurrentMode() === 'prueba';
+    const syncBase = isPrueba ? 'synced' : 'pending_create';
+    const demoFlag = isPrueba ? { demo: true } : {};
 
     try {
       // 1) Movimiento INGRESO en vendedor
@@ -1120,8 +1128,9 @@ function IntercompanyPage({ showToast }) {
         notas: form.notas || null,
         created_by: userId, updated_by: userId,
         created_at: now, updated_at: now,
-        version: 1, sync_status: 'pending_create', last_synced_at: null,
+        version: 1, sync_status: syncBase, last_synced_at: null,
         idempotency_key: `${userId}_acc_mov_${sellerMovId}`,
+        ...demoFlag,
       });
 
       // 2) Movimiento COSTO en comprador
@@ -1146,8 +1155,9 @@ function IntercompanyPage({ showToast }) {
         notas: form.notas || null,
         created_by: userId, updated_by: userId,
         created_at: now, updated_at: now,
-        version: 1, sync_status: 'pending_create', last_synced_at: null,
+        version: 1, sync_status: syncBase, last_synced_at: null,
         idempotency_key: `${userId}_acc_mov_${buyerMovId}`,
+        ...demoFlag,
       });
 
       // 3) Transacción IC
@@ -1168,8 +1178,9 @@ function IntercompanyPage({ showToast }) {
         notas: form.notas || null,
         created_by: userId, updated_by: userId,
         created_at: now, updated_at: now,
-        version: 1, sync_status: 'pending_create', last_synced_at: null,
+        version: 1, sync_status: syncBase, last_synced_at: null,
         idempotency_key: `${userId}_ictx_${ictxId}`,
+        ...demoFlag,
       });
 
       try { await window.__logAudit?.({ action:'insert', table:'intercompany_transactions', recordId:ictxId,
@@ -2097,6 +2108,7 @@ function TrazabilidadPage({ showToast }) {
         showToast('Cadena actualizada', 'green');
       } else {
         const id = window.__newId();
+        const isPrueba = getCurrentMode() === 'prueba';
         const rec = {
           id,
           obra_id: form.obra_id,
@@ -2121,8 +2133,12 @@ function TrazabilidadPage({ showToast }) {
           notas: form.notas?.trim() || null,
           created_at: now, updated_at: now,
           created_by: userId, updated_by: userId,
-          version: 1, sync_status: 'pending_create', last_synced_at: null,
+          version: 1,
+          // En modo prueba: marcar como demo + no enviar a sync
+          sync_status: isPrueba ? 'synced' : 'pending_create',
+          last_synced_at: null,
           idempotency_key: `${userId}_chain_${id}`,
+          ...(isPrueba ? { demo: true } : {}),
         };
         await window.__db.trazabilidad_cadenas.add(rec);
         try { await window.__logAudit?.({ action:'insert', table:'trazabilidad_cadenas', recordId:id, newData:rec, reason:`Nueva cadena: ${rec.item_nombre}` }); } catch {}
