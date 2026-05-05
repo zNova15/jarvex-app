@@ -541,13 +541,33 @@ function RequisicionesPage({ showToast }) {
 // ╔════════════════════════════════════════════════════════════╗
 // ║  ÓRDENES DE COMPRA                                         ║
 // ╚════════════════════════════════════════════════════════════╝
+// Flujo de estados de OC:
+//   borrador        → recién creada (datos incompletos)
+//   por_confirmar   → confirmada, PDF descargado, esperando firma del solicitante
+//   firmada         → almacenero subió foto firmada (notif a compras)
+//   enviada         → compras la envió al proveedor
+//   recibida_parcial → factura(s) cubrieron parte de los items
+//   recibida        → factura(s) cubrieron todos los items (compra completa)
+//   cancelada
 const OC_ESTADO_BADGE = {
-  borrador: 'b-gray', enviada: 'b-blue', aceptada: 'b-amber',
-  recibida_parcial: 'b-amber', recibida: 'b-green', cancelada: 'b-red',
+  borrador: 'b-gray',
+  por_confirmar: 'b-amber',
+  firmada: 'b-blue',
+  enviada: 'b-blue',
+  aceptada: 'b-amber',
+  recibida_parcial: 'b-amber',
+  recibida: 'b-green',
+  cancelada: 'b-red',
 };
 const OC_ESTADO_LABEL = {
-  borrador: 'Borrador', enviada: 'Enviada', aceptada: 'Aceptada',
-  recibida_parcial: 'Recibida parcial', recibida: 'Recibida', cancelada: 'Cancelada',
+  borrador: 'Borrador',
+  por_confirmar: 'Por confirmar (firma)',
+  firmada: 'Firmada',
+  enviada: 'Enviada',
+  aceptada: 'Aceptada',
+  recibida_parcial: 'Comprada parcial',
+  recibida: 'Comprada',
+  cancelada: 'Cancelada',
 };
 
 function OrdenesCompraPage({ showToast }) {
@@ -565,6 +585,55 @@ function OrdenesCompraPage({ showToast }) {
 
   // Cancelar OC con motivo obligatorio. Restaura la requisición de origen
   // a estado 'aprobada' si la OC venía de una requisición.
+  // Confirmar OC: borrador → por_confirmar. Genera PDF auto y avisa al
+  // solicitante/almacenero que tiene que imprimir, hacer firmar y subir
+  // la foto firmada para que pase a 'firmada'.
+  const confirmarOC = async (oc) => {
+    if (oc.estado !== 'borrador') {
+      showToast('Solo se puede confirmar una OC en estado borrador', 'amber');
+      return;
+    }
+    try {
+      const items = await window.__db.oc_items.where('orden_compra_id').equals(oc.id).filter(x=>!x.deleted_at).toArray();
+      if (!items.length) {
+        showToast('La OC no tiene items', 'red');
+        return;
+      }
+      // 1. Cambiar estado
+      const now = new Date().toISOString();
+      await window.__db.ordenes_compra.update(oc.id, {
+        estado: 'por_confirmar',
+        confirmada_at: now,
+        confirmada_por: userId,
+        updated_at: now, updated_by: userId,
+        version: (oc.version ?? 0) + 1,
+        sync_status: oc.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      // 2. Descargar PDF automáticamente
+      try {
+        const proveedor = lookupProv(oc.proveedor_id);
+        const obras = await window.__db.obras.toArray();
+        const obra = obras.find(o => o.id === oc.obra_id);
+        const companies = await window.__db.companies.toArray();
+        const company = companies.find(c => !c.deleted_at && c.status === 'activa');
+        window.__pdfs?.generateOCPdf?.(oc, items, proveedor, obra, company);
+      } catch (e) { console.warn('[OC confirmar] PDF', e); }
+      // 3. Audit + dispatch
+      try { await window.__logAudit?.({ action:'update', table:'ordenes_compra', recordId: oc.id,
+        oldData:{ estado: 'borrador' }, newData:{ estado: 'por_confirmar' },
+        reason:`OC ${oc.codigo} confirmada — PDF descargado, esperando firma del solicitante` }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'ordenes_compra' } })); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jarvex_new_notif', {
+        detail: {
+          tipo: 'oc_por_confirmar',
+          titulo: `OC ${oc.codigo} lista para firma`,
+          descripcion: `Imprimila, hacela firmar al solicitante y subila como evidencia (botón ⬆ en la OC)`,
+        }
+      })); } catch {}
+      showToast(`✓ OC ${oc.codigo} confirmada · PDF descargado · imprimila y hacela firmar`, 'green');
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
+
   const cancelarOC = async (oc) => {
     const motivo = prompt(`Motivo de cancelación de la OC ${oc.codigo}:\n(ej: "el solicitante dijo que era otro tipo", "se confundió de proveedor")`);
     if (!motivo || motivo.trim().length < 5) {
@@ -863,7 +932,15 @@ function OrdenesCompraPage({ showToast }) {
                       <button className="btn btn-ghost btn-xs" title="Ver / Editar" onClick={()=>verDetalle(oc)}>
                         <JxIcon name="eye" size={11}/>
                       </button>
-                      <button className="btn btn-ghost btn-xs" title="Descargar PDF para imprimir y firmar" onClick={async ()=>{
+                      {/* Confirmar OC: borrador → por_confirmar (descarga PDF auto) */}
+                      {canApproveOC && oc.estado === 'borrador' && (
+                        <button className="btn btn-amber btn-xs" title="Confirmar OC y descargar PDF para firma"
+                          onClick={()=>confirmarOC(oc)} style={{ marginLeft:4 }}>
+                          <JxIcon name="check" size={11}/> Confirmar
+                        </button>
+                      )}
+                      {/* Re-descargar PDF (cualquier estado salvo cancelada) */}
+                      <button className="btn btn-ghost btn-xs" title="Descargar PDF" onClick={async ()=>{
                         try {
                           const items = await window.__db.oc_items.where('orden_compra_id').equals(oc.id).filter(x=>!x.deleted_at).toArray();
                           const proveedor = lookupProv(oc.proveedor_id);
@@ -872,13 +949,13 @@ function OrdenesCompraPage({ showToast }) {
                           const companies = await window.__db.companies.toArray();
                           const company = companies.find(c => !c.deleted_at && c.status === 'activa');
                           window.__pdfs?.generateOCPdf?.(oc, items, proveedor, obra, company);
-                          showToast('PDF generado · imprimí y hacé firmar', 'green');
+                          showToast('PDF generado', 'green');
                         } catch (e) { showToast('Error PDF: '+e.message, 'red'); }
                       }} style={{ marginLeft:4 }}>
                         <JxIcon name="download" size={11}/>
                       </button>
-                      {/* Adjuntar OC firmada */}
-                      {oc.estado !== 'cancelada' && (
+                      {/* Adjuntar OC firmada (visible en por_confirmar, firmada, enviada — no en borrador ni final) */}
+                      {oc.estado !== 'cancelada' && oc.estado !== 'borrador' && oc.estado !== 'recibida' && (
                         <button className="btn btn-ghost btn-xs" title="Adjuntar OC firmada (PDF/foto)"
                           onClick={()=>fileInputRef.current?.openForOC(oc)} style={{ marginLeft:4 }}>
                           <JxIcon name="upload" size={11}/>
@@ -919,25 +996,43 @@ function OrdenesCompraPage({ showToast }) {
           if (f.size > 10 * 1024 * 1024) { showToast('Archivo muy grande (máx 10 MB)', 'red'); return; }
           try {
             const evId = window.__newId();
+            const now = new Date().toISOString();
             await window.__saveEvidenciaLocal?.({
               id: evId, obra_id: oc.obra_id,
               tipo_evidencia: 'oc_firmada',
               modulo_relacionado: 'ordenes_compra',
               registro_relacionado_id: oc.id,
               nombre_archivo: f.name, mime_type: f.type, blob: f,
-              fecha: new Date().toISOString().slice(0,10),
+              fecha: now.slice(0,10),
               observaciones: `OC firmada · ${oc.codigo}`,
               created_by: userId,
             });
+            // Estado nuevo: por_confirmar → firmada (lo más común). Si ya estaba
+            // firmada/enviada, se mantiene. Si era borrador (no debería pasar
+            // porque el botón está oculto), también pasa a firmada.
+            const nuevoEstado = (oc.estado === 'borrador' || oc.estado === 'por_confirmar') ? 'firmada' : oc.estado;
             await window.__db.ordenes_compra.update(oc.id, {
-              estado: oc.estado === 'borrador' ? 'enviada' : oc.estado,
+              estado: nuevoEstado,
               oc_firmada_evidencia_id: evId,
-              updated_at: new Date().toISOString(),
+              firmada_at: now,
+              firmada_por: userId,
+              updated_at: now, updated_by: userId,
               version: (oc.version ?? 0) + 1,
               sync_status: oc.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
             });
+            try { await window.__logAudit?.({ action:'update', table:'ordenes_compra', recordId: oc.id,
+              oldData:{ estado: oc.estado }, newData:{ estado: nuevoEstado, evidencia_id: evId },
+              reason:`OC ${oc.codigo} firmada — solicitante firmó y almacén adjuntó evidencia` }); } catch {}
             try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'ordenes_compra' } })); } catch {}
-            showToast(`✓ OC firmada adjuntada · ${oc.codigo}`, 'green');
+            // Notificación a compras: la OC está lista para ejecutarse (comprar al proveedor)
+            try { window.dispatchEvent(new CustomEvent('jarvex_new_notif', {
+              detail: {
+                tipo: 'oc_firmada',
+                titulo: `OC ${oc.codigo} firmada · lista para comprar`,
+                descripcion: `${oc.codigo} fue firmada por el solicitante. Compras puede ejecutar la compra y luego subir la factura por Captura Mágica.`,
+              }
+            })); } catch {}
+            showToast(`✓ OC firmada adjuntada · ${oc.codigo} ahora lista para comprar`, 'green');
           } catch (err) { showToast('Error: ' + (err.message || err), 'red'); }
           e.target.value = ''; // limpiar input
         }}/>
