@@ -39,17 +39,31 @@ const MAX_DESC_CHARS = 1500;
 function buildSystemPrompt() {
   return `Eres un asistente experto en obras de construcción peruana. Tu rol es ayudar al residente o maestro de obra a armar una solicitud de materiales bien estructurada a partir de una descripción libre.
 
-REGLAS:
+REGLAS CRÍTICAS:
 - Recibís: descripción libre + catálogo de materiales del almacén de la obra + (opcional) histórico de solicitudes anteriores + partidas activas + proveedores.
 - Devolvés un JSON con la solicitud completa lista para que el residente revise.
-- Para cada ítem:
-  · Si el material que el residente pide YA EXISTE en el catálogo → usar el material_id real y "accion": "usar_existente"
-  · Si NO existe → "accion": "crear_nuevo", material_id=null, descripcion_libre con el nombre completo
+
+== NOMBRE DEL MATERIAL ==
+- "nombre_match" debe ser SOLO el nombre del material — NUNCA incluyas cantidad, unidad ni multiplicador en este campo.
+  · ✓ CORRECTO: "Cemento Sol Tipo I"
+  · ✗ MAL: "Cemento Sol × 200 bls", "Cemento Sol (200 bls)", "200 bls de Cemento"
+- La cantidad va EXCLUSIVAMENTE en "cantidad" (number).
+- La unidad va EXCLUSIVAMENTE en "unidad" (string corto: "bls", "kg", "m", "und", "m2", "m3", "gal").
+
+== MATCHING ==
+- Para cada ítem, intentá matchear con el catálogo:
+  · Si existe → "material_id": "<uuid del catálogo>", "accion": "usar_existente"
+  · Si NO existe → "material_id": null, "accion": "crear_nuevo", "descripcion_libre": "<nombre completo>"
+
+== CANTIDADES Y CONTEXTO ==
 - Sugerí cantidades realistas basadas en el histórico (si hay solicitudes parecidas). Si no hay histórico, estimá conservador con texto del residente.
 - Si la descripción menciona una partida específica (ej: "vaciado de losa nivel 3"), tratá de matchear con partidas_obra y poner partida_sugerida_id.
 - Sugerí proveedor solo si tenés alta confianza (ej: el material en histórico siempre vino de cierto proveedor).
 - Estimá fecha_necesidad_sugerida basado en frases como "esta semana"/"hoy"/"mañana"/"para el lunes".
 - Estimá prioridad: si hay urgencia explícita ("urgente", "ya"), si hay parada de obra, etc.
+
+== SOLICITANTE ==
+- Si el texto menciona explícitamente quien pidió ("el maestro de obra Juan Pérez solicitó", "lo pide el capataz"), incluilo en "solicitante_detectado". Sino devolvé null.
 
 CONFIANZA:
 - 0.85+: descripción clara, todos los items matchean al catálogo, cantidades respaldadas por histórico
@@ -81,6 +95,7 @@ DEVUELVE SOLO JSON VÁLIDO (sin markdown, sin texto antes/después):
   "descripcion_estructurada": "Materiales para vaciado de losa nivel 3 — semana 18",
   "fecha_necesidad_sugerida": "2026-05-10",
   "prioridad_sugerida": "alta",
+  "solicitante_detectado": "Maestro de obra Juan Pérez",
   "confianza": 0.88,
   "razonamiento": "El residente pidió cemento, fierro y agregados típicos de un vaciado de losa. Las cantidades fueron estimadas basadas en 3 solicitudes similares en histórico.",
   "advertencias": [
@@ -227,6 +242,15 @@ export default async function handler(req, res) {
     const partidaIds = new Set((body.partidas_obra || []).map(p => p.id));
     const provIds = new Set((body.proveedores || []).map(p => p.id));
 
+    // Sanea defensivamente el nombre por si Claude igual mete cantidad/unidad
+    // pegada (ej: "Cemento Sol × 200 bls" → "Cemento Sol").
+    const limpiarNombre = (s) => String(s || '')
+      .replace(/\s*[×x]\s*\d+(\.\d+)?\s*(bls|kg|m2|m3|m|und|gal|hr|pza|pza?s)?\b/gi, '')
+      .replace(/\s*[\(\[]\s*\d+(\.\d+)?\s*(bls|kg|m2|m3|m|und|gal|hr|pza|pza?s)?\s*[\)\]]/gi, '')
+      .replace(/\s*[-–—]\s*\d+(\.\d+)?\s*(bls|kg|m2|m3|m|und|gal|hr|pza|pza?s)\b/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
     const itemsRaw = Array.isArray(parsed.items) ? parsed.items : [];
     const items = itemsRaw.slice(0, 100).map((it) => {
       const mid = it.material_id && materialIds.has(it.material_id) ? it.material_id : null;
@@ -236,7 +260,7 @@ export default async function handler(req, res) {
       const cant = Number(it.cantidad);
       return {
         material_id: mid,
-        nombre_match: String(it.nombre_match || it.descripcion_libre || '(sin nombre)').slice(0, 120),
+        nombre_match: limpiarNombre(it.nombre_match || it.descripcion_libre || '(sin nombre)').slice(0, 120),
         cantidad: Number.isFinite(cant) && cant > 0 ? cant : 1,
         unidad: String(it.unidad || 'und').slice(0, 20),
         precio_estimado: Number(it.precio_estimado) || 0,
@@ -245,7 +269,7 @@ export default async function handler(req, res) {
         notas: String(it.notas || '').slice(0, 300),
         confianza_item: typeof it.confianza_item === 'number' ? Math.max(0, Math.min(1, it.confianza_item)) : 0.5,
         accion,
-        descripcion_libre: !mid ? String(it.descripcion_libre || it.nombre_match || '').slice(0, 200) : null,
+        descripcion_libre: !mid ? limpiarNombre(it.descripcion_libre || it.nombre_match || '').slice(0, 200) : null,
       };
     });
 
@@ -260,6 +284,7 @@ export default async function handler(req, res) {
         descripcion_estructurada: String(parsed.descripcion_estructurada || descripcion).slice(0, 300),
         fecha_necesidad_sugerida: parsed.fecha_necesidad_sugerida || null,
         prioridad_sugerida: prioridad,
+        solicitante_detectado: parsed.solicitante_detectado ? String(parsed.solicitante_detectado).slice(0, 120) : null,
       },
       confianza,
       razonamiento: String(parsed.razonamiento || '').slice(0, 600),

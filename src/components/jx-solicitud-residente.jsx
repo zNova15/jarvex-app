@@ -26,19 +26,70 @@ function SolicitudResidentePage({ showToast }) {
   const userName = `${auth?.profile?.nombres || ''} ${auth?.profile?.apellidos || ''}`.trim() || auth?.profile?.email || 'Residente';
 
   const [obraId, setObraId] = uS(null);
+  const [fechaCreacion, setFechaCreacion] = uS(() => new Date().toISOString().slice(0, 10));
   const [fechaNecesidad, setFechaNecesidad] = uS(() => {
     const d = new Date(); d.setDate(d.getDate() + 7);
     return d.toISOString().slice(0, 10);
   });
+  // Solicitante: por default el usuario logueado, pero editable
+  // (ej: el residente carga la solicitud por pedido del maestro de obra).
+  const [solicitanteNombre, setSolicitanteNombre] = uS(userName);
   const [descripcion, setDescripcion] = uS('');
-  const [items, setItems] = uS([{ id: 1, material_id: '', material_nombre: '', cantidad: '', notas: '' }]);
+  const [items, setItems] = uS([{ id: 1, material_id: '', material_nombre: '', cantidad: '', unidad: '', notas: '' }]);
   const [previewing, setPreviewing] = uS(false);
   const [submitBusy, setSubmitBusy] = uS(false);
+  // Última requisición creada (para botones "Ir a requisición" / "Generar OC")
+  const [ultimaReq, setUltimaReq] = uS(null);
   // Asistente IA: descripción libre del residente → solicitud estructurada
   const [aiPrompt, setAiPrompt] = uS('');
   const [aiBusy, setAiBusy] = uS(false);
-  const [aiResult, setAiResult] = uS(null); // { result, confianza, razonamiento, advertencias }
+  const [aiResult, setAiResult] = uS(null);
   const [aiPriority, setAiPriority] = uS('normal');
+
+  // Sanea el nombre del material: quita cantidad/unidad redundantes que la
+  // IA pudiera meter en el campo nombre. Ej: "Cemento Sol × 200 bls" → "Cemento Sol",
+  // "Fierro 1/2 (50 kg)" → "Fierro 1/2".
+  const sanearNombreItem = (nombre) => {
+    if (!nombre) return '';
+    return String(nombre)
+      .replace(/\s*[×x]\s*\d+(\.\d+)?\s*(bls|kg|m2|m3|m|und|gal|hr|pza|pza?s)?\b/gi, '')
+      .replace(/\s*[\(\[]\s*\d+(\.\d+)?\s*(bls|kg|m2|m3|m|und|gal|hr|pza|pza?s)?\s*[\)\]]/gi, '')
+      .replace(/\s*[-–—]\s*\d+(\.\d+)?\s*(bls|kg|m2|m3|m|und|gal|hr|pza|pza?s)\b/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
+
+  // Detecta menciones a "el maestro de obra Juan Pérez" / "el residente X solicitó"
+  // dentro del texto y devuelve el nombre del solicitante real, o null.
+  const detectarSolicitanteEnTexto = (texto) => {
+    if (!texto) return null;
+    const t = String(texto);
+    const patrones = [
+      /(?:el\s+|la\s+)?maestro\s+de?\s*obra\s+(?:llamad[oa]\s+)?([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){0,2})/i,
+      /(?:el\s+|la\s+)?capataz\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){0,2})/i,
+      /(?:el\s+|la\s+)?ingenier[oa]\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){0,2})/i,
+      /(?:el\s+|la\s+)?residente\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){0,2})/i,
+      /solicit[óa]\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){1,2})/i,
+    ];
+    // Prefijos de cargo (los devolvemos en el resultado)
+    const cargoPrefijo = (regex) => {
+      const m = t.match(regex);
+      if (!m) return null;
+      const nombre = m[1]?.trim();
+      if (!nombre) return null;
+      const lower = m[0].toLowerCase();
+      if (lower.includes('maestro')) return `Maestro de obra ${nombre}`;
+      if (lower.includes('capataz')) return `Capataz ${nombre}`;
+      if (lower.includes('ingenier')) return `Ing. ${nombre}`;
+      if (lower.includes('residente')) return `Residente ${nombre}`;
+      return nombre;
+    };
+    for (const p of patrones) {
+      const r = cargoPrefijo(p);
+      if (r) return r;
+    }
+    return null;
+  };
 
   // Obra activa
   uE(() => {
@@ -112,7 +163,7 @@ function SolicitudResidentePage({ showToast }) {
     requisicionItems: proyeccion.filter(p => p.status !== 'suficiente'),
   }), [proyeccion]);
 
-  const addItem = () => setItems(prev => [...prev, { id: Date.now(), material_id: '', material_nombre: '', cantidad: '', notas: '' }]);
+  const addItem = () => setItems(prev => [...prev, { id: Date.now(), material_id: '', material_nombre: '', cantidad: '', unidad: '', notas: '' }]);
   const removeItem = (id) => setItems(prev => prev.length === 1 ? prev : prev.filter(it => it.id !== id));
   const updateItem = (id, patch) => setItems(prev => prev.map(it => it.id === id ? { ...it, ...patch } : it));
 
@@ -126,23 +177,29 @@ function SolicitudResidentePage({ showToast }) {
     return conf >= 0.85 && !advCriticas && sug.result.items.length > 0;
   };
 
-  const aplicarSugerenciaIA = (sug) => {
+  const aplicarSugerenciaIA = (sug, textoOriginal) => {
     if (!sug?.result) return;
-    // Volcar items al form
-    const nuevosItems = sug.result.items.map((it, i) => ({
-      id: Date.now() + i,
-      material_id: it.material_id || '',
-      material_nombre: it.material_id ? (matsArr.find(m => m.id === it.material_id)?.nombre_material || it.nombre_match) : it.nombre_match,
-      cantidad: String(it.cantidad ?? ''),
-      notas: [it.notas, it.accion === 'crear_nuevo' ? '⚠ Material nuevo (no en catálogo)' : null].filter(Boolean).join(' · '),
-    }));
+    // Volcar items al form. El nombre del material va SOLO con el nombre,
+    // la cantidad va en su columna y la unidad en la suya — no las
+    // mezclamos aunque la IA las haya devuelto pegadas.
+    const nuevosItems = sug.result.items.map((it, i) => {
+      const matCatalogo = it.material_id ? matsArr.find(m => m.id === it.material_id) : null;
+      const nombreLimpio = sanearNombreItem(matCatalogo?.nombre_material || it.nombre_match || '');
+      return {
+        id: Date.now() + i,
+        material_id: it.material_id || '',
+        material_nombre: nombreLimpio,
+        cantidad: String(it.cantidad ?? ''),
+        unidad: matCatalogo?.unidad || it.unidad || '',
+        notas: [it.notas, it.accion === 'crear_nuevo' ? '⚠ Material nuevo (no en catálogo)' : null].filter(Boolean).join(' · '),
+      };
+    });
     if (nuevosItems.length === 0) return;
     setItems(nuevosItems);
     if (sug.result.descripcion_estructurada && !descripcion.trim()) {
       setDescripcion(sug.result.descripcion_estructurada);
     }
     if (sug.result.fecha_necesidad_sugerida) {
-      // Solo si el formato es válido YYYY-MM-DD y no es pasado
       const f = sug.result.fecha_necesidad_sugerida;
       if (/^\d{4}-\d{2}-\d{2}$/.test(f)) {
         const hoy = new Date().toISOString().slice(0,10);
@@ -150,6 +207,17 @@ function SolicitudResidentePage({ showToast }) {
       }
     }
     if (sug.result.prioridad_sugerida) setAiPriority(sug.result.prioridad_sugerida);
+    // Si la IA detectó que la solicitud venía de otra persona (campo
+    // explícito del LLM) o si el regex local lo detecta del texto, y
+    // el usuario NO había editado el campo Solicitante, lo seteamos.
+    if (solicitanteNombre === userName) {
+      const detectadoIA = sug.result?.solicitante_detectado;
+      const detectadoRegex = textoOriginal ? detectarSolicitanteEnTexto(textoOriginal) : null;
+      const detectado = detectadoIA || detectadoRegex;
+      if (detectado && detectado !== userName) {
+        setSolicitanteNombre(detectado);
+      }
+    }
   };
 
   const generarConIA = async () => {
@@ -233,7 +301,7 @@ function SolicitudResidentePage({ showToast }) {
       } catch {}
 
       if (aplicarAuto(sug)) {
-        aplicarSugerenciaIA(sug);
+        aplicarSugerenciaIA(sug, aiPrompt);
         showToast(`✓ ${sug.result.items.length} items generados por IA (${(sug.confianza*100).toFixed(0)}% confianza)`, 'green');
         setAiPrompt('');
       } else {
@@ -248,12 +316,13 @@ function SolicitudResidentePage({ showToast }) {
   };
 
   const handleMaterialChange = (rowId, value) => {
-    const mat = matsByName.get(value.toLowerCase());
+    const limpio = sanearNombreItem(value);
+    const mat = matsByName.get(limpio.toLowerCase()) || matsByName.get(value.toLowerCase());
     if (mat) {
-      updateItem(rowId, { material_id: mat.id, material_nombre: mat.nombre_material });
+      // Auto-popular unidad cuando se selecciona un material del catálogo
+      updateItem(rowId, { material_id: mat.id, material_nombre: mat.nombre_material, unidad: mat.unidad || '' });
     } else {
-      // Permitir texto libre — se resolverá al guardar
-      updateItem(rowId, { material_id: '', material_nombre: value });
+      updateItem(rowId, { material_id: '', material_nombre: limpio });
     }
   };
 
@@ -272,18 +341,20 @@ function SolicitudResidentePage({ showToast }) {
         const reqsObra = await window.__db.requisiciones.where('obra_id').equals(obraId).filter(r=>!r.deleted_at).toArray();
         const sigNum = (reqsObra.length || 0) + 1;
         const codigo = `REQ-${new Date().getFullYear()}-${String(sigNum).padStart(4, '0')}`;
-        // Prioridad: si HAY faltantes reales → urgente; si solo bajan al mínimo → alta
         const prioridad = stats.faltantes > 0 ? 'urgente' : 'alta';
+        const solicitanteFinal = solicitanteNombre?.trim() || userName;
+        const fechaFinal = fechaCreacion || now.slice(0,10);
 
         await window.__db.requisiciones.add({
           id: reqId, obra_id: obraId,
-          codigo, fecha: now.slice(0,10),
-          descripcion: `Solicitud residente · ${descripcion}`,
+          codigo, fecha: fechaFinal,
+          descripcion: descripcion,
           prioridad,
           estado: 'pendiente_aprobacion',
           solicitante_id: userId,
+          solicitante_nombre: solicitanteFinal,
           fecha_necesidad: fechaNecesidad,
-          notas: `Generada automáticamente desde "Solicitud de Materiales" del residente ${userName}. ${stats.faltantes > 0 ? `${stats.faltantes} item(s) sin stock suficiente.` : ''} ${stats.bajaMin > 0 ? `${stats.bajaMin} item(s) bajarían al stock mínimo.` : ''}`,
+          notas: `${solicitanteFinal !== userName ? `Solicitado por ${solicitanteFinal}, cargado por ${userName}. ` : `Cargado por ${userName}. `}${stats.faltantes > 0 ? `${stats.faltantes} item(s) sin stock suficiente.` : ''} ${stats.bajaMin > 0 ? `${stats.bajaMin} item(s) bajarían al stock mínimo.` : ''}`.trim(),
           created_by: userId, updated_by: userId,
           created_at: now, updated_at: now,
           version: 1, sync_status: 'pending_create', last_synced_at: null,
@@ -291,22 +362,26 @@ function SolicitudResidentePage({ showToast }) {
         });
 
         for (const p of stats.requisicionItems) {
-          // Cantidad a comprar: si faltante > 0 usa faltante; si baja al mínimo,
-          // pide hasta llegar a 2× el mínimo (búffer)
           const cantPedir = p.faltante > 0
-            ? p.faltante + Math.max(0, p.stockMinimo - 0) // faltante + buffer hasta mínimo
+            ? p.faltante + Math.max(0, p.stockMinimo - 0)
             : Math.max(0, p.stockMinimo * 2 - p.stockActual);
           const itemId = window.__newId();
+          // Si el residente eligió una unidad distinta a la del material, la respetamos
+          const itemForm = items.find(it => it.material_id === p.mat.id);
+          const unidadFinal = itemForm?.unidad?.trim() || p.mat.unidad;
           await window.__db.requisicion_items.add({
             id: itemId, requisicion_id: reqId,
             material_id: p.mat.id,
-            descripcion: p.mat.nombre_material,
-            unidad: p.mat.unidad,
+            descripcion: sanearNombreItem(p.mat.nombre_material),
+            unidad: unidadFinal,
             cantidad: cantPedir,
             precio_estimado: Number(p.mat.precio_unitario_estimado || 0),
-            notas: p.status === 'faltante'
-              ? `Solicitado ${p.solicitado}, en stock ${p.stockActual}, falta ${p.faltante}`
-              : `Solicitado ${p.solicitado}, en stock ${p.stockActual}, bajaría a ${p.stockTrasUsar} (mín ${p.stockMinimo})`,
+            notas: [
+              itemForm?.notas || null,
+              p.status === 'faltante'
+                ? `Solicitado ${p.solicitado}, en stock ${p.stockActual}, falta ${p.faltante}`
+                : `Solicitado ${p.solicitado}, en stock ${p.stockActual}, bajaría a ${p.stockTrasUsar} (mín ${p.stockMinimo})`,
+            ].filter(Boolean).join(' · '),
             created_at: now, updated_at: now,
             sync_status: 'pending_create',
             idempotency_key: `${userId}_req_items_${itemId}`,
@@ -314,31 +389,33 @@ function SolicitudResidentePage({ showToast }) {
         }
 
         try { await window.__logAudit?.({ action:'insert', table:'requisiciones', recordId:reqId,
-          newData:{ codigo, items: stats.requisicionItems.length },
-          reason:`Solicitud residente · ${descripcion}` }); } catch {}
+          newData:{ codigo, items: stats.requisicionItems.length, solicitante: solicitanteFinal },
+          reason:`Solicitud · ${descripcion}` }); } catch {}
         try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'requisiciones' } })); } catch {}
         try { window.dispatchEvent(new CustomEvent('jarvex_new_notif', {
           detail: {
             tipo: 'requisicion',
             titulo: `Requisición ${codigo} (${prioridad})`,
-            descripcion: `${stats.requisicionItems.length} ítems sin stock suficiente · ${userName}`,
+            descripcion: `${stats.requisicionItems.length} ítems sin stock · solicitó ${solicitanteFinal}`,
           }
         })); } catch {}
         showToast(`✓ Requisición ${codigo} creada · ${stats.requisicionItems.length} ítem(s) requieren compra`, 'amber');
+        setUltimaReq({ id: reqId, codigo, prioridad, items: stats.requisicionItems.length });
       } else {
         // Stock suficiente para todos → solo registramos como notificación
         try { window.dispatchEvent(new CustomEvent('jarvex_new_notif', {
           detail: {
             tipo: 'solicitud_residente',
             titulo: `Solicitud cubierta con stock`,
-            descripcion: `${userName} solicitó ${stats.suficientes} ítems · stock suficiente`,
+            descripcion: `${(solicitanteNombre || userName)} solicitó ${stats.suficientes} ítems · stock suficiente`,
           }
         })); } catch {}
         showToast(`✓ Stock suficiente para los ${stats.suficientes} materiales solicitados`, 'green');
+        setUltimaReq(null);
       }
 
-      // Limpiar form
-      setItems([{ id: 1, material_id: '', material_nombre: '', cantidad: '', notas: '' }]);
+      // Limpiar form (manteniendo el solicitante por si carga otra solicitud seguida)
+      setItems([{ id: 1, material_id: '', material_nombre: '', cantidad: '', unidad: '', notas: '' }]);
       setDescripcion('');
       setPreviewing(false);
     } catch (e) {
@@ -460,7 +537,7 @@ function SolicitudResidentePage({ showToast }) {
               <button className="btn btn-ghost btn-sm" onClick={()=>{ setAiResult(null); }}>
                 Descartar
               </button>
-              <button className="btn btn-amber btn-sm" onClick={()=>{ aplicarSugerenciaIA(aiResult); setAiResult(null); setAiPrompt(''); showToast('Items aplicados al form', 'green'); }}>
+              <button className="btn btn-amber btn-sm" onClick={()=>{ aplicarSugerenciaIA(aiResult, aiPrompt); setAiResult(null); setAiPrompt(''); showToast('Items aplicados al form', 'green'); }}>
                 <JxIcon name="check" size={12}/> Aplicar al form
               </button>
             </div>
@@ -476,12 +553,35 @@ function SolicitudResidentePage({ showToast }) {
             <input className="fi" value={descripcion} onChange={e=>setDescripcion(e.target.value)} placeholder="Ej: Materiales para vaciado de losa nivel 3 - Semana 18"/>
           </div>
           <div>
-            <label className="flabel">Solicitante</label>
-            <input className="fi" value={userName} disabled/>
+            <label className="flabel" style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+              <span>Solicitante</span>
+              {solicitanteNombre !== userName && (
+                <button type="button" className="btn btn-ghost btn-xs"
+                  title="Volver a mi nombre (usuario actual)"
+                  onClick={()=>setSolicitanteNombre(userName)}
+                  style={{ fontSize:10 }}>↺ Soy yo</button>
+              )}
+            </label>
+            <input className="fi" value={solicitanteNombre}
+              onChange={e=>setSolicitanteNombre(e.target.value)}
+              placeholder="Ej: Maestro de obra Juan Pérez"/>
+            <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>
+              {solicitanteNombre === userName
+                ? `Sos vos — editá si la solicitud viene de otra persona`
+                : `Usuario que carga el sistema: ${userName}`}
+            </div>
+          </div>
+          <div>
+            <label className="flabel">Fecha de creación</label>
+            <input className="fi" type="date" value={fechaCreacion}
+              max={new Date().toISOString().slice(0,10)}
+              onChange={e=>setFechaCreacion(e.target.value)}/>
           </div>
           <div>
             <label className="flabel">Fecha en que se necesita *</label>
-            <input className="fi" type="date" value={fechaNecesidad} onChange={e=>setFechaNecesidad(e.target.value)}/>
+            <input className="fi" type="date" value={fechaNecesidad}
+              min={fechaCreacion}
+              onChange={e=>setFechaNecesidad(e.target.value)}/>
           </div>
         </div>
       </div>
@@ -521,7 +621,12 @@ function SolicitudResidentePage({ showToast }) {
                       </datalist>
                     </td>
                     <td><input className="fi" type="number" min="0" step="0.01" value={it.cantidad} onChange={e=>updateItem(it.id, { cantidad: e.target.value })}/></td>
-                    <td style={{ fontSize:11, color:'var(--tm)' }}>{mat?.unidad || '—'}</td>
+                    <td>
+                      <input className="fi" style={{ fontSize:11, padding:'4px 6px', minWidth:60 }}
+                        value={it.unidad || mat?.unidad || ''}
+                        onChange={e=>updateItem(it.id, { unidad: e.target.value })}
+                        placeholder="bls/kg/m..."/>
+                    </td>
                     <td style={{ textAlign:'right' }}>{mat ? `${fmtN(mat.stock_actual)} (mín ${fmtN(mat.stock_minimo)})` : '—'}</td>
                     <td>
                       {proj && (
@@ -543,6 +648,31 @@ function SolicitudResidentePage({ showToast }) {
           </table>
         </div>
       </div>
+
+      {/* Banner post-submit: a dónde fue la solicitud + acceso directo */}
+      {ultimaReq && (
+        <div className="card card-p" style={{ marginBottom:14, background:'rgba(46,204,113,0.07)', border:'1px solid rgba(46,204,113,0.3)' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
+            <div style={{ flex:1, minWidth:240 }}>
+              <div style={{ fontSize:13, fontWeight:700, color:'var(--green)' }}>
+                ✓ Requisición {ultimaReq.codigo} creada
+              </div>
+              <div style={{ fontSize:11.5, color:'var(--ts)', marginTop:4 }}>
+                Está en estado <strong>pendiente de aprobación</strong> con prioridad <strong style={{ textTransform:'uppercase' }}>{ultimaReq.prioridad}</strong>.
+                El admin/jefe de compras la verá en <strong>Requisiciones</strong> y podrá generar la Orden de Compra.
+              </div>
+            </div>
+            <button className="btn btn-amber btn-sm"
+              onClick={()=>{ try { window.location.hash = '#/requisiciones'; } catch {} }}>
+              Ir a Requisiciones <JxIcon name="chevR" size={11}/>
+            </button>
+            <button className="btn btn-ghost btn-sm" onClick={()=>setUltimaReq(null)}>Cerrar</button>
+          </div>
+          <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:8, lineHeight:1.5 }}>
+            <strong>Flujo:</strong> Solicitud → <strong>Requisición</strong> (acá quedó) → aprobación → <strong>Orden de Compra</strong> (botón "OC" en cada requisición) → imprimir y firmar → enviar al proveedor.
+          </div>
+        </div>
+      )}
 
       {/* Resumen de proyección */}
       {proyeccion.length > 0 && (
