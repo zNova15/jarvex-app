@@ -63,15 +63,27 @@ export async function generarFacturasInternas(cadena, companies, userId) {
   }
 
   const isPrueba = getCurrentMode() === 'prueba';
-  const cantidad = Number(cadena.cantidad) || 0;
   const moneda = cadena.moneda || 'PEN';
   const fechaBase = cadena.fecha || new Date().toISOString().slice(0, 10);
-  const item = cadena.item_nombre || 'Material';
-  const unidad = cadena.unidad || 'und';
 
-  // Para cada par (i, i+1) creamos venta (i → i+1).
+  // Items: si la cadena tiene `items[]`, usamos cada uno con su precio escalado
+  // por el markup acumulado. Si es legacy single-item, generamos uno solo.
+  const itemsCadena = Array.isArray(cadena.items) && cadena.items.length > 0
+    ? cadena.items
+    : [{
+        descripcion: cadena.item_nombre || 'Material',
+        unidad: cadena.unidad || 'und',
+        cantidad: Number(cadena.cantidad) || 0,
+        precio_real_unitario: Number(cadena.precio_real_unitario) || 0,
+      }];
+  // Precio "real" promedio = base para escalar
+  const cantTotal = itemsCadena.reduce((s, it) => s + Number(it.cantidad || 0), 0);
+  const totalRealCadena = itemsCadena.reduce((s, it) =>
+    s + Number(it.cantidad || 0) * Number(it.precio_real_unitario || 0), 0);
+  const precioRealProm = cantTotal > 0 ? totalRealCadena / cantTotal : 0;
+
   const facturasCreadas = [];
-  let serieCount = await contarFacturasPorEmpresa(); // mapa para serializar correlativos por company
+  let serieCount = await contarFacturasPorEmpresa();
 
   for (let i = 0; i < eslabones.length - 1; i++) {
     const vendedor = eslabones[i];
@@ -85,7 +97,22 @@ export async function generarFacturasInternas(cadena, companies, userId) {
     const precioUnit = Number(vendedor.precio_unit) || 0;
     if (precioUnit <= 0) throw new Error(`Falta precio en eslabón ${i + 1} (${compVend.name})`);
 
-    const subtotal = +(precioUnit * cantidad).toFixed(2);
+    // Factor del eslabón actual = precio_unit / precio_real_promedio.
+    // Cada item de la factura usa su precio_real * factor.
+    const factor = precioRealProm > 0 ? precioUnit / precioRealProm : 1;
+    const itemsFactura = itemsCadena.map(it => {
+      const precioItem = +(Number(it.precio_real_unitario || 0) * factor).toFixed(4);
+      const cantItem = Number(it.cantidad || 0);
+      return {
+        descripcion: it.descripcion,
+        unidad: it.unidad || 'und',
+        cantidad: cantItem,
+        precio_unitario: precioItem,
+        subtotal: +(cantItem * precioItem).toFixed(2),
+        material_id: it.material_id || null,
+      };
+    });
+    const subtotal = +itemsFactura.reduce((s, it) => s + it.subtotal, 0).toFixed(2);
     const igv = +(subtotal * IGV_RATE).toFixed(2);
     const total = +(subtotal + igv).toFixed(2);
 
@@ -102,10 +129,12 @@ export async function generarFacturasInternas(cadena, companies, userId) {
 
     const facturaMeta = {
       serie, correlativo, fecha: fechaBase, moneda,
-      item_nombre: item, cantidad, unidad, precio_unitario: precioUnit,
+      // Multi-items: cada uno con su precio, cantidad, subtotal
+      items: itemsFactura,
+      // Resumen
       subtotal, igv, total,
       paso_idx: i + 1, paso_total: eslabones.length - 1,
-      concepto: `Venta interna ${item} (cadena ${cadena.id.slice(0, 8)})`,
+      concepto: `Venta interna · cadena ${cadena.id.slice(0, 8)} · ${itemsFactura.length} ítem(s)`,
     };
 
     // 1) Asiento INGRESO en empresa vendedora
@@ -116,7 +145,7 @@ export async function generarFacturasInternas(cadena, companies, userId) {
       date: fechaBase,
       amount: total,
       currency: moneda,
-      description: `Venta intercompany a ${compComp.name} · ${item}`,
+      description: `Venta intercompany a ${compComp.name} · ${itemsFactura.length} item(s)`,
       third_party_name: compComp.legal_name || compComp.name,
       third_party_ruc: compComp.ruc || null,
       document_type: 'factura',
@@ -149,7 +178,7 @@ export async function generarFacturasInternas(cadena, companies, userId) {
       date: fechaBase,
       amount: total,
       currency: moneda,
-      description: `Compra intercompany a ${compVend.name} · ${item}`,
+      description: `Compra intercompany a ${compVend.name} · ${itemsFactura.length} item(s)`,
       third_party_name: compVend.legal_name || compVend.name,
       third_party_ruc: compVend.ruc || null,
       document_type: 'factura',
@@ -182,7 +211,7 @@ export async function generarFacturasInternas(cadena, companies, userId) {
       buyer_company_id: compComp.id,
       date: fechaBase,
       operation_type: 'venta_material',
-      description: `${item} · ${cantidad} ${unidad}`,
+      description: `Cadena ${cadena.id.slice(0, 8)} · ${itemsFactura.length} item(s)`,
       amount: total,
       currency: moneda,
       document_type: 'factura',

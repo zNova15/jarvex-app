@@ -1732,15 +1732,21 @@ function TrazabilidadPage({ showToast }) {
 
   // ── Cálculos por cadena ──────────────────────────────────────
   const calcular = (c) => {
-    const cant = Number(c.cantidad || 0);
-    const precioReal = Number(c.precio_real_unitario || 0);
+    // Soporta cadenas multi-items (c.items) y legacy single-item.
+    const items = Array.isArray(c.items) && c.items.length > 0
+      ? c.items
+      : [{ cantidad: c.cantidad || 0, precio_real_unitario: c.precio_real_unitario || 0, precio_referencial_contrato: c.precio_referencial_contrato || 0 }];
     const eslabones = Array.isArray(c.eslabones) ? c.eslabones : [];
     const ultimo = eslabones[eslabones.length - 1];
+    const cant = items.reduce((s, it) => s + Number(it.cantidad || 0), 0);
+    const costoTotalReal = items.reduce((s, it) => s + Number(it.cantidad || 0) * Number(it.precio_real_unitario || 0), 0);
+    const presupTotal = items.reduce((s, it) => s + Number(it.cantidad || 0) * Number(it.precio_referencial_contrato || 0), 0);
+    // Markup factor del último eslabón sobre el precio real
     const precioFinal = Number(ultimo?.precio_unit || 0);
-    const presup = Number(c.precio_referencial_contrato || 0);
-    const costoTotalReal = precioReal * cant;
-    const costoCargadoObra = precioFinal * cant;
-    const presupTotal = presup * cant;
+    const precioReal = cant > 0 ? costoTotalReal / cant : 0;
+    const presup = cant > 0 ? presupTotal / cant : 0;
+    const factorFinal = precioReal > 0 ? precioFinal / precioReal : 1;
+    const costoCargadoObra = costoTotalReal * factorFinal;
     const gananciaGrupoReal = costoCargadoObra - costoTotalReal;
     const gananciaEjecutoraAparente = presupTotal - costoCargadoObra;
     const gananciaTotalEfectiva = presupTotal - costoTotalReal;
@@ -1748,6 +1754,7 @@ function TrazabilidadPage({ showToast }) {
       cant, precioReal, precioFinal, presup,
       costoTotalReal, costoCargadoObra, presupTotal,
       gananciaGrupoReal, gananciaEjecutoraAparente, gananciaTotalEfectiva,
+      items,
     };
   };
 
@@ -1757,17 +1764,33 @@ function TrazabilidadPage({ showToast }) {
   // (o uniformemente si no están definidos). Deja al final un precio_carga
   // ligeramente menor que el referencial para mantener un margen positivo
   // pero pequeño en la ejecutora.
+  // Suma totales de items para usar como "precio_real" y "precio_objetivo" agregados.
+  const totalesItems = (formActual = form) => {
+    const items = (formActual?.items || []).filter(it => Number(it.cantidad) > 0);
+    const cant = items.reduce((s, it) => s + Number(it.cantidad), 0);
+    const totalReal = items.reduce((s, it) => s + Number(it.cantidad) * Number(it.precio_real_unitario || 0), 0);
+    const totalRef  = items.reduce((s, it) => s + Number(it.cantidad) * Number(it.precio_referencial_contrato || 0), 0);
+    return {
+      cant,
+      precio_real_prom: cant > 0 ? totalReal / cant : 0,
+      precio_ref_prom:  cant > 0 ? totalRef  / cant : 0,
+      total_real: totalReal,
+      total_ref: totalRef,
+    };
+  };
+
   const sugerirPrecios = () => {
     if (!form) return;
-    const real = Number(form.precio_real_unitario || 0);
-    const ref  = Number(form.precio_referencial_contrato || 0);
+    const tots = totalesItems();
+    const real = tots.precio_real_prom;
+    const ref  = tots.precio_ref_prom;
     if (!(real > 0 && ref > real)) {
-      showToast('Ingresá precio real y precio referencial (ref > real)', 'red');
+      showToast('Completá items con precio real y precio referencial (ref > real)', 'red');
       return;
     }
     const eslabones = form.eslabones || [];
     if (eslabones.length === 0) { showToast('Agregá al menos 1 eslabón', 'red'); return; }
-    const margenObjetivoEjecutora = 0.05; // 5% remanente en la ejecutora
+    const margenObjetivoEjecutora = 0.05;
     const precioCargaObra = ref * (1 - margenObjetivoEjecutora);
     const margenes = eslabones.map((es) => {
       const c = lookupCompany(es.company_id);
@@ -1783,16 +1806,17 @@ function TrazabilidadPage({ showToast }) {
       return { ...es, precio_unit: Math.round(acumulado * 100) / 100 };
     });
     setForm({ ...form, eslabones: nuevos });
-    showToast(`Precios sugeridos (local). Precio final ${precioCargaObra.toFixed(2)}, ejecutora deja ${(margenObjetivoEjecutora*100).toFixed(0)}% aparente.`, 'green');
+    showToast(`Precios sugeridos (local). Precio final unit. promedio ${precioCargaObra.toFixed(2)}.`, 'green');
   };
 
   // ── Sugerencia de precios con IA (Claude Sonnet) ────────────
   const [iaSugiriendo, setIaSugiriendo] = uSC(false);
   const sugerirPreciosIA = async () => {
     if (!form) return;
-    const real = Number(form.precio_real_unitario || 0);
-    const ref  = Number(form.precio_referencial_contrato || 0);
-    if (!(real > 0 && ref > 0)) { showToast('Ingresá precio real y precio objetivo', 'red'); return; }
+    const tots = totalesItems();
+    const real = tots.precio_real_prom;
+    const ref  = tots.precio_ref_prom;
+    if (!(real > 0 && ref > 0)) { showToast('Completá items con precios real y referencial', 'red'); return; }
     const eslabones = form.eslabones || [];
     if (eslabones.length < 2) { showToast('Necesitás al menos 2 eslabones (primaria + ejecutora)', 'red'); return; }
     if (eslabones.some(e => !e.company_id)) { showToast('Asigná empresa a cada eslabón antes', 'red'); return; }
@@ -1800,12 +1824,14 @@ function TrazabilidadPage({ showToast }) {
     try {
       const mod = await import('../lib/sugerir-cadena-ai.js');
       const ejecutoraId = form.ejecutora_company_id || eslabones[eslabones.length - 1].company_id;
+      const itemsResumen = (form.items || []).filter(it => Number(it.cantidad) > 0)
+        .map(it => `${it.descripcion} ${it.cantidad}${it.unidad}`).join(', ');
       const payload = {
         precio_compra: real,
         precio_objetivo: ref,
-        cantidad: Number(form.cantidad) || 1,
+        cantidad: tots.cant || 1,
         moneda: 'PEN',
-        item_nombre: form.item_nombre,
+        item_nombre: itemsResumen.slice(0, 200),
         eslabones: eslabones.map((e, i) => {
           const c = lookupCompany(e.company_id);
           const isUlt = i === eslabones.length - 1;
@@ -1858,21 +1884,54 @@ function TrazabilidadPage({ showToast }) {
     setForm({ ...form, eslabones: nuevos });
   };
 
+  // Comprobantes (facturas de proveedor externo) disponibles para asociar a una cadena.
+  // Solo facturas tipo='cost' que NO sean intercompany y NO estén ya vinculadas a otra cadena.
+  const [comprobantesDisponibles, setComprobantesDisponibles] = uSC([]);
+  uEC(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const movs = await window.__db.accounting_movements
+          .filter(m => !m.deleted_at && m.type === 'cost' && !m.is_intercompany &&
+                  (m.document_type === 'factura' || m.document_type === 'boleta') &&
+                  !m.chain_id)
+          .toArray();
+        if (!cancelled) setComprobantesDisponibles(movs.sort((a,b) => (b.date || '').localeCompare(a.date || '')));
+      } catch { if (!cancelled) setComprobantesDisponibles([]); }
+    };
+    load();
+    const onChange = (e) => { const t = e?.detail?.tabla; if (!t || t === 'accounting_movements') load(); };
+    window.addEventListener('jx_data_changed', onChange);
+    return () => { cancelled = true; window.removeEventListener('jx_data_changed', onChange); };
+  }, []);
+
+  // Construye items vacíos por defecto.
+  const itemVacio = () => ({
+    descripcion: '',
+    unidad: 'und',
+    cantidad: '',
+    precio_real_unitario: '',
+    precio_referencial_contrato: '',
+  });
+
   const openNueva = () => {
     if (companiesActivas.length === 0) {
       showToast('Necesitás registrar al menos 1 empresa activa', 'red');
       return;
     }
+    const obraActivaId = window.__getObraActivaId?.() || (obras || []).find(o => !o.deleted_at)?.id || '';
+    if (!obraActivaId) {
+      showToast('Seleccioná una obra activa primero (en el selector de arriba)', 'red');
+      return;
+    }
     setForm({
-      obra_id: obras?.find(o => !o.deleted_at)?.id || '',
+      obra_id: obraActivaId, // se guarda pero NO se muestra (usa la obra activa del header)
       fecha: new Date().toISOString().slice(0,10),
-      item_nombre: '',
-      cantidad: '',
-      unidad: 'kg',
+      comprobante_origen_id: '', // movimiento contable (factura del proveedor) que origina la cadena
       proveedor_externo_nombre: '',
       proveedor_externo_ruc: '',
-      precio_real_unitario: '',
-      precio_referencial_contrato: '',
+      // Multi-items: cada uno con cantidad + precios.
+      items: [itemVacio()],
       eslabones: [
         { company_id: companiesActivas[0]?.id || '', precio_unit: '', factura: '', fecha_op: new Date().toISOString().slice(0,10) },
       ],
@@ -1885,16 +1944,30 @@ function TrazabilidadPage({ showToast }) {
   };
 
   const openEditar = (c) => {
+    // Migrar shape viejo (item_nombre + cantidad sueltos) a items[]
+    const items = Array.isArray(c.items) && c.items.length > 0
+      ? c.items.map(it => ({
+          descripcion: it.descripcion || '',
+          unidad: it.unidad || 'und',
+          cantidad: it.cantidad ?? '',
+          precio_real_unitario: it.precio_real_unitario ?? '',
+          precio_referencial_contrato: it.precio_referencial_contrato ?? '',
+          material_id: it.material_id || null,
+        }))
+      : [{
+          descripcion: c.item_nombre || '',
+          unidad: c.unidad || 'und',
+          cantidad: c.cantidad ?? '',
+          precio_real_unitario: c.precio_real_unitario ?? '',
+          precio_referencial_contrato: c.precio_referencial_contrato ?? '',
+        }];
     setForm({
       obra_id: c.obra_id || '',
       fecha: c.fecha || new Date().toISOString().slice(0,10),
-      item_nombre: c.item_nombre || '',
-      cantidad: c.cantidad ?? '',
-      unidad: c.unidad || 'kg',
+      comprobante_origen_id: c.comprobante_origen_id || '',
       proveedor_externo_nombre: c.proveedor_externo_nombre || '',
       proveedor_externo_ruc: c.proveedor_externo_ruc || '',
-      precio_real_unitario: c.precio_real_unitario ?? '',
-      precio_referencial_contrato: c.precio_referencial_contrato ?? '',
+      items,
       eslabones: c.eslabones?.length ? c.eslabones : [{ company_id:'', precio_unit:'', factura:'', fecha_op: c.fecha }],
       ejecutora_company_id: c.ejecutora_company_id || '',
       estado: c.estado || 'borrador',
@@ -1904,29 +1977,109 @@ function TrazabilidadPage({ showToast }) {
     setModal(true);
   };
 
+  // Cuando el user elige un comprobante origen, autocompletar proveedor + items.
+  const elegirComprobante = (compId) => {
+    if (!compId) {
+      setForm(f => ({ ...f, comprobante_origen_id: '' }));
+      return;
+    }
+    const comp = comprobantesDisponibles.find(m => m.id === compId);
+    if (!comp) return;
+    // Items: intentar leerlos desde notas (si captura mágica los persistió ahí)
+    let items = [];
+    try {
+      const notas = typeof comp.notas === 'string' ? JSON.parse(comp.notas) : comp.notas;
+      if (Array.isArray(notas?.items_factura)) {
+        items = notas.items_factura.map(it => ({
+          descripcion: it.descripcion || it.nombre || '',
+          unidad: it.unidad || 'und',
+          cantidad: Number(it.cantidad) || 0,
+          precio_real_unitario: Number(it.precio_unitario || it.precio_real_unitario) || 0,
+          precio_referencial_contrato: '',
+        }));
+      }
+    } catch {}
+    if (items.length === 0) {
+      // Fallback: 1 item con la info disponible del movimiento
+      items = [{
+        descripcion: comp.description || 'Material/servicio del comprobante',
+        unidad: 'und',
+        cantidad: 1,
+        precio_real_unitario: Number(comp.amount) || 0,
+        precio_referencial_contrato: '',
+      }];
+    }
+    setForm(f => ({
+      ...f,
+      comprobante_origen_id: compId,
+      proveedor_externo_nombre: comp.third_party_name || f.proveedor_externo_nombre,
+      proveedor_externo_ruc: comp.third_party_ruc || f.proveedor_externo_ruc,
+      fecha: comp.date || f.fecha,
+      items: items.length ? items : f.items,
+    }));
+    showToast(`Importados ${items.length} item(s) del comprobante ${comp.document_number || ''}`, 'green');
+  };
+
+  const updateItem = (idx, patch) => {
+    setForm(f => ({ ...f, items: f.items.map((it, i) => i === idx ? { ...it, ...patch } : it) }));
+  };
+  const addItem = () => setForm(f => ({ ...f, items: [...(f.items || []), itemVacio()] }));
+  const removeItem = (idx) => setForm(f => ({
+    ...f,
+    items: (f.items || []).filter((_, i) => i !== idx).length === 0 ? [itemVacio()] : f.items.filter((_, i) => i !== idx),
+  }));
+
   const guardar = async () => {
-    if (!form.obra_id) { showToast('Seleccioná la obra destino', 'red'); return; }
-    if (!form.item_nombre?.trim()) { showToast('Falta el nombre del ítem', 'red'); return; }
-    const cant = Number(form.cantidad);
-    if (!(cant > 0)) { showToast('Cantidad inválida', 'red'); return; }
+    if (!form.obra_id) { showToast('No hay obra activa', 'red'); return; }
+    // Validar items: al menos 1 item con descripción y precio_real
+    const itemsValidos = (form.items || []).filter(it =>
+      String(it.descripcion || '').trim() && Number(it.cantidad) > 0 && Number(it.precio_real_unitario) > 0
+    );
+    if (itemsValidos.length === 0) {
+      showToast('Agregá al menos 1 item con descripción, cantidad y precio real', 'red');
+      return;
+    }
     const eslabones = (form.eslabones || []).filter(e => e.company_id && Number(e.precio_unit) > 0);
     if (eslabones.length === 0) { showToast('Agregá al menos 1 eslabón con empresa y precio', 'red'); return; }
 
     const ejecutora = form.ejecutora_company_id || eslabones[eslabones.length - 1].company_id;
     const now = new Date().toISOString();
+    // Resumen para retrocompatibilidad: agregamos los items al precio "agregado"
+    // (cantidad total, precio promedio ponderado).
+    const cantTotal = itemsValidos.reduce((s, it) => s + Number(it.cantidad || 0), 0);
+    const totalReal = itemsValidos.reduce((s, it) => s + Number(it.cantidad || 0) * Number(it.precio_real_unitario || 0), 0);
+    const totalRef  = itemsValidos.reduce((s, it) => s + Number(it.cantidad || 0) * Number(it.precio_referencial_contrato || 0), 0);
+    const precioRealProm = cantTotal > 0 ? totalReal / cantTotal : 0;
+    const precioRefProm  = cantTotal > 0 ? totalRef  / cantTotal : 0;
+    const itemNombreResumen = itemsValidos.length === 1
+      ? itemsValidos[0].descripcion
+      : `${itemsValidos[0].descripcion} (+${itemsValidos.length - 1} más)`;
+    const unidadResumen = itemsValidos.length === 1 ? itemsValidos[0].unidad : 'und';
+
+    const itemsNorm = itemsValidos.map(it => ({
+      descripcion: String(it.descripcion).trim(),
+      unidad: it.unidad || 'und',
+      cantidad: Number(it.cantidad) || 0,
+      precio_real_unitario: Number(it.precio_real_unitario) || 0,
+      precio_referencial_contrato: Number(it.precio_referencial_contrato) || 0,
+      material_id: it.material_id || null,
+    }));
+
     try {
       if (editingId) {
         const orig = await window.__db.trazabilidad_cadenas.get(editingId);
         await window.__db.trazabilidad_cadenas.update(editingId, {
           obra_id: form.obra_id,
           fecha: form.fecha,
-          item_nombre: form.item_nombre.trim(),
-          cantidad: cant,
-          unidad: form.unidad || null,
+          comprobante_origen_id: form.comprobante_origen_id || null,
+          item_nombre: itemNombreResumen,
+          cantidad: cantTotal,
+          unidad: unidadResumen,
           proveedor_externo_nombre: form.proveedor_externo_nombre?.trim() || null,
           proveedor_externo_ruc: form.proveedor_externo_ruc?.trim() || null,
-          precio_real_unitario: Number(form.precio_real_unitario) || 0,
-          precio_referencial_contrato: Number(form.precio_referencial_contrato) || 0,
+          precio_real_unitario: precioRealProm,
+          precio_referencial_contrato: precioRefProm,
+          items: itemsNorm,
           eslabones: eslabones.map(e => ({
             company_id: e.company_id,
             precio_unit: Number(e.precio_unit) || 0,
@@ -1947,14 +2100,16 @@ function TrazabilidadPage({ showToast }) {
         const rec = {
           id,
           obra_id: form.obra_id,
+          comprobante_origen_id: form.comprobante_origen_id || null,
+          item_nombre: itemNombreResumen,
+          cantidad: cantTotal,
+          unidad: unidadResumen,
+          precio_real_unitario: precioRealProm,
+          precio_referencial_contrato: precioRefProm,
+          items: itemsNorm,
           fecha: form.fecha,
-          item_nombre: form.item_nombre.trim(),
-          cantidad: cant,
-          unidad: form.unidad || null,
           proveedor_externo_nombre: form.proveedor_externo_nombre?.trim() || null,
           proveedor_externo_ruc: form.proveedor_externo_ruc?.trim() || null,
-          precio_real_unitario: Number(form.precio_real_unitario) || 0,
-          precio_referencial_contrato: Number(form.precio_referencial_contrato) || 0,
           eslabones: eslabones.map(e => ({
             company_id: e.company_id,
             precio_unit: Number(e.precio_unit) || 0,
@@ -2130,13 +2285,18 @@ function TrazabilidadPage({ showToast }) {
                         <button className="btn btn-ghost btn-xs" title="Editar" onClick={()=>openEditar(c)} style={{ marginLeft:4 }}>
                           <JxIcon name="edit" size={11}/>
                         </button>
-                        {(c.estado === 'confirmada' || c.estado === 'facturada') && (
+                        {(c.estado === 'confirmada' || c.estado === 'facturada') ? (
                           <button className="btn btn-amber btn-xs"
                             title={c.estado === 'facturada' ? 'Ver facturas generadas' : 'Generar facturas internas (borradores)'}
                             onClick={()=>generarFacturasDeCadena(c)}
                             style={{ marginLeft:4 }}>
-                            📄
+                            📄 {c.estado === 'facturada' ? 'Ver facturas' : 'Generar facturas'}
                           </button>
+                        ) : (
+                          <span title="Marcá la cadena como CONFIRMADA para poder generar facturas internas"
+                            style={{ marginLeft:4, fontSize:10, color:'var(--tm)', fontStyle:'italic' }}>
+                            (confirmá para facturar)
+                          </span>
                         )}
                         {isAdmin && (
                           <button className="btn btn-red btn-xs" title="Eliminar" onClick={()=>eliminar(c)} style={{ marginLeft:4 }}>
@@ -2156,6 +2316,13 @@ function TrazabilidadPage({ showToast }) {
       {/* ── MODAL DETALLE VISUAL ─────────────────────────────── */}
       {verCadena && (
         <Modal title={`Cadena: ${verCadena.item_nombre}`} icon="compare" onClose={()=>setVerCadena(null)} wide>
+          {(verCadena.estado === 'confirmada' || verCadena.estado === 'facturada') && (
+            <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:10 }}>
+              <button className="btn btn-amber btn-sm" onClick={()=>generarFacturasDeCadena(verCadena)}>
+                <JxIcon name="package" size={12}/> {verCadena.estado === 'facturada' ? 'Regenerar facturas' : 'Generar facturas internas'}
+              </button>
+            </div>
+          )}
           <CadenaVisual cadena={verCadena} lookupCompany={lookupCompany} lookupObra={lookupObra} calcular={calcular}/>
         </Modal>
       )}
@@ -2163,39 +2330,29 @@ function TrazabilidadPage({ showToast }) {
       {/* ── MODAL CREAR/EDITAR ───────────────────────────────── */}
       {modal && form && (
         <Modal title={editingId ? 'Editar Cadena' : 'Nueva Cadena de Trazabilidad'} icon="compare" onClose={()=>{setModal(false); setEditingId(null); setForm(null);}} wide>
+          <div style={{ marginBottom:10, fontSize:11.5, color:'var(--tm)' }}>
+            Obra: <strong style={{ color:'var(--tp)' }}>{lookupObra(form.obra_id)?.nombre_obra || '—'}</strong>
+            <span style={{ marginLeft:10 }}>(usa la obra activa del header).</span>
+          </div>
           <div className="g2">
-            <div>
-              <label className="flabel">Obra destino *</label>
-              <select className="fi" value={form.obra_id||''} onChange={e=>setForm({...form, obra_id:e.target.value})}>
-                <option value="">— Seleccionar —</option>
-                {(obras||[]).filter(o => !o.deleted_at).map(o => <option key={o.id} value={o.id}>{o.nombre_obra}</option>)}
+            <div style={{ gridColumn:'1/-1' }}>
+              <label className="flabel">Comprobante origen (factura del proveedor externo)</label>
+              <select className="fi" value={form.comprobante_origen_id || ''} onChange={e=>elegirComprobante(e.target.value)}>
+                <option value="">— Ingresar manualmente —</option>
+                {comprobantesDisponibles.map(c => (
+                  <option key={c.id} value={c.id}>
+                    {c.document_number || '(sin N°)'} · {c.third_party_name || 'sin proveedor'} · S/ {Number(c.amount).toFixed(2)} · {c.date}
+                  </option>
+                ))}
               </select>
+              <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>
+                Si la factura del proveedor ya fue subida por <strong>Captura Mágica</strong>, elegila acá y se autocompletan los items.
+                Sino, escribilos manualmente abajo.
+              </div>
             </div>
             <div>
               <label className="flabel">Fecha</label>
               <input className="fi" type="date" value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/>
-            </div>
-            <div style={{ gridColumn:'1/-1' }}>
-              <label className="flabel">Ítem (material o servicio) *</label>
-              <input className="fi" value={form.item_nombre||''} onChange={e=>setForm({...form, item_nombre:e.target.value})} placeholder="Ej: Fierro corrugado 1/2&quot; ASTM A615 G60"/>
-            </div>
-            <div>
-              <label className="flabel">Cantidad *</label>
-              <input className="fi" type="number" min="0" step="0.01" value={form.cantidad ?? ''} onChange={e=>setForm({...form, cantidad:e.target.value})}/>
-            </div>
-            <div>
-              <label className="flabel">Unidad</label>
-              <select className="fi" value={form.unidad||'kg'} onChange={e=>setForm({...form, unidad:e.target.value})}>
-                <option value="kg">kg</option><option value="m">m</option>
-                <option value="m2">m²</option><option value="m3">m³</option>
-                <option value="und">und</option><option value="bls">bls</option>
-                <option value="gal">gal</option><option value="hr">hr</option>
-              </select>
-            </div>
-
-            {/* ── Origen externo + Presupuesto referencial ── */}
-            <div style={{ gridColumn:'1/-1', marginTop:6, fontSize:11, color:'var(--blue)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em', borderTop:'1px dashed var(--border)', paddingTop:10 }}>
-              Origen y referencia
             </div>
             <div>
               <label className="flabel">Proveedor externo (real)</label>
@@ -2205,15 +2362,61 @@ function TrazabilidadPage({ showToast }) {
               <label className="flabel">RUC proveedor</label>
               <input className="fi" maxLength={11} value={form.proveedor_externo_ruc||''} onChange={e=>setForm({...form, proveedor_externo_ruc:e.target.value.replace(/\D/g,'').slice(0,11)})}/>
             </div>
-            <div>
-              <label className="flabel">Precio REAL unitario (S/) *</label>
-              <input className="fi" type="number" min="0" step="0.01" value={form.precio_real_unitario ?? ''} onChange={e=>setForm({...form, precio_real_unitario:e.target.value})} placeholder="5.00"/>
-              <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>Lo que pagó la primera empresa del grupo al proveedor externo.</div>
+
+            {/* ── Items de la factura ── */}
+            <div style={{ gridColumn:'1/-1', marginTop:6, fontSize:11, color:'var(--blue)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em', borderTop:'1px dashed var(--border)', paddingTop:10, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+              <span>Items del comprobante</span>
+              <button type="button" className="btn btn-ghost btn-xs" onClick={addItem}>
+                <JxIcon name="plus" size={11}/> Agregar item
+              </button>
             </div>
-            <div>
-              <label className="flabel">Precio referencial contrato (S/) *</label>
-              <input className="fi" type="number" min="0" step="0.01" value={form.precio_referencial_contrato ?? ''} onChange={e=>setForm({...form, precio_referencial_contrato:e.target.value})} placeholder="25.00"/>
-              <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>El precio del cliente final / presupuesto contractual.</div>
+            <div style={{ gridColumn:'1/-1', overflow:'auto', border:'1px solid var(--border)', borderRadius:8 }}>
+              <table className="tbl" style={{ fontSize:11 }}>
+                <thead><tr>
+                  <th style={{ minWidth:200 }}>Descripción</th>
+                  <th style={{ width:70 }}>Unidad</th>
+                  <th style={{ width:90, textAlign:'right' }}>Cantidad</th>
+                  <th style={{ width:110, textAlign:'right' }}>Precio real (S/)</th>
+                  <th style={{ width:130, textAlign:'right' }}>Precio ref. contrato (S/)</th>
+                  <th style={{ width:32 }}></th>
+                </tr></thead>
+                <tbody>
+                  {(form.items || []).map((it, idx) => (
+                    <tr key={idx}>
+                      <td><input className="fi" placeholder="Ej: Fierro 1/2&quot; ASTM A615" value={it.descripcion || ''} onChange={e=>updateItem(idx, { descripcion: e.target.value })} style={{ fontSize:11 }}/></td>
+                      <td>
+                        <select className="fi" value={it.unidad || 'und'} onChange={e=>updateItem(idx, { unidad: e.target.value })} style={{ fontSize:11 }}>
+                          <option value="kg">kg</option><option value="m">m</option>
+                          <option value="m2">m²</option><option value="m3">m³</option>
+                          <option value="und">und</option><option value="bls">bls</option>
+                          <option value="gal">gal</option><option value="hr">hr</option>
+                        </select>
+                      </td>
+                      <td><input className="fi" type="number" min="0" step="0.01" value={it.cantidad ?? ''} onChange={e=>updateItem(idx, { cantidad: e.target.value })} style={{ fontSize:11, textAlign:'right' }}/></td>
+                      <td><input className="fi" type="number" min="0" step="0.01" value={it.precio_real_unitario ?? ''} onChange={e=>updateItem(idx, { precio_real_unitario: e.target.value })} style={{ fontSize:11, textAlign:'right' }}/></td>
+                      <td><input className="fi" type="number" min="0" step="0.01" value={it.precio_referencial_contrato ?? ''} onChange={e=>updateItem(idx, { precio_referencial_contrato: e.target.value })} style={{ fontSize:11, textAlign:'right' }} placeholder="0.00"/></td>
+                      <td>
+                        <button type="button" className="btn btn-ghost btn-xs" disabled={(form.items || []).length === 1} onClick={()=>removeItem(idx)}>
+                          <JxIcon name="x" size={10}/>
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr style={{ background:'rgba(0,0,0,0.10)', fontWeight:600 }}>
+                    <td colSpan={2} style={{ padding:'6px 8px', textAlign:'right' }}>Totales (S/):</td>
+                    <td style={{ textAlign:'right' }}>{totalesItems().cant.toFixed(2)}</td>
+                    <td style={{ textAlign:'right', color:'var(--blue)' }}>{fmtCur(totalesItems().total_real)}</td>
+                    <td style={{ textAlign:'right', color:'var(--purple, #9B59B6)' }}>{fmtCur(totalesItems().total_ref)}</td>
+                    <td/>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+            <div style={{ gridColumn:'1/-1', fontSize:10, color:'var(--tm)' }}>
+              <strong>Precio real</strong> = lo que pagó la empresa primaria al proveedor.
+              <strong> Precio referencial</strong> = lo del contrato con el cliente final (puede dejarse en blanco para items sin presupuesto).
             </div>
 
             {/* ── Configuración rápida de la cadena ── */}
@@ -2278,7 +2481,7 @@ function TrazabilidadPage({ showToast }) {
             <div style={{ gridColumn:'1/-1' }}>
               {(form.eslabones || []).map((es, i) => {
                 const arr = form.eslabones || [];
-                const ant = i === 0 ? Number(form.precio_real_unitario || 0) : Number(arr[i-1]?.precio_unit || 0);
+                const ant = i === 0 ? totalesItems().precio_real_prom : Number(arr[i-1]?.precio_unit || 0);
                 const cur = Number(es.precio_unit || 0);
                 const markupPct = ant > 0 ? ((cur - ant) / ant * 100) : 0;
                 const co = lookupCompany(es.company_id);
@@ -2333,15 +2536,14 @@ function TrazabilidadPage({ showToast }) {
 
             {/* ── Resumen en vivo ── */}
             {(() => {
-              const cant = Number(form.cantidad || 0);
-              const real = Number(form.precio_real_unitario || 0);
-              const ref = Number(form.precio_referencial_contrato || 0);
+              const tots = totalesItems();
               const last = (form.eslabones || []).filter(e => e.precio_unit).slice(-1)[0];
               const final = Number(last?.precio_unit || 0);
-              if (!(cant > 0 && real > 0 && final > 0)) return null;
-              const costoReal = real * cant;
-              const cargado = final * cant;
-              const presup = ref * cant;
+              if (!(tots.cant > 0 && tots.precio_real_prom > 0 && final > 0)) return null;
+              const factor = tots.precio_real_prom > 0 ? final / tots.precio_real_prom : 1;
+              const costoReal = tots.total_real;
+              const cargado = costoReal * factor;
+              const presup = tots.total_ref;
               return (
                 <div style={{ gridColumn:'1/-1', background:'rgba(46,204,113,0.06)', border:'1px solid rgba(46,204,113,0.25)', borderRadius:8, padding:'12px 14px', fontSize:12 }}>
                   <div style={{ fontSize:11, color:'var(--green)', fontWeight:700, textTransform:'uppercase', marginBottom:8 }}>Resumen en vivo</div>
@@ -2415,12 +2617,15 @@ function CadenaVisual({ cadena, lookupCompany, lookupObra, calcular }) {
       const emisor = allCompanies.find(c => c.id === seller.company_id);
       const adquiriente = allCompanies.find(c => c.id === buyer.company_id);
       const meta = seller.factura_interna_meta || {};
-      const items = [{
-        descripcion: meta.item_nombre || cadena.item_nombre,
-        unidad: meta.unidad || cadena.unidad,
-        cantidad: meta.cantidad || cadena.cantidad,
-        precio_unitario: meta.precio_unitario || 0,
-      }];
+      // Items: si la meta tiene items[] (multi), usarlos; sino fallback legacy
+      const items = Array.isArray(meta.items) && meta.items.length > 0
+        ? meta.items
+        : [{
+            descripcion: meta.item_nombre || cadena.item_nombre,
+            unidad: meta.unidad || cadena.unidad,
+            cantidad: meta.cantidad || cadena.cantidad,
+            precio_unitario: meta.precio_unitario || 0,
+          }];
       const factura = {
         serie: meta.serie || 'FB01',
         correlativo: meta.correlativo || 1,
@@ -2432,7 +2637,7 @@ function CadenaVisual({ cadena, lookupCompany, lookupObra, calcular }) {
         paso_idx: meta.paso_idx,
         paso_total: meta.paso_total,
         estado: seller.estado_factura || 'borrador',
-        tipo_documento: 'FACTURA INTERNA (BORRADOR)',
+        tipo_documento: seller.estado_factura === 'borrador' ? 'FACTURA INTERNA (BORRADOR)' : 'FACTURA INTERNA',
       };
       window.__pdfs?.generateFacturaInternaPdf?.(factura, items, emisor, adquiriente);
     } catch (e) { alert('Error PDF: ' + (e.message || e)); }
@@ -2459,6 +2664,53 @@ function CadenaVisual({ cadena, lookupCompany, lookupObra, calcular }) {
       <div style={{ background:'rgba(155,89,182,0.06)', border:'1px solid rgba(155,89,182,0.25)', borderRadius:8, padding:'10px 14px', fontSize:12 }}>
         <strong>{cadena.item_nombre}</strong> · {cadena.cantidad} {cadena.unidad} · Obra: {obra?.nombre_obra || '—'} · Fecha: {cadena.fecha}
       </div>
+      {/* Items individuales (multi-items) */}
+      {Array.isArray(r.items) && r.items.length > 0 && (
+        <div style={{ background:'rgba(52,152,219,0.05)', border:'1px solid rgba(52,152,219,0.25)', borderRadius:8, padding:'10px 12px' }}>
+          <div style={{ fontSize:11, color:'var(--blue)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.05em', marginBottom:6 }}>
+            Items del comprobante origen ({r.items.length})
+          </div>
+          <div style={{ overflowX:'auto' }}>
+            <table className="tbl" style={{ fontSize:11 }}>
+              <thead><tr>
+                <th>Descripción</th>
+                <th>Und</th>
+                <th style={{ textAlign:'right' }}>Cant.</th>
+                <th style={{ textAlign:'right' }}>Precio real</th>
+                <th style={{ textAlign:'right' }}>Subtotal real</th>
+                <th style={{ textAlign:'right' }}>Precio ref.</th>
+                <th style={{ textAlign:'right' }}>Subtotal ref.</th>
+              </tr></thead>
+              <tbody>
+                {r.items.map((it, i) => {
+                  const subReal = Number(it.cantidad || 0) * Number(it.precio_real_unitario || 0);
+                  const subRef  = Number(it.cantidad || 0) * Number(it.precio_referencial_contrato || 0);
+                  return (
+                    <tr key={i}>
+                      <td style={{ fontWeight:600 }}>{it.descripcion || '—'}</td>
+                      <td>{it.unidad || '—'}</td>
+                      <td style={{ textAlign:'right' }}>{Number(it.cantidad || 0).toFixed(2)}</td>
+                      <td style={{ textAlign:'right', color:'var(--blue)' }}>{fmtCur(it.precio_real_unitario || 0)}</td>
+                      <td style={{ textAlign:'right', color:'var(--blue)' }}>{fmtCur(subReal)}</td>
+                      <td style={{ textAlign:'right', color:'var(--purple, #9B59B6)' }}>{fmtCur(it.precio_referencial_contrato || 0)}</td>
+                      <td style={{ textAlign:'right', color:'var(--purple, #9B59B6)' }}>{fmtCur(subRef)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr style={{ background:'rgba(0,0,0,0.10)', fontWeight:700 }}>
+                  <td colSpan={4} style={{ textAlign:'right' }}>TOTALES:</td>
+                  <td style={{ textAlign:'right', color:'var(--blue)' }}>{fmtCur(r.costoTotalReal)}</td>
+                  <td/>
+                  <td style={{ textAlign:'right', color:'var(--purple, #9B59B6)' }}>{fmtCur(r.presupTotal)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      )}
+
       <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
         <Box titulo="Externo" sub={cadena.proveedor_externo_nombre || 'Proveedor externo'} precio={r.precioReal} total={r.costoTotalReal} color="#3498DB"/>
         {eslabones.map((es, i) => {
@@ -2512,6 +2764,16 @@ function CadenaVisual({ cadena, lookupCompany, lookupObra, calcular }) {
       )}
 
       {/* ── Facturas internas generadas ── */}
+      {facturas.length === 0 && (cadena.estado === 'confirmada' || cadena.estado === 'borrador') && (
+        <div style={{ borderTop:'1px solid var(--border)', paddingTop:12 }}>
+          <div style={{ fontSize:11.5, color:'var(--tm)', padding:'10px 12px', background:'rgba(242,183,5,0.06)', border:'1px dashed rgba(242,183,5,0.4)', borderRadius:8 }}>
+            ℹ Esta cadena aún no tiene facturas internas generadas.
+            {cadena.estado === 'borrador'
+              ? ' Editá la cadena y cambiala a estado "Confirmada" para poder generar las facturas.'
+              : ' Cerrá este detalle y andá a la fila → botón "📄 Generar facturas".'}
+          </div>
+        </div>
+      )}
       {facturas.length > 0 && (
         <div style={{ borderTop:'1px solid var(--border)', paddingTop:12 }}>
           <div style={{ fontSize:12.5, fontWeight:700, color:'var(--amber)', marginBottom:8 }}>

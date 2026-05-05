@@ -619,6 +619,14 @@ function CapturaMagicaPage({ showToast }) {
           materiales_creados: materialesCreados.length,
           movs_creados: movsMatCreados.length,
           oc_vinculada: r.vincular_a_oc || null,
+          // Persistimos los items detectados para que Trazabilidad pueda
+          // autocompletar la cadena cuando el usuario elija este comprobante.
+          items_factura: (r.items || []).map(it => ({
+            descripcion: it.descripcion || it.nombre || '',
+            unidad: it.unidad || 'und',
+            cantidad: Number(it.cantidad) || 0,
+            precio_unitario: Number(it.precio_unitario) || 0,
+          })),
         }),
         created_by: userId, updated_by: userId,
         created_at: now, updated_at: now,

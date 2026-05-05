@@ -166,6 +166,10 @@ function ObrasPage({ showToast }) {
   };
 
   const openNuevaObra = () => {
+    if (companiesActivas.length === 0) {
+      showToast('Necesitás registrar al menos 1 empresa activa antes de crear una obra (la ejecutora es obligatoria)', 'red');
+      return;
+    }
     setForm({
       ejecutora_tipo: 'empresa',
       ejecutora_company_id: companiesActivas[0]?.id || '',
@@ -195,7 +199,13 @@ function ObrasPage({ showToast }) {
     let consorcioMiembros = null;
     if (ejecutoraTipo === 'empresa') {
       if (!form.ejecutora_company_id) {
-        showToast('Seleccioná la empresa ejecutora de la obra', 'red');
+        showToast('No podés crear una obra sin empresa ejecutora — seleccioná una.', 'red');
+        return;
+      }
+      // Verificar que la empresa exista y esté activa
+      const exists = companiesActivas.find(c => c.id === form.ejecutora_company_id);
+      if (!exists) {
+        showToast('La empresa ejecutora seleccionada no existe o está inactiva', 'red');
         return;
       }
       ejecutoraCompanyId = form.ejecutora_company_id;
