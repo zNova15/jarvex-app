@@ -9,7 +9,7 @@
 -- por low storage / sw update, los datos se pierden.
 --
 -- Política aplicada a CADA tabla operativa:
---   SELECT  → authenticated + deleted_at IS NULL (ver registros vivos)
+--   SELECT  → authenticated (USING true; el cliente filtra deleted_at)
 --   INSERT  → authenticated (cualquier user logueado)
 --   UPDATE  → authenticated (cualquier user logueado)
 --   DELETE  → solo admin (proteger borrado masivo)
@@ -64,15 +64,19 @@ BEGIN
     -- Habilitar RLS (idempotente, no falla si ya está)
     EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', t);
 
-    -- SELECT: cualquier autenticado puede leer registros no eliminados
+    -- SELECT: cualquier autenticado puede leer.
+    -- USING (true) en vez de chequear deleted_at, porque varias tablas
+    -- transaccionales (asistencia, movimientos_*, avance_obra, incidencias,
+    -- evidencias, insumos_partida, cronograma) NO tienen esa columna y
+    -- referenciarla rompe el CREATE POLICY con error 42703.
+    -- El cliente Dexie filtra deleted_at en sus queries cuando aplica.
     EXECUTE format('DROP POLICY IF EXISTS "%s: select autenticado" ON public.%I', t, t);
     EXECUTE format($p$
       CREATE POLICY "%s: select autenticado"
         ON public.%I FOR SELECT
         TO authenticated
-        USING (deleted_at IS NULL OR deleted_at IS NOT NULL)
+        USING (true)
     $p$, t, t);
-    -- (USING TRUE permite SELECT incluso de soft-deleted; el cliente filtra)
 
     -- INSERT: cualquier autenticado puede crear
     EXECUTE format('DROP POLICY IF EXISTS "%s: insert autenticado" ON public.%I', t, t);
