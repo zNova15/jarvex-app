@@ -486,17 +486,56 @@ async function markConflict(tabla, localRecord, serverRecord) {
   });
 }
 
+// Detecta si un error de Supabase indica que las RLS bloquearon la operación
+// (insufficient_privilege, row-level security, etc.). Si es así, el sync NUNCA
+// va a tener éxito sin cambios server-side, así que disparamos un evento
+// global para que la UI muestre un banner al usuario.
+function esErrorRLS(error) {
+  if (!error) return false;
+  const code = error.code || '';
+  const msg = String(error.message || '').toLowerCase();
+  return code === '42501'
+    || code === 'PGRST301'
+    || msg.includes('row-level security')
+    || msg.includes('insufficient_privilege')
+    || msg.includes('row level security')
+    || msg.includes('new row violates');
+}
+
+let _ultimoEventoRLSEmitido = 0;
+function emitirEventoRLS(tabla, operacion, error) {
+  // Throttle: máximo 1 evento cada 5s para no spammear si hay muchas filas pendientes.
+  const now = Date.now();
+  if (now - _ultimoEventoRLSEmitido < 5000) return;
+  _ultimoEventoRLSEmitido = now;
+  try {
+    window.dispatchEvent(new CustomEvent('jx_sync_blocked_rls', {
+      detail: { tabla, operacion, message: error.message, code: error.code },
+    }));
+  } catch {}
+}
+
 async function handleSyncError(tabla, record, operacion, error) {
   const retries = (record._sync_retries ?? 0) + 1;
-  const newStatus = retries >= 5 ? SYNC_STATUS.FAILED : record.sync_status;
+  const isRLS = esErrorRLS(error);
+  // Si es RLS, marcamos como FAILED inmediatamente — reintentar 5 veces no
+  // va a cambiar nada y solo gasta cuota Supabase.
+  const newStatus = isRLS || retries >= 5 ? SYNC_STATUS.FAILED : record.sync_status;
 
   await db[tabla].update(record.id, {
     sync_status: newStatus,
     _sync_retries: retries,
     _last_error: error.message,
+    _last_error_code: error.code || null,
+    _last_error_is_rls: isRLS,
   });
 
-  console.warn(`[SyncEngine] ${tabla}/${operacion} failed (attempt ${retries}):`, error.message);
+  if (isRLS) {
+    console.error(`[SyncEngine] ${tabla}/${operacion} BLOQUEADO POR RLS (sync no podrá completarse):`, error.message);
+    emitirEventoRLS(tabla, operacion, error);
+  } else {
+    console.warn(`[SyncEngine] ${tabla}/${operacion} failed (attempt ${retries}):`, error.message);
+  }
 }
 
 // ── Auto-sync al recuperar internet ──────────────────────────────────

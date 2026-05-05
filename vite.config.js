@@ -65,12 +65,13 @@ export default defineConfig({
   resolve: {
     alias: { '@': '/src' },
   },
-  // En producción, esbuild elimina console.* y debugger del bundle.
-  // Esto evita filtrar info de debug (warns, paths internos, IDs) a usuarios
-  // que abran DevTools. Los console.error sí se mantienen para reportar
-  // problemas reales en runtime via Sentry/Datadog si se conecta a futuro.
+  // Producción: solo eliminamos `debugger` y `console.log/info/debug`. Los
+  // console.error y console.warn SE MANTIENEN porque son críticos para
+  // diagnosticar problemas que ven los users en runtime (errores de sync,
+  // 401/403 contra Supabase, fallos de RLS, etc.). Sin estos, debugar
+  // bugs reportados por users sería casi imposible.
   esbuild: {
-    drop: process.env.NODE_ENV === 'production' ? ['console', 'debugger'] : [],
-    pure: process.env.NODE_ENV === 'production' ? ['console.log', 'console.warn', 'console.info', 'console.debug'] : [],
+    drop: process.env.NODE_ENV === 'production' ? ['debugger'] : [],
+    pure: process.env.NODE_ENV === 'production' ? ['console.log', 'console.info', 'console.debug'] : [],
   },
 })

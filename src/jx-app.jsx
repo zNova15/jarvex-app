@@ -867,11 +867,50 @@ function App() {
                 syncStatus={syncStatus}
                 onSync={()=>sync.sync && sync.sync()}
                 isMobile={isMobile}/>
+        <SyncBlockedBanner profile={auth.profile}/>
         <div style={{ flex:1, overflow:'hidden', background:'var(--bg-p)' }} key={page}>
           {renderPage()}
         </div>
       </div>
       {toast && <Toast key={toast.key} message={toast.msg} type={toast.type} onDone={()=>setToast(null)}/>}
+    </div>
+  );
+}
+
+// Banner persistente que aparece cuando el SyncEngine detecta que las RLS de
+// Supabase están bloqueando el push de datos. Sin esto, el user crea registros
+// que NUNCA se sincronizan al server y, si limpia cache local, se pierden.
+function SyncBlockedBanner({ profile }) {
+  const [blocked, setBlocked] = uSA(null);
+  uEA(() => {
+    const onBlock = (e) => {
+      setBlocked({
+        tabla: e.detail?.tabla,
+        operacion: e.detail?.operacion,
+        message: e.detail?.message,
+        ts: Date.now(),
+      });
+    };
+    window.addEventListener('jx_sync_blocked_rls', onBlock);
+    return () => window.removeEventListener('jx_sync_blocked_rls', onBlock);
+  }, []);
+  if (!blocked) return null;
+  const rol = profile?.rol || 'tu rol';
+  return (
+    <div style={{
+      background: 'rgba(231,76,60,0.15)', borderBottom: '2px solid rgba(231,76,60,0.6)',
+      color: '#FFD3CE', padding: '10px 18px', fontSize: 12.5,
+      display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+    }}>
+      <div style={{ flex: 1, minWidth: 200 }}>
+        <strong style={{ color: '#FF8B7E' }}>⚠ Sync bloqueado por permisos del servidor.</strong>
+        {' '}Tu cuenta ({rol}) no puede crear/actualizar <code style={{ background: 'rgba(0,0,0,0.3)', padding: '1px 5px', borderRadius: 3 }}>{blocked.tabla}</code> en
+        Supabase. Los datos se guardan localmente pero NO se sincronizan — avisale al admin.
+      </div>
+      <button onClick={() => setBlocked(null)}
+        style={{ background: 'transparent', color: '#FFD3CE', border: '1px solid rgba(255,211,206,0.4)', padding: '4px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer' }}>
+        Cerrar
+      </button>
     </div>
   );
 }
