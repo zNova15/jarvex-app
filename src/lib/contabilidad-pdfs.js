@@ -718,10 +718,243 @@ export function generateConsolidadoPdf(data, companies, periodo) {
   return doc;
 }
 
+// ─────────────────────────────────────────────────────────────
+// 5. Factura Interna (intercompany) — borrador
+// ─────────────────────────────────────────────────────────────
+//
+// Formato similar a factura electrónica SUNAT (encabezado, datos emisor /
+// adquiriente, items con IGV, totales). NO genera XML firmado — eso requiere
+// el flujo SUNAT real. Este PDF es el documento legible para imprimir, firmar
+// y luego digitalizar para Captura Mágica o subir a SUNAT.
+//
+// Args:
+//   factura: {
+//     serie, correlativo, fecha, fecha_vencimiento, moneda,
+//     concepto, observaciones, chain_id, paso_idx, paso_total,
+//   }
+//   items: [{ descripcion, unidad, cantidad, precio_unitario }]
+//   emisor: company que vende (datos completos)
+//   adquiriente: company que compra (datos completos)
+//   download?: boolean (default true) — si false sólo retorna el doc sin doc.save
+//
+export function generateFacturaInternaPdf(factura, items, emisor, adquiriente, { download = true } = {}) {
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const pageWidth = 210;
+  factura = factura || {};
+  items = Array.isArray(items) ? items : [];
+  emisor = emisor || {};
+  adquiriente = adquiriente || {};
+
+  const tipoDoc = factura.tipo_documento || 'FACTURA ELECTRÓNICA';
+  const serieCorr = `${factura.serie || 'F001'}-${String(factura.correlativo || '00000001').padStart(8, '0')}`;
+  const moneda = (factura.moneda || 'PEN').toUpperCase();
+  const monedaSimbolo = moneda === 'USD' ? 'US$ ' : 'S/ ';
+  const igvRate = 0.18;
+
+  drawHeader(doc, {
+    company: emisor,
+    title: tipoDoc,
+    subtitle: serieCorr,
+    pageWidth,
+  });
+
+  // Banner si es borrador
+  const estado = (factura.estado || 'borrador').toLowerCase();
+  if (estado === 'borrador') {
+    doc.setFillColor(245, 158, 11);
+    doc.rect(0, 28, pageWidth, 5, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'bold');
+    doc.text('● BORRADOR — pendiente de firma y emisión SUNAT', pageWidth / 2, 31.5, { align: 'center' });
+    doc.setTextColor(0, 0, 0);
+  }
+
+  // Box emisor
+  const yBox = 38;
+  infoBox(doc, 14, yBox, 90, 30, 'EMISOR', [
+    safe(emisor.legal_name || emisor.name, '—'),
+    emisor.ruc ? `RUC: ${emisor.ruc}` : null,
+    emisor.address ? String(emisor.address) : null,
+    emisor.phone ? `Tel: ${emisor.phone}` : null,
+  ]);
+  // Box adquiriente
+  infoBox(doc, 106, yBox, 90, 30, 'ADQUIRIENTE', [
+    safe(adquiriente.legal_name || adquiriente.name, '—'),
+    adquiriente.ruc ? `RUC: ${adquiriente.ruc}` : null,
+    adquiriente.address ? String(adquiriente.address) : null,
+    adquiriente.phone ? `Tel: ${adquiriente.phone}` : null,
+  ]);
+
+  // Meta
+  let y = yBox + 34;
+  doc.setFontSize(9);
+  doc.setFont('helvetica', 'bold');
+  doc.text('F. Emisión:', 14, y);
+  doc.setFont('helvetica', 'normal');
+  doc.text(fmtDate(factura.fecha || new Date()), 38, y);
+
+  doc.setFont('helvetica', 'bold');
+  doc.text('F. Vencimiento:', 80, y);
+  doc.setFont('helvetica', 'normal');
+  doc.text(fmtDate(factura.fecha_vencimiento), 110, y);
+
+  doc.setFont('helvetica', 'bold');
+  doc.text('Moneda:', 150, y);
+  doc.setFont('helvetica', 'normal');
+  doc.text(moneda, 168, y);
+
+  y += 5;
+  if (factura.chain_id) {
+    doc.setFont('helvetica', 'bold');
+    doc.text('Cadena trazabilidad:', 14, y);
+    doc.setFont('helvetica', 'normal');
+    doc.text(String(factura.chain_id).slice(0, 8) + (factura.paso_idx != null ? ` · paso ${factura.paso_idx}/${factura.paso_total || '?'}` : ''), 50, y);
+    y += 5;
+  }
+  if (factura.concepto) {
+    doc.setFont('helvetica', 'bold');
+    doc.text('Concepto:', 14, y);
+    doc.setFont('helvetica', 'normal');
+    const lines = doc.splitTextToSize(String(factura.concepto), pageWidth - 50);
+    doc.text(lines, 35, y);
+    y += 5 * Math.max(1, lines.length);
+  }
+
+  // Tabla items
+  let subtotal = 0;
+  const body = items.map((it, idx) => {
+    const cant = Number(it.cantidad ?? 0);
+    const pu = Number(it.precio_unitario ?? 0);
+    const sub = +(cant * pu).toFixed(4);
+    subtotal += sub;
+    return [
+      String(idx + 1),
+      safe(it.descripcion || it.nombre, '—'),
+      safe(it.unidad || it.und, '—'),
+      fmtNum(cant, 2),
+      monedaSimbolo + fmtNum(pu, 4),
+      monedaSimbolo + fmtNum(sub, 2),
+    ];
+  });
+
+  autoTable(doc, {
+    startY: y + 2,
+    head: [['#', 'Descripción', 'Und', 'Cant.', 'P. Unit.', 'Subtotal']],
+    body,
+    headStyles: { fillColor: COLOR_HEAD, textColor: 255, fontSize: 9 },
+    bodyStyles: { fontSize: 8 },
+    alternateRowStyles: { fillColor: COLOR_ALT },
+    columnStyles: {
+      0: { cellWidth: 10, halign: 'center' },
+      1: { cellWidth: 'auto' },
+      2: { cellWidth: 16, halign: 'center' },
+      3: { cellWidth: 20, halign: 'right' },
+      4: { cellWidth: 30, halign: 'right' },
+      5: { cellWidth: 30, halign: 'right' },
+    },
+    margin: { left: 14, right: 14 },
+  });
+
+  // Totales
+  const igv = +(subtotal * igvRate).toFixed(2);
+  const total = +(subtotal + igv).toFixed(2);
+  let endY = doc.lastAutoTable.finalY + 4;
+
+  const xLabel = 130;
+  const xVal = pageWidth - 14;
+  doc.setFontSize(9);
+  doc.setFont('helvetica', 'normal');
+  doc.text('Subtotal (gravado):', xLabel, endY);
+  doc.text(monedaSimbolo + fmtNum(subtotal, 2), xVal, endY, { align: 'right' });
+  endY += 5;
+  doc.text('IGV (18%):', xLabel, endY);
+  doc.text(monedaSimbolo + fmtNum(igv, 2), xVal, endY, { align: 'right' });
+  endY += 6;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10);
+  doc.setFillColor(...COLOR_HEAD);
+  doc.rect(xLabel - 3, endY - 4, pageWidth - 14 - (xLabel - 3), 6, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.text('TOTAL:', xLabel, endY);
+  doc.text(monedaSimbolo + fmtNum(total, 2), xVal, endY, { align: 'right' });
+  doc.setTextColor(0, 0, 0);
+
+  // Importe en letras (simple, solo PEN)
+  endY += 10;
+  if (moneda === 'PEN') {
+    doc.setFontSize(8);
+    doc.setFont('helvetica', 'italic');
+    doc.text(`SON: ${montoEnLetras(total)} SOLES`, 14, endY);
+  }
+
+  // Observaciones
+  if (factura.observaciones) {
+    endY += 8;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.text('Observaciones:', 14, endY);
+    doc.setFont('helvetica', 'normal');
+    const lines = doc.splitTextToSize(String(factura.observaciones), pageWidth - 28);
+    doc.text(lines, 14, endY + 5);
+  }
+
+  drawFooter(doc, `Factura interna ${serieCorr} · ${safe(emisor.name, '')} → ${safe(adquiriente.name, '')}`);
+  const filename = `FacturaInterna_${serieCorr}_${fmtDate(factura.fecha || new Date()).replace(/\//g, '-')}.pdf`;
+  if (download) doc.save(filename);
+  return { doc, filename };
+}
+
+// Conversor número → letras simplificado (limitado a millones)
+function montoEnLetras(n) {
+  const num = Math.floor(Number(n) || 0);
+  const dec = Math.round((Number(n) - num) * 100);
+  const unidades = ['', 'UNO', 'DOS', 'TRES', 'CUATRO', 'CINCO', 'SEIS', 'SIETE', 'OCHO', 'NUEVE'];
+  const decenas = ['', 'DIEZ', 'VEINTE', 'TREINTA', 'CUARENTA', 'CINCUENTA', 'SESENTA', 'SETENTA', 'OCHENTA', 'NOVENTA'];
+  const especiales = ['DIEZ','ONCE','DOCE','TRECE','CATORCE','QUINCE','DIECISÉIS','DIECISIETE','DIECIOCHO','DIECINUEVE'];
+  const centenas = ['', 'CIENTO', 'DOSCIENTOS', 'TRESCIENTOS', 'CUATROCIENTOS', 'QUINIENTOS', 'SEISCIENTOS', 'SETECIENTOS', 'OCHOCIENTOS', 'NOVECIENTOS'];
+
+  function bajo1000(n) {
+    if (n === 0) return '';
+    if (n === 100) return 'CIEN';
+    let s = '';
+    const c = Math.floor(n / 100);
+    const r = n % 100;
+    if (c) s += centenas[c] + ' ';
+    if (r >= 10 && r < 20) s += especiales[r - 10];
+    else {
+      const d = Math.floor(r / 10);
+      const u = r % 10;
+      if (d) s += decenas[d];
+      if (u) s += (d ? ' Y ' : '') + unidades[u];
+    }
+    return s.trim();
+  }
+
+  if (num === 0) return `CERO CON ${String(dec).padStart(2, '0')}/100`;
+  if (num >= 1000000) {
+    const m = Math.floor(num / 1000000);
+    const r = num % 1000000;
+    let s = (m === 1 ? 'UN MILLÓN' : `${bajo1000(m)} MILLONES`);
+    if (r >= 1000) s += ' ' + bajo1000(Math.floor(r / 1000)) + ' MIL';
+    if (r % 1000) s += ' ' + bajo1000(r % 1000);
+    return `${s} CON ${String(dec).padStart(2, '0')}/100`;
+  }
+  if (num >= 1000) {
+    const miles = Math.floor(num / 1000);
+    const resto = num % 1000;
+    let s = (miles === 1 ? 'MIL' : `${bajo1000(miles)} MIL`);
+    if (resto) s += ' ' + bajo1000(resto);
+    return `${s} CON ${String(dec).padStart(2, '0')}/100`;
+  }
+  return `${bajo1000(num)} CON ${String(dec).padStart(2, '0')}/100`;
+}
+
 // ─── Export agrupado para conveniencia ───────────────────────
 export default {
   generateOCPdf,
   generateRequisicionPdf,
   generateValorizacionPdf,
   generateConsolidadoPdf,
+  generateFacturaInternaPdf,
 };

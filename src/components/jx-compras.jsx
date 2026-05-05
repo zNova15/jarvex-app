@@ -677,11 +677,19 @@ function OrdenesCompraPage({ showToast }) {
   const [editing, setEditing] = uS(null);
   const [form, setForm] = uS({});
   const [items, setItems] = uS([]);
+  const [recepciones, setRecepciones] = uS([]); // del OC abierto en detalle
+  const [evidenciasOC, setEvidenciasOC] = uS([]); // evidencias ligadas a la OC abierta
   const [busqueda, setBusqueda] = uS('');
   const [filtroEstado, setFiltroEstado] = uS('todos');
+  // 'todas' | 'pendientes' (firmada/enviada/aceptada/recibida_parcial) | 'completas' (recibida)
+  const [vista, setVista] = uS('todas');
+
+  const ESTADOS_PENDIENTES = ['firmada','enviada','aceptada','recibida_parcial'];
 
   const sorted = uM(() => {
     let f = [...(ocs || [])];
+    if (vista === 'pendientes') f = f.filter(o => ESTADOS_PENDIENTES.includes(o.estado));
+    else if (vista === 'completas') f = f.filter(o => o.estado === 'recibida');
     if (filtroEstado !== 'todos') f = f.filter(o => o.estado === filtroEstado);
     if (busqueda) {
       const q = busqueda.toLowerCase();
@@ -692,21 +700,35 @@ function OrdenesCompraPage({ showToast }) {
       );
     }
     return f.sort((a,b) => (b.fecha||'').localeCompare(a.fecha||''));
-  }, [ocs, filtroEstado, busqueda]);
+  }, [ocs, filtroEstado, busqueda, vista]);
 
-  // Conteo de items por OC (carga async)
+  const conteoPendientes = uM(() =>
+    (ocs || []).filter(o => ESTADOS_PENDIENTES.includes(o.estado)).length
+  , [ocs]);
+
+  // Conteo de items por OC + items con cantidad pendiente (cantidad_recibida < cantidad)
   const [ocItemsCount, setOcItemsCount] = uS({});
+  const [ocItemsPendientes, setOcItemsPendientes] = uS({});
   uE(() => {
     let cancelled = false;
-    (async () => {
+    const load = async () => {
       try {
         const all = await window.__db.oc_items.filter(x => !x.deleted_at).toArray();
-        const map = {};
-        for (const it of all) map[it.orden_compra_id] = (map[it.orden_compra_id] || 0) + 1;
-        if (!cancelled) setOcItemsCount(map);
+        const totales = {};
+        const pendientes = {};
+        for (const it of all) {
+          totales[it.orden_compra_id] = (totales[it.orden_compra_id] || 0) + 1;
+          if (Number(it.cantidad_recibida || 0) < Number(it.cantidad || 0)) {
+            pendientes[it.orden_compra_id] = (pendientes[it.orden_compra_id] || 0) + 1;
+          }
+        }
+        if (!cancelled) { setOcItemsCount(totales); setOcItemsPendientes(pendientes); }
       } catch {}
-    })();
-    return () => { cancelled = true; };
+    };
+    load();
+    const onChange = (e) => { const t = e?.detail?.tabla; if (!t || t === 'oc_items' || t === 'recepciones' || t === 'recepcion_items') load(); };
+    window.addEventListener('jx_data_changed', onChange);
+    return () => { cancelled = true; window.removeEventListener('jx_data_changed', onChange); };
   }, [ocs]);
 
   const lookupProv = (id) => proveedores.find(p => p.id === id);
@@ -750,6 +772,24 @@ function OrdenesCompraPage({ showToast }) {
       const its = await window.__db.oc_items.where('orden_compra_id').equals(oc.id).filter(x=>!x.deleted_at).toArray();
       setItems(its);
     } catch { setItems([]); }
+    // Cargar recepciones formales asociadas
+    try {
+      const recs = await window.__db.recepciones.where('orden_compra_id').equals(oc.id).filter(x=>!x.deleted_at).toArray();
+      // Para cada recepcion, sus items
+      const recsConItems = await Promise.all(recs.map(async r => {
+        const ris = await window.__db.recepcion_items.where('recepcion_id').equals(r.id).filter(x=>!x.deleted_at).toArray();
+        return { ...r, items: ris };
+      }));
+      setRecepciones(recsConItems.sort((a,b) => (b.fecha||'').localeCompare(a.fecha||'')));
+    } catch { setRecepciones([]); }
+    // Cargar evidencias (facturas) ligadas a la OC
+    try {
+      const evs = await window.__db.evidencias
+        .where('modulo_relacionado').equals('ordenes_compra')
+        .filter(e => e.registro_relacionado_id === oc.id && !e.deleted_at)
+        .toArray();
+      setEvidenciasOC(evs.sort((a,b) => (b.fecha||'').localeCompare(a.fecha||'')));
+    } catch { setEvidenciasOC([]); }
     setModal(true);
   };
 
@@ -872,6 +912,25 @@ function OrdenesCompraPage({ showToast }) {
         </button>
       </div>
 
+      <div style={{ display:'flex', gap:6, marginBottom:10 }}>
+        <button
+          className={`btn btn-sm ${vista === 'todas' ? 'btn-amber' : 'btn-ghost'}`}
+          onClick={()=>setVista('todas')}>
+          Todas ({(ocs||[]).length})
+        </button>
+        <button
+          className={`btn btn-sm ${vista === 'pendientes' ? 'btn-amber' : 'btn-ghost'}`}
+          onClick={()=>setVista('pendientes')}
+          title="OCs firmadas/enviadas/aceptadas/parciales con items aún por recibir">
+          ⏳ Con items pendientes ({conteoPendientes})
+        </button>
+        <button
+          className={`btn btn-sm ${vista === 'completas' ? 'btn-amber' : 'btn-ghost'}`}
+          onClick={()=>setVista('completas')}>
+          ✓ Compradas
+        </button>
+      </div>
+
       <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', marginBottom:14 }}>
         <div className="search-bar" style={{ flex:'1 1 200px' }}><JxIcon name="search" size={14} color="var(--tm)"/><input placeholder="Buscar código…" value={busqueda} onChange={e=>setBusqueda(e.target.value)}/></div>
         <select className="fi" value={filtroEstado} onChange={e=>setFiltroEstado(e.target.value)} style={{ minWidth:140 }}>
@@ -902,6 +961,7 @@ function OrdenesCompraPage({ showToast }) {
               <tbody>
                 {sorted.map(oc => {
                   const itemsN = ocItemsCount[oc.id] ?? 0;
+                  const itemsPend = ocItemsPendientes[oc.id] ?? 0;
                   const provLabel = lookupProv(oc.proveedor_id)?.razon_social || oc.proveedor_nombre || '—';
                   return (
                   <tr key={oc.id}>
@@ -912,6 +972,11 @@ function OrdenesCompraPage({ showToast }) {
                     <td className="col-p" style={{ maxWidth:240, fontWeight:600, color:'var(--tp)' }}>{provLabel}</td>
                     <td style={{ textAlign:'center' }}>
                       <span className="badge b-blue">{itemsN} {itemsN === 1 ? 'item' : 'items'}</span>
+                      {itemsPend > 0 && (
+                        <div style={{ fontSize:10, color:'var(--amber)', fontWeight:600, marginTop:2 }}>
+                          ⏳ {itemsPend} pend.
+                        </div>
+                      )}
                     </td>
                     <td className="col-m">{oc.fecha}</td>
                     <td className="col-m">{oc.fecha_entrega || '—'}</td>
@@ -1038,7 +1103,7 @@ function OrdenesCompraPage({ showToast }) {
         }}/>
 
       {modal && (
-        <Modal title={editing ? `OC ${form.codigo}` : 'Nueva Orden de Compra'} icon="package" onClose={()=>{setModal(null); setEditing(null); setItems([]);}} wide>
+        <Modal title={editing ? `OC ${form.codigo}` : 'Nueva Orden de Compra'} icon="package" onClose={()=>{setModal(null); setEditing(null); setItems([]); setRecepciones([]); setEvidenciasOC([]);}} wide>
           <div className="g2">
             <div>
               <label className="flabel">Código</label>
@@ -1085,6 +1150,7 @@ function OrdenesCompraPage({ showToast }) {
                 <thead><tr>
                   <th>Material</th><th>Nombre libre</th><th style={{ width:70 }}>Unidad</th>
                   <th style={{ width:90, textAlign:'right' }}>Cantidad</th>
+                  {editing && <th style={{ width:90, textAlign:'right' }}>Recibido</th>}
                   <th style={{ width:100, textAlign:'right' }}>P. Unit.</th>
                   <th style={{ width:100, textAlign:'right' }}>Subtotal</th>
                   <th style={{ width:32 }}></th>
@@ -1106,6 +1172,21 @@ function OrdenesCompraPage({ showToast }) {
                         <td><input className="fi" disabled={!!it.material_id} value={it.nombre_libre||''} onChange={e=>updateItem(idx, { nombre_libre:e.target.value })} style={{ fontSize:11 }}/></td>
                         <td><input className="fi" value={it.unidad||''} onChange={e=>updateItem(idx, { unidad:e.target.value })} style={{ fontSize:11 }}/></td>
                         <td><input className="fi" type="number" min="0" step="0.01" value={it.cantidad||''} onChange={e=>updateItem(idx, { cantidad:e.target.value })} style={{ fontSize:11, textAlign:'right' }}/></td>
+                        {editing && (
+                          <td style={{ textAlign:'right', fontWeight:600 }}>
+                            {(() => {
+                              const rec = Number(it.cantidad_recibida || 0);
+                              const tot = Number(it.cantidad || 0);
+                              const pend = tot - rec;
+                              const color = rec >= tot ? 'var(--green)' : rec > 0 ? 'var(--amber)' : 'var(--tm)';
+                              return (
+                                <span style={{ color }} title={pend > 0 ? `Pendiente: ${pend}` : 'Recibido completo'}>
+                                  {rec.toFixed(2)} / {tot.toFixed(2)}
+                                </span>
+                              );
+                            })()}
+                          </td>
+                        )}
                         <td><input className="fi" type="number" min="0" step="0.0001" value={it.precio_unitario||''} onChange={e=>updateItem(idx, { precio_unitario:e.target.value })} style={{ fontSize:11, textAlign:'right' }}/></td>
                         <td style={{ textAlign:'right', fontWeight:600 }}>{fmtS(sub)}</td>
                         <td><button className="btn btn-ghost btn-xs" onClick={()=>removeItem(idx)}><JxIcon name="trash" size={10}/></button></td>
@@ -1115,17 +1196,17 @@ function OrdenesCompraPage({ showToast }) {
                 </tbody>
                 <tfoot>
                   <tr style={{ background:'rgba(0,0,0,0.15)' }}>
-                    <td colSpan={5} style={{ padding:'8px 12px', textAlign:'right', fontWeight:600 }}>Subtotal:</td>
+                    <td colSpan={editing ? 6 : 5} style={{ padding:'8px 12px', textAlign:'right', fontWeight:600 }}>Subtotal:</td>
                     <td style={{ textAlign:'right', fontWeight:700 }}>{fmtS(totales.subtotal)}</td>
                     <td/>
                   </tr>
                   <tr style={{ background:'rgba(0,0,0,0.10)' }}>
-                    <td colSpan={5} style={{ padding:'6px 12px', textAlign:'right' }}>IGV (18%):</td>
+                    <td colSpan={editing ? 6 : 5} style={{ padding:'6px 12px', textAlign:'right' }}>IGV (18%):</td>
                     <td style={{ textAlign:'right' }}>{fmtS(totales.igv)}</td>
                     <td/>
                   </tr>
                   <tr style={{ background:'rgba(242,183,5,0.15)', fontWeight:700 }}>
-                    <td colSpan={5} style={{ padding:'8px 12px', textAlign:'right' }}>TOTAL:</td>
+                    <td colSpan={editing ? 6 : 5} style={{ padding:'8px 12px', textAlign:'right' }}>TOTAL:</td>
                     <td style={{ textAlign:'right', color:'var(--amber)' }}>{fmtS(totales.total)}</td>
                     <td/>
                   </tr>
@@ -1134,8 +1215,74 @@ function OrdenesCompraPage({ showToast }) {
             </div>
           </div>
 
+          {/* Recepciones formales y evidencias (solo en modo edición) */}
+          {editing && (recepciones.length > 0 || evidenciasOC.length > 0) && (
+            <div style={{ marginTop:14, paddingTop:14, borderTop:'1px solid var(--border)' }}>
+              {recepciones.length > 0 && (
+                <div style={{ marginBottom:14 }}>
+                  <div style={{ fontSize:12.5, fontWeight:700, color:'var(--green)', marginBottom:6 }}>
+                    📦 Recepciones formales ({recepciones.length})
+                  </div>
+                  <div style={{ overflow:'auto', maxHeight:180, border:'1px solid var(--border)', borderRadius:6 }}>
+                    <table className="tbl" style={{ fontSize:11 }}>
+                      <thead><tr>
+                        <th>Fecha</th><th>Guía remisión</th><th>Factura</th>
+                        <th style={{ textAlign:'right' }}>Items</th>
+                        <th>Observaciones</th>
+                      </tr></thead>
+                      <tbody>
+                        {recepciones.map(r => {
+                          const conDiff = (r.items || []).some(it => Math.abs(Number(it.diferencia_precio_pct || 0)) >= 5);
+                          return (
+                            <tr key={r.id}>
+                              <td className="col-m">{r.fecha || '—'}</td>
+                              <td style={{ fontFamily:'monospace' }}>{r.guia_remision || '—'}</td>
+                              <td style={{ fontFamily:'monospace' }}>{r.factura_ref || '—'}</td>
+                              <td style={{ textAlign:'right' }}>
+                                {(r.items || []).length}
+                                {conDiff && <span style={{ marginLeft:4, color:'var(--amber)' }} title="Con diferencias de precio ≥5%">⚠</span>}
+                              </td>
+                              <td style={{ fontSize:10.5, color:'var(--tm)' }}>{r.observaciones || '—'}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+              {evidenciasOC.length > 0 && (
+                <div>
+                  <div style={{ fontSize:12.5, fontWeight:700, color:'var(--blue)', marginBottom:6 }}>
+                    📎 Facturas / evidencias ({evidenciasOC.length})
+                  </div>
+                  <div style={{ display:'flex', flexWrap:'wrap', gap:8 }}>
+                    {evidenciasOC.map(e => (
+                      <button key={e.id} type="button" className="btn btn-ghost btn-sm"
+                        title={`${e.nombre_archivo || 'archivo'} · ${(e.tamano_bytes/1024/1024).toFixed(2)} MB`}
+                        onClick={async () => {
+                          try {
+                            const blobId = e.blob_ref || e.id;
+                            const row = await window.__db.evidencias_blobs.get(blobId);
+                            if (!row?.blob) { showToast('Archivo no disponible localmente', 'red'); return; }
+                            const url = URL.createObjectURL(row.blob);
+                            window.open(url, '_blank');
+                            setTimeout(() => URL.revokeObjectURL(url), 60000);
+                          } catch (err) { showToast('Error abriendo archivo: ' + (err.message || err), 'red'); }
+                        }}>
+                        <JxIcon name="image" size={12}/>
+                        <span style={{ marginLeft:6, fontSize:11 }}>{e.nombre_archivo || 'archivo'}</span>
+                        <span style={{ marginLeft:4, fontSize:10, color:'var(--tm)' }}>· {e.fecha || ''}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="modal-actions">
-            <button className="btn btn-ghost" onClick={()=>{setModal(null); setEditing(null); setItems([]);}}>Cancelar</button>
+            <button className="btn btn-ghost" onClick={()=>{setModal(null); setEditing(null); setItems([]); setRecepciones([]); setEvidenciasOC([]);}}>Cancelar</button>
             <button className="btn btn-amber" onClick={guardar}>
               <JxIcon name="check" size={13}/>{editing ? 'Guardar' : 'Crear OC'}
             </button>

@@ -100,6 +100,7 @@ function CapturaMagicaPage({ showToast }) {
   // OCs activas (estados: por_confirmar | firmada | enviada | aceptada |
   // recibida_parcial) con sus items, para sugerir vinculación de facturas.
   const [ocsActivasDB, setOcsActivasDB] = uSCM([]); // [{ oc, items: [oc_items], company, proveedor }]
+  const [cadenasActivasDB, setCadenasActivasDB] = uSCM([]); // cadenas en borrador o confirmadas (no facturadas/cerradas)
   const [restored, setRestored] = uSCM(false);
   const fileInputRef = uRCM(null);
 
@@ -130,7 +131,7 @@ function CapturaMagicaPage({ showToast }) {
     let mounted = true;
     const cargar = async () => {
       try {
-        const [p, m, pending, ocsAll, ocItemsAll] = await Promise.all([
+        const [p, m, pending, ocsAll, ocItemsAll, cadenas] = await Promise.all([
           window.__db.proveedores.filter(x => !x.deleted_at).toArray(),
           window.__db.materiales.filter(x => !x.deleted_at).toArray(),
           window.__db.captura_magica_pending.toArray(),
@@ -139,10 +140,13 @@ function CapturaMagicaPage({ showToast }) {
             'por_confirmar', 'firmada', 'enviada', 'aceptada', 'recibida_parcial'
           ].includes(o.estado)).toArray(),
           window.__db.oc_items.filter(it => !it.deleted_at).toArray(),
+          // Cadenas activas para detección intercompany
+          window.__db.trazabilidad_cadenas.filter(c => !c.deleted_at && c.estado !== 'cerrada').toArray(),
         ]);
         if (!mounted) return;
         setProveedoresDB(p);
         setMaterialesDB(m);
+        setCadenasActivasDB(cadenas);
         // Indexar oc_items por oc_id
         const itemsPorOc = {};
         ocItemsAll.forEach(it => {
@@ -258,7 +262,7 @@ function CapturaMagicaPage({ showToast }) {
         base64,
         parsed: ext,
         status: dup ? 'duplicado' : 'revisar',
-        review: buildInitialReview(ext, companies, obras, proveedoresDB, materialesDB, ocsActivasDB),
+        review: buildInitialReview(ext, companies, obras, proveedoresDB, materialesDB, ocsActivasDB, cadenasActivasDB),
         duplicate_of: dup?.id || null,
       } : x));
     } catch (e) {
@@ -269,14 +273,17 @@ function CapturaMagicaPage({ showToast }) {
   };
 
   // ── Build review state desde el JSON extraído ───────────────
-  const buildInitialReview = (ext, companies, obras, proveedoresDB, materialesDB, ocsActivasDB) => {
+  const buildInitialReview = (ext, companies, obras, proveedoresDB, materialesDB, ocsActivasDB, cadenasActivasDB) => {
     if (!ext) return null;
-    // Emisor (proveedor)
+    // Emisor: puede ser proveedor externo O empresa nuestra (intercompany)
     const ruc = ext.emisor?.ruc || '';
     const proveedorMatch = ruc ? proveedoresDB.find(p => p.ruc === ruc) : null;
+    const emisorCompanyMatch = ruc ? (companies || []).find(c => c.ruc === ruc && c.status === 'activa' && !c.deleted_at) : null;
     // Receptor (empresa del grupo)
     const rucRec = ext.receptor?.documento || '';
     const companyMatch = rucRec ? (companies || []).find(c => c.ruc === rucRec && c.status === 'activa') : null;
+    // Si emisor es nuestra empresa Y receptor es nuestra empresa → operación intercompany.
+    const esIntercompany = !!(emisorCompanyMatch && companyMatch);
     // Si no hay match pero la factura sí tiene datos del receptor, autoseteamos
     // el modo "Crear nueva" pre-rellenado para que el usuario solo confirme.
     const hayDatosReceptor = !!(rucRec || ext.receptor?.razon_social_o_nombre);
@@ -399,6 +406,47 @@ function CapturaMagicaPage({ showToast }) {
           oc_match_alternativas: ocsRelacionadas.slice(1, 4), // hasta 3 alternativas
           // Por default: si la mejor candidata cubre ≥70% de items, sugerir vinculación
           vincular_a_oc: mejorOC && mejorOC.ratio >= 0.7 ? mejorOC.oc_id : null,
+        };
+      })(),
+      // ── Detección INTERCOMPANY ──────────────────────────────
+      // Si emisor y receptor son ambas nuestras empresas, es trazabilidad interna.
+      es_intercompany: esIntercompany,
+      emisor_company_id: emisorCompanyMatch?.id || null,
+      // Cadenas candidatas: aquellas con un paso seller=emisor → buyer=receptor sin facturar.
+      ...(() => {
+        if (!esIntercompany) return { cadena_candidatas: [], vincular_a_cadena_step: null };
+        const candidatas = (cadenasActivasDB || []).filter(c => {
+          if (c.deleted_at || c.estado === 'cerrada') return false;
+          const eslabones = c.eslabones || [];
+          for (let i = 0; i < eslabones.length - 1; i++) {
+            if (eslabones[i].company_id === emisorCompanyMatch.id &&
+                eslabones[i + 1].company_id === companyMatch.id) {
+              return true;
+            }
+          }
+          return false;
+        }).map(c => {
+          const eslabones = c.eslabones || [];
+          let stepIdx = -1;
+          for (let i = 0; i < eslabones.length - 1; i++) {
+            if (eslabones[i].company_id === emisorCompanyMatch.id &&
+                eslabones[i + 1].company_id === companyMatch.id) {
+              stepIdx = i; break;
+            }
+          }
+          return {
+            chain_id: c.id,
+            item_nombre: c.item_nombre,
+            cantidad: c.cantidad,
+            unidad: c.unidad,
+            estado: c.estado,
+            paso_idx: stepIdx,
+            paso_total: Math.max(0, eslabones.length - 1),
+          };
+        });
+        return {
+          cadena_candidatas: candidatas,
+          vincular_a_cadena_step: candidatas[0] ? { chain_id: candidatas[0].chain_id, paso_idx: candidatas[0].paso_idx } : null,
         };
       })(),
     };
@@ -584,8 +632,26 @@ function CapturaMagicaPage({ showToast }) {
       // 3.5) VINCULAR A OC: actualizar cantidad_recibida en oc_items + recalcular estado
       if (r.vincular_a_oc && r.oc_match) {
         try {
+          // 3.5.a) Crear recepción formal (uno solo por confirmación)
+          const recepcionId = window.__newId();
+          await window.__db.recepciones.add({
+            id: recepcionId,
+            orden_compra_id: r.vincular_a_oc,
+            fecha: r.fecha_recepcion || r.fecha_emision || now.slice(0, 10),
+            guia_remision: r.guia_remision || null,
+            factura_ref: r.serie_correlativo || null,
+            accounting_movement_id: accId,
+            observaciones: `Recepción por factura ${r.serie_correlativo || ''} (Captura Mágica)`.trim(),
+            created_by: userId, updated_by: userId,
+            created_at: now, updated_at: now,
+            version: 1, sync_status: 'pending_create', last_synced_at: null,
+            idempotency_key: `${userId}_rec_${recepcionId}`,
+            deleted_at: null,
+          });
+
           // Para cada match (factura_idx → oc_item), sumar la cantidad de la
-          // factura a cantidad_recibida del oc_item correspondiente.
+          // factura a cantidad_recibida del oc_item correspondiente + crear recepcion_item.
+          const diffsPrecio = []; // se acumulan diferencias significativas para audit
           for (const m of r.oc_match.matches) {
             const facturaItem = r.items[m.factura_idx];
             if (!facturaItem) continue;
@@ -593,13 +659,43 @@ function CapturaMagicaPage({ showToast }) {
             if (!ocItem) continue;
             const recibidaPrev = Number(ocItem.cantidad_recibida || 0);
             const cantNueva = Number(facturaItem.cantidad || 0);
+            const ocPU = Number(ocItem.precio_unitario || 0);
+            const facPU = Number(facturaItem.precio_unitario || 0);
+            const pct = ocPU > 0 && facPU > 0 ? ((facPU - ocPU) / ocPU) * 100 : 0;
+            if (Math.abs(pct) >= 5) {
+              diffsPrecio.push({ material_id: ocItem.material_id, ocPU, facPU, pct: +pct.toFixed(2) });
+            }
             await window.__db.oc_items.update(m.oc_item.id, {
               cantidad_recibida: recibidaPrev + cantNueva,
               updated_at: now,
               version: (ocItem.version || 0) + 1,
               sync_status: ocItem.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
             });
+            // Crear recepcion_item ligando este oc_item con la cantidad recibida
+            const recItemId = window.__newId();
+            await window.__db.recepcion_items.add({
+              id: recItemId,
+              recepcion_id: recepcionId,
+              oc_item_id: m.oc_item.id,
+              material_id: ocItem.material_id || null,
+              cantidad_recibida: cantNueva,
+              precio_unitario_factura: facPU || null,
+              diferencia_precio_pct: Math.abs(pct) >= 1 ? +pct.toFixed(2) : null,
+              observaciones: Math.abs(pct) >= 5 ? `Precio distinto a OC (${pct > 0 ? '+' : ''}${pct.toFixed(1)}%)` : null,
+              created_by: userId, updated_by: userId,
+              created_at: now, updated_at: now,
+              version: 1, sync_status: 'pending_create', last_synced_at: null,
+              idempotency_key: `${userId}_recit_${recItemId}`,
+              deleted_at: null,
+            });
           }
+          if (diffsPrecio.length > 0) {
+            try { await window.__logAudit?.({ action:'price_diff', table:'recepciones', recordId: recepcionId,
+              newData: { diffs: diffsPrecio, factura: r.serie_correlativo, oc_id: r.vincular_a_oc },
+              reason:`${diffsPrecio.length} ítem(s) con diferencia de precio ≥5% entre OC y factura` }); } catch {}
+          }
+          try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'recepciones' } })); } catch {}
+          try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'recepcion_items' } })); } catch {}
           // Recalcular estado de la OC: si todos los items tienen
           // cantidad_recibida >= cantidad → estado = 'recibida' (Comprada).
           // Si al menos uno tiene cantidad_recibida > 0 pero no todo cubierto
@@ -642,7 +738,9 @@ function CapturaMagicaPage({ showToast }) {
         }
       }
 
-      // 4) Evidencia (PDF/imagen)
+      // 4) Evidencia (PDF/imagen) — guardada en accounting_movements y, si hay
+      // OC vinculada, también ligada a ordenes_compra para que sea visible
+      // desde la vista de la OC (no solo desde Captura Mágica).
       try {
         const evId = window.__newId();
         await window.__saveEvidenciaLocal?.({
@@ -658,7 +756,64 @@ function CapturaMagicaPage({ showToast }) {
           observaciones: `Captura Mágica · ${r.serie_correlativo}`,
           created_by: userId,
         });
+        if (r.vincular_a_oc) {
+          // Segunda fila en evidencias apuntando a la OC. Reutilizamos el MISMO
+          // blob_id (= evId) para no duplicar el archivo en IndexedDB.
+          const evIdOC = window.__newId();
+          await window.__db.evidencias.put({
+            id: evIdOC,
+            obra_id: r.obra_id || null,
+            tipo_evidencia: 'comprobante_captura',
+            modulo_relacionado: 'ordenes_compra',
+            registro_relacionado_id: r.vincular_a_oc,
+            nombre_archivo: it.name,
+            mime_type: it.mimeType,
+            tamano_bytes: it.file?.size || 0,
+            url_archivo: null,
+            local_path_temporal: `idb://evidencias_blobs/${evId}`,
+            blob_ref: evId, // referencia al blob compartido
+            subido_por: userId,
+            fecha: r.fecha_emision || new Date().toISOString().slice(0, 10),
+            observaciones: `Factura ${r.serie_correlativo} (vinculada via Captura Mágica)`,
+            sync_status: 'pending_create',
+            upload_retries: 0,
+            created_by: userId,
+            created_at: now, updated_at: now,
+          });
+          try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'evidencias' } })); } catch {}
+        }
       } catch (e) { console.warn('[captura-magica] evidencia', e); }
+
+      // 4.5) VINCULAR A CADENA DE TRAZABILIDAD (operación intercompany).
+      // Si el user marcó vincular_a_cadena_step, marcamos la factura interna
+      // borrador correspondiente como "recibida" y archivamos la evidencia
+      // contra la cadena.
+      if (r.es_intercompany && r.vincular_a_cadena_step?.chain_id) {
+        try {
+          const facMod = await import('../lib/facturas-internas.js');
+          const todasFacturas = await facMod.listarFacturasDeCadena(r.vincular_a_cadena_step.chain_id);
+          const pasoTarget = todasFacturas.find(p => p.step === r.vincular_a_cadena_step.paso_idx);
+          if (pasoTarget?.income?.id) {
+            await facMod.marcarFacturaRecibida(pasoTarget.income.id, userId, accId);
+          }
+          // Etiquetar el accounting_movement creado como vinculado a cadena
+          await window.__db.accounting_movements.update(accId, {
+            chain_id: r.vincular_a_cadena_step.chain_id,
+            chain_step_index: r.vincular_a_cadena_step.paso_idx,
+            is_intercompany: true,
+            updated_at: now,
+            sync_status: 'pending_update',
+          });
+          try { await window.__logAudit?.({ action:'update', table:'trazabilidad_cadenas', recordId: r.vincular_a_cadena_step.chain_id,
+            newData: { paso_recibido: r.vincular_a_cadena_step.paso_idx, factura: r.serie_correlativo, accounting_movement_id: accId },
+            reason:`Factura ${r.serie_correlativo} vinculada a paso ${r.vincular_a_cadena_step.paso_idx + 1} de cadena via Captura Mágica` }); } catch {}
+          try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'trazabilidad_cadenas' } })); } catch {}
+          showToast(`✓ Paso ${r.vincular_a_cadena_step.paso_idx + 1} de la cadena marcado como recibido`, 'green');
+        } catch (e) {
+          console.warn('[captura-magica] vincular cadena', e);
+          showToast('Factura registrada, pero falló la vinculación a la cadena: ' + (e.message || e), 'amber');
+        }
+      }
 
       // Marca como confirmado y borra de Dexie (el usuario ya lo procesó)
       setItems(prev => prev.map(x => x.id === id ? { ...x, status: 'confirmado', accId } : x));
@@ -989,6 +1144,47 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
               )}
             </div>
 
+            {/* INTERCOMPANY — operación entre nuestras empresas */}
+            {r.es_intercompany && (
+              <div style={{ marginTop:10, padding:'12px 14px', background:'rgba(52,152,219,0.07)', border:'1px solid rgba(52,152,219,0.4)', borderRadius:8 }}>
+                <div style={{ fontSize:11.5, fontWeight:700, color:'#3498DB', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:6 }}>
+                  🔗 OPERACIÓN INTERCOMPANY DETECTADA
+                </div>
+                <div style={{ fontSize:12.5, color:'var(--ts)', lineHeight:1.5 }}>
+                  El emisor y el receptor de esta factura son ambas <strong>empresas tuyas</strong>. Es una operación interna del grupo.
+                  {r.cadena_candidatas?.length > 0 ? (
+                    <> Detecté <strong>{r.cadena_candidatas.length} cadena(s)</strong> de trazabilidad pendientes que coinciden con este movimiento. ¿Querés vincular esta factura a una?</>
+                  ) : (
+                    <> No encontré ninguna cadena de trazabilidad pendiente que coincida. La factura quedará registrada igual, pero conviene crear primero la cadena en Trazabilidad.</>
+                  )}
+                </div>
+                {r.cadena_candidatas?.length > 0 && (
+                  <div style={{ marginTop:8 }}>
+                    <select className="fi" style={{ fontSize:11, maxWidth:480 }}
+                      value={r.vincular_a_cadena_step ? `${r.vincular_a_cadena_step.chain_id}::${r.vincular_a_cadena_step.paso_idx}` : ''}
+                      onChange={e => {
+                        const v = e.target.value;
+                        if (!v) { upd({ vincular_a_cadena_step: null }); return; }
+                        const [chain_id, paso_idx] = v.split('::');
+                        upd({ vincular_a_cadena_step: { chain_id, paso_idx: Number(paso_idx) } });
+                      }}>
+                      <option value="">— No vincular a ninguna cadena —</option>
+                      {r.cadena_candidatas.map(cc => (
+                        <option key={cc.chain_id + '_' + cc.paso_idx} value={`${cc.chain_id}::${cc.paso_idx}`}>
+                          {cc.item_nombre} ({cc.cantidad} {cc.unidad}) · paso {cc.paso_idx + 1}/{cc.paso_total} · {cc.estado}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                {r.vincular_a_cadena_step && (
+                  <div style={{ marginTop:6, fontSize:10.5, color:'var(--tm)' }}>
+                    Al confirmar: el paso correspondiente de la cadena se marcará como <strong>recibido</strong> y la factura quedará archivada como evidencia.
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* OC RELACIONADA — sugerencia de vinculación */}
             {r.oc_match && (
               <div style={{ marginTop:10, padding:'12px 14px', background:'rgba(155,89,182,0.07)', border:'1px solid rgba(155,89,182,0.35)', borderRadius:8 }}>
@@ -1026,10 +1222,65 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
                   )}
                 </div>
                 {r.vincular_a_oc && (
-                  <div style={{ marginTop:6, fontSize:10.5, color:'var(--tm)' }}>
-                    Al confirmar: se sumarán las cantidades de la factura a las cantidades recibidas de la OC.
-                    Si quedan items sin cubrir, la OC pasará a "comprada parcial". Si todos están cubiertos, "comprada".
-                  </div>
+                  <>
+                    <div style={{ marginTop:10, display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+                      <div>
+                        <label className="flabel" style={{ fontSize:10.5 }}>Guía de remisión (opcional)</label>
+                        <input className="fi" placeholder="Ej: T001-001234"
+                          value={r.guia_remision || ''}
+                          onChange={e=>upd({ guia_remision: e.target.value })}/>
+                      </div>
+                      <div>
+                        <label className="flabel" style={{ fontSize:10.5 }}>Fecha de recepción</label>
+                        <input className="fi" type="date"
+                          value={r.fecha_recepcion || r.fecha_emision || ''}
+                          onChange={e=>upd({ fecha_recepcion: e.target.value })}/>
+                      </div>
+                    </div>
+                    {/* Diferencias de precio detectadas */}
+                    {(() => {
+                      if (!r.oc_match?.matches) return null;
+                      const diffs = r.oc_match.matches.map(m => {
+                        const facItem = r.items[m.factura_idx];
+                        if (!facItem) return null;
+                        const ocPU = Number(m.oc_item.precio_unitario || 0);
+                        const facPU = Number(facItem.precio_unitario || 0);
+                        if (ocPU <= 0 || facPU <= 0) return null;
+                        const pct = ((facPU - ocPU) / ocPU) * 100;
+                        if (Math.abs(pct) < 1) return null; // < 1% = ruido
+                        return {
+                          nombre: facItem.descripcion || m.oc_item.material_id,
+                          ocPU, facPU, pct,
+                          alto: Math.abs(pct) > 5,
+                        };
+                      }).filter(Boolean);
+                      if (!diffs.length) return null;
+                      const algunoAlto = diffs.some(d => d.alto);
+                      return (
+                        <div style={{ marginTop:10, padding:'8px 10px', background: algunoAlto ? 'rgba(231,76,60,0.10)' : 'rgba(242,183,5,0.10)', border:`1px solid ${algunoAlto ? 'rgba(231,76,60,0.4)' : 'rgba(242,183,5,0.4)'}`, borderRadius:6, fontSize:11 }}>
+                          <div style={{ fontWeight:700, color: algunoAlto ? 'var(--red)' : 'var(--amber)', marginBottom:4 }}>
+                            ⚠ {diffs.length} ítem(s) con precio distinto al de la OC
+                          </div>
+                          <ul style={{ margin:0, paddingLeft:16, color:'var(--ts)' }}>
+                            {diffs.map((d, i) => (
+                              <li key={i} style={{ marginBottom:2 }}>
+                                <strong>{d.nombre}</strong> · OC: {fmtCurMagic(d.ocPU, r.moneda)} → Factura: {fmtCurMagic(d.facPU, r.moneda)}
+                                <span style={{ marginLeft:6, color: d.pct > 0 ? 'var(--red)' : 'var(--green)', fontWeight:600 }}>
+                                  ({d.pct > 0 ? '+' : ''}{d.pct.toFixed(1)}%)
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      );
+                    })()}
+                    <div style={{ marginTop:8, fontSize:10.5, color:'var(--tm)' }}>
+                      Al confirmar: se sumarán las cantidades de la factura a las cantidades recibidas de la OC,
+                      se creará una <strong>recepción formal</strong> con la guía y fecha indicadas, y la factura
+                      quedará disponible como evidencia desde la OC.
+                      Si quedan items sin cubrir → "comprada parcial". Si todos están cubiertos → "comprada".
+                    </div>
+                  </>
                 )}
               </div>
             )}

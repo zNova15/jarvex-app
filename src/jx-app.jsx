@@ -497,6 +497,8 @@ const PAGE_REGISTRY = {
   'mov-materiales':         { chunk: 'jx-movimientos', component: 'MovMaterialesPage' },
   'mov-herramientas':       { chunk: 'jx-movimientos', component: 'MovHerramientasPage' },
   'proveedores':            { chunk: 'jx-movimientos', component: 'ProveedoresPage' },
+  // === jx-ubicaciones ===
+  'ubicaciones':            { chunk: 'jx-ubicaciones', component: 'UbicacionesPage' },
   // === jx-evidencias ===
   'evidencias':             { chunk: 'jx-evidencias', component: 'EvidenciasPage' },
   // === jx-reportes ===

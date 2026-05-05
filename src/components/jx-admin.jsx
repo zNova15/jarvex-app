@@ -367,7 +367,7 @@ function UsuariosPage({ showToast }) {
 // (compatible con código existente); MODULE_GROUPS define cómo
 // renderizar la tabla con separadores.
 const MODULE_GROUPS = [
-  { group: 'Operaciones diarias', modules: ['Obras','Personal','Asistencia','Materiales','Mov. Materiales','Herramientas','Mov. Herramientas','Proveedores'] },
+  { group: 'Operaciones diarias', modules: ['Obras','Personal','Asistencia','Materiales','Mov. Materiales','Herramientas','Mov. Herramientas','Ubicaciones','Proveedores'] },
   { group: 'Gestión de obra', modules: ['Partidas','Insumos','Versiones presupuesto','Cronograma','Avance','Comparativo','Costos','Valorizaciones','Incidencias','Evidencias'] },
   { group: 'Compras / Logística', modules: ['Requisiciones','Órdenes de Compra','Cotizaciones','Recepciones'] },
   { group: 'Subcontratos', modules: ['Subcontratistas','Subcontratos','Valor. Subcontrato'] },
@@ -399,7 +399,7 @@ const PERM_MATRIX = {
       'Obras','Personal','Partidas','Avance','Comparativo','Costos','Valorizaciones',
       // Compras: el gerente aprueba requisiciones y firma OC
       'Requisiciones','Órdenes de Compra','Cotizaciones','Recepciones','Proveedores',
-      'Subcontratistas','Subcontratos','Valor. Subcontrato','Activos Pesados',
+      'Subcontratistas','Subcontratos','Valor. Subcontrato','Activos Pesados','Ubicaciones',
       'Empresas','Movs. Contables','Intercompany','Trazabilidad','Consolidado','Plan de Cuentas',
       'Libro Diario','Balance General','Estado Resultados','Captura Mágica',
       'Cuentas Bancarias','Flujo de Caja','Flujo Proyectado','Comparativo Periodos',
@@ -419,7 +419,7 @@ const PERM_MATRIX = {
     if (['Personal','Asistencia','Partidas','Insumos','Cronograma','Avance','Comparativo',
          'Valorizaciones','Subcontratos','Valor. Subcontrato','Mantenimiento','Horas Máquina',
          'Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones',
-         'Incidencias','Evidencias','Requisiciones','KPIs por Obra','Cumplimiento Cronograma'].includes(m)) return 'w';
+         'Incidencias','Evidencias','Requisiciones','Ubicaciones','KPIs por Obra','Cumplimiento Cronograma'].includes(m)) return 'w';
     return 'r';
   }),
 
@@ -444,7 +444,7 @@ const PERM_MATRIX = {
     if (['Materiales','Mov. Materiales','Herramientas','Mov. Herramientas','Recepciones','EPP'].includes(m)) return 'w';
     // Lectura: lo que necesita consultar para hacer su trabajo
     if (['Requisiciones','Órdenes de Compra','Cotizaciones','Proveedores','Personal','Asistencia',
-         'Activos Pesados','Mantenimiento','Horas Máquina','Evidencias','Incidencias'].includes(m)) return 'r';
+         'Activos Pesados','Mantenimiento','Horas Máquina','Evidencias','Incidencias','Ubicaciones'].includes(m)) return 'r';
     // Resto (RRHH, contabilidad, SUNAT, ejecutivo, SSOMA distinto a EPP, auditoría) → sin acceso
     return 'x';
   }),
@@ -493,7 +493,7 @@ const PERM_MATRIX = {
          'Subcontratistas','Subcontratos','Captura Mágica'].includes(m)) return 'w';
     if (['Obras','Materiales','Mov. Materiales','Herramientas','Mov. Herramientas','Partidas',
          'Insumos','Costos','Incidencias','Evidencias','Personal','Reportes',
-         'Activos Pesados','Solicitudes Cambio'].includes(m)) return 'r';
+         'Activos Pesados','Solicitudes Cambio','Ubicaciones'].includes(m)) return 'r';
     return 'x';
   }),
 
@@ -528,7 +528,7 @@ const PERM_MATRIX = {
          'Mov. Herramientas'].includes(m)) return 'w';
     if (['Obras','Personal','Partidas','Insumos','Cronograma','Materiales','Herramientas',
          'Charlas Seguridad','EPP','IPERC','Inspecciones SSOMA','Capacitaciones',
-         'Activos Pesados','Comparativo'].includes(m)) return 'r';
+         'Activos Pesados','Comparativo','Ubicaciones'].includes(m)) return 'r';
     return 'x';
   }),
 
@@ -584,6 +584,7 @@ window.__moduleIdMap = {
   'mov-materiales': 'Mov. Materiales',
   'herramientas': 'Herramientas',
   'mov-herramientas': 'Mov. Herramientas',
+  'ubicaciones': 'Ubicaciones',
   'proveedores': 'Proveedores',
   // Gestión de obra
   'partidas': 'Partidas',

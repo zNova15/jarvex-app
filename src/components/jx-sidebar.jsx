@@ -70,6 +70,7 @@ const NAV = [
   { id: 'mov-materiales', label: 'Mov. de Materiales', icon: 'arrowIn' },
   { id: 'herramientas', label: 'Herramientas', icon: 'tool' },
   { id: 'mov-herramientas', label: 'Mov. Herramientas', icon: 'arrowOut' },
+  { id: 'ubicaciones', label: 'Ubicaciones de Obra', icon: 'map' },
   { id: 'proveedores', label: 'Proveedores', icon: 'truck' },
   { id: 'evidencias', label: 'Evidencias', icon: 'camera' },
 

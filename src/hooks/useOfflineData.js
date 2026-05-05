@@ -166,6 +166,19 @@ export function useHerramientas(obra_id) {
   , [obra_id]);
 }
 
+// Catálogo per-obra de ubicaciones de almacenaje (Patio, Bóveda, etc.).
+// `soloActivas: true` filtra ubicaciones desactivadas para los selects
+// de los formularios de creación.
+export function useUbicacionesObra(obra_id, { soloActivas = false } = {}) {
+  return useOfflineData('ubicaciones_obra', q =>
+    obra_id
+      ? q.where('obra_id').equals(obra_id)
+          .filter(u => !u.deleted_at && (!soloActivas || u.activo !== false))
+          .toArray()
+      : []
+  , [obra_id, soloActivas]);
+}
+
 export function useMovimientosMateriales(obra_id) {
   return useOfflineData('movimientos_materiales', q =>
     obra_id ? q.where('obra_id').equals(obra_id).toArray() : q.toArray()

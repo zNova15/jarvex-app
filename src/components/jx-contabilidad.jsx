@@ -1751,7 +1751,7 @@ function TrazabilidadPage({ showToast }) {
     };
   };
 
-  // ── Sugerencia de precios distribuidos ──────────────────────
+  // ── Sugerencia de precios distribuidos (local, fallback) ────
   // Dado precio_real y precio_referencial_contrato, distribuye el markup
   // entre los eslabones intermedios proporcional a sus margen_objetivo_pct
   // (o uniformemente si no están definidos). Deja al final un precio_carga
@@ -1769,10 +1769,7 @@ function TrazabilidadPage({ showToast }) {
     if (eslabones.length === 0) { showToast('Agregá al menos 1 eslabón', 'red'); return; }
     const margenObjetivoEjecutora = 0.05; // 5% remanente en la ejecutora
     const precioCargaObra = ref * (1 - margenObjetivoEjecutora);
-    // El precio del último eslabón = precio que paga la ejecutora = precioCargaObra.
-    // Los eslabones intermedios distribuyen markup proporcional.
-    const N = eslabones.length;
-    const margenes = eslabones.map((es, i) => {
+    const margenes = eslabones.map((es) => {
       const c = lookupCompany(es.company_id);
       const m = Number(c?.margen_objetivo_pct ?? 20);
       return Math.max(1, m);
@@ -1786,7 +1783,79 @@ function TrazabilidadPage({ showToast }) {
       return { ...es, precio_unit: Math.round(acumulado * 100) / 100 };
     });
     setForm({ ...form, eslabones: nuevos });
-    showToast(`Precios sugeridos. Precio final ${precioCargaObra.toFixed(2)}, ejecutora deja ${(margenObjetivoEjecutora*100).toFixed(0)}% aparente.`, 'green');
+    showToast(`Precios sugeridos (local). Precio final ${precioCargaObra.toFixed(2)}, ejecutora deja ${(margenObjetivoEjecutora*100).toFixed(0)}% aparente.`, 'green');
+  };
+
+  // ── Sugerencia de precios con IA (Claude Sonnet) ────────────
+  const [iaSugiriendo, setIaSugiriendo] = uSC(false);
+  const sugerirPreciosIA = async () => {
+    if (!form) return;
+    const real = Number(form.precio_real_unitario || 0);
+    const ref  = Number(form.precio_referencial_contrato || 0);
+    if (!(real > 0 && ref > 0)) { showToast('Ingresá precio real y precio objetivo', 'red'); return; }
+    const eslabones = form.eslabones || [];
+    if (eslabones.length < 2) { showToast('Necesitás al menos 2 eslabones (primaria + ejecutora)', 'red'); return; }
+    if (eslabones.some(e => !e.company_id)) { showToast('Asigná empresa a cada eslabón antes', 'red'); return; }
+    setIaSugiriendo(true);
+    try {
+      const mod = await import('../lib/sugerir-cadena-ai.js');
+      const ejecutoraId = form.ejecutora_company_id || eslabones[eslabones.length - 1].company_id;
+      const payload = {
+        precio_compra: real,
+        precio_objetivo: ref,
+        cantidad: Number(form.cantidad) || 1,
+        moneda: 'PEN',
+        item_nombre: form.item_nombre,
+        eslabones: eslabones.map((e, i) => {
+          const c = lookupCompany(e.company_id);
+          const isUlt = i === eslabones.length - 1;
+          const isPrim = i === 0;
+          return {
+            company_id: e.company_id,
+            name: c?.name || '?',
+            rol_grupo: c?.rol_grupo,
+            margen_objetivo_pct: Number(c?.margen_objetivo_pct ?? null),
+            posicion: isPrim ? 'primaria' : (isUlt || e.company_id === ejecutoraId) ? 'ejecutora' : 'secundaria',
+          };
+        }),
+      };
+      const resp = await mod.sugerirCadenaTrazabilidad(payload);
+      const nuevos = eslabones.map((es, i) => {
+        const paso = resp.result.pasos[i];
+        return { ...es, precio_unit: Math.round(Number(paso?.precio_unit_venta || 0) * 100) / 100 };
+      });
+      setForm({ ...form, eslabones: nuevos });
+      const conf = Math.round((resp.confianza || 0) * 100);
+      showToast(`✨ IA sugerió cadena (confianza ${conf}%)${resp.advertencias?.length ? ' · con advertencias' : ''}`, conf >= 85 ? 'green' : 'amber');
+      if (resp.advertencias?.length) {
+        console.warn('[trazabilidad IA] advertencias:', resp.advertencias);
+      }
+    } catch (e) {
+      showToast('IA falló: ' + (e.message || e) + ' · usando sugerencia local', 'amber');
+      sugerirPrecios();
+    } finally {
+      setIaSugiriendo(false);
+    }
+  };
+
+  // ── Ajuste rápido: "# secundarias intermedias" ──────────────
+  const ajustarCantidadSecundarias = (n) => {
+    if (!form) return;
+    const eslabones = [...(form.eslabones || [])];
+    if (eslabones.length === 0) {
+      eslabones.push({ company_id:'', precio_unit:'', factura:'', fecha_op: form.fecha, _rol:'primaria' });
+    }
+    // mantenemos primero (primaria) y último (ejecutora si existe)
+    const primaria = eslabones[0];
+    const ejecutoraIdx = eslabones.length > 1 ? eslabones.length - 1 : null;
+    const ejecutora = ejecutoraIdx != null ? eslabones[ejecutoraIdx] : { company_id: form.ejecutora_company_id || '', precio_unit:'', factura:'', fecha_op: form.fecha };
+    const intermedias = [];
+    for (let i = 0; i < n; i++) {
+      const existente = eslabones[1 + i];
+      intermedias.push(existente && existente !== ejecutora ? existente : { company_id:'', precio_unit:'', factura:'', fecha_op: form.fecha });
+    }
+    const nuevos = [primaria, ...intermedias, ejecutora];
+    setForm({ ...form, eslabones: nuevos });
   };
 
   const openNueva = () => {
@@ -1925,6 +1994,25 @@ function TrazabilidadPage({ showToast }) {
     } catch (e) { showToast('Error: ' + (e.message||e), 'red'); }
   };
 
+  // Genera N-1 facturas internas borrador (una por cada paso de la cadena).
+  // Si ya existían, abre el detalle visual para verlas.
+  const generarFacturasDeCadena = async (c) => {
+    try {
+      const mod = await import('../lib/facturas-internas.js');
+      const r = await mod.generarFacturasInternas(c, companies || [], userId);
+      if (r.ya_existian) {
+        showToast('Esta cadena ya tiene facturas generadas — abriendo detalle', 'amber');
+      } else {
+        showToast(`✓ ${r.creados} facturas internas borrador creadas`, 'green');
+      }
+      // Refrescar el record de la cadena (estado pasó a 'facturada')
+      const updated = await window.__db.trazabilidad_cadenas.get(c.id);
+      setVerCadena(updated || c);
+    } catch (e) {
+      showToast('Error generando facturas: ' + (e.message || e), 'red');
+    }
+  };
+
   // ── Resumen global ──────────────────────────────────────────
   const resumen = uMC(() => {
     let real = 0, cargada = 0, ref = 0;
@@ -2042,6 +2130,14 @@ function TrazabilidadPage({ showToast }) {
                         <button className="btn btn-ghost btn-xs" title="Editar" onClick={()=>openEditar(c)} style={{ marginLeft:4 }}>
                           <JxIcon name="edit" size={11}/>
                         </button>
+                        {(c.estado === 'confirmada' || c.estado === 'facturada') && (
+                          <button className="btn btn-amber btn-xs"
+                            title={c.estado === 'facturada' ? 'Ver facturas generadas' : 'Generar facturas internas (borradores)'}
+                            onClick={()=>generarFacturasDeCadena(c)}
+                            style={{ marginLeft:4 }}>
+                            📄
+                          </button>
+                        )}
                         {isAdmin && (
                           <button className="btn btn-red btn-xs" title="Eliminar" onClick={()=>eliminar(c)} style={{ marginLeft:4 }}>
                             <JxIcon name="trash" size={11}/>
@@ -2120,12 +2216,64 @@ function TrazabilidadPage({ showToast }) {
               <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>El precio del cliente final / presupuesto contractual.</div>
             </div>
 
+            {/* ── Configuración rápida de la cadena ── */}
+            <div style={{ gridColumn:'1/-1', marginTop:6, fontSize:11, color:'var(--purple, #9B59B6)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em', borderTop:'1px dashed var(--border)', paddingTop:10 }}>
+              Configuración de la cadena
+            </div>
+            <div style={{ gridColumn:'1/-1', display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10 }}>
+              <div>
+                <label className="flabel">Empresa Primaria *</label>
+                <select className="fi" value={(form.eslabones || [])[0]?.company_id || ''} onChange={e => {
+                  const arr = [...(form.eslabones || [])];
+                  if (arr.length === 0) arr.push({ company_id:'', precio_unit:'', factura:'', fecha_op: form.fecha });
+                  arr[0] = { ...arr[0], company_id: e.target.value };
+                  setForm({ ...form, eslabones: arr });
+                }}>
+                  <option value="">— Compradora externa —</option>
+                  {companiesActivas.filter(c => c.rol_grupo !== 'ejecutora').map(c => (
+                    <option key={c.id} value={c.id}>{c.name}{c.rol_grupo ? ` · ${c.rol_grupo}` : ''}</option>
+                  ))}
+                </select>
+                <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>Compra al proveedor externo.</div>
+              </div>
+              <div>
+                <label className="flabel"># empresas intermedias</label>
+                <input className="fi" type="number" min="0" max="6"
+                  value={Math.max(0, (form.eslabones || []).length - 2)}
+                  onChange={e => ajustarCantidadSecundarias(Math.max(0, Math.min(6, Number(e.target.value) || 0)))}
+                />
+                <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>0 = primaria vende directo a la ejecutora.</div>
+              </div>
+              <div>
+                <label className="flabel">Empresa Ejecutora *</label>
+                <select className="fi" value={form.ejecutora_company_id || ''} onChange={e => {
+                  const arr = [...(form.eslabones || [])];
+                  // Aseguramos que el último eslabón coincida con la ejecutora
+                  if (arr.length === 0) arr.push({ company_id: e.target.value, precio_unit:'', factura:'', fecha_op: form.fecha });
+                  else arr[arr.length - 1] = { ...arr[arr.length - 1], company_id: e.target.value };
+                  setForm({ ...form, ejecutora_company_id: e.target.value, eslabones: arr });
+                }}>
+                  <option value="">— Seleccionar —</option>
+                  {companiesActivas.filter(c => c.rol_grupo === 'ejecutora' || c.rol_grupo === 'mixta' || !c.rol_grupo).map(c => (
+                    <option key={c.id} value={c.id}>{c.name}{c.rol_grupo ? ` · ${c.rol_grupo}` : ''}</option>
+                  ))}
+                </select>
+                <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>Firma contrato con cliente final.</div>
+              </div>
+            </div>
+
             {/* ── Eslabones ── */}
-            <div style={{ gridColumn:'1/-1', marginTop:6, fontSize:11, color:'var(--amber)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em', borderTop:'1px dashed var(--border)', paddingTop:10, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+            <div style={{ gridColumn:'1/-1', marginTop:6, fontSize:11, color:'var(--amber)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em', borderTop:'1px dashed var(--border)', paddingTop:10, display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:6 }}>
               <span>Eslabones del grupo (orden = flujo)</span>
-              <button type="button" className="btn btn-ghost btn-xs" onClick={sugerirPrecios} title="Distribuir markup automáticamente según margen objetivo de cada empresa">
-                <JxIcon name="refresh" size={11}/> Sugerir precios
-              </button>
+              <div style={{ display:'flex', gap:6 }}>
+                <button type="button" className="btn btn-ghost btn-xs" onClick={sugerirPrecios} title="Distribuir markup automáticamente según margen objetivo de cada empresa">
+                  <JxIcon name="refresh" size={11}/> Sugerir local
+                </button>
+                <button type="button" className="btn btn-amber btn-xs" onClick={sugerirPreciosIA} disabled={iaSugiriendo}
+                  title="IA distribuye markup considerando rol y margen objetivo de cada empresa">
+                  {iaSugiriendo ? '⏳ Pensando…' : '✨ Sugerir con IA'}
+                </button>
+              </div>
             </div>
             <div style={{ gridColumn:'1/-1' }}>
               {(form.eslabones || []).map((es, i) => {
@@ -2134,9 +2282,15 @@ function TrazabilidadPage({ showToast }) {
                 const cur = Number(es.precio_unit || 0);
                 const markupPct = ant > 0 ? ((cur - ant) / ant * 100) : 0;
                 const co = lookupCompany(es.company_id);
+                const isPrim = i === 0;
+                const isUlt = i === arr.length - 1;
+                const rol = isPrim ? 'PRIMARIA' : isUlt ? 'EJECUTORA' : 'SECUNDARIA';
+                const rolColor = isPrim ? 'var(--blue)' : isUlt ? 'var(--green)' : 'var(--amber)';
                 return (
-                  <div key={i} style={{ display:'grid', gridTemplateColumns:'24px 2fr 1fr 1fr 1fr 32px', gap:8, alignItems:'center', marginBottom:8, padding:'8px 10px', background:'rgba(255,255,255,0.025)', border:'1px solid var(--border)', borderRadius:8 }}>
-                    <div style={{ fontSize:11, fontWeight:700, color:'var(--amber)', textAlign:'center' }}>#{i+1}</div>
+                  <div key={i} style={{ display:'grid', gridTemplateColumns:'90px 2fr 1fr 1fr 1fr 32px', gap:8, alignItems:'center', marginBottom:8, padding:'8px 10px', background:'rgba(255,255,255,0.025)', border:'1px solid var(--border)', borderRadius:8 }}>
+                    <div style={{ fontSize:9.5, fontWeight:700, color:rolColor, textAlign:'center', padding:'2px 4px', background:`${rolColor}1A`, borderRadius:4 }}>
+                      #{i+1} {rol}
+                    </div>
                     <select className="fi" value={es.company_id||''} onChange={e=>{
                       const nuevos = [...arr]; nuevos[i] = { ...nuevos[i], company_id: e.target.value };
                       setForm({ ...form, eslabones: nuevos });
@@ -2231,6 +2385,67 @@ function CadenaVisual({ cadena, lookupCompany, lookupObra, calcular }) {
   const r = calcular(cadena);
   const obra = lookupObra(cadena.obra_id);
   const eslabones = cadena.eslabones || [];
+
+  // Cargar facturas internas vinculadas a esta cadena
+  const [facturas, setFacturas] = uSC([]);
+  uEC(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const mod = await import('../lib/facturas-internas.js');
+        const fs = await mod.listarFacturasDeCadena(cadena.id);
+        if (!cancelled) setFacturas(fs);
+      } catch { if (!cancelled) setFacturas([]); }
+    };
+    load();
+    const onChange = (e) => {
+      const t = e?.detail?.tabla;
+      if (!t || t === 'accounting_movements' || t === 'intercompany_transactions') load();
+    };
+    window.addEventListener('jx_data_changed', onChange);
+    return () => { cancelled = true; window.removeEventListener('jx_data_changed', onChange); };
+  }, [cadena.id]);
+
+  const descargarFacturaPdf = async (paso) => {
+    try {
+      const seller = paso.income;
+      const buyer = paso.cost;
+      if (!seller || !buyer) return;
+      const allCompanies = await window.__db.companies.toArray();
+      const emisor = allCompanies.find(c => c.id === seller.company_id);
+      const adquiriente = allCompanies.find(c => c.id === buyer.company_id);
+      const meta = seller.factura_interna_meta || {};
+      const items = [{
+        descripcion: meta.item_nombre || cadena.item_nombre,
+        unidad: meta.unidad || cadena.unidad,
+        cantidad: meta.cantidad || cadena.cantidad,
+        precio_unitario: meta.precio_unitario || 0,
+      }];
+      const factura = {
+        serie: meta.serie || 'FB01',
+        correlativo: meta.correlativo || 1,
+        fecha: meta.fecha || seller.date,
+        moneda: meta.moneda || seller.currency,
+        concepto: meta.concepto,
+        observaciones: cadena.notas,
+        chain_id: cadena.id,
+        paso_idx: meta.paso_idx,
+        paso_total: meta.paso_total,
+        estado: seller.estado_factura || 'borrador',
+        tipo_documento: 'FACTURA INTERNA (BORRADOR)',
+      };
+      window.__pdfs?.generateFacturaInternaPdf?.(factura, items, emisor, adquiriente);
+    } catch (e) { alert('Error PDF: ' + (e.message || e)); }
+  };
+
+  const marcarEmitida = async (paso) => {
+    try {
+      if (!confirm('¿Marcar esta factura como emitida (firmada y lista para SUNAT)?')) return;
+      const mod = await import('../lib/facturas-internas.js');
+      const auth = window.__useAuth?.();
+      await mod.marcarFacturaEmitida(paso.income.id, auth?.profile?.id || 'offline');
+    } catch (e) { alert('Error: ' + (e.message || e)); }
+  };
   const Box = ({ titulo, sub, precio, total, color, icono }) => (
     <div style={{ flex:1, minWidth:140, background:'rgba(255,255,255,0.025)', border:`1px solid ${color}55`, borderTop:`3px solid ${color}`, borderRadius:8, padding:'10px 12px', textAlign:'center' }}>
       <div style={{ fontSize:10.5, color:'var(--tm)', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:4 }}>{titulo}</div>
@@ -2293,6 +2508,70 @@ function CadenaVisual({ cadena, lookupCompany, lookupObra, calcular }) {
       {cadena.notas && (
         <div style={{ fontSize:11.5, color:'var(--ts)', padding:'8px 10px', background:'rgba(255,255,255,0.025)', border:'1px solid var(--border)', borderRadius:6 }}>
           <strong>Notas:</strong> {cadena.notas}
+        </div>
+      )}
+
+      {/* ── Facturas internas generadas ── */}
+      {facturas.length > 0 && (
+        <div style={{ borderTop:'1px solid var(--border)', paddingTop:12 }}>
+          <div style={{ fontSize:12.5, fontWeight:700, color:'var(--amber)', marginBottom:8 }}>
+            📄 Facturas internas generadas ({facturas.length})
+          </div>
+          <div style={{ overflowX:'auto', border:'1px solid var(--border)', borderRadius:8 }}>
+            <table className="tbl" style={{ fontSize:11 }}>
+              <thead><tr>
+                <th>Paso</th>
+                <th>Vendedor → Comprador</th>
+                <th>N° doc</th>
+                <th style={{ textAlign:'right' }}>Total</th>
+                <th>Estado</th>
+                <th style={{ textAlign:'center' }}>Acciones</th>
+              </tr></thead>
+              <tbody>
+                {facturas.map(paso => {
+                  const seller = paso.income;
+                  const buyer = paso.cost;
+                  if (!seller || !buyer) return null;
+                  const cV = lookupCompany(seller.company_id);
+                  const cC = lookupCompany(buyer.company_id);
+                  const estado = seller.estado_factura || 'borrador';
+                  return (
+                    <tr key={paso.step}>
+                      <td style={{ textAlign:'center' }}>{paso.step + 1}</td>
+                      <td>
+                        <strong>{cV?.name || '?'}</strong>
+                        <span style={{ color:'var(--tm)', margin:'0 6px' }}>→</span>
+                        <strong>{cC?.name || '?'}</strong>
+                      </td>
+                      <td style={{ fontFamily:'monospace' }}>{seller.document_number}</td>
+                      <td style={{ textAlign:'right', fontWeight:700, color:'var(--amber)' }}>
+                        {fmtCur(seller.amount)}
+                      </td>
+                      <td>
+                        <span className={`badge ${estado === 'emitida' ? 'b-blue' : estado === 'recibida' ? 'b-green' : 'b-gray'}`}>
+                          {estado === 'borrador' ? 'Borrador' : estado === 'emitida' ? 'Emitida' : estado === 'recibida' ? 'Recibida' : estado}
+                        </span>
+                      </td>
+                      <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
+                        <button className="btn btn-ghost btn-xs" title="Descargar PDF" onClick={() => descargarFacturaPdf(paso)}>
+                          <JxIcon name="download" size={11}/>
+                        </button>
+                        {estado === 'borrador' && (
+                          <button className="btn btn-amber btn-xs" title="Marcar como emitida (firmada)" onClick={() => marcarEmitida(paso)} style={{ marginLeft:4 }}>
+                            ✓
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:6 }}>
+            💡 Las facturas borrador no llegan a SUNAT hasta que las marcás "emitida". Para registrar la recepción real,
+            subí la factura firmada vía <strong>Captura Mágica</strong> y vinculala a esta cadena.
+          </div>
         </div>
       )}
     </div>

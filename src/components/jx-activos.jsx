@@ -39,6 +39,34 @@ function ActivosPesadosPage({ showToast }) {
   const [hmModal, setHmModal] = uS(null); // activo seleccionado para registrar HM/comb/mant
   const [historial, setHistorial] = uS(null); // { activo, hm: [], cb: [], mt: [] }
 
+  // Ubicaciones del catálogo de la obra seleccionada en el form
+  const { data: ubicaciones } = window.__hooks.useUbicacionesObra?.(form.obra_actual_id || null) || { data: [] };
+  const ubicacionesActivas = uM(() => (ubicaciones || []).filter(u => u.activo !== false && !u.deleted_at), [ubicaciones]);
+
+  // Cache de todas las ubicaciones por id (de todas las obras) para mostrar en la tabla principal
+  const [ubicacionesAll, setUbicacionesAll] = uS({});
+  uE(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const all = await window.__db.ubicaciones_obra.filter(u => !u.deleted_at).toArray();
+        if (cancelled) return;
+        const map = {};
+        all.forEach(u => { map[u.id] = u; });
+        setUbicacionesAll(map);
+      } catch {}
+    };
+    load();
+    const onChange = (e) => { if (!e?.detail?.tabla || e.detail.tabla === 'ubicaciones_obra') load(); };
+    window.addEventListener('jx_data_changed', onChange);
+    window.addEventListener('jx_sync_pull', load);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('jx_data_changed', onChange);
+      window.removeEventListener('jx_sync_pull', load);
+    };
+  }, []);
+
   // KPIs por activo (HM acumuladas, combustible total, mantenim total)
   const [kpisActivo, setKpisActivo] = uS({});
   uE(() => {
@@ -69,14 +97,14 @@ function ActivosPesadosPage({ showToast }) {
       anio: new Date().getFullYear(), placa:'', serie:'',
       costo_adquisicion: '', vida_util_anios: 5,
       hm_acumuladas: 0, estado: 'operativo',
-      company_id: '', obra_actual_id: '',
+      company_id: '', obra_actual_id: '', ubicacion_id: '',
     });
     setEditing(null);
     setModal('activo');
   };
 
   const openEditar = (a) => {
-    setForm({ ...a });
+    setForm({ ...a, ubicacion_id: a.ubicacion_id || '' });
     setEditing(a);
     setModal('activo');
   };
@@ -94,6 +122,7 @@ function ActivosPesadosPage({ showToast }) {
           hm_acumuladas: parseFloat(form.hm_acumuladas)||0,
           company_id: form.company_id || null,
           obra_actual_id: form.obra_actual_id || null,
+          ubicacion_id: form.ubicacion_id || null,
           updated_at: now, updated_by: userId,
           version: (editing.version ?? 0) + 1,
           sync_status: editing.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
@@ -116,6 +145,7 @@ function ActivosPesadosPage({ showToast }) {
           estado: form.estado || 'operativo',
           company_id: form.company_id || null,
           obra_actual_id: form.obra_actual_id || null,
+          ubicacion_id: form.ubicacion_id || null,
           notas: form.notas || null,
           created_by: userId, updated_by: userId,
           created_at: now, updated_at: now,
@@ -266,7 +296,7 @@ function ActivosPesadosPage({ showToast }) {
             <table className="tbl">
               <thead><tr>
                 <th>Código</th><th>Equipo</th><th>Tipo</th><th>Placa</th>
-                <th>Estado</th><th>Obra actual</th>
+                <th>Estado</th><th>Obra actual</th><th>Ubicación</th>
                 <th style={{ textAlign:'right' }}>HM acum.</th>
                 <th style={{ textAlign:'right' }}>Combust.</th>
                 <th style={{ textAlign:'right' }}>Mantenim.</th>
@@ -284,6 +314,14 @@ function ActivosPesadosPage({ showToast }) {
                       <td className="col-m">{a.placa || '—'}</td>
                       <td><span className={`badge ${a.estado==='operativo'?'b-green':a.estado==='mantenimiento'?'b-amber':a.estado==='reparacion'?'b-red':'b-gray'}`}>{a.estado}</span></td>
                       <td>{lookupOb(a.obra_actual_id)?.nombre_obra || '—'}</td>
+                      <td style={{ fontSize:11 }}>
+                        {a.ubicacion_id && ubicacionesAll[a.ubicacion_id]
+                          ? <span style={{ color: ubicacionesAll[a.ubicacion_id].activo === false ? 'var(--tm)' : 'var(--tp)' }}>
+                              {ubicacionesAll[a.ubicacion_id].nombre}
+                              {ubicacionesAll[a.ubicacion_id].activo === false ? ' (inact.)' : ''}
+                            </span>
+                          : <span style={{ color:'var(--tm)' }}>—</span>}
+                      </td>
                       <td style={{ textAlign:'right', fontWeight:600 }}>{(k.horasTotal||0).toFixed(1)}</td>
                       <td style={{ textAlign:'right', color:'var(--orange)' }}>{fmtSk(k.combTotal||0)}</td>
                       <td style={{ textAlign:'right', color:'var(--red)' }}>{fmtSk(k.mantTotal||0)}</td>
@@ -358,9 +396,23 @@ function ActivosPesadosPage({ showToast }) {
               </select>
             </div>
             <div><label className="flabel">Obra actual</label>
-              <select className="fi" value={form.obra_actual_id||''} onChange={e=>setForm({...form, obra_actual_id:e.target.value})}>
+              <select className="fi" value={form.obra_actual_id||''} onChange={e=>setForm({...form, obra_actual_id:e.target.value, ubicacion_id: ''})}>
                 <option value="">— en almacén —</option>
                 {(obras||[]).filter(o=>!o.deleted_at).map(o => <option key={o.id} value={o.id}>{o.nombre_obra}</option>)}
+              </select>
+            </div>
+            <div><label className="flabel">Ubicación en obra</label>
+              <select
+                className="fi"
+                value={form.ubicacion_id||''}
+                onChange={e=>setForm({...form, ubicacion_id:e.target.value||null})}
+                disabled={!form.obra_actual_id}
+              >
+                <option value="">{form.obra_actual_id ? '— sin asignar —' : '— elegí una obra primero —'}</option>
+                {ubicacionesActivas.map(u => <option key={u.id} value={u.id}>{u.nombre}</option>)}
+                {form.ubicacion_id && ubicacionesAll[form.ubicacion_id] && ubicacionesAll[form.ubicacion_id].activo === false && (
+                  <option value={form.ubicacion_id}>{ubicacionesAll[form.ubicacion_id].nombre} (inactiva)</option>
+                )}
               </select>
             </div>
           </div>

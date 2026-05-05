@@ -188,6 +188,15 @@ function MaterialesPage({ showToast }) {
   const { data: personal } = window.__hooks.usePersonal(obraId);
   const movHook = window.__hooks.useMovimientosMateriales(obraId);
 
+  // Ubicaciones de almacenaje per-obra (para selector en modal y display en tabla)
+  const { data: ubicaciones } = window.__hooks.useUbicacionesObra?.(obraId) || { data: [] };
+  const ubicacionesActivas = uM(() => (ubicaciones || []).filter(u => u.activo !== false && !u.deleted_at), [ubicaciones]);
+  const ubicacionesById = uM(() => {
+    const map = new Map();
+    (ubicaciones || []).forEach(u => map.set(u.id, u));
+    return map;
+  }, [ubicaciones]);
+
   // Proveedores desde Dexie directamente
   const [provs, setProvs] = uS([]);
   uE(() => { window.__db.proveedores.toArray().then(setProvs); }, [obraId]);
@@ -644,6 +653,7 @@ function MaterialesPage({ showToast }) {
       stock_minimo: m.stock_minimo ?? '',
       precio: m.precio_unitario_estimado ?? '',
       proveedor_id: m.proveedor_principal_id || null,
+      ubicacion_id: m.ubicacion_id || '',
     });
     setEditingId(m.id);
     setModal('editar');
@@ -680,6 +690,7 @@ function MaterialesPage({ showToast }) {
           stock_minimo: stockMinimo,
           precio_unitario_estimado: parseFloat(form.precio) || null,
           proveedor_principal_id: form.proveedor_id || null,
+          ubicacion_id: form.ubicacion_id || null,
           alerta: calcAlerta(stockActual, stockMinimo),
         };
         await updateMaterial(editingId, newFields);
@@ -699,6 +710,7 @@ function MaterialesPage({ showToast }) {
           stock_minimo: stockMinimo,
           precio_unitario_estimado: parseFloat(form.precio) || null,
           proveedor_principal_id: form.proveedor_id || null,
+          ubicacion_id: form.ubicacion_id || null,
           alerta: alertaInicial,
           estado: 'activo',
         });
@@ -1091,7 +1103,7 @@ function MaterialesPage({ showToast }) {
         <div style={{ overflowX:'auto' }}>
           <table className="tbl">
             <thead><tr>
-              <th>Material</th><th>Categoría</th><th>Unidad</th>
+              <th>Material</th><th>Categoría</th><th>Ubicación</th><th>Unidad</th>
               <th style={{textAlign:'right'}}>Precio est.</th>
               <th style={{textAlign:'right'}}>Stock Actual</th><th style={{textAlign:'right'}}>Stock Mín.</th>
               <th style={{textAlign:'right'}}>Entradas</th><th style={{textAlign:'right'}}>Salidas</th>
@@ -1107,6 +1119,16 @@ function MaterialesPage({ showToast }) {
                   <tr key={m.id}>
                     <td className="col-p">{m.nombre_material}</td>
                     <td><span className="tag">{m.categoria || '—'}</span></td>
+                    <td style={{ fontSize:11 }}>
+                      {m.ubicacion_id
+                        ? (() => {
+                            const u = ubicacionesById.get(m.ubicacion_id);
+                            return u
+                              ? <span style={{ color: u.activo === false ? 'var(--tm)' : 'var(--tp)' }}>{u.nombre}{u.activo === false ? ' (inactiva)' : ''}</span>
+                              : <span style={{ color:'var(--tm)' }}>—</span>;
+                          })()
+                        : <span style={{ color:'var(--tm)' }}>—</span>}
+                    </td>
                     <td className="col-m">{m.unidad}</td>
                     <td style={{textAlign:'right'}} className="col-num">
                       {Number(m.precio_unitario_estimado || 0) > 0
@@ -1659,6 +1681,22 @@ function MaterialesPage({ showToast }) {
               {provs.map(p => <option key={p.id} value={p.id}>{p.razon_social}</option>)}
             </select>
           </div>
+          <div style={{gridColumn:'1/-1'}}>
+            <label className="flabel">Ubicación de almacenaje</label>
+            <select className="fi" value={form.ubicacion_id||''} onChange={e=>setForm({...form, ubicacion_id:e.target.value||null})}>
+              <option value="">— sin asignar —</option>
+              {ubicacionesActivas.map(u => <option key={u.id} value={u.id}>{u.nombre}</option>)}
+              {/* Si en edición la ubicación actual está inactiva, dejarla seleccionable como tombstone */}
+              {form.ubicacion_id && ubicacionesById.get(form.ubicacion_id) && ubicacionesById.get(form.ubicacion_id).activo === false && (
+                <option value={form.ubicacion_id}>{ubicacionesById.get(form.ubicacion_id).nombre} (inactiva)</option>
+              )}
+            </select>
+            {ubicacionesActivas.length === 0 && (
+              <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:4 }}>
+                No hay ubicaciones definidas para esta obra. Andá a "Ubicaciones de Obra" para crear el catálogo.
+              </div>
+            )}
+          </div>
         </div>
         <div className="modal-actions">
           <button className="btn btn-ghost" onClick={()=>{setModal(null); setEditingId(null); setForm({});}}>Cancelar</button>
@@ -1732,6 +1770,25 @@ function MaterialesPage({ showToast }) {
             { key: 'unidad', label: 'Unidad' },
             { key: 'stock_minimo', label: 'Stock mínimo', type: 'number' },
             { key: 'precio_unitario_estimado', label: 'Precio estimado (S/)', type: 'number' },
+            {
+              key: 'proveedor_principal_id',
+              label: 'Proveedor principal',
+              options: [
+                { value: '', label: '— sin especificar —' },
+                ...((provs || []).map(p => ({ value: p.id, label: p.razon_social || p.ruc || p.id }))),
+              ],
+            },
+            {
+              key: 'ubicacion_id',
+              label: 'Ubicación de almacenaje',
+              options: [
+                { value: '', label: '— sin asignar —' },
+                ...((ubicaciones || []).filter(u => !u.deleted_at).map(u => ({
+                  value: u.id,
+                  label: u.activo === false ? `${u.nombre} (inactiva)` : u.nombre,
+                }))),
+              ],
+            },
           ]}
           showToast={showToast}
           onClose={() => setRequestTarget(null)}
@@ -1781,6 +1838,14 @@ function HerramientasPage({ showToast }) {
   const { data: herramientas, loading, create: createHerr, update: updateHerr, refresh } = window.__hooks.useHerramientas(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
   const movHook = window.__hooks.useMovimientosHerramientas(obraId);
+
+  const { data: ubicacionesH } = window.__hooks.useUbicacionesObra?.(obraId) || { data: [] };
+  const ubicacionesActivasH = uM(() => (ubicacionesH || []).filter(u => u.activo !== false && !u.deleted_at), [ubicacionesH]);
+  const ubicacionesByIdH = uM(() => {
+    const map = new Map();
+    (ubicacionesH || []).forEach(u => map.set(u.id, u));
+    return map;
+  }, [ubicacionesH]);
 
   const filtered = uM(() => {
     if (!herramientas) return [];
@@ -1976,6 +2041,7 @@ function HerramientasPage({ showToast }) {
       modelo: h.modelo || '',
       serie: h.serie || '',
       estado_actual: h.estado_actual || 'bueno',
+      ubicacion_id: h.ubicacion_id || '',
     });
     setEditingId(h.id);
     setModal('editar');
@@ -2006,6 +2072,7 @@ function HerramientasPage({ showToast }) {
           modelo: form.modelo || null,
           serie: form.serie || null,
           estado_actual: form.estado_actual || 'bueno',
+          ubicacion_id: form.ubicacion_id || null,
         };
         await updateHerr(editingId, newFields);
         try { await window.__logAudit?.({ action:'update', table:'herramientas', recordId:editingId, oldData, newData:newFields }); } catch(e) {}
@@ -2020,6 +2087,7 @@ function HerramientasPage({ showToast }) {
           serie: form.serie || null,
           estado_actual: form.estado_actual || 'bueno',
           ubicacion_actual: 'almacen',
+          ubicacion_id: form.ubicacion_id || null,
           disponible: true,
         });
         try { await window.__logAudit?.({ action:'insert', table:'herramientas', recordId:created?.id, newData:created }); } catch(e) {}
@@ -2245,9 +2313,13 @@ function HerramientasPage({ showToast }) {
                 const e = ESTADO_STYLE[h.estado_actual] || ESTADO_STYLE.bueno;
                 const u = UBIC_STYLE[h.ubicacion_actual] || UBIC_STYLE.almacen;
                 const resp = personal.find(p => p.id === h.ultimo_responsable_id);
+                const ubicCat = h.ubicacion_id ? ubicacionesByIdH.get(h.ubicacion_id) : null;
                 return (
                   <tr key={h.id}>
-                    <td className="col-p">{h.nombre_herramienta}</td>
+                    <td className="col-p">
+                      {h.nombre_herramienta}
+                      {ubicCat && <div style={{ fontSize:10.5, color: ubicCat.activo === false ? 'var(--tm)' : 'var(--amber)', marginTop:2 }}>📍 {ubicCat.nombre}{ubicCat.activo === false ? ' (inactiva)' : ''}</div>}
+                    </td>
                     <td><span className="tag">{h.tipo_herramienta?.replace('_',' ') || '—'}</span></td>
                     <td className="col-m">{[h.marca, h.modelo].filter(Boolean).join(' ') || '—'}</td>
                     <td><span className={`badge ${e.class}`}>{e.label}</span></td>
@@ -2450,6 +2522,21 @@ function HerramientasPage({ showToast }) {
           <div><label className="flabel">Marca</label><input className="fi" placeholder="Ej: Bosch" value={form.marca||''} onChange={e=>setForm({...form, marca:e.target.value})}/></div>
           <div><label className="flabel">Modelo</label><input className="fi" placeholder="Ej: GA7020" value={form.modelo||''} onChange={e=>setForm({...form, modelo:e.target.value})}/></div>
           <div style={{gridColumn:'1/-1'}}><label className="flabel">N° Serie</label><input className="fi" placeholder="Ej: BS-2024-001" value={form.serie||''} onChange={e=>setForm({...form, serie:e.target.value})}/></div>
+          <div style={{gridColumn:'1/-1'}}>
+            <label className="flabel">Ubicación de almacenaje</label>
+            <select className="fi" value={form.ubicacion_id||''} onChange={e=>setForm({...form, ubicacion_id:e.target.value||null})}>
+              <option value="">— sin asignar —</option>
+              {ubicacionesActivasH.map(u => <option key={u.id} value={u.id}>{u.nombre}</option>)}
+              {form.ubicacion_id && ubicacionesByIdH.get(form.ubicacion_id) && ubicacionesByIdH.get(form.ubicacion_id).activo === false && (
+                <option value={form.ubicacion_id}>{ubicacionesByIdH.get(form.ubicacion_id).nombre} (inactiva)</option>
+              )}
+            </select>
+            {ubicacionesActivasH.length === 0 && (
+              <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:4 }}>
+                No hay ubicaciones definidas. Andá a "Ubicaciones de Obra" para crear el catálogo.
+              </div>
+            )}
+          </div>
         </div>
         <div className="modal-actions">
           <button className="btn btn-ghost" onClick={()=>{setModal(null); setEditingId(null); setForm({});}}>Cancelar</button>

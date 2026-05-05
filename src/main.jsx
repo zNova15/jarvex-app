@@ -9,6 +9,7 @@ import { useRealtimeNotifications } from './hooks/useRealtimeNotifications';
 import { useObraActiva, getObraActivaIdSync, setObraActivaId } from './hooks/useObraActiva';
 import {
   useObras, usePersonal, useMateriales, useHerramientas,
+  useUbicacionesObra,
   useMovimientosMateriales, useMovimientosHerramientas,
   useAsistencia, usePartidas, useAvanceObra, useIncidencias,
   useEvidencias, useConflicts,
@@ -62,6 +63,7 @@ window.__getObraActivaId = getObraActivaIdSync;
 window.__setObraActivaId = setObraActivaId;
 window.__hooks = {
   useObras, usePersonal, useMateriales, useHerramientas,
+  useUbicacionesObra,
   useMovimientosMateriales, useMovimientosHerramientas,
   useAsistencia, usePartidas, useAvanceObra, useIncidencias,
   useEvidencias, useConflicts,
@@ -161,6 +163,7 @@ const PAGE_CHUNKS = {
     import('./components/jx-config-sunat.jsx'),
   ]),
   'jx-conflicts':             () => import('./components/jx-conflicts.jsx'),
+  'jx-ubicaciones':           () => import('./components/jx-ubicaciones.jsx'),
 };
 
 window.__loadedChunks = new Set();

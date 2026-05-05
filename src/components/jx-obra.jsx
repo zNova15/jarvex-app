@@ -261,6 +261,12 @@ function ObrasPage({ showToast }) {
           costo_real_acumulado: 0,
         });
         try { await window.__logAudit?.({ action:'insert', table:'obras', recordId:created?.id, newData:created }); } catch(e) {}
+        if (created?.id) {
+          try {
+            const mod = await import('../lib/seed-ubicaciones.js');
+            await mod.seedUbicacionesPorDefecto(created.id, userId);
+          } catch (e) { console.warn('[obras] seed ubicaciones falló:', e?.message); }
+        }
         showToast(`Obra "${form.nombre_obra}" creada`, 'green');
       }
       setModal(null); setForm({}); setEditingId(null);

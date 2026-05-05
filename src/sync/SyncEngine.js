@@ -50,6 +50,8 @@ const TRANSACTIONAL_TABLES = [
   'evidencias',
   // Trazabilidad
   'trazabilidad_cadenas',
+  // Ubicaciones de almacenaje (catálogo per-obra)
+  'ubicaciones_obra',
 ];
 
 // Tablas maestras que se descargan del servidor en cada sync.
@@ -107,6 +109,8 @@ const MASTER_TABLES = [
   { tabla: 'planilla_boletas',          query: () => supabase.from('planilla_boletas').select('*').is('deleted_at', null) },
   // Trazabilidad
   { tabla: 'trazabilidad_cadenas',      query: () => supabase.from('trazabilidad_cadenas').select('*').is('deleted_at', null) },
+  // Ubicaciones de almacenaje (catálogo per-obra)
+  { tabla: 'ubicaciones_obra',          query: () => supabase.from('ubicaciones_obra').select('*').is('deleted_at', null) },
   { tabla: 'profiles',               query: () => supabase.from('profiles').select('*') },
 ];
 
