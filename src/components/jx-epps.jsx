@@ -391,6 +391,26 @@ function EppsInventarioPage({ showToast }) {
           <div className="pg-sub">{epps.length} EPPs registrados · {epps.filter(e => ['critico','reponer','agotado','sin_stock'].includes(e.alerta)).length} alertas</div>
         </div>
         <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+          <button className="btn btn-ghost btn-sm" title="PDF imprimible para llenar ingreso a mano"
+            onClick={async () => {
+              try {
+                const obra = (await window.__db.obras.get(obraId));
+                await window.__plantillas?.ingresoEpps({ obraNombre: obra?.nombre_obra || '—', fecha: new Date().toISOString().slice(0,10) });
+                showToast('Plantilla descargada', 'green');
+              } catch (err) { showToast('Error: ' + (err?.message || err), 'red'); }
+            }}>
+            <JxIcon name="download" size={13}/>Plantilla ingreso
+          </button>
+          <button className="btn btn-ghost btn-sm" title="PDF imprimible de entrega con firma (registro físico SUNAFIL)"
+            onClick={async () => {
+              try {
+                const obra = (await window.__db.obras.get(obraId));
+                await window.__plantillas?.salidaEpps({ obraNombre: obra?.nombre_obra || '—', fecha: new Date().toISOString().slice(0,10), personal: (personal || []).filter(p => p.estado === 'activo') });
+                showToast('Plantilla descargada', 'green');
+              } catch (err) { showToast('Error: ' + (err?.message || err), 'red'); }
+            }}>
+            <JxIcon name="download" size={13}/>Plantilla entrega
+          </button>
           <button className="btn btn-ghost btn-sm" onClick={openSalida}><JxIcon name="arrowOut" size={13}/>Registrar Salida</button>
           <button className="btn btn-ghost btn-sm" onClick={openIngreso}><JxIcon name="arrowIn" size={13}/>Registrar Ingreso</button>
           <button className="btn btn-amber btn-sm" onClick={openNuevo}><JxIcon name="plus" size={13}/>Nuevo EPP</button>
