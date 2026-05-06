@@ -325,7 +325,7 @@ function LoginScreen({ onLogin }) {
 }
 
 // ── HEADER BAR ────────────────────────────────────────────
-function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStatus, onSync, isMobile }) {
+function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStatus, onSync, isMobile, notifs: notifsProp }) {
   const pageLabels = {
     dashboard:'Dashboard',obras:'Obras / Proyectos',reportes:'Reportes',
     personal:'Personal',asistencia:'Asistencia',materiales:'Materiales',
@@ -357,7 +357,9 @@ function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStat
     solicitudes:'Solicitudes de Cambio',
   };
 
-  const notifs = window.__useRealtimeNotifications ? window.__useRealtimeNotifications() : { notifications:[], unreadCount:0, markAllRead:()=>{}, clearAll:()=>{} };
+  // notifs viene como prop desde App() para compartir una sola suscripción
+  // realtime entre Header y Sidebar (sin crear dos canales).
+  const notifs = notifsProp || { notifications:[], unreadCount:0, markAllRead:()=>{}, clearAll:()=>{} };
   const [notifOpen, setNotifOpen] = uSA(false);
 
   const initials = profile
@@ -680,6 +682,12 @@ function App() {
   }, [isMobile]);
   const sync = window.__useSync ? window.__useSync() : { syncing:false, pending:0 };
   const online = window.__useOnline ? window.__useOnline() : true;
+  // Una única suscripción realtime para toda la app: la compartimos con
+  // Header (notificaciones) y Sidebar (badge de estado). Si Header llamara
+  // a useRealtimeNotifications también, abriríamos dos canales.
+  const notifs = window.__useRealtimeNotifications
+    ? window.__useRealtimeNotifications()
+    : { notifications:[], unreadCount:0, markAllRead:()=>{}, clearAll:()=>{}, realtimeStatus:'idle', forceReconnect:()=>{} };
 
   const showToast = uCA((msg, type='amber') => setToast({ msg, type, key: Date.now() }), []);
   // Exponer toast como global para que helpers/loaders sin acceso al closure
@@ -866,6 +874,7 @@ function App() {
                 profile={auth.profile}
                 obraActiva={obraActiva}
                 syncStatus={syncStatus}
+                notifs={notifs}
                 onSync={()=>sync.sync && sync.sync()}
                 isMobile={isMobile}/>
         <div style={{ flex:1, overflow:'hidden', background:'var(--bg-p)' }} key={page}>
