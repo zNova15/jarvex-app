@@ -1996,6 +1996,10 @@ function HerramientasPage({ showToast }) {
   const [form, setForm] = uS({});
   const [editingId, setEditingId] = uS(null);
   const [obraId, setObraId] = uS(null);
+  // Foto en edición/creación: { blob, url } — url es objectURL local.
+  const [foto, setFoto] = uS(null);
+  // Map<herramienta_id, { url, isRemote }>: thumbnails para la lista.
+  const [fotosMap, setFotosMap] = uS(() => new Map());
   const [requestTarget, setRequestTarget] = uS(null);
 
   uE(() => {
@@ -2025,6 +2029,52 @@ function HerramientasPage({ showToast }) {
   const { data: herramientas, loading, create: createHerr, update: updateHerr, refresh } = window.__hooks.useHerramientas(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
   const movHook = window.__hooks.useMovimientosHerramientas(obraId);
+
+  // Carga fotos de herramientas (evidencias tipo 'foto_herramienta')
+  uE(() => {
+    if (!obraId) return;
+    let cancelled = false;
+    const blobUrlsLocales = [];
+    const cargar = async () => {
+      try {
+        const evidencias = await window.__db.evidencias
+          .where('obra_id').equals(obraId)
+          .filter(e => e.tipo_evidencia === 'foto_herramienta' && !e.deleted_at && e.registro_relacionado_id)
+          .toArray();
+        evidencias.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+        const map = new Map();
+        for (const ev of evidencias) {
+          if (map.has(ev.registro_relacionado_id)) continue;
+          if (ev.url_archivo) {
+            map.set(ev.registro_relacionado_id, { url: ev.url_archivo, isRemote: true });
+          } else {
+            try {
+              const row = await window.__db.evidencias_blobs.get(ev.id);
+              if (row?.blob) {
+                const url = URL.createObjectURL(row.blob);
+                blobUrlsLocales.push(url);
+                map.set(ev.registro_relacionado_id, { url, isRemote: false });
+              }
+            } catch {}
+          }
+        }
+        if (!cancelled) setFotosMap(map);
+      } catch (e) { console.warn('[fotos herramientas]', e?.message || e); }
+    };
+    cargar();
+    const onChange = (e) => {
+      const t = e?.detail?.tabla || e?.detail?.table;
+      if (!t || t === 'evidencias' || t === 'herramientas') cargar();
+    };
+    window.addEventListener('jx_data_changed', onChange);
+    window.addEventListener('jarvex_master_updated', onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('jx_data_changed', onChange);
+      window.removeEventListener('jarvex_master_updated', onChange);
+      blobUrlsLocales.forEach(u => { try { URL.revokeObjectURL(u); } catch {} });
+    };
+  }, [obraId]);
 
   const { data: ubicacionesH } = window.__hooks.useUbicacionesObra?.(obraId) || { data: [] };
   const ubicacionesActivasH = uM(() => (ubicacionesH || []).filter(u => u.activo !== false && !u.deleted_at), [ubicacionesH]);
@@ -2236,6 +2286,25 @@ function HerramientasPage({ showToast }) {
     });
     setEditingId(h.id);
     setModal('editar');
+    if (foto?.url) try { URL.revokeObjectURL(foto.url); } catch {}
+    setFoto(null);
+  };
+
+  const handleFotoChangeHerr = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { showToast('Solo imágenes', 'red'); return; }
+    if (file.size > 8 * 1024 * 1024) { showToast('La foto supera 8 MB', 'red'); return; }
+    if (foto?.url) try { URL.revokeObjectURL(foto.url); } catch {}
+    setFoto({ blob: file, url: URL.createObjectURL(file) });
+  };
+
+  const closeModalHerr = () => {
+    if (foto?.url) try { URL.revokeObjectURL(foto.url); } catch {}
+    setFoto(null);
+    setModal(null);
+    setEditingId(null);
+    setForm({});
   };
 
   const handleDeleteHerr = async (h) => {
@@ -2254,6 +2323,7 @@ function HerramientasPage({ showToast }) {
       return;
     }
     try {
+      let herramientaId = editingId;
       if (editingId) {
         const oldData = herramientas.find(h => h.id === editingId);
         const newFields = {
@@ -2281,10 +2351,31 @@ function HerramientasPage({ showToast }) {
           ubicacion_id: form.ubicacion_id || null,
           disponible: true,
         });
+        herramientaId = created?.id;
         try { await window.__logAudit?.({ action:'insert', table:'herramientas', recordId:created?.id, newData:created }); } catch(e) {}
         showToast(`Herramienta "${form.nombre_herramienta}" creada`, 'green');
       }
-      setModal(null); setForm({}); setEditingId(null);
+      // Foto referencial (opcional)
+      if (foto?.blob && herramientaId) {
+        try {
+          await window.__saveEvidenciaLocal?.({
+            id: window.__newId(),
+            obra_id: obraId,
+            tipo_evidencia: 'foto_herramienta',
+            modulo_relacionado: 'herramientas',
+            registro_relacionado_id: herramientaId,
+            nombre_archivo: foto.blob.name || `herramienta_${herramientaId}.jpg`,
+            mime_type: foto.blob.type || 'image/jpeg',
+            blob: foto.blob,
+            observaciones: `Foto referencial · ${form.nombre_herramienta}`,
+            fecha: new Date().toISOString().slice(0, 10),
+            created_by: auth?.profile?.id || null,
+          });
+        } catch (e) {
+          showToast('Herramienta guardada, pero la foto falló: ' + (e?.message || e), 'amber');
+        }
+      }
+      closeModalHerr();
     } catch (e) {
       showToast('Error: ' + e.message, 'red');
     }
@@ -2505,11 +2596,27 @@ function HerramientasPage({ showToast }) {
                 const u = UBIC_STYLE[h.ubicacion_actual] || UBIC_STYLE.almacen;
                 const resp = personal.find(p => p.id === h.ultimo_responsable_id);
                 const ubicCat = h.ubicacion_id ? ubicacionesByIdH.get(h.ubicacion_id) : null;
+                const fotoH = fotosMap.get(h.id);
                 return (
                   <tr key={h.id}>
                     <td className="col-p">
-                      {h.nombre_herramienta}
-                      {ubicCat && <div style={{ fontSize:10.5, color: ubicCat.activo === false ? 'var(--tm)' : 'var(--amber)', marginTop:2 }}>📍 {ubicCat.nombre}{ubicCat.activo === false ? ' (inactiva)' : ''}</div>}
+                      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                        {fotoH ? (
+                          <img src={fotoH.url} alt="foto"
+                               style={{ width:32, height:32, objectFit:'cover', borderRadius:4, border:'1px solid var(--bd)', flexShrink:0, cursor:'pointer' }}
+                               onClick={(ev) => { ev.stopPropagation(); window.open(fotoH.url, '_blank'); }}
+                               title="Click para ampliar"/>
+                        ) : (
+                          <div style={{ width:32, height:32, borderRadius:4, background:'rgba(255,255,255,0.04)', border:'1px dashed var(--bd)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
+                               title="Sin foto">
+                            <JxIcon name="image" size={12} color="var(--tm)"/>
+                          </div>
+                        )}
+                        <div>
+                          <div>{h.nombre_herramienta}</div>
+                          {ubicCat && <div style={{ fontSize:10.5, color: ubicCat.activo === false ? 'var(--tm)' : 'var(--amber)', marginTop:2 }}>📍 {ubicCat.nombre}{ubicCat.activo === false ? ' (inactiva)' : ''}</div>}
+                        </div>
+                      </div>
                     </td>
                     <td><span className="tag">{h.tipo_herramienta?.replace('_',' ') || '—'}</span></td>
                     <td className="col-m">{[h.marca, h.modelo].filter(Boolean).join(' ') || '—'}</td>
@@ -2695,7 +2802,7 @@ function HerramientasPage({ showToast }) {
       )}
 
       {/* Modal Nueva / Editar Herramienta */}
-      {(modal==='nuevo' || modal==='editar') && <Modal title={editingId ? 'Editar Herramienta' : 'Nueva Herramienta'} icon="tool" onClose={()=>{setModal(null); setEditingId(null); setForm({});}}>
+      {(modal==='nuevo' || modal==='editar') && <Modal title={editingId ? 'Editar Herramienta' : 'Nueva Herramienta'} icon="tool" onClose={closeModalHerr}>
         <div className="g2">
           <div style={{gridColumn:'1/-1'}}><label className="flabel">Nombre *</label><input className="fi" placeholder="Ej: Amoladora 7&quot;" value={form.nombre_herramienta||''} onChange={e=>setForm({...form, nombre_herramienta:e.target.value})}/></div>
           <div><label className="flabel">Tipo</label>
@@ -2729,9 +2836,33 @@ function HerramientasPage({ showToast }) {
               </div>
             )}
           </div>
+          {/* Foto referencial (opcional) — sube como evidencia */}
+          <div style={{ gridColumn:'1/-1' }}>
+            <label className="flabel">Foto de la herramienta (opcional)</label>
+            <div style={{ display:'flex', gap:10, alignItems:'flex-start', flexWrap:'wrap' }}>
+              <label className="btn btn-ghost btn-sm" style={{ cursor:'pointer' }}>
+                <JxIcon name="camera" size={13}/> {foto ? 'Cambiar foto' : 'Adjuntar foto'}
+                <input type="file" accept="image/*" capture="environment" style={{ display:'none' }}
+                       onChange={handleFotoChangeHerr}/>
+              </label>
+              {foto?.url && (
+                <div style={{ position:'relative' }}>
+                  <img src={foto.url} alt="preview" style={{ width:80, height:80, objectFit:'cover', borderRadius:6, border:'1px solid var(--bd)' }}/>
+                  <button type="button" onClick={() => { if (foto.url) try { URL.revokeObjectURL(foto.url); } catch {} setFoto(null); }}
+                    style={{ position:'absolute', top:-6, right:-6, width:20, height:20, borderRadius:'50%', background:'var(--red)', color:'white', border:'none', fontSize:11, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}
+                    title="Quitar foto">×</button>
+                </div>
+              )}
+              {!foto && editingId && (
+                <span style={{ fontSize:11, color:'var(--tm)', alignSelf:'center' }}>
+                  Si ya hay una foto guardada, se mantiene. Adjuntá una nueva sólo si querés reemplazarla.
+                </span>
+              )}
+            </div>
+          </div>
         </div>
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={()=>{setModal(null); setEditingId(null); setForm({});}}>Cancelar</button>
+          <button className="btn btn-ghost" onClick={closeModalHerr}>Cancelar</button>
           <button className="btn btn-amber" onClick={handleSubmitHerr}><JxIcon name="check" size={13}/>{editingId ? 'Guardar Cambios' : 'Crear Herramienta'}</button>
         </div>
       </Modal>}
