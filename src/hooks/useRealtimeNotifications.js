@@ -101,34 +101,72 @@ export function useRealtimeNotifications() {
     const channel = supabase.channel(channelName);
 
     // ── Aplica un cambio remoto a Dexie y notifica a la UI ─────
-    // Si es eco del propio user, igual escribimos a Dexie (para que sync_status
-    // quede 'synced'), pero NO disparamos jx_data_changed: el componente que
-    // hizo el cambio ya actualizó su state local en su flujo de submit.
+    // Reglas defensivas:
+    //  1. NO sobreescribir cambios locales pendientes (sync_status pending_*).
+    //     SyncEngine los va a pushear y el server eventualmente reemitirá.
+    //  2. NO aplicar versiones más viejas que la local (proteger contra
+    //     reordenamientos del realtime).
+    //  3. Usar update() en lugar de put() para hacer MERGE — esto preserva
+    //     campos solo-locales (idempotency_key, blobs, etc.) que el server
+    //     no devuelve en su row.
+    //  4. Disparar jx_data_changed SIEMPRE que se modifica Dexie. El "render
+    //     extra" cuando es eco propio es benigno; "no render" cuando otro
+    //     dispositivo edita un record que yo creé es un bug grave.
     const applyLiveSync = async (table, eventType, row) => {
       if (!row?.id) return;
-      const isEcho = row.created_by === profile.id || row.updated_by === profile.id;
       try {
         const db = window.__db;
-        if (db && db[table]) {
-          if (eventType === 'DELETE') {
-            await db[table].delete(row.id);
-          } else if (row.deleted_at) {
-            await db[table].delete(row.id);
+        if (!db || !db[table]) return;
+
+        if (eventType === 'DELETE') {
+          await db[table].delete(row.id);
+        } else if (row.deleted_at) {
+          await db[table].delete(row.id);
+        } else {
+          // Lee el record local para decidir si vale la pena aplicar
+          const local = await db[table].get(row.id);
+
+          // Si tenemos cambios locales pendientes, NO sobreescribir.
+          // SyncEngine los pushea y el server reemitirá.
+          const localPending = local && (
+            local.sync_status === 'pending_create' ||
+            local.sync_status === 'pending_update' ||
+            local.sync_status === 'pending_delete'
+          );
+          if (localPending) return;
+
+          // Si la version local es mayor que la del server, este evento
+          // está stale (probablemente reordenamiento del canal). Ignorar.
+          const serverV = Number(row.version ?? 0);
+          const localV  = Number(local?.version ?? 0);
+          if (local && localV > serverV) return;
+
+          if (local) {
+            // Merge: solo escribimos los campos del server, preservando
+            // metadata local. Si row no trae un campo, lo dejamos como está.
+            await db[table].update(row.id, {
+              ...row,
+              sync_status: 'synced',
+              last_synced_at: new Date().toISOString(),
+            });
           } else {
-            await db[table].put({ ...row, sync_status: 'synced', last_synced_at: new Date().toISOString() });
+            // Record nuevo (no estaba localmente): put() crea
+            await db[table].put({
+              ...row,
+              sync_status: 'synced',
+              last_synced_at: new Date().toISOString(),
+            });
           }
         }
       } catch (e) {
         console.warn('[realtime] live sync', table, e?.message || e);
         return;
       }
-      // Disparar eventos UI sólo cuando es cambio remoto (no eco propio)
-      if (!isEcho) {
-        try {
-          window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: table, source: 'realtime', eventType } }));
-          window.dispatchEvent(new CustomEvent('jarvex_master_updated', { detail: { table, eventType, row } }));
-        } catch {}
-      }
+      // Disparar siempre — la UI debe enterarse de cualquier cambio en Dexie
+      try {
+        window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: table, source: 'realtime', eventType } }));
+        window.dispatchEvent(new CustomEvent('jarvex_master_updated', { detail: { table, eventType, row } }));
+      } catch {}
     };
 
     // ── Incidencias (filtradas por obra si hay una activa) ──
