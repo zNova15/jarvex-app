@@ -549,6 +549,8 @@ const PAGE_REGISTRY = {
   'charlas-seguridad':      { chunk: 'jx-ssoma', component: 'CharlasSeguridadPage' },
   'iperc':                  { chunk: 'jx-ssoma', component: 'IpercPage' },
   'epp':                    { chunk: 'jx-ssoma', component: 'EppPage' },
+  // === jx-epps (inventario separado de materiales) ===
+  'epps-inventario':        { chunk: 'jx-epps', component: 'EppsInventarioPage' },
   // === jx-ssoma-extra ===
   'inspecciones-seguridad': { chunk: 'jx-ssoma-extra', component: 'InspeccionesSeguridadPage' },
   'capacitaciones':         { chunk: 'jx-ssoma-extra', component: 'CapacitacionesPage' },

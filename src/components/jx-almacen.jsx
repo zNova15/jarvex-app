@@ -1996,11 +1996,61 @@ function MaterialesPage({ showToast }) {
         return (
         <Modal title={editingId ? 'Editar Material' : 'Nuevo Material'} icon="package" onClose={closeModalMaterial}>
         {/* Banner detector EPP — aparece cuando el nombre matchea palabras clave
-            de EPP. Sugiere al user marcar el registro como EPP en su categoría
-            (Opción 1: flag por categoría hasta que tengamos tabla separada). */}
+            de EPP. Si el material todavía no se guardó (creación), sugiere
+            cancelar y crearlo directamente como EPP en SSOMA → EPPs. Si ya
+            existe (edición), ofrece "Mover a EPPs" — clona el registro a la
+            tabla `epps` y soft-deletea el material. */}
         {(() => {
           const tipoEpp = detectarEPP(form.nombre_material);
           if (!tipoEpp || form.categoria === 'EPP') return null;
+          const moverAEpps = async () => {
+            if (!editingId) {
+              showToast('Guardá primero el material; después se puede migrar', 'amber');
+              return;
+            }
+            if (!confirm(`¿Mover "${form.nombre_material}" a la base de EPPs?\n\nSe creará un EPP nuevo con el stock actual y este material quedará marcado como eliminado. Los movimientos históricos no se borran.`)) return;
+            try {
+              const mat = materiales.find(m => m.id === editingId);
+              if (!mat) { showToast('Material no encontrado', 'red'); return; }
+              const nuevoEppId = window.__newId();
+              const stockInicial = Number(mat.stock_actual ?? 0);
+              const stockMinimo = Number(mat.stock_minimo ?? 0);
+              await window.__db.epps.add({
+                id: nuevoEppId,
+                obra_id: mat.obra_id,
+                nombre_epp: mat.nombre_material,
+                tipo_epp: tipoEpp,
+                marca: null,
+                modelo: null,
+                talla: null,
+                vida_util_dias: null,
+                unidad: mat.unidad || 'Und',
+                stock_inicial: stockInicial,
+                stock_actual: stockInicial,
+                stock_minimo: stockMinimo,
+                precio_unitario_estimado: mat.precio_unitario_estimado || null,
+                proveedor_principal_id: mat.proveedor_principal_id || null,
+                ubicacion_id: mat.ubicacion_id || null,
+                alerta: mat.alerta || calcAlerta(stockInicial, stockMinimo),
+                estado: 'activo',
+                material_origen_id: mat.id,
+                created_by: auth?.profile?.id || null,
+                updated_by: auth?.profile?.id || null,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+                version: 1,
+                sync_status: 'pending_create',
+                last_synced_at: null,
+                idempotency_key: window.__newIdempotencyKey?.(auth?.profile?.id || 'offline', 'epps') || null,
+              });
+              await updateMaterial(mat.id, { deleted_at: new Date().toISOString() });
+              try { await window.__logAudit?.({ action:'update', table:'materiales', recordId: mat.id, oldData: mat, newData: { migrado_a_epp: nuevoEppId }, reason: `Migrado a tabla EPPs (id ${nuevoEppId})` }); } catch {}
+              showToast(`✓ Movido a EPPs. Andá a SSOMA → EPPs (Inventario) para verlo`, 'green');
+              closeModalMaterial();
+            } catch (e) {
+              showToast('Error: ' + (e?.message || e), 'red');
+            }
+          };
           return (
             <div style={{ marginBottom: 10, padding: '10px 12px', background: 'rgba(242,183,5,0.08)', border: '1px solid rgba(242,183,5,0.4)', borderRadius: 6, display: 'flex', alignItems: 'flex-start', gap: 10 }}>
               <span style={{ fontSize: 18, lineHeight: 1 }}>🦺</span>
@@ -2009,12 +2059,22 @@ function MaterialesPage({ showToast }) {
                   Esto parece un EPP ({tipoEpp})
                 </div>
                 <div style={{ fontSize: 11.5, color: 'var(--ts)', lineHeight: 1.4 }}>
-                  Los EPPs (cascos, guantes, arneses, etc.) tienen control de vida útil y se entregan con firma del trabajador. Marcalo como "EPP" para que aparezca en el módulo SSOMA → EPPs.
+                  Los EPPs tienen control de vida útil y se entregan con firma del trabajador (SUNAFIL).
+                  {editingId
+                    ? ' Click "Mover a EPPs" para migrar este registro al inventario separado de EPPs.'
+                    : ' Recomendado: cancelá y creá el registro directamente en SSOMA → EPPs (Inventario).'}
                 </div>
-                <button type="button" className="btn btn-amber btn-xs" style={{ marginTop: 6 }}
-                  onClick={() => setForm({ ...form, categoria: 'EPP' })}>
-                  Marcar como EPP
-                </button>
+                <div style={{ display:'flex', gap:6, marginTop:6, flexWrap:'wrap' }}>
+                  {editingId && (
+                    <button type="button" className="btn btn-amber btn-xs" onClick={moverAEpps}>
+                      <JxIcon name="arrowOut" size={11}/> Mover a EPPs
+                    </button>
+                  )}
+                  <button type="button" className="btn btn-ghost btn-xs"
+                    onClick={() => setForm({ ...form, categoria: 'EPP' })}>
+                    Solo marcar categoría como "EPP"
+                  </button>
+                </div>
               </div>
             </div>
           );

@@ -166,6 +166,21 @@ export function useHerramientas(obra_id) {
   , [obra_id]);
 }
 
+// EPPs: inventario separado de materiales (vida útil + firma en salida).
+export function useEpps(obra_id) {
+  return useOfflineData('epps', q =>
+    obra_id
+      ? q.where('obra_id').equals(obra_id).filter(e => !e.deleted_at).toArray()
+      : q.filter(e => !e.deleted_at).toArray()
+  , [obra_id]);
+}
+
+export function useMovimientosEpp(obra_id) {
+  return useOfflineData('movimientos_epp', q =>
+    obra_id ? q.where('obra_id').equals(obra_id).toArray() : q.toArray()
+  , [obra_id]);
+}
+
 // Catálogo per-obra de ubicaciones de almacenaje (Patio, Bóveda, etc.).
 // `soloActivas: true` filtra ubicaciones desactivadas para los selects
 // de los formularios de creación.

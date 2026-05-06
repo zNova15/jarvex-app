@@ -21,6 +21,7 @@ import {
   useCuentasBancarias, useCronogramaPagos, useMovimientosBancarios,
   useActivosPesados, useHorasMaquina,
   useCharlasSeguridad, useIperc, useEppEntregas, useInspeccionesSeguridad, useCapacitaciones,
+  useEpps, useMovimientosEpp,
   useSubcontratistas, useSubcontratos, useSubcontratoValorizaciones,
   usePersonalContrato, usePlanillas, usePlanillaBoletas,
 } from './hooks/useOfflineData';
@@ -81,6 +82,7 @@ window.__hooks = {
   useCuentasBancarias, useCronogramaPagos, useMovimientosBancarios,
   useActivosPesados, useHorasMaquina,
   useCharlasSeguridad, useIperc, useEppEntregas, useInspeccionesSeguridad, useCapacitaciones,
+  useEpps, useMovimientosEpp,
   useSubcontratistas, useSubcontratos, useSubcontratoValorizaciones,
   usePersonalContrato, usePlanillas, usePlanillaBoletas,
 };
@@ -155,6 +157,7 @@ const PAGE_CHUNKS = {
   'jx-activos':               () => import('./components/jx-activos.jsx'),
   'jx-ssoma':                 () => import('./components/jx-ssoma.jsx'),
   'jx-ssoma-extra':           () => import('./components/jx-ssoma-extra.jsx'),
+  'jx-epps':                  () => import('./components/jx-epps.jsx'),
   'jx-subcontratos':          () => import('./components/jx-subcontratos.jsx'),
   'jx-subcontratos-val':      () => import('./components/jx-subcontratos-val.jsx'),
   'jx-planillas':             () => import('./components/jx-planillas.jsx'),

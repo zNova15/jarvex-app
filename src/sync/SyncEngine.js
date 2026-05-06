@@ -52,6 +52,9 @@ const TRANSACTIONAL_TABLES = [
   'trazabilidad_cadenas',
   // Ubicaciones de almacenaje (catálogo per-obra)
   'ubicaciones_obra',
+  // EPPs (catálogo + movimientos con firma) — separados de materiales
+  'epps',
+  'movimientos_epp',
 ];
 
 // Tablas maestras que se descargan del servidor en cada sync.
@@ -111,6 +114,9 @@ const MASTER_TABLES = [
   { tabla: 'trazabilidad_cadenas',      query: () => supabase.from('trazabilidad_cadenas').select('*').is('deleted_at', null) },
   // Ubicaciones de almacenaje (catálogo per-obra)
   { tabla: 'ubicaciones_obra',          query: () => supabase.from('ubicaciones_obra').select('*').is('deleted_at', null) },
+  // EPPs (separados de materiales)
+  { tabla: 'epps',                      query: () => supabase.from('epps').select('*').is('deleted_at', null) },
+  { tabla: 'movimientos_epp',           query: () => supabase.from('movimientos_epp').select('*') },
   { tabla: 'profiles',               query: () => supabase.from('profiles').select('*') },
 ];
 

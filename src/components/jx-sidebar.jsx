@@ -107,6 +107,7 @@ const NAV = [
   { section: 'SSOMA / SEGURIDAD' },
   { id: 'charlas-seguridad', label: 'Charlas de 5 minutos', icon: 'alert' },
   { id: 'iperc', label: 'IPERC (riesgos)', icon: 'alert' },
+  { id: 'epps-inventario', label: 'EPPs (inventario)', icon: 'shield' },
   { id: 'epp', label: 'Entregas EPP', icon: 'check' },
   { id: 'inspecciones-seguridad', label: 'Inspecciones', icon: 'shield' },
   { id: 'capacitaciones', label: 'Capacitaciones', icon: 'users' },

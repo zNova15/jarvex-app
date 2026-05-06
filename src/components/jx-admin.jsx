@@ -620,6 +620,7 @@ window.__moduleIdMap = {
   'charlas-seguridad': 'Charlas Seguridad',
   'iperc': 'IPERC',
   'epp': 'EPP',
+  'epps-inventario': 'EPP',
   'inspecciones-seguridad': 'Inspecciones SSOMA',
   'capacitaciones': 'Capacitaciones',
   // RRHH
