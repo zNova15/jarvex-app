@@ -30,32 +30,69 @@ function fmtFecha(iso) {
   catch { return iso; }
 }
 
-// Cabecera estándar JARVEX en página vertical (portrait)
-function drawHeader(doc, { titulo, subtitulo, obraNombre, fecha }) {
-  doc.setFillColor(14, 22, 32);
-  doc.rect(0, 0, 210, 22, 'F');
-  doc.setTextColor(242, 183, 5);
-  doc.setFontSize(14);
-  doc.setFont('helvetica', 'bold');
-  doc.text('JARVEX', 14, 11);
-  doc.setTextColor(255, 255, 255);
-  doc.setFontSize(8);
-  doc.setFont('helvetica', 'normal');
-  doc.text('Plantilla imprimible · llenar a mano', 14, 17);
+// Constantes de layout (A4 portrait: 210x297 mm)
+const PAGE_W = 210;
+const PAGE_H = 297;
+const MARGIN_X = 10;        // margen izquierdo/derecho
+const CONTENT_W = PAGE_W - MARGIN_X * 2;
+const HEADER_BAND_H = 18;   // banda negra superior con "JARVEX"
+const FOOTER_Y = 285;       // línea de footer
 
+// Dibuja la cabecera y devuelve la Y donde puede arrancar la tabla.
+// El subtitulo hace wrap automático para no salirse del margen ni
+// sobreponerse con la línea de Obra/Fecha. Cuanto más subtítulo, más
+// abajo arranca la tabla — todo coherente.
+function drawHeader(doc, { titulo, subtitulo, obraNombre, fecha }) {
+  // Banda negra superior
+  doc.setFillColor(14, 22, 32);
+  doc.rect(0, 0, PAGE_W, HEADER_BAND_H, 'F');
+  doc.setTextColor(242, 183, 5);
+  doc.setFontSize(13);
+  doc.setFont('helvetica', 'bold');
+  doc.text('JARVEX', MARGIN_X, 9);
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(7.5);
+  doc.setFont('helvetica', 'normal');
+  doc.text('Plantilla imprimible · llenar a mano', MARGIN_X, 14);
+
+  // Título
+  let y = HEADER_BAND_H + 7;          // 25
   doc.setTextColor(0);
   doc.setFontSize(13);
   doc.setFont('helvetica', 'bold');
-  doc.text(titulo, 14, 30);
+  doc.text(titulo || '', MARGIN_X, y);
+  y += 6;
+
+  // Subtítulo con wrap (multi-línea si excede ancho disponible)
   if (subtitulo) {
     doc.setFontSize(9);
     doc.setFont('helvetica', 'normal');
-    doc.text(subtitulo, 14, 35);
+    const lineas = doc.splitTextToSize(subtitulo, CONTENT_W);
+    for (const linea of lineas) {
+      doc.text(linea, MARGIN_X, y);
+      y += 4.5;
+    }
+    y += 1.5;
+  } else {
+    y += 1;
   }
+
+  // Línea Obra (izq) + Fecha (der). La fecha se ancla al margen derecho
+  // para evitar overlap si el nombre de obra es largo.
   doc.setFontSize(9);
   doc.setFont('helvetica', 'normal');
-  doc.text(`Obra: ${obraNombre || '____________________'}`, 14, 42);
-  doc.text(`Fecha: ${fmtFecha(fecha)}`, 130, 42);
+  doc.text(`Obra: ${obraNombre || '____________________'}`, MARGIN_X, y);
+  const fechaTxt = `Fecha: ${fmtFecha(fecha)}`;
+  const fechaW = doc.getTextWidth(fechaTxt);
+  doc.text(fechaTxt, PAGE_W - MARGIN_X - fechaW, y);
+  y += 6;
+
+  // Línea separadora sutil
+  doc.setDrawColor(200);
+  doc.setLineWidth(0.2);
+  doc.line(MARGIN_X, y, PAGE_W - MARGIN_X, y);
+
+  return y + 4;  // dónde puede arrancar la tabla
 }
 
 function drawFooter(doc, footerText) {
@@ -64,18 +101,28 @@ function drawFooter(doc, footerText) {
     doc.setPage(i);
     doc.setFontSize(7);
     doc.setTextColor(128);
-    doc.text(footerText || 'Llenar con bolígrafo. Subir al sistema con foto/escan al final del día.', 14, 287);
-    doc.text(`Página ${i} de ${pageCount}`, 180, 287);
+    const txt = footerText || 'Llenar con bolígrafo. Subir al sistema con foto/escan al final del día.';
+    const lineas = doc.splitTextToSize(txt, CONTENT_W - 30); // dejamos espacio para el nº de página
+    let y = FOOTER_Y;
+    for (const l of lineas) {
+      doc.text(l, MARGIN_X, y);
+      y += 3.5;
+    }
+    const pagTxt = `Página ${i} de ${pageCount}`;
+    const pagW = doc.getTextWidth(pagTxt);
+    doc.text(pagTxt, PAGE_W - MARGIN_X - pagW, FOOTER_Y);
   }
 }
 
-// Render genérico de plantilla: cabecera + tabla vacía con N filas en blanco
+// Render genérico: dibuja header en cada página vía didDrawPage y reserva
+// margin.top para que el body de la tabla nunca pise el header.
 async function renderPlantilla({ titulo, subtitulo, obraNombre, fecha, columnas, filasPrellenadas = [], filasVacias = 20, columnasAnchos, footer }) {
   const { jsPDF, autoTable } = await loadPDF();
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-  drawHeader(doc, { titulo, subtitulo, obraNombre, fecha });
 
-  // Mezclar filas pre-llenadas + filas vacías
+  // Calculamos altura del header (depende del wrap del subtitulo)
+  const startY = drawHeader(doc, { titulo, subtitulo, obraNombre, fecha });
+
   const filasFinales = [
     ...filasPrellenadas,
     ...Array.from({ length: filasVacias }, () => columnas.map(() => '')),
@@ -84,16 +131,17 @@ async function renderPlantilla({ titulo, subtitulo, obraNombre, fecha, columnas,
   autoTable(doc, {
     head: [columnas],
     body: filasFinales,
-    startY: 48,
-    headStyles: { fillColor: [28, 45, 64], textColor: 255, fontSize: 8.5, halign: 'center' },
-    bodyStyles: { fontSize: 8.5, minCellHeight: 8 },
-    alternateRowStyles: { fillColor: [250, 250, 250] },
-    margin: { left: 10, right: 10 },
+    startY,
+    margin: { top: startY, left: MARGIN_X, right: MARGIN_X, bottom: 18 },
+    headStyles: { fillColor: [28, 45, 64], textColor: 255, fontSize: 8.5, halign: 'center', valign: 'middle' },
+    bodyStyles: { fontSize: 8.5, minCellHeight: 8, valign: 'middle' },
+    alternateRowStyles: { fillColor: [248, 248, 248] },
     columnStyles: columnasAnchos || {},
+    // Re-dibujar el header al inicio de cada página nueva (después de la 1ª).
+    // No tocamos el body — autotable respeta margin.top.
     didDrawPage: (data) => {
-      // Re-dibujar la cabecera en cada página
       if (data.pageNumber > 1) {
-        drawHeader(doc, { titulo: titulo + ' (cont.)', subtitulo, obraNombre, fecha });
+        drawHeader(doc, { titulo, subtitulo, obraNombre, fecha });
       }
     },
   });
@@ -116,18 +164,19 @@ export async function plantillaAsistencia({ obraNombre, fecha, personal = [] }) 
     titulo: 'Asistencia diaria',
     subtitulo: 'Marcar V (vino), F (faltó), A (atraso), T (tardanza). Firmar al final del día.',
     obraNombre, fecha,
-    columnas: ['DNI', 'Apellidos y nombres', 'Cargo', 'Estado', 'Entrada', 'Salida', 'Horas', 'Firma'],
+    columnas: ['DNI', 'Apellidos y nombres', 'Cargo', 'Est.', 'Entr.', 'Sal.', 'Hrs', 'Firma'],
     filasPrellenadas,
     filasVacias: cantVacias,
+    // Total: 188mm (CONTENT_W=190)
     columnasAnchos: {
-      0: { cellWidth: 22 },
-      1: { cellWidth: 60 },
-      2: { cellWidth: 28 },
-      3: { cellWidth: 14, halign: 'center' },
-      4: { cellWidth: 16, halign: 'center' },
-      5: { cellWidth: 16, halign: 'center' },
-      6: { cellWidth: 14, halign: 'center' },
-      7: { cellWidth: 30 },
+      0: { cellWidth: 20 },
+      1: { cellWidth: 56 },
+      2: { cellWidth: 26 },
+      3: { cellWidth: 12, halign: 'center' },
+      4: { cellWidth: 14, halign: 'center' },
+      5: { cellWidth: 14, halign: 'center' },
+      6: { cellWidth: 12, halign: 'center' },
+      7: { cellWidth: 34 },
     },
     footer: 'Original: archivo obra. Copia: subir foto al sistema (Asistencia → registrar atrasado).',
   });
@@ -139,16 +188,17 @@ export async function plantillaIngresoMateriales({ obraNombre, fecha, proveedorS
     titulo: 'Ingreso de materiales',
     subtitulo: `Proveedor: ${proveedorSugerido || '____________________________'}    Guía Nº: ____________`,
     obraNombre, fecha,
-    columnas: ['#', 'Material', 'Unidad', 'Cantidad', 'Precio (S/)', 'Total (S/)', 'Recibido por'],
+    columnas: ['#', 'Material', 'Unidad', 'Cantidad', 'Precio S/', 'Total S/', 'Recibido por'],
     filasVacias: 22,
+    // Total: 188mm
     columnasAnchos: {
       0: { cellWidth: 8, halign: 'center' },
-      1: { cellWidth: 75 },
+      1: { cellWidth: 70 },
       2: { cellWidth: 18, halign: 'center' },
       3: { cellWidth: 22, halign: 'right' },
       4: { cellWidth: 22, halign: 'right' },
       5: { cellWidth: 22, halign: 'right' },
-      6: { cellWidth: 28 },
+      6: { cellWidth: 26 },
     },
     footer: 'Subir al sistema desde Materiales → Registrar Ingreso (lote). Adjuntar foto de la guía.',
   });
@@ -162,13 +212,14 @@ export async function plantillaSalidaMateriales({ obraNombre, fecha, retiraSuger
     obraNombre, fecha,
     columnas: ['#', 'Material', 'Unidad', 'Cantidad', 'Stock antes', 'Firma quien retira'],
     filasVacias: 22,
+    // Total: 188mm
     columnasAnchos: {
       0: { cellWidth: 8, halign: 'center' },
-      1: { cellWidth: 80 },
+      1: { cellWidth: 76 },
       2: { cellWidth: 18, halign: 'center' },
-      3: { cellWidth: 24, halign: 'right' },
-      4: { cellWidth: 24, halign: 'right' },
-      5: { cellWidth: 40 },
+      3: { cellWidth: 22, halign: 'right' },
+      4: { cellWidth: 22, halign: 'right' },
+      5: { cellWidth: 42 },
     },
     footer: 'Original: caja almacén. Copia: subir al sistema desde Materiales → Registrar Salida (lote).',
   });
@@ -182,14 +233,15 @@ export async function plantillaIngresoHerramientas({ obraNombre, fecha, proveedo
     obraNombre, fecha,
     columnas: ['#', 'Herramienta', 'Marca', 'Modelo', 'N° Serie', 'Estado', 'Recibido por'],
     filasVacias: 18,
+    // Total: 188mm
     columnasAnchos: {
       0: { cellWidth: 8, halign: 'center' },
-      1: { cellWidth: 55 },
-      2: { cellWidth: 25 },
-      3: { cellWidth: 25 },
-      4: { cellWidth: 28 },
+      1: { cellWidth: 52 },
+      2: { cellWidth: 24 },
+      3: { cellWidth: 24 },
+      4: { cellWidth: 26 },
       5: { cellWidth: 18, halign: 'center' },
-      6: { cellWidth: 30 },
+      6: { cellWidth: 36 },
     },
     footer: 'Subir al sistema desde Herramientas → Registrar Ingreso. Adjuntar foto de la guía.',
   });
@@ -201,16 +253,17 @@ export async function plantillaSalidaHerramientas({ obraNombre, fecha }) {
     titulo: 'Salida y devolución de herramientas',
     subtitulo: 'Marcar fecha estimada de devolución. Devolver firmado a almacén.',
     obraNombre, fecha,
-    columnas: ['#', 'Herramienta', 'Cantidad', 'Responsable / DNI', 'Devolución est.', 'Firma retira', 'Firma devuelve'],
+    columnas: ['#', 'Herramienta', 'Cant.', 'Responsable / DNI', 'Devol. est.', 'Firma retira', 'Firma devuelve'],
     filasVacias: 18,
+    // Total: 188mm
     columnasAnchos: {
       0: { cellWidth: 8, halign: 'center' },
-      1: { cellWidth: 55 },
-      2: { cellWidth: 18, halign: 'right' },
-      3: { cellWidth: 40 },
+      1: { cellWidth: 52 },
+      2: { cellWidth: 14, halign: 'right' },
+      3: { cellWidth: 38 },
       4: { cellWidth: 22, halign: 'center' },
-      5: { cellWidth: 24 },
-      6: { cellWidth: 24 },
+      5: { cellWidth: 27 },
+      6: { cellWidth: 27 },
     },
     footer: 'Subir desde Herramientas → Registrar Movimiento. Adjuntar foto de la firma.',
   });
@@ -222,17 +275,18 @@ export async function plantillaIngresoEpps({ obraNombre, fecha, proveedorSugerid
     titulo: 'Ingreso de EPPs (Equipos de Protección Personal)',
     subtitulo: `Proveedor: ${proveedorSugerido || '____________________________'}    Guía Nº: ____________`,
     obraNombre, fecha,
-    columnas: ['#', 'EPP', 'Tipo', 'Talla', 'Marca', 'Cantidad', 'Precio (S/)', 'Recibido'],
+    columnas: ['#', 'EPP', 'Tipo', 'Talla', 'Marca', 'Cant.', 'Precio S/', 'Recibido'],
     filasVacias: 18,
+    // Total: 188mm
     columnasAnchos: {
       0: { cellWidth: 8, halign: 'center' },
-      1: { cellWidth: 50 },
+      1: { cellWidth: 52 },
       2: { cellWidth: 22, halign: 'center' },
       3: { cellWidth: 14, halign: 'center' },
       4: { cellWidth: 24 },
-      5: { cellWidth: 18, halign: 'right' },
-      6: { cellWidth: 20, halign: 'right' },
-      7: { cellWidth: 28 },
+      5: { cellWidth: 14, halign: 'right' },
+      6: { cellWidth: 22, halign: 'right' },
+      7: { cellWidth: 32 },
     },
     footer: 'Subir desde SSOMA → EPPs (Inventario) → Registrar Ingreso.',
   });
@@ -247,21 +301,22 @@ export async function plantillaSalidaEpps({ obraNombre, fecha, personal = [] }) 
   ]);
   const cantVacias = Math.max(8, 20 - filasPrellenadas.length);
   return renderPlantilla({
-    titulo: 'Entrega de EPPs — registro físico SUNAFIL',
-    subtitulo: 'Llenar EPP entregado, motivo (dotación/reposición/cambio/pérdida) y FIRMA del trabajador. Conservar 5 años.',
+    titulo: 'Entrega de EPPs — registro físico (SUNAFIL)',
+    subtitulo: 'Llenar EPP, motivo (dotación / reposición / cambio / pérdida) y firma del trabajador. Conservar 5 años.',
     obraNombre, fecha,
     columnas: ['DNI', 'Trabajador', 'EPP', 'Tipo', 'Talla', 'Cant.', 'Motivo', 'Firma trabajador'],
     filasPrellenadas,
     filasVacias: cantVacias,
+    // Total: 188mm
     columnasAnchos: {
-      0: { cellWidth: 22 },
-      1: { cellWidth: 45 },
-      2: { cellWidth: 32 },
+      0: { cellWidth: 20 },
+      1: { cellWidth: 42 },
+      2: { cellWidth: 30 },
       3: { cellWidth: 18, halign: 'center' },
       4: { cellWidth: 12, halign: 'center' },
       5: { cellWidth: 12, halign: 'center' },
       6: { cellWidth: 22 },
-      7: { cellWidth: 30 },
+      7: { cellWidth: 32 },
     },
     footer: 'Original: archivo SSOMA (5 años). Copia: subir desde SSOMA → EPPs → Registrar Salida con firma.',
   });
