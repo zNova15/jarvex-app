@@ -710,7 +710,26 @@ function MaterialesPage({ showToast }) {
       hora: new Date().toTimeString().slice(0, 5),
       tipo_movimiento: type === 'ingreso' ? 'entrada' : 'salida',
     });
+    // Reseteamos el lote cada vez que se abre un modal de mov.
+    setLoteItems([{ id: window.__newId?.() || crypto.randomUUID(), material_id:'', cantidad:'', precio:'', proveedor_id:null, responsable_id:null }]);
+    setLoteComunes({ usarMismoProveedor: true, usarMismaPersona: true, proveedor_id: null, responsable_id: null });
     setModal(type);
+  };
+
+  // Estado del lote: items[] + flags "todos del mismo proveedor / persona".
+  // Cuando el flag está activo, la columna individual se desactiva y se usa
+  // el valor global de loteComunes.{proveedor_id, responsable_id}.
+  const [loteItems, setLoteItems] = uS([]);
+  const [loteComunes, setLoteComunes] = uS({ usarMismoProveedor: true, usarMismaPersona: true, proveedor_id: null, responsable_id: null });
+
+  const updateLoteItem = (id, patch) => {
+    setLoteItems(items => items.map(it => it.id === id ? { ...it, ...patch } : it));
+  };
+  const addLoteItem = () => {
+    setLoteItems(items => [...items, { id: window.__newId?.() || crypto.randomUUID(), material_id:'', cantidad:'', precio:'', proveedor_id:null, responsable_id:null }]);
+  };
+  const removeLoteItem = (id) => {
+    setLoteItems(items => items.length > 1 ? items.filter(it => it.id !== id) : items);
   };
 
   const openEditMaterial = (m) => {
@@ -1031,6 +1050,102 @@ function MaterialesPage({ showToast }) {
     }
   };
 
+  // ── Handler de lote: registra N movimientos del mismo tipo en una sola
+  // operación. Usa los campos comunes del form (fecha, hora, observaciones,
+  // documento) + items individuales. Para proveedor/persona, si el flag
+  // "usar mismo X" está activo, se aplica el valor global a todos.
+  const handleSubmitMovLote = async (tipo) => {
+    const itemsValidos = loteItems.filter(it => it.material_id && parseFloat(it.cantidad) > 0);
+    if (itemsValidos.length === 0) {
+      showToast('Agregá al menos un material con cantidad', 'red');
+      return;
+    }
+    const hoy = new Date().toISOString().slice(0, 10);
+    if (form.fecha && form.fecha > hoy) {
+      showToast('No podés registrar un movimiento con fecha futura', 'red');
+      return;
+    }
+    if (tipo === 'salida' && loteComunes.usarMismaPersona && !loteComunes.responsable_id) {
+      // No es obligatorio responsable, pero advertir
+    }
+
+    // Validación de stock para SALIDA (sin forzar — para no complicar el lote)
+    if (tipo === 'salida') {
+      for (const it of itemsValidos) {
+        const mat = materiales.find(m => m.id === it.material_id);
+        if (!mat) continue;
+        const cant = parseFloat(it.cantidad);
+        const stockActual = Number(mat.stock_actual ?? 0);
+        if (cant > stockActual && !isAdmin && !['gerente'].includes(myRol)) {
+          showToast(`❌ Stock insuficiente: ${mat.nombre_material} tiene ${stockActual} ${mat.unidad}, pediste ${cant}. Quitá esa fila o pedí menos.`, 'red');
+          return;
+        }
+      }
+    }
+
+    let exitosos = 0;
+    let fallidos = 0;
+    const errores = [];
+
+    for (const it of itemsValidos) {
+      const material = materiales.find(m => m.id === it.material_id);
+      if (!material) { fallidos++; continue; }
+      const cantNum = parseFloat(it.cantidad) || 0;
+      const proveedor_id = tipo === 'ingreso'
+        ? (loteComunes.usarMismoProveedor ? loteComunes.proveedor_id : it.proveedor_id) || null
+        : null;
+      const responsable_id = tipo === 'salida'
+        ? (loteComunes.usarMismaPersona ? loteComunes.responsable_id : it.responsable_id) || null
+        : null;
+      try {
+        const movCreated = await movHook.create({
+          obra_id: obraId,
+          material_id: it.material_id,
+          fecha: form.fecha,
+          hora: form.hora,
+          tipo_movimiento: tipo === 'ingreso' ? 'entrada' : 'salida',
+          cantidad: cantNum,
+          unidad: material.unidad,
+          responsable_id,
+          proveedor_id,
+          documento_asociado: form.documento || null,
+          partida_id: null,
+          precio_unitario_real: parseFloat(it.precio) || null,
+          observaciones: form.observaciones || null,
+        });
+        try { await window.__logAudit?.({ action:'insert', table:'movimientos_materiales', recordId:movCreated?.id, newData:movCreated, reason:`${tipo} en LOTE de ${cantNum} ${material.unidad} de ${material.nombre_material}` }); } catch {}
+        // Stock optimist
+        const delta = tipo === 'ingreso' ? cantNum : -cantNum;
+        const nuevoStock = (material.stock_actual ?? 0) + delta;
+        const minimo = Number(material.stock_minimo || 0);
+        const nuevaAlerta = nuevoStock <= 0 ? 'agotado'
+          : minimo > 0 && nuevoStock <= minimo * 0.5 ? 'critico'
+          : minimo > 0 && nuevoStock <= minimo ? 'reponer'
+          : minimo > 0 && nuevoStock <= minimo * 1.2 ? 'cerca'
+          : 'ok';
+        await window.__db.materiales.update(it.material_id, {
+          stock_actual: nuevoStock,
+          alerta: nuevaAlerta,
+        });
+        exitosos++;
+      } catch (e) {
+        fallidos++;
+        errores.push(`${material?.nombre_material || it.material_id}: ${e?.message || e}`);
+      }
+    }
+    refresh();
+    if (fallidos === 0) {
+      showToast(`✓ Lote registrado: ${exitosos} ${tipo === 'ingreso' ? 'ingresos' : 'salidas'}`, 'green');
+    } else if (exitosos === 0) {
+      showToast(`✗ Falló el lote: ${errores[0] || 'sin detalles'}`, 'red');
+    } else {
+      showToast(`⚠ Lote parcial: ${exitosos} ok, ${fallidos} fallaron`, 'amber');
+    }
+    setModal(null);
+    setForm({});
+    setLoteItems([]);
+  };
+
   // Mapeo alerta → badge styling
   const ALERTA_STYLE = {
     ok:        { class: 'b-green',  label: 'OK' },
@@ -1335,126 +1450,246 @@ function MaterialesPage({ showToast }) {
       </div>
       )}
 
-      {/* Modal Ingreso */}
-      {modal==='ingreso' && <Modal title="Registrar Ingreso de Material" icon="arrowIn" onClose={()=>setModal(null)}>
+      {/* Modal Ingreso (lote) — tabla de N materiales con datos comunes arriba */}
+      {modal==='ingreso' && <Modal title="Registrar Ingreso de Materiales (lote)" icon="arrowIn" onClose={()=>setModal(null)} wide>
         <div className="g2">
           <div><label className="flabel">Fecha</label><input className="fi" type="date" max={new Date().toISOString().slice(0,10)} value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
           <div><label className="flabel">Hora</label><input className="fi" type="time" value={form.hora||''} onChange={e=>setForm({...form, hora:e.target.value})}/></div>
-          <div><label className="flabel">Material</label>
-            <select className="fi" value={form.material_id||''}
-              onChange={e=>{
-                const newId = e.target.value;
-                const mat = materiales.find(m => m.id === newId);
-                // Auto-fill precio sólo si el campo está vacío o es 0 (no pisar lo que el usuario haya escrito)
-                const currentPrecio = parseFloat(form.precio);
-                const autofill = mat && (!currentPrecio || currentPrecio === 0)
-                  ? Number(mat.precio_unitario_estimado || 0).toFixed(2)
-                  : form.precio;
-                setForm({...form, material_id: newId, precio: autofill });
-              }}>
-              <option value="">Selecciona...</option>
-              {materiales.map(m => <option key={m.id} value={m.id}>{m.nombre_material} ({m.unidad})</option>)}
-            </select>
-          </div>
-          <div><label className="flabel">Cantidad</label><input className="fi" type="number" min="0" step="0.01" value={form.cantidad||''} onChange={e=>setForm({...form, cantidad:e.target.value})}/></div>
-          <div><label className="flabel">Proveedor</label>
-            <select className="fi" value={form.proveedor_id||''} onChange={e=>setForm({...form, proveedor_id:e.target.value||null})}>
-              <option value="">— sin especificar —</option>
-              {provs.map(p => <option key={p.id} value={p.id}>{p.razon_social}</option>)}
-            </select>
-          </div>
-          <div><label className="flabel">Documento / Guía (n°)</label><input className="fi" placeholder="N° guía o factura" value={form.documento||''} onChange={e=>setForm({...form, documento:e.target.value})}/></div>
-          <div>
-            <label className="flabel">Precio Unitario (S/)</label>
-            <input className="fi" type="number" step="0.01" placeholder="0.00" value={form.precio||''} onChange={e=>setForm({...form, precio:e.target.value})}/>
-            <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:3 }}>
-              Auto-llenado del precio estimado del material. Edítalo si la compra fue distinta.
+          <div><label className="flabel">Documento / Guía (n°)</label><input className="fi" placeholder="N° guía o factura — se aplica a todos" value={form.documento||''} onChange={e=>setForm({...form, documento:e.target.value})}/></div>
+        </div>
+
+        {/* Banner: proveedor común */}
+        <div style={{ marginTop:12, padding:'10px 12px', background:'rgba(52,152,219,0.06)', border:'1px solid rgba(52,152,219,0.25)', borderRadius:6 }}>
+          <label style={{ display:'flex', alignItems:'center', gap:8, fontSize:12.5, color:'var(--tp)', cursor:'pointer' }}>
+            <input type="checkbox" checked={loteComunes.usarMismoProveedor}
+                   onChange={e => setLoteComunes(c => ({ ...c, usarMismoProveedor: e.target.checked }))}/>
+            <span><strong>Todos los materiales son del mismo proveedor</strong></span>
+          </label>
+          {loteComunes.usarMismoProveedor && (
+            <div style={{ marginTop:8 }}>
+              <select className="fi" value={loteComunes.proveedor_id || ''}
+                      onChange={e => setLoteComunes(c => ({ ...c, proveedor_id: e.target.value || null }))}>
+                <option value="">— Selecciona proveedor —</option>
+                {provs.map(p => <option key={p.id} value={p.id}>{p.razon_social}</option>)}
+              </select>
             </div>
+          )}
+          {!loteComunes.usarMismoProveedor && (
+            <div style={{ fontSize:11, color:'var(--tm)', marginTop:4 }}>
+              Cada fila tendrá su propio selector de proveedor.
+            </div>
+          )}
+        </div>
+
+        {/* Tabla de items */}
+        <div style={{ marginTop:14 }}>
+          <div style={{ fontSize:12, fontWeight:700, color:'var(--ts)', marginBottom:6, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+            <span>Materiales a ingresar ({loteItems.length})</span>
+            <button type="button" className="btn btn-ghost btn-xs" onClick={addLoteItem}>
+              <JxIcon name="plus" size={11}/> Agregar fila
+            </button>
+          </div>
+          <div style={{ overflowX:'auto' }}>
+            <table className="tbl" style={{ fontSize:12 }}>
+              <thead>
+                <tr>
+                  <th style={{ minWidth:240 }}>Material</th>
+                  <th style={{ width:90 }}>Unidad</th>
+                  <th style={{ width:110 }}>Cantidad *</th>
+                  <th style={{ width:110 }}>Precio S/</th>
+                  {!loteComunes.usarMismoProveedor && <th style={{ minWidth:160 }}>Proveedor</th>}
+                  <th style={{ width:40 }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {loteItems.map((it, idx) => {
+                  const mat = materiales.find(m => m.id === it.material_id);
+                  return (
+                    <tr key={it.id}>
+                      <td>
+                        <select className="fi" value={it.material_id} style={{ fontSize:12 }}
+                                onChange={e => {
+                                  const newMat = materiales.find(m => m.id === e.target.value);
+                                  updateLoteItem(it.id, {
+                                    material_id: e.target.value,
+                                    precio: newMat && !it.precio ? Number(newMat.precio_unitario_estimado || 0).toFixed(2) : it.precio,
+                                  });
+                                }}>
+                          <option value="">— Selecciona —</option>
+                          {materiales.map(m => <option key={m.id} value={m.id}>{m.nombre_material}</option>)}
+                        </select>
+                      </td>
+                      <td style={{ color:'var(--tm)' }}>{mat?.unidad || '—'}</td>
+                      <td><input className="fi" type="number" min="0" step="0.01" value={it.cantidad} style={{ fontSize:12 }}
+                                 onChange={e => updateLoteItem(it.id, { cantidad: e.target.value })}/></td>
+                      <td><input className="fi" type="number" step="0.01" placeholder="0.00" value={it.precio} style={{ fontSize:12 }}
+                                 onChange={e => updateLoteItem(it.id, { precio: e.target.value })}/></td>
+                      {!loteComunes.usarMismoProveedor && (
+                        <td>
+                          <select className="fi" value={it.proveedor_id || ''} style={{ fontSize:12 }}
+                                  onChange={e => updateLoteItem(it.id, { proveedor_id: e.target.value || null })}>
+                            <option value="">—</option>
+                            {provs.map(p => <option key={p.id} value={p.id}>{p.razon_social}</option>)}
+                          </select>
+                        </td>
+                      )}
+                      <td>
+                        {loteItems.length > 1 && (
+                          <button type="button" className="btn btn-ghost btn-xs" title="Quitar fila"
+                                  onClick={() => removeLoteItem(it.id)} style={{ color:'var(--red)' }}>
+                            <JxIcon name="x" size={11}/>
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         </div>
-        <div style={{marginTop:14}}><label className="flabel">Observaciones</label><textarea className="fi" value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})} placeholder="Notas adicionales…"/></div>
+
+        <div style={{ marginTop:14 }}>
+          <label className="flabel">Observaciones (se aplica a todos)</label>
+          <textarea className="fi" value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})} placeholder="Notas adicionales del lote completo…"/>
+        </div>
         <div className="modal-actions">
           <button className="btn btn-ghost" onClick={()=>setModal(null)}>Cancelar</button>
-          <button className="btn btn-amber" onClick={()=>handleSubmitMovimiento('ingreso')}><JxIcon name="check" size={13}/>Registrar Ingreso</button>
+          <button className="btn btn-amber" onClick={()=>handleSubmitMovLote('ingreso')}>
+            <JxIcon name="check" size={13}/>Registrar Lote ({loteItems.filter(it => it.material_id && parseFloat(it.cantidad) > 0).length})
+          </button>
         </div>
       </Modal>}
 
-      {/* Modal Salida */}
-      {modal==='salida' && <Modal title="Registrar Salida de Material" icon="arrowOut" onClose={()=>setModal(null)}>
-        <div className="g2">
-          <div><label className="flabel">Fecha</label><input className="fi" type="date" max={new Date().toISOString().slice(0,10)} value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
-          <div><label className="flabel">Hora</label><input className="fi" type="time" value={form.hora||''} onChange={e=>setForm({...form, hora:e.target.value})}/></div>
-          <div><label className="flabel">Material</label>
-            <select className="fi" value={form.material_id||''} onChange={e=>setForm({...form, material_id:e.target.value})}>
-              <option value="">Selecciona...</option>
-              {materiales.map(m => <option key={m.id} value={m.id}>{m.nombre_material} ({m.unidad}) · stock: {m.stock_actual}</option>)}
-            </select>
+      {/* Modal Salida (lote) — tabla de N materiales con persona común */}
+      {modal==='salida' && (() => {
+        const personalActivo = personal.filter(p => {
+          if (p.estado !== 'activo') return false;
+          const hoy = new Date().toISOString().slice(0, 10);
+          if (p.fecha_ingreso && String(p.fecha_ingreso) > hoy) return false;
+          if (p.obra_id && obraId && p.obra_id !== obraId) return false;
+          return true;
+        });
+        return (
+        <Modal title="Registrar Salida de Materiales (lote)" icon="arrowOut" onClose={()=>setModal(null)} wide>
+          <div className="g2">
+            <div><label className="flabel">Fecha</label><input className="fi" type="date" max={new Date().toISOString().slice(0,10)} value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
+            <div><label className="flabel">Hora</label><input className="fi" type="time" value={form.hora||''} onChange={e=>setForm({...form, hora:e.target.value})}/></div>
+            <div><label className="flabel">Documento / Vale (n°)</label><input className="fi" placeholder="N° vale de salida" value={form.documento||''} onChange={e=>setForm({...form, documento:e.target.value})}/></div>
           </div>
-          <div><label className="flabel">Cantidad</label><input className="fi" type="number" min="0" step="0.01" value={form.cantidad||''} onChange={e=>setForm({...form, cantidad:e.target.value})}/></div>
-          <div><label className="flabel">Responsable</label>
-            <select className="fi" value={form.responsable_id||''} onChange={e=>setForm({...form, responsable_id:e.target.value||null})}>
-              <option value="">— sin especificar —</option>
-              {personal
-                .filter(p => {
-                  if (p.estado !== 'activo') return false;
-                  const hoy = new Date().toISOString().slice(0, 10);
-                  if (p.fecha_ingreso && String(p.fecha_ingreso) > hoy) return false;
-                  if (p.obra_id && obraId && p.obra_id !== obraId) return false;
-                  return true;
-                })
-                .map(p => <option key={p.id} value={p.id}>{p.nombres} {p.apellidos} · {p.cargo}</option>)}
-            </select>
-            <div style={{ fontSize:10, color:'var(--tm)', marginTop:4 }}>
-              Solo trabajadores activos de la obra que ya ingresaron.
-            </div>
-          </div>
-          <div><label className="flabel">Frente / Zona</label><input className="fi" placeholder="Ej: Frente A, Piso 2" value={form.frente_zona||''} onChange={e=>setForm({...form, frente_zona:e.target.value})}/></div>
-          <div><label className="flabel">Stock Disponible</label>
-            {matSeleccionado ? (
-              <div style={{background:matSeleccionado.stock_actual >= (parseFloat(form.cantidad)||0) ? 'var(--green-l)' : 'var(--red-l)', border:`1px solid ${matSeleccionado.stock_actual >= (parseFloat(form.cantidad)||0) ? 'rgba(46,204,113,.2)' : 'rgba(231,76,60,.2)'}`, borderRadius:6, padding:'10px 13px', fontSize:13, color: matSeleccionado.stock_actual >= (parseFloat(form.cantidad)||0) ? 'var(--green)' : 'var(--red)', fontWeight:600}}>
-                {matSeleccionado.stock_actual >= (parseFloat(form.cantidad)||0) ? '✓' : '⚠'} {matSeleccionado.stock_actual} {matSeleccionado.unidad} disponibles
-              </div>
-            ) : <div className="fi" style={{color:'var(--tm)'}}>—</div>}
-          </div>
-          <div style={{ gridColumn:'1/-1' }}>
-            <label className="flabel">Partida (¿a qué se va a usar?)</label>
-            <select className="fi" value={form.partida_id||''} onChange={e=>setForm({...form, partida_id:e.target.value||null})}>
-              <option value="">— Asignar después / no aplica —</option>
-              {partidasSugeridas.length > 0 && (
-                <optgroup label="🎯 Partidas que usan este material">
-                  {partidasSugeridas.map(({ partida, presup, usado, pct, insumo }) => (
-                    <option key={partida.id} value={partida.id}>
-                      {partida.codigo_delfin} — {partida.nombre_partida?.slice(0,55)} · {usado.toFixed(0)}/{presup.toFixed(0)} {insumo.unidad} ({pct.toFixed(0)}%)
-                    </option>
+
+          {/* Banner: persona/responsable común */}
+          <div style={{ marginTop:12, padding:'10px 12px', background:'rgba(242,140,40,0.08)', border:'1px solid rgba(242,140,40,0.3)', borderRadius:6 }}>
+            <label style={{ display:'flex', alignItems:'center', gap:8, fontSize:12.5, color:'var(--tp)', cursor:'pointer' }}>
+              <input type="checkbox" checked={loteComunes.usarMismaPersona}
+                     onChange={e => setLoteComunes(c => ({ ...c, usarMismaPersona: e.target.checked }))}/>
+              <span><strong>Todos los materiales los retira la misma persona</strong></span>
+            </label>
+            {loteComunes.usarMismaPersona && (
+              <div style={{ marginTop:8 }}>
+                <select className="fi" value={loteComunes.responsable_id || ''}
+                        onChange={e => setLoteComunes(c => ({ ...c, responsable_id: e.target.value || null }))}>
+                  <option value="">— Selecciona persona / subcontrato —</option>
+                  {personalActivo.map(p => (
+                    <option key={p.id} value={p.id}>{p.nombres} {p.apellidos} · {p.cargo}</option>
                   ))}
-                </optgroup>
-              )}
-              {partidasObra.length > 0 && (
-                <optgroup label="Otras partidas activas">
-                  {partidasObra
-                    .filter(p => !partidasSugeridas.find(ps => ps.partida.id === p.id))
-                    .slice(0, 50)
-                    .map(p => (
-                      <option key={p.id} value={p.id}>
-                        {p.codigo_delfin} — {p.nombre_partida?.slice(0,55)}
-                      </option>
-                    ))}
-                </optgroup>
-              )}
-            </select>
-            {partidasSugeridas.length > 0 && form.material_id && (
+                </select>
+                <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:4 }}>
+                  Solo trabajadores activos de la obra que ya ingresaron.
+                </div>
+              </div>
+            )}
+            {!loteComunes.usarMismaPersona && (
               <div style={{ fontSize:11, color:'var(--tm)', marginTop:4 }}>
-                💡 Hay {partidasSugeridas.length} partida{partidasSugeridas.length>1?'s':''} que usa{partidasSugeridas.length===1?'':'n'} este material según el APU.
+                Cada fila tendrá su propio selector de responsable.
               </div>
             )}
           </div>
-        </div>
-        <div style={{marginTop:14}}><label className="flabel">Observaciones</label><textarea className="fi" value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})} placeholder="Notas adicionales…"/></div>
-        <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={()=>setModal(null)}>Cancelar</button>
-          <button className="btn btn-amber" onClick={()=>handleSubmitMovimiento('salida')}><JxIcon name="check" size={13}/>Registrar Salida</button>
-        </div>
-      </Modal>}
+
+          {/* Tabla de items */}
+          <div style={{ marginTop:14 }}>
+            <div style={{ fontSize:12, fontWeight:700, color:'var(--ts)', marginBottom:6, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+              <span>Materiales a sacar ({loteItems.length})</span>
+              <button type="button" className="btn btn-ghost btn-xs" onClick={addLoteItem}>
+                <JxIcon name="plus" size={11}/> Agregar fila
+              </button>
+            </div>
+            <div style={{ overflowX:'auto' }}>
+              <table className="tbl" style={{ fontSize:12 }}>
+                <thead>
+                  <tr>
+                    <th style={{ minWidth:240 }}>Material</th>
+                    <th style={{ width:90 }}>Unidad</th>
+                    <th style={{ width:110 }}>Cantidad *</th>
+                    <th style={{ width:110 }}>Stock</th>
+                    {!loteComunes.usarMismaPersona && <th style={{ minWidth:180 }}>Quien retira</th>}
+                    <th style={{ width:40 }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {loteItems.map((it) => {
+                    const mat = materiales.find(m => m.id === it.material_id);
+                    const cantSolicitada = parseFloat(it.cantidad) || 0;
+                    const stock = Number(mat?.stock_actual ?? 0);
+                    const stockOk = stock >= cantSolicitada;
+                    return (
+                      <tr key={it.id}>
+                        <td>
+                          <select className="fi" value={it.material_id} style={{ fontSize:12 }}
+                                  onChange={e => updateLoteItem(it.id, { material_id: e.target.value })}>
+                            <option value="">— Selecciona —</option>
+                            {materiales.map(m => <option key={m.id} value={m.id}>{m.nombre_material}</option>)}
+                          </select>
+                        </td>
+                        <td style={{ color:'var(--tm)' }}>{mat?.unidad || '—'}</td>
+                        <td><input className="fi" type="number" min="0" step="0.01" value={it.cantidad} style={{ fontSize:12 }}
+                                   onChange={e => updateLoteItem(it.id, { cantidad: e.target.value })}/></td>
+                        <td>
+                          {mat ? (
+                            <span style={{ color: stockOk ? 'var(--green)' : 'var(--red)', fontWeight: 600, fontSize: 11 }}>
+                              {stockOk ? '✓' : '⚠'} {stock}
+                            </span>
+                          ) : <span style={{ color:'var(--tm)' }}>—</span>}
+                        </td>
+                        {!loteComunes.usarMismaPersona && (
+                          <td>
+                            <select className="fi" value={it.responsable_id || ''} style={{ fontSize:12 }}
+                                    onChange={e => updateLoteItem(it.id, { responsable_id: e.target.value || null })}>
+                              <option value="">—</option>
+                              {personalActivo.map(p => (
+                                <option key={p.id} value={p.id}>{p.nombres} {p.apellidos}</option>
+                              ))}
+                            </select>
+                          </td>
+                        )}
+                        <td>
+                          {loteItems.length > 1 && (
+                            <button type="button" className="btn btn-ghost btn-xs" title="Quitar fila"
+                                    onClick={() => removeLoteItem(it.id)} style={{ color:'var(--red)' }}>
+                              <JxIcon name="x" size={11}/>
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div style={{ marginTop:14 }}>
+            <label className="flabel">Observaciones (se aplica a todos)</label>
+            <textarea className="fi" value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})} placeholder="Notas adicionales del lote…"/>
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={()=>setModal(null)}>Cancelar</button>
+            <button className="btn btn-amber" onClick={()=>handleSubmitMovLote('salida')}>
+              <JxIcon name="check" size={13}/>Registrar Salida ({loteItems.filter(it => it.material_id && parseFloat(it.cantidad) > 0).length})
+            </button>
+          </div>
+        </Modal>);
+      })()}
 
       {/* Modal: opciones de sincronización (paso previo) */}
       {modal === 'syncOpts' && (
