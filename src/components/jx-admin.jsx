@@ -1905,28 +1905,30 @@ function SistemaTab({ showToast }) {
               Vuelve a admin con un click. Al salir de modo prueba, se restaura automáticamente.
             </div>
             <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
-              {[
-                { v:null, l:'👑 Admin (yo)', cls:'b-amber' },
-                { v:'gerente', l:'Gerente', cls:'b-blue' },
-                { v:'ingeniero_residente', l:'Ing. Residente', cls:'b-blue' },
-                { v:'supervisor', l:'Supervisor', cls:'b-gray' },
-                { v:'almacenero', l:'Almacenero', cls:'b-gray' },
-                { v:'asistente_admin', l:'Asistente Admin', cls:'b-gray' },
-                { v:'solo_lectura', l:'Solo lectura', cls:'b-gray' },
-              ].map(r => {
-                const active = (appMode.roleOverride || null) === r.v;
-                return (
-                  <button key={r.v || 'admin'}
-                    className={`btn btn-sm ${active ? 'btn-amber' : 'btn-ghost'}`}
-                    disabled={active}
-                    onClick={() => {
-                      appMode.setRoleOverride(r.v);
-                      showToast?.(r.v ? `Viendo como ${r.l}` : 'Volviste a admin', 'amber');
-                    }}>
-                    {r.l}
-                  </button>
-                );
-              })}
+              {(() => {
+                const allKeys = getAllRolKeys(); // built-in (no ocultos) + custom
+                const labels = getAllRolLabels();
+                // Botón inicial: volver a admin real (sin override). Después,
+                // todos los roles disponibles excepto 'admin' (ya somos admin).
+                const buttons = [
+                  { v: null, l: '👑 Admin (yo)' },
+                  ...allKeys.filter(k => k !== 'admin').map(k => ({ v: k, l: labels[k] || k })),
+                ];
+                return buttons.map(r => {
+                  const active = (appMode.roleOverride || null) === r.v;
+                  return (
+                    <button key={r.v || 'admin'}
+                      className={`btn btn-sm ${active ? 'btn-amber' : 'btn-ghost'}`}
+                      disabled={active}
+                      onClick={() => {
+                        appMode.setRoleOverride(r.v);
+                        showToast?.(r.v ? `Viendo como ${r.l}` : 'Volviste a admin', 'amber');
+                      }}>
+                      {r.l}
+                    </button>
+                  );
+                });
+              })()}
             </div>
           </div>
         )}

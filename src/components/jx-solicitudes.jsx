@@ -419,9 +419,12 @@ function SolicitudesPage({ showToast }) {
 }
 
 // ─── RequestChangeModal — modal compartido para "Solicitar Cambio" ───
-// Recibe: { table, record, fields: [{key, label, type?, options?}], onClose, showToast }
+// Recibe: { table, record, fields: [{key, label, type?, options?}], onClose, showToast, allowDelete? }
 // Se usa desde Materiales / Herramientas / Personal / Proveedores.
-function RequestChangeModal({ table, record, recordLabel, fields, onClose, showToast }) {
+// Si allowDelete=true, expone tab "Eliminar registro" que crea un change_request
+// con proposed_changes.deleted_at — al aprobarlo, applyChange hace soft-delete.
+function RequestChangeModal({ table, record, recordLabel, fields, onClose, showToast, allowDelete = false }) {
+  const [mode, setMode] = uSS('edit'); // 'edit' | 'delete'
   const [field, setField] = uSS(fields[0]?.key || '');
   const [newValue, setNewValue] = uSS('');
   const [reason, setReason] = uSS('');
@@ -430,7 +433,7 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
   const fieldDef = fields.find(f => f.key === field) || fields[0];
   const oldValue = record?.[field];
 
-  const handleSubmit = async () => {
+  const submitEdit = async () => {
     if (!field) { showToast('Selecciona un campo', 'red'); return; }
     if (newValue === '' || newValue === null || newValue === undefined) {
       showToast('Indica el valor propuesto', 'red'); return;
@@ -459,56 +462,117 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
     }
   };
 
+  const submitDelete = async () => {
+    if (!reason || reason.trim().length < 10) {
+      showToast('El motivo debe tener al menos 10 caracteres', 'red'); return;
+    }
+    setBusy(true);
+    try {
+      await window.__changeRequests.create({
+        table,
+        recordId: record.id,
+        recordLabel: recordLabel || record.id,
+        proposedChanges: { deleted_at: { old: null, new: new Date().toISOString() } },
+        reason: reason.trim(),
+      });
+      showToast('Solicitud de eliminación enviada al admin', 'green');
+      onClose();
+    } catch (e) {
+      showToast('Error: ' + (e?.message || e), 'red');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
-    <Modal title="Solicitar Cambio" icon="alert" onClose={onClose}>
+    <Modal title={mode === 'delete' ? 'Solicitar Eliminación' : 'Solicitar Cambio'} icon={mode === 'delete' ? 'trash' : 'alert'} onClose={onClose}>
       <div style={{ marginBottom: 10 }}>
         <div style={{ fontSize: 11, color: 'var(--tm)', marginBottom: 4 }}>Registro:</div>
         <div style={{ fontSize: 13, color: 'var(--tp)', fontWeight: 600 }}>{recordLabel || record?.id}</div>
       </div>
 
-      <div className="g2">
-        <div>
-          <label className="flabel">Campo a modificar *</label>
-          <select className="fi" value={field} onChange={e => { setField(e.target.value); setNewValue(''); }}>
-            {fields.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
-          </select>
+      {allowDelete && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 12, borderBottom: '1px solid var(--bd)', paddingBottom: 8 }}>
+          <button
+            type="button"
+            className={mode === 'edit' ? 'btn btn-amber btn-sm' : 'btn btn-ghost btn-sm'}
+            onClick={() => setMode('edit')}
+            disabled={busy}
+          >
+            <JxIcon name="edit" size={12} /> Modificar campo
+          </button>
+          <button
+            type="button"
+            className={mode === 'delete' ? 'btn btn-red btn-sm' : 'btn btn-ghost btn-sm'}
+            onClick={() => setMode('delete')}
+            disabled={busy}
+          >
+            <JxIcon name="trash" size={12} /> Solicitar eliminación
+          </button>
         </div>
-        <div>
-          <label className="flabel">Valor actual</label>
-          <input className="fi" disabled value={oldValue == null ? '—' : String(oldValue)} />
-        </div>
-        <div style={{ gridColumn: '1/-1' }}>
-          <label className="flabel">Valor propuesto *</label>
-          {fieldDef?.options ? (
-            <select className="fi" value={newValue} onChange={e => setNewValue(e.target.value)}>
-              <option value="">— Selecciona —</option>
-              {fieldDef.options.map(o => (
-                <option key={o.value ?? o} value={o.value ?? o}>{o.label ?? o}</option>
-              ))}
+      )}
+
+      {mode === 'edit' ? (
+        <div className="g2">
+          <div>
+            <label className="flabel">Campo a modificar *</label>
+            <select className="fi" value={field} onChange={e => { setField(e.target.value); setNewValue(''); }}>
+              {fields.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
             </select>
-          ) : (
-            <input
-              className="fi"
-              type={fieldDef?.type === 'number' ? 'number' : 'text'}
-              step={fieldDef?.type === 'number' ? '0.01' : undefined}
-              placeholder="Nuevo valor"
-              value={newValue}
-              onChange={e => setNewValue(e.target.value)}
-            />
-          )}
+          </div>
+          <div>
+            <label className="flabel">Valor actual</label>
+            <input className="fi" disabled value={oldValue == null ? '—' : String(oldValue)} />
+          </div>
+          <div style={{ gridColumn: '1/-1' }}>
+            <label className="flabel">Valor propuesto *</label>
+            {fieldDef?.options ? (
+              <select className="fi" value={newValue} onChange={e => setNewValue(e.target.value)}>
+                <option value="">— Selecciona —</option>
+                {fieldDef.options.map(o => (
+                  <option key={o.value ?? o} value={o.value ?? o}>{o.label ?? o}</option>
+                ))}
+              </select>
+            ) : (
+              <input
+                className="fi"
+                type={fieldDef?.type === 'number' ? 'number' : 'text'}
+                step={fieldDef?.type === 'number' ? '0.01' : undefined}
+                placeholder="Nuevo valor"
+                value={newValue}
+                onChange={e => setNewValue(e.target.value)}
+              />
+            )}
+          </div>
+          <div style={{ gridColumn: '1/-1' }}>
+            <label className="flabel">Motivo * (mín. 10 caracteres)</label>
+            <textarea className="fi" rows={3} placeholder="Explica por qué este registro debe cambiar…"
+                      value={reason} onChange={e => setReason(e.target.value)} />
+          </div>
         </div>
-        <div style={{ gridColumn: '1/-1' }}>
-          <label className="flabel">Motivo * (mín. 10 caracteres)</label>
-          <textarea className="fi" rows={3} placeholder="Explica por qué este registro debe cambiar…"
+      ) : (
+        <div>
+          <div style={{ background: 'rgba(231,76,60,0.08)', border: '1px solid rgba(231,76,60,0.25)', borderRadius: 6, padding: 10, marginBottom: 12, fontSize: 12, color: 'var(--ts)' }}>
+            <strong style={{ color: '#EF6B5E' }}>⚠ Solicitud de eliminación</strong>
+            <div style={{ marginTop: 4 }}>El registro quedará marcado como eliminado (soft-delete) cuando el admin apruebe. Los movimientos históricos no se ven afectados.</div>
+          </div>
+          <label className="flabel">Motivo de la eliminación * (mín. 10 caracteres)</label>
+          <textarea className="fi" rows={3} placeholder="Explica por qué este registro debe eliminarse…"
                     value={reason} onChange={e => setReason(e.target.value)} />
         </div>
-      </div>
+      )}
 
       <div className="modal-actions">
         <button className="btn btn-ghost" disabled={busy} onClick={onClose}>Cancelar</button>
-        <button className="btn btn-amber" disabled={busy} onClick={handleSubmit}>
-          <JxIcon name="check" size={13} />{busy ? 'Enviando…' : 'Enviar Solicitud'}
-        </button>
+        {mode === 'delete' ? (
+          <button className="btn btn-red" disabled={busy} onClick={submitDelete}>
+            <JxIcon name="trash" size={13} />{busy ? 'Enviando…' : 'Enviar Solicitud de Eliminación'}
+          </button>
+        ) : (
+          <button className="btn btn-amber" disabled={busy} onClick={submitEdit}>
+            <JxIcon name="check" size={13} />{busy ? 'Enviando…' : 'Enviar Solicitud'}
+          </button>
+        )}
       </div>
     </Modal>
   );

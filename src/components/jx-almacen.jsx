@@ -1773,6 +1773,7 @@ function MaterialesPage({ showToast }) {
           table="materiales"
           record={requestTarget}
           recordLabel={requestTarget.nombre_material}
+          allowDelete
           fields={[
             { key: 'nombre_material', label: 'Nombre del material' },
             { key: 'categoria', label: 'Categoría' },
@@ -2563,6 +2564,7 @@ function HerramientasPage({ showToast }) {
           table="herramientas"
           record={requestTarget}
           recordLabel={requestTarget.nombre_herramienta}
+          allowDelete
           fields={[
             { key: 'nombre_herramienta', label: 'Nombre' },
             { key: 'marca', label: 'Marca' },
@@ -2945,6 +2947,7 @@ function PersonalPage({ showToast }) {
           table="personal"
           record={requestTarget}
           recordLabel={`${requestTarget.nombres || ''} ${requestTarget.apellidos || ''}`.trim() || requestTarget.dni}
+          allowDelete
           fields={[
             { key: 'nombres', label: 'Nombres' },
             { key: 'apellidos', label: 'Apellidos' },
