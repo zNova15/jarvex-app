@@ -556,7 +556,11 @@ window.addEventListener('online', () => {
 // volvemos a 60s. Esto evita saturar la red cuando hay problemas de conectividad.
 let _periodicId = null;
 let _syncFailures = 0;
-const MIN_INTERVAL_MS = 60_000;
+// Polling de fallback. Realtime cubre la mayoría de los casos en vivo;
+// este interval solo tira datos pendientes en cola y cierra brechas si el
+// canal Realtime cae. Bajamos a 30s (antes 60s) para que en el peor caso
+// los cambios "lleguen tarde" igual se sientan rápidos.
+const MIN_INTERVAL_MS = 30_000;
 const MAX_INTERVAL_MS = 600_000;
 
 function nextSyncDelay() {
@@ -600,5 +604,13 @@ if (typeof window !== 'undefined') {
     if (document.visibilityState === 'visible' && navigator.onLine) {
       setTimeout(syncAll, 500);
     }
+  });
+  // Re-sincronizar cuando vuelve la conexión: pueden haber registros en
+  // pending_create/update que no se subieron mientras estábamos offline,
+  // y el server pudo recibir cambios que nuestra cola realtime perdió.
+  window.addEventListener('online', () => {
+    // Reset del backoff: el server ya no es el problema
+    _syncFailures = 0;
+    setTimeout(syncAll, 500);
   });
 }

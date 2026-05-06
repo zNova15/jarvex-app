@@ -148,7 +148,7 @@ const NAV = [
   { id: 'audit-log', label: 'Auditoría', icon: 'shield' },
 ];
 
-function Sidebar({ current, onNav, collapsed, onToggle }) {
+function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle', onReconnectRealtime }) {
   const appMode = window.__useAppMode ? window.__useAppMode() : { mode: 'edicion', isPrueba: false, isEdicion: true, isProduccion: false, isImpersonating: false, roleOverride: null, clearRoleOverride: ()=>{} };
   const { mode, isPrueba, isEdicion, isProduccion, isImpersonating, roleOverride, clearRoleOverride } = appMode;
   const [hovered, setHovered] = useState(null);
@@ -437,6 +437,9 @@ function Sidebar({ current, onNav, collapsed, onToggle }) {
             title={isPrueba ? 'Modo prueba — datos demo' : isEdicion ? 'Modo edición sobre data real' : 'Modo producción'}>
             {isPrueba ? '🧪 MODO PRUEBA' : isEdicion ? '✏️ EDICIÓN' : '🔒 PRODUCCIÓN'}
           </div>
+
+          {/* Indicador de estado realtime */}
+          <RealtimeStatusBadge status={realtimeStatus} onReconnect={onReconnectRealtime} />
           {/* Banner impersonación: visible cuando admin está viendo como otro rol */}
           {isImpersonating && (
             <div style={{
@@ -509,6 +512,46 @@ function Sidebar({ current, onNav, collapsed, onToggle }) {
       </div>
     </aside>
     </>
+  );
+}
+
+// ─── RealtimeStatusBadge ───────────────────────────────────────────
+// Muestra el estado del canal Supabase Realtime debajo del badge de modo.
+// connected → 🟢 EN VIVO (cambios llegan al instante)
+// connecting → 🟡 CONECTANDO… (suscripción en curso)
+// error      → 🔴 SIN REALTIME (canal cayó, click para reconectar)
+// offline    → ⚪ SIN CONEXIÓN (browser sin red)
+// idle       → no se renderiza (todavía no hay user)
+function RealtimeStatusBadge({ status, onReconnect }) {
+  if (!status || status === 'idle') return null;
+  const cfg = {
+    connected:  { icon: '🟢', label: 'EN VIVO',         bg: 'rgba(46,204,113,0.12)',  fg: '#2ECC71',  border: 'rgba(46,204,113,0.4)',  title: 'Realtime conectado. Los cambios entre dispositivos llegan al instante.' },
+    connecting: { icon: '🟡', label: 'CONECTANDO…',     bg: 'rgba(242,183,5,0.12)',   fg: '#F2B705',  border: 'rgba(242,183,5,0.4)',   title: 'Suscribiendo al canal de cambios en vivo…' },
+    error:      { icon: '🔴', label: 'SIN REALTIME',    bg: 'rgba(231,76,60,0.12)',   fg: '#E74C3C',  border: 'rgba(231,76,60,0.4)',   title: 'El canal cayó. Los cambios pueden tardar hasta 30s. Click para reintentar.' },
+    offline:    { icon: '⚪', label: 'SIN CONEXIÓN',    bg: 'rgba(149,165,166,0.12)', fg: '#95A5A6',  border: 'rgba(149,165,166,0.4)', title: 'Tu dispositivo está offline. Los cambios se sincronizan al volver online.' },
+  }[status] || null;
+  if (!cfg) return null;
+  const clickable = status === 'error' && typeof onReconnect === 'function';
+  return (
+    <div
+      onClick={clickable ? onReconnect : undefined}
+      title={cfg.title + (clickable ? ' (Click para reconectar)' : '')}
+      style={{
+        marginTop: 6,
+        padding: '4px 8px',
+        background: cfg.bg,
+        color: cfg.fg,
+        border: `1px solid ${cfg.border}`,
+        borderRadius: 6,
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: 0.4,
+        textAlign: 'center',
+        cursor: clickable ? 'pointer' : 'default',
+        userSelect: 'none',
+      }}>
+      {cfg.icon} {cfg.label}
+    </div>
   );
 }
 

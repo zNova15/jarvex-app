@@ -857,7 +857,8 @@ function App() {
 
   return (
     <div style={{ display:'flex', height:'100vh', overflow:'hidden' }}>
-      <Sidebar current={page} onNav={p=>{setPage(p);}} collapsed={collapsed} onToggle={()=>setCollapsed(c=>!c)}/>
+      <Sidebar current={page} onNav={p=>{setPage(p);}} collapsed={collapsed} onToggle={()=>setCollapsed(c=>!c)}
+               realtimeStatus={notifs.realtimeStatus} onReconnectRealtime={notifs.forceReconnect}/>
       <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', minWidth:0 }}>
         <Header page={page}
                 onToggleSidebar={()=>setCollapsed(c=>!c)}
