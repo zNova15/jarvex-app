@@ -142,6 +142,10 @@ function MaterialesPage({ showToast }) {
   // Supabase Storage (cuando ya se subió); blob_url es objectURL local
   // mientras está pendiente. Se rellena al cargar materiales/evidencias.
   const [fotosMap, setFotosMap] = uS(() => new Map());
+  // Flag busy para deshabilitar el botón Guardar mientras se procesa el
+  // submit. Sin esto, doble click podía disparar 2 submits simultáneos
+  // (1 update + 1 create si el primer await ya había reset editingId).
+  const [busyMat, setBusyMat] = uS(false);
   // Filtros + categorías custom
   const [filtroCategoria, setFiltroCategoria] = uS('todas');
   const [filtroEstado, setFiltroEstado] = uS('todos');
@@ -785,10 +789,12 @@ function MaterialesPage({ showToast }) {
   };
 
   const handleSubmitMaterial = async () => {
+    if (busyMat) return; // doble click guard
     if (!form.nombre_material || !form.unidad) {
       showToast('Completa nombre y unidad', 'red');
       return;
     }
+    setBusyMat(true);
     try {
       // Helper de alerta vive en src/lib/stock-utils.js (testeable, reusable).
 
@@ -866,6 +872,8 @@ function MaterialesPage({ showToast }) {
       closeModalMaterial();
     } catch (e) {
       showToast('Error: ' + e.message, 'red');
+    } finally {
+      setBusyMat(false);
     }
   };
 
@@ -2200,8 +2208,11 @@ function MaterialesPage({ showToast }) {
           </div>
         </div>
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={closeModalMaterial}>Cancelar</button>
-          <button className="btn btn-amber" onClick={handleSubmitMaterial}><JxIcon name="check" size={13}/>{editingId ? 'Guardar Cambios' : 'Crear Material'}</button>
+          <button className="btn btn-ghost" onClick={closeModalMaterial} disabled={busyMat}>Cancelar</button>
+          <button className="btn btn-amber" onClick={handleSubmitMaterial} disabled={busyMat}>
+            <JxIcon name="check" size={13}/>
+            {busyMat ? 'Guardando…' : (editingId ? 'Guardar Cambios' : 'Crear Material')}
+          </button>
         </div>
       </Modal>);
       })()}
@@ -2315,6 +2326,8 @@ function HerramientasPage({ showToast }) {
   const [foto, setFoto] = uS(null);
   // Map<herramienta_id, { url, isRemote }>: thumbnails para la lista.
   const [fotosMap, setFotosMap] = uS(() => new Map());
+  // Doble click guard
+  const [busyHerr, setBusyHerr] = uS(false);
   const [requestTarget, setRequestTarget] = uS(null);
 
   uE(() => {
@@ -2633,10 +2646,12 @@ function HerramientasPage({ showToast }) {
   };
 
   const handleSubmitHerr = async () => {
+    if (busyHerr) return; // doble click guard
     if (!form.nombre_herramienta) {
       showToast('Falta nombre', 'red');
       return;
     }
+    setBusyHerr(true);
     try {
       let herramientaId = editingId;
       if (editingId) {
@@ -2693,6 +2708,8 @@ function HerramientasPage({ showToast }) {
       closeModalHerr();
     } catch (e) {
       showToast('Error: ' + e.message, 'red');
+    } finally {
+      setBusyHerr(false);
     }
   };
 
@@ -3197,8 +3214,11 @@ function HerramientasPage({ showToast }) {
           </div>
         </div>
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={closeModalHerr}>Cancelar</button>
-          <button className="btn btn-amber" onClick={handleSubmitHerr}><JxIcon name="check" size={13}/>{editingId ? 'Guardar Cambios' : 'Crear Herramienta'}</button>
+          <button className="btn btn-ghost" onClick={closeModalHerr} disabled={busyHerr}>Cancelar</button>
+          <button className="btn btn-amber" onClick={handleSubmitHerr} disabled={busyHerr}>
+            <JxIcon name="check" size={13}/>
+            {busyHerr ? 'Guardando…' : (editingId ? 'Guardar Cambios' : 'Crear Herramienta')}
+          </button>
         </div>
       </Modal>}
 

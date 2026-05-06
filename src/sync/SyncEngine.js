@@ -212,25 +212,31 @@ const PUSH_PARALLELISM = 5;
 async function pushTablePending(tabla) {
   // Mantener el orden create → update → delete dentro de la misma tabla
   // para respetar dependencias (e.g. crear antes de actualizar).
-  const pendingCreates = await db[tabla]
+  // FILTRO IMPORTANTE: records con `demo: true` (modo prueba) NO se pushean
+  // — viven solo localmente. Sin este filtro, se intentaría updatear en el
+  // server registros que nunca se insertaron, causando 0 rows affected
+  // silencioso y pérdida de cambios.
+  const noEsDemo = (r) => r && r.demo !== true;
+
+  const pendingCreates = (await db[tabla]
     .where('sync_status').equals(SYNC_STATUS.PENDING_CREATE)
-    .toArray();
+    .toArray()).filter(noEsDemo);
 
   for (const record of pendingCreates) {
     await pushCreate(tabla, record);
   }
 
-  const pendingUpdates = await db[tabla]
+  const pendingUpdates = (await db[tabla]
     .where('sync_status').equals(SYNC_STATUS.PENDING_UPDATE)
-    .toArray();
+    .toArray()).filter(noEsDemo);
 
   for (const record of pendingUpdates) {
     await pushUpdate(tabla, record);
   }
 
-  const pendingDeletes = await db[tabla]
+  const pendingDeletes = (await db[tabla]
     .where('sync_status').equals(SYNC_STATUS.PENDING_DELETE)
-    .toArray();
+    .toArray()).filter(noEsDemo);
 
   for (const record of pendingDeletes) {
     await pushDelete(tabla, record);
@@ -272,32 +278,74 @@ async function pushCreate(tabla, record) {
 async function pushUpdate(tabla, record) {
   const { sync_status, last_synced_at, ...serverRecord } = record;
 
-  const { error, data: existing } = await supabase
+  // 1. Chequear si el record existe en server. Si NO existe (PGRST116 = no
+  //    rows o error similar), el record solo vive localmente — el cliente
+  //    cree que está sincronizado pero el server nunca lo recibió. En ese
+  //    caso, en lugar de intentar UPDATE (que daría 0 rows affected y
+  //    perdería el cambio), reseteamos sync_status a PENDING_CREATE para
+  //    que el próximo ciclo lo INSERTE. Resuelve casos donde almacenero
+  //    creó offline y nunca completó push.
+  const { error: selectErr, data: existing } = await supabase
     .from(tabla)
     .select('version')
     .eq('id', record.id)
-    .single();
+    .maybeSingle();
 
-  if (!error && existing && existing.version > record.version) {
-    // Conflicto: el servidor tiene una versión más nueva
+  if (!existing && (!selectErr || selectErr.code === 'PGRST116')) {
+    // Record no existe en server → reset a PENDING_CREATE.
+    // Próximo ciclo hará INSERT con el id local (no duplica porque mantiene
+    // el mismo id). Si el server no acepta el INSERT por unique constraint
+    // (idempotency_key) marcará synced igual.
+    console.warn(`[SyncEngine] ${tabla}/${record.id} no existe en server, reseteando a PENDING_CREATE`);
+    await db[tabla].update(record.id, {
+      sync_status: SYNC_STATUS.PENDING_CREATE,
+    });
+    return;
+  }
+
+  if (!selectErr && existing && existing.version > record.version) {
+    // Conflicto: el servidor tiene una versión más nueva → resolver manual
     await markConflict(tabla, record, existing);
     return;
   }
 
-  const { error: updateError } = await supabase
+  // 2. Hacer el UPDATE con .select() para saber cuántas filas se afectaron.
+  //    Si 0 filas (porque la version local no matchea con server), no
+  //    podemos asumir success — el record no se actualizó.
+  const { data: actualizadas, error: updateError } = await supabase
     .from(tabla)
     .update(serverRecord)
     .eq('id', record.id)
-    .eq('version', record.version - 1); // optimistic concurrency
+    .eq('version', record.version - 1) // optimistic concurrency
+    .select('id');
 
-  if (!updateError) {
-    await db[tabla].update(record.id, {
-      sync_status: SYNC_STATUS.SYNCED,
-      last_synced_at: new Date().toISOString(),
-    });
-  } else {
+  if (updateError) {
     await handleSyncError(tabla, record, 'update', updateError);
+    return;
   }
+
+  if (!actualizadas || actualizadas.length === 0) {
+    // 0 rows affected: la version del cliente no matchea la del server.
+    // Probablemente otro cliente actualizó este record entre nuestro pull
+    // anterior y este push. Marcamos como conflicto para resolver manual.
+    console.warn(`[SyncEngine] ${tabla}/${record.id} update afectó 0 filas (version desync) → marcando conflicto`);
+    if (existing) {
+      await markConflict(tabla, record, existing);
+    } else {
+      // Edge case: existing era null pero no tiramos PENDING_CREATE arriba
+      // (raro). Resetear a PENDING_UPDATE para reintentar.
+      await db[tabla].update(record.id, {
+        sync_status: SYNC_STATUS.PENDING_UPDATE,
+      });
+    }
+    return;
+  }
+
+  // Update exitoso — marcar como synced
+  await db[tabla].update(record.id, {
+    sync_status: SYNC_STATUS.SYNCED,
+    last_synced_at: new Date().toISOString(),
+  });
 }
 
 async function pushDelete(tabla, record) {
