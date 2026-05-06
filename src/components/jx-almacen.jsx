@@ -1,6 +1,7 @@
 import React from "react";
 import { calcAlerta } from "../lib/stock-utils.js";
 import { ocrAsistencia } from "../lib/ocr-asistencia.js";
+import { detectarEPP, esProbablementeEPP } from "../lib/epp-utils.js";
 import { usePagination } from "../hooks/usePagination.js";
 import { TablePagination } from "./jx-pagination.jsx";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
@@ -133,6 +134,14 @@ function MaterialesPage({ showToast }) {
   const [precioForm, setPrecioForm] = uS({ precio_nuevo:'', motivo:'manual', documento_ref:'', notas:'' });
   const [historialTarget, setHistorialTarget] = uS(null); // material para ver historial
   const [historialData, setHistorialData] = uS([]);
+  // Foto del material en edición/creación: { blob, url } — url es objectURL
+  // local para preview, se revoca al limpiar el modal o reemplazarla.
+  const [foto, setFoto] = uS(null);
+  // Map<material_id, { url_archivo?, blob_url? }>: fotos de cada material
+  // para mostrar thumbnail en la lista. url_archivo es la URL pública en
+  // Supabase Storage (cuando ya se subió); blob_url es objectURL local
+  // mientras está pendiente. Se rellena al cargar materiales/evidencias.
+  const [fotosMap, setFotosMap] = uS(() => new Map());
   // Filtros + categorías custom
   const [filtroCategoria, setFiltroCategoria] = uS('todas');
   const [filtroEstado, setFiltroEstado] = uS('todos');
@@ -202,6 +211,58 @@ function MaterialesPage({ showToast }) {
   // Proveedores desde Dexie directamente
   const [provs, setProvs] = uS([]);
   uE(() => { window.__db.proveedores.toArray().then(setProvs); }, [obraId]);
+
+  // Carga fotos de materiales (evidencias tipo 'foto_material' para esta obra)
+  // y construye el Map material_id → URL para mostrar thumbnails. Se actualiza
+  // cuando el sync trae cambios o cuando se guarda una nueva foto.
+  uE(() => {
+    if (!obraId) return;
+    let cancelled = false;
+    const blobUrlsLocales = []; // para revocar al desmontar
+    const cargar = async () => {
+      try {
+        const evidencias = await window.__db.evidencias
+          .where('obra_id').equals(obraId)
+          .filter(e => e.tipo_evidencia === 'foto_material' && !e.deleted_at && e.registro_relacionado_id)
+          .toArray();
+        // Si hay varias fotos por material, usamos la más reciente
+        evidencias.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+        const map = new Map();
+        for (const ev of evidencias) {
+          if (map.has(ev.registro_relacionado_id)) continue;
+          if (ev.url_archivo) {
+            map.set(ev.registro_relacionado_id, { url: ev.url_archivo, isRemote: true });
+          } else {
+            // Aún no se subió: tomamos el blob local
+            try {
+              const row = await window.__db.evidencias_blobs.get(ev.id);
+              if (row?.blob) {
+                const url = URL.createObjectURL(row.blob);
+                blobUrlsLocales.push(url);
+                map.set(ev.registro_relacionado_id, { url, isRemote: false });
+              }
+            } catch {}
+          }
+        }
+        if (!cancelled) setFotosMap(map);
+      } catch (e) {
+        console.warn('[fotos materiales]', e?.message || e);
+      }
+    };
+    cargar();
+    const onChange = (e) => {
+      const t = e?.detail?.tabla || e?.detail?.table;
+      if (!t || t === 'evidencias' || t === 'materiales') cargar();
+    };
+    window.addEventListener('jx_data_changed', onChange);
+    window.addEventListener('jarvex_master_updated', onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('jx_data_changed', onChange);
+      window.removeEventListener('jarvex_master_updated', onChange);
+      blobUrlsLocales.forEach(u => { try { URL.revokeObjectURL(u); } catch {} });
+    };
+  }, [obraId]);
 
   // Estado del form
   const [form, setForm] = uS({});
@@ -665,6 +726,33 @@ function MaterialesPage({ showToast }) {
     });
     setEditingId(m.id);
     setModal('editar');
+    // Foto: reseteamos. La existente del material se ve en la lista (thumbnail);
+    // si el user adjunta una nueva, reemplaza a la anterior al guardar.
+    if (foto?.url) try { URL.revokeObjectURL(foto.url); } catch {}
+    setFoto(null);
+  };
+
+  const handleFotoChange = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      showToast('Solo se permiten imágenes', 'red');
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      showToast('La foto supera los 8 MB', 'red');
+      return;
+    }
+    if (foto?.url) try { URL.revokeObjectURL(foto.url); } catch {}
+    setFoto({ blob: file, url: URL.createObjectURL(file) });
+  };
+
+  const closeModalMaterial = () => {
+    if (foto?.url) try { URL.revokeObjectURL(foto.url); } catch {}
+    setFoto(null);
+    setModal(null);
+    setEditingId(null);
+    setForm({});
   };
 
   const handleDeleteMaterial = async (m) => {
@@ -685,6 +773,7 @@ function MaterialesPage({ showToast }) {
     try {
       // Helper de alerta vive en src/lib/stock-utils.js (testeable, reusable).
 
+      let materialId = editingId;
       if (editingId) {
         // EDITAR — preserva stock_actual pero recalcula alerta con nuevos parámetros
         const oldData = materiales.find(m => m.id === editingId);
@@ -722,6 +811,7 @@ function MaterialesPage({ showToast }) {
           alerta: alertaInicial,
           estado: 'activo',
         });
+        materialId = created?.id;
         // Toast adicional si nace con alerta para que el usuario lo sepa
         if (alertaInicial === 'agotado') showToast(`⚠ "${form.nombre_material}" creado SIN STOCK — abajo del mínimo`, 'red');
         else if (alertaInicial === 'critico') showToast(`⚠ "${form.nombre_material}" en estado CRÍTICO desde el inicio`, 'red');
@@ -730,9 +820,31 @@ function MaterialesPage({ showToast }) {
         else showToast(`Material "${form.nombre_material}" creado`, 'green');
         try { await window.__logAudit?.({ action:'insert', table:'materiales', recordId:created?.id, newData:created }); } catch(e) {}
       }
-      setModal(null);
-      setForm({});
-      setEditingId(null);
+
+      // Foto: si el user adjuntó una, la guardamos como evidencia vinculada al
+      // material. EvidenceUploader (gatillado por SyncEngine) la subirá a
+      // Supabase Storage en el siguiente ciclo y poblará url_archivo.
+      if (foto?.blob && materialId) {
+        try {
+          await window.__saveEvidenciaLocal?.({
+            id: window.__newId(),
+            obra_id: obraId,
+            tipo_evidencia: 'foto_material',
+            modulo_relacionado: 'materiales',
+            registro_relacionado_id: materialId,
+            nombre_archivo: foto.blob.name || `material_${materialId}.jpg`,
+            mime_type: foto.blob.type || 'image/jpeg',
+            blob: foto.blob,
+            observaciones: `Foto referencial del material ${form.nombre_material}`,
+            fecha: new Date().toISOString().slice(0, 10),
+            created_by: auth?.profile?.id || null,
+          });
+        } catch (e) {
+          showToast('Material guardado, pero la foto falló: ' + (e?.message || e), 'amber');
+        }
+      }
+
+      closeModalMaterial();
     } catch (e) {
       showToast('Error: ' + e.message, 'red');
     }
@@ -1123,9 +1235,25 @@ function MaterialesPage({ showToast }) {
                 const stockColor = m.alerta === 'critico' ? 'var(--red)'
                   : m.alerta === 'sin_stock' ? 'var(--tm)'
                   : m.alerta === 'reponer' ? 'var(--yellow)' : 'var(--tp)';
+                const fotoMat = fotosMap.get(m.id);
                 return (
                   <tr key={m.id}>
-                    <td className="col-p">{m.nombre_material}</td>
+                    <td className="col-p">
+                      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                        {fotoMat ? (
+                          <img src={fotoMat.url} alt="foto"
+                               style={{ width:32, height:32, objectFit:'cover', borderRadius:4, border:'1px solid var(--bd)', flexShrink:0, cursor:'pointer' }}
+                               onClick={(e) => { e.stopPropagation(); window.open(fotoMat.url, '_blank'); }}
+                               title="Click para ampliar"/>
+                        ) : (
+                          <div style={{ width:32, height:32, borderRadius:4, background:'rgba(255,255,255,0.04)', border:'1px dashed var(--bd)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
+                               title="Sin foto">
+                            <JxIcon name="image" size={12} color="var(--tm)"/>
+                          </div>
+                        )}
+                        <span>{m.nombre_material}</span>
+                      </div>
+                    </td>
                     <td><span className="tag">{m.categoria || '—'}</span></td>
                     <td style={{ fontSize:11 }}>
                       {m.ubicacion_id
@@ -1631,7 +1759,31 @@ function MaterialesPage({ showToast }) {
           ? matsBase.filter(m => m.nombre.toLowerCase().includes(form.nombre_material.toLowerCase())).slice(0, 8)
           : [];
         return (
-        <Modal title={editingId ? 'Editar Material' : 'Nuevo Material'} icon="package" onClose={()=>{setModal(null); setEditingId(null); setForm({});}}>
+        <Modal title={editingId ? 'Editar Material' : 'Nuevo Material'} icon="package" onClose={closeModalMaterial}>
+        {/* Banner detector EPP — aparece cuando el nombre matchea palabras clave
+            de EPP. Sugiere al user marcar el registro como EPP en su categoría
+            (Opción 1: flag por categoría hasta que tengamos tabla separada). */}
+        {(() => {
+          const tipoEpp = detectarEPP(form.nombre_material);
+          if (!tipoEpp || form.categoria === 'EPP') return null;
+          return (
+            <div style={{ marginBottom: 10, padding: '10px 12px', background: 'rgba(242,183,5,0.08)', border: '1px solid rgba(242,183,5,0.4)', borderRadius: 6, display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+              <span style={{ fontSize: 18, lineHeight: 1 }}>🦺</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: '#F2B705', marginBottom: 2 }}>
+                  Esto parece un EPP ({tipoEpp})
+                </div>
+                <div style={{ fontSize: 11.5, color: 'var(--ts)', lineHeight: 1.4 }}>
+                  Los EPPs (cascos, guantes, arneses, etc.) tienen control de vida útil y se entregan con firma del trabajador. Marcalo como "EPP" para que aparezca en el módulo SSOMA → EPPs.
+                </div>
+                <button type="button" className="btn btn-amber btn-xs" style={{ marginTop: 6 }}
+                  onClick={() => setForm({ ...form, categoria: 'EPP' })}>
+                  Marcar como EPP
+                </button>
+              </div>
+            </div>
+          );
+        })()}
         <div className="g2">
           <div style={{gridColumn:'1/-1', position:'relative'}}>
             <label className="flabel">Nombre del material *</label>
@@ -1706,9 +1858,34 @@ function MaterialesPage({ showToast }) {
               </div>
             )}
           </div>
+          {/* Foto referencial del material (opcional). Se sube como evidencia
+              vinculada al material y aparece como thumbnail en la lista. */}
+          <div style={{ gridColumn:'1/-1' }}>
+            <label className="flabel">Foto del material (opcional)</label>
+            <div style={{ display:'flex', gap:10, alignItems:'flex-start', flexWrap:'wrap' }}>
+              <label className="btn btn-ghost btn-sm" style={{ cursor:'pointer' }}>
+                <JxIcon name="camera" size={13}/> {foto ? 'Cambiar foto' : 'Adjuntar foto'}
+                <input type="file" accept="image/*" capture="environment" style={{ display:'none' }}
+                       onChange={handleFotoChange}/>
+              </label>
+              {foto?.url && (
+                <div style={{ position:'relative' }}>
+                  <img src={foto.url} alt="preview" style={{ width:80, height:80, objectFit:'cover', borderRadius:6, border:'1px solid var(--bd)' }}/>
+                  <button type="button" onClick={() => { if (foto.url) try { URL.revokeObjectURL(foto.url); } catch {} setFoto(null); }}
+                    style={{ position:'absolute', top:-6, right:-6, width:20, height:20, borderRadius:'50%', background:'var(--red)', color:'white', border:'none', fontSize:11, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}
+                    title="Quitar foto">×</button>
+                </div>
+              )}
+              {!foto && editingId && (
+                <span style={{ fontSize:11, color:'var(--tm)', alignSelf:'center' }}>
+                  Si ya hay una foto guardada, se mantiene. Adjuntá una nueva sólo si querés reemplazarla.
+                </span>
+              )}
+            </div>
+          </div>
         </div>
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={()=>{setModal(null); setEditingId(null); setForm({});}}>Cancelar</button>
+          <button className="btn btn-ghost" onClick={closeModalMaterial}>Cancelar</button>
           <button className="btn btn-amber" onClick={handleSubmitMaterial}><JxIcon name="check" size={13}/>{editingId ? 'Guardar Cambios' : 'Crear Material'}</button>
         </div>
       </Modal>);

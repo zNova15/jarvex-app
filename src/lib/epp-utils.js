@@ -42,3 +42,29 @@ export const sumarDiasISO = (iso, dias) => {
   d.setDate(d.getDate() + dias);
   return d.toISOString().slice(0, 10);
 };
+
+// Detecta si un nombre de material corresponde a un EPP (Equipo de
+// Protección Personal). Misma regex que usa el importador Excel para
+// clasificar como 'seguridad'. Reusable desde cualquier modal.
+const EPP_NAME_RE = /casco|chaleco|guante|extintor|arn[ée]s|botas?|lentes|m[áa]scara|mascarilla|tapones|protecci[óo]n|proteccion|respirador|auriculares|protector auditivo|epp/i;
+
+export function detectarEPP(nombre) {
+  if (!nombre || typeof nombre !== 'string') return null;
+  if (!EPP_NAME_RE.test(nombre)) return null;
+  // Devuelve el tipo del catálogo más probable
+  const s = nombre.toLowerCase();
+  if (/casco/.test(s))                 return 'Casco';
+  if (/chaleco/.test(s))               return 'Chaleco reflectivo';
+  if (/guante/.test(s))                return 'Guantes';
+  if (/bota/.test(s))                  return 'Botas de seguridad';
+  if (/lentes|gafas/.test(s))          return 'Lentes';
+  if (/mascarilla|m[áa]scara/.test(s)) return 'Mascarilla';
+  if (/arn[ée]s/.test(s))              return 'Arnés';
+  if (/auriculares|protector auditivo/.test(s)) return 'Auriculares';
+  if (/tapones/.test(s))               return 'Tapones';
+  return 'Otro';
+}
+
+export function esProbablementeEPP(nombre) {
+  return detectarEPP(nombre) !== null;
+}
