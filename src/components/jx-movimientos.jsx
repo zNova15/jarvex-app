@@ -771,6 +771,44 @@ function MovMaterialesPage({ showToast }) {
   const { data: evidencias } = window.__hooks.useEvidencias(obraId);
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
 
+  // ── Mapa de TODOS los materiales (incluye soft-deleted) para lookup ──
+  // Necesario porque cuando un material se elimina del catálogo, los
+  // movimientos históricos siguen vivos pero el hook useMateriales filtra
+  // los eliminados, así que el lookup mostraba "(material eliminado)".
+  // Acá leemos directo de Dexie SIN filtrar deleted_at — el nombre del
+  // material queda visible aunque haya sido borrado del catálogo.
+  const [materialesAll, setMaterialesAll] = uSM([]);
+  uEM(() => {
+    if (!obraId) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const rows = await window.__db.materiales
+          .where('obra_id').equals(obraId)
+          .toArray();
+        if (!cancelled) setMaterialesAll(rows);
+      } catch {}
+    };
+    load();
+    const onChange = (e) => {
+      const t = e?.detail?.tabla || e?.detail?.table;
+      if (!t || t === 'materiales') load();
+    };
+    window.addEventListener('jx_data_changed', onChange);
+    window.addEventListener('jarvex_master_updated', onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('jx_data_changed', onChange);
+      window.removeEventListener('jarvex_master_updated', onChange);
+    };
+  }, [obraId]);
+
+  const matsByIdAll = uMM(() => {
+    const map = new Map();
+    materialesAll.forEach(m => map.set(m.id, m));
+    return map;
+  }, [materialesAll]);
+
   const [reversoTarget, setReversoTarget] = uSM(null);
   const isAdmin = auth?.profile?.rol === 'admin';
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
@@ -846,8 +884,10 @@ function MovMaterialesPage({ showToast }) {
     if (!canDelete) return;
     const fecha = m.fecha || '';
     const cant = m.cantidad || 0;
-    const mat = materiales?.find(x => x.id === m.material_id);
-    const nombre = mat?.nombre_material || '(material)';
+    // Lookup contra TODOS los materiales (incluso soft-deleted) para que
+    // siempre se muestre el nombre histórico aunque el catálogo esté borrado.
+    const mat = matsByIdAll.get(m.material_id);
+    const nombre = mat?.nombre_material || '(material no encontrado)';
     if (!confirm(`¿Eliminar este movimiento?\n\n${m.tipo_movimiento} de ${cant} ${m.unidad || ''} de ${nombre}\nFecha: ${fecha}\n\nEl stock NO se reajusta — usa "Reversar" si quieres compensar el stock.`)) return;
     try {
       await updateMov(m.id, { deleted_at: new Date().toISOString() });
@@ -891,7 +931,9 @@ function MovMaterialesPage({ showToast }) {
   const [regAtrasadoOpen, setRegAtrasadoOpen] = uSM(false);
   const [rfRefresh, setRfRefresh] = uSM(0);
 
-  const lookupMat = (id) => materiales?.find(m => m.id === id);
+  // Lookup que busca primero en TODOS (incluso soft-deleted) — para que el
+  // nombre se muestre aunque el material catálogo esté eliminado.
+  const lookupMat = (id) => matsByIdAll.get(id) || materiales?.find(m => m.id === id);
   const lookupPers = (id) => personal?.find(p => p.id === id);
   const lookupProv = (id) => provs?.find(p => p.id === id);
   const lookupPart = (id) => partidas?.find(p => p.id === id);
@@ -1004,6 +1046,18 @@ function MovMaterialesPage({ showToast }) {
   if (!obraId) return <SinObraEmpty icon="arrowIn"/>;
   if (loading) return <div className="page-wrap"><div className="empty-state"><JxIcon name="arrowIn" size={32} color="var(--tm)"/><p>Cargando movimientos…</p></div></div>;
 
+  // Diagnóstico de sync: cuántos movimientos están pendientes de subir al server
+  // o tienen error. Si el almacenero crea offline o el push falla por
+  // FK violation/RLS, los registros quedan locales — el banner los hace visibles
+  // para que el user sepa que algo no subió y pueda reportarlo.
+  const syncStats = uMM(() => {
+    const pending = (movs || []).filter(m =>
+      m.sync_status && ['pending_create','pending_update','pending_delete'].includes(m.sync_status)
+    );
+    const failed = (movs || []).filter(m => m.sync_status === 'failed');
+    return { pending: pending.length, failed: failed.length, failedRecords: failed };
+  }, [movs]);
+
   return (
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
@@ -1020,6 +1074,58 @@ function MovMaterialesPage({ showToast }) {
           </button>
         </div>
       </div>
+
+      {/* Banner diagnóstico de sync: solo aparece si hay records pendientes/fallidos */}
+      {(syncStats.pending > 0 || syncStats.failed > 0) && (
+        <div style={{
+          marginBottom: 14,
+          padding: '10px 14px',
+          background: syncStats.failed > 0 ? 'rgba(231,76,60,0.10)' : 'rgba(242,183,5,0.10)',
+          border: `1px solid ${syncStats.failed > 0 ? 'rgba(231,76,60,0.4)' : 'rgba(242,183,5,0.4)'}`,
+          borderRadius: 6,
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: 10,
+          fontSize: 12.5,
+        }}>
+          <span style={{ fontSize: 16, lineHeight: 1 }}>{syncStats.failed > 0 ? '🔴' : '🟡'}</span>
+          <div style={{ flex: 1, color: 'var(--ts)' }}>
+            <strong style={{ color: syncStats.failed > 0 ? 'var(--red)' : 'var(--amber)' }}>
+              {syncStats.failed > 0
+                ? `${syncStats.failed} movimiento${syncStats.failed === 1 ? '' : 's'} con error de sincronización`
+                : `${syncStats.pending} movimiento${syncStats.pending === 1 ? '' : 's'} sin sincronizar al servidor`}
+            </strong>
+            <div style={{ marginTop: 4, fontSize: 11.5, color: 'var(--tm)', lineHeight: 1.4 }}>
+              {syncStats.failed > 0
+                ? 'Estos registros existen sólo en este dispositivo. Posibles causas: el material referenciado no está en el server, o no tienes permisos. Detalles en consola (F12).'
+                : 'Esperando que SyncEngine los suba. Si no se sincroniza en 1 minuto, recargá la página o avisale al admin.'}
+            </div>
+            {syncStats.failed > 0 && syncStats.failedRecords[0]?._last_error && (
+              <div style={{ marginTop: 6, fontSize: 11, color: 'var(--red)', fontFamily: 'monospace' }}>
+                Error: {syncStats.failedRecords[0]._last_error}
+              </div>
+            )}
+          </div>
+          {syncStats.failed > 0 && (
+            <button className="btn btn-ghost btn-xs" title="Reintentar push de movimientos fallidos"
+              onClick={async () => {
+                try {
+                  await Promise.all(syncStats.failedRecords.map(r =>
+                    window.__db.movimientos_materiales.update(r.id, {
+                      sync_status: r.deleted_at ? 'pending_delete' : 'pending_update',
+                      _sync_retries: 0,
+                      _last_error: null,
+                    })
+                  ));
+                  showToast?.('Movimientos puestos en cola — reintentando…', 'amber');
+                  if (window.__sync?.sync) await window.__sync.sync();
+                } catch (e) { showToast?.('Error: ' + (e?.message || e), 'red'); }
+              }}>
+              <JxIcon name="refresh" size={11}/> Reintentar
+            </button>
+          )}
+        </div>
+      )}
       {regFisicoOpen && (
         <RegistroFisicoModal modulo="movimientos_materiales" obraId={obraId}
           onClose={()=>setRegFisicoOpen(false)} showToast={showToast} refreshKey={rfRefresh}/>
@@ -1092,7 +1198,14 @@ function MovMaterialesPage({ showToast }) {
                       {yaReversado && <div style={{ marginTop:4 }}><span className="badge b-gray" title="Este movimiento fue reversado">Reversado</span></div>}
                       {esReverso && <div style={{ marginTop:4 }}><span className="badge b-amber" title={`Reverso del movimiento ${m.reverses_id}`}>Reverso de #{reversoOriginalShort}</span></div>}
                     </td>
-                    <td className="col-p">{mat?.nombre_material || '(material eliminado)'}</td>
+                    <td className="col-p">
+                      {mat?.nombre_material || '(material no disponible)'}
+                      {mat?.deleted_at && (
+                        <span style={{ marginLeft:6, fontSize:10, color:'var(--tm)' }} title="El material fue eliminado del catálogo, pero el historial del movimiento se mantiene">
+                          · histórico
+                        </span>
+                      )}
+                    </td>
                     <td style={{ textAlign:'right' }} className="col-num">{Number(m.cantidad || 0).toLocaleString('es-PE')} <span style={{ color:'var(--tm)', fontSize:11 }}>{m.unidad || mat?.unidad || ''}</span></td>
                     <td>{pers ? `${pers.nombres} ${pers.apellidos}` : (prov?.razon_social || '—')}</td>
                     <td className="col-m">{m.documento_asociado || '—'}</td>
