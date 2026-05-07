@@ -4,6 +4,7 @@ import { ocrAsistencia } from "../lib/ocr-asistencia.js";
 import { detectarEPP, esProbablementeEPP } from "../lib/epp-utils.js";
 import { usePagination } from "../hooks/usePagination.js";
 import { TablePagination } from "./jx-pagination.jsx";
+import { SearchableSelect } from "./jx-searchable-select.jsx";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 // ─── DATA ───────────────────────────────────────────────
@@ -1495,11 +1496,14 @@ function MaterialesPage({ showToast }) {
           </label>
           {loteComunes.usarMismoProveedor && (
             <div style={{ marginTop:8 }}>
-              <select className="fi" value={loteComunes.proveedor_id || ''}
-                      onChange={e => setLoteComunes(c => ({ ...c, proveedor_id: e.target.value || null }))}>
-                <option value="">— Selecciona proveedor —</option>
-                {provs.map(p => <option key={p.id} value={p.id}>{p.razon_social}</option>)}
-              </select>
+              <SearchableSelect
+                value={loteComunes.proveedor_id}
+                onChange={v => setLoteComunes(c => ({ ...c, proveedor_id: v || null }))}
+                options={[
+                  { value: '', label: '— Selecciona proveedor —' },
+                  ...provs.map(p => ({ value: p.id, label: p.razon_social })),
+                ]}
+                placeholder="— Selecciona proveedor —"/>
             </div>
           )}
           {!loteComunes.usarMismoProveedor && (
@@ -1535,17 +1539,21 @@ function MaterialesPage({ showToast }) {
                   return (
                     <tr key={it.id}>
                       <td>
-                        <select className="fi" value={it.material_id} style={{ fontSize:12 }}
-                                onChange={e => {
-                                  const newMat = materiales.find(m => m.id === e.target.value);
-                                  updateLoteItem(it.id, {
-                                    material_id: e.target.value,
-                                    precio: newMat && !it.precio ? Number(newMat.precio_unitario_estimado || 0).toFixed(2) : it.precio,
-                                  });
-                                }}>
-                          <option value="">— Selecciona —</option>
-                          {materiales.map(m => <option key={m.id} value={m.id}>{m.nombre_material}</option>)}
-                        </select>
+                        <SearchableSelect
+                          value={it.material_id}
+                          onChange={v => {
+                            const newMat = materiales.find(m => m.id === v);
+                            updateLoteItem(it.id, {
+                              material_id: v,
+                              precio: newMat && !it.precio ? Number(newMat.precio_unitario_estimado || 0).toFixed(2) : it.precio,
+                            });
+                          }}
+                          options={[
+                            { value: '', label: '— Selecciona —' },
+                            ...materiales.map(m => ({ value: m.id, label: m.nombre_material })),
+                          ]}
+                          fontSize={12}
+                          placeholder="— Selecciona —"/>
                       </td>
                       <td style={{ color:'var(--tm)' }}>{mat?.unidad || '—'}</td>
                       <td><input className="fi" type="number" min="0" step="0.01" value={it.cantidad} style={{ fontSize:12 }}
@@ -1554,11 +1562,15 @@ function MaterialesPage({ showToast }) {
                                  onChange={e => updateLoteItem(it.id, { precio: e.target.value })}/></td>
                       {!loteComunes.usarMismoProveedor && (
                         <td>
-                          <select className="fi" value={it.proveedor_id || ''} style={{ fontSize:12 }}
-                                  onChange={e => updateLoteItem(it.id, { proveedor_id: e.target.value || null })}>
-                            <option value="">—</option>
-                            {provs.map(p => <option key={p.id} value={p.id}>{p.razon_social}</option>)}
-                          </select>
+                          <SearchableSelect
+                            value={it.proveedor_id}
+                            onChange={v => updateLoteItem(it.id, { proveedor_id: v || null })}
+                            options={[
+                              { value: '', label: '—' },
+                              ...provs.map(p => ({ value: p.id, label: p.razon_social })),
+                            ]}
+                            fontSize={12}
+                            placeholder="—"/>
                         </td>
                       )}
                       <td>
@@ -1615,13 +1627,17 @@ function MaterialesPage({ showToast }) {
             </label>
             {loteComunes.usarMismaPersona && (
               <div style={{ marginTop:8 }}>
-                <select className="fi" value={loteComunes.responsable_id || ''}
-                        onChange={e => setLoteComunes(c => ({ ...c, responsable_id: e.target.value || null }))}>
-                  <option value="">— Selecciona persona / subcontrato —</option>
-                  {personalActivo.map(p => (
-                    <option key={p.id} value={p.id}>{p.nombres} {p.apellidos} · {p.cargo}</option>
-                  ))}
-                </select>
+                <SearchableSelect
+                  value={loteComunes.responsable_id}
+                  onChange={v => setLoteComunes(c => ({ ...c, responsable_id: v || null }))}
+                  options={[
+                    { value: '', label: '— Selecciona persona / subcontrato —' },
+                    ...personalActivo.map(p => ({
+                      value: p.id,
+                      label: `${p.nombres} ${p.apellidos} · ${p.cargo || ''}`.trim(),
+                    })),
+                  ]}
+                  placeholder="— Selecciona persona / subcontrato —"/>
                 <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:4 }}>
                   Solo trabajadores activos de la obra que ya ingresaron.
                 </div>
@@ -1663,11 +1679,15 @@ function MaterialesPage({ showToast }) {
                     return (
                       <tr key={it.id}>
                         <td>
-                          <select className="fi" value={it.material_id} style={{ fontSize:12 }}
-                                  onChange={e => updateLoteItem(it.id, { material_id: e.target.value })}>
-                            <option value="">— Selecciona —</option>
-                            {materiales.map(m => <option key={m.id} value={m.id}>{m.nombre_material}</option>)}
-                          </select>
+                          <SearchableSelect
+                            value={it.material_id}
+                            onChange={v => updateLoteItem(it.id, { material_id: v })}
+                            options={[
+                              { value: '', label: '— Selecciona —' },
+                              ...materiales.map(m => ({ value: m.id, label: m.nombre_material })),
+                            ]}
+                            fontSize={12}
+                            placeholder="— Selecciona —"/>
                         </td>
                         <td style={{ color:'var(--tm)' }}>{mat?.unidad || '—'}</td>
                         <td><input className="fi" type="number" min="0" step="0.01" value={it.cantidad} style={{ fontSize:12 }}
@@ -1681,13 +1701,18 @@ function MaterialesPage({ showToast }) {
                         </td>
                         {!loteComunes.usarMismaPersona && (
                           <td>
-                            <select className="fi" value={it.responsable_id || ''} style={{ fontSize:12 }}
-                                    onChange={e => updateLoteItem(it.id, { responsable_id: e.target.value || null })}>
-                              <option value="">—</option>
-                              {personalActivo.map(p => (
-                                <option key={p.id} value={p.id}>{p.nombres} {p.apellidos}</option>
-                              ))}
-                            </select>
+                            <SearchableSelect
+                              value={it.responsable_id}
+                              onChange={v => updateLoteItem(it.id, { responsable_id: v || null })}
+                              options={[
+                                { value: '', label: '—' },
+                                ...personalActivo.map(p => ({
+                                  value: p.id,
+                                  label: `${p.nombres} ${p.apellidos}`.trim(),
+                                })),
+                              ]}
+                              fontSize={12}
+                              placeholder="—"/>
                           </td>
                         )}
                         <td>

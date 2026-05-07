@@ -13,6 +13,7 @@ import { CATALOGO_EPP, epppTipo, detectarEPP } from "../lib/epp-utils.js";
 import { calcAlerta } from "../lib/stock-utils.js";
 import { usePagination } from "../hooks/usePagination.js";
 import { TablePagination } from "./jx-pagination.jsx";
+import { SearchableSelect } from "./jx-searchable-select.jsx";
 
 const { useState: uS, useEffect: uE, useMemo: uM, useRef: uR } = React;
 
@@ -587,11 +588,15 @@ function EppsInventarioPage({ showToast }) {
                     return (
                       <tr key={it.id}>
                         <td>
-                          <select className="fi" value={it.epp_id} style={{ fontSize:12 }}
-                                  onChange={e => updateLoteItem(it.id, { epp_id: e.target.value })}>
-                            <option value="">— Selecciona —</option>
-                            {epps.map(e => <option key={e.id} value={e.id}>{e.nombre_epp}</option>)}
-                          </select>
+                          <SearchableSelect
+                            value={it.epp_id}
+                            onChange={v => updateLoteItem(it.id, { epp_id: v })}
+                            options={[
+                              { value: '', label: '— Selecciona —' },
+                              ...epps.map(e => ({ value: e.id, label: e.nombre_epp })),
+                            ]}
+                            fontSize={12}
+                            placeholder="— Selecciona —"/>
                         </td>
                         <td style={{ color:'var(--tm)' }}>{epp?.talla || '—'}</td>
                         <td><input className="fi" type="number" min="0" step="0.01" value={it.cantidad} style={{ fontSize:12 }}
@@ -650,13 +655,17 @@ function EppsInventarioPage({ showToast }) {
             </label>
             {loteComunes.usarMismaPersona && (
               <div style={{ marginTop:8 }}>
-                <select className="fi" value={loteComunes.personal_id || ''}
-                        onChange={e => setLoteComunes(c => ({ ...c, personal_id: e.target.value || null }))}>
-                  <option value="">— Selecciona trabajador —</option>
-                  {personal.filter(p => p.estado === 'activo').map(p => (
-                    <option key={p.id} value={p.id}>{p.nombres} {p.apellidos} · DNI {p.dni || '—'}</option>
-                  ))}
-                </select>
+                <SearchableSelect
+                  value={loteComunes.personal_id}
+                  onChange={v => setLoteComunes(c => ({ ...c, personal_id: v || null }))}
+                  options={[
+                    { value: '', label: '— Selecciona trabajador —' },
+                    ...personal.filter(p => p.estado === 'activo').map(p => ({
+                      value: p.id,
+                      label: `${p.nombres} ${p.apellidos} · DNI ${p.dni || '—'}`.trim(),
+                    })),
+                  ]}
+                  placeholder="— Selecciona trabajador —"/>
               </div>
             )}
           </div>
@@ -688,11 +697,15 @@ function EppsInventarioPage({ showToast }) {
                     return (
                       <tr key={it.id}>
                         <td>
-                          <select className="fi" value={it.epp_id} style={{ fontSize:12 }}
-                                  onChange={e => updateLoteItem(it.id, { epp_id: e.target.value })}>
-                            <option value="">— Selecciona —</option>
-                            {epps.map(e => <option key={e.id} value={e.id}>{e.nombre_epp}</option>)}
-                          </select>
+                          <SearchableSelect
+                            value={it.epp_id}
+                            onChange={v => updateLoteItem(it.id, { epp_id: v })}
+                            options={[
+                              { value: '', label: '— Selecciona —' },
+                              ...epps.map(e => ({ value: e.id, label: e.nombre_epp })),
+                            ]}
+                            fontSize={12}
+                            placeholder="— Selecciona —"/>
                         </td>
                         <td style={{ color:'var(--tm)' }}>{epp?.talla || '—'}</td>
                         <td><input className="fi" type="number" min="0" step="0.01" value={it.cantidad} style={{ fontSize:12 }}
@@ -706,13 +719,18 @@ function EppsInventarioPage({ showToast }) {
                         </td>
                         {!loteComunes.usarMismaPersona && (
                           <td>
-                            <select className="fi" value={it.personal_id || ''} style={{ fontSize:12 }}
-                                    onChange={e => updateLoteItem(it.id, { personal_id: e.target.value || null })}>
-                              <option value="">—</option>
-                              {personal.filter(p => p.estado === 'activo').map(p => (
-                                <option key={p.id} value={p.id}>{p.nombres} {p.apellidos}</option>
-                              ))}
-                            </select>
+                            <SearchableSelect
+                              value={it.personal_id}
+                              onChange={v => updateLoteItem(it.id, { personal_id: v || null })}
+                              options={[
+                                { value: '', label: '—' },
+                                ...personal.filter(p => p.estado === 'activo').map(p => ({
+                                  value: p.id,
+                                  label: `${p.nombres} ${p.apellidos}`.trim(),
+                                })),
+                              ]}
+                              fontSize={12}
+                              placeholder="—"/>
                           </td>
                         )}
                         <td>
