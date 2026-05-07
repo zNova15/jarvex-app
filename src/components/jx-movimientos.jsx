@@ -1043,13 +1043,12 @@ function MovMaterialesPage({ showToast }) {
     return s;
   }, [movs]);
 
-  if (!obraId) return <SinObraEmpty icon="arrowIn"/>;
-  if (loading) return <div className="page-wrap"><div className="empty-state"><JxIcon name="arrowIn" size={32} color="var(--tm)"/><p>Cargando movimientos…</p></div></div>;
-
   // Diagnóstico de sync: cuántos movimientos están pendientes de subir al server
   // o tienen error. Si el almacenero crea offline o el push falla por
   // FK violation/RLS, los registros quedan locales — el banner los hace visibles
   // para que el user sepa que algo no subió y pueda reportarlo.
+  // IMPORTANTE: este hook DEBE estar antes de cualquier `return` early para
+  // no violar las reglas de hooks de React (cantidad consistente por render).
   const syncStats = uMM(() => {
     const pending = (movs || []).filter(m =>
       m.sync_status && ['pending_create','pending_update','pending_delete'].includes(m.sync_status)
@@ -1057,6 +1056,9 @@ function MovMaterialesPage({ showToast }) {
     const failed = (movs || []).filter(m => m.sync_status === 'failed');
     return { pending: pending.length, failed: failed.length, failedRecords: failed };
   }, [movs]);
+
+  if (!obraId) return <SinObraEmpty icon="arrowIn"/>;
+  if (loading) return <div className="page-wrap"><div className="empty-state"><JxIcon name="arrowIn" size={32} color="var(--tm)"/><p>Cargando movimientos…</p></div></div>;
 
   return (
     <div className="page-wrap">
