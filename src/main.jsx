@@ -3,6 +3,10 @@
 // PRIMERO. Ver src/instrument.js para la configuración.
 import './instrument.js';
 import * as Sentry from '@sentry/react';
+// PostHog: telemetría de uso (qué pantallas se usan, clicks, flows).
+// Se inicializa aquí también temprano para que capture el primer pageview.
+import { initPostHog } from './lib/posthog.js';
+initPostHog();
 
 // Exponer Sentry en window para tests manuales desde DevTools.
 // Útil para validar que la captura funciona:

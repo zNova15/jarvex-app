@@ -1,10 +1,42 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
+import { sentryVitePlugin } from '@sentry/vite-plugin'
+
+// Sentry source maps: solo activamos el upload si SENTRY_AUTH_TOKEN está
+// presente (en CI / Vercel). En dev local no aplica — el plugin no rompe
+// el build si no hay token, simplemente no sube los maps.
+const SENTRY_TOKEN = process.env.SENTRY_AUTH_TOKEN;
 
 export default defineConfig({
+  // Generar source maps en producción para que Sentry pueda mapear los
+  // stack traces minificados a líneas reales del código fuente. Sin esto,
+  // un error aparece como "at Wo (index-XXX.js:9:52390)" en vez de
+  // "at handleSubmitMaterial (jx-almacen.jsx:680:5)".
+  build: {
+    sourcemap: true,
+  },
   plugins: [
     react(),
+    // Sentry plugin — solo en build de Vercel (cuando hay token). El plugin
+    // sube los .map.js a Sentry y los borra del bundle público para que
+    // los users del cliente no los descarguen (ahorra bandwidth + privacidad
+    // del código fuente).
+    SENTRY_TOKEN && sentryVitePlugin({
+      org: 'novvx-proyect',
+      project: 'jarvex-app',
+      authToken: SENTRY_TOKEN,
+      // Borrar los archivos .map del bundle público después de subirlos.
+      // Sentry los tiene, los users del cliente NO.
+      sourcemaps: {
+        filesToDeleteAfterUpload: ['./dist/**/*.map'],
+      },
+      // No fallar el build si la subida falla (ej: token inválido o Sentry
+      // caído). Es deseable que un problema con Sentry no bloquee deploys.
+      errorHandler: (err) => {
+        console.warn('[Sentry plugin] upload failed (non-fatal):', err.message);
+      },
+    }),
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.ico', 'icons/*.png'],

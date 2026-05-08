@@ -1,4 +1,5 @@
 import React from "react";
+import { trackPageView } from "./lib/posthog.js";
 const { useState: uSA, useEffect: uEA, useCallback: uCA } = React;
 
 // Hook compartido: detecta viewport móvil
@@ -677,6 +678,20 @@ function App() {
   );
   const [toast, setToast]           = uSA(null);
   const [obraActiva, setObraActiva] = uSA(null);
+
+  // PostHog: trackear cambio de pantalla. Esto responde la pregunta del
+  // Council "¿qué pantallas se usan?" — cada vez que el user navega
+  // (cambia el state `page`), mandamos un $pageview con el id de la pantalla
+  // y el rol del user. Después en el dashboard de PostHog filtramos por
+  // pantalla para ver uso real.
+  uEA(() => {
+    if (!page) return;
+    trackPageView(page, {
+      // Sin nombres ni emails — solo metadata útil para análisis
+      user_rol: auth?.profile?.rol || 'anonymous',
+      is_mobile: isMobile,
+    });
+  }, [page, auth?.profile?.rol, isMobile]);
 
   // Si el viewport cambia entre móvil/desktop, ajustamos el estado del sidebar.
   uEA(() => {

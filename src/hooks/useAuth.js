@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, createContext, useContext } from 'react';
 import { getCurrentUser, login as authLogin, logout as authLogout } from '../lib/auth';
 import { syncAll } from '../sync/SyncEngine';
+import { identifyUser, resetUser } from '../lib/posthog.js';
 
 export const AuthContext = createContext(null);
 
@@ -58,6 +59,10 @@ export function useAuthProvider() {
           setUser(result.session?.user ?? null);
           setProfile(result.profile);
           setOffline(result.offline);
+          // PostHog: identificar al user al hidratar sesión existente
+          // (refresh del browser con cookie/localStorage). Sin esto, el
+          // primer pageview queda como "anónimo" hasta que login again.
+          try { identifyUser(result.profile); } catch {}
           if (!result.offline) {
             setTimeout(syncAll, 2000);
           }
@@ -119,6 +124,8 @@ export function useAuthProvider() {
     setUser(result.session?.user ?? null);
     setProfile(result.profile);
     setOffline(result.offline);
+    // PostHog: identificar al user por su id de Supabase + rol (sin email).
+    try { identifyUser(result.profile); } catch {}
     if (!result.offline) {
       setTimeout(syncAll, 1000);
     }
@@ -130,6 +137,8 @@ export function useAuthProvider() {
     setUser(null);
     setProfile(null);
     setOffline(false);
+    // PostHog: limpiar identidad anónima al cerrar sesión.
+    try { resetUser(); } catch {}
     try {
       localStorage.removeItem('jx_user_role');
       localStorage.removeItem('jx_user_role_real');
