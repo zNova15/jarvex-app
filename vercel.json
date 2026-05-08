@@ -4,9 +4,9 @@
   "framework": "vite",
   "installCommand": "npm install --legacy-peer-deps",
   "rewrites": [
-    { "source": "/ingest/static/:path*", "destination": "https://us-assets.i.posthog.com/static/:path*" },
-    { "source": "/ingest/:path*",        "destination": "https://us.i.posthog.com/:path*" },
-    { "source": "/((?!api/|ingest/).*)", "destination": "/index.html" }
+    { "source": "/ingest/static/:rest(.*)", "destination": "https://us-assets.i.posthog.com/static/:rest" },
+    { "source": "/ingest/:rest(.*)",        "destination": "https://us.i.posthog.com/:rest" },
+    { "source": "/((?!api/|ingest/).*)",    "destination": "/index.html" }
   ],
   "headers": [
     {
