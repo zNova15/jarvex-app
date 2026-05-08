@@ -1,4 +1,5 @@
 import React from "react";
+import { useBusy } from "../hooks/useBusy.js";
 const { useState: uSO, useMemo: uMO, useEffect: uEO } = React;
 
 const EST_PART = { terminado:'b-green', en_ejecucion:'b-blue', atrasado:'b-red', pendiente:'b-gray', observado:'b-yellow' };
@@ -56,6 +57,7 @@ function ObrasPage({ showToast }) {
   const isAdmin = auth?.profile?.rol === 'admin';
   const appMode = window.__useAppMode ? window.__useAppMode() : { isEdicion: true };
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
+  const [busyObra, , setBusyObra] = useBusy();
   const [modal, setModal] = uSO(null);
   const [form, setForm] = uSO({});
   const [editingId, setEditingId] = uSO(null);
@@ -181,6 +183,7 @@ function ObrasPage({ showToast }) {
   };
 
   const handleSubmit = async () => {
+    if (busyObra) return; // doble click guard
     if (!form.nombre_obra) { showToast('Falta el nombre de la obra', 'red'); return; }
     // ── Validaciones de sentido común ─────────────────────────
     if (form.fecha_inicio && form.fecha_fin_estimada && form.fecha_fin_estimada < form.fecha_inicio) {
@@ -232,6 +235,7 @@ function ObrasPage({ showToast }) {
       consorcioMiembros = miembros;
       consorcioNombre = form.consorcio_nombre?.trim() || null;
     }
+    setBusyObra(true);
     try {
       if (editingId) {
         const oldObra = obras.find(o => o.id === editingId);
@@ -282,6 +286,8 @@ function ObrasPage({ showToast }) {
       setModal(null); setForm({}); setEditingId(null);
     } catch (e) {
       showToast('Error: ' + e.message, 'red');
+    } finally {
+      setBusyObra(false);
     }
   };
 
@@ -496,8 +502,10 @@ function ObrasPage({ showToast }) {
           )}
         </div>
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={()=>{setModal(null); setEditingId(null); setForm({});}}>Cancelar</button>
-          <button className="btn btn-amber" onClick={handleSubmit}><JxIcon name="check" size={13}/>{editingId ? 'Guardar Cambios' : 'Crear Obra'}</button>
+          <button className="btn btn-ghost" disabled={busyObra} onClick={()=>{setModal(null); setEditingId(null); setForm({});}}>Cancelar</button>
+          <button className="btn btn-amber" disabled={busyObra} onClick={handleSubmit}>
+            <JxIcon name="check" size={13}/>{busyObra ? 'Guardando…' : (editingId ? 'Guardar Cambios' : 'Crear Obra')}
+          </button>
         </div>
       </Modal>}
 
@@ -952,6 +960,7 @@ function PartidasPage({ showToast }) {
   const [modal, setModal] = uSO(null);
   const [form, setForm] = uSO({});
   const [editingId, setEditingId] = uSO(null);
+  const [busyPart, , setBusyPart] = useBusy();
   const [expanded, setExpanded] = uSO(() => new Set());
   const [soloActivas, setSoloActivas] = uSO(false);
   const [estadoFilter, setEstadoFilter] = uSO('todos');
@@ -1085,7 +1094,9 @@ function PartidasPage({ showToast }) {
   }), [partidas]);
 
   const handleSubmit = async () => {
+    if (busyPart) return; // doble click guard
     if (!form.nombre_partida) { showToast('Falta nombre de partida', 'red'); return; }
+    setBusyPart(true);
     try {
       const cantidad = parseFloat(form.metrado_contratado) || 0;
       const precio = parseFloat(form.precio_unitario_pres) || 0;
@@ -1126,6 +1137,8 @@ function PartidasPage({ showToast }) {
       setModal(null); setForm({}); setEditingId(null);
     } catch (e) {
       showToast('Error: ' + e.message, 'red');
+    } finally {
+      setBusyPart(false);
     }
   };
 
@@ -1371,8 +1384,10 @@ function PartidasPage({ showToast }) {
           </div>}
         </div>
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={()=>{setModal(null); setEditingId(null); setForm({});}}>Cancelar</button>
-          <button className="btn btn-amber" onClick={handleSubmit}><JxIcon name="check" size={13}/>{editingId ? 'Guardar Cambios' : 'Crear Partida'}</button>
+          <button className="btn btn-ghost" disabled={busyPart} onClick={()=>{setModal(null); setEditingId(null); setForm({});}}>Cancelar</button>
+          <button className="btn btn-amber" disabled={busyPart} onClick={handleSubmit}>
+            <JxIcon name="check" size={13}/>{busyPart ? 'Guardando…' : (editingId ? 'Guardar Cambios' : 'Crear Partida')}
+          </button>
         </div>
       </Modal>}
     </div>
@@ -1870,6 +1885,7 @@ function AvancePage({ showToast }) {
   const obraActiva = obras?.find(o => o.id === obraId);
   const auth = window.__useAuth ? window.__useAuth() : null;
   const isAdmin = auth?.profile?.rol === 'admin';
+  const [busyAvance, , setBusyAvance] = useBusy();
 
   const [modal, setModal] = uSO(false);
   const [form, setForm] = uSO({});
@@ -1897,11 +1913,13 @@ function AvancePage({ showToast }) {
   };
 
   const handleSubmit = async () => {
+    if (busyAvance) return; // doble click guard
     if (!form.partida_id || !form.metrado_ejecutado) {
       showToast('Selecciona partida y metrado', 'red');
       return;
     }
     const partida = partidas.find(p => p.id === form.partida_id);
+    setBusyAvance(true);
     try {
       if (editingId) {
         // Solo editamos campos seguros (no recalculamos avance de partida)
@@ -1944,6 +1962,8 @@ function AvancePage({ showToast }) {
       setModal(false); setForm({});
     } catch (e) {
       showToast('Error: ' + e.message, 'red');
+    } finally {
+      setBusyAvance(false);
     }
   };
 
@@ -2044,8 +2064,10 @@ function AvancePage({ showToast }) {
         </div>
         <div style={{marginTop:14}}><label className="flabel">Observaciones</label><textarea className="fi" placeholder="Descripción del avance, materiales usados, inconvenientes..." value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})}/></div>
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={()=>{setModal(false); setEditingId(null); setForm({});}}>Cancelar</button>
-          <button className="btn btn-amber" onClick={handleSubmit}><JxIcon name="check" size={13}/>{editingId ? 'Guardar Cambios' : 'Guardar Avance'}</button>
+          <button className="btn btn-ghost" disabled={busyAvance} onClick={()=>{setModal(false); setEditingId(null); setForm({});}}>Cancelar</button>
+          <button className="btn btn-amber" disabled={busyAvance} onClick={handleSubmit}>
+            <JxIcon name="check" size={13}/>{busyAvance ? 'Guardando…' : (editingId ? 'Guardar Cambios' : 'Guardar Avance')}
+          </button>
         </div>
       </Modal>}
     </div>

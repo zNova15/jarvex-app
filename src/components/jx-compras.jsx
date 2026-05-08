@@ -1,4 +1,5 @@
 import React from "react";
+import { useBusy } from "../hooks/useBusy.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -58,6 +59,8 @@ function RequisicionesPage({ showToast }) {
   const userId = auth?.profile?.id ?? 'offline';
   const rol = auth?.profile?.rol || '';
   const isAdmin = rol === 'admin';
+  // Doble click guard del botón "Crear Requisición"
+  const [busyGuardar, , setBusyGuardar] = useBusy();
   // ¿El rol puede aprobar/cambiar estado de requisiciones?
   // Solo admin + roles con permiso de write en 'Requisiciones' (ej: ingeniero_residente)
   const canApprove = isAdmin || (window.__hasPerm?.(rol, 'Requisiciones', 'w') ?? false);
@@ -143,8 +146,10 @@ function RequisicionesPage({ showToast }) {
   };
 
   const guardar = async () => {
+    if (busyGuardar) return; // doble click guard
     const itemsValidos = items.filter(i => (i.material_id || i.nombre_libre) && Number(i.cantidad) > 0);
     if (!itemsValidos.length) { showToast('Agrega al menos un item con cantidad', 'red'); return; }
+    setBusyGuardar(true);
     const now = new Date().toISOString();
     try {
       let reqIdFinal;
@@ -202,6 +207,8 @@ function RequisicionesPage({ showToast }) {
     } catch (e) {
       console.error('[req save]', e);
       showToast('Error: ' + (e.message || e), 'red');
+    } finally {
+      setBusyGuardar(false);
     }
   };
 
@@ -527,9 +534,9 @@ function RequisicionesPage({ showToast }) {
           </div>
 
           <div className="modal-actions">
-            <button className="btn btn-ghost" onClick={()=>{setModal(null); setEditing(null); setItems([]);}}>Cancelar</button>
-            <button className="btn btn-amber" onClick={guardar}>
-              <JxIcon name="check" size={13}/>{editing ? 'Guardar Cambios' : 'Crear Requisición'}
+            <button className="btn btn-ghost" disabled={busyGuardar} onClick={()=>{setModal(null); setEditing(null); setItems([]);}}>Cancelar</button>
+            <button className="btn btn-amber" disabled={busyGuardar} onClick={guardar}>
+              <JxIcon name="check" size={13}/>{busyGuardar ? 'Guardando…' : (editing ? 'Guardar Cambios' : 'Crear Requisición')}
             </button>
           </div>
         </Modal>
@@ -577,6 +584,8 @@ function OrdenesCompraPage({ showToast }) {
   const rol = auth?.profile?.rol || '';
   const isAdmin = rol === 'admin';
   const canApproveOC = isAdmin || (window.__hasPerm?.(rol, 'Órdenes de Compra', 'w') ?? false);
+  // Doble click guard del botón "Crear OC" (operación compleja: OC + items + reserva)
+  const [busyOC, , setBusyOC] = useBusy();
   const { data: ocs } = window.__hooks.useOrdenesCompra(obraId);
   const { data: materiales } = window.__hooks.useMateriales(obraId);
   const [proveedores, setProveedores] = uS([]);
@@ -805,8 +814,10 @@ function OrdenesCompraPage({ showToast }) {
   }, [items]);
 
   const guardar = async () => {
+    if (busyOC) return; // doble click guard
     const itemsValidos = items.filter(i => (i.material_id || i.nombre_libre) && Number(i.cantidad) > 0 && Number(i.precio_unitario) > 0);
     if (!itemsValidos.length) { showToast('Agrega al menos un item válido', 'red'); return; }
+    setBusyOC(true);
     const now = new Date().toISOString();
     try {
       let ocId;
@@ -875,6 +886,8 @@ function OrdenesCompraPage({ showToast }) {
     } catch (e) {
       console.error('[oc save]', e);
       showToast('Error: ' + (e.message || e), 'red');
+    } finally {
+      setBusyOC(false);
     }
   };
 
@@ -1282,9 +1295,9 @@ function OrdenesCompraPage({ showToast }) {
           )}
 
           <div className="modal-actions">
-            <button className="btn btn-ghost" onClick={()=>{setModal(null); setEditing(null); setItems([]); setRecepciones([]); setEvidenciasOC([]);}}>Cancelar</button>
-            <button className="btn btn-amber" onClick={guardar}>
-              <JxIcon name="check" size={13}/>{editing ? 'Guardar' : 'Crear OC'}
+            <button className="btn btn-ghost" disabled={busyOC} onClick={()=>{setModal(null); setEditing(null); setItems([]); setRecepciones([]); setEvidenciasOC([]);}}>Cancelar</button>
+            <button className="btn btn-amber" disabled={busyOC} onClick={guardar}>
+              <JxIcon name="check" size={13}/>{busyOC ? 'Guardando…' : (editing ? 'Guardar' : 'Crear OC')}
             </button>
           </div>
         </Modal>

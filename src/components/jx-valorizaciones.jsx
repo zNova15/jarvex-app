@@ -1,4 +1,5 @@
 import React from "react";
+import { useBusy } from "../hooks/useBusy.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -52,6 +53,9 @@ function ValorizacionesPage({ showToast }) {
   const auth = window.__useAuth?.();
   const userId = auth?.profile?.id ?? 'offline';
   const isAdmin = auth?.profile?.rol === 'admin';
+  // Doble click guard para el botón "Crear Valorización" (operación pesada
+  // que crea valorización + partidas + adicionales en cadena).
+  const [busyGuardar, , setBusyGuardar] = useBusy();
   const { data: valorizaciones } = window.__hooks.useValorizaciones(obraId);
   const { data: partidas } = window.__hooks.usePartidas(obraId);
   const { data: obras } = window.__hooks.useObras();
@@ -175,7 +179,9 @@ function ValorizacionesPage({ showToast }) {
   };
 
   const guardar = async () => {
+    if (busyGuardar) return; // doble click guard
     if (!form.company_id) { showToast('Selecciona empresa emisora', 'red'); return; }
+    setBusyGuardar(true);
     const now = new Date().toISOString();
     try {
       let valId;
@@ -267,6 +273,8 @@ function ValorizacionesPage({ showToast }) {
     } catch (e) {
       console.error('[val save]', e);
       showToast('Error: ' + (e.message || e), 'red');
+    } finally {
+      setBusyGuardar(false);
     }
   };
 
@@ -567,9 +575,9 @@ function ValorizacionesPage({ showToast }) {
           </div>
 
           <div className="modal-actions">
-            <button className="btn btn-ghost" onClick={()=>{setModal(null); setEditing(null); setValPartidas([]);}}>Cancelar</button>
-            <button className="btn btn-amber" onClick={guardar}>
-              <JxIcon name="check" size={13}/>{editing ? 'Guardar' : 'Crear Valorización'}
+            <button className="btn btn-ghost" disabled={busyGuardar} onClick={()=>{setModal(null); setEditing(null); setValPartidas([]);}}>Cancelar</button>
+            <button className="btn btn-amber" disabled={busyGuardar} onClick={guardar}>
+              <JxIcon name="check" size={13}/>{busyGuardar ? 'Guardando…' : (editing ? 'Guardar' : 'Crear Valorización')}
             </button>
           </div>
         </Modal>
