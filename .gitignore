@@ -34,3 +34,8 @@ dist-ssr
 *.sql.gz
 backups/
 jarvex-backups/
+
+# Claude Code local config (per-developer, no project-level)
+# Las skills "globales" (.agents/skills) sí se commitean para todo el equipo;
+# los symlinks de .claude/skills cada dev los regenera con `npx skills add`.
+.claude/
