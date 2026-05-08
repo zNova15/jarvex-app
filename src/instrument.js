@@ -30,6 +30,13 @@ if (dsn) {
   Sentry.init({
     dsn,
 
+    // Tunnel: el SDK postea los envelopes a /api/sentry-tunnel en lugar
+    // de directamente a *.ingest.sentry.io. El endpoint los reenvía a
+    // Sentry desde el lado del server. Esto esquiva ad-blockers (uBlock,
+    // Brave Shields, AdGuard) que bloquean los dominios *.sentry.io.
+    // Ver: api/sentry-tunnel.js
+    tunnel: '/api/sentry-tunnel',
+
     // Entornos: production / preview / development. Vite setea MODE.
     environment: import.meta.env.MODE,
 
