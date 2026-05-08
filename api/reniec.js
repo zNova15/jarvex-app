@@ -6,7 +6,7 @@
 // - Rate limit: 30 consultas / minuto / IP (mitigación contra enumeración masiva).
 // - Validación de formato DNI antes de pegarle a RENIEC (ahorra cuota).
 
-import { requireAuth, rateLimit, sanitizeError, isValidDNI, setCorsHeaders } from './_lib.js';
+import { requireAuth, rateLimit, sanitizeError, isValidDNI, setCorsHeaders } from '../lib/api-helpers.js';
 
 export default async function handler(req, res) {
   setCorsHeaders(req, res);

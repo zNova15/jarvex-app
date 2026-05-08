@@ -1,4 +1,4 @@
-import { requireAuth, rateLimit, sanitizeError, sanitizeForPrompt } from './_lib.js';
+import { requireAuth, rateLimit, sanitizeError, sanitizeForPrompt } from '../lib/api-helpers.js';
 
 // Vercel serverless: POST /api/sugerir-cadena-trazabilidad
 //

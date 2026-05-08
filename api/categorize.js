@@ -45,7 +45,7 @@ Responde SOLO con JSON válido: {"results":[{"id":"<id>","categoria":"<una_categ
 
 // Sanitización: cada nombre que se concatena al prompt se filtra para evitar
 // prompt injection (\n, comillas raras, caracteres de control, etc.).
-import { requireAuth, rateLimit, sanitizeError, sanitizeForPrompt } from './_lib.js';
+import { requireAuth, rateLimit, sanitizeError, sanitizeForPrompt } from '../lib/api-helpers.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {

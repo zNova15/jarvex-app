@@ -415,7 +415,7 @@ function ConfigSUNATPage({ showToast }) {
         • Modo homologación: usá RUC 20000000001, user MODDATOS, pass moddatos para tests.<br/>
         • El certificado digital tributario cuesta ~S/200/año (Reniec, Camerfirma, Llama.pe).<br/>
         • La firma se hace en este navegador. La key privada NUNCA se envía a ningún server.<br/>
-        • SUNAT requiere conexión a /api/sunat-bill (proxy). Sin internet, los XMLs quedan en cola.
+        • SUNAT requiere conexión a /api/sunat (proxy). Sin internet, los XMLs quedan en cola.
       </div>
     </div>
   );

@@ -15,7 +15,7 @@
 //   2. Si no → fallback a apis.net.pe v1/ruc legacy (gratis sin token,
 //      solo razón social + dirección).
 
-import { requireAuth, rateLimit, sanitizeError, isValidRUC, setCorsHeaders } from './_lib.js';
+import { requireAuth, rateLimit, sanitizeError, isValidRUC, setCorsHeaders } from '../lib/api-helpers.js';
 
 // ── Mapeo de actividades económicas / CIIU → rubro JARVEX ────
 // El mapeo busca palabras clave en el texto de actividad económica
@@ -48,10 +48,96 @@ function clasificarRubro(actividadTexto) {
   return null;
 }
 
+// ── SOAP: enviar comprobante a billService de SUNAT (era /api/sunat-bill) ──
+// Consolidado acá para no exceder el límite de 12 functions del plan
+// Hobby de Vercel. Se diferencia por método HTTP:
+//   GET  /api/sunat?ruc=...        → consulta info de RUC
+//   POST /api/sunat                → envía SOAP envelope al billService
+const BILL_ENDPOINTS = {
+  homologacion: 'https://e-beta.sunat.gob.pe/ol-ti-itcpfegem-beta/billService',
+  produccion: 'https://e-factura.sunat.gob.pe/ol-ti-itcpfegem/billService',
+};
+const SOAP_ACTION = 'urn:sendBill';
+
+async function readJsonBody(req) {
+  return new Promise((resolve) => {
+    let data = '';
+    req.on('data', (c) => (data += c));
+    req.on('end', () => {
+      try { resolve(JSON.parse(data)); } catch { resolve({}); }
+    });
+    req.on('error', () => resolve({}));
+  });
+}
+
+async function handleSendBill(req, res) {
+  try {
+    await requireAuth(req);
+    rateLimit(req, { windowMs: 60_000, max: 10 });
+  } catch (e) {
+    const sanitized = sanitizeError(e, 'No autorizado');
+    return res.status(sanitized.status).json({ ok: false, ...sanitized.body });
+  }
+
+  const body = req.body && typeof req.body === 'object' ? req.body : await readJsonBody(req);
+  const { soapEnvelope, ambiente } = body || {};
+
+  if (typeof soapEnvelope !== 'string' || !soapEnvelope.trim()) {
+    return res.status(400).json({ ok: false, code: 'BAD_BODY', message: 'soapEnvelope requerido' });
+  }
+  if (soapEnvelope.length > 5_000_000 || !/<\w+:?Envelope/i.test(soapEnvelope)) {
+    return res.status(400).json({ ok: false, code: 'BAD_BODY', message: 'soapEnvelope debe ser un SOAP envelope válido (<5MB)' });
+  }
+  const url = BILL_ENDPOINTS[ambiente];
+  if (!url) {
+    return res.status(400).json({ ok: false, code: 'BAD_AMBIENTE', message: 'ambiente debe ser homologacion o produccion' });
+  }
+
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 30000);
+    const upstream = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/xml; charset=utf-8',
+        'SOAPAction': SOAP_ACTION,
+        'Accept': 'text/xml, application/xml',
+      },
+      body: soapEnvelope,
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    const text = await upstream.text();
+    return res.status(200).json({
+      ok: true,
+      soapResponse: text,
+      upstreamStatus: upstream.status,
+    });
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      return res.status(504).json({ ok: false, code: 'TIMEOUT', message: 'SUNAT tardó más de 30s' });
+    }
+    console.error('[sunat sendBill] upstream error:', e?.message);
+    const isProd = process.env.NODE_ENV === 'production';
+    return res.status(502).json({
+      ok: false,
+      code: 'UPSTREAM',
+      message: 'No se pudo conectar a SUNAT',
+      ...(isProd ? {} : { detail: String(e.message || e) }),
+    });
+  }
+}
+
 export default async function handler(req, res) {
   setCorsHeaders(req, res);
   if (req.method === 'OPTIONS') return res.status(204).end();
 
+  // POST → envío SOAP al billService de SUNAT (consolidado de sunat-bill)
+  if (req.method === 'POST') {
+    return handleSendBill(req, res);
+  }
+
+  // GET → consulta de info de RUC vía decolecta/apis.net.pe
   try {
     await requireAuth(req);
     rateLimit(req, { windowMs: 60_000, max: 30 });

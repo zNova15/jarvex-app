@@ -167,7 +167,7 @@ function buildUserMessage(body) {
   return partes.join('\n');
 }
 
-import { requireAuth, rateLimit, sanitizeError } from './_lib.js';
+import { requireAuth, rateLimit, sanitizeError } from '../lib/api-helpers.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {

@@ -60,7 +60,7 @@ Devuelve SOLO JSON válido (sin markdown, sin texto extra) con esta estructura e
 
 Coloca en errors[] todo lo "high" y "medium". Coloca en warnings[] los "low". confianza alta (>=0.85) cuando los datos son completos y validables sin ambigüedad.`;
 
-import { requireAuth, rateLimit, sanitizeError } from './_lib.js';
+import { requireAuth, rateLimit, sanitizeError } from '../lib/api-helpers.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {

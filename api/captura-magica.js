@@ -68,7 +68,7 @@ Responde SOLO con JSON válido (sin markdown, sin texto extra) con esta estructu
   "advertencias": [string]
 }`;
 
-import { requireAuth, rateLimit, sanitizeError, validateFileBytes } from './_lib.js';
+import { requireAuth, rateLimit, sanitizeError, validateFileBytes } from '../lib/api-helpers.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {

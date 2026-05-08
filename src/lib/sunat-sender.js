@@ -13,7 +13,7 @@
 //  (ej: "20000000001MODDATOS") y la password también es SOL.
 //
 //  CORS: SUNAT NO permite llamadas directas browser→SUNAT. Por eso el
-//  cliente JS hace POST a /api/sunat-bill (función serverless en Vercel)
+//  cliente JS hace POST a /api/sunat (función serverless en Vercel)
 //  que reenvía el SOAP envelope a SUNAT.
 // ══════════════════════════════════════════════════════════════════════════
 
@@ -104,14 +104,14 @@ export async function sendBillToSUNAT({ zipBase64, zipFilename, ruc, sol_user, s
   let proxyResp;
   try {
     const { apiFetch } = await import('./api-client');
-    proxyResp = await apiFetch('/api/sunat-bill', {
+    proxyResp = await apiFetch('/api/sunat', {
       method: 'POST',
       timeout: 60000,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ soapEnvelope, ambiente }),
     });
   } catch (e) {
-    return { success: false, code: 'NETWORK', message: 'No se pudo contactar el proxy /api/sunat-bill: ' + e.message };
+    return { success: false, code: 'NETWORK', message: 'No se pudo contactar el proxy /api/sunat: ' + e.message };
   }
 
   let payload;

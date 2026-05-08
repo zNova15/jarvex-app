@@ -29,7 +29,7 @@
 //   advertencias_sunat: [string],
 // }
 
-import { requireAuth, rateLimit, sanitizeError, sanitizeForPrompt } from './_lib.js';
+import { requireAuth, rateLimit, sanitizeError, sanitizeForPrompt } from '../lib/api-helpers.js';
 
 function buildSystemPrompt() {
   return `Eres un auditor experto en compliance tributario peruano (SUNAT) y planificación de cadenas intercompany. Tu trabajo es analizar si una cadena de transferencia interna de materiales tiene COHERENCIA económica y fiscal.

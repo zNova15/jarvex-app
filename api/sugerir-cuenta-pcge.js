@@ -1,4 +1,4 @@
-import { requireAuth, rateLimit, sanitizeError, sanitizeForPrompt } from './_lib.js';
+import { requireAuth, rateLimit, sanitizeError, sanitizeForPrompt } from '../lib/api-helpers.js';
 
 // Vercel serverless function: POST /api/sugerir-cuenta-pcge
 //
