@@ -2,6 +2,7 @@ import { db, SYNC_STATUS, getLastSync, setLastSync } from '../db/jarvex.db';
 import { supabase } from '../lib/supabase';
 import { syncPendingAuditLogs } from '../lib/audit';
 import { syncPendingChangeRequests } from '../lib/changeRequests';
+import { captureException, captureMessage } from '../instrument.js';
 
 // Tablas que el cliente PUSHEA al servidor cuando hay cambios locales.
 // Antes solo eran las "transaccionales" (movimientos, asistencia, etc.)
@@ -176,6 +177,11 @@ export async function syncAll() {
   } catch (err) {
     console.error('[SyncEngine] ✗ Error en syncAll:', err);
     emit({ syncing: false, error: err.message });
+    // Sentry: syncAll completo falló (no un record individual). Es grave.
+    captureException(err, {
+      tags: { module: 'sync-engine', operation: 'syncAll' },
+      level: 'error',
+    });
   } finally {
     syncInProgress = false;
   }
@@ -587,8 +593,22 @@ async function handleSyncError(tabla, record, operacion, error) {
   if (isRLS) {
     console.error(`[SyncEngine] ${tabla}/${operacion} BLOQUEADO POR RLS (sync no podrá completarse):`, error.message);
     emitirEventoRLS(tabla, operacion, error);
+    // Sentry: warning crítico (NO error full porque la app sigue OK).
+    captureMessage(
+      `[SyncEngine] RLS bloqueando ${tabla}/${operacion}: ${error.message}`,
+      'warning'
+    );
   } else {
     console.warn(`[SyncEngine] ${tabla}/${operacion} failed (attempt ${retries}):`, error.message);
+    // Sentry: solo capturamos cuando ya marcamos como FAILED (5 retries).
+    // Antes de eso es ruido — el siguiente intento puede arreglarlo.
+    if (newStatus === SYNC_STATUS.FAILED) {
+      captureException(error, {
+        tags: { module: 'sync-engine', operation: operacion, table: tabla },
+        extra: { recordId: record.id, retries, errorCode: error.code },
+        level: 'error',
+      });
+    }
   }
 }
 

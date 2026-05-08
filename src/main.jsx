@@ -1,3 +1,9 @@
+// IMPORTANTE: Sentry DEBE inicializar antes que cualquier otro código
+// para capturar errores de imports y bootstrap. Por eso este import va
+// PRIMERO. Ver src/instrument.js para la configuración.
+import './instrument.js';
+import * as Sentry from '@sentry/react';
+
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 // Chart.js se carga lazy via src/lib/chart-loader (-250 KB del bundle inicial)
@@ -326,7 +332,15 @@ if ('serviceWorker' in navigator) {
 
 // Dar un tick para que todos los window.* estén registrados
 requestAnimationFrame(() => {
-  ReactDOM.createRoot(document.getElementById('root')).render(
+  // React 19 + Sentry: pasamos reactErrorHandler() para que Sentry capture
+  // errores de render que el ErrorBoundary built-in no atrapa (ej: errores
+  // en useEffect cleanups, suspended trees, etc.). Esto es complementario
+  // al AppErrorBoundary que ya tenemos para mostrar UI de fallback.
+  ReactDOM.createRoot(document.getElementById('root'), {
+    onUncaughtError:    Sentry.reactErrorHandler(),
+    onCaughtError:      Sentry.reactErrorHandler(),
+    onRecoverableError: Sentry.reactErrorHandler(),
+  }).render(
     <React.StrictMode>
       <Root />
     </React.StrictMode>
