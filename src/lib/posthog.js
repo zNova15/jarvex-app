@@ -26,7 +26,17 @@
 import posthog from 'posthog-js';
 
 const KEY = import.meta.env.VITE_POSTHOG_KEY;
-const HOST = import.meta.env.VITE_POSTHOG_HOST || 'https://us.i.posthog.com';
+// Default: usar el reverse proxy de Vercel (/ingest/*) para esquivar
+// adblockers. La ruta /ingest/* está configurada en vercel.json y
+// reescribe a us.i.posthog.com del lado del edge — NO cuenta como
+// serverless function. Adblockers no bloquean rutas del propio dominio.
+//
+// Si querés mandar directo a PostHog (ej: dev local sin Vercel),
+// definí VITE_POSTHOG_HOST=https://us.i.posthog.com en .env.local.
+const HOST = import.meta.env.VITE_POSTHOG_HOST || '/ingest';
+// PostHog necesita saber el host real para descargar assets estáticos
+// (toolbar, recordings) — el proxy /ingest/static/:path se encarga.
+const UI_HOST = import.meta.env.VITE_POSTHOG_UI_HOST || 'https://us.posthog.com';
 
 let _initialized = false;
 
@@ -77,6 +87,7 @@ export function initPostHog() {
 
   posthog.init(KEY, {
     api_host: HOST,
+    ui_host: UI_HOST,
     // Privacy / autocapture:
     autocapture: true,                    // captura clicks/forms automáticamente
     capture_pageview: false,              // lo manejamos manual con setPage (no hay rutas)
