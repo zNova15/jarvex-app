@@ -1,11 +1,13 @@
 // Helpers compartidos entre los endpoints serverless de /api.
 //
-// IMPORTANTE: este archivo NO tiene `export default handler`, así que Vercel
-// no lo trata como endpoint público (solo se expone via `import` desde otros
-// handlers). Si por algún motivo Vercel lo expone, este handler responde 404:
-export default function notAnEndpoint(_req, res) {
-  res.status(404).json({ error: 'Not an endpoint' });
-}
+// IMPORTANTE: este archivo NO debe tener `export default`. Vercel cuenta
+// como serverless function a TODO archivo .js en /api/ que tenga
+// `export default`, contra el límite de 12 functions del plan Hobby.
+// Antes este archivo tenía un `export default function notAnEndpoint`
+// pensado como guard, pero eso lo hacía contar como function — el guard
+// era contraproducente. Si Vercel por algún motivo lo expusiera como
+// endpoint (solo si lo solicitan como /api/_lib), responde con 404 por
+// defecto (no hay handler match).
 
 // ── 1. Validar usuario autenticado ────────────────────────────────
 //
