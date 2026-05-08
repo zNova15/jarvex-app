@@ -4,6 +4,15 @@
 import './instrument.js';
 import * as Sentry from '@sentry/react';
 
+// Exponer Sentry en window para tests manuales desde DevTools.
+// Útil para validar que la captura funciona:
+//   window.Sentry.captureException(new Error('test'));
+//   window.Sentry.captureMessage('hello sentry', 'info');
+// El DSN ya está inicializado en instrument.js — solo expone el SDK.
+if (typeof window !== 'undefined') {
+  window.Sentry = Sentry;
+}
+
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 // Chart.js se carga lazy via src/lib/chart-loader (-250 KB del bundle inicial)
