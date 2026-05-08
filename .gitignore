@@ -27,3 +27,10 @@ dist-ssr
 
 # Vercel
 .vercel/
+.vercel
+
+# Backups (NUNCA commitear dumps de DB — pueden tener datos sensibles)
+*.dump
+*.sql.gz
+backups/
+jarvex-backups/
