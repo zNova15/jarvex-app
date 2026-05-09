@@ -771,21 +771,24 @@ function MovMaterialesPage({ showToast }) {
   const { data: evidencias } = window.__hooks.useEvidencias(obraId);
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
 
-  // ── Mapa de TODOS los materiales (incluye soft-deleted) para lookup ──
-  // Necesario porque cuando un material se elimina del catálogo, los
-  // movimientos históricos siguen vivos pero el hook useMateriales filtra
-  // los eliminados, así que el lookup mostraba "(material eliminado)".
-  // Acá leemos directo de Dexie SIN filtrar deleted_at — el nombre del
-  // material queda visible aunque haya sido borrado del catálogo.
+  // ── Mapa de TODOS los materiales (incluye soft-deleted Y de otras obras) ──
+  // Necesario porque:
+  //   1. Material eliminado del catálogo → mov histórico debería mostrar
+  //      el nombre, no "(eliminado)".
+  //   2. Material que vive en otra obra (caso raro pero posible si el form
+  //      no reseteó la obra al crear) → el lookup debe encontrarlo igual.
+  //   3. Material no sincronizado al device del user → fallback al server.
+  // Estrategia: cargamos TODOS los materiales de Dexie sin filtros, y para
+  // los IDs que aún no aparezcan, hacemos un fetch directo a Supabase.
   const [materialesAll, setMaterialesAll] = uSM([]);
+  const [matsServer, setMatsServer] = uSM(new Map()); // id → {nombre_material, unidad}
+
   uEM(() => {
-    if (!obraId) return;
     let cancelled = false;
     const load = async () => {
       try {
-        const rows = await window.__db.materiales
-          .where('obra_id').equals(obraId)
-          .toArray();
+        // Sin filtro de obra — si vive en otra obra del user, igual lo encontramos.
+        const rows = await window.__db.materiales.toArray();
         if (!cancelled) setMaterialesAll(rows);
       } catch {}
     };
@@ -801,13 +804,47 @@ function MovMaterialesPage({ showToast }) {
       window.removeEventListener('jx_data_changed', onChange);
       window.removeEventListener('jarvex_master_updated', onChange);
     };
-  }, [obraId]);
+  }, []);
 
   const matsByIdAll = uMM(() => {
     const map = new Map();
     materialesAll.forEach(m => map.set(m.id, m));
     return map;
   }, [materialesAll]);
+
+  // ── Fallback al server: si hay movs cuyo material_id NO está en Dexie,
+  //    pedimos los nombres a Supabase en una sola query. Así el otro admin
+  //    ve "Cemento Sol 42.5kg" en vez de "(material no disponible)" aunque
+  //    el material no haya llegado a su Dexie por algún sync trabado.
+  uEM(() => {
+    if (!movs || movs.length === 0) return;
+    const sb = window.__supabase;
+    if (!sb) return;
+    const idsFaltantes = [];
+    for (const m of movs) {
+      if (!m.material_id) continue;
+      if (matsByIdAll.has(m.material_id)) continue;
+      if (matsServer.has(m.material_id)) continue;
+      idsFaltantes.push(m.material_id);
+    }
+    if (idsFaltantes.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await sb
+          .from('materiales')
+          .select('id,nombre_material,unidad,obra_id')
+          .in('id', idsFaltantes);
+        if (cancelled || !data) return;
+        setMatsServer(prev => {
+          const next = new Map(prev);
+          for (const r of data) next.set(r.id, r);
+          return next;
+        });
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [movs, matsByIdAll, matsServer]);
 
   const [reversoTarget, setReversoTarget] = uSM(null);
   const isAdmin = auth?.profile?.rol === 'admin';
@@ -931,9 +968,11 @@ function MovMaterialesPage({ showToast }) {
   const [regAtrasadoOpen, setRegAtrasadoOpen] = uSM(false);
   const [rfRefresh, setRfRefresh] = uSM(0);
 
-  // Lookup que busca primero en TODOS (incluso soft-deleted) — para que el
-  // nombre se muestre aunque el material catálogo esté eliminado.
-  const lookupMat = (id) => matsByIdAll.get(id) || materiales?.find(m => m.id === id);
+  // Lookup en cascada: Dexie (todos) → server cache (matsServer).
+  // Si el material no está en Dexie del user, el cache server lo provee
+  // para que NUNCA aparezca "(material no disponible)" en la UI.
+  const lookupMat = (id) =>
+    matsByIdAll.get(id) || materiales?.find(m => m.id === id) || matsServer.get(id);
   const lookupPers = (id) => personal?.find(p => p.id === id);
   const lookupProv = (id) => provs?.find(p => p.id === id);
   const lookupPart = (id) => partidas?.find(p => p.id === id);

@@ -216,14 +216,44 @@ async function pushPendingChangeRequests() {
 // velocidad y no saturar Supabase / RLS / la conexión del cliente.
 const PUSH_PARALLELISM = 5;
 
+// Foreign keys que NO deben pushearse mientras la entidad referenciada
+// esté pendiente de sync en local. Si el material X todavía es PENDING en
+// Dexie, un movimiento que referencia X NO debe llegar al server primero,
+// porque otros devices verían "(material no disponible)". Esperamos al
+// próximo ciclo, cuando X ya esté SYNCED.
+const FK_DEPS = {
+  movimientos_materiales:    [{ campo: 'material_id', tabla: 'materiales' }],
+  movimientos_herramientas:  [{ campo: 'herramienta_id', tabla: 'herramientas' }],
+  movimientos_epp:           [{ campo: 'epp_id', tabla: 'epps' }],
+  asistencia:                [{ campo: 'personal_id', tabla: 'personal' }],
+  recepcion_items:           [{ campo: 'recepcion_id', tabla: 'recepciones' }],
+  oc_items:                  [{ campo: 'oc_id', tabla: 'ordenes_compra' }],
+  cotizacion_items:          [{ campo: 'cotizacion_id', tabla: 'cotizaciones' }],
+  requisicion_items:         [{ campo: 'requisicion_id', tabla: 'requisiciones' }],
+};
+
+// True si todas las FKs del record están sincronizadas (o no hay FKs).
+async function fkDepsReady(tabla, record) {
+  const deps = FK_DEPS[tabla];
+  if (!deps) return true;
+  for (const { campo, tabla: tablaRef } of deps) {
+    const id = record[campo];
+    if (!id) continue; // FK opcional
+    const ref = await db[tablaRef].get(id);
+    if (!ref) return false; // referencia rota — no pushear
+    if (ref.sync_status && ref.sync_status !== SYNC_STATUS.SYNCED) {
+      return false; // todavía pendiente
+    }
+  }
+  return true;
+}
+
 async function pushTablePending(tabla) {
-  // Self-heal: records FAILED por el bug de columnas `_local` (PGRST204
+  // Self-heal #1: records FAILED por el bug de columnas `_local` (PGRST204
   // "Could not find the '_last_error' column") quedan bloqueados para
   // siempre porque pushTablePending solo procesa PENDING_*. Ahora que
   // stripLocalFields filtra esas columnas, podemos resetearlos a
   // PENDING_UPDATE para que el próximo push los reintente limpio.
-  // Si la operación original era CREATE, pushUpdate detecta que no existe
-  // en server y resetea a PENDING_CREATE automáticamente (línea ~300).
   const stuckByLocalFields = await db[tabla]
     .where('sync_status').equals(SYNC_STATUS.FAILED)
     .filter(r => r._last_error_code === 'PGRST204'
@@ -234,7 +264,31 @@ async function pushTablePending(tabla) {
       sync_status: SYNC_STATUS.PENDING_UPDATE,
       _sync_retries: 0,
     });
-    console.info(`[SyncEngine] self-heal: ${tabla}/${r.id} reset a PENDING_UPDATE`);
+    console.info(`[SyncEngine] self-heal _local: ${tabla}/${r.id} reset a PENDING_UPDATE`);
+  }
+
+  // Self-heal #2: records FAILED por causas NO permanentes (no RLS, no
+  // schema cache) que llevan más de 10 min en FAILED. Probablemente fue
+  // un error transitorio de red/server y vale la pena reintentar. Sin
+  // este reset, un blip de Supabase deja records en FAILED para siempre.
+  const TEN_MIN = 10 * 60 * 1000;
+  const ahora = Date.now();
+  const stuckTransients = await db[tabla]
+    .where('sync_status').equals(SYNC_STATUS.FAILED)
+    .filter(r => {
+      // No tocar si fue RLS — eso requiere intervención humana.
+      if (r._last_error_is_rls) return false;
+      // No tocar si lleva poco tiempo en FAILED (puede estar en proceso).
+      const updatedAt = r.updated_at ? new Date(r.updated_at).getTime() : 0;
+      return ahora - updatedAt > TEN_MIN;
+    })
+    .toArray();
+  for (const r of stuckTransients) {
+    await db[tabla].update(r.id, {
+      sync_status: SYNC_STATUS.PENDING_UPDATE,
+      _sync_retries: 0,
+    });
+    console.info(`[SyncEngine] self-heal transient: ${tabla}/${r.id} reset (FAILED >10min)`);
   }
 
   // Mantener el orden create → update → delete dentro de la misma tabla
@@ -300,6 +354,17 @@ function stripLocalFields(record) {
 }
 
 async function pushCreate(tabla, record) {
+  // Anti-fantasma: no pushear si una FK referenciada todavía está
+  // pendiente en local. Si pusheamos el mov antes que el material,
+  // el server queda con un mov huérfano y otros devices ven
+  // "(material no disponible)". Esperamos al próximo ciclo —
+  // cuando el material ya esté SYNCED, este record también se va.
+  if (!(await fkDepsReady(tabla, record))) {
+    console.info(`[SyncEngine] ${tabla}/${record.id.slice(0,8)} esperando FK ` +
+                 `pendiente; skip por ahora`);
+    return;
+  }
+
   const serverRecord = stripLocalFields(record);
 
   const { error } = await supabase.from(tabla).insert(serverRecord);
@@ -320,6 +385,13 @@ async function pushCreate(tabla, record) {
 }
 
 async function pushUpdate(tabla, record) {
+  // Anti-fantasma (igual que en pushCreate): si una FK referenciada
+  // está pendiente en local, esperamos al próximo ciclo.
+  if (!(await fkDepsReady(tabla, record))) {
+    console.info(`[SyncEngine] ${tabla}/${record.id.slice(0,8)} update esperando FK; skip`);
+    return;
+  }
+
   const serverRecord = stripLocalFields(record);
 
   // 1. Chequear si el record existe en server. Si NO existe (PGRST116 = no
@@ -657,6 +729,27 @@ async function handleSyncError(tabla, record, operacion, error) {
 window.addEventListener('online', () => {
   console.log('[SyncEngine] Online — syncing...');
   setTimeout(syncAll, 1000); // pequeño delay para estabilizar la conexión
+});
+
+// ── Push agresivo al crear/editar localmente ─────────────────────────
+// Cuando un componente UI escribe a Dexie, emite 'jx_data_changed'.
+// Antes solo refrescábamos la UI; ahora también disparamos un push
+// inmediato (debounced 1.5s) para que el record llegue al server YA, no
+// 30s después. Esto es lo que hace que "agregar material → otro device
+// lo ve" se sienta instantáneo.
+let _pushDebounceId = null;
+window.addEventListener('jx_data_changed', (e) => {
+  // Solo nos interesan cambios LOCALES (source !== 'realtime'), porque
+  // los de realtime ya vienen del server y no hay nada que pushear.
+  const source = e?.detail?.source;
+  if (source === 'realtime' || source === 'pull') return;
+  if (!navigator.onLine) return; // si está offline, esperamos al evento online
+  clearTimeout(_pushDebounceId);
+  _pushDebounceId = setTimeout(() => {
+    pushPendingOperations().catch(err => {
+      console.warn('[SyncEngine] push agresivo falló:', err?.message);
+    });
+  }, 1500);
 });
 
 // ── Sync periódico cada 60s como respaldo del realtime ──────────────
