@@ -10,6 +10,8 @@
     "preview": "vite preview",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
+    "test:e2e": "node tests/e2e/run-all.mjs",
+    "test:e2e:headed": "HEADLESS=false node tests/e2e/run-all.mjs",
     "deploy:preview": "vercel",
     "deploy:prod": "vercel --prod"
   },

@@ -13,12 +13,16 @@ import { run as smoke }     from './01-smoke.test.mjs';
 import { run as nav }       from './02-navegacion.test.mjs';
 import { run as busqueda }  from './03-busqueda.test.mjs';
 import { run as alertas }   from './04-alertas.test.mjs';
+import { run as syncOffline } from './05-sync-offline-recovery.test.mjs';
+import { run as syncNoLeak }  from './06-sync-no-leak-local-fields.test.mjs';
 
 const TESTS = [
-  { name: '01-smoke',       fn: smoke },
-  { name: '02-navegacion',  fn: nav },
-  { name: '03-busqueda',    fn: busqueda },
-  { name: '04-alertas',     fn: alertas },
+  { name: '01-smoke',          fn: smoke },
+  { name: '02-navegacion',     fn: nav },
+  { name: '03-busqueda',       fn: busqueda },
+  { name: '04-alertas',        fn: alertas },
+  { name: '05-sync-offline',   fn: syncOffline },
+  { name: '06-sync-no-leak',   fn: syncNoLeak },
 ];
 
 const CHECK = '✓'; // ✓

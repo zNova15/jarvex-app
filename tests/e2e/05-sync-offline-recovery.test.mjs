@@ -27,15 +27,12 @@ const TIMEOUT_SYNC = 60_000; // 60s de paciencia para el sync engine
 const log = (msg) => console.log(`[${TEST_NAME}] ${new Date().toISOString().slice(11,19)} ${msg}`);
 const fail = async (page, msg) => {
   const f = await capture(page, `fail-${TEST_NAME}-${Date.now()}`);
-  console.error(`\n❌ FAIL: ${msg}`);
-  console.error(`   Screenshot: ${f}`);
-  process.exit(1);
+  throw new Error(`${msg} (screenshot: ${f})`);
 };
 
-(async () => {
+export async function run() {
   const { email, pass } = getCreds();
   const { browser, ctx, page } = await launchBrowser();
-  let aprobado = false;
 
   try {
     log('Login...');
@@ -217,20 +214,26 @@ const fail = async (page, msg) => {
       }
     }, [mov1, mov2, testIdA]);
 
-    aprobado = true;
     log('═══════════════════════════════════════════════════════');
     log('✓ TODOS LOS TESTS PASARON');
     log('═══════════════════════════════════════════════════════');
-  } catch (err) {
-    console.error(`\n❌ EXCEPTION: ${err?.message || err}`);
-    if (err?.stack) console.error(err.stack);
-    await capture(page, `${TEST_NAME}-exception`);
-    process.exit(1);
+    return { ok: true, details: { tests: ['online', 'offline', 'doble-click'] } };
   } finally {
     await close(browser);
-    process.exit(aprobado ? 0 : 1);
   }
-})();
+}
+
+// Permitir correrlo standalone con: node tests/e2e/05-sync-offline-recovery.test.mjs
+if (import.meta.url === `file://${process.argv[1]}`) {
+  run().then(r => {
+    console.log('Test 05:', JSON.stringify(r, null, 2));
+    process.exit(r.ok ? 0 : 1);
+  }).catch(e => {
+    console.error('Test 05 FAILED:', e?.message || e);
+    if (e?.stack) console.error(e.stack);
+    process.exit(1);
+  });
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
