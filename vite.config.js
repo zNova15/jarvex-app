@@ -8,7 +8,23 @@ import { sentryVitePlugin } from '@sentry/vite-plugin'
 // el build si no hay token, simplemente no sube los maps.
 const SENTRY_TOKEN = process.env.SENTRY_AUTH_TOKEN;
 
+// Versión del release. Vercel expone VERCEL_GIT_COMMIT_SHA en builds;
+// localmente caemos a npm_package_version o 'dev'. Sin esto, Sentry
+// recibía 'jarvex@unknown' y NO podía mapear sourcemaps a release →
+// stacktraces en prod aparecían minificados ("Wo at index-XXX.js:9:52000")
+// en vez de simbolicados ("handleSubmit at jx-almacen.jsx:680").
+const RELEASE = `jarvex@${
+  process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ||
+  process.env.npm_package_version ||
+  'dev'
+}`;
+
 export default defineConfig({
+  // Inyectamos VITE_APP_VERSION en build-time. Vite reemplaza
+  // `import.meta.env.VITE_APP_VERSION` por este string literal.
+  define: {
+    'import.meta.env.VITE_APP_VERSION': JSON.stringify(RELEASE),
+  },
   // Generar source maps en producción para que Sentry pueda mapear los
   // stack traces minificados a líneas reales del código fuente. Sin esto,
   // un error aparece como "at Wo (index-XXX.js:9:52390)" en vez de

@@ -1,0 +1,103 @@
+# ═══════════════════════════════════════════════════════════════════
+# JARVEX — Monitoreo automático diario
+#
+# Corre todos los días a las 09:00 UTC (04:00 Lima) y verifica:
+#   - RLS sigue funcionando (almacenero/anon bloqueados)
+#   - No aparecieron movs huérfanos nuevos
+#   - No aparecieron duplicados nuevos
+#   - npm audit
+#
+# Si encuentra algo, el job FALLA y GitHub te manda mail al owner.
+# Falla NO significa que la app esté rota — significa que algo merece
+# tu atención.
+#
+# Para correrlo manual: tab Actions → "Monitoreo diario" → Run workflow.
+# ═══════════════════════════════════════════════════════════════════
+name: Monitoreo diario
+
+on:
+  schedule:
+    - cron: '0 9 * * *'  # 04:00 Lima
+  workflow_dispatch:
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install (sin scripts de postinstall)
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Verify RLS (anon NO debe leer planillas/cuentas)
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        run: |
+          set -e
+          # El script imprime ✓/✗ pero no devuelve exit code útil.
+          # Lo parseamos: si hay '✗' en la salida → falla.
+          OUT=$(node scripts/verify-rls.mjs)
+          echo "$OUT"
+          if echo "$OUT" | grep -q '✗'; then
+            echo "::error::verify-rls detectó problemas. Revisar arriba."
+            exit 1
+          fi
+
+      - name: Detectar duplicados nuevos
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          set -e
+          OUT=$(node scripts/detect-duplicates.mjs)
+          echo "$OUT"
+          # Falla solo si encontró ≥1 grupo de duplicados en movs
+          if echo "$OUT" | grep -E '⚠ [0-9]+ grupos de duplicados detectados' | grep -v '^   ✓'; then
+            echo "::warning::Hay duplicados que vale la pena revisar."
+            # No falla — solo warning. Los duplicados pueden ser legítimos.
+          fi
+
+      - name: Detectar movs huérfanos
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          set -e
+          OUT=$(node scripts/diagnose-orphan-movs.mjs)
+          echo "$OUT"
+          if echo "$OUT" | grep -q 'movs con material_id INEXISTENTE'; then
+            echo "::error::Hay movs huérfanos. Si vienen de pre-fix, ya están limpios; si nuevos, hay regression."
+            exit 1
+          fi
+
+      - name: npm audit (solo high/critical)
+        run: |
+          set -e
+          if npm audit --audit-level=high --json > audit.json 2>/dev/null; then
+            echo "✓ Sin vulnerabilidades high/critical"
+          else
+            CRIT=$(node -e "const j=require('./audit.json');console.log(j.metadata?.vulnerabilities?.critical||0)")
+            HIGH=$(node -e "const j=require('./audit.json');console.log(j.metadata?.vulnerabilities?.high||0)")
+            echo "✗ Vulnerabilidades: $CRIT critical, $HIGH high"
+            cat audit.json | node -e "
+              const j=JSON.parse(require('fs').readFileSync('/dev/stdin','utf-8'));
+              for (const [pkg, info] of Object.entries(j.vulnerabilities||{})) {
+                if (info.severity==='critical'||info.severity==='high') {
+                  console.log('  - '+pkg+' ('+info.severity+')');
+                }
+              }
+            "
+            # Falla solo si hay critical. Las high se reportan pero no bloquean
+            # — algunas no tienen fix upstream (ej. xlsx).
+            if [ "$CRIT" -gt 0 ]; then exit 1; fi
+          fi

@@ -90,6 +90,8 @@ export function initPostHog() {
     autocapture: true,                    // captura clicks/forms automáticamente
     capture_pageview: false,              // lo manejamos manual con setPage (no hay rutas)
     capture_pageleave: true,              // tiempo en pantalla
+    capture_performance: true,            // Web Vitals (LCP/FCP/INP/CLS) — útil para ver
+                                          //   cuán rápido se siente la app por user/rol/release.
     disable_session_recording: true,      // ❌ NO grabar pantalla (datos sensibles)
     persistence: 'localStorage',          // sin cookies de tracking
     cross_subdomain_cookie: false,
