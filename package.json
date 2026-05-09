@@ -10,8 +10,9 @@
     "preview": "vite preview",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
-    "test:e2e": "node tests/e2e/run-all.mjs",
-    "test:e2e:headed": "HEADLESS=false node tests/e2e/run-all.mjs",
+    "test:e2e": "cd tests && npm run test:e2e",
+    "test:e2e:headed": "cd tests && npm run test:e2e:headed",
+    "test:e2e:install": "cd tests && npm install && npx playwright install chromium",
     "deploy:preview": "vercel",
     "deploy:prod": "vercel --prod"
   },

@@ -19,12 +19,11 @@ Levantan un Chrome real, hacen login en producción y validan flows críticos. C
 
 ### Setup (una vez)
 
-1. Instalá deps de tests:
+1. Instalá deps de tests **y el browser de Playwright**:
    ```bash
-   cd tests
-   npm install
-   cd ..
+   npm run test:e2e:install
    ```
+   Esto hace `cd tests && npm install && playwright install chromium` (~150 MB la primera vez).
 2. Exportá credenciales de un usuario de prueba (admin o el tuyo):
    ```bash
    export JX_TEST_EMAIL="grabieljesusjulcasalazar@gmail.com"

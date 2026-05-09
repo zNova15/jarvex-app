@@ -12,6 +12,7 @@
     "test:busqueda": "node e2e/03-busqueda.test.mjs",
     "test:alertas": "node e2e/04-alertas.test.mjs",
     "test:sync": "node e2e/05-sync-offline-recovery.test.mjs",
+    "test:no-leak": "node e2e/06-sync-no-leak-local-fields.test.mjs",
     "install:browsers": "playwright install chromium"
   },
   "devDependencies": {
