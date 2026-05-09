@@ -216,6 +216,26 @@ async function pushPendingChangeRequests() {
 const PUSH_PARALLELISM = 5;
 
 async function pushTablePending(tabla) {
+  // Self-heal: records FAILED por el bug de columnas `_local` (PGRST204
+  // "Could not find the '_last_error' column") quedan bloqueados para
+  // siempre porque pushTablePending solo procesa PENDING_*. Ahora que
+  // stripLocalFields filtra esas columnas, podemos resetearlos a
+  // PENDING_UPDATE para que el próximo push los reintente limpio.
+  // Si la operación original era CREATE, pushUpdate detecta que no existe
+  // en server y resetea a PENDING_CREATE automáticamente (línea ~300).
+  const stuckByLocalFields = await db[tabla]
+    .where('sync_status').equals(SYNC_STATUS.FAILED)
+    .filter(r => r._last_error_code === 'PGRST204'
+                 && /'_[a-z_]+' column/.test(r._last_error || ''))
+    .toArray();
+  for (const r of stuckByLocalFields) {
+    await db[tabla].update(r.id, {
+      sync_status: SYNC_STATUS.PENDING_UPDATE,
+      _sync_retries: 0,
+    });
+    console.info(`[SyncEngine] self-heal: ${tabla}/${r.id} reset a PENDING_UPDATE`);
+  }
+
   // Mantener el orden create → update → delete dentro de la misma tabla
   // para respetar dependencias (e.g. crear antes de actualizar).
   // FILTRO IMPORTANTE: records con `demo: true` (modo prueba) NO se pushean
@@ -263,8 +283,23 @@ async function pushPendingOperations() {
   }
 }
 
+// Quita campos que solo viven en Dexie y nunca deben mandarse al server.
+// Convención: cualquier prop con prefijo `_` (ej: _last_error, _sync_retries)
+// es metadato local. Sin este filtro, PostgREST devuelve PGRST204
+// "Could not find the '_last_error' column" y el record se queda
+// permanentemente en pending — lo vimos en producción (Sentry JARVEX-APP-4).
+function stripLocalFields(record) {
+  const out = {};
+  for (const k of Object.keys(record)) {
+    if (k.startsWith('_')) continue;
+    if (k === 'sync_status' || k === 'last_synced_at') continue;
+    out[k] = record[k];
+  }
+  return out;
+}
+
 async function pushCreate(tabla, record) {
-  const { sync_status, last_synced_at, ...serverRecord } = record;
+  const serverRecord = stripLocalFields(record);
 
   const { error } = await supabase.from(tabla).insert(serverRecord);
 
@@ -282,7 +317,7 @@ async function pushCreate(tabla, record) {
 }
 
 async function pushUpdate(tabla, record) {
-  const { sync_status, last_synced_at, ...serverRecord } = record;
+  const serverRecord = stripLocalFields(record);
 
   // 1. Chequear si el record existe en server. Si NO existe (PGRST116 = no
   //    rows o error similar), el record solo vive localmente — el cliente
