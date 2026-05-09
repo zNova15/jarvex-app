@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 import { syncPendingAuditLogs } from '../lib/audit';
 import { syncPendingChangeRequests } from '../lib/changeRequests';
 import { captureException, captureMessage } from '../instrument.js';
+import { trackEvent } from '../lib/posthog.js';
 
 // Tablas que el cliente PUSHEA al servidor cuando hay cambios locales.
 // Antes solo eran las "transaccionales" (movimientos, asistencia, etc.)
@@ -308,9 +309,11 @@ async function pushCreate(tabla, record) {
       sync_status: SYNC_STATUS.SYNCED,
       last_synced_at: new Date().toISOString(),
     });
+    trackEvent('record_pushed', { tabla, operacion: 'create' });
   } else if (error.code === '23505') {
     // Unique constraint → ya existe en servidor (idempotency_key duplicado)
     await db[tabla].update(record.id, { sync_status: SYNC_STATUS.SYNCED });
+    trackEvent('record_pushed', { tabla, operacion: 'create_dedup' });
   } else {
     await handleSyncError(tabla, record, 'create', error);
   }
@@ -387,6 +390,7 @@ async function pushUpdate(tabla, record) {
     sync_status: SYNC_STATUS.SYNCED,
     last_synced_at: new Date().toISOString(),
   });
+  trackEvent('record_pushed', { tabla, operacion: 'update' });
 }
 
 async function pushDelete(tabla, record) {
@@ -397,6 +401,7 @@ async function pushDelete(tabla, record) {
 
   if (!error) {
     await db[tabla].delete(record.id);
+    trackEvent('record_pushed', { tabla, operacion: 'delete' });
   } else {
     await handleSyncError(tabla, record, 'delete', error);
   }

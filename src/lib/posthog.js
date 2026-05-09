@@ -128,6 +128,14 @@ export function identifyUser(profile) {
       rol: profile.rol || 'unknown',
       obra_id_activa: profile.obra_id || null,
     });
+    // Super-properties: se inyectan automáticamente en CADA evento
+    // posterior. Sin esto, los dashboards filtrados por rol solo verían
+    // $pageview (que ya pasa user_rol manual) pero no los record_pushed
+    // del SyncEngine. Con register, todo evento queda taggeado.
+    posthog.register({
+      user_rol: profile.rol || 'unknown',
+      obra_activa: profile.obra_id || null,
+    });
     // Group analytics: agrupar por obra para ver patrones por obra.
     if (profile.obra_id) {
       posthog.group('obra', profile.obra_id);
