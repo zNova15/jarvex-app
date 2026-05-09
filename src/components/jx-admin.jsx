@@ -703,6 +703,38 @@ window.__canSeeSidebarItem = function(rol, itemId) {
   if (modulo === undefined) return false;
   return window.__hasPerm?.(rol, modulo, 'r') ?? false;
 };
+// Pantalla "home" por rol — cuando el user logea, en vez de caer siempre
+// en el dashboard ejecutivo (que para un almacenero es una pantalla con
+// info que ni le incumbe), abrimos directo en su pantalla principal.
+// Si el rol no tiene permiso al item sugerido por algún custom override,
+// caemos al dashboard utility por seguridad.
+const __HOME_POR_ROL = {
+  admin: 'dashboard',
+  gerente: 'dashboard-ejecutivo',
+  ingeniero_residente: 'avance',
+  supervisor: 'asistencia',
+  almacenero: 'mov-materiales',
+  asistente_admin: 'requisiciones',
+  contador: 'movimientos-contables',
+  tesorero: 'cuentas-bancarias',
+  jefe_compras: 'requisiciones',
+  rrhh: 'planillas',
+  prevencionista: 'iperc',
+  maestro_obra: 'avance',
+  solo_lectura: 'dashboard',
+};
+
+window.__defaultPageForRol = function(rol) {
+  if (!rol) return 'dashboard';
+  const sugerido = __HOME_POR_ROL[rol] || 'dashboard';
+  // Verificar que el rol realmente puede ver esa pantalla. Si custom-overrides
+  // del admin se la quitaron, fallback al dashboard (siempre visible).
+  try {
+    if (window.__canSeeSidebarItem?.(rol, sugerido)) return sugerido;
+  } catch {}
+  return 'dashboard';
+};
+
 window.__hasPerm = function(rol, modulo, nivel = 'r') {
   if (!rol) return false;
   if (rol === 'admin') return true;

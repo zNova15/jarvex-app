@@ -604,6 +604,33 @@ const PAGE_REGISTRY = {
   'conflictos':             { chunk: 'jx-conflicts', component: 'ConflictsPage' },
 };
 
+// Pre-fetch de chunks que el rol va a usar. Se llama post-login para
+// que cuando el user clickee en el sidebar, los chunks ya estén en
+// memoria. Almacenero NO descarga jx-contabilidad/jx-tesoreria/jx-planillas;
+// contador NO descarga jx-almacen/jx-ssoma. Bundle inicial sigue chico,
+// pero la navegación se siente instantánea dentro del rol.
+window.__prefetchChunksForRol = function(rol) {
+  if (!rol || !window.__loadChunk || !window.__canSeeSidebarItem) return;
+  const chunks = new Set();
+  for (const [pageId, info] of Object.entries(PAGE_REGISTRY)) {
+    if (window.__canSeeSidebarItem(rol, pageId)) {
+      chunks.add(info.chunk);
+    }
+  }
+  // Cargar de a uno con requestIdleCallback para no competir con la
+  // pantalla activa. Si el browser no soporta rIC, fallback a setTimeout
+  // con stagger pequeño para no saturar la red.
+  const lista = [...chunks];
+  const cargar = (i) => {
+    if (i >= lista.length) return;
+    const ric = window.requestIdleCallback || ((cb) => setTimeout(cb, 100));
+    ric(() => {
+      window.__loadChunk(lista[i]).catch(() => {}).finally(() => cargar(i + 1));
+    }, { timeout: 5000 });
+  };
+  setTimeout(() => cargar(0), 1500); // dejar que el initial render termine
+};
+
 function LazyPageSpinner() {
   return (
     <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', gap:14, color:'var(--tm)' }}>
@@ -670,7 +697,35 @@ function App() {
   const auth = window.__useAuth();   // hook expuesto desde main.jsx
   const [resetFlow] = uSA(() => isResetFlow());
   const isMobile = useIsMobileApp();
-  const [page, setPage]             = uSA('dashboard');
+  // Pantalla inicial según el rol: el almacenero arranca en "Mov. Materiales",
+  // el contador en "Movs. Contables", el gerente en "Dashboard Ejecutivo", etc.
+  // Si el rol todavía no se cargó (auth pendiente), arrancamos en 'dashboard'
+  // y el effect de abajo lo cambia cuando el profile esté disponible.
+  const [page, setPage]             = uSA(() => {
+    const rol = auth?.profile?.rol;
+    if (rol && window.__defaultPageForRol) return window.__defaultPageForRol(rol);
+    return 'dashboard';
+  });
+
+  // Al cargar el profile (post-login):
+  //   1. Redirigir a la home del rol (solo la primera vez).
+  //   2. Disparar prefetch de los chunks que el rol va a usar — así su
+  //      navegación dentro del menú se siente instantánea.
+  const _homeAplicadaRef = React.useRef(false);
+  uEA(() => {
+    if (_homeAplicadaRef.current) return;
+    const rol = auth?.profile?.rol;
+    if (!rol) return;
+    _homeAplicadaRef.current = true;
+    if (page === 'dashboard' && window.__defaultPageForRol) {
+      const home = window.__defaultPageForRol(rol);
+      if (home && home !== page) setPage(home);
+    }
+    // Prefetch en background — no bloquea nada, no espera nada.
+    if (window.__prefetchChunksForRol) {
+      window.__prefetchChunksForRol(rol);
+    }
+  }, [auth?.profile?.rol]);
   // En móvil arrancamos con el drawer cerrado (collapsed=true).
   // En desktop arrancamos con el sidebar expandido (collapsed=false).
   const [collapsed, setCollapsed]   = uSA(() =>
