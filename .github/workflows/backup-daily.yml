@@ -1,0 +1,71 @@
+# ═══════════════════════════════════════════════════════════════════
+# JARVEX — Backup automático diario de Supabase
+#
+# Corre todos los días a las 08:00 UTC (03:00 Lima) y deja un artifact
+# comprimido con TODAS las tablas en formato JSONL. Retención por
+# default de GitHub: 90 días. Si querés más, cambialo en
+# Settings → Actions → General → Artifact retention.
+#
+# Si el job falla, GitHub manda un mail automático al owner del repo
+# (configurar en https://github.com/settings/notifications).
+#
+# Para correrlo a mano: tab Actions → "Backup diario Supabase" → Run
+# workflow.
+#
+# Secrets requeridos en Settings → Secrets and variables → Actions:
+#   - VITE_SUPABASE_URL          (mismo valor que en Vercel)
+#   - SUPABASE_SERVICE_ROLE_KEY  (mismo valor — NUNCA commitear)
+# ═══════════════════════════════════════════════════════════════════
+name: Backup diario Supabase
+
+on:
+  schedule:
+    # 08:00 UTC = 03:00 Lima/Perú (UTC-5)
+    - cron: '0 8 * * *'
+  workflow_dispatch:  # botón manual
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Ejecutar backup
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          BACKUP_DIR: ${{ github.workspace }}/backup-output
+        run: node scripts/backup-supabase.mjs
+
+      - name: Comprimir backup
+        run: |
+          cd backup-output
+          BACKUP_FOLDER=$(ls -1 | head -1)
+          if [ -z "$BACKUP_FOLDER" ]; then
+            echo "✗ No se generó ninguna carpeta de backup"
+            exit 1
+          fi
+          tar -czf "$BACKUP_FOLDER.tar.gz" "$BACKUP_FOLDER"
+          ls -lh "$BACKUP_FOLDER.tar.gz"
+          echo "BACKUP_NAME=$BACKUP_FOLDER" >> "$GITHUB_ENV"
+
+      - name: Subir como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BACKUP_NAME }}
+          path: backup-output/*.tar.gz
+          retention-days: 90
+          compression-level: 0  # ya está comprimido con tar.gz
+
+      - name: Resumen
+        run: |
+          echo "✓ Backup ${{ env.BACKUP_NAME }} subido como artifact."
+          echo "  Descargar desde: tab Actions → este run → Artifacts"
