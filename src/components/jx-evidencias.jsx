@@ -167,6 +167,7 @@ function EvidenciasPage({ showToast }) {
   const [q, setQ]         = uSE('');
   const [cat, setCat]     = uSE('todos');
   const [modal, setModal] = uSE(false);
+  const [plantillasOpen, setPlantillasOpen] = uSE(false);
   const [light, setLight] = uSE(null); // evidencia seleccionada
 
   // Refs para URLs
@@ -213,9 +214,14 @@ function EvidenciasPage({ showToast }) {
           <div className="pg-title">Evidencias</div>
           <div className="pg-sub">{stats.total} archivos · {stats.pendientes} pendientes de subir</div>
         </div>
-        <button className="btn btn-amber btn-sm" onClick={()=>setModal(true)}>
-          <JxIcon name="upload" size={13}/>Subir Archivo
-        </button>
+        <div style={{ display:'flex', gap:8 }}>
+          <button className="btn btn-ghost btn-sm" onClick={()=>setPlantillasOpen(true)}>
+            <JxIcon name="fileText" size={13}/>Plantillas
+          </button>
+          <button className="btn btn-amber btn-sm" onClick={()=>setModal(true)}>
+            <JxIcon name="upload" size={13}/>Subir Archivo
+          </button>
+        </div>
       </div>
 
       {/* Filters */}
@@ -303,6 +309,15 @@ function EvidenciasPage({ showToast }) {
           obraId={obraId}
           onClose={()=>setModal(false)}
           onSaved={()=>{ refresh(); showToast?.('Evidencia guardada localmente · se subirá al sincronizar', 'green'); setModal(false); }}
+          showToast={showToast}
+        />
+      )}
+
+      {/* Plantillas modal */}
+      {plantillasOpen && (
+        <PlantillasModal
+          obraId={obraId}
+          onClose={()=>setPlantillasOpen(false)}
           showToast={showToast}
         />
       )}
@@ -540,6 +555,250 @@ function Lightbox({ ev, signedRef, blobUrlRef, onClose }) {
             "{ev.observaciones}"
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ─── PLANTILLAS MODAL ──────────────────────────────────────────────
+// Lista todas las plantillas disponibles. Cada una se expande con sus
+// opciones (fecha, persona que firma/recibe). Al confirmar, descarga
+// el PDF con el nombre y datos prellenados de la obra activa.
+const PLANTILLAS_DEF = [
+  {
+    id: 'ingresoMateriales',
+    titulo: 'Ingreso de materiales',
+    descripcion: 'Registro de materiales que llegan al almacén (con guía).',
+    grupo: 'Materiales',
+    campos: ['fecha', 'recibidoPor', 'firma'],
+  },
+  {
+    id: 'salidaMateriales',
+    titulo: 'Salida de materiales',
+    descripcion: 'Vale de salida con firma de quien retira.',
+    grupo: 'Materiales',
+    campos: ['fecha', 'retiraPor', 'firma'],
+  },
+  {
+    id: 'diarioMateriales',
+    titulo: 'Diario de materiales (ingreso + salida)',
+    descripcion: 'Plantilla combinada: 1 hoja para todo el día.',
+    grupo: 'Materiales',
+    campos: ['fecha', 'recibidoPor', 'firma'],
+  },
+  {
+    id: 'ingresoHerramientas',
+    titulo: 'Ingreso de herramientas',
+    descripcion: 'Registro de herramientas que ingresan al almacén.',
+    grupo: 'Herramientas',
+    campos: ['fecha', 'recibidoPor', 'firma'],
+  },
+  {
+    id: 'salidaHerramientas',
+    titulo: 'Salida de herramientas',
+    descripcion: 'Préstamo de herramientas con firma de quien retira.',
+    grupo: 'Herramientas',
+    campos: ['fecha', 'retiraPor', 'firma'],
+  },
+  {
+    id: 'diarioHerramientas',
+    titulo: 'Diario de herramientas (ingreso + salida)',
+    descripcion: 'Plantilla combinada del día.',
+    grupo: 'Herramientas',
+    campos: ['fecha', 'recibidoPor', 'firma'],
+  },
+  {
+    id: 'parteDiarioMaquinaria',
+    titulo: 'Parte diario de maquinaria',
+    descripcion: 'Operador, hora inicio/fin, horas trabajadas, combustible.',
+    grupo: 'Maquinaria',
+    campos: ['fecha', 'firma'],
+    cargaActivos: true,
+  },
+  {
+    id: 'ingresoEpps',
+    titulo: 'Ingreso de EPPs',
+    descripcion: 'Recepción de EPPs al almacén SSOMA.',
+    grupo: 'EPPs / SSOMA',
+    campos: ['fecha', 'recibidoPor', 'firma'],
+  },
+  {
+    id: 'salidaEpps',
+    titulo: 'Entrega de EPPs (SUNAFIL)',
+    descripcion: 'Acta de entrega con firma del trabajador. Conservar 5 años.',
+    grupo: 'EPPs / SSOMA',
+    campos: ['fecha', 'firma'],
+    cargaPersonal: true,
+  },
+  {
+    id: 'asistencia',
+    titulo: 'Asistencia diaria',
+    descripcion: 'Hoja con personal pre-cargado para marcar V/F/A/T.',
+    grupo: 'Personal',
+    campos: ['fecha'],
+    cargaPersonal: true,
+  },
+];
+
+function PlantillasModal({ obraId, onClose, showToast }) {
+  const [expanded, setExpanded]   = uSE(null);
+  const [loading, setLoading]     = uSE(false);
+  const [obraNombre, setObraNombre] = uSE('—');
+  const [opts, setOpts]           = uSE({}); // por id: { fecha, persona, firma }
+
+  uEE(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const o = await window.__db.obras.get(obraId);
+        if (!cancelled && o) setObraNombre(o.nombre_obra || '—');
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [obraId]);
+
+  const updateOpt = (id, patch) => setOpts(prev => ({
+    ...prev,
+    [id]: { ...(prev[id] || {}), ...patch },
+  }));
+
+  const getOpts = (def) => {
+    const cur = opts[def.id] || {};
+    return {
+      fecha: cur.fecha || new Date().toISOString().slice(0, 10),
+      persona: cur.persona || '',
+      firma: cur.firma !== false, // default true
+    };
+  };
+
+  const descargar = async (def) => {
+    setLoading(true);
+    try {
+      const fn = window.__plantillas?.[def.id];
+      if (!fn) { showToast?.('Plantilla no disponible', 'red'); return; }
+      const o = getOpts(def);
+      const args = { obraNombre, fecha: o.fecha };
+      if (def.campos.includes('recibidoPor')) args.recibidoSugerido = o.persona;
+      if (def.campos.includes('retiraPor'))   args.retiraSugerido   = o.persona;
+      if (def.campos.includes('recibidoPor') && def.id === 'ingresoMateriales')
+        args.proveedorSugerido = o.persona;
+      if (def.cargaPersonal) {
+        try {
+          const personal = await window.__db.personal
+            .where('obra_id').equals(obraId)
+            .filter(p => !p.deleted_at && p.estado === 'activo')
+            .toArray();
+          args.personal = personal;
+        } catch {}
+      }
+      if (def.cargaActivos) {
+        try {
+          const maquinarias = await window.__db.activos_pesados
+            ?.where('obra_id').equals(obraId)
+            .filter(a => !a.deleted_at)
+            .toArray();
+          args.maquinarias = maquinarias || [];
+        } catch {}
+      }
+      await fn(args);
+      showToast?.(`✓ ${def.titulo} descargada`, 'green');
+    } catch (e) {
+      console.error('[plantillas] error:', e);
+      showToast?.('Error al generar PDF: ' + (e.message || e), 'red');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const grupos = uME(() => {
+    const g = {};
+    for (const p of PLANTILLAS_DEF) {
+      g[p.grupo] = g[p.grupo] || [];
+      g[p.grupo].push(p);
+    }
+    return g;
+  }, []);
+
+  return (
+    <div className="modal-backdrop" onClick={onClose} style={{ background:'rgba(0,0,0,0.7)' }}>
+      <div className="modal" onClick={e=>e.stopPropagation()} style={{ maxWidth:640, width:'92%', maxHeight:'88vh', display:'flex', flexDirection:'column' }}>
+        <div className="modal-hd">
+          <div>
+            <div style={{ fontWeight:700, fontSize:15 }}>Plantillas para imprimir</div>
+            <div style={{ fontSize:11.5, color:'var(--tm)', marginTop:2 }}>
+              Hojas en PDF para llenar a mano en obra y subir como evidencia después.
+            </div>
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>Cerrar</button>
+        </div>
+
+        <div style={{ overflow:'auto', padding:'12px 16px' }}>
+          {Object.entries(grupos).map(([grupo, lista]) => (
+            <div key={grupo} style={{ marginBottom:14 }}>
+              <div style={{ fontSize:11, color:'var(--tm)', fontWeight:600, marginBottom:6, letterSpacing:0.5, textTransform:'uppercase' }}>
+                {grupo}
+              </div>
+              {lista.map(def => {
+                const open = expanded === def.id;
+                const o = getOpts(def);
+                return (
+                  <div key={def.id} style={{ border:'1px solid var(--bd)', borderRadius:6, marginBottom:6, background:'var(--bg2)' }}>
+                    <button
+                      onClick={()=>setExpanded(open ? null : def.id)}
+                      style={{ width:'100%', textAlign:'left', padding:'10px 12px', display:'flex', alignItems:'center', justifyContent:'space-between', background:'none', border:'none', color:'var(--ts)', cursor:'pointer' }}>
+                      <div>
+                        <div style={{ fontSize:13, fontWeight:600 }}>{def.titulo}</div>
+                        <div style={{ fontSize:11, color:'var(--tm)', marginTop:1 }}>{def.descripcion}</div>
+                      </div>
+                      <JxIcon name={open ? 'chevronUp' : 'chevronDown'} size={14} color="var(--tm)"/>
+                    </button>
+                    {open && (
+                      <div style={{ padding:'10px 12px 12px', borderTop:'1px solid var(--bd)', display:'flex', flexDirection:'column', gap:8 }}>
+                        {def.campos.includes('fecha') && (
+                          <label style={{ fontSize:11.5, color:'var(--tm)', display:'flex', alignItems:'center', gap:8 }}>
+                            <span style={{ minWidth:80 }}>Fecha:</span>
+                            <input type="date" className="input"
+                              value={o.fecha}
+                              onChange={e => updateOpt(def.id, { fecha: e.target.value })}
+                              style={{ flex:1 }}/>
+                          </label>
+                        )}
+                        {(def.campos.includes('recibidoPor') || def.campos.includes('retiraPor')) && (
+                          <label style={{ fontSize:11.5, color:'var(--tm)', display:'flex', alignItems:'center', gap:8 }}>
+                            <span style={{ minWidth:80 }}>
+                              {def.campos.includes('recibidoPor') ? 'Recibe / Proveedor:' : 'Quien retira:'}
+                            </span>
+                            <input type="text" className="input"
+                              placeholder="Nombre (opcional, queda en blanco si no se llena)"
+                              value={o.persona}
+                              onChange={e => updateOpt(def.id, { persona: e.target.value })}
+                              style={{ flex:1 }}/>
+                          </label>
+                        )}
+                        {def.campos.includes('firma') && (
+                          <label style={{ fontSize:11.5, color:'var(--tm)', display:'flex', alignItems:'center', gap:8 }}>
+                            <input type="checkbox"
+                              checked={o.firma}
+                              onChange={e => updateOpt(def.id, { firma: e.target.checked })}/>
+                            <span>Incluir columna de firma (default sí — siempre se incluye en estas plantillas)</span>
+                          </label>
+                        )}
+                        <div style={{ marginTop:4 }}>
+                          <button className="btn btn-amber btn-sm"
+                            disabled={loading}
+                            onClick={() => descargar(def)}>
+                            <JxIcon name="download" size={12}/>
+                            {loading ? 'Generando…' : 'Descargar PDF'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

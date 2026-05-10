@@ -113,10 +113,13 @@ window.__plantillas = {
   async asistencia(args)        { const m = await import('./lib/plantillas-pdf.js'); const doc = await m.plantillaAsistencia(args); m.descargarPlantilla(doc, `plantilla-asistencia-${args.fecha || 'hoy'}.pdf`); },
   async ingresoMateriales(args) { const m = await import('./lib/plantillas-pdf.js'); const doc = await m.plantillaIngresoMateriales(args); m.descargarPlantilla(doc, `plantilla-ingreso-materiales-${args.fecha || 'hoy'}.pdf`); },
   async salidaMateriales(args)  { const m = await import('./lib/plantillas-pdf.js'); const doc = await m.plantillaSalidaMateriales(args); m.descargarPlantilla(doc, `plantilla-salida-materiales-${args.fecha || 'hoy'}.pdf`); },
+  async diarioMateriales(args)  { const m = await import('./lib/plantillas-pdf.js'); const doc = await m.plantillaDiarioMateriales(args); m.descargarPlantilla(doc, `plantilla-diario-materiales-${args.fecha || 'hoy'}.pdf`); },
   async ingresoHerramientas(args) { const m = await import('./lib/plantillas-pdf.js'); const doc = await m.plantillaIngresoHerramientas(args); m.descargarPlantilla(doc, `plantilla-ingreso-herramientas-${args.fecha || 'hoy'}.pdf`); },
   async salidaHerramientas(args)  { const m = await import('./lib/plantillas-pdf.js'); const doc = await m.plantillaSalidaHerramientas(args); m.descargarPlantilla(doc, `plantilla-salida-herramientas-${args.fecha || 'hoy'}.pdf`); },
+  async diarioHerramientas(args)  { const m = await import('./lib/plantillas-pdf.js'); const doc = await m.plantillaDiarioHerramientas(args); m.descargarPlantilla(doc, `plantilla-diario-herramientas-${args.fecha || 'hoy'}.pdf`); },
+  async parteDiarioMaquinaria(args) { const m = await import('./lib/plantillas-pdf.js'); const doc = await m.plantillaParteDiarioMaquinaria(args); m.descargarPlantilla(doc, `plantilla-maquinaria-${args.fecha || 'hoy'}.pdf`); },
   async ingresoEpps(args)       { const m = await import('./lib/plantillas-pdf.js'); const doc = await m.plantillaIngresoEpps(args); m.descargarPlantilla(doc, `plantilla-ingreso-epps-${args.fecha || 'hoy'}.pdf`); },
-  async salidaEpps(args)        { const m = await import('./lib/plantillas-pdf.js'); const doc = await m.plantillaSalidaEpps(args); m.descargarPlantilla(doc, `plantilla-salida-epps-${args.fecha || 'hoy'}.pdf`); },
+  async salidaEpps(args)        { const m = await import('./lib/plantillas-pdf.js'); const doc = await m.plantillaSalidaEpps(args); m.descargarPlantilla(doc, `plantilla-entrega-epps-${args.fecha || 'hoy'}.pdf`); },
 };
 window.__pdfs = { ...(window.__pdfs || {}), ...contabilidadPdfs };
 window.__excel = { parseExcelFile, downloadTemplate, MODULES: IMPORT_MODULES };

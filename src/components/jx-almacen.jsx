@@ -1307,26 +1307,6 @@ function MaterialesPage({ showToast }) {
               <JxIcon name="settings" size={13}/>Categorizar con IA
             </button>
           )}
-          <button className="btn btn-ghost btn-sm" title="Descargar PDF imprimible para llenar a mano en obra"
-            onClick={async () => {
-              try {
-                const obra = (await window.__db.obras.get(obraId));
-                await window.__plantillas?.ingresoMateriales({ obraNombre: obra?.nombre_obra || '—', fecha: new Date().toISOString().slice(0,10) });
-                showToast('Plantilla de ingreso descargada', 'green');
-              } catch (e) { showToast('Error: ' + (e?.message || e), 'red'); }
-            }}>
-            <JxIcon name="download" size={13}/>Plantilla ingreso
-          </button>
-          <button className="btn btn-ghost btn-sm" title="Descargar PDF imprimible de salida"
-            onClick={async () => {
-              try {
-                const obra = (await window.__db.obras.get(obraId));
-                await window.__plantillas?.salidaMateriales({ obraNombre: obra?.nombre_obra || '—', fecha: new Date().toISOString().slice(0,10) });
-                showToast('Plantilla de salida descargada', 'green');
-              } catch (e) { showToast('Error: ' + (e?.message || e), 'red'); }
-            }}>
-            <JxIcon name="download" size={13}/>Plantilla salida
-          </button>
           <button className="btn btn-ghost btn-sm" onClick={()=>openModal('salida')}><JxIcon name="arrowOut" size={13}/>Registrar Salida</button>
           <button className="btn btn-ghost btn-sm" onClick={()=>openModal('ingreso')}><JxIcon name="arrowIn" size={13}/>Registrar Ingreso</button>
           <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setModal('nuevo');}}><JxIcon name="plus" size={13}/>Nuevo Material</button>
@@ -2926,26 +2906,6 @@ function HerramientasPage({ showToast }) {
               <JxIcon name="settings" size={13}/>Categorizar con IA
             </button>
           )}
-          <button className="btn btn-ghost btn-sm" title="Plantilla PDF imprimible para llenar a mano"
-            onClick={async () => {
-              try {
-                const obra = (await window.__db.obras.get(obraId));
-                await window.__plantillas?.ingresoHerramientas({ obraNombre: obra?.nombre_obra || '—', fecha: new Date().toISOString().slice(0,10) });
-                showToast('Plantilla descargada', 'green');
-              } catch (e) { showToast('Error: ' + (e?.message || e), 'red'); }
-            }}>
-            <JxIcon name="download" size={13}/>Plantilla ingreso
-          </button>
-          <button className="btn btn-ghost btn-sm" title="Plantilla PDF imprimible de salida y devolución"
-            onClick={async () => {
-              try {
-                const obra = (await window.__db.obras.get(obraId));
-                await window.__plantillas?.salidaHerramientas({ obraNombre: obra?.nombre_obra || '—', fecha: new Date().toISOString().slice(0,10) });
-                showToast('Plantilla descargada', 'green');
-              } catch (e) { showToast('Error: ' + (e?.message || e), 'red'); }
-            }}>
-            <JxIcon name="download" size={13}/>Plantilla salida
-          </button>
           <button className="btn btn-green btn-sm" onClick={()=>openMov('entrada')}><JxIcon name="arrowIn" size={13}/>Registrar Devolución</button>
           <button className="btn btn-ghost btn-sm" onClick={()=>openMov('salida')}><JxIcon name="arrowOut" size={13}/>Registrar Salida</button>
           <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setModal('nuevo');}}><JxIcon name="plus" size={13}/>Nueva Herramienta</button>
@@ -4013,17 +3973,6 @@ function AsistenciaPage({ showToast }) {
         <div><div className="pg-title">Control de Asistencia</div><div className="pg-sub">Registro diario masivo · 1 evidencia por día</div></div>
         <div style={{display:'flex',gap:8,alignItems:'center', flexWrap:'wrap'}}>
           <input className="fi" type="date" max={new Date().toISOString().slice(0,10)} value={date} onChange={e=>setDate(e.target.value)} style={{width:'auto'}}/>
-          <button className="btn btn-ghost btn-sm" title="Plantilla PDF imprimible con todos los trabajadores activos para llenar a mano"
-            onClick={async () => {
-              try {
-                const obra = (await window.__db.obras.get(obraId));
-                const personalActivo = (personal || []).filter(p => p.estado === 'activo');
-                await window.__plantillas?.asistencia({ obraNombre: obra?.nombre_obra || '—', fecha: date, personal: personalActivo });
-                showToast('Plantilla descargada', 'green');
-              } catch (e) { showToast('Error: ' + (e?.message || e), 'red'); }
-            }}>
-            <JxIcon name="download" size={13}/>Plantilla
-          </button>
           <button className="btn btn-amber btn-sm" onClick={openMasivo}>
             <JxIcon name="users" size={13}/>Registrar Asistencia Diaria
           </button>

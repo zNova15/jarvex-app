@@ -322,6 +322,77 @@ export async function plantillaSalidaEpps({ obraNombre, fecha, personal = [] }) 
   });
 }
 
+// ─── Plantilla 8: Diario combinado de materiales (ingreso + salida) ──
+export async function plantillaDiarioMateriales({ obraNombre, fecha, recibidoSugerido = '' }) {
+  return renderPlantilla({
+    titulo: 'Movimientos diarios de materiales',
+    subtitulo: `Una línea por movimiento. E = entrada (ingreso) · S = salida. Llenar con bolígrafo. Recibe/Entrega: ${recibidoSugerido || '____________________________'}`,
+    obraNombre, fecha,
+    columnas: ['Hora', 'E/S', 'Material', 'Unidad', 'Cantidad', 'Documento', 'Firma'],
+    filasVacias: 24,
+    columnasAnchos: {
+      0: { cellWidth: 16, halign: 'center' },
+      1: { cellWidth: 12, halign: 'center' },
+      2: { cellWidth: 60 },
+      3: { cellWidth: 18, halign: 'center' },
+      4: { cellWidth: 22, halign: 'right' },
+      5: { cellWidth: 26 },
+      6: { cellWidth: 34 },
+    },
+    footer: 'Subir al sistema desde Materiales → Mov. Materiales (lote diario). Adjuntar foto de esta hoja.',
+  });
+}
+
+// ─── Plantilla 9: Diario combinado de herramientas (ingreso + salida) ─
+export async function plantillaDiarioHerramientas({ obraNombre, fecha, recibidoSugerido = '' }) {
+  return renderPlantilla({
+    titulo: 'Movimientos diarios de herramientas',
+    subtitulo: `Una línea por movimiento. E = entrada (devolución) · S = salida (préstamo). Almacenero: ${recibidoSugerido || '____________________________'}`,
+    obraNombre, fecha,
+    columnas: ['Hora', 'E/S', 'Herramienta', 'Cantidad', 'Estado', 'Quien retira/devuelve', 'Firma'],
+    filasVacias: 24,
+    columnasAnchos: {
+      0: { cellWidth: 16, halign: 'center' },
+      1: { cellWidth: 12, halign: 'center' },
+      2: { cellWidth: 50 },
+      3: { cellWidth: 18, halign: 'center' },
+      4: { cellWidth: 24, halign: 'center' },
+      5: { cellWidth: 38 },
+      6: { cellWidth: 30 },
+    },
+    footer: 'Subir desde Herramientas → Mov. Herramientas. Reportar al instante cualquier daño o pérdida.',
+  });
+}
+
+// ─── Plantilla 10: Parte diario de maquinaria ───────────────────────
+export async function plantillaParteDiarioMaquinaria({ obraNombre, fecha, maquinarias = [] }) {
+  const filasPrellenadas = (maquinarias || []).slice(0, 6).map(m => [
+    m.codigo || m.placa || '',
+    m.descripcion || m.tipo || '',
+    '', '', '', '', '', '',
+  ]);
+  const cantVacias = Math.max(6, 12 - filasPrellenadas.length);
+  return renderPlantilla({
+    titulo: 'Parte diario de maquinaria',
+    subtitulo: 'Operador firma al inicio y al final del turno. Combustible registrar con surtidor o galones. Reportar averías de inmediato.',
+    obraNombre, fecha,
+    columnas: ['Equipo', 'Descripción', 'Operador', 'Hora ini.', 'Hora fin', 'Hrs trab.', 'Combust. (gal)', 'Firma'],
+    filasPrellenadas,
+    filasVacias: cantVacias,
+    columnasAnchos: {
+      0: { cellWidth: 20 },
+      1: { cellWidth: 36 },
+      2: { cellWidth: 36 },
+      3: { cellWidth: 16, halign: 'center' },
+      4: { cellWidth: 16, halign: 'center' },
+      5: { cellWidth: 14, halign: 'center' },
+      6: { cellWidth: 18, halign: 'right' },
+      7: { cellWidth: 32 },
+    },
+    footer: 'Subir desde Activos Pesados → Horas Máquina y Consumos Combustible al cierre del turno.',
+  });
+}
+
 // ─── Helper: descargar el doc generado ──────────────────────────────
 export function descargarPlantilla(doc, filename) {
   doc.save(filename);
