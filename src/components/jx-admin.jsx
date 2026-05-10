@@ -139,14 +139,20 @@ function UsuariosPage({ showToast }) {
     };
   }, []);
 
+  // Conteo de obras por usuario — SOLO cuenta asignaciones a obras NO
+  // borradas. Antes contaba todas las entradas de obra_usuarios incluso
+  // las de obras soft-deleted, así un admin con 8 asignaciones a obras
+  // viejas aparecía con "8 obras" cuando solo había 1 activa.
   const obrasPorUsuario = uMAd(() => {
+    const obrasActivasIds = new Set((obras || []).map(o => o.id));
     const m = {};
-    (obraUsuarios||[]).forEach(o => {
+    (obraUsuarios || []).forEach(o => {
       if (o.activo === false) return;
+      if (!obrasActivasIds.has(o.obra_id)) return; // obra borrada
       m[o.usuario_id] = (m[o.usuario_id] || 0) + 1;
     });
     return m;
-  }, [obraUsuarios]);
+  }, [obraUsuarios, obras]);
 
   const filtered = uMAd(() => {
     const q = search.trim().toLowerCase();
@@ -156,6 +162,13 @@ function UsuariosPage({ showToast }) {
       (p.email||'').toLowerCase().includes(q)
     );
   }, [profiles, search]);
+
+  // Separar admins de los demás roles. Los admins van en su propia
+  // sección arriba — tienen acceso a TODAS las obras automáticamente,
+  // así que los botones "Editar obras" y "Cambiar rol" no les aplican
+  // (un admin no se cambia rol a sí mismo, y no se le asignan obras).
+  const adminsList = uMAd(() => filtered.filter(u => u.rol === 'admin'), [filtered]);
+  const regularesList = uMAd(() => filtered.filter(u => u.rol !== 'admin'), [filtered]);
 
   const stats = uMAd(() => {
     const total = profiles.length;
@@ -378,59 +391,94 @@ function UsuariosPage({ showToast }) {
         <div className="card card-p" style={{ textAlign:'center', color:'var(--tm)' }}>
           {profiles.length === 0 ? 'Sin usuarios registrados' : 'Sin resultados para la búsqueda'}
         </div>
-      ) : (
-        <div className="card" style={{ overflow:'hidden' }}>
-          <table className="tbl">
-            <thead><tr>
-              <th>Usuario</th><th>Email</th><th>Rol</th><th>Estado</th><th>Obras</th><th>Acciones</th>
-            </tr></thead>
-            <tbody>
-              {filtered.map(u => {
-                const activo = u.activo !== false;
-                const obras = obrasPorUsuario[u.id] || 0;
-                const isMe = u.id === myId;
-                return (
-                  <tr key={u.id}>
-                    <td>
-                      <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                        <div style={{ width:32, height:32, borderRadius:'50%', background:'rgba(242,183,5,0.15)', border:'1.5px solid rgba(242,183,5,0.3)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:700, color:'var(--amber)', flexShrink:0 }}>
-                          {initialsOf(u.nombres, u.apellidos)}
-                        </div>
-                        <span className="col-p">{u.nombres||''} {u.apellidos||''}{isMe && <span style={{ color:'var(--tm)', marginLeft:6, fontSize:11 }}>(tú)</span>}</span>
-                      </div>
-                    </td>
-                    <td className="col-m">{u.email}</td>
-                    <td><span className={`badge ${getAllRolColors()[u.rol]||'b-gray'}`}>{getAllRolLabels()[u.rol]||u.rol||'—'}</span></td>
-                    <td><span className={`badge ${activo?'b-green':'b-gray'}`}>{activo?'Activo':'Inactivo'}</span></td>
-                    <td className="col-m">{obras}</td>
-                    <td>
-                      <div style={{ display:'flex', gap:4 }}>
-                        {isAdmin ? (
-                          <>
-                            <button className="btn btn-ghost btn-xs" title="Cambiar rol"
-                                    disabled={isMe} onClick={()=>setModalRol(u)}>
-                              <JxIcon name="edit" size={11}/>
-                            </button>
-                            <button className="btn btn-ghost btn-xs" title="Editar obras asignadas"
-                                    disabled={u.rol === 'admin'} onClick={()=>openEditObras(u)}>
-                              <JxIcon name="building" size={11}/>
-                            </button>
-                            <button className={`btn ${activo?'btn-red':'btn-green'} btn-xs`}
-                                    title={activo?'Desactivar (no podrá entrar)':'Reactivar'}
-                                    disabled={isMe} onClick={()=>handleToggleActivo(u)}>
-                              <JxIcon name={activo?'lock':'check'} size={11}/>
-                            </button>
-                          </>
-                        ) : <span style={{ fontSize:11, color:'var(--tm)' }}>—</span>}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+      ) : (() => {
+        // Render reusable de una fila (con flag para mostrar/ocultar botones
+        // que no aplican a admins — edit-rol y editar-obras)
+        const renderRow = (u, esAdminRow) => {
+          const activo = u.activo !== false;
+          const obrasCount = obrasPorUsuario[u.id] || 0;
+          const isMe = u.id === myId;
+          return (
+            <tr key={u.id}>
+              <td>
+                <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                  <div style={{ width:32, height:32, borderRadius:'50%', background:'rgba(242,183,5,0.15)', border:'1.5px solid rgba(242,183,5,0.3)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:700, color:'var(--amber)', flexShrink:0 }}>
+                    {initialsOf(u.nombres, u.apellidos)}
+                  </div>
+                  <span className="col-p">{u.nombres||''} {u.apellidos||''}{isMe && <span style={{ color:'var(--tm)', marginLeft:6, fontSize:11 }}>(tú)</span>}</span>
+                </div>
+              </td>
+              <td className="col-m">{u.email}</td>
+              <td><span className={`badge ${getAllRolColors()[u.rol]||'b-gray'}`}>{getAllRolLabels()[u.rol]||u.rol||'—'}</span></td>
+              <td><span className={`badge ${activo?'b-green':'b-gray'}`}>{activo?'Activo':'Inactivo'}</span></td>
+              <td className="col-m">{esAdminRow ? <span style={{ color:'var(--tm)' }}>todas</span> : obrasCount}</td>
+              <td>
+                <div style={{ display:'flex', gap:4 }}>
+                  {isAdmin ? (
+                    <>
+                      {!esAdminRow && (
+                        <>
+                          <button className="btn btn-ghost btn-xs" title="Cambiar rol"
+                                  onClick={()=>setModalRol(u)}>
+                            <JxIcon name="edit" size={11}/>
+                          </button>
+                          <button className="btn btn-ghost btn-xs" title="Editar obras asignadas"
+                                  onClick={()=>openEditObras(u)}>
+                            <JxIcon name="building" size={11}/>
+                          </button>
+                        </>
+                      )}
+                      <button className={`btn ${activo?'btn-red':'btn-green'} btn-xs`}
+                              title={activo?'Desactivar (no podrá entrar)':'Reactivar'}
+                              disabled={isMe} onClick={()=>handleToggleActivo(u)}>
+                        <JxIcon name={activo?'lock':'check'} size={11}/>
+                      </button>
+                    </>
+                  ) : <span style={{ fontSize:11, color:'var(--tm)' }}>—</span>}
+                </div>
+              </td>
+            </tr>
+          );
+        };
+        return (
+          <>
+            {adminsList.length > 0 && (
+              <div style={{ marginBottom:18 }}>
+                <div style={{ fontSize:11, color:'var(--tm)', fontWeight:600, marginBottom:6, letterSpacing:0.5, textTransform:'uppercase' }}>
+                  Administradores · {adminsList.length}
+                </div>
+                <div className="card" style={{ overflow:'hidden' }}>
+                  <table className="tbl">
+                    <thead><tr>
+                      <th>Usuario</th><th>Email</th><th>Rol</th><th>Estado</th><th>Obras</th><th>Acciones</th>
+                    </tr></thead>
+                    <tbody>
+                      {adminsList.map(u => renderRow(u, true))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+            {regularesList.length > 0 && (
+              <div>
+                <div style={{ fontSize:11, color:'var(--tm)', fontWeight:600, marginBottom:6, letterSpacing:0.5, textTransform:'uppercase' }}>
+                  Otros usuarios · {regularesList.length}
+                </div>
+                <div className="card" style={{ overflow:'hidden' }}>
+                  <table className="tbl">
+                    <thead><tr>
+                      <th>Usuario</th><th>Email</th><th>Rol</th><th>Estado</th><th>Obras</th><th>Acciones</th>
+                    </tr></thead>
+                    <tbody>
+                      {regularesList.map(u => renderRow(u, false))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </>
+        );
+      })()}
 
       {modalNew && (() => {
         const obrasActivas = (obras || []).filter(o => o.estado !== 'cerrada');
@@ -2318,6 +2366,14 @@ function SistemaTab({ showToast }) {
                 <li>Los datos en <strong>Supabase</strong> (la nube). Lo ya sincronizado se vuelve a bajar al recargar.</li>
                 <li>Tu cuenta de usuario ni los permisos.</li>
               </ul>
+
+              <div style={{ background:'rgba(52,152,219,0.10)', border:'1px solid rgba(52,152,219,0.35)', borderRadius:8, padding:'10px 12px', fontSize:12, color:'var(--ts)', marginBottom:10 }}>
+                <strong style={{ color:'var(--blue)' }}>¿Por qué después aparece data otra vez?</strong> Esto borra
+                solo este dispositivo. Al recargar, el sync vuelve a bajar todo lo
+                que estaba en el server. Si querés borrar registros específicos
+                (un material de prueba, una obra), borralos uno por uno desde su
+                pantalla — eso sí los saca del server.
+              </div>
 
               <div style={{ background:'rgba(255,179,0,0.10)', border:'1px solid rgba(255,179,0,0.35)', borderRadius:8, padding:'10px 12px', fontSize:12, color:'var(--ts)' }}>
                 <strong style={{ color:'var(--amber)' }}>Antes de borrar:</strong> verifica que estés <strong>online</strong> y que la última sincronización haya terminado.
