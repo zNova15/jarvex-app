@@ -143,6 +143,77 @@ function EppsInventarioPage({ showToast }) {
   const [form, setForm] = uS({});
   const [editingId, setEditingId] = uS(null);
 
+  // Foto del EPP — mismo patrón que materiales/herramientas en jx-almacen.
+  // Se guarda como evidencia (tipo_evidencia='foto_epp') vinculada al
+  // registro_relacionado_id del EPP. NO modifica el schema de epps —
+  // las fotos viven en la tabla `evidencias` separada.
+  const [foto, setFoto] = uS(null);
+  const [fotosMap, setFotosMap] = uS(() => new Map());
+
+  // Carga las fotos existentes para mostrarlas en el modal de edición y
+  // como thumbnail en la lista. Hace blob URLs locales para fotos que
+  // todavía no se subieron (pending_upload) y signed URLs remotas para
+  // las ya en Supabase Storage.
+  uE(() => {
+    if (!obraId) return;
+    let cancelled = false;
+    const blobUrlsLocales = [];
+    const cargar = async () => {
+      try {
+        const evidencias = await window.__db.evidencias
+          .where('obra_id').equals(obraId)
+          .filter(e => e.tipo_evidencia === 'foto_epp' && !e.deleted_at && e.registro_relacionado_id)
+          .toArray();
+        evidencias.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+        const map = new Map();
+        for (const ev of evidencias) {
+          if (map.has(ev.registro_relacionado_id)) continue; // primera = más reciente
+          if (ev.url_archivo) {
+            map.set(ev.registro_relacionado_id, { url: ev.url_archivo, isRemote: true });
+          } else {
+            try {
+              const row = await window.__db.evidencias_blobs.get(ev.id);
+              if (row?.blob) {
+                const url = URL.createObjectURL(row.blob);
+                blobUrlsLocales.push(url);
+                map.set(ev.registro_relacionado_id, { url, isRemote: false });
+              }
+            } catch {}
+          }
+        }
+        if (!cancelled) setFotosMap(map);
+      } catch (e) { console.warn('[fotos epp]', e?.message || e); }
+    };
+    cargar();
+    const onChange = (e) => {
+      const t = e?.detail?.tabla || e?.detail?.table;
+      if (!t || t === 'evidencias' || t === 'epps') cargar();
+    };
+    window.addEventListener('jx_data_changed', onChange);
+    window.addEventListener('jarvex_master_updated', onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('jx_data_changed', onChange);
+      window.removeEventListener('jarvex_master_updated', onChange);
+      blobUrlsLocales.forEach(u => { try { URL.revokeObjectURL(u); } catch {} });
+    };
+  }, [obraId]);
+
+  const handleFotoChangeEpp = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      showToast('Solo se permiten imágenes', 'red');
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      showToast('La foto supera los 8 MB', 'red');
+      return;
+    }
+    if (foto?.url) try { URL.revokeObjectURL(foto.url); } catch {}
+    setFoto({ blob: file, url: URL.createObjectURL(file) });
+  };
+
   // Lote (igual patrón que materiales)
   const [loteItems, setLoteItems] = uS([]);
   const [loteComunes, setLoteComunes] = uS({ usarMismoProveedor: true, usarMismaPersona: true, proveedor_id: null, personal_id: null });
@@ -184,11 +255,15 @@ function EppsInventarioPage({ showToast }) {
   const openNuevo = () => {
     setForm({ tipo_epp: 'Casco', vida_util_dias: 365, unidad: 'Und' });
     setEditingId(null);
+    if (foto?.url) try { URL.revokeObjectURL(foto.url); } catch {}
+    setFoto(null);
     setModal('nuevo');
   };
   const openEditar = (e) => {
     setForm({ ...e });
     setEditingId(e.id);
+    if (foto?.url) try { URL.revokeObjectURL(foto.url); } catch {}
+    setFoto(null);
     setModal('editar');
   };
   const openIngreso = () => {
@@ -234,6 +309,27 @@ function EppsInventarioPage({ showToast }) {
         };
         await updateEpp(editingId, newFields);
         try { await window.__logAudit?.({ action:'update', table:'epps', recordId:editingId, oldData, newData:newFields }); } catch {}
+        // Si el user adjuntó una foto nueva, la guardamos como evidencia.
+        // No bloquea el flow si falla — el EPP queda igual y avisamos.
+        if (foto?.blob && editingId) {
+          try {
+            await window.__saveEvidenciaLocal?.({
+              id: window.__newId(),
+              obra_id: obraId,
+              tipo_evidencia: 'foto_epp',
+              modulo_relacionado: 'epps',
+              registro_relacionado_id: editingId,
+              nombre_archivo: foto.blob.name || `epp_${editingId}.jpg`,
+              mime_type: foto.blob.type || 'image/jpeg',
+              blob: foto.blob,
+              observaciones: `Foto referencial del EPP ${form.nombre_epp}`,
+              fecha: new Date().toISOString().slice(0, 10),
+              created_by: window.__useAuth?.()?.profile?.id || null,
+            });
+          } catch (e) {
+            showToast('EPP guardado, pero la foto falló: ' + (e?.message || e), 'amber');
+          }
+        }
         showToast(`EPP "${form.nombre_epp}" actualizado`, 'green');
       } else {
         const stockInicial = parseFloat(form.stock_inicial) || 0;
@@ -257,8 +353,30 @@ function EppsInventarioPage({ showToast }) {
           estado: 'activo',
         });
         try { await window.__logAudit?.({ action:'insert', table:'epps', recordId:created?.id, newData:created }); } catch {}
+        // Si el user adjuntó una foto al crear, la guardamos como evidencia.
+        if (foto?.blob && created?.id) {
+          try {
+            await window.__saveEvidenciaLocal?.({
+              id: window.__newId(),
+              obra_id: obraId,
+              tipo_evidencia: 'foto_epp',
+              modulo_relacionado: 'epps',
+              registro_relacionado_id: created.id,
+              nombre_archivo: foto.blob.name || `epp_${created.id}.jpg`,
+              mime_type: foto.blob.type || 'image/jpeg',
+              blob: foto.blob,
+              observaciones: `Foto referencial del EPP ${form.nombre_epp}`,
+              fecha: new Date().toISOString().slice(0, 10),
+              created_by: window.__useAuth?.()?.profile?.id || null,
+            });
+          } catch (e) {
+            showToast('EPP creado, pero la foto falló: ' + (e?.message || e), 'amber');
+          }
+        }
         showToast(`EPP "${form.nombre_epp}" creado`, 'green');
       }
+      if (foto?.url) try { URL.revokeObjectURL(foto.url); } catch {}
+      setFoto(null);
       setModal(null); setForm({}); setEditingId(null);
     } catch (e) {
       showToast('Error: ' + e.message, 'red');
@@ -526,9 +644,54 @@ function EppsInventarioPage({ showToast }) {
               <label className="flabel">Precio estimado (S/)</label>
               <input className="fi" type="number" step="0.01" value={form.precio_unitario_estimado || ''} onChange={ev => setForm({ ...form, precio_unitario_estimado: ev.target.value })}/>
             </div>
+            {/* Foto del EPP — sube como evidencia foto_epp */}
+            {(() => {
+              const fotoExistente = editingId ? fotosMap.get(editingId) : null;
+              const tieneNueva = !!foto?.url;
+              const tieneExistente = !!fotoExistente?.url && !tieneNueva;
+              const labelBoton = tieneNueva
+                ? 'Cambiar la nueva foto'
+                : (fotoExistente ? 'Reemplazar foto guardada' : 'Adjuntar foto');
+              return (
+                <div style={{ gridColumn:'1/-1' }}>
+                  <label className="flabel">
+                    Foto del EPP {fotoExistente && !tieneNueva && (
+                      <span style={{ fontSize:11, color:'var(--green)', fontWeight:500 }}> · ya tiene foto</span>
+                    )}
+                  </label>
+                  <div style={{ display:'flex', gap:10, alignItems:'flex-start', flexWrap:'wrap' }}>
+                    <label className="btn btn-ghost btn-sm" style={{ cursor:'pointer' }}>
+                      <JxIcon name="camera" size={13}/> {labelBoton}
+                      <input type="file" accept="image/*" capture="environment" style={{ display:'none' }}
+                             onChange={handleFotoChangeEpp}/>
+                    </label>
+                    {tieneNueva && (
+                      <div style={{ position:'relative' }}>
+                        <img src={foto.url} alt="nueva foto" style={{ width:80, height:80, objectFit:'cover', borderRadius:6, border:'2px solid var(--green)' }}/>
+                        <div style={{ position:'absolute', bottom:-8, left:0, right:0, textAlign:'center', fontSize:9, color:'var(--green)', fontWeight:600 }}>NUEVA</div>
+                        <button type="button" onClick={() => { if (foto.url) try { URL.revokeObjectURL(foto.url); } catch {} setFoto(null); }}
+                          style={{ position:'absolute', top:-6, right:-6, width:20, height:20, borderRadius:'50%', background:'var(--red)', color:'white', border:'none', fontSize:11, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}
+                          title="Cancelar nueva foto">×</button>
+                      </div>
+                    )}
+                    {tieneExistente && (
+                      <div style={{ position:'relative' }}>
+                        <img src={fotoExistente.url} alt="foto actual" style={{ width:80, height:80, objectFit:'cover', borderRadius:6, border:'1px solid var(--bd)' }}/>
+                        <div style={{ position:'absolute', bottom:-8, left:0, right:0, textAlign:'center', fontSize:9, color:'var(--tm)' }}>ACTUAL</div>
+                      </div>
+                    )}
+                    {!tieneNueva && !fotoExistente && (
+                      <span style={{ fontSize:11, color:'var(--tm)', alignSelf:'center' }}>
+                        Sin foto. Adjuntá una para que el trabajador la identifique al recibirlo.
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
           <div className="modal-actions">
-            <button className="btn btn-ghost" onClick={() => { setModal(null); setEditingId(null); setForm({}); }}>Cancelar</button>
+            <button className="btn btn-ghost" onClick={() => { if (foto?.url) try { URL.revokeObjectURL(foto.url); } catch {} setFoto(null); setModal(null); setEditingId(null); setForm({}); }}>Cancelar</button>
             <button className="btn btn-amber" onClick={handleSubmitEpp}>
               <JxIcon name="check" size={13}/>{editingId ? 'Guardar Cambios' : 'Crear EPP'}
             </button>
