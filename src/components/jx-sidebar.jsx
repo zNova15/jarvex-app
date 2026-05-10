@@ -78,6 +78,7 @@ const NAV = [
   { id: 'solicitud-residente', label: 'Solicitud de Materiales', icon: 'plus' },
   { id: 'requisiciones', label: 'Requisiciones', icon: 'list' },
   { id: 'ordenes-compra', label: 'Órdenes de Compra', icon: 'package' },
+  { id: 'compras-pendientes', label: 'Compras Pendientes', icon: 'arrowIn' },
 
   { section: 'MAQUINARIA' },
   { id: 'activos-pesados', label: 'Equipos Pesados', icon: 'tool' },

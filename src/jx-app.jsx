@@ -539,6 +539,7 @@ const PAGE_REGISTRY = {
   // === jx-compras ===
   'requisiciones':          { chunk: 'jx-compras', component: 'RequisicionesPage' },
   'ordenes-compra':         { chunk: 'jx-compras', component: 'OrdenesCompraPage' },
+  'compras-pendientes':     { chunk: 'jx-compras-pendientes', component: 'ComprasPendientesPage' },
   // === jx-valorizaciones ===
   'valorizaciones':         { chunk: 'jx-valorizaciones', component: 'ValorizacionesPage' },
   // === jx-tesoreria ===

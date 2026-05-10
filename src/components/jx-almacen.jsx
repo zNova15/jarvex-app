@@ -726,6 +726,77 @@ function MaterialesPage({ showToast }) {
   // el valor global de loteComunes.{proveedor_id, responsable_id}.
   const [loteItems, setLoteItems] = uS([]);
   const [loteComunes, setLoteComunes] = uS({ usarMismoProveedor: true, usarMismaPersona: true, proveedor_id: null, responsable_id: null });
+  // Facturas pendientes de recepción (cargadas por contadora vía captura
+  // mágica). Cuando el almacenero abre el modal de "Registrar Ingreso",
+  // se le muestra un banner con la lista. Click → pre-rellena items.
+  const [facturasPendientes, setFacturasPendientes] = uS([]);
+  const [facturaVinculadaId, setFacturaVinculadaId] = uS(null);
+
+  // Carga reactiva de facturas pendientes de recepción
+  uE(() => {
+    if (!obraId) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const rows = await window.__db.accounting_movements
+          .where('obra_id').equals(obraId)
+          .filter(m => m.recepcion_status === 'pendiente_recepcion' && !m.deleted_at)
+          .toArray();
+        rows.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+        if (!cancelled) setFacturasPendientes(rows);
+      } catch {}
+    };
+    load();
+    const onChange = (e) => {
+      const t = e?.detail?.tabla || e?.detail?.table;
+      if (!t || t === 'accounting_movements') load();
+    };
+    window.addEventListener('jx_data_changed', onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('jx_data_changed', onChange);
+    };
+  }, [obraId]);
+
+  // Helper: aplicar items de una factura al lote actual
+  const vincularFactura = (facturaId) => {
+    const factura = facturasPendientes.find(f => f.id === facturaId);
+    if (!factura) return;
+    let items = [];
+    try {
+      const j = JSON.parse(factura.notas || '{}');
+      items = Array.isArray(j.items_factura) ? j.items_factura : [];
+    } catch {}
+    if (!items.length) {
+      showToast('Esa factura no tiene items detallados', 'amber');
+      return;
+    }
+    const itemsConMaterial = items.filter(it => it.material_id);
+    if (!itemsConMaterial.length) {
+      showToast('Los items de la factura no están vinculados al catálogo. Pedile a gerencia que los cree primero.', 'red');
+      return;
+    }
+    // Pre-rellenar el lote
+    setLoteItems(itemsConMaterial.map((it, idx) => ({
+      id: `factura_${idx}_${Date.now()}`,
+      material_id: it.material_id,
+      cantidad: String(it.cantidad ?? ''),
+      precio: String(it.precio_unitario ?? ''),
+      proveedor_id: factura.proveedor_id || null,
+      ubicacion_id: null,
+    })));
+    setLoteComunes(c => ({
+      ...c,
+      usarMismoProveedor: true,
+      proveedor_id: factura.proveedor_id || null,
+    }));
+    setForm(f => ({
+      ...f,
+      documento: factura.document_number || f.documento,
+    }));
+    setFacturaVinculadaId(facturaId);
+    showToast(`✓ Vinculado a factura ${factura.document_number} — ${itemsConMaterial.length} item(s) cargados`, 'green');
+  };
 
   const updateLoteItem = (id, patch) => {
     setLoteItems(items => items.map(it => it.id === id ? { ...it, ...patch } : it));
@@ -1258,6 +1329,36 @@ function MaterialesPage({ showToast }) {
       }
     }
     refresh();
+
+    // Si el lote estaba vinculado a una factura pendiente, marcarla como
+    // recibida en el accounting_movement. El recepcion_movimiento_id
+    // apunta al primer mov creado para trazabilidad.
+    if (tipo === 'ingreso' && facturaVinculadaId && exitosos > 0) {
+      try {
+        const factura = facturasPendientes.find(f => f.id === facturaVinculadaId);
+        if (factura) {
+          const userId = auth?.profile?.id || null;
+          await window.__db.accounting_movements.update(facturaVinculadaId, {
+            recepcion_status: 'recibido',
+            recepcion_fecha: new Date().toISOString(),
+            recepcion_por: userId,
+            updated_at: new Date().toISOString(),
+            updated_by: userId,
+            version: (factura.version || 0) + 1,
+            sync_status: factura.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+          });
+          try { await window.__logAudit?.({
+            action: 'update', table: 'accounting_movements', recordId: facturaVinculadaId,
+            newData: { recepcion_status: 'recibido' },
+            reason: `Recepción confirmada — ${exitosos} mov(s) ingreso · factura ${factura.document_number}`,
+          }); } catch {}
+          try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'accounting_movements' } })); } catch {}
+        }
+      } catch (e) {
+        console.warn('[lote-ingreso] no se pudo marcar la factura como recibida:', e?.message);
+      }
+    }
+
     if (fallidos === 0) {
       showToast(`✓ Lote registrado: ${exitosos} ${tipo === 'ingreso' ? 'ingresos' : 'salidas'}`, 'green');
     } else if (exitosos === 0) {
@@ -1268,6 +1369,7 @@ function MaterialesPage({ showToast }) {
     setModal(null);
     setForm({});
     setLoteItems([]);
+    setFacturaVinculadaId(null);
   };
 
   // Mapeo alerta → badge styling
@@ -1594,6 +1696,46 @@ function MaterialesPage({ showToast }) {
 
       {/* Modal Ingreso (lote) — tabla de N materiales con datos comunes arriba */}
       {modal==='ingreso' && <Modal title="Registrar Ingreso de Materiales (lote)" icon="arrowIn" onClose={()=>setModal(null)} wide>
+        {/* Banner facturas pendientes — la contadora cargó facturas en
+            captura mágica y quedaron esperando recepción física. El
+            almacenero las vincula con 1 click y se auto-rellena el lote. */}
+        {facturasPendientes.length > 0 && (
+          <div style={{
+            marginBottom: 12,
+            padding: '10px 12px',
+            background: 'rgba(242,183,5,0.10)',
+            border: '1px solid rgba(242,183,5,0.4)',
+            borderRadius: 6,
+            display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+          }}>
+            <span style={{ fontSize: 18, lineHeight: 1 }}>🧾</span>
+            <div style={{ flex: 1, minWidth: 200 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: '#F2B705' }}>
+                {facturasPendientes.length} factura(s) pendiente(s) de recepción
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--tm)' }}>
+                Vinculá una para pre-rellenar los items (material, cantidad, proveedor).
+              </div>
+            </div>
+            <select
+              className="fi"
+              value={facturaVinculadaId || ''}
+              onChange={e => {
+                const id = e.target.value;
+                if (id) vincularFactura(id);
+                else setFacturaVinculadaId(null);
+              }}
+              style={{ minWidth: 240, maxWidth: 360, fontSize: 12 }}>
+              <option value="">— Vincular factura —</option>
+              {facturasPendientes.map(f => (
+                <option key={f.id} value={f.id}>
+                  {f.document_number} · {f.third_party_name || '—'} · {f.date}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
         <div className="g2">
           <div><label className="flabel">Fecha</label><input className="fi" type="date" max={new Date().toISOString().slice(0,10)} value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
           <div><label className="flabel">Hora</label><input className="fi" type="time" value={form.hora||''} onChange={e=>setForm({...form, hora:e.target.value})}/></div>

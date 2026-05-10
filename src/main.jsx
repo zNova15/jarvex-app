@@ -186,6 +186,7 @@ const PAGE_CHUNKS = {
   'jx-captura-magica':        () => import('./components/jx-captura-magica.jsx'),
   'jx-contabilidad':          () => import('./components/jx-contabilidad.jsx'),
   'jx-compras':               () => import('./components/jx-compras.jsx'),
+  'jx-compras-pendientes':    () => import('./components/jx-compras-pendientes.jsx'),
   'jx-valorizaciones':        () => import('./components/jx-valorizaciones.jsx'),
   'jx-tesoreria':             () => import('./components/jx-tesoreria.jsx'),
   'jx-activos':               () => import('./components/jx-activos.jsx'),

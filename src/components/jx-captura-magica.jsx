@@ -349,8 +349,19 @@ function CapturaMagicaPage({ showToast }) {
       observaciones: ext.observaciones || '',
       confianza: ext.confianza || 'media',
       advertencias: ext.advertencias || [],
-      // Material commit options
-      crear_movimiento_materiales: true,
+      // Defaults: crear materiales en catálogo SIN stock + marcar la
+      // factura como pendiente de recepción para que el almacenero la
+      // confirme cuando llegue físicamente. Si el comprobante NO es
+      // de almacén (combustible, servicios, fletes), el contador
+      // desactiva el segundo checkbox.
+      crear_materiales_catalogo: true,
+      genera_recepcion_almacen: true,
+      metodo_pago: null,
+      payment_status: 'pendiente',
+      // Legacy: si llega un payload viejo lo respetamos pero la UI ya no
+      // expone este flag — los movimientos de inventario los crea el
+      // almacenero al confirmar recepción, no la captura mágica.
+      crear_movimiento_materiales: false,
       // ── Detección de OC relacionada ─────────────────────────
       // Buscamos entre las OCs activas (por_confirmar/firmada/enviada/...)
       // candidatos cuyos items hagan match fuzzy con los items de la factura.
@@ -524,10 +535,17 @@ function CapturaMagicaPage({ showToast }) {
         proveedorIdFinal = pid;
       }
 
-      // 2) Crear materiales nuevos + movimientos_materiales
+      // 2) Crear materiales nuevos en catálogo SIN stock. El movimiento
+      //    de ingreso al almacén lo crea el almacenero cuando confirme
+      //    la recepción física. Esto separa responsabilidades:
+      //      - Contadora: registra la compra (factura + materiales nuevos)
+      //      - Almacenero: confirma cuándo llegan físicamente
+      //    Antes la captura mágica también creaba movs de entrada — eso
+      //    causaba inventario incorrecto si la factura era de combustible
+      //    o si los materiales no habían llegado todavía.
       const materialesCreados = [];
-      const movsMatCreados = [];
-      if (r.crear_movimiento_materiales && r.obra_id) {
+      const movsMatCreados = []; // queda vacío — el almacenero los crea
+      if (r.crear_materiales_catalogo && r.obra_id) {
         for (const it of r.items) {
           let matId = it.material_id;
           if (it.accion_material === 'crear_nuevo') {
@@ -539,11 +557,12 @@ function CapturaMagicaPage({ showToast }) {
               nombre_material: it.descripcion.trim().slice(0, 120),
               unidad: it.unidad || 'und',
               categoria: 'Otro',
-              stock_inicial: Number(it.cantidad) || 0,
-              stock_actual: Number(it.cantidad) || 0,
+              // Sin stock — el almacenero lo registra al recibir
+              stock_inicial: 0,
+              stock_actual: 0,
               stock_minimo: 0,
               precio_unitario_estimado: Number(it.precio_unitario) || 0,
-              alerta: 'ok',
+              alerta: 'sin_stock',
               estado: 'activo',
               proveedor_principal_id: proveedorIdFinal || null,
               created_by: userId, updated_by: userId,
@@ -551,43 +570,12 @@ function CapturaMagicaPage({ showToast }) {
               version: 1, sync_status: 'pending_create',
               idempotency_key: `${userId}_mat_${matId}`,
             });
+            // Mutamos el item para que el accounting_movement lo guarde
+            // y el almacenero pueda vincular la recepción.
+            it.material_id = matId;
             materialesCreados.push(matId);
             try { await window.__logAudit?.({ action:'insert', table:'materiales', recordId: matId,
-              newData: { nombre: it.descripcion, stock_inicial: it.cantidad }, reason:'Captura mágica · material nuevo' }); } catch {}
-          } else if (matId) {
-            // Sumar al stock_actual
-            const mat = await window.__db.materiales.get(matId);
-            if (mat) {
-              await window.__db.materiales.update(matId, {
-                stock_actual: (Number(mat.stock_actual) || 0) + (Number(it.cantidad) || 0),
-                updated_at: now, updated_by: userId,
-                version: (mat.version || 0) + 1,
-                sync_status: mat.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
-              });
-            }
-          }
-          // Movimiento de materiales (entrada)
-          if (matId) {
-            const movId = window.__newId();
-            await window.__db.movimientos_materiales.add({
-              id: movId,
-              obra_id: r.obra_id,
-              material_id: matId,
-              fecha: r.fecha_emision,
-              hora: '12:00',
-              tipo_movimiento: 'entrada',
-              cantidad: Number(it.cantidad) || 0,
-              unidad: it.unidad || 'und',
-              proveedor_id: proveedorIdFinal || null,
-              documento_asociado: r.serie_correlativo,
-              precio_unitario_real: Number(it.precio_unitario) || 0,
-              observaciones: 'Captura Mágica IA',
-              created_by: userId, updated_by: userId,
-              created_at: now, updated_at: now,
-              version: 1, sync_status: 'pending_create',
-              idempotency_key: `${userId}_movmat_${movId}`,
-            });
-            movsMatCreados.push(movId);
+              newData: { nombre: it.descripcion }, reason:'Captura mágica · material nuevo (sin stock)' }); } catch {}
           }
         }
       }
@@ -607,7 +595,17 @@ function CapturaMagicaPage({ showToast }) {
         currency: r.moneda || 'PEN',
         third_party_name: r.proveedor_razon_social || null,
         third_party_ruc: r.proveedor_ruc || null,
-        payment_status: 'pending',
+        // Nuevos: método y estado de pago (registrados desde la UI).
+        // Si el contador no eligió, usamos defaults razonables.
+        metodo_pago: r.metodo_pago || null,
+        payment_status: r.payment_status || 'pendiente',
+        // Recepción de almacén: si la factura "genera ingreso al almacén"
+        // queda como pendiente para que el almacenero confirme cuando
+        // llegue físicamente. Si NO (combustible, servicios, fletes),
+        // no aplica.
+        recepcion_status: (r.genera_recepcion_almacen && r.obra_id && r.items?.length > 0)
+          ? 'pendiente_recepcion'
+          : 'no_aplica',
         document_type: tipoAcc,
         document_number: r.serie_correlativo,
         proveedor_id: proveedorIdFinal || null,
@@ -621,9 +619,11 @@ function CapturaMagicaPage({ showToast }) {
           materiales_creados: materialesCreados.length,
           movs_creados: movsMatCreados.length,
           oc_vinculada: r.vincular_a_oc || null,
-          // Persistimos los items detectados para que Trazabilidad pueda
-          // autocompletar la cadena cuando el usuario elija este comprobante.
+          // Persistimos los items detectados con sus material_id (los
+          // recién creados ya tienen el id). El almacenero los usa para
+          // pre-llenar el modal de ingreso cuando confirma la recepción.
           items_factura: (r.items || []).map(it => ({
+            material_id: it.material_id || null,
             descripcion: it.descripcion || it.nombre || '',
             unidad: it.unidad || 'und',
             cantidad: Number(it.cantidad) || 0,
@@ -1126,6 +1126,27 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
                   <option value="USD">USD</option>
                 </select>
               </div>
+              <div>
+                <label className="flabel">Método de pago</label>
+                <select className="fi" value={r.metodo_pago || ''} onChange={e=>upd({ metodo_pago: e.target.value || null })}>
+                  <option value="">— Seleccionar —</option>
+                  <option value="efectivo">Efectivo</option>
+                  <option value="transferencia">Transferencia bancaria</option>
+                  <option value="yape">Yape</option>
+                  <option value="plin">Plin</option>
+                  <option value="tarjeta">Tarjeta</option>
+                  <option value="cheque">Cheque</option>
+                  <option value="otro">Otro</option>
+                </select>
+              </div>
+              <div>
+                <label className="flabel">Estado del pago</label>
+                <select className="fi" value={r.payment_status || 'pendiente'} onChange={e=>upd({ payment_status: e.target.value })}>
+                  <option value="pagado">Pagado</option>
+                  <option value="pendiente">Pendiente</option>
+                  <option value="credito">Crédito (plazo)</option>
+                </select>
+              </div>
             </div>
 
             {/* PROVEEDOR (emisor) */}
@@ -1410,10 +1431,16 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
                 <div style={{ fontSize:11, fontWeight:700, color:'var(--amber)', textTransform:'uppercase', letterSpacing:'.05em' }}>
                   Ítems ({r.items.length})
                 </div>
-                <div style={{ display:'flex', gap:6, alignItems:'center' }}>
-                  <label style={{ fontSize:11, color:'var(--tm)', display:'flex', alignItems:'center', gap:4 }}>
-                    <input type="checkbox" checked={r.crear_movimiento_materiales} onChange={e=>upd({ crear_movimiento_materiales: e.target.checked })}/>
-                    Crear materiales + entradas en inventario
+                <div style={{ display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
+                  <label style={{ fontSize:11, color:'var(--tm)', display:'flex', alignItems:'center', gap:4 }}
+                    title="Crea los materiales en el catálogo de la obra (sin stock). El almacenero recibirá la notificación de compra pendiente.">
+                    <input type="checkbox" checked={r.crear_materiales_catalogo !== false} onChange={e=>upd({ crear_materiales_catalogo: e.target.checked })}/>
+                    Crear materiales en catálogo (sin stock)
+                  </label>
+                  <label style={{ fontSize:11, color:'var(--tm)', display:'flex', alignItems:'center', gap:4 }}
+                    title="Si está marcado, esta factura aparece en 'Compras pendientes' del almacenero hasta que confirme la recepción física.">
+                    <input type="checkbox" checked={r.genera_recepcion_almacen !== false} onChange={e=>upd({ genera_recepcion_almacen: e.target.checked })}/>
+                    Genera ingreso al almacén (esperar recepción física)
                   </label>
                   <button type="button" className="btn btn-ghost btn-xs" onClick={recalcular}>↻ Recalcular total</button>
                 </div>
@@ -1474,7 +1501,9 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
         <div style={{ padding:'12px 18px', borderTop:'1px solid var(--border)', display:'flex', justifyContent:'space-between', gap:10 }}>
           <div style={{ fontSize:11, color:'var(--tm)' }}>
             Al confirmar se crea: {r.proveedor_accion === 'crear_nuevo' && '1 proveedor + '}1 movimiento contable
-            {r.crear_movimiento_materiales && r.obra_id ? ` + ${r.items.length} entrada(s) de inventario` : ''} + 1 evidencia.
+            {r.crear_materiales_catalogo && r.obra_id ? ` + ${r.items.filter(i=>i.accion_material==='crear_nuevo').length} material(es) en catálogo (sin stock)` : ''}
+            {r.genera_recepcion_almacen && r.obra_id && r.items?.length > 0 ? ` + 1 recepción pendiente para almacén` : ''}
+            {' + 1 evidencia.'}
           </div>
           <div style={{ display:'flex', gap:8 }}>
             <button className="btn btn-ghost btn-sm" onClick={onClose}>Cancelar</button>

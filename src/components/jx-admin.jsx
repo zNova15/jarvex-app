@@ -851,6 +851,7 @@ window.__moduleIdMap = {
   'solicitud-residente': 'Requisiciones',
   'requisiciones': 'Requisiciones',
   'ordenes-compra': 'Órdenes de Compra',
+  'compras-pendientes': 'Recepciones',
   // Subcontratos
   'subcontratistas': 'Subcontratistas',
   'subcontratos': 'Subcontratos',
