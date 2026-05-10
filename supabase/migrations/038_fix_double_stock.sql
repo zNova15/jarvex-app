@@ -43,7 +43,8 @@ FROM (
     SUM(CASE WHEN tipo_movimiento IN ('entrada', 'devolucion') THEN cantidad ELSE 0 END) AS entradas,
     SUM(CASE WHEN tipo_movimiento IN ('salida', 'merma', 'ajuste_negativo') THEN cantidad ELSE 0 END) AS salidas
   FROM public.movimientos_materiales
-  WHERE deleted_at IS NULL
+  -- Nota: movimientos_materiales NO tiene columna deleted_at (los movs
+  -- son inmutables — para "deshacer" se crea un mov de reverso).
   GROUP BY material_id
 ) s
 WHERE s.material_id = m.id
@@ -63,7 +64,6 @@ WHERE public.materiales.deleted_at IS NULL
   AND NOT EXISTS (
     SELECT 1 FROM public.movimientos_materiales mm
     WHERE mm.material_id = public.materiales.id
-      AND mm.deleted_at IS NULL
   );
 
 -- ── EPPs (mismo patrón) ─────────────────────────────────────────────
@@ -81,7 +81,7 @@ FROM (
     SUM(CASE WHEN tipo_movimiento IN ('entrada', 'devolucion') THEN cantidad ELSE 0 END) AS entradas,
     SUM(CASE WHEN tipo_movimiento IN ('salida', 'merma', 'baja') THEN cantidad ELSE 0 END) AS salidas
   FROM public.movimientos_epp
-  WHERE deleted_at IS NULL
+  -- movimientos_epp tampoco tiene deleted_at — son inmutables
   GROUP BY epp_id
 ) s
 WHERE s.epp_id = e.id
@@ -98,7 +98,6 @@ WHERE public.epps.deleted_at IS NULL
   AND NOT EXISTS (
     SELECT 1 FROM public.movimientos_epp me
     WHERE me.epp_id = public.epps.id
-      AND me.deleted_at IS NULL
   );
 
 NOTIFY pgrst, 'reload schema';
