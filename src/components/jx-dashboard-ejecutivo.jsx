@@ -197,11 +197,16 @@ function DashboardEjecutivoPage() {
       });
     });
 
-    // 4. Stock: incluye agotado, sin_stock, crítico y reponer (en mínimo)
-    (materiales || []).filter(m =>
-      m.alerta === 'agotado' || m.alerta === 'sin_stock' ||
-      m.alerta === 'critico' || m.alerta === 'reponer'
-    ).forEach(m => {
+    // 4. Stock: incluye agotado, sin_stock, crítico y reponer (en mínimo).
+    // Excluye inactivos manuales y los importados sin configurar
+    // (stock=0 y mínimo=0) — esos son fantasmas del catálogo, no alertas.
+    (materiales || []).filter(m => {
+      if (m.estado === 'inactivo' || m.estado === 'retirado') return false;
+      const s = Number(m.stock_actual) || 0, mn = Number(m.stock_minimo) || 0;
+      if (s === 0 && mn === 0) return false;
+      return m.alerta === 'agotado' || m.alerta === 'sin_stock' ||
+             m.alerta === 'critico' || m.alerta === 'reponer';
+    }).forEach(m => {
       const esAgotado = m.alerta === 'agotado' || m.alerta === 'sin_stock';
       const esCritico = m.alerta === 'critico';
       list.push({
@@ -233,10 +238,14 @@ function DashboardEjecutivoPage() {
     return list;
   }, [pagos, ordenes, iperc, materiales, valorizaciones, today]);
 
-  // Conteo rápido para banner: cuántos materiales en cada nivel de alerta
+  // Conteo rápido para banner: cuántos materiales en cada nivel de alerta.
+  // Mismo filtro que arriba: excluye inactivos y sin configurar.
   const stockCounts = uM(() => {
     const c = { agotado: 0, critico: 0, reponer: 0 };
     (materiales || []).forEach(m => {
+      if (m.estado === 'inactivo' || m.estado === 'retirado') return;
+      const s = Number(m.stock_actual) || 0, mn = Number(m.stock_minimo) || 0;
+      if (s === 0 && mn === 0) return;
       if (m.alerta === 'agotado' || m.alerta === 'sin_stock') c.agotado++;
       else if (m.alerta === 'critico') c.critico++;
       else if (m.alerta === 'reponer') c.reponer++;

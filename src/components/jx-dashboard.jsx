@@ -239,11 +239,20 @@ function DashboardPage() {
   // KPIs reales
   const kpis = uMD(() => {
     const asistHoy = asistencia.filter(a => a.fecha === today);
-    const materialesAlerta = materiales.filter(m => m.alerta === 'critico' || m.alerta === 'sin_stock');
-    const matsCritico = materiales.filter(m => m.alerta === 'critico').length;
-    const matsReponer = materiales.filter(m => m.alerta === 'reponer').length;
-    const matsSinStock = materiales.filter(m => m.alerta === 'sin_stock').length;
-    const matsOk = materiales.filter(m => m.alerta === 'ok' || !m.alerta).length;
+    // Filtramos materiales monitorizables: excluye inactivos manualmente
+    // y los importados sin configurar (stock=0 y minimo=0). Sin esto, una
+    // importación de 200 partidas sin stock dejaba el dashboard con
+    // "200 sin stock" todo el día → ruido inutilizable.
+    const matsActivos = materiales.filter(m =>
+      (m.estado !== 'inactivo' && m.estado !== 'retirado') &&
+      !((Number(m.stock_actual) || 0) === 0 && (Number(m.stock_minimo) || 0) === 0)
+    );
+    const materialesAlertaList = matsActivos.filter(m => m.alerta === 'critico' || m.alerta === 'sin_stock');
+    const materialesAlerta = materialesAlertaList.length;
+    const matsCritico = matsActivos.filter(m => m.alerta === 'critico').length;
+    const matsReponer = matsActivos.filter(m => m.alerta === 'reponer').length;
+    const matsSinStock = matsActivos.filter(m => m.alerta === 'sin_stock').length;
+    const matsOk = matsActivos.filter(m => m.alerta === 'ok' || !m.alerta).length;
     const herrEnUso = herramientas.filter(h => h.ubicacion_actual === 'en_uso').length;
     const incAbiertas = incidencias.filter(i => i.estado === 'abierta').length;
 
@@ -416,7 +425,7 @@ function DashboardPage() {
       {canMateriales && kpis.materialesAlerta > 0 && (
         <div className="alert-banner" style={{marginBottom:18}}>
           <JxIcon name="alert" size={16} color="#E74C3C"/>
-          <span><strong>{kpis.matsSinStock + kpis.matsCritico} material{kpis.matsSinStock+kpis.matsCritico>1?'es':''} en estado crítico:</strong> {materiales.filter(m=>m.alerta==='critico'||m.alerta==='sin_stock').slice(0,3).map(m=>`${m.nombre_material} (${m.stock_actual} ${m.unidad})`).join(' · ')}{kpis.materialesAlerta>3?` · y ${kpis.materialesAlerta-3} más`:''}</span>
+          <span><strong>{kpis.matsSinStock + kpis.matsCritico} material{kpis.matsSinStock+kpis.matsCritico>1?'es':''} en estado crítico:</strong> {kpis.materialesAlertaList.slice(0,3).map(m=>`${m.nombre_material} (${m.stock_actual} ${m.unidad})`).join(' · ')}{kpis.materialesAlerta>3?` · y ${kpis.materialesAlerta-3} más`:''}</span>
         </div>
       )}
 

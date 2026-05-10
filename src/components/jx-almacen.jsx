@@ -2188,36 +2188,89 @@ function MaterialesPage({ showToast }) {
           </div>
           {/* Foto referencial del material (opcional). Se sube como evidencia
               vinculada al material y aparece como thumbnail en la lista. */}
-          <div style={{ gridColumn:'1/-1' }}>
-            <label className="flabel">Foto del material (opcional)</label>
-            <div style={{ display:'flex', gap:10, alignItems:'flex-start', flexWrap:'wrap' }}>
-              <label className="btn btn-ghost btn-sm" style={{ cursor:'pointer' }}>
-                <JxIcon name="camera" size={13}/> {foto ? 'Cambiar foto' : 'Adjuntar foto'}
-                <input type="file" accept="image/*" capture="environment" style={{ display:'none' }}
-                       onChange={handleFotoChange}/>
-              </label>
-              {foto?.url && (
-                <div style={{ position:'relative' }}>
-                  <img src={foto.url} alt="preview" style={{ width:80, height:80, objectFit:'cover', borderRadius:6, border:'1px solid var(--bd)' }}/>
-                  <button type="button" onClick={() => { if (foto.url) try { URL.revokeObjectURL(foto.url); } catch {} setFoto(null); }}
-                    style={{ position:'absolute', top:-6, right:-6, width:20, height:20, borderRadius:'50%', background:'var(--red)', color:'white', border:'none', fontSize:11, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}
-                    title="Quitar foto">×</button>
+          {(() => {
+            const fotoExistente = editingId ? fotosMap.get(editingId) : null;
+            const tieneNueva = !!foto?.url;
+            const tieneExistente = !!fotoExistente?.url && !tieneNueva;
+            const labelBoton = tieneNueva
+              ? 'Cambiar la nueva foto'
+              : (fotoExistente ? 'Reemplazar foto guardada' : 'Adjuntar foto');
+            return (
+              <div style={{ gridColumn:'1/-1' }}>
+                <label className="flabel">
+                  Foto del material {fotoExistente && !tieneNueva && (
+                    <span style={{ fontSize:11, color:'var(--green)', fontWeight:500 }}> · ya tiene foto</span>
+                  )}
+                </label>
+                <div style={{ display:'flex', gap:10, alignItems:'flex-start', flexWrap:'wrap' }}>
+                  <label className="btn btn-ghost btn-sm" style={{ cursor:'pointer' }}>
+                    <JxIcon name="camera" size={13}/> {labelBoton}
+                    <input type="file" accept="image/*" capture="environment" style={{ display:'none' }}
+                           onChange={handleFotoChange}/>
+                  </label>
+                  {tieneNueva && (
+                    <div style={{ position:'relative' }}>
+                      <img src={foto.url} alt="nueva foto" style={{ width:80, height:80, objectFit:'cover', borderRadius:6, border:'2px solid var(--green)' }}/>
+                      <div style={{ position:'absolute', bottom:-8, left:0, right:0, textAlign:'center', fontSize:9, color:'var(--green)', fontWeight:600 }}>NUEVA</div>
+                      <button type="button" onClick={() => { if (foto.url) try { URL.revokeObjectURL(foto.url); } catch {} setFoto(null); }}
+                        style={{ position:'absolute', top:-6, right:-6, width:20, height:20, borderRadius:'50%', background:'var(--red)', color:'white', border:'none', fontSize:11, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}
+                        title="Cancelar nueva foto">×</button>
+                    </div>
+                  )}
+                  {tieneExistente && (
+                    <div style={{ position:'relative' }}>
+                      <img src={fotoExistente.url} alt="foto actual" style={{ width:80, height:80, objectFit:'cover', borderRadius:6, border:'1px solid var(--bd)' }}/>
+                      <div style={{ position:'absolute', bottom:-8, left:0, right:0, textAlign:'center', fontSize:9, color:'var(--tm)' }}>ACTUAL</div>
+                    </div>
+                  )}
+                  {!tieneNueva && !fotoExistente && (
+                    <span style={{ fontSize:11, color:'var(--tm)', alignSelf:'center' }}>
+                      Sin foto. Adjuntá una para que el equipo la identifique más fácil.
+                    </span>
+                  )}
                 </div>
-              )}
-              {!foto && editingId && (
-                <span style={{ fontSize:11, color:'var(--tm)', alignSelf:'center' }}>
-                  Si ya hay una foto guardada, se mantiene. Adjuntá una nueva sólo si querés reemplazarla.
-                </span>
-              )}
-            </div>
-          </div>
+              </div>
+            );
+          })()}
         </div>
-        <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={closeModalMaterial} disabled={busyMat}>Cancelar</button>
-          <button className="btn btn-amber" onClick={handleSubmitMaterial} disabled={busyMat}>
-            <JxIcon name="check" size={13}/>
-            {busyMat ? 'Guardando…' : (editingId ? 'Guardar Cambios' : 'Crear Material')}
-          </button>
+        <div className="modal-actions" style={{ justifyContent: editingId ? 'space-between' : 'flex-end' }}>
+          {editingId && (() => {
+            const matEdit = materiales.find(x => x.id === editingId);
+            const yaInactivo = matEdit?.estado === 'inactivo';
+            return (
+              <button
+                className={`btn ${yaInactivo ? 'btn-ghost' : 'btn-ghost'}`}
+                style={{ color: yaInactivo ? 'var(--green)' : 'var(--tm)' }}
+                disabled={busyMat}
+                onClick={async () => {
+                  if (!matEdit) return;
+                  const nuevoEstado = yaInactivo ? 'activo' : 'inactivo';
+                  try {
+                    await updateMaterial(editingId, {
+                      estado: nuevoEstado,
+                      updated_at: new Date().toISOString(),
+                      sync_status: 'pending_update',
+                    });
+                    showToast(yaInactivo
+                      ? `Material reactivado — vuelve a las alertas`
+                      : `Material marcado inactivo — no genera más alertas`, 'green');
+                    closeModalMaterial();
+                  } catch (e) {
+                    showToast('Error: ' + (e.message || e), 'red');
+                  }
+                }}>
+                <JxIcon name={yaInactivo ? 'check' : 'archive'} size={13}/>
+                {yaInactivo ? 'Reactivar' : 'Marcar inactivo'}
+              </button>
+            );
+          })()}
+          <div style={{ display:'flex', gap:8 }}>
+            <button className="btn btn-ghost" onClick={closeModalMaterial} disabled={busyMat}>Cancelar</button>
+            <button className="btn btn-amber" onClick={handleSubmitMaterial} disabled={busyMat}>
+              <JxIcon name="check" size={13}/>
+              {busyMat ? 'Guardando…' : (editingId ? 'Guardar Cambios' : 'Crear Material')}
+            </button>
+          </div>
         </div>
       </Modal>);
       })()}
@@ -3174,29 +3227,50 @@ function HerramientasPage({ showToast }) {
             )}
           </div>
           {/* Foto referencial (opcional) — sube como evidencia */}
-          <div style={{ gridColumn:'1/-1' }}>
-            <label className="flabel">Foto de la herramienta (opcional)</label>
-            <div style={{ display:'flex', gap:10, alignItems:'flex-start', flexWrap:'wrap' }}>
-              <label className="btn btn-ghost btn-sm" style={{ cursor:'pointer' }}>
-                <JxIcon name="camera" size={13}/> {foto ? 'Cambiar foto' : 'Adjuntar foto'}
-                <input type="file" accept="image/*" capture="environment" style={{ display:'none' }}
-                       onChange={handleFotoChangeHerr}/>
-              </label>
-              {foto?.url && (
-                <div style={{ position:'relative' }}>
-                  <img src={foto.url} alt="preview" style={{ width:80, height:80, objectFit:'cover', borderRadius:6, border:'1px solid var(--bd)' }}/>
-                  <button type="button" onClick={() => { if (foto.url) try { URL.revokeObjectURL(foto.url); } catch {} setFoto(null); }}
-                    style={{ position:'absolute', top:-6, right:-6, width:20, height:20, borderRadius:'50%', background:'var(--red)', color:'white', border:'none', fontSize:11, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}
-                    title="Quitar foto">×</button>
+          {(() => {
+            const fotoExistente = editingId ? fotosMap.get(editingId) : null;
+            const tieneNueva = !!foto?.url;
+            const tieneExistente = !!fotoExistente?.url && !tieneNueva;
+            const labelBoton = tieneNueva
+              ? 'Cambiar la nueva foto'
+              : (fotoExistente ? 'Reemplazar foto guardada' : 'Adjuntar foto');
+            return (
+              <div style={{ gridColumn:'1/-1' }}>
+                <label className="flabel">
+                  Foto de la herramienta {fotoExistente && !tieneNueva && (
+                    <span style={{ fontSize:11, color:'var(--green)', fontWeight:500 }}> · ya tiene foto</span>
+                  )}
+                </label>
+                <div style={{ display:'flex', gap:10, alignItems:'flex-start', flexWrap:'wrap' }}>
+                  <label className="btn btn-ghost btn-sm" style={{ cursor:'pointer' }}>
+                    <JxIcon name="camera" size={13}/> {labelBoton}
+                    <input type="file" accept="image/*" capture="environment" style={{ display:'none' }}
+                           onChange={handleFotoChangeHerr}/>
+                  </label>
+                  {tieneNueva && (
+                    <div style={{ position:'relative' }}>
+                      <img src={foto.url} alt="nueva foto" style={{ width:80, height:80, objectFit:'cover', borderRadius:6, border:'2px solid var(--green)' }}/>
+                      <div style={{ position:'absolute', bottom:-8, left:0, right:0, textAlign:'center', fontSize:9, color:'var(--green)', fontWeight:600 }}>NUEVA</div>
+                      <button type="button" onClick={() => { if (foto.url) try { URL.revokeObjectURL(foto.url); } catch {} setFoto(null); }}
+                        style={{ position:'absolute', top:-6, right:-6, width:20, height:20, borderRadius:'50%', background:'var(--red)', color:'white', border:'none', fontSize:11, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}
+                        title="Cancelar nueva foto">×</button>
+                    </div>
+                  )}
+                  {tieneExistente && (
+                    <div style={{ position:'relative' }}>
+                      <img src={fotoExistente.url} alt="foto actual" style={{ width:80, height:80, objectFit:'cover', borderRadius:6, border:'1px solid var(--bd)' }}/>
+                      <div style={{ position:'absolute', bottom:-8, left:0, right:0, textAlign:'center', fontSize:9, color:'var(--tm)' }}>ACTUAL</div>
+                    </div>
+                  )}
+                  {!tieneNueva && !fotoExistente && (
+                    <span style={{ fontSize:11, color:'var(--tm)', alignSelf:'center' }}>
+                      Sin foto. Adjuntá una para identificarla más rápido en obra.
+                    </span>
+                  )}
                 </div>
-              )}
-              {!foto && editingId && (
-                <span style={{ fontSize:11, color:'var(--tm)', alignSelf:'center' }}>
-                  Si ya hay una foto guardada, se mantiene. Adjuntá una nueva sólo si querés reemplazarla.
-                </span>
-              )}
-            </div>
-          </div>
+              </div>
+            );
+          })()}
         </div>
         <div className="modal-actions">
           <button className="btn btn-ghost" onClick={closeModalHerr} disabled={busyHerr}>Cancelar</button>

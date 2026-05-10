@@ -329,9 +329,29 @@ function SolicitudResidentePage({ showToast }) {
 
   const handleSubmit = async () => {
     if (!obraId) { showToast('Selecciona una obra activa', 'red'); return; }
-    if (!descripcion.trim()) { showToast('Descripción de la solicitud requerida', 'red'); return; }
+
+    // Validaciones con mensajes específicos para que el residente sepa
+    // QUÉ le falta. Antes el botón quedaba disabled sin explicación y no
+    // se entendía por qué no se podía confirmar.
+    const itemsConCantidad = items.filter(it => Number(it.cantidad) > 0);
+    if (!itemsConCantidad.length) {
+      showToast('Agregá al menos un material con cantidad mayor a 0', 'red');
+      return;
+    }
     const validos = items.filter(it => it.material_id && Number(it.cantidad) > 0);
-    if (!validos.length) { showToast('Agrega al menos un material', 'red'); return; }
+    if (!validos.length) {
+      const sinMaterial = itemsConCantidad.filter(it => !it.material_id).length;
+      if (sinMaterial > 0) {
+        showToast(`${sinMaterial} ítem(s) sin material seleccionado del catálogo. Tocá la lista para elegir, o creá el material primero.`, 'red');
+      } else {
+        showToast('Agrega al menos un material', 'red');
+      }
+      return;
+    }
+    // Si no hay descripción, autocompletar con texto razonable en vez de
+    // bloquear. Era frustrante que el botón no funcione "porque sí".
+    const descripcionFinal = descripcion.trim()
+      || `Solicitud del ${new Date().toISOString().slice(0, 10)} (${validos.length} ítem(s))`;
 
     setSubmitBusy(true);
     try {
@@ -357,7 +377,7 @@ function SolicitudResidentePage({ showToast }) {
       await window.__db.requisiciones.add({
         id: reqId, obra_id: obraId,
         codigo, fecha: fechaFinal,
-        descripcion: descripcion,
+        descripcion: descripcionFinal,
         prioridad,
         estado,
         solicitante_id: userId,
@@ -737,10 +757,10 @@ function SolicitudResidentePage({ showToast }) {
         </button>
         <button
           className="btn btn-amber"
-          disabled={submitBusy || proyeccion.length === 0 || !descripcion.trim()}
+          disabled={submitBusy}
           onClick={handleSubmit}>
           <JxIcon name="check" size={13}/>
-          {stats.requisicionItems.length > 0 ? 'Enviar y crear requisición' : 'Confirmar solicitud'}
+          {submitBusy ? 'Enviando…' : (stats.requisicionItems.length > 0 ? 'Enviar y crear requisición' : 'Confirmar solicitud')}
         </button>
       </div>
     </div>

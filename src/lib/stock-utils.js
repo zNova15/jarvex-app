@@ -21,3 +21,32 @@ export function calcAlerta(stock, minimo) {
   if (s <= m * 1.2) return 'cerca';
   return 'ok';
 }
+
+// Devuelve false si el item NO debe entrar en alertas globales
+// (centro de alertas, dashboard, ejecutivo). Aplica a materiales,
+// herramientas y EPPs.
+//
+// Casos en que NO se monitoriza:
+//   - estado === 'inactivo' o 'retirado' (marcado manualmente por el user)
+//   - stock_actual === 0 Y stock_minimo === 0 (típicamente importado
+//     desde Excel sin datos completos — son "fantasmas" del catálogo
+//     que no representan stock real). Aparecen con badge "sin configurar"
+//     en la lista pero no rompen el contador del dashboard.
+//
+// Si querés mostrarlos en la lista local (con badge visual distinto),
+// usá `esMaterialSinConfigurar` para detectarlos sin esconderlos.
+export function esMaterialMonitorizable(m) {
+  if (!m) return false;
+  if (m.estado === 'inactivo' || m.estado === 'retirado') return false;
+  const s = Number(m.stock_actual) || 0;
+  const min = Number(m.stock_minimo) || 0;
+  if (s === 0 && min === 0) return false;
+  return true;
+}
+
+export function esMaterialSinConfigurar(m) {
+  if (!m) return false;
+  const s = Number(m.stock_actual) || 0;
+  const min = Number(m.stock_minimo) || 0;
+  return s === 0 && min === 0 && m.estado !== 'inactivo';
+}
