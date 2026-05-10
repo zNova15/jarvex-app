@@ -284,7 +284,11 @@ const TABLA_TO_MODULO = {
 
 function canPushTabla(tabla) {
   try {
-    const rol = window.__useAuth?.()?.profile?.rol;
+    // IMPORTANTE: leer del espejo `window.__currentRol` (publicado por
+    // useAuth via efecto), NO invocar `useAuth()` desde acá. El
+    // SyncEngine corre en setInterval, fuera del árbol React, y llamar
+    // un hook ahí dispara "Invalid hook call" (Sentry JARVEX-APP-D).
+    const rol = window.__currentRol;
     if (!rol) return true;          // sin rol todavía: dejar pasar
     if (rol === 'admin') return true;
     const modulo = TABLA_TO_MODULO[tabla];

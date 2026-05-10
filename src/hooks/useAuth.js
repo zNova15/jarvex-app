@@ -25,6 +25,23 @@ export function useAuth() {
   return useContext(AuthContext);
 }
 
+// Espejo del rol/id del profile en `window` para que módulos NO-React
+// (SyncEngine corre en setInterval, fuera del árbol) puedan leerlo
+// sin invocar useAuth() — invocar un hook fuera de un componente
+// dispara "Invalid hook call" (ver Sentry JARVEX-APP-D).
+// Se actualiza desde el effect del Provider abajo.
+function publicarSesion(profile) {
+  try {
+    if (profile) {
+      window.__currentRol     = profile.rol || null;
+      window.__currentUserId  = profile.id || null;
+    } else {
+      window.__currentRol     = null;
+      window.__currentUserId  = null;
+    }
+  } catch {}
+}
+
 export function useAuthProvider() {
   const [user, setUser] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -76,6 +93,9 @@ export function useAuthProvider() {
   // los modos prueba/edicion solo a admin de forma síncrona.
   // También guarda el rol REAL para poder volver del role override.
   useEffect(() => {
+    // Espejo en window.__currentRol/window.__currentUserId para que el
+    // SyncEngine y otros módulos NO-React puedan leerlos sin hooks.
+    publicarSesion(profile);
     try {
       const rol = profile?.rol || '';
       const prevReal = localStorage.getItem('jx_user_role_real');

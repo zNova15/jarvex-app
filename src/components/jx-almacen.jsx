@@ -3462,7 +3462,9 @@ function PersonalPage({ showToast }) {
   const obraNombre = (id) => obrasActivas.find(o => o.id === id)?.nombre_obra || '—';
 
   const consultarRENIEC = async (dniOverride = null) => {
-    const dni = (dniOverride || form.dni || '').trim();
+    // String() coerciona números (caso de DNI importado de Excel como
+    // numérico) y previene "trim is not a function" — Sentry JARVEX-APP-C.
+    const dni = String(dniOverride ?? form.dni ?? '').trim();
     if (!/^\d{8}$/.test(dni)) { showToast('Ingresa primero un DNI de 8 dígitos', 'red'); return; }
     setReniecBusy(true);
     try {
@@ -3487,7 +3489,7 @@ function PersonalPage({ showToast }) {
   const [lastDniFetched, setLastDniFetched] = uS(null);
   uE(() => {
     if (!editingId) return; // solo en modo edición
-    const dni = (form.dni || '').trim();
+    const dni = String(form.dni ?? '').trim();
     if (!/^\d{8}$/.test(dni)) return;
     const original = personal?.find(p => p.id === editingId)?.dni;
     if (!original || dni === original) return; // mismo DNI → no consultar
@@ -3546,7 +3548,7 @@ function PersonalPage({ showToast }) {
   };
 
   const handleSubmit = async () => {
-    const dni = (form.dni || '').trim();
+    const dni = String(form.dni ?? '').trim();
     if (!form.nombres?.trim() || !form.apellidos?.trim() || !dni) {
       showToast('Faltan campos obligatorios (nombres, apellidos, DNI)', 'red');
       return;
