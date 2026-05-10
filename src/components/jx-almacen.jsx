@@ -3725,7 +3725,7 @@ function PersonalPage({ showToast }) {
             <label className="flabel">DNI *</label>
             <div style={{ display:'flex', gap:6 }}>
               <input className="fi" placeholder="8 dígitos" inputMode="numeric" maxLength={8} value={form.dni||''} onChange={e=>setForm({...form, dni:e.target.value.replace(/\D/g,'').slice(0,8)})} style={{ flex:1 }}/>
-              <button type="button" className="btn btn-blue btn-sm" disabled={reniecBusy || (form.dni||'').length !== 8} onClick={consultarRENIEC} title="Consultar datos en RENIEC">
+              <button type="button" className="btn btn-blue btn-sm" disabled={reniecBusy || (form.dni||'').length !== 8} onClick={() => consultarRENIEC()} title="Consultar datos en RENIEC">
                 <JxIcon name="search" size={12}/>{reniecBusy ? '...' : 'RENIEC'}
               </button>
             </div>
