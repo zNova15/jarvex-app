@@ -161,6 +161,7 @@ function SolicitudResidentePage({ showToast }) {
     bajaMin: proyeccion.filter(p => p.status === 'baja_a_minimo').length,
     faltantes: proyeccion.filter(p => p.status === 'faltante').length,
     requisicionItems: proyeccion.filter(p => p.status !== 'suficiente'),
+    suficientesItems: proyeccion.filter(p => p.status === 'suficiente'),
   }), [proyeccion]);
 
   const addItem = () => setItems(prev => [...prev, { id: Date.now(), material_id: '', material_nombre: '', cantidad: '', unidad: '', notas: '' }]);
@@ -335,84 +336,101 @@ function SolicitudResidentePage({ showToast }) {
     setSubmitBusy(true);
     try {
       const now = new Date().toISOString();
-      // Si HAY items con faltante o que tocan el mínimo → crear requisición
-      if (stats.requisicionItems.length > 0) {
-        const reqId = window.__newId();
-        const reqsObra = await window.__db.requisiciones.where('obra_id').equals(obraId).filter(r=>!r.deleted_at).toArray();
-        const sigNum = (reqsObra.length || 0) + 1;
-        const codigo = `REQ-${new Date().getFullYear()}-${String(sigNum).padStart(4, '0')}`;
-        const prioridad = stats.faltantes > 0 ? 'urgente' : 'alta';
-        const solicitanteFinal = solicitanteNombre?.trim() || userName;
-        const fechaFinal = fechaCreacion || now.slice(0,10);
+      // Crear SIEMPRE una requisición — el almacenero la necesita para
+      // preparar entrega aunque haya stock. Antes este else-branch solo
+      // disparaba una notificación in-memory que se perdía → el almacenero
+      // nunca se enteraba de la solicitud.
+      const stockSuficiente = stats.requisicionItems.length === 0;
+      const reqId = window.__newId();
+      const reqsObra = await window.__db.requisiciones.where('obra_id').equals(obraId).filter(r=>!r.deleted_at).toArray();
+      const sigNum = (reqsObra.length || 0) + 1;
+      const codigo = `REQ-${new Date().getFullYear()}-${String(sigNum).padStart(4, '0')}`;
+      const prioridad = stats.faltantes > 0 ? 'urgente' : (stockSuficiente ? 'normal' : 'alta');
+      const estado = stockSuficiente ? 'aprobada' : 'pendiente_aprobacion';
+      const solicitanteFinal = solicitanteNombre?.trim() || userName;
+      const fechaFinal = fechaCreacion || now.slice(0,10);
 
-        await window.__db.requisiciones.add({
-          id: reqId, obra_id: obraId,
-          codigo, fecha: fechaFinal,
-          descripcion: descripcion,
-          prioridad,
-          estado: 'pendiente_aprobacion',
-          solicitante_id: userId,
-          solicitante_nombre: solicitanteFinal,
-          fecha_necesidad: fechaNecesidad,
-          notas: `${solicitanteFinal !== userName ? `Solicitado por ${solicitanteFinal}, cargado por ${userName}. ` : `Cargado por ${userName}. `}${stats.faltantes > 0 ? `${stats.faltantes} item(s) sin stock suficiente.` : ''} ${stats.bajaMin > 0 ? `${stats.bajaMin} item(s) bajarían al stock mínimo.` : ''}`.trim(),
-          created_by: userId, updated_by: userId,
+      const notasReq = stockSuficiente
+        ? `${solicitanteFinal !== userName ? `Solicitado por ${solicitanteFinal}, cargado por ${userName}. ` : `Cargado por ${userName}. `}Stock suficiente — lista para entrega.`
+        : `${solicitanteFinal !== userName ? `Solicitado por ${solicitanteFinal}, cargado por ${userName}. ` : `Cargado por ${userName}. `}${stats.faltantes > 0 ? `${stats.faltantes} item(s) sin stock suficiente.` : ''} ${stats.bajaMin > 0 ? `${stats.bajaMin} item(s) bajarían al stock mínimo.` : ''}`.trim();
+
+      await window.__db.requisiciones.add({
+        id: reqId, obra_id: obraId,
+        codigo, fecha: fechaFinal,
+        descripcion: descripcion,
+        prioridad,
+        estado,
+        solicitante_id: userId,
+        solicitante_nombre: solicitanteFinal,
+        fecha_necesidad: fechaNecesidad,
+        notas: notasReq,
+        created_by: userId, updated_by: userId,
+        created_at: now, updated_at: now,
+        version: 1, sync_status: 'pending_create', last_synced_at: null,
+        idempotency_key: `${userId}_requisiciones_${reqId}`,
+      });
+
+      // Items de la requisición. Si hay faltante, sale el cálculo de
+      // "cuánto pedir al proveedor". Si stock alcanza, agrega solo lo
+      // que el residente pidió, para que el almacenero sepa cuánto
+      // entregar.
+      const itemsParaCrear = stockSuficiente
+        ? stats.suficientesItems
+        : stats.requisicionItems;
+
+      for (const p of itemsParaCrear) {
+        const cantPedir = stockSuficiente
+          ? p.solicitado
+          : (p.faltante > 0
+              ? p.faltante + Math.max(0, p.stockMinimo - 0)
+              : Math.max(0, p.stockMinimo * 2 - p.stockActual));
+        const itemId = window.__newId();
+        const itemForm = items.find(it => it.material_id === p.mat.id);
+        const unidadFinal = itemForm?.unidad?.trim() || p.mat.unidad;
+        await window.__db.requisicion_items.add({
+          id: itemId, requisicion_id: reqId,
+          material_id: p.mat.id,
+          descripcion: sanearNombreItem(p.mat.nombre_material),
+          unidad: unidadFinal,
+          cantidad: cantPedir,
+          precio_estimado: Number(p.mat.precio_unitario_estimado || 0),
+          notas: stockSuficiente
+            ? [itemForm?.notas || null, `Solicitado ${p.solicitado} · stock OK`].filter(Boolean).join(' · ')
+            : [
+                itemForm?.notas || null,
+                p.status === 'faltante'
+                  ? `Solicitado ${p.solicitado}, en stock ${p.stockActual}, falta ${p.faltante}`
+                  : `Solicitado ${p.solicitado}, en stock ${p.stockActual}, bajaría a ${p.stockTrasUsar} (mín ${p.stockMinimo})`,
+              ].filter(Boolean).join(' · '),
           created_at: now, updated_at: now,
-          version: 1, sync_status: 'pending_create', last_synced_at: null,
-          idempotency_key: `${userId}_requisiciones_${reqId}`,
+          sync_status: 'pending_create',
+          idempotency_key: `${userId}_req_items_${itemId}`,
         });
-
-        for (const p of stats.requisicionItems) {
-          const cantPedir = p.faltante > 0
-            ? p.faltante + Math.max(0, p.stockMinimo - 0)
-            : Math.max(0, p.stockMinimo * 2 - p.stockActual);
-          const itemId = window.__newId();
-          // Si el residente eligió una unidad distinta a la del material, la respetamos
-          const itemForm = items.find(it => it.material_id === p.mat.id);
-          const unidadFinal = itemForm?.unidad?.trim() || p.mat.unidad;
-          await window.__db.requisicion_items.add({
-            id: itemId, requisicion_id: reqId,
-            material_id: p.mat.id,
-            descripcion: sanearNombreItem(p.mat.nombre_material),
-            unidad: unidadFinal,
-            cantidad: cantPedir,
-            precio_estimado: Number(p.mat.precio_unitario_estimado || 0),
-            notas: [
-              itemForm?.notas || null,
-              p.status === 'faltante'
-                ? `Solicitado ${p.solicitado}, en stock ${p.stockActual}, falta ${p.faltante}`
-                : `Solicitado ${p.solicitado}, en stock ${p.stockActual}, bajaría a ${p.stockTrasUsar} (mín ${p.stockMinimo})`,
-            ].filter(Boolean).join(' · '),
-            created_at: now, updated_at: now,
-            sync_status: 'pending_create',
-            idempotency_key: `${userId}_req_items_${itemId}`,
-          });
-        }
-
-        try { await window.__logAudit?.({ action:'insert', table:'requisiciones', recordId:reqId,
-          newData:{ codigo, items: stats.requisicionItems.length, solicitante: solicitanteFinal },
-          reason:`Solicitud · ${descripcion}` }); } catch {}
-        try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'requisiciones' } })); } catch {}
-        try { window.dispatchEvent(new CustomEvent('jarvex_new_notif', {
-          detail: {
-            tipo: 'requisicion',
-            titulo: `Requisición ${codigo} (${prioridad})`,
-            descripcion: `${stats.requisicionItems.length} ítems sin stock · solicitó ${solicitanteFinal}`,
-          }
-        })); } catch {}
-        showToast(`✓ Requisición ${codigo} creada · ${stats.requisicionItems.length} ítem(s) requieren compra`, 'amber');
-        setUltimaReq({ id: reqId, codigo, prioridad, items: stats.requisicionItems.length });
-      } else {
-        // Stock suficiente para todos → solo registramos como notificación
-        try { window.dispatchEvent(new CustomEvent('jarvex_new_notif', {
-          detail: {
-            tipo: 'solicitud_residente',
-            titulo: `Solicitud cubierta con stock`,
-            descripcion: `${(solicitanteNombre || userName)} solicitó ${stats.suficientes} ítems · stock suficiente`,
-          }
-        })); } catch {}
-        showToast(`✓ Stock suficiente para los ${stats.suficientes} materiales solicitados`, 'green');
-        setUltimaReq(null);
       }
+
+      try { await window.__logAudit?.({
+        action:'insert', table:'requisiciones', recordId:reqId,
+        newData:{ codigo, items: itemsParaCrear.length, solicitante: solicitanteFinal, estado },
+        reason:`Solicitud · ${descripcion}`,
+      }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'requisiciones' } })); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jarvex_new_notif', {
+        detail: {
+          tipo: 'requisicion',
+          titulo: stockSuficiente
+            ? `Solicitud ${codigo} lista para entrega`
+            : `Requisición ${codigo} (${prioridad})`,
+          descripcion: stockSuficiente
+            ? `${itemsParaCrear.length} ítems con stock OK · solicitó ${solicitanteFinal}`
+            : `${stats.requisicionItems.length} ítems sin stock · solicitó ${solicitanteFinal}`,
+        }
+      })); } catch {}
+
+      const toastMsg = stockSuficiente
+        ? `✓ Solicitud ${codigo} registrada · ${itemsParaCrear.length} ítems listos para entrega`
+        : `✓ Requisición ${codigo} creada · ${stats.requisicionItems.length} ítem(s) requieren compra`;
+      showToast(toastMsg, stockSuficiente ? 'green' : 'amber');
+      setUltimaReq({ id: reqId, codigo, prioridad, items: itemsParaCrear.length, estado });
 
       // Limpiar form (manteniendo el solicitante por si carga otra solicitud seguida)
       setItems([{ id: 1, material_id: '', material_nombre: '', cantidad: '', unidad: '', notas: '' }]);
