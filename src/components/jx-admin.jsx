@@ -2048,6 +2048,7 @@ function SistemaTab({ showToast }) {
   const [counts, setCounts] = uSAd({});
   const [online, setOnline] = uSAd(navigator.onLine);
   const [confirm, setConfirm] = uSAd(null);
+  const [wipeConfirmText, setWipeConfirmText] = uSAd('');
   const [busy, setBusy] = uSAd(false);
   const [tableConfirm, setTableConfirm] = uSAd(null);
 
@@ -2102,6 +2103,35 @@ function SistemaTab({ showToast }) {
       showToast?.('Sesiones offline cerradas','green');
       setTimeout(()=>location.reload(), 800);
     } catch(e) { showToast?.('Error: '+(e.message||e),'red'); }
+    finally { setBusy(false); setConfirm(null); }
+  };
+
+  // Wipe TOTAL del server vía RPC admin_wipe_data() (migration 039).
+  // El RPC verifica internamente que el caller sea admin activo.
+  // Después del wipe del server, también limpia Dexie local del admin
+  // y recarga la app — sino quedan inconsistencias visuales.
+  const wipeServer = async () => {
+    setBusy(true);
+    try {
+      const sb = window.__supabase;
+      if (!sb) throw new Error('Supabase no disponible');
+      const { data, error } = await sb.rpc('admin_wipe_data');
+      if (error) throw error;
+      const totalBorrado = Object.values(data || {}).reduce(
+        (s, v) => s + (typeof v === 'number' ? v : 0), 0
+      );
+      showToast?.(`✓ Server wiped: ${totalBorrado} registros eliminados. Recargando...`, 'amber');
+      // Limpiar local también para no mostrar data vieja
+      try {
+        await Promise.all(DB_TABLES_LIST.map(t => {
+          try { return window.__db[t].clear(); } catch { return Promise.resolve(); }
+        }));
+      } catch {}
+      setTimeout(()=>location.reload(), 1500);
+    } catch(e) {
+      showToast?.('Error: '+(e.message||e),'red');
+      console.error('[wipeServer]', e);
+    }
     finally { setBusy(false); setConfirm(null); }
   };
 
@@ -2306,6 +2336,35 @@ function SistemaTab({ showToast }) {
         </div>
       </div>
 
+      {/* DANGER ZONE — wipe completo del server (solo admin) */}
+      {isAdmin && (
+        <div className="card card-p" style={{
+          gridColumn:'1 / -1',
+          background:'rgba(229,57,53,0.05)',
+          border:'2px solid rgba(229,57,53,0.4)',
+          marginTop:8,
+        }}>
+          <div style={{ fontSize:13, fontWeight:800, color:'var(--red)', marginBottom:6, display:'flex', alignItems:'center', gap:8 }}>
+            <JxIcon name="alert" size={14} color="var(--red)"/> ZONA DE PELIGRO — Reset total del server
+          </div>
+          <div style={{ fontSize:12, color:'var(--ts)', lineHeight:1.55, marginBottom:10 }}>
+            Borra <strong>TODA la data operativa del server</strong> (obras, partidas,
+            materiales, herramientas, personal, movimientos, requisiciones, etc.)
+            para empezar de cero. Solo se mantienen los profiles de los admins.
+            <br/><br/>
+            <strong style={{ color:'var(--red)' }}>IRREVERSIBLE.</strong> Hacé un backup
+            local antes (correr <code style={{ background:'rgba(255,255,255,0.05)', padding:'1px 4px', borderRadius:3 }}>node scripts/backup-supabase.mjs</code>
+            en tu PC) o aceptá que perdés todo.
+          </div>
+          <button className="btn btn-red btn-sm"
+            onClick={()=>setConfirm('wipe-server')}
+            disabled={busy}>
+            <JxIcon name="trash" size={13}/>
+            {busy ? 'Procesando…' : 'Borrar TODO el server'}
+          </button>
+        </div>
+      )}
+
       <div className="card card-p">
         <div style={{ fontSize:13, fontWeight:700, marginBottom:14 }}>Registros locales por tabla</div>
         <div style={{ maxHeight:380, overflowY:'auto' }}>
@@ -2344,8 +2403,45 @@ function SistemaTab({ showToast }) {
       )}
 
       {confirm && (
-        <Modal title={confirm==='cache'?'⚠️ Limpiar caché local':'Cerrar sesiones offline'} icon="alert" onClose={()=>setConfirm(null)}>
-          {confirm === 'cache' ? (
+        <Modal
+          title={
+            confirm==='cache' ? '⚠️ Limpiar caché local' :
+            confirm==='wipe-server' ? '🔥 BORRAR TODO EL SERVER' :
+            'Cerrar sesiones offline'
+          }
+          icon="alert"
+          onClose={()=>{ setConfirm(null); setWipeConfirmText(''); }}>
+          {confirm === 'wipe-server' ? (
+            <div style={{ fontSize:13, color:'var(--ts)', marginBottom:12, lineHeight:1.55 }}>
+              <div style={{ background:'rgba(229,57,53,0.15)', border:'2px solid var(--red)', borderRadius:8, padding:'12px 14px', marginBottom:14 }}>
+                <div style={{ fontWeight:800, color:'var(--red)', marginBottom:6, fontSize:14 }}>
+                  ⚠ ESTÁS POR BORRAR TODA LA DATA DEL SERVER
+                </div>
+                <div style={{ fontSize:12, color:'var(--ts)' }}>
+                  Esta acción es <strong>IRREVERSIBLE</strong>. Borra obras, materiales,
+                  herramientas, partidas, movimientos, requisiciones, valorizaciones,
+                  evidencias, asistencia y todo el resto de data operativa.
+                  <br/><br/>
+                  Solo quedan los <strong>profiles de admin</strong>.
+                </div>
+              </div>
+              <div style={{ fontSize:12.5, marginBottom:8 }}>
+                Para confirmar, escribí <code style={{ background:'rgba(255,255,255,0.08)', padding:'2px 6px', borderRadius:4, fontWeight:700 }}>BORRAR TODO</code> abajo:
+              </div>
+              <input
+                className="fi"
+                type="text"
+                placeholder='Escribí "BORRAR TODO"'
+                value={wipeConfirmText}
+                onChange={e => setWipeConfirmText(e.target.value)}
+                autoFocus
+                style={{ marginBottom:8 }}/>
+              <div style={{ fontSize:11, color:'var(--tm)' }}>
+                Hacé un backup primero si no lo hiciste:
+                <code style={{ display:'block', marginTop:4, padding:'4px 6px', background:'rgba(0,0,0,0.3)', borderRadius:4, fontSize:11 }}>node scripts/backup-supabase.mjs</code>
+              </div>
+            </div>
+          ) : confirm === 'cache' ? (
             <div style={{ fontSize:13, color:'var(--ts)', marginBottom:12, lineHeight:1.55 }}>
               <div style={{ background:'rgba(229,57,53,0.10)', border:'1px solid rgba(229,57,53,0.35)', borderRadius:8, padding:'10px 12px', marginBottom:12 }}>
                 <div style={{ fontWeight:700, color:'var(--red)', marginBottom:6, display:'flex', alignItems:'center', gap:6 }}>
@@ -2389,9 +2485,24 @@ function SistemaTab({ showToast }) {
             </div>
           )}
           <div className="modal-actions">
-            <button className="btn btn-ghost" onClick={()=>setConfirm(null)}>Cancelar</button>
-            <button className="btn btn-red" disabled={busy} onClick={confirm==='cache'?clearLocal:clearAuth}>
-              {busy?'Procesando...':(confirm==='cache'?'Sí, borrar todo':'Confirmar')}
+            <button className="btn btn-ghost"
+              onClick={()=>{ setConfirm(null); setWipeConfirmText(''); }}>
+              Cancelar
+            </button>
+            <button
+              className="btn btn-red"
+              disabled={busy ||
+                (confirm === 'wipe-server' && wipeConfirmText !== 'BORRAR TODO')
+              }
+              onClick={
+                confirm === 'cache' ? clearLocal :
+                confirm === 'wipe-server' ? wipeServer :
+                clearAuth
+              }>
+              {busy ? 'Procesando...' :
+                confirm === 'cache' ? 'Sí, borrar todo' :
+                confirm === 'wipe-server' ? '🔥 BORRAR TODO EL SERVER' :
+                'Confirmar'}
             </button>
           </div>
         </Modal>

@@ -435,16 +435,41 @@ async function pushPendingOperations() {
   }
 }
 
+// Campos que ciertos triggers del server calculan automáticamente. El
+// cliente NO debe pushearlos: si los manda, pisa el cálculo del trigger
+// y crea inconsistencias (típicamente stock duplicado al ×2 cuando el
+// cliente suma local + el trigger suma server).
+//
+// Caso real: handleSubmitMovLote actualizaba stock_actual local. El
+// SyncEngine pushea materiales ANTES que movimientos_materiales, así
+// que server recibía stock=30 (del cliente), después llegaba el mov,
+// y el trigger hacía 30+30=60. Bug visible: ingresar 30, ver stock 60.
+const TRIGGER_MANAGED_FIELDS = {
+  materiales: new Set([
+    'stock_actual', 'total_entradas', 'total_salidas',
+    'precio_unitario_real_prom', 'alerta',
+  ]),
+  herramientas: new Set([
+    'disponible', 'ubicacion_actual', 'ultimo_responsable_id',
+    'estado_actual',
+  ]),
+  epps: new Set([
+    'stock_actual', 'total_entradas', 'total_salidas', 'alerta',
+  ]),
+};
+
 // Quita campos que solo viven en Dexie y nunca deben mandarse al server.
 // Convención: cualquier prop con prefijo `_` (ej: _last_error, _sync_retries)
 // es metadato local. Sin este filtro, PostgREST devuelve PGRST204
 // "Could not find the '_last_error' column" y el record se queda
 // permanentemente en pending — lo vimos en producción (Sentry JARVEX-APP-4).
-function stripLocalFields(record) {
+function stripLocalFields(record, tabla) {
+  const triggerManaged = tabla ? TRIGGER_MANAGED_FIELDS[tabla] : null;
   const out = {};
   for (const k of Object.keys(record)) {
     if (k.startsWith('_')) continue;
     if (k === 'sync_status' || k === 'last_synced_at') continue;
+    if (triggerManaged && triggerManaged.has(k)) continue;
     out[k] = record[k];
   }
   return out;
@@ -462,7 +487,7 @@ async function pushCreate(tabla, record) {
     return;
   }
 
-  const serverRecord = stripLocalFields(record);
+  const serverRecord = stripLocalFields(record, tabla);
 
   const { error } = await supabase.from(tabla).insert(serverRecord);
 
@@ -489,7 +514,7 @@ async function pushUpdate(tabla, record) {
     return;
   }
 
-  const serverRecord = stripLocalFields(record);
+  const serverRecord = stripLocalFields(record, tabla);
 
   // 1. Chequear si el record existe en server. Si NO existe (PGRST116 = no
   //    rows o error similar), el record solo vive localmente — el cliente
