@@ -756,6 +756,64 @@ function MaterialesPage({ showToast }) {
     setFoto(null);
   };
 
+  // Mueve un material existente a la tabla EPPs (clona + soft-delete).
+  // Usable desde el modal de edición Y desde el botón inline en la fila
+  // (cuando el detector identifica el material como EPP).
+  const moverMaterialAEpps = async (mat, opts = {}) => {
+    if (!mat?.id) return;
+    const tipoEpp = detectarEPP(mat.nombre_material) || 'Otro';
+    const skipConfirm = opts.skipConfirm === true;
+    if (!skipConfirm) {
+      if (!confirm(`¿Mover "${mat.nombre_material}" a la base de EPPs?\n\nSe creará un EPP nuevo (tipo "${tipoEpp}") con el stock actual. El material original queda marcado como eliminado pero sus movimientos históricos se mantienen.`)) {
+        return;
+      }
+    }
+    try {
+      const nuevoEppId = window.__newId();
+      const stockInicial = Number(mat.stock_actual ?? 0);
+      const stockMinimo = Number(mat.stock_minimo ?? 0);
+      await window.__db.epps.add({
+        id: nuevoEppId,
+        obra_id: mat.obra_id,
+        nombre_epp: mat.nombre_material,
+        tipo_epp: tipoEpp,
+        marca: null,
+        modelo: null,
+        talla: null,
+        vida_util_dias: null,
+        unidad: mat.unidad || 'Und',
+        stock_inicial: stockInicial,
+        stock_actual: stockInicial,
+        stock_minimo: stockMinimo,
+        precio_unitario_estimado: mat.precio_unitario_estimado || null,
+        proveedor_principal_id: mat.proveedor_principal_id || null,
+        ubicacion_id: mat.ubicacion_id || null,
+        alerta: mat.alerta || calcAlerta(stockInicial, stockMinimo),
+        estado: 'activo',
+        material_origen_id: mat.id,
+        created_by: auth?.profile?.id || null,
+        updated_by: auth?.profile?.id || null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        version: 1,
+        sync_status: 'pending_create',
+        last_synced_at: null,
+        idempotency_key: window.__newIdempotencyKey?.(auth?.profile?.id || 'offline', 'epps') || null,
+      });
+      await updateMaterial(mat.id, { deleted_at: new Date().toISOString() });
+      try { await window.__logAudit?.({
+        action: 'update', table: 'materiales', recordId: mat.id, oldData: mat,
+        newData: { migrado_a_epp: nuevoEppId },
+        reason: `Migrado a EPPs (tipo ${tipoEpp}, id ${nuevoEppId})`,
+      }); } catch {}
+      showToast(`✓ "${mat.nombre_material}" movido a EPPs (${tipoEpp})`, 'green');
+      return nuevoEppId;
+    } catch (e) {
+      showToast('Error al mover: ' + (e?.message || e), 'red');
+      return null;
+    }
+  };
+
   const handleFotoChange = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -1493,6 +1551,22 @@ function MaterialesPage({ showToast }) {
                           <button className="btn btn-ghost btn-xs" title="Editar material" onClick={()=>openEditMaterial(m)}>
                             <JxIcon name="edit" size={11}/>
                           </button>
+                          {/* Botón "Mover a EPPs" — solo aparece si el detector
+                              identifica el material como EPP (cascos, guantes,
+                              etc.). Permite migrar sin entrar al modal. */}
+                          {(() => {
+                            const tipoEpp = detectarEPP(m.nombre_material);
+                            if (!tipoEpp || m.categoria === 'EPP') return null;
+                            return (
+                              <button
+                                className="btn btn-amber btn-xs"
+                                title={`Detectado como ${tipoEpp} — mover al inventario de EPPs`}
+                                onClick={() => moverMaterialAEpps(m)}
+                                style={{ marginLeft:4 }}>
+                                🦺
+                              </button>
+                            );
+                          })()}
                           {canDelete && (
                             <button className="btn btn-red btn-xs" title="Eliminar (solo modo edición)" onClick={()=>handleDeleteMaterial(m)} style={{ marginLeft:4 }}>
                               <JxIcon name="trash" size={11}/>
@@ -2153,48 +2227,10 @@ function MaterialesPage({ showToast }) {
               showToast('Guardá primero el material; después se puede migrar', 'amber');
               return;
             }
-            if (!confirm(`¿Mover "${form.nombre_material}" a la base de EPPs?\n\nSe creará un EPP nuevo con el stock actual y este material quedará marcado como eliminado. Los movimientos históricos no se borran.`)) return;
-            try {
-              const mat = materiales.find(m => m.id === editingId);
-              if (!mat) { showToast('Material no encontrado', 'red'); return; }
-              const nuevoEppId = window.__newId();
-              const stockInicial = Number(mat.stock_actual ?? 0);
-              const stockMinimo = Number(mat.stock_minimo ?? 0);
-              await window.__db.epps.add({
-                id: nuevoEppId,
-                obra_id: mat.obra_id,
-                nombre_epp: mat.nombre_material,
-                tipo_epp: tipoEpp,
-                marca: null,
-                modelo: null,
-                talla: null,
-                vida_util_dias: null,
-                unidad: mat.unidad || 'Und',
-                stock_inicial: stockInicial,
-                stock_actual: stockInicial,
-                stock_minimo: stockMinimo,
-                precio_unitario_estimado: mat.precio_unitario_estimado || null,
-                proveedor_principal_id: mat.proveedor_principal_id || null,
-                ubicacion_id: mat.ubicacion_id || null,
-                alerta: mat.alerta || calcAlerta(stockInicial, stockMinimo),
-                estado: 'activo',
-                material_origen_id: mat.id,
-                created_by: auth?.profile?.id || null,
-                updated_by: auth?.profile?.id || null,
-                created_at: new Date().toISOString(),
-                updated_at: new Date().toISOString(),
-                version: 1,
-                sync_status: 'pending_create',
-                last_synced_at: null,
-                idempotency_key: window.__newIdempotencyKey?.(auth?.profile?.id || 'offline', 'epps') || null,
-              });
-              await updateMaterial(mat.id, { deleted_at: new Date().toISOString() });
-              try { await window.__logAudit?.({ action:'update', table:'materiales', recordId: mat.id, oldData: mat, newData: { migrado_a_epp: nuevoEppId }, reason: `Migrado a tabla EPPs (id ${nuevoEppId})` }); } catch {}
-              showToast(`✓ Movido a EPPs. Andá a SSOMA → EPPs (Inventario) para verlo`, 'green');
-              closeModalMaterial();
-            } catch (e) {
-              showToast('Error: ' + (e?.message || e), 'red');
-            }
+            const mat = materiales.find(m => m.id === editingId);
+            if (!mat) { showToast('Material no encontrado', 'red'); return; }
+            const nuevoEppId = await moverMaterialAEpps(mat);
+            if (nuevoEppId) closeModalMaterial();
           };
           return (
             <div style={{ marginBottom: 10, padding: '10px 12px', background: 'rgba(242,183,5,0.08)', border: '1px solid rgba(242,183,5,0.4)', borderRadius: 6, display: 'flex', alignItems: 'flex-start', gap: 10 }}>

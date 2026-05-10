@@ -1,4 +1,5 @@
 import React from "react";
+import { detectarEPP, esProbablementeEPP, epppTipo } from "../lib/epp-utils.js";
 const { useState: uSI, useMemo: uMI, useEffect: uEI, useRef: uRI, useCallback: uCI } = React;
 
 // ── Obra activa helper (poll Dexie) ──────────────────────────
@@ -618,7 +619,9 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
     let creadosMat = 0, actualizadosMat = 0, conUnidad = 0, sinUnidad = 0;
     let creadosMO = 0, saltadosMO = 0;
     let creadosEq = 0, saltadosEq = 0;
+    let creadosEpp = 0; // detectados como EPP en el import (van a tabla `epps`)
     const tiposEqContador = {};
+    const tiposEppContador = {};
 
     if (!include.materiales && !include.mano_obra && !include.equipos) {
       throw new Error('No seleccionaste ninguna categoría para importar.');
@@ -638,7 +641,57 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
 
     // ─── Materiales ───────────────────────────────────────────
     if (include.materiales) {
-      const materialesNuevos = parsed.data.filter(i => i.categoria === 'material');
+      // Separar EPPs detectados (cascos, guantes, lentes, etc) para
+      // importarlos a la tabla `epps` en vez de `materiales`. Sin esto,
+      // un APU de obra contiene cascos/chalecos/etc mezclados con
+      // materiales reales y el almacenero tenía que moverlos uno por uno.
+      const todoLoQueLlamaImport = parsed.data.filter(i => i.categoria === 'material');
+      const eppsDetectadosImport = todoLoQueLlamaImport.filter(i => esProbablementeEPP(i.descripcion));
+      const materialesNuevos = todoLoQueLlamaImport.filter(i => !esProbablementeEPP(i.descripcion));
+
+      // ── Importar los EPPs detectados a la tabla `epps` ──
+      if (eppsDetectadosImport.length > 0) {
+        const eppsExistentes = await window.__db.epps.where('obra_id').equals(obraId).filter(x=>!x.deleted_at).toArray();
+        const eppsPorNombre = new Map(eppsExistentes.map(e => [String(e.nombre_epp||'').toLowerCase().trim(), e]));
+        setProgress({ phase:'Cargando EPPs detectados…', current:0, total: eppsDetectadosImport.length });
+        for (let i = 0; i < eppsDetectadosImport.length; i++) {
+          const ins = eppsDetectadosImport[i];
+          const unidadResuelta = (ins.unidad && ins.unidad.trim()) || unidadPorCodigoAPU.get(ins.codigo) || 'und';
+          const tipoEpp = detectarEPP(ins.descripcion) || 'Otro';
+          const claveNombre = String(ins.descripcion || '').toLowerCase().trim();
+          try {
+            if (eppsPorNombre.has(claveNombre)) {
+              // Ya existe — saltar (no actualizar para evitar pisar config manual)
+              continue;
+            }
+            const cat = epppTipo(tipoEpp);
+            const id = window.__newId();
+            await window.__db.epps.add({
+              id, obra_id: obraId,
+              nombre_epp: ins.descripcion,
+              tipo_epp: tipoEpp,
+              marca: null, modelo: null, talla: null,
+              vida_util_dias: cat?.vida_util_dias || null,
+              unidad: unidadResuelta,
+              stock_inicial: 0, stock_actual: 0, stock_minimo: 0,
+              precio_unitario_estimado: Number(ins.precio_unitario) || 0,
+              alerta: 'sin_stock', estado: 'activo',
+              created_by: userId, updated_by: userId,
+              created_at: now, updated_at: now,
+              version: 1, sync_status: 'pending_create', last_synced_at: null,
+              idempotency_key: `${userId}_epps_${id}`,
+            });
+            creadosEpp++;
+            tiposEppContador[tipoEpp] = (tiposEppContador[tipoEpp] || 0) + 1;
+          } catch (e) {
+            errorList.push({ row: ins.codigo, error: `EPP: ${e.message || e}` });
+          }
+          if (i % 25 === 0) {
+            setProgress({ phase:'Cargando EPPs detectados…', current: i+1, total: eppsDetectadosImport.length });
+            await new Promise(r => setTimeout(r, 0));
+          }
+        }
+      }
       // Normalizador para detectar duplicados aún con códigos distintos.
       // (S10 puede emitir el mismo material con códigos diferentes entre versiones)
       const normNombre = (s) => String(s || '')
@@ -795,6 +848,12 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       const totalMat = creadosMat + actualizadosMat;
       partes.push(`Materiales: ${creadosMat} nuevos + ${actualizadosMat} actualizados = ${totalMat}` +
                   (sinUnidad > 0 ? ` (⚠ ${sinUnidad} sin unidad detectada — tip: importa primero el APU)` : ''));
+      // EPPs detectados automáticamente del flujo de "materiales" (cascos,
+      // guantes, etc.) — separados a la tabla `epps` por el detector.
+      if (creadosEpp > 0) {
+        const tiposEppStr = Object.entries(tiposEppContador).map(([k,v]) => `${v} ${k}`).join(', ');
+        partes.push(`🦺 EPPs detectados: ${creadosEpp} importados a tabla EPPs${tiposEppStr ? ` (${tiposEppStr})` : ''}`);
+      }
     }
     if (include.mano_obra) {
       partes.push(`Cargos MO (plantillas): ${creadosMO} creados${saltadosMO ? `, ${saltadosMO} ya existían` : ''}`);
@@ -805,7 +864,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
     }
     return {
       tipo: 'insumos',
-      ok: creadosMat + actualizadosMat + creadosMO + creadosEq,
+      ok: creadosMat + actualizadosMat + creadosMO + creadosEq + creadosEpp,
       detalle: partes.join(' · '),
       errors: errorList.length, errorList: errorList.slice(0, 20),
     };
