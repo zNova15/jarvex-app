@@ -5,7 +5,7 @@ import { detectarEPP, esProbablementeEPP } from "../lib/epp-utils.js";
 import { usePagination } from "../hooks/usePagination.js";
 import { TablePagination } from "./jx-pagination.jsx";
 import { SearchableSelect } from "./jx-searchable-select.jsx";
-const { useState: uS, useMemo: uM, useEffect: uE } = React;
+const { useState: uS, useMemo: uM, useEffect: uE, useCallback: uCB } = React;
 
 // ─── DATA ───────────────────────────────────────────────
 const MAT_DATA = [
@@ -1118,11 +1118,68 @@ function MaterialesPage({ showToast }) {
           responsable_id,
           proveedor_id,
           documento_asociado: form.documento || null,
-          partida_id: null,
+          // partida_id viene por fila en el lote: para salidas se usa para
+          // descontar del APU; para ingresos sigue null (no aplica).
+          partida_id: tipo === 'salida' ? (it.partida_id || null) : null,
           precio_unitario_real: parseFloat(it.precio) || null,
           observaciones: form.observaciones || null,
         });
         try { await window.__logAudit?.({ action:'insert', table:'movimientos_materiales', recordId:movCreated?.id, newData:movCreated, reason:`${tipo} en LOTE de ${cantNum} ${material.unidad} de ${material.nombre_material}` }); } catch {}
+
+        // INGRESO con ubicación: si el material no tenía ubicación asignada
+        // o el almacenero eligió una distinta, actualizamos el material para
+        // que después se sepa dónde está físicamente.
+        if (tipo === 'ingreso' && it.ubicacion_id && it.ubicacion_id !== material.ubicacion_id) {
+          try {
+            await window.__db.materiales.update(it.material_id, {
+              ubicacion_id: it.ubicacion_id,
+              sync_status: material.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+              updated_at: new Date().toISOString(),
+              version: (material.version ?? 0) + 1,
+            });
+          } catch {}
+        }
+
+        // SALIDA con partida: descontar del APU (cantidad_real_usada del insumo
+        // que matchea por nombre) y sumar al costo_real_acumulado de la partida
+        // si hay precio. Mismo flow que el modal individual antiguo.
+        if (tipo === 'salida' && it.partida_id) {
+          try {
+            const palabras = String(material.nombre_material || '')
+              .toLowerCase()
+              .split(/[^a-záéíóúñ0-9]+/)
+              .filter(p => p.length >= 4);
+            const insumoTarget = insumosObra.find(i =>
+              i.partida_id === it.partida_id &&
+              i.tipo_insumo === 'material' &&
+              palabras.length > 0 &&
+              palabras.every(w => String(i.nombre_insumo || '').toLowerCase().includes(w))
+            );
+            if (insumoTarget) {
+              const nuevoUsado = Number(insumoTarget.cantidad_real_usada || 0) + cantNum;
+              await window.__db.insumos_partida.update(insumoTarget.id, {
+                cantidad_real_usada: nuevoUsado,
+                sync_status: insumoTarget.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+                updated_at: new Date().toISOString(),
+                version: (insumoTarget.version ?? 0) + 1,
+              });
+            }
+            const precioReal = parseFloat(it.precio) || 0;
+            if (precioReal > 0) {
+              const partidaActual = partidasObra.find(p => p.id === it.partida_id);
+              if (partidaActual) {
+                const nuevoCosto = Number(partidaActual.costo_real_acumulado || 0) + (cantNum * precioReal);
+                await window.__db.partidas.update(it.partida_id, {
+                  costo_real_acumulado: nuevoCosto,
+                  sync_status: partidaActual.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+                  updated_at: new Date().toISOString(),
+                  version: (partidaActual.version ?? 0) + 1,
+                });
+              }
+            }
+          } catch (e) { console.warn('[lote-salida] APU update falló:', e?.message); }
+        }
+
         // Stock optimist
         const delta = tipo === 'ingreso' ? cantNum : -cantNum;
         const nuevoStock = (material.stock_actual ?? 0) + delta;
@@ -1251,19 +1308,17 @@ function MaterialesPage({ showToast }) {
     ? materiales.find(m => m.id === form.material_id)
     : null;
 
-  // Partidas sugeridas: aquellas cuyo APU contiene un insumo material que matchea
-  // el nombre del material seleccionado (palabras clave). Ordenadas por % consumido
-  // descendente (las más urgentes arriba).
-  const partidasSugeridas = uM(() => {
-    if (!matSeleccionado || !partidasObra.length || !insumosObra.length) return [];
-    const palabras = String(matSeleccionado.nombre_material || '')
+  // Helper extraído: partidas sugeridas para CUALQUIER material (no solo
+  // matSeleccionado). Usado tanto en el modal individual de "Nuevo movimiento"
+  // como en cada fila del modal de "Salida (lote)" para que el almacenero
+  // vea qué partida está consumiendo este material según el APU.
+  const computarPartidasSugeridas = uCB((mat) => {
+    if (!mat || !partidasObra.length || !insumosObra.length) return [];
+    const palabras = String(mat.nombre_material || '')
       .toLowerCase()
       .split(/[^a-záéíóúñ0-9]+/)
-      .filter(p => p.length >= 4);  // descartar palabras cortas tipo "de", "tipo"
+      .filter(p => p.length >= 4);
     if (!palabras.length) return [];
-
-    // Para cada partida, buscar si tiene un insumo material cuyo nombre contenga
-    // todas las palabras clave del material seleccionado
     const matches = [];
     for (const p of partidasObra) {
       const insumosDeP = insumosObra.filter(i => i.partida_id === p.id && i.tipo_insumo === 'material');
@@ -1278,9 +1333,13 @@ function MaterialesPage({ showToast }) {
         matches.push({ partida: p, insumo: insumoMatch, presup, usado, pct });
       }
     }
-    // Ordenar por % descendente, max 8 sugerencias
     return matches.sort((a, b) => b.pct - a.pct).slice(0, 8);
-  }, [matSeleccionado, partidasObra, insumosObra]);
+  }, [partidasObra, insumosObra]);
+
+  const partidasSugeridas = uM(
+    () => computarPartidasSugeridas(matSeleccionado),
+    [matSeleccionado, computarPartidasSugeridas]
+  );
 
   if (!obraId) return <SinObraEmpty icon="package"/>;
   if (loading) {
@@ -1509,6 +1568,7 @@ function MaterialesPage({ showToast }) {
                   <th style={{ width:90 }}>Unidad</th>
                   <th style={{ width:110 }}>Cantidad *</th>
                   <th style={{ width:110 }}>Precio S/</th>
+                  <th style={{ minWidth:160 }}>Ubicación</th>
                   {!loteComunes.usarMismoProveedor && <th style={{ minWidth:160 }}>Proveedor</th>}
                   <th style={{ width:40 }}></th>
                 </tr>
@@ -1526,6 +1586,8 @@ function MaterialesPage({ showToast }) {
                             updateLoteItem(it.id, {
                               material_id: v,
                               precio: newMat && !it.precio ? Number(newMat.precio_unitario_estimado || 0).toFixed(2) : it.precio,
+                              // Si el material ya tiene ubicación asignada, la heredamos como sugerencia
+                              ubicacion_id: it.ubicacion_id || newMat?.ubicacion_id || null,
                             });
                           }}
                           options={[
@@ -1540,6 +1602,17 @@ function MaterialesPage({ showToast }) {
                                  onChange={e => updateLoteItem(it.id, { cantidad: e.target.value })}/></td>
                       <td><input className="fi" type="number" step="0.01" placeholder="0.00" value={it.precio} style={{ fontSize:12 }}
                                  onChange={e => updateLoteItem(it.id, { precio: e.target.value })}/></td>
+                      <td>
+                        <SearchableSelect
+                          value={it.ubicacion_id}
+                          onChange={v => updateLoteItem(it.id, { ubicacion_id: v || null })}
+                          options={[
+                            { value: '', label: ubicacionesActivas.length ? '— Sin asignar —' : '— Sin ubicaciones definidas —' },
+                            ...ubicacionesActivas.map(u => ({ value: u.id, label: u.nombre })),
+                          ]}
+                          fontSize={12}
+                          placeholder="— Sin asignar —"/>
+                      </td>
                       {!loteComunes.usarMismoProveedor && (
                         <td>
                           <SearchableSelect
@@ -1643,10 +1716,11 @@ function MaterialesPage({ showToast }) {
                 <thead>
                   <tr>
                     <th style={{ minWidth:240 }}>Material</th>
-                    <th style={{ width:90 }}>Unidad</th>
-                    <th style={{ width:110 }}>Cantidad *</th>
-                    <th style={{ width:110 }}>Stock</th>
-                    {!loteComunes.usarMismaPersona && <th style={{ minWidth:180 }}>Quien retira</th>}
+                    <th style={{ width:80 }}>Unidad</th>
+                    <th style={{ width:100 }}>Cantidad *</th>
+                    <th style={{ width:90 }}>Stock</th>
+                    <th style={{ minWidth:220 }}>Partida (a qué se carga)</th>
+                    {!loteComunes.usarMismaPersona && <th style={{ minWidth:160 }}>Quien retira</th>}
                     <th style={{ width:40 }}></th>
                   </tr>
                 </thead>
@@ -1656,12 +1730,37 @@ function MaterialesPage({ showToast }) {
                     const cantSolicitada = parseFloat(it.cantidad) || 0;
                     const stock = Number(mat?.stock_actual ?? 0);
                     const stockOk = stock >= cantSolicitada;
+                    // Sugerencias por fila — depende del material elegido en esta fila
+                    const sugeridas = mat ? computarPartidasSugeridas(mat) : [];
+                    const idsSugeridos = new Set(sugeridas.map(s => s.partida.id));
+                    const partidasOpts = [
+                      { value: '', label: '— Sin partida (no descontar APU) —' },
+                      ...sugeridas.map(s => ({
+                        value: s.partida.id,
+                        label: `★ ${s.partida.descripcion?.slice(0, 50) || s.partida.codigo_s10 || '?'} · ${s.pct.toFixed(0)}% usado`,
+                      })),
+                      ...partidasObra
+                        .filter(p => !idsSugeridos.has(p.id))
+                        .slice(0, 50)
+                        .map(p => ({
+                          value: p.id,
+                          label: `${p.descripcion?.slice(0, 50) || p.codigo_s10 || '?'}`,
+                        })),
+                    ];
                     return (
                       <tr key={it.id}>
                         <td>
                           <SearchableSelect
                             value={it.material_id}
-                            onChange={v => updateLoteItem(it.id, { material_id: v })}
+                            onChange={v => {
+                              const newMat = materiales.find(m => m.id === v);
+                              const sugs = newMat ? computarPartidasSugeridas(newMat) : [];
+                              // Auto-pre-seleccionar la partida más urgente (primera en orden por % usado)
+                              updateLoteItem(it.id, {
+                                material_id: v,
+                                partida_id: sugs[0]?.partida?.id || null,
+                              });
+                            }}
                             options={[
                               { value: '', label: '— Selecciona —' },
                               ...materiales.map(m => ({ value: m.id, label: m.nombre_material })),
@@ -1678,6 +1777,19 @@ function MaterialesPage({ showToast }) {
                               {stockOk ? '✓' : '⚠'} {stock}
                             </span>
                           ) : <span style={{ color:'var(--tm)' }}>—</span>}
+                        </td>
+                        <td>
+                          <SearchableSelect
+                            value={it.partida_id}
+                            onChange={v => updateLoteItem(it.id, { partida_id: v || null })}
+                            options={partidasOpts}
+                            fontSize={12}
+                            placeholder={mat ? '— Sin partida —' : 'Elegí material primero'}/>
+                          {mat && sugeridas.length > 0 && !it.partida_id && (
+                            <div style={{ fontSize:10, color:'var(--tm)', marginTop:2 }}>
+                              ★ = sugerida según APU
+                            </div>
+                          )}
                         </td>
                         {!loteComunes.usarMismaPersona && (
                           <td>

@@ -498,7 +498,23 @@ async function pullMasterTables() {
       continue; // skip silencioso
     }
     try {
-      const lastSync = await getLastSync(tabla);
+      let lastSync = await getLastSync(tabla);
+      // Auto-recovery: si Dexie tiene 0 records de esta tabla pero hay
+      // lastSync grabado, ignoramos lastSync y hacemos full pull. Pasa
+      // cuando IndexedDB se borró parcialmente (quota, "Clear cache" pero
+      // no "Clear cookies", crash del browser) y los datos viejos
+      // quedaron inalcanzables porque su updated_at < lastSync. Sin esto,
+      // el almacenero ve 0 partidas para siempre aunque el server tenga
+      // 9145.
+      if (lastSync && db[tabla]) {
+        try {
+          const localCount = await db[tabla].count();
+          if (localCount === 0) {
+            console.warn(`[SyncEngine] ${tabla}: Dexie vacío con lastSync grabado → full pull (recovery)`);
+            lastSync = null;
+          }
+        } catch {}
+      }
       let q = query();
       if (lastSync) {
         q = q.gte('updated_at', lastSync);
