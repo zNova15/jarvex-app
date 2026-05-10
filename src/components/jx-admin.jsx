@@ -99,23 +99,28 @@ function UsuariosPage({ showToast }) {
 
   const [profiles, setProfiles] = uSAd([]);
   const [obraUsuarios, setObraUsuarios] = uSAd([]);
+  const [obras, setObras] = uSAd([]);
   const [loading, setLoading] = uSAd(true);
   const [search, setSearch] = uSAd('');
   const [modalNew, setModalNew] = uSAd(false);
   const [modalRol, setModalRol] = uSAd(null);
-  const [form, setForm] = uSAd({ email:'', password:'', nombres:'', apellidos:'', rol:'solo_lectura' });
+  const [modalObras, setModalObras] = uSAd(null);   // user al que se le editan obras
+  const [obrasObrasSeleccion, setObrasObrasSeleccion] = uSAd(new Set());
+  const [form, setForm] = uSAd({ email:'', password:'', nombres:'', apellidos:'', rol:'solo_lectura', obras: new Set() });
   const [busy, setBusy] = uSAd(false);
 
   const reload = async () => {
     try {
       const sb = window.__supabase;
       if (!sb) { setLoading(false); return; }
-      const [{ data: p }, { data: ou }] = await Promise.all([
+      const [{ data: p }, { data: ou }, { data: ob }] = await Promise.all([
         sb.from('profiles').select('*').order('apellidos'),
         sb.from('obra_usuarios').select('id, obra_id, usuario_id, activo'),
+        sb.from('obras').select('id, nombre_obra, estado').is('deleted_at', null),
       ]);
       setProfiles(p || []);
       setObraUsuarios(ou || []);
+      setObras(ob || []);
     } catch (e) { console.warn('UsuariosPage reload', e); }
     finally { setLoading(false); }
   };
@@ -163,6 +168,14 @@ function UsuariosPage({ showToast }) {
   const handleCreate = async () => {
     if (!form.email || !form.password) { showToast?.('Email y password requeridos','red'); return; }
     if (form.password.length < 8) { showToast?.('Mínimo 8 caracteres','red'); return; }
+    // Para roles distintos a admin, exigir al menos 1 obra. Sin obra
+    // asignada el sync no le baja datos y el user ve la app vacía
+    // (era el bug que reportó el almacenero).
+    const obrasArr = Array.from(form.obras || []);
+    if (form.rol !== 'admin' && obrasArr.length === 0) {
+      showToast?.('Asigná al menos 1 obra al usuario (no es admin).','red');
+      return;
+    }
     setBusy(true);
     try {
       const sb = window.__supabase;
@@ -194,12 +207,102 @@ function UsuariosPage({ showToast }) {
         throw new Error(data.error || data.detail || `HTTP ${resp.status}`);
       }
 
-      showToast?.(data.message || 'Usuario creado. Ya puede ingresar.', 'green');
+      // Asignar obras al usuario recién creado. Si falla esta parte, igual
+      // el user ya existe — avisamos pero no rollback (admin puede asignar
+      // después con "Editar obras").
+      const newUserId = data?.user?.id || data?.id;
+      if (newUserId && obrasArr.length > 0) {
+        const filas = obrasArr.map(obra_id => ({
+          obra_id,
+          usuario_id: newUserId,
+          rol_obra: form.rol,
+          activo: true,
+        }));
+        const { error: errAsign } = await sb.from('obra_usuarios').insert(filas);
+        if (errAsign) {
+          showToast?.(`Usuario creado, pero falló asignar obras: ${errAsign.message}. Asigná desde "Editar obras".`, 'amber');
+        } else {
+          try { await window.__logAudit?.({
+            action: 'insert', table: 'obra_usuarios', recordId: newUserId,
+            newData: { usuario: form.email, rol: form.rol, obras: obrasArr.length },
+            reason: `Usuario creado con ${obrasArr.length} obra(s) asignada(s)`,
+          }); } catch {}
+        }
+      }
+
+      showToast?.(data.message || `Usuario creado y asignado a ${obrasArr.length} obra(s).`, 'green');
       setModalNew(false);
-      setForm({ email:'', password:'', nombres:'', apellidos:'', rol:'solo_lectura' });
+      setForm({ email:'', password:'', nombres:'', apellidos:'', rol:'solo_lectura', obras: new Set() });
       reload();
     } catch (e) {
       showToast?.('Error: ' + (e.message || e),'red');
+    } finally { setBusy(false); }
+  };
+
+  // Abrir modal de edición de obras para un user existente
+  const openEditObras = (user) => {
+    const asignadas = new Set(
+      (obraUsuarios || [])
+        .filter(o => o.usuario_id === user.id && o.activo !== false)
+        .map(o => o.obra_id)
+    );
+    setObrasObrasSeleccion(asignadas);
+    setModalObras(user);
+  };
+
+  // Guardar cambios de obras de un user (diff: agregar nuevas, desactivar removidas)
+  const handleSaveObras = async () => {
+    if (!modalObras) return;
+    setBusy(true);
+    try {
+      const sb = window.__supabase;
+      const userId = modalObras.id;
+      const actuales = (obraUsuarios || []).filter(o => o.usuario_id === userId);
+      const idsActivosActuales = new Set(actuales.filter(o => o.activo !== false).map(o => o.obra_id));
+      const idsNuevos = obrasObrasSeleccion;
+
+      const aAgregar = [...idsNuevos].filter(id => !idsActivosActuales.has(id));
+      const aDesactivar = [...idsActivosActuales].filter(id => !idsNuevos.has(id));
+
+      // Agregar (puede que existan inactivas que reactivar antes que insertar)
+      for (const obra_id of aAgregar) {
+        const existente = actuales.find(o => o.obra_id === obra_id);
+        if (existente) {
+          // Reactivar
+          const { error } = await sb.from('obra_usuarios')
+            .update({ activo: true, rol_obra: modalObras.rol })
+            .eq('id', existente.id);
+          if (error) throw error;
+        } else {
+          const { error } = await sb.from('obra_usuarios').insert({
+            obra_id, usuario_id: userId, rol_obra: modalObras.rol, activo: true,
+          });
+          if (error) throw error;
+        }
+      }
+
+      // Desactivar (no eliminar — preserva historial)
+      for (const obra_id of aDesactivar) {
+        const existente = actuales.find(o => o.obra_id === obra_id && o.activo !== false);
+        if (existente) {
+          const { error } = await sb.from('obra_usuarios')
+            .update({ activo: false })
+            .eq('id', existente.id);
+          if (error) throw error;
+        }
+      }
+
+      try { await window.__logAudit?.({
+        action: 'update', table: 'obra_usuarios', recordId: userId,
+        newData: { agregadas: aAgregar.length, removidas: aDesactivar.length },
+        reason: `Edición de obras de ${modalObras.email}`,
+      }); } catch {}
+
+      showToast?.(`Obras actualizadas: +${aAgregar.length} / -${aDesactivar.length}`, 'green');
+      setModalObras(null);
+      reload();
+    } catch (e) {
+      showToast?.('Error: ' + (e.message || e), 'red');
     } finally { setBusy(false); }
   };
 
@@ -304,11 +407,16 @@ function UsuariosPage({ showToast }) {
                       <div style={{ display:'flex', gap:4 }}>
                         {isAdmin ? (
                           <>
-                            <button className="btn btn-ghost btn-xs" title="Cambiar Rol"
+                            <button className="btn btn-ghost btn-xs" title="Cambiar rol"
                                     disabled={isMe} onClick={()=>setModalRol(u)}>
                               <JxIcon name="edit" size={11}/>
                             </button>
-                            <button className={`btn ${activo?'btn-red':'btn-green'} btn-xs`} title={activo?'Desactivar':'Activar'}
+                            <button className="btn btn-ghost btn-xs" title="Editar obras asignadas"
+                                    disabled={u.rol === 'admin'} onClick={()=>openEditObras(u)}>
+                              <JxIcon name="building" size={11}/>
+                            </button>
+                            <button className={`btn ${activo?'btn-red':'btn-green'} btn-xs`}
+                                    title={activo?'Desactivar (no podrá entrar)':'Reactivar'}
                                     disabled={isMe} onClick={()=>handleToggleActivo(u)}>
                               <JxIcon name={activo?'lock':'check'} size={11}/>
                             </button>
@@ -324,8 +432,17 @@ function UsuariosPage({ showToast }) {
         </div>
       )}
 
-      {modalNew && (
+      {modalNew && (() => {
+        const obrasActivas = (obras || []).filter(o => o.estado !== 'cerrada');
+        const necesitaObras = form.rol !== 'admin';
+        const sinObras = necesitaObras && obrasActivas.length === 0;
+        return (
         <Modal title="Nuevo Usuario" icon="user" onClose={()=>setModalNew(false)}>
+          {sinObras && (
+            <div style={{ marginBottom:12, padding:'10px 12px', background:'rgba(231,76,60,0.10)', border:'1px solid rgba(231,76,60,0.4)', borderRadius:6, fontSize:12.5, color:'var(--ts)' }}>
+              <strong>⚠ No hay obras creadas.</strong> Para crear un usuario que NO sea admin, primero necesitás al menos 1 obra. Andá a "Obras" → "Nueva Obra" y volvé acá.
+            </div>
+          )}
           <div className="g2">
             <div><label className="flabel">Nombres *</label>
               <input className="fi" value={form.nombres} onChange={e=>setForm({...form, nombres:e.target.value})}/></div>
@@ -337,19 +454,93 @@ function UsuariosPage({ showToast }) {
               <input className="fi" type="password" value={form.password} onChange={e=>setForm({...form, password:e.target.value})}/></div>
             <div style={{ gridColumn:'1 / -1' }}>
               <label className="flabel">Rol</label>
-              <select className="fi" value={form.rol} onChange={e=>setForm({...form, rol:e.target.value})}>
+              <select className="fi" value={form.rol} onChange={e=>setForm({...form, rol:e.target.value, obras: e.target.value === 'admin' ? new Set() : form.obras })}>
                 {getAllRolKeys().map(r => <option key={r} value={r}>{getAllRolLabels()[r]}</option>)}
               </select>
+              {form.rol === 'admin' && (
+                <div style={{ fontSize:11, color:'var(--tm)', marginTop:4 }}>
+                  Los admins ven y editan TODAS las obras automáticamente. No es necesario asignarlas.
+                </div>
+              )}
             </div>
+            {necesitaObras && !sinObras && (
+              <div style={{ gridColumn:'1 / -1' }}>
+                <label className="flabel">
+                  Obras asignadas * <span style={{ fontWeight:400, color:'var(--tm)' }}>· {form.obras.size} de {obrasActivas.length}</span>
+                </label>
+                <div style={{ maxHeight:180, overflow:'auto', border:'1px solid var(--bd)', borderRadius:6, padding:6, background:'var(--bg2)' }}>
+                  {obrasActivas.map(o => {
+                    const checked = form.obras.has(o.id);
+                    return (
+                      <label key={o.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'5px 6px', cursor:'pointer', fontSize:12.5, color:'var(--ts)', borderRadius:4 }}
+                        onMouseEnter={e => e.currentTarget.style.background = 'rgba(242,183,5,0.06)'}
+                        onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                        <input type="checkbox" checked={checked}
+                          onChange={() => {
+                            const next = new Set(form.obras);
+                            if (checked) next.delete(o.id); else next.add(o.id);
+                            setForm({ ...form, obras: next });
+                          }}/>
+                        <span>{o.nombre_obra}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize:11, color:'var(--tm)', marginTop:4 }}>
+                  El usuario solo verá data y podrá registrar cambios en las obras seleccionadas.
+                </div>
+              </div>
+            )}
           </div>
           <div className="modal-actions">
             <button className="btn btn-ghost" onClick={()=>setModalNew(false)}>Cancelar</button>
-            <button className="btn btn-amber" disabled={busy} onClick={handleCreate}>
+            <button className="btn btn-amber" disabled={busy || sinObras} onClick={handleCreate}>
               <JxIcon name="check" size={13}/>{busy?'Creando...':'Crear Usuario'}
             </button>
           </div>
         </Modal>
-      )}
+        );
+      })()}
+
+      {modalObras && (() => {
+        const obrasActivas = (obras || []).filter(o => o.estado !== 'cerrada');
+        return (
+          <Modal title={`Obras de ${modalObras.nombres||''} ${modalObras.apellidos||''}`} icon="building" onClose={()=>setModalObras(null)}>
+            <div style={{ fontSize:12, color:'var(--tm)', marginBottom:10 }}>
+              {modalObras.email} · rol: <strong style={{ color:'var(--ts)' }}>{getAllRolLabels()[modalObras.rol]||modalObras.rol||'—'}</strong>
+            </div>
+            <div style={{ marginBottom:8, fontSize:12, color:'var(--ts)' }}>
+              Obras asignadas <span style={{ color:'var(--tm)' }}>· {obrasObrasSeleccion.size} de {obrasActivas.length}</span>
+            </div>
+            <div style={{ maxHeight:300, overflow:'auto', border:'1px solid var(--bd)', borderRadius:6, padding:6, background:'var(--bg2)' }}>
+              {obrasActivas.length === 0 ? (
+                <div style={{ padding:'12px', color:'var(--tm)', fontSize:12, textAlign:'center' }}>No hay obras activas. Creá una primero.</div>
+              ) : obrasActivas.map(o => {
+                const checked = obrasObrasSeleccion.has(o.id);
+                return (
+                  <label key={o.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'6px', cursor:'pointer', fontSize:12.5, color:'var(--ts)', borderRadius:4 }}
+                    onMouseEnter={e => e.currentTarget.style.background = 'rgba(242,183,5,0.06)'}
+                    onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                    <input type="checkbox" checked={checked}
+                      onChange={() => {
+                        const next = new Set(obrasObrasSeleccion);
+                        if (checked) next.delete(o.id); else next.add(o.id);
+                        setObrasObrasSeleccion(next);
+                      }}/>
+                    <span>{o.nombre_obra}</span>
+                  </label>
+                );
+              })}
+            </div>
+            <div className="modal-actions">
+              <button className="btn btn-ghost" onClick={()=>setModalObras(null)}>Cancelar</button>
+              <button className="btn btn-amber" disabled={busy} onClick={handleSaveObras}>
+                <JxIcon name="check" size={13}/>{busy?'Guardando...':'Guardar Cambios'}
+              </button>
+            </div>
+          </Modal>
+        );
+      })()}
 
       {modalRol && (
         <Modal title={`Cambiar Rol: ${modalRol.nombres||''} ${modalRol.apellidos||''}`} icon="edit" onClose={()=>setModalRol(null)}>

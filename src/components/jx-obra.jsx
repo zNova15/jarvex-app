@@ -138,11 +138,49 @@ function ObrasPage({ showToast }) {
 
   const handleDeleteObra = async (o) => {
     if (!canDelete) return;
-    if (!confirm(`¿Eliminar la obra "${o.nombre_obra}"?\n\nESTO ES IRREVERSIBLE. Todos los registros asociados (partidas, materiales, asistencia, movimientos) quedarán huérfanos.\n\nSolo úsalo para limpiar pruebas.`)) return;
+
+    // Antes de borrar, verificamos qué users están asignados a esta obra
+    // y avisamos al admin para que no borre algo con consecuencias.
+    let usersAsignados = [];
+    try {
+      const sb = window.__supabase;
+      if (sb) {
+        const { data } = await sb.from('obra_usuarios')
+          .select('usuario_id, rol_obra, profiles:usuario_id(nombres, apellidos, email, rol)')
+          .eq('obra_id', o.id)
+          .eq('activo', true);
+        usersAsignados = (data || []).map(r => ({
+          email: r.profiles?.email || r.usuario_id?.slice(0, 8),
+          nombre: `${r.profiles?.nombres || ''} ${r.profiles?.apellidos || ''}`.trim() || r.profiles?.email || '?',
+          rol: r.profiles?.rol || r.rol_obra,
+        })).filter(u => u.rol !== 'admin'); // los admins ven todas las obras igualmente
+      }
+    } catch {}
+
+    let confirmMsg = `¿Eliminar la obra "${o.nombre_obra}"?\n\n`;
+    if (usersAsignados.length > 0) {
+      confirmMsg += `⚠ ATENCIÓN: ${usersAsignados.length} usuario(s) asignado(s) a esta obra perderán acceso:\n`;
+      confirmMsg += usersAsignados.slice(0, 8).map(u => `  · ${u.nombre} (${u.rol})`).join('\n');
+      if (usersAsignados.length > 8) confirmMsg += `\n  ... y ${usersAsignados.length - 8} más`;
+      confirmMsg += `\n\n`;
+    }
+    confirmMsg += `ESTO ES IRREVERSIBLE. Todos los registros asociados (partidas, materiales, asistencia, movimientos) quedarán huérfanos.\n\nSolo úsalo para limpiar pruebas.`;
+    if (!confirm(confirmMsg)) return;
+
     try {
       await updateObra(o.id, { deleted_at: new Date().toISOString() });
-      try { await window.__logAudit?.({ action:'delete', table:'obras', recordId:o.id, oldData:o, reason:'Eliminación manual (modo edición)' }); } catch(e) {}
-      showToast(`Obra "${o.nombre_obra}" eliminada`, 'amber');
+      // Desactivar las asignaciones obra_usuarios (no borrar — preserva historial)
+      if (usersAsignados.length > 0) {
+        try {
+          const sb = window.__supabase;
+          await sb.from('obra_usuarios').update({ activo: false }).eq('obra_id', o.id);
+        } catch (e) { console.warn('[deleteObra] no se pudieron desactivar obra_usuarios:', e?.message); }
+      }
+      try { await window.__logAudit?.({
+        action:'delete', table:'obras', recordId:o.id, oldData:o,
+        reason:`Eliminación manual · ${usersAsignados.length} user(s) desasignado(s)`,
+      }); } catch(e) {}
+      showToast(`Obra "${o.nombre_obra}" eliminada · ${usersAsignados.length} user(s) desasignado(s)`, 'amber');
     } catch (e) { showToast('Error al eliminar: ' + (e.message||e), 'red'); }
   };
 
