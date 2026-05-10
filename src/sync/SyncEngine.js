@@ -216,6 +216,85 @@ async function pushPendingChangeRequests() {
 // velocidad y no saturar Supabase / RLS / la conexión del cliente.
 const PUSH_PARALLELISM = 5;
 
+// Mapeo tabla → módulo de la matriz de permisos. Si el user actual no
+// tiene 'w' en el módulo, skipeamos el push de esa tabla — sino el
+// SyncEngine intenta crear records que el RLS server bloquea, gasta
+// retries (5 por record) y spammea Sentry con warnings RLS sabidos.
+//
+// Caso real (Sentry JARVEX-APP-9/A/B): el almacenero tiene insumos de
+// partidas en su Dexie (importados por el admin) marcados como
+// pending_create por algún edge case del pull. El push falla 79 veces
+// con RLS porque almacenero no tiene 'w' en Insumos/Partidas.
+const TABLA_TO_MODULO = {
+  obras: 'Obras',
+  personal: 'Personal',
+  materiales: 'Materiales',
+  herramientas: 'Herramientas',
+  epps: 'EPP',
+  proveedores: 'Proveedores',
+  partidas: 'Partidas',
+  insumos_partida: 'Insumos',
+  partidas_versionadas: 'Versiones presupuesto',
+  insumos_partida_versionadas: 'Versiones presupuesto',
+  presupuestos_versiones: 'Versiones presupuesto',
+  cronograma: 'Cronograma',
+  movimientos_materiales: 'Mov. Materiales',
+  movimientos_herramientas: 'Mov. Herramientas',
+  movimientos_epp: 'EPP',
+  asistencia: 'Asistencia',
+  avance_obra: 'Avance',
+  incidencias: 'Incidencias',
+  evidencias: 'Evidencias',
+  ubicaciones_obra: 'Ubicaciones',
+  requisiciones: 'Requisiciones',
+  requisicion_items: 'Requisiciones',
+  cotizaciones: 'Cotizaciones',
+  cotizacion_items: 'Cotizaciones',
+  ordenes_compra: 'Órdenes de Compra',
+  oc_items: 'Órdenes de Compra',
+  recepciones: 'Recepciones',
+  recepcion_items: 'Recepciones',
+  valorizaciones: 'Valorizaciones',
+  valorizacion_partidas: 'Valorizaciones',
+  valorizacion_adicionales: 'Valorizaciones',
+  cuentas_bancarias: 'Cuentas Bancarias',
+  movimientos_bancarios: 'Cuentas Bancarias',
+  cronograma_pagos: 'Cuentas Bancarias',
+  activos_pesados: 'Activos Pesados',
+  horas_maquina: 'Horas Máquina',
+  consumos_combustible: 'Horas Máquina',
+  mantenimientos_maquinaria: 'Mantenimiento',
+  charlas_seguridad: 'Charlas Seguridad',
+  charla_asistentes: 'Charlas Seguridad',
+  iperc: 'IPERC',
+  epp_entregas: 'EPP',
+  inspecciones_seguridad: 'Inspecciones SSOMA',
+  capacitaciones: 'Capacitaciones',
+  subcontratistas: 'Subcontratistas',
+  subcontratos: 'Subcontratos',
+  subcontrato_valorizaciones: 'Valor. Subcontrato',
+  personal_contrato: 'Contratos Laborales',
+  planillas: 'Planillas',
+  planilla_boletas: 'Planillas',
+  companies: 'Empresas',
+  accounting_movements: 'Movs. Contables',
+  intercompany_transactions: 'Intercompany',
+  trazabilidad_cadenas: 'Trazabilidad',
+};
+
+function canPushTabla(tabla) {
+  try {
+    const rol = window.__useAuth?.()?.profile?.rol;
+    if (!rol) return true;          // sin rol todavía: dejar pasar
+    if (rol === 'admin') return true;
+    const modulo = TABLA_TO_MODULO[tabla];
+    if (!modulo) return true;       // sin mapping: defensivo, dejar pasar
+    return window.__hasPerm?.(rol, modulo, 'w') ?? true;
+  } catch {
+    return true;
+  }
+}
+
 // Foreign keys que NO deben pushearse mientras la entidad referenciada
 // esté pendiente de sync en local. Si el material X todavía es PENDING en
 // Dexie, un movimiento que referencia X NO debe llegar al server primero,
@@ -249,6 +328,15 @@ async function fkDepsReady(tabla, record) {
 }
 
 async function pushTablePending(tabla) {
+  // Skip silencioso si el rol del user no tiene write permission a esta
+  // tabla. Antes el SyncEngine intentaba pushear y gastaba 5 retries por
+  // record antes de marcarlo FAILED, y por cada uno mandaba un warning
+  // RLS a Sentry. Con un almacenero teniendo en Dexie 79 insumos del
+  // admin, eso eran 79*5 = 395 intentos y 79 warnings. Spam puro.
+  if (!canPushTabla(tabla)) {
+    return;
+  }
+
   // Self-heal #1: records FAILED por PGRST204 "Could not find the 'X'
   // column of 'tabla'" quedan bloqueados aunque la causa se haya resuelto
   // (ej: el admin corrió la migration que agrega la columna). Cubre dos
@@ -708,6 +796,12 @@ function emitirEventoRLS(tabla, operacion, error) {
   } catch {}
 }
 
+// Dedup de warnings RLS a Sentry: solo mandamos 1 captureMessage por
+// combinación tabla+operacion por sesión. Si el almacenero tiene 79
+// insumos en pending_create de la importación del admin, antes
+// generábamos 79 warnings idénticos en Sentry; ahora solo 1.
+const _rlsLogged = new Set();
+
 async function handleSyncError(tabla, record, operacion, error) {
   const retries = (record._sync_retries ?? 0) + 1;
   const isRLS = esErrorRLS(error);
@@ -726,11 +820,17 @@ async function handleSyncError(tabla, record, operacion, error) {
   if (isRLS) {
     console.error(`[SyncEngine] ${tabla}/${operacion} BLOQUEADO POR RLS (sync no podrá completarse):`, error.message);
     emitirEventoRLS(tabla, operacion, error);
-    // Sentry: warning crítico (NO error full porque la app sigue OK).
-    captureMessage(
-      `[SyncEngine] RLS bloqueando ${tabla}/${operacion}: ${error.message}`,
-      'warning'
-    );
+    // Sentry: solo el primer evento por tabla+op por sesión. Sin esto,
+    // un import del admin propagado al Dexie del almacenero generaba
+    // 79 warnings idénticos.
+    const dedupKey = `${tabla}_${operacion}`;
+    if (!_rlsLogged.has(dedupKey)) {
+      _rlsLogged.add(dedupKey);
+      captureMessage(
+        `[SyncEngine] RLS bloqueando ${tabla}/${operacion}: ${error.message}`,
+        'warning'
+      );
+    }
   } else {
     console.warn(`[SyncEngine] ${tabla}/${operacion} failed (attempt ${retries}):`, error.message);
     // Sentry: solo capturamos cuando ya marcamos como FAILED (5 retries).
