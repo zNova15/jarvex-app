@@ -683,15 +683,18 @@ const PERM_MATRIX = {
     return 'r';
   }),
 
-  // Almacenero: w en almacén + EPP (entrega); r en compras/maquinaria/personal/asistencia;
-  // x en gestión presupuestal, contabilidad, RRHH, SUNAT, ejecutivo, auditoría
+  // Almacenero: w en almacén + EPP (entrega) + REQUISICIONES (puede pedir
+  // compras cuando detecta faltante en obra); r en cotizaciones/OC/maquinaria/
+  // personal/asistencia (las cotizaciones y OCs las maneja jefe de compras
+  // o admin); x en gestión presupuestal, contabilidad, RRHH, SUNAT, ejecutivo.
   almacenero: PERM_MATRIX_MODULES.map(m => {
     if (m === 'Usuarios/Config') return 'x';
     // Write: lo que el almacenero ejecuta directamente
-    if (['Materiales','Mov. Materiales','Herramientas','Mov. Herramientas','Recepciones','EPP'].includes(m)) return 'w';
+    if (['Materiales','Mov. Materiales','Herramientas','Mov. Herramientas',
+         'Recepciones','EPP','Requisiciones','Evidencias','Incidencias'].includes(m)) return 'w';
     // Lectura: lo que necesita consultar para hacer su trabajo
-    if (['Requisiciones','Órdenes de Compra','Cotizaciones','Proveedores','Personal','Asistencia',
-         'Activos Pesados','Mantenimiento','Horas Máquina','Evidencias','Incidencias','Ubicaciones'].includes(m)) return 'r';
+    if (['Órdenes de Compra','Cotizaciones','Proveedores','Personal','Asistencia',
+         'Activos Pesados','Mantenimiento','Horas Máquina','Ubicaciones'].includes(m)) return 'r';
     // Resto (RRHH, contabilidad, SUNAT, ejecutivo, SSOMA distinto a EPP, auditoría) → sin acceso
     return 'x';
   }),

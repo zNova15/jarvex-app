@@ -3462,10 +3462,21 @@ function PersonalPage({ showToast }) {
   const obraNombre = (id) => obrasActivas.find(o => o.id === id)?.nombre_obra || '—';
 
   const consultarRENIEC = async (dniOverride = null) => {
-    // String() coerciona números (caso de DNI importado de Excel como
-    // numérico) y previene "trim is not a function" — Sentry JARVEX-APP-C.
-    const dni = String(dniOverride ?? form.dni ?? '').trim();
-    if (!/^\d{8}$/.test(dni)) { showToast('Ingresa primero un DNI de 8 dígitos', 'red'); return; }
+    // Sanitize tolerante: String() para números, replace para sacar
+    // espacios/puntos/guiones/letras que el user pueda meter sin querer.
+    // Sin esto, "12.345.678" o "1234 5678" fallaba el regex aunque el
+    // user creía haber puesto 8 dígitos. Si después del replace NO da
+    // 8 dígitos, ahí sí es input inválido.
+    const dni = String(dniOverride ?? form.dni ?? '').replace(/\D/g, '');
+    if (dni.length !== 8) {
+      showToast(
+        dni.length === 0
+          ? 'Ingresa el DNI primero'
+          : `DNI debe tener 8 dígitos (escribiste ${dni.length})`,
+        'red'
+      );
+      return;
+    }
     setReniecBusy(true);
     try {
       const data = await window.__identity.consultarDNI(dni);
@@ -3489,8 +3500,8 @@ function PersonalPage({ showToast }) {
   const [lastDniFetched, setLastDniFetched] = uS(null);
   uE(() => {
     if (!editingId) return; // solo en modo edición
-    const dni = String(form.dni ?? '').trim();
-    if (!/^\d{8}$/.test(dni)) return;
+    const dni = String(form.dni ?? '').replace(/\D/g, '');
+    if (dni.length !== 8) return;
     const original = personal?.find(p => p.id === editingId)?.dni;
     if (!original || dni === original) return; // mismo DNI → no consultar
     if (lastDniFetched === dni) return; // ya consultamos este
@@ -3548,7 +3559,7 @@ function PersonalPage({ showToast }) {
   };
 
   const handleSubmit = async () => {
-    const dni = String(form.dni ?? '').trim();
+    const dni = String(form.dni ?? '').replace(/\D/g, '');
     if (!form.nombres?.trim() || !form.apellidos?.trim() || !dni) {
       showToast('Faltan campos obligatorios (nombres, apellidos, DNI)', 'red');
       return;
