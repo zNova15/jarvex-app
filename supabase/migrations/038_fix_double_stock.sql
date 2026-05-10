@@ -66,14 +66,14 @@ WHERE public.materiales.deleted_at IS NULL
     WHERE mm.material_id = public.materiales.id
   );
 
--- ── EPPs (mismo patrón) ─────────────────────────────────────────────
+-- ── EPPs ────────────────────────────────────────────────────────────
+-- NOTA: la tabla epps NO tiene total_entradas/total_salidas (a
+-- diferencia de materiales). Solo recalculamos stock_actual.
 UPDATE public.epps e
 SET
-  total_entradas = COALESCE(s.entradas, 0),
-  total_salidas  = COALESCE(s.salidas, 0),
-  stock_actual   = COALESCE(e.stock_inicial, 0)
-                   + COALESCE(s.entradas, 0)
-                   - COALESCE(s.salidas, 0),
+  stock_actual = COALESCE(e.stock_inicial, 0)
+                 + COALESCE(s.entradas, 0)
+                 - COALESCE(s.salidas, 0),
   updated_at = now()
 FROM (
   SELECT
@@ -81,7 +81,6 @@ FROM (
     SUM(CASE WHEN tipo_movimiento IN ('entrada', 'devolucion') THEN cantidad ELSE 0 END) AS entradas,
     SUM(CASE WHEN tipo_movimiento IN ('salida', 'merma', 'baja') THEN cantidad ELSE 0 END) AS salidas
   FROM public.movimientos_epp
-  -- movimientos_epp tampoco tiene deleted_at — son inmutables
   GROUP BY epp_id
 ) s
 WHERE s.epp_id = e.id
@@ -89,11 +88,8 @@ WHERE s.epp_id = e.id
 
 -- EPPs sin movimientos
 UPDATE public.epps
-SET
-  total_entradas = 0,
-  total_salidas  = 0,
-  stock_actual   = COALESCE(public.epps.stock_inicial, 0),
-  updated_at     = now()
+SET stock_actual = COALESCE(public.epps.stock_inicial, 0),
+    updated_at   = now()
 WHERE public.epps.deleted_at IS NULL
   AND NOT EXISTS (
     SELECT 1 FROM public.movimientos_epp me
