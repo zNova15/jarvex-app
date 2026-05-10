@@ -50,16 +50,20 @@ WHERE s.material_id = m.id
   AND m.deleted_at IS NULL;
 
 -- Materiales SIN movimientos: stock_actual = stock_inicial
-UPDATE public.materiales m
+-- Postgres no permite alias en UPDATE en algunas versiones cuando hay
+-- subquery con NOT EXISTS — usamos nombre completo de tabla en todos
+-- lados para evitar ambigüedad "column m.deleted_at does not exist".
+UPDATE public.materiales
 SET
   total_entradas = 0,
   total_salidas  = 0,
-  stock_actual   = COALESCE(m.stock_inicial, 0),
+  stock_actual   = COALESCE(public.materiales.stock_inicial, 0),
   updated_at     = now()
-WHERE m.deleted_at IS NULL
+WHERE public.materiales.deleted_at IS NULL
   AND NOT EXISTS (
-    SELECT 1 FROM public.movimientos_materiales
-    WHERE material_id = m.id AND deleted_at IS NULL
+    SELECT 1 FROM public.movimientos_materiales mm
+    WHERE mm.material_id = public.materiales.id
+      AND mm.deleted_at IS NULL
   );
 
 -- ── EPPs (mismo patrón) ─────────────────────────────────────────────
@@ -84,15 +88,17 @@ WHERE s.epp_id = e.id
   AND e.deleted_at IS NULL;
 
 -- EPPs sin movimientos
-UPDATE public.epps e
+UPDATE public.epps
 SET
   total_entradas = 0,
   total_salidas  = 0,
-  stock_actual   = COALESCE(e.stock_inicial, 0),
+  stock_actual   = COALESCE(public.epps.stock_inicial, 0),
   updated_at     = now()
-WHERE e.deleted_at IS NULL
+WHERE public.epps.deleted_at IS NULL
   AND NOT EXISTS (
-    SELECT 1 FROM public.movimientos_epp WHERE epp_id = e.id AND deleted_at IS NULL
+    SELECT 1 FROM public.movimientos_epp me
+    WHERE me.epp_id = public.epps.id
+      AND me.deleted_at IS NULL
   );
 
 NOTIFY pgrst, 'reload schema';
