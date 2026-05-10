@@ -249,22 +249,27 @@ async function fkDepsReady(tabla, record) {
 }
 
 async function pushTablePending(tabla) {
-  // Self-heal #1: records FAILED por el bug de columnas `_local` (PGRST204
-  // "Could not find the '_last_error' column") quedan bloqueados para
-  // siempre porque pushTablePending solo procesa PENDING_*. Ahora que
-  // stripLocalFields filtra esas columnas, podemos resetearlos a
-  // PENDING_UPDATE para que el próximo push los reintente limpio.
-  const stuckByLocalFields = await db[tabla]
+  // Self-heal #1: records FAILED por PGRST204 "Could not find the 'X'
+  // column of 'tabla'" quedan bloqueados aunque la causa se haya resuelto
+  // (ej: el admin corrió la migration que agrega la columna). Cubre dos
+  // escenarios reales:
+  //   a) Bug de columnas locales `_*` (Sentry JARVEX-APP-4): stripLocalFields
+  //      ya las filtra, retry queda limpio.
+  //   b) Schema desfasado entre cliente y server (Sentry JARVEX-APP-8):
+  //      cliente manda columna nueva, server todavía no la tiene. Después
+  //      de aplicar la migration, retry funciona.
+  // En ambos: PGRST204 + mensaje "column of" → reset a PENDING_UPDATE.
+  const stuckByPGRST204 = await db[tabla]
     .where('sync_status').equals(SYNC_STATUS.FAILED)
     .filter(r => r._last_error_code === 'PGRST204'
-                 && /'_[a-z_]+' column/.test(r._last_error || ''))
+                 && /column of/i.test(r._last_error || ''))
     .toArray();
-  for (const r of stuckByLocalFields) {
+  for (const r of stuckByPGRST204) {
     await db[tabla].update(r.id, {
       sync_status: SYNC_STATUS.PENDING_UPDATE,
       _sync_retries: 0,
     });
-    console.info(`[SyncEngine] self-heal _local: ${tabla}/${r.id} reset a PENDING_UPDATE`);
+    console.info(`[SyncEngine] self-heal PGRST204: ${tabla}/${r.id} reset a PENDING_UPDATE`);
   }
 
   // Self-heal #2: records FAILED por causas NO permanentes (no RLS, no
