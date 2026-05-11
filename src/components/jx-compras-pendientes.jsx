@@ -41,16 +41,23 @@ function ComprasPendientesPage({ showToast }) {
     let cancelled = false;
     const load = async () => {
       try {
-        const [mc, mt, hr, ep, pr] = await Promise.all([
-          window.__db.accounting_movements
-            .where('obra_id').equals(obraId)
-            .filter(m => m.recepcion_status === 'pendiente_recepcion' && !m.deleted_at)
-            .toArray(),
+        // `obra_id` NO está indexado en accounting_movements (ver
+        // jarvex.db.js, schema version 15). Por eso filtramos en memoria.
+        // Pasar `.where('obra_id')` con un keyPath no indexado en Dexie
+        // tira SchemaError y la promesa rechaza → la lista queda vacía
+        // sin que el usuario se entere.
+        const [mcAll, mt, hr, ep, pr] = await Promise.all([
+          window.__db.accounting_movements.toArray(),
           window.__db.materiales.where('obra_id').equals(obraId).toArray(),
           window.__db.herramientas.where('obra_id').equals(obraId).toArray(),
           window.__db.epps.where('obra_id').equals(obraId).toArray(),
           window.__db.proveedores.toArray(),
         ]);
+        const mc = mcAll.filter(m =>
+          m.obra_id === obraId &&
+          m.recepcion_status === 'pendiente_recepcion' &&
+          !m.deleted_at
+        );
         if (cancelled) return;
         mc.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
         setMovsContables(mc);
