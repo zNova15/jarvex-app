@@ -24,7 +24,11 @@ const Modal = (props) => (window.Modal ? <window.Modal {...props}/> : null);
 function ComprasPendientesPage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : {};
   const userId = auth?.profile?.id || null;
-  const obraId = window.__useObraActiva ? window.__useObraActiva() : null;
+  // useObraActiva retorna { obraId, obra, obras, setObraActiva, loading }.
+  // Asignar el objeto entero a `obraId` rompe el filtro porque la comparación
+  // `m.obra_id === obraId` siempre da false.
+  const obraHook = window.__useObraActiva ? window.__useObraActiva() : { obraId: null };
+  const obraId = obraHook?.obraId || null;
 
   const [movsContables, setMovsContables] = uS([]);
   const [materiales, setMateriales] = uS([]);
