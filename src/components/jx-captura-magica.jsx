@@ -357,7 +357,7 @@ function CapturaMagicaPage({ showToast }) {
       crear_materiales_catalogo: true,
       genera_recepcion_almacen: true,
       metodo_pago: null,
-      payment_status: 'pendiente',
+      payment_status: 'pending',
       // Legacy: si llega un payload viejo lo respetamos pero la UI ya no
       // expone este flag — los movimientos de inventario los crea el
       // almacenero al confirmar recepción, no la captura mágica.
@@ -598,7 +598,7 @@ function CapturaMagicaPage({ showToast }) {
         // Nuevos: método y estado de pago (registrados desde la UI).
         // Si el contador no eligió, usamos defaults razonables.
         metodo_pago: r.metodo_pago || null,
-        payment_status: r.payment_status || 'pendiente',
+        payment_status: r.payment_status || 'pending',
         // Recepción de almacén: si la factura "genera ingreso al almacén"
         // queda como pendiente para que el almacenero confirme cuando
         // llegue físicamente. Si NO (combustible, servicios, fletes),
@@ -1141,10 +1141,10 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
               </div>
               <div>
                 <label className="flabel">Estado del pago</label>
-                <select className="fi" value={r.payment_status || 'pendiente'} onChange={e=>upd({ payment_status: e.target.value })}>
-                  <option value="pagado">Pagado</option>
-                  <option value="pendiente">Pendiente</option>
-                  <option value="credito">Crédito (plazo)</option>
+                <select className="fi" value={r.payment_status || 'pending'} onChange={e=>upd({ payment_status: e.target.value })}>
+                  <option value="paid">Pagado</option>
+                  <option value="pending">Pendiente</option>
+                  <option value="credit">Crédito (plazo)</option>
                 </select>
               </div>
             </div>

@@ -21,8 +21,8 @@ const fmtCurK = (n, currency = 'PEN') => {
 const TYPE_LABEL = { income: 'Ingreso', cost: 'Costo', expense: 'Gasto' };
 const TYPE_COLOR = { income: 'var(--green)', cost: 'var(--red)', expense: 'var(--amber)' };
 const TYPE_BADGE = { income: 'b-green', cost: 'b-red', expense: 'b-amber' };
-const STATUS_BADGE = { paid: 'b-green', pending: 'b-amber', cancelled: 'b-gray' };
-const STATUS_LABEL = { paid: 'Pagado', pending: 'Pendiente', cancelled: 'Anulado' };
+const STATUS_BADGE = { paid: 'b-green', pending: 'b-amber', credit: 'b-blue', cancelled: 'b-gray' };
+const STATUS_LABEL = { paid: 'Pagado', pending: 'Pendiente', credit: 'Crédito', cancelled: 'Anulado' };
 const COMPANY_TYPES = [
   { v: 'constructora', label: 'Constructora' },
   { v: 'comercial',    label: 'Comercializadora' },
@@ -570,6 +570,67 @@ function MovimientosContablesPage({ showToast }) {
   const [modal, setModal] = uSC(null);
   const [editingId, setEditingId] = uSC(null);
   const [form, setForm] = uSC({});
+
+  // Evidencias adjuntas a movs contables (factura PDF/imagen guardada
+  // por Captura Mágica). Map<accId, {url, mime}>. Cuando la contadora
+  // entra a verificar, ve un botón 👁️ para abrir el archivo.
+  const [evidenciasPorMov, setEvidenciasPorMov] = uSC(() => new Map());
+  const [evidenciaModal, setEvidenciaModal] = uSC(null); // { url, mime, nombre }
+
+  uEC(() => {
+    let cancelled = false;
+    const blobUrlsLocales = [];
+    const cargar = async () => {
+      try {
+        const evs = await window.__db.evidencias
+          .filter(e =>
+            e.modulo_relacionado === 'accounting_movements' &&
+            !e.deleted_at &&
+            e.registro_relacionado_id
+          )
+          .toArray();
+        evs.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+        const map = new Map();
+        for (const ev of evs) {
+          if (map.has(ev.registro_relacionado_id)) continue;
+          let url = null;
+          if (ev.url_archivo) {
+            url = ev.url_archivo;
+          } else {
+            try {
+              const blobId = ev.blob_ref || ev.id;
+              const row = await window.__db.evidencias_blobs.get(blobId);
+              if (row?.blob) {
+                url = URL.createObjectURL(row.blob);
+                blobUrlsLocales.push(url);
+              }
+            } catch {}
+          }
+          if (url) {
+            map.set(ev.registro_relacionado_id, {
+              url,
+              mime: ev.mime_type || 'application/pdf',
+              nombre: ev.nombre_archivo || 'comprobante',
+            });
+          }
+        }
+        if (!cancelled) setEvidenciasPorMov(map);
+      } catch (e) { console.warn('[contab evidencias]', e?.message); }
+    };
+    cargar();
+    const onChange = (e) => {
+      const t = e?.detail?.tabla || e?.detail?.table;
+      if (!t || t === 'evidencias') cargar();
+    };
+    window.addEventListener('jx_data_changed', onChange);
+    window.addEventListener('jarvex_master_updated', onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('jx_data_changed', onChange);
+      window.removeEventListener('jarvex_master_updated', onChange);
+      blobUrlsLocales.forEach(u => { try { URL.revokeObjectURL(u); } catch {} });
+    };
+  }, []);
   // IA: sugerencia de cuenta PCGE
   const [aiSugCuenta, setAiSugCuenta] = uSC(null); // { result, confianza, razonamiento, advertencias }
   const [aiSugLoading, setAiSugLoading] = uSC(false);
@@ -859,10 +920,24 @@ function MovimientosContablesPage({ showToast }) {
                         <select className="fi" value={m.payment_status} onChange={e=>cambiarEstadoPago(m, e.target.value)} style={{ fontSize:11, padding:'4px 6px', minWidth:110 }}>
                           <option value="pending">⏱ Pendiente</option>
                           <option value="paid">✓ Pagado</option>
+                          <option value="credit">≡ Crédito</option>
                           <option value="cancelled">✗ Anulado</option>
                         </select>
                       </td>
                       <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
+                        {/* Botón ver archivo — visible solo si hay
+                            evidencia (PDF/imagen) vinculada al mov. */}
+                        {evidenciasPorMov.has(m.id) && (() => {
+                          const ev = evidenciasPorMov.get(m.id);
+                          return (
+                            <button className="btn btn-ghost btn-xs"
+                              title="Ver factura adjunta"
+                              onClick={() => setEvidenciaModal(ev)}
+                              style={{ marginRight: 4, color: 'var(--blue)' }}>
+                              <JxIcon name="eye" size={11}/>
+                            </button>
+                          );
+                        })()}
                         <button className="btn btn-ghost btn-xs" title={isIc?'Editar desde Operaciones entre empresas':'Editar'} onClick={()=>openEditar(m)} disabled={isIc}>
                           <JxIcon name="edit" size={11}/>
                         </button>
@@ -882,8 +957,60 @@ function MovimientosContablesPage({ showToast }) {
         </div>
       )}
 
+      {/* Visor de factura adjunta (PDF/imagen) */}
+      {evidenciaModal && (
+        <Modal title={`Comprobante: ${evidenciaModal.nombre}`} icon="eye"
+          onClose={() => setEvidenciaModal(null)} wide>
+          <div style={{ minHeight: 480, maxHeight: '70vh', background: '#0E1620', borderRadius: 6, overflow: 'hidden' }}>
+            {evidenciaModal.mime?.startsWith('image/') ? (
+              <img src={evidenciaModal.url} alt={evidenciaModal.nombre}
+                style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}/>
+            ) : (
+              <iframe src={evidenciaModal.url} title={evidenciaModal.nombre}
+                style={{ width: '100%', height: '70vh', border: 'none', background: 'white' }}/>
+            )}
+          </div>
+          <div className="modal-actions">
+            <a href={evidenciaModal.url} target="_blank" rel="noopener noreferrer"
+              className="btn btn-ghost btn-sm">
+              <JxIcon name="external" size={12}/> Abrir en nueva pestaña
+            </a>
+            <button className="btn btn-amber btn-sm" onClick={() => setEvidenciaModal(null)}>
+              Cerrar
+            </button>
+          </div>
+        </Modal>
+      )}
+
       {(modal === 'nuevo' || modal === 'editar') && (
         <Modal title={editingId ? 'Editar Movimiento' : 'Nuevo Movimiento'} icon="dollar" onClose={()=>{setModal(null); setEditingId(null);}} wide>
+          {/* Si el mov tiene factura adjunta (vino de Captura Mágica),
+              mostrar botón "Ver factura" arriba para que la contadora
+              pueda revisarla sin salir del modal de edición. */}
+          {editingId && evidenciasPorMov.has(editingId) && (() => {
+            const ev = evidenciasPorMov.get(editingId);
+            return (
+              <div style={{
+                marginBottom: 12,
+                padding: '8px 12px',
+                background: 'rgba(52,152,219,0.08)',
+                border: '1px solid rgba(52,152,219,0.3)',
+                borderRadius: 6,
+                display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+              }}>
+                <span style={{ fontSize: 16, lineHeight: 1 }}>📎</span>
+                <div style={{ flex: 1, minWidth: 200 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--blue)' }}>
+                    Factura adjunta · {ev.nombre}
+                  </div>
+                </div>
+                <button type="button" className="btn btn-ghost btn-sm"
+                  onClick={() => setEvidenciaModal(ev)}>
+                  <JxIcon name="eye" size={12}/> Ver factura
+                </button>
+              </div>
+            );
+          })()}
           <div className="g2">
             <div>
               <label className="flabel">Empresa *</label>
@@ -1034,6 +1161,7 @@ function MovimientosContablesPage({ showToast }) {
               <select className="fi" value={form.payment_status||'pending'} onChange={e=>setForm({...form, payment_status:e.target.value})}>
                 <option value="pending">Pendiente</option>
                 <option value="paid">Pagado</option>
+                <option value="credit">Crédito</option>
                 <option value="cancelled">Anulado</option>
               </select>
             </div>
@@ -1361,6 +1489,7 @@ function IntercompanyPage({ showToast }) {
               <select className="fi" value={form.payment_status||'pending'} onChange={e=>setForm({...form, payment_status:e.target.value})}>
                 <option value="pending">Pendiente</option>
                 <option value="paid">Pagado</option>
+                <option value="credit">Crédito</option>
                 <option value="cancelled">Anulado</option>
               </select>
             </div>
