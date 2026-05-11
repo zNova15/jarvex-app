@@ -1,4 +1,8 @@
 import React from "react";
+import {
+  clasificarInsumo, TIPO_INSUMO_LABEL, TIPO_INSUMO_BADGE, TIPO_INSUMO_TABLA,
+} from "../lib/insumo-clasificador.js";
+import { epppTipo } from "../lib/epp-utils.js";
 const { useState: uSCM, useMemo: uMCM, useEffect: uECM, useRef: uRCM } = React;
 
 // ╔════════════════════════════════════════════════════════════╗
@@ -306,13 +310,17 @@ function CapturaMagicaPage({ showToast }) {
         .filter(x => x.score >= 0.5)
         .sort((a, b) => b.score - a.score);
       const top = candidatos[0];
+      // Clasificar el insumo en uno de los 4 grupos: material / herramienta
+      // / epp / maquinaria / servicio. Esto define en qué tabla se va a
+      // crear el catálogo si el contador marca "Crear materiales".
+      const tipoInsumo = clasificarInsumo(it.descripcion || '');
       return {
         ...it,
         idx,
         material_id: top ? top.m.id : '',
         accion_material: top ? 'usar_existente' : 'crear_nuevo',
         unidad: it.unidad || top?.m.unidad || 'und',
-        // sugerencia de stock_minimo / partida_id si existe
+        tipo_insumo: tipoInsumo,
       };
     });
     return {
@@ -480,6 +488,22 @@ function CapturaMagicaPage({ showToast }) {
     if (!r.serie_correlativo) { showToast('Falta serie-correlativo', 'red'); return; }
     if (!(Number(r.total) > 0)) { showToast('El total debe ser mayor a 0', 'red'); return; }
 
+    // Validación de obra: si el contador marcó "crear materiales" o
+    // "genera ingreso al almacén", la obra es OBLIGATORIA. Sin obra
+    // no hay almacén donde poner los insumos. Antes esto fallaba en
+    // silencio (los items se descartaban por obra_id null y nada se
+    // creaba).
+    const algunItemRealAlmacen = (r.items || []).some(it =>
+      it.tipo_insumo && it.tipo_insumo !== 'servicio'
+    );
+    if (algunItemRealAlmacen && (r.crear_materiales_catalogo || r.genera_recepcion_almacen) && !r.obra_id) {
+      showToast(
+        'Falta seleccionar la OBRA. Sin obra no se pueden crear materiales/herramientas/EPPs ni notificar al almacén. Elegila arriba o desactivá los dos checkboxes si es solo gasto contable.',
+        'red'
+      );
+      return;
+    }
+
     const now = new Date().toISOString();
     let proveedorIdFinal = r.proveedor_id;
     let companyIdFinal = r.company_id;
@@ -535,47 +559,105 @@ function CapturaMagicaPage({ showToast }) {
         proveedorIdFinal = pid;
       }
 
-      // 2) Crear materiales nuevos en catálogo SIN stock. El movimiento
-      //    de ingreso al almacén lo crea el almacenero cuando confirme
-      //    la recepción física. Esto separa responsabilidades:
-      //      - Contadora: registra la compra (factura + materiales nuevos)
-      //      - Almacenero: confirma cuándo llegan físicamente
-      //    Antes la captura mágica también creaba movs de entrada — eso
-      //    causaba inventario incorrecto si la factura era de combustible
-      //    o si los materiales no habían llegado todavía.
+      // 2) Crear insumos nuevos en su tabla correspondiente, SIN stock.
+      //    El movimiento de ingreso al almacén lo crea el almacenero
+      //    cuando confirme la recepción física.
+      //    Cada item tiene un `tipo_insumo` que define en qué tabla va:
+      //      'material'    → materiales
+      //      'herramienta' → herramientas
+      //      'epp'         → epps
+      //      'maquinaria'  → activos_pesados
+      //      'servicio'    → no se crea (combustible, fletes, etc.)
       const materialesCreados = [];
       const movsMatCreados = []; // queda vacío — el almacenero los crea
+
       if (r.crear_materiales_catalogo && r.obra_id) {
         for (const it of r.items) {
-          let matId = it.material_id;
-          if (it.accion_material === 'crear_nuevo') {
-            if (!it.descripcion?.trim()) continue;
-            matId = window.__newId();
-            await window.__db.materiales.add({
-              id: matId,
+          if (it.accion_material !== 'crear_nuevo') continue;
+          if (!it.descripcion?.trim()) continue;
+          const tipo = it.tipo_insumo || clasificarInsumo(it.descripcion);
+          const tablaDestino = TIPO_INSUMO_TABLA[tipo];
+          if (!tablaDestino) {
+            // Servicio / gasto: no se crea en inventario, solo se registra
+            // como costo en el accounting_movement.
+            continue;
+          }
+          try {
+            const newId = window.__newId();
+            const nombre = it.descripcion.trim().slice(0, 120);
+            const precio = Number(it.precio_unitario) || 0;
+            const idemKey = `${userId}_${tipo}_${newId}`;
+            const baseCommon = {
+              id: newId,
               obra_id: r.obra_id,
-              nombre_material: it.descripcion.trim().slice(0, 120),
               unidad: it.unidad || 'und',
-              categoria: 'Otro',
-              // Sin stock — el almacenero lo registra al recibir
-              stock_inicial: 0,
-              stock_actual: 0,
-              stock_minimo: 0,
-              precio_unitario_estimado: Number(it.precio_unitario) || 0,
-              alerta: 'sin_stock',
               estado: 'activo',
-              proveedor_principal_id: proveedorIdFinal || null,
               created_by: userId, updated_by: userId,
               created_at: now, updated_at: now,
               version: 1, sync_status: 'pending_create',
-              idempotency_key: `${userId}_mat_${matId}`,
-            });
-            // Mutamos el item para que el accounting_movement lo guarde
-            // y el almacenero pueda vincular la recepción.
-            it.material_id = matId;
-            materialesCreados.push(matId);
-            try { await window.__logAudit?.({ action:'insert', table:'materiales', recordId: matId,
-              newData: { nombre: it.descripcion }, reason:'Captura mágica · material nuevo (sin stock)' }); } catch {}
+              idempotency_key: idemKey,
+            };
+
+            if (tipo === 'material') {
+              await window.__db.materiales.add({
+                ...baseCommon,
+                nombre_material: nombre,
+                categoria: 'Otro',
+                stock_inicial: 0, stock_actual: 0, stock_minimo: 0,
+                precio_unitario_estimado: precio,
+                alerta: 'sin_stock',
+                proveedor_principal_id: proveedorIdFinal || null,
+              });
+            } else if (tipo === 'herramienta') {
+              await window.__db.herramientas.add({
+                ...baseCommon,
+                nombre_herramienta: nombre,
+                tipo: 'manual',
+                marca: null, modelo: null,
+                costo_referencial: precio || null,
+                disponible: false, // sin stock — espera recepción
+                ubicacion_actual: 'pendiente',
+                estado_actual: 'nuevo',
+                proveedor_principal_id: proveedorIdFinal || null,
+              });
+            } else if (tipo === 'epp') {
+              const tipoEppDetectado = epppTipo(it.descripcion) || { tipo: 'Otro', vida_util_dias: null };
+              await window.__db.epps.add({
+                ...baseCommon,
+                nombre_epp: nombre,
+                tipo_epp: tipoEppDetectado.tipo || 'Otro',
+                vida_util_dias: tipoEppDetectado.vida_util_dias || null,
+                stock_inicial: 0, stock_actual: 0, stock_minimo: 0,
+                precio_unitario_estimado: precio,
+                alerta: 'sin_stock',
+                proveedor_principal_id: proveedorIdFinal || null,
+              });
+            } else if (tipo === 'maquinaria') {
+              await window.__db.activos_pesados.add({
+                ...baseCommon,
+                codigo: `MAQ-${newId.slice(0, 6).toUpperCase()}`,
+                nombre,
+                tipo: 'maquinaria',
+                marca: null, modelo: null, anio: null, placa: null, serie: null,
+                costo_adquisicion: precio || null,
+                fecha_adquisicion: r.fecha_emision || null,
+                estado: 'activo',
+                hm_acumuladas: 0,
+                company_id: companyIdFinal,
+                obra_actual_id: r.obra_id,
+              });
+            }
+            // Vincular el item al id recién creado para que la recepción
+            // (vía Compras Pendientes) sepa a qué registro pertenece.
+            it.material_id = newId;
+            materialesCreados.push({ id: newId, tipo, tabla: tablaDestino });
+            try { await window.__logAudit?.({
+              action: 'insert', table: tablaDestino, recordId: newId,
+              newData: { nombre, tipo, sin_stock: true },
+              reason: `Captura mágica · ${tipo} nuevo (sin stock)`,
+            }); } catch {}
+          } catch (e) {
+            console.warn('[captura magica · crear insumo]', e?.message);
           }
         }
       }
@@ -628,6 +710,7 @@ function CapturaMagicaPage({ showToast }) {
             unidad: it.unidad || 'und',
             cantidad: Number(it.cantidad) || 0,
             precio_unitario: Number(it.precio_unitario) || 0,
+            tipo_insumo: it.tipo_insumo || 'material',
           })),
         }),
         created_by: userId, updated_by: userId,
@@ -1351,11 +1434,35 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
                     </select>
                   </div>
                   <div>
-                    <label className="flabel">Obra (opcional)</label>
-                    <select className="fi" value={r.obra_id||''} onChange={e=>upd({ obra_id: e.target.value })}>
-                      <option value="">— Sin obra (gasto general) —</option>
-                      {obrasDeEmpresa.map(o => <option key={o.id} value={o.id}>{o.nombre_obra}</option>)}
-                    </select>
+                    {(() => {
+                      const obraRequerida = (r.crear_materiales_catalogo || r.genera_recepcion_almacen)
+                        && (r.items || []).some(it => it.tipo_insumo && it.tipo_insumo !== 'servicio');
+                      const sinObra = !r.obra_id;
+                      return (
+                        <>
+                          <label className="flabel">
+                            Obra {obraRequerida
+                              ? <span style={{ color:'var(--red)', fontWeight:700 }}>*</span>
+                              : <span style={{ color:'var(--tm)' }}>(opcional)</span>}
+                          </label>
+                          <select
+                            className="fi"
+                            value={r.obra_id||''}
+                            onChange={e=>upd({ obra_id: e.target.value })}
+                            style={obraRequerida && sinObra
+                              ? { border:'1.5px solid var(--red)' }
+                              : {}}>
+                            <option value="">— Sin obra (gasto general) —</option>
+                            {obrasDeEmpresa.map(o => <option key={o.id} value={o.id}>{o.nombre_obra}</option>)}
+                          </select>
+                          {obraRequerida && sinObra && (
+                            <div style={{ fontSize:10.5, color:'var(--red)', marginTop:3 }}>
+                              Hay items marcados para crear/recepción. Elegí obra.
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
                 </div>
               ) : (
@@ -1448,7 +1555,8 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
               <div style={{ overflow:'auto', maxHeight:280, border:'1px solid var(--border)', borderRadius:6 }}>
                 <table className="tbl" style={{ fontSize:11 }}>
                   <thead><tr>
-                    <th style={{ minWidth:200 }}>Descripción</th>
+                    <th style={{ minWidth:180 }}>Descripción</th>
+                    <th style={{ width:100 }}>Tipo</th>
                     <th>Material</th>
                     <th style={{ textAlign:'right' }}>Cant</th>
                     <th>Unid</th>
@@ -1459,6 +1567,19 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
                     {r.items.map((it, i) => (
                       <tr key={i}>
                         <td><input className="fi" style={{ fontSize:11, padding:'4px 6px' }} value={it.descripcion||''} onChange={e=>updateItem(i, { descripcion: e.target.value })}/></td>
+                        <td>
+                          {/* Tipo de insumo: la IA pre-clasifica por nombre,
+                              el contador puede corregir si es necesario. */}
+                          <select style={{ fontSize:10, padding:'3px 4px' }} className="fi"
+                            value={it.tipo_insumo || 'material'}
+                            onChange={e => updateItem(i, { tipo_insumo: e.target.value })}>
+                            <option value="material">Material</option>
+                            <option value="herramienta">Herramienta</option>
+                            <option value="epp">EPP</option>
+                            <option value="maquinaria">Maquinaria</option>
+                            <option value="servicio">Servicio/Gasto</option>
+                          </select>
+                        </td>
                         <td>
                           <select style={{ fontSize:10, padding:'3px 4px', maxWidth:160 }} className="fi"
                             value={it.accion_material === 'crear_nuevo' ? '__new__' : (it.material_id || '__none__')}

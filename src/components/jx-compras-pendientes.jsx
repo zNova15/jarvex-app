@@ -14,6 +14,7 @@
 // crea los movimientos de entrada al inventario.
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
+import { TIPO_INSUMO_LABEL, TIPO_INSUMO_BADGE } from "../lib/insumo-clasificador.js";
 
 const { useState: uS, useEffect: uE, useMemo: uM } = React;
 
@@ -27,6 +28,8 @@ function ComprasPendientesPage({ showToast }) {
 
   const [movsContables, setMovsContables] = uS([]);
   const [materiales, setMateriales] = uS([]);
+  const [herramientas, setHerramientas] = uS([]);
+  const [epps, setEpps] = uS([]);
   const [proveedores, setProveedores] = uS([]);
   const [loading, setLoading] = uS(true);
   const [recibiendoId, setRecibiendoId] = uS(null);   // id del mov contable a recibir
@@ -38,18 +41,22 @@ function ComprasPendientesPage({ showToast }) {
     let cancelled = false;
     const load = async () => {
       try {
-        const [mc, mt, pr] = await Promise.all([
+        const [mc, mt, hr, ep, pr] = await Promise.all([
           window.__db.accounting_movements
             .where('obra_id').equals(obraId)
             .filter(m => m.recepcion_status === 'pendiente_recepcion' && !m.deleted_at)
             .toArray(),
           window.__db.materiales.where('obra_id').equals(obraId).toArray(),
+          window.__db.herramientas.where('obra_id').equals(obraId).toArray(),
+          window.__db.epps.where('obra_id').equals(obraId).toArray(),
           window.__db.proveedores.toArray(),
         ]);
         if (cancelled) return;
         mc.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
         setMovsContables(mc);
         setMateriales(mt);
+        setHerramientas(hr);
+        setEpps(ep);
         setProveedores(pr);
       } catch (e) {
         console.warn('[compras-pendientes]', e?.message || e);
@@ -60,7 +67,7 @@ function ComprasPendientesPage({ showToast }) {
     load();
     const onChange = (e) => {
       const t = e?.detail?.tabla || e?.detail?.table;
-      if (!t || ['accounting_movements','materiales','proveedores'].includes(t)) load();
+      if (!t || ['accounting_movements','materiales','herramientas','epps','proveedores'].includes(t)) load();
     };
     window.addEventListener('jx_data_changed', onChange);
     window.addEventListener('jarvex_master_updated', onChange);
@@ -72,7 +79,17 @@ function ComprasPendientesPage({ showToast }) {
   }, [obraId]);
 
   const matsById = uM(() => new Map(materiales.map(m => [m.id, m])), [materiales]);
+  const herrsById = uM(() => new Map(herramientas.map(h => [h.id, h])), [herramientas]);
+  const eppsById = uM(() => new Map(epps.map(e => [e.id, e])), [epps]);
   const provsById = uM(() => new Map(proveedores.map(p => [p.id, p])), [proveedores]);
+  // Catálogo unificado para verificar que un id existe en cualquier tabla
+  const catalogoCompleto = uM(() => {
+    const m = new Map();
+    materiales.forEach(x => m.set(x.id, { tipo: 'material', record: x }));
+    herramientas.forEach(x => m.set(x.id, { tipo: 'herramienta', record: x }));
+    epps.forEach(x => m.set(x.id, { tipo: 'epp', record: x }));
+    return m;
+  }, [materiales, herramientas, epps]);
 
   // Parse items del JSON de notas (los guarda captura mágica)
   const parseItems = (notasRaw) => {
@@ -146,23 +163,32 @@ function ComprasPendientesPage({ showToast }) {
                     </div>
                     <table className="tbl" style={{ fontSize:11.5 }}>
                       <thead><tr>
-                        <th>Material</th>
-                        <th style={{ width:90, textAlign:'right' }}>Cantidad</th>
+                        <th>Insumo</th>
+                        <th style={{ width:90 }}>Tipo</th>
+                        <th style={{ width:80, textAlign:'right' }}>Cantidad</th>
                         <th style={{ width:60 }}>Unidad</th>
                         <th style={{ width:80 }}>En catálogo</th>
                       </tr></thead>
                       <tbody>
                         {items.map((it, i) => {
-                          const enCatalogo = it.material_id && matsById.has(it.material_id);
+                          const enCatalogo = it.material_id && catalogoCompleto.has(it.material_id);
+                          const tipo = it.tipo_insumo || 'material';
                           return (
                             <tr key={i}>
                               <td style={{ color:'var(--ts)' }}>{it.descripcion || '—'}</td>
+                              <td>
+                                <span className={`badge ${TIPO_INSUMO_BADGE[tipo] || 'b-gray'}`} style={{ fontSize:9 }}>
+                                  {TIPO_INSUMO_LABEL[tipo] || tipo}
+                                </span>
+                              </td>
                               <td style={{ textAlign:'right', fontWeight:600 }}>{Number(it.cantidad).toLocaleString('es-PE')}</td>
                               <td style={{ color:'var(--tm)' }}>{it.unidad || '—'}</td>
                               <td>
-                                {enCatalogo
-                                  ? <span className="badge b-green" style={{ fontSize:9 }}>OK</span>
-                                  : <span className="badge b-yellow" style={{ fontSize:9 }}>Falta</span>}
+                                {tipo === 'servicio'
+                                  ? <span className="badge b-purple" style={{ fontSize:9 }}>N/A</span>
+                                  : enCatalogo
+                                    ? <span className="badge b-green" style={{ fontSize:9 }}>OK</span>
+                                    : <span className="badge b-yellow" style={{ fontSize:9 }}>Falta</span>}
                               </td>
                             </tr>
                           );
@@ -188,7 +214,7 @@ function ComprasPendientesPage({ showToast }) {
           items={parseItems(facturaSeleccionada.notas)}
           obraId={obraId}
           userId={userId}
-          matsById={matsById}
+          catalogoCompleto={catalogoCompleto}
           provsById={provsById}
           busy={busy}
           setBusy={setBusy}
@@ -201,7 +227,7 @@ function ComprasPendientesPage({ showToast }) {
 }
 
 // ─── Modal de Recepción ──────────────────────────────────────────────
-function RegistrarRecepcionModal({ factura, items, obraId, userId, matsById, provsById, busy, setBusy, showToast, onClose }) {
+function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompleto, provsById, busy, setBusy, showToast, onClose }) {
   // Estado local: lista de items con cantidad editable (default = cantidad de factura)
   const [recepItems, setRecepItems] = uS(() =>
     items.map(it => ({
@@ -243,38 +269,67 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, matsById, pro
       const now = new Date().toISOString();
       const movIds = [];
       for (const it of validos) {
+        const entry = catalogoCompleto.get(it.material_id);
+        const tipoReal = entry?.tipo || it.tipo_insumo || 'material';
         const movId = window.__newId();
-        await window.__db.movimientos_materiales.add({
+        const obs = `Recepción factura ${factura.document_number}${observaciones ? ' · ' + observaciones : ''}`;
+        const baseMov = {
           id: movId,
           obra_id: obraId,
-          material_id: it.material_id,
           fecha: now.slice(0, 10),
           hora: now.slice(11, 16),
-          tipo_movimiento: 'entrada',
           cantidad: Number(it.cantidad_recibida) || 0,
           unidad: it.unidad || 'und',
-          proveedor_id: factura.proveedor_id || null,
-          documento_asociado: factura.document_number || null,
-          precio_unitario_real: Number(it.precio_unitario) || 0,
-          partida_id: null,
-          observaciones: `Recepción factura ${factura.document_number}${observaciones ? ' · ' + observaciones : ''}`,
+          observaciones: obs,
           created_by: userId, updated_by: userId,
           created_at: now, updated_at: now,
           version: 1, sync_status: 'pending_create',
-          idempotency_key: `${userId}_movmat_${movId}`,
-        });
-        // Si el almacenero eligió ubicación, actualizar el material
-        if (ubicacionId) {
-          const mat = matsById.get(it.material_id);
-          if (mat && mat.ubicacion_id !== ubicacionId) {
-            try {
-              await window.__db.materiales.update(it.material_id, {
-                ubicacion_id: ubicacionId,
-                updated_at: now, updated_by: userId,
-                version: (mat.version || 0) + 1,
-                sync_status: mat.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
-              });
-            } catch {}
+        };
+
+        if (tipoReal === 'herramienta') {
+          await window.__db.movimientos_herramientas.add({
+            ...baseMov,
+            herramienta_id: it.material_id,
+            accion: 'entrada',
+            responsable_id: userId,
+            estado_devolucion: 'nuevo',
+            idempotency_key: `${userId}_movherr_${movId}`,
+          });
+        } else if (tipoReal === 'epp') {
+          await window.__db.movimientos_epp.add({
+            ...baseMov,
+            epp_id: it.material_id,
+            tipo_movimiento: 'entrada',
+            proveedor_id: factura.proveedor_id || null,
+            documento_asociado: factura.document_number || null,
+            precio_unitario_real: Number(it.precio_unitario) || 0,
+            idempotency_key: `${userId}_movepp_${movId}`,
+          });
+        } else {
+          // Default: material
+          await window.__db.movimientos_materiales.add({
+            ...baseMov,
+            material_id: it.material_id,
+            tipo_movimiento: 'entrada',
+            proveedor_id: factura.proveedor_id || null,
+            documento_asociado: factura.document_number || null,
+            precio_unitario_real: Number(it.precio_unitario) || 0,
+            partida_id: null,
+            idempotency_key: `${userId}_movmat_${movId}`,
+          });
+          // Si el almacenero eligió ubicación, actualizar el material
+          if (ubicacionId) {
+            const mat = entry?.record;
+            if (mat && mat.ubicacion_id !== ubicacionId) {
+              try {
+                await window.__db.materiales.update(it.material_id, {
+                  ubicacion_id: ubicacionId,
+                  updated_at: now, updated_by: userId,
+                  version: (mat.version || 0) + 1,
+                  sync_status: mat.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+                });
+              } catch {}
+            }
           }
         }
         movIds.push(movId);
@@ -334,7 +389,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, matsById, pro
           </thead>
           <tbody>
             {recepItems.map((it, i) => {
-              const enCatalogo = it.material_id && matsById.has(it.material_id);
+              const enCatalogo = it.material_id && catalogoCompleto.has(it.material_id);
               return (
                 <tr key={i} style={{ opacity: it.verificado ? 1 : 0.5 }}>
                   <td style={{ textAlign: 'center' }}>
