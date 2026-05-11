@@ -294,9 +294,16 @@ function CapturaMagicaPage({ showToast }) {
     // el modo "Crear nueva" pre-rellenado para que el usuario solo confirme.
     const hayDatosReceptor = !!(rucRec || ext.receptor?.razon_social_o_nombre);
     const autoCrearNueva = hayDatosReceptor && !companyMatch;
-    // Obra: si la company tiene 1 obra activa, autoseleccionar
+    // Obra: prioridad → obra activa del contexto > única obra de la empresa.
+    // El usuario ya está navegando dentro de una obra, así que esa es la
+    // que aplica por defecto (no debe tener que volver a elegirla).
     let obraSugerida = '';
-    if (companyMatch) {
+    const obraActivaId = (typeof window !== 'undefined' && window.__getObraActivaId)
+      ? window.__getObraActivaId()
+      : null;
+    if (obraActivaId && (obras || []).some(o => o.id === obraActivaId && !o.deleted_at)) {
+      obraSugerida = obraActivaId;
+    } else if (companyMatch) {
       const obrasCo = (obras || []).filter(o => !o.deleted_at && (
         o.ejecutora_company_id === companyMatch.id ||
         (o.ejecutora_tipo === 'consorcio' && (o.consorcio_miembros||[]).some(m => m.company_id === companyMatch.id))
@@ -488,20 +495,15 @@ function CapturaMagicaPage({ showToast }) {
     if (!r.serie_correlativo) { showToast('Falta serie-correlativo', 'red'); return; }
     if (!(Number(r.total) > 0)) { showToast('El total debe ser mayor a 0', 'red'); return; }
 
-    // Validación de obra: si el contador marcó "crear materiales" o
-    // "genera ingreso al almacén", la obra es OBLIGATORIA. Sin obra
-    // no hay almacén donde poner los insumos. Antes esto fallaba en
-    // silencio (los items se descartaban por obra_id null y nada se
-    // creaba).
+    // Obra: se pre-popula con la obra activa del contexto. Si el usuario
+    // explícitamente la deja en "Sin obra (gasto general)", interpretamos
+    // que es un gasto contable puro y los items NO se insertan en almacén
+    // (aunque los checkboxes estén marcados). Solo avisamos por toast.
     const algunItemRealAlmacen = (r.items || []).some(it =>
       it.tipo_insumo && it.tipo_insumo !== 'servicio'
     );
     if (algunItemRealAlmacen && (r.crear_materiales_catalogo || r.genera_recepcion_almacen) && !r.obra_id) {
-      showToast(
-        'Falta seleccionar la OBRA. Sin obra no se pueden crear materiales/herramientas/EPPs ni notificar al almacén. Elegila arriba o desactivá los dos checkboxes si es solo gasto contable.',
-        'red'
-      );
-      return;
+      showToast('Sin obra: los items quedaron solo en contabilidad, no se crearon en almacén.', 'orange');
     }
 
     const now = new Date().toISOString();
@@ -1428,41 +1430,33 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
                 <div className="g2">
                   <div>
                     <label className="flabel">Empresa *</label>
-                    <select className="fi" value={r.company_id||''} onChange={e=>upd({ company_id: e.target.value, obra_id:'' })}>
+                    <select className="fi" value={r.company_id||''} onChange={e=>{
+                      const newCompanyId = e.target.value;
+                      const obraActivaId = window.__getObraActivaId?.() || null;
+                      const obrasDeNueva = (obras || []).filter(o => !o.deleted_at && (
+                        o.ejecutora_company_id === newCompanyId ||
+                        (o.ejecutora_tipo === 'consorcio' && (o.consorcio_miembros||[]).some(m => m.company_id === newCompanyId))
+                      ));
+                      const obraValida = obraActivaId && obrasDeNueva.some(o => o.id === obraActivaId)
+                        ? obraActivaId
+                        : (obrasDeNueva.length === 1 ? obrasDeNueva[0].id : '');
+                      upd({ company_id: newCompanyId, obra_id: obraValida });
+                    }}>
                       <option value="">— Seleccionar —</option>
                       {companiesActivas.map(c => <option key={c.id} value={c.id}>{c.name} {c.ruc ? `· ${c.ruc}` : ''}</option>)}
                     </select>
                   </div>
                   <div>
-                    {(() => {
-                      const obraRequerida = (r.crear_materiales_catalogo || r.genera_recepcion_almacen)
-                        && (r.items || []).some(it => it.tipo_insumo && it.tipo_insumo !== 'servicio');
-                      const sinObra = !r.obra_id;
-                      return (
-                        <>
-                          <label className="flabel">
-                            Obra {obraRequerida
-                              ? <span style={{ color:'var(--red)', fontWeight:700 }}>*</span>
-                              : <span style={{ color:'var(--tm)' }}>(opcional)</span>}
-                          </label>
-                          <select
-                            className="fi"
-                            value={r.obra_id||''}
-                            onChange={e=>upd({ obra_id: e.target.value })}
-                            style={obraRequerida && sinObra
-                              ? { border:'1.5px solid var(--red)' }
-                              : {}}>
-                            <option value="">— Sin obra (gasto general) —</option>
-                            {obrasDeEmpresa.map(o => <option key={o.id} value={o.id}>{o.nombre_obra}</option>)}
-                          </select>
-                          {obraRequerida && sinObra && (
-                            <div style={{ fontSize:10.5, color:'var(--red)', marginTop:3 }}>
-                              Hay items marcados para crear/recepción. Elegí obra.
-                            </div>
-                          )}
-                        </>
-                      );
-                    })()}
+                    <label className="flabel">
+                      Obra <span style={{ color:'var(--tm)' }}>(opcional)</span>
+                    </label>
+                    <select
+                      className="fi"
+                      value={r.obra_id||''}
+                      onChange={e=>upd({ obra_id: e.target.value })}>
+                      <option value="">— Sin obra (gasto general) —</option>
+                      {obrasDeEmpresa.map(o => <option key={o.id} value={o.id}>{o.nombre_obra}</option>)}
+                    </select>
                   </div>
                 </div>
               ) : (
