@@ -42,8 +42,12 @@ export function useObraActiva() {
         setObras(visibles);
         const stored = getObraActivaIdSync();
         if (!stored && visibles.length > 0) {
+          // Persistimos: si solo guardamos el state local, otros consumers
+          // (window.__getObraActivaId, captura mágica, etc.) leen null.
+          setObraActivaId(visibles[0].id);
           setObraId(visibles[0].id);
         } else if (stored && !visibles.find(o => o.id === stored) && visibles.length > 0) {
+          setObraActivaId(visibles[0].id);
           setObraId(visibles[0].id);
         } else if (stored) {
           setObraId(stored);

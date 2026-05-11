@@ -294,21 +294,18 @@ function CapturaMagicaPage({ showToast }) {
     // el modo "Crear nueva" pre-rellenado para que el usuario solo confirme.
     const hayDatosReceptor = !!(rucRec || ext.receptor?.razon_social_o_nombre);
     const autoCrearNueva = hayDatosReceptor && !companyMatch;
-    // Obra: prioridad → obra activa del contexto > única obra de la empresa.
-    // El usuario ya está navegando dentro de una obra, así que esa es la
-    // que aplica por defecto (no debe tener que volver a elegirla).
+    // Obra: el contador siempre opera dentro de una obra. No hay selector
+    // en la UI — se asume la obra activa del contexto. Fallback: primera
+    // obra visible (si nunca se eligió ninguna).
     let obraSugerida = '';
+    const obrasVisibles = (obras || []).filter(o => !o.deleted_at);
     const obraActivaId = (typeof window !== 'undefined' && window.__getObraActivaId)
       ? window.__getObraActivaId()
       : null;
-    if (obraActivaId && (obras || []).some(o => o.id === obraActivaId && !o.deleted_at)) {
+    if (obraActivaId && obrasVisibles.some(o => o.id === obraActivaId)) {
       obraSugerida = obraActivaId;
-    } else if (companyMatch) {
-      const obrasCo = (obras || []).filter(o => !o.deleted_at && (
-        o.ejecutora_company_id === companyMatch.id ||
-        (o.ejecutora_tipo === 'consorcio' && (o.consorcio_miembros||[]).some(m => m.company_id === companyMatch.id))
-      ));
-      if (obrasCo.length === 1) obraSugerida = obrasCo[0].id;
+    } else if (obrasVisibles.length > 0) {
+      obraSugerida = obrasVisibles[0].id;
     }
     // Items: match con materiales existentes
     const items = (ext.items || []).map((it, idx) => {
@@ -1427,37 +1424,27 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
                   })}>+ Crear nueva</button>
               </div>
               {r.company_accion !== 'crear_nueva' ? (
-                <div className="g2">
-                  <div>
-                    <label className="flabel">Empresa *</label>
-                    <select className="fi" value={r.company_id||''} onChange={e=>{
-                      const newCompanyId = e.target.value;
-                      const obraActivaId = window.__getObraActivaId?.() || null;
-                      const obrasDeNueva = (obras || []).filter(o => !o.deleted_at && (
-                        o.ejecutora_company_id === newCompanyId ||
-                        (o.ejecutora_tipo === 'consorcio' && (o.consorcio_miembros||[]).some(m => m.company_id === newCompanyId))
-                      ));
-                      const obraValida = obraActivaId && obrasDeNueva.some(o => o.id === obraActivaId)
-                        ? obraActivaId
-                        : (obrasDeNueva.length === 1 ? obrasDeNueva[0].id : '');
-                      upd({ company_id: newCompanyId, obra_id: obraValida });
-                    }}>
-                      <option value="">— Seleccionar —</option>
-                      {companiesActivas.map(c => <option key={c.id} value={c.id}>{c.name} {c.ruc ? `· ${c.ruc}` : ''}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="flabel">
-                      Obra <span style={{ color:'var(--tm)' }}>(opcional)</span>
-                    </label>
-                    <select
-                      className="fi"
-                      value={r.obra_id||''}
-                      onChange={e=>upd({ obra_id: e.target.value })}>
-                      <option value="">— Sin obra (gasto general) —</option>
-                      {obrasDeEmpresa.map(o => <option key={o.id} value={o.id}>{o.nombre_obra}</option>)}
-                    </select>
-                  </div>
+                <div>
+                  <label className="flabel">Empresa *</label>
+                  <select className="fi" value={r.company_id||''} onChange={e=>upd({ company_id: e.target.value })}>
+                    <option value="">— Seleccionar —</option>
+                    {companiesActivas.map(c => <option key={c.id} value={c.id}>{c.name} {c.ruc ? `· ${c.ruc}` : ''}</option>)}
+                  </select>
+                  {(() => {
+                    const obraActual = (obras || []).find(o => o.id === r.obra_id);
+                    if (obraActual) {
+                      return (
+                        <div style={{ fontSize:11, color:'var(--tm)', marginTop:6 }}>
+                          📍 Se asignará a <strong style={{ color:'var(--ts)' }}>{obraActual.nombre_obra}</strong> (obra activa)
+                        </div>
+                      );
+                    }
+                    return (
+                      <div style={{ fontSize:11, color:'var(--amber)', marginTop:6 }}>
+                        ⚠ No hay obra activa. Los items quedarán solo en contabilidad.
+                      </div>
+                    );
+                  })()}
                 </div>
               ) : (
                 <div className="g2">
