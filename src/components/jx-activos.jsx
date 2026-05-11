@@ -27,7 +27,9 @@ const AP_TYPES = [
 function ActivosPesadosPage({ showToast }) {
   const auth = window.__useAuth?.();
   const userId = auth?.profile?.id ?? 'offline';
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Activos Pesados', 'w') ?? false);
   const { data: activos } = window.__hooks.useActivosPesados();
   const { data: companies } = window.__hooks.useCompanies();
   const { data: obras } = window.__hooks.useObras();
@@ -280,9 +282,13 @@ function ActivosPesadosPage({ showToast }) {
           <div className="pg-title">Activos Pesados / Maquinaria</div>
           <div className="pg-sub">{(activos||[]).length} equipos · {(activos||[]).filter(a=>a.estado==='operativo').length} operativos</div>
         </div>
-        <button className="btn btn-amber btn-sm" onClick={openNuevo}>
-          <JxIcon name="plus" size={13}/>Nuevo Equipo
-        </button>
+        {canWrite ? (
+          <button className="btn btn-amber btn-sm" onClick={openNuevo}>
+            <JxIcon name="plus" size={13}/>Nuevo Equipo
+          </button>
+        ) : (
+          <span className="badge b-gray" title="Tu rol es solo lectura para Activos Pesados">Solo lectura</span>
+        )}
       </div>
 
       {(activos||[]).length === 0 ? (

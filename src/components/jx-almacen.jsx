@@ -122,6 +122,11 @@ function MaterialesPage({ showToast }) {
   const puedeActualizarPrecios = isAdmin || ['gerente','asistente_admin'].includes(myRol);
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
+  // Respeta la matriz de Roles y Permisos. Si el admin marcó al rol
+  // como solo-lectura en "Materiales" desde la UI, oculta acciones de
+  // escritura.
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Materiales', 'w') ?? false);
+  const canWriteMov = isAdmin || (window.__hasPerm?.(myRol, 'Mov. Materiales', 'w') ?? false);
   const [q, setQ] = uS('');
   const [modal, setModal] = uS(null); // 'ingreso' | 'salida' | 'nuevo' | 'editar' | 'sync' | 'reposicion'
   const [reposicionForm, setReposicionForm] = uS(null); // { mat, cantidad, motivo, prioridad }
@@ -1526,9 +1531,13 @@ function MaterialesPage({ showToast }) {
               <JxIcon name="settings" size={13}/>Categorizar con IA
             </button>
           )}
-          <button className="btn btn-ghost btn-sm" onClick={()=>openModal('salida')}><JxIcon name="arrowOut" size={13}/>Registrar Salida</button>
-          <button className="btn btn-ghost btn-sm" onClick={()=>openModal('ingreso')}><JxIcon name="arrowIn" size={13}/>Registrar Ingreso</button>
-          <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setModal('nuevo');}}><JxIcon name="plus" size={13}/>Nuevo Material</button>
+          {canWriteMov && <button className="btn btn-ghost btn-sm" onClick={()=>openModal('salida')}><JxIcon name="arrowOut" size={13}/>Registrar Salida</button>}
+          {canWriteMov && <button className="btn btn-ghost btn-sm" onClick={()=>openModal('ingreso')}><JxIcon name="arrowIn" size={13}/>Registrar Ingreso</button>}
+          {canWrite ? (
+            <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setModal('nuevo');}}><JxIcon name="plus" size={13}/>Nuevo Material</button>
+          ) : (
+            <span className="badge b-gray" title="Tu rol es solo lectura para Materiales">Solo lectura</span>
+          )}
         </div>
       </div>
 
@@ -2662,9 +2671,12 @@ function MaterialesPage({ showToast }) {
 // ─── HERRAMIENTAS PAGE ──────────────────────────────────
 function HerramientasPage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Herramientas', 'w') ?? false);
+  const canWriteMov = isAdmin || (window.__hasPerm?.(myRol, 'Mov. Herramientas', 'w') ?? false);
   const [q, setQ] = uS('');
   const [modal, setModal] = uS(null);
   const [form, setForm] = uS({});
@@ -3249,9 +3261,13 @@ function HerramientasPage({ showToast }) {
               <JxIcon name="settings" size={13}/>Categorizar con IA
             </button>
           )}
-          <button className="btn btn-green btn-sm" onClick={()=>openMov('entrada')}><JxIcon name="arrowIn" size={13}/>Registrar Devolución</button>
-          <button className="btn btn-ghost btn-sm" onClick={()=>openMov('salida')}><JxIcon name="arrowOut" size={13}/>Registrar Salida</button>
-          <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setModal('nuevo');}}><JxIcon name="plus" size={13}/>Nueva Herramienta</button>
+          {canWriteMov && <button className="btn btn-green btn-sm" onClick={()=>openMov('entrada')}><JxIcon name="arrowIn" size={13}/>Registrar Devolución</button>}
+          {canWriteMov && <button className="btn btn-ghost btn-sm" onClick={()=>openMov('salida')}><JxIcon name="arrowOut" size={13}/>Registrar Salida</button>}
+          {canWrite ? (
+            <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setModal('nuevo');}}><JxIcon name="plus" size={13}/>Nueva Herramienta</button>
+          ) : (
+            <span className="badge b-gray" title="Tu rol es solo lectura para Herramientas">Solo lectura</span>
+          )}
         </div>
       </div>
 
@@ -3598,9 +3614,11 @@ function HerramientasPage({ showToast }) {
 // ─── PERSONAL PAGE ──────────────────────────────────────
 function PersonalPage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Personal', 'w') ?? false);
   const [q, setQ] = uS('');
   const [modal, setModal] = uS(null);
   const [form, setForm] = uS({});
@@ -3837,7 +3855,11 @@ function PersonalPage({ showToast }) {
       <div className="pg-hd frow-sb">
         <div><div className="pg-title">Personal</div><div className="pg-sub">{personal.length} trabajadores · {personal.filter(p=>p.estado==='activo').length} activos</div></div>
         <div style={{display:'flex',gap:8}}>
-          <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setModal('nuevo');}}><JxIcon name="plus" size={13}/>Nuevo Trabajador</button>
+          {canWrite ? (
+            <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setModal('nuevo');}}><JxIcon name="plus" size={13}/>Nuevo Trabajador</button>
+          ) : (
+            <span className="badge b-gray" title="Tu rol es solo lectura para Personal">Solo lectura</span>
+          )}
         </div>
       </div>
       <div style={{display:'flex',gap:8,marginBottom:14}}>
@@ -3995,6 +4017,10 @@ function PersonalPage({ showToast }) {
 
 // ─── ASISTENCIA PAGE ─────────────────────────────────────
 function AsistenciaPage({ showToast }) {
+  const auth = window.__useAuth ? window.__useAuth() : null;
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Asistencia', 'w') ?? false);
   const today = new Date().toISOString().slice(0, 10);
   const [date, setDate] = uS(today);
   const [modal, setModal] = uS(null); // null | 'masivo' | 'editar'
@@ -4235,7 +4261,7 @@ function AsistenciaPage({ showToast }) {
           mime_type: photoBlob.type || 'image/jpeg',
           blob: photoBlob,
           fecha: date,
-          created_by: window.__useAuth?.()?.profile?.id || 'offline',
+          created_by: auth?.profile?.id || 'offline',
         });
       }
 
@@ -4350,9 +4376,13 @@ function AsistenciaPage({ showToast }) {
         <div><div className="pg-title">Control de Asistencia</div><div className="pg-sub">Registro diario masivo · 1 evidencia por día</div></div>
         <div style={{display:'flex',gap:8,alignItems:'center', flexWrap:'wrap'}}>
           <input className="fi" type="date" max={new Date().toISOString().slice(0,10)} value={date} onChange={e=>setDate(e.target.value)} style={{width:'auto'}}/>
-          <button className="btn btn-amber btn-sm" onClick={openMasivo}>
-            <JxIcon name="users" size={13}/>Registrar Asistencia Diaria
-          </button>
+          {canWrite ? (
+            <button className="btn btn-amber btn-sm" onClick={openMasivo}>
+              <JxIcon name="users" size={13}/>Registrar Asistencia Diaria
+            </button>
+          ) : (
+            <span className="badge b-gray" title="Tu rol es solo lectura para Asistencia">Solo lectura</span>
+          )}
         </div>
       </div>
 

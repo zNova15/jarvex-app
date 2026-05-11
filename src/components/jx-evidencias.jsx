@@ -135,6 +135,10 @@ function Thumb({ ev, signedRef, blobUrlRef, onClick }) {
 
 // ─── EVIDENCIAS PAGE ────────────────────────────────────
 function EvidenciasPage({ showToast }) {
+  const auth = window.__useAuth ? window.__useAuth() : null;
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Evidencias', 'w') ?? false);
   const [obraId, setObraId] = uSE(null);
 
   // Detectar obra activa
@@ -218,9 +222,13 @@ function EvidenciasPage({ showToast }) {
           <button className="btn btn-ghost btn-sm" onClick={()=>setPlantillasOpen(true)}>
             <JxIcon name="fileText" size={13}/>Plantillas
           </button>
-          <button className="btn btn-amber btn-sm" onClick={()=>setModal(true)}>
-            <JxIcon name="upload" size={13}/>Subir Archivo
-          </button>
+          {canWrite ? (
+            <button className="btn btn-amber btn-sm" onClick={()=>setModal(true)}>
+              <JxIcon name="upload" size={13}/>Subir Archivo
+            </button>
+          ) : (
+            <span className="badge b-gray" title="Tu rol es solo lectura para Evidencias">Solo lectura</span>
+          )}
         </div>
       </div>
 

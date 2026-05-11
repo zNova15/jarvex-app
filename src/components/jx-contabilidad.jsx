@@ -2883,6 +2883,10 @@ function CadenaVisual({ cadena, lookupCompany, lookupObra, calcular }) {
   const r = calcular(cadena);
   const obra = lookupObra(cadena.obra_id);
   const eslabones = cadena.eslabones || [];
+  // Auth se resuelve UNA vez en el render (no dentro de handlers async).
+  // Llamar a window.__useAuth() desde un onClick post-render tira
+  // "Invalid hook call" porque React no está en su fase de render.
+  const auth = window.__useAuth?.();
 
   // Toggle precios netos vs con IGV
   const [conIgv, setConIgv] = uSC(false);
@@ -2949,7 +2953,6 @@ function CadenaVisual({ cadena, lookupCompany, lookupObra, calcular }) {
     try {
       if (!confirm('¿Marcar esta factura como emitida (firmada y lista para SUNAT)?')) return;
       const mod = await import('../lib/facturas-internas.js');
-      const auth = window.__useAuth?.();
       await mod.marcarFacturaEmitida(paso.income.id, auth?.profile?.id || 'offline');
     } catch (e) { alert('Error: ' + (e.message || e)); }
   };

@@ -54,9 +54,11 @@ function ObrasPage({ showToast }) {
   const { data: companies } = window.__hooks.useCompanies?.() || { data: [] };
   const auth = window.__useAuth ? window.__useAuth() : null;
   const userId = auth?.profile?.id ?? 'offline';
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
   const appMode = window.__useAppMode ? window.__useAppMode() : { isEdicion: true };
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Obras', 'w') ?? false);
   const [busyObra, , setBusyObra] = useBusy();
   const [modal, setModal] = uSO(null);
   const [form, setForm] = uSO({});
@@ -337,7 +339,11 @@ function ObrasPage({ showToast }) {
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div><div className="pg-title">Obras / Proyectos</div><div className="pg-sub">{obras.length} proyectos · {activas} activos</div></div>
-        <button className="btn btn-amber btn-sm" onClick={openNuevaObra}><JxIcon name="plus" size={13}/>Nueva Obra</button>
+        {canWrite ? (
+          <button className="btn btn-amber btn-sm" onClick={openNuevaObra}><JxIcon name="plus" size={13}/>Nueva Obra</button>
+        ) : (
+          <span className="badge b-gray" title="Tu rol es solo lectura para Obras">Solo lectura</span>
+        )}
       </div>
 
       {obras.length === 0 ? (
@@ -993,7 +999,9 @@ function PartidasPage({ showToast }) {
   const obraId = useObraActiva();
   const { data: partidas, loading, create: createPartida, update: updatePartida } = window.__hooks.usePartidas(obraId);
   const auth = window.__useAuth ? window.__useAuth() : null;
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Partidas', 'w') ?? false);
   const [q, setQ] = uSO('');
   const [modal, setModal] = uSO(null);
   const [form, setForm] = uSO({});
@@ -1187,7 +1195,11 @@ function PartidasPage({ showToast }) {
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div><div className="pg-title">Partidas de Obra</div><div className="pg-sub">{partidas.length} partidas · {fmtSk(totalReal)} ejecutado de {fmtSk(totalPres)}</div></div>
-        <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setEditingId(null); setModal('nueva');}}><JxIcon name="plus" size={13}/>Nueva Partida</button>
+        {canWrite ? (
+          <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setEditingId(null); setModal('nueva');}}><JxIcon name="plus" size={13}/>Nueva Partida</button>
+        ) : (
+          <span className="badge b-gray" title="Tu rol es solo lectura para Partidas">Solo lectura</span>
+        )}
       </div>
 
       <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:18}}>
@@ -1922,7 +1934,9 @@ function AvancePage({ showToast }) {
   const { data: obras } = window.__hooks.useObras();
   const obraActiva = obras?.find(o => o.id === obraId);
   const auth = window.__useAuth ? window.__useAuth() : null;
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Avance', 'w') ?? false);
   const [busyAvance, , setBusyAvance] = useBusy();
 
   const [modal, setModal] = uSO(false);
@@ -2025,7 +2039,11 @@ function AvancePage({ showToast }) {
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div><div className="pg-title">Avance de Obra</div><div className="pg-sub">Registros diarios y semanales · {registros.length} registros</div></div>
-        <button className="btn btn-amber btn-sm" onClick={openModal}><JxIcon name="plus" size={13}/>Registrar Avance</button>
+        {canWrite ? (
+          <button className="btn btn-amber btn-sm" onClick={openModal}><JxIcon name="plus" size={13}/>Registrar Avance</button>
+        ) : (
+          <span className="badge b-gray" title="Tu rol es solo lectura para Avance">Solo lectura</span>
+        )}
       </div>
 
       <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:14,marginBottom:20}}>

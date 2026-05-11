@@ -46,7 +46,9 @@ function CharlasSeguridadPage({ showToast }) {
   const obraId = useObraActiva();
   const auth = window.__useAuth?.();
   const userId = auth?.profile?.id ?? 'offline';
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Charlas Seguridad', 'w') ?? false);
   const { data: charlas } = window.__hooks.useCharlasSeguridad(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
 
@@ -166,9 +168,13 @@ function CharlasSeguridadPage({ showToast }) {
           <div className="pg-title">Charlas de Seguridad (5 min)</div>
           <div className="pg-sub">{sorted.length} charlas registradas</div>
         </div>
-        <button className="btn btn-amber btn-sm" onClick={openNueva}>
-          <JxIcon name="plus" size={13}/>Nueva Charla
-        </button>
+        {canWrite ? (
+          <button className="btn btn-amber btn-sm" onClick={openNueva}>
+            <JxIcon name="plus" size={13}/>Nueva Charla
+          </button>
+        ) : (
+          <span className="badge b-gray" title="Tu rol es solo lectura para Charlas Seguridad">Solo lectura</span>
+        )}
       </div>
 
       {sorted.length === 0 ? (
@@ -250,7 +256,9 @@ function IpercPage({ showToast }) {
   const obraId = useObraActiva();
   const auth = window.__useAuth?.();
   const userId = auth?.profile?.id ?? 'offline';
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'IPERC', 'w') ?? false);
   const { data: registros } = window.__hooks.useIperc(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
 
@@ -343,9 +351,13 @@ function IpercPage({ showToast }) {
           <div className="pg-title">IPERC — Matriz de Identificación de Peligros</div>
           <div className="pg-sub">{sorted.length} riesgos identificados · {sorted.filter(r => r.clasificacion==='intolerable' || r.clasificacion==='importante').length} críticos</div>
         </div>
-        <button className="btn btn-amber btn-sm" onClick={openNueva}>
-          <JxIcon name="plus" size={13}/>Nuevo Riesgo
-        </button>
+        {canWrite ? (
+          <button className="btn btn-amber btn-sm" onClick={openNueva}>
+            <JxIcon name="plus" size={13}/>Nuevo Riesgo
+          </button>
+        ) : (
+          <span className="badge b-gray" title="Tu rol es solo lectura para IPERC">Solo lectura</span>
+        )}
       </div>
 
       {sorted.length === 0 ? (
@@ -459,7 +471,9 @@ function EppPage({ showToast }) {
   const obraId = useObraActiva();
   const auth = window.__useAuth?.();
   const userId = auth?.profile?.id ?? 'offline';
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'EPP', 'w') ?? false);
   const { data: entregas } = window.__hooks.useEppEntregas(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
 
@@ -693,12 +707,18 @@ function EppPage({ showToast }) {
           </div>
         </div>
         <div style={{ display:'flex', gap:8 }}>
-          <button className="btn btn-ghost btn-sm" onClick={openNuevaEntrada}>
-            <JxIcon name="arrowIn" size={13}/> Nueva Compra
-          </button>
-          <button className="btn btn-amber btn-sm" onClick={openNuevaEntrega}>
-            <JxIcon name="plus" size={13}/> Nueva Entrega
-          </button>
+          {canWrite ? (
+            <>
+              <button className="btn btn-ghost btn-sm" onClick={openNuevaEntrada}>
+                <JxIcon name="arrowIn" size={13}/> Nueva Compra
+              </button>
+              <button className="btn btn-amber btn-sm" onClick={openNuevaEntrega}>
+                <JxIcon name="plus" size={13}/> Nueva Entrega
+              </button>
+            </>
+          ) : (
+            <span className="badge b-gray" title="Tu rol es solo lectura para EPP">Solo lectura</span>
+          )}
         </div>
       </div>
 

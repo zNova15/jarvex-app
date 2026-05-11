@@ -86,8 +86,10 @@ const ESTADOS = {
 // ─── PANTALLA PRINCIPAL ──────────────────────────────────────
 function CapturaMagicaPage({ showToast }) {
   const auth = window.__useAuth?.();
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
   const userId = auth?.profile?.id ?? 'offline';
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Captura Mágica', 'w') ?? false);
 
   const { data: companies } = window.__hooks?.useCompanies?.() || { data: [] };
   const { data: obras } = window.__hooks?.useObras?.() || { data: [] };
@@ -966,34 +968,40 @@ function CapturaMagicaPage({ showToast }) {
       </div>
 
       {/* ── DROP ZONE ─────────────────────────────────────────── */}
-      <div
-        onDrop={onDrop}
-        onDragOver={onDragOver}
-        onClick={()=>fileInputRef.current?.click()}
-        style={{
-          border:'2px dashed var(--border)', borderRadius:12, padding:'40px 30px', textAlign:'center',
-          background:'rgba(255,255,255,0.02)', cursor:'pointer', marginBottom:18,
-          transition:'background 0.2s',
-        }}
-        onDragEnter={(e)=>{ e.preventDefault(); e.currentTarget.style.background = 'rgba(155,89,182,0.08)'; }}
-        onDragLeave={(e)=>{ e.preventDefault(); e.currentTarget.style.background = 'rgba(255,255,255,0.02)'; }}
-      >
-        <JxIcon name="upload" size={38} color="var(--amber)"/>
-        <div style={{ fontSize:14, fontWeight:700, marginTop:10, color:'var(--tp)' }}>
-          Arrastrá facturas aquí o click para seleccionar
+      {canWrite ? (
+        <div
+          onDrop={onDrop}
+          onDragOver={onDragOver}
+          onClick={()=>fileInputRef.current?.click()}
+          style={{
+            border:'2px dashed var(--border)', borderRadius:12, padding:'40px 30px', textAlign:'center',
+            background:'rgba(255,255,255,0.02)', cursor:'pointer', marginBottom:18,
+            transition:'background 0.2s',
+          }}
+          onDragEnter={(e)=>{ e.preventDefault(); e.currentTarget.style.background = 'rgba(155,89,182,0.08)'; }}
+          onDragLeave={(e)=>{ e.preventDefault(); e.currentTarget.style.background = 'rgba(255,255,255,0.02)'; }}
+        >
+          <JxIcon name="upload" size={38} color="var(--amber)"/>
+          <div style={{ fontSize:14, fontWeight:700, marginTop:10, color:'var(--tp)' }}>
+            Arrastrá facturas aquí o click para seleccionar
+          </div>
+          <div style={{ fontSize:11.5, color:'var(--tm)', marginTop:5 }}>
+            PDF · JPG · PNG · WEBP — máx 6 MB cada uno · podés subir varios a la vez
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept=".pdf,image/jpeg,image/png,image/webp"
+            style={{ display:'none' }}
+            onChange={e => handleFiles(e.target.files)}
+          />
         </div>
-        <div style={{ fontSize:11.5, color:'var(--tm)', marginTop:5 }}>
-          PDF · JPG · PNG · WEBP — máx 6 MB cada uno · podés subir varios a la vez
+      ) : (
+        <div className="card card-p" style={{ background:'rgba(243,156,18,0.08)', border:'1px solid rgba(243,156,18,0.3)', marginBottom:18, fontSize:12.5, color:'var(--amber)' }}>
+          👁️ Tu rol tiene acceso de solo lectura para Captura Mágica. Podés revisar facturas pero no adjuntar nuevas ni confirmarlas.
         </div>
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          accept=".pdf,image/jpeg,image/png,image/webp"
-          style={{ display:'none' }}
-          onChange={e => handleFiles(e.target.files)}
-        />
-      </div>
+      )}
 
       {/* ── LISTA DE ITEMS ────────────────────────────────────── */}
       {items.length === 0 ? (

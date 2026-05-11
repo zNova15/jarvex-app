@@ -112,6 +112,7 @@ function EppsInventarioPage({ showToast }) {
   const isAdmin = myRol === 'admin';
   const appMode = window.__useAppMode ? window.__useAppMode() : { isEdicion: true };
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'EPP', 'w') ?? false);
 
   const [obraId, setObraId] = uS(null);
 
@@ -324,7 +325,7 @@ function EppsInventarioPage({ showToast }) {
               blob: foto.blob,
               observaciones: `Foto referencial del EPP ${form.nombre_epp}`,
               fecha: new Date().toISOString().slice(0, 10),
-              created_by: window.__useAuth?.()?.profile?.id || null,
+              created_by: auth?.profile?.id || null,
             });
           } catch (e) {
             showToast('EPP guardado, pero la foto falló: ' + (e?.message || e), 'amber');
@@ -367,7 +368,7 @@ function EppsInventarioPage({ showToast }) {
               blob: foto.blob,
               observaciones: `Foto referencial del EPP ${form.nombre_epp}`,
               fecha: new Date().toISOString().slice(0, 10),
-              created_by: window.__useAuth?.()?.profile?.id || null,
+              created_by: auth?.profile?.id || null,
             });
           } catch (e) {
             showToast('EPP creado, pero la foto falló: ' + (e?.message || e), 'amber');
@@ -510,9 +511,13 @@ function EppsInventarioPage({ showToast }) {
           <div className="pg-sub">{epps.length} EPPs registrados · {epps.filter(e => ['critico','reponer','agotado','sin_stock'].includes(e.alerta)).length} alertas</div>
         </div>
         <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-          <button className="btn btn-ghost btn-sm" onClick={openSalida}><JxIcon name="arrowOut" size={13}/>Registrar Salida</button>
-          <button className="btn btn-ghost btn-sm" onClick={openIngreso}><JxIcon name="arrowIn" size={13}/>Registrar Ingreso</button>
-          <button className="btn btn-amber btn-sm" onClick={openNuevo}><JxIcon name="plus" size={13}/>Nuevo EPP</button>
+          {canWrite && <button className="btn btn-ghost btn-sm" onClick={openSalida}><JxIcon name="arrowOut" size={13}/>Registrar Salida</button>}
+          {canWrite && <button className="btn btn-ghost btn-sm" onClick={openIngreso}><JxIcon name="arrowIn" size={13}/>Registrar Ingreso</button>}
+          {canWrite ? (
+            <button className="btn btn-amber btn-sm" onClick={openNuevo}><JxIcon name="plus" size={13}/>Nuevo EPP</button>
+          ) : (
+            <span className="badge b-gray" title="Tu rol es solo lectura para EPP">Solo lectura</span>
+          )}
         </div>
       </div>
 
