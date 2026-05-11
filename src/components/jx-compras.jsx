@@ -64,6 +64,11 @@ function RequisicionesPage({ showToast }) {
   // ¿El rol puede aprobar/cambiar estado de requisiciones?
   // Solo admin + roles con permiso de write en 'Requisiciones' (ej: ingeniero_residente)
   const canApprove = isAdmin || (window.__hasPerm?.(rol, 'Requisiciones', 'w') ?? false);
+  // Mismo permiso para crear/editar/guardar. Si el admin marcó al rol
+  // como "solo lectura" en la matriz, NO debe poder tocar nada de esta
+  // pantalla. Antes solo se gateaba el cambio de estado, así que el
+  // almacenero podía crear/editar igual a pesar del override.
+  const canWrite = canApprove;
   const { data: requisiciones } = window.__hooks.useRequisiciones(obraId);
   const { data: materiales } = window.__hooks.useMateriales(obraId);
 
@@ -147,6 +152,10 @@ function RequisicionesPage({ showToast }) {
 
   const guardar = async () => {
     if (busyGuardar) return; // doble click guard
+    if (!canWrite) {
+      showToast('No tenés permisos para crear ni editar requisiciones', 'red');
+      return;
+    }
     const itemsValidos = items.filter(i => (i.material_id || i.nombre_libre) && Number(i.cantidad) > 0);
     if (!itemsValidos.length) { showToast('Agrega al menos un item con cantidad', 'red'); return; }
     setBusyGuardar(true);
@@ -353,9 +362,13 @@ function RequisicionesPage({ showToast }) {
           <div className="pg-title">Requisiciones</div>
           <div className="pg-sub">Solicitudes de compra desde obra · {sorted.length} de {(requisiciones || []).length}</div>
         </div>
-        <button className="btn btn-amber btn-sm" onClick={openNueva}>
-          <JxIcon name="plus" size={13}/>Nueva Requisición
-        </button>
+        {canWrite ? (
+          <button className="btn btn-amber btn-sm" onClick={openNueva}>
+            <JxIcon name="plus" size={13}/>Nueva Requisición
+          </button>
+        ) : (
+          <span className="badge b-gray" title="Tu rol es de solo lectura">Solo lectura</span>
+        )}
       </div>
 
       <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', marginBottom:14 }}>
@@ -416,7 +429,7 @@ function RequisicionesPage({ showToast }) {
                     </td>
                     <td style={{ fontSize:11, maxWidth:280, whiteSpace:'normal' }}>{r.notas || '—'}</td>
                     <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
-                      <button className="btn btn-ghost btn-xs" title="Ver / Editar" onClick={()=>verDetalle(r)}>
+                      <button className="btn btn-ghost btn-xs" title={canWrite ? 'Ver / Editar' : 'Ver detalle (solo lectura)'} onClick={()=>verDetalle(r)}>
                         <JxIcon name="eye" size={11}/>
                       </button>
                       <button className="btn btn-ghost btn-xs" title="Descargar PDF para imprimir y firmar" onClick={async ()=>{
@@ -454,49 +467,56 @@ function RequisicionesPage({ showToast }) {
 
       {(modal === 'nueva' || modal === 'detalle') && (
         <Modal title={editing ? `Requisición ${form.codigo}` : 'Nueva Requisición'} icon="package" onClose={()=>{setModal(null); setEditing(null); setItems([]);}} wide>
+          {!canWrite && (
+            <div className="card card-p" style={{ background:'rgba(243,156,18,0.08)', border:'1px solid rgba(243,156,18,0.3)', marginBottom:12, fontSize:12, color:'var(--amber)' }}>
+              👁️ Tu rol tiene acceso de solo lectura. Podés ver el detalle pero no modificarlo.
+            </div>
+          )}
           <div className="g2">
             <div>
               <label className="flabel">Código</label>
-              <input className="fi" value={form.codigo||''} onChange={e=>setForm({...form, codigo:e.target.value})}/>
+              <input className="fi" value={form.codigo||''} onChange={e=>setForm({...form, codigo:e.target.value})} disabled={!canWrite}/>
             </div>
             <div>
               <label className="flabel">Estado</label>
-              <select className="fi" value={form.estado||'borrador'} onChange={e=>setForm({...form, estado:e.target.value})} disabled={!canApprove && editing}>
+              <select className="fi" value={form.estado||'borrador'} onChange={e=>setForm({...form, estado:e.target.value})} disabled={!canWrite || (!canApprove && editing)}>
                 {Object.entries(REQ_ESTADO_LABEL).map(([k,v]) => <option key={k} value={k}>{v}</option>)}
               </select>
             </div>
             <div style={{ gridColumn:'1/-1' }}>
               <label className="flabel">Descripción / Nombre de la solicitud</label>
               <input className="fi" value={form.descripcion||''} onChange={e=>setForm({...form, descripcion:e.target.value})}
-                placeholder="Ej: Materiales para vaciado de losa nivel 3 - Semana 18"/>
+                placeholder="Ej: Materiales para vaciado de losa nivel 3 - Semana 18" disabled={!canWrite}/>
             </div>
             <div>
               <label className="flabel">Fecha</label>
-              <input className="fi" type="date" value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/>
+              <input className="fi" type="date" value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})} disabled={!canWrite}/>
             </div>
             <div>
               <label className="flabel">Fecha requerida</label>
-              <input className="fi" type="date" value={form.fecha_requerida||''} onChange={e=>setForm({...form, fecha_requerida:e.target.value})}/>
+              <input className="fi" type="date" value={form.fecha_requerida||''} onChange={e=>setForm({...form, fecha_requerida:e.target.value})} disabled={!canWrite}/>
             </div>
             <div>
               <label className="flabel">Prioridad</label>
-              <select className="fi" value={form.prioridad||'normal'} onChange={e=>setForm({...form, prioridad:e.target.value})}>
+              <select className="fi" value={form.prioridad||'normal'} onChange={e=>setForm({...form, prioridad:e.target.value})} disabled={!canWrite}>
                 <option value="baja">Baja</option><option value="normal">Normal</option>
                 <option value="alta">Alta</option><option value="urgente">Urgente</option>
               </select>
             </div>
             <div style={{ gridColumn:'1/-1' }}>
               <label className="flabel">Notas</label>
-              <textarea className="fi" rows={2} value={form.notas||''} onChange={e=>setForm({...form, notas:e.target.value})}/>
+              <textarea className="fi" rows={2} value={form.notas||''} onChange={e=>setForm({...form, notas:e.target.value})} disabled={!canWrite}/>
             </div>
           </div>
 
           <div style={{ marginTop:14 }}>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
               <strong style={{ fontSize:13 }}>Items ({items.length})</strong>
-              <button className="btn btn-ghost btn-sm" onClick={addItem}>
-                <JxIcon name="plus" size={11}/> Agregar item
-              </button>
+              {canWrite && (
+                <button className="btn btn-ghost btn-sm" onClick={addItem}>
+                  <JxIcon name="plus" size={11}/> Agregar item
+                </button>
+              )}
             </div>
             <div style={{ overflowX:'auto', maxHeight:300, border:'1px solid var(--border)', borderRadius:6 }}>
               <table className="tbl" style={{ fontSize:11 }}>
@@ -511,7 +531,7 @@ function RequisicionesPage({ showToast }) {
                   {items.map((it, idx) => (
                     <tr key={idx}>
                       <td>
-                        <select className="fi" value={it.material_id||''} onChange={e=>{
+                        <select className="fi" value={it.material_id||''} disabled={!canWrite} onChange={e=>{
                           const m = materiales?.find(x => x.id === e.target.value);
                           updateItem(idx, { material_id: e.target.value, unidad: m?.unidad || it.unidad });
                         }} style={{ fontSize:11 }}>
@@ -521,11 +541,11 @@ function RequisicionesPage({ showToast }) {
                           ))}
                         </select>
                       </td>
-                      <td><input className="fi" disabled={!!it.material_id} value={it.nombre_libre||''} onChange={e=>updateItem(idx, { nombre_libre:e.target.value })} placeholder="Si no está en almacén" style={{ fontSize:11 }}/></td>
-                      <td><input className="fi" value={it.unidad||''} onChange={e=>updateItem(idx, { unidad:e.target.value })} style={{ fontSize:11 }}/></td>
-                      <td><input className="fi" type="number" min="0" step="0.01" value={it.cantidad||''} onChange={e=>updateItem(idx, { cantidad:e.target.value })} style={{ fontSize:11, textAlign:'right' }}/></td>
-                      <td><input className="fi" value={it.observacion||''} onChange={e=>updateItem(idx, { observacion:e.target.value })} style={{ fontSize:11 }}/></td>
-                      <td><button className="btn btn-ghost btn-xs" onClick={()=>removeItem(idx)}><JxIcon name="trash" size={10}/></button></td>
+                      <td><input className="fi" disabled={!canWrite || !!it.material_id} value={it.nombre_libre||''} onChange={e=>updateItem(idx, { nombre_libre:e.target.value })} placeholder="Si no está en almacén" style={{ fontSize:11 }}/></td>
+                      <td><input className="fi" disabled={!canWrite} value={it.unidad||''} onChange={e=>updateItem(idx, { unidad:e.target.value })} style={{ fontSize:11 }}/></td>
+                      <td><input className="fi" disabled={!canWrite} type="number" min="0" step="0.01" value={it.cantidad||''} onChange={e=>updateItem(idx, { cantidad:e.target.value })} style={{ fontSize:11, textAlign:'right' }}/></td>
+                      <td><input className="fi" disabled={!canWrite} value={it.observacion||''} onChange={e=>updateItem(idx, { observacion:e.target.value })} style={{ fontSize:11 }}/></td>
+                      <td>{canWrite && <button className="btn btn-ghost btn-xs" onClick={()=>removeItem(idx)}><JxIcon name="trash" size={10}/></button>}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -534,10 +554,12 @@ function RequisicionesPage({ showToast }) {
           </div>
 
           <div className="modal-actions">
-            <button className="btn btn-ghost" disabled={busyGuardar} onClick={()=>{setModal(null); setEditing(null); setItems([]);}}>Cancelar</button>
-            <button className="btn btn-amber" disabled={busyGuardar} onClick={guardar}>
-              <JxIcon name="check" size={13}/>{busyGuardar ? 'Guardando…' : (editing ? 'Guardar Cambios' : 'Crear Requisición')}
-            </button>
+            <button className="btn btn-ghost" disabled={busyGuardar} onClick={()=>{setModal(null); setEditing(null); setItems([]);}}>{canWrite ? 'Cancelar' : 'Cerrar'}</button>
+            {canWrite && (
+              <button className="btn btn-amber" disabled={busyGuardar} onClick={guardar}>
+                <JxIcon name="check" size={13}/>{busyGuardar ? 'Guardando…' : (editing ? 'Guardar Cambios' : 'Crear Requisición')}
+              </button>
+            )}
           </div>
         </Modal>
       )}
