@@ -81,8 +81,10 @@ const OP_TYPES = [
 // ╚════════════════════════════════════════════════════════════╝
 function EmpresasPage({ showToast }) {
   const auth = window.__useAuth?.();
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
   const userId = auth?.profile?.id ?? 'offline';
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Empresas', 'w') ?? false);
   const { data: companies } = window.__hooks.useCompanies();
   const { data: movs } = window.__hooks.useAccountingMovements();
   const { data: obras } = window.__hooks.useObras?.() || { data: [] };
@@ -254,10 +256,12 @@ function EmpresasPage({ showToast }) {
           <div className="pg-title">Empresas</div>
           <div className="pg-sub">{sorted.length} empresas registradas · {sorted.filter(c=>c.status==='activa').length} activas</div>
         </div>
-        {isAdmin && (
+        {canWrite ? (
           <button className="btn btn-amber btn-sm" onClick={openNueva}>
             <JxIcon name="plus" size={13}/>Nueva Empresa
           </button>
+        ) : (
+          <span className="badge b-gray" title="Tu rol es solo lectura para Empresas">Solo lectura</span>
         )}
       </div>
 
@@ -558,8 +562,10 @@ function EmpresasPage({ showToast }) {
 // ╚════════════════════════════════════════════════════════════╝
 function MovimientosContablesPage({ showToast }) {
   const auth = window.__useAuth?.();
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
   const userId = auth?.profile?.id ?? 'offline';
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Movs. Contables', 'w') ?? false);
   const { data: companies } = window.__hooks.useCompanies();
   const { data: movs } = window.__hooks.useAccountingMovements();
 
@@ -860,9 +866,13 @@ function MovimientosContablesPage({ showToast }) {
           <div className="pg-title">Movimientos Contables</div>
           <div className="pg-sub">{filtered.length} de {(movs || []).length} movimientos · ingresos / costos / gastos por empresa</div>
         </div>
-        <button className="btn btn-amber btn-sm" onClick={openNuevo}>
-          <JxIcon name="plus" size={13}/>Nuevo Movimiento
-        </button>
+        {canWrite ? (
+          <button className="btn btn-amber btn-sm" onClick={openNuevo}>
+            <JxIcon name="plus" size={13}/>Nuevo Movimiento
+          </button>
+        ) : (
+          <span className="badge b-gray" title="Tu rol es solo lectura para Movs. Contables">Solo lectura</span>
+        )}
       </div>
 
       <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', marginBottom:14 }}>
@@ -1187,8 +1197,10 @@ function MovimientosContablesPage({ showToast }) {
 // ╚════════════════════════════════════════════════════════════╝
 function IntercompanyPage({ showToast }) {
   const auth = window.__useAuth?.();
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
   const userId = auth?.profile?.id ?? 'offline';
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Intercompany', 'w') ?? false);
   const { data: companies } = window.__hooks.useCompanies();
   const { data: ictx } = window.__hooks.useIntercompanyTransactions();
 
@@ -1368,9 +1380,13 @@ function IntercompanyPage({ showToast }) {
           <div className="pg-title">Operaciones entre Empresas</div>
           <div className="pg-sub">{sorted.length} operaciones internas · cada una crea 2 movimientos contables enlazados (ingreso + costo)</div>
         </div>
-        <button className="btn btn-amber btn-sm" onClick={openNueva}>
-          <JxIcon name="plus" size={13}/>Nueva Operación Interna
-        </button>
+        {canWrite ? (
+          <button className="btn btn-amber btn-sm" onClick={openNueva}>
+            <JxIcon name="plus" size={13}/>Nueva Operación Interna
+          </button>
+        ) : (
+          <span className="badge b-gray" title="Tu rol es solo lectura para Intercompany">Solo lectura</span>
+        )}
       </div>
 
       {sorted.length === 0 ? (

@@ -1876,7 +1876,9 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
 function ImportarPage({ showToast }) {
   const auth = window.__useAuth?.();
   const userId = auth?.profile?.id || 'offline';
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Importar', 'w') ?? false);
   const obraId = useObraActiva();
 
   const [tab, setTab] = uSI('importar');
@@ -2065,6 +2067,21 @@ function ImportarPage({ showToast }) {
   // Las RLS de Supabase rechazarán INSERTs si no tiene permiso, pero al
   // menos puede ver la pantalla.
   const showNoAdminBanner = auth?.profile && !isAdmin;
+
+  if (!canWrite) {
+    return (
+      <div className="page-wrap">
+        <div className="card card-p" style={{ background:'rgba(243,156,18,0.08)', border:'1px solid rgba(243,156,18,0.3)' }}>
+          <div style={{ fontSize:18, fontWeight:700, color:'var(--amber)', marginBottom:8 }}>👁️ Solo lectura</div>
+          <div style={{ fontSize:13, color:'var(--ts)', lineHeight:1.6 }}>
+            Tu rol ({myRol || '—'}) no tiene permiso para importar datos. Esta pantalla está reservada a roles con permiso de escritura en el módulo <strong>Importar</strong>.
+            <br/><br/>
+            Si necesitás importar un Excel masivo, pedile al admin que lo haga o que te otorgue el permiso desde <em>Roles & Permisos → Importar</em>.
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="page-wrap">

@@ -52,7 +52,9 @@ function ValorizacionesPage({ showToast }) {
   const obraId = useObraActiva();
   const auth = window.__useAuth?.();
   const userId = auth?.profile?.id ?? 'offline';
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Valorizaciones', 'w') ?? false);
   // Doble click guard para el botón "Crear Valorización" (operación pesada
   // que crea valorización + partidas + adicionales en cadena).
   const [busyGuardar, , setBusyGuardar] = useBusy();
@@ -351,9 +353,13 @@ function ValorizacionesPage({ showToast }) {
           <div className="pg-title">Valorizaciones</div>
           <div className="pg-sub">{obra?.nombre_obra} · {sorted.length} valorizaciones · total emitido {fmtSk(sorted.reduce((s,v)=>s+Number(v.monto_total||0),0))}</div>
         </div>
-        <button className="btn btn-amber btn-sm" onClick={openNueva}>
-          <JxIcon name="plus" size={13}/>Nueva Valorización
-        </button>
+        {canWrite ? (
+          <button className="btn btn-amber btn-sm" onClick={openNueva}>
+            <JxIcon name="plus" size={13}/>Nueva Valorización
+          </button>
+        ) : (
+          <span className="badge b-gray" title="Tu rol es solo lectura para Valorizaciones">Solo lectura</span>
+        )}
       </div>
 
       <div style={{ display:'flex', gap:8, marginBottom:14 }}>

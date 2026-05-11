@@ -71,7 +71,9 @@ function InspeccionesSeguridadPage({ showToast }) {
   const obraId = useObraActiva();
   const auth = window.__useAuth?.();
   const userId = auth?.profile?.id ?? 'offline';
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Inspecciones SSOMA', 'w') ?? false);
   const { data: inspecciones } = window.__hooks.useInspeccionesSeguridad(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
 
@@ -173,9 +175,13 @@ function InspeccionesSeguridadPage({ showToast }) {
           <div className="pg-title">Inspecciones de Seguridad</div>
           <div className="pg-sub">{filtradas.length} de {(inspecciones || []).length} inspecciones</div>
         </div>
-        <button className="btn btn-amber btn-sm" onClick={openNueva}>
-          <JxIcon name="plus" size={13}/>Nueva Inspección
-        </button>
+        {canWrite ? (
+          <button className="btn btn-amber btn-sm" onClick={openNueva}>
+            <JxIcon name="plus" size={13}/>Nueva Inspección
+          </button>
+        ) : (
+          <span className="badge b-gray" title="Tu rol es solo lectura para Inspecciones SSOMA">Solo lectura</span>
+        )}
       </div>
 
       <div className="card card-p" style={{ marginBottom: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
@@ -311,7 +317,9 @@ function CapacitacionesPage({ showToast }) {
   const obraId = useObraActiva();
   const auth = window.__useAuth?.();
   const userId = auth?.profile?.id ?? 'offline';
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Capacitaciones', 'w') ?? false);
   const { data: capacitaciones } = window.__hooks.useCapacitaciones(obraId);
 
   const [modal, setModal] = uS(null);
@@ -408,9 +416,13 @@ function CapacitacionesPage({ showToast }) {
           <div className="pg-title">Capacitaciones</div>
           <div className="pg-sub">{filtradas.length} capacitaciones · {totalHoras.toFixed(1)} h dictadas</div>
         </div>
-        <button className="btn btn-amber btn-sm" onClick={openNueva}>
-          <JxIcon name="plus" size={13}/>Nueva Capacitación
-        </button>
+        {canWrite ? (
+          <button className="btn btn-amber btn-sm" onClick={openNueva}>
+            <JxIcon name="plus" size={13}/>Nueva Capacitación
+          </button>
+        ) : (
+          <span className="badge b-gray" title="Tu rol es solo lectura para Capacitaciones">Solo lectura</span>
+        )}
       </div>
 
       <div className="card card-p" style={{ marginBottom: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>

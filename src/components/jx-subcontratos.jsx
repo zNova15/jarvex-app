@@ -42,7 +42,9 @@ function useObraActiva() {
 function SubcontratistasPage({ showToast }) {
   const auth = window.__useAuth?.();
   const userId = auth?.profile?.id ?? 'offline';
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Subcontratistas', 'w') ?? false);
   const { data: subs } = window.__hooks.useSubcontratistas();
 
   const [modal, setModal] = uS(null);
@@ -109,7 +111,11 @@ function SubcontratistasPage({ showToast }) {
           <div className="pg-title">Subcontratistas</div>
           <div className="pg-sub">{sorted.length} registrados</div>
         </div>
-        <button className="btn btn-amber btn-sm" onClick={openNueva}><JxIcon name="plus" size={13}/>Nuevo</button>
+        {canWrite ? (
+          <button className="btn btn-amber btn-sm" onClick={openNueva}><JxIcon name="plus" size={13}/>Nuevo</button>
+        ) : (
+          <span className="badge b-gray" title="Tu rol es solo lectura para Subcontratistas">Solo lectura</span>
+        )}
       </div>
 
       {sorted.length === 0 ? (
@@ -177,7 +183,9 @@ function SubcontratosPage({ showToast }) {
   const obraId = useObraActiva();
   const auth = window.__useAuth?.();
   const userId = auth?.profile?.id ?? 'offline';
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Subcontratos', 'w') ?? false);
   const { data: contratos } = window.__hooks.useSubcontratos(obraId);
   const { data: subs } = window.__hooks.useSubcontratistas();
 
@@ -272,7 +280,11 @@ function SubcontratosPage({ showToast }) {
           <div className="pg-title">Subcontratos</div>
           <div className="pg-sub">{sorted.length} contratos · valor total {fmtSk(sorted.reduce((s,c)=>s+Number(c.monto_contrato||0),0))}</div>
         </div>
-        <button className="btn btn-amber btn-sm" onClick={openNueva}><JxIcon name="plus" size={13}/>Nuevo Contrato</button>
+        {canWrite ? (
+          <button className="btn btn-amber btn-sm" onClick={openNueva}><JxIcon name="plus" size={13}/>Nuevo Contrato</button>
+        ) : (
+          <span className="badge b-gray" title="Tu rol es solo lectura para Subcontratos">Solo lectura</span>
+        )}
       </div>
 
       {sorted.length === 0 ? (

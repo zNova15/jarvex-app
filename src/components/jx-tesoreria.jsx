@@ -16,7 +16,9 @@ const PAGO_LABEL = { programado:'Programado', pagado:'Pagado', vencido:'Vencido'
 function CuentasBancariasPage({ showToast }) {
   const auth = window.__useAuth?.();
   const userId = auth?.profile?.id ?? 'offline';
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Cuentas Bancarias', 'w') ?? false);
   const { data: cuentas } = window.__hooks.useCuentasBancarias();
   const { data: movs } = window.__hooks.useMovimientosBancarios();
   const { data: companies } = window.__hooks.useCompanies();
@@ -116,9 +118,13 @@ function CuentasBancariasPage({ showToast }) {
           <div className="pg-title">Cuentas Bancarias</div>
           <div className="pg-sub">{(cuentas||[]).length} cuentas · saldo total {fmtSk((cuentas||[]).reduce((s,c)=>s+(saldoPorCuenta.get(c.id)||0),0))}</div>
         </div>
-        <button className="btn btn-amber btn-sm" onClick={openNueva}>
-          <JxIcon name="plus" size={13}/>Nueva Cuenta
-        </button>
+        {canWrite ? (
+          <button className="btn btn-amber btn-sm" onClick={openNueva}>
+            <JxIcon name="plus" size={13}/>Nueva Cuenta
+          </button>
+        ) : (
+          <span className="badge b-gray" title="Tu rol es solo lectura para Cuentas Bancarias">Solo lectura</span>
+        )}
       </div>
 
       {(cuentas||[]).length === 0 ? (
@@ -232,7 +238,9 @@ function CuentasBancariasPage({ showToast }) {
 function FlujoCajaPage({ showToast }) {
   const auth = window.__useAuth?.();
   const userId = auth?.profile?.id ?? 'offline';
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Flujo de Caja', 'w') ?? false);
   const { data: pagos } = window.__hooks.useCronogramaPagos();
   const { data: companies } = window.__hooks.useCompanies();
   const { data: cuentas } = window.__hooks.useCuentasBancarias();
@@ -404,9 +412,13 @@ function FlujoCajaPage({ showToast }) {
           <div className="pg-title">Flujo de Caja / Cronograma de Pagos</div>
           <div className="pg-sub">{filtered.length} de {(pagos||[]).length} pagos</div>
         </div>
-        <button className="btn btn-amber btn-sm" onClick={openNueva}>
-          <JxIcon name="plus" size={13}/>Programar Pago
-        </button>
+        {canWrite ? (
+          <button className="btn btn-amber btn-sm" onClick={openNueva}>
+            <JxIcon name="plus" size={13}/>Programar Pago
+          </button>
+        ) : (
+          <span className="badge b-gray" title="Tu rol es solo lectura para Flujo de Caja">Solo lectura</span>
+        )}
       </div>
 
       {/* KPIs */}
