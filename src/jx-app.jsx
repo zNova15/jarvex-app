@@ -727,6 +727,19 @@ function App() {
       window.__prefetchChunksForRol(rol);
     }
   }, [auth?.profile?.rol]);
+  // Contador de versión de permisos. Aumenta cada vez que el admin
+  // cambia la matriz desde Roles & Permisos. Lo agregamos al `key` del
+  // contenedor de la página para forzar un remount completo de la
+  // pantalla actual — así las variables `canWrite` que calculan sus
+  // valores en el render inicial vuelven a calcularse con los nuevos
+  // permisos sin que cada pantalla tenga que suscribirse al evento.
+  const [permsVer, setPermsVer] = uSA(0);
+  uEA(() => {
+    const onPerms = () => setPermsVer(v => v + 1);
+    window.addEventListener('jx_perms_changed', onPerms);
+    return () => window.removeEventListener('jx_perms_changed', onPerms);
+  }, []);
+
   // En móvil arrancamos con el drawer cerrado (collapsed=true).
   // En desktop arrancamos con el sidebar expandido (collapsed=false).
   const [collapsed, setCollapsed]   = uSA(() =>
@@ -950,7 +963,7 @@ function App() {
                 notifs={notifs}
                 onSync={()=>sync.sync && sync.sync()}
                 isMobile={isMobile}/>
-        <div style={{ flex:1, overflow:'hidden', background:'var(--bg-p)' }} key={page}>
+        <div style={{ flex:1, overflow:'hidden', background:'var(--bg-p)' }} key={`${page}_${permsVer}`}>
           {renderPage()}
         </div>
       </div>

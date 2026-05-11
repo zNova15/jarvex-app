@@ -1106,7 +1106,10 @@ function RolesPage() {
   };
 
   const cycle = (rol, modIdx) => {
-    if (!canEdit) return;
+    if (!canEdit) {
+      try { window.__showToast?.('Activá Modo Edición o Modo Prueba para cambiar permisos', 'amber'); } catch {}
+      return;
+    }
     if (rol === 'admin') return; // admin nunca pierde permisos
     const mod = PERM_MATRIX_MODULES[modIdx];
     const cur = matrix[rol][modIdx];
@@ -1114,9 +1117,14 @@ function RolesPage() {
     const ov = { ...overrides };
     ov[rol] = { ...(ov[rol] || {}), [mod]: next };
     setOverrides(ov);
-    savePermOverrides(ov);
+    savePermOverrides(ov); // dispatches jx_perms_changed → toda la app re-renderea
     try { window.__logAudit?.({ action:'update', table:'permisos', recordId: null,
       oldData:{ valor: cur }, newData:{ rol, modulo: mod, valor: next }, reason:`Cambio permiso ${rol} → ${mod}` }); } catch {}
+    // Confirmación visual: el cambio ya está guardado y aplicado.
+    try {
+      const niveles = { w: 'Escritura ✓', r: 'Solo lectura 👁', x: 'Sin acceso ✗' };
+      window.__showToast?.(`${todasRolLabels[rol] || rol} · ${mod} → ${niveles[next] || next}`, 'green');
+    } catch {}
   };
 
   const resetAll = () => {
@@ -1169,11 +1177,30 @@ function RolesPage() {
               : 'Matriz de permisos por rol. Activa Modo Edición (siendo admin) para personalizar.'}
           </div>
         </div>
-        {canEdit && tieneOverrides && (
-          <button className="btn btn-ghost btn-sm" onClick={resetAll} title="Restaurar a valores por defecto">
-            <JxIcon name="refresh" size={12}/> Restaurar defaults
-          </button>
-        )}
+        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+          {canEdit && (
+            <button
+              className="btn btn-green btn-sm"
+              onClick={() => {
+                // savePermOverrides ya se llamó en cada toggle. Este botón
+                // re-dispara el evento para que TODAS las pantallas abiertas
+                // (otros tabs / la pantalla actual del usuario) reapliquen.
+                try {
+                  window.dispatchEvent(new CustomEvent('jx_perms_changed', { detail: overrides }));
+                } catch {}
+                try { window.__showToast?.('Permisos guardados y aplicados a toda la app ✓', 'green'); } catch {}
+              }}
+              title="Re-aplica los permisos actuales a todas las pantallas abiertas"
+            >
+              <JxIcon name="check" size={13}/> Guardar y aplicar
+            </button>
+          )}
+          {canEdit && tieneOverrides && (
+            <button className="btn btn-ghost btn-sm" onClick={resetAll} title="Restaurar a valores por defecto">
+              <JxIcon name="refresh" size={12}/> Restaurar defaults
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="card card-p" style={{ marginBottom:16, background: canEdit ? 'rgba(242,183,5,0.07)' : 'rgba(52,152,219,0.08)', border: canEdit ? '1px solid rgba(242,183,5,0.3)' : '1px solid rgba(52,152,219,0.25)' }}>
