@@ -55,6 +55,36 @@ const NEEDS_OBRA = (m) => !['proveedores','subcontratistas','companies','activos
 const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const fmtDate = () => new Date().toLocaleString('es-PE');
 
+// Normaliza un código jerárquico: quita ceros de padding por segmento.
+//   '01.01.05'  → '1.1.5'
+//   '1.01'      → '1.1'
+//   '02.01.01.01.01' → '2.1.1.1.1'
+// Útil para matchear códigos del Gantt contra partidas existentes
+// cuando uno trae padding y el otro no (problema reportado al
+// importar Gantt: ~500 partidas "no encontradas" por este motivo).
+function normalizeCodigo(codigo) {
+  if (!codigo) return '';
+  return String(codigo).trim().split('.').map(seg => {
+    const n = parseInt(seg, 10);
+    return Number.isNaN(n) ? seg : String(n);
+  }).join('.');
+}
+
+// Normaliza texto para fuzzy match: NFD + minúsculas + alfanumérico
+const normTxt = (s) => String(s || '')
+  .normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+// % de palabras compartidas (≥3 chars) entre dos descripciones.
+function fuzzyScore(a, b) {
+  const A = new Set(normTxt(a).split(' ').filter(w => w.length > 2));
+  const B = new Set(normTxt(b).split(' ').filter(w => w.length > 2));
+  if (!A.size || !B.size) return 0;
+  let inter = 0;
+  for (const w of A) if (B.has(w)) inter++;
+  return inter / Math.max(A.size, B.size);
+}
+
 function autoMap(fields, headers) {
   const map = {};
   const used = new Set();
@@ -206,6 +236,10 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
   const [importing, setImp] = uSI(false);
   const [progress, setProgress] = uSI({ phase:'', current:0, total:0 });
   const [result, setResult] = uSI(null);
+  // Sugerencias del import de Gantt: array de {tareaCodigo, candidatoId,
+  // candidatoCodigo, candidatoDescripcion, score, tarea, aprobada}.
+  // Si hay alguna, se muestra el modal de revisión antes de cerrar el flujo.
+  const [gantSugerencias, setGantSugerencias] = uSI(null);
 
   // Selector de obra destino — el usuario puede cambiarlo antes de importar
   const [obrasDisponibles, setObrasDisponibles] = uSI([]);
@@ -871,49 +905,123 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
   }
 
   // ── Import Cronograma Gantt (actualiza partidas con fechas) ──
+  //
+  // Estrategia de matching (de más confiable a menos):
+  //  1. Match exacto: gantt.codigo === partida.codigo_delfin
+  //  2. Match normalizado: '01.01' ↔ '1.01' (sin padding de ceros)
+  //  3. Match fuzzy por descripción: solo si las 2 anteriores fallan.
+  //     Se calcula un score [0..1] de palabras compartidas y se
+  //     retorna como SUGERENCIA — NO se aplica automáticamente, el
+  //     usuario las aprueba manualmente en un modal.
   async function importGantt() {
     const now = new Date().toISOString();
     const partidasObra = await window.__db.partidas.where('obra_id').equals(obraId).toArray();
     if (!partidasObra.length) {
       throw new Error('No hay partidas en esta obra. Importa primero el APU (presupuesto) antes del cronograma.');
     }
-    const porCodigo = new Map(partidasObra.map(p => [p.codigo_delfin, p]));
+    const vivas = partidasObra.filter(p => !p.deleted_at);
+    const porCodigo = new Map(vivas.map(p => [p.codigo_delfin, p]));
+    const porCodigoNorm = new Map(vivas.map(p => [normalizeCodigo(p.codigo_delfin), p]));
 
-    let actualizadas = 0;
-    const noEncontradas = [];
-    setProgress({ phase:'Aplicando cronograma…', current:0, total: parsed.data.length });
-
-    for (let i = 0; i < parsed.data.length; i++) {
-      const t = parsed.data[i];
-      const p = porCodigo.get(t.codigo);
-      if (!p) {
-        noEncontradas.push({ row: t.codigo, error: `Tarea "${t.descripcion}" no encontrada en partidas` });
-        continue;
-      }
+    const aplicar = async (p, t) => {
       await window.__db.partidas.update(p.id, {
         fecha_inicio_planificada: t.fecha_inicio,
         fecha_fin_planificada:    t.fecha_fin,
         duracion_dias: t.duracion_dias,
         predecesoras: t.predecesoras,
-        // Si reportan avance > 0 y no tienen estado, marcar 'en_ejecucion'
         ...(t.porcentaje_avance > 0 && p.estado === 'pendiente' ? { estado: 'en_ejecucion' } : {}),
         updated_at: now, updated_by: userId,
         version: (p.version ?? 0) + 1,
         sync_status: p.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
       });
-      actualizadas++;
+    };
+
+    let exactas = 0, normalizadas = 0;
+    const sugerencias = []; // {tarea, candidato, score}
+    const noMatch = [];     // sin candidato razonable
+    setProgress({ phase:'Aplicando cronograma…', current:0, total: parsed.data.length });
+
+    for (let i = 0; i < parsed.data.length; i++) {
+      const t = parsed.data[i];
+      // 1) Exacto
+      let p = porCodigo.get(t.codigo);
+      if (p) { await aplicar(p, t); exactas++; }
+      else {
+        // 2) Normalizado (padding de ceros)
+        const norm = normalizeCodigo(t.codigo);
+        p = porCodigoNorm.get(norm);
+        if (p) { await aplicar(p, t); normalizadas++; }
+        else {
+          // 3) Fuzzy por descripción → SUGERENCIA (no aplicar)
+          let top = null;
+          for (const cand of vivas) {
+            const s = fuzzyScore(t.descripcion, cand.nombre_partida);
+            if (s >= 0.5 && (!top || s > top.score)) top = { cand, score: s };
+          }
+          if (top) {
+            sugerencias.push({
+              tareaCodigo: t.codigo,
+              tareaDescripcion: t.descripcion,
+              candidatoId: top.cand.id,
+              candidatoCodigo: top.cand.codigo_delfin,
+              candidatoDescripcion: top.cand.nombre_partida,
+              score: top.score,
+              tarea: t, // payload completo para aplicar después
+            });
+          } else {
+            noMatch.push({ row: t.codigo, error: `"${t.descripcion}" — sin partida similar` });
+          }
+        }
+      }
       if (i % 25 === 0) {
         setProgress({ phase:'Aplicando cronograma…', current: i+1, total: parsed.data.length });
         await new Promise(r => setTimeout(r, 0));
       }
     }
+    const actualizadas = exactas + normalizadas;
     return {
       tipo: 'gantt',
       ok: actualizadas,
-      detalle: `${actualizadas} partidas con fechas planificadas${noEncontradas.length ? ` · ${noEncontradas.length} no encontradas` : ''}`,
-      errors: noEncontradas.length,
-      errorList: noEncontradas.slice(0, 20),
+      detalle: `${actualizadas} partidas con fechas planificadas` +
+        (normalizadas ? ` (${exactas} match exacto + ${normalizadas} match normalizado)` : '') +
+        (sugerencias.length ? ` · ${sugerencias.length} sugerencias por revisar` : '') +
+        (noMatch.length ? ` · ${noMatch.length} sin match` : ''),
+      errors: noMatch.length,
+      errorList: noMatch.slice(0, 20),
+      sugerencias, // si hay, ImportarPage abre el modal de revisión
     };
+  }
+
+  // ── Aplicar sugerencias aprobadas manualmente (segunda pasada) ──
+  async function aplicarSugerenciasGantt(aprobadas) {
+    if (!aprobadas?.length) return 0;
+    const now = new Date().toISOString();
+    let n = 0;
+    setProgress({ phase:`Aplicando ${aprobadas.length} sugerencias…`, current:0, total: aprobadas.length });
+    for (let i = 0; i < aprobadas.length; i++) {
+      const s = aprobadas[i];
+      try {
+        const p = await window.__db.partidas.get(s.candidatoId);
+        if (!p || p.deleted_at) continue;
+        const t = s.tarea;
+        await window.__db.partidas.update(p.id, {
+          fecha_inicio_planificada: t.fecha_inicio,
+          fecha_fin_planificada:    t.fecha_fin,
+          duracion_dias: t.duracion_dias,
+          predecesoras: t.predecesoras,
+          ...(t.porcentaje_avance > 0 && p.estado === 'pendiente' ? { estado: 'en_ejecucion' } : {}),
+          updated_at: now, updated_by: userId,
+          version: (p.version ?? 0) + 1,
+          sync_status: p.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+        });
+        n++;
+      } catch (e) { console.warn('[aplicar sugerencia gantt]', e); }
+      if (i % 25 === 0) {
+        setProgress({ phase:`Aplicando sugerencias…`, current: i+1, total: aprobadas.length });
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+    return n;
   }
 
   // ── Dispatcher de import según tipo ──────────────────────────
@@ -1060,6 +1168,11 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       }
 
       setResult(res);
+      // Si el import de Gantt devolvió sugerencias por fuzzy match,
+      // abrir el modal de revisión para que el usuario las apruebe.
+      if (parsed.tipo === 'gantt' && Array.isArray(res?.sugerencias) && res.sugerencias.length) {
+        setGantSugerencias(res.sugerencias.map(s => ({ ...s, aprobada: s.score >= 0.7 })));
+      }
 
       const entry = {
         fecha: fmtDate(),
@@ -1885,6 +1998,108 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                     : `Aplicar cronograma a ${parsed.summary.total} tareas`
                   }</>}
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* ───────── MODAL Revisar Sugerencias (Gantt fuzzy) ───────── */}
+      {gantSugerencias && gantSugerencias.length > 0 && (
+        <div className="overlay" onClick={e => e.target === e.currentTarget && setGantSugerencias(null)}
+             style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.65)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+          <div className="card" style={{ background:'var(--bg-s)', maxWidth:920, width:'100%', maxHeight:'88vh', display:'flex', flexDirection:'column', borderRadius:10 }}>
+            <div style={{ padding:'16px 20px', borderBottom:'1px solid var(--border)' }}>
+              <div style={{ fontSize:16, fontWeight:700, color:'var(--tp)' }}>
+                Revisar sugerencias del cronograma
+              </div>
+              <div style={{ fontSize:12, color:'var(--tm)', marginTop:4 }}>
+                Hay <strong>{gantSugerencias.length}</strong> tareas del Gantt sin match exacto, pero con candidatos por <em>similitud de descripción</em>.
+                Marcá las que querés aplicar y dale a "Aplicar aprobadas". Las que dejes sin marcar quedan como "sin aplicar".
+              </div>
+            </div>
+            <div style={{ padding:'10px 20px', borderBottom:'1px solid var(--border)', display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+              <button className="btn btn-ghost btn-sm" onClick={() => setGantSugerencias(prev => prev.map(s => ({ ...s, aprobada: true })))}>
+                <JxIcon name="check" size={12}/> Aprobar todas
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setGantSugerencias(prev => prev.map(s => ({ ...s, aprobada: false })))}>
+                <JxIcon name="x" size={12}/> Rechazar todas
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setGantSugerencias(prev => prev.map(s => ({ ...s, aprobada: s.score >= 0.7 })))}
+                title="Solo las que tienen ≥70% de palabras compartidas">
+                <JxIcon name="filter" size={12}/> Solo alta similitud (≥70%)
+              </button>
+              <div style={{ marginLeft:'auto', fontSize:11.5, color:'var(--tm)' }}>
+                <strong style={{ color:'var(--green)' }}>{gantSugerencias.filter(s=>s.aprobada).length}</strong> aprobadas · {gantSugerencias.length - gantSugerencias.filter(s=>s.aprobada).length} rechazadas
+              </div>
+            </div>
+            <div style={{ flex:1, overflowY:'auto', padding:'4px 0' }}>
+              <table className="tbl" style={{ fontSize:11.5 }}>
+                <thead>
+                  <tr>
+                    <th style={{ width:50, textAlign:'center' }}>✓</th>
+                    <th style={{ width:90 }}>Score</th>
+                    <th>Tarea del Gantt</th>
+                    <th>Candidato en Partidas</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {gantSugerencias
+                    .slice() // copy
+                    .sort((a,b) => b.score - a.score)
+                    .map((s, idx) => {
+                    const scoreColor = s.score >= 0.7 ? 'var(--green)' : s.score >= 0.5 ? 'var(--amber)' : 'var(--red)';
+                    return (
+                      <tr key={idx} style={{ background: s.aprobada ? 'rgba(46,204,113,0.05)' : 'transparent' }}>
+                        <td style={{ textAlign:'center' }}>
+                          <input type="checkbox" checked={!!s.aprobada} onChange={e => {
+                            setGantSugerencias(prev => prev.map((x,i) => x === s ? { ...x, aprobada: e.target.checked } : x));
+                          }}/>
+                        </td>
+                        <td>
+                          <span style={{ fontWeight:700, color: scoreColor }}>{Math.round(s.score * 100)}%</span>
+                        </td>
+                        <td>
+                          <div style={{ fontFamily:'monospace', fontSize:10.5, color:'var(--tm)' }}>{s.tareaCodigo}</div>
+                          <div style={{ color:'var(--tp)' }}>{s.tareaDescripcion}</div>
+                        </td>
+                        <td>
+                          <div style={{ fontFamily:'monospace', fontSize:10.5, color:'var(--tm)' }}>{s.candidatoCodigo}</div>
+                          <div style={{ color:'var(--tp)' }}>{s.candidatoDescripcion}</div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ padding:'14px 20px', borderTop:'1px solid var(--border)', display:'flex', gap:8, justifyContent:'flex-end' }}>
+              <button className="btn btn-ghost" onClick={() => setGantSugerencias(null)}>Cancelar (no aplicar)</button>
+              <button className="btn btn-amber" onClick={async () => {
+                const aprobadas = gantSugerencias.filter(s => s.aprobada);
+                if (!aprobadas.length) {
+                  showToast('No marcaste ninguna sugerencia para aplicar', 'amber');
+                  return;
+                }
+                setImp(true);
+                try {
+                  const aplicadas = await aplicarSugerenciasGantt(aprobadas);
+                  showToast(`${aplicadas} sugerencias aplicadas al cronograma`, 'green');
+                  setResult(prev => prev ? {
+                    ...prev,
+                    ok: (prev.ok || 0) + aplicadas,
+                    detalle: `${(prev.ok||0) + aplicadas} partidas con fechas (${prev.ok||0} auto + ${aplicadas} aprobadas)`,
+                  } : null);
+                  try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'partidas' } })); } catch {}
+                  try { window.dispatchEvent(new Event('online')); } catch {}
+                } catch (e) {
+                  showToast('Error aplicando sugerencias: ' + (e.message||e), 'red');
+                } finally {
+                  setImp(false);
+                  setGantSugerencias(null);
+                }
+              }}>
+                <JxIcon name="check" size={13}/> Aplicar aprobadas ({gantSugerencias.filter(s=>s.aprobada).length})
+              </button>
+            </div>
           </div>
         </div>
       )}
