@@ -303,6 +303,12 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
   const [page, setPage] = uSI(0);
   const PAGE_SIZE = 100;
 
+  // ── Preview (dry-run) del match para Gantt ──
+  // Antes de aplicar el cronograma, computamos cuántas tareas matchean
+  // por exacto / normalizado / fuzzy / sin match. Así el usuario sabe
+  // exactamente qué va a pasar.
+  const [gantPreview, setGantPreview] = uSI(null); // null|{computing, exactas, normalizadas, sugerencias[], noMatch[]}
+
   // Cargar partidas existentes y comparar al entrar a step 2 con tipo apu
   uEI(() => {
     let cancelled = false;
@@ -343,6 +349,64 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
         if (!cancelled) setCompareErr(e.message || 'Error al comparar partidas');
       } finally {
         if (!cancelled) setComparing(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [step, parsed, obraId]);
+
+  // ── Dry-run del match Gantt cuando se entra al preview ──
+  uEI(() => {
+    let cancelled = false;
+    if (step !== 2 || !parsed || parsed.tipo !== 'gantt' || !obraId) {
+      setGantPreview(null);
+      return;
+    }
+    setGantPreview({ computing: true, exactas: 0, normalizadas: 0, sugerencias: [], noMatch: [] });
+    (async () => {
+      try {
+        const all = await window.__db.partidas.where('obra_id').equals(obraId).toArray();
+        const vivas = all.filter(p => !p.deleted_at);
+        if (!vivas.length) {
+          if (!cancelled) setGantPreview({
+            computing: false, error: 'No hay partidas en esta obra. Importa primero el APU.',
+            exactas: 0, normalizadas: 0, sugerencias: [], noMatch: [],
+          });
+          return;
+        }
+        const porCodigo = new Map(vivas.map(p => [p.codigo_delfin, p]));
+        const porCodigoNorm = new Map(vivas.map(p => [normalizeCodigo(p.codigo_delfin), p]));
+        let exactas = 0, normalizadas = 0;
+        const sugerencias = [];
+        const noMatch = [];
+        for (const t of parsed.data) {
+          if (porCodigo.has(t.codigo)) { exactas++; continue; }
+          const n = normalizeCodigo(t.codigo);
+          if (porCodigoNorm.has(n)) { normalizadas++; continue; }
+          // Fuzzy
+          let top = null;
+          for (const cand of vivas) {
+            const s = fuzzyScore(t.descripcion, cand.nombre_partida);
+            if (s >= 0.5 && (!top || s > top.score)) top = { cand, score: s };
+          }
+          if (top) {
+            sugerencias.push({
+              tareaCodigo: t.codigo, tareaDescripcion: t.descripcion,
+              candidatoCodigo: top.cand.codigo_delfin,
+              candidatoDescripcion: top.cand.nombre_partida,
+              score: top.score,
+            });
+          } else {
+            noMatch.push({ tareaCodigo: t.codigo, tareaDescripcion: t.descripcion });
+          }
+        }
+        if (!cancelled) setGantPreview({
+          computing: false, exactas, normalizadas, sugerencias, noMatch,
+        });
+      } catch (e) {
+        if (!cancelled) setGantPreview({
+          computing: false, error: e.message || 'Error analizando match',
+          exactas: 0, normalizadas: 0, sugerencias: [], noMatch: [],
+        });
       }
     })();
     return () => { cancelled = true; };
@@ -1620,20 +1684,24 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                     <button
                       className="btn btn-amber btn-sm"
                       onClick={()=>{
-                        // Aplicar automático: importar nuevas + reemplazar TODAS las
-                        // duplicadas (iguales y distintas). Útil cuando el usuario
-                        // confía en que el archivo nuevo es la fuente de verdad.
+                        // Aplicar automático SEGURO: importar las nuevas + reemplazar
+                        // solo las DISTINTAS (las iguales se SALTAN para no perder
+                        // insumos que pudieran haberse agregado manualmente).
                         bulkAction(c => c.status === 'nueva', 'importar');
-                        bulkAction(c => c.status === 'duplicada_igual' || c.status === 'duplicada_distinta', 'reemplazar');
+                        bulkAction(c => c.status === 'duplicada_distinta', 'reemplazar');
+                        bulkAction(c => c.status === 'duplicada_igual', 'saltar');
                       }}
-                      title="Importar nuevas + reemplazar TODAS las duplicadas con el archivo subido"
+                      title="Importar nuevas + reemplazar solo las que tengan datos distintos. Las iguales se saltan (no se tocan sus insumos)."
                     >
-                      <JxIcon name="check" size={12}/> Aplicar todo automáticamente ({kpis.nuevas + kpis.iguales + kpis.distintas})
+                      <JxIcon name="check" size={12}/> Aplicar automáticamente (seguro)
                     </button>
                     <button
                       className="btn btn-ghost btn-sm"
-                      onClick={()=>bulkAction(c => c.status === 'duplicada_igual' || c.status === 'duplicada_distinta', 'reemplazar')}
-                      title="Reemplazar TODAS las duplicadas (iguales y distintas) con los datos del archivo"
+                      onClick={()=>{
+                        if (!confirm(`¿Reemplazar las ${kpis.iguales + kpis.distintas} duplicadas?\n\nATENCIÓN: esto BORRA los insumos viejos de cada partida y los reemplaza con los del archivo. Si tenías insumos agregados manualmente, se pierden.\n\nSi querés conservar las iguales tal cual, usá "Aplicar automáticamente (seguro)".`)) return;
+                        bulkAction(c => c.status === 'duplicada_igual' || c.status === 'duplicada_distinta', 'reemplazar');
+                      }}
+                      title="⚠ Reemplaza TODAS las duplicadas (iguales + distintas). Sobrescribe insumos."
                     >
                       <JxIcon name="refresh" size={12}/> Reemplazar todas las duplicadas ({kpis.iguales + kpis.distintas})
                     </button>
@@ -1851,6 +1919,83 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                   <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:6, textTransform:'uppercase' }}>Fin</div>
                 </div>
               </div>
+
+              {/* ── Análisis de match (dry-run) ── */}
+              {gantPreview && (
+                <div className="card card-p" style={{ marginBottom:14, background: gantPreview.error ? 'rgba(231,76,60,0.06)' : 'rgba(46,204,113,0.04)', border: gantPreview.error ? '1px solid rgba(231,76,60,0.3)' : '1px solid rgba(46,204,113,0.2)' }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:'var(--tp)', marginBottom:10 }}>
+                    🔍 Análisis de match contra partidas existentes
+                  </div>
+                  {gantPreview.computing && <div style={{ fontSize:12, color:'var(--tm)' }}>Analizando…</div>}
+                  {gantPreview.error && <div style={{ fontSize:12, color:'var(--red)' }}>⚠ {gantPreview.error}</div>}
+                  {!gantPreview.computing && !gantPreview.error && (
+                    <>
+                      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:10 }}>
+                        <div style={{ textAlign:'center', padding:8, background:'rgba(46,204,113,0.12)', borderRadius:6, border:'1px solid rgba(46,204,113,0.3)' }}>
+                          <div style={{ fontSize:20, fontWeight:800, color:'var(--green)' }}>{gantPreview.exactas}</div>
+                          <div style={{ fontSize:10, color:'var(--tm)', textTransform:'uppercase' }}>Match exacto</div>
+                        </div>
+                        <div style={{ textAlign:'center', padding:8, background:'rgba(52,152,219,0.12)', borderRadius:6, border:'1px solid rgba(52,152,219,0.3)' }}>
+                          <div style={{ fontSize:20, fontWeight:800, color:'var(--blue)' }}>{gantPreview.normalizadas}</div>
+                          <div style={{ fontSize:10, color:'var(--tm)', textTransform:'uppercase' }}>Match normalizado<br/>(01.01 ↔ 1.01)</div>
+                        </div>
+                        <div style={{ textAlign:'center', padding:8, background:'rgba(242,183,5,0.12)', borderRadius:6, border:'1px solid rgba(242,183,5,0.3)' }}>
+                          <div style={{ fontSize:20, fontWeight:800, color:'var(--amber)' }}>{gantPreview.sugerencias.length}</div>
+                          <div style={{ fontSize:10, color:'var(--tm)', textTransform:'uppercase' }}>Sugerencias<br/>(por descripción)</div>
+                        </div>
+                        <div style={{ textAlign:'center', padding:8, background:'rgba(231,76,60,0.10)', borderRadius:6, border:'1px solid rgba(231,76,60,0.3)' }}>
+                          <div style={{ fontSize:20, fontWeight:800, color:'var(--red)' }}>{gantPreview.noMatch.length}</div>
+                          <div style={{ fontSize:10, color:'var(--tm)', textTransform:'uppercase' }}>Sin match</div>
+                        </div>
+                      </div>
+                      <div style={{ fontSize:11.5, color:'var(--tm)', lineHeight:1.6 }}>
+                        Al importar: las <strong style={{ color:'var(--green)' }}>{gantPreview.exactas + gantPreview.normalizadas}</strong> con match se aplicarán automáticamente.
+                        {gantPreview.sugerencias.length > 0 && <> Las <strong style={{ color:'var(--amber)' }}>{gantPreview.sugerencias.length} sugerencias</strong> se mostrarán en un modal para que las apruebes una por una.</>}
+                        {gantPreview.noMatch.length > 0 && <> Las <strong style={{ color:'var(--red)' }}>{gantPreview.noMatch.length} sin match</strong> se reportarán como no encontradas.</>}
+                      </div>
+                      {gantPreview.sugerencias.length > 0 && (
+                        <details style={{ marginTop:10 }}>
+                          <summary style={{ fontSize:11.5, color:'var(--amber)', cursor:'pointer', fontWeight:600 }}>
+                            Ver las {gantPreview.sugerencias.length} sugerencias antes de importar ▾
+                          </summary>
+                          <div style={{ maxHeight:240, overflowY:'auto', marginTop:8, border:'1px solid var(--border)', borderRadius:6 }}>
+                            <table className="tbl" style={{ fontSize:11 }}>
+                              <thead><tr><th style={{ width:60 }}>Score</th><th>Tarea Gantt</th><th>Candidato partida</th></tr></thead>
+                              <tbody>
+                                {gantPreview.sugerencias.slice().sort((a,b)=>b.score-a.score).slice(0, 50).map((s, i) => {
+                                  const c = s.score >= 0.7 ? 'var(--green)' : s.score >= 0.5 ? 'var(--amber)' : 'var(--red)';
+                                  return (
+                                    <tr key={i}>
+                                      <td><strong style={{ color:c }}>{Math.round(s.score*100)}%</strong></td>
+                                      <td><div style={{ fontFamily:'monospace', fontSize:10, color:'var(--tm)' }}>{s.tareaCodigo}</div><div>{s.tareaDescripcion}</div></td>
+                                      <td><div style={{ fontFamily:'monospace', fontSize:10, color:'var(--tm)' }}>{s.candidatoCodigo}</div><div>{s.candidatoDescripcion}</div></td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </details>
+                      )}
+                      {gantPreview.noMatch.length > 0 && (
+                        <details style={{ marginTop:8 }}>
+                          <summary style={{ fontSize:11.5, color:'var(--red)', cursor:'pointer', fontWeight:600 }}>
+                            Ver las {gantPreview.noMatch.length} sin match ▾
+                          </summary>
+                          <div style={{ maxHeight:200, overflowY:'auto', marginTop:8, fontSize:11, padding:'4px 10px', background:'rgba(0,0,0,0.15)', borderRadius:6 }}>
+                            {gantPreview.noMatch.slice(0, 100).map((t, i) => (
+                              <div key={i} style={{ padding:'2px 0', borderBottom:'1px solid var(--border)' }}>
+                                <span style={{ fontFamily:'monospace', color:'var(--tm)' }}>{t.tareaCodigo}</span> · {t.tareaDescripcion}
+                              </div>
+                            ))}
+                            {gantPreview.noMatch.length > 100 && <div style={{ color:'var(--tm)', marginTop:4 }}>… y {gantPreview.noMatch.length - 100} más</div>}
+                          </div>
+                        </details>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
               <div className="card" style={{ overflow:'hidden', marginBottom:14 }}>
                 <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', fontSize:11.5, fontWeight:600, color:'var(--tm)' }}>
                   <JxIcon name="eye" size={13}/> Primeras 12 tareas del cronograma

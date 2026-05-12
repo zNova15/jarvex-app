@@ -1573,9 +1573,37 @@ function CronogramaPage() {
   const [q, setQ] = uSO('');
   const [soloActivas, setSoloActivas] = uSO(false);
   const [soloAtrasadas, setSoloAtrasadas] = uSO(false);
+  // Filtro nivel: específicas = nodos hoja (sin sub-partidas), no específicas
+  // = capítulos/sub-capítulos (1, 1.01, 1.01.01…) que agrupan a otras.
+  const [tipoFilter, setTipoFilter] = uSO('todas'); // 'todas' | 'especificas' | 'no_especificas'
+  // Modo de ordenamiento del listado
+  const [sortMode, setSortMode] = uSO('codigo_especificas_al_final');
+  // 'codigo' = orden jerárquico puro
+  // 'codigo_especificas_al_final' = no específicas primero, luego específicas
+  // 'fecha_inicio' = orden por fecha
   const [scrollTop, setScrollTop] = uSO(0);
   const [viewportH, setViewportH] = uSO(560);
   const scrollRef = React.useRef(null);
+
+  // Set de todos los códigos vivos → para detectar hojas (específicas)
+  const codigosLive = uMO(() => {
+    const s = new Set();
+    (partidasRaw || []).forEach(p => { if (!p.deleted_at && p.codigo_delfin) s.add(p.codigo_delfin); });
+    return s;
+  }, [partidasRaw]);
+
+  // Una partida es "específica" (hoja) si NINGUNA otra partida la tiene como
+  // prefijo en su código jerárquico. P.ej. '1.01.01.01.01.02' es específica
+  // si no existe '1.01.01.01.01.02.X'. '1.01' es NO específica si existe
+  // '1.01.01' o '1.01.02', etc.
+  const esEspecifica = (codigo) => {
+    if (!codigo) return true;
+    const prefix = codigo + '.';
+    for (const c of codigosLive) {
+      if (c !== codigo && c.startsWith(prefix)) return false;
+    }
+    return true;
+  };
 
   const todayMs = uMO(() => startOfDay(Date.now()), []);
 
@@ -1723,11 +1751,11 @@ function CronogramaPage() {
     return acc;
   };
 
-  // Filtros
+  // Filtros + orden
   const filtered = uMO(() => {
     if (!partidasConFechas.length) return [];
     const tokens = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    return partidasConFechas.filter(p => {
+    const f = partidasConFechas.filter(p => {
       const cod = String(p.codigo_delfin || '').toLowerCase();
       const nom = String(p.nombre_partida || '').toLowerCase();
       const hay = (cod + ' ' + nom);
@@ -1737,9 +1765,36 @@ function CronogramaPage() {
       const fin = parseDate(p.fecha_fin_planificada);
       if (soloActivas && av >= 100) return false;
       if (soloAtrasadas && !(fin < todayMs && av < 80)) return false;
+      // Filtro específicas / no específicas
+      if (tipoFilter === 'especificas' && !esEspecifica(p.codigo_delfin)) return false;
+      if (tipoFilter === 'no_especificas' && esEspecifica(p.codigo_delfin)) return false;
       return true;
     });
-  }, [partidasConFechas, q, soloActivas, soloAtrasadas, todayMs]);
+    // Ordenamiento
+    if (sortMode === 'fecha_inicio') {
+      f.sort((a, b) => parseDate(a.fecha_inicio_planificada) - parseDate(b.fecha_inicio_planificada));
+    } else if (sortMode === 'codigo_especificas_al_final') {
+      f.sort((a, b) => {
+        const ea = esEspecifica(a.codigo_delfin) ? 1 : 0;
+        const eb = esEspecifica(b.codigo_delfin) ? 1 : 0;
+        if (ea !== eb) return ea - eb; // no-específicas (0) primero, específicas (1) al final
+        return String(a.codigo_delfin || '').localeCompare(String(b.codigo_delfin || ''), 'es', { numeric: true });
+      });
+    } else {
+      // 'codigo' jerárquico puro
+      f.sort((a, b) => String(a.codigo_delfin || '').localeCompare(String(b.codigo_delfin || ''), 'es', { numeric: true }));
+    }
+    return f;
+  }, [partidasConFechas, q, soloActivas, soloAtrasadas, todayMs, tipoFilter, sortMode, codigosLive]);
+
+  // KPIs de tipo
+  const tipoKpis = uMO(() => {
+    let esp = 0, noEsp = 0;
+    for (const p of partidasConFechas) {
+      if (esEspecifica(p.codigo_delfin)) esp++; else noEsp++;
+    }
+    return { especificas: esp, noEspecificas: noEsp };
+  }, [partidasConFechas, codigosLive]);
 
   // Estadísticas
   const stats = uMO(() => {
@@ -1835,10 +1890,40 @@ function CronogramaPage() {
 
       {/* Filtros */}
       <div className="card card-p" style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'center',padding:'10px 14px'}}>
-        <div className="search-bar" style={{flex:'1 1 280px'}}>
+        <div className="search-bar" style={{flex:'1 1 240px'}}>
           <JxIcon name="search" size={14} color="var(--tm)"/>
           <input placeholder="Buscar por código o nombre…" value={q} onChange={e=>setQ(e.target.value)}/>
         </div>
+        {/* Tipo de partida: específicas (hojas) vs no específicas (capítulos) */}
+        <div style={{display:'flex',gap:4,background:'rgba(0,0,0,0.2)',padding:3,borderRadius:6}}>
+          <button
+            className={'btn btn-xs ' + (tipoFilter === 'todas' ? 'btn-amber' : 'btn-ghost')}
+            onClick={() => setTipoFilter('todas')}
+            title="Mostrar todas las partidas"
+          >
+            Todas ({tipoKpis.especificas + tipoKpis.noEspecificas})
+          </button>
+          <button
+            className={'btn btn-xs ' + (tipoFilter === 'no_especificas' ? 'btn-amber' : 'btn-ghost')}
+            onClick={() => setTipoFilter('no_especificas')}
+            title="Solo capítulos / sub-capítulos (1, 1.01, 1.01.01…)"
+          >
+            📁 Capítulos ({tipoKpis.noEspecificas})
+          </button>
+          <button
+            className={'btn btn-xs ' + (tipoFilter === 'especificas' ? 'btn-amber' : 'btn-ghost')}
+            onClick={() => setTipoFilter('especificas')}
+            title="Solo partidas específicas (hojas — el trabajo real)"
+          >
+            🎯 Específicas ({tipoKpis.especificas})
+          </button>
+        </div>
+        {/* Ordenamiento */}
+        <select className="fi" value={sortMode} onChange={e => setSortMode(e.target.value)} style={{ fontSize:11.5, minWidth:200 }}>
+          <option value="codigo_especificas_al_final">Capítulos primero, específicas al final</option>
+          <option value="codigo">Orden por código (jerárquico)</option>
+          <option value="fecha_inicio">Orden por fecha de inicio</option>
+        </select>
         <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'var(--ts)',cursor:'pointer'}}>
           <input type="checkbox" checked={soloActivas} onChange={e=>setSoloActivas(e.target.checked)}/>
           Solo activas
@@ -1899,8 +1984,12 @@ function CronogramaPage() {
                     background: idx % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.015)',
                     fontSize:11.5,color:'var(--ts)',whiteSpace:'nowrap',overflow:'hidden',
                   }}>
-                    <span style={{fontSize:9.5,color:'var(--tm)',fontWeight:700,flexShrink:0,fontFamily:'ui-monospace,monospace'}}>{p.codigo_delfin || ''}</span>
-                    <span style={{overflow:'hidden',textOverflow:'ellipsis'}}>{p.nombre_partida}</span>
+                    <span title={esEspecifica(p.codigo_delfin) ? 'Partida específica (hoja)' : 'Capítulo / sub-capítulo'}
+                          style={{ fontSize:11, flexShrink:0, opacity:0.8 }}>
+                      {esEspecifica(p.codigo_delfin) ? '🎯' : '📁'}
+                    </span>
+                    <span style={{fontSize:9.5,color: esEspecifica(p.codigo_delfin) ? 'var(--tm)' : 'var(--amber)',fontWeight:700,flexShrink:0,fontFamily:'ui-monospace,monospace'}}>{p.codigo_delfin || ''}</span>
+                    <span style={{overflow:'hidden',textOverflow:'ellipsis', fontWeight: esEspecifica(p.codigo_delfin) ? 400 : 600}}>{p.nombre_partida}</span>
                   </div>
                 );
               })}
