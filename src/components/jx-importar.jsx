@@ -1505,6 +1505,26 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                   {/* Bulk actions */}
                   <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:10 }}>
                     <button
+                      className="btn btn-amber btn-sm"
+                      onClick={()=>{
+                        // Aplicar automático: importar nuevas + reemplazar TODAS las
+                        // duplicadas (iguales y distintas). Útil cuando el usuario
+                        // confía en que el archivo nuevo es la fuente de verdad.
+                        bulkAction(c => c.status === 'nueva', 'importar');
+                        bulkAction(c => c.status === 'duplicada_igual' || c.status === 'duplicada_distinta', 'reemplazar');
+                      }}
+                      title="Importar nuevas + reemplazar TODAS las duplicadas con el archivo subido"
+                    >
+                      <JxIcon name="check" size={12}/> Aplicar todo automáticamente ({kpis.nuevas + kpis.iguales + kpis.distintas})
+                    </button>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={()=>bulkAction(c => c.status === 'duplicada_igual' || c.status === 'duplicada_distinta', 'reemplazar')}
+                      title="Reemplazar TODAS las duplicadas (iguales y distintas) con los datos del archivo"
+                    >
+                      <JxIcon name="refresh" size={12}/> Reemplazar todas las duplicadas ({kpis.iguales + kpis.distintas})
+                    </button>
+                    <button
                       className="btn btn-ghost btn-sm"
                       onClick={()=>bulkAction(c => c.status === 'nueva', 'importar')}
                       title="Marcar todas las partidas nuevas como Importar"

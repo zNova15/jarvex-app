@@ -999,9 +999,72 @@ function PartidasPage({ showToast }) {
   const obraId = useObraActiva();
   const { data: partidas, loading, create: createPartida, update: updatePartida } = window.__hooks.usePartidas(obraId);
   const auth = window.__useAuth ? window.__useAuth() : null;
+  const userId = auth?.profile?.id ?? 'offline';
   const myRol = auth?.profile?.rol;
   const isAdmin = myRol === 'admin';
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Partidas', 'w') ?? false);
+  const [borrandoTodo, setBorrandoTodo] = uSO(false);
+
+  // Eliminar TODAS las partidas (e insumos asociados) de la obra activa.
+  // Usa soft delete: deleted_at + sync_status='pending_delete' para que el
+  // SyncEngine propague al server. Útil cuando el usuario importó un APU
+  // mal armado y quiere empezar de cero.
+  const eliminarTodasPartidas = async () => {
+    if (!canWrite) return;
+    if (!obraId) return;
+    const total = (partidas || []).filter(p => !p.deleted_at).length;
+    if (total === 0) {
+      showToast?.('No hay partidas para eliminar', 'amber');
+      return;
+    }
+    const c1 = confirm(`¿Eliminar TODAS las ${total} partidas de esta obra?\n\nEsto también elimina los insumos del APU asociados.\nLos avances de obra y cronograma quedan huérfanos (referencian partidas eliminadas).\n\nUsalo solo si querés re-importar el APU completo desde Delphin.`);
+    if (!c1) return;
+    const c2 = prompt(`Para confirmar, escribí: ELIMINAR ${total}`);
+    if (c2 !== `ELIMINAR ${total}`) {
+      showToast?.('Confirmación incorrecta. Operación cancelada.', 'amber');
+      return;
+    }
+    setBorrandoTodo(true);
+    const now = new Date().toISOString();
+    try {
+      const partidasObra = (partidas || []).filter(p => !p.deleted_at);
+      let count = 0;
+      for (const p of partidasObra) {
+        // Soft-delete partida
+        await window.__db.partidas.update(p.id, {
+          deleted_at: now,
+          updated_at: now,
+          updated_by: userId,
+          version: (p.version ?? 0) + 1,
+          sync_status: p.sync_status === 'pending_create' ? 'pending_delete' : 'pending_delete',
+        });
+        // Soft-delete insumos del APU de esa partida
+        const insumos = await window.__db.insumos_partida.where('partida_id').equals(p.id).toArray();
+        for (const i of insumos) {
+          if (i.deleted_at) continue;
+          await window.__db.insumos_partida.update(i.id, {
+            deleted_at: now,
+            updated_at: now,
+            version: (i.version ?? 0) + 1,
+            sync_status: i.sync_status === 'pending_create' ? 'pending_delete' : 'pending_delete',
+          });
+        }
+        count++;
+      }
+      try { window.__logAudit?.({
+        action: 'delete', table: 'partidas', recordId: null,
+        oldData: { total: count }, reason: `Eliminación masiva de ${count} partidas (obra ${obraId})`,
+      }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'partidas' } })); } catch {}
+      try { window.dispatchEvent(new Event('online')); } catch {}
+      showToast?.(`${count} partidas eliminadas`, 'green');
+    } catch (e) {
+      console.error('[partidas eliminar todas]', e);
+      showToast?.(`Error: ${e.message || e}`, 'red');
+    } finally {
+      setBorrandoTodo(false);
+    }
+  };
   const [q, setQ] = uSO('');
   const [modal, setModal] = uSO(null);
   const [form, setForm] = uSO({});
@@ -1195,11 +1258,23 @@ function PartidasPage({ showToast }) {
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div><div className="pg-title">Partidas de Obra</div><div className="pg-sub">{partidas.length} partidas · {fmtSk(totalReal)} ejecutado de {fmtSk(totalPres)}</div></div>
-        {canWrite ? (
-          <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setEditingId(null); setModal('nueva');}}><JxIcon name="plus" size={13}/>Nueva Partida</button>
-        ) : (
-          <span className="badge b-gray" title="Tu rol es solo lectura para Partidas">Solo lectura</span>
-        )}
+        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+          {canWrite && partidas.length > 0 && (
+            <button
+              className="btn btn-red btn-sm"
+              onClick={eliminarTodasPartidas}
+              disabled={borrandoTodo}
+              title="Soft-delete de todas las partidas e insumos del APU de esta obra"
+            >
+              <JxIcon name="trash" size={13}/>{borrandoTodo ? 'Eliminando…' : `Eliminar todas (${partidas.length})`}
+            </button>
+          )}
+          {canWrite ? (
+            <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setEditingId(null); setModal('nueva');}}><JxIcon name="plus" size={13}/>Nueva Partida</button>
+          ) : (
+            <span className="badge b-gray" title="Tu rol es solo lectura para Partidas">Solo lectura</span>
+          )}
+        </div>
       </div>
 
       <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:18}}>
