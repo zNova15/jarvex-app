@@ -25,6 +25,30 @@ const CATS = {
   'SUBPARTIDA':   'subpartida',
 };
 
+// Detector flexible de categorías. Antes solo matcheaba el texto EXACTO
+// de CATS. Pero algunos exports de Delphin/S10 traen variantes:
+// "MATERIAL" (singular), "EQUIPOS" (plural), "EQUIPO DE TRABAJO", etc.
+// Si no detecta la categoría, ningún insumo de esa partida entra al
+// import — la partida queda como "sin insumos cargados".
+function detectarCategoria(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const t = raw.trim().toUpperCase();
+  if (!t) return null;
+  // Match exacto primero
+  if (CATS[t]) return CATS[t];
+  // Mano de obra: "MANO DE OBRA", "M.O.", "MANO OBRA"
+  if (/^(MANO\s*(DE\s*)?OBRA|M\.?O\.?)$/i.test(t)) return 'mano_obra';
+  // Materiales: "MATERIAL", "MATERIALES"
+  if (/^MATERIAL(ES)?$/i.test(t)) return 'material';
+  // Equipos: "EQUIPO", "EQUIPOS", "EQUIPO DE TRABAJO", "EQUIPOS Y HERRAMIENTAS"
+  if (/^EQUIPOS?(\s+.*)?$/i.test(t)) return 'equipo';
+  // Subcontrato(s)
+  if (/^SUBCONTRATOS?$/i.test(t)) return 'subcontrato';
+  // Subpartida(s)
+  if (/^SUBPARTIDAS?$/i.test(t)) return 'subpartida';
+  return null;
+}
+
 // Helper: detecta los índices de columnas de un header de tabla APU.
 // El header tiene "Código", "Descripción", "Unid.", "Cantidad", "Costo", "Total"
 // en posiciones que pueden variar entre exports de S10 (a veces hay columnas
@@ -134,10 +158,13 @@ export function parseAPU(rows) {
       continue;
     }
 
-    // Categoría
-    if (typeof c1 === 'string' && CATS[c1.trim()]) {
-      categoriaActual = CATS[c1.trim()];
-      continue;
+    // Categoría — flexible: acepta variantes ("MATERIAL", "EQUIPOS", etc.)
+    {
+      const catC1 = typeof c1 === 'string' ? detectarCategoria(c1) : null;
+      if (catC1) { categoriaActual = catC1; continue; }
+      // A veces el header de categoría está en col 0 en exports nuevos
+      const catC0 = typeof c0 === 'string' ? detectarCategoria(c0) : null;
+      if (catC0) { categoriaActual = catC0; continue; }
     }
 
     // Línea final "TOTAL:"  (puede estar en col costo-1 o costo)
@@ -159,20 +186,32 @@ export function parseAPU(rows) {
       continue;
     }
 
-    // Insumo: hay código (o categoría sin código pero con descripción y cantidad)
-    if (categoriaActual && r[cols.descripcion] && r[cols.unidad] && r[cols.cantidad] != null) {
+    // Insumo: condiciones más permisivas que antes.
+    //   - Antes requería unidad NO vacía → algunos S10 dejan la celda en
+    //     blanco y la partida acababa sin insumos. Ahora aceptamos sin
+    //     unidad (default 'und').
+    //   - Antes requería cantidad != null → ahora aceptamos sin cantidad
+    //     (default 0) si descripcion+precio están presentes.
+    if (categoriaActual && r[cols.descripcion]) {
+      const desc = String(r[cols.descripcion]).trim();
+      if (!desc) continue;
+      // Filtrar la fila de "MANO DE OBRA" / "MATERIALES" / variantes que
+      // ya pasaron como categoria (no son insumos)
+      if (detectarCategoria(desc)) continue;
       const codigo = r[cols.codigo] != null && r[cols.codigo] !== ''
         ? String(r[cols.codigo]).trim() : '';
-      // Filtrar la fila de "MANO DE OBRA" / "MATERIALES" que ya pasó como categoria
-      if (!codigo && CATS[String(r[cols.descripcion]).trim()]) continue;
+      const cantidad = Number(r[cols.cantidad]) || 0;
+      const precio = Number(r[cols.costo]) || 0;
+      const total = Number(r[cols.total]) || 0;
+      // Aceptar el insumo si tiene al menos algún dato económico real
+      // (cantidad o precio o total). Las filas vacías intermedias se filtran.
+      if (cantidad === 0 && precio === 0 && total === 0) continue;
       current.insumos.push({
         codigo,
-        descripcion: String(r[cols.descripcion]).trim(),
+        descripcion: desc,
         categoria: categoriaActual,
-        unidad: String(r[cols.unidad]).trim(),
-        cantidad: Number(r[cols.cantidad]) || 0,
-        precio_unitario: Number(r[cols.costo]) || 0,
-        total: Number(r[cols.total]) || 0,
+        unidad: String(r[cols.unidad] ?? 'und').trim() || 'und',
+        cantidad, precio_unitario: precio, total,
       });
     }
   }

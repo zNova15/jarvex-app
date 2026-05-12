@@ -1030,24 +1030,43 @@ function PartidasPage({ showToast }) {
       const partidasObra = (partidas || []).filter(p => !p.deleted_at);
       let count = 0;
       for (const p of partidasObra) {
-        // Soft-delete partida
-        await window.__db.partidas.update(p.id, {
-          deleted_at: now,
-          updated_at: now,
-          updated_by: userId,
-          version: (p.version ?? 0) + 1,
-          sync_status: p.sync_status === 'pending_create' ? 'pending_delete' : 'pending_delete',
-        });
-        // Soft-delete insumos del APU de esa partida
         const insumos = await window.__db.insumos_partida.where('partida_id').equals(p.id).toArray();
-        for (const i of insumos) {
-          if (i.deleted_at) continue;
-          await window.__db.insumos_partida.update(i.id, {
-            deleted_at: now,
-            updated_at: now,
-            version: (i.version ?? 0) + 1,
-            sync_status: i.sync_status === 'pending_create' ? 'pending_delete' : 'pending_delete',
+        if (p.sync_status === 'pending_create') {
+          // Nunca llegó al server → hard-delete local + cascade hard-delete
+          // de los insumos pending_create. Esto evita basura en Dexie que
+          // después confunda a la re-importación.
+          await window.__db.partidas.delete(p.id);
+          for (const i of insumos) {
+            if (i.sync_status === 'pending_create' || i.deleted_at) {
+              await window.__db.insumos_partida.delete(i.id);
+            } else {
+              await window.__db.insumos_partida.update(i.id, {
+                deleted_at: now, updated_at: now,
+                version: (i.version ?? 0) + 1,
+                sync_status: 'pending_delete',
+              });
+            }
+          }
+        } else {
+          // Ya está en server → soft-delete para que el sync engine
+          // propague el DELETE.
+          await window.__db.partidas.update(p.id, {
+            deleted_at: now, updated_at: now, updated_by: userId,
+            version: (p.version ?? 0) + 1,
+            sync_status: 'pending_delete',
           });
+          for (const i of insumos) {
+            if (i.deleted_at) continue;
+            if (i.sync_status === 'pending_create') {
+              await window.__db.insumos_partida.delete(i.id);
+            } else {
+              await window.__db.insumos_partida.update(i.id, {
+                deleted_at: now, updated_at: now,
+                version: (i.version ?? 0) + 1,
+                sync_status: 'pending_delete',
+              });
+            }
+          }
         }
         count++;
       }
@@ -1416,9 +1435,14 @@ function PartidasPage({ showToast }) {
               {loadingInsumos ? (
                 <div style={{ padding:24, textAlign:'center', color:'var(--tm)', fontSize:12.5 }}>Cargando insumos…</div>
               ) : insumosDetalle.length === 0 ? (
-                <div style={{ padding:24, textAlign:'center', color:'var(--tm)', fontSize:12.5, background:'rgba(242,183,5,0.06)', borderRadius:8 }}>
-                  Esta partida no tiene insumos cargados.<br/>
-                  <span style={{ fontSize:11 }}>Reimporta el APU desde S10 para cargar el detalle.</span>
+                <div style={{ padding:20, textAlign:'left', color:'var(--ts)', fontSize:12.5, background:'rgba(242,183,5,0.06)', borderRadius:8, lineHeight:1.6 }}>
+                  <strong style={{ color:'var(--amber)' }}>Esta partida no tiene desglose de insumos.</strong><br/>
+                  Puede deberse a:
+                  <ul style={{ margin:'6px 0 0 18px', padding:0, fontSize:11.5 }}>
+                    <li><strong>Lump sum (suma alzada):</strong> el S10 la trae con costo total pero sin partida de materiales/mano de obra/equipos detallada. Es válido — el costo se reconoce contra el total presupuestado.</li>
+                    <li><strong>Capítulo / sub-capítulo:</strong> los nodos jerárquicos (1, 1.01) agrupan, no tienen insumos propios.</li>
+                    <li><strong>Parser no detectó la categoría:</strong> si el S10 usa headers tipo "EQUIPOS Y HERRAMIENTAS" muy distintos a los estándar. Re-importá el APU para reintentar con el detector flexible.</li>
+                  </ul>
                 </div>
               ) : (
                 <div className="card" style={{ overflow:'hidden' }}>
