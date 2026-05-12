@@ -404,11 +404,17 @@ export function detectS10Type(rows) {
     if (c0.startsWith('Partida:')) return 'apu';
   }
 
-  // 2) Header de Gantt: "Numeracion" en col 0 + "Inicio" o "Duracion" en otras
+  // 2) Header de Gantt: "Numeracion" en col 0 + algo tipo "Inicio" /
+  //    "Duracion" / "Fecha" en otras columnas. Usamos `some(c => c.includes(...))`
+  //    en vez de `r.includes(...)` exacto, porque los exports reales suelen
+  //    traer variantes tipo "Fecha Inicio", "Duración (días)", "Fecha fin".
   for (let i = 0; i < Math.min(10, rows.length); i++) {
     const r = (rows[i] || []).map(c => String(c ?? '').trim().toLowerCase());
     if (r[0] && (r[0] === 'numeracion' || r[0].startsWith('numer'))) {
-      if (r.includes('inicio') || r.includes('fin') || r.includes('duración') || r.includes('duracion')) {
+      const hasInicio   = r.some(c => c.includes('inicio'));
+      const hasFin      = r.some(c => c.includes('fin'));          // 'fecha fin', 'fin', etc
+      const hasDuracion = r.some(c => c.includes('duracion') || c.includes('duración'));
+      if (hasInicio || hasFin || hasDuracion) {
         return 'gantt';
       }
     }
