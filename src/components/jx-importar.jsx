@@ -1,5 +1,6 @@
 import React from "react";
 import { detectarEPP, esProbablementeEPP, epppTipo } from "../lib/epp-utils.js";
+import { normalizeCodigo, fuzzyScore } from "../lib/match-helpers.js";
 const { useState: uSI, useMemo: uMI, useEffect: uEI, useRef: uRI, useCallback: uCI } = React;
 
 // ── Obra activa helper (poll Dexie) ──────────────────────────
@@ -55,35 +56,8 @@ const NEEDS_OBRA = (m) => !['proveedores','subcontratistas','companies','activos
 const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const fmtDate = () => new Date().toLocaleString('es-PE');
 
-// Normaliza un código jerárquico: quita ceros de padding por segmento.
-//   '01.01.05'  → '1.1.5'
-//   '1.01'      → '1.1'
-//   '02.01.01.01.01' → '2.1.1.1.1'
-// Útil para matchear códigos del Gantt contra partidas existentes
-// cuando uno trae padding y el otro no (problema reportado al
-// importar Gantt: ~500 partidas "no encontradas" por este motivo).
-function normalizeCodigo(codigo) {
-  if (!codigo) return '';
-  return String(codigo).trim().split('.').map(seg => {
-    const n = parseInt(seg, 10);
-    return Number.isNaN(n) ? seg : String(n);
-  }).join('.');
-}
-
-// Normaliza texto para fuzzy match: NFD + minúsculas + alfanumérico
-const normTxt = (s) => String(s || '')
-  .normalize('NFD').replace(/[̀-ͯ]/g, '')
-  .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-
-// % de palabras compartidas (≥3 chars) entre dos descripciones.
-function fuzzyScore(a, b) {
-  const A = new Set(normTxt(a).split(' ').filter(w => w.length > 2));
-  const B = new Set(normTxt(b).split(' ').filter(w => w.length > 2));
-  if (!A.size || !B.size) return 0;
-  let inter = 0;
-  for (const w of A) if (B.has(w)) inter++;
-  return inter / Math.max(A.size, B.size);
-}
+// normalizeCodigo + fuzzyScore: importados desde lib/match-helpers.js
+// (compartidos con jx-obra.jsx para el "Comparativo con Presupuesto").
 
 function autoMap(fields, headers) {
   const map = {};

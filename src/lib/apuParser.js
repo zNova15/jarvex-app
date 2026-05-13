@@ -430,6 +430,61 @@ export function parseGantt(rows) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// PRESUPUESTO DE OBRA — listado completo de partidas (con capítulos)
+//
+// Formato detectado en exports de Delphin/S10:
+//   - Filas 0-10: metadata del proyecto (PROYECTO, PROPIETARIO, FECHA, etc.)
+//   - Fila ~11: header con "Item", "Descripción", "Unid.", "Cant.", "Precio", "Total"
+//   - Filas 13+: datos. Col 0 = código jerárquico (número o string), Col 1 = descripción,
+//     Col 8 = unidad, Col 10 = cantidad, Col 12 = precio, Col 14 = total.
+//   - El código puede venir como número (Excel auto-convierte "1.01" → 1.01) o string
+//     ("02.01.01.01.01"). Lo normalizamos siempre a string.
+//
+// Devuelve: array de { codigo, descripcion, unidad, cantidad, precio, total, nivel }
+// ═══════════════════════════════════════════════════════════════════
+export function parsePresupuestoObra(rows) {
+  const partidas = [];
+  // Encontrar header (la fila que tiene "Item" y "Descripción")
+  let dataStart = 0;
+  for (let i = 0; i < Math.min(30, rows.length); i++) {
+    const r = rows[i] || [];
+    const has = (target) => r.some(c => typeof c === 'string' && c.trim().toLowerCase() === target);
+    if (has('item') && (has('descripción') || has('descripcion'))) {
+      dataStart = i + 1;
+      break;
+    }
+  }
+  for (let i = dataStart; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r) continue;
+    const rawCod = r[0];
+    if (rawCod == null || rawCod === '') continue;
+    // Normalizar código a string
+    let codigo = '';
+    if (typeof rawCod === 'number') {
+      // Excel convirtió "1.01" en número 1.01 — recuperar con padding
+      // mínimo. "1" → "1", "1.01" → "1.01", "1.1" se respeta tal cual.
+      codigo = String(rawCod);
+    } else {
+      codigo = String(rawCod).trim();
+    }
+    // Filas tipo "Pág. X" o totales
+    if (!/^\d+(\.\d+)*$/.test(codigo)) continue;
+    const desc = String(r[1] ?? '').trim();
+    if (!desc) continue;
+    // Skip si la descripción es un encabezado vacío típico
+    if (/^pres?upuesto/i.test(desc)) continue;
+    const unidad = String(r[8] ?? '').trim() || null;
+    const cantidad = Number(r[10]) || 0;
+    const precio = Number(r[12]) || 0;
+    const total = Number(r[14]) || 0;
+    const nivel = codigo.split('.').length; // 1, 2, 3, 4, 5…
+    partidas.push({ codigo, descripcion: desc, unidad, cantidad, precio, total, nivel });
+  }
+  return partidas;
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // AUTO-DETECCIÓN DEL TIPO DE ARCHIVO S10
 // Devuelve 'apu' | 'insumos' | 'gantt' | 'desconocido'.
 // ═══════════════════════════════════════════════════════════════════

@@ -1,5 +1,7 @@
 import React from "react";
 import { useBusy } from "../hooks/useBusy.js";
+import { normalizeCodigo, fuzzyScore } from "../lib/match-helpers.js";
+import { parsePresupuestoObra } from "../lib/apuParser.js";
 const { useState: uSO, useMemo: uMO, useEffect: uEO } = React;
 
 const EST_PART = { terminado:'b-green', en_ejecucion:'b-blue', atrasado:'b-red', pendiente:'b-gray', observado:'b-yellow' };
@@ -1005,6 +1007,144 @@ function PartidasPage({ showToast }) {
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Partidas', 'w') ?? false);
   const [borrandoTodo, setBorrandoTodo] = uSO(false);
 
+  // ── Comparativo con presupuesto de obra ──────────────────────
+  // El admin sube un Excel con TODAS las partidas (capítulos +
+  // específicas) con sus nombres reales. La herramienta matchea por
+  // código (exacto → normalizado → fuzzy) y propone actualizar el
+  // nombre_partida en las que la BD tiene un nombre distinto.
+  const [comparativoOpen, setComparativoOpen] = uSO(false);
+  const [comparativoFile, setComparativoFile] = uSO(null);
+  const [comparativoParsing, setComparativoParsing] = uSO(false);
+  const [comparativoError, setComparativoError] = uSO(null);
+  const [comparativoRows, setComparativoRows] = uSO(null); // null | array
+  const [comparativoFilter, setComparativoFilter] = uSO('a_cambiar'); // a_cambiar|iguales|no_encontradas|todas
+  const [comparativoBusy, setComparativoBusy] = uSO(false);
+
+  // Procesa el archivo cargado y produce filas de comparación.
+  // Cada fila: { codigo, descExcel, partida (DB), matchType, score, aprobada }
+  const procesarComparativo = async (file) => {
+    if (!file) return;
+    setComparativoParsing(true);
+    setComparativoError(null);
+    setComparativoRows(null);
+    try {
+      const XLSX = (await import('xlsx')).default;
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array' });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rawRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: true });
+      const parsed = parsePresupuestoObra(rawRows);
+      if (!parsed.length) {
+        throw new Error('No se detectaron partidas en el archivo. Verificá que tenga columna "Item" y "Descripción".');
+      }
+      // Construir mapas de partidas existentes
+      const vivas = (partidas || []).filter(p => !p.deleted_at);
+      const porCodigo = new Map(vivas.map(p => [String(p.codigo_delfin || ''), p]));
+      const porCodigoNorm = new Map(vivas.map(p => [normalizeCodigo(p.codigo_delfin), p]));
+      const filas = parsed.map(p => {
+        let partida = porCodigo.get(p.codigo);
+        let matchType = 'exacto';
+        if (!partida) {
+          partida = porCodigoNorm.get(normalizeCodigo(p.codigo));
+          if (partida) matchType = 'normalizado';
+        }
+        if (!partida) {
+          // Fuzzy fallback por nombre
+          let top = null;
+          for (const v of vivas) {
+            const s = fuzzyScore(p.descripcion, v.nombre_partida);
+            if (s >= 0.6 && (!top || s > top.score)) top = { v, score: s };
+          }
+          if (top) { partida = top.v; matchType = 'fuzzy'; }
+        }
+        if (!partida) {
+          return {
+            codigo: p.codigo, descExcel: p.descripcion, nivel: p.nivel,
+            partidaActual: null, matchType: 'sin_match',
+            scoreNombre: 0, sonIguales: false, aprobada: false,
+          };
+        }
+        const scoreNombre = fuzzyScore(p.descripcion, partida.nombre_partida || '');
+        const sonIguales = (partida.nombre_partida || '').trim().toUpperCase() === p.descripcion.trim().toUpperCase();
+        return {
+          codigo: p.codigo, descExcel: p.descripcion, nivel: p.nivel,
+          partidaActual: partida, matchType,
+          scoreNombre, sonIguales,
+          // Default: aprobada si hay match Y nombres distintos Y score nombre >= 0.3
+          // (es decir, son la misma partida pero con texto diferente)
+          aprobada: !sonIguales && scoreNombre >= 0.3,
+        };
+      });
+      setComparativoRows(filas);
+    } catch (e) {
+      console.error('[comparativo presupuesto]', e);
+      setComparativoError(e.message || 'Error procesando el archivo');
+    } finally {
+      setComparativoParsing(false);
+    }
+  };
+
+  // Aplicar los cambios aprobados (actualizar nombre_partida en BD)
+  const aplicarComparativo = async () => {
+    if (!comparativoRows || !canWrite) return;
+    const aprobadas = comparativoRows.filter(r => r.aprobada && r.partidaActual && !r.sonIguales);
+    if (!aprobadas.length) {
+      showToast?.('No marcaste ninguna fila para actualizar', 'amber');
+      return;
+    }
+    setComparativoBusy(true);
+    const now = new Date().toISOString();
+    let n = 0;
+    try {
+      for (const r of aprobadas) {
+        const p = r.partidaActual;
+        await window.__db.partidas.update(p.id, {
+          nombre_partida: r.descExcel,
+          updated_at: now, updated_by: userId,
+          version: (p.version ?? 0) + 1,
+          sync_status: p.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+        });
+        n++;
+      }
+      try { window.__logAudit?.({
+        action: 'update', table: 'partidas', recordId: null,
+        newData: { actualizadas: n }, reason: 'Comparativo con presupuesto: actualización masiva de nombres',
+      }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'partidas' } })); } catch {}
+      try { window.dispatchEvent(new Event('online')); } catch {}
+      showToast?.(`${n} nombres de partida actualizados`, 'green');
+      setComparativoOpen(false);
+      setComparativoFile(null);
+      setComparativoRows(null);
+    } catch (e) {
+      showToast?.(`Error aplicando: ${e.message || e}`, 'red');
+    } finally {
+      setComparativoBusy(false);
+    }
+  };
+
+  // KPIs del comparativo para mostrar en el header del modal
+  const comparativoKpis = uMO(() => {
+    if (!comparativoRows) return null;
+    let aCambiar = 0, iguales = 0, sinMatch = 0, total = comparativoRows.length;
+    for (const r of comparativoRows) {
+      if (!r.partidaActual) sinMatch++;
+      else if (r.sonIguales) iguales++;
+      else aCambiar++;
+    }
+    return { total, aCambiar, iguales, sinMatch };
+  }, [comparativoRows]);
+
+  const comparativoFiltradas = uMO(() => {
+    if (!comparativoRows) return [];
+    return comparativoRows.filter(r => {
+      if (comparativoFilter === 'a_cambiar') return r.partidaActual && !r.sonIguales;
+      if (comparativoFilter === 'iguales') return r.partidaActual && r.sonIguales;
+      if (comparativoFilter === 'no_encontradas') return !r.partidaActual;
+      return true;
+    });
+  }, [comparativoRows, comparativoFilter]);
+
   // Eliminar TODAS las partidas (e insumos asociados) de la obra activa.
   // Usa soft delete: deleted_at + sync_status='pending_delete' para que el
   // SyncEngine propague al server. Útil cuando el usuario importó un APU
@@ -1277,7 +1417,16 @@ function PartidasPage({ showToast }) {
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div><div className="pg-title">Partidas de Obra</div><div className="pg-sub">{partidas.length} partidas · {fmtSk(totalReal)} ejecutado de {fmtSk(totalPres)}</div></div>
-        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+        <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+          {canWrite && partidas.length > 0 && (
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => setComparativoOpen(true)}
+              title="Subí un Excel con todas las partidas (capítulos + específicas) y actualizá los nombres por código"
+            >
+              <JxIcon name="compare" size={13}/>Comparativo con presupuesto
+            </button>
+          )}
           {canWrite && partidas.length > 0 && (
             <button
               className="btn btn-red btn-sm"
@@ -1539,6 +1688,197 @@ function PartidasPage({ showToast }) {
           </button>
         </div>
       </Modal>}
+
+      {/* ───────── MODAL: Comparativo con presupuesto ───────── */}
+      {comparativoOpen && (
+        <div className="overlay" onClick={e => e.target === e.currentTarget && !comparativoBusy && setComparativoOpen(false)}
+             style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.65)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+          <div className="card" style={{ background:'var(--bg-s)', maxWidth:1100, width:'100%', maxHeight:'92vh', display:'flex', flexDirection:'column', borderRadius:10 }}>
+            <div style={{ padding:'14px 20px', borderBottom:'1px solid var(--border)', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+              <div>
+                <div style={{ fontSize:16, fontWeight:700, color:'var(--tp)' }}>Comparativo con presupuesto de obra</div>
+                <div style={{ fontSize:11.5, color:'var(--tm)', marginTop:3 }}>
+                  Subí el Excel del presupuesto completo. Te muestro las partidas con nombres distintos por código y elegís cuáles actualizar.
+                </div>
+              </div>
+              <button className="btn btn-ghost btn-sm" disabled={comparativoBusy} onClick={() => { setComparativoOpen(false); setComparativoFile(null); setComparativoRows(null); setComparativoError(null); }}>✕</button>
+            </div>
+
+            {/* PASO 1: subir archivo */}
+            {!comparativoRows && (
+              <div style={{ padding:24, flex:1, overflowY:'auto' }}>
+                <div style={{
+                  border:'2px dashed var(--border)', borderRadius:10, padding:'32px 24px', textAlign:'center',
+                  background:'rgba(255,255,255,0.02)', cursor:'pointer',
+                }}
+                  onClick={() => document.getElementById('comp-presup-input')?.click()}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    const f = e.dataTransfer?.files?.[0];
+                    if (f) { setComparativoFile(f); procesarComparativo(f); }
+                  }}
+                >
+                  <JxIcon name="upload" size={32} color="var(--amber)"/>
+                  <div style={{ fontSize:14, fontWeight:700, marginTop:10, color:'var(--tp)' }}>
+                    {comparativoParsing ? 'Procesando…' : comparativoFile ? comparativoFile.name : 'Arrastrá el Excel o click para seleccionar'}
+                  </div>
+                  <div style={{ fontSize:11, color:'var(--tm)', marginTop:6 }}>
+                    Acepta el formato "Presupuesto de Obra" de Delphin/S10: col A=Item, col B=Descripción, col I=Unidad, col K=Cant., col M=Precio, col O=Total.
+                  </div>
+                  <input
+                    id="comp-presup-input"
+                    type="file"
+                    accept=".xlsx,.xls"
+                    style={{ display:'none' }}
+                    onChange={e => { const f = e.target.files?.[0]; if (f) { setComparativoFile(f); procesarComparativo(f); } }}
+                  />
+                </div>
+                {comparativoError && (
+                  <div style={{ marginTop:14, padding:'10px 14px', background:'rgba(231,76,60,0.08)', border:'1px solid rgba(231,76,60,0.3)', borderRadius:6, color:'var(--red)', fontSize:12 }}>
+                    ⚠ {comparativoError}
+                  </div>
+                )}
+                <div style={{ marginTop:16, padding:'10px 14px', background:'rgba(52,152,219,0.06)', border:'1px solid rgba(52,152,219,0.2)', borderRadius:6, fontSize:12, color:'var(--ts)', lineHeight:1.6 }}>
+                  <strong style={{ color:'var(--blue)' }}>ℹ Cómo funciona el match:</strong>
+                  <ol style={{ margin:'6px 0 0 18px', padding:0 }}>
+                    <li><strong>Exacto:</strong> mismo código (ej. <code>02.01.01</code> ↔ <code>02.01.01</code>).</li>
+                    <li><strong>Normalizado:</strong> ignora ceros de padding (ej. <code>02.01.01</code> ↔ <code>2.1.1</code>).</li>
+                    <li><strong>Fuzzy por nombre:</strong> si no hay match por código, busca por similitud de descripción ≥60%.</li>
+                  </ol>
+                  Para los matcheos, comparo el nombre del Excel con el de la BD. Si son distintos y la similitud es razonable (≥30%), te lo propongo para actualizar.
+                </div>
+              </div>
+            )}
+
+            {/* PASO 2: revisar y aprobar */}
+            {comparativoRows && comparativoKpis && (
+              <>
+                <div style={{ padding:'10px 20px', borderBottom:'1px solid var(--border)', display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:8, flex:1, minWidth:300 }}>
+                    <div style={{ textAlign:'center', padding:6, background:'rgba(255,255,255,0.04)', borderRadius:6 }}>
+                      <div style={{ fontSize:18, fontWeight:800 }}>{comparativoKpis.total}</div>
+                      <div style={{ fontSize:9.5, color:'var(--tm)', textTransform:'uppercase' }}>Total Excel</div>
+                    </div>
+                    <div style={{ textAlign:'center', padding:6, background:'rgba(242,183,5,0.10)', borderRadius:6, border:'1px solid rgba(242,183,5,0.3)' }}>
+                      <div style={{ fontSize:18, fontWeight:800, color:'var(--amber)' }}>{comparativoKpis.aCambiar}</div>
+                      <div style={{ fontSize:9.5, color:'var(--tm)', textTransform:'uppercase' }}>A actualizar</div>
+                    </div>
+                    <div style={{ textAlign:'center', padding:6, background:'rgba(46,204,113,0.10)', borderRadius:6, border:'1px solid rgba(46,204,113,0.3)' }}>
+                      <div style={{ fontSize:18, fontWeight:800, color:'var(--green)' }}>{comparativoKpis.iguales}</div>
+                      <div style={{ fontSize:9.5, color:'var(--tm)', textTransform:'uppercase' }}>Ya iguales</div>
+                    </div>
+                    <div style={{ textAlign:'center', padding:6, background:'rgba(231,76,60,0.08)', borderRadius:6, border:'1px solid rgba(231,76,60,0.3)' }}>
+                      <div style={{ fontSize:18, fontWeight:800, color:'var(--red)' }}>{comparativoKpis.sinMatch}</div>
+                      <div style={{ fontSize:9.5, color:'var(--tm)', textTransform:'uppercase' }}>Sin match</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ padding:'10px 20px', borderBottom:'1px solid var(--border)', display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+                  <div style={{ display:'flex', gap:4, background:'rgba(0,0,0,0.2)', padding:3, borderRadius:6 }}>
+                    {[
+                      { k: 'a_cambiar', label: `A actualizar (${comparativoKpis.aCambiar})` },
+                      { k: 'iguales', label: `Iguales (${comparativoKpis.iguales})` },
+                      { k: 'no_encontradas', label: `Sin match (${comparativoKpis.sinMatch})` },
+                      { k: 'todas', label: `Todas (${comparativoKpis.total})` },
+                    ].map(f => (
+                      <button key={f.k}
+                        className={'btn btn-xs ' + (comparativoFilter === f.k ? 'btn-amber' : 'btn-ghost')}
+                        onClick={() => setComparativoFilter(f.k)}>
+                        {f.label}
+                      </button>
+                    ))}
+                  </div>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setComparativoRows(prev => prev.map(r => (r.partidaActual && !r.sonIguales) ? { ...r, aprobada: true } : r))}>
+                    Marcar todas las "a actualizar"
+                  </button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setComparativoRows(prev => prev.map(r => ({ ...r, aprobada: false })))}>
+                    Desmarcar todas
+                  </button>
+                  <div style={{ marginLeft:'auto', fontSize:11, color:'var(--tm)' }}>
+                    Aprobadas: <strong style={{ color:'var(--green)' }}>{comparativoRows.filter(r=>r.aprobada).length}</strong>
+                  </div>
+                </div>
+
+                <div style={{ flex:1, overflowY:'auto' }}>
+                  <table className="tbl" style={{ fontSize:11 }}>
+                    <thead style={{ position:'sticky', top:0, background:'var(--bg-s)', zIndex:1 }}>
+                      <tr>
+                        <th style={{ width:40, textAlign:'center' }}>✓</th>
+                        <th style={{ width:90 }}>Match</th>
+                        <th style={{ width:130 }}>Código</th>
+                        <th>Nombre en Excel</th>
+                        <th>Nombre actual en BD</th>
+                        <th style={{ width:60, textAlign:'center' }}>Sim.</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {comparativoFiltradas.slice(0, 500).map((r, idx) => {
+                        const matchBadge = r.matchType === 'exacto' ? { bg:'rgba(46,204,113,0.15)', c:'var(--green)', t:'Exacto' }
+                          : r.matchType === 'normalizado' ? { bg:'rgba(52,152,219,0.15)', c:'var(--blue)', t:'Normalizado' }
+                          : r.matchType === 'fuzzy' ? { bg:'rgba(242,183,5,0.15)', c:'var(--amber)', t:'Por nombre' }
+                          : { bg:'rgba(231,76,60,0.12)', c:'var(--red)', t:'Sin match' };
+                        const sc = r.scoreNombre;
+                        const scColor = sc >= 0.7 ? 'var(--green)' : sc >= 0.4 ? 'var(--amber)' : 'var(--red)';
+                        return (
+                          <tr key={idx} style={{ background: r.aprobada ? 'rgba(46,204,113,0.05)' : (r.sonIguales ? 'rgba(46,204,113,0.02)' : 'transparent') }}>
+                            <td style={{ textAlign:'center' }}>
+                              {r.partidaActual && !r.sonIguales ? (
+                                <input type="checkbox" checked={!!r.aprobada} onChange={e => {
+                                  const checked = e.target.checked;
+                                  setComparativoRows(prev => prev.map(x => x === r ? { ...x, aprobada: checked } : x));
+                                }}/>
+                              ) : r.sonIguales ? <span style={{ color:'var(--green)' }} title="Nombres ya iguales — sin cambios">✓</span>
+                                : <span style={{ color:'var(--tm)' }} title="Sin partida en BD">—</span>}
+                            </td>
+                            <td>
+                              <span style={{ fontSize:10, fontWeight:700, padding:'2px 6px', borderRadius:3, background: matchBadge.bg, color: matchBadge.c }}>
+                                {matchBadge.t}
+                              </span>
+                            </td>
+                            <td style={{ fontFamily:'monospace', fontSize:10.5 }}>
+                              <div>{r.codigo}</div>
+                              {r.partidaActual && r.partidaActual.codigo_delfin !== r.codigo && (
+                                <div style={{ color:'var(--tm)', fontSize:9.5 }}>BD: {r.partidaActual.codigo_delfin}</div>
+                              )}
+                            </td>
+                            <td><strong style={{ color:'var(--tp)' }}>{r.descExcel}</strong></td>
+                            <td style={{ color: r.sonIguales ? 'var(--green)' : 'var(--ts)' }}>
+                              {r.partidaActual ? r.partidaActual.nombre_partida : <em style={{ color:'var(--tm)' }}>—</em>}
+                            </td>
+                            <td style={{ textAlign:'center' }}>
+                              {r.partidaActual && <strong style={{ color: scColor }}>{Math.round(sc * 100)}%</strong>}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {comparativoFiltradas.length > 500 && (
+                        <tr><td colSpan={6} style={{ textAlign:'center', padding:10, color:'var(--tm)' }}>
+                          Mostrando 500 de {comparativoFiltradas.length}. Aplicá un filtro para ver el resto.
+                        </td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div style={{ padding:'12px 20px', borderTop:'1px solid var(--border)', display:'flex', gap:8, justifyContent:'flex-end' }}>
+                  <button className="btn btn-ghost" disabled={comparativoBusy} onClick={() => { setComparativoRows(null); setComparativoFile(null); }}>
+                    Volver a cargar archivo
+                  </button>
+                  <button className="btn btn-ghost" disabled={comparativoBusy} onClick={() => { setComparativoOpen(false); setComparativoFile(null); setComparativoRows(null); }}>
+                    Cancelar
+                  </button>
+                  <button className="btn btn-amber" disabled={comparativoBusy || comparativoRows.filter(r=>r.aprobada && !r.sonIguales).length === 0} onClick={aplicarComparativo}>
+                    <JxIcon name="check" size={13}/>
+                    {comparativoBusy ? 'Aplicando…' : `Actualizar ${comparativoRows.filter(r=>r.aprobada && !r.sonIguales).length} nombres`}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
