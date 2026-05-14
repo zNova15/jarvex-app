@@ -8,6 +8,10 @@ export function useSync() {
     failed: 0,
     lastSync: null,
     error: null,
+    // Progreso del push en lote (para la barrita "sincronizando X/Y").
+    phase: null,
+    current: 0,
+    total: 0,
   });
 
   useEffect(() => {

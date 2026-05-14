@@ -314,10 +314,10 @@ export async function syncAll() {
     const [pending, failed] = await Promise.all([getPendingCount(), getFailedCount()]);
     const ms = Math.round(performance.now() - t0);
     console.log(`[SyncEngine] ✓ syncAll OK en ${ms}ms · pending=${pending} failed=${failed}`);
-    emit({ syncing: false, pending, failed, lastSync: new Date(), error: null });
+    emit({ syncing: false, pending, failed, lastSync: new Date(), error: null, phase: null, current: 0, total: 0 });
   } catch (err) {
     console.error('[SyncEngine] ✗ Error en syncAll:', err);
-    emit({ syncing: false, error: err.message });
+    emit({ syncing: false, error: err.message, phase: null, current: 0, total: 0 });
     // Sentry: syncAll completo falló (no un record individual). Es grave.
     captureException(err, {
       tags: { module: 'sync-engine', operation: 'syncAll' },
@@ -559,9 +559,7 @@ async function pushTablePending(tabla) {
     .where('sync_status').equals(SYNC_STATUS.PENDING_CREATE)
     .toArray()).filter(noEsDemo);
 
-  for (const record of pendingCreates) {
-    await pushCreate(tabla, record);
-  }
+  await pushCreatesBatch(tabla, pendingCreates);
 
   const pendingUpdates = (await db[tabla]
     .where('sync_status').equals(SYNC_STATUS.PENDING_UPDATE)
@@ -575,8 +573,73 @@ async function pushTablePending(tabla) {
     .where('sync_status').equals(SYNC_STATUS.PENDING_DELETE)
     .toArray()).filter(noEsDemo);
 
-  for (const record of pendingDeletes) {
-    await pushDelete(tabla, record);
+  await pushDeletesBatch(tabla, pendingDeletes);
+}
+
+// Cuántos records por request al pushear en lote. Antes el push era
+// record-por-record (1 request HTTP cada uno) — importar 50k insumos
+// tomaba una eternidad. Con INSERT en lote, 50k insumos = ~250 requests.
+const PUSH_BATCH_SIZE = 200;
+
+// Push de PENDING_CREATE en lote: agrupa en chunks y hace un solo INSERT
+// por chunk. Si el chunk falla (ej. un idempotency_key duplicado tumba
+// todo el INSERT), cae a per-record para aislar el/los malo(s) sin perder
+// los buenos.
+async function pushCreatesBatch(tabla, records) {
+  if (!records.length) return;
+  // Filtrar los que tienen una FK todavía pendiente en local — esos
+  // esperan al próximo ciclo (anti-fantasma). Para las tablas sin FK_DEPS
+  // (insumos_partida, partidas, etc.) fkDepsReady devuelve true al toque.
+  const listos = [];
+  for (const r of records) {
+    if (await fkDepsReady(tabla, r)) listos.push(r);
+  }
+  if (!listos.length) return;
+
+  for (let i = 0; i < listos.length; i += PUSH_BATCH_SIZE) {
+    const chunk = listos.slice(i, i + PUSH_BATCH_SIZE);
+    const serverRows = chunk.map(r => stripLocalFields(r, tabla));
+    const { error } = await supabase.from(tabla).insert(serverRows);
+    if (!error) {
+      const now = new Date().toISOString();
+      // bulkPut de los mismos records con sync_status actualizado — una
+      // sola operación Dexie en vez de N updates.
+      await db[tabla].bulkPut(chunk.map(r => ({
+        ...r, sync_status: SYNC_STATUS.SYNCED, last_synced_at: now,
+      })));
+      trackEvent('record_pushed', { tabla, operacion: 'create_batch', count: chunk.length });
+    } else {
+      // El INSERT en lote falló entero — reintentar uno por uno para que
+      // un solo record problemático no bloquee a los demás del chunk.
+      console.warn(`[SyncEngine] batch create ${tabla} falló (${error.code || ''}) — fallback per-record`);
+      for (const r of chunk) {
+        await pushCreate(tabla, r);
+      }
+    }
+    emit({ syncing: true, phase: `Subiendo ${tabla}`, current: Math.min(i + PUSH_BATCH_SIZE, listos.length), total: listos.length });
+  }
+}
+
+// Push de PENDING_DELETE en lote: un solo UPDATE deleted_at por chunk de ids.
+async function pushDeletesBatch(tabla, records) {
+  if (!records.length) return;
+  for (let i = 0; i < records.length; i += PUSH_BATCH_SIZE) {
+    const chunk = records.slice(i, i + PUSH_BATCH_SIZE);
+    const ids = chunk.map(r => r.id);
+    const { error } = await supabase
+      .from(tabla)
+      .update({ deleted_at: new Date().toISOString() })
+      .in('id', ids);
+    if (!error) {
+      await db[tabla].bulkDelete(ids);
+      trackEvent('record_pushed', { tabla, operacion: 'delete_batch', count: chunk.length });
+    } else {
+      console.warn(`[SyncEngine] batch delete ${tabla} falló (${error.code || ''}) — fallback per-record`);
+      for (const r of chunk) {
+        await pushDelete(tabla, r);
+      }
+    }
+    emit({ syncing: true, phase: `Borrando ${tabla}`, current: Math.min(i + PUSH_BATCH_SIZE, records.length), total: records.length });
   }
 }
 
@@ -784,6 +847,28 @@ const TABLAS_NO_EN_SERVER = new Set([
 // hasta que se recargue la página (evita spam de errores en consola).
 const _tablasCon404 = new Set();
 
+// Supabase/PostgREST corta cada respuesta a 1000 filas por defecto. Sin
+// paginar, una tabla como insumos_partida (50k+ filas) sólo bajaba las
+// primeras 1000 → el resto de los insumos "desaparecía" en cada device
+// nuevo. fetchAllRows pagina con .range() hasta traer todo.
+//
+// buildQuery DEBE devolver un query nuevo en cada llamada (con sus filtros
+// ya aplicados, pero sin .range()) — Supabase ejecuta el builder al await.
+const PULL_PAGE_SIZE = 1000;
+async function fetchAllRows(buildQuery) {
+  let all = [];
+  let from = 0;
+  for (;;) {
+    const { data, error } = await buildQuery().range(from, from + PULL_PAGE_SIZE - 1);
+    if (error) return { data: all.length ? all : null, error };
+    const batch = data || [];
+    all = all.concat(batch);
+    if (batch.length < PULL_PAGE_SIZE) break; // última página
+    from += PULL_PAGE_SIZE;
+  }
+  return { data: all, error: null };
+}
+
 async function pullMasterTables() {
   for (const { tabla } of MASTER_TABLES) {
     if (TABLAS_NO_EN_SERVER.has(tabla) || _tablasCon404.has(tabla)) {
@@ -817,14 +902,14 @@ async function pullMasterTables() {
       //  · Incremental (con lastSync): traemos TODOS los updated desde
       //    entonces, incluidos los soft-deleted, y abajo separamos
       //    "vivos" de "tombstones" para hacer bulkPut + bulkDelete.
-      let q = supabase.from(tabla).select('*');
-      if (lastSync) {
-        q = q.gt('updated_at', lastSync);
-      } else {
-        q = q.is('deleted_at', null);
-      }
+      const buildQuery = () => {
+        let q = supabase.from(tabla).select('*');
+        if (lastSync) q = q.gt('updated_at', lastSync);
+        else q = q.is('deleted_at', null);
+        return q;
+      };
 
-      const { data, error } = await q;
+      const { data, error } = await fetchAllRows(buildQuery);
       if (error) {
         const code = error.code || '';
         const msg = String(error.message || '').toLowerCase();
@@ -837,7 +922,7 @@ async function pullMasterTables() {
         // en esa tabla), intentamos un fallback sin ese filtro.
         if (code === '42703' || /column .* does not exist/i.test(msg)) {
           console.warn(`[SyncEngine] pull ${tabla}: fallback sin filtros (la tabla no tiene la columna del filtro)`);
-          const { data: data2, error: error2 } = await supabase.from(tabla).select('*');
+          const { data: data2, error: error2 } = await fetchAllRows(() => supabase.from(tabla).select('*'));
           if (error2) {
             console.warn(`[SyncEngine] pull ${tabla} ERROR:`, error2.message);
             continue;
@@ -1002,13 +1087,16 @@ async function pullTransactionalChanges() {
         .select('*')
         .gte('updated_at', lastSync ?? '2020-01-01T00:00:00Z');
 
-    let q = baseQuery();
     const skipCreatedBy = tableSkipsCreatedBy(tabla);
-    if (!skipCreatedBy) {
-      q = q.neq('created_by', userId); // No traer lo que yo mismo creé
-    }
+    // buildQuery devuelve un query nuevo en cada página (fetchAllRows lo
+    // re-ejecuta con distintos .range()).
+    const buildQuery = () => {
+      let q = baseQuery();
+      if (!skipCreatedBy) q = q.neq('created_by', userId); // No traer lo que yo mismo creé
+      return q;
+    };
 
-    let { data, error } = await q;
+    let { data, error } = await fetchAllRows(buildQuery);
 
     // Auto-retry: si el error es por columna created_by inexistente,
     // reintentamos sin el filtro y cacheamos el resultado para futuras syncs.
@@ -1019,7 +1107,7 @@ async function pullTransactionalChanges() {
       );
       _runtimeNoCreatedBy.add(tabla);
       cacheChanged = true;
-      ({ data, error } = await baseQuery());
+      ({ data, error } = await fetchAllRows(baseQuery));
     }
 
     if (error || !data?.length) continue;
