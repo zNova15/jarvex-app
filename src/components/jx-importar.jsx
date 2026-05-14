@@ -349,10 +349,12 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
         }
         const porCodigo = new Map(vivas.map(p => [p.codigo_delfin, p]));
         const porCodigoNorm = new Map(vivas.map(p => [normalizeCodigo(p.codigo_delfin), p]));
-        let exactas = 0, normalizadas = 0;
+        let exactas = 0, normalizadas = 0, capitulos = 0;
         const sugerencias = [];
         const noMatch = [];
         for (const t of parsed.data) {
+          // Los capítulos/títulos no son partidas — se omiten del match.
+          if (t.esCapitulo) { capitulos++; continue; }
           if (porCodigo.has(t.codigo)) { exactas++; continue; }
           const n = normalizeCodigo(t.codigo);
           if (porCodigoNorm.has(n)) { normalizadas++; continue; }
@@ -360,7 +362,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
           noMatch.push({ tareaCodigo: t.codigo, tareaDescripcion: t.descripcion });
         }
         if (!cancelled) setGantPreview({
-          computing: false, exactas, normalizadas, sugerencias, noMatch,
+          computing: false, exactas, normalizadas, capitulos, sugerencias, noMatch,
         });
       } catch (e) {
         if (!cancelled) setGantPreview({
@@ -960,13 +962,16 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       });
     };
 
-    let exactas = 0, normalizadas = 0;
+    let exactas = 0, normalizadas = 0, capitulos = 0;
     const sugerencias = []; // {tarea, candidato, score}
     const noMatch = [];     // sin candidato razonable
     setProgress({ phase:'Aplicando cronograma…', current:0, total: parsed.data.length });
 
     for (let i = 0; i < parsed.data.length; i++) {
       const t = parsed.data[i];
+      // Los capítulos/títulos no son partidas — no se les aplica fecha ni
+      // se cuentan como "sin match".
+      if (t.esCapitulo) { capitulos++; continue; }
       // Match SOLO por código: exacto → normalizado (con tolerancia de
       // padding de ceros). Sin fallback por descripción — el usuario
       // pidió que las equivalencias se determinen por número de partida
@@ -992,6 +997,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       ok: actualizadas,
       detalle: `${actualizadas} partidas con fechas planificadas` +
         (normalizadas ? ` (${exactas} match exacto + ${normalizadas} match normalizado)` : '') +
+        (capitulos ? ` · ${capitulos} capítulos omitidos` : '') +
         (sugerencias.length ? ` · ${sugerencias.length} sugerencias por revisar` : '') +
         (noMatch.length ? ` · ${noMatch.length} sin match` : ''),
       errors: noMatch.length,
@@ -1874,7 +1880,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                   {gantPreview.error && <div style={{ fontSize:12, color:'var(--red)' }}>⚠ {gantPreview.error}</div>}
                   {!gantPreview.computing && !gantPreview.error && (
                     <>
-                      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:10 }}>
+                      <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:10, marginBottom:10 }}>
                         <div style={{ textAlign:'center', padding:8, background:'rgba(46,204,113,0.12)', borderRadius:6, border:'1px solid rgba(46,204,113,0.3)' }}>
                           <div style={{ fontSize:20, fontWeight:800, color:'var(--green)' }}>{gantPreview.exactas}</div>
                           <div style={{ fontSize:10, color:'var(--tm)', textTransform:'uppercase' }}>Match exacto</div>
@@ -1882,6 +1888,10 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                         <div style={{ textAlign:'center', padding:8, background:'rgba(52,152,219,0.12)', borderRadius:6, border:'1px solid rgba(52,152,219,0.3)' }}>
                           <div style={{ fontSize:20, fontWeight:800, color:'var(--blue)' }}>{gantPreview.normalizadas}</div>
                           <div style={{ fontSize:10, color:'var(--tm)', textTransform:'uppercase' }}>Match normalizado<br/>(01.01 ↔ 1.01)</div>
+                        </div>
+                        <div style={{ textAlign:'center', padding:8, background:'rgba(148,163,184,0.12)', borderRadius:6, border:'1px solid rgba(148,163,184,0.3)' }}>
+                          <div style={{ fontSize:20, fontWeight:800, color:'var(--tm)' }}>{gantPreview.capitulos || 0}</div>
+                          <div style={{ fontSize:10, color:'var(--tm)', textTransform:'uppercase' }}>Capítulos omitidos<br/>(no son partidas)</div>
                         </div>
                         <div style={{ textAlign:'center', padding:8, background:'rgba(242,183,5,0.12)', borderRadius:6, border:'1px solid rgba(242,183,5,0.3)' }}>
                           <div style={{ fontSize:20, fontWeight:800, color:'var(--amber)' }}>{gantPreview.sugerencias.length}</div>
@@ -1894,6 +1904,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                       </div>
                       <div style={{ fontSize:11.5, color:'var(--tm)', lineHeight:1.6 }}>
                         Al importar: las <strong style={{ color:'var(--green)' }}>{gantPreview.exactas + gantPreview.normalizadas}</strong> con match se aplicarán automáticamente.
+                        {gantPreview.capitulos > 0 && <> Los <strong style={{ color:'var(--tm)' }}>{gantPreview.capitulos} capítulos/títulos</strong> se omiten — no son partidas específicas, no llevan fecha.</>}
                         {gantPreview.sugerencias.length > 0 && <> Las <strong style={{ color:'var(--amber)' }}>{gantPreview.sugerencias.length} sugerencias</strong> se mostrarán en un modal para que las apruebes una por una.</>}
                         {gantPreview.noMatch.length > 0 && <> Las <strong style={{ color:'var(--red)' }}>{gantPreview.noMatch.length} sin match</strong> se reportarán como no encontradas.</>}
                       </div>

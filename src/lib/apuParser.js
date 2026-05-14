@@ -16,6 +16,7 @@
 // ─────────────────────────────────────────────────────────────
 
 import * as XLSX from 'xlsx';
+import { normalizeCodigo } from './match-helpers.js';
 
 const CATS = {
   'MANO DE OBRA': 'mano_obra',
@@ -425,6 +426,25 @@ export function parseGantt(rows) {
       porcentaje_avance: Number(r[6]) || 0,
       dias_calendario: Number(r[7]) || null,
     });
+  }
+  // Marcar capítulos/títulos: una tarea es capítulo si su código es prefijo
+  // estricto de otro (existe otra tarea cuyo código empieza con "codigo.").
+  // Los capítulos NO se importan como partidas — solo las hojas — así que el
+  // matcher debe omitirlos en vez de contarlos como "sin match".
+  //
+  // IMPORTANTE: el Gantt mezcla códigos numéricos ("2.01", que Excel guardó
+  // como número) con strings ("02.01.01"). Un startsWith crudo fallaría en
+  // ese borde ("02.01.01" NO empieza con "2.01."). Por eso comparamos sobre
+  // el código NORMALIZADO (sin padding de ceros), que es consistente.
+  // Además, el código "0" / "0.x" es la raíz del proyecto y los hitos
+  // (INICIO/FIN DE OBRA) en la convención de Gantt — tampoco son partidas.
+  const codigosNorm = tareas.map(t => normalizeCodigo(t.codigo));
+  for (let i = 0; i < tareas.length; i++) {
+    const norm = codigosNorm[i];
+    const prefijo = norm + '.';
+    const tieneHijos = codigosNorm.some((c, j) => j !== i && c.startsWith(prefijo));
+    const esRaizOHito = norm === '0' || norm.startsWith('0.');
+    tareas[i].esCapitulo = tieneHijos || esRaizOHito;
   }
   return tareas;
 }
