@@ -16,7 +16,7 @@
 import React from 'react';
 import {
   getFailedDetails, retryAllFailed, getPendingCount, getFailedCount,
-  syncAll,
+  syncAll, forceFullResync,
 } from '../sync/SyncEngine';
 
 const { useState, useEffect } = React;
@@ -75,6 +75,26 @@ export default function SyncDetailModal({ open, onClose, showToast }) {
     } catch (e) {
       if (showToast) showToast(`Error: ${e.message || e}`, 'red');
     } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleFullResync = async () => {
+    if (!confirm(
+      'SINCRONIZACIÓN COMPLETA\n\n' +
+      'Esto borra el rastro de "última sincronización" y vuelve a descargar todo desde el servidor. ' +
+      'Cualquier registro que esté en este dispositivo pero ya NO esté en el servidor (porque otro usuario lo eliminó) se quitará de acá.\n\n' +
+      'NO toca lo que tengas pendiente de subir — eso se preserva.\n\n' +
+      '¿Continuar?'
+    )) return;
+    setBusy(true);
+    try {
+      await forceFullResync();
+      if (showToast) showToast('Resync forzado en proceso — recargá en unos segundos para ver cambios', 'amber');
+      // Reload counters tras 4s para mostrar el resultado.
+      setTimeout(async () => { await reload(); setBusy(false); }, 4000);
+    } catch (e) {
+      if (showToast) showToast(`Error: ${e.message || e}`, 'red');
       setBusy(false);
     }
   };
@@ -157,18 +177,29 @@ export default function SyncDetailModal({ open, onClose, showToast }) {
           )}
         </div>
 
-        <div style={{ padding:'12px 18px', borderTop:'1px solid var(--border)', display:'flex', gap:8, justifyContent:'flex-end' }}>
-          <button className="btn btn-ghost" disabled={busy} onClick={onClose}>Cerrar</button>
-          {failedTotal > 0 && (
-            <button className="btn btn-amber" disabled={busy} onClick={handleRetryAll}>
-              <JxIcon name="refresh" size={13}/> {busy ? 'Reintentando…' : `Reintentar todos (${failedTotal})`}
-            </button>
-          )}
-          {pending > 0 && failedTotal === 0 && (
-            <button className="btn btn-amber" disabled={busy} onClick={handleSyncNow}>
-              <JxIcon name="refresh" size={13}/> {busy ? 'Sincronizando…' : 'Sincronizar ahora'}
-            </button>
-          )}
+        <div style={{ padding:'12px 18px', borderTop:'1px solid var(--border)', display:'flex', gap:8, justifyContent:'space-between', alignItems:'center', flexWrap:'wrap' }}>
+          <button
+            className="btn btn-ghost"
+            disabled={busy}
+            onClick={handleFullResync}
+            title="Recovery: vuelve a descargar todo desde el server. Útil si este dispositivo ve cosas que ya fueron borradas en otro."
+            style={{ fontSize:11.5, color:'var(--amber)' }}
+          >
+            <JxIcon name="refresh" size={12}/> Forzar resync completo
+          </button>
+          <div style={{ display:'flex', gap:8 }}>
+            <button className="btn btn-ghost" disabled={busy} onClick={onClose}>Cerrar</button>
+            {failedTotal > 0 && (
+              <button className="btn btn-amber" disabled={busy} onClick={handleRetryAll}>
+                <JxIcon name="refresh" size={13}/> {busy ? 'Reintentando…' : `Reintentar todos (${failedTotal})`}
+              </button>
+            )}
+            {pending > 0 && failedTotal === 0 && (
+              <button className="btn btn-amber" disabled={busy} onClick={handleSyncNow}>
+                <JxIcon name="refresh" size={13}/> {busy ? 'Sincronizando…' : 'Sincronizar ahora'}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

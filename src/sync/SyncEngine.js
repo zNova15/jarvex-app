@@ -262,30 +262,6 @@ export async function getFailedDetails() {
  *
  * Retorna { tablas, total } para feedback al usuario.
  */
-/**
- * Borra todos los lastSync de sync_metadata y dispara un syncAll. La
- * próxima ronda de pulls va a ser FULL PULL (sin filtro de updated_at),
- * lo que activa el reconcile sweep: cualquier record en Dexie que
- * SYNCED pero no esté en server se borra.
- *
- * Útil para recuperar dispositivos que quedaron divergentes (ej. otro
- * device borró cosas y este no se enteró por un sync con código viejo).
- *
- * NO toca records con sync_status=pending_*: esas son ediciones locales
- * que el usuario hizo y todavía no se subieron al server. Se preservan.
- */
-export async function forceFullResync() {
-  try {
-    await db.sync_metadata.clear();
-  } catch (e) {
-    console.warn('[SyncEngine] forceFullResync: error limpiando sync_metadata', e);
-  }
-  if (navigator.onLine) {
-    setTimeout(() => { syncAll().catch(()=>{}); }, 100);
-  }
-  return { ok: true };
-}
-
 export async function retryAllFailed() {
   let total = 0;
   const tablas = [];
