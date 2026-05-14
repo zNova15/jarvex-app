@@ -3,6 +3,7 @@ import { calcAlerta } from "../lib/stock-utils.js";
 import { ocrAsistencia } from "../lib/ocr-asistencia.js";
 import { detectarEPP, esProbablementeEPP } from "../lib/epp-utils.js";
 import { usePagination } from "../hooks/usePagination.js";
+import { useBusy } from "../hooks/useBusy.js";
 import { TablePagination } from "./jx-pagination.jsx";
 import { SearchableSelect } from "./jx-searchable-select.jsx";
 const { useState: uS, useMemo: uM, useEffect: uE, useCallback: uCB } = React;
@@ -127,6 +128,11 @@ function MaterialesPage({ showToast }) {
   // escritura.
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Materiales', 'w') ?? false);
   const canWriteMov = isAdmin || (window.__hasPerm?.(myRol, 'Mov. Materiales', 'w') ?? false);
+  // Doble-click guard para "Registrar Salida/Ingreso" en lote.
+  // Sin esto, un click ansioso del almacenero crea 2 movimientos
+  // duplicados (mismo timestamp). Se vio en producción: arenas y
+  // tubos duplicados que dejaron stock en -45.
+  const [busyMovLote, , setBusyMovLote] = useBusy();
   const [q, setQ] = uS('');
   const [modal, setModal] = uS(null); // 'ingreso' | 'salida' | 'nuevo' | 'editar' | 'sync' | 'reposicion'
   const [reposicionForm, setReposicionForm] = uS(null); // { mat, cantidad, motivo, prioridad }
@@ -1198,6 +1204,11 @@ function MaterialesPage({ showToast }) {
   // documento) + items individuales. Para proveedor/persona, si el flag
   // "usar mismo X" está activo, se aplica el valor global a todos.
   const handleSubmitMovLote = async (tipo) => {
+    // Doble-click guard: si ya estamos procesando, ignorar clicks extra.
+    // Bug en prod: ARENAS GRUESA / PIEDRA CHANCADA aparecieron 2x con
+    // mismo timestamp 10:48 → stock cayó a -45. Causa: click rápido
+    // doble en "Registrar Salida".
+    if (busyMovLote) return;
     const itemsValidos = loteItems.filter(it => it.material_id && parseFloat(it.cantidad) > 0);
     if (itemsValidos.length === 0) {
       showToast('Agregá al menos un material con cantidad', 'red');
@@ -1226,10 +1237,12 @@ function MaterialesPage({ showToast }) {
       }
     }
 
+    setBusyMovLote(true);
     let exitosos = 0;
     let fallidos = 0;
     const errores = [];
 
+    try {
     for (const it of itemsValidos) {
       const material = materiales.find(m => m.id === it.material_id);
       if (!material) { fallidos++; continue; }
@@ -1375,6 +1388,11 @@ function MaterialesPage({ showToast }) {
     setForm({});
     setLoteItems([]);
     setFacturaVinculadaId(null);
+    } finally {
+      // Liberamos SIEMPRE — aunque haya excepción en el loop, el usuario
+      // debe poder reintentar sin recargar la app.
+      setBusyMovLote(false);
+    }
   };
 
   // Mapeo alerta → badge styling
@@ -1872,9 +1890,9 @@ function MaterialesPage({ showToast }) {
           <textarea className="fi" value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})} placeholder="Notas adicionales del lote completo…"/>
         </div>
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={()=>setModal(null)}>Cancelar</button>
-          <button className="btn btn-amber" onClick={()=>handleSubmitMovLote('ingreso')}>
-            <JxIcon name="check" size={13}/>Registrar Lote ({loteItems.filter(it => it.material_id && parseFloat(it.cantidad) > 0).length})
+          <button className="btn btn-ghost" disabled={busyMovLote} onClick={()=>setModal(null)}>Cancelar</button>
+          <button className="btn btn-amber" disabled={busyMovLote} onClick={()=>handleSubmitMovLote('ingreso')}>
+            <JxIcon name="check" size={13}/>{busyMovLote ? 'Registrando…' : `Registrar Lote (${loteItems.filter(it => it.material_id && parseFloat(it.cantidad) > 0).length})`}
           </button>
         </div>
       </Modal>}
@@ -2053,9 +2071,9 @@ function MaterialesPage({ showToast }) {
             <textarea className="fi" value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})} placeholder="Notas adicionales del lote…"/>
           </div>
           <div className="modal-actions">
-            <button className="btn btn-ghost" onClick={()=>setModal(null)}>Cancelar</button>
-            <button className="btn btn-amber" onClick={()=>handleSubmitMovLote('salida')}>
-              <JxIcon name="check" size={13}/>Registrar Salida ({loteItems.filter(it => it.material_id && parseFloat(it.cantidad) > 0).length})
+            <button className="btn btn-ghost" disabled={busyMovLote} onClick={()=>setModal(null)}>Cancelar</button>
+            <button className="btn btn-amber" disabled={busyMovLote} onClick={()=>handleSubmitMovLote('salida')}>
+              <JxIcon name="check" size={13}/>{busyMovLote ? 'Registrando…' : `Registrar Salida (${loteItems.filter(it => it.material_id && parseFloat(it.cantidad) > 0).length})`}
             </button>
           </div>
         </Modal>);
