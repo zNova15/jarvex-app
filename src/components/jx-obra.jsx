@@ -1042,20 +1042,15 @@ function PartidasPage({ showToast }) {
       const porCodigo = new Map(vivas.map(p => [String(p.codigo_delfin || ''), p]));
       const porCodigoNorm = new Map(vivas.map(p => [normalizeCodigo(p.codigo_delfin), p]));
       const filas = parsed.map(p => {
+        // Match SOLO por código (exacto → normalizado). Sin fallback por
+        // nombre — el usuario quiere que la equivalencia se determine por
+        // número de partida y no por similitud de descripción. La
+        // normalización tolera padding de ceros: 01.01.01 ↔ 1.01.1 ↔ 1.1.1.
         let partida = porCodigo.get(p.codigo);
         let matchType = 'exacto';
         if (!partida) {
           partida = porCodigoNorm.get(normalizeCodigo(p.codigo));
           if (partida) matchType = 'normalizado';
-        }
-        if (!partida) {
-          // Fuzzy fallback por nombre
-          let top = null;
-          for (const v of vivas) {
-            const s = fuzzyScore(p.descripcion, v.nombre_partida);
-            if (s >= 0.6 && (!top || s > top.score)) top = { v, score: s };
-          }
-          if (top) { partida = top.v; matchType = 'fuzzy'; }
         }
         if (!partida) {
           return {

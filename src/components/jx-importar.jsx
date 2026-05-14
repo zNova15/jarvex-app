@@ -356,22 +356,8 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
           if (porCodigo.has(t.codigo)) { exactas++; continue; }
           const n = normalizeCodigo(t.codigo);
           if (porCodigoNorm.has(n)) { normalizadas++; continue; }
-          // Fuzzy
-          let top = null;
-          for (const cand of vivas) {
-            const s = fuzzyScore(t.descripcion, cand.nombre_partida);
-            if (s >= 0.5 && (!top || s > top.score)) top = { cand, score: s };
-          }
-          if (top) {
-            sugerencias.push({
-              tareaCodigo: t.codigo, tareaDescripcion: t.descripcion,
-              candidatoCodigo: top.cand.codigo_delfin,
-              candidatoDescripcion: top.cand.nombre_partida,
-              score: top.score,
-            });
-          } else {
-            noMatch.push({ tareaCodigo: t.codigo, tareaDescripcion: t.descripcion });
-          }
+          // Sin fuzzy por nombre — el match es por número de partida.
+          noMatch.push({ tareaCodigo: t.codigo, tareaDescripcion: t.descripcion });
         }
         if (!cancelled) setGantPreview({
           computing: false, exactas, normalizadas, sugerencias, noMatch,
@@ -981,34 +967,18 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
 
     for (let i = 0; i < parsed.data.length; i++) {
       const t = parsed.data[i];
-      // 1) Exacto
+      // Match SOLO por código: exacto → normalizado (con tolerancia de
+      // padding de ceros). Sin fallback por descripción — el usuario
+      // pidió que las equivalencias se determinen por número de partida
+      // y no por similitud de nombres.
       let p = porCodigo.get(t.codigo);
       if (p) { await aplicar(p, t); exactas++; }
       else {
-        // 2) Normalizado (padding de ceros)
         const norm = normalizeCodigo(t.codigo);
         p = porCodigoNorm.get(norm);
         if (p) { await aplicar(p, t); normalizadas++; }
         else {
-          // 3) Fuzzy por descripción → SUGERENCIA (no aplicar)
-          let top = null;
-          for (const cand of vivas) {
-            const s = fuzzyScore(t.descripcion, cand.nombre_partida);
-            if (s >= 0.5 && (!top || s > top.score)) top = { cand, score: s };
-          }
-          if (top) {
-            sugerencias.push({
-              tareaCodigo: t.codigo,
-              tareaDescripcion: t.descripcion,
-              candidatoId: top.cand.id,
-              candidatoCodigo: top.cand.codigo_delfin,
-              candidatoDescripcion: top.cand.nombre_partida,
-              score: top.score,
-              tarea: t, // payload completo para aplicar después
-            });
-          } else {
-            noMatch.push({ row: t.codigo, error: `"${t.descripcion}" — sin partida similar` });
-          }
+          noMatch.push({ row: t.codigo, error: `"${t.descripcion}" — código ${t.codigo} no existe en partidas (ni con padding de ceros)` });
         }
       }
       if (i % 25 === 0) {
