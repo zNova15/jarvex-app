@@ -134,6 +134,71 @@ function emit(state) {
   listeners.forEach(cb => cb(state));
 }
 
+/**
+ * Resincronización forzada total: wipea las tablas que tenemos cacheadas
+ * en Dexie y vuelve a bajar TODO del server. Es la opción nuclear cuando
+ * algo se desincronizó y no sabemos cómo. Borra solo las tablas que no
+ * tienen pending locales (para no perder ediciones offline).
+ *
+ * Retorna { wiped, kept, total } con conteos por tabla.
+ */
+export async function forceFullResync() {
+  const wiped = [];
+  const kept = [];
+
+  // 1) Push de todo lo pendiente PRIMERO. Si hay algo en pending, lo
+  // intentamos subir para no perderlo.
+  if (navigator.onLine) {
+    try {
+      emit({ syncing: true, error: null });
+      await pushPendingOperations();
+    } catch (e) {
+      console.warn('[forceFullResync] push falló (continuamos):', e?.message);
+    }
+  }
+
+  // 2) Borrar las tablas master en Dexie + resetear lastSync por tabla
+  // para que el próximo pull traiga TODO desde 0.
+  for (const { tabla } of MASTER_TABLES) {
+    try {
+      // Verificar si quedan pendientes en esta tabla. Si sí, NO la
+      // borramos — el user perdería trabajo no sincronizado.
+      const pending = await db[tabla]
+        .where('sync_status').anyOf([
+          SYNC_STATUS.PENDING_CREATE,
+          SYNC_STATUS.PENDING_UPDATE,
+          SYNC_STATUS.PENDING_DELETE,
+          SYNC_STATUS.FAILED,
+        ]).count();
+      if (pending > 0) {
+        kept.push({ tabla, pending });
+        continue;
+      }
+      const before = await db[tabla].count();
+      await db[tabla].clear();
+      await setLastSync(tabla, null);
+      wiped.push({ tabla, count: before });
+    } catch (e) {
+      console.warn(`[forceFullResync] error wipeando ${tabla}:`, e?.message);
+    }
+  }
+
+  // 3) Re-pull completo.
+  try {
+    await pullMasterTables();
+    await pullTransactionalChanges();
+    emit({ syncing: false, lastSync: new Date(), error: null });
+    try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { source: 'force-resync' } })); } catch {}
+  } catch (e) {
+    emit({ syncing: false, error: e?.message || 'pull tras wipe falló' });
+    throw e;
+  }
+
+  const totalWiped = wiped.reduce((s, x) => s + x.count, 0);
+  const totalKept = kept.reduce((s, x) => s + x.pending, 0);
+  return { wiped, kept, total: totalWiped, keptTotal: totalKept };
+}
+
 export async function getPendingCount() {
   const counts = await Promise.all(
     TRANSACTIONAL_TABLES.map(t =>
@@ -197,6 +262,30 @@ export async function getFailedDetails() {
  *
  * Retorna { tablas, total } para feedback al usuario.
  */
+/**
+ * Borra todos los lastSync de sync_metadata y dispara un syncAll. La
+ * próxima ronda de pulls va a ser FULL PULL (sin filtro de updated_at),
+ * lo que activa el reconcile sweep: cualquier record en Dexie que
+ * SYNCED pero no esté en server se borra.
+ *
+ * Útil para recuperar dispositivos que quedaron divergentes (ej. otro
+ * device borró cosas y este no se enteró por un sync con código viejo).
+ *
+ * NO toca records con sync_status=pending_*: esas son ediciones locales
+ * que el usuario hizo y todavía no se subieron al server. Se preservan.
+ */
+export async function forceFullResync() {
+  try {
+    await db.sync_metadata.clear();
+  } catch (e) {
+    console.warn('[SyncEngine] forceFullResync: error limpiando sync_metadata', e);
+  }
+  if (navigator.onLine) {
+    setTimeout(() => { syncAll().catch(()=>{}); }, 100);
+  }
+  return { ok: true };
+}
+
 export async function retryAllFailed() {
   let total = 0;
   const tablas = [];
@@ -786,7 +875,39 @@ async function pullMasterTables() {
         console.warn(`[SyncEngine] pull ${tabla} ERROR:`, error.message, '— posible causa: RLS o permisos');
         continue;
       }
-      if (!data?.length) {
+      const dataArr = data || [];
+
+      // ── RECONCILE SWEEP en FULL PULL ──
+      // Caso típico: PC1 borró 100 partidas, PC2 hizo sync con código viejo
+      // ANTES de este fix (lastSync se actualizó a un momento posterior al
+      // delete). Después PC2 carga este código nuevo. La query incremental
+      // `updated_at > lastSync` devuelve 0 tombstones (ya pasaron). Y PC2
+      // sigue con las 100 partidas fantasma en Dexie.
+      //
+      // Fix: si estamos en full pull (lastSync era null), comparamos los
+      // IDs vivos del server contra los SYNCED locales. Lo que está en
+      // Dexie como SYNCED pero NO está en server → fue borrado, lo
+      // eliminamos. Skip los locales con sync_status=pending_* (son
+      // ediciones nuestras que aún no llegaron).
+      if (!lastSync) {
+        try {
+          const serverIds = new Set(dataArr.map(r => r.id));
+          const localesSynced = await db[tabla]
+            .where('sync_status').equals(SYNC_STATUS.SYNCED)
+            .toArray();
+          const aReconciliar = localesSynced
+            .filter(l => !serverIds.has(l.id))
+            .map(l => l.id);
+          if (aReconciliar.length) {
+            await db[tabla].bulkDelete(aReconciliar);
+            console.log(`[SyncEngine] reconcile ${tabla}: ${aReconciliar.length} records borrados (no estaban en server)`);
+          }
+        } catch (e) {
+          console.warn(`[SyncEngine] reconcile ${tabla} skip:`, e?.message || e);
+        }
+      }
+
+      if (!dataArr.length) {
         console.log(`[SyncEngine] pull ${tabla}: 0 registros nuevos`);
         await setLastSync(tabla, new Date().toISOString());
         continue;
@@ -794,8 +915,8 @@ async function pullMasterTables() {
 
       // Separar tombstones (soft-deleted desde otro device) de los vivos.
       // Esto SOLO produce tombstones cuando estamos en incremental.
-      const tombstones = data.filter(r => r.deleted_at);
-      const vivos      = data.filter(r => !r.deleted_at);
+      const tombstones = dataArr.filter(r => r.deleted_at);
+      const vivos      = dataArr.filter(r => !r.deleted_at);
 
       if (vivos.length) {
         await db[tabla].bulkPut(vivos);
