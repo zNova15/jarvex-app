@@ -783,17 +783,31 @@ function App() {
   // en lugar de solo silenciar con console.error.
   uEA(() => { window.__showToast = showToast; return () => { if (window.__showToast === showToast) delete window.__showToast; }; }, [showToast]);
 
-  // Escucha eventos de notificaciones realtime y muestra toast in-app inmediato
+  // Escucha eventos de notificaciones realtime y muestra toast in-app inmediato.
+  //
+  // ANTES: cada addNotif() de useRealtimeNotifications disparaba un toast.
+  // En una obra con 5+ usuarios activos esto generaba 1000+ toasts al admin
+  // (cada movimiento, cada asistencia, cada avance) → reportado por el user.
+  //
+  // AHORA:
+  //  · Tipos "ruidosos" (movimiento, asistencia, avance) NO muestran toast
+  //    — quedan solo en el badge de notificaciones del header.
+  //  · Tipos críticos (incidencia, stock_critico, change_request) sí toast,
+  //    pero throttle: máximo 1 cada 8 segundos por tipo. Si llegan varios
+  //    dentro de la ventana, mostramos uno coalescente: "3 nuevas
+  //    incidencias".
   uEA(() => {
     if (!auth?.profile) return;
-    const onNotif = (e) => {
-      const n = e?.detail;
-      if (!n) return;
-      const txt = `${n.titulo}${n.descripcion ? ' — ' + n.descripcion : ''}`;
+    const TIPOS_RUIDOSOS = new Set(['movimiento', 'mov_herramienta', 'asistencia', 'avance', 'obra_nueva']);
+    const ultimoToastPorTipo = new Map(); // tipo → { lastShownAt, pendingCount, pendingTimer }
+    const COALESCE_MS = 8000;
+
+    const dispararToast = (n, count = 1) => {
+      const txt = count > 1
+        ? `${count} nuevas notificaciones — ${n.titulo}`
+        : `${n.titulo}${n.descripcion ? ' — ' + n.descripcion : ''}`;
       const tipo = n.tipo === 'change_request' ? 'amber' : n.tipo === 'incidencia' ? 'red' : 'blue';
       showToast(txt, tipo);
-      // Browser Notification nativa: si tenemos permiso y la app no está enfocada,
-      // también lanzar una notif del sistema (la PWA la muestra incluso minimizada).
       try {
         if (typeof Notification !== 'undefined' &&
             Notification.permission === 'granted' &&
@@ -809,8 +823,44 @@ function App() {
         }
       } catch (_) {}
     };
+
+    const onNotif = (e) => {
+      const n = e?.detail;
+      if (!n) return;
+      // Tipos ruidosos → solo badge (que ya está actualizado por
+      // useRealtimeNotifications). NO toast.
+      if (TIPOS_RUIDOSOS.has(n.tipo)) return;
+
+      const ahora = Date.now();
+      const estado = ultimoToastPorTipo.get(n.tipo) || { lastShownAt: 0, pendingCount: 0, pendingTimer: null };
+      const desdeUltimo = ahora - estado.lastShownAt;
+
+      if (desdeUltimo >= COALESCE_MS) {
+        // Mostrar inmediato y resetear ventana
+        dispararToast(n);
+        ultimoToastPorTipo.set(n.tipo, { lastShownAt: ahora, pendingCount: 0, pendingTimer: null });
+      } else {
+        // Estamos dentro de la ventana — coalescer
+        const next = { ...estado, pendingCount: estado.pendingCount + 1 };
+        if (!estado.pendingTimer) {
+          next.pendingTimer = setTimeout(() => {
+            const cur = ultimoToastPorTipo.get(n.tipo);
+            if (cur && cur.pendingCount > 0) {
+              dispararToast(n, cur.pendingCount + 1);
+            }
+            ultimoToastPorTipo.set(n.tipo, { lastShownAt: Date.now(), pendingCount: 0, pendingTimer: null });
+          }, COALESCE_MS - desdeUltimo);
+        }
+        ultimoToastPorTipo.set(n.tipo, next);
+      }
+    };
     window.addEventListener('jarvex_new_notif', onNotif);
-    return () => window.removeEventListener('jarvex_new_notif', onNotif);
+    return () => {
+      window.removeEventListener('jarvex_new_notif', onNotif);
+      for (const v of ultimoToastPorTipo.values()) {
+        if (v.pendingTimer) clearTimeout(v.pendingTimer);
+      }
+    };
   }, [auth?.profile, showToast]);
 
   // Atajo Cmd+K / Ctrl+K → abrir búsqueda global

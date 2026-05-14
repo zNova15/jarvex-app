@@ -720,19 +720,15 @@ const TABLAS_NO_EN_SERVER = new Set([
 const _tablasCon404 = new Set();
 
 async function pullMasterTables() {
-  for (const { tabla, query } of MASTER_TABLES) {
+  for (const { tabla } of MASTER_TABLES) {
     if (TABLAS_NO_EN_SERVER.has(tabla) || _tablasCon404.has(tabla)) {
       continue; // skip silencioso
     }
     try {
       let lastSync = await getLastSync(tabla);
-      // Auto-recovery: si Dexie tiene 0 records de esta tabla pero hay
-      // lastSync grabado, ignoramos lastSync y hacemos full pull. Pasa
-      // cuando IndexedDB se borró parcialmente (quota, "Clear cache" pero
-      // no "Clear cookies", crash del browser) y los datos viejos
-      // quedaron inalcanzables porque su updated_at < lastSync. Sin esto,
-      // el almacenero ve 0 partidas para siempre aunque el server tenga
-      // 9145.
+      // Auto-recovery: si Dexie tiene 0 records pero hay lastSync grabado,
+      // ignoramos lastSync y hacemos full pull. Pasa cuando IndexedDB se
+      // borró parcialmente.
       if (lastSync && db[tabla]) {
         try {
           const localCount = await db[tabla].count();
@@ -742,35 +738,93 @@ async function pullMasterTables() {
           }
         } catch {}
       }
-      let q = query();
+
+      // CAMBIO CRÍTICO (bug de tombstones): antes el query() filtraba
+      // .is('deleted_at', null) siempre. Eso significaba que si otro
+      // device hacía un soft-delete (deleted_at = now), el record nunca
+      // llegaba a este device — ni por incremental ni por full pull —
+      // y se quedaba "fantasma" en Dexie aunque el server lo tuviera
+      // marcado como borrado.
+      //
+      // Ahora:
+      //  · Primer pull (sin lastSync): filtramos deleted_at IS NULL
+      //    por eficiencia (no descargar tombstones históricos).
+      //  · Incremental (con lastSync): traemos TODOS los updated desde
+      //    entonces, incluidos los soft-deleted, y abajo separamos
+      //    "vivos" de "tombstones" para hacer bulkPut + bulkDelete.
+      let q = supabase.from(tabla).select('*');
       if (lastSync) {
-        q = q.gte('updated_at', lastSync);
+        q = q.gt('updated_at', lastSync);
+      } else {
+        q = q.is('deleted_at', null);
       }
 
       const { data, error } = await q;
       if (error) {
-        // Detectar tabla inexistente (404 / PGRST205): la marcamos para
-        // skip durante esta sesión y NO romper el resto del sync.
         const code = error.code || '';
         const msg = String(error.message || '').toLowerCase();
         if (code === 'PGRST205' || msg.includes('could not find the table') || msg.includes('not found')) {
           _tablasCon404.add(tabla);
-          console.warn(`[SyncEngine] tabla "${tabla}" no existe en Supabase remoto — se omitirá hasta el próximo reload. Correr migrations.sql para crearla.`);
+          console.warn(`[SyncEngine] tabla "${tabla}" no existe en Supabase remoto — omitida hasta próximo reload.`);
           continue;
         }
-        console.warn(`[SyncEngine] pull ${tabla} ERROR:`, error.message, '— posible causa: RLS o falta de permisos');
+        // Si el error es por una columna inexistente (ej. deleted_at no existe
+        // en esa tabla), intentamos un fallback sin ese filtro.
+        if (code === '42703' || /column .* does not exist/i.test(msg)) {
+          console.warn(`[SyncEngine] pull ${tabla}: fallback sin filtros (la tabla no tiene la columna del filtro)`);
+          const { data: data2, error: error2 } = await supabase.from(tabla).select('*');
+          if (error2) {
+            console.warn(`[SyncEngine] pull ${tabla} ERROR:`, error2.message);
+            continue;
+          }
+          if (data2?.length) {
+            await db[tabla].bulkPut(data2);
+            await setLastSync(tabla, new Date().toISOString());
+          }
+          continue;
+        }
+        console.warn(`[SyncEngine] pull ${tabla} ERROR:`, error.message, '— posible causa: RLS o permisos');
         continue;
       }
       if (!data?.length) {
         console.log(`[SyncEngine] pull ${tabla}: 0 registros nuevos`);
+        await setLastSync(tabla, new Date().toISOString());
         continue;
       }
 
-      console.log(`[SyncEngine] pull ${tabla}: ${data.length} registros recibidos`);
-      await db[tabla].bulkPut(data);
+      // Separar tombstones (soft-deleted desde otro device) de los vivos.
+      // Esto SOLO produce tombstones cuando estamos en incremental.
+      const tombstones = data.filter(r => r.deleted_at);
+      const vivos      = data.filter(r => !r.deleted_at);
+
+      if (vivos.length) {
+        await db[tabla].bulkPut(vivos);
+      }
+      if (tombstones.length) {
+        // Antes de borrar local: si tenemos cambios locales pendientes en
+        // ese id (sync_status pending_*), NO los borramos — el SyncEngine
+        // los va a pushear y el server resolverá conflicto.
+        const ids = tombstones.map(t => t.id);
+        const localesPendientes = new Set();
+        try {
+          const locales = await db[tabla].where('id').anyOf(ids).toArray();
+          for (const l of locales) {
+            if (l.sync_status === SYNC_STATUS.PENDING_CREATE ||
+                l.sync_status === SYNC_STATUS.PENDING_UPDATE ||
+                l.sync_status === SYNC_STATUS.PENDING_DELETE) {
+              localesPendientes.add(l.id);
+            }
+          }
+        } catch {}
+        const idsBorrables = ids.filter(id => !localesPendientes.has(id));
+        if (idsBorrables.length) {
+          await db[tabla].bulkDelete(idsBorrables);
+          console.log(`[SyncEngine] pull ${tabla}: ${idsBorrables.length} tombstones aplicados (${ids.length - idsBorrables.length} skip por pending local)`);
+        }
+      }
+      console.log(`[SyncEngine] pull ${tabla}: ${vivos.length} vivos + ${tombstones.length} tombstones`);
       await setLastSync(tabla, new Date().toISOString());
     } catch (e) {
-      // Network errors u otros — no romper sync entero
       console.warn(`[SyncEngine] pull ${tabla} excepción:`, e?.message || e);
     }
   }
@@ -873,12 +927,31 @@ async function pullTransactionalChanges() {
 
     if (error || !data?.length) continue;
 
-    // Solo insertar/actualizar si el registro local NO tiene cambios pendientes
+    // Loop: aplicar vivos (put) o tombstones (delete) según deleted_at,
+    // respetando cambios locales pendientes (no sobreescribir nuestras
+    // ediciones que todavía no se pushearon).
+    let aplicados = 0, borrados = 0, skip = 0;
     for (const serverRecord of data) {
       const local = await db[tabla].get(serverRecord.id);
-      if (local && local.sync_status !== SYNC_STATUS.SYNCED) continue;
+      if (local && local.sync_status !== SYNC_STATUS.SYNCED) { skip++; continue; }
 
-      await db[tabla].put({ ...serverRecord, sync_status: SYNC_STATUS.SYNCED });
+      if (serverRecord.deleted_at) {
+        // Tombstone — el record fue soft-deleted en otro device.
+        // Antes lo guardábamos con sync_status=synced y deleted_at, lo
+        // cual hacía que la UI lo filtrara pero Dexie crecía indefinido.
+        // Ahora lo borramos localmente — está soft-deleted en server,
+        // si vuelve un día llegará por updated_at otra vez.
+        if (local) {
+          await db[tabla].delete(serverRecord.id);
+          borrados++;
+        }
+      } else {
+        await db[tabla].put({ ...serverRecord, sync_status: SYNC_STATUS.SYNCED });
+        aplicados++;
+      }
+    }
+    if (aplicados || borrados || skip) {
+      console.log(`[SyncEngine] pull tx ${tabla}: ${aplicados} aplicados, ${borrados} tombstones, ${skip} skip por pending local`);
     }
 
     await setLastSync(`${tabla}_pull`, new Date().toISOString());

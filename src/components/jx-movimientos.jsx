@@ -1276,9 +1276,16 @@ function MovMaterialesPage({ showToast }) {
                         );
                       })()}
                     </td>
-                    <td>{m.sync_status && m.sync_status !== 'synced'
-                      ? <span className="badge b-amber" title={m.sync_status}>⏱</span>
-                      : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}
+                    <td>{(() => {
+                      const s = m.sync_status;
+                      if (s === 'failed') {
+                        return <span className="badge b-red" title={`No sincronizado: ${m._last_error || 'error'}`}>⚠ Error</span>;
+                      }
+                      if (s && s !== 'synced') {
+                        return <span className="badge b-amber" title={`Pendiente: ${s}`}>⏱ Local</span>;
+                      }
+                      return <span style={{color:'var(--green)',fontSize:11}} title="Sincronizado con el servidor">✓</span>;
+                    })()}
                     </td>
                     {isAdmin && (
                       <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
@@ -1575,9 +1582,16 @@ function MovHerramientasPage({ showToast }) {
                     <td>{m.estado_salida ? <span className={`badge ${EST_HER[m.estado_salida]||'b-gray'}`} style={{ textTransform:'capitalize' }}>{m.estado_salida}</span> : <span className="col-m">—</span>}</td>
                     <td>{m.estado_devolucion ? <span className={`badge ${EST_HER[m.estado_devolucion]||'b-gray'}`} style={{ textTransform:'capitalize' }}>{m.estado_devolucion}</span> : <span className="col-m">—</span>}</td>
                     <td className="col-m" style={{ color: danado?'var(--red)':'', fontSize:11 }}>{m.observaciones || '—'}</td>
-                    <td>{m.sync_status && m.sync_status !== 'synced'
-                      ? <span className="badge b-amber" title={m.sync_status}>⏱</span>
-                      : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}
+                    <td>{(() => {
+                      const s = m.sync_status;
+                      if (s === 'failed') {
+                        return <span className="badge b-red" title={`No sincronizado: ${m._last_error || 'error'}`}>⚠ Error</span>;
+                      }
+                      if (s && s !== 'synced') {
+                        return <span className="badge b-amber" title={`Pendiente: ${s}`}>⏱ Local</span>;
+                      }
+                      return <span style={{color:'var(--green)',fontSize:11}} title="Sincronizado con el servidor">✓</span>;
+                    })()}
                     </td>
                     {isAdmin && (
                       <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
