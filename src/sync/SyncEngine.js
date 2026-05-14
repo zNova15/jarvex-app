@@ -353,15 +353,28 @@ async function pushTablePending(tabla) {
   // En ambos: PGRST204 + mensaje "column of" → reset a PENDING_UPDATE.
   const stuckByPGRST204 = await db[tabla]
     .where('sync_status').equals(SYNC_STATUS.FAILED)
-    .filter(r => r._last_error_code === 'PGRST204'
-                 && /column of/i.test(r._last_error || ''))
+    .filter(r => (
+      // a) PGRST204 + "column of" → schema cache desfasado
+      (r._last_error_code === 'PGRST204' && /column of/i.test(r._last_error || ''))
+      // b) Postgres 428C9 → "cannot insert a non-DEFAULT value into column X"
+      //    (generated column). Después de agregar el campo a TRIGGER_MANAGED_FIELDS,
+      //    el retry queda limpio. Sentry JARVEX-APP-8.
+      || (r._last_error_code === '428C9')
+    ))
     .toArray();
   for (const r of stuckByPGRST204) {
+    // Si nunca alcanzó server (version=1 ⇒ creación pendiente) volvemos a
+    // PENDING_CREATE; si fue update fallido (version>1) volvemos a UPDATE.
+    // Antes siempre se reseteaba a UPDATE — eso rompía creates porque el
+    // pushUpdate no encontraba el record en server.
+    const restoreStatus = (Number(r.version) || 1) <= 1
+      ? SYNC_STATUS.PENDING_CREATE
+      : SYNC_STATUS.PENDING_UPDATE;
     await db[tabla].update(r.id, {
-      sync_status: SYNC_STATUS.PENDING_UPDATE,
+      sync_status: restoreStatus,
       _sync_retries: 0,
     });
-    console.info(`[SyncEngine] self-heal PGRST204: ${tabla}/${r.id} reset a PENDING_UPDATE`);
+    console.info(`[SyncEngine] self-heal PGRST204: ${tabla}/${r.id} reset a ${restoreStatus}`);
   }
 
   // Self-heal #2: records FAILED por causas NO permanentes (no RLS, no
@@ -381,11 +394,17 @@ async function pushTablePending(tabla) {
     })
     .toArray();
   for (const r of stuckTransients) {
+    // Mismo razonamiento: si nunca llegó al server, debe seguir como
+    // pending_create. Sin esto, los retry transient hacían UPDATE sobre
+    // un record inexistente y volvían a fallar.
+    const restoreStatus = (Number(r.version) || 1) <= 1
+      ? SYNC_STATUS.PENDING_CREATE
+      : SYNC_STATUS.PENDING_UPDATE;
     await db[tabla].update(r.id, {
-      sync_status: SYNC_STATUS.PENDING_UPDATE,
+      sync_status: restoreStatus,
       _sync_retries: 0,
     });
-    console.info(`[SyncEngine] self-heal transient: ${tabla}/${r.id} reset (FAILED >10min)`);
+    console.info(`[SyncEngine] self-heal transient: ${tabla}/${r.id} reset a ${restoreStatus} (FAILED >10min)`);
   }
 
   // Mantener el orden create → update → delete dentro de la misma tabla
@@ -455,6 +474,17 @@ const TRIGGER_MANAGED_FIELDS = {
   ]),
   epps: new Set([
     'stock_actual', 'total_entradas', 'total_salidas', 'alerta',
+  ]),
+  // Sentry JARVEX-APP-8: `costo_presupuestado` es una GENERATED COLUMN
+  // en Postgres (cantidad_presupuestada * precio_presupuestado).
+  // Mandarla en el INSERT tira código 428C9 ("cannot insert a non-DEFAULT
+  // value into column 'costo_presupuestado'") y el record queda
+  // permanentemente en FAILED tras 5 retries.
+  insumos_partida: new Set([
+    'costo_presupuestado',
+  ]),
+  insumos_partida_versionadas: new Set([
+    'costo_presupuestado',
   ]),
 };
 
