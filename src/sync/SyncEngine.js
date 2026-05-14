@@ -147,6 +147,81 @@ export async function getPendingCount() {
   return counts.reduce((a, b) => a + b, 0);
 }
 
+/**
+ * Cuenta records FAILED (push fracasó tras 5 retries o por RLS).
+ * Antes el badge solo mostraba `pending` — si todo lo pendiente fallaba,
+ * el contador volvía a 0 y la UI decía "Sincronizado" aunque hubieran
+ * datos perdidos. La auditoría del consejo lo flageó como bug #1.
+ */
+export async function getFailedCount() {
+  const counts = await Promise.all(
+    TRANSACTIONAL_TABLES.map(t =>
+      db[t].where('sync_status').equals(SYNC_STATUS.FAILED).count()
+    )
+  );
+  return counts.reduce((a, b) => a + b, 0);
+}
+
+/**
+ * Devuelve el desglose de records FAILED por tabla con info útil para
+ * mostrar al usuario en el modal de detalle.
+ */
+export async function getFailedDetails() {
+  const out = [];
+  for (const t of TRANSACTIONAL_TABLES) {
+    const rows = await db[t].where('sync_status').equals(SYNC_STATUS.FAILED).toArray();
+    if (rows.length === 0) continue;
+    out.push({
+      tabla: t,
+      label: TABLA_TO_MODULO[t] || t,
+      count: rows.length,
+      rows: rows.slice(0, 50).map(r => ({
+        id: r.id,
+        codigo: r.codigo || r.codigo_delfin || r.serie_correlativo || r.id.slice(0, 8),
+        descripcion: r.nombre_material || r.nombre_partida || r.descripcion || r.nombre_insumo || '',
+        error: r._last_error || 'Error desconocido',
+        errorCode: r._last_error_code || null,
+        isRLS: !!r._last_error_is_rls,
+        retries: r._sync_retries || 0,
+        updatedAt: r.updated_at,
+      })),
+    });
+  }
+  return out;
+}
+
+/**
+ * Resetea TODOS los records FAILED a su estado de pending correspondiente
+ * (PENDING_CREATE si version<=1, PENDING_UPDATE si >1). El próximo tick
+ * del SyncEngine los reintentará.
+ *
+ * Retorna { tablas, total } para feedback al usuario.
+ */
+export async function retryAllFailed() {
+  let total = 0;
+  const tablas = [];
+  for (const t of TRANSACTIONAL_TABLES) {
+    const rows = await db[t].where('sync_status').equals(SYNC_STATUS.FAILED).toArray();
+    if (rows.length === 0) continue;
+    for (const r of rows) {
+      const restoreStatus = (Number(r.version) || 1) <= 1
+        ? SYNC_STATUS.PENDING_CREATE
+        : SYNC_STATUS.PENDING_UPDATE;
+      await db[t].update(r.id, {
+        sync_status: restoreStatus,
+        _sync_retries: 0,
+      });
+      total++;
+    }
+    tablas.push({ tabla: t, count: rows.length });
+  }
+  // Disparar push inmediato
+  if (total > 0 && navigator.onLine) {
+    setTimeout(() => { syncAll().catch(()=>{}); }, 100);
+  }
+  return { tablas, total };
+}
+
 export async function syncAll() {
   if (syncInProgress || !navigator.onLine) return;
   syncInProgress = true;
@@ -171,10 +246,10 @@ export async function syncAll() {
     console.log('[SyncEngine] 5/5 pull de transactional (movimientos, asistencia, evidencias)…');
     await pullTransactionalChanges();
 
-    const pending = await getPendingCount();
+    const [pending, failed] = await Promise.all([getPendingCount(), getFailedCount()]);
     const ms = Math.round(performance.now() - t0);
-    console.log(`[SyncEngine] ✓ syncAll OK en ${ms}ms · pending=${pending}`);
-    emit({ syncing: false, pending, lastSync: new Date(), error: null });
+    console.log(`[SyncEngine] ✓ syncAll OK en ${ms}ms · pending=${pending} failed=${failed}`);
+    emit({ syncing: false, pending, failed, lastSync: new Date(), error: null });
   } catch (err) {
     console.error('[SyncEngine] ✗ Error en syncAll:', err);
     emit({ syncing: false, error: err.message });

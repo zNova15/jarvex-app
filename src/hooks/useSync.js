@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
-import { syncAll, onSyncChange, getPendingCount } from '../sync/SyncEngine';
+import { syncAll, onSyncChange, getPendingCount, getFailedCount } from '../sync/SyncEngine';
 
 export function useSync() {
   const [state, setState] = useState({
     syncing: false,
     pending: 0,
+    failed: 0,
     lastSync: null,
     error: null,
   });
@@ -12,10 +13,20 @@ export function useSync() {
   useEffect(() => {
     const unsub = onSyncChange((newState) => setState(s => ({ ...s, ...newState })));
 
-    // Obtener pendientes iniciales
-    getPendingCount().then(pending => setState(s => ({ ...s, pending })));
+    // Obtener contadores iniciales (pendientes Y failed).
+    Promise.all([getPendingCount(), getFailedCount()])
+      .then(([pending, failed]) => setState(s => ({ ...s, pending, failed })));
 
-    return unsub;
+    // Refresh defensivo cada 10s del contador FAILED. SyncEngine emite
+    // tras cada tick, pero entre ticks un push puede pasar un record a
+    // FAILED localmente; este refresh garantiza que el badge no mienta
+    // por más de 10s.
+    const interval = setInterval(() => {
+      Promise.all([getPendingCount(), getFailedCount()])
+        .then(([pending, failed]) => setState(s => ({ ...s, pending, failed })));
+    }, 10_000);
+
+    return () => { unsub(); clearInterval(interval); };
   }, []);
 
   const sync = useCallback(() => syncAll(), []);

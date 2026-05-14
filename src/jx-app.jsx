@@ -1,5 +1,6 @@
 import React from "react";
 import { trackPageView } from "./lib/posthog.js";
+import SyncDetailModal from "./components/SyncDetailModal.jsx";
 const { useState: uSA, useEffect: uEA, useCallback: uCA } = React;
 
 // Hook compartido: detecta viewport móvil
@@ -747,6 +748,7 @@ function App() {
   );
   const [toast, setToast]           = uSA(null);
   const [obraActiva, setObraActiva] = uSA(null);
+  const [syncDetailOpen, setSyncDetailOpen] = uSA(false);
 
   // PostHog: trackear cambio de pantalla. Esto responde la pregunta del
   // Council "¿qué pantallas se usan?" — cada vez que el user navega
@@ -885,11 +887,16 @@ function App() {
     return () => window.removeEventListener('obra_activa_change', onChange);
   }, [auth?.profile, sync.lastSync]);
 
+  // Badge honesto. Prioridades:
+  //   offline > syncing > FAILED > pending > synced
+  // El consejo flageó que mostrar "Sincronizado" mientras hay records
+  // en FAILED es la mentira que causó los problemas de producción.
   let syncStatus = null;
-  if (!online) syncStatus = { color:'#F59E0B', label:'Sin conexión', bg:'rgba(245,158,11,0.12)' };
-  else if (sync.syncing) syncStatus = { color:'#60A5FA', label:'Sincronizando…', bg:'rgba(96,165,250,0.12)', syncing:true };
-  else if (sync.pending > 0) syncStatus = { color:'#F59E0B', label:`${sync.pending} pendiente${sync.pending>1?'s':''}`, bg:'rgba(245,158,11,0.12)' };
-  else syncStatus = { color:'#34D399', label:'Sincronizado', bg:'rgba(52,211,153,0.1)' };
+  if (!online) syncStatus = { color:'#F59E0B', label:'Sin conexión', bg:'rgba(245,158,11,0.12)', kind:'offline' };
+  else if (sync.syncing) syncStatus = { color:'#60A5FA', label:'Sincronizando…', bg:'rgba(96,165,250,0.12)', syncing:true, kind:'syncing' };
+  else if (sync.failed > 0) syncStatus = { color:'#EF4444', label:`${sync.failed} con error · click para revisar`, bg:'rgba(239,68,68,0.14)', kind:'failed' };
+  else if (sync.pending > 0) syncStatus = { color:'#F59E0B', label:`${sync.pending} pendiente${sync.pending>1?'s':''}`, bg:'rgba(245,158,11,0.12)', kind:'pending' };
+  else syncStatus = { color:'#34D399', label:'Sincronizado', bg:'rgba(52,211,153,0.1)', kind:'synced' };
 
   // Guard de acceso por rol: si el rol del usuario no puede ver esta página
   // (según __canSeeSidebarItem / matriz de permisos), mostramos un mensaje
@@ -961,13 +968,21 @@ function App() {
                 obraActiva={obraActiva}
                 syncStatus={syncStatus}
                 notifs={notifs}
-                onSync={()=>sync.sync && sync.sync()}
+                onSync={() => {
+                  // Si hay records FAILED → abrir modal de detalle (no
+                  // tiene sentido reintentar a ciegas). Si todo OK,
+                  // disparar un sync manual. Si solo hay pending,
+                  // también abre el modal para que el user vea qué falta.
+                  if ((sync.failed || 0) > 0 || (sync.pending || 0) > 0) setSyncDetailOpen(true);
+                  else if (sync.sync) sync.sync();
+                }}
                 isMobile={isMobile}/>
         <div style={{ flex:1, overflow:'hidden', background:'var(--bg-p)' }} key={`${page}_${permsVer}`}>
           {renderPage()}
         </div>
       </div>
       {toast && <Toast key={toast.key} message={toast.msg} type={toast.type} onDone={()=>setToast(null)}/>}
+      <SyncDetailModal open={syncDetailOpen} onClose={()=>setSyncDetailOpen(false)} showToast={showToast}/>
     </div>
   );
 }
