@@ -695,8 +695,10 @@ function computeAggregates(node) {
     leafCount += 1;
   }
 
-  // partida asociada al nodo
-  if (node.partida) {
+  // partida asociada al nodo — solo cuenta si es hoja real (sin hijos).
+  // Los capítulos existen como fila pero su presupuesto se agrega desde
+  // las hojas; contarlos acá los duplicaría e inflaría el conteo.
+  if (node.partida && node.children.size === 0) {
     const ctP = Number(node.partida.costo_total_presupuestado || 0);
     const ctR = Number(node.partida.costo_real_acumulado || 0);
     presupuesto += ctP;
@@ -950,8 +952,11 @@ function TreeNode({ node, visibleCodes, expanded, onToggle, searchTerms, isAdmin
       </div>
       {isOpen && (
         <>
-          {/* partida asociada al nodo (raro, pero posible) */}
-          {node.partida && hasChildren && (
+          {/* Partida asociada a un nodo con hijos: el nombre ya se muestra
+              en el header del capítulo. Solo la renderamos como fila aparte
+              si tiene presupuesto propio (caso raro de partida-con-subpartidas);
+              los capítulos puros (costo 0) no generan fila duplicada. */}
+          {node.partida && hasChildren && Number(node.partida.costo_total_presupuestado || 0) > 0 && (
             <PartidaLeafRow
               partida={node.partida}
               depth={depth + 1}
@@ -1041,33 +1046,56 @@ function PartidasPage({ showToast }) {
       const vivas = (partidas || []).filter(p => !p.deleted_at);
       const porCodigo = new Map(vivas.map(p => [String(p.codigo_delfin || ''), p]));
       const porCodigoNorm = new Map(vivas.map(p => [normalizeCodigo(p.codigo_delfin), p]));
-      const filas = parsed.map(p => {
-        // Match SOLO por código (exacto → normalizado). Sin fallback por
-        // nombre — el usuario quiere que la equivalencia se determine por
-        // número de partida y no por similitud de descripción. La
-        // normalización tolera padding de ceros: 01.01.01 ↔ 1.01.1 ↔ 1.1.1.
-        let partida = porCodigo.get(p.codigo);
-        let matchType = 'exacto';
-        if (!partida) {
-          partida = porCodigoNorm.get(normalizeCodigo(p.codigo));
-          if (partida) matchType = 'normalizado';
+      // Mapa de TODOS los prefijos jerárquicos de las partidas existentes →
+      // código canónico (con el padding real que usa el árbol). Las partidas
+      // de la BD son las hojas; los capítulos NO existen como fila. Si un
+      // código del Excel no matchea una partida pero SÍ es prefijo de alguna
+      // hoja, entonces es un capítulo/título que hay que CREAR con su nombre.
+      const nodeCodeByNorm = new Map();
+      for (const p of vivas) {
+        const segs = String(p.codigo_delfin || '').split('.').filter(Boolean);
+        for (let i = 1; i < segs.length; i++) { // i<length: solo prefijos, no la hoja entera
+          const pref = segs.slice(0, i).join('.');
+          const k = normalizeCodigo(pref);
+          if (!nodeCodeByNorm.has(k)) nodeCodeByNorm.set(k, pref);
         }
-        if (!partida) {
+      }
+      const filas = parsed.map(p => {
+        // Match SOLO por código (exacto → normalizado). La normalización
+        // tolera padding de ceros: 01.01.01 ↔ 1.01.1 ↔ 1.1.1.
+        const norm = normalizeCodigo(p.codigo);
+        const partida = porCodigo.get(p.codigo) || porCodigoNorm.get(norm) || null;
+        if (partida) {
+          const matchType = porCodigo.has(p.codigo) ? 'exacto' : 'normalizado';
+          const scoreNombre = fuzzyScore(p.descripcion, partida.nombre_partida || '');
+          const sonIguales = (partida.nombre_partida || '').trim().toUpperCase() === p.descripcion.trim().toUpperCase();
           return {
-            codigo: p.codigo, descExcel: p.descripcion, nivel: p.nivel,
-            partidaActual: null, matchType: 'sin_match',
-            scoreNombre: 0, sonIguales: false, aprobada: false,
+            codigo: p.codigo, codigoCanonico: partida.codigo_delfin,
+            descExcel: p.descripcion, nivel: p.nivel,
+            partidaActual: partida, matchType,
+            accion: sonIguales ? 'igual' : 'actualizar',
+            scoreNombre, sonIguales,
+            aprobada: !sonIguales && scoreNombre >= 0.3,
           };
         }
-        const scoreNombre = fuzzyScore(p.descripcion, partida.nombre_partida || '');
-        const sonIguales = (partida.nombre_partida || '').trim().toUpperCase() === p.descripcion.trim().toUpperCase();
+        // No existe como partida. ¿Es un capítulo (prefijo de alguna hoja)?
+        const canonico = nodeCodeByNorm.get(norm) || null;
+        if (canonico) {
+          return {
+            codigo: p.codigo, codigoCanonico: canonico,
+            descExcel: p.descripcion, nivel: p.nivel,
+            partidaActual: null, matchType: 'crear',
+            accion: 'crear', scoreNombre: 0, sonIguales: false,
+            aprobada: true,
+          };
+        }
+        // Ni partida ni capítulo conocido — código huérfano.
         return {
-          codigo: p.codigo, descExcel: p.descripcion, nivel: p.nivel,
-          partidaActual: partida, matchType,
-          scoreNombre, sonIguales,
-          // Default: aprobada si hay match Y nombres distintos Y score nombre >= 0.3
-          // (es decir, son la misma partida pero con texto diferente)
-          aprobada: !sonIguales && scoreNombre >= 0.3,
+          codigo: p.codigo, codigoCanonico: null,
+          descExcel: p.descripcion, nivel: p.nivel,
+          partidaActual: null, matchType: 'sin_match',
+          accion: 'sin_match', scoreNombre: 0, sonIguales: false,
+          aprobada: false,
         };
       });
       setComparativoRows(filas);
@@ -1079,19 +1107,21 @@ function PartidasPage({ showToast }) {
     }
   };
 
-  // Aplicar los cambios aprobados (actualizar nombre_partida en BD)
+  // Aplicar los cambios aprobados: actualiza nombres de partidas existentes
+  // y CREA las filas de capítulo que faltan (con su nombre real del Excel).
   const aplicarComparativo = async () => {
     if (!comparativoRows || !canWrite) return;
-    const aprobadas = comparativoRows.filter(r => r.aprobada && r.partidaActual && !r.sonIguales);
-    if (!aprobadas.length) {
-      showToast?.('No marcaste ninguna fila para actualizar', 'amber');
+    const aActualizar = comparativoRows.filter(r => r.aprobada && r.accion === 'actualizar' && r.partidaActual);
+    const aCrear = comparativoRows.filter(r => r.aprobada && r.accion === 'crear' && r.codigoCanonico);
+    if (!aActualizar.length && !aCrear.length) {
+      showToast?.('No marcaste ninguna fila para aplicar', 'amber');
       return;
     }
     setComparativoBusy(true);
     const now = new Date().toISOString();
-    let n = 0;
+    let nUpd = 0, nNew = 0;
     try {
-      for (const r of aprobadas) {
+      for (const r of aActualizar) {
         const p = r.partidaActual;
         await window.__db.partidas.update(p.id, {
           nombre_partida: r.descExcel,
@@ -1099,15 +1129,42 @@ function PartidasPage({ showToast }) {
           version: (p.version ?? 0) + 1,
           sync_status: p.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
         });
-        n++;
+        nUpd++;
+      }
+      if (aCrear.length) {
+        // Capítulo: costo 0 — el árbol agrega el presupuesto desde las hojas,
+        // ponerle un costo propio lo duplicaría.
+        const nuevos = aCrear.map(r => {
+          const id = window.__newId();
+          const segs = String(r.codigoCanonico).split('.').filter(Boolean);
+          return {
+            id, obra_id: obraId,
+            codigo_delfin: r.codigoCanonico,
+            nombre_partida: r.descExcel,
+            unidad: null,
+            metrado_contratado: 0,
+            precio_unitario_pres: 0,
+            costo_total_presupuestado: 0,
+            estado: 'pendiente',
+            nivel: segs.length,
+            parent_codigo: segs.length > 1 ? segs.slice(0, -1).join('.') : null,
+            orden: 0,
+            created_by: userId, updated_by: userId,
+            created_at: now, updated_at: now,
+            version: 1, sync_status: 'pending_create', last_synced_at: null,
+            idempotency_key: `${userId}_partidas_${id}`,
+          };
+        });
+        await window.__db.partidas.bulkPut(nuevos);
+        nNew = nuevos.length;
       }
       try { window.__logAudit?.({
         action: 'update', table: 'partidas', recordId: null,
-        newData: { actualizadas: n }, reason: 'Comparativo con presupuesto: actualización masiva de nombres',
+        newData: { actualizadas: nUpd, creadas: nNew }, reason: 'Comparativo con presupuesto: nombres + capítulos',
       }); } catch {}
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'partidas' } })); } catch {}
       try { window.dispatchEvent(new Event('online')); } catch {}
-      showToast?.(`${n} nombres de partida actualizados`, 'green');
+      showToast?.(`${nUpd} nombres actualizados · ${nNew} capítulos creados`, 'green');
       setComparativoOpen(false);
       setComparativoFile(null);
       setComparativoRows(null);
@@ -1121,21 +1178,23 @@ function PartidasPage({ showToast }) {
   // KPIs del comparativo para mostrar en el header del modal
   const comparativoKpis = uMO(() => {
     if (!comparativoRows) return null;
-    let aCambiar = 0, iguales = 0, sinMatch = 0, total = comparativoRows.length;
+    let aCambiar = 0, aCrear = 0, iguales = 0, sinMatch = 0, total = comparativoRows.length;
     for (const r of comparativoRows) {
-      if (!r.partidaActual) sinMatch++;
-      else if (r.sonIguales) iguales++;
-      else aCambiar++;
+      if (r.accion === 'actualizar') aCambiar++;
+      else if (r.accion === 'crear') aCrear++;
+      else if (r.accion === 'igual') iguales++;
+      else sinMatch++;
     }
-    return { total, aCambiar, iguales, sinMatch };
+    return { total, aCambiar, aCrear, iguales, sinMatch };
   }, [comparativoRows]);
 
   const comparativoFiltradas = uMO(() => {
     if (!comparativoRows) return [];
     return comparativoRows.filter(r => {
-      if (comparativoFilter === 'a_cambiar') return r.partidaActual && !r.sonIguales;
-      if (comparativoFilter === 'iguales') return r.partidaActual && r.sonIguales;
-      if (comparativoFilter === 'no_encontradas') return !r.partidaActual;
+      if (comparativoFilter === 'a_cambiar') return r.accion === 'actualizar';
+      if (comparativoFilter === 'a_crear') return r.accion === 'crear';
+      if (comparativoFilter === 'iguales') return r.accion === 'igual';
+      if (comparativoFilter === 'no_encontradas') return r.accion === 'sin_match';
       return true;
     });
   }, [comparativoRows, comparativoFilter]);
@@ -1750,7 +1809,7 @@ function PartidasPage({ showToast }) {
             {comparativoRows && comparativoKpis && (
               <>
                 <div style={{ padding:'10px 20px', borderBottom:'1px solid var(--border)', display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
-                  <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:8, flex:1, minWidth:300 }}>
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:8, flex:1, minWidth:300 }}>
                     <div style={{ textAlign:'center', padding:6, background:'rgba(255,255,255,0.04)', borderRadius:6 }}>
                       <div style={{ fontSize:18, fontWeight:800 }}>{comparativoKpis.total}</div>
                       <div style={{ fontSize:9.5, color:'var(--tm)', textTransform:'uppercase' }}>Total Excel</div>
@@ -1758,6 +1817,10 @@ function PartidasPage({ showToast }) {
                     <div style={{ textAlign:'center', padding:6, background:'rgba(242,183,5,0.10)', borderRadius:6, border:'1px solid rgba(242,183,5,0.3)' }}>
                       <div style={{ fontSize:18, fontWeight:800, color:'var(--amber)' }}>{comparativoKpis.aCambiar}</div>
                       <div style={{ fontSize:9.5, color:'var(--tm)', textTransform:'uppercase' }}>A actualizar</div>
+                    </div>
+                    <div style={{ textAlign:'center', padding:6, background:'rgba(52,152,219,0.10)', borderRadius:6, border:'1px solid rgba(52,152,219,0.3)' }}>
+                      <div style={{ fontSize:18, fontWeight:800, color:'var(--blue)' }}>{comparativoKpis.aCrear}</div>
+                      <div style={{ fontSize:9.5, color:'var(--tm)', textTransform:'uppercase' }}>Capítulos a crear</div>
                     </div>
                     <div style={{ textAlign:'center', padding:6, background:'rgba(46,204,113,0.10)', borderRadius:6, border:'1px solid rgba(46,204,113,0.3)' }}>
                       <div style={{ fontSize:18, fontWeight:800, color:'var(--green)' }}>{comparativoKpis.iguales}</div>
@@ -1771,9 +1834,10 @@ function PartidasPage({ showToast }) {
                 </div>
 
                 <div style={{ padding:'10px 20px', borderBottom:'1px solid var(--border)', display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
-                  <div style={{ display:'flex', gap:4, background:'rgba(0,0,0,0.2)', padding:3, borderRadius:6 }}>
+                  <div style={{ display:'flex', gap:4, background:'rgba(0,0,0,0.2)', padding:3, borderRadius:6, flexWrap:'wrap' }}>
                     {[
                       { k: 'a_cambiar', label: `A actualizar (${comparativoKpis.aCambiar})` },
+                      { k: 'a_crear', label: `A crear (${comparativoKpis.aCrear})` },
                       { k: 'iguales', label: `Iguales (${comparativoKpis.iguales})` },
                       { k: 'no_encontradas', label: `Sin match (${comparativoKpis.sinMatch})` },
                       { k: 'todas', label: `Todas (${comparativoKpis.total})` },
@@ -1785,8 +1849,8 @@ function PartidasPage({ showToast }) {
                       </button>
                     ))}
                   </div>
-                  <button className="btn btn-ghost btn-sm" onClick={() => setComparativoRows(prev => prev.map(r => (r.partidaActual && !r.sonIguales) ? { ...r, aprobada: true } : r))}>
-                    Marcar todas las "a actualizar"
+                  <button className="btn btn-ghost btn-sm" onClick={() => setComparativoRows(prev => prev.map(r => (r.accion === 'actualizar' || r.accion === 'crear') ? { ...r, aprobada: true } : r))}>
+                    Marcar todo lo aplicable
                   </button>
                   <button className="btn btn-ghost btn-sm" onClick={() => setComparativoRows(prev => prev.map(r => ({ ...r, aprobada: false })))}>
                     Desmarcar todas
@@ -1812,20 +1876,22 @@ function PartidasPage({ showToast }) {
                       {comparativoFiltradas.slice(0, 500).map((r, idx) => {
                         const matchBadge = r.matchType === 'exacto' ? { bg:'rgba(46,204,113,0.15)', c:'var(--green)', t:'Exacto' }
                           : r.matchType === 'normalizado' ? { bg:'rgba(52,152,219,0.15)', c:'var(--blue)', t:'Normalizado' }
+                          : r.matchType === 'crear' ? { bg:'rgba(52,152,219,0.15)', c:'var(--blue)', t:'Crear capítulo' }
                           : r.matchType === 'fuzzy' ? { bg:'rgba(242,183,5,0.15)', c:'var(--amber)', t:'Por nombre' }
                           : { bg:'rgba(231,76,60,0.12)', c:'var(--red)', t:'Sin match' };
                         const sc = r.scoreNombre;
                         const scColor = sc >= 0.7 ? 'var(--green)' : sc >= 0.4 ? 'var(--amber)' : 'var(--red)';
+                        const aplicable = r.accion === 'actualizar' || r.accion === 'crear';
                         return (
                           <tr key={idx} style={{ background: r.aprobada ? 'rgba(46,204,113,0.05)' : (r.sonIguales ? 'rgba(46,204,113,0.02)' : 'transparent') }}>
                             <td style={{ textAlign:'center' }}>
-                              {r.partidaActual && !r.sonIguales ? (
+                              {aplicable ? (
                                 <input type="checkbox" checked={!!r.aprobada} onChange={e => {
                                   const checked = e.target.checked;
                                   setComparativoRows(prev => prev.map(x => x === r ? { ...x, aprobada: checked } : x));
                                 }}/>
-                              ) : r.sonIguales ? <span style={{ color:'var(--green)' }} title="Nombres ya iguales — sin cambios">✓</span>
-                                : <span style={{ color:'var(--tm)' }} title="Sin partida en BD">—</span>}
+                              ) : r.accion === 'igual' ? <span style={{ color:'var(--green)' }} title="Nombres ya iguales — sin cambios">✓</span>
+                                : <span style={{ color:'var(--tm)' }} title="No es partida ni capítulo conocido">—</span>}
                             </td>
                             <td>
                               <span style={{ fontSize:10, fontWeight:700, padding:'2px 6px', borderRadius:3, background: matchBadge.bg, color: matchBadge.c }}>
@@ -1834,13 +1900,17 @@ function PartidasPage({ showToast }) {
                             </td>
                             <td style={{ fontFamily:'monospace', fontSize:10.5 }}>
                               <div>{r.codigo}</div>
-                              {r.partidaActual && r.partidaActual.codigo_delfin !== r.codigo && (
-                                <div style={{ color:'var(--tm)', fontSize:9.5 }}>BD: {r.partidaActual.codigo_delfin}</div>
+                              {r.codigoCanonico && r.codigoCanonico !== r.codigo && (
+                                <div style={{ color:'var(--tm)', fontSize:9.5 }}>BD: {r.codigoCanonico}</div>
                               )}
                             </td>
                             <td><strong style={{ color:'var(--tp)' }}>{r.descExcel}</strong></td>
                             <td style={{ color: r.sonIguales ? 'var(--green)' : 'var(--ts)' }}>
-                              {r.partidaActual ? r.partidaActual.nombre_partida : <em style={{ color:'var(--tm)' }}>—</em>}
+                              {r.partidaActual
+                                ? r.partidaActual.nombre_partida
+                                : r.accion === 'crear'
+                                  ? <em style={{ color:'var(--blue)' }}>(se creará como capítulo)</em>
+                                  : <em style={{ color:'var(--tm)' }}>—</em>}
                             </td>
                             <td style={{ textAlign:'center' }}>
                               {r.partidaActual && <strong style={{ color: scColor }}>{Math.round(sc * 100)}%</strong>}
@@ -1864,10 +1934,16 @@ function PartidasPage({ showToast }) {
                   <button className="btn btn-ghost" disabled={comparativoBusy} onClick={() => { setComparativoOpen(false); setComparativoFile(null); setComparativoRows(null); }}>
                     Cancelar
                   </button>
-                  <button className="btn btn-amber" disabled={comparativoBusy || comparativoRows.filter(r=>r.aprobada && !r.sonIguales).length === 0} onClick={aplicarComparativo}>
-                    <JxIcon name="check" size={13}/>
-                    {comparativoBusy ? 'Aplicando…' : `Actualizar ${comparativoRows.filter(r=>r.aprobada && !r.sonIguales).length} nombres`}
-                  </button>
+                  {(() => {
+                    const nUpd = comparativoRows.filter(r => r.aprobada && r.accion === 'actualizar').length;
+                    const nNew = comparativoRows.filter(r => r.aprobada && r.accion === 'crear').length;
+                    return (
+                      <button className="btn btn-amber" disabled={comparativoBusy || (nUpd + nNew) === 0} onClick={aplicarComparativo}>
+                        <JxIcon name="check" size={13}/>
+                        {comparativoBusy ? 'Aplicando…' : `Aplicar (${nUpd} nombres · ${nNew} capítulos)`}
+                      </button>
+                    );
+                  })()}
                 </div>
               </>
             )}

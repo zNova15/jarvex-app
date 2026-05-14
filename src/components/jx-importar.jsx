@@ -353,7 +353,8 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
         const sugerencias = [];
         const noMatch = [];
         for (const t of parsed.data) {
-          // Los capítulos/títulos no son partidas — se omiten del match.
+          // Los capítulos/títulos se crean o se nombran con su título real
+          // (no son hojas, no se cuentan como "sin match").
           if (t.esCapitulo) { capitulos++; continue; }
           if (porCodigo.has(t.codigo)) { exactas++; continue; }
           const n = normalizeCodigo(t.codigo);
@@ -948,6 +949,18 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
     const vivas = partidasObra.filter(p => !p.deleted_at);
     const porCodigo = new Map(vivas.map(p => [p.codigo_delfin, p]));
     const porCodigoNorm = new Map(vivas.map(p => [normalizeCodigo(p.codigo_delfin), p]));
+    // nodeCodeByNorm: prefijos jerárquicos de las hojas existentes →
+    // código canónico (con el padding real). Permite crear los capítulos
+    // que faltan con el código que el árbol de Partidas espera.
+    const nodeCodeByNorm = new Map();
+    for (const p of vivas) {
+      const segs = String(p.codigo_delfin || '').split('.').filter(Boolean);
+      for (let i = 1; i < segs.length; i++) {
+        const pref = segs.slice(0, i).join('.');
+        const k = normalizeCodigo(pref);
+        if (!nodeCodeByNorm.has(k)) nodeCodeByNorm.set(k, pref);
+      }
+    }
 
     const aplicar = async (p, t) => {
       await window.__db.partidas.update(p.id, {
@@ -961,29 +974,80 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
         sync_status: p.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
       });
     };
+    // Capítulo existente: actualiza nombre + fechas. (El nombre del Gantt es
+    // el título real; el capítulo en BD suele venir sin nombre o como "—".)
+    const aplicarCapitulo = async (p, t) => {
+      await window.__db.partidas.update(p.id, {
+        nombre_partida: t.descripcion || p.nombre_partida,
+        fecha_inicio_planificada: t.fecha_inicio,
+        fecha_fin_planificada:    t.fecha_fin,
+        duracion_dias: t.duracion_dias,
+        predecesoras: t.predecesoras,
+        updated_at: now, updated_by: userId,
+        version: (p.version ?? 0) + 1,
+        sync_status: p.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+    };
 
-    let exactas = 0, normalizadas = 0, capitulos = 0;
+    let exactas = 0, normalizadas = 0, capActualizados = 0;
     const sugerencias = []; // {tarea, candidato, score}
     const noMatch = [];     // sin candidato razonable
+    const nuevosCapitulos = []; // filas de capítulo a crear (bulkPut al final)
+    const creados = new Set(); // códigos canónicos ya encolados (dedupe)
     setProgress({ phase:'Aplicando cronograma…', current:0, total: parsed.data.length });
 
     for (let i = 0; i < parsed.data.length; i++) {
       const t = parsed.data[i];
-      // Los capítulos/títulos no son partidas — no se les aplica fecha ni
-      // se cuentan como "sin match".
-      if (t.esCapitulo) { capitulos++; continue; }
-      // Match SOLO por código: exacto → normalizado (con tolerancia de
-      // padding de ceros). Sin fallback por descripción — el usuario
-      // pidió que las equivalencias se determinen por número de partida
-      // y no por similitud de nombres.
-      let p = porCodigo.get(t.codigo);
-      if (p) { await aplicar(p, t); exactas++; }
-      else {
-        const norm = normalizeCodigo(t.codigo);
-        p = porCodigoNorm.get(norm);
-        if (p) { await aplicar(p, t); normalizadas++; }
+      const norm = normalizeCodigo(t.codigo);
+
+      if (t.esCapitulo) {
+        // Capítulo/título: crear la fila si falta (con su nombre real), o
+        // actualizar nombre + fechas si ya existe.
+        const p = porCodigo.get(t.codigo) || porCodigoNorm.get(norm);
+        if (p) {
+          await aplicarCapitulo(p, t);
+          capActualizados++;
+        } else {
+          const canonico = nodeCodeByNorm.get(norm);
+          // Sin código canónico = no es prefijo de ninguna hoja (ej. el "0"
+          // raíz del proyecto). No es una partida real — se omite.
+          if (canonico && !creados.has(canonico)) {
+            creados.add(canonico);
+            const id = window.__newId();
+            const segs = String(canonico).split('.').filter(Boolean);
+            nuevosCapitulos.push({
+              id, obra_id: obraId,
+              codigo_delfin: canonico,
+              nombre_partida: t.descripcion || canonico,
+              unidad: null,
+              metrado_contratado: 0,
+              precio_unitario_pres: 0,
+              costo_total_presupuestado: 0,
+              estado: 'pendiente',
+              nivel: segs.length,
+              parent_codigo: segs.length > 1 ? segs.slice(0, -1).join('.') : null,
+              orden: 0,
+              fecha_inicio_planificada: t.fecha_inicio,
+              fecha_fin_planificada:    t.fecha_fin,
+              duracion_dias: t.duracion_dias,
+              predecesoras: t.predecesoras,
+              created_by: userId, updated_by: userId,
+              created_at: now, updated_at: now,
+              version: 1, sync_status: 'pending_create', last_synced_at: null,
+              idempotency_key: `${userId}_partidas_${id}`,
+            });
+          }
+        }
+      } else {
+        // Hoja: aplicar fechas. Match SOLO por código: exacto → normalizado.
+        let p = porCodigo.get(t.codigo);
+        if (p) { await aplicar(p, t); exactas++; }
         else {
-          noMatch.push({ row: t.codigo, error: `"${t.descripcion}" — código ${t.codigo} no existe en partidas (ni con padding de ceros)` });
+          p = porCodigoNorm.get(norm);
+          if (p) { await aplicar(p, t); normalizadas++; }
+          else {
+            noMatch.push({ row: t.codigo, error: `"${t.descripcion}" — código ${t.codigo} no existe en partidas (ni con padding de ceros)` });
+          }
         }
       }
       if (i % 25 === 0) {
@@ -991,13 +1055,19 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
         await new Promise(r => setTimeout(r, 0));
       }
     }
+    let capCreados = 0;
+    if (nuevosCapitulos.length) {
+      await window.__db.partidas.bulkPut(nuevosCapitulos);
+      capCreados = nuevosCapitulos.length;
+    }
     const actualizadas = exactas + normalizadas;
     return {
       tipo: 'gantt',
       ok: actualizadas,
       detalle: `${actualizadas} partidas con fechas planificadas` +
         (normalizadas ? ` (${exactas} match exacto + ${normalizadas} match normalizado)` : '') +
-        (capitulos ? ` · ${capitulos} capítulos omitidos` : '') +
+        (capCreados ? ` · ${capCreados} capítulos creados` : '') +
+        (capActualizados ? ` · ${capActualizados} capítulos actualizados` : '') +
         (sugerencias.length ? ` · ${sugerencias.length} sugerencias por revisar` : '') +
         (noMatch.length ? ` · ${noMatch.length} sin match` : ''),
       errors: noMatch.length,
@@ -1889,9 +1959,9 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                           <div style={{ fontSize:20, fontWeight:800, color:'var(--blue)' }}>{gantPreview.normalizadas}</div>
                           <div style={{ fontSize:10, color:'var(--tm)', textTransform:'uppercase' }}>Match normalizado<br/>(01.01 ↔ 1.01)</div>
                         </div>
-                        <div style={{ textAlign:'center', padding:8, background:'rgba(148,163,184,0.12)', borderRadius:6, border:'1px solid rgba(148,163,184,0.3)' }}>
-                          <div style={{ fontSize:20, fontWeight:800, color:'var(--tm)' }}>{gantPreview.capitulos || 0}</div>
-                          <div style={{ fontSize:10, color:'var(--tm)', textTransform:'uppercase' }}>Capítulos omitidos<br/>(no son partidas)</div>
+                        <div style={{ textAlign:'center', padding:8, background:'rgba(155,89,182,0.14)', borderRadius:6, border:'1px solid rgba(155,89,182,0.35)' }}>
+                          <div style={{ fontSize:20, fontWeight:800, color:'#b07cd6' }}>{gantPreview.capitulos || 0}</div>
+                          <div style={{ fontSize:10, color:'var(--tm)', textTransform:'uppercase' }}>Capítulos<br/>(crear / nombrar)</div>
                         </div>
                         <div style={{ textAlign:'center', padding:8, background:'rgba(242,183,5,0.12)', borderRadius:6, border:'1px solid rgba(242,183,5,0.3)' }}>
                           <div style={{ fontSize:20, fontWeight:800, color:'var(--amber)' }}>{gantPreview.sugerencias.length}</div>
@@ -1904,7 +1974,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                       </div>
                       <div style={{ fontSize:11.5, color:'var(--tm)', lineHeight:1.6 }}>
                         Al importar: las <strong style={{ color:'var(--green)' }}>{gantPreview.exactas + gantPreview.normalizadas}</strong> con match se aplicarán automáticamente.
-                        {gantPreview.capitulos > 0 && <> Los <strong style={{ color:'var(--tm)' }}>{gantPreview.capitulos} capítulos/títulos</strong> se omiten — no son partidas específicas, no llevan fecha.</>}
+                        {gantPreview.capitulos > 0 && <> Los <strong style={{ color:'#b07cd6' }}>{gantPreview.capitulos} capítulos/títulos</strong> se crean (si faltan) o se renombran con su título real, y se les aplican las fechas.</>}
                         {gantPreview.sugerencias.length > 0 && <> Las <strong style={{ color:'var(--amber)' }}>{gantPreview.sugerencias.length} sugerencias</strong> se mostrarán en un modal para que las apruebes una por una.</>}
                         {gantPreview.noMatch.length > 0 && <> Las <strong style={{ color:'var(--red)' }}>{gantPreview.noMatch.length} sin match</strong> se reportarán como no encontradas.</>}
                       </div>
