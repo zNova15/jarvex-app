@@ -99,5 +99,14 @@ export async function consultarDNI(dni) {
     apellidoMaterno: data.apellidoMaterno || '',
     apellidos: `${data.apellidoPaterno || ''} ${data.apellidoMaterno || ''}`.trim(),
     nombreCompleto: `${data.nombres || ''} ${data.apellidoPaterno || ''} ${data.apellidoMaterno || ''}`.trim(),
+    // Campos premium (presentes si /api/reniec tiene DECOLECTA_TOKEN
+    // en Vercel). En plan gratis vienen null y el form ignora el
+    // autofill silenciosamente.
+    fechaNacimiento: data.fechaNacimiento || null,
+    sexo: data.sexo || null,
+    ubigeo: data.ubigeo || null,
+    estadoCivil: data.estadoCivil || null,
+    direccion: data.direccion || null,
+    _source: data._source || null,
   };
 }

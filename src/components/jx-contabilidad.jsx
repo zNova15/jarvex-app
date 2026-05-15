@@ -138,6 +138,7 @@ function EmpresasPage({ showToast }) {
       rubro:'otro', rol_grupo:'mixta', regimen_tributario:'RG', margen_objetivo_pct:'',
       direccion:'', telefono:'', email:'', representante_legal:'', inicio_actividades:'',
       actividades_economicas: [],
+      logo_dataurl: null, nombre_corto: '', codigo_doc_prefix: '',
     });
     setEditingId(null);
     setModal('nueva');
@@ -160,6 +161,9 @@ function EmpresasPage({ showToast }) {
       representante_legal: c.representante_legal || '',
       inicio_actividades: c.inicio_actividades || '',
       actividades_economicas: Array.isArray(c.actividades_economicas) ? c.actividades_economicas : [],
+      logo_dataurl: c.logo_dataurl || null,
+      nombre_corto: c.nombre_corto || '',
+      codigo_doc_prefix: c.codigo_doc_prefix || '',
     });
     setEditingId(c.id);
     setModal('editar');
@@ -189,6 +193,9 @@ function EmpresasPage({ showToast }) {
           representante_legal: form.representante_legal?.trim() || null,
           inicio_actividades: form.inicio_actividades || null,
           actividades_economicas: Array.isArray(form.actividades_economicas) ? form.actividades_economicas : [],
+          logo_dataurl: form.logo_dataurl || null,
+          nombre_corto: form.nombre_corto?.trim() || null,
+          codigo_doc_prefix: form.codigo_doc_prefix?.trim() || null,
           updated_at: now, updated_by: userId,
           version: (orig?.version ?? 0) + 1,
           sync_status: orig?.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
@@ -216,6 +223,9 @@ function EmpresasPage({ showToast }) {
           representante_legal: form.representante_legal?.trim() || null,
           inicio_actividades: form.inicio_actividades || null,
           actividades_economicas: Array.isArray(form.actividades_economicas) ? form.actividades_economicas : [],
+          logo_dataurl: form.logo_dataurl || null,
+          nombre_corto: form.nombre_corto?.trim() || null,
+          codigo_doc_prefix: form.codigo_doc_prefix?.trim() || null,
           created_by: userId, updated_by: userId,
           created_at: now, updated_at: now,
           version: 1, sync_status: 'pending_create', last_synced_at: null,
@@ -538,6 +548,93 @@ function EmpresasPage({ showToast }) {
             <div>
               <label className="flabel">Inicio de actividades</label>
               <input className="fi" type="date" value={form.inicio_actividades||''} onChange={e=>setForm({...form, inicio_actividades:e.target.value})}/>
+            </div>
+
+            <div style={{ gridColumn:'1/-1', padding:'14px 14px 10px', background:'rgba(242,183,5,0.05)', border:'1px dashed rgba(242,183,5,0.25)', borderRadius:8 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:'var(--amber)', marginBottom:8, textTransform:'uppercase', letterSpacing:0.3 }}>
+                Branding para plantillas imprimibles
+              </div>
+              <div style={{ fontSize:11, color:'var(--tm)', marginBottom:10, lineHeight:1.5 }}>
+                Cuando esta empresa es la ejecutora de una obra, las plantillas PDF (entrega de EPPs, asistencia, ingresos/salidas) usan este logo y nombre en vez de "JARVEX".
+              </div>
+              <div style={{ display:'grid', gridTemplateColumns:'140px 1fr', gap:14, alignItems:'flex-start' }}>
+                <div style={{ textAlign:'center' }}>
+                  {form.logo_dataurl ? (
+                    <div style={{ background:'#fff', borderRadius:6, padding:8, marginBottom:6, minHeight:80, display:'flex', alignItems:'center', justifyContent:'center' }}>
+                      <img src={form.logo_dataurl} alt="logo" style={{ maxHeight:70, maxWidth:120, objectFit:'contain' }}/>
+                    </div>
+                  ) : (
+                    <div style={{ background:'rgba(0,0,0,0.2)', borderRadius:6, padding:'24px 8px', marginBottom:6, fontSize:10, color:'var(--tm)' }}>
+                      Sin logo
+                    </div>
+                  )}
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/jpg,image/webp"
+                    id="empresa-logo-input"
+                    style={{ display:'none' }}
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      if (file.size > 2 * 1024 * 1024) {
+                        showToast('Logo demasiado grande — máximo 2MB. Comprimilo antes de subir.', 'red');
+                        e.target.value = '';
+                        return;
+                      }
+                      // Re-encode a JPEG max 320x320 para que el dataURL pese poco
+                      try {
+                        const url = await new Promise((res, rej) => {
+                          const r = new FileReader();
+                          r.onload = () => res(r.result);
+                          r.onerror = rej;
+                          r.readAsDataURL(file);
+                        });
+                        const img = new Image();
+                        await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
+                        const maxDim = 320;
+                        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+                        const w = Math.round(img.width * scale);
+                        const h = Math.round(img.height * scale);
+                        const canvas = document.createElement('canvas');
+                        canvas.width = w; canvas.height = h;
+                        const ctx = canvas.getContext('2d');
+                        // Fondo blanco — los logos suelen ser PNG con transparencia, y al
+                        // imprimir en PDF queda raro sobre fondo blanco si no se aplana.
+                        ctx.fillStyle = '#FFFFFF';
+                        ctx.fillRect(0, 0, w, h);
+                        ctx.drawImage(img, 0, 0, w, h);
+                        const compressed = canvas.toDataURL('image/jpeg', 0.85);
+                        setForm({ ...form, logo_dataurl: compressed });
+                      } catch (err) {
+                        showToast('Error procesando imagen: ' + (err.message || err), 'red');
+                      }
+                      e.target.value = '';
+                    }}
+                  />
+                  <div style={{ display:'flex', gap:6, flexDirection:'column' }}>
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={()=>document.getElementById('empresa-logo-input').click()}>
+                      <JxIcon name="upload" size={11}/> {form.logo_dataurl ? 'Cambiar' : 'Subir logo'}
+                    </button>
+                    {form.logo_dataurl && (
+                      <button type="button" className="btn btn-ghost btn-sm" style={{ color:'var(--red)' }} onClick={()=>setForm({...form, logo_dataurl: null})}>
+                        Quitar
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div style={{ display:'grid', gap:10 }}>
+                  <div>
+                    <label className="flabel">Nombre corto para plantillas (opcional)</label>
+                    <input className="fi" value={form.nombre_corto||''} placeholder={form.name || 'Ej: CONSORCIO EL INCA'} maxLength={80} onChange={e=>setForm({...form, nombre_corto:e.target.value})}/>
+                    <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>Si está vacío, se usa "{form.name || 'Razón social'}".</div>
+                  </div>
+                  <div>
+                    <label className="flabel">Código de formato (opcional)</label>
+                    <input className="fi" value={form.codigo_doc_prefix||''} placeholder="Ej: F-SSO-05" maxLength={20} onChange={e=>setForm({...form, codigo_doc_prefix:e.target.value})}/>
+                    <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>Aparece arriba a la derecha en la plantilla de EPPs.</div>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div style={{ gridColumn:'1/-1' }}>

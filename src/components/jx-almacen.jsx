@@ -1223,19 +1223,45 @@ function MaterialesPage({ showToast }) {
       // No es obligatorio responsable, pero advertir
     }
 
-    // Validación de stock para SALIDA (sin forzar — para no complicar el lote)
+    // ── Validación CUMULATIVA de stock para SALIDA ────────────────
+    // Antes solo se chequeaba cada fila contra el stock actual, pero si
+    // el lote tiene 3 filas del mismo material (3+5+10 unidades) cada
+    // una pasaba si stock_actual >= esa fila individual. Ahora se
+    // acumula el descuento proyectado por material y se rechaza si en
+    // algún momento bajaría de 0. Esto impide TODO stock negativo
+    // (sin permitir forzar), alineado con CHECK constraint del server.
     if (tipo === 'salida') {
+      const proyeccion = new Map(); // material_id → stock proyectado
       for (const it of itemsValidos) {
         const mat = materiales.find(m => m.id === it.material_id);
         if (!mat) continue;
         const cant = parseFloat(it.cantidad);
-        const stockActual = Number(mat.stock_actual ?? 0);
-        if (cant > stockActual && !isAdmin && !['gerente'].includes(myRol)) {
-          showToast(`❌ Stock insuficiente: ${mat.nombre_material} tiene ${stockActual} ${mat.unidad}, pediste ${cant}. Quitá esa fila o pedí menos.`, 'red');
+        const stockBase = proyeccion.has(it.material_id)
+          ? proyeccion.get(it.material_id)
+          : Number(mat.stock_actual ?? 0);
+        const stockProyectado = stockBase - cant;
+        if (stockProyectado < 0) {
+          showToast(
+            `❌ Stock insuficiente para ${mat.nombre_material}: ` +
+            `stock actual ${Number(mat.stock_actual ?? 0)} ${mat.unidad}, ` +
+            `total pedido ${stockBase + cant - Number(mat.stock_actual ?? 0) + cant} ${mat.unidad}. ` +
+            `Quitá filas, reducí la cantidad o registrá primero el ingreso.`,
+            'red'
+          );
+          setBusyMovLote(false);
           return;
         }
+        proyeccion.set(it.material_id, stockProyectado);
       }
     }
+
+    // Idempotency a nivel LOTE: una clave por click → cada item usa
+    // una sub-clave determinista. Si el browser dobla submit por
+    // cualquier motivo (network glitch, react re-render anómalo), el
+    // server rechaza por UNIQUE(idempotency_key) y no se crean duplicados.
+    const loteKey = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? `lote-mov-mat-${crypto.randomUUID()}`
+      : `lote-mov-mat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     setBusyMovLote(true);
     let exitosos = 0;
@@ -1243,7 +1269,8 @@ function MaterialesPage({ showToast }) {
     const errores = [];
 
     try {
-    for (const it of itemsValidos) {
+    for (let idx = 0; idx < itemsValidos.length; idx++) {
+      const it = itemsValidos[idx];
       const material = materiales.find(m => m.id === it.material_id);
       if (!material) { fallidos++; continue; }
       const cantNum = parseFloat(it.cantidad) || 0;
@@ -1270,6 +1297,9 @@ function MaterialesPage({ showToast }) {
           partida_id: tipo === 'salida' ? (it.partida_id || null) : null,
           precio_unitario_real: parseFloat(it.precio) || null,
           observaciones: form.observaciones || null,
+          // Idempotency determinista: si el browser re-envía, server
+          // rechaza la fila duplicada por UNIQUE(idempotency_key).
+          idempotency_key: `${loteKey}_${idx}_${it.material_id}`,
         });
         try { await window.__logAudit?.({ action:'insert', table:'movimientos_materiales', recordId:movCreated?.id, newData:movCreated, reason:`${tipo} en LOTE de ${cantNum} ${material.unidad} de ${material.nombre_material}` }); } catch {}
 
@@ -3696,12 +3726,17 @@ function PersonalPage({ showToast }) {
       const data = await window.__identity.consultarDNI(dni);
       // Sobrescribir nombres/apellidos siempre — si el usuario está cambiando el DNI
       // (en edición), espera ver los nombres del nuevo DNI, no los anteriores.
+      // fecha_nacimiento solo se rellena si el provider la devolvió (plan
+      // premium con DECOLECTA_TOKEN) y solo si el campo está vacío, para
+      // no pisar una fecha que el usuario ya corrigió a mano.
       setForm(prev => ({
         ...prev,
         nombres: data.nombres || '',
         apellidos: data.apellidos || '',
+        fecha_nacimiento: data.fechaNacimiento || prev.fecha_nacimiento || '',
       }));
-      showToast(`RENIEC: ${data.nombreCompleto || 'datos cargados'}`, 'green');
+      const extras = data.fechaNacimiento ? ` · nac. ${data.fechaNacimiento}` : '';
+      showToast(`RENIEC: ${data.nombreCompleto || 'datos cargados'}${extras}`, 'green');
     } catch (e) {
       showToast(e.message || 'Error al consultar RENIEC', 'red');
     } finally {

@@ -686,6 +686,32 @@ function PlantillasModal({ obraId, onClose, showToast }) {
       if (!fn) { showToast?.('Plantilla no disponible', 'red'); return; }
       const o = getOpts(def);
       const args = { obraNombre, fecha: o.fecha };
+
+      // Branding por empresa ejecutora: si la obra tiene una ejecutora
+      // con logo o nombre comercial, las plantillas lo usan en el header.
+      // Si la obra está en consorcio, se toma el primer miembro como
+      // ejecutora de facto. Si nada está configurado, cae a JARVEX.
+      try {
+        const obra = obraId ? await window.__db.obras.get(obraId) : null;
+        let companyId = obra?.ejecutora_company_id || null;
+        if (!companyId && Array.isArray(obra?.consorcio_miembros) && obra.consorcio_miembros.length) {
+          const first = obra.consorcio_miembros[0];
+          companyId = typeof first === 'string' ? first : (first?.company_id || null);
+        }
+        if (companyId) {
+          const empresa = await window.__db.companies.get(companyId);
+          if (empresa && !empresa.deleted_at) {
+            args.empresaBrand = {
+              nombre: empresa.nombre_corto || empresa.name || '',
+              logoDataUrl: empresa.logo_dataurl || null,
+              codigoDocPrefix: empresa.codigo_doc_prefix || null,
+            };
+          }
+        }
+      } catch (e) {
+        console.warn('[plantillas] no se pudo cargar branding empresa:', e?.message || e);
+      }
+
       if (def.campos.includes('recibidoPor')) args.recibidoSugerido = o.persona;
       if (def.campos.includes('retiraPor'))   args.retiraSugerido   = o.persona;
       if (def.campos.includes('recibidoPor') && def.id === 'ingresoMateriales')
