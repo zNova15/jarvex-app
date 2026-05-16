@@ -1573,13 +1573,25 @@ function PartidasPage({ showToast }) {
               />
             ))}
           </div>
-          <div style={{padding:'10px 14px',background:'rgba(0,0,0,0.18)',borderTop:'1px solid rgba(255,255,255,0.05)',display:'grid',gridTemplateColumns:'1fr 110px 110px auto',gap:8,fontSize:12,fontWeight:700,color:'var(--tp)'}}>
+          <div style={{padding:'10px 14px',background:'rgba(0,0,0,0.18)',borderTop:'1px solid rgba(255,255,255,0.05)',display:'grid',gridTemplateColumns:'1fr 110px 110px 130px',gap:8,fontSize:12,fontWeight:700,color:'var(--tp)'}}>
             <div style={{color:'var(--ts)'}}>TOTALES</div>
             <div style={{textAlign:'right'}}>{fmtS(totalPres)}</div>
             <div style={{textAlign:'right'}}>{fmtS(totalReal)}</div>
-            <div style={{color:(totalReal-totalPres)>0?'var(--red)':'var(--green)'}}>
-              {(totalReal-totalPres)>0?'+':''}{Math.round(totalReal-totalPres).toLocaleString()}
-            </div>
+            {/* Saldo = presupuesto − real consumido. Positivo (verde) = aún
+                queda presupuesto disponible. Negativo (rojo) = sobregasto. */}
+            {(() => {
+              const saldo = totalPres - totalReal;
+              const sobregasto = saldo < 0;
+              return (
+                <div style={{textAlign:'right', color: sobregasto ? 'var(--red)' : 'var(--green)'}}
+                     title={sobregasto ? 'Sobregasto: se gastó más de lo presupuestado' : 'Saldo disponible (lo que queda por gastar)'}>
+                  <span style={{fontSize:10, color:'var(--tm)', fontWeight:500, marginRight:4}}>
+                    {sobregasto ? 'Sobregasto' : 'Saldo'}
+                  </span>
+                  {fmtS(Math.abs(saldo))}
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}

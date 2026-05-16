@@ -1,5 +1,5 @@
 import React from "react";
-const { useState: uSE, useMemo: uME, useEffect: uEE, useRef: uRE } = React;
+const { useState: uSE, useMemo: uME, useEffect: uEE, useRef: uRE, useCallback: uCB } = React;
 
 // ─── CONFIG ─────────────────────────────────────────────
 const TIPO_META = {
@@ -648,11 +648,48 @@ const PLANTILLAS_DEF = [
   },
 ];
 
-function PlantillasModal({ obraId, onClose, showToast }) {
+function PlantillasModal({ obraId, onClose, showToast, embedded = false }) {
   const [expanded, setExpanded]   = uSE(null);
   const [loading, setLoading]     = uSE(false);
   const [obraNombre, setObraNombre] = uSE('—');
   const [opts, setOpts]           = uSE({}); // por id: { fecha, persona, firma }
+
+  // ── Branding panel: company ejecutora de la obra (logo + nombre + código) ──
+  // Se muestra arriba del listado para que el user vea de inmediato cuál
+  // empresa va a aparecer en las plantillas y pueda editarla sin tener que
+  // buscar la empresa en Contabilidad.
+  const [empresa, setEmpresa] = uSE(null);   // company entera (o null si no hay)
+  const [brandingEdit, setBrandingEdit] = uSE(false);
+  const [brandingForm, setBrandingForm] = uSE({ logo_dataurl: null, nombre_corto: '', codigo_doc_prefix: '' });
+  const [brandingSaving, setBrandingSaving] = uSE(false);
+  const auth = window.__useAuth?.();
+  const isAdmin = auth?.profile?.rol === 'admin';
+
+  const loadEmpresa = uCB(async () => {
+    try {
+      const obra = obraId ? await window.__db.obras.get(obraId) : null;
+      let companyId = obra?.ejecutora_company_id || null;
+      if (!companyId && Array.isArray(obra?.consorcio_miembros) && obra.consorcio_miembros.length) {
+        const first = obra.consorcio_miembros[0];
+        companyId = typeof first === 'string' ? first : (first?.company_id || null);
+      }
+      if (!companyId) { setEmpresa(null); return; }
+      const c = await window.__db.companies.get(companyId);
+      if (c && !c.deleted_at) {
+        setEmpresa(c);
+        setBrandingForm({
+          logo_dataurl: c.logo_dataurl || null,
+          nombre_corto: c.nombre_corto || '',
+          codigo_doc_prefix: c.codigo_doc_prefix || '',
+        });
+      } else {
+        setEmpresa(null);
+      }
+    } catch (e) {
+      console.warn('[plantillas] no se pudo cargar empresa ejecutora:', e?.message);
+      setEmpresa(null);
+    }
+  }, [obraId]);
 
   uEE(() => {
     let cancelled = false;
@@ -661,9 +698,66 @@ function PlantillasModal({ obraId, onClose, showToast }) {
         const o = await window.__db.obras.get(obraId);
         if (!cancelled && o) setObraNombre(o.nombre_obra || '—');
       } catch {}
+      if (!cancelled) await loadEmpresa();
     })();
     return () => { cancelled = true; };
-  }, [obraId]);
+  }, [obraId, loadEmpresa]);
+
+  // ── Handlers de branding ─────────────────────────────────────────
+  const onPickLogo = async (file) => {
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      showToast?.('Logo demasiado grande — máximo 2MB', 'red');
+      return;
+    }
+    try {
+      const url = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result); r.onerror = rej;
+        r.readAsDataURL(file);
+      });
+      const img = new Image();
+      await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
+      const maxDim = 320;
+      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(img, 0, 0, w, h);
+      const compressed = canvas.toDataURL('image/jpeg', 0.85);
+      setBrandingForm(prev => ({ ...prev, logo_dataurl: compressed }));
+    } catch (err) {
+      showToast?.('Error procesando imagen: ' + (err.message || err), 'red');
+    }
+  };
+
+  const guardarBranding = async () => {
+    if (!empresa) return;
+    setBrandingSaving(true);
+    try {
+      const now = new Date().toISOString();
+      await window.__db.companies.update(empresa.id, {
+        logo_dataurl: brandingForm.logo_dataurl || null,
+        nombre_corto: brandingForm.nombre_corto?.trim() || null,
+        codigo_doc_prefix: brandingForm.codigo_doc_prefix?.trim() || null,
+        updated_at: now,
+        version: (empresa.version ?? 0) + 1,
+        sync_status: empresa.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'companies' } })); } catch {}
+      try { window.dispatchEvent(new Event('online')); } catch {}
+      await loadEmpresa();
+      setBrandingEdit(false);
+      showToast?.('Branding actualizado — las plantillas ya lo usan', 'green');
+    } catch (e) {
+      showToast?.('Error al guardar: ' + (e.message || e), 'red');
+    } finally {
+      setBrandingSaving(false);
+    }
+  };
 
   const updateOpt = (id, patch) => setOpts(prev => ({
     ...prev,
@@ -753,20 +847,140 @@ function PlantillasModal({ obraId, onClose, showToast }) {
     return g;
   }, []);
 
-  return (
-    <div className="modal-backdrop" onClick={onClose} style={{ background:'rgba(0,0,0,0.7)' }}>
-      <div className="modal" onClick={e=>e.stopPropagation()} style={{ maxWidth:640, width:'92%', maxHeight:'88vh', display:'flex', flexDirection:'column' }}>
-        <div className="modal-hd">
-          <div>
-            <div style={{ fontWeight:700, fontSize:15 }}>Plantillas para imprimir</div>
-            <div style={{ fontSize:11.5, color:'var(--tm)', marginTop:2 }}>
-              Hojas en PDF para llenar a mano en obra y subir como evidencia después.
-            </div>
+  // Contenido principal (header + scroll). Se reusa tanto en modo modal
+  // (con backdrop) como en modo `embedded` (página standalone vía sidebar
+  // "Plantillas").
+  const contenido = (
+    <>
+      <div className={embedded ? '' : 'modal-hd'}
+           style={embedded
+             ? { padding:'14px 18px', borderBottom:'1px solid var(--bd)' }
+             : {}}>
+        <div>
+          <div style={{ fontWeight:700, fontSize:embedded ? 18 : 15 }}>Plantillas para imprimir</div>
+          <div style={{ fontSize:11.5, color:'var(--tm)', marginTop:2 }}>
+            Hojas en PDF para llenar a mano en obra y subir como evidencia después.
           </div>
-          <button className="btn btn-ghost btn-sm" onClick={onClose}>Cerrar</button>
         </div>
+        {!embedded && <button className="btn btn-ghost btn-sm" onClick={onClose}>Cerrar</button>}
+      </div>
 
-        <div style={{ overflow:'auto', padding:'12px 16px' }}>
+      <div style={{ overflow:'auto', padding:'12px 16px', flex: embedded ? 1 : undefined }}>
+          {/* ── Branding panel: lo que va a salir como cabecera de los PDFs ── */}
+          <div style={{
+            marginBottom:16,
+            padding:'12px 14px',
+            background:'rgba(242,183,5,0.06)',
+            border:'1px dashed rgba(242,183,5,0.3)',
+            borderRadius:8,
+          }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:12, marginBottom:8 }}>
+              <div>
+                <div style={{ fontSize:11, fontWeight:700, color:'var(--amber)', textTransform:'uppercase', letterSpacing:0.4, marginBottom:3 }}>
+                  Branding del header de las plantillas
+                </div>
+                <div style={{ fontSize:11, color:'var(--tm)', lineHeight:1.5 }}>
+                  Estos datos aparecen en la parte superior de los PDFs. Se aplican a las {Object.keys(grupos).reduce((n,g)=>n+grupos[g].length,0)} plantillas de esta obra.
+                </div>
+              </div>
+              {!brandingEdit && isAdmin && (
+                <button className="btn btn-ghost btn-sm" onClick={()=>setBrandingEdit(true)} style={{ flexShrink:0 }}>
+                  <JxIcon name="edit" size={12}/> {empresa ? 'Editar' : 'Configurar'}
+                </button>
+              )}
+            </div>
+
+            {!brandingEdit && (
+              <div style={{ display:'flex', alignItems:'center', gap:14 }}>
+                <div style={{ width:90, minHeight:50, background:'#fff', borderRadius:6, padding:6, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                  {empresa?.logo_dataurl ? (
+                    <img src={empresa.logo_dataurl} alt="logo" style={{ maxHeight:42, maxWidth:78, objectFit:'contain' }}/>
+                  ) : (
+                    <div style={{ fontSize:10, color:'#999', textAlign:'center', padding:4 }}>Sin logo</div>
+                  )}
+                </div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:'var(--tp)' }}>
+                    {empresa ? (empresa.nombre_corto || empresa.name) : 'JARVEX'}
+                  </div>
+                  <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2 }}>
+                    {empresa
+                      ? <>Empresa ejecutora · Código: <strong>{empresa.codigo_doc_prefix || 'F-SSO-05'}</strong></>
+                      : 'La obra no tiene empresa ejecutora asignada — se usa "JARVEX" por default. Asigná la ejecutora en Obras / Proyectos.'}
+                  </div>
+                  {empresa && !isAdmin && (
+                    <div style={{ fontSize:10, color:'var(--tm)', marginTop:4, fontStyle:'italic' }}>
+                      Solo admin puede modificar el branding.
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {brandingEdit && empresa && (
+              <div style={{ display:'grid', gridTemplateColumns:'110px 1fr', gap:12, marginTop:6 }}>
+                <div>
+                  <div style={{ width:'100%', minHeight:70, background:'#fff', borderRadius:6, padding:6, display:'flex', alignItems:'center', justifyContent:'center', marginBottom:6 }}>
+                    {brandingForm.logo_dataurl ? (
+                      <img src={brandingForm.logo_dataurl} alt="logo" style={{ maxHeight:60, maxWidth:90, objectFit:'contain' }}/>
+                    ) : (
+                      <div style={{ fontSize:10, color:'#999' }}>Sin logo</div>
+                    )}
+                  </div>
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/jpg,image/webp"
+                    id="branding-logo-input"
+                    style={{ display:'none' }}
+                    onChange={(e) => { onPickLogo(e.target.files?.[0]); e.target.value=''; }}
+                  />
+                  <button type="button" className="btn btn-ghost btn-sm" style={{ width:'100%', marginBottom:4 }}
+                    onClick={()=>document.getElementById('branding-logo-input').click()}>
+                    <JxIcon name="upload" size={11}/> {brandingForm.logo_dataurl ? 'Cambiar' : 'Subir logo'}
+                  </button>
+                  {brandingForm.logo_dataurl && (
+                    <button type="button" className="btn btn-ghost btn-sm" style={{ width:'100%', color:'var(--red)' }}
+                      onClick={()=>setBrandingForm(prev => ({ ...prev, logo_dataurl: null }))}>
+                      Quitar logo
+                    </button>
+                  )}
+                </div>
+                <div style={{ display:'grid', gap:8 }}>
+                  <div>
+                    <label style={{ fontSize:10.5, color:'var(--tm)', display:'block', marginBottom:3 }}>Nombre corto</label>
+                    <input className="input" style={{ width:'100%' }}
+                      placeholder={empresa.name || 'CONSORCIO EL INCA'}
+                      value={brandingForm.nombre_corto}
+                      maxLength={80}
+                      onChange={e=>setBrandingForm(prev => ({ ...prev, nombre_corto: e.target.value }))}/>
+                    <div style={{ fontSize:9.5, color:'var(--tm)', marginTop:2 }}>Vacío = "{empresa.name}"</div>
+                  </div>
+                  <div>
+                    <label style={{ fontSize:10.5, color:'var(--tm)', display:'block', marginBottom:3 }}>Código de formato</label>
+                    <input className="input" style={{ width:'100%' }}
+                      placeholder="F-SSO-05"
+                      value={brandingForm.codigo_doc_prefix}
+                      maxLength={20}
+                      onChange={e=>setBrandingForm(prev => ({ ...prev, codigo_doc_prefix: e.target.value }))}/>
+                  </div>
+                  <div style={{ display:'flex', gap:6, marginTop:2 }}>
+                    <button className="btn btn-amber btn-sm" onClick={guardarBranding} disabled={brandingSaving}>
+                      <JxIcon name="check" size={12}/> {brandingSaving ? 'Guardando…' : 'Guardar'}
+                    </button>
+                    <button className="btn btn-ghost btn-sm" onClick={()=>{
+                      setBrandingForm({
+                        logo_dataurl: empresa.logo_dataurl || null,
+                        nombre_corto: empresa.nombre_corto || '',
+                        codigo_doc_prefix: empresa.codigo_doc_prefix || '',
+                      });
+                      setBrandingEdit(false);
+                    }} disabled={brandingSaving}>Cancelar</button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
           {Object.entries(grupos).map(([grupo, lista]) => (
             <div key={grupo} style={{ marginBottom:14 }}>
               <div style={{ fontSize:11, color:'var(--tm)', fontWeight:600, marginBottom:6, letterSpacing:0.5, textTransform:'uppercase' }}>
@@ -832,10 +1046,72 @@ function PlantillasModal({ obraId, onClose, showToast }) {
               })}
             </div>
           ))}
-        </div>
+      </div>
+    </>
+  );
+
+  // Modo página standalone (desde sidebar "Plantillas"): tarjeta a ancho
+  // completo, sin backdrop. Modo modal (desde Evidencias): backdrop + modal.
+  if (embedded) {
+    return (
+      <div className="card" style={{ display:'flex', flexDirection:'column', height:'100%', overflow:'hidden' }}>
+        {contenido}
+      </div>
+    );
+  }
+  return (
+    <div className="modal-backdrop" onClick={onClose} style={{ background:'rgba(0,0,0,0.7)' }}>
+      <div className="modal" onClick={e=>e.stopPropagation()} style={{ maxWidth:640, width:'92%', maxHeight:'88vh', display:'flex', flexDirection:'column' }}>
+        {contenido}
       </div>
     </div>
   );
 }
 
-Object.assign(window, { EvidenciasPage });
+// ─── PLANTILLAS PAGE ────────────────────────────────────────────────
+// Acceso directo desde el sidebar a las plantillas imprimibles, sin
+// pasar por Evidencias. Auto-detecta la obra activa.
+function PlantillasPage({ showToast }) {
+  const [obraId, setObraId] = uSE(null);
+
+  uEE(() => {
+    let cancelled = false;
+    let attempts = 0;
+    const find = async () => {
+      attempts++;
+      const obras = await window.__db.obras.toArray();
+      const stored = window.__getObraActivaId?.();
+      const activa = (stored && obras.find(o => o.id === stored && !o.deleted_at))
+                  || obras.find(o => !o.deleted_at);
+      if (activa) { if (!cancelled) setObraId(activa.id); return; }
+      if (cancelled || attempts >= 10) return;
+      setTimeout(find, 500);
+    };
+    find();
+    const onChange = () => { attempts = 0; find(); };
+    window.addEventListener('jarvex_master_updated', onChange);
+    window.addEventListener('obra_activa_change', onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('jarvex_master_updated', onChange);
+      window.removeEventListener('obra_activa_change', onChange);
+    };
+  }, []);
+
+  if (!obraId) {
+    return (
+      <div className="card card-p" style={{ textAlign:'center', color:'var(--tm)', padding:40 }}>
+        <JxIcon name="building" size={36} color="var(--tm)"/>
+        <div style={{ marginTop:12 }}>Seleccioná una obra para ver las plantillas.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ height:'calc(100vh - 100px)', display:'flex', flexDirection:'column' }}>
+      <PlantillasModal obraId={obraId} showToast={showToast} embedded onClose={()=>{}}/>
+    </div>
+  );
+}
+
+Object.assign(window, { EvidenciasPage, PlantillasPage });

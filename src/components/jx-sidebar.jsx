@@ -73,6 +73,7 @@ const NAV = [
   { id: 'ubicaciones', label: 'Ubicaciones de Obra', icon: 'map' },
   { id: 'proveedores', label: 'Proveedores', icon: 'truck' },
   { id: 'evidencias', label: 'Evidencias', icon: 'camera' },
+  { id: 'plantillas', label: 'Plantillas', icon: 'file' },
 
   { section: 'COMPRAS / LOGÍSTICA' },
   { id: 'solicitud-residente', label: 'Solicitud de Materiales', icon: 'plus' },
