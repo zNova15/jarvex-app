@@ -175,6 +175,31 @@ function SolicitudesPage({ showToast }) {
       } catch (e) {}
     }
 
+    // ── HOOK ESPECIAL: cambio de partida_id en movimientos_materiales ──
+    // Cuando un ingeniero pide reasignar una salida a otra partida, no
+    // basta con UPDATE — hay que revertir el consumo de la partida vieja
+    // y aplicarlo a la nueva (insumos_partida.cantidad_real_usada +
+    // partidas.costo_real_acumulado). De lo contrario el costo queda mal.
+    if (req.target_table === 'movimientos_materiales' && 'partida_id' in fields && oldData) {
+      try {
+        const [{ revertirConsumoPartida, aplicarConsumoPartida }] = await Promise.all([
+          import('../lib/partida-allocation.js'),
+        ]);
+        const material = await window.__db.materiales.get(oldData.material_id);
+        const userId = window.__currentUserId || 'admin-approval';
+        // 1) revertir si la partida vieja existía
+        if (oldData.partida_id) {
+          await revertirConsumoPartida({ mov: oldData, partida_id: oldData.partida_id, material, userId });
+        }
+        // 2) aplicar a la nueva
+        if (fields.partida_id) {
+          await aplicarConsumoPartida({ mov: { ...oldData, ...fields }, partida_id: fields.partida_id, material, userId });
+        }
+      } catch (e) {
+        console.warn('[solicitudes] no se pudo recalcular consumo partida:', e?.message);
+      }
+    }
+
     // Aplicar en Supabase
     const { error } = await window.__supabase
       .from(req.target_table)

@@ -8,7 +8,7 @@ export const AuthContext = createContext(null);
 // Lista canónica de roles válidos. Cualquier profile cuyo `rol` no esté acá
 // se trata como inválido (NO se asume admin para evitar escalación).
 const ROLES_VALIDOS = new Set([
-  'admin','gerente','ingeniero_residente','supervisor','almacenero',
+  'admin','gerente','ingeniero_residente','ingeniero','supervisor','almacenero',
   'asistente_admin','contador','tesorero','jefe_compras','rrhh',
   'prevencionista','maestro_obra','solo_lectura',
 ]);

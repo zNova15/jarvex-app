@@ -7,6 +7,7 @@ const ROL_LABELS = {
   admin:               'Admin',
   gerente:             'Gerente',
   ingeniero_residente: 'Ing. Residente',
+  ingeniero:           'Ingeniero',
   supervisor:          'Supervisor',
   almacenero:          'Almacenero',
   asistente_admin:     'Asist. Admin',
@@ -23,6 +24,7 @@ const ROL_COLORS_ADM = {
   admin:               'b-red',
   gerente:             'b-blue',
   ingeniero_residente: 'b-amber',
+  ingeniero:           'b-blue',
   supervisor:          'b-blue',
   almacenero:          'b-green',
   asistente_admin:     'b-blue',
@@ -35,7 +37,7 @@ const ROL_COLORS_ADM = {
   solo_lectura:        'b-gray',
 };
 
-const ROL_KEYS = ['admin','gerente','ingeniero_residente','supervisor','almacenero','asistente_admin','contador','tesorero','jefe_compras','rrhh','prevencionista','maestro_obra','solo_lectura'];
+const ROL_KEYS = ['admin','gerente','ingeniero_residente','ingeniero','supervisor','almacenero','asistente_admin','contador','tesorero','jefe_compras','rrhh','prevencionista','maestro_obra','solo_lectura'];
 
 // ── Roles Custom (definidos por el admin, persistidos en localStorage) ──
 // Cada rol custom: { key, label, color }
@@ -615,7 +617,7 @@ function UsuariosPage({ showToast }) {
 // renderizar la tabla con separadores.
 const MODULE_GROUPS = [
   { group: 'Operaciones diarias', modules: ['Obras','Personal','Asistencia','Materiales','Mov. Materiales','Herramientas','Mov. Herramientas','Ubicaciones','Proveedores'] },
-  { group: 'Gestión de obra', modules: ['Partidas','Insumos','Versiones presupuesto','Cronograma','Avance','Comparativo','Costos','Valorizaciones','Incidencias','Evidencias'] },
+  { group: 'Gestión de obra', modules: ['Partidas','Insumos','Versiones presupuesto','Cronograma','Avance','Comparativo','Costos','Valorizaciones','Incidencias','Evidencias','Vinculación Salidas'] },
   { group: 'Compras / Logística', modules: ['Requisiciones','Órdenes de Compra','Cotizaciones','Recepciones'] },
   { group: 'Subcontratos', modules: ['Subcontratistas','Subcontratos','Valor. Subcontrato'] },
   { group: 'Maquinaria', modules: ['Activos Pesados','Mantenimiento','Horas Máquina'] },
@@ -666,8 +668,36 @@ const PERM_MATRIX = {
     if (['Personal','Asistencia','Partidas','Insumos','Cronograma','Avance','Comparativo',
          'Valorizaciones','Subcontratos','Valor. Subcontrato','Mantenimiento','Horas Máquina',
          'Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones',
-         'Incidencias','Evidencias','Requisiciones','Ubicaciones','KPIs por Obra','Cumplimiento Cronograma'].includes(m)) return 'w';
+         'Incidencias','Evidencias','Requisiciones','Ubicaciones','KPIs por Obra','Cumplimiento Cronograma',
+         'Vinculación Salidas'].includes(m)) return 'w';
     return 'r';
+  }),
+
+  // Ingeniero (subordinado al Ing. Residente): w en Vinculación Salidas,
+  // Avance, Incidencias, Cumplimiento. r en Materiales/Mov.Mat/Personal/
+  // Partidas (para ver consumo). x en TODO lo financiero — el ingeniero
+  // NO debe ver precios ni costos.
+  ingeniero: PERM_MATRIX_MODULES.map(m => {
+    if (m === 'Usuarios/Config') return 'x';
+    // Sin acceso a finanzas, RRHH, SUNAT, compras (a nivel decisional)
+    if (['Costos','Valorizaciones','Empresas','Movs. Contables','Intercompany','Trazabilidad',
+         'Consolidado','Plan de Cuentas','Libro Diario','Balance General','Estado Resultados',
+         'Cuentas Bancarias','Flujo de Caja','Flujo Proyectado','Comparativo Periodos',
+         'Comprobantes Electrónicos','Libros Electrónicos','PLAME / T-Registro','Config SUNAT',
+         'Contratos Laborales','Planillas','CTS','Gratificaciones','Subcontratistas','Subcontratos',
+         'Valor. Subcontrato','Captura Mágica','Auditoría','Conflictos Sync',
+         'Cotizaciones','Órdenes de Compra','Recepciones'].includes(m)) return 'x';
+    // Write: lo que el ingeniero ejecuta directamente
+    if (['Vinculación Salidas','Avance','Incidencias','Evidencias',
+         'Cumplimiento Cronograma','Solicitudes Cambio'].includes(m)) return 'w';
+    // Read: catálogo y datos operativos para ver el contexto de las salidas
+    if (['Obras','Materiales','Mov. Materiales','Herramientas','Mov. Herramientas',
+         'Partidas','Insumos','Cronograma','Versiones presupuesto','Comparativo',
+         'Personal','Asistencia','Proveedores','Ubicaciones','Requisiciones','Activos Pesados',
+         'KPIs por Obra','Dashboard Ejecutivo','Centro Alertas','Búsqueda Global','Reportes',
+         'Importar','Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones',
+         'Mantenimiento','Horas Máquina'].includes(m)) return 'r';
+    return 'x';
   }),
 
   // Supervisor: w asistencia, movimientos, avance, evidencias; r resto operativo; x Contabilidad/SUNAT

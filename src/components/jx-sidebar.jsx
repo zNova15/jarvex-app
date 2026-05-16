@@ -92,6 +92,9 @@ const NAV = [
   { id: 'alertas', label: 'Centro de Alertas', icon: 'bell' },
   { id: 'busqueda', label: 'Búsqueda Global', icon: 'search' },
 
+  { section: 'INGENIERÍA' },
+  { id: 'vinculacion-salidas', label: 'Vinculación de Salidas', icon: 'link' },
+
   { section: 'GESTIÓN DE OBRA' },
   { id: 'partidas', label: 'Partidas', icon: 'list' },
   { id: 'insumos', label: 'Insumos por Partida', icon: 'layers' },

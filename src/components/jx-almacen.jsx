@@ -1157,7 +1157,9 @@ function MaterialesPage({ showToast }) {
         responsable_id: form.responsable_id || null,
         proveedor_id: form.proveedor_id || null,
         documento_asociado: form.documento || null,
-        partida_id: form.partida_id || null,
+        // partida_id SIEMPRE null al crear desde almacén (Paquete C).
+        // El ingeniero la asigna después desde su inbox.
+        partida_id: null,
         precio_unitario_real: parseFloat(form.precio) || null,
         observaciones: form.observaciones || null,
       });
@@ -1191,51 +1193,10 @@ function MaterialesPage({ showToast }) {
         }
       }
 
-      // Si es SALIDA y hay partida asociada, actualizar el consumo del insumo
-      // y el costo real acumulado de la partida correspondiente.
-      if (tipo === 'salida' && form.partida_id) {
-        try {
-          const sugerencia = partidasSugeridas.find(ps => ps.partida.id === form.partida_id);
-          // Buscar el insumo material de esa partida que matchea el material
-          // (puede que la sugerencia ya lo haya identificado).
-          let insumoTarget = sugerencia?.insumo;
-          if (!insumoTarget) {
-            const palabras = String(material.nombre_material || '')
-              .toLowerCase()
-              .split(/[^a-záéíóúñ0-9]+/)
-              .filter(p => p.length >= 4);
-            insumoTarget = insumosObra.find(i =>
-              i.partida_id === form.partida_id &&
-              i.tipo_insumo === 'material' &&
-              palabras.length > 0 &&
-              palabras.every(w => String(i.nombre_insumo || '').toLowerCase().includes(w))
-            );
-          }
-          if (insumoTarget) {
-            const nuevoUsado = Number(insumoTarget.cantidad_real_usada || 0) + cantNum;
-            await window.__db.insumos_partida.update(insumoTarget.id, {
-              cantidad_real_usada: nuevoUsado,
-              sync_status: insumoTarget.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
-              updated_at: new Date().toISOString(),
-              version: (insumoTarget.version ?? 0) + 1,
-            });
-          }
-          // Actualizar costo_real_acumulado de la partida si hay precio
-          const precioReal = parseFloat(form.precio) || 0;
-          if (precioReal > 0) {
-            const partidaActual = partidasObra.find(p => p.id === form.partida_id);
-            if (partidaActual) {
-              const nuevoCosto = Number(partidaActual.costo_real_acumulado || 0) + (cantNum * precioReal);
-              await window.__db.partidas.update(form.partida_id, {
-                costo_real_acumulado: nuevoCosto,
-                sync_status: partidaActual.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
-                updated_at: new Date().toISOString(),
-                version: (partidaActual.version ?? 0) + 1,
-              });
-            }
-          }
-        } catch(e) { console.warn('No se pudo actualizar el avance de la partida:', e?.message); }
-      }
+      // NOTA: la imputación a partida (insumos_partida + costo_real_acumulado)
+      // ya no ocurre acá. El ingeniero la asigna desde su inbox usando
+      // aplicarConsumoPartida() en src/lib/partida-allocation.js. Paquete C.
+
       // Actualizar stock local optimistamente
       const delta = tipo === 'ingreso' ? parseFloat(form.cantidad) : -parseFloat(form.cantidad);
       const nuevoStock = (material.stock_actual ?? 0) + delta;
@@ -1364,9 +1325,11 @@ function MaterialesPage({ showToast }) {
           responsable_id,
           proveedor_id,
           documento_asociado: form.documento || null,
-          // partida_id viene por fila en el lote: para salidas se usa para
-          // descontar del APU; para ingresos sigue null (no aplica).
-          partida_id: tipo === 'salida' ? (it.partida_id || null) : null,
+          // partida_id SIEMPRE null al crear desde almacén — la vinculación
+          // material → partida la hace el rol "ingeniero" desde su inbox.
+          // (Antes el almacenero la elegía con un dropdown, pero no tenía
+          // contexto técnico para asignar bien — Paquete C del plan.)
+          partida_id: null,
           precio_unitario_real: parseFloat(it.precio) || null,
           observaciones: form.observaciones || null,
           // Idempotency determinista: si el browser re-envía, server
@@ -1403,45 +1366,11 @@ function MaterialesPage({ showToast }) {
           } catch {}
         }
 
-        // SALIDA con partida: descontar del APU (cantidad_real_usada del insumo
-        // que matchea por nombre) y sumar al costo_real_acumulado de la partida
-        // si hay precio. Mismo flow que el modal individual antiguo.
-        if (tipo === 'salida' && it.partida_id) {
-          try {
-            const palabras = String(material.nombre_material || '')
-              .toLowerCase()
-              .split(/[^a-záéíóúñ0-9]+/)
-              .filter(p => p.length >= 4);
-            const insumoTarget = insumosObra.find(i =>
-              i.partida_id === it.partida_id &&
-              i.tipo_insumo === 'material' &&
-              palabras.length > 0 &&
-              palabras.every(w => String(i.nombre_insumo || '').toLowerCase().includes(w))
-            );
-            if (insumoTarget) {
-              const nuevoUsado = Number(insumoTarget.cantidad_real_usada || 0) + cantNum;
-              await window.__db.insumos_partida.update(insumoTarget.id, {
-                cantidad_real_usada: nuevoUsado,
-                sync_status: insumoTarget.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
-                updated_at: new Date().toISOString(),
-                version: (insumoTarget.version ?? 0) + 1,
-              });
-            }
-            const precioReal = parseFloat(it.precio) || 0;
-            if (precioReal > 0) {
-              const partidaActual = partidasObra.find(p => p.id === it.partida_id);
-              if (partidaActual) {
-                const nuevoCosto = Number(partidaActual.costo_real_acumulado || 0) + (cantNum * precioReal);
-                await window.__db.partidas.update(it.partida_id, {
-                  costo_real_acumulado: nuevoCosto,
-                  sync_status: partidaActual.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
-                  updated_at: new Date().toISOString(),
-                  version: (partidaActual.version ?? 0) + 1,
-                });
-              }
-            }
-          } catch (e) { console.warn('[lote-salida] APU update falló:', e?.message); }
-        }
+        // NOTA: la imputación a partida (insumos_partida.cantidad_real_usada
+        // + partidas.costo_real_acumulado) se ejecuta cuando el INGENIERO
+        // vincula la salida desde su inbox, vía aplicarConsumoPartida()
+        // en src/lib/partida-allocation.js. Almacén ya no se preocupa por
+        // esto — Paquete C del plan.
 
         // Stock optimist
         const delta = tipo === 'ingreso' ? cantNum : -cantNum;
@@ -2182,7 +2111,7 @@ function MaterialesPage({ showToast }) {
                     <th style={{ width:80 }}>Unidad</th>
                     <th style={{ width:100 }}>Cantidad *</th>
                     <th style={{ width:90 }}>Stock</th>
-                    <th style={{ minWidth:220 }}>Partida (a qué se carga)</th>
+                    {/* Columna "Partida" removida — el ingeniero la asigna después desde su inbox (Paquete C) */}
                     {!loteComunes.usarMismaPersona && <th style={{ minWidth:160 }}>Quien retira</th>}
                     <th style={{ width:40 }}></th>
                   </tr>
@@ -2193,37 +2122,12 @@ function MaterialesPage({ showToast }) {
                     const cantSolicitada = parseFloat(it.cantidad) || 0;
                     const stock = Number(mat?.stock_actual ?? 0);
                     const stockOk = stock >= cantSolicitada;
-                    // Sugerencias por fila — depende del material elegido en esta fila
-                    const sugeridas = mat ? computarPartidasSugeridas(mat) : [];
-                    const idsSugeridos = new Set(sugeridas.map(s => s.partida.id));
-                    const partidasOpts = [
-                      { value: '', label: '— Sin partida (no descontar APU) —' },
-                      ...sugeridas.map(s => ({
-                        value: s.partida.id,
-                        label: `★ ${s.partida.descripcion?.slice(0, 50) || s.partida.codigo_s10 || '?'} · ${s.pct.toFixed(0)}% usado`,
-                      })),
-                      ...partidasObra
-                        .filter(p => !idsSugeridos.has(p.id))
-                        .slice(0, 50)
-                        .map(p => ({
-                          value: p.id,
-                          label: `${p.descripcion?.slice(0, 50) || p.codigo_s10 || '?'}`,
-                        })),
-                    ];
                     return (
                       <tr key={it.id}>
                         <td>
                           <SearchableSelect
                             value={it.material_id}
-                            onChange={v => {
-                              const newMat = materiales.find(m => m.id === v);
-                              const sugs = newMat ? computarPartidasSugeridas(newMat) : [];
-                              // Auto-pre-seleccionar la partida más urgente (primera en orden por % usado)
-                              updateLoteItem(it.id, {
-                                material_id: v,
-                                partida_id: sugs[0]?.partida?.id || null,
-                              });
-                            }}
+                            onChange={v => updateLoteItem(it.id, { material_id: v })}
                             options={[
                               { value: '', label: '— Selecciona —' },
                               ...materiales.map(m => ({ value: m.id, label: m.nombre_material })),
@@ -2241,19 +2145,7 @@ function MaterialesPage({ showToast }) {
                             </span>
                           ) : <span style={{ color:'var(--tm)' }}>—</span>}
                         </td>
-                        <td>
-                          <SearchableSelect
-                            value={it.partida_id}
-                            onChange={v => updateLoteItem(it.id, { partida_id: v || null })}
-                            options={partidasOpts}
-                            fontSize={12}
-                            placeholder={mat ? '— Sin partida —' : 'Elegí material primero'}/>
-                          {mat && sugeridas.length > 0 && !it.partida_id && (
-                            <div style={{ fontSize:10, color:'var(--tm)', marginTop:2 }}>
-                              ★ = sugerida según APU
-                            </div>
-                          )}
-                        </td>
+                        {/* Columna "Partida" removida — el ingeniero la asigna después */}
                         {!loteComunes.usarMismaPersona && (
                           <td>
                             <SearchableSelect
