@@ -744,6 +744,19 @@ function MaterialesPage({ showToast }) {
   const [facturaVinculadaId, setFacturaVinculadaId] = uS(null);
 
   // Carga reactiva de facturas pendientes de recepción
+  // Pendientes = 'pendiente_recepcion' o 'parcial' (las que todavía
+  // necesitan al menos una entrega o un cierre manual). 'recibido' y
+  // 'no_aplica' ya no aparecen.
+  const PENDIENTE_STATUSES = ['pendiente_recepcion', 'parcial'];
+
+  // Mapa accounting_movement_id → suma de cantidad ingresada (todos los
+  // movs vinculados). Usado para mostrar "800/2000 recibidos" en el banner.
+  const [progresoPorFactura, setProgresoPorFactura] = uS(new Map());
+
+  // Modal de cierre manual: la almacenera marca una factura como "entrega
+  // completa" con observación (ej. "completo", "proveedor adeuda 5 ud").
+  const [cerrarRecepcionFactura, setCerrarRecepcionFactura] = uS(null);
+
   uE(() => {
     if (!obraId) return;
     let cancelled = false;
@@ -751,16 +764,38 @@ function MaterialesPage({ showToast }) {
       try {
         const rows = await window.__db.accounting_movements
           .where('obra_id').equals(obraId)
-          .filter(m => m.recepcion_status === 'pendiente_recepcion' && !m.deleted_at)
+          .filter(m => PENDIENTE_STATUSES.includes(m.recepcion_status) && !m.deleted_at)
           .toArray();
         rows.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
-        if (!cancelled) setFacturasPendientes(rows);
+
+        // Cargar progreso: para cada factura, sumar cantidad ingresada.
+        const facturaIds = rows.map(r => r.id);
+        const progresoMap = new Map();
+        if (facturaIds.length) {
+          const movsLinkeados = await window.__db.movimientos_materiales
+            .where('obra_id').equals(obraId)
+            .filter(m => m.tipo_movimiento === 'entrada'
+                      && facturaIds.includes(m.accounting_movement_id))
+            .toArray();
+          for (const mov of movsLinkeados) {
+            const key = mov.accounting_movement_id;
+            const cur = progresoMap.get(key) || { items: 0, qty: 0 };
+            cur.items += 1;
+            cur.qty += Number(mov.cantidad || 0);
+            progresoMap.set(key, cur);
+          }
+        }
+
+        if (!cancelled) {
+          setFacturasPendientes(rows);
+          setProgresoPorFactura(progresoMap);
+        }
       } catch {}
     };
     load();
     const onChange = (e) => {
       const t = e?.detail?.tabla || e?.detail?.table;
-      if (!t || t === 'accounting_movements') load();
+      if (!t || t === 'accounting_movements' || t === 'movimientos_materiales') load();
     };
     window.addEventListener('jx_data_changed', onChange);
     return () => {
@@ -807,6 +842,43 @@ function MaterialesPage({ showToast }) {
     }));
     setFacturaVinculadaId(facturaId);
     showToast(`✓ Vinculado a factura ${factura.document_number} — ${itemsConMaterial.length} item(s) cargados`, 'green');
+  };
+
+  // Cierre manual de la recepción de una factura. Marca `recepcion_status`
+  // como 'recibido' y persiste la observación obligatoria. Esto cierra el
+  // aviso aunque las cantidades no estén completas (la observación explica
+  // por qué — ej. "proveedor adeuda 5 ud").
+  const cerrarRecepcion = async (factura, observacion) => {
+    if (!observacion || observacion.trim().length < 5) {
+      showToast('Escribí una observación (mín 5 caracteres)', 'red');
+      return;
+    }
+    try {
+      const now = new Date().toISOString();
+      const userId = auth?.profile?.id || null;
+      await window.__db.accounting_movements.update(factura.id, {
+        recepcion_status: 'recibido',
+        recepcion_observaciones: observacion.trim(),
+        recepcion_completada_at: now,
+        recepcion_completada_por: userId,
+        updated_at: now,
+        updated_by: userId,
+        version: (factura.version ?? 0) + 1,
+        sync_status: factura.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      try { await window.__logAudit?.({
+        action: 'update', table: 'accounting_movements', recordId: factura.id,
+        oldData: { recepcion_status: factura.recepcion_status },
+        newData: { recepcion_status: 'recibido', recepcion_observaciones: observacion.trim() },
+        reason: `Recepción cerrada manualmente: ${observacion.trim()}`,
+      }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'accounting_movements' } })); } catch {}
+      try { window.dispatchEvent(new Event('online')); } catch {}
+      showToast(`✓ Recepción cerrada · factura ${factura.document_number || ''}`, 'green');
+      setCerrarRecepcionFactura(null);
+    } catch (e) {
+      showToast('Error al cerrar: ' + (e.message || e), 'red');
+    }
   };
 
   const updateLoteItem = (id, patch) => {
@@ -1308,6 +1380,12 @@ function MaterialesPage({ showToast }) {
             pendiente_sustento: true,
             observaciones_almacen: loteComunes.observacionesAlmacen?.trim() || null,
           } : {}),
+          // Linkeo a factura vinculada: cada mov del lote queda asociado
+          // a la factura. Sirve para calcular progreso "5/12 items"
+          // (paquete B — entregas parciales) y para auditoría.
+          ...(tipo === 'ingreso' && facturaVinculadaId && !loteComunes.sinFactura ? {
+            accounting_movement_id: facturaVinculadaId,
+          } : {}),
         });
         try { await window.__logAudit?.({ action:'insert', table:'movimientos_materiales', recordId:movCreated?.id, newData:movCreated, reason:`${tipo} en LOTE de ${cantNum} ${material.unidad} de ${material.nombre_material}` }); } catch {}
 
@@ -1387,15 +1465,22 @@ function MaterialesPage({ showToast }) {
     refresh();
 
     // Si el lote estaba vinculado a una factura pendiente, marcarla como
-    // recibida en el accounting_movement. El recepcion_movimiento_id
-    // apunta al primer mov creado para trazabilidad.
+    // recibida en el accounting_movement. Estado pasa a 'parcial' — la
+    // almacenera lo cierra MANUALMENTE como 'recibido' con observación
+    // cuando confirma que la entrega está completa (botón "Marcar entrega
+    // completa" en el banner). Esto preserva el aviso para entregas
+    // parciales (ej. factura por 2000 tubos en 3 tandas).
+    // Además linkeamos cada mov del lote a la factura via accounting_movement_id
+    // para poder mostrar progreso "800/2000 recibidos".
     if (tipo === 'ingreso' && facturaVinculadaId && exitosos > 0) {
       try {
         const factura = facturasPendientes.find(f => f.id === facturaVinculadaId);
         if (factura) {
           const userId = auth?.profile?.id || null;
           await window.__db.accounting_movements.update(facturaVinculadaId, {
-            recepcion_status: 'recibido',
+            // 'parcial' = al menos 1 ingreso registrado, pero la almacenera
+            // todavía no marcó "completa". El aviso queda visible.
+            recepcion_status: 'parcial',
             recepcion_fecha: new Date().toISOString(),
             recepcion_por: userId,
             updated_at: new Date().toISOString(),
@@ -1405,13 +1490,13 @@ function MaterialesPage({ showToast }) {
           });
           try { await window.__logAudit?.({
             action: 'update', table: 'accounting_movements', recordId: facturaVinculadaId,
-            newData: { recepcion_status: 'recibido' },
-            reason: `Recepción confirmada — ${exitosos} mov(s) ingreso · factura ${factura.document_number}`,
+            newData: { recepcion_status: 'parcial' },
+            reason: `Recepción parcial registrada — ${exitosos} mov(s) ingreso · factura ${factura.document_number}`,
           }); } catch {}
           try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'accounting_movements' } })); } catch {}
         }
       } catch (e) {
-        console.warn('[lote-ingreso] no se pudo marcar la factura como recibida:', e?.message);
+        console.warn('[lote-ingreso] no se pudo marcar la factura como parcial:', e?.message);
       }
     }
 
@@ -1771,33 +1856,87 @@ function MaterialesPage({ showToast }) {
             background: 'rgba(242,183,5,0.10)',
             border: '1px solid rgba(242,183,5,0.4)',
             borderRadius: 6,
-            display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
           }}>
-            <span style={{ fontSize: 18, lineHeight: 1 }}>🧾</span>
-            <div style={{ flex: 1, minWidth: 200 }}>
-              <div style={{ fontSize: 12.5, fontWeight: 700, color: '#F2B705' }}>
-                {facturasPendientes.length} factura(s) pendiente(s) de recepción
+            <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+              <span style={{ fontSize: 18, lineHeight: 1 }}>🧾</span>
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: '#F2B705' }}>
+                  {facturasPendientes.length} factura(s) pendiente(s) de recepción
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--tm)' }}>
+                  Vinculá una para pre-rellenar los items. Si la entrega es parcial el aviso queda activo hasta que la cierres a mano.
+                </div>
               </div>
-              <div style={{ fontSize: 11, color: 'var(--tm)' }}>
-                Vinculá una para pre-rellenar los items (material, cantidad, proveedor).
-              </div>
+              <select
+                className="fi"
+                value={facturaVinculadaId || ''}
+                onChange={e => {
+                  const id = e.target.value;
+                  if (id) vincularFactura(id);
+                  else setFacturaVinculadaId(null);
+                }}
+                style={{ minWidth: 240, maxWidth: 360, fontSize: 12 }}>
+                <option value="">— Vincular factura —</option>
+                {facturasPendientes.map(f => {
+                  const prog = progresoPorFactura.get(f.id);
+                  const sufijo = prog ? ` · ${prog.items} item(s) ingresados` : '';
+                  const estadoTag = f.recepcion_status === 'parcial' ? ' [⏳ parcial]' : '';
+                  return (
+                    <option key={f.id} value={f.id}>
+                      {f.document_number} · {f.third_party_name || '—'} · {f.date}{estadoTag}{sufijo}
+                    </option>
+                  );
+                })}
+              </select>
             </div>
-            <select
-              className="fi"
-              value={facturaVinculadaId || ''}
-              onChange={e => {
-                const id = e.target.value;
-                if (id) vincularFactura(id);
-                else setFacturaVinculadaId(null);
-              }}
-              style={{ minWidth: 240, maxWidth: 360, fontSize: 12 }}>
-              <option value="">— Vincular factura —</option>
-              {facturasPendientes.map(f => (
-                <option key={f.id} value={f.id}>
-                  {f.document_number} · {f.third_party_name || '—'} · {f.date}
-                </option>
-              ))}
-            </select>
+
+            {/* Lista detallada de pendientes con progreso + botón "Marcar completa" */}
+            <div style={{ marginTop:10, display:'flex', flexDirection:'column', gap:6 }}>
+              {facturasPendientes.map(f => {
+                const prog = progresoPorFactura.get(f.id) || { items: 0, qty: 0 };
+                let itemsFactura = [];
+                try {
+                  const j = JSON.parse(f.notas || '{}');
+                  itemsFactura = Array.isArray(j.items_factura) ? j.items_factura : [];
+                } catch {}
+                const totalItems = itemsFactura.length;
+                const totalQty = itemsFactura.reduce((s, it) => s + Number(it.cantidad || 0), 0);
+                const pctItems = totalItems > 0 ? Math.min(100, Math.round(prog.items / totalItems * 100)) : 0;
+                const pctQty = totalQty > 0 ? Math.min(100, Math.round(prog.qty / totalQty * 100)) : 0;
+                const pct = Math.max(pctItems, pctQty);
+                return (
+                  <div key={f.id} style={{ background:'rgba(0,0,0,0.18)', borderRadius:6, padding:'8px 10px', fontSize:11.5 }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8, marginBottom:6 }}>
+                      <div>
+                        <span style={{ fontWeight:700, color:'var(--tp)' }}>{f.document_number || 'sin nº'}</span>
+                        <span style={{ color:'var(--tm)', marginLeft:6 }}>· {f.third_party_name || '—'}</span>
+                        {f.recepcion_status === 'parcial' && (
+                          <span className="b-amber" style={{ marginLeft:6, fontSize:10 }}>⏳ Parcial</span>
+                        )}
+                      </div>
+                      <button
+                        className="btn btn-amber btn-sm"
+                        disabled={prog.items === 0}
+                        onClick={()=>setCerrarRecepcionFactura(f)}
+                        title={prog.items === 0 ? 'Registrá al menos 1 ingreso antes de cerrar' : 'Marcar la entrega como completa (con observación)'}>
+                        <JxIcon name="check" size={11}/> Marcar completa
+                      </button>
+                    </div>
+                    {totalItems > 0 && (
+                      <>
+                        <div style={{ display:'flex', justifyContent:'space-between', fontSize:10.5, color:'var(--tm)', marginBottom:3 }}>
+                          <span>{prog.items} de {totalItems} items · {prog.qty.toLocaleString()} de {totalQty.toLocaleString()} cantidad</span>
+                          <span style={{ color: pct >= 100 ? 'var(--green)' : 'var(--amber)' }}>{pct}%</span>
+                        </div>
+                        <div style={{ height:4, background:'rgba(255,255,255,0.06)', borderRadius:2, overflow:'hidden' }}>
+                          <div style={{ width:`${pct}%`, height:'100%', background: pct >= 100 ? 'var(--green)' : 'var(--amber)', transition:'width 0.3s' }}/>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
 
@@ -1968,6 +2107,15 @@ function MaterialesPage({ showToast }) {
           </button>
         </div>
       </Modal>}
+
+      {/* Modal cerrar recepción manual — Paquete B */}
+      {cerrarRecepcionFactura && (
+        <CerrarRecepcionModal
+          factura={cerrarRecepcionFactura}
+          progreso={progresoPorFactura.get(cerrarRecepcionFactura.id)}
+          onClose={()=>setCerrarRecepcionFactura(null)}
+          onConfirm={(obs)=>cerrarRecepcion(cerrarRecepcionFactura, obs)}/>
+      )}
 
       {/* Modal Salida (lote) — tabla de N materiales con persona común */}
       {modal==='salida' && (() => {
@@ -4669,6 +4817,75 @@ function AsistenciaPage({ showToast }) {
         </div>
       </Modal>}
     </div>
+  );
+}
+
+// ── Modal de cierre manual de recepción (Paquete B) ────────────────
+// La almacenera lo abre desde el banner de facturas pendientes. Calcula
+// items recibidos vs facturados y obliga a escribir una observación
+// (ej. "completo", "proveedor adeuda 5 ud", "faltante por devolución").
+function CerrarRecepcionModal({ factura, progreso, onClose, onConfirm }) {
+  const [observacion, setObservacion] = uS('');
+  const [saving, setSaving] = uS(false);
+  let itemsFactura = [];
+  try {
+    const j = JSON.parse(factura.notas || '{}');
+    itemsFactura = Array.isArray(j.items_factura) ? j.items_factura : [];
+  } catch {}
+  const totalItems = itemsFactura.length;
+  const totalQty = itemsFactura.reduce((s, it) => s + Number(it.cantidad || 0), 0);
+  const prog = progreso || { items: 0, qty: 0 };
+  const incompleta = totalItems > 0 && (prog.items < totalItems || prog.qty < totalQty);
+  const placeholder = incompleta
+    ? 'Ej: Proveedor quedó debiendo 5 unidades · Faltante justificado por devolución'
+    : 'Ej: Entrega completa · Todo recibido OK';
+
+  const submit = async () => {
+    setSaving(true);
+    try { await onConfirm(observacion); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <Modal title="Marcar recepción completa" icon="check" onClose={onClose}>
+      <div style={{ fontSize:12.5, color:'var(--ts)', marginBottom:10, lineHeight:1.5 }}>
+        Cerrando recepción de <strong>{factura.document_number || 'sin nº'}</strong> · {factura.third_party_name || '—'}.
+      </div>
+      {totalItems > 0 && (
+        <div style={{ padding:10, background:'rgba(0,0,0,0.18)', borderRadius:6, marginBottom:12, fontSize:11.5 }}>
+          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
+            <span style={{ color:'var(--tm)' }}>Items recibidos</span>
+            <span style={{ color: prog.items >= totalItems ? 'var(--green)' : 'var(--amber)' }}>
+              {prog.items} de {totalItems}
+            </span>
+          </div>
+          <div style={{ display:'flex', justifyContent:'space-between' }}>
+            <span style={{ color:'var(--tm)' }}>Cantidad total</span>
+            <span style={{ color: prog.qty >= totalQty ? 'var(--green)' : 'var(--amber)' }}>
+              {prog.qty.toLocaleString()} de {totalQty.toLocaleString()}
+            </span>
+          </div>
+          {incompleta && (
+            <div style={{ marginTop:8, padding:'6px 8px', background:'rgba(231,76,60,0.10)', border:'1px solid rgba(231,76,60,0.3)', borderRadius:4, color:'var(--red)', fontSize:11 }}>
+              ⚠ La entrega no está completa. La observación es obligatoria para justificar el cierre.
+            </div>
+          )}
+        </div>
+      )}
+      <div style={{ marginBottom:10 }}>
+        <label className="flabel">Observación (mín 5 caracteres)</label>
+        <textarea className="fi" rows={3}
+          placeholder={placeholder}
+          value={observacion}
+          onChange={e=>setObservacion(e.target.value)}/>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose} disabled={saving}>Cancelar</button>
+        <button className="btn btn-amber" onClick={submit} disabled={saving || observacion.trim().length < 5}>
+          <JxIcon name="check" size={13}/> {saving ? 'Cerrando…' : 'Cerrar recepción'}
+        </button>
+      </div>
+    </Modal>
   );
 }
 
