@@ -1629,11 +1629,78 @@ function IntercompanyPage({ showToast }) {
 function ContabilidadDashboardPage({ showToast }) {
   const { data: companies } = window.__hooks.useCompanies();
   const { data: movs } = window.__hooks.useAccountingMovements();
+  const { data: materiales } = window.__hooks.useMateriales();
+  // Proveedores cargados manualmente — no hay hook genérico
+  const [providers, setProviders] = uSC([]);
+  uEC(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const rows = await window.__db.proveedores.filter(p => !p.deleted_at).toArray();
+        if (!cancelled) setProviders(rows);
+      } catch {}
+    };
+    load();
+    const onChange = (e) => {
+      const t = e?.detail?.tabla || e?.detail?.table;
+      if (!t || t === 'proveedores') load();
+    };
+    window.addEventListener('jx_data_changed', onChange);
+    return () => { cancelled = true; window.removeEventListener('jx_data_changed', onChange); };
+  }, []);
 
   const [filtroEmpresa, setFiltroEmpresa] = uSC('todas');
   const [filtroMoneda, setFiltroMoneda] = uSC('PEN');
   const [filtroDesde, setFiltroDesde] = uSC('');
   const [filtroHasta, setFiltroHasta] = uSC('');
+
+  // ── Ingresos pendientes de sustento (flujo inverso almacén → contabilidad) ──
+  // La almacenera puede registrar ingresos sin factura. Aquí la contadora
+  // los ve para vincularlos a una factura existente o marcarlos como
+  // consumo sin sustento.
+  const [pendientesSustento, setPendientesSustento] = uSC([]);
+  const [vincularModal, setVincularModal] = uSC(null); // movimiento_materiales pendiente
+  const [cerrarSinFacturaModal, setCerrarSinFacturaModal] = uSC(null);
+
+  uEC(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const rows = await window.__db.movimientos_materiales
+          .filter(m => m.pendiente_sustento === true && !m.accounting_movement_id)
+          .toArray();
+        rows.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+        if (!cancelled) setPendientesSustento(rows);
+      } catch (e) {
+        console.warn('[contabilidad] no se pudo cargar pendientes_sustento:', e?.message);
+      }
+    };
+    load();
+    const onChange = (e) => {
+      const t = e?.detail?.tabla || e?.detail?.table;
+      if (!t || t === 'movimientos_materiales') load();
+    };
+    window.addEventListener('jx_data_changed', onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('jx_data_changed', onChange);
+    };
+  }, []);
+
+  // Agrupar pendientes por proveedor (o "Sin proveedor" si null) para
+  // facilitar el matching con facturas reales.
+  const pendientesAgrupados = uMC(() => {
+    const grupos = new Map();
+    for (const mov of pendientesSustento) {
+      const provId = mov.proveedor_id || '__sin_proveedor__';
+      if (!grupos.has(provId)) grupos.set(provId, { proveedor_id: mov.proveedor_id, items: [] });
+      grupos.get(provId).items.push(mov);
+    }
+    return Array.from(grupos.values());
+  }, [pendientesSustento]);
+
+  const matName = (id) => (materiales || []).find(m => m.id === id)?.nombre_material || '—';
+  const provName = (id) => id ? ((providers || []).find(p => p.id === id)?.razon_social || '—') : 'Sin proveedor';
 
   const filtered = uMC(() => {
     let f = (movs || []).filter(m => m.currency === filtroMoneda);
@@ -1661,6 +1728,73 @@ function ContabilidadDashboardPage({ showToast }) {
     return { ingresos, costos, gastos, utilidad, margen, porCobrar, porPagar };
   }, [filtered]);
 
+  // ── Handlers de pendientes de sustento ────────────────────────────
+  const userId = window.__useAuth?.()?.profile?.id || 'offline';
+
+  // Vincular un movimiento pendiente a una factura existente (accounting_movement
+  // del mismo proveedor). Por simplicidad, se hace 1:1 — un mov ↔ una factura.
+  const vincularAFactura = async (mov, accountingMovId) => {
+    try {
+      const factura = (movs || []).find(m => m.id === accountingMovId);
+      if (!factura) { showToast?.('Factura no encontrada', 'red'); return; }
+      const now = new Date().toISOString();
+      await window.__db.movimientos_materiales.update(mov.id, {
+        accounting_movement_id: accountingMovId,
+        pendiente_sustento: false,
+        updated_at: now,
+        updated_by: userId,
+        version: (mov.version ?? 0) + 1,
+        sync_status: mov.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      // La factura cambia a 'parcial' (la almacenera la cerrará completa después,
+      // ver Paquete B). Si todavía está como pendiente_recepcion, pasa a parcial.
+      if (factura.recepcion_status === 'pendiente_recepcion' || !factura.recepcion_status) {
+        await window.__db.accounting_movements.update(accountingMovId, {
+          recepcion_status: 'parcial',
+          updated_at: now,
+          updated_by: userId,
+          version: (factura.version ?? 0) + 1,
+          sync_status: factura.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+        });
+      }
+      try { await window.__logAudit?.({ action:'update', table:'movimientos_materiales', recordId: mov.id, oldData:{ pendiente_sustento:true }, newData:{ accounting_movement_id: accountingMovId }, reason:`Vinculado a factura ${factura.document_number || accountingMovId}` }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'movimientos_materiales' } })); } catch {}
+      try { window.dispatchEvent(new Event('online')); } catch {}
+      showToast?.(`✓ Ingreso vinculado a factura ${factura.document_number || ''}`, 'green');
+      setVincularModal(null);
+    } catch (e) {
+      showToast?.('Error al vincular: ' + (e.message || e), 'red');
+    }
+  };
+
+  // Marcar el ingreso como "sin factura" definitivo (consumo interno, donación,
+  // material de descarte, etc.) — pendiente_sustento pasa a false sin link.
+  const cerrarSinFactura = async (mov, motivo) => {
+    if (!motivo || motivo.trim().length < 5) {
+      showToast?.('Escribí un motivo (mín 5 caracteres)', 'red');
+      return;
+    }
+    try {
+      const now = new Date().toISOString();
+      const obs = `${mov.observaciones_almacen ? mov.observaciones_almacen + ' · ' : ''}[cerrado sin factura: ${motivo.trim()}]`;
+      await window.__db.movimientos_materiales.update(mov.id, {
+        pendiente_sustento: false,
+        observaciones_almacen: obs,
+        updated_at: now,
+        updated_by: userId,
+        version: (mov.version ?? 0) + 1,
+        sync_status: mov.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      try { await window.__logAudit?.({ action:'update', table:'movimientos_materiales', recordId: mov.id, oldData:{ pendiente_sustento:true }, newData:{ pendiente_sustento:false }, reason:`Cerrado sin factura: ${motivo.trim()}` }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'movimientos_materiales' } })); } catch {}
+      try { window.dispatchEvent(new Event('online')); } catch {}
+      showToast?.('✓ Ingreso cerrado sin factura', 'amber');
+      setCerrarSinFacturaModal(null);
+    } catch (e) {
+      showToast?.('Error: ' + (e.message || e), 'red');
+    }
+  };
+
   return (
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
@@ -1669,6 +1803,101 @@ function ContabilidadDashboardPage({ showToast }) {
           <div className="pg-sub">Vista rápida de ingresos, costos y márgenes por empresa</div>
         </div>
       </div>
+
+      {/* ── Ingresos sin sustento (flujo inverso almacén → contabilidad) ── */}
+      {pendientesSustento.length > 0 && (
+        <div className="card" style={{ marginBottom:16, padding:'14px 16px', background:'rgba(242,183,5,0.06)', border:'1px solid rgba(242,183,5,0.35)' }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:10 }}>
+            <div>
+              <div style={{ fontSize:14, fontWeight:700, color:'var(--amber)' }}>
+                🧾 {pendientesSustento.length} ingreso(s) sin sustento documental
+              </div>
+              <div style={{ fontSize:11.5, color:'var(--tm)', marginTop:3, lineHeight:1.5 }}>
+                Almacén registró estos materiales sin factura. Vinculalos a una factura existente, o marcalos como "sin factura" si fue consumo interno / donación / muestra.
+              </div>
+            </div>
+          </div>
+          <div style={{ display:'flex', flexDirection:'column', gap:6, maxHeight:300, overflowY:'auto' }}>
+            {pendientesAgrupados.map(grp => (
+              <div key={grp.proveedor_id || 'sin_prov'} style={{ background:'rgba(0,0,0,0.15)', borderRadius:6, padding:'8px 10px' }}>
+                <div style={{ fontSize:11, color:'var(--tm)', marginBottom:6, fontWeight:600 }}>
+                  Proveedor: <span style={{ color:'var(--tp)' }}>{provName(grp.proveedor_id)}</span>
+                  <span style={{ marginLeft:8, opacity:0.6 }}>· {grp.items.length} ítem(s)</span>
+                </div>
+                {grp.items.map(mov => (
+                  <div key={mov.id} style={{ display:'grid', gridTemplateColumns:'1fr 1fr auto auto', gap:8, alignItems:'center', padding:'6px 0', borderTop:'1px solid rgba(255,255,255,0.04)', fontSize:12 }}>
+                    <div>
+                      <div style={{ color:'var(--tp)', fontWeight:600 }}>{matName(mov.material_id)}</div>
+                      <div style={{ fontSize:10.5, color:'var(--tm)' }}>{mov.fecha} · {mov.cantidad} {mov.unidad}</div>
+                    </div>
+                    <div style={{ fontSize:10.5, color:'var(--tm)', fontStyle:'italic' }}>
+                      {mov.observaciones_almacen || '—'}
+                    </div>
+                    <button className="btn btn-amber btn-sm" onClick={()=>setVincularModal(mov)} title="Vincular a una factura existente de este proveedor">
+                      <JxIcon name="link" size={11}/> Vincular factura
+                    </button>
+                    <button className="btn btn-ghost btn-sm" onClick={()=>setCerrarSinFacturaModal(mov)} title="Marcar como consumo sin factura">
+                      <JxIcon name="x" size={11}/> Sin factura
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Modal: vincular a factura existente */}
+      {vincularModal && (
+        <Modal title={`Vincular a factura — ${matName(vincularModal.material_id)}`} icon="link" onClose={()=>setVincularModal(null)}>
+          <div style={{ fontSize:12, color:'var(--tm)', marginBottom:10 }}>
+            Seleccioná la factura del proveedor <strong>{provName(vincularModal.proveedor_id)}</strong> que sustenta este ingreso de <strong>{vincularModal.cantidad} {vincularModal.unidad}</strong> de <strong>{matName(vincularModal.material_id)}</strong>.
+          </div>
+          {(() => {
+            const candidatas = (movs || []).filter(m =>
+              (m.type === 'cost' || m.type === 'expense') &&
+              (!vincularModal.proveedor_id || m.proveedor_id === vincularModal.proveedor_id || m.third_party_doc) &&
+              !m.deleted_at);
+            if (!candidatas.length) {
+              return (
+                <div style={{ padding:'14px', background:'rgba(231,76,60,0.08)', border:'1px solid rgba(231,76,60,0.3)', borderRadius:6, fontSize:12, color:'var(--ts)' }}>
+                  No hay facturas registradas para este proveedor. Subí la factura primero por Captura Mágica.
+                </div>
+              );
+            }
+            return (
+              <div style={{ maxHeight:300, overflowY:'auto', display:'flex', flexDirection:'column', gap:6 }}>
+                {candidatas.slice(0, 30).map(f => (
+                  <button key={f.id} className="card card-p" style={{ textAlign:'left', cursor:'pointer', border:'1px solid var(--bd)' }}
+                    onClick={()=>vincularAFactura(vincularModal, f.id)}>
+                    <div style={{ display:'flex', justifyContent:'space-between', fontSize:12 }}>
+                      <div>
+                        <div style={{ fontWeight:700, color:'var(--tp)' }}>{f.document_number || 'sin n°'}</div>
+                        <div style={{ fontSize:10.5, color:'var(--tm)' }}>{f.date} · S/ {Number(f.amount || 0).toLocaleString()}</div>
+                      </div>
+                      <div style={{ fontSize:10.5, color:'var(--tm)' }}>
+                        {f.recepcion_status === 'recibido' ? '✓ recibida'
+                          : f.recepcion_status === 'parcial' ? '⏳ parcial'
+                          : f.recepcion_status === 'pendiente_recepcion' ? '🆕 pendiente'
+                          : '—'}
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            );
+          })()}
+        </Modal>
+      )}
+
+      {/* Modal: cerrar sin factura */}
+      {cerrarSinFacturaModal && (
+        <CerrarSinFacturaModal
+          mov={cerrarSinFacturaModal}
+          matName={matName(cerrarSinFacturaModal.material_id)}
+          onClose={()=>setCerrarSinFacturaModal(null)}
+          onConfirm={(motivo)=>cerrarSinFactura(cerrarSinFacturaModal, motivo)}/>
+      )}
 
       {/* Filtros */}
       <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', marginBottom:14 }}>
@@ -3270,6 +3499,40 @@ function CadenaVisual({ cadena, lookupCompany, lookupObra, calcular }) {
         </div>
       )}
     </div>
+  );
+}
+
+// ── Modal de cierre "sin factura" para ingresos de almacén ──
+// Cuando un ingreso registrado por almacén sin factura nunca tendrá una
+// (consumo interno / donación / muestra), la contadora lo cierra acá con
+// un motivo. pendiente_sustento pasa a false sin link a accounting_movement.
+function CerrarSinFacturaModal({ mov, matName, onClose, onConfirm }) {
+  const [motivo, setMotivo] = uSC('');
+  const [saving, setSaving] = uSC(false);
+  const submit = async () => {
+    setSaving(true);
+    try { await onConfirm(motivo); }
+    finally { setSaving(false); }
+  };
+  return (
+    <Modal title="Marcar ingreso sin factura" icon="x" onClose={onClose}>
+      <div style={{ fontSize:12.5, color:'var(--ts)', marginBottom:10, lineHeight:1.5 }}>
+        Vas a cerrar este ingreso de <strong>{mov.cantidad} {mov.unidad}</strong> de <strong>{matName}</strong> sin asociar una factura. Quedará registrado en auditoría.
+      </div>
+      <div style={{ marginBottom:10 }}>
+        <label className="flabel">Motivo (mín 5 caracteres)</label>
+        <textarea className="fi" rows={3}
+          placeholder="Ej: consumo interno · donación de proveedor · muestra · material descartado"
+          value={motivo}
+          onChange={e=>setMotivo(e.target.value)}/>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose} disabled={saving}>Cancelar</button>
+        <button className="btn btn-amber" onClick={submit} disabled={saving || motivo.trim().length < 5}>
+          <JxIcon name="check" size={13}/> {saving ? 'Guardando…' : 'Cerrar sin factura'}
+        </button>
+      </div>
+    </Modal>
   );
 }
 

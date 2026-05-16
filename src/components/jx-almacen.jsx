@@ -728,7 +728,7 @@ function MaterialesPage({ showToast }) {
     });
     // Reseteamos el lote cada vez que se abre un modal de mov.
     setLoteItems([{ id: window.__newId?.() || crypto.randomUUID(), material_id:'', cantidad:'', precio:'', proveedor_id:null, responsable_id:null }]);
-    setLoteComunes({ usarMismoProveedor: true, usarMismaPersona: true, proveedor_id: null, responsable_id: null });
+    setLoteComunes({ usarMismoProveedor: true, usarMismaPersona: true, proveedor_id: null, responsable_id: null, sinFactura: false, observacionesAlmacen: '' });
     setModal(type);
   };
 
@@ -736,7 +736,7 @@ function MaterialesPage({ showToast }) {
   // Cuando el flag está activo, la columna individual se desactiva y se usa
   // el valor global de loteComunes.{proveedor_id, responsable_id}.
   const [loteItems, setLoteItems] = uS([]);
-  const [loteComunes, setLoteComunes] = uS({ usarMismoProveedor: true, usarMismaPersona: true, proveedor_id: null, responsable_id: null });
+  const [loteComunes, setLoteComunes] = uS({ usarMismoProveedor: true, usarMismaPersona: true, proveedor_id: null, responsable_id: null, sinFactura: false, observacionesAlmacen: '' });
   // Facturas pendientes de recepción (cargadas por contadora vía captura
   // mágica). Cuando el almacenero abre el modal de "Registrar Ingreso",
   // se le muestra un banner con la lista. Click → pre-rellena items.
@@ -1300,6 +1300,14 @@ function MaterialesPage({ showToast }) {
           // Idempotency determinista: si el browser re-envía, server
           // rechaza la fila duplicada por UNIQUE(idempotency_key).
           idempotency_key: `${loteKey}_${idx}_${it.material_id}`,
+          // Flujo inverso almacén → contabilidad: si la almacenera marcó
+          // "sin factura aún", el mov queda en cola de contabilidad
+          // (pendiente_sustento=true). accounting_movement_id se setea
+          // cuando la contadora vincule la factura desde su sección.
+          ...(tipo === 'ingreso' && loteComunes.sinFactura ? {
+            pendiente_sustento: true,
+            observaciones_almacen: loteComunes.observacionesAlmacen?.trim() || null,
+          } : {}),
         });
         try { await window.__logAudit?.({ action:'insert', table:'movimientos_materiales', recordId:movCreated?.id, newData:movCreated, reason:`${tipo} en LOTE de ${cantNum} ${material.unidad} de ${material.nombre_material}` }); } catch {}
 
@@ -1793,10 +1801,44 @@ function MaterialesPage({ showToast }) {
           </div>
         )}
 
+        {/* Banner "Sin factura aún" — solo aplica si no hay factura vinculada.
+            La almacenera puede registrar el ingreso físico antes que llegue
+            la factura. Queda en cola para que la contadora la suba después
+            via Captura Mágica y la vincule a este ingreso. */}
+        {!facturaVinculadaId && (
+          <div style={{
+            marginBottom: 12,
+            padding: '10px 12px',
+            background: loteComunes.sinFactura ? 'rgba(242,183,5,0.10)' : 'rgba(255,255,255,0.03)',
+            border: loteComunes.sinFactura ? '1px solid rgba(242,183,5,0.4)' : '1px dashed rgba(255,255,255,0.15)',
+            borderRadius: 6,
+          }}>
+            <label style={{ display:'flex', alignItems:'center', gap:8, fontSize:12.5, color:'var(--tp)', cursor:'pointer' }}>
+              <input type="checkbox" checked={loteComunes.sinFactura}
+                     onChange={e => setLoteComunes(c => ({ ...c, sinFactura: e.target.checked }))}/>
+              <span><strong>📝 Sin factura aún</strong> — registrar ingreso físico ahora, contabilidad sube la factura después</span>
+            </label>
+            {loteComunes.sinFactura && (
+              <div style={{ marginTop:8 }}>
+                <div style={{ fontSize:11, color:'var(--tm)', marginBottom:6, lineHeight:1.5 }}>
+                  Proveedor/guía son opcionales. La contadora verá este ingreso en su cola "Ingresos sin sustento" y lo vinculará a la factura cuando la suba.
+                </div>
+                <textarea
+                  className="fi"
+                  rows={2}
+                  placeholder="Observación opcional (ej. proveedor entregó sin guía, marca XX, llegó solo parte del pedido…)"
+                  value={loteComunes.observacionesAlmacen}
+                  onChange={e => setLoteComunes(c => ({ ...c, observacionesAlmacen: e.target.value }))}
+                  style={{ fontSize:12 }}/>
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="g2">
           <div><label className="flabel">Fecha</label><input className="fi" type="date" max={new Date().toISOString().slice(0,10)} value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
           <div><label className="flabel">Hora</label><input className="fi" type="time" value={form.hora||''} onChange={e=>setForm({...form, hora:e.target.value})}/></div>
-          <div><label className="flabel">Documento / Guía (n°)</label><input className="fi" placeholder="N° guía o factura — se aplica a todos" value={form.documento||''} onChange={e=>setForm({...form, documento:e.target.value})}/></div>
+          <div><label className="flabel">Documento / Guía (n°){loteComunes.sinFactura ? ' (opcional)' : ''}</label><input className="fi" placeholder={loteComunes.sinFactura ? 'Opcional — se puede llenar cuando llegue la factura' : 'N° guía o factura — se aplica a todos'} value={form.documento||''} onChange={e=>setForm({...form, documento:e.target.value})}/></div>
         </div>
 
         {/* Banner: proveedor común */}

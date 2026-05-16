@@ -200,6 +200,22 @@ export function useRealtimeNotifications() {
         const row = payload.new && Object.keys(payload.new).length ? payload.new : payload.old;
         applyLiveSync('movimientos_materiales', payload.eventType || payload.event, row);
         if (payload.eventType === 'INSERT' && payload.new?.created_by !== profile.id) {
+          // Si es un ingreso "sin factura aún" (flujo inverso almacén →
+          // contabilidad), solo notifica a contabilidad/admin — no le suena
+          // a todo el mundo.
+          if (payload.new.pendiente_sustento === true) {
+            const esContable = ['contador', 'asistente_admin', 'admin', 'gerente'].includes(profile.rol);
+            if (esContable) {
+              addNotif({
+                tipo: 'pendiente_sustento',
+                icon: 'fileText',
+                color: '#F2B705',
+                titulo: 'Ingreso sin factura registrado',
+                descripcion: `Almacén registró ${payload.new.cantidad} ${payload.new.unidad} sin sustento — revisá en Contabilidad`,
+              });
+            }
+            return;
+          }
           addNotif({
             tipo: 'movimiento', icon: payload.new.tipo_movimiento === 'entrada' ? 'arrowIn' : 'arrowOut',
             color: payload.new.tipo_movimiento === 'entrada' ? '#2ECC71' : '#F28C28',
