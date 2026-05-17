@@ -1011,6 +1011,37 @@ function MovMaterialesPage({ showToast }) {
       .reduce((s, m) => s + (Number(m.precio_unitario_real || 0) * Number(m.cantidad || 0)), 0),
   }), [sorted]);
 
+  // ── Avisar a contabilidad: marcar un ingreso como "pendiente de sustento"
+  // El mov queda visible en la cola de la contadora (Dashboard Contable →
+  // "Ingresos sin sustento") para que ella vincule la factura cuando la
+  // tenga. Solo aplica a entradas que NO tienen accounting_movement_id.
+  const avisarContabilidad = async (mov) => {
+    const matName = (materiales?.find(m => m.id === mov.material_id)?.nombre_material) || 'material';
+    if (!confirm(
+      `¿Avisar a contabilidad?\n\n` +
+      `Ingreso: ${mov.cantidad} ${mov.unidad || ''} de ${matName}\n` +
+      `Fecha: ${mov.fecha}\n\n` +
+      `Va a aparecer en la cola "Ingresos sin sustento" del Dashboard Contable. ` +
+      `La contadora lo vinculará con la factura cuando la suba.`
+    )) return;
+    try {
+      const userId = window.__currentUserId || 'almacen';
+      await window.__db.movimientos_materiales.update(mov.id, {
+        pendiente_sustento: true,
+        updated_at: new Date().toISOString(),
+        updated_by: userId,
+        version: (mov.version ?? 0) + 1,
+        sync_status: mov.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      try { await window.__logAudit?.({ action:'update', table:'movimientos_materiales', recordId: mov.id, newData:{ pendiente_sustento:true }, reason:'Almacén avisó a contabilidad — falta sustento documental' }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'movimientos_materiales' } })); } catch {}
+      try { window.dispatchEvent(new Event('online')); } catch {}
+      showToast?.('📩 Avisado a contabilidad — aparecerá en su cola', 'green');
+    } catch (e) {
+      showToast?.('Error: ' + (e.message || e), 'red');
+    }
+  };
+
   // ── Reversar movimiento de materiales ───────────────────
   const handleReversoMaterial = async (motivo) => {
     if (!reversoTarget) return;
@@ -1251,9 +1282,18 @@ function MovMaterialesPage({ showToast }) {
                     <td>{pers ? `${pers.nombres} ${pers.apellidos}` : (prov?.razon_social || '—')}</td>
                     <td className="col-m">{m.documento_asociado || '—'}</td>
                     <td style={{ textAlign:'right' }} className="col-num">{m.precio_unitario_real ? fmtS(m.precio_unitario_real) : '—'}</td>
-                    <td style={{ textAlign:'center' }}>
+                    <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
                       {(() => {
                         const guia = guiasPorMov.get(m.id);
+                        // Estado 1: ya tiene factura vinculada (Paquete A)
+                        if (m.accounting_movement_id) {
+                          return <span className="badge b-green" title="Vinculado a factura por contabilidad">✓ Factura</span>;
+                        }
+                        // Estado 2: ya avisado a contabilidad
+                        if (m.pendiente_sustento) {
+                          return <span className="badge b-amber" title="Almacén avisó a contabilidad — esperando que suban la factura">📩 Avisado</span>;
+                        }
+                        // Estado 3: tiene foto de guía adjunta
                         if (guia) {
                           return (
                             <button className="btn btn-ghost btn-xs" onClick={()=>verGuia(guia)}
@@ -1262,17 +1302,27 @@ function MovMaterialesPage({ showToast }) {
                             </button>
                           );
                         }
-                        // Permitir adjuntar solo en entradas (donde tiene sentido tener factura/guía)
+                        // Estado 4: salida (no aplica factura)
                         if (m.tipo_movimiento !== 'entrada') {
                           return <span style={{ fontSize:10, color:'var(--tm)' }}>—</span>;
                         }
+                        // Estado 5: entrada sin nada → botones para adjuntar o avisar
                         return (
-                          <label className="btn btn-ghost btn-xs" title="Adjuntar guía o factura (solo una vez)" style={{ cursor:'pointer' }}>
-                            <JxIcon name="upload" size={11}/>
-                            <input type="file" accept="image/*,.pdf"
-                              style={{ display:'none' }}
-                              onChange={adjuntarGuia(m)}/>
-                          </label>
+                          <div style={{ display:'flex', gap:3, justifyContent:'center' }}>
+                            <label className="btn btn-ghost btn-xs" title="Adjuntar guía o factura (foto/PDF)" style={{ cursor:'pointer' }}>
+                              <JxIcon name="upload" size={11}/>
+                              <input type="file" accept="image/*,.pdf"
+                                style={{ display:'none' }}
+                                onChange={adjuntarGuia(m)}/>
+                            </label>
+                            <button
+                              className="btn btn-ghost btn-xs"
+                              title="Avisar a contabilidad que falta la factura — aparecerá en su cola"
+                              onClick={()=>avisarContabilidad(m)}
+                              style={{ fontSize:10, color:'var(--amber)' }}>
+                              📩
+                            </button>
+                          </div>
                         );
                       })()}
                     </td>

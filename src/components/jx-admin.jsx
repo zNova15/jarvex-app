@@ -747,9 +747,13 @@ const PERM_MATRIX = {
     if (m === 'Usuarios/Config') return 'x';
     if (['Movs. Contables','Plan de Cuentas','Libro Diario','Balance General','Estado Resultados',
          'Empresas','Intercompany','Trazabilidad','Consolidado','Auditoría','Captura Mágica'].includes(m)) return 'w';
+    // Compras / Logística → 'x' explícito. El contador no debe entrar a
+    // requisiciones, órdenes de compra, cotizaciones ni recepciones —
+    // esos son del jefe de compras / almacén. El contador sustenta con
+    // facturas, no decide compras.
+    if (['Requisiciones','Órdenes de Compra','Cotizaciones','Recepciones'].includes(m)) return 'x';
     if (['Obras','Personal','Proveedores','Subcontratistas','Subcontratos','Valor. Subcontrato',
-         'Requisiciones','Órdenes de Compra','Cotizaciones','Recepciones','Valorizaciones',
-         'Reportes','Comprobantes Electrónicos','Libros Electrónicos'].includes(m)) return 'r';
+         'Valorizaciones','Reportes','Comprobantes Electrónicos','Libros Electrónicos'].includes(m)) return 'r';
     return 'x';
   }),
 
@@ -877,6 +881,8 @@ window.__moduleIdMap = {
   'valorizaciones': 'Valorizaciones',
   'incidencias': 'Incidencias',
   'evidencias': 'Evidencias',
+  'plantillas': 'Evidencias',                  // misma sección, mismo permiso
+  'vinculacion-salidas': 'Vinculación Salidas', // nuevo módulo del rol Ingeniero (Paquete C)
   // Compras
   'solicitud-residente': 'Requisiciones',
   'requisiciones': 'Requisiciones',
@@ -946,7 +952,7 @@ window.__moduleIdMap = {
 // Si llega un rol fuera de esta lista (legado, basura), lo tratamos como
 // "sin permisos" — NUNCA como admin.
 const __ROLES_CANONICOS = new Set([
-  'admin','gerente','ingeniero_residente','supervisor','almacenero',
+  'admin','gerente','ingeniero_residente','ingeniero','supervisor','almacenero',
   'asistente_admin','contador','tesorero','jefe_compras','rrhh',
   'prevencionista','maestro_obra','solo_lectura',
 ]);

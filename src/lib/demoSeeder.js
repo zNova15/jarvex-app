@@ -375,13 +375,19 @@ export async function seedDemoData(progressCb) {
   }
 
   // 9. MOVIMIENTOS DE MATERIALES — entradas y salidas variadas
+  // El sistema usa 'entrada' / 'salida'. ~40% entradas / 60% salidas.
+  // Las SALIDAS se siembran SIN partida_id para alimentar el inbox del
+  // rol Ingeniero (Paquete C). Las ENTRADAS algunas se marcan
+  // pendiente_sustento=true para probar el flujo inverso almacén →
+  // contabilidad (Paquete A).
   log('Sembrando movimientos materiales...');
   for (let i = 0; i < 80; i++) {
     const mat = pick(materialIds);
-    // El sistema usa 'entrada' / 'salida' (no 'ingreso'). Se mantiene la
-    // misma proporción 40% entradas / 60% salidas.
     const tipo = Math.random() < 0.4 ? 'entrada' : 'salida';
     const cant = rndF(1, Math.max(2, mat.stock * 0.3), 1);
+    // 25% de las entradas quedan "pendiente_sustento" — la contadora las
+    // verá en su cola "Ingresos sin sustento" del Dashboard Contable.
+    const sinFactura = tipo === 'entrada' && Math.random() < 0.25;
     await db.movimientos_materiales.add({
       ...baseFields(), id: newId(),
       obra_id: obraPrincipal.id,
@@ -392,7 +398,12 @@ export async function seedDemoData(progressCb) {
       precio_unitario: mat.precio,
       proveedor_id: tipo === 'entrada' ? pick(proveedorIds).id : null,
       responsable_id: pick(personalObra).id,
-      observaciones: tipo === 'entrada' ? 'Compra OC' : 'Salida a obra',
+      observaciones: tipo === 'entrada'
+        ? (sinFactura ? 'Llegó sin factura — almacén avisó' : 'Compra OC')
+        : 'Salida a obra',
+      partida_id: null, // el ingeniero las vincula desde su inbox (Paquete C)
+      pendiente_sustento: sinFactura,
+      observaciones_almacen: sinFactura ? 'Material recibido sin guía/factura — proveedor enviará después' : null,
       idempotency_key: `${DEMO_USER}_mov_mat_${i}`,
     });
   }
