@@ -1285,11 +1285,12 @@ function MovMaterialesPage({ showToast }) {
                     <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
                       {(() => {
                         const guia = guiasPorMov.get(m.id);
-                        // Estado 1: ya tiene factura vinculada (Paquete A)
+                        const tieneDocFactura = !!(m.documento_asociado && String(m.documento_asociado).trim());
+                        // Estado 1: vinculado a accounting_movement (Paquete A nuevo)
                         if (m.accounting_movement_id) {
                           return <span className="badge b-green" title="Vinculado a factura por contabilidad">✓ Factura</span>;
                         }
-                        // Estado 2: ya avisado a contabilidad
+                        // Estado 2: avisado a contabilidad — esperando sustento
                         if (m.pendiente_sustento) {
                           return <span className="badge b-amber" title="Almacén avisó a contabilidad — esperando que suban la factura">📩 Avisado</span>;
                         }
@@ -1306,7 +1307,20 @@ function MovMaterialesPage({ showToast }) {
                         if (m.tipo_movimiento !== 'entrada') {
                           return <span style={{ fontSize:10, color:'var(--tm)' }}>—</span>;
                         }
-                        // Estado 5: entrada sin nada → botones para adjuntar o avisar
+                        // Estado 5: entrada con número de doc registrado (factura nominal
+                        // ya conocida — flujo histórico). No mostrar 📩 porque ya hay
+                        // sustento documental anotado. Permitimos adjuntar foto opcional.
+                        if (tieneDocFactura) {
+                          return (
+                            <label className="btn btn-ghost btn-xs" title="Adjuntar foto de la factura/guía (opcional)" style={{ cursor:'pointer' }}>
+                              <JxIcon name="upload" size={11}/>
+                              <input type="file" accept="image/*,.pdf"
+                                style={{ display:'none' }}
+                                onChange={adjuntarGuia(m)}/>
+                            </label>
+                          );
+                        }
+                        // Estado 6: entrada SIN factura ni guía ni doc → botones adjuntar + avisar
                         return (
                           <div style={{ display:'flex', gap:3, justifyContent:'center' }}>
                             <label className="btn btn-ghost btn-xs" title="Adjuntar guía o factura (foto/PDF)" style={{ cursor:'pointer' }}>

@@ -101,6 +101,11 @@ function CapturaMagicaPage({ showToast }) {
   // cierre del browser.
   const [items, setItems] = uSCM([]);
   const [reviewing, setReviewing] = uSCM(null);
+  // Cuando una factura recién registrada coincide con ingresos del almacén
+  // marcados como pendiente_sustento del mismo proveedor, abrimos un modal
+  // para que la contadora elija cuáles vincular. Se setea al final del
+  // confirmarItem si hay matches.
+  const [vincularPendientesModal, setVincularPendientesModal] = uSCM(null);
   const [proveedoresDB, setProveedoresDB] = uSCM([]);
   const [materialesDB, setMaterialesDB] = uSCM([]);
   // OCs activas (estados: por_confirmar | firmada | enviada | aceptada |
@@ -933,9 +938,80 @@ function CapturaMagicaPage({ showToast }) {
       } catch {}
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'accounting_movements' } })); } catch {}
       showToast(`✓ Comprobante ${r.serie_correlativo} registrado`, 'green');
+
+      // ── Detección de ingresos pendientes de sustento ──
+      // Si el almacenero registró ingresos del MISMO proveedor sin factura
+      // (pendiente_sustento=true) en esta obra, le ofrecemos a la contadora
+      // vincularlos a esta factura recién creada — así cumple el flujo
+      // inverso almacén → contabilidad sin duplicar movimientos.
+      try {
+        if (proveedorIdFinal && r.obra_id) {
+          const candidatos = await window.__db.movimientos_materiales
+            .where('obra_id').equals(r.obra_id)
+            .filter(mm =>
+              mm.tipo_movimiento === 'entrada' &&
+              mm.pendiente_sustento === true &&
+              !mm.accounting_movement_id &&
+              mm.proveedor_id === proveedorIdFinal
+            )
+            .toArray();
+          if (candidatos.length > 0) {
+            candidatos.sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
+            setVincularPendientesModal({
+              accId,
+              accDoc: r.serie_correlativo,
+              accFecha: r.fecha_emision,
+              proveedorNombre: r.proveedor_razon_social || '—',
+              candidatos,
+            });
+          }
+        }
+      } catch (e) {
+        console.warn('[captura-magica] detección pendientes:', e?.message);
+      }
+
       setReviewing(null);
     } catch (e) {
       showToast('Error al registrar: ' + (e.message || e), 'red');
+    }
+  };
+
+  // Vincular movimientos pendientes seleccionados a la factura recién creada.
+  // Actualiza accounting_movement_id + pendiente_sustento=false en batch.
+  const vincularPendientesAFactura = async (accId, movIds) => {
+    if (!movIds.length) { setVincularPendientesModal(null); return; }
+    try {
+      const userId = window.__currentUserId || 'contador';
+      const now = new Date().toISOString();
+      for (const movId of movIds) {
+        const mov = await window.__db.movimientos_materiales.get(movId);
+        if (!mov) continue;
+        await window.__db.movimientos_materiales.update(movId, {
+          accounting_movement_id: accId,
+          pendiente_sustento: false,
+          updated_at: now,
+          updated_by: userId,
+          version: (mov.version ?? 0) + 1,
+          sync_status: mov.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+        });
+        try { await window.__logAudit?.({ action:'update', table:'movimientos_materiales', recordId: movId, newData:{ accounting_movement_id: accId }, reason:`Captura mágica · vinculado a factura ${accId}` }); } catch {}
+      }
+      // La factura pasa a 'parcial' (la almacenera la cerrará completa después).
+      const factura = await window.__db.accounting_movements.get(accId);
+      if (factura && (factura.recepcion_status === 'pendiente_recepcion' || !factura.recepcion_status)) {
+        await window.__db.accounting_movements.update(accId, {
+          recepcion_status: 'parcial',
+          updated_at: now, updated_by: userId,
+          version: (factura.version ?? 0) + 1,
+          sync_status: factura.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+        });
+      }
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'movimientos_materiales' } })); } catch {}
+      try { window.dispatchEvent(new Event('online')); } catch {}
+      showToast(`✓ ${movIds.length} ingreso(s) vinculado(s) a la factura`, 'green');
+      setVincularPendientesModal(null);
+    } catch (e) {
+      showToast('Error al vincular: ' + (e.message || e), 'red');
     }
   };
 
@@ -1101,6 +1177,94 @@ function CapturaMagicaPage({ showToast }) {
           onClose={() => setReviewing(null)}
         />
       )}
+
+      {/* Modal post-creación: vincular ingresos pendientes a esta factura */}
+      {vincularPendientesModal && (
+        <VincularPendientesModal
+          data={vincularPendientesModal}
+          materialesDB={materialesDB}
+          onClose={() => setVincularPendientesModal(null)}
+          onConfirm={(movIds) => vincularPendientesAFactura(vincularPendientesModal.accId, movIds)}/>
+      )}
+    </div>
+  );
+}
+
+// ─── Modal: vincular ingresos pendientes a la factura recién creada ───
+// Aparece automáticamente al confirmar un comprobante si el almacenero
+// había registrado ingresos del MISMO proveedor sin factura. La contadora
+// elige cuáles vincular (checkbox por defecto todos marcados) — los movs
+// pasan a accounting_movement_id=accId + pendiente_sustento=false.
+function VincularPendientesModal({ data, materialesDB, onClose, onConfirm }) {
+  const [seleccionados, setSeleccionados] = uSCM(() => new Set(data.candidatos.map(c => c.id)));
+  const [saving, setSaving] = uSCM(false);
+
+  const toggle = (id) => {
+    setSeleccionados(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const matName = (id) => materialesDB.find(m => m.id === id)?.nombre_material || '—';
+
+  const submit = async () => {
+    setSaving(true);
+    try { await onConfirm(Array.from(seleccionados)); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose} style={{ background:'rgba(0,0,0,0.7)' }}>
+      <div className="modal" onClick={e=>e.stopPropagation()} style={{ maxWidth:680, width:'92%', maxHeight:'88vh', display:'flex', flexDirection:'column' }}>
+        <div className="modal-hd">
+          <div>
+            <div style={{ fontWeight:700, fontSize:15 }}>🔗 Vincular ingresos pendientes</div>
+            <div style={{ fontSize:11.5, color:'var(--tm)', marginTop:3, lineHeight:1.5 }}>
+              El almacenero registró estos ingresos sin factura del proveedor <strong>{data.proveedorNombre}</strong>.
+              Marcá los que correspondan a la factura <strong>{data.accDoc}</strong> que acabás de registrar.
+            </div>
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button>
+        </div>
+
+        <div style={{ overflowY:'auto', padding:'12px 16px', flex:1 }}>
+          {data.candidatos.length === 0 ? (
+            <div style={{ textAlign:'center', color:'var(--tm)', padding:20 }}>Sin pendientes.</div>
+          ) : (
+            <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+              {data.candidatos.map(mov => {
+                const checked = seleccionados.has(mov.id);
+                return (
+                  <label key={mov.id} style={{
+                    display:'flex', alignItems:'center', gap:10, padding:'10px 12px',
+                    background: checked ? 'rgba(46,204,113,0.08)' : 'rgba(0,0,0,0.15)',
+                    border: checked ? '1px solid rgba(46,204,113,0.35)' : '1px solid rgba(255,255,255,0.04)',
+                    borderRadius:6, cursor:'pointer', fontSize:12,
+                  }}>
+                    <input type="checkbox" checked={checked} onChange={()=>toggle(mov.id)}/>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontWeight:600, color:'var(--tp)' }}>{matName(mov.material_id)}</div>
+                      <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2 }}>
+                        {mov.fecha} · {mov.cantidad} {mov.unidad}
+                        {mov.observaciones_almacen && <> · <em>"{mov.observaciones_almacen}"</em></>}
+                      </div>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="modal-actions">
+          <button className="btn btn-ghost" onClick={onClose} disabled={saving}>Saltar — no vincular</button>
+          <button className="btn btn-amber" onClick={submit} disabled={saving || seleccionados.size === 0}>
+            {saving ? 'Vinculando…' : `Vincular ${seleccionados.size} ingreso(s)`}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
