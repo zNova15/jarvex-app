@@ -443,6 +443,73 @@ function MaterialesPage({ showToast }) {
     setModal('sync');
   };
 
+  // ── Recalcular stocks desde movimientos ─────────────────────────
+  // Para cada material de la obra activa, suma entradas - salidas
+  // (excluyendo reversas y reversadas) y actualiza stock_actual.
+  // Útil cuando hubo desajuste por movs duplicados, fuerzas históricas
+  // o el seed inicial. Solo admin.
+  const [recalculandoStock, setRecalculandoStock] = uS(false);
+  const recalcularStocks = async () => {
+    if (!obraId || !materiales?.length) return;
+    if (!confirm(
+      `¿Recalcular el stock de los ${materiales.length} materiales de esta obra?\n\n` +
+      `El sistema recorrerá los movimientos (entradas − salidas, excluyendo reversas) ` +
+      `y reescribirá stock_actual de cada material.\n\n` +
+      `No toca movimientos — solo el snapshot stock_actual.`
+    )) return;
+    setRecalculandoStock(true);
+    let ajustados = 0;
+    let iguales = 0;
+    let errores = 0;
+    try {
+      const movs = await window.__db.movimientos_materiales
+        .where('obra_id').equals(obraId)
+        .filter(m => !m.reverses_id && !m.reversed_by_id)
+        .toArray();
+      // Agrupar por material_id sumando entradas - salidas
+      const sums = new Map();
+      for (const mov of movs) {
+        const cur = sums.get(mov.material_id) || 0;
+        const c = Number(mov.cantidad) || 0;
+        sums.set(mov.material_id, cur + (mov.tipo_movimiento === 'entrada' ? c : -c));
+      }
+      const now = new Date().toISOString();
+      const userId = auth?.profile?.id || 'admin';
+      for (const mat of materiales) {
+        try {
+          const calculado = Math.max(0, sums.get(mat.id) || 0);
+          const actual = Number(mat.stock_actual ?? 0);
+          if (Math.abs(calculado - actual) < 0.001) { iguales++; continue; }
+          const minimo = Number(mat.stock_minimo || 0);
+          const nuevaAlerta = calculado <= 0 ? 'agotado'
+            : minimo > 0 && calculado <= minimo * 0.5 ? 'critico'
+            : minimo > 0 && calculado <= minimo ? 'reponer'
+            : minimo > 0 && calculado <= minimo * 1.2 ? 'cerca'
+            : 'ok';
+          await window.__db.materiales.update(mat.id, {
+            stock_actual: calculado,
+            alerta: nuevaAlerta,
+            updated_at: now, updated_by: userId,
+            version: (mat.version ?? 0) + 1,
+            sync_status: mat.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+          });
+          ajustados++;
+        } catch (e) {
+          console.warn('[recalcular] error en', mat.nombre_material, e?.message);
+          errores++;
+        }
+      }
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'materiales' } })); } catch {}
+      try { window.dispatchEvent(new Event('online')); } catch {}
+      try { await window.__logAudit?.({ action:'alert', table:'materiales', reason:`Recálculo masivo de stock obra ${obraId}: ${ajustados} ajustados, ${iguales} ya correctos, ${errores} fallidos` }); } catch {}
+      showToast(`✓ Recálculo completo: ${ajustados} ajustados · ${iguales} sin cambios${errores ? ` · ${errores} errores` : ''}`, ajustados > 0 ? 'green' : 'amber');
+    } catch (e) {
+      showToast('Error: ' + (e.message || e), 'red');
+    } finally {
+      setRecalculandoStock(false);
+    }
+  };
+
   // ── Categorización por IA (Claude vía /api/categorize) ──
   const [iaModal, setIaModal] = uS(null); // null | 'preview' | 'running' | 'done'
   const [iaResults, setIaResults] = uS([]);
@@ -1118,32 +1185,25 @@ function MaterialesPage({ showToast }) {
     }
 
     // ── Validación de stock para SALIDA ─────────────────────────
-    // Almacenero/supervisor/etc: bloqueado si stock insuficiente
-    // Admin/gerente: warning con confirm para forzar (audit log)
-    let stockForzado = false;
+    // BLOQUEO ESTRICTO para todos los roles. No es posible sacar lo que
+    // no existe — viola conservación de masa y rompe la trazabilidad.
+    // Si el almacenero ve que físicamente sí está pero el sistema dice
+    // que no, primero hay que registrar el INGRESO faltante (avisar a
+    // contabilidad si no hay factura → flujo Paquete A).
     if (tipo === 'salida') {
       const stockActual = Number(material.stock_actual ?? 0);
       if (cantNum > stockActual) {
         const faltante = cantNum - stockActual;
-        const puedeForzar = isAdmin || ['gerente'].includes(myRol);
-        if (!puedeForzar) {
-          showToast(`❌ Stock insuficiente: tienes ${stockActual} ${material.unidad} de ${material.nombre_material}. Pide al admin o registra primero el ingreso.`, 'red');
-          return;
-        }
-        const confirmar = confirm(
-          `⚠ STOCK INSUFICIENTE\n\n` +
-          `Material: ${material.nombre_material}\n` +
-          `Stock actual: ${stockActual} ${material.unidad}\n` +
-          `Cantidad pedida: ${cantNum} ${material.unidad}\n` +
-          `Faltante: ${faltante} ${material.unidad}\n\n` +
-          `Como ${myRol}, puedes forzar el registro y dejar el stock en NEGATIVO. ` +
-          `Esto queda registrado en auditoría.\n\n` +
-          `¿Forzar el registro?`
+        showToast(
+          `❌ Stock insuficiente: ${material.nombre_material} tiene ${stockActual} ${material.unidad}, ` +
+          `pediste ${cantNum} ${material.unidad} (faltan ${faltante}). ` +
+          `Registrá primero el ingreso pendiente o consultá a contabilidad si falta sustento.`,
+          'red'
         );
-        if (!confirmar) return;
-        stockForzado = true;
+        return;
       }
     }
+    const stockForzado = false; // legacy — ya no se usa, pero el audit log lo referencia abajo
 
     try {
       const movCreated = await movHook.create({
@@ -1599,6 +1659,12 @@ function MaterialesPage({ showToast }) {
             <button className="btn btn-ghost btn-sm" onClick={ejecutarCategorizacionIA}
               title="Usa Claude IA para categorizar materiales sin categoría asignada">
               <JxIcon name="settings" size={13}/>Categorizar con IA
+            </button>
+          )}
+          {isAdmin && (
+            <button className="btn btn-ghost btn-sm" disabled={recalculandoStock} onClick={recalcularStocks}
+              title="Recalcula stock_actual sumando entradas − salidas de cada material (corrige desajustes históricos)">
+              <JxIcon name="refresh" size={13}/>{recalculandoStock ? 'Recalculando…' : 'Recalcular stocks'}
             </button>
           )}
           {canWriteMov && <button className="btn btn-ghost btn-sm" onClick={()=>openModal('salida')}><JxIcon name="arrowOut" size={13}/>Registrar Salida</button>}

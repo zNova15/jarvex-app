@@ -374,38 +374,95 @@ export async function seedDemoData(progressCb) {
     }
   }
 
-  // 9. MOVIMIENTOS DE MATERIALES — entradas y salidas variadas
-  // El sistema usa 'entrada' / 'salida'. ~40% entradas / 60% salidas.
-  // Las SALIDAS se siembran SIN partida_id para alimentar el inbox del
-  // rol Ingeniero (Paquete C). Las ENTRADAS algunas se marcan
-  // pendiente_sustento=true para probar el flujo inverso almacén →
-  // contabilidad (Paquete A).
-  log('Sembrando movimientos materiales...');
-  for (let i = 0; i < 80; i++) {
+  // 9. MOVIMIENTOS DE MATERIALES — coherentes con stock
+  //
+  // Lógica:
+  // - Primero PARA CADA material generamos 2-4 entradas (ingresos
+  //   históricos que dejan stock inicial).
+  // - Luego generamos salidas RANDOM, pero verificando un stock virtual
+  //   por material — si una salida dejaría stock < 0 se SKIPea (no se
+  //   genera, intenta otra). Garantiza coherencia: nunca salidas > entradas.
+  // - Resultado final: stock_actual = sum(entradas) - sum(salidas) ≥ 0
+  //   para todos los materiales.
+  // - 25% de las entradas quedan pendiente_sustento=true (flujo Paquete A).
+  // - Las salidas SIEMPRE con partida_id=null (alimentan inbox ingeniero
+  //   del Paquete C).
+  log('Sembrando movimientos materiales (coherentes con stock)...');
+  const stockVirtual = new Map();  // material_id → stock disponible
+  let movSeq = 0;
+  // Fase A: 2-4 entradas por material (genera stock inicial)
+  for (const mat of materialIds) {
+    const nEntradas = rnd(2, 4);
+    for (let k = 0; k < nEntradas; k++) {
+      const cant = rndF(5, Math.max(15, mat.stock || 50), 1);
+      const sinFactura = Math.random() < 0.25;
+      const fecha = dt(rnd(-30, -5));  // entradas viejas (días -30 a -5)
+      await db.movimientos_materiales.add({
+        ...baseFields(), id: newId(),
+        obra_id: obraPrincipal.id,
+        material_id: mat.id,
+        fecha,
+        tipo_movimiento: 'entrada',
+        cantidad: cant,
+        precio_unitario: mat.precio,
+        proveedor_id: pick(proveedorIds).id,
+        responsable_id: pick(personalObra).id,
+        observaciones: sinFactura ? 'Llegó sin factura — almacén avisó' : 'Compra OC',
+        partida_id: null,
+        pendiente_sustento: sinFactura,
+        observaciones_almacen: sinFactura ? 'Material recibido sin guía/factura — proveedor enviará después' : null,
+        idempotency_key: `${DEMO_USER}_mov_mat_${movSeq++}`,
+      });
+      stockVirtual.set(mat.id, (stockVirtual.get(mat.id) || 0) + cant);
+    }
+  }
+  // Fase B: salidas — solo si stock virtual >= cantidad. Hasta 80 intentos.
+  let salidasGeneradas = 0;
+  for (let intento = 0; intento < 160 && salidasGeneradas < 80; intento++) {
     const mat = pick(materialIds);
-    const tipo = Math.random() < 0.4 ? 'entrada' : 'salida';
-    const cant = rndF(1, Math.max(2, mat.stock * 0.3), 1);
-    // 25% de las entradas quedan "pendiente_sustento" — la contadora las
-    // verá en su cola "Ingresos sin sustento" del Dashboard Contable.
-    const sinFactura = tipo === 'entrada' && Math.random() < 0.25;
+    const dispo = stockVirtual.get(mat.id) || 0;
+    if (dispo < 1) continue;
+    const cant = rndF(1, Math.max(2, dispo * 0.4), 1);
+    if (cant > dispo) continue;
     await db.movimientos_materiales.add({
       ...baseFields(), id: newId(),
       obra_id: obraPrincipal.id,
       material_id: mat.id,
-      fecha: dt(rnd(-30, 0)),
-      tipo_movimiento: tipo,
+      fecha: dt(rnd(-5, 0)),  // salidas recientes (últimos 5 días)
+      tipo_movimiento: 'salida',
       cantidad: cant,
       precio_unitario: mat.precio,
-      proveedor_id: tipo === 'entrada' ? pick(proveedorIds).id : null,
+      proveedor_id: null,
       responsable_id: pick(personalObra).id,
-      observaciones: tipo === 'entrada'
-        ? (sinFactura ? 'Llegó sin factura — almacén avisó' : 'Compra OC')
-        : 'Salida a obra',
-      partida_id: null, // el ingeniero las vincula desde su inbox (Paquete C)
-      pendiente_sustento: sinFactura,
-      observaciones_almacen: sinFactura ? 'Material recibido sin guía/factura — proveedor enviará después' : null,
-      idempotency_key: `${DEMO_USER}_mov_mat_${i}`,
+      observaciones: 'Salida a obra',
+      partida_id: null, // ingeniero asigna en su inbox (Paquete C)
+      idempotency_key: `${DEMO_USER}_mov_mat_${movSeq++}`,
     });
+    stockVirtual.set(mat.id, dispo - cant);
+    salidasGeneradas++;
+  }
+
+  // 9.b RECALCULAR stock_actual de cada material en base a movs sembrados.
+  // Garantiza que la pantalla Materiales muestre stocks coherentes desde
+  // el primer momento (no depende de "stock optimist" que podría fallar).
+  log('Recalculando stock_actual desde movs sembrados...');
+  for (const mat of materialIds) {
+    const stockFinal = Math.max(0, stockVirtual.get(mat.id) || 0);
+    const minimo = Number(mat.stock || 0);
+    const alerta = stockFinal <= 0 ? 'agotado'
+      : minimo > 0 && stockFinal <= minimo * 0.5 ? 'critico'
+      : minimo > 0 && stockFinal <= minimo ? 'reponer'
+      : minimo > 0 && stockFinal <= minimo * 1.2 ? 'cerca'
+      : 'ok';
+    try {
+      await db.materiales.update(mat.id, {
+        stock_actual: stockFinal,
+        alerta,
+        updated_at: ts(0),
+      });
+    } catch (e) {
+      console.warn('[seeder] no se pudo actualizar stock final de', mat.nombre, e?.message);
+    }
   }
 
   // 10. REQUISICIONES + items
