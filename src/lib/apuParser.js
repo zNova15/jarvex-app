@@ -505,6 +505,115 @@ export function parsePresupuestoObra(rows) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// TABLA DE COSTOS — la tabla resumen al final del presupuesto Delphin/S10
+//
+// Estructura típica (col concepto + col % opcional + col monto):
+//   COSTO DIRECTO                      | 9,809,772.60
+//   UTILIDADES (15% DEL CD)      | 15% | 1,471,465.89
+//   GASTOS GENERALES (15% DEL CD)| 15% | 1,471,465.89
+//   SUB TOTAL                          | 12,752,704.38
+//   IGV (18%)                    | 18% | 2,295,486.79
+//   VALOR REFERENCIAL                  | 15,048,191.17
+//   ELABORACIÓN DEL DOCUMENTO…         | 100,000      ┐
+//   SUPERVISIÓN DE OBRA                | 638,050      │ otros gastos
+//   …                                  | …            ┘
+//   COSTO TOTAL DEL PROYECTO           | 16,022,782.13
+//
+// Heurística robusta: por cada fila, concepto = primera celda de texto
+// "largo" (no código), monto = última celda numérica, pct = celda que
+// matchea "NN%" o 0.NN. Clasifica por keywords. Lo que cae ENTRE el
+// Valor Referencial y el Costo Total y no es una capa conocida → es un
+// "otro gasto".
+//
+// Devuelve null si no encuentra al menos COSTO DIRECTO y COSTO TOTAL.
+// Si encuentra, devuelve:
+//   { costoDirecto, utilidadPct, gastosPct, igvPct, otrosGastos[],
+//     valorReferencial, costoTotal }
+// (los pct pueden venir null si el Excel no los explicita — el caller
+// puede derivarlos: utilidadPct = utilidades/CD×100, etc.)
+// ═══════════════════════════════════════════════════════════════════
+export function parseTablaCostos(rows) {
+  const norm = (s) => String(s ?? '').trim().toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '');
+
+  // Extrae {concepto, pct, monto} de una fila, o null si no aplica.
+  const parseRow = (r) => {
+    if (!r) return null;
+    // Si la fila tiene un código jerárquico en col 0 → es partida, no costo.
+    const c0 = r[0];
+    if (c0 != null && c0 !== '' && /^\d+(\.\d+)*$/.test(String(c0).trim())) return null;
+
+    let concepto = '';
+    let pct = null;
+    let monto = null;
+    for (const cell of r) {
+      if (cell == null || cell === '') continue;
+      const s = String(cell).trim();
+      // Porcentaje: "15%" o "18 %"
+      const mPct = s.match(/^(\d+(?:\.\d+)?)\s*%$/);
+      if (mPct) { pct = Number(mPct[1]); continue; }
+      const num = typeof cell === 'number' ? cell : Number(s.replace(/,/g, ''));
+      if (!Number.isNaN(num) && /^[\d.,\s%-]+$/.test(s)) {
+        // celda numérica → candidato a monto (nos quedamos con el último/mayor)
+        if (num > 1 && (monto == null || num >= 0)) monto = num;
+        // pct como decimal 0.15
+        else if (num > 0 && num < 1 && pct == null) pct = num * 100;
+        continue;
+      }
+      // Texto largo → concepto (el primero significativo)
+      if (!concepto && s.length >= 3) concepto = s;
+    }
+    if (!concepto) return null;
+    return { concepto, pct, monto, n: norm(concepto) };
+  };
+
+  const result = {
+    costoDirecto: null, utilidadPct: null, gastosPct: null, igvPct: null,
+    valorReferencial: null, costoTotal: null, otrosGastos: [],
+  };
+  let vistoValorRef = false;
+
+  for (const r of rows) {
+    const row = parseRow(r);
+    if (!row || row.monto == null) continue;
+    const n = row.n;
+
+    if (n.includes('costo directo')) { result.costoDirecto = row.monto; continue; }
+    if (n.includes('utilidad')) { result.utilidadPct = row.pct; result._utilidades = row.monto; continue; }
+    if (n.includes('gastos generales') || n.includes('gastos admin') || n.includes('gasto general')) {
+      result.gastosPct = row.pct; result._gastos = row.monto; continue;
+    }
+    if (n.includes('sub total') || n === 'subtotal') { result.subTotal = row.monto; continue; }
+    if (n.startsWith('igv') || n.includes('i.g.v')) { result.igvPct = row.pct; result._igv = row.monto; continue; }
+    if (n.includes('valor referencial')) { result.valorReferencial = row.monto; vistoValorRef = true; continue; }
+    if (n.includes('costo total')) { result.costoTotal = row.monto; break; }
+
+    // Entre Valor Referencial y Costo Total → otro gasto
+    if (vistoValorRef) {
+      result.otrosGastos.push({ concepto: row.concepto, monto: row.monto });
+    }
+  }
+
+  // Derivar pct si no vinieron explícitos pero sí los montos.
+  if (result.costoDirecto > 0) {
+    if (result.utilidadPct == null && result._utilidades != null) {
+      result.utilidadPct = +(result._utilidades / result.costoDirecto * 100).toFixed(2);
+    }
+    if (result.gastosPct == null && result._gastos != null) {
+      result.gastosPct = +(result._gastos / result.costoDirecto * 100).toFixed(2);
+    }
+  }
+  if (result.igvPct == null && result._igv != null && result.subTotal > 0) {
+    result.igvPct = +(result._igv / result.subTotal * 100).toFixed(2);
+  }
+  delete result._utilidades; delete result._gastos; delete result._igv;
+
+  // Inválido si no hay al menos CD y costo total.
+  if (result.costoDirecto == null || result.costoTotal == null) return null;
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // AUTO-DETECCIÓN DEL TIPO DE ARCHIVO S10
 // Devuelve 'apu' | 'insumos' | 'gantt' | 'desconocido'.
 // ═══════════════════════════════════════════════════════════════════

@@ -1,7 +1,8 @@
 import React from "react";
 import { useBusy } from "../hooks/useBusy.js";
 import { normalizeCodigo, fuzzyScore } from "../lib/match-helpers.js";
-import { parsePresupuestoObra } from "../lib/apuParser.js";
+import { parsePresupuestoObra, parseTablaCostos } from "../lib/apuParser.js";
+import { calcularPresupuesto, fmtSoles } from "../lib/presupuesto-obra.js";
 const { useState: uSO, useMemo: uMO, useEffect: uEO } = React;
 
 const EST_PART = { terminado:'b-green', en_ejecucion:'b-blue', atrasado:'b-red', pendiente:'b-gray', observado:'b-yellow' };
@@ -204,6 +205,12 @@ function ObrasPage({ showToast }) {
       consorcio_miembros: Array.isArray(o.consorcio_miembros) && o.consorcio_miembros.length
         ? o.consorcio_miembros
         : [{ company_id:'', participacion_pct: '' }, { company_id:'', participacion_pct: '' }],
+      // Estructura de costos (modelo Delphin/S10)
+      costo_directo: o.costo_directo ?? '',
+      utilidad_pct: o.utilidad_pct ?? 15,
+      gastos_generales_pct: o.gastos_generales_pct ?? 15,
+      igv_pct: o.igv_pct ?? 18,
+      otros_gastos: Array.isArray(o.otros_gastos) ? o.otros_gastos : [],
     });
     setEditingId(o.id);
     setModal('editar');
@@ -219,6 +226,11 @@ function ObrasPage({ showToast }) {
       ejecutora_company_id: companiesActivas[0]?.id || '',
       consorcio_nombre: '',
       consorcio_miembros: [{ company_id:'', participacion_pct:'' }, { company_id:'', participacion_pct:'' }],
+      // Estructura de costos con defaults peruanos
+      utilidad_pct: 15,
+      gastos_generales_pct: 15,
+      igv_pct: 18,
+      otros_gastos: [],
     });
     setEditingId(null);
     setModal('nueva');
@@ -294,6 +306,12 @@ function ObrasPage({ showToast }) {
           ejecutora_company_id: ejecutoraCompanyId,
           consorcio_nombre: consorcioNombre,
           consorcio_miembros: consorcioMiembros,
+          // Estructura de costos
+          costo_directo: parseFloat(form.costo_directo) || null,
+          utilidad_pct: form.utilidad_pct === '' || form.utilidad_pct == null ? 15 : Number(form.utilidad_pct),
+          gastos_generales_pct: form.gastos_generales_pct === '' || form.gastos_generales_pct == null ? 15 : Number(form.gastos_generales_pct),
+          igv_pct: form.igv_pct === '' || form.igv_pct == null ? 18 : Number(form.igv_pct),
+          otros_gastos: Array.isArray(form.otros_gastos) ? form.otros_gastos.filter(g => g.concepto || g.monto) : [],
         };
         await updateObra(editingId, newFields);
         try { await window.__logAudit?.({ action:'update', table:'obras', recordId:editingId, oldData:oldObra, newData:newFields }); } catch(e) {}
@@ -312,6 +330,12 @@ function ObrasPage({ showToast }) {
           ejecutora_company_id: ejecutoraCompanyId,
           consorcio_nombre: consorcioNombre,
           consorcio_miembros: consorcioMiembros,
+          // Estructura de costos
+          costo_directo: parseFloat(form.costo_directo) || null,
+          utilidad_pct: form.utilidad_pct === '' || form.utilidad_pct == null ? 15 : Number(form.utilidad_pct),
+          gastos_generales_pct: form.gastos_generales_pct === '' || form.gastos_generales_pct == null ? 15 : Number(form.gastos_generales_pct),
+          igv_pct: form.igv_pct === '' || form.igv_pct == null ? 18 : Number(form.igv_pct),
+          otros_gastos: Array.isArray(form.otros_gastos) ? form.otros_gastos.filter(g => g.concepto || g.monto) : [],
           avance_fisico: 0,
           avance_financiero: 0,
           costo_real_acumulado: 0,
@@ -444,8 +468,76 @@ function ObrasPage({ showToast }) {
             {window.JxFieldLabel
               ? <window.JxFieldLabel text="Presupuesto total (S/)" hint="Monto contractual SIN IGV de la obra completa. Se compara contra costo ejecutado para calcular margen y avance financiero. Si la obra es a suma alzada usá el monto del contrato; si es por administración, el costo proyectado."/>
               : <label className="flabel">Presupuesto total (S/)</label>}
-            <input className="fi" type="number" step="0.01" placeholder="0.00" value={form.presupuesto_total||''} onChange={e=>setForm({...form, presupuesto_total:e.target.value})}/>
+            <input className="fi" type="number" step="0.01" placeholder="Se completa solo al importar el APU" value={form.presupuesto_total||''} onChange={e=>setForm({...form, presupuesto_total:e.target.value})}/>
+            <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>= Costo Total del Proyecto. Se calcula automáticamente al importar las partidas (Costo Directo + utilidades + gastos + IGV + otros).</div>
           </div>
+
+          {/* ── Estructura de costos (modelo Delphin/S10) ───────── */}
+          <div style={{gridColumn:'1/-1', marginTop:6, fontSize:11, color:'var(--amber)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em', borderTop:'1px dashed var(--border)', paddingTop:10}}>
+            Estructura de costos del presupuesto
+          </div>
+          <div style={{ gridColumn:'1/-1', fontSize:11, color:'var(--tm)', marginTop:-4, marginBottom:2, lineHeight:1.5 }}>
+            Configura los porcentajes y otros gastos. Cuando importes el APU, el sistema calcula el Costo Total automáticamente. También se autocompletan si importás el Excel del presupuesto.
+          </div>
+          <div><label className="flabel">% Utilidades (sobre CD)</label><input className="fi" type="number" step="0.01" value={form.utilidad_pct ?? 15} onChange={e=>setForm({...form, utilidad_pct:e.target.value})}/></div>
+          <div><label className="flabel">% Gastos Generales (sobre CD)</label><input className="fi" type="number" step="0.01" value={form.gastos_generales_pct ?? 15} onChange={e=>setForm({...form, gastos_generales_pct:e.target.value})}/></div>
+          <div><label className="flabel">% IGV (sobre subtotal)</label><input className="fi" type="number" step="0.01" value={form.igv_pct ?? 18} onChange={e=>setForm({...form, igv_pct:e.target.value})}/></div>
+          <div>
+            <label className="flabel">Costo Directo (info)</label>
+            <input className="fi" type="number" step="0.01" placeholder="Suma de partidas" value={form.costo_directo||''} onChange={e=>setForm({...form, costo_directo:e.target.value})}/>
+            <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>Se llena al importar el APU.</div>
+          </div>
+
+          {/* Otros gastos (líneas editables) */}
+          <div style={{ gridColumn:'1/-1' }}>
+            <label className="flabel">Otros gastos (supervisión, gestión, control…)</label>
+            {(form.otros_gastos || []).map((g, i) => (
+              <div key={i} style={{ display:'flex', gap:6, marginBottom:5 }}>
+                <input className="fi" style={{ flex:2 }} placeholder="Concepto (ej. Supervisión de obra)" value={g.concepto||''}
+                  onChange={e=>{ const arr=[...form.otros_gastos]; arr[i]={...arr[i], concepto:e.target.value}; setForm({...form, otros_gastos:arr}); }}/>
+                <input className="fi" style={{ flex:1 }} type="number" step="0.01" placeholder="Monto S/" value={g.monto||''}
+                  onChange={e=>{ const arr=[...form.otros_gastos]; arr[i]={...arr[i], monto:parseFloat(e.target.value)||0}; setForm({...form, otros_gastos:arr}); }}/>
+                <button type="button" className="btn btn-ghost btn-sm" style={{ color:'var(--red)' }}
+                  onClick={()=>{ const arr=form.otros_gastos.filter((_,j)=>j!==i); setForm({...form, otros_gastos:arr}); }}>✕</button>
+              </div>
+            ))}
+            <button type="button" className="btn btn-ghost btn-sm"
+              onClick={()=>setForm({...form, otros_gastos:[...(form.otros_gastos||[]), { concepto:'', monto:0 }]})}>
+              <JxIcon name="plus" size={11}/> Agregar gasto
+            </button>
+          </div>
+
+          {/* Preview del desglose calculado */}
+          {Number(form.costo_directo) > 0 && (() => {
+            const calc = calcularPresupuesto({
+              costoDirecto: Number(form.costo_directo),
+              utilidadPct: Number(form.utilidad_pct ?? 15),
+              gastosPct: Number(form.gastos_generales_pct ?? 15),
+              igvPct: Number(form.igv_pct ?? 18),
+              otrosGastos: form.otros_gastos || [],
+            });
+            const Row = ({ label, val, bold, color }) => (
+              <div style={{ display:'flex', justifyContent:'space-between', padding:'3px 0', fontSize:12, fontWeight: bold?700:400, color: color||'var(--ts)' }}>
+                <span>{label}</span><span>{fmtSoles(val)}</span>
+              </div>
+            );
+            return (
+              <div style={{ gridColumn:'1/-1', background:'rgba(0,0,0,0.18)', borderRadius:8, padding:'10px 14px', marginTop:4 }}>
+                <div style={{ fontSize:10.5, color:'var(--amber)', fontWeight:700, textTransform:'uppercase', marginBottom:4 }}>Desglose calculado</div>
+                <Row label="Costo Directo" val={calc.costoDirecto}/>
+                <Row label={`Utilidades (${form.utilidad_pct ?? 15}%)`} val={calc.utilidades}/>
+                <Row label={`Gastos Generales (${form.gastos_generales_pct ?? 15}%)`} val={calc.gastosGenerales}/>
+                <Row label="Sub Total" val={calc.subTotal} bold/>
+                <Row label={`IGV (${form.igv_pct ?? 18}%)`} val={calc.igv}/>
+                <Row label="Valor Referencial" val={calc.valorReferencial} bold color="var(--blue)"/>
+                {calc.totalOtrosGastos > 0 && <Row label="Otros gastos" val={calc.totalOtrosGastos}/>}
+                <div style={{ borderTop:'1px solid var(--border)', marginTop:4, paddingTop:2 }}>
+                  <Row label="Costo Total del Proyecto" val={calc.costoTotal} bold color="var(--green)"/>
+                </div>
+              </div>
+            );
+          })()}
+
           <div style={{gridColumn:'1/-1'}}><label className="flabel">Observaciones</label><textarea className="fi" value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})}/></div>
 
           {/* ── Empresa ejecutora / Consorcio ─────────────────── */}
@@ -1024,6 +1116,8 @@ function PartidasPage({ showToast }) {
   const [comparativoRows, setComparativoRows] = uSO(null); // null | array
   const [comparativoFilter, setComparativoFilter] = uSO('a_cambiar'); // a_cambiar|iguales|no_encontradas|todas
   const [comparativoBusy, setComparativoBusy] = uSO(false);
+  const [comparativoCostos, setComparativoCostos] = uSO(null); // tabla de costos detectada en el Excel
+  const [costosAplicados, setCostosAplicados] = uSO(false);
 
   // Procesa el archivo cargado y produce filas de comparación.
   // Cada fila: { codigo, descExcel, partida (DB), matchType, score, aprobada }
@@ -1042,6 +1136,11 @@ function PartidasPage({ showToast }) {
       if (!parsed.length) {
         throw new Error('No se detectaron partidas en el archivo. Verificá que tenga columna "Item" y "Descripción".');
       }
+      // Tabla de costos al final del Excel (CD, utilidades, gastos, IGV,
+      // otros gastos, costo total). Si existe, la ofrecemos para aplicar
+      // a la obra — "2 pájaros de un tiro" con la corrección de títulos.
+      setCostosAplicados(false);
+      try { setComparativoCostos(parseTablaCostos(rawRows)); } catch { setComparativoCostos(null); }
       // Construir mapas de partidas existentes
       const vivas = (partidas || []).filter(p => !p.deleted_at);
       const porCodigo = new Map(vivas.map(p => [String(p.codigo_delfin || ''), p]));
@@ -1109,6 +1208,51 @@ function PartidasPage({ showToast }) {
 
   // Aplicar los cambios aprobados: actualiza nombres de partidas existentes
   // y CREA las filas de capítulo que faltan (con su nombre real del Excel).
+  // Aplica la estructura de costos detectada en el Excel a la obra:
+  // utilidad/gastos/IGV %, otros gastos, costo_directo y costo total.
+  const aplicarCostosALaObra = async () => {
+    if (!comparativoCostos || !canWrite || !obraId) return;
+    setComparativoBusy(true);
+    try {
+      const c = comparativoCostos;
+      const obra = await window.__db.obras.get(obraId);
+      if (!obra) { showToast?.('Obra no encontrada', 'red'); return; }
+      // CD: si el Excel lo trae, usarlo; si no, sumar las partidas vivas.
+      const cd = c.costoDirecto != null ? c.costoDirecto
+        : (partidas || []).filter(p => !p.deleted_at).reduce((s, p) => s + Number(p.costo_total_presupuestado || 0), 0);
+      const calc = calcularPresupuesto({
+        costoDirecto: cd,
+        utilidadPct: c.utilidadPct ?? 15,
+        gastosPct: c.gastosPct ?? 15,
+        igvPct: c.igvPct ?? 18,
+        otrosGastos: c.otrosGastos || [],
+      });
+      const now = new Date().toISOString();
+      await window.__db.obras.update(obraId, {
+        costo_directo: cd,
+        utilidad_pct: c.utilidadPct ?? 15,
+        gastos_generales_pct: c.gastosPct ?? 15,
+        igv_pct: c.igvPct ?? 18,
+        otros_gastos: c.otrosGastos || [],
+        presupuesto_total: c.costoTotal != null ? c.costoTotal : calc.costoTotal,
+        updated_at: now, updated_by: userId,
+        version: (obra.version ?? 0) + 1,
+        sync_status: obra.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      try { await window.__logAudit?.({ action:'update', table:'obras', recordId: obraId,
+        newData:{ costo_directo: cd, utilidad_pct: c.utilidadPct, gastos_generales_pct: c.gastosPct, igv_pct: c.igvPct, presupuesto_total: c.costoTotal },
+        reason:'Estructura de costos aplicada desde Excel del presupuesto' }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'obras' } })); } catch {}
+      try { window.dispatchEvent(new Event('online')); } catch {}
+      setCostosAplicados(true);
+      showToast?.(`✓ Estructura de costos aplicada · Costo Total ${fmtSoles(c.costoTotal ?? calc.costoTotal)}`, 'green');
+    } catch (e) {
+      showToast?.('Error: ' + (e.message || e), 'red');
+    } finally {
+      setComparativoBusy(false);
+    }
+  };
+
   const aplicarComparativo = async () => {
     if (!comparativoRows || !canWrite) return;
     const aActualizar = comparativoRows.filter(r => r.aprobada && r.accion === 'actualizar' && r.partidaActual);
@@ -1844,6 +1988,35 @@ function PartidasPage({ showToast }) {
                     </div>
                   </div>
                 </div>
+
+                {/* Estructura de costos detectada en el Excel */}
+                {comparativoCostos && (
+                  <div style={{ padding:'12px 20px', borderBottom:'1px solid var(--border)', background:'rgba(46,204,113,0.04)' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:14, flexWrap:'wrap' }}>
+                      <div style={{ flex:1, minWidth:280 }}>
+                        <div style={{ fontSize:13, fontWeight:700, color:'var(--green)', marginBottom:4, display:'flex', alignItems:'center', gap:6 }}>
+                          <JxIcon name="dollar" size={13}/> Estructura de costos detectada en el Excel
+                        </div>
+                        <div style={{ fontSize:11, color:'var(--tm)', lineHeight:1.5, marginBottom:8 }}>
+                          El archivo trae la tabla de costos al final. Aplicala a la obra para fijar utilidades, gastos, IGV y otros gastos automáticamente.
+                        </div>
+                        <div style={{ display:'flex', gap:14, flexWrap:'wrap', fontSize:11.5 }}>
+                          <span>CD: <strong>{fmtSoles(comparativoCostos.costoDirecto)}</strong></span>
+                          <span>Util: <strong>{comparativoCostos.utilidadPct ?? '—'}%</strong></span>
+                          <span>Gastos: <strong>{comparativoCostos.gastosPct ?? '—'}%</strong></span>
+                          <span>IGV: <strong>{comparativoCostos.igvPct ?? '—'}%</strong></span>
+                          {comparativoCostos.otrosGastos?.length > 0 && <span>Otros: <strong>{comparativoCostos.otrosGastos.length} ítem(s)</strong></span>}
+                          <span style={{ color:'var(--green)' }}>Costo Total: <strong>{fmtSoles(comparativoCostos.costoTotal)}</strong></span>
+                        </div>
+                      </div>
+                      <button className="btn btn-amber btn-sm" disabled={comparativoBusy || costosAplicados || !canWrite}
+                        onClick={aplicarCostosALaObra}>
+                        <JxIcon name={costosAplicados ? 'check' : 'dollar'} size={12}/>
+                        {costosAplicados ? 'Aplicado ✓' : 'Aplicar a la obra'}
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 <div style={{ padding:'10px 20px', borderBottom:'1px solid var(--border)', display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
                   <div style={{ display:'flex', gap:4, background:'rgba(0,0,0,0.2)', padding:3, borderRadius:6, flexWrap:'wrap' }}>

@@ -1,6 +1,7 @@
 import React from "react";
 import { detectarEPP, esProbablementeEPP, epppTipo } from "../lib/epp-utils.js";
 import { normalizeCodigo, fuzzyScore } from "../lib/match-helpers.js";
+import { calcularPresupuesto, fmtSoles } from "../lib/presupuesto-obra.js";
 const { useState: uSI, useMemo: uMI, useEffect: uEI, useRef: uRI, useCallback: uCI } = React;
 
 // ── Obra activa helper (poll Dexie) ──────────────────────────
@@ -1150,6 +1151,41 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       else if (parsed.tipo === 'gantt') res = await importGantt();
       else throw new Error('Tipo de archivo no soportado');
 
+      // ── Auto-costeo del presupuesto al importar APU ──────────────
+      // CD = suma de los totales de las partidas. Con los % de la obra
+      // (utilidades, gastos, IGV) + otros gastos, calculamos el Costo
+      // Total y lo guardamos. presupuesto_total = Costo Total del Proyecto;
+      // costo_directo = base de ejecución.
+      if (parsed.tipo === 'apu' && obraDestino) {
+        try {
+          const cd = (parsed.data || []).reduce((s, p) => s + (Number(p.costo_total) || 0), 0);
+          if (cd > 0) {
+            const obraFresca = await window.__db.obras.get(obraDestino.id) || obraDestino;
+            const calc = calcularPresupuesto({
+              costoDirecto: cd,
+              utilidadPct: Number(obraFresca.utilidad_pct ?? 15),
+              gastosPct: Number(obraFresca.gastos_generales_pct ?? 15),
+              igvPct: Number(obraFresca.igv_pct ?? 18),
+              otrosGastos: Array.isArray(obraFresca.otros_gastos) ? obraFresca.otros_gastos : [],
+            });
+            const now = new Date().toISOString();
+            await window.__db.obras.update(obraDestino.id, {
+              costo_directo: cd,
+              presupuesto_total: calc.costoTotal,
+              updated_at: now, updated_by: userId,
+              version: (obraFresca.version ?? 0) + 1,
+              sync_status: obraFresca.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+            });
+            try { await window.__logAudit?.({ action:'update', table:'obras', recordId: obraDestino.id,
+              newData:{ costo_directo: cd, presupuesto_total: calc.costoTotal },
+              reason:`Auto-costeo APU: CD ${cd.toFixed(2)} → Costo Total ${calc.costoTotal.toFixed(2)}` }); } catch {}
+            try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'obras' } })); } catch {}
+          }
+        } catch (e) {
+          console.warn('[auto-costeo APU]', e?.message);
+        }
+      }
+
       // Guardar como versión de presupuesto si el usuario lo pidió (solo APU)
       if (parsed.tipo === 'apu' && saveVersion.habilitado && obraDestino) {
         try {
@@ -1537,94 +1573,53 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                     </div>
                   </div>
 
-                  {/* Coherencia presupuesto + actualización de obra */}
+                  {/* Costeo del presupuesto — desglose Delphin/S10 */}
                   {(() => {
-                    const totalAPU = (parsed?.data || []).reduce((s, p) => s + (Number(p.costo_total) || 0), 0);
-                    const presObra = Number(obraDestino?.presupuesto_total || 0);
-                    const ratio = presObra > 0 ? totalAPU / presObra : null;
-                    const incoherente = presObra > 0 && (ratio > 1.05 || ratio < 0.5);
-                    const newPres = updateObra.habilitado && updateObra.presupuesto !== ''
-                      ? Number(updateObra.presupuesto) : presObra;
-                    const newNombre = updateObra.habilitado && updateObra.nombre.trim()
-                      ? updateObra.nombre.trim() : (obraDestino?.nombre_obra || '');
+                    // CD = suma de los totales de las partidas del APU.
+                    const cd = (parsed?.data || []).reduce((s, p) => s + (Number(p.costo_total) || 0), 0);
+                    const uPct = Number(obraDestino?.utilidad_pct ?? 15);
+                    const gPct = Number(obraDestino?.gastos_generales_pct ?? 15);
+                    const iPct = Number(obraDestino?.igv_pct ?? 18);
+                    const otros = Array.isArray(obraDestino?.otros_gastos) ? obraDestino.otros_gastos : [];
+                    const calc = calcularPresupuesto({ costoDirecto: cd, utilidadPct: uPct, gastosPct: gPct, igvPct: iPct, otrosGastos: otros });
+                    // Comparación contra el CD previo de la obra (si ya tenía uno).
+                    const cdPrevio = Number(obraDestino?.costo_directo || 0);
+                    const ratio = cdPrevio > 0 ? cd / cdPrevio : null;
+                    const incoherente = cdPrevio > 0 && (ratio > 1.05 || ratio < 0.5);
+                    const Row = ({ label, val, bold, color }) => (
+                      <div style={{ display:'flex', justifyContent:'space-between', padding:'3px 0', fontSize:12.5, fontWeight: bold?700:400, color: color||'var(--ts)' }}>
+                        <span>{label}</span><span>{fmtSoles(val)}</span>
+                      </div>
+                    );
                     return (
-                      <div className="card card-p" style={{ marginBottom:14, borderLeft: incoherente && !updateObra.habilitado ? '3px solid var(--red)' : '3px solid var(--blue)' }}>
-                        <div style={{ display:'flex', justifyContent:'space-between', flexWrap:'wrap', gap:14, marginBottom:10 }}>
-                          <div>
-                            <div style={{ fontSize:13, fontWeight:700, color:'var(--tp)', marginBottom:4, display:'flex', alignItems:'center', gap:6 }}>
-                              <JxIcon name="dollar" size={13} color="var(--blue)"/> Coherencia presupuestal
-                            </div>
-                            <div style={{ fontSize:11.5, color:'var(--tm)' }}>
-                              Verifica que el presupuesto de la obra cuadre con el total del APU antes de importar.
-                            </div>
-                          </div>
-                          {!updateObra.habilitado && (
-                            <button className="btn btn-ghost btn-sm"
-                              onClick={()=>setUpdateObra({ habilitado:true,
-                                nombre: obraDestino?.nombre_obra || '',
-                                presupuesto: presObra > 0 ? String(presObra) : String(totalAPU.toFixed(2)) })}>
-                              <JxIcon name="edit" size={12}/> Actualizar nombre / costo de la obra
-                            </button>
-                          )}
+                      <div className="card card-p" style={{ marginBottom:14, borderLeft:'3px solid var(--green)' }}>
+                        <div style={{ fontSize:13, fontWeight:700, color:'var(--tp)', marginBottom:4, display:'flex', alignItems:'center', gap:6 }}>
+                          <JxIcon name="dollar" size={13} color="var(--green)"/> Costeo del presupuesto
                         </div>
-
-                        <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:updateObra.habilitado?12:0 }}>
-                          <div style={{ background:'rgba(255,255,255,0.03)', borderRadius:8, padding:'10px 12px' }}>
-                            <div style={{ fontSize:10.5, color:'var(--tm)', textTransform:'uppercase' }}>Presup. Obra</div>
-                            <div style={{ fontSize:18, fontWeight:800, color:'var(--blue)', marginTop:2 }}>
-                              {presObra > 0 ? `S/ ${presObra.toLocaleString('es-PE', { maximumFractionDigits: 0 })}` : '— sin definir —'}
-                            </div>
-                          </div>
-                          <div style={{ background:'rgba(255,255,255,0.03)', borderRadius:8, padding:'10px 12px' }}>
-                            <div style={{ fontSize:10.5, color:'var(--tm)', textTransform:'uppercase' }}>Total APU</div>
-                            <div style={{ fontSize:18, fontWeight:800, color:'var(--amber)', marginTop:2 }}>
-                              S/ {totalAPU.toLocaleString('es-PE', { maximumFractionDigits: 0 })}
-                            </div>
-                          </div>
-                          <div style={{ background:'rgba(255,255,255,0.03)', borderRadius:8, padding:'10px 12px' }}>
-                            <div style={{ fontSize:10.5, color:'var(--tm)', textTransform:'uppercase' }}>Diferencia</div>
-                            <div style={{ fontSize:18, fontWeight:800, color: presObra > 0 ? (incoherente?'var(--red)':'var(--green)') : 'var(--tm)', marginTop:2 }}>
-                              {presObra > 0
-                                ? `${(totalAPU - presObra) >= 0 ? '+' : ''}S/ ${(totalAPU - presObra).toLocaleString('es-PE', { maximumFractionDigits: 0 })} (${((ratio - 1) * 100).toFixed(1)}%)`
-                                : '— sin presupuesto registrado —'}
-                            </div>
+                        <div style={{ fontSize:11.5, color:'var(--tm)', marginBottom:10, lineHeight:1.5 }}>
+                          El <strong>Costo Directo</strong> es la suma de las {parsed?.summary?.partidas || (parsed?.data||[]).length} partidas. Con los porcentajes de la obra ({uPct}% util · {gPct}% gastos · {iPct}% IGV) se calcula el Costo Total. Al confirmar la importación se guarda en la obra.
+                        </div>
+                        <div style={{ background:'rgba(0,0,0,0.18)', borderRadius:8, padding:'10px 14px' }}>
+                          <Row label="Costo Directo (suma de partidas)" val={calc.costoDirecto} bold color="var(--amber)"/>
+                          <Row label={`Utilidades (${uPct}%)`} val={calc.utilidades}/>
+                          <Row label={`Gastos Generales (${gPct}%)`} val={calc.gastosGenerales}/>
+                          <Row label="Sub Total" val={calc.subTotal} bold/>
+                          <Row label={`IGV (${iPct}%)`} val={calc.igv}/>
+                          <Row label="Valor Referencial" val={calc.valorReferencial} bold color="var(--blue)"/>
+                          {calc.totalOtrosGastos > 0 && <Row label="Otros gastos" val={calc.totalOtrosGastos}/>}
+                          <div style={{ borderTop:'1px solid var(--border)', marginTop:4, paddingTop:3 }}>
+                            <Row label="Costo Total del Proyecto" val={calc.costoTotal} bold color="var(--green)"/>
                           </div>
                         </div>
-
-                        {incoherente && !updateObra.habilitado && (
+                        {calc.totalOtrosGastos === 0 && (
+                          <div style={{ fontSize:11, color:'var(--tm)', marginTop:8 }}>
+                            💡 ¿Faltan supervisión, gestión, control concurrente? Configurá los "Otros gastos" en Obras → editar la obra, o importá el Excel del presupuesto desde "Comparativo con presupuesto" en Partidas.
+                          </div>
+                        )}
+                        {incoherente && (
                           <div style={{ background:'rgba(231,76,60,0.10)', border:'1px solid rgba(231,76,60,0.35)', borderRadius:8, padding:'10px 12px', marginTop:10, fontSize:12, color:'var(--ts)' }}>
-                            <strong style={{ color:'var(--red)' }}>⚠ Incoherencia detectada.</strong>{' '}
-                            {ratio > 1.05
-                              ? <>El APU suma <strong>{(ratio*100).toFixed(0)}%</strong> del presupuesto registrado de la obra. ¿Estás seguro de que la obra es de S/ {presObra.toLocaleString('es-PE')} y no de S/ {totalAPU.toLocaleString('es-PE', { maximumFractionDigits: 0 })}?</>
-                              : <>El APU es solo el <strong>{(ratio*100).toFixed(0)}%</strong> del presupuesto registrado. Puede que falte importar más partidas.</>}
-                            {' '}Click en <strong>Actualizar nombre / costo</strong> para alinear el presupuesto.
-                          </div>
-                        )}
-                        {presObra === 0 && totalAPU > 0 && !updateObra.habilitado && (
-                          <div style={{ background:'rgba(242,183,5,0.08)', border:'1px solid rgba(242,183,5,0.35)', borderRadius:8, padding:'10px 12px', marginTop:10, fontSize:12, color:'var(--ts)' }}>
-                            <strong style={{ color:'var(--amber)' }}>ℹ La obra no tiene presupuesto registrado.</strong>{' '}
-                            Click en <strong>Actualizar nombre / costo</strong> para fijarlo en S/ {totalAPU.toLocaleString('es-PE', { maximumFractionDigits: 0 })}.
-                          </div>
-                        )}
-
-                        {updateObra.habilitado && (
-                          <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr auto', gap:10, alignItems:'flex-end', borderTop:'1px solid var(--border)', paddingTop:12 }}>
-                            <div>
-                              <label className="flabel">Nombre de la obra</label>
-                              <input className="fi" value={updateObra.nombre}
-                                onChange={e=>setUpdateObra({...updateObra, nombre:e.target.value})}
-                                placeholder={obraDestino?.nombre_obra || 'Nombre…'}/>
-                            </div>
-                            <div>
-                              <label className="flabel">Presupuesto total (S/)</label>
-                              <input className="fi" type="number" min="0" step="0.01"
-                                value={updateObra.presupuesto}
-                                onChange={e=>setUpdateObra({...updateObra, presupuesto:e.target.value})}
-                                placeholder="0.00"/>
-                            </div>
-                            <button className="btn btn-ghost btn-sm" onClick={()=>setUpdateObra({ habilitado:false, nombre:'', presupuesto:'' })}>
-                              Cancelar
-                            </button>
+                            <strong style={{ color:'var(--red)' }}>⚠ Cambio grande de Costo Directo.</strong>{' '}
+                            El CD de este APU ({fmtSoles(cd)}) es el <strong>{(ratio*100).toFixed(0)}%</strong> del CD que ya tenía la obra ({fmtSoles(cdPrevio)}). Si es una re-importación intencional, ignorá este aviso.
                           </div>
                         )}
                       </div>
