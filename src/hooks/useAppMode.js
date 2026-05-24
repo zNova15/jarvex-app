@@ -4,6 +4,30 @@ const STORAGE_KEY = 'app_mode';
 const ROLE_KEY = 'jx_user_role';
 const EVENT_NAME = 'app_mode_change';
 
+// ── Super Admin (edición de fechas históricas) ──
+// Toggle que SOLO el admin real puede activar. Desbloquea la edición de
+// fechas de movimientos (materiales/herramientas/EPP) y la fecha de
+// registro de los insumos. Pensado para cargar registros de días pasados
+// al arrancar una obra. Se persiste en localStorage y se refleja en
+// window.__superAdmin para módulos no-React.
+const SUPER_ADMIN_KEY = 'jx_super_admin';
+const SUPER_ADMIN_EVENT = 'jx_super_admin_change';
+
+function readSuperAdmin() {
+  try {
+    if (localStorage.getItem(SUPER_ADMIN_KEY) !== '1') return false;
+    // Validar que el rol REAL sea admin (no override). Si no, se ignora.
+    const rolReal = localStorage.getItem('jx_user_role_real') || localStorage.getItem(ROLE_KEY) || '';
+    return rolReal === 'admin';
+  } catch { return false; }
+}
+
+// Espejo en window para validar desde código no-React (handlers de edición).
+export function isSuperAdminActive() { return readSuperAdmin(); }
+if (typeof window !== 'undefined') {
+  window.__isSuperAdmin = isSuperAdminActive;
+}
+
 // 3 modos (solo admin puede usar 'prueba' y 'edicion'):
 //   'prueba'    → muestra SOLO data demo (registros con flag demo:true). Solo admin.
 //   'edicion'   → muestra SOLO data real (sin flag demo); permite editar/eliminar. Solo admin.
@@ -55,20 +79,37 @@ function readMode() {
 
 export function useAppMode() {
   const [mode, setModeState] = useState(readMode);
+  const [superAdmin, setSuperAdminState] = useState(readSuperAdmin);
 
   useEffect(() => {
     const onStorage = (e) => {
       if (e.key === STORAGE_KEY || e.key === ROLE_KEY || e.key === 'jx_role_override') setModeState(readMode());
+      if (e.key === SUPER_ADMIN_KEY || e.key === ROLE_KEY) setSuperAdminState(readSuperAdmin());
     };
     const onCustom = () => setModeState(readMode());
+    const onSuper = () => setSuperAdminState(readSuperAdmin());
     window.addEventListener('storage', onStorage);
     window.addEventListener(EVENT_NAME, onCustom);
     window.addEventListener('jx_role_override_change', onCustom);
+    window.addEventListener(SUPER_ADMIN_EVENT, onSuper);
     return () => {
       window.removeEventListener('storage', onStorage);
       window.removeEventListener(EVENT_NAME, onCustom);
       window.removeEventListener('jx_role_override_change', onCustom);
+      window.removeEventListener(SUPER_ADMIN_EVENT, onSuper);
     };
+  }, []);
+
+  // Toggle de super admin — solo admin real. Persiste + dispara evento.
+  const setSuperAdmin = useCallback((on) => {
+    try {
+      const rolReal = localStorage.getItem('jx_user_role_real') || readUserRole();
+      if (rolReal !== 'admin') return;
+      if (on) localStorage.setItem(SUPER_ADMIN_KEY, '1');
+      else localStorage.removeItem(SUPER_ADMIN_KEY);
+      window.dispatchEvent(new Event(SUPER_ADMIN_EVENT));
+      setSuperAdminState(readSuperAdmin());
+    } catch {}
   }, []);
 
   const setMode = useCallback((newMode) => {
@@ -138,6 +179,10 @@ export function useAppMode() {
     isImpersonating,
     setRoleOverride,
     clearRoleOverride,
+    // Super Admin (edición de fechas históricas) — solo admin real
+    superAdmin: superAdmin && isAdminReal,
+    setSuperAdmin,
+    canSuperAdmin: isAdminReal,
   };
 }
 

@@ -112,6 +112,7 @@ function EppsInventarioPage({ showToast }) {
   const isAdmin = myRol === 'admin';
   const appMode = window.__useAppMode ? window.__useAppMode() : { isEdicion: true };
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
+  const superAdmin = !!appMode.superAdmin;
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'EPP', 'w') ?? false);
 
   const [obraId, setObraId] = uS(null);
@@ -261,7 +262,7 @@ function EppsInventarioPage({ showToast }) {
     setModal('nuevo');
   };
   const openEditar = (e) => {
-    setForm({ ...e });
+    setForm({ ...e, fecha_registro: (e.created_at || '').slice(0, 10) });
     setEditingId(e.id);
     if (foto?.url) try { URL.revokeObjectURL(foto.url); } catch {}
     setFoto(null);
@@ -308,6 +309,10 @@ function EppsInventarioPage({ showToast }) {
           proveedor_principal_id: form.proveedor_principal_id || null,
           ubicacion_id: form.ubicacion_id || null,
         };
+        // Super Admin: corregir fecha de registro (created_at)
+        if (superAdmin && form.fecha_registro && form.fecha_registro !== (oldData?.created_at || '').slice(0, 10)) {
+          newFields.created_at = new Date(form.fecha_registro + 'T12:00:00').toISOString();
+        }
         await updateEpp(editingId, newFields);
         try { await window.__logAudit?.({ action:'update', table:'epps', recordId:editingId, oldData, newData:newFields }); } catch {}
         // Si el user adjuntó una foto nueva, la guardamos como evidencia.
@@ -695,6 +700,17 @@ function EppsInventarioPage({ showToast }) {
               );
             })()}
           </div>
+          {superAdmin && editingId && (
+            <div style={{ marginTop:10, padding:'10px 12px', background:'rgba(231,76,60,0.06)', border:'1px solid rgba(231,76,60,0.3)', borderRadius:6 }}>
+              <label className="flabel" style={{ color:'#E74C3C' }}>⚡ Fecha de registro (Super Admin)</label>
+              <input className="fi" type="date" max={new Date().toISOString().slice(0,10)}
+                value={form.fecha_registro || ''}
+                onChange={e=>setForm({...form, fecha_registro:e.target.value})}/>
+              <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:3 }}>
+                Corrige la fecha de creación del EPP (created_at).
+              </div>
+            </div>
+          )}
           <div className="modal-actions">
             <button className="btn btn-ghost" onClick={() => { if (foto?.url) try { URL.revokeObjectURL(foto.url); } catch {} setFoto(null); setModal(null); setEditingId(null); setForm({}); }}>Cancelar</button>
             <button className="btn btn-amber" onClick={handleSubmitEpp}>

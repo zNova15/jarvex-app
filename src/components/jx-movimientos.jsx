@@ -847,8 +847,26 @@ function MovMaterialesPage({ showToast }) {
   }, [movs, matsByIdAll, matsServer]);
 
   const [reversoTarget, setReversoTarget] = uSM(null);
+  const [editFechaTarget, setEditFechaTarget] = uSM(null);
   const isAdmin = auth?.profile?.rol === 'admin';
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
+  const superAdmin = !!appMode.superAdmin;
+
+  // Super Admin: editar fecha/hora de un movimiento histórico.
+  const guardarFechaMov = async (mov, nuevaFecha, nuevaHora) => {
+    if (!nuevaFecha) { showToast('Elegí una fecha', 'red'); return; }
+    try {
+      await updateMov(mov.id, { fecha: nuevaFecha, hora: nuevaHora || mov.hora || null });
+      try { await window.__logAudit?.({ action:'update', table:'movimientos_materiales', recordId: mov.id,
+        oldData:{ fecha: mov.fecha, hora: mov.hora }, newData:{ fecha: nuevaFecha, hora: nuevaHora },
+        reason:'Super Admin · corrección de fecha histórica' }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'movimientos_materiales' } })); } catch {}
+      showToast('✓ Fecha actualizada', 'green');
+      setEditFechaTarget(null);
+    } catch (e) {
+      showToast('Error: ' + (e.message || e), 'red');
+    }
+  };
 
   // Mapa movimiento_id → evidencia (guía adjunta)
   const guiasPorMov = uMM(() => {
@@ -1353,6 +1371,11 @@ function MovMaterialesPage({ showToast }) {
                     </td>
                     {isAdmin && (
                       <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
+                        {superAdmin && (
+                          <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar fecha/hora del movimiento" onClick={()=>setEditFechaTarget(m)} style={{ marginRight:4, color:'#E74C3C' }}>
+                            📅
+                          </button>
+                        )}
                         {puedeReversar ? (
                           <button className="btn btn-red btn-xs" title="Reversar movimiento" onClick={()=>setReversoTarget(m)}>
                             <JxIcon name="arrowOut" size={10}/>Reversar
@@ -1388,6 +1411,12 @@ function MovMaterialesPage({ showToast }) {
           onConfirm={handleReversoMaterial}
         />
       )}
+      {editFechaTarget && (
+        <EditarFechaMovModal
+          mov={editFechaTarget}
+          onClose={()=>setEditFechaTarget(null)}
+          onSave={(f,h)=>guardarFechaMov(editFechaTarget, f, h)}/>
+      )}
     </div>
   );
 }
@@ -1403,8 +1432,26 @@ function MovHerramientasPage({ showToast }) {
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
 
   const [reversoTarget, setReversoTarget] = uSM(null);
+  const [editFechaTarget, setEditFechaTarget] = uSM(null);
   const isAdmin = auth?.profile?.rol === 'admin';
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
+  const superAdmin = !!appMode.superAdmin;
+
+  // Super Admin: editar fecha/hora de un movimiento de herramienta histórico.
+  const guardarFechaMov = async (mov, nuevaFecha, nuevaHora) => {
+    if (!nuevaFecha) { showToast('Elegí una fecha', 'red'); return; }
+    try {
+      await updateMov(mov.id, { fecha: nuevaFecha, hora: nuevaHora || mov.hora || null });
+      try { await window.__logAudit?.({ action:'update', table:'movimientos_herramientas', recordId: mov.id,
+        oldData:{ fecha: mov.fecha, hora: mov.hora }, newData:{ fecha: nuevaFecha, hora: nuevaHora },
+        reason:'Super Admin · corrección de fecha histórica' }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'movimientos_herramientas' } })); } catch {}
+      showToast('✓ Fecha actualizada', 'green');
+      setEditFechaTarget(null);
+    } catch (e) {
+      showToast('Error: ' + (e.message || e), 'red');
+    }
+  };
 
   const handleDeleteMov = async (m) => {
     if (!canDelete) return;
@@ -1659,6 +1706,11 @@ function MovHerramientasPage({ showToast }) {
                     </td>
                     {isAdmin && (
                       <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
+                        {superAdmin && (
+                          <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar fecha/hora del movimiento" onClick={()=>setEditFechaTarget(m)} style={{ marginRight:4, color:'#E74C3C' }}>
+                            📅
+                          </button>
+                        )}
                         {puedeReversar ? (
                           <button className="btn btn-red btn-xs" title="Reversar movimiento" onClick={()=>setReversoTarget(m)}>
                             <JxIcon name="arrowOut" size={10}/>Reversar
@@ -1693,6 +1745,12 @@ function MovHerramientasPage({ showToast }) {
           onClose={()=>setReversoTarget(null)}
           onConfirm={handleReversoHerramienta}
         />
+      )}
+      {editFechaTarget && (
+        <EditarFechaMovModal
+          mov={editFechaTarget}
+          onClose={()=>setEditFechaTarget(null)}
+          onSave={(f,h)=>guardarFechaMov(editFechaTarget, f, h)}/>
       )}
     </div>
   );
@@ -2004,6 +2062,46 @@ function ProveedoresPage({ showToast }) {
         />
       )}
     </div>
+  );
+}
+
+// ─── Modal Super Admin: editar fecha/hora de un movimiento ───────────
+// Solo accesible con Super Admin activo. Permite corregir la fecha de
+// movimientos históricos (al arrancar la obra con registros de días
+// pasados). Cada cambio queda en auditoría.
+function EditarFechaMovModal({ mov, onClose, onSave }) {
+  const [fecha, setFecha] = uSM(mov.fecha || new Date().toISOString().slice(0, 10));
+  const [hora, setHora] = uSM(mov.hora || '');
+  const [saving, setSaving] = uSM(false);
+  const hoy = new Date().toISOString().slice(0, 10);
+  const submit = async () => {
+    setSaving(true);
+    try { await onSave(fecha, hora); }
+    finally { setSaving(false); }
+  };
+  return (
+    <Modal title="⚡ Editar fecha del movimiento" icon="edit" onClose={onClose}>
+      <div style={{ fontSize:12, color:'var(--tm)', marginBottom:12, lineHeight:1.5 }}>
+        Corrección de fecha histórica (Super Admin). El movimiento original quedaba en
+        <strong> {mov.fecha || '—'} {mov.hora || ''}</strong>.
+      </div>
+      <div className="g2">
+        <div>
+          <label className="flabel">Fecha</label>
+          <input className="fi" type="date" max={hoy} value={fecha} onChange={e=>setFecha(e.target.value)}/>
+        </div>
+        <div>
+          <label className="flabel">Hora (opcional)</label>
+          <input className="fi" type="time" value={hora} onChange={e=>setHora(e.target.value)}/>
+        </div>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose} disabled={saving}>Cancelar</button>
+        <button className="btn btn-amber" onClick={submit} disabled={saving || !fecha}>
+          <JxIcon name="check" size={13}/> {saving ? 'Guardando…' : 'Guardar fecha'}
+        </button>
+      </div>
+    </Modal>
   );
 }
 

@@ -123,6 +123,7 @@ function MaterialesPage({ showToast }) {
   const puedeActualizarPrecios = isAdmin || ['gerente','asistente_admin'].includes(myRol);
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
+  const superAdmin = !!appMode.superAdmin;
   // Respeta la matriz de Roles y Permisos. Si el admin marcó al rol
   // como solo-lectura en "Materiales" desde la UI, oculta acciones de
   // escritura.
@@ -968,6 +969,8 @@ function MaterialesPage({ showToast }) {
       precio: m.precio_unitario_estimado ?? '',
       proveedor_id: m.proveedor_principal_id || null,
       ubicacion_id: m.ubicacion_id || '',
+      // Super Admin: fecha de registro editable (created_at → fecha YYYY-MM-DD)
+      fecha_registro: (m.created_at || '').slice(0, 10),
     });
     setEditingId(m.id);
     setModal('editar');
@@ -1095,6 +1098,11 @@ function MaterialesPage({ showToast }) {
           ubicacion_id: form.ubicacion_id || null,
           alerta: calcAlerta(stockActual, stockMinimo),
         };
+        // Super Admin: permitir corregir la fecha de registro (created_at).
+        // Útil al cargar materiales que existían desde antes del sistema.
+        if (superAdmin && form.fecha_registro && form.fecha_registro !== (oldData?.created_at || '').slice(0, 10)) {
+          newFields.created_at = new Date(form.fecha_registro + 'T12:00:00').toISOString();
+        }
         await updateMaterial(editingId, newFields);
         try { await window.__logAudit?.({ action:'update', table:'materiales', recordId:editingId, oldData, newData:newFields }); } catch(e) {}
         showToast(`Material "${form.nombre_material}" actualizado`, 'green');
@@ -2728,6 +2736,18 @@ function MaterialesPage({ showToast }) {
             );
           })()}
         </div>
+        {/* Super Admin: fecha de registro editable (solo en edición) */}
+        {superAdmin && editingId && (
+          <div style={{ marginTop:10, padding:'10px 12px', background:'rgba(231,76,60,0.06)', border:'1px solid rgba(231,76,60,0.3)', borderRadius:6 }}>
+            <label className="flabel" style={{ color:'#E74C3C' }}>⚡ Fecha de registro (Super Admin)</label>
+            <input className="fi" type="date" max={new Date().toISOString().slice(0,10)}
+              value={form.fecha_registro || ''}
+              onChange={e=>setForm({...form, fecha_registro:e.target.value})}/>
+            <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:3 }}>
+              Corrige la fecha de creación del material (created_at). Para cargar insumos que existían antes de empezar a usar el sistema.
+            </div>
+          </div>
+        )}
         <div className="modal-actions" style={{ justifyContent: editingId ? 'space-between' : 'flex-end' }}>
           {editingId && (() => {
             const matEdit = materiales.find(x => x.id === editingId);
@@ -2871,6 +2891,7 @@ function HerramientasPage({ showToast }) {
   const isAdmin = myRol === 'admin';
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
+  const superAdmin = !!appMode.superAdmin;
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Herramientas', 'w') ?? false);
   const canWriteMov = isAdmin || (window.__hasPerm?.(myRol, 'Mov. Herramientas', 'w') ?? false);
   const [q, setQ] = uS('');
@@ -3167,6 +3188,7 @@ function HerramientasPage({ showToast }) {
       serie: h.serie || '',
       estado_actual: h.estado_actual || 'bueno',
       ubicacion_id: h.ubicacion_id || '',
+      fecha_registro: (h.created_at || '').slice(0, 10),
     });
     setEditingId(h.id);
     setModal('editar');
@@ -3221,6 +3243,9 @@ function HerramientasPage({ showToast }) {
           estado_actual: form.estado_actual || 'bueno',
           ubicacion_id: form.ubicacion_id || null,
         };
+        if (superAdmin && form.fecha_registro && form.fecha_registro !== (oldData?.created_at || '').slice(0, 10)) {
+          newFields.created_at = new Date(form.fecha_registro + 'T12:00:00').toISOString();
+        }
         await updateHerr(editingId, newFields);
         try { await window.__logAudit?.({ action:'update', table:'herramientas', recordId:editingId, oldData, newData:newFields }); } catch(e) {}
         showToast(`Herramienta "${form.nombre_herramienta}" actualizada`, 'green');
@@ -3774,6 +3799,17 @@ function HerramientasPage({ showToast }) {
             );
           })()}
         </div>
+        {superAdmin && editingId && (
+          <div style={{ marginTop:10, padding:'10px 12px', background:'rgba(231,76,60,0.06)', border:'1px solid rgba(231,76,60,0.3)', borderRadius:6 }}>
+            <label className="flabel" style={{ color:'#E74C3C' }}>⚡ Fecha de registro (Super Admin)</label>
+            <input className="fi" type="date" max={new Date().toISOString().slice(0,10)}
+              value={form.fecha_registro || ''}
+              onChange={e=>setForm({...form, fecha_registro:e.target.value})}/>
+            <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:3 }}>
+              Corrige la fecha de creación de la herramienta (created_at).
+            </div>
+          </div>
+        )}
         <div className="modal-actions">
           <button className="btn btn-ghost" onClick={closeModalHerr} disabled={busyHerr}>Cancelar</button>
           <button className="btn btn-amber" onClick={handleSubmitHerr} disabled={busyHerr}>

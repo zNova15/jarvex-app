@@ -474,8 +474,32 @@ function EppPage({ showToast }) {
   const myRol = auth?.profile?.rol;
   const isAdmin = myRol === 'admin';
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'EPP', 'w') ?? false);
+  const appMode = window.__useAppMode ? window.__useAppMode() : { superAdmin: false };
+  const superAdmin = !!appMode.superAdmin;
   const { data: entregas } = window.__hooks.useEppEntregas(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
+
+  // Super Admin: editar fecha de una entrega/compra de EPP histórica.
+  const [editFechaEpp, setEditFechaEpp] = uS(null);
+  const [editFechaEppValue, setEditFechaEppValue] = uS('');
+  const guardarFechaEpp = async (reg, nuevaFecha) => {
+    if (!nuevaFecha) { showToast('Elegí una fecha', 'red'); return; }
+    try {
+      await window.__db.epp_entregas.update(reg.id, {
+        fecha: nuevaFecha,
+        updated_at: new Date().toISOString(),
+        updated_by: userId,
+        version: (reg.version ?? 0) + 1,
+        sync_status: reg.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      try { await window.__logAudit?.({ action:'update', table:'epp_entregas', recordId: reg.id, oldData:{ fecha: reg.fecha }, newData:{ fecha: nuevaFecha }, reason:'Super Admin · corrección de fecha histórica EPP' }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'epp_entregas' } })); } catch {}
+      showToast('✓ Fecha actualizada', 'green');
+      setEditFechaEpp(null);
+    } catch (e) {
+      showToast('Error: ' + (e.message || e), 'red');
+    }
+  };
 
   const [proveedoresDB, setProveedoresDB] = uS([]);
   uE(() => {
@@ -805,7 +829,13 @@ function EppPage({ showToast }) {
                   const vencido = proxFecha && proxFecha < hoy;
                   return (
                     <tr key={e.id} onClick={()=>setDetalleOpen(e)} style={{ cursor:'pointer' }}>
-                      <td className="col-m">{e.fecha}</td>
+                      <td className="col-m">
+                        {e.fecha}
+                        {superAdmin && (
+                          <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar fecha" style={{ marginLeft:4, color:'#E74C3C', padding:'0 4px' }}
+                            onClick={(ev)=>{ ev.stopPropagation(); setEditFechaEpp(e); setEditFechaEppValue(e.fecha || ''); }}>📅</button>
+                        )}
+                      </td>
                       <td className="col-p">{p ? `${p.nombres} ${p.apellidos}` : '—'}</td>
                       <td>
                         {its.slice(0, 3).map((it, i) => (
@@ -848,7 +878,13 @@ function EppPage({ showToast }) {
                   const its = entregaItems(e);
                   return (
                     <tr key={e.id} onClick={()=>setDetalleOpen(e)} style={{ cursor:'pointer' }}>
-                      <td className="col-m">{e.fecha}</td>
+                      <td className="col-m">
+                        {e.fecha}
+                        {superAdmin && (
+                          <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar fecha" style={{ marginLeft:4, color:'#E74C3C', padding:'0 4px' }}
+                            onClick={(ev)=>{ ev.stopPropagation(); setEditFechaEpp(e); setEditFechaEppValue(e.fecha || ''); }}>📅</button>
+                        )}
+                      </td>
                       <td className="col-p">{prov?.razon_social || prov?.nombre || '—'}</td>
                       <td>
                         {its.slice(0, 3).map((it, i) => (
@@ -871,6 +907,24 @@ function EppPage({ showToast }) {
       )}
 
       {/* ── MODAL DETALLE ─────────────────────────────────────── */}
+      {editFechaEpp && (
+        <Modal title="⚡ Editar fecha de la entrega EPP" icon="edit" onClose={()=>setEditFechaEpp(null)}>
+          <div style={{ fontSize:12, color:'var(--tm)', marginBottom:12 }}>
+            Corrección de fecha histórica (Super Admin). Original: <strong>{editFechaEpp.fecha}</strong>.
+          </div>
+          <label className="flabel">Nueva fecha</label>
+          <input className="fi" type="date" max={new Date().toISOString().slice(0,10)}
+            value={editFechaEppValue}
+            onChange={(e)=>setEditFechaEppValue(e.target.value)}/>
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={()=>setEditFechaEpp(null)}>Cancelar</button>
+            <button className="btn btn-amber" onClick={()=>guardarFechaEpp(editFechaEpp, editFechaEppValue)}>
+              <JxIcon name="check" size={13}/> Guardar fecha
+            </button>
+          </div>
+        </Modal>
+      )}
+
       {detalleOpen && (
         <Modal title={`Detalle · ${detalleOpen.fecha}`} icon="check" onClose={()=>setDetalleOpen(null)}>
           <div style={{ fontSize:12, marginBottom:12 }}>

@@ -155,8 +155,8 @@ const NAV = [
 ];
 
 function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle', onReconnectRealtime }) {
-  const appMode = window.__useAppMode ? window.__useAppMode() : { mode: 'edicion', isPrueba: false, isEdicion: true, isProduccion: false, isImpersonating: false, roleOverride: null, clearRoleOverride: ()=>{} };
-  const { mode, isPrueba, isEdicion, isProduccion, isImpersonating, roleOverride, clearRoleOverride } = appMode;
+  const appMode = window.__useAppMode ? window.__useAppMode() : { mode: 'edicion', isPrueba: false, isEdicion: true, isProduccion: false, isImpersonating: false, roleOverride: null, clearRoleOverride: ()=>{}, superAdmin: false, setSuperAdmin: ()=>{}, canSuperAdmin: false };
+  const { mode, isPrueba, isEdicion, isProduccion, isImpersonating, roleOverride, clearRoleOverride, superAdmin, setSuperAdmin, canSuperAdmin } = appMode;
   const [hovered, setHovered] = useState(null);
   const isMobile = useIsMobile();
   const pwa = usePwaInstall();
@@ -446,6 +446,33 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
 
           {/* Indicador de estado realtime */}
           <RealtimeStatusBadge status={realtimeStatus} onReconnect={onReconnectRealtime} />
+
+          {/* Super Admin — toggle de edición de fechas históricas. Solo admin real. */}
+          {canSuperAdmin && (
+            <button
+              onClick={() => {
+                if (superAdmin) { setSuperAdmin(false); return; }
+                if (confirm(
+                  '⚡ ACTIVAR SUPER ADMIN\n\n' +
+                  'Vas a poder editar FECHAS de movimientos (materiales, herramientas, EPP) ' +
+                  'y la fecha de registro de los insumos.\n\n' +
+                  'Usalo solo para cargar registros de días pasados al arrancar la obra. ' +
+                  'Cada cambio queda en auditoría.\n\n' +
+                  '¿Activar?'
+                )) setSuperAdmin(true);
+              }}
+              style={{
+                marginTop: 6, width: '100%', cursor: 'pointer',
+                padding: '6px 8px', borderRadius: 6, fontSize: 10.5, fontWeight: 700, letterSpacing: 0.4,
+                background: superAdmin ? 'rgba(231,76,60,0.18)' : 'rgba(255,255,255,0.04)',
+                color: superAdmin ? '#E74C3C' : '#7A8A9A',
+                border: superAdmin ? '1px solid rgba(231,76,60,0.5)' : '1px dashed rgba(255,255,255,0.15)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+              }}
+              title={superAdmin ? 'Super Admin ACTIVO — click para desactivar' : 'Activar edición de fechas históricas'}>
+              {superAdmin ? '⚡ SUPER ADMIN — fechas editables' : '🔓 Activar Super Admin'}
+            </button>
+          )}
           {/* Banner impersonación: visible cuando admin está viendo como otro rol */}
           {isImpersonating && (
             <div style={{
