@@ -633,13 +633,24 @@ export function detectS10Type(rows) {
   //    traer variantes tipo "Fecha Inicio", "Duración (días)", "Fecha fin".
   for (let i = 0; i < Math.min(10, rows.length); i++) {
     const r = (rows[i] || []).map(c => String(c ?? '').trim().toLowerCase());
-    if (r[0] && (r[0] === 'numeracion' || r[0].startsWith('numer'))) {
-      const hasInicio   = r.some(c => c.includes('inicio'));
-      const hasFin      = r.some(c => c.includes('fin'));          // 'fecha fin', 'fin', etc
-      const hasDuracion = r.some(c => c.includes('duracion') || c.includes('duración'));
-      if (hasInicio || hasFin || hasDuracion) {
-        return 'gantt';
-      }
+    // Header de Gantt: o bien empieza con "Numeracion"/"Código Jerárquico"
+    // en col 0, o simplemente contiene columnas de cronograma (inicio/fin/
+    // duración/predecesora). Esto es muy característico del Gantt y NO del
+    // presupuesto (que tiene precio/total). Lo chequeamos ANTES del
+    // presupuesto para que un Gantt con códigos jerárquicos no se confunda.
+    const c0 = r[0] || '';
+    const esHeaderCodigo = c0 === 'numeracion' || c0.startsWith('numer')
+      || c0.includes('jerarqu') || c0 === 'item' || c0 === 'id';
+    const señalesCrono = [
+      r.some(c => c.includes('inicio')),
+      r.some(c => c.includes('fin')),
+      r.some(c => c.includes('duracion') || c.includes('duración')),
+      r.some(c => c.includes('predecesor')),
+    ].filter(Boolean).length;
+    // Header con código + al menos 1 señal de cronograma, O 2+ señales de
+    // cronograma en cualquier fila (sin importar col 0).
+    if ((esHeaderCodigo && señalesCrono >= 1) || señalesCrono >= 2) {
+      return 'gantt';
     }
   }
 
@@ -654,6 +665,20 @@ export function detectS10Type(rows) {
       }
     }
   }
+
+  // 4) Presupuesto de obra consolidado: listado de partidas (capítulos +
+  //    hojas) con código jerárquico + descripción + total, SIN bloques
+  //    "Partida:". Es el export "Presupuesto" de Delphin/S10 (el que trae
+  //    también la tabla de costos al final). Como último recurso, si
+  //    parsePresupuestoObra encuentra ≥5 filas con código jerárquico, lo
+  //    tratamos como presupuesto.
+  try {
+    const pp = parsePresupuestoObra(rows);
+    // Requerir ≥5 partidas Y que varias tengan TOTAL en dinero (col 14) —
+    // así un Gantt (códigos pero sin columna de costo) no cae acá.
+    const conTotal = pp.filter(p => Number(p.total) > 0).length;
+    if (pp.length >= 5 && conTotal >= 3) return 'presupuesto';
+  } catch { /* noop */ }
 
   return 'desconocido';
 }
@@ -692,6 +717,55 @@ export async function parseS10File(file) {
         partidas: partidas.length,
         insumos: partidas.reduce((s, p) => s + p.insumos.length, 0),
         errores: errores.length,
+      },
+    };
+  }
+
+  // Presupuesto consolidado (capítulos + hojas + tabla de costos). Lo
+  // mapeamos al shape del pipeline APU para reusar todo el flujo de
+  // comparación + insert. Clave: los CAPÍTULOS (códigos que son prefijo
+  // de otra fila) van con costo_total 0 — el árbol agrega el presupuesto
+  // desde las hojas, ponerles costo propio lo duplicaría.
+  if (tipo === 'presupuesto') {
+    const items = parsePresupuestoObra(rows);
+    const norm = (c) => String(c ?? '').trim().split('.').map(s => {
+      const n = parseInt(s, 10); return Number.isNaN(n) ? s : String(n);
+    }).join('.');
+    const codigosNorm = items.map(it => norm(it.codigo));
+    const data = items
+      // Filtramos la raíz del proyecto y los hitos (código "0"/"0.x") — no
+      // son partidas reales.
+      .map((it, i) => {
+        const nrm = codigosNorm[i];
+        const esRaiz = nrm === '0' || nrm.startsWith('0.');
+        const prefijo = nrm + '.';
+        const esCapitulo = !esRaiz && codigosNorm.some((c, j) => j !== i && c.startsWith(prefijo));
+        const segs = String(it.codigo).split('.').filter(Boolean);
+        return {
+          _esRaiz: esRaiz,
+          codigo: it.codigo,
+          descripcion: it.descripcion,
+          unidad: it.unidad || (esCapitulo ? null : 'und'),
+          cantidad: esCapitulo ? 0 : (Number(it.cantidad) || 0),
+          // costo_total es el campo que consume el pipeline APU.
+          costo_total: esCapitulo ? 0 : (Number(it.total) || 0),
+          nivel: it.nivel ?? segs.length,
+          parent_codigo: segs.length > 1 ? segs.slice(0, -1).join('.') : null,
+          insumos: [],
+          esCapitulo,
+        };
+      })
+      .filter(p => !p._esRaiz && p.descripcion);
+    return {
+      tipo: 'apu',                 // reusar pipeline APU
+      source_format: 'presupuesto',
+      data,
+      tablaCostos,
+      summary: {
+        partidas: data.length,
+        insumos: 0,
+        errores: 0,
+        capitulos: data.filter(p => p.esCapitulo).length,
       },
     };
   }
