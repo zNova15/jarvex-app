@@ -673,12 +673,21 @@ export async function parseS10File(file) {
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: true });
   const tipo = detectS10Type(rows);
 
+  // Tabla de costos al final del Excel (CD, %s, otros gastos, total).
+  // Muchos presupuestos Delphin/S10 traen las partidas + esta tabla en el
+  // MISMO archivo. La adjuntamos siempre que esté presente, para que el
+  // import del APU pueda fijar los márgenes reales del proyecto sin depender
+  // de defaults ni de un segundo archivo.
+  let tablaCostos = null;
+  try { tablaCostos = parseTablaCostos(rows); } catch { tablaCostos = null; }
+
   if (tipo === 'apu') {
     const { partidas, errores } = parseAPU(rows);
     const enriched = enrichJerarquia(partidas);
     return {
       tipo,
       data: enriched,
+      tablaCostos,
       summary: {
         partidas: partidas.length,
         insumos: partidas.reduce((s, p) => s + p.insumos.length, 0),

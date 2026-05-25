@@ -216,6 +216,34 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
   // Si hay alguna, se muestra el modal de revisión antes de cerrar el flujo.
   const [gantSugerencias, setGantSugerencias] = uSI(null);
 
+  // Márgenes/otros gastos leídos desde el Excel del presupuesto (tabla de
+  // costos al final). Si el usuario carga ese archivo en el panel de costeo,
+  // se usa en vez de los % de la obra. null = usar los de la obra/defaults.
+  const [costosArchivo, setCostosArchivo] = uSI(null);
+  const [costosArchivoErr, setCostosArchivoErr] = uSI(null);
+
+  // Lee la tabla de costos de un Excel de presupuesto y la guarda en estado.
+  const cargarMargenesDesdeExcel = async (file) => {
+    if (!file) return;
+    setCostosArchivoErr(null);
+    try {
+      const XLSX = await import('xlsx');
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array' });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: true });
+      const tabla = window.__apu.parseTablaCostos(rows);
+      if (!tabla) {
+        setCostosArchivoErr('No encontré la tabla de costos en ese Excel (Costo Directo … Costo Total del Proyecto al final). ¿Es el presupuesto completo?');
+        return;
+      }
+      setCostosArchivo(tabla);
+      showToast?.('✓ Márgenes leídos del Excel del presupuesto', 'green');
+    } catch (e) {
+      setCostosArchivoErr('Error leyendo el Excel: ' + (e.message || e));
+    }
+  };
+
   // Selector de obra destino — el usuario puede cambiarlo antes de importar
   const [obrasDisponibles, setObrasDisponibles] = uSI([]);
   const [obraId, setObraId] = uSI(defaultObraId || null);
@@ -1161,24 +1189,32 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
           const cd = (parsed.data || []).reduce((s, p) => s + (Number(p.costo_total) || 0), 0);
           if (cd > 0) {
             const obraFresca = await window.__db.obras.get(obraDestino.id) || obraDestino;
-            const calc = calcularPresupuesto({
-              costoDirecto: cd,
-              utilidadPct: Number(obraFresca.utilidad_pct ?? 15),
-              gastosPct: Number(obraFresca.gastos_generales_pct ?? 15),
-              igvPct: Number(obraFresca.igv_pct ?? 18),
-              otrosGastos: Array.isArray(obraFresca.otros_gastos) ? obraFresca.otros_gastos : [],
-            });
+            // Márgenes: si el usuario cargó el Excel del presupuesto, usamos
+            // ESOS (y los persistimos en la obra). Si no, los % de la obra.
+            const uPct = Number(costosArchivo?.utilidadPct ?? obraFresca.utilidad_pct ?? 15);
+            const gPct = Number(costosArchivo?.gastosPct ?? obraFresca.gastos_generales_pct ?? 15);
+            const iPct = Number(costosArchivo?.igvPct ?? obraFresca.igv_pct ?? 18);
+            const otros = costosArchivo?.otrosGastos ?? (Array.isArray(obraFresca.otros_gastos) ? obraFresca.otros_gastos : []);
+            const calc = calcularPresupuesto({ costoDirecto: cd, utilidadPct: uPct, gastosPct: gPct, igvPct: iPct, otrosGastos: otros });
             const now = new Date().toISOString();
-            await window.__db.obras.update(obraDestino.id, {
+            const patch = {
               costo_directo: cd,
               presupuesto_total: calc.costoTotal,
               updated_at: now, updated_by: userId,
               version: (obraFresca.version ?? 0) + 1,
               sync_status: obraFresca.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
-            });
+            };
+            // Si vino del Excel, persistir también los %s y otros gastos.
+            if (costosArchivo) {
+              patch.utilidad_pct = uPct;
+              patch.gastos_generales_pct = gPct;
+              patch.igv_pct = iPct;
+              patch.otros_gastos = otros;
+            }
+            await window.__db.obras.update(obraDestino.id, patch);
             try { await window.__logAudit?.({ action:'update', table:'obras', recordId: obraDestino.id,
-              newData:{ costo_directo: cd, presupuesto_total: calc.costoTotal },
-              reason:`Auto-costeo APU: CD ${cd.toFixed(2)} → Costo Total ${calc.costoTotal.toFixed(2)}` }); } catch {}
+              newData:{ costo_directo: cd, presupuesto_total: calc.costoTotal, fuente_margenes: costosArchivo ? 'excel' : 'obra' },
+              reason:`Auto-costeo APU: CD ${cd.toFixed(2)} → Costo Total ${calc.costoTotal.toFixed(2)}${costosArchivo ? ' (márgenes del Excel)' : ''}` }); } catch {}
             try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'obras' } })); } catch {}
           }
         } catch (e) {
@@ -1577,15 +1613,14 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                   {(() => {
                     // CD = suma de los totales de las partidas del APU.
                     const cd = (parsed?.data || []).reduce((s, p) => s + (Number(p.costo_total) || 0), 0);
-                    const uPct = Number(obraDestino?.utilidad_pct ?? 15);
-                    const gPct = Number(obraDestino?.gastos_generales_pct ?? 15);
-                    const iPct = Number(obraDestino?.igv_pct ?? 18);
-                    const otros = Array.isArray(obraDestino?.otros_gastos) ? obraDestino.otros_gastos : [];
+                    // Fuente de los márgenes: 1º el Excel cargado (costosArchivo),
+                    // 2º los % de la obra, 3º defaults. Los "otros gastos" igual.
+                    const desdeArchivo = !!costosArchivo;
+                    const uPct = Number(costosArchivo?.utilidadPct ?? obraDestino?.utilidad_pct ?? 15);
+                    const gPct = Number(costosArchivo?.gastosPct ?? obraDestino?.gastos_generales_pct ?? 15);
+                    const iPct = Number(costosArchivo?.igvPct ?? obraDestino?.igv_pct ?? 18);
+                    const otros = costosArchivo?.otrosGastos ?? (Array.isArray(obraDestino?.otros_gastos) ? obraDestino.otros_gastos : []);
                     const calc = calcularPresupuesto({ costoDirecto: cd, utilidadPct: uPct, gastosPct: gPct, igvPct: iPct, otrosGastos: otros });
-                    // Comparación contra el CD previo de la obra (si ya tenía uno).
-                    const cdPrevio = Number(obraDestino?.costo_directo || 0);
-                    const ratio = cdPrevio > 0 ? cd / cdPrevio : null;
-                    const incoherente = cdPrevio > 0 && (ratio > 1.05 || ratio < 0.5);
                     const Row = ({ label, val, bold, color }) => (
                       <div style={{ display:'flex', justifyContent:'space-between', padding:'3px 0', fontSize:12.5, fontWeight: bold?700:400, color: color||'var(--ts)' }}>
                         <span>{label}</span><span>{fmtSoles(val)}</span>
@@ -1593,12 +1628,32 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                     );
                     return (
                       <div className="card card-p" style={{ marginBottom:14, borderLeft:'3px solid var(--green)' }}>
-                        <div style={{ fontSize:13, fontWeight:700, color:'var(--tp)', marginBottom:4, display:'flex', alignItems:'center', gap:6 }}>
-                          <JxIcon name="dollar" size={13} color="var(--green)"/> Costeo del presupuesto
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:12, flexWrap:'wrap', marginBottom:4 }}>
+                          <div style={{ fontSize:13, fontWeight:700, color:'var(--tp)', display:'flex', alignItems:'center', gap:6 }}>
+                            <JxIcon name="dollar" size={13} color="var(--green)"/> Costeo del presupuesto
+                          </div>
+                          <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                            <label className="btn btn-ghost btn-sm" style={{ cursor:'pointer' }} title="Subí el Excel del presupuesto completo (con la tabla de costos al final) para tomar los márgenes reales del proyecto">
+                              <JxIcon name="upload" size={12}/> {desdeArchivo ? 'Cambiar Excel de márgenes' : 'Cargar márgenes desde Excel'}
+                              <input type="file" accept=".xlsx,.xls" style={{ display:'none' }}
+                                onChange={e=>{ const f=e.target.files?.[0]; if(f) cargarMargenesDesdeExcel(f); e.target.value=''; }}/>
+                            </label>
+                            {desdeArchivo && (
+                              <button className="btn btn-ghost btn-sm" style={{ color:'var(--tm)' }} onClick={()=>setCostosArchivo(null)} title="Volver a los % de la obra">✕</button>
+                            )}
+                          </div>
                         </div>
                         <div style={{ fontSize:11.5, color:'var(--tm)', marginBottom:10, lineHeight:1.5 }}>
-                          El <strong>Costo Directo</strong> es la suma de las {parsed?.summary?.partidas || (parsed?.data||[]).length} partidas. Con los porcentajes de la obra ({uPct}% util · {gPct}% gastos · {iPct}% IGV) se calcula el Costo Total. Al confirmar la importación se guarda en la obra.
+                          El <strong>Costo Directo</strong> es la suma de las {parsed?.summary?.partidas || (parsed?.data||[]).length} partidas.{' '}
+                          {desdeArchivo
+                            ? <>Márgenes y otros gastos <strong style={{ color:'var(--green)' }}>leídos del Excel del presupuesto</strong> ({uPct}% util · {gPct}% gastos · {iPct}% IGV · {otros.length} otros gastos). Al confirmar se guardan en la obra.</>
+                            : <>Con los porcentajes de la obra ({uPct}% util · {gPct}% gastos · {iPct}% IGV) se calcula el Costo Total. <strong>¿Los márgenes de este proyecto son distintos?</strong> Cargá el Excel del presupuesto arriba.</>}
                         </div>
+                        {costosArchivoErr && (
+                          <div style={{ background:'rgba(231,76,60,0.10)', border:'1px solid rgba(231,76,60,0.35)', borderRadius:6, padding:'8px 12px', marginBottom:10, fontSize:11.5, color:'var(--red)' }}>
+                            ⚠ {costosArchivoErr}
+                          </div>
+                        )}
                         <div style={{ background:'rgba(0,0,0,0.18)', borderRadius:8, padding:'10px 14px' }}>
                           <Row label="Costo Directo (suma de partidas)" val={calc.costoDirecto} bold color="var(--amber)"/>
                           <Row label={`Utilidades (${uPct}%)`} val={calc.utilidades}/>
@@ -1606,22 +1661,14 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                           <Row label="Sub Total" val={calc.subTotal} bold/>
                           <Row label={`IGV (${iPct}%)`} val={calc.igv}/>
                           <Row label="Valor Referencial" val={calc.valorReferencial} bold color="var(--blue)"/>
-                          {calc.totalOtrosGastos > 0 && <Row label="Otros gastos" val={calc.totalOtrosGastos}/>}
+                          {otros.length > 0 && otros.map((g, i) => (
+                            <Row key={i} label={`· ${g.concepto || 'Otro gasto'}`} val={g.monto}/>
+                          ))}
+                          {calc.totalOtrosGastos > 0 && <Row label="Total otros gastos" val={calc.totalOtrosGastos} color="var(--tm)"/>}
                           <div style={{ borderTop:'1px solid var(--border)', marginTop:4, paddingTop:3 }}>
                             <Row label="Costo Total del Proyecto" val={calc.costoTotal} bold color="var(--green)"/>
                           </div>
                         </div>
-                        {calc.totalOtrosGastos === 0 && (
-                          <div style={{ fontSize:11, color:'var(--tm)', marginTop:8 }}>
-                            💡 ¿Faltan supervisión, gestión, control concurrente? Configurá los "Otros gastos" en Obras → editar la obra, o importá el Excel del presupuesto desde "Comparativo con presupuesto" en Partidas.
-                          </div>
-                        )}
-                        {incoherente && (
-                          <div style={{ background:'rgba(231,76,60,0.10)', border:'1px solid rgba(231,76,60,0.35)', borderRadius:8, padding:'10px 12px', marginTop:10, fontSize:12, color:'var(--ts)' }}>
-                            <strong style={{ color:'var(--red)' }}>⚠ Cambio grande de Costo Directo.</strong>{' '}
-                            El CD de este APU ({fmtSoles(cd)}) es el <strong>{(ratio*100).toFixed(0)}%</strong> del CD que ya tenía la obra ({fmtSoles(cdPrevio)}). Si es una re-importación intencional, ignorá este aviso.
-                          </div>
-                        )}
                       </div>
                     );
                   })()}
