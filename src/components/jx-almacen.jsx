@@ -3110,6 +3110,9 @@ function HerramientasPage({ showToast }) {
 
   const enUso = herramientas?.filter(h => h.ubicacion_actual === 'en_uso').length ?? 0;
   const disponibles = herramientas?.filter(h => h.disponible).length ?? 0;
+  // Herramientas de lote (stock por cantidad, como Materiales) — vienen de la
+  // migración histórica o se marcan manualmente. Conviven con las serializadas.
+  const porCantidad = herramientas?.filter(h => h.maneja_cantidad).length ?? 0;
 
   // ── Categorización por IA (Claude vía /api/categorize) ──
   const [iaModalH, setIaModalH] = uS(null); // null | 'running' | 'preview'
@@ -3580,7 +3583,7 @@ function HerramientasPage({ showToast }) {
       <div className="pg-hd frow-sb">
         <div>
           <div className="pg-title">Herramientas</div>
-          <div className="pg-sub">{herramientas.length} herramientas · {enUso} en uso · {disponibles} disponibles</div>
+          <div className="pg-sub">{herramientas.length} herramientas · {enUso} en uso · {disponibles} disponibles{porCantidad > 0 ? ` · ${porCantidad} por cantidad` : ''}</div>
         </div>
         <div style={{display:'flex',gap:8, flexWrap:'wrap'}}>
           {isAdmin && (
@@ -3611,7 +3614,7 @@ function HerramientasPage({ showToast }) {
           <table className="tbl">
             <thead><tr>
               <th>Herramienta</th><th>Tipo</th><th>Marca / Modelo</th><th>Estado</th>
-              <th>Ubicación</th><th>Disponible</th><th>Últ. Movimiento</th><th>Sync</th>
+              <th>Ubicación</th><th>Disponible / Stock</th><th>Últ. Movimiento</th><th>Sync</th>
               <th style={{textAlign:'center'}}>Acciones</th>
             </tr></thead>
             <tbody>
@@ -3646,7 +3649,14 @@ function HerramientasPage({ showToast }) {
                     <td className="col-m">{[h.marca, h.modelo].filter(Boolean).join(' ') || '—'}</td>
                     <td><span className={`badge ${e.class}`}>{e.label}</span></td>
                     <td><span className={`badge ${u.class}`}>{u.label}</span></td>
-                    <td>{h.disponible ? <span className="badge b-green">Sí</span> : <span className="badge b-gray">No</span>}</td>
+                    <td>{h.maneja_cantidad
+                      ? (() => {
+                          const st = Number(h.stock_actual ?? 0);
+                          const cls = (h.alerta === 'agotado' || h.alerta === 'critico') ? 'b-red'
+                            : (h.alerta === 'reponer' || h.alerta === 'cerca') ? 'b-amber' : 'b-green';
+                          return <span className={`badge ${cls}`} title={`Stock por cantidad${h.stock_minimo ? ` · mín ${h.stock_minimo}` : ''}`}>{st.toLocaleString('es-PE')} {h.unidad || 'und'}</span>;
+                        })()
+                      : (h.disponible ? <span className="badge b-green">Sí</span> : <span className="badge b-gray">No</span>)}</td>
                     <td className="col-m">{h.fecha_ultimo_movimiento || '—'}{resp ? ` · ${resp.nombres}` : ''}</td>
                     <td>{h.sync_status && h.sync_status !== 'synced'
                       ? <span className="badge b-amber">⏱</span>
@@ -3707,7 +3717,7 @@ function HerramientasPage({ showToast }) {
             }}>
               <option value="">Selecciona...</option>
               {herramientas
-                .filter(h => form.accion === 'salida' ? h.disponible : !h.disponible)
+                .filter(h => !h.maneja_cantidad && (form.accion === 'salida' ? h.disponible : !h.disponible))
                 .map(h => <option key={h.id} value={h.id}>{h.nombre_herramienta} · {h.marca || ''} {h.modelo || ''}</option>)}
             </select>
           </div>

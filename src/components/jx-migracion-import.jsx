@@ -103,6 +103,10 @@ function matchProveedor(termino, proveedores) {
   return null;
 }
 
+// Estado de herramienta del Excel ("Nuevo"/"Bueno") → valor válido del CHECK.
+const ESTADOS_HERR = ['nuevo', 'bueno', 'regular', 'malo', 'mantenimiento', 'inhabilitado', 'baja'];
+const normEstadoHerr = (v) => { const n = normTxt(v); return ESTADOS_HERR.find(e => e === n) || 'bueno'; };
+
 // ════════════════════════════════════════════════════════════════════
 export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }) {
   const [step, setStep] = uS(0);
@@ -117,8 +121,8 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
   const fmtMeta = formato ? FORMATOS[formato] : null;
   const esInsumos = formato === 'insumos_totales';
   const esMov = formato && formato.startsWith('mov_');
-  const movHabilitado = formato === 'mov_materiales' || formato === 'mov_epp';
-  const movProximaFase = formato === 'mov_herramientas' || formato === 'mov_maquinaria';
+  const movHabilitado = formato === 'mov_materiales' || formato === 'mov_epp' || formato === 'mov_herramientas';
+  const movProximaFase = formato === 'mov_maquinaria';
 
   // Preview derivado del parse
   const preview = uM(() => {
@@ -176,7 +180,8 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
             rec = await addRecord('herramientas', {
               obra_id: obraId, nombre_herramienta: it.nombre, tipo_herramienta: 'manual',
               estado_actual: 'bueno', ubicacion_actual: 'almacen', disponible: true,
-              observaciones: it.unidad ? `Unidad: ${it.unidad}` : null,
+              maneja_cantidad: true, unidad: it.unidad || 'Und',
+              stock_inicial: 0, stock_actual: 0, stock_minimo: 0, alerta: 'ok',
             }, userId, it.fechaCreacion);
           } else if (it.tipo === 'epps') {
             rec = await addRecord('epps', {
@@ -351,6 +356,81 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       detalle: `${okCount} movimientos EPP cargados · ${eppIdx.map.size - prevEpp} EPP nuevos · ${errores} con error` };
   };
 
+  const runMovHerramientas = async () => {
+    const movs = [...preview.movs].sort((a, b) => (a.fecha || '') < (b.fecha || '') ? -1 : 1);
+    const herrIdx = await cargarIndice('herramientas', obraId, 'nombre_herramienta');
+    const ubicIdx = await cargarIndice('ubicaciones_obra', obraId, 'nombre');
+    const personal = (await window.__db.personal.where('obra_id').equals(obraId).filter(p => !p.deleted_at).toArray());
+    const proveedores = (await window.__db.proveedores.filter(p => !p.deleted_at).toArray());
+
+    const resolverHerr = async (nombre, unidad, estado) => {
+      const k = normTxt(nombre);
+      if (herrIdx.map.has(k)) return herrIdx.map.get(k);
+      const rec = await addRecord('herramientas', {
+        obra_id: obraId, nombre_herramienta: String(nombre).trim(), tipo_herramienta: 'manual',
+        estado_actual: normEstadoHerr(estado), ubicacion_actual: 'almacen', disponible: true,
+        maneja_cantidad: true, unidad: unidad || 'Und',
+        stock_inicial: 0, stock_actual: 0, stock_minimo: 0, alerta: 'ok',
+      }, userId);
+      herrIdx.map.set(k, rec); return rec;
+    };
+    const resolverUbic = async (nombre) => {
+      const k = normTxt(nombre);
+      if (!k) return null;
+      if (ubicIdx.map.has(k)) return ubicIdx.map.get(k).id;
+      const rec = await addRecord('ubicaciones_obra', {
+        obra_id: obraId, nombre: String(nombre).trim(), descripcion: 'Creada en migración histórica',
+        orden: ubicIdx.map.size + 1, activo: true,
+      }, userId);
+      ubicIdx.map.set(k, rec); return rec.id;
+    };
+
+    let okCount = 0, errores = 0;
+    const errorList = [];
+    const afectados = new Set();
+    const prevHerr = herrIdx.map.size;
+    setProgress({ current: 0, total: movs.length });
+
+    for (let i = 0; i < movs.length; i++) {
+      const m = movs[i];
+      try {
+        if (!m.tipo) throw new Error('Tipo de movimiento no reconocido');
+        if (!(m.cantidad > 0)) throw new Error('Cantidad inválida');
+        const herr = await resolverHerr(m.nombreItem, m.unidad, m.estado);
+        afectados.add(herr.id);
+        const obsExtra = [];
+        let proveedor_id = null, responsable_id = null, frente = null, ubicId = null;
+
+        if (m.tipo === 'entrada') {
+          if (m.origen) { proveedor_id = matchProveedor(m.origen, proveedores); if (!proveedor_id) obsExtra.push(`Proveedor: ${m.origen}`); }
+          if (m.lugar) ubicId = await resolverUbic(m.lugar);
+        } else {
+          const quien = m.responsable || m.origen;
+          if (quien) { responsable_id = matchPersonal(quien, personal); if (!responsable_id) obsExtra.push(`Responsable: ${quien}`); }
+          if (m.lugar) frente = m.lugar;
+        }
+        const obs = ['Migración histórica', ...obsExtra].join(' · ');
+        // accion = tipo_movimiento (valores válidos del CHECK legacy).
+        await addRecord('movimientos_herramientas', {
+          obra_id: obraId, herramienta_id: herr.id, fecha: m.fecha || new Date().toISOString().slice(0, 10),
+          hora: null, accion: m.tipo, tipo_movimiento: m.tipo, cantidad: m.cantidad,
+          responsable_id, proveedor_id, frente_zona: frente, observaciones: obs,
+        }, userId);
+
+        if (ubicId) {
+          try { await aplicarDelta({ obraId, itemTipo: 'herramienta', itemId: herr.id, ubicacionId: ubicId, delta: m.tipo === 'entrada' ? m.cantidad : -m.cantidad, userId }); } catch {}
+        }
+        okCount++;
+      } catch (e) { errores++; errorList.push({ row: m.idx, error: e.message || String(e) }); }
+      if (i % 20 === 0) { setProgress({ current: i + 1, total: movs.length }); await new Promise(r => setTimeout(r, 0)); }
+    }
+
+    await recalcularStockHerramientas(obraId, afectados, userId);
+    fireChanged('herramientas', 'movimientos_herramientas', 'ubicaciones_obra', 'stock_ubicaciones');
+    return { ok: okCount, errors: errores, errorList,
+      detalle: `${okCount} movimientos de herramientas cargados · ${herrIdx.map.size - prevHerr} herramientas nuevas · ${errores} con error` };
+  };
+
   const ejecutar = async () => {
     if (!obraId) { showToast('No hay obra activa', 'red'); return; }
     if (!superAdmin) { showToast('Activá Super Admin para migrar históricos', 'red'); return; }
@@ -360,6 +440,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       if (esInsumos) res = await runInsumos();
       else if (formato === 'mov_materiales') res = await runMovMateriales();
       else if (formato === 'mov_epp') res = await runMovEpp();
+      else if (formato === 'mov_herramientas') res = await runMovHerramientas();
       else { setImp(false); return; }
       setResult(res);
       setStep(3);
@@ -586,6 +667,34 @@ async function recalcularStockMateriales(obraId, idsAfectados, userId) {
       updated_at: now, updated_by: userId,
       version: (mat.version ?? 0) + 1,
       sync_status: mat.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+    });
+  }
+}
+
+async function recalcularStockHerramientas(obraId, idsAfectados, userId) {
+  if (!idsAfectados?.size) return;
+  const movs = await window.__db.movimientos_herramientas.where('obra_id').equals(obraId).toArray();
+  const sums = new Map();
+  for (const mv of movs) {
+    if (mv.reverses_id || mv.reversed_by_id || mv.deleted_at) continue;
+    if (!idsAfectados.has(mv.herramienta_id)) continue;
+    // Solo movimientos de cantidad (la migración los crea con cantidad+tipo).
+    if (mv.cantidad == null) continue;
+    const c = Number(mv.cantidad || 0);
+    const tipo = mv.tipo_movimiento || mv.accion;
+    if (tipo === 'entrada') sums.set(mv.herramienta_id, (sums.get(mv.herramienta_id) || 0) + c);
+    else if (tipo === 'salida') sums.set(mv.herramienta_id, (sums.get(mv.herramienta_id) || 0) - c);
+  }
+  const now = new Date().toISOString();
+  for (const id of idsAfectados) {
+    const h = await window.__db.herramientas.get(id);
+    if (!h) continue;
+    const stock = Math.max(0, sums.get(id) || 0);
+    await window.__db.herramientas.update(id, {
+      stock_actual: stock, alerta: calcAlerta(stock, Number(h.stock_minimo || 0)),
+      updated_at: now, updated_by: userId,
+      version: (h.version ?? 0) + 1,
+      sync_status: h.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
     });
   }
 }
