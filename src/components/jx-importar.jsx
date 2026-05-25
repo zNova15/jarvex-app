@@ -2,6 +2,7 @@ import React from "react";
 import { detectarEPP, esProbablementeEPP, epppTipo } from "../lib/epp-utils.js";
 import { normalizeCodigo, fuzzyScore } from "../lib/match-helpers.js";
 import { calcularPresupuesto, fmtSoles } from "../lib/presupuesto-obra.js";
+import { aplicarNombresDesdePartidas } from "../lib/partida-nombres.js";
 const { useState: uSI, useMemo: uMI, useEffect: uEI, useRef: uRI, useCallback: uCI } = React;
 
 // ── Obra activa helper (poll Dexie) ──────────────────────────
@@ -237,8 +238,16 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
         setCostosArchivoErr('No encontré la tabla de costos en ese Excel (Costo Directo … Costo Total del Proyecto al final). ¿Es el presupuesto completo?');
         return;
       }
-      setCostosArchivo(tabla);
-      showToast?.('✓ Márgenes leídos del Excel del presupuesto', 'green');
+      // Además de los márgenes, parseamos las partidas del MISMO Excel —
+      // así al confirmar el import también corregimos los nombres de los
+      // capítulos (que vienen genéricos "Capítulo NN" del consolidado).
+      let partidasExcel = [];
+      try {
+        partidasExcel = (window.__apu.parsePresupuestoObra(rows) || [])
+          .map(p => ({ codigo: p.codigo, descripcion: p.descripcion }));
+      } catch {}
+      setCostosArchivo({ ...tabla, partidasExcel });
+      showToast?.(`✓ Márgenes leídos${partidasExcel.length ? ` · ${partidasExcel.length} nombres de partida detectados` : ''}`, 'green');
     } catch (e) {
       setCostosArchivoErr('Error leyendo el Excel: ' + (e.message || e));
     }
@@ -1220,6 +1229,25 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
         } catch (e) {
           console.warn('[auto-costeo APU]', e?.message);
         }
+
+        // Si el Excel de márgenes trae los nombres de partida, corregimos
+        // los capítulos genéricos ("Capítulo NN") con sus nombres reales y
+        // creamos las filas de capítulo que falten.
+        if (costosArchivo?.partidasExcel?.length) {
+          try {
+            const r = await aplicarNombresDesdePartidas({
+              obraId: obraDestino.id,
+              partidasExcel: costosArchivo.partidasExcel,
+              userId,
+            });
+            if (r.actualizadas || r.creadas) {
+              try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'partidas' } })); } catch {}
+              showToast(`✓ Nombres de partidas: ${r.actualizadas} actualizados · ${r.creadas} capítulos creados`, 'green');
+            }
+          } catch (e) {
+            console.warn('[aplicar nombres desde Excel]', e?.message);
+          }
+        }
       }
 
       // Guardar como versión de presupuesto si el usuario lo pidió (solo APU)
@@ -1646,8 +1674,8 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                         <div style={{ fontSize:11.5, color:'var(--tm)', marginBottom:10, lineHeight:1.5 }}>
                           El <strong>Costo Directo</strong> es la suma de las {parsed?.summary?.partidas || (parsed?.data||[]).length} partidas.{' '}
                           {desdeArchivo
-                            ? <>Márgenes y otros gastos <strong style={{ color:'var(--green)' }}>leídos del Excel del presupuesto</strong> ({uPct}% util · {gPct}% gastos · {iPct}% IGV · {otros.length} otros gastos). Al confirmar se guardan en la obra.</>
-                            : <>Con los porcentajes de la obra ({uPct}% util · {gPct}% gastos · {iPct}% IGV) se calcula el Costo Total. <strong>¿Los márgenes de este proyecto son distintos?</strong> Cargá el Excel del presupuesto arriba.</>}
+                            ? <>Márgenes y otros gastos <strong style={{ color:'var(--green)' }}>leídos del Excel del presupuesto</strong> ({uPct}% util · {gPct}% gastos · {iPct}% IGV · {otros.length} otros gastos). Al confirmar se guardan en la obra{costosArchivo?.partidasExcel?.length ? <> y se corrigen los nombres de los capítulos ("Capítulo NN" → nombre real) con las {costosArchivo.partidasExcel.length} partidas del Excel</> : null}.</>
+                            : <>Con los porcentajes de la obra ({uPct}% util · {gPct}% gastos · {iPct}% IGV) se calcula el Costo Total. <strong>¿Los márgenes de este proyecto son distintos?</strong> Cargá el Excel del presupuesto arriba — también corrige los nombres de los capítulos.</>}
                         </div>
                         {costosArchivoErr && (
                           <div style={{ background:'rgba(231,76,60,0.10)', border:'1px solid rgba(231,76,60,0.35)', borderRadius:6, padding:'8px 12px', marginBottom:10, fontSize:11.5, color:'var(--red)' }}>

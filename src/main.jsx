@@ -56,7 +56,7 @@ import { parseExcelFile, downloadTemplate, MODULES as IMPORT_MODULES } from './l
 // los pondrá en su propio chunk porque sus deps (jsPDF, xlsx) ya son lazy
 // desde reports.js, así que no engordan el bundle inicial.
 import * as contabilidadPdfs from './lib/contabilidad-pdfs';
-import { parseAPUFile, parseS10File, enrichJerarquia, buildArbol, parseAPU, parseInsumosList, parseGantt, detectS10Type, excelDateToISO, parseTablaCostos } from './lib/apuParser';
+import { parseAPUFile, parseS10File, enrichJerarquia, buildArbol, parseAPU, parseInsumosList, parseGantt, detectS10Type, excelDateToISO, parseTablaCostos, parsePresupuestoObra } from './lib/apuParser';
 import { parsePresupuestoPDF, extractTextFromPDF, parsePresupuestoLines, partidasToImportRows } from './lib/pdfBudgetParser';
 import * as catalogos from './lib/catalogos';
 import { seedDemoData, clearDemoData, countDemoRecords } from './lib/demoSeeder';
@@ -126,7 +126,7 @@ window.__excel = { parseExcelFile, downloadTemplate, MODULES: IMPORT_MODULES };
 window.__apu = {
   parseAPUFile, parseS10File, enrichJerarquia, buildArbol,
   parseAPU, parseInsumosList, parseGantt, detectS10Type, excelDateToISO,
-  parseTablaCostos,
+  parseTablaCostos, parsePresupuestoObra,
 };
 window.__pdfBudget = {
   parsePresupuestoPDF, extractTextFromPDF, parsePresupuestoLines, partidasToImportRows,
