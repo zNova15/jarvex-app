@@ -3,6 +3,7 @@ import { detectarEPP, esProbablementeEPP, epppTipo } from "../lib/epp-utils.js";
 import { normalizeCodigo, fuzzyScore } from "../lib/match-helpers.js";
 import { calcularPresupuesto, fmtSoles } from "../lib/presupuesto-obra.js";
 import { aplicarNombresDesdePartidas } from "../lib/partida-nombres.js";
+import { MigracionFlow } from "./jx-migracion-import.jsx";
 const { useState: uSI, useMemo: uMI, useEffect: uEI, useRef: uRI, useCallback: uCI } = React;
 
 // ── Obra activa helper (poll Dexie) ──────────────────────────
@@ -38,6 +39,7 @@ function useObraActiva() {
 const SOURCES = [
   { id:'excel',     label:'Excel / CSV',     icon:'chart',  color:'#1E7145', desc:'Importa desde hojas de cálculo .xlsx, .xls o archivos .csv', ext:'.xlsx,.xls,.csv', badge:'Universal',  enabled:true  },
   { id:'s10',       label:'Delphin',         icon:'dollar', color:'#0070C0', desc:'Importa presupuestos, partidas e insumos directamente desde Delphin', ext:'.xlsx, .xls', badge:'Construcción Perú', enabled:true  },
+  { id:'migracion', label:'Migración histórica', icon:'calendar', color:'#9B59B6', desc:'Carga masiva de movimientos en papel/Excel previos a JARVEX, respetando fechas reales', ext:'.xlsx, .xls', badge:'Super Admin', enabled:true, requiresSuperAdmin:true },
 ];
 
 // ── MODULE DESTINATIONS (real ones for Excel) ────────────────
@@ -2376,6 +2378,8 @@ function ImportarPage({ showToast }) {
   const isAdmin = myRol === 'admin';
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Importar', 'w') ?? false);
   const obraId = useObraActiva();
+  const appMode = window.__useAppMode?.() || {};
+  const superAdmin = !!appMode.superAdmin;
 
   const [tab, setTab] = uSI('importar');
   const [step, setStep] = uSI(0);
@@ -2617,7 +2621,19 @@ function ImportarPage({ showToast }) {
         </div>
       )}
 
-      {tab === 'importar' && !(srcId === 's10' && step >= 1) && (
+      {tab === 'importar' && srcId === 'migracion' && step >= 1 && (
+        <div style={{ maxWidth:880, margin:'0 auto' }}>
+          <MigracionFlow
+            obraId={obraId}
+            userId={userId}
+            showToast={showToast}
+            onReset={reset}
+            superAdmin={superAdmin}
+          />
+        </div>
+      )}
+
+      {tab === 'importar' && !(srcId === 's10' && step >= 1) && !(srcId === 'migracion' && step >= 1) && (
         <div style={{ maxWidth:880, margin:'0 auto' }}>
           <Steps current={step} steps={STEPS} onJump={(i)=>setStep(i)}/>
 
@@ -2627,25 +2643,32 @@ function ImportarPage({ showToast }) {
               <div style={{ fontSize:15, fontWeight:700, color:'var(--tp)', marginBottom:4 }}>¿Desde dónde quieres importar?</div>
               <div style={{ fontSize:12.5, color:'var(--tm)', marginBottom:18 }}>Excel/CSV (universal) o Delphin (presupuesto + insumos + cronograma).</div>
               <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-                {SOURCES.map(s => (
-                  <button key={s.id} onClick={()=>s.enabled && setSrc(s.id)} disabled={!s.enabled}
-                    style={{ background:srcId===s.id?'rgba(242,183,5,0.1)':'var(--bg-c)', border:`2px solid ${srcId===s.id?'var(--amber)':'var(--border)'}`, borderRadius:10, padding:'18px 20px', cursor:s.enabled?'pointer':'not-allowed', textAlign:'left', transition:'all .18s', display:'flex', gap:14, alignItems:'flex-start', opacity:s.enabled?1:.5 }}>
+                {SOURCES.map(s => {
+                  const effEnabled = s.requiresSuperAdmin ? (s.enabled && superAdmin) : s.enabled;
+                  const lockedBySA = s.requiresSuperAdmin && !superAdmin;
+                  return (
+                  <button key={s.id} onClick={()=>effEnabled && setSrc(s.id)} disabled={!effEnabled}
+                    title={lockedBySA ? 'Activá Super Admin para usar la migración histórica' : undefined}
+                    style={{ background:srcId===s.id?'rgba(242,183,5,0.1)':'var(--bg-c)', border:`2px solid ${srcId===s.id?'var(--amber)':'var(--border)'}`, borderRadius:10, padding:'18px 20px', cursor:effEnabled?'pointer':'not-allowed', textAlign:'left', transition:'all .18s', display:'flex', gap:14, alignItems:'flex-start', opacity:effEnabled?1:.5 }}>
                     <div style={{ width:44, height:44, borderRadius:10, background:`${s.color}20`, border:`1px solid ${s.color}40`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
                       <JxIcon name={s.icon} size={20} color={s.color}/>
                     </div>
                     <div style={{ flex:1 }}>
                       <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
                         <span style={{ fontSize:14, fontWeight:700, color:srcId===s.id?'var(--amber)':'var(--tp)' }}>{s.label}</span>
-                        {s.enabled
-                          ? <span className="badge b-amber" style={{ fontSize:9.5 }}>{s.badge}</span>
-                          : <span className="badge b-gray" style={{ fontSize:9.5 }}>Próximamente</span>}
+                        {!s.enabled
+                          ? <span className="badge b-gray" style={{ fontSize:9.5 }}>Próximamente</span>
+                          : lockedBySA
+                            ? <span className="badge b-gray" style={{ fontSize:9.5 }}>🔒 {s.badge}</span>
+                            : <span className="badge b-amber" style={{ fontSize:9.5 }}>{s.badge}</span>}
                       </div>
                       <div style={{ fontSize:12, color:'var(--tm)', lineHeight:1.5 }}>{s.desc}</div>
-                      <div style={{ fontSize:11, color:'var(--tm)', marginTop:5 }}>Formatos: <span style={{ color:'var(--ts)' }}>{s.ext}</span></div>
+                      <div style={{ fontSize:11, color:'var(--tm)', marginTop:5 }}>{lockedBySA ? <span style={{ color:'var(--amber)' }}>Activá Super Admin para usarlo</span> : <>Formatos: <span style={{ color:'var(--ts)' }}>{s.ext}</span></>}</div>
                     </div>
                     {srcId===s.id && <JxIcon name="checkCircle" size={18} color="var(--amber)"/>}
                   </button>
-                ))}
+                  );
+                })}
               </div>
               <div style={{ display:'flex', justifyContent:'flex-end', marginTop:20 }}>
                 <button className="btn btn-amber" disabled={!srcId} onClick={()=>setStep(1)} style={{ opacity:srcId?1:.4 }}>
