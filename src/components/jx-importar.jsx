@@ -1486,6 +1486,19 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                     <strong style={{ color:'var(--amber)' }}> Reemplaza</strong> las partidas existentes de la obra.
                   </div>
                 </div>
+                <div className="card card-p" style={{ borderLeft:'3px solid var(--green)' }}>
+                  <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)', marginBottom:4, display:'flex', alignItems:'center', gap:6 }}>
+                    <JxIcon name="dollar" size={13} color="var(--green)"/> Presupuesto de obra (consolidado con costos)
+                  </div>
+                  <div style={{ fontSize:11.5, color:'var(--tm)', lineHeight:1.55 }}>
+                    El export "Presupuesto de Obra" de Delphin: listado de partidas (capítulos + específicas) con su <strong>tabla de costos al final</strong> (Costo Directo → utilidades, gastos, IGV, otros gastos → Costo Total). Al importarlo:
+                    <ul style={{ margin:'5px 0 0 16px', padding:0 }}>
+                      <li>Crea/nombra los <strong>capítulos no específicos</strong> ("OBRAS PROVISIONALES", etc.) — los códigos deben coincidir con tus partidas.</li>
+                      <li>Aplica los <strong>márgenes y otros gastos</strong> reales del proyecto a la obra (sin usar los 15/15/18 por defecto).</li>
+                    </ul>
+                    <span style={{ color:'var(--amber)' }}>Importá primero el APU / consolidado de partidas</span> para que los códigos coincidan.
+                  </div>
+                </div>
                 <div className="card card-p" style={{ borderLeft:'3px solid var(--blue)' }}>
                   <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)', marginBottom:4, display:'flex', alignItems:'center', gap:6 }}>
                     <JxIcon name="package" size={13} color="var(--blue)"/> Lista de Insumos
