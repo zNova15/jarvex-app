@@ -280,7 +280,7 @@ function ActivosPesadosPage({ showToast }) {
       <div className="pg-hd frow-sb">
         <div>
           <div className="pg-title">Activos Pesados / Maquinaria</div>
-          <div className="pg-sub">{(activos||[]).length} equipos · {(activos||[]).filter(a=>a.estado==='operativo').length} operativos</div>
+          <div className="pg-sub">{(activos||[]).length} equipos · {(activos||[]).filter(a=>a.estado==='operativo').length} operativos{(activos||[]).filter(a=>a.maneja_cantidad).length>0?` · ${(activos||[]).filter(a=>a.maneja_cantidad).length} por cantidad`:''}</div>
         </div>
         {canWrite ? (
           <button className="btn btn-amber btn-sm" onClick={openNuevo}>
@@ -301,7 +301,7 @@ function ActivosPesadosPage({ showToast }) {
           <div style={{ overflowX:'auto' }}>
             <table className="tbl">
               <thead><tr>
-                <th>Código</th><th>Equipo</th><th>Tipo</th><th>Placa</th>
+                <th>Código</th><th>Equipo</th><th>Tipo</th><th>Placa / Stock</th>
                 <th>Estado</th><th>Obra actual</th><th>Ubicación</th>
                 <th style={{ textAlign:'right' }}>HM acum.</th>
                 <th style={{ textAlign:'right' }}>Combust.</th>
@@ -317,7 +317,14 @@ function ActivosPesadosPage({ showToast }) {
                       <td className="col-m" style={{ fontFamily:'monospace' }}>{a.codigo || '—'}</td>
                       <td className="col-p"><strong>{a.nombre}</strong>{a.marca && <div style={{ fontSize:10, color:'var(--tm)' }}>{a.marca} {a.modelo} {a.anio}</div>}</td>
                       <td><span className="tag">{AP_TYPES.find(t=>t.v===a.tipo)?.l || a.tipo}</span></td>
-                      <td className="col-m">{a.placa || '—'}</td>
+                      <td className="col-m">{a.maneja_cantidad
+                        ? (() => {
+                            const st = Number(a.stock_actual ?? 0);
+                            const cls = (a.alerta === 'agotado' || a.alerta === 'critico') ? 'b-red'
+                              : (a.alerta === 'reponer' || a.alerta === 'cerca') ? 'b-amber' : 'b-green';
+                            return <span className={`badge ${cls}`} title="Stock por cantidad">{st.toLocaleString('es-PE')} {a.unidad || 'und'}</span>;
+                          })()
+                        : (a.placa || '—')}</td>
                       <td><span className={`badge ${a.estado==='operativo'?'b-green':a.estado==='mantenimiento'?'b-amber':a.estado==='reparacion'?'b-red':'b-gray'}`}>{a.estado}</span></td>
                       <td>{lookupOb(a.obra_actual_id)?.nombre_obra || '—'}</td>
                       <td style={{ fontSize:11 }}>

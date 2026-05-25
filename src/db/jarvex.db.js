@@ -15,6 +15,14 @@ export const db = new Dexie('JarvexDB');
 //   firma_url del trabajador (registro físico exigido por SUNAFIL).
 //   `epp_entregas` se mantiene para no romper datos viejos pero los flujos
 //   nuevos usan movimientos_epp.
+// Versión 17: Maquinaria por cantidad — movimientos_maquinaria (espejo de
+// movimientos_materiales) para equipos menores que se mueven por cantidad.
+// stock_ubicaciones ahora también admite item_tipo 'maquinaria' (el índice
+// no cambia; el CHECK vive en el server, migración 052).
+db.version(17).stores({
+  movimientos_maquinaria: 'id, obra_id, activo_id, fecha, sync_status, idempotency_key',
+});
+
 // Versión 16: Stock por ubicación (desglose) + traspasos entre almacenes.
 // Tabla genérica para material/herramienta/epp. Patrón incremental: Dexie
 // mergea esta tabla con el schema de v15 (las demás tablas se heredan).

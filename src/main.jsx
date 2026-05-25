@@ -29,7 +29,7 @@ import { useObraActiva, getObraActivaIdSync, setObraActivaId } from './hooks/use
 import {
   useObras, usePersonal, useMateriales, useHerramientas,
   useUbicacionesObra,
-  useMovimientosMateriales, useMovimientosHerramientas,
+  useMovimientosMateriales, useMovimientosHerramientas, useMovimientosMaquinaria,
   useAsistencia, usePartidas, useAvanceObra, useIncidencias,
   useEvidencias, useConflicts,
   usePresupuestosVersiones, usePartidasVersionadas,
@@ -90,7 +90,7 @@ window.__setObraActivaId = setObraActivaId;
 window.__hooks = {
   useObras, usePersonal, useMateriales, useHerramientas,
   useUbicacionesObra,
-  useMovimientosMateriales, useMovimientosHerramientas,
+  useMovimientosMateriales, useMovimientosHerramientas, useMovimientosMaquinaria,
   useAsistencia, usePartidas, useAvanceObra, useIncidencias,
   useEvidencias, useConflicts,
   usePresupuestosVersiones, usePartidasVersionadas,

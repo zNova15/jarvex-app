@@ -37,6 +37,7 @@ const TRANSACTIONAL_TABLES = [
   'cuentas_bancarias', 'movimientos_bancarios', 'cronograma_pagos',
   // Activos pesados
   'activos_pesados', 'horas_maquina', 'consumos_combustible', 'mantenimientos_maquinaria',
+  'movimientos_maquinaria',
   // SSOMA
   'charlas_seguridad', 'charla_asistentes', 'iperc',
   'epp_entregas', 'inspecciones_seguridad', 'capacitaciones',
@@ -121,6 +122,7 @@ const MASTER_TABLES = [
   // EPPs (separados de materiales)
   { tabla: 'epps',                      query: () => supabase.from('epps').select('*').is('deleted_at', null) },
   { tabla: 'movimientos_epp',           query: () => supabase.from('movimientos_epp').select('*') },
+  { tabla: 'movimientos_maquinaria',    query: () => supabase.from('movimientos_maquinaria').select('*') },
   { tabla: 'stock_ubicaciones',         query: () => supabase.from('stock_ubicaciones').select('*').is('deleted_at', null) },
   { tabla: 'profiles',               query: () => supabase.from('profiles').select('*') },
 ];
@@ -384,6 +386,7 @@ const TABLA_TO_MODULO = {
   movimientos_materiales: 'Mov. Materiales',
   movimientos_herramientas: 'Mov. Herramientas',
   movimientos_epp: 'EPP',
+  movimientos_maquinaria: 'Mov. Maquinaria',
   asistencia: 'Asistencia',
   avance_obra: 'Avance',
   incidencias: 'Incidencias',
@@ -451,6 +454,7 @@ const FK_DEPS = {
   movimientos_materiales:    [{ campo: 'material_id', tabla: 'materiales' }],
   movimientos_herramientas:  [{ campo: 'herramienta_id', tabla: 'herramientas' }],
   movimientos_epp:           [{ campo: 'epp_id', tabla: 'epps' }],
+  movimientos_maquinaria:    [{ campo: 'activo_id', tabla: 'activos_pesados' }],
   asistencia:                [{ campo: 'personal_id', tabla: 'personal' }],
   recepcion_items:           [{ campo: 'recepcion_id', tabla: 'recepciones' }],
   oc_items:                  [{ campo: 'oc_id', tabla: 'ordenes_compra' }],

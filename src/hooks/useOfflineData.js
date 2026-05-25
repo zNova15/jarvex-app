@@ -206,6 +206,12 @@ export function useMovimientosHerramientas(obra_id) {
   , [obra_id]);
 }
 
+export function useMovimientosMaquinaria(obra_id) {
+  return useOfflineData('movimientos_maquinaria', q =>
+    obra_id ? q.where('obra_id').equals(obra_id).toArray() : q.toArray()
+  , [obra_id]);
+}
+
 export function useAsistencia(obra_id) {
   return useOfflineData('asistencia', q =>
     obra_id ? q.where('obra_id').equals(obra_id).toArray() : q.toArray()
