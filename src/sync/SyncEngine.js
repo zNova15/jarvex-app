@@ -57,6 +57,8 @@ const TRANSACTIONAL_TABLES = [
   // EPPs (catálogo + movimientos con firma) — separados de materiales
   'epps',
   'movimientos_epp',
+  // Stock por ubicación (desglose material/herramienta/epp × ubicación)
+  'stock_ubicaciones',
 ];
 
 // Tablas maestras que se descargan del servidor en cada sync.
@@ -119,6 +121,7 @@ const MASTER_TABLES = [
   // EPPs (separados de materiales)
   { tabla: 'epps',                      query: () => supabase.from('epps').select('*').is('deleted_at', null) },
   { tabla: 'movimientos_epp',           query: () => supabase.from('movimientos_epp').select('*') },
+  { tabla: 'stock_ubicaciones',         query: () => supabase.from('stock_ubicaciones').select('*').is('deleted_at', null) },
   { tabla: 'profiles',               query: () => supabase.from('profiles').select('*') },
 ];
 
@@ -453,6 +456,9 @@ const FK_DEPS = {
   oc_items:                  [{ campo: 'oc_id', tabla: 'ordenes_compra' }],
   cotizacion_items:          [{ campo: 'cotizacion_id', tabla: 'cotizaciones' }],
   requisicion_items:         [{ campo: 'requisicion_id', tabla: 'requisiciones' }],
+  // El desglose de stock referencia la ubicación (FK real en server). El
+  // item_id es polimórfico (sin FK), así que solo esperamos a la ubicación.
+  stock_ubicaciones:         [{ campo: 'ubicacion_id', tabla: 'ubicaciones_obra' }],
 };
 
 // True si todas las FKs del record están sincronizadas (o no hay FKs).

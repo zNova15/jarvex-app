@@ -26,6 +26,8 @@ const LIVE_SYNC_TABLES = [
   // Transaccionales
   'movimientos_materiales', 'movimientos_herramientas', 'asistencia',
   'avance_obra', 'incidencias', 'evidencias',
+  // Stock por ubicación (desglose) — el traspaso entre almacenes debe verse al instante
+  'stock_ubicaciones',
 ];
 
 // Backoff para reintentar suscripción si el canal cae

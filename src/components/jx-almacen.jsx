@@ -6,6 +6,7 @@ import { usePagination } from "../hooks/usePagination.js";
 import { useBusy } from "../hooks/useBusy.js";
 import { TablePagination } from "./jx-pagination.jsx";
 import { SearchableSelect } from "./jx-searchable-select.jsx";
+import { getDesgloseBulk, aplicarDelta, traspasar } from "../lib/stock-ubicaciones.js";
 const { useState: uS, useMemo: uM, useEffect: uE, useCallback: uCB } = React;
 
 // ─── DATA ───────────────────────────────────────────────
@@ -225,6 +226,26 @@ function MaterialesPage({ showToast }) {
     return map;
   }, [ubicaciones]);
 
+  // Desglose de stock por ubicación: Map(material_id → Map(ubic_id → cant)).
+  // Se recarga cuando cambian materiales o llega un cambio en stock_ubicaciones.
+  const [desgloseUbic, setDesgloseUbic] = uS(() => new Map());
+  const cargarDesglose = uCB(async () => {
+    try {
+      const ids = (materiales || []).map(m => m.id);
+      const m = await getDesgloseBulk('material', ids);
+      setDesgloseUbic(m);
+    } catch {}
+  }, [materiales]);
+  uE(() => {
+    cargarDesglose();
+    const onCh = (e) => { const t = e?.detail?.tabla || e?.detail?.table; if (!t || t === 'stock_ubicaciones') cargarDesglose(); };
+    window.addEventListener('jx_data_changed', onCh);
+    return () => window.removeEventListener('jx_data_changed', onCh);
+  }, [cargarDesglose]);
+
+  // Modal de traspaso entre ubicaciones
+  const [traspasoOpen, setTraspasoOpen] = uS(false);
+
   // Proveedores desde Dexie directamente
   const [provs, setProvs] = uS([]);
   uE(() => { window.__db.proveedores.toArray().then(setProvs); }, [obraId]);
@@ -442,6 +463,47 @@ function MaterialesPage({ showToast }) {
       modo: syncMode,
     });
     setModal('sync');
+  };
+
+  // ── Traspaso entre ubicaciones ──────────────────────────────────
+  // Mueve stock de una ubicación a otra. El total del material no cambia.
+  // Registra 2 movimientos (salida + entrada) marcados como traspaso para
+  // que quede el rastro en el historial.
+  const ejecutarTraspaso = async ({ material_id, origenId, destinoId, cantidad }) => {
+    const mat = materiales.find(m => m.id === material_id);
+    if (!mat) { showToast('Material no encontrado', 'red'); return false; }
+    const userId = auth?.profile?.id || null;
+    const now = new Date().toISOString();
+    const cant = Number(cantidad) || 0;
+    try {
+      await traspasar({ obraId, itemTipo: 'material', itemId: material_id, origenId, destinoId, cantidad: cant, userId });
+      const uO = ubicacionesById.get(origenId)?.nombre || 'origen';
+      const uD = ubicacionesById.get(destinoId)?.nombre || 'destino';
+      const obsTraspaso = `Traspaso ${uO} → ${uD}`;
+      // 2 movimientos para trazabilidad (no cambian el stock total — por eso
+      // NO tocamos materiales.stock_actual acá).
+      const key = `traspaso-${crypto.randomUUID ? crypto.randomUUID() : Date.now()}`;
+      await movHook.create({
+        obra_id: obraId, material_id, fecha: now.slice(0,10), hora: now.slice(11,16),
+        tipo_movimiento: 'salida', cantidad: cant, unidad: mat.unidad,
+        observaciones: obsTraspaso, partida_id: null,
+        idempotency_key: `${key}_out`,
+      });
+      await movHook.create({
+        obra_id: obraId, material_id, fecha: now.slice(0,10), hora: now.slice(11,16),
+        tipo_movimiento: 'entrada', cantidad: cant, unidad: mat.unidad,
+        observaciones: obsTraspaso, partida_id: null,
+        idempotency_key: `${key}_in`,
+      });
+      try { await window.__logAudit?.({ action:'update', table:'stock_ubicaciones', recordId: material_id,
+        newData:{ origen: origenId, destino: destinoId, cantidad: cant }, reason: obsTraspaso }); } catch {}
+      showToast(`✓ Traspaso: ${cant} ${mat.unidad} de ${mat.nombre_material} (${uO} → ${uD})`, 'green');
+      cargarDesglose();
+      return true;
+    } catch (e) {
+      showToast('Error en traspaso: ' + (e.message || e), 'red');
+      return false;
+    }
   };
 
   // ── Recalcular stocks desde movimientos ─────────────────────────
@@ -1420,9 +1482,22 @@ function MaterialesPage({ showToast }) {
         });
         try { await window.__logAudit?.({ action:'insert', table:'movimientos_materiales', recordId:movCreated?.id, newData:movCreated, reason:`${tipo} en LOTE de ${cantNum} ${material.unidad} de ${material.nombre_material}` }); } catch {}
 
-        // INGRESO con ubicación: si el material no tenía ubicación asignada
-        // o el almacenero eligió una distinta, actualizamos el material para
-        // que después se sepa dónde está físicamente.
+        // Stock por ubicación (desglose). INGRESO suma a la ubicación
+        // elegida; SALIDA resta de la ubicación elegida. Si no se eligió
+        // ubicación, cae a la ubicación principal del material.
+        const ubicMov = it.ubicacion_id || material.ubicacion_id || null;
+        if (ubicMov) {
+          try {
+            await aplicarDelta({
+              obraId, itemTipo: 'material', itemId: it.material_id,
+              ubicacionId: ubicMov,
+              delta: tipo === 'ingreso' ? cantNum : -cantNum,
+              userId: auth?.profile?.id || null,
+            });
+          } catch (e) { console.warn('[stock-ubic lote]', e?.message); }
+        }
+        // INGRESO: si el material no tenía ubicación principal, fijarla a la
+        // primera donde ingresó (para que el desglose y los reportes sepan).
         if (tipo === 'ingreso' && it.ubicacion_id && it.ubicacion_id !== material.ubicacion_id) {
           try {
             await window.__db.materiales.update(it.material_id, {
@@ -1677,6 +1752,7 @@ function MaterialesPage({ showToast }) {
           )}
           {canWriteMov && <button className="btn btn-ghost btn-sm" onClick={()=>openModal('salida')}><JxIcon name="arrowOut" size={13}/>Registrar Salida</button>}
           {canWriteMov && <button className="btn btn-ghost btn-sm" onClick={()=>openModal('ingreso')}><JxIcon name="arrowIn" size={13}/>Registrar Ingreso</button>}
+          {canWriteMov && ubicacionesActivas.length >= 2 && <button className="btn btn-ghost btn-sm" onClick={()=>setTraspasoOpen(true)} title="Mover stock entre almacenes/ubicaciones"><JxIcon name="refresh" size={13}/>Traspaso</button>}
           {canWrite ? (
             <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setModal('nuevo');}}><JxIcon name="plus" size={13}/>Nuevo Material</button>
           ) : (
@@ -1752,14 +1828,34 @@ function MaterialesPage({ showToast }) {
                     </td>
                     <td><span className="tag">{m.categoria || '—'}</span></td>
                     <td style={{ fontSize:11 }}>
-                      {m.ubicacion_id
-                        ? (() => {
-                            const u = ubicacionesById.get(m.ubicacion_id);
-                            return u
-                              ? <span style={{ color: u.activo === false ? 'var(--tm)' : 'var(--tp)' }}>{u.nombre}{u.activo === false ? ' (inactiva)' : ''}</span>
-                              : <span style={{ color:'var(--tm)' }}>—</span>;
-                          })()
-                        : <span style={{ color:'var(--tm)' }}>—</span>}
+                      {(() => {
+                        const dg = desgloseUbic.get(m.id);
+                        const entradas = dg ? Array.from(dg.entries()).filter(([,c]) => Number(c) > 0) : [];
+                        // Si hay desglose por ubicación, mostrarlo (Alm1: 5 · Alm2: 3).
+                        if (entradas.length) {
+                          return (
+                            <div style={{ display:'flex', flexDirection:'column', gap:2 }}>
+                              {entradas.map(([uid, cant]) => {
+                                const u = ubicacionesById.get(uid);
+                                return (
+                                  <span key={uid} style={{ fontSize:10.5 }}>
+                                    <span style={{ color:'var(--tp)' }}>{u?.nombre || '—'}</span>
+                                    <span style={{ color:'var(--amber)', fontWeight:700, marginLeft:4 }}>{Number(cant).toLocaleString('es-PE')}</span>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          );
+                        }
+                        // Sin desglose → ubicación principal (legacy)
+                        if (m.ubicacion_id) {
+                          const u = ubicacionesById.get(m.ubicacion_id);
+                          return u
+                            ? <span style={{ color: u.activo === false ? 'var(--tm)' : 'var(--tp)' }}>{u.nombre}{u.activo === false ? ' (inactiva)' : ''}</span>
+                            : <span style={{ color:'var(--tm)' }}>—</span>;
+                        }
+                        return <span style={{ color:'var(--tm)' }}>—</span>;
+                      })()}
                     </td>
                     <td className="col-m">{m.unidad}</td>
                     <td style={{textAlign:'right'}} className="col-num">
@@ -2110,6 +2206,17 @@ function MaterialesPage({ showToast }) {
           </button>
         </div>
       </Modal>}
+
+      {/* Modal Traspaso entre ubicaciones */}
+      {traspasoOpen && (
+        <TraspasoModal
+          materiales={(materiales || []).filter(m => !m.deleted_at)}
+          ubicaciones={ubicacionesActivas}
+          ubicacionesById={ubicacionesById}
+          getDesgloseDe={(mid) => desgloseUbic.get(mid)}
+          onClose={()=>setTraspasoOpen(false)}
+          onConfirm={async (payload) => { const ok = await ejecutarTraspaso(payload); if (ok) setTraspasoOpen(false); }}/>
+      )}
 
       {/* Modal cerrar recepción manual — Paquete B */}
       {cerrarRecepcionFactura && (
@@ -4877,6 +4984,88 @@ function CerrarRecepcionModal({ factura, progreso, onClose, onConfirm }) {
         <button className="btn btn-ghost" onClick={onClose} disabled={saving}>Cancelar</button>
         <button className="btn btn-amber" onClick={submit} disabled={saving || observacion.trim().length < 5}>
           <JxIcon name="check" size={13}/> {saving ? 'Cerrando…' : 'Cerrar recepción'}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+// ── Modal de Traspaso entre ubicaciones ────────────────────────────
+// Elegí material → ubicación origen (muestra cuánto hay) → destino →
+// cantidad. Mueve stock entre almacenes sin cambiar el total.
+function TraspasoModal({ materiales, ubicaciones, ubicacionesById, getDesgloseDe, onClose, onConfirm }) {
+  const [materialId, setMaterialId] = uS('');
+  const [origenId, setOrigenId] = uS('');
+  const [destinoId, setDestinoId] = uS('');
+  const [cantidad, setCantidad] = uS('');
+  const [saving, setSaving] = uS(false);
+
+  const dg = materialId ? getDesgloseDe(materialId) : null;
+  // Ubicaciones donde HAY stock de este material (para el origen).
+  const origenes = dg ? Array.from(dg.entries()).filter(([,c]) => Number(c) > 0) : [];
+  const dispoOrigen = origenId && dg ? Number(dg.get(origenId) || 0) : 0;
+  const cant = Number(cantidad) || 0;
+  const valido = materialId && origenId && destinoId && origenId !== destinoId && cant > 0 && cant <= dispoOrigen;
+
+  const submit = async () => {
+    setSaving(true);
+    try { await onConfirm({ material_id: materialId, origenId, destinoId, cantidad: cant }); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <Modal title="Traspaso entre ubicaciones" icon="refresh" onClose={onClose}>
+      <div style={{ fontSize:12, color:'var(--tm)', marginBottom:12, lineHeight:1.5 }}>
+        Mové stock de un almacén a otro. Se registra como salida + entrada y el stock total del material no cambia.
+      </div>
+      <div style={{ marginBottom:10 }}>
+        <label className="flabel">Material</label>
+        <SearchableSelect
+          value={materialId}
+          onChange={v => { setMaterialId(v); setOrigenId(''); setDestinoId(''); }}
+          options={[{ value:'', label:'— Selecciona —' }, ...materiales.map(m => ({ value:m.id, label:m.nombre_material }))]}
+          placeholder="— Selecciona material —"/>
+      </div>
+      {materialId && (
+        <>
+          {origenes.length === 0 ? (
+            <div style={{ padding:'10px 12px', background:'rgba(242,183,5,0.08)', border:'1px solid rgba(242,183,5,0.3)', borderRadius:6, fontSize:12, color:'var(--ts)' }}>
+              Este material no tiene stock distribuido por ubicación todavía. Registrá un ingreso eligiendo la ubicación primero.
+            </div>
+          ) : (
+            <div className="g2">
+              <div>
+                <label className="flabel">Desde (origen)</label>
+                <select className="fi" value={origenId} onChange={e=>setOrigenId(e.target.value)}>
+                  <option value="">— Origen —</option>
+                  {origenes.map(([uid, c]) => (
+                    <option key={uid} value={uid}>{ubicacionesById.get(uid)?.nombre || '—'} · {Number(c).toLocaleString('es-PE')} disp.</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="flabel">Hacia (destino)</label>
+                <select className="fi" value={destinoId} onChange={e=>setDestinoId(e.target.value)}>
+                  <option value="">— Destino —</option>
+                  {ubicaciones.filter(u => u.id !== origenId).map(u => (
+                    <option key={u.id} value={u.id}>{u.nombre}</option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ gridColumn:'1/-1' }}>
+                <label className="flabel">Cantidad a traspasar {origenId ? `(máx ${dispoOrigen})` : ''}</label>
+                <input className="fi" type="number" min="0" step="0.01" max={dispoOrigen}
+                  value={cantidad} onChange={e=>setCantidad(e.target.value)} placeholder="0"/>
+                {cant > dispoOrigen && <div style={{ fontSize:10.5, color:'var(--red)', marginTop:3 }}>No podés traspasar más de lo disponible en el origen.</div>}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose} disabled={saving}>Cancelar</button>
+        <button className="btn btn-amber" onClick={submit} disabled={!valido || saving}>
+          <JxIcon name="refresh" size={13}/> {saving ? 'Traspasando…' : 'Confirmar traspaso'}
         </button>
       </div>
     </Modal>

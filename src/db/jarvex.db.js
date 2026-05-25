@@ -15,6 +15,13 @@ export const db = new Dexie('JarvexDB');
 //   firma_url del trabajador (registro físico exigido por SUNAFIL).
 //   `epp_entregas` se mantiene para no romper datos viejos pero los flujos
 //   nuevos usan movimientos_epp.
+// Versión 16: Stock por ubicación (desglose) + traspasos entre almacenes.
+// Tabla genérica para material/herramienta/epp. Patrón incremental: Dexie
+// mergea esta tabla con el schema de v15 (las demás tablas se heredan).
+db.version(16).stores({
+  stock_ubicaciones: 'id, obra_id, item_tipo, item_id, ubicacion_id, deleted_at, sync_status, [item_tipo+item_id]',
+});
+
 db.version(15).stores({
   obras:                    'id, estado, deleted_at, sync_status',
   personal:                 'id, obra_id, dni, estado, deleted_at, sync_status',
