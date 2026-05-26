@@ -42,6 +42,10 @@ export const FORMATOS = {
     desc: 'Entregas y reposiciones de EPP con fecha histórica.' },
   mov_maquinaria:  { id: 'mov_maquinaria', label: 'Movimientos de Maquinaria', icon: 'tool',
     desc: 'Ingresos y salidas de equipos pesados / maquinaria menor.' },
+  insumos_emergencia: { id: 'insumos_emergencia', label: 'Insumos de Emergencia (catálogo)', icon: 'package',
+    desc: 'Crea el inventario de insumos de emergencia (SSOMA). Sin stock ni movimientos.' },
+  mov_emergencia:  { id: 'mov_emergencia', label: 'Movimientos de Insumos de Emergencia', icon: 'shield',
+    desc: 'Ingresos y salidas de insumos de emergencia con fecha histórica.' },
 };
 
 /**
@@ -51,6 +55,13 @@ export const FORMATOS = {
 export function detectFormato(headers) {
   const H = (headers || []).map(normTxt);
   const tiene = (txt) => { const n = normTxt(txt); return H.some((h) => h.includes(n) || n.includes(h)); };
+
+  // Emergencia: si algún header menciona "emergencia" mandamos a su flujo
+  // (catálogo si no hay tipo de movimiento, si no movimientos). Va primero
+  // para que un archivo separado de emergencia no caiga en Insumos Totales.
+  if (H.some((h) => h.includes('emergencia'))) {
+    return tiene('tipo de movimiento') ? 'mov_emergencia' : 'insumos_emergencia';
+  }
 
   if (tiene('nombre insumo') && tiene('tipo')) return 'insumos_totales';
   if (!tiene('tipo de movimiento')) return null;
@@ -172,9 +183,27 @@ export function parseInsumosTotales(rows) {
   return out;
 }
 
+/** Formato catálogo "Insumos de Emergencia" → [{ nombre, categoria, unidad, fechaCreacion }] */
+export function parseInsumosEmergencia(rows) {
+  const out = [];
+  (rows || []).forEach((row, i) => {
+    const g = rowGetter(row);
+    const nombre = txt(g('Insumo de Emergencia', 'Nombre Insumo', 'Insumo', 'Nombre'));
+    if (!nombre) return;
+    out.push({
+      idx: i + 2,
+      nombre,
+      categoria: txt(g('Categoria', 'Categoría')),
+      unidad: txt(g('Unidad')) || 'Und',
+      fechaCreacion: parseFechaMigracion(g('Fecha de creacion', 'Fecha de creación', 'Fecha creacion', 'Fecha')),
+    });
+  });
+  return out;
+}
+
 /**
  * Parser unificado de movimientos. `formato` ∈ mov_materiales | mov_epp |
- * mov_herramientas | mov_maquinaria. Devuelve filas normalizadas con la
+ * mov_herramientas | mov_maquinaria | mov_emergencia. Devuelve filas normalizadas con la
  * semántica de origen/responsable/lugar resuelta por el caller.
  */
 export function parseMovimientos(rows, formato) {
@@ -184,6 +213,7 @@ export function parseMovimientos(rows, formato) {
     mov_epp:         ['EPP'],
     mov_herramientas:['Herramientas', 'Herramienta'],
     mov_maquinaria:  ['EPP', 'Maquinaria', 'Equipo'],
+    mov_emergencia:  ['Insumo de Emergencia', 'Insumo', 'EPP', 'Material', 'Nombre'],
   }[formato] || ['Material'];
 
   (rows || []).forEach((row, i) => {

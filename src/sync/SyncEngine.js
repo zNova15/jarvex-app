@@ -60,6 +60,10 @@ const TRANSACTIONAL_TABLES = [
   'movimientos_epp',
   // Stock por ubicación (desglose material/herramienta/epp × ubicación)
   'stock_ubicaciones',
+  // Caja chica (almacén) + Insumos de emergencia (SSOMA)
+  'caja_chica_movimientos',
+  'insumos_emergencia',
+  'movimientos_insumos_emergencia',
 ];
 
 // Tablas maestras que se descargan del servidor en cada sync.
@@ -124,6 +128,10 @@ const MASTER_TABLES = [
   { tabla: 'movimientos_epp',           query: () => supabase.from('movimientos_epp').select('*') },
   { tabla: 'movimientos_maquinaria',    query: () => supabase.from('movimientos_maquinaria').select('*') },
   { tabla: 'stock_ubicaciones',         query: () => supabase.from('stock_ubicaciones').select('*').is('deleted_at', null) },
+  // Caja chica + insumos de emergencia
+  { tabla: 'caja_chica_movimientos',         query: () => supabase.from('caja_chica_movimientos').select('*') },
+  { tabla: 'insumos_emergencia',             query: () => supabase.from('insumos_emergencia').select('*').is('deleted_at', null) },
+  { tabla: 'movimientos_insumos_emergencia', query: () => supabase.from('movimientos_insumos_emergencia').select('*') },
   { tabla: 'profiles',               query: () => supabase.from('profiles').select('*') },
 ];
 
@@ -387,6 +395,9 @@ const TABLA_TO_MODULO = {
   movimientos_herramientas: 'Mov. Herramientas',
   movimientos_epp: 'EPP',
   movimientos_maquinaria: 'Mov. Maquinaria',
+  caja_chica_movimientos: 'Caja Chica',
+  insumos_emergencia: 'Insumos Emergencia',
+  movimientos_insumos_emergencia: 'Mov. Insumos Emergencia',
   asistencia: 'Asistencia',
   avance_obra: 'Avance',
   incidencias: 'Incidencias',
@@ -455,6 +466,7 @@ const FK_DEPS = {
   movimientos_herramientas:  [{ campo: 'herramienta_id', tabla: 'herramientas' }],
   movimientos_epp:           [{ campo: 'epp_id', tabla: 'epps' }],
   movimientos_maquinaria:    [{ campo: 'activo_id', tabla: 'activos_pesados' }],
+  movimientos_insumos_emergencia: [{ campo: 'insumo_emergencia_id', tabla: 'insumos_emergencia' }],
   asistencia:                [{ campo: 'personal_id', tabla: 'personal' }],
   recepcion_items:           [{ campo: 'recepcion_id', tabla: 'recepciones' }],
   oc_items:                  [{ campo: 'oc_id', tabla: 'ordenes_compra' }],

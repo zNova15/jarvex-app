@@ -616,12 +616,12 @@ function UsuariosPage({ showToast }) {
 // (compatible con código existente); MODULE_GROUPS define cómo
 // renderizar la tabla con separadores.
 const MODULE_GROUPS = [
-  { group: 'Operaciones diarias', modules: ['Obras','Personal','Asistencia','Materiales','Mov. Materiales','Herramientas','Mov. Herramientas','Ubicaciones','Proveedores'] },
+  { group: 'Operaciones diarias', modules: ['Obras','Personal','Asistencia','Materiales','Mov. Materiales','Herramientas','Mov. Herramientas','Caja Chica','Ubicaciones','Proveedores'] },
   { group: 'Gestión de obra', modules: ['Partidas','Insumos','Versiones presupuesto','Cronograma','Avance','Comparativo','Costos','Valorizaciones','Incidencias','Evidencias','Vinculación Salidas'] },
   { group: 'Compras / Logística', modules: ['Requisiciones','Órdenes de Compra','Cotizaciones','Recepciones'] },
   { group: 'Subcontratos', modules: ['Subcontratistas','Subcontratos','Valor. Subcontrato'] },
   { group: 'Maquinaria', modules: ['Activos Pesados','Mantenimiento','Horas Máquina'] },
-  { group: 'SSOMA', modules: ['Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones'] },
+  { group: 'SSOMA', modules: ['Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones','Insumos de Emergencia'] },
   { group: 'RRHH', modules: ['Contratos Laborales','Planillas','CTS','Gratificaciones'] },
   { group: 'Contabilidad', modules: ['Empresas','Movs. Contables','Intercompany','Trazabilidad','Consolidado','Plan de Cuentas','Libro Diario','Balance General','Estado Resultados'] },
   { group: 'Tesorería', modules: ['Cuentas Bancarias','Flujo de Caja','Flujo Proyectado','Comparativo Periodos'] },
@@ -719,9 +719,10 @@ const PERM_MATRIX = {
   // o admin); x en gestión presupuestal, contabilidad, RRHH, SUNAT, ejecutivo.
   almacenero: PERM_MATRIX_MODULES.map(m => {
     if (m === 'Usuarios/Config') return 'x';
-    // Write: lo que el almacenero ejecuta directamente
+    // Write: lo que el almacenero ejecuta directamente. Caja Chica la maneja
+    // la almacenera (fondo para compras urgentes).
     if (['Materiales','Mov. Materiales','Herramientas','Mov. Herramientas',
-         'Recepciones','EPP','Requisiciones','Evidencias','Incidencias'].includes(m)) return 'w';
+         'Recepciones','EPP','Requisiciones','Evidencias','Incidencias','Caja Chica'].includes(m)) return 'w';
     // Lectura: lo que necesita consultar para hacer su trabajo
     if (['Órdenes de Compra','Cotizaciones','Proveedores','Personal','Asistencia',
          'Activos Pesados','Mantenimiento','Horas Máquina','Ubicaciones'].includes(m)) return 'r';
@@ -797,7 +798,7 @@ const PERM_MATRIX = {
   prevencionista: PERM_MATRIX_MODULES.map(m => {
     if (m === 'Usuarios/Config') return 'x';
     if (['Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones',
-         'Incidencias','Evidencias'].includes(m)) return 'w';
+         'Incidencias','Evidencias','Insumos de Emergencia'].includes(m)) return 'w';
     if (['Obras','Personal','Asistencia','Activos Pesados','Mantenimiento','Subcontratistas',
          'Subcontratos','Reportes'].includes(m)) return 'r';
     return 'x';
@@ -868,6 +869,7 @@ window.__moduleIdMap = {
   'mov-materiales': 'Mov. Materiales',
   'herramientas': 'Herramientas',
   'mov-herramientas': 'Mov. Herramientas',
+  'caja-chica': 'Caja Chica',
   'ubicaciones': 'Ubicaciones',
   'proveedores': 'Proveedores',
   // Gestión de obra
@@ -902,6 +904,7 @@ window.__moduleIdMap = {
   'epps-inventario': 'EPP',
   'inspecciones-seguridad': 'Inspecciones SSOMA',
   'capacitaciones': 'Capacitaciones',
+  'insumos-emergencia': 'Insumos de Emergencia',
   // RRHH
   'personal-contratos': 'Contratos Laborales',
   'planillas': 'Planillas',

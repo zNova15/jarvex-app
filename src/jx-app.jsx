@@ -516,6 +516,8 @@ const PAGE_REGISTRY = {
   'mov-materiales':         { chunk: 'jx-movimientos', component: 'MovMaterialesPage' },
   'mov-herramientas':       { chunk: 'jx-movimientos', component: 'MovHerramientasPage' },
   'proveedores':            { chunk: 'jx-movimientos', component: 'ProveedoresPage' },
+  // === jx-caja-chica ===
+  'caja-chica':             { chunk: 'jx-caja-chica', component: 'CajaChicaPage' },
   // === jx-ubicaciones ===
   'ubicaciones':            { chunk: 'jx-ubicaciones', component: 'UbicacionesPage' },
   // === jx-evidencias ===
@@ -560,6 +562,8 @@ const PAGE_REGISTRY = {
   // === jx-ssoma-extra ===
   'inspecciones-seguridad': { chunk: 'jx-ssoma-extra', component: 'InspeccionesSeguridadPage' },
   'capacitaciones':         { chunk: 'jx-ssoma-extra', component: 'CapacitacionesPage' },
+  // === jx-insumos-emergencia ===
+  'insumos-emergencia':     { chunk: 'jx-insumos-emergencia', component: 'InsumosEmergenciaPage' },
   // === jx-subcontratos ===
   'subcontratistas':        { chunk: 'jx-subcontratos', component: 'SubcontratistasPage' },
   'subcontratos':           { chunk: 'jx-subcontratos', component: 'SubcontratosPage' },

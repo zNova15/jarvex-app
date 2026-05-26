@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  detectFormato, parseFechaMigracion, parseInsumosTotales, parseMovimientos,
+  detectFormato, parseFechaMigracion, parseInsumosTotales, parseInsumosEmergencia, parseMovimientos,
   clasificaTipoInsumo, normalizaTipoMov, resumenMovimientos, normTxt,
 } from '../migracion-parser.js';
 
@@ -41,6 +41,24 @@ describe('detectFormato — distingue los 5 formatos por headers', () => {
   });
   it('headers desconocidos → null', () => {
     expect(detectFormato(['Col1', 'Col2'])).toBeNull();
+  });
+  it('insumos de emergencia: catálogo vs movimientos por header "emergencia"', () => {
+    expect(detectFormato(['ID', 'Insumo de Emergencia', 'Categoría', 'Unidad', 'Fecha de creacion'])).toBe('insumos_emergencia');
+    expect(detectFormato(['ID', 'Fecha de Movimiento', 'Insumo de Emergencia', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Proveedor/Responsable', 'Lugar'])).toBe('mov_emergencia');
+  });
+});
+
+describe('parseInsumosEmergencia', () => {
+  it('mapea nombre/categoría/unidad/fecha (sin clasificar por tipo)', () => {
+    const rows = [{ ID: '1', 'Insumo de Emergencia': 'Botiquín portátil', 'Categoría': 'Primeros auxilios', Unidad: 'kit', 'Fecha de creacion': '5/25/26' }];
+    const out = parseInsumosEmergencia(rows);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ nombre: 'Botiquín portátil', categoria: 'Primeros auxilios', unidad: 'kit', fechaCreacion: '2026-05-25' });
+  });
+  it('movimientos de emergencia: columna "Insumo de Emergencia" como item', () => {
+    const rows = [{ ID: '1', 'Fecha de Movimiento': '5/21/26', 'Insumo de Emergencia': 'Extintor PQS 6kg', Unidad: 'Und', Cantidad: '4', 'Tipo de Movimiento': 'Ingreso', 'Proveedor/Responsable': 'Seguridad SAC', Lugar: 'Almacen' }];
+    const p = parseMovimientos(rows, 'mov_emergencia');
+    expect(p[0]).toMatchObject({ tipo: 'entrada', nombreItem: 'Extintor PQS 6kg', cantidad: 4 });
   });
 });
 

@@ -24,7 +24,7 @@ import { calcAlerta } from "../lib/stock-utils.js";
 import { aplicarDelta } from "../lib/stock-ubicaciones.js";
 import {
   detectFormato, FORMATOS,
-  parseInsumosTotales, parseMovimientos, resumenMovimientos,
+  parseInsumosTotales, parseInsumosEmergencia, parseMovimientos, resumenMovimientos,
   normTxt,
 } from "../lib/migracion-parser.js";
 
@@ -120,8 +120,9 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
 
   const fmtMeta = formato ? FORMATOS[formato] : null;
   const esInsumos = formato === 'insumos_totales';
+  const esInsumosEmergencia = formato === 'insumos_emergencia';
   const esMov = formato && formato.startsWith('mov_');
-  const movHabilitado = formato === 'mov_materiales' || formato === 'mov_epp' || formato === 'mov_herramientas' || formato === 'mov_maquinaria';
+  const movHabilitado = formato === 'mov_materiales' || formato === 'mov_epp' || formato === 'mov_herramientas' || formato === 'mov_maquinaria' || formato === 'mov_emergencia';
 
   // Preview derivado del parse
   const preview = uM(() => {
@@ -132,9 +133,13 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       for (const it of items) porTipo[it.tipo || 'desconocido']++;
       return { tipo: 'insumos', items, porTipo, total: items.length };
     }
+    if (esInsumosEmergencia) {
+      const items = parseInsumosEmergencia(parsed.rows);
+      return { tipo: 'insumos_emergencia', items, total: items.length };
+    }
     const movs = parseMovimientos(parsed.rows, formato);
     return { tipo: 'mov', movs, resumen: resumenMovimientos(movs) };
-  }, [parsed, formato, esInsumos]);
+  }, [parsed, formato, esInsumos, esInsumosEmergencia]);
 
   const onFile = uC((f) => {
     setFile(f); setParsed(null); setParseErr(null); setFormato(null); setResult(null);
@@ -505,6 +510,86 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       detalle: `${okCount} movimientos de maquinaria cargados · ${actIdx.map.size - prevAct} equipos nuevos · ${errores} con error` };
   };
 
+  const runInsumosEmergencia = async () => {
+    const items = preview.items;
+    let creados = 0, saltados = 0, errores = 0;
+    const errorList = [];
+    const idx = (await cargarIndice('insumos_emergencia', obraId, 'nombre')).map;
+    setProgress({ current: 0, total: items.length });
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      try {
+        if (idx.has(normTxt(it.nombre))) { saltados++; }
+        else {
+          const rec = await addRecord('insumos_emergencia', {
+            obra_id: obraId, nombre: it.nombre, categoria: it.categoria || null, unidad: it.unidad || 'Und',
+            stock_inicial: 0, stock_actual: 0, stock_minimo: 0, alerta: 'ok', estado: 'activo',
+          }, userId, it.fechaCreacion);
+          idx.set(normTxt(it.nombre), rec); creados++;
+        }
+      } catch (e) { errores++; errorList.push({ row: it.idx, error: e.message || String(e) }); }
+      if (i % 20 === 0) { setProgress({ current: i + 1, total: items.length }); await new Promise(r => setTimeout(r, 0)); }
+    }
+    fireChanged('insumos_emergencia');
+    return { ok: creados, saltados, errors: errores, errorList,
+      detalle: `${creados} insumos de emergencia creados · ${saltados} ya existían · ${errores} con error` };
+  };
+
+  const runMovEmergencia = async () => {
+    const movs = [...preview.movs].sort((a, b) => (a.fecha || '') < (b.fecha || '') ? -1 : 1);
+    const insIdx = await cargarIndice('insumos_emergencia', obraId, 'nombre');
+    const personal = (await window.__db.personal.where('obra_id').equals(obraId).filter(p => !p.deleted_at).toArray());
+    const proveedores = (await window.__db.proveedores.filter(p => !p.deleted_at).toArray());
+
+    const resolverInsumo = async (nombre, unidad) => {
+      const k = normTxt(nombre);
+      if (insIdx.map.has(k)) return insIdx.map.get(k);
+      const rec = await addRecord('insumos_emergencia', {
+        obra_id: obraId, nombre: String(nombre).trim(), categoria: null, unidad: unidad || 'Und',
+        stock_inicial: 0, stock_actual: 0, stock_minimo: 0, alerta: 'ok', estado: 'activo',
+      }, userId);
+      insIdx.map.set(k, rec); return rec;
+    };
+
+    let okCount = 0, errores = 0;
+    const errorList = [];
+    const afectados = new Set();
+    const prevIns = insIdx.map.size;
+    setProgress({ current: 0, total: movs.length });
+
+    for (let i = 0; i < movs.length; i++) {
+      const m = movs[i];
+      try {
+        if (!m.tipo) throw new Error('Tipo de movimiento no reconocido');
+        if (!(m.cantidad > 0)) throw new Error('Cantidad inválida');
+        const ins = await resolverInsumo(m.nombreItem, m.unidad);
+        afectados.add(ins.id);
+        const obsExtra = [];
+        let proveedor_id = null, responsable_id = null;
+        if (m.tipo === 'entrada') {
+          if (m.origen) { proveedor_id = matchProveedor(m.origen, proveedores); if (!proveedor_id) obsExtra.push(`Proveedor: ${m.origen}`); }
+        } else {
+          const quien = m.responsable || m.origen;
+          if (quien) { responsable_id = matchPersonal(quien, personal); if (!responsable_id) obsExtra.push(`Responsable: ${quien}`); }
+        }
+        if (m.lugar) obsExtra.push(`Lugar: ${m.lugar}`);
+        const obs = ['Migración histórica', ...obsExtra].join(' · ');
+        await addRecord('movimientos_insumos_emergencia', {
+          obra_id: obraId, insumo_emergencia_id: ins.id, fecha: m.fecha || new Date().toISOString().slice(0, 10),
+          hora: null, tipo_movimiento: m.tipo, cantidad: m.cantidad, unidad: m.unidad || ins.unidad || 'Und',
+          responsable_id, proveedor_id, observaciones: obs,
+        }, userId);
+        okCount++;
+      } catch (e) { errores++; errorList.push({ row: m.idx, error: e.message || String(e) }); }
+      if (i % 20 === 0) { setProgress({ current: i + 1, total: movs.length }); await new Promise(r => setTimeout(r, 0)); }
+    }
+
+    await recalcularStockEmergencia(obraId, afectados, userId);
+    fireChanged('insumos_emergencia', 'movimientos_insumos_emergencia');
+    return { ok: okCount, errors: errores, errorList,
+      detalle: `${okCount} movimientos de emergencia cargados · ${insIdx.map.size - prevIns} insumos nuevos · ${errores} con error` };
+  };
+
   const ejecutar = async () => {
     if (!obraId) { showToast('No hay obra activa', 'red'); return; }
     if (!superAdmin) { showToast('Activá Super Admin para migrar históricos', 'red'); return; }
@@ -512,10 +597,12 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     try {
       let res;
       if (esInsumos) res = await runInsumos();
+      else if (esInsumosEmergencia) res = await runInsumosEmergencia();
       else if (formato === 'mov_materiales') res = await runMovMateriales();
       else if (formato === 'mov_epp') res = await runMovEpp();
       else if (formato === 'mov_herramientas') res = await runMovHerramientas();
       else if (formato === 'mov_maquinaria') res = await runMovMaquinaria();
+      else if (formato === 'mov_emergencia') res = await runMovEmergencia();
       else { setImp(false); return; }
       setResult(res);
       setStep(3);
@@ -622,6 +709,16 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
                 <div style={{ fontSize: 12, color: 'var(--amber)', marginTop: 10 }}>⚠️ {preview.porTipo.desconocido} fila(s) con Tipo no reconocido (no se crearán).</div>
               )}
               <div style={{ fontSize: 12, color: 'var(--tm)', marginTop: 10 }}>Se crea el catálogo sin stock ni movimientos. Los insumos que ya existan (por nombre) se saltan.</div>
+            </div>
+          )}
+
+          {preview.tipo === 'insumos_emergencia' && (
+            <div className="card card-p" style={{ marginBottom: 14 }}>
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 24, fontWeight: 800, color: '#2ECC71' }}>{preview.total}</div>
+                <div style={{ fontSize: 11, color: 'var(--tm)' }}>Insumos de emergencia</div>
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--tm)', marginTop: 10 }}>Se crean en el inventario de Seguridad → Insumos de Emergencia, sin stock ni movimientos. Los que ya existan (por nombre) se saltan.</div>
             </div>
           )}
 
@@ -788,6 +885,31 @@ async function recalcularStockMaquinaria(obraId, idsAfectados, userId) {
       updated_at: now, updated_by: userId,
       version: (a.version ?? 0) + 1,
       sync_status: a.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+    });
+  }
+}
+
+async function recalcularStockEmergencia(obraId, idsAfectados, userId) {
+  if (!idsAfectados?.size) return;
+  const movs = await window.__db.movimientos_insumos_emergencia.where('obra_id').equals(obraId).toArray();
+  const sums = new Map();
+  for (const mv of movs) {
+    if (mv.reverses_id || mv.reversed_by_id || mv.deleted_at) continue;
+    if (!idsAfectados.has(mv.insumo_emergencia_id)) continue;
+    const c = Number(mv.cantidad || 0);
+    if (mv.tipo_movimiento === 'entrada') sums.set(mv.insumo_emergencia_id, (sums.get(mv.insumo_emergencia_id) || 0) + c);
+    else if (mv.tipo_movimiento === 'salida') sums.set(mv.insumo_emergencia_id, (sums.get(mv.insumo_emergencia_id) || 0) - c);
+  }
+  const now = new Date().toISOString();
+  for (const id of idsAfectados) {
+    const ins = await window.__db.insumos_emergencia.get(id);
+    if (!ins) continue;
+    const stock = Math.max(0, sums.get(id) || 0);
+    await window.__db.insumos_emergencia.update(id, {
+      stock_actual: stock, alerta: calcAlerta(stock, Number(ins.stock_minimo || 0)),
+      updated_at: now, updated_by: userId,
+      version: (ins.version ?? 0) + 1,
+      sync_status: ins.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
     });
   }
 }

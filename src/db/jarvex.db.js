@@ -15,6 +15,16 @@ export const db = new Dexie('JarvexDB');
 //   firma_url del trabajador (registro físico exigido por SUNAFIL).
 //   `epp_entregas` se mantiene para no romper datos viejos pero los flujos
 //   nuevos usan movimientos_epp.
+// Versión 18: Caja Chica (Almacén) + Insumos de Emergencia (SSOMA).
+// caja_chica_movimientos: libro de entradas (fondo) / salidas (gastos).
+// insumos_emergencia + movimientos_insumos_emergencia: inventario propio
+// de emergencia con stock por cantidad (igual patrón que materiales).
+db.version(18).stores({
+  caja_chica_movimientos:          'id, obra_id, fecha, tipo_movimiento, sync_status, idempotency_key',
+  insumos_emergencia:              'id, obra_id, estado, alerta, deleted_at, sync_status',
+  movimientos_insumos_emergencia:  'id, obra_id, insumo_emergencia_id, fecha, sync_status, idempotency_key',
+});
+
 // Versión 17: Maquinaria por cantidad — movimientos_maquinaria (espejo de
 // movimientos_materiales) para equipos menores que se mueven por cantidad.
 // stock_ubicaciones ahora también admite item_tipo 'maquinaria' (el índice

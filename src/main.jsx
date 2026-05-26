@@ -41,6 +41,7 @@ import {
   useActivosPesados, useHorasMaquina,
   useCharlasSeguridad, useIperc, useEppEntregas, useInspeccionesSeguridad, useCapacitaciones,
   useEpps, useMovimientosEpp,
+  useCajaChica, useInsumosEmergencia, useMovInsumosEmergencia,
   useSubcontratistas, useSubcontratos, useSubcontratoValorizaciones,
   usePersonalContrato, usePlanillas, usePlanillaBoletas,
 } from './hooks/useOfflineData';
@@ -102,6 +103,7 @@ window.__hooks = {
   useActivosPesados, useHorasMaquina,
   useCharlasSeguridad, useIperc, useEppEntregas, useInspeccionesSeguridad, useCapacitaciones,
   useEpps, useMovimientosEpp,
+  useCajaChica, useInsumosEmergencia, useMovInsumosEmergencia,
   useSubcontratistas, useSubcontratos, useSubcontratoValorizaciones,
   usePersonalContrato, usePlanillas, usePlanillaBoletas,
 };
@@ -184,6 +186,8 @@ const PAGE_CHUNKS = {
   // siga funcionando sin disparar el warning de "ineffective dynamic import".
   'jx-admin':                 () => Promise.resolve(true),
   'jx-importar':              () => import('./components/jx-importar.jsx'),
+  'jx-caja-chica':            () => import('./components/jx-caja-chica.jsx'),
+  'jx-insumos-emergencia':    () => import('./components/jx-insumos-emergencia.jsx'),
   'jx-captura-magica':        () => import('./components/jx-captura-magica.jsx'),
   'jx-contabilidad':          () => import('./components/jx-contabilidad.jsx'),
   'jx-compras':               () => import('./components/jx-compras.jsx'),

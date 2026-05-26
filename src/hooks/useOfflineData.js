@@ -212,6 +212,28 @@ export function useMovimientosMaquinaria(obra_id) {
   , [obra_id]);
 }
 
+// Caja chica (almacén): libro de entradas (fondo) / salidas (gastos).
+export function useCajaChica(obra_id) {
+  return useOfflineData('caja_chica_movimientos', q =>
+    obra_id ? q.where('obra_id').equals(obra_id).toArray() : q.toArray()
+  , [obra_id]);
+}
+
+// Insumos de emergencia (SSOMA): catálogo + movimientos.
+export function useInsumosEmergencia(obra_id) {
+  return useOfflineData('insumos_emergencia', q =>
+    obra_id
+      ? q.where('obra_id').equals(obra_id).filter(i => !i.deleted_at).toArray()
+      : q.filter(i => !i.deleted_at).toArray()
+  , [obra_id]);
+}
+
+export function useMovInsumosEmergencia(obra_id) {
+  return useOfflineData('movimientos_insumos_emergencia', q =>
+    obra_id ? q.where('obra_id').equals(obra_id).toArray() : q.toArray()
+  , [obra_id]);
+}
+
 export function useAsistencia(obra_id) {
   return useOfflineData('asistencia', q =>
     obra_id ? q.where('obra_id').equals(obra_id).toArray() : q.toArray()

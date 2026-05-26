@@ -70,6 +70,7 @@ const NAV = [
   { id: 'mov-materiales', label: 'Mov. de Materiales', icon: 'arrowIn' },
   { id: 'herramientas', label: 'Herramientas', icon: 'tool' },
   { id: 'mov-herramientas', label: 'Mov. Herramientas', icon: 'arrowOut' },
+  { id: 'caja-chica', label: 'Caja Chica', icon: 'dollar' },
   { id: 'ubicaciones', label: 'Ubicaciones de Obra', icon: 'map' },
   { id: 'proveedores', label: 'Proveedores', icon: 'truck' },
   { id: 'evidencias', label: 'Evidencias', icon: 'camera' },
@@ -116,6 +117,7 @@ const NAV = [
   { id: 'epp', label: 'Entregas EPP', icon: 'check' },
   { id: 'inspecciones-seguridad', label: 'Inspecciones', icon: 'shield' },
   { id: 'capacitaciones', label: 'Capacitaciones', icon: 'users' },
+  { id: 'insumos-emergencia', label: 'Insumos de Emergencia', icon: 'package' },
 
   { section: 'RRHH' },
   { id: 'personal', label: 'Personal', icon: 'users' },
