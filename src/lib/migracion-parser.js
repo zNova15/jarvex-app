@@ -46,6 +46,8 @@ export const FORMATOS = {
     desc: 'Crea el inventario de insumos de emergencia (SSOMA). Sin stock ni movimientos.' },
   mov_emergencia:  { id: 'mov_emergencia', label: 'Movimientos de Insumos de Emergencia', icon: 'shield',
     desc: 'Ingresos y salidas de insumos de emergencia con fecha histórica.' },
+  mov_maquinaria_asignacion: { id: 'mov_maquinaria_asignacion', label: 'Asignaciones de Maquinaria (custodia)', icon: 'tool',
+    desc: 'Salidas (asignación a personal/subcontrato) y devoluciones de equipos pesados, con fecha.' },
 };
 
 /**
@@ -62,6 +64,11 @@ export function detectFormato(headers) {
   if (H.some((h) => h.includes('emergencia'))) {
     return tiene('tipo de movimiento') ? 'mov_emergencia' : 'insumos_emergencia';
   }
+
+  // Asignaciones de maquinaria: el header "Asignado a" / "Asignar a" lo
+  // distingue de los movimientos por cantidad. (Su template usa "Movimiento",
+  // no "Tipo de Movimiento", así que va antes del gate de abajo.)
+  if (H.some((h) => h.includes('asigna'))) return 'mov_maquinaria_asignacion';
 
   if (tiene('nombre insumo') && tiene('tipo')) return 'insumos_totales';
   if (!tiene('tipo de movimiento')) return null;
@@ -235,6 +242,38 @@ export function parseMovimientos(rows, formato) {
       responsable: txt(g('Resposable (Salida)', 'Responsable (Salida)', 'Responsable', 'Proveedor/Responsable', 'Proveedor/Responsible')),
       // lugar de llegada (ingreso = almacén) / frente (salida)
       lugar: txt(g('Lugar llega / Frente', 'Lugar de llegada', 'Lugar', 'Frente')),
+    });
+  });
+  return out;
+}
+
+/**
+ * Asignaciones de maquinaria (custodia). Devuelve filas normalizadas:
+ * { idx, fecha, equipo, tipo ('salida'|'entrada'), destinoTipo
+ * ('personal'|'subcontratista'|null), destinoNombre, observaciones }.
+ * Salida = asignación; Devolución/Ingreso = entrada (vuelve al pool).
+ */
+export function parseMovMaquinariaAsignacion(rows) {
+  const out = [];
+  (rows || []).forEach((row, i) => {
+    const g = rowGetter(row);
+    const equipo = txt(g('Equipo', 'Maquinaria', 'Activo', 'Nombre'));
+    if (!equipo) return;
+    const movRaw = normTxt(g('Movimiento', 'Tipo de Movimiento', 'Tipo'));
+    let tipo = null;
+    if (movRaw.startsWith('sal') || movRaw.includes('asign')) tipo = 'salida';
+    else if (movRaw.startsWith('dev') || movRaw.startsWith('ingr') || movRaw.startsWith('entr')) tipo = 'entrada';
+    const dt = normTxt(g('Tipo destino', 'Asignar a', 'Destino tipo', 'Destino'));
+    const destinoTipo = dt.includes('subcontr') ? 'subcontratista'
+      : (dt.includes('personal') || dt.includes('trabajad')) ? 'personal' : null;
+    out.push({
+      idx: i + 2,
+      fecha: parseFechaMigracion(g('Fecha', 'Fecha de Movimiento')),
+      equipo,
+      tipo,
+      destinoTipo,
+      destinoNombre: txt(g('Asignado a', 'Asignado', 'Responsable', 'Proveedor/Responsable')),
+      observaciones: txt(g('Observación', 'Observacion', 'Observaciones')),
     });
   });
   return out;

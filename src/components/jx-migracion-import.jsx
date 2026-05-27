@@ -24,9 +24,31 @@ import { calcAlerta } from "../lib/stock-utils.js";
 import { aplicarDelta } from "../lib/stock-ubicaciones.js";
 import {
   detectFormato, FORMATOS,
-  parseInsumosTotales, parseInsumosEmergencia, parseMovimientos, resumenMovimientos,
+  parseInsumosTotales, parseInsumosEmergencia, parseMovimientos, parseMovMaquinariaAsignacion, resumenMovimientos,
   normTxt,
 } from "../lib/migracion-parser.js";
+
+// Plantillas descargables por formato (headers + 1 fila de ejemplo).
+const TEMPLATES = {
+  insumos_totales:    { headers: ['ID', 'Nombre Insumo', 'Tipo', 'Unidad', 'Fecha de creacion'], sample: ['1', 'Cemento Portland Tipo I', 'Material', 'bolsa', '25/05/2026'] },
+  insumos_emergencia: { headers: ['ID', 'Insumo de Emergencia', 'Categoría', 'Unidad', 'Fecha de creacion'], sample: ['1', 'Botiquín portátil', 'Primeros auxilios', 'kit', '25/05/2026'] },
+  mov_materiales:     { headers: ['ID', 'Fecha de Movimiento', 'Material', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Proveedor/Almacen de Salida', 'Resposable (Salida)', 'Lugar llega / Frente'], sample: ['1', '21/05/2026', 'Yeso 7kg', 'Bolsa', '20', 'Ingreso', 'Ferretería X', '', 'Almacen Central'] },
+  mov_epp:            { headers: ['ID', 'Fecha de Movimiento', 'EPP', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Proveedor/Responsable', 'Lugar de llegada'], sample: ['1', '21/05/2026', 'Casco Blanco', 'Unidad', '20', 'Ingreso', '', 'Almacen Central'] },
+  mov_herramientas:   { headers: ['ID', 'Fecha de Movimiento', 'Herramientas', 'Estado', 'Cantidad', 'Tipo de Movimiento', 'Proveedor/Responsible', 'Lugar llega / Frente'], sample: ['1', '21/05/2026', 'Palas rectas', 'Nuevo', '12', 'Ingreso', 'Almacenero', 'Almacen Central'] },
+  mov_maquinaria:     { headers: ['ID', 'Fecha de Movimiento', 'Maquinaria', 'Estado', 'Cantidad', 'Tipo de Movimiento', 'Proveedor/Responsable', 'Lugar de llegada'], sample: ['1', '21/05/2026', 'Rotomartillo', 'Nuevo', '1', 'Ingreso', '', 'Almacen Central'] },
+  mov_emergencia:     { headers: ['ID', 'Fecha de Movimiento', 'Insumo de Emergencia', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Proveedor/Responsable', 'Lugar de llegada'], sample: ['1', '21/05/2026', 'Extintor PQS 6kg', 'Und', '4', 'Ingreso', 'Seguridad SAC', 'Almacen Central'] },
+  mov_maquinaria_asignacion: { headers: ['ID', 'Fecha', 'Equipo', 'Movimiento', 'Tipo destino', 'Asignado a', 'Observación'], sample: ['1', '21/05/2026', 'Excavadora CAT 320', 'Salida', 'Personal', 'Juan Pérez', 'Frente A'] },
+};
+
+async function descargarPlantilla(formato) {
+  const t = TEMPLATES[formato];
+  if (!t) return;
+  const XLSX = await import('xlsx');
+  const ws = XLSX.utils.aoa_to_sheet([t.headers, t.sample]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Plantilla');
+  XLSX.writeFile(wb, `plantilla_${formato}.xlsx`);
+}
 
 const { useState: uS, useMemo: uM, useCallback: uC } = React;
 
@@ -117,12 +139,14 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
   const [importing, setImp] = uS(false);
   const [progress, setProgress] = uS({ current: 0, total: 0 });
   const [result, setResult] = uS(null);
+  const [plantillaSel, setPlantillaSel] = uS('insumos_totales');  // formato para "Descargar plantilla"
 
   const fmtMeta = formato ? FORMATOS[formato] : null;
   const esInsumos = formato === 'insumos_totales';
   const esInsumosEmergencia = formato === 'insumos_emergencia';
   const esMov = formato && formato.startsWith('mov_');
-  const movHabilitado = formato === 'mov_materiales' || formato === 'mov_epp' || formato === 'mov_herramientas' || formato === 'mov_maquinaria' || formato === 'mov_emergencia';
+  const esAsignacion = formato === 'mov_maquinaria_asignacion';
+  const movHabilitado = formato === 'mov_materiales' || formato === 'mov_epp' || formato === 'mov_herramientas' || formato === 'mov_maquinaria' || formato === 'mov_emergencia' || esAsignacion;
 
   // Preview derivado del parse
   const preview = uM(() => {
@@ -137,9 +161,20 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       const items = parseInsumosEmergencia(parsed.rows);
       return { tipo: 'insumos_emergencia', items, total: items.length };
     }
+    if (esAsignacion) {
+      const movs = parseMovMaquinariaAsignacion(parsed.rows);
+      return {
+        tipo: 'mov_asignacion', movs,
+        salidas: movs.filter(m => m.tipo === 'salida').length,
+        devoluciones: movs.filter(m => m.tipo === 'entrada').length,
+        sinTipo: movs.filter(m => !m.tipo).length,
+        equipos: new Set(movs.map(m => normTxt(m.equipo))).size,
+        total: movs.length,
+      };
+    }
     const movs = parseMovimientos(parsed.rows, formato);
     return { tipo: 'mov', movs, resumen: resumenMovimientos(movs) };
-  }, [parsed, formato, esInsumos, esInsumosEmergencia]);
+  }, [parsed, formato, esInsumos, esInsumosEmergencia, esAsignacion]);
 
   const onFile = uC((f) => {
     setFile(f); setParsed(null); setParseErr(null); setFormato(null); setResult(null);
@@ -590,6 +625,85 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       detalle: `${okCount} movimientos de emergencia cargados · ${insIdx.map.size - prevIns} insumos nuevos · ${errores} con error` };
   };
 
+  const runMovMaquinariaAsignacionLoad = async () => {
+    const movs = [...preview.movs].sort((a, b) => (a.fecha || '') < (b.fecha || '') ? -1 : 1);
+    const actIdx = await cargarIndice('activos_pesados', obraId, 'nombre', { porObra: false });
+    const personal = (await window.__db.personal.where('obra_id').equals(obraId).filter(p => !p.deleted_at).toArray());
+    const subcontratistas = (await window.__db.subcontratistas.filter(s => !s.deleted_at).toArray());
+
+    const resolverActivo = async (nombre) => {
+      const k = normTxt(nombre);
+      if (actIdx.map.has(k)) return actIdx.map.get(k);
+      const rec = await addRecord('activos_pesados', {
+        nombre: String(nombre).trim(), tipo: 'equipo', estado: 'operativo',
+        obra_actual_id: obraId, obra_id: obraId, maneja_cantidad: false, notas: 'Migración histórica',
+      }, userId);
+      actIdx.map.set(k, rec); return rec;
+    };
+    const matchPers = (nombre) => matchPersonal(nombre, personal);
+    const matchSub = (nombre) => {
+      const t = normTxt(nombre); if (!t) return null;
+      const s = subcontratistas.find(x => { const r = normTxt(x.razon_social); return r && (r === t || r.includes(t) || t.includes(r)); });
+      return s?.id || null;
+    };
+
+    let okCount = 0, errores = 0;
+    const errorList = [];
+    const prevAct = actIdx.map.size;
+    // custodia final por activo (último movimiento gana, ya que vienen asc)
+    const custodia = new Map();
+    setProgress({ current: 0, total: movs.length });
+
+    for (let i = 0; i < movs.length; i++) {
+      const m = movs[i];
+      try {
+        if (!m.tipo) throw new Error('Movimiento no reconocido (usá Salida/Devolución)');
+        const act = await resolverActivo(m.equipo);
+        const obsExtra = [];
+        let responsable_id = null, subcontratista_id = null, destino_tipo = null, destino_nombre = null;
+        if (m.tipo === 'salida') {
+          destino_tipo = m.destinoTipo || 'personal';
+          if (destino_tipo === 'subcontratista') {
+            subcontratista_id = matchSub(m.destinoNombre);
+            if (!subcontratista_id && m.destinoNombre) obsExtra.push(`Subcontrato: ${m.destinoNombre}`);
+          } else {
+            responsable_id = matchPers(m.destinoNombre);
+            if (!responsable_id && m.destinoNombre) obsExtra.push(`Asignado a: ${m.destinoNombre}`);
+          }
+          destino_nombre = m.destinoNombre || null;
+        }
+        const obs = ['Migración histórica', m.observaciones, ...obsExtra].filter(Boolean).join(' · ');
+        await addRecord('movimientos_maquinaria', {
+          obra_id: obraId, activo_id: act.id, fecha: m.fecha || new Date().toISOString().slice(0, 10),
+          hora: null, tipo_movimiento: m.tipo, cantidad: null, unidad: null,
+          responsable_id, subcontratista_id, destino_tipo, observaciones: obs,
+        }, userId);
+        // custodia final
+        custodia.set(act.id, m.tipo === 'salida'
+          ? { tipo: destino_tipo, id: responsable_id || subcontratista_id || null, nombre: destino_nombre, fecha: m.fecha }
+          : null);
+        okCount++;
+      } catch (e) { errores++; errorList.push({ row: m.idx, error: e.message || String(e) }); }
+      if (i % 20 === 0) { setProgress({ current: i + 1, total: movs.length }); await new Promise(r => setTimeout(r, 0)); }
+    }
+
+    // Aplicar custodia final a cada equipo afectado
+    const now = new Date().toISOString();
+    for (const [activoId, c] of custodia) {
+      const a = await window.__db.activos_pesados.get(activoId);
+      if (!a) continue;
+      await window.__db.activos_pesados.update(activoId, {
+        asignado_a_tipo: c?.tipo || null, asignado_a_id: c?.id || null,
+        asignado_a_nombre: c?.nombre || null, fecha_asignacion: c?.fecha || null,
+        updated_at: now, updated_by: userId, version: (a.version ?? 0) + 1,
+        sync_status: a.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+    }
+    fireChanged('activos_pesados', 'movimientos_maquinaria');
+    return { ok: okCount, errors: errores, errorList,
+      detalle: `${okCount} asignaciones cargadas · ${actIdx.map.size - prevAct} equipos nuevos · ${errores} con error` };
+  };
+
   const ejecutar = async () => {
     if (!obraId) { showToast('No hay obra activa', 'red'); return; }
     if (!superAdmin) { showToast('Activá Super Admin para migrar históricos', 'red'); return; }
@@ -603,6 +717,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       else if (formato === 'mov_herramientas') res = await runMovHerramientas();
       else if (formato === 'mov_maquinaria') res = await runMovMaquinaria();
       else if (formato === 'mov_emergencia') res = await runMovEmergencia();
+      else if (esAsignacion) res = await runMovMaquinariaAsignacionLoad();
       else { setImp(false); return; }
       setResult(res);
       setStep(3);
@@ -659,7 +774,13 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       {step === 1 && (
         <div>
           <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--tp)', marginBottom: 4 }}>Subí el archivo Excel</div>
-          <div style={{ fontSize: 12.5, color: 'var(--tm)', marginBottom: 16 }}>Detecto automáticamente cuál de los 5 formatos es por sus columnas.</div>
+          <div style={{ fontSize: 12.5, color: 'var(--tm)', marginBottom: 12 }}>Detecto automáticamente el formato por sus columnas. ¿No tenés el archivo? Descargá la plantilla del tipo que vas a cargar:</div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 16, flexWrap: 'wrap' }}>
+            <select className="fi" style={{ width: 'auto', flex: '1 1 280px' }} value={plantillaSel} onChange={(e) => setPlantillaSel(e.target.value)}>
+              {Object.values(FORMATOS).map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
+            </select>
+            <button className="btn btn-ghost btn-sm" onClick={() => descargarPlantilla(plantillaSel)}><JxIcon name="file" size={13} />Descargar plantilla</button>
+          </div>
           <label style={{ display: 'block', border: '2px dashed var(--border)', borderRadius: 10, padding: '28px 20px', textAlign: 'center', cursor: 'pointer', background: 'var(--bg-c)' }}>
             <input type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={(e) => onFile(e.target.files?.[0] || null)} />
             <JxIcon name="file" size={28} color="var(--amber)" />
@@ -735,6 +856,18 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
                   ⚠️ {preview.resumen.sinTipo} sin tipo · {preview.resumen.sinFecha} sin fecha (usan hoy) · {preview.resumen.sinCantidad} sin cantidad válida.
                 </div>
               )}
+            </div>
+          )}
+
+          {preview.tipo === 'mov_asignacion' && (
+            <div className="card card-p" style={{ marginBottom: 14 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12 }}>
+                <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: 'var(--amber)' }}>{preview.salidas}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Salidas (asignaciones)</div></div>
+                <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: 'var(--green)' }}>{preview.devoluciones}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Devoluciones</div></div>
+                <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: 'var(--tp)' }}>{preview.equipos}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Equipos distintos</div></div>
+              </div>
+              {preview.sinTipo > 0 && <div style={{ fontSize: 12, color: 'var(--amber)', marginTop: 10 }}>⚠️ {preview.sinTipo} fila(s) sin Movimiento reconocido (usá "Salida" o "Devolución").</div>}
+              <div style={{ fontSize: 12, color: 'var(--tm)', marginTop: 10 }}>Aplica la custodia en orden de fecha; el último movimiento define quién tiene cada equipo. Equipos/personas que no existan se crean o quedan anotados en observaciones.</div>
             </div>
           )}
 

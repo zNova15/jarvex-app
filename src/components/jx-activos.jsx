@@ -34,12 +34,22 @@ function ActivosPesadosPage({ showToast }) {
   const { data: companies } = window.__hooks.useCompanies();
   const { data: obras } = window.__hooks.useObras();
   const { data: hms } = window.__hooks.useHorasMaquina();
+  // Custodia: a quién se le asigna el equipo (personal de la obra activa o subcontratista).
+  const { obraId: obraActivaId } = window.__useObraActiva ? window.__useObraActiva() : { obraId: null };
+  const { data: personal } = window.__hooks.usePersonal(obraActivaId);
+  const { data: subcontratistas } = window.__hooks.useSubcontratistas();
+  const movMaqHook = window.__hooks.useMovimientosMaquinaria(obraActivaId);
 
   const [modal, setModal] = uS(null);
   const [editing, setEditing] = uS(null);
   const [form, setForm] = uS({});
   const [hmModal, setHmModal] = uS(null); // activo seleccionado para registrar HM/comb/mant
   const [historial, setHistorial] = uS(null); // { activo, hm: [], cb: [], mt: [] }
+  // Asignación / devolución de custodia
+  const [asignModal, setAsignModal] = uS(null); // { activo, mode:'salida'|'entrada' }
+  const [asignForm, setAsignForm] = uS({});
+  const [asignFoto, setAsignFoto] = uS(null);   // { blob, url }
+  const [busyAsign, setBusyAsign] = uS(false);
 
   // Ubicaciones del catálogo de la obra seleccionada en el form
   const { data: ubicaciones } = window.__hooks.useUbicacionesObra?.(form.obra_actual_id || null) || { data: [] };
@@ -171,6 +181,83 @@ function ActivosPesadosPage({ showToast }) {
       });
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'activos_pesados' } })); } catch {}
     } catch (e) { showToast('Error: '+e.message, 'red'); }
+  };
+
+  // ── Custodia: salida (asignación) / devolución ─────────────────────
+  const openAsignar = (a, mode) => {
+    setAsignModal({ activo: a, mode });
+    setAsignForm({ fecha: new Date().toISOString().slice(0, 10), destino_tipo: 'personal', destino_id: '', observaciones: '' });
+    if (asignFoto?.url) { try { URL.revokeObjectURL(asignFoto.url); } catch {} }
+    setAsignFoto(null);
+  };
+  const onAsignFoto = (e) => {
+    const f = e.target.files?.[0]; if (!f) return;
+    if (!f.type.startsWith('image/')) { showToast('Solo se permiten imágenes', 'red'); return; }
+    if (f.size > 8 * 1024 * 1024) { showToast('La foto supera los 8 MB', 'red'); return; }
+    if (asignFoto?.url) { try { URL.revokeObjectURL(asignFoto.url); } catch {} }
+    setAsignFoto({ blob: f, url: URL.createObjectURL(f) });
+  };
+  const guardarAsignacion = async () => {
+    if (busyAsign || !asignModal) return;
+    const { activo, mode } = asignModal;
+    const esSalida = mode === 'salida';
+    if (esSalida && !asignForm.destino_id) { showToast('Elegí a quién se le asigna el equipo', 'red'); return; }
+    const obraId = obraActivaId || activo.obra_actual_id || null;
+    setBusyAsign(true);
+    try {
+      const now = new Date().toISOString();
+      let responsable_id = null, subcontratista_id = null, destino_tipo = null, destino_nombre = null;
+      if (esSalida) {
+        destino_tipo = asignForm.destino_tipo;
+        if (destino_tipo === 'personal') {
+          responsable_id = asignForm.destino_id;
+          const p = (personal || []).find(x => x.id === responsable_id);
+          destino_nombre = p ? `${p.nombres} ${p.apellidos || ''}`.trim() : null;
+        } else {
+          subcontratista_id = asignForm.destino_id;
+          const s = (subcontratistas || []).find(x => x.id === subcontratista_id);
+          destino_nombre = s ? s.razon_social : null;
+        }
+      }
+      // Movimiento (la custodia y la evidencia se enlazan con su id real).
+      const mov = await movMaqHook.create({
+        obra_id: obraId, activo_id: activo.id, fecha: asignForm.fecha,
+        tipo_movimiento: esSalida ? 'salida' : 'entrada',
+        cantidad: null, unidad: null,
+        responsable_id, subcontratista_id, destino_tipo,
+        observaciones: asignForm.observaciones?.trim() || (esSalida ? `Asignado a ${destino_nombre || '—'}` : 'Devolución'),
+      });
+      // Foto (prueba física) → evidencia local enlazada al movimiento
+      if (asignFoto?.blob && mov?.id) {
+        const evId = window.__newId();
+        try {
+          await window.__saveEvidenciaLocal?.({
+            id: evId, obra_id: obraId, tipo_evidencia: 'movimiento_maquinaria',
+            modulo_relacionado: 'movimientos_maquinaria', registro_relacionado_id: mov.id,
+            nombre_archivo: `maquinaria_${mode}_${mov.id}.jpg`, mime_type: asignFoto.blob.type || 'image/jpeg',
+            blob: asignFoto.blob, observaciones: `${esSalida ? 'Salida' : 'Devolución'} · ${activo.nombre}`,
+            fecha: asignForm.fecha, created_by: userId,
+          });
+          await movMaqHook.update(mov.id, { evidencia_id: evId });
+        } catch {}
+      }
+      // Custodia denormalizada en el activo
+      await window.__db.activos_pesados.update(activo.id, esSalida ? {
+        asignado_a_tipo: destino_tipo, asignado_a_id: asignForm.destino_id, asignado_a_nombre: destino_nombre, fecha_asignacion: asignForm.fecha,
+        updated_at: now, version: (activo.version ?? 0) + 1,
+        sync_status: activo.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      } : {
+        asignado_a_tipo: null, asignado_a_id: null, asignado_a_nombre: null, fecha_asignacion: null,
+        updated_at: now, version: (activo.version ?? 0) + 1,
+        sync_status: activo.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      try { await window.__logAudit?.({ action: 'insert', table: 'movimientos_maquinaria', recordId: mov?.id, reason: `${esSalida ? 'Salida/asignación' : 'Devolución'} de ${activo.nombre}${destino_nombre ? ` → ${destino_nombre}` : ''}` }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'activos_pesados' } })); } catch {}
+      showToast(esSalida ? `Equipo asignado a ${destino_nombre || '—'}` : 'Devolución registrada', 'green');
+      if (asignFoto?.url) { try { URL.revokeObjectURL(asignFoto.url); } catch {} }
+      setAsignModal(null); setAsignForm({}); setAsignFoto(null);
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+    finally { setBusyAsign(false); }
   };
 
   // Form para registrar HM, combustible, mantenimiento
@@ -315,7 +402,10 @@ function ActivosPesadosPage({ showToast }) {
                   return (
                     <tr key={a.id}>
                       <td className="col-m" style={{ fontFamily:'monospace' }}>{a.codigo || '—'}</td>
-                      <td className="col-p"><strong>{a.nombre}</strong>{a.marca && <div style={{ fontSize:10, color:'var(--tm)' }}>{a.marca} {a.modelo} {a.anio}</div>}</td>
+                      <td className="col-p"><strong>{a.nombre}</strong>
+                        {a.marca && <div style={{ fontSize:10, color:'var(--tm)' }}>{a.marca} {a.modelo} {a.anio}</div>}
+                        {a.asignado_a_id && <div style={{ fontSize:10.5, color:'var(--amber)', marginTop:2 }} title={`En custodia desde ${a.fecha_asignacion || '—'}`}>🔧 En uso: {a.asignado_a_nombre || '—'}{a.fecha_asignacion ? ` · ${a.fecha_asignacion}` : ''}</div>}
+                      </td>
                       <td><span className="tag">{AP_TYPES.find(t=>t.v===a.tipo)?.l || a.tipo}</span></td>
                       <td className="col-m">{a.maneja_cantidad
                         ? (() => {
@@ -343,6 +433,12 @@ function ActivosPesadosPage({ showToast }) {
                         <button className="btn btn-amber btn-xs" title="Registrar HM / Comb / Mant" onClick={()=>openHm(a)}>
                           <JxIcon name="plus" size={11}/>
                         </button>
+                        {/* Custodia: asignar (salida) / devolución. Solo equipos con placa (no por cantidad). */}
+                        {canWrite && !a.maneja_cantidad && (
+                          a.asignado_a_id
+                            ? <button className="btn btn-green btn-xs" title="Registrar devolución" onClick={()=>openAsignar(a,'entrada')} style={{ marginLeft:4 }}><JxIcon name="arrowIn" size={11}/></button>
+                            : <button className="btn btn-ghost btn-xs" title="Asignar equipo (salida)" onClick={()=>openAsignar(a,'salida')} style={{ marginLeft:4 }}><JxIcon name="arrowOut" size={11}/></button>
+                        )}
                         <button className="btn btn-ghost btn-xs" title="Ver historial completo" onClick={async ()=>{
                           try {
                             const [hm, cb, mt] = await Promise.all([
@@ -602,6 +698,56 @@ function ActivosPesadosPage({ showToast }) {
           </div>
         </Modal>
       )}
+
+      {/* Modal asignación (salida) / devolución de custodia */}
+      {asignModal && (() => {
+        const esSalida = asignModal.mode === 'salida';
+        const a = asignModal.activo;
+        return (
+          <Modal title={esSalida ? `Asignar equipo — ${a.nombre}` : `Devolución — ${a.nombre}`} icon={esSalida ? 'arrowOut' : 'arrowIn'} onClose={()=>{ setAsignModal(null); setAsignForm({}); if (asignFoto?.url) { try { URL.revokeObjectURL(asignFoto.url); } catch {} } setAsignFoto(null); }}>
+            {!esSalida && a.asignado_a_id && (
+              <div style={{ padding:'10px 12px', background:'rgba(242,183,5,0.08)', border:'1px solid rgba(242,183,5,0.25)', borderRadius:8, fontSize:12.5, color:'var(--ts)', marginBottom:12 }}>
+                Actualmente en uso por <strong style={{ color:'var(--amber)' }}>{a.asignado_a_nombre || '—'}</strong>{a.fecha_asignacion ? ` desde el ${a.fecha_asignacion}` : ''}.
+              </div>
+            )}
+            <div className="g2">
+              {esSalida && (
+                <>
+                  <div><label className="flabel">Asignar a</label>
+                    <select className="fi" value={asignForm.destino_tipo || 'personal'} onChange={e=>setAsignForm({ ...asignForm, destino_tipo:e.target.value, destino_id:'' })}>
+                      <option value="personal">Personal</option>
+                      <option value="subcontratista">Subcontratista</option>
+                    </select></div>
+                  <div><label className="flabel">{asignForm.destino_tipo === 'subcontratista' ? 'Subcontratista' : 'Trabajador'} *</label>
+                    {asignForm.destino_tipo === 'subcontratista'
+                      ? <select className="fi" value={asignForm.destino_id || ''} onChange={e=>setAsignForm({ ...asignForm, destino_id:e.target.value })}>
+                          <option value="">Selecciona…</option>
+                          {(subcontratistas||[]).filter(s=>!s.deleted_at).map(s => <option key={s.id} value={s.id}>{s.razon_social}</option>)}
+                        </select>
+                      : <select className="fi" value={asignForm.destino_id || ''} onChange={e=>setAsignForm({ ...asignForm, destino_id:e.target.value })}>
+                          <option value="">Selecciona…</option>
+                          {(personal||[]).filter(p=>!p.deleted_at).map(p => <option key={p.id} value={p.id}>{p.nombres} {p.apellidos || ''}</option>)}
+                        </select>}
+                  </div>
+                </>
+              )}
+              <div><label className="flabel">Fecha</label>
+                <input className="fi" type="date" value={asignForm.fecha || ''} max={new Date().toISOString().slice(0,10)} onChange={e=>setAsignForm({ ...asignForm, fecha:e.target.value })}/></div>
+              <div style={{ gridColumn: esSalida ? 'auto' : '1/-1' }}><label className="flabel">Observaciones</label>
+                <input className="fi" value={asignForm.observaciones || ''} onChange={e=>setAsignForm({ ...asignForm, observaciones:e.target.value })} placeholder={esSalida ? 'Frente, motivo…' : 'Estado de devolución…'}/></div>
+              <div style={{ gridColumn:'1/-1' }}>
+                <label className="flabel">Prueba física (foto) <span style={{ color:'var(--tm)', textTransform:'none', fontWeight:400 }}>· opcional, recomendada</span></label>
+                <input type="file" accept="image/*" onChange={onAsignFoto} style={{ fontSize:12 }}/>
+                {asignFoto?.url && <div style={{ marginTop:8 }}><img src={asignFoto.url} alt="prueba" style={{ maxHeight:120, borderRadius:6, border:'1px solid var(--border)' }}/></div>}
+              </div>
+            </div>
+            <div className="modal-actions" style={{ marginTop:16 }}>
+              <button className="btn btn-ghost" onClick={()=>{ setAsignModal(null); setAsignForm({}); if (asignFoto?.url) { try { URL.revokeObjectURL(asignFoto.url); } catch {} } setAsignFoto(null); }} disabled={busyAsign}>Cancelar</button>
+              <button className={`btn ${esSalida ? 'btn-amber' : 'btn-green'}`} onClick={guardarAsignacion} disabled={busyAsign}>{busyAsign ? 'Guardando…' : (esSalida ? 'Asignar equipo' : 'Registrar devolución')}</button>
+            </div>
+          </Modal>
+        );
+      })()}
     </div>
   );
 }

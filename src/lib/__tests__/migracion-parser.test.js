@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   detectFormato, parseFechaMigracion, parseInsumosTotales, parseInsumosEmergencia, parseMovimientos,
-  clasificaTipoInsumo, normalizaTipoMov, resumenMovimientos, normTxt,
+  parseMovMaquinariaAsignacion, clasificaTipoInsumo, normalizaTipoMov, resumenMovimientos, normTxt,
 } from '../migracion-parser.js';
 
 describe('parseFechaMigracion — fechas en formato US (raw:false) / serial / ISO', () => {
@@ -45,6 +45,26 @@ describe('detectFormato — distingue los 5 formatos por headers', () => {
   it('insumos de emergencia: catálogo vs movimientos por header "emergencia"', () => {
     expect(detectFormato(['ID', 'Insumo de Emergencia', 'Categoría', 'Unidad', 'Fecha de creacion'])).toBe('insumos_emergencia');
     expect(detectFormato(['ID', 'Fecha de Movimiento', 'Insumo de Emergencia', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Proveedor/Responsable', 'Lugar'])).toBe('mov_emergencia');
+  });
+  it('asignaciones de maquinaria: detecta por header "Asignado a"', () => {
+    expect(detectFormato(['ID', 'Fecha', 'Equipo', 'Movimiento', 'Tipo destino', 'Asignado a', 'Observación'])).toBe('mov_maquinaria_asignacion');
+  });
+});
+
+describe('parseMovMaquinariaAsignacion', () => {
+  const rows = [
+    { ID: '1', Fecha: '5/21/26', Equipo: 'Excavadora CAT 320', Movimiento: 'Salida', 'Tipo destino': 'Personal', 'Asignado a': 'Juan Pérez', 'Observación': 'Frente A' },
+    { ID: '2', Fecha: '5/28/26', Equipo: 'Excavadora CAT 320', Movimiento: 'Devolución', 'Tipo destino': '', 'Asignado a': '', 'Observación': 'OK' },
+    { ID: '3', Fecha: '5/22/26', Equipo: 'Rodillo', Movimiento: 'Salida', 'Tipo destino': 'Subcontratista', 'Asignado a': 'Construcciones SAC', 'Observación': '' },
+  ];
+  it('mapea salida con destino personal y devolución', () => {
+    const p = parseMovMaquinariaAsignacion(rows);
+    expect(p[0]).toMatchObject({ equipo: 'Excavadora CAT 320', tipo: 'salida', destinoTipo: 'personal', destinoNombre: 'Juan Pérez', fecha: '2026-05-21' });
+    expect(p[1]).toMatchObject({ equipo: 'Excavadora CAT 320', tipo: 'entrada', fecha: '2026-05-28' });
+  });
+  it('reconoce destino subcontratista', () => {
+    const p = parseMovMaquinariaAsignacion(rows);
+    expect(p[2]).toMatchObject({ tipo: 'salida', destinoTipo: 'subcontratista', destinoNombre: 'Construcciones SAC' });
   });
 });
 
