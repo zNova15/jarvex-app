@@ -11,6 +11,8 @@
 import React from "react";
 import { CATALOGO_EPP, epppTipo, detectarEPP } from "../lib/epp-utils.js";
 import { calcAlerta } from "../lib/stock-utils.js";
+import { getDesgloseBulk, aplicarDelta, traspasar } from "../lib/stock-ubicaciones.js";
+import { DesglosePopup, TraspasoStockModal, ubicacionAutoOrigen, validarSalidaUbic } from "./jx-stock-ubic.jsx";
 import { usePagination } from "../hooks/usePagination.js";
 import { TablePagination } from "./jx-pagination.jsx";
 import { SearchableSelect } from "./jx-searchable-select.jsx";
@@ -138,6 +140,26 @@ function EppsInventarioPage({ showToast }) {
   const { data: epps = [], loading, create: createEpp, update: updateEpp, refresh } = window.__hooks.useEpps?.(obraId) || { data: [] };
   const movHook = window.__hooks.useMovimientosEpp?.(obraId) || { data: [], create: async () => {} };
   const { data: personal = [] } = window.__hooks.usePersonal?.(obraId) || { data: [] };
+
+  // Ubicaciones (almacenes) de la obra + desglose de stock por ubicación.
+  const { data: ubicaciones = [] } = window.__hooks.useUbicacionesObra?.(obraId) || { data: [] };
+  const ubicacionesActivas = uM(() => (ubicaciones || []).filter(u => u.activo !== false && !u.deleted_at), [ubicaciones]);
+  const ubicacionesById = uM(() => { const m = new Map(); (ubicaciones || []).forEach(u => m.set(u.id, u)); return m; }, [ubicaciones]);
+  const [desgloseUbic, setDesgloseUbic] = uS(() => new Map()); // Map(epp_id → Map(ubic_id → cant))
+  uE(() => {
+    if (!obraId) return;
+    let cancelled = false;
+    const cargar = async () => {
+      try { const m = await getDesgloseBulk('epp', (epps || []).map(e => e.id)); if (!cancelled) setDesgloseUbic(m); }
+      catch (err) { console.warn('[epp desglose]', err?.message); }
+    };
+    cargar();
+    const onCh = (e) => { const t = e?.detail?.tabla || e?.detail?.table; if (!t || t === 'stock_ubicaciones') cargar(); };
+    window.addEventListener('jx_data_changed', onCh);
+    return () => { cancelled = true; window.removeEventListener('jx_data_changed', onCh); };
+  }, [obraId, epps]);
+  const [popupEpp, setPopupEpp] = uS(null);       // EPP para el popup de desglose
+  const [traspasoPreId, setTraspasoPreId] = uS(''); // EPP preseleccionado en traspaso
 
   const [q, setQ] = uS('');
   const [filtroTipo, setFiltroTipo] = uS('todos');
@@ -268,13 +290,15 @@ function EppsInventarioPage({ showToast }) {
     setFoto(null);
     setModal('editar');
   };
+  // Almacén por defecto: si hay uno solo, se autocompleta.
+  const ubicacionDefault = () => (ubicacionesActivas.length === 1 ? ubicacionesActivas[0].id : '');
   const openIngreso = () => {
     setForm({
       fecha: new Date().toISOString().slice(0, 10),
       hora: new Date().toTimeString().slice(0, 5),
     });
     setLoteItems([{ id: crypto.randomUUID(), epp_id:'', cantidad:'', precio:'', proveedor_id:null }]);
-    setLoteComunes({ usarMismoProveedor: true, usarMismaPersona: true, proveedor_id: null, personal_id: null });
+    setLoteComunes({ usarMismoProveedor: true, usarMismaPersona: true, proveedor_id: null, personal_id: null, ubicacion_id: ubicacionDefault() });
     setModal('ingreso');
   };
   const openSalida = () => {
@@ -283,9 +307,27 @@ function EppsInventarioPage({ showToast }) {
       hora: new Date().toTimeString().slice(0, 5),
     });
     setLoteItems([{ id: crypto.randomUUID(), epp_id:'', cantidad:'', talla:'' }]);
-    setLoteComunes({ usarMismoProveedor: true, usarMismaPersona: true, proveedor_id: null, personal_id: null });
+    setLoteComunes({ usarMismoProveedor: true, usarMismaPersona: true, proveedor_id: null, personal_id: null, ubicacion_id: ubicacionDefault() });
     setFirmaBlob(null);
     setModal('salida');
+  };
+  const openTraspaso = (preId = '') => { setTraspasoPreId(preId || ''); setModal('traspaso'); };
+
+  // Traspaso EPP entre almacenes: mueve stock_ubicaciones + 2 movimientos de trazabilidad.
+  const ejecutarTraspasoEpp = async ({ item_id, origenId, destinoId, cantidad }) => {
+    try {
+      await traspasar({ obraId, itemTipo: 'epp', itemId: item_id, origenId, destinoId, cantidad, userId: auth?.profile?.id || null });
+      const epp = epps.find(e => e.id === item_id);
+      const uO = ubicacionesById.get(origenId)?.nombre || 'origen';
+      const uD = ubicacionesById.get(destinoId)?.nombre || 'destino';
+      const key = `traspaso-epp-${crypto.randomUUID ? crypto.randomUUID() : Date.now()}`;
+      const base = { obra_id: obraId, epp_id: item_id, fecha: new Date().toISOString().slice(0,10), cantidad, unidad: epp?.unidad || 'Und', personal_id: null, proveedor_id: null, motivo: 'traspaso' };
+      await movHook.create({ ...base, tipo_movimiento: 'salida', ubicacion_id: origenId, observaciones: `Traspaso → ${uD}`, idempotency_key: `${key}_out` });
+      await movHook.create({ ...base, tipo_movimiento: 'entrada', ubicacion_id: destinoId, observaciones: `Traspaso ← ${uO}`, idempotency_key: `${key}_in` });
+      try { await window.__logAudit?.({ action:'update', table:'stock_ubicaciones', recordId:item_id, reason:`Traspaso ${cantidad} ${epp?.nombre_epp||''}: ${uO} → ${uD}` }); } catch {}
+      showToast(`Traspaso: ${cantidad} de ${uO} → ${uD}`, 'green');
+      setModal(null); refresh();
+    } catch (e) { showToast('Error en traspaso: ' + (e.message || e), 'red'); }
   };
 
   const handleSubmitEpp = async () => {
@@ -416,6 +458,31 @@ function EppsInventarioPage({ showToast }) {
       return;
     }
 
+    // Almacén del movimiento (destino en ingreso, ORIGEN obligatorio en salida).
+    const ubicMov = loteComunes.ubicacion_id || null;
+    if (tipo === 'salida' && ubicacionesActivas.length >= 1 && !ubicMov) {
+      showToast('Elegí el almacén de origen de la salida', 'red');
+      return;
+    }
+    // Validación de stock POR UBICACIÓN (acumulada). Si el EPP no tiene
+    // desglose todavía (stock inicial sin distribuir), valida contra el total.
+    if (tipo === 'salida' && ubicMov) {
+      const proyec = new Map();
+      for (const it of itemsValidos) {
+        const epp = epps.find(e => e.id === it.epp_id);
+        const dgItem = desgloseUbic.get(it.epp_id);
+        const tieneDesglose = dgItem && Array.from(dgItem.values()).some(c => Number(c) > 0);
+        const base = proyec.has(it.epp_id) ? proyec.get(it.epp_id)
+          : (tieneDesglose ? Number(dgItem.get(ubicMov) || 0) : Number(epp?.stock_actual || 0));
+        const cant = parseFloat(it.cantidad) || 0;
+        if (base - cant < 0) {
+          showToast(`❌ Stock insuficiente de "${epp?.nombre_epp}" en ${ubicacionesById.get(ubicMov)?.nombre || 'ese almacén'}: hay ${base}, pedís ${cant}.`, 'red');
+          return;
+        }
+        proyec.set(it.epp_id, base - cant);
+      }
+    }
+
     let exitosos = 0, fallidos = 0;
     let firmaUrlCommon = null;
     // Subir firma una vez (si es salida y todos comparten persona)
@@ -447,11 +514,16 @@ function EppsInventarioPage({ showToast }) {
           unidad: epp.unidad || 'Und',
           personal_id,
           proveedor_id,
+          ubicacion_id: ubicMov,
           documento_asociado: form.documento || null,
           precio_unitario_real: parseFloat(it.precio) || null,
           motivo: form.motivo || (tipo === 'ingreso' ? 'reposicion' : 'dotacion'),
           observaciones: form.observaciones || null,
         });
+        // Desglose por ubicación: ingreso suma al almacén de llegada, salida resta del de origen.
+        if (ubicMov) {
+          try { await aplicarDelta({ obraId, itemTipo: 'epp', itemId: it.epp_id, ubicacionId: ubicMov, delta: tipo === 'ingreso' ? cantNum : -cantNum, userId: auth?.profile?.id || null }); } catch (err) { console.warn('[epp aplicarDelta]', err?.message); }
+        }
         // Para SALIDA: guardar firma como evidencia vinculada al movimiento
         if (tipo === 'salida' && firmaBlob && exitosos === 0) {
           try {
@@ -518,6 +590,7 @@ function EppsInventarioPage({ showToast }) {
         <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
           {canWrite && <button className="btn btn-ghost btn-sm" onClick={openSalida}><JxIcon name="arrowOut" size={13}/>Registrar Salida</button>}
           {canWrite && <button className="btn btn-ghost btn-sm" onClick={openIngreso}><JxIcon name="arrowIn" size={13}/>Registrar Ingreso</button>}
+          {canWrite && ubicacionesActivas.length >= 2 && <button className="btn btn-ghost btn-sm" onClick={() => openTraspaso()} title="Mover stock entre almacenes"><JxIcon name="compare" size={13}/>Traspaso</button>}
           {canWrite ? (
             <button className="btn btn-amber btn-sm" onClick={openNuevo}><JxIcon name="plus" size={13}/>Nuevo EPP</button>
           ) : (
@@ -556,7 +629,7 @@ function EppsInventarioPage({ showToast }) {
             <thead>
               <tr>
                 <th>EPP</th>
-                <th>Tipo</th>
+                <th>Ubicación</th>
                 <th>Talla</th>
                 <th style={{textAlign:'right'}}>Stock</th>
                 <th style={{textAlign:'right'}}>Mín.</th>
@@ -577,7 +650,13 @@ function EppsInventarioPage({ showToast }) {
                       {e.nombre_epp}
                       {e.marca && <div style={{ fontSize:10.5, color:'var(--tm)' }}>{e.marca} {e.modelo || ''}</div>}
                     </td>
-                    <td><span className="tag">{e.tipo_epp}</span></td>
+                    <td>{(() => {
+                      const dg = desgloseUbic.get(e.id);
+                      const entradas = dg ? Array.from(dg.entries()).filter(([, c]) => Number(c) > 0) : [];
+                      if (entradas.length === 0) return <span style={{ color: 'var(--tm)', fontSize: 11 }}>—</span>;
+                      const resumen = entradas.length === 1 ? (ubicacionesById.get(entradas[0][0])?.nombre || 'Almacén') : `${entradas.length} almacenes`;
+                      return <button className="btn btn-ghost btn-xs" title="Ver stock por ubicación" onClick={() => setPopupEpp(e)}><JxIcon name="map" size={11} /> {resumen}</button>;
+                    })()}</td>
                     <td className="col-m">{e.talla || '—'}</td>
                     <td style={{textAlign:'right'}} className="col-num">
                       <span style={{ color: stockColor, fontWeight: 600 }}>{Number(e.stock_actual ?? 0).toLocaleString('es-PE')}</span>
@@ -727,6 +806,13 @@ function EppsInventarioPage({ showToast }) {
             <div><label className="flabel">Fecha</label><input className="fi" type="date" max={new Date().toISOString().slice(0,10)} value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
             <div><label className="flabel">Hora</label><input className="fi" type="time" value={form.hora||''} onChange={e=>setForm({...form, hora:e.target.value})}/></div>
             <div><label className="flabel">Documento / Guía</label><input className="fi" value={form.documento||''} onChange={e=>setForm({...form, documento:e.target.value})}/></div>
+            {ubicacionesActivas.length > 0 && (
+              <div><label className="flabel">Almacén de llegada</label>
+                <select className="fi" value={loteComunes.ubicacion_id || ''} onChange={e=>setLoteComunes(c=>({...c, ubicacion_id:e.target.value}))}>
+                  <option value="">— Sin asignar —</option>
+                  {ubicacionesActivas.map(u => <option key={u.id} value={u.id}>{u.nombre}</option>)}
+                </select></div>
+            )}
           </div>
           <div style={{ marginTop:14 }}>
             <div style={{ fontSize:12, fontWeight:700, color:'var(--ts)', marginBottom:6, display:'flex', justifyContent:'space-between' }}>
@@ -834,6 +920,21 @@ function EppsInventarioPage({ showToast }) {
             )}
           </div>
 
+          {ubicacionesActivas.length > 0 && (
+            <div style={{ marginTop:12, padding:'10px 12px', background:'rgba(52,152,219,0.06)', border:'1px solid rgba(52,152,219,0.3)', borderRadius:6 }}>
+              <label className="flabel" style={{ marginBottom:6 }}>Almacén de origen * <span style={{ color:'var(--tm)', textTransform:'none', fontWeight:400 }}>· de dónde sale el EPP</span></label>
+              {ubicacionesActivas.length === 1 ? (
+                <div style={{ fontSize:12.5, color:'var(--tp)' }}>📍 {ubicacionesActivas[0].nombre} <span style={{ color:'var(--tm)' }}>(único almacén)</span></div>
+              ) : (
+                <SearchableSelect
+                  value={loteComunes.ubicacion_id}
+                  onChange={v => setLoteComunes(c => ({ ...c, ubicacion_id: v || '' }))}
+                  options={[{ value:'', label:'— Selecciona almacén de origen —' }, ...ubicacionesActivas.map(u => ({ value:u.id, label:u.nombre }))]}
+                  placeholder="— Selecciona almacén de origen —"/>
+              )}
+            </div>
+          )}
+
           <div style={{ marginTop:14 }}>
             <div style={{ fontSize:12, fontWeight:700, color:'var(--ts)', marginBottom:6, display:'flex', justifyContent:'space-between' }}>
               <span>EPPs a entregar ({loteItems.length})</span>
@@ -928,6 +1029,25 @@ function EppsInventarioPage({ showToast }) {
             </button>
           </div>
         </Modal>
+      )}
+      {/* Popup desglose por ubicación */}
+      {popupEpp && (
+        <DesglosePopup
+          nombre={popupEpp.nombre_epp} unidad={popupEpp.unidad}
+          desglose={desgloseUbic.get(popupEpp.id)} ubicacionesById={ubicacionesById}
+          canTraspaso={canWrite && ubicacionesActivas.length >= 2}
+          onTraspaso={() => openTraspaso(popupEpp.id)}
+          onClose={() => setPopupEpp(null)} />
+      )}
+
+      {/* Traspaso entre almacenes */}
+      {modal === 'traspaso' && (
+        <TraspasoStockModal
+          items={epps.map(e => ({ id: e.id, nombre: e.nombre_epp }))}
+          ubicaciones={ubicacionesActivas} ubicacionesById={ubicacionesById}
+          getDesgloseDe={(id) => desgloseUbic.get(id)}
+          itemLabel="EPP" preItemId={traspasoPreId}
+          onClose={() => setModal(null)} onConfirm={ejecutarTraspasoEpp} />
       )}
     </div>
   );
