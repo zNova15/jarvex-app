@@ -818,9 +818,21 @@ async function pushUpdate(tabla, record) {
   }
 
   if (!actualizadas || actualizadas.length === 0) {
-    // 0 rows affected: la version del cliente no matchea la del server.
-    // Probablemente otro cliente actualizó este record entre nuestro pull
-    // anterior y este push. Marcamos como conflicto para resolver manual.
+    // 0 rows: la version local no es exactamente server+1. Dos casos:
+    //  a) LOCAL VA ADELANTE (existing.version < record.version): el cliente
+    //     hizo varias ediciones entre syncs (ej. migración: create→recalc→
+    //     ajuste de stock bumpean la versión >1). NO es un conflicto entre
+    //     clientes — local es la versión más reciente. Forzamos el update por
+    //     id y marcamos synced. (Sin esto, el record queda atascado y se
+    //     re-marca conflicto en cada ciclo → tormenta de conflictos falsos.)
+    //  b) MISMA VERSIÓN / server distinto: ambigüedad real → conflicto manual.
+    if (existing && Number(existing.version || 0) < Number(record.version || 0)) {
+      const { error: forceErr } = await supabase.from(tabla).update(serverRecord).eq('id', record.id);
+      if (forceErr) { await handleSyncError(tabla, record, 'update', forceErr); return; }
+      await db[tabla].update(record.id, { sync_status: SYNC_STATUS.SYNCED, last_synced_at: new Date().toISOString() });
+      trackEvent('record_pushed', { tabla, operacion: 'update_forced_local_ahead' });
+      return;
+    }
     console.warn(`[SyncEngine] ${tabla}/${record.id} update afectó 0 filas (version desync) → marcando conflicto`);
     if (existing) {
       await markConflict(tabla, record, existing);

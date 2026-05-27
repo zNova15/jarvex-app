@@ -4,6 +4,7 @@ const { useState: uSC, useEffect: uEC } = React;
 function ConflictsPage({ showToast }) {
   const [conflicts, setConflicts] = uSC([]);
   const [loading, setLoading] = uSC(true);
+  const [bulk, setBulk] = uSC(null); // { hechos, total } mientras resuelve en lote
 
   const load = async () => {
     setLoading(true);
@@ -50,11 +51,56 @@ function ConflictsPage({ showToast }) {
     load();
   };
 
+  // Resolución en LOTE: para tormentas de conflictos (ej. tras una migración,
+  // donde local quedó adelante del server). 'local' = forzar mis cambios en
+  // todos; 'servidor' = mantener server en todos.
+  const resolverTodos = async (modo) => {
+    const pend = await window.__db.sync_conflicts.where('estado').equals('pendiente').toArray();
+    if (!pend.length) return;
+    const label = modo === 'local' ? 'FORZAR TUS CAMBIOS' : 'MANTENER LA VERSIÓN DEL SERVIDOR';
+    if (!confirm(`¿Resolver los ${pend.length} conflictos con "${label}"?\n\nEsta acción es masiva y no se puede deshacer una por una.`)) return;
+    setBulk({ hechos: 0, total: pend.length });
+    let ok = 0, fail = 0;
+    for (let i = 0; i < pend.length; i++) {
+      const c = pend[i];
+      try {
+        if (modo === 'servidor') {
+          await window.__db[c.tabla].put({ ...c.datos_servidor, sync_status: 'synced' });
+          await window.__db.sync_conflicts.update(c.local_seq, { estado: 'resuelto_servidor' });
+        } else {
+          const { sync_status, last_synced_at, _last_error, _last_error_code, ...payload } = c.datos_local || {};
+          await window.__supabase.from(c.tabla).upsert(payload);
+          await window.__db[c.tabla].update(c.registro_id, { sync_status: 'synced' });
+          await window.__db.sync_conflicts.update(c.local_seq, { estado: 'resuelto_local' });
+        }
+        ok++;
+      } catch (e) { fail++; }
+      if (i % 10 === 0) { setBulk({ hechos: i + 1, total: pend.length }); await new Promise(r => setTimeout(r, 0)); }
+    }
+    setBulk(null);
+    showToast(`Conflictos resueltos: ${ok} ok${fail ? ` · ${fail} con error` : ''}`, fail ? 'amber' : 'green');
+    load();
+  };
+
   if (loading) return <div className="page-wrap"><div className="empty-state"><JxIcon name="alert" size={32} color="var(--tm)"/><p>Cargando conflictos…</p></div></div>;
 
   return (
     <div className="page-wrap">
-      <div className="pg-hd"><div><div className="pg-title">Bandeja de Conflictos</div><div className="pg-sub">{conflicts.length} conflicto{conflicts.length!==1?'s':''} pendiente{conflicts.length!==1?'s':''} de resolución</div></div></div>
+      <div className="pg-hd frow-sb">
+        <div><div className="pg-title">Bandeja de Conflictos</div><div className="pg-sub">{conflicts.length} conflicto{conflicts.length!==1?'s':''} pendiente{conflicts.length!==1?'s':''} de resolución</div></div>
+        {conflicts.length > 1 && (
+          <div style={{ display:'flex', gap:8 }}>
+            <button className="btn btn-ghost btn-sm" disabled={!!bulk} onClick={()=>resolverTodos('servidor')}>Mantener servidor (todos)</button>
+            <button className="btn btn-amber btn-sm" disabled={!!bulk} onClick={()=>resolverTodos('local')}>{bulk ? `Resolviendo… ${bulk.hechos}/${bulk.total}` : 'Forzar mis cambios (todos)'}</button>
+          </div>
+        )}
+      </div>
+      {conflicts.length > 5 && (
+        <div className="info-banner" style={{ marginBottom:14, background:'rgba(242,183,5,0.08)', border:'1px solid rgba(242,183,5,0.25)' }}>
+          <JxIcon name="alert" size={14} color="var(--amber)"/>
+          <span>Muchos conflictos suelen venir de ediciones locales que quedaron adelante del servidor (ej. tras una migración). Si tus datos locales son los correctos, usá <strong>"Forzar mis cambios (todos)"</strong>.</span>
+        </div>
+      )}
 
       {conflicts.length === 0 ? (
         <div className="card card-p empty-state">
