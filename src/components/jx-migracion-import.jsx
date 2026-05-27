@@ -29,7 +29,7 @@ import {
 } from "../lib/migracion-parser.js";
 
 // Plantillas descargables por formato (headers + 1 fila de ejemplo).
-const TEMPLATES = {
+export const TEMPLATES = {
   insumos_totales:    { headers: ['ID', 'Nombre Insumo', 'Tipo', 'Unidad', 'Fecha de creacion'], sample: ['1', 'Cemento Portland Tipo I', 'Material', 'bolsa', '25/05/2026'] },
   insumos_emergencia: { headers: ['ID', 'Insumo de Emergencia', 'Categoría', 'Unidad', 'Fecha de creacion'], sample: ['1', 'Botiquín portátil', 'Primeros auxilios', 'kit', '25/05/2026'] },
   mov_materiales:     { headers: ['ID', 'Fecha de Movimiento', 'Material', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Proveedor/Almacen de Salida', 'Resposable (Salida)', 'Lugar llega / Frente'], sample: ['1', '21/05/2026', 'Yeso 7kg', 'Bolsa', '20', 'Ingreso', 'Ferretería X', '', 'Almacen Central'] },
@@ -40,7 +40,7 @@ const TEMPLATES = {
   mov_maquinaria_asignacion: { headers: ['ID', 'Fecha', 'Equipo', 'Movimiento', 'Tipo destino', 'Asignado a', 'Observación'], sample: ['1', '21/05/2026', 'Excavadora CAT 320', 'Salida', 'Personal', 'Juan Pérez', 'Frente A'] },
 };
 
-async function descargarPlantilla(formato) {
+export async function descargarPlantilla(formato) {
   const t = TEMPLATES[formato];
   if (!t) return;
   const XLSX = await import('xlsx');

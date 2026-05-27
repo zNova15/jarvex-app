@@ -7,6 +7,7 @@ import { useBusy } from "../hooks/useBusy.js";
 import { TablePagination } from "./jx-pagination.jsx";
 import { SearchableSelect } from "./jx-searchable-select.jsx";
 import { getDesgloseBulk, aplicarDelta, traspasar } from "../lib/stock-ubicaciones.js";
+import { DesglosePopup, TraspasoStockModal } from "./jx-stock-ubic.jsx";
 const { useState: uS, useMemo: uM, useEffect: uE, useCallback: uCB } = React;
 
 // ─── DATA ───────────────────────────────────────────────
@@ -229,6 +230,7 @@ function MaterialesPage({ showToast }) {
   // Desglose de stock por ubicación: Map(material_id → Map(ubic_id → cant)).
   // Se recarga cuando cambian materiales o llega un cambio en stock_ubicaciones.
   const [desgloseUbic, setDesgloseUbic] = uS(() => new Map());
+  const [popupMat, setPopupMat] = uS(null); // material para el popup de desglose por ubicación
   const cargarDesglose = uCB(async () => {
     try {
       const ids = (materiales || []).map(m => m.id);
@@ -1418,6 +1420,32 @@ function MaterialesPage({ showToast }) {
       }
     }
 
+    // Origen obligatorio + validación POR UBICACIÓN (salida). Si el material
+    // está distribuido por almacén, exige elegir de cuál sale y valida que ahí
+    // haya stock. Materiales sin desglose siguen con la validación global de arriba.
+    if (tipo === 'salida' && ubicacionesActivas.length >= 1) {
+      const proyecUbic = new Map();
+      for (const it of itemsValidos) {
+        const mat = materiales.find(m => m.id === it.material_id);
+        const dgItem = desgloseUbic.get(it.material_id);
+        const tieneDesglose = dgItem && Array.from(dgItem.values()).some(c => Number(c) > 0);
+        if (!tieneDesglose) continue;
+        const ubic = it.ubicacion_id || mat?.ubicacion_id || null;
+        if (!ubic) {
+          showToast(`Elegí el almacén de origen para "${mat?.nombre_material}"`, 'red');
+          setBusyMovLote(false); return;
+        }
+        const key = `${it.material_id}__${ubic}`;
+        const base = proyecUbic.has(key) ? proyecUbic.get(key) : Number(dgItem.get(ubic) || 0);
+        const cant = parseFloat(it.cantidad) || 0;
+        if (base - cant < 0) {
+          showToast(`❌ Stock insuficiente de "${mat?.nombre_material}" en ${ubicacionesById.get(ubic)?.nombre || 'ese almacén'}: hay ${base}, pedís ${cant}.`, 'red');
+          setBusyMovLote(false); return;
+        }
+        proyecUbic.set(key, base - cant);
+      }
+    }
+
     // Idempotency a nivel LOTE: una clave por click → cada item usa
     // una sub-clave determinista. Si el browser dobla submit por
     // cualquier motivo (network glitch, react re-render anómalo), el
@@ -1460,6 +1488,8 @@ function MaterialesPage({ showToast }) {
           // (Antes el almacenero la elegía con un dropdown, pero no tenía
           // contexto técnico para asignar bien — Paquete C del plan.)
           partida_id: null,
+          // Almacén de origen (salida) / llegada (ingreso). Auditable en la fila.
+          ubicacion_id: it.ubicacion_id || material.ubicacion_id || null,
           precio_unitario_real: parseFloat(it.precio) || null,
           observaciones: form.observaciones || null,
           // Idempotency determinista: si el browser re-envía, server
@@ -1831,21 +1861,10 @@ function MaterialesPage({ showToast }) {
                       {(() => {
                         const dg = desgloseUbic.get(m.id);
                         const entradas = dg ? Array.from(dg.entries()).filter(([,c]) => Number(c) > 0) : [];
-                        // Si hay desglose por ubicación, mostrarlo (Alm1: 5 · Alm2: 3).
+                        // Si hay desglose por ubicación, botón → popup (Alm1: 5 · Alm2: 3).
                         if (entradas.length) {
-                          return (
-                            <div style={{ display:'flex', flexDirection:'column', gap:2 }}>
-                              {entradas.map(([uid, cant]) => {
-                                const u = ubicacionesById.get(uid);
-                                return (
-                                  <span key={uid} style={{ fontSize:10.5 }}>
-                                    <span style={{ color:'var(--tp)' }}>{u?.nombre || '—'}</span>
-                                    <span style={{ color:'var(--amber)', fontWeight:700, marginLeft:4 }}>{Number(cant).toLocaleString('es-PE')}</span>
-                                  </span>
-                                );
-                              })}
-                            </div>
-                          );
+                          const resumen = entradas.length === 1 ? (ubicacionesById.get(entradas[0][0])?.nombre || 'Almacén') : `${entradas.length} almacenes`;
+                          return <button className="btn btn-ghost btn-xs" title="Ver stock por ubicación" onClick={()=>setPopupMat(m)}><JxIcon name="map" size={11}/> {resumen}</button>;
                         }
                         // Sin desglose → ubicación principal (legacy)
                         if (m.ubicacion_id) {
@@ -2136,11 +2155,14 @@ function MaterialesPage({ showToast }) {
                           value={it.material_id}
                           onChange={v => {
                             const newMat = materiales.find(m => m.id === v);
+                            // Auto-origen: si el material está en un solo almacén, lo sugerimos.
+                            const dg = desgloseUbic.get(v);
+                            const conStock = dg ? Array.from(dg.entries()).filter(([, c]) => Number(c) > 0) : [];
+                            const autoUbic = conStock.length === 1 ? conStock[0][0] : null;
                             updateLoteItem(it.id, {
                               material_id: v,
                               precio: newMat && !it.precio ? Number(newMat.precio_unitario_estimado || 0).toFixed(2) : it.precio,
-                              // Si el material ya tiene ubicación asignada, la heredamos como sugerencia
-                              ubicacion_id: it.ubicacion_id || newMat?.ubicacion_id || null,
+                              ubicacion_id: it.ubicacion_id || autoUbic || newMat?.ubicacion_id || null,
                             });
                           }}
                           options={[
@@ -2216,6 +2238,16 @@ function MaterialesPage({ showToast }) {
           getDesgloseDe={(mid) => desgloseUbic.get(mid)}
           onClose={()=>setTraspasoOpen(false)}
           onConfirm={async (payload) => { const ok = await ejecutarTraspaso(payload); if (ok) setTraspasoOpen(false); }}/>
+      )}
+
+      {/* Popup desglose por ubicación (material) */}
+      {popupMat && (
+        <DesglosePopup
+          nombre={popupMat.nombre_material} unidad={popupMat.unidad}
+          desglose={desgloseUbic.get(popupMat.id)} ubicacionesById={ubicacionesById}
+          canTraspaso={canWriteMov && ubicacionesActivas.length >= 2}
+          onTraspaso={()=>setTraspasoOpen(true)}
+          onClose={()=>setPopupMat(null)}/>
       )}
 
       {/* Modal cerrar recepción manual — Paquete B */}
@@ -3042,6 +3074,30 @@ function HerramientasPage({ showToast }) {
   const { data: personal } = window.__hooks.usePersonal(obraId);
   const movHook = window.__hooks.useMovimientosHerramientas(obraId);
 
+  // Stock por ubicación (solo aplica a herramientas maneja_cantidad).
+  const [desgloseUbicH, setDesgloseUbicH] = uS(() => new Map()); // Map(herr_id → Map(ubic_id → cant))
+  const [popupHerr, setPopupHerr] = uS(null);        // herramienta para el popup de desglose
+  const [traspasoPreIdH, setTraspasoPreIdH] = uS('');// herr preseleccionada en traspaso
+  const [loteCant, setLoteCant] = uS(null);          // 'ingreso' | 'salida' (modal lote por cantidad)
+  const [loteCantItems, setLoteCantItems] = uS([]);
+  const [loteCantForm, setLoteCantForm] = uS({});
+  const [busyLoteCant, setBusyLoteCant] = uS(false);
+  uE(() => {
+    if (!obraId) return;
+    let cancelled = false;
+    const cargar = async () => {
+      try {
+        const ids = (herramientas || []).filter(h => h.maneja_cantidad).map(h => h.id);
+        const m = await getDesgloseBulk('herramienta', ids);
+        if (!cancelled) setDesgloseUbicH(m);
+      } catch (e) { console.warn('[herr desglose]', e?.message); }
+    };
+    cargar();
+    const onCh = (e) => { const t = e?.detail?.tabla || e?.detail?.table; if (!t || t === 'stock_ubicaciones') cargar(); };
+    window.addEventListener('jx_data_changed', onCh);
+    return () => { cancelled = true; window.removeEventListener('jx_data_changed', onCh); };
+  }, [obraId, herramientas]);
+
   // Carga fotos de herramientas (evidencias tipo 'foto_herramienta')
   uE(() => {
     if (!obraId) return;
@@ -3095,6 +3151,76 @@ function HerramientasPage({ showToast }) {
     (ubicacionesH || []).forEach(u => map.set(u.id, u));
     return map;
   }, [ubicacionesH]);
+
+  // ── Herramientas por cantidad: ingreso/salida en lote + traspaso ────
+  const herrCantidad = uM(() => (herramientas || []).filter(h => h.maneja_cantidad && !h.deleted_at), [herramientas]);
+  const ubicDefaultH = () => (ubicacionesActivasH.length === 1 ? ubicacionesActivasH[0].id : '');
+  const updateLoteCantItem = (id, patch) => setLoteCantItems(items => items.map(it => it.id === id ? { ...it, ...patch } : it));
+  const addLoteCantItem = () => setLoteCantItems(items => [...items, { id: window.__newId?.() || crypto.randomUUID(), herramienta_id: '', cantidad: '' }]);
+  const removeLoteCantItem = (id) => setLoteCantItems(items => items.length > 1 ? items.filter(it => it.id !== id) : items);
+  const openLoteCant = (tipo) => {
+    setLoteCantForm({ fecha: new Date().toISOString().slice(0, 10), hora: new Date().toTimeString().slice(0, 5), ubicacion_id: ubicDefaultH(), responsable_id: '', observaciones: '' });
+    setLoteCantItems([{ id: crypto.randomUUID(), herramienta_id: '', cantidad: '' }]);
+    setLoteCant(tipo);
+  };
+  const submitLoteCant = async () => {
+    if (busyLoteCant) return;
+    const tipo = loteCant;
+    const itemsValidos = loteCantItems.filter(it => it.herramienta_id && parseFloat(it.cantidad) > 0);
+    if (!itemsValidos.length) { showToast('Agregá al menos una herramienta con cantidad', 'red'); return; }
+    const ubicMov = loteCantForm.ubicacion_id || null;
+    if (tipo === 'salida' && ubicacionesActivasH.length >= 1 && !ubicMov) { showToast('Elegí el almacén de origen de la salida', 'red'); return; }
+    if (tipo === 'salida' && ubicMov) {
+      const proyec = new Map();
+      for (const it of itemsValidos) {
+        const h = herramientas.find(x => x.id === it.herramienta_id);
+        const dgItem = desgloseUbicH.get(it.herramienta_id);
+        const tieneDesglose = dgItem && Array.from(dgItem.values()).some(c => Number(c) > 0);
+        const base = proyec.has(it.herramienta_id) ? proyec.get(it.herramienta_id) : (tieneDesglose ? Number(dgItem.get(ubicMov) || 0) : Number(h?.stock_actual || 0));
+        const cant = parseFloat(it.cantidad) || 0;
+        if (base - cant < 0) { showToast(`❌ Stock insuficiente de "${h?.nombre_herramienta}" en ${ubicacionesByIdH.get(ubicMov)?.nombre || 'ese almacén'}: hay ${base}, pedís ${cant}.`, 'red'); return; }
+        proyec.set(it.herramienta_id, base - cant);
+      }
+    }
+    setBusyLoteCant(true);
+    let ok = 0, fail = 0;
+    try {
+      for (const it of itemsValidos) {
+        const h = herramientas.find(x => x.id === it.herramienta_id);
+        if (!h) { fail++; continue; }
+        const cant = parseFloat(it.cantidad) || 0;
+        try {
+          await movHook.create({
+            obra_id: obraId, herramienta_id: it.herramienta_id, fecha: loteCantForm.fecha, hora: loteCantForm.hora,
+            accion: tipo, tipo_movimiento: tipo, cantidad: cant,
+            responsable_id: tipo === 'salida' ? (loteCantForm.responsable_id || null) : null,
+            ubicacion_id: ubicMov, observaciones: loteCantForm.observaciones || null,
+          });
+          if (ubicMov) { try { await aplicarDelta({ obraId, itemTipo: 'herramienta', itemId: it.herramienta_id, ubicacionId: ubicMov, delta: tipo === 'ingreso' ? cant : -cant, userId: auth?.profile?.id || null }); } catch (err) { console.warn('[herr aplicarDelta]', err?.message); } }
+          const nuevoStock = Math.max(0, Number(h.stock_actual || 0) + (tipo === 'ingreso' ? cant : -cant));
+          await window.__db.herramientas.update(it.herramienta_id, { stock_actual: nuevoStock, alerta: calcAlerta(nuevoStock, Number(h.stock_minimo || 0)) });
+          ok++;
+        } catch (e) { fail++; }
+      }
+      refresh();
+      showToast(fail ? `⚠ ${ok} ok, ${fail} fallaron` : `✓ ${ok} ${tipo === 'ingreso' ? 'ingresos' : 'salidas'}`, fail ? 'amber' : 'green');
+      setLoteCant(null); setLoteCantItems([]); setLoteCantForm({});
+    } finally { setBusyLoteCant(false); }
+  };
+  const ejecutarTraspasoHerr = async ({ item_id, origenId, destinoId, cantidad }) => {
+    try {
+      await traspasar({ obraId, itemTipo: 'herramienta', itemId: item_id, origenId, destinoId, cantidad, userId: auth?.profile?.id || null });
+      const h = herramientas.find(x => x.id === item_id);
+      const uO = ubicacionesByIdH.get(origenId)?.nombre || 'origen';
+      const uD = ubicacionesByIdH.get(destinoId)?.nombre || 'destino';
+      const key = `traspaso-herr-${crypto.randomUUID ? crypto.randomUUID() : Date.now()}`;
+      const base = { obra_id: obraId, herramienta_id: item_id, fecha: new Date().toISOString().slice(0, 10), cantidad, responsable_id: null };
+      await movHook.create({ ...base, accion: 'salida', tipo_movimiento: 'salida', ubicacion_id: origenId, observaciones: `Traspaso → ${uD}`, idempotency_key: `${key}_out` });
+      await movHook.create({ ...base, accion: 'entrada', tipo_movimiento: 'entrada', ubicacion_id: destinoId, observaciones: `Traspaso ← ${uO}`, idempotency_key: `${key}_in` });
+      showToast(`Traspaso: ${cantidad} de ${uO} → ${uD}`, 'green');
+      setModal(null); refresh();
+    } catch (e) { showToast('Error en traspaso: ' + (e.message || e), 'red'); }
+  };
 
   const filtered = uM(() => {
     if (!herramientas) return [];
@@ -3594,6 +3720,10 @@ function HerramientasPage({ showToast }) {
           )}
           {canWriteMov && <button className="btn btn-green btn-sm" onClick={()=>openMov('entrada')}><JxIcon name="arrowIn" size={13}/>Registrar Devolución</button>}
           {canWriteMov && <button className="btn btn-ghost btn-sm" onClick={()=>openMov('salida')}><JxIcon name="arrowOut" size={13}/>Registrar Salida</button>}
+          {/* Herramientas por cantidad (palas, conos): ingreso/salida/traspaso por lote */}
+          {canWriteMov && porCantidad > 0 && <button className="btn btn-green btn-sm" onClick={()=>openLoteCant('ingreso')} title="Ingreso de herramientas por cantidad"><JxIcon name="arrowIn" size={13}/>Ingreso (cant.)</button>}
+          {canWriteMov && porCantidad > 0 && <button className="btn btn-ghost btn-sm" onClick={()=>openLoteCant('salida')} title="Salida de herramientas por cantidad"><JxIcon name="arrowOut" size={13}/>Salida (cant.)</button>}
+          {canWriteMov && porCantidad > 0 && ubicacionesActivasH.length >= 2 && <button className="btn btn-ghost btn-sm" onClick={()=>{ setTraspasoPreIdH(''); setModal('traspaso-herr'); }} title="Mover stock entre almacenes"><JxIcon name="compare" size={13}/>Traspaso</button>}
           {canWrite ? (
             <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setModal('nuevo');}}><JxIcon name="plus" size={13}/>Nueva Herramienta</button>
           ) : (
@@ -3654,7 +3784,12 @@ function HerramientasPage({ showToast }) {
                           const st = Number(h.stock_actual ?? 0);
                           const cls = (h.alerta === 'agotado' || h.alerta === 'critico') ? 'b-red'
                             : (h.alerta === 'reponer' || h.alerta === 'cerca') ? 'b-amber' : 'b-green';
-                          return <span className={`badge ${cls}`} title={`Stock por cantidad${h.stock_minimo ? ` · mín ${h.stock_minimo}` : ''}`}>{st.toLocaleString('es-PE')} {h.unidad || 'und'}</span>;
+                          return (
+                            <span style={{ display:'inline-flex', alignItems:'center', gap:6 }}>
+                              <span className={`badge ${cls}`} title={`Stock por cantidad${h.stock_minimo ? ` · mín ${h.stock_minimo}` : ''}`}>{st.toLocaleString('es-PE')} {h.unidad || 'und'}</span>
+                              <button className="btn btn-ghost btn-xs" title="Ver stock por ubicación" onClick={()=>setPopupHerr(h)}><JxIcon name="map" size={11}/></button>
+                            </span>
+                          );
                         })()
                       : (h.disponible ? <span className="badge b-green">Sí</span> : <span className="badge b-gray">No</span>)}</td>
                     <td className="col-m">{h.fecha_ultimo_movimiento || '—'}{resp ? ` · ${resp.nombres}` : ''}</td>
@@ -3955,6 +4090,88 @@ function HerramientasPage({ showToast }) {
           showToast={showToast}
           onClose={() => setRequestTarget(null)}
         />
+      )}
+
+      {/* Popup desglose por ubicación (herramientas por cantidad) */}
+      {popupHerr && (
+        <DesglosePopup
+          nombre={popupHerr.nombre_herramienta} unidad={popupHerr.unidad}
+          desglose={desgloseUbicH.get(popupHerr.id)} ubicacionesById={ubicacionesByIdH}
+          canTraspaso={canWriteMov && ubicacionesActivasH.length >= 2}
+          onTraspaso={() => { setTraspasoPreIdH(popupHerr.id); setModal('traspaso-herr'); }}
+          onClose={() => setPopupHerr(null)} />
+      )}
+
+      {/* Traspaso entre almacenes (herramientas por cantidad) */}
+      {modal === 'traspaso-herr' && (
+        <TraspasoStockModal
+          items={herrCantidad.map(h => ({ id: h.id, nombre: h.nombre_herramienta }))}
+          ubicaciones={ubicacionesActivasH} ubicacionesById={ubicacionesByIdH}
+          getDesgloseDe={(id) => desgloseUbicH.get(id)}
+          itemLabel="Herramienta" preItemId={traspasoPreIdH}
+          onClose={() => setModal(null)} onConfirm={ejecutarTraspasoHerr} />
+      )}
+
+      {/* Ingreso/Salida por cantidad (lote) */}
+      {loteCant && (
+        <Modal title={loteCant === 'ingreso' ? 'Ingreso de herramientas (por cantidad)' : 'Salida de herramientas (por cantidad)'} icon={loteCant === 'ingreso' ? 'arrowIn' : 'arrowOut'} onClose={() => setLoteCant(null)} wide>
+          <div className="g2">
+            <div><label className="flabel">Fecha</label><input className="fi" type="date" max={new Date().toISOString().slice(0,10)} value={loteCantForm.fecha || ''} onChange={e=>setLoteCantForm(f=>({...f, fecha:e.target.value}))}/></div>
+            <div><label className="flabel">Hora</label><input className="fi" type="time" value={loteCantForm.hora || ''} onChange={e=>setLoteCantForm(f=>({...f, hora:e.target.value}))}/></div>
+            {ubicacionesActivasH.length > 0 && (
+              <div><label className="flabel">{loteCant === 'ingreso' ? 'Almacén de llegada' : 'Almacén de origen *'}</label>
+                {loteCant === 'salida' && ubicacionesActivasH.length === 1 ? (
+                  <div style={{ fontSize:12.5, color:'var(--tp)', padding:'8px 0' }}>📍 {ubicacionesActivasH[0].nombre} <span style={{ color:'var(--tm)' }}>(único)</span></div>
+                ) : (
+                  <select className="fi" value={loteCantForm.ubicacion_id || ''} onChange={e=>setLoteCantForm(f=>({...f, ubicacion_id:e.target.value}))}>
+                    <option value="">{loteCant === 'salida' ? '— Selecciona origen —' : '— Sin asignar —'}</option>
+                    {ubicacionesActivasH.map(u => <option key={u.id} value={u.id}>{u.nombre}</option>)}
+                  </select>
+                )}
+              </div>
+            )}
+            {loteCant === 'salida' && (
+              <div><label className="flabel">Responsable (opcional)</label>
+                <select className="fi" value={loteCantForm.responsable_id || ''} onChange={e=>setLoteCantForm(f=>({...f, responsable_id:e.target.value}))}>
+                  <option value="">—</option>
+                  {(personal||[]).filter(p=>!p.deleted_at).map(p => <option key={p.id} value={p.id}>{p.nombres} {p.apellidos||''}</option>)}
+                </select></div>
+            )}
+          </div>
+          <div style={{ marginTop:14 }}>
+            <div style={{ fontSize:12, fontWeight:700, color:'var(--ts)', marginBottom:6, display:'flex', justifyContent:'space-between' }}>
+              <span>Herramientas ({loteCantItems.length})</span>
+              <button type="button" className="btn btn-ghost btn-xs" onClick={addLoteCantItem}><JxIcon name="plus" size={11}/> Agregar fila</button>
+            </div>
+            <div style={{ overflowX:'auto' }}>
+              <table className="tbl" style={{ fontSize:12 }}>
+                <thead><tr><th style={{ minWidth:240 }}>Herramienta</th><th style={{ width:120 }}>Cantidad *</th>{loteCant === 'salida' && <th style={{ width:90 }}>Stock</th>}<th style={{ width:40 }}></th></tr></thead>
+                <tbody>
+                  {loteCantItems.map(it => {
+                    const h = herrCantidad.find(x => x.id === it.herramienta_id);
+                    const cant = parseFloat(it.cantidad) || 0;
+                    const stockOk = (h?.stock_actual ?? 0) >= cant;
+                    return (
+                      <tr key={it.id}>
+                        <td><SearchableSelect value={it.herramienta_id} onChange={v=>updateLoteCantItem(it.id,{herramienta_id:v})} options={[{value:'',label:'— Selecciona —'}, ...herrCantidad.map(h=>({value:h.id,label:h.nombre_herramienta}))]} fontSize={12} placeholder="— Selecciona —"/></td>
+                        <td><input className="fi" type="number" min="0" step="0.01" value={it.cantidad} style={{ fontSize:12 }} onChange={e=>updateLoteCantItem(it.id,{cantidad:e.target.value})}/></td>
+                        {loteCant === 'salida' && <td>{h ? <span style={{ color: stockOk ? 'var(--green)' : 'var(--red)', fontWeight:600, fontSize:11 }}>{stockOk ? '✓' : '⚠'} {Number(h.stock_actual||0)}</span> : '—'}</td>}
+                        <td>{loteCantItems.length > 1 && <button type="button" className="btn btn-ghost btn-xs" onClick={()=>removeLoteCantItem(it.id)} style={{ color:'var(--red)' }}><JxIcon name="x" size={11}/></button>}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div style={{ marginTop:14 }}><label className="flabel">Observaciones</label><textarea className="fi" rows={2} value={loteCantForm.observaciones || ''} onChange={e=>setLoteCantForm(f=>({...f, observaciones:e.target.value}))}/></div>
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={()=>setLoteCant(null)} disabled={busyLoteCant}>Cancelar</button>
+            <button className={`btn ${loteCant === 'ingreso' ? 'btn-green' : 'btn-amber'}`} onClick={submitLoteCant} disabled={busyLoteCant}>
+              {busyLoteCant ? 'Guardando…' : (loteCant === 'ingreso' ? 'Registrar ingreso' : 'Registrar salida')} ({loteCantItems.filter(it=>it.herramienta_id && parseFloat(it.cantidad)>0).length})
+            </button>
+          </div>
+        </Modal>
       )}
     </div>
   );

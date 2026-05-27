@@ -3,7 +3,8 @@ import { detectarEPP, esProbablementeEPP, epppTipo } from "../lib/epp-utils.js";
 import { normalizeCodigo, fuzzyScore } from "../lib/match-helpers.js";
 import { calcularPresupuesto, fmtSoles } from "../lib/presupuesto-obra.js";
 import { aplicarNombresDesdePartidas } from "../lib/partida-nombres.js";
-import { MigracionFlow } from "./jx-migracion-import.jsx";
+import { MigracionFlow, descargarPlantilla as descargarPlantillaMigracion } from "./jx-migracion-import.jsx";
+import { FORMATOS as MIGRACION_FORMATOS } from "../lib/migracion-parser.js";
 const { useState: uSI, useMemo: uMI, useEffect: uEI, useRef: uRI, useCallback: uCI } = React;
 
 // ── Obra activa helper (poll Dexie) ──────────────────────────
@@ -2971,6 +2972,40 @@ function ImportarPage({ showToast }) {
               </div>
             ))}
           </div>
+
+          {/* Plantillas de migración histórica — solo Super Admin */}
+          {superAdmin && (
+            <div style={{ marginTop:28 }}>
+              <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
+                <JxIcon name="calendar" size={16} color="#9B59B6"/>
+                <span style={{ fontSize:14, fontWeight:800, color:'#9B59B6' }}>Plantillas de Migración Histórica</span>
+                <span className="badge b-gray" style={{ fontSize:9.5 }}>Super Admin</span>
+              </div>
+              <div className="info-banner" style={{ marginBottom:14, background:'rgba(155,89,182,0.08)', border:'1px solid rgba(155,89,182,0.3)' }}>
+                <JxIcon name="download" size={14} color="#9B59B6"/>
+                <span>Plantillas para cargar el histórico (papel/Excel previo a JARVEX) desde <strong>Migración histórica</strong>. Llenalas y subilas en ese origen.</span>
+              </div>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14 }}>
+                {Object.values(MIGRACION_FORMATOS).map(f => (
+                  <div key={f.id} className="card card-p card-hover">
+                    <div style={{ display:'flex', gap:12, alignItems:'flex-start', marginBottom:12 }}>
+                      <div style={{ width:40, height:40, borderRadius:10, background:'rgba(155,89,182,0.15)', border:'1px solid rgba(155,89,182,0.28)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                        <JxIcon name={f.icon} size={18} color="#9B59B6"/>
+                      </div>
+                      <div>
+                        <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)', lineHeight:1.3, marginBottom:4 }}>{f.label}</div>
+                        <div style={{ fontSize:11, color:'var(--tm)' }}>{f.desc}</div>
+                      </div>
+                    </div>
+                    <button className="btn btn-ghost btn-sm" style={{ width:'100%', justifyContent:'center' }}
+                      onClick={async ()=>{ try { await descargarPlantillaMigracion(f.id); showToast(`Plantilla ${f.label} descargada`,'green'); } catch(e) { showToast(e.message,'red'); } }}>
+                      <JxIcon name="download" size={13}/>Descargar .xlsx
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
