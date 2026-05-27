@@ -153,7 +153,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     if (!parsed || !formato) return null;
     if (esInsumos) {
       const items = parseInsumosTotales(parsed.rows);
-      const porTipo = { materiales: 0, herramientas: 0, activos_pesados: 0, epps: 0, desconocido: 0 };
+      const porTipo = { materiales: 0, herramientas: 0, activos_pesados: 0, epps: 0, insumos_emergencia: 0, desconocido: 0 };
       for (const it of items) porTipo[it.tipo || 'desconocido']++;
       return { tipo: 'insumos', items, porTipo, total: items.length };
     }
@@ -200,6 +200,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       herramientas: (await cargarIndice('herramientas', obraId, 'nombre_herramienta')).map,
       epps: (await cargarIndice('epps', obraId, 'nombre_epp')).map,
       activos_pesados: (await cargarIndice('activos_pesados', obraId, 'nombre', { porObra: false })).map,
+      insumos_emergencia: (await cargarIndice('insumos_emergencia', obraId, 'nombre')).map,
     };
     setProgress({ current: 0, total: items.length });
     for (let i = 0; i < items.length; i++) {
@@ -233,8 +234,14 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
               nombre: it.nombre, tipo: (it.tipoRaw || 'equipo').toLowerCase(),
               estado: 'operativo', obra_actual_id: obraId, obra_id: obraId,
               maneja_cantidad: true, unidad: it.unidad || 'Und',
-              stock_inicial: 0, stock_actual: 0, stock_minimo: 0, alerta: 'ok',
+              stock_actual: 0, stock_minimo: 0, alerta: 'ok',
               notas: 'Migración histórica',
+            }, userId, it.fechaCreacion);
+          } else if (it.tipo === 'insumos_emergencia') {
+            rec = await addRecord('insumos_emergencia', {
+              obra_id: obraId, nombre: it.nombre, categoria: it.tipoRaw || null,
+              unidad: it.unidad || 'Und', stock_inicial: 0, stock_actual: 0, stock_minimo: 0,
+              alerta: 'ok', estado: 'activo',
             }, userId, it.fechaCreacion);
           }
           if (rec) { idx[it.tipo].set(normTxt(it.nombre), rec); creados++; }
@@ -242,7 +249,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       } catch (e) { errores++; errorList.push({ row: it.idx, error: e.message || String(e) }); }
       if (i % 20 === 0) { setProgress({ current: i + 1, total: items.length }); await new Promise(r => setTimeout(r, 0)); }
     }
-    fireChanged('materiales', 'herramientas', 'epps', 'activos_pesados');
+    fireChanged('materiales', 'herramientas', 'epps', 'activos_pesados', 'insumos_emergencia');
     return { ok: creados, saltados, errors: errores, errorList,
       detalle: `${creados} insumos creados · ${saltados} ya existían · ${errores} con error` };
   };
@@ -818,8 +825,8 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
 
           {preview.tipo === 'insumos' && (
             <div className="card card-p" style={{ marginBottom: 14 }}>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12 }}>
-                {[['Materiales', preview.porTipo.materiales, '#3498DB'], ['Herramientas', preview.porTipo.herramientas, '#F28C28'], ['Maquinaria', preview.porTipo.activos_pesados, '#8E44AD'], ['EPP', preview.porTipo.epps, '#2ECC71']].map(([lbl, n, c]) => (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: 12 }}>
+                {[['Materiales', preview.porTipo.materiales, '#3498DB'], ['Herramientas', preview.porTipo.herramientas, '#F28C28'], ['Maquinaria', preview.porTipo.activos_pesados, '#8E44AD'], ['EPP', preview.porTipo.epps, '#2ECC71'], ['Emergencia', preview.porTipo.insumos_emergencia, '#9B59B6']].map(([lbl, n, c]) => (
                   <div key={lbl} style={{ textAlign: 'center' }}>
                     <div style={{ fontSize: 24, fontWeight: 800, color: c }}>{n}</div>
                     <div style={{ fontSize: 11, color: 'var(--tm)' }}>{lbl}</div>

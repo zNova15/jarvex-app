@@ -161,6 +161,9 @@ export function normalizaTipoMov(v) {
 /** Clasifica el Tipo de un insumo a su tabla destino. */
 export function clasificaTipoInsumo(v) {
   const n = normTxt(v);
+  // 'emergencia' va primero: "Insumo de Emergencia" contiene "insumo" pero
+  // debe ir a su inventario propio (SSOMA), no a materiales.
+  if (n.includes('emergencia')) return 'insumos_emergencia';
   if (n.includes('material')) return 'materiales';
   if (n.includes('herramient')) return 'herramientas';
   if (n.includes('maquinaria') || n.includes('equipo') || n.includes('activo')) return 'activos_pesados';
