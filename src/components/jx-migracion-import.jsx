@@ -315,6 +315,64 @@ async function limpiarBasuraMigracion() {
   return { itemsBorrados, movsBorrados };
 }
 
+// Quita movimientos de migración DUPLICADOS (mismo item+fecha+tipo+cantidad,
+// marcados "Migración histórica"), dejando uno solo. Borra el resto: si nunca
+// sincronizó → hard delete local; si ya está en server → soft delete
+// (deleted_at + pending_delete) para que el SyncEngine lo borre también.
+// Después recalcula el stock de los items afectados.
+async function quitarMovsDuplicadosMigracion(obraId, userId) {
+  const db = window.__db;
+  const now = new Date().toISOString();
+  const MOVS = [
+    { tabla: 'movimientos_materiales', fk: 'material_id', itemTabla: 'materiales' },
+    { tabla: 'movimientos_epp', fk: 'epp_id', itemTabla: 'epps' },
+    { tabla: 'movimientos_herramientas', fk: 'herramienta_id', itemTabla: 'herramientas' },
+    { tabla: 'movimientos_maquinaria', fk: 'activo_id', itemTabla: 'activos_pesados' },
+    { tabla: 'movimientos_insumos_emergencia', fk: 'insumo_emergencia_id', itemTabla: 'insumos_emergencia' },
+  ];
+  let borrados = 0;
+  const afectadosPorTabla = {};
+  for (const { tabla, fk, itemTabla } of MOVS) {
+    const rows = (await db[tabla].where('obra_id').equals(obraId).toArray())
+      .filter(mv => !mv.deleted_at && String(mv.observaciones || '').includes('Migración histórica'));
+    // Agrupar por firma de contenido.
+    const grupos = new Map();
+    for (const mv of rows) {
+      const sig = mv.cantidad == null
+        ? `${mv[fk]}__${mv.fecha || ''}__${mv.tipo_movimiento || ''}__${mv.destino_tipo || ''}` // asignación
+        : `${mv[fk]}__${mv.fecha || ''}__${mv.tipo_movimiento || ''}__${mv.cantidad}`;
+      if (!grupos.has(sig)) grupos.set(sig, []);
+      grupos.get(sig).push(mv);
+    }
+    const afectados = new Set();
+    for (const lista of grupos.values()) {
+      if (lista.length <= 1) continue;
+      lista.sort((a, b) => (a.created_at || '').localeCompare(b.created_at || '')); // conservar el más viejo
+      for (let i = 1; i < lista.length; i++) {
+        const mv = lista[i];
+        try {
+          if (mv.sync_status === 'pending_create') await db[tabla].delete(mv.id);
+          else await db[tabla].update(mv.id, { deleted_at: now, sync_status: 'pending_delete' });
+          borrados++; afectados.add(mv[fk]);
+        } catch {}
+      }
+    }
+    afectadosPorTabla[itemTabla] = afectados;
+    try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla } })); } catch {}
+  }
+  // Recalcular stock de los items afectados, leyendo movimientos VIVOS.
+  for (const [itemTabla, afectados] of Object.entries(afectadosPorTabla)) {
+    if (!afectados.size) continue;
+    if (itemTabla === 'materiales') await recalcularStockMateriales(obraId, afectados, userId);
+    else if (itemTabla === 'epps') await recalcularStockEpp(obraId, afectados, userId);
+    else if (itemTabla === 'herramientas') await recalcularStockHerramientas(obraId, afectados, userId);
+    else if (itemTabla === 'activos_pesados') await recalcularStockMaquinaria(obraId, afectados, userId);
+    else if (itemTabla === 'insumos_emergencia') await recalcularStockEmergencia(obraId, afectados, userId);
+    try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: itemTabla } })); } catch {}
+  }
+  return { borrados };
+}
+
 // activos_pesados.tipo tiene un CHECK que solo admite estos valores.
 // Cualquier otro Tipo del Excel se mapea a 'otro' para no romper el sync.
 const ACTIVOS_TIPOS = new Set([
@@ -1129,7 +1187,17 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
               }}>
                 <JxIcon name="trash" size={13} />{limpiando ? 'Limpiando…' : 'Limpiar registros corruptos (locales)'}
               </button>
-              <span style={{ fontSize: 11, color: 'var(--tm)' }}>Borra insumos sin nombre y movimientos huérfanos de imports anteriores.</span>
+              <button className="btn btn-ghost btn-sm" disabled={limpiando} onClick={async () => {
+                if (!obraId) { showToast('No hay obra activa', 'red'); return; }
+                if (!confirm('Quita los movimientos de migración DUPLICADOS (mismo insumo, fecha, tipo y cantidad), dejando uno solo, y recalcula el stock. Los que ya están en el servidor se borran también al sincronizar. ¿Continuar?')) return;
+                setLimpiando(true);
+                try { const r = await quitarMovsDuplicadosMigracion(obraId, userId); showToast(`${r.borrados} movimientos duplicados quitados · stock recalculado`, 'green'); }
+                catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+                finally { setLimpiando(false); }
+              }}>
+                <JxIcon name="trash" size={13} />Quitar movimientos duplicados
+              </button>
+              <span style={{ fontSize: 11, color: 'var(--tm)' }}>Limpieza de imports anteriores: insumos sin nombre, movimientos huérfanos y duplicados.</span>
             </div>
           )}
           {!superAdmin && (

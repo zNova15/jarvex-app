@@ -2035,9 +2035,10 @@ function SistemaTab({ showToast }) {
   // Para Sistema usamos el rol REAL (no el override) — solo admin ve esto
   const isAdmin = (auth?.profile?._rolReal || auth?.profile?.rol) === 'admin';
   const appMode = window.__useAppMode ? window.__useAppMode() : { mode: 'edicion', setMode: ()=>{}, isPrueba: false, isEdicion: true, isProduccion: false, isImpersonating: false, roleOverride: null, setRoleOverride: ()=>{}, clearRoleOverride: ()=>{} };
-  const { mode, setMode, isPrueba, isEdicion, isProduccion } = appMode;
+  const { mode, setMode, isPrueba, isEdicion, isProduccion, superAdmin } = appMode;
   const [demoCount, setDemoCount] = uSAd(0);
   const [seedBusy, setSeedBusy] = uSAd(false);
+  const [borrarServer, setBorrarServer] = uSAd(false); // checkbox del modal de purga
 
   uEAd(() => {
     let cancelled = false;
@@ -2204,17 +2205,37 @@ function SistemaTab({ showToast }) {
 
   const totalLocal = Object.values(counts).reduce((a,b)=>a+(b||0),0);
 
+  // Columna de obra por tabla (para borrar en server scopeado a la obra activa).
+  const OBRA_COL = { activos_pesados: 'obra_actual_id' }; // resto usa 'obra_id'
   const clearTable = async (tableName) => {
     setBusy(true);
     try {
+      // 1) Borrado en Supabase (opcional, Super Admin). Scopeado a la obra
+      //    activa si la tabla tiene columna de obra; si no, borra toda la tabla.
+      let serverMsg = '';
+      if (borrarServer && superAdmin) {
+        const sb = window.__supabase;
+        const obraId = window.__getObraActivaId?.() || null;
+        const col = OBRA_COL[tableName] || 'obra_id';
+        let res = obraId ? await sb.from(tableName).delete().eq(col, obraId) : await sb.from(tableName).delete().not('id', 'is', null);
+        // Si la tabla no tiene esa columna de obra → borrar toda la tabla.
+        if (res.error && (res.error.code === '42703' || /column .* does not exist/i.test(res.error.message || ''))) {
+          res = await sb.from(tableName).delete().not('id', 'is', null);
+        }
+        if (res.error) { showToast?.(`Server: ${res.error.message}`, 'red'); serverMsg = ' (server FALLÓ)'; }
+        else serverMsg = obraId && !OBRA_COL[tableName] && tableName !== 'obras' ? ' + server (obra activa)' : ' + server';
+      }
+      // 2) Borrado local SIEMPRE.
       await window.__db[tableName].clear();
       setCounts(c => ({ ...c, [tableName]: 0 }));
-      showToast?.(`Tabla \`${tableName}\` vaciada localmente`, 'green');
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: tableName } })); } catch {}
+      showToast?.(`Tabla \`${tableName}\` vaciada localmente${serverMsg}`, 'green');
     } catch(e) {
       showToast?.('Error: '+(e.message||e),'red');
     } finally {
       setBusy(false);
       setTableConfirm(null);
+      setBorrarServer(false);
     }
   };
 
@@ -2458,12 +2479,22 @@ function SistemaTab({ showToast }) {
       {tableConfirm && (
         <Modal title={`Vaciar tabla: ${tableConfirm}`} icon="alert" onClose={()=>setTableConfirm(null)}>
           <div style={{ fontSize:13, color:'var(--ts)', marginBottom:12 }}>
-            ¿Borrar TODOS los registros de la tabla <code style={{ color:'var(--amber)' }}>{tableConfirm}</code> en este dispositivo ({(counts[tableConfirm]||0).toLocaleString()} registros)? Esto NO afecta los datos en Supabase si ya fueron sincronizados. Solo disponible en modo edición.
+            ¿Borrar TODOS los registros de la tabla <code style={{ color:'var(--amber)' }}>{tableConfirm}</code> en este dispositivo ({(counts[tableConfirm]||0).toLocaleString()} registros)?
           </div>
+          {superAdmin ? (
+            <label style={{ display:'flex', alignItems:'flex-start', gap:8, padding:'10px 12px', background:'rgba(231,76,60,0.08)', border:'1px solid rgba(231,76,60,0.3)', borderRadius:8, marginBottom:12, cursor:'pointer' }}>
+              <input type="checkbox" checked={borrarServer} onChange={e=>setBorrarServer(e.target.checked)} style={{ marginTop:2, accentColor:'var(--red)' }}/>
+              <span style={{ fontSize:12.5, color:'var(--ts)' }}>
+                <strong style={{ color:'var(--red)' }}>También borrar en Supabase (nube)</strong> — Super Admin. {OBRA_COL[tableConfirm] || tableConfirm !== 'obras' ? 'Borra los registros de la obra activa en el servidor.' : 'Borra del servidor.'} Irreversible.
+              </span>
+            </label>
+          ) : (
+            <div style={{ fontSize:12, color:'var(--tm)', marginBottom:12 }}>Solo borra en este dispositivo. Para borrar también en Supabase, activá Super Admin.</div>
+          )}
           <div className="modal-actions">
-            <button className="btn btn-ghost" onClick={()=>setTableConfirm(null)}>Cancelar</button>
+            <button className="btn btn-ghost" onClick={()=>{ setTableConfirm(null); setBorrarServer(false); }}>Cancelar</button>
             <button className="btn btn-red" disabled={busy} onClick={()=>clearTable(tableConfirm)}>
-              {busy?'Procesando...':'Vaciar tabla'}
+              {busy?'Procesando...':(borrarServer && superAdmin ? 'Vaciar local + Supabase' : 'Vaciar tabla (local)')}
             </button>
           </div>
         </Modal>

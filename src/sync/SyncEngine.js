@@ -1014,7 +1014,27 @@ async function pullMasterTables() {
       const vivos      = dataArr.filter(r => !r.deleted_at);
 
       if (vivos.length) {
-        await db[tabla].bulkPut(vivos);
+        // NO pisar registros con cambios locales pendientes/fallidos: el push
+        // los va a subir y el server resolverá. Sin este filtro, un pull que
+        // corre entre la edición local y su push borra el cambio local —
+        // p.ej. el stock de un EPP recién recalculado volvía a 0 porque el
+        // server aún tenía stock 0 y el bulkPut lo sobrescribía.
+        const vivosIds = vivos.map(r => r.id);
+        const pendLocal = new Set();
+        try {
+          const locs = await db[tabla].where('id').anyOf(vivosIds).toArray();
+          for (const l of locs) {
+            if (l.sync_status === SYNC_STATUS.PENDING_CREATE ||
+                l.sync_status === SYNC_STATUS.PENDING_UPDATE ||
+                l.sync_status === SYNC_STATUS.PENDING_DELETE ||
+                l.sync_status === SYNC_STATUS.FAILED) {
+              pendLocal.add(l.id);
+            }
+          }
+        } catch {}
+        const vivosAplicar = pendLocal.size ? vivos.filter(r => !pendLocal.has(r.id)) : vivos;
+        if (vivosAplicar.length) await db[tabla].bulkPut(vivosAplicar);
+        if (pendLocal.size) console.log(`[SyncEngine] pull ${tabla}: ${pendLocal.size} registros con cambios locales preservados (no pisados)`);
       }
       if (tombstones.length) {
         // Antes de borrar local: si tenemos cambios locales pendientes en
