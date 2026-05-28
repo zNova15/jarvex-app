@@ -79,6 +79,18 @@ async function addRecord(tabla, fields, userId, createdAtISO) {
   return rec;
 }
 
+// activos_pesados.tipo tiene un CHECK que solo admite estos valores.
+// Cualquier otro Tipo del Excel se mapea a 'otro' para no romper el sync.
+const ACTIVOS_TIPOS = new Set([
+  'excavadora','retroexcavadora','volquete','cargador','tractor','motoniveladora',
+  'rodillo','grua','pavimentadora','bulldozer','camion','maquinaria','equipo','otro',
+]);
+function normaTipoActivo(raw) {
+  const t = String(raw || '').toLowerCase().trim()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '');
+  return ACTIVOS_TIPOS.has(t) ? t : 'otro';
+}
+
 const fireChanged = (...tablas) => {
   for (const t of tablas) {
     try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: t } })); } catch {}
@@ -231,7 +243,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
             }, userId, it.fechaCreacion);
           } else if (it.tipo === 'activos_pesados') {
             rec = await addRecord('activos_pesados', {
-              nombre: it.nombre, tipo: (it.tipoRaw || 'equipo').toLowerCase(),
+              nombre: it.nombre, tipo: normaTipoActivo(it.tipoRaw || 'maquinaria'),
               estado: 'operativo', obra_actual_id: obraId, obra_id: obraId,
               maneja_cantidad: true, unidad: it.unidad || 'Und',
               stock_actual: 0, stock_minimo: 0, alerta: 'ok',
@@ -490,7 +502,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       const k = normTxt(nombre);
       if (actIdx.map.has(k)) return actIdx.map.get(k);
       const rec = await addRecord('activos_pesados', {
-        nombre: String(nombre).trim(), tipo: 'equipo', estado: 'operativo',
+        nombre: String(nombre).trim(), tipo: 'maquinaria', estado: 'operativo',
         obra_actual_id: obraId, obra_id: obraId, maneja_cantidad: true, unidad: unidad || 'Und',
         stock_inicial: 0, stock_actual: 0, stock_minimo: 0, alerta: 'ok', notas: 'Migración histórica',
       }, userId);
@@ -642,8 +654,8 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       const k = normTxt(nombre);
       if (actIdx.map.has(k)) return actIdx.map.get(k);
       const rec = await addRecord('activos_pesados', {
-        nombre: String(nombre).trim(), tipo: 'equipo', estado: 'operativo',
-        obra_actual_id: obraId, obra_id: obraId, maneja_cantidad: false, notas: 'Migración histórica',
+        nombre: String(nombre).trim(), tipo: 'maquinaria', estado: 'operativo',
+        obra_actual_id: obraId, obra_id: obraId, maneja_cantidad: false, notas: 'Migración histórica · custodia',
       }, userId);
       actIdx.map.set(k, rec); return rec;
     };
