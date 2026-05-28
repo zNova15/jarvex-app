@@ -184,6 +184,9 @@ async function aplicarDecisiones(scan, decisiones, formato, obraId, userId) {
 
 // Crea un item nuevo en la tabla esperada con el shape mínimo correcto.
 async function crearItemEnTabla(tabla, nombre, unidad, obraId, userId) {
+  // Guard: nunca crear insumos sin nombre (filas del Excel con celda vacía /
+  // sin ID). Devuelve null → el caller saltará sus movimientos.
+  if (!nombre || !String(nombre).trim()) return null;
   const ahora = new Date().toISOString();
   const id = window.__newId();
   const isPrueba = getCurrentMode() === 'prueba';
@@ -228,6 +231,62 @@ async function addRecord(tabla, fields, userId, createdAtISO) {
   const rec = buildRecord(tabla, fields, userId, createdAtISO);
   await window.__db[tabla].add(rec);
   return rec;
+}
+
+// Movimiento de migración IDEMPOTENTE: la idempotency_key se deriva de una
+// firma estable (obra+formato+fila+item+fecha+tipo+cantidad). Si ya existe un
+// movimiento con esa clave (re-subida del mismo archivo), NO se crea de nuevo
+// → re-importar el mismo Excel es un no-op (no duplica ni genera errores de
+// sync). Devuelve { rec } si se creó, o { dup:true } si ya existía.
+async function addMovIdem(tabla, fields, userId, createdAtISO, sig) {
+  const key = `mig_${sig}`;
+  try {
+    const yaExiste = await window.__db[tabla].where('idempotency_key').equals(key).first();
+    if (yaExiste) return { dup: true };
+  } catch {}
+  const rec = await addRecord(tabla, { ...fields, idempotency_key: key }, userId, createdAtISO);
+  return { rec };
+}
+// Firma estable de una fila de movimiento para la idempotencia.
+function sigMov(obraId, formato, m) {
+  const nombre = normTxt(m.nombreItem || m.equipo || '');
+  return `${(obraId || '').slice(0, 8)}_${formato}_${m.idx}_${nombre}_${m.fecha || ''}_${m.tipo || ''}_${m.cantidad ?? ''}`;
+}
+
+// Limpieza de basura local de migraciones rotas anteriores: insumos sin nombre
+// y movimientos huérfanos (su item no existe). SOLO borra registros que NUNCA
+// sincronizaron (pending_create/failed) — los que ya están en el server no se
+// tocan. Es local-first: el server queda intacto. Devuelve conteos.
+async function limpiarBasuraMigracion() {
+  const db = window.__db;
+  const noSync = (r) => r.sync_status === 'pending_create' || r.sync_status === 'failed';
+  let itemsBorrados = 0, movsBorrados = 0;
+  const INV = [
+    { tabla: 'materiales', col: 'nombre_material', movTabla: 'movimientos_materiales', fk: 'material_id' },
+    { tabla: 'herramientas', col: 'nombre_herramienta', movTabla: 'movimientos_herramientas', fk: 'herramienta_id' },
+    { tabla: 'epps', col: 'nombre_epp', movTabla: 'movimientos_epp', fk: 'epp_id' },
+    { tabla: 'activos_pesados', col: 'nombre', movTabla: 'movimientos_maquinaria', fk: 'activo_id' },
+    { tabla: 'insumos_emergencia', col: 'nombre', movTabla: 'movimientos_insumos_emergencia', fk: 'insumo_emergencia_id' },
+  ];
+  for (const { tabla, col, movTabla, fk } of INV) {
+    // 1) Insumos sin nombre que nunca sincronizaron → borrar.
+    const items = await db[tabla].toArray();
+    const idsBorrar = new Set();
+    for (const it of items) {
+      if (!String(it[col] || '').trim() && noSync(it)) { idsBorrar.add(it.id); }
+    }
+    for (const id of idsBorrar) { try { await db[tabla].delete(id); itemsBorrados++; } catch {} }
+    // 2) Movimientos cuyo item no existe (huérfanos) y que nunca sincronizaron.
+    const idsVivos = new Set((await db[tabla].toArray()).filter(r => !r.deleted_at).map(r => r.id));
+    const movs = await db[movTabla].toArray();
+    for (const mv of movs) {
+      if (!idsVivos.has(mv[fk]) && noSync(mv)) { try { await db[movTabla].delete(mv.id); movsBorrados++; } catch {} }
+    }
+  }
+  for (const t of ['materiales','herramientas','epps','activos_pesados','insumos_emergencia','movimientos_materiales','movimientos_herramientas','movimientos_epp','movimientos_maquinaria','movimientos_insumos_emergencia']) {
+    try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: t } })); } catch {}
+  }
+  return { itemsBorrados, movsBorrados };
 }
 
 // activos_pesados.tipo tiene un CHECK que solo admite estos valores.
@@ -307,6 +366,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
   const [scanRows, setScanRows] = uS(null);    // Array<{ key, nombre, status, existing, ... }>
   const [decisiones, setDecisiones] = uS(() => new Map()); // Map<key, accion>
   const [scanning, setScanning] = uS(false);
+  const [limpiando, setLimpiando] = uS(false);
 
   const fmtMeta = formato ? FORMATOS[formato] : null;
   const esInsumos = formato === 'insumos_totales';
@@ -451,7 +511,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       ubicIdx.map.set(k, rec); return rec.id;
     };
 
-    let okCount = 0, errores = 0, itemsCreados = 0, ubicCreadas = 0, saltadosNoAprobados = 0;
+    let okCount = 0, errores = 0, itemsCreados = 0, ubicCreadas = 0, saltadosNoAprobados = 0, duplicados = 0;
     const errorList = [];
     const afectados = new Set();
     const prevMat = matIdx.map.size, prevUbic = ubicIdx.map.size;
@@ -462,6 +522,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       try {
         if (!m.tipo) throw new Error(`Tipo de movimiento no reconocido`);
         if (!(m.cantidad > 0)) throw new Error(`Cantidad inválida`);
+        if (!String(m.nombreItem || '').trim()) { saltadosNoAprobados++; continue; }
         const mat = await resolverMaterial(m.nombreItem, m.unidad);
         if (!mat) { saltadosNoAprobados++; continue; }
         afectados.add(mat.id);
@@ -477,13 +538,14 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           if (m.lugar) frente = m.lugar;
         }
         const obs = ['Migración histórica', ...obsExtra].join(' · ');
-        await addRecord('movimientos_materiales', {
+        const r = await addMovIdem('movimientos_materiales', {
           obra_id: obraId, material_id: mat.id, fecha: m.fecha || new Date().toISOString().slice(0, 10),
           hora: null, tipo_movimiento: m.tipo, cantidad: m.cantidad,
           unidad: m.unidad || mat.unidad || 'Und',
-          responsable_id, proveedor_id, frente_zona: frente, partida_id: null,
+          responsable_id, proveedor_id, frente_zona: frente, partida_id: null, ubicacion_id: ubicId,
           documento_asociado: null, precio_unitario_real: null, observaciones: obs,
-        }, userId);
+        }, userId, null, sigMov(obraId, 'mov_materiales', m));
+        if (r.dup) { duplicados++; continue; }
 
         if (ubicId) {
           try { await aplicarDelta({ obraId, itemTipo: 'material', itemId: mat.id, ubicacionId: ubicId, delta: m.tipo === 'entrada' ? m.cantidad : -m.cantidad, userId }); } catch {}
@@ -498,7 +560,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     await recalcularStockMateriales(obraId, afectados, userId);
     fireChanged('materiales', 'movimientos_materiales', 'ubicaciones_obra', 'stock_ubicaciones');
     return { ok: okCount, errors: errores, saltadosNoAprobados, errorList,
-      detalle: `${okCount} movimientos cargados · ${ubicCreadas} ubicaciones creadas${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
+      detalle: `${okCount} movimientos cargados · ${ubicCreadas} ubicaciones creadas${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
   const runMovEpp = async (resolvedItems = null) => {
@@ -530,7 +592,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       ubicIdx.map.set(k, rec); return rec.id;
     };
 
-    let okCount = 0, errores = 0, saltadosNoAprobados = 0;
+    let okCount = 0, errores = 0, saltadosNoAprobados = 0, duplicados = 0;
     const errorList = [];
     const afectados = new Set();
     const prevEpp = eppIdx.map.size;
@@ -541,6 +603,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       try {
         if (!m.tipo) throw new Error('Tipo de movimiento no reconocido');
         if (!(m.cantidad > 0)) throw new Error('Cantidad inválida');
+        if (!String(m.nombreItem || '').trim()) { saltadosNoAprobados++; continue; }
         const epp = await resolverEpp(m.nombreItem, m.unidad);
         if (!epp) { saltadosNoAprobados++; continue; }
         afectados.add(epp.id);
@@ -557,11 +620,12 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           ubicId = epp.ubicacion_id || (ubicIdx.rows[0]?.id ?? null);
         }
         const obs = ['Migración histórica', ...obsExtra].join(' · ');
-        await addRecord('movimientos_epp', {
+        const r = await addMovIdem('movimientos_epp', {
           obra_id: obraId, epp_id: epp.id, fecha: m.fecha || new Date().toISOString().slice(0, 10),
           hora: null, tipo_movimiento: m.tipo, cantidad: m.cantidad, unidad: m.unidad || epp.unidad || 'Und',
-          personal_id, proveedor_id, motivo: m.tipo === 'entrada' ? 'reposicion' : 'dotacion', observaciones: obs,
-        }, userId);
+          personal_id, proveedor_id, ubicacion_id: ubicId, motivo: m.tipo === 'entrada' ? 'reposicion' : 'dotacion', observaciones: obs,
+        }, userId, null, sigMov(obraId, 'mov_epp', m));
+        if (r.dup) { duplicados++; continue; }
 
         if (ubicId) {
           try { await aplicarDelta({ obraId, itemTipo: 'epp', itemId: epp.id, ubicacionId: ubicId, delta: m.tipo === 'entrada' ? m.cantidad : -m.cantidad, userId }); } catch {}
@@ -574,7 +638,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     await recalcularStockEpp(obraId, afectados, userId);
     fireChanged('epps', 'movimientos_epp', 'ubicaciones_obra', 'stock_ubicaciones');
     return { ok: okCount, errors: errores, saltadosNoAprobados, errorList,
-      detalle: `${okCount} movimientos EPP cargados${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
+      detalle: `${okCount} movimientos EPP cargados${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
   const runMovHerramientas = async (resolvedItems = null) => {
@@ -608,7 +672,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       ubicIdx.map.set(k, rec); return rec.id;
     };
 
-    let okCount = 0, errores = 0, saltadosNoAprobados = 0;
+    let okCount = 0, errores = 0, saltadosNoAprobados = 0, duplicados = 0;
     const errorList = [];
     const afectados = new Set();
     const prevHerr = herrIdx.map.size;
@@ -619,6 +683,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       try {
         if (!m.tipo) throw new Error('Tipo de movimiento no reconocido');
         if (!(m.cantidad > 0)) throw new Error('Cantidad inválida');
+        if (!String(m.nombreItem || '').trim()) { saltadosNoAprobados++; continue; }
         const herr = await resolverHerr(m.nombreItem, m.unidad, m.estado);
         if (!herr) { saltadosNoAprobados++; continue; }
         afectados.add(herr.id);
@@ -635,11 +700,12 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         }
         const obs = ['Migración histórica', ...obsExtra].join(' · ');
         // accion = tipo_movimiento (valores válidos del CHECK legacy).
-        await addRecord('movimientos_herramientas', {
+        const r = await addMovIdem('movimientos_herramientas', {
           obra_id: obraId, herramienta_id: herr.id, fecha: m.fecha || new Date().toISOString().slice(0, 10),
           hora: null, accion: m.tipo, tipo_movimiento: m.tipo, cantidad: m.cantidad,
-          responsable_id, proveedor_id, frente_zona: frente, observaciones: obs,
-        }, userId);
+          responsable_id, proveedor_id, frente_zona: frente, ubicacion_id: ubicId, observaciones: obs,
+        }, userId, null, sigMov(obraId, 'mov_herramientas', m));
+        if (r.dup) { duplicados++; continue; }
 
         if (ubicId) {
           try { await aplicarDelta({ obraId, itemTipo: 'herramienta', itemId: herr.id, ubicacionId: ubicId, delta: m.tipo === 'entrada' ? m.cantidad : -m.cantidad, userId }); } catch {}
@@ -652,7 +718,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     await recalcularStockHerramientas(obraId, afectados, userId);
     fireChanged('herramientas', 'movimientos_herramientas', 'ubicaciones_obra', 'stock_ubicaciones');
     return { ok: okCount, errors: errores, saltadosNoAprobados, errorList,
-      detalle: `${okCount} movimientos de herramientas cargados${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
+      detalle: `${okCount} movimientos de herramientas cargados${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
   const runMovMaquinaria = async (resolvedItems = null) => {
@@ -685,7 +751,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       ubicIdx.map.set(k, rec); return rec.id;
     };
 
-    let okCount = 0, errores = 0, saltadosNoAprobados = 0;
+    let okCount = 0, errores = 0, saltadosNoAprobados = 0, duplicados = 0;
     const errorList = [];
     const afectados = new Set();
     const prevAct = actIdx.map.size;
@@ -696,6 +762,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       try {
         if (!m.tipo) throw new Error('Tipo de movimiento no reconocido');
         if (!(m.cantidad > 0)) throw new Error('Cantidad inválida');
+        if (!String(m.nombreItem || '').trim()) { saltadosNoAprobados++; continue; }
         const act = await resolverActivo(m.nombreItem, m.unidad, m.estado);
         if (!act) { saltadosNoAprobados++; continue; }
         afectados.add(act.id);
@@ -711,11 +778,12 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           if (m.lugar) frente = m.lugar;
         }
         const obs = ['Migración histórica', ...obsExtra].join(' · ');
-        await addRecord('movimientos_maquinaria', {
+        const r = await addMovIdem('movimientos_maquinaria', {
           obra_id: obraId, activo_id: act.id, fecha: m.fecha || new Date().toISOString().slice(0, 10),
           hora: null, tipo_movimiento: m.tipo, cantidad: m.cantidad, unidad: m.unidad || act.unidad || 'Und',
           responsable_id, proveedor_id, estado: m.estado || null, frente_zona: frente, observaciones: obs,
-        }, userId);
+        }, userId, null, sigMov(obraId, 'mov_maquinaria', m));
+        if (r.dup) { duplicados++; continue; }
 
         if (ubicId) {
           try { await aplicarDelta({ obraId, itemTipo: 'maquinaria', itemId: act.id, ubicacionId: ubicId, delta: m.tipo === 'entrada' ? m.cantidad : -m.cantidad, userId }); } catch {}
@@ -728,7 +796,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     await recalcularStockMaquinaria(obraId, afectados, userId);
     fireChanged('activos_pesados', 'movimientos_maquinaria', 'ubicaciones_obra', 'stock_ubicaciones');
     return { ok: okCount, errors: errores, saltadosNoAprobados, errorList,
-      detalle: `${okCount} movimientos de maquinaria cargados${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
+      detalle: `${okCount} movimientos de maquinaria cargados${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
   const runInsumosEmergencia = async () => {
@@ -774,7 +842,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       insIdx.map.set(k, rec); return rec;
     };
 
-    let okCount = 0, errores = 0, saltadosNoAprobados = 0;
+    let okCount = 0, errores = 0, saltadosNoAprobados = 0, duplicados = 0;
     const errorList = [];
     const afectados = new Set();
     const prevIns = insIdx.map.size;
@@ -785,6 +853,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       try {
         if (!m.tipo) throw new Error('Tipo de movimiento no reconocido');
         if (!(m.cantidad > 0)) throw new Error('Cantidad inválida');
+        if (!String(m.nombreItem || '').trim()) { saltadosNoAprobados++; continue; }
         const ins = await resolverInsumo(m.nombreItem, m.unidad);
         if (!ins) { saltadosNoAprobados++; continue; }
         afectados.add(ins.id);
@@ -798,11 +867,12 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         }
         if (m.lugar) obsExtra.push(`Lugar: ${m.lugar}`);
         const obs = ['Migración histórica', ...obsExtra].join(' · ');
-        await addRecord('movimientos_insumos_emergencia', {
+        const r = await addMovIdem('movimientos_insumos_emergencia', {
           obra_id: obraId, insumo_emergencia_id: ins.id, fecha: m.fecha || new Date().toISOString().slice(0, 10),
           hora: null, tipo_movimiento: m.tipo, cantidad: m.cantidad, unidad: m.unidad || ins.unidad || 'Und',
           responsable_id, proveedor_id, observaciones: obs,
-        }, userId);
+        }, userId, null, sigMov(obraId, 'mov_emergencia', m));
+        if (r.dup) { duplicados++; continue; }
         okCount++;
       } catch (e) { errores++; errorList.push({ row: m.idx, error: e.message || String(e) }); }
       if (i % 20 === 0) { setProgress({ current: i + 1, total: movs.length }); await new Promise(r => setTimeout(r, 0)); }
@@ -811,7 +881,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     await recalcularStockEmergencia(obraId, afectados, userId);
     fireChanged('insumos_emergencia', 'movimientos_insumos_emergencia');
     return { ok: okCount, errors: errores, saltadosNoAprobados, errorList,
-      detalle: `${okCount} movimientos de emergencia cargados${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
+      detalle: `${okCount} movimientos de emergencia cargados${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
   const runMovMaquinariaAsignacionLoad = async (resolvedItems = null) => {
@@ -838,7 +908,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       return s?.id || null;
     };
 
-    let okCount = 0, errores = 0, saltadosNoAprobados = 0;
+    let okCount = 0, errores = 0, saltadosNoAprobados = 0, duplicados = 0;
     const errorList = [];
     const prevAct = actIdx.map.size;
     // custodia final por activo (último movimiento gana, ya que vienen asc)
@@ -849,6 +919,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       const m = movs[i];
       try {
         if (!m.tipo) throw new Error('Movimiento no reconocido (usá Salida/Devolución)');
+        if (!String(m.equipo || '').trim()) { saltadosNoAprobados++; continue; }
         const act = await resolverActivo(m.equipo);
         if (!act) { saltadosNoAprobados++; continue; }
         const obsExtra = [];
@@ -865,11 +936,13 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           destino_nombre = m.destinoNombre || null;
         }
         const obs = ['Migración histórica', m.observaciones, ...obsExtra].filter(Boolean).join(' · ');
-        await addRecord('movimientos_maquinaria', {
+        const sigA = `${(obraId || '').slice(0, 8)}_asig_${m.idx}_${normTxt(m.equipo)}_${m.fecha || ''}_${m.tipo}_${normTxt(m.destinoNombre || '')}`;
+        const r = await addMovIdem('movimientos_maquinaria', {
           obra_id: obraId, activo_id: act.id, fecha: m.fecha || new Date().toISOString().slice(0, 10),
           hora: null, tipo_movimiento: m.tipo, cantidad: null, unidad: null,
           responsable_id, subcontratista_id, destino_tipo, observaciones: obs,
-        }, userId);
+        }, userId, null, sigA);
+        if (r.dup) { duplicados++; continue; }
         // custodia final
         custodia.set(act.id, m.tipo === 'salida'
           ? { tipo: destino_tipo, id: responsable_id || subcontratista_id || null, nombre: destino_nombre, fecha: m.fecha }
@@ -893,7 +966,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     }
     fireChanged('activos_pesados', 'movimientos_maquinaria');
     return { ok: okCount, errors: errores, saltadosNoAprobados, errorList,
-      detalle: `${okCount} asignaciones cargadas${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
+      detalle: `${okCount} asignaciones cargadas${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
   // Llamado desde el paso "Revisar". Para movimientos lanza el escaneo de
@@ -982,13 +1055,28 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
             <div style={{ fontSize: 13, color: 'var(--ts)', lineHeight: 1.65 }}>
               Carga masiva de los movimientos que la obra registró en papel/Excel antes de usar JARVEX, <strong>respetando las fechas reales</strong>.
               <br /><br />
-              <strong>Orden recomendado:</strong>
+              <strong>Cómo funciona:</strong>
               <ol style={{ margin: '6px 0 0 18px', padding: 0 }}>
-                <li>Primero <strong>Insumos Totales</strong> (crea el catálogo de Materiales / Herramientas / Maquinaria / EPP, sin stock).</li>
-                <li>Luego cada archivo de <strong>Movimientos</strong> (ingresos/salidas con su fecha). Si un insumo no existe, se crea solo.</li>
+                <li>Subís cada archivo de <strong>Movimientos</strong> (Materiales, Herramientas, EPP, Maquinaria, Emergencia).</li>
+                <li>Antes de cargar, una <strong>revisión de insumos</strong> te muestra cuáles existen, cuáles son nuevos y cuáles ya están en otro inventario — vos decidís crear, reemplazar o saltar.</li>
+                <li>Re-subir el mismo archivo es seguro: los movimientos ya cargados <strong>no se duplican</strong>.</li>
               </ol>
             </div>
           </div>
+          {superAdmin && (
+            <div style={{ marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <button className="btn btn-ghost btn-sm" disabled={limpiando} onClick={async () => {
+                if (!confirm('Limpieza local: borra de ESTE dispositivo los insumos sin nombre y los movimientos huérfanos de migraciones anteriores que nunca se sincronizaron. El servidor no se toca. ¿Continuar?')) return;
+                setLimpiando(true);
+                try { const r = await limpiarBasuraMigracion(); showToast(`Limpieza: ${r.itemsBorrados} insumos + ${r.movsBorrados} movimientos corruptos borrados`, 'green'); }
+                catch (e) { showToast('Error en limpieza: ' + (e.message || e), 'red'); }
+                finally { setLimpiando(false); }
+              }}>
+                <JxIcon name="trash" size={13} />{limpiando ? 'Limpiando…' : 'Limpiar registros corruptos (locales)'}
+              </button>
+              <span style={{ fontSize: 11, color: 'var(--tm)' }}>Borra insumos sin nombre y movimientos huérfanos de imports anteriores.</span>
+            </div>
+          )}
           {!superAdmin && (
             <div className="alert-banner" style={{ marginBottom: 14, background: 'rgba(231,76,60,0.08)', border: '1px solid rgba(231,76,60,0.3)', color: 'var(--red)' }}>
               <JxIcon name="alert" size={14} color="var(--red)" />
