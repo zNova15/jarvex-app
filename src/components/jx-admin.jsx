@@ -2207,6 +2207,17 @@ function SistemaTab({ showToast }) {
 
   // Columna de obra por tabla (para borrar en server scopeado a la obra activa).
   const OBRA_COL = { activos_pesados: 'obra_actual_id' }; // resto usa 'obra_id'
+  // Tablas hijas que referencian (FK NO ACTION) a una tabla padre y bloquean
+  // su borrado en server. Hay que borrarlas ANTES del padre. Todas tienen
+  // obra_id, así que se borran scopeadas a la obra activa. stock_ubicaciones se
+  // borra por item_tipo (filtra los del padre correspondiente).
+  const SERVER_CHILDREN = {
+    materiales:          [{ tabla: 'movimientos_materiales' }, { tabla: 'stock_ubicaciones', itemTipo: 'material' }],
+    herramientas:        [{ tabla: 'movimientos_herramientas' }, { tabla: 'stock_ubicaciones', itemTipo: 'herramienta' }],
+    epps:                [{ tabla: 'movimientos_epp' }, { tabla: 'epp_entregas' }, { tabla: 'stock_ubicaciones', itemTipo: 'epp' }],
+    activos_pesados:     [{ tabla: 'movimientos_maquinaria' }, { tabla: 'stock_ubicaciones', itemTipo: 'maquinaria' }],
+    insumos_emergencia:  [{ tabla: 'movimientos_insumos_emergencia' }],
+  };
   const clearTable = async (tableName) => {
     setBusy(true);
     try {
@@ -2217,13 +2228,23 @@ function SistemaTab({ showToast }) {
         const sb = window.__supabase;
         const obraId = window.__getObraActivaId?.() || null;
         const col = OBRA_COL[tableName] || 'obra_id';
+        // 1a) Borrar hijos primero (FK NO ACTION bloquearía el padre).
+        const hijos = SERVER_CHILDREN[tableName] || [];
+        for (const h of hijos) {
+          let q = sb.from(h.tabla).delete();
+          q = obraId ? q.eq('obra_id', obraId) : q.not('id', 'is', null);
+          if (h.itemTipo) q = q.eq('item_tipo', h.itemTipo);
+          const hr = await q;
+          if (hr.error) console.warn(`[purge] hijo ${h.tabla}:`, hr.error.message);
+        }
+        // 1b) Borrar el padre.
         let res = obraId ? await sb.from(tableName).delete().eq(col, obraId) : await sb.from(tableName).delete().not('id', 'is', null);
         // Si la tabla no tiene esa columna de obra → borrar toda la tabla.
         if (res.error && (res.error.code === '42703' || /column .* does not exist/i.test(res.error.message || ''))) {
           res = await sb.from(tableName).delete().not('id', 'is', null);
         }
         if (res.error) { showToast?.(`Server: ${res.error.message}`, 'red'); serverMsg = ' (server FALLÓ)'; }
-        else serverMsg = obraId && !OBRA_COL[tableName] && tableName !== 'obras' ? ' + server (obra activa)' : ' + server';
+        else serverMsg = ' + server';
       }
       // 2) Borrado local SIEMPRE.
       await window.__db[tableName].clear();

@@ -477,12 +477,14 @@ function EppPage({ showToast }) {
   const appMode = window.__useAppMode ? window.__useAppMode() : { superAdmin: false };
   const superAdmin = !!appMode.superAdmin;
   const { data: entregas } = window.__hooks.useEppEntregas(obraId);
-  const { data: personal } = window.__hooks.usePersonal(obraId);
+  const { data: personal, create: createPersonal } = window.__hooks.usePersonal(obraId);
   // Movimientos del inventario EPP (movimientos_epp) + catálogo epps —
   // se unifican con epp_entregas: salida→entrega a trabajador, entrada→compra.
   const { data: movEpp } = window.__hooks.useMovimientosEpp?.(obraId) || { data: [] };
   const { data: eppsCat } = window.__hooks.useEpps?.(obraId) || { data: [] };
+  const { data: subcontratistas } = window.__hooks.useSubcontratistas?.() || { data: [] };
   const eppsById = uM(() => { const m = new Map(); (eppsCat || []).forEach(e => m.set(e.id, e)); return m; }, [eppsCat]);
+  const subById = uM(() => { const m = new Map(); (subcontratistas || []).forEach(s => m.set(s.id, s)); return m; }, [subcontratistas]);
 
   // Normaliza cada movimiento_epp al shape de un registro de epp_entregas,
   // para que las tablas, el stock y los filtros lo procesen igual.
@@ -494,6 +496,8 @@ function EppPage({ showToast }) {
       return {
         id: mv.id, fecha: mv.fecha, tipo_movimiento: mv.tipo_movimiento,
         personal_id: mv.tipo_movimiento === 'salida' ? (mv.personal_id || null) : null,
+        subcontratista_id: mv.subcontratista_id || null,
+        destino_tipo: mv.destino_tipo || null,
         proveedor_id: mv.proveedor_id || null,
         motivo: mv.motivo || (mv.tipo_movimiento === 'entrada' ? 'compra' : 'dotacion'),
         observaciones: mv.observaciones || null,
@@ -528,6 +532,56 @@ function EppPage({ showToast }) {
     } catch (e) {
       showToast('Error: ' + (e.message || e), 'red');
     }
+  };
+
+  // Super Admin: editar el destino de una entrega EPP (movimientos_epp).
+  // Permite asignar a Personal o Subcontratista, y crear el trabajador si no
+  // existe (la columna G del Excel = responsable, que puede no estar creado).
+  const [editDestino, setEditDestino] = uS(null); // reg en edición
+  const [destForm, setDestForm] = uS({ destino_tipo: 'personal', personal_id: '', subcontratista_id: '', nuevoNombre: '' });
+  const abrirEditDestino = (reg) => {
+    setEditDestino(reg);
+    setDestForm({
+      destino_tipo: reg.subcontratista_id ? 'subcontratista' : 'personal',
+      personal_id: reg.personal_id || '',
+      subcontratista_id: reg.subcontratista_id || '',
+      nuevoNombre: '',
+    });
+  };
+  const guardarDestino = async () => {
+    if (!editDestino) return;
+    try {
+      let personal_id = null, subcontratista_id = null;
+      if (destForm.destino_tipo === 'subcontratista') {
+        if (!destForm.subcontratista_id) { showToast('Elegí el subcontratista', 'red'); return; }
+        subcontratista_id = destForm.subcontratista_id;
+      } else {
+        // Personal: usar existente o crear uno nuevo con el nombre tipeado.
+        if (destForm.personal_id === '__nuevo__') {
+          const nombre = (destForm.nuevoNombre || '').trim();
+          if (!nombre) { showToast('Escribí el nombre del trabajador', 'red'); return; }
+          const partes = nombre.split(/\s+/);
+          const nombres = partes.slice(0, Math.ceil(partes.length / 2)).join(' ') || nombre;
+          const apellidos = partes.slice(Math.ceil(partes.length / 2)).join(' ') || '';
+          const nuevo = await createPersonal({ obra_id: obraId, nombres, apellidos, dni: null, cargo: 'Obrero', estado: 'activo' });
+          personal_id = nuevo?.id;
+        } else {
+          if (!destForm.personal_id) { showToast('Elegí el trabajador', 'red'); return; }
+          personal_id = destForm.personal_id;
+        }
+      }
+      await window.__db.movimientos_epp.update(editDestino.id, {
+        personal_id, subcontratista_id, destino_tipo: destForm.destino_tipo,
+        updated_at: new Date().toISOString(), updated_by: userId,
+        version: (editDestino.version ?? 0) + 1,
+        sync_status: editDestino.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      try { await window.__logAudit?.({ action: 'update', table: 'movimientos_epp', recordId: editDestino.id, reason: 'Super Admin · asignar destino EPP' }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'movimientos_epp' } })); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'personal' } })); } catch {}
+      showToast('Destino actualizado', 'green');
+      setEditDestino(null);
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
   };
 
   const [proveedoresDB, setProveedoresDB] = uS([]);
@@ -867,7 +921,21 @@ function EppPage({ showToast }) {
                             onClick={(ev)=>{ ev.stopPropagation(); setEditFechaEpp(e); setEditFechaEppValue(e.fecha || ''); }}>📅</button>
                         )}
                       </td>
-                      <td className="col-p">{p ? `${p.nombres} ${p.apellidos}` : '—'}</td>
+                      <td className="col-p">
+                        {(() => {
+                          const sub = e.subcontratista_id ? subById.get(e.subcontratista_id) : null;
+                          if (p) return `${p.nombres} ${p.apellidos || ''}`.trim();
+                          if (sub) return `${sub.razon_social} (subcontrato)`;
+                          // sin asignar: mostrar el nombre del Excel si quedó en observaciones
+                          const m = String(e.observaciones || '').match(/(?:Entregado a|Responsable|Asignado a):\s*([^·]+)/i);
+                          const txt = m ? m[1].trim() : '—';
+                          return <span style={{ color: 'var(--tm)' }}>{txt}{txt !== '—' ? ' ⚠' : ''}</span>;
+                        })()}
+                        {superAdmin && e._esMovEpp && (
+                          <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: asignar trabajador / subcontrato" style={{ marginLeft: 4, color: '#E74C3C', padding: '0 4px' }}
+                            onClick={(ev) => { ev.stopPropagation(); abrirEditDestino(e); }}>👤</button>
+                        )}
+                      </td>
                       <td>
                         {its.slice(0, 3).map((it, i) => (
                           <span key={i} className="tag" style={{ marginRight:4, marginBottom:2, display:'inline-block' }}>
@@ -952,6 +1020,53 @@ function EppPage({ showToast }) {
             <button className="btn btn-amber" onClick={()=>guardarFechaEpp(editFechaEpp, editFechaEppValue)}>
               <JxIcon name="check" size={13}/> Guardar fecha
             </button>
+          </div>
+        </Modal>
+      )}
+
+      {editDestino && (
+        <Modal title="⚡ Asignar destino de la entrega EPP" icon="users" onClose={()=>setEditDestino(null)}>
+          <div style={{ fontSize:12, color:'var(--tm)', marginBottom:12 }}>
+            {editDestino._eppNombre} · {editDestino.fecha}. Los EPP se entregan al personal directo o a un subcontratista.
+          </div>
+          <div className="g2">
+            <div style={{ gridColumn:'1/-1' }}>
+              <label className="flabel">Tipo de destino</label>
+              <select className="fi" value={destForm.destino_tipo} onChange={e=>setDestForm(f=>({ ...f, destino_tipo:e.target.value }))}>
+                <option value="personal">Personal directo</option>
+                <option value="subcontratista">Subcontratista</option>
+              </select>
+            </div>
+            {destForm.destino_tipo === 'subcontratista' ? (
+              <div style={{ gridColumn:'1/-1' }}>
+                <label className="flabel">Subcontratista</label>
+                <select className="fi" value={destForm.subcontratista_id} onChange={e=>setDestForm(f=>({ ...f, subcontratista_id:e.target.value }))}>
+                  <option value="">— Selecciona —</option>
+                  {(subcontratistas||[]).filter(s=>!s.deleted_at).map(s => <option key={s.id} value={s.id}>{s.razon_social}</option>)}
+                </select>
+              </div>
+            ) : (
+              <>
+                <div style={{ gridColumn:'1/-1' }}>
+                  <label className="flabel">Trabajador</label>
+                  <select className="fi" value={destForm.personal_id} onChange={e=>setDestForm(f=>({ ...f, personal_id:e.target.value }))}>
+                    <option value="">— Selecciona —</option>
+                    {(personal||[]).filter(p=>!p.deleted_at).map(p => <option key={p.id} value={p.id}>{p.nombres} {p.apellidos || ''}</option>)}
+                    <option value="__nuevo__">+ Crear trabajador nuevo…</option>
+                  </select>
+                </div>
+                {destForm.personal_id === '__nuevo__' && (
+                  <div style={{ gridColumn:'1/-1' }}>
+                    <label className="flabel">Nombre del nuevo trabajador</label>
+                    <input className="fi" value={destForm.nuevoNombre} onChange={e=>setDestForm(f=>({ ...f, nuevoNombre:e.target.value }))} placeholder="Nombre y apellido"/>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={()=>setEditDestino(null)}>Cancelar</button>
+            <button className="btn btn-amber" onClick={guardarDestino}><JxIcon name="check" size={13}/> Guardar destino</button>
           </div>
         </Modal>
       )}
