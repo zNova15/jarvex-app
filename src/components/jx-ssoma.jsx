@@ -478,6 +478,34 @@ function EppPage({ showToast }) {
   const superAdmin = !!appMode.superAdmin;
   const { data: entregas } = window.__hooks.useEppEntregas(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
+  // Movimientos del inventario EPP (movimientos_epp) + catálogo epps —
+  // se unifican con epp_entregas: salida→entrega a trabajador, entrada→compra.
+  const { data: movEpp } = window.__hooks.useMovimientosEpp?.(obraId) || { data: [] };
+  const { data: eppsCat } = window.__hooks.useEpps?.(obraId) || { data: [] };
+  const eppsById = uM(() => { const m = new Map(); (eppsCat || []).forEach(e => m.set(e.id, e)); return m; }, [eppsCat]);
+
+  // Normaliza cada movimiento_epp al shape de un registro de epp_entregas,
+  // para que las tablas, el stock y los filtros lo procesen igual.
+  const movEppNormalizados = uM(() => {
+    return (movEpp || []).filter(mv => !mv.deleted_at).map(mv => {
+      const epp = eppsById.get(mv.epp_id);
+      const cant = Number(mv.cantidad || 0);
+      const cu = Number(mv.precio_unitario_real || 0);
+      return {
+        id: mv.id, fecha: mv.fecha, tipo_movimiento: mv.tipo_movimiento,
+        personal_id: mv.tipo_movimiento === 'salida' ? (mv.personal_id || null) : null,
+        proveedor_id: mv.proveedor_id || null,
+        motivo: mv.motivo || (mv.tipo_movimiento === 'entrada' ? 'compra' : 'dotacion'),
+        observaciones: mv.observaciones || null,
+        sync_status: mv.sync_status, version: mv.version,
+        _esMovEpp: true, _eppNombre: epp?.nombre_epp || '(EPP)',
+        items: [{ tipo_epp: epp?.tipo_epp || 'Otro', nombre: epp?.nombre_epp, cantidad: cant, costo_unitario: cu, costo_total: +(cant * cu).toFixed(2) }],
+      };
+    });
+  }, [movEpp, eppsById]);
+
+  // Fuente unificada: epp_entregas (flujo clásico) + movimientos_epp (inventario).
+  const registros = uM(() => [...(entregas || []), ...movEppNormalizados], [entregas, movEppNormalizados]);
 
   // Super Admin: editar fecha de una entrega/compra de EPP histórica.
   const [editFechaEpp, setEditFechaEpp] = uS(null);
@@ -485,15 +513,16 @@ function EppPage({ showToast }) {
   const guardarFechaEpp = async (reg, nuevaFecha) => {
     if (!nuevaFecha) { showToast('Elegí una fecha', 'red'); return; }
     try {
-      await window.__db.epp_entregas.update(reg.id, {
+      const tabla = reg._esMovEpp ? 'movimientos_epp' : 'epp_entregas';
+      await window.__db[tabla].update(reg.id, {
         fecha: nuevaFecha,
         updated_at: new Date().toISOString(),
         updated_by: userId,
         version: (reg.version ?? 0) + 1,
         sync_status: reg.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
       });
-      try { await window.__logAudit?.({ action:'update', table:'epp_entregas', recordId: reg.id, oldData:{ fecha: reg.fecha }, newData:{ fecha: nuevaFecha }, reason:'Super Admin · corrección de fecha histórica EPP' }); } catch {}
-      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'epp_entregas' } })); } catch {}
+      try { await window.__logAudit?.({ action:'update', table: tabla, recordId: reg.id, oldData:{ fecha: reg.fecha }, newData:{ fecha: nuevaFecha }, reason:'Super Admin · corrección de fecha histórica EPP' }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla } })); } catch {}
       showToast('✓ Fecha actualizada', 'green');
       setEditFechaEpp(null);
     } catch (e) {
@@ -525,19 +554,21 @@ function EppPage({ showToast }) {
   // Las "entradas" son registros con tipo_movimiento='entrada' o personal_id=null.
   // Las "entregas" son las clásicas con personal_id.
   const entregasFiltradas = uM(() => {
-    return (entregas || []).filter(e =>
-      !e.deleted_at &&
-      e.tipo_movimiento !== 'entrada' &&
-      !!e.personal_id
-    ).sort((a,b) => (b.fecha||'').localeCompare(a.fecha||''));
-  }, [entregas]);
+    return (registros || []).filter(e => {
+      if (e.deleted_at) return false;
+      // movimientos_epp: salida = entrega a trabajador (aunque no tenga personal_id).
+      if (e._esMovEpp) return e.tipo_movimiento === 'salida';
+      return e.tipo_movimiento !== 'entrada' && !!e.personal_id;
+    }).sort((a,b) => (b.fecha||'').localeCompare(a.fecha||''));
+  }, [registros]);
 
   const entradasFiltradas = uM(() => {
-    return (entregas || []).filter(e =>
-      !e.deleted_at &&
-      (e.tipo_movimiento === 'entrada' || (!e.personal_id && e.proveedor_id))
-    ).sort((a,b) => (b.fecha||'').localeCompare(a.fecha||''));
-  }, [entregas]);
+    return (registros || []).filter(e => {
+      if (e.deleted_at) return false;
+      if (e._esMovEpp) return e.tipo_movimiento === 'entrada';
+      return e.tipo_movimiento === 'entrada' || (!e.personal_id && e.proveedor_id);
+    }).sort((a,b) => (b.fecha||'').localeCompare(a.fecha||''));
+  }, [registros]);
 
   // Compatibilidad: una entrega puede ser un solo tipo (campos planos) o
   // un grupo con `items: [{tipo_epp, cantidad, marca, costo_unitario}]`.
@@ -557,10 +588,10 @@ function EppPage({ showToast }) {
   const stockPorTipo = uM(() => {
     const map = {}; // tipo → { entradas, entregas, stock }
     CATALOGO_EPP.forEach(c => { map[c.tipo] = { entradas: 0, entregas: 0, stock: 0 }; });
-    (entregas || []).forEach(e => {
+    (registros || []).forEach(e => {
       if (e.deleted_at) return;
       const its = entregaItems(e);
-      const esEntrada = e.tipo_movimiento === 'entrada' || (!e.personal_id && e.proveedor_id);
+      const esEntrada = e._esMovEpp ? e.tipo_movimiento === 'entrada' : (e.tipo_movimiento === 'entrada' || (!e.personal_id && e.proveedor_id));
       its.forEach(it => {
         const t = it.tipo_epp;
         if (!map[t]) map[t] = { entradas: 0, entregas: 0, stock: 0 };
@@ -840,7 +871,7 @@ function EppPage({ showToast }) {
                       <td>
                         {its.slice(0, 3).map((it, i) => (
                           <span key={i} className="tag" style={{ marginRight:4, marginBottom:2, display:'inline-block' }}>
-                            {it.tipo_epp} ×{it.cantidad}
+                            {it.nombre || it.tipo_epp} ×{it.cantidad}
                           </span>
                         ))}
                         {its.length > 3 && <span style={{ fontSize:10, color:'var(--tm)' }}>+{its.length - 3}</span>}
@@ -889,7 +920,7 @@ function EppPage({ showToast }) {
                       <td>
                         {its.slice(0, 3).map((it, i) => (
                           <span key={i} className="tag" style={{ marginRight:4, marginBottom:2, display:'inline-block' }}>
-                            {it.tipo_epp} ×{it.cantidad}
+                            {it.nombre || it.tipo_epp} ×{it.cantidad}
                           </span>
                         ))}
                         {its.length > 3 && <span style={{ fontSize:10, color:'var(--tm)' }}>+{its.length - 3}</span>}
