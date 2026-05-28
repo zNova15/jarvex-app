@@ -247,10 +247,36 @@ async function addMovIdem(tabla, fields, userId, createdAtISO, sig) {
   const rec = await addRecord(tabla, { ...fields, idempotency_key: key }, userId, createdAtISO);
   return { rec };
 }
-// Firma estable de una fila de movimiento para la idempotencia.
+// Firma estable de una fila de movimiento para la idempotencia (clave server).
 function sigMov(obraId, formato, m) {
   const nombre = normTxt(m.nombreItem || m.equipo || '');
   return `${(obraId || '').slice(0, 8)}_${formato}_${m.idx}_${nombre}_${m.fecha || ''}_${m.tipo || ''}_${m.cantidad ?? ''}`;
+}
+
+// Dedup por CONTENIDO (robusto entre versiones / claves distintas). Construye
+// un multiset de los movimientos de migración YA existentes de una tabla,
+// contados por (item, fecha, tipo, cantidad). Al importar, cada fila del Excel
+// "consume" una coincidencia preexistente: si ya hay tantas como en el archivo,
+// no se crea ninguna nueva → re-subir el mismo archivo no duplica, aunque la
+// idempotency_key sea distinta. Solo mira movimientos marcados "Migración
+// histórica" para no chocar con movimientos manuales idénticos.
+async function cargarFirmasMigracion(movTabla, obraId, fk) {
+  const rows = await window.__db[movTabla].where('obra_id').equals(obraId).toArray();
+  const count = new Map();
+  for (const mv of rows) {
+    if (mv.deleted_at) continue;
+    if (!String(mv.observaciones || '').includes('Migración histórica')) continue;
+    const s = `${mv[fk]}__${mv.fecha || ''}__${mv.tipo_movimiento || ''}__${mv.cantidad ?? ''}`;
+    count.set(s, (count.get(s) || 0) + 1);
+  }
+  return count;
+}
+// Devuelve true (y consume 1) si ya existe un movimiento idéntico preexistente.
+function consumirFirma(firmas, itemId, fecha, tipo, cantidad) {
+  const s = `${itemId}__${fecha || ''}__${tipo || ''}__${cantidad ?? ''}`;
+  const c = firmas.get(s) || 0;
+  if (c > 0) { firmas.set(s, c - 1); return true; }
+  return false;
 }
 
 // Limpieza de basura local de migraciones rotas anteriores: insumos sin nombre
@@ -511,6 +537,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       ubicIdx.map.set(k, rec); return rec.id;
     };
 
+    const firmas = await cargarFirmasMigracion('movimientos_materiales', obraId, 'material_id');
     let okCount = 0, errores = 0, itemsCreados = 0, ubicCreadas = 0, saltadosNoAprobados = 0, duplicados = 0;
     const errorList = [];
     const afectados = new Set();
@@ -525,6 +552,8 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         if (!String(m.nombreItem || '').trim()) { saltadosNoAprobados++; continue; }
         const mat = await resolverMaterial(m.nombreItem, m.unidad);
         if (!mat) { saltadosNoAprobados++; continue; }
+        const fechaMov = m.fecha || new Date().toISOString().slice(0, 10);
+        if (consumirFirma(firmas, mat.id, fechaMov, m.tipo, m.cantidad)) { duplicados++; continue; }
         afectados.add(mat.id);
         const obsExtra = [];
         let proveedor_id = null, responsable_id = null, frente = null, ubicId = null;
@@ -592,6 +621,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       ubicIdx.map.set(k, rec); return rec.id;
     };
 
+    const firmas = await cargarFirmasMigracion('movimientos_epp', obraId, 'epp_id');
     let okCount = 0, errores = 0, saltadosNoAprobados = 0, duplicados = 0;
     const errorList = [];
     const afectados = new Set();
@@ -606,6 +636,8 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         if (!String(m.nombreItem || '').trim()) { saltadosNoAprobados++; continue; }
         const epp = await resolverEpp(m.nombreItem, m.unidad);
         if (!epp) { saltadosNoAprobados++; continue; }
+        const fechaMov = m.fecha || new Date().toISOString().slice(0, 10);
+        if (consumirFirma(firmas, epp.id, fechaMov, m.tipo, m.cantidad)) { duplicados++; continue; }
         afectados.add(epp.id);
         const obsExtra = [];
         let proveedor_id = null, personal_id = null, ubicId = null;
@@ -672,6 +704,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       ubicIdx.map.set(k, rec); return rec.id;
     };
 
+    const firmas = await cargarFirmasMigracion('movimientos_herramientas', obraId, 'herramienta_id');
     let okCount = 0, errores = 0, saltadosNoAprobados = 0, duplicados = 0;
     const errorList = [];
     const afectados = new Set();
@@ -686,6 +719,8 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         if (!String(m.nombreItem || '').trim()) { saltadosNoAprobados++; continue; }
         const herr = await resolverHerr(m.nombreItem, m.unidad, m.estado);
         if (!herr) { saltadosNoAprobados++; continue; }
+        const fechaMov = m.fecha || new Date().toISOString().slice(0, 10);
+        if (consumirFirma(firmas, herr.id, fechaMov, m.tipo, m.cantidad)) { duplicados++; continue; }
         afectados.add(herr.id);
         const obsExtra = [];
         let proveedor_id = null, responsable_id = null, frente = null, ubicId = null;
@@ -751,6 +786,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       ubicIdx.map.set(k, rec); return rec.id;
     };
 
+    const firmas = await cargarFirmasMigracion('movimientos_maquinaria', obraId, 'activo_id');
     let okCount = 0, errores = 0, saltadosNoAprobados = 0, duplicados = 0;
     const errorList = [];
     const afectados = new Set();
@@ -765,6 +801,8 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         if (!String(m.nombreItem || '').trim()) { saltadosNoAprobados++; continue; }
         const act = await resolverActivo(m.nombreItem, m.unidad, m.estado);
         if (!act) { saltadosNoAprobados++; continue; }
+        const fechaMov = m.fecha || new Date().toISOString().slice(0, 10);
+        if (consumirFirma(firmas, act.id, fechaMov, m.tipo, m.cantidad)) { duplicados++; continue; }
         afectados.add(act.id);
         const obsExtra = [];
         let proveedor_id = null, responsable_id = null, frente = null, ubicId = null;
@@ -842,6 +880,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       insIdx.map.set(k, rec); return rec;
     };
 
+    const firmas = await cargarFirmasMigracion('movimientos_insumos_emergencia', obraId, 'insumo_emergencia_id');
     let okCount = 0, errores = 0, saltadosNoAprobados = 0, duplicados = 0;
     const errorList = [];
     const afectados = new Set();
@@ -856,6 +895,8 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         if (!String(m.nombreItem || '').trim()) { saltadosNoAprobados++; continue; }
         const ins = await resolverInsumo(m.nombreItem, m.unidad);
         if (!ins) { saltadosNoAprobados++; continue; }
+        const fechaMov = m.fecha || new Date().toISOString().slice(0, 10);
+        if (consumirFirma(firmas, ins.id, fechaMov, m.tipo, m.cantidad)) { duplicados++; continue; }
         afectados.add(ins.id);
         const obsExtra = [];
         let proveedor_id = null, responsable_id = null;
@@ -908,6 +949,17 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       return s?.id || null;
     };
 
+    // Firmas existentes de asignaciones de migración (activo+fecha+tipo+destino).
+    const firmasAsig = new Map();
+    {
+      const rows = await window.__db.movimientos_maquinaria.where('obra_id').equals(obraId).toArray();
+      for (const mv of rows) {
+        if (mv.deleted_at || mv.cantidad != null) continue; // cantidad null = asignación
+        if (!String(mv.observaciones || '').includes('Migración histórica')) continue;
+        const s = `${mv.activo_id}__${mv.fecha || ''}__${mv.tipo_movimiento || ''}__${mv.destino_tipo || ''}`;
+        firmasAsig.set(s, (firmasAsig.get(s) || 0) + 1);
+      }
+    }
     let okCount = 0, errores = 0, saltadosNoAprobados = 0, duplicados = 0;
     const errorList = [];
     const prevAct = actIdx.map.size;
@@ -935,6 +987,9 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           }
           destino_nombre = m.destinoNombre || null;
         }
+        const fechaMov = m.fecha || new Date().toISOString().slice(0, 10);
+        const firmaA = `${act.id}__${fechaMov}__${m.tipo}__${m.tipo === 'salida' ? (destino_tipo || '') : ''}`;
+        if ((firmasAsig.get(firmaA) || 0) > 0) { firmasAsig.set(firmaA, firmasAsig.get(firmaA) - 1); duplicados++; continue; }
         const obs = ['Migración histórica', m.observaciones, ...obsExtra].filter(Boolean).join(' · ');
         const sigA = `${(obraId || '').slice(0, 8)}_asig_${m.idx}_${normTxt(m.equipo)}_${m.fecha || ''}_${m.tipo}_${normTxt(m.destinoNombre || '')}`;
         const r = await addMovIdem('movimientos_maquinaria', {
