@@ -562,8 +562,9 @@ function EppPage({ showToast }) {
           if (!nombre) { showToast('Escribí el nombre del trabajador', 'red'); return; }
           const partes = nombre.split(/\s+/);
           const nombres = partes.slice(0, Math.ceil(partes.length / 2)).join(' ') || nombre;
-          const apellidos = partes.slice(Math.ceil(partes.length / 2)).join(' ') || '';
-          const nuevo = await createPersonal({ obra_id: obraId, nombres, apellidos, dni: null, cargo: 'Obrero', estado: 'activo' });
+          const apellidos = partes.slice(Math.ceil(partes.length / 2)).join(' ') || '—';
+          const dni = `MIG-${nombre.toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,16)}`;
+          const nuevo = await createPersonal({ obra_id: obraId, nombres, apellidos, dni, cargo: 'Obrero', estado: 'activo' });
           personal_id = nuevo?.id;
         } else {
           if (!destForm.personal_id) { showToast('Elegí el trabajador', 'red'); return; }

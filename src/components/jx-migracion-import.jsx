@@ -133,6 +133,77 @@ async function escanearMovs(movs, formato, obraId) {
   });
 }
 
+// Nombre de la persona responsable de un movimiento (col. G en salidas /
+// "Asignado a" en asignaciones). Vacío si el movimiento no lleva responsable.
+function nombrePersonaDeMov(m, formato) {
+  if (formato === 'mov_maquinaria_asignacion') return m.tipo === 'salida' ? (m.destinoNombre || '') : '';
+  if (m.tipo !== 'salida') return '';
+  if (formato === 'mov_materiales') return m.responsable || '';
+  return m.responsable || m.origen || ''; // epp / herramientas / maquinaria / emergencia
+}
+
+// Escanea los responsables únicos de las salidas y los clasifica contra
+// `personal` (de la obra) y `subcontratistas`. Devuelve filas para revisión:
+//   matched_personal / matched_sub / new (no existe en ninguno).
+async function escanearResponsables(movs, formato, obraId) {
+  const nombres = new Map(); // norm → { nombre, count, sugSub }
+  for (const m of movs || []) {
+    const n = nombrePersonaDeMov(m, formato);
+    const k = normTxt(n);
+    if (!k) continue;
+    if (!nombres.has(k)) nombres.set(k, { nombre: n.trim(), count: 0, sugSub: false });
+    const v = nombres.get(k);
+    v.count++;
+    if (formato === 'mov_maquinaria_asignacion' && m.destinoTipo === 'subcontratista') v.sugSub = true;
+  }
+  const personal = obraId ? await window.__db.personal.where('obra_id').equals(obraId).filter(p => !p.deleted_at).toArray() : [];
+  const subs = await window.__db.subcontratistas.filter(s => !s.deleted_at).toArray();
+  const idxPers = new Map(); for (const p of personal) { const k = normTxt(`${p.nombres || ''} ${p.apellidos || ''}`); if (k) idxPers.set(k, p); }
+  const idxSub = new Map(); for (const s of subs) { const k = normTxt(s.razon_social); if (k) idxSub.set(k, s); }
+  const out = [];
+  for (const [k, info] of nombres) {
+    const pMatch = idxPers.get(k) || personal.find(p => { const f = normTxt(`${p.nombres || ''} ${p.apellidos || ''}`); return f && (f.includes(k) || k.includes(f)); });
+    const sMatch = idxSub.get(k) || subs.find(s => { const r = normTxt(s.razon_social); return r && (r.includes(k) || k.includes(r)); });
+    let status, existing = null;
+    if (pMatch) { status = 'matched_personal'; existing = { tipo: 'personal', id: pMatch.id }; }
+    else if (sMatch) { status = 'matched_sub'; existing = { tipo: 'subcontratista', id: sMatch.id }; }
+    else status = 'new';
+    out.push({ key: k, nombre: info.nombre, count: info.count, status, existing, sugSub: info.sugSub });
+  }
+  return out.sort((a, b) => { const o = { new: 0, matched_sub: 1, matched_personal: 2 }; return (o[a.status] - o[b.status]) || a.nombre.localeCompare(b.nombre); });
+}
+function accionPersonaDefault(row) {
+  if (row.status === 'matched_personal') return 'usar_personal';
+  if (row.status === 'matched_sub') return 'usar_sub';
+  return row.sugSub ? 'crear_sub' : 'crear_personal'; // new
+}
+
+// Aplica las decisiones de responsables: crea personal/subcontratistas según
+// corresponda y devuelve Map(normNombre → {tipo, id}).
+async function aplicarDecisionesPersonas(scan, decisiones, obraId, userId) {
+  const map = new Map();
+  let creadosPers = 0, creadosSub = 0;
+  for (const row of scan) {
+    const acc = decisiones.get(row.key) || accionPersonaDefault(row);
+    if (acc === 'ignorar') continue;
+    if (acc === 'usar_personal' && row.existing) { map.set(row.key, { tipo: 'personal', id: row.existing.id }); continue; }
+    if (acc === 'usar_sub' && row.existing) { map.set(row.key, { tipo: 'subcontratista', id: row.existing.id }); continue; }
+    if (acc === 'crear_personal') {
+      const partes = row.nombre.split(/\s+/);
+      const nombres = partes.slice(0, Math.ceil(partes.length / 2)).join(' ') || row.nombre;
+      const apellidos = partes.slice(Math.ceil(partes.length / 2)).join(' ') || '—';
+      // dni es NOT NULL + UNIQUE(dni, obra_id): placeholder único por nombre.
+      const dni = `MIG-${row.key.slice(0, 16)}`;
+      const rec = await addRecord('personal', { obra_id: obraId, nombres, apellidos, dni, cargo: 'Obrero', estado: 'activo' }, userId);
+      map.set(row.key, { tipo: 'personal', id: rec.id }); creadosPers++;
+    } else if (acc === 'crear_sub') {
+      const rec = await addRecord('subcontratistas', { razon_social: row.nombre, ruc: null, estado: 'activo' }, userId);
+      map.set(row.key, { tipo: 'subcontratista', id: rec.id }); creadosSub++;
+    }
+  }
+  return { map, creadosPers, creadosSub };
+}
+
 // Decide la acción por defecto para una fila del scan.
 function accionDefault(row) {
   if (row.status === 'same') return 'mantener';
@@ -449,6 +520,8 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
   // Paso "Insumos": revisión item-por-item antes de cargar movimientos.
   const [scanRows, setScanRows] = uS(null);    // Array<{ key, nombre, status, existing, ... }>
   const [decisiones, setDecisiones] = uS(() => new Map()); // Map<key, accion>
+  const [scanPersonas, setScanPersonas] = uS(null);          // responsables a revisar
+  const [decisionesPersonas, setDecisionesPersonas] = uS(() => new Map());
   const [scanning, setScanning] = uS(false);
   const [limpiando, setLimpiando] = uS(false);
 
@@ -565,7 +638,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       detalle: `${creados} insumos creados · ${saltados} ya existían · ${errores} con error` };
   };
 
-  const runMovMateriales = async (resolvedItems = null) => {
+  const runMovMateriales = async (resolvedItems = null, rp = null) => {
     const movs = [...preview.movs].sort((a, b) => (a.fecha || '') < (b.fecha || '') ? -1 : 1);
     const matIdx = await cargarIndice('materiales', obraId, 'nombre_material');
     if (resolvedItems) { for (const [k, info] of resolvedItems) matIdx.map.set(k, { id: info.id, unidad: info.unidad }); }
@@ -621,7 +694,12 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           if (m.lugar) ubicId = await resolverUbic(m.lugar);
         } else {
           if (m.origen) ubicId = await resolverUbic(m.origen);
-          if (m.responsable) { responsable_id = matchPersonal(m.responsable, personal); if (!responsable_id) obsExtra.push(`Responsable: ${m.responsable}`); }
+          if (m.responsable) {
+            const rpHit = rp?.get(normTxt(m.responsable));
+            if (rpHit?.tipo === 'personal') responsable_id = rpHit.id;
+            else if (rpHit?.tipo === 'subcontratista') obsExtra.push(`Subcontrato: ${m.responsable}`);
+            else { responsable_id = matchPersonal(m.responsable, personal); if (!responsable_id) obsExtra.push(`Responsable: ${m.responsable}`); }
+          }
           if (m.lugar) frente = m.lugar;
         }
         const obs = ['Migración histórica', ...obsExtra].join(' · ');
@@ -650,7 +728,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       detalle: `${okCount} movimientos cargados · ${ubicCreadas} ubicaciones creadas${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
-  const runMovEpp = async (resolvedItems = null) => {
+  const runMovEpp = async (resolvedItems = null, rp = null) => {
     const movs = [...preview.movs].sort((a, b) => (a.fecha || '') < (b.fecha || '') ? -1 : 1);
     const eppIdx = await cargarIndice('epps', obraId, 'nombre_epp');
     if (resolvedItems) { for (const [k, info] of resolvedItems) eppIdx.map.set(k, { id: info.id, unidad: info.unidad }); }
@@ -698,14 +776,19 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         if (consumirFirma(firmas, epp.id, fechaMov, m.tipo, m.cantidad)) { duplicados++; continue; }
         afectados.add(epp.id);
         const obsExtra = [];
-        let proveedor_id = null, personal_id = null, ubicId = null;
+        let proveedor_id = null, personal_id = null, subcontratista_id = null, destino_tipo = null, ubicId = null;
 
         if (m.tipo === 'entrada') {
           if (m.origen) { proveedor_id = matchProveedor(m.origen, proveedores); if (!proveedor_id) obsExtra.push(`Proveedor: ${m.origen}`); }
           if (m.lugar) ubicId = await resolverUbic(m.lugar);
         } else {
           const quien = m.responsable || m.origen;
-          if (quien) { personal_id = matchPersonal(quien, personal); if (!personal_id) obsExtra.push(`Entregado a: ${quien}`); }
+          if (quien) {
+            const rpHit = rp?.get(normTxt(quien));
+            if (rpHit?.tipo === 'personal') { personal_id = rpHit.id; destino_tipo = 'personal'; }
+            else if (rpHit?.tipo === 'subcontratista') { subcontratista_id = rpHit.id; destino_tipo = 'subcontratista'; }
+            else { personal_id = matchPersonal(quien, personal); destino_tipo = personal_id ? 'personal' : null; if (!personal_id) obsExtra.push(`Entregado a: ${quien}`); }
+          }
           if (m.lugar) obsExtra.push(`Lugar: ${m.lugar}`);
           ubicId = epp.ubicacion_id || (ubicIdx.rows[0]?.id ?? null);
         }
@@ -713,7 +796,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         const r = await addMovIdem('movimientos_epp', {
           obra_id: obraId, epp_id: epp.id, fecha: m.fecha || new Date().toISOString().slice(0, 10),
           hora: null, tipo_movimiento: m.tipo, cantidad: m.cantidad, unidad: m.unidad || epp.unidad || 'Und',
-          personal_id, proveedor_id, ubicacion_id: ubicId, motivo: m.tipo === 'entrada' ? 'reposicion' : 'dotacion', observaciones: obs,
+          personal_id, subcontratista_id, destino_tipo, proveedor_id, ubicacion_id: ubicId, motivo: m.tipo === 'entrada' ? 'reposicion' : 'dotacion', observaciones: obs,
         }, userId, null, sigMov(obraId, 'mov_epp', m));
         if (r.dup) { duplicados++; continue; }
 
@@ -731,7 +814,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       detalle: `${okCount} movimientos EPP cargados${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
-  const runMovHerramientas = async (resolvedItems = null) => {
+  const runMovHerramientas = async (resolvedItems = null, rp = null) => {
     const movs = [...preview.movs].sort((a, b) => (a.fecha || '') < (b.fecha || '') ? -1 : 1);
     const herrIdx = await cargarIndice('herramientas', obraId, 'nombre_herramienta');
     if (resolvedItems) { for (const [k, info] of resolvedItems) herrIdx.map.set(k, { id: info.id, unidad: info.unidad }); }
@@ -788,7 +871,12 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           if (m.lugar) ubicId = await resolverUbic(m.lugar);
         } else {
           const quien = m.responsable || m.origen;
-          if (quien) { responsable_id = matchPersonal(quien, personal); if (!responsable_id) obsExtra.push(`Responsable: ${quien}`); }
+          if (quien) {
+            const rpHit = rp?.get(normTxt(quien));
+            if (rpHit?.tipo === 'personal') responsable_id = rpHit.id;
+            else if (rpHit?.tipo === 'subcontratista') obsExtra.push(`Subcontrato: ${quien}`);
+            else { responsable_id = matchPersonal(quien, personal); if (!responsable_id) obsExtra.push(`Responsable: ${quien}`); }
+          }
           if (m.lugar) frente = m.lugar;
         }
         const obs = ['Migración histórica', ...obsExtra].join(' · ');
@@ -814,7 +902,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       detalle: `${okCount} movimientos de herramientas cargados${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
-  const runMovMaquinaria = async (resolvedItems = null) => {
+  const runMovMaquinaria = async (resolvedItems = null, rp = null) => {
     const movs = [...preview.movs].sort((a, b) => (a.fecha || '') < (b.fecha || '') ? -1 : 1);
     const actIdx = await cargarIndice('activos_pesados', obraId, 'nombre', { porObra: false });
     if (resolvedItems) { for (const [k, info] of resolvedItems) actIdx.map.set(k, { id: info.id, unidad: info.unidad }); }
@@ -863,21 +951,26 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         if (consumirFirma(firmas, act.id, fechaMov, m.tipo, m.cantidad)) { duplicados++; continue; }
         afectados.add(act.id);
         const obsExtra = [];
-        let proveedor_id = null, responsable_id = null, frente = null, ubicId = null;
+        let proveedor_id = null, responsable_id = null, subcontratista_id = null, frente = null, ubicId = null;
 
         if (m.tipo === 'entrada') {
           if (m.origen) { proveedor_id = matchProveedor(m.origen, proveedores); if (!proveedor_id) obsExtra.push(`Proveedor: ${m.origen}`); }
           if (m.lugar) ubicId = await resolverUbic(m.lugar);
         } else {
           const quien = m.responsable || m.origen;
-          if (quien) { responsable_id = matchPersonal(quien, personal); if (!responsable_id) obsExtra.push(`Responsable: ${quien}`); }
+          if (quien) {
+            const rpHit = rp?.get(normTxt(quien));
+            if (rpHit?.tipo === 'personal') responsable_id = rpHit.id;
+            else if (rpHit?.tipo === 'subcontratista') subcontratista_id = rpHit.id;
+            else { responsable_id = matchPersonal(quien, personal); if (!responsable_id) obsExtra.push(`Responsable: ${quien}`); }
+          }
           if (m.lugar) frente = m.lugar;
         }
         const obs = ['Migración histórica', ...obsExtra].join(' · ');
         const r = await addMovIdem('movimientos_maquinaria', {
           obra_id: obraId, activo_id: act.id, fecha: m.fecha || new Date().toISOString().slice(0, 10),
           hora: null, tipo_movimiento: m.tipo, cantidad: m.cantidad, unidad: m.unidad || act.unidad || 'Und',
-          responsable_id, proveedor_id, estado: m.estado || null, frente_zona: frente, observaciones: obs,
+          responsable_id, subcontratista_id, proveedor_id, estado: m.estado || null, frente_zona: frente, observaciones: obs,
         }, userId, null, sigMov(obraId, 'mov_maquinaria', m));
         if (r.dup) { duplicados++; continue; }
 
@@ -920,7 +1013,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       detalle: `${creados} insumos de emergencia creados · ${saltados} ya existían · ${errores} con error` };
   };
 
-  const runMovEmergencia = async (resolvedItems = null) => {
+  const runMovEmergencia = async (resolvedItems = null, rp = null) => {
     const movs = [...preview.movs].sort((a, b) => (a.fecha || '') < (b.fecha || '') ? -1 : 1);
     const insIdx = await cargarIndice('insumos_emergencia', obraId, 'nombre');
     if (resolvedItems) { for (const [k, info] of resolvedItems) insIdx.map.set(k, { id: info.id, unidad: info.unidad }); }
@@ -962,7 +1055,12 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           if (m.origen) { proveedor_id = matchProveedor(m.origen, proveedores); if (!proveedor_id) obsExtra.push(`Proveedor: ${m.origen}`); }
         } else {
           const quien = m.responsable || m.origen;
-          if (quien) { responsable_id = matchPersonal(quien, personal); if (!responsable_id) obsExtra.push(`Responsable: ${quien}`); }
+          if (quien) {
+            const rpHit = rp?.get(normTxt(quien));
+            if (rpHit?.tipo === 'personal') responsable_id = rpHit.id;
+            else if (rpHit?.tipo === 'subcontratista') obsExtra.push(`Subcontrato: ${quien}`);
+            else { responsable_id = matchPersonal(quien, personal); if (!responsable_id) obsExtra.push(`Responsable: ${quien}`); }
+          }
         }
         if (m.lugar) obsExtra.push(`Lugar: ${m.lugar}`);
         const obs = ['Migración histórica', ...obsExtra].join(' · ');
@@ -983,7 +1081,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       detalle: `${okCount} movimientos de emergencia cargados${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
-  const runMovMaquinariaAsignacionLoad = async (resolvedItems = null) => {
+  const runMovMaquinariaAsignacionLoad = async (resolvedItems = null, rp = null) => {
     const movs = [...preview.movs].sort((a, b) => (a.fecha || '') < (b.fecha || '') ? -1 : 1);
     const actIdx = await cargarIndice('activos_pesados', obraId, 'nombre', { porObra: false });
     if (resolvedItems) { for (const [k, info] of resolvedItems) actIdx.map.set(k, { id: info.id, unidad: info.unidad }); }
@@ -1036,7 +1134,10 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         let responsable_id = null, subcontratista_id = null, destino_tipo = null, destino_nombre = null;
         if (m.tipo === 'salida') {
           destino_tipo = m.destinoTipo || 'personal';
-          if (destino_tipo === 'subcontratista') {
+          const rpHit = rp?.get(normTxt(m.destinoNombre || ''));
+          if (rpHit?.tipo === 'subcontratista') { subcontratista_id = rpHit.id; destino_tipo = 'subcontratista'; }
+          else if (rpHit?.tipo === 'personal') { responsable_id = rpHit.id; destino_tipo = 'personal'; }
+          else if (destino_tipo === 'subcontratista') {
             subcontratista_id = matchSub(m.destinoNombre);
             if (!subcontratista_id && m.destinoNombre) obsExtra.push(`Subcontrato: ${m.destinoNombre}`);
           } else {
@@ -1099,13 +1200,17 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     setScanning(true);
     try {
       const rows = await escanearMovs(preview.movs, formato, obraId);
-      // Decisiones por defecto por status
       const d = new Map();
       for (const r of rows) d.set(r.key, accionDefault(r));
       setScanRows(rows); setDecisiones(d);
+      // Escaneo de responsables (col. G en salidas / "Asignado a").
+      const pers = await escanearResponsables(preview.movs, formato, obraId);
+      const dp = new Map();
+      for (const r of pers) dp.set(r.key, accionPersonaDefault(r));
+      setScanPersonas(pers); setDecisionesPersonas(dp);
       setStep(3); // Paso "Insumos"
     } catch (e) {
-      showToast('Error al escanear insumos: ' + (e.message || e), 'red');
+      showToast('Error al escanear: ' + (e.message || e), 'red');
     } finally { setScanning(false); }
   };
 
@@ -1114,15 +1219,18 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     setImp(true);
     try {
       const dec = await aplicarDecisiones(scanRows, decisiones, formato, obraId, userId);
+      const per = await aplicarDecisionesPersonas(scanPersonas || [], decisionesPersonas, obraId, userId);
+      const rp = per.map; // Map(normNombre → {tipo, id})
       let res;
-      if (formato === 'mov_materiales') res = await runMovMateriales(dec.resolved);
-      else if (formato === 'mov_epp') res = await runMovEpp(dec.resolved);
-      else if (formato === 'mov_herramientas') res = await runMovHerramientas(dec.resolved);
-      else if (formato === 'mov_maquinaria') res = await runMovMaquinaria(dec.resolved);
-      else if (formato === 'mov_emergencia') res = await runMovEmergencia(dec.resolved);
-      else if (esAsignacion) res = await runMovMaquinariaAsignacionLoad(dec.resolved);
+      if (formato === 'mov_materiales') res = await runMovMateriales(dec.resolved, rp);
+      else if (formato === 'mov_epp') res = await runMovEpp(dec.resolved, rp);
+      else if (formato === 'mov_herramientas') res = await runMovHerramientas(dec.resolved, rp);
+      else if (formato === 'mov_maquinaria') res = await runMovMaquinaria(dec.resolved, rp);
+      else if (formato === 'mov_emergencia') res = await runMovEmergencia(dec.resolved, rp);
+      else if (esAsignacion) res = await runMovMaquinariaAsignacionLoad(dec.resolved, rp);
       else { setImp(false); return; }
-      res = { ...res, detalle: `${res.detalle} · ${dec.creados} insumos creados · ${dec.reemplazados} actualizados · ${dec.saltados} insumos saltados` };
+      const persMsg = (per.creadosPers || per.creadosSub) ? ` · ${per.creadosPers} personal + ${per.creadosSub} subcontratos creados` : '';
+      res = { ...res, detalle: `${res.detalle} · ${dec.creados} insumos creados · ${dec.reemplazados} actualizados · ${dec.saltados} insumos saltados${persMsg}` };
       setResult(res);
       setStep(4);
       showToast(res.detalle, res.errors ? 'amber' : 'green');
@@ -1135,6 +1243,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     setStep(0); setFile(null); setParsed(null); setParseErr(null); setFormato(null); setResult(null);
     setProgress({ current: 0, total: 0 });
     setScanRows(null); setDecisiones(new Map());
+    setScanPersonas(null); setDecisionesPersonas(new Map());
   };
 
   // Acciones globales del paso "Insumos".
@@ -1390,6 +1499,45 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
                 </div>
               ))}
             </div>
+
+            {/* Responsables (col. G en salidas / "Asignado a") */}
+            {scanPersonas && scanPersonas.length > 0 && (() => {
+              const nuevos = scanPersonas.filter(r => r.status === 'new');
+              return (
+                <div style={{ marginTop: 18 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--tp)', marginBottom: 4 }}>Responsables de salidas <span style={{ color: 'var(--tm)', fontWeight: 400 }}>· {scanPersonas.length} distintos{nuevos.length ? ` · ${nuevos.length} no existen` : ''}</span></div>
+                  <div style={{ fontSize: 12, color: 'var(--tm)', marginBottom: 8 }}>A quién se le entregó/asignó. Los que no existen podés crearlos como Personal o Subcontratista, o ignorarlos (quedan anotados en observaciones).</div>
+                  {nuevos.length > 1 && (
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+                      <button className="btn btn-ghost btn-xs" onClick={() => { const n = new Map(decisionesPersonas); for (const r of scanPersonas) if (r.status === 'new') n.set(r.key, 'crear_personal'); setDecisionesPersonas(n); }}>Crear todos como Personal</button>
+                      <button className="btn btn-ghost btn-xs" onClick={() => { const n = new Map(decisionesPersonas); for (const r of scanPersonas) if (r.status === 'new') n.set(r.key, 'crear_sub'); setDecisionesPersonas(n); }}>Crear todos como Subcontrato</button>
+                      <button className="btn btn-ghost btn-xs" onClick={() => { const n = new Map(decisionesPersonas); for (const r of scanPersonas) if (r.status === 'new') n.set(r.key, 'ignorar'); setDecisionesPersonas(n); }}>Ignorar todos</button>
+                    </div>
+                  )}
+                  <div className="card" style={{ overflow: 'hidden', maxHeight: '32vh', overflowY: 'auto' }}>
+                    {scanPersonas.map((r, idx) => {
+                      const acc = decisionesPersonas.get(r.key) || accionPersonaDefault(r);
+                      const opciones = r.status === 'matched_personal' ? [['usar_personal', 'Usar (personal existente)'], ['ignorar', 'Ignorar']]
+                        : r.status === 'matched_sub' ? [['usar_sub', 'Usar (subcontrato existente)'], ['ignorar', 'Ignorar']]
+                        : [['crear_personal', 'Crear como Personal'], ['crear_sub', 'Crear como Subcontrato'], ['ignorar', 'Ignorar']];
+                      const badge = r.status === 'new' ? { t: 'No existe', c: '#3498DB' } : r.status === 'matched_sub' ? { t: 'Subcontrato', c: '#9B59B6' } : { t: 'Personal', c: '#2ECC71' };
+                      return (
+                        <div key={r.key} style={{ padding: '8px 12px', borderTop: idx > 0 ? '1px solid var(--border)' : 'none', display: 'grid', gridTemplateColumns: '1.6fr 0.8fr 1.4fr', gap: 10, alignItems: 'center' }}>
+                          <div>
+                            <div style={{ fontSize: 12.5, color: 'var(--tp)', fontWeight: 600 }}>{r.nombre}</div>
+                            <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 2 }}>{r.count} salida{r.count !== 1 ? 's' : ''}</div>
+                          </div>
+                          <span style={{ fontSize: 10.5, color: badge.c, fontWeight: 700 }}>{badge.t}</span>
+                          <select className="fi" style={{ fontSize: 12, padding: '6px 10px' }} value={acc} onChange={e => { const next = new Map(decisionesPersonas); next.set(r.key, e.target.value); setDecisionesPersonas(next); }}>
+                            {opciones.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                          </select>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
 
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 16 }}>
               <button className="btn btn-ghost" onClick={() => setStep(2)} disabled={importing}><JxIcon name="chevL" size={14} />Atrás</button>
