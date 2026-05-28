@@ -30,7 +30,6 @@ import {
 
 // Plantillas descargables por formato (headers + 1 fila de ejemplo).
 export const TEMPLATES = {
-  insumos_totales:    { headers: ['ID', 'Nombre Insumo', 'Tipo', 'Unidad', 'Fecha de creacion'], sample: ['1', 'Cemento Portland Tipo I', 'Material', 'bolsa', '25/05/2026'] },
   insumos_emergencia: { headers: ['ID', 'Insumo de Emergencia', 'Categoría', 'Unidad', 'Fecha de creacion'], sample: ['1', 'Botiquín portátil', 'Primeros auxilios', 'kit', '25/05/2026'] },
   mov_materiales:     { headers: ['ID', 'Fecha de Movimiento', 'Material', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Proveedor/Almacen de Salida', 'Resposable (Salida)', 'Lugar llega / Frente'], sample: ['1', '21/05/2026', 'Yeso 7kg', 'Bolsa', '20', 'Ingreso', 'Ferretería X', '', 'Almacen Central'] },
   mov_epp:            { headers: ['ID', 'Fecha de Movimiento', 'EPP', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Proveedor/Responsable', 'Lugar de llegada'], sample: ['1', '21/05/2026', 'Casco Blanco', 'Unidad', '20', 'Ingreso', '', 'Almacen Central'] },
@@ -52,7 +51,159 @@ export async function descargarPlantilla(formato) {
 
 const { useState: uS, useMemo: uM, useCallback: uC } = React;
 
-const STEPS_MIG = ['Aviso', 'Archivo', 'Revisar', 'Resultado'];
+const STEPS_MIG = ['Aviso', 'Archivo', 'Revisar', 'Insumos', 'Resultado'];
+
+// Tabla donde "vive" cada formato de movimiento (a dónde van los insumos).
+const TABLA_POR_FORMATO = {
+  mov_materiales: 'materiales',
+  mov_epp: 'epps',
+  mov_herramientas: 'herramientas',
+  mov_maquinaria: 'activos_pesados',
+  mov_emergencia: 'insumos_emergencia',
+  mov_maquinaria_asignacion: 'activos_pesados',
+};
+const COL_NOMBRE = {
+  materiales: 'nombre_material',
+  epps: 'nombre_epp',
+  herramientas: 'nombre_herramienta',
+  activos_pesados: 'nombre',
+  insumos_emergencia: 'nombre',
+};
+const LABEL_TABLA = {
+  materiales: 'Materiales',
+  epps: 'EPP',
+  herramientas: 'Herramientas',
+  activos_pesados: 'Maquinaria',
+  insumos_emergencia: 'Insumos de Emergencia',
+};
+
+// Escanea los items únicos del archivo de movimientos contra TODAS las tablas
+// de inventario (materiales/epps/herramientas/activos/emergencia). Clasifica:
+//   same   — ya existe en la tabla esperada con la misma unidad → no toca catálogo.
+//   diff   — existe en la tabla esperada con UNIDAD distinta → preguntar.
+//   other  — no existe en la esperada pero SÍ en otra → preguntar (evitar duplicado).
+//   new    — no existe en ninguna → preguntar (crear o saltar).
+async function escanearMovs(movs, formato, obraId) {
+  const expectedTabla = TABLA_POR_FORMATO[formato];
+  const itemsExcel = new Map(); // normNombre → { nombre, unidades:Set, count }
+  for (const m of movs || []) {
+    const k = normTxt(m.nombreItem || m.equipo);
+    if (!k) continue;
+    if (!itemsExcel.has(k)) itemsExcel.set(k, { nombre: m.nombreItem || m.equipo, unidades: new Set(), count: 0 });
+    const v = itemsExcel.get(k);
+    if (m.unidad) v.unidades.add(String(m.unidad).trim());
+    v.count++;
+  }
+  // Carga índice de cada tabla por nombre normalizado.
+  const dbIdx = {};
+  for (const t of Object.keys(COL_NOMBRE)) {
+    const q = window.__db[t];
+    let rows;
+    if (t === 'activos_pesados') rows = await q.filter(r => !r.deleted_at).toArray();
+    else rows = await q.where('obra_id').equals(obraId).filter(r => !r.deleted_at).toArray();
+    const m = new Map();
+    for (const r of rows) { const k = normTxt(r[COL_NOMBRE[t]]); if (k && !m.has(k)) m.set(k, { id: r.id, unidad: r.unidad || null, nombre: r[COL_NOMBRE[t]] }); }
+    dbIdx[t] = m;
+  }
+  const out = [];
+  for (const [k, info] of itemsExcel) {
+    const unidadExcel = info.unidades.size === 1 ? [...info.unidades][0] : null;
+    const existsExpected = dbIdx[expectedTabla]?.get(k) || null;
+    const existsOther = [];
+    for (const [t, m] of Object.entries(dbIdx)) {
+      if (t === expectedTabla) continue;
+      if (m.has(k)) existsOther.push({ tabla: t, ...m.get(k) });
+    }
+    let status, existing = null;
+    if (existsExpected) {
+      const matchUnidad = !unidadExcel || normTxt(unidadExcel) === normTxt(existsExpected.unidad || '');
+      status = matchUnidad ? 'same' : 'diff';
+      existing = { tabla: expectedTabla, ...existsExpected };
+    } else if (existsOther.length) {
+      status = 'other';
+      existing = existsOther[0];
+    } else {
+      status = 'new';
+    }
+    out.push({ key: k, nombre: info.nombre, unidadExcel, count: info.count, status, expectedTabla, existing, otrosEnDb: existsOther });
+  }
+  return out.sort((a, b) => {
+    const ord = { new: 0, diff: 1, other: 2, same: 3 };
+    return (ord[a.status] - ord[b.status]) || a.nombre.localeCompare(b.nombre);
+  });
+}
+
+// Decide la acción por defecto para una fila del scan.
+function accionDefault(row) {
+  if (row.status === 'same') return 'mantener';
+  if (row.status === 'diff') return 'saltar';
+  if (row.status === 'other') return 'saltar';
+  return 'crear'; // new
+}
+
+// Aplica las decisiones (crear/reemplazar/saltar) y devuelve el Map de items
+// resueltos (clave normNombre → {id, tabla, unidad}). Los items que se saltan
+// no entran al map → el loader saltará sus movimientos.
+async function aplicarDecisiones(scan, decisiones, formato, obraId, userId) {
+  const expectedTabla = TABLA_POR_FORMATO[formato];
+  const resolved = new Map();
+  let creados = 0, reemplazados = 0, mantenidos = 0, saltados = 0;
+  for (const row of scan) {
+    const acc = decisiones.get(row.key) || accionDefault(row);
+    if (acc === 'saltar') { saltados++; continue; }
+    if (acc === 'mantener') {
+      if (row.existing) {
+        resolved.set(row.key, { id: row.existing.id, tabla: row.existing.tabla, unidad: row.existing.unidad || row.unidadExcel || 'Und' });
+        mantenidos++;
+      }
+      continue;
+    }
+    if (acc === 'reemplazar' && row.existing) {
+      const nuevaUnidad = row.unidadExcel || row.existing.unidad || 'Und';
+      try {
+        const tablaExist = row.existing.tabla;
+        await window.__db[tablaExist].update(row.existing.id, {
+          unidad: nuevaUnidad,
+          updated_at: new Date().toISOString(), updated_by: userId,
+          sync_status: 'pending_update',
+        });
+      } catch {}
+      resolved.set(row.key, { id: row.existing.id, tabla: row.existing.tabla, unidad: nuevaUnidad });
+      reemplazados++;
+      continue;
+    }
+    if (acc === 'crear') {
+      // Crea en la tabla esperada del formato.
+      const rec = await crearItemEnTabla(expectedTabla, row.nombre, row.unidadExcel || 'Und', obraId, userId);
+      if (rec) { resolved.set(row.key, { id: rec.id, tabla: expectedTabla, unidad: row.unidadExcel || 'Und' }); creados++; }
+      continue;
+    }
+  }
+  return { resolved, creados, reemplazados, mantenidos, saltados };
+}
+
+// Crea un item nuevo en la tabla esperada con el shape mínimo correcto.
+async function crearItemEnTabla(tabla, nombre, unidad, obraId, userId) {
+  const ahora = new Date().toISOString();
+  const id = window.__newId();
+  const isPrueba = getCurrentMode() === 'prueba';
+  const meta = {
+    id, created_by: userId, updated_by: userId, created_at: ahora, updated_at: ahora,
+    version: 1, sync_status: isPrueba ? 'synced' : 'pending_create', last_synced_at: null,
+    idempotency_key: `${userId || 'x'}_${tabla}_${id}`,
+    ...(isPrueba ? { demo: true } : {}),
+  };
+  let body;
+  if (tabla === 'materiales') body = { obra_id: obraId, nombre_material: nombre.trim(), categoria: null, unidad, stock_inicial: 0, stock_actual: 0, stock_minimo: 0, total_entradas: 0, total_salidas: 0, alerta: 'ok', estado: 'activo' };
+  else if (tabla === 'epps') body = { obra_id: obraId, nombre_epp: nombre.trim(), tipo_epp: detectarEPP(nombre) || 'Otro', unidad, stock_inicial: 0, stock_actual: 0, stock_minimo: 0, alerta: 'ok', estado: 'activo' };
+  else if (tabla === 'herramientas') body = { obra_id: obraId, nombre_herramienta: nombre.trim(), tipo_herramienta: 'manual', estado_actual: 'bueno', ubicacion_actual: 'almacen', disponible: true, maneja_cantidad: true, unidad, stock_actual: 0, stock_minimo: 0, alerta: 'ok' };
+  else if (tabla === 'activos_pesados') body = { nombre: nombre.trim(), tipo: 'maquinaria', estado: 'operativo', obra_actual_id: obraId, obra_id: obraId, maneja_cantidad: false, unidad, stock_actual: 0, stock_minimo: 0, alerta: 'ok', notas: 'Migración histórica' };
+  else if (tabla === 'insumos_emergencia') body = { obra_id: obraId, nombre: nombre.trim(), categoria: null, unidad, stock_inicial: 0, stock_actual: 0, stock_minimo: 0, alerta: 'ok', estado: 'activo' };
+  else return null;
+  const rec = { ...body, ...meta };
+  await window.__db[tabla].add(rec);
+  return rec;
+}
 
 // ── Creación local-first con control de created_at + demo ───────────────
 function buildRecord(tabla, fields, userId, createdAtISO) {
@@ -151,7 +302,11 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
   const [importing, setImp] = uS(false);
   const [progress, setProgress] = uS({ current: 0, total: 0 });
   const [result, setResult] = uS(null);
-  const [plantillaSel, setPlantillaSel] = uS('insumos_totales');  // formato para "Descargar plantilla"
+  const [plantillaSel, setPlantillaSel] = uS('mov_materiales');   // formato para "Descargar plantilla"
+  // Paso "Insumos": revisión item-por-item antes de cargar movimientos.
+  const [scanRows, setScanRows] = uS(null);    // Array<{ key, nombre, status, existing, ... }>
+  const [decisiones, setDecisiones] = uS(() => new Map()); // Map<key, accion>
+  const [scanning, setScanning] = uS(false);
 
   const fmtMeta = formato ? FORMATOS[formato] : null;
   const esInsumos = formato === 'insumos_totales';
@@ -266,9 +421,10 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       detalle: `${creados} insumos creados · ${saltados} ya existían · ${errores} con error` };
   };
 
-  const runMovMateriales = async () => {
+  const runMovMateriales = async (resolvedItems = null) => {
     const movs = [...preview.movs].sort((a, b) => (a.fecha || '') < (b.fecha || '') ? -1 : 1);
     const matIdx = await cargarIndice('materiales', obraId, 'nombre_material');
+    if (resolvedItems) { for (const [k, info] of resolvedItems) matIdx.map.set(k, { id: info.id, unidad: info.unidad }); }
     const ubicIdx = await cargarIndice('ubicaciones_obra', obraId, 'nombre');
     const personal = (await window.__db.personal.where('obra_id').equals(obraId).filter(p => !p.deleted_at).toArray());
     const proveedores = (await window.__db.proveedores.filter(p => !p.deleted_at).toArray());
@@ -276,6 +432,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     const resolverMaterial = async (nombre, unidad) => {
       const k = normTxt(nombre);
       if (matIdx.map.has(k)) return matIdx.map.get(k);
+      if (resolvedItems) return null; // ítem no aprobado en revisión → saltar
       const rec = await addRecord('materiales', {
         obra_id: obraId, nombre_material: String(nombre).trim(), categoria: null,
         unidad: unidad || 'Und', stock_inicial: 0, stock_actual: 0, stock_minimo: 0,
@@ -294,7 +451,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       ubicIdx.map.set(k, rec); return rec.id;
     };
 
-    let okCount = 0, errores = 0, itemsCreados = 0, ubicCreadas = 0;
+    let okCount = 0, errores = 0, itemsCreados = 0, ubicCreadas = 0, saltadosNoAprobados = 0;
     const errorList = [];
     const afectados = new Set();
     const prevMat = matIdx.map.size, prevUbic = ubicIdx.map.size;
@@ -306,6 +463,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         if (!m.tipo) throw new Error(`Tipo de movimiento no reconocido`);
         if (!(m.cantidad > 0)) throw new Error(`Cantidad inválida`);
         const mat = await resolverMaterial(m.nombreItem, m.unidad);
+        if (!mat) { saltadosNoAprobados++; continue; }
         afectados.add(mat.id);
         const obsExtra = [];
         let proveedor_id = null, responsable_id = null, frente = null, ubicId = null;
@@ -339,13 +497,14 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     ubicCreadas = ubicIdx.map.size - prevUbic;
     await recalcularStockMateriales(obraId, afectados, userId);
     fireChanged('materiales', 'movimientos_materiales', 'ubicaciones_obra', 'stock_ubicaciones');
-    return { ok: okCount, errors: errores, errorList,
-      detalle: `${okCount} movimientos cargados · ${itemsCreados} materiales nuevos · ${ubicCreadas} ubicaciones creadas · ${errores} con error` };
+    return { ok: okCount, errors: errores, saltadosNoAprobados, errorList,
+      detalle: `${okCount} movimientos cargados · ${ubicCreadas} ubicaciones creadas${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
-  const runMovEpp = async () => {
+  const runMovEpp = async (resolvedItems = null) => {
     const movs = [...preview.movs].sort((a, b) => (a.fecha || '') < (b.fecha || '') ? -1 : 1);
     const eppIdx = await cargarIndice('epps', obraId, 'nombre_epp');
+    if (resolvedItems) { for (const [k, info] of resolvedItems) eppIdx.map.set(k, { id: info.id, unidad: info.unidad }); }
     const ubicIdx = await cargarIndice('ubicaciones_obra', obraId, 'nombre');
     const personal = (await window.__db.personal.where('obra_id').equals(obraId).filter(p => !p.deleted_at).toArray());
     const proveedores = (await window.__db.proveedores.filter(p => !p.deleted_at).toArray());
@@ -353,6 +512,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     const resolverEpp = async (nombre, unidad) => {
       const k = normTxt(nombre);
       if (eppIdx.map.has(k)) return eppIdx.map.get(k);
+      if (resolvedItems) return null; // no aprobado en revisión
       const rec = await addRecord('epps', {
         obra_id: obraId, nombre_epp: String(nombre).trim(), tipo_epp: detectarEPP(nombre) || 'Otro',
         unidad: unidad || 'Und', stock_inicial: 0, stock_actual: 0, stock_minimo: 0, alerta: 'ok', estado: 'activo',
@@ -370,7 +530,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       ubicIdx.map.set(k, rec); return rec.id;
     };
 
-    let okCount = 0, errores = 0;
+    let okCount = 0, errores = 0, saltadosNoAprobados = 0;
     const errorList = [];
     const afectados = new Set();
     const prevEpp = eppIdx.map.size;
@@ -382,6 +542,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         if (!m.tipo) throw new Error('Tipo de movimiento no reconocido');
         if (!(m.cantidad > 0)) throw new Error('Cantidad inválida');
         const epp = await resolverEpp(m.nombreItem, m.unidad);
+        if (!epp) { saltadosNoAprobados++; continue; }
         afectados.add(epp.id);
         const obsExtra = [];
         let proveedor_id = null, personal_id = null, ubicId = null;
@@ -412,13 +573,14 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
 
     await recalcularStockEpp(obraId, afectados, userId);
     fireChanged('epps', 'movimientos_epp', 'ubicaciones_obra', 'stock_ubicaciones');
-    return { ok: okCount, errors: errores, errorList,
-      detalle: `${okCount} movimientos EPP cargados · ${eppIdx.map.size - prevEpp} EPP nuevos · ${errores} con error` };
+    return { ok: okCount, errors: errores, saltadosNoAprobados, errorList,
+      detalle: `${okCount} movimientos EPP cargados${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
-  const runMovHerramientas = async () => {
+  const runMovHerramientas = async (resolvedItems = null) => {
     const movs = [...preview.movs].sort((a, b) => (a.fecha || '') < (b.fecha || '') ? -1 : 1);
     const herrIdx = await cargarIndice('herramientas', obraId, 'nombre_herramienta');
+    if (resolvedItems) { for (const [k, info] of resolvedItems) herrIdx.map.set(k, { id: info.id, unidad: info.unidad }); }
     const ubicIdx = await cargarIndice('ubicaciones_obra', obraId, 'nombre');
     const personal = (await window.__db.personal.where('obra_id').equals(obraId).filter(p => !p.deleted_at).toArray());
     const proveedores = (await window.__db.proveedores.filter(p => !p.deleted_at).toArray());
@@ -426,6 +588,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     const resolverHerr = async (nombre, unidad, estado) => {
       const k = normTxt(nombre);
       if (herrIdx.map.has(k)) return herrIdx.map.get(k);
+      if (resolvedItems) return null; // no aprobado en revisión
       const rec = await addRecord('herramientas', {
         obra_id: obraId, nombre_herramienta: String(nombre).trim(), tipo_herramienta: 'manual',
         estado_actual: normEstadoHerr(estado), ubicacion_actual: 'almacen', disponible: true,
@@ -445,7 +608,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       ubicIdx.map.set(k, rec); return rec.id;
     };
 
-    let okCount = 0, errores = 0;
+    let okCount = 0, errores = 0, saltadosNoAprobados = 0;
     const errorList = [];
     const afectados = new Set();
     const prevHerr = herrIdx.map.size;
@@ -457,6 +620,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         if (!m.tipo) throw new Error('Tipo de movimiento no reconocido');
         if (!(m.cantidad > 0)) throw new Error('Cantidad inválida');
         const herr = await resolverHerr(m.nombreItem, m.unidad, m.estado);
+        if (!herr) { saltadosNoAprobados++; continue; }
         afectados.add(herr.id);
         const obsExtra = [];
         let proveedor_id = null, responsable_id = null, frente = null, ubicId = null;
@@ -487,13 +651,14 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
 
     await recalcularStockHerramientas(obraId, afectados, userId);
     fireChanged('herramientas', 'movimientos_herramientas', 'ubicaciones_obra', 'stock_ubicaciones');
-    return { ok: okCount, errors: errores, errorList,
-      detalle: `${okCount} movimientos de herramientas cargados · ${herrIdx.map.size - prevHerr} herramientas nuevas · ${errores} con error` };
+    return { ok: okCount, errors: errores, saltadosNoAprobados, errorList,
+      detalle: `${okCount} movimientos de herramientas cargados${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
-  const runMovMaquinaria = async () => {
+  const runMovMaquinaria = async (resolvedItems = null) => {
     const movs = [...preview.movs].sort((a, b) => (a.fecha || '') < (b.fecha || '') ? -1 : 1);
     const actIdx = await cargarIndice('activos_pesados', obraId, 'nombre', { porObra: false });
+    if (resolvedItems) { for (const [k, info] of resolvedItems) actIdx.map.set(k, { id: info.id, unidad: info.unidad }); }
     const ubicIdx = await cargarIndice('ubicaciones_obra', obraId, 'nombre');
     const personal = (await window.__db.personal.where('obra_id').equals(obraId).filter(p => !p.deleted_at).toArray());
     const proveedores = (await window.__db.proveedores.filter(p => !p.deleted_at).toArray());
@@ -501,10 +666,11 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     const resolverActivo = async (nombre, unidad, estado) => {
       const k = normTxt(nombre);
       if (actIdx.map.has(k)) return actIdx.map.get(k);
+      if (resolvedItems) return null; // no aprobado en revisión
       const rec = await addRecord('activos_pesados', {
         nombre: String(nombre).trim(), tipo: 'maquinaria', estado: 'operativo',
         obra_actual_id: obraId, obra_id: obraId, maneja_cantidad: true, unidad: unidad || 'Und',
-        stock_inicial: 0, stock_actual: 0, stock_minimo: 0, alerta: 'ok', notas: 'Migración histórica',
+        stock_actual: 0, stock_minimo: 0, alerta: 'ok', notas: 'Migración histórica',
       }, userId);
       actIdx.map.set(k, rec); return rec;
     };
@@ -519,7 +685,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       ubicIdx.map.set(k, rec); return rec.id;
     };
 
-    let okCount = 0, errores = 0;
+    let okCount = 0, errores = 0, saltadosNoAprobados = 0;
     const errorList = [];
     const afectados = new Set();
     const prevAct = actIdx.map.size;
@@ -531,6 +697,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         if (!m.tipo) throw new Error('Tipo de movimiento no reconocido');
         if (!(m.cantidad > 0)) throw new Error('Cantidad inválida');
         const act = await resolverActivo(m.nombreItem, m.unidad, m.estado);
+        if (!act) { saltadosNoAprobados++; continue; }
         afectados.add(act.id);
         const obsExtra = [];
         let proveedor_id = null, responsable_id = null, frente = null, ubicId = null;
@@ -560,8 +727,8 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
 
     await recalcularStockMaquinaria(obraId, afectados, userId);
     fireChanged('activos_pesados', 'movimientos_maquinaria', 'ubicaciones_obra', 'stock_ubicaciones');
-    return { ok: okCount, errors: errores, errorList,
-      detalle: `${okCount} movimientos de maquinaria cargados · ${actIdx.map.size - prevAct} equipos nuevos · ${errores} con error` };
+    return { ok: okCount, errors: errores, saltadosNoAprobados, errorList,
+      detalle: `${okCount} movimientos de maquinaria cargados${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
   const runInsumosEmergencia = async () => {
@@ -589,15 +756,17 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       detalle: `${creados} insumos de emergencia creados · ${saltados} ya existían · ${errores} con error` };
   };
 
-  const runMovEmergencia = async () => {
+  const runMovEmergencia = async (resolvedItems = null) => {
     const movs = [...preview.movs].sort((a, b) => (a.fecha || '') < (b.fecha || '') ? -1 : 1);
     const insIdx = await cargarIndice('insumos_emergencia', obraId, 'nombre');
+    if (resolvedItems) { for (const [k, info] of resolvedItems) insIdx.map.set(k, { id: info.id, unidad: info.unidad }); }
     const personal = (await window.__db.personal.where('obra_id').equals(obraId).filter(p => !p.deleted_at).toArray());
     const proveedores = (await window.__db.proveedores.filter(p => !p.deleted_at).toArray());
 
     const resolverInsumo = async (nombre, unidad) => {
       const k = normTxt(nombre);
       if (insIdx.map.has(k)) return insIdx.map.get(k);
+      if (resolvedItems) return null;
       const rec = await addRecord('insumos_emergencia', {
         obra_id: obraId, nombre: String(nombre).trim(), categoria: null, unidad: unidad || 'Und',
         stock_inicial: 0, stock_actual: 0, stock_minimo: 0, alerta: 'ok', estado: 'activo',
@@ -605,7 +774,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       insIdx.map.set(k, rec); return rec;
     };
 
-    let okCount = 0, errores = 0;
+    let okCount = 0, errores = 0, saltadosNoAprobados = 0;
     const errorList = [];
     const afectados = new Set();
     const prevIns = insIdx.map.size;
@@ -617,6 +786,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         if (!m.tipo) throw new Error('Tipo de movimiento no reconocido');
         if (!(m.cantidad > 0)) throw new Error('Cantidad inválida');
         const ins = await resolverInsumo(m.nombreItem, m.unidad);
+        if (!ins) { saltadosNoAprobados++; continue; }
         afectados.add(ins.id);
         const obsExtra = [];
         let proveedor_id = null, responsable_id = null;
@@ -640,19 +810,21 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
 
     await recalcularStockEmergencia(obraId, afectados, userId);
     fireChanged('insumos_emergencia', 'movimientos_insumos_emergencia');
-    return { ok: okCount, errors: errores, errorList,
-      detalle: `${okCount} movimientos de emergencia cargados · ${insIdx.map.size - prevIns} insumos nuevos · ${errores} con error` };
+    return { ok: okCount, errors: errores, saltadosNoAprobados, errorList,
+      detalle: `${okCount} movimientos de emergencia cargados${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
-  const runMovMaquinariaAsignacionLoad = async () => {
+  const runMovMaquinariaAsignacionLoad = async (resolvedItems = null) => {
     const movs = [...preview.movs].sort((a, b) => (a.fecha || '') < (b.fecha || '') ? -1 : 1);
     const actIdx = await cargarIndice('activos_pesados', obraId, 'nombre', { porObra: false });
+    if (resolvedItems) { for (const [k, info] of resolvedItems) actIdx.map.set(k, { id: info.id, unidad: info.unidad }); }
     const personal = (await window.__db.personal.where('obra_id').equals(obraId).filter(p => !p.deleted_at).toArray());
     const subcontratistas = (await window.__db.subcontratistas.filter(s => !s.deleted_at).toArray());
 
     const resolverActivo = async (nombre) => {
       const k = normTxt(nombre);
       if (actIdx.map.has(k)) return actIdx.map.get(k);
+      if (resolvedItems) return null;
       const rec = await addRecord('activos_pesados', {
         nombre: String(nombre).trim(), tipo: 'maquinaria', estado: 'operativo',
         obra_actual_id: obraId, obra_id: obraId, maneja_cantidad: false, notas: 'Migración histórica · custodia',
@@ -666,7 +838,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       return s?.id || null;
     };
 
-    let okCount = 0, errores = 0;
+    let okCount = 0, errores = 0, saltadosNoAprobados = 0;
     const errorList = [];
     const prevAct = actIdx.map.size;
     // custodia final por activo (último movimiento gana, ya que vienen asc)
@@ -678,6 +850,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       try {
         if (!m.tipo) throw new Error('Movimiento no reconocido (usá Salida/Devolución)');
         const act = await resolverActivo(m.equipo);
+        if (!act) { saltadosNoAprobados++; continue; }
         const obsExtra = [];
         let responsable_id = null, subcontratista_id = null, destino_tipo = null, destino_nombre = null;
         if (m.tipo === 'salida') {
@@ -719,27 +892,53 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       });
     }
     fireChanged('activos_pesados', 'movimientos_maquinaria');
-    return { ok: okCount, errors: errores, errorList,
-      detalle: `${okCount} asignaciones cargadas · ${actIdx.map.size - prevAct} equipos nuevos · ${errores} con error` };
+    return { ok: okCount, errors: errores, saltadosNoAprobados, errorList,
+      detalle: `${okCount} asignaciones cargadas${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
+  // Llamado desde el paso "Revisar". Para movimientos lanza el escaneo de
+  // items y salta al paso "Insumos"; los formatos de catálogo (insumos_emergencia)
+  // se ejecutan directo a Resultado (no necesitan revisión).
   const ejecutar = async () => {
     if (!obraId) { showToast('No hay obra activa', 'red'); return; }
     if (!superAdmin) { showToast('Activá Super Admin para migrar históricos', 'red'); return; }
+    if (esInsumosEmergencia) {
+      setImp(true);
+      try { const res = await runInsumosEmergencia(); setResult(res); setStep(4); showToast(res.detalle, res.errors ? 'amber' : 'green'); }
+      catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+      finally { setImp(false); }
+      return;
+    }
+    if (!esMov || !preview?.movs?.length) { showToast('No hay movimientos para procesar', 'red'); return; }
+    setScanning(true);
+    try {
+      const rows = await escanearMovs(preview.movs, formato, obraId);
+      // Decisiones por defecto por status
+      const d = new Map();
+      for (const r of rows) d.set(r.key, accionDefault(r));
+      setScanRows(rows); setDecisiones(d);
+      setStep(3); // Paso "Insumos"
+    } catch (e) {
+      showToast('Error al escanear insumos: ' + (e.message || e), 'red');
+    } finally { setScanning(false); }
+  };
+
+  // Llamado desde el paso "Insumos" — aplica decisiones y corre el loader.
+  const confirmarYCargar = async () => {
     setImp(true);
     try {
+      const dec = await aplicarDecisiones(scanRows, decisiones, formato, obraId, userId);
       let res;
-      if (esInsumos) res = await runInsumos();
-      else if (esInsumosEmergencia) res = await runInsumosEmergencia();
-      else if (formato === 'mov_materiales') res = await runMovMateriales();
-      else if (formato === 'mov_epp') res = await runMovEpp();
-      else if (formato === 'mov_herramientas') res = await runMovHerramientas();
-      else if (formato === 'mov_maquinaria') res = await runMovMaquinaria();
-      else if (formato === 'mov_emergencia') res = await runMovEmergencia();
-      else if (esAsignacion) res = await runMovMaquinariaAsignacionLoad();
+      if (formato === 'mov_materiales') res = await runMovMateriales(dec.resolved);
+      else if (formato === 'mov_epp') res = await runMovEpp(dec.resolved);
+      else if (formato === 'mov_herramientas') res = await runMovHerramientas(dec.resolved);
+      else if (formato === 'mov_maquinaria') res = await runMovMaquinaria(dec.resolved);
+      else if (formato === 'mov_emergencia') res = await runMovEmergencia(dec.resolved);
+      else if (esAsignacion) res = await runMovMaquinariaAsignacionLoad(dec.resolved);
       else { setImp(false); return; }
+      res = { ...res, detalle: `${res.detalle} · ${dec.creados} insumos creados · ${dec.reemplazados} actualizados · ${dec.saltados} insumos saltados` };
       setResult(res);
-      setStep(3);
+      setStep(4);
       showToast(res.detalle, res.errors ? 'amber' : 'green');
     } catch (e) {
       showToast('Error en la migración: ' + (e.message || e), 'red');
@@ -749,6 +948,22 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
   const reiniciar = () => {
     setStep(0); setFile(null); setParsed(null); setParseErr(null); setFormato(null); setResult(null);
     setProgress({ current: 0, total: 0 });
+    setScanRows(null); setDecisiones(new Map());
+  };
+
+  // Acciones globales del paso "Insumos".
+  const accionGlobal = (modo) => {
+    if (!scanRows) return;
+    const next = new Map(decisiones);
+    for (const r of scanRows) {
+      if (modo === 'crear_nuevos' && r.status === 'new') next.set(r.key, 'crear');
+      else if (modo === 'saltar_nuevos' && r.status === 'new') next.set(r.key, 'saltar');
+      else if (modo === 'reemplazar_dif' && r.status === 'diff') next.set(r.key, 'reemplazar');
+      else if (modo === 'saltar_dif' && r.status === 'diff') next.set(r.key, 'saltar');
+      else if (modo === 'crear_otros' && r.status === 'other') next.set(r.key, 'crear');
+      else if (modo === 'saltar_otros' && r.status === 'other') next.set(r.key, 'saltar');
+    }
+    setDecisiones(next);
   };
 
   // ── RENDER ──────────────────────────────────────────────────────────
@@ -892,8 +1107,8 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
 
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
             <button className="btn btn-ghost" onClick={() => setStep(1)} disabled={importing}><JxIcon name="chevL" size={14} />Atrás</button>
-            <button className="btn btn-amber" disabled={importing || (esMov && !movHabilitado)} onClick={ejecutar}>
-              {importing ? `Cargando… ${progress.current}/${progress.total}` : <>Cargar a JARVEX <JxIcon name="chevR" size={14} /></>}
+            <button className="btn btn-amber" disabled={importing || scanning || (esMov && !movHabilitado)} onClick={ejecutar}>
+              {scanning ? 'Escaneando insumos…' : importing ? `Cargando… ${progress.current}/${progress.total}` : <>{esMov ? 'Revisar insumos' : 'Cargar a JARVEX'} <JxIcon name="chevR" size={14} /></>}
             </button>
           </div>
           {importing && progress.total > 0 && (
@@ -904,8 +1119,84 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         </div>
       )}
 
-      {/* Step 3 — Resultado */}
-      {step === 3 && result && (
+      {/* Step 3 — Insumos (revisión item-por-item antes de cargar) */}
+      {step === 3 && scanRows && (() => {
+        const cuentas = { new: 0, diff: 0, other: 0, same: 0 };
+        for (const r of scanRows) cuentas[r.status]++;
+        const STATUS_META = {
+          new:   { label: 'Nuevos', color: '#3498DB', desc: 'No existen en ningún inventario' },
+          diff:  { label: 'Con diferencias', color: '#F2B705', desc: 'Existen pero con otra unidad' },
+          other: { label: 'En otro inventario', color: '#9B59B6', desc: 'Existen pero en otra tabla' },
+          same:  { label: 'Iguales', color: '#2ECC71', desc: 'Ya existen — se usan como están' },
+        };
+        const ordenStatus = ['new', 'diff', 'other', 'same'];
+        return (
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--tp)', marginBottom: 6 }}>Revisar insumos detectados</div>
+            <div style={{ fontSize: 12.5, color: 'var(--tm)', marginBottom: 14 }}>Buscamos cada item en Materiales, Herramientas, EPP, Maquinaria e Insumos de Emergencia. Decidí qué hacer con cada uno antes de cargar los movimientos.</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10, marginBottom: 14 }}>
+              {ordenStatus.map(s => (
+                <div key={s} className="card card-p" style={{ textAlign: 'center', borderLeft: `3px solid ${STATUS_META[s].color}` }}>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: STATUS_META[s].color }}>{cuentas[s]}</div>
+                  <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 2 }}>{STATUS_META[s].label}</div>
+                </div>
+              ))}
+            </div>
+            {/* Acciones globales */}
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+              {cuentas.new > 0 && <><button className="btn btn-ghost btn-xs" onClick={() => accionGlobal('crear_nuevos')}>Crear todos los nuevos</button><button className="btn btn-ghost btn-xs" onClick={() => accionGlobal('saltar_nuevos')}>Saltar todos los nuevos</button></>}
+              {cuentas.diff > 0 && <><button className="btn btn-ghost btn-xs" onClick={() => accionGlobal('reemplazar_dif')}>Reemplazar todas las diferencias</button><button className="btn btn-ghost btn-xs" onClick={() => accionGlobal('saltar_dif')}>Saltar todas las diferencias</button></>}
+              {cuentas.other > 0 && <><button className="btn btn-ghost btn-xs" onClick={() => accionGlobal('crear_otros')}>Crear todos los de otro inventario</button><button className="btn btn-ghost btn-xs" onClick={() => accionGlobal('saltar_otros')}>Saltar todos los de otro inventario</button></>}
+            </div>
+            {/* Lista de items agrupada por status */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxHeight: '50vh', overflow: 'auto', paddingRight: 6 }}>
+              {ordenStatus.filter(s => cuentas[s] > 0).map(s => (
+                <div key={s}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: STATUS_META[s].color, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '.04em' }}>{STATUS_META[s].label} · {cuentas[s]} <span style={{ color: 'var(--tm)', fontWeight: 400, textTransform: 'none' }}>· {STATUS_META[s].desc}</span></div>
+                  <div className="card" style={{ overflow: 'hidden' }}>
+                    {scanRows.filter(r => r.status === s).map((r, idx) => {
+                      const acc = decisiones.get(r.key) || accionDefault(r);
+                      const opciones = r.status === 'same' ? [['mantener', 'Usar existente']]
+                        : r.status === 'diff' ? [['saltar', 'Saltar (mantener catálogo)'], ['reemplazar', `Reemplazar (unidad → ${r.unidadExcel || '?'})`]]
+                        : r.status === 'other' ? [['saltar', 'Saltar'], ['crear', `Crear nuevo en ${LABEL_TABLA[r.expectedTabla]}`]]
+                        : [['crear', `Crear en ${LABEL_TABLA[r.expectedTabla]}`], ['saltar', 'Saltar']];
+                      return (
+                        <div key={r.key} style={{ padding: '8px 12px', borderTop: idx > 0 ? '1px solid var(--border)' : 'none', display: 'grid', gridTemplateColumns: '1.6fr 1fr 1.2fr', gap: 10, alignItems: 'center' }}>
+                          <div>
+                            <div style={{ fontSize: 12.5, color: 'var(--tp)', fontWeight: 600 }}>{r.nombre}</div>
+                            <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 2 }}>{r.count} movimiento{r.count !== 1 ? 's' : ''} · unidad: {r.unidadExcel || '—'}</div>
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--tm)' }}>
+                            {r.existing ? <>📌 {LABEL_TABLA[r.existing.tabla]}{r.existing.unidad ? ` · ${r.existing.unidad}` : ''}</> : '—'}
+                          </div>
+                          <select className="fi" style={{ fontSize: 12, padding: '6px 10px' }} value={acc} onChange={e => { const next = new Map(decisiones); next.set(r.key, e.target.value); setDecisiones(next); }}>
+                            {opciones.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                          </select>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 16 }}>
+              <button className="btn btn-ghost" onClick={() => setStep(2)} disabled={importing}><JxIcon name="chevL" size={14} />Atrás</button>
+              <button className="btn btn-amber" disabled={importing} onClick={confirmarYCargar}>
+                {importing ? `Cargando… ${progress.current}/${progress.total}` : <>Confirmar y cargar <JxIcon name="chevR" size={14} /></>}
+              </button>
+            </div>
+            {importing && progress.total > 0 && (
+              <div style={{ height: 6, background: 'var(--bg-s)', borderRadius: 4, marginTop: 12, overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${Math.round(progress.current / progress.total * 100)}%`, background: 'var(--amber)', transition: 'width .2s' }} />
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* Step 4 — Resultado */}
+      {step === 4 && result && (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '30px 20px', gap: 16, textAlign: 'center' }}>
           <div style={{ width: 64, height: 64, borderRadius: '50%', background: result.errors ? 'rgba(242,183,5,0.15)' : 'rgba(46,204,113,0.15)', border: `2px solid ${result.errors ? 'var(--amber)' : 'var(--green)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <JxIcon name={result.errors ? 'alert' : 'checkCircle'} size={28} color={result.errors ? 'var(--amber)' : 'var(--green)'} />

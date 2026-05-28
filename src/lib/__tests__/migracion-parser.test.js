@@ -26,8 +26,8 @@ describe('parseFechaMigracion — fechas en formato US (raw:false) / serial / IS
 });
 
 describe('detectFormato — distingue los 5 formatos por headers', () => {
-  it('insumos totales', () => {
-    expect(detectFormato(['ID', 'Nombre Insumo', 'Tipo', 'Unidad', 'Fecha de creacion'])).toBe('insumos_totales');
+  it('insumos totales: retirado del flujo → ya no se detecta como formato', () => {
+    expect(detectFormato(['ID', 'Nombre Insumo', 'Tipo', 'Unidad', 'Fecha de creacion'])).toBeNull();
   });
   it('movimientos materiales', () => {
     expect(detectFormato(['ID', 'Fecha de Movimiento', 'Material', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Proveedor/Almacen de Salida', 'Resposable (Salida)', 'Lugar llega / Frente'])).toBe('mov_materiales');

@@ -30,10 +30,10 @@ export const normTxt = (s) =>
     .replace(/[̀-ͯ]/g, '')
     .replace(/[^a-z0-9]/g, '');
 
-/** Metadatos de los 5 formatos: id, etiqueta y descripción para la UI. */
+/** Metadatos de los formatos: id, etiqueta y descripción para la UI.
+ * "Insumos Totales" quedó retirado: ahora el catálogo se completa solo al
+ * cargar movimientos (con paso de revisión de items en el wizard). */
 export const FORMATOS = {
-  insumos_totales: { id: 'insumos_totales', label: 'Insumos Totales', icon: 'package',
-    desc: 'Crea Materiales / Herramientas / Maquinaria / EPP. No genera movimientos ni stock.' },
   mov_materiales:  { id: 'mov_materiales', label: 'Movimientos de Materiales', icon: 'package',
     desc: 'Ingresos y salidas de materiales con fecha histórica.' },
   mov_herramientas:{ id: 'mov_herramientas', label: 'Movimientos de Herramientas', icon: 'tool',
@@ -70,7 +70,12 @@ export function detectFormato(headers) {
   // no "Tipo de Movimiento", así que va antes del gate de abajo.)
   if (H.some((h) => h.includes('asigna'))) return 'mov_maquinaria_asignacion';
 
-  if (tiene('nombre insumo') && tiene('tipo')) return 'insumos_totales';
+  // (Insumos Totales se retiró del flujo — el catálogo lo crea el paso de
+  // revisión al cargar movimientos.)
+  // Para ser mov_*, requerimos que ALGÚN header contenga "movimiento" — así
+  // no confundimos un archivo con columna sola "Tipo" (catálogo viejo).
+  const tieneMovimiento = H.some((h) => h.includes('movimiento'));
+  if (!tieneMovimiento) return null;
   if (!tiene('tipo de movimiento')) return null;
 
   if (tiene('material')) return 'mov_materiales';
