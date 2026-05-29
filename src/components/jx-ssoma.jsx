@@ -534,6 +534,32 @@ function EppPage({ showToast }) {
     }
   };
 
+  // Super Admin: eliminar una entrega/compra/movimiento EPP (soft-delete).
+  // Funciona tanto sobre epp_entregas como sobre movimientos_epp. Al borrar
+  // un movimiento, el stock se recalcula solo (stockPorTipo lee de registros).
+  const eliminarRegistroEpp = async (reg) => {
+    const tabla = reg._esMovEpp ? 'movimientos_epp' : 'epp_entregas';
+    const desc = reg._esMovEpp
+      ? `${reg.tipo_movimiento === 'entrada' ? 'entrada' : 'salida'} de ${reg._eppNombre}`
+      : `entrega del ${reg.fecha}`;
+    if (!confirm(`⚡ Super Admin\n\n¿Eliminar esta ${desc}?\n\nSe borra del inventario y del servidor. Esta acción queda registrada en auditoría.`)) return;
+    try {
+      const now = new Date().toISOString();
+      await window.__db[tabla].update(reg.id, {
+        deleted_at: now,
+        updated_at: now,
+        updated_by: userId,
+        version: (reg.version ?? 0) + 1,
+        sync_status: reg.sync_status === 'pending_create' ? 'pending_create' : 'pending_delete',
+      });
+      try { await window.__logAudit?.({ action: 'delete', table: tabla, recordId: reg.id, reason: 'Super Admin · eliminación de registro EPP' }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla } })); } catch {}
+      showToast('✓ Registro eliminado', 'green');
+    } catch (e) {
+      showToast('Error: ' + (e.message || e), 'red');
+    }
+  };
+
   // Super Admin: editar el destino de una entrega EPP (movimientos_epp).
   // Permite asignar a Personal o Subcontratista, y crear el trabajador si no
   // existe (la columna G del Excel = responsable, que puede no estar creado).
@@ -657,7 +683,7 @@ function EppPage({ showToast }) {
       });
     });
     return map;
-  }, [entregas]);
+  }, [registros]);
 
   // ── Próximos vencimientos por trabajador ────────────────────
   // Para cada entrega, calcula fecha de vencimiento (entrega + vida_util_dias)
@@ -921,6 +947,10 @@ function EppPage({ showToast }) {
                           <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar fecha" style={{ marginLeft:4, color:'#E74C3C', padding:'0 4px' }}
                             onClick={(ev)=>{ ev.stopPropagation(); setEditFechaEpp(e); setEditFechaEppValue(e.fecha || ''); }}>📅</button>
                         )}
+                        {superAdmin && (
+                          <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: eliminar registro" style={{ marginLeft:2, color:'var(--red)', padding:'0 4px' }}
+                            onClick={(ev)=>{ ev.stopPropagation(); eliminarRegistroEpp(e); }}>🗑</button>
+                        )}
                       </td>
                       <td className="col-p">
                         {(() => {
@@ -983,6 +1013,10 @@ function EppPage({ showToast }) {
                         {superAdmin && (
                           <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar fecha" style={{ marginLeft:4, color:'#E74C3C', padding:'0 4px' }}
                             onClick={(ev)=>{ ev.stopPropagation(); setEditFechaEpp(e); setEditFechaEppValue(e.fecha || ''); }}>📅</button>
+                        )}
+                        {superAdmin && (
+                          <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: eliminar registro" style={{ marginLeft:2, color:'var(--red)', padding:'0 4px' }}
+                            onClick={(ev)=>{ ev.stopPropagation(); eliminarRegistroEpp(e); }}>🗑</button>
                         )}
                       </td>
                       <td className="col-p">{prov?.razon_social || prov?.nombre || '—'}</td>

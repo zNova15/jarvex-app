@@ -1420,9 +1420,14 @@ const DB_TABLES_LIST = [
   'cuentas_bancarias','movimientos_bancarios','cronograma_pagos',
   // Activos / Maquinaria
   'activos_pesados','horas_maquina','consumos_combustible','mantenimientos_maquinaria',
+  'movimientos_maquinaria',
   // SSOMA
   'charlas_seguridad','charla_asistentes','iperc',
-  'epp_entregas','inspecciones_seguridad','capacitaciones',
+  'epps','movimientos_epp','epp_entregas','inspecciones_seguridad','capacitaciones',
+  // Inventarios por ubicación
+  'stock_ubicaciones',
+  // Almacén — Caja Chica e Insumos de Emergencia
+  'caja_chica_movimientos','insumos_emergencia','movimientos_insumos_emergencia',
   // Subcontratos
   'subcontratistas','subcontratos','subcontrato_valorizaciones',
   // Planillas / RRHH
