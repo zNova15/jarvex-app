@@ -183,6 +183,120 @@ function EppsInventarioPage({ showToast }) {
   const stockDe = (e) => liveStockById.has(e?.id) ? Math.max(0, liveStockById.get(e.id)) : Number(e?.stock_actual ?? 0);
   const alertaDe = (e) => calcAlerta(stockDe(e), Number(e?.stock_minimo || 0));
 
+  // ── Variantes padre-hijo (SKU) ──────────────────────────────────────
+  // Un grupo (es_grupo) agrupa variantes (padre_id = grupo.id). El stock del
+  // grupo es la suma de sus variantes; un grupo no recibe movimientos.
+  const childrenByPadre = uM(() => {
+    const m = new Map();
+    for (const e of (epps || [])) {
+      if (e.padre_id) { const arr = m.get(e.padre_id) || []; arr.push(e); m.set(e.padre_id, arr); }
+    }
+    return m;
+  }, [epps]);
+  const variantesDe = (g) => childrenByPadre.get(g.id) || [];
+  const stockDeNodo = (e) => e.es_grupo ? variantesDe(e).reduce((s, c) => s + stockDe(c), 0) : stockDe(e);
+  const alertaDeNodo = (e) => e.es_grupo ? calcAlerta(stockDeNodo(e), Number(e.stock_minimo || 0)) : alertaDe(e);
+  const [expandedGroups, setExpandedGroups] = uS(() => new Set());
+  const toggleGroup = (id) => setExpandedGroups(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  // Detección de genéricos: ítems sueltos (sin grupo, sin padre) que comparten
+  // la primera palabra significativa (≥3) → sugerencia de agrupar como SKU.
+  const sugerenciasGrupo = uM(() => {
+    const norm = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const primera = (s) => { const p = norm(s).replace(/[^a-z0-9\s]/g, ' ').trim().split(/\s+/); return (p[0] && p[0].length >= 3) ? p[0] : null; };
+    const grupos = new Map();
+    for (const e of (epps || [])) {
+      if (e.deleted_at || e.es_grupo || e.padre_id) continue; // solo sueltos
+      const k = primera(e.nombre_epp);
+      if (!k) continue;
+      const arr = grupos.get(k) || []; arr.push(e); grupos.set(k, arr);
+    }
+    return Array.from(grupos.entries())
+      .filter(([, arr]) => arr.length >= 3)
+      .map(([k, arr]) => ({ clave: k, titulo: k.charAt(0).toUpperCase() + k.slice(1), items: arr }))
+      .sort((a, b) => b.items.length - a.items.length);
+  }, [epps]);
+  const [sugDescartadas, setSugDescartadas] = uS(() => new Set());
+  const [grupoModal, setGrupoModal] = uS(null); // { titulo, items } para confirmar agrupación
+
+  // Crea un grupo padre y reasigna los ítems como sus variantes.
+  const crearGrupoCon = async (titulo, items) => {
+    const nombre = (titulo || '').trim();
+    if (!nombre || !items?.length) return;
+    try {
+      const padre = await createEpp({
+        obra_id: obraId, nombre_epp: nombre, tipo_epp: items[0]?.tipo_epp || 'Otro',
+        unidad: items[0]?.unidad || 'Und', es_grupo: true,
+        stock_inicial: 0, stock_actual: 0, stock_minimo: 0, alerta: 'ok', estado: 'activo',
+      });
+      const padreId = padre?.id;
+      if (!padreId) throw new Error('No se pudo crear el grupo');
+      for (const it of items) {
+        await updateEpp(it.id, {
+          padre_id: padreId,
+          updated_at: new Date().toISOString(),
+          version: (it.version ?? 0) + 1,
+          sync_status: it.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+        });
+      }
+      try { await window.__logAudit?.({ action: 'update', table: 'epps', reason: `Agrupar ${items.length} EPP como variantes de "${nombre}"` }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'epps' } })); } catch {}
+      setExpandedGroups(s => new Set(s).add(padreId));
+      showToast(`✓ "${nombre}" creado con ${items.length} variantes`, 'green');
+      setGrupoModal(null); refresh?.();
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
+
+  // Deshacer grupo: las variantes vuelven a ser ítems sueltos y se borra el padre.
+  const eliminarGrupo = async (g) => {
+    const hijos = variantesDe(g);
+    if (!confirm(`¿Deshacer el grupo "${g.nombre_epp}"?\n\nSus ${hijos.length} variantes vuelven a ser EPP sueltos (no se borran). El grupo se elimina.`)) return;
+    try {
+      for (const h of hijos) {
+        await updateEpp(h.id, { padre_id: null, updated_at: new Date().toISOString(), version: (h.version ?? 0) + 1, sync_status: h.sync_status === 'pending_create' ? 'pending_create' : 'pending_update' });
+      }
+      await updateEpp(g.id, { deleted_at: new Date().toISOString(), version: (g.version ?? 0) + 1, sync_status: g.sync_status === 'pending_create' ? 'pending_create' : 'pending_delete' });
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'epps' } })); } catch {}
+      showToast('Grupo deshecho', 'amber'); refresh?.();
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
+
+  // Render de una fila de inventario (ítem suelto o variante anidada).
+  const filaEpp = (e, esHijo) => {
+    const aler = alertaDe(e);
+    const a = ALERTA_STYLE[aler] || ALERTA_STYLE.ok;
+    const stockColor = aler === 'critico' || aler === 'agotado' ? 'var(--red)' : aler === 'reponer' ? 'var(--yellow)' : 'var(--tp)';
+    return (
+      <tr key={e.id} style={esHijo ? { background: 'rgba(255,255,255,0.015)' } : undefined}>
+        <td className="col-p" style={esHijo ? { paddingLeft: 26 } : undefined}>
+          {esHijo && <span style={{ color: 'var(--tm)', marginRight: 4 }}>└</span>}
+          {e.nombre_epp}
+          {e.marca && <div style={{ fontSize:10.5, color:'var(--tm)', paddingLeft: esHijo ? 14 : 0 }}>{e.marca} {e.modelo || ''}</div>}
+        </td>
+        <td>{(() => {
+          const dg = desgloseUbic.get(e.id);
+          const entradas = dg ? Array.from(dg.entries()).filter(([, c]) => Number(c) > 0) : [];
+          if (entradas.length === 0) return <span style={{ color: 'var(--tm)', fontSize: 11 }}>—</span>;
+          const resumen = entradas.length === 1 ? (ubicacionesById.get(entradas[0][0])?.nombre || 'Almacén') : `${entradas.length} almacenes`;
+          return <button className="btn btn-ghost btn-xs" title="Ver stock por ubicación" onClick={() => setPopupEpp(e)}><JxIcon name="map" size={11} /> {resumen}</button>;
+        })()}</td>
+        <td className="col-m">{e.talla || '—'}</td>
+        <td style={{textAlign:'right'}} className="col-num">
+          <span style={{ color: stockColor, fontWeight: 600 }}>{stockDe(e).toLocaleString('es-PE')}</span>
+          <span style={{ color:'var(--tm)', fontSize:10.5, marginLeft:4 }}>{e.unidad}</span>
+        </td>
+        <td style={{textAlign:'right'}} className="col-num">{Number(e.stock_minimo ?? 0).toLocaleString('es-PE')}</td>
+        <td className="col-m">{e.vida_util_dias ? `${e.vida_util_dias} días` : '—'}</td>
+        <td><span className={`badge ${a.class}`}>{a.label}</span></td>
+        <td>{e.sync_status && e.sync_status !== 'synced' ? <span className="badge b-amber">⏱</span> : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}</td>
+        <td style={{textAlign:'center', whiteSpace:'nowrap'}}>
+          <button className="btn btn-ghost btn-xs" title="Editar" onClick={() => openEditar(e)}><JxIcon name="edit" size={11}/></button>
+          {canDelete && <button className="btn btn-red btn-xs" title="Eliminar" onClick={() => handleDelete(e)} style={{ marginLeft:4 }}><JxIcon name="trash" size={11}/></button>}
+        </td>
+      </tr>
+    );
+  };
+
   // Auto-reparación: si el stock vivo difiere del stock_actual guardado, lo
   // persistimos (una sola vez por diferencia) para que el campo se sincronice
   // con el server y el resto de pantallas lo vean bien. Tras escribir, el live
@@ -306,20 +420,20 @@ function EppsInventarioPage({ showToast }) {
     setLoteItems(items => items.length > 1 ? items.filter(it => it.id !== id) : items);
   };
 
+  const matchEpp = (e) => {
+    if (filtroTipo !== 'todos' && e.tipo_epp !== filtroTipo) return false;
+    if (!q) return true;
+    const ql = q.toLowerCase();
+    return e.nombre_epp?.toLowerCase().includes(ql) || e.tipo_epp?.toLowerCase().includes(ql)
+      || e.marca?.toLowerCase().includes(ql) || e.talla?.toLowerCase().includes(ql);
+  };
+  // Nivel superior = ítems sin padre (grupos + sueltos). Un grupo aparece si
+  // él o alguna de sus variantes hace match; las variantes se renderizan
+  // anidadas bajo su grupo (ver tbody).
   const filtered = uM(() => {
-    let rows = epps;
-    if (filtroTipo !== 'todos') rows = rows.filter(e => e.tipo_epp === filtroTipo);
-    if (q) {
-      const ql = q.toLowerCase();
-      rows = rows.filter(e =>
-        e.nombre_epp?.toLowerCase().includes(ql) ||
-        e.tipo_epp?.toLowerCase().includes(ql) ||
-        e.marca?.toLowerCase().includes(ql) ||
-        e.talla?.toLowerCase().includes(ql)
-      );
-    }
-    return rows;
-  }, [epps, q, filtroTipo]);
+    const top = (epps || []).filter(e => !e.padre_id);
+    return top.filter(e => e.es_grupo ? (matchEpp(e) || variantesDe(e).some(matchEpp)) : matchEpp(e));
+  }, [epps, q, filtroTipo, childrenByPadre]);
 
   const eppsPg = usePagination(filtered, 50);
 
@@ -402,6 +516,7 @@ function EppsInventarioPage({ showToast }) {
           precio_unitario_estimado: parseFloat(form.precio_unitario_estimado) || null,
           proveedor_principal_id: form.proveedor_principal_id || null,
           ubicacion_id: form.ubicacion_id || null,
+          padre_id: form.padre_id || null,
         };
         // Super Admin: corregir fecha de registro (created_at)
         if (superAdmin && form.fecha_registro && form.fecha_registro !== (oldData?.created_at || '').slice(0, 10)) {
@@ -449,6 +564,7 @@ function EppsInventarioPage({ showToast }) {
           precio_unitario_estimado: parseFloat(form.precio_unitario_estimado) || null,
           proveedor_principal_id: form.proveedor_principal_id || null,
           ubicacion_id: form.ubicacion_id || null,
+          padre_id: form.padre_id || null,
           alerta: calcAlerta(stockInicial, stockMinimo),
           estado: 'activo',
         });
@@ -666,6 +782,19 @@ function EppsInventarioPage({ showToast }) {
         <span style={{ fontSize:11, color:'var(--tm)' }}>{filtered.length} de {epps.length}</span>
       </div>
 
+      {/* Detección: insumos genéricos que conviene dividir en variantes (SKU) */}
+      {canWrite && sugerenciasGrupo.filter(s => !sugDescartadas.has(s.clave)).map(s => (
+        <div key={s.clave} className="card card-p" style={{ marginBottom: 12, background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.3)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 1 320px', fontSize: 12.5, color: 'var(--ts)' }}>
+            💡 Detecté <strong>{s.items.length} EPP</strong> que empiezan con <strong>“{s.titulo}”</strong> ({s.items.slice(0,4).map(i=>i.nombre_epp).join(', ')}{s.items.length>4?'…':''}). ¿Los agrupás como variantes de <strong>{s.titulo}</strong>? Quedan ordenados bajo un solo grupo con stock total.
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-amber btn-sm" onClick={() => setGrupoModal({ titulo: s.titulo, items: s.items })}><JxIcon name="layers" size={13} /> Agrupar</button>
+            <button className="btn btn-ghost btn-sm" onClick={() => setSugDescartadas(d => new Set(d).add(s.clave))}>Ahora no</button>
+          </div>
+        </div>
+      ))}
+
       {epps.length === 0 ? (
         <div className="card card-p empty-state">
           <JxIcon name="shield" size={40} color="var(--tm)"/>
@@ -693,45 +822,39 @@ function EppsInventarioPage({ showToast }) {
             </thead>
             <tbody>
               {eppsPg.pagedItems.map(e => {
-                const aler = alertaDe(e);
-                const a = ALERTA_STYLE[aler] || ALERTA_STYLE.ok;
-                const stockColor = aler === 'critico' || aler === 'agotado' ? 'var(--red)'
-                  : aler === 'reponer' ? 'var(--yellow)' : 'var(--tp)';
+                if (!e.es_grupo) return filaEpp(e, false);
+                // Cabecera de grupo (rollup de variantes).
+                const hijos = variantesDe(e);
+                const hijosVis = q || filtroTipo !== 'todos' ? hijos.filter(matchEpp) : hijos;
+                const total = stockDeNodo(e);
+                const alerG = alertaDeNodo(e);
+                const aG = ALERTA_STYLE[alerG] || ALERTA_STYLE.ok;
+                const abierto = expandedGroups.has(e.id);
                 return (
-                  <tr key={e.id}>
-                    <td className="col-p">
-                      {e.nombre_epp}
-                      {e.marca && <div style={{ fontSize:10.5, color:'var(--tm)' }}>{e.marca} {e.modelo || ''}</div>}
-                    </td>
-                    <td>{(() => {
-                      const dg = desgloseUbic.get(e.id);
-                      const entradas = dg ? Array.from(dg.entries()).filter(([, c]) => Number(c) > 0) : [];
-                      if (entradas.length === 0) return <span style={{ color: 'var(--tm)', fontSize: 11 }}>—</span>;
-                      const resumen = entradas.length === 1 ? (ubicacionesById.get(entradas[0][0])?.nombre || 'Almacén') : `${entradas.length} almacenes`;
-                      return <button className="btn btn-ghost btn-xs" title="Ver stock por ubicación" onClick={() => setPopupEpp(e)}><JxIcon name="map" size={11} /> {resumen}</button>;
-                    })()}</td>
-                    <td className="col-m">{e.talla || '—'}</td>
-                    <td style={{textAlign:'right'}} className="col-num">
-                      <span style={{ color: stockColor, fontWeight: 600 }}>{stockDe(e).toLocaleString('es-PE')}</span>
-                      <span style={{ color:'var(--tm)', fontSize:10.5, marginLeft:4 }}>{e.unidad}</span>
-                    </td>
-                    <td style={{textAlign:'right'}} className="col-num">{Number(e.stock_minimo ?? 0).toLocaleString('es-PE')}</td>
-                    <td className="col-m">{e.vida_util_dias ? `${e.vida_util_dias} días` : '—'}</td>
-                    <td><span className={`badge ${a.class}`}>{a.label}</span></td>
-                    <td>{e.sync_status && e.sync_status !== 'synced'
-                      ? <span className="badge b-amber">⏱</span>
-                      : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}</td>
-                    <td style={{textAlign:'center', whiteSpace:'nowrap'}}>
-                      <button className="btn btn-ghost btn-xs" title="Editar" onClick={() => openEditar(e)}>
-                        <JxIcon name="edit" size={11}/>
-                      </button>
-                      {canDelete && (
-                        <button className="btn btn-red btn-xs" title="Eliminar" onClick={() => handleDelete(e)} style={{ marginLeft:4 }}>
-                          <JxIcon name="trash" size={11}/>
-                        </button>
-                      )}
-                    </td>
-                  </tr>
+                  <React.Fragment key={e.id}>
+                    <tr style={{ background: 'rgba(245,158,11,0.06)', cursor: 'pointer' }} onClick={() => toggleGroup(e.id)}>
+                      <td className="col-p">
+                        <span style={{ color: 'var(--amber)', marginRight: 6, fontWeight: 700 }}>{abierto ? '▾' : '▸'}</span>
+                        <strong>{e.nombre_epp}</strong>
+                        <span className="badge b-amber" style={{ marginLeft: 8 }}>{hijos.length} variantes</span>
+                      </td>
+                      <td><span style={{ color: 'var(--tm)', fontSize: 11 }}>—</span></td>
+                      <td className="col-m">—</td>
+                      <td style={{ textAlign: 'right' }} className="col-num">
+                        <span style={{ fontWeight: 700, color: 'var(--tp)' }}>{total.toLocaleString('es-PE')}</span>
+                        <span style={{ color: 'var(--tm)', fontSize: 10.5, marginLeft: 4 }}>{e.unidad}</span>
+                      </td>
+                      <td style={{ textAlign: 'right' }} className="col-num">{Number(e.stock_minimo ?? 0).toLocaleString('es-PE')}</td>
+                      <td className="col-m">—</td>
+                      <td><span className={`badge ${aG.class}`}>{aG.label}</span></td>
+                      <td>{e.sync_status && e.sync_status !== 'synced' ? <span className="badge b-amber">⏱</span> : <span style={{ color: 'var(--green)', fontSize: 11 }}>✓</span>}</td>
+                      <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
+                        <button className="btn btn-ghost btn-xs" title="Renombrar grupo" onClick={(ev) => { ev.stopPropagation(); openEditar(e); }}><JxIcon name="edit" size={11} /></button>
+                        {canDelete && <button className="btn btn-red btn-xs" title="Deshacer grupo" onClick={(ev) => { ev.stopPropagation(); eliminarGrupo(e); }} style={{ marginLeft: 4 }}><JxIcon name="trash" size={11} /></button>}
+                      </td>
+                    </tr>
+                    {abierto && hijosVis.map(h => filaEpp(h, true))}
+                  </React.Fragment>
                 );
               })}
             </tbody>
@@ -739,6 +862,28 @@ function EppsInventarioPage({ showToast }) {
         </div>
         <TablePagination {...eppsPg} />
       </div>
+      )}
+
+      {/* ── Modal confirmar agrupación (variantes SKU) ───── */}
+      {grupoModal && (
+        <Modal title="Agrupar como variantes" icon="layers" onClose={() => setGrupoModal(null)}>
+          <div style={{ fontSize: 12.5, color: 'var(--ts)', marginBottom: 12 }}>
+            Se crea el grupo <strong>“{grupoModal.titulo}”</strong> y estos {grupoModal.items.length} EPP pasan a ser sus variantes (conservan su stock e historial):
+          </div>
+          <div>
+            <label className="flabel">Nombre del grupo</label>
+            <input className="fi" value={grupoModal.titulo} onChange={ev => setGrupoModal(g => ({ ...g, titulo: ev.target.value }))} />
+          </div>
+          <div style={{ maxHeight: 180, overflowY: 'auto', marginTop: 10, border: '1px solid var(--bd)', borderRadius: 6, padding: 8 }}>
+            {grupoModal.items.map(it => (
+              <div key={it.id} style={{ fontSize: 12, padding: '3px 0', color: 'var(--ts)' }}>• {it.nombre_epp} <span style={{ color: 'var(--tm)' }}>· stock {stockDe(it)} {it.unidad}</span></div>
+            ))}
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={() => setGrupoModal(null)}>Cancelar</button>
+            <button className="btn btn-amber" onClick={() => crearGrupoCon(grupoModal.titulo, grupoModal.items)}><JxIcon name="check" size={13} /> Crear grupo</button>
+          </div>
+        </Modal>
       )}
 
       {/* ── Modal Nuevo / Editar EPP ───────────────────── */}
@@ -772,6 +917,15 @@ function EppsInventarioPage({ showToast }) {
             <div><label className="flabel">Modelo</label><input className="fi" value={form.modelo || ''} onChange={ev => setForm({ ...form, modelo: ev.target.value })}/></div>
             <div><label className="flabel">Talla</label><input className="fi" placeholder="S/M/L o número" value={form.talla || ''} onChange={ev => setForm({ ...form, talla: ev.target.value })}/></div>
             <div><label className="flabel">Unidad</label><input className="fi" value={form.unidad || 'Und'} onChange={ev => setForm({ ...form, unidad: ev.target.value })}/></div>
+            {!form.es_grupo && (
+              <div>
+                <label className="flabel">Grupo (variante de)</label>
+                <select className="fi" value={form.padre_id || ''} onChange={ev => setForm({ ...form, padre_id: ev.target.value || null })}>
+                  <option value="">— Ítem suelto —</option>
+                  {epps.filter(g => g.es_grupo && !g.deleted_at && g.id !== editingId).map(g => <option key={g.id} value={g.id}>{g.nombre_epp}</option>)}
+                </select>
+              </div>
+            )}
             {!editingId && (
               <div>
                 <label className="flabel">Stock inicial</label>
@@ -896,7 +1050,7 @@ function EppsInventarioPage({ showToast }) {
                             onChange={v => updateLoteItem(it.id, { epp_id: v })}
                             options={[
                               { value: '', label: '— Selecciona —' },
-                              ...epps.map(e => ({ value: e.id, label: e.nombre_epp })),
+                              ...epps.filter(e => !e.es_grupo && !e.deleted_at).map(e => ({ value: e.id, label: e.nombre_epp })),
                             ]}
                             fontSize={12}
                             placeholder="— Selecciona —"/>
@@ -1021,7 +1175,7 @@ function EppsInventarioPage({ showToast }) {
                             onChange={v => updateLoteItem(it.id, { epp_id: v })}
                             options={[
                               { value: '', label: '— Selecciona —' },
-                              ...epps.map(e => ({ value: e.id, label: e.nombre_epp })),
+                              ...epps.filter(e => !e.es_grupo && !e.deleted_at).map(e => ({ value: e.id, label: e.nombre_epp })),
                             ]}
                             fontSize={12}
                             placeholder="— Selecciona —"/>
@@ -1097,7 +1251,7 @@ function EppsInventarioPage({ showToast }) {
       {/* Traspaso entre almacenes */}
       {modal === 'traspaso' && (
         <TraspasoStockModal
-          items={epps.map(e => ({ id: e.id, nombre: e.nombre_epp }))}
+          items={epps.filter(e => !e.es_grupo && !e.deleted_at).map(e => ({ id: e.id, nombre: e.nombre_epp }))}
           ubicaciones={ubicacionesActivas} ubicacionesById={ubicacionesById}
           getDesgloseDe={(id) => desgloseUbic.get(id)}
           itemLabel="EPP" preItemId={traspasoPreId}

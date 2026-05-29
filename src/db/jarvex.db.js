@@ -19,6 +19,17 @@ export const db = new Dexie('JarvexDB');
 // caja_chica_movimientos: libro de entradas (fondo) / salidas (gastos).
 // insumos_emergencia + movimientos_insumos_emergencia: inventario propio
 // de emergencia con stock por cantidad (igual patrón que materiales).
+// Versión 19: Variantes padre-hijo (SKU). Un insumo genérico ("Guantes") se
+// divide en variantes concretas. padre_id apunta al grupo; es_grupo marca la
+// fila padre (rollup sin stock propio). Se indexa padre_id para listar hijos.
+// Aplica a los 4 inventarios. Aditivo (no se borran datos).
+db.version(19).stores({
+  materiales:               'id, obra_id, ubicacion_id, categoria, alerta, padre_id, deleted_at, sync_status',
+  epps:                     'id, obra_id, ubicacion_id, tipo_epp, alerta, padre_id, deleted_at, sync_status',
+  herramientas:             'id, obra_id, estado_actual, disponible, padre_id, deleted_at, sync_status',
+  insumos_emergencia:       'id, obra_id, estado, alerta, padre_id, deleted_at, sync_status',
+});
+
 db.version(18).stores({
   caja_chica_movimientos:          'id, obra_id, fecha, tipo_movimiento, sync_status, idempotency_key',
   insumos_emergencia:              'id, obra_id, estado, alerta, deleted_at, sync_status',
