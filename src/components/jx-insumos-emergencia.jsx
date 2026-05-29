@@ -9,6 +9,7 @@
 
 import React from "react";
 import { calcAlerta } from "../lib/stock-utils.js";
+import { detectarSugerencias, detectarDuplicados, fusionarInsumos } from "../lib/variantes.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 const hoyISO = () => new Date().toISOString().slice(0, 10);
@@ -71,12 +72,65 @@ function InsumosEmergenciaPage({ showToast }) {
     } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
   };
 
-  const filtered = uM(() => {
-    const lista = (insumos || []).filter(i => !i.deleted_at);
-    if (!q) return lista;
+  const matchIns = (i) => {
+    if (!q) return true;
     const t = q.toLowerCase();
-    return lista.filter(i => i.nombre?.toLowerCase().includes(t) || i.categoria?.toLowerCase().includes(t));
-  }, [insumos, q]);
+    return i.nombre?.toLowerCase().includes(t) || i.categoria?.toLowerCase().includes(t);
+  };
+  // ── Variantes padre-hijo (SKU) ──────────────────────────────
+  const childrenByPadre = uM(() => {
+    const m = new Map();
+    for (const e of (insumos || [])) { if (!e.deleted_at && e.padre_id) { const a = m.get(e.padre_id) || []; a.push(e); m.set(e.padre_id, a); } }
+    return m;
+  }, [insumos]);
+  const variantesDe = (g) => childrenByPadre.get(g.id) || [];
+  const stockDeNodo = (e) => e.es_grupo ? variantesDe(e).reduce((s, c) => s + Number(c.stock_actual || 0), 0) : Number(e.stock_actual || 0);
+  const alertaDeNodo = (e) => e.es_grupo ? calcAlerta(stockDeNodo(e), Number(e.stock_minimo || 0)) : e.alerta;
+  const [expandedGroups, setExpandedGroups] = uS(() => new Set());
+  const toggleGroup = (id) => setExpandedGroups(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const sugerencias = uM(() => detectarSugerencias(insumos, 'nombre'), [insumos]);
+  const dups = uM(() => detectarDuplicados(insumos, 'nombre'), [insumos]);
+  const [descartadas, setDescartadas] = uS(() => new Set());
+  const [grupoModal, setGrupoModal] = uS(null);
+  const [dupModal, setDupModal] = uS(null);
+  const [opBusy, setOpBusy] = uS(false);
+
+  // Top-level (grupos + sueltos); un grupo aparece si él o una variante matchea.
+  const filtered = uM(() => {
+    const top = (insumos || []).filter(i => !i.deleted_at && !i.padre_id);
+    return top.filter(i => i.es_grupo ? (matchIns(i) || variantesDe(i).some(matchIns)) : matchIns(i));
+  }, [insumos, q, childrenByPadre]);
+
+  const crearGrupoCon = async (titulo, items) => {
+    const nombre = (titulo || '').trim();
+    if (!nombre || !items?.length || opBusy) return;
+    setOpBusy(true);
+    try {
+      const padre = await createInsumo({ obra_id: obraId, nombre, categoria: items[0]?.categoria || null, unidad: items[0]?.unidad || 'Und', es_grupo: true, stock_inicial: 0, stock_actual: 0, stock_minimo: 0, alerta: 'ok', estado: 'activo' });
+      for (const it of items) await updateInsumo(it.id, { padre_id: padre.id });
+      setExpandedGroups(s => new Set(s).add(padre.id));
+      showToast(`✓ "${nombre}" con ${items.length} variantes`, 'green'); setGrupoModal(null); refresh?.();
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); } finally { setOpBusy(false); }
+  };
+  const agregarAGrupo = async (grupo, items) => {
+    try { for (const it of items) await updateInsumo(it.id, { padre_id: grupo.id }); setExpandedGroups(s => new Set(s).add(grupo.id)); showToast(`✓ ${items.length} agregado(s) a "${grupo.nombre}"`, 'green'); refresh?.(); }
+    catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
+  const eliminarGrupo = async (g) => {
+    const hijos = variantesDe(g);
+    if (!confirm(`¿Deshacer el grupo "${g.nombre}"? Sus ${hijos.length} variantes vuelven a ser sueltas.`)) return;
+    try { for (const h of hijos) await updateInsumo(h.id, { padre_id: null }); await updateInsumo(g.id, { deleted_at: new Date().toISOString() }); showToast('Grupo deshecho', 'amber'); refresh?.(); }
+    catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
+  const fusionarDup = async () => {
+    if (!dupModal?.survivorId || opBusy) return;
+    setOpBusy(true);
+    try {
+      const dupIds = dupModal.grupo.items.map(i => i.id).filter(id => id !== dupModal.survivorId);
+      const r = await fusionarInsumos({ db: window.__db, tabla: 'insumos_emergencia', movTabla: 'movimientos_insumos_emergencia', fk: 'insumo_emergencia_id', itemTipoStock: null, userId, calcAlerta }, dupModal.survivorId, dupIds);
+      showToast(`✓ Fusionado · ${r.movidos} movimientos · stock ${r.stockFinal}`, 'green'); setDupModal(null); refresh?.();
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); } finally { setOpBusy(false); }
+  };
 
   const stats = uM(() => {
     const lista = (insumos || []).filter(i => !i.deleted_at);
@@ -99,6 +153,7 @@ function InsumosEmergenciaPage({ showToast }) {
           nombre: form.nombre.trim(), categoria: form.categoria?.trim() || null, unidad: form.unidad.trim(),
           stock_minimo: stockMin, vencimiento: form.vencimiento || null, observaciones: form.observaciones?.trim() || null,
           alerta: calcAlerta(Number(form.stock_actual ?? 0), stockMin),
+          padre_id: form.es_grupo ? (form.padre_id ?? null) : (form.padre_id || null),
         });
         showToast('Insumo actualizado', 'green');
       } else {
@@ -107,7 +162,7 @@ function InsumosEmergenciaPage({ showToast }) {
           obra_id: obraId, nombre: form.nombre.trim(), categoria: form.categoria?.trim() || null, unidad: form.unidad.trim(),
           stock_inicial: stockIni, stock_actual: stockIni, stock_minimo: stockMin,
           vencimiento: form.vencimiento || null, observaciones: form.observaciones?.trim() || null,
-          alerta: calcAlerta(stockIni, stockMin), estado: 'activo',
+          alerta: calcAlerta(stockIni, stockMin), estado: 'activo', padre_id: form.padre_id || null,
         });
         showToast(`Insumo "${form.nombre.trim()}" creado`, 'green');
       }
@@ -187,6 +242,36 @@ function InsumosEmergenciaPage({ showToast }) {
         <div className="search-bar"><JxIcon name="search" size={14} color="var(--tm)" /><input placeholder="Buscar insumo…" value={q} onChange={e => setQ(e.target.value)} /></div>
       </div>
 
+      {/* Sugerencias de agrupación (variantes) */}
+      {canWrite && sugerencias.filter(s => !descartadas.has(s.clave)).map(s => (
+        <div key={'sug-' + s.clave} className="card card-p" style={{ marginBottom: 12, background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.3)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 1 320px', fontSize: 12.5, color: 'var(--ts)' }}>
+            {s.tipo === 'add'
+              ? <>💡 <strong>{s.items.length} insumo(s)</strong> suelto(s) parecen variantes de <strong>“{s.grupo.nombre}”</strong>. ¿Los agregás a ese grupo?</>
+              : <>💡 <strong>{s.items.length} insumos</strong> empiezan con <strong>“{s.titulo}”</strong>. ¿Los agrupás como variantes?</>}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {s.tipo === 'add'
+              ? <button className="btn btn-amber btn-sm" onClick={() => agregarAGrupo(s.grupo, s.items)}><JxIcon name="layers" size={13} /> Agregar a {s.grupo.nombre}</button>
+              : <button className="btn btn-amber btn-sm" onClick={() => setGrupoModal({ titulo: s.titulo, items: s.items })}><JxIcon name="layers" size={13} /> Agrupar</button>}
+            <button className="btn btn-ghost btn-sm" onClick={() => setDescartadas(d => new Set(d).add(s.clave))}>Ahora no</button>
+          </div>
+        </div>
+      ))}
+
+      {/* Revisión de duplicados */}
+      {canWrite && dups.filter(d => !descartadas.has('dup-' + d.clave)).map(d => (
+        <div key={'dup-' + d.clave} className="card card-p" style={{ marginBottom: 12, background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.3)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 1 320px', fontSize: 12.5, color: 'var(--ts)' }}>
+            ⚠ <strong>{d.items.length} insumos</strong> con el mismo nombre <strong>“{d.nombre}”</strong> (probable duplicado). Conviene fusionarlos.
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-red btn-sm" onClick={() => setDupModal({ grupo: d, survivorId: d.items[0].id })}><JxIcon name="compare" size={13} /> Fusionar</button>
+            <button className="btn btn-ghost btn-sm" onClick={() => setDescartadas(s => new Set(s).add('dup-' + d.clave))}>Ahora no</button>
+          </div>
+        </div>
+      ))}
+
       {filtered.length === 0 ? (
         <div className="card card-p empty-state"><JxIcon name="package" size={40} color="var(--tm)" /><p>No hay insumos de emergencia. Click en "Nuevo insumo".</p></div>
       ) : (
@@ -202,21 +287,45 @@ function InsumosEmergenciaPage({ showToast }) {
               </tr></thead>
               <tbody>
                 {filtered.map(i => {
-                  const st = Number(i.stock_actual ?? 0);
+                  const fila = (it, esHijo) => {
+                    const st = Number(it.stock_actual ?? 0);
+                    return (
+                      <tr key={it.id} style={esHijo ? { background: 'rgba(255,255,255,0.015)' } : undefined}>
+                        <td className="col-p" style={esHijo ? { paddingLeft: 26 } : undefined}>{esHijo && <span style={{ color: 'var(--tm)', marginRight: 4 }}>└</span>}<strong>{it.nombre}</strong></td>
+                        <td>{it.categoria || '—'}</td>
+                        <td className="col-m">{it.unidad}</td>
+                        <td style={{ textAlign: 'right' }}><span className={`badge ${alertaClase(it.alerta)}`}>{st.toLocaleString('es-PE')}</span></td>
+                        <td style={{ textAlign: 'right', color: 'var(--tm)' }}>{Number(it.stock_minimo ?? 0).toLocaleString('es-PE')}</td>
+                        <td className="col-m" style={{ fontSize: 11 }}>{it.vencimiento || '—'}</td>
+                        <td>{it.sync_status && it.sync_status !== 'synced' ? <span className="badge b-amber">⏱</span> : <span style={{ color: 'var(--green)', fontSize: 11 }}>✓</span>}</td>
+                        <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
+                          {canWrite && <button className="btn btn-ghost btn-xs" title="Editar" onClick={() => abrirEditar(it)}><JxIcon name="edit" size={11} /></button>}
+                          {canDelete && <button className="btn btn-red btn-xs" title="Eliminar (modo edición)" onClick={() => eliminarInsumo(it)} style={{ marginLeft: 4 }}><JxIcon name="trash" size={11} /></button>}
+                        </td>
+                      </tr>
+                    );
+                  };
+                  if (!i.es_grupo) return fila(i, false);
+                  const hijos = variantesDe(i);
+                  const hijosVis = q ? hijos.filter(matchIns) : hijos;
+                  const abierto = expandedGroups.has(i.id);
                   return (
-                    <tr key={i.id}>
-                      <td className="col-p"><strong>{i.nombre}</strong></td>
-                      <td>{i.categoria || '—'}</td>
-                      <td className="col-m">{i.unidad}</td>
-                      <td style={{ textAlign: 'right' }}><span className={`badge ${alertaClase(i.alerta)}`}>{st.toLocaleString('es-PE')}</span></td>
-                      <td style={{ textAlign: 'right', color: 'var(--tm)' }}>{Number(i.stock_minimo ?? 0).toLocaleString('es-PE')}</td>
-                      <td className="col-m" style={{ fontSize: 11 }}>{i.vencimiento || '—'}</td>
-                      <td>{i.sync_status && i.sync_status !== 'synced' ? <span className="badge b-amber">⏱</span> : <span style={{ color: 'var(--green)', fontSize: 11 }}>✓</span>}</td>
-                      <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
-                        {canWrite && <button className="btn btn-ghost btn-xs" title="Editar" onClick={() => abrirEditar(i)}><JxIcon name="edit" size={11} /></button>}
-                        {canDelete && <button className="btn btn-red btn-xs" title="Eliminar (modo edición)" onClick={() => eliminarInsumo(i)} style={{ marginLeft: 4 }}><JxIcon name="trash" size={11} /></button>}
-                      </td>
-                    </tr>
+                    <React.Fragment key={i.id}>
+                      <tr style={{ background: 'rgba(245,158,11,0.06)', cursor: 'pointer' }} onClick={() => toggleGroup(i.id)}>
+                        <td className="col-p"><span style={{ color: 'var(--amber)', marginRight: 6, fontWeight: 700 }}>{abierto ? '▾' : '▸'}</span><strong>{i.nombre}</strong> <span className="badge b-amber" style={{ marginLeft: 6 }}>{hijos.length} variantes</span></td>
+                        <td>{i.categoria || '—'}</td>
+                        <td className="col-m">{i.unidad}</td>
+                        <td style={{ textAlign: 'right' }}><span className={`badge ${alertaClase(alertaDeNodo(i))}`}>{stockDeNodo(i).toLocaleString('es-PE')}</span></td>
+                        <td style={{ textAlign: 'right', color: 'var(--tm)' }}>{Number(i.stock_minimo ?? 0).toLocaleString('es-PE')}</td>
+                        <td className="col-m">—</td>
+                        <td>{i.sync_status && i.sync_status !== 'synced' ? <span className="badge b-amber">⏱</span> : <span style={{ color: 'var(--green)', fontSize: 11 }}>✓</span>}</td>
+                        <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
+                          {canWrite && <button className="btn btn-ghost btn-xs" title="Renombrar grupo" onClick={(ev) => { ev.stopPropagation(); abrirEditar(i); }}><JxIcon name="edit" size={11} /></button>}
+                          {canDelete && <button className="btn btn-red btn-xs" title="Deshacer grupo" onClick={(ev) => { ev.stopPropagation(); eliminarGrupo(i); }} style={{ marginLeft: 4 }}><JxIcon name="trash" size={11} /></button>}
+                        </td>
+                      </tr>
+                      {abierto && hijosVis.map(h => fila(h, true))}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
@@ -291,12 +400,55 @@ function InsumosEmergenciaPage({ showToast }) {
               <input className="fi" type="number" min="0" step="0.01" value={form.stock_minimo || ''} onChange={e => setForm({ ...form, stock_minimo: e.target.value })} placeholder="0" /></div>
             <div><label className="flabel">Vencimiento</label>
               <input className="fi" type="date" value={form.vencimiento || ''} onChange={e => setForm({ ...form, vencimiento: e.target.value })} /></div>
+            {!form.es_grupo && (
+              <div><label className="flabel">Grupo (variante de)</label>
+                <select className="fi" value={form.padre_id || ''} onChange={e => setForm({ ...form, padre_id: e.target.value || null })}>
+                  <option value="">— Ítem suelto —</option>
+                  {(insumos || []).filter(g => g.es_grupo && !g.deleted_at && g.id !== form.id).map(g => <option key={g.id} value={g.id}>{g.nombre}</option>)}
+                </select></div>
+            )}
             <div style={{ gridColumn: '1/-1' }}><label className="flabel">Observaciones</label>
               <textarea className="fi" rows={2} value={form.observaciones || ''} onChange={e => setForm({ ...form, observaciones: e.target.value })} /></div>
           </div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
             <button className="btn btn-ghost" onClick={() => { setModal(null); setForm({}); }} disabled={busy}>Cancelar</button>
             <button className="btn btn-amber" onClick={guardarInsumo} disabled={busy}>{busy ? 'Guardando…' : 'Guardar'}</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal confirmar agrupación */}
+      {grupoModal && (
+        <Modal title="Agrupar como variantes" icon="layers" onClose={() => setGrupoModal(null)}>
+          <div style={{ fontSize: 12.5, color: 'var(--ts)', marginBottom: 12 }}>Se crea el grupo <strong>“{grupoModal.titulo}”</strong> y estos {grupoModal.items.length} insumos pasan a ser sus variantes.</div>
+          <label className="flabel">Nombre del grupo</label>
+          <input className="fi" value={grupoModal.titulo} onChange={e => setGrupoModal(g => ({ ...g, titulo: e.target.value }))} />
+          <div style={{ maxHeight: 180, overflowY: 'auto', marginTop: 10, border: '1px solid var(--bd)', borderRadius: 6, padding: 8 }}>
+            {grupoModal.items.map(it => <div key={it.id} style={{ fontSize: 12, padding: '3px 0', color: 'var(--ts)' }}>• {it.nombre} <span style={{ color: 'var(--tm)' }}>· stock {Number(it.stock_actual || 0)} {it.unidad}</span></div>)}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+            <button className="btn btn-ghost" onClick={() => setGrupoModal(null)} disabled={opBusy}>Cancelar</button>
+            <button className="btn btn-amber" onClick={() => crearGrupoCon(grupoModal.titulo, grupoModal.items)} disabled={opBusy}><JxIcon name="check" size={13} /> Crear grupo</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal fusionar duplicados */}
+      {dupModal && (
+        <Modal title="Fusionar insumos duplicados" icon="compare" onClose={() => setDupModal(null)}>
+          <div style={{ fontSize: 12.5, color: 'var(--ts)', marginBottom: 12 }}>Elegí cuál se queda. Los demás se dan de baja y sus movimientos + stock pasan al sobreviviente.</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {dupModal.grupo.items.map(it => (
+              <label key={it.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', border: '1px solid var(--bd)', borderRadius: 6, cursor: 'pointer', background: dupModal.survivorId === it.id ? 'rgba(46,204,113,0.08)' : 'transparent' }}>
+                <input type="radio" name="dup-ie" checked={dupModal.survivorId === it.id} onChange={() => setDupModal(m => ({ ...m, survivorId: it.id }))} style={{ accentColor: 'var(--green)' }} />
+                <span style={{ flex: 1, fontSize: 12.5 }}>{it.nombre}</span>
+                <span style={{ fontSize: 11, color: 'var(--tm)' }}>stock {Number(it.stock_actual || 0)} {it.unidad}</span>
+              </label>
+            ))}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+            <button className="btn btn-ghost" onClick={() => setDupModal(null)} disabled={opBusy}>Cancelar</button>
+            <button className="btn btn-red" onClick={fusionarDup} disabled={opBusy}><JxIcon name="check" size={13} /> {opBusy ? 'Fusionando…' : 'Fusionar'}</button>
           </div>
         </Modal>
       )}
