@@ -439,16 +439,18 @@ function ActivosPesadosPage({ showToast }) {
                             ? <button className="btn btn-green btn-xs" title="Registrar devolución" onClick={()=>openAsignar(a,'entrada')} style={{ marginLeft:4 }}><JxIcon name="arrowIn" size={11}/></button>
                             : <button className="btn btn-ghost btn-xs" title="Asignar equipo (salida)" onClick={()=>openAsignar(a,'salida')} style={{ marginLeft:4 }}><JxIcon name="arrowOut" size={11}/></button>
                         )}
-                        <button className="btn btn-ghost btn-xs" title="Ver historial completo" onClick={async ()=>{
+                        <button className="btn btn-ghost btn-xs" title="Ver historial completo (custodia, HM, combustible, mantenimiento)" onClick={async ()=>{
                           try {
-                            const [hm, cb, mt] = await Promise.all([
+                            const [hm, cb, mt, mv] = await Promise.all([
                               window.__db.horas_maquina.where('activo_id').equals(a.id).filter(x=>!x.deleted_at).toArray(),
                               window.__db.consumos_combustible.where('activo_id').equals(a.id).filter(x=>!x.deleted_at).toArray(),
                               window.__db.mantenimientos_maquinaria.where('activo_id').equals(a.id).filter(x=>!x.deleted_at).toArray(),
+                              window.__db.movimientos_maquinaria.where('activo_id').equals(a.id).filter(x=>!x.deleted_at).toArray(),
                             ]);
                             setHistorial({ activo: a, hm: hm.sort((x,y)=>(y.fecha||'').localeCompare(x.fecha||'')),
                               cb: cb.sort((x,y)=>(y.fecha||'').localeCompare(x.fecha||'')),
-                              mt: mt.sort((x,y)=>(y.fecha||'').localeCompare(x.fecha||'')) });
+                              mt: mt.sort((x,y)=>(y.fecha||'').localeCompare(x.fecha||'')),
+                              mv: mv.sort((x,y)=>(y.fecha||'').localeCompare(x.fecha||'')) });
                           } catch (e) { showToast('Error cargando historial: '+(e.message||e), 'red'); }
                         }} style={{ marginLeft:4 }}>
                           <JxIcon name="list" size={11}/>
@@ -623,6 +625,39 @@ function ActivosPesadosPage({ showToast }) {
               </div>
               <div style={{ fontSize:11, color:'var(--tm)' }}>{historial.mt.length} servicios</div>
             </div>
+          </div>
+
+          {/* Custodia: salidas (asignación) y devoluciones — quién tuvo el equipo */}
+          <div style={{ marginBottom:18 }}>
+            <div style={{ fontSize:12.5, fontWeight:700, color:'var(--amber)', marginBottom:6 }}>
+              🔧 Custodia — salidas y devoluciones
+              {historial.activo.asignado_a_id
+                ? <span className="badge b-amber" style={{ marginLeft:8 }}>En uso: {historial.activo.asignado_a_nombre || '—'}{historial.activo.fecha_asignacion ? ` · desde ${historial.activo.fecha_asignacion}` : ''}</span>
+                : <span className="badge b-green" style={{ marginLeft:8 }}>Disponible en almacén</span>}
+            </div>
+            {(!historial.mv || historial.mv.length === 0) ? <div style={{ fontSize:11, color:'var(--tm)' }}>Sin movimientos de custodia. Usá ↗ (salida) / ↙ (devolución) en la lista.</div> : (
+              <div style={{ maxHeight:180, overflow:'auto', border:'1px solid var(--bd)', borderRadius:6 }}>
+                <table className="tbl"><thead><tr>
+                  <th>Fecha</th><th>Movimiento</th><th>Asignado a</th><th>Prueba</th><th>Observaciones</th>
+                </tr></thead><tbody>
+                  {historial.mv.map(mv => {
+                    const esSalida = mv.tipo_movimiento === 'salida';
+                    let quien = '—';
+                    if (mv.responsable_id) { const p = (personal||[]).find(x=>x.id===mv.responsable_id); quien = p ? `${p.nombres} ${p.apellidos||''}`.trim() : '—'; }
+                    else if (mv.subcontratista_id) { const s = (subcontratistas||[]).find(x=>x.id===mv.subcontratista_id); quien = s ? `${s.razon_social} (subcontrato)` : '—'; }
+                    return (
+                      <tr key={mv.id}>
+                        <td style={{ fontSize:11 }}>{mv.fecha || '—'}</td>
+                        <td><span className={`badge ${esSalida ? 'b-amber' : 'b-green'}`}>{esSalida ? '↗ Salida' : '↙ Devolución'}</span></td>
+                        <td style={{ fontSize:11 }}>{esSalida ? quien : '—'}</td>
+                        <td style={{ fontSize:11 }}>{mv.evidencia_id ? '📷 Sí' : '—'}</td>
+                        <td style={{ fontSize:11, color:'var(--tm)' }}>{mv.observaciones || '—'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody></table>
+              </div>
+            )}
           </div>
 
           {/* HM */}

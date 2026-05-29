@@ -19,7 +19,8 @@ function InsumosEmergenciaPage({ showToast }) {
   const userId = auth?.profile?.id ?? 'offline';
   const myRol = auth?.profile?.rol;
   const isAdmin = myRol === 'admin';
-  const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true, isEdicion: false };
+  const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true, isEdicion: false, superAdmin: false };
+  const superAdmin = !!appMode.superAdmin;
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Insumos de Emergencia', 'w') ?? false);
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
 
@@ -29,6 +30,7 @@ function InsumosEmergenciaPage({ showToast }) {
   const { data: personal } = window.__hooks.usePersonal(obraId);
 
   const [q, setQ] = uS('');
+  const [vista, setVista] = uS('inventario'); // 'inventario' | 'movimientos'
   const [modal, setModal] = uS(null);   // 'nuevo' | 'editar' | 'mov'
   const [form, setForm] = uS({});
   const [busy, setBusy] = uS(false);
@@ -37,6 +39,37 @@ function InsumosEmergenciaPage({ showToast }) {
   uE(() => { window.__db.proveedores.filter(p => !p.deleted_at).toArray().then(setProveedores).catch(() => {}); }, []);
 
   const personalById = uM(() => { const m = new Map(); (personal || []).forEach(p => m.set(p.id, p)); return m; }, [personal]);
+  const insumoById = uM(() => { const m = new Map(); (insumos || []).forEach(i => m.set(i.id, i)); return m; }, [insumos]);
+  const proveedorById = uM(() => { const m = new Map(); (proveedores || []).forEach(p => m.set(p.id, p)); return m; }, [proveedores]);
+
+  // Movimientos de entrada/salida (más reciente primero) para la pestaña.
+  const movimientos = uM(() => {
+    return (movHook.data || [])
+      .filter(mv => !mv.deleted_at)
+      .slice()
+      .sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
+  }, [movHook.data]);
+
+  // Eliminar un movimiento (soft-delete) y revertir su efecto en el stock.
+  const eliminarMov = async (mv) => {
+    const ins = insumoById.get(mv.insumo_emergencia_id);
+    if (!confirm(`¿Eliminar este movimiento (${mv.tipo_movimiento} de ${mv.cantidad} ${mv.unidad || ''} · ${ins?.nombre || 'insumo'})?\n\nEl stock se ajusta automáticamente.`)) return;
+    try {
+      const now = new Date().toISOString();
+      await window.__db.movimientos_insumos_emergencia.update(mv.id, {
+        deleted_at: now, updated_at: now, updated_by: userId,
+        version: (mv.version ?? 0) + 1,
+        sync_status: mv.sync_status === 'pending_create' ? 'pending_create' : 'pending_delete',
+      });
+      if (ins) {
+        const delta = mv.tipo_movimiento === 'entrada' ? -Number(mv.cantidad || 0) : Number(mv.cantidad || 0);
+        const nuevoStock = Math.max(0, Number(ins.stock_actual ?? 0) + delta);
+        await updateInsumo(ins.id, { stock_actual: nuevoStock, alerta: calcAlerta(nuevoStock, Number(ins.stock_minimo || 0)) });
+      }
+      try { await window.__logAudit?.({ action: 'delete', table: 'movimientos_insumos_emergencia', recordId: mv.id, reason: 'Eliminación de movimiento de insumo de emergencia' }); } catch {}
+      showToast('Movimiento eliminado', 'amber'); refresh?.();
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
 
   const filtered = uM(() => {
     const lista = (insumos || []).filter(i => !i.deleted_at);
@@ -138,6 +171,18 @@ function InsumosEmergenciaPage({ showToast }) {
         ) : <span className="badge b-gray" title="Tu rol es solo lectura para Insumos de Emergencia">Solo lectura</span>}
       </div>
 
+      {/* Pestañas: Inventario / Movimientos */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 14, background: 'var(--bg-s)', padding: 4, borderRadius: 8, width: 'fit-content' }}>
+        <button className={`btn btn-sm ${vista === 'inventario' ? 'btn-amber' : 'btn-ghost'}`} style={{ border: 'none' }} onClick={() => setVista('inventario')}>
+          <JxIcon name="package" size={13} />Inventario ({stats.total})
+        </button>
+        <button className={`btn btn-sm ${vista === 'movimientos' ? 'btn-amber' : 'btn-ghost'}`} style={{ border: 'none' }} onClick={() => setVista('movimientos')}>
+          <JxIcon name="compare" size={13} />Movimientos ({movimientos.length})
+        </button>
+      </div>
+
+      {vista === 'inventario' && (
+      <>
       <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
         <div className="search-bar"><JxIcon name="search" size={14} color="var(--tm)" /><input placeholder="Buscar insumo…" value={q} onChange={e => setQ(e.target.value)} /></div>
       </div>
@@ -178,6 +223,54 @@ function InsumosEmergenciaPage({ showToast }) {
             </table>
           </div>
         </div>
+      )}
+      </>
+      )}
+
+      {/* Pestaña Movimientos */}
+      {vista === 'movimientos' && (
+        movimientos.length === 0 ? (
+          <div className="card card-p empty-state"><JxIcon name="compare" size={40} color="var(--tm)" /><p>Sin movimientos todavía. Registrá un Ingreso o una Salida.</p></div>
+        ) : (
+          <div className="card" style={{ overflow: 'hidden' }}>
+            <div style={{ overflowX: 'auto' }}>
+              <table className="tbl">
+                <thead><tr>
+                  <th>Fecha</th><th>Tipo</th><th>Insumo</th>
+                  <th style={{ textAlign: 'right' }}>Cantidad</th>
+                  <th>Proveedor / Responsable</th><th>Observaciones</th>
+                  {(canDelete || superAdmin) && <th style={{ textAlign: 'center' }}>Acciones</th>}
+                </tr></thead>
+                <tbody>
+                  {movimientos.map(mv => {
+                    const ins = insumoById.get(mv.insumo_emergencia_id);
+                    const esEntrada = mv.tipo_movimiento === 'entrada';
+                    const quien = esEntrada
+                      ? (proveedorById.get(mv.proveedor_id)?.razon_social || '—')
+                      : (() => { const p = personalById.get(mv.responsable_id); return p ? `${p.nombres} ${p.apellidos || ''}`.trim() : '—'; })();
+                    return (
+                      <tr key={mv.id}>
+                        <td className="col-m">{mv.fecha || '—'}</td>
+                        <td><span className={`badge ${esEntrada ? 'b-green' : 'b-amber'}`}>{esEntrada ? '↓ Ingreso' : '↑ Salida'}</span></td>
+                        <td className="col-p"><strong>{ins?.nombre || '(insumo)'}</strong></td>
+                        <td style={{ textAlign: 'right', fontWeight: 600, color: esEntrada ? 'var(--green)' : 'var(--amber)' }}>
+                          {esEntrada ? '+' : '−'}{Number(mv.cantidad || 0).toLocaleString('es-PE')} <span style={{ color: 'var(--tm)', fontSize: 10.5, fontWeight: 400 }}>{mv.unidad || ins?.unidad || ''}</span>
+                        </td>
+                        <td>{quien}</td>
+                        <td style={{ fontSize: 11, color: 'var(--tm)' }}>{mv.observaciones || '—'}</td>
+                        {(canDelete || superAdmin) && (
+                          <td style={{ textAlign: 'center' }}>
+                            <button className="btn btn-red btn-xs" title="Eliminar movimiento (ajusta stock)" onClick={() => eliminarMov(mv)}><JxIcon name="trash" size={11} /></button>
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )
       )}
 
       {/* Modal nuevo/editar insumo */}
