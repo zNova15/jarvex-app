@@ -297,35 +297,37 @@ function EppsInventarioPage({ showToast }) {
     );
   };
 
-  // Auto-reparación: si el stock vivo difiere del stock_actual guardado, lo
-  // persistimos (una sola vez por diferencia) para que el campo se sincronice
-  // con el server y el resto de pantallas lo vean bien. Tras escribir, el live
-  // pasa a coincidir y el efecto no vuelve a escribir (sin bucle).
-  uE(() => {
-    if (!epps?.length || !liveStockById.size) return;
-    let cancel = false;
-    (async () => {
-      for (const e of epps) {
-        if (cancel) break;
+  // NOTA: no auto-reparamos epps.stock_actual desde acá. La pantalla y la
+  // validación ya usan el stock VIVO (stockDe), así que persistir el campo
+  // denormalizado solo generaba escrituras repetidas (pending_update) en cada
+  // montaje cuando el server no las retenía → la UI titilaba y se trababa. Si
+  // hiciera falta sanear el campo en la BD, se hace una sola vez al importar
+  // (recalcularStockEpp) o con un botón manual, nunca en un efecto de render.
+  // Recálculo bajo demanda (botón "Recalcular stock"): persiste el stock vivo.
+  const [recalcBusy, setRecalcBusy] = uS(false);
+  const recalcularStockManual = async () => {
+    if (recalcBusy) return;
+    setRecalcBusy(true);
+    let n = 0;
+    try {
+      for (const e of (epps || [])) {
+        if (e.es_grupo || e.deleted_at) continue;
         if (!liveStockById.has(e.id)) continue;
         const live = Math.max(0, liveStockById.get(e.id));
-        const stored = Number(e.stock_actual ?? 0);
-        if (live === stored) continue;
-        if (e.sync_status === 'pending_delete' || e.deleted_at) continue;
-        try {
-          await window.__db.epps.update(e.id, {
-            stock_actual: live,
-            alerta: calcAlerta(live, Number(e.stock_minimo || 0)),
-            updated_at: new Date().toISOString(),
-            version: (e.version ?? 0) + 1,
-            sync_status: e.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
-          });
-        } catch (err) { console.warn('[epp reconcile stock]', err?.message); }
+        if (live === Number(e.stock_actual ?? 0)) continue;
+        await window.__db.epps.update(e.id, {
+          stock_actual: live, alerta: calcAlerta(live, Number(e.stock_minimo || 0)),
+          updated_at: new Date().toISOString(), version: (e.version ?? 0) + 1,
+          sync_status: e.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+        });
+        n++;
       }
-      if (!cancel) { try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'epps' } })); } catch {} }
-    })();
-    return () => { cancel = true; };
-  }, [epps, liveStockById]);
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'epps' } })); } catch {}
+      showToast(n ? `✓ Stock recalculado en ${n} EPP` : 'El stock ya estaba al día', 'green');
+      refresh?.();
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+    finally { setRecalcBusy(false); }
+  };
 
   const [q, setQ] = uS('');
   const [filtroTipo, setFiltroTipo] = uS('todos');
@@ -759,6 +761,7 @@ function EppsInventarioPage({ showToast }) {
           {canWrite && <button className="btn btn-ghost btn-sm" onClick={openSalida}><JxIcon name="arrowOut" size={13}/>Registrar Salida</button>}
           {canWrite && <button className="btn btn-ghost btn-sm" onClick={openIngreso}><JxIcon name="arrowIn" size={13}/>Registrar Ingreso</button>}
           {canWrite && ubicacionesActivas.length >= 2 && <button className="btn btn-ghost btn-sm" onClick={() => openTraspaso()} title="Mover stock entre almacenes"><JxIcon name="compare" size={13}/>Traspaso</button>}
+          {canWrite && <button className="btn btn-ghost btn-sm" onClick={recalcularStockManual} disabled={recalcBusy} title="Recalcular el stock guardado a partir de los movimientos"><JxIcon name="refresh" size={13}/>{recalcBusy ? 'Recalculando…' : 'Recalcular stock'}</button>}
           {canWrite ? (
             <button className="btn btn-amber btn-sm" onClick={openNuevo}><JxIcon name="plus" size={13}/>Nuevo EPP</button>
           ) : (
