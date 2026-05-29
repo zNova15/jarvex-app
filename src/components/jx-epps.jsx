@@ -13,6 +13,7 @@ import { CATALOGO_EPP, epppTipo, detectarEPP } from "../lib/epp-utils.js";
 import { calcAlerta } from "../lib/stock-utils.js";
 import { getDesgloseBulk, aplicarDelta, traspasar } from "../lib/stock-ubicaciones.js";
 import { DesglosePopup, TraspasoStockModal, ubicacionAutoOrigen, validarSalidaUbic } from "./jx-stock-ubic.jsx";
+import { detectarSugerencias, detectarDuplicados, fusionarInsumos } from "../lib/variantes.js";
 import { usePagination } from "../hooks/usePagination.js";
 import { TablePagination } from "./jx-pagination.jsx";
 import { SearchableSelect } from "./jx-searchable-select.jsx";
@@ -199,25 +200,45 @@ function EppsInventarioPage({ showToast }) {
   const [expandedGroups, setExpandedGroups] = uS(() => new Set());
   const toggleGroup = (id) => setExpandedGroups(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
-  // Detección de genéricos: ítems sueltos (sin grupo, sin padre) que comparten
-  // la primera palabra significativa (≥3) → sugerencia de agrupar como SKU.
-  const sugerenciasGrupo = uM(() => {
-    const norm = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-    const primera = (s) => { const p = norm(s).replace(/[^a-z0-9\s]/g, ' ').trim().split(/\s+/); return (p[0] && p[0].length >= 3) ? p[0] : null; };
-    const grupos = new Map();
-    for (const e of (epps || [])) {
-      if (e.deleted_at || e.es_grupo || e.padre_id) continue; // solo sueltos
-      const k = primera(e.nombre_epp);
-      if (!k) continue;
-      const arr = grupos.get(k) || []; arr.push(e); grupos.set(k, arr);
-    }
-    return Array.from(grupos.entries())
-      .filter(([, arr]) => arr.length >= 3)
-      .map(([k, arr]) => ({ clave: k, titulo: k.charAt(0).toUpperCase() + k.slice(1), items: arr }))
-      .sort((a, b) => b.items.length - a.items.length);
-  }, [epps]);
+  // Detección de genéricos (lib compartida): sueltos que comparten palabra base
+  // → sugerencia de CREAR grupo, o de AÑADIR a un grupo ya existente (caso
+  // "ZAPATOS38" corregido cuando ya existe el grupo "Zapatos").
+  const sugerenciasGrupo = uM(() => detectarSugerencias(epps, 'nombre_epp'), [epps]);
+  const duplicados = uM(() => detectarDuplicados(epps, 'nombre_epp'), [epps]);
   const [sugDescartadas, setSugDescartadas] = uS(() => new Set());
   const [grupoModal, setGrupoModal] = uS(null); // { titulo, items } para confirmar agrupación
+  const [dupModal, setDupModal] = uS(null);     // { grupo:{nombre,items}, survivorId }
+
+  // Añadir ítems sueltos a un grupo existente (sugerencia tipo 'add').
+  const agregarAGrupo = async (grupo, items) => {
+    try {
+      for (const it of items) {
+        await updateEpp(it.id, { padre_id: grupo.id, updated_at: new Date().toISOString(), version: (it.version ?? 0) + 1, sync_status: it.sync_status === 'pending_create' ? 'pending_create' : 'pending_update' });
+      }
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'epps' } })); } catch {}
+      setExpandedGroups(s => new Set(s).add(grupo.id));
+      showToast(`✓ ${items.length} agregado(s) a "${grupo.nombre_epp}"`, 'green'); refresh?.();
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
+
+  // Fusionar duplicados en un sobreviviente (mueve movimientos + stock).
+  const [dupBusy, setDupBusy] = uS(false);
+  const fusionarDuplicado = async () => {
+    if (!dupModal?.survivorId || dupBusy) return;
+    setDupBusy(true);
+    try {
+      const dupIds = dupModal.grupo.items.map(i => i.id).filter(id => id !== dupModal.survivorId);
+      const r = await fusionarInsumos({
+        db: window.__db, tabla: 'epps', movTabla: 'movimientos_epp', fk: 'epp_id',
+        itemTipoStock: 'epp', userId, calcAlerta,
+      }, dupModal.survivorId, dupIds);
+      try { await window.__logAudit?.({ action: 'update', table: 'epps', reason: `Fusionar ${dupIds.length} EPP duplicado(s) en uno` }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'epps' } })); } catch {}
+      showToast(`✓ Fusionado · ${r.movidos} movimientos reasignados · stock ${r.stockFinal}`, 'green');
+      setDupModal(null); refresh?.();
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+    finally { setDupBusy(false); }
+  };
 
   // Crea un grupo padre y reasigna los ítems como sus variantes.
   const crearGrupoCon = async (titulo, items) => {
@@ -269,9 +290,24 @@ function EppsInventarioPage({ showToast }) {
     return (
       <tr key={e.id} style={esHijo ? { background: 'rgba(255,255,255,0.015)' } : undefined}>
         <td className="col-p" style={esHijo ? { paddingLeft: 26 } : undefined}>
-          {esHijo && <span style={{ color: 'var(--tm)', marginRight: 4 }}>└</span>}
-          {e.nombre_epp}
-          {e.marca && <div style={{ fontSize:10.5, color:'var(--tm)', paddingLeft: esHijo ? 14 : 0 }}>{e.marca} {e.modelo || ''}</div>}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {esHijo && <span style={{ color: 'var(--tm)' }}>└</span>}
+            {(() => {
+              const f = fotosMap.get(e.id);
+              return f ? (
+                <img src={f.url} alt="foto" style={{ width: 32, height: 32, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--bd)', flexShrink: 0, cursor: 'pointer' }}
+                     onClick={(ev) => { ev.stopPropagation(); window.open(f.url, '_blank'); }} title="Click para ampliar" />
+              ) : (
+                <div style={{ width: 32, height: 32, borderRadius: 4, background: 'rgba(255,255,255,0.04)', border: '1px dashed var(--bd)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }} title="Sin foto">
+                  <JxIcon name="image" size={12} color="var(--tm)" />
+                </div>
+              );
+            })()}
+            <div>
+              <span>{e.nombre_epp}</span>
+              {e.marca && <div style={{ fontSize:10.5, color:'var(--tm)' }}>{e.marca} {e.modelo || ''}</div>}
+            </div>
+          </div>
         </td>
         <td>{(() => {
           const dg = desgloseUbic.get(e.id);
@@ -787,13 +823,30 @@ function EppsInventarioPage({ showToast }) {
 
       {/* Detección: insumos genéricos que conviene dividir en variantes (SKU) */}
       {canWrite && sugerenciasGrupo.filter(s => !sugDescartadas.has(s.clave)).map(s => (
-        <div key={s.clave} className="card card-p" style={{ marginBottom: 12, background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.3)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <div key={'sug-'+s.clave} className="card card-p" style={{ marginBottom: 12, background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.3)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <div style={{ flex: '1 1 320px', fontSize: 12.5, color: 'var(--ts)' }}>
-            💡 Detecté <strong>{s.items.length} EPP</strong> que empiezan con <strong>“{s.titulo}”</strong> ({s.items.slice(0,4).map(i=>i.nombre_epp).join(', ')}{s.items.length>4?'…':''}). ¿Los agrupás como variantes de <strong>{s.titulo}</strong>? Quedan ordenados bajo un solo grupo con stock total.
+            {s.tipo === 'add'
+              ? <>💡 Detecté <strong>{s.items.length} EPP</strong> suelto(s) que parecen variantes de <strong>“{s.grupo.nombre_epp}”</strong> ({s.items.slice(0,4).map(i=>i.nombre_epp).join(', ')}{s.items.length>4?'…':''}). ¿Los agregás a ese grupo?</>
+              : <>💡 Detecté <strong>{s.items.length} EPP</strong> que empiezan con <strong>“{s.titulo}”</strong> ({s.items.slice(0,4).map(i=>i.nombre_epp).join(', ')}{s.items.length>4?'…':''}). ¿Los agrupás como variantes de <strong>{s.titulo}</strong>? Quedan ordenados bajo un solo grupo con stock total.</>}
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn btn-amber btn-sm" onClick={() => setGrupoModal({ titulo: s.titulo, items: s.items })}><JxIcon name="layers" size={13} /> Agrupar</button>
+            {s.tipo === 'add'
+              ? <button className="btn btn-amber btn-sm" onClick={() => agregarAGrupo(s.grupo, s.items)}><JxIcon name="layers" size={13} /> Agregar a {s.grupo.nombre_epp}</button>
+              : <button className="btn btn-amber btn-sm" onClick={() => setGrupoModal({ titulo: s.titulo, items: s.items })}><JxIcon name="layers" size={13} /> Agrupar</button>}
             <button className="btn btn-ghost btn-sm" onClick={() => setSugDescartadas(d => new Set(d).add(s.clave))}>Ahora no</button>
+          </div>
+        </div>
+      ))}
+
+      {/* Revisión de duplicados: mismo nombre (ignora espacios/acentos) */}
+      {canWrite && duplicados.filter(d => !sugDescartadas.has('dup-'+d.clave)).map(d => (
+        <div key={'dup-'+d.clave} className="card card-p" style={{ marginBottom: 12, background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.3)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 1 320px', fontSize: 12.5, color: 'var(--ts)' }}>
+            ⚠ <strong>{d.items.length} EPP</strong> con el mismo nombre <strong>“{d.nombre}”</strong> (probable duplicado por tipeo). Conviene fusionarlos en uno: se reasignan los movimientos y se suma el stock.
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-red btn-sm" onClick={() => setDupModal({ grupo: d, survivorId: d.items[0].id })}><JxIcon name="compare" size={13} /> Fusionar</button>
+            <button className="btn btn-ghost btn-sm" onClick={() => setSugDescartadas(s => new Set(s).add('dup-'+d.clave))}>Ahora no</button>
           </div>
         </div>
       ))}
@@ -885,6 +938,28 @@ function EppsInventarioPage({ showToast }) {
           <div className="modal-actions">
             <button className="btn btn-ghost" onClick={() => setGrupoModal(null)}>Cancelar</button>
             <button className="btn btn-amber" onClick={() => crearGrupoCon(grupoModal.titulo, grupoModal.items)}><JxIcon name="check" size={13} /> Crear grupo</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* ── Modal fusionar duplicados ────────────────────── */}
+      {dupModal && (
+        <Modal title="Fusionar EPP duplicados" icon="compare" onClose={() => setDupModal(null)}>
+          <div style={{ fontSize: 12.5, color: 'var(--ts)', marginBottom: 12 }}>
+            Elegí cuál se queda (sobreviviente). Los demás se dan de baja y sus movimientos + stock pasan al sobreviviente.
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {dupModal.grupo.items.map(it => (
+              <label key={it.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', border: '1px solid var(--bd)', borderRadius: 6, cursor: 'pointer', background: dupModal.survivorId === it.id ? 'rgba(46,204,113,0.08)' : 'transparent' }}>
+                <input type="radio" name="dup-surv" checked={dupModal.survivorId === it.id} onChange={() => setDupModal(m => ({ ...m, survivorId: it.id }))} style={{ accentColor: 'var(--green)' }} />
+                <span style={{ flex: 1, fontSize: 12.5 }}>{it.nombre_epp}</span>
+                <span style={{ fontSize: 11, color: 'var(--tm)' }}>stock {stockDe(it)} {it.unidad}{it.tipo_epp ? ` · ${it.tipo_epp}` : ''}</span>
+              </label>
+            ))}
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={() => setDupModal(null)} disabled={dupBusy}>Cancelar</button>
+            <button className="btn btn-red" onClick={fusionarDuplicado} disabled={dupBusy}><JxIcon name="check" size={13} /> {dupBusy ? 'Fusionando…' : 'Fusionar'}</button>
           </div>
         </Modal>
       )}
