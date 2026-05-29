@@ -8,6 +8,7 @@ import { TablePagination } from "./jx-pagination.jsx";
 import { SearchableSelect } from "./jx-searchable-select.jsx";
 import { getDesgloseBulk, aplicarDelta, traspasar } from "../lib/stock-ubicaciones.js";
 import { DesglosePopup, TraspasoStockModal } from "./jx-stock-ubic.jsx";
+import { detectarSugerencias, detectarDuplicados, fusionarInsumos } from "../lib/variantes.js";
 const { useState: uS, useMemo: uM, useEffect: uE, useCallback: uCB } = React;
 
 // ─── DATA ───────────────────────────────────────────────
@@ -314,32 +315,186 @@ function MaterialesPage({ showToast }) {
     return Array.from(set).sort();
   }, [materiales, customCats]);
 
+  const matchMat = (m) => {
+    if (q) {
+      const ql = q.toLowerCase();
+      const matchQ = m.nombre_material?.toLowerCase().includes(ql)
+        || m.categoria?.toLowerCase().includes(ql)
+        || m.codigo_s10?.toLowerCase().includes(ql);
+      if (!matchQ) return false;
+    }
+    if (filtroCategoria !== 'todas' && m.categoria !== filtroCategoria) return false;
+    if (filtroEstado !== 'todos') {
+      if (filtroEstado === 'sin_unidad' && m.unidad && m.unidad !== 'und') return false;
+      if (filtroEstado === 'sin_unidad' && !m.unidad) {} // pasa
+      else if (filtroEstado !== 'sin_unidad' && m.alerta !== filtroEstado) return false;
+    }
+    return true;
+  };
+  // ── Variantes padre-hijo (SKU) ──────────────────────────────
+  const childrenByPadre = uM(() => {
+    const map = new Map();
+    for (const m of (materiales || [])) { if (!m.deleted_at && m.padre_id) { const a = map.get(m.padre_id) || []; a.push(m); map.set(m.padre_id, a); } }
+    return map;
+  }, [materiales]);
+  const variantesDe = (g) => childrenByPadre.get(g.id) || [];
+  const stockDeNodo = (m) => m.es_grupo ? variantesDe(m).reduce((s, c) => s + Number(c.stock_actual || 0), 0) : Number(m.stock_actual || 0);
+  const alertaDeNodo = (m) => m.es_grupo ? calcAlerta(stockDeNodo(m), Number(m.stock_minimo || 0)) : m.alerta;
+  const [expandedGroups, setExpandedGroups] = uS(() => new Set());
+  const toggleGroup = (id) => setExpandedGroups(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const sugerencias = uM(() => detectarSugerencias(materiales, 'nombre_material'), [materiales]);
+  const dups = uM(() => detectarDuplicados(materiales, 'nombre_material'), [materiales]);
+  const [descartadas, setDescartadas] = uS(() => new Set());
+  const [grupoModal, setGrupoModal] = uS(null);
+  const [dupModal, setDupModal] = uS(null);
+  const [varBusy, setVarBusy] = uS(false);
+
   const filtered = uM(() => {
     if (!materiales) return [];
-    return materiales.filter(m => {
-      // Búsqueda
-      if (q) {
-        const ql = q.toLowerCase();
-        const matchQ = m.nombre_material?.toLowerCase().includes(ql)
-          || m.categoria?.toLowerCase().includes(ql)
-          || m.codigo_s10?.toLowerCase().includes(ql);
-        if (!matchQ) return false;
-      }
-      // Filtro categoría
-      if (filtroCategoria !== 'todas' && m.categoria !== filtroCategoria) return false;
-      // Filtro estado de stock
-      if (filtroEstado !== 'todos') {
-        if (filtroEstado === 'sin_unidad' && m.unidad && m.unidad !== 'und') return false;
-        if (filtroEstado === 'sin_unidad' && !m.unidad) {} // pasa
-        else if (filtroEstado !== 'sin_unidad' && m.alerta !== filtroEstado) return false;
-      }
-      return true;
-    });
-  }, [q, materiales, filtroCategoria, filtroEstado]);
+    const top = materiales.filter(m => !m.deleted_at && !m.padre_id);
+    return top.filter(m => m.es_grupo ? (matchMat(m) || variantesDe(m).some(matchMat)) : matchMat(m));
+  }, [q, materiales, filtroCategoria, filtroEstado, childrenByPadre]);
 
   // Paginación de materiales — antes se renderizaban TODOS de golpe.
   // Con 500+ materiales en una obra, el filtro/scroll se sentía pesado.
   const matPg = usePagination(filtered, 50);
+
+  const crearGrupoMat = async (titulo, items) => {
+    const nombre = (titulo || '').trim();
+    if (!nombre || !items?.length || varBusy) return;
+    setVarBusy(true);
+    try {
+      const padre = await createMaterial({ obra_id: obraId, nombre_material: nombre, categoria: items[0]?.categoria || null, unidad: items[0]?.unidad || 'und', es_grupo: true, stock_inicial: 0, stock_actual: 0, stock_minimo: 0, total_entradas: 0, total_salidas: 0, alerta: 'ok', estado: 'activo' });
+      for (const it of items) await updateMaterial(it.id, { padre_id: padre.id });
+      setExpandedGroups(s => new Set(s).add(padre.id));
+      showToast(`✓ "${nombre}" con ${items.length} variantes`, 'green'); setGrupoModal(null); refresh?.();
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); } finally { setVarBusy(false); }
+  };
+  const agregarAGrupoMat = async (grupo, items) => {
+    try { for (const it of items) await updateMaterial(it.id, { padre_id: grupo.id }); setExpandedGroups(s => new Set(s).add(grupo.id)); showToast(`✓ ${items.length} agregado(s) a "${grupo.nombre_material}"`, 'green'); refresh?.(); }
+    catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
+  const eliminarGrupoMat = async (g) => {
+    const hijos = variantesDe(g);
+    if (!confirm(`¿Deshacer el grupo "${g.nombre_material}"? Sus ${hijos.length} variantes vuelven a sueltas.`)) return;
+    try { for (const h of hijos) await updateMaterial(h.id, { padre_id: null }); await updateMaterial(g.id, { deleted_at: new Date().toISOString() }); showToast('Grupo deshecho', 'amber'); refresh?.(); }
+    catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
+  const fusionarDupMat = async () => {
+    if (!dupModal?.survivorId || varBusy) return;
+    setVarBusy(true);
+    try {
+      const userId = auth?.profile?.id ?? 'offline';
+      const dupIds = dupModal.grupo.items.map(i => i.id).filter(id => id !== dupModal.survivorId);
+      const r = await fusionarInsumos({ db: window.__db, tabla: 'materiales', movTabla: 'movimientos_materiales', fk: 'material_id', itemTipoStock: 'material', userId, calcAlerta }, dupModal.survivorId, dupIds);
+      showToast(`✓ Fusionado · ${r.movidos} movimientos · stock ${r.stockFinal}`, 'green'); setDupModal(null); refresh?.();
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); } finally { setVarBusy(false); }
+  };
+
+  // Fila de material (ítem suelto o variante anidada). Se define como función
+  // para poder reutilizarla en las variantes dentro de un grupo.
+  const filaMat = (m, esHijo) => {
+    const a = ALERTA_STYLE[m.alerta] || ALERTA_STYLE.ok;
+    const stockColor = m.alerta === 'critico' ? 'var(--red)'
+      : m.alerta === 'sin_stock' ? 'var(--tm)'
+      : m.alerta === 'reponer' ? 'var(--yellow)' : 'var(--tp)';
+    const fotoMat = fotosMap.get(m.id);
+    return (
+      <tr key={m.id} style={esHijo ? { background: 'rgba(255,255,255,0.015)' } : undefined}>
+        <td className="col-p" style={esHijo ? { paddingLeft: 26 } : undefined}>
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            {esHijo && <span style={{ color:'var(--tm)' }}>└</span>}
+            {fotoMat ? (
+              <img src={fotoMat.url} alt="foto"
+                   style={{ width:32, height:32, objectFit:'cover', borderRadius:4, border:'1px solid var(--bd)', flexShrink:0, cursor:'pointer' }}
+                   onClick={(e) => { e.stopPropagation(); window.open(fotoMat.url, '_blank'); }}
+                   title="Click para ampliar"/>
+            ) : (
+              <div style={{ width:32, height:32, borderRadius:4, background:'rgba(255,255,255,0.04)', border:'1px dashed var(--bd)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
+                   title="Sin foto">
+                <JxIcon name="image" size={12} color="var(--tm)"/>
+              </div>
+            )}
+            <span>{m.nombre_material}</span>
+          </div>
+        </td>
+        <td><span className="tag">{m.categoria || '—'}</span></td>
+        <td style={{ fontSize:11 }}>
+          {(() => {
+            const dg = desgloseUbic.get(m.id);
+            const entradas = dg ? Array.from(dg.entries()).filter(([,c]) => Number(c) > 0) : [];
+            if (entradas.length) {
+              const resumen = entradas.length === 1 ? (ubicacionesById.get(entradas[0][0])?.nombre || 'Almacén') : `${entradas.length} almacenes`;
+              return <button className="btn btn-ghost btn-xs" title="Ver stock por ubicación" onClick={()=>setPopupMat(m)}><JxIcon name="map" size={11}/> {resumen}</button>;
+            }
+            if (m.ubicacion_id) {
+              const u = ubicacionesById.get(m.ubicacion_id);
+              return u
+                ? <span style={{ color: u.activo === false ? 'var(--tm)' : 'var(--tp)' }}>{u.nombre}{u.activo === false ? ' (inactiva)' : ''}</span>
+                : <span style={{ color:'var(--tm)' }}>—</span>;
+            }
+            return <span style={{ color:'var(--tm)' }}>—</span>;
+          })()}
+        </td>
+        <td className="col-m">{m.unidad}</td>
+        <td style={{textAlign:'right'}} className="col-num">
+          {Number(m.precio_unitario_estimado || 0) > 0
+            ? <span>S/ {Number(m.precio_unitario_estimado).toFixed(2)}</span>
+            : <span style={{ color:'var(--tm)' }}>—</span>}
+        </td>
+        <td style={{textAlign:'right'}} className="col-num">
+          <span style={{ color: stockColor, fontWeight: 600 }}>{Number(m.stock_actual ?? 0).toLocaleString('es-PE')}</span>
+        </td>
+        <td style={{textAlign:'right'}} className="col-num">{Number(m.stock_minimo ?? 0).toLocaleString('es-PE')}</td>
+        <td style={{textAlign:'right'}} className="col-num"><span style={{color:'var(--green)'}}>{Number(m.total_entradas ?? 0).toLocaleString('es-PE')}</span></td>
+        <td style={{textAlign:'right'}} className="col-num"><span style={{color:'var(--orange)'}}>{Number(m.total_salidas ?? 0).toLocaleString('es-PE')}</span></td>
+        <td><span className={`badge ${a.class}`}>{a.label}</span></td>
+        <td>{m.sync_status && m.sync_status !== 'synced'
+          ? <span className="badge b-amber" title={m.sync_status}>⏱ pendiente</span>
+          : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}
+        </td>
+        <td style={{textAlign:'center', whiteSpace:'nowrap'}}>
+          {['critico','reponer','agotado','sin_stock','cerca'].includes(m.alerta) && (
+            <button className="btn btn-xs" title="Crear requisición de reposición rápida" onClick={()=>solicitarReposicion(m)}
+              style={{ marginRight:4, background: m.alerta === 'critico' || m.alerta === 'agotado' || m.alerta === 'sin_stock' ? 'var(--red)' : 'var(--amber)', color:'#fff', borderColor:'transparent' }}>
+              <JxIcon name="plus" size={11}/> Reponer
+            </button>
+          )}
+          <button className="btn btn-ghost btn-xs" title="Ver historial de precios" onClick={()=>verHistorialPrecios(m)} style={{ marginRight:4 }}>
+            <JxIcon name="dollar" size={11}/>
+          </button>
+          {puedeActualizarPrecios && (
+            <button className="btn btn-ghost btn-xs" title="Actualizar precio (gerencia/contabilidad)" onClick={()=>abrirModalPrecio(m)} style={{ marginRight:4, color:'var(--amber)' }}>
+              <JxIcon name="edit" size={11}/>$
+            </button>
+          )}
+          {isAdmin ? (
+            <>
+              <button className="btn btn-ghost btn-xs" title="Editar material" onClick={()=>openEditMaterial(m)}>
+                <JxIcon name="edit" size={11}/>
+              </button>
+              {(() => {
+                const tipoEpp = detectarEPP(m.nombre_material);
+                if (!tipoEpp || m.categoria === 'EPP') return null;
+                return (
+                  <button className="btn btn-amber btn-xs" title={`Detectado como ${tipoEpp} — mover al inventario de EPPs`} onClick={() => moverMaterialAEpps(m)} style={{ marginLeft:4 }}>🦺</button>
+                );
+              })()}
+              {canDelete && (
+                <button className="btn btn-red btn-xs" title="Eliminar (solo modo edición)" onClick={()=>handleDeleteMaterial(m)} style={{ marginLeft:4 }}>
+                  <JxIcon name="trash" size={11}/>
+                </button>
+              )}
+            </>
+          ) : (
+            <button className="btn btn-ghost btn-xs" title="Solicitar cambio" onClick={()=>setRequestTarget(m)}>
+              <JxIcon name="alert" size={11}/>
+            </button>
+          )}
+        </td>
+      </tr>
+    );
+  };
 
   const alertasCount = uM(() =>
     materiales?.filter(m => m.alerta === 'critico' || m.alerta === 'sin_stock').length ?? 0,
@@ -1161,6 +1316,7 @@ function MaterialesPage({ showToast }) {
           proveedor_principal_id: form.proveedor_id || null,
           ubicacion_id: form.ubicacion_id || null,
           alerta: calcAlerta(stockActual, stockMinimo),
+          padre_id: form.padre_id || null,
         };
         // Super Admin: permitir corregir la fecha de registro (created_at).
         // Útil al cargar materiales que existían desde antes del sistema.
@@ -1187,6 +1343,7 @@ function MaterialesPage({ showToast }) {
           ubicacion_id: form.ubicacion_id || null,
           alerta: alertaInicial,
           estado: 'activo',
+          padre_id: form.padre_id || null,
         });
         materialId = created?.id;
         // Toast adicional si nace con alerta para que el usuario lo sepa
@@ -1815,6 +1972,33 @@ function MaterialesPage({ showToast }) {
         </span>
       </div>
 
+      {/* Sugerencias de agrupación (variantes SKU) */}
+      {isAdmin && sugerencias.filter(s => !descartadas.has(s.clave)).map(s => (
+        <div key={'sug-'+s.clave} className="card card-p" style={{ marginBottom:12, background:'rgba(245,158,11,0.07)', border:'1px solid rgba(245,158,11,0.3)', display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
+          <div style={{ flex:'1 1 320px', fontSize:12.5, color:'var(--ts)' }}>
+            {s.tipo === 'add'
+              ? <>💡 <strong>{s.items.length} material(es)</strong> suelto(s) parecen variantes de <strong>“{s.grupo.nombre_material}”</strong>. ¿Los agregás a ese grupo?</>
+              : <>💡 <strong>{s.items.length} materiales</strong> empiezan con <strong>“{s.titulo}”</strong>. ¿Los agrupás como variantes?</>}
+          </div>
+          <div style={{ display:'flex', gap:8 }}>
+            {s.tipo === 'add'
+              ? <button className="btn btn-amber btn-sm" onClick={()=>agregarAGrupoMat(s.grupo, s.items)}><JxIcon name="layers" size={13}/> Agregar a {s.grupo.nombre_material}</button>
+              : <button className="btn btn-amber btn-sm" onClick={()=>setGrupoModal({ titulo:s.titulo, items:s.items })}><JxIcon name="layers" size={13}/> Agrupar</button>}
+            <button className="btn btn-ghost btn-sm" onClick={()=>setDescartadas(d=>new Set(d).add(s.clave))}>Ahora no</button>
+          </div>
+        </div>
+      ))}
+      {/* Revisión de duplicados */}
+      {isAdmin && dups.filter(d => !descartadas.has('dup-'+d.clave)).map(d => (
+        <div key={'dup-'+d.clave} className="card card-p" style={{ marginBottom:12, background:'rgba(239,68,68,0.07)', border:'1px solid rgba(239,68,68,0.3)', display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
+          <div style={{ flex:'1 1 320px', fontSize:12.5, color:'var(--ts)' }}>⚠ <strong>{d.items.length} materiales</strong> con el mismo nombre <strong>“{d.nombre}”</strong> (probable duplicado). Conviene fusionarlos.</div>
+          <div style={{ display:'flex', gap:8 }}>
+            <button className="btn btn-red btn-sm" onClick={()=>setDupModal({ grupo:d, survivorId:d.items[0].id })}><JxIcon name="compare" size={13}/> Fusionar</button>
+            <button className="btn btn-ghost btn-sm" onClick={()=>setDescartadas(s=>new Set(s).add('dup-'+d.clave))}>Ahora no</button>
+          </div>
+        </div>
+      ))}
+
       {materiales.length === 0 ? (
         <div className="card card-p empty-state">
           <JxIcon name="package" size={40} color="var(--tm)"/>
@@ -1833,123 +2017,33 @@ function MaterialesPage({ showToast }) {
             </tr></thead>
             <tbody>
               {matPg.pagedItems.map(m => {
-                const a = ALERTA_STYLE[m.alerta] || ALERTA_STYLE.ok;
-                const stockColor = m.alerta === 'critico' ? 'var(--red)'
-                  : m.alerta === 'sin_stock' ? 'var(--tm)'
-                  : m.alerta === 'reponer' ? 'var(--yellow)' : 'var(--tp)';
-                const fotoMat = fotosMap.get(m.id);
+                if (!m.es_grupo) return filaMat(m, false);
+                const hijos = variantesDe(m);
+                const hayFiltro = q || filtroCategoria !== 'todas' || filtroEstado !== 'todos';
+                const hijosVis = hayFiltro ? hijos.filter(matchMat) : hijos;
+                const abierto = expandedGroups.has(m.id);
+                const aG = ALERTA_STYLE[alertaDeNodo(m)] || ALERTA_STYLE.ok;
                 return (
-                  <tr key={m.id}>
-                    <td className="col-p">
-                      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                        {fotoMat ? (
-                          <img src={fotoMat.url} alt="foto"
-                               style={{ width:32, height:32, objectFit:'cover', borderRadius:4, border:'1px solid var(--bd)', flexShrink:0, cursor:'pointer' }}
-                               onClick={(e) => { e.stopPropagation(); window.open(fotoMat.url, '_blank'); }}
-                               title="Click para ampliar"/>
-                        ) : (
-                          <div style={{ width:32, height:32, borderRadius:4, background:'rgba(255,255,255,0.04)', border:'1px dashed var(--bd)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
-                               title="Sin foto">
-                            <JxIcon name="image" size={12} color="var(--tm)"/>
-                          </div>
-                        )}
-                        <span>{m.nombre_material}</span>
-                      </div>
-                    </td>
-                    <td><span className="tag">{m.categoria || '—'}</span></td>
-                    <td style={{ fontSize:11 }}>
-                      {(() => {
-                        const dg = desgloseUbic.get(m.id);
-                        const entradas = dg ? Array.from(dg.entries()).filter(([,c]) => Number(c) > 0) : [];
-                        // Si hay desglose por ubicación, botón → popup (Alm1: 5 · Alm2: 3).
-                        if (entradas.length) {
-                          const resumen = entradas.length === 1 ? (ubicacionesById.get(entradas[0][0])?.nombre || 'Almacén') : `${entradas.length} almacenes`;
-                          return <button className="btn btn-ghost btn-xs" title="Ver stock por ubicación" onClick={()=>setPopupMat(m)}><JxIcon name="map" size={11}/> {resumen}</button>;
-                        }
-                        // Sin desglose → ubicación principal (legacy)
-                        if (m.ubicacion_id) {
-                          const u = ubicacionesById.get(m.ubicacion_id);
-                          return u
-                            ? <span style={{ color: u.activo === false ? 'var(--tm)' : 'var(--tp)' }}>{u.nombre}{u.activo === false ? ' (inactiva)' : ''}</span>
-                            : <span style={{ color:'var(--tm)' }}>—</span>;
-                        }
-                        return <span style={{ color:'var(--tm)' }}>—</span>;
-                      })()}
-                    </td>
-                    <td className="col-m">{m.unidad}</td>
-                    <td style={{textAlign:'right'}} className="col-num">
-                      {Number(m.precio_unitario_estimado || 0) > 0
-                        ? <span>S/ {Number(m.precio_unitario_estimado).toFixed(2)}</span>
-                        : <span style={{ color:'var(--tm)' }}>—</span>}
-                    </td>
-                    <td style={{textAlign:'right'}} className="col-num">
-                      <span style={{ color: stockColor, fontWeight: 600 }}>{Number(m.stock_actual ?? 0).toLocaleString('es-PE')}</span>
-                    </td>
-                    <td style={{textAlign:'right'}} className="col-num">{Number(m.stock_minimo ?? 0).toLocaleString('es-PE')}</td>
-                    <td style={{textAlign:'right'}} className="col-num"><span style={{color:'var(--green)'}}>{Number(m.total_entradas ?? 0).toLocaleString('es-PE')}</span></td>
-                    <td style={{textAlign:'right'}} className="col-num"><span style={{color:'var(--orange)'}}>{Number(m.total_salidas ?? 0).toLocaleString('es-PE')}</span></td>
-                    <td><span className={`badge ${a.class}`}>{a.label}</span></td>
-                    <td>{m.sync_status && m.sync_status !== 'synced'
-                      ? <span className="badge b-amber" title={m.sync_status}>⏱ pendiente</span>
-                      : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}
-                    </td>
-                    <td style={{textAlign:'center', whiteSpace:'nowrap'}}>
-                      {/* Botón "Solicitar reposición" cuando el stock está en mínimo o crítico */}
-                      {['critico','reponer','agotado','sin_stock','cerca'].includes(m.alerta) && (
-                        <button
-                          className="btn btn-xs"
-                          title="Crear requisición de reposición rápida"
-                          onClick={()=>solicitarReposicion(m)}
-                          style={{
-                            marginRight:4,
-                            background: m.alerta === 'critico' || m.alerta === 'agotado' || m.alerta === 'sin_stock' ? 'var(--red)' : 'var(--amber)',
-                            color:'#fff', borderColor:'transparent',
-                          }}>
-                          <JxIcon name="plus" size={11}/> Reponer
-                        </button>
-                      )}
-                      <button className="btn btn-ghost btn-xs" title="Ver historial de precios" onClick={()=>verHistorialPrecios(m)} style={{ marginRight:4 }}>
-                        <JxIcon name="dollar" size={11}/>
-                      </button>
-                      {puedeActualizarPrecios && (
-                        <button className="btn btn-ghost btn-xs" title="Actualizar precio (gerencia/contabilidad)" onClick={()=>abrirModalPrecio(m)} style={{ marginRight:4, color:'var(--amber)' }}>
-                          <JxIcon name="edit" size={11}/>$
-                        </button>
-                      )}
-                      {isAdmin ? (
-                        <>
-                          <button className="btn btn-ghost btn-xs" title="Editar material" onClick={()=>openEditMaterial(m)}>
-                            <JxIcon name="edit" size={11}/>
-                          </button>
-                          {/* Botón "Mover a EPPs" — solo aparece si el detector
-                              identifica el material como EPP (cascos, guantes,
-                              etc.). Permite migrar sin entrar al modal. */}
-                          {(() => {
-                            const tipoEpp = detectarEPP(m.nombre_material);
-                            if (!tipoEpp || m.categoria === 'EPP') return null;
-                            return (
-                              <button
-                                className="btn btn-amber btn-xs"
-                                title={`Detectado como ${tipoEpp} — mover al inventario de EPPs`}
-                                onClick={() => moverMaterialAEpps(m)}
-                                style={{ marginLeft:4 }}>
-                                🦺
-                              </button>
-                            );
-                          })()}
-                          {canDelete && (
-                            <button className="btn btn-red btn-xs" title="Eliminar (solo modo edición)" onClick={()=>handleDeleteMaterial(m)} style={{ marginLeft:4 }}>
-                              <JxIcon name="trash" size={11}/>
-                            </button>
-                          )}
-                        </>
-                      ) : (
-                        <button className="btn btn-ghost btn-xs" title="Solicitar cambio" onClick={()=>setRequestTarget(m)}>
-                          <JxIcon name="alert" size={11}/>
-                        </button>
-                      )}
-                    </td>
-                  </tr>
+                  <React.Fragment key={m.id}>
+                    <tr style={{ background:'rgba(245,158,11,0.06)', cursor:'pointer' }} onClick={()=>toggleGroup(m.id)}>
+                      <td className="col-p"><span style={{color:'var(--amber)',marginRight:6,fontWeight:700}}>{abierto?'▾':'▸'}</span><strong>{m.nombre_material}</strong> <span className="badge b-amber" style={{marginLeft:6}}>{hijos.length} variantes</span></td>
+                      <td><span className="tag">{m.categoria || '—'}</span></td>
+                      <td style={{ fontSize:11, color:'var(--tm)' }}>—</td>
+                      <td className="col-m">{m.unidad}</td>
+                      <td style={{textAlign:'right'}} className="col-num"><span style={{color:'var(--tm)'}}>—</span></td>
+                      <td style={{textAlign:'right'}} className="col-num"><span style={{fontWeight:700}}>{stockDeNodo(m).toLocaleString('es-PE')}</span></td>
+                      <td style={{textAlign:'right'}} className="col-num">{Number(m.stock_minimo ?? 0).toLocaleString('es-PE')}</td>
+                      <td style={{textAlign:'right'}} className="col-num">—</td>
+                      <td style={{textAlign:'right'}} className="col-num">—</td>
+                      <td><span className={`badge ${aG.class}`}>{aG.label}</span></td>
+                      <td>{m.sync_status && m.sync_status !== 'synced' ? <span className="badge b-amber">⏱</span> : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}</td>
+                      <td style={{textAlign:'center', whiteSpace:'nowrap'}}>
+                        {isAdmin && <button className="btn btn-ghost btn-xs" title="Renombrar grupo" onClick={(ev)=>{ev.stopPropagation(); openEditMaterial(m);}}><JxIcon name="edit" size={11}/></button>}
+                        {isAdmin && canDelete && <button className="btn btn-red btn-xs" title="Deshacer grupo" onClick={(ev)=>{ev.stopPropagation(); eliminarGrupoMat(m);}} style={{ marginLeft:4 }}><JxIcon name="trash" size={11}/></button>}
+                      </td>
+                    </tr>
+                    {abierto && hijosVis.map(h => filaMat(h, true))}
+                  </React.Fragment>
                 );
               })}
             </tbody>
@@ -2788,6 +2882,14 @@ function MaterialesPage({ showToast }) {
               {unidadesAll.map(u => <option key={u.codigo} value={u.codigo}>{u.codigo} — {u.nombre}</option>)}
             </select>
           </div>
+          {!form.es_grupo && (
+            <div><label className="flabel">Grupo (variante de)</label>
+              <select className="fi" value={form.padre_id || ''} onChange={e=>setForm({...form, padre_id: e.target.value || null})}>
+                <option value="">— Ítem suelto —</option>
+                {(materiales||[]).filter(g => g.es_grupo && !g.deleted_at && g.id !== editingId).map(g => <option key={g.id} value={g.id}>{g.nombre_material}</option>)}
+              </select>
+            </div>
+          )}
           <div>
             {window.JxFieldLabel
               ? <window.JxFieldLabel text="Stock inicial" hint="Cantidad que ingresa al almacén al crear el material. Si aún no llegó, dejalo en 0 y registrá un ingreso después."/>
@@ -2928,6 +3030,42 @@ function MaterialesPage({ showToast }) {
         </div>
       </Modal>);
       })()}
+
+      {/* Modal confirmar agrupación (variantes SKU) */}
+      {grupoModal && (
+        <Modal title="Agrupar como variantes" icon="layers" onClose={() => setGrupoModal(null)}>
+          <div style={{ fontSize: 12.5, color: 'var(--ts)', marginBottom: 12 }}>Se crea el grupo <strong>“{grupoModal.titulo}”</strong> y estos {grupoModal.items.length} materiales pasan a ser sus variantes.</div>
+          <label className="flabel">Nombre del grupo</label>
+          <input className="fi" value={grupoModal.titulo} onChange={e => setGrupoModal(g => ({ ...g, titulo: e.target.value }))} />
+          <div style={{ maxHeight: 180, overflowY: 'auto', marginTop: 10, border: '1px solid var(--bd)', borderRadius: 6, padding: 8 }}>
+            {grupoModal.items.map(it => <div key={it.id} style={{ fontSize: 12, padding: '3px 0', color: 'var(--ts)' }}>• {it.nombre_material} <span style={{ color: 'var(--tm)' }}>· stock {Number(it.stock_actual || 0)} {it.unidad}</span></div>)}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+            <button className="btn btn-ghost" onClick={() => setGrupoModal(null)} disabled={varBusy}>Cancelar</button>
+            <button className="btn btn-amber" onClick={() => crearGrupoMat(grupoModal.titulo, grupoModal.items)} disabled={varBusy}><JxIcon name="check" size={13} /> Crear grupo</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal fusionar duplicados */}
+      {dupModal && (
+        <Modal title="Fusionar materiales duplicados" icon="compare" onClose={() => setDupModal(null)}>
+          <div style={{ fontSize: 12.5, color: 'var(--ts)', marginBottom: 12 }}>Elegí cuál se queda. Los demás se dan de baja y sus movimientos + stock pasan al sobreviviente.</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {dupModal.grupo.items.map(it => (
+              <label key={it.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', border: '1px solid var(--bd)', borderRadius: 6, cursor: 'pointer', background: dupModal.survivorId === it.id ? 'rgba(46,204,113,0.08)' : 'transparent' }}>
+                <input type="radio" name="dup-mat" checked={dupModal.survivorId === it.id} onChange={() => setDupModal(m => ({ ...m, survivorId: it.id }))} style={{ accentColor: 'var(--green)' }} />
+                <span style={{ flex: 1, fontSize: 12.5 }}>{it.nombre_material}</span>
+                <span style={{ fontSize: 11, color: 'var(--tm)' }}>stock {Number(it.stock_actual || 0)} {it.unidad}{it.categoria ? ` · ${it.categoria}` : ''}</span>
+              </label>
+            ))}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+            <button className="btn btn-ghost" onClick={() => setDupModal(null)} disabled={varBusy}>Cancelar</button>
+            <button className="btn btn-red" onClick={fusionarDupMat} disabled={varBusy}><JxIcon name="check" size={13} /> {varBusy ? 'Fusionando…' : 'Fusionar'}</button>
+          </div>
+        </Modal>
+      )}
 
       {/* Modal Solicitar Reposición — con cantidad editable + motivo obligatorio */}
       {modal === 'reposicion' && reposicionForm && (
@@ -3222,17 +3360,139 @@ function HerramientasPage({ showToast }) {
     } catch (e) { showToast('Error en traspaso: ' + (e.message || e), 'red'); }
   };
 
+  const matchHerr = (h) => {
+    if (!q) return true;
+    const ql = q.toLowerCase();
+    return h.nombre_herramienta?.toLowerCase().includes(ql) || h.marca?.toLowerCase().includes(ql) || h.tipo_herramienta?.toLowerCase().includes(ql);
+  };
+  // ── Variantes padre-hijo (SKU) ──────────────────────────────
+  const childrenByPadre = uM(() => {
+    const map = new Map();
+    for (const h of (herramientas || [])) { if (!h.deleted_at && h.padre_id) { const a = map.get(h.padre_id) || []; a.push(h); map.set(h.padre_id, a); } }
+    return map;
+  }, [herramientas]);
+  const variantesDe = (g) => childrenByPadre.get(g.id) || [];
+  const stockDeNodo = (h) => h.es_grupo ? variantesDe(h).reduce((s, c) => s + Number(c.stock_actual || 0), 0) : Number(h.stock_actual || 0);
+  const [expandedGroups, setExpandedGroups] = uS(() => new Set());
+  const toggleGroup = (id) => setExpandedGroups(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const sugerencias = uM(() => detectarSugerencias(herramientas, 'nombre_herramienta'), [herramientas]);
+  const dups = uM(() => detectarDuplicados(herramientas, 'nombre_herramienta'), [herramientas]);
+  const [descartadas, setDescartadas] = uS(() => new Set());
+  const [grupoModal, setGrupoModal] = uS(null);
+  const [dupModal, setDupModal] = uS(null);
+  const [varBusy, setVarBusy] = uS(false);
+
   const filtered = uM(() => {
     if (!herramientas) return [];
-    if (!q) return herramientas;
-    return herramientas.filter(h =>
-      h.nombre_herramienta?.toLowerCase().includes(q.toLowerCase()) ||
-      h.marca?.toLowerCase().includes(q.toLowerCase()) ||
-      h.tipo_herramienta?.toLowerCase().includes(q.toLowerCase())
-    );
-  }, [q, herramientas]);
+    const top = herramientas.filter(h => !h.deleted_at && !h.padre_id);
+    return top.filter(h => h.es_grupo ? (matchHerr(h) || variantesDe(h).some(matchHerr)) : matchHerr(h));
+  }, [q, herramientas, childrenByPadre]);
 
   const herrPg = usePagination(filtered, 50);
+
+  const crearGrupoHerr = async (titulo, items) => {
+    const nombre = (titulo || '').trim();
+    if (!nombre || !items?.length || varBusy) return;
+    setVarBusy(true);
+    try {
+      const padre = await createHerr({ obra_id: obraId, nombre_herramienta: nombre, tipo_herramienta: items[0]?.tipo_herramienta || 'manual', estado_actual: 'bueno', ubicacion_actual: 'almacen', disponible: true, maneja_cantidad: true, unidad: items[0]?.unidad || 'und', es_grupo: true, stock_actual: 0, stock_minimo: 0, alerta: 'ok' });
+      for (const it of items) await updateHerr(it.id, { padre_id: padre.id });
+      setExpandedGroups(s => new Set(s).add(padre.id));
+      showToast(`✓ "${nombre}" con ${items.length} variantes`, 'green'); setGrupoModal(null); refresh?.();
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); } finally { setVarBusy(false); }
+  };
+  const agregarAGrupoHerr = async (grupo, items) => {
+    try { for (const it of items) await updateHerr(it.id, { padre_id: grupo.id }); setExpandedGroups(s => new Set(s).add(grupo.id)); showToast(`✓ ${items.length} agregado(s) a "${grupo.nombre_herramienta}"`, 'green'); refresh?.(); }
+    catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
+  const eliminarGrupoHerr = async (g) => {
+    const hijos = variantesDe(g);
+    if (!confirm(`¿Deshacer el grupo "${g.nombre_herramienta}"? Sus ${hijos.length} variantes vuelven a sueltas.`)) return;
+    try { for (const h of hijos) await updateHerr(h.id, { padre_id: null }); await updateHerr(g.id, { deleted_at: new Date().toISOString() }); showToast('Grupo deshecho', 'amber'); refresh?.(); }
+    catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
+  const fusionarDupHerr = async () => {
+    if (!dupModal?.survivorId || varBusy) return;
+    setVarBusy(true);
+    try {
+      const userId = auth?.profile?.id ?? 'offline';
+      const dupIds = dupModal.grupo.items.map(i => i.id).filter(id => id !== dupModal.survivorId);
+      const r = await fusionarInsumos({ db: window.__db, tabla: 'herramientas', movTabla: 'movimientos_herramientas', fk: 'herramienta_id', itemTipoStock: 'herramienta', userId, calcAlerta }, dupModal.survivorId, dupIds);
+      showToast(`✓ Fusionado · ${r.movidos} movimientos · stock ${r.stockFinal}`, 'green'); setDupModal(null); refresh?.();
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); } finally { setVarBusy(false); }
+  };
+
+  // Fila de herramienta (ítem suelto o variante anidada).
+  const filaHerr = (h, esHijo) => {
+    const e = ESTADO_STYLE[h.estado_actual] || ESTADO_STYLE.bueno;
+    const u = UBIC_STYLE[h.ubicacion_actual] || UBIC_STYLE.almacen;
+    const resp = personal.find(p => p.id === h.ultimo_responsable_id);
+    const ubicCat = h.ubicacion_id ? ubicacionesByIdH.get(h.ubicacion_id) : null;
+    const fotoH = fotosMap.get(h.id);
+    return (
+      <tr key={h.id} style={esHijo ? { background: 'rgba(255,255,255,0.015)' } : undefined}>
+        <td className="col-p" style={esHijo ? { paddingLeft: 26 } : undefined}>
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            {esHijo && <span style={{ color:'var(--tm)' }}>└</span>}
+            {fotoH ? (
+              <img src={fotoH.url} alt="foto"
+                   style={{ width:32, height:32, objectFit:'cover', borderRadius:4, border:'1px solid var(--bd)', flexShrink:0, cursor:'pointer' }}
+                   onClick={(ev) => { ev.stopPropagation(); window.open(fotoH.url, '_blank'); }}
+                   title="Click para ampliar"/>
+            ) : (
+              <div style={{ width:32, height:32, borderRadius:4, background:'rgba(255,255,255,0.04)', border:'1px dashed var(--bd)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
+                   title="Sin foto">
+                <JxIcon name="image" size={12} color="var(--tm)"/>
+              </div>
+            )}
+            <div>
+              <div>{h.nombre_herramienta}</div>
+              {ubicCat && <div style={{ fontSize:10.5, color: ubicCat.activo === false ? 'var(--tm)' : 'var(--amber)', marginTop:2 }}>📍 {ubicCat.nombre}{ubicCat.activo === false ? ' (inactiva)' : ''}</div>}
+            </div>
+          </div>
+        </td>
+        <td><span className="tag">{h.tipo_herramienta?.replace('_',' ') || '—'}</span></td>
+        <td className="col-m">{[h.marca, h.modelo].filter(Boolean).join(' ') || '—'}</td>
+        <td><span className={`badge ${e.class}`}>{e.label}</span></td>
+        <td><span className={`badge ${u.class}`}>{u.label}</span></td>
+        <td>{h.maneja_cantidad
+          ? (() => {
+              const st = Number(h.stock_actual ?? 0);
+              const cls = (h.alerta === 'agotado' || h.alerta === 'critico') ? 'b-red'
+                : (h.alerta === 'reponer' || h.alerta === 'cerca') ? 'b-amber' : 'b-green';
+              return (
+                <span style={{ display:'inline-flex', alignItems:'center', gap:6 }}>
+                  <span className={`badge ${cls}`} title={`Stock por cantidad${h.stock_minimo ? ` · mín ${h.stock_minimo}` : ''}`}>{st.toLocaleString('es-PE')} {h.unidad || 'und'}</span>
+                  <button className="btn btn-ghost btn-xs" title="Ver stock por ubicación" onClick={()=>setPopupHerr(h)}><JxIcon name="map" size={11}/></button>
+                </span>
+              );
+            })()
+          : (h.disponible ? <span className="badge b-green">Sí</span> : <span className="badge b-gray">No</span>)}</td>
+        <td className="col-m">{h.fecha_ultimo_movimiento || '—'}{resp ? ` · ${resp.nombres}` : ''}</td>
+        <td>{h.sync_status && h.sync_status !== 'synced'
+          ? <span className="badge b-amber">⏱</span>
+          : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}</td>
+        <td style={{textAlign:'center', whiteSpace:'nowrap'}}>
+          {isAdmin ? (
+            <>
+              <button className="btn btn-ghost btn-xs" title="Editar herramienta" onClick={()=>openEditHerr(h)}>
+                <JxIcon name="edit" size={11}/>
+              </button>
+              {canDelete && (
+                <button className="btn btn-red btn-xs" title="Eliminar (solo modo edición)" onClick={()=>handleDeleteHerr(h)} style={{ marginLeft:4 }}>
+                  <JxIcon name="trash" size={11}/>
+                </button>
+              )}
+            </>
+          ) : (
+            <button className="btn btn-ghost btn-xs" title="Solicitar cambio" onClick={()=>setRequestTarget(h)}>
+              <JxIcon name="alert" size={11}/>
+            </button>
+          )}
+        </td>
+      </tr>
+    );
+  };
 
   const enUso = herramientas?.filter(h => h.ubicacion_actual === 'en_uso').length ?? 0;
   const disponibles = herramientas?.filter(h => h.disponible).length ?? 0;
@@ -3478,6 +3738,7 @@ function HerramientasPage({ showToast }) {
           serie: form.serie || null,
           estado_actual: form.estado_actual || 'bueno',
           ubicacion_id: form.ubicacion_id || null,
+          padre_id: form.padre_id || null,
         };
         if (superAdmin && form.fecha_registro && form.fecha_registro !== (oldData?.created_at || '').slice(0, 10)) {
           newFields.created_at = new Date(form.fecha_registro + 'T12:00:00').toISOString();
@@ -3497,6 +3758,7 @@ function HerramientasPage({ showToast }) {
           ubicacion_actual: 'almacen',
           ubicacion_id: form.ubicacion_id || null,
           disponible: true,
+          padre_id: form.padre_id || null,
         });
         herramientaId = created?.id;
         try { await window.__logAudit?.({ action:'insert', table:'herramientas', recordId:created?.id, newData:created }); } catch(e) {}
@@ -3736,6 +3998,33 @@ function HerramientasPage({ showToast }) {
         <div className="search-bar"><JxIcon name="search" size={14} color="var(--tm)"/><input placeholder="Buscar herramienta…" value={q} onChange={e=>setQ(e.target.value)}/></div>
       </div>
 
+      {/* Sugerencias de agrupación (variantes SKU) */}
+      {isAdmin && sugerencias.filter(s => !descartadas.has(s.clave)).map(s => (
+        <div key={'sug-'+s.clave} className="card card-p" style={{ marginBottom:12, background:'rgba(245,158,11,0.07)', border:'1px solid rgba(245,158,11,0.3)', display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
+          <div style={{ flex:'1 1 320px', fontSize:12.5, color:'var(--ts)' }}>
+            {s.tipo === 'add'
+              ? <>💡 <strong>{s.items.length} herramienta(s)</strong> suelta(s) parecen variantes de <strong>“{s.grupo.nombre_herramienta}”</strong>. ¿Las agregás a ese grupo?</>
+              : <>💡 <strong>{s.items.length} herramientas</strong> empiezan con <strong>“{s.titulo}”</strong>. ¿Las agrupás como variantes?</>}
+          </div>
+          <div style={{ display:'flex', gap:8 }}>
+            {s.tipo === 'add'
+              ? <button className="btn btn-amber btn-sm" onClick={()=>agregarAGrupoHerr(s.grupo, s.items)}><JxIcon name="layers" size={13}/> Agregar a {s.grupo.nombre_herramienta}</button>
+              : <button className="btn btn-amber btn-sm" onClick={()=>setGrupoModal({ titulo:s.titulo, items:s.items })}><JxIcon name="layers" size={13}/> Agrupar</button>}
+            <button className="btn btn-ghost btn-sm" onClick={()=>setDescartadas(d=>new Set(d).add(s.clave))}>Ahora no</button>
+          </div>
+        </div>
+      ))}
+      {/* Revisión de duplicados */}
+      {isAdmin && dups.filter(d => !descartadas.has('dup-'+d.clave)).map(d => (
+        <div key={'dup-'+d.clave} className="card card-p" style={{ marginBottom:12, background:'rgba(239,68,68,0.07)', border:'1px solid rgba(239,68,68,0.3)', display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
+          <div style={{ flex:'1 1 320px', fontSize:12.5, color:'var(--ts)' }}>⚠ <strong>{d.items.length} herramientas</strong> con el mismo nombre <strong>“{d.nombre}”</strong> (probable duplicado). Conviene fusionarlas.</div>
+          <div style={{ display:'flex', gap:8 }}>
+            <button className="btn btn-red btn-sm" onClick={()=>setDupModal({ grupo:d, survivorId:d.items[0].id })}><JxIcon name="compare" size={13}/> Fusionar</button>
+            <button className="btn btn-ghost btn-sm" onClick={()=>setDescartadas(s=>new Set(s).add('dup-'+d.clave))}>Ahora no</button>
+          </div>
+        </div>
+      ))}
+
       {herramientas.length === 0 ? (
         <div className="card card-p empty-state"><JxIcon name="tool" size={40} color="var(--tm)"/><p>No hay herramientas registradas. Click en "Nueva Herramienta".</p></div>
       ) : (
@@ -3749,72 +4038,28 @@ function HerramientasPage({ showToast }) {
             </tr></thead>
             <tbody>
               {herrPg.pagedItems.map(h => {
-                const e = ESTADO_STYLE[h.estado_actual] || ESTADO_STYLE.bueno;
-                const u = UBIC_STYLE[h.ubicacion_actual] || UBIC_STYLE.almacen;
-                const resp = personal.find(p => p.id === h.ultimo_responsable_id);
-                const ubicCat = h.ubicacion_id ? ubicacionesByIdH.get(h.ubicacion_id) : null;
-                const fotoH = fotosMap.get(h.id);
+                if (!h.es_grupo) return filaHerr(h, false);
+                const hijos = variantesDe(h);
+                const hijosVis = q ? hijos.filter(matchHerr) : hijos;
+                const abierto = expandedGroups.has(h.id);
                 return (
-                  <tr key={h.id}>
-                    <td className="col-p">
-                      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                        {fotoH ? (
-                          <img src={fotoH.url} alt="foto"
-                               style={{ width:32, height:32, objectFit:'cover', borderRadius:4, border:'1px solid var(--bd)', flexShrink:0, cursor:'pointer' }}
-                               onClick={(ev) => { ev.stopPropagation(); window.open(fotoH.url, '_blank'); }}
-                               title="Click para ampliar"/>
-                        ) : (
-                          <div style={{ width:32, height:32, borderRadius:4, background:'rgba(255,255,255,0.04)', border:'1px dashed var(--bd)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
-                               title="Sin foto">
-                            <JxIcon name="image" size={12} color="var(--tm)"/>
-                          </div>
-                        )}
-                        <div>
-                          <div>{h.nombre_herramienta}</div>
-                          {ubicCat && <div style={{ fontSize:10.5, color: ubicCat.activo === false ? 'var(--tm)' : 'var(--amber)', marginTop:2 }}>📍 {ubicCat.nombre}{ubicCat.activo === false ? ' (inactiva)' : ''}</div>}
-                        </div>
-                      </div>
-                    </td>
-                    <td><span className="tag">{h.tipo_herramienta?.replace('_',' ') || '—'}</span></td>
-                    <td className="col-m">{[h.marca, h.modelo].filter(Boolean).join(' ') || '—'}</td>
-                    <td><span className={`badge ${e.class}`}>{e.label}</span></td>
-                    <td><span className={`badge ${u.class}`}>{u.label}</span></td>
-                    <td>{h.maneja_cantidad
-                      ? (() => {
-                          const st = Number(h.stock_actual ?? 0);
-                          const cls = (h.alerta === 'agotado' || h.alerta === 'critico') ? 'b-red'
-                            : (h.alerta === 'reponer' || h.alerta === 'cerca') ? 'b-amber' : 'b-green';
-                          return (
-                            <span style={{ display:'inline-flex', alignItems:'center', gap:6 }}>
-                              <span className={`badge ${cls}`} title={`Stock por cantidad${h.stock_minimo ? ` · mín ${h.stock_minimo}` : ''}`}>{st.toLocaleString('es-PE')} {h.unidad || 'und'}</span>
-                              <button className="btn btn-ghost btn-xs" title="Ver stock por ubicación" onClick={()=>setPopupHerr(h)}><JxIcon name="map" size={11}/></button>
-                            </span>
-                          );
-                        })()
-                      : (h.disponible ? <span className="badge b-green">Sí</span> : <span className="badge b-gray">No</span>)}</td>
-                    <td className="col-m">{h.fecha_ultimo_movimiento || '—'}{resp ? ` · ${resp.nombres}` : ''}</td>
-                    <td>{h.sync_status && h.sync_status !== 'synced'
-                      ? <span className="badge b-amber">⏱</span>
-                      : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}</td>
-                    <td style={{textAlign:'center', whiteSpace:'nowrap'}}>
-                      {isAdmin ? (
-                        <>
-                          <button className="btn btn-ghost btn-xs" title="Editar herramienta" onClick={()=>openEditHerr(h)}>
-                            <JxIcon name="edit" size={11}/>
-                          </button>
-                          {canDelete && (
-                            <button className="btn btn-red btn-xs" title="Eliminar (solo modo edición)" onClick={()=>handleDeleteHerr(h)} style={{ marginLeft:4 }}>
-                              <JxIcon name="trash" size={11}/>
-                            </button>
-                          )}
-                        </>
-                      ) : (
-                        <button className="btn btn-ghost btn-xs" title="Solicitar cambio" onClick={()=>setRequestTarget(h)}>
-                          <JxIcon name="alert" size={11}/>
-                        </button>
-                      )}
-                    </td>
-                  </tr>
+                  <React.Fragment key={h.id}>
+                    <tr style={{ background:'rgba(245,158,11,0.06)', cursor:'pointer' }} onClick={()=>toggleGroup(h.id)}>
+                      <td className="col-p"><span style={{color:'var(--amber)',marginRight:6,fontWeight:700}}>{abierto?'▾':'▸'}</span><strong>{h.nombre_herramienta}</strong> <span className="badge b-amber" style={{marginLeft:6}}>{hijos.length} variantes</span></td>
+                      <td><span className="tag">{h.tipo_herramienta?.replace('_',' ') || '—'}</span></td>
+                      <td className="col-m">—</td>
+                      <td>—</td>
+                      <td>—</td>
+                      <td><span className="badge b-green" title="Total de las variantes">{stockDeNodo(h).toLocaleString('es-PE')} {h.unidad || 'und'}</span></td>
+                      <td className="col-m">—</td>
+                      <td>{h.sync_status && h.sync_status !== 'synced' ? <span className="badge b-amber">⏱</span> : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}</td>
+                      <td style={{textAlign:'center', whiteSpace:'nowrap'}}>
+                        {isAdmin && <button className="btn btn-ghost btn-xs" title="Renombrar grupo" onClick={(ev)=>{ev.stopPropagation(); openEditHerr(h);}}><JxIcon name="edit" size={11}/></button>}
+                        {isAdmin && canDelete && <button className="btn btn-red btn-xs" title="Deshacer grupo" onClick={(ev)=>{ev.stopPropagation(); eliminarGrupoHerr(h);}} style={{ marginLeft:4 }}><JxIcon name="trash" size={11}/></button>}
+                      </td>
+                    </tr>
+                    {abierto && hijosVis.map(hh => filaHerr(hh, true))}
+                  </React.Fragment>
                 );
               })}
             </tbody>
@@ -3989,6 +4234,14 @@ function HerramientasPage({ showToast }) {
           </div>
           <div><label className="flabel">Marca</label><input className="fi" placeholder="Ej: Bosch" value={form.marca||''} onChange={e=>setForm({...form, marca:e.target.value})}/></div>
           <div><label className="flabel">Modelo</label><input className="fi" placeholder="Ej: GA7020" value={form.modelo||''} onChange={e=>setForm({...form, modelo:e.target.value})}/></div>
+          {!form.es_grupo && (
+            <div><label className="flabel">Grupo (variante de)</label>
+              <select className="fi" value={form.padre_id || ''} onChange={e=>setForm({...form, padre_id: e.target.value || null})}>
+                <option value="">— Ítem suelto —</option>
+                {(herramientas||[]).filter(g => g.es_grupo && !g.deleted_at && g.id !== editingId).map(g => <option key={g.id} value={g.id}>{g.nombre_herramienta}</option>)}
+              </select>
+            </div>
+          )}
           <div style={{gridColumn:'1/-1'}}><label className="flabel">N° Serie</label><input className="fi" placeholder="Ej: BS-2024-001" value={form.serie||''} onChange={e=>setForm({...form, serie:e.target.value})}/></div>
           <div style={{gridColumn:'1/-1'}}>
             <label className="flabel">Ubicación de almacenaje</label>
@@ -4070,6 +4323,42 @@ function HerramientasPage({ showToast }) {
           </button>
         </div>
       </Modal>}
+
+      {/* Modal confirmar agrupación (variantes SKU) */}
+      {grupoModal && (
+        <Modal title="Agrupar como variantes" icon="layers" onClose={() => setGrupoModal(null)}>
+          <div style={{ fontSize: 12.5, color: 'var(--ts)', marginBottom: 12 }}>Se crea el grupo <strong>“{grupoModal.titulo}”</strong> y estas {grupoModal.items.length} herramientas pasan a ser sus variantes.</div>
+          <label className="flabel">Nombre del grupo</label>
+          <input className="fi" value={grupoModal.titulo} onChange={e => setGrupoModal(g => ({ ...g, titulo: e.target.value }))} />
+          <div style={{ maxHeight: 180, overflowY: 'auto', marginTop: 10, border: '1px solid var(--bd)', borderRadius: 6, padding: 8 }}>
+            {grupoModal.items.map(it => <div key={it.id} style={{ fontSize: 12, padding: '3px 0', color: 'var(--ts)' }}>• {it.nombre_herramienta}</div>)}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+            <button className="btn btn-ghost" onClick={() => setGrupoModal(null)} disabled={varBusy}>Cancelar</button>
+            <button className="btn btn-amber" onClick={() => crearGrupoHerr(grupoModal.titulo, grupoModal.items)} disabled={varBusy}><JxIcon name="check" size={13} /> Crear grupo</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal fusionar duplicados */}
+      {dupModal && (
+        <Modal title="Fusionar herramientas duplicadas" icon="compare" onClose={() => setDupModal(null)}>
+          <div style={{ fontSize: 12.5, color: 'var(--ts)', marginBottom: 12 }}>Elegí cuál se queda. Las demás se dan de baja y sus movimientos + stock pasan a la sobreviviente.</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {dupModal.grupo.items.map(it => (
+              <label key={it.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', border: '1px solid var(--bd)', borderRadius: 6, cursor: 'pointer', background: dupModal.survivorId === it.id ? 'rgba(46,204,113,0.08)' : 'transparent' }}>
+                <input type="radio" name="dup-herr" checked={dupModal.survivorId === it.id} onChange={() => setDupModal(m => ({ ...m, survivorId: it.id }))} style={{ accentColor: 'var(--green)' }} />
+                <span style={{ flex: 1, fontSize: 12.5 }}>{it.nombre_herramienta}</span>
+                <span style={{ fontSize: 11, color: 'var(--tm)' }}>{[it.marca, it.modelo].filter(Boolean).join(' ')}</span>
+              </label>
+            ))}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+            <button className="btn btn-ghost" onClick={() => setDupModal(null)} disabled={varBusy}>Cancelar</button>
+            <button className="btn btn-red" onClick={fusionarDupHerr} disabled={varBusy}><JxIcon name="check" size={13} /> {varBusy ? 'Fusionando…' : 'Fusionar'}</button>
+          </div>
+        </Modal>
+      )}
 
       {requestTarget && (
         <RequestChangeModal
