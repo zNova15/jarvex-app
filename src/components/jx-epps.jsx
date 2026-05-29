@@ -161,6 +161,58 @@ function EppsInventarioPage({ showToast }) {
   const [popupEpp, setPopupEpp] = uS(null);       // EPP para el popup de desglose
   const [traspasoPreId, setTraspasoPreId] = uS(''); // EPP preseleccionado en traspaso
 
+  // Stock VIVO calculado desde movimientos_epp (entradas − salidas). El campo
+  // epps.stock_actual es denormalizado y puede quedar desfasado (p. ej. cuando
+  // una reimportación deduplica todos los movimientos y no dispara el recálculo,
+  // o cuando los movimientos vienen de la migración / compras / entregas). Para
+  // que el inventario NUNCA muestre 0 habiendo movimientos, mostramos y validamos
+  // contra el stock vivo y dejamos stock_actual solo como respaldo.
+  const movEppLive = movHook.data || [];
+  const liveStockById = uM(() => {
+    const m = new Map();
+    for (const mv of movEppLive) {
+      if (mv.deleted_at) continue;
+      const c = Number(mv.cantidad || 0);
+      if (!c) continue;
+      const prev = m.get(mv.epp_id) || 0;
+      if (mv.tipo_movimiento === 'entrada') m.set(mv.epp_id, prev + c);
+      else if (mv.tipo_movimiento === 'salida') m.set(mv.epp_id, prev - c);
+    }
+    return m;
+  }, [movEppLive]);
+  const stockDe = (e) => liveStockById.has(e?.id) ? Math.max(0, liveStockById.get(e.id)) : Number(e?.stock_actual ?? 0);
+  const alertaDe = (e) => calcAlerta(stockDe(e), Number(e?.stock_minimo || 0));
+
+  // Auto-reparación: si el stock vivo difiere del stock_actual guardado, lo
+  // persistimos (una sola vez por diferencia) para que el campo se sincronice
+  // con el server y el resto de pantallas lo vean bien. Tras escribir, el live
+  // pasa a coincidir y el efecto no vuelve a escribir (sin bucle).
+  uE(() => {
+    if (!epps?.length || !liveStockById.size) return;
+    let cancel = false;
+    (async () => {
+      for (const e of epps) {
+        if (cancel) break;
+        if (!liveStockById.has(e.id)) continue;
+        const live = Math.max(0, liveStockById.get(e.id));
+        const stored = Number(e.stock_actual ?? 0);
+        if (live === stored) continue;
+        if (e.sync_status === 'pending_delete' || e.deleted_at) continue;
+        try {
+          await window.__db.epps.update(e.id, {
+            stock_actual: live,
+            alerta: calcAlerta(live, Number(e.stock_minimo || 0)),
+            updated_at: new Date().toISOString(),
+            version: (e.version ?? 0) + 1,
+            sync_status: e.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+          });
+        } catch (err) { console.warn('[epp reconcile stock]', err?.message); }
+      }
+      if (!cancel) { try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'epps' } })); } catch {} }
+    })();
+    return () => { cancel = true; };
+  }, [epps, liveStockById]);
+
   const [q, setQ] = uS('');
   const [filtroTipo, setFiltroTipo] = uS('todos');
   const [modal, setModal] = uS(null); // 'nuevo' | 'editar' | 'ingreso' | 'salida'
@@ -473,7 +525,7 @@ function EppsInventarioPage({ showToast }) {
         const dgItem = desgloseUbic.get(it.epp_id);
         const tieneDesglose = dgItem && Array.from(dgItem.values()).some(c => Number(c) > 0);
         const base = proyec.has(it.epp_id) ? proyec.get(it.epp_id)
-          : (tieneDesglose ? Number(dgItem.get(ubicMov) || 0) : Number(epp?.stock_actual || 0));
+          : (tieneDesglose ? Number(dgItem.get(ubicMov) || 0) : stockDe(epp));
         const cant = parseFloat(it.cantidad) || 0;
         if (base - cant < 0) {
           showToast(`❌ Stock insuficiente de "${epp?.nombre_epp}" en ${ubicacionesById.get(ubicMov)?.nombre || 'ese almacén'}: hay ${base}, pedís ${cant}.`, 'red');
@@ -585,7 +637,7 @@ function EppsInventarioPage({ showToast }) {
       <div className="pg-hd frow-sb">
         <div>
           <div className="pg-title">EPPs (Inventario)</div>
-          <div className="pg-sub">{epps.length} EPPs registrados · {epps.filter(e => ['critico','reponer','agotado','sin_stock'].includes(e.alerta)).length} alertas</div>
+          <div className="pg-sub">{epps.length} EPPs registrados · {epps.filter(e => ['critico','reponer','agotado','sin_stock'].includes(alertaDe(e))).length} alertas</div>
         </div>
         <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
           {canWrite && <button className="btn btn-ghost btn-sm" onClick={openSalida}><JxIcon name="arrowOut" size={13}/>Registrar Salida</button>}
@@ -641,9 +693,10 @@ function EppsInventarioPage({ showToast }) {
             </thead>
             <tbody>
               {eppsPg.pagedItems.map(e => {
-                const a = ALERTA_STYLE[e.alerta] || ALERTA_STYLE.ok;
-                const stockColor = e.alerta === 'critico' || e.alerta === 'agotado' ? 'var(--red)'
-                  : e.alerta === 'reponer' ? 'var(--yellow)' : 'var(--tp)';
+                const aler = alertaDe(e);
+                const a = ALERTA_STYLE[aler] || ALERTA_STYLE.ok;
+                const stockColor = aler === 'critico' || aler === 'agotado' ? 'var(--red)'
+                  : aler === 'reponer' ? 'var(--yellow)' : 'var(--tp)';
                 return (
                   <tr key={e.id}>
                     <td className="col-p">
@@ -659,7 +712,7 @@ function EppsInventarioPage({ showToast }) {
                     })()}</td>
                     <td className="col-m">{e.talla || '—'}</td>
                     <td style={{textAlign:'right'}} className="col-num">
-                      <span style={{ color: stockColor, fontWeight: 600 }}>{Number(e.stock_actual ?? 0).toLocaleString('es-PE')}</span>
+                      <span style={{ color: stockColor, fontWeight: 600 }}>{stockDe(e).toLocaleString('es-PE')}</span>
                       <span style={{ color:'var(--tm)', fontSize:10.5, marginLeft:4 }}>{e.unidad}</span>
                     </td>
                     <td style={{textAlign:'right'}} className="col-num">{Number(e.stock_minimo ?? 0).toLocaleString('es-PE')}</td>
@@ -958,7 +1011,8 @@ function EppsInventarioPage({ showToast }) {
                   {loteItems.map(it => {
                     const epp = epps.find(e => e.id === it.epp_id);
                     const cant = parseFloat(it.cantidad) || 0;
-                    const stockOk = (epp?.stock_actual ?? 0) >= cant;
+                    const stockEpp = stockDe(epp);
+                    const stockOk = stockEpp >= cant;
                     return (
                       <tr key={it.id}>
                         <td>
@@ -978,7 +1032,7 @@ function EppsInventarioPage({ showToast }) {
                         <td>
                           {epp ? (
                             <span style={{ color: stockOk ? 'var(--green)' : 'var(--red)', fontWeight:600, fontSize:11 }}>
-                              {stockOk ? '✓' : '⚠'} {epp.stock_actual}
+                              {stockOk ? '✓' : '⚠'} {stockEpp}
                             </span>
                           ) : '—'}
                         </td>

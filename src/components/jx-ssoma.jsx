@@ -560,6 +560,49 @@ function EppPage({ showToast }) {
     }
   };
 
+  // Super Admin: edición COMPLETA de un movimiento de inventario EPP
+  // (movimientos_epp): tipo (entrada/salida), EPP, cantidad, costo unitario y
+  // motivo. Tras guardar, el stock se recalcula solo (live desde movimientos).
+  const [editMov, setEditMov] = uS(null);     // reg (_esMovEpp) en edición
+  const [movForm, setMovForm] = uS(null);
+  const abrirEditMov = (reg) => {
+    const it = (reg.items && reg.items[0]) || {};
+    setEditMov(reg);
+    setMovForm({
+      tipo_movimiento: reg.tipo_movimiento || 'salida',
+      epp_id: (movEpp || []).find(m => m.id === reg.id)?.epp_id || '',
+      cantidad: String(it.cantidad ?? ''),
+      costo_unitario: String(it.costo_unitario ?? ''),
+      motivo: reg.motivo || '',
+    });
+  };
+  const guardarEditMov = async () => {
+    if (!editMov || !movForm) return;
+    const cant = parseFloat(movForm.cantidad);
+    if (!movForm.epp_id) { showToast('Elegí el EPP', 'red'); return; }
+    if (!(cant > 0)) { showToast('La cantidad debe ser mayor a 0', 'red'); return; }
+    try {
+      const cu = movForm.costo_unitario === '' ? null : (parseFloat(movForm.costo_unitario) || 0);
+      await window.__db.movimientos_epp.update(editMov.id, {
+        tipo_movimiento: movForm.tipo_movimiento,
+        epp_id: movForm.epp_id,
+        cantidad: cant,
+        precio_unitario_real: cu,
+        costo_total: cu != null ? +(cu * cant).toFixed(2) : null,
+        motivo: (movForm.motivo || '').trim() || null,
+        updated_at: new Date().toISOString(),
+        updated_by: userId,
+        version: (editMov.version ?? 0) + 1,
+        sync_status: editMov.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      try { await window.__logAudit?.({ action: 'update', table: 'movimientos_epp', recordId: editMov.id, reason: 'Super Admin · edición completa de movimiento EPP' }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'movimientos_epp' } })); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'epps' } })); } catch {}
+      showToast('✓ Movimiento actualizado', 'green');
+      setEditMov(null); setMovForm(null);
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
+
   // Super Admin: editar el destino de una entrega EPP (movimientos_epp).
   // Permite asignar a Personal o Subcontratista, y crear el trabajador si no
   // existe (la columna G del Excel = responsable, que puede no estar creado).
@@ -947,6 +990,10 @@ function EppPage({ showToast }) {
                           <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar fecha" style={{ marginLeft:4, color:'#E74C3C', padding:'0 4px' }}
                             onClick={(ev)=>{ ev.stopPropagation(); setEditFechaEpp(e); setEditFechaEppValue(e.fecha || ''); }}>📅</button>
                         )}
+                        {superAdmin && e._esMovEpp && (
+                          <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar EPP, cantidad, costo, motivo" style={{ marginLeft:2, color:'#E74C3C', padding:'0 4px' }}
+                            onClick={(ev)=>{ ev.stopPropagation(); abrirEditMov(e); }}>✏️</button>
+                        )}
                         {superAdmin && (
                           <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: eliminar registro" style={{ marginLeft:2, color:'var(--red)', padding:'0 4px' }}
                             onClick={(ev)=>{ ev.stopPropagation(); eliminarRegistroEpp(e); }}>🗑</button>
@@ -1014,6 +1061,10 @@ function EppPage({ showToast }) {
                           <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar fecha" style={{ marginLeft:4, color:'#E74C3C', padding:'0 4px' }}
                             onClick={(ev)=>{ ev.stopPropagation(); setEditFechaEpp(e); setEditFechaEppValue(e.fecha || ''); }}>📅</button>
                         )}
+                        {superAdmin && e._esMovEpp && (
+                          <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar EPP, cantidad, costo, motivo" style={{ marginLeft:2, color:'#E74C3C', padding:'0 4px' }}
+                            onClick={(ev)=>{ ev.stopPropagation(); abrirEditMov(e); }}>✏️</button>
+                        )}
                         {superAdmin && (
                           <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: eliminar registro" style={{ marginLeft:2, color:'var(--red)', padding:'0 4px' }}
                             onClick={(ev)=>{ ev.stopPropagation(); eliminarRegistroEpp(e); }}>🗑</button>
@@ -1038,6 +1089,51 @@ function EppPage({ showToast }) {
             </table>
           </div>
         )
+      )}
+
+      {/* ── MODAL EDITAR MOVIMIENTO EPP (Super Admin) ─────────── */}
+      {editMov && movForm && (
+        <Modal title="⚡ Editar movimiento EPP" icon="edit" onClose={()=>{ setEditMov(null); setMovForm(null); }}>
+          <div style={{ fontSize:12, color:'var(--tm)', marginBottom:12 }}>
+            Edición completa del movimiento (Super Admin). El stock se recalcula automáticamente.
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+            <div>
+              <label className="flabel">Tipo</label>
+              <select className="fi" value={movForm.tipo_movimiento} onChange={e=>setMovForm(f=>({...f, tipo_movimiento:e.target.value}))}>
+                <option value="entrada">Entrada (compra)</option>
+                <option value="salida">Salida (entrega)</option>
+              </select>
+            </div>
+            <div>
+              <label className="flabel">EPP</label>
+              <select className="fi" value={movForm.epp_id} onChange={e=>setMovForm(f=>({...f, epp_id:e.target.value}))}>
+                <option value="">— Elegí el EPP —</option>
+                {(eppsCat||[]).filter(x=>!x.deleted_at).map(x => <option key={x.id} value={x.id}>{x.nombre_epp}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="flabel">Cantidad</label>
+              <input className="fi" type="number" min="0" step="0.01" value={movForm.cantidad}
+                onChange={e=>setMovForm(f=>({...f, cantidad:e.target.value}))}/>
+            </div>
+            <div>
+              <label className="flabel">Costo unitario (S/)</label>
+              <input className="fi" type="number" min="0" step="0.01" value={movForm.costo_unitario}
+                placeholder="opcional" onChange={e=>setMovForm(f=>({...f, costo_unitario:e.target.value}))}/>
+            </div>
+            <div style={{ gridColumn:'1 / -1' }}>
+              <label className="flabel">Motivo</label>
+              <input className="fi" type="text" value={movForm.motivo}
+                placeholder={movForm.tipo_movimiento==='entrada'?'compra':'dotacion'}
+                onChange={e=>setMovForm(f=>({...f, motivo:e.target.value}))}/>
+            </div>
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={()=>{ setEditMov(null); setMovForm(null); }}>Cancelar</button>
+            <button className="btn btn-amber" onClick={guardarEditMov}><JxIcon name="check" size={13}/> Guardar movimiento</button>
+          </div>
+        </Modal>
       )}
 
       {/* ── MODAL DETALLE ─────────────────────────────────────── */}
