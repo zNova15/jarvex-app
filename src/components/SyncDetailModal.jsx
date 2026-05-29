@@ -23,6 +23,28 @@ const { useState, useEffect } = React;
 
 const JxIcon = (props) => (window.JxIcon ? <window.JxIcon {...props}/> : null);
 
+// Traduce el error técnico del server a un mensaje entendible + qué hacer.
+function mensajeAmigable(code, error) {
+  const m = String(error || '').toLowerCase();
+  if (code === 'PGRST204' || /could not find the .* column/.test(m))
+    return 'El servidor no reconoce una columna que el programa quiso guardar (esquema desactualizado). Suele resolverse al recargar la página; si persiste, avisá.';
+  if (/row-level security|violates row-level security|insufficient_privilege|42501|pgrst301/.test(m + code))
+    return 'Permisos (RLS): tu rol no puede guardar este registro en el servidor, o la sesión expiró. Cerrá sesión y volvé a entrar; si sos admin y sigue, revisá las políticas de la tabla.';
+  if (/violates check constraint/.test(m) && /stock/.test(m))
+    return 'El movimiento dejaría el stock en negativo, lo que no está permitido. Revisá el archivo: probablemente falta una entrada previa o la cantidad de la salida está mal.';
+  if (/violates check constraint/.test(m) && /alerta/.test(m))
+    return 'Valor de "alerta" no permitido para ese insumo.';
+  if (/violates check constraint/.test(m))
+    return 'Un valor del registro no cumple una regla del servidor (CHECK). Revisá los datos del archivo.';
+  if (code === '23503' || /foreign key|violates foreign key/.test(m))
+    return 'Falta el registro relacionado (p. ej. el insumo del movimiento todavía no está en el servidor). Reintentá: al subir primero el insumo, el movimiento entra solo.';
+  if (code === '23505' || /duplicate key|already exists/.test(m))
+    return 'Registro duplicado: ya existe en el servidor (no se vuelve a crear).';
+  if (code === '23502' || /null value in column|not-null/.test(m))
+    return 'Falta un dato obligatorio en el registro.';
+  return error || 'Error desconocido';
+}
+
 export default function SyncDetailModal({ open, onClose, showToast }) {
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState([]);
@@ -149,9 +171,13 @@ export default function SyncDetailModal({ open, onClose, showToast }) {
                               {r.isRLS && <span style={{ fontSize:9, padding:'1px 5px', borderRadius:3, background:'rgba(239,68,68,0.18)', color:'var(--red)' }}>RLS</span>}
                             </div>
                             {r.descripcion && <div style={{ color:'var(--ts)', marginTop:2 }}>{r.descripcion}</div>}
-                            <div style={{ color:'var(--tm)', fontSize:10, marginTop:3 }}>
-                              {r.errorCode && <span style={{ fontFamily:'monospace' }}>[{r.errorCode}]</span>} {r.error}
-                            </div>
+                            <div style={{ color:'var(--amber)', fontSize:11, marginTop:3 }}>{mensajeAmigable(r.errorCode, r.error)}</div>
+                            <details style={{ marginTop:3 }}>
+                              <summary style={{ cursor:'pointer', color:'var(--tm)', fontSize:9.5 }}>Detalle técnico</summary>
+                              <div style={{ color:'var(--tm)', fontSize:10, marginTop:2 }}>
+                                {r.errorCode && <span style={{ fontFamily:'monospace' }}>[{r.errorCode}]</span>} {r.error}
+                              </div>
+                            </details>
                           </div>
                         ))}
                         {g.count > g.rows.length && (

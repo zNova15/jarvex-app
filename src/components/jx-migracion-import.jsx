@@ -560,6 +560,50 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     return { tipo: 'mov', movs, resumen: resumenMovimientos(movs) };
   }, [parsed, formato, esInsumos, esInsumosEmergencia, esAsignacion]);
 
+  // Validación de calidad del archivo de movimientos (por cantidad):
+  //  · unidades: un insumo no puede tener 2 unidades distintas (ej. clavos en
+  //    Kg y en cajas) → se bloquea el insumo entero.
+  //  · stock negativo: una salida no puede dejar el stock bajo 0 (faltan
+  //    entradas o el dato está mal) → se marca esa fila.
+  // Las filas/insumos con problema NO se importan; se muestran para corregir
+  // el Excel. (No aplica a asignaciones de maquinaria, que no llevan cantidad.)
+  const validacionMov = uM(() => {
+    if (!esMov || esAsignacion || !preview?.movs?.length) return null;
+    const movs = preview.movs;
+    // 1) unidades por insumo
+    const unidades = new Map();
+    for (const m of movs) {
+      const k = normTxt(m.nombreItem || ''); if (!k) continue;
+      const u = (m.unidad || '').trim(); if (!u) continue;
+      if (!unidades.has(k)) unidades.set(k, { nombre: m.nombreItem, set: new Set() });
+      unidades.get(k).set.add(u);
+    }
+    const conflictoUnidad = []; const itemsConConflicto = new Set();
+    for (const [k, v] of unidades) if (v.set.size > 1) { conflictoUnidad.push({ key: k, nombre: v.nombre, unidades: [...v.set] }); itemsConConflicto.add(k); }
+    // 2) stock negativo simulado en orden de fecha
+    const ordenadas = [...movs].sort((a, b) => (a.fecha || '') < (b.fecha || '') ? -1 : 1);
+    const saldo = new Map(); const stockNeg = []; const idxNeg = new Set();
+    for (const m of ordenadas) {
+      const k = normTxt(m.nombreItem || ''); if (!k || !m.tipo || !(m.cantidad > 0)) continue;
+      const s = saldo.get(k) || 0;
+      if (m.tipo === 'entrada') saldo.set(k, s + m.cantidad);
+      else {
+        const ns = s - m.cantidad;
+        if (ns < 0) { stockNeg.push({ idx: m.idx, nombre: m.nombreItem, fecha: m.fecha, cantidad: m.cantidad, disponible: s }); idxNeg.add(m.idx); }
+        else saldo.set(k, ns);
+      }
+    }
+    return { conflictoUnidad, itemsConConflicto, stockNeg, idxNeg };
+  }, [preview, esMov, esAsignacion]);
+
+  // ¿Esta fila del Excel queda excluida por validación de calidad?
+  const esFilaInvalida = (m) => {
+    if (!validacionMov) return false;
+    if (validacionMov.idxNeg.has(m.idx)) return true;
+    if (validacionMov.itemsConConflicto.has(normTxt(m.nombreItem || ''))) return true;
+    return false;
+  };
+
   const onFile = uC((f) => {
     setFile(f); setParsed(null); setParseErr(null); setFormato(null); setResult(null);
     if (!f) return;
@@ -681,6 +725,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         if (!m.tipo) throw new Error(`Tipo de movimiento no reconocido`);
         if (!(m.cantidad > 0)) throw new Error(`Cantidad inválida`);
         if (!String(m.nombreItem || '').trim()) { saltadosNoAprobados++; continue; }
+        if (esFilaInvalida(m)) { saltadosNoAprobados++; continue; }
         const mat = await resolverMaterial(m.nombreItem, m.unidad);
         if (!mat) { saltadosNoAprobados++; continue; }
         const fechaMov = m.fecha || new Date().toISOString().slice(0, 10);
@@ -770,6 +815,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         if (!m.tipo) throw new Error('Tipo de movimiento no reconocido');
         if (!(m.cantidad > 0)) throw new Error('Cantidad inválida');
         if (!String(m.nombreItem || '').trim()) { saltadosNoAprobados++; continue; }
+        if (esFilaInvalida(m)) { saltadosNoAprobados++; continue; }
         const epp = await resolverEpp(m.nombreItem, m.unidad);
         if (!epp) { saltadosNoAprobados++; continue; }
         const fechaMov = m.fecha || new Date().toISOString().slice(0, 10);
@@ -858,6 +904,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         if (!m.tipo) throw new Error('Tipo de movimiento no reconocido');
         if (!(m.cantidad > 0)) throw new Error('Cantidad inválida');
         if (!String(m.nombreItem || '').trim()) { saltadosNoAprobados++; continue; }
+        if (esFilaInvalida(m)) { saltadosNoAprobados++; continue; }
         const herr = await resolverHerr(m.nombreItem, m.unidad, m.estado);
         if (!herr) { saltadosNoAprobados++; continue; }
         const fechaMov = m.fecha || new Date().toISOString().slice(0, 10);
@@ -945,6 +992,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         if (!m.tipo) throw new Error('Tipo de movimiento no reconocido');
         if (!(m.cantidad > 0)) throw new Error('Cantidad inválida');
         if (!String(m.nombreItem || '').trim()) { saltadosNoAprobados++; continue; }
+        if (esFilaInvalida(m)) { saltadosNoAprobados++; continue; }
         const act = await resolverActivo(m.nombreItem, m.unidad, m.estado);
         if (!act) { saltadosNoAprobados++; continue; }
         const fechaMov = m.fecha || new Date().toISOString().slice(0, 10);
@@ -1044,6 +1092,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         if (!m.tipo) throw new Error('Tipo de movimiento no reconocido');
         if (!(m.cantidad > 0)) throw new Error('Cantidad inválida');
         if (!String(m.nombreItem || '').trim()) { saltadosNoAprobados++; continue; }
+        if (esFilaInvalida(m)) { saltadosNoAprobados++; continue; }
         const ins = await resolverInsumo(m.nombreItem, m.unidad);
         if (!ins) { saltadosNoAprobados++; continue; }
         const fechaMov = m.fecha || new Date().toISOString().slice(0, 10);
@@ -1454,6 +1503,36 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           <div>
             <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--tp)', marginBottom: 6 }}>Revisar insumos detectados</div>
             <div style={{ fontSize: 12.5, color: 'var(--tm)', marginBottom: 14 }}>Buscamos cada item en Materiales, Herramientas, EPP, Maquinaria e Insumos de Emergencia. Decidí qué hacer con cada uno antes de cargar los movimientos.</div>
+
+            {/* Problemas de calidad del archivo (no se importan, corregí el Excel) */}
+            {validacionMov && (validacionMov.conflictoUnidad.length > 0 || validacionMov.stockNeg.length > 0) && (
+              <div className="card card-p" style={{ marginBottom: 14, background: 'rgba(231,76,60,0.08)', border: '1px solid rgba(231,76,60,0.35)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <JxIcon name="alert" size={16} color="var(--red)" />
+                  <span style={{ fontSize: 13.5, fontWeight: 800, color: 'var(--red)' }}>Problemas en el archivo — estas filas NO se importarán</span>
+                </div>
+                {validacionMov.conflictoUnidad.length > 0 && (
+                  <div style={{ marginBottom: validacionMov.stockNeg.length ? 10 : 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--ts)', marginBottom: 4 }}>Unidades inconsistentes ({validacionMov.conflictoUnidad.length})</div>
+                    <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 6 }}>Un insumo no puede tener dos unidades distintas (ej. clavos en Kg y en cajas). Corregí el Excel para que cada insumo use una sola unidad.</div>
+                    {validacionMov.conflictoUnidad.map(c => (
+                      <div key={c.key} style={{ fontSize: 12, color: 'var(--ts)', padding: '3px 0' }}>• <strong>{c.nombre}</strong>: usa {c.unidades.map(u => `"${u}"`).join(' y ')}</div>
+                    ))}
+                  </div>
+                )}
+                {validacionMov.stockNeg.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--ts)', marginBottom: 4 }}>Salidas que dejarían stock negativo ({validacionMov.stockNeg.length})</div>
+                    <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 6 }}>No se puede sacar más de lo que entró. Revisá si falta una entrada previa o si la cantidad está mal.</div>
+                    <div style={{ maxHeight: 160, overflow: 'auto' }}>
+                      {validacionMov.stockNeg.map((s, i) => (
+                        <div key={i} style={{ fontSize: 12, color: 'var(--ts)', padding: '3px 0' }}>• Fila {s.idx} · <strong>{s.nombre}</strong> · {s.fecha || 'sin fecha'}: salida de {s.cantidad}, pero solo hay {s.disponible} disponible.</div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10, marginBottom: 14 }}>
               {ordenStatus.map(s => (
                 <div key={s} className="card card-p" style={{ textAlign: 'center', borderLeft: `3px solid ${STATUS_META[s].color}` }}>
