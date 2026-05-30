@@ -22,6 +22,7 @@ import { getCurrentMode } from "../hooks/useAppMode.js";
 import { detectarEPP } from "../lib/epp-utils.js";
 import { calcAlerta } from "../lib/stock-utils.js";
 import { aplicarDelta } from "../lib/stock-ubicaciones.js";
+import { detectarSugerencias, detectarDuplicados, fusionarInsumos } from "../lib/variantes.js";
 import {
   detectFormato, FORMATOS,
   parseInsumosTotales, parseInsumosEmergencia, parseMovimientos, parseMovMaquinariaAsignacion, resumenMovimientos,
@@ -505,6 +506,101 @@ function matchProveedor(termino, proveedores) {
 // Estado de herramienta del Excel ("Nuevo"/"Bueno") → valor válido del CHECK.
 const ESTADOS_HERR = ['nuevo', 'bueno', 'regular', 'malo', 'mantenimiento', 'inhabilitado', 'baja'];
 const normEstadoHerr = (v) => { const n = normTxt(v); return ESTADOS_HERR.find(e => e === n) || 'bueno'; };
+
+// ── Config de variantes/dedup por tabla de inventario ───────────────
+const ORG_CONFIG = {
+  materiales:         { nombre: 'nombre_material',    movTabla: 'movimientos_materiales',           fk: 'material_id',           itemTipo: 'material',    etiqueta: 'materiales' },
+  epps:               { nombre: 'nombre_epp',         movTabla: 'movimientos_epp',                  fk: 'epp_id',                itemTipo: 'epp',         etiqueta: 'EPP' },
+  herramientas:       { nombre: 'nombre_herramienta', movTabla: 'movimientos_herramientas',          fk: 'herramienta_id',        itemTipo: 'herramienta', etiqueta: 'herramientas' },
+  insumos_emergencia: { nombre: 'nombre',             movTabla: 'movimientos_insumos_emergencia',   fk: 'insumo_emergencia_id',  itemTipo: null,          etiqueta: 'insumos de emergencia' },
+};
+
+// Panel post-import: detecta variantes (genéricos) y duplicados del inventario
+// recién cargado y deja agruparlos / fusionarlos sin salir del importador.
+function OrganizacionSugerida({ tabla, obraId, userId, showToast }) {
+  const cfg = ORG_CONFIG[tabla];
+  const [items, setItems] = uS([]);
+  const [descartadas, setDescartadas] = uS(() => new Set());
+  const [busy, setBusy] = uS(false);
+  const recargar = React.useCallback(async () => {
+    if (!cfg || !obraId) return;
+    try {
+      const rows = await window.__db[tabla].where('obra_id').equals(obraId).filter(r => !r.deleted_at).toArray();
+      setItems(rows);
+    } catch (e) { console.warn('[org sugerida]', e?.message); }
+  }, [tabla, obraId, cfg]);
+  React.useEffect(() => { recargar(); }, [recargar]);
+  if (!cfg) return null;
+
+  const sugerencias = detectarSugerencias(items, cfg.nombre).filter(s => !descartadas.has(s.clave));
+  const dups = detectarDuplicados(items, cfg.nombre).filter(d => !descartadas.has('dup-' + d.clave));
+  if (!sugerencias.length && !dups.length) return null;
+
+  const nombreDe = (it) => it[cfg.nombre];
+  const crearGrupo = async (titulo, lista) => {
+    if (busy) return; setBusy(true);
+    try {
+      const base = lista[0] || {};
+      const padreBody = { obra_id: obraId, [cfg.nombre]: titulo.trim(), unidad: base.unidad || 'und', es_grupo: true, stock_inicial: 0, stock_actual: 0, stock_minimo: 0, alerta: 'ok', estado: 'activo' };
+      if (tabla === 'epps') padreBody.tipo_epp = base.tipo_epp || 'Otro';
+      if (tabla === 'herramientas') { padreBody.tipo_herramienta = base.tipo_herramienta || 'manual'; padreBody.estado_actual = 'bueno'; padreBody.ubicacion_actual = 'almacen'; padreBody.disponible = true; padreBody.maneja_cantidad = true; }
+      const padre = await addRecord(tabla, padreBody, userId);
+      for (const it of lista) await window.__db[tabla].update(it.id, { padre_id: padre.id, updated_at: new Date().toISOString(), version: (it.version ?? 0) + 1, sync_status: it.sync_status === 'pending_create' ? 'pending_create' : 'pending_update' });
+      fireChanged(tabla);
+      showToast?.(`✓ "${titulo}" con ${lista.length} variantes`, 'green'); await recargar();
+    } catch (e) { showToast?.('Error: ' + (e.message || e), 'red'); } finally { setBusy(false); }
+  };
+  const agregar = async (grupo, lista) => {
+    if (busy) return; setBusy(true);
+    try {
+      for (const it of lista) await window.__db[tabla].update(it.id, { padre_id: grupo.id, updated_at: new Date().toISOString(), version: (it.version ?? 0) + 1, sync_status: it.sync_status === 'pending_create' ? 'pending_create' : 'pending_update' });
+      fireChanged(tabla);
+      showToast?.(`✓ ${lista.length} agregado(s) a "${nombreDe(grupo)}"`, 'green'); await recargar();
+    } catch (e) { showToast?.('Error: ' + (e.message || e), 'red'); } finally { setBusy(false); }
+  };
+  const fusionar = async (grupo) => {
+    if (busy) return;
+    if (!confirm(`¿Fusionar ${grupo.items.length} "${grupo.nombre}" en uno? Se reasignan los movimientos y se suma el stock al primero.`)) return;
+    setBusy(true);
+    try {
+      const survivorId = grupo.items[0].id;
+      const dupIds = grupo.items.slice(1).map(i => i.id);
+      const r = await fusionarInsumos({ db: window.__db, tabla, movTabla: cfg.movTabla, fk: cfg.fk, itemTipoStock: cfg.itemTipo, userId, calcAlerta }, survivorId, dupIds);
+      fireChanged(tabla, cfg.movTabla);
+      showToast?.(`✓ Fusionado · ${r.movidos} movimientos · stock ${r.stockFinal}`, 'green'); await recargar();
+    } catch (e) { showToast?.('Error: ' + (e.message || e), 'red'); } finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ width: '100%', maxWidth: 640, textAlign: 'left', marginTop: 8 }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--tp)', marginBottom: 8 }}>Organización sugerida — {cfg.etiqueta}</div>
+      {sugerencias.map(s => (
+        <div key={'sug-' + s.clave} style={{ marginBottom: 8, padding: '10px 12px', background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 1 300px', fontSize: 12, color: 'var(--ts)' }}>
+            {s.tipo === 'add'
+              ? <>💡 <strong>{s.items.length}</strong> parecen variantes de <strong>“{nombreDe(s.grupo)}”</strong>. ¿Agregar al grupo?</>
+              : <>💡 <strong>{s.items.length}</strong> empiezan con <strong>“{s.titulo}”</strong>. ¿Agrupar como variantes?</>}
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {s.tipo === 'add'
+              ? <button className="btn btn-amber btn-sm" disabled={busy} onClick={() => agregar(s.grupo, s.items)}>Agregar</button>
+              : <button className="btn btn-amber btn-sm" disabled={busy} onClick={() => crearGrupo(s.titulo, s.items)}>Agrupar</button>}
+            <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setDescartadas(d => new Set(d).add(s.clave))}>No</button>
+          </div>
+        </div>
+      ))}
+      {dups.map(d => (
+        <div key={'dup-' + d.clave} style={{ marginBottom: 8, padding: '10px 12px', background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 1 300px', fontSize: 12, color: 'var(--ts)' }}>⚠ <strong>{d.items.length}</strong> con el mismo nombre <strong>“{d.nombre}”</strong> (duplicado). ¿Fusionar?</div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button className="btn btn-red btn-sm" disabled={busy} onClick={() => fusionar(d)}>Fusionar</button>
+            <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setDescartadas(s => new Set(s).add('dup-' + d.clave))}>No</button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 // ════════════════════════════════════════════════════════════════════
 export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }) {
@@ -1654,6 +1750,10 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
                 ))}
               </div>
             </details>
+          )}
+          {/* Organización post-import: variantes (genéricos) y duplicados */}
+          {ORG_CONFIG[TABLA_POR_FORMATO[formato]] && (
+            <OrganizacionSugerida tabla={TABLA_POR_FORMATO[formato]} obraId={obraId} userId={userId} showToast={showToast} />
           )}
           <div style={{ display: 'flex', gap: 10 }}>
             <button className="btn btn-ghost" onClick={reiniciar}><JxIcon name="arrowIn" size={13} />Migrar otro archivo</button>
