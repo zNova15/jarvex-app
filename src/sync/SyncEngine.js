@@ -60,6 +60,8 @@ const TRANSACTIONAL_TABLES = [
   'movimientos_epp',
   // Stock por ubicación (desglose material/herramienta/epp × ubicación)
   'stock_ubicaciones',
+  // Stock por estado/condición (buckets nuevo/bueno/reparacion/baja)
+  'stock_estados',
   // Caja chica (almacén) + Insumos de emergencia (SSOMA)
   'caja_chica_movimientos',
   'insumos_emergencia',
@@ -128,6 +130,7 @@ const MASTER_TABLES = [
   { tabla: 'movimientos_epp',           query: () => supabase.from('movimientos_epp').select('*') },
   { tabla: 'movimientos_maquinaria',    query: () => supabase.from('movimientos_maquinaria').select('*') },
   { tabla: 'stock_ubicaciones',         query: () => supabase.from('stock_ubicaciones').select('*').is('deleted_at', null) },
+  { tabla: 'stock_estados',             query: () => supabase.from('stock_estados').select('*').is('deleted_at', null) },
   // Caja chica + insumos de emergencia
   { tabla: 'caja_chica_movimientos',         query: () => supabase.from('caja_chica_movimientos').select('*') },
   { tabla: 'insumos_emergencia',             query: () => supabase.from('insumos_emergencia').select('*').is('deleted_at', null) },

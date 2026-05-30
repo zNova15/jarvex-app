@@ -8,6 +8,8 @@ import { TablePagination } from "./jx-pagination.jsx";
 import { SearchableSelect } from "./jx-searchable-select.jsx";
 import { getDesgloseBulk, aplicarDelta, traspasar } from "../lib/stock-ubicaciones.js";
 import { DesglosePopup, TraspasoStockModal } from "./jx-stock-ubic.jsx";
+import { EstadosModal } from "./jx-stock-estados.jsx";
+import { getEstadosBulk, ESTADOS_COND } from "../lib/stock-estados.js";
 import { detectarSugerencias, detectarDuplicados, fusionarInsumos } from "../lib/variantes.js";
 const { useState: uS, useMemo: uM, useEffect: uE, useCallback: uCB } = React;
 
@@ -3382,6 +3384,25 @@ function HerramientasPage({ showToast }) {
   const [dupModal, setDupModal] = uS(null);
   const [varBusy, setVarBusy] = uS(false);
 
+  // Estados/condición (buckets) por herramienta de cantidad.
+  const [estadosItem, setEstadosItem] = uS(null);        // herramienta abierta en el modal
+  const [estadosMap, setEstadosMap] = uS(() => new Map()); // id → Map(estado → cantidad)
+  uE(() => {
+    if (!herramientas?.length) return;
+    let cancel = false;
+    const cargar = async () => {
+      try {
+        const ids = herramientas.filter(h => h.maneja_cantidad && !h.es_grupo).map(h => h.id);
+        const m = await getEstadosBulk('herramienta', ids);
+        if (!cancel) setEstadosMap(m);
+      } catch (e) { console.warn('[estados bulk]', e?.message); }
+    };
+    cargar();
+    const onCh = (e) => { const t = e?.detail?.tabla || e?.detail?.table; if (!t || t === 'stock_estados') cargar(); };
+    window.addEventListener('jx_data_changed', onCh);
+    return () => { cancel = true; window.removeEventListener('jx_data_changed', onCh); };
+  }, [herramientas]);
+
   const filtered = uM(() => {
     if (!herramientas) return [];
     const top = herramientas.filter(h => !h.deleted_at && !h.padre_id);
@@ -3460,10 +3481,18 @@ function HerramientasPage({ showToast }) {
               const st = Number(h.stock_actual ?? 0);
               const cls = (h.alerta === 'agotado' || h.alerta === 'critico') ? 'b-red'
                 : (h.alerta === 'reponer' || h.alerta === 'cerca') ? 'b-amber' : 'b-green';
+              const em = estadosMap.get(h.id);
+              const resumen = em ? ESTADOS_COND.filter(e => Number(em.get(e.key) || 0) > 0) : [];
               return (
-                <span style={{ display:'inline-flex', alignItems:'center', gap:6 }}>
+                <span style={{ display:'inline-flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
                   <span className={`badge ${cls}`} title={`Stock por cantidad${h.stock_minimo ? ` · mín ${h.stock_minimo}` : ''}`}>{st.toLocaleString('es-PE')} {h.unidad || 'und'}</span>
                   <button className="btn btn-ghost btn-xs" title="Ver stock por ubicación" onClick={()=>setPopupHerr(h)}><JxIcon name="map" size={11}/></button>
+                  <button className="btn btn-ghost btn-xs" title="Condición / estado de las unidades (nuevo, bueno, reparar, baja)" onClick={()=>setEstadosItem(h)}><JxIcon name="layers" size={11}/></button>
+                  {resumen.length > 0 && (
+                    <span style={{ display:'inline-flex', gap:3 }} title="Distribución por condición">
+                      {resumen.map(e => <span key={e.key} className={`badge ${e.badge}`} style={{ fontSize:9, padding:'0 4px' }}>{e.label[0]}{Number(em.get(e.key) || 0)}</span>)}
+                    </span>
+                  )}
                 </span>
               );
             })()
@@ -4358,6 +4387,19 @@ function HerramientasPage({ showToast }) {
             <button className="btn btn-red" onClick={fusionarDupHerr} disabled={varBusy}><JxIcon name="check" size={13} /> {varBusy ? 'Fusionando…' : 'Fusionar'}</button>
           </div>
         </Modal>
+      )}
+
+      {/* Modal de condición/estado (buckets) de una herramienta de cantidad */}
+      {estadosItem && (
+        <EstadosModal
+          itemTipo="herramienta"
+          item={estadosItem}
+          obraId={obraId}
+          userId={auth?.profile?.id ?? 'offline'}
+          showToast={showToast}
+          onClose={() => setEstadosItem(null)}
+          onDone={() => refresh?.()}
+        />
       )}
 
       {requestTarget && (

@@ -1424,8 +1424,8 @@ const DB_TABLES_LIST = [
   // SSOMA
   'charlas_seguridad','charla_asistentes','iperc',
   'epps','movimientos_epp','epp_entregas','inspecciones_seguridad','capacitaciones',
-  // Inventarios por ubicación
-  'stock_ubicaciones',
+  // Inventarios por ubicación / por estado
+  'stock_ubicaciones','stock_estados',
   // Almacén — Caja Chica e Insumos de Emergencia
   'caja_chica_movimientos','insumos_emergencia','movimientos_insumos_emergencia',
   // Subcontratos
@@ -2218,7 +2218,7 @@ function SistemaTab({ showToast }) {
   // borra por item_tipo (filtra los del padre correspondiente).
   const SERVER_CHILDREN = {
     materiales:          [{ tabla: 'movimientos_materiales' }, { tabla: 'stock_ubicaciones', itemTipo: 'material' }],
-    herramientas:        [{ tabla: 'movimientos_herramientas' }, { tabla: 'stock_ubicaciones', itemTipo: 'herramienta' }],
+    herramientas:        [{ tabla: 'movimientos_herramientas' }, { tabla: 'stock_ubicaciones', itemTipo: 'herramienta' }, { tabla: 'stock_estados', itemTipo: 'herramienta' }],
     epps:                [{ tabla: 'movimientos_epp' }, { tabla: 'epp_entregas' }, { tabla: 'stock_ubicaciones', itemTipo: 'epp' }],
     activos_pesados:     [{ tabla: 'movimientos_maquinaria' }, { tabla: 'stock_ubicaciones', itemTipo: 'maquinaria' }],
     insumos_emergencia:  [{ tabla: 'movimientos_insumos_emergencia' }],
