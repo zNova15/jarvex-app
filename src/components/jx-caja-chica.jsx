@@ -21,11 +21,15 @@ function CajaChicaPage({ showToast }) {
   const isAdmin = myRol === 'admin';
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Caja Chica', 'w') ?? false);
 
+  const appMode = window.__useAppMode ? window.__useAppMode() : { superAdmin: false };
+  const superAdmin = !!appMode.superAdmin;
+
   const { obraId } = window.__useObraActiva ? window.__useObraActiva() : { obraId: null };
-  const { data: movimientos, create, refresh } = window.__hooks.useCajaChica(obraId);
+  const { data: movimientos, create, update, remove, refresh } = window.__hooks.useCajaChica(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
 
-  const [modal, setModal] = uS(null);  // 'entrada' | 'salida'
+  const [modal, setModal] = uS(null);   // 'entrada' | 'salida'
+  const [editingId, setEditingId] = uS(null); // id si estamos editando (Super Admin)
   const [form, setForm] = uS({});
   const [busy, setBusy] = uS(false);
 
@@ -58,8 +62,29 @@ function CajaChicaPage({ showToast }) {
   }, [movimientos]);
 
   const abrir = (tipo) => {
+    setEditingId(null);
     setForm({ tipo_movimiento: tipo, fecha: hoyISO(), monto: '', concepto: '', responsable_id: '', proveedor: '', documento_asociado: '', observaciones: '' });
     setModal(tipo);
+  };
+  // Super Admin: editar un movimiento existente (corregir fecha/monto/etc.).
+  const abrirEditar = (m) => {
+    setEditingId(m.id);
+    setForm({
+      tipo_movimiento: m.tipo_movimiento, fecha: (m.fecha || '').slice(0, 10), monto: String(m.monto ?? ''),
+      concepto: m.concepto || '', responsable_id: m.responsable_id || '', proveedor: m.proveedor || '',
+      documento_asociado: m.documento_asociado || '', observaciones: m.observaciones || '',
+    });
+    setModal(m.tipo_movimiento);
+  };
+  const eliminar = async (m) => {
+    if (!superAdmin) return;
+    if (!confirm(`¿Eliminar este movimiento de caja chica (${m.tipo_movimiento} ${fmtS(m.monto)})? Recalcula el saldo.`)) return;
+    try {
+      await remove(m.id);
+      try { await window.__logAudit?.({ action: 'delete', table: 'caja_chica_movimientos', recordId: m.id, oldData: m, reason: 'Super Admin · eliminar movimiento caja chica' }); } catch {}
+      showToast('Movimiento eliminado', 'amber');
+      refresh?.();
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
   };
 
   const guardar = async () => {
@@ -67,12 +92,12 @@ function CajaChicaPage({ showToast }) {
     if (!obraId) { showToast('No hay obra activa', 'red'); return; }
     const monto = parseFloat(form.monto);
     if (!(monto > 0)) { showToast('Ingresá un monto mayor a 0', 'red'); return; }
-    if (form.tipo_movimiento === 'salida' && monto > saldo) {
+    if (!editingId && form.tipo_movimiento === 'salida' && monto > saldo) {
       if (!confirm(`El gasto (${fmtS(monto)}) supera el saldo actual (${fmtS(saldo)}). El saldo quedará negativo. ¿Registrar igual?`)) return;
     }
     setBusy(true);
     try {
-      await create({
+      const fields = {
         obra_id: obraId,
         fecha: form.fecha || hoyISO(),
         tipo_movimiento: form.tipo_movimiento,
@@ -82,10 +107,17 @@ function CajaChicaPage({ showToast }) {
         proveedor: form.proveedor?.trim() || null,
         documento_asociado: form.documento_asociado?.trim() || null,
         observaciones: form.observaciones?.trim() || null,
-      });
-      try { await window.__logAudit?.({ action: 'insert', table: 'caja_chica_movimientos', reason: `${form.tipo_movimiento} caja chica ${fmtS(monto)}` }); } catch {}
-      showToast(form.tipo_movimiento === 'entrada' ? 'Ingreso de fondo registrado' : 'Gasto registrado', 'green');
-      setModal(null); setForm({});
+      };
+      if (editingId) {
+        await update(editingId, fields);
+        try { await window.__logAudit?.({ action: 'update', table: 'caja_chica_movimientos', recordId: editingId, newData: fields, reason: 'Super Admin · editar movimiento caja chica' }); } catch {}
+        showToast('Movimiento actualizado', 'green');
+      } else {
+        await create(fields);
+        try { await window.__logAudit?.({ action: 'insert', table: 'caja_chica_movimientos', reason: `${form.tipo_movimiento} caja chica ${fmtS(monto)}` }); } catch {}
+        showToast(form.tipo_movimiento === 'entrada' ? 'Ingreso de fondo registrado' : 'Gasto registrado', 'green');
+      }
+      setModal(null); setForm({}); setEditingId(null);
       refresh?.();
     } catch (e) {
       showToast('Error: ' + (e.message || e), 'red');
@@ -136,6 +168,7 @@ function CajaChicaPage({ showToast }) {
                 <th style={{ textAlign: 'right' }}>Monto</th>
                 <th>Responsable</th><th>Proveedor / Doc.</th>
                 <th style={{ textAlign: 'right' }}>Saldo</th>
+                {superAdmin && <th style={{ textAlign: 'center' }}>⚡ Acciones</th>}
               </tr></thead>
               <tbody>
                 {ordenados.map(m => {
@@ -150,6 +183,12 @@ function CajaChicaPage({ showToast }) {
                       <td className="col-m">{resp ? `${resp.nombres} ${resp.apellidos || ''}`.trim() : '—'}</td>
                       <td className="col-m" style={{ fontSize: 11 }}>{[m.proveedor, m.documento_asociado].filter(Boolean).join(' · ') || '—'}</td>
                       <td style={{ textAlign: 'right', fontWeight: 600, color: m._saldo < 0 ? 'var(--red)' : 'var(--ts)' }}>{fmtS(m._saldo)}</td>
+                      {superAdmin && (
+                        <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
+                          <button className="btn btn-ghost btn-xs" title="⚡ Editar movimiento" onClick={() => abrirEditar(m)}><JxIcon name="edit" size={11} /></button>
+                          <button className="btn btn-red btn-xs" title="⚡ Eliminar movimiento" onClick={() => eliminar(m)} style={{ marginLeft: 4 }}><JxIcon name="trash" size={11} /></button>
+                        </td>
+                      )}
                     </tr>
                   );
                 })}
@@ -159,10 +198,17 @@ function CajaChicaPage({ showToast }) {
         </div>
       )}
 
-      {/* Modal nuevo movimiento */}
+      {/* Modal nuevo / editar movimiento */}
       {modal && (
-        <Modal title={modal === 'entrada' ? 'Ingreso de fondo a caja chica' : 'Registrar gasto de caja chica'} icon="dollar" onClose={() => { setModal(null); setForm({}); }}>
+        <Modal title={editingId ? '⚡ Editar movimiento de caja chica' : (modal === 'entrada' ? 'Ingreso de fondo a caja chica' : 'Registrar gasto de caja chica')} icon="dollar" onClose={() => { setModal(null); setForm({}); setEditingId(null); }}>
           <div className="g2">
+            {editingId && (
+              <div style={{ gridColumn: '1/-1' }}><label className="flabel">Tipo</label>
+                <select className="fi" value={form.tipo_movimiento || 'entrada'} onChange={e => setForm({ ...form, tipo_movimiento: e.target.value })}>
+                  <option value="entrada">Ingreso de fondo</option>
+                  <option value="salida">Gasto</option>
+                </select></div>
+            )}
             <div><label className="flabel">Fecha</label>
               <input className="fi" type="date" value={form.fecha || ''} max={hoyISO()} onChange={e => setForm({ ...form, fecha: e.target.value })} /></div>
             <div><label className="flabel">Monto (S/) *</label>
@@ -184,9 +230,9 @@ function CajaChicaPage({ showToast }) {
               <textarea className="fi" rows={2} value={form.observaciones || ''} onChange={e => setForm({ ...form, observaciones: e.target.value })} /></div>
           </div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
-            <button className="btn btn-ghost" onClick={() => { setModal(null); setForm({}); }} disabled={busy}>Cancelar</button>
-            <button className={`btn ${modal === 'entrada' ? 'btn-green' : 'btn-amber'}`} onClick={guardar} disabled={busy}>
-              {busy ? 'Guardando…' : (modal === 'entrada' ? 'Registrar ingreso' : 'Registrar gasto')}
+            <button className="btn btn-ghost" onClick={() => { setModal(null); setForm({}); setEditingId(null); }} disabled={busy}>Cancelar</button>
+            <button className={`btn ${form.tipo_movimiento === 'entrada' ? 'btn-green' : 'btn-amber'}`} onClick={guardar} disabled={busy}>
+              {busy ? 'Guardando…' : editingId ? 'Guardar cambios' : (form.tipo_movimiento === 'entrada' ? 'Registrar ingreso' : 'Registrar gasto')}
             </button>
           </div>
         </Modal>

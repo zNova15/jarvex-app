@@ -33,6 +33,7 @@ function InsumosEmergenciaPage({ showToast }) {
   const [q, setQ] = uS('');
   const [vista, setVista] = uS('inventario'); // 'inventario' | 'movimientos'
   const [modal, setModal] = uS(null);   // 'nuevo' | 'editar' | 'mov'
+  const [editingMovId, setEditingMovId] = uS(null); // id del movimiento en edición (Super Admin)
   const [form, setForm] = uS({});
   const [busy, setBusy] = uS(false);
   // Proveedores (tabla global): carga directa de Dexie como el resto de pantallas.
@@ -178,7 +179,13 @@ function InsumosEmergenciaPage({ showToast }) {
   };
 
   // ── Movimiento (entrada/salida) ────────────────────────────────────
-  const abrirMov = (tipo) => { setForm({ tipo_movimiento: tipo, fecha: hoyISO(), insumo_emergencia_id: '', cantidad: '', responsable_id: '', proveedor_id: '', observaciones: '' }); setModal('mov'); };
+  const abrirMov = (tipo) => { setEditingMovId(null); setForm({ tipo_movimiento: tipo, fecha: hoyISO(), insumo_emergencia_id: '', cantidad: '', responsable_id: '', proveedor_id: '', observaciones: '' }); setModal('mov'); };
+  // Super Admin: editar un movimiento existente (corrige stock revirtiendo el viejo y aplicando el nuevo).
+  const abrirEditarMov = (mv) => {
+    setEditingMovId(mv.id);
+    setForm({ tipo_movimiento: mv.tipo_movimiento, fecha: (mv.fecha || '').slice(0, 10), insumo_emergencia_id: mv.insumo_emergencia_id || '', cantidad: String(mv.cantidad ?? ''), responsable_id: mv.responsable_id || '', proveedor_id: mv.proveedor_id || '', observaciones: mv.observaciones || '' });
+    setModal('mov');
+  };
 
   const guardarMov = async () => {
     if (busy) return;
@@ -187,24 +194,45 @@ function InsumosEmergenciaPage({ showToast }) {
     const cant = parseFloat(form.cantidad);
     if (!(cant > 0)) { showToast('Cantidad debe ser mayor a 0', 'red'); return; }
     const esEntrada = form.tipo_movimiento === 'entrada';
-    const stockActual = Number(insumo.stock_actual ?? 0);
-    if (!esEntrada && cant > stockActual) {
-      showToast(`❌ Stock insuficiente de "${insumo.nombre}": hay ${stockActual} ${insumo.unidad}, pedís ${cant}. No se puede sacar lo que no existe.`, 'red');
+    const viejo = editingMovId ? (movHook.data || []).find(x => x.id === editingMovId) : null;
+    // Validación de stock insuficiente solo en creación (la edición SA recalcula).
+    if (!editingMovId && !esEntrada && cant > Number(insumo.stock_actual ?? 0)) {
+      showToast(`❌ Stock insuficiente de "${insumo.nombre}": hay ${Number(insumo.stock_actual ?? 0)} ${insumo.unidad}, pedís ${cant}. No se puede sacar lo que no existe.`, 'red');
       return;
     }
     setBusy(true);
     try {
-      await movHook.create({
+      const campos = {
         obra_id: obraId, insumo_emergencia_id: insumo.id, fecha: form.fecha || hoyISO(),
         tipo_movimiento: form.tipo_movimiento, cantidad: cant, unidad: insumo.unidad,
         responsable_id: form.responsable_id || null, proveedor_id: form.proveedor_id || null,
         observaciones: form.observaciones?.trim() || null,
-      });
-      const nuevoStock = Math.max(0, stockActual + (esEntrada ? cant : -cant));
-      await updateInsumo(insumo.id, { stock_actual: nuevoStock, alerta: calcAlerta(nuevoStock, Number(insumo.stock_minimo || 0)) });
-      try { await window.__logAudit?.({ action: 'insert', table: 'movimientos_insumos_emergencia', reason: `${form.tipo_movimiento} ${cant} ${insumo.unidad} de ${insumo.nombre}` }); } catch {}
-      showToast(esEntrada ? 'Ingreso registrado' : 'Salida registrada', 'green');
-      setModal(null); setForm({}); refresh?.();
+      };
+      if (editingMovId) {
+        // 1) revertir efecto del movimiento viejo en su insumo
+        if (viejo) {
+          const insViejo = insumoById.get(viejo.insumo_emergencia_id);
+          if (insViejo) {
+            const deltaRev = viejo.tipo_movimiento === 'entrada' ? -Number(viejo.cantidad || 0) : Number(viejo.cantidad || 0);
+            const sRev = Math.max(0, Number(insViejo.stock_actual ?? 0) + deltaRev);
+            await updateInsumo(insViejo.id, { stock_actual: sRev, alerta: calcAlerta(sRev, Number(insViejo.stock_minimo || 0)) });
+          }
+        }
+        await movHook.update(editingMovId, campos);
+        // 2) aplicar efecto del movimiento nuevo (releer el insumo actualizado)
+        const insAct = (await window.__db.insumos_emergencia.get(insumo.id)) || insumo;
+        const sNew = Math.max(0, Number(insAct.stock_actual ?? 0) + (esEntrada ? cant : -cant));
+        await updateInsumo(insumo.id, { stock_actual: sNew, alerta: calcAlerta(sNew, Number(insAct.stock_minimo || 0)) });
+        try { await window.__logAudit?.({ action: 'update', table: 'movimientos_insumos_emergencia', recordId: editingMovId, newData: campos, reason: 'Super Admin · editar movimiento de insumo de emergencia' }); } catch {}
+        showToast('Movimiento actualizado', 'green');
+      } else {
+        await movHook.create(campos);
+        const nuevoStock = Math.max(0, Number(insumo.stock_actual ?? 0) + (esEntrada ? cant : -cant));
+        await updateInsumo(insumo.id, { stock_actual: nuevoStock, alerta: calcAlerta(nuevoStock, Number(insumo.stock_minimo || 0)) });
+        try { await window.__logAudit?.({ action: 'insert', table: 'movimientos_insumos_emergencia', reason: `${form.tipo_movimiento} ${cant} ${insumo.unidad} de ${insumo.nombre}` }); } catch {}
+        showToast(esEntrada ? 'Ingreso registrado' : 'Salida registrada', 'green');
+      }
+      setModal(null); setForm({}); setEditingMovId(null); refresh?.();
     } catch (e) { showToast('Error: ' + (e.message || e), 'red'); } finally { setBusy(false); }
   };
 
@@ -368,7 +396,8 @@ function InsumosEmergenciaPage({ showToast }) {
                         <td>{quien}</td>
                         <td style={{ fontSize: 11, color: 'var(--tm)' }}>{mv.observaciones || '—'}</td>
                         {(canDelete || superAdmin) && (
-                          <td style={{ textAlign: 'center' }}>
+                          <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
+                            {superAdmin && <button className="btn btn-ghost btn-xs" title="⚡ Editar movimiento (ajusta stock)" onClick={() => abrirEditarMov(mv)} style={{ marginRight: 4 }}><JxIcon name="edit" size={11} /></button>}
                             <button className="btn btn-red btn-xs" title="Eliminar movimiento (ajusta stock)" onClick={() => eliminarMov(mv)}><JxIcon name="trash" size={11} /></button>
                           </td>
                         )}
@@ -455,8 +484,15 @@ function InsumosEmergenciaPage({ showToast }) {
 
       {/* Modal movimiento */}
       {modal === 'mov' && (
-        <Modal title={form.tipo_movimiento === 'entrada' ? 'Ingreso de insumo de emergencia' : 'Salida de insumo de emergencia'} icon={form.tipo_movimiento === 'entrada' ? 'arrowIn' : 'arrowOut'} onClose={() => { setModal(null); setForm({}); }}>
+        <Modal title={editingMovId ? '⚡ Editar movimiento de emergencia' : (form.tipo_movimiento === 'entrada' ? 'Ingreso de insumo de emergencia' : 'Salida de insumo de emergencia')} icon={form.tipo_movimiento === 'entrada' ? 'arrowIn' : 'arrowOut'} onClose={() => { setModal(null); setForm({}); setEditingMovId(null); }}>
           <div className="g2">
+            {editingMovId && (
+              <div style={{ gridColumn: '1/-1' }}><label className="flabel">Tipo</label>
+                <select className="fi" value={form.tipo_movimiento || 'entrada'} onChange={e => setForm({ ...form, tipo_movimiento: e.target.value })}>
+                  <option value="entrada">Ingreso</option>
+                  <option value="salida">Salida</option>
+                </select></div>
+            )}
             <div style={{ gridColumn: '1/-1' }}><label className="flabel">Insumo *</label>
               <select className="fi" value={form.insumo_emergencia_id || ''} onChange={e => setForm({ ...form, insumo_emergencia_id: e.target.value })}>
                 <option value="">Selecciona…</option>
@@ -481,8 +517,8 @@ function InsumosEmergenciaPage({ showToast }) {
               <textarea className="fi" rows={2} value={form.observaciones || ''} onChange={e => setForm({ ...form, observaciones: e.target.value })} /></div>
           </div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
-            <button className="btn btn-ghost" onClick={() => { setModal(null); setForm({}); }} disabled={busy}>Cancelar</button>
-            <button className={`btn ${form.tipo_movimiento === 'entrada' ? 'btn-green' : 'btn-amber'}`} onClick={guardarMov} disabled={busy}>{busy ? 'Guardando…' : 'Registrar'}</button>
+            <button className="btn btn-ghost" onClick={() => { setModal(null); setForm({}); setEditingMovId(null); }} disabled={busy}>Cancelar</button>
+            <button className={`btn ${form.tipo_movimiento === 'entrada' ? 'btn-green' : 'btn-amber'}`} onClick={guardarMov} disabled={busy}>{busy ? 'Guardando…' : editingMovId ? 'Guardar cambios' : 'Registrar'}</button>
           </div>
         </Modal>
       )}

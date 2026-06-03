@@ -30,6 +30,8 @@ function ActivosPesadosPage({ showToast }) {
   const myRol = auth?.profile?.rol;
   const isAdmin = myRol === 'admin';
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Activos Pesados', 'w') ?? false);
+  const appMode = window.__useAppMode ? window.__useAppMode() : { superAdmin: false };
+  const superAdmin = !!appMode.superAdmin;
   const { data: activos } = window.__hooks.useActivosPesados();
   const { data: companies } = window.__hooks.useCompanies();
   const { data: obras } = window.__hooks.useObras();
@@ -50,6 +52,68 @@ function ActivosPesadosPage({ showToast }) {
   const [asignForm, setAsignForm] = uS({});
   const [asignFoto, setAsignFoto] = uS(null);   // { blob, url }
   const [busyAsign, setBusyAsign] = uS(false);
+  const [editFechaMaq, setEditFechaMaq] = uS(null); // { tipo, row } en edición de fecha (Super Admin)
+  const [editFechaMaqVal, setEditFechaMaqVal] = uS('');
+
+  // Recarga los registros del historial del activo abierto.
+  const recargarHistorial = async (activo) => {
+    const a = activo || historial?.activo;
+    if (!a) return;
+    const [hm, cb, mt, mv] = await Promise.all([
+      window.__db.horas_maquina.where('activo_id').equals(a.id).filter(x => !x.deleted_at).toArray(),
+      window.__db.consumos_combustible.where('activo_id').equals(a.id).filter(x => !x.deleted_at).toArray(),
+      window.__db.mantenimientos_maquinaria.where('activo_id').equals(a.id).filter(x => !x.deleted_at).toArray(),
+      window.__db.movimientos_maquinaria.where('activo_id').equals(a.id).filter(x => !x.deleted_at).toArray(),
+    ]);
+    const desc = (arr) => arr.sort((x, y) => (y.fecha || '').localeCompare(x.fecha || ''));
+    const aFresh = (await window.__db.activos_pesados.get(a.id)) || a;
+    setHistorial({ activo: aFresh, hm: desc(hm), cb: desc(cb), mt: desc(mt), mv: desc(mv) });
+  };
+  const TABLA_HIST = { mv: 'movimientos_maquinaria', hm: 'horas_maquina', cb: 'consumos_combustible', mt: 'mantenimientos_maquinaria' };
+  // Super Admin: eliminar un registro del historial (ajusta HM acumuladas / custodia).
+  const borrarHistorial = async (tipo, row) => {
+    if (!superAdmin) return;
+    if (!confirm('¿Eliminar este registro del historial? (Super Admin)')) return;
+    const tabla = TABLA_HIST[tipo];
+    try {
+      const now = new Date().toISOString();
+      await window.__db[tabla].update(row.id, { deleted_at: now, updated_at: now, updated_by: userId, version: (row.version ?? 0) + 1, sync_status: row.sync_status === 'pending_create' ? 'pending_create' : 'pending_delete' });
+      // HM: descontar las horas del acumulado del activo.
+      if (tipo === 'hm') {
+        const a = await window.__db.activos_pesados.get(row.activo_id);
+        if (a) await window.__db.activos_pesados.update(a.id, { hm_acumuladas: Math.max(0, Number(a.hm_acumuladas || 0) - Number(row.horas_trabajadas || 0)), updated_at: now, version: (a.version ?? 0) + 1, sync_status: a.sync_status === 'pending_create' ? 'pending_create' : 'pending_update' });
+      }
+      // Custodia: si borro el movimiento que dejó el equipo asignado, lo libero.
+      if (tipo === 'mv') {
+        const a = await window.__db.activos_pesados.get(row.activo_id);
+        if (a && row.tipo_movimiento === 'salida' && a.asignado_a_id && a.fecha_asignacion === row.fecha) {
+          await window.__db.activos_pesados.update(a.id, { asignado_a_tipo: null, asignado_a_id: null, asignado_a_nombre: null, fecha_asignacion: null, updated_at: now, version: (a.version ?? 0) + 1, sync_status: a.sync_status === 'pending_create' ? 'pending_create' : 'pending_update' });
+        }
+      }
+      try { await window.__logAudit?.({ action: 'delete', table: tabla, recordId: row.id, oldData: row, reason: 'Super Admin · eliminar registro de historial de maquinaria' }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla } })); } catch {}
+      showToast('Registro eliminado', 'amber');
+      await recargarHistorial();
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
+  const guardarFechaMaq = async () => {
+    if (!editFechaMaq || !editFechaMaqVal) { showToast('Elegí una fecha', 'red'); return; }
+    const { tipo, row } = editFechaMaq;
+    const tabla = TABLA_HIST[tipo];
+    try {
+      await window.__db[tabla].update(row.id, { fecha: editFechaMaqVal, updated_at: new Date().toISOString(), updated_by: userId, version: (row.version ?? 0) + 1, sync_status: row.sync_status === 'pending_create' ? 'pending_create' : 'pending_update' });
+      try { await window.__logAudit?.({ action: 'update', table: tabla, recordId: row.id, oldData: { fecha: row.fecha }, newData: { fecha: editFechaMaqVal }, reason: 'Super Admin · corrección de fecha histórica de maquinaria' }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla } })); } catch {}
+      showToast('Fecha actualizada', 'green');
+      setEditFechaMaq(null); await recargarHistorial();
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
+  const accionesSA = (tipo, row) => superAdmin ? (
+    <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
+      <button className="btn btn-ghost btn-xs" title="⚡ Editar fecha" style={{ color: '#E74C3C', padding: '0 4px' }} onClick={() => { setEditFechaMaq({ tipo, row }); setEditFechaMaqVal((row.fecha || '').slice(0, 10)); }}>📅</button>
+      <button className="btn btn-red btn-xs" title="⚡ Eliminar" onClick={() => borrarHistorial(tipo, row)} style={{ marginLeft: 4 }}><JxIcon name="trash" size={10} /></button>
+    </td>
+  ) : null;
 
   // Ubicaciones del catálogo de la obra seleccionada en el form
   const { data: ubicaciones } = window.__hooks.useUbicacionesObra?.(form.obra_actual_id || null) || { data: [] };
@@ -440,18 +504,8 @@ function ActivosPesadosPage({ showToast }) {
                             : <button className="btn btn-ghost btn-xs" title="Asignar equipo (salida)" onClick={()=>openAsignar(a,'salida')} style={{ marginLeft:4 }}><JxIcon name="arrowOut" size={11}/></button>
                         )}
                         <button className="btn btn-ghost btn-xs" title="Ver historial completo (custodia, HM, combustible, mantenimiento)" onClick={async ()=>{
-                          try {
-                            const [hm, cb, mt, mv] = await Promise.all([
-                              window.__db.horas_maquina.where('activo_id').equals(a.id).filter(x=>!x.deleted_at).toArray(),
-                              window.__db.consumos_combustible.where('activo_id').equals(a.id).filter(x=>!x.deleted_at).toArray(),
-                              window.__db.mantenimientos_maquinaria.where('activo_id').equals(a.id).filter(x=>!x.deleted_at).toArray(),
-                              window.__db.movimientos_maquinaria.where('activo_id').equals(a.id).filter(x=>!x.deleted_at).toArray(),
-                            ]);
-                            setHistorial({ activo: a, hm: hm.sort((x,y)=>(y.fecha||'').localeCompare(x.fecha||'')),
-                              cb: cb.sort((x,y)=>(y.fecha||'').localeCompare(x.fecha||'')),
-                              mt: mt.sort((x,y)=>(y.fecha||'').localeCompare(x.fecha||'')),
-                              mv: mv.sort((x,y)=>(y.fecha||'').localeCompare(x.fecha||'')) });
-                          } catch (e) { showToast('Error cargando historial: '+(e.message||e), 'red'); }
+                          try { await recargarHistorial(a); }
+                          catch (e) { showToast('Error cargando historial: '+(e.message||e), 'red'); }
                         }} style={{ marginLeft:4 }}>
                           <JxIcon name="list" size={11}/>
                         </button>
@@ -638,7 +692,7 @@ function ActivosPesadosPage({ showToast }) {
             {(!historial.mv || historial.mv.length === 0) ? <div style={{ fontSize:11, color:'var(--tm)' }}>Sin movimientos de custodia. Usá ↗ (salida) / ↙ (devolución) en la lista.</div> : (
               <div style={{ maxHeight:180, overflow:'auto', border:'1px solid var(--bd)', borderRadius:6 }}>
                 <table className="tbl"><thead><tr>
-                  <th>Fecha</th><th>Movimiento</th><th>Asignado a</th><th>Prueba</th><th>Observaciones</th>
+                  <th>Fecha</th><th>Movimiento</th><th>Asignado a</th><th>Prueba</th><th>Observaciones</th>{superAdmin && <th style={{textAlign:'center'}}>⚡</th>}
                 </tr></thead><tbody>
                   {historial.mv.map(mv => {
                     const esSalida = mv.tipo_movimiento === 'salida';
@@ -652,6 +706,7 @@ function ActivosPesadosPage({ showToast }) {
                         <td style={{ fontSize:11 }}>{esSalida ? quien : '—'}</td>
                         <td style={{ fontSize:11 }}>{mv.evidencia_id ? '📷 Sí' : '—'}</td>
                         <td style={{ fontSize:11, color:'var(--tm)' }}>{mv.observaciones || '—'}</td>
+                        {accionesSA('mv', mv)}
                       </tr>
                     );
                   })}
@@ -666,7 +721,7 @@ function ActivosPesadosPage({ showToast }) {
             {historial.hm.length === 0 ? <div style={{ fontSize:11, color:'var(--tm)' }}>Sin registros.</div> : (
               <div style={{ maxHeight:160, overflow:'auto', border:'1px solid var(--bd)', borderRadius:6 }}>
                 <table className="tbl"><thead><tr>
-                  <th>Fecha</th><th>Obra</th><th style={{textAlign:'right'}}>Horas</th><th>Operador</th><th>Notas</th>
+                  <th>Fecha</th><th>Obra</th><th style={{textAlign:'right'}}>Horas</th><th>Operador</th><th>Notas</th>{superAdmin && <th style={{textAlign:'center'}}>⚡</th>}
                 </tr></thead><tbody>
                   {historial.hm.map(h => (
                     <tr key={h.id}>
@@ -675,6 +730,7 @@ function ActivosPesadosPage({ showToast }) {
                       <td style={{ textAlign:'right', fontWeight:600, color:'var(--blue)' }}>{Number(h.horas_trabajadas||0).toFixed(1)}</td>
                       <td style={{ fontSize:11 }}>{h.operador || '—'}</td>
                       <td style={{ fontSize:11, color:'var(--tm)' }}>{h.notas || '—'}</td>
+                      {accionesSA('hm', h)}
                     </tr>
                   ))}
                 </tbody></table>
@@ -688,7 +744,7 @@ function ActivosPesadosPage({ showToast }) {
             {historial.cb.length === 0 ? <div style={{ fontSize:11, color:'var(--tm)' }}>Sin registros.</div> : (
               <div style={{ maxHeight:160, overflow:'auto', border:'1px solid var(--bd)', borderRadius:6 }}>
                 <table className="tbl"><thead><tr>
-                  <th>Fecha</th><th style={{textAlign:'right'}}>Galones</th><th style={{textAlign:'right'}}>Precio/gal</th><th style={{textAlign:'right'}}>Total</th><th>Grifo</th><th>Notas</th>
+                  <th>Fecha</th><th style={{textAlign:'right'}}>Galones</th><th style={{textAlign:'right'}}>Precio/gal</th><th style={{textAlign:'right'}}>Total</th><th>Grifo</th><th>Notas</th>{superAdmin && <th style={{textAlign:'center'}}>⚡</th>}
                 </tr></thead><tbody>
                   {historial.cb.map(c => (
                     <tr key={c.id}>
@@ -698,6 +754,7 @@ function ActivosPesadosPage({ showToast }) {
                       <td style={{ textAlign:'right', fontWeight:600, color:'var(--orange)' }}>{fmtS(c.total||0)}</td>
                       <td style={{ fontSize:11 }}>{c.grifo || c.proveedor || '—'}</td>
                       <td style={{ fontSize:11, color:'var(--tm)' }}>{c.notas || '—'}</td>
+                      {accionesSA('cb', c)}
                     </tr>
                   ))}
                 </tbody></table>
@@ -711,7 +768,7 @@ function ActivosPesadosPage({ showToast }) {
             {historial.mt.length === 0 ? <div style={{ fontSize:11, color:'var(--tm)' }}>Sin registros.</div> : (
               <div style={{ maxHeight:160, overflow:'auto', border:'1px solid var(--bd)', borderRadius:6 }}>
                 <table className="tbl"><thead><tr>
-                  <th>Fecha</th><th>Tipo</th><th>Descripción</th><th style={{textAlign:'right'}}>Costo</th><th>Taller</th><th>HM al servicio</th>
+                  <th>Fecha</th><th>Tipo</th><th>Descripción</th><th style={{textAlign:'right'}}>Costo</th><th>Taller</th><th>HM al servicio</th>{superAdmin && <th style={{textAlign:'center'}}>⚡</th>}
                 </tr></thead><tbody>
                   {historial.mt.map(m => (
                     <tr key={m.id}>
@@ -721,6 +778,7 @@ function ActivosPesadosPage({ showToast }) {
                       <td style={{ textAlign:'right', fontWeight:600, color:'var(--red)' }}>{fmtS(m.costo_total || ((Number(m.costo_repuestos)||0)+(Number(m.costo_mano_obra)||0)))}</td>
                       <td style={{ fontSize:11 }}>{m.taller || '—'}</td>
                       <td style={{ textAlign:'right', fontSize:11 }}>{m.hm_actuales != null ? Number(m.hm_actuales).toFixed(1) : '—'}</td>
+                      {accionesSA('mt', m)}
                     </tr>
                   ))}
                 </tbody></table>
@@ -730,6 +788,19 @@ function ActivosPesadosPage({ showToast }) {
 
           <div className="modal-actions">
             <button className="btn btn-ghost" onClick={()=>setHistorial(null)}>Cerrar</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal Super Admin: editar fecha de un registro del historial */}
+      {editFechaMaq && (
+        <Modal title="⚡ Editar fecha del registro" icon="calendar" onClose={()=>setEditFechaMaq(null)}>
+          <div style={{ fontSize:12, color:'var(--tm)', marginBottom:12 }}>Corrección de fecha histórica (Super Admin). Original: <strong>{editFechaMaq.row.fecha || '—'}</strong>.</div>
+          <label className="flabel">Nueva fecha</label>
+          <input className="fi" type="date" max={new Date().toISOString().slice(0,10)} value={editFechaMaqVal} onChange={(e)=>setEditFechaMaqVal(e.target.value)}/>
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={()=>setEditFechaMaq(null)}>Cancelar</button>
+            <button className="btn btn-amber" onClick={guardarFechaMaq}><JxIcon name="check" size={13}/> Guardar fecha</button>
           </div>
         </Modal>
       )}
