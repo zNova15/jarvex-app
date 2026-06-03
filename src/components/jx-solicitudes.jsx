@@ -561,7 +561,7 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
             ) : (
               <input
                 className="fi"
-                type={fieldDef?.type === 'number' ? 'number' : 'text'}
+                type={fieldDef?.type === 'number' ? 'number' : fieldDef?.type === 'date' ? 'date' : 'text'}
                 step={fieldDef?.type === 'number' ? '0.01' : undefined}
                 placeholder="Nuevo valor"
                 value={newValue}

@@ -32,6 +32,11 @@ function CajaChicaPage({ showToast }) {
   const [editingId, setEditingId] = uS(null); // id si estamos editando (Super Admin)
   const [form, setForm] = uS({});
   const [busy, setBusy] = uS(false);
+  const [requestTarget, setRequestTarget] = uS(null); // movimiento para "Solicitar Cambio" (rol almacén)
+
+  // El almacén puede pedir cambios (no editar directo); el admin/super admin edita.
+  const puedeSolicitar = canWrite && !isAdmin;
+  const mostrarAcciones = superAdmin || puedeSolicitar;
 
   const personalById = uM(() => {
     const m = new Map();
@@ -168,7 +173,7 @@ function CajaChicaPage({ showToast }) {
                 <th style={{ textAlign: 'right' }}>Monto</th>
                 <th>Responsable</th><th>Proveedor / Doc.</th>
                 <th style={{ textAlign: 'right' }}>Saldo</th>
-                {superAdmin && <th style={{ textAlign: 'center' }}>⚡ Acciones</th>}
+                {mostrarAcciones && <th style={{ textAlign: 'center' }}>{superAdmin ? '⚡ Acciones' : 'Acciones'}</th>}
               </tr></thead>
               <tbody>
                 {ordenados.map(m => {
@@ -183,10 +188,16 @@ function CajaChicaPage({ showToast }) {
                       <td className="col-m">{resp ? `${resp.nombres} ${resp.apellidos || ''}`.trim() : '—'}</td>
                       <td className="col-m" style={{ fontSize: 11 }}>{[m.proveedor, m.documento_asociado].filter(Boolean).join(' · ') || '—'}</td>
                       <td style={{ textAlign: 'right', fontWeight: 600, color: m._saldo < 0 ? 'var(--red)' : 'var(--ts)' }}>{fmtS(m._saldo)}</td>
-                      {superAdmin && (
+                      {mostrarAcciones && (
                         <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
-                          <button className="btn btn-ghost btn-xs" title="⚡ Editar movimiento" onClick={() => abrirEditar(m)}><JxIcon name="edit" size={11} /></button>
-                          <button className="btn btn-red btn-xs" title="⚡ Eliminar movimiento" onClick={() => eliminar(m)} style={{ marginLeft: 4 }}><JxIcon name="trash" size={11} /></button>
+                          {superAdmin ? (
+                            <>
+                              <button className="btn btn-ghost btn-xs" title="⚡ Editar movimiento" onClick={() => abrirEditar(m)}><JxIcon name="edit" size={11} /></button>
+                              <button className="btn btn-red btn-xs" title="⚡ Eliminar movimiento" onClick={() => eliminar(m)} style={{ marginLeft: 4 }}><JxIcon name="trash" size={11} /></button>
+                            </>
+                          ) : (
+                            <button className="btn btn-ghost btn-xs" title="Solicitar cambio (requiere aprobación de un admin)" onClick={() => setRequestTarget(m)}><JxIcon name="edit" size={11} /> Solicitar cambio</button>
+                          )}
                         </td>
                       )}
                     </tr>
@@ -236,6 +247,30 @@ function CajaChicaPage({ showToast }) {
             </button>
           </div>
         </Modal>
+      )}
+
+      {/* Solicitar cambio (rol almacén) — requiere aprobación de un admin */}
+      {requestTarget && (
+        <RequestChangeModal
+          table="caja_chica_movimientos"
+          record={requestTarget}
+          recordLabel={`${requestTarget.fecha || ''} · ${requestTarget.concepto || (requestTarget.tipo_movimiento === 'entrada' ? 'Ingreso' : 'Gasto')} · S/ ${requestTarget.monto ?? ''}`.trim()}
+          allowDelete
+          fields={[
+            { key: 'fecha', label: 'Fecha', type: 'date' },
+            { key: 'tipo_movimiento', label: 'Tipo', options: [
+              { value: 'entrada', label: 'Ingreso de fondo' },
+              { value: 'salida', label: 'Gasto' },
+            ]},
+            { key: 'monto', label: 'Monto (S/)', type: 'number' },
+            { key: 'concepto', label: 'Concepto' },
+            { key: 'proveedor', label: 'Proveedor' },
+            { key: 'documento_asociado', label: 'Documento asociado' },
+            { key: 'observaciones', label: 'Observaciones' },
+          ]}
+          showToast={showToast}
+          onClose={() => setRequestTarget(null)}
+        />
       )}
     </div>
   );

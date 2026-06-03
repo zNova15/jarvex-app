@@ -1137,21 +1137,41 @@ async function pullTransactionalChanges() {
   let cacheChanged = false;
 
   for (const tabla of TRANSACTIONAL_TABLES) {
-    const lastSync = await getLastSync(`${tabla}_pull`);
+    let lastSync = await getLastSync(`${tabla}_pull`);
+
+    // Auto-recovery: si Dexie está vacío pero hay lastSync grabado (típico tras
+    // "Limpiar caché local" / "Forzar resync completo"), ignoramos el watermark
+    // y hacemos full pull. Igual que pullMasterTables. Sin esto, las tablas
+    // transaccionales NO se re-descargaban tras un cache-clear y quedaban
+    // invisibles aunque existieran en el server.
+    if (lastSync && db[tabla]) {
+      try {
+        if ((await db[tabla].count()) === 0) {
+          console.warn(`[SyncEngine] ${tabla} (tx): Dexie vacío con lastSync grabado → full pull (recovery)`);
+          lastSync = null;
+        }
+      } catch {}
+    }
+
     const baseQuery = () =>
       supabase
         .from(tabla)
         .select('*')
         .gte('updated_at', lastSync ?? '2020-01-01T00:00:00Z');
 
+    // ANTES filtrábamos .neq('created_by', userId) ("no traer lo que yo mismo
+    // creé"). Eso causaba PÉRDIDA DE VISTA: tras un cache-clear, los registros
+    // creados por el propio usuario (ej. 225 movimientos importados por el
+    // admin) NUNCA se re-descargaban → invisibles localmente aunque el stock
+    // (tabla maestra) sí volvía. Afectaba a TODAS las tablas transaccionales
+    // (movimientos_*, caja_chica, asistencia, avance_obra...). Lo quitamos: el
+    // guard por-registro de abajo (skip si sync_status !== synced) ya protege
+    // las ediciones locales no sincronizadas, y la RLS del server es la fuente
+    // de verdad de visibilidad.
     const skipCreatedBy = tableSkipsCreatedBy(tabla);
     // buildQuery devuelve un query nuevo en cada página (fetchAllRows lo
     // re-ejecuta con distintos .range()).
-    const buildQuery = () => {
-      let q = baseQuery();
-      if (!skipCreatedBy) q = q.neq('created_by', userId); // No traer lo que yo mismo creé
-      return q;
-    };
+    const buildQuery = () => baseQuery();
 
     let { data, error } = await fetchAllRows(buildQuery);
 
