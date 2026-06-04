@@ -70,6 +70,7 @@ function IngenieroInboxPage({ showToast }) {
   const [loading, setLoading] = uS(true);
   const [materiales, setMateriales] = uS([]);
   const [personal, setPersonal] = uS([]);
+  const [subcontratistas, setSubcontratistas] = uS([]);
   const [partidas, setPartidas] = uS([]);
   const [busquedaPartida, setBusquedaPartida] = uS('');
   const [asignarModal, setAsignarModal] = uS(null);          // mov a asignar (modo inbox)
@@ -81,7 +82,7 @@ function IngenieroInboxPage({ showToast }) {
     if (!obraId) return;
     setLoading(true);
     try {
-      const [salidas, mats, pers, parts] = await Promise.all([
+      const [salidas, mats, pers, parts, subs] = await Promise.all([
         window.__db.movimientos_materiales
           .where('obra_id').equals(obraId)
           .filter(m => m.tipo_movimiento === 'salida' && !m.reverses_id && !m.reversed_by_id)
@@ -89,12 +90,14 @@ function IngenieroInboxPage({ showToast }) {
         window.__db.materiales.where('obra_id').equals(obraId).filter(m => !m.deleted_at).toArray(),
         window.__db.personal.where('obra_id').equals(obraId).filter(p => !p.deleted_at).toArray(),
         window.__db.partidas.where('obra_id').equals(obraId).filter(p => !p.deleted_at).toArray(),
+        window.__db.subcontratistas.filter(s => !s.deleted_at).toArray(),
       ]);
       salidas.sort((a, b) => (b.fecha || '').localeCompare(a.fecha || '') || (b.hora || '').localeCompare(a.hora || ''));
       setSalidasPendientes(salidas.filter(s => !s.partida_id));
       setSalidasHistorial(salidas.filter(s => s.partida_id));
       setMateriales(mats);
       setPersonal(pers);
+      setSubcontratistas(subs || []);
       setPartidas(parts.sort((a, b) => (a.codigo_delfin || '').localeCompare(b.codigo_delfin || '')));
     } catch (e) {
       console.error('[ingeniero] cargar:', e);
@@ -119,6 +122,15 @@ function IngenieroInboxPage({ showToast }) {
     if (!id) return '—';
     const p = personal.find(x => x.id === id);
     return p ? `${p.nombres || ''} ${p.apellidos || ''}`.trim() : '—';
+  };
+  // Destino del movimiento: persona o subcontrato (Fase B). Si la salida se
+  // atribuyó a un subcontrato, mostramos su razón social en vez de '—'.
+  const destName = (mov) => {
+    if (mov?.subcontratista_id) {
+      const s = subcontratistas.find(x => x.id === mov.subcontratista_id);
+      return s ? `${s.razon_social} (subcontrato)` : '(subcontrato)';
+    }
+    return persName(mov?.responsable_id);
   };
   const partLabel = (id) => {
     const p = partidas.find(x => x.id === id);
@@ -248,7 +260,7 @@ function IngenieroInboxPage({ showToast }) {
                           <td style={{ fontWeight: 600 }}>{matName(mov.material_id)}</td>
                           <td style={{ textAlign: 'right', fontWeight: 700 }}>{mov.cantidad}</td>
                           <td style={{ color: 'var(--tm)' }}>{mov.unidad}</td>
-                          <td>{persName(mov.responsable_id)}</td>
+                          <td>{destName(mov)}</td>
                           <td style={{ fontSize: 11.5, color: 'var(--tm)', fontStyle: 'italic' }}>{mov.observaciones || '—'}</td>
                           <td style={{ textAlign: 'right' }}>
                             <button className="btn btn-amber btn-sm" onClick={() => setAsignarModal(mov)}>

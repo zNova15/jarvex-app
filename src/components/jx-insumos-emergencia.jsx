@@ -10,6 +10,7 @@
 import React from "react";
 import { calcAlerta } from "../lib/stock-utils.js";
 import { detectarSugerencias, detectarDuplicados, fusionarInsumos } from "../lib/variantes.js";
+import { opcionesDestinoFlat, splitDestino, joinDestino, nombreDestinoMov } from "../lib/destino-mov.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 const hoyISO = () => new Date().toISOString().slice(0, 10);
@@ -29,6 +30,7 @@ function InsumosEmergenciaPage({ showToast }) {
   const { data: insumos, create: createInsumo, update: updateInsumo, refresh } = window.__hooks.useInsumosEmergencia(obraId);
   const movHook = window.__hooks.useMovInsumosEmergencia(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
+  const { data: subcontratistas } = window.__hooks.useSubcontratistas();
 
   const [q, setQ] = uS('');
   const [vista, setVista] = uS('inventario'); // 'inventario' | 'movimientos'
@@ -43,6 +45,9 @@ function InsumosEmergenciaPage({ showToast }) {
   const personalById = uM(() => { const m = new Map(); (personal || []).forEach(p => m.set(p.id, p)); return m; }, [personal]);
   const insumoById = uM(() => { const m = new Map(); (insumos || []).forEach(i => m.set(i.id, i)); return m; }, [insumos]);
   const proveedorById = uM(() => { const m = new Map(); (proveedores || []).forEach(p => m.set(p.id, p)); return m; }, [proveedores]);
+  // Destino de salida: personal activo + subcontratos (Fase B)
+  const subsById = uM(() => { const m = new Map(); (subcontratistas || []).forEach(s => m.set(s.id, s)); return m; }, [subcontratistas]);
+  const destinoOpts = uM(() => opcionesDestinoFlat((personal || []).filter(p => p.estado === 'activo'), subcontratistas), [personal, subcontratistas]);
 
   // Movimientos de entrada/salida (más reciente primero) para la pestaña.
   const movimientos = uM(() => {
@@ -183,7 +188,7 @@ function InsumosEmergenciaPage({ showToast }) {
   // Super Admin: editar un movimiento existente (corrige stock revirtiendo el viejo y aplicando el nuevo).
   const abrirEditarMov = (mv) => {
     setEditingMovId(mv.id);
-    setForm({ tipo_movimiento: mv.tipo_movimiento, fecha: (mv.fecha || '').slice(0, 10), insumo_emergencia_id: mv.insumo_emergencia_id || '', cantidad: String(mv.cantidad ?? ''), responsable_id: mv.responsable_id || '', proveedor_id: mv.proveedor_id || '', observaciones: mv.observaciones || '' });
+    setForm({ tipo_movimiento: mv.tipo_movimiento, fecha: (mv.fecha || '').slice(0, 10), insumo_emergencia_id: mv.insumo_emergencia_id || '', cantidad: String(mv.cantidad ?? ''), responsable_id: joinDestino(mv), proveedor_id: mv.proveedor_id || '', observaciones: mv.observaciones || '' });
     setModal('mov');
   };
 
@@ -205,7 +210,9 @@ function InsumosEmergenciaPage({ showToast }) {
       const campos = {
         obra_id: obraId, insumo_emergencia_id: insumo.id, fecha: form.fecha || hoyISO(),
         tipo_movimiento: form.tipo_movimiento, cantidad: cant, unidad: insumo.unidad,
-        responsable_id: form.responsable_id || null, proveedor_id: form.proveedor_id || null,
+        // Destino (persona o subcontrato) solo en salida; entrada lleva proveedor (Fase B)
+        ...splitDestino(esEntrada ? null : form.responsable_id),
+        proveedor_id: form.proveedor_id || null,
         observaciones: form.observaciones?.trim() || null,
       };
       if (editingMovId) {
@@ -384,7 +391,7 @@ function InsumosEmergenciaPage({ showToast }) {
                     const esEntrada = mv.tipo_movimiento === 'entrada';
                     const quien = esEntrada
                       ? (proveedorById.get(mv.proveedor_id)?.razon_social || '—')
-                      : (() => { const p = personalById.get(mv.responsable_id); return p ? `${p.nombres} ${p.apellidos || ''}`.trim() : '—'; })();
+                      : nombreDestinoMov(mv, personalById, subsById);
                     return (
                       <tr key={mv.id}>
                         <td className="col-m">{mv.fecha || '—'}</td>
@@ -502,7 +509,7 @@ function InsumosEmergenciaPage({ showToast }) {
               <input className="fi" type="date" value={form.fecha || ''} max={hoyISO()} onChange={e => setForm({ ...form, fecha: e.target.value })} /></div>
             <div><label className="flabel">Cantidad *</label>
               <input className="fi" type="number" min="0" step="0.01" value={form.cantidad || ''} onChange={e => setForm({ ...form, cantidad: e.target.value })} placeholder="0" /></div>
-            <div><label className="flabel">{form.tipo_movimiento === 'entrada' ? 'Proveedor' : 'Entregado a / responsable'}</label>
+            <div><label className="flabel">{form.tipo_movimiento === 'entrada' ? 'Proveedor' : 'Entregado a — persona o subcontrato'}</label>
               {form.tipo_movimiento === 'entrada'
                 ? <select className="fi" value={form.proveedor_id || ''} onChange={e => setForm({ ...form, proveedor_id: e.target.value })}>
                     <option value="">—</option>
@@ -510,7 +517,7 @@ function InsumosEmergenciaPage({ showToast }) {
                   </select>
                 : <select className="fi" value={form.responsable_id || ''} onChange={e => setForm({ ...form, responsable_id: e.target.value })}>
                     <option value="">—</option>
-                    {(personal || []).filter(p => !p.deleted_at).map(p => <option key={p.id} value={p.id}>{p.nombres} {p.apellidos || ''}</option>)}
+                    {destinoOpts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                   </select>}
             </div>
             <div style={{ gridColumn: '1/-1' }}><label className="flabel">Observaciones</label>

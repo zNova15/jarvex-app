@@ -6,6 +6,7 @@ import { usePagination } from "../hooks/usePagination.js";
 import { useBusy } from "../hooks/useBusy.js";
 import { TablePagination } from "./jx-pagination.jsx";
 import { SearchableSelect } from "./jx-searchable-select.jsx";
+import { opcionesDestinoFlat, splitDestino } from "../lib/destino-mov.js";
 import { getDesgloseBulk, aplicarDelta, traspasar } from "../lib/stock-ubicaciones.js";
 import { DesglosePopup, TraspasoStockModal } from "./jx-stock-ubic.jsx";
 import { EstadosModal } from "./jx-stock-estados.jsx";
@@ -197,6 +198,8 @@ function MaterialesPage({ showToast }) {
 
   // Hook real de materiales
   const { data: materiales, loading, create: createMaterial, update: updateMaterial, refresh } = window.__hooks.useMateriales(obraId);
+  // Subcontratistas para atribuir salidas a un subcontrato (Fase B)
+  const { data: subcontratistas } = window.__hooks.useSubcontratistas();
 
   // Cargar partidas + insumos_partida de la obra (para sugerir partida en salida)
   uE(() => {
@@ -1445,7 +1448,8 @@ function MaterialesPage({ showToast }) {
         tipo_movimiento: tipo === 'ingreso' ? 'entrada' : 'salida',
         cantidad: cantNum,
         unidad: material.unidad,
-        responsable_id: form.responsable_id || null,
+        // Destino (persona o subcontrato) — consistente con el lote (Fase B)
+        ...splitDestino(form.responsable_id),
         proveedor_id: form.proveedor_id || null,
         documento_asociado: form.documento || null,
         // partida_id SIEMPRE null al crear desde almacén (Paquete C).
@@ -1627,9 +1631,12 @@ function MaterialesPage({ showToast }) {
       const proveedor_id = tipo === 'ingreso'
         ? (loteComunes.usarMismoProveedor ? loteComunes.proveedor_id : it.proveedor_id) || null
         : null;
-      const responsable_id = tipo === 'salida'
+      // Destino combinado (persona o subcontrato). splitDestino lo separa en
+      // responsable_id / subcontratista_id / destino_tipo (Fase B).
+      const destinoVal = tipo === 'salida'
         ? (loteComunes.usarMismaPersona ? loteComunes.responsable_id : it.responsable_id) || null
         : null;
+      const dest = splitDestino(destinoVal);
       try {
         const movCreated = await movHook.create({
           obra_id: obraId,
@@ -1639,7 +1646,9 @@ function MaterialesPage({ showToast }) {
           tipo_movimiento: tipo === 'ingreso' ? 'entrada' : 'salida',
           cantidad: cantNum,
           unidad: material.unidad,
-          responsable_id,
+          responsable_id: dest.responsable_id,
+          subcontratista_id: dest.subcontratista_id,
+          destino_tipo: dest.destino_tipo,
           proveedor_id,
           documento_asociado: form.documento || null,
           // partida_id SIEMPRE null al crear desde almacén — la vinculación
@@ -2364,6 +2373,9 @@ function MaterialesPage({ showToast }) {
           if (p.obra_id && obraId && p.obra_id !== obraId) return false;
           return true;
         });
+        // Destinos = personal activo + subcontratos (value 'sub:<id>'). Permite
+        // atribuir la salida a una persona o a un subcontrato, sin texto libre.
+        const destinoOpts = opcionesDestinoFlat(personalActivo, subcontratistas);
         return (
         <Modal title="Registrar Salida de Materiales (lote)" icon="arrowOut" onClose={()=>setModal(null)} wide>
           <div className="g2">
@@ -2386,14 +2398,11 @@ function MaterialesPage({ showToast }) {
                   onChange={v => setLoteComunes(c => ({ ...c, responsable_id: v || null }))}
                   options={[
                     { value: '', label: '— Selecciona persona / subcontrato —' },
-                    ...personalActivo.map(p => ({
-                      value: p.id,
-                      label: `${p.nombres} ${p.apellidos} · ${p.cargo || ''}`.trim(),
-                    })),
+                    ...destinoOpts,
                   ]}
                   placeholder="— Selecciona persona / subcontrato —"/>
                 <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:4 }}>
-                  Solo trabajadores activos de la obra que ya ingresaron.
+                  Trabajadores activos de la obra o un subcontrato. Sin nombres a mano.
                 </div>
               </div>
             )}
@@ -2462,10 +2471,7 @@ function MaterialesPage({ showToast }) {
                               onChange={v => updateLoteItem(it.id, { responsable_id: v || null })}
                               options={[
                                 { value: '', label: '—' },
-                                ...personalActivo.map(p => ({
-                                  value: p.id,
-                                  label: `${p.nombres} ${p.apellidos}`.trim(),
-                                })),
+                                ...destinoOpts,
                               ]}
                               fontSize={12}
                               placeholder="—"/>
@@ -3212,7 +3218,11 @@ function HerramientasPage({ showToast }) {
 
   const { data: herramientas, loading, create: createHerr, update: updateHerr, refresh } = window.__hooks.useHerramientas(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
+  const { data: subcontratistas } = window.__hooks.useSubcontratistas();
   const movHook = window.__hooks.useMovimientosHerramientas(obraId);
+  // Personal activo de la obra + subcontratos, para atribuir salidas (Fase B).
+  const personalActivoHerr = uM(() => (personal || []).filter(p => p.estado === 'activo' && (!p.obra_id || !obraId || p.obra_id === obraId)), [personal, obraId]);
+  const destinoOptsHerr = uM(() => opcionesDestinoFlat(personalActivoHerr, subcontratistas), [personalActivoHerr, subcontratistas]);
 
   // Stock por ubicación (solo aplica a herramientas maneja_cantidad).
   const [desgloseUbicH, setDesgloseUbicH] = uS(() => new Map()); // Map(herr_id → Map(ubic_id → cant))
@@ -3333,7 +3343,8 @@ function HerramientasPage({ showToast }) {
           await movHook.create({
             obra_id: obraId, herramienta_id: it.herramienta_id, fecha: loteCantForm.fecha, hora: loteCantForm.hora,
             accion: tipo, tipo_movimiento: tipo, cantidad: cant,
-            responsable_id: tipo === 'salida' ? (loteCantForm.responsable_id || null) : null,
+            // Destino (persona o subcontrato) solo en salida (Fase B)
+            ...(tipo === 'salida' ? splitDestino(loteCantForm.responsable_id) : { responsable_id: null }),
             ubicacion_id: ubicMov, observaciones: loteCantForm.observaciones || null,
           });
           if (ubicMov) { try { await aplicarDelta({ obraId, itemTipo: 'herramienta', itemId: it.herramienta_id, ubicacionId: ubicMov, delta: tipo === 'ingreso' ? cant : -cant, userId: auth?.profile?.id || null }); } catch (err) { console.warn('[herr aplicarDelta]', err?.message); } }
@@ -4462,10 +4473,10 @@ function HerramientasPage({ showToast }) {
               </div>
             )}
             {loteCant === 'salida' && (
-              <div><label className="flabel">Responsable (opcional)</label>
+              <div><label className="flabel">Destino — persona o subcontrato (opcional)</label>
                 <select className="fi" value={loteCantForm.responsable_id || ''} onChange={e=>setLoteCantForm(f=>({...f, responsable_id:e.target.value}))}>
                   <option value="">—</option>
-                  {(personal||[]).filter(p=>!p.deleted_at).map(p => <option key={p.id} value={p.id}>{p.nombres} {p.apellidos||''}</option>)}
+                  {destinoOptsHerr.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select></div>
             )}
           </div>

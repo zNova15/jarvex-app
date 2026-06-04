@@ -17,6 +17,7 @@ import { detectarSugerencias, detectarDuplicados, fusionarInsumos } from "../lib
 import { usePagination } from "../hooks/usePagination.js";
 import { TablePagination } from "./jx-pagination.jsx";
 import { SearchableSelect } from "./jx-searchable-select.jsx";
+import { opcionesDestinoFlat, splitDestino } from "../lib/destino-mov.js";
 
 const { useState: uS, useEffect: uE, useMemo: uM, useRef: uR } = React;
 
@@ -141,6 +142,9 @@ function EppsInventarioPage({ showToast }) {
   const { data: epps = [], loading, create: createEpp, update: updateEpp, refresh } = window.__hooks.useEpps?.(obraId) || { data: [] };
   const movHook = window.__hooks.useMovimientosEpp?.(obraId) || { data: [], create: async () => {} };
   const { data: personal = [] } = window.__hooks.usePersonal?.(obraId) || { data: [] };
+  const { data: subcontratistas = [] } = window.__hooks.useSubcontratistas?.() || { data: [] };
+  // Destino de salida EPP: personal activo + subcontratos (Fase B)
+  const destinoOptsEpp = uM(() => opcionesDestinoFlat((personal || []).filter(p => p.estado === 'activo'), subcontratistas), [personal, subcontratistas]);
 
   // Ubicaciones (almacenes) de la obra + desglose de stock por ubicación.
   const { data: ubicaciones = [] } = window.__hooks.useUbicacionesObra?.(obraId) || { data: [] };
@@ -705,9 +709,12 @@ function EppsInventarioPage({ showToast }) {
       const proveedor_id = tipo === 'ingreso'
         ? (loteComunes.usarMismoProveedor ? loteComunes.proveedor_id : it.proveedor_id) || null
         : null;
-      const personal_id = tipo === 'salida'
+      // Destino combinado (persona o subcontrato). EPP usa personal_id; el
+      // helper devuelve responsable_id, lo remapeamos (Fase B).
+      const destinoVal = tipo === 'salida'
         ? (loteComunes.usarMismaPersona ? loteComunes.personal_id : it.personal_id) || null
         : null;
+      const dest = splitDestino(destinoVal);
       try {
         const movId = window.__newId();
         const movCreated = await movHook.create({
@@ -718,7 +725,9 @@ function EppsInventarioPage({ showToast }) {
           tipo_movimiento: tipo === 'ingreso' ? 'entrada' : 'salida',
           cantidad: cantNum,
           unidad: epp.unidad || 'Und',
-          personal_id,
+          personal_id: dest.responsable_id,
+          subcontratista_id: dest.subcontratista_id,
+          destino_tipo: dest.destino_tipo,
           proveedor_id,
           ubicacion_id: ubicMov,
           documento_asociado: form.documento || null,
@@ -1194,13 +1203,10 @@ function EppsInventarioPage({ showToast }) {
                   value={loteComunes.personal_id}
                   onChange={v => setLoteComunes(c => ({ ...c, personal_id: v || null }))}
                   options={[
-                    { value: '', label: '— Selecciona trabajador —' },
-                    ...personal.filter(p => p.estado === 'activo').map(p => ({
-                      value: p.id,
-                      label: `${p.nombres} ${p.apellidos} · DNI ${p.dni || '—'}`.trim(),
-                    })),
+                    { value: '', label: '— Selecciona persona / subcontrato —' },
+                    ...destinoOptsEpp,
                   ]}
-                  placeholder="— Selecciona trabajador —"/>
+                  placeholder="— Selecciona persona / subcontrato —"/>
               </div>
             )}
           </div>
@@ -1275,10 +1281,7 @@ function EppsInventarioPage({ showToast }) {
                               onChange={v => updateLoteItem(it.id, { personal_id: v || null })}
                               options={[
                                 { value: '', label: '—' },
-                                ...personal.filter(p => p.estado === 'activo').map(p => ({
-                                  value: p.id,
-                                  label: `${p.nombres} ${p.apellidos}`.trim(),
-                                })),
+                                ...destinoOptsEpp,
                               ]}
                               fontSize={12}
                               placeholder="—"/>

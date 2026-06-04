@@ -828,7 +828,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         if (consumirFirma(firmas, mat.id, fechaMov, m.tipo, m.cantidad)) { duplicados++; continue; }
         afectados.add(mat.id);
         const obsExtra = [];
-        let proveedor_id = null, responsable_id = null, frente = null, ubicId = null;
+        let proveedor_id = null, responsable_id = null, subcontratista_id = null, destino_tipo = null, frente = null, ubicId = null;
 
         if (m.tipo === 'entrada') {
           if (m.origen) { proveedor_id = matchProveedor(m.origen, proveedores); if (!proveedor_id) obsExtra.push(`Proveedor: ${m.origen}`); }
@@ -837,9 +837,9 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           if (m.origen) ubicId = await resolverUbic(m.origen);
           if (m.responsable) {
             const rpHit = rp?.get(normTxt(m.responsable));
-            if (rpHit?.tipo === 'personal') responsable_id = rpHit.id;
-            else if (rpHit?.tipo === 'subcontratista') obsExtra.push(`Subcontrato: ${m.responsable}`);
-            else { responsable_id = matchPersonal(m.responsable, personal); if (!responsable_id) obsExtra.push(`Responsable: ${m.responsable}`); }
+            if (rpHit?.tipo === 'personal') { responsable_id = rpHit.id; destino_tipo = 'personal'; }
+            else if (rpHit?.tipo === 'subcontratista') { subcontratista_id = rpHit.id; destino_tipo = 'subcontratista'; }
+            else { responsable_id = matchPersonal(m.responsable, personal); if (responsable_id) destino_tipo = 'personal'; else obsExtra.push(`Responsable: ${m.responsable}`); }
           }
           if (m.lugar) frente = m.lugar;
         }
@@ -848,7 +848,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           obra_id: obraId, material_id: mat.id, fecha: m.fecha || new Date().toISOString().slice(0, 10),
           hora: null, tipo_movimiento: m.tipo, cantidad: m.cantidad,
           unidad: m.unidad || mat.unidad || 'Und',
-          responsable_id, proveedor_id, frente_zona: frente, partida_id: null, ubicacion_id: ubicId,
+          responsable_id, subcontratista_id, destino_tipo, proveedor_id, frente_zona: frente, partida_id: null, ubicacion_id: ubicId,
           documento_asociado: null, precio_unitario_real: null, observaciones: obs,
         }, userId, null, sigMov(obraId, 'mov_materiales', m));
         if (r.dup) { duplicados++; continue; }
@@ -1007,7 +1007,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         if (consumirFirma(firmas, herr.id, fechaMov, m.tipo, m.cantidad)) { duplicados++; continue; }
         afectados.add(herr.id);
         const obsExtra = [];
-        let proveedor_id = null, responsable_id = null, frente = null, ubicId = null;
+        let proveedor_id = null, responsable_id = null, subcontratista_id = null, destino_tipo = null, frente = null, ubicId = null;
 
         if (m.tipo === 'entrada') {
           if (m.origen) { proveedor_id = matchProveedor(m.origen, proveedores); if (!proveedor_id) obsExtra.push(`Proveedor: ${m.origen}`); }
@@ -1016,9 +1016,9 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           const quien = m.responsable || m.origen;
           if (quien) {
             const rpHit = rp?.get(normTxt(quien));
-            if (rpHit?.tipo === 'personal') responsable_id = rpHit.id;
-            else if (rpHit?.tipo === 'subcontratista') obsExtra.push(`Subcontrato: ${quien}`);
-            else { responsable_id = matchPersonal(quien, personal); if (!responsable_id) obsExtra.push(`Responsable: ${quien}`); }
+            if (rpHit?.tipo === 'personal') { responsable_id = rpHit.id; destino_tipo = 'personal'; }
+            else if (rpHit?.tipo === 'subcontratista') { subcontratista_id = rpHit.id; destino_tipo = 'subcontratista'; }
+            else { responsable_id = matchPersonal(quien, personal); if (responsable_id) destino_tipo = 'personal'; else obsExtra.push(`Responsable: ${quien}`); }
           }
           if (m.lugar) frente = m.lugar;
         }
@@ -1027,7 +1027,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         const r = await addMovIdem('movimientos_herramientas', {
           obra_id: obraId, herramienta_id: herr.id, fecha: m.fecha || new Date().toISOString().slice(0, 10),
           hora: null, accion: m.tipo, tipo_movimiento: m.tipo, cantidad: m.cantidad,
-          responsable_id, proveedor_id, frente_zona: frente, ubicacion_id: ubicId, observaciones: obs,
+          responsable_id, subcontratista_id, destino_tipo, proveedor_id, frente_zona: frente, ubicacion_id: ubicId, observaciones: obs,
         }, userId, null, sigMov(obraId, 'mov_herramientas', m));
         if (r.dup) { duplicados++; continue; }
 
@@ -1095,7 +1095,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         if (consumirFirma(firmas, act.id, fechaMov, m.tipo, m.cantidad)) { duplicados++; continue; }
         afectados.add(act.id);
         const obsExtra = [];
-        let proveedor_id = null, responsable_id = null, subcontratista_id = null, frente = null, ubicId = null;
+        let proveedor_id = null, responsable_id = null, subcontratista_id = null, destino_tipo = null, frente = null, ubicId = null;
 
         if (m.tipo === 'entrada') {
           if (m.origen) { proveedor_id = matchProveedor(m.origen, proveedores); if (!proveedor_id) obsExtra.push(`Proveedor: ${m.origen}`); }
@@ -1104,9 +1104,9 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           const quien = m.responsable || m.origen;
           if (quien) {
             const rpHit = rp?.get(normTxt(quien));
-            if (rpHit?.tipo === 'personal') responsable_id = rpHit.id;
-            else if (rpHit?.tipo === 'subcontratista') subcontratista_id = rpHit.id;
-            else { responsable_id = matchPersonal(quien, personal); if (!responsable_id) obsExtra.push(`Responsable: ${quien}`); }
+            if (rpHit?.tipo === 'personal') { responsable_id = rpHit.id; destino_tipo = 'personal'; }
+            else if (rpHit?.tipo === 'subcontratista') { subcontratista_id = rpHit.id; destino_tipo = 'subcontratista'; }
+            else { responsable_id = matchPersonal(quien, personal); if (responsable_id) destino_tipo = 'personal'; else obsExtra.push(`Responsable: ${quien}`); }
           }
           if (m.lugar) frente = m.lugar;
         }
@@ -1114,7 +1114,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         const r = await addMovIdem('movimientos_maquinaria', {
           obra_id: obraId, activo_id: act.id, fecha: m.fecha || new Date().toISOString().slice(0, 10),
           hora: null, tipo_movimiento: m.tipo, cantidad: m.cantidad, unidad: m.unidad || act.unidad || 'Und',
-          responsable_id, subcontratista_id, proveedor_id, estado: m.estado || null, frente_zona: frente, observaciones: obs,
+          responsable_id, subcontratista_id, destino_tipo, proveedor_id, estado: m.estado || null, frente_zona: frente, observaciones: obs,
         }, userId, null, sigMov(obraId, 'mov_maquinaria', m));
         if (r.dup) { duplicados++; continue; }
 
@@ -1195,16 +1195,16 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         if (consumirFirma(firmas, ins.id, fechaMov, m.tipo, m.cantidad)) { duplicados++; continue; }
         afectados.add(ins.id);
         const obsExtra = [];
-        let proveedor_id = null, responsable_id = null;
+        let proveedor_id = null, responsable_id = null, subcontratista_id = null, destino_tipo = null;
         if (m.tipo === 'entrada') {
           if (m.origen) { proveedor_id = matchProveedor(m.origen, proveedores); if (!proveedor_id) obsExtra.push(`Proveedor: ${m.origen}`); }
         } else {
           const quien = m.responsable || m.origen;
           if (quien) {
             const rpHit = rp?.get(normTxt(quien));
-            if (rpHit?.tipo === 'personal') responsable_id = rpHit.id;
-            else if (rpHit?.tipo === 'subcontratista') obsExtra.push(`Subcontrato: ${quien}`);
-            else { responsable_id = matchPersonal(quien, personal); if (!responsable_id) obsExtra.push(`Responsable: ${quien}`); }
+            if (rpHit?.tipo === 'personal') { responsable_id = rpHit.id; destino_tipo = 'personal'; }
+            else if (rpHit?.tipo === 'subcontratista') { subcontratista_id = rpHit.id; destino_tipo = 'subcontratista'; }
+            else { responsable_id = matchPersonal(quien, personal); if (responsable_id) destino_tipo = 'personal'; else obsExtra.push(`Responsable: ${quien}`); }
           }
         }
         if (m.lugar) obsExtra.push(`Lugar: ${m.lugar}`);
@@ -1212,7 +1212,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         const r = await addMovIdem('movimientos_insumos_emergencia', {
           obra_id: obraId, insumo_emergencia_id: ins.id, fecha: m.fecha || new Date().toISOString().slice(0, 10),
           hora: null, tipo_movimiento: m.tipo, cantidad: m.cantidad, unidad: m.unidad || ins.unidad || 'Und',
-          responsable_id, proveedor_id, observaciones: obs,
+          responsable_id, subcontratista_id, destino_tipo, proveedor_id, observaciones: obs,
         }, userId, null, sigMov(obraId, 'mov_emergencia', m));
         if (r.dup) { duplicados++; continue; }
         okCount++;
