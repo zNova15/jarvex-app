@@ -199,6 +199,31 @@ export async function forceFullResync() {
     }
   }
 
+  // 2b) Resetear el watermark de pull de las tablas TRANSACCIONAL-ONLY. Antes el
+  // resync solo tocaba MASTER_TABLES, así que el watermark `${tabla}_pull` de
+  // movimientos_materiales/herramientas/asistencia/avance_obra quedaba intacto y
+  // "Forzar resync" NO recuperaba esos movimientos perdidos. Las dual (MASTER +
+  // TRANSACTIONAL) ya las limpió el loop de arriba, así que aquí solo van las
+  // transaccional-only (evita doble-clear y doble-conteo). Respeta pendientes.
+  for (const tabla of transactionalOnlyTables()) {
+    try {
+      const pending = await db[tabla]
+        .where('sync_status').anyOf([
+          SYNC_STATUS.PENDING_CREATE,
+          SYNC_STATUS.PENDING_UPDATE,
+          SYNC_STATUS.PENDING_DELETE,
+          SYNC_STATUS.FAILED,
+        ]).count();
+      if (pending > 0) { kept.push({ tabla, pending }); continue; }
+      const before = await db[tabla].count();
+      await db[tabla].clear();
+      await setLastSync(`${tabla}_pull`, null);
+      wiped.push({ tabla, count: before });
+    } catch (e) {
+      console.warn(`[forceFullResync] error wipeando tx ${tabla}:`, e?.message);
+    }
+  }
+
   // 3) Re-pull completo.
   try {
     await pullMasterTables();
@@ -1133,14 +1158,50 @@ function tableSkipsCreatedBy(tabla) {
   return TABLES_WITHOUT_CREATED_BY.has(tabla) || _runtimeNoCreatedBy.has(tabla);
 }
 
+// Reparación única por device (client-side migration). El watermark de pull
+// transaccional se grababa con el RELOJ DEL CLIENTE (new Date()), no con el
+// MAX(updated_at) de lo traído. Un device que avanzó su watermark por delante
+// del updated_at de filas que nunca llegó a traer (por el viejo filtro
+// created_by, un ciclo que abortó, o skew de reloj) las salta para siempre con
+// .gte('updated_at', watermark). Reseteamos UNA vez los watermarks `_pull` para
+// forzar un full re-pull que ya se auto-corrige con la lógica nueva (watermark =
+// max updated_at). No borra datos locales: el full pull re-aplica (put) sobre lo
+// existente y el guard por-registro preserva ediciones locales sin sincronizar.
+// Tablas que SOLO son transaccionales (pull incremental por watermark), no
+// MASTER (pull completo cada sync). Son las ÚNICAS vulnerables al watermark
+// envenenado: las que están también en MASTER se re-bajan enteras cada sync y
+// nunca quedan "ciegas". En la práctica: movimientos_materiales,
+// movimientos_herramientas, asistencia, avance_obra, incidencias, evidencias.
+function transactionalOnlyTables() {
+  return TRANSACTIONAL_TABLES.filter(t => !MASTER_TABLES.some(m => m.tabla === t));
+}
+
+const _TXWM_REPAIR_KEY = 'jx_txwm_repair_v1';
+async function repairTransactionalWatermarksOnce() {
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage.getItem(_TXWM_REPAIR_KEY)) return;
+    // Solo las transaccional-only (las únicas que el watermark puede ocultar).
+    for (const tabla of transactionalOnlyTables()) {
+      try { await setLastSync(`${tabla}_pull`, null); } catch {}
+    }
+    if (typeof localStorage !== 'undefined') localStorage.setItem(_TXWM_REPAIR_KEY, new Date().toISOString());
+    console.warn('[SyncEngine] watermarks transaccional-only reseteados una vez (repair v1) → próximo pull es full re-pull de esas tablas');
+  } catch (e) {
+    console.warn('[SyncEngine] repair de watermarks transaccionales falló:', e?.message);
+  }
+}
+
 async function pullTransactionalChanges() {
   const userId = (await supabase.auth.getUser())?.data?.user?.id;
   if (!userId) return;
 
   await hydrateNoCreatedByCache();
+  // Cura una vez los devices con watermark transaccional "envenenado".
+  await repairTransactionalWatermarksOnce();
   let cacheChanged = false;
 
   for (const tabla of TRANSACTIONAL_TABLES) {
+   try {
     let lastSync = await getLastSync(`${tabla}_pull`);
 
     // Auto-recovery: si Dexie está vacío pero hay lastSync grabado (típico tras
@@ -1197,9 +1258,15 @@ async function pullTransactionalChanges() {
     // respetando cambios locales pendientes (no sobreescribir nuestras
     // ediciones que todavía no se pushearon).
     let aplicados = 0, borrados = 0, skip = 0;
+    // Watermark = MAX(updated_at) de lo traído (no el reloj del cliente).
+    let maxUpd = lastSync || null;
     for (const serverRecord of data) {
+      if (serverRecord.updated_at && (!maxUpd || serverRecord.updated_at > maxUpd)) maxUpd = serverRecord.updated_at;
       const local = await db[tabla].get(serverRecord.id);
       if (local && local.sync_status !== SYNC_STATUS.SYNCED) { skip++; continue; }
+      // Ya tenemos esta versión exacta (re-pull de borde por .gte sobre el max
+      // watermark) → no re-escribir Dexie en cada tick. Idempotente y barato.
+      if (local && !serverRecord.deleted_at && local.updated_at === serverRecord.updated_at) { continue; }
 
       if (serverRecord.deleted_at) {
         // Tombstone — el record fue soft-deleted en otro device.
@@ -1220,7 +1287,26 @@ async function pullTransactionalChanges() {
       console.log(`[SyncEngine] pull tx ${tabla}: ${aplicados} aplicados, ${borrados} tombstones, ${skip} skip por pending local`);
     }
 
-    await setLastSync(`${tabla}_pull`, new Date().toISOString());
+    // Avanzar el watermark al MAX(updated_at) realmente traído. NUNCA al reloj
+    // del cliente: si éste iba por delante del updated_at de los datos, un pull
+    // que no los trajera dejaba el watermark adelantado y .gte() los saltaba para
+    // siempre (causa raíz de "no veo los movimientos importados").
+    if (maxUpd) {
+      await setLastSync(`${tabla}_pull`, maxUpd);
+    } else if (data.length) {
+      // Caso patológico: trajimos filas pero ninguna tiene updated_at. Sin
+      // avanzar, esta tabla haría full re-pull cada sync. Avanzamos al reloj
+      // como último recurso (en la práctica todas las filas tienen updated_at).
+      await setLastSync(`${tabla}_pull`, new Date().toISOString());
+    }
+   } catch (e) {
+     // Aislar el error por-tabla: antes un throw de Dexie en una tabla temprana
+     // (ej. durante el upgrade a v21 que solapa el primer sync) abortaba TODO el
+     // ciclo y movimientos_materiales (índice ~49) nunca se pulleaba. Igual que
+     // pullMasterTables, seguimos con la siguiente tabla.
+     console.warn(`[SyncEngine] pull tx ${tabla} falló (continúo con la siguiente):`, e?.message);
+     continue;
+   }
   }
 
   if (cacheChanged) await persistNoCreatedByCache();
