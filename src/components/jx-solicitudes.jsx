@@ -158,6 +158,15 @@ function SolicitudesPage({ showToast }) {
       fields[k] = v && typeof v === 'object' && 'new' in v ? v.new : v;
     }
 
+    // Coherencia: si se devuelve un trabajador a "Directo" (subcontratista_id
+    // vacío), jefe y seguro del subcontrato dejan de aplicar → limpiarlos.
+    // Igual que PersonalPage.handleSubmit cuando subId es null.
+    if (req.target_table === 'personal' && 'subcontratista_id' in fields && !fields.subcontratista_id) {
+      fields.subcontratista_id = null;
+      fields.es_jefe_subcontrato = false;
+      fields.seguro_a_cargo = null;
+    }
+
     // Leer registro actual para oldData (si existe)
     let oldData = null;
     try {
@@ -458,9 +467,14 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
   const fieldDef = fields.find(f => f.key === field) || fields[0];
   const oldValue = record?.[field];
 
+  // Algunos campos tienen una opción con value '' legítima (ej. subcontratista_id
+  // → "Directo de la empresa"). En esos casos '' es una elección válida que
+  // representa "vaciar" el campo, no "no elegí".
+  const hasEmptyOption = fieldDef?.options?.some(o => (o.value ?? o) === '');
+
   const submitEdit = async () => {
     if (!field) { showToast('Selecciona un campo', 'red'); return; }
-    if (newValue === '' || newValue === null || newValue === undefined) {
+    if (!hasEmptyOption && (newValue === '' || newValue === null || newValue === undefined)) {
       showToast('Indica el valor propuesto', 'red'); return;
     }
     if (!reason || reason.trim().length < 10) {
@@ -470,6 +484,8 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
     try {
       let parsedNew = newValue;
       if (fieldDef?.type === 'number') parsedNew = parseFloat(newValue);
+      // '' en un campo con opción-vacía = limpiar → null (no '', que rompería un FK uuid)
+      if (newValue === '' && hasEmptyOption) parsedNew = null;
 
       await window.__changeRequests.create({
         table,
@@ -553,7 +569,7 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
             <label className="flabel">Valor propuesto *</label>
             {fieldDef?.options ? (
               <select className="fi" value={newValue} onChange={e => setNewValue(e.target.value)}>
-                <option value="">— Selecciona —</option>
+                {!hasEmptyOption && <option value="">— Selecciona —</option>}
                 {fieldDef.options.map(o => (
                   <option key={o.value ?? o} value={o.value ?? o}>{o.label ?? o}</option>
                 ))}

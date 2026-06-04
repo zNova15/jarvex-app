@@ -4523,6 +4523,8 @@ function PersonalPage({ showToast }) {
   const [reniecBusy, setReniecBusy] = uS(false);
   const [obraId, setObraId] = uS(null);
   const [requestTarget, setRequestTarget] = uS(null);
+  const [filtroVinculo, setFiltroVinculo] = uS('todos'); // todos | directos | subcontratados | sub:<id>
+  const [filtroEstado, setFiltroEstado] = uS('todos');   // todos | activos | inactivos
 
   uE(() => {
     let cancelled = false;
@@ -4551,8 +4553,15 @@ function PersonalPage({ showToast }) {
   const { data: personal, loading, create: createPersonal, update: updatePersonal } = window.__hooks.usePersonal(obraId);
   const { data: obrasAll } = window.__hooks.useObras();
   const { data: herramientas } = window.__hooks.useHerramientas(obraId);
+  const { data: subcontratistas } = window.__hooks.useSubcontratistas();
   const obrasActivas = uM(() => (obrasAll || []).filter(o => !o.deleted_at), [obrasAll]);
   const obraNombre = (id) => obrasActivas.find(o => o.id === id)?.nombre_obra || '—';
+  // Subcontratistas para agrupar personal (cuadrillas). Map por id + lista activa.
+  const subsById = uM(() => new Map((subcontratistas || []).map(s => [s.id, s])), [subcontratistas]);
+  const subsActivos = uM(() => (subcontratistas || [])
+    .filter(s => !s.deleted_at && s.estado !== 'bloqueado')
+    .sort((a, b) => (a.razon_social || '').localeCompare(b.razon_social || '')), [subcontratistas]);
+  const nombreSub = (id) => subsById.get(id)?.razon_social || (id ? '(subcontratista eliminado)' : null);
 
   const consultarRENIEC = async (dniOverride = null) => {
     // Sanitize tolerante: String() para números, replace para sacar
@@ -4612,13 +4621,28 @@ function PersonalPage({ showToast }) {
 
   const filtered = uM(() => {
     if (!personal) return [];
-    if (!q) return personal;
-    return personal.filter(p =>
-      `${p.nombres} ${p.apellidos}`.toLowerCase().includes(q.toLowerCase()) ||
-      p.cargo?.toLowerCase().includes(q.toLowerCase()) ||
-      p.dni?.includes(q)
-    );
-  }, [q, personal]);
+    let list = personal;
+    // Vínculo: directos (sin subcontratista), subcontratados (con cualquiera), o uno específico
+    if (filtroVinculo === 'directos') list = list.filter(p => !p.subcontratista_id);
+    else if (filtroVinculo === 'subcontratados') list = list.filter(p => !!p.subcontratista_id);
+    else if (filtroVinculo.startsWith('sub:')) {
+      const id = filtroVinculo.slice(4);
+      list = list.filter(p => p.subcontratista_id === id);
+    }
+    // Estado: activos vs el resto (inactivo/suspendido/retirado) por rotación
+    if (filtroEstado === 'activos') list = list.filter(p => p.estado === 'activo');
+    else if (filtroEstado === 'inactivos') list = list.filter(p => p.estado !== 'activo');
+    if (q) {
+      const t = q.toLowerCase();
+      list = list.filter(p =>
+        `${p.nombres} ${p.apellidos}`.toLowerCase().includes(t) ||
+        p.cargo?.toLowerCase().includes(t) ||
+        p.dni?.includes(q) ||
+        (p.subcontratista_id && (nombreSub(p.subcontratista_id) || '').toLowerCase().includes(t))
+      );
+    }
+    return list;
+  }, [q, personal, filtroVinculo, filtroEstado, subsById]);
 
   const personalPg = usePagination(filtered, 50);
 
@@ -4641,6 +4665,9 @@ function PersonalPage({ showToast }) {
       telefono: p.telefono || '',
       estado: p.estado || 'activo',
       obra_id: p.obra_id || obraId || '',
+      subcontratista_id: p.subcontratista_id || '',
+      es_jefe_subcontrato: !!p.es_jefe_subcontrato,
+      seguro_a_cargo: p.seguro_a_cargo || '',
     });
     setEditingId(p.id);
     setModal('editar');
@@ -4705,6 +4732,20 @@ function PersonalPage({ showToast }) {
         }
       }
     }
+    // ── Vínculo a subcontrato (cuadrilla) ───────────────────────
+    const subId = form.subcontratista_id || null;
+    const esJefe = !!subId && !!form.es_jefe_subcontrato;            // jefe solo aplica a subcontratado
+    const seguro = subId ? (form.seguro_a_cargo || 'empresa') : null; // directo → null (= empresa implícita)
+    // Aviso suave: lo normal es 1-2 jefes por subcontrato
+    if (esJefe) {
+      const jefes = (personal || []).filter(p =>
+        p.subcontratista_id === subId && p.es_jefe_subcontrato && !p.deleted_at && p.id !== editingId
+      );
+      if (jefes.length >= 2) {
+        const ls = jefes.map(j => `· ${j.nombres} ${j.apellidos}`).join('\n');
+        if (!confirm(`Este subcontrato ya tiene ${jefes.length} jefes:\n${ls}\n\n¿Agregar otro jefe de todas formas?`)) return;
+      }
+    }
     try {
       if (editingId) {
         const oldData = personal.find(p => p.id === editingId);
@@ -4718,6 +4759,9 @@ function PersonalPage({ showToast }) {
           fecha_ingreso: form.fecha_ingreso || null,
           telefono: form.telefono?.trim() || null,
           estado: form.estado || 'activo',
+          subcontratista_id: subId,
+          es_jefe_subcontrato: esJefe,
+          seguro_a_cargo: seguro,
           // Forzar mantener la obra original — NUNCA cambiarla en edición
           // (preserva trazabilidad de asistencia y movimientos históricos)
           obra_id: oldData?.obra_id || obraId,
@@ -4737,6 +4781,9 @@ function PersonalPage({ showToast }) {
           fecha_ingreso: form.fecha_ingreso || new Date().toISOString().slice(0,10),
           telefono: form.telefono?.trim() || null,
           estado: 'activo',
+          subcontratista_id: subId,
+          es_jefe_subcontrato: esJefe,
+          seguro_a_cargo: seguro,
         });
         try { await window.__logAudit?.({ action:'insert', table:'personal', recordId:created?.id, newData:created }); } catch(e) {}
         showToast(`Trabajador "${form.nombres} ${form.apellidos}" registrado`, 'green');
@@ -4755,7 +4802,7 @@ function PersonalPage({ showToast }) {
   return (
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
-        <div><div className="pg-title">Personal</div><div className="pg-sub">{personal.length} trabajadores · {personal.filter(p=>p.estado==='activo').length} activos</div></div>
+        <div><div className="pg-title">Personal</div><div className="pg-sub">{personal.length} trabajadores · {personal.filter(p=>p.estado==='activo').length} activos · {personal.filter(p=>!p.subcontratista_id).length} directos · {personal.filter(p=>!!p.subcontratista_id).length} en subcontrato</div></div>
         <div style={{display:'flex',gap:8}}>
           {canWrite ? (
             <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setModal('nuevo');}}><JxIcon name="plus" size={13}/>Nuevo Trabajador</button>
@@ -4764,8 +4811,20 @@ function PersonalPage({ showToast }) {
           )}
         </div>
       </div>
-      <div style={{display:'flex',gap:8,marginBottom:14}}>
-        <div className="search-bar"><JxIcon name="search" size={14} color="var(--tm)"/><input placeholder="Buscar por nombre, cargo o DNI…" value={q} onChange={e=>setQ(e.target.value)}/></div>
+      <div style={{display:'flex',gap:8,marginBottom:14,flexWrap:'wrap'}}>
+        <div className="search-bar" style={{flex:'1 1 220px'}}><JxIcon name="search" size={14} color="var(--tm)"/><input placeholder="Buscar por nombre, cargo, DNI o subcontrato…" value={q} onChange={e=>setQ(e.target.value)}/></div>
+        <select className="fi" style={{width:'auto',minWidth:170}} value={filtroVinculo} onChange={e=>{setFiltroVinculo(e.target.value); personalPg.setPage?.(1);}} title="Filtrar por vínculo laboral">
+          <option value="todos">Vínculo: todos</option>
+          <option value="directos">Directos (empresa)</option>
+          <option value="subcontratados">En subcontrato</option>
+          {subsActivos.length > 0 && <option disabled>──────────</option>}
+          {subsActivos.map(s => <option key={s.id} value={`sub:${s.id}`}>{s.razon_social}</option>)}
+        </select>
+        <select className="fi" style={{width:'auto',minWidth:150}} value={filtroEstado} onChange={e=>setFiltroEstado(e.target.value)} title="Filtrar por estado">
+          <option value="todos">Estado: todos</option>
+          <option value="activos">Solo activos</option>
+          <option value="inactivos">Inactivos / baja</option>
+        </select>
       </div>
       {personal.length === 0 ? (
         <div className="card card-p empty-state"><JxIcon name="users" size={40} color="var(--tm)"/><p>No hay personal registrado. Click en "Nuevo Trabajador".</p></div>
@@ -4773,7 +4832,7 @@ function PersonalPage({ showToast }) {
       <div className="card" style={{overflow:'hidden'}}>
         <table className="tbl">
           <thead><tr>
-            <th>Nombre Completo</th><th>DNI</th><th>Cargo</th><th>Área</th>
+            <th>Nombre Completo</th><th>DNI</th><th>Cargo</th><th>Área</th><th>Vínculo</th>
             <th>F. Ingreso</th><th>Estado</th><th>Teléfono</th><th>Sync</th>
             <th style={{textAlign:'center'}}>Acciones</th>
           </tr></thead>
@@ -4786,6 +4845,17 @@ function PersonalPage({ showToast }) {
                   <td className="col-m">{p.dni}</td>
                   <td>{p.cargo || '—'}</td>
                   <td><span className="tag">{p.area || '—'}</span></td>
+                  <td>
+                    {p.subcontratista_id ? (
+                      <span style={{display:'inline-flex',gap:4,alignItems:'center',flexWrap:'wrap'}}>
+                        <span className="tag" title="Subcontrato">{nombreSub(p.subcontratista_id)}</span>
+                        {p.es_jefe_subcontrato && <span className="badge b-blue" title="Jefe de subcontrato">Jefe</span>}
+                        {p.seguro_a_cargo === 'subcontrato'
+                          ? <span className="badge b-gray" title="Seguro / SCTR a cargo del subcontrato">seg: sub</span>
+                          : <span className="badge b-green" title="Seguro / SCTR a cargo de la empresa">seg: emp</span>}
+                      </span>
+                    ) : <span style={{color:'var(--tm)',fontSize:12}}>Directo</span>}
+                  </td>
                   <td className="col-m">{p.fecha_ingreso || '—'}</td>
                   <td><span className={`badge ${e.class}`}>{e.label}</span></td>
                   <td className="col-m">{p.telefono || '—'}</td>
@@ -4851,6 +4921,45 @@ function PersonalPage({ showToast }) {
           </div>
           <div><label className="flabel">Fecha de nacimiento</label><input className="fi" type="date" value={form.fecha_nacimiento||''} onChange={e=>setForm({...form, fecha_nacimiento:e.target.value})}/></div>
           <div><label className="flabel">Fecha de ingreso</label><input className="fi" type="date" value={form.fecha_ingreso||''} onChange={e=>setForm({...form, fecha_ingreso:e.target.value})}/></div>
+          <div style={{ gridColumn:'1 / -1', borderTop:'1px solid var(--bd)', paddingTop:10, marginTop:2 }}>
+            <label className="flabel" style={{ fontWeight:600 }}><JxIcon name="users" size={11}/> Vínculo laboral</label>
+            <div className="g2" style={{ marginTop:6 }}>
+              <div>
+                <label className="flabel">Pertenece a</label>
+                <select className="fi" value={form.subcontratista_id || ''} onChange={e=>{
+                  const v = e.target.value;
+                  const sub = subsById.get(v);
+                  setForm(f => ({
+                    ...f,
+                    subcontratista_id: v,
+                    seguro_a_cargo: v ? (f.seguro_a_cargo || sub?.seguro_a_cargo || 'empresa') : '',
+                    es_jefe_subcontrato: v ? f.es_jefe_subcontrato : false,
+                  }));
+                }}>
+                  <option value="">Directo de la empresa</option>
+                  {subsActivos.map(s => <option key={s.id} value={s.id}>{s.razon_social}{s.especialidad ? ` · ${s.especialidad}` : ''}</option>)}
+                </select>
+              </div>
+              {form.subcontratista_id ? (
+                <div>
+                  <label className="flabel">Seguro / SCTR a cargo de</label>
+                  <select className="fi" value={form.seguro_a_cargo || 'empresa'} onChange={e=>setForm({...form, seguro_a_cargo:e.target.value})}>
+                    <option value="empresa">Empresa ejecutora (lo compramos nosotros)</option>
+                    <option value="subcontrato">El subcontrato</option>
+                  </select>
+                </div>
+              ) : <div/>}
+              {form.subcontratista_id && (
+                <div style={{ gridColumn:'1 / -1', display:'flex', alignItems:'center', gap:8 }}>
+                  <input id="es_jefe_sub" type="checkbox" checked={!!form.es_jefe_subcontrato} onChange={e=>setForm({...form, es_jefe_subcontrato:e.target.checked})}/>
+                  <label htmlFor="es_jefe_sub" style={{ fontSize:13, cursor:'pointer' }}>Es <strong>jefe</strong> de este subcontrato (lo normal: 1-2 por grupo)</label>
+                </div>
+              )}
+            </div>
+            {subsActivos.length === 0 && (
+              <div style={{ fontSize:11, color:'var(--tm)', marginTop:6 }}>Para agrupar bajo un subcontrato, primero crea el subcontratista en la sección <strong>Subcontratistas</strong>.</div>
+            )}
+          </div>
           {editingId && (
             <div><label className="flabel">Estado</label>
               <select className="fi" value={form.estado||'activo'} onChange={e=>setForm({...form, estado:e.target.value})}>
@@ -4907,6 +5016,14 @@ function PersonalPage({ showToast }) {
             { key: 'estado', label: 'Estado', options: [
               { value: 'activo', label: 'Activo' }, { value: 'inactivo', label: 'Inactivo' },
               { value: 'suspendido', label: 'Suspendido' }, { value: 'retirado', label: 'Retirado' },
+            ]},
+            { key: 'subcontratista_id', label: 'Pertenece a (subcontrato)', options: [
+              { value: '', label: 'Directo de la empresa' },
+              ...subsActivos.map(s => ({ value: s.id, label: s.razon_social })),
+            ]},
+            { key: 'seguro_a_cargo', label: 'Seguro a cargo de', options: [
+              { value: 'empresa', label: 'Empresa ejecutora' },
+              { value: 'subcontrato', label: 'El subcontrato' },
             ]},
           ]}
           showToast={showToast}

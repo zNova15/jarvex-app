@@ -22,6 +22,14 @@ export const db = new Dexie('JarvexDB');
 // Versión 20: Stock por estado/condición (buckets) para herramientas.
 // Subdivide el stock_actual por estado (nuevo/bueno/reparacion/baja) con foto
 // por bucket. Genérica vía item_tipo+item_id. Aditivo.
+// Versión 21: Personal agrupado bajo subcontratista (cuadrilla). Se indexa
+// subcontratista_id para listar "el personal de este subcontrato". Los campos
+// es_jefe_subcontrato y seguro_a_cargo son props sin índice (Dexie los acepta).
+// Aditivo: el personal existente queda con subcontratista_id undefined = directo.
+db.version(21).stores({
+  personal: 'id, obra_id, dni, estado, subcontratista_id, deleted_at, sync_status',
+});
+
 db.version(20).stores({
   stock_estados: 'id, obra_id, item_tipo, item_id, estado, deleted_at, sync_status, [item_tipo+item_id]',
 });

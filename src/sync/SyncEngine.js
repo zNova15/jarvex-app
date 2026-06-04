@@ -471,6 +471,10 @@ const FK_DEPS = {
   movimientos_maquinaria:    [{ campo: 'activo_id', tabla: 'activos_pesados' }],
   movimientos_insumos_emergencia: [{ campo: 'insumo_emergencia_id', tabla: 'insumos_emergencia' }],
   asistencia:                [{ campo: 'personal_id', tabla: 'personal' }],
+  // Un trabajador puede pertenecer a la cuadrilla de un subcontratista; si ese
+  // subcontratista aún es PENDING local, esperamos a que sincronice primero
+  // (FK opcional: se salta cuando subcontratista_id es null = personal directo).
+  personal:                  [{ campo: 'subcontratista_id', tabla: 'subcontratistas' }],
   recepcion_items:           [{ campo: 'recepcion_id', tabla: 'recepciones' }],
   oc_items:                  [{ campo: 'oc_id', tabla: 'ordenes_compra' }],
   cotizacion_items:          [{ campo: 'cotizacion_id', tabla: 'cotizaciones' }],

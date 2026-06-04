@@ -46,13 +46,31 @@ function SubcontratistasPage({ showToast }) {
   const isAdmin = myRol === 'admin';
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Subcontratistas', 'w') ?? false);
   const { data: subs } = window.__hooks.useSubcontratistas();
+  // Cuadrilla: personal de la obra activa agrupado por subcontratista. Los
+  // subcontratistas son globales pero el personal es por obra, así que la
+  // cuadrilla que se ve es la de la obra activa.
+  const obraId = useObraActiva();
+  const { data: personal } = window.__hooks.usePersonal(obraId);
 
   const [modal, setModal] = uS(null);
   const [editing, setEditing] = uS(null);
   const [form, setForm] = uS({});
   const [busy, setBusy] = uS(false);
+  const [crewOf, setCrewOf] = uS(null); // subcontratista cuya cuadrilla se ve
 
   const sorted = uM(() => [...(subs||[])].sort((a,b) => (a.razon_social||'').localeCompare(b.razon_social||'')), [subs]);
+  const crewBySub = uM(() => {
+    const m = new Map();
+    // Guard: usePersonal(null) devuelve personal de TODAS las obras (no []),
+    // así que sin obra activa no agrupamos — evita cuadrillas cross-obra.
+    if (!obraId) return m;
+    for (const p of (personal || [])) {
+      if (!p.subcontratista_id || p.deleted_at) continue;
+      if (!m.has(p.subcontratista_id)) m.set(p.subcontratista_id, []);
+      m.get(p.subcontratista_id).push(p);
+    }
+    return m;
+  }, [personal, obraId]);
 
   const consultarRUC = async () => {
     const ruc = (form.ruc || '').trim();
@@ -71,7 +89,7 @@ function SubcontratistasPage({ showToast }) {
   };
 
   const openNueva = () => {
-    setForm({ razon_social:'', ruc:'', contacto:'', telefono:'', email:'', direccion:'', especialidad:'', estado:'activo' });
+    setForm({ razon_social:'', ruc:'', contacto:'', telefono:'', email:'', direccion:'', especialidad:'', estado:'activo', seguro_a_cargo:'empresa' });
     setEditing(null);
     setModal(true);
   };
@@ -124,22 +142,34 @@ function SubcontratistasPage({ showToast }) {
         <div className="card" style={{ overflow:'hidden' }}>
           <table className="tbl">
             <thead><tr>
-              <th>Razón social</th><th>RUC</th><th>Especialidad</th><th>Contacto</th><th>Estado</th>
+              <th>Razón social</th><th>RUC</th><th>Especialidad</th><th>Estado</th><th>Seguro</th>
+              <th style={{ textAlign:'center' }}>Cuadrilla</th>
               <th style={{ textAlign:'center' }}>Acciones</th>
             </tr></thead>
             <tbody>
-              {sorted.map(s => (
+              {sorted.map(s => {
+                const crew = crewBySub.get(s.id) || [];
+                const jefes = crew.filter(p => p.es_jefe_subcontrato).length;
+                return (
                 <tr key={s.id}>
-                  <td className="col-p"><strong>{s.razon_social}</strong></td>
+                  <td className="col-p"><strong>{s.razon_social}</strong>{s.contacto ? <div style={{fontSize:11,color:'var(--tm)'}}>{s.contacto}{s.telefono?` · ${s.telefono}`:''}</div> : null}</td>
                   <td className="col-m">{s.ruc || '—'}</td>
                   <td>{s.especialidad || '—'}</td>
-                  <td>{s.contacto ? `${s.contacto} · ${s.telefono || ''}` : '—'}</td>
                   <td><span className={`badge ${s.estado==='activo'?'b-green':'b-gray'}`}>{s.estado}</span></td>
+                  <td><span className={`badge ${s.seguro_a_cargo==='subcontrato'?'b-gray':'b-green'}`} title="Quién asume el seguro/SCTR del personal de este subcontrato">{s.seguro_a_cargo==='subcontrato'?'Subcontrato':'Empresa'}</span></td>
+                  <td style={{ textAlign:'center' }}>
+                    {crew.length > 0 ? (
+                      <button className="btn btn-ghost btn-xs" onClick={()=>setCrewOf(s)} title="Ver cuadrilla (personal de la obra activa)">
+                        {crew.length}{jefes>0 ? ` · ${jefes} jefe${jefes>1?'s':''}` : ''}
+                      </button>
+                    ) : <span style={{color:'var(--tm)',fontSize:12}}>—</span>}
+                  </td>
                   <td style={{ textAlign:'center' }}>
                     <button className="btn btn-ghost btn-xs" onClick={()=>{setForm({...s}); setEditing(s); setModal(true);}}><JxIcon name="edit" size={11}/></button>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -162,7 +192,13 @@ function SubcontratistasPage({ showToast }) {
               </select>
             </div>
             <div style={{gridColumn:'1/-1'}}><label className="flabel">Razón social *</label><input className="fi" value={form.razon_social||''} onChange={e=>setForm({...form, razon_social:e.target.value})}/></div>
-            <div><label className="flabel">Especialidad</label><input className="fi" value={form.especialidad||''} placeholder="Instalaciones eléctricas" onChange={e=>setForm({...form, especialidad:e.target.value})}/></div>
+            <div><label className="flabel">Especialidad / tipo</label><input className="fi" value={form.especialidad||''} placeholder="Instalaciones eléctricas, mov. tierras…" onChange={e=>setForm({...form, especialidad:e.target.value})}/></div>
+            <div><label className="flabel">Seguro / SCTR a cargo de</label>
+              <select className="fi" value={form.seguro_a_cargo||'empresa'} onChange={e=>setForm({...form, seguro_a_cargo:e.target.value})} title="Default que se aplica al personal que agregues a este subcontrato">
+                <option value="empresa">Empresa ejecutora</option>
+                <option value="subcontrato">El subcontrato</option>
+              </select>
+            </div>
             <div><label className="flabel">Contacto</label><input className="fi" value={form.contacto||''} onChange={e=>setForm({...form, contacto:e.target.value})}/></div>
             <div><label className="flabel">Teléfono</label><input className="fi" value={form.telefono||''} onChange={e=>setForm({...form, telefono:e.target.value})}/></div>
             <div><label className="flabel">Email</label><input className="fi" value={form.email||''} onChange={e=>setForm({...form, email:e.target.value})}/></div>
@@ -174,6 +210,43 @@ function SubcontratistasPage({ showToast }) {
           </div>
         </Modal>
       )}
+
+      {crewOf && (() => {
+        const crew = (crewBySub.get(crewOf.id) || []).slice().sort((a,b) =>
+          (b.es_jefe_subcontrato?1:0) - (a.es_jefe_subcontrato?1:0) ||
+          `${a.nombres} ${a.apellidos}`.localeCompare(`${b.nombres} ${b.apellidos}`));
+        const activos = crew.filter(p => p.estado === 'activo').length;
+        const jefes = crew.filter(p => p.es_jefe_subcontrato).length;
+        const aseguraEmpresa = crew.filter(p => (p.seguro_a_cargo || 'empresa') === 'empresa').length;
+        return (
+          <Modal title={`Cuadrilla · ${crewOf.razon_social}`} icon="users" onClose={()=>setCrewOf(null)}>
+            <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:12 }}>
+              <span className="badge b-blue">{crew.length} trabajadores</span>
+              <span className="badge b-green">{activos} activos</span>
+              <span className="badge b-gray">{jefes} {jefes===1?'jefe':'jefes'}</span>
+              <span className="badge b-green" title="Personal cuyo seguro/SCTR asume la empresa ejecutora">{aseguraEmpresa} asegura empresa</span>
+            </div>
+            <div className="card" style={{ overflow:'hidden' }}>
+              <table className="tbl">
+                <thead><tr><th>Nombre</th><th>Cargo</th><th>Estado</th><th>Seguro</th></tr></thead>
+                <tbody>
+                  {crew.map(p => (
+                    <tr key={p.id}>
+                      <td className="col-p">{p.es_jefe_subcontrato && <span className="badge b-blue" style={{marginRight:6}}>Jefe</span>}{p.nombres} {p.apellidos}</td>
+                      <td>{p.cargo || '—'}</td>
+                      <td><span className={`badge ${p.estado==='activo'?'b-green':'b-gray'}`}>{p.estado}</span></td>
+                      <td>{(p.seguro_a_cargo||'empresa')==='subcontrato' ? 'Subcontrato' : 'Empresa'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ fontSize:11, color:'var(--tm)', marginTop:10 }}>
+              Cuadrilla de la obra activa. Para agregar o quitar personal de este subcontrato, edítalos en la sección <strong>Personal</strong> (campo «Vínculo laboral»).
+            </div>
+          </Modal>
+        );
+      })()}
     </div>
   );
 }
