@@ -620,6 +620,9 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
   const [decisionesPersonas, setDecisionesPersonas] = uS(() => new Map());
   const [scanning, setScanning] = uS(false);
   const [limpiando, setLimpiando] = uS(false);
+  // Backup multi-hoja: si el .xlsx trae varias hojas reconocidas (ej. el export
+  // histórico), guardamos la lista para que el usuario elija cuál importar.
+  const [multiHojas, setMultiHojas] = uS(null); // [{ name, headers, rows, formato }]
 
   const fmtMeta = formato ? FORMATOS[formato] : null;
   const esInsumos = formato === 'insumos_totales';
@@ -701,17 +704,30 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
   };
 
   const onFile = uC((f) => {
-    setFile(f); setParsed(null); setParseErr(null); setFormato(null); setResult(null);
+    setFile(f); setParsed(null); setParseErr(null); setFormato(null); setResult(null); setMultiHojas(null);
     if (!f) return;
     if (f.size > 10 * 1024 * 1024) { setParseErr('El archivo excede 10 MB'); return; }
     window.__excel.parseExcelFile(f)
       .then(p => {
+        // Backup multi-hoja: si hay ≥2 hojas con formato de movimientos reconocido
+        // (ej. el export histórico), dejamos que el usuario elija cuál importar.
+        const reconocidas = (p.sheets || [])
+          .map(s => ({ ...s, formato: detectFormato(s.headers) }))
+          .filter(s => s.formato && s.formato.startsWith('mov_'));
+        if (reconocidas.length > 1) { setMultiHojas(reconocidas); return; }
         setParsed(p);
         const det = detectFormato(p.headers);
         setFormato(det);
-        if (!det) setParseErr('No reconozco el formato. Revisá que sea uno de los 5 formatos de migración.');
+        if (!det) setParseErr('No reconozco el formato. Revisá que sea uno de los formatos de migración.');
       })
       .catch(e => setParseErr(e.message || 'Error al leer el archivo'));
+  }, []);
+
+  // Elegir una hoja del workbook de backup → carga su contenido en el flujo normal.
+  const pickHoja = uC((s) => {
+    setParsed({ headers: s.headers, rows: s.rows });
+    setFormato(s.formato);
+    setResult(null); setScanRows(null); setScanPersonas(null);
   }, []);
 
   // ── Cargas ────────────────────────────────────────────────────────
@@ -1488,6 +1504,26 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           </label>
 
           {parseErr && <div className="alert-banner" style={{ marginTop: 12, background: 'rgba(231,76,60,0.08)', border: '1px solid rgba(231,76,60,0.3)', color: 'var(--red)' }}><JxIcon name="alert" size={14} color="var(--red)" /><span>{parseErr}</span></div>}
+
+          {multiHojas && (
+            <div className="card card-p" style={{ marginTop: 12, background: 'rgba(155,89,182,0.06)', border: '1px solid rgba(155,89,182,0.3)' }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: '#9B59B6', marginBottom: 8 }}>
+                <JxIcon name="file" size={14} color="#9B59B6" /> Backup con {multiHojas.length} hojas de movimientos. Elegí cuál importar (una por vez):
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {multiHojas.map(s => {
+                  const meta = FORMATOS[s.formato];
+                  const active = formato === s.formato && parsed?.rows === s.rows;
+                  return (
+                    <button key={s.name} className={`btn btn-sm ${active ? 'btn-amber' : 'btn-ghost'}`} onClick={() => pickHoja(s)}>
+                      <JxIcon name={meta?.icon || 'file'} size={12} /> {s.name} · {s.rows.length} filas
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 8 }}>Las hojas <strong>Personal</strong> y catálogos (<strong>CAT *</strong>) se importan desde <strong>Importar → genérico</strong>, no acá.</div>
+            </div>
+          )}
 
           {parsed && formato && (
             <div className="card card-p" style={{ marginTop: 12 }}>

@@ -14,10 +14,16 @@ export async function parseExcelFile(file) {
       try {
         const data = new Uint8Array(e.target.result);
         const workbook = XLSX.read(data, { type: 'array' });
-        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-        const json = XLSX.utils.sheet_to_json(firstSheet, { defval: null, raw: false });
-        const headers = json.length > 0 ? Object.keys(json[0]) : [];
-        resolve({ headers, rows: json, sheetName: workbook.SheetNames[0] });
+        // Todas las hojas (para re-importar un workbook de backup multi-hoja).
+        const sheets = (workbook.SheetNames || []).map((name) => {
+          const ws = workbook.Sheets[name];
+          const rows = XLSX.utils.sheet_to_json(ws, { defval: null, raw: false });
+          const headers = rows.length > 0 ? Object.keys(rows[0]) : [];
+          return { name, headers, rows };
+        });
+        const first = sheets[0] || { name: workbook.SheetNames[0], headers: [], rows: [] };
+        // Backward-compatible: headers/rows = primera hoja (como antes) + sheets.
+        resolve({ headers: first.headers, rows: first.rows, sheetName: first.name, sheets });
       } catch (e) { reject(e); }
     };
     reader.onerror = reject;
@@ -187,11 +193,14 @@ export const MODULES = {
   },
   activos_pesados: {
     table: 'activos_pesados',
-    requiredFields: ['placa','marca'],
-    fields: ['placa','marca','modelo','tipo','año','año_fabricacion','propietario','estado'],
+    requiredFields: ['marca'],
+    fields: ['nombre','placa','marca','modelo','tipo','año','año_fabricacion','propietario','estado'],
     transform: (row) => ({
-      placa: String(row.placa).trim().toUpperCase(),
-      marca: String(row.marca).trim(),
+      // La maquinaria menor (la que se mueve por cantidad) se identifica por
+      // `nombre`, no por placa. Toleramos placa/marca vacíos sin romper.
+      nombre: row.nombre ? String(row.nombre).trim() : null,
+      placa: row.placa ? String(row.placa).trim().toUpperCase() : null,
+      marca: row.marca ? String(row.marca).trim() : null,
       modelo: row.modelo || null,
       tipo: row.tipo || 'volquete',
       año_fabricacion: parseInt(row.año || row.año_fabricacion, 10) || null,

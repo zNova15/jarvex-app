@@ -5,6 +5,7 @@ import { calcularPresupuesto, fmtSoles } from "../lib/presupuesto-obra.js";
 import { aplicarNombresDesdePartidas } from "../lib/partida-nombres.js";
 import { MigracionFlow, descargarPlantilla as descargarPlantillaMigracion } from "./jx-migracion-import.jsx";
 import { FORMATOS as MIGRACION_FORMATOS } from "../lib/migracion-parser.js";
+import { exportarHistoricoExcel } from "../lib/export-historico.js";
 const { useState: uSI, useMemo: uMI, useEffect: uEI, useRef: uRI, useCallback: uCI } = React;
 
 // ── Obra activa helper (poll Dexie) ──────────────────────────
@@ -2384,6 +2385,7 @@ function ImportarPage({ showToast }) {
 
   const [tab, setTab] = uSI('importar');
   const [step, setStep] = uSI(0);
+  const [expBusy, setExpBusy] = uSI(false); // exportando histórico (Super Admin)
   const [srcId, setSrc] = uSI(null);
   const [modId, setMod] = uSI(null);
   const [file, setFile] = uSI(null);
@@ -2418,8 +2420,20 @@ function ImportarPage({ showToast }) {
     setParseErr(null);
     window.__excel.parseExcelFile(file)
       .then(p => {
-        setParsed(p);
-        if (modCfg) setMapping(autoMap(modCfg.fields, p.headers));
+        // Backup multi-hoja (export histórico): si el workbook trae varias hojas,
+        // elegimos la que corresponde al módulo seleccionado (por nombre de hoja
+        // o porque sus columnas contienen los campos requeridos del módulo).
+        let chosen = p;
+        if (p.sheets && p.sheets.length > 1 && modId) {
+          const MOD_TO_SHEET = { personal:'Personal', materiales:'CAT Materiales', herramientas:'CAT Herramientas', proveedores:'Proveedores', subcontratistas:'Subcontratistas', activos_pesados:'CAT Maquinaria' };
+          const norm = (s) => String(s||'').trim().toLowerCase();
+          const wanted = MOD_TO_SHEET[modId];
+          const match = (wanted && p.sheets.find(s => norm(s.name) === norm(wanted)))
+            || (modCfg && p.sheets.find(s => (modCfg.requiredFields||[]).every(f => (s.headers||[]).includes(f))));
+          if (match) chosen = { headers: match.headers, rows: match.rows, sheetName: match.name, sheets: p.sheets };
+        }
+        setParsed(chosen);
+        if (modCfg) setMapping(autoMap(modCfg.fields, chosen.headers));
       })
       .catch(e => { setParseErr(e.message || 'Error al leer archivo'); setParsed(null); });
   }, [file]);
@@ -2972,6 +2986,39 @@ function ImportarPage({ showToast }) {
               </div>
             ))}
           </div>
+
+          {/* Exportar histórico completo (backup re-importable) — solo Super Admin */}
+          {superAdmin && (
+            <div style={{ marginTop:28 }}>
+              <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
+                <JxIcon name="download" size={16} color="#16A34A"/>
+                <span style={{ fontSize:14, fontWeight:800, color:'#16A34A' }}>Exportar histórico (backup Excel)</span>
+                <span className="badge b-gray" style={{ fontSize:9.5 }}>Super Admin</span>
+              </div>
+              <div className="info-banner" style={{ marginBottom:14, background:'rgba(22,163,74,0.08)', border:'1px solid rgba(22,163,74,0.3)' }}>
+                <JxIcon name="download" size={14} color="#16A34A"/>
+                <span>Descarga <strong>un Excel</strong> con todo el histórico de la obra activa, una hoja por categoría (movimientos de materiales, herramientas, EPP, maquinaria, emergencia, + personal y catálogos). Guardalo como respaldo. <strong>Para restaurar tras un borrado general:</strong> (1) importá las hojas <em>Personal</em>, <em>Proveedores</em> y <em>Subcontratistas</em> desde <strong>Importar → genérico</strong>; (2) importá las hojas <em>MOV *</em> desde <strong>Migración histórica</strong> — recrean los insumos faltantes y los movimientos con su fecha real. Las hojas <em>CAT *</em> son una foto de referencia (los insumos se recrean al cargar los movimientos).</span>
+              </div>
+              <div className="card card-p" style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:16, flexWrap:'wrap' }}>
+                <div style={{ fontSize:12.5, color:'var(--ts)' }}>
+                  Respaldo de la obra activa en formato re-importable. {obraId ? '' : <span style={{ color:'var(--red)' }}>No hay obra activa.</span>}
+                </div>
+                <button className="btn btn-green" disabled={expBusy || !obraId}
+                  onClick={async ()=>{
+                    if (!obraId) { showToast('No hay obra activa para exportar', 'red'); return; }
+                    setExpBusy(true);
+                    try {
+                      const obra = await window.__db.obras.get(obraId);
+                      const res = await exportarHistoricoExcel(obraId, obra?.nombre_obra || obra?.nombre || 'obra');
+                      showToast(`Histórico exportado: ${res.totalMovs} movimientos · ${res.hojas.length} hojas → ${res.archivo}`, 'green');
+                    } catch (e) { showToast('Error al exportar: ' + (e.message || e), 'red'); }
+                    finally { setExpBusy(false); }
+                  }}>
+                  <JxIcon name="download" size={14}/>{expBusy ? 'Exportando…' : 'Exportar histórico (.xlsx)'}
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Plantillas de migración histórica — solo Super Admin */}
           {superAdmin && (
