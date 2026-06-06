@@ -57,7 +57,7 @@ async function cargarContexto(obraId) {
     movMat, movHerr, movEpp, movMaq, movEmer,
     mantsAll, horas, comb, caja, asist,
     mats, herrs, epps, activos, insEmer,
-    personal, subs, provs, ubic, evid,
+    personal, subs, provs, ubic, evid, fren,
   ] = await Promise.all([
     porObra('movimientos_materiales'), porObra('movimientos_herramientas'), porObra('movimientos_epp'),
     porObra('movimientos_maquinaria'), porObra('movimientos_insumos_emergencia'),
@@ -66,7 +66,7 @@ async function cargarContexto(obraId) {
     porObra('asistencia').catch(() => []),
     porObra('materiales'), porObra('herramientas'), porObra('epps'), todos('activos_pesados'), porObra('insumos_emergencia'),
     porObra('personal'), todos('subcontratistas'), todos('proveedores'), porObra('ubicaciones_obra'),
-    porObra('evidencias').catch(() => []),
+    porObra('evidencias').catch(() => []), porObra('frentes_obra').catch(() => []),
   ]);
   // mantenimientos_maquinaria NO tiene obra_id → lo scopeamos a los activos de
   // esta obra (asignados a la obra o que tienen movimientos en ella).
@@ -77,10 +77,10 @@ async function cargarContexto(obraId) {
   const mants = (mantsAll || []).filter((m) => activoIdsObra.has(m.activo_id));
   return {
     movMat, movHerr, movEpp, movMaq, movEmer, mants, horas, comb, caja, asist,
-    mats, herrs, epps, activos, insEmer, personal, subs, provs, ubic, evid,
+    mats, herrs, epps, activos, insEmer, personal, subs, provs, ubic, evid, fren,
     matById: byId(mats), herrById: byId(herrs), eppById: byId(epps), activoById: byId(activos),
     insEmerById: byId(insEmer), personalById: byId(personal), subsById: byId(subs),
-    provById: byId(provs), ubicById: byId(ubic),
+    provById: byId(provs), ubicById: byId(ubic), frenById: byId(fren),
   };
 }
 
@@ -196,9 +196,18 @@ export const DATASETS = [
       if (f?.responsable && f.responsable.startsWith('sub:')) { const id = f.responsable.slice(4); list = list.filter((p) => p.subcontratista_id === id); }
       if (q) list = list.filter((p) => `${p.nombres} ${p.apellidos} ${p.dni}`.toLowerCase().includes(q));
       list.sort((a, b) => `${a.apellidos} ${a.nombres}`.localeCompare(`${b.apellidos} ${b.nombres}`));
-      const rows = list.map((p) => [p.nombres || '', p.apellidos || '', p.dni || '', p.cargo || '', p.area || '', p.estado || 'activo', p.subcontratista_id ? 'Subcontrato' : 'Directo', p.subcontratista_id ? (c.subsById.get(p.subcontratista_id)?.razon_social || '') : '', p.es_jefe_subcontrato ? 'Sí' : '', p.seguro_a_cargo || '', p.fecha_ingreso || '', p.fecha_nacimiento || '', p.telefono || '']);
-      return { headers: ['Nombres', 'Apellidos', 'DNI', 'Cargo', 'Área', 'Estado', 'Vínculo', 'Subcontrato', 'Jefe Subcontrato', 'Seguro a cargo', 'Fecha Ingreso', 'Fecha Nac.', 'Teléfono'], rows };
+      const rows = list.map((p) => [p.nombres || '', p.apellidos || '', p.dni || '', p.cargo || '', p.area || '', p.frente_id ? (c.frenById.get(p.frente_id)?.nombre || '') : '', p.estado || 'activo', p.subcontratista_id ? 'Subcontrato' : 'Directo', p.subcontratista_id ? (c.subsById.get(p.subcontratista_id)?.razon_social || '') : '', p.es_jefe_subcontrato ? 'Sí' : '', p.seguro_a_cargo || '', p.fecha_ingreso || '', p.fecha_nacimiento || '', p.telefono || '']);
+      return { headers: ['Nombres', 'Apellidos', 'DNI', 'Cargo', 'Área', 'Frente', 'Estado', 'Vínculo', 'Subcontrato', 'Jefe Subcontrato', 'Seguro a cargo', 'Fecha Ingreso', 'Fecha Nac.', 'Teléfono'], rows };
     } },
+  { id: 'frentes', label: 'Frentes de Trabajo', icon: 'flag', color: '#D35400', grupo: 'RRHH', filtrable: false,
+    build: (c) => ({ headers: ['Frente', 'Descripción', 'Ingeniero a cargo', 'Orden', 'Activo'],
+      rows: (c.fren || []).slice().sort((a, b) => Number(a.orden ?? 99) - Number(b.orden ?? 99)).map((f) => [f.nombre || '', f.descripcion || '', nombrePersona(c.personalById.get(f.ingeniero_id)), f.orden ?? '', f.activo !== false ? 'Sí' : 'No']) }) },
+  { id: 'proveedores', label: 'Proveedores', icon: 'truck', color: '#2C3E50', grupo: 'Maestros', filtrable: false,
+    build: (c, f) => { const q = (f?.q || '').toLowerCase(); let list = (c.provs || []); if (q) list = list.filter((p) => `${p.razon_social || ''} ${p.ruc || ''}`.toLowerCase().includes(q)); list = list.slice().sort((a, b) => (a.razon_social || '').localeCompare(b.razon_social || ''));
+      return { headers: ['Razón social', 'RUC', 'Contacto', 'Teléfono', 'Correo', 'Tipo', 'Dirección'], rows: list.map((p) => [p.razon_social || '', p.ruc || '', p.contacto || '', p.telefono || '', p.correo || p.email || '', p.tipo_proveedor || '', p.direccion || '']) }; } },
+  { id: 'subcontratistas', label: 'Subcontratistas', icon: 'users', color: '#8E44AD', grupo: 'Maestros', filtrable: false,
+    build: (c, f) => { const q = (f?.q || '').toLowerCase(); let list = (c.subs || []); if (q) list = list.filter((s) => `${s.razon_social || ''} ${s.ruc || ''}`.toLowerCase().includes(q)); list = list.slice().sort((a, b) => (a.razon_social || '').localeCompare(b.razon_social || ''));
+      return { headers: ['Razón social', 'RUC', 'Contacto', 'Teléfono', 'Correo', 'Dirección', 'Especialidad', 'Estado', 'Seguro a cargo'], rows: list.map((s) => [s.razon_social || '', s.ruc || '', s.contacto || '', s.telefono || '', s.correo || s.email || '', s.direccion || '', s.especialidad || '', s.estado || '', s.seguro_a_cargo || '']) }; } },
   { id: 'asistencia', label: 'Asistencia', icon: 'calendar', color: '#1ABC9C', grupo: 'RRHH', filtrable: true,
     build: (c, f) => {
       const nombre = (m) => nombrePersona(c.personalById.get(m.personal_id));

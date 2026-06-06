@@ -6,6 +6,7 @@ import { aplicarNombresDesdePartidas } from "../lib/partida-nombres.js";
 import { MigracionFlow, descargarPlantilla as descargarPlantillaMigracion } from "./jx-migracion-import.jsx";
 import { FORMATOS as MIGRACION_FORMATOS } from "../lib/migracion-parser.js";
 import { DATASETS as EXPORT_DATASETS, exportarDataset, exportarTodo, contarDatasets, exportarFotosZip } from "../lib/export-historico.js";
+import { restaurarBackup, restaurarFotosZip } from "../lib/restore-backup.js";
 const { useState: uSI, useMemo: uMI, useEffect: uEI, useRef: uRI, useCallback: uCI } = React;
 
 // ── Obra activa helper (poll Dexie) ──────────────────────────
@@ -2429,6 +2430,24 @@ function ImportarPage({ showToast }) {
     finally { setExpBusy(null); }
   };
 
+  // Restaurar backup (Super Admin): .xlsx de datos + .zip de fotos opcional.
+  const [restoreFile, setRestoreFile] = uSI(null);
+  const [restoreZip, setRestoreZip] = uSI(null);
+  const [restoreBusy, setRestoreBusy] = uSI(false);
+  const doRestore = async () => {
+    if (!obraId) { showToast('No hay obra activa', 'red'); return; }
+    if (!restoreFile) { showToast('Elegí el archivo .xlsx del backup', 'red'); return; }
+    if (!confirm('Restaurar el backup en la OBRA ACTIVA. Crea lo que falte (no duplica lo que ya existe). ¿Continuar?')) return;
+    setRestoreBusy(true);
+    try {
+      const r = await restaurarBackup(restoreFile, { userId, obraId, isPrueba: !!appMode.isPrueba });
+      let msg = `Restaurado: ${r.movimientos} movs · ${r.personal} personal · ${r.inventario} insumos · ${r.frentes} frentes · ${r.proveedores} prov · ${r.subcontratistas} subc${r.saltados ? ` · ${r.saltados} ya existían` : ''}${r.errores ? ` · ${r.errores} errores` : ''}`;
+      if (restoreZip) { const f = await restaurarFotosZip(restoreZip, { userId, obraId, isPrueba: !!appMode.isPrueba }); msg += ` · ${f.ok} fotos`; }
+      showToast(msg, r.errores ? 'amber' : 'green');
+    } catch (e) { showToast('Error al restaurar: ' + (e.message || e), 'red'); }
+    finally { setRestoreBusy(false); }
+  };
+
   const exportarZipFotos = async () => {
     if (!obraId) { showToast('No hay obra activa', 'red'); return; }
     setExpBusy('__fotos__');
@@ -3116,6 +3135,24 @@ function ImportarPage({ showToast }) {
               <button className="btn btn-ghost btn-sm" onClick={()=>setExpFiltros({desde:'',hasta:'',q:'',responsable:''})}>Limpiar filtros</button>
               <button className="btn btn-green" disabled={!obraId || !!expBusy} onClick={()=>exportarUno('__todo__')}>
                 <JxIcon name="download" size={14}/>{expBusy==='__todo__'?'Exportando…':'Exportar TODO (un Excel)'}
+              </button>
+            </div>
+          </div>
+
+          {/* Restaurar backup */}
+          <div className="card card-p" style={{ marginBottom:16, background:'rgba(155,89,182,0.06)', border:'1px solid rgba(155,89,182,0.3)' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
+              <JxIcon name="refresh" size={15} color="#9B59B6"/>
+              <span style={{ fontSize:13, fontWeight:800, color:'#9B59B6' }}>Restaurar backup</span>
+            </div>
+            <div style={{ fontSize:12, color:'var(--ts)', marginBottom:10 }}>
+              Subí el <strong>.xlsx</strong> exportado (y opcional el <strong>.zip</strong> de fotos) para rearmar la obra tras un borrado general. Restaura <strong>frentes, proveedores, subcontratistas, inventario, personal y movimientos</strong> re-resolviendo por nombre, sin duplicar lo que ya existe (podés correrlo varias veces). Las fotos vuelven como galería por categoría (el vínculo a cada registro no se conserva). No restaura partidas, OC ni valorizaciones.
+            </div>
+            <div style={{ display:'flex', gap:10, flexWrap:'wrap', alignItems:'flex-end' }}>
+              <div><label className="flabel">Datos (.xlsx) *</label><input type="file" accept=".xlsx,.xls" className="fi" style={{ padding:6 }} onChange={e=>setRestoreFile(e.target.files?.[0]||null)}/></div>
+              <div><label className="flabel">Fotos (.zip) — opcional</label><input type="file" accept=".zip" className="fi" style={{ padding:6 }} onChange={e=>setRestoreZip(e.target.files?.[0]||null)}/></div>
+              <button className="btn btn-amber" disabled={!obraId || restoreBusy || !restoreFile} onClick={doRestore}>
+                <JxIcon name="refresh" size={14}/>{restoreBusy ? 'Restaurando…' : 'Restaurar en obra activa'}
               </button>
             </div>
           </div>
