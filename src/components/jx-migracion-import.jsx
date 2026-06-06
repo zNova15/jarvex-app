@@ -29,15 +29,18 @@ import {
   normTxt,
 } from "../lib/migracion-parser.js";
 
-// Plantillas descargables por formato (headers + 1 fila de ejemplo).
+// Plantillas descargables por formato. Columnas RICAS y organizadas (mismo
+// formato que produce el Export histórico → round-trip completo). El parser
+// (migracion-parser.js) las lee por nombre flexible; las columnas extra son
+// opcionales (si las dejás vacías, no pasa nada).
 export const TEMPLATES = {
   insumos_emergencia: { headers: ['ID', 'Insumo de Emergencia', 'Categoría', 'Unidad', 'Fecha de creacion'], sample: ['1', 'Botiquín portátil', 'Primeros auxilios', 'kit', '25/05/2026'] },
-  mov_materiales:     { headers: ['ID', 'Fecha de Movimiento', 'Material', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Proveedor/Almacen de Salida', 'Resposable (Salida)', 'Lugar llega / Frente'], sample: ['1', '21/05/2026', 'Yeso 7kg', 'Bolsa', '20', 'Ingreso', 'Ferretería X', '', 'Almacen Central'] },
-  mov_epp:            { headers: ['ID', 'Fecha de Movimiento', 'EPP', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Proveedor/Responsable', 'Lugar de llegada'], sample: ['1', '21/05/2026', 'Casco Blanco', 'Unidad', '20', 'Ingreso', '', 'Almacen Central'] },
-  mov_herramientas:   { headers: ['ID', 'Fecha de Movimiento', 'Herramientas', 'Estado', 'Cantidad', 'Tipo de Movimiento', 'Proveedor/Responsible', 'Lugar llega / Frente'], sample: ['1', '21/05/2026', 'Palas rectas', 'Nuevo', '12', 'Ingreso', 'Almacenero', 'Almacen Central'] },
-  mov_maquinaria:     { headers: ['ID', 'Fecha de Movimiento', 'Maquinaria', 'Estado', 'Cantidad', 'Tipo de Movimiento', 'Proveedor/Responsable', 'Lugar de llegada'], sample: ['1', '21/05/2026', 'Rotomartillo', 'Nuevo', '1', 'Ingreso', '', 'Almacen Central'] },
-  mov_emergencia:     { headers: ['ID', 'Fecha de Movimiento', 'Insumo de Emergencia', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Proveedor/Responsable', 'Lugar de llegada'], sample: ['1', '21/05/2026', 'Extintor PQS 6kg', 'Und', '4', 'Ingreso', 'Seguridad SAC', 'Almacen Central'] },
-  mov_maquinaria_asignacion: { headers: ['ID', 'Fecha', 'Equipo', 'Movimiento', 'Tipo destino', 'Asignado a', 'Observación'], sample: ['1', '21/05/2026', 'Excavadora CAT 320', 'Salida', 'Personal', 'Juan Pérez', 'Frente A'] },
+  mov_materiales:     { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Material', 'Categoría', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Almacén', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente / Zona', 'Documento', 'Precio Unit. (S/)', 'Observaciones'], sample: ['1', '21/05/2026', '08:30', 'Yeso 7kg', 'Yeso', 'Bolsa', '20', 'Ingreso', 'Almacén Central', 'Ferretería X', '', '', '', 'GR-001', '12.50', ''] },
+  mov_herramientas:   { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Herramientas', 'Estado', 'Cantidad', 'Tipo de Movimiento', 'Almacén', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente / Zona', 'Observaciones'], sample: ['1', '21/05/2026', '08:30', 'Palas rectas', 'Nuevo', '12', 'Ingreso', 'Almacén Central', 'Ferretería X', '', '', '', ''] },
+  mov_epp:            { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'EPP', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Almacén', 'Proveedor', 'Responsable', 'Subcontrato', 'Documento', 'Precio Unit. (S/)', 'Observaciones'], sample: ['1', '21/05/2026', '08:30', 'Casco Blanco', 'Unidad', '20', 'Ingreso', 'Almacén Central', 'Seguridad SAC', '', '', '', '8.00', ''] },
+  mov_maquinaria:     { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Maquinaria', 'Estado', 'Cantidad', 'Tipo de Movimiento', 'Almacén', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente / Zona', 'Documento', 'Observaciones'], sample: ['1', '21/05/2026', '08:30', 'Rotomartillo', 'Nuevo', '1', 'Ingreso', 'Almacén Central', '', '', '', '', '', ''] },
+  mov_emergencia:     { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Insumo de Emergencia', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente / Zona', 'Documento', 'Observaciones'], sample: ['1', '21/05/2026', '08:30', 'Extintor PQS 6kg', 'Und', '4', 'Ingreso', 'Seguridad SAC', '', '', '', '', ''] },
+  mov_maquinaria_asignacion: { headers: ['ID', 'Fecha', 'Hora', 'Equipo', 'Movimiento', 'Tipo destino', 'Asignado a', 'Frente / Zona', 'Observación'], sample: ['1', '21/05/2026', '08:30', 'Excavadora CAT 320', 'Salida', 'Personal', 'Juan Pérez', 'Frente A', ''] },
 };
 
 export async function descargarPlantilla(formato) {
@@ -139,8 +142,9 @@ async function escanearMovs(movs, formato, obraId) {
 function nombrePersonaDeMov(m, formato) {
   if (formato === 'mov_maquinaria_asignacion') return m.tipo === 'salida' ? (m.destinoNombre || '') : '';
   if (m.tipo !== 'salida') return '';
-  if (formato === 'mov_materiales') return m.responsable || '';
-  return m.responsable || m.origen || ''; // epp / herramientas / maquinaria / emergencia
+  // Plantilla mejorada: columna explícita "Subcontrato" cuenta como responsable.
+  if (formato === 'mov_materiales') return m.responsable || m.subcontrato || '';
+  return m.responsable || m.subcontrato || m.origen || ''; // epp / herramientas / maquinaria / emergencia
 }
 
 // Escanea los responsables únicos de las salidas y los clasifica contra
@@ -845,27 +849,31 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         afectados.add(mat.id);
         const obsExtra = [];
         let proveedor_id = null, responsable_id = null, subcontratista_id = null, destino_tipo = null, frente = null, ubicId = null;
+        // Plantilla mejorada: columnas separadas (con fallback a la combinada vieja).
+        const prov = m.proveedor || m.origen;
+        const alm = m.almacen || (m.tipo === 'entrada' ? m.lugar : m.origen);
+        const quien = m.responsable || m.subcontrato;
 
         if (m.tipo === 'entrada') {
-          if (m.origen) { proveedor_id = matchProveedor(m.origen, proveedores); if (!proveedor_id) obsExtra.push(`Proveedor: ${m.origen}`); }
-          if (m.lugar) ubicId = await resolverUbic(m.lugar);
+          if (prov) { proveedor_id = matchProveedor(prov, proveedores); if (!proveedor_id) obsExtra.push(`Proveedor: ${prov}`); }
+          if (alm) ubicId = await resolverUbic(alm);
         } else {
-          if (m.origen) ubicId = await resolverUbic(m.origen);
-          if (m.responsable) {
-            const rpHit = rp?.get(normTxt(m.responsable));
+          if (alm) ubicId = await resolverUbic(alm);
+          if (quien) {
+            const rpHit = rp?.get(normTxt(quien));
             if (rpHit?.tipo === 'personal') { responsable_id = rpHit.id; destino_tipo = 'personal'; }
             else if (rpHit?.tipo === 'subcontratista') { subcontratista_id = rpHit.id; destino_tipo = 'subcontratista'; }
-            else { responsable_id = matchPersonal(m.responsable, personal); if (responsable_id) destino_tipo = 'personal'; else obsExtra.push(`Responsable: ${m.responsable}`); }
+            else { responsable_id = matchPersonal(quien, personal); if (responsable_id) destino_tipo = 'personal'; else obsExtra.push(`Responsable: ${quien}`); }
           }
-          if (m.lugar) frente = m.lugar;
+          frente = m.frente || m.lugar || null;
         }
-        const obs = ['Migración histórica', ...obsExtra].join(' · ');
+        const obs = ['Migración histórica', ...(m.observaciones ? [m.observaciones] : []), ...obsExtra].join(' · ');
         const r = await addMovIdem('movimientos_materiales', {
           obra_id: obraId, material_id: mat.id, fecha: m.fecha || new Date().toISOString().slice(0, 10),
-          hora: null, tipo_movimiento: m.tipo, cantidad: m.cantidad,
+          hora: m.hora || null, tipo_movimiento: m.tipo, cantidad: m.cantidad,
           unidad: m.unidad || mat.unidad || 'Und',
           responsable_id, subcontratista_id, destino_tipo, proveedor_id, frente_zona: frente, partida_id: null, ubicacion_id: ubicId,
-          documento_asociado: null, precio_unitario_real: null, observaciones: obs,
+          documento_asociado: m.documento || null, precio_unitario_real: (m.precio ?? null), observaciones: obs,
         }, userId, null, sigMov(obraId, 'mov_materiales', m));
         if (r.dup) { duplicados++; continue; }
 
@@ -935,26 +943,31 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         afectados.add(epp.id);
         const obsExtra = [];
         let proveedor_id = null, personal_id = null, subcontratista_id = null, destino_tipo = null, ubicId = null;
+        const prov = m.proveedor || m.origen;
+        const quien = m.responsable || m.subcontrato || m.origen;
 
         if (m.tipo === 'entrada') {
-          if (m.origen) { proveedor_id = matchProveedor(m.origen, proveedores); if (!proveedor_id) obsExtra.push(`Proveedor: ${m.origen}`); }
-          if (m.lugar) ubicId = await resolverUbic(m.lugar);
+          if (prov) { proveedor_id = matchProveedor(prov, proveedores); if (!proveedor_id) obsExtra.push(`Proveedor: ${prov}`); }
+          const almIn = m.almacen || m.lugar; // almacén de llegada (nuevo: 'Almacén'; viejo: 'Lugar de llegada')
+          if (almIn) ubicId = await resolverUbic(almIn);
         } else {
-          const quien = m.responsable || m.origen;
           if (quien) {
             const rpHit = rp?.get(normTxt(quien));
             if (rpHit?.tipo === 'personal') { personal_id = rpHit.id; destino_tipo = 'personal'; }
             else if (rpHit?.tipo === 'subcontratista') { subcontratista_id = rpHit.id; destino_tipo = 'subcontratista'; }
             else { personal_id = matchPersonal(quien, personal); destino_tipo = personal_id ? 'personal' : null; if (!personal_id) obsExtra.push(`Entregado a: ${quien}`); }
           }
-          if (m.lugar) obsExtra.push(`Lugar: ${m.lugar}`);
-          ubicId = epp.ubicacion_id || (ubicIdx.rows[0]?.id ?? null);
+          const fr = m.frente || m.lugar; if (fr) obsExtra.push(`Frente: ${fr}`);
+          // Salida: solo el 'Almacén' explícito (nuevo) define la ubicación de
+          // origen; sin él, el almacén casa del EPP (preserva comportamiento viejo).
+          ubicId = (m.almacen ? await resolverUbic(m.almacen) : null) || epp.ubicacion_id || (ubicIdx.rows[0]?.id ?? null);
         }
-        const obs = ['Migración histórica', ...obsExtra].join(' · ');
+        const obs = ['Migración histórica', ...(m.observaciones ? [m.observaciones] : []), ...obsExtra].join(' · ');
         const r = await addMovIdem('movimientos_epp', {
           obra_id: obraId, epp_id: epp.id, fecha: m.fecha || new Date().toISOString().slice(0, 10),
-          hora: null, tipo_movimiento: m.tipo, cantidad: m.cantidad, unidad: m.unidad || epp.unidad || 'Und',
-          personal_id, subcontratista_id, destino_tipo, proveedor_id, ubicacion_id: ubicId, motivo: m.tipo === 'entrada' ? 'reposicion' : 'dotacion', observaciones: obs,
+          hora: m.hora || null, tipo_movimiento: m.tipo, cantidad: m.cantidad, unidad: m.unidad || epp.unidad || 'Und',
+          personal_id, subcontratista_id, destino_tipo, proveedor_id, ubicacion_id: ubicId, motivo: m.tipo === 'entrada' ? 'reposicion' : 'dotacion',
+          documento_asociado: m.documento || null, precio_unitario_real: (m.precio ?? null), observaciones: obs,
         }, userId, null, sigMov(obraId, 'mov_epp', m));
         if (r.dup) { duplicados++; continue; }
 
@@ -1024,25 +1037,28 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         afectados.add(herr.id);
         const obsExtra = [];
         let proveedor_id = null, responsable_id = null, subcontratista_id = null, destino_tipo = null, frente = null, ubicId = null;
+        const prov = m.proveedor || m.origen;
+        const alm = m.almacen || (m.tipo === 'entrada' ? m.lugar : m.origen);
+        const quien = m.responsable || m.subcontrato || m.origen;
 
         if (m.tipo === 'entrada') {
-          if (m.origen) { proveedor_id = matchProveedor(m.origen, proveedores); if (!proveedor_id) obsExtra.push(`Proveedor: ${m.origen}`); }
-          if (m.lugar) ubicId = await resolverUbic(m.lugar);
+          if (prov) { proveedor_id = matchProveedor(prov, proveedores); if (!proveedor_id) obsExtra.push(`Proveedor: ${prov}`); }
+          if (alm) ubicId = await resolverUbic(alm);
         } else {
-          const quien = m.responsable || m.origen;
+          if (alm) ubicId = await resolverUbic(alm);
           if (quien) {
             const rpHit = rp?.get(normTxt(quien));
             if (rpHit?.tipo === 'personal') { responsable_id = rpHit.id; destino_tipo = 'personal'; }
             else if (rpHit?.tipo === 'subcontratista') { subcontratista_id = rpHit.id; destino_tipo = 'subcontratista'; }
             else { responsable_id = matchPersonal(quien, personal); if (responsable_id) destino_tipo = 'personal'; else obsExtra.push(`Responsable: ${quien}`); }
           }
-          if (m.lugar) frente = m.lugar;
+          frente = m.frente || m.lugar || null;
         }
-        const obs = ['Migración histórica', ...obsExtra].join(' · ');
+        const obs = ['Migración histórica', ...(m.observaciones ? [m.observaciones] : []), ...obsExtra].join(' · ');
         // accion = tipo_movimiento (valores válidos del CHECK legacy).
         const r = await addMovIdem('movimientos_herramientas', {
           obra_id: obraId, herramienta_id: herr.id, fecha: m.fecha || new Date().toISOString().slice(0, 10),
-          hora: null, accion: m.tipo, tipo_movimiento: m.tipo, cantidad: m.cantidad,
+          hora: m.hora || null, accion: m.tipo, tipo_movimiento: m.tipo, cantidad: m.cantidad,
           responsable_id, subcontratista_id, destino_tipo, proveedor_id, frente_zona: frente, ubicacion_id: ubicId, observaciones: obs,
         }, userId, null, sigMov(obraId, 'mov_herramientas', m));
         if (r.dup) { duplicados++; continue; }
@@ -1112,25 +1128,29 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         afectados.add(act.id);
         const obsExtra = [];
         let proveedor_id = null, responsable_id = null, subcontratista_id = null, destino_tipo = null, frente = null, ubicId = null;
+        const prov = m.proveedor || m.origen;
+        const alm = m.almacen || (m.tipo === 'entrada' ? m.lugar : m.origen);
+        const quien = m.responsable || m.subcontrato || m.origen;
 
         if (m.tipo === 'entrada') {
-          if (m.origen) { proveedor_id = matchProveedor(m.origen, proveedores); if (!proveedor_id) obsExtra.push(`Proveedor: ${m.origen}`); }
-          if (m.lugar) ubicId = await resolverUbic(m.lugar);
+          if (prov) { proveedor_id = matchProveedor(prov, proveedores); if (!proveedor_id) obsExtra.push(`Proveedor: ${prov}`); }
+          if (alm) ubicId = await resolverUbic(alm);
         } else {
-          const quien = m.responsable || m.origen;
+          if (alm) ubicId = await resolverUbic(alm);
           if (quien) {
             const rpHit = rp?.get(normTxt(quien));
             if (rpHit?.tipo === 'personal') { responsable_id = rpHit.id; destino_tipo = 'personal'; }
             else if (rpHit?.tipo === 'subcontratista') { subcontratista_id = rpHit.id; destino_tipo = 'subcontratista'; }
             else { responsable_id = matchPersonal(quien, personal); if (responsable_id) destino_tipo = 'personal'; else obsExtra.push(`Responsable: ${quien}`); }
           }
-          if (m.lugar) frente = m.lugar;
+          frente = m.frente || m.lugar || null;
         }
-        const obs = ['Migración histórica', ...obsExtra].join(' · ');
+        const obs = ['Migración histórica', ...(m.observaciones ? [m.observaciones] : []), ...obsExtra].join(' · ');
         const r = await addMovIdem('movimientos_maquinaria', {
           obra_id: obraId, activo_id: act.id, fecha: m.fecha || new Date().toISOString().slice(0, 10),
-          hora: null, tipo_movimiento: m.tipo, cantidad: m.cantidad, unidad: m.unidad || act.unidad || 'Und',
-          responsable_id, subcontratista_id, destino_tipo, proveedor_id, estado: m.estado || null, frente_zona: frente, observaciones: obs,
+          hora: m.hora || null, tipo_movimiento: m.tipo, cantidad: m.cantidad, unidad: m.unidad || act.unidad || 'Und',
+          responsable_id, subcontratista_id, destino_tipo, proveedor_id, estado: m.estado || null, frente_zona: frente,
+          documento_asociado: m.documento || null, observaciones: obs,
         }, userId, null, sigMov(obraId, 'mov_maquinaria', m));
         if (r.dup) { duplicados++; continue; }
 
@@ -1212,10 +1232,12 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         afectados.add(ins.id);
         const obsExtra = [];
         let proveedor_id = null, responsable_id = null, subcontratista_id = null, destino_tipo = null;
+        const prov = m.proveedor || m.origen;
+        const quien = m.responsable || m.subcontrato || m.origen;
+        const frente = m.frente || m.lugar || null;
         if (m.tipo === 'entrada') {
-          if (m.origen) { proveedor_id = matchProveedor(m.origen, proveedores); if (!proveedor_id) obsExtra.push(`Proveedor: ${m.origen}`); }
+          if (prov) { proveedor_id = matchProveedor(prov, proveedores); if (!proveedor_id) obsExtra.push(`Proveedor: ${prov}`); }
         } else {
-          const quien = m.responsable || m.origen;
           if (quien) {
             const rpHit = rp?.get(normTxt(quien));
             if (rpHit?.tipo === 'personal') { responsable_id = rpHit.id; destino_tipo = 'personal'; }
@@ -1223,12 +1245,12 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
             else { responsable_id = matchPersonal(quien, personal); if (responsable_id) destino_tipo = 'personal'; else obsExtra.push(`Responsable: ${quien}`); }
           }
         }
-        if (m.lugar) obsExtra.push(`Lugar: ${m.lugar}`);
-        const obs = ['Migración histórica', ...obsExtra].join(' · ');
+        const obs = ['Migración histórica', ...(m.observaciones ? [m.observaciones] : []), ...obsExtra].join(' · ');
         const r = await addMovIdem('movimientos_insumos_emergencia', {
           obra_id: obraId, insumo_emergencia_id: ins.id, fecha: m.fecha || new Date().toISOString().slice(0, 10),
-          hora: null, tipo_movimiento: m.tipo, cantidad: m.cantidad, unidad: m.unidad || ins.unidad || 'Und',
-          responsable_id, subcontratista_id, destino_tipo, proveedor_id, observaciones: obs,
+          hora: m.hora || null, tipo_movimiento: m.tipo, cantidad: m.cantidad, unidad: m.unidad || ins.unidad || 'Und',
+          responsable_id, subcontratista_id, destino_tipo, proveedor_id, frente_zona: frente,
+          documento_asociado: m.documento || null, observaciones: obs,
         }, userId, null, sigMov(obraId, 'mov_emergencia', m));
         if (r.dup) { duplicados++; continue; }
         okCount++;
@@ -1314,8 +1336,8 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         const sigA = `${(obraId || '').slice(0, 8)}_asig_${m.idx}_${normTxt(m.equipo)}_${m.fecha || ''}_${m.tipo}_${normTxt(m.destinoNombre || '')}`;
         const r = await addMovIdem('movimientos_maquinaria', {
           obra_id: obraId, activo_id: act.id, fecha: m.fecha || new Date().toISOString().slice(0, 10),
-          hora: null, tipo_movimiento: m.tipo, cantidad: null, unidad: null,
-          responsable_id, subcontratista_id, destino_tipo, observaciones: obs,
+          hora: m.hora || null, tipo_movimiento: m.tipo, cantidad: null, unidad: null,
+          responsable_id, subcontratista_id, destino_tipo, frente_zona: m.frente || null, observaciones: obs,
         }, userId, null, sigA);
         if (r.dup) { duplicados++; continue; }
         // custodia final

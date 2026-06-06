@@ -153,6 +153,8 @@ function rowGetter(row) {
 
 const txt = (v) => (v == null ? null : String(v).trim() || null);
 const num = (v) => { const n = parseFloat(String(v).replace(/[^0-9.\-]/g, '')); return Number.isFinite(n) ? n : 0; };
+// Como num pero devuelve null si está vacío (para precio: no forzar 0).
+const numN = (v) => { if (v == null || String(v).trim() === '') return null; const n = parseFloat(String(v).replace(/[^0-9.\-]/g, '')); return Number.isFinite(n) ? n : null; };
 
 /** "Ingreso"/"Entrada" → 'entrada'; "Salida" → 'salida'. */
 export function normalizaTipoMov(v) {
@@ -233,23 +235,45 @@ export function parseMovimientos(rows, formato) {
 
   (rows || []).forEach((row, i) => {
     const g = rowGetter(row);
+    // Getter EXACTO (sin match parcial). Las columnas NUEVAS de la plantilla
+    // mejorada se leen exacto para no engancharse con headers viejos combinados:
+    // p.ej. 'Almacén' NO debe leer 'Proveedor/Almacen de Salida' por substring.
+    const gE = (...cands) => {
+      for (const c of cands) {
+        const key = Object.keys(row || {}).find((k) => normTxt(k) === normTxt(c));
+        if (key != null) { const v = row[key]; if (v != null && String(v).trim() !== '') return v; }
+      }
+      return null;
+    };
     const nombreItem = txt(g(...itemCols));
     if (!nombreItem) return;
     const tipo = normalizaTipoMov(g('Tipo de Movimiento', 'Tipo'));
     out.push({
       idx: i + 2,
       fecha: parseFechaMigracion(g('Fecha de Movimiento', 'Fecha')),
+      hora: txt(gE('Hora')),
       nombreItem,
+      categoria: txt(gE('Categoría', 'Categoria')),
       unidad: txt(g('Unidad')),
       estado: txt(g('Estado')),
       cantidad: num(g('Cantidad')),
       tipo, // 'entrada' | 'salida' | null
-      // proveedor (ingreso) / almacén de salida (salida materiales)
+      // proveedor (ingreso) / almacén de salida (salida materiales) — col. combinada vieja
       origen: txt(g('Proveedor/Almacen de Salida', 'Proveedor/Responsable', 'Proveedor/Responsible', 'Proveedor')),
-      // responsable que retira (salida)
+      // Plantilla mejorada: columnas SEPARADAS, leídas EXACTO (gE) para no
+      // confundirse con la columna combinada vieja (backward-compat: en plantillas
+      // viejas estas quedan null y el loader cae a origen/lugar como antes).
+      proveedor: txt(gE('Proveedor')),
+      almacen: txt(gE('Almacén', 'Almacen', 'Almacén de Salida', 'Almacen de Salida', 'Almacén de salida')),
+      subcontrato: txt(gE('Subcontrato', 'Subcontratista')),
+      documento: txt(gE('Documento', 'Documento Asociado', 'Vale', 'Guía', 'Guia', 'N° Vale', 'N° Guía')),
+      precio: numN(gE('Precio Unit. (S/)', 'Precio Unitario', 'Precio Unit.', 'Precio unitario', 'Precio')),
+      observaciones: txt(gE('Observaciones', 'Observación', 'Observacion')),
+      // responsable que retira (salida) — flexible (en EPP/herr viejos viene de la col. combinada)
       responsable: txt(g('Resposable (Salida)', 'Responsable (Salida)', 'Responsable', 'Proveedor/Responsable', 'Proveedor/Responsible')),
-      // lugar de llegada (ingreso = almacén) / frente (salida)
+      // lugar de llegada (ingreso = almacén) / frente (salida) — col. vieja
       lugar: txt(g('Lugar llega / Frente', 'Lugar de llegada', 'Lugar', 'Frente')),
+      frente: txt(gE('Frente / Zona', 'Frente', 'Zona')),
     });
   });
   return out;
@@ -277,10 +301,12 @@ export function parseMovMaquinariaAsignacion(rows) {
     out.push({
       idx: i + 2,
       fecha: parseFechaMigracion(g('Fecha', 'Fecha de Movimiento')),
+      hora: txt(g('Hora')),
       equipo,
       tipo,
       destinoTipo,
       destinoNombre: txt(g('Asignado a', 'Asignado', 'Responsable', 'Proveedor/Responsable')),
+      frente: txt(g('Frente / Zona', 'Frente', 'Zona')),
       observaciones: txt(g('Observación', 'Observacion', 'Observaciones')),
     });
   });

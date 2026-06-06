@@ -10,6 +10,22 @@
 
 import { db } from '../db/jarvex.db.js';
 
+// Path dentro del bucket 'evidencias' (para createSignedUrl). Igual que jx-evidencias.
+function pathFromUrl(url) {
+  if (!url) return null;
+  const idx = url.indexOf('/evidencias/');
+  if (idx === -1) return null;
+  return url.slice(idx + '/evidencias/'.length);
+}
+const extDe = (nombre, mime) => {
+  const m = String(nombre || '').match(/\.([a-z0-9]{2,5})$/i); if (m) return m[1].toLowerCase();
+  const t = String(mime || '');
+  if (t.includes('jpeg') || t.includes('jpg')) return 'jpg';
+  if (t.includes('png')) return 'png'; if (t.includes('webp')) return 'webp';
+  if (t.includes('pdf')) return 'pdf'; if (t.includes('heic')) return 'heic';
+  return 'bin';
+};
+
 const tipoLabel = (t) => (t === 'entrada' ? 'Ingreso' : t === 'salida' ? 'Salida' : (t || ''));
 const isoFecha = (f) => (f ? String(f).slice(0, 10) : '');
 const hhmm = (h) => (h ? String(h).slice(0, 5) : '');
@@ -41,7 +57,7 @@ async function cargarContexto(obraId) {
     movMat, movHerr, movEpp, movMaq, movEmer,
     mantsAll, horas, comb, caja, asist,
     mats, herrs, epps, activos, insEmer,
-    personal, subs, provs, ubic,
+    personal, subs, provs, ubic, evid,
   ] = await Promise.all([
     porObra('movimientos_materiales'), porObra('movimientos_herramientas'), porObra('movimientos_epp'),
     porObra('movimientos_maquinaria'), porObra('movimientos_insumos_emergencia'),
@@ -50,6 +66,7 @@ async function cargarContexto(obraId) {
     porObra('asistencia').catch(() => []),
     porObra('materiales'), porObra('herramientas'), porObra('epps'), todos('activos_pesados'), porObra('insumos_emergencia'),
     porObra('personal'), todos('subcontratistas'), todos('proveedores'), porObra('ubicaciones_obra'),
+    porObra('evidencias').catch(() => []),
   ]);
   // mantenimientos_maquinaria NO tiene obra_id → lo scopeamos a los activos de
   // esta obra (asignados a la obra o que tienen movimientos en ella).
@@ -60,7 +77,7 @@ async function cargarContexto(obraId) {
   const mants = (mantsAll || []).filter((m) => activoIdsObra.has(m.activo_id));
   return {
     movMat, movHerr, movEpp, movMaq, movEmer, mants, horas, comb, caja, asist,
-    mats, herrs, epps, activos, insEmer, personal, subs, provs, ubic,
+    mats, herrs, epps, activos, insEmer, personal, subs, provs, ubic, evid,
     matById: byId(mats), herrById: byId(herrs), eppById: byId(epps), activoById: byId(activos),
     insEmerById: byId(insEmer), personalById: byId(personal), subsById: byId(subs),
     provById: byId(provs), ubicById: byId(ubic),
@@ -205,6 +222,17 @@ export const DATASETS = [
       rows = rows.slice().sort((a, b) => isoFecha(a.fecha).localeCompare(isoFecha(b.fecha)) || String(a.hora || '').localeCompare(String(b.hora || '')));
       return { headers: ['ID', 'Fecha', 'Hora', 'Tipo', 'Monto (S/)', 'Concepto', 'Responsable', 'Proveedor', 'Documento', 'Observaciones'], rows: rows.map((m, i) => [i + 1, isoFecha(m.fecha), hhmm(m.hora), m.tipo_movimiento === 'entrada' ? 'Ingreso' : 'Gasto', n2(m.monto), m.concepto || '', nombrePersona(c.personalById.get(m.responsable_id)), m.proveedor || '', m.documento_asociado || '', m.observaciones || '']) };
     } },
+  { id: 'evidencias', label: 'Evidencias (registro)', icon: 'image', color: '#7F8C8D', grupo: 'Evidencias', filtrable: true,
+    build: (c, f) => {
+      let rows = (c.evid || []);
+      const { desde, hasta, q } = f || {};
+      if (desde) rows = rows.filter((e) => isoFecha(e.fecha) >= desde);
+      if (hasta) rows = rows.filter((e) => isoFecha(e.fecha) <= hasta);
+      if (q) rows = rows.filter((e) => `${e.nombre_archivo || ''} ${e.observaciones || ''}`.toLowerCase().includes(q.toLowerCase()));
+      rows = rows.slice().sort((a, b) => isoFecha(a.fecha).localeCompare(isoFecha(b.fecha)));
+      return { headers: ['Tipo', 'Módulo', 'Registro ID', 'Nombre archivo', 'Fecha', 'Observaciones', 'Estado', 'MIME', 'Tamaño (KB)', 'URL / Path'],
+        rows: rows.map((e) => [e.tipo_evidencia || '', e.modulo_relacionado || '', e.registro_relacionado_id || '', e.nombre_archivo || '', isoFecha(e.fecha), e.observaciones || '', e.sync_status || '', e.mime_type || '', e.tamano_bytes ? Math.round(e.tamano_bytes / 1024) : '', e.url_archivo || e.local_path_temporal || '']) };
+    } },
 ];
 
 const DATASET_BY_ID = new Map(DATASETS.map((d) => [d.id, d]));
@@ -255,6 +283,61 @@ export async function exportarTodo(obraId, obraNombre = 'obra', filtros = {}) {
   const archivo = `JARVEX_historico_completo_${slug(obraNombre)}_${fecha}.xlsx`;
   escribirWorkbook(XLSX, hojas, archivo);
   return { archivo, hojas: hojas.length, total };
+}
+
+// Descarga las EVIDENCIAS (fotos/PDF) reales en un .zip + manifiesto.csv.
+// Trae cada archivo desde Supabase Storage (signed URL) si está subido, o del
+// blob local (evidencias_blobs) si aún no se subió. onProgress(hechas, total).
+export async function exportarFotosZip(obraId, obraNombre = 'obra', filtros = {}, onProgress) {
+  if (!obraId) throw new Error('No hay una obra activa.');
+  const c = await cargarContexto(obraId);
+  let evid = (c.evid || []);
+  const { desde, hasta, q } = filtros || {};
+  if (desde) evid = evid.filter((e) => isoFecha(e.fecha) >= desde);
+  if (hasta) evid = evid.filter((e) => isoFecha(e.fecha) <= hasta);
+  if (q) evid = evid.filter((e) => `${e.nombre_archivo || ''} ${e.observaciones || ''}`.toLowerCase().includes(q.toLowerCase()));
+  if (!evid.length) throw new Error('No hay evidencias para exportar con esos filtros.');
+
+  const JSZip = (await import('jszip')).default;
+  const zip = new JSZip();
+  const manifest = [['archivo_en_zip', 'tipo', 'modulo', 'registro_id', 'fecha', 'nombre_original', 'estado', 'observaciones']];
+  let ok = 0, fail = 0;
+  for (let i = 0; i < evid.length; i++) {
+    const e = evid[i];
+    let blob = null;
+    try {
+      if (e.sync_status === 'uploaded' && e.url_archivo) {
+        const path = pathFromUrl(e.url_archivo);
+        if (path) {
+          const { data } = await window.__supabase.storage.from('evidencias').createSignedUrl(path, 3600);
+          if (data?.signedUrl) { const resp = await fetch(data.signedUrl); if (resp.ok) blob = await resp.blob(); }
+        }
+      }
+      if (!blob) { const entry = await window.__db.evidencias_blobs.get(e.id); if (entry?.blob) blob = entry.blob; }
+    } catch { /* sigue, cuenta como fail abajo */ }
+    if (!blob) {
+      fail++;
+      manifest.push(['(no disponible)', e.tipo_evidencia || '', e.modulo_relacionado || '', e.registro_relacionado_id || '', isoFecha(e.fecha), e.nombre_archivo || '', e.sync_status || '', String(e.observaciones || '').replace(/\s+/g, ' ')]);
+    } else {
+      const ext = extDe(e.nombre_archivo, e.mime_type);
+      const carpeta = slug(e.modulo_relacionado || 'evidencias');
+      const fname = `${carpeta}/${slug(e.tipo_evidencia || 'foto')}_${isoFecha(e.fecha) || 'sf'}_${String(e.id).slice(0, 8)}.${ext}`;
+      zip.file(fname, blob);
+      manifest.push([fname, e.tipo_evidencia || '', e.modulo_relacionado || '', e.registro_relacionado_id || '', isoFecha(e.fecha), e.nombre_archivo || '', e.sync_status || '', String(e.observaciones || '').replace(/\s+/g, ' ')]);
+      ok++;
+    }
+    if (onProgress) onProgress(i + 1, evid.length);
+  }
+  const csv = '﻿' + manifest.map((r) => r.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
+  zip.file('_manifiesto.csv', csv);
+  const content = await zip.generateAsync({ type: 'blob' });
+  const fecha = new Date().toISOString().slice(0, 10);
+  const archivo = `JARVEX_evidencias_${slug(obraNombre)}_${fecha}.zip`;
+  const url = URL.createObjectURL(content);
+  const a = document.createElement('a');
+  a.href = url; a.download = archivo; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 3000);
+  return { archivo, ok, fail, total: evid.length };
 }
 
 // Compat: el nombre viejo apunta al export completo.

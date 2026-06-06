@@ -5,7 +5,7 @@ import { calcularPresupuesto, fmtSoles } from "../lib/presupuesto-obra.js";
 import { aplicarNombresDesdePartidas } from "../lib/partida-nombres.js";
 import { MigracionFlow, descargarPlantilla as descargarPlantillaMigracion } from "./jx-migracion-import.jsx";
 import { FORMATOS as MIGRACION_FORMATOS } from "../lib/migracion-parser.js";
-import { DATASETS as EXPORT_DATASETS, exportarDataset, exportarTodo, contarDatasets } from "../lib/export-historico.js";
+import { DATASETS as EXPORT_DATASETS, exportarDataset, exportarTodo, contarDatasets, exportarFotosZip } from "../lib/export-historico.js";
 const { useState: uSI, useMemo: uMI, useEffect: uEI, useRef: uRI, useCallback: uCI } = React;
 
 // ── Obra activa helper (poll Dexie) ──────────────────────────
@@ -2428,6 +2428,17 @@ function ImportarPage({ showToast }) {
     } catch (e) { showToast('Error al exportar: ' + (e.message || e), 'red'); }
     finally { setExpBusy(null); }
   };
+
+  const exportarZipFotos = async () => {
+    if (!obraId) { showToast('No hay obra activa', 'red'); return; }
+    setExpBusy('__fotos__');
+    try {
+      const obra = await window.__db.obras.get(obraId);
+      const r = await exportarFotosZip(obraId, obra?.nombre_obra || obra?.nombre || 'obra', expFiltros);
+      showToast(`Fotos exportadas: ${r.ok} archivos${r.fail ? ` · ${r.fail} no disponibles` : ''} → ${r.archivo}`, r.fail ? 'amber' : 'green');
+    } catch (e) { showToast('Error al exportar fotos: ' + (e.message || e), 'red'); }
+    finally { setExpBusy(null); }
+  };
   const [srcId, setSrc] = uSI(null);
   const [modId, setMod] = uSI(null);
   const [file, setFile] = uSI(null);
@@ -3130,6 +3141,22 @@ function ImportarPage({ showToast }) {
                     </button>
                   </div>
                 ))}
+                {g === 'Evidencias' && (
+                  <div className="card card-p card-hover">
+                    <div style={{ display:'flex', gap:12, alignItems:'flex-start', marginBottom:10 }}>
+                      <div style={{ width:38, height:38, borderRadius:9, background:'rgba(22,163,74,0.10)', border:'1px solid rgba(22,163,74,0.3)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                        <JxIcon name="download" size={17} color="#16A34A"/>
+                      </div>
+                      <div>
+                        <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)', lineHeight:1.3 }}>Fotos / Archivos (ZIP) <span title="Aplica fecha y nombre">⏱</span></div>
+                        <div style={{ fontSize:11, color:'var(--tm)' }}>Los archivos reales + manifiesto</div>
+                      </div>
+                    </div>
+                    <button className="btn btn-green btn-sm" style={{ width:'100%', justifyContent:'center' }} disabled={!obraId || !!expBusy} onClick={exportarZipFotos}>
+                      <JxIcon name="download" size={13}/>{expBusy==='__fotos__'?'Descargando…':'Descargar fotos (.zip)'}
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           ))}
