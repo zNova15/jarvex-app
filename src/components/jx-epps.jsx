@@ -1095,7 +1095,7 @@ function EppsInventarioPage({ showToast }) {
 
       {/* ── Modal Ingreso (lote) ───────────────────── */}
       {modal === 'ingreso' && (
-        <Modal title="Registrar Ingreso de EPPs (lote)" icon="arrowIn" onClose={() => setModal(null)} wide>
+        <Modal title="Registrar Ingreso de EPPs (lote)" icon="arrowIn" onClose={() => setModal(null)} size="xl">
           <div className="g2">
             <div><label className="flabel">Fecha</label><input className="fi" type="date" max={new Date().toISOString().slice(0,10)} value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
             <div><label className="flabel">Hora</label><input className="fi" type="time" value={form.hora||''} onChange={e=>setForm({...form, hora:e.target.value})}/></div>
@@ -1176,7 +1176,7 @@ function EppsInventarioPage({ showToast }) {
 
       {/* ── Modal Salida con firma (lote) ────────────────── */}
       {modal === 'salida' && (
-        <Modal title="Registrar Salida de EPPs (con firma)" icon="arrowOut" onClose={() => setModal(null)} wide>
+        <Modal title="Registrar Salida de EPPs (con firma)" icon="arrowOut" onClose={() => setModal(null)} size="xl">
           <div className="g2">
             <div><label className="flabel">Fecha</label><input className="fi" type="date" max={new Date().toISOString().slice(0,10)} value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
             <div><label className="flabel">Hora</label><input className="fi" type="time" value={form.hora||''} onChange={e=>setForm({...form, hora:e.target.value})}/></div>

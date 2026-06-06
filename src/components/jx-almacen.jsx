@@ -8,7 +8,7 @@ import { TablePagination } from "./jx-pagination.jsx";
 import { SearchableSelect } from "./jx-searchable-select.jsx";
 import { opcionesDestinoFlat, splitDestino } from "../lib/destino-mov.js";
 import { getDesgloseBulk, aplicarDelta, traspasar } from "../lib/stock-ubicaciones.js";
-import { DesglosePopup, TraspasoStockModal } from "./jx-stock-ubic.jsx";
+import { DesglosePopup, TraspasoStockModal, ubicacionAutoOrigen } from "./jx-stock-ubic.jsx";
 import { EstadosModal } from "./jx-stock-estados.jsx";
 import { getEstadosBulk, ESTADOS_COND } from "../lib/stock-estados.js";
 import { detectarSugerencias, detectarDuplicados, fusionarInsumos } from "../lib/variantes.js";
@@ -1608,9 +1608,12 @@ function MaterialesPage({ showToast }) {
         const dgItem = desgloseUbic.get(it.material_id);
         const tieneDesglose = dgItem && Array.from(dgItem.values()).some(c => Number(c) > 0);
         if (!tieneDesglose) continue;
-        const ubic = it.ubicacion_id || mat?.ubicacion_id || null;
+        // Auto-origen: si el material está en UN solo almacén con stock, se
+        // resuelve solo. Solo si está repartido en ≥2 almacenes obligamos a
+        // elegir de cuál sale (el selector aparece en la fila).
+        const ubic = it.ubicacion_id || ubicacionAutoOrigen(dgItem) || null;
         if (!ubic) {
-          showToast(`Elegí el almacén de origen para "${mat?.nombre_material}"`, 'red');
+          showToast(`"${mat?.nombre_material}" está repartido en varios almacenes — elegí de cuál sale en la columna "Almacén de origen".`, 'red');
           setBusyMovLote(false); return;
         }
         const key = `${it.material_id}__${ubic}`;
@@ -1643,6 +1646,12 @@ function MaterialesPage({ showToast }) {
       const material = materiales.find(m => m.id === it.material_id);
       if (!material) { fallidos++; continue; }
       const cantNum = parseFloat(it.cantidad) || 0;
+      // Almacén del movimiento: en SALIDA se auto-resuelve si el material está
+      // en un solo almacén; si está repartido usa el que eligió la fila. En
+      // INGRESO es la ubicación elegida (o la principal del material).
+      const ubicMov = it.ubicacion_id
+        || (tipo === 'salida' ? ubicacionAutoOrigen(desgloseUbic.get(it.material_id)) : null)
+        || material.ubicacion_id || null;
       const proveedor_id = tipo === 'ingreso'
         ? (loteComunes.usarMismoProveedor ? loteComunes.proveedor_id : it.proveedor_id) || null
         : null;
@@ -1672,7 +1681,7 @@ function MaterialesPage({ showToast }) {
           // contexto técnico para asignar bien — Paquete C del plan.)
           partida_id: null,
           // Almacén de origen (salida) / llegada (ingreso). Auditable en la fila.
-          ubicacion_id: it.ubicacion_id || material.ubicacion_id || null,
+          ubicacion_id: ubicMov,
           precio_unitario_real: parseFloat(it.precio) || null,
           observaciones: form.observaciones || null,
           // Idempotency determinista: si el browser re-envía, server
@@ -1696,9 +1705,8 @@ function MaterialesPage({ showToast }) {
         try { await window.__logAudit?.({ action:'insert', table:'movimientos_materiales', recordId:movCreated?.id, newData:movCreated, reason:`${tipo} en LOTE de ${cantNum} ${material.unidad} de ${material.nombre_material}` }); } catch {}
 
         // Stock por ubicación (desglose). INGRESO suma a la ubicación
-        // elegida; SALIDA resta de la ubicación elegida. Si no se eligió
-        // ubicación, cae a la ubicación principal del material.
-        const ubicMov = it.ubicacion_id || material.ubicacion_id || null;
+        // elegida; SALIDA resta de la ubicación elegida (ya resuelta arriba
+        // con auto-origen). Si no hay ubicación, solo cambia el stock global.
         if (ubicMov) {
           try {
             await aplicarDelta({
@@ -2083,7 +2091,7 @@ function MaterialesPage({ showToast }) {
       )}
 
       {/* Modal Ingreso (lote) — tabla de N materiales con datos comunes arriba */}
-      {modal==='ingreso' && <Modal title="Registrar Ingreso de Materiales (lote)" icon="arrowIn" onClose={()=>setModal(null)} wide>
+      {modal==='ingreso' && <Modal title="Registrar Ingreso de Materiales (lote)" icon="arrowIn" onClose={()=>setModal(null)} size="xl">
         {/* Banner facturas pendientes — la contadora cargó facturas en
             captura mágica y quedaron esperando recepción física. El
             almacenero las vincula con 1 click y se auto-rellena el lote. */}
@@ -2392,7 +2400,7 @@ function MaterialesPage({ showToast }) {
         // atribuir la salida a una persona o a un subcontrato, sin texto libre.
         const destinoOpts = opcionesDestinoFlat(personalActivo, subcontratistas);
         return (
-        <Modal title="Registrar Salida de Materiales (lote)" icon="arrowOut" onClose={()=>setModal(null)} wide>
+        <Modal title="Registrar Salida de Materiales (lote)" icon="arrowOut" onClose={()=>setModal(null)} size="xl">
           <div className="g2">
             <div><label className="flabel">Fecha</label><input className="fi" type="date" max={new Date().toISOString().slice(0,10)} value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
             <div><label className="flabel">Hora</label><input className="fi" type="time" value={form.hora||''} onChange={e=>setForm({...form, hora:e.target.value})}/></div>
@@ -2444,6 +2452,7 @@ function MaterialesPage({ showToast }) {
                     <th style={{ width:80 }}>Unidad</th>
                     <th style={{ width:100 }}>Cantidad *</th>
                     <th style={{ width:90 }}>Stock</th>
+                    <th style={{ minWidth:160 }}>Almacén de origen</th>
                     {/* Columna "Partida" removida — el ingeniero la asigna después desde su inbox (Paquete C) */}
                     {!loteComunes.usarMismaPersona && <th style={{ minWidth:160 }}>Quien retira</th>}
                     <th style={{ width:40 }}></th>
@@ -2460,7 +2469,14 @@ function MaterialesPage({ showToast }) {
                         <td>
                           <SearchableSelect
                             value={it.material_id}
-                            onChange={v => updateLoteItem(it.id, { material_id: v })}
+                            onChange={v => {
+                              // Auto-origen: si el material está en un solo almacén
+                              // con stock, lo fijamos; si está repartido (≥2) o sin
+                              // desglose, queda null (la columna pedirá elegir o usará stock general).
+                              const dg = desgloseUbic.get(v);
+                              const conStock = dg ? Array.from(dg.entries()).filter(([, c]) => Number(c) > 0) : [];
+                              updateLoteItem(it.id, { material_id: v, ubicacion_id: conStock.length === 1 ? conStock[0][0] : null });
+                            }}
                             options={[
                               { value: '', label: '— Selecciona —' },
                               ...materiales.map(m => ({ value: m.id, label: m.nombre_material })),
@@ -2477,6 +2493,31 @@ function MaterialesPage({ showToast }) {
                               {stockOk ? '✓' : '⚠'} {stock}
                             </span>
                           ) : <span style={{ color:'var(--tm)' }}>—</span>}
+                        </td>
+                        {/* Almacén de origen: auto si está en 1 solo, selector si repartido */}
+                        <td>
+                          {(() => {
+                            if (!mat) return <span style={{ color:'var(--tm)' }}>—</span>;
+                            const dg = desgloseUbic.get(it.material_id);
+                            const conStock = dg ? Array.from(dg.entries()).filter(([, c]) => Number(c) > 0) : [];
+                            if (conStock.length === 0)
+                              return <span style={{ fontSize:11, color:'var(--tm)' }} title="Sin desglose por almacén — sale del stock general">Stock general</span>;
+                            if (conStock.length === 1) {
+                              const [uid, c] = conStock[0];
+                              return <span style={{ fontSize:11, color:'var(--ts)' }} title="Único almacén con stock (automático)">📍 {ubicacionesById.get(uid)?.nombre || '—'} <span style={{ color:'var(--tm)' }}>({Number(c).toLocaleString('es-PE')})</span></span>;
+                            }
+                            return (
+                              <SearchableSelect
+                                value={it.ubicacion_id || ''}
+                                onChange={v => updateLoteItem(it.id, { ubicacion_id: v || null })}
+                                options={[
+                                  { value: '', label: '— Elegí almacén —' },
+                                  ...conStock.map(([uid, c]) => ({ value: uid, label: `${ubicacionesById.get(uid)?.nombre || '—'} · ${Number(c).toLocaleString('es-PE')} disp.` })),
+                                ]}
+                                fontSize={12}
+                                placeholder="— Elegí almacén —"/>
+                            );
+                          })()}
                         </td>
                         {/* Columna "Partida" removida — el ingeniero la asigna después */}
                         {!loteComunes.usarMismaPersona && (
@@ -4471,7 +4512,7 @@ function HerramientasPage({ showToast }) {
 
       {/* Ingreso/Salida por cantidad (lote) */}
       {loteCant && (
-        <Modal title={loteCant === 'ingreso' ? 'Ingreso de herramientas (por cantidad)' : 'Salida de herramientas (por cantidad)'} icon={loteCant === 'ingreso' ? 'arrowIn' : 'arrowOut'} onClose={() => setLoteCant(null)} wide>
+        <Modal title={loteCant === 'ingreso' ? 'Ingreso de herramientas (por cantidad)' : 'Salida de herramientas (por cantidad)'} icon={loteCant === 'ingreso' ? 'arrowIn' : 'arrowOut'} onClose={() => setLoteCant(null)} size="xl">
           <div className="g2">
             <div><label className="flabel">Fecha</label><input className="fi" type="date" max={new Date().toISOString().slice(0,10)} value={loteCantForm.fecha || ''} onChange={e=>setLoteCantForm(f=>({...f, fecha:e.target.value}))}/></div>
             <div><label className="flabel">Hora</label><input className="fi" type="time" value={loteCantForm.hora || ''} onChange={e=>setLoteCantForm(f=>({...f, hora:e.target.value}))}/></div>
