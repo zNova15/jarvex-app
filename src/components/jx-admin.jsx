@@ -864,6 +864,7 @@ window.__moduleIdMap = {
   // Operaciones
   'obras': 'Obras',
   'personal': 'Personal',
+  'frentes': 'Personal',                         // frentes de trabajo: hereda permiso de Personal
   'asistencia': 'Asistencia',
   'materiales': 'Materiales',
   'mov-materiales': 'Mov. Materiales',

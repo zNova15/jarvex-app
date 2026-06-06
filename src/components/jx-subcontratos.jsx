@@ -51,6 +51,8 @@ function SubcontratistasPage({ showToast }) {
   // cuadrilla que se ve es la de la obra activa.
   const obraId = useObraActiva();
   const { data: personal } = window.__hooks.usePersonal(obraId);
+  const { data: frentes } = window.__hooks.useFrentesObra(obraId);
+  const frentesById = uM(() => new Map((frentes || []).map(f => [f.id, f.nombre])), [frentes]);
 
   const [modal, setModal] = uS(null);
   const [editing, setEditing] = uS(null);
@@ -218,6 +220,8 @@ function SubcontratistasPage({ showToast }) {
         const activos = crew.filter(p => p.estado === 'activo').length;
         const jefes = crew.filter(p => p.es_jefe_subcontrato).length;
         const aseguraEmpresa = crew.filter(p => (p.seguro_a_cargo || 'empresa') === 'empresa').length;
+        // Frentes en los que trabaja este subcontrato = derivados del personal de su cuadrilla.
+        const frentesDelSub = [...new Set(crew.map(p => p.frente_id).filter(Boolean))].map(id => frentesById.get(id)).filter(Boolean);
         return (
           <Modal title={`Cuadrilla · ${crewOf.razon_social}`} icon="users" onClose={()=>setCrewOf(null)}>
             <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:12 }}>
@@ -226,14 +230,21 @@ function SubcontratistasPage({ showToast }) {
               <span className="badge b-gray">{jefes} {jefes===1?'jefe':'jefes'}</span>
               <span className="badge b-green" title="Personal cuyo seguro/SCTR asume la empresa ejecutora">{aseguraEmpresa} asegura empresa</span>
             </div>
+            {frentesDelSub.length > 0 && (
+              <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginBottom:12, alignItems:'center' }}>
+                <span style={{ fontSize:11.5, color:'var(--tm)' }}>Trabaja en:</span>
+                {frentesDelSub.map(n => <span key={n} className="badge b-amber">{n}</span>)}
+              </div>
+            )}
             <div className="card" style={{ overflow:'hidden' }}>
               <table className="tbl">
-                <thead><tr><th>Nombre</th><th>Cargo</th><th>Estado</th><th>Seguro</th></tr></thead>
+                <thead><tr><th>Nombre</th><th>Cargo</th><th>Frente</th><th>Estado</th><th>Seguro</th></tr></thead>
                 <tbody>
                   {crew.map(p => (
                     <tr key={p.id}>
                       <td className="col-p">{p.es_jefe_subcontrato && <span className="badge b-blue" style={{marginRight:6}}>Jefe</span>}{p.nombres} {p.apellidos}</td>
                       <td>{p.cargo || '—'}</td>
+                      <td>{p.frente_id ? (frentesById.get(p.frente_id) || '—') : '—'}</td>
                       <td><span className={`badge ${p.estado==='activo'?'b-green':'b-gray'}`}>{p.estado}</span></td>
                       <td>{(p.seguro_a_cargo||'empresa')==='subcontrato' ? 'Subcontrato' : 'Empresa'}</td>
                     </tr>

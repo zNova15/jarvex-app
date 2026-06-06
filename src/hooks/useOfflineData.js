@@ -194,6 +194,16 @@ export function useUbicacionesObra(obra_id, { soloActivas = false } = {}) {
   , [obra_id, soloActivas]);
 }
 
+export function useFrentesObra(obra_id, { soloActivas = false } = {}) {
+  return useOfflineData('frentes_obra', q =>
+    obra_id
+      ? q.where('obra_id').equals(obra_id)
+          .filter(f => !f.deleted_at && (!soloActivas || f.activo !== false))
+          .toArray()
+      : []
+  , [obra_id, soloActivas]);
+}
+
 export function useMovimientosMateriales(obra_id) {
   return useOfflineData('movimientos_materiales', q =>
     obra_id ? q.where('obra_id').equals(obra_id).toArray() : q.toArray()
@@ -288,6 +298,14 @@ export function useMaterialPreciosHistorial(material_id) {
       ? q.where('material_id').equals(material_id).filter(p => !p.deleted_at).toArray()
       : q.filter(p => !p.deleted_at).toArray()
   , [material_id]);
+}
+
+export function useHistorialPersonal(personal_id) {
+  return useOfflineData('personal_historial', q =>
+    personal_id
+      ? q.where('personal_id').equals(personal_id).filter(h => !h.deleted_at).toArray()
+      : q.filter(h => !h.deleted_at).toArray()
+  , [personal_id]);
 }
 
 // ── Contabilidad ─────────────────────────────────────────────────────

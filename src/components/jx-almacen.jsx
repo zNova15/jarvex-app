@@ -121,6 +121,21 @@ function getAllCategorias() {
 }
 window.__categoriasMat = { loadCustomCats, saveCustomCats, getAllCategorias };
 
+// ─── Cargos de personal: lista por defecto + personalizables (localStorage) ───
+const CARGOS_BUILTIN = [
+  'Ingeniero Residente', 'Ingeniero', 'Ingeniero de Campo', 'Asistente de Ingeniería',
+  'Maestro de Obra', 'Capataz', 'Operario', 'Oficial', 'Peón',
+  'Almacenero', 'Supervisor SST', 'Prevencionista', 'Topógrafo', 'Administrador de Obra', 'Otro',
+];
+const CARGOS_STORAGE_KEY = 'jx_cargos_personal_v1';
+function loadCustomCargos() { try { return JSON.parse(localStorage.getItem(CARGOS_STORAGE_KEY) || '[]'); } catch { return []; } }
+function saveCustomCargos(list) {
+  try { localStorage.setItem(CARGOS_STORAGE_KEY, JSON.stringify(list)); } catch {}
+  try { window.dispatchEvent(new CustomEvent('jx_cargos_changed', { detail: list })); } catch {}
+}
+function getAllCargos() { const base = new Set(CARGOS_BUILTIN); loadCustomCargos().forEach(c => base.add(c)); return Array.from(base); }
+window.__cargosPersonal = { loadCustomCargos, saveCustomCargos, getAllCargos };
+
 function MaterialesPage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
   const myRol = auth?.profile?.rol;
@@ -4520,6 +4535,44 @@ function HerramientasPage({ showToast }) {
 }
 
 // ─── PERSONAL PAGE ──────────────────────────────────────
+// Modal de línea de tiempo individual del trabajador (cambios de cargo/frente/estado).
+function HistorialPersonalModal({ persona, onClose }) {
+  const { data: hist } = window.__hooks.useHistorialPersonal(persona?.id);
+  const rows = uM(() => [...(hist || [])].sort((a, b) =>
+    String(b.fecha || '').localeCompare(String(a.fecha || '')) || String(b.created_at || '').localeCompare(String(a.created_at || ''))
+  ), [hist]);
+  const TIPO = {
+    alta: { label: 'Alta', cls: 'b-green' }, cargo: { label: 'Cargo', cls: 'b-blue' },
+    frente: { label: 'Frente', cls: 'b-amber' }, estado: { label: 'Estado', cls: 'b-gray' },
+    subcontrato: { label: 'Subcontrato', cls: 'b-gray' }, area: { label: 'Área', cls: 'b-gray' },
+  };
+  return (
+    <Modal title={`Historial · ${persona?.nombres || ''} ${persona?.apellidos || ''}`.trim()} icon="clock" onClose={onClose}>
+      {rows.length === 0 ? (
+        <div className="empty-state" style={{ padding: 20 }}><JxIcon name="clock" size={28} color="var(--tm)" /><p style={{ marginTop: 8 }}>Sin cambios registrados todavía. Los cambios de cargo, frente o estado se irán registrando acá.</p></div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {rows.map((h, i) => {
+            const t = TIPO[h.tipo] || { label: h.tipo, cls: 'b-gray' };
+            return (
+              <div key={h.id} style={{ display: 'flex', gap: 10, padding: '8px 0', borderBottom: i < rows.length - 1 ? '1px solid var(--bd)' : 'none', alignItems: 'flex-start' }}>
+                <div style={{ minWidth: 84, fontSize: 11, color: 'var(--tm)', fontFamily: 'monospace', paddingTop: 2 }}>{(h.fecha || '').slice(0, 10)}</div>
+                <span className={`badge ${t.cls}`}>{t.label}</span>
+                <div style={{ fontSize: 12.5, color: 'var(--ts)' }}>
+                  {h.tipo === 'alta'
+                    ? <>Ingresó como <strong>{h.valor_nuevo || '—'}</strong></>
+                    : <><span style={{ color: 'var(--tm)' }}>{h.valor_anterior || '—'}</span> → <strong>{h.valor_nuevo || '—'}</strong></>}
+                  {h.motivo && <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 2 }}>{h.motivo}</div>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 function PersonalPage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
   const myRol = auth?.profile?.rol;
@@ -4565,6 +4618,7 @@ function PersonalPage({ showToast }) {
   const { data: obrasAll } = window.__hooks.useObras();
   const { data: herramientas } = window.__hooks.useHerramientas(obraId);
   const { data: subcontratistas } = window.__hooks.useSubcontratistas();
+  const { data: frentes } = window.__hooks.useFrentesObra(obraId);
   const obrasActivas = uM(() => (obrasAll || []).filter(o => !o.deleted_at), [obrasAll]);
   const obraNombre = (id) => obrasActivas.find(o => o.id === id)?.nombre_obra || '—';
   // Subcontratistas para agrupar personal (cuadrillas). Map por id + lista activa.
@@ -4573,6 +4627,15 @@ function PersonalPage({ showToast }) {
     .filter(s => !s.deleted_at && s.estado !== 'bloqueado')
     .sort((a, b) => (a.razon_social || '').localeCompare(b.razon_social || '')), [subcontratistas]);
   const nombreSub = (id) => subsById.get(id)?.razon_social || (id ? '(subcontratista eliminado)' : null);
+  // Frentes de trabajo (catálogo) + cargos personalizables.
+  const frentesById = uM(() => new Map((frentes || []).map(f => [f.id, f])), [frentes]);
+  const frentesActivos = uM(() => (frentes || []).filter(f => !f.deleted_at && f.activo !== false)
+    .sort((a, b) => Number(a.orden ?? 99) - Number(b.orden ?? 99) || (a.nombre || '').localeCompare(b.nombre || '')), [frentes]);
+  const nombreFrente = (id) => frentesById.get(id)?.nombre || null;
+  const [customCargos, setCustomCargos] = uS(loadCustomCargos());
+  const cargosDisponibles = uM(() => getAllCargos(), [customCargos]);
+  const [filtroFrente, setFiltroFrente] = uS('todos'); // todos | <frente_id> | sin
+  const [histTarget, setHistTarget] = uS(null);        // trabajador cuyo historial se ve
 
   const consultarRENIEC = async (dniOverride = null) => {
     // Sanitize tolerante: String() para números, replace para sacar
@@ -4643,6 +4706,9 @@ function PersonalPage({ showToast }) {
     // Estado: activos vs el resto (inactivo/suspendido/retirado) por rotación
     if (filtroEstado === 'activos') list = list.filter(p => p.estado === 'activo');
     else if (filtroEstado === 'inactivos') list = list.filter(p => p.estado !== 'activo');
+    // Frente de trabajo
+    if (filtroFrente === 'sin') list = list.filter(p => !p.frente_id);
+    else if (filtroFrente !== 'todos') list = list.filter(p => p.frente_id === filtroFrente);
     if (q) {
       const t = q.toLowerCase();
       list = list.filter(p =>
@@ -4653,7 +4719,7 @@ function PersonalPage({ showToast }) {
       );
     }
     return list;
-  }, [q, personal, filtroVinculo, filtroEstado, subsById]);
+  }, [q, personal, filtroVinculo, filtroEstado, filtroFrente, subsById]);
 
   const personalPg = usePagination(filtered, 50);
 
@@ -4679,6 +4745,7 @@ function PersonalPage({ showToast }) {
       subcontratista_id: p.subcontratista_id || '',
       es_jefe_subcontrato: !!p.es_jefe_subcontrato,
       seguro_a_cargo: p.seguro_a_cargo || '',
+      frente_id: p.frente_id || '',
     });
     setEditingId(p.id);
     setModal('editar');
@@ -4743,10 +4810,30 @@ function PersonalPage({ showToast }) {
         }
       }
     }
-    // ── Vínculo a subcontrato (cuadrilla) ───────────────────────
+    // ── Vínculo a subcontrato (cuadrilla) + frente de trabajo ───
     const subId = form.subcontratista_id || null;
     const esJefe = !!subId && !!form.es_jefe_subcontrato;            // jefe solo aplica a subcontratado
     const seguro = subId ? (form.seguro_a_cargo || 'empresa') : null; // directo → null (= empresa implícita)
+    const frenteId = form.frente_id || null;
+
+    // Historial individual: registra cambios de cargo/frente/estado/etc. Guarda
+    // NOMBRES (no ids) para que la timeline sea legible aunque el frente se borre.
+    const isPruebaP = !!appMode.isPrueba;
+    const uidP = auth?.profile?.id || 'offline';
+    const logHist = async (tipo, antes, despues, personalId) => {
+      if (String(antes ?? '') === String(despues ?? '')) return;
+      try {
+        const id = window.__newId(); const now = new Date().toISOString();
+        await window.__db.personal_historial.add({
+          id, personal_id: personalId, obra_id: obraId, fecha: now.slice(0, 10), tipo,
+          valor_anterior: (antes != null && antes !== '') ? String(antes) : null,
+          valor_nuevo: (despues != null && despues !== '') ? String(despues) : null,
+          motivo: null, created_by: uidP, updated_by: uidP, created_at: now, updated_at: now,
+          version: 1, sync_status: isPruebaP ? 'synced' : 'pending_create', last_synced_at: null,
+          idempotency_key: `${uidP}_phist_${id}`, ...(isPruebaP ? { demo: true } : {}),
+        });
+      } catch (e) { console.warn('[personal_historial] no se pudo registrar:', e?.message); }
+    };
     // Aviso suave: lo normal es 1-2 jefes por subcontrato
     if (esJefe) {
       const jefes = (personal || []).filter(p =>
@@ -4773,12 +4860,19 @@ function PersonalPage({ showToast }) {
           subcontratista_id: subId,
           es_jefe_subcontrato: esJefe,
           seguro_a_cargo: seguro,
+          frente_id: frenteId,
           // Forzar mantener la obra original — NUNCA cambiarla en edición
           // (preserva trazabilidad de asistencia y movimientos históricos)
           obra_id: oldData?.obra_id || obraId,
         };
         await updatePersonal(editingId, newFields);
         try { await window.__logAudit?.({ action:'update', table:'personal', recordId:editingId, oldData, newData:newFields }); } catch(e) {}
+        // Historial individual: una fila por cada cambio relevante.
+        await logHist('cargo', oldData?.cargo, newFields.cargo, editingId);
+        await logHist('area', oldData?.area, newFields.area, editingId);
+        await logHist('estado', oldData?.estado, newFields.estado, editingId);
+        await logHist('frente', nombreFrente(oldData?.frente_id), nombreFrente(frenteId), editingId);
+        await logHist('subcontrato', nombreSub(oldData?.subcontratista_id), nombreSub(subId), editingId);
         showToast(`Trabajador "${form.nombres} ${form.apellidos}" actualizado`, 'green');
       } else {
         const created = await createPersonal({
@@ -4795,8 +4889,11 @@ function PersonalPage({ showToast }) {
           subcontratista_id: subId,
           es_jefe_subcontrato: esJefe,
           seguro_a_cargo: seguro,
+          frente_id: frenteId,
         });
         try { await window.__logAudit?.({ action:'insert', table:'personal', recordId:created?.id, newData:created }); } catch(e) {}
+        // Historial: alta del trabajador (cargo · frente inicial).
+        await logHist('alta', null, `${form.cargo || 's/cargo'}${frenteId ? ' · ' + (nombreFrente(frenteId) || '') : ''}`, created?.id);
         showToast(`Trabajador "${form.nombres} ${form.apellidos}" registrado`, 'green');
       }
       setModal(null); setForm({}); setEditingId(null);
@@ -4836,6 +4933,13 @@ function PersonalPage({ showToast }) {
           <option value="activos">Solo activos</option>
           <option value="inactivos">Inactivos / baja</option>
         </select>
+        {frentesActivos.length > 0 && (
+          <select className="fi" style={{width:'auto',minWidth:160}} value={filtroFrente} onChange={e=>setFiltroFrente(e.target.value)} title="Filtrar por frente de trabajo">
+            <option value="todos">Frente: todos</option>
+            <option value="sin">Sin frente</option>
+            {frentesActivos.map(f => <option key={f.id} value={f.id}>{f.nombre}</option>)}
+          </select>
+        )}
       </div>
       {personal.length === 0 ? (
         <div className="card card-p empty-state"><JxIcon name="users" size={40} color="var(--tm)"/><p>No hay personal registrado. Click en "Nuevo Trabajador".</p></div>
@@ -4843,7 +4947,7 @@ function PersonalPage({ showToast }) {
       <div className="card" style={{overflow:'hidden'}}>
         <table className="tbl">
           <thead><tr>
-            <th>Nombre Completo</th><th>DNI</th><th>Cargo</th><th>Área</th><th>Vínculo</th>
+            <th>Nombre Completo</th><th>DNI</th><th>Cargo</th><th>Frente</th><th>Área</th><th>Vínculo</th>
             <th>F. Ingreso</th><th>Estado</th><th>Teléfono</th><th>Sync</th>
             <th style={{textAlign:'center'}}>Acciones</th>
           </tr></thead>
@@ -4855,6 +4959,7 @@ function PersonalPage({ showToast }) {
                   <td className="col-p">{p.nombres} {p.apellidos}</td>
                   <td className="col-m">{p.dni}</td>
                   <td>{p.cargo || '—'}</td>
+                  <td>{p.frente_id ? <span className="badge b-amber" title="Frente de trabajo">{nombreFrente(p.frente_id) || '(frente)'}</span> : <span style={{color:'var(--tm)',fontSize:12}}>—</span>}</td>
                   <td><span className="tag">{p.area || '—'}</span></td>
                   <td>
                     {p.subcontratista_id ? (
@@ -4874,9 +4979,12 @@ function PersonalPage({ showToast }) {
                     ? <span className="badge b-amber">⏱</span>
                     : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}</td>
                   <td style={{textAlign:'center', whiteSpace:'nowrap'}}>
+                    <button className="btn btn-ghost btn-xs" title="Ver historial del trabajador" onClick={()=>setHistTarget(p)}>
+                      <JxIcon name="clock" size={11}/>
+                    </button>
                     {isAdmin ? (
                       <>
-                        <button className="btn btn-ghost btn-xs" title="Editar trabajador" onClick={()=>openEditPersonal(p)}>
+                        <button className="btn btn-ghost btn-xs" title="Editar trabajador" onClick={()=>openEditPersonal(p)} style={{ marginLeft:4 }}>
                           <JxIcon name="edit" size={11}/>
                         </button>
                         {canDelete && (
@@ -4886,7 +4994,7 @@ function PersonalPage({ showToast }) {
                         )}
                       </>
                     ) : (
-                      <button className="btn btn-ghost btn-xs" title="Solicitar cambio" onClick={()=>setRequestTarget(p)}>
+                      <button className="btn btn-ghost btn-xs" title="Solicitar cambio" onClick={()=>setRequestTarget(p)} style={{ marginLeft:4 }}>
                         <JxIcon name="alert" size={11}/>
                       </button>
                     )}
@@ -4915,11 +5023,20 @@ function PersonalPage({ showToast }) {
           </div>
           <div><label className="flabel">Teléfono</label><input className="fi" placeholder="9 dígitos" inputMode="numeric" maxLength={9} value={form.telefono||''} onChange={e=>setForm({...form, telefono:e.target.value.replace(/\D/g,'').slice(0,9)})}/></div>
           <div><label className="flabel">Cargo</label>
-            <select className="fi" value={form.cargo||''} onChange={e=>setForm({...form, cargo:e.target.value})}>
+            <select className="fi" value={form.cargo||''} onChange={e=>{
+              const v = e.target.value;
+              if (v === '__add__') {
+                const n = (prompt('Nuevo cargo (ej. Ingeniero Sanitario, Topógrafo Jr.)') || '').trim();
+                if (n && !cargosDisponibles.includes(n)) { const next = [...customCargos, n]; setCustomCargos(next); saveCustomCargos(next); }
+                if (n) setForm({...form, cargo:n});
+                return;
+              }
+              setForm({...form, cargo:v});
+            }}>
               <option value="">— Selecciona —</option>
-              <option>Capataz</option><option>Operario</option><option>Oficial</option><option>Peón</option>
-              <option>Almacenero</option><option>Maestro de Obra</option><option>Supervisor SST</option>
-              <option>Topógrafo</option><option>Ingeniero Residente</option><option>Otro</option>
+              {form.cargo && !cargosDisponibles.includes(form.cargo) && <option value={form.cargo}>{form.cargo}</option>}
+              {cargosDisponibles.map(c => <option key={c} value={c}>{c}</option>)}
+              <option value="__add__">+ Agregar cargo…</option>
             </select>
           </div>
           <div><label className="flabel">Área</label>
@@ -4933,8 +5050,20 @@ function PersonalPage({ showToast }) {
           <div><label className="flabel">Fecha de nacimiento</label><input className="fi" type="date" value={form.fecha_nacimiento||''} onChange={e=>setForm({...form, fecha_nacimiento:e.target.value})}/></div>
           <div><label className="flabel">Fecha de ingreso</label><input className="fi" type="date" value={form.fecha_ingreso||''} onChange={e=>setForm({...form, fecha_ingreso:e.target.value})}/></div>
           <div style={{ gridColumn:'1 / -1', borderTop:'1px solid var(--bd)', paddingTop:10, marginTop:2 }}>
-            <label className="flabel" style={{ fontWeight:600 }}><JxIcon name="users" size={11}/> Vínculo laboral</label>
+            <label className="flabel" style={{ fontWeight:600 }}><JxIcon name="flag" size={11}/> Frente de trabajo y vínculo</label>
             <div className="g2" style={{ marginTop:6 }}>
+              <div>
+                <label className="flabel">Frente de trabajo</label>
+                <select className="fi" value={form.frente_id || ''} onChange={e=>setForm({...form, frente_id:e.target.value})}>
+                  <option value="">— Sin frente —</option>
+                  {frentesActivos.map(f => <option key={f.id} value={f.id}>{f.nombre}</option>)}
+                </select>
+                {frentesActivos.length === 0 && <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:3 }}>Creá frentes en <strong>Frentes de Trabajo</strong> (menú RRHH).</div>}
+                {form.subcontratista_id && (() => {
+                  const fs = [...new Set((personal||[]).filter(p=>p.subcontratista_id===form.subcontratista_id && p.frente_id && !p.deleted_at).map(p=>p.frente_id))].map(id=>nombreFrente(id)).filter(Boolean);
+                  return fs.length ? <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:3 }}>Este subcontrato trabaja en: {fs.join(', ')}.</div> : null;
+                })()}
+              </div>
               <div>
                 <label className="flabel">Pertenece a</label>
                 <select className="fi" value={form.subcontratista_id || ''} onChange={e=>{
@@ -5041,6 +5170,8 @@ function PersonalPage({ showToast }) {
           onClose={() => setRequestTarget(null)}
         />
       )}
+
+      {histTarget && <HistorialPersonalModal persona={histTarget} onClose={()=>setHistTarget(null)} />}
     </div>
   );
 }

@@ -520,6 +520,7 @@ const PAGE_REGISTRY = {
   'caja-chica':             { chunk: 'jx-caja-chica', component: 'CajaChicaPage' },
   // === jx-ubicaciones ===
   'ubicaciones':            { chunk: 'jx-ubicaciones', component: 'UbicacionesPage' },
+  'frentes':                { chunk: 'jx-frentes', component: 'FrentesPage' },
   // === jx-evidencias ===
   'evidencias':             { chunk: 'jx-evidencias', component: 'EvidenciasPage' },
   'plantillas':             { chunk: 'jx-evidencias', component: 'PlantillasPage' },

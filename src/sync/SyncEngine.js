@@ -13,7 +13,9 @@ import { trackEvent } from '../lib/posthog.js';
 // participan del push.
 const TRANSACTIONAL_TABLES = [
   'obras',
+  'frentes_obra',        // antes de personal (personal.frente_id depende de él)
   'personal',
+  'personal_historial',
   'materiales',
   'herramientas',
   'proveedores',
@@ -71,7 +73,9 @@ const TRANSACTIONAL_TABLES = [
 // Tablas maestras que se descargan del servidor en cada sync.
 const MASTER_TABLES = [
   { tabla: 'obras',                  query: () => supabase.from('obras').select('*').is('deleted_at', null) },
+  { tabla: 'frentes_obra',           query: () => supabase.from('frentes_obra').select('*').is('deleted_at', null) },
   { tabla: 'personal',               query: () => supabase.from('personal').select('*').is('deleted_at', null) },
+  { tabla: 'personal_historial',     query: () => supabase.from('personal_historial').select('*').is('deleted_at', null) },
   { tabla: 'materiales',             query: () => supabase.from('materiales').select('*').is('deleted_at', null) },
   { tabla: 'herramientas',           query: () => supabase.from('herramientas').select('*').is('deleted_at', null) },
   { tabla: 'proveedores',            query: () => supabase.from('proveedores').select('*').is('deleted_at', null) },
@@ -409,6 +413,9 @@ const PUSH_PARALLELISM = 5;
 const TABLA_TO_MODULO = {
   obras: 'Obras',
   personal: 'Personal',
+  personal_historial: 'Personal',
+  // frentes_obra: sin mapear a propósito → canPushTabla deja pasar (no existe
+  // módulo 'Frentes' en la matriz de permisos; el CRUD ya gatea por rol).
   materiales: 'Materiales',
   herramientas: 'Herramientas',
   epps: 'EPP',
@@ -499,7 +506,8 @@ const FK_DEPS = {
   // Un trabajador puede pertenecer a la cuadrilla de un subcontratista; si ese
   // subcontratista aún es PENDING local, esperamos a que sincronice primero
   // (FK opcional: se salta cuando subcontratista_id es null = personal directo).
-  personal:                  [{ campo: 'subcontratista_id', tabla: 'subcontratistas' }],
+  personal:                  [{ campo: 'subcontratista_id', tabla: 'subcontratistas' }, { campo: 'frente_id', tabla: 'frentes_obra' }],
+  personal_historial:        [{ campo: 'personal_id', tabla: 'personal' }],
   recepcion_items:           [{ campo: 'recepcion_id', tabla: 'recepciones' }],
   oc_items:                  [{ campo: 'oc_id', tabla: 'ordenes_compra' }],
   cotizacion_items:          [{ campo: 'cotizacion_id', tabla: 'cotizaciones' }],

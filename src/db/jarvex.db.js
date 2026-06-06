@@ -26,6 +26,14 @@ export const db = new Dexie('JarvexDB');
 // subcontratista_id para listar "el personal de este subcontrato". Los campos
 // es_jefe_subcontrato y seguro_a_cargo son props sin índice (Dexie los acepta).
 // Aditivo: el personal existente queda con subcontratista_id undefined = directo.
+// Versión 22: Frentes de trabajo (catálogo per-obra, espejo de ubicaciones_obra)
+// + historial individual de personal (timeline de cambios de cargo/frente/estado).
+// personal.frente_id es prop sin índice (Dexie la acepta). Aditivo.
+db.version(22).stores({
+  frentes_obra:       'id, obra_id, activo, deleted_at, sync_status',
+  personal_historial: 'id, personal_id, obra_id, fecha, tipo, deleted_at, sync_status',
+});
+
 db.version(21).stores({
   personal: 'id, obra_id, dni, estado, subcontratista_id, deleted_at, sync_status',
 });

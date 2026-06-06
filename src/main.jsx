@@ -28,12 +28,12 @@ import { useRealtimeNotifications } from './hooks/useRealtimeNotifications';
 import { useObraActiva, getObraActivaIdSync, setObraActivaId } from './hooks/useObraActiva';
 import {
   useObras, usePersonal, useMateriales, useHerramientas,
-  useUbicacionesObra,
+  useUbicacionesObra, useFrentesObra,
   useMovimientosMateriales, useMovimientosHerramientas, useMovimientosMaquinaria,
   useAsistencia, usePartidas, useAvanceObra, useIncidencias,
   useEvidencias, useConflicts,
   usePresupuestosVersiones, usePartidasVersionadas,
-  useMaterialPreciosHistorial,
+  useMaterialPreciosHistorial, useHistorialPersonal,
   useCompanies, useAccountingMovements, useIntercompanyTransactions, useTrazabilidadCadenas,
   useRequisiciones, useOrdenesCompra,
   useValorizaciones,
@@ -90,12 +90,12 @@ window.__getObraActivaId = getObraActivaIdSync;
 window.__setObraActivaId = setObraActivaId;
 window.__hooks = {
   useObras, usePersonal, useMateriales, useHerramientas,
-  useUbicacionesObra,
+  useUbicacionesObra, useFrentesObra,
   useMovimientosMateriales, useMovimientosHerramientas, useMovimientosMaquinaria,
   useAsistencia, usePartidas, useAvanceObra, useIncidencias,
   useEvidencias, useConflicts,
   usePresupuestosVersiones, usePartidasVersionadas,
-  useMaterialPreciosHistorial,
+  useMaterialPreciosHistorial, useHistorialPersonal,
   useCompanies, useAccountingMovements, useIntercompanyTransactions, useTrazabilidadCadenas,
   useRequisiciones, useOrdenesCompra,
   useValorizaciones,
@@ -223,6 +223,7 @@ const PAGE_CHUNKS = {
   ]),
   'jx-conflicts':             () => import('./components/jx-conflicts.jsx'),
   'jx-ubicaciones':           () => import('./components/jx-ubicaciones.jsx'),
+  'jx-frentes':               () => import('./components/jx-frentes.jsx'),
 };
 
 window.__loadedChunks = new Set();

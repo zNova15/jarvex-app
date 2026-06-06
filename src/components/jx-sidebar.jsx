@@ -121,6 +121,7 @@ const NAV = [
 
   { section: 'RRHH' },
   { id: 'personal', label: 'Personal', icon: 'users' },
+  { id: 'frentes', label: 'Frentes de Trabajo', icon: 'flag' },
   { id: 'asistencia', label: 'Asistencia', icon: 'calendar' },
   { id: 'personal-contratos', label: 'Contratos Laborales', icon: 'shield' },
   { id: 'planillas', label: 'Planillas / Sueldos', icon: 'user' },
