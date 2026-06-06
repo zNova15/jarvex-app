@@ -5,7 +5,7 @@ import { calcularPresupuesto, fmtSoles } from "../lib/presupuesto-obra.js";
 import { aplicarNombresDesdePartidas } from "../lib/partida-nombres.js";
 import { MigracionFlow, descargarPlantilla as descargarPlantillaMigracion } from "./jx-migracion-import.jsx";
 import { FORMATOS as MIGRACION_FORMATOS } from "../lib/migracion-parser.js";
-import { exportarHistoricoExcel } from "../lib/export-historico.js";
+import { DATASETS as EXPORT_DATASETS, exportarDataset, exportarTodo, contarDatasets } from "../lib/export-historico.js";
 const { useState: uSI, useMemo: uMI, useEffect: uEI, useRef: uRI, useCallback: uCI } = React;
 
 // ── Obra activa helper (poll Dexie) ──────────────────────────
@@ -2385,7 +2385,49 @@ function ImportarPage({ showToast }) {
 
   const [tab, setTab] = uSI('importar');
   const [step, setStep] = uSI(0);
-  const [expBusy, setExpBusy] = uSI(false); // exportando histórico (Super Admin)
+  // Exportar (Super Admin): filtros, conteos, estado de descarga, listas para filtro.
+  const [expBusy, setExpBusy] = uSI(null);       // id del dataset que se está exportando ('__todo__' para todo)
+  const [expFiltros, setExpFiltros] = uSI({ desde:'', hasta:'', q:'', responsable:'' });
+  const [expCounts, setExpCounts] = uSI(null);   // { datasetId: n }
+  const [expPersonal, setExpPersonal] = uSI([]);
+  const [expSubs, setExpSubs] = uSI([]);
+
+  // Carga conteos + listas (personal/subcontratistas) al entrar a la pestaña Exportar.
+  uEI(() => {
+    if (tab !== 'exportar' || !obraId) return;
+    let cancel = false;
+    (async () => {
+      try {
+        const [counts, pers, subs] = await Promise.all([
+          contarDatasets(obraId),
+          window.__db.personal.where('obra_id').equals(obraId).filter(p=>!p.deleted_at && p.estado==='activo').toArray(),
+          window.__db.subcontratistas.filter(s=>!s.deleted_at).toArray(),
+        ]);
+        if (cancel) return;
+        setExpCounts(counts);
+        setExpPersonal((pers||[]).sort((a,b)=>`${a.apellidos} ${a.nombres}`.localeCompare(`${b.apellidos} ${b.nombres}`)));
+        setExpSubs((subs||[]).sort((a,b)=>(a.razon_social||'').localeCompare(b.razon_social||'')));
+      } catch (e) { console.warn('[exportar] carga:', e?.message); }
+    })();
+    return () => { cancel = true; };
+  }, [tab, obraId]);
+
+  const exportarUno = async (datasetId) => {
+    if (!obraId) { showToast('No hay obra activa', 'red'); return; }
+    setExpBusy(datasetId);
+    try {
+      const obra = await window.__db.obras.get(obraId);
+      const nombre = obra?.nombre_obra || obra?.nombre || 'obra';
+      if (datasetId === '__todo__') {
+        const r = await exportarTodo(obraId, nombre, expFiltros);
+        showToast(`Exportado TODO: ${r.total} registros · ${r.hojas} hojas → ${r.archivo}`, 'green');
+      } else {
+        const r = await exportarDataset(datasetId, obraId, nombre, expFiltros);
+        showToast(`Exportado: ${r.filas} registros → ${r.archivo}`, 'green');
+      }
+    } catch (e) { showToast('Error al exportar: ' + (e.message || e), 'red'); }
+    finally { setExpBusy(null); }
+  };
   const [srcId, setSrc] = uSI(null);
   const [modId, setMod] = uSI(null);
   const [file, setFile] = uSI(null);
@@ -2612,9 +2654,9 @@ function ImportarPage({ showToast }) {
           <div className="pg-sub">Importa Excel/CSV a Materiales, Personal, Partidas, Proveedores o Herramientas</div>
         </div>
         <div style={{ display:'flex', gap:4, background:'var(--bg-s)', padding:4, borderRadius:8 }}>
-          {['importar','historial','plantillas'].map(t => (
+          {['importar','historial','plantillas', ...(superAdmin ? ['exportar'] : [])].map(t => (
             <button key={t} onClick={()=>setTab(t)} className={`btn ${tab===t?'btn-amber':'btn-ghost'} btn-sm`} style={{ border:'none', textTransform:'capitalize' }}>
-              {t==='importar'?'Importar':t==='historial'?'Historial':'Plantillas'}
+              {t==='importar'?'Importar':t==='historial'?'Historial':t==='plantillas'?'Plantillas':'Exportar'}
             </button>
           ))}
         </div>
@@ -2987,36 +3029,10 @@ function ImportarPage({ showToast }) {
             ))}
           </div>
 
-          {/* Exportar histórico completo (backup re-importable) — solo Super Admin */}
           {superAdmin && (
-            <div style={{ marginTop:28 }}>
-              <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
-                <JxIcon name="download" size={16} color="#16A34A"/>
-                <span style={{ fontSize:14, fontWeight:800, color:'#16A34A' }}>Exportar histórico (backup Excel)</span>
-                <span className="badge b-gray" style={{ fontSize:9.5 }}>Super Admin</span>
-              </div>
-              <div className="info-banner" style={{ marginBottom:14, background:'rgba(22,163,74,0.08)', border:'1px solid rgba(22,163,74,0.3)' }}>
-                <JxIcon name="download" size={14} color="#16A34A"/>
-                <span>Descarga <strong>un Excel</strong> con todo el histórico de la obra activa, una hoja por categoría (movimientos de materiales, herramientas, EPP, maquinaria, emergencia, + personal y catálogos). Guardalo como respaldo. <strong>Para restaurar tras un borrado general:</strong> (1) importá las hojas <em>Personal</em>, <em>Proveedores</em> y <em>Subcontratistas</em> desde <strong>Importar → genérico</strong>; (2) importá las hojas <em>MOV *</em> desde <strong>Migración histórica</strong> — recrean los insumos faltantes y los movimientos con su fecha real. Las hojas <em>CAT *</em> son una foto de referencia (los insumos se recrean al cargar los movimientos).</span>
-              </div>
-              <div className="card card-p" style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:16, flexWrap:'wrap' }}>
-                <div style={{ fontSize:12.5, color:'var(--ts)' }}>
-                  Respaldo de la obra activa en formato re-importable. {obraId ? '' : <span style={{ color:'var(--red)' }}>No hay obra activa.</span>}
-                </div>
-                <button className="btn btn-green" disabled={expBusy || !obraId}
-                  onClick={async ()=>{
-                    if (!obraId) { showToast('No hay obra activa para exportar', 'red'); return; }
-                    setExpBusy(true);
-                    try {
-                      const obra = await window.__db.obras.get(obraId);
-                      const res = await exportarHistoricoExcel(obraId, obra?.nombre_obra || obra?.nombre || 'obra');
-                      showToast(`Histórico exportado: ${res.totalMovs} movimientos · ${res.hojas.length} hojas → ${res.archivo}`, 'green');
-                    } catch (e) { showToast('Error al exportar: ' + (e.message || e), 'red'); }
-                    finally { setExpBusy(false); }
-                  }}>
-                  <JxIcon name="download" size={14}/>{expBusy ? 'Exportando…' : 'Exportar histórico (.xlsx)'}
-                </button>
-              </div>
+            <div className="info-banner" style={{ marginTop:18, background:'rgba(22,163,74,0.08)', border:'1px solid rgba(22,163,74,0.3)' }}>
+              <JxIcon name="download" size={14} color="#16A34A"/>
+              <span>¿Querés <strong>exportar los datos reales</strong> de la obra (movimientos, mantenimientos, inventario, personal…) con filtros? Andá a la pestaña <strong>Exportar</strong>.</span>
             </div>
           )}
 
@@ -3053,6 +3069,70 @@ function ImportarPage({ showToast }) {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ───────── TAB: EXPORTAR (Super Admin) ───────── */}
+      {tab === 'exportar' && (
+        <div>
+          <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
+            <JxIcon name="download" size={16} color="#16A34A"/>
+            <span style={{ fontSize:15, fontWeight:800, color:'#16A34A' }}>Exportar datos de la obra</span>
+            <span className="badge b-gray" style={{ fontSize:9.5 }}>Super Admin</span>
+          </div>
+          <div className="info-banner" style={{ marginBottom:14, background:'rgba(22,163,74,0.08)', border:'1px solid rgba(22,163,74,0.3)' }}>
+            <JxIcon name="download" size={14} color="#16A34A"/>
+            <span>Descargá los <strong>datos reales</strong> de la obra activa en Excel, organizados por categoría (parte por parte o todo junto). Los filtros se aplican a los datasets marcados con ⏱.</span>
+          </div>
+          {!obraId && <div className="alert-banner" style={{ marginBottom:14, background:'rgba(231,76,60,0.08)', border:'1px solid rgba(231,76,60,0.3)', color:'var(--red)' }}><JxIcon name="alert" size={14} color="var(--red)"/><span>No hay obra activa.</span></div>}
+
+          {/* Filtros */}
+          <div className="card card-p" style={{ marginBottom:16 }}>
+            <div style={{ fontSize:12, fontWeight:700, color:'var(--ts)', marginBottom:8 }}>Filtros</div>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))', gap:10 }}>
+              <div><label className="flabel">Desde</label><input type="date" className="fi" value={expFiltros.desde} onChange={e=>setExpFiltros(f=>({...f, desde:e.target.value}))}/></div>
+              <div><label className="flabel">Hasta</label><input type="date" className="fi" value={expFiltros.hasta} onChange={e=>setExpFiltros(f=>({...f, hasta:e.target.value}))}/></div>
+              <div><label className="flabel">Buscar (insumo / concepto)</label><input className="fi" placeholder="nombre…" value={expFiltros.q} onChange={e=>setExpFiltros(f=>({...f, q:e.target.value}))}/></div>
+              <div><label className="flabel">Personal / Subcontrato</label>
+                <select className="fi" value={expFiltros.responsable} onChange={e=>setExpFiltros(f=>({...f, responsable:e.target.value}))}>
+                  <option value="">Todos</option>
+                  <optgroup label="Personal">{expPersonal.map(p=><option key={p.id} value={`p:${p.id}`}>{p.nombres} {p.apellidos}</option>)}</optgroup>
+                  <optgroup label="Subcontratos">{expSubs.map(s=><option key={s.id} value={`sub:${s.id}`}>{s.razon_social}</option>)}</optgroup>
+                </select>
+              </div>
+            </div>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:12, gap:10, flexWrap:'wrap' }}>
+              <button className="btn btn-ghost btn-sm" onClick={()=>setExpFiltros({desde:'',hasta:'',q:'',responsable:''})}>Limpiar filtros</button>
+              <button className="btn btn-green" disabled={!obraId || !!expBusy} onClick={()=>exportarUno('__todo__')}>
+                <JxIcon name="download" size={14}/>{expBusy==='__todo__'?'Exportando…':'Exportar TODO (un Excel)'}
+              </button>
+            </div>
+          </div>
+
+          {/* Datasets por grupo */}
+          {[...new Set(EXPORT_DATASETS.map(d=>d.grupo))].map(g => (
+            <div key={g} style={{ marginBottom:18 }}>
+              <div style={{ fontSize:12, fontWeight:800, color:'var(--ts)', textTransform:'uppercase', letterSpacing:0.4, marginBottom:8 }}>{g}</div>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:12 }}>
+                {EXPORT_DATASETS.filter(d=>d.grupo===g).map(d => (
+                  <div key={d.id} className="card card-p card-hover">
+                    <div style={{ display:'flex', gap:12, alignItems:'flex-start', marginBottom:10 }}>
+                      <div style={{ width:38, height:38, borderRadius:9, background:`${d.color}18`, border:`1px solid ${d.color}30`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                        <JxIcon name={d.icon} size={17} color={d.color}/>
+                      </div>
+                      <div>
+                        <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)', lineHeight:1.3 }}>{d.label} {d.filtrable && <span title="Aplica los filtros">⏱</span>}</div>
+                        <div style={{ fontSize:11, color:'var(--tm)' }}>{expCounts ? `${expCounts[d.id] ?? 0} registros` : 'Cargando…'}</div>
+                      </div>
+                    </div>
+                    <button className="btn btn-ghost btn-sm" style={{ width:'100%', justifyContent:'center' }} disabled={!obraId || !!expBusy} onClick={()=>exportarUno(d.id)}>
+                      <JxIcon name="download" size={13}/>{expBusy===d.id?'Exportando…':'Descargar .xlsx'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>
