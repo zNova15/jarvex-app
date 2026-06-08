@@ -3360,6 +3360,14 @@ function HerramientasPage({ showToast }) {
 
   // ── Herramientas por cantidad: ingreso/salida en lote + traspaso ────
   const herrCantidad = uM(() => (herramientas || []).filter(h => h.maneja_cantidad && !h.deleted_at), [herramientas]);
+  // Flujo unificado de movimientos: TODA herramienta suelta (no grupo) puede
+  // moverse — ya no se separa "serializada" vs "por cantidad". Las pocas que
+  // quedaron serializadas (creadas antes del fix) se sanan a cantidad en el submit.
+  const herrMovibles = uM(() => (herramientas || []).filter(h => !h.deleted_at && !h.es_grupo), [herramientas]);
+  const stockDeHerr = (h) => h?.maneja_cantidad ? Number(h?.stock_actual || 0) : (h?.disponible !== false ? 1 : 0);
+  // "Fuera de almacén" = lo que el badge muestra En Uso (o no disponible). Es
+  // lo que se puede devolver. Respeta el estado importado del registro histórico.
+  const herrFueraDeAlmacen = uM(() => (herramientas || []).filter(h => !h.deleted_at && !h.es_grupo && (h.ubicacion_actual === 'en_uso' || h.ubicacion_actual === 'mantenimiento' || h.disponible === false)), [herramientas]);
   const ubicDefaultH = () => (ubicacionesActivasH.length === 1 ? ubicacionesActivasH[0].id : '');
   const updateLoteCantItem = (id, patch) => setLoteCantItems(items => items.map(it => it.id === id ? { ...it, ...patch } : it));
   const addLoteCantItem = () => setLoteCantItems(items => [...items, { id: window.__newId?.() || crypto.randomUUID(), herramienta_id: '', cantidad: '' }]);
@@ -3371,46 +3379,88 @@ function HerramientasPage({ showToast }) {
   };
   const submitLoteCant = async () => {
     if (busyLoteCant) return;
-    const tipo = loteCant;
+    const tipo = loteCant;                       // 'ingreso' | 'salida' | 'devolucion'
+    const esEntrada = tipo !== 'salida';         // ingreso (compra) y devolución suman stock
     const itemsValidos = loteCantItems.filter(it => it.herramienta_id && parseFloat(it.cantidad) > 0);
     if (!itemsValidos.length) { showToast('Agregá al menos una herramienta con cantidad', 'red'); return; }
     const ubicMov = loteCantForm.ubicacion_id || null;
-    if (tipo === 'salida' && ubicacionesActivasH.length >= 1 && !ubicMov) { showToast('Elegí el almacén de origen de la salida', 'red'); return; }
+    // El almacén es obligatorio en las 3 acciones cuando hay almacenes definidos:
+    // sin él, el desglose por ubicación (stock_ubicaciones) no se actualizaría y
+    // quedaría inconsistente con el stock total. (Con 1 solo almacén se autocompleta.)
+    if (ubicacionesActivasH.length >= 1 && !ubicMov) {
+      showToast(tipo === 'salida' ? 'Elegí el almacén de origen de la salida' : 'Elegí el almacén de llegada', 'red');
+      return;
+    }
+    // Validación de stock por ubicación SOLO en salida (no podés sacar más de lo que hay).
     if (tipo === 'salida' && ubicMov) {
       const proyec = new Map();
       for (const it of itemsValidos) {
         const h = herramientas.find(x => x.id === it.herramienta_id);
         const dgItem = desgloseUbicH.get(it.herramienta_id);
         const tieneDesglose = dgItem && Array.from(dgItem.values()).some(c => Number(c) > 0);
-        const base = proyec.has(it.herramienta_id) ? proyec.get(it.herramienta_id) : (tieneDesglose ? Number(dgItem.get(ubicMov) || 0) : Number(h?.stock_actual || 0));
+        const base = proyec.has(it.herramienta_id) ? proyec.get(it.herramienta_id) : (tieneDesglose ? Number(dgItem.get(ubicMov) || 0) : stockDeHerr(h));
         const cant = parseFloat(it.cantidad) || 0;
         if (base - cant < 0) { showToast(`❌ Stock insuficiente de "${h?.nombre_herramienta}" en ${ubicacionesByIdH.get(ubicMov)?.nombre || 'ese almacén'}: hay ${base}, pedís ${cant}.`, 'red'); return; }
         proyec.set(it.herramienta_id, base - cant);
       }
     }
+    // Observaciones: prefijo [Devolución] solo si hay texto real (evita guardar
+    // un prefijo suelto o espacios en blanco).
+    const obsLimpia = (loteCantForm.observaciones || '').trim();
+    const obsFinal = tipo === 'devolucion'
+      ? (obsLimpia ? `[Devolución] ${obsLimpia}` : '[Devolución]')
+      : (obsLimpia || null);
+    // Idempotencia a nivel LOTE: una clave por click → sub-clave determinista por
+    // item. Si el browser re-envía, el server rechaza el duplicado por UNIQUE.
+    const loteKey = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? `lote-mov-herr-${crypto.randomUUID()}`
+      : `lote-mov-herr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setBusyLoteCant(true);
     let ok = 0, fail = 0;
     try {
-      for (const it of itemsValidos) {
+      for (let idx = 0; idx < itemsValidos.length; idx++) {
+        const it = itemsValidos[idx];
         const h = herramientas.find(x => x.id === it.herramienta_id);
         if (!h) { fail++; continue; }
         const cant = parseFloat(it.cantidad) || 0;
+        // Atribución (persona/subcontrato): la registra la salida; la devolución
+        // guarda quién la devuelve (opcional). El ingreso (compra) no lleva.
+        const dest = tipo === 'ingreso' ? { responsable_id: null, subcontratista_id: null, destino_tipo: null } : splitDestino(loteCantForm.responsable_id);
         try {
           await movHook.create({
             obra_id: obraId, herramienta_id: it.herramienta_id, fecha: loteCantForm.fecha, hora: loteCantForm.hora,
-            accion: tipo, tipo_movimiento: tipo, cantidad: cant,
-            // Destino (persona o subcontrato) solo en salida (Fase B)
-            ...(tipo === 'salida' ? splitDestino(loteCantForm.responsable_id) : { responsable_id: null }),
-            ubicacion_id: ubicMov, observaciones: loteCantForm.observaciones || null,
+            accion: esEntrada ? 'entrada' : 'salida', tipo_movimiento: esEntrada ? 'entrada' : 'salida', cantidad: cant,
+            ...dest,
+            ubicacion_id: ubicMov,
+            observaciones: obsFinal,
+            idempotency_key: `${loteKey}_${idx}_${it.herramienta_id}`,
           });
-          if (ubicMov) { try { await aplicarDelta({ obraId, itemTipo: 'herramienta', itemId: it.herramienta_id, ubicacionId: ubicMov, delta: tipo === 'ingreso' ? cant : -cant, userId: auth?.profile?.id || null }); } catch (err) { console.warn('[herr aplicarDelta]', err?.message); } }
-          const nuevoStock = Math.max(0, Number(h.stock_actual || 0) + (tipo === 'ingreso' ? cant : -cant));
-          await window.__db.herramientas.update(it.herramienta_id, { stock_actual: nuevoStock, alerta: calcAlerta(nuevoStock, Number(h.stock_minimo || 0)) });
+          if (ubicMov) { try { await aplicarDelta({ obraId, itemTipo: 'herramienta', itemId: it.herramienta_id, ubicacionId: ubicMov, delta: esEntrada ? cant : -cant, userId: auth?.profile?.id || null }); } catch (err) { console.warn('[herr aplicarDelta]', err?.message); } }
+          const base = stockDeHerr(h);
+          const nuevoStock = Math.max(0, base + (esEntrada ? cant : -cant));
+          // Saneo + estado: toda herramienta queda "por cantidad" y su badge
+          // refleja la última acción (salida → En Uso, entrada → Almacén).
+          await window.__db.herramientas.update(it.herramienta_id, {
+            maneja_cantidad: true,
+            stock_actual: nuevoStock,
+            alerta: calcAlerta(nuevoStock, Number(h.stock_minimo || 0)),
+            ubicacion_actual: esEntrada ? 'almacen' : 'en_uso',
+            disponible: esEntrada ? true : nuevoStock > 0,
+            ultimo_responsable_id: tipo === 'salida' ? (dest.responsable_id || null) : (tipo === 'devolucion' ? null : (h.ultimo_responsable_id || null)),
+            fecha_ultimo_movimiento: loteCantForm.fecha,
+            // Sync: marcar pending para que el cambio de stock/estado viaje al
+            // servidor (el lote viejo usaba db.update "pelado" → NO sincronizaba).
+            sync_status: h.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+            updated_at: new Date().toISOString(),
+            updated_by: auth?.profile?.id || 'offline',
+            version: (h.version ?? 0) + 1,
+          });
           ok++;
         } catch (e) { fail++; }
       }
       refresh();
-      showToast(fail ? `⚠ ${ok} ok, ${fail} fallaron` : `✓ ${ok} ${tipo === 'ingreso' ? 'ingresos' : 'salidas'}`, fail ? 'amber' : 'green');
+      const etq = tipo === 'ingreso' ? 'ingresos' : tipo === 'devolucion' ? 'devoluciones' : 'salidas';
+      showToast(fail ? `⚠ ${ok} ok, ${fail} fallaron` : `✓ ${ok} ${etq}`, fail ? 'amber' : 'green');
       setLoteCant(null); setLoteCantItems([]); setLoteCantForm({});
     } finally { setBusyLoteCant(false); }
   };
@@ -3592,9 +3642,6 @@ function HerramientasPage({ showToast }) {
 
   const enUso = herramientas?.filter(h => h.ubicacion_actual === 'en_uso').length ?? 0;
   const disponibles = herramientas?.filter(h => h.disponible).length ?? 0;
-  // Herramientas de lote (stock por cantidad, como Materiales) — vienen de la
-  // migración histórica o se marcan manualmente. Conviven con las serializadas.
-  const porCantidad = herramientas?.filter(h => h.maneja_cantidad).length ?? 0;
 
   // ── Categorización por IA (Claude vía /api/categorize) ──
   const [iaModalH, setIaModalH] = uS(null); // null | 'running' | 'preview'
@@ -3762,15 +3809,6 @@ function HerramientasPage({ showToast }) {
     baja:           { class:'b-gray',   label:'Baja' },
   };
 
-  const openMov = (accion) => {
-    setForm({
-      fecha: new Date().toISOString().slice(0, 10),
-      hora: new Date().toTimeString().slice(0, 5),
-      accion,
-    });
-    setModal('mov');
-  };
-
   const openEditHerr = (h) => {
     setForm({
       nombre_herramienta: h.nombre_herramienta || '',
@@ -3780,6 +3818,7 @@ function HerramientasPage({ showToast }) {
       serie: h.serie || '',
       estado_actual: h.estado_actual || 'bueno',
       ubicacion_id: h.ubicacion_id || '',
+      stock_minimo: h.stock_minimo ?? '',
       fecha_registro: (h.created_at || '').slice(0, 10),
     });
     setEditingId(h.id);
@@ -3834,6 +3873,7 @@ function HerramientasPage({ showToast }) {
           serie: form.serie || null,
           estado_actual: form.estado_actual || 'bueno',
           ubicacion_id: form.ubicacion_id || null,
+          stock_minimo: Number(form.stock_minimo || 0),
           padre_id: form.padre_id || null,
         };
         if (superAdmin && form.fecha_registro && form.fecha_registro !== (oldData?.created_at || '').slice(0, 10)) {
@@ -3852,8 +3892,17 @@ function HerramientasPage({ showToast }) {
           serie: form.serie || null,
           estado_actual: form.estado_actual || 'bueno',
           ubicacion_actual: 'almacen',
-          ubicacion_id: form.ubicacion_id || null,
+          // Crear una herramienta = solo el catálogo. El almacén (ubicación)
+          // se define al registrar su INGRESO, no acá. Toda herramienta nueva
+          // se maneja por cantidad → entra al flujo unificado de movimientos
+          // (antes quedaban "serializadas" y no aparecían para ingreso/salida).
+          ubicacion_id: null,
           disponible: true,
+          maneja_cantidad: true,
+          unidad: form.unidad || 'Und',
+          stock_actual: 0,
+          stock_minimo: Number(form.stock_minimo || 0),
+          alerta: 'ok',
           padre_id: form.padre_id || null,
         });
         herramientaId = created?.id;
@@ -3888,175 +3937,6 @@ function HerramientasPage({ showToast }) {
     }
   };
 
-  const handleSubmitMov = async () => {
-    if (!form.herramienta_id || !form.responsable_id) {
-      showToast('Selecciona herramienta y responsable', 'red');
-      return;
-    }
-    const herr = herramientas.find(h => h.id === form.herramienta_id);
-    if (!herr) {
-      showToast('Herramienta no encontrada', 'red');
-      return;
-    }
-    // ── Validaciones de sentido común ─────────────────────────
-    const hoy = new Date().toISOString().slice(0, 10);
-    if (form.fecha && form.fecha > hoy) {
-      showToast('No podés registrar un movimiento con fecha futura', 'red');
-      return;
-    }
-    if (form.responsable_id) {
-      const resp = personal?.find(p => p.id === form.responsable_id);
-      if (resp?.fecha_ingreso && form.fecha && String(resp.fecha_ingreso) > form.fecha) {
-        showToast(`${resp.nombres} aún no había ingresado a la obra el ${form.fecha} (ingreso: ${resp.fecha_ingreso})`, 'red');
-        return;
-      }
-    }
-    // Validar motivo si la devolución es por excepción (otra persona devuelve)
-    const esDevolucion = form.accion === 'entrada';
-    const respOriginalId = herr.ultimo_responsable_id || null;
-    const cambioResponsable = esDevolucion && respOriginalId && form.responsable_id !== respOriginalId;
-    if (cambioResponsable && !(form.motivo_excepcion && form.motivo_excepcion.trim())) {
-      showToast('Debes ingresar el motivo de la excepción cuando otra persona devuelve la herramienta', 'red');
-      return;
-    }
-    // Devolución (entrada) de herramienta que NO está en uso → no tiene sentido
-    if (esDevolucion && herr.disponible === true && !respOriginalId) {
-      const myRol3 = auth?.profile?.rol;
-      const puedeForzar = myRol3 === 'admin' || myRol3 === 'gerente';
-      if (!puedeForzar) {
-        showToast(`❌ "${herr.nombre_herramienta}" no está entregada — no se puede devolver algo que no salió del almacén.`, 'red');
-        return;
-      }
-      if (!confirm(`⚠ "${herr.nombre_herramienta}" no figura como entregada. ¿Registrar devolución igualmente? (queda en auditoría)`)) return;
-    }
-
-    // ── Validación de disponibilidad para SALIDA ─────────────
-    let salidaForzada = false;
-    if (form.accion === 'salida') {
-      const noDisponible = !herr.disponible
-        || herr.ubicacion_actual === 'en_uso'
-        || herr.ubicacion_actual === 'mantenimiento'
-        || herr.estado_actual === 'baja'
-        || herr.estado_actual === 'inhabilitado';
-      if (noDisponible) {
-        const myRol2 = auth?.profile?.rol;
-        const puedeForzar = myRol2 === 'admin' || myRol2 === 'gerente';
-        const motivo = herr.ubicacion_actual === 'en_uso' ? 'ya está en uso por otro responsable'
-          : herr.ubicacion_actual === 'mantenimiento' ? 'está en mantenimiento'
-          : herr.estado_actual === 'baja' ? 'está dada de baja'
-          : herr.estado_actual === 'inhabilitado' ? 'está inhabilitada'
-          : 'no está disponible';
-        if (!puedeForzar) {
-          showToast(`❌ "${herr.nombre_herramienta}" ${motivo}. Pide al admin que registre primero la devolución o la salida forzada.`, 'red');
-          return;
-        }
-        const confirmar = confirm(
-          `⚠ HERRAMIENTA NO DISPONIBLE\n\n` +
-          `Herramienta: ${herr.nombre_herramienta}\n` +
-          `Estado actual: ${herr.estado_actual} · ${herr.ubicacion_actual}\n` +
-          `Razón: ${motivo}\n\n` +
-          `Como ${myRol2}, puedes forzar la salida. Esto queda registrado en auditoría.\n\n` +
-          `¿Forzar la salida?`
-        );
-        if (!confirmar) return;
-        salidaForzada = true;
-      }
-    }
-
-    try {
-      const movCreated = await movHook.create({
-        obra_id: obraId,
-        herramienta_id: form.herramienta_id,
-        fecha: form.fecha,
-        hora: form.hora,
-        accion: form.accion,
-        responsable_id: form.responsable_id,
-        estado_salida: form.accion === 'salida' ? form.estado : null,
-        estado_devolucion: form.accion === 'entrada' ? form.estado : null,
-        observaciones: form.observaciones || null,
-      });
-      try { await window.__logAudit?.({ action:'insert', table:'movimientos_herramientas', recordId:movCreated?.id, newData:movCreated, reason:`${form.accion} de "${herr.nombre_herramienta}"${salidaForzada ? ' (FORZADA)' : ''}${cambioResponsable ? ' (EXCEPCIÓN responsable)' : ''}` }); } catch(e) {}
-      // Audit + notif al admin si fue excepción de devolución (otra persona)
-      if (cambioResponsable) {
-        const respOrig = personal.find(p => p.id === respOriginalId);
-        const respNuevo = personal.find(p => p.id === form.responsable_id);
-        const desc = `Devolvió ${respNuevo?.nombres || ''} ${respNuevo?.apellidos || ''} en lugar de ${respOrig?.nombres || ''} ${respOrig?.apellidos || ''}. Motivo: ${form.motivo_excepcion}`;
-        try {
-          await window.__logAudit?.({
-            action: 'alert', table: 'movimientos_herramientas', recordId: movCreated?.id,
-            oldData: { responsable_original_id: respOriginalId },
-            newData: { responsable_devolucion_id: form.responsable_id, motivo: form.motivo_excepcion },
-            reason: `⚠ Excepción de devolución: ${herr.nombre_herramienta}. ${desc}`,
-          });
-        } catch {}
-        try {
-          window.dispatchEvent(new CustomEvent('jarvex_new_notif', {
-            detail: {
-              tipo: 'excepcion_devolucion',
-              titulo: `Devolución por excepción · ${herr.nombre_herramienta}`,
-              descripcion: desc,
-            }
-          }));
-        } catch {}
-        showToast(`⚠ Devolución registrada como EXCEPCIÓN. Admin notificado.`, 'amber');
-      }
-      if (salidaForzada) {
-        try { await window.__logAudit?.({ action:'alert', table:'movimientos_herramientas', recordId: movCreated?.id,
-          oldData:{ disponible: herr.disponible, ubicacion: herr.ubicacion_actual, estado: herr.estado_actual },
-          newData:{ accion: form.accion, forzado_por: auth?.profile?.id },
-          reason:`⚠ Salida FORZADA de herramienta no disponible: ${herr.nombre_herramienta}` }); } catch {}
-        showToast(`⚠ Salida forzada registrada — herramienta no estaba disponible.`, 'amber');
-      }
-      // Sincronizar estado de la herramienta (disponible ↔ ubicacion_actual SIEMPRE
-      // consistentes). Vía updateHerr → marca sync_status='pending_update' para
-      // que Supabase reciba el cambio en el próximo sync.
-      const updates = { fecha_ultimo_movimiento: form.fecha };
-      if (form.accion === 'salida') {
-        updates.disponible = false;
-        updates.ubicacion_actual = 'en_uso';
-        updates.ultimo_responsable_id = form.responsable_id;
-      } else if (form.accion === 'entrada') {
-        // Devolución: la herramienta vuelve al almacén y queda disponible
-        updates.disponible = true;
-        updates.ubicacion_actual = 'almacen';
-        updates.ultimo_responsable_id = null;
-        if (form.estado) updates.estado_actual = form.estado;
-        // Si el estado de devolución es 'malo' → mandar a mantenimiento
-        if (form.estado === 'malo') {
-          updates.disponible = false;
-          updates.ubicacion_actual = 'mantenimiento';
-        }
-      } else if (form.accion === 'mantenimiento') {
-        updates.disponible = false;
-        updates.ubicacion_actual = 'mantenimiento';
-        updates.estado_actual = 'mantenimiento';
-      }
-      await updateHerr(form.herramienta_id, updates);
-
-      // Si devolución con estado peor → crear incidencia
-      if (form.accion === 'entrada' && form.estado === 'malo' && herr.estado_actual !== 'malo') {
-        await window.__db.incidencias.add({
-          id: window.__newId(),
-          obra_id: obraId,
-          tipo_incidencia: 'herramienta',
-          severidad: 'media',
-          modulo_origen: 'movimientos_herramientas',
-          descripcion: `Herramienta "${herr.nombre_herramienta}" devuelta en mal estado.`,
-          estado: 'abierta',
-          sync_status: 'pending_create',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        });
-        showToast('Incidencia creada por daño en herramienta', 'amber');
-      } else {
-        showToast(`${form.accion === 'salida' ? 'Salida' : form.accion === 'entrada' ? 'Devolución' : 'Movimiento'} registrado`, 'green');
-      }
-      setModal(null); setForm({});
-    } catch (e) {
-      showToast('Error: ' + e.message, 'red');
-    }
-  };
-
   if (!obraId) return <SinObraEmpty icon="tool"/>;
   if (loading) {
     return <div className="page-wrap"><div className="empty-state"><JxIcon name="tool" size={32} color="var(--tm)"/><p>Cargando herramientas…</p></div></div>;
@@ -4067,7 +3947,7 @@ function HerramientasPage({ showToast }) {
       <div className="pg-hd frow-sb">
         <div>
           <div className="pg-title">Herramientas</div>
-          <div className="pg-sub">{herramientas.length} herramientas · {enUso} en uso · {disponibles} disponibles{porCantidad > 0 ? ` · ${porCantidad} por cantidad` : ''}</div>
+          <div className="pg-sub">{herramientas.length} herramientas · {enUso} fuera de almacén · {disponibles} en almacén</div>
         </div>
         <div style={{display:'flex',gap:8, flexWrap:'wrap'}}>
           {isAdmin && (
@@ -4076,12 +3956,12 @@ function HerramientasPage({ showToast }) {
               <JxIcon name="settings" size={13}/>Categorizar con IA
             </button>
           )}
-          {canWriteMov && <button className="btn btn-green btn-sm" onClick={()=>openMov('entrada')}><JxIcon name="arrowIn" size={13}/>Registrar Devolución</button>}
-          {canWriteMov && <button className="btn btn-ghost btn-sm" onClick={()=>openMov('salida')}><JxIcon name="arrowOut" size={13}/>Registrar Salida</button>}
-          {/* Herramientas por cantidad (palas, conos): ingreso/salida/traspaso por lote */}
-          {canWriteMov && porCantidad > 0 && <button className="btn btn-green btn-sm" onClick={()=>openLoteCant('ingreso')} title="Ingreso de herramientas por cantidad"><JxIcon name="arrowIn" size={13}/>Ingreso (cant.)</button>}
-          {canWriteMov && porCantidad > 0 && <button className="btn btn-ghost btn-sm" onClick={()=>openLoteCant('salida')} title="Salida de herramientas por cantidad"><JxIcon name="arrowOut" size={13}/>Salida (cant.)</button>}
-          {canWriteMov && porCantidad > 0 && ubicacionesActivasH.length >= 2 && <button className="btn btn-ghost btn-sm" onClick={()=>{ setTraspasoPreIdH(''); setModal('traspaso-herr'); }} title="Mover stock entre almacenes"><JxIcon name="compare" size={13}/>Traspaso</button>}
+          {/* Flujo UNIFICADO: un solo botón por acción, sirve para 1 o varias
+              herramientas (cualquiera, no solo "por cantidad"). */}
+          {canWriteMov && <button className="btn btn-green btn-sm" onClick={()=>openLoteCant('ingreso')} title="Ingreso de herramientas (compra / llegada a almacén)"><JxIcon name="arrowIn" size={13}/>Registrar Ingreso</button>}
+          {canWriteMov && <button className="btn btn-ghost btn-sm" onClick={()=>openLoteCant('salida')} title="Salida de herramientas (entrega a responsable)"><JxIcon name="arrowOut" size={13}/>Registrar Salida</button>}
+          {canWriteMov && <button className="btn btn-blue btn-sm" onClick={()=>openLoteCant('devolucion')} title="Devolución de herramientas que están fuera de almacén"><JxIcon name="arrowIn" size={13}/>Registrar Devolución</button>}
+          {canWriteMov && ubicacionesActivasH.length >= 2 && <button className="btn btn-ghost btn-sm" onClick={()=>{ setTraspasoPreIdH(''); setModal('traspaso-herr'); }} title="Mover stock entre almacenes"><JxIcon name="compare" size={13}/>Traspaso</button>}
           {canWrite ? (
             <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setModal('nuevo');}}><JxIcon name="plus" size={13}/>Nueva Herramienta</button>
           ) : (
@@ -4165,105 +4045,6 @@ function HerramientasPage({ showToast }) {
       </div>
       )}
 
-      {/* Modal Movimiento (salida/devolución) */}
-      {modal==='mov' && (() => {
-        // Para devolución: el responsable original (quien sacó la herramienta).
-        // Auto-fill: si no hay excepción, locked al ultimo_responsable_id.
-        const herrSel = herramientas.find(h => h.id === form.herramienta_id);
-        const respOriginalId = herrSel?.ultimo_responsable_id || null;
-        const respOriginal = respOriginalId ? personal.find(p => p.id === respOriginalId) : null;
-        const esDevolucion = form.accion === 'entrada';
-        const hayExcepcion = !!form.es_excepcion;
-        return (
-        <Modal title={form.accion === 'salida' ? 'Registrar Salida de Herramienta' : form.accion === 'entrada' ? 'Registrar Devolución' : 'Mantenimiento'} icon="tool" onClose={()=>setModal(null)}>
-        <div className="g2">
-          <div style={{gridColumn:'1/-1'}}><label className="flabel">Herramienta</label>
-            <select className="fi" value={form.herramienta_id||''} onChange={e=>{
-              const newHerr = herramientas.find(h => h.id === e.target.value);
-              setForm({
-                ...form,
-                herramienta_id: e.target.value,
-                // En devolución, autocompletar responsable con quien la sacó
-                responsable_id: esDevolucion && newHerr?.ultimo_responsable_id
-                  ? newHerr.ultimo_responsable_id
-                  : (form.responsable_id || ''),
-                es_excepcion: false,
-                motivo_excepcion: '',
-              });
-            }}>
-              <option value="">Selecciona...</option>
-              {herramientas
-                .filter(h => !h.maneja_cantidad && (form.accion === 'salida' ? h.disponible : !h.disponible))
-                .map(h => <option key={h.id} value={h.id}>{h.nombre_herramienta} · {h.marca || ''} {h.modelo || ''}</option>)}
-            </select>
-          </div>
-          {/* Banner informativo sobre el responsable original (devolución) */}
-          {esDevolucion && respOriginal && (
-            <div style={{ gridColumn:'1/-1', padding:'10px 12px', background:'rgba(52,152,219,0.08)', border:'1px solid rgba(52,152,219,0.25)', borderRadius:8, fontSize:12, color:'var(--ts)' }}>
-              <strong style={{ color:'var(--blue)' }}>Responsable original:</strong> {respOriginal.nombres} {respOriginal.apellidos} ({respOriginal.cargo || 'sin cargo'})
-              <label style={{ display:'flex', alignItems:'center', gap:6, marginTop:6, cursor:'pointer', fontSize:11.5 }}>
-                <input type="checkbox" checked={hayExcepcion}
-                  onChange={e => setForm({
-                    ...form,
-                    es_excepcion: e.target.checked,
-                    responsable_id: e.target.checked ? '' : respOriginalId,
-                  })}
-                  style={{ accentColor:'var(--amber)' }}/>
-                <span>⚠ Excepción: otra persona devuelve la herramienta</span>
-              </label>
-            </div>
-          )}
-          <div><label className="flabel">Responsable {esDevolucion && hayExcepcion ? '(quien devuelve)' : ''}</label>
-            <select className="fi" value={form.responsable_id||''}
-              disabled={esDevolucion && !hayExcepcion && !!respOriginalId}
-              onChange={e=>setForm({...form, responsable_id:e.target.value})}>
-              <option value="">Selecciona...</option>
-              {personal
-                .filter(p => {
-                  if (p.estado !== 'activo') return false;
-                  // Solo trabajadores que ya ingresaron (fecha_ingreso <= hoy)
-                  const hoy = new Date().toISOString().slice(0, 10);
-                  if (p.fecha_ingreso && String(p.fecha_ingreso) > hoy) return false;
-                  // Y de la obra activa (el hook ya filtra pero por si acaso)
-                  if (p.obra_id && obraId && p.obra_id !== obraId) return false;
-                  return true;
-                })
-                .map(p => <option key={p.id} value={p.id}>{p.nombres} {p.apellidos} · {p.cargo}</option>)}
-            </select>
-            <div style={{ fontSize:10, color:'var(--tm)', marginTop:4 }}>
-              Solo trabajadores activos de la obra que ya ingresaron a trabajar.
-            </div>
-          </div>
-          <div><label className="flabel">Estado de {form.accion === 'salida' ? 'Salida' : 'Devolución'}</label>
-            <select className="fi" value={form.estado||''} onChange={e=>setForm({...form, estado:e.target.value})}>
-              <option value="">— sin cambio —</option>
-              <option value="nuevo">Nuevo</option><option value="bueno">Bueno</option>
-              <option value="regular">Regular</option><option value="malo">Malo</option>
-            </select>
-          </div>
-          <div><label className="flabel">Fecha</label><input className="fi" type="date" max={new Date().toISOString().slice(0,10)} value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
-          <div><label className="flabel">Hora</label><input className="fi" type="time" value={form.hora||''} onChange={e=>setForm({...form, hora:e.target.value})}/></div>
-          {esDevolucion && hayExcepcion && (
-            <div style={{ gridColumn:'1/-1' }}>
-              <label className="flabel" style={{ color:'var(--amber)' }}>Motivo de la excepción *</label>
-              <input className="fi" value={form.motivo_excepcion||''}
-                onChange={e=>setForm({...form, motivo_excepcion:e.target.value})}
-                placeholder="Ej: el responsable original está enfermo y no pudo venir hoy"
-                style={{ borderColor:'var(--amber)' }}/>
-              <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:4 }}>
-                Esto queda registrado en auditoría y se notifica al administrador.
-              </div>
-            </div>
-          )}
-        </div>
-        <div style={{marginTop:14}}><label className="flabel">Observaciones</label><textarea className="fi" value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})} placeholder="Condición de la herramienta, daños, etc."/></div>
-        <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={()=>setModal(null)}>Cancelar</button>
-          <button className="btn btn-amber" onClick={handleSubmitMov}><JxIcon name="check" size={13}/>Registrar</button>
-        </div>
-      </Modal>);
-      })()}
-
       {/* Modal IA Herramientas: corriendo */}
       {iaModalH === 'running' && (
         <Modal title="Categorizando con IA…" icon="settings" onClose={()=>{}}>
@@ -4338,21 +4119,10 @@ function HerramientasPage({ showToast }) {
               </select>
             </div>
           )}
-          <div style={{gridColumn:'1/-1'}}><label className="flabel">N° Serie</label><input className="fi" placeholder="Ej: BS-2024-001" value={form.serie||''} onChange={e=>setForm({...form, serie:e.target.value})}/></div>
-          <div style={{gridColumn:'1/-1'}}>
-            <label className="flabel">Ubicación de almacenaje</label>
-            <select className="fi" value={form.ubicacion_id||''} onChange={e=>setForm({...form, ubicacion_id:e.target.value||null})}>
-              <option value="">— sin asignar —</option>
-              {ubicacionesActivasH.map(u => <option key={u.id} value={u.id}>{u.nombre}</option>)}
-              {form.ubicacion_id && ubicacionesByIdH.get(form.ubicacion_id) && ubicacionesByIdH.get(form.ubicacion_id).activo === false && (
-                <option value={form.ubicacion_id}>{ubicacionesByIdH.get(form.ubicacion_id).nombre} (inactiva)</option>
-              )}
-            </select>
-            {ubicacionesActivasH.length === 0 && (
-              <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:4 }}>
-                No hay ubicaciones definidas. Andá a "Ubicaciones de Obra" para crear el catálogo.
-              </div>
-            )}
+          <div><label className="flabel">N° Serie</label><input className="fi" placeholder="Ej: BS-2024-001" value={form.serie||''} onChange={e=>setForm({...form, serie:e.target.value})}/></div>
+          <div><label className="flabel">Stock mínimo (alerta)</label><input className="fi" type="number" min="0" step="1" placeholder="0" value={form.stock_minimo ?? ''} onChange={e=>setForm({...form, stock_minimo:e.target.value})}/></div>
+          <div style={{gridColumn:'1/-1', fontSize:11, color:'var(--tm)', background:'rgba(52,152,219,0.06)', border:'1px solid rgba(52,152,219,0.2)', borderRadius:6, padding:'8px 10px' }}>
+            <JxIcon name="info" size={12} color="var(--blue)"/> El <strong>almacén</strong> de la herramienta se define al registrar su <strong>Ingreso</strong>, no acá. Esto es solo el catálogo.
           </div>
           {/* Foto referencial (opcional) — sube como evidencia */}
           {(() => {
@@ -4511,25 +4281,41 @@ function HerramientasPage({ showToast }) {
       )}
 
       {/* Ingreso/Salida por cantidad (lote) */}
-      {loteCant && (
-        <Modal title={loteCant === 'ingreso' ? 'Ingreso de herramientas (por cantidad)' : 'Salida de herramientas (por cantidad)'} icon={loteCant === 'ingreso' ? 'arrowIn' : 'arrowOut'} onClose={() => setLoteCant(null)} size="xl">
+      {loteCant && (() => {
+        const esSalida = loteCant === 'salida';
+        const esDevol = loteCant === 'devolucion';
+        // Lista de herramientas según la acción: salida/ingreso = todas;
+        // devolución = solo las que están fuera de almacén (En Uso).
+        const listaHerr = esDevol ? herrFueraDeAlmacen : herrMovibles;
+        const tituloMov = esSalida ? 'Registrar Salida de Herramientas' : esDevol ? 'Registrar Devolución de Herramientas' : 'Registrar Ingreso de Herramientas';
+        const labelAlmacen = esSalida ? 'Almacén de origen *' : esDevol ? 'Almacén de retorno *' : 'Almacén de llegada *';
+        const labelResp = esDevol ? 'Quién devuelve (opcional)' : 'Destino — persona o subcontrato (opcional)';
+        const mostrarResp = esSalida || esDevol;
+        const mostrarStock = esSalida;
+        return (
+        <Modal title={tituloMov} icon={esSalida ? 'arrowOut' : 'arrowIn'} onClose={() => setLoteCant(null)} size="xl">
+          {esDevol && listaHerr.length === 0 && (
+            <div style={{ padding:'12px 14px', marginBottom:12, background:'rgba(242,183,5,0.08)', border:'1px solid rgba(242,183,5,0.3)', borderRadius:8, fontSize:12.5, color:'var(--ts)' }}>
+              No hay herramientas marcadas como <strong>fuera de almacén</strong> (En Uso) para devolver. Si una salió pero figura en almacén, registrá primero su Salida.
+            </div>
+          )}
           <div className="g2">
             <div><label className="flabel">Fecha</label><input className="fi" type="date" max={new Date().toISOString().slice(0,10)} value={loteCantForm.fecha || ''} onChange={e=>setLoteCantForm(f=>({...f, fecha:e.target.value}))}/></div>
             <div><label className="flabel">Hora</label><input className="fi" type="time" value={loteCantForm.hora || ''} onChange={e=>setLoteCantForm(f=>({...f, hora:e.target.value}))}/></div>
             {ubicacionesActivasH.length > 0 && (
-              <div><label className="flabel">{loteCant === 'ingreso' ? 'Almacén de llegada' : 'Almacén de origen *'}</label>
-                {loteCant === 'salida' && ubicacionesActivasH.length === 1 ? (
+              <div><label className="flabel">{labelAlmacen}</label>
+                {ubicacionesActivasH.length === 1 ? (
                   <div style={{ fontSize:12.5, color:'var(--tp)', padding:'8px 0' }}>📍 {ubicacionesActivasH[0].nombre} <span style={{ color:'var(--tm)' }}>(único)</span></div>
                 ) : (
                   <select className="fi" value={loteCantForm.ubicacion_id || ''} onChange={e=>setLoteCantForm(f=>({...f, ubicacion_id:e.target.value}))}>
-                    <option value="">{loteCant === 'salida' ? '— Selecciona origen —' : '— Sin asignar —'}</option>
+                    <option value="">{esSalida ? '— Selecciona origen —' : '— Selecciona almacén —'}</option>
                     {ubicacionesActivasH.map(u => <option key={u.id} value={u.id}>{u.nombre}</option>)}
                   </select>
                 )}
               </div>
             )}
-            {loteCant === 'salida' && (
-              <div><label className="flabel">Destino — persona o subcontrato (opcional)</label>
+            {mostrarResp && (
+              <div><label className="flabel">{labelResp}</label>
                 <select className="fi" value={loteCantForm.responsable_id || ''} onChange={e=>setLoteCantForm(f=>({...f, responsable_id:e.target.value}))}>
                   <option value="">—</option>
                   {destinoOptsHerr.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -4543,17 +4329,17 @@ function HerramientasPage({ showToast }) {
             </div>
             <div style={{ overflowX:'auto' }}>
               <table className="tbl" style={{ fontSize:12 }}>
-                <thead><tr><th style={{ minWidth:240 }}>Herramienta</th><th style={{ width:120 }}>Cantidad *</th>{loteCant === 'salida' && <th style={{ width:90 }}>Stock</th>}<th style={{ width:40 }}></th></tr></thead>
+                <thead><tr><th style={{ minWidth:240 }}>Herramienta</th><th style={{ width:120 }}>Cantidad *</th>{mostrarStock && <th style={{ width:90 }}>Stock</th>}<th style={{ width:40 }}></th></tr></thead>
                 <tbody>
                   {loteCantItems.map(it => {
-                    const h = herrCantidad.find(x => x.id === it.herramienta_id);
+                    const h = listaHerr.find(x => x.id === it.herramienta_id) || herrMovibles.find(x => x.id === it.herramienta_id);
                     const cant = parseFloat(it.cantidad) || 0;
-                    const stockOk = (h?.stock_actual ?? 0) >= cant;
+                    const stockOk = stockDeHerr(h) >= cant;
                     return (
                       <tr key={it.id}>
-                        <td><SearchableSelect value={it.herramienta_id} onChange={v=>updateLoteCantItem(it.id,{herramienta_id:v})} options={[{value:'',label:'— Selecciona —'}, ...herrCantidad.map(h=>({value:h.id,label:h.nombre_herramienta}))]} fontSize={12} placeholder="— Selecciona —"/></td>
+                        <td><SearchableSelect value={it.herramienta_id} onChange={v=>updateLoteCantItem(it.id,{herramienta_id:v})} options={[{value:'',label:'— Selecciona —'}, ...listaHerr.map(x=>({value:x.id,label:x.nombre_herramienta}))]} fontSize={12} placeholder="— Selecciona —"/></td>
                         <td><input className="fi" type="number" min="0" step="0.01" value={it.cantidad} style={{ fontSize:12 }} onChange={e=>updateLoteCantItem(it.id,{cantidad:e.target.value})}/></td>
-                        {loteCant === 'salida' && <td>{h ? <span style={{ color: stockOk ? 'var(--green)' : 'var(--red)', fontWeight:600, fontSize:11 }}>{stockOk ? '✓' : '⚠'} {Number(h.stock_actual||0)}</span> : '—'}</td>}
+                        {mostrarStock && <td>{h ? <span style={{ color: stockOk ? 'var(--green)' : 'var(--red)', fontWeight:600, fontSize:11 }}>{stockOk ? '✓' : '⚠'} {stockDeHerr(h)}</span> : '—'}</td>}
                         <td>{loteCantItems.length > 1 && <button type="button" className="btn btn-ghost btn-xs" onClick={()=>removeLoteCantItem(it.id)} style={{ color:'var(--red)' }}><JxIcon name="x" size={11}/></button>}</td>
                       </tr>
                     );
@@ -4565,12 +4351,12 @@ function HerramientasPage({ showToast }) {
           <div style={{ marginTop:14 }}><label className="flabel">Observaciones</label><textarea className="fi" rows={2} value={loteCantForm.observaciones || ''} onChange={e=>setLoteCantForm(f=>({...f, observaciones:e.target.value}))}/></div>
           <div className="modal-actions">
             <button className="btn btn-ghost" onClick={()=>setLoteCant(null)} disabled={busyLoteCant}>Cancelar</button>
-            <button className={`btn ${loteCant === 'ingreso' ? 'btn-green' : 'btn-amber'}`} onClick={submitLoteCant} disabled={busyLoteCant}>
-              {busyLoteCant ? 'Guardando…' : (loteCant === 'ingreso' ? 'Registrar ingreso' : 'Registrar salida')} ({loteCantItems.filter(it=>it.herramienta_id && parseFloat(it.cantidad)>0).length})
+            <button className={`btn ${esSalida ? 'btn-amber' : esDevol ? 'btn-blue' : 'btn-green'}`} onClick={submitLoteCant} disabled={busyLoteCant}>
+              {busyLoteCant ? 'Guardando…' : (esSalida ? 'Registrar salida' : esDevol ? 'Registrar devolución' : 'Registrar ingreso')} ({loteCantItems.filter(it=>it.herramienta_id && parseFloat(it.cantidad)>0).length})
             </button>
           </div>
-        </Modal>
-      )}
+        </Modal>);
+      })()}
     </div>
   );
 }
