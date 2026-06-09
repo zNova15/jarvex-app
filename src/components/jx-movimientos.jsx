@@ -1,4 +1,6 @@
 import React from "react";
+import { calcAlerta } from "../lib/stock-utils.js";
+import { aplicarDelta } from "../lib/stock-ubicaciones.js";
 const { useState: uSM, useMemo: uMM, useEffect: uEM } = React;
 
 // Helper formato moneda
@@ -321,11 +323,21 @@ const MOV_MAT_TIPO = {
 
 const MOV_HER_ACCION = {
   salida:        { cls:'b-amber',  lbl:'Salida',        icon:'arrowOut'   },
-  entrada:       { cls:'b-green',  lbl:'Entrada',       icon:'arrowIn'    },
+  entrada:       { cls:'b-green',  lbl:'Ingreso',       icon:'arrowIn'    },
   mantenimiento: { cls:'b-orange', lbl:'Mantenimiento', icon:'tool'       },
   baja:          { cls:'b-gray',   lbl:'Baja',          icon:'trash'      },
   reposicion:    { cls:'b-blue',   lbl:'Reposición',    icon:'plus'       },
 };
+
+// Badge fino: distingue INGRESO (compra/herramienta nueva) de DEVOLUCIÓN
+// (retorno de un responsable). Ambos son accion='entrada' en el schema, pero
+// el tipo_movimiento lleva la semántica. Cae a accion para datos viejos/importados.
+function badgeMovHerr(m) {
+  if (m.reverses_id || m.tipo_movimiento === 'reverso') return { cls:'b-gray', lbl:'Reverso', icon:'refresh' };
+  if (m.tipo_movimiento === 'devolucion') return { cls:'b-blue',  lbl:'Devolución', icon:'arrowIn' };
+  if (m.tipo_movimiento === 'ingreso')    return { cls:'b-green', lbl:'Ingreso',    icon:'arrowIn' };
+  return MOV_HER_ACCION[m.accion] || MOV_HER_ACCION.salida;
+}
 
 const EST_HER = {
   nuevo: 'b-blue', bueno: 'b-green', regular: 'b-yellow', malo: 'b-red',
@@ -400,7 +412,7 @@ function ReversoModal({ mov, tipo /* 'mat' | 'her' */, lookupNombre, onClose, on
       <div style={{ marginBottom:12, fontSize:12, color:'var(--tm)' }}>
         <div><strong style={{ color:'var(--ts)' }}>Movimiento:</strong> {tipo === 'mat'
           ? `${(MOV_MAT_TIPO[mov.tipo_movimiento]||{}).lbl || mov.tipo_movimiento} de ${Number(mov.cantidad||0)} ${mov.unidad||''} de ${lookupNombre(mov)}`
-          : `${(MOV_HER_ACCION[mov.accion]||{}).lbl || mov.accion} de ${lookupNombre(mov)}`}</div>
+          : `${badgeMovHerr(mov).lbl}${mov.cantidad != null && mov.cantidad !== '' ? ` de ${Number(mov.cantidad).toLocaleString('es-PE')}` : ''} de ${lookupNombre(mov)}`}</div>
         <div style={{ marginTop:4 }}><strong style={{ color:'var(--ts)' }}>Fecha:</strong> {mov.fecha} {mov.hora || ''}</div>
       </div>
       {err && <div style={{ background:'rgba(231,76,60,0.1)', border:'1px solid rgba(231,76,60,0.25)', borderRadius:8, padding:'10px 12px', fontSize:12, color:'var(--red)', marginBottom:10 }}>{err}</div>}
@@ -1487,7 +1499,13 @@ function MovHerramientasPage({ showToast }) {
 
   const filtered = uMM(() => {
     return sorted.filter(m => {
-      const matchA = accion === 'todas' || m.accion === accion;
+      // Filtros tipo-aware: "Ingreso" = entradas que NO son devolución;
+      // "Devolución" = retornos (tipo_movimiento). Resto matchea por accion.
+      const matchA = accion === 'todas'
+        ? true
+        : accion === 'entrada'    ? (m.accion === 'entrada' && m.tipo_movimiento !== 'devolucion')
+        : accion === 'devolucion' ? (m.tipo_movimiento === 'devolucion')
+        : m.accion === accion;
       if (!matchA) return false;
       if (!q) return true;
       const ql = q.toLowerCase();
@@ -1503,8 +1521,13 @@ function MovHerramientasPage({ showToast }) {
 
   const stats = uMM(() => ({
     total: sorted.length,
-    salidasHoy: sorted.filter(m => m.fecha === today && m.accion === 'salida').length,
-    devolHoy: sorted.filter(m => m.fecha === today && m.accion === 'entrada').length,
+    // Los reversos (reverses_id) no se cuentan como movimientos del día — son
+    // correcciones, no ingresos/salidas/devoluciones reales.
+    salidasHoy: sorted.filter(m => m.fecha === today && m.accion === 'salida' && !m.reverses_id).length,
+    // Devolución ≠ ingreso: una herramienta NUEVA que entra es un INGRESO, no
+    // una devolución. Sólo cuentan como devolución los retornos (tipo_movimiento).
+    devolHoy: sorted.filter(m => m.fecha === today && m.tipo_movimiento === 'devolucion' && !m.reverses_id).length,
+    ingresosHoy: sorted.filter(m => m.fecha === today && m.accion === 'entrada' && m.tipo_movimiento !== 'devolucion' && m.tipo_movimiento !== 'reverso' && !m.reverses_id).length,
     danadas: sorted.filter(m => m.estado_devolucion === 'malo').length,
   }), [sorted]);
 
@@ -1530,11 +1553,19 @@ function MovHerramientasPage({ showToast }) {
     const hora = nowIso.slice(11, 16);
     const accionInv = invertirAccionHerramienta(original.accion);
 
+    const cantRev = Number(original.cantidad) || 0;   // 0 → herramienta serializada (sin cantidad)
     const reverso = await movHook.create({
       obra_id: original.obra_id,
       herramienta_id: original.herramienta_id,
       fecha, hora,
       accion: accionInv,
+      // tipo_movimiento='reverso' para que NO se cuente como ingreso/salida/
+      // devolución en las tarjetas ni se confunda en los badges.
+      tipo_movimiento: 'reverso',
+      // El reverso conserva la cantidad y el almacén del original para poder
+      // deshacer el stock (toda herramienta es por cantidad).
+      cantidad: cantRev || null,
+      ubicacion_id: original.ubicacion_id || null,
       responsable_id: original.responsable_id || null,
       estado_salida: original.estado_salida || null,
       estado_devolucion: original.estado_devolucion || null,
@@ -1554,6 +1585,22 @@ function MovHerramientasPage({ showToast }) {
       const h = herramientas?.find(x => x.id === original.herramienta_id);
       if (h) {
         const patch = { fecha_ultimo_movimiento: fecha };
+        // Stock por cantidad: deshacer el delta del original. Reverso de una
+        // salida SUMA de vuelta; reverso de una entrada RESTA. (Serializadas
+        // sin cantidad → cantRev 0 → no toca stock.)
+        if (cantRev > 0) {
+          const delta = (accionInv === 'entrada' || accionInv === 'reposicion') ? cantRev
+            : accionInv === 'salida' ? -cantRev : 0;
+          if (delta !== 0) {
+            const nuevoStock = Math.max(0, Number(h.stock_actual || 0) + delta);
+            patch.stock_actual = nuevoStock;
+            patch.alerta = calcAlerta(nuevoStock, Number(h.stock_minimo || 0));
+            // Desglose por ubicación (si el original tenía almacén).
+            if (original.ubicacion_id) {
+              try { await aplicarDelta({ obraId, itemTipo: 'herramienta', itemId: h.id, ubicacionId: original.ubicacion_id, delta, userId: auth?.profile?.id || null }); } catch (err) { console.warn('[reverso herr desglose]', err?.message); }
+            }
+          }
+        }
         if (accionInv === 'entrada' || accionInv === 'reposicion') {
           patch.disponible = true;
           patch.ubicacion_actual = 'almacen';
@@ -1640,10 +1687,10 @@ function MovHerramientasPage({ showToast }) {
 
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12, marginBottom:18 }}>
         {[
-          { label:'Total Movimientos',     val:stats.total.toLocaleString('es-PE'),       color:'var(--blue)' },
-          { label:'Salidas Hoy',           val:stats.salidasHoy.toLocaleString('es-PE'),  color:'var(--amber)' },
-          { label:'Devoluciones Hoy',      val:stats.devolHoy.toLocaleString('es-PE'),    color:'var(--green)' },
-          { label:'Herramientas Dañadas',  val:stats.danadas.toLocaleString('es-PE'),     color:'var(--red)' },
+          { label:'Total Movimientos',     val:stats.total.toLocaleString('es-PE'),        color:'var(--blue)' },
+          { label:'Ingresos Hoy',          val:stats.ingresosHoy.toLocaleString('es-PE'),  color:'var(--green)' },
+          { label:'Salidas Hoy',           val:stats.salidasHoy.toLocaleString('es-PE'),   color:'var(--amber)' },
+          { label:'Devoluciones Hoy',      val:stats.devolHoy.toLocaleString('es-PE'),     color:'var(--blue)' },
         ].map((s,i)=>(
           <div key={i} className="card card-p"><div style={{ fontSize:11, color:'var(--tm)' }}>{s.label}</div><div style={{ fontSize:26, fontWeight:800, color:s.color, margin:'4px 0' }}>{s.val}</div></div>
         ))}
@@ -1651,9 +1698,9 @@ function MovHerramientasPage({ showToast }) {
 
       <div style={{ display:'flex', gap:8, marginBottom:14, flexWrap:'wrap' }}>
         <div className="search-bar"><JxIcon name="search" size={14} color="var(--tm)"/><input placeholder="Buscar herramienta o responsable…" value={q} onChange={e=>setQ(e.target.value)}/></div>
-        {['todas','salida','entrada','mantenimiento','baja','reposicion'].map(a=>(
+        {['todas','entrada','salida','devolucion','mantenimiento','baja'].map(a=>(
           <button key={a} onClick={()=>setAccion(a)} className={`btn btn-sm ${accion===a?'btn-amber':'btn-ghost'}`}>
-            {a==='todas' ? 'Todas' : MOV_HER_ACCION[a]?.lbl || a}
+            {a==='todas' ? 'Todas' : a==='entrada' ? 'Ingreso' : a==='devolucion' ? 'Devolución' : MOV_HER_ACCION[a]?.lbl || a}
           </button>
         ))}
       </div>
@@ -1666,13 +1713,14 @@ function MovHerramientasPage({ showToast }) {
           <table className="tbl">
             <thead><tr>
               <th>Fecha / Hora</th><th>Herramienta</th><th>Acción</th>
+              <th style={{ textAlign:'right' }}>Cantidad</th>
               <th>Responsable</th><th>Estado Salida</th><th>Estado Devol.</th>
               <th>Observaciones</th><th>Sync</th>
               {isAdmin && <th style={{ textAlign:'center' }}>Acción</th>}
             </tr></thead>
             <tbody>
               {filtered.map(m=>{
-                const a = MOV_HER_ACCION[m.accion] || MOV_HER_ACCION.salida;
+                const a = badgeMovHerr(m);
                 const h = lookupHerr(m.herramienta_id);
                 const p = lookupPers(m.responsable_id);
                 const danado = m.estado_devolucion === 'malo';
@@ -1688,6 +1736,11 @@ function MovHerramientasPage({ showToast }) {
                       <span className={`badge ${a.cls}`}><JxIcon name={a.icon} size={10}/>{a.lbl}</span>
                       {yaReversado && <div style={{ marginTop:4 }}><span className="badge b-gray" title="Movimiento reversado">Reversado</span></div>}
                       {esReverso && <div style={{ marginTop:4 }}><span className="badge b-amber" title={`Reverso del movimiento ${m.reverses_id}`}>Reverso de #{reversoOriginalShort}</span></div>}
+                    </td>
+                    <td style={{ textAlign:'right' }} className="col-num">
+                      {m.cantidad != null && m.cantidad !== ''
+                        ? <span style={{ fontWeight:700 }}>{Number(m.cantidad).toLocaleString('es-PE')} <span style={{ color:'var(--tm)', fontSize:11, fontWeight:400 }}>{h?.unidad || 'und'}</span></span>
+                        : <span className="col-m">—</span>}
                     </td>
                     <td>{p ? `${p.nombres} ${p.apellidos}` : '—'}</td>
                     <td>{m.estado_salida ? <span className={`badge ${EST_HER[m.estado_salida]||'b-gray'}`} style={{ textTransform:'capitalize' }}>{m.estado_salida}</span> : <span className="col-m">—</span>}</td>

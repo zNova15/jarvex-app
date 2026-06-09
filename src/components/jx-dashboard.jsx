@@ -361,9 +361,15 @@ function DashboardPage() {
     });
     movHerramientas.forEach(m => {
       const h = herramientas.find(x => x.id === m.herramienta_id);
+      // Etiqueta fina: ingreso (herramienta nueva) ≠ devolución (retorno). Ambos
+      // son accion='entrada'; el tipo_movimiento los distingue.
+      const accionLbl = m.accion === 'salida' ? 'Salida'
+        : m.tipo_movimiento === 'devolucion' ? 'Devolución'
+        : 'Ingreso';
+      const cantTxt = (m.cantidad != null && m.cantidad !== '') ? `${Number(m.cantidad).toLocaleString('es-PE')} ` : '';
       items.push({
         type: m.accion === 'salida' ? 'out' : 'in',
-        text: `${m.accion === 'salida' ? 'Salida' : 'Devolución'} de ${h?.nombre_herramienta || 'herramienta'}`,
+        text: `${accionLbl} de ${cantTxt}${h?.nombre_herramienta || 'herramienta'}`,
         time: m.fecha,
         ts: new Date(m.created_at || m.fecha).getTime(),
       });

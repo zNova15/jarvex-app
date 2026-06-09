@@ -26,7 +26,13 @@ const extDe = (nombre, mime) => {
   return 'bin';
 };
 
-const tipoLabel = (t) => (t === 'entrada' ? 'Ingreso' : t === 'salida' ? 'Salida' : (t || ''));
+const tipoLabel = (t) => (
+  t === 'entrada' || t === 'ingreso' ? 'Ingreso'
+  : t === 'salida' ? 'Salida'
+  : t === 'devolucion' ? 'Devolución'
+  : t === 'reverso' ? 'Reverso'
+  : (t || '')
+);
 const isoFecha = (f) => (f ? String(f).slice(0, 10) : '');
 const hhmm = (h) => (h ? String(h).slice(0, 5) : '');
 const n2 = (v) => (v == null || v === '' ? '' : Number(v));

@@ -3420,7 +3420,12 @@ function HerramientasPage({ showToast }) {
     try {
       for (let idx = 0; idx < itemsValidos.length; idx++) {
         const it = itemsValidos[idx];
-        const h = herramientas.find(x => x.id === it.herramienta_id);
+        // Releemos la herramienta desde Dexie (no del closure de React) para que
+        // el stock base sea el PERSISTIDO actual y no una copia vieja del render
+        // — evita que un ingreso "no se refleje" si la lista estaba desfasada.
+        const hDb = await window.__db.herramientas.get(it.herramienta_id).catch(() => null);
+        if (!hDb) console.warn('[herr lote] no se pudo releer de Dexie; uso copia de pantalla', it.herramienta_id);
+        const h = hDb || herramientas.find(x => x.id === it.herramienta_id);
         if (!h) { fail++; continue; }
         const cant = parseFloat(it.cantidad) || 0;
         // Atribución (persona/subcontrato): la registra la salida; la devolución
@@ -3429,7 +3434,9 @@ function HerramientasPage({ showToast }) {
         try {
           await movHook.create({
             obra_id: obraId, herramienta_id: it.herramienta_id, fecha: loteCantForm.fecha, hora: loteCantForm.hora,
-            accion: esEntrada ? 'entrada' : 'salida', tipo_movimiento: esEntrada ? 'entrada' : 'salida', cantidad: cant,
+            // accion respeta el CHECK del schema (entrada/salida); tipo_movimiento
+            // lleva la semántica fina (ingreso ≠ devolución) para los reportes.
+            accion: esEntrada ? 'entrada' : 'salida', tipo_movimiento: tipo, cantidad: cant,
             ...dest,
             ubicacion_id: ubicMov,
             observaciones: obsFinal,

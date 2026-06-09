@@ -1055,10 +1055,11 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           frente = m.frente || m.lugar || null;
         }
         const obs = ['Migración histórica', ...(m.observaciones ? [m.observaciones] : []), ...obsExtra].join(' · ');
-        // accion = tipo_movimiento (valores válidos del CHECK legacy).
+        // accion respeta el CHECK (entrada/salida); tipo_movimiento lleva la
+        // semántica fina (entrada → ingreso) igual que el flujo nuevo.
         const r = await addMovIdem('movimientos_herramientas', {
           obra_id: obraId, herramienta_id: herr.id, fecha: m.fecha || new Date().toISOString().slice(0, 10),
-          hora: m.hora || null, accion: m.tipo, tipo_movimiento: m.tipo, cantidad: m.cantidad,
+          hora: m.hora || null, accion: m.tipo, tipo_movimiento: m.tipo === 'entrada' ? 'ingreso' : m.tipo, cantidad: m.cantidad,
           responsable_id, subcontratista_id, destino_tipo, proveedor_id, frente_zona: frente, ubicacion_id: ubicId, observaciones: obs,
         }, userId, null, sigMov(obraId, 'mov_herramientas', m));
         if (r.dup) { duplicados++; continue; }
