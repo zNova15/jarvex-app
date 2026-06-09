@@ -10,7 +10,7 @@ import { opcionesDestinoFlat, splitDestino } from "../lib/destino-mov.js";
 import { getDesgloseBulk, aplicarDelta, traspasar } from "../lib/stock-ubicaciones.js";
 import { DesglosePopup, TraspasoStockModal, ubicacionAutoOrigen } from "./jx-stock-ubic.jsx";
 import { EstadosModal } from "./jx-stock-estados.jsx";
-import { getEstadosBulk, ESTADOS_COND } from "../lib/stock-estados.js";
+import { getEstadosBulk, ESTADOS_COND, ESTADO_LABEL, aplicarDeltaEstado } from "../lib/stock-estados.js";
 import { detectarSugerencias, detectarDuplicados, fusionarInsumos } from "../lib/variantes.js";
 const { useState: uS, useMemo: uM, useEffect: uE, useCallback: uCB } = React;
 
@@ -3370,11 +3370,16 @@ function HerramientasPage({ showToast }) {
   const herrFueraDeAlmacen = uM(() => (herramientas || []).filter(h => !h.deleted_at && !h.es_grupo && (h.ubicacion_actual === 'en_uso' || h.ubicacion_actual === 'mantenimiento' || h.disponible === false)), [herramientas]);
   const ubicDefaultH = () => (ubicacionesActivasH.length === 1 ? ubicacionesActivasH[0].id : '');
   const updateLoteCantItem = (id, patch) => setLoteCantItems(items => items.map(it => it.id === id ? { ...it, ...patch } : it));
-  const addLoteCantItem = () => setLoteCantItems(items => [...items, { id: window.__newId?.() || crypto.randomUUID(), herramienta_id: '', cantidad: '' }]);
+  // Cada fila lleva además `condicion` (estado de origen en salida / de retorno
+  // en devolución) y `responsable_id` (quién devuelve, en devolución).
+  const nuevaFilaCant = (tipo) => ({ id: window.__newId?.() || crypto.randomUUID(), herramienta_id: '', cantidad: '', condicion: tipo === 'devolucion' ? 'bueno' : '', responsable_id: '' });
+  const addLoteCantItem = () => setLoteCantItems(items => [...items, nuevaFilaCant(loteCant)]);
   const removeLoteCantItem = (id) => setLoteCantItems(items => items.length > 1 ? items.filter(it => it.id !== id) : items);
   const openLoteCant = (tipo) => {
-    setLoteCantForm({ fecha: new Date().toISOString().slice(0, 10), hora: new Date().toTimeString().slice(0, 5), ubicacion_id: ubicDefaultH(), responsable_id: '', observaciones: '' });
-    setLoteCantItems([{ id: crypto.randomUUID(), herramienta_id: '', cantidad: '' }]);
+    // es_excepcion/motivo: la devolución la hace por defecto quien sacó la
+    // herramienta; si la devuelve otra persona se marca la excepción + motivo.
+    setLoteCantForm({ fecha: new Date().toISOString().slice(0, 10), hora: new Date().toTimeString().slice(0, 5), ubicacion_id: ubicDefaultH(), responsable_id: '', observaciones: '', es_excepcion: false, motivo_excepcion: '' });
+    setLoteCantItems([nuevaFilaCant(tipo)]);
     setLoteCant(tipo);
   };
   const submitLoteCant = async () => {
@@ -3404,11 +3409,54 @@ function HerramientasPage({ showToast }) {
         proyec.set(it.herramienta_id, base - cant);
       }
     }
+    // Resolvemos la CONDICIÓN de origen de cada fila de salida UNA sola vez (sobre
+    // el snapshot estable de estadosMap), y la reusamos en validación y ejecución
+    // para que no haya forma de que difieran. Auto si hay una sola fuente con stock.
+    const condSalida = new Map();
+    if (tipo === 'salida') {
+      for (const it of itemsValidos) {
+        const fuentes = fuentesSalidaHerr(it.herramienta_id);
+        condSalida.set(it.id, it.condicion || (fuentes.length === 1 ? fuentes[0].key : ''));
+      }
+      // Validación por condición: hay que decir de cuál sale y que alcance.
+      const proyecEst = new Map();
+      for (const it of itemsValidos) {
+        const h = herramientas.find(x => x.id === it.herramienta_id);
+        const fuentes = fuentesSalidaHerr(it.herramienta_id);
+        if (fuentes.length === 0) continue; // sin stock (lo atrapa la validación de almacén)
+        const cond = condSalida.get(it.id);
+        if (!cond) { showToast(`Elegí de qué condición sale "${h?.nombre_herramienta}" (está repartida en varias).`, 'red'); return; }
+        const fuente = fuentes.find(f => f.key === cond);
+        const k = `${it.herramienta_id}__${cond}`;
+        const baseE = proyecEst.has(k) ? proyecEst.get(k) : Number(fuente?.qty || 0);
+        const cant = parseFloat(it.cantidad) || 0;
+        const lblCond = cond === '_sin' ? 'Sin clasificar' : (ESTADO_LABEL[cond] || cond);
+        if (baseE - cant < 0) { showToast(`❌ De "${lblCond}" solo hay ${baseE} de "${h?.nombre_herramienta}", pedís ${cant}.`, 'red'); return; }
+        proyecEst.set(k, baseE - cant);
+      }
+    }
+    // Devolución: el responsable es OBLIGATORIO. Por defecto la devuelve quien la
+    // sacó (ultimo_responsable_id); si la devuelve otra persona → excepción + motivo.
+    if (tipo === 'devolucion') {
+      if (loteCantForm.es_excepcion && !(loteCantForm.motivo_excepcion || '').trim()) {
+        showToast('Indicá el motivo: ¿por qué la devuelve otra persona?', 'red'); return;
+      }
+      for (const it of itemsValidos) {
+        const h = herramientas.find(x => x.id === it.herramienta_id);
+        const resp = loteCantForm.es_excepcion ? it.responsable_id : (h?.ultimo_responsable_id || it.responsable_id);
+        if (!resp) {
+          showToast(loteCantForm.es_excepcion
+            ? `Elegí quién devuelve "${h?.nombre_herramienta}".`
+            : `"${h?.nombre_herramienta}" no tiene responsable previo — marcá "La devuelve otra persona" y elegí quién.`, 'red');
+          return;
+        }
+      }
+    }
     // Observaciones: prefijo [Devolución] solo si hay texto real (evita guardar
     // un prefijo suelto o espacios en blanco).
     const obsLimpia = (loteCantForm.observaciones || '').trim();
     const obsFinal = tipo === 'devolucion'
-      ? (obsLimpia ? `[Devolución] ${obsLimpia}` : '[Devolución]')
+      ? ['[Devolución]', obsLimpia, (loteCantForm.es_excepcion ? `Excepción (la devuelve otra persona): ${(loteCantForm.motivo_excepcion || '').trim()}` : '')].filter(Boolean).join(' · ')
       : (obsLimpia || null);
     // Idempotencia a nivel LOTE: una clave por click → sub-clave determinista por
     // item. Si el browser re-envía, el server rechaza el duplicado por UNIQUE.
@@ -3428,9 +3476,16 @@ function HerramientasPage({ showToast }) {
         const h = hDb || herramientas.find(x => x.id === it.herramienta_id);
         if (!h) { fail++; continue; }
         const cant = parseFloat(it.cantidad) || 0;
-        // Atribución (persona/subcontrato): la registra la salida; la devolución
-        // guarda quién la devuelve (opcional). El ingreso (compra) no lleva.
-        const dest = tipo === 'ingreso' ? { responsable_id: null, subcontratista_id: null, destino_tipo: null } : splitDestino(loteCantForm.responsable_id);
+        // Atribución: salida usa el destino del lote; devolución usa el responsable
+        // de la FILA (por defecto quien la sacó, o el de la excepción); ingreso no lleva.
+        // OJO devolución: tomamos el ultimo_responsable del SNAPSHOT de pantalla
+        // (no del re-read), porque al devolver se pone null y una devolución dividida
+        // por condición (varias filas del mismo ítem) perdería el responsable.
+        const ultimoOrig = herramientas.find(x => x.id === it.herramienta_id)?.ultimo_responsable_id || h.ultimo_responsable_id || null;
+        const destRaw = tipo === 'ingreso' ? null
+          : tipo === 'salida' ? loteCantForm.responsable_id
+          : (loteCantForm.es_excepcion ? it.responsable_id : (ultimoOrig || it.responsable_id));
+        const dest = tipo === 'ingreso' ? { responsable_id: null, subcontratista_id: null, destino_tipo: null } : splitDestino(destRaw);
         try {
           await movHook.create({
             obra_id: obraId, herramienta_id: it.herramienta_id, fecha: loteCantForm.fecha, hora: loteCantForm.hora,
@@ -3462,6 +3517,22 @@ function HerramientasPage({ showToast }) {
             updated_by: auth?.profile?.id || 'offline',
             version: (h.version ?? 0) + 1,
           });
+          // Buckets por CONDICIÓN (stock_estados): ingreso → +Nuevo; salida →
+          // −(condición de origen, auto si hay una sola); devolución → +(condición
+          // de retorno). Mantiene la distribución por estado en sync automático.
+          try {
+            const uid = auth?.profile?.id || null;
+            if (tipo === 'ingreso') {
+              await aplicarDeltaEstado({ obraId, itemTipo: 'herramienta', itemId: it.herramienta_id, estado: 'nuevo', delta: cant, userId: uid });
+            } else if (tipo === 'salida') {
+              // Misma condición resuelta que en la validación (condSalida).
+              const cond = condSalida.get(it.id);
+              // '_sin' = sale de lo no clasificado → no toca ningún bucket.
+              if (cond && cond !== '_sin') await aplicarDeltaEstado({ obraId, itemTipo: 'herramienta', itemId: it.herramienta_id, estado: cond, delta: -cant, userId: uid });
+            } else if (tipo === 'devolucion') {
+              await aplicarDeltaEstado({ obraId, itemTipo: 'herramienta', itemId: it.herramienta_id, estado: it.condicion || 'bueno', delta: cant, userId: uid });
+            }
+          } catch (err) { console.warn('[herr estado delta]', err?.message); }
           ok++;
         } catch (e) { fail++; }
       }
@@ -3526,6 +3597,21 @@ function HerramientasPage({ showToast }) {
     window.addEventListener('jx_data_changed', onCh);
     return () => { cancel = true; window.removeEventListener('jx_data_changed', onCh); };
   }, [herramientas]);
+
+  // Fuentes de una SALIDA por condición: cada bucket con stock + "Sin clasificar"
+  // (lo que el stock_actual tiene de más respecto a la suma de buckets). Así se
+  // puede sacar de una condición concreta o de lo no clasificado sin que la suma
+  // por estado quede inconsistente con el stock total.
+  const fuentesSalidaHerr = (herrId) => {
+    const h = herramientas.find(x => x.id === herrId);
+    if (!h) return [];
+    const em = estadosMap.get(herrId);
+    const buckets = (em ? ESTADOS_COND.filter(e => Number(em.get(e.key) || 0) > 0) : [])
+      .map(e => ({ key: e.key, label: e.label, badge: e.badge, qty: Number(em.get(e.key) || 0) }));
+    const clasif = buckets.reduce((s, b) => s + b.qty, 0);
+    const sinClasif = Math.max(0, stockDeHerr(h) - clasif);
+    return sinClasif > 0 ? [...buckets, { key: '_sin', label: 'Sin clasificar', badge: 'b-gray', qty: sinClasif }] : buckets;
+  };
 
   const filtered = uM(() => {
     if (!herramientas) return [];
@@ -4296,8 +4382,6 @@ function HerramientasPage({ showToast }) {
         const listaHerr = esDevol ? herrFueraDeAlmacen : herrMovibles;
         const tituloMov = esSalida ? 'Registrar Salida de Herramientas' : esDevol ? 'Registrar Devolución de Herramientas' : 'Registrar Ingreso de Herramientas';
         const labelAlmacen = esSalida ? 'Almacén de origen *' : esDevol ? 'Almacén de retorno *' : 'Almacén de llegada *';
-        const labelResp = esDevol ? 'Quién devuelve (opcional)' : 'Destino — persona o subcontrato (opcional)';
-        const mostrarResp = esSalida || esDevol;
         const mostrarStock = esSalida;
         return (
         <Modal title={tituloMov} icon={esSalida ? 'arrowOut' : 'arrowIn'} onClose={() => setLoteCant(null)} size="xl">
@@ -4321,14 +4405,35 @@ function HerramientasPage({ showToast }) {
                 )}
               </div>
             )}
-            {mostrarResp && (
-              <div><label className="flabel">{labelResp}</label>
+            {esSalida && (
+              <div><label className="flabel">Destino — persona o subcontrato (opcional)</label>
                 <select className="fi" value={loteCantForm.responsable_id || ''} onChange={e=>setLoteCantForm(f=>({...f, responsable_id:e.target.value}))}>
                   <option value="">—</option>
                   {destinoOptsHerr.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select></div>
             )}
           </div>
+          {/* Devolución: por defecto la devuelve quien la sacó (columna Responsable
+              de cada fila). Si la devuelve otra persona → excepción + motivo. */}
+          {esDevol && (
+            <div style={{ marginTop:12, padding:'10px 12px', background:'rgba(52,152,219,0.06)', border:'1px solid rgba(52,152,219,0.3)', borderRadius:6 }}>
+              <label style={{ display:'flex', alignItems:'center', gap:8, fontSize:12.5, color:'var(--tp)', cursor:'pointer' }}>
+                <input type="checkbox" checked={!!loteCantForm.es_excepcion}
+                  onChange={e => setLoteCantForm(f => ({ ...f, es_excepcion: e.target.checked }))}/>
+                <span><strong>La devuelve otra persona</strong> (no el responsable que la sacó)</span>
+              </label>
+              {loteCantForm.es_excepcion ? (
+                <div style={{ marginTop:8 }}>
+                  <input className="fi" placeholder="Motivo: ¿por qué la devuelve otra persona? *"
+                    value={loteCantForm.motivo_excepcion || ''} onChange={e=>setLoteCantForm(f=>({...f, motivo_excepcion:e.target.value}))}
+                    style={{ borderColor:'var(--amber)' }}/>
+                  <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:4 }}>Elegí en cada fila quién la devuelve. Queda en auditoría.</div>
+                </div>
+              ) : (
+                <div style={{ fontSize:11, color:'var(--tm)', marginTop:4 }}>Cada herramienta la devuelve automáticamente quien la sacó (se autocompleta).</div>
+              )}
+            </div>
+          )}
           <div style={{ marginTop:14 }}>
             <div style={{ fontSize:12, fontWeight:700, color:'var(--ts)', marginBottom:6, display:'flex', justifyContent:'space-between' }}>
               <span>Herramientas ({loteCantItems.length})</span>
@@ -4336,17 +4441,60 @@ function HerramientasPage({ showToast }) {
             </div>
             <div style={{ overflowX:'auto' }}>
               <table className="tbl" style={{ fontSize:12 }}>
-                <thead><tr><th style={{ minWidth:240 }}>Herramienta</th><th style={{ width:120 }}>Cantidad *</th>{mostrarStock && <th style={{ width:90 }}>Stock</th>}<th style={{ width:40 }}></th></tr></thead>
+                <thead><tr>
+                  <th style={{ minWidth:220 }}>Herramienta</th>
+                  <th style={{ width:110 }}>Cantidad *</th>
+                  {mostrarStock && <th style={{ width:80 }}>Stock</th>}
+                  {(esSalida || esDevol) && <th style={{ minWidth:160 }}>{esSalida ? 'Condición (de la que sale)' : 'Condición (en que vuelve)'}</th>}
+                  {esDevol && <th style={{ minWidth:170 }}>Quién devuelve *</th>}
+                  <th style={{ width:40 }}></th>
+                </tr></thead>
                 <tbody>
                   {loteCantItems.map(it => {
                     const h = listaHerr.find(x => x.id === it.herramienta_id) || herrMovibles.find(x => x.id === it.herramienta_id);
                     const cant = parseFloat(it.cantidad) || 0;
                     const stockOk = stockDeHerr(h) >= cant;
+                    const fuentes = esSalida && it.herramienta_id ? fuentesSalidaHerr(it.herramienta_id) : [];
+                    const respAuto = h?.ultimo_responsable_id || '';
+                    const respPers = respAuto ? personal?.find(p => p.id === respAuto) : null;
                     return (
                       <tr key={it.id}>
-                        <td><SearchableSelect value={it.herramienta_id} onChange={v=>updateLoteCantItem(it.id,{herramienta_id:v})} options={[{value:'',label:'— Selecciona —'}, ...listaHerr.map(x=>({value:x.id,label:x.nombre_herramienta}))]} fontSize={12} placeholder="— Selecciona —"/></td>
+                        <td><SearchableSelect value={it.herramienta_id} onChange={v=>updateLoteCantItem(it.id,{herramienta_id:v, condicion: esDevol ? (it.condicion||'bueno') : ''})} options={[{value:'',label:'— Selecciona —'}, ...listaHerr.map(x=>({value:x.id,label:x.nombre_herramienta}))]} fontSize={12} placeholder="— Selecciona —"/></td>
                         <td><input className="fi" type="number" min="0" step="0.01" value={it.cantidad} style={{ fontSize:12 }} onChange={e=>updateLoteCantItem(it.id,{cantidad:e.target.value})}/></td>
                         {mostrarStock && <td>{h ? <span style={{ color: stockOk ? 'var(--green)' : 'var(--red)', fontWeight:600, fontSize:11 }}>{stockOk ? '✓' : '⚠'} {stockDeHerr(h)}</span> : '—'}</td>}
+                        {esSalida && (
+                          <td>
+                            {!h ? <span style={{ color:'var(--tm)' }}>—</span>
+                              : fuentes.length === 0 ? <span style={{ fontSize:11, color:'var(--tm)' }}>—</span>
+                              : fuentes.length === 1 ? (
+                                  fuentes[0].key === '_sin'
+                                    ? <span style={{ fontSize:11, color:'var(--tm)' }} title="Stock sin clasificar (automático)">Sin clasificar · {fuentes[0].qty}</span>
+                                    : <span className={`badge ${fuentes[0].badge}`} title="Única condición con stock (automático)">{fuentes[0].label} · {fuentes[0].qty}</span>
+                                )
+                              : (
+                                <select className="fi" value={it.condicion || ''} style={{ fontSize:12 }} onChange={ev=>updateLoteCantItem(it.id,{condicion:ev.target.value})}>
+                                  <option value="">— Elegí de dónde sale —</option>
+                                  {fuentes.map(f => <option key={f.key} value={f.key}>{f.label} · {f.qty} disp.</option>)}
+                                </select>
+                              )}
+                          </td>
+                        )}
+                        {esDevol && (
+                          <td>
+                            <select className="fi" value={it.condicion || 'bueno'} style={{ fontSize:12 }} onChange={ev=>updateLoteCantItem(it.id,{condicion:ev.target.value})}>
+                              {ESTADOS_COND.map(e => <option key={e.key} value={e.key}>{e.label}</option>)}
+                            </select>
+                          </td>
+                        )}
+                        {esDevol && (
+                          <td>
+                            {loteCantForm.es_excepcion
+                              ? <SearchableSelect value={it.responsable_id || ''} onChange={v=>updateLoteCantItem(it.id,{responsable_id:v||''})} options={[{value:'',label:'— Quién devuelve —'}, ...destinoOptsHerr]} fontSize={12} placeholder="— Quién devuelve —"/>
+                              : respAuto
+                                ? <span style={{ fontSize:11.5, color:'var(--ts)' }} title="Quien la sacó (automático)">{respPers ? `${respPers.nombres} ${respPers.apellidos}` : 'Responsable'}</span>
+                                : <span style={{ fontSize:11, color:'var(--amber)' }} title="Sin responsable previo — marcá la excepción y elegí quién la devuelve">⚠ marcá excepción</span>}
+                          </td>
+                        )}
                         <td>{loteCantItems.length > 1 && <button type="button" className="btn btn-ghost btn-xs" onClick={()=>removeLoteCantItem(it.id)} style={{ color:'var(--red)' }}><JxIcon name="x" size={11}/></button>}</td>
                       </tr>
                     );

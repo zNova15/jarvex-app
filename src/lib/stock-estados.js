@@ -16,11 +16,13 @@ const PEND_CREATE = 'pending_create';
 const PEND_UPDATE = 'pending_update';
 
 // Orden y etiquetas de los estados (la UI los pinta en este orden).
+// nuevo > bueno > regular > reparación > baja (de mejor a peor condición).
 export const ESTADOS_COND = [
-  { key: 'nuevo',      label: 'Nuevo',          color: 'var(--green)',  badge: 'b-green' },
-  { key: 'bueno',      label: 'Bueno',          color: 'var(--blue)',   badge: 'b-blue'  },
-  { key: 'reparacion', label: 'En reparación',  color: 'var(--amber)',  badge: 'b-amber' },
-  { key: 'baja',       label: 'De baja',        color: 'var(--tm)',     badge: 'b-gray'  },
+  { key: 'nuevo',      label: 'Nuevo',          color: 'var(--green)',  badge: 'b-green'  },
+  { key: 'bueno',      label: 'Bueno',          color: 'var(--blue)',   badge: 'b-blue'   },
+  { key: 'regular',    label: 'Regular',        color: 'var(--yellow)', badge: 'b-yellow' },
+  { key: 'reparacion', label: 'En reparación',  color: 'var(--amber)',  badge: 'b-amber'  },
+  { key: 'baja',       label: 'De baja',        color: 'var(--tm)',     badge: 'b-gray'   },
 ];
 export const ESTADO_LABEL = Object.fromEntries(ESTADOS_COND.map(e => [e.key, e.label]));
 
@@ -79,6 +81,17 @@ async function upsertEstado(obraId, itemTipo, itemId, estado, patch, userId) {
 export async function setCantidadEstado({ obraId, itemTipo, itemId, estado, cantidad, userId }) {
   if (!obraId || !itemTipo || !itemId || !estado) return;
   await upsertEstado(obraId, itemTipo, itemId, estado, { cantidad: Math.max(0, Number(cantidad) || 0) }, userId);
+  try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'stock_estados' } })); } catch {}
+}
+
+/** Suma (o resta, con delta negativo) `delta` unidades a un bucket de condición.
+ *  Clampa a 0. Lo usan los movimientos de herramientas para mantener los
+ *  buckets en sync automáticamente: ingreso → +nuevo, salida → −(condición de
+ *  origen), devolución → +(condición de retorno). */
+export async function aplicarDeltaEstado({ obraId, itemTipo, itemId, estado, delta, userId }) {
+  if (!obraId || !itemTipo || !itemId || !estado || !delta) return;
+  const actual = Number((await getEstados(itemTipo, itemId)).find(r => r.estado === estado)?.cantidad || 0);
+  await upsertEstado(obraId, itemTipo, itemId, estado, { cantidad: Math.max(0, actual + Number(delta)) }, userId);
   try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'stock_estados' } })); } catch {}
 }
 
