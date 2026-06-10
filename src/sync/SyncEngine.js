@@ -1198,6 +1198,42 @@ function transactionalOnlyTables() {
 }
 
 const _TXWM_REPAIR_KEY = 'jx_txwm_repair_v1';
+// Saneo one-shot: personas locales pendientes/failed con valores que violan
+// los CHECK del server (seguro_a_cargo fuera de {empresa,subcontrato}, estado
+// fuera de la whitelist). Pasaba con Excels de roster con texto libre
+// ("Subcontratista", "Activo"); el push devolvía CHECK violation y el registro
+// quedaba atascado en failed. Normaliza y re-encola.
+// Corre en CADA sync (no one-shot): es idempotente y solo recorre las filas
+// pendientes/failed (pocas). Así también sanea datos que meta un build viejo
+// desde otro dispositivo.
+async function repairPersonalChecksOnce() {
+  try {
+    const ESTADOS = ['activo', 'inactivo', 'suspendido', 'retirado'];
+    const rows = await db.personal.filter(p =>
+      p.sync_status === SYNC_STATUS.PENDING_CREATE ||
+      p.sync_status === SYNC_STATUS.PENDING_UPDATE ||
+      p.sync_status === SYNC_STATUS.FAILED).toArray();
+    let arreglados = 0;
+    for (const p of rows) {
+      const patch = {};
+      const seg = String(p.seguro_a_cargo || '').toLowerCase().trim();
+      if (p.seguro_a_cargo != null && !['empresa', 'subcontrato'].includes(p.seguro_a_cargo)) {
+        patch.seguro_a_cargo = seg.startsWith('emp') ? 'empresa' : seg.startsWith('sub') ? 'subcontrato' : null;
+      }
+      if (p.estado != null && !ESTADOS.includes(p.estado)) {
+        const e = String(p.estado).toLowerCase().trim();
+        patch.estado = ESTADOS.includes(e) ? e : 'activo';
+      }
+      if (p.sync_status === SYNC_STATUS.FAILED) {
+        patch.sync_status = p.last_synced_at ? SYNC_STATUS.PENDING_UPDATE : SYNC_STATUS.PENDING_CREATE;
+        patch._sync_retries = 0;
+      }
+      if (Object.keys(patch).length) { await db.personal.update(p.id, patch); arreglados++; }
+    }
+    if (arreglados) console.log(`[SyncEngine] repair personal CHECKs: ${arreglados} registros normalizados y re-encolados`);
+  } catch (e) { console.warn('[SyncEngine] repair personal CHECKs:', e?.message || e); }
+}
+
 async function repairTransactionalWatermarksOnce() {
   try {
     if (typeof localStorage !== 'undefined' && localStorage.getItem(_TXWM_REPAIR_KEY)) return;
@@ -1219,6 +1255,7 @@ async function pullTransactionalChanges() {
   await hydrateNoCreatedByCache();
   // Cura una vez los devices con watermark transaccional "envenenado".
   await repairTransactionalWatermarksOnce();
+  await repairPersonalChecksOnce();
   let cacheChanged = false;
 
   for (const tabla of TRANSACTIONAL_TABLES) {

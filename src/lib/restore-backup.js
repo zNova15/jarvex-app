@@ -185,8 +185,13 @@ export async function restaurarBackup(file, { userId = 'offline', obraId, isPrue
       const subNom = g('Subcontrato'); const subId = subNom ? subMap.get(normTxt(subNom)) || null : null;
       const frNom = g('Frente'); const frId = frNom ? frenteMap.get(normTxt(frNom)) || null : null;
       const rec = await add('personal', { obra_id: obraId, nombres, apellidos, dni: dni || `RES-${normTxt(nombres + apellidos).slice(0, 14)}`, tipo_documento: tipoDoc,
-        cargo: g('Cargo') || null, area: g('Área', 'Area') || null, estado: g('Estado') || 'activo',
-        subcontratista_id: subId, es_jefe_subcontrato: String(g('Jefe Subcontrato') || '').toLowerCase().startsWith('s'), seguro_a_cargo: g('Seguro a cargo') || (subId ? 'empresa' : null), frente_id: frId,
+        cargo: g('Cargo') || null, area: g('Área', 'Area') || null,
+        // CHECKs del server: estado ∈ {activo,inactivo,suspendido,retirado};
+        // seguro_a_cargo ∈ {empresa,subcontrato} o NULL. Normalizamos el texto
+        // libre del Excel para que el push no falle.
+        estado: (() => { const e = String(g('Estado') || '').toLowerCase().trim(); return ['activo','inactivo','suspendido','retirado'].includes(e) ? e : 'activo'; })(),
+        subcontratista_id: subId, es_jefe_subcontrato: String(g('Jefe Subcontrato') || '').toLowerCase().startsWith('s'),
+        seguro_a_cargo: (() => { const v = String(g('Seguro a cargo') || '').toLowerCase().trim(); if (v.startsWith('emp')) return 'empresa'; if (v.startsWith('sub')) return 'subcontrato'; return subId ? 'empresa' : null; })(), frente_id: frId,
         fecha_ingreso: g('Fecha Ingreso') || null, fecha_nacimiento: g('Fecha Nac.', 'Fecha Nacimiento') || null, telefono: (g('Teléfono', 'Telefono') || '').toString() || null,
         email: g('Email') || null, direccion: g('Direccion', 'Dirección') || null,
         contacto_emergencia: g('Contacto Emergencia') || null, telefono_emergencia: (g('Telefono Emergencia', 'Teléfono Emergencia') || '').toString() || null,

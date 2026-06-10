@@ -4996,6 +4996,22 @@ function PersonalPage({ showToast }) {
           )}
         </div>
       </div>
+      {/* ⚡ Nombres temporales de la migración (dni MIG-/RES-): pendientes de fusión */}
+      {superAdminP && (() => {
+        const temporales = (personal || []).filter(p => !p.deleted_at && /^(MIG-|RES-)/.test(String(p.dni || '')));
+        if (!temporales.length) return null;
+        return (
+          <div style={{ marginBottom:12, padding:'10px 14px', background:'rgba(231,76,60,0.08)', border:'1px solid rgba(231,76,60,0.3)', borderRadius:8, display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+            <span style={{ fontSize:12.5, color:'var(--ts)' }}>
+              👥 <strong>{temporales.length} nombre(s) temporales</strong> de la importación histórica (ej. {temporales[0].nombres} {temporales[0].apellidos}) pendientes de fusionar con el personal real.
+            </span>
+            <button className="btn btn-sm" style={{ marginLeft:'auto', background:'rgba(231,76,60,0.15)', color:'#E74C3C', border:'1px solid rgba(231,76,60,0.35)' }} onClick={()=>setFusionOpen(true)}>
+              <JxIcon name="compare" size={12}/> Fusionar ahora
+            </button>
+          </div>
+        );
+      })()}
+
       <div style={{display:'flex',gap:8,marginBottom:14,flexWrap:'wrap'}}>
         <div className="search-bar" style={{flex:'1 1 220px'}}><JxIcon name="search" size={14} color="var(--tm)"/><input placeholder="Buscar por nombre, cargo, DNI o subcontrato…" value={q} onChange={e=>setQ(e.target.value)}/></div>
         <select className="fi" style={{width:'auto',minWidth:170}} value={filtroVinculo} onChange={e=>{setFiltroVinculo(e.target.value); personalPg.setPage?.(1);}} title="Filtrar por vínculo laboral">

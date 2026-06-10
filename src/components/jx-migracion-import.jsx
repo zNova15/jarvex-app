@@ -92,6 +92,36 @@ export const TEMPORAL_UBIC = 'Por asignar (temporal)';
 // combinadas: en ingreso el "Lugar de llegada", en salida el "Origen").
 const extraerAlm = (m) => m.almacen || (m.tipo === 'entrada' ? m.lugar : m.origen) || null;
 
+// PERSONA TEMPORAL para salidas SIN responsable: ninguna salida debe quedar
+// sin atribución. Se crea una por obra (dni fijo MIG-TEMPORAL → idempotente,
+// aparece como "(referencial)" y el modal de fusión la sugiere). El Super
+// Admin debe fusionarla con la persona real lo antes posible.
+const TEMPORAL_PERSONA_DNI = 'MIG-TEMPORAL';
+async function obtenerPersonaTemporal(obraId, userId) {
+  const existente = await window.__db.personal
+    .where('obra_id').equals(obraId)
+    .filter(p => !p.deleted_at && p.dni === TEMPORAL_PERSONA_DNI)
+    .first().catch(() => null);
+  if (existente) return existente.id;
+  const rec = await addRecord('personal', {
+    obra_id: obraId, nombres: 'Personal temporal', apellidos: '(a fusionar)',
+    dni: TEMPORAL_PERSONA_DNI, cargo: 'Temporal', estado: 'activo',
+    observaciones: 'Salidas importadas SIN responsable — fusionar con la persona real en Personal → Fusionar nombres',
+  }, userId);
+  return rec.id;
+}
+
+function notifFusionTemporal(n) {
+  if (!n) return;
+  try {
+    window.dispatchEvent(new CustomEvent('jarvex_new_notif', { detail: {
+      tipo: 'fusion_pendiente',
+      titulo: `👥 ${n} salida(s) atribuidas a "Personal temporal (a fusionar)"`,
+      descripcion: 'Esas salidas no decían quién retiró. Identificá al responsable real y fusioná el temporal en Personal → Fusionar nombres.',
+    } }));
+  } catch {}
+}
+
 // Recordatorio para el almacenero cuando hay ingresos en el almacén temporal.
 function notifTemporal(n) {
   if (!n) return;
@@ -273,7 +303,13 @@ async function aplicarDecisionesPersonas(scan, decisiones, obraId, userId) {
       const apellidos = partes.slice(Math.ceil(partes.length / 2)).join(' ') || '—';
       // dni es NOT NULL + UNIQUE(dni, obra_id): placeholder único por nombre.
       const dni = `MIG-${row.key.slice(0, 16)}`;
-      const rec = await addRecord('personal', { obra_id: obraId, nombres, apellidos, dni, cargo: 'Obrero', estado: 'activo' }, userId);
+      // TEMPORAL sujeto a fusión: el archivo trae nombres referenciales ("Ing
+      // Gaby"); se crea para no perder la atribución del movimiento, pero el
+      // Super Admin debe fusionarlo con el personal real (Personal → Fusionar
+      // nombres). El dni MIG- hace que aparezca como "(referencial)" y que el
+      // modal de fusión lo sugiera automáticamente.
+      const rec = await addRecord('personal', { obra_id: obraId, nombres, apellidos, dni, cargo: 'Obrero', estado: 'activo',
+        observaciones: 'Temporal (migración histórica) — fusionar con el personal real en Personal → Fusionar nombres' }, userId);
       map.set(row.key, { tipo: 'personal', id: rec.id }); creadosPers++;
     } else if (acc === 'crear_sub') {
       const rec = await addRecord('subcontratistas', { razon_social: row.nombre, ruc: null, estado: 'activo' }, userId);
@@ -916,6 +952,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       ubicIdx.map.set(k, rec); return rec.id;
     };
     let enTemporal = 0; // ingresos que cayeron al almacén temporal
+    let sinRespTemporal = 0; // salidas sin responsable → persona temporal
 
     const firmas = await cargarFirmasMigracion('movimientos_materiales', obraId, 'material_id');
     let okCount = 0, errores = 0, itemsCreados = 0, ubicCreadas = 0, saltadosNoAprobados = 0, duplicados = 0;
@@ -957,6 +994,14 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
             else if (rpHit?.tipo === 'subcontratista') { subcontratista_id = rpHit.id; destino_tipo = 'subcontratista'; }
             else { responsable_id = matchPersonal(quien, personal); if (responsable_id) destino_tipo = 'personal'; else obsExtra.push(`Responsable: ${quien}`); }
           }
+          if (!quien) {
+            // Salida SIN responsable → se atribuye a la persona TEMPORAL de la
+            // obra (a fusionar después con la persona real).
+            responsable_id = await obtenerPersonaTemporal(obraId, userId);
+            destino_tipo = 'personal';
+            obsExtra.push('Sin responsable en el archivo → Personal temporal');
+            sinRespTemporal++;
+          }
           frente = m.frente || m.lugar || null;
         }
         const obs = ['Migración histórica', ...(m.observaciones ? [m.observaciones] : []), ...obsExtra].join(' · ');
@@ -982,8 +1027,9 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     await recalcularStockMateriales(obraId, afectados, userId);
     fireChanged('materiales', 'movimientos_materiales', 'ubicaciones_obra', 'stock_ubicaciones');
     notifTemporal(enTemporal);
+    notifFusionTemporal(sinRespTemporal);
     return { ok: okCount, errors: errores, saltadosNoAprobados, errorList,
-      detalle: `${okCount} movimientos cargados${enTemporal ? ` · ${enTemporal} al almacén temporal` : ''} · ${ubicCreadas} ubicaciones creadas${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
+      detalle: `${okCount} movimientos cargados${sinRespTemporal ? ` · ${sinRespTemporal} sin responsable → temporal` : ''}${enTemporal ? ` · ${enTemporal} al almacén temporal` : ''} · ${ubicCreadas} ubicaciones creadas${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
   const runMovEpp = async (resolvedItems = null, rp = null) => {
@@ -1015,6 +1061,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       ubicIdx.map.set(k, rec); return rec.id;
     };
     let enTemporal = 0; // ingresos que cayeron al almacén temporal
+    let sinRespTemporal = 0; // salidas sin responsable → persona temporal
 
     const firmas = await cargarFirmasMigracion('movimientos_epp', obraId, 'epp_id');
     let okCount = 0, errores = 0, saltadosNoAprobados = 0, duplicados = 0;
@@ -1053,6 +1100,12 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
             else if (rpHit?.tipo === 'subcontratista') { subcontratista_id = rpHit.id; destino_tipo = 'subcontratista'; }
             else { personal_id = matchPersonal(quien, personal); destino_tipo = personal_id ? 'personal' : null; if (!personal_id) obsExtra.push(`Entregado a: ${quien}`); }
           }
+          if (!quien) {
+            personal_id = await obtenerPersonaTemporal(obraId, userId);
+            destino_tipo = 'personal';
+            obsExtra.push('Sin responsable en el archivo → Personal temporal');
+            sinRespTemporal++;
+          }
           const fr = m.frente || m.lugar; if (fr) obsExtra.push(`Frente: ${fr}`);
           // Salida: solo el 'Almacén' explícito (nuevo) define la ubicación de
           // origen; sin él, el almacén casa del EPP (preserva comportamiento viejo).
@@ -1078,8 +1131,9 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     await recalcularStockEpp(obraId, afectados, userId);
     fireChanged('epps', 'movimientos_epp', 'ubicaciones_obra', 'stock_ubicaciones');
     notifTemporal(enTemporal);
+    notifFusionTemporal(sinRespTemporal);
     return { ok: okCount, errors: errores, saltadosNoAprobados, errorList,
-      detalle: `${okCount} movimientos EPP cargados${enTemporal ? ` · ${enTemporal} al almacén temporal` : ''}${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
+      detalle: `${okCount} movimientos EPP cargados${sinRespTemporal ? ` · ${sinRespTemporal} sin responsable → temporal` : ''}${enTemporal ? ` · ${enTemporal} al almacén temporal` : ''}${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
   const runMovHerramientas = async (resolvedItems = null, rp = null) => {
@@ -1113,6 +1167,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       ubicIdx.map.set(k, rec); return rec.id;
     };
     let enTemporal = 0; // ingresos que cayeron al almacén temporal
+    let sinRespTemporal = 0; // salidas sin responsable → persona temporal
 
     const firmas = await cargarFirmasMigracion('movimientos_herramientas', obraId, 'herramienta_id');
     let okCount = 0, errores = 0, saltadosNoAprobados = 0, duplicados = 0;
@@ -1153,6 +1208,14 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
             else if (rpHit?.tipo === 'subcontratista') { subcontratista_id = rpHit.id; destino_tipo = 'subcontratista'; }
             else { responsable_id = matchPersonal(quien, personal); if (responsable_id) destino_tipo = 'personal'; else obsExtra.push(`Responsable: ${quien}`); }
           }
+          if (!quien) {
+            // Salida SIN responsable → se atribuye a la persona TEMPORAL de la
+            // obra (a fusionar después con la persona real).
+            responsable_id = await obtenerPersonaTemporal(obraId, userId);
+            destino_tipo = 'personal';
+            obsExtra.push('Sin responsable en el archivo → Personal temporal');
+            sinRespTemporal++;
+          }
           frente = m.frente || m.lugar || null;
         }
         const obs = ['Migración histórica', ...(m.observaciones ? [m.observaciones] : []), ...obsExtra].join(' · ');
@@ -1176,8 +1239,9 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     await recalcularStockHerramientas(obraId, afectados, userId);
     fireChanged('herramientas', 'movimientos_herramientas', 'ubicaciones_obra', 'stock_ubicaciones');
     notifTemporal(enTemporal);
+    notifFusionTemporal(sinRespTemporal);
     return { ok: okCount, errors: errores, saltadosNoAprobados, errorList,
-      detalle: `${okCount} movimientos de herramientas cargados${enTemporal ? ` · ${enTemporal} al almacén temporal` : ''}${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
+      detalle: `${okCount} movimientos de herramientas cargados${sinRespTemporal ? ` · ${sinRespTemporal} sin responsable → temporal` : ''}${enTemporal ? ` · ${enTemporal} al almacén temporal` : ''}${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
   const runMovMaquinaria = async (resolvedItems = null, rp = null) => {
@@ -1210,6 +1274,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       ubicIdx.map.set(k, rec); return rec.id;
     };
     let enTemporal = 0; // ingresos que cayeron al almacén temporal
+    let sinRespTemporal = 0; // salidas sin responsable → persona temporal
 
     const firmas = await cargarFirmasMigracion('movimientos_maquinaria', obraId, 'activo_id');
     let okCount = 0, errores = 0, saltadosNoAprobados = 0, duplicados = 0;
@@ -1250,6 +1315,14 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
             else if (rpHit?.tipo === 'subcontratista') { subcontratista_id = rpHit.id; destino_tipo = 'subcontratista'; }
             else { responsable_id = matchPersonal(quien, personal); if (responsable_id) destino_tipo = 'personal'; else obsExtra.push(`Responsable: ${quien}`); }
           }
+          if (!quien) {
+            // Salida SIN responsable → se atribuye a la persona TEMPORAL de la
+            // obra (a fusionar después con la persona real).
+            responsable_id = await obtenerPersonaTemporal(obraId, userId);
+            destino_tipo = 'personal';
+            obsExtra.push('Sin responsable en el archivo → Personal temporal');
+            sinRespTemporal++;
+          }
           frente = m.frente || m.lugar || null;
         }
         const obs = ['Migración histórica', ...(m.observaciones ? [m.observaciones] : []), ...obsExtra].join(' · ');
@@ -1274,8 +1347,9 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     await recalcularStockMaquinaria(obraId, afectados, userId);
     fireChanged('activos_pesados', 'movimientos_maquinaria', 'ubicaciones_obra', 'stock_ubicaciones');
     notifTemporal(enTemporal);
+    notifFusionTemporal(sinRespTemporal);
     return { ok: okCount, errors: errores, saltadosNoAprobados, errorList,
-      detalle: `${okCount} movimientos de maquinaria cargados${enTemporal ? ` · ${enTemporal} al almacén temporal` : ''}${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
+      detalle: `${okCount} movimientos de maquinaria cargados${sinRespTemporal ? ` · ${sinRespTemporal} sin responsable → temporal` : ''}${enTemporal ? ` · ${enTemporal} al almacén temporal` : ''}${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
   const runInsumosEmergencia = async () => {
@@ -1478,6 +1552,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       insIdx.map.set(k, rec); return rec;
     };
 
+    let sinRespTemporal = 0; // salidas sin responsable → persona temporal
     const firmas = await cargarFirmasMigracion('movimientos_insumos_emergencia', obraId, 'insumo_emergencia_id');
     let okCount = 0, errores = 0, saltadosNoAprobados = 0, duplicados = 0;
     const errorList = [];
@@ -1511,6 +1586,14 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
             else if (rpHit?.tipo === 'subcontratista') { subcontratista_id = rpHit.id; destino_tipo = 'subcontratista'; }
             else { responsable_id = matchPersonal(quien, personal); if (responsable_id) destino_tipo = 'personal'; else obsExtra.push(`Responsable: ${quien}`); }
           }
+          if (!quien) {
+            // Salida SIN responsable → se atribuye a la persona TEMPORAL de la
+            // obra (a fusionar después con la persona real).
+            responsable_id = await obtenerPersonaTemporal(obraId, userId);
+            destino_tipo = 'personal';
+            obsExtra.push('Sin responsable en el archivo → Personal temporal');
+            sinRespTemporal++;
+          }
         }
         const obs = ['Migración histórica', ...(m.observaciones ? [m.observaciones] : []), ...obsExtra].join(' · ');
         const r = await addMovIdem('movimientos_insumos_emergencia', {
@@ -1527,8 +1610,9 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
 
     await recalcularStockEmergencia(obraId, afectados, userId);
     fireChanged('insumos_emergencia', 'movimientos_insumos_emergencia');
+    notifFusionTemporal(sinRespTemporal);
     return { ok: okCount, errors: errores, saltadosNoAprobados, errorList,
-      detalle: `${okCount} movimientos de emergencia cargados${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
+      detalle: `${okCount} movimientos de emergencia cargados${sinRespTemporal ? ` · ${sinRespTemporal} sin responsable → temporal` : ''}${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
   const runMovMaquinariaAsignacionLoad = async (resolvedItems = null, rp = null) => {
@@ -1567,6 +1651,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       }
     }
     let okCount = 0, errores = 0, saltadosNoAprobados = 0, duplicados = 0;
+    let sinRespTemporal = 0; // salidas sin destinatario → persona temporal
     const errorList = [];
     const prevAct = actIdx.map.size;
     // custodia final por activo (último movimiento gana, ya que vienen asc)
@@ -1594,7 +1679,15 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
             responsable_id = matchPers(m.destinoNombre);
             if (!responsable_id && m.destinoNombre) obsExtra.push(`Asignado a: ${m.destinoNombre}`);
           }
-          destino_nombre = m.destinoNombre || null;
+          if (!responsable_id && !subcontratista_id && !m.destinoNombre) {
+            // Asignación SIN destinatario → persona temporal (a fusionar).
+            responsable_id = await obtenerPersonaTemporal(obraId, userId);
+            destino_tipo = 'personal';
+            destino_nombre = 'Personal temporal (a fusionar)';
+            obsExtra.push('Sin destinatario en el archivo → Personal temporal');
+            sinRespTemporal++;
+          }
+          destino_nombre = destino_nombre || m.destinoNombre || null;
         }
         const fechaMov = m.fecha || new Date().toISOString().slice(0, 10);
         const firmaA = `${act.id}__${fechaMov}__${m.tipo}__${m.tipo === 'salida' ? (destino_tipo || '') : ''}`;
@@ -1629,8 +1722,9 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       });
     }
     fireChanged('activos_pesados', 'movimientos_maquinaria');
+    notifFusionTemporal(sinRespTemporal);
     return { ok: okCount, errors: errores, saltadosNoAprobados, errorList,
-      detalle: `${okCount} asignaciones cargadas${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
+      detalle: `${okCount} asignaciones cargadas${sinRespTemporal ? ` · ${sinRespTemporal} sin destinatario → temporal` : ''}${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
   // Llamado desde el paso "Revisar". Para movimientos lanza el escaneo de
@@ -1693,6 +1787,15 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       else { setImp(false); return; }
       const persMsg = (per.creadosPers || per.creadosSub) ? ` · ${per.creadosPers} personal + ${per.creadosSub} subcontratos creados` : '';
       res = { ...res, detalle: `${res.detalle} · ${dec.creados} insumos creados · ${dec.reemplazados} actualizados · ${dec.saltados} insumos saltados${persMsg}` };
+      if (per.creadosPers > 0) {
+        try {
+          window.dispatchEvent(new CustomEvent('jarvex_new_notif', { detail: {
+            tipo: 'fusion_pendiente',
+            titulo: `👥 ${per.creadosPers} nombre(s) referenciales creados`,
+            descripcion: 'La migración creó personal temporal (ej. "Ing Gaby"). Andá a Personal → Fusionar nombres y unilos con el personal real para no tener registros duplicados.',
+          } }));
+        } catch {}
+      }
       setResult(res);
       setStep(4);
       showToast(res.detalle, res.errors ? 'amber' : 'green');
@@ -2169,7 +2272,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
                       )}
                       {scanAlmacenes.salidasSinResp > 0 && (
                         <div style={{ padding: '8px 10px', background: 'rgba(231,76,60,0.08)', border: '1px solid rgba(231,76,60,0.3)', borderRadius: 6, fontSize: 12, color: 'var(--ts)' }}>
-                          ⚠ <strong>{scanAlmacenes.salidasSinResp} salida(s) sin responsable</strong> (ni persona ni subcontrato). Las salidas deberían decir quién retiró — revisá el Excel o quedarán sin atribución.
+                          ⚠ <strong>{scanAlmacenes.salidasSinResp} salida(s) sin responsable</strong> (ni persona ni subcontrato). Si importás igual, se atribuyen a <strong>"Personal temporal (a fusionar)"</strong> — después identificá al responsable real y fusionalo en Personal → Fusionar nombres.
                         </div>
                       )}
                       {scanAlmacenes.negativos.length > 0 && (
@@ -2191,7 +2294,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
             {/* Salidas sin responsable también para formatos sin almacén (emergencia) */}
             {scanAlmacenes && !scanAlmacenes.soporta && scanAlmacenes.salidasSinResp > 0 && (
               <div style={{ marginTop: 14, padding: '8px 10px', background: 'rgba(231,76,60,0.08)', border: '1px solid rgba(231,76,60,0.3)', borderRadius: 6, fontSize: 12, color: 'var(--ts)' }}>
-                ⚠ <strong>{scanAlmacenes.salidasSinResp} salida(s) sin responsable</strong> (ni persona ni subcontrato). Revisá el Excel o quedarán sin atribución.
+                ⚠ <strong>{scanAlmacenes.salidasSinResp} salida(s) sin responsable</strong> (ni persona ni subcontrato). Si importás igual, se atribuyen a <strong>"Personal temporal (a fusionar)"</strong> para fusionar después con la persona real.
               </div>
             )}
 

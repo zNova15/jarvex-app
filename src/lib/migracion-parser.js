@@ -275,7 +275,15 @@ export function parsePersonal(rows) {
       area: txt(g('Area', 'Área')),
       frente: txt(g('Frente', 'Frente/Zona')),
       subcontrato: txt(g('Subcontrato', 'Subcontratista')),
-      seguro: (txt(g('Seguro a cargo')) || '').toLowerCase() || null,
+      // El server tiene CHECK: seguro_a_cargo ∈ {empresa, subcontrato} o NULL.
+      // El Excel trae texto libre ("Subcontratista", "Sí", "EMPRESA")  → se
+      // normaliza a la whitelist; lo que no calza queda NULL (no rompe sync).
+      seguro: (() => {
+        const v = (txt(g('Seguro a cargo')) || '').toLowerCase();
+        if (v.startsWith('emp')) return 'empresa';
+        if (v.startsWith('sub')) return 'subcontrato';
+        return null;
+      })(),
       estado: ['activo', 'inactivo', 'suspendido', 'retirado'].includes(estadoRaw) ? estadoRaw : 'activo',
       fechaIngreso: parseFechaMigracion(g('Fecha Ingreso', 'Fecha de Ingreso')),
       fechaNacimiento: parseFechaMigracion(g('Fecha Nacimiento', 'Fecha Nac.', 'Fecha de Nacimiento')),
