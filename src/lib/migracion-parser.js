@@ -48,6 +48,8 @@ export const FORMATOS = {
     desc: 'Ingresos y salidas de insumos de emergencia con fecha histórica.' },
   mov_maquinaria_asignacion: { id: 'mov_maquinaria_asignacion', label: 'Asignaciones de Maquinaria (custodia)', icon: 'tool',
     desc: 'Salidas (asignación a personal/subcontrato) y devoluciones de equipos pesados, con fecha.' },
+  personal: { id: 'personal', label: 'Personal (datos + cuentas bancarias)', icon: 'users',
+    desc: 'Roster de trabajadores: datos personales, contacto y cuentas bancarias. Crea o actualiza por DNI; las cuentas van a Cuentas Bancarias → Personal.' },
 };
 
 /**
@@ -69,6 +71,12 @@ export function detectFormato(headers) {
   // distingue de los movimientos por cantidad. (Su template usa "Movimiento",
   // no "Tipo de Movimiento", así que va antes del gate de abajo.)
   if (H.some((h) => h.includes('asigna'))) return 'mov_maquinaria_asignacion';
+
+  // Personal: roster de trabajadores (Nombres + Apellidos + DNI). Los archivos
+  // de movimientos llevan "Responsable" (una sola columna), no Nombres/Apellidos
+  // separados, así que no colisionan. También reconoce la hoja "Cuentas
+  // bancarias (personal)" del export (trae las mismas tres columnas).
+  if (tiene('nombres') && tiene('apellidos') && tiene('dni')) return 'personal';
 
   // (Insumos Totales se retiró del flujo — el catálogo lo crea el paso de
   // revisión al cargar movimientos.)
@@ -213,6 +221,62 @@ export function parseInsumosEmergencia(rows) {
       categoria: txt(g('Categoria', 'Categoría')),
       unidad: txt(g('Unidad')) || 'Und',
       fechaCreacion: parseFechaMigracion(g('Fecha de creacion', 'Fecha de creación', 'Fecha creacion', 'Fecha')),
+    });
+  });
+  return out;
+}
+
+/**
+ * Personal: roster de trabajadores con datos de contacto y cuentas bancarias.
+ * Lee tanto la plantilla nueva como la hoja Personal del export histórico
+ * (headers flexibles, con o sin tildes). Las columnas bancarias se separan en
+ * `cuentas` — el loader las crea en personal_cuentas_bancarias.
+ */
+export function parsePersonal(rows) {
+  const out = [];
+  (rows || []).forEach((row, i) => {
+    const g = rowGetter(row);
+    const nombres = txt(g('Nombres', 'Nombre'));
+    const apellidos = txt(g('Apellidos', 'Apellido'));
+    if (!nombres && !apellidos) return;
+    const dni = String(g('DNI') ?? '').replace(/\D/g, '');
+    const cuentas = [];
+    const banco = txt(g('Banco'));
+    const nroCta = txt(g('Numero Cuenta', 'Número Cuenta', 'N° Cuenta', 'Nro Cuenta', 'Numero de cuenta', 'Cuenta'));
+    const cci = (txt(g('CCI')) || '').replace(/[\s-]/g, '') || null;
+    if (banco || nroCta || cci) {
+      const pCol = txt(g('Principal'));
+      const tipoCta = (txt(g('Tipo Cuenta', 'Tipo de cuenta')) || 'ahorros').toLowerCase();
+      cuentas.push({ banco: banco || 'Banco', tipo_cuenta: tipoCta, numero_cuenta: nroCta, cci,
+        moneda: (txt(g('Moneda')) || 'PEN').toUpperCase(),
+        principal: pCol != null ? pCol.toLowerCase().startsWith('s') : tipoCta !== 'cts' });
+    }
+    const bancoCts = txt(g('Banco CTS'));
+    const ctaCts = txt(g('Cuenta CTS'));
+    if (bancoCts || ctaCts) {
+      cuentas.push({ banco: bancoCts || 'Banco de la Nación', tipo_cuenta: 'cts', numero_cuenta: ctaCts, cci: null, moneda: 'PEN', principal: false });
+    }
+    const estadoRaw = (txt(g('Estado')) || '').toLowerCase();
+    out.push({
+      idx: i + 2,
+      nombres: nombres || '',
+      apellidos: apellidos || '',
+      dni,
+      cargo: txt(g('Cargo')),
+      area: txt(g('Area', 'Área')),
+      frente: txt(g('Frente', 'Frente/Zona')),
+      subcontrato: txt(g('Subcontrato', 'Subcontratista')),
+      seguro: (txt(g('Seguro a cargo')) || '').toLowerCase() || null,
+      estado: ['activo', 'inactivo', 'suspendido', 'retirado'].includes(estadoRaw) ? estadoRaw : 'activo',
+      fechaIngreso: parseFechaMigracion(g('Fecha Ingreso', 'Fecha de Ingreso')),
+      fechaNacimiento: parseFechaMigracion(g('Fecha Nacimiento', 'Fecha Nac.', 'Fecha de Nacimiento')),
+      telefono: txt(g('Telefono', 'Teléfono')),
+      email: txt(g('Email', 'Correo', 'E-mail', 'Correo electronico', 'Correo electrónico', 'E_MAIL')),
+      direccion: txt(g('Direccion', 'Dirección')),
+      contactoEmergencia: txt(g('Contacto Emergencia', 'Contacto de emergencia')),
+      telefonoEmergencia: txt(g('Telefono Emergencia', 'Teléfono Emergencia', 'Telefono de emergencia')),
+      regimen: txt(g('Regimen Pension', 'Régimen Pensión', 'Regimen de pension', 'AFP/ONP', 'Regimen')),
+      cuentas,
     });
   });
   return out;

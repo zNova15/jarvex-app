@@ -25,7 +25,7 @@ import { aplicarDelta } from "../lib/stock-ubicaciones.js";
 import { detectarSugerencias, detectarDuplicados, fusionarInsumos } from "../lib/variantes.js";
 import {
   detectFormato, FORMATOS,
-  parseInsumosTotales, parseInsumosEmergencia, parseMovimientos, parseMovMaquinariaAsignacion, resumenMovimientos,
+  parseInsumosTotales, parseInsumosEmergencia, parsePersonal, parseMovimientos, parseMovMaquinariaAsignacion, resumenMovimientos,
   normTxt,
 } from "../lib/migracion-parser.js";
 
@@ -41,6 +41,8 @@ export const TEMPLATES = {
   mov_maquinaria:     { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Maquinaria', 'Estado', 'Cantidad', 'Tipo de Movimiento', 'Almacén', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente / Zona', 'Documento', 'Observaciones'], sample: ['1', '21/05/2026', '08:30', 'Rotomartillo', 'Nuevo', '1', 'Ingreso', 'Almacén Central', '', '', '', '', '', ''] },
   mov_emergencia:     { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Insumo de Emergencia', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente / Zona', 'Documento', 'Observaciones'], sample: ['1', '21/05/2026', '08:30', 'Extintor PQS 6kg', 'Und', '4', 'Ingreso', 'Seguridad SAC', '', '', '', '', ''] },
   mov_maquinaria_asignacion: { headers: ['ID', 'Fecha', 'Hora', 'Equipo', 'Movimiento', 'Tipo destino', 'Asignado a', 'Frente / Zona', 'Observación'], sample: ['1', '21/05/2026', '08:30', 'Excavadora CAT 320', 'Salida', 'Personal', 'Juan Pérez', 'Frente A', ''] },
+  personal: { headers: ['Nombres', 'Apellidos', 'DNI', 'Cargo', 'Area', 'Frente', 'Subcontrato', 'Seguro a cargo', 'Estado', 'Fecha Ingreso', 'Fecha Nacimiento', 'Telefono', 'Email', 'Direccion', 'Contacto Emergencia', 'Telefono Emergencia', 'Regimen Pension', 'Banco', 'Tipo Cuenta', 'Numero Cuenta', 'CCI', 'Moneda', 'Banco CTS', 'Cuenta CTS'],
+    sample: ['Carlos', 'Mendoza Quispe', '40123456', 'Capataz', 'Estructuras', 'Alcantarillado', '', 'empresa', 'activo', '15/01/2026', '12/04/1985', '987111111', 'carlos.mendoza@gmail.com', 'Jr. Los Pinos 123', 'María Quispe', '976222333', 'AFP Integra', 'BCP', 'ahorros', '19112345678012', '00219111234567801299', 'PEN', 'Banco de la Nación', '04-123-456789'] },
 };
 
 export async function descargarPlantilla(formato) {
@@ -631,6 +633,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
   const fmtMeta = formato ? FORMATOS[formato] : null;
   const esInsumos = formato === 'insumos_totales';
   const esInsumosEmergencia = formato === 'insumos_emergencia';
+  const esPersonal = formato === 'personal';
   const esMov = formato && formato.startsWith('mov_');
   const esAsignacion = formato === 'mov_maquinaria_asignacion';
   const movHabilitado = formato === 'mov_materiales' || formato === 'mov_epp' || formato === 'mov_herramientas' || formato === 'mov_maquinaria' || formato === 'mov_emergencia' || esAsignacion;
@@ -648,6 +651,14 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       const items = parseInsumosEmergencia(parsed.rows);
       return { tipo: 'insumos_emergencia', items, total: items.length };
     }
+    if (esPersonal) {
+      const items = parsePersonal(parsed.rows);
+      return {
+        tipo: 'personal', items, total: items.length,
+        conCuentas: items.filter(it => it.cuentas.length).length,
+        sinDni: items.filter(it => !it.dni).length,
+      };
+    }
     if (esAsignacion) {
       const movs = parseMovMaquinariaAsignacion(parsed.rows);
       return {
@@ -661,7 +672,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     }
     const movs = parseMovimientos(parsed.rows, formato);
     return { tipo: 'mov', movs, resumen: resumenMovimientos(movs) };
-  }, [parsed, formato, esInsumos, esInsumosEmergencia, esAsignacion]);
+  }, [parsed, formato, esInsumos, esInsumosEmergencia, esPersonal, esAsignacion]);
 
   // Validación de calidad del archivo de movimientos (por cantidad):
   //  · unidades: un insumo no puede tener 2 unidades distintas (ej. clavos en
@@ -1194,6 +1205,96 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       detalle: `${creados} insumos de emergencia creados · ${saltados} ya existían · ${errores} con error` };
   };
 
+  // Personal: upsert por DNI (datos personales) + cuentas bancarias por
+  // persona (Cuentas Bancarias → Personal). Mismo split que el import
+  // genérico: re-importar el archivo NO duplica gente ni cuentas.
+  const runPersonal = async () => {
+    const items = preview.items;
+    let creados = 0, actualizados = 0, cuentasNuevas = 0, errores = 0;
+    const errorList = [];
+    const existentes = (await window.__db.personal.where('obra_id').equals(obraId).toArray()).filter(p => !p.deleted_at);
+    const porDni = new Map(existentes.filter(p => p.dni).map(p => [String(p.dni).trim(), p]));
+    const porNombre = new Map(existentes.map(p => [normTxt(`${p.nombres} ${p.apellidos || ''}`), p]));
+    const subs = (await window.__db.subcontratistas.filter(s => !s.deleted_at).toArray());
+    const subMap = new Map(subs.map(s => [normTxt(s.razon_social), s.id]));
+    const frentes = (await window.__db.frentes_obra.where('obra_id').equals(obraId).toArray().catch(() => [])).filter(f => !f.deleted_at);
+    const frenteMap = new Map(frentes.map(f => [normTxt(f.nombre), f.id]));
+    const cuentasExist = (await window.__db.personal_cuentas_bancarias.where('obra_id').equals(obraId).toArray().catch(() => [])).filter(c => !c.deleted_at);
+    const now = new Date().toISOString();
+
+    const guardarCuentas = async (personalId, cuentas) => {
+      for (const cta of (cuentas || [])) {
+        const dup = cuentasExist.find(c => c.personal_id === personalId
+          && ((cta.numero_cuenta && c.numero_cuenta === cta.numero_cuenta) || (cta.cci && c.cci === cta.cci)));
+        if (dup) continue;
+        const yaTienePrincipal = cuentasExist.some(c => c.personal_id === personalId && c.principal);
+        const id = window.__newId();
+        const rec = {
+          id, obra_id: obraId, personal_id: personalId,
+          banco: cta.banco, tipo_cuenta: cta.tipo_cuenta, numero_cuenta: cta.numero_cuenta,
+          cci: cta.cci, moneda: cta.moneda, principal: cta.principal && !yaTienePrincipal, observaciones: null,
+          created_by: userId, updated_by: userId, created_at: now, updated_at: now,
+          version: 1, sync_status: 'pending_create', last_synced_at: null,
+          idempotency_key: `${userId}_pcb_${id}`,
+        };
+        await window.__db.personal_cuentas_bancarias.add(rec);
+        cuentasExist.push(rec); cuentasNuevas++;
+      }
+    };
+
+    setProgress({ current: 0, total: items.length });
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      try {
+        const subId = it.subcontrato ? (subMap.get(normTxt(it.subcontrato)) || null) : null;
+        const frId = it.frente ? (frenteMap.get(normTxt(it.frente)) || null) : null;
+        const existente = (it.dni && porDni.get(it.dni)) || (!it.dni && porNombre.get(normTxt(`${it.nombres} ${it.apellidos}`))) || null;
+        if (existente) {
+          // Merge: solo campos NO vacíos del Excel (no pisar datos buenos).
+          const patch = {};
+          const setIf = (k, v) => { if (v !== null && v !== undefined && v !== '') patch[k] = v; };
+          setIf('cargo', it.cargo); setIf('area', it.area);
+          setIf('fecha_ingreso', it.fechaIngreso); setIf('fecha_nacimiento', it.fechaNacimiento);
+          setIf('telefono', it.telefono); setIf('email', it.email); setIf('direccion', it.direccion);
+          setIf('contacto_emergencia', it.contactoEmergencia); setIf('telefono_emergencia', it.telefonoEmergencia);
+          setIf('regimen_pension', it.regimen);
+          if (subId) patch.subcontratista_id = subId;
+          if (frId) patch.frente_id = frId;
+          if (Object.keys(patch).length) {
+            await window.__db.personal.update(existente.id, {
+              ...patch, updated_by: userId, updated_at: now,
+              version: (existente.version ?? 0) + 1,
+              sync_status: existente.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+            });
+            actualizados++;
+          }
+          await guardarCuentas(existente.id, it.cuentas);
+        } else {
+          if (!it.nombres) throw new Error('Fila sin nombres');
+          const rec = await addRecord('personal', {
+            obra_id: obraId, nombres: it.nombres, apellidos: it.apellidos,
+            dni: it.dni || `MIG-${normTxt(it.nombres + it.apellidos).slice(0, 14)}`,
+            cargo: it.cargo, area: it.area, estado: it.estado || 'activo',
+            fecha_ingreso: it.fechaIngreso, fecha_nacimiento: it.fechaNacimiento,
+            telefono: it.telefono, email: it.email, direccion: it.direccion,
+            contacto_emergencia: it.contactoEmergencia, telefono_emergencia: it.telefonoEmergencia,
+            regimen_pension: it.regimen,
+            subcontratista_id: subId, seguro_a_cargo: it.seguro || (subId ? 'empresa' : null), frente_id: frId,
+          }, userId);
+          if (it.dni) porDni.set(it.dni, rec);
+          porNombre.set(normTxt(`${it.nombres} ${it.apellidos}`), rec);
+          creados++;
+          await guardarCuentas(rec.id, it.cuentas);
+        }
+      } catch (e) { errores++; errorList.push({ row: it.idx, error: e.message || String(e) }); }
+      if (i % 20 === 0) { setProgress({ current: i + 1, total: items.length }); await new Promise(r => setTimeout(r, 0)); }
+    }
+    fireChanged('personal');
+    if (cuentasNuevas) fireChanged('personal_cuentas_bancarias');
+    return { ok: creados + actualizados, saltados: 0, errors: errores, errorList,
+      detalle: `${creados} trabajadores creados · ${actualizados} actualizados · ${cuentasNuevas} cuentas bancarias · ${errores} con error` };
+  };
+
   const runMovEmergencia = async (resolvedItems = null, rp = null) => {
     const movs = [...preview.movs].sort((a, b) => (a.fecha || '') < (b.fecha || '') ? -1 : 1);
     const insIdx = await cargarIndice('insumos_emergencia', obraId, 'nombre');
@@ -1376,6 +1477,14 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     if (esInsumosEmergencia) {
       setImp(true);
       try { const res = await runInsumosEmergencia(); setResult(res); setStep(4); showToast(res.detalle, res.errors ? 'amber' : 'green'); }
+      catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+      finally { setImp(false); }
+      return;
+    }
+    if (esPersonal) {
+      if (!preview?.items?.length) { showToast('No hay trabajadores para procesar', 'red'); return; }
+      setImp(true);
+      try { const res = await runPersonal(); setResult(res); setStep(4); showToast(res.detalle, res.errors ? 'amber' : 'green'); }
       catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
       finally { setImp(false); }
       return;
@@ -1598,6 +1707,20 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
                 <div style={{ fontSize: 11, color: 'var(--tm)' }}>Insumos de emergencia</div>
               </div>
               <div style={{ fontSize: 12, color: 'var(--tm)', marginTop: 10 }}>Se crean en el inventario de Seguridad → Insumos de Emergencia, sin stock ni movimientos. Los que ya existan (por nombre) se saltan.</div>
+            </div>
+          )}
+
+          {preview.tipo === 'personal' && (
+            <div className="card card-p" style={{ marginBottom: 14 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12 }}>
+                <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: '#27AE60' }}>{preview.total}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Trabajadores</div></div>
+                <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: '#16A085' }}>{preview.conCuentas}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Con cuenta bancaria</div></div>
+                <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: preview.sinDni ? 'var(--amber)' : 'var(--tp)' }}>{preview.sinDni}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Sin DNI</div></div>
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--tm)', marginTop: 10 }}>
+                Los datos personales van a <strong>Personal</strong> (si el DNI ya existe, se actualiza — no se duplica) y las columnas bancarias crean las cuentas en <strong>Cuentas Bancarias → Personal</strong>, enlazadas por persona. Re-importar el mismo archivo no duplica nada.
+              </div>
+              {preview.sinDni > 0 && <div style={{ fontSize: 12, color: 'var(--amber)', marginTop: 8 }}>⚠️ {preview.sinDni} fila(s) sin DNI: se identifican por nombre completo (menos confiable).</div>}
             </div>
           )}
 
