@@ -9,6 +9,20 @@
 
 export const SUB_PREFIX = 'sub:';
 
+// Etiqueta de una persona para selectores: nombre + «alias» + (cargo) +
+// subcontrato. En obra se ubica a la gente por apodo y cargo ("Raúl Díaz
+// (Obrero) · Subcontrato JUAN"), y SearchableSelect busca por label — así
+// alias y cargo quedan buscables sin tocar el componente.
+export function etiquetaPersona(p, subName = null) {
+  const nombre = `${p.nombres || ''} ${p.apellidos || ''}`.trim();
+  const alias = p.alias ? ` «${p.alias}»` : '';
+  const cargo = p.cargo ? ` (${p.cargo})` : '';
+  const sub = p.subcontratista_id
+    ? ` · ${(subName && subName.get(p.subcontratista_id)) || 'subcontrato'}`
+    : '';
+  return `${nombre}${alias}${cargo}${sub}`;
+}
+
 // Opciones para un selector combinado: personal (activo) + subcontratistas.
 // Devuelve { personas, subs } por si se quieren mostrar agrupados; o usar
 // [...personas, ...subs] como lista plana.
@@ -16,8 +30,7 @@ export function opcionesDestino(personalActivos = [], subcontratistas = []) {
   const subName = new Map((subcontratistas || []).map(s => [s.id, s.razon_social]));
   const personas = (personalActivos || []).map(p => ({
     value: p.id,
-    label: `${p.nombres || ''} ${p.apellidos || ''}`.trim()
-      + (p.subcontratista_id ? ` · ${subName.get(p.subcontratista_id) || 'subcontrato'}` : ''),
+    label: etiquetaPersona(p, subName),
   }));
   const subs = (subcontratistas || [])
     .filter(s => !s.deleted_at && s.estado !== 'bloqueado')

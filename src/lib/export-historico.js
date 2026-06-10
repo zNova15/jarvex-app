@@ -217,7 +217,7 @@ export const DATASETS = [
         const ctas = c.pcbByPersonal?.get(p.id) || [];
         const ppal = ctas.find((x) => x.principal) || ctas.find((x) => x.tipo_cuenta !== 'cts') || null;
         const cts = ctas.find((x) => x.tipo_cuenta === 'cts') || null;
-        return [p.nombres || '', p.apellidos || '', p.tipo_documento || 'dni', p.dni || '', p.cargo || '', p.area || '',
+        return [p.nombres || '', p.apellidos || '', p.alias || '', p.tipo_documento || 'dni', p.dni || '', p.cargo || '', p.area || '',
           p.frente_id ? (c.frenById.get(p.frente_id)?.nombre || '') : '', p.estado || 'activo',
           p.subcontratista_id ? 'Subcontrato' : 'Directo', p.subcontratista_id ? (c.subsById.get(p.subcontratista_id)?.razon_social || '') : '',
           p.es_jefe_subcontrato ? 'Sí' : '', p.seguro_a_cargo || '', p.fecha_ingreso || '', p.fecha_nacimiento || '', p.telefono || '',
@@ -225,7 +225,7 @@ export const DATASETS = [
           ppal?.banco || '', ppal?.tipo_cuenta || '', ppal?.numero_cuenta || '', ppal?.cci || '', ppal?.moneda || '',
           cts?.banco || '', cts?.numero_cuenta || ''];
       });
-      return { headers: ['Nombres', 'Apellidos', 'Tipo Documento', 'DNI', 'Cargo', 'Area', 'Frente', 'Estado', 'Vínculo', 'Subcontrato', 'Jefe Subcontrato', 'Seguro a cargo', 'Fecha Ingreso', 'Fecha Nacimiento', 'Telefono', 'Email', 'Direccion', 'Contacto Emergencia', 'Telefono Emergencia', 'Regimen Pension', 'Banco', 'Tipo Cuenta', 'Numero Cuenta', 'CCI', 'Moneda', 'Banco CTS', 'Cuenta CTS'], rows };
+      return { headers: ['Nombres', 'Apellidos', 'Alias', 'Tipo Documento', 'DNI', 'Cargo', 'Area', 'Frente', 'Estado', 'Vínculo', 'Subcontrato', 'Jefe Subcontrato', 'Seguro a cargo', 'Fecha Ingreso', 'Fecha Nacimiento', 'Telefono', 'Email', 'Direccion', 'Contacto Emergencia', 'Telefono Emergencia', 'Regimen Pension', 'Banco', 'Tipo Cuenta', 'Numero Cuenta', 'CCI', 'Moneda', 'Banco CTS', 'Cuenta CTS'], rows };
     } },
   { id: 'personal_cuentas', label: 'Cuentas bancarias (personal)', icon: 'dollar', color: '#16A085', grupo: 'RRHH', filtrable: false,
     build: (c, f) => {

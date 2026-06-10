@@ -149,39 +149,53 @@ export default async function handler(req, res) {
       return res.status(422).json({ error: 'RUC inválido (formato o dígito verificador)' });
     }
 
-    const token = process.env.DECOLECTA_TOKEN || process.env.APIS_NET_PE_TOKEN;
-    const useFull = !!token;
-    const url = useFull
-      ? `https://api.decolecta.com/v1/sunat/ruc/full?numero=${r}`
-      : `https://api.apis.net.pe/v1/ruc?numero=${r}`;
+    // Cadena de proveedores — cada token va a SU API (un token de apis.net.pe
+    // mandado a decolecta da 401 seguro). 401/403/429/5xx → siguiente; 404 corta.
+    const providers = [];
+    if (process.env.DECOLECTA_TOKEN) {
+      providers.push({ id: 'decolecta', url: `https://api.decolecta.com/v1/sunat/ruc/full?numero=${r}`, token: process.env.DECOLECTA_TOKEN });
+    }
+    if (process.env.APIS_NET_PE_TOKEN) {
+      providers.push({ id: 'apis.net.pe/v2', url: `https://api.apis.net.pe/v2/sunat/ruc/full?numero=${r}`, token: process.env.APIS_NET_PE_TOKEN });
+    }
+    providers.push({ id: 'apis.net.pe/v1', url: `https://api.apis.net.pe/v1/ruc?numero=${r}`, token: null });
 
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 10000);
-    const upstream = await fetch(url, {
-      signal: ctrl.signal,
-      headers: {
-        Accept: 'application/json',
-        ...(useFull ? { Authorization: `Bearer ${token}` } : {}),
-      },
-    });
-    clearTimeout(timer);
-
-    if (upstream.status === 401) {
-      // No filtrar nombre de la env var al cliente
-      console.error('[sunat] upstream 401 — verificá DECOLECTA_TOKEN en Vercel');
-      return res.status(503).json({ error: 'SUNAT temporalmente no disponible — avisá al admin' });
+    let data = null, last = null, source = null;
+    for (const p of providers) {
+      let upstream;
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 10000);
+        upstream = await fetch(p.url, {
+          signal: ctrl.signal,
+          headers: {
+            Accept: 'application/json',
+            ...(p.token ? { Authorization: `Bearer ${p.token}` } : {}),
+          },
+        });
+        clearTimeout(timer);
+      } catch {
+        last = { id: p.id, status: 0 };
+        continue;
+      }
+      if (upstream.ok) {
+        try { data = await upstream.json(); } catch { last = { id: p.id, status: 200 }; continue; }
+        source = p.id;
+        break;
+      }
+      if (upstream.status === 404) {
+        return res.status(404).json({ error: 'RUC no encontrado en SUNAT' });
+      }
+      // No filtrar el valor del token al cliente; al log sí va el proveedor.
+      console.warn(`[sunat] ${p.id} respondió ${upstream.status}${p.token ? ' — revisá ese token en Vercel' : ''}`);
+      last = { id: p.id, status: upstream.status };
     }
-    if (upstream.status === 404) {
-      return res.status(404).json({ error: 'RUC no encontrado en SUNAT' });
+    if (!data) {
+      if (last && last.status === 429) {
+        return res.status(429).json({ error: 'Demasiadas consultas al servicio de RUC — espera un minuto y reintenta' });
+      }
+      return res.status(503).json({ error: `Servicio de RUC no disponible (${last ? `${last.id} respondió ${last.status || 'timeout'}` : 'sin proveedores'}) — reintenta o revisa los tokens en Vercel` });
     }
-    if (upstream.status === 429) {
-      return res.status(429).json({ error: 'Cuota agotada (100/mes en plan free decolecta) — esperá o paga upgrade' });
-    }
-    if (!upstream.ok) {
-      return res.status(upstream.status).json({ error: `SUNAT respondió ${upstream.status}` });
-    }
-
-    const data = await upstream.json();
 
     // ── Normalizar respuesta a un shape único ────────────────
     // decolecta v1/full devuelve snake_case y a veces "-" cuando el campo
@@ -240,9 +254,9 @@ export default async function handler(req, res) {
       tipoContabilidad: limpiarDash(data.tipo_contabilidad) || null,
       esAgenteRetencion: data.es_agente_retencion ?? null,
       esBuenContribuyente: data.es_buen_contribuyente ?? null,
-      ubigeo: data.ubigeo || null,
+      ubigeo: Array.isArray(data.ubigeo) ? (data.ubigeo[data.ubigeo.length - 1] || null) : limpiarDash(data.ubigeo),
       localesAnexos: Array.isArray(data.locales_anexos) ? data.locales_anexos : null,
-      _source: useFull ? 'decolecta/v1/full' : 'apis.net.pe/v1',
+      _source: source,
     };
 
     // Cache de 1 hora — los datos de RUC cambian raramente.

@@ -4757,6 +4757,7 @@ function PersonalPage({ showToast }) {
       const t = q.toLowerCase();
       list = list.filter(p =>
         `${p.nombres} ${p.apellidos}`.toLowerCase().includes(t) ||
+        p.alias?.toLowerCase().includes(t) ||
         p.cargo?.toLowerCase().includes(t) ||
         p.dni?.includes(q) ||
         (p.subcontratista_id && (nombreSub(p.subcontratista_id) || '').toLowerCase().includes(t))
@@ -4778,6 +4779,7 @@ function PersonalPage({ showToast }) {
     setForm({
       nombres: p.nombres || '',
       apellidos: p.apellidos || '',
+      alias: p.alias || '',
       dni: p.dni || '',
       tipo_documento: p.tipo_documento || 'dni',
       cargo: p.cargo || '',
@@ -4909,6 +4911,7 @@ function PersonalPage({ showToast }) {
         const newFields = {
           nombres: form.nombres.trim(),
           apellidos: form.apellidos.trim(),
+          alias: form.alias?.trim() || null,
           dni,
           tipo_documento: tipoDoc,
           cargo: form.cargo || null,
@@ -4944,6 +4947,7 @@ function PersonalPage({ showToast }) {
           obra_id: obraId,
           nombres: form.nombres.trim(),
           apellidos: form.apellidos.trim(),
+          alias: form.alias?.trim() || null,
           dni,
           tipo_documento: tipoDoc,
           cargo: form.cargo || null,
@@ -5003,8 +5007,15 @@ function PersonalPage({ showToast }) {
         return (
           <div style={{ marginBottom:12, padding:'10px 14px', background:'rgba(231,76,60,0.08)', border:'1px solid rgba(231,76,60,0.3)', borderRadius:8, display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
             <span style={{ fontSize:12.5, color:'var(--ts)' }}>
-              👥 <strong>{temporales.length} nombre(s) temporales</strong> de la importación histórica (ej. {temporales[0].nombres} {temporales[0].apellidos}) pendientes de fusionar con el personal real.
+              👥 <strong>{temporales.length} nombre(s) temporales</strong> de la importación histórica pendientes de fusionar con el personal real:
             </span>
+            {temporales.slice(0, 8).map(p => (
+              <button key={p.id} className="tag" title="Buscar en la lista" style={{ cursor:'pointer', border:'1px solid rgba(231,76,60,0.35)' }}
+                onClick={()=>setQ(`${p.nombres} ${p.apellidos}`.trim())}>
+                {p.nombres} {p.apellidos}
+              </button>
+            ))}
+            {temporales.length > 8 && <span style={{ fontSize:11.5, color:'var(--tm)' }}>+{temporales.length - 8} más</span>}
             <button className="btn btn-sm" style={{ marginLeft:'auto', background:'rgba(231,76,60,0.15)', color:'#E74C3C', border:'1px solid rgba(231,76,60,0.35)' }} onClick={()=>setFusionOpen(true)}>
               <JxIcon name="compare" size={12}/> Fusionar ahora
             </button>
@@ -5013,7 +5024,7 @@ function PersonalPage({ showToast }) {
       })()}
 
       <div style={{display:'flex',gap:8,marginBottom:14,flexWrap:'wrap'}}>
-        <div className="search-bar" style={{flex:'1 1 220px'}}><JxIcon name="search" size={14} color="var(--tm)"/><input placeholder="Buscar por nombre, cargo, DNI o subcontrato…" value={q} onChange={e=>setQ(e.target.value)}/></div>
+        <div className="search-bar" style={{flex:'1 1 220px'}}><JxIcon name="search" size={14} color="var(--tm)"/><input placeholder="Buscar por nombre, alias, cargo, DNI o subcontrato…" value={q} onChange={e=>setQ(e.target.value)}/></div>
         <select className="fi" style={{width:'auto',minWidth:170}} value={filtroVinculo} onChange={e=>{setFiltroVinculo(e.target.value); personalPg.setPage?.(1);}} title="Filtrar por vínculo laboral">
           <option value="todos">Vínculo: todos</option>
           <option value="directos">Directos (empresa)</option>
@@ -5049,7 +5060,7 @@ function PersonalPage({ showToast }) {
               const e = ESTADO_STYLE[p.estado] || ESTADO_STYLE.activo;
               return (
                 <tr key={p.id}>
-                  <td className="col-p">{p.nombres} {p.apellidos}</td>
+                  <td className="col-p">{p.nombres} {p.apellidos}{p.alias ? <span style={{color:'var(--tm)',fontWeight:400}}> «{p.alias}»</span> : null}</td>
                   <td className="col-m">{p.dni}</td>
                   <td>{p.cargo || '—'}</td>
                   <td>{p.frente_id ? <span className="badge b-amber" title="Frente de trabajo">{nombreFrente(p.frente_id) || '(frente)'}</span> : <span style={{color:'var(--tm)',fontSize:12}}>—</span>}</td>
@@ -5110,6 +5121,7 @@ function PersonalPage({ showToast }) {
         <div className="g2">
           <div><label className="flabel">Nombres *</label><input className="fi" value={form.nombres||''} onChange={e=>setForm({...form, nombres:e.target.value})}/></div>
           <div><label className="flabel">Apellidos *</label><input className="fi" value={form.apellidos||''} onChange={e=>setForm({...form, apellidos:e.target.value})}/></div>
+          <div><label className="flabel">Alias / apodo</label><input className="fi" placeholder='Como lo conocen en obra: "Coco", "Chato"…' value={form.alias||''} onChange={e=>setForm({...form, alias:e.target.value})}/></div>
           <div>
             <label className="flabel">Documento *</label>
             <div style={{ display:'flex', gap:6 }}>
@@ -5275,6 +5287,7 @@ function PersonalPage({ showToast }) {
           fields={[
             { key: 'nombres', label: 'Nombres' },
             { key: 'apellidos', label: 'Apellidos' },
+            { key: 'alias', label: 'Alias / apodo' },
             { key: 'dni', label: 'DNI' },
             { key: 'cargo', label: 'Cargo' },
             { key: 'area', label: 'Área' },

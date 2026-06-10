@@ -41,8 +41,8 @@ export const TEMPLATES = {
   mov_maquinaria:     { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Maquinaria', 'Estado', 'Cantidad', 'Tipo de Movimiento', 'Almacén', 'Almacén Destino', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente / Zona', 'Documento', 'Observaciones'], sample: ['1', '21/05/2026', '08:30', 'Rotomartillo', 'Nuevo', '1', 'Ingreso', 'Almacén Central', '', '', '', '', '', '', ''] },
   mov_emergencia:     { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Insumo de Emergencia', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente / Zona', 'Documento', 'Observaciones'], sample: ['1', '21/05/2026', '08:30', 'Extintor PQS 6kg', 'Und', '4', 'Ingreso', 'Seguridad SAC', '', '', '', '', ''] },
   mov_maquinaria_asignacion: { headers: ['ID', 'Fecha', 'Hora', 'Equipo', 'Movimiento', 'Tipo destino', 'Asignado a', 'Frente / Zona', 'Observación'], sample: ['1', '21/05/2026', '08:30', 'Excavadora CAT 320', 'Salida', 'Personal', 'Juan Pérez', 'Frente A', ''] },
-  personal: { headers: ['Nombres', 'Apellidos', 'Tipo Documento', 'DNI', 'Cargo', 'Area', 'Frente', 'Subcontrato', 'Seguro a cargo', 'Estado', 'Fecha Ingreso', 'Fecha Nacimiento', 'Telefono', 'Email', 'Direccion', 'Contacto Emergencia', 'Telefono Emergencia', 'Regimen Pension', 'Banco', 'Tipo Cuenta', 'Numero Cuenta', 'CCI', 'Moneda', 'Banco CTS', 'Cuenta CTS'],
-    sample: ['Carlos', 'Mendoza Quispe', 'DNI', '40123456', 'Capataz', 'Estructuras', 'Alcantarillado', '', 'empresa', 'activo', '15/01/2026', '12/04/1985', '987111111', 'carlos.mendoza@gmail.com', 'Jr. Los Pinos 123', 'María Quispe', '976222333', 'AFP Integra', 'BCP', 'ahorros', '19112345678012', '00219111234567801299', 'PEN', 'Banco de la Nación', '04-123-456789'] },
+  personal: { headers: ['Nombres', 'Apellidos', 'Alias', 'Tipo Documento', 'DNI', 'Cargo', 'Area', 'Frente', 'Subcontrato', 'Seguro a cargo', 'Estado', 'Fecha Ingreso', 'Fecha Nacimiento', 'Telefono', 'Email', 'Direccion', 'Contacto Emergencia', 'Telefono Emergencia', 'Regimen Pension', 'Banco', 'Tipo Cuenta', 'Numero Cuenta', 'CCI', 'Moneda', 'Banco CTS', 'Cuenta CTS'],
+    sample: ['Carlos', 'Mendoza Quispe', 'Calo', 'DNI', '40123456', 'Capataz', 'Estructuras', 'Alcantarillado', '', 'empresa', 'activo', '15/01/2026', '12/04/1985', '987111111', 'carlos.mendoza@gmail.com', 'Jr. Los Pinos 123', 'María Quispe', '976222333', 'AFP Integra', 'BCP', 'ahorros', '19112345678012', '00219111234567801299', 'PEN', 'Banco de la Nación', '04-123-456789'] },
 };
 
 export async function descargarPlantilla(formato) {
@@ -1700,7 +1700,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           const patch = {};
           const setIf = (k, v) => { if (v !== null && v !== undefined && v !== '') patch[k] = v; };
           if (usarReniec) { setIf('nombres', nom); setIf('apellidos', ape); }
-          setIf('cargo', it.cargo); setIf('area', it.area);
+          setIf('cargo', it.cargo); setIf('area', it.area); setIf('alias', it.alias);
           setIf('fecha_ingreso', it.fechaIngreso); setIf('fecha_nacimiento', it.fechaNacimiento);
           setIf('telefono', it.telefono); setIf('email', it.email); setIf('direccion', it.direccion);
           setIf('contacto_emergencia', it.contactoEmergencia); setIf('telefono_emergencia', it.telefonoEmergencia);
@@ -1725,6 +1725,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
             obra_id: obraId, nombres: nom, apellidos: ape,
             dni: it.dni || `MIG-${normTxt(nom + ape).slice(0, 14)}`,
             tipo_documento: it.tipoDoc || 'dni',
+            alias: it.alias || null,
             cargo: it.cargo, area: it.area, estado: it.estado || 'activo',
             fecha_ingreso: it.fechaIngreso, fecha_nacimiento: it.fechaNacimiento,
             telefono: it.telefono, email: it.email, direccion: it.direccion,

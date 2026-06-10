@@ -1,5 +1,6 @@
 import React from "react";
 import { CATALOGO_EPP, epppTipo, epppVidaTexto, sumarDiasISO } from "../lib/epp-utils.js";
+import { etiquetaPersona } from "../lib/destino-mov.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -485,6 +486,8 @@ function EppPage({ showToast }) {
   const { data: subcontratistas } = window.__hooks.useSubcontratistas?.() || { data: [] };
   const eppsById = uM(() => { const m = new Map(); (eppsCat || []).forEach(e => m.set(e.id, e)); return m; }, [eppsCat]);
   const subById = uM(() => { const m = new Map(); (subcontratistas || []).forEach(s => m.set(s.id, s)); return m; }, [subcontratistas]);
+  // id → razón social, para etiquetar personas con su subcontrato en selectores.
+  const subNameEpp = uM(() => { const m = new Map(); (subcontratistas || []).forEach(s => m.set(s.id, s.razon_social)); return m; }, [subcontratistas]);
 
   // Normaliza cada movimiento_epp al shape de un registro de epp_entregas,
   // para que las tablas, el stock y los filtros lo procesen igual.
@@ -1182,7 +1185,7 @@ function EppPage({ showToast }) {
                   <label className="flabel">Trabajador</label>
                   <select className="fi" value={destForm.personal_id} onChange={e=>setDestForm(f=>({ ...f, personal_id:e.target.value }))}>
                     <option value="">— Selecciona —</option>
-                    {(personal||[]).filter(p=>!p.deleted_at).map(p => <option key={p.id} value={p.id}>{p.nombres} {p.apellidos || ''}</option>)}
+                    {(personal||[]).filter(p=>!p.deleted_at).map(p => <option key={p.id} value={p.id}>{etiquetaPersona(p, subNameEpp)}</option>)}
                     <option value="__nuevo__">+ Crear trabajador nuevo…</option>
                   </select>
                 </div>
@@ -1289,9 +1292,21 @@ function EppPage({ showToast }) {
                   <select className="fi" value={form.personal_id||''} onChange={e=>setForm({...form, personal_id:e.target.value})}>
                     <option value="">— Seleccionar —</option>
                     {(personal||[]).filter(p=>p.estado==='activo').map(p => (
-                      <option key={p.id} value={p.id}>{p.nombres} {p.apellidos} · {p.dni}</option>
+                      <option key={p.id} value={p.id}>{etiquetaPersona(p, subNameEpp)}{p.dni ? ` · ${p.dni}` : ''}</option>
                     ))}
                   </select>
+                  {(() => {
+                    // Acuerdo EPP del subcontrato: recordar qué cubre la empresa
+                    // (ej. "todo menos zapatos de seguridad") al momento de entregar.
+                    const pSel = (personal||[]).find(x => x.id === form.personal_id);
+                    const subSel = pSel?.subcontratista_id ? subById.get(pSel.subcontratista_id) : null;
+                    if (!subSel?.notas) return null;
+                    return (
+                      <div style={{ marginTop:6, padding:'6px 10px', background:'rgba(242,183,5,0.08)', border:'1px solid rgba(242,183,5,0.25)', borderRadius:6, fontSize:11.5, color:'var(--ts)' }}>
+                        📋 <strong>{subSel.razon_social}</strong>: {subSel.notas}
+                      </div>
+                    );
+                  })()}
                 </div>
                 <div style={{ gridColumn:'1/-1' }}>
                   <label className="flabel">Motivo</label>

@@ -1,5 +1,6 @@
 import React from "react";
 import { useFotosEvidencias, FotoInsumoCell } from "./jx-foto-insumo.jsx";
+import { etiquetaPersona } from "../lib/destino-mov.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -44,6 +45,8 @@ function ActivosPesadosPage({ showToast }) {
   const { obraId: obraActivaId } = window.__useObraActiva ? window.__useObraActiva() : { obraId: null };
   const { data: personal } = window.__hooks.usePersonal(obraActivaId);
   const { data: subcontratistas } = window.__hooks.useSubcontratistas();
+  // id → razón social para etiquetar personas con su subcontrato en el selector.
+  const subNameAct = uM(() => new Map((subcontratistas || []).map(s => [s.id, s.razon_social])), [subcontratistas]);
   const movMaqHook = window.__hooks.useMovimientosMaquinaria(obraActivaId);
   // Fotos del catálogo de máquinas (todas las obras: los activos rotan entre obras).
   const fotosActivos = useFotosEvidencias(null, 'foto_activo');
@@ -846,7 +849,7 @@ function ActivosPesadosPage({ showToast }) {
                         </select>
                       : <select className="fi" value={asignForm.destino_id || ''} onChange={e=>setAsignForm({ ...asignForm, destino_id:e.target.value })}>
                           <option value="">Selecciona…</option>
-                          {(personal||[]).filter(p=>!p.deleted_at).map(p => <option key={p.id} value={p.id}>{p.nombres} {p.apellidos || ''}</option>)}
+                          {(personal||[]).filter(p=>!p.deleted_at).map(p => <option key={p.id} value={p.id}>{etiquetaPersona(p, subNameAct)}</option>)}
                         </select>}
                   </div>
                 </>

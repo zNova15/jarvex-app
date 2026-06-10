@@ -1,4 +1,5 @@
 import React from "react";
+import { stripLocalFields } from "../sync/SyncEngine";
 const { useState: uSC, useEffect: uEC } = React;
 
 function ConflictsPage({ showToast }) {
@@ -33,21 +34,59 @@ function ConflictsPage({ showToast }) {
     };
   }, []);
 
-  const aceptarServidor = async (c) => {
-    // Mantener datos del servidor, descartar locales
-    await window.__db[c.tabla].put({ ...c.datos_servidor, sync_status: 'synced' });
+  // Forzar mis cambios: upsert por id y ESPEJAR la version que dejó el server
+  // (su trigger la pisa con OLD+1; sin el espejo, la próxima edición local
+  // vuelve a caer en conflicto — era la causa de conflictos reincidentes).
+  const forzarLocal = async (c) => {
+    // Pushear la fila VIVA de Dexie (si el usuario editó después de detectado
+    // el conflicto, el snapshot la revertiría), pasada por stripLocalFields:
+    // quita _sync_retries y demás campos locales (PGRST204) y los campos
+    // TRIGGER_MANAGED/GENERATED por tabla (428C9 en insumos_partida, stock
+    // pisado en materiales/epps/herramientas).
+    const vivo = await window.__db[c.tabla].get(c.registro_id);
+    const payload = stripLocalFields(vivo || c.datos_local || {}, c.tabla);
+    const { data, error } = await window.__supabase.from(c.tabla).upsert(payload).select('version');
+    if (error) throw error;
+    const v = data && data[0] ? data[0].version : null;
+    await window.__db[c.tabla].update(c.registro_id, {
+      sync_status: 'synced', last_synced_at: new Date().toISOString(),
+      ...(v != null ? { version: v } : {}),
+    });
+    await window.__db.sync_conflicts.update(c.local_seq, { estado: 'resuelto_local' });
+  };
+
+  // Mantener servidor: los conflictos viejos guardaban solo {version: N} como
+  // snapshot — si no hay fila completa, traerla del server antes de pisar local.
+  const mantenerServidor = async (c) => {
+    let fila = (c.datos_servidor && c.datos_servidor.id) ? c.datos_servidor : null;
+    if (!fila) {
+      const { data, error } = await window.__supabase.from(c.tabla).select('*').eq('id', c.registro_id).maybeSingle();
+      if (error || !data) throw (error || new Error('La fila ya no existe en el servidor'));
+      fila = data;
+    }
+    if (fila.deleted_at) {
+      // El server la tiene soft-borrada: "mantener servidor" = borrarla local,
+      // igual que hace el pull con los tombstones (un put la dejaría zombie).
+      await window.__db[c.tabla].delete(c.registro_id);
+    } else {
+      await window.__db[c.tabla].put({ ...fila, sync_status: 'synced', last_synced_at: new Date().toISOString() });
+    }
     await window.__db.sync_conflicts.update(c.local_seq, { estado: 'resuelto_servidor' });
-    showToast('Conflicto resuelto: se mantuvo versión del servidor', 'green');
+  };
+
+  const aceptarServidor = async (c) => {
+    try {
+      await mantenerServidor(c);
+      showToast('Conflicto resuelto: se mantuvo versión del servidor', 'green');
+    } catch (e) { showToast(`No se pudo traer la versión del servidor: ${e.message || e}`, 'red'); }
     load();
   };
 
   const aceptarLocal = async (c) => {
-    // Forzar mis cambios al servidor
-    const { sync_status, last_synced_at, ...payload } = c.datos_local;
-    await window.__supabase.from(c.tabla).upsert(payload);
-    await window.__db[c.tabla].update(c.registro_id, { sync_status: 'synced' });
-    await window.__db.sync_conflicts.update(c.local_seq, { estado: 'resuelto_local' });
-    showToast('Conflicto resuelto: se forzaron tus cambios', 'green');
+    try {
+      await forzarLocal(c);
+      showToast('Conflicto resuelto: se forzaron tus cambios', 'green');
+    } catch (e) { showToast(`No se pudo forzar el cambio: ${e.message || e}`, 'red'); }
     load();
   };
 
@@ -64,15 +103,8 @@ function ConflictsPage({ showToast }) {
     for (let i = 0; i < pend.length; i++) {
       const c = pend[i];
       try {
-        if (modo === 'servidor') {
-          await window.__db[c.tabla].put({ ...c.datos_servidor, sync_status: 'synced' });
-          await window.__db.sync_conflicts.update(c.local_seq, { estado: 'resuelto_servidor' });
-        } else {
-          const { sync_status, last_synced_at, _last_error, _last_error_code, ...payload } = c.datos_local || {};
-          await window.__supabase.from(c.tabla).upsert(payload);
-          await window.__db[c.tabla].update(c.registro_id, { sync_status: 'synced' });
-          await window.__db.sync_conflicts.update(c.local_seq, { estado: 'resuelto_local' });
-        }
+        if (modo === 'servidor') await mantenerServidor(c);
+        else await forzarLocal(c);
         ok++;
       } catch (e) { fail++; }
       if (i % 10 === 0) { setBulk({ hechos: i + 1, total: pend.length }); await new Promise(r => setTimeout(r, 0)); }

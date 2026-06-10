@@ -7,14 +7,16 @@
 // - Rate limit: 30 consultas / minuto / IP (mitigación contra enumeración masiva).
 // - Validación de formato DNI antes de pegarle a la API.
 //
-// Estrategia:
-//   1. Si hay DECOLECTA_TOKEN (o APIS_NET_PE_TOKEN como alias legacy) →
-//      decolecta v1/reniec/dni → devuelve nombres + apellidos + fecha de
-//      nacimiento + sexo + ubigeo (plan free 100/mes).
-//   2. Fallback → apis.net.pe v1/dni gratis (solo nombres + apellidos,
-//      sin fecha de nacimiento).
-// La respuesta normalizada siempre incluye los mismos campos; lo que
-// la API gratis no devuelve viene como null.
+// Estrategia — CADENA de proveedores, cada token va a SU API (un token de
+// apis.net.pe mandado a decolecta da 401 seguro — ese era el bug del toast
+// "Token decolecta inválido y fallback apis.net.pe falló"):
+//   1. DECOLECTA_TOKEN  → decolecta v1/reniec/dni (datos completos, 100/mes free).
+//   2. APIS_NET_PE_TOKEN → apis.net.pe v2/reniec/dni con Bearer.
+//   3. Gratis           → apis.net.pe v1/dni (solo nombres; rate limit agresivo
+//                          por IP — y las functions de Vercel comparten IP).
+// 401/403/429/5xx de un proveedor → se intenta el siguiente. 404 = DNI no
+// existe (autoritativo, no se sigue probando). La respuesta normalizada
+// siempre tiene los mismos campos; lo que el proveedor no provee viene null.
 
 import { requireAuth, rateLimit, sanitizeError, isValidDNI, setCorsHeaders } from '../lib/api-helpers.js';
 
@@ -33,56 +35,50 @@ export default async function handler(req, res) {
       return res.status(422).json({ error: 'DNI debe tener 8 dígitos numéricos válidos' });
     }
 
-    const token = process.env.DECOLECTA_TOKEN || process.env.APIS_NET_PE_TOKEN;
-    const useFull = !!token;
+    const providers = [];
+    if (process.env.DECOLECTA_TOKEN) {
+      providers.push({ id: 'decolecta/v1/reniec', url: `https://api.decolecta.com/v1/reniec/dni?numero=${d}`, token: process.env.DECOLECTA_TOKEN });
+    }
+    if (process.env.APIS_NET_PE_TOKEN) {
+      providers.push({ id: 'apis.net.pe/v2', url: `https://api.apis.net.pe/v2/reniec/dni?numero=${d}`, token: process.env.APIS_NET_PE_TOKEN });
+    }
+    providers.push({ id: 'apis.net.pe/v1', url: `https://api.apis.net.pe/v1/dni?numero=${d}`, token: null });
 
-    const url = useFull
-      ? `https://api.decolecta.com/v1/reniec/dni?numero=${d}`
-      : `https://api.apis.net.pe/v1/dni?numero=${d}`;
-
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 8000);
-    const upstream = await fetch(url, {
-      signal: ctrl.signal,
-      headers: useFull
-        ? { 'Accept': 'application/json', 'Authorization': `Bearer ${token}` }
-        : { 'Accept': 'application/json' },
-    });
-    clearTimeout(timer);
-
-    if (upstream.status === 401) {
-      // Token decolecta inválido — caer al endpoint gratis sin romper UX
-      if (useFull) {
-        console.warn('[reniec] decolecta 401 — verificá DECOLECTA_TOKEN en Vercel, cayendo a apis.net.pe v1');
-        const fallbackCtrl = new AbortController();
-        const fbTimer = setTimeout(() => fallbackCtrl.abort(), 8000);
-        const fb = await fetch(`https://api.apis.net.pe/v1/dni?numero=${d}`, {
-          signal: fallbackCtrl.signal,
-          headers: { 'Accept': 'application/json' },
+    let last = null;
+    for (const p of providers) {
+      let upstream;
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 8000);
+        upstream = await fetch(p.url, {
+          signal: ctrl.signal,
+          headers: p.token
+            ? { 'Accept': 'application/json', 'Authorization': `Bearer ${p.token}` }
+            : { 'Accept': 'application/json' },
         });
-        clearTimeout(fbTimer);
-        if (!fb.ok) {
-          return res.status(503).json({ error: 'Token decolecta inválido y fallback apis.net.pe falló' });
-        }
-        const data = await fb.json();
-        res.setHeader('Cache-Control', 's-maxage=86400, stale-while-revalidate=604800');
-        return res.status(200).json(normalize(data, d, 'apis.net.pe/v1'));
+        clearTimeout(timer);
+      } catch {
+        last = { id: p.id, status: 0 };
+        continue;
       }
-      return res.status(503).json({ error: 'RENIEC requiere token ahora — avisa al admin' });
+      if (upstream.ok) {
+        let data = null;
+        try { data = await upstream.json(); } catch { last = { id: p.id, status: 200 }; continue; }
+        res.setHeader('Cache-Control', 's-maxage=86400, stale-while-revalidate=604800');
+        return res.status(200).json(normalize(data, d, p.id));
+      }
+      if (upstream.status === 404) {
+        return res.status(404).json({ error: 'DNI no encontrado en RENIEC' });
+      }
+      // 401/403 = token inválido para ESE proveedor; 429 = límite; 5xx = caído
+      // → probar el siguiente de la cadena.
+      console.warn(`[reniec] ${p.id} respondió ${upstream.status}${p.token ? ' — revisá ese token en Vercel (Settings → Environment Variables)' : ''}`);
+      last = { id: p.id, status: upstream.status };
     }
-    if (upstream.status === 404) {
-      return res.status(404).json({ error: 'DNI no encontrado en RENIEC' });
+    if (last && last.status === 429) {
+      return res.status(429).json({ error: 'Demasiadas consultas al servicio de DNI — espera un minuto y reintenta' });
     }
-    if (upstream.status === 429) {
-      return res.status(429).json({ error: 'Demasiadas consultas — espera un momento' });
-    }
-    if (!upstream.ok) {
-      return res.status(upstream.status).json({ error: `RENIEC respondió ${upstream.status}` });
-    }
-
-    const data = await upstream.json();
-    res.setHeader('Cache-Control', 's-maxage=86400, stale-while-revalidate=604800');
-    return res.status(200).json(normalize(data, d, useFull ? 'decolecta/v1/reniec' : 'apis.net.pe/v1'));
+    return res.status(503).json({ error: `Servicio de DNI no disponible (${last ? `${last.id} respondió ${last.status || 'timeout'}` : 'sin proveedores'}) — reintenta o revisa los tokens en Vercel` });
   } catch (e) {
     const sanitized = sanitizeError(e, 'No se pudo conectar a RENIEC');
     return res.status(sanitized.status).json(sanitized.body);

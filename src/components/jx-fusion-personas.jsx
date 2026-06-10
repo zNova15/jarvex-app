@@ -43,6 +43,13 @@ export function FusionPersonasModal({ personal, showToast, onClose, onDone }) {
   // Sugerencias automáticas: placeholders de la migración vs roster real.
   const sugerencias = uM(() => sugerirFusiones(vivos).slice(0, 6), [vivos]);
 
+  // Placeholders PENDIENTES (dni MIG-/RES-) que quedaron SIN sugerencia: el
+  // usuario debe verlos igual — son los que "no sé cuáles faltan por fusionar".
+  const pendientesSinSugerencia = uM(() => {
+    const sugeridos = new Set(sugerencias.map(s => s.from.id));
+    return vivos.filter(p => /^(MIG-|RES-)/.test(String(p.dni || '')) && !sugeridos.has(p.id));
+  }, [vivos, sugerencias]);
+
   // Preview en vivo cuando hay par elegido.
   uE(() => {
     let cancel = false;
@@ -95,6 +102,23 @@ export function FusionPersonasModal({ personal, showToast, onClose, onDone }) {
                 <span style={{ color: 'var(--tm)' }}>&nbsp;→&nbsp;</span>
                 <span style={{ color: 'var(--green)' }}>{s.to.nombres} {s.to.apellidos || ''}</span>
                 <span style={{ color: 'var(--tm)', marginLeft: 6, fontSize: 10.5 }}>({s.to.dni})</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {pendientesSinSugerencia.length > 0 && !fromId && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--tm)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 6 }}>
+            Pendientes sin sugerencia — elegí con quién fusionarlos
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {pendientesSinSugerencia.map(p => (
+              <button key={p.id} className="tag" style={{ cursor: 'pointer', border: '1px solid rgba(231,76,60,0.35)' }}
+                title="Lo pone en «Se va» — luego elegí el nombre real en «Queda»"
+                onClick={() => setFromId(p.id)}>
+                {p.nombres} {p.apellidos || ''}
               </button>
             ))}
           </div>

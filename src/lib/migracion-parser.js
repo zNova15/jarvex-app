@@ -274,6 +274,9 @@ export function parsePersonal(rows) {
       idx: i + 2,
       nombres: nombres || '',
       apellidos: apellidos || '',
+      // Solo Alias/Apodo: 'Sobrenombre' contiene 'nombre' y el partial-match
+      // de rowGetter engancharía el header 'Nombre' (alias = nombre, contaminado).
+      alias: txt(g('Alias', 'Apodo')),
       dni,
       tipoDoc,
       cargo: txt(g('Cargo')),

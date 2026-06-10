@@ -771,7 +771,7 @@ const TRIGGER_MANAGED_FIELDS = {
 // es metadato local. Sin este filtro, PostgREST devuelve PGRST204
 // "Could not find the '_last_error' column" y el record se queda
 // permanentemente en pending — lo vimos en producción (Sentry JARVEX-APP-4).
-function stripLocalFields(record, tabla) {
+export function stripLocalFields(record, tabla) {
   const triggerManaged = tabla ? TRIGGER_MANAGED_FIELDS[tabla] : null;
   const out = {};
   for (const k of Object.keys(record)) {
@@ -831,9 +831,12 @@ async function pushUpdate(tabla, record) {
   //    perdería el cambio), reseteamos sync_status a PENDING_CREATE para
   //    que el próximo ciclo lo INSERTE. Resuelve casos donde almacenero
   //    creó offline y nunca completó push.
+  // Se trae la fila COMPLETA (no solo version): si esto termina en conflicto,
+  // la bandeja necesita el snapshot real del server para que "Mantener
+  // servidor" funcione (antes guardaba {version: N} y quedaba inusable).
   const { error: selectErr, data: existing } = await supabase
     .from(tabla)
-    .select('version')
+    .select('*')
     .eq('id', record.id)
     .maybeSingle();
 
@@ -863,7 +866,7 @@ async function pushUpdate(tabla, record) {
     .update(serverRecord)
     .eq('id', record.id)
     .eq('version', record.version - 1) // optimistic concurrency
-    .select('id');
+    .select('id, version');
 
   if (updateError) {
     await handleSyncError(tabla, record, 'update', updateError);
@@ -872,18 +875,44 @@ async function pushUpdate(tabla, record) {
 
   if (!actualizadas || actualizadas.length === 0) {
     // 0 rows: la version local no es exactamente server+1. Dos casos:
-    //  a) LOCAL VA ADELANTE (existing.version < record.version): el cliente
-    //     hizo varias ediciones entre syncs (ej. migración: create→recalc→
-    //     ajuste de stock bumpean la versión >1). NO es un conflicto entre
-    //     clientes — local es la versión más reciente. Forzamos el update por
-    //     id y marcamos synced. (Sin esto, el record queda atascado y se
-    //     re-marca conflicto en cada ciclo → tormenta de conflictos falsos.)
-    //  b) MISMA VERSIÓN / server distinto: ambigüedad real → conflicto manual.
-    if (existing && Number(existing.version || 0) < Number(record.version || 0)) {
-      const { error: forceErr } = await supabase.from(tabla).update(serverRecord).eq('id', record.id);
+    //  a) LOCAL NO VA DETRÁS (existing.version <= record.version): o el
+    //     cliente hizo varias ediciones entre syncs (migración: create→
+    //     recalc→ajuste bumpean >1), o hay EMPATE de versiones — el trigger
+    //     del server (update_updated_at) bumpea version en CADA update, así
+    //     que el server suele ir adelantado en exactamente los bumps que el
+    //     local acaba de hacer (caso fusión de nombres: 159 falsos
+    //     conflictos). En ambos casos la edición local es la intencional →
+    //     forzamos por id y espejamos la version del server.
+    //  b) SERVER VA ADELANTE (otro device editó más veces): conflicto manual.
+    if (existing && Number(existing.version || 0) <= Number(record.version || 0)) {
+      const tie = Number(existing.version || 0) === Number(record.version || 0);
+      // Empate con último escritor DISTINTO = edición concurrente canónica
+      // (dos usuarios partieron de la misma base) → conflicto manual. El
+      // empate PROPIO (fusión, doble push, drift del trigger con el mismo
+      // usuario) sí se fuerza — es el que generaba tormentas de falsos.
+      if (tie && existing.updated_by && record.updated_by && existing.updated_by !== record.updated_by) {
+        await markConflict(tabla, record, existing);
+        return;
+      }
+      // CAS contra la version que acabamos de leer: si el server cambió entre
+      // el select y este update (otro device empujó), 0 filas → reintentar.
+      const { data: forzadas, error: forceErr } = await supabase
+        .from(tabla).update(serverRecord).eq('id', record.id)
+        .eq('version', Number(existing.version || 0))
+        .select('version');
       if (forceErr) { await handleSyncError(tabla, record, 'update', forceErr); return; }
-      await db[tabla].update(record.id, { sync_status: SYNC_STATUS.SYNCED, last_synced_at: new Date().toISOString() });
-      trackEvent('record_pushed', { tabla, operacion: 'update_forced_local_ahead' });
+      if (!forzadas || forzadas.length === 0) {
+        await db[tabla].update(record.id, { sync_status: SYNC_STATUS.PENDING_UPDATE });
+        return;
+      }
+      await db[tabla].update(record.id, {
+        sync_status: SYNC_STATUS.SYNCED,
+        last_synced_at: new Date().toISOString(),
+        // El trigger del server pisa version con OLD+1 — espejarla en local
+        // para que el próximo edit no vuelva a desfasarse.
+        ...(forzadas[0] && forzadas[0].version != null ? { version: forzadas[0].version } : {}),
+      });
+      trackEvent('record_pushed', { tabla, operacion: tie ? 'update_forced_version_tie' : 'update_forced_local_ahead' });
       return;
     }
     console.warn(`[SyncEngine] ${tabla}/${record.id} update afectó 0 filas (version desync) → marcando conflicto`);
@@ -899,10 +928,14 @@ async function pushUpdate(tabla, record) {
     return;
   }
 
-  // Update exitoso — marcar como synced
+  // Update exitoso — marcar como synced y espejar la version post-trigger
+  // del server (el trigger update_updated_at la pisa con OLD+1; sin el
+  // espejo, la version local queda crónicamente detrás y cualquier edición
+  // futura cae en falso conflicto).
   await db[tabla].update(record.id, {
     sync_status: SYNC_STATUS.SYNCED,
     last_synced_at: new Date().toISOString(),
+    ...(actualizadas[0] && actualizadas[0].version != null ? { version: actualizadas[0].version } : {}),
   });
   trackEvent('record_pushed', { tabla, operacion: 'update' });
 }

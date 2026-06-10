@@ -91,7 +91,7 @@ function SubcontratistasPage({ showToast }) {
   };
 
   const openNueva = () => {
-    setForm({ razon_social:'', ruc:'', contacto:'', telefono:'', email:'', direccion:'', especialidad:'', estado:'activo', seguro_a_cargo:'empresa' });
+    setForm({ razon_social:'', ruc:'', contacto:'', telefono:'', email:'', direccion:'', especialidad:'', estado:'activo', seguro_a_cargo:'empresa', notas:'' });
     setEditing(null);
     setModal(true);
   };
@@ -205,6 +205,11 @@ function SubcontratistasPage({ showToast }) {
             <div><label className="flabel">Teléfono</label><input className="fi" value={form.telefono||''} onChange={e=>setForm({...form, telefono:e.target.value})}/></div>
             <div><label className="flabel">Email</label><input className="fi" value={form.email||''} onChange={e=>setForm({...form, email:e.target.value})}/></div>
             <div style={{gridColumn:'1/-1'}}><label className="flabel">Dirección</label><input className="fi" value={form.direccion||''} onChange={e=>setForm({...form, direccion:e.target.value})}/></div>
+            <div style={{gridColumn:'1/-1'}}><label className="flabel">Notas / acuerdos</label>
+              <textarea className="fi" rows={2} value={form.notas||''} onChange={e=>setForm({...form, notas:e.target.value})}
+                placeholder="Acuerdos del trato: qué EPPs les damos y cuáles ponen ellos (ej. todo menos zapatos de seguridad), forma de pago al líder, etc."/>
+              <div style={{fontSize:11,color:'var(--tm)',marginTop:3}}>Visible al entregar EPP a personal de este subcontrato.</div>
+            </div>
           </div>
           <div className="modal-actions">
             <button className="btn btn-ghost" onClick={()=>{setModal(null); setEditing(null);}}>Cancelar</button>
