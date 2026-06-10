@@ -1639,6 +1639,41 @@ function MaterialesPage({ showToast }) {
       ? `lote-mov-mat-${crypto.randomUUID()}`
       : `lote-mov-mat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
+    // Almacén TEMPORAL para ingresos sin lugar de llegada (mismo nombre que el
+    // de la importación histórica). Se crea una sola vez por obra.
+    const TEMPORAL_NOMBRE = 'Por asignar (temporal)';
+    let enTemporalManual = 0;
+    let temporalId = null;
+    const resolverUbicTemporal = async () => {
+      if (temporalId) return temporalId;
+      const norm = (x) => String(x || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+      const existente = (ubicaciones || []).find(u => !u.deleted_at && norm(u.nombre) === norm(TEMPORAL_NOMBRE));
+      if (existente) { temporalId = existente.id; return temporalId; }
+      // La lista del hook puede estar desfasada (lote anterior recién creó el
+      // temporal): consultamos Dexie directo antes de crear, para no duplicar.
+      try {
+        const enDb = await window.__db.ubicaciones_obra
+          .filter(u => u.obra_id === obraId && !u.deleted_at && norm(u.nombre) === norm(TEMPORAL_NOMBRE))
+          .first();
+        if (enDb) { temporalId = enDb.id; return temporalId; }
+      } catch {}
+      try {
+        const id = window.__newId();
+        const now = new Date().toISOString();
+        await window.__db.ubicaciones_obra.add({
+          id, obra_id: obraId, nombre: TEMPORAL_NOMBRE,
+          descripcion: 'Ingresos sin lugar de llegada — designar almacén real con un Traspaso',
+          orden: 99, activo: true,
+          created_by: auth?.profile?.id || null, updated_by: auth?.profile?.id || null,
+          created_at: now, updated_at: now, version: 1,
+          sync_status: 'pending_create', last_synced_at: null,
+          idempotency_key: `${auth?.profile?.id || 'x'}_ubic_${id}`,
+        });
+        try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'ubicaciones_obra' } })); } catch {}
+        temporalId = id; return id;
+      } catch { return null; }
+    };
+
     setBusyMovLote(true);
     let exitosos = 0;
     let fallidos = 0;
@@ -1652,10 +1687,16 @@ function MaterialesPage({ showToast }) {
       const cantNum = parseFloat(it.cantidad) || 0;
       // Almacén del movimiento: en SALIDA se auto-resuelve si el material está
       // en un solo almacén; si está repartido usa el que eligió la fila. En
-      // INGRESO es la ubicación elegida (o la principal del material).
-      const ubicMov = it.ubicacion_id
+      // INGRESO es la ubicación elegida (o la principal del material) — y si NO
+      // hay ninguna, va al almacén TEMPORAL "Por asignar": ningún material debe
+      // ingresar sin saber a qué almacén llegó (recordatorio al final).
+      let ubicMov = it.ubicacion_id
         || (tipo === 'salida' ? ubicacionAutoOrigen(desgloseUbic.get(it.material_id)) : null)
         || material.ubicacion_id || null;
+      if (!ubicMov && tipo === 'ingreso') {
+        ubicMov = await resolverUbicTemporal();
+        if (ubicMov) enTemporalManual++;
+      }
       const proveedor_id = tipo === 'ingreso'
         ? (loteComunes.usarMismoProveedor ? loteComunes.proveedor_id : it.proveedor_id) || null
         : null;
@@ -1803,6 +1844,17 @@ function MaterialesPage({ showToast }) {
       showToast(`✗ Falló el lote: ${errores[0] || 'sin detalles'}`, 'red');
     } else {
       showToast(`⚠ Lote parcial: ${exitosos} ok, ${fallidos} fallaron`, 'amber');
+    }
+    if (enTemporalManual > 0) {
+      // Recordatorio: estos ingresos no dijeron a qué almacén llegaron.
+      showToast(`📦 ${enTemporalManual} ingreso(s) quedaron en "${TEMPORAL_NOMBRE}" — designá su almacén real con un Traspaso`, 'amber');
+      try {
+        window.dispatchEvent(new CustomEvent('jarvex_new_notif', { detail: {
+          tipo: 'almacen_temporal',
+          titulo: `📦 ${enTemporalManual} ingreso(s) en "${TEMPORAL_NOMBRE}"`,
+          descripcion: 'Hay materiales sin almacén designado. Usá Traspaso para moverlos a su almacén real.',
+        } }));
+      } catch {}
     }
     setModal(null);
     setForm({});
