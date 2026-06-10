@@ -164,10 +164,13 @@ const num = (v) => { const n = parseFloat(String(v).replace(/[^0-9.\-]/g, '')); 
 // Como num pero devuelve null si está vacío (para precio: no forzar 0).
 const numN = (v) => { if (v == null || String(v).trim() === '') return null; const n = parseFloat(String(v).replace(/[^0-9.\-]/g, '')); return Number.isFinite(n) ? n : null; };
 
-/** "Ingreso"/"Entrada" → 'entrada'; "Salida" → 'salida'. */
+/** "Ingreso"/"Entrada" → 'entrada'; "Salida" → 'salida';
+ *  "Traspaso"/"Transferencia"/"Traslado" → 'traspaso' (sale de un almacén y
+ *  entra a otro: el loader lo convierte en el par salida+entrada). */
 export function normalizaTipoMov(v) {
   const n = normTxt(v);
   if (!n) return null;
+  if (n.startsWith('trasp') || n.startsWith('transf') || n.startsWith('trasl')) return 'traspaso';
   if (n.startsWith('ingr') || n.startsWith('entr') || n.includes('compra')) return 'entrada';
   if (n.startsWith('sal') || n.includes('despacho') || n.includes('consumo')) return 'salida';
   return null;
@@ -396,7 +399,9 @@ export function parseMovimientos(rows, formato) {
       // confundirse con la columna combinada vieja (backward-compat: en plantillas
       // viejas estas quedan null y el loader cae a origen/lugar como antes).
       proveedor: txt(gE('Proveedor')),
-      almacen: txt(gE('Almacén', 'Almacen', 'Almacén de Salida', 'Almacen de Salida', 'Almacén de salida')),
+      almacen: txt(gE('Almacén', 'Almacen', 'Almacén de Salida', 'Almacen de Salida', 'Almacén de salida', 'Almacén Origen', 'Almacen Origen')),
+      // Traspaso: a qué almacén llega (el 'Almacén' de arriba es el de origen).
+      almacenDestino: txt(gE('Almacén Destino', 'Almacen Destino', 'Almacén de destino', 'Almacen de destino', 'Almacén de llegada', 'Almacen de llegada')),
       subcontrato: txt(gE('Subcontrato', 'Subcontratista')),
       documento: txt(gE('Documento', 'Documento Asociado', 'Vale', 'Guía', 'Guia', 'N° Vale', 'N° Guía')),
       precio: numN(gE('Precio Unit. (S/)', 'Precio Unitario', 'Precio Unit.', 'Precio unitario', 'Precio')),
@@ -447,10 +452,11 @@ export function parseMovMaquinariaAsignacion(rows) {
 
 /** Resumen de un parse de movimientos para el preview. */
 export function resumenMovimientos(parsed) {
-  const r = { total: parsed.length, entradas: 0, salidas: 0, sinTipo: 0, sinFecha: 0, sinCantidad: 0, items: new Set() };
+  const r = { total: parsed.length, entradas: 0, salidas: 0, traspasos: 0, sinTipo: 0, sinFecha: 0, sinCantidad: 0, items: new Set() };
   for (const p of parsed) {
     if (p.tipo === 'entrada') r.entradas++;
     else if (p.tipo === 'salida') r.salidas++;
+    else if (p.tipo === 'traspaso') r.traspasos++;
     else r.sinTipo++;
     if (!p.fecha) r.sinFecha++;
     if (!(p.cantidad > 0)) r.sinCantidad++;

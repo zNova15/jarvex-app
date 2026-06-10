@@ -35,10 +35,10 @@ import {
 // opcionales (si las dejás vacías, no pasa nada).
 export const TEMPLATES = {
   insumos_emergencia: { headers: ['ID', 'Insumo de Emergencia', 'Categoría', 'Unidad', 'Fecha de creacion'], sample: ['1', 'Botiquín portátil', 'Primeros auxilios', 'kit', '25/05/2026'] },
-  mov_materiales:     { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Material', 'Categoría', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Almacén', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente / Zona', 'Documento', 'Precio Unit. (S/)', 'Observaciones'], sample: ['1', '21/05/2026', '08:30', 'Yeso 7kg', 'Yeso', 'Bolsa', '20', 'Ingreso', 'Almacén Central', 'Ferretería X', '', '', '', 'GR-001', '12.50', ''] },
-  mov_herramientas:   { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Herramientas', 'Estado', 'Cantidad', 'Tipo de Movimiento', 'Almacén', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente / Zona', 'Observaciones'], sample: ['1', '21/05/2026', '08:30', 'Palas rectas', 'Nuevo', '12', 'Ingreso', 'Almacén Central', 'Ferretería X', '', '', '', ''] },
-  mov_epp:            { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'EPP', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Almacén', 'Proveedor', 'Responsable', 'Subcontrato', 'Documento', 'Precio Unit. (S/)', 'Observaciones'], sample: ['1', '21/05/2026', '08:30', 'Casco Blanco', 'Unidad', '20', 'Ingreso', 'Almacén Central', 'Seguridad SAC', '', '', '', '8.00', ''] },
-  mov_maquinaria:     { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Maquinaria', 'Estado', 'Cantidad', 'Tipo de Movimiento', 'Almacén', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente / Zona', 'Documento', 'Observaciones'], sample: ['1', '21/05/2026', '08:30', 'Rotomartillo', 'Nuevo', '1', 'Ingreso', 'Almacén Central', '', '', '', '', '', ''] },
+  mov_materiales:     { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Material', 'Categoría', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Almacén', 'Almacén Destino', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente / Zona', 'Documento', 'Precio Unit. (S/)', 'Observaciones'], sample: ['1', '21/05/2026', '08:30', 'Yeso 7kg', 'Yeso', 'Bolsa', '20', 'Ingreso', 'Almacén Central', '', 'Ferretería X', '', '', '', 'GR-001', '12.50', ''] },
+  mov_herramientas:   { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Herramientas', 'Estado', 'Cantidad', 'Tipo de Movimiento', 'Almacén', 'Almacén Destino', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente / Zona', 'Observaciones'], sample: ['1', '21/05/2026', '08:30', 'Palas rectas', 'Nuevo', '12', 'Ingreso', 'Almacén Central', '', 'Ferretería X', '', '', '', ''] },
+  mov_epp:            { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'EPP', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Almacén', 'Almacén Destino', 'Proveedor', 'Responsable', 'Subcontrato', 'Documento', 'Precio Unit. (S/)', 'Observaciones'], sample: ['1', '21/05/2026', '08:30', 'Casco Blanco', 'Unidad', '20', 'Ingreso', 'Almacén Central', '', 'Seguridad SAC', '', '', '', '8.00', ''] },
+  mov_maquinaria:     { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Maquinaria', 'Estado', 'Cantidad', 'Tipo de Movimiento', 'Almacén', 'Almacén Destino', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente / Zona', 'Documento', 'Observaciones'], sample: ['1', '21/05/2026', '08:30', 'Rotomartillo', 'Nuevo', '1', 'Ingreso', 'Almacén Central', '', '', '', '', '', '', ''] },
   mov_emergencia:     { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Insumo de Emergencia', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente / Zona', 'Documento', 'Observaciones'], sample: ['1', '21/05/2026', '08:30', 'Extintor PQS 6kg', 'Und', '4', 'Ingreso', 'Seguridad SAC', '', '', '', '', ''] },
   mov_maquinaria_asignacion: { headers: ['ID', 'Fecha', 'Hora', 'Equipo', 'Movimiento', 'Tipo destino', 'Asignado a', 'Frente / Zona', 'Observación'], sample: ['1', '21/05/2026', '08:30', 'Excavadora CAT 320', 'Salida', 'Personal', 'Juan Pérez', 'Frente A', ''] },
   personal: { headers: ['Nombres', 'Apellidos', 'Tipo Documento', 'DNI', 'Cargo', 'Area', 'Frente', 'Subcontrato', 'Seguro a cargo', 'Estado', 'Fecha Ingreso', 'Fecha Nacimiento', 'Telefono', 'Email', 'Direccion', 'Contacto Emergencia', 'Telefono Emergencia', 'Regimen Pension', 'Banco', 'Tipo Cuenta', 'Numero Cuenta', 'CCI', 'Moneda', 'Banco CTS', 'Cuenta CTS'],
@@ -122,6 +122,45 @@ function notifFusionTemporal(n) {
   } catch {}
 }
 
+// TRASPASO entre almacenes en la migración: el Excel trae una fila
+// "Traspaso" con almacén de ORIGEN (col. Almacén) y de DESTINO (col. Almacén
+// Destino). Se convierte en el PAR salida+entrada (mismo modelo que el botón
+// Traspaso de la app: el stock total no cambia, solo se mueve de lugar).
+// Idempotente en re-subida: si el par ya existe (firmas salida+entrada),
+// se salta. Origen/destino faltantes caen al almacén temporal.
+async function cargarTraspasoPar({ obraId, userId, itemTipo, itemId, m, firmas, resolverUbic, buildMov, sigBase }) {
+  const fechaMov = m.fecha || new Date().toISOString().slice(0, 10);
+  const cant = m.cantidad;
+  // Re-subida: el par ya está solo si AMBAS firmas existen (multiset). Se
+  // mira ANTES de consumir: si solo hay una (p.ej. una salida normal del
+  // mismo día/cantidad), consumirla aquí robaría la firma de ese otro
+  // movimiento y desbalancearía el stock.
+  const kOut = `${itemId}__${fechaMov}__salida__${cant ?? ''}`;
+  const kIn = `${itemId}__${fechaMov}__entrada__${cant ?? ''}`;
+  if ((firmas.get(kOut) || 0) > 0 && (firmas.get(kIn) || 0) > 0) {
+    consumirFirma(firmas, itemId, fechaMov, 'salida', cant);
+    consumirFirma(firmas, itemId, fechaMov, 'entrada', cant);
+    return { dup: true };
+  }
+  const origenNombre = m.almacen || m.origen || null;
+  const destinoNombre = m.almacenDestino || m.lugar || null;
+  const ubicOrigen = await resolverUbic(origenNombre || TEMPORAL_UBIC);
+  const ubicDestino = await resolverUbic(destinoNombre || TEMPORAL_UBIC);
+  let temporales = 0;
+  if (!origenNombre) temporales++;
+  if (!destinoNombre) temporales++;
+  const obsBase = ['Migración histórica', ...(m.observaciones ? [m.observaciones] : [])];
+  await addMovIdem(buildMov.tabla, buildMov.campos('salida', ubicOrigen,
+    [...obsBase, `Traspaso → ${destinoNombre || TEMPORAL_UBIC}`].join(' · ')),
+    userId, null, `${sigBase}_tout`);
+  try { await aplicarDelta({ obraId, itemTipo, itemId, ubicacionId: ubicOrigen, delta: -cant, userId }); } catch {}
+  await addMovIdem(buildMov.tabla, buildMov.campos('entrada', ubicDestino,
+    [...obsBase, `Traspaso ← ${origenNombre || TEMPORAL_UBIC}`].join(' · ')),
+    userId, null, `${sigBase}_tin`);
+  try { await aplicarDelta({ obraId, itemTipo, itemId, ubicacionId: ubicDestino, delta: cant, userId }); } catch {}
+  return { dup: false, temporales };
+}
+
 // Recordatorio para el almacenero cuando hay ingresos en el almacén temporal.
 function notifTemporal(n) {
   if (!n) return;
@@ -141,7 +180,7 @@ function notifTemporal(n) {
 async function analizarAlmacenes(movs, formato, obraId) {
   const ok = (v) => String(v || '').trim();
   const soporta = ['mov_materiales', 'mov_epp', 'mov_herramientas', 'mov_maquinaria'].includes(formato);
-  const res = { soporta, almacenes: [], entradasSinAlm: 0, salidasSinAlm: 0, salidasSinResp: 0, negativos: [] };
+  const res = { soporta, almacenes: [], entradasSinAlm: 0, salidasSinAlm: 0, salidasSinResp: 0, traspasos: 0, traspasosSinOrigen: 0, traspasosSinDestino: 0, negativos: [] };
   for (const m of movs || []) {
     // Asignaciones de maquinaria llevan el responsable en `destinoNombre`.
     if (m.tipo === 'salida' && !ok(m.responsable) && !ok(m.subcontrato) && !ok(m.destinoNombre)) res.salidasSinResp++;
@@ -149,16 +188,28 @@ async function analizarAlmacenes(movs, formato, obraId) {
   if (!soporta) return res;
   const idx = await cargarIndice('ubicaciones_obra', obraId, 'nombre');
   const vistos = new Map();
+  const registrar = (nombre) => {
+    if (!ok(nombre)) return;
+    const k = normTxt(nombre);
+    if (!vistos.has(k)) vistos.set(k, { nombre: ok(nombre), existe: idx.map.has(k), movs: 0 });
+    vistos.get(k).movs++;
+  };
   for (const m of movs || []) {
     if (!m.tipo) continue;
+    if (m.tipo === 'traspaso') {
+      // Traspaso: origen (col. Almacén) y destino (col. Almacén Destino).
+      res.traspasos++;
+      const ori = m.almacen || m.origen; const dst = m.almacenDestino || m.lugar;
+      if (ok(ori)) registrar(ori); else res.traspasosSinOrigen++;
+      if (ok(dst)) registrar(dst); else res.traspasosSinDestino++;
+      continue;
+    }
     const alm = extraerAlm(m);
     if (!ok(alm)) {
       if (m.tipo === 'entrada') res.entradasSinAlm++; else res.salidasSinAlm++;
       continue;
     }
-    const k = normTxt(alm);
-    if (!vistos.has(k)) vistos.set(k, { nombre: ok(alm), existe: idx.map.has(k), movs: 0 });
-    vistos.get(k).movs++;
+    registrar(alm);
   }
   res.almacenes = [...vistos.values()].sort((a, b) => b.movs - a.movs);
   // Stock por almacén: simulación en orden de fecha. Las entradas sin almacén
@@ -170,7 +221,17 @@ async function analizarAlmacenes(movs, formato, obraId) {
     if (!m.tipo || !(m.cantidad > 0)) continue;
     const item = normTxt(m.nombreItem || ''); if (!item) continue;
     const alm = extraerAlm(m);
-    if (m.tipo === 'entrada') {
+    if (m.tipo === 'traspaso') {
+      const ori = ok(m.almacen || m.origen) || TEMPORAL_UBIC;
+      const dst = ok(m.almacenDestino || m.lugar) || TEMPORAL_UBIC;
+      const kO = `${item}|${normTxt(ori)}`;
+      const antes = saldo.get(kO) || 0;
+      const despues = antes - m.cantidad;
+      if (despues < 0 && antes >= 0) res.negativos.push({ item: m.nombreItem, almacen: ori, fecha: m.fecha || '', faltan: -despues });
+      saldo.set(kO, despues);
+      const kD = `${item}|${normTxt(dst)}`;
+      saldo.set(kD, (saldo.get(kD) || 0) + m.cantidad);
+    } else if (m.tipo === 'entrada') {
       const k = `${item}|${normTxt(ok(alm) || TEMPORAL_UBIC)}`;
       saldo.set(k, (saldo.get(k) || 0) + m.cantidad);
     } else if (ok(alm)) {
@@ -813,6 +874,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     for (const m of ordenadas) {
       const k = normTxt(m.nombreItem || ''); if (!k || !m.tipo || !(m.cantidad > 0)) continue;
       const s = saldo.get(k) || 0;
+      if (m.tipo === 'traspaso') continue; // mueve de almacén: stock total intacto
       if (m.tipo === 'entrada') saldo.set(k, s + m.cantidad);
       else {
         const ns = s - m.cantidad;
@@ -971,6 +1033,24 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         const mat = await resolverMaterial(m.nombreItem, m.unidad);
         if (!mat) { saltadosNoAprobados++; continue; }
         const fechaMov = m.fecha || new Date().toISOString().slice(0, 10);
+        if (m.tipo === 'traspaso') {
+          // Traspaso = par salida(origen) + entrada(destino); stock total intacto.
+          const t = await cargarTraspasoPar({
+            obraId, userId, itemTipo: 'material', itemId: mat.id, m, firmas, resolverUbic,
+            sigBase: sigMov(obraId, 'mov_materiales', m),
+            buildMov: { tabla: 'movimientos_materiales', campos: (lado, ubicId2, obs2) => ({
+              obra_id: obraId, material_id: mat.id, fecha: fechaMov, hora: m.hora || null,
+              tipo_movimiento: lado, cantidad: m.cantidad, unidad: m.unidad || mat.unidad || 'Und',
+              responsable_id: null, subcontratista_id: null, destino_tipo: null, proveedor_id: null,
+              frente_zona: null, partida_id: null, ubicacion_id: ubicId2,
+              documento_asociado: m.documento || null, precio_unitario_real: null, observaciones: obs2,
+            }) },
+          });
+          if (t.dup) { duplicados++; continue; }
+          afectados.add(mat.id);
+          if (t.temporales) enTemporal += t.temporales;
+          okCount++; continue;
+        }
         if (consumirFirma(firmas, mat.id, fechaMov, m.tipo, m.cantidad)) { duplicados++; continue; }
         afectados.add(mat.id);
         const obsExtra = [];
@@ -1080,6 +1160,23 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         const epp = await resolverEpp(m.nombreItem, m.unidad);
         if (!epp) { saltadosNoAprobados++; continue; }
         const fechaMov = m.fecha || new Date().toISOString().slice(0, 10);
+        if (m.tipo === 'traspaso') {
+          const t = await cargarTraspasoPar({
+            obraId, userId, itemTipo: 'epp', itemId: epp.id, m, firmas, resolverUbic,
+            sigBase: sigMov(obraId, 'mov_epp', m),
+            buildMov: { tabla: 'movimientos_epp', campos: (lado, ubicId2, obs2) => ({
+              obra_id: obraId, epp_id: epp.id, fecha: fechaMov, hora: m.hora || null,
+              tipo_movimiento: lado, cantidad: m.cantidad, unidad: m.unidad || epp.unidad || 'Und',
+              personal_id: null, subcontratista_id: null, destino_tipo: null, proveedor_id: null,
+              ubicacion_id: ubicId2, motivo: lado === 'entrada' ? 'reposicion' : 'dotacion',
+              documento_asociado: m.documento || null, precio_unitario_real: null, observaciones: obs2,
+            }) },
+          });
+          if (t.dup) { duplicados++; continue; }
+          afectados.add(epp.id);
+          if (t.temporales) enTemporal += t.temporales;
+          okCount++; continue;
+        }
         if (consumirFirma(firmas, epp.id, fechaMov, m.tipo, m.cantidad)) { duplicados++; continue; }
         afectados.add(epp.id);
         const obsExtra = [];
@@ -1186,6 +1283,23 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         const herr = await resolverHerr(m.nombreItem, m.unidad, m.estado);
         if (!herr) { saltadosNoAprobados++; continue; }
         const fechaMov = m.fecha || new Date().toISOString().slice(0, 10);
+        if (m.tipo === 'traspaso') {
+          const t = await cargarTraspasoPar({
+            obraId, userId, itemTipo: 'herramienta', itemId: herr.id, m, firmas, resolverUbic,
+            sigBase: sigMov(obraId, 'mov_herramientas', m),
+            buildMov: { tabla: 'movimientos_herramientas', campos: (lado, ubicId2, obs2) => ({
+              obra_id: obraId, herramienta_id: herr.id, fecha: fechaMov, hora: m.hora || null,
+              // Igual que el Traspaso manual: accion/tipo_movimiento = entrada|salida planos.
+              accion: lado, tipo_movimiento: lado, cantidad: m.cantidad,
+              responsable_id: null, subcontratista_id: null, destino_tipo: null, proveedor_id: null,
+              frente_zona: null, ubicacion_id: ubicId2, observaciones: obs2,
+            }) },
+          });
+          if (t.dup) { duplicados++; continue; }
+          afectados.add(herr.id);
+          if (t.temporales) enTemporal += t.temporales;
+          okCount++; continue;
+        }
         if (consumirFirma(firmas, herr.id, fechaMov, m.tipo, m.cantidad)) { duplicados++; continue; }
         afectados.add(herr.id);
         const obsExtra = [];
@@ -1293,6 +1407,23 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         const act = await resolverActivo(m.nombreItem, m.unidad, m.estado);
         if (!act) { saltadosNoAprobados++; continue; }
         const fechaMov = m.fecha || new Date().toISOString().slice(0, 10);
+        if (m.tipo === 'traspaso') {
+          const t = await cargarTraspasoPar({
+            obraId, userId, itemTipo: 'maquinaria', itemId: act.id, m, firmas, resolverUbic,
+            sigBase: sigMov(obraId, 'mov_maquinaria', m),
+            buildMov: { tabla: 'movimientos_maquinaria', campos: (lado, ubicId2, obs2) => ({
+              obra_id: obraId, activo_id: act.id, fecha: fechaMov, hora: m.hora || null,
+              tipo_movimiento: lado, cantidad: m.cantidad, unidad: m.unidad || act.unidad || 'Und',
+              responsable_id: null, subcontratista_id: null, destino_tipo: null, proveedor_id: null,
+              estado: null, frente_zona: null, ubicacion_id: ubicId2,
+              documento_asociado: m.documento || null, observaciones: obs2,
+            }) },
+          });
+          if (t.dup) { duplicados++; continue; }
+          afectados.add(act.id);
+          if (t.temporales) enTemporal += t.temporales;
+          okCount++; continue;
+        }
         if (consumirFirma(firmas, act.id, fechaMov, m.tipo, m.cantidad)) { duplicados++; continue; }
         afectados.add(act.id);
         const obsExtra = [];
@@ -1564,6 +1695,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       const m = movs[i];
       try {
         if (!m.tipo) throw new Error('Tipo de movimiento no reconocido');
+        if (m.tipo === 'traspaso') throw new Error('Los insumos de emergencia no manejan almacenes — no aplica Traspaso');
         if (!(m.cantidad > 0)) throw new Error('Cantidad inválida');
         if (!String(m.nombreItem || '').trim()) { saltadosNoAprobados++; continue; }
         if (esFilaInvalida(m)) { saltadosNoAprobados++; continue; }
@@ -2068,9 +2200,10 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
 
           {preview.tipo === 'mov' && (
             <div className="card card-p" style={{ marginBottom: 14 }}>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: `repeat(${preview.resumen.traspasos ? 5 : 4},1fr)`, gap: 12 }}>
                 <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: 'var(--green)' }}>{preview.resumen.entradas}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Ingresos</div></div>
                 <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: 'var(--red)' }}>{preview.resumen.salidas}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Salidas</div></div>
+                {preview.resumen.traspasos > 0 && <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: 'var(--blue)' }}>{preview.resumen.traspasos}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Traspasos</div></div>}
                 <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: 'var(--tp)' }}>{preview.resumen.itemsUnicos}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Insumos distintos</div></div>
                 <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: 'var(--amber)' }}>{preview.resumen.sinTipo + preview.resumen.sinFecha + preview.resumen.sinCantidad}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>A revisar</div></div>
               </div>
@@ -2258,11 +2391,16 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
                       ))}
                     </div>
                   )}
-                  {(scanAlmacenes.entradasSinAlm > 0 || scanAlmacenes.salidasSinAlm > 0 || scanAlmacenes.salidasSinResp > 0 || scanAlmacenes.negativos.length > 0) && (
+                  {(scanAlmacenes.entradasSinAlm > 0 || scanAlmacenes.salidasSinAlm > 0 || scanAlmacenes.salidasSinResp > 0 || scanAlmacenes.traspasosSinOrigen > 0 || scanAlmacenes.traspasosSinDestino > 0 || scanAlmacenes.negativos.length > 0) && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                       {scanAlmacenes.entradasSinAlm > 0 && (
                         <div style={{ padding: '8px 10px', background: 'rgba(242,183,5,0.08)', border: '1px solid rgba(242,183,5,0.3)', borderRadius: 6, fontSize: 12, color: 'var(--ts)' }}>
                           ⚠ <strong>{scanAlmacenes.entradasSinAlm} ingreso(s) sin lugar de llegada.</strong> Se asignarán al almacén temporal <strong>"{TEMPORAL_UBIC}"</strong> — después hay que designarles su almacén real con un Traspaso (queda un recordatorio para el almacenero).
+                        </div>
+                      )}
+                      {(scanAlmacenes.traspasosSinOrigen > 0 || scanAlmacenes.traspasosSinDestino > 0) && (
+                        <div style={{ padding: '8px 10px', background: 'rgba(242,183,5,0.08)', border: '1px solid rgba(242,183,5,0.3)', borderRadius: 6, fontSize: 12, color: 'var(--ts)' }}>
+                          ⚠ <strong>Traspasos incompletos:</strong> {scanAlmacenes.traspasosSinOrigen > 0 ? `${scanAlmacenes.traspasosSinOrigen} sin almacén de ORIGEN` : ''}{scanAlmacenes.traspasosSinOrigen > 0 && scanAlmacenes.traspasosSinDestino > 0 ? ' · ' : ''}{scanAlmacenes.traspasosSinDestino > 0 ? `${scanAlmacenes.traspasosSinDestino} sin almacén de DESTINO` : ''}. El lado faltante cae al almacén temporal "{TEMPORAL_UBIC}".
                         </div>
                       )}
                       {scanAlmacenes.salidasSinAlm > 0 && (
