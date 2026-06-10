@@ -742,8 +742,13 @@ const TRIGGER_MANAGED_FIELDS = {
     'precio_unitario_real_prom', 'alerta',
   ]),
   herramientas: new Set([
-    'disponible', 'ubicacion_actual', 'ultimo_responsable_id',
+    'disponible', 'ubicacion_actual',
     'estado_actual',
+    // OJO: 'ultimo_responsable_id' NO se striplea. El trigger del server lo
+    // setea en cada INSERT de movimiento (misma fuente que el cliente), así
+    // que pushearlo es inofensivo — y la FUSIÓN de personas necesita que el
+    // re-apuntado llegue al server (si se stripleara, el server quedaría
+    // apuntando al nombre eliminado).
   ]),
   epps: new Set([
     'stock_actual', 'total_entradas', 'total_salidas', 'alerta',

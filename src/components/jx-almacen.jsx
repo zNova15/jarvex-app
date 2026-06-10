@@ -10,6 +10,7 @@ import { opcionesDestinoFlat, splitDestino } from "../lib/destino-mov.js";
 import { getDesgloseBulk, aplicarDelta, traspasar } from "../lib/stock-ubicaciones.js";
 import { DesglosePopup, TraspasoStockModal, ubicacionAutoOrigen } from "./jx-stock-ubic.jsx";
 import { EstadosModal } from "./jx-stock-estados.jsx";
+import { FusionPersonasModal } from "./jx-fusion-personas.jsx";
 import { getEstadosBulk, ESTADOS_COND, ESTADO_LABEL, aplicarDeltaEstado } from "../lib/stock-estados.js";
 import { detectarSugerencias, detectarDuplicados, fusionarInsumos } from "../lib/variantes.js";
 const { useState: uS, useMemo: uM, useEffect: uE, useCallback: uCB } = React;
@@ -4567,6 +4568,8 @@ function PersonalPage({ showToast }) {
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Personal', 'w') ?? false);
+  const superAdminP = !!appMode.superAdmin;
+  const [fusionOpen, setFusionOpen] = uS(false);
   const [q, setQ] = uS('');
   const [modal, setModal] = uS(null);
   const [form, setForm] = uS({});
@@ -4928,6 +4931,12 @@ function PersonalPage({ showToast }) {
       <div className="pg-hd frow-sb">
         <div><div className="pg-title">Personal</div><div className="pg-sub">{personal.length} trabajadores · {personal.filter(p=>p.estado==='activo').length} activos · {personal.filter(p=>!p.subcontratista_id).length} directos · {personal.filter(p=>!!p.subcontratista_id).length} en subcontrato</div></div>
         <div style={{display:'flex',gap:8}}>
+          {superAdminP && (
+            <button className="btn btn-sm" style={{ background:'rgba(231,76,60,0.12)', color:'#E74C3C', border:'1px solid rgba(231,76,60,0.3)' }}
+              onClick={()=>setFusionOpen(true)} title="⚡ Super Admin: juntar dos nombres que son la misma persona (referencial de migración + nombre real)">
+              <JxIcon name="compare" size={13}/>Fusionar nombres
+            </button>
+          )}
           {canWrite ? (
             <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setModal('nuevo');}}><JxIcon name="plus" size={13}/>Nuevo Trabajador</button>
           ) : (
@@ -5022,6 +5031,11 @@ function PersonalPage({ showToast }) {
         </table>
         <TablePagination {...personalPg} />
       </div>
+      )}
+
+      {fusionOpen && (
+        <FusionPersonasModal personal={personal} showToast={showToast}
+          onClose={()=>setFusionOpen(false)} onDone={()=>{ /* el hook se refresca solo vía jx_data_changed */ }}/>
       )}
 
       {(modal === 'nuevo' || modal === 'editar') && <Modal title={editingId ? 'Editar Trabajador' : 'Nuevo Trabajador'} icon="user" onClose={()=>{setModal(null); setEditingId(null); setForm({});}}>
