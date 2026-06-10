@@ -90,7 +90,27 @@ export const TEMPORAL_UBIC = 'Por asignar (temporal)';
 
 // Almacén que menciona la fila (columna nueva 'Almacén' o las viejas
 // combinadas: en ingreso el "Lugar de llegada", en salida el "Origen").
-const extraerAlm = (m) => m.almacen || (m.tipo === 'entrada' ? m.lugar : m.origen) || null;
+// Para ENTRADAS el archivo puede traer el lugar de llegada en la columna
+// 'Almacén de Llegada' (capturada como almacenDestino, la misma que usa el
+// traspaso como destino) o en la vieja 'Lugar de llegada'. En EPP la columna
+// combinada vieja ('Proveedor/Responsable' → m.origen) es una PERSONA, no un
+// almacén — el loader de salidas EPP la ignora y aquí también debe ignorarse.
+const extraerAlm = (m, formato) =>
+  m.almacen ||
+  (m.tipo === 'entrada' ? (m.almacenDestino || m.lugar) : (formato === 'mov_epp' ? null : m.origen)) ||
+  null;
+
+// Orden cronológico para las SIMULACIONES de stock: por fecha; dentro del
+// mismo día entrada → traspaso → salida (el archivo no trae hora confiable;
+// si la salida apareciera antes que la entrada/traspaso que la abastece ese
+// día, marcaría un negativo falso). Empate total → 0 (sort estable: conserva
+// el orden del archivo).
+const RANK_TIPO_MOV = { entrada: 0, traspaso: 1, salida: 2 };
+const cmpMovFechaTipo = (a, b) => {
+  const fa = a.fecha || '', fb = b.fecha || '';
+  if (fa !== fb) return fa < fb ? -1 : 1;
+  return (RANK_TIPO_MOV[a.tipo] ?? 3) - (RANK_TIPO_MOV[b.tipo] ?? 3);
+};
 
 // PERSONA TEMPORAL para salidas SIN responsable: ninguna salida debe quedar
 // sin atribución. Se crea una por obra (dni fijo MIG-TEMPORAL → idempotente,
@@ -131,15 +151,15 @@ function notifFusionTemporal(n) {
 async function cargarTraspasoPar({ obraId, userId, itemTipo, itemId, m, firmas, resolverUbic, buildMov, sigBase }) {
   const fechaMov = m.fecha || new Date().toISOString().slice(0, 10);
   const cant = m.cantidad;
-  // Re-subida: el par ya está solo si AMBAS firmas existen (multiset). Se
-  // mira ANTES de consumir: si solo hay una (p.ej. una salida normal del
-  // mismo día/cantidad), consumirla aquí robaría la firma de ese otro
-  // movimiento y desbalancearía el stock.
-  const kOut = `${itemId}__${fechaMov}__salida__${cant ?? ''}`;
-  const kIn = `${itemId}__${fechaMov}__entrada__${cant ?? ''}`;
+  // Re-subida: el par ya está solo si AMBAS firmas __T (patas de traspaso,
+  // firmadas aparte de las entradas/salidas ordinarias) existen. Se mira
+  // ANTES de consumir: si solo hay una, consumirla robaría la firma de otro
+  // traspaso del día y desbalancearía el stock.
+  const kOut = `${itemId}__${fechaMov}__salida__${cant ?? ''}__T`;
+  const kIn = `${itemId}__${fechaMov}__entrada__${cant ?? ''}__T`;
   if ((firmas.get(kOut) || 0) > 0 && (firmas.get(kIn) || 0) > 0) {
-    consumirFirma(firmas, itemId, fechaMov, 'salida', cant);
-    consumirFirma(firmas, itemId, fechaMov, 'entrada', cant);
+    consumirFirma(firmas, itemId, fechaMov, 'salida', cant, '__T');
+    consumirFirma(firmas, itemId, fechaMov, 'entrada', cant, '__T');
     return { dup: true };
   }
   const origenNombre = m.almacen || m.origen || null;
@@ -159,6 +179,41 @@ async function cargarTraspasoPar({ obraId, userId, itemTipo, itemId, m, firmas, 
     userId, null, `${sigBase}_tin`);
   try { await aplicarDelta({ obraId, itemTipo, itemId, ubicacionId: ubicDestino, delta: cant, userId }); } catch {}
   return { dup: false, temporales };
+}
+
+// CURA en re-subida: si la entrada ya existe (dup) pero quedó apuntando al
+// almacén TEMPORAL (una importación previa no supo interpretar el lugar de
+// llegada), y el archivo ahora SÍ trae el almacén real → corrige el movimiento
+// existente y mueve el stock del temporal al almacén real. El total del item
+// no cambia; solo el desglose por ubicación. Devuelve true si curó una fila.
+async function sanarEntradaTemporal({ obraId, userId, tabla, fk, itemTipo, itemId, m, fechaMov, resolverUbic }) {
+  const alm = m.almacen || m.almacenDestino || m.lugar;
+  if (!alm) return false;
+  const db = window.__db;
+  const temp = await db.ubicaciones_obra.where('obra_id').equals(obraId)
+    .filter((u) => !u.deleted_at && normTxt(u.nombre) === normTxt(TEMPORAL_UBIC))
+    .first().catch(() => null);
+  if (!temp) return false;
+  const mov = await db[tabla].where('obra_id').equals(obraId)
+    .filter((r) => !r.deleted_at && r[fk] === itemId && r.ubicacion_id === temp.id &&
+      (r.fecha || '') === fechaMov && r.tipo_movimiento === 'entrada' &&
+      Number(r.cantidad) === Number(m.cantidad) &&
+      String(r.observaciones || '').includes('Migración histórica') &&
+      !/Traspaso [→←]/.test(String(r.observaciones || '')))
+    .first().catch(() => null);
+  if (!mov) return false;
+  const ubicId = await resolverUbic(alm);
+  if (!ubicId || ubicId === temp.id) return false;
+  await db[tabla].update(mov.id, {
+    ubicacion_id: ubicId,
+    observaciones: [String(mov.observaciones || ''), `Almacén corregido en re-subida: ${String(alm).trim()}`].filter(Boolean).join(' · '),
+    updated_at: new Date().toISOString(), updated_by: userId,
+    version: (mov.version ?? 0) + 1,
+    sync_status: mov.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+  });
+  try { await aplicarDelta({ obraId, itemTipo, itemId, ubicacionId: temp.id, delta: -Number(m.cantidad), userId }); } catch {}
+  try { await aplicarDelta({ obraId, itemTipo, itemId, ubicacionId: ubicId, delta: Number(m.cantidad), userId }); } catch {}
+  return true;
 }
 
 // Recordatorio para el almacenero cuando hay ingresos en el almacén temporal.
@@ -204,7 +259,7 @@ async function analizarAlmacenes(movs, formato, obraId) {
       if (ok(dst)) registrar(dst); else res.traspasosSinDestino++;
       continue;
     }
-    const alm = extraerAlm(m);
+    const alm = extraerAlm(m, formato);
     if (!ok(alm)) {
       if (m.tipo === 'entrada') res.entradasSinAlm++; else res.salidasSinAlm++;
       continue;
@@ -214,13 +269,16 @@ async function analizarAlmacenes(movs, formato, obraId) {
   res.almacenes = [...vistos.values()].sort((a, b) => b.movs - a.movs);
   // Stock por almacén: simulación en orden de fecha. Las entradas sin almacén
   // suman al TEMPORAL (así se importan); las salidas sin almacén no descuentan
-  // de ninguno (solo se avisa el conteo).
+  // de ninguno (solo se avisa el conteo). Dentro del MISMO día: entradas →
+  // traspasos → salidas (el archivo no trae hora confiable; si la salida
+  // apareciera antes que el traspaso que la abastece ese día, marcaría un
+  // negativo falso).
   const saldo = new Map();
-  const orden = [...(movs || [])].sort((a, b) => ((a.fecha || '') < (b.fecha || '') ? -1 : 1));
+  const orden = [...(movs || [])].sort(cmpMovFechaTipo);
   for (const m of orden) {
     if (!m.tipo || !(m.cantidad > 0)) continue;
     const item = normTxt(m.nombreItem || ''); if (!item) continue;
-    const alm = extraerAlm(m);
+    const alm = extraerAlm(m, formato);
     if (m.tipo === 'traspaso') {
       const ori = ok(m.almacen || m.origen) || TEMPORAL_UBIC;
       const dst = ok(m.almacenDestino || m.lugar) || TEMPORAL_UBIC;
@@ -512,15 +570,22 @@ async function cargarFirmasMigracion(movTabla, obraId, fk) {
   const count = new Map();
   for (const mv of rows) {
     if (mv.deleted_at) continue;
-    if (!String(mv.observaciones || '').includes('Migración histórica')) continue;
-    const s = `${mv[fk]}__${mv.fecha || ''}__${mv.tipo_movimiento || ''}__${mv.cantidad ?? ''}`;
+    const obs = String(mv.observaciones || '');
+    if (!obs.includes('Migración histórica')) continue;
+    // Las PATAS de un traspaso (obs 'Traspaso →'/'Traspaso ←') se firman
+    // aparte (sufijo __T): una entrada/salida ordinaria del mismo
+    // item|fecha|cantidad NO debe hacer pasar un traspaso por duplicado,
+    // ni un traspaso preexistente tragarse la firma de una ordinaria.
+    const leg = /Traspaso [→←]/.test(obs) ? '__T' : '';
+    const s = `${mv[fk]}__${mv.fecha || ''}__${mv.tipo_movimiento || ''}__${mv.cantidad ?? ''}${leg}`;
     count.set(s, (count.get(s) || 0) + 1);
   }
   return count;
 }
 // Devuelve true (y consume 1) si ya existe un movimiento idéntico preexistente.
-function consumirFirma(firmas, itemId, fecha, tipo, cantidad) {
-  const s = `${itemId}__${fecha || ''}__${tipo || ''}__${cantidad ?? ''}`;
+// sufijo '__T' = pata de traspaso (firmada aparte de los movimientos ordinarios).
+function consumirFirma(firmas, itemId, fecha, tipo, cantidad, sufijo = '') {
+  const s = `${itemId}__${fecha || ''}__${tipo || ''}__${cantidad ?? ''}${sufijo}`;
   const c = firmas.get(s) || 0;
   if (c > 0) { firmas.set(s, c - 1); return true; }
   return false;
@@ -869,7 +934,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     const conflictoUnidad = []; const itemsConConflicto = new Set();
     for (const [k, v] of unidades) if (v.set.size > 1) { conflictoUnidad.push({ key: k, nombre: v.nombre, unidades: [...v.set] }); itemsConConflicto.add(k); }
     // 2) stock negativo simulado en orden de fecha
-    const ordenadas = [...movs].sort((a, b) => (a.fecha || '') < (b.fecha || '') ? -1 : 1);
+    const ordenadas = [...movs].sort(cmpMovFechaTipo);
     const saldo = new Map(); const stockNeg = []; const idxNeg = new Set();
     for (const m of ordenadas) {
       const k = normTxt(m.nombreItem || ''); if (!k || !m.tipo || !(m.cantidad > 0)) continue;
@@ -985,7 +1050,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
   };
 
   const runMovMateriales = async (resolvedItems = null, rp = null) => {
-    const movs = [...preview.movs].sort((a, b) => (a.fecha || '') < (b.fecha || '') ? -1 : 1);
+    const movs = [...preview.movs].sort(cmpMovFechaTipo);
     const matIdx = await cargarIndice('materiales', obraId, 'nombre_material');
     if (resolvedItems) { for (const [k, info] of resolvedItems) matIdx.map.set(k, { id: info.id, unidad: info.unidad }); }
     const ubicIdx = await cargarIndice('ubicaciones_obra', obraId, 'nombre');
@@ -1017,7 +1082,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     let sinRespTemporal = 0; // salidas sin responsable → persona temporal
 
     const firmas = await cargarFirmasMigracion('movimientos_materiales', obraId, 'material_id');
-    let okCount = 0, errores = 0, itemsCreados = 0, ubicCreadas = 0, saltadosNoAprobados = 0, duplicados = 0;
+    let okCount = 0, errores = 0, itemsCreados = 0, ubicCreadas = 0, saltadosNoAprobados = 0, duplicados = 0, curadas = 0;
     const errorList = [];
     const afectados = new Set();
     const prevMat = matIdx.map.size, prevUbic = ubicIdx.map.size;
@@ -1051,13 +1116,17 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           if (t.temporales) enTemporal += t.temporales;
           okCount++; continue;
         }
-        if (consumirFirma(firmas, mat.id, fechaMov, m.tipo, m.cantidad)) { duplicados++; continue; }
+        if (consumirFirma(firmas, mat.id, fechaMov, m.tipo, m.cantidad)) {
+          // Dup pero con ubicación temporal de un run anterior → curar.
+          if (m.tipo === 'entrada' && await sanarEntradaTemporal({ obraId, userId, tabla: 'movimientos_materiales', fk: 'material_id', itemTipo: 'material', itemId: mat.id, m, fechaMov, resolverUbic })) curadas++;
+          duplicados++; continue;
+        }
         afectados.add(mat.id);
         const obsExtra = [];
         let proveedor_id = null, responsable_id = null, subcontratista_id = null, destino_tipo = null, frente = null, ubicId = null;
         // Plantilla mejorada: columnas separadas (con fallback a la combinada vieja).
         const prov = m.proveedor || m.origen;
-        const alm = m.almacen || (m.tipo === 'entrada' ? m.lugar : m.origen);
+        const alm = m.almacen || (m.tipo === 'entrada' ? (m.almacenDestino || m.lugar) : m.origen);
         const quien = m.responsable || m.subcontrato;
 
         if (m.tipo === 'entrada') {
@@ -1109,11 +1178,11 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     notifTemporal(enTemporal);
     notifFusionTemporal(sinRespTemporal);
     return { ok: okCount, errors: errores, saltadosNoAprobados, errorList,
-      detalle: `${okCount} movimientos cargados${sinRespTemporal ? ` · ${sinRespTemporal} sin responsable → temporal` : ''}${enTemporal ? ` · ${enTemporal} al almacén temporal` : ''} · ${ubicCreadas} ubicaciones creadas${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
+      detalle: `${okCount} movimientos cargados${sinRespTemporal ? ` · ${sinRespTemporal} sin responsable → temporal` : ''}${enTemporal ? ` · ${enTemporal} al almacén temporal` : ''} · ${ubicCreadas} ubicaciones creadas${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${curadas ? ` · ${curadas} ingresos movidos del temporal al almacén real` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
   const runMovEpp = async (resolvedItems = null, rp = null) => {
-    const movs = [...preview.movs].sort((a, b) => (a.fecha || '') < (b.fecha || '') ? -1 : 1);
+    const movs = [...preview.movs].sort(cmpMovFechaTipo);
     const eppIdx = await cargarIndice('epps', obraId, 'nombre_epp');
     if (resolvedItems) { for (const [k, info] of resolvedItems) eppIdx.map.set(k, { id: info.id, unidad: info.unidad }); }
     const ubicIdx = await cargarIndice('ubicaciones_obra', obraId, 'nombre');
@@ -1144,7 +1213,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     let sinRespTemporal = 0; // salidas sin responsable → persona temporal
 
     const firmas = await cargarFirmasMigracion('movimientos_epp', obraId, 'epp_id');
-    let okCount = 0, errores = 0, saltadosNoAprobados = 0, duplicados = 0;
+    let okCount = 0, errores = 0, saltadosNoAprobados = 0, duplicados = 0, curadas = 0;
     const errorList = [];
     const afectados = new Set();
     const prevEpp = eppIdx.map.size;
@@ -1177,7 +1246,11 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           if (t.temporales) enTemporal += t.temporales;
           okCount++; continue;
         }
-        if (consumirFirma(firmas, epp.id, fechaMov, m.tipo, m.cantidad)) { duplicados++; continue; }
+        if (consumirFirma(firmas, epp.id, fechaMov, m.tipo, m.cantidad)) {
+          // Dup pero con ubicación temporal de un run anterior → curar.
+          if (m.tipo === 'entrada' && await sanarEntradaTemporal({ obraId, userId, tabla: 'movimientos_epp', fk: 'epp_id', itemTipo: 'epp', itemId: epp.id, m, fechaMov, resolverUbic })) curadas++;
+          duplicados++; continue;
+        }
         afectados.add(epp.id);
         const obsExtra = [];
         let proveedor_id = null, personal_id = null, subcontratista_id = null, destino_tipo = null, ubicId = null;
@@ -1186,7 +1259,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
 
         if (m.tipo === 'entrada') {
           if (prov) { proveedor_id = matchProveedor(prov, proveedores); if (!proveedor_id) obsExtra.push(`Proveedor: ${prov}`); }
-          const almIn = m.almacen || m.lugar; // almacén de llegada (nuevo: 'Almacén'; viejo: 'Lugar de llegada')
+          const almIn = m.almacen || m.almacenDestino || m.lugar; // almacén de llegada (nuevo: 'Almacén'; otros: 'Almacén de Llegada'/'Lugar de llegada')
           // Ingreso SIN lugar de llegada → almacén temporal (recordatorio al final).
           ubicId = await resolverUbic(almIn || TEMPORAL_UBIC);
           if (!almIn) enTemporal++;
@@ -1230,11 +1303,11 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     notifTemporal(enTemporal);
     notifFusionTemporal(sinRespTemporal);
     return { ok: okCount, errors: errores, saltadosNoAprobados, errorList,
-      detalle: `${okCount} movimientos EPP cargados${sinRespTemporal ? ` · ${sinRespTemporal} sin responsable → temporal` : ''}${enTemporal ? ` · ${enTemporal} al almacén temporal` : ''}${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
+      detalle: `${okCount} movimientos EPP cargados${sinRespTemporal ? ` · ${sinRespTemporal} sin responsable → temporal` : ''}${enTemporal ? ` · ${enTemporal} al almacén temporal` : ''}${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${curadas ? ` · ${curadas} ingresos movidos del temporal al almacén real` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
   const runMovHerramientas = async (resolvedItems = null, rp = null) => {
-    const movs = [...preview.movs].sort((a, b) => (a.fecha || '') < (b.fecha || '') ? -1 : 1);
+    const movs = [...preview.movs].sort(cmpMovFechaTipo);
     const herrIdx = await cargarIndice('herramientas', obraId, 'nombre_herramienta');
     if (resolvedItems) { for (const [k, info] of resolvedItems) herrIdx.map.set(k, { id: info.id, unidad: info.unidad }); }
     const ubicIdx = await cargarIndice('ubicaciones_obra', obraId, 'nombre');
@@ -1267,7 +1340,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     let sinRespTemporal = 0; // salidas sin responsable → persona temporal
 
     const firmas = await cargarFirmasMigracion('movimientos_herramientas', obraId, 'herramienta_id');
-    let okCount = 0, errores = 0, saltadosNoAprobados = 0, duplicados = 0;
+    let okCount = 0, errores = 0, saltadosNoAprobados = 0, duplicados = 0, curadas = 0;
     const errorList = [];
     const afectados = new Set();
     const prevHerr = herrIdx.map.size;
@@ -1300,12 +1373,16 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           if (t.temporales) enTemporal += t.temporales;
           okCount++; continue;
         }
-        if (consumirFirma(firmas, herr.id, fechaMov, m.tipo, m.cantidad)) { duplicados++; continue; }
+        if (consumirFirma(firmas, herr.id, fechaMov, m.tipo, m.cantidad)) {
+          // Dup pero con ubicación temporal de un run anterior → curar.
+          if (m.tipo === 'entrada' && await sanarEntradaTemporal({ obraId, userId, tabla: 'movimientos_herramientas', fk: 'herramienta_id', itemTipo: 'herramienta', itemId: herr.id, m, fechaMov, resolverUbic })) curadas++;
+          duplicados++; continue;
+        }
         afectados.add(herr.id);
         const obsExtra = [];
         let proveedor_id = null, responsable_id = null, subcontratista_id = null, destino_tipo = null, frente = null, ubicId = null;
         const prov = m.proveedor || m.origen;
-        const alm = m.almacen || (m.tipo === 'entrada' ? m.lugar : m.origen);
+        const alm = m.almacen || (m.tipo === 'entrada' ? (m.almacenDestino || m.lugar) : m.origen);
         const quien = m.responsable || m.subcontrato || m.origen;
 
         if (m.tipo === 'entrada') {
@@ -1355,11 +1432,11 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     notifTemporal(enTemporal);
     notifFusionTemporal(sinRespTemporal);
     return { ok: okCount, errors: errores, saltadosNoAprobados, errorList,
-      detalle: `${okCount} movimientos de herramientas cargados${sinRespTemporal ? ` · ${sinRespTemporal} sin responsable → temporal` : ''}${enTemporal ? ` · ${enTemporal} al almacén temporal` : ''}${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
+      detalle: `${okCount} movimientos de herramientas cargados${sinRespTemporal ? ` · ${sinRespTemporal} sin responsable → temporal` : ''}${enTemporal ? ` · ${enTemporal} al almacén temporal` : ''}${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${curadas ? ` · ${curadas} ingresos movidos del temporal al almacén real` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
   const runMovMaquinaria = async (resolvedItems = null, rp = null) => {
-    const movs = [...preview.movs].sort((a, b) => (a.fecha || '') < (b.fecha || '') ? -1 : 1);
+    const movs = [...preview.movs].sort(cmpMovFechaTipo);
     const actIdx = await cargarIndice('activos_pesados', obraId, 'nombre', { porObra: false });
     if (resolvedItems) { for (const [k, info] of resolvedItems) actIdx.map.set(k, { id: info.id, unidad: info.unidad }); }
     const ubicIdx = await cargarIndice('ubicaciones_obra', obraId, 'nombre');
@@ -1391,7 +1468,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     let sinRespTemporal = 0; // salidas sin responsable → persona temporal
 
     const firmas = await cargarFirmasMigracion('movimientos_maquinaria', obraId, 'activo_id');
-    let okCount = 0, errores = 0, saltadosNoAprobados = 0, duplicados = 0;
+    let okCount = 0, errores = 0, saltadosNoAprobados = 0, duplicados = 0, curadas = 0;
     const errorList = [];
     const afectados = new Set();
     const prevAct = actIdx.map.size;
@@ -1424,12 +1501,16 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           if (t.temporales) enTemporal += t.temporales;
           okCount++; continue;
         }
-        if (consumirFirma(firmas, act.id, fechaMov, m.tipo, m.cantidad)) { duplicados++; continue; }
+        if (consumirFirma(firmas, act.id, fechaMov, m.tipo, m.cantidad)) {
+          // Dup pero con ubicación temporal de un run anterior → curar.
+          if (m.tipo === 'entrada' && await sanarEntradaTemporal({ obraId, userId, tabla: 'movimientos_maquinaria', fk: 'activo_id', itemTipo: 'maquinaria', itemId: act.id, m, fechaMov, resolverUbic })) curadas++;
+          duplicados++; continue;
+        }
         afectados.add(act.id);
         const obsExtra = [];
         let proveedor_id = null, responsable_id = null, subcontratista_id = null, destino_tipo = null, frente = null, ubicId = null;
         const prov = m.proveedor || m.origen;
-        const alm = m.almacen || (m.tipo === 'entrada' ? m.lugar : m.origen);
+        const alm = m.almacen || (m.tipo === 'entrada' ? (m.almacenDestino || m.lugar) : m.origen);
         const quien = m.responsable || m.subcontrato || m.origen;
 
         if (m.tipo === 'entrada') {
@@ -1480,7 +1561,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     notifTemporal(enTemporal);
     notifFusionTemporal(sinRespTemporal);
     return { ok: okCount, errors: errores, saltadosNoAprobados, errorList,
-      detalle: `${okCount} movimientos de maquinaria cargados${sinRespTemporal ? ` · ${sinRespTemporal} sin responsable → temporal` : ''}${enTemporal ? ` · ${enTemporal} al almacén temporal` : ''}${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
+      detalle: `${okCount} movimientos de maquinaria cargados${sinRespTemporal ? ` · ${sinRespTemporal} sin responsable → temporal` : ''}${enTemporal ? ` · ${enTemporal} al almacén temporal` : ''}${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${curadas ? ` · ${curadas} ingresos movidos del temporal al almacén real` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
   const runInsumosEmergencia = async () => {

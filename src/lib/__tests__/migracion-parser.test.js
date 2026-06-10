@@ -95,6 +95,34 @@ describe('clasificaTipoInsumo / normalizaTipoMov', () => {
     expect(normalizaTipoMov('Salida')).toBe('salida');
     expect(normalizaTipoMov('')).toBeNull();
   });
+  it('normaliza Traspaso y sus variantes (incl. "Transpaso" con n)', () => {
+    expect(normalizaTipoMov('Traspaso')).toBe('traspaso');
+    expect(normalizaTipoMov('TRANSPASO')).toBe('traspaso');
+    expect(normalizaTipoMov('Transferencia')).toBe('traspaso');
+    expect(normalizaTipoMov('Traslado')).toBe('traspaso');
+    // "Transporte" NO es traspaso: debe fallar visible como tipo no reconocido.
+    expect(normalizaTipoMov('Transporte')).toBeNull();
+  });
+});
+
+describe('parseMovimientos — formato real con Almacen de Salida/Llegada', () => {
+  const H = (o) => ({
+    'Fecha de Movimiento': '5/15/26', Material: 'Lubricante PVC', Unidad: 'unidad', Cantidad: '49',
+    'Tipo de Movimiento': '', Proveedor: '', 'Almacen de Salida': '', 'Resposable (Salida)': '',
+    'Almacen de Llegada': '', Frente: '', Observaciones: '', ...o,
+  });
+  it('TRANSPASO: almacen=origen, almacenDestino=llegada', () => {
+    const p = parseMovimientos([H({ 'Tipo de Movimiento': 'TRANSPASO', 'Almacen de Salida': 'Zona Juan Carlos', 'Almacen de Llegada': 'Almacen Central' })], 'mov_materiales');
+    expect(p[0]).toMatchObject({ tipo: 'traspaso', almacen: 'Zona Juan Carlos', almacenDestino: 'Almacen Central' });
+  });
+  it('INGRESO: la llegada queda en almacenDestino (almacen/lugar vacíos)', () => {
+    const p = parseMovimientos([H({ 'Tipo de Movimiento': 'INGRESO', Proveedor: 'Koplast', 'Almacen de Llegada': 'Zona Juan Carlos' })], 'mov_materiales');
+    expect(p[0]).toMatchObject({ tipo: 'entrada', almacen: null, almacenDestino: 'Zona Juan Carlos' });
+  });
+  it('SALIDA: almacen=origen, responsable con el header con typo', () => {
+    const p = parseMovimientos([H({ 'Tipo de Movimiento': 'SALIDA', Cantidad: '1', 'Almacen de Salida': 'Almacen Central', 'Resposable (Salida)': 'Ing Elvis' })], 'mov_materiales');
+    expect(p[0]).toMatchObject({ tipo: 'salida', almacen: 'Almacen Central', responsable: 'Ing Elvis' });
+  });
 });
 
 describe('parseInsumosTotales', () => {

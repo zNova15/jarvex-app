@@ -165,12 +165,14 @@ const num = (v) => { const n = parseFloat(String(v).replace(/[^0-9.\-]/g, '')); 
 const numN = (v) => { if (v == null || String(v).trim() === '') return null; const n = parseFloat(String(v).replace(/[^0-9.\-]/g, '')); return Number.isFinite(n) ? n : null; };
 
 /** "Ingreso"/"Entrada" → 'entrada'; "Salida" → 'salida';
- *  "Traspaso"/"Transferencia"/"Traslado" → 'traspaso' (sale de un almacén y
- *  entra a otro: el loader lo convierte en el par salida+entrada). */
+ *  "Traspaso"/"Transpaso"/"Transferencia"/"Traslado" → 'traspaso' (sale de un
+ *  almacén y entra a otro: el loader lo convierte en el par salida+entrada). */
 export function normalizaTipoMov(v) {
   const n = normTxt(v);
   if (!n) return null;
-  if (n.startsWith('trasp') || n.startsWith('transf') || n.startsWith('trasl')) return 'traspaso';
+  // 'transpas' (no 'transp'): "Transporte" debe seguir cayendo a null →
+  // error visible de fila, no convertirse en un par de traspaso silencioso.
+  if (n.startsWith('trasp') || n.startsWith('transpas') || n.startsWith('transf') || n.startsWith('trasl')) return 'traspaso';
   if (n.startsWith('ingr') || n.startsWith('entr') || n.includes('compra')) return 'entrada';
   if (n.startsWith('sal') || n.includes('despacho') || n.includes('consumo')) return 'salida';
   return null;
