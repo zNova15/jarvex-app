@@ -11,6 +11,7 @@ import React from "react";
 import { calcAlerta } from "../lib/stock-utils.js";
 import { detectarSugerencias, detectarDuplicados, fusionarInsumos } from "../lib/variantes.js";
 import { opcionesDestinoFlat, splitDestino, joinDestino, nombreDestinoMov } from "../lib/destino-mov.js";
+import { useFotosEvidencias, FotoInsumoCell } from "./jx-foto-insumo.jsx";
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 const hoyISO = () => new Date().toISOString().slice(0, 10);
@@ -24,6 +25,9 @@ function InsumosEmergenciaPage({ showToast }) {
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true, isEdicion: false, superAdmin: false };
   const superAdmin = !!appMode.superAdmin;
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Insumos de Emergencia', 'w') ?? false);
+  // Adjuntar foto = permiso de Evidencias (el almacenero puede ponerle foto
+  // al insumo aunque no edite el catálogo).
+  const canFoto = canWrite || (window.__hasPerm?.(myRol, 'Evidencias', 'w') ?? false);
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
 
   const { obraId } = window.__useObraActiva ? window.__useObraActiva() : { obraId: null };
@@ -41,6 +45,9 @@ function InsumosEmergenciaPage({ showToast }) {
   // Proveedores (tabla global): carga directa de Dexie como el resto de pantallas.
   const [proveedores, setProveedores] = uS([]);
   uE(() => { window.__db.proveedores.filter(p => !p.deleted_at).toArray().then(setProveedores).catch(() => {}); }, []);
+
+  // Fotos del catálogo (evidencias tipo foto_insumo_emergencia) → thumbnail por fila.
+  const fotosMap = useFotosEvidencias(obraId, 'foto_insumo_emergencia');
 
   const personalById = uM(() => { const m = new Map(); (personal || []).forEach(p => m.set(p.id, p)); return m; }, [personal]);
   const insumoById = uM(() => { const m = new Map(); (insumos || []).forEach(i => m.set(i.id, i)); return m; }, [insumos]);
@@ -326,7 +333,15 @@ function InsumosEmergenciaPage({ showToast }) {
                     const st = Number(it.stock_actual ?? 0);
                     return (
                       <tr key={it.id} style={esHijo ? { background: 'rgba(255,255,255,0.015)' } : undefined}>
-                        <td className="col-p" style={esHijo ? { paddingLeft: 26 } : undefined}>{esHijo && <span style={{ color: 'var(--tm)', marginRight: 4 }}>└</span>}<strong>{it.nombre}</strong></td>
+                        <td className="col-p" style={esHijo ? { paddingLeft: 26 } : undefined}>
+                          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                            {esHijo && <span style={{ color: 'var(--tm)' }}>└</span>}
+                            <FotoInsumoCell obraId={obraId} tipoEvidencia="foto_insumo_emergencia" modulo="insumos_emergencia"
+                              registroId={it.id} nombre={it.nombre} foto={fotosMap.get(it.id)}
+                              canFoto={canFoto} userId={userId} showToast={showToast}/>
+                            <strong>{it.nombre}</strong>
+                          </div>
+                        </td>
                         <td>{it.categoria || '—'}</td>
                         <td className="col-m">{it.unidad}</td>
                         <td style={{ textAlign: 'right' }}><span className={`badge ${alertaClase(it.alerta)}`}>{st.toLocaleString('es-PE')}</span></td>

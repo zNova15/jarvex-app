@@ -1,4 +1,5 @@
 import React from "react";
+import { useFotosEvidencias, FotoInsumoCell } from "./jx-foto-insumo.jsx";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -30,6 +31,9 @@ function ActivosPesadosPage({ showToast }) {
   const myRol = auth?.profile?.rol;
   const isAdmin = myRol === 'admin';
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Activos Pesados', 'w') ?? false);
+  // Adjuntar foto = permiso de Evidencias: el almacenero (Activos solo lectura)
+  // puede ponerle foto a la máquina sin poder editar sus specs.
+  const canFoto = canWrite || (window.__hasPerm?.(myRol, 'Evidencias', 'w') ?? false);
   const appMode = window.__useAppMode ? window.__useAppMode() : { superAdmin: false };
   const superAdmin = !!appMode.superAdmin;
   const { data: activos } = window.__hooks.useActivosPesados();
@@ -41,6 +45,8 @@ function ActivosPesadosPage({ showToast }) {
   const { data: personal } = window.__hooks.usePersonal(obraActivaId);
   const { data: subcontratistas } = window.__hooks.useSubcontratistas();
   const movMaqHook = window.__hooks.useMovimientosMaquinaria(obraActivaId);
+  // Fotos del catálogo de máquinas (todas las obras: los activos rotan entre obras).
+  const fotosActivos = useFotosEvidencias(null, 'foto_activo');
 
   const [modal, setModal] = uS(null);
   const [editing, setEditing] = uS(null);
@@ -466,9 +472,17 @@ function ActivosPesadosPage({ showToast }) {
                   return (
                     <tr key={a.id}>
                       <td className="col-m" style={{ fontFamily:'monospace' }}>{a.codigo || '—'}</td>
-                      <td className="col-p"><strong>{a.nombre}</strong>
-                        {a.marca && <div style={{ fontSize:10, color:'var(--tm)' }}>{a.marca} {a.modelo} {a.anio}</div>}
-                        {a.asignado_a_id && <div style={{ fontSize:10.5, color:'var(--amber)', marginTop:2 }} title={`En custodia desde ${a.fecha_asignacion || '—'}`}>🔧 En uso: {a.asignado_a_nombre || '—'}{a.fecha_asignacion ? ` · ${a.fecha_asignacion}` : ''}</div>}
+                      <td className="col-p">
+                        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                          <FotoInsumoCell obraId={a.obra_actual_id || obraActivaId} tipoEvidencia="foto_activo" modulo="activos_pesados"
+                            registroId={a.id} nombre={a.nombre} foto={fotosActivos.get(a.id)}
+                            canFoto={canFoto} userId={userId} showToast={showToast}/>
+                          <div>
+                            <strong>{a.nombre}</strong>
+                            {a.marca && <div style={{ fontSize:10, color:'var(--tm)' }}>{a.marca} {a.modelo} {a.anio}</div>}
+                            {a.asignado_a_id && <div style={{ fontSize:10.5, color:'var(--amber)', marginTop:2 }} title={`En custodia desde ${a.fecha_asignacion || '—'}`}>🔧 En uso: {a.asignado_a_nombre || '—'}{a.fecha_asignacion ? ` · ${a.fecha_asignacion}` : ''}</div>}
+                          </div>
+                        </div>
                       </td>
                       <td><span className="tag">{AP_TYPES.find(t=>t.v===a.tipo)?.l || a.tipo}</span></td>
                       <td className="col-m">{a.maneja_cantidad

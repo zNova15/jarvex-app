@@ -720,9 +720,11 @@ const PERM_MATRIX = {
   almacenero: PERM_MATRIX_MODULES.map(m => {
     if (m === 'Usuarios/Config') return 'x';
     // Write: lo que el almacenero ejecuta directamente. Caja Chica la maneja
-    // la almacenera (fondo para compras urgentes).
+    // la almacenera (fondo para compras urgentes). Insumos de Emergencia es
+    // stock que vive en el almacén (botiquín, extintores) → también lo gestiona.
     if (['Materiales','Mov. Materiales','Herramientas','Mov. Herramientas',
-         'Recepciones','EPP','Requisiciones','Evidencias','Incidencias','Caja Chica'].includes(m)) return 'w';
+         'Recepciones','EPP','Requisiciones','Evidencias','Incidencias','Caja Chica',
+         'Insumos de Emergencia'].includes(m)) return 'w';
     // Lectura: lo que necesita consultar para hacer su trabajo
     if (['Órdenes de Compra','Cotizaciones','Proveedores','Personal','Asistencia',
          'Activos Pesados','Mantenimiento','Horas Máquina','Ubicaciones'].includes(m)) return 'r';

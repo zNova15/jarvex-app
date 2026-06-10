@@ -457,7 +457,10 @@ function SolicitudesPage({ showToast }) {
 // Se usa desde Materiales / Herramientas / Personal / Proveedores.
 // Si allowDelete=true, expone tab "Eliminar registro" que crea un change_request
 // con proposed_changes.deleted_at — al aprobarlo, applyChange hace soft-delete.
-function RequestChangeModal({ table, record, recordLabel, fields, onClose, showToast, allowDelete = false }) {
+function RequestChangeModal({ table, record, recordLabel, fields, onClose, showToast: showToastProp, allowDelete = false }) {
+  // NINGÚN call site pasa showToast hoy → sin este fallback, enviar la
+  // solicitud tiraba TypeError. Cae al toast global del shell.
+  const showToast = showToastProp || window.__showToast || (() => {});
   const [mode, setMode] = uSS('edit'); // 'edit' | 'delete'
   const [field, setField] = uSS(fields[0]?.key || '');
   const [newValue, setNewValue] = uSS('');

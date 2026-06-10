@@ -488,12 +488,15 @@ function MaterialesPage({ showToast }) {
               <JxIcon name="edit" size={11}/>$
             </button>
           )}
-          {isAdmin ? (
+          {/* Editar = permiso de escritura del módulo (el almacenero tiene 'w'
+              en Materiales y necesita editar para adjuntar la foto). Mover a
+              EPP y eliminar siguen siendo de admin. */}
+          {canWrite ? (
             <>
               <button className="btn btn-ghost btn-xs" title="Editar material" onClick={()=>openEditMaterial(m)}>
                 <JxIcon name="edit" size={11}/>
               </button>
-              {(() => {
+              {isAdmin && (() => {
                 const tipoEpp = detectarEPP(m.nombre_material);
                 if (!tipoEpp || m.categoria === 'EPP') return null;
                 return (
@@ -3712,7 +3715,9 @@ function HerramientasPage({ showToast }) {
           ? <span className="badge b-amber">⏱</span>
           : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}</td>
         <td style={{textAlign:'center', whiteSpace:'nowrap'}}>
-          {isAdmin ? (
+          {/* Editar = permiso de escritura del módulo (el almacenero tiene 'w'
+              en Herramientas y necesita editar para adjuntar la foto). */}
+          {canWrite ? (
             <>
               <button className="btn btn-ghost btn-xs" title="Editar herramienta" onClick={()=>openEditHerr(h)}>
                 <JxIcon name="edit" size={11}/>

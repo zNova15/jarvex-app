@@ -431,8 +431,12 @@ const TABLA_TO_MODULO = {
   movimientos_epp: 'EPP',
   movimientos_maquinaria: 'Mov. Maquinaria',
   caja_chica_movimientos: 'Caja Chica',
-  insumos_emergencia: 'Insumos Emergencia',
-  movimientos_insumos_emergencia: 'Mov. Insumos Emergencia',
+  // OJO: el módulo canónico en la matriz de permisos es 'Insumos de Emergencia'
+  // (con "de"). Antes apuntaba a 'Insumos Emergencia' / 'Mov. Insumos Emergencia',
+  // módulos que NO existen → __hasPerm devolvía false y el push quedaba
+  // bloqueado para todo rol no-admin (prevencionista, y ahora almacenero).
+  insumos_emergencia: 'Insumos de Emergencia',
+  movimientos_insumos_emergencia: 'Insumos de Emergencia',
   asistencia: 'Asistencia',
   avance_obra: 'Avance',
   incidencias: 'Incidencias',
