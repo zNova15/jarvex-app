@@ -16,6 +16,7 @@ const TRANSACTIONAL_TABLES = [
   'frentes_obra',        // antes de personal (personal.frente_id depende de él)
   'personal',
   'personal_historial',
+  'personal_cuentas_bancarias',   // después de personal (FK personal_id)
   'materiales',
   'herramientas',
   'proveedores',
@@ -76,6 +77,7 @@ const MASTER_TABLES = [
   { tabla: 'frentes_obra',           query: () => supabase.from('frentes_obra').select('*').is('deleted_at', null) },
   { tabla: 'personal',               query: () => supabase.from('personal').select('*').is('deleted_at', null) },
   { tabla: 'personal_historial',     query: () => supabase.from('personal_historial').select('*').is('deleted_at', null) },
+  { tabla: 'personal_cuentas_bancarias', query: () => supabase.from('personal_cuentas_bancarias').select('*').is('deleted_at', null) },
   { tabla: 'materiales',             query: () => supabase.from('materiales').select('*').is('deleted_at', null) },
   { tabla: 'herramientas',           query: () => supabase.from('herramientas').select('*').is('deleted_at', null) },
   { tabla: 'proveedores',            query: () => supabase.from('proveedores').select('*').is('deleted_at', null) },
@@ -414,6 +416,7 @@ const TABLA_TO_MODULO = {
   obras: 'Obras',
   personal: 'Personal',
   personal_historial: 'Personal',
+  personal_cuentas_bancarias: 'Personal',
   // frentes_obra: sin mapear a propósito → canPushTabla deja pasar (no existe
   // módulo 'Frentes' en la matriz de permisos; el CRUD ya gatea por rol).
   materiales: 'Materiales',
@@ -512,6 +515,7 @@ const FK_DEPS = {
   // (FK opcional: se salta cuando subcontratista_id es null = personal directo).
   personal:                  [{ campo: 'subcontratista_id', tabla: 'subcontratistas' }, { campo: 'frente_id', tabla: 'frentes_obra' }],
   personal_historial:        [{ campo: 'personal_id', tabla: 'personal' }],
+  personal_cuentas_bancarias: [{ campo: 'personal_id', tabla: 'personal' }],
   recepcion_items:           [{ campo: 'recepcion_id', tabla: 'recepciones' }],
   oc_items:                  [{ campo: 'oc_id', tabla: 'ordenes_compra' }],
   cotizacion_items:          [{ campo: 'cotizacion_id', tabla: 'cotizaciones' }],

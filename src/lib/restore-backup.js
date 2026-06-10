@@ -141,20 +141,52 @@ export async function restaurarBackup(file, { userId = 'offline', obraId, isPrue
     } catch { resumen.errores++; }
   }
   // 5) Personal (dedup por DNI; resuelve frente/subcontrato por nombre)
+  // Cuentas bancarias existentes (dedup al restaurar las del sheet de Personal).
+  const pcbExistentes = await db.personal_cuentas_bancarias.where('obra_id').equals(obraId)
+    .filter((r) => !r.deleted_at).toArray().catch(() => []);
+  const restaurarCuentas = async (personalId, g) => {
+    const txt = (v) => { const s = (v == null ? '' : String(v)).trim(); return s || null; };
+    const candidatas = [];
+    const banco = txt(g('Banco')); const nro = txt(g('Numero Cuenta', 'N° Cuenta', 'Nro Cuenta')); const cci = txt(g('CCI'))?.replace(/[\s-]/g, '') || null;
+    // La hoja "Cuentas bancarias (personal)" trae columna Principal explícita;
+    // la hoja Personal (cuenta inline) no → ahí la cuenta de sueldo es principal.
+    const pCol = txt(g('Principal'));
+    const tipoCta = (txt(g('Tipo Cuenta')) || 'ahorros').toLowerCase();
+    if (banco || nro || cci) candidatas.push({ banco: banco || 'Banco', tipo_cuenta: tipoCta, numero_cuenta: nro, cci, moneda: (txt(g('Moneda')) || 'PEN').toUpperCase(), principal: pCol != null ? pCol.toLowerCase().startsWith('s') : tipoCta !== 'cts' });
+    const bancoCts = txt(g('Banco CTS')); const nroCts = txt(g('Cuenta CTS'));
+    if (bancoCts || nroCts) candidatas.push({ banco: bancoCts || 'Banco de la Nación', tipo_cuenta: 'cts', numero_cuenta: nroCts, cci: null, moneda: 'PEN', principal: false });
+    for (const cta of candidatas) {
+      const dup = pcbExistentes.find((c) => c.personal_id === personalId && ((cta.numero_cuenta && c.numero_cuenta === cta.numero_cuenta) || (cta.cci && c.cci === cta.cci)));
+      if (dup) continue;
+      const yaTienePrincipal = pcbExistentes.some((c) => c.personal_id === personalId && c.principal);
+      const rec = await add('personal_cuentas_bancarias', { obra_id: obraId, personal_id: personalId, ...cta, principal: cta.principal && !yaTienePrincipal, observaciones: null });
+      pcbExistentes.push(rec);
+    }
+  };
+
   for (const sh of porTipo('personal')) for (const row of sh.rows) {
     try { const g = rowGet(row); const dni = (g('DNI') || '').toString().replace(/\D/g, '');
       const nombres = (g('Nombres') || '').toString().trim(); if (!nombres) continue;
       const apellidos = (g('Apellidos') || '').toString().trim();
       const nomKey = normTxt(`${nombres} ${apellidos}`);
       // Dedup por DNI; si no hay DNI, por nombre completo (evita duplicar al re-correr).
-      if ((dni && persByDni.has(dni)) || (!dni && persMap.has(nomKey))) { resumen.saltados++; continue; }
+      // Aunque la persona ya exista, restauramos sus CUENTAS (dedup interno).
+      if ((dni && persByDni.has(dni)) || (!dni && persMap.has(nomKey))) {
+        const pid = dni ? persByDni.get(dni) : persMap.get(nomKey);
+        try { await restaurarCuentas(pid, g); } catch {}
+        resumen.saltados++; continue;
+      }
       const subNom = g('Subcontrato'); const subId = subNom ? subMap.get(normTxt(subNom)) || null : null;
       const frNom = g('Frente'); const frId = frNom ? frenteMap.get(normTxt(frNom)) || null : null;
       const rec = await add('personal', { obra_id: obraId, nombres, apellidos, dni: dni || `RES-${normTxt(nombres + apellidos).slice(0, 14)}`,
         cargo: g('Cargo') || null, area: g('Área', 'Area') || null, estado: g('Estado') || 'activo',
         subcontratista_id: subId, es_jefe_subcontrato: String(g('Jefe Subcontrato') || '').toLowerCase().startsWith('s'), seguro_a_cargo: g('Seguro a cargo') || (subId ? 'empresa' : null), frente_id: frId,
-        fecha_ingreso: g('Fecha Ingreso') || null, fecha_nacimiento: g('Fecha Nac.', 'Fecha Nacimiento') || null, telefono: (g('Teléfono', 'Telefono') || '').toString() || null });
+        fecha_ingreso: g('Fecha Ingreso') || null, fecha_nacimiento: g('Fecha Nac.', 'Fecha Nacimiento') || null, telefono: (g('Teléfono', 'Telefono') || '').toString() || null,
+        email: g('Email') || null, direccion: g('Direccion', 'Dirección') || null,
+        contacto_emergencia: g('Contacto Emergencia') || null, telefono_emergencia: (g('Telefono Emergencia', 'Teléfono Emergencia') || '').toString() || null,
+        regimen_pension: g('Regimen Pension', 'Régimen Pensión') || null });
       if (dni) persByDni.set(dni, rec.id); persMap.set(normTxt(`${nombres} ${apellidos}`), rec.id); resumen.personal++;
+      try { await restaurarCuentas(rec.id, g); } catch {}
     } catch { resumen.errores++; }
   }
 

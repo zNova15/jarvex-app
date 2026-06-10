@@ -12,6 +12,9 @@ const fmtSk = (n) => {
 const PAGO_BADGE = { programado:'b-amber', pagado:'b-green', vencido:'b-red', anulado:'b-gray' };
 const PAGO_LABEL = { programado:'Programado', pagado:'Pagado', vencido:'Vencido', anulado:'Anulado' };
 
+// Bancos típicos de Perú (sugerencias del datalist — texto libre permitido).
+const BANCOS_PE = ['BCP', 'BBVA', 'Interbank', 'Scotiabank', 'Banco de la Nación', 'BanBif', 'Banco Pichincha', 'Mibanco', 'Caja Arequipa', 'Caja Huancayo', 'Caja Piura', 'Caja Trujillo'];
+
 // ╔═══ CUENTAS BANCARIAS ═════════════════════════════════════════╗
 function CuentasBancariasPage({ showToast }) {
   const auth = window.__useAuth?.();
@@ -22,6 +25,10 @@ function CuentasBancariasPage({ showToast }) {
   const { data: cuentas } = window.__hooks.useCuentasBancarias();
   const { data: movs } = window.__hooks.useMovimientosBancarios();
   const { data: companies } = window.__hooks.useCompanies();
+
+  // Pestañas: cuentas de las EMPRESAS (tesorería) vs cuentas del PERSONAL
+  // (trabajadores — tabla propia, no entra al flujo de caja).
+  const [tab, setTab] = uS('empresas'); // 'empresas' | 'personal'
 
   const [modal, setModal] = uS(null);
   const [editing, setEditing] = uS(null);
@@ -116,18 +123,27 @@ function CuentasBancariasPage({ showToast }) {
       <div className="pg-hd frow-sb">
         <div>
           <div className="pg-title">Cuentas Bancarias</div>
-          <div className="pg-sub">{(cuentas||[]).length} cuentas · saldo total {fmtSk((cuentas||[]).reduce((s,c)=>s+(saldoPorCuenta.get(c.id)||0),0))}</div>
+          <div className="pg-sub">{tab === 'empresas'
+            ? `${(cuentas||[]).length} cuentas · saldo total ${fmtSk((cuentas||[]).reduce((s,c)=>s+(saldoPorCuenta.get(c.id)||0),0))}`
+            : 'Cuentas de abono de los trabajadores (sueldo, CTS) — no entran al flujo de caja'}</div>
         </div>
-        {canWrite ? (
+        {tab === 'empresas' && (canWrite ? (
           <button className="btn btn-amber btn-sm" onClick={openNueva}>
             <JxIcon name="plus" size={13}/>Nueva Cuenta
           </button>
         ) : (
           <span className="badge b-gray" title="Tu rol es solo lectura para Cuentas Bancarias">Solo lectura</span>
-        )}
+        ))}
       </div>
 
-      {(cuentas||[]).length === 0 ? (
+      <div style={{ display:'flex', gap:8, marginBottom:14 }}>
+        <button className={`btn btn-sm ${tab==='empresas'?'btn-amber':'btn-ghost'}`} onClick={()=>setTab('empresas')}><JxIcon name="dollar" size={13}/>Empresas</button>
+        <button className={`btn btn-sm ${tab==='personal'?'btn-amber':'btn-ghost'}`} onClick={()=>setTab('personal')}><JxIcon name="users" size={13}/>Personal (trabajadores)</button>
+      </div>
+
+      {tab === 'personal' ? (
+        <CuentasPersonalSection showToast={showToast} />
+      ) : (cuentas||[]).length === 0 ? (
         <div className="card card-p empty-state">
           <JxIcon name="dollar" size={40} color="var(--tm)"/>
           <p>No hay cuentas bancarias. Crea una para empezar a registrar movimientos y programar pagos.</p>
@@ -231,6 +247,235 @@ function CuentasBancariasPage({ showToast }) {
         </Modal>
       )}
     </div>
+  );
+}
+
+// ╔═══ CUENTAS BANCARIAS DEL PERSONAL (trabajadores) ═════════════╗
+// Cuentas de abono de los trabajadores de la obra activa (sueldo, CTS),
+// separadas por persona. Tabla personal_cuentas_bancarias — NO entra al
+// flujo de caja (eso es de las cuentas de empresas).
+function CuentasPersonalSection({ showToast }) {
+  const auth = window.__useAuth?.();
+  const userId = auth?.profile?.id ?? 'offline';
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
+  // Las cuentas de trabajadores son dato de PERSONAL: las gestiona quien
+  // gestiona personal (RRHH/asistente) o quien gestiona cuentas (tesorero).
+  const canWrite = isAdmin
+    || (window.__hasPerm?.(myRol, 'Cuentas Bancarias', 'w') ?? false)
+    || (window.__hasPerm?.(myRol, 'Personal', 'w') ?? false);
+
+  const { obraId } = window.__useObraActiva ? window.__useObraActiva() : { obraId: null };
+  const { data: personal } = window.__hooks.usePersonal(obraId);
+  const { data: cuentas, refresh } = window.__hooks.usePersonalCuentas(obraId);
+
+  const [q, setQ] = uS('');
+  const [modal, setModal] = uS(false);
+  const [editing, setEditing] = uS(null);
+  const [form, setForm] = uS({});
+  const [busy, setBusy] = uS(false);
+
+  const personalById = uM(() => { const m = new Map(); (personal||[]).forEach(p => m.set(p.id, p)); return m; }, [personal]);
+  const nombreDe = (pid) => { const p = personalById.get(pid); return p ? `${p.nombres} ${p.apellidos}`.trim() : '(persona eliminada)'; };
+
+  const filas = uM(() => {
+    const ql = q.toLowerCase();
+    let list = (cuentas || []).slice();
+    if (ql) list = list.filter(c => `${nombreDe(c.personal_id)} ${personalById.get(c.personal_id)?.dni || ''} ${c.banco || ''} ${c.numero_cuenta || ''} ${c.cci || ''}`.toLowerCase().includes(ql));
+    // Orden por persona, principal primero
+    list.sort((a, b) => nombreDe(a.personal_id).localeCompare(nombreDe(b.personal_id)) || (b.principal ? 1 : 0) - (a.principal ? 1 : 0));
+    return list;
+  }, [cuentas, q, personalById]);
+
+  const sinCuenta = uM(() => {
+    const con = new Set((cuentas||[]).map(c => c.personal_id));
+    return (personal||[]).filter(p => p.estado === 'activo' && !con.has(p.id)).length;
+  }, [cuentas, personal]);
+
+  const openNueva = (personalId = '') => {
+    setForm({ personal_id: personalId, banco: '', tipo_cuenta: 'ahorros', numero_cuenta: '', cci: '', moneda: 'PEN', principal: true, observaciones: '' });
+    setEditing(null); setModal(true);
+  };
+  const openEditar = (c) => { setForm({ ...c }); setEditing(c); setModal(true); };
+
+  const guardar = async () => {
+    if (busy) return;
+    if (!form.personal_id) { showToast('Elegí al trabajador', 'red'); return; }
+    if (!form.banco?.trim()) { showToast('Banco requerido', 'red'); return; }
+    if (!(form.numero_cuenta || '').trim() && !(form.cci || '').trim()) { showToast('Ingresá el número de cuenta o el CCI', 'red'); return; }
+    if ((form.cci || '').trim() && !/^\d{20}$/.test(form.cci.replace(/[\s-]/g, ''))) { showToast('El CCI debe tener exactamente 20 dígitos', 'red'); return; }
+    setBusy(true);
+    const now = new Date().toISOString();
+    try {
+      // Una sola cuenta PRINCIPAL por persona: si esta queda principal,
+      // desmarcamos las otras de la misma persona.
+      if (form.principal) {
+        const otras = (cuentas || []).filter(c => c.personal_id === form.personal_id && c.principal && c.id !== editing?.id);
+        for (const o of otras) {
+          await window.__db.personal_cuentas_bancarias.update(o.id, {
+            principal: false, updated_at: now, updated_by: userId,
+            version: (o.version ?? 0) + 1,
+            sync_status: o.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+          });
+        }
+      }
+      const campos = {
+        personal_id: form.personal_id,
+        banco: form.banco.trim(),
+        tipo_cuenta: form.tipo_cuenta || 'ahorros',
+        numero_cuenta: (form.numero_cuenta || '').trim() || null,
+        cci: (form.cci || '').replace(/[\s-]/g, '') || null,
+        moneda: form.moneda || 'PEN',
+        principal: !!form.principal,
+        observaciones: (form.observaciones || '').trim() || null,
+      };
+      if (editing) {
+        await window.__db.personal_cuentas_bancarias.update(editing.id, {
+          ...campos, updated_at: now, updated_by: userId,
+          version: (editing.version ?? 0) + 1,
+          sync_status: editing.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+        });
+      } else {
+        const id = window.__newId();
+        await window.__db.personal_cuentas_bancarias.add({
+          id, obra_id: obraId, ...campos,
+          created_by: userId, updated_by: userId, created_at: now, updated_at: now,
+          version: 1, sync_status: 'pending_create', last_synced_at: null,
+          idempotency_key: `${userId}_pcb_${id}`,
+        });
+      }
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'personal_cuentas_bancarias' } })); } catch {}
+      refresh?.();
+      showToast(editing ? 'Cuenta actualizada' : 'Cuenta agregada', 'green');
+      setModal(false); setEditing(null);
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+    finally { setBusy(false); }
+  };
+
+  const eliminar = async (c) => {
+    if (!isAdmin) return;
+    if (!confirm(`¿Eliminar la cuenta ${c.banco} de ${nombreDe(c.personal_id)}?`)) return;
+    try {
+      await window.__db.personal_cuentas_bancarias.update(c.id, {
+        deleted_at: new Date().toISOString(),
+        sync_status: c.sync_status === 'pending_create' ? 'pending_create' : 'pending_delete',
+      });
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'personal_cuentas_bancarias' } })); } catch {}
+      refresh?.();
+      showToast('Cuenta eliminada', 'amber');
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
+
+  if (!obraId) return <div className="card card-p empty-state"><JxIcon name="users" size={32} color="var(--tm)"/><p>Elegí una obra activa para ver las cuentas del personal.</p></div>;
+
+  const TIPO_LBL = { ahorros: 'Ahorros', corriente: 'Corriente', cts: 'CTS', otra: 'Otra' };
+  return (
+    <>
+      <div style={{ display:'flex', gap:8, marginBottom:12, flexWrap:'wrap', alignItems:'center' }}>
+        <div className="search-bar"><JxIcon name="search" size={14} color="var(--tm)"/><input placeholder="Buscar trabajador, DNI o banco…" value={q} onChange={e=>setQ(e.target.value)}/></div>
+        {sinCuenta > 0 && <span className="badge b-amber" title="Trabajadores activos sin ninguna cuenta registrada">{sinCuenta} sin cuenta</span>}
+        {canWrite && <button className="btn btn-amber btn-sm" style={{ marginLeft:'auto' }} onClick={()=>openNueva()}><JxIcon name="plus" size={13}/>Agregar cuenta</button>}
+      </div>
+
+      {filas.length === 0 ? (
+        <div className="card card-p empty-state">
+          <JxIcon name="dollar" size={40} color="var(--tm)"/>
+          <p>No hay cuentas de trabajadores registradas{q ? ' que coincidan con la búsqueda' : ''}. {canWrite ? 'Agregalas acá o importalas con la plantilla "Personal" (Importar Datos).' : ''}</p>
+        </div>
+      ) : (
+        <div className="card" style={{ overflow:'hidden' }}>
+          <table className="tbl">
+            <thead><tr>
+              <th>Trabajador</th><th>DNI</th><th>Banco</th><th>Tipo</th>
+              <th>N° Cuenta</th><th>CCI</th><th>Moneda</th><th>Principal</th><th>Sync</th>
+              {canWrite && <th style={{ textAlign:'center' }}>Acciones</th>}
+            </tr></thead>
+            <tbody>
+              {filas.map(c => {
+                const p = personalById.get(c.personal_id);
+                return (
+                  <tr key={c.id}>
+                    <td className="col-p"><strong>{nombreDe(c.personal_id)}</strong>{p?.cargo && <div style={{ fontSize:10, color:'var(--tm)' }}>{p.cargo}</div>}</td>
+                    <td className="col-m">{p?.dni || '—'}</td>
+                    <td><strong>{c.banco}</strong></td>
+                    <td><span className="tag">{TIPO_LBL[c.tipo_cuenta] || c.tipo_cuenta || '—'}</span></td>
+                    <td className="col-m">{c.numero_cuenta || '—'}</td>
+                    <td className="col-m" style={{ fontSize:11 }}>{c.cci || '—'}</td>
+                    <td className="col-m">{c.moneda || 'PEN'}</td>
+                    <td>{c.principal ? <span className="badge b-green">★ Principal</span> : <span style={{ color:'var(--tm)', fontSize:11 }}>—</span>}</td>
+                    <td>{c.sync_status && c.sync_status !== 'synced' ? <span className="badge b-amber">⏱</span> : <span style={{ color:'var(--green)', fontSize:11 }}>✓</span>}</td>
+                    {canWrite && (
+                      <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
+                        <button className="btn btn-ghost btn-xs" title="Editar" onClick={()=>openEditar(c)}><JxIcon name="edit" size={11}/></button>
+                        {isAdmin && <button className="btn btn-red btn-xs" title="Eliminar" onClick={()=>eliminar(c)} style={{ marginLeft:4 }}><JxIcon name="trash" size={11}/></button>}
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {modal && (
+        <Modal title={editing ? `Editar cuenta · ${nombreDe(editing.personal_id)}` : 'Agregar cuenta de trabajador'} icon="dollar" onClose={()=>{setModal(false); setEditing(null);}}>
+          <div className="g2">
+            <div style={{ gridColumn:'1/-1' }}>
+              <label className="flabel">Trabajador *</label>
+              <SearchableSelect
+                value={form.personal_id || ''}
+                onChange={v => setForm(f => ({ ...f, personal_id: v }))}
+                options={[{ value:'', label:'— Selecciona —' }, ...(personal||[]).filter(p=>!p.deleted_at).sort((a,b)=>`${a.apellidos} ${a.nombres}`.localeCompare(`${b.apellidos} ${b.nombres}`)).map(p => ({ value:p.id, label:`${p.nombres} ${p.apellidos} · ${p.dni || 's/DNI'}` }))]}
+                placeholder="— Selecciona trabajador —"/>
+            </div>
+            <div>
+              <label className="flabel">Banco *</label>
+              <input className="fi" list="bancos-pe" value={form.banco||''} placeholder="Ej: BCP, Banco de la Nación" onChange={e=>setForm({...form, banco:e.target.value})}/>
+              <datalist id="bancos-pe">{BANCOS_PE.map(b => <option key={b} value={b}/>)}</datalist>
+            </div>
+            <div>
+              <label className="flabel">Tipo de cuenta</label>
+              <select className="fi" value={form.tipo_cuenta||'ahorros'} onChange={e=>setForm({...form, tipo_cuenta:e.target.value})}>
+                <option value="ahorros">Ahorros (sueldo)</option>
+                <option value="corriente">Corriente</option>
+                <option value="cts">CTS</option>
+                <option value="otra">Otra</option>
+              </select>
+            </div>
+            <div>
+              <label className="flabel">Número de cuenta</label>
+              <input className="fi" value={form.numero_cuenta||''} onChange={e=>setForm({...form, numero_cuenta:e.target.value})}/>
+            </div>
+            <div>
+              <label className="flabel">CCI (20 dígitos)</label>
+              <input className="fi" value={form.cci||''} placeholder="002-…" onChange={e=>setForm({...form, cci:e.target.value})}/>
+            </div>
+            <div>
+              <label className="flabel">Moneda</label>
+              <select className="fi" value={form.moneda||'PEN'} onChange={e=>setForm({...form, moneda:e.target.value})}>
+                <option value="PEN">S/ (PEN)</option>
+                <option value="USD">USD</option>
+              </select>
+            </div>
+            <div style={{ display:'flex', alignItems:'flex-end', paddingBottom:8 }}>
+              <label style={{ display:'flex', alignItems:'center', gap:8, fontSize:12.5, cursor:'pointer' }}>
+                <input type="checkbox" checked={!!form.principal} onChange={e=>setForm({...form, principal:e.target.checked})}/>
+                <span>Cuenta principal (abono de sueldo)</span>
+              </label>
+            </div>
+            <div style={{ gridColumn:'1/-1' }}>
+              <label className="flabel">Observaciones</label>
+              <textarea className="fi" rows={2} value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})}/>
+            </div>
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-ghost" disabled={busy} onClick={()=>{setModal(false); setEditing(null);}}>Cancelar</button>
+            <button className="btn btn-amber" disabled={busy} onClick={guardar}><JxIcon name="check" size={13}/>{busy ? 'Guardando…' : (editing ? 'Guardar' : 'Agregar')}</button>
+          </div>
+        </Modal>
+      )}
+    </>
   );
 }
 

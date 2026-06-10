@@ -2547,29 +2547,89 @@ function ImportarPage({ showToast }) {
     setImp(true);
     setProgress({ current:0, total: transformedRows.length });
     let okCount = 0;
+    let cuentasCreadas = 0;
     const errorList = [];
     const now = new Date().toISOString();
 
+    // Personal: la plantilla completa trae también las CUENTAS BANCARIAS del
+    // trabajador (separadas por transform en `__cuentas`). Acá se reparten:
+    // los datos personales van a `personal` (upsert por DNI — re-importar la
+    // plantilla actualiza en vez de duplicar) y las cuentas a
+    // `personal_cuentas_bancarias` (Cuentas Bancarias → Personal).
+    const esPersonal = modId === 'personal';
+    const personalPorDni = new Map();
+    const cuentasExistentes = [];
+    if (esPersonal && obraId) {
+      try {
+        (await window.__db.personal.where('obra_id').equals(obraId).toArray())
+          .filter(p => !p.deleted_at && p.dni)
+          .forEach(p => personalPorDni.set(String(p.dni).trim(), p));
+        cuentasExistentes.push(...(await window.__db.personal_cuentas_bancarias
+          .where('obra_id').equals(obraId).toArray()).filter(c => !c.deleted_at));
+      } catch {}
+    }
+    const guardarCuentas = async (personalId, cuentas) => {
+      for (const cta of (cuentas || [])) {
+        const dup = cuentasExistentes.find(c => c.personal_id === personalId
+          && ((cta.numero_cuenta && c.numero_cuenta === cta.numero_cuenta) || (cta.cci && c.cci === cta.cci)));
+        if (dup) continue; // ya registrada — no duplicar al re-importar
+        // Una sola principal por persona: si ya tiene, la nueva entra como secundaria.
+        const yaTienePrincipal = cuentasExistentes.some(c => c.personal_id === personalId && c.principal);
+        const id = window.__newId();
+        const rowCta = {
+          id, obra_id: obraId, personal_id: personalId,
+          banco: cta.banco, tipo_cuenta: cta.tipo_cuenta, numero_cuenta: cta.numero_cuenta,
+          cci: cta.cci, moneda: cta.moneda, principal: cta.principal && !yaTienePrincipal,
+          observaciones: null,
+          created_by: userId, updated_by: userId, created_at: now, updated_at: now,
+          version: 1, sync_status: 'pending_create', last_synced_at: null,
+          idempotency_key: `${userId}_pcb_${id}`,
+        };
+        await window.__db.personal_cuentas_bancarias.add(rowCta);
+        cuentasExistentes.push(rowCta);
+        cuentasCreadas++;
+      }
+    };
+
     for (let i = 0; i < transformedRows.length; i++) {
-      const row = transformedRows[i];
+      const { __cuentas, ...row } = transformedRows[i];
       const errs = validateRow(row, modId, modCfg);
       if (errs.length) {
         errorList.push({ row:i+2, error: errs.join('; ') });
       } else {
         try {
-          const record = {
-            ...row,
-            id: window.__newId(),
-            ...(NEEDS_OBRA(modId) ? { obra_id: obraId } : {}),
-            created_by: userId,
-            updated_by: userId,
-            created_at: now,
-            updated_at: now,
-            version: 1,
-            sync_status: 'pending_create',
-            last_synced_at: null,
-          };
-          await window.__db[modCfg.table].add(record);
+          const existente = esPersonal ? personalPorDni.get(String(row.dni || '').trim()) : null;
+          if (existente) {
+            // Upsert: actualizar solo con valores NO vacíos (no pisar datos
+            // buenos con celdas vacías de la plantilla).
+            const patch = {};
+            Object.entries(row).forEach(([k, v]) => { if (v !== null && v !== undefined && v !== '') patch[k] = v; });
+            delete patch.estado; // no reactivar/desactivar gente desde la plantilla
+            await window.__db.personal.update(existente.id, {
+              ...patch, updated_by: userId, updated_at: now,
+              version: (existente.version ?? 0) + 1,
+              sync_status: existente.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+            });
+            if (__cuentas?.length) await guardarCuentas(existente.id, __cuentas);
+          } else {
+            const record = {
+              ...row,
+              id: window.__newId(),
+              ...(NEEDS_OBRA(modId) ? { obra_id: obraId } : {}),
+              created_by: userId,
+              updated_by: userId,
+              created_at: now,
+              updated_at: now,
+              version: 1,
+              sync_status: 'pending_create',
+              last_synced_at: null,
+            };
+            await window.__db[modCfg.table].add(record);
+            if (esPersonal) {
+              if (record.dni) personalPorDni.set(String(record.dni).trim(), record);
+              if (__cuentas?.length) await guardarCuentas(record.id, __cuentas);
+            }
+          }
           okCount++;
         } catch (e) {
           errorList.push({ row:i+2, error: e.message || 'Error al insertar' });
@@ -2577,6 +2637,9 @@ function ImportarPage({ showToast }) {
       }
       setProgress({ current:i+1, total: transformedRows.length });
       if (i % 25 === 0) await new Promise(r => setTimeout(r, 0));
+    }
+    if (cuentasCreadas) {
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'personal_cuentas_bancarias' } })); } catch {}
     }
 
     const res = { ok: okCount, errors: errorList.length, errorList };
@@ -2596,7 +2659,7 @@ function ImportarPage({ showToast }) {
     setHist(newHist);
     localStorage.setItem('importaciones_historial', JSON.stringify(newHist));
 
-    showToast(`Importación: ${okCount} OK · ${errorList.length} errores`, errorList.length ? 'amber' : 'green');
+    showToast(`Importación: ${okCount} OK${cuentasCreadas ? ` · ${cuentasCreadas} cuentas bancarias` : ''} · ${errorList.length} errores`, errorList.length ? 'amber' : 'green');
   };
 
   // ── RESULT SCREEN ──────────────────────────────────────────

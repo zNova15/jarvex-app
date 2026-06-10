@@ -4727,6 +4727,11 @@ function PersonalPage({ showToast }) {
       fecha_nacimiento: p.fecha_nacimiento || '',
       fecha_ingreso: p.fecha_ingreso || '',
       telefono: p.telefono || '',
+      email: p.email || '',
+      direccion: p.direccion || '',
+      contacto_emergencia: p.contacto_emergencia || '',
+      telefono_emergencia: p.telefono_emergencia || '',
+      regimen_pension: p.regimen_pension || '',
       estado: p.estado || 'activo',
       obra_id: p.obra_id || obraId || '',
       subcontratista_id: p.subcontratista_id || '',
@@ -4843,6 +4848,11 @@ function PersonalPage({ showToast }) {
           fecha_nacimiento: form.fecha_nacimiento || null,
           fecha_ingreso: form.fecha_ingreso || null,
           telefono: form.telefono?.trim() || null,
+          email: form.email?.trim() || null,
+          direccion: form.direccion?.trim() || null,
+          contacto_emergencia: form.contacto_emergencia?.trim() || null,
+          telefono_emergencia: form.telefono_emergencia?.trim() || null,
+          regimen_pension: form.regimen_pension?.trim() || null,
           estado: form.estado || 'activo',
           subcontratista_id: subId,
           es_jefe_subcontrato: esJefe,
@@ -4872,6 +4882,11 @@ function PersonalPage({ showToast }) {
           fecha_nacimiento: form.fecha_nacimiento || null,
           fecha_ingreso: form.fecha_ingreso || new Date().toISOString().slice(0,10),
           telefono: form.telefono?.trim() || null,
+          email: form.email?.trim() || null,
+          direccion: form.direccion?.trim() || null,
+          contacto_emergencia: form.contacto_emergencia?.trim() || null,
+          telefono_emergencia: form.telefono_emergencia?.trim() || null,
+          regimen_pension: form.regimen_pension?.trim() || null,
           estado: 'activo',
           subcontratista_id: subId,
           es_jefe_subcontrato: esJefe,
@@ -5009,6 +5024,14 @@ function PersonalPage({ showToast }) {
             </div>
           </div>
           <div><label className="flabel">Teléfono</label><input className="fi" placeholder="9 dígitos" inputMode="numeric" maxLength={9} value={form.telefono||''} onChange={e=>setForm({...form, telefono:e.target.value.replace(/\D/g,'').slice(0,9)})}/></div>
+          <div><label className="flabel">Email</label><input className="fi" type="email" placeholder="correo@gmail.com" value={form.email||''} onChange={e=>setForm({...form, email:e.target.value})}/></div>
+          <div style={{gridColumn:'1/-1'}}><label className="flabel">Dirección</label><input className="fi" placeholder="Jr./Av./Caserío…" value={form.direccion||''} onChange={e=>setForm({...form, direccion:e.target.value})}/></div>
+          <div><label className="flabel">Contacto de emergencia</label><input className="fi" placeholder="Nombre del familiar" value={form.contacto_emergencia||''} onChange={e=>setForm({...form, contacto_emergencia:e.target.value})}/></div>
+          <div><label className="flabel">Teléfono de emergencia</label><input className="fi" placeholder="9 dígitos" inputMode="numeric" maxLength={9} value={form.telefono_emergencia||''} onChange={e=>setForm({...form, telefono_emergencia:e.target.value.replace(/\D/g,'').slice(0,9)})}/></div>
+          <div><label className="flabel">Régimen de pensión</label>
+            <input className="fi" list="regimenes-pension" placeholder="ONP / AFP Integra…" value={form.regimen_pension||''} onChange={e=>setForm({...form, regimen_pension:e.target.value})}/>
+            <datalist id="regimenes-pension"><option value="ONP"/><option value="AFP Integra"/><option value="AFP Prima"/><option value="AFP Profuturo"/><option value="AFP Habitat"/><option value="Sin régimen"/></datalist>
+          </div>
           <div><label className="flabel">Cargo</label>
             <select className="fi" value={form.cargo||''} onChange={e=>{
               const v = e.target.value;

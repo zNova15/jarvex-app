@@ -26,6 +26,16 @@ export const db = new Dexie('JarvexDB');
 // subcontratista_id para listar "el personal de este subcontrato". Los campos
 // es_jefe_subcontrato y seguro_a_cargo son props sin índice (Dexie los acepta).
 // Aditivo: el personal existente queda con subcontratista_id undefined = directo.
+// Versión 23: Cuentas bancarias del PERSONAL (trabajadores). Tabla propia —
+// `cuentas_bancarias` es de empresas (saldo → flujo de caja en Tesorería) y
+// mezclar trabajadores contaminaría esas agregaciones. Una persona puede tener
+// varias cuentas (sueldo, CTS). Los campos banco/cci/moneda/principal son props
+// sin índice. Los campos nuevos de personal (email, direccion, contacto_emergencia,
+// telefono_emergencia, regimen_pension) también son props sin índice. Aditivo.
+db.version(23).stores({
+  personal_cuentas_bancarias: 'id, obra_id, personal_id, deleted_at, sync_status',
+});
+
 // Versión 22: Frentes de trabajo (catálogo per-obra, espejo de ubicaciones_obra)
 // + historial individual de personal (timeline de cambios de cargo/frente/estado).
 // personal.frente_id es prop sin índice (Dexie la acepta). Aditivo.

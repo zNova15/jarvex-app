@@ -308,6 +308,16 @@ export function useHistorialPersonal(personal_id) {
   , [personal_id]);
 }
 
+// Cuentas bancarias del PERSONAL (trabajadores) — tabla propia, separada de
+// cuentas_bancarias (empresas/tesorería). Por obra.
+export function usePersonalCuentas(obra_id) {
+  return useOfflineData('personal_cuentas_bancarias', q =>
+    obra_id
+      ? q.where('obra_id').equals(obra_id).filter(c => !c.deleted_at).toArray()
+      : q.filter(c => !c.deleted_at).toArray()
+  , [obra_id]);
+}
+
 // ── Contabilidad ─────────────────────────────────────────────────────
 export function useCompanies() {
   return useOfflineData('companies', q =>

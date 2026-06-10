@@ -42,9 +42,13 @@ export async function downloadTemplate(modulo) {
       ],
     },
     personal: {
-      headers: ['nombres','apellidos','dni','cargo','area','fecha_ingreso','telefono'],
+      // Plantilla COMPLETA: datos de la persona + sus cuentas bancarias en la
+      // misma fila. Al importar, el sistema separa: los datos personales van a
+      // Personal y las columnas de banco crean las cuentas en "Cuentas
+      // Bancarias → Personal" enlazadas por DNI.
+      headers: ['nombres','apellidos','dni','cargo','area','fecha_nacimiento','fecha_ingreso','telefono','email','direccion','contacto_emergencia','telefono_emergencia','regimen_pension','banco','tipo_cuenta','numero_cuenta','cci','moneda','banco_cts','cuenta_cts'],
       sample: [
-        ['Carlos','Mendoza','40123456','Capataz','Estructuras','2026-01-15','987111111'],
+        ['Carlos','Mendoza Quispe','40123456','Capataz','Estructuras','1985-04-12','2026-01-15','987111111','carlos.mendoza@gmail.com','Jr. Los Pinos 123, Cajamarca','María Quispe','976222333','AFP Integra','BCP','ahorros','19112345678012','00219111234567801299','PEN','Banco de la Nación','04-123-456789'],
       ],
     },
     partidas: {
@@ -97,18 +101,51 @@ export const MODULES = {
   personal: {
     table: 'personal',
     requiredFields: ['nombres','apellidos','dni'],
-    fields: ['nombres','apellidos','dni','cargo','area','fecha_nacimiento','fecha_ingreso','telefono'],
-    transform: (row) => ({
-      nombres: String(row.nombres || '').trim(),
-      apellidos: String(row.apellidos || '').trim(),
-      dni: String(row.dni || '').trim(),
-      cargo: row.cargo || null,
-      area: row.area || null,
-      fecha_nacimiento: row.fecha_nacimiento || null,
-      fecha_ingreso: row.fecha_ingreso || null,
-      telefono: row.telefono ? String(row.telefono) : null,
-      estado: 'activo',
-    }),
+    fields: ['nombres','apellidos','dni','cargo','area','fecha_nacimiento','fecha_ingreso','telefono',
+             'email','direccion','contacto_emergencia','telefono_emergencia','regimen_pension',
+             'banco','tipo_cuenta','numero_cuenta','cci','moneda','banco_cts','cuenta_cts'],
+    transform: (row) => {
+      const txt = (v) => (v == null ? null : String(v).trim() || null);
+      // Las columnas de BANCO no van a la tabla personal: se separan en
+      // `__cuentas` y el importador las crea en personal_cuentas_bancarias
+      // (sección Cuentas Bancarias → Personal) enlazadas a la persona.
+      const cuentas = [];
+      if (txt(row.banco) || txt(row.numero_cuenta) || txt(row.cci)) {
+        cuentas.push({
+          banco: txt(row.banco) || 'Banco',
+          tipo_cuenta: (txt(row.tipo_cuenta) || 'ahorros').toLowerCase(),
+          numero_cuenta: txt(row.numero_cuenta),
+          cci: txt(row.cci)?.replace(/[\s-]/g, '') || null,
+          moneda: (txt(row.moneda) || 'PEN').toUpperCase(),
+          principal: true,
+        });
+      }
+      if (txt(row.banco_cts) || txt(row.cuenta_cts)) {
+        cuentas.push({
+          banco: txt(row.banco_cts) || 'Banco de la Nación',
+          tipo_cuenta: 'cts',
+          numero_cuenta: txt(row.cuenta_cts),
+          cci: null, moneda: 'PEN', principal: false,
+        });
+      }
+      return {
+        nombres: String(row.nombres || '').trim(),
+        apellidos: String(row.apellidos || '').trim(),
+        dni: String(row.dni || '').trim(),
+        cargo: txt(row.cargo),
+        area: txt(row.area),
+        fecha_nacimiento: row.fecha_nacimiento || null,
+        fecha_ingreso: row.fecha_ingreso || null,
+        telefono: row.telefono ? String(row.telefono) : null,
+        email: txt(row.email),
+        direccion: txt(row.direccion),
+        contacto_emergencia: txt(row.contacto_emergencia),
+        telefono_emergencia: row.telefono_emergencia ? String(row.telefono_emergencia) : null,
+        regimen_pension: txt(row.regimen_pension),
+        estado: 'activo',
+        ...(cuentas.length ? { __cuentas: cuentas } : {}),
+      };
+    },
   },
   partidas: {
     table: 'partidas',

@@ -63,7 +63,7 @@ async function cargarContexto(obraId) {
     movMat, movHerr, movEpp, movMaq, movEmer,
     mantsAll, horas, comb, caja, asist,
     mats, herrs, epps, activos, insEmer,
-    personal, subs, provs, ubic, evid, fren,
+    personal, subs, provs, ubic, evid, fren, pcb,
   ] = await Promise.all([
     porObra('movimientos_materiales'), porObra('movimientos_herramientas'), porObra('movimientos_epp'),
     porObra('movimientos_maquinaria'), porObra('movimientos_insumos_emergencia'),
@@ -73,6 +73,7 @@ async function cargarContexto(obraId) {
     porObra('materiales'), porObra('herramientas'), porObra('epps'), todos('activos_pesados'), porObra('insumos_emergencia'),
     porObra('personal'), todos('subcontratistas'), todos('proveedores'), porObra('ubicaciones_obra'),
     porObra('evidencias').catch(() => []), porObra('frentes_obra').catch(() => []),
+    porObra('personal_cuentas_bancarias').catch(() => []),
   ]);
   // mantenimientos_maquinaria NO tiene obra_id → lo scopeamos a los activos de
   // esta obra (asignados a la obra o que tienen movimientos en ella).
@@ -81,12 +82,18 @@ async function cargarContexto(obraId) {
     ...movMaq.map((m) => m.activo_id),
   ].filter(Boolean));
   const mants = (mantsAll || []).filter((m) => activoIdsObra.has(m.activo_id));
+  // Cuentas bancarias de los trabajadores agrupadas por persona.
+  const pcbByPersonal = new Map();
+  (pcb || []).forEach((c) => {
+    if (!pcbByPersonal.has(c.personal_id)) pcbByPersonal.set(c.personal_id, []);
+    pcbByPersonal.get(c.personal_id).push(c);
+  });
   return {
     movMat, movHerr, movEpp, movMaq, movEmer, mants, horas, comb, caja, asist,
-    mats, herrs, epps, activos, insEmer, personal, subs, provs, ubic, evid, fren,
+    mats, herrs, epps, activos, insEmer, personal, subs, provs, ubic, evid, fren, pcb,
     matById: byId(mats), herrById: byId(herrs), eppById: byId(epps), activoById: byId(activos),
     insEmerById: byId(insEmer), personalById: byId(personal), subsById: byId(subs),
-    provById: byId(provs), ubicById: byId(ubic), frenById: byId(fren),
+    provById: byId(provs), ubicById: byId(ubic), frenById: byId(fren), pcbByPersonal,
   };
 }
 
@@ -202,8 +209,32 @@ export const DATASETS = [
       if (f?.responsable && f.responsable.startsWith('sub:')) { const id = f.responsable.slice(4); list = list.filter((p) => p.subcontratista_id === id); }
       if (q) list = list.filter((p) => `${p.nombres} ${p.apellidos} ${p.dni}`.toLowerCase().includes(q));
       list.sort((a, b) => `${a.apellidos} ${a.nombres}`.localeCompare(`${b.apellidos} ${b.nombres}`));
-      const rows = list.map((p) => [p.nombres || '', p.apellidos || '', p.dni || '', p.cargo || '', p.area || '', p.frente_id ? (c.frenById.get(p.frente_id)?.nombre || '') : '', p.estado || 'activo', p.subcontratista_id ? 'Subcontrato' : 'Directo', p.subcontratista_id ? (c.subsById.get(p.subcontratista_id)?.razon_social || '') : '', p.es_jefe_subcontrato ? 'Sí' : '', p.seguro_a_cargo || '', p.fecha_ingreso || '', p.fecha_nacimiento || '', p.telefono || '']);
-      return { headers: ['Nombres', 'Apellidos', 'DNI', 'Cargo', 'Área', 'Frente', 'Estado', 'Vínculo', 'Subcontrato', 'Jefe Subcontrato', 'Seguro a cargo', 'Fecha Ingreso', 'Fecha Nac.', 'Teléfono'], rows };
+      // Headers ASCII (sin tildes) para que el round-trip con el importador
+      // genérico (autoMap normaliza quitando acentos) y el restore funcionen.
+      // La cuenta PRINCIPAL y la CTS van inline (como la plantilla de import);
+      // si hay más cuentas, están completas en el dataset "Cuentas bancarias".
+      const rows = list.map((p) => {
+        const ctas = c.pcbByPersonal?.get(p.id) || [];
+        const ppal = ctas.find((x) => x.principal) || ctas.find((x) => x.tipo_cuenta !== 'cts') || null;
+        const cts = ctas.find((x) => x.tipo_cuenta === 'cts') || null;
+        return [p.nombres || '', p.apellidos || '', p.dni || '', p.cargo || '', p.area || '',
+          p.frente_id ? (c.frenById.get(p.frente_id)?.nombre || '') : '', p.estado || 'activo',
+          p.subcontratista_id ? 'Subcontrato' : 'Directo', p.subcontratista_id ? (c.subsById.get(p.subcontratista_id)?.razon_social || '') : '',
+          p.es_jefe_subcontrato ? 'Sí' : '', p.seguro_a_cargo || '', p.fecha_ingreso || '', p.fecha_nacimiento || '', p.telefono || '',
+          p.email || '', p.direccion || '', p.contacto_emergencia || '', p.telefono_emergencia || '', p.regimen_pension || '',
+          ppal?.banco || '', ppal?.tipo_cuenta || '', ppal?.numero_cuenta || '', ppal?.cci || '', ppal?.moneda || '',
+          cts?.banco || '', cts?.numero_cuenta || ''];
+      });
+      return { headers: ['Nombres', 'Apellidos', 'DNI', 'Cargo', 'Area', 'Frente', 'Estado', 'Vínculo', 'Subcontrato', 'Jefe Subcontrato', 'Seguro a cargo', 'Fecha Ingreso', 'Fecha Nacimiento', 'Telefono', 'Email', 'Direccion', 'Contacto Emergencia', 'Telefono Emergencia', 'Regimen Pension', 'Banco', 'Tipo Cuenta', 'Numero Cuenta', 'CCI', 'Moneda', 'Banco CTS', 'Cuenta CTS'], rows };
+    } },
+  { id: 'personal_cuentas', label: 'Cuentas bancarias (personal)', icon: 'dollar', color: '#16A085', grupo: 'RRHH', filtrable: false,
+    build: (c, f) => {
+      const q = (f?.q || '').toLowerCase();
+      let list = (c.pcb || []).slice();
+      if (q) list = list.filter((x) => { const p = c.personalById.get(x.personal_id); return `${p?.nombres || ''} ${p?.apellidos || ''} ${p?.dni || ''} ${x.banco || ''}`.toLowerCase().includes(q); });
+      list.sort((a, b) => { const pa = c.personalById.get(a.personal_id), pb = c.personalById.get(b.personal_id); return `${pa?.apellidos || ''} ${pa?.nombres || ''}`.localeCompare(`${pb?.apellidos || ''} ${pb?.nombres || ''}`); });
+      return { headers: ['Nombres', 'Apellidos', 'DNI', 'Banco', 'Tipo Cuenta', 'Numero Cuenta', 'CCI', 'Moneda', 'Principal', 'Observaciones'],
+        rows: list.map((x) => { const p = c.personalById.get(x.personal_id); return [p?.nombres || '', p?.apellidos || '', p?.dni || '', x.banco || '', x.tipo_cuenta || '', x.numero_cuenta || '', x.cci || '', x.moneda || 'PEN', x.principal ? 'Sí' : '', x.observaciones || '']; }) };
     } },
   { id: 'frentes', label: 'Frentes de Trabajo', icon: 'flag', color: '#D35400', grupo: 'RRHH', filtrable: false,
     build: (c) => ({ headers: ['Frente', 'Descripción', 'Ingeniero a cargo', 'Orden', 'Activo'],
