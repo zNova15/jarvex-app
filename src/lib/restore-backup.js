@@ -165,7 +165,13 @@ export async function restaurarBackup(file, { userId = 'offline', obraId, isPrue
   };
 
   for (const sh of porTipo('personal')) for (const row of sh.rows) {
-    try { const g = rowGet(row); const dni = (g('DNI') || '').toString().replace(/\D/g, '');
+    try { const g = rowGet(row);
+      // DNI = dígitos; CE/pasaporte = alfanumérico (no destruir las letras).
+      const tdRaw = normTxt(g('Tipo Documento', 'Tipo Doc') || 'dni');
+      const tipoDoc = tdRaw.includes('extranjeria') || tdRaw === 'ce' ? 'ce' : tdRaw.includes('pasaporte') ? 'pasaporte' : 'dni';
+      const dni = tipoDoc === 'dni'
+        ? (g('DNI') || '').toString().replace(/\D/g, '')
+        : (g('DNI') || '').toString().replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
       const nombres = (g('Nombres') || '').toString().trim(); if (!nombres) continue;
       const apellidos = (g('Apellidos') || '').toString().trim();
       const nomKey = normTxt(`${nombres} ${apellidos}`);
@@ -178,7 +184,7 @@ export async function restaurarBackup(file, { userId = 'offline', obraId, isPrue
       }
       const subNom = g('Subcontrato'); const subId = subNom ? subMap.get(normTxt(subNom)) || null : null;
       const frNom = g('Frente'); const frId = frNom ? frenteMap.get(normTxt(frNom)) || null : null;
-      const rec = await add('personal', { obra_id: obraId, nombres, apellidos, dni: dni || `RES-${normTxt(nombres + apellidos).slice(0, 14)}`,
+      const rec = await add('personal', { obra_id: obraId, nombres, apellidos, dni: dni || `RES-${normTxt(nombres + apellidos).slice(0, 14)}`, tipo_documento: tipoDoc,
         cargo: g('Cargo') || null, area: g('Área', 'Area') || null, estado: g('Estado') || 'activo',
         subcontratista_id: subId, es_jefe_subcontrato: String(g('Jefe Subcontrato') || '').toLowerCase().startsWith('s'), seguro_a_cargo: g('Seguro a cargo') || (subId ? 'empresa' : null), frente_id: frId,
         fecha_ingreso: g('Fecha Ingreso') || null, fecha_nacimiento: g('Fecha Nac.', 'Fecha Nacimiento') || null, telefono: (g('Teléfono', 'Telefono') || '').toString() || null,

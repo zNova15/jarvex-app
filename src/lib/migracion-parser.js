@@ -239,7 +239,15 @@ export function parsePersonal(rows) {
     const nombres = txt(g('Nombres', 'Nombre'));
     const apellidos = txt(g('Apellidos', 'Apellido'));
     if (!nombres && !apellidos) return;
-    const dni = String(g('DNI') ?? '').replace(/\D/g, '');
+    // Tipo de documento: dni (default) | ce (carnet extranjería) | pasaporte.
+    // El número se sanitiza según el tipo: DNI solo dígitos; CE/pasaporte
+    // alfanumérico (un CE como "001043328" o pasaporte "AB123456" no debe
+    // perder letras).
+    const tdRaw = normTxt(txt(g('Tipo Documento', 'Tipo Doc', 'Tipo de documento')) || 'dni');
+    const tipoDoc = tdRaw.includes('extranjeria') || tdRaw === 'ce' ? 'ce'
+      : tdRaw.includes('pasaporte') ? 'pasaporte' : 'dni';
+    const numRaw = String(g('DNI', 'Documento', 'N° Documento', 'Numero Documento') ?? '');
+    const dni = tipoDoc === 'dni' ? numRaw.replace(/\D/g, '') : numRaw.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
     const cuentas = [];
     const banco = txt(g('Banco'));
     const nroCta = txt(g('Numero Cuenta', 'Número Cuenta', 'N° Cuenta', 'Nro Cuenta', 'Numero de cuenta', 'Cuenta'));
@@ -262,6 +270,7 @@ export function parsePersonal(rows) {
       nombres: nombres || '',
       apellidos: apellidos || '',
       dni,
+      tipoDoc,
       cargo: txt(g('Cargo')),
       area: txt(g('Area', 'Área')),
       frente: txt(g('Frente', 'Frente/Zona')),
@@ -280,6 +289,57 @@ export function parsePersonal(rows) {
     });
   });
   return out;
+}
+
+/** "ELVIS IVAN HUATAY" → "Elvis Ivan Huatay". RENIEC devuelve todo en
+ *  MAYÚSCULAS; al autocompletar/corregir lo pasamos a Título para que quede
+ *  como el resto del roster. */
+export function titleCaseNombre(s) {
+  return String(s || '').toLowerCase().replace(/(^|[\s'-])\p{L}/gu, (c) => c.toUpperCase()).trim();
+}
+
+/** ¿Distancia de edición ≤ 1? (typo de una letra, p.ej. "Huaman"/"Huamán" ya
+ *  normalizado, o "Quispe"/"Quizpe"). Barato y suficiente para nombres. */
+function lev1(a, b) {
+  if (a === b) return true;
+  const la = a.length, lb = b.length;
+  if (Math.abs(la - lb) > 1) return false;
+  let i = 0, j = 0, edits = 0;
+  while (i < la && j < lb) {
+    if (a[i] === b[j]) { i++; j++; continue; }
+    if (++edits > 1) return false;
+    if (la === lb) { i++; j++; }
+    else if (la > lb) i++;
+    else j++;
+  }
+  return edits + (la - i) + (lb - j) <= 1;
+}
+
+/**
+ * Compara los nombres del Excel contra lo que devolvió RENIEC para ese DNI.
+ * Devuelve { estado, coincidencias, total, ratio }:
+ *   ok          → coinciden (incluye orden distinto y tildes)
+ *   difiere     → coincidencia parcial (typo, segundo nombre faltante…) →
+ *                 sugerir corregir con los datos RENIEC
+ *   no_coincide → NADA coincide → el DNI probablemente está mal escrito →
+ *                 recomendar verificar el número
+ */
+export function compararNombresReniec(excelNombres, excelApellidos, reniec) {
+  const tok = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-zñ ]/g, ' ').split(/\s+/).filter((t) => t.length >= 2);
+  const ex = [...tok(excelNombres), ...tok(excelApellidos)];
+  const rn = [...tok(reniec?.nombres), ...tok(reniec?.apellidoPaterno), ...tok(reniec?.apellidoMaterno)];
+  if (!ex.length || !rn.length) return { estado: 'sin_datos', coincidencias: 0, total: Math.max(ex.length, rn.length), ratio: 0 };
+  let match = 0;
+  const usados = new Set();
+  for (const t of ex) {
+    const hit = rn.findIndex((r, i) => !usados.has(i) && (r === t || (t.length >= 4 && lev1(t, r))));
+    if (hit >= 0) { usados.add(hit); match++; }
+  }
+  const total = Math.max(ex.length, rn.length);
+  const ratio = match / total;
+  const estado = ratio >= 0.99 ? 'ok' : (match >= 2 || ratio >= 0.5) ? 'difiere' : 'no_coincide';
+  return { estado, coincidencias: match, total, ratio };
 }
 
 /**

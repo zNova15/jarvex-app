@@ -94,8 +94,9 @@ function validateRow(row, mod, modCfg) {
       errors.push(`Falta "${f}"`);
     }
   });
-  if (mod === 'personal' && row.dni && !/^\d{8}$/.test(String(row.dni).trim())) {
-    errors.push('DNI debe tener 8 dígitos');
+  // DNI = 8 dígitos; CE/pasaporte = alfanumérico (formatos variables).
+  if (mod === 'personal' && row.dni && (row.tipo_documento || 'dni') === 'dni' && !/^\d{8}$/.test(String(row.dni).trim())) {
+    errors.push('DNI debe tener 8 dígitos (si es carnet de extranjería o pasaporte, llená la columna tipo_documento)');
   }
   if (mod === 'proveedores' && row.ruc && !/^\d{11}$/.test(String(row.ruc).trim())) {
     errors.push('RUC debe tener 11 dígitos');

@@ -26,7 +26,7 @@ import { detectarSugerencias, detectarDuplicados, fusionarInsumos } from "../lib
 import {
   detectFormato, FORMATOS,
   parseInsumosTotales, parseInsumosEmergencia, parsePersonal, parseMovimientos, parseMovMaquinariaAsignacion, resumenMovimientos,
-  normTxt,
+  normTxt, compararNombresReniec, titleCaseNombre,
 } from "../lib/migracion-parser.js";
 
 // Plantillas descargables por formato. Columnas RICAS y organizadas (mismo
@@ -41,8 +41,8 @@ export const TEMPLATES = {
   mov_maquinaria:     { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Maquinaria', 'Estado', 'Cantidad', 'Tipo de Movimiento', 'Almacén', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente / Zona', 'Documento', 'Observaciones'], sample: ['1', '21/05/2026', '08:30', 'Rotomartillo', 'Nuevo', '1', 'Ingreso', 'Almacén Central', '', '', '', '', '', ''] },
   mov_emergencia:     { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Insumo de Emergencia', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente / Zona', 'Documento', 'Observaciones'], sample: ['1', '21/05/2026', '08:30', 'Extintor PQS 6kg', 'Und', '4', 'Ingreso', 'Seguridad SAC', '', '', '', '', ''] },
   mov_maquinaria_asignacion: { headers: ['ID', 'Fecha', 'Hora', 'Equipo', 'Movimiento', 'Tipo destino', 'Asignado a', 'Frente / Zona', 'Observación'], sample: ['1', '21/05/2026', '08:30', 'Excavadora CAT 320', 'Salida', 'Personal', 'Juan Pérez', 'Frente A', ''] },
-  personal: { headers: ['Nombres', 'Apellidos', 'DNI', 'Cargo', 'Area', 'Frente', 'Subcontrato', 'Seguro a cargo', 'Estado', 'Fecha Ingreso', 'Fecha Nacimiento', 'Telefono', 'Email', 'Direccion', 'Contacto Emergencia', 'Telefono Emergencia', 'Regimen Pension', 'Banco', 'Tipo Cuenta', 'Numero Cuenta', 'CCI', 'Moneda', 'Banco CTS', 'Cuenta CTS'],
-    sample: ['Carlos', 'Mendoza Quispe', '40123456', 'Capataz', 'Estructuras', 'Alcantarillado', '', 'empresa', 'activo', '15/01/2026', '12/04/1985', '987111111', 'carlos.mendoza@gmail.com', 'Jr. Los Pinos 123', 'María Quispe', '976222333', 'AFP Integra', 'BCP', 'ahorros', '19112345678012', '00219111234567801299', 'PEN', 'Banco de la Nación', '04-123-456789'] },
+  personal: { headers: ['Nombres', 'Apellidos', 'Tipo Documento', 'DNI', 'Cargo', 'Area', 'Frente', 'Subcontrato', 'Seguro a cargo', 'Estado', 'Fecha Ingreso', 'Fecha Nacimiento', 'Telefono', 'Email', 'Direccion', 'Contacto Emergencia', 'Telefono Emergencia', 'Regimen Pension', 'Banco', 'Tipo Cuenta', 'Numero Cuenta', 'CCI', 'Moneda', 'Banco CTS', 'Cuenta CTS'],
+    sample: ['Carlos', 'Mendoza Quispe', 'DNI', '40123456', 'Capataz', 'Estructuras', 'Alcantarillado', '', 'empresa', 'activo', '15/01/2026', '12/04/1985', '987111111', 'carlos.mendoza@gmail.com', 'Jr. Los Pinos 123', 'María Quispe', '976222333', 'AFP Integra', 'BCP', 'ahorros', '19112345678012', '00219111234567801299', 'PEN', 'Banco de la Nación', '04-123-456789'] },
 };
 
 export async function descargarPlantilla(formato) {
@@ -55,7 +55,7 @@ export async function descargarPlantilla(formato) {
   XLSX.writeFile(wb, `plantilla_${formato}.xlsx`);
 }
 
-const { useState: uS, useMemo: uM, useCallback: uC } = React;
+const { useState: uS, useMemo: uM, useCallback: uC, useEffect: uE } = React;
 
 const STEPS_MIG = ['Aviso', 'Archivo', 'Revisar', 'Insumos', 'Resultado'];
 
@@ -629,6 +629,10 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
   // Backup multi-hoja: si el .xlsx trae varias hojas reconocidas (ej. el export
   // histórico), guardamos la lista para que el usuario elija cuál importar.
   const [multiHojas, setMultiHojas] = uS(null); // [{ name, headers, rows, formato }]
+  // Verificación RENIEC del roster de personal (formato 'personal'):
+  // Map(idxFila → { estado, reniec, mensaje }) + filas con sugerencia aceptada.
+  const [reniecChk, setReniecChk] = uS(null);          // null | { running, current, total, resultados }
+  const [reniecAplicar, setReniecAplicar] = uS(() => new Set());
 
   const fmtMeta = formato ? FORMATOS[formato] : null;
   const esInsumos = formato === 'insumos_totales';
@@ -1205,6 +1209,61 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       detalle: `${creados} insumos de emergencia creados · ${saltados} ya existían · ${errores} con error` };
   };
 
+  // La verificación RENIEC pertenece al ARCHIVO cargado: si cambia el archivo
+  // o el formato, los resultados anteriores ya no aplican.
+  uE(() => { setReniecChk(null); setReniecAplicar(new Set()); }, [parsed, formato]);
+
+  // Verifica los DNI del roster contra RENIEC y compara nombres:
+  //   ok          → coinciden
+  //   difiere     → coincidencia parcial → sugerencia corregible con un click
+  //   no_coincide → nada coincide → el DNI probablemente está MAL ESCRITO
+  //   no_encontrado → el DNI no existe en RENIEC → verificar el número
+  // Solo aplica a tipo DNI (CE/pasaporte no están en RENIEC). Secuencial con
+  // pausa corta para no saturar el API gratuito.
+  const verificarReniec = async () => {
+    const todos = (preview?.items || []).filter(it => it.tipoDoc === 'dni' && /^\d{8}$/.test(it.dni || ''));
+    if (!todos.length) { showToast('No hay DNIs de 8 dígitos para verificar (CE/pasaporte no están en RENIEC)', 'amber'); return; }
+    if (!navigator.onLine) { showToast('Sin conexión — no se puede consultar RENIEC', 'red'); return; }
+    // Reintentar CONTINÚA donde quedó: lo ya verificado no se vuelve a
+    // consultar (la cuota es 30/min); solo se reintentan los 'error' y los
+    // que faltaban.
+    const resultados = new Map(reniecChk?.resultados || []);
+    const items = todos.filter(it => {
+      const prev = resultados.get(it.idx);
+      return !prev || prev.estado === 'error';
+    });
+    if (!items.length) { showToast('Todos los DNIs ya fueron verificados', 'green'); return; }
+    setReniecChk({ running: true, current: 0, total: items.length, resultados });
+    const aplicar = new Set(reniecAplicar);
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      try {
+        const rn = await window.__identity.consultarDNI(it.dni);
+        const cmp = compararNombresReniec(it.nombres, it.apellidos, rn);
+        resultados.set(it.idx, { estado: cmp.estado, reniec: rn, ratio: cmp.ratio });
+        if (cmp.estado === 'difiere') aplicar.add(it.idx);
+      } catch (e) {
+        const msg = String(e?.message || e);
+        // El proxy /api/reniec limita a 30 consultas/min: si llegamos al
+        // límite, cortamos acá — lo verificado queda y el resto se reintenta.
+        if (/429|demasiadas/i.test(msg)) {
+          showToast('Límite de RENIEC alcanzado (30/min) — esperá un minuto y tocá Reintentar para verificar los que faltan', 'amber');
+          break;
+        }
+        const noExiste = /404|no encontrado|not found|no existe/i.test(msg);
+        resultados.set(it.idx, { estado: noExiste ? 'no_encontrado' : 'error', mensaje: msg });
+      }
+      setReniecChk({ running: true, current: i + 1, total: items.length, resultados: new Map(resultados) });
+      // Pacing: el proxy permite 30/min → ~2.1s entre consultas para no chocar.
+      if (i < items.length - 1) await new Promise(r => setTimeout(r, 2100));
+    }
+    setReniecChk({ running: false, current: items.length, total: items.length, resultados });
+    setReniecAplicar(aplicar);
+    const difiere = [...resultados.values()].filter(r => r.estado === 'difiere').length;
+    const mal = [...resultados.values()].filter(r => r.estado === 'no_coincide' || r.estado === 'no_encontrado').length;
+    showToast(`RENIEC: ${resultados.size}/${todos.length} verificados · ${difiere} con diferencias · ${mal} DNIs a revisar`, mal ? 'amber' : 'green');
+  };
+
   // Personal: upsert por DNI (datos personales) + cuentas bancarias por
   // persona (Cuentas Bancarias → Personal). Mismo split que el import
   // genérico: re-importar el archivo NO duplica gente ni cuentas.
@@ -1248,11 +1307,19 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       try {
         const subId = it.subcontrato ? (subMap.get(normTxt(it.subcontrato)) || null) : null;
         const frId = it.frente ? (frenteMap.get(normTxt(it.frente)) || null) : null;
-        const existente = (it.dni && porDni.get(it.dni)) || (!it.dni && porNombre.get(normTxt(`${it.nombres} ${it.apellidos}`))) || null;
+        // Si la verificación RENIEC sugirió corregir y el usuario lo aceptó,
+        // usamos los nombres oficiales de RENIEC en lugar de los del Excel.
+        const rChk = reniecChk?.resultados?.get(it.idx);
+        const usarReniec = rChk?.estado === 'difiere' && reniecAplicar.has(it.idx) && rChk.reniec;
+        // RENIEC devuelve MAYÚSCULAS → a Título para que quede como el resto.
+        const nom = usarReniec ? (titleCaseNombre(rChk.reniec.nombres) || it.nombres) : it.nombres;
+        const ape = usarReniec ? (titleCaseNombre(rChk.reniec.apellidos) || it.apellidos) : it.apellidos;
+        const existente = (it.dni && porDni.get(it.dni)) || (!it.dni && porNombre.get(normTxt(`${nom} ${ape}`))) || null;
         if (existente) {
           // Merge: solo campos NO vacíos del Excel (no pisar datos buenos).
           const patch = {};
           const setIf = (k, v) => { if (v !== null && v !== undefined && v !== '') patch[k] = v; };
+          if (usarReniec) { setIf('nombres', nom); setIf('apellidos', ape); }
           setIf('cargo', it.cargo); setIf('area', it.area);
           setIf('fecha_ingreso', it.fechaIngreso); setIf('fecha_nacimiento', it.fechaNacimiento);
           setIf('telefono', it.telefono); setIf('email', it.email); setIf('direccion', it.direccion);
@@ -1260,6 +1327,9 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           setIf('regimen_pension', it.regimen);
           if (subId) patch.subcontratista_id = subId;
           if (frId) patch.frente_id = frId;
+          // Solo corregimos el tipo cuando el Excel dice EXPLÍCITAMENTE ce/pasaporte
+          // (la columna ausente cae a 'dni' y no debe pisar un CE ya registrado).
+          if (it.tipoDoc && it.tipoDoc !== 'dni' && existente.tipo_documento !== it.tipoDoc) patch.tipo_documento = it.tipoDoc;
           if (Object.keys(patch).length) {
             await window.__db.personal.update(existente.id, {
               ...patch, updated_by: userId, updated_at: now,
@@ -1270,10 +1340,11 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           }
           await guardarCuentas(existente.id, it.cuentas);
         } else {
-          if (!it.nombres) throw new Error('Fila sin nombres');
+          if (!nom) throw new Error('Fila sin nombres');
           const rec = await addRecord('personal', {
-            obra_id: obraId, nombres: it.nombres, apellidos: it.apellidos,
-            dni: it.dni || `MIG-${normTxt(it.nombres + it.apellidos).slice(0, 14)}`,
+            obra_id: obraId, nombres: nom, apellidos: ape,
+            dni: it.dni || `MIG-${normTxt(nom + ape).slice(0, 14)}`,
+            tipo_documento: it.tipoDoc || 'dni',
             cargo: it.cargo, area: it.area, estado: it.estado || 'activo',
             fecha_ingreso: it.fechaIngreso, fecha_nacimiento: it.fechaNacimiento,
             telefono: it.telefono, email: it.email, direccion: it.direccion,
@@ -1282,7 +1353,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
             subcontratista_id: subId, seguro_a_cargo: it.seguro || (subId ? 'empresa' : null), frente_id: frId,
           }, userId);
           if (it.dni) porDni.set(it.dni, rec);
-          porNombre.set(normTxt(`${it.nombres} ${it.apellidos}`), rec);
+          porNombre.set(normTxt(`${nom} ${ape}`), rec);
           creados++;
           await guardarCuentas(rec.id, it.cuentas);
         }
@@ -1482,6 +1553,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       return;
     }
     if (esPersonal) {
+      if (reniecChk?.running) { showToast('Esperá a que termine la verificación RENIEC', 'amber'); return; }
       if (!preview?.items?.length) { showToast('No hay trabajadores para procesar', 'red'); return; }
       setImp(true);
       try { const res = await runPersonal(); setResult(res); setStep(4); showToast(res.detalle, res.errors ? 'amber' : 'green'); }
@@ -1721,6 +1793,76 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
                 Los datos personales van a <strong>Personal</strong> (si el DNI ya existe, se actualiza — no se duplica) y las columnas bancarias crean las cuentas en <strong>Cuentas Bancarias → Personal</strong>, enlazadas por persona. Re-importar el mismo archivo no duplica nada.
               </div>
               {preview.sinDni > 0 && <div style={{ fontSize: 12, color: 'var(--amber)', marginTop: 8 }}>⚠️ {preview.sinDni} fila(s) sin DNI: se identifican por nombre completo (menos confiable).</div>}
+
+              {/* ── Verificación RENIEC: DNI vs Nombres/Apellidos ── */}
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px dashed var(--border)' }}>
+                {!reniecChk && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <button className="btn btn-blue btn-sm" onClick={verificarReniec}>
+                      <JxIcon name="search" size={13}/> Verificar nombres con RENIEC
+                    </button>
+                    <span style={{ fontSize: 11.5, color: 'var(--tm)' }}>
+                      Compara cada DNI contra RENIEC: si el nombre difiere poco, te sugiere la corrección; si no coincide en nada, probablemente el DNI está mal escrito. (CE y pasaporte no se verifican.)
+                    </span>
+                  </div>
+                )}
+                {reniecChk?.running && (
+                  <div style={{ fontSize: 12.5, color: 'var(--ts)' }}>
+                    Consultando RENIEC… {reniecChk.current}/{reniecChk.total}
+                    <div style={{ width: '100%', height: 6, background: 'var(--bg-c)', borderRadius: 3, overflow: 'hidden', marginTop: 6 }}>
+                      <div style={{ width: `${reniecChk.total ? (reniecChk.current / reniecChk.total * 100) : 0}%`, height: '100%', background: 'var(--blue)', transition: 'width .2s' }}/>
+                    </div>
+                  </div>
+                )}
+                {reniecChk && !reniecChk.running && (() => {
+                  const rs = [...reniecChk.resultados.entries()];
+                  const cnt = (e) => rs.filter(([, r]) => r.estado === e).length;
+                  const problemas = rs.filter(([, r]) => r.estado !== 'ok');
+                  const itemPorIdx = new Map((preview.items || []).map(it => [it.idx, it]));
+                  return (
+                    <div>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: problemas.length ? 10 : 0 }}>
+                        <span className="badge b-green">✓ {cnt('ok')} coinciden</span>
+                        {cnt('difiere') > 0 && <span className="badge b-amber">⚠ {cnt('difiere')} con diferencias</span>}
+                        {(cnt('no_coincide') + cnt('no_encontrado')) > 0 && <span className="badge b-red">✖ {cnt('no_coincide') + cnt('no_encontrado')} DNIs a revisar</span>}
+                        {cnt('error') > 0 && <span className="badge b-gray">{cnt('error')} sin respuesta</span>}
+                        <button className="btn btn-ghost btn-xs" onClick={verificarReniec} title="Volver a consultar">↻ Reintentar</button>
+                      </div>
+                      {problemas.length > 0 && (
+                        <div style={{ maxHeight: 260, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                          {problemas.slice(0, 80).map(([idx, r]) => {
+                            const it = itemPorIdx.get(idx);
+                            if (!it) return null;
+                            if (r.estado === 'difiere') {
+                              return (
+                                <label key={idx} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '8px 10px', background: 'rgba(242,183,5,0.06)', border: '1px solid rgba(242,183,5,0.3)', borderRadius: 8, cursor: 'pointer', fontSize: 12 }}>
+                                  <input type="checkbox" checked={reniecAplicar.has(idx)} style={{ marginTop: 2 }}
+                                    onChange={e => setReniecAplicar(s => { const n = new Set(s); e.target.checked ? n.add(idx) : n.delete(idx); return n; })}/>
+                                  <span>
+                                    <strong>Fila {idx}</strong> · DNI {it.dni} — el Excel dice <span style={{ color: 'var(--red)' }}>{it.nombres} {it.apellidos}</span> y RENIEC <span style={{ color: 'var(--green)' }}>{titleCaseNombre(r.reniec.nombres)} {titleCaseNombre(r.reniec.apellidos)}</span>.
+                                    <span style={{ color: 'var(--tm)' }}> Marcado = importar con el nombre de RENIEC.</span>
+                                  </span>
+                                </label>
+                              );
+                            }
+                            const msg = r.estado === 'no_encontrado'
+                              ? 'El DNI no existe en RENIEC — verificá el número.'
+                              : r.estado === 'no_coincide'
+                                ? `RENIEC devuelve "${titleCaseNombre(r.reniec?.nombres)} ${titleCaseNombre(r.reniec?.apellidos)}" — no se parece en nada: el DNI probablemente está mal escrito. Verificalo antes de importar.`
+                                : `No se pudo consultar (${r.mensaje || 'error'}).`;
+                            return (
+                              <div key={idx} style={{ padding: '8px 10px', background: r.estado === 'error' ? 'rgba(255,255,255,0.03)' : 'rgba(231,76,60,0.06)', border: `1px solid ${r.estado === 'error' ? 'var(--border)' : 'rgba(231,76,60,0.3)'}`, borderRadius: 8, fontSize: 12 }}>
+                                <strong>Fila {idx}</strong> · {it.nombres} {it.apellidos} · DNI {it.dni} — {msg}
+                              </div>
+                            );
+                          })}
+                          {problemas.length > 80 && <div style={{ fontSize: 11, color: 'var(--tm)' }}>… y {problemas.length - 80} más (corregí el Excel y volvé a subirlo).</div>}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
             </div>
           )}
 
@@ -1754,7 +1896,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
 
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
             <button className="btn btn-ghost" onClick={() => setStep(1)} disabled={importing}><JxIcon name="chevL" size={14} />Atrás</button>
-            <button className="btn btn-amber" disabled={importing || scanning || (esMov && !movHabilitado)} onClick={ejecutar}>
+            <button className="btn btn-amber" disabled={importing || scanning || reniecChk?.running || (esMov && !movHabilitado)} onClick={ejecutar}>
               {scanning ? 'Escaneando insumos…' : importing ? `Cargando… ${progress.current}/${progress.total}` : <>{esMov ? 'Revisar insumos' : 'Cargar a JARVEX'} <JxIcon name="chevR" size={14} /></>}
             </button>
           </div>

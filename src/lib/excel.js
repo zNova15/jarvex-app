@@ -46,9 +46,9 @@ export async function downloadTemplate(modulo) {
       // misma fila. Al importar, el sistema separa: los datos personales van a
       // Personal y las columnas de banco crean las cuentas en "Cuentas
       // Bancarias → Personal" enlazadas por DNI.
-      headers: ['nombres','apellidos','dni','cargo','area','fecha_nacimiento','fecha_ingreso','telefono','email','direccion','contacto_emergencia','telefono_emergencia','regimen_pension','banco','tipo_cuenta','numero_cuenta','cci','moneda','banco_cts','cuenta_cts'],
+      headers: ['nombres','apellidos','tipo_documento','dni','cargo','area','fecha_nacimiento','fecha_ingreso','telefono','email','direccion','contacto_emergencia','telefono_emergencia','regimen_pension','banco','tipo_cuenta','numero_cuenta','cci','moneda','banco_cts','cuenta_cts'],
       sample: [
-        ['Carlos','Mendoza Quispe','40123456','Capataz','Estructuras','1985-04-12','2026-01-15','987111111','carlos.mendoza@gmail.com','Jr. Los Pinos 123, Cajamarca','María Quispe','976222333','AFP Integra','BCP','ahorros','19112345678012','00219111234567801299','PEN','Banco de la Nación','04-123-456789'],
+        ['Carlos','Mendoza Quispe','dni','40123456','Capataz','Estructuras','1985-04-12','2026-01-15','987111111','carlos.mendoza@gmail.com','Jr. Los Pinos 123, Cajamarca','María Quispe','976222333','AFP Integra','BCP','ahorros','19112345678012','00219111234567801299','PEN','Banco de la Nación','04-123-456789'],
       ],
     },
     partidas: {
@@ -101,7 +101,7 @@ export const MODULES = {
   personal: {
     table: 'personal',
     requiredFields: ['nombres','apellidos','dni'],
-    fields: ['nombres','apellidos','dni','cargo','area','fecha_nacimiento','fecha_ingreso','telefono',
+    fields: ['nombres','apellidos','tipo_documento','dni','cargo','area','fecha_nacimiento','fecha_ingreso','telefono',
              'email','direccion','contacto_emergencia','telefono_emergencia','regimen_pension',
              'banco','tipo_cuenta','numero_cuenta','cci','moneda','banco_cts','cuenta_cts'],
     transform: (row) => {
@@ -128,10 +128,15 @@ export const MODULES = {
           cci: null, moneda: 'PEN', principal: false,
         });
       }
+      // Tipo de documento: dni (default) | ce | pasaporte. El número se
+      // sanitiza según el tipo (un CE/pasaporte puede llevar letras).
+      const tdRaw = String(row.tipo_documento || 'dni').toLowerCase();
+      const tipoDoc = tdRaw.includes('extranjer') || tdRaw === 'ce' ? 'ce' : tdRaw.includes('pasaporte') ? 'pasaporte' : 'dni';
       return {
         nombres: String(row.nombres || '').trim(),
         apellidos: String(row.apellidos || '').trim(),
-        dni: String(row.dni || '').trim(),
+        tipo_documento: tipoDoc,
+        dni: tipoDoc === 'dni' ? String(row.dni || '').trim() : String(row.dni || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase(),
         cargo: txt(row.cargo),
         area: txt(row.area),
         fecha_nacimiento: row.fecha_nacimiento || null,

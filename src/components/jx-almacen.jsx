@@ -4648,10 +4648,12 @@ function PersonalPage({ showToast }) {
       // fecha_nacimiento solo se rellena si el provider la devolvió (plan
       // premium con DECOLECTA_TOKEN) y solo si el campo está vacío, para
       // no pisar una fecha que el usuario ya corrigió a mano.
+      // RENIEC devuelve MAYÚSCULAS → a Título para que quede como el resto.
+      const tc = (s) => String(s || '').toLowerCase().replace(/(^|[\s'-])\p{L}/gu, (c) => c.toUpperCase()).trim();
       setForm(prev => ({
         ...prev,
-        nombres: data.nombres || '',
-        apellidos: data.apellidos || '',
+        nombres: tc(data.nombres),
+        apellidos: tc(data.apellidos),
         fecha_nacimiento: data.fechaNacimiento || prev.fecha_nacimiento || '',
       }));
       const extras = data.fechaNacimiento ? ` · nac. ${data.fechaNacimiento}` : '';
@@ -4722,6 +4724,7 @@ function PersonalPage({ showToast }) {
       nombres: p.nombres || '',
       apellidos: p.apellidos || '',
       dni: p.dni || '',
+      tipo_documento: p.tipo_documento || 'dni',
       cargo: p.cargo || '',
       area: p.area || '',
       fecha_nacimiento: p.fecha_nacimiento || '',
@@ -4754,13 +4757,22 @@ function PersonalPage({ showToast }) {
   };
 
   const handleSubmit = async () => {
-    const dni = String(form.dni ?? '').replace(/\D/g, '');
+    const tipoDoc = form.tipo_documento || 'dni';
+    // DNI: 8 dígitos. CE/Pasaporte: alfanumérico 5-12 (sin formato estricto —
+    // los formatos varían por país y por serie de carnet).
+    const dni = tipoDoc === 'dni'
+      ? String(form.dni ?? '').replace(/\D/g, '')
+      : String(form.dni ?? '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
     if (!form.nombres?.trim() || !form.apellidos?.trim() || !dni) {
-      showToast('Faltan campos obligatorios (nombres, apellidos, DNI)', 'red');
+      showToast('Faltan campos obligatorios (nombres, apellidos, documento)', 'red');
       return;
     }
-    if (!/^\d{8}$/.test(dni)) {
+    if (tipoDoc === 'dni' && !/^\d{8}$/.test(dni)) {
       showToast('El DNI debe tener exactamente 8 dígitos numéricos', 'red');
+      return;
+    }
+    if (tipoDoc !== 'dni' && !/^[A-Z0-9]{5,12}$/.test(dni)) {
+      showToast(`El ${tipoDoc === 'ce' ? 'carnet de extranjería' : 'pasaporte'} debe tener entre 5 y 12 caracteres alfanuméricos`, 'red');
       return;
     }
     // ── Validaciones de sentido común ───────────────────────────
@@ -4843,6 +4855,7 @@ function PersonalPage({ showToast }) {
           nombres: form.nombres.trim(),
           apellidos: form.apellidos.trim(),
           dni,
+          tipo_documento: tipoDoc,
           cargo: form.cargo || null,
           area: form.area || null,
           fecha_nacimiento: form.fecha_nacimiento || null,
@@ -4877,6 +4890,7 @@ function PersonalPage({ showToast }) {
           nombres: form.nombres.trim(),
           apellidos: form.apellidos.trim(),
           dni,
+          tipo_documento: tipoDoc,
           cargo: form.cargo || null,
           area: form.area || null,
           fecha_nacimiento: form.fecha_nacimiento || null,
@@ -5015,12 +5029,32 @@ function PersonalPage({ showToast }) {
           <div><label className="flabel">Nombres *</label><input className="fi" value={form.nombres||''} onChange={e=>setForm({...form, nombres:e.target.value})}/></div>
           <div><label className="flabel">Apellidos *</label><input className="fi" value={form.apellidos||''} onChange={e=>setForm({...form, apellidos:e.target.value})}/></div>
           <div>
-            <label className="flabel">DNI *</label>
+            <label className="flabel">Documento *</label>
             <div style={{ display:'flex', gap:6 }}>
-              <input className="fi" placeholder="8 dígitos" inputMode="numeric" maxLength={8} value={form.dni||''} onChange={e=>setForm({...form, dni:e.target.value.replace(/\D/g,'').slice(0,8)})} style={{ flex:1 }}/>
-              <button type="button" className="btn btn-blue btn-sm" disabled={reniecBusy || (form.dni||'').length !== 8} onClick={() => consultarRENIEC()} title="Consultar datos en RENIEC">
-                <JxIcon name="search" size={12}/>{reniecBusy ? '...' : 'RENIEC'}
-              </button>
+              {/* No todos tienen DNI: hay personal extranjero con carnet de
+                  extranjería o pasaporte. RENIEC solo aplica a DNI. */}
+              <select className="fi" value={form.tipo_documento||'dni'} style={{ width:110, flexShrink:0 }}
+                onChange={e=>{
+                  const t = e.target.value;
+                  // Al cambiar de tipo, re-sanitizar el número con la regla del tipo nuevo.
+                  const num = t === 'dni' ? String(form.dni||'').replace(/\D/g,'').slice(0,8) : String(form.dni||'').replace(/[^a-zA-Z0-9]/g,'').toUpperCase().slice(0,12);
+                  setForm({...form, tipo_documento:t, dni:num});
+                }}>
+                <option value="dni">DNI</option>
+                <option value="ce">C. Extranjería</option>
+                <option value="pasaporte">Pasaporte</option>
+              </select>
+              <input className="fi" style={{ flex:1 }}
+                placeholder={(form.tipo_documento||'dni')==='dni' ? '8 dígitos' : 'N° de documento'}
+                inputMode={(form.tipo_documento||'dni')==='dni' ? 'numeric' : 'text'}
+                maxLength={(form.tipo_documento||'dni')==='dni' ? 8 : 12}
+                value={form.dni||''}
+                onChange={e=>setForm({...form, dni:(form.tipo_documento||'dni')==='dni' ? e.target.value.replace(/\D/g,'').slice(0,8) : e.target.value.replace(/[^a-zA-Z0-9]/g,'').toUpperCase().slice(0,12)})}/>
+              {(form.tipo_documento||'dni')==='dni' && (
+                <button type="button" className="btn btn-blue btn-sm" disabled={reniecBusy || (form.dni||'').length !== 8} onClick={() => consultarRENIEC()} title="Consultar datos en RENIEC">
+                  <JxIcon name="search" size={12}/>{reniecBusy ? '...' : 'RENIEC'}
+                </button>
+              )}
             </div>
           </div>
           <div><label className="flabel">Teléfono</label><input className="fi" placeholder="9 dígitos" inputMode="numeric" maxLength={9} value={form.telefono||''} onChange={e=>setForm({...form, telefono:e.target.value.replace(/\D/g,'').slice(0,9)})}/></div>
