@@ -504,10 +504,14 @@ function canPushTabla(tabla) {
 // porque otros devices verían "(material no disponible)". Esperamos al
 // próximo ciclo, cuando X ya esté SYNCED.
 const FK_DEPS = {
-  movimientos_materiales:    [{ campo: 'material_id', tabla: 'materiales' }],
-  movimientos_herramientas:  [{ campo: 'herramienta_id', tabla: 'herramientas' }],
-  movimientos_epp:           [{ campo: 'epp_id', tabla: 'epps' }],
-  movimientos_maquinaria:    [{ campo: 'activo_id', tabla: 'activos_pesados' }],
+  // OJO: gatear TODAS las FKs reales del server, no solo el insumo. La
+  // migración histórica crea personas/subcontratistas pending y los
+  // movimientos que los referencian salían antes que ellos → 23503 → FAILED
+  // (los "24 registros no se pudieron subir" de la importación de herramientas).
+  movimientos_materiales:    [{ campo: 'material_id', tabla: 'materiales' }, { campo: 'responsable_id', tabla: 'personal' }, { campo: 'subcontratista_id', tabla: 'subcontratistas' }, { campo: 'proveedor_id', tabla: 'proveedores' }, { campo: 'partida_id', tabla: 'partidas' }],
+  movimientos_herramientas:  [{ campo: 'herramienta_id', tabla: 'herramientas' }, { campo: 'responsable_id', tabla: 'personal' }, { campo: 'subcontratista_id', tabla: 'subcontratistas' }],
+  movimientos_epp:           [{ campo: 'epp_id', tabla: 'epps' }, { campo: 'personal_id', tabla: 'personal' }, { campo: 'subcontratista_id', tabla: 'subcontratistas' }],
+  movimientos_maquinaria:    [{ campo: 'activo_id', tabla: 'activos_pesados' }, { campo: 'responsable_id', tabla: 'personal' }, { campo: 'subcontratista_id', tabla: 'subcontratistas' }],
   // Datasets de maquinaria + caja chica (import histórico/restore los crea en
   // el mismo lote que activos/personal pending; sin esto el INSERT hijo puede
   // ganarle la carrera al padre dentro del mismo batch paralelo → FK 23503).
@@ -515,7 +519,7 @@ const FK_DEPS = {
   consumos_combustible:      [{ campo: 'activo_id', tabla: 'activos_pesados' }, { campo: 'operador_id', tabla: 'personal' }],
   mantenimientos_maquinaria: [{ campo: 'activo_id', tabla: 'activos_pesados' }],
   caja_chica_movimientos:    [{ campo: 'responsable_id', tabla: 'personal' }],
-  movimientos_insumos_emergencia: [{ campo: 'insumo_emergencia_id', tabla: 'insumos_emergencia' }],
+  movimientos_insumos_emergencia: [{ campo: 'insumo_emergencia_id', tabla: 'insumos_emergencia' }, { campo: 'responsable_id', tabla: 'personal' }, { campo: 'subcontratista_id', tabla: 'subcontratistas' }],
   asistencia:                [{ campo: 'personal_id', tabla: 'personal' }],
   // Un trabajador puede pertenecer a la cuadrilla de un subcontratista; si ese
   // subcontratista aún es PENDING local, esperamos a que sincronice primero
@@ -540,12 +544,59 @@ async function fkDepsReady(tabla, record) {
     const id = record[campo];
     if (!id) continue; // FK opcional
     const ref = await db[tablaRef].get(id);
-    if (!ref) return false; // referencia rota — no pushear
+    // Ausente de Dexie ≠ ausente del server: los soft-deletes BORRAN la
+    // fila local del padre (tombstones del pull, reconcile sweep del full
+    // pull, pushDeletesBatch) pero el server conserva la fila física con
+    // deleted_at — la FK del hijo PASA. Bloquear acá dejaba el hijo en
+    // pending ETERNO y silencioso (ej: editar un movimiento viejo cuyo
+    // responsable fue dado de baja). Solo esperamos si el padre ESTÁ en
+    // Dexie y aún no se sincronizó; si no está, push y que el server
+    // decida — un 23503 real termina en FAILED visible y el self-heal #3
+    // lo diagnostica.
+    if (!ref) continue;
     if (ref.sync_status && ref.sync_status !== SYNC_STATUS.SYNCED) {
       return false; // todavía pendiente
     }
   }
   return true;
+}
+
+// Versión EN LOTE de fkDepsReady para pushCreatesBatch. Con FK_DEPS
+// ampliado (hasta 5 padres por movimiento) el chequeo per-record hacía
+// deps×N gets SECUENCIALES a IndexedDB repitiendo los MISMOS padres
+// (un responsable aparece en cientos de movimientos) — en un import
+// histórico de 50k filas eso son ~250k transacciones antes del primer
+// INSERT y sin feedback de progreso. Acá cada padre único se resuelve
+// UNA sola vez por pase (un bulkGet por tabla padre) y el filtro corre
+// en memoria. Misma semántica que fkDepsReady record-por-record.
+async function filtrarFkDepsListos(tabla, records) {
+  const deps = FK_DEPS[tabla];
+  if (!deps || !records.length) return records;
+  // tablaRef → Map(id → record padre | undefined)
+  const padresPorTabla = new Map();
+  for (const { campo, tabla: tablaRef } of deps) {
+    let mapa = padresPorTabla.get(tablaRef);
+    if (!mapa) { mapa = new Map(); padresPorTabla.set(tablaRef, mapa); }
+    for (const r of records) {
+      const id = r[campo];
+      if (id) mapa.set(id, undefined);
+    }
+  }
+  for (const [tablaRef, mapa] of padresPorTabla) {
+    const ids = [...mapa.keys()];
+    if (!ids.length) continue;
+    const padres = await db[tablaRef].bulkGet(ids);
+    ids.forEach((id, i) => mapa.set(id, padres[i]));
+  }
+  return records.filter(r => deps.every(({ campo, tabla: tablaRef }) => {
+    const id = r[campo];
+    if (!id) return true; // FK opcional
+    const ref = padresPorTabla.get(tablaRef).get(id);
+    // Ausente de Dexie (padre soft-deleteado) → dejar pasar; el server
+    // conserva la fila y la FK pasa. Ver comentario en fkDepsReady.
+    if (!ref) return true;
+    return !(ref.sync_status && ref.sync_status !== SYNC_STATUS.SYNCED);
+  }));
 }
 
 async function pushTablePending(tabla) {
@@ -594,10 +645,100 @@ async function pushTablePending(tabla) {
     console.info(`[SyncEngine] self-heal PGRST204: ${tabla}/${r.id} reset a ${restoreStatus}`);
   }
 
+  // Self-heal #3: FAILED por FK (23503) — "falta el registro relacionado".
+  // El re-encolado ciego del self-heal #2 nunca cura la CAUSA: el PADRE que
+  // no está en el server. Acá se repara de verdad: por cada FAILED 23503 se
+  // verifica cada padre (FK_DEPS) contra el SERVER; si el padre no existe
+  // allá pero localmente dice synced (padre fantasma, ej. dedup 23505 por
+  // DNI con otro id), se re-encola el PADRE; si todos los padres ya están
+  // en el server, se re-encola el hijo (entra limpio al próximo pase).
+  //
+  // ORDEN CRÍTICO: este bloque DEBE correr ANTES del self-heal #2. #2
+  // re-encola a ciegas cualquier FAILED no-RLS con updated_at >10min
+  // (incluye 23503), y handleSyncError NO bumpea updated_at (queda el del
+  // último edit de dominio). Si #2 corriera primero, todo 23503 viejo —
+  // exactamente el backlog de imports que motiva este fix — se flipearía
+  // a PENDING antes de que el query de acá lo vea, y la cura del padre
+  // fantasma jamás ejecutaría (loop eterno reset→23503→5 retries→FAILED).
+  const deps23503 = FK_DEPS[tabla];
+  if (deps23503) {
+    const failedFk = await db[tabla]
+      .where('sync_status').equals(SYNC_STATUS.FAILED)
+      .filter(r => String(r._last_error_code || '') === '23503')
+      .limit(50)
+      .toArray();
+    for (const r of failedFk) {
+      try {
+        // ¿QUÉ FK falló? Postgres lo dice en el mensaje del 23503:
+        // '... violates foreign key constraint "movimientos_materiales_obra_id_fkey"'.
+        // Si la FK que falló NO está mapeada en FK_DEPS (obra_id, created_by,
+        // updated_by — FKs reales del server que acá no gateamos), re-encolar
+        // es inútil: el insert vuelve a fallar con el mismo 23503 → loop
+        // caliente sin backoff (este self-heal corre cada pase, sin gate
+        // temporal) + probes de padres que nunca son la causa. En ese caso
+        // NO tocamos el record: queda FAILED y el self-heal #2 lo reintenta
+        // con su gate de 10 min. Todas las FKs del schema son inline
+        // REFERENCES → nombre default `<tabla>_<campo>_fkey`; si el mensaje
+        // no trae constraint (record viejo sin _last_error), caemos al
+        // chequeo completo de siempre.
+        const mFk = /violates foreign key constraint "([^"]+)"/i.exec(r._last_error || '');
+        if (mFk && !deps23503.some(d => mFk[1] === `${tabla}_${d.campo}_fkey`)) {
+          continue; // FK no mapeada (obra_id, created_by, ...) — no re-encolar
+        }
+        // Si conocemos la FK culpable, probar SOLO esa — no las deps
+        // inocentes. Probar deps inocentes puede flipear padres SANOS:
+        // una policy de LECTURA que oculta la fila hace que el select
+        // devuelva null SIN error (RLS filtra, no tira excepción) y acá
+        // eso se lee como "no existe en server". Caso real del repo:
+        // frentes_obra (mig 065) tiene SELECT USING (deleted_at IS NULL)
+        // — un frente soft-deleted es invisible hasta para admin; el flip
+        // lo re-INSERTa, choca 23505 (PK) y la verificación de duplicado
+        // (ciega por la misma policy) lo deja FAILED con mensaje engañoso
+        // en loop eterno con el self-heal #2. La FK culpable en cambio es
+        // probe-confiable: si causó el 23503 es porque el server NO la
+        // encontró al insertar (los checks de FK SÍ ven filas soft-deleted,
+        // así que un padre soft-deleted nunca es la causa). Si hay OTRO
+        // padre fantasma además, el re-push del hijo vuelve a fallar 23503
+        // nombrando esa FK y se cura al pase siguiente (converge).
+        const depsProbar = mFk
+          ? deps23503.filter(d => mFk[1] === `${tabla}_${d.campo}_fkey`)
+          : deps23503; // record viejo sin constraint en el mensaje → chequeo completo
+        let padresOk = true;
+        for (const { campo, tabla: tablaRef } of depsProbar) {
+          const fkId = r[campo];
+          if (!fkId) continue;
+          const { data: padreServer, error: selErr } = await supabase
+            .from(tablaRef).select('id').eq('id', fkId).maybeSingle();
+          if (selErr) { padresOk = false; break; } // sin red/permiso — no tocar
+          if (!padreServer) {
+            padresOk = false;
+            const padreLocal = await db[tablaRef].get(fkId);
+            // Solo flipear el padre si este device PUEDE pushear esa tabla:
+            // pushTablePending gatea por canPushTabla, así que en un rol sin
+            // write-perm el flip nunca se sube — deja un PENDING_CREATE
+            // imposible que encima bloquea hijos nuevos vía fkDepsReady.
+            if (padreLocal && padreLocal.sync_status === SYNC_STATUS.SYNCED && !padreLocal.demo && canPushTabla(tablaRef)) {
+              await db[tablaRef].update(fkId, { sync_status: SYNC_STATUS.PENDING_CREATE, _sync_retries: 0 });
+              console.warn(`[SyncEngine] self-heal 23503: padre fantasma ${tablaRef}/${String(fkId).slice(0, 8)} re-encolado (decía synced pero no está en server)`);
+            }
+          }
+        }
+        if (padresOk) {
+          await db[tabla].update(r.id, {
+            sync_status: (Number(r.version) || 1) <= 1 ? SYNC_STATUS.PENDING_CREATE : SYNC_STATUS.PENDING_UPDATE,
+            _sync_retries: 0,
+          });
+          console.info(`[SyncEngine] self-heal 23503: ${tabla}/${r.id.slice(0, 8)} re-encolado (padres ya en server)`);
+        }
+      } catch {}
+    }
+  }
+
   // Self-heal #2: records FAILED por causas NO permanentes (no RLS, no
   // schema cache) que llevan más de 10 min en FAILED. Probablemente fue
   // un error transitorio de red/server y vale la pena reintentar. Sin
   // este reset, un blip de Supabase deja records en FAILED para siempre.
+  // (Corre DESPUÉS del self-heal #3 a propósito — ver comentario arriba.)
   const TEN_MIN = 10 * 60 * 1000;
   const ahora = Date.now();
   const stuckTransients = await db[tabla]
@@ -636,6 +777,22 @@ async function pushTablePending(tabla) {
     .where('sync_status').equals(SYNC_STATUS.PENDING_CREATE)
     .toArray()).filter(noEsDemo);
 
+  // Movimientos: pushear en orden CRONOLÓGICO (fecha; mismo día entradas
+  // antes que salidas). Dexie devuelve por índice (orden de UUID): si una
+  // SALIDA llega al server antes que sus entradas, el trigger de stock deja
+  // stock_actual < 0 y el CHECK del server (mig 044) la rechaza con 23514 —
+  // el "error de stock negativo" tras importar una migración válida.
+  if (pendingCreates.length > 1 && pendingCreates[0] && ('fecha' in pendingCreates[0]) && ('tipo_movimiento' in pendingCreates[0])) {
+    const rank = { entrada: 0, devolucion: 1, ajuste: 2, salida: 3, merma: 4 };
+    pendingCreates.sort((a, b) => {
+      const fa = a.fecha || '', fb = b.fecha || '';
+      if (fa !== fb) return fa < fb ? -1 : 1;
+      const ra = rank[a.tipo_movimiento] ?? 5, rb = rank[b.tipo_movimiento] ?? 5;
+      if (ra !== rb) return ra - rb;
+      return String(a.created_at || '').localeCompare(String(b.created_at || ''));
+    });
+  }
+
   await pushCreatesBatch(tabla, pendingCreates);
 
   const pendingUpdates = (await db[tabla]
@@ -666,11 +823,9 @@ async function pushCreatesBatch(tabla, records) {
   if (!records.length) return;
   // Filtrar los que tienen una FK todavía pendiente en local — esos
   // esperan al próximo ciclo (anti-fantasma). Para las tablas sin FK_DEPS
-  // (insumos_partida, partidas, etc.) fkDepsReady devuelve true al toque.
-  const listos = [];
-  for (const r of records) {
-    if (await fkDepsReady(tabla, r)) listos.push(r);
-  }
+  // (insumos_partida, partidas, etc.) devuelve el array tal cual. Cada
+  // padre único se lee UNA vez (bulkGet), no deps×N gets per-record.
+  const listos = await filtrarFkDepsListos(tabla, records);
   if (!listos.length) return;
 
   for (let i = 0; i < listos.length; i += PUSH_BATCH_SIZE) {
@@ -817,9 +972,33 @@ async function pushCreate(tabla, record) {
     });
     trackEvent('record_pushed', { tabla, operacion: 'create' });
   } else if (error.code === '23505') {
-    // Unique constraint → ya existe en servidor (idempotency_key duplicado)
-    await db[tabla].update(record.id, { sync_status: SYNC_STATUS.SYNCED });
-    trackEvent('record_pushed', { tabla, operacion: 'create_dedup' });
+    // Unique constraint. Caso normal: idempotency_key duplicado → la MISMA
+    // fila ya está en el server → synced. PERO el 23505 también puede venir
+    // de OTRA unique (ej. personal UNIQUE(dni, obra_id)): el server tiene
+    // una fila equivalente con OTRO id. Marcar synced a ciegas crea un
+    // "padre fantasma" — fkDepsReady lo ve synced, los hijos lo referencian
+    // y revientan 23503 PARA SIEMPRE. Verificamos que el id real exista.
+    const { data: enServer, error: selErr } = await supabase.from(tabla).select('id').eq('id', record.id).maybeSingle();
+    if (enServer) {
+      await db[tabla].update(record.id, { sync_status: SYNC_STATUS.SYNCED });
+      trackEvent('record_pushed', { tabla, operacion: 'create_dedup' });
+    } else if (selErr) {
+      // El select de verificación FALLÓ (red caída a mitad de batch, timeout,
+      // 5xx, RLS de lectura). enServer=null NO significa "no está" — no
+      // sabemos. Diagnosticar "fila con OTRO id" acá sería un falso fantasma
+      // con mensaje engañoso. Reintentamos con el 23505 original: el próximo
+      // ciclo re-inserta → 23505 → select de nuevo, y con red sana cae en
+      // el dedup de arriba.
+      await handleSyncError(tabla, record, 'create', {
+        ...error,
+        message: `${error.message || '23505'} — verificación de duplicado no concluyente (select falló: ${selErr.message || selErr.code || 'error'})`,
+      });
+    } else {
+      await handleSyncError(tabla, record, 'create', {
+        ...error,
+        message: `${error.message || '23505'} — el server tiene una fila equivalente con OTRO id (duplicado por DNI/nombre, no por idempotency_key). Resolvé el duplicado o fusioná.`,
+      });
+    }
   } else {
     await handleSyncError(tabla, record, 'create', error);
   }
@@ -1436,12 +1615,16 @@ function esErrorRLS(error) {
   if (!error) return false;
   const code = error.code || '';
   const msg = String(error.message || '').toLowerCase();
+  // OJO: NO matchear 'new row violates' a secas — los CHECK del server
+  // (23514, ej. stock negativo transitorio por orden de llegada) dicen
+  // "new row ... violates check constraint" y NO son RLS: clasificarlos
+  // como RLS los mandaba a FAILED sin reintentos.
   return code === '42501'
     || code === 'PGRST301'
     || msg.includes('row-level security')
     || msg.includes('insufficient_privilege')
     || msg.includes('row level security')
-    || msg.includes('new row violates');
+    || msg.includes('violates row-level security');
 }
 
 let _ultimoEventoRLSEmitido = 0;

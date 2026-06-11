@@ -1125,7 +1125,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     for (let i = 0; i < movs.length; i++) {
       const m = movs[i];
       try {
-        if (!m.tipo) throw new Error(`Tipo de movimiento no reconocido`);
+        if (!m.tipo) throw new Error(m.tipoRaw ? `Tipo de movimiento no reconocido: "${m.tipoRaw}" (usá Ingreso, Salida o Traspaso)` : 'Sin tipo de movimiento (usá Ingreso, Salida o Traspaso)');
         if (!(m.cantidad > 0)) throw new Error(`Cantidad inválida`);
         if (!String(m.nombreItem || '').trim()) { saltadosNoAprobados++; continue; }
         if (esFilaInvalida(m)) { saltadosNoAprobados++; continue; }
@@ -1256,7 +1256,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     for (let i = 0; i < movs.length; i++) {
       const m = movs[i];
       try {
-        if (!m.tipo) throw new Error('Tipo de movimiento no reconocido');
+        if (!m.tipo) throw new Error(m.tipoRaw ? `Tipo de movimiento no reconocido: "${m.tipoRaw}" (usá Ingreso, Salida o Traspaso)` : 'Sin tipo de movimiento (usá Ingreso, Salida o Traspaso)');
         if (!(m.cantidad > 0)) throw new Error('Cantidad inválida');
         if (!String(m.nombreItem || '').trim()) { saltadosNoAprobados++; continue; }
         if (esFilaInvalida(m)) { saltadosNoAprobados++; continue; }
@@ -1383,7 +1383,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     for (let i = 0; i < movs.length; i++) {
       const m = movs[i];
       try {
-        if (!m.tipo) throw new Error('Tipo de movimiento no reconocido');
+        if (!m.tipo) throw new Error(m.tipoRaw ? `Tipo de movimiento no reconocido: "${m.tipoRaw}" (usá Ingreso, Salida o Traspaso)` : 'Sin tipo de movimiento (usá Ingreso, Salida o Traspaso)');
         if (!(m.cantidad > 0)) throw new Error('Cantidad inválida');
         if (!String(m.nombreItem || '').trim()) { saltadosNoAprobados++; continue; }
         if (esFilaInvalida(m)) { saltadosNoAprobados++; continue; }
@@ -1511,7 +1511,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     for (let i = 0; i < movs.length; i++) {
       const m = movs[i];
       try {
-        if (!m.tipo) throw new Error('Tipo de movimiento no reconocido');
+        if (!m.tipo) throw new Error(m.tipoRaw ? `Tipo de movimiento no reconocido: "${m.tipoRaw}" (usá Ingreso, Salida o Traspaso)` : 'Sin tipo de movimiento (usá Ingreso, Salida o Traspaso)');
         if (!(m.cantidad > 0)) throw new Error('Cantidad inválida');
         if (!String(m.nombreItem || '').trim()) { saltadosNoAprobados++; continue; }
         if (esFilaInvalida(m)) { saltadosNoAprobados++; continue; }
@@ -1810,7 +1810,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     for (let i = 0; i < movs.length; i++) {
       const m = movs[i];
       try {
-        if (!m.tipo) throw new Error('Tipo de movimiento no reconocido');
+        if (!m.tipo) throw new Error(m.tipoRaw ? `Tipo de movimiento no reconocido: "${m.tipoRaw}" (usá Ingreso, Salida o Traspaso)` : 'Sin tipo de movimiento (usá Ingreso, Salida o Traspaso)');
         if (m.tipo === 'traspaso') throw new Error('Los insumos de emergencia no manejan almacenes — no aplica Traspaso');
         if (!(m.cantidad > 0)) throw new Error('Cantidad inválida');
         if (!String(m.nombreItem || '').trim()) { saltadosNoAprobados++; continue; }
@@ -1909,7 +1909,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     for (let i = 0; i < movs.length; i++) {
       const m = movs[i];
       try {
-        if (!m.tipo) throw new Error('Movimiento no reconocido (usá Salida/Devolución)');
+        if (!m.tipo) throw new Error(m.tipoRaw ? `Movimiento no reconocido: "${m.tipoRaw}" (usá Salida o Devolución)` : 'Movimiento no reconocido (usá Salida o Devolución)');
         if (!String(m.equipo || '').trim()) { saltadosNoAprobados++; continue; }
         const act = await resolverActivo(m.equipo);
         if (!act) { saltadosNoAprobados++; continue; }
@@ -2364,6 +2364,21 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
               {(preview.resumen.sinTipo || preview.resumen.sinFecha || preview.resumen.sinCantidad) > 0 && (
                 <div style={{ fontSize: 12, color: 'var(--amber)', marginTop: 10 }}>
                   ⚠️ {preview.resumen.sinTipo} sin tipo · {preview.resumen.sinFecha} sin fecha (usan hoy) · {preview.resumen.sinCantidad} sin cantidad válida.
+                </div>
+              )}
+              {(preview.resumen.filasProblema || []).length > 0 && (
+                <div style={{ marginTop: 10, padding: '10px 12px', background: 'rgba(231,76,60,0.06)', border: '1px solid rgba(231,76,60,0.3)', borderRadius: 8 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--red)', marginBottom: 6 }}>
+                    ⛔ {preview.resumen.filasProblema.length} fila(s) con problemas — corregilas en el Excel ANTES de importar (si seguís, esas filas fallarán y NO se registrarán):
+                  </div>
+                  <div style={{ maxHeight: 180, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 3 }}>
+                    {preview.resumen.filasProblema.slice(0, 60).map((f, i) => (
+                      <div key={i} style={{ fontSize: 12, color: 'var(--ts)' }}>
+                        • <strong>Fila {f.idx}</strong> · {f.item}: {f.problema} <span style={{ color: 'var(--tm)' }}>— {f.sugerencia}</span>
+                      </div>
+                    ))}
+                    {preview.resumen.filasProblema.length > 60 && <div style={{ fontSize: 11.5, color: 'var(--tm)' }}>… y {preview.resumen.filasProblema.length - 60} más</div>}
+                  </div>
                 </div>
               )}
             </div>

@@ -580,7 +580,8 @@ export function parseMovimientos(rows, formato) {
     };
     const nombreItem = txt(g(...itemCols));
     if (!nombreItem) return;
-    const tipo = normalizaTipoMov(g('Tipo de Movimiento', 'Tipo'));
+    const tipoRaw = txt(g('Tipo de Movimiento', 'Tipo'));
+    const tipo = normalizaTipoMov(tipoRaw);
     out.push({
       idx: i + 2,
       fecha: parseFechaMigracion(g('Fecha de Movimiento', 'Fecha')),
@@ -590,7 +591,11 @@ export function parseMovimientos(rows, formato) {
       unidad: txt(g('Unidad')),
       estado: txt(g('Estado')),
       cantidad: num(g('Cantidad')),
-      tipo, // 'entrada' | 'salida' | null
+      // texto crudo de la celda — num() fuerza 0 en celdas vacías/no numéricas,
+      // y el aviso pre-import debe distinguir «vacía» de un 0 escrito.
+      cantidadRaw: txt(g('Cantidad')),
+      tipo, // 'entrada' | 'salida' | 'traspaso' | null
+      tipoRaw, // texto crudo de la celda — para avisos «Fila N: Tipo "X" no reconocido»
       // proveedor (ingreso) / almacén de salida (salida materiales) — col. combinada vieja
       origen: txt(g('Proveedor/Almacen de Salida', 'Proveedor/Responsable', 'Proveedor/Responsible', 'Proveedor')),
       // Plantilla mejorada: columnas SEPARADAS, leídas EXACTO (gE) para no
@@ -626,7 +631,8 @@ export function parseMovMaquinariaAsignacion(rows) {
     const g = rowGetter(row);
     const equipo = txt(g('Equipo', 'Maquinaria', 'Activo', 'Nombre'));
     if (!equipo) return;
-    const movRaw = normTxt(g('Movimiento', 'Tipo de Movimiento', 'Tipo'));
+    const tipoRaw = txt(g('Movimiento', 'Tipo de Movimiento', 'Tipo'));
+    const movRaw = normTxt(tipoRaw);
     let tipo = null;
     if (movRaw.startsWith('sal') || movRaw.includes('asign')) tipo = 'salida';
     else if (movRaw.startsWith('dev') || movRaw.startsWith('ingr') || movRaw.startsWith('entr')) tipo = 'entrada';
@@ -639,6 +645,7 @@ export function parseMovMaquinariaAsignacion(rows) {
       hora: txt(g('Hora')),
       equipo,
       tipo,
+      tipoRaw,
       destinoTipo,
       destinoNombre: txt(g('Asignado a', 'Asignado', 'Responsable', 'Proveedor/Responsable')),
       frente: txt(g('Frente / Zona', 'Frente', 'Zona')),
@@ -650,14 +657,23 @@ export function parseMovMaquinariaAsignacion(rows) {
 
 /** Resumen de un parse de movimientos para el preview. */
 export function resumenMovimientos(parsed) {
-  const r = { total: parsed.length, entradas: 0, salidas: 0, traspasos: 0, sinTipo: 0, sinFecha: 0, sinCantidad: 0, items: new Set() };
+  const r = { total: parsed.length, entradas: 0, salidas: 0, traspasos: 0, sinTipo: 0, sinFecha: 0, sinCantidad: 0, items: new Set(), filasProblema: [] };
   for (const p of parsed) {
     if (p.tipo === 'entrada') r.entradas++;
     else if (p.tipo === 'salida') r.salidas++;
     else if (p.tipo === 'traspaso') r.traspasos++;
-    else r.sinTipo++;
+    else {
+      r.sinTipo++;
+      // Detalle pre-import: ANTES solo se contaba — el usuario no podía saber
+      // QUÉ fila iba a fallar hasta después de importar ("Fila 101: Tipo no
+      // reconocido"). Ahora la fila, el insumo y el texto crudo se listan.
+      r.filasProblema.push({ idx: p.idx, item: p.nombreItem || '(sin nombre)', problema: p.tipoRaw ? `Tipo "${p.tipoRaw}" no reconocido` : 'Sin tipo de movimiento', sugerencia: 'Usá Ingreso, Salida o Traspaso' });
+    }
+    if (!(p.cantidad > 0)) {
+      r.sinCantidad++;
+      if (p.tipo) r.filasProblema.push({ idx: p.idx, item: p.nombreItem || '(sin nombre)', problema: `Cantidad inválida (${p.cantidadRaw ?? 'vacía'})`, sugerencia: 'Poné una cantidad mayor a 0' });
+    }
     if (!p.fecha) r.sinFecha++;
-    if (!(p.cantidad > 0)) r.sinCantidad++;
     if (p.nombreItem) r.items.add(normTxt(p.nombreItem));
   }
   r.itemsUnicos = r.items.size;

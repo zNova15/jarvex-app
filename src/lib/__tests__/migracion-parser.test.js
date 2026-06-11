@@ -67,6 +67,17 @@ describe('parseMovMaquinariaAsignacion', () => {
     const p = parseMovMaquinariaAsignacion(rows);
     expect(p[2]).toMatchObject({ tipo: 'salida', destinoTipo: 'subcontratista', destinoNombre: 'Construcciones SAC' });
   });
+  it('conserva tipoRaw; "Asignación" deriva salida y un movimiento no reconocido queda tipo null', () => {
+    const p = parseMovMaquinariaAsignacion(rows);
+    expect(p[0]).toMatchObject({ tipo: 'salida', tipoRaw: 'Salida' });
+    expect(p[1]).toMatchObject({ tipo: 'entrada', tipoRaw: 'Devolución' });
+    const x = parseMovMaquinariaAsignacion([
+      { ID: '9', Fecha: '5/21/26', Equipo: 'Grúa', Movimiento: 'Asignación', 'Tipo destino': 'Personal', 'Asignado a': 'Pedro', 'Observación': '' },
+      { ID: '10', Fecha: '5/21/26', Equipo: 'Grúa', Movimiento: 'Préstamo', 'Tipo destino': '', 'Asignado a': '', 'Observación': '' },
+    ]);
+    expect(x[0]).toMatchObject({ tipo: 'salida', tipoRaw: 'Asignación' });
+    expect(x[1]).toMatchObject({ tipo: null, tipoRaw: 'Préstamo' });
+  });
 });
 
 describe('parseInsumosEmergencia', () => {
@@ -192,6 +203,34 @@ describe('parseMovimientos — formato real con Almacen de Salida/Llegada', () =
   it('SALIDA: almacen=origen, responsable con el header con typo', () => {
     const p = parseMovimientos([H({ 'Tipo de Movimiento': 'SALIDA', Cantidad: '1', 'Almacen de Salida': 'Almacen Central', 'Resposable (Salida)': 'Ing Elvis' })], 'mov_materiales');
     expect(p[0]).toMatchObject({ tipo: 'salida', almacen: 'Almacen Central', responsable: 'Ing Elvis' });
+  });
+  it('tipo no reconocido: tipo=null pero tipoRaw conserva la celda cruda (Transporte NO cae a traspaso)', () => {
+    const p = parseMovimientos([H({ 'Tipo de Movimiento': 'TRANSPORTE' })], 'mov_materiales');
+    expect(p[0]).toMatchObject({ tipo: null, tipoRaw: 'TRANSPORTE' });
+  });
+});
+
+describe('resumenMovimientos.filasProblema — detalle pre-import del panel rojo', () => {
+  const fila = (o) => ({ 'Fecha de Movimiento': '5/15/26', Material: 'Yeso 7kg', Unidad: 'Bolsa', Cantidad: '5', 'Tipo de Movimiento': 'Ingreso', ...o });
+  const resumen = (...filas) => resumenMovimientos(parseMovimientos(filas, 'mov_materiales'));
+  it('fila sin tipo Y sin cantidad → ambos contadores suben pero UNA sola entrada (la de tipo)', () => {
+    const r = resumen(fila({ 'Tipo de Movimiento': 'TRANSPORTE', Cantidad: '' }));
+    expect(r).toMatchObject({ sinTipo: 1, sinCantidad: 1 });
+    expect(r.filasProblema).toHaveLength(1);
+    expect(r.filasProblema[0]).toMatchObject({ idx: 2, item: 'Yeso 7kg', problema: 'Tipo "TRANSPORTE" no reconocido', sugerencia: 'Usá Ingreso, Salida o Traspaso' });
+  });
+  it('celda Tipo vacía → "Sin tipo de movimiento" (sin texto crudo en el aviso)', () => {
+    const r = resumen(fila({ 'Tipo de Movimiento': '' }));
+    expect(r.filasProblema).toHaveLength(1);
+    expect(r.filasProblema[0].problema).toBe('Sin tipo de movimiento');
+  });
+  it('fila con tipo válido y Cantidad "0" → 1 entrada de cantidad inválida', () => {
+    const r = resumen(fila({ Cantidad: '0' }));
+    expect(r.filasProblema).toHaveLength(1);
+    expect(r.filasProblema[0]).toMatchObject({ idx: 2, item: 'Yeso 7kg', problema: 'Cantidad inválida (0)', sugerencia: 'Poné una cantidad mayor a 0' });
+  });
+  it('fila sana → filasProblema vacío', () => {
+    expect(resumen(fila()).filasProblema).toEqual([]);
   });
 });
 
