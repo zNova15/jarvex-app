@@ -736,7 +736,11 @@ async function pushPendingOperations() {
 // SyncEngine pushea materiales ANTES que movimientos_materiales, así
 // que server recibía stock=30 (del cliente), después llegaba el mov,
 // y el trigger hacía 30+30=60. Bug visible: ingresar 30, ver stock 60.
-const TRIGGER_MANAGED_FIELDS = {
+// Exportado: la bandeja de conflictos (jx-conflicts) lo usa para NO mostrar
+// estos campos como "diferencias" — el server los recalcula por trigger, así
+// que difieren casi siempre y la elección del usuario no los afecta
+// (stripLocalFields los quita del push de "Forzar mis cambios").
+export const TRIGGER_MANAGED_FIELDS = {
   materiales: new Set([
     'stock_actual', 'total_entradas', 'total_salidas',
     'precio_unitario_real_prom', 'alerta',

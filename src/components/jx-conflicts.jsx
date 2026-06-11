@@ -1,6 +1,68 @@
 import React from "react";
-import { stripLocalFields } from "../sync/SyncEngine";
+import { stripLocalFields, TRIGGER_MANAGED_FIELDS } from "../sync/SyncEngine";
 const { useState: uSC, useEffect: uEC } = React;
+
+// ── Diff legible de un conflicto ─────────────────────────────────────
+// Campos de "ruido" que difieren casi siempre y no le dicen nada al usuario
+// (la versión la bumpea un trigger del server, updated_at cambia solo, etc.).
+const CAMPOS_RUIDO = new Set(['version', 'updated_at', 'created_at', 'updated_by', 'created_by', 'last_synced_at', 'sync_status', 'idempotency_key']);
+const LABELS_CAMPO = {
+  responsable_id: 'Responsable', personal_id: 'Persona', subcontratista_id: 'Subcontrato',
+  cantidad: 'Cantidad', fecha: 'Fecha', hora: 'Hora', tipo_movimiento: 'Tipo de movimiento',
+  accion: 'Acción', ubicacion_id: 'Almacén', frente_zona: 'Frente', observaciones: 'Observaciones',
+  precio_unitario_real: 'Precio unit.', documento_asociado: 'Documento', deleted_at: 'Eliminado',
+  estado: 'Estado', cargo: 'Cargo', nombres: 'Nombres', apellidos: 'Apellidos', alias: 'Alias',
+  destino_tipo: 'Tipo de destino', proveedor_id: 'Proveedor', unidad: 'Unidad', motivo: 'Motivo',
+  reversed_by_id: 'Reversado por (movimiento)', reverses_id: 'Reverso de (movimiento)',
+  accounting_movement_id: 'Asiento contable vinculado', pendiente_sustento: 'Pendiente de sustento',
+  evidencia_id: 'Evidencia (foto)',
+};
+// Campos que escribe OTRO flujo/equipo sobre el mismo registro: reversed_by_id
+// lo setea el flujo de reversos sobre el movimiento original; accounting_movement_id
+// y pendiente_sustento los setea contabilidad al vincular factura (típicamente el
+// contador en otro device); evidencia_id se agrega al adjuntar foto. NO son ruido:
+// no están en stripLocalFields, así que «Forzar mis cambios» pushea el valor local
+// viejo y le borra al server el vínculo — es justo la diferencia que el usuario
+// necesita ver (con explicación) antes de forzar.
+const CAMPOS_OTRO_PROCESO = new Set(['reversed_by_id', 'reverses_id', 'accounting_movement_id', 'pendiente_sustento', 'evidencia_id']);
+// Devuelve [{campo, local, servidor}] con SOLO lo que difiere de verdad, o
+// null si el snapshot del server es viejo (solo {version: N}, sin fila).
+// Excluye también los TRIGGER_MANAGED_FIELDS de la tabla: el server los
+// recalcula por trigger (stock_actual, totales, costo_presupuestado...), el
+// cliente mantiene su propia copia, así que difieren casi siempre — y la
+// elección del usuario NO los afecta («Forzar mis cambios» los quita del
+// push vía stripLocalFields). Mostrarlos rompería la promesa del banner
+// ("si no difiere ninguno, forzá sin riesgo") en materiales/epps/herramientas.
+function diferenciasConflicto(local, server, tabla) {
+  if (!local || !server || !server.id) return null;
+  const triggerManaged = (tabla && TRIGGER_MANAGED_FIELDS[tabla]) || null;
+  const keys = new Set([...Object.keys(local), ...Object.keys(server)]);
+  const out = [];
+  for (const k of keys) {
+    if (k.startsWith('_') || CAMPOS_RUIDO.has(k)) continue;
+    if (triggerManaged && triggerManaged.has(k)) continue;
+    const a = local[k] ?? null, b = server[k] ?? null;
+    if (JSON.stringify(a) !== JSON.stringify(b)) out.push({ campo: k, local: a, servidor: b });
+  }
+  return out;
+}
+const fmtValConf = (v) => {
+  if (v == null || v === '') return '(vacío)';
+  if (typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}/.test(v)) return v.slice(0, 8) + '…';
+  // Timestamps ISO (deleted_at y similares) → fecha legible, no el crudo
+  // "2026-06-09T15:23:45.123+00:00" que no le dice nada al almacenero.
+  if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(v)) {
+    const d = new Date(v);
+    if (!isNaN(d)) return d.toLocaleString('es-PE', { dateStyle: 'short', timeStyle: 'short' });
+  }
+  if (v === true) return 'Sí';
+  if (v === false) return 'No';
+  // jsonb reales en tablas sincronizadas (obras.otros_gastos/consorcio_miembros,
+  // trazabilidad_cadenas.items/eslabones, accounting_movements.factura_interna_meta,
+  // companies.actividades_economicas): sin esto saldría '[object Object]'.
+  if (typeof v === 'object') return JSON.stringify(v).slice(0, 80);
+  return String(v).slice(0, 80);
+};
 
 function ConflictsPage({ showToast }) {
   const [conflicts, setConflicts] = uSC([]);
@@ -127,10 +189,15 @@ function ConflictsPage({ showToast }) {
           </div>
         )}
       </div>
-      {conflicts.length > 5 && (
-        <div className="info-banner" style={{ marginBottom:14, background:'rgba(242,183,5,0.08)', border:'1px solid rgba(242,183,5,0.25)' }}>
-          <JxIcon name="alert" size={14} color="var(--amber)"/>
-          <span>Muchos conflictos suelen venir de ediciones locales que quedaron adelante del servidor (ej. tras una migración). Si tus datos locales son los correctos, usá <strong>"Forzar mis cambios (todos)"</strong>.</span>
+      {conflicts.length > 0 && (
+        <div className="info-banner" style={{ marginBottom:14, background:'rgba(52,152,219,0.06)', border:'1px solid rgba(52,152,219,0.25)', display:'block', lineHeight:1.6, fontSize:12.5 }}>
+          <div style={{ fontWeight:700, marginBottom:4 }}>💡 ¿Qué es un conflicto?</div>
+          <div>El mismo registro quedó con <strong>dos versiones</strong>: la de este equipo (izquierda) y la del servidor (derecha — lo que subió otro equipo o una sincronización anterior). <strong>No se perdió nada</strong>: el sistema espera que elijas cuál vale.</div>
+          <div style={{ marginTop:4 }}>
+            <strong>«Forzar mis cambios»</strong> = vale la de este equipo — lo normal si el último cambio lo hiciste vos (ej. tras una fusión de nombres o una importación histórica). ·{' '}
+            <strong>«Mantener servidor»</strong> = vale la del servidor — si alguien más corrigió el dato después que vos.
+          </div>
+          <div style={{ marginTop:4, color:'var(--tm)' }}>Abajo de cada conflicto te mostramos <strong>exactamente qué campos difieren</strong>; si no difiere ninguno, podés forzar tus cambios sin riesgo.</div>
         </div>
       )}
 
@@ -150,16 +217,63 @@ function ConflictsPage({ showToast }) {
                 </div>
                 <span className="badge b-red">Conflicto</span>
               </div>
-              <div className="g2">
-                <div style={{background:'rgba(52,152,219,0.08)',padding:12,borderRadius:8}}>
-                  <div style={{fontSize:11,fontWeight:700,color:'var(--blue)',marginBottom:6}}>VERSIÓN LOCAL (TUYA)</div>
-                  <pre style={{fontSize:10.5,color:'var(--ts)',whiteSpace:'pre-wrap',maxHeight:200,overflow:'auto'}}>{JSON.stringify(c.datos_local, null, 2)}</pre>
+              {(() => {
+                const difs = diferenciasConflicto(c.datos_local, c.datos_servidor, c.tabla);
+                if (difs === null) {
+                  return (
+                    <div style={{ padding:'8px 12px', background:'rgba(242,183,5,0.08)', border:'1px solid rgba(242,183,5,0.25)', borderRadius:8, fontSize:12, color:'var(--ts)', marginBottom:10 }}>
+                      ⚠️ Este conflicto se detectó con una versión anterior de la app y no guardó la copia completa del servidor. Los botones funcionan igual («Mantener servidor» la trae de nuevo); no podemos mostrarte el detalle de diferencias.
+                    </div>
+                  );
+                }
+                if (difs.length === 0) {
+                  return (
+                    <div style={{ padding:'8px 12px', background:'rgba(39,174,96,0.08)', border:'1px solid rgba(39,174,96,0.3)', borderRadius:8, fontSize:12.5, color:'var(--ts)', marginBottom:10 }}>
+                      ✓ <strong>El contenido es idéntico en ambos lados</strong> — solo difieren campos internos (el contador de versiones o valores que el servidor recalcula solo, como stock y totales). Podés <strong>«Forzar mis cambios»</strong> con total seguridad.
+                    </div>
+                  );
+                }
+                return (
+                  <div style={{ marginBottom:10 }}>
+                    <div style={{ fontSize:11.5, fontWeight:700, color:'var(--ts)', marginBottom:6 }}>Difieren {difs.length} campo{difs.length !== 1 ? 's' : ''}:</div>
+                    <div style={{ display:'grid', gap:6 }}>
+                      {difs.map(d => (
+                        <div key={d.campo} style={{ display:'flex', gap:10, alignItems:'baseline', flexWrap:'wrap', fontSize:12, padding:'6px 10px', background:'rgba(231,76,60,0.05)', border:'1px solid rgba(231,76,60,0.18)', borderRadius:6 }}>
+                          <span style={{ fontWeight:700, minWidth:130 }}>{LABELS_CAMPO[d.campo] || d.campo}</span>
+                          <span style={{ color:'var(--blue)' }}>Tuya: <strong>{fmtValConf(d.local)}</strong></span>
+                          <span style={{ color:'var(--tm)' }}>→</span>
+                          <span style={{ color:'var(--amber)' }}>Servidor: <strong>{fmtValConf(d.servidor)}</strong></span>
+                          {CAMPOS_OTRO_PROCESO.has(d.campo) && (
+                            <span style={{ flexBasis:'100%', fontSize:11, color:'var(--tm)' }}>
+                              ⚠️ Este campo lo escribe otro proceso (reversos / contabilidad / evidencias). «Forzar mis cambios» pisa lo del servidor y puede desvincular ese reverso, asiento o foto.
+                            </span>
+                          )}
+                          {d.campo === 'deleted_at' && (
+                            <span style={{ flexBasis:'100%', fontSize:11.5, fontWeight:600, color:'var(--red)' }}>
+                              {d.servidor
+                                ? <>🗑️ Otro equipo <strong>eliminó este registro</strong>. «Mantener servidor» lo elimina también acá (lo normal). «Forzar mis cambios» lo vuelve a crear para todos — usalo solo si el borrado fue un error.</>
+                                : <>🗑️ Este equipo lo tiene <strong>eliminado</strong> pero en el servidor sigue vivo. «Forzar mis cambios» lo elimina para todos; «Mantener servidor» lo recupera acá.</>}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+              <details style={{ marginBottom:4 }}>
+                <summary style={{ cursor:'pointer', fontSize:11.5, color:'var(--tm)' }}>Ver datos completos (técnico)</summary>
+                <div className="g2" style={{ marginTop:8 }}>
+                  <div style={{background:'rgba(52,152,219,0.08)',padding:12,borderRadius:8}}>
+                    <div style={{fontSize:11,fontWeight:700,color:'var(--blue)',marginBottom:6}}>VERSIÓN LOCAL (TUYA)</div>
+                    <pre style={{fontSize:10.5,color:'var(--ts)',whiteSpace:'pre-wrap',maxHeight:200,overflow:'auto'}}>{JSON.stringify(c.datos_local, null, 2)}</pre>
+                  </div>
+                  <div style={{background:'rgba(242,183,5,0.08)',padding:12,borderRadius:8}}>
+                    <div style={{fontSize:11,fontWeight:700,color:'var(--amber)',marginBottom:6}}>VERSIÓN SERVIDOR (REMOTA)</div>
+                    <pre style={{fontSize:10.5,color:'var(--ts)',whiteSpace:'pre-wrap',maxHeight:200,overflow:'auto'}}>{JSON.stringify(c.datos_servidor, null, 2)}</pre>
+                  </div>
                 </div>
-                <div style={{background:'rgba(242,183,5,0.08)',padding:12,borderRadius:8}}>
-                  <div style={{fontSize:11,fontWeight:700,color:'var(--amber)',marginBottom:6}}>VERSIÓN SERVIDOR (REMOTA)</div>
-                  <pre style={{fontSize:10.5,color:'var(--ts)',whiteSpace:'pre-wrap',maxHeight:200,overflow:'auto'}}>{JSON.stringify(c.datos_servidor, null, 2)}</pre>
-                </div>
-              </div>
+              </details>
               <div style={{display:'flex',gap:8,marginTop:14,justifyContent:'flex-end'}}>
                 <button className="btn btn-ghost btn-sm" onClick={()=>aceptarServidor(c)}>Mantener servidor</button>
                 <button className="btn btn-amber btn-sm" onClick={()=>aceptarLocal(c)}>Forzar mis cambios</button>

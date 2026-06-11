@@ -662,18 +662,20 @@ function MaterialesPage({ showToast }) {
       const uD = ubicacionesById.get(destinoId)?.nombre || 'destino';
       const obsTraspaso = `Traspaso ${uO} → ${uD}`;
       // 2 movimientos para trazabilidad (no cambian el stock total — por eso
-      // NO tocamos materiales.stock_actual acá).
+      // NO tocamos materiales.stock_actual acá). Mismo formato estándar que
+      // el traspaso de herramientas/EPPs: ubicacion_id propio + el otro lado
+      // en observaciones ('Traspaso → X' / 'Traspaso ← Y').
       const key = `traspaso-${crypto.randomUUID ? crypto.randomUUID() : Date.now()}`;
       await movHook.create({
         obra_id: obraId, material_id, fecha: now.slice(0,10), hora: now.slice(11,16),
         tipo_movimiento: 'salida', cantidad: cant, unidad: mat.unidad,
-        observaciones: obsTraspaso, partida_id: null,
+        ubicacion_id: origenId, observaciones: `Traspaso → ${uD}`, partida_id: null,
         idempotency_key: `${key}_out`,
       });
       await movHook.create({
         obra_id: obraId, material_id, fecha: now.slice(0,10), hora: now.slice(11,16),
         tipo_movimiento: 'entrada', cantidad: cant, unidad: mat.unidad,
-        observaciones: obsTraspaso, partida_id: null,
+        ubicacion_id: destinoId, observaciones: `Traspaso ← ${uO}`, partida_id: null,
         idempotency_key: `${key}_in`,
       });
       try { await window.__logAudit?.({ action:'update', table:'stock_ubicaciones', recordId: material_id,

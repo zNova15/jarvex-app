@@ -364,9 +364,9 @@ function AlertasCentralizadasPage({ showToast }) {
         tipo: 'conflicto_sync',
         severidad: 'alta',
         titulo: `Conflicto de sincronización — ${cf.tabla || 'tabla'}`,
-        descripcion: `Registro ${(cf.registro_id || '').slice(0, 8)} · detectado ${fmtDate((cf.created_at || '').slice(0, 10))}`,
+        descripcion: `Registro ${(cf.registro_id || '').slice(0, 8)} · detectado ${fmtDate((cf.created_at || '').slice(0, 10))} · el mismo dato quedó con dos versiones (este equipo vs servidor). No se perdió nada.`,
         modulo_destino: 'conflictos',
-        contexto: 'Resolver manualmente: mantener servidor o forzar local',
+        contexto: 'En la Bandeja de Conflictos vas a ver QUÉ campos difieren. Si el último cambio lo hiciste vos (fusión, importación, edición), usá "Forzar mis cambios"; si otro equipo corrigió el dato después, "Mantener servidor".',
         fecha_relevante: cf.created_at ? cf.created_at.slice(0, 10) : null,
       });
     });

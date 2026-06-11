@@ -313,6 +313,38 @@ function useObraActiva() {
   return obraId;
 }
 
+// Almacenes de una fila de movimiento (materiales/herramientas): la fila
+// guarda UNA ubicación (salida = de dónde sale; entrada/devolución = a dónde
+// llega). Si es pata de un TRASPASO, el otro lado viene anotado en
+// observaciones ('Traspaso → X' / 'Traspaso ← Y'). Formato legado del
+// traspaso de materiales: 'Traspaso Origen → Destino' (ambos lados en la
+// observación, fila sin ubicacion_id).
+function almacenesDeMov(m, ubicNombre) {
+  const ubic = m.ubicacion_id ? (ubicNombre.get(m.ubicacion_id) || null) : null;
+  const obs = String(m.observaciones || '');
+  const haciaTr = obs.match(/Traspaso → ([^·]+)/);
+  const desdeTr = obs.match(/Traspaso ← ([^·]+)/);
+  if (!haciaTr && !desdeTr) {
+    const par = obs.match(/Traspaso ([^·→←]+) → ([^·]+)/);
+    if (par) return { salida: par[1].trim(), llegada: par[2].trim(), esTraspaso: true };
+  }
+  const tipo = m.accion || m.tipo_movimiento;
+  // 'baja' y 'mantenimiento' (acciones legales del CHECK de herramientas,
+  // hoy solo en data legacy/reversos) también son stock que SALE del almacén.
+  const esSalida = tipo === 'salida' || tipo === 'merma' || tipo === 'baja' || tipo === 'mantenimiento';
+  return {
+    salida: esSalida ? ubic : (desdeTr ? desdeTr[1].trim() : null),
+    llegada: !esSalida ? ubic : (haciaTr ? haciaTr[1].trim() : null),
+    esTraspaso: !!(haciaTr || desdeTr),
+  };
+}
+
+// Celda de almacén compartida por las tablas de movimientos.
+function CeldaAlmacen({ nombre, esTraspaso }) {
+  if (!nombre) return <span style={{ color:'var(--tm)', fontSize:12 }}>—</span>;
+  return <span className="tag" title={esTraspaso ? 'Parte de un traspaso entre almacenes' : 'Almacén'}>{esTraspaso ? '⇄ ' : ''}{nombre}</span>;
+}
+
 const MOV_MAT_TIPO = {
   entrada:    { cls:'b-green',  lbl:'Entrada',    icon:'arrowIn'  },
   salida:     { cls:'b-orange', lbl:'Salida',     icon:'arrowOut' },
@@ -781,6 +813,8 @@ function MovMaterialesPage({ showToast }) {
   const { data: materiales } = window.__hooks.useMateriales(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
   const { data: evidencias } = window.__hooks.useEvidencias(obraId);
+  const { data: ubicaciones } = window.__hooks.useUbicacionesObra?.(obraId) || { data: [] };
+  const { data: subcontratistas } = window.__hooks.useSubcontratistas?.() || { data: [] };
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
 
   // ── Mapa de TODOS los materiales (incluye soft-deleted Y de otras obras) ──
@@ -1006,6 +1040,9 @@ function MovMaterialesPage({ showToast }) {
   const lookupPers = (id) => personal?.find(p => p.id === id);
   const lookupProv = (id) => provs?.find(p => p.id === id);
   const lookupPart = (id) => partidas?.find(p => p.id === id);
+  const ubicNombre = uMM(() => { const m = new Map(); (ubicaciones || []).forEach(u => m.set(u.id, u.nombre)); return m; }, [ubicaciones]);
+  const subNameMov = uMM(() => { const m = new Map(); (subcontratistas || []).forEach(sc => m.set(sc.id, sc.razon_social)); return m; }, [subcontratistas]);
+  const almacenesDe = (m) => almacenesDeMov(m, ubicNombre);
 
   const sorted = uMM(() => {
     if (!movs) return [];
@@ -1023,11 +1060,17 @@ function MovMaterialesPage({ showToast }) {
       if (!matchT) return false;
       if (!q) return true;
       const mat = lookupMat(m.material_id);
+      const pers = lookupPers(m.responsable_id);
+      const alm = almacenesDe(m);
       const ql = q.toLowerCase();
       return (mat?.nombre_material || '').toLowerCase().includes(ql) ||
-             (m.documento_asociado || '').toLowerCase().includes(ql);
+             (m.documento_asociado || '').toLowerCase().includes(ql) ||
+             (pers ? `${pers.nombres} ${pers.apellidos} ${pers.alias || ''}`.toLowerCase().includes(ql) : false) ||
+             (m.frente_zona || '').toLowerCase().includes(ql) ||
+             (alm.salida || '').toLowerCase().includes(ql) ||
+             (alm.llegada || '').toLowerCase().includes(ql);
     });
-  }, [sorted, q, tipo, materiales]);
+  }, [sorted, q, tipo, materiales, personal, ubicNombre, matsByIdAll, matsServer]);
 
   const today = new Date().toISOString().slice(0, 10);
   const monthStart = today.slice(0, 7);
@@ -1097,9 +1140,18 @@ function MovMaterialesPage({ showToast }) {
       proveedor_id: original.proveedor_id || null,
       documento_asociado: original.documento_asociado || null,
       precio_unitario_real: original.precio_unitario_real ?? null,
+      // Conserva el almacén del original (mismo patrón que herramientas):
+      // sin esto, la fila REVERSO mostraría '—' en las columnas de almacén.
+      ubicacion_id: original.ubicacion_id || null,
       observaciones: 'REVERSO: ' + motivo,
       reverses_id: original.id,
     });
+    // Devolver el stock al desglose por almacén: el reverso de una salida
+    // re-ingresa al almacén original (y viceversa).
+    if (original.ubicacion_id) {
+      const deltaRev = (tipoInv === 'entrada' || tipoInv === 'devolucion' ? 1 : -1) * Math.abs(Number(original.cantidad || 0));
+      try { await aplicarDelta({ obraId, itemTipo: 'material', itemId: original.material_id, ubicacionId: original.ubicacion_id, delta: deltaRev, userId: auth?.profile?.id || null }); } catch (err) { console.warn('[reverso mat desglose]', err?.message); }
+    }
 
     // Marcar el original
     try {
@@ -1259,7 +1311,7 @@ function MovMaterialesPage({ showToast }) {
       </div>
 
       <div style={{ display:'flex', gap:8, marginBottom:14, flexWrap:'wrap' }}>
-        <div className="search-bar"><JxIcon name="search" size={14} color="var(--tm)"/><input placeholder="Buscar material o documento…" value={q} onChange={e=>setQ(e.target.value)}/></div>
+        <div className="search-bar"><JxIcon name="search" size={14} color="var(--tm)"/><input placeholder="Buscar material, responsable, almacén, frente o documento…" value={q} onChange={e=>setQ(e.target.value)}/></div>
         {['todos','entrada','salida','ajuste','devolucion','merma'].map(t=>(
           <button key={t} onClick={()=>setTipo(t)} className={`btn btn-sm ${tipo===t?'btn-amber':'btn-ghost'}`}>
             {t==='todos' ? 'Todos' : MOV_MAT_TIPO[t]?.lbl || t}
@@ -1276,7 +1328,8 @@ function MovMaterialesPage({ showToast }) {
             <thead><tr>
               <th>Fecha / Hora</th><th>Tipo</th><th>Material</th>
               <th style={{ textAlign:'right' }}>Cantidad</th>
-              <th>Responsable</th><th>Documento</th>
+              <th>Almacén salida</th><th>Almacén llegada</th>
+              <th>Responsable</th><th>Frente</th><th>Documento</th>
               <th style={{ textAlign:'right' }}>Precio</th>
               <th style={{ textAlign:'center' }}>Guía</th>
               <th>Sync</th>
@@ -1309,7 +1362,17 @@ function MovMaterialesPage({ showToast }) {
                       )}
                     </td>
                     <td style={{ textAlign:'right' }} className="col-num">{Number(m.cantidad || 0).toLocaleString('es-PE')} <span style={{ color:'var(--tm)', fontSize:11 }}>{m.unidad || mat?.unidad || ''}</span></td>
-                    <td>{pers ? `${pers.nombres} ${pers.apellidos}` : (prov?.razon_social || '—')}</td>
+                    {(() => {
+                      const alm = almacenesDe(m);
+                      return (<>
+                        <td><CeldaAlmacen nombre={alm.salida} esTraspaso={alm.esTraspaso}/></td>
+                        <td><CeldaAlmacen nombre={alm.llegada} esTraspaso={alm.esTraspaso}/></td>
+                      </>);
+                    })()}
+                    <td>{pers
+                      ? <>{pers.nombres} {pers.apellidos}{pers.alias ? <span style={{ color:'var(--tm)' }}> «{pers.alias}»</span> : null}{pers.cargo ? <div style={{ fontSize:10.5, color:'var(--tm)' }}>{pers.cargo}{pers.subcontratista_id ? ` · ${subNameMov.get(pers.subcontratista_id) || 'subcontrato'}` : ''}</div> : null}</>
+                      : (prov?.razon_social || '—')}</td>
+                    <td>{m.frente_zona ? <span className="badge b-amber" title="Frente / zona al que va">{m.frente_zona}</span> : <span style={{ color:'var(--tm)', fontSize:12 }}>—</span>}</td>
                     <td className="col-m">{m.documento_asociado || '—'}</td>
                     <td style={{ textAlign:'right' }} className="col-num">{m.precio_unitario_real ? fmtS(m.precio_unitario_real) : '—'}</td>
                     <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
@@ -1441,7 +1504,9 @@ function MovHerramientasPage({ showToast }) {
   const { data: movs, loading, update: updateMov } = movHook;
   const { data: herramientas, update: updateHerr } = window.__hooks.useHerramientas(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
+  const { data: ubicacionesH } = window.__hooks.useUbicacionesObra?.(obraId) || { data: [] };
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
+  const ubicNombreH = uMM(() => { const m = new Map(); (ubicacionesH || []).forEach(u => m.set(u.id, u.nombre)); return m; }, [ubicacionesH]);
 
   const [reversoTarget, setReversoTarget] = uSM(null);
   const [editFechaTarget, setEditFechaTarget] = uSM(null);
@@ -1714,6 +1779,7 @@ function MovHerramientasPage({ showToast }) {
             <thead><tr>
               <th>Fecha / Hora</th><th>Herramienta</th><th>Acción</th>
               <th style={{ textAlign:'right' }}>Cantidad</th>
+              <th>Almacén salida</th><th>Almacén llegada</th>
               <th>Responsable</th><th>Estado Salida</th><th>Estado Devol.</th>
               <th>Observaciones</th><th>Sync</th>
               {isAdmin && <th style={{ textAlign:'center' }}>Acción</th>}
@@ -1742,7 +1808,14 @@ function MovHerramientasPage({ showToast }) {
                         ? <span style={{ fontWeight:700 }}>{Number(m.cantidad).toLocaleString('es-PE')} <span style={{ color:'var(--tm)', fontSize:11, fontWeight:400 }}>{h?.unidad || 'und'}</span></span>
                         : <span className="col-m">—</span>}
                     </td>
-                    <td>{p ? `${p.nombres} ${p.apellidos}` : '—'}</td>
+                    {(() => {
+                      const alm = almacenesDeMov(m, ubicNombreH);
+                      return (<>
+                        <td><CeldaAlmacen nombre={alm.salida} esTraspaso={alm.esTraspaso}/></td>
+                        <td><CeldaAlmacen nombre={alm.llegada} esTraspaso={alm.esTraspaso}/></td>
+                      </>);
+                    })()}
+                    <td>{p ? <>{p.nombres} {p.apellidos}{p.alias ? <span style={{ color:'var(--tm)' }}> «{p.alias}»</span> : null}{p.cargo ? <div style={{ fontSize:10.5, color:'var(--tm)' }}>{p.cargo}</div> : null}</> : '—'}</td>
                     <td>{m.estado_salida ? <span className={`badge ${EST_HER[m.estado_salida]||'b-gray'}`} style={{ textTransform:'capitalize' }}>{m.estado_salida}</span> : <span className="col-m">—</span>}</td>
                     <td>{m.estado_devolucion ? <span className={`badge ${EST_HER[m.estado_devolucion]||'b-gray'}`} style={{ textTransform:'capitalize' }}>{m.estado_devolucion}</span> : <span className="col-m">—</span>}</td>
                     <td className="col-m" style={{ color: danado?'var(--red)':'', fontSize:11 }}>{m.observaciones || '—'}</td>
