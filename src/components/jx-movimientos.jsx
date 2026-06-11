@@ -1,7 +1,26 @@
 import React from "react";
 import { calcAlerta } from "../lib/stock-utils.js";
 import { aplicarDelta } from "../lib/stock-ubicaciones.js";
+import { exportarDataset } from "../lib/export-historico.js";
 const { useState: uSM, useMemo: uMM, useEffect: uEM } = React;
+
+// Botón "Exportar Excel" de las páginas de movimientos: descarga el dataset
+// del export histórico (solo lectura — disponible para almaceneros también).
+function BotonExportarMovs({ datasetId, obraId, showToast, label = 'Exportar Excel' }) {
+  return (
+    <button className="btn btn-ghost btn-sm" title="Descargar el Excel de estos movimientos (solo exporta — no modifica nada)"
+      onClick={async () => {
+        if (!obraId) { showToast?.('No hay obra activa', 'red'); return; }
+        try {
+          const obra = await window.__db.obras.get(obraId);
+          const r = await exportarDataset(datasetId, obraId, obra?.nombre_obra || obra?.nombre || 'obra', {}, { porModo: true });
+          showToast?.(`Exportado: ${r.filas} registros → ${r.archivo}`, 'green');
+        } catch (e) { showToast?.('Error al exportar: ' + (e.message || e), 'red'); }
+      }}>
+      <JxIcon name="download" size={13}/> {label}
+    </button>
+  );
+}
 
 // Helper formato moneda
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
@@ -1217,6 +1236,7 @@ function MovMaterialesPage({ showToast }) {
       <div className="pg-hd frow-sb">
         <div><div className="pg-title">Movimiento de Materiales</div><div className="pg-sub">Historial completo · {sorted.length} movimientos registrados</div></div>
         <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+          <BotonExportarMovs datasetId="mov_materiales" obraId={obraId} showToast={showToast}/>
           <button className="btn btn-ghost btn-sm" onClick={()=>setRegFisicoOpen(true)} title="Ver registros físicos diarios subidos">
             <JxIcon name="camera" size={13}/> Visualización registro físico
           </button>
@@ -1713,6 +1733,7 @@ function MovHerramientasPage({ showToast }) {
       <div className="pg-hd frow-sb">
         <div><div className="pg-title">Movimiento de Herramientas</div><div className="pg-sub">Historial de salidas, devoluciones y mantenimientos · {sorted.length} registros</div></div>
         <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+          <BotonExportarMovs datasetId="mov_herramientas" obraId={obraId} showToast={showToast}/>
           <button className="btn btn-ghost btn-sm" onClick={()=>setRegFisicoOpen(true)} title="Ver registros físicos diarios subidos">
             <JxIcon name="camera" size={13}/> Visualización registro físico
           </button>

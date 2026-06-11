@@ -13,7 +13,9 @@ import { EstadosModal } from "./jx-stock-estados.jsx";
 import { FusionPersonasModal } from "./jx-fusion-personas.jsx";
 import { getEstadosBulk, ESTADOS_COND, ESTADO_LABEL, aplicarDeltaEstado } from "../lib/stock-estados.js";
 import { detectarSugerencias, detectarDuplicados, fusionarInsumos } from "../lib/variantes.js";
-const { useState: uS, useMemo: uM, useEffect: uE, useCallback: uCB } = React;
+import { compararNombresReniec, titleCaseNombre } from "../lib/migracion-parser.js";
+import { exportarDataset } from "../lib/export-historico.js";
+const { useState: uS, useMemo: uM, useEffect: uE, useCallback: uCB, useRef: uR } = React;
 
 // ─── DATA ───────────────────────────────────────────────
 const MAT_DATA = [
@@ -4624,6 +4626,9 @@ function PersonalPage({ showToast }) {
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Personal', 'w') ?? false);
   const superAdminP = !!appMode.superAdmin;
   const [fusionOpen, setFusionOpen] = uS(false);
+  // Verificación masiva de DNIs del roster contra RENIEC (pacing 30/min).
+  const [dniCheck, setDniCheck] = uS(null); // null | { running, current, total, resultados: Map(pid→{estado,reniec,mensaje}) }
+  const dniAbort = uR({ stop: false }).current; // ref estable: el loop y "Pausar" comparten SIEMPRE el mismo objeto
   const [q, setQ] = uS('');
   const [modal, setModal] = uS(null);
   const [form, setForm] = uS({});
@@ -4715,6 +4720,11 @@ function PersonalPage({ showToast }) {
       }));
       const extras = data.fechaNacimiento ? ` · nac. ${data.fechaNacimiento}` : '';
       showToast(`RENIEC: ${data.nombreCompleto || 'datos cargados'}${extras}`, 'green');
+      // El servicio gratuito (apis.net.pe v1) NO devuelve fecha de nacimiento
+      // — avisarlo para que no parezca un bug del autocompletado.
+      if (!data.fechaNacimiento && data._source === 'apis.net.pe/v1') {
+        setTimeout(() => showToast('El servicio gratuito de RENIEC no trae fecha de nacimiento — completala a mano (con un token gratis de apis.net.pe en Vercel se autocompleta)', 'amber'), 1200);
+      }
     } catch (e) {
       showToast(e.message || 'Error al consultar RENIEC', 'red');
     } finally {
@@ -4979,6 +4989,79 @@ function PersonalPage({ showToast }) {
     }
   };
 
+  // ── Verificar los DNIs del roster contra RENIEC ──────────────────
+  // Reusable también para reanudar tras el límite de 30/min: lo verificado
+  // queda en el Map y solo se consultan los pendientes.
+  const dniCandidatos = () => (personal || []).filter(p =>
+    !p.deleted_at && (p.tipo_documento || 'dni') === 'dni' &&
+    /^\d{8}$/.test(String(p.dni || '')));
+  // Pendiente = sin resultado, con error transitorio, o cuyo DNI cambió desde
+  // la consulta (ej: salió "no encontrado" → el usuario corrigió el número →
+  // el resultado viejo queda obsoleto y hay que re-consultar el DNI nuevo).
+  const dniPendiente = (p, resultados) => {
+    const r = resultados.get(p.id);
+    // 'sin_datos' = el registro local no tenía nombres/apellidos comparables
+    // (RENIEC sí respondió). Tras completarlos, "Continuar" lo re-verifica.
+    return !r || r.estado === 'error' || r.estado === 'sin_datos' || r.dni !== p.dni;
+  };
+  const verificarDnisRoster = async () => {
+    const candidatos = dniCandidatos();
+    if (!candidatos.length) { showToast('No hay trabajadores con DNI de 8 dígitos para verificar (CE/pasaporte no se consultan)', 'amber'); return; }
+    const resultados = dniCheck?.resultados ? new Map(dniCheck.resultados) : new Map();
+    const pendientes = candidatos.filter(p => dniPendiente(p, resultados));
+    if (!pendientes.length) { setDniCheck(prev => ({ ...(prev || {}), running: false, abierto: true, total: candidatos.length, resultados })); return; }
+    dniAbort.stop = false;
+    // Merge del Map local del loop con las correcciones aplicadas vía "Usar
+    // nombre RENIEC" MIENTRAS corre la verificación (quedan marcadas
+    // corregido:true en el estado): sin esto, el set de cada iteración pisaría
+    // la corrección y la fila volvería a aparecer como "difiere".
+    const conCorrecciones = (prev) => {
+      const merged = new Map(resultados);
+      if (prev?.resultados) for (const [k, v] of prev.resultados) { if (v?.corregido) merged.set(k, v); }
+      return merged;
+    };
+    setDniCheck({ running: true, abierto: true, current: candidatos.length - pendientes.length, total: candidatos.length, resultados: new Map(resultados) });
+    for (let i = 0; i < pendientes.length; i++) {
+      if (dniAbort.stop) break;
+      const p = pendientes[i];
+      try {
+        const rn = await window.__identity.consultarDNI(p.dni);
+        const cmp = compararNombresReniec(p.nombres, p.apellidos, rn);
+        resultados.set(p.id, { estado: cmp.estado, reniec: rn, ratio: cmp.ratio, dni: p.dni });
+      } catch (e) {
+        const msg = String(e?.message || e);
+        if (/429|demasiadas/i.test(msg)) {
+          showToast('Límite de RENIEC alcanzado (30/min) — esperá un minuto y tocá "Continuar" para verificar los que faltan', 'amber');
+          break;
+        }
+        const noExiste = /404|no encontrado|not found|no existe/i.test(msg);
+        resultados.set(p.id, { estado: noExiste ? 'no_encontrado' : 'error', mensaje: msg, dni: p.dni });
+      }
+      // Preservar `abierto` del estado previo: si el usuario cerró el modal
+      // (X o "Editar") mientras corre el loop, NO reabrirlo solo — el progreso
+      // sigue visible en el botón del header y se reabre desde ahí.
+      setDniCheck(prev => ({ ...(prev || {}), running: true, current: candidatos.length - pendientes.length + i + 1, total: candidatos.length, resultados: conCorrecciones(prev) }));
+      if (i < pendientes.length - 1) await new Promise(r => setTimeout(r, 2100));
+    }
+    setDniCheck(prev => { const r = conCorrecciones(prev); return { ...(prev || {}), running: false, current: r.size, total: candidatos.length, resultados: r }; });
+  };
+
+  // Aplicar el nombre de RENIEC a una persona (corrección sugerida).
+  const aplicarNombreReniec = async (p, rn) => {
+    const nuevos = { nombres: titleCaseNombre(rn.nombres), apellidos: titleCaseNombre(rn.apellidos) };
+    try {
+      await updatePersonal(p.id, nuevos);
+      try { await window.__logAudit?.({ action: 'update', table: 'personal', recordId: p.id, oldData: { nombres: p.nombres, apellidos: p.apellidos }, newData: nuevos, reason: 'Corrección de nombre según RENIEC (verificación de DNIs)' }); } catch {}
+      setDniCheck(prev => {
+        if (!prev) return prev;
+        const r = new Map(prev.resultados);
+        r.set(p.id, { ...(r.get(p.id) || {}), estado: 'ok', corregido: true });
+        return { ...prev, resultados: r };
+      });
+      showToast(`✓ ${nuevos.nombres} ${nuevos.apellidos} — nombre corregido según RENIEC`, 'green');
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
+
   if (!obraId) return <SinObraEmpty icon="users"/>;
   if (loading) {
     return <div className="page-wrap"><div className="empty-state"><JxIcon name="users" size={32} color="var(--tm)"/><p>Cargando personal…</p></div></div>;
@@ -4993,6 +5076,32 @@ function PersonalPage({ showToast }) {
             <button className="btn btn-sm" style={{ background:'rgba(231,76,60,0.12)', color:'#E74C3C', border:'1px solid rgba(231,76,60,0.3)' }}
               onClick={()=>setFusionOpen(true)} title="⚡ Super Admin: juntar dos nombres que son la misma persona (referencial de migración + nombre real)">
               <JxIcon name="compare" size={13}/>Fusionar nombres
+            </button>
+          )}
+          <button className="btn btn-ghost btn-sm" title="Descargar el Excel del personal de esta obra (solo exporta — no modifica nada)"
+            onClick={async () => {
+              try {
+                const obra = await window.__db.obras.get(obraId);
+                // La página Personal nunca muestra datos bancarios (viven en
+                // Tesorería → Cuentas Bancarias). Si el rol no tiene ese módulo
+                // al menos en lectura, el export sale con las columnas bancarias
+                // vacías — si no, el botón sería un bypass de permisos. OJO: no
+                // alcanza con canWrite (rrhh / residente tienen Personal 'w'
+                // pero Cuentas Bancarias 'x').
+                const sinBancos = !(isAdmin || (window.__hasPerm?.(myRol, 'Cuentas Bancarias', 'r') ?? false));
+                const r = await exportarDataset('personal', obraId, obra?.nombre_obra || obra?.nombre || 'obra', { sinBancos }, { porModo: true });
+                showToast(`Exportado: ${r.filas} trabajadores → ${r.archivo}`, 'green');
+              } catch (e) { showToast('Error al exportar: ' + (e.message || e), 'red'); }
+            }}>
+            <JxIcon name="download" size={13}/>Exportar Excel
+          </button>
+          {canWrite && (
+            // Si corre el loop → solo reabrir el modal. Si NO corre → re-evaluar
+            // pendientes (DNIs corregidos, trabajadores nuevos); sin pendientes
+            // solo reabre el modal con el total fresco, sin tocar la API.
+            <button className="btn btn-ghost btn-sm" onClick={() => (dniCheck?.running ? setDniCheck(prev => ({ ...prev, abierto: true })) : verificarDnisRoster())}
+              title="Consulta cada DNI del roster en RENIEC y avisa si el nombre no coincide o el DNI no existe">
+              <JxIcon name="search" size={13}/>Verificar DNIs{dniCheck?.running ? ` ${dniCheck.current}/${dniCheck.total}` : ''}
             </button>
           )}
           {canWrite ? (
@@ -5114,6 +5223,89 @@ function PersonalPage({ showToast }) {
       </div>
       )}
 
+      {dniCheck?.abierto && (() => {
+        const porId = new Map((personal || []).map(p => [p.id, p]));
+        const rs = [...dniCheck.resultados.entries()].map(([pid, r]) => ({ p: porId.get(pid), r })).filter(x => x.p);
+        const cnt = (e) => rs.filter(x => x.r.estado === e).length;
+        const problemas = rs.filter(x => x.r.estado !== 'ok');
+        // Pendientes contra el roster FRESCO (no dniCheck.total del run viejo):
+        // cubre trabajadores agregados y DNIs corregidos después de verificar.
+        const pendientesN = dniCandidatos().filter(p => dniPendiente(p, dniCheck.resultados)).length;
+        return (
+          <Modal title="Verificación de DNIs contra RENIEC" icon="search" size="wide" onClose={() => { dniAbort.stop = true; setDniCheck(prev => prev ? { ...prev, abierto: false } : prev); }}>
+            {dniCheck.running ? (
+              <div style={{ fontSize: 12.5, color: 'var(--ts)', marginBottom: 12 }}>
+                Consultando RENIEC… {dniCheck.current}/{dniCheck.total} (≈2 seg por DNI para respetar el límite del servicio)
+                <div style={{ width: '100%', height: 6, background: 'var(--bg-c)', borderRadius: 3, overflow: 'hidden', marginTop: 6 }}>
+                  <div style={{ width: `${dniCheck.total ? (dniCheck.current / dniCheck.total * 100) : 0}%`, height: '100%', background: 'var(--blue)', transition: 'width .2s' }}/>
+                </div>
+                <button className="btn btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={() => { dniAbort.stop = true; }}>Pausar</button>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+                <span className="badge b-green">✓ {cnt('ok')} coinciden</span>
+                {cnt('difiere') > 0 && <span className="badge b-amber">⚠ {cnt('difiere')} con nombre distinto</span>}
+                {(cnt('no_coincide') + cnt('no_encontrado')) > 0 && <span className="badge b-red">✖ {cnt('no_coincide') + cnt('no_encontrado')} DNIs a revisar</span>}
+                {cnt('sin_datos') > 0 && <span className="badge b-amber">{cnt('sin_datos')} con datos incompletos</span>}
+                {cnt('error') > 0 && <span className="badge b-gray">{cnt('error')} sin respuesta</span>}
+                {pendientesN > 0 && (
+                  <button className="btn btn-blue btn-sm" onClick={verificarDnisRoster}>↻ Continuar ({pendientesN} pendientes)</button>
+                )}
+              </div>
+            )}
+            {!dniCheck.running && problemas.length === 0 && dniCheck.resultados.size > 0 && (
+              <div style={{ padding: '10px 12px', background: 'rgba(39,174,96,0.08)', border: '1px solid rgba(39,174,96,0.3)', borderRadius: 8, fontSize: 12.5, color: 'var(--ts)' }}>
+                ✓ Todos los DNIs verificados coinciden con RENIEC.
+              </div>
+            )}
+            {problemas.length > 0 && (
+              <div style={{ maxHeight: 340, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {problemas.slice(0, 100).map(({ p, r }) => {
+                  if (r.estado === 'difiere' && r.reniec) {
+                    return (
+                      <div key={p.id} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '8px 10px', background: 'rgba(242,183,5,0.06)', border: '1px solid rgba(242,183,5,0.3)', borderRadius: 8, fontSize: 12 }}>
+                        <span style={{ flex: '1 1 280px' }}>
+                          DNI {p.dni} — registrado: <span style={{ color: 'var(--red)' }}>{p.nombres} {p.apellidos}</span> · RENIEC: <span style={{ color: 'var(--green)' }}>{titleCaseNombre(r.reniec.nombres)} {titleCaseNombre(r.reniec.apellidos)}</span>
+                        </span>
+                        <button className="btn btn-green btn-xs" onClick={() => aplicarNombreReniec(p, r.reniec)}>Usar nombre RENIEC</button>
+                        <button className="btn btn-ghost btn-xs" onClick={() => { setDniCheck(prev => ({ ...prev, abierto: false })); openEditPersonal(p); }}>Editar</button>
+                      </div>
+                    );
+                  }
+                  // 'no_coincide': RENIEC SÍ encontró el DNI pero el nombre es
+                  // completamente distinto — el DNI tipeado pertenece a OTRA
+                  // persona. Se muestra el nombre RENIEC pero NO se ofrece
+                  // "Usar nombre RENIEC": pisar el registro con el nombre de un
+                  // tercero sería peor; lo correcto es corregir el DNI (Editar).
+                  const esOtraPersona = r.estado === 'no_coincide' && r.reniec;
+                  const esNoEnc = r.estado === 'no_encontrado' || (r.estado === 'no_coincide' && !r.reniec);
+                  // 'sin_datos': RENIEC respondió bien, pero el registro local no
+                  // tiene nombres/apellidos comparables (vacíos o solo iniciales).
+                  const esSinDatos = r.estado === 'sin_datos';
+                  const esRojo = esNoEnc || esOtraPersona;
+                  return (
+                    <div key={p.id} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '8px 10px', background: esRojo ? 'rgba(231,76,60,0.06)' : esSinDatos ? 'rgba(242,183,5,0.06)' : 'rgba(127,140,141,0.08)', border: `1px solid ${esRojo ? 'rgba(231,76,60,0.3)' : esSinDatos ? 'rgba(242,183,5,0.3)' : 'var(--border)'}`, borderRadius: 8, fontSize: 12 }}>
+                      <span style={{ flex: '1 1 280px' }}>
+                        <strong>{p.nombres} {p.apellidos}</strong> · DNI {p.dni} — {esOtraPersona
+                          ? <>RENIEC dice que ese DNI es de <span style={{ color: 'var(--red)', fontWeight: 600 }}>{titleCaseNombre(r.reniec.nombres)} {titleCaseNombre(r.reniec.apellidos)}</span> (otra persona). El número probablemente está mal escrito — corregí el DNI con Editar.</>
+                          : esNoEnc
+                          ? 'no encontrado: el número puede estar mal escrito (o es un DNI reciente que el servicio gratuito no tiene). Revisalo y corregilo.'
+                          : esSinDatos
+                            ? `faltan nombres/apellidos en el registro para comparar${r.reniec?.nombres ? ` (RENIEC dice: ${titleCaseNombre(r.reniec.nombres)} ${titleCaseNombre(r.reniec.apellidos)})` : ''} — completalos con Editar y tocá Continuar`
+                            : `sin respuesta del servicio (${(r.mensaje || '').slice(0, 80)})`}
+                      </span>
+                      <button className="btn btn-amber btn-xs" onClick={() => { setDniCheck(prev => ({ ...prev, abierto: false })); openEditPersonal(p); }}>Revisar / Editar</button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <div style={{ fontSize: 11.5, color: 'var(--tm)', marginTop: 12 }}>
+              Solo se consultan DNIs de 8 dígitos (CE y pasaporte no aplican). El servicio gratuito tiene base desactualizada y sin fecha de nacimiento — un "no encontrado" puede ser un DNI real reciente.
+            </div>
+          </Modal>
+        );
+      })()}
       {fusionOpen && (
         <FusionPersonasModal personal={personal} showToast={showToast}
           onClose={()=>setFusionOpen(false)} onDone={()=>{ /* el hook se refresca solo vía jx_data_changed */ }}/>

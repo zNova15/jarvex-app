@@ -9,6 +9,18 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import { db } from '../db/jarvex.db.js';
+import { getCurrentMode } from '../hooks/useAppMode.js';
+
+// Predicado de modo — espejo de filterByMode (useOfflineData.js): en 'prueba'
+// solo registros demo (demo === true); en 'edicion'/'produccion' solo reales.
+// Lo usan los botones "Exportar Excel" de las páginas (porModo: true) para que
+// el Excel coincida con lo que la página muestra. La pestaña Exportar y el
+// backup completo de Super Admin NO lo pasan: siguen exportando todo.
+function pasaModoActual() {
+  const mode = getCurrentMode();
+  if (mode === 'prueba') return (r) => r.demo === true;
+  return (r) => !r.demo;
+}
 
 // Path dentro del bucket 'evidencias' (para createSignedUrl). Igual que jx-evidencias.
 function pathFromUrl(url) {
@@ -53,12 +65,14 @@ function destino(m, personalById, subsById) {
 }
 
 // ── Carga única del contexto de la obra (tablas + mapas) ──
-async function cargarContexto(obraId) {
-  const porObra = (t) => db[t].where('obra_id').equals(obraId).filter((r) => !r.deleted_at).toArray();
+// opts.porModo: filtra demo/real según el modo actual (ver pasaModoActual).
+async function cargarContexto(obraId, { porModo = false } = {}) {
+  const pasaModo = porModo ? pasaModoActual() : () => true;
+  const porObra = (t) => db[t].where('obra_id').equals(obraId).filter((r) => !r.deleted_at && pasaModo(r)).toArray();
   // Para tablas con obra_id pero SIN índice obra_id (ej. consumos_combustible),
   // filtramos en memoria — where('obra_id') sobre keypath no indexado rechaza.
-  const porObraSinIndice = (t) => db[t].filter((r) => !r.deleted_at && r.obra_id === obraId).toArray();
-  const todos = (t) => db[t].filter((r) => !r.deleted_at).toArray();
+  const porObraSinIndice = (t) => db[t].filter((r) => !r.deleted_at && r.obra_id === obraId && pasaModo(r)).toArray();
+  const todos = (t) => db[t].filter((r) => !r.deleted_at && pasaModo(r)).toArray();
   const [
     movMat, movHerr, movEpp, movMaq, movEmer,
     mantsAll, horas, comb, caja, asist,
@@ -214,7 +228,9 @@ export const DATASETS = [
       // La cuenta PRINCIPAL y la CTS van inline (como la plantilla de import);
       // si hay más cuentas, están completas en el dataset "Cuentas bancarias".
       const rows = list.map((p) => {
-        const ctas = c.pcbByPersonal?.get(p.id) || [];
+        // sinBancos: el caller no tiene permiso de "Cuentas Bancarias" → las 7
+        // columnas bancarias salen vacías (headers intactos para el round-trip).
+        const ctas = f?.sinBancos ? [] : (c.pcbByPersonal?.get(p.id) || []);
         const ppal = ctas.find((x) => x.principal) || ctas.find((x) => x.tipo_cuenta !== 'cts') || null;
         const cts = ctas.find((x) => x.tipo_cuenta === 'cts') || null;
         return [p.nombres || '', p.apellidos || '', p.alias || '', p.tipo_documento || 'dni', p.dni || '', p.cargo || '', p.area || '',
@@ -305,12 +321,13 @@ function escribirWorkbook(XLSX, hojas, archivo) {
 }
 
 // Exporta UN dataset (un Excel de una hoja) con los filtros dados.
-export async function exportarDataset(datasetId, obraId, obraNombre = 'obra', filtros = {}) {
+// opts.porModo: true → respeta el modo demo/real actual (botones de página).
+export async function exportarDataset(datasetId, obraId, obraNombre = 'obra', filtros = {}, opts = {}) {
   if (!obraId) throw new Error('No hay una obra activa para exportar.');
   const d = DATASET_BY_ID.get(datasetId);
   if (!d) throw new Error('Dataset desconocido: ' + datasetId);
   const XLSX = await import('xlsx');
-  const c = await cargarContexto(obraId);
+  const c = await cargarContexto(obraId, opts);
   const { headers, rows } = d.build(c, filtros);
   const fecha = new Date().toISOString().slice(0, 10);
   const archivo = `JARVEX_${datasetId}_${slug(obraNombre)}_${fecha}.xlsx`;

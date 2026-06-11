@@ -64,11 +64,24 @@ export default async function handler(req, res) {
       if (upstream.ok) {
         let data = null;
         try { data = await upstream.json(); } catch { last = { id: p.id, status: 200 }; continue; }
+        // El v1 gratis a veces devuelve 200 con los nombres VACÍOS para DNIs
+        // que su base (desactualizada) no tiene — tratarlo como no-encontrado.
+        const norm = normalize(data, d, p.id);
+        if (!String(norm.nombres || '').trim() && !String(norm.apellidoPaterno || '').trim()) {
+          last = { id: p.id, status: 404, gratis: !p.token };
+          continue;
+        }
         res.setHeader('Cache-Control', 's-maxage=86400, stale-while-revalidate=604800');
-        return res.status(200).json(normalize(data, d, p.id));
+        return res.status(200).json(norm);
       }
       if (upstream.status === 404) {
-        return res.status(404).json({ error: 'DNI no encontrado en RENIEC' });
+        // El no-encontrado del servicio GRATUITO no es confiable: su base está
+        // desactualizada y suele no tener DNIs recientes. Decirlo claro para
+        // que el usuario no dude de un DNI correcto.
+        if (!p.token) {
+          return res.status(404).json({ error: 'DNI no encontrado en el servicio gratuito de RENIEC (su base está desactualizada y puede no incluir DNIs recientes ni fecha de nacimiento). Verificá el número; si es correcto, registrate gratis en apis.net.pe y poné el token APIS_NET_PE_TOKEN en Vercel para usar la base completa.' });
+        }
+        return res.status(404).json({ error: 'DNI no encontrado en RENIEC — verificá el número' });
       }
       // 401/403 = token inválido para ESE proveedor; 429 = límite; 5xx = caído
       // → probar el siguiente de la cadena.
@@ -77,6 +90,12 @@ export default async function handler(req, res) {
     }
     if (last && last.status === 429) {
       return res.status(429).json({ error: 'Demasiadas consultas al servicio de DNI — espera un minuto y reintenta' });
+    }
+    if (last && last.status === 404) {
+      // Cayó acá por un 200-vacío tratado como no-encontrado.
+      return res.status(404).json({ error: last.gratis
+        ? 'DNI no encontrado en el servicio gratuito de RENIEC (su base está desactualizada y puede no incluir DNIs recientes ni fecha de nacimiento). Verificá el número; si es correcto, registrate gratis en apis.net.pe y poné el token APIS_NET_PE_TOKEN en Vercel para usar la base completa.'
+        : 'DNI no encontrado en RENIEC — verificá el número' });
     }
     return res.status(503).json({ error: `Servicio de DNI no disponible (${last ? `${last.id} respondió ${last.status || 'timeout'}` : 'sin proveedores'}) — reintenta o revisa los tokens en Vercel` });
   } catch (e) {

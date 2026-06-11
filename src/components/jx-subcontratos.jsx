@@ -1,4 +1,5 @@
 import React from "react";
+import { SearchableSelect } from "./jx-searchable-select.jsx";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -50,8 +51,18 @@ function SubcontratistasPage({ showToast }) {
   // subcontratistas son globales pero el personal es por obra, así que la
   // cuadrilla que se ve es la de la obra activa.
   const obraId = useObraActiva();
-  const { data: personal } = window.__hooks.usePersonal(obraId);
+  const { data: personal, update: updPersonal, create: crtPersonal } = window.__hooks.usePersonal(obraId);
   const { data: frentes } = window.__hooks.useFrentesObra(obraId);
+  // Herramientas de la obra: para bloquear inhabilitar con préstamos pendientes
+  // (misma regla de negocio que PersonalPage en jx-almacen).
+  const { data: herramientasObra } = window.__hooks.useHerramientas(obraId);
+  // Editar la CUADRILLA toca la tabla personal → permiso del módulo Personal.
+  const canWritePersonal = isAdmin || (window.__hasPerm?.(myRol, 'Personal', 'w') ?? false);
+  // Sin obra activa NO se edita la cuadrilla: usePersonal(null) lista personal de
+  // TODAS las obras (cross-obra) y crear escribiría obra_id null — NOT NULL en el
+  // server → push fallaría para siempre. Mientras useObraActiva() resuelve, solo lectura.
+  const canEditCrew = canWritePersonal && !!obraId;
+  const appModeSub = window.__useAppMode ? window.__useAppMode() : {};
   const frentesById = uM(() => new Map((frentes || []).map(f => [f.id, f.nombre])), [frentes]);
 
   const [modal, setModal] = uS(null);
@@ -59,6 +70,141 @@ function SubcontratistasPage({ showToast }) {
   const [form, setForm] = uS({});
   const [busy, setBusy] = uS(false);
   const [crewOf, setCrewOf] = uS(null); // subcontratista cuya cuadrilla se ve
+  const [nuevoMiembro, setNuevoMiembro] = uS(null); // null | { nombres, apellidos, dni, es_jefe } — mini-form
+  const [miembroSel, setMiembroSel] = uS('');       // persona directa elegida para sumar a la cuadrilla
+  const [crewBusy, setCrewBusy] = uS(false);
+
+  // Historial individual (mismos tipos del CHECK de personal_historial:
+  // alta/cargo/frente/estado/subcontrato/area — NO inventar otros).
+  const logHistSub = async (tipo, antes, despues, personalId) => {
+    if (String(antes ?? '') === String(despues ?? '')) return;
+    try {
+      const id = window.__newId(); const now = new Date().toISOString();
+      const isPruebaH = !!appModeSub.isPrueba;
+      await window.__db.personal_historial.add({
+        id, personal_id: personalId, obra_id: obraId, fecha: now.slice(0, 10), tipo,
+        valor_anterior: (antes != null && antes !== '') ? String(antes) : null,
+        valor_nuevo: (despues != null && despues !== '') ? String(despues) : null,
+        motivo: 'Gestión de cuadrilla (Subcontratistas)', created_by: userId, updated_by: userId, created_at: now, updated_at: now,
+        version: 1, sync_status: isPruebaH ? 'synced' : 'pending_create', last_synced_at: null,
+        idempotency_key: `${userId}_phist_${id}`, ...(isPruebaH ? { demo: true } : {}),
+      });
+    } catch (e) { console.warn('[cuadrilla historial]', e?.message); }
+  };
+
+  // ── Acciones de cuadrilla ──────────────────────────────────────────
+  const agregarMiembro = async (personaId) => {
+    if (crewBusy) return; // re-entrada durante el await = doble updPersonal + historial duplicado
+    if (!obraId) return;  // sin obra activa, "personal" puede ser de otras obras
+    const p = (personal || []).find(x => x.id === personaId);
+    if (!p || !crewOf) return;
+    setCrewBusy(true);
+    try {
+      const oldVals = { subcontratista_id: p.subcontratista_id, es_jefe_subcontrato: p.es_jefe_subcontrato, seguro_a_cargo: p.seguro_a_cargo };
+      const newVals = { subcontratista_id: crewOf.id, es_jefe_subcontrato: false, seguro_a_cargo: p.seguro_a_cargo || crewOf.seguro_a_cargo || 'empresa' };
+      await updPersonal(p.id, newVals);
+      try { await window.__logAudit?.({ action:'update', table:'personal', recordId:p.id, oldData:oldVals, newData:newVals, reason:`Cuadrilla (Subcontratistas): agregado a ${crewOf.razon_social}` }); } catch {}
+      await logHistSub('subcontrato', p.subcontratista_id ? '(otro subcontrato)' : 'Directo', crewOf.razon_social, p.id);
+      showToast(`✓ ${p.nombres} ${p.apellidos} agregado a la cuadrilla`, 'green');
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+    finally { setCrewBusy(false); setMiembroSel(''); } // reset también en error — que no quede nadie "seleccionado" sin haber sido agregado
+  };
+
+  const toggleJefe = async (p) => {
+    // Mismo aviso suave que PersonalPage: lo normal es 1-2 jefes por subcontrato.
+    if (!p.es_jefe_subcontrato) {
+      const jefes = (personal || []).filter(x =>
+        x.subcontratista_id === p.subcontratista_id && x.es_jefe_subcontrato && !x.deleted_at && x.id !== p.id
+      );
+      if (jefes.length >= 2) {
+        const ls = jefes.map(j => `· ${j.nombres} ${j.apellidos}`).join('\n');
+        if (!confirm(`Este subcontrato ya tiene ${jefes.length} jefes:\n${ls}\n\n¿Agregar otro jefe de todas formas?`)) return;
+      }
+    }
+    setCrewBusy(true);
+    try {
+      await updPersonal(p.id, { es_jefe_subcontrato: !p.es_jefe_subcontrato });
+      try { await window.__logAudit?.({ action:'update', table:'personal', recordId:p.id, oldData:{ es_jefe_subcontrato: p.es_jefe_subcontrato }, newData:{ es_jefe_subcontrato: !p.es_jefe_subcontrato }, reason:'Cuadrilla (Subcontratistas): cambio de jefatura' }); } catch {}
+      showToast(p.es_jefe_subcontrato ? `${p.nombres} ya no es jefe` : `★ ${p.nombres} ${p.apellidos} ahora es jefe de la cuadrilla`, 'green');
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+    finally { setCrewBusy(false); }
+  };
+
+  // Habilitar/inhabilitar = estado activo ↔ inactivo (cuando un miembro se va
+  // de la cuadrilla o vuelve). El historial individual lo registra.
+  const toggleHabilitado = async (p) => {
+    const nuevo = p.estado === 'activo' ? 'inactivo' : 'activo';
+    // Misma regla que PersonalPage: no se inhabilita a alguien con
+    // herramientas sin devolver (es el último responsable y siguen en uso).
+    if (nuevo === 'inactivo') {
+      const herrPendientes = (herramientasObra || []).filter(h =>
+        !h.deleted_at && h.ultimo_responsable_id === p.id && (h.disponible === false || h.ubicacion_actual === 'en_uso')
+      );
+      if (herrPendientes.length > 0) {
+        const lista = herrPendientes.slice(0, 5).map(h => `· ${h.nombre_herramienta}`).join('\n');
+        showToast(`No podés inhabilitar a ${p.nombres}: tiene ${herrPendientes.length} herramienta(s) sin devolver:\n${lista}`, 'red');
+        return;
+      }
+    }
+    setCrewBusy(true);
+    try {
+      const newVals = { estado: nuevo, ...(nuevo === 'inactivo' ? { es_jefe_subcontrato: false } : {}) };
+      await updPersonal(p.id, newVals);
+      try { await window.__logAudit?.({ action:'update', table:'personal', recordId:p.id, oldData:{ estado: p.estado, es_jefe_subcontrato: p.es_jefe_subcontrato }, newData:newVals, reason:`Cuadrilla (Subcontratistas): ${nuevo === 'activo' ? 'habilitado' : 'inhabilitado'}` }); } catch {}
+      await logHistSub('estado', p.estado, nuevo, p.id);
+      showToast(nuevo === 'activo' ? `✓ ${p.nombres} habilitado` : `${p.nombres} inhabilitado (inactivo)`, nuevo === 'activo' ? 'green' : 'amber');
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+    finally { setCrewBusy(false); }
+  };
+
+  const quitarDeCuadrilla = async (p) => {
+    if (!confirm(`¿Quitar a ${p.nombres} ${p.apellidos} de la cuadrilla?\n\nVuelve como personal directo de la empresa (no se elimina ni pierde su historial).`)) return;
+    setCrewBusy(true);
+    try {
+      const oldVals = { subcontratista_id: p.subcontratista_id, es_jefe_subcontrato: p.es_jefe_subcontrato, seguro_a_cargo: p.seguro_a_cargo };
+      const newVals = { subcontratista_id: null, es_jefe_subcontrato: false, seguro_a_cargo: null };
+      await updPersonal(p.id, newVals);
+      try { await window.__logAudit?.({ action:'update', table:'personal', recordId:p.id, oldData:oldVals, newData:newVals, reason:`Cuadrilla (Subcontratistas): quitado de ${crewOf?.razon_social || '(subcontrato)'} — vuelve directo` }); } catch {}
+      await logHistSub('subcontrato', crewOf?.razon_social || '(subcontrato)', 'Directo', p.id);
+      showToast(`${p.nombres} ${p.apellidos} ahora es personal directo`, 'amber');
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+    finally { setCrewBusy(false); }
+  };
+
+  const crearMiembro = async () => {
+    if (!obraId) { showToast('Esperá a que cargue la obra activa', 'red'); return; } // personal.obra_id es NOT NULL en el server
+    const f = nuevoMiembro || {};
+    const dni = String(f.dni || '').replace(/\D/g, '');
+    if (!f.nombres?.trim() || !f.apellidos?.trim()) { showToast('Faltan nombres y apellidos', 'red'); return; }
+    if (!/^\d{8}$/.test(dni)) { showToast('El DNI debe tener exactamente 8 dígitos', 'red'); return; }
+    const dupe = (personal || []).find(x => x.dni === dni && !x.deleted_at);
+    if (dupe) { showToast(`Ya existe un trabajador con DNI ${dni}: ${dupe.nombres} ${dupe.apellidos}${dupe.subcontratista_id ? '' : ' — agregalo desde el buscador de arriba'}`, 'red'); return; }
+    // Mismo aviso suave que PersonalPage: lo normal es 1-2 jefes por subcontrato.
+    if (f.es_jefe) {
+      const jefes = (personal || []).filter(x =>
+        x.subcontratista_id === crewOf.id && x.es_jefe_subcontrato && !x.deleted_at
+      );
+      if (jefes.length >= 2) {
+        const ls = jefes.map(j => `· ${j.nombres} ${j.apellidos}`).join('\n');
+        if (!confirm(`Este subcontrato ya tiene ${jefes.length} jefes:\n${ls}\n\n¿Agregar otro jefe de todas formas?`)) return;
+      }
+    }
+    setCrewBusy(true);
+    try {
+      const created = await crtPersonal({
+        obra_id: obraId, nombres: f.nombres.trim(), apellidos: f.apellidos.trim(), dni,
+        tipo_documento: 'dni', cargo: f.es_jefe ? `Jefe Subcontrato ${crewOf.razon_social}`.slice(0, 60) : 'Obrero',
+        estado: 'activo', fecha_ingreso: new Date().toISOString().slice(0, 10),
+        subcontratista_id: crewOf.id, es_jefe_subcontrato: !!f.es_jefe,
+        seguro_a_cargo: crewOf.seguro_a_cargo || 'empresa',
+      });
+      try { await window.__logAudit?.({ action:'insert', table:'personal', recordId:created?.id, newData:created, reason:`Cuadrilla (Subcontratistas): alta en ${crewOf.razon_social}` }); } catch {}
+      await logHistSub('alta', null, `Cuadrilla ${crewOf.razon_social}${f.es_jefe ? ' · jefe' : ''}`, created?.id);
+      showToast(`✓ ${f.nombres.trim()} ${f.apellidos.trim()} creado en la cuadrilla`, 'green');
+      setNuevoMiembro(null);
+    } catch (e) { showToast('Error: ' + (e.message?.includes('UNIQUE') ? 'Ya existe un trabajador con ese DNI' : e.message), 'red'); }
+    finally { setCrewBusy(false); }
+  };
 
   const sorted = uM(() => [...(subs||[])].sort((a,b) => (a.razon_social||'').localeCompare(b.razon_social||'')), [subs]);
   const crewBySub = uM(() => {
@@ -161,10 +307,12 @@ function SubcontratistasPage({ showToast }) {
                   <td><span className={`badge ${s.seguro_a_cargo==='subcontrato'?'b-gray':'b-green'}`} title="Quién asume el seguro/SCTR del personal de este subcontrato">{s.seguro_a_cargo==='subcontrato'?'Subcontrato':'Empresa'}</span></td>
                   <td style={{ textAlign:'center' }}>
                     {crew.length > 0 ? (
-                      <button className="btn btn-ghost btn-xs" onClick={()=>setCrewOf(s)} title="Ver cuadrilla (personal de la obra activa)">
+                      <button className="btn btn-ghost btn-xs" onClick={()=>setCrewOf(s)} title="Ver / gestionar la cuadrilla (personal de la obra activa)">
                         {crew.length}{jefes>0 ? ` · ${jefes} jefe${jefes>1?'s':''}` : ''}
                       </button>
-                    ) : <span style={{color:'var(--tm)',fontSize:12}}>—</span>}
+                    ) : (canEditCrew
+                      ? <button className="btn btn-ghost btn-xs" onClick={()=>setCrewOf(s)} title="Armar la cuadrilla de este subcontrato">+ armar</button>
+                      : <span style={{color:'var(--tm)',fontSize:12}}>—</span>)}
                   </td>
                   <td style={{ textAlign:'center' }}>
                     <button className="btn btn-ghost btn-xs" onClick={()=>{setForm({...s}); setEditing(s); setModal(true);}}><JxIcon name="edit" size={11}/></button>
@@ -228,7 +376,7 @@ function SubcontratistasPage({ showToast }) {
         // Frentes en los que trabaja este subcontrato = derivados del personal de su cuadrilla.
         const frentesDelSub = [...new Set(crew.map(p => p.frente_id).filter(Boolean))].map(id => frentesById.get(id)).filter(Boolean);
         return (
-          <Modal title={`Cuadrilla · ${crewOf.razon_social}`} icon="users" onClose={()=>setCrewOf(null)}>
+          <Modal title={`Cuadrilla · ${crewOf.razon_social}`} icon="users" onClose={()=>{ setCrewOf(null); setNuevoMiembro(null); setMiembroSel(''); }}>
             <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:12 }}>
               <span className="badge b-blue">{crew.length} trabajadores</span>
               <span className="badge b-green">{activos} activos</span>
@@ -241,24 +389,69 @@ function SubcontratistasPage({ showToast }) {
                 {frentesDelSub.map(n => <span key={n} className="badge b-amber">{n}</span>)}
               </div>
             )}
+            {canEditCrew && (
+              <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'flex-end', marginBottom:12, padding:'10px 12px', background:'rgba(39,174,96,0.05)', border:'1px dashed rgba(39,174,96,0.35)', borderRadius:8 }}>
+                <div style={{ flex:'1 1 240px' }}>
+                  <label className="flabel">Agregar miembro existente (personal directo)</label>
+                  <SearchableSelect value={miembroSel} disabled={crewBusy} onChange={v => { setMiembroSel(v); if (v) agregarMiembro(v); }}
+                    options={[{ value:'', label:'— Buscar persona directa —' },
+                      ...((personal || []).filter(p => !p.deleted_at && !p.subcontratista_id)
+                        .sort((a,b)=>`${a.nombres} ${a.apellidos}`.localeCompare(`${b.nombres} ${b.apellidos}`))
+                        .map(p => ({ value:p.id, label:`${p.nombres} ${p.apellidos}${p.alias?` «${p.alias}»`:''}${p.cargo?` (${p.cargo})`:''} · ${p.dni||'s/doc'}` })))]}
+                    placeholder="— Buscar persona directa —"/>
+                </div>
+                <button className="btn btn-green btn-sm" disabled={crewBusy} onClick={()=>setNuevoMiembro(nuevoMiembro ? null : { nombres:'', apellidos:'', dni:'', es_jefe:false })}>
+                  <JxIcon name="plus" size={12}/> Nuevo miembro
+                </button>
+              </div>
+            )}
+            {canEditCrew && nuevoMiembro && (
+              <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'flex-end', marginBottom:12, padding:'10px 12px', background:'var(--bg-s)', borderRadius:8 }}>
+                <div><label className="flabel">Nombres *</label><input className="fi" value={nuevoMiembro.nombres} onChange={e=>setNuevoMiembro({...nuevoMiembro, nombres:e.target.value})}/></div>
+                <div><label className="flabel">Apellidos *</label><input className="fi" value={nuevoMiembro.apellidos} onChange={e=>setNuevoMiembro({...nuevoMiembro, apellidos:e.target.value})}/></div>
+                <div><label className="flabel">DNI *</label><input className="fi" style={{width:110}} maxLength={8} inputMode="numeric" value={nuevoMiembro.dni} onChange={e=>setNuevoMiembro({...nuevoMiembro, dni:e.target.value.replace(/\D/g,'').slice(0,8)})}/></div>
+                <label style={{ display:'flex', gap:6, alignItems:'center', fontSize:12, paddingBottom:8, cursor:'pointer' }}>
+                  <input type="checkbox" checked={!!nuevoMiembro.es_jefe} onChange={e=>setNuevoMiembro({...nuevoMiembro, es_jefe:e.target.checked})}/> Es jefe
+                </label>
+                <button className="btn btn-amber btn-sm" disabled={crewBusy} onClick={crearMiembro}>{crewBusy ? '…' : 'Crear y agregar'}</button>
+              </div>
+            )}
             <div className="card" style={{ overflow:'hidden' }}>
               <table className="tbl">
-                <thead><tr><th>Nombre</th><th>Cargo</th><th>Frente</th><th>Estado</th><th>Seguro</th></tr></thead>
+                <thead><tr><th>Nombre</th><th>Cargo</th><th>Frente</th><th>Estado</th><th>Seguro</th>{canEditCrew && <th style={{textAlign:'center'}}>Acciones</th>}</tr></thead>
                 <tbody>
+                  {crew.length === 0 && (
+                    <tr><td colSpan={canEditCrew ? 6 : 5} style={{ textAlign:'center', color:'var(--tm)', fontSize:12.5, padding:18 }}>
+                      Cuadrilla vacía — agregá personal directo con el buscador o creá miembros nuevos.
+                    </td></tr>
+                  )}
                   {crew.map(p => (
-                    <tr key={p.id}>
-                      <td className="col-p">{p.es_jefe_subcontrato && <span className="badge b-blue" style={{marginRight:6}}>Jefe</span>}{p.nombres} {p.apellidos}</td>
+                    <tr key={p.id} style={{ opacity: p.estado === 'activo' ? 1 : 0.55 }}>
+                      <td className="col-p">{p.es_jefe_subcontrato && <span className="badge b-blue" style={{marginRight:6}}>Jefe</span>}{p.nombres} {p.apellidos}{p.alias ? <span style={{color:'var(--tm)',fontWeight:400}}> «{p.alias}»</span> : null}</td>
                       <td>{p.cargo || '—'}</td>
                       <td>{p.frente_id ? (frentesById.get(p.frente_id) || '—') : '—'}</td>
                       <td><span className={`badge ${p.estado==='activo'?'b-green':'b-gray'}`}>{p.estado}</span></td>
                       <td>{(p.seguro_a_cargo||'empresa')==='subcontrato' ? 'Subcontrato' : 'Empresa'}</td>
+                      {canEditCrew && (
+                        <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
+                          <button className="btn btn-ghost btn-xs" disabled={crewBusy} title={p.es_jefe_subcontrato ? 'Quitar jefatura' : 'Hacer jefe de la cuadrilla'} onClick={()=>toggleJefe(p)}>
+                            {p.es_jefe_subcontrato ? '★' : '☆'}
+                          </button>
+                          <button className="btn btn-ghost btn-xs" disabled={crewBusy} title={p.estado==='activo' ? 'Inhabilitar (se fue de la cuadrilla — queda inactivo, conserva historial)' : 'Habilitar (vuelve a estar activo)'} onClick={()=>toggleHabilitado(p)}>
+                            {p.estado === 'activo' ? '⏸' : '▶'}
+                          </button>
+                          <button className="btn btn-ghost btn-xs" disabled={crewBusy} title="Quitar del subcontrato (vuelve como personal directo)" onClick={()=>quitarDeCuadrilla(p)} style={{ color:'var(--red)' }}>
+                            ✕
+                          </button>
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
             <div style={{ fontSize:11, color:'var(--tm)', marginTop:10 }}>
-              Cuadrilla de la obra activa. Para agregar o quitar personal de este subcontrato, edítalos en la sección <strong>Personal</strong> (campo «Vínculo laboral»).
+              Cuadrilla de la obra activa. ★ = jefe (cobra por encargo y maneja su gente) · ⏸/▶ = inhabilitar cuando se van / habilitar cuando vuelven (conservan su historial, EPPs entregados y SCTR) · ✕ = pasa a personal directo. Los acuerdos del trato (EPPs que cubre la empresa, etc.) se anotan en «Notas / acuerdos» del subcontratista.
             </div>
           </Modal>
         );

@@ -18,6 +18,7 @@ import { usePagination } from "../hooks/usePagination.js";
 import { TablePagination } from "./jx-pagination.jsx";
 import { SearchableSelect } from "./jx-searchable-select.jsx";
 import { opcionesDestinoFlat, splitDestino } from "../lib/destino-mov.js";
+import { exportarDataset } from "../lib/export-historico.js";
 
 const { useState: uS, useEffect: uE, useMemo: uM, useRef: uR } = React;
 
@@ -803,6 +804,17 @@ function EppsInventarioPage({ showToast }) {
           <div className="pg-sub">{epps.length} EPPs registrados · {epps.filter(e => ['critico','reponer','agotado','sin_stock'].includes(alertaDe(e))).length} alertas</div>
         </div>
         <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+          <button className="btn btn-ghost btn-sm" title="Descargar el Excel de los movimientos de EPP (solo exporta — no modifica nada)"
+            onClick={async () => {
+              if (!obraId) { showToast?.('No hay obra activa', 'red'); return; }
+              try {
+                const obra = await window.__db.obras.get(obraId);
+                const r = await exportarDataset('mov_epp', obraId, obra?.nombre_obra || obra?.nombre || 'obra', {}, { porModo: true });
+                showToast?.(`Exportado: ${r.filas} movimientos de EPP → ${r.archivo}`, 'green');
+              } catch (e) { showToast?.('Error al exportar: ' + (e.message || e), 'red'); }
+            }}>
+            <JxIcon name="download" size={13}/> Exportar Excel
+          </button>
           {canWrite && <button className="btn btn-ghost btn-sm" onClick={openSalida}><JxIcon name="arrowOut" size={13}/>Registrar Salida</button>}
           {canWrite && <button className="btn btn-ghost btn-sm" onClick={openIngreso}><JxIcon name="arrowIn" size={13}/>Registrar Ingreso</button>}
           {canWrite && ubicacionesActivas.length >= 2 && <button className="btn btn-ghost btn-sm" onClick={() => openTraspaso()} title="Mover stock entre almacenes"><JxIcon name="compare" size={13}/>Traspaso</button>}
