@@ -27,7 +27,12 @@ import {
   detectFormato, FORMATOS,
   parseInsumosTotales, parseInsumosEmergencia, parsePersonal, parseMovimientos, parseMovMaquinariaAsignacion, resumenMovimientos,
   normTxt, compararNombresReniec, titleCaseNombre,
+  parseCajaChica, parseAsistencia, parseMantenimientos, parseHorasMaquina, parseCombustible,
 } from "../lib/migracion-parser.js";
+import {
+  runCajaChicaImport, runAsistenciaImport, runMantenimientosImport,
+  runHorasMaquinaImport, runCombustibleImport,
+} from "../lib/import-datasets.js";
 
 // Plantillas descargables por formato. Columnas RICAS y organizadas (mismo
 // formato que produce el Export histórico → round-trip completo). El parser
@@ -43,6 +48,16 @@ export const TEMPLATES = {
   mov_maquinaria_asignacion: { headers: ['ID', 'Fecha', 'Hora', 'Equipo', 'Movimiento', 'Tipo destino', 'Asignado a', 'Frente / Zona', 'Observación'], sample: ['1', '21/05/2026', '08:30', 'Excavadora CAT 320', 'Salida', 'Personal', 'Juan Pérez', 'Frente A', ''] },
   personal: { headers: ['Nombres', 'Apellidos', 'Alias', 'Tipo Documento', 'DNI', 'Cargo', 'Area', 'Frente', 'Subcontrato', 'Seguro a cargo', 'Estado', 'Fecha Ingreso', 'Fecha Nacimiento', 'Telefono', 'Email', 'Direccion', 'Contacto Emergencia', 'Telefono Emergencia', 'Regimen Pension', 'Banco', 'Tipo Cuenta', 'Numero Cuenta', 'CCI', 'Moneda', 'Banco CTS', 'Cuenta CTS'],
     sample: ['Carlos', 'Mendoza Quispe', 'Calo', 'DNI', '40123456', 'Capataz', 'Estructuras', 'Alcantarillado', '', 'empresa', 'activo', '15/01/2026', '12/04/1985', '987111111', 'carlos.mendoza@gmail.com', 'Jr. Los Pinos 123', 'María Quispe', '976222333', 'AFP Integra', 'BCP', 'ahorros', '19112345678012', '00219111234567801299', 'PEN', 'Banco de la Nación', '04-123-456789'] },
+  caja_chica: { headers: ['ID', 'Fecha', 'Hora', 'Tipo', 'Monto (S/)', 'Concepto', 'Responsable', 'Proveedor', 'Documento', 'Observaciones'],
+    sample: ['1', '11/05/2026', '08:30', 'Ingreso', '200', 'Ingreso 1 Caja Chica', 'Yanet Tafur', '', '', ''] },
+  asistencia: { headers: ['Fecha', 'Trabajador', 'Hora Ingreso', 'Hora Salida', 'Horas', 'Estado', 'Observaciones'],
+    sample: ['02/06/2026', 'Carlos Mendoza Quispe', '07:30', '17:30', '9', 'Asistió', ''] },
+  mantenimientos: { headers: ['ID', 'Fecha', 'Equipo', 'Tipo', 'HM Actuales', 'Descripción', 'Costo Repuestos (S/)', 'Costo Mano de Obra (S/)', 'Costo Total (S/)', 'Taller', 'Mecánico', 'Duración (h)', 'Observaciones'],
+    sample: ['1', '15/05/2026', 'Excavadora CAT 320', 'Preventivo', '1250', 'Cambio de aceite y filtros', '450', '150', '600', 'Taller propio', 'Luis Pérez', '4', ''] },
+  horas_maquina: { headers: ['ID', 'Fecha', 'Equipo', 'Horas Trabajadas', 'HM Inicial', 'HM Final', 'Operador', 'Actividad', 'Observaciones'],
+    sample: ['1', '15/05/2026', 'Excavadora CAT 320', '8', '1242', '1250', 'Juan Carlos Silva', 'Excavación de zanja', ''] },
+  combustible: { headers: ['ID', 'Fecha', 'Equipo', 'Galones', 'Precio/Galón (S/)', 'Total (S/)', 'Surtidor', 'Operador', 'HM Actuales', 'Observaciones'],
+    sample: ['1', '15/05/2026', 'Excavadora CAT 320', '15', '16.50', '247.50', 'Grifo San Juan', 'Juan Carlos Silva', '1250', ''] },
 };
 
 export async function descargarPlantilla(formato) {
@@ -873,6 +888,10 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
   const esInsumos = formato === 'insumos_totales';
   const esInsumosEmergencia = formato === 'insumos_emergencia';
   const esPersonal = formato === 'personal';
+  // Datasets re-importables del export histórico: van directo (sin paso de
+  // revisión de insumos) y deduplican por contenido contra lo ya existente.
+  const DATASETS = { caja_chica: parseCajaChica, asistencia: parseAsistencia, mantenimientos: parseMantenimientos, horas_maquina: parseHorasMaquina, combustible: parseCombustible };
+  const esDataset = !!(formato && DATASETS[formato]);
   const esMov = formato && formato.startsWith('mov_');
   const esAsignacion = formato === 'mov_maquinaria_asignacion';
   const movHabilitado = formato === 'mov_materiales' || formato === 'mov_epp' || formato === 'mov_herramientas' || formato === 'mov_maquinaria' || formato === 'mov_emergencia' || esAsignacion;
@@ -898,6 +917,21 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         sinDni: items.filter(it => !it.dni).length,
       };
     }
+    if (esDataset) {
+      const items = DATASETS[formato](parsed.rows);
+      const fechas = items.map(it => it.fecha).filter(Boolean).sort();
+      const resumen = { total: items.length, desde: fechas[0] || null, hasta: fechas[fechas.length - 1] || null };
+      if (formato === 'caja_chica') {
+        resumen.ingresos = items.filter(it => it.tipo === 'entrada').reduce((a, it) => a + (it.monto || 0), 0);
+        resumen.gastos = items.filter(it => it.tipo === 'salida').reduce((a, it) => a + (it.monto || 0), 0);
+        resumen.sinTipo = items.filter(it => !it.tipo).length;
+      }
+      if (formato === 'asistencia') resumen.personas = new Set(items.map(it => normTxt(it.trabajador || ''))).size;
+      if (formato === 'mantenimientos' || formato === 'horas_maquina' || formato === 'combustible') {
+        resumen.equipos = new Set(items.map(it => normTxt(it.equipo || ''))).size;
+      }
+      return { tipo: 'dataset', items, resumen, total: items.length };
+    }
     if (esAsignacion) {
       const movs = parseMovMaquinariaAsignacion(parsed.rows);
       return {
@@ -911,7 +945,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     }
     const movs = parseMovimientos(parsed.rows, formato);
     return { tipo: 'mov', movs, resumen: resumenMovimientos(movs) };
-  }, [parsed, formato, esInsumos, esInsumosEmergencia, esPersonal, esAsignacion]);
+  }, [parsed, formato, esInsumos, esInsumosEmergencia, esPersonal, esAsignacion, esDataset]);
 
   // Validación de calidad del archivo de movimientos (por cantidad):
   //  · unidades: un insumo no puede tener 2 unidades distintas (ej. clavos en
@@ -968,7 +1002,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         // (ej. el export histórico), dejamos que el usuario elija cuál importar.
         const reconocidas = (p.sheets || [])
           .map(s => ({ ...s, formato: detectFormato(s.headers) }))
-          .filter(s => s.formato && s.formato.startsWith('mov_'));
+          .filter(s => s.formato && (s.formato.startsWith('mov_') || ['caja_chica', 'asistencia', 'mantenimientos', 'horas_maquina', 'combustible', 'personal'].includes(s.formato)));
         if (reconocidas.length > 1) { setMultiHojas(reconocidas); return; }
         setParsed(p);
         const det = detectFormato(p.headers);
@@ -1954,6 +1988,18 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       finally { setImp(false); }
       return;
     }
+    if (esDataset) {
+      if (!preview?.items?.length) { showToast('No hay filas para procesar', 'red'); return; }
+      setImp(true);
+      try {
+        const RUN = { caja_chica: runCajaChicaImport, asistencia: runAsistenciaImport, mantenimientos: runMantenimientosImport, horas_maquina: runHorasMaquinaImport, combustible: runCombustibleImport };
+        const res = await RUN[formato]({ obraId, userId, rows: preview.items });
+        setResult(res); setStep(4); showToast(res.detalle, res.errors ? 'amber' : 'green');
+      }
+      catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+      finally { setImp(false); }
+      return;
+    }
     if (esPersonal) {
       if (reniecChk?.running) { showToast('Esperá a que termine la verificación RENIEC', 'amber'); return; }
       if (!preview?.items?.length) { showToast('No hay trabajadores para procesar', 'red'); return; }
@@ -2126,7 +2172,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           {multiHojas && (
             <div className="card card-p" style={{ marginTop: 12, background: 'rgba(155,89,182,0.06)', border: '1px solid rgba(155,89,182,0.3)' }}>
               <div style={{ fontSize: 12.5, fontWeight: 700, color: '#9B59B6', marginBottom: 8 }}>
-                <JxIcon name="file" size={14} color="#9B59B6" /> Backup con {multiHojas.length} hojas de movimientos. Elegí cuál importar (una por vez):
+                <JxIcon name="file" size={14} color="#9B59B6" /> Backup con {multiHojas.length} hojas importables. Elegí cuál importar (una por vez):
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                 {multiHojas.map(s => {
@@ -2139,7 +2185,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
                   );
                 })}
               </div>
-              <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 8 }}>Las hojas <strong>Personal</strong> y catálogos (<strong>CAT *</strong>) se importan desde <strong>Importar → genérico</strong>, no acá.</div>
+              <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 8 }}>Las hojas de catálogos (<strong>CAT *</strong>) se importan desde <strong>Importar → genérico</strong>, no acá.</div>
             </div>
           )}
 
@@ -2196,6 +2242,32 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
             </div>
           )}
 
+          {preview.tipo === 'dataset' && (
+            <div className="card card-p" style={{ marginBottom: 14 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: `repeat(${formato === 'caja_chica' ? 4 : 3},1fr)`, gap: 12 }}>
+                <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: '#F39C12' }}>{preview.total}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Filas</div></div>
+                <div style={{ textAlign: 'center' }}><div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ts)', marginTop: 6 }}>{preview.resumen.desde || '—'} → {preview.resumen.hasta || '—'}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Rango de fechas</div></div>
+                {formato === 'caja_chica' && (<>
+                  <div style={{ textAlign: 'center' }}><div style={{ fontSize: 18, fontWeight: 800, color: '#27AE60' }}>S/ {Number(preview.resumen.ingresos || 0).toLocaleString('es-PE', { minimumFractionDigits: 2 })}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Ingresos (fondo)</div></div>
+                  <div style={{ textAlign: 'center' }}><div style={{ fontSize: 18, fontWeight: 800, color: '#E74C3C' }}>S/ {Number(preview.resumen.gastos || 0).toLocaleString('es-PE', { minimumFractionDigits: 2 })}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Gastos</div></div>
+                </>)}
+                {formato === 'asistencia' && (
+                  <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: '#1ABC9C' }}>{preview.resumen.personas}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Trabajadores distintos</div></div>
+                )}
+                {preview.resumen.equipos != null && (
+                  <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: '#E67E22' }}>{preview.resumen.equipos}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Equipos distintos</div></div>
+                )}
+              </div>
+              {formato === 'caja_chica' && preview.resumen.sinTipo > 0 && (
+                <div style={{ fontSize: 12, color: 'var(--amber)', marginTop: 10 }}>⚠️ {preview.resumen.sinTipo} fila(s) sin Tipo reconocido (usá "Ingreso" o "Gasto") — se reportarán con error.</div>
+              )}
+              <div style={{ fontSize: 12, color: 'var(--tm)', marginTop: 10 }}>
+                {formato === 'caja_chica' && 'Re-subir el mismo archivo no duplica: cada fila se compara por fecha + tipo + monto + concepto contra lo que ya existe en Caja Chica. El responsable se enlaza por nombre si está en Personal; si no, queda anotado en observaciones.'}
+                {formato === 'asistencia' && 'Una fila por trabajador y día (si ya existe asistencia para esa persona en esa fecha, se salta). Los nombres deben coincidir con Personal — los que no coincidan se reportan con error, no se inventan personas.'}
+                {(formato === 'mantenimientos' || formato === 'horas_maquina' || formato === 'combustible') && 'Los equipos se enlazan por nombre (o placa) contra Equipos Pesados — los que no existan se reportan con error. El operador se enlaza por nombre si está en Personal. Re-subir el mismo archivo no duplica.'}
+              </div>
+            </div>
+          )}
           {preview.tipo === 'personal' && (
             <div className="card card-p" style={{ marginBottom: 14 }}>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12 }}>

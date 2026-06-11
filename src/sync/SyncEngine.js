@@ -508,6 +508,13 @@ const FK_DEPS = {
   movimientos_herramientas:  [{ campo: 'herramienta_id', tabla: 'herramientas' }],
   movimientos_epp:           [{ campo: 'epp_id', tabla: 'epps' }],
   movimientos_maquinaria:    [{ campo: 'activo_id', tabla: 'activos_pesados' }],
+  // Datasets de maquinaria + caja chica (import histórico/restore los crea en
+  // el mismo lote que activos/personal pending; sin esto el INSERT hijo puede
+  // ganarle la carrera al padre dentro del mismo batch paralelo → FK 23503).
+  horas_maquina:             [{ campo: 'activo_id', tabla: 'activos_pesados' }, { campo: 'operador_id', tabla: 'personal' }],
+  consumos_combustible:      [{ campo: 'activo_id', tabla: 'activos_pesados' }, { campo: 'operador_id', tabla: 'personal' }],
+  mantenimientos_maquinaria: [{ campo: 'activo_id', tabla: 'activos_pesados' }],
+  caja_chica_movimientos:    [{ campo: 'responsable_id', tabla: 'personal' }],
   movimientos_insumos_emergencia: [{ campo: 'insumo_emergencia_id', tabla: 'insumos_emergencia' }],
   asistencia:                [{ campo: 'personal_id', tabla: 'personal' }],
   // Un trabajador puede pertenecer a la cuadrilla de un subcontratista; si ese

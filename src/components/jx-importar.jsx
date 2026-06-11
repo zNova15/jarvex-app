@@ -2442,7 +2442,7 @@ function ImportarPage({ showToast }) {
     setRestoreBusy(true);
     try {
       const r = await restaurarBackup(restoreFile, { userId, obraId, isPrueba: !!appMode.isPrueba });
-      let msg = `Restaurado: ${r.movimientos} movs · ${r.personal} personal · ${r.inventario} insumos · ${r.frentes} frentes · ${r.proveedores} prov · ${r.subcontratistas} subc${r.saltados ? ` · ${r.saltados} ya existían` : ''}${r.errores ? ` · ${r.errores} errores` : ''}`;
+      let msg = `Restaurado: ${r.movimientos} movs · ${r.personal} personal · ${r.inventario} insumos · ${r.frentes} frentes · ${r.proveedores} prov · ${r.subcontratistas} subc · ${r.datasets} datasets${r.saltados ? ` · ${r.saltados} ya existían` : ''}${r.errores ? ` · ${r.errores} errores` : ''}`;
       if (restoreZip) { const f = await restaurarFotosZip(restoreZip, { userId, obraId, isPrueba: !!appMode.isPrueba }); msg += ` · ${f.ok} fotos`; }
       showToast(msg, r.errores ? 'amber' : 'green');
     } catch (e) { showToast('Error al restaurar: ' + (e.message || e), 'red'); }

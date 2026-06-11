@@ -50,6 +50,17 @@ export const FORMATOS = {
     desc: 'Salidas (asignación a personal/subcontrato) y devoluciones de equipos pesados, con fecha.' },
   personal: { id: 'personal', label: 'Personal (datos + cuentas bancarias)', icon: 'users',
     desc: 'Roster de trabajadores: datos personales, contacto y cuentas bancarias. Crea o actualiza por DNI; las cuentas van a Cuentas Bancarias → Personal.' },
+  // ── Datasets re-importables del export histórico (round-trip completo) ──
+  caja_chica: { id: 'caja_chica', label: 'Caja Chica', icon: 'dollar',
+    desc: 'Ingresos (fondo) y gastos de caja chica con fecha histórica. Re-importa el Excel exportado desde Exportar → Caja Chica sin duplicar.' },
+  asistencia: { id: 'asistencia', label: 'Asistencia', icon: 'calendar',
+    desc: 'Asistencia diaria por trabajador. El trabajador debe existir en Personal (importá el roster primero). Una fila por persona y día; no duplica.' },
+  mantenimientos: { id: 'mantenimientos', label: 'Mantenimientos de Maquinaria', icon: 'tool',
+    desc: 'Mantenimientos preventivos/correctivos con costos. El equipo debe existir en Equipos Pesados.' },
+  horas_maquina: { id: 'horas_maquina', label: 'Horas Máquina', icon: 'tool',
+    desc: 'Partes diarios de horas trabajadas por equipo (horómetro inicial/final, operador).' },
+  combustible: { id: 'combustible', label: 'Consumos de Combustible', icon: 'tool',
+    desc: 'Consumos de combustible por equipo (galones, precio, surtidor, operador).' },
 };
 
 /**
@@ -58,12 +69,18 @@ export const FORMATOS = {
  */
 export function detectFormato(headers) {
   const H = (headers || []).map(normTxt);
-  const tiene = (txt) => { const n = normTxt(txt); return H.some((h) => h.includes(n) || n.includes(h)); };
+  // h && : un header que normaliza a '' (p.ej. '#') matchearía CUALQUIER
+  // needle vía n.includes('') — nunca es un match real.
+  const tiene = (txt) => { const n = normTxt(txt); return H.some((h) => h && (h.includes(n) || n.includes(h))); };
 
   // Emergencia: si algún header menciona "emergencia" mandamos a su flujo
   // (catálogo si no hay tipo de movimiento, si no movimientos). Va primero
   // para que un archivo separado de emergencia no caiga en Insumos Totales.
-  if (H.some((h) => h.includes('emergencia'))) {
+  // OJO: el roster de Personal trae "Contacto Emergencia" / "Telefono
+  // Emergencia" — esas columnas NO convierten el archivo en emergencia
+  // (sin esta exclusión la hoja Personal del export caía acá y nunca
+  // llegaba a la regla 'personal' de abajo).
+  if (H.some((h) => h.includes('emergencia') && !h.includes('contacto') && !h.includes('telefono'))) {
     return tiene('tipo de movimiento') ? 'mov_emergencia' : 'insumos_emergencia';
   }
 
@@ -71,6 +88,26 @@ export function detectFormato(headers) {
   // distingue de los movimientos por cantidad. (Su template usa "Movimiento",
   // no "Tipo de Movimiento", así que va antes del gate de abajo.)
   if (H.some((h) => h.includes('asigna'))) return 'mov_maquinaria_asignacion';
+
+  // Datasets del export histórico (round-trip): se reconocen por columnas
+  // distintivas que ningún formato de movimientos tiene. Combustible va
+  // primero ('Galones' es inequívoco); mantenimientos antes que horas
+  // (ambos tienen 'Equipo', pero solo mantenimientos trae taller/costos).
+  // OJO: estas reglas corren ANTES del gate de 'movimiento', así que el match
+  // es estricto: SOLO header ⊇ needle (una dirección). Con el bidireccional un
+  // header corto roba hojas ajenas aunque se exija longitud mínima: 'Hora'
+  // (4 chars) matchea 'horas trabajadas' → Equipo+Hora caía en horas_maquina;
+  // 'ID' matchea 'hora sal-id-a'; 'N°'→'n' y '#'→'' matcheaban todo. Los
+  // headers del export contienen el needle completo, así que esto basta.
+  const tieneCol = (txt) => {
+    const n = normTxt(txt);
+    return H.some((h) => h.includes(n));
+  };
+  if (tieneCol('galones')) return 'combustible';
+  if (tieneCol('equipo') && (tieneCol('taller') || tieneCol('costo repuestos') || tieneCol('mecanico'))) return 'mantenimientos';
+  if (tieneCol('equipo') && (tieneCol('hm inicial') || tieneCol('horas trabajadas'))) return 'horas_maquina';
+  if (tieneCol('monto') && tieneCol('concepto')) return 'caja_chica';
+  if (tieneCol('trabajador') && (tieneCol('hora ingreso') || tieneCol('hora salida'))) return 'asistencia';
 
   // Personal: roster de trabajadores (Nombres + Apellidos + DNI). Los archivos
   // de movimientos llevan "Responsable" (una sola columna), no Nombres/Apellidos
@@ -302,6 +339,162 @@ export function parsePersonal(rows) {
       telefonoEmergencia: txt(g('Telefono Emergencia', 'Teléfono Emergencia', 'Telefono de emergencia')),
       regimen: txt(g('Regimen Pension', 'Régimen Pensión', 'Regimen de pension', 'AFP/ONP', 'Regimen')),
       cuentas,
+    });
+  });
+  return out;
+}
+
+
+/** Hora a 'HH:MM' (24h). Acepta 'HH:MM', 'H:MM:SS', 'h:mm AM/PM' y el serial
+ *  de Excel (fracción de día). Devuelve null si no se puede interpretar. */
+export function normalizaHora(v) {
+  if (v == null || v === '') return null;
+  const s = String(v).trim();
+  const m = s.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*(a|p)?\.?\s*m?\.?\s*$/i);
+  if (m) {
+    let h = parseInt(m[1], 10);
+    const ap = (m[3] || '').toLowerCase();
+    if (ap === 'p' && h < 12) h += 12;
+    if (ap === 'a' && h === 12) h = 0;
+    if (h >= 0 && h <= 23) return `${String(h).padStart(2, '0')}:${m[2]}`;
+    return null;
+  }
+  const n = Number(s);
+  if (Number.isFinite(n) && n > 0 && n < 1) {
+    const tot = Math.round(n * 24 * 60);
+    return `${String(Math.floor(tot / 60)).padStart(2, '0')}:${String(tot % 60).padStart(2, '0')}`;
+  }
+  return null;
+}
+
+/** Caja chica (export: ID·Fecha·Hora·Tipo·Monto (S/)·Concepto·Responsable·
+ *  Proveedor·Documento·Observaciones). Tipo: Ingreso/Reposición → entrada;
+ *  Gasto/Compra/Salida → salida. */
+export function parseCajaChica(rows) {
+  const out = [];
+  (rows || []).forEach((row, i) => {
+    const g = rowGetter(row);
+    const tipoRaw = normTxt(g('Tipo', 'Tipo de Movimiento'));
+    let tipo = null;
+    if (tipoRaw.startsWith('ingre') || tipoRaw.startsWith('entra') || tipoRaw.startsWith('repos')) tipo = 'entrada';
+    else if (tipoRaw.startsWith('gasto') || tipoRaw.startsWith('sal') || tipoRaw.startsWith('compra') || tipoRaw.startsWith('egre')) tipo = 'salida';
+    const monto = num(g('Monto (S/)', 'Monto', 'Importe'));
+    const concepto = txt(g('Concepto', 'Descripción', 'Descripcion', 'Detalle'));
+    if (!tipo && !monto && !concepto) return; // fila vacía
+    out.push({
+      idx: i + 2,
+      fecha: parseFechaMigracion(g('Fecha')),
+      hora: normalizaHora(g('Hora')),
+      tipo, monto, concepto,
+      responsable: txt(g('Responsable')),
+      proveedor: txt(g('Proveedor')),
+      documento: txt(g('Documento', 'Documento Asociado', 'Boleta', 'Factura', 'N° Documento')),
+      observaciones: txt(g('Observaciones', 'Observación', 'Observacion')),
+    });
+  });
+  return out;
+}
+
+/** Asistencia (export: Fecha·Trabajador·Hora Ingreso·Hora Salida·Horas·
+ *  Estado·Observaciones). Estado normalizado al CHECK del server. */
+export function parseAsistencia(rows) {
+  const out = [];
+  (rows || []).forEach((row, i) => {
+    const g = rowGetter(row);
+    const trabajador = txt(g('Trabajador', 'Personal', 'Nombre Completo', 'Nombre'));
+    if (!trabajador) return;
+    const eRaw = normTxt(g('Estado', 'Estado Asistencia', 'Asistencia'));
+    let estado = null;
+    if (eRaw.startsWith('asis') || eRaw === 'presente' || eRaw === 'a' || eRaw === 'x') estado = 'asistio';
+    else if (eRaw.startsWith('tard')) estado = 'tardanza';
+    else if (eRaw.startsWith('falt') || eRaw === 'f') estado = 'falta';
+    else if (eRaw.startsWith('perm') || eRaw.startsWith('licen')) estado = 'permiso';
+    else if (eRaw.startsWith('desc') || eRaw.startsWith('domin')) estado = 'descanso';
+    out.push({
+      idx: i + 2,
+      fecha: parseFechaMigracion(g('Fecha')),
+      trabajador,
+      horaIngreso: normalizaHora(g('Hora Ingreso', 'Ingreso')),
+      horaSalida: normalizaHora(g('Hora Salida', 'Salida')),
+      horas: numN(g('Horas', 'Horas Trabajadas')),
+      estado, // null → el loader asume 'asistio'
+      observaciones: txt(g('Observaciones', 'Observación', 'Observacion')),
+    });
+  });
+  return out;
+}
+
+/** Mantenimientos de maquinaria (export: ID·Fecha·Equipo·Tipo·HM Actuales·
+ *  Descripción·Costo Repuestos·Costo Mano de Obra·Costo Total·Taller·
+ *  Mecánico·Duración·Observaciones). */
+export function parseMantenimientos(rows) {
+  const out = [];
+  (rows || []).forEach((row, i) => {
+    const g = rowGetter(row);
+    const equipo = txt(g('Equipo', 'Maquinaria', 'Activo'));
+    if (!equipo) return;
+    const tRaw = normTxt(g('Tipo'));
+    out.push({
+      idx: i + 2,
+      fecha: parseFechaMigracion(g('Fecha')),
+      equipo,
+      tipo: tRaw.startsWith('corr') ? 'correctivo' : 'preventivo',
+      hmActuales: numN(g('HM Actuales', 'Horometro', 'Horómetro')),
+      descripcion: txt(g('Descripción', 'Descripcion', 'Detalle')),
+      costoRepuestos: numN(g('Costo Repuestos (S/)', 'Costo Repuestos')),
+      costoManoObra: numN(g('Costo Mano de Obra (S/)', 'Costo Mano de Obra')),
+      costoTotal: numN(g('Costo Total (S/)', 'Costo Total')),
+      taller: txt(g('Taller')),
+      mecanico: txt(g('Mecánico', 'Mecanico')),
+      duracion: numN(g('Duración (h)', 'Duracion (h)', 'Duración', 'Duracion')),
+      observaciones: txt(g('Observaciones', 'Observación', 'Observacion')),
+    });
+  });
+  return out;
+}
+
+/** Horas máquina (export: ID·Fecha·Equipo·Horas Trabajadas·HM Inicial·
+ *  HM Final·Operador·Actividad·Observaciones). */
+export function parseHorasMaquina(rows) {
+  const out = [];
+  (rows || []).forEach((row, i) => {
+    const g = rowGetter(row);
+    const equipo = txt(g('Equipo', 'Maquinaria', 'Activo'));
+    if (!equipo) return;
+    out.push({
+      idx: i + 2,
+      fecha: parseFechaMigracion(g('Fecha')),
+      equipo,
+      horas: numN(g('Horas Trabajadas', 'Horas')),
+      hmInicial: numN(g('HM Inicial')),
+      hmFinal: numN(g('HM Final')),
+      operador: txt(g('Operador', 'Operario')),
+      actividad: txt(g('Actividad')),
+      observaciones: txt(g('Observaciones', 'Observación', 'Observacion')),
+    });
+  });
+  return out;
+}
+
+/** Consumos de combustible (export: ID·Fecha·Equipo·Galones·Precio/Galón·
+ *  Total·Surtidor·Operador·HM Actuales·Observaciones). */
+export function parseCombustible(rows) {
+  const out = [];
+  (rows || []).forEach((row, i) => {
+    const g = rowGetter(row);
+    const equipo = txt(g('Equipo', 'Maquinaria', 'Activo'));
+    if (!equipo) return;
+    out.push({
+      idx: i + 2,
+      fecha: parseFechaMigracion(g('Fecha')),
+      equipo,
+      galones: numN(g('Galones')),
+      precioGalon: numN(g('Precio/Galón (S/)', 'Precio/Galon (S/)', 'Precio Galon', 'Precio por galon')),
+      total: numN(g('Total (S/)', 'Total')),
+      surtidor: txt(g('Surtidor', 'Grifo')),
+      operador: txt(g('Operador', 'Operario')),
+      hmActuales: numN(g('HM Actuales', 'Horometro', 'Horómetro')),
+      observaciones: txt(g('Observaciones', 'Observación', 'Observacion')),
     });
   });
   return out;

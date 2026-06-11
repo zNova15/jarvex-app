@@ -10,13 +10,16 @@
 // Personal → Movimientos (5 formatos). Las fotos se restauran como galería por
 // categoría (el vínculo foto→registro no se conserva: ver restaurarFotosZip).
 //
-// Fuera de scope (se informa): mantenimientos, horas máquina, combustible,
-// asistencia, caja chica, partidas, OC/cotizaciones, valorizaciones.
+// Después de movimientos se restauran los DATASETS del export (caja chica,
+// asistencia, mantenimientos, horas máquina, combustible) vía los mismos
+// loaders del wizard (import-datasets.js — dedup por contenido).
+// Fuera de scope (se informa): partidas, OC/cotizaciones, valorizaciones.
 // ═══════════════════════════════════════════════════════════════════
 
 import { db } from '../db/jarvex.db.js';
 import { normTxt } from './match-helpers.js';
-import { detectFormato, parseMovimientos } from './migracion-parser.js';
+import { detectFormato, parseMovimientos, parseCajaChica, parseAsistencia, parseMantenimientos, parseHorasMaquina, parseCombustible } from './migracion-parser.js';
+import { runCajaChicaImport, runAsistenciaImport, runMantenimientosImport, runHorasMaquinaImport, runCombustibleImport } from './import-datasets.js';
 import { calcAlerta } from './stock-utils.js';
 
 const H = (sheet) => (sheet.headers || []).map((h) => normTxt(h));
@@ -45,6 +48,12 @@ function clasificar(sheet) {
   if (tiene(sheet, 'Razón social')) return { tipo: 'proveedores' };
   const fmt = detectFormato(sheet.headers);
   if (fmt && fmt.startsWith('mov_')) return { tipo: 'mov', formato: fmt };
+  // Datasets re-importables (caja chica, asistencia, maquinaria) — los carga
+  // import-datasets.js DESPUÉS de personal/movimientos (necesitan que personas
+  // y equipos ya existan para resolver por nombre).
+  if (fmt && ['caja_chica', 'asistencia', 'mantenimientos', 'horas_maquina', 'combustible'].includes(fmt)) {
+    return { tipo: 'dataset', formato: fmt };
+  }
   return { tipo: null };
 }
 
@@ -67,7 +76,7 @@ export async function restaurarBackup(file, { userId = 'offline', obraId, isPrue
   if (!file) throw new Error('Elegí el archivo .xlsx del backup.');
   const parsed = await window.__excel.parseExcelFile(file);
   const sheets = (parsed.sheets || []).map((s) => ({ ...s, clase: clasificar(s) }));
-  const resumen = { frentes: 0, proveedores: 0, subcontratistas: 0, inventario: 0, personal: 0, movimientos: 0, saltados: 0, errores: 0, ignoradas: [] };
+  const resumen = { frentes: 0, proveedores: 0, subcontratistas: 0, inventario: 0, personal: 0, movimientos: 0, datasets: 0, saltados: 0, errores: 0, ignoradas: [] };
 
   // Índices por clave natural (para dedup + resolución de FKs por nombre).
   const frentes = await db.frentes_obra.where('obra_id').equals(obraId).filter((r) => !r.deleted_at).toArray();
@@ -284,6 +293,30 @@ export async function restaurarBackup(file, { userId = 'offline', obraId, isPrue
         await db[cat].update(itemId, patch);
       } catch {}
     }
+  }
+
+  // 8) Datasets del export (caja chica, asistencia, maquinaria): mismos
+  // loaders que el wizard de migración — dedup por contenido, así que
+  // re-correr el restore no duplica. Van al final porque resuelven personas
+  // y equipos por nombre (ya restaurados arriba).
+  const DATASET_RUN = {
+    caja_chica: [parseCajaChica, runCajaChicaImport],
+    asistencia: [parseAsistencia, runAsistenciaImport],
+    mantenimientos: [parseMantenimientos, runMantenimientosImport],
+    horas_maquina: [parseHorasMaquina, runHorasMaquinaImport],
+    combustible: [parseCombustible, runCombustibleImport],
+  };
+  for (const sh of sheets) {
+    if (sh.clase.tipo !== 'dataset') continue;
+    const cfgDs = DATASET_RUN[sh.clase.formato];
+    if (!cfgDs) continue;
+    try {
+      const r = await cfgDs[1]({ obraId, userId, rows: cfgDs[0](sh.rows), isPrueba });
+      resumen.datasets += r.ok || 0;
+      resumen.saltados += r.duplicados || 0;
+      resumen.errores += r.errors || 0;
+      if (onProgress) onProgress(sh.clase.formato, r.ok || 0, (sh.rows || []).length);
+    } catch { resumen.errores++; }
   }
 
   // Hojas que existen pero no se restauran (informativo).

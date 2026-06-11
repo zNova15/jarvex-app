@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   detectFormato, parseFechaMigracion, parseInsumosTotales, parseInsumosEmergencia, parseMovimientos,
   parseMovMaquinariaAsignacion, clasificaTipoInsumo, normalizaTipoMov, resumenMovimientos, normTxt,
+  parseCajaChica, parseAsistencia, parseHorasMaquina, parseCombustible, normalizaHora,
 } from '../migracion-parser.js';
 
 describe('parseFechaMigracion — fechas en formato US (raw:false) / serial / ISO', () => {
@@ -102,6 +103,75 @@ describe('clasificaTipoInsumo / normalizaTipoMov', () => {
     expect(normalizaTipoMov('Traslado')).toBe('traspaso');
     // "Transporte" NO es traspaso: debe fallar visible como tipo no reconocido.
     expect(normalizaTipoMov('Transporte')).toBeNull();
+  });
+});
+
+describe('datasets re-importables (round-trip del export)', () => {
+  it('detectFormato reconoce los headers exactos del export', () => {
+    expect(detectFormato(['ID', 'Fecha', 'Hora', 'Tipo', 'Monto (S/)', 'Concepto', 'Responsable', 'Proveedor', 'Documento', 'Observaciones'])).toBe('caja_chica');
+    expect(detectFormato(['Fecha', 'Trabajador', 'Hora Ingreso', 'Hora Salida', 'Horas', 'Estado', 'Observaciones'])).toBe('asistencia');
+    expect(detectFormato(['ID', 'Fecha', 'Equipo', 'Tipo', 'HM Actuales', 'Descripción', 'Costo Repuestos (S/)', 'Costo Mano de Obra (S/)', 'Costo Total (S/)', 'Taller', 'Mecánico', 'Duración (h)', 'Observaciones'])).toBe('mantenimientos');
+    expect(detectFormato(['ID', 'Fecha', 'Equipo', 'Horas Trabajadas', 'HM Inicial', 'HM Final', 'Operador', 'Actividad', 'Observaciones'])).toBe('horas_maquina');
+    expect(detectFormato(['ID', 'Fecha', 'Equipo', 'Galones', 'Precio/Galón (S/)', 'Total (S/)', 'Surtidor', 'Operador', 'HM Actuales', 'Observaciones'])).toBe('combustible');
+    // y NO confunde los formatos de movimientos existentes
+    expect(detectFormato(['ID', 'Fecha de Movimiento', 'Material', 'Unidad', 'Cantidad', 'Tipo de Movimiento'])).toBe('mov_materiales');
+  });
+  it('headers cortos NO roban hojas ajenas a los datasets (match estricto header ⊇ needle)', () => {
+    // Regresión: con el match bidireccional, 'Hora' (⊆ 'horas trabajadas') robaba
+    // Equipo+Hora a horas_maquina, e 'ID'/'Hora' (⊆ 'hora sal-id-a') fingían asistencia.
+    expect(detectFormato(['ID', 'Fecha', 'Hora', 'Equipo', 'Movimiento', 'Destino', 'Observación'])).not.toBe('horas_maquina');
+    expect(detectFormato(['ID', 'Trabajador', 'Fecha', 'Estado'])).toBeNull();
+    expect(detectFormato(['Fecha', 'Trabajador', 'Hora', 'Estado'])).toBeNull();
+    expect(detectFormato(['N°', '#', 'Fecha', 'Detalle'])).toBeNull();
+  });
+  it('hoja Personal del export: "Contacto/Telefono Emergencia" NO la manda a emergencia', () => {
+    // Regresión: el gate de emergencia se comía el roster (Contacto Emergencia)
+    // y detectaba 'insumos_emergencia' → la hoja Personal nunca aparecía en el
+    // picker de multiHojas ni llegaba a su flujo.
+    const exportPersonal = ['Nombres', 'Apellidos', 'Alias', 'Tipo Documento', 'DNI', 'Cargo', 'Area', 'Frente', 'Estado', 'Vínculo', 'Subcontrato', 'Jefe Subcontrato', 'Seguro a cargo', 'Fecha Ingreso', 'Fecha Nacimiento', 'Telefono', 'Email', 'Direccion', 'Contacto Emergencia', 'Telefono Emergencia', 'Regimen Pension', 'Banco', 'Tipo Cuenta', 'Numero Cuenta', 'CCI', 'Moneda', 'Banco CTS', 'Cuenta CTS'];
+    expect(detectFormato(exportPersonal)).toBe('personal');
+    // y los archivos de emergencia de verdad siguen cayendo en su flujo
+    expect(detectFormato(['ID', 'Insumo de Emergencia', 'Categoría', 'Unidad', 'Fecha de creacion'])).toBe('insumos_emergencia');
+  });
+  it('headers degenerados ("N°"→"n", "#"→"") NO disparan datasets por substring', () => {
+    // Regresión: 'galones'.includes('n') / .includes('') matcheaba cualquier
+    // hoja ajena como combustible (o caja_chica) e inflaba errores en restore.
+    expect(detectFormato(['N°', 'Fecha', 'Detalle'])).toBeNull();
+    expect(detectFormato(['#', 'Item', 'Total'])).toBeNull();
+    expect(detectFormato(['N°', 'Fecha', 'Descripción', 'Importe'])).toBeNull();
+  });
+  it('parseCajaChica: Ingreso/Gasto, monto y fila vacía', () => {
+    const rows = [
+      { ID: '1', Fecha: '2026-05-11', Hora: '08:30', Tipo: 'Ingreso', 'Monto (S/)': '200', Concepto: 'Ingreso 1 Caja', Responsable: 'A OBRA', Proveedor: '', Documento: '', Observaciones: '' },
+      { ID: '2', Fecha: '2026-05-14', Hora: '', Tipo: 'Gasto', 'Monto (S/)': '12.5', Concepto: 'Compra urgente', Responsable: '', Proveedor: 'EL FUTURO', Documento: 'FA01-15', Observaciones: '' },
+      { ID: '', Fecha: '', Hora: '', Tipo: '', 'Monto (S/)': '', Concepto: '', Responsable: '', Proveedor: '', Documento: '', Observaciones: '' },
+    ];
+    const p = parseCajaChica(rows);
+    expect(p).toHaveLength(2);
+    expect(p[0]).toMatchObject({ tipo: 'entrada', monto: 200, hora: '08:30', responsable: 'A OBRA' });
+    expect(p[1]).toMatchObject({ tipo: 'salida', monto: 12.5, proveedor: 'EL FUTURO', documento: 'FA01-15' });
+  });
+  it('normalizaHora: HH:MM, AM/PM y serial Excel', () => {
+    expect(normalizaHora('08:30')).toBe('08:30');
+    expect(normalizaHora('7:05:00')).toBe('07:05');
+    expect(normalizaHora('1:30 pm')).toBe('13:30');
+    expect(normalizaHora(0.5)).toBe('12:00');
+    expect(normalizaHora('no-hora')).toBeNull();
+  });
+  it('parseAsistencia normaliza estados al CHECK del server', () => {
+    const rows = [
+      { Fecha: '2026-06-02', Trabajador: 'Carlos Mendoza', 'Hora Ingreso': '07:30', 'Hora Salida': '17:30', Horas: '9', Estado: 'Asistió', Observaciones: '' },
+      { Fecha: '2026-06-03', Trabajador: 'Carlos Mendoza', 'Hora Ingreso': '', 'Hora Salida': '', Horas: '', Estado: 'FALTA', Observaciones: '' },
+    ];
+    const p = parseAsistencia(rows);
+    expect(p[0]).toMatchObject({ estado: 'asistio', horaIngreso: '07:30', horas: 9 });
+    expect(p[1]).toMatchObject({ estado: 'falta' });
+  });
+  it('parseCombustible y parseHorasMaquina leen los headers del export', () => {
+    const c = parseCombustible([{ ID: '1', Fecha: '2026-05-15', Equipo: 'Excavadora CAT', Galones: '15', 'Precio/Galón (S/)': '16.5', 'Total (S/)': '247.5', Surtidor: 'Grifo', Operador: 'Juan Silva', 'HM Actuales': '1250', Observaciones: '' }]);
+    expect(c[0]).toMatchObject({ equipo: 'Excavadora CAT', galones: 15, precioGalon: 16.5, total: 247.5 });
+    const h = parseHorasMaquina([{ ID: '1', Fecha: '2026-05-15', Equipo: 'Excavadora CAT', 'Horas Trabajadas': '8', 'HM Inicial': '1242', 'HM Final': '1250', Operador: 'Juan Silva', Actividad: 'Zanja', Observaciones: '' }]);
+    expect(h[0]).toMatchObject({ horas: 8, hmInicial: 1242, hmFinal: 1250, actividad: 'Zanja' });
   });
 });
 
