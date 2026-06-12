@@ -239,6 +239,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       const wb = XLSX.read(buf, { type: 'array' });
       const sheet = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: true });
+      const rowsTexto = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: false });
       const tabla = window.__apu.parseTablaCostos(rows);
       if (!tabla) {
         setCostosArchivoErr('No encontré la tabla de costos en ese Excel (Costo Directo … Costo Total del Proyecto al final). ¿Es el presupuesto completo?');
@@ -249,7 +250,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       // capítulos (que vienen genéricos "Capítulo NN" del consolidado).
       let partidasExcel = [];
       try {
-        partidasExcel = (window.__apu.parsePresupuestoObra(rows) || [])
+        partidasExcel = (window.__apu.parsePresupuestoObra(rows, rowsTexto) || [])
           .map(p => ({ codigo: p.codigo, descripcion: p.descripcion }));
       } catch {}
       setCostosArchivo({ ...tabla, partidasExcel });
@@ -337,6 +338,15 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
         const all = await window.__db.partidas.where('obra_id').equals(obraId).toArray();
         const vivas = all.filter(p => !p.deleted_at);
         const porCodigo = new Map(vivas.map(p => [p.codigo_delfin, p]));
+        // Fallback NORMALIZADO (mismo patrón que importGantt/comparativo):
+        // "01.07" del archivo debe matchear "1.7" de la BD y viceversa. Sin
+        // esto, importar los costos generales después de las partidas creaba
+        // un árbol PARALELO completo (el "Punto 1" duplicado).
+        const porCodigoNorm = new Map();
+        for (const v of vivas) {
+          const k = normalizeCodigo(v.codigo_delfin);
+          if (k && !porCodigoNorm.has(k)) porCodigoNorm.set(k, v);
+        }
         const eqNum = (a, b) => {
           const na = Number(a) || 0, nb = Number(b) || 0;
           return Math.abs(na - nb) < 0.01;
@@ -344,7 +354,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
         const cmp = parsed.data.map(p => {
           const cantidad = Number(p.cantidad) || 0;
           const total = Number(p.costo_total) || 0;
-          const existente = porCodigo.get(p.codigo) || null;
+          const existente = porCodigo.get(p.codigo) || porCodigoNorm.get(normalizeCodigo(p.codigo)) || null;
           let status = 'nueva';
           if (existente) {
             const sameNombre = (existente.nombre_partida || '').trim() === (p.descripcion || p.codigo || '').trim();
@@ -527,7 +537,19 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
     const now = new Date().toISOString();
     const errorList = [];
 
-    const aReemplazar = comparison.filter(c => c.action === 'reemplazar' && c.existente);
+    // Dedupe por existente.id: con el fallback normalizado del compare, dos
+    // filas del archivo ("01.07" texto + "1.7" numérica) pueden resolver al
+    // MISMO existente. Sin este guard: doble update last-wins en el bulkPut
+    // de Fase 1 (los números de la primera fila se pierden sin error) y los
+    // insumos de AMBAS filas se insertan bajo la misma partida en Fase 2.
+    // First-wins; la fila descartada cuenta como "saltada" en el detalle.
+    const existentesUsados = new Set();
+    const aReemplazar = comparison.filter(c => {
+      if (c.action !== 'reemplazar' || !c.existente) return false;
+      if (existentesUsados.has(c.existente.id)) return false;
+      existentesUsados.add(c.existente.id);
+      return true;
+    });
     const aImportar   = comparison.filter(c => c.action === 'importar');
     const parsedPorCodigo = new Map(parsed.data.map(p => [p.codigo, p]));
     const ordenPorCodigo = new Map();
@@ -549,15 +571,18 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
         idsReemplazadas.push(ex.id);
         updateRecords.push({
           ...ex,
-          codigo_delfin: p.codigo,
+          // El código CANÓNICO es el de la BD: pisarlo con el formato del
+          // archivo nuevo ("1.7" vs "01.07") re-rootea la partida a otra
+          // rama del árbol y parte la estructura en dos.
+          codigo_delfin: ex.codigo_delfin,
           nombre_partida: p.descripcion || p.codigo,
           unidad: p.unidad || 'und',
           metrado_contratado: cantidad,
           precio_unitario_pres: pu,
           costo_total_presupuestado: total,
           // costo_real_acumulado, porcentaje_avance, estado: NO se tocan
-          nivel: p.nivel ?? 1,
-          parent_codigo: p.parent_codigo ?? null,
+          nivel: p.nivel ?? ex.nivel ?? 1,
+          parent_codigo: ex.parent_codigo ?? p.parent_codigo ?? null,
           orden: ordenPorCodigo.get(p.codigo) ?? 0,
           updated_at: now, updated_by: userId,
           version: (ex.version ?? 0) + 1,
@@ -587,6 +612,21 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
     }
 
     // ── Fase 2: construir registros para INSERT (sólo aImportar) + insumos para todos ──
+    // Código CANÓNICO para nuevas: si el prefijo normalizado ya existe en la
+    // obra (en cualquier partida viva), usar SU formato — así un capítulo
+    // "1.7" del presupuesto se cuelga de la rama "01.07" existente en vez de
+    // abrir una rama paralela. (Mismo criterio que importGantt/comparativo.)
+    const vivasCanon = (await window.__db.partidas.where('obra_id').equals(obraId).toArray()).filter(v => !v.deleted_at);
+    const nodeCodeByNorm = new Map();
+    for (const v of vivasCanon) {
+      const segs = String(v.codigo_delfin || '').trim().split('.');
+      for (let i = 1; i <= segs.length; i++) {
+        const pref = segs.slice(0, i).join('.');
+        const norm = normalizeCodigo(pref);
+        if (norm && !nodeCodeByNorm.has(norm)) nodeCodeByNorm.set(norm, pref);
+      }
+    }
+    const codigoCanon = (codigo) => nodeCodeByNorm.get(normalizeCodigo(codigo)) || String(codigo || '').trim();
     const partidaRecords = [];     // sólo nuevas
     const insumoRecords = [];      // de aImportar Y aReemplazar
     const idPorCodigoNuevas = new Map(); // codigo nuevo → id nuevo
@@ -600,7 +640,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       const pu = cantidad > 0 ? +(total / cantidad).toFixed(6) : 0;
       partidaRecords.push({
         id, obra_id: obraId,
-        codigo_delfin: p.codigo,
+        codigo_delfin: codigoCanon(p.codigo),
         nombre_partida: p.descripcion || p.codigo,
         unidad: p.unidad || 'und',
         metrado_contratado: cantidad,
@@ -608,7 +648,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
         costo_total_presupuestado: total,
         estado: 'pendiente',
         nivel: p.nivel ?? 1,
-        parent_codigo: p.parent_codigo ?? null,
+        parent_codigo: p.parent_codigo ? codigoCanon(p.parent_codigo) : null,
         orden: ordenPorCodigo.get(p.codigo) ?? 0,
         created_by: userId, updated_by: userId,
         created_at: now, updated_at: now,
@@ -683,8 +723,31 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       }
     }
 
+    // ── Fase 5: si el archivo era el PRESUPUESTO/costos generales, renombrar
+    // los capítulos genéricos ("Capítulo 01") con sus nombres reales y crear
+    // los que falten — ANTES solo corría si el usuario cargaba el Excel en el
+    // panel de márgenes; ahora corre siempre que el presupuesto trae nombres.
+    let capitulosRenombrados = 0;
+    if (parsed.source_format === 'presupuesto') {
+      try {
+        // Respetar el 'saltar' del preview también para los NOMBRES: una fila
+        // que el usuario saltó explícitamente no debe recibir el nombre del
+        // Excel (p.ej. partidas renombradas a mano en JARVEX). Con las
+        // acciones por defecto esto es un no-op: las 'duplicada_igual'
+        // (saltar) tienen el nombre idéntico y no se tocarían de todos modos.
+        const codigosSaltados = new Set(
+          comparison.filter(c => c.action === 'saltar').map(c => String(c.codigo))
+        );
+        const partidasExcelNoSaltadas = parsed.data.filter(p => !codigosSaltados.has(String(p.codigo)));
+        const rn = await aplicarNombresDesdePartidas({ obraId, partidasExcel: partidasExcelNoSaltadas, userId });
+        capitulosRenombrados = (rn?.actualizadas || 0) + (rn?.creadas || 0);
+      } catch (e) {
+        errorList.push({ row: '-', error: `Renombrado de capítulos: ${e.message || e}` });
+      }
+    }
+
     const aSaltar = comparison.length - aImportar.length - aReemplazar.length;
-    const detalle = `${partidasInsertadas} nuevas, ${partidasActualizadas} actualizadas (preservando ID), ${aSaltar} saltadas, ${insumosInsertados} insumos${errorList.length ? `, ${errorList.length} errores` : ''}`;
+    const detalle = `${partidasInsertadas} nuevas, ${partidasActualizadas} actualizadas (preservando ID), ${aSaltar} saltadas, ${insumosInsertados} insumos${capitulosRenombrados ? `, ${capitulosRenombrados} capítulos renombrados/creados` : ''}${errorList.length ? `, ${errorList.length} errores` : ''}`;
     return {
       tipo: 'apu',
       ok: partidasInsertadas + partidasActualizadas,

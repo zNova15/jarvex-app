@@ -754,14 +754,27 @@ function buildPartidasTree(partidas) {
     let cur = root;
     for (let i = 0; i < segs.length; i++) {
       const prefix = segs.slice(0, i + 1).join('.');
-      let child = cur.children.get(prefix);
+      // DEFENSA contra datos legacy con formatos mixtos ("01.07" vs "1.7"):
+      // agrupar por el prefijo NORMALIZADO para que ambas escrituras caigan
+      // en el MISMO nodo en vez de partir el árbol en ramas paralelas. El
+      // code/label visible conserva el primer formato visto.
+      const key = normalizeCodigo(prefix);
+      let child = cur.children.get(key);
       if (!child) {
         child = { code: prefix, label: prefix, children: new Map(), partidas: [], depth: i + 1 };
-        cur.children.set(prefix, child);
+        cur.children.set(key, child);
       }
       cur = child;
     }
-    // La hoja "real" (la partida) se asocia al nodo del prefijo completo
+    // La hoja "real" (la partida) se asocia al nodo del prefijo completo.
+    // Si YA había una partida en este nodo (duplicado legacy: mismo código en
+    // dos formatos, ej "01.07.05" y "1.7.5"), NO pisarla en silencio: se
+    // conserva como hoja suelta para que siga visible/editable y los agregados
+    // del árbol coincidan con la tabla cruda (header, exports, comparativo).
+    if (cur.partida && cur.partida.id !== p.id) {
+      console.warn(`[Partidas] Código duplicado tras normalizar: "${cur.partida.codigo_delfin}" y "${p.codigo_delfin}" — ambas se muestran; conviene depurar la duplicada.`);
+      cur.partidas.push(cur.partida);
+    }
     cur.partida = p;
   }
   return root;
@@ -975,18 +988,34 @@ function TreeNode({ node, visibleCodes, expanded, onToggle, searchTerms, isAdmin
   const isLeafOnly = !hasChildren && node.partida; // nodo terminal con partida real
   const depth = node.depth;
 
-  // Si solo es la hoja (sin hijos), renderizamos como PartidaLeafRow
+  // Si solo es la hoja (sin hijos), renderizamos como PartidaLeafRow.
+  // node.partidas: duplicados legacy con el mismo código normalizado —
+  // vacío en datos limpios; se renderizan también para no ocultarlos.
   if (isLeafOnly && !hasChildren) {
     return (
-      <PartidaLeafRow
-        partida={node.partida}
-        depth={depth}
-        searchTerms={searchTerms}
-        isAdmin={isAdmin}
-        onEdit={onEdit}
-        onVerAPU={onVerAPU}
-        consumoMap={consumoMap}
-      />
+      <>
+        <PartidaLeafRow
+          partida={node.partida}
+          depth={depth}
+          searchTerms={searchTerms}
+          isAdmin={isAdmin}
+          onEdit={onEdit}
+          onVerAPU={onVerAPU}
+          consumoMap={consumoMap}
+        />
+        {node.partidas.map(p => (
+          <PartidaLeafRow
+            key={p.id}
+            partida={p}
+            depth={depth}
+            searchTerms={searchTerms}
+            isAdmin={isAdmin}
+            onEdit={onEdit}
+            onVerAPU={onVerAPU}
+            consumoMap={consumoMap}
+          />
+        ))}
+      </>
     );
   }
 
@@ -1132,7 +1161,9 @@ function PartidasPage({ showToast }) {
       const wb = XLSX.read(buf, { type: 'array' });
       const sheet = wb.Sheets[wb.SheetNames[0]];
       const rawRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: true });
-      const parsed = parsePresupuestoObra(rawRows);
+      // Texto formateado para no perder ceros finales de códigos numéricos.
+      const rowsTexto = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: false });
+      const parsed = parsePresupuestoObra(rawRows, rowsTexto);
       if (!parsed.length) {
         throw new Error('No se detectaron partidas en el archivo. Verificá que tenga columna "Item" y "Descripción".');
       }

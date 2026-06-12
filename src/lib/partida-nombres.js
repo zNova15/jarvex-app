@@ -36,7 +36,16 @@ export async function aplicarNombresDesdePartidas({ obraId, partidasExcel, userI
 
   const vivas = await db.partidas.where('obra_id').equals(obraId).filter(p => !p.deleted_at).toArray();
   const porCodigo = new Map(vivas.map(p => [String(p.codigo_delfin || ''), p]));
-  const porCodigoNorm = new Map(vivas.map(p => [normalizeCodigo(p.codigo_delfin), p]));
+  // First-wins (mismo tie-break que el comparador de importAPU): si la BD
+  // trae duplicados legacy por código normalizado ("01.07" y "1.7" vivas a
+  // la vez), Fase 1 (reemplazar) y este renombrado deben tocar la MISMA fila
+  // — con new Map(vivas.map(...)) (last-wins) cada fase actualizaba un
+  // duplicado distinto. El guard k&& además evita matchear por clave vacía.
+  const porCodigoNorm = new Map();
+  for (const p of vivas) {
+    const k = normalizeCodigo(p.codigo_delfin);
+    if (k && !porCodigoNorm.has(k)) porCodigoNorm.set(k, p);
+  }
 
   // Prefijos jerárquicos de las hojas → capítulos que deberían existir.
   const nodeCodeByNorm = new Map();

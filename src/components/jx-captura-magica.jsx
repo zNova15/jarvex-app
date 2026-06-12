@@ -177,13 +177,47 @@ function CapturaMagicaPage({ showToast }) {
           const status = it.status === 'procesando' ? 'pendiente' : it.status;
           return { ...it, file, status };
         }).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
-        setItems(restoredItems);
+        // MERGE, no reemplazo ciego: esta pestaña es la ÚNICA escritora de
+        // captura_magica_pending y la persistencia estado→Dexie es asíncrona,
+        // así que el estado en memoria siempre está al menos tan fresco como
+        // el snapshot. Reemplazar a ciegas pisaba resultados recién llegados
+        // de requests en vuelo (cargar() corre con cada jx_data_changed): la
+        // fila volvía a 'pendiente' SIN parsed y, con reprocesoHecho=true y
+        // enVuelo ya limpio, nadie la reprocesaba ('pendiente' no tiene botón
+        // de reintento) → atascada hasta remontar la pestaña. Regla: para ids
+        // ya en estado gana el estado; Dexie solo aporta ids que faltan.
+        setItems(prev => {
+          if (!prev.length) return restoredItems;
+          const byId = new Map(prev.map(x => [x.id, x]));
+          return restoredItems.map(r => byId.get(r.id) || r);
+        });
         setRestored(true);
-        // Re-procesar los que quedaron pendientes (sin parsed)
-        for (const it of restoredItems) {
-          if (it.status === 'pendiente' && it.file && !it.parsed) {
-            // disparar async sin bloquear
-            procesarItem(it.id, it.file);
+        // Re-procesar los que quedaron pendientes (sin parsed): UNA sola vez
+        // (cargar() también corre con cada jx_data_changed — sin el guard se
+        // re-disparaban los mismos archivos), EN SERIE (la ráfaga paralela
+        // agotaba el rate limit de la API → 429) y con el ref fresco (el
+        // closure del primer render tiene los catálogos vacíos).
+        if (!reprocesoHecho.current) {
+          reprocesoHecho.current = true;
+          // Ceder un macrotask ANTES de la primera llamada del loop: React 19
+          // batchea los setState de arriba y los commitea en una tarea aparte.
+          // Sin este yield, el PRIMER item evalúa procesarItemRef.current
+          // antes del re-render → closure pre-cargar con proveedoresDB/
+          // materialesDB/ocsActivasDB/cadenasActivasDB vacíos (proveedor y
+          // materiales sin matchear, sin sugerencia de OC/cadena). Los items
+          // siguientes no lo necesitan (el await de la red deja commitear).
+          // Si el orden de tareas no ayudara, es inocuo: queda como estaba.
+          await new Promise(res => setTimeout(res, 0));
+          for (const it of restoredItems) {
+            // Si el componente se desmontó (navegación a otra pestaña), cortar:
+            // los setItems serían no-op y el efecto de persistencia ya no corre
+            // → cada request restante sería API gastada cuyo resultado se pierde
+            // (y al volver se reprocesa igual). El remount retoma la cola con
+            // un reprocesoHecho fresco.
+            if (!mounted) break;
+            if (it.status === 'pendiente' && it.file && !it.parsed) {
+              await procesarItemRef.current(it.id, it.file);
+            }
           }
         }
       } catch (e) {
@@ -248,7 +282,15 @@ function CapturaMagicaPage({ showToast }) {
   const onDragOver = (e) => { e.preventDefault(); e.stopPropagation(); };
 
   // ── Llamada al endpoint ─────────────────────────────────────
+  // Guard anti-duplicado: ids con request en vuelo (el listener de
+  // jx_data_changed re-ejecuta cargar() y sin esto re-disparaba el MISMO
+  // archivo en paralelo → ráfaga de 429 de la API).
+  const enVuelo = uRCM(new Set());
+  // Reproceso de pendientes restaurados: solo en el primer cargar() del mount.
+  const reprocesoHecho = uRCM(false);
   const procesarItem = async (id, file) => {
+    if (enVuelo.current.has(id)) return;
+    enVuelo.current.add(id);
     setItems(prev => prev.map(x => x.id === id ? { ...x, status: 'procesando' } : x));
     try {
       const base64 = await fileToBase64(file);
@@ -282,8 +324,17 @@ function CapturaMagicaPage({ showToast }) {
       setItems(prev => prev.map(x => x.id === id ? {
         ...x, status: 'error', error: e.message || String(e),
       } : x));
+    } finally {
+      enVuelo.current.delete(id);
     }
   };
+  // El restore al montar corre con el closure del PRIMER render (obras/
+  // companies/proveedores aún vacíos) → el review salía con obra_id '' y
+  // proveedor sin matchear. El ref siempre apunta a la versión fresca.
+  const procesarItemRef = uRCM(null);
+  // (declarado acá pero usado por el efecto de carga de arriba vía closure)
+
+  procesarItemRef.current = procesarItem;
 
   // ── Build review state desde el JSON extraído ───────────────
   const buildInitialReview = (ext, companies, obras, proveedoresDB, materialesDB, ocsActivasDB, cadenasActivasDB) => {
@@ -309,7 +360,12 @@ function CapturaMagicaPage({ showToast }) {
     const obraActivaId = (typeof window !== 'undefined' && window.__getObraActivaId)
       ? window.__getObraActivaId()
       : null;
-    if (obraActivaId && obrasVisibles.some(o => o.id === obraActivaId)) {
+    // OJO: NO validar contra `obras` del closure — en el primer render (y en
+    // el restore del mount) el hook todavía no cargó y obras=[] anulaba un id
+    // PERFECTAMENTE válido → "No hay obra activa" con obra activa. El id de
+    // localStorage es la fuente de verdad; si la obra fue borrada, el selector
+    // del modal de revisión permite corregirlo.
+    if (obraActivaId) {
       obraSugerida = obraActivaId;
     } else if (obrasVisibles.length > 0) {
       obraSugerida = obrasVisibles[0].id;
@@ -488,7 +544,27 @@ function CapturaMagicaPage({ showToast }) {
   const confirmarItem = async (id) => {
     const it = items.find(x => x.id === id);
     if (!it || !it.review) return;
-    const r = it.review;
+    let r = it.review;
+    // Defensa: reviews viejos persistidos con obra_id '' aunque haya obra
+    // activa (closure vacío del primer render). Mismo criterio que el header.
+    // OJO: si el usuario eligió a propósito "Sin obra" en el selector del
+    // modal (obra_id_explicita), respetamos su elección y NO reparamos.
+    if (!r.obra_id && !r.obra_id_explicita) {
+      const activa = window.__getObraActivaId?.();
+      if (activa && (obras || []).some(o => o.id === activa && !o.deleted_at)) {
+        r = { ...r, obra_id: activa };
+      }
+    }
+    // Defensa inversa: buildInitialReview confía en el id de localStorage sin
+    // validar (el closure del primer render tenía obras=[]). Si esa obra fue
+    // BORRADA, useObras ya no la trae: el modal mostró "Sin obra" pero
+    // r.obra_id seguía seteado → se crearían catálogo/recepción/movimiento
+    // contra una obra muerta. Alineamos el dato con lo que la UI mostró.
+    if (r.obra_id && (obras || []).length > 0 &&
+        !obras.some(o => o.id === r.obra_id && !o.deleted_at)) {
+      r = { ...r, obra_id: '' };
+      showToast('La obra destino ya no existe — el documento se registra sin obra (solo contabilidad).', 'orange');
+    }
 
     // Validaciones
     if (r.company_accion === 'crear_nueva') {
@@ -1271,6 +1347,21 @@ function VincularPendientesModal({ data, materialesDB, onClose, onConfirm }) {
 
 // ─── MODAL DE REVISIÓN ───────────────────────────────────────
 function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsActivasDB, onChange, onConfirm, onClose }) {
+  // Reviews viejos (o procesados con el closure vacío) quedaron con obra_id ''
+  // persistido en Dexie. Acá la lista de obras YA está cargada: si hay obra
+  // activa válida, repararlo en vivo en cuanto se abre.
+  uECM(() => {
+    const rr = item?.review;
+    // obra_id_explicita = el usuario ya tocó el selector de obra a mano
+    // (incluida la opción "Sin obra") → no pisar su elección al reabrir.
+    if (!rr || rr.obra_id || rr.obra_id_explicita) return;
+    const activa = window.__getObraActivaId?.();
+    if (activa && (obras || []).some(o => o.id === activa && !o.deleted_at)) {
+      // onChange espera el review COMPLETO (upd hace {...r, ...patch}).
+      onChange({ ...rr, obra_id: activa });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item?.id]);
   const r = item.review;
   const upd = (patch) => onChange({ ...r, ...patch });
   const [previewUrl, setPreviewUrl] = uSCM(null);
@@ -1603,17 +1694,31 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
                     {companiesActivas.map(c => <option key={c.id} value={c.id}>{c.name} {c.ruc ? `· ${c.ruc}` : ''}</option>)}
                   </select>
                   {(() => {
-                    const obraActual = (obras || []).find(o => o.id === r.obra_id);
-                    if (obraActual) {
-                      return (
-                        <div style={{ fontSize:11, color:'var(--tm)', marginTop:6 }}>
-                          📍 Se asignará a <strong style={{ color:'var(--ts)' }}>{obraActual.nombre_obra}</strong> (obra activa)
-                        </div>
-                      );
-                    }
+                    const obraActual = (obras || []).find(o => o.id === r.obra_id && !o.deleted_at);
+                    // La obra activa puede ser de OTRA empresa del grupo:
+                    // obrasDeEmpresa la excluye y el <select> controlado
+                    // quedaba EN BLANCO (value huérfano) con el mensaje verde
+                    // abajo — señales contradictorias. La incluimos como
+                    // opción visible para que el ruteo nunca sea silencioso.
+                    const base = obrasDeEmpresa.length ? obrasDeEmpresa : (obras || []).filter(o => !o.deleted_at);
+                    const candidatas = (obraActual && !base.some(o => o.id === obraActual.id))
+                      ? [obraActual, ...base] : base;
                     return (
-                      <div style={{ fontSize:11, color:'var(--amber)', marginTop:6 }}>
-                        ⚠ No hay obra activa. Los items quedarán solo en contabilidad.
+                      <div style={{ marginTop: 6 }}>
+                        <label className="flabel">Obra destino {obraActual ? '' : '(elegila para que los items lleguen al almacén)'}</label>
+                        <select className="fi" value={r.obra_id || ''} onChange={e => upd({ obra_id: e.target.value, obra_id_explicita: true })}>
+                          <option value="">Sin obra (gasto general — solo contabilidad)</option>
+                          {candidatas.map(o => <option key={o.id} value={o.id}>{o.nombre_obra || o.nombre}</option>)}
+                        </select>
+                        {obraActual ? (
+                          <div style={{ fontSize:11, color:'var(--tm)', marginTop:4 }}>
+                            📍 Los materiales e ingresos de almacén van a <strong style={{ color:'var(--ts)' }}>{obraActual.nombre_obra}</strong>.
+                          </div>
+                        ) : (
+                          <div style={{ fontSize:11, color:'var(--amber)', marginTop:4 }}>
+                            ⚠ Sin obra: los items quedarán solo en contabilidad (sin catálogo ni ingreso de almacén).
+                          </div>
+                        )}
                       </div>
                     );
                   })()}

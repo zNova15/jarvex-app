@@ -150,36 +150,82 @@ export default async function handler(req, res) {
   const userInstruction = `Analiza este comprobante peruano y extrae todos los datos al JSON estructurado descrito en las instrucciones del sistema. Responde SOLO con el JSON, sin texto adicional ni markdown.`;
 
   try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 90000);
-    const upstream = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      signal: ctrl.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 4000,
-        system: SYSTEM_PROMPT,
-        messages: [
-          {
-            role: 'user',
-            content: [fileBlock, { type: 'text', text: userInstruction }],
+    // Retry con backoff para 429 (rate limit) y 5xx/529 (sobrecarga): hasta 3
+    // intentos respetando retry-after. Sin esto, un lote de facturas moría con
+    // "Claude API respondió 429" en filas que hubieran pasado reintentando 2
+    // segundos después.
+    // Presupuesto compartido (deadline): el cliente aborta a los 90s
+    // (jx-captura-magica → apiFetch timeout 90000). Sin deadline, el peor caso
+    // (respuestas 5xx lentas) era 60+20+60+20+60 ≈ 220s: el usuario veía un
+    // abort genérico (el mensaje amigable del 429 nunca llegaba) y la función
+    // seguía quemando intentos/tokens para nadie. Con el deadline, el error
+    // real siempre sale antes de que el cliente corte.
+    const deadline = Date.now() + 80000;
+    let upstream = null;
+    let errText = '';
+    for (let intento = 0; intento < 3; intento++) {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), Math.min(60000, Math.max(deadline - Date.now(), 1000)));
+      let fetchErr = null;
+      try {
+        upstream = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          signal: ctrl.signal,
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
           },
-        ],
-      }),
-    });
-    clearTimeout(timer);
+          body: JSON.stringify({
+            model: 'claude-sonnet-4-6',
+            max_tokens: 4000,
+            system: SYSTEM_PROMPT,
+            messages: [
+              {
+                role: 'user',
+                content: [fileBlock, { type: 'text', text: userInstruction }],
+              },
+            ],
+          }),
+        });
+      } catch (e) {
+        fetchErr = e;
+      } finally {
+        clearTimeout(timer);
+      }
+      if (fetchErr) {
+        // Errores de red (ECONNRESET, DNS, socket hang up) son transitorios:
+        // se reintentan igual que un 5xx. AbortError NO se reintenta — ya se
+        // consumieron 60s y otro intento reventaría el presupuesto de 90s del
+        // cliente (sale al catch externo → 504, como antes).
+        if (fetchErr.name === 'AbortError' || intento === 2) throw fetchErr;
+        const esperaMs = Math.min(2000 * Math.pow(4, intento), 20000);
+        // Sin presupuesto para esperar + un intento útil (10s) → propagar ya.
+        if (Date.now() + esperaMs + 10000 > deadline) throw fetchErr;
+        console.warn(`[captura-magica] fetch lanzó (${fetchErr.message || fetchErr.name}) — reintento ${intento + 1}/2 en ${esperaMs}ms`);
+        await new Promise((r) => setTimeout(r, esperaMs));
+        continue;
+      }
+      if (upstream.ok) break;
+      errText = await upstream.text().catch(() => '');
+      const retriable = upstream.status === 429 || upstream.status === 529 || upstream.status >= 500;
+      if (!retriable || intento === 2) break;
+      const retryAfter = Number(upstream.headers.get('retry-after')) || 0;
+      const esperaMs = Math.min((retryAfter * 1000) || (2000 * Math.pow(4, intento)), 20000);
+      // Sin presupuesto para esperar + un intento útil (10s) → devolver el
+      // error real ya (incl. mensaje amigable del 429; la fila tiene Reintentar).
+      if (Date.now() + esperaMs + 10000 > deadline) break;
+      console.warn(`[captura-magica] upstream ${upstream.status} — reintento ${intento + 1}/2 en ${esperaMs}ms`);
+      await new Promise((r) => setTimeout(r, esperaMs));
+    }
 
     if (!upstream.ok) {
-      const errText = await upstream.text();
       console.error('[captura-magica] upstream error:', upstream.status, errText.slice(0, 200));
       const isProd = process.env.NODE_ENV === 'production';
       return res.status(upstream.status).json({
-        error: `Claude API respondió ${upstream.status}`,
+        error: upstream.status === 429
+          ? 'El servicio de IA está saturado (429) — reintenta en un minuto (la fila tiene botón Reintentar)'
+          : `Claude API respondió ${upstream.status}`,
         ...(isProd ? {} : { detail: errText.slice(0, 500) }),
       });
     }
@@ -216,7 +262,7 @@ export default async function handler(req, res) {
     });
   } catch (e) {
     if (e.name === 'AbortError') {
-      return res.status(504).json({ error: 'Claude tardó demasiado (>90s)' });
+      return res.status(504).json({ error: 'Claude tardó demasiado (>60s)' });
     }
     const sanitized = sanitizeError(e, 'Error consultando Claude');
     return res.status(sanitized.status).json(sanitized.body);

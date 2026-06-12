@@ -396,7 +396,7 @@ export function excelDateToISO(serial) {
   return d.toISOString().slice(0, 10);
 }
 
-export function parseGantt(rows) {
+export function parseGantt(rows, rowsTexto = null) {
   const tareas = [];
   let startIdx = 0;
   for (let i = 0; i < Math.min(10, rows.length); i++) {
@@ -410,7 +410,13 @@ export function parseGantt(rows) {
   for (let i = startIdx; i < rows.length; i++) {
     const r = rows[i];
     if (!r) continue;
-    const codigo = String(r[0] ?? '').trim();
+    let codigo = String(r[0] ?? '').trim();
+    // Código numérico con cero final perdido ("2.10" → 2.1): preferir el
+    // texto formateado de la celda si es un código jerárquico válido.
+    if (typeof r[0] === 'number') {
+      const texto = String(rowsTexto?.[i]?.[0] ?? '').trim();
+      if (/^\d+(\.\d+)*$/.test(texto)) codigo = texto;
+    }
     const desc   = String(r[1] ?? '').trim();
     if (!codigo || !desc) continue;
     // Filtrar filas que no son códigos jerárquicos (p.ej. headers o resúmenes)
@@ -462,7 +468,7 @@ export function parseGantt(rows) {
 //
 // Devuelve: array de { codigo, descripcion, unidad, cantidad, precio, total, nivel }
 // ═══════════════════════════════════════════════════════════════════
-export function parsePresupuestoObra(rows) {
+export function parsePresupuestoObra(rows, rowsTexto = null) {
   const partidas = [];
   // Encontrar header (la fila que tiene "Item" y "Descripción")
   let dataStart = 0;
@@ -482,9 +488,11 @@ export function parsePresupuestoObra(rows) {
     // Normalizar código a string
     let codigo = '';
     if (typeof rawCod === 'number') {
-      // Excel convirtió "1.01" en número 1.01 — recuperar con padding
-      // mínimo. "1" → "1", "1.01" → "1.01", "1.1" se respeta tal cual.
-      codigo = String(rawCod);
+      // Excel convirtió "1.10" en número 1.1 — String() pierde el cero final
+      // y el código colisiona con "1.1"/"01.01". Preferir el texto FORMATEADO
+      // de la celda (lo que se ve en Excel) si está disponible y es un código.
+      const texto = String(rowsTexto?.[i]?.[0] ?? '').trim();
+      codigo = /^\d+(\.\d+)*$/.test(texto) ? texto : String(rawCod);
     } else {
       codigo = String(rawCod).trim();
     }
@@ -696,6 +704,10 @@ export async function parseS10File(file) {
   const wb = XLSX.read(data, { type: 'array' });
   const sheet = wb.Sheets[wb.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: true });
+  // Texto formateado (lo que se VE en Excel) para la columna de códigos:
+  // un código "1.10" guardado como número llega como 1.1 con raw:true —
+  // String(1.10) === "1.1" pierde el cero final y colisiona con "1.1"/"01.01".
+  const rowsTexto = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: false });
   const tipo = detectS10Type(rows);
 
   // Tabla de costos al final del Excel (CD, %s, otros gastos, total).
@@ -727,7 +739,7 @@ export async function parseS10File(file) {
   // de otra fila) van con costo_total 0 — el árbol agrega el presupuesto
   // desde las hojas, ponerles costo propio lo duplicaría.
   if (tipo === 'presupuesto') {
-    const items = parsePresupuestoObra(rows);
+    const items = parsePresupuestoObra(rows, rowsTexto);
     const norm = (c) => String(c ?? '').trim().split('.').map(s => {
       const n = parseInt(s, 10); return Number.isNaN(n) ? s : String(n);
     }).join('.');
@@ -787,7 +799,7 @@ export async function parseS10File(file) {
     };
   }
   if (tipo === 'gantt') {
-    const tareas = parseGantt(rows);
+    const tareas = parseGantt(rows, rowsTexto);
     const fechas = tareas.map(t => t.fecha_inicio).filter(Boolean).sort();
     const fines  = tareas.map(t => t.fecha_fin).filter(Boolean).sort();
     return {
