@@ -62,7 +62,7 @@ const obrasDemo = [
     nombre_obra: '🧪 DEMO · Carretera Otuzco-Salpo',
     cliente: 'Gobierno Regional La Libertad',
     ubicacion: 'Otuzco, La Libertad',
-    estado: 'finalizada',
+    estado: 'terminado', // valor del CHECK del server y de EST_OBRA ('finalizada' nunca fue válido; demo:true no pushea — el impacto era badge fallback + select de edición en blanco)
     fecha_inicio: dt(-365),
     fecha_fin_estimada: dt(-30),
     presupuesto_total: 8_900_000,

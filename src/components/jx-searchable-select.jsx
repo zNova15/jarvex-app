@@ -75,7 +75,10 @@ function SearchableSelect({
     }
     if (e.key === 'Enter' && filtered.length > 0) {
       e.preventDefault();
-      onChange(filtered[0].value);
+      // Saltar opciones disabled (ej. capítulos no elegibles).
+      const primera = filtered.find(o => !o.disabled);
+      if (!primera) return;
+      onChange(primera.value);
       setOpen(false);
       setSearch('');
     }
@@ -147,6 +150,18 @@ function SearchableSelect({
             ) : (
               filtered.map((o, i) => {
                 const esActivo = String(o.value ?? '') === String(value ?? '');
+                // disabled: visible (da contexto, ej. capítulos del árbol de
+                // partidas) pero no clickeable ni elegible con Enter.
+                if (o.disabled) {
+                  return (
+                    <div key={(o.value ?? '') + '-' + i}
+                      style={{ width: '100%', padding: '7px 10px', textAlign: 'left', color: 'var(--tm)',
+                        borderBottom: '1px solid rgba(255,255,255,0.04)', fontSize: 12, fontWeight: 600,
+                        fontFamily: 'inherit', cursor: 'default', opacity: 0.75 }}>
+                      {o.label}
+                    </div>
+                  );
+                }
                 return (
                   <button
                     key={(o.value ?? '') + '-' + i}
@@ -167,6 +182,7 @@ function SearchableSelect({
                       cursor: 'pointer',
                       fontSize: 12,
                       fontWeight: esActivo ? 600 : 400,
+                      fontFamily: 'inherit',
                       transition: 'background 0.1s',
                     }}
                     onMouseEnter={e => {

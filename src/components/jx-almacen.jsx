@@ -231,7 +231,10 @@ function MaterialesPage({ showToast }) {
         ]);
         if (!cancelled) {
           setPartidasObra((parts || []).filter(p => !p.deleted_at && p.estado !== 'terminado'));
-          setInsumosObra(inss || []);
+          // Excluir soft-deleted: tras un re-import (Fase 1b) los insumos del
+          // APU viejo quedan deleted_at hasta que el push los purga — sin este
+          // filtro contaminan sugerencias de partida y el sync de precios.
+          setInsumosObra((inss || []).filter(i => !i.deleted_at));
         }
       } catch (e) { /* tabla puede no existir aún */ }
     };

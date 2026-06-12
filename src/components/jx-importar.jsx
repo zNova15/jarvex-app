@@ -557,7 +557,6 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
 
     // ── Fase 1: ACTUALIZAR partidas a reemplazar (preservando ID) ──
     let partidasActualizadas = 0;
-    const idsReemplazadas = []; // para soft-delete de insumos viejos
     if (aReemplazar.length) {
       setProgress({ phase:`Actualizando ${aReemplazar.length} partidas existentes…`, current:0, total: aReemplazar.length });
       const updateRecords = [];
@@ -568,7 +567,6 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
         const total = Number(p.costo_total) || 0;
         const pu = cantidad > 0 ? +(total / cantidad).toFixed(6) : 0;
         const ex = c.existente;
-        idsReemplazadas.push(ex.id);
         updateRecords.push({
           ...ex,
           // El código CANÓNICO es el de la BD: pisarlo con el formato del
@@ -601,10 +599,16 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
 
     // ── Fase 1b: SOFT-DELETE insumos viejos de las partidas reemplazadas ──
     // (sus insumos cambian de archivo a archivo, así que descartamos los anteriores)
-    if (idsReemplazadas.length) {
+    // SOLO para partidas cuyo archivo NUEVO trae insumos: el PRESUPUESTO
+    // consolidado siempre viene con insumos vacíos — borrar los APU previos
+    // al re-importarlo destruía el desglose sin reemplazo.
+    const idsReemplazadasConInsumos = aReemplazar
+      .filter(c => (parsedPorCodigo.get(c.codigo)?.insumos || []).length > 0)
+      .map(c => c.existente.id);
+    if (idsReemplazadasConInsumos.length) {
       try {
         await window.__db.insumos_partida
-          .where('partida_id').anyOf(idsReemplazadas)
+          .where('partida_id').anyOf(idsReemplazadasConInsumos)
           .modify({ deleted_at: now, sync_status: 'pending_delete', updated_at: now });
       } catch (e) {
         errorList.push({ row: '-', error: `Error marcando insumos viejos: ${e.message || e}` });
@@ -800,7 +804,9 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
     const unidadPorCodigoAPU = new Map();
     try {
       const insumosPart = await window.__db.insumos_partida.where('obra_id').equals(obraId).toArray();
-      insumosPart.forEach(ip => {
+      // Solo insumos vivos: los soft-deleted de un re-import (Fase 1b) traen
+      // unidades del APU viejo y pueden shadowear (first-wins) a los vigentes.
+      insumosPart.filter(ip => !ip.deleted_at).forEach(ip => {
         const cod = ip.insumo_codigo;
         const u = (ip.unidad || '').trim();
         if (cod && u && !unidadPorCodigoAPU.has(cod)) unidadPorCodigoAPU.set(cod, u);

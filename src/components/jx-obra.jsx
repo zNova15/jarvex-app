@@ -8,8 +8,13 @@ const { useState: uSO, useMemo: uMO, useEffect: uEO } = React;
 const EST_PART = { terminado:'b-green', en_ejecucion:'b-blue', atrasado:'b-red', pendiente:'b-gray', observado:'b-yellow' };
 const EST_LBL  = { terminado:'Terminado', en_ejecucion:'En Ejecución', atrasado:'Atrasado', pendiente:'Pendiente', observado:'Observado' };
 
-const EST_OBRA = { activo:'b-green', planificacion:'b-blue', pausado:'b-yellow', terminado:'b-gray', cancelado:'b-red' };
-const EST_OBRA_LBL = { activo:'Activo', planificacion:'Planificación', pausado:'Pausado', terminado:'Terminado', cancelado:'Cancelado' };
+const EST_OBRA = { activo:'b-green', planificacion:'b-blue', pausado:'b-yellow', terminado:'b-gray', cancelado:'b-red', finalizada:'b-gray', cancelada:'b-red' };
+const EST_OBRA_LBL = { activo:'Activo', planificacion:'Planificación', pausado:'Pausado', terminado:'Terminado', cancelado:'Cancelado', finalizada:'Terminado', cancelada:'Cancelado' };
+// Valores legacy del form viejo que el CHECK del server nunca aceptó (mig 001:
+// solo terminado/cancelado). Quedaron en Dexie (form viejo + demoSeeder) y al
+// editarse re-pusheaban 23514. Se normalizan al abrir el form → el próximo save
+// escribe el valor válido y sana la fila.
+const EST_OBRA_LEGACY = { finalizada: 'terminado', cancelada: 'cancelado' };
 
 // Helper para detectar obra activa con tope de reintentos + reanudar
 // cuando el realtime traiga una obra nueva (evento 'jarvex_master_updated').
@@ -194,7 +199,7 @@ function ObrasPage({ showToast }) {
       nombre_obra: o.nombre_obra || '',
       cliente: o.cliente || '',
       ubicacion: o.ubicacion || '',
-      estado: o.estado || 'planificacion',
+      estado: EST_OBRA_LEGACY[o.estado] || o.estado || 'planificacion',
       fecha_inicio: o.fecha_inicio || '',
       fecha_fin_estimada: o.fecha_fin_estimada || '',
       presupuesto_total: o.presupuesto_total ?? '',
@@ -238,7 +243,7 @@ function ObrasPage({ showToast }) {
 
   const handleSubmit = async () => {
     if (busyObra) return; // doble click guard
-    if (!form.nombre_obra) { showToast('Falta el nombre de la obra', 'red'); return; }
+    if (!form.nombre_obra?.trim()) { showToast('Falta el nombre de la obra', 'red'); return; }
     // ── Validaciones de sentido común ─────────────────────────
     if (form.fecha_inicio && form.fecha_fin_estimada && form.fecha_fin_estimada < form.fecha_inicio) {
       showToast('La fecha fin estimada no puede ser anterior a la fecha de inicio', 'red');
@@ -294,7 +299,7 @@ function ObrasPage({ showToast }) {
       if (editingId) {
         const oldObra = obras.find(o => o.id === editingId);
         const newFields = {
-          nombre_obra: form.nombre_obra,
+          nombre_obra: form.nombre_obra.trim(),
           cliente: form.cliente || null,
           ubicacion: form.ubicacion || null,
           estado: form.estado || 'planificacion',
@@ -318,7 +323,7 @@ function ObrasPage({ showToast }) {
         showToast(`Obra "${form.nombre_obra}" actualizada`, 'green');
       } else {
         const created = await createObra({
-          nombre_obra: form.nombre_obra,
+          nombre_obra: form.nombre_obra.trim(),
           cliente: form.cliente || null,
           ubicacion: form.ubicacion || null,
           estado: form.estado || 'planificacion',
@@ -457,8 +462,8 @@ function ObrasPage({ showToast }) {
           <div><label className="flabel">Estado</label>
             <select className="fi" value={form.estado||'planificacion'} onChange={e=>setForm({...form, estado:e.target.value})}>
               <option value="planificacion">Planificación</option><option value="activo">Activo</option>
-              <option value="pausado">Pausado</option><option value="finalizada">Finalizada</option>
-              <option value="cancelada">Cancelada</option>
+              <option value="pausado">Pausado</option><option value="terminado">Terminado</option>
+              <option value="cancelado">Cancelado</option>
             </select>
           </div>
           <div style={{gridColumn:'1/-1'}}><label className="flabel">Ubicación</label><input className="fi" placeholder="Distrito, dirección" value={form.ubicacion||''} onChange={e=>setForm({...form, ubicacion:e.target.value})}/></div>
@@ -1473,7 +1478,7 @@ function PartidasPage({ showToast }) {
     setLoadingInsumos(true);
     (async () => {
       try {
-        const arr = await window.__db.insumos_partida.where('partida_id').equals(verAPU.id).toArray();
+        const arr = await window.__db.insumos_partida.where('partida_id').equals(verAPU.id).filter(r => !r.deleted_at).toArray();
         if (!cancelled) setInsumosDetalle(arr || []);
       } catch (e) {
         console.warn('Error cargando insumos:', e);

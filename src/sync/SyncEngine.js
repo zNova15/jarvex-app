@@ -534,6 +534,19 @@ const FK_DEPS = {
   // El desglose de stock referencia la ubicación (FK real en server). El
   // item_id es polimórfico (sin FK), así que solo esperamos a la ubicación.
   stock_ubicaciones:         [{ campo: 'ubicacion_id', tabla: 'ubicaciones_obra' }],
+  // partidas e insumos_partida van en el MISMO batch paralelo del push: sin
+  // el gate, un insumo podía llegar al server antes que su partida → 23503.
+  insumos_partida:           [{ campo: 'partida_id', tabla: 'partidas' }],
+  // Espejo versionado: el snapshot de versión (jx-gestion / jx-importar) crea
+  // presupuestos_versiones + partidas_versionadas + insumos_partida_versionadas
+  // pending_create en el MISMO lote, y las tres caen en el MISMO batch paralelo
+  // del push (índices 10-12 con PUSH_PARALLELISM=5). Las FKs son NOT NULL
+  // (migs 018/019): sin el gate, el INSERT hijo puede ganarle al padre →
+  // 23503 tumba el chunk de 200 entero → fallback per-record (hasta 200
+  // requests fallidos por chunk con un APU de 50k insumos). Misma patología
+  // que insumos_partida → partidas, arriba.
+  partidas_versionadas:        [{ campo: 'version_id', tabla: 'presupuestos_versiones' }],
+  insumos_partida_versionadas: [{ campo: 'version_id', tabla: 'presupuestos_versiones' }, { campo: 'partida_versionada_id', tabla: 'partidas_versionadas' }],
 };
 
 // True si todas las FKs del record están sincronizadas (o no hay FKs).
@@ -599,6 +612,101 @@ async function filtrarFkDepsListos(tabla, records) {
   }));
 }
 
+// Columna de IDENTIDAD por tabla (espejo del guard de useRealtimeNotifications):
+// una fila local que NI SIQUIERA tiene la propiedad no pertenece a esa tabla —
+// es un "fantasma" que el bug de bindings desalineados de realtime ruteó a la
+// tabla equivocada (caso 2026-06-12: fila de personal puesta en obras/
+// herramientas/incidencias). Esas filas se ven como cards vacías y, si se
+// editan/borran, intentan pushear columnas ajenas → PGRST204 en loop.
+const COLUMNA_IDENTIDAD = {
+  obras: 'nombre_obra', personal: 'nombres', materiales: 'nombre_material',
+  herramientas: 'nombre_herramienta', epps: 'nombre_epp',
+  proveedores: 'razon_social', subcontratistas: 'razon_social',
+  partidas: 'nombre_partida', incidencias: 'descripcion',
+  movimientos_materiales: 'material_id', movimientos_herramientas: 'herramienta_id',
+  movimientos_epp: 'epp_id', asistencia: 'personal_id',
+  insumos_emergencia: 'nombre', activos_pesados: 'nombre',
+  caja_chica_movimientos: 'monto', ubicaciones_obra: 'nombre',
+  // Las 3 tablas suscritas a realtime que faltaban (el mismo bug de bindings
+  // pudo rutearles filas de personal). OJO: acá NO sirve obra_id como en
+  // IDENTIDAD_TABLA del hook — personal.obra_id es NOT NULL, así que un
+  // fantasma de personal SÍ trae obra_id. Se usan columnas que personal no
+  // tiene y que toda fila legítima trae siempre (NOT NULL en server, seteadas
+  // en todos los creates locales, y UUID/TEXT corto = nunca TOASTeadas):
+  avance_obra: 'partida_id', evidencias: 'nombre_archivo',
+  stock_ubicaciones: 'ubicacion_id',
+};
+const esFantasma = (tabla, fila) => {
+  const ident = COLUMNA_IDENTIDAD[tabla];
+  return !!(ident && fila && !(ident in fila));
+};
+
+// Solo estas tablas reciben escrituras desde realtime (LIVE_SYNC_TABLES +
+// callbacks dedicados de useRealtimeNotifications — verificado en todo el
+// historial git): son las únicas que pueden contener fantasmas. Las demás
+// tablas de COLUMNA_IDENTIDAD jamás fueron escritas por applyLiveSync;
+// escanearlas sería riesgo puro (borrar filas legítimas) sin beneficio.
+// COLUMNA_IDENTIDAD se mantiene completa porque también la usa esFantasma
+// en el self-heal PGRST204 (que solo toca filas FAILED).
+const TABLAS_CON_FANTASMAS_POSIBLES = new Set([
+  'obras', 'materiales', 'herramientas', 'personal', 'proveedores', 'partidas',
+  'movimientos_materiales', 'movimientos_herramientas', 'asistencia', 'incidencias',
+  // También realtime-escritas (callback dedicado avance_obra + loop dinámico
+  // evidencias/stock_ubicaciones) — pudieron recibir fantasmas del incidente:
+  'avance_obra', 'evidencias', 'stock_ubicaciones',
+]);
+
+// Limpieza ONE-SHOT de fantasmas ya creados por el bug de realtime (corre una
+// vez por dispositivo; las defensas nuevas evitan que se creen más). Borrar
+// local es seguro: el server nunca tuvo esas filas en esa tabla (entraron
+// directo a Dexie como 'synced') y la fila REAL vive sana en su tabla correcta.
+async function limpiarFantasmasRealtimeOnce() {
+  // v2: el barrido sumó avance_obra/evidencias/stock_ubicaciones (las 3
+  // realtime-escritas que faltaban) — bump del flag para que los devices que
+  // ya corrieron v1 (solo dev, el código no se deployó) re-barran. Idempotente.
+  const FLAG = 'jx_fantasmas_realtime_v2';
+  try { if (localStorage.getItem(FLAG)) return; } catch {}
+  let borrados = 0;
+  let huboError = false;
+  for (const [tabla, ident] of Object.entries(COLUMNA_IDENTIDAD)) {
+    try {
+      if (!TABLAS_CON_FANTASMAS_POSIBLES.has(tabla)) continue;
+      if (!db[tabla]) continue;
+      // PENDING_CREATE se salta: un fantasma NUNCA entra como pending_create
+      // (applyLiveSync los escribe 'synced'), pero una fila legítima creada
+      // por una versión vieja de la app que no seteara la columna identidad
+      // sería solo-local — borrarla aquí sería pérdida irreversible. Si un
+      // fantasma llegara a pending_create (reset del push), su push fallará
+      // → FAILED → el self-heal PGRST204 lo borra igual.
+      // demo:true también se salta: un fantasma jamás es demo (applyLiveSync
+      // no setea demo) y el seeder tiene filas con schema viejo — ej.
+      // evidencias demo sin nombre_archivo — que son legítimas en modo prueba.
+      const malas = await db[tabla]
+        .filter(r => !(ident in r) && r.sync_status !== SYNC_STATUS.PENDING_CREATE && r.demo !== true)
+        .toArray();
+      for (const m of malas) {
+        await db[tabla].delete(m.id);
+        borrados++;
+        console.warn(`[SyncEngine] fantasma realtime eliminado: ${tabla}/${String(m.id).slice(0, 8)} (sin '${ident}')`);
+      }
+    } catch (e) {
+      huboError = true;
+      console.warn(`[SyncEngine] limpieza de fantasmas falló en ${tabla} (reintenta próximo sync):`, e?.message);
+    }
+  }
+  if (borrados) {
+    try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { source: 'limpieza_fantasmas' } })); } catch {}
+  }
+  // El flag solo se marca tras una pasada COMPLETA sin errores: si una tabla
+  // falló a mitad (Dexie cerrada por upgrade en otra tab, etc.), reintentamos
+  // en el próximo pull. Si lo marcáramos igual, los fantasmas SYNCED de esa
+  // tabla quedarían como cards vacías para siempre — el self-heal #1 solo ve
+  // los que el usuario edita/borra hasta FAILED.
+  if (!huboError) {
+    try { localStorage.setItem(FLAG, new Date().toISOString()); } catch {}
+  }
+}
+
 async function pushTablePending(tabla) {
   // Skip silencioso si el rol del user no tiene write permission a esta
   // tabla. Antes el SyncEngine intentaba pushear y gastaba 5 retries por
@@ -631,6 +739,37 @@ async function pushTablePending(tabla) {
     ))
     .toArray();
   for (const r of stuckByPGRST204) {
+    // Fila FANTASMA (ruteada por realtime a la tabla equivocada): no tiene ni
+    // la columna de identidad de su tabla. Reintentarla es un loop infinito
+    // (PGRST204 por columnas ajenas y, si se pelaran, 23502 por NOT NULL).
+    // Borrarla local es seguro: el server nunca la tuvo en esta tabla.
+    if (esFantasma(tabla, r)) {
+      try {
+        await db[tabla].delete(r.id);
+        console.warn(`[SyncEngine] self-heal PGRST204: fantasma ${tabla}/${String(r.id).slice(0, 8)} eliminado (fila de otra tabla)`);
+      } catch {}
+      continue;
+    }
+    // Si la columna que el server no reconoce VIVE en el record local
+    // (columna LEGACY de un schema viejo — ej. obras.company_id de antes de
+    // multi-empresa), re-encolar a ciegas es un loop infinito: el retry
+    // manda la misma columna y vuelve a fallar. La quitamos del record
+    // (preservando el valor en _legacy_<campo>, que el push siempre stripea)
+    // — es la única forma de que la fila pueda sincronizar.
+    const m = /could not find the '([A-Za-z0-9_]+)' column/i.exec(r._last_error || '');
+    const campoLegacy = m && m[1];
+    if (campoLegacy && campoLegacy !== 'id' && !campoLegacy.startsWith('_') &&
+        Object.prototype.hasOwnProperty.call(r, campoLegacy)) {
+      try {
+        const fila = await db[tabla].get(r.id);
+        if (fila && Object.prototype.hasOwnProperty.call(fila, campoLegacy)) {
+          fila[`_legacy_${campoLegacy}`] = fila[campoLegacy];
+          delete fila[campoLegacy];
+          await db[tabla].put(fila);
+          console.warn(`[SyncEngine] self-heal PGRST204: ${tabla}/${r.id} — columna legacy '${campoLegacy}' removida (el server no la tiene)`);
+        }
+      } catch (e) { console.warn('[SyncEngine] self-heal PGRST204 legacy:', e?.message); }
+    }
     // Si nunca alcanzó server (version=1 ⇒ creación pendiente) volvemos a
     // PENDING_CREATE; si fue update fallido (version>1) volvemos a UPDATE.
     // Antes siempre se reseteaba a UPDATE — eso rompía creates porque el
@@ -823,7 +962,8 @@ async function pushCreatesBatch(tabla, records) {
   if (!records.length) return;
   // Filtrar los que tienen una FK todavía pendiente en local — esos
   // esperan al próximo ciclo (anti-fantasma). Para las tablas sin FK_DEPS
-  // (insumos_partida, partidas, etc.) devuelve el array tal cual. Cada
+  // (partidas, materiales, etc.) devuelve el array tal cual. OJO:
+  // insumos_partida SÍ tiene FK_DEPS (gate partida_id→partidas). Cada
   // padre único se lee UNA vez (bulkGet), no deps×N gets per-record.
   const listos = await filtrarFkDepsListos(tabla, records);
   if (!listos.length) return;
@@ -925,10 +1065,21 @@ export const TRIGGER_MANAGED_FIELDS = {
   // value into column 'costo_presupuestado'") y el record queda
   // permanentemente en FAILED tras 5 retries.
   insumos_partida: new Set([
-    'costo_presupuestado',
+    'costo_presupuestado', 'diferencia_cantidad',
   ]),
   insumos_partida_versionadas: new Set([
     'costo_presupuestado',
+  ]),
+  // `diferencia` es GENERATED (costo_real_acumulado - costo_total_presupuestado,
+  // mig 001 línea 250). Mismo caso que insumos_partida.diferencia_cantidad: el
+  // pull (select '*') la mete en Dexie y partida-allocation marca la partida
+  // PENDING_UPDATE al imputar consumo → el push la mandaría → 428C9 ("column
+  // can only be updated to DEFAULT"). Sin esta entrada, el self-heal #1 de
+  // 428C9 resetearía esos FAILED en loop infinito (la columna nunca se
+  // stripea y el regex de legacy no matchea ese mensaje). Nadie la lee
+  // local: la UI recalcula desde las dos columnas base.
+  partidas: new Set([
+    'diferencia',
   ]),
 };
 
@@ -1478,6 +1629,7 @@ async function pullTransactionalChanges() {
   await hydrateNoCreatedByCache();
   // Cura una vez los devices con watermark transaccional "envenenado".
   await repairTransactionalWatermarksOnce();
+  await limpiarFantasmasRealtimeOnce();
   await repairPersonalChecksOnce();
   let cacheChanged = false;
 

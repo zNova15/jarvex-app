@@ -1,4 +1,5 @@
 import React from "react";
+import { SearchableSelect } from "./jx-searchable-select.jsx";
 const { useState: uSG, useMemo: uMG, useEffect: uEG } = React;
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
@@ -48,10 +49,85 @@ function InsumosPage({ showToast }) {
 
   const [partidaSel, setPartidaSel] = uSG(null);
   const [insumosPres, setInsumosPres] = uSG([]);
-
+  // Conteo de insumos presupuestados POR PARTIDA (una sola query por obra):
+  // alimenta los badges del selector — el usuario ve dónde hay APU antes de
+  // clickear, en vez de adivinar partida por partida.
+  // null = "aún no cargado" (≠ Map vacío = "cargado, sin APU"): el default del
+  // selector espera a que los conteos existan — si no, las partidas (query
+  // liviana) ganan la carrera al scan de insumos_partida (50k+ filas) y el
+  // default caería siempre en la primera hoja AUNQUE no tenga APU.
+  const [insumosPorPartida, setInsumosPorPartida] = uSG(null);
   uEG(() => {
-    if (!partidaSel && partidas?.length > 0) setPartidaSel(partidas[0].id);
+    let cancelled = false;
+    if (!obraId) { setInsumosPorPartida(null); return; }
+    const cargar = async () => {
+      try {
+        const rows = await window.__db.insumos_partida
+          .where('obra_id').equals(obraId)
+          .filter(r => !r.deleted_at)
+          .toArray();
+        if (cancelled) return;
+        const m = new Map();
+        rows.forEach(r => m.set(r.partida_id, (m.get(r.partida_id) || 0) + 1));
+        setInsumosPorPartida(m);
+      } catch { if (!cancelled) setInsumosPorPartida(new Map()); }
+    };
+    cargar();
+    // Refrescar SOLO cuando cambian los DATOS de insumos_partida — import APU
+    // dispara jx_data_changed con tabla:'insumos_partida'; restore/force-resync/
+    // limpieza_fantasmas lo disparan sin tabla. NO depender de partidaSel: a la
+    // escala real (50k+ insumos/obra) re-leer toda la tabla en cada click del
+    // selector cuesta cientos de ms para badges que no cambiaron. Tampoco usar
+    // jarvex_master_updated: nunca trae insumos_partida (no está en realtime)
+    // y dispara en cada cambio realtime de OTRAS tablas (asistencia, movs…).
+    const onData = (e) => {
+      const tabla = e?.detail?.tabla;
+      if (!tabla || tabla === 'insumos_partida') cargar();
+    };
+    window.addEventListener('jx_data_changed', onData);
+    return () => { cancelled = true; window.removeEventListener('jx_data_changed', onData); };
+  }, [obraId]);
+
+  // Jerarquía: una partida es HOJA (específica) si su código no es prefijo de
+  // ningún otro; los capítulos solo agrupan y nunca tienen insumos propios.
+  const partidasOrdenadas = uMG(() => {
+    const lista = (partidas || []).slice().sort((a, b) =>
+      String(a.codigo_delfin || '').localeCompare(String(b.codigo_delfin || ''), 'es', { numeric: true }));
+    const codigos = lista.map(p => String(p.codigo_delfin || '').trim()).filter(Boolean);
+    const setCod = new Set(codigos);
+    const esHoja = (codigo) => {
+      if (!codigo) return true;
+      const pref = codigo + '.';
+      for (const c of setCod) { if (c !== codigo && c.startsWith(pref)) return false; }
+      return true;
+    };
+    return lista.map(p => ({ p, hoja: esHoja(String(p.codigo_delfin || '').trim()) }));
   }, [partidas]);
+
+  const opcionesPartida = uMG(() => partidasOrdenadas.map(({ p, hoja }) => {
+    const nivel = Math.max(0, String(p.codigo_delfin || '').split('.').filter(Boolean).length - 1);
+    const sangria = '\u2002\u2002'.repeat(nivel);
+    const n = insumosPorPartida?.get(p.id) || 0;
+    return hoja
+      ? { value: p.id, label: `${sangria}🎯 ${p.codigo_delfin ? p.codigo_delfin + ' — ' : ''}${p.nombre_partida}${n ? ` · ${n} insumo${n > 1 ? 's' : ''}` : ' · sin APU'}` }
+      : { value: `cap_${p.id}`, label: `${sangria}📁 ${p.codigo_delfin ? p.codigo_delfin + ' — ' : ''}${p.nombre_partida}`, disabled: true };
+  }), [partidasOrdenadas, insumosPorPartida]);
+
+  // Default: primera HOJA con insumos presupuestados; si no hay, primera hoja.
+  // Espera a que insumosPorPartida esté cargado (no-null) para no elegir una
+  // hoja "sin APU" solo porque los conteos aún no llegaron (race vs usePartidas).
+  // También re-defaultea si partidaSel quedó huérfano — cambio de obra activa
+  // (el componente NO remonta: useObraActiva solo cambia estado) o partida
+  // borrada. Antes el guard `partidaSel` truthy dejaba el select en placeholder
+  // y la página vacía hasta que el usuario re-seleccionara a mano.
+  uEG(() => {
+    if (!partidasOrdenadas.length || !insumosPorPartida) return;
+    if (partidaSel && partidasOrdenadas.some(x => x.p.id === partidaSel)) return;
+    const hojas = partidasOrdenadas.filter(x => x.hoja);
+    const conApu = hojas.find(x => (insumosPorPartida.get(x.p.id) || 0) > 0);
+    const elegida = conApu || hojas[0] || partidasOrdenadas[0];
+    if (elegida) setPartidaSel(elegida.p.id);
+  }, [partidasOrdenadas, insumosPorPartida, partidaSel]);
 
   // Cargar insumos presupuestados desde la tabla insumos_partida (importados desde APU)
   uEG(() => {
@@ -164,9 +240,16 @@ function InsumosPage({ showToast }) {
           <div className="pg-title">Insumos por Partida</div>
           <div className="pg-sub">Comparativa <strong>presupuestado</strong> (APU/Delphin) vs <strong>real</strong> (movimientos)</div>
         </div>
-        <select className="fi" style={{width:'auto', maxWidth:380}} value={partidaSel||''} onChange={e=>setPartidaSel(e.target.value)}>
-          {partidas.map(p => <option key={p.id} value={p.id}>{p.codigo_delfin ? p.codigo_delfin + ' — ' : ''}{p.nombre_partida}</option>)}
-        </select>
+        <div style={{ width: 460, maxWidth: '46vw' }}>
+          <SearchableSelect
+            value={partidaSel || ''}
+            onChange={v => { if (v && !String(v).startsWith('cap_')) setPartidaSel(v); }}
+            options={opcionesPartida}
+            placeholder="— Buscar partida por código o nombre —"/>
+          <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3, textAlign: 'right' }}>
+            🎯 partidas específicas (elegibles) · 📁 capítulos (solo agrupan)
+          </div>
+        </div>
       </div>
 
       {partida && (
@@ -181,7 +264,8 @@ function InsumosPage({ showToast }) {
         {sinAPU && (
           <div className="card card-p" style={{ background:'rgba(52,152,219,0.06)', border:'1px solid rgba(52,152,219,0.25)', marginBottom:14, fontSize:12.5, color:'var(--ts)' }}>
             <strong style={{ color:'var(--blue)' }}>ℹ Esta partida no tiene insumos presupuestados.</strong>{' '}
-            Importa el APU desde el módulo <strong>Importar → Delphin</strong> (Análisis de Precios Unitarios) para ver la comparativa presupuesto vs real, o registra movimientos de materiales asociándolos a esta partida para ver consumo real.
+            El Excel del <strong>presupuesto consolidado</strong> (Item · Descripción · Metrado · Precio · Parcial) trae los totales pero NO el desglose.
+            El desglose vive en el reporte <strong>"Análisis de Precios Unitarios" (APU)</strong> de Delphin/S10 — exportalo a Excel (cada partida sale como bloque "Partida: 01.02.03" con sus secciones MANO DE OBRA / MATERIALES / EQUIPO) y subilo en <strong>Importar → Delphin</strong>: completa los insumos de las partidas ya importadas sin duplicarlas. También podés registrar movimientos de materiales asociados a esta partida para ver consumo real.
           </div>
         )}
 

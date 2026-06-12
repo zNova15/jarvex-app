@@ -114,11 +114,40 @@ export function useRealtimeNotifications() {
     //  4. Disparar jx_data_changed SIEMPRE que se modifica Dexie. El "render
     //     extra" cuando es eco propio es benigno; "no render" cuando otro
     //     dispositivo edita un record que yo creé es un bug grave.
+    // Columna de IDENTIDAD por tabla: una fila que no la trae NO pertenece a
+    // esa tabla. Defensa contra el bug de realtime-js con múltiples bindings
+    // postgres_changes en un canal: en re-suscripciones los ids de binding
+    // pueden desalinearse y un UPDATE de personal llega al callback de obras
+    // → db.obras.put(filaDePersonal) = "obra fantasma" sin nombre (caso real
+    // 2026-06-12: la fusión de Willy creó fantasmas en obras/herramientas/
+    // incidencias/mov_herramientas).
+    const IDENTIDAD_TABLA = {
+      obras: 'nombre_obra', personal: 'nombres', materiales: 'nombre_material',
+      herramientas: 'nombre_herramienta', epps: 'nombre_epp',
+      proveedores: 'razon_social', subcontratistas: 'razon_social',
+      partidas: 'nombre_partida', incidencias: 'descripcion',
+      movimientos_materiales: 'material_id', movimientos_herramientas: 'herramienta_id',
+      movimientos_epp: 'epp_id', asistencia: 'personal_id',
+      insumos_emergencia: 'nombre', activos_pesados: 'nombre',
+      caja_chica_movimientos: 'monto', ubicaciones_obra: 'nombre',
+      // obra_id es NOT NULL en estas 3 → todo payload completo lo trae;
+      // un payload con errors (413/RLS → new={} y fallback a old={id}) no.
+      avance_obra: 'obra_id', evidencias: 'obra_id', stock_ubicaciones: 'obra_id',
+    };
     const applyLiveSync = async (table, eventType, row) => {
       if (!row?.id) return;
       try {
         const db = window.__db;
         if (!db || !db[table]) return;
+        // NOTA TOAST: en UPDATEs el server OMITE columnas TOASTeadas que no
+        // cambiaron (no hay REPLICA IDENTITY FULL) — p.ej. una
+        // incidencias.descripcion larga (>~2KB) cuando solo cambia `estado`.
+        // Por eso la identidad se exige SOLO en el path que CREA un record
+        // nuevo (put), donde una fila sin identidad sería un fantasma mal
+        // ruteado o una fila incompleta. El merge a un record existente es
+        // seguro sin el campo (Dexie update no toca keys ausentes) y un
+        // delete por id de otra tabla es no-op.
+        const ident = IDENTIDAD_TABLA[table];
 
         if (eventType === 'DELETE') {
           await db[table].delete(row.id);
@@ -152,7 +181,18 @@ export function useRealtimeNotifications() {
               last_synced_at: new Date().toISOString(),
             });
           } else {
-            // Record nuevo (no estaba localmente): put() crea
+            // Record nuevo (no estaba localmente): acá SÍ exigimos la columna
+            // de identidad. Una fila que no la trae no pertenece a esta tabla
+            // (evento mal ruteado por el bug de bindings de realtime-js), o
+            // llegó incompleta (UPDATE con columnas TOAST omitidas de un
+            // record que aún no tenemos, o payload con errors → old={id}).
+            // En todos los casos put() crearía una card vacía: descartar —
+            // el pull periódico trae la fila completa después.
+            if (ident && !(ident in row)) {
+              console.warn(`[realtime] descartado: payload sin '${ident}' no parece de '${table}'`);
+              return;
+            }
+            // put() crea
             await db[table].put({
               ...row,
               sync_status: 'synced',
@@ -175,6 +215,7 @@ export function useRealtimeNotifications() {
     channel.on('postgres_changes',
       { event: '*', schema: 'public', table: 'incidencias', ...(obraFilter ? { filter: obraFilter } : {}) },
       (payload) => {
+        if (payload?.table && payload.table !== 'incidencias') return; // binding desalineado
         const row = payload.new && Object.keys(payload.new).length ? payload.new : payload.old;
         applyLiveSync('incidencias', payload.eventType || payload.event, row);
         if (payload.eventType === 'INSERT' && payload.new?.created_by !== profile.id) {
@@ -199,6 +240,7 @@ export function useRealtimeNotifications() {
     channel.on('postgres_changes',
       { event: '*', schema: 'public', table: 'movimientos_materiales', ...(obraFilter ? { filter: obraFilter } : {}) },
       (payload) => {
+        if (payload?.table && payload.table !== 'movimientos_materiales') return; // binding desalineado
         const row = payload.new && Object.keys(payload.new).length ? payload.new : payload.old;
         applyLiveSync('movimientos_materiales', payload.eventType || payload.event, row);
         if (payload.eventType === 'INSERT' && payload.new?.created_by !== profile.id) {
@@ -231,6 +273,7 @@ export function useRealtimeNotifications() {
     channel.on('postgres_changes',
       { event: '*', schema: 'public', table: 'movimientos_herramientas', ...(obraFilter ? { filter: obraFilter } : {}) },
       (payload) => {
+        if (payload?.table && payload.table !== 'movimientos_herramientas') return; // binding desalineado
         const row = payload.new && Object.keys(payload.new).length ? payload.new : payload.old;
         applyLiveSync('movimientos_herramientas', payload.eventType || payload.event, row);
         if (payload.eventType === 'INSERT' && payload.new?.created_by !== profile.id) {
@@ -246,6 +289,7 @@ export function useRealtimeNotifications() {
     channel.on('postgres_changes',
       { event: '*', schema: 'public', table: 'asistencia', ...(obraFilter ? { filter: obraFilter } : {}) },
       (payload) => {
+        if (payload?.table && payload.table !== 'asistencia') return; // binding desalineado
         const row = payload.new && Object.keys(payload.new).length ? payload.new : payload.old;
         applyLiveSync('asistencia', payload.eventType || payload.event, row);
         if (payload.eventType === 'INSERT' && payload.new?.created_by !== profile.id) {
@@ -261,6 +305,7 @@ export function useRealtimeNotifications() {
     channel.on('postgres_changes',
       { event: '*', schema: 'public', table: 'avance_obra', ...(obraFilter ? { filter: obraFilter } : {}) },
       (payload) => {
+        if (payload?.table && payload.table !== 'avance_obra') return; // binding desalineado
         const row = payload.new && Object.keys(payload.new).length ? payload.new : payload.old;
         applyLiveSync('avance_obra', payload.eventType || payload.event, row);
         if (payload.eventType === 'INSERT' && payload.new?.created_by !== profile.id) {
@@ -287,6 +332,7 @@ export function useRealtimeNotifications() {
         channel.on('postgres_changes',
           { event: '*', schema: 'public', table: tabla },
           (payload) => {
+            if (payload?.table && payload.table !== tabla) return; // binding desalineado
             const row = payload.new && Object.keys(payload.new).length ? payload.new : payload.old;
             applyLiveSync(tabla, payload.eventType || payload.event, row);
 
