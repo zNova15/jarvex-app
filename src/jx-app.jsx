@@ -380,6 +380,20 @@ function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStat
     setObraDropdownOpen(false);
     if (!canSwitchObra) return;
     if (id === obraHook.obraId) return;
+    // Ventana de seguridad: cambiar de obra re-apunta TODOS los módulos
+    // (almacén, personal, caja chica, Captura Mágica…). Un click accidental
+    // acá puede hacer que el usuario registre movimientos en la obra
+    // equivocada sin darse cuenta.
+    const destino = (obraHook.obras || []).find(o => o.id === id);
+    const actual = obraDisplay?.nombre_obra || '(obra actual)';
+    if (!confirm(
+      `¿Cambiar de obra activa?\n\n` +
+      `De: ${actual}\n` +
+      `A:  ${destino?.nombre_obra || '(obra)'}\n\n` +
+      `TODOS los módulos (almacén, movimientos, personal, caja chica, ` +
+      `Captura Mágica…) pasarán a mostrar y registrar sobre la obra nueva. ` +
+      `La app se recargará.`
+    )) return;
     if (window.__setObraActivaId) window.__setObraActivaId(id);
     // Reload de toda la app: la mayoría de componentes leen la obra al montar.
     setTimeout(() => window.location.reload(), 100);

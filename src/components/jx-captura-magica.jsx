@@ -545,25 +545,14 @@ function CapturaMagicaPage({ showToast }) {
     const it = items.find(x => x.id === id);
     if (!it || !it.review) return;
     let r = it.review;
-    // Defensa: reviews viejos persistidos con obra_id '' aunque haya obra
-    // activa (closure vacío del primer render). Mismo criterio que el header.
-    // OJO: si el usuario eligió a propósito "Sin obra" en el selector del
-    // modal (obra_id_explicita), respetamos su elección y NO reparamos.
-    if (!r.obra_id && !r.obra_id_explicita) {
+    // La obra destino es SIEMPRE la obra activa del header al momento de
+    // confirmar (validada contra las obras vivas) — igual que el resto de
+    // los módulos. Si no hay obra activa válida, queda solo en contabilidad
+    // (el aviso de abajo lo dice).
+    {
       const activa = window.__getObraActivaId?.();
-      if (activa && (obras || []).some(o => o.id === activa && !o.deleted_at)) {
-        r = { ...r, obra_id: activa };
-      }
-    }
-    // Defensa inversa: buildInitialReview confía en el id de localStorage sin
-    // validar (el closure del primer render tenía obras=[]). Si esa obra fue
-    // BORRADA, useObras ya no la trae: el modal mostró "Sin obra" pero
-    // r.obra_id seguía seteado → se crearían catálogo/recepción/movimiento
-    // contra una obra muerta. Alineamos el dato con lo que la UI mostró.
-    if (r.obra_id && (obras || []).length > 0 &&
-        !obras.some(o => o.id === r.obra_id && !o.deleted_at)) {
-      r = { ...r, obra_id: '' };
-      showToast('La obra destino ya no existe — el documento se registra sin obra (solo contabilidad).', 'orange');
+      const valida = activa && (obras || []).some(o => o.id === activa && !o.deleted_at);
+      r = { ...r, obra_id: valida ? activa : '' };
     }
 
     // Validaciones
@@ -1111,12 +1100,28 @@ function CapturaMagicaPage({ showToast }) {
           <div className="pg-title">✨ Captura Mágica</div>
           <div className="pg-sub">Subí PDFs o fotos de facturas/boletas. La IA extrae proveedor, items y totales · {stats.total} archivo(s)</div>
         </div>
+        {(() => {
+          // La obra destino sigue SIEMPRE a la obra activa del header — acá
+          // se recuerda visiblemente a cuál se está importando.
+          const activaId = window.__getObraActivaId?.();
+          const obraActiva = (obras || []).find(o => o.id === activaId && !o.deleted_at);
+          return obraActiva ? (
+            <span className="badge b-green" title="Los comprobantes confirmados asignan materiales e ingresos de almacén a esta obra. Para cambiarla, usá el selector de obra activa (arriba a la derecha)." style={{ maxWidth: 360, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+              📍 Importando a: {obraActiva.nombre_obra}
+            </span>
+          ) : (
+            <span className="badge b-amber" title="Sin obra activa, los comprobantes quedan solo en contabilidad (sin catálogo ni ingreso de almacén).">
+              ⚠ Sin obra activa — solo contabilidad
+            </span>
+          );
+        })()}
       </div>
 
       <div className="card card-p" style={{ marginBottom:14, background:'rgba(155,89,182,0.06)', border:'1px solid rgba(155,89,182,0.25)', fontSize:12, color:'var(--ts)' }}>
         <strong style={{ color:'#9B59B6' }}>ℹ Cómo funciona:</strong> Arrastrá tus comprobantes (PDF o foto) y Claude AI los lee. Después revisás
-        el JSON extraído, confirmás con qué empresa y obra se asocia, y el sistema crea automáticamente:
+        el JSON extraído, confirmás la empresa compradora, y el sistema crea automáticamente:
         proveedor (si es nuevo), movimiento contable de costo, materiales nuevos, movimientos de inventario y guarda el archivo como evidencia.
+        Todo se asigna a la <strong>obra activa</strong> seleccionada arriba a la derecha.
       </div>
 
       {/* ── DROP ZONE ─────────────────────────────────────────── */}
@@ -1347,18 +1352,19 @@ function VincularPendientesModal({ data, materialesDB, onClose, onConfirm }) {
 
 // ─── MODAL DE REVISIÓN ───────────────────────────────────────
 function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsActivasDB, onChange, onConfirm, onClose }) {
-  // Reviews viejos (o procesados con el closure vacío) quedaron con obra_id ''
-  // persistido en Dexie. Acá la lista de obras YA está cargada: si hay obra
-  // activa válida, repararlo en vivo en cuanto se abre.
+  // La obra destino SIGUE a la obra activa del header (decisión de producto:
+  // todos los módulos operan sobre la obra activa). Al abrir el modal,
+  // sincronizar el review con la obra activa actual — cubre reviews viejos
+  // con obra_id '' y reviews procesados cuando otra obra estaba activa.
   uECM(() => {
     const rr = item?.review;
-    // obra_id_explicita = el usuario ya tocó el selector de obra a mano
-    // (incluida la opción "Sin obra") → no pisar su elección al reabrir.
-    if (!rr || rr.obra_id || rr.obra_id_explicita) return;
+    if (!rr) return;
     const activa = window.__getObraActivaId?.();
-    if (activa && (obras || []).some(o => o.id === activa && !o.deleted_at)) {
+    const valida = activa && (obras || []).some(o => o.id === activa && !o.deleted_at);
+    const destino = valida ? activa : '';
+    if (rr.obra_id !== destino) {
       // onChange espera el review COMPLETO (upd hace {...r, ...patch}).
-      onChange({ ...rr, obra_id: activa });
+      onChange({ ...rr, obra_id: destino });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item?.id]);
@@ -1694,31 +1700,25 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
                     {companiesActivas.map(c => <option key={c.id} value={c.id}>{c.name} {c.ruc ? `· ${c.ruc}` : ''}</option>)}
                   </select>
                   {(() => {
-                    const obraActual = (obras || []).find(o => o.id === r.obra_id && !o.deleted_at);
-                    // La obra activa puede ser de OTRA empresa del grupo:
-                    // obrasDeEmpresa la excluye y el <select> controlado
-                    // quedaba EN BLANCO (value huérfano) con el mensaje verde
-                    // abajo — señales contradictorias. La incluimos como
-                    // opción visible para que el ruteo nunca sea silencioso.
-                    const base = obrasDeEmpresa.length ? obrasDeEmpresa : (obras || []).filter(o => !o.deleted_at);
-                    const candidatas = (obraActual && !base.some(o => o.id === obraActual.id))
-                      ? [obraActual, ...base] : base;
+                    // La obra destino SIGUE SIEMPRE a la obra activa del header
+                    // (arriba a la derecha) — como todos los módulos de JARVEX.
+                    // Acá solo se MUESTRA cuál es; para cambiarla se cambia la
+                    // obra activa (con su ventana de confirmación).
+                    const activaId = window.__getObraActivaId?.();
+                    const obraActiva = (obras || []).find(o => o.id === activaId && !o.deleted_at);
+                    if (obraActiva) {
+                      return (
+                        <div style={{ marginTop: 8, padding: '8px 12px', background: 'rgba(39,174,96,0.07)', border: '1px solid rgba(39,174,96,0.3)', borderRadius: 8, fontSize: 11.5, color: 'var(--ts)' }}>
+                          📍 <strong>Obra activa:</strong> los materiales e ingresos de almacén van a{' '}
+                          <strong style={{ color: 'var(--green)' }}>{obraActiva.nombre_obra}</strong>
+                          {obraActiva.cui ? ` con CUI ${obraActiva.cui}` : ''}.
+                          <span style={{ color: 'var(--tm)' }}> Para asignar a otra obra, cambiá la obra activa arriba a la derecha.</span>
+                        </div>
+                      );
+                    }
                     return (
-                      <div style={{ marginTop: 6 }}>
-                        <label className="flabel">Obra destino {obraActual ? '' : '(elegila para que los items lleguen al almacén)'}</label>
-                        <select className="fi" value={r.obra_id || ''} onChange={e => upd({ obra_id: e.target.value, obra_id_explicita: true })}>
-                          <option value="">Sin obra (gasto general — solo contabilidad)</option>
-                          {candidatas.map(o => <option key={o.id} value={o.id}>{o.nombre_obra || o.nombre}</option>)}
-                        </select>
-                        {obraActual ? (
-                          <div style={{ fontSize:11, color:'var(--tm)', marginTop:4 }}>
-                            📍 Los materiales e ingresos de almacén van a <strong style={{ color:'var(--ts)' }}>{obraActual.nombre_obra}</strong>.
-                          </div>
-                        ) : (
-                          <div style={{ fontSize:11, color:'var(--amber)', marginTop:4 }}>
-                            ⚠ Sin obra: los items quedarán solo en contabilidad (sin catálogo ni ingreso de almacén).
-                          </div>
-                        )}
+                      <div style={{ marginTop: 8, padding: '8px 12px', background: 'rgba(242,183,5,0.08)', border: '1px solid rgba(242,183,5,0.3)', borderRadius: 8, fontSize: 11.5, color: 'var(--amber)' }}>
+                        ⚠ No hay obra activa seleccionada (arriba a la derecha): el documento quedará solo en contabilidad, sin catálogo ni ingreso de almacén.
                       </div>
                     );
                   })()}
