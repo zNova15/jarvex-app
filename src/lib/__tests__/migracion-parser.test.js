@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   detectFormato, parseFechaMigracion, parseInsumosTotales, parseInsumosEmergencia, parseMovimientos,
-  parseMovMaquinariaAsignacion, clasificaTipoInsumo, normalizaTipoMov, resumenMovimientos, normTxt,
+  parseMovMaquinariaAsignacion, clasificaTipoInsumo, normalizaTipoMov, resumenMovimientos, normTxt, clasificarMovsHerramientas,
   parseCajaChica, parseAsistencia, parseHorasMaquina, parseCombustible, normalizaHora,
 } from '../migracion-parser.js';
 
@@ -269,5 +269,104 @@ describe('normTxt — normaliza acentos y símbolos', () => {
   it('quita acentos, espacios y símbolos', () => {
     expect(normTxt('Fecha de creación')).toBe('fechadecreacion');
     expect(normTxt('Proveedor/Responsable')).toBe('proveedorresponsable');
+  });
+});
+
+describe('normalizaTipoMov — devolución (solo herramientas)', () => {
+  it('reconoce Devolución/DEVOLUCION/Devuelto con el flag conDevolucion', () => {
+    expect(normalizaTipoMov('Devolución', true)).toBe('devolucion');
+    expect(normalizaTipoMov('DEVOLUCION', true)).toBe('devolucion');
+    expect(normalizaTipoMov('Devuelto', true)).toBe('devolucion');
+  });
+  it('sin el flag (otros formatos) sigue cayendo a null → error visible', () => {
+    expect(normalizaTipoMov('Devolución')).toBeNull();
+    expect(normalizaTipoMov('DEVOLUCION', false)).toBeNull();
+  });
+});
+
+describe('clasificarMovsHerramientas — ingreso vs devolución', () => {
+  const fila = (idx, tipo, item, cantidad, extra = {}) => ({
+    idx, tipo, nombreItem: item, cantidad, fecha: extra.fecha || '2026-01-10',
+    proveedor: extra.proveedor || null, origen: extra.origen || null,
+    responsable: extra.responsable || null, subcontrato: extra.subcontrato || null,
+    ...extra,
+  });
+
+  it('el primer ingreso queda como ingreso; el segundo se reclasifica a devolución', () => {
+    const r = clasificarMovsHerramientas([
+      fila(2, 'entrada', 'Taladro', 1, { fecha: '2026-01-01' }),
+      fila(3, 'salida', 'Taladro', 1, { fecha: '2026-01-05', responsable: 'Juan Perez' }),
+      fila(4, 'entrada', 'Taladro', 1, { fecha: '2026-01-08', proveedor: 'Juan Perez' }),
+    ]);
+    expect(r.movs[0].tipo).toBe('entrada');
+    expect(r.movs[2].tipo).toBe('devolucion');
+    expect(r.movs[2].tipoOriginal).toBe('entrada');
+    expect(r.reclasificadas).toHaveLength(1);
+    expect(r.reclasificadas[0].idx).toBe(4);
+    expect(r.excepciones).toHaveLength(0); // devuelve el mismo que sacó
+  });
+
+  it('el historial de la BD cuenta como ingreso previo', () => {
+    const r = clasificarMovsHerramientas(
+      [fila(2, 'entrada', 'Pistola de Calor', 1)],
+      { historialPorItem: { [normTxt('Pistola de Calor')]: { tuvoIngreso: true, saldos: {}, nombres: {} } } }
+    );
+    expect(r.movs[0].tipo).toBe('devolucion');
+    expect(r.reclasificadas).toHaveLength(1);
+  });
+
+  it('devolución sin ingreso previo → se convierte en primer ingreso (huérfana)', () => {
+    const r = clasificarMovsHerramientas([
+      fila(2, 'devolucion', 'Amoladora', 1, { proveedor: 'Elvis Huatay' }),
+      fila(3, 'entrada', 'Amoladora', 1, { fecha: '2026-01-20' }),
+    ]);
+    expect(r.movs[0].tipo).toBe('entrada');
+    expect(r.movs[0].tipoOriginal).toBe('devolucion');
+    expect(r.huerfanas).toHaveLength(1);
+    // y el ingreso posterior se vuelve devolución (ya hubo primer ingreso)
+    expect(r.movs[1].tipo).toBe('devolucion');
+  });
+
+  it('quien devuelve sin saldo cargado genera excepción con el detalle de quién sí tiene', () => {
+    const r = clasificarMovsHerramientas([
+      fila(2, 'entrada', 'Taladro', 2, { fecha: '2026-01-01' }),
+      fila(3, 'salida', 'Taladro', 2, { fecha: '2026-01-05', responsable: 'Juan Perez' }),
+      fila(4, 'devolucion', 'Taladro', 2, { fecha: '2026-01-08', proveedor: 'Pedro Gomez' }),
+    ]);
+    expect(r.excepciones).toHaveLength(1);
+    expect(r.excepciones[0].devuelve).toBe('Pedro Gomez');
+    expect(r.excepciones[0].saldoDevolvedor).toBe(0);
+    expect(r.excepciones[0].conSaldo).toEqual([{ nombre: 'Juan Perez', cantidad: 2 }]);
+  });
+
+  it('mismo día: la salida se procesa antes que la devolución (sin falsa excepción)', () => {
+    const r = clasificarMovsHerramientas([
+      fila(2, 'entrada', 'Taladro', 1, { fecha: '2026-01-01' }),
+      fila(4, 'devolucion', 'Taladro', 1, { fecha: '2026-01-05', proveedor: 'Juan Perez' }),
+      fila(3, 'salida', 'Taladro', 1, { fecha: '2026-01-05', responsable: 'Juan Perez' }),
+    ]);
+    expect(r.excepciones).toHaveLength(0);
+  });
+
+  it('saldos sembrados de la BD descargan con resolverPersona', () => {
+    const k = normTxt('Taladro');
+    const r = clasificarMovsHerramientas(
+      [fila(2, 'devolucion', 'Taladro', 1, { proveedor: 'Juan Perez' })],
+      {
+        historialPorItem: { [k]: { tuvoIngreso: true, saldos: { 'p:u1': 1 }, nombres: { 'p:u1': 'Juan Perez' } } },
+        resolverPersona: (n) => (normTxt(n) === normTxt('Juan Perez') ? 'p:u1' : null),
+      }
+    );
+    expect(r.movs[0].tipo).toBe('devolucion');
+    expect(r.excepciones).toHaveLength(0);
+  });
+
+  it('los traspasos no cuentan como ingreso ni tocan saldos', () => {
+    const r = clasificarMovsHerramientas([
+      fila(2, 'traspaso', 'Taladro', 1, { fecha: '2026-01-01' }),
+      fila(3, 'entrada', 'Taladro', 1, { fecha: '2026-01-02' }),
+    ]);
+    expect(r.movs[1].tipo).toBe('entrada'); // sigue siendo el primer ingreso
+    expect(r.reclasificadas).toHaveLength(0);
   });
 });

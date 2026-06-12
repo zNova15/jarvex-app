@@ -37,7 +37,7 @@ export const FORMATOS = {
   mov_materiales:  { id: 'mov_materiales', label: 'Movimientos de Materiales', icon: 'package',
     desc: 'Ingresos y salidas de materiales con fecha histórica.' },
   mov_herramientas:{ id: 'mov_herramientas', label: 'Movimientos de Herramientas', icon: 'tool',
-    desc: 'Ingresos y salidas de herramientas con cantidad.' },
+    desc: 'Ingresos, salidas y devoluciones de herramientas con cantidad (en devoluciones, la columna Proveedor es quien devuelve).' },
   mov_epp:         { id: 'mov_epp', label: 'Movimientos de EPP', icon: 'shield',
     desc: 'Entregas y reposiciones de EPP con fecha histórica.' },
   mov_maquinaria:  { id: 'mov_maquinaria', label: 'Movimientos de Maquinaria', icon: 'tool',
@@ -203,13 +203,17 @@ const numN = (v) => { if (v == null || String(v).trim() === '') return null; con
 
 /** "Ingreso"/"Entrada" → 'entrada'; "Salida" → 'salida';
  *  "Traspaso"/"Transpaso"/"Transferencia"/"Traslado" → 'traspaso' (sale de un
- *  almacén y entra a otro: el loader lo convierte en el par salida+entrada). */
-export function normalizaTipoMov(v) {
+ *  almacén y entra a otro: el loader lo convierte en el par salida+entrada).
+ *  Con conDevolucion (solo herramientas hoy): "Devolución" → 'devolucion'
+ *  (suma stock como entrada; el devolvedor viene de la col. Proveedor). Los
+ *  demás formatos la siguen rechazando: sus tablas solo admiten entrada/salida. */
+export function normalizaTipoMov(v, conDevolucion = false) {
   const n = normTxt(v);
   if (!n) return null;
   // 'transpas' (no 'transp'): "Transporte" debe seguir cayendo a null →
   // error visible de fila, no convertirse en un par de traspaso silencioso.
   if (n.startsWith('trasp') || n.startsWith('transpas') || n.startsWith('transf') || n.startsWith('trasl')) return 'traspaso';
+  if (conDevolucion && (n.startsWith('devol') || n.startsWith('devuel'))) return 'devolucion';
   if (n.startsWith('ingr') || n.startsWith('entr') || n.includes('compra')) return 'entrada';
   if (n.startsWith('sal') || n.includes('despacho') || n.includes('consumo')) return 'salida';
   return null;
@@ -581,7 +585,7 @@ export function parseMovimientos(rows, formato) {
     const nombreItem = txt(g(...itemCols));
     if (!nombreItem) return;
     const tipoRaw = txt(g('Tipo de Movimiento', 'Tipo'));
-    const tipo = normalizaTipoMov(tipoRaw);
+    const tipo = normalizaTipoMov(tipoRaw, formato === 'mov_herramientas');
     out.push({
       idx: i + 2,
       fecha: parseFechaMigracion(g('Fecha de Movimiento', 'Fecha')),
@@ -655,19 +659,115 @@ export function parseMovMaquinariaAsignacion(rows) {
   return out;
 }
 
+/**
+ * Clasificador inteligente de ingresos/devoluciones de HERRAMIENTAS.
+ * Regla de negocio (Gabriel): una herramienta INGRESA una sola vez (su primer
+ * registro); después solo sale y VUELVE — esa vuelta es una devolución aunque
+ * el Excel diga "Ingreso". Recorre los movimientos en orden cronológico,
+ * sembrado con el historial que ya existe en la BD, y:
+ *   · entrada con ingreso previo  → se reclasifica a 'devolucion'  (reclasificadas)
+ *   · devolución SIN ingreso previo → se convierte en 'entrada'    (huerfanas)
+ *   · devolución cuyo devolvedor no tiene esa cantidad cargada     (excepciones)
+ * El saldo por persona se lleva por herramienta: la salida carga al que retira
+ * y la devolución descarga al que devuelve (col. Proveedor en devoluciones).
+ *
+ * @param movs filas de parseMovimientos (formato mov_herramientas)
+ * @param historialPorItem { [normTxt(nombre)]: { tuvoIngreso, saldos: {key: cant}, nombres: {key: nombre} } }
+ * @param resolverPersona (nombreCrudo) → key estable ('p:<id>' | 's:<id>') o null
+ * @returns { movs (ajustados, con tipoOriginal en los cambiados), reclasificadas, huerfanas, excepciones }
+ */
+export function clasificarMovsHerramientas(movs, { historialPorItem = {}, resolverPersona = () => null } = {}) {
+  // Orden SOLO para clasificar: dentro del mismo día la salida va antes que la
+  // devolución (no podés devolver lo que retirás más tarde ese día). El orden
+  // de carga/push usa su propio ranking (entradas primero) — no este.
+  const ORDEN = { entrada: 0, traspaso: 1, salida: 2, devolucion: 3 };
+  const idxs = (movs || []).map((_, i) => i).sort((a, b) => {
+    const fa = movs[a].fecha || '9999-12-31', fb = movs[b].fecha || '9999-12-31';
+    if (fa !== fb) return fa < fb ? -1 : 1;
+    return ((ORDEN[movs[a].tipo] ?? 9) - (ORDEN[movs[b].tipo] ?? 9)) || (a - b);
+  });
+
+  const estado = {};
+  const stDe = (item) => {
+    const k = normTxt(item);
+    if (!estado[k]) {
+      const h = historialPorItem[k];
+      estado[k] = { tuvoIngreso: !!h?.tuvoIngreso, saldos: { ...(h?.saldos || {}) }, nombres: { ...(h?.nombres || {}) } };
+    }
+    return estado[k];
+  };
+  const keyDe = (st, quien) => {
+    if (!quien) return null;
+    const key = resolverPersona(quien) || `txt:${normTxt(quien)}`;
+    if (!st.nombres[key]) st.nombres[key] = String(quien).trim();
+    return key;
+  };
+
+  const reclasificadas = [], huerfanas = [], excepciones = [];
+  const tipoEfectivo = new Array(movs.length).fill(null);
+
+  for (const i of idxs) {
+    const m = movs[i];
+    tipoEfectivo[i] = m.tipo;
+    if (!m.nombreItem || !(m.cantidad > 0) || !m.tipo || m.tipo === 'traspaso') continue;
+    const st = stDe(m.nombreItem);
+    let t = m.tipo;
+    if (t === 'entrada') {
+      if (st.tuvoIngreso) {
+        t = 'devolucion';
+        reclasificadas.push({ idx: m.idx, item: m.nombreItem, cantidad: m.cantidad, fecha: m.fecha });
+      } else {
+        st.tuvoIngreso = true;
+      }
+    } else if (t === 'devolucion' && !st.tuvoIngreso) {
+      t = 'entrada';
+      st.tuvoIngreso = true;
+      huerfanas.push({ idx: m.idx, item: m.nombreItem, cantidad: m.cantidad, fecha: m.fecha });
+    }
+    if (t === 'salida') {
+      const key = keyDe(st, m.responsable || m.subcontrato || m.origen) || '?';
+      st.saldos[key] = (st.saldos[key] || 0) + m.cantidad;
+    } else if (t === 'devolucion') {
+      // En devoluciones la col. Proveedor (u origen combinado) trae al devolvedor.
+      const quien = m.proveedor || m.origen || m.responsable;
+      const key = keyDe(st, quien) || '?';
+      const disponible = st.saldos[key] || 0;
+      if (m.cantidad > disponible) {
+        const conSaldo = Object.entries(st.saldos)
+          .filter(([, c]) => c > 0)
+          .map(([k2, c]) => ({ nombre: st.nombres[k2] || k2.replace(/^txt:/, ''), cantidad: c }));
+        excepciones.push({
+          idx: m.idx, item: m.nombreItem, fecha: m.fecha, cantidad: m.cantidad,
+          devuelve: quien ? String(quien).trim() : '(sin nombre)',
+          saldoDevolvedor: disponible, conSaldo,
+        });
+      }
+      st.saldos[key] = Math.max(0, disponible - m.cantidad);
+    }
+    tipoEfectivo[i] = t;
+  }
+
+  return {
+    movs: (movs || []).map((m, i) => (tipoEfectivo[i] !== m.tipo ? { ...m, tipo: tipoEfectivo[i], tipoOriginal: m.tipo } : m)),
+    reclasificadas, huerfanas, excepciones,
+  };
+}
+
 /** Resumen de un parse de movimientos para el preview. */
-export function resumenMovimientos(parsed) {
-  const r = { total: parsed.length, entradas: 0, salidas: 0, traspasos: 0, sinTipo: 0, sinFecha: 0, sinCantidad: 0, items: new Set(), filasProblema: [] };
+export function resumenMovimientos(parsed, formato) {
+  const r = { total: parsed.length, entradas: 0, salidas: 0, traspasos: 0, devoluciones: 0, sinTipo: 0, sinFecha: 0, sinCantidad: 0, items: new Set(), filasProblema: [] };
+  const sugTipos = formato === 'mov_herramientas' ? 'Usá Ingreso, Salida, Devolución o Traspaso' : 'Usá Ingreso, Salida o Traspaso';
   for (const p of parsed) {
     if (p.tipo === 'entrada') r.entradas++;
     else if (p.tipo === 'salida') r.salidas++;
     else if (p.tipo === 'traspaso') r.traspasos++;
+    else if (p.tipo === 'devolucion') r.devoluciones++;
     else {
       r.sinTipo++;
       // Detalle pre-import: ANTES solo se contaba — el usuario no podía saber
       // QUÉ fila iba a fallar hasta después de importar ("Fila 101: Tipo no
       // reconocido"). Ahora la fila, el insumo y el texto crudo se listan.
-      r.filasProblema.push({ idx: p.idx, item: p.nombreItem || '(sin nombre)', problema: p.tipoRaw ? `Tipo "${p.tipoRaw}" no reconocido` : 'Sin tipo de movimiento', sugerencia: 'Usá Ingreso, Salida o Traspaso' });
+      r.filasProblema.push({ idx: p.idx, item: p.nombreItem || '(sin nombre)', problema: p.tipoRaw ? `Tipo "${p.tipoRaw}" no reconocido` : 'Sin tipo de movimiento', sugerencia: sugTipos });
     }
     if (!(p.cantidad > 0)) {
       r.sinCantidad++;

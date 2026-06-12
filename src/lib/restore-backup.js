@@ -260,7 +260,9 @@ export async function restaurarBackup(file, { userId = 'offline', obraId, isPrue
         if (cfg.cat === 'epps') Object.assign(base, { personal_id: persId, ubicacion_id: ubicacionId, motivo: m.tipo === 'entrada' ? 'reposicion' : 'dotacion' });
         else Object.assign(base, { [cfg.persFk]: persId, frente_zona: m.frente || m.lugar || null });
         if (cfg.cat === 'materiales') base.ubicacion_id = ubicacionId;
-        if (cfg.cat === 'herramientas') { base.ubicacion_id = ubicacionId; base.accion = m.tipo; base.estado_salida = m.estado || null; }
+        // accion respeta el CHECK del server (solo entrada/salida — la devolución
+        // ES entrada, igual que el wizard); tipo_movimiento lleva la semántica fina.
+        if (cfg.cat === 'herramientas') { base.ubicacion_id = ubicacionId; base.accion = m.tipo === 'salida' ? 'salida' : 'entrada'; base.estado_salida = m.estado || null; }
         if (cfg.cat === 'activos_pesados') { base.estado = m.estado || null; }
         if (cfg.cat === 'materiales' || cfg.cat === 'epps') base.precio_unitario_real = (m.precio ?? null);
         // documento_asociado: existe en todas MENOS movimientos_herramientas.

@@ -938,7 +938,10 @@ async function pushTablePending(tabla) {
   // stock_actual < 0 y el CHECK del server (mig 044) la rechaza con 23514 —
   // el "error de stock negativo" tras importar una migración válida.
   if (pendingCreates.length > 1 && pendingCreates[0] && ('fecha' in pendingCreates[0]) && ('tipo_movimiento' in pendingCreates[0])) {
-    const rank = { entrada: 0, devolucion: 1, ajuste: 2, salida: 3, merma: 4 };
+    // 'ingreso' = la entrada de herramientas (los 3 botones del flujo manual y
+    // la migración la escriben así); sin él caía al ?? 5, DESPUÉS de las
+    // salidas del mismo día.
+    const rank = { entrada: 0, ingreso: 0, devolucion: 1, ajuste: 2, salida: 3, merma: 4 };
     pendingCreates.sort((a, b) => {
       const fa = a.fecha || '', fb = b.fecha || '';
       if (fa !== fb) return fa < fb ? -1 : 1;
