@@ -660,17 +660,33 @@ const TABLAS_CON_FANTASMAS_POSIBLES = new Set([
 // vez por dispositivo; las defensas nuevas evitan que se creen más). Borrar
 // local es seguro: el server nunca tuvo esas filas en esa tabla (entraron
 // directo a Dexie como 'synced') y la fila REAL vive sana en su tabla correcta.
-async function limpiarFantasmasRealtimeOnce() {
-  // v2: el barrido sumó avance_obra/evidencias/stock_ubicaciones (las 3
-  // realtime-escritas que faltaban) — bump del flag para que los devices que
-  // ya corrieron v1 (solo dev, el código no se deployó) re-barran. Idempotente.
-  const FLAG = 'jx_fantasmas_realtime_v2';
-  try { if (localStorage.getItem(FLAG)) return; } catch {}
+// Tablas CHICAS (cientos/pocos miles de filas): barrerlas en CADA pull es
+// trivial y cura olas nuevas sin esperar flags — el caso real del 2026-06-12:
+// un import masivo de APU generó miles de ecos de realtime en una build vieja
+// (la PWA cachea) y aparecieron 94 "obras" fantasma de golpe. Las PESADAS
+// (movimientos 50k+, asistencia, stock, evidencias) solo van en la pasada
+// one-shot versionada para no escanearlas en cada sync.
+const TABLAS_FANTASMA_LIGERAS = new Set([
+  'obras', 'personal', 'herramientas', 'materiales', 'epps', 'incidencias',
+  'proveedores', 'subcontratistas', 'activos_pesados', 'insumos_emergencia',
+  'caja_chica_movimientos', 'ubicaciones_obra', 'partidas',
+]);
+
+async function limpiarFantasmas() {
+  // Corre en CADA pull: las tablas LIGERAS se barren siempre (cura olas
+  // nuevas al siguiente sync, sin flags); las PESADAS solo en la primera
+  // pasada por dispositivo (flag v3 — bump para re-barrer dispositivos que
+  // corrieron v1/v2 ANTES de la ola masiva del import de APU del 2026-06-12,
+  // que dejó 94 obras fantasma en el device del admin).
+  const FLAG = 'jx_fantasmas_realtime_v3';
+  let completa = true;
+  try { if (localStorage.getItem(FLAG)) completa = false; } catch {}
   let borrados = 0;
   let huboError = false;
   for (const [tabla, ident] of Object.entries(COLUMNA_IDENTIDAD)) {
     try {
       if (!TABLAS_CON_FANTASMAS_POSIBLES.has(tabla)) continue;
+      if (!completa && !TABLAS_FANTASMA_LIGERAS.has(tabla)) continue;
       if (!db[tabla]) continue;
       // PENDING_CREATE se salta: un fantasma NUNCA entra como pending_create
       // (applyLiveSync los escribe 'synced'), pero una fila legítima creada
@@ -697,12 +713,12 @@ async function limpiarFantasmasRealtimeOnce() {
   if (borrados) {
     try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { source: 'limpieza_fantasmas' } })); } catch {}
   }
-  // El flag solo se marca tras una pasada COMPLETA sin errores: si una tabla
-  // falló a mitad (Dexie cerrada por upgrade en otra tab, etc.), reintentamos
-  // en el próximo pull. Si lo marcáramos igual, los fantasmas SYNCED de esa
-  // tabla quedarían como cards vacías para siempre — el self-heal #1 solo ve
+  // El flag (solo en pasada completa) se marca tras una pasada COMPLETA sin
+  // errores: si una tabla falló a mitad (Dexie cerrada por upgrade en otra
+  // tab, etc.), reintentamos en el próximo pull. Si lo marcáramos igual, los
+  // fantasmas SYNCED de esa tabla quedarían como cards vacías para siempre
   // los que el usuario edita/borra hasta FAILED.
-  if (!huboError) {
+  if (!huboError && completa) {
     try { localStorage.setItem(FLAG, new Date().toISOString()); } catch {}
   }
 }
@@ -1629,7 +1645,7 @@ async function pullTransactionalChanges() {
   await hydrateNoCreatedByCache();
   // Cura una vez los devices con watermark transaccional "envenenado".
   await repairTransactionalWatermarksOnce();
-  await limpiarFantasmasRealtimeOnce();
+  await limpiarFantasmas();
   await repairPersonalChecksOnce();
   let cacheChanged = false;
 
