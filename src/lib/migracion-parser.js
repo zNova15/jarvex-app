@@ -662,24 +662,32 @@ export function parseMovMaquinariaAsignacion(rows) {
 /**
  * Clasificador inteligente de ingresos/devoluciones de HERRAMIENTAS.
  * Regla de negocio (Gabriel): una herramienta INGRESA una sola vez (su primer
- * registro); después solo sale y VUELVE — esa vuelta es una devolución aunque
- * el Excel diga "Ingreso". Recorre los movimientos en orden cronológico,
- * sembrado con el historial que ya existe en la BD, y:
- *   · entrada con ingreso previo  → se reclasifica a 'devolucion'  (reclasificadas)
- *   · devolución SIN ingreso previo → se convierte en 'entrada'    (huerfanas)
- *   · devolución cuyo devolvedor no tiene esa cantidad cargada     (excepciones)
- * El saldo por persona se lleva por herramienta: la salida carga al que retira
- * y la devolución descarga al que devuelve (col. Proveedor en devoluciones).
+ * registro); una DEVOLUCIÓN solo ocurre cuando una herramienta YA ingresada
+ * SALIÓ (con responsable y almacén de salida) y ahora VUELVE a un almacén. Por
+ * eso un "Ingreso" solo PUEDE ser una devolución si hay unidades de ese ítem
+ * actualmente AFUERA (salidas que no volvieron); si no hay nada afuera es un
+ * simple ingreso, aunque la herramienta ya exista (ej. comprar 2 picos más).
+ *
+ * El clasificador NO reclasifica solo: cuando un ingreso PODRÍA ser devolución
+ * lo lista como SUGERENCIA y el usuario decide (decisiones[idx]). Por defecto
+ * la sugerencia NO se aplica (queda como ingreso, el valor del archivo). Las
+ * "Devolución" explícitas del archivo se respetan; las huérfanas (sin ningún
+ * ingreso ni stock afuera) se convierten en su primer ingreso.
+ *
+ * Recorre en orden cronológico, sembrado con el historial que ya está en la BD.
+ * `afuera` = salidas − devoluciones del ítem (lo que está prestado). El saldo
+ * POR PERSONA permite avisar cuando quien devuelve no es quien retiró.
  *
  * @param movs filas de parseMovimientos (formato mov_herramientas)
- * @param historialPorItem { [normTxt(nombre)]: { tuvoIngreso, saldos: {key: cant}, nombres: {key: nombre} } }
+ * @param historialPorItem { [normTxt(nombre)]: { tuvoIngreso, afuera, saldos:{key:cant}, nombres:{key:nombre} } }
  * @param resolverPersona (nombreCrudo) → key estable ('p:<id>' | 's:<id>') o null
- * @returns { movs (ajustados, con tipoOriginal en los cambiados), reclasificadas, huerfanas, excepciones }
+ * @param decisiones Map|obj idx → 'devolucion' | 'ingreso' (acepta/rechaza una sugerencia)
+ * @returns { movs (con tipoOriginal en los cambiados), sugerencias, huerfanas, excepciones, reclasificadas }
  */
-export function clasificarMovsHerramientas(movs, { historialPorItem = {}, resolverPersona = () => null } = {}) {
+export function clasificarMovsHerramientas(movs, { historialPorItem = {}, resolverPersona = () => null, decisiones = {} } = {}) {
   // Orden SOLO para clasificar: dentro del mismo día la salida va antes que la
-  // devolución (no podés devolver lo que retirás más tarde ese día). El orden
-  // de carga/push usa su propio ranking (entradas primero) — no este.
+  // devolución (no podés devolver lo que retirás más tarde ese día) y el
+  // ingreso antes que ambas. El orden de carga/push usa su propio ranking.
   const ORDEN = { entrada: 0, traspaso: 1, salida: 2, devolucion: 3 };
   const idxs = (movs || []).map((_, i) => i).sort((a, b) => {
     const fa = movs[a].fecha || '9999-12-31', fb = movs[b].fecha || '9999-12-31';
@@ -687,12 +695,14 @@ export function clasificarMovsHerramientas(movs, { historialPorItem = {}, resolv
     return ((ORDEN[movs[a].tipo] ?? 9) - (ORDEN[movs[b].tipo] ?? 9)) || (a - b);
   });
 
+  const decisionDe = (idx) => (decisiones instanceof Map ? decisiones.get(idx) : decisiones?.[idx]) || null;
+
   const estado = {};
   const stDe = (item) => {
     const k = normTxt(item);
     if (!estado[k]) {
       const h = historialPorItem[k];
-      estado[k] = { tuvoIngreso: !!h?.tuvoIngreso, saldos: { ...(h?.saldos || {}) }, nombres: { ...(h?.nombres || {}) } };
+      estado[k] = { tuvoIngreso: !!h?.tuvoIngreso, afuera: Number(h?.afuera || 0), saldos: { ...(h?.saldos || {}) }, nombres: { ...(h?.nombres || {}) } };
     }
     return estado[k];
   };
@@ -702,8 +712,11 @@ export function clasificarMovsHerramientas(movs, { historialPorItem = {}, resolv
     if (!st.nombres[key]) st.nombres[key] = String(quien).trim();
     return key;
   };
+  const conSaldoDe = (st) => Object.entries(st.saldos)
+    .filter(([, c]) => c > 0)
+    .map(([k2, c]) => ({ nombre: st.nombres[k2] || k2.replace(/^txt:/, ''), cantidad: c }));
 
-  const reclasificadas = [], huerfanas = [], excepciones = [];
+  const sugerencias = [], huerfanas = [], excepciones = [];
   const tipoEfectivo = new Array(movs.length).fill(null);
 
   for (const i of idxs) {
@@ -712,44 +725,58 @@ export function clasificarMovsHerramientas(movs, { historialPorItem = {}, resolv
     if (!m.nombreItem || !(m.cantidad > 0) || !m.tipo || m.tipo === 'traspaso') continue;
     const st = stDe(m.nombreItem);
     let t = m.tipo;
+
     if (t === 'entrada') {
-      if (st.tuvoIngreso) {
-        t = 'devolucion';
-        reclasificadas.push({ idx: m.idx, item: m.nombreItem, cantidad: m.cantidad, fecha: m.fecha });
-      } else {
-        st.tuvoIngreso = true;
+      if (st.afuera > 0) {
+        // Hay unidades de este ítem afuera (salieron y no volvieron) → este
+        // "Ingreso" PODRÍA ser su devolución. Sugerencia: el usuario decide;
+        // por defecto queda como ingreso (no se reclasifica solo).
+        const devuelve = m.proveedor || m.origen || m.responsable || null;
+        const aceptada = decisionDe(m.idx) === 'devolucion';
+        sugerencias.push({
+          idx: m.idx, item: m.nombreItem, fecha: m.fecha, cantidad: m.cantidad,
+          afuera: st.afuera, conSaldo: conSaldoDe(st),
+          devuelve: devuelve ? String(devuelve).trim() : null, aceptada,
+        });
+        if (aceptada) t = 'devolucion';
       }
-    } else if (t === 'devolucion' && !st.tuvoIngreso) {
+      // si afuera === 0 → ingreso simple (aunque la herramienta ya exista)
+    } else if (t === 'devolucion' && st.afuera <= 0 && !st.tuvoIngreso) {
+      // "Devolución" sin ningún ingreso previo ni stock afuera → en realidad
+      // es el primer ingreso de la herramienta.
       t = 'entrada';
-      st.tuvoIngreso = true;
       huerfanas.push({ idx: m.idx, item: m.nombreItem, cantidad: m.cantidad, fecha: m.fecha });
     }
-    if (t === 'salida') {
+
+    // Efecto sobre el estado con el tipo EFECTIVO.
+    if (t === 'entrada') {
+      st.tuvoIngreso = true;
+    } else if (t === 'salida') {
       const key = keyDe(st, m.responsable || m.subcontrato || m.origen) || '?';
       st.saldos[key] = (st.saldos[key] || 0) + m.cantidad;
+      st.afuera += m.cantidad;
     } else if (t === 'devolucion') {
       // En devoluciones la col. Proveedor (u origen combinado) trae al devolvedor.
       const quien = m.proveedor || m.origen || m.responsable;
       const key = keyDe(st, quien) || '?';
       const disponible = st.saldos[key] || 0;
       if (m.cantidad > disponible) {
-        const conSaldo = Object.entries(st.saldos)
-          .filter(([, c]) => c > 0)
-          .map(([k2, c]) => ({ nombre: st.nombres[k2] || k2.replace(/^txt:/, ''), cantidad: c }));
         excepciones.push({
           idx: m.idx, item: m.nombreItem, fecha: m.fecha, cantidad: m.cantidad,
           devuelve: quien ? String(quien).trim() : '(sin nombre)',
-          saldoDevolvedor: disponible, conSaldo,
+          saldoDevolvedor: disponible, conSaldo: conSaldoDe(st),
         });
       }
       st.saldos[key] = Math.max(0, disponible - m.cantidad);
+      st.afuera = Math.max(0, st.afuera - m.cantidad);
     }
     tipoEfectivo[i] = t;
   }
 
   return {
     movs: (movs || []).map((m, i) => (tipoEfectivo[i] !== m.tipo ? { ...m, tipo: tipoEfectivo[i], tipoOriginal: m.tipo } : m)),
-    reclasificadas, huerfanas, excepciones,
+    sugerencias, huerfanas, excepciones,
+    reclasificadas: sugerencias.filter(s => s.aceptada),
   };
 }
 

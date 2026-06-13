@@ -278,6 +278,12 @@ export async function seedDemoData(progressCb) {
         : 'entrada';
       const responsable = estaFuera ? h.resp || pick(personalIds).id : pick(personalIds).id;
       const estado = accion === 'entrada' ? pick(['bueno', 'bueno', 'regular', 'bueno', 'malo']) : null;
+      // accion respeta el CHECK del schema (entrada/salida); tipo_movimiento lleva
+      // la semántica fina (ingreso/salida/devolucion) igual que el flujo manual y la
+      // migración. Un 'entrada' que sucede tras una salida es una DEVOLUCIÓN: si se
+      // sembrara como tipo_movimiento='entrada', cargarHistorialHerr no la contaría
+      // como devolución y dejaría "afuera" sobreestimado (afuera=N en vez de 0).
+      const tipoMov = accion === 'entrada' ? 'devolucion' : accion;
       await db.movimientos_herramientas.add({
         ...baseFields(), id: newId(),
         obra_id: obraPrincipal.id,
@@ -285,7 +291,7 @@ export async function seedDemoData(progressCb) {
         fecha,
         hora,
         accion,
-        tipo_movimiento: accion,
+        tipo_movimiento: tipoMov,
         responsable_id: responsable,
         estado_salida: accion === 'salida' ? pick(['nuevo', 'bueno']) : null,
         estado_devolucion: accion === 'entrada' ? estado : null,

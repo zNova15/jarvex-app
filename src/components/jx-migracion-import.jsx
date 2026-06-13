@@ -800,8 +800,9 @@ const ESTADOS_HERR_UI = [['nuevo', 'Nuevo'], ['bueno', 'Bueno'], ['regular', 'Re
 
 // Historial de herramientas YA en la BD, para sembrar el clasificador de
 // devoluciones: por nombre normalizado, si la herramienta ya tuvo su primer
-// ingreso y cuánto tiene cargado cada persona/subcontrato (salidas − devoluciones).
-// Las patas de traspaso no cuentan (mueven de almacén, no registran personas).
+// ingreso, cuánto está AFUERA (salidas − devoluciones = lo prestado) y cuánto
+// tiene cargado cada persona/subcontrato. Las patas de traspaso no cuentan
+// (mueven de almacén, no prestan a nadie).
 async function cargarHistorialHerr(obraId) {
   const db = window.__db;
   const herrs = await db.herramientas.where('obra_id').equals(obraId).filter(h => !h.deleted_at).toArray();
@@ -812,23 +813,42 @@ async function cargarHistorialHerr(obraId) {
   const nombrePers = new Map(personal.map(p => [p.id, `${p.nombres || ''} ${p.apellidos || ''}`.trim()]));
   const nombreSub = new Map(subs.map(s => [s.id, s.razon_social || '']));
   const historial = {};
-  const entry = (k) => (historial[k] = historial[k] || { tuvoIngreso: false, saldos: {}, nombres: {} });
-  await db.movimientos_herramientas.where('obra_id').equals(obraId).each(mv => {
-    if (mv.deleted_at || mv.reverses_id || mv.reversed_by_id) return;
-    const k = porId.get(mv.herramienta_id); if (!k) return;
-    if (/Traspaso [→←]/.test(String(mv.observaciones || ''))) return;
+  const entry = (k) => (historial[k] = historial[k] || { tuvoIngreso: false, afuera: 0, saldos: {}, nombres: {} });
+  // .each() itera en orden de PK (UUID aleatorio), NO cronológico: si una
+  // devolución se procesara antes de su salida, el Math.max(0, …) clamparía a 0
+  // y el decremento se perdería → afuera/saldos sobrestimados. Acumulamos a un
+  // array y lo ordenamos por (fecha, ORDEN[tipo]) — el MISMO ranking que usa
+  // clasificarMovsHerramientas — para que salida siempre venga antes que su
+  // devolución del mismo día.
+  const ORDEN_HERR = { entrada: 0, traspaso: 1, salida: 2, devolucion: 3 };
+  const movsHist = [];
+  await db.movimientos_herramientas.where('obra_id').equals(obraId).each(mv => { movsHist.push(mv); });
+  movsHist.sort((a, b) => {
+    const fa = a.fecha || '9999-12-31', fb = b.fecha || '9999-12-31';
+    if (fa !== fb) return fa < fb ? -1 : 1;
+    const ta = a.tipo_movimiento || a.accion, tb = b.tipo_movimiento || b.accion;
+    return (ORDEN_HERR[ta] ?? 9) - (ORDEN_HERR[tb] ?? 9);
+  });
+  for (const mv of movsHist) {
+    if (mv.deleted_at || mv.reverses_id || mv.reversed_by_id) continue;
+    const k = porId.get(mv.herramienta_id); if (!k) continue;
+    if (/Traspaso [→←]/.test(String(mv.observaciones || ''))) continue;
     const e = entry(k);
     const tipo = mv.tipo_movimiento || mv.accion;
-    if (tipo === 'ingreso' || tipo === 'entrada' || tipo === 'devolucion' || mv.accion === 'entrada') e.tuvoIngreso = true;
+    const esSalida = tipo === 'salida' || (mv.accion === 'salida' && tipo !== 'devolucion');
+    const esDevol = tipo === 'devolucion';
+    if (!esSalida) e.tuvoIngreso = true; // ingreso/devolución implican que la herramienta existe
     const cant = Number(mv.cantidad) || 0;
+    // afuera = lo prestado (no depende de tener responsable identificado).
+    if (cant) { if (esSalida) e.afuera += cant; else if (esDevol) e.afuera = Math.max(0, e.afuera - cant); }
     let key = null;
     if (mv.subcontratista_id) key = `s:${mv.subcontratista_id}`;
     else if (mv.responsable_id) key = `p:${mv.responsable_id}`;
-    if (!key || !cant) return;
+    if (!key || !cant) continue;
     if (!e.nombres[key]) e.nombres[key] = mv.subcontratista_id ? (nombreSub.get(mv.subcontratista_id) || 'Subcontrato') : (nombrePers.get(mv.responsable_id) || 'Personal');
-    if (tipo === 'salida') e.saldos[key] = (e.saldos[key] || 0) + cant;
-    else if (tipo === 'devolucion') e.saldos[key] = Math.max(0, (e.saldos[key] || 0) - cant);
-  });
+    if (esSalida) e.saldos[key] = (e.saldos[key] || 0) + cant;
+    else if (esDevol) e.saldos[key] = Math.max(0, (e.saldos[key] || 0) - cant);
+  }
   // Resolutor de nombres del archivo al mismo espacio de claves del historial.
   const resolverPersona = (nombre) => {
     const id = matchPersonal(nombre, personal);
@@ -953,10 +973,18 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
   const [scanPersonas, setScanPersonas] = uS(null);          // responsables a revisar
   const [scanAlmacenes, setScanAlmacenes] = uS(null);        // análisis de almacenes/avisos
   const [decisionesPersonas, setDecisionesPersonas] = uS(() => new Map());
-  // Herramientas: análisis ingreso-vs-devolución (clasificarMovsHerramientas)
-  // + estado elegido para cada herramienta NUEVA (revisión del primer ingreso).
-  const [devAnalisis, setDevAnalisis] = uS(null);
+  // Herramientas: insumos del clasificador ingreso-vs-devolución (movs +
+  // historial + resolverPersona, fijados al escanear) y las decisiones del
+  // usuario por fila (aceptar/rechazar una sugerencia de devolución). El
+  // análisis se recomputa de forma reactiva con clasificarMovsHerramientas.
+  const [devInputs, setDevInputs] = uS(null);
+  const [decisionesDevolucion, setDecisionesDevolucion] = uS(() => new Map()); // idx → 'devolucion'|'ingreso'
   const [estadosHerr, setEstadosHerr] = uS(() => new Map()); // key → estado CHECK
+  const devAnalisis = uM(
+    () => (devInputs ? clasificarMovsHerramientas(devInputs.movs, { historialPorItem: devInputs.historial, resolverPersona: devInputs.resolverPersona, decisiones: decisionesDevolucion }) : null),
+    [devInputs, decisionesDevolucion]
+  );
+  const setDevDecision = (idx, val) => setDecisionesDevolucion(prev => { const n = new Map(prev); n.set(idx, val); return n; });
   const [scanning, setScanning] = uS(false);
   const [limpiando, setLimpiando] = uS(false);
   // Backup multi-hoja: si el .xlsx trae varias hojas reconocidas (ej. el export
@@ -1080,7 +1108,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     // INVARIANTE: devAnalisis/estadosHerr describen el archivo YA escaneado y
     // mueren con él — si quedaran stale con la misma cantidad de filas,
     // runMovHerramientas importaría el dataset del archivo anterior entero.
-    setDevAnalisis(null); setEstadosHerr(new Map());
+    setDevInputs(null); setDecisionesDevolucion(new Map()); setEstadosHerr(new Map());
     if (!f) return;
     if (f.size > 10 * 1024 * 1024) { setParseErr('El archivo excede 10 MB'); return; }
     window.__excel.parseExcelFile(f)
@@ -1104,7 +1132,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     setParsed({ headers: s.headers, rows: s.rows });
     setFormato(s.formato);
     setResult(null); setScanRows(null); setScanPersonas(null); setScanAlmacenes(null);
-    setDevAnalisis(null); setEstadosHerr(new Map());
+    setDevInputs(null); setDecisionesDevolucion(new Map()); setEstadosHerr(new Map());
   }, []);
 
   // ── Cargas ────────────────────────────────────────────────────────
@@ -1552,7 +1580,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         } else if (m.tipo === 'devolucion') {
           // La herramienta VUELVE a un almacén; quien devuelve viene de la col.
           // Proveedor (o la combinada vieja) — igual que el botón Devolución.
-          if (m.tipoOriginal === 'entrada') obsExtra.push('Ingreso reclasificado como devolución (la herramienta ya tuvo su primer ingreso)');
+          if (m.tipoOriginal === 'entrada') obsExtra.push('Ingreso confirmado como devolución en la revisión (había stock de la herramienta afuera)');
           const exc = excepcionPorIdx.get(m.idx);
           if (exc) {
             const tienen = (exc.conSaldo || []).map(c => `${c.nombre} (${c.cantidad})`).join(', ');
@@ -2154,39 +2182,44 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     if (!esMov || !preview?.movs?.length) { showToast('No hay movimientos para procesar', 'red'); return; }
     setScanning(true);
     try {
-      // HERRAMIENTAS: clasificación ingreso-vs-devolución ANTES de los escaneos
-      // (el primer ingreso es ingreso; los siguientes son devoluciones; una
-      // devolución sin ingreso previo se convierte en el primer ingreso).
-      let movsEscaneo = preview.movs;
+      // HERRAMIENTAS: deja listos los insumos del clasificador ingreso-vs-
+      // devolución (el análisis se recomputa reactivo con las decisiones del
+      // usuario). Por defecto NADA se reclasifica: un "Ingreso" solo se sugiere
+      // como devolución si hay unidades del ítem AFUERA (salieron y no
+      // volvieron). El escaneo de RESPONSABLES corre sobre la clasificación con
+      // TODAS las sugerencias aceptadas (superset): así todo posible devolvedor
+      // queda disponible si el usuario acepta esa devolución después.
+      let movsResp = preview.movs;
       if (formato === 'mov_herramientas') {
         const { historial, resolverPersona } = await cargarHistorialHerr(obraId);
-        const an = clasificarMovsHerramientas(preview.movs, { historialPorItem: historial, resolverPersona });
-        setDevAnalisis(an);
-        movsEscaneo = an.movs;
-        // Estado por defecto del primer ingreso de cada herramienta (lo que
-        // diga el archivo, normalizado) — editable en el paso Insumos. Se
-        // recorre en orden CRONOLÓGICO, no en orden del archivo: si el Excel
-        // viene desordenado, el default debe salir del primer ingreso y no
-        // del Estado de una salida/devolución posterior.
+        setDevInputs({ movs: preview.movs, historial, resolverPersona });
+        setDecisionesDevolucion(new Map());
+        const base = clasificarMovsHerramientas(preview.movs, { historialPorItem: historial, resolverPersona });
+        const decMax = new Map(base.sugerencias.map(s => [s.idx, 'devolucion']));
+        movsResp = clasificarMovsHerramientas(preview.movs, { historialPorItem: historial, resolverPersona, decisiones: decMax }).movs;
+        // Estado por defecto del primer ingreso de cada herramienta (lo que diga
+        // el archivo, normalizado) — editable en el paso Insumos. Se recorre en
+        // orden CRONOLÓGICO: si el Excel viene desordenado, el default sale del
+        // primer ingreso y no del Estado de una salida/devolución posterior.
         const est = new Map();
-        for (const m of [...an.movs].sort(cmpMovFechaTipo)) {
+        for (const m of [...preview.movs].sort(cmpMovFechaTipo)) {
           const k = normTxt(m.nombreItem || '');
           if (k && !est.has(k) && m.estado) est.set(k, normEstadoHerr(m.estado));
         }
         setEstadosHerr(est);
-      } else { setDevAnalisis(null); setEstadosHerr(new Map()); }
-      const rows = await escanearMovs(movsEscaneo, formato, obraId);
+      } else { setDevInputs(null); setDecisionesDevolucion(new Map()); setEstadosHerr(new Map()); }
+      const rows = await escanearMovs(preview.movs, formato, obraId);
       const d = new Map();
       for (const r of rows) d.set(r.key, accionDefault(r));
       setScanRows(rows); setDecisiones(d);
       // Escaneo de responsables (col. G en salidas / "Asignado a" / devolvedores).
-      const pers = await escanearResponsables(movsEscaneo, formato, obraId);
+      const pers = await escanearResponsables(movsResp, formato, obraId);
       const dp = new Map();
       for (const r of pers) dp.set(r.key, accionPersonaDefault(r));
       setScanPersonas(pers); setDecisionesPersonas(dp);
       // Análisis de ALMACENES + avisos (sin almacén / sin responsable / stock
       // negativo por almacén) — misma revisión previa que items y personas.
-      try { setScanAlmacenes(await analizarAlmacenes(movsEscaneo, formato, obraId)); } catch { setScanAlmacenes(null); }
+      try { setScanAlmacenes(await analizarAlmacenes(preview.movs, formato, obraId)); } catch { setScanAlmacenes(null); }
       setStep(3); // Paso "Insumos"
     } catch (e) {
       showToast('Error al escanear: ' + (e.message || e), 'red');
@@ -2232,7 +2265,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     setProgress({ current: 0, total: 0 });
     setScanRows(null); setDecisiones(new Map());
     setScanPersonas(null); setDecisionesPersonas(new Map()); setScanAlmacenes(null);
-    setDevAnalisis(null); setEstadosHerr(new Map());
+    setDevInputs(null); setDecisionesDevolucion(new Map()); setEstadosHerr(new Map());
   };
 
   // Acciones globales del paso "Insumos".
@@ -2521,7 +2554,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
               <div style={{ display: 'grid', gridTemplateColumns: `repeat(${4 + (preview.resumen.traspasos ? 1 : 0) + (preview.resumen.devoluciones ? 1 : 0)},1fr)`, gap: 12 }}>
                 <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: 'var(--green)' }}>{preview.resumen.entradas}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Ingresos</div></div>
                 <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: 'var(--red)' }}>{preview.resumen.salidas}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Salidas</div></div>
-                {preview.resumen.devoluciones > 0 && <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: 'var(--amber)' }}>{preview.resumen.devoluciones}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Devoluciones</div></div>}
+                {preview.resumen.devoluciones > 0 && <div style={{ textAlign: 'center' }} title="Filas marcadas como &quot;Devolución&quot; en el archivo. Los ingresos que podrían ser devolución se revisan más abajo, en el paso Insumos."><div style={{ fontSize: 24, fontWeight: 800, color: 'var(--amber)' }}>{preview.resumen.devoluciones}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Devoluciones</div></div>}
                 {preview.resumen.traspasos > 0 && <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: 'var(--blue)' }}>{preview.resumen.traspasos}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Traspasos</div></div>}
                 <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: 'var(--tp)' }}>{preview.resumen.itemsUnicos}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Insumos distintos</div></div>
                 <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: 'var(--amber)' }}>{preview.resumen.sinTipo + preview.resumen.sinFecha + preview.resumen.sinCantidad}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>A revisar</div></div>
@@ -2621,23 +2654,42 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
               </div>
             )}
             {/* ── Devoluciones: clasificación inteligente de herramientas ── */}
-            {devAnalisis && (devAnalisis.reclasificadas.length > 0 || devAnalisis.huerfanas.length > 0 || devAnalisis.excepciones.length > 0) && (
+            {devAnalisis && (devAnalisis.sugerencias.length > 0 || devAnalisis.huerfanas.length > 0 || devAnalisis.excepciones.length > 0) && (() => {
+              const aceptadas = devAnalisis.sugerencias.filter(s => s.aceptada).length;
+              return (
               <div className="card card-p" style={{ marginBottom: 14, background: 'rgba(242,183,5,0.06)', border: '1px solid rgba(242,183,5,0.35)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
                   <JxIcon name="compare" size={16} color="var(--amber)" />
-                  <span style={{ fontSize: 13.5, fontWeight: 800, color: 'var(--amber)' }}>Devoluciones detectadas</span>
+                  <span style={{ fontSize: 13.5, fontWeight: 800, color: 'var(--amber)' }}>Posibles devoluciones</span>
                 </div>
                 <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 8 }}>
-                  Una herramienta INGRESA una sola vez (su primer registro); cuando vuelve después de una salida es una devolución. En devoluciones, la columna Proveedor se lee como la persona o subcontrato que devuelve.
+                  Una herramienta INGRESA una sola vez. Una <strong>devolución</strong> es cuando una herramienta que ya ingresó <strong>salió</strong> (con responsable y almacén de salida) y ahora <strong>vuelve</strong> a un almacén — la puede devolver quien la sacó u otra persona. En devoluciones, la columna Proveedor se lee como quien devuelve.
                 </div>
-                {devAnalisis.reclasificadas.length > 0 && (
-                  <div style={{ marginBottom: 8 }}>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--ts)', marginBottom: 4 }}>↩ {devAnalisis.reclasificadas.length} ingreso(s) se cargarán como DEVOLUCIÓN <span style={{ color: 'var(--tm)', fontWeight: 400 }}>(la herramienta ya tuvo su primer ingreso)</span></div>
-                    <div style={{ maxHeight: 130, overflowY: 'auto' }}>
-                      {devAnalisis.reclasificadas.slice(0, 40).map((d, i) => (
-                        <div key={i} style={{ fontSize: 12, color: 'var(--ts)', padding: '2px 0' }}>• Fila {d.idx} · <strong>{d.item}</strong> · {d.fecha || 'sin fecha'} · {d.cantidad}</div>
+                {devAnalisis.sugerencias.length > 0 && (
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--ts)' }}>
+                        {devAnalisis.sugerencias.length} ingreso(s) podrían ser devolución <span style={{ color: 'var(--tm)', fontWeight: 400 }}>· hay stock de ese ítem afuera{aceptadas > 0 ? ` · ${aceptadas} marcada(s) como devolución` : ''}</span>
+                      </div>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <button className="btn btn-ghost btn-xs" onClick={() => setDecisionesDevolucion(prev => { const n = new Map(prev); for (const s of devAnalisis.sugerencias) n.set(s.idx, 'devolucion'); return n; })}>Aceptar todas</button>
+                        <button className="btn btn-ghost btn-xs" onClick={() => setDecisionesDevolucion(prev => { const n = new Map(prev); for (const s of devAnalisis.sugerencias) n.set(s.idx, 'ingreso'); return n; })}>Dejar todas como ingreso</button>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--tm)', marginBottom: 6 }}>Por defecto quedan como <strong>Ingreso</strong> (lo que dice el archivo). Marcá Devolución solo en las que realmente lo sean. Al marcar una devolución bajan las unidades afuera del ítem, así que otras sugerencias del <em>mismo</em> ítem pueden ajustarse (aparecer o desaparecer): no podés devolver más de lo que está afuera.</div>
+                    <div style={{ maxHeight: 200, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      {devAnalisis.sugerencias.map((s) => (
+                        <div key={s.idx} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 10, alignItems: 'center', padding: '5px 8px', background: s.aceptada ? 'rgba(242,183,5,0.10)' : 'var(--bg-c)', border: '1px solid var(--border)', borderRadius: 6 }}>
+                          <div style={{ fontSize: 11.5, color: 'var(--ts)' }}>
+                            <strong>{s.item}</strong> · Fila {s.idx} · {s.fecha || 'sin fecha'} · {s.cantidad}
+                            <span style={{ color: 'var(--tm)' }}> — {s.afuera} afuera{(s.conSaldo || []).length ? ` (con: ${s.conSaldo.map(c => `${c.nombre} ${c.cantidad}`).join(', ')})` : ''}{s.devuelve ? ` · devuelve: ${s.devuelve}` : ''}</span>
+                          </div>
+                          <div style={{ display: 'flex', gap: 0, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+                            <button onClick={() => setDevDecision(s.idx, 'ingreso')} style={{ fontSize: 11, padding: '4px 9px', border: 'none', cursor: 'pointer', background: !s.aceptada ? 'var(--blue)' : 'transparent', color: !s.aceptada ? '#fff' : 'var(--tm)' }}>Ingreso</button>
+                            <button onClick={() => setDevDecision(s.idx, 'devolucion')} style={{ fontSize: 11, padding: '4px 9px', border: 'none', cursor: 'pointer', background: s.aceptada ? 'var(--amber)' : 'transparent', color: s.aceptada ? '#1a1a1a' : 'var(--tm)' }}>Devolución</button>
+                          </div>
+                        </div>
                       ))}
-                      {devAnalisis.reclasificadas.length > 40 && <div style={{ fontSize: 11, color: 'var(--tm)' }}>… y {devAnalisis.reclasificadas.length - 40} más</div>}
                     </div>
                   </div>
                 )}
@@ -2667,7 +2719,8 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
                   </div>
                 )}
               </div>
-            )}
+              );
+            })()}
 
             {/* ── Estado del primer ingreso (herramientas nuevas) ── */}
             {formato === 'mov_herramientas' && cuentas.new > 0 && (() => {
@@ -2784,9 +2837,9 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
                         <div key={r.key} style={{ padding: '8px 12px', borderTop: idx > 0 ? '1px solid var(--border)' : 'none', display: 'grid', gridTemplateColumns: '1.6fr 0.8fr 1.4fr', gap: 10, alignItems: 'center' }}>
                           <div>
                             <div style={{ fontSize: 12.5, color: 'var(--tp)', fontWeight: 600 }}>{r.nombre}</div>
-                            <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 2 }}>{r.count} movimiento{r.count !== 1 ? 's' : ''}{r.countReclas > 0 ? ` · ${r.countReclas} viene${r.countReclas !== 1 ? 'n' : ''} de ingreso reclasificado a devolución` : ''}</div>
+                            <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 2 }}>{r.count} movimiento{r.count !== 1 ? 's' : ''}{r.countReclas > 0 ? ` · ${r.countReclas} podría${r.countReclas !== 1 ? 'n' : ''} venir de un ingreso marcado como devolución` : ''}</div>
                           </div>
-                          <span style={{ fontSize: 10.5, color: badge.c, fontWeight: 700 }} title={r.esProveedor ? 'Existe en el padrón de Proveedores — en los ingresos reclasificados la col. Proveedor era el proveedor original, no quien devuelve' : undefined}>{badge.t}</span>
+                          <span style={{ fontSize: 10.5, color: badge.c, fontWeight: 700 }} title={r.esProveedor ? 'Existe en el padrón de Proveedores — si esos ingresos se marcan como devolución, la col. Proveedor era el proveedor original, no quien devuelve' : undefined}>{badge.t}</span>
                           <select className="fi" style={{ fontSize: 12, padding: '6px 10px' }} value={acc} onChange={e => { const next = new Map(decisionesPersonas); next.set(r.key, e.target.value); setDecisionesPersonas(next); }}>
                             {opciones.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                           </select>

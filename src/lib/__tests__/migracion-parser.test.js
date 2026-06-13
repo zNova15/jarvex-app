@@ -292,47 +292,79 @@ describe('clasificarMovsHerramientas — ingreso vs devolución', () => {
     ...extra,
   });
 
-  it('el primer ingreso queda como ingreso; el segundo se reclasifica a devolución', () => {
+  it('ingreso repetido SIN salida previa NO es devolución (caso PICOS MACHOS)', () => {
+    // 2 ingresos al mismo almacén, ninguna salida en medio → ambos son ingreso.
+    const r = clasificarMovsHerramientas([
+      fila(2, 'entrada', 'Picos Machos', 5, { fecha: '2026-05-14', proveedor: 'Gasomi' }),
+      fila(3, 'entrada', 'Picos Machos', 2, { fecha: '2026-05-15', proveedor: 'Gasomi' }),
+    ]);
+    expect(r.movs[0].tipo).toBe('entrada');
+    expect(r.movs[1].tipo).toBe('entrada');
+    expect(r.sugerencias).toHaveLength(0); // no hay nada afuera → ni se sugiere
+  });
+
+  it('ingreso con salida previa → SUGERENCIA de devolución, no auto-aplicada', () => {
     const r = clasificarMovsHerramientas([
       fila(2, 'entrada', 'Taladro', 1, { fecha: '2026-01-01' }),
       fila(3, 'salida', 'Taladro', 1, { fecha: '2026-01-05', responsable: 'Juan Perez' }),
       fila(4, 'entrada', 'Taladro', 1, { fecha: '2026-01-08', proveedor: 'Juan Perez' }),
     ]);
-    expect(r.movs[0].tipo).toBe('entrada');
+    expect(r.movs[2].tipo).toBe('entrada'); // por defecto NO se reclasifica
+    expect(r.sugerencias).toHaveLength(1);
+    expect(r.sugerencias[0].idx).toBe(4);
+    expect(r.sugerencias[0].afuera).toBe(1);
+    expect(r.sugerencias[0].aceptada).toBe(false);
+  });
+
+  it('aceptar la sugerencia (decisiones) la reclasifica a devolución', () => {
+    const movs = [
+      fila(2, 'entrada', 'Taladro', 1, { fecha: '2026-01-01' }),
+      fila(3, 'salida', 'Taladro', 1, { fecha: '2026-01-05', responsable: 'Juan Perez' }),
+      fila(4, 'entrada', 'Taladro', 1, { fecha: '2026-01-08', proveedor: 'Juan Perez' }),
+    ];
+    const r = clasificarMovsHerramientas(movs, { decisiones: { 4: 'devolucion' } });
     expect(r.movs[2].tipo).toBe('devolucion');
     expect(r.movs[2].tipoOriginal).toBe('entrada');
     expect(r.reclasificadas).toHaveLength(1);
-    expect(r.reclasificadas[0].idx).toBe(4);
     expect(r.excepciones).toHaveLength(0); // devuelve el mismo que sacó
   });
 
-  it('el historial de la BD cuenta como ingreso previo', () => {
+  it('historial con stock afuera → el ingreso se SUGIERE (no se fuerza)', () => {
+    const k = normTxt('Pistola de Calor');
     const r = clasificarMovsHerramientas(
-      [fila(2, 'entrada', 'Pistola de Calor', 1)],
-      { historialPorItem: { [normTxt('Pistola de Calor')]: { tuvoIngreso: true, saldos: {}, nombres: {} } } }
+      [fila(2, 'entrada', 'Pistola de Calor', 1, { proveedor: 'Elvis Huatay' })],
+      { historialPorItem: { [k]: { tuvoIngreso: true, afuera: 1, saldos: { 'p:u1': 1 }, nombres: { 'p:u1': 'Gabriela' } } } }
     );
-    expect(r.movs[0].tipo).toBe('devolucion');
-    expect(r.reclasificadas).toHaveLength(1);
+    expect(r.movs[0].tipo).toBe('entrada');
+    expect(r.sugerencias).toHaveLength(1);
   });
 
-  it('devolución sin ingreso previo → se convierte en primer ingreso (huérfana)', () => {
+  it('historial CON ingreso pero SIN stock afuera → ingreso simple (sin sugerencia)', () => {
+    const k = normTxt('Comba');
+    const r = clasificarMovsHerramientas(
+      [fila(2, 'entrada', 'Comba', 1, { proveedor: 'Gasomi' })],
+      { historialPorItem: { [k]: { tuvoIngreso: true, afuera: 0, saldos: {}, nombres: {} } } }
+    );
+    expect(r.movs[0].tipo).toBe('entrada');
+    expect(r.sugerencias).toHaveLength(0);
+  });
+
+  it('devolución explícita sin ingreso ni stock previo → primer ingreso (huérfana)', () => {
     const r = clasificarMovsHerramientas([
       fila(2, 'devolucion', 'Amoladora', 1, { proveedor: 'Elvis Huatay' }),
-      fila(3, 'entrada', 'Amoladora', 1, { fecha: '2026-01-20' }),
     ]);
     expect(r.movs[0].tipo).toBe('entrada');
     expect(r.movs[0].tipoOriginal).toBe('devolucion');
     expect(r.huerfanas).toHaveLength(1);
-    // y el ingreso posterior se vuelve devolución (ya hubo primer ingreso)
-    expect(r.movs[1].tipo).toBe('devolucion');
   });
 
-  it('quien devuelve sin saldo cargado genera excepción con el detalle de quién sí tiene', () => {
+  it('devolución explícita con quien devuelve ≠ quien sacó → excepción con el detalle', () => {
     const r = clasificarMovsHerramientas([
       fila(2, 'entrada', 'Taladro', 2, { fecha: '2026-01-01' }),
       fila(3, 'salida', 'Taladro', 2, { fecha: '2026-01-05', responsable: 'Juan Perez' }),
       fila(4, 'devolucion', 'Taladro', 2, { fecha: '2026-01-08', proveedor: 'Pedro Gomez' }),
     ]);
+    expect(r.movs[2].tipo).toBe('devolucion'); // explícita, se respeta
     expect(r.excepciones).toHaveLength(1);
     expect(r.excepciones[0].devuelve).toBe('Pedro Gomez');
     expect(r.excepciones[0].saldoDevolvedor).toBe(0);
@@ -348,25 +380,13 @@ describe('clasificarMovsHerramientas — ingreso vs devolución', () => {
     expect(r.excepciones).toHaveLength(0);
   });
 
-  it('saldos sembrados de la BD descargan con resolverPersona', () => {
-    const k = normTxt('Taladro');
-    const r = clasificarMovsHerramientas(
-      [fila(2, 'devolucion', 'Taladro', 1, { proveedor: 'Juan Perez' })],
-      {
-        historialPorItem: { [k]: { tuvoIngreso: true, saldos: { 'p:u1': 1 }, nombres: { 'p:u1': 'Juan Perez' } } },
-        resolverPersona: (n) => (normTxt(n) === normTxt('Juan Perez') ? 'p:u1' : null),
-      }
-    );
-    expect(r.movs[0].tipo).toBe('devolucion');
-    expect(r.excepciones).toHaveLength(0);
-  });
-
-  it('los traspasos no cuentan como ingreso ni tocan saldos', () => {
+  it('los traspasos no cuentan como salida ni generan sugerencias', () => {
     const r = clasificarMovsHerramientas([
-      fila(2, 'traspaso', 'Taladro', 1, { fecha: '2026-01-01' }),
-      fila(3, 'entrada', 'Taladro', 1, { fecha: '2026-01-02' }),
+      fila(2, 'entrada', 'Taladro', 1, { fecha: '2026-01-01' }),
+      fila(3, 'traspaso', 'Taladro', 1, { fecha: '2026-01-02' }),
+      fila(4, 'entrada', 'Taladro', 1, { fecha: '2026-01-03' }),
     ]);
-    expect(r.movs[1].tipo).toBe('entrada'); // sigue siendo el primer ingreso
-    expect(r.reclasificadas).toHaveLength(0);
+    expect(r.movs[2].tipo).toBe('entrada'); // el traspaso no dejó nada afuera
+    expect(r.sugerencias).toHaveLength(0);
   });
 });
