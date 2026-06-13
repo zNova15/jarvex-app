@@ -47,7 +47,17 @@ function InsumosPage({ showToast }) {
   const { data: materiales } = window.__hooks.useMateriales(obraId);
   const { data: movimientos } = window.__hooks.useMovimientosMateriales(obraId);
 
-  const [partidaSel, setPartidaSel] = uSG(null);
+  // Partida destino al llegar desde el Gantt (window.__insumosTargetPartida) +
+  // si venimos del cronograma (para mostrar el botón "Volver"). Se leen UNA vez
+  // al montar (la página remonta al navegar) y se consumen para no reusarlos en
+  // una visita manual posterior. El efecto de default respeta este partidaSel
+  // inicial: mientras la partida no esté en la lista no lo pisa (guard de carga).
+  const [partidaSel, setPartidaSel] = uSG(() => (typeof window !== 'undefined' && window.__insumosTargetPartida) || null);
+  const [fromGantt] = uSG(() => typeof window !== 'undefined' && !!window.__insumosFromGantt);
+  uEG(() => { try { delete window.__insumosTargetPartida; delete window.__insumosFromGantt; } catch {} }, []);
+  const volverAlCronograma = () => {
+    try { window.dispatchEvent(new CustomEvent('jx_navigate', { detail: { page: 'cronograma' } })); } catch {}
+  };
   const [insumosPres, setInsumosPres] = uSG([]);
   // Conteo de insumos presupuestados POR PARTIDA (una sola query por obra):
   // alimenta los badges del selector — el usuario ve dónde hay APU antes de
@@ -237,6 +247,11 @@ function InsumosPage({ showToast }) {
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div>
+          {fromGantt && (
+            <button className="btn btn-ghost btn-sm" onClick={volverAlCronograma} style={{ marginBottom: 8 }}>
+              <JxIcon name="chevL" size={13} />Volver al cronograma
+            </button>
+          )}
           <div className="pg-title">Insumos por Partida</div>
           <div className="pg-sub">Comparativa <strong>presupuestado</strong> (APU/Delphin) vs <strong>real</strong> (movimientos)</div>
         </div>

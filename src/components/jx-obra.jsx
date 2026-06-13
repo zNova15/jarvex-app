@@ -2263,6 +2263,18 @@ function CronogramaPage() {
 
   const todayMs = uMO(() => startOfDay(Date.now()), []);
 
+  // Click en una partida ESPECÍFICA (hoja) → ir a "Insumos por Partida" con
+  // esa partida ya seleccionada (y un botón para volver al cronograma). Los
+  // capítulos solo agrupan, no tienen insumos → no navegan.
+  const verInsumosDe = (p) => {
+    if (!p?.id) return;
+    try {
+      window.__insumosTargetPartida = p.id;
+      window.__insumosFromGantt = true;
+      window.dispatchEvent(new CustomEvent('jx_navigate', { detail: { page: 'insumos' } }));
+    } catch {}
+  };
+
   const partidasConFechas = uMO(() => {
     if (!partidasRaw) return [];
     return partidasRaw
@@ -2632,20 +2644,25 @@ function CronogramaPage() {
             <div style={{height:totalContentH,position:'relative'}}>
               {visibleRows.map((p, i) => {
                 const idx = startIdx + i;
+                const hoja = esEspecifica(p.codigo_delfin);
                 return (
-                  <div key={p.id} style={{
+                  <div key={p.id}
+                    onClick={hoja ? () => verInsumosDe(p) : undefined}
+                    title={hoja ? 'Ver insumos de esta partida →' : 'Capítulo / sub-capítulo'}
+                    style={{
                     position:'absolute',top:idx*ROW_H,left:0,right:0,height:ROW_H,
                     padding:'0 12px',display:'flex',alignItems:'center',gap:6,
                     borderBottom:'1px solid rgba(255,255,255,0.03)',
                     background: idx % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.015)',
                     fontSize:11.5,color:'var(--ts)',whiteSpace:'nowrap',overflow:'hidden',
+                    cursor: hoja ? 'pointer' : 'default',
                   }}>
-                    <span title={esEspecifica(p.codigo_delfin) ? 'Partida específica (hoja)' : 'Capítulo / sub-capítulo'}
-                          style={{ fontSize:11, flexShrink:0, opacity:0.8 }}>
-                      {esEspecifica(p.codigo_delfin) ? '🎯' : '📁'}
+                    <span style={{ fontSize:11, flexShrink:0, opacity:0.8 }}>
+                      {hoja ? '🎯' : '📁'}
                     </span>
-                    <span style={{fontSize:9.5,color: esEspecifica(p.codigo_delfin) ? 'var(--tm)' : 'var(--amber)',fontWeight:700,flexShrink:0,fontFamily:'ui-monospace,monospace'}}>{p.codigo_delfin || ''}</span>
-                    <span style={{overflow:'hidden',textOverflow:'ellipsis', fontWeight: esEspecifica(p.codigo_delfin) ? 400 : 600}}>{p.nombre_partida}</span>
+                    <span style={{fontSize:9.5,color: hoja ? 'var(--tm)' : 'var(--amber)',fontWeight:700,flexShrink:0,fontFamily:'ui-monospace,monospace'}}>{p.codigo_delfin || ''}</span>
+                    <span style={{overflow:'hidden',textOverflow:'ellipsis', fontWeight: hoja ? 400 : 600}}>{p.nombre_partida}</span>
+                    {hoja && <span style={{ marginLeft:'auto', flexShrink:0, fontSize:11, color:'var(--amber)', opacity:0.65 }}>→</span>}
                   </div>
                 );
               })}
@@ -2689,13 +2706,16 @@ function CronogramaPage() {
                 const dur = p.duracion_dias || (diffDays(ini, fin) + 1);
                 const tooltip = `${p.codigo_delfin || ''} · ${p.nombre_partida || ''}\n${p.fecha_inicio_planificada} → ${p.fecha_fin_planificada}\nDuración: ${dur} días · Avance: ${av.toFixed(1)}%\nEstado: ${col.label}`;
 
+                const hojaBar = esEspecifica(p.codigo_delfin);
                 return (
                   <div key={p.id}
-                    title={tooltip}
+                    title={hojaBar ? `${tooltip}\n\n→ Click para ver los insumos de esta partida` : tooltip}
+                    onClick={hojaBar ? () => verInsumosDe(p) : undefined}
                     style={{
                       position:'absolute',top:idx*ROW_H,left:0,height:ROW_H,width:'100%',
                       borderBottom:'1px solid rgba(255,255,255,0.03)',
                       background: idx % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.015)',
+                      cursor: hojaBar ? 'pointer' : 'default',
                     }}>
                     <div style={{
                       position:'absolute',
