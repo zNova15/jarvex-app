@@ -3,6 +3,7 @@ import { detectarEPP, esProbablementeEPP, epppTipo } from "../lib/epp-utils.js";
 import { normalizeCodigo, fuzzyScore } from "../lib/match-helpers.js";
 import { calcularPresupuesto, fmtSoles } from "../lib/presupuesto-obra.js";
 import { aplicarNombresDesdePartidas } from "../lib/partida-nombres.js";
+import { dedupePartidasLocal } from "../lib/partida-dedup.js";
 import { MigracionFlow, descargarPlantilla as descargarPlantillaMigracion } from "./jx-migracion-import.jsx";
 import { FORMATOS as MIGRACION_FORMATOS } from "../lib/migracion-parser.js";
 import { DATASETS as EXPORT_DATASETS, exportarDataset, exportarTodo, contarDatasets, exportarFotosZip } from "../lib/export-historico.js";
@@ -750,8 +751,19 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       }
     }
 
+    // ── Fase 6: dedup defensivo — colapsa duplicados por código normalizado
+    // que pudieran haber quedado de imports previos (presupuesto/Gantt/APU son
+    // 3 flujos que insertan partidas con snapshots independientes). Idempotente.
+    let dedupBorradas = 0;
+    try {
+      const r = await dedupePartidasLocal(window.__db, obraId, userId);
+      dedupBorradas = r.borradas;
+    } catch (e) {
+      errorList.push({ row: '-', error: `Dedup de partidas: ${e.message || e}` });
+    }
+
     const aSaltar = comparison.length - aImportar.length - aReemplazar.length;
-    const detalle = `${partidasInsertadas} nuevas, ${partidasActualizadas} actualizadas (preservando ID), ${aSaltar} saltadas, ${insumosInsertados} insumos${capitulosRenombrados ? `, ${capitulosRenombrados} capítulos renombrados/creados` : ''}${errorList.length ? `, ${errorList.length} errores` : ''}`;
+    const detalle = `${partidasInsertadas} nuevas, ${partidasActualizadas} actualizadas (preservando ID), ${aSaltar} saltadas, ${insumosInsertados} insumos${capitulosRenombrados ? `, ${capitulosRenombrados} capítulos renombrados/creados` : ''}${dedupBorradas ? `, ${dedupBorradas} duplicadas depuradas` : ''}${errorList.length ? `, ${errorList.length} errores` : ''}`;
     return {
       tipo: 'apu',
       ok: partidasInsertadas + partidasActualizadas,
@@ -1173,6 +1185,10 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       await window.__db.partidas.bulkPut(nuevosCapitulos);
       capCreados = nuevosCapitulos.length;
     }
+    // Dedup defensivo: el Gantt crea capítulos que pueden colisionar (por código
+    // normalizado) con partidas ya creadas por el presupuesto/APU. Idempotente.
+    let dedupBorradas = 0;
+    try { dedupBorradas = (await dedupePartidasLocal(window.__db, obraId, userId)).borradas; } catch {}
     const actualizadas = exactas + normalizadas;
     return {
       tipo: 'gantt',
@@ -1181,6 +1197,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
         (normalizadas ? ` (${exactas} match exacto + ${normalizadas} match normalizado)` : '') +
         (capCreados ? ` · ${capCreados} capítulos creados` : '') +
         (capActualizados ? ` · ${capActualizados} capítulos actualizados` : '') +
+        (dedupBorradas ? ` · ${dedupBorradas} duplicadas depuradas` : '') +
         (sugerencias.length ? ` · ${sugerencias.length} sugerencias por revisar` : '') +
         (noMatch.length ? ` · ${noMatch.length} sin match` : ''),
       errors: noMatch.length,

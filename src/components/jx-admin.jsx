@@ -2161,6 +2161,67 @@ function SistemaTab({ showToast }) {
     showToast?.('Sincronización solicitada','green');
   };
 
+  // Repara partidas duplicadas por código (Delphin: presupuesto+Gantt+APU
+  // pueden crear la misma partida 2-3 veces). Colapsa cada grupo en una sola
+  // partida (la que tiene insumos), re-apunta insumos y soft-borra el resto.
+  //
+  // ANTES de deduplicar SIEMPRE sincronizamos (syncAll): pusheamos lo que haya
+  // pendiente y, sobre todo, traemos los tombstones del server. Sin esto, si el
+  // duplicado ya se limpió en el server (p.ej. un cleanup SQL) pero este device
+  // todavía no recibió el pull (el periódico tarda hasta 30s y se SKIPEA si la
+  // pestaña no está visible), el dedup correría sobre el estado pre-limpieza:
+  // elegiría supervivientes localmente y empujaría borrados/updates que chocan
+  // con la limpieza ya hecha en el server (puede matar el superviviente correcto
+  // del server y re-apuntar insumos a una fila que el server tiene tombstoneada).
+  // Reconciliando primero, el dedup corre sobre el estado real ya limpio y queda
+  // como un no-op idempotente, o sólo colapsa duplicados que de verdad sigan.
+  const repararPartidas = async () => {
+    setBusy(true);
+    try {
+      const obraId = window.__getObraActivaId?.();
+      if (!obraId) { showToast?.('No hay obra activa', 'red'); return; }
+
+      // 1) No tocar nada si estamos offline: no podemos traer los tombstones del
+      //    server y deduplicar a ciegas es justo lo que queremos evitar.
+      if (!navigator.onLine) {
+        showToast?.('Sin conexión: conectate para reparar (necesita sincronizar primero)', 'red');
+        return;
+      }
+
+      // 2) Abortar si hay cambios de partidas/insumos sin sincronizar: pushearlos
+      //    en medio de una limpieza del server genera conflictos. Que el usuario
+      //    sincronice primero y vuelva a intentar.
+      const db = window.__db;
+      const pendStatuses = ['pending_create', 'pending_update', 'pending_delete'];
+      const [pendPart, pendIns] = await Promise.all([
+        db.partidas.where('obra_id').equals(obraId).filter(p => pendStatuses.includes(p.sync_status)).count(),
+        db.insumos_partida.where('obra_id').equals(obraId).filter(i => pendStatuses.includes(i.sync_status)).count(),
+      ]);
+      if (pendPart + pendIns > 0) {
+        showToast?.(`Hay ${pendPart + pendIns} cambios de partidas sin sincronizar. Sincronizá primero y reintentá.`, 'amber');
+        return;
+      }
+
+      // 3) Reconciliar ANTES de deduplicar: trae los tombstones del server (y
+      //    empuja cualquier pendiente residual). Tras esto, Dexie refleja el
+      //    estado real del server.
+      try {
+        const { syncAll } = await import('../sync/SyncEngine.js');
+        await syncAll();
+      } catch (e) {
+        showToast?.('No se pudo sincronizar antes de reparar: ' + (e.message || e), 'red');
+        return;
+      }
+
+      // 4) Recién ahora deduplicar sobre el estado reconciliado.
+      const { dedupePartidasLocal } = await import('../lib/partida-dedup.js');
+      const r = await dedupePartidasLocal(db, obraId, auth?.profile?.id || 'offline');
+      if (r.borradas === 0) showToast?.('No hay partidas duplicadas en esta obra', 'green');
+      else showToast?.(`${r.borradas} partidas duplicadas depuradas (${r.grupos} códigos) · ${r.insumosReapuntados} insumos re-apuntados`, 'green');
+    } catch (e) { showToast?.('Error: ' + (e.message || e), 'red'); }
+    finally { setBusy(false); }
+  };
+
   const clearLocal = async () => {
     setBusy(true);
     try {
@@ -2439,6 +2500,11 @@ function SistemaTab({ showToast }) {
           <button className="btn btn-amber btn-sm" onClick={triggerSync}>
             <JxIcon name="refresh" size={13}/>Sincronizar ahora
           </button>
+          {isAdmin && (
+            <button className="btn btn-ghost btn-sm" onClick={repararPartidas} disabled={busy}>
+              <JxIcon name="layers" size={13}/>{busy ? 'Reparando…' : 'Reparar partidas duplicadas'}
+            </button>
+          )}
           {/* Acciones destructivas solo para admin */}
           {isAdmin && (
             <>
