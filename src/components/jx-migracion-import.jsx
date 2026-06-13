@@ -979,6 +979,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
   // análisis se recomputa de forma reactiva con clasificarMovsHerramientas.
   const [devInputs, setDevInputs] = uS(null);
   const [decisionesDevolucion, setDecisionesDevolucion] = uS(() => new Map()); // idx → 'devolucion'|'ingreso'
+  const [motivosExcepcion, setMotivosExcepcion] = uS(() => new Map()); // idx → motivo (obligatorio en devolución por otra persona)
   const [estadosHerr, setEstadosHerr] = uS(() => new Map()); // key → estado CHECK
   const devAnalisis = uM(
     () => (devInputs ? clasificarMovsHerramientas(devInputs.movs, { historialPorItem: devInputs.historial, resolverPersona: devInputs.resolverPersona, decisiones: decisionesDevolucion }) : null),
@@ -1108,7 +1109,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     // INVARIANTE: devAnalisis/estadosHerr describen el archivo YA escaneado y
     // mueren con él — si quedaran stale con la misma cantidad de filas,
     // runMovHerramientas importaría el dataset del archivo anterior entero.
-    setDevInputs(null); setDecisionesDevolucion(new Map()); setEstadosHerr(new Map());
+    setDevInputs(null); setDecisionesDevolucion(new Map()); setMotivosExcepcion(new Map()); setEstadosHerr(new Map());
     if (!f) return;
     if (f.size > 10 * 1024 * 1024) { setParseErr('El archivo excede 10 MB'); return; }
     window.__excel.parseExcelFile(f)
@@ -1132,7 +1133,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     setParsed({ headers: s.headers, rows: s.rows });
     setFormato(s.formato);
     setResult(null); setScanRows(null); setScanPersonas(null); setScanAlmacenes(null);
-    setDevInputs(null); setDecisionesDevolucion(new Map()); setEstadosHerr(new Map());
+    setDevInputs(null); setDecisionesDevolucion(new Map()); setMotivosExcepcion(new Map()); setEstadosHerr(new Map());
   }, []);
 
   // ── Cargas ────────────────────────────────────────────────────────
@@ -1584,7 +1585,8 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           const exc = excepcionPorIdx.get(m.idx);
           if (exc) {
             const tienen = (exc.conSaldo || []).map(c => `${c.nombre} (${c.cantidad})`).join(', ');
-            obsExtra.push(`[Devolución] Excepción: devuelta por ${exc.devuelve}${tienen ? `; con saldo cargado: ${tienen}` : '; nadie tenía esa cantidad cargada'}`);
+            const motivo = (motivosExcepcion.get(m.idx) || '').trim();
+            obsExtra.push(`[Devolución] Excepción: la devuelve ${exc.devuelve}${tienen ? `, a cargo de ${tienen}` : ' (nadie la tenía a cargo)'}${motivo ? `. Motivo: ${motivo}` : ''}`);
           }
           const devuelve = m.proveedor || m.origen || m.responsable;
           if (devuelve) atribuir(devuelve, 'Devuelve');
@@ -2194,6 +2196,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         const { historial, resolverPersona } = await cargarHistorialHerr(obraId);
         setDevInputs({ movs: preview.movs, historial, resolverPersona });
         setDecisionesDevolucion(new Map());
+        setMotivosExcepcion(new Map());
         const base = clasificarMovsHerramientas(preview.movs, { historialPorItem: historial, resolverPersona });
         const decMax = new Map(base.sugerencias.map(s => [s.idx, 'devolucion']));
         movsResp = clasificarMovsHerramientas(preview.movs, { historialPorItem: historial, resolverPersona, decisiones: decMax }).movs;
@@ -2207,7 +2210,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           if (k && !est.has(k) && m.estado) est.set(k, normEstadoHerr(m.estado));
         }
         setEstadosHerr(est);
-      } else { setDevInputs(null); setDecisionesDevolucion(new Map()); setEstadosHerr(new Map()); }
+      } else { setDevInputs(null); setDecisionesDevolucion(new Map()); setMotivosExcepcion(new Map()); setEstadosHerr(new Map()); }
       const rows = await escanearMovs(preview.movs, formato, obraId);
       const d = new Map();
       for (const r of rows) d.set(r.key, accionDefault(r));
@@ -2228,6 +2231,10 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
 
   // Llamado desde el paso "Insumos" — aplica decisiones y corre el loader.
   const confirmarYCargar = async () => {
+    // Guard: las devoluciones por OTRA persona necesitan motivo obligatorio
+    // (además del botón deshabilitado, por si se llamara por otra vía).
+    const exSinMotivo = (devAnalisis?.excepciones || []).filter(e => !(motivosExcepcion.get(e.idx) || '').trim());
+    if (exSinMotivo.length) { showToast(`Completá el motivo de ${exSinMotivo.length} devolución(es) por otra persona`, 'red'); return; }
     setImp(true);
     try {
       const dec = await aplicarDecisiones(scanRows, decisiones, formato, obraId, userId, { estadosHerr });
@@ -2265,7 +2272,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     setProgress({ current: 0, total: 0 });
     setScanRows(null); setDecisiones(new Map());
     setScanPersonas(null); setDecisionesPersonas(new Map()); setScanAlmacenes(null);
-    setDevInputs(null); setDecisionesDevolucion(new Map()); setEstadosHerr(new Map());
+    setDevInputs(null); setDecisionesDevolucion(new Map()); setMotivosExcepcion(new Map()); setEstadosHerr(new Map());
   };
 
   // Acciones globales del paso "Insumos".
@@ -2706,15 +2713,27 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
                 )}
                 {devAnalisis.excepciones.length > 0 && (
                   <div style={{ padding: '8px 10px', background: 'rgba(231,76,60,0.08)', border: '1px solid rgba(231,76,60,0.3)', borderRadius: 6 }}>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--red)', marginBottom: 4 }}>⚠ {devAnalisis.excepciones.length} devolución(es) donde quien devuelve NO tenía esa cantidad cargada</div>
-                    <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 6 }}>Se importan igual con una observación de excepción (como el flujo manual). Revisá si el Excel tiene a la persona equivocada o si faltó registrar la salida.</div>
-                    <div style={{ maxHeight: 150, overflowY: 'auto' }}>
-                      {devAnalisis.excepciones.slice(0, 30).map((e, i) => (
-                        <div key={i} style={{ fontSize: 12, color: 'var(--ts)', padding: '2px 0' }}>
-                          • Fila {e.idx} · <strong>{e.item}</strong> ({e.fecha || 'sin fecha'}): devuelve <strong>{e.devuelve}</strong> {e.cantidad} pero tenía {e.saldoDevolvedor} cargado{(e.conSaldo || []).length ? <> — con saldo: {e.conSaldo.map(c => `${c.nombre} (${c.cantidad})`).join(', ')}</> : ' — nadie tenía saldo de esta herramienta'}
-                        </div>
-                      ))}
-                      {devAnalisis.excepciones.length > 30 && <div style={{ fontSize: 11, color: 'var(--tm)' }}>… y {devAnalisis.excepciones.length - 30} más</div>}
+                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--red)', marginBottom: 4 }}>⚠ {devAnalisis.excepciones.length} devolución(es) por OTRA persona — motivo obligatorio</div>
+                    <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 8 }}>La devuelve alguien que no la tenía a su cargo (ej. el ingeniero que apoyó con el regreso). Se permite, pero escribí <strong>por qué</strong> la devuelve esa persona — queda en las observaciones del movimiento. Sin el motivo no se puede cargar.</div>
+                    <div style={{ maxHeight: 240, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {devAnalisis.excepciones.map((e) => {
+                        const motivo = motivosExcepcion.get(e.idx) || '';
+                        const falta = !motivo.trim();
+                        return (
+                          <div key={e.idx} style={{ padding: '6px 8px', background: 'var(--bg-c)', border: `1px solid ${falta ? 'rgba(231,76,60,0.5)' : 'var(--border)'}`, borderRadius: 6 }}>
+                            <div style={{ fontSize: 12, color: 'var(--ts)', marginBottom: 5 }}>
+                              Fila {e.idx} · <strong>{e.item}</strong> ({e.fecha || 'sin fecha'}): la devuelve <strong>{e.devuelve}</strong> {e.cantidad}{(e.conSaldo || []).length ? <> — a cargo de: {e.conSaldo.map(c => `${c.nombre} (${c.cantidad})`).join(', ')}</> : ' — nadie la tenía a cargo'}
+                            </div>
+                            <input
+                              className="fi"
+                              style={{ fontSize: 12, padding: '6px 8px', borderColor: falta ? 'var(--red)' : undefined }}
+                              placeholder="Motivo (obligatorio): ej. el ingeniero Elvis apoyó con el regreso de la herramienta"
+                              value={motivo}
+                              onChange={ev => setMotivosExcepcion(prev => { const n = new Map(prev); n.set(e.idx, ev.target.value); return n; })}
+                            />
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -2916,12 +2935,26 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
               </div>
             )}
 
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 16 }}>
-              <button className="btn btn-ghost" onClick={() => setStep(2)} disabled={importing}><JxIcon name="chevL" size={14} />Atrás</button>
-              <button className="btn btn-amber" disabled={importing} onClick={confirmarYCargar}>
-                {importing ? `Cargando… ${progress.current}/${progress.total}` : <>Confirmar y cargar <JxIcon name="chevR" size={14} /></>}
-              </button>
-            </div>
+            {(() => {
+              // Devoluciones por otra persona: el motivo es OBLIGATORIO. Mientras
+              // falte alguno, no se puede cargar (y se avisa cuántos faltan).
+              const exSinMotivo = (devAnalisis?.excepciones || []).filter(e => !(motivosExcepcion.get(e.idx) || '').trim()).length;
+              return (
+                <>
+                  {exSinMotivo > 0 && (
+                    <div style={{ marginTop: 14, padding: '8px 10px', background: 'rgba(231,76,60,0.08)', border: '1px solid rgba(231,76,60,0.3)', borderRadius: 6, fontSize: 12, color: 'var(--ts)' }}>
+                      ⚠ Completá el motivo de {exSinMotivo} devolución(es) por otra persona (arriba, en "Posibles devoluciones") antes de cargar.
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 16 }}>
+                    <button className="btn btn-ghost" onClick={() => setStep(2)} disabled={importing}><JxIcon name="chevL" size={14} />Atrás</button>
+                    <button className="btn btn-amber" disabled={importing || exSinMotivo > 0} onClick={confirmarYCargar}>
+                      {importing ? `Cargando… ${progress.current}/${progress.total}` : <>Confirmar y cargar <JxIcon name="chevR" size={14} /></>}
+                    </button>
+                  </div>
+                </>
+              );
+            })()}
             {importing && progress.total > 0 && (
               <div style={{ height: 6, background: 'var(--bg-s)', borderRadius: 4, marginTop: 12, overflow: 'hidden' }}>
                 <div style={{ height: '100%', width: `${Math.round(progress.current / progress.total * 100)}%`, background: 'var(--amber)', transition: 'width .2s' }} />
