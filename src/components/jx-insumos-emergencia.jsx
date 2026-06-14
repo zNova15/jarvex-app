@@ -612,7 +612,7 @@ function InsumosEmergenciaPage({ showToast }) {
 
       {/* Modal movimiento */}
       {modal === 'mov' && (
-        <Modal title={editingMovId ? '⚡ Editar movimiento de emergencia' : (form.tipo_movimiento === 'entrada' ? 'Ingreso de insumo de emergencia' : 'Salida de insumo de emergencia')} icon={form.tipo_movimiento === 'entrada' ? 'arrowIn' : 'arrowOut'} onClose={() => { setModal(null); setForm({}); setEditingMovId(null); }}>
+        <Modal title={editingMovId ? '⚡ Editar movimiento de emergencia' : (form.tipo_movimiento === 'entrada' ? 'Ingreso de insumo de emergencia' : 'Salida de insumo de emergencia')} icon={form.tipo_movimiento === 'entrada' ? 'arrowIn' : 'arrowOut'} size="wide" onClose={() => { setModal(null); setForm({}); setEditingMovId(null); }}>
           <div className="g2">
             {editingMovId && (
               <div style={{ gridColumn: '1/-1' }}><label className="flabel">Tipo</label>

@@ -99,6 +99,19 @@ const COL_NOMBRE = {
   activos_pesados: 'nombre',
   insumos_emergencia: 'nombre',
 };
+// Tabla de movimientos (con cantidad) por tabla de inventario. La validación de
+// stock negativo se siembra con el stock VIVO (Σentradas − Σsalidas) de estos
+// movimientos, NO con la columna denormalizada stock_actual: esa puede quedar
+// desfasada-BAJA (p. ej. cuando una reimportación deduplica movimientos sin
+// disparar el recálculo) y bloquearía salidas válidas por "stock negativo"
+// falso. Maquinaria no lleva cantidad por movimiento → no está acá (cae al
+// fallback stock_actual). Mantener alineado con liveStockById de jx-epps.jsx.
+const MOV_POR_TABLA = {
+  materiales: { movTabla: 'movimientos_materiales', fk: 'material_id' },
+  epps: { movTabla: 'movimientos_epp', fk: 'epp_id' },
+  herramientas: { movTabla: 'movimientos_herramientas', fk: 'herramienta_id' },
+  insumos_emergencia: { movTabla: 'movimientos_insumos_emergencia', fk: 'insumo_emergencia_id' },
+};
 const LABEL_TABLA = {
   materiales: 'Materiales',
   epps: 'EPP',
@@ -297,13 +310,37 @@ async function analizarAlmacenes(movs, formato, obraId) {
     registrar(alm);
   }
   res.almacenes = [...vistos.values()].sort((a, b) => b.movs - a.movs);
-  // Stock por almacén: simulación en orden de fecha. Las entradas sin almacén
-  // suman al TEMPORAL (así se importan); las salidas sin almacén no descuentan
-  // de ninguno (solo se avisa el conteo). Dentro del MISMO día: entradas →
-  // traspasos → salidas (el archivo no trae hora confiable; si la salida
-  // apareciera antes que el traspaso que la abastece ese día, marcaría un
-  // negativo falso).
+  // Stock por almacén: simulación en orden de fecha, SEMBRADA con el desglose
+  // que ya existe en el programa (stock_ubicaciones) — si importás solo el día
+  // 12 hacia adelante, las salidas se miden contra lo ya cargado por almacén.
+  // Las entradas sin almacén suman al TEMPORAL (así se importan); las salidas
+  // sin almacén no descuentan de ninguno (solo se avisa el conteo). Dentro del
+  // MISMO día: entradas → traspasos → salidas (el archivo no trae hora
+  // confiable; si la salida apareciera antes que el traspaso que la abastece
+  // ese día, marcaría un negativo falso).
+  const seedUbic = new Map(); // `${itemNorm}|${ubicNorm}` → cantidad existente
+  try {
+    const ITEM_TIPO = { mov_materiales: 'material', mov_epp: 'epp', mov_herramientas: 'herramienta', mov_maquinaria: 'maquinaria', mov_emergencia: 'emergencia' }[formato];
+    const tabla = TABLA_POR_FORMATO[formato];
+    const col = COL_NOMBRE[tabla];
+    if (ITEM_TIPO && tabla && col) {
+      const db = window.__db;
+      const itemRows = tabla === 'activos_pesados'
+        ? await db[tabla].filter(r => !r.deleted_at).toArray()
+        : await db[tabla].where('obra_id').equals(obraId).filter(r => !r.deleted_at).toArray();
+      const nomItemById = new Map(itemRows.map(r => [r.id, normTxt(r[col])]));
+      const nomUbicById = new Map((idx.rows || []).map(u => [u.id, normTxt(u.nombre)]));
+      await db.stock_ubicaciones.where('obra_id').equals(obraId).each(su => {
+        if (su.deleted_at || su.item_tipo !== ITEM_TIPO) return;
+        const inom = nomItemById.get(su.item_id), unom = nomUbicById.get(su.ubicacion_id);
+        if (!inom || !unom) return;
+        const key = `${inom}|${unom}`;
+        seedUbic.set(key, (seedUbic.get(key) || 0) + (Number(su.cantidad) || 0));
+      });
+    }
+  } catch {}
   const saldo = new Map();
+  const saldoUbic = (k) => saldo.has(k) ? saldo.get(k) : (seedUbic.get(k) || 0);
   const orden = [...(movs || [])].sort(cmpMovFechaTipo);
   for (const m of orden) {
     if (!m.tipo || !(m.cantidad > 0)) continue;
@@ -313,18 +350,18 @@ async function analizarAlmacenes(movs, formato, obraId) {
       const ori = ok(m.almacen || m.origen) || TEMPORAL_UBIC;
       const dst = ok(m.almacenDestino || m.lugar) || TEMPORAL_UBIC;
       const kO = `${item}|${normTxt(ori)}`;
-      const antes = saldo.get(kO) || 0;
+      const antes = saldoUbic(kO);
       const despues = antes - m.cantidad;
       if (despues < 0 && antes >= 0) res.negativos.push({ item: m.nombreItem, almacen: ori, fecha: m.fecha || '', faltan: -despues });
       saldo.set(kO, despues);
       const kD = `${item}|${normTxt(dst)}`;
-      saldo.set(kD, (saldo.get(kD) || 0) + m.cantidad);
+      saldo.set(kD, saldoUbic(kD) + m.cantidad);
     } else if (m.tipo === 'entrada' || m.tipo === 'devolucion') {
       const k = `${item}|${normTxt(ok(alm) || TEMPORAL_UBIC)}`;
-      saldo.set(k, (saldo.get(k) || 0) + m.cantidad);
+      saldo.set(k, saldoUbic(k) + m.cantidad);
     } else if (ok(alm)) {
       const k = `${item}|${normTxt(alm)}`;
-      const antes = saldo.get(k) || 0;
+      const antes = saldoUbic(k);
       const despues = antes - m.cantidad;
       if (despues < 0 && antes >= 0) res.negativos.push({ item: m.nombreItem, almacen: ok(alm), fecha: m.fecha || '', faltan: -despues });
       saldo.set(k, despues);
@@ -1059,11 +1096,73 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     return { tipo: 'mov', movs, resumen: resumenMovimientos(movs, formato) };
   }, [parsed, formato, esInsumos, esInsumosEmergencia, esPersonal, esAsignacion, esDataset]);
 
+  // Stock que YA existe en el programa (movimientos previos / otra importación),
+  // por nombre normalizado del insumo, de la tabla de catálogo del formato. La
+  // validación de stock negativo se SIEMBRA con esto: si importás solo el día 12
+  // hacia adelante, las salidas se miden contra lo que ya hay cargado, no contra
+  // un saldo en 0 (antes daba "stock negativo" falso).
+  // OJO: se siembra con el stock VIVO (Σentradas − Σsalidas sobre la tabla de
+  // movimientos), igual que liveStockById en jx-epps.jsx — NO con la columna
+  // denormalizada stock_actual. Esa columna puede quedar desfasada-BAJA (p. ej.
+  // tras una reimportación que deduplica movimientos sin disparar el recálculo:
+  // stock_actual=0 con 50 unidades vivas) y bloquearía las salidas del día 12
+  // con un "stock negativo" FALSO. Se usa stock_actual solo como respaldo cuando
+  // el item no tiene movimientos con cantidad (o la tabla no los lleva, como
+  // maquinaria), igual que el fallback de la página.
+  const [stockExistente, setStockExistente] = uS(new Map()); // normNombre → stock vivo
+  uE(() => {
+    if (!esMov || esAsignacion || !obraId || !formato) { setStockExistente(new Map()); return; }
+    let cancel = false;
+    const cargar = async () => {
+      try {
+        const tabla = TABLA_POR_FORMATO[formato];
+        const col = COL_NOMBRE[tabla];
+        if (!tabla || !col) { if (!cancel) setStockExistente(new Map()); return; }
+        const db = window.__db;
+        const rows = tabla === 'activos_pesados'
+          ? await db[tabla].filter(r => !r.deleted_at && (r.obra_actual_id === obraId || r.obra_id === obraId)).toArray()
+          : await db[tabla].where('obra_id').equals(obraId).filter(r => !r.deleted_at).toArray();
+        // Stock vivo por id desde los movimientos (entrada/ingreso/devolucion
+        // suman, salida/merma restan; se ignoran reversas y borrados) — espeja
+        // recalcularStock* / liveStockById, así la validación mide contra lo
+        // mismo que muestra el inventario.
+        const movCfg = MOV_POR_TABLA[tabla];
+        const vivoPorId = new Map();
+        if (movCfg) {
+          const movs = await db[movCfg.movTabla].where('obra_id').equals(obraId).toArray();
+          for (const mv of movs) {
+            if (mv.deleted_at || mv.reverses_id || mv.reversed_by_id) continue;
+            if (mv.cantidad == null) continue;
+            const c = Number(mv.cantidad || 0); if (!c) continue;
+            const id = mv[movCfg.fk]; if (id == null) continue;
+            const t = mv.tipo_movimiento || mv.accion;
+            if (t === 'entrada' || t === 'ingreso' || t === 'devolucion') vivoPorId.set(id, (vivoPorId.get(id) || 0) + c);
+            else if (t === 'salida' || t === 'merma') vivoPorId.set(id, (vivoPorId.get(id) || 0) - c);
+          }
+        }
+        const m = new Map();
+        for (const r of rows) {
+          const k = normTxt(r[col]); if (!k) continue;
+          // Si el item tiene movimientos vivos, usá esa suma (clamp a ≥0, como
+          // la página); si no, caé al denormalizado stock_actual como respaldo.
+          const stock = vivoPorId.has(r.id) ? Math.max(0, vivoPorId.get(r.id)) : (Number(r.stock_actual) || 0);
+          m.set(k, (m.get(k) || 0) + stock); // suma de variantes que comparten nombre normalizado
+        }
+        if (!cancel) setStockExistente(m);
+      } catch { if (!cancel) setStockExistente(new Map()); }
+    };
+    cargar();
+    const onData = (e) => { const t = e?.detail?.tabla; if (!t || ['materiales', 'epps', 'herramientas', 'insumos_emergencia', 'activos_pesados', 'movimientos_materiales', 'movimientos_epp', 'movimientos_herramientas', 'movimientos_insumos_emergencia', 'movimientos_maquinaria'].includes(t)) cargar(); };
+    window.addEventListener('jx_data_changed', onData);
+    return () => { cancel = true; window.removeEventListener('jx_data_changed', onData); };
+  }, [obraId, formato, esMov, esAsignacion]);
+
   // Validación de calidad del archivo de movimientos (por cantidad):
   //  · unidades: un insumo no puede tener 2 unidades distintas (ej. clavos en
   //    Kg y en cajas) → se bloquea el insumo entero.
   //  · stock negativo: una salida no puede dejar el stock bajo 0 (faltan
-  //    entradas o el dato está mal) → se marca esa fila.
+  //    entradas o el dato está mal) → se marca esa fila. El saldo arranca del
+  //    stock YA existente en el programa (stockExistente), no de 0.
   // Las filas/insumos con problema NO se importan; se muestran para corregir
   // el Excel. (No aplica a asignaciones de maquinaria, que no llevan cantidad.)
   const validacionMov = uM(() => {
@@ -1079,13 +1178,14 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
     }
     const conflictoUnidad = []; const itemsConConflicto = new Set();
     for (const [k, v] of unidades) if (v.set.size > 1) { conflictoUnidad.push({ key: k, nombre: v.nombre, unidades: [...v.set] }); itemsConConflicto.add(k); }
-    // 2) stock negativo simulado en orden de fecha
+    // 2) stock negativo simulado en orden de fecha, sembrado con el stock actual.
     const ordenadas = [...movs].sort(cmpMovFechaTipo);
     const saldo = new Map(); const stockNeg = []; const idxNeg = new Set();
+    const saldoDe = (k) => saldo.has(k) ? saldo.get(k) : (stockExistente.get(k) || 0);
     for (const m of ordenadas) {
       const k = normTxt(m.nombreItem || ''); if (!k || !m.tipo || !(m.cantidad > 0)) continue;
-      const s = saldo.get(k) || 0;
       if (m.tipo === 'traspaso') continue; // mueve de almacén: stock total intacto
+      const s = saldoDe(k);
       if (m.tipo === 'entrada' || m.tipo === 'devolucion') saldo.set(k, s + m.cantidad);
       else {
         const ns = s - m.cantidad;
@@ -1094,7 +1194,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       }
     }
     return { conflictoUnidad, itemsConConflicto, stockNeg, idxNeg };
-  }, [preview, esMov, esAsignacion]);
+  }, [preview, esMov, esAsignacion, stockExistente]);
 
   // ¿Esta fila del Excel queda excluida por validación de calidad?
   const esFilaInvalida = (m) => {

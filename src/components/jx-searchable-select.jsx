@@ -14,8 +14,9 @@
 //   />
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
+import { createPortal } from "react-dom";
 
-const { useState, useEffect, useRef, useMemo } = React;
+const { useState, useEffect, useRef, useMemo, useLayoutEffect, useCallback } = React;
 
 function SearchableSelect({
   value,
@@ -30,9 +31,25 @@ function SearchableSelect({
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
+  // El dropdown se renderiza vía portal a <body> con position:fixed para que
+  // NO lo recorte ningún ancestro con overflow (ej. el wrapper overflowX:auto
+  // de las tablas de lote en almacén/EPP/herramientas, o el propio .modal con
+  // overflow-y:auto). Anclamos por getBoundingClientRect del botón trigger.
+  const [coords, setCoords] = useState(null); // { left, top, bottom, width, openUp }
   const inputRef = useRef(null);
   const containerRef = useRef(null);
   const dropdownRef = useRef(null);
+
+  const recompute = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const vh = window.innerHeight || document.documentElement.clientHeight;
+    const espacioAbajo = vh - r.bottom;
+    // Si abajo no caben ~220px y arriba hay más espacio, abrimos hacia arriba.
+    const openUp = espacioAbajo < 220 && r.top > espacioAbajo;
+    setCoords({ left: r.left, top: r.top, bottom: r.bottom, width: r.width, openUp });
+  }, []);
 
   const selected = useMemo(
     () => options.find(o => String(o.value ?? '') === String(value ?? '')),
@@ -46,6 +63,25 @@ function SearchableSelect({
     return options.filter(o => String(o.label ?? '').toLowerCase().includes(q));
   }, [options, search]);
 
+  // Posicionar el dropdown al abrir (antes del paint para evitar parpadeo).
+  useLayoutEffect(() => {
+    if (open) recompute();
+    else setCoords(null);
+  }, [open, recompute]);
+
+  // Re-anclar en scroll (de cualquier ancestro, capture) y resize mientras
+  // está abierto, para que el dropdown fixed siga al botón.
+  useEffect(() => {
+    if (!open) return;
+    const onScroll = () => recompute();
+    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', onScroll);
+    return () => {
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', onScroll);
+    };
+  }, [open, recompute]);
+
   // Focus al abrir
   useEffect(() => {
     if (open && inputRef.current) {
@@ -54,11 +90,14 @@ function SearchableSelect({
     }
   }, [open]);
 
-  // Click outside cierra
+  // Click outside cierra. El dropdown vive en un portal a <body>, así que el
+  // contains() del container NO lo cubre — chequeamos también el dropdownRef.
   useEffect(() => {
     if (!open) return;
     const onMouseDown = (e) => {
-      if (containerRef.current && !containerRef.current.contains(e.target)) {
+      const inContainer = containerRef.current && containerRef.current.contains(e.target);
+      const inDropdown = dropdownRef.current && dropdownRef.current.contains(e.target);
+      if (!inContainer && !inDropdown) {
         setOpen(false);
         setSearch('');
       }
@@ -111,20 +150,22 @@ function SearchableSelect({
         <span style={{ color: 'var(--tm)', fontSize: 10, flexShrink: 0 }}>{open ? '▴' : '▾'}</span>
       </button>
 
-      {open && (
+      {open && coords && createPortal(
         <div
           ref={dropdownRef}
           style={{
-            position: 'absolute',
-            top: '100%',
-            left: 0,
-            right: 0,
-            marginTop: 4,
+            position: 'fixed',
+            left: coords.left,
+            width: coords.width,
+            // Hacia abajo: justo bajo el botón. Hacia arriba: sobre el botón.
+            ...(coords.openUp
+              ? { bottom: Math.max(8, (window.innerHeight || 0) - coords.top + 4) }
+              : { top: coords.bottom + 4 }),
             background: 'var(--bg-c, #1A2533)',
             border: '1px solid var(--bd, #2A3543)',
             borderRadius: 6,
             boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
-            zIndex: 2000,
+            zIndex: 3000,
             maxHeight: 320,
             display: 'flex',
             flexDirection: 'column',
@@ -197,7 +238,8 @@ function SearchableSelect({
               })
             )}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
