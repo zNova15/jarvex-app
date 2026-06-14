@@ -5,8 +5,8 @@ const { useState: uS, useEffect: uE, useMemo: uM, useRef: uR } = React;
 // con el stock general de la obra por categoría y el desglose de cuánto
 // hay de cada categoría en cada ubicación (fuente: stock_ubicaciones;
 // la maquinaria usa la ubicación de la ficha del activo — o su desglose
-// en stock_ubicaciones si la ficha no tiene ubicación — y los insumos
-// de emergencia no manejan ubicación — solo aparecen en el resumen).
+// en stock_ubicaciones si la ficha no tiene ubicación — caso migración).
+// Los insumos de emergencia también manejan almacén (mig 074).
 
 const fmtN = (n) => Number(n || 0).toLocaleString('es-PE');
 
@@ -18,12 +18,13 @@ const CATS = [
   { key: 'material',    label: 'Materiales',   icon: 'package', color: 'var(--blue)',   bg: 'rgba(59,130,246,0.12)' },
   { key: 'herramienta', label: 'Herramientas', icon: 'tool',    color: 'var(--amber)',  bg: 'rgba(245,158,11,0.12)' },
   { key: 'epp',         label: 'EPPs',         icon: 'shield',  color: 'var(--green)',  bg: 'rgba(34,197,94,0.12)' },
+  { key: 'emergencia',  label: 'Emergencia',   icon: 'alert',   color: 'var(--red)',    bg: 'rgba(239,68,68,0.12)' },
   { key: 'maquinaria',  label: 'Maquinaria',   icon: 'truck',   color: 'var(--orange)', bg: 'rgba(249,115,22,0.12)' },
 ];
 
 const cero = () => ({ items: 0, unidades: 0 });
 const bucketDe = (map, ubicId, tipo) => {
-  if (!map.has(ubicId)) map.set(ubicId, { material: cero(), herramienta: cero(), epp: cero(), maquinaria: cero() });
+  if (!map.has(ubicId)) map.set(ubicId, { material: cero(), herramienta: cero(), epp: cero(), emergencia: cero(), maquinaria: cero() });
   return map.get(ubicId)[tipo];
 };
 
@@ -83,7 +84,7 @@ function UbicacionesPage({ showToast }) {
       const db = window.__db;
       try {
         const tot = { material: cero(), herramienta: cero(), epp: cero(), maquinaria: cero(), emergencia: cero() };
-        const vivos = { material: new Set(), herramienta: new Set(), epp: new Set() };
+        const vivos = { material: new Set(), herramienta: new Set(), epp: new Set(), emergencia: new Set() };
         const serializadas = []; // herramientas legacy sin maneja_cantidad, con ubicación de catálogo
         const serialIds = new Set(); // ids serializados: sus filas en stock_ubicaciones (legacy/huérfanas) se saltan para no contarlas dos veces
         const activos = [];
@@ -127,6 +128,7 @@ function UbicacionesPage({ showToast }) {
         });
         await db.insumos_emergencia.where('obra_id').equals(obraId).each(r => {
           if (r.deleted_at || r.es_grupo === true) return;
+          vivos.emergencia.add(r.id);
           tot.emergencia.items++; tot.emergencia.unidades += Number(r.stock_actual) || 0;
         });
         // activos_pesados no tiene índice obra_id: el campo canónico es obra_actual_id
@@ -149,7 +151,7 @@ function UbicacionesPage({ showToast }) {
         // Desglose por ubicación: materiales/herramientas/epp desde stock_ubicaciones.
         const mapa = new Map();
         const rowsPorUbic = new Map();
-        const dist = { material: 0, herramienta: 0, epp: 0, maquinaria: 0 };
+        const dist = { material: 0, herramienta: 0, epp: 0, emergencia: 0, maquinaria: 0 };
         const maqDesglose = new Map(); // activo_id → [{ubic, cant}] (filas 'maquinaria', ej. migración histórica)
         await db.stock_ubicaciones.where('obra_id').equals(obraId).each(r => {
           if (r.deleted_at) return;
@@ -204,6 +206,7 @@ function UbicacionesPage({ showToast }) {
           material: Math.max(0, tot.material.unidades - dist.material),
           herramienta: Math.max(0, tot.herramienta.unidades - dist.herramienta),
           epp: Math.max(0, tot.epp.unidades - dist.epp),
+          emergencia: Math.max(0, tot.emergencia.unidades - dist.emergencia),
           maquinaria: Math.max(0, tot.maquinaria.unidades - dist.maquinaria),
         });
         setDetalles({});
@@ -245,7 +248,7 @@ function UbicacionesPage({ showToast }) {
     try {
       const db = window.__db;
       const rows = stockRowsRef.current.get(ubicId) || [];
-      const idsPorTipo = { material: [], herramienta: [], epp: [] };
+      const idsPorTipo = { material: [], herramienta: [], epp: [], emergencia: [] };
       for (const r of rows) if (r.item_id && idsPorTipo[r.tipo]) idsPorTipo[r.tipo].push(r.item_id);
 
       const nombres = new Map();
@@ -255,6 +258,8 @@ function UbicacionesPage({ showToast }) {
         .forEach(h => nombres.set(h.id, { nombre: h.nombre_herramienta || 'Herramienta', unidad: h.unidad || 'und' }));
       if (idsPorTipo.epp.length) (await db.epps.where('id').anyOf(idsPorTipo.epp).toArray())
         .forEach(e => nombres.set(e.id, { nombre: e.nombre_epp || 'EPP', unidad: e.unidad || 'und' }));
+      if (idsPorTipo.emergencia.length) (await db.insumos_emergencia.where('id').anyOf(idsPorTipo.emergencia).toArray())
+        .forEach(e => nombres.set(e.id, { nombre: e.nombre || 'Insumo de emergencia', unidad: e.unidad || 'und' }));
 
       const grupos = CATS.map(cat => ({
         cat,
@@ -469,10 +474,7 @@ function UbicacionesPage({ showToast }) {
 
       {/* Resumen general de stock de la obra por categoría */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 18 }}>
-        {[...CATS.slice(0, 3),
-          { key: 'emergencia', label: 'Emergencia', icon: 'alert', color: 'var(--red)', bg: 'rgba(239,68,68,0.12)', sub: 'stock general · sin ubicación' },
-          CATS[3],
-        ].map(cat => {
+        {CATS.map(cat => {
           const r = resumen?.[cat.key];
           // Materiales suma bolsas + m3 + kg + metros: esa suma de unidades es
           // mixta y no responde "cuántos existen". Ahí el héroe es el nº de

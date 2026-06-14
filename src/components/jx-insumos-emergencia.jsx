@@ -12,6 +12,10 @@ import { calcAlerta } from "../lib/stock-utils.js";
 import { detectarSugerencias, detectarDuplicados, fusionarInsumos } from "../lib/variantes.js";
 import { opcionesDestinoFlat, splitDestino, joinDestino, nombreDestinoMov } from "../lib/destino-mov.js";
 import { useFotosEvidencias, FotoInsumoCell } from "./jx-foto-insumo.jsx";
+import { getDesgloseBulk, aplicarDelta, traspasar } from "../lib/stock-ubicaciones.js";
+import { DesglosePopup, TraspasoStockModal, ubicacionAutoOrigen, validarSalidaUbic } from "./jx-stock-ubic.jsx";
+
+const ITEM_TIPO = 'emergencia'; // item_tipo en stock_ubicaciones (mig 074)
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 const hoyISO = () => new Date().toISOString().slice(0, 10);
@@ -35,6 +39,9 @@ function InsumosEmergenciaPage({ showToast }) {
   const movHook = window.__hooks.useMovInsumosEmergencia(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
   const { data: subcontratistas } = window.__hooks.useSubcontratistas();
+  const { data: ubicaciones } = window.__hooks.useUbicacionesObra?.(obraId) || { data: [] };
+  const ubicacionesActivas = uM(() => (ubicaciones || []).filter(u => u.activo !== false), [ubicaciones]);
+  const ubicacionesById = uM(() => { const m = new Map(); (ubicaciones || []).forEach(u => m.set(u.id, u)); return m; }, [ubicaciones]);
 
   const [q, setQ] = uS('');
   const [vista, setVista] = uS('inventario'); // 'inventario' | 'movimientos'
@@ -48,6 +55,30 @@ function InsumosEmergenciaPage({ showToast }) {
 
   // Fotos del catálogo (evidencias tipo foto_insumo_emergencia) → thumbnail por fila.
   const fotosMap = useFotosEvidencias(obraId, 'foto_insumo_emergencia');
+
+  // ── Stock por ALMACÉN (desglose) — paridad con materiales (mig 074) ──
+  // desgloseUbic: Map(insumoId → Map(ubicacionId → cantidad)). Se recarga
+  // cuando cambia stock_ubicaciones (jx_data_changed).
+  const [desgloseUbic, setDesgloseUbic] = uS(new Map());
+  const [popupInsumo, setPopupInsumo] = uS(null);     // insumo cuyo desglose se ve
+  const [traspasoOpen, setTraspasoOpen] = uS(false);  // modal de traspaso
+  uE(() => {
+    if (!obraId) { setDesgloseUbic(new Map()); return; }
+    let cancelado = false;
+    const cargar = async () => {
+      try {
+        const ids = (insumos || []).filter(i => !i.deleted_at && !i.es_grupo).map(i => i.id);
+        if (!ids.length) { if (!cancelado) setDesgloseUbic(new Map()); return; }
+        const m = await getDesgloseBulk(ITEM_TIPO, ids);
+        if (!cancelado) setDesgloseUbic(m);
+      } catch { if (!cancelado) setDesgloseUbic(new Map()); }
+    };
+    cargar();
+    const onData = (e) => { const t = e?.detail?.tabla; if (!t || t === 'stock_ubicaciones') cargar(); };
+    window.addEventListener('jx_data_changed', onData);
+    return () => { cancelado = true; window.removeEventListener('jx_data_changed', onData); };
+  }, [obraId, insumos]);
+  const hayAlmacenes = ubicacionesActivas.length > 0;
 
   const personalById = uM(() => { const m = new Map(); (personal || []).forEach(p => m.set(p.id, p)); return m; }, [personal]);
   const insumoById = uM(() => { const m = new Map(); (insumos || []).forEach(i => m.set(i.id, i)); return m; }, [insumos]);
@@ -79,6 +110,10 @@ function InsumosEmergenciaPage({ showToast }) {
         const delta = mv.tipo_movimiento === 'entrada' ? -Number(mv.cantidad || 0) : Number(mv.cantidad || 0);
         const nuevoStock = Math.max(0, Number(ins.stock_actual ?? 0) + delta);
         await updateInsumo(ins.id, { stock_actual: nuevoStock, alerta: calcAlerta(nuevoStock, Number(ins.stock_minimo || 0)) });
+      }
+      // Revertir también el desglose por almacén si el movimiento llevaba ubicación.
+      if (mv.ubicacion_id) {
+        try { await aplicarDelta({ obraId, itemTipo: ITEM_TIPO, itemId: mv.insumo_emergencia_id, ubicacionId: mv.ubicacion_id, delta: mv.tipo_movimiento === 'entrada' ? -Number(mv.cantidad || 0) : Number(mv.cantidad || 0), userId }); } catch {}
       }
       try { await window.__logAudit?.({ action: 'delete', table: 'movimientos_insumos_emergencia', recordId: mv.id, reason: 'Eliminación de movimiento de insumo de emergencia' }); } catch {}
       showToast('Movimiento eliminado', 'amber'); refresh?.();
@@ -191,12 +226,39 @@ function InsumosEmergenciaPage({ showToast }) {
   };
 
   // ── Movimiento (entrada/salida) ────────────────────────────────────
-  const abrirMov = (tipo) => { setEditingMovId(null); setForm({ tipo_movimiento: tipo, fecha: hoyISO(), insumo_emergencia_id: '', cantidad: '', responsable_id: '', proveedor_id: '', observaciones: '' }); setModal('mov'); };
+  const abrirMov = (tipo) => { setEditingMovId(null); setForm({ tipo_movimiento: tipo, fecha: hoyISO(), insumo_emergencia_id: '', cantidad: '', responsable_id: '', proveedor_id: '', almacen_id: '', observaciones: '' }); setModal('mov'); };
   // Super Admin: editar un movimiento existente (corrige stock revirtiendo el viejo y aplicando el nuevo).
   const abrirEditarMov = (mv) => {
     setEditingMovId(mv.id);
-    setForm({ tipo_movimiento: mv.tipo_movimiento, fecha: (mv.fecha || '').slice(0, 10), insumo_emergencia_id: mv.insumo_emergencia_id || '', cantidad: String(mv.cantidad ?? ''), responsable_id: joinDestino(mv), proveedor_id: mv.proveedor_id || '', observaciones: mv.observaciones || '' });
+    setForm({ tipo_movimiento: mv.tipo_movimiento, fecha: (mv.fecha || '').slice(0, 10), insumo_emergencia_id: mv.insumo_emergencia_id || '', cantidad: String(mv.cantidad ?? ''), responsable_id: joinDestino(mv), proveedor_id: mv.proveedor_id || '', almacen_id: mv.ubicacion_id || '', observaciones: mv.observaciones || '' });
     setModal('mov');
+  };
+  // Al elegir el insumo en una SALIDA, autocompletar el almacén de origen si
+  // tiene stock en uno solo (paridad con materiales).
+  const onElegirInsumoMov = (insId) => {
+    const next = { ...form, insumo_emergencia_id: insId };
+    if (form.tipo_movimiento === 'salida' && insId) {
+      const auto = ubicacionAutoOrigen(desgloseUbic.get(insId));
+      if (auto) next.almacen_id = auto;
+    }
+    setForm(next);
+  };
+
+  // Traspaso entre almacenes (mueve stock; el total del insumo no cambia).
+  const ejecutarTraspaso = async ({ item_id, origenId, destinoId, cantidad }) => {
+    const insumo = insumoById.get(item_id);
+    if (!insumo) return;
+    try {
+      await traspasar({ obraId, itemTipo: ITEM_TIPO, itemId: item_id, origenId, destinoId, cantidad, userId });
+      const oNom = ubicacionesById.get(origenId)?.nombre || '—';
+      const dNom = ubicacionesById.get(destinoId)?.nombre || '—';
+      const base = (lado, ubic, obs) => ({ obra_id: obraId, insumo_emergencia_id: item_id, fecha: hoyISO(), tipo_movimiento: lado, cantidad, unidad: insumo.unidad, ubicacion_id: ubic, observaciones: obs });
+      await movHook.create(base('salida', origenId, `Traspaso → ${dNom}`));
+      await movHook.create(base('entrada', destinoId, `Traspaso ← ${oNom}`));
+      try { await window.__logAudit?.({ action: 'insert', table: 'movimientos_insumos_emergencia', reason: `Traspaso ${cantidad} ${insumo.unidad} de ${insumo.nombre}: ${oNom} → ${dNom}` }); } catch {}
+      showToast(`Traspaso registrado: ${oNom} → ${dNom}`, 'green');
+      setTraspasoOpen(false); refresh?.();
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
   };
 
   const guardarMov = async () => {
@@ -212,6 +274,23 @@ function InsumosEmergenciaPage({ showToast }) {
       showToast(`❌ Stock insuficiente de "${insumo.nombre}": hay ${Number(insumo.stock_actual ?? 0)} ${insumo.unidad}, pedís ${cant}. No se puede sacar lo que no existe.`, 'red');
       return;
     }
+
+    // ── Resolver el almacén del movimiento (paridad con materiales) ──
+    const dgItem = desgloseUbic.get(insumo.id) || new Map();
+    const tieneDesglose = Array.from(dgItem.values()).some(c => Number(c) > 0);
+    let ubicMov = form.almacen_id || null;
+    if (!esEntrada) {
+      // Salida: origen auto si hay uno solo; si está repartido, obligatorio + validar.
+      if (!ubicMov) ubicMov = ubicacionAutoOrigen(dgItem);
+      if (!editingMovId && hayAlmacenes && tieneDesglose && !ubicMov) {
+        showToast('Elegí el almacén de origen: este insumo tiene stock repartido en varios.', 'red'); return;
+      }
+      if (!editingMovId && ubicMov && tieneDesglose) {
+        const { ok, disponible } = validarSalidaUbic(dgItem, ubicMov, cant);
+        if (!ok) { showToast(`En ese almacén hay ${disponible} ${insumo.unidad} de "${insumo.nombre}", pedís ${cant}.`, 'red'); return; }
+      }
+    }
+
     setBusy(true);
     try {
       const campos = {
@@ -220,10 +299,11 @@ function InsumosEmergenciaPage({ showToast }) {
         // Destino (persona o subcontrato) solo en salida; entrada lleva proveedor (Fase B)
         ...splitDestino(esEntrada ? null : form.responsable_id),
         proveedor_id: form.proveedor_id || null,
+        ubicacion_id: ubicMov || null,
         observaciones: form.observaciones?.trim() || null,
       };
       if (editingMovId) {
-        // 1) revertir efecto del movimiento viejo en su insumo
+        // 1) revertir efecto del movimiento viejo en su insumo (total + desglose)
         if (viejo) {
           const insViejo = insumoById.get(viejo.insumo_emergencia_id);
           if (insViejo) {
@@ -231,18 +311,25 @@ function InsumosEmergenciaPage({ showToast }) {
             const sRev = Math.max(0, Number(insViejo.stock_actual ?? 0) + deltaRev);
             await updateInsumo(insViejo.id, { stock_actual: sRev, alerta: calcAlerta(sRev, Number(insViejo.stock_minimo || 0)) });
           }
+          if (viejo.ubicacion_id) {
+            try { await aplicarDelta({ obraId, itemTipo: ITEM_TIPO, itemId: viejo.insumo_emergencia_id, ubicacionId: viejo.ubicacion_id, delta: viejo.tipo_movimiento === 'entrada' ? -Number(viejo.cantidad || 0) : Number(viejo.cantidad || 0), userId }); } catch {}
+          }
         }
         await movHook.update(editingMovId, campos);
         // 2) aplicar efecto del movimiento nuevo (releer el insumo actualizado)
         const insAct = (await window.__db.insumos_emergencia.get(insumo.id)) || insumo;
         const sNew = Math.max(0, Number(insAct.stock_actual ?? 0) + (esEntrada ? cant : -cant));
         await updateInsumo(insumo.id, { stock_actual: sNew, alerta: calcAlerta(sNew, Number(insAct.stock_minimo || 0)) });
+        if (ubicMov) { try { await aplicarDelta({ obraId, itemTipo: ITEM_TIPO, itemId: insumo.id, ubicacionId: ubicMov, delta: esEntrada ? cant : -cant, userId }); } catch {} }
         try { await window.__logAudit?.({ action: 'update', table: 'movimientos_insumos_emergencia', recordId: editingMovId, newData: campos, reason: 'Super Admin · editar movimiento de insumo de emergencia' }); } catch {}
         showToast('Movimiento actualizado', 'green');
       } else {
         await movHook.create(campos);
         const nuevoStock = Math.max(0, Number(insumo.stock_actual ?? 0) + (esEntrada ? cant : -cant));
         await updateInsumo(insumo.id, { stock_actual: nuevoStock, alerta: calcAlerta(nuevoStock, Number(insumo.stock_minimo || 0)) });
+        if (ubicMov) { try { await aplicarDelta({ obraId, itemTipo: ITEM_TIPO, itemId: insumo.id, ubicacionId: ubicMov, delta: esEntrada ? cant : -cant, userId }); } catch {} }
+        // Fijar la ubicación principal del insumo en su primer ingreso con almacén.
+        if (esEntrada && ubicMov && !insumo.ubicacion_id) { try { await updateInsumo(insumo.id, { ubicacion_id: ubicMov }); } catch {} }
         try { await window.__logAudit?.({ action: 'insert', table: 'movimientos_insumos_emergencia', reason: `${form.tipo_movimiento} ${cant} ${insumo.unidad} de ${insumo.nombre}` }); } catch {}
         showToast(esEntrada ? 'Ingreso registrado' : 'Salida registrada', 'green');
       }
@@ -263,6 +350,9 @@ function InsumosEmergenciaPage({ showToast }) {
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button className="btn btn-green btn-sm" onClick={() => abrirMov('entrada')}><JxIcon name="arrowIn" size={13} />Ingreso</button>
             <button className="btn btn-ghost btn-sm" onClick={() => abrirMov('salida')}><JxIcon name="arrowOut" size={13} />Salida</button>
+            {hayAlmacenes && ubicacionesActivas.length >= 2 && (
+              <button className="btn btn-ghost btn-sm" onClick={() => setTraspasoOpen(true)} title="Mover stock entre almacenes"><JxIcon name="compare" size={13} />Traspaso</button>
+            )}
             <button className="btn btn-amber btn-sm" onClick={abrirNuevo}><JxIcon name="plus" size={13} />Nuevo insumo</button>
           </div>
         ) : <span className="badge b-gray" title="Tu rol es solo lectura para Insumos de Emergencia">Solo lectura</span>}
@@ -323,6 +413,7 @@ function InsumosEmergenciaPage({ showToast }) {
               <thead><tr>
                 <th>Insumo</th><th>Categoría</th><th>Unidad</th>
                 <th style={{ textAlign: 'right' }}>Stock</th>
+                {hayAlmacenes && <th>Ubicación</th>}
                 <th style={{ textAlign: 'right' }}>Mínimo</th>
                 <th>Vence</th><th>Sync</th>
                 <th style={{ textAlign: 'center' }}>Acciones</th>
@@ -345,6 +436,20 @@ function InsumosEmergenciaPage({ showToast }) {
                         <td>{it.categoria || '—'}</td>
                         <td className="col-m">{it.unidad}</td>
                         <td style={{ textAlign: 'right' }}><span className={`badge ${alertaClase(it.alerta)}`}>{st.toLocaleString('es-PE')}</span></td>
+                        {hayAlmacenes && (() => {
+                          const dg = desgloseUbic.get(it.id);
+                          const conStock = dg ? Array.from(dg.entries()).filter(([, c]) => Number(c) > 0) : [];
+                          const label = conStock.length === 0 ? 'Sin distribuir'
+                            : conStock.length === 1 ? (ubicacionesById.get(conStock[0][0])?.nombre || '1 almacén')
+                            : `${conStock.length} almacenes`;
+                          return (
+                            <td>
+                              <button className="btn btn-ghost btn-xs" title="Ver stock por almacén" onClick={() => setPopupInsumo(it)}>
+                                <JxIcon name="map" size={11} /> {label}
+                              </button>
+                            </td>
+                          );
+                        })()}
                         <td style={{ textAlign: 'right', color: 'var(--tm)' }}>{Number(it.stock_minimo ?? 0).toLocaleString('es-PE')}</td>
                         <td className="col-m" style={{ fontSize: 11 }}>{it.vencimiento || '—'}</td>
                         <td>{it.sync_status && it.sync_status !== 'synced' ? <span className="badge b-amber">⏱</span> : <span style={{ color: 'var(--green)', fontSize: 11 }}>✓</span>}</td>
@@ -366,6 +471,7 @@ function InsumosEmergenciaPage({ showToast }) {
                         <td>{i.categoria || '—'}</td>
                         <td className="col-m">{i.unidad}</td>
                         <td style={{ textAlign: 'right' }}><span className={`badge ${alertaClase(alertaDeNodo(i))}`}>{stockDeNodo(i).toLocaleString('es-PE')}</span></td>
+                        {hayAlmacenes && <td style={{ color: 'var(--tm)', fontSize: 11 }}>—</td>}
                         <td style={{ textAlign: 'right', color: 'var(--tm)' }}>{Number(i.stock_minimo ?? 0).toLocaleString('es-PE')}</td>
                         <td className="col-m">—</td>
                         <td>{i.sync_status && i.sync_status !== 'synced' ? <span className="badge b-amber">⏱</span> : <span style={{ color: 'var(--green)', fontSize: 11 }}>✓</span>}</td>
@@ -516,10 +622,28 @@ function InsumosEmergenciaPage({ showToast }) {
                 </select></div>
             )}
             <div style={{ gridColumn: '1/-1' }}><label className="flabel">Insumo *</label>
-              <select className="fi" value={form.insumo_emergencia_id || ''} onChange={e => setForm({ ...form, insumo_emergencia_id: e.target.value })}>
+              <select className="fi" value={form.insumo_emergencia_id || ''} onChange={e => onElegirInsumoMov(e.target.value)}>
                 <option value="">Selecciona…</option>
-                {(insumos || []).filter(i => !i.deleted_at).map(i => <option key={i.id} value={i.id}>{i.nombre} · stock {Number(i.stock_actual ?? 0)} {i.unidad}</option>)}
+                {(insumos || []).filter(i => !i.deleted_at && !i.es_grupo).map(i => <option key={i.id} value={i.id}>{i.nombre} · stock {Number(i.stock_actual ?? 0)} {i.unidad}</option>)}
               </select></div>
+            {hayAlmacenes && (() => {
+              const dg = form.insumo_emergencia_id ? (desgloseUbic.get(form.insumo_emergencia_id) || new Map()) : new Map();
+              const conStock = Array.from(dg.entries()).filter(([, c]) => Number(c) > 0);
+              const esEntrada = form.tipo_movimiento === 'entrada';
+              const opciones = esEntrada ? ubicacionesActivas : (conStock.length ? ubicacionesActivas.filter(u => conStock.some(([uid]) => uid === u.id)) : ubicacionesActivas);
+              return (
+                <div style={{ gridColumn: '1/-1' }}>
+                  <label className="flabel">{esEntrada ? 'Almacén de llegada' : 'Almacén de origen'}{!esEntrada && conStock.length > 1 ? ' *' : ''}</label>
+                  <select className="fi" value={form.almacen_id || ''} onChange={e => setForm({ ...form, almacen_id: e.target.value })}>
+                    <option value="">{esEntrada ? '— Elegí dónde llega —' : (conStock.length ? '— Elegí de dónde sale —' : '— Sin distribuir —')}</option>
+                    {opciones.map(u => {
+                      const enU = Number(dg.get(u.id) || 0);
+                      return <option key={u.id} value={u.id}>{u.nombre}{!esEntrada && enU ? ` · ${enU} disp.` : ''}</option>;
+                    })}
+                  </select>
+                </div>
+              );
+            })()}
             <div><label className="flabel">Fecha</label>
               <input className="fi" type="date" value={form.fecha || ''} max={hoyISO()} onChange={e => setForm({ ...form, fecha: e.target.value })} /></div>
             <div><label className="flabel">Cantidad *</label>
@@ -543,6 +667,33 @@ function InsumosEmergenciaPage({ showToast }) {
             <button className={`btn ${form.tipo_movimiento === 'entrada' ? 'btn-green' : 'btn-amber'}`} onClick={guardarMov} disabled={busy}>{busy ? 'Guardando…' : editingMovId ? 'Guardar cambios' : 'Registrar'}</button>
           </div>
         </Modal>
+      )}
+
+      {/* Popup: stock por almacén de un insumo */}
+      {popupInsumo && (
+        <DesglosePopup
+          nombre={popupInsumo.nombre}
+          unidad={popupInsumo.unidad}
+          desglose={desgloseUbic.get(popupInsumo.id)}
+          ubicacionesById={ubicacionesById}
+          canTraspaso={canWrite && ubicacionesActivas.length >= 2}
+          onTraspaso={() => setTraspasoOpen(true)}
+          onClose={() => setPopupInsumo(null)}
+        />
+      )}
+
+      {/* Modal de traspaso entre almacenes */}
+      {traspasoOpen && (
+        <TraspasoStockModal
+          items={(insumos || []).filter(i => !i.deleted_at && !i.es_grupo).map(i => ({ id: i.id, nombre: i.nombre }))}
+          ubicaciones={ubicacionesActivas}
+          ubicacionesById={ubicacionesById}
+          getDesgloseDe={(id) => desgloseUbic.get(id)}
+          itemLabel="Insumo"
+          preItemId={popupInsumo?.id || ''}
+          onClose={() => setTraspasoOpen(false)}
+          onConfirm={ejecutarTraspaso}
+        />
       )}
     </div>
   );

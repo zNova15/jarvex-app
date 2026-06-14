@@ -32,6 +32,13 @@ export const db = new Dexie('JarvexDB');
 // varias cuentas (sueldo, CTS). Los campos banco/cci/moneda/principal son props
 // sin índice. Los campos nuevos de personal (email, direccion, contacto_emergencia,
 // telefono_emergencia, regimen_pension) también son props sin índice. Aditivo.
+// Versión 24: ubicacion_id en movimientos de emergencia — paridad con
+// mat/epp/herr/maquinaria (mig 074). Permite desglosar el stock de emergencia
+// por almacén y hacer traspasos. Aditivo (las demás tablas se heredan).
+db.version(24).stores({
+  movimientos_insumos_emergencia: 'id, obra_id, insumo_emergencia_id, ubicacion_id, fecha, sync_status, idempotency_key',
+});
+
 db.version(23).stores({
   personal_cuentas_bancarias: 'id, obra_id, personal_id, deleted_at, sync_status',
 });

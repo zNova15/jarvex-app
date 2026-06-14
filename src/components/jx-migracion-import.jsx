@@ -51,7 +51,7 @@ export const TEMPLATES = {
   ] },
   mov_epp:            { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'EPP', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Almacén', 'Almacén Destino', 'Proveedor', 'Responsable', 'Subcontrato', 'Documento', 'Precio Unit. (S/)', 'Observaciones'], sample: ['1', '21/05/2026', '08:30', 'Casco Blanco', 'Unidad', '20', 'Ingreso', 'Almacén Central', '', 'Seguridad SAC', '', '', '', '8.00', ''] },
   mov_maquinaria:     { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Maquinaria', 'Estado', 'Cantidad', 'Tipo de Movimiento', 'Almacén', 'Almacén Destino', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente / Zona', 'Documento', 'Observaciones'], sample: ['1', '21/05/2026', '08:30', 'Rotomartillo', 'Nuevo', '1', 'Ingreso', 'Almacén Central', '', '', '', '', '', '', ''] },
-  mov_emergencia:     { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Insumo de Emergencia', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente / Zona', 'Documento', 'Observaciones'], sample: ['1', '21/05/2026', '08:30', 'Extintor PQS 6kg', 'Und', '4', 'Ingreso', 'Seguridad SAC', '', '', '', '', ''] },
+  mov_emergencia:     { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Insumo de Emergencia', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Almacén', 'Almacén Destino', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente / Zona', 'Documento', 'Observaciones'], sample: ['1', '21/05/2026', '08:30', 'Extintor PQS 6kg', 'Und', '4', 'Ingreso', 'Almacén Central', '', 'Seguridad SAC', '', '', '', '', ''] },
   mov_maquinaria_asignacion: { headers: ['ID', 'Fecha', 'Hora', 'Equipo', 'Movimiento', 'Tipo destino', 'Asignado a', 'Frente / Zona', 'Observación'], sample: ['1', '21/05/2026', '08:30', 'Excavadora CAT 320', 'Salida', 'Personal', 'Juan Pérez', 'Frente A', ''] },
   personal: { headers: ['Nombres', 'Apellidos', 'Alias', 'Tipo Documento', 'DNI', 'Cargo', 'Area', 'Frente', 'Subcontrato', 'Seguro a cargo', 'Estado', 'Fecha Ingreso', 'Fecha Nacimiento', 'Telefono', 'Email', 'Direccion', 'Contacto Emergencia', 'Telefono Emergencia', 'Regimen Pension', 'Banco', 'Tipo Cuenta', 'Numero Cuenta', 'CCI', 'Moneda', 'Banco CTS', 'Cuenta CTS'],
     sample: ['Carlos', 'Mendoza Quispe', 'Calo', 'DNI', '40123456', 'Capataz', 'Estructuras', 'Alcantarillado', '', 'empresa', 'activo', '15/01/2026', '12/04/1985', '987111111', 'carlos.mendoza@gmail.com', 'Jr. Los Pinos 123', 'María Quispe', '976222333', 'AFP Integra', 'BCP', 'ahorros', '19112345678012', '00219111234567801299', 'PEN', 'Banco de la Nación', '04-123-456789'] },
@@ -125,7 +125,7 @@ const extraerAlm = (m, formato) =>
   m.almacen ||
   (m.tipo === 'entrada' || m.tipo === 'devolucion'
     ? (m.almacenDestino || m.lugar)
-    : (formato === 'mov_epp' ? null : m.origen)) ||
+    : ((formato === 'mov_epp' || formato === 'mov_emergencia') ? null : m.origen)) ||
   null;
 
 // Orden cronológico para las SIMULACIONES de stock: por fecha; dentro del
@@ -264,7 +264,7 @@ function notifTemporal(n) {
 // responsable, y si alguna salida deja un almacén con stock NEGATIVO.
 async function analizarAlmacenes(movs, formato, obraId) {
   const ok = (v) => String(v || '').trim();
-  const soporta = ['mov_materiales', 'mov_epp', 'mov_herramientas', 'mov_maquinaria'].includes(formato);
+  const soporta = ['mov_materiales', 'mov_epp', 'mov_herramientas', 'mov_maquinaria', 'mov_emergencia'].includes(formato);
   const res = { soporta, almacenes: [], entradasSinAlm: 0, salidasSinAlm: 0, salidasSinResp: 0, traspasos: 0, traspasosSinOrigen: 0, traspasosSinDestino: 0, negativos: [] };
   for (const m of movs || []) {
     // Asignaciones de maquinaria llevan el responsable en `destinoNombre`.
@@ -866,7 +866,7 @@ const ORG_CONFIG = {
   materiales:         { nombre: 'nombre_material',    movTabla: 'movimientos_materiales',           fk: 'material_id',           itemTipo: 'material',    etiqueta: 'materiales' },
   epps:               { nombre: 'nombre_epp',         movTabla: 'movimientos_epp',                  fk: 'epp_id',                itemTipo: 'epp',         etiqueta: 'EPP' },
   herramientas:       { nombre: 'nombre_herramienta', movTabla: 'movimientos_herramientas',          fk: 'herramienta_id',        itemTipo: 'herramienta', etiqueta: 'herramientas' },
-  insumos_emergencia: { nombre: 'nombre',             movTabla: 'movimientos_insumos_emergencia',   fk: 'insumo_emergencia_id',  itemTipo: null,          etiqueta: 'insumos de emergencia' },
+  insumos_emergencia: { nombre: 'nombre',             movTabla: 'movimientos_insumos_emergencia',   fk: 'insumo_emergencia_id',  itemTipo: 'emergencia',  etiqueta: 'insumos de emergencia' },
 };
 
 // Panel post-import: detecta variantes (genéricos) y duplicados del inventario
@@ -1954,9 +1954,10 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
   };
 
   const runMovEmergencia = async (resolvedItems = null, rp = null) => {
-    const movs = [...preview.movs].sort((a, b) => (a.fecha || '') < (b.fecha || '') ? -1 : 1);
+    const movs = [...preview.movs].sort(cmpMovFechaTipo);
     const insIdx = await cargarIndice('insumos_emergencia', obraId, 'nombre');
     if (resolvedItems) { for (const [k, info] of resolvedItems) insIdx.map.set(k, { id: info.id, unidad: info.unidad }); }
+    const ubicIdx = await cargarIndice('ubicaciones_obra', obraId, 'nombre');
     const personal = (await window.__db.personal.where('obra_id').equals(obraId).filter(p => !p.deleted_at).toArray());
     const proveedores = (await window.__db.proveedores.filter(p => !p.deleted_at).toArray());
 
@@ -1970,36 +1971,72 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
       }, userId);
       insIdx.map.set(k, rec); return rec;
     };
+    const resolverUbic = async (nombre) => {
+      const k = normTxt(nombre);
+      if (!k) return null;
+      if (ubicIdx.map.has(k)) return ubicIdx.map.get(k).id;
+      const rec = await addRecord('ubicaciones_obra', {
+        obra_id: obraId, nombre: String(nombre).trim(), descripcion: 'Creada en migración histórica',
+        orden: ubicIdx.map.size + 1, activo: true,
+      }, userId);
+      ubicIdx.map.set(k, rec); return rec.id;
+    };
 
-    let sinRespTemporal = 0; // salidas sin responsable → persona temporal
+    let sinRespTemporal = 0, enTemporal = 0;
     const firmas = await cargarFirmasMigracion('movimientos_insumos_emergencia', obraId, 'insumo_emergencia_id');
-    let okCount = 0, errores = 0, saltadosNoAprobados = 0, duplicados = 0;
+    let okCount = 0, errores = 0, saltadosNoAprobados = 0, duplicados = 0, curadas = 0;
     const errorList = [];
     const afectados = new Set();
-    const prevIns = insIdx.map.size;
     setProgress({ current: 0, total: movs.length });
 
     for (let i = 0; i < movs.length; i++) {
       const m = movs[i];
       try {
         if (!m.tipo) throw new Error(m.tipoRaw ? `Tipo de movimiento no reconocido: "${m.tipoRaw}" (usá Ingreso, Salida o Traspaso)` : 'Sin tipo de movimiento (usá Ingreso, Salida o Traspaso)');
-        if (m.tipo === 'traspaso') throw new Error('Los insumos de emergencia no manejan almacenes — no aplica Traspaso');
         if (!(m.cantidad > 0)) throw new Error('Cantidad inválida');
         if (!String(m.nombreItem || '').trim()) { saltadosNoAprobados++; continue; }
         if (esFilaInvalida(m)) { saltadosNoAprobados++; continue; }
         const ins = await resolverInsumo(m.nombreItem, m.unidad);
         if (!ins) { saltadosNoAprobados++; continue; }
         const fechaMov = m.fecha || new Date().toISOString().slice(0, 10);
-        if (consumirFirma(firmas, ins.id, fechaMov, m.tipo, m.cantidad)) { duplicados++; continue; }
+
+        if (m.tipo === 'traspaso') {
+          const t = await cargarTraspasoPar({
+            obraId, userId, itemTipo: 'emergencia', itemId: ins.id, m, firmas, resolverUbic,
+            sigBase: sigMov(obraId, 'mov_emergencia', m),
+            buildMov: { tabla: 'movimientos_insumos_emergencia', campos: (lado, ubicId2, obs2) => ({
+              obra_id: obraId, insumo_emergencia_id: ins.id, fecha: fechaMov, hora: m.hora || null,
+              tipo_movimiento: lado, cantidad: m.cantidad, unidad: m.unidad || ins.unidad || 'Und',
+              responsable_id: null, subcontratista_id: null, destino_tipo: null, proveedor_id: null,
+              frente_zona: null, documento_asociado: m.documento || null, ubicacion_id: ubicId2, observaciones: obs2,
+            }) },
+          });
+          if (t.dup) { duplicados++; continue; }
+          afectados.add(ins.id);
+          if (t.temporales) enTemporal += t.temporales;
+          okCount++; continue;
+        }
+
+        if (consumirFirma(firmas, ins.id, fechaMov, m.tipo, m.cantidad)) {
+          if (m.tipo === 'entrada' && await sanarEntradaTemporal({ obraId, userId, tabla: 'movimientos_insumos_emergencia', fk: 'insumo_emergencia_id', itemTipo: 'emergencia', itemId: ins.id, m, fechaMov, resolverUbic })) curadas++;
+          duplicados++; continue;
+        }
         afectados.add(ins.id);
         const obsExtra = [];
-        let proveedor_id = null, responsable_id = null, subcontratista_id = null, destino_tipo = null;
+        let proveedor_id = null, responsable_id = null, subcontratista_id = null, destino_tipo = null, ubicId = null;
         const prov = m.proveedor || m.origen;
         const quien = m.responsable || m.subcontrato || m.origen;
         const frente = m.frente || m.lugar || null;
+        // El almacén de la SALIDA solo viene de la col. 'Almacén' (la combinada
+        // m.origen es la PERSONA, igual que EPP); el de la ENTRADA, del lugar de
+        // llegada. Ingreso sin almacén → temporal "Por asignar".
+        const alm = m.almacen || (m.tipo === 'entrada' ? (m.almacenDestino || m.lugar) : null);
         if (m.tipo === 'entrada') {
           if (prov) { proveedor_id = matchProveedor(prov, proveedores); if (!proveedor_id) obsExtra.push(`Proveedor: ${prov}`); }
+          ubicId = await resolverUbic(alm || TEMPORAL_UBIC);
+          if (!alm) enTemporal++;
         } else {
+          if (alm) ubicId = await resolverUbic(alm);
           if (quien) {
             const rpHit = rp?.get(normTxt(quien));
             if (rpHit?.tipo === 'personal') { responsable_id = rpHit.id; destino_tipo = 'personal'; }
@@ -2020,19 +2057,24 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           obra_id: obraId, insumo_emergencia_id: ins.id, fecha: m.fecha || new Date().toISOString().slice(0, 10),
           hora: m.hora || null, tipo_movimiento: m.tipo, cantidad: m.cantidad, unidad: m.unidad || ins.unidad || 'Und',
           responsable_id, subcontratista_id, destino_tipo, proveedor_id, frente_zona: frente,
-          documento_asociado: m.documento || null, observaciones: obs,
+          documento_asociado: m.documento || null, ubicacion_id: ubicId, observaciones: obs,
         }, userId, null, sigMov(obraId, 'mov_emergencia', m));
         if (r.dup) { duplicados++; continue; }
+
+        if (ubicId) {
+          try { await aplicarDelta({ obraId, itemTipo: 'emergencia', itemId: ins.id, ubicacionId: ubicId, delta: m.tipo === 'entrada' ? m.cantidad : -m.cantidad, userId }); } catch {}
+        }
         okCount++;
       } catch (e) { errores++; errorList.push({ row: m.idx, error: e.message || String(e) }); }
       if (i % 20 === 0) { setProgress({ current: i + 1, total: movs.length }); await new Promise(r => setTimeout(r, 0)); }
     }
 
     await recalcularStockEmergencia(obraId, afectados, userId);
-    fireChanged('insumos_emergencia', 'movimientos_insumos_emergencia');
+    fireChanged('insumos_emergencia', 'movimientos_insumos_emergencia', 'ubicaciones_obra', 'stock_ubicaciones');
+    notifTemporal(enTemporal);
     notifFusionTemporal(sinRespTemporal);
     return { ok: okCount, errors: errores, saltadosNoAprobados, errorList,
-      detalle: `${okCount} movimientos de emergencia cargados${sinRespTemporal ? ` · ${sinRespTemporal} sin responsable → temporal` : ''}${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
+      detalle: `${okCount} movimientos de emergencia cargados${sinRespTemporal ? ` · ${sinRespTemporal} sin responsable → temporal` : ''}${enTemporal ? ` · ${enTemporal} al almacén temporal` : ''}${duplicados ? ` · ${duplicados} ya existían (re-subida)` : ''}${curadas ? ` · ${curadas} ingresos movidos del temporal al almacén real` : ''}${saltadosNoAprobados ? ` · ${saltadosNoAprobados} saltados (no aprobados)` : ''} · ${errores} con error` };
   };
 
   const runMovMaquinariaAsignacionLoad = async (resolvedItems = null, rp = null) => {
