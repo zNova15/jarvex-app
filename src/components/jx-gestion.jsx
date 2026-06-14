@@ -1,5 +1,6 @@
 import React from "react";
 import { SearchableSelect } from "./jx-searchable-select.jsx";
+import { hijosDirectos, cadenaBreadcrumb } from "../lib/partida-arbol.js";
 const { useState: uSG, useMemo: uMG, useEffect: uEG } = React;
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
@@ -47,14 +48,18 @@ function InsumosPage({ showToast }) {
   const { data: materiales } = window.__hooks.useMateriales(obraId);
   const { data: movimientos } = window.__hooks.useMovimientosMateriales(obraId);
 
-  // Partida destino al llegar desde el Gantt (window.__insumosTargetPartida) +
-  // si venimos del cronograma (para mostrar el botón "Volver"). Se leen UNA vez
-  // al montar (la página remonta al navegar) y se consumen para no reusarlos en
-  // una visita manual posterior. El efecto de default respeta este partidaSel
-  // inicial: mientras la partida no esté en la lista no lo pisa (guard de carga).
-  const [partidaSel, setPartidaSel] = uSG(() => (typeof window !== 'undefined' && window.__insumosTargetPartida) || null);
+  // Llegada desde el Gantt: si la partida es HOJA → su desglose de insumos; si
+  // es CAPÍTULO → vista de carpetas (foco = su código) para navegar hacia abajo.
+  // Se leen UNA vez al montar (la página remonta al navegar) y se consumen.
+  const [partidaSel, setPartidaSel] = uSG(() => (typeof window !== 'undefined' && window.__insumosTargetEsHoja && window.__insumosTargetPartida) || null);
+  // foco: código del capítulo que se está explorando (vista carpetas). null =
+  // mostrar el desglose de la partida seleccionada (vista insumos). '' = raíz.
+  const [foco, setFoco] = uSG(() => {
+    const w = typeof window !== 'undefined' ? window : {};
+    return (w.__insumosTargetCodigo && !w.__insumosTargetEsHoja) ? String(w.__insumosTargetCodigo) : null;
+  });
   const [fromGantt] = uSG(() => typeof window !== 'undefined' && !!window.__insumosFromGantt);
-  uEG(() => { try { delete window.__insumosTargetPartida; delete window.__insumosFromGantt; } catch {} }, []);
+  uEG(() => { try { ['__insumosTargetPartida','__insumosTargetCodigo','__insumosTargetEsHoja','__insumosFromGantt'].forEach(k => delete window[k]); } catch {} }, []);
   const volverAlCronograma = () => {
     try { window.dispatchEvent(new CustomEvent('jx_navigate', { detail: { page: 'cronograma' } })); } catch {}
   };
@@ -122,6 +127,34 @@ function InsumosPage({ showToast }) {
       ? { value: p.id, label: `${sangria}🎯 ${p.codigo_delfin ? p.codigo_delfin + ' — ' : ''}${p.nombre_partida}${n ? ` · ${n} insumo${n > 1 ? 's' : ''}` : ' · sin APU'}` }
       : { value: `cap_${p.id}`, label: `${sangria}📁 ${p.codigo_delfin ? p.codigo_delfin + ' — ' : ''}${p.nombre_partida}`, disabled: true };
   }), [partidasOrdenadas, insumosPorPartida]);
+
+  // ── Vista de CARPETAS (navegar capítulos → sub-capítulos → partida) ──
+  // Hijos directos del código `foco` (o nivel 1 si foco==='') derivados de los
+  // prefijos de codigo_delfin. Un nodo es CARPETA si tiene descendientes; si no,
+  // es una partida HOJA (con su fila y sus insumos). Soporta intermedios sin
+  // fila propia (se muestran igual como carpeta).
+  const nodosFoco = uMG(() => {
+    if (foco === null) return null;
+    return hijosDirectos(partidas, foco)
+      .map(n => ({ ...n, nInsumos: n.partida ? (insumosPorPartida?.get(n.partida.id) || 0) : 0 }));
+  }, [foco, partidas, insumosPorPartida]);
+
+  // Cadena de breadcrumb (raíz → … → código actual) del foco o de la partida.
+  const codigoActual = foco !== null ? foco : (partidas?.find(p => p.id === partidaSel)?.codigo_delfin || '');
+  const nombrePorCodigo = uMG(() => {
+    const m = new Map();
+    (partidas || []).forEach(p => { if (p.codigo_delfin && !p.deleted_at) m.set(String(p.codigo_delfin).trim(), p.nombre_partida); });
+    return m;
+  }, [partidas]);
+  const breadcrumb = uMG(() => cadenaBreadcrumb(codigoActual).map(code => (
+    code === '' ? { code: '', label: 'Todas' }
+                : { code, label: `${code}${nombrePorCodigo.get(code) ? ' · ' + nombrePorCodigo.get(code) : ''}` }
+  )), [codigoActual, nombrePorCodigo]);
+
+  const abrirNodo = (n) => {
+    if (n.esFolder) { setFoco(n.code); }
+    else if (n.partida) { setPartidaSel(n.partida.id); setFoco(null); }
+  };
 
   // Default: primera HOJA con insumos presupuestados; si no hay, primera hoja.
   // Espera a que insumosPorPartida esté cargado (no-null) para no elegir una
@@ -257,17 +290,76 @@ function InsumosPage({ showToast }) {
         </div>
         <div style={{ width: 460, maxWidth: '46vw' }}>
           <SearchableSelect
-            value={partidaSel || ''}
-            onChange={v => { if (v && !String(v).startsWith('cap_')) setPartidaSel(v); }}
+            value={foco !== null ? '' : (partidaSel || '')}
+            onChange={v => { if (v && !String(v).startsWith('cap_')) { setPartidaSel(v); setFoco(null); } }}
             options={opcionesPartida}
             placeholder="— Buscar partida por código o nombre —"/>
           <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3, textAlign: 'right' }}>
-            🎯 partidas específicas (elegibles) · 📁 capítulos (solo agrupan)
+            🎯 elegí una partida · 📁 capítulos: abrilos en la lista o la ruta
           </div>
         </div>
       </div>
 
-      {partida && (
+      {/* Breadcrumb de navegación (capítulos → sub-capítulos → partida) */}
+      {(foco !== null || codigoActual) && (
+        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4, marginBottom: 14, fontSize: 12 }}>
+          {breadcrumb.map((b, i) => (
+            <React.Fragment key={b.code || '_root'}>
+              {i > 0 && <span style={{ color: 'var(--tm)' }}>/</span>}
+              <button
+                onClick={() => { if (i === breadcrumb.length - 1 && foco === null) return; setFoco(b.code); }}
+                title={b.label}
+                style={{
+                  background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px',
+                  color: (i === breadcrumb.length - 1 && foco !== null) ? 'var(--amber)' : 'var(--ts)',
+                  fontWeight: (i === breadcrumb.length - 1) ? 700 : 400,
+                  maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>
+                {i === 0 ? '🏠 Todas' : b.label}
+              </button>
+            </React.Fragment>
+          ))}
+        </div>
+      )}
+
+      {/* Vista de CARPETAS: hijos del capítulo en foco */}
+      {foco !== null ? (
+        <div className="card" style={{ overflow: 'hidden' }}>
+          {(!nodosFoco || nodosFoco.length === 0) ? (
+            <div className="card-p empty-state"><JxIcon name="layers" size={36} color="var(--tm)" /><p>Este capítulo no tiene sub-partidas. Usá el buscador de arriba o subí de nivel en la ruta.</p></div>
+          ) : (
+            <>
+            <div style={{ padding: '9px 14px', borderBottom: '1px solid var(--border)', fontSize: 11, color: 'var(--tm)', display: 'flex', alignItems: 'center', gap: 6 }}>
+              {nodosFoco.length} {nodosFoco.length === 1 ? 'sub-partida' : 'sub-partidas'}
+              <span style={{ opacity: 0.6 }}>· 📁 capítulo (abre) · 🎯 partida (ver insumos)</span>
+            </div>
+            {nodosFoco.map((n, i) => (
+              <div key={n.code}
+                className="jx-carpeta-row"
+                onClick={() => abrirNodo(n)}
+                title={n.esFolder ? `Abrir capítulo ${n.code} →` : `Ver insumos de ${n.code} →`}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10, padding: '11px 14px',
+                  borderTop: i > 0 ? '1px solid var(--border)' : 'none',
+                  cursor: (n.esFolder || n.partida) ? 'pointer' : 'default',
+                }}>
+                <span style={{ fontSize: 16, flexShrink: 0 }}>{n.esFolder ? '📁' : '🎯'}</span>
+                <span style={{ fontFamily: 'ui-monospace,monospace', fontSize: 11, fontWeight: 700, color: n.esFolder ? 'var(--amber)' : 'var(--tm)', flexShrink: 0 }}>{n.code}</span>
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: n.esFolder ? 600 : 400, color: 'var(--tp)' }}>
+                  {n.partida?.nombre_partida || (nombrePorCodigo.get(n.code) || 'Capítulo')}
+                </span>
+                {!n.esFolder && (
+                  <span className={`badge ${n.nInsumos > 0 ? 'b-green' : 'b-gray'}`} style={{ flexShrink: 0 }}>
+                    {n.nInsumos > 0 ? `${n.nInsumos} insumo${n.nInsumos > 1 ? 's' : ''}` : 'sin APU'}
+                  </span>
+                )}
+                <span style={{ flexShrink: 0, color: 'var(--amber)', opacity: 0.6 }}>›</span>
+              </div>
+            ))}
+            </>
+          )}
+        </div>
+      ) : partida && (
       <>
         <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:18}}>
           <div className="card card-p"><div style={{fontSize:11,color:'var(--tm)'}}>Costo Presupuestado (APU)</div><div style={{fontSize:22,fontWeight:800,color:'var(--blue)',margin:'6px 0 2px'}}>{fmtSk(totalPres || presupuesto)}</div><div style={{fontSize:11,color:'var(--tm)'}}>{insumosPres.length} insumos</div></div>

@@ -2225,21 +2225,38 @@ function CronogramaPage() {
   const obraId = useObraActiva();
   const { data: partidasRaw, loading } = window.__hooks.usePartidas(obraId);
 
-  const [zoomMode, setZoomMode] = uSO(null); // 'dia' | 'semana' | 'mes' | null=auto
-  const [q, setQ] = uSO('');
-  const [soloActivas, setSoloActivas] = uSO(false);
-  const [soloAtrasadas, setSoloAtrasadas] = uSO(false);
+  // Estado de vista PERSISTIDO entre navegaciones (window.__ganttView): al ir a
+  // "Insumos por Partida" y volver con el botón, la página remonta (key=page) y
+  // sin esto se perdían filtros y scroll. Se restaura acá y se guarda en un
+  // efecto; el scroll del DOM se restaura cuando ya hay filas (abajo).
+  const VISTA_GANTT = (typeof window !== 'undefined' && window.__ganttView) || {};
+  const [zoomMode, setZoomMode] = uSO(VISTA_GANTT.zoomMode ?? null); // 'dia' | 'semana' | 'mes' | null=auto
+  const [q, setQ] = uSO(VISTA_GANTT.q ?? '');
+  const [soloActivas, setSoloActivas] = uSO(VISTA_GANTT.soloActivas ?? false);
+  const [soloAtrasadas, setSoloAtrasadas] = uSO(VISTA_GANTT.soloAtrasadas ?? false);
   // Filtro nivel: específicas = nodos hoja (sin sub-partidas), no específicas
   // = capítulos/sub-capítulos (1, 1.01, 1.01.01…) que agrupan a otras.
-  const [tipoFilter, setTipoFilter] = uSO('todas'); // 'todas' | 'especificas' | 'no_especificas'
+  const [tipoFilter, setTipoFilter] = uSO(VISTA_GANTT.tipoFilter ?? 'todas'); // 'todas' | 'especificas' | 'no_especificas'
   // Modo de ordenamiento del listado
-  const [sortMode, setSortMode] = uSO('codigo_especificas_al_final');
+  const [sortMode, setSortMode] = uSO(VISTA_GANTT.sortMode ?? 'codigo_especificas_al_final');
   // 'codigo' = orden jerárquico puro
   // 'codigo_especificas_al_final' = no específicas primero, luego específicas
   // 'fecha_inicio' = orden por fecha
-  const [scrollTop, setScrollTop] = uSO(0);
+  const [scrollTop, setScrollTop] = uSO(VISTA_GANTT.scrollTop ?? 0);
   const [viewportH, setViewportH] = uSO(560);
   const scrollRef = React.useRef(null);
+  const scrollRestaurado = React.useRef(false);
+  const scrollGuardado = React.useRef((typeof window !== 'undefined' && window.__ganttView?.scrollTop) || 0);
+  // Obra a la que pertenecía la vista guardada. El cambio de obra normal recarga
+  // la app (limpia __ganttView), pero si otra vía dispara obra_activa_change sin
+  // reload, esto evita restaurar el scroll de una obra ajena.
+  const obraGuardada = React.useRef((typeof window !== 'undefined' && window.__ganttView?.obraId) || null);
+
+  // Persistir la vista actual (tagueada con la obra) para restaurarla al volver
+  // del detalle de insumos.
+  uEO(() => {
+    try { window.__ganttView = { obraId, zoomMode, q, soloActivas, soloAtrasadas, tipoFilter, sortMode, scrollTop }; } catch {}
+  }, [obraId, zoomMode, q, soloActivas, soloAtrasadas, tipoFilter, sortMode, scrollTop]);
 
   // Set de todos los códigos vivos → para detectar hojas (específicas)
   const codigosLive = uMO(() => {
@@ -2263,13 +2280,16 @@ function CronogramaPage() {
 
   const todayMs = uMO(() => startOfDay(Date.now()), []);
 
-  // Click en una partida ESPECÍFICA (hoja) → ir a "Insumos por Partida" con
-  // esa partida ya seleccionada (y un botón para volver al cronograma). Los
-  // capítulos solo agrupan, no tienen insumos → no navegan.
+  // Click en una partida → ir a "Insumos por Partida". Si es HOJA (específica),
+  // abre su desglose de insumos; si es CAPÍTULO, abre la vista de carpetas con
+  // sus sub-partidas para navegar hacia abajo. Vuelve con el botón "Volver al
+  // cronograma" (que conserva esta vista por window.__ganttView).
   const verInsumosDe = (p) => {
     if (!p?.id) return;
     try {
       window.__insumosTargetPartida = p.id;
+      window.__insumosTargetCodigo = p.codigo_delfin || '';
+      window.__insumosTargetEsHoja = esEspecifica(p.codigo_delfin);
       window.__insumosFromGantt = true;
       window.dispatchEvent(new CustomEvent('jx_navigate', { detail: { page: 'insumos' } }));
     } catch {}
@@ -2488,6 +2508,19 @@ function CronogramaPage() {
   uEO(() => {
     const el = scrollRef.current;
     if (!el) return;
+    // Restaurar el scroll guardado UNA vez, cuando ya hay ALTURA suficiente para
+    // alcanzar la posición guardada (si se setea antes, el navegador lo clampa).
+    // Espera a que el contenido sea alto: si filtered llega por lotes, no fijamos
+    // un scroll truncado en la primera pasada (se reintenta al crecer filtered).
+    const mismaObra = obraGuardada.current == null || obraGuardada.current === obraId;
+    if (!scrollRestaurado.current && mismaObra && scrollGuardado.current > 0 &&
+        filtered.length * ROW_H >= scrollGuardado.current) {
+      el.scrollTop = scrollGuardado.current;
+      // Releer el valor REAL del DOM (el navegador puede haberlo clampado) para
+      // que la virtualización (startIdx) no use un scrollTop fantasma.
+      setScrollTop(el.scrollTop);
+      scrollRestaurado.current = true;
+    }
     const onScroll = () => setScrollTop(el.scrollTop);
     const onResize = () => setViewportH(el.clientHeight);
     el.addEventListener('scroll', onScroll, { passive: true });
@@ -2497,7 +2530,7 @@ function CronogramaPage() {
       el.removeEventListener('scroll', onScroll);
       window.removeEventListener('resize', onResize);
     };
-  }, [filtered.length]);
+  }, [filtered.length, obraId]);
 
   // Loading / empty
   if (!obraId) return <SinObraEmpty icon="gantt"/>;
@@ -2647,22 +2680,22 @@ function CronogramaPage() {
                 const hoja = esEspecifica(p.codigo_delfin);
                 return (
                   <div key={p.id}
-                    onClick={hoja ? () => verInsumosDe(p) : undefined}
-                    title={hoja ? 'Ver insumos de esta partida →' : 'Capítulo / sub-capítulo'}
+                    onClick={() => verInsumosDe(p)}
+                    title={hoja ? 'Ver insumos de esta partida →' : 'Abrir capítulo (ver sus partidas) →'}
                     style={{
                     position:'absolute',top:idx*ROW_H,left:0,right:0,height:ROW_H,
                     padding:'0 12px',display:'flex',alignItems:'center',gap:6,
                     borderBottom:'1px solid rgba(255,255,255,0.03)',
                     background: idx % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.015)',
                     fontSize:11.5,color:'var(--ts)',whiteSpace:'nowrap',overflow:'hidden',
-                    cursor: hoja ? 'pointer' : 'default',
+                    cursor: 'pointer',
                   }}>
                     <span style={{ fontSize:11, flexShrink:0, opacity:0.8 }}>
                       {hoja ? '🎯' : '📁'}
                     </span>
                     <span style={{fontSize:9.5,color: hoja ? 'var(--tm)' : 'var(--amber)',fontWeight:700,flexShrink:0,fontFamily:'ui-monospace,monospace'}}>{p.codigo_delfin || ''}</span>
                     <span style={{overflow:'hidden',textOverflow:'ellipsis', fontWeight: hoja ? 400 : 600}}>{p.nombre_partida}</span>
-                    {hoja && <span style={{ marginLeft:'auto', flexShrink:0, fontSize:11, color:'var(--amber)', opacity:0.65 }}>→</span>}
+                    <span style={{ marginLeft:'auto', flexShrink:0, fontSize:11, color:'var(--amber)', opacity:0.6 }}>→</span>
                   </div>
                 );
               })}
@@ -2709,13 +2742,13 @@ function CronogramaPage() {
                 const hojaBar = esEspecifica(p.codigo_delfin);
                 return (
                   <div key={p.id}
-                    title={hojaBar ? `${tooltip}\n\n→ Click para ver los insumos de esta partida` : tooltip}
-                    onClick={hojaBar ? () => verInsumosDe(p) : undefined}
+                    title={`${tooltip}\n\n→ Click para ${hojaBar ? 'ver los insumos de esta partida' : 'abrir el capítulo y ver sus partidas'}`}
+                    onClick={() => verInsumosDe(p)}
                     style={{
                       position:'absolute',top:idx*ROW_H,left:0,height:ROW_H,width:'100%',
                       borderBottom:'1px solid rgba(255,255,255,0.03)',
                       background: idx % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.015)',
-                      cursor: hojaBar ? 'pointer' : 'default',
+                      cursor: 'pointer',
                     }}>
                     <div style={{
                       position:'absolute',

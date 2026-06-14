@@ -81,6 +81,10 @@ textarea.fi { resize: vertical; min-height: 80px; }
 .tbl td.col-m { color: var(--tm); font-size: 12px; }
 .tbl td.col-num { font-variant-numeric: tabular-nums; font-weight: 500; }
 
+/* ── FILA DE CARPETA (Insumos por Partida: navegación de capítulos) ── */
+.jx-carpeta-row { transition: background .15s; }
+.jx-carpeta-row:hover { background: rgba(255,255,255,.03); }
+
 /* ── BADGES ── */
 .badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 20px; font-size: 10.5px; font-weight: 700; letter-spacing: .03em; white-space: nowrap; }
 .b-green { background: var(--green-l); color: #3DDB82; }
