@@ -198,6 +198,7 @@ const PAGE_CHUNKS = {
   'jx-ssoma':                 () => import('./components/jx-ssoma.jsx'),
   'jx-ssoma-extra':           () => import('./components/jx-ssoma-extra.jsx'),
   'jx-epps':                  () => import('./components/jx-epps.jsx'),
+  'jx-insumos-persona':       () => import('./components/jx-insumos-persona.jsx'),
   'jx-subcontratos':          () => import('./components/jx-subcontratos.jsx'),
   'jx-subcontratos-val':      () => import('./components/jx-subcontratos-val.jsx'),
   'jx-planillas':             () => import('./components/jx-planillas.jsx'),

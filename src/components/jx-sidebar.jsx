@@ -115,6 +115,7 @@ const NAV = [
   { id: 'iperc', label: 'IPERC (riesgos)', icon: 'alert' },
   { id: 'epps-inventario', label: 'EPPs (inventario)', icon: 'shield' },
   { id: 'epp', label: 'Entregas EPP', icon: 'check' },
+  { id: 'insumos-persona', label: 'Insumos por Persona', icon: 'users' },
   { id: 'inspecciones-seguridad', label: 'Inspecciones', icon: 'shield' },
   { id: 'capacitaciones', label: 'Capacitaciones', icon: 'users' },
   { id: 'insumos-emergencia', label: 'Insumos de Emergencia', icon: 'package' },

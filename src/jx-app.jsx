@@ -574,6 +574,7 @@ const PAGE_REGISTRY = {
   'epp':                    { chunk: 'jx-ssoma', component: 'EppPage' },
   // === jx-epps (inventario separado de materiales) ===
   'epps-inventario':        { chunk: 'jx-epps', component: 'EppsInventarioPage' },
+  'insumos-persona':        { chunk: 'jx-insumos-persona', component: 'InsumosPorPersonaPage' },
   // === jx-ssoma-extra ===
   'inspecciones-seguridad': { chunk: 'jx-ssoma-extra', component: 'InspeccionesSeguridadPage' },
   'capacitaciones':         { chunk: 'jx-ssoma-extra', component: 'CapacitacionesPage' },

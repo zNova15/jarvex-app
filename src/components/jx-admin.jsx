@@ -905,6 +905,7 @@ window.__moduleIdMap = {
   'iperc': 'IPERC',
   'epp': 'EPP',
   'epps-inventario': 'EPP',
+  'insumos-persona': 'EPP',
   'inspecciones-seguridad': 'Inspecciones SSOMA',
   'capacitaciones': 'Capacitaciones',
   'insumos-emergencia': 'Insumos de Emergencia',
