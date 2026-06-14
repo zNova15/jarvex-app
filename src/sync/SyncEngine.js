@@ -280,6 +280,28 @@ export async function getFailedCount() {
  */
 export async function getFailedDetails() {
   const out = [];
+  // Precargar personal una vez para resolver nombres legibles (el error de
+  // "personal duplicado" mostraba solo un fragmento del uuid — inútil para
+  // ubicar a quién corregir). Mapea id → "Nombres Apellidos".
+  let personalById = new Map();
+  try {
+    const ps = await db.personal.toArray();
+    personalById = new Map(ps.map(p => [p.id, `${p.nombres || ''} ${p.apellidos || ''}`.trim() || '(sin nombre)']));
+  } catch {}
+  // Nombre legible de un registro FAILED según su tabla (para que el modal diga
+  // "Juan Pérez · DNI X" en vez del uuid). Movimientos resuelven el responsable.
+  const nombreLegible = (t, r) => {
+    if (t === 'personal') return `${`${r.nombres || ''} ${r.apellidos || ''}`.trim() || '(sin nombre)'}${r.dni ? ` · DNI ${r.dni}` : ''}`;
+    if (t === 'subcontratistas') return r.razon_social || r.nombre || '';
+    if (t === 'frentes_obra' || t === 'ubicaciones_obra') return r.nombre || '';
+    if (t === 'personal_cuentas_bancarias' || t === 'personal_historial') return personalById.get(r.personal_id) || '';
+    if (t.startsWith('movimientos_')) {
+      const ins = r.nombre_material || r.nombre_epp || r.nombre_herramienta || r.nombre_insumo || '';
+      const quien = personalById.get(r.personal_id) || personalById.get(r.responsable_id) || '';
+      return [ins, quien].filter(Boolean).join(' → ') || (r.tipo_movimiento ? `${r.tipo_movimiento}` : '');
+    }
+    return r.nombre_material || r.nombre_partida || r.descripcion || r.nombre_insumo || r.nombre || '';
+  };
   for (const t of TRANSACTIONAL_TABLES) {
     const rows = await db[t].where('sync_status').equals(SYNC_STATUS.FAILED).toArray();
     if (rows.length === 0) continue;
@@ -290,6 +312,8 @@ export async function getFailedDetails() {
       rows: rows.slice(0, 50).map(r => ({
         id: r.id,
         codigo: r.codigo || r.codigo_delfin || r.serie_correlativo || r.id.slice(0, 8),
+        // nombre humano (prioritario) + descripción de respaldo
+        nombre: nombreLegible(t, r),
         descripcion: r.nombre_material || r.nombre_partida || r.descripcion || r.nombre_insumo || '',
         error: r._last_error || 'Error desconocido',
         errorCode: r._last_error_code || null,

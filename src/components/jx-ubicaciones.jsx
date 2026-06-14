@@ -67,6 +67,9 @@ function UbicacionesPage({ showToast }) {
   const [resumen, setResumen] = uS(null);          // { material:{items,unidades}, ..., emergencia }
   const [porUbic, setPorUbic] = uS(new Map());     // ubicId → { material:{items,unidades}, ... }
   const [sinDistribuir, setSinDistribuir] = uS(null); // { material: unidades, ... }
+  const [sinDistDetalle, setSinDistDetalle] = uS(null); // { material:[{nombre,unidad,faltante}], ... }
+  const [sinDistAbierto, setSinDistAbierto] = uS(false); // banner expandido
+  const [sinDistVerTodo, setSinDistVerTodo] = uS(() => new Set()); // categorías con la lista completa
   const stockRowsRef = uR(new Map());              // ubicId → [{tipo, item_id, cantidad, nombre?, unidad?}]
   const [detalles, setDetalles] = uS({});          // ubicId → { loading, grupos }
   const [expandidas, setExpandidas] = uS(() => new Set());
@@ -85,6 +88,10 @@ function UbicacionesPage({ showToast }) {
       try {
         const tot = { material: cero(), herramienta: cero(), epp: cero(), maquinaria: cero(), emergencia: cero() };
         const vivos = { material: new Set(), herramienta: new Set(), epp: new Set(), emergencia: new Set() };
+        // Para el drill-down de "sin distribuir": stock por ítem (catálogo) y lo
+        // distribuido por ítem (stock_ubicaciones). faltante = stock − distribuido.
+        const catItems = { material: [], herramienta: [], epp: [], emergencia: [], maquinaria: [] };
+        const distPorItem = new Map(); // item_id → cantidad distribuida
         const serializadas = []; // herramientas legacy sin maneja_cantidad, con ubicación de catálogo
         const serialIds = new Set(); // ids serializados: sus filas en stock_ubicaciones (legacy/huérfanas) se saltan para no contarlas dos veces
         const activos = [];
@@ -92,14 +99,18 @@ function UbicacionesPage({ showToast }) {
         await db.materiales.where('obra_id').equals(obraId).each(r => {
           if (r.deleted_at || r.es_grupo === true) return;
           vivos.material.add(r.id);
-          tot.material.items++; tot.material.unidades += Number(r.stock_actual) || 0;
+          const s = Number(r.stock_actual) || 0;
+          tot.material.items++; tot.material.unidades += s;
+          if (s > 0) catItems.material.push({ id: r.id, nombre: r.nombre_material || 'Material', unidad: r.unidad || '', stock: s });
         });
         await db.herramientas.where('obra_id').equals(obraId).each(r => {
           if (r.deleted_at || r.es_grupo === true) return;
           vivos.herramienta.add(r.id);
           tot.herramienta.items++;
           if (r.maneja_cantidad) {
-            tot.herramienta.unidades += Number(r.stock_actual) || 0;
+            const s = Number(r.stock_actual) || 0;
+            tot.herramienta.unidades += s;
+            if (s > 0) catItems.herramienta.push({ id: r.id, nombre: r.nombre_herramienta || 'Herramienta', unidad: r.unidad || 'und', stock: s });
           } else {
             tot.herramienta.unidades += 1;
             serialIds.add(r.id);
@@ -124,12 +135,16 @@ function UbicacionesPage({ showToast }) {
           if (r.deleted_at || r.es_grupo === true) return;
           vivos.epp.add(r.id);
           tot.epp.items++;
-          tot.epp.unidades += eppVivo.has(r.id) ? Math.max(0, eppVivo.get(r.id)) : (Number(r.stock_actual) || 0);
+          const s = eppVivo.has(r.id) ? Math.max(0, eppVivo.get(r.id)) : (Number(r.stock_actual) || 0);
+          tot.epp.unidades += s;
+          if (s > 0) catItems.epp.push({ id: r.id, nombre: r.nombre_epp || 'EPP', unidad: r.unidad || 'und', stock: s });
         });
         await db.insumos_emergencia.where('obra_id').equals(obraId).each(r => {
           if (r.deleted_at || r.es_grupo === true) return;
           vivos.emergencia.add(r.id);
-          tot.emergencia.items++; tot.emergencia.unidades += Number(r.stock_actual) || 0;
+          const s = Number(r.stock_actual) || 0;
+          tot.emergencia.items++; tot.emergencia.unidades += s;
+          if (s > 0) catItems.emergencia.push({ id: r.id, nombre: r.nombre || 'Insumo de emergencia', unidad: r.unidad || 'und', stock: s });
         });
         // activos_pesados no tiene índice obra_id: el campo canónico es obra_actual_id
         await db.activos_pesados.where('obra_actual_id').equals(obraId).each(r => {
@@ -170,6 +185,7 @@ function UbicacionesPage({ showToast }) {
           const b = bucketDe(mapa, r.ubicacion_id, r.item_tipo);
           b.items++; b.unidades += cant;
           dist[r.item_tipo] += cant;
+          distPorItem.set(r.item_id, (distPorItem.get(r.item_id) || 0) + cant);
           if (!rowsPorUbic.has(r.ubicacion_id)) rowsPorUbic.set(r.ubicacion_id, []);
           rowsPorUbic.get(r.ubicacion_id).push({ tipo: r.item_tipo, item_id: r.item_id, cantidad: cant });
         });
@@ -209,6 +225,16 @@ function UbicacionesPage({ showToast }) {
           emergencia: Math.max(0, tot.emergencia.unidades - dist.emergencia),
           maquinaria: Math.max(0, tot.maquinaria.unidades - dist.maquinaria),
         });
+        // Detalle: qué insumos tienen stock > lo distribuido (los que faltan
+        // asignar a un almacén). Ordenado por faltante desc.
+        const detalle = {};
+        for (const cat of ['material', 'herramienta', 'epp', 'emergencia']) {
+          detalle[cat] = catItems[cat]
+            .map(it => ({ nombre: it.nombre, unidad: it.unidad, faltante: it.stock - (distPorItem.get(it.id) || 0) }))
+            .filter(x => x.faltante > 0)
+            .sort((a, b) => b.faltante - a.faltante);
+        }
+        setSinDistDetalle(detalle);
         setDetalles({});
         // Re-carga el detalle de las filas que el usuario tiene expandidas:
         // sin esto, tras un sync/jx_data_changed la fila abierta quedaba como
@@ -525,6 +551,41 @@ function UbicacionesPage({ showToast }) {
               <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 3 }}>
                 Es stock que existe en el total de la obra pero no figura en ningún almacén — por eso las tarjetas de arriba suman más que la tabla. Suele ser stock registrado antes de que existieran los almacenes, o movimientos sin almacén. Para asignarlo, registrá los ingresos eligiendo el almacén de llegada.
               </div>
+              {sinDistDetalle && CATS.some(c => (sinDistDetalle[c.key] || []).length > 0) && (
+                <button className="btn btn-ghost btn-xs" style={{ marginTop: 8 }} onClick={() => setSinDistAbierto(v => !v)}>
+                  {sinDistAbierto ? '▾ Ocultar detalle' : '▸ Ver qué insumos faltan asignar'}
+                </button>
+              )}
+              {sinDistAbierto && sinDistDetalle && (
+                <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 14 }}>
+                  {CATS.filter(c => (sinDistDetalle[c.key] || []).length > 0).map(c => {
+                    const lista = sinDistDetalle[c.key];
+                    const verTodo = sinDistVerTodo.has(c.key);
+                    const visibles = verTodo ? lista : lista.slice(0, 10);
+                    return (
+                      <div key={c.key}>
+                        <div style={{ fontSize: 10.5, fontWeight: 700, color: c.color, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 6 }}>
+                          <JxIcon name={c.icon} size={11} color={c.color} /> {c.label} · {lista.length}
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                          {visibles.map((it, i) => (
+                            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 11.5 }}>
+                              <span style={{ color: 'var(--ts)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.nombre}</span>
+                              <span style={{ fontWeight: 600, whiteSpace: 'nowrap', color: 'var(--amber)' }}>{fmtN(it.faltante)} {it.unidad}</span>
+                            </div>
+                          ))}
+                          {lista.length > 10 && (
+                            <button className="btn btn-ghost btn-xs" style={{ alignSelf: 'flex-start' }}
+                              onClick={() => setSinDistVerTodo(prev => { const n = new Set(prev); n.has(c.key) ? n.delete(c.key) : n.add(c.key); return n; })}>
+                              {verTodo ? 'Ver menos' : `… y ${lista.length - 10} más`}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         </div>

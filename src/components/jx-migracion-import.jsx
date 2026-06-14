@@ -499,8 +499,11 @@ async function aplicarDecisionesPersonas(scan, decisiones, obraId, userId) {
       const partes = row.nombre.split(/\s+/);
       const nombres = partes.slice(0, Math.ceil(partes.length / 2)).join(' ') || row.nombre;
       const apellidos = partes.slice(Math.ceil(partes.length / 2)).join(' ') || '—';
-      // dni es NOT NULL + UNIQUE(dni, obra_id): placeholder único por nombre.
-      const dni = `MIG-${row.key.slice(0, 16)}`;
+      // dni es NOT NULL + UNIQUE(dni, obra_id): placeholder. Se agrega un sufijo
+      // corto del id para que NUNCA colisione — dos nombres distintos que
+      // normalizan/truncan igual ("Carlos Alberto Mendoza" vs "…Mena") daban el
+      // MISMO MIG-… y el 2º fallaba con 23505 al sincronizar.
+      const dni = `MIG-${row.key.slice(0, 12)}-${window.__newId().slice(0, 6)}`;
       // TEMPORAL sujeto a fusión: el archivo trae nombres referenciales ("Ing
       // Gaby"); se crea para no perder la atribución del movimiento, pero el
       // Super Admin debe fusionarlo con el personal real (Personal → Fusionar

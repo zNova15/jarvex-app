@@ -4820,7 +4820,31 @@ function PersonalPage({ showToast }) {
 
   const handleDeletePersonal = async (p) => {
     if (!canDelete) return;
-    if (!confirm(`¿Eliminar al trabajador "${p.nombres} ${p.apellidos}"?\n\nLas asistencias y movimientos históricos no se borran.`)) return;
+    // Personal TEMPORAL (migración histórica, dni MIG-…): si tiene movimientos
+    // de inventario atribuidos, borrarlo los deja huérfanos. Lo correcto es
+    // FUSIONARLO con la persona real (Personal → Fusionar nombres), que
+    // re-apunta los movimientos. Avisamos fuerte antes de permitir el borrado.
+    const esTemporal = String(p.dni || '').startsWith('MIG-') || /fusionar/i.test(p.observaciones || '');
+    if (esTemporal) {
+      let movs = 0;
+      try {
+        const db = window.__db, oid = p.obra_id;
+        const [a, b, c, d] = await Promise.all([
+          db.movimientos_epp.where('obra_id').equals(oid).filter(m => !m.deleted_at && m.personal_id === p.id).count(),
+          db.movimientos_materiales.where('obra_id').equals(oid).filter(m => !m.deleted_at && m.responsable_id === p.id).count(),
+          db.movimientos_herramientas.where('obra_id').equals(oid).filter(m => !m.deleted_at && m.responsable_id === p.id).count(),
+          db.movimientos_insumos_emergencia.where('obra_id').equals(oid).filter(m => !m.deleted_at && m.responsable_id === p.id).count(),
+        ]);
+        movs = a + b + c + d;
+      } catch {}
+      if (movs > 0) {
+        showToast(`"${p.nombres} ${p.apellidos}" es personal temporal con ${movs} movimiento(s) de inventario. No lo borres: FUSIONALO con la persona real (Personal → Fusionar nombres) para no dejar esos movimientos huérfanos.`, 'red');
+        return;
+      }
+      if (!confirm(`"${p.nombres} ${p.apellidos}" es personal temporal de la migración (pendiente de fusión) y no tiene movimientos. ¿Eliminarlo igual?`)) return;
+    } else {
+      if (!confirm(`¿Eliminar al trabajador "${p.nombres} ${p.apellidos}"?\n\nLas asistencias y movimientos históricos no se borran.`)) return;
+    }
     try {
       await updatePersonal(p.id, { deleted_at: new Date().toISOString() });
       try { await window.__logAudit?.({ action:'delete', table:'personal', recordId:p.id, oldData:p, reason:'Eliminación manual (modo edición)' }); } catch(e) {}

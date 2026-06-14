@@ -167,10 +167,10 @@ export default function SyncDetailModal({ open, onClose, showToast }) {
                         {g.rows.map(r => (
                           <div key={r.id} style={{ padding:'6px 8px', background:'rgba(0,0,0,0.18)', borderRadius:4, marginBottom:4 }}>
                             <div style={{ display:'flex', justifyContent:'space-between', gap:8 }}>
-                              <span style={{ fontWeight:600 }}>{r.codigo}</span>
+                              <span style={{ fontWeight:600 }}>{r.nombre || r.codigo}</span>
                               {r.isRLS && <span style={{ fontSize:9, padding:'1px 5px', borderRadius:3, background:'rgba(239,68,68,0.18)', color:'var(--red)' }}>RLS</span>}
                             </div>
-                            {r.descripcion && <div style={{ color:'var(--ts)', marginTop:2 }}>{r.descripcion}</div>}
+                            {r.descripcion && r.descripcion !== r.nombre && <div style={{ color:'var(--ts)', marginTop:2 }}>{r.descripcion}</div>}
                             <div style={{ color:'var(--amber)', fontSize:11, marginTop:3 }}>{mensajeAmigable(r.errorCode, r.error)}</div>
                             <details style={{ marginTop:3 }}>
                               <summary style={{ cursor:'pointer', color:'var(--tm)', fontSize:9.5 }}>Detalle técnico</summary>
