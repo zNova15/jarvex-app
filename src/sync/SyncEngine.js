@@ -1162,6 +1162,58 @@ export function stripLocalFields(record, tabla) {
   return out;
 }
 
+// Tablas locales que apuntan a un proveedor (para re-apuntar en una fusión).
+const PROVEEDOR_REF_TABLAS = [
+  'accounting_movements', 'cotizaciones', 'ordenes_compra',
+  'movimientos_materiales', 'movimientos_herramientas', 'movimientos_epp',
+  'movimientos_insumos_emergencia', 'movimientos_maquinaria',
+];
+
+// El caso clásico: captura mágica crea un proveedor LOCAL por RUC que ya existe
+// en el server (creado en otra sesión/dispositivo y aún no pulleado acá). El push
+// del proveedor choca 23505 (UNIQUE ruc) y queda FAILED; peor: la factura que lo
+// referencia (proveedor_id local) revienta 23503 porque ese id nunca entró al
+// server. Acá ADOPTAMOS el id del proveedor que sí está en el server: re-apuntamos
+// todas las referencias locales del id duplicado al id real, traemos el real a
+// Dexie y borramos el duplicado local. Devuelve true si reconcilió.
+async function reconciliarProveedorDuplicado(record) {
+  const ruc = String(record?.ruc || '').trim();
+  if (!ruc) return false;
+  let serverProv = null;
+  try {
+    const { data, error } = await supabase.from('proveedores').select('*').eq('ruc', ruc).is('deleted_at', null).limit(1).maybeSingle();
+    if (error || !data) return false;
+    serverProv = data;
+  } catch { return false; }
+  if (!serverProv?.id || serverProv.id === record.id) return false;
+
+  const now = new Date().toISOString();
+  // Re-apuntar todas las referencias locales del id duplicado → id real.
+  for (const t of PROVEEDOR_REF_TABLAS) {
+    if (!db[t]) continue;
+    let rows = [];
+    try { rows = await db[t].filter(x => x.proveedor_id === record.id).toArray(); } catch { continue; }
+    for (const row of rows) {
+      try {
+        await db[t].update(row.id, {
+          proveedor_id: serverProv.id, updated_at: now,
+          version: (row.version || 0) + 1,
+          sync_status: row.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+        });
+      } catch {}
+    }
+  }
+  // Traer el proveedor real a Dexie (synced) y borrar el duplicado local.
+  try { await db.proveedores.put({ ...serverProv, sync_status: SYNC_STATUS.SYNCED, last_synced_at: now }); } catch {}
+  try { await db.proveedores.delete(record.id); } catch {}
+  try {
+    window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'proveedores' } }));
+    window.dispatchEvent(new CustomEvent('jarvex_master_updated', { detail: { tabla: 'proveedores' } }));
+  } catch {}
+  console.info(`[SyncEngine] proveedor dup ${record.id.slice(0, 8)} reconciliado → ${serverProv.id.slice(0, 8)} (RUC ${ruc})`);
+  return true;
+}
+
 async function pushCreate(tabla, record) {
   // Anti-fantasma: no pushear si una FK referenciada todavía está
   // pendiente en local. Si pusheamos el mov antes que el material,
@@ -1206,6 +1258,11 @@ async function pushCreate(tabla, record) {
         ...error,
         message: `${error.message || '23505'} — verificación de duplicado no concluyente (select falló: ${selErr.message || selErr.code || 'error'})`,
       });
+    } else if (tabla === 'proveedores' && await reconciliarProveedorDuplicado(record)) {
+      // Proveedor duplicado por RUC: adoptamos el id del server, re-apuntamos las
+      // referencias y borramos el duplicado local. Las facturas que lo apuntaban
+      // quedan pending_update con el id real y suben solas en el próximo ciclo.
+      trackEvent('record_pushed', { tabla, operacion: 'create_dedup_ruc' });
     } else {
       await handleSyncError(tabla, record, 'create', {
         ...error,

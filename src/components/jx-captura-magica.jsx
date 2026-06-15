@@ -423,13 +423,21 @@ function CapturaMagicaPage({ showToast }) {
       total: Number(ext.totales?.total || 0),
       observaciones: ext.observaciones || '',
       confianza: ext.confianza || 'media',
-      advertencias: ext.advertencias || [],
-      // Defaults: crear materiales en catálogo SIN stock + marcar la
-      // factura como pendiente de recepción para que el almacenero la
-      // confirme cuando llegue físicamente. Si el comprobante NO es
-      // de almacén (combustible, servicios, fletes), el contador
-      // desactiva el segundo checkbox.
-      crear_materiales_catalogo: true,
+      // La IA a veces marca mal "fecha futura" (su 'hoy' interno no es el real,
+      // p.ej. dice que el 17/05 es futuro estando en junio). Recalculamos la
+      // advertencia de fecha en el cliente, que sí tiene la fecha real del SO.
+      advertencias: (() => {
+        const hoy = new Date().toISOString().slice(0, 10);
+        const fe = ext.fecha_emision || hoy;
+        const base = (ext.advertencias || []).filter(a => !/futur|posterior a la fecha|adelant/i.test(String(a)));
+        if (fe > hoy) base.unshift(`La fecha de emisión (${fe}) es posterior a hoy (${hoy}); verificá si es correcta.`);
+        return base;
+      })(),
+      // La CREACIÓN de insumos NO la hace el contador: queda para el almacenero
+      // en "Compras pendientes" (ahí decide crear o vincular). Acá solo se marca
+      // la factura como pendiente de recepción. Si el comprobante NO es de almacén
+      // (combustible, servicios, fletes), el contador desactiva ese checkbox.
+      crear_materiales_catalogo: false,
       genera_recepcion_almacen: true,
       metodo_pago: null,
       payment_status: 'pending',
@@ -1798,63 +1806,47 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
                 </div>
                 <div style={{ display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
                   <label style={{ fontSize:11, color:'var(--tm)', display:'flex', alignItems:'center', gap:4 }}
-                    title="Crea los materiales en el catálogo de la obra (sin stock). El almacenero recibirá la notificación de compra pendiente.">
-                    <input type="checkbox" checked={r.crear_materiales_catalogo !== false} onChange={e=>upd({ crear_materiales_catalogo: e.target.checked })}/>
-                    Crear materiales en catálogo (sin stock)
-                  </label>
-                  <label style={{ fontSize:11, color:'var(--tm)', display:'flex', alignItems:'center', gap:4 }}
-                    title="Si está marcado, esta factura aparece en 'Compras pendientes' del almacenero hasta que confirme la recepción física.">
+                    title="Si está marcado, esta factura aparece en 'Compras pendientes' del almacenero, que decide allí crear el insumo nuevo o vincularlo a uno existente cuando confirme la recepción física.">
                     <input type="checkbox" checked={r.genera_recepcion_almacen !== false} onChange={e=>upd({ genera_recepcion_almacen: e.target.checked })}/>
                     Genera ingreso al almacén (esperar recepción física)
                   </label>
                   <button type="button" className="btn btn-ghost btn-xs" onClick={recalcular}>↻ Recalcular total</button>
                 </div>
               </div>
-              <div style={{ overflow:'auto', maxHeight:280, border:'1px solid var(--border)', borderRadius:6 }}>
-                <table className="tbl" style={{ fontSize:11 }}>
+              {/* La columna "Material" (crear/vincular insumo) se quitó a propósito:
+                  ese trabajo es del ALMACENERO en "Compras pendientes". El contador
+                  solo verifica descripción, tipo, cantidad y precio. */}
+              <div style={{ overflow:'auto', maxHeight:460, border:'1px solid var(--border)', borderRadius:6 }}>
+                <table className="tbl" style={{ fontSize:12 }}>
                   <thead><tr>
-                    <th style={{ minWidth:180 }}>Descripción</th>
-                    <th style={{ width:100 }}>Tipo</th>
-                    <th>Material</th>
-                    <th style={{ textAlign:'right' }}>Cant</th>
-                    <th>Unid</th>
-                    <th style={{ textAlign:'right' }}>P.Unit</th>
-                    <th style={{ textAlign:'right' }}>Subt</th>
+                    <th style={{ minWidth:300 }}>Descripción</th>
+                    <th style={{ width:130 }}>Tipo</th>
+                    <th style={{ textAlign:'right', width:90 }}>Cant</th>
+                    <th style={{ width:70 }}>Unid</th>
+                    <th style={{ textAlign:'right', width:100 }}>P.Unit</th>
+                    <th style={{ textAlign:'right', width:100 }}>Subt</th>
                   </tr></thead>
                   <tbody>
                     {r.items.map((it, i) => (
                       <tr key={i}>
-                        <td><input className="fi" style={{ fontSize:11, padding:'4px 6px' }} value={it.descripcion||''} onChange={e=>updateItem(i, { descripcion: e.target.value })}/></td>
+                        <td><input className="fi" style={{ fontSize:12, padding:'6px 8px' }} value={it.descripcion||''} onChange={e=>updateItem(i, { descripcion: e.target.value })}/></td>
                         <td>
                           {/* Tipo de insumo: la IA pre-clasifica por nombre,
                               el contador puede corregir si es necesario. */}
-                          <select style={{ fontSize:10, padding:'3px 4px' }} className="fi"
+                          <select style={{ fontSize:11, padding:'5px 6px' }} className="fi"
                             value={it.tipo_insumo || 'material'}
                             onChange={e => updateItem(i, { tipo_insumo: e.target.value })}>
                             <option value="material">Material</option>
                             <option value="herramienta">Herramienta</option>
                             <option value="epp">EPP</option>
                             <option value="maquinaria">Maquinaria</option>
+                            <option value="emergencia">Emergencia</option>
                             <option value="servicio">Servicio/Gasto</option>
                           </select>
                         </td>
-                        <td>
-                          <select style={{ fontSize:10, padding:'3px 4px', maxWidth:160 }} className="fi"
-                            value={it.accion_material === 'crear_nuevo' ? '__new__' : (it.material_id || '__none__')}
-                            onChange={e=>{
-                              const v = e.target.value;
-                              if (v === '__new__') updateItem(i, { accion_material:'crear_nuevo', material_id:'' });
-                              else if (v === '__none__') updateItem(i, { accion_material:'usar_existente', material_id:'' });
-                              else updateItem(i, { accion_material:'usar_existente', material_id: v });
-                            }}>
-                            <option value="__new__">+ Crear nuevo</option>
-                            <option value="__none__">— No vincular —</option>
-                            {materialesDB.map(m => <option key={m.id} value={m.id}>{m.nombre_material?.slice(0,30)}</option>)}
-                          </select>
-                        </td>
-                        <td><input className="fi" type="number" step="0.01" style={{ fontSize:11, padding:'4px 6px', width:70, textAlign:'right' }} value={it.cantidad ?? ''} onChange={e=>updateItem(i, { cantidad: e.target.value })}/></td>
-                        <td><input className="fi" style={{ fontSize:11, padding:'4px 6px', width:50 }} value={it.unidad||''} onChange={e=>updateItem(i, { unidad: e.target.value })}/></td>
-                        <td><input className="fi" type="number" step="0.01" style={{ fontSize:11, padding:'4px 6px', width:80, textAlign:'right' }} value={it.precio_unitario ?? ''} onChange={e=>updateItem(i, { precio_unitario: e.target.value })}/></td>
+                        <td><input className="fi" type="number" step="0.01" style={{ fontSize:12, padding:'6px 8px', width:80, textAlign:'right' }} value={it.cantidad ?? ''} onChange={e=>updateItem(i, { cantidad: e.target.value })}/></td>
+                        <td><input className="fi" style={{ fontSize:12, padding:'6px 8px', width:60 }} value={it.unidad||''} onChange={e=>updateItem(i, { unidad: e.target.value })}/></td>
+                        <td><input className="fi" type="number" step="0.01" style={{ fontSize:12, padding:'6px 8px', width:90, textAlign:'right' }} value={it.precio_unitario ?? ''} onChange={e=>updateItem(i, { precio_unitario: e.target.value })}/></td>
                         <td style={{ textAlign:'right' }}>{((Number(it.cantidad)||0) * (Number(it.precio_unitario)||0)).toFixed(2)}</td>
                       </tr>
                     ))}
