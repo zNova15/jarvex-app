@@ -33,6 +33,48 @@ const CFG_TIPO = {
   epp:         { mov: 'movimientos_epp',                fk: 'epp_id',         itemTipo: 'epp',         cat: 'epps',         nombreCol: 'nombre_epp',         idkey: 'movepp' },
 };
 
+// Normaliza un nombre para comparar (sin tildes, sin signos, minúsculas).
+const _normNom = (s) => String(s || '').toLowerCase().normalize('NFD')
+  .replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+// Puntaje de similitud 0..1 entre dos nombres: Jaccard de tokens (≥2 chars) +
+// bonus si uno contiene al otro. Sirve para sugerir el insumo del catálogo más
+// parecido a la descripción de la factura (los nombres rara vez coinciden).
+function simNombre(a, b) {
+  const na = _normNom(a), nb = _normNom(b);
+  if (!na || !nb) return 0;
+  if (na === nb) return 1;
+  const sa = new Set(na.split(' ').filter(w => w.length >= 2));
+  const sb = new Set(nb.split(' ').filter(w => w.length >= 2));
+  if (!sa.size || !sb.size) return 0;
+  let inter = 0; for (const w of sa) if (sb.has(w)) inter++;
+  const jacc = inter / (sa.size + sb.size - inter);
+  const contains = (na.includes(nb) || nb.includes(na)) ? 0.3 : 0;
+  return Math.min(1, jacc + contains);
+}
+// Distancia en días absolutos entre dos fechas YYYY-MM-DD (Infinity si falta).
+function diasEntre(a, b) {
+  if (!a || !b) return Infinity;
+  const ta = Date.parse(a), tb = Date.parse(b);
+  if (isNaN(ta) || isNaN(tb)) return Infinity;
+  return Math.abs(ta - tb) / 86400000;
+}
+// ¿Es un movimiento de INGRESO real (compra/recepción), candidato a vincular a
+// una factura? Excluye lo que NO es una compra aunque tenga 'entrada':
+//  - devolución / salida / baja
+//  - REVERSO de otra operación (reverses_id / reversed_by_id / tipo='reverso'):
+//    en herramientas el reverso de una salida queda con accion='entrada'.
+//  - pierna de ENTRADA de un TRASPASO entre almacenes (mismo stock, no compra).
+// En herramientas las devoluciones traen accion='entrada' pero tipo='devolucion',
+// por eso filtramos por tipo_movimiento y solo caemos a `accion` al final.
+const _esIngreso = (m) => {
+  if (m?.reverses_id || m?.reversed_by_id) return false;
+  const tm = String(m?.tipo_movimiento || '').toLowerCase();
+  if (['devolucion', 'salida', 'baja', 'reverso', 'traspaso'].includes(tm)) return false;
+  if (/traspaso/i.test(String(m?.observaciones || ''))) return false;
+  if (tm === 'entrada' || tm === 'ingreso') return true;
+  return String(m?.accion || '').toLowerCase() === 'entrada';
+};
+
 function ComprasPendientesPage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : {};
   const userId = auth?.profile?.id || null;
@@ -291,11 +333,19 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
         verificado: !noStock && resta > 0 && !!matchId,  // listo si hay match y falta recibir
         match_id: noStock ? null : matchId, tipo,
         ubicacion_id: null, obs_item: '',
+        // 'nuevo' = crea un movimiento de ingreso y sube stock (default).
+        // 'existente' = se vincula a un movimiento de ingreso YA registrado
+        // (la mercadería ya entró): solo le estampa la factura, NO toca stock.
+        modo: 'nuevo', mov_existente_id: null,
       };
     })
   );
   const [obsGlobal, setObsGlobal] = uS('');
   const [ubicaciones, setUbicaciones] = uS([]);
+  // Movimientos de ingreso candidatos para VINCULAR (cache por insumo).
+  const [candCache, setCandCache] = uS({});     // `${tipo}:${matchId}` -> array
+  const [candLoading, setCandLoading] = uS({}); // misma clave -> bool
+  const [candOpen, setCandOpen] = uS(null);     // idx de fila con el panel abierto
   // Candado SÍNCRONO contra doble-post. `busy` (estado de React) no protege de
   // un doble-click rápido: el 2do click dispara su handler ANTES de que React
   // re-renderice el botón con disabled, así que confirmar() correría dos veces
@@ -324,6 +374,55 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
     for (const c of (catalogoTodos || [])) (o[c.tipo] || o.material).push({ value: c.id, label: c.nombre });
     return o;
   }, [catalogoTodos]);
+
+  // Sugerencias de insumo del catálogo más parecido a la descripción de la
+  // factura (top 3 del mismo tipo, score ≥ 0.25), por fila. Se calcula UNA vez y
+  // se memoiza por una firma estable (tipo+descripción+match de cada fila): así
+  // NO se reescanea el catálogo (que puede ser de miles de insumos) en cada
+  // tecla de observación/cantidad, que solo cambian otras props de `recep`.
+  const sugSignature = recep.map(r => (r.match_id || r.modo === 'existente') ? '' : `${r.tipo}::${r.descripcion}`).join('');
+  const sugerenciasPorIdx = uM(() => recep.map(it =>
+    (it.match_id || it.modo === 'existente') ? [] :
+      (catalogoTodos || [])
+        .filter(c => c.tipo === it.tipo)
+        .map(c => ({ ...c, score: simNombre(it.descripcion, c.nombre) }))
+        .filter(x => x.score >= 0.25)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 3)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  ), [sugSignature, catalogoTodos]);
+
+  // Carga (lazy, cacheado) los movimientos de ingreso de un insumo que TODAVÍA
+  // no están atados a una factura, ordenados por cercanía a la fecha de la
+  // factura. Son los candidatos a vincular ("la mercadería ya entró").
+  const cargarCandidatos = async (tipo, matchId) => {
+    const k = `${tipo}:${matchId}`;
+    if (!matchId || candCache[k] || candLoading[k]) return;
+    setCandLoading(s => ({ ...s, [k]: true }));
+    try {
+      const cfg = CFG_TIPO[tipo] || CFG_TIPO.material;
+      const rows = await window.__db[cfg.mov].where(cfg.fk).equals(matchId).toArray();
+      const facDate = factura.date || '';
+      const cand = rows
+        .filter(m => !m.deleted_at && m.obra_id === obraId && _esIngreso(m)
+          && !String(m.documento_asociado || '').trim() && !m.accounting_movement_id)
+        .map(m => ({
+          id: m.id,
+          fecha: m.fecha || (m.created_at || '').slice(0, 10),
+          cantidad: Number(m.cantidad) || 0,
+          unidad: m.unidad || '',
+          observaciones: m.observaciones || '',
+          dist: diasEntre(m.fecha || (m.created_at || '').slice(0, 10), facDate),
+        }))
+        .sort((a, b) => a.dist - b.dist || (b.fecha || '').localeCompare(a.fecha || ''))
+        .slice(0, 15);
+      setCandCache(s => ({ ...s, [k]: cand }));
+    } catch {
+      setCandCache(s => ({ ...s, [k]: [] }));
+    } finally {
+      setCandLoading(s => ({ ...s, [k]: false }));
+    }
+  };
 
   // Crear un insumo nuevo del tipo elegido y vincularlo a la fila (cuando la
   // factura trae algo que no está en el catálogo).
@@ -357,22 +456,17 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
     } catch (e) { showToast?.('Error al crear: ' + (e.message || e), 'red'); }
   };
 
+  // Tablas que la recepción toca: el set fijo para la transacción atómica.
+  const TX_TABLAS = ['movimientos_materiales', 'movimientos_herramientas', 'movimientos_epp', 'materiales', 'herramientas', 'epps', 'accounting_movements', 'stock_ubicaciones'];
+
   const confirmar = async () => {
-    const validos = recep.filter(r => !r.no_stock && r.verificado && r.match_id && Number(r.cantidad_recibida) > 0);
-    if (validos.length === 0) { showToast?.('Marcá al menos 1 ítem verificado, con insumo vinculado y cantidad > 0', 'red'); return; }
-    // Aviso (no bloqueo) si se recibe MÁS de lo que falta por facturar: puede ser
-    // legítimo (el proveedor mandó de más) pero suele ser un tipeo.
-    const excedidos = validos.filter(r => {
-      const falta = Math.max(0, (Number(r.cantidad) || 0) - (Number(r.ya_recibido) || 0));
-      return Number(r.cantidad_recibida) > falta + 0.0001;
-    });
-    if (excedidos.length > 0) {
-      const detalle = excedidos.map(r => `• ${r.descripcion}: recibís ${Number(r.cantidad_recibida).toLocaleString('es-PE')} y faltaba ${Math.max(0, (Number(r.cantidad) || 0) - (Number(r.ya_recibido) || 0)).toLocaleString('es-PE')}`).join('\n');
-      const ok = window.confirm(`Estás recibiendo MÁS de lo facturado en ${excedidos.length} ítem(s):\n\n${detalle}\n\n¿Confirmás de todos modos?`);
-      if (!ok) return;
-    }
-    // A partir de acá ya hay escrituras en la BD: cerramos el candado síncrono.
-    // Si ya estaba cerrado, este es un 2do disparo (doble-click) → cortamos.
+    const validos = recep.filter(r => !r.no_stock && r.verificado && (
+      (r.modo === 'existente' && r.mov_existente_id) ||
+      (r.modo !== 'existente' && r.match_id && Number(r.cantidad_recibida) > 0)
+    ));
+    if (validos.length === 0) { showToast?.('Marcá al menos 1 ítem verificado: vinculá a un insumo (cantidad > 0) o a un movimiento ya registrado', 'red'); return; }
+    // Candado SÍNCRONO contra doble-click ANTES de cualquier await (incluido el
+    // re-read y el prompt de exceso): si ya estaba cerrado, es un 2do disparo.
     if (enviandoRef.current) return;
     enviandoRef.current = true;
     setBusy(true);
@@ -381,37 +475,117 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
       // En modo prueba todo lo creado/actualizado es demo: 'synced' + demo:true
       // para que no se pushee a Supabase y lo vea el filtro de modo prueba.
       const isPrueba = getCurrentMode() === 'prueba';
-      let creados = 0;
-      let primerMov = null;
-      // Reconciliamos por ÍNDICE de fila, no por descripción: una misma factura
-      // puede traer dos renglones con idéntica `descripcion` (ej. el mismo ítem
-      // facturado dos veces o descripciones genéricas). Joinear por texto
-      // colapsaría/duplicaría lo recibido. `recep` es 1:1 y en orden con
-      // items_factura (ambos derivan del mismo JSON), así que el índice es estable.
-      const recibidoPorIdx = new Map(); // idx de fila → cantidad recibida ahora
-      for (const it of validos) {
-        const idx = recep.indexOf(it);
-        const cfg = CFG_TIPO[it.tipo] || CFG_TIPO.material;
-        const cant = Number(it.cantidad_recibida) || 0;
-        const movId = window.__newId();
-        const obs = ['Recepción factura ' + factura.document_number, obsGlobal, it.obs_item].filter(Boolean).join(' · ');
-        const baseMov = {
-          id: movId, obra_id: obraId, fecha: now.slice(0, 10), hora: now.slice(11, 16),
-          cantidad: cant, unidad: it.unidad || 'und', observaciones: obs,
-          proveedor_id: factura.proveedor_id || null, documento_asociado: factura.document_number || null,
-          ubicacion_id: it.ubicacion_id || null,
-          created_by: userId, updated_by: userId, created_at: now, updated_at: now,
-          version: 1, sync_status: isPrueba ? 'synced' : 'pending_create', idempotency_key: `${userId}_${cfg.idkey}_${movId}`,
-          ...(isPrueba ? { demo: true } : {}),
-        };
-        if (cfg.cat === 'herramientas') Object.assign(baseMov, { herramienta_id: it.match_id, accion: 'entrada', tipo_movimiento: 'ingreso', estado_devolucion: 'nuevo' });
-        else if (cfg.cat === 'epps') Object.assign(baseMov, { epp_id: it.match_id, tipo_movimiento: 'entrada', precio_unitario_real: Number(it.precio_unitario) || 0 });
-        else Object.assign(baseMov, { material_id: it.match_id, tipo_movimiento: 'entrada', precio_unitario_real: Number(it.precio_unitario) || 0, partida_id: null });
-        await window.__db[cfg.mov].add(baseMov);
-        primerMov = primerMov || movId;
 
-        // SUBIR stock_actual del insumo (el bug: antes solo creaba el movimiento).
-        try {
+      // Releemos la factura FRESCA de la BD. El modal pudo abrirse con `notas`
+      // viejas: la lista del padre se refresca async tras una recepción, y si la
+      // tarjeta se reabre antes de ese refresh, `factura.notas` (prop) tiene el
+      // `recibido` previo. Sin esto, re-confirmar la misma recepción doblaría el
+      // stock. Toda la reconciliación se basa en esta copia fresca, no en el prop.
+      const facFresh = await window.__db.accounting_movements.get(factura.id);
+      if (!facFresh || facFresh.deleted_at) {
+        showToast?.('La factura ya no está disponible (se borró o sincronizó). Reabrí la lista de compras pendientes.', 'red');
+        return;
+      }
+      const facturaNoSube = isPrueba || facFresh.demo === true;
+      let notasObj = {};
+      try { notasObj = JSON.parse(facFresh.notas || '{}'); } catch {}
+      const itemsFresh = Array.isArray(notasObj.items_factura) ? notasObj.items_factura : items;
+      const yaFreshDe = (idx) => Number(itemsFresh[idx]?.recibido) || 0;
+
+      // Aviso (no bloqueo) si se recibe MÁS de lo que falta — calculado sobre la
+      // BD FRESCA, no sobre el ya_recibido con que se montó el modal.
+      const excedidos = validos.filter(r => {
+        if (r.modo === 'existente') return false; // el vínculo refleja lo ya entrado
+        const idx = recep.indexOf(r);
+        const falta = Math.max(0, (Number(r.cantidad) || 0) - yaFreshDe(idx));
+        return Number(r.cantidad_recibida) > falta + 0.0001;
+      });
+      let permitirExceso = false;
+      if (excedidos.length > 0) {
+        const detalle = excedidos.map(r => { const idx = recep.indexOf(r); const falta = Math.max(0, (Number(r.cantidad) || 0) - yaFreshDe(idx)); return `• ${r.descripcion}: recibís ${Number(r.cantidad_recibida).toLocaleString('es-PE')} y faltaba ${falta.toLocaleString('es-PE')}`; }).join('\n');
+        const ok = window.confirm(`Estás recibiendo MÁS de lo facturado en ${excedidos.length} ítem(s):\n\n${detalle}\n\n¿Confirmás de todos modos?`);
+        if (!ok) return;
+        permitirExceso = true;
+      }
+
+      // Reconciliamos por ÍNDICE de fila, no por descripción: una misma factura
+      // puede traer dos renglones con idéntica `descripcion`. `recep` es 1:1 y en
+      // orden con items_factura (ambos derivan del mismo JSON), así que es estable.
+      const recibidoPorIdx = new Map(); // idx de fila → cantidad recibida ahora
+      const vinculadosIds = new Set();  // mov_existente_id ya estampados en este envío
+      const noVinculados = [];          // vínculos que no se pudieron aplicar (mov borrado)
+      // El desglose por almacén (stock_ubicaciones) se aplica DESPUÉS de la
+      // transacción: aplicarDelta dispara un evento jx_data_changed que correría
+      // el load() del padre (lee `proveedores`, fuera del scope de la tx) en
+      // pleno commit. Lo encolamos y lo aplicamos best-effort al cerrar la tx.
+      const desgloseQueue = [];
+      const NO_STOCK = new Set(['servicio', 'maquinaria']);
+      let creados = 0, vinculados = 0, primerMov = null, todoCompleto = false;
+
+      // TODO en una sola transacción Dexie: si algo falla a mitad, se revierte
+      // todo (no quedan movimientos creados ni stock subido sin que la factura
+      // avance) y un reintento no re-suma stock.
+      await window.__db.transaction('rw', TX_TABLAS, async () => {
+        for (const it of validos) {
+          const idx = recep.indexOf(it);
+          const cfg = CFG_TIPO[it.tipo] || CFG_TIPO.material;
+
+          // ── Camino VINCULAR: la mercadería ya entró y existe el movimiento ──
+          // Solo estampa la factura. NO crea movimiento ni toca stock (eso ya lo
+          // hizo el ingreso original).
+          if (it.modo === 'existente' && it.mov_existente_id) {
+            if (vinculadosIds.has(it.mov_existente_id)) continue; // un ingreso → una sola estampa
+            const mov = await window.__db[cfg.mov].get(it.mov_existente_id);
+            if (!mov || mov.deleted_at) { noVinculados.push(it.descripcion || 'ítem'); continue; }
+            const cantVinc = Number(mov.cantidad) || Number(it.cantidad_recibida) || 0;
+            const obsLink = [mov.observaciones, it.obs_item, 'Factura ' + (facFresh.document_number || '')].filter(Boolean).join(' · ');
+            await window.__db[cfg.mov].update(it.mov_existente_id, {
+              documento_asociado: facFresh.document_number || mov.documento_asociado || null,
+              accounting_movement_id: facFresh.id,
+              proveedor_id: mov.proveedor_id || facFresh.proveedor_id || null,
+              observaciones: obsLink,
+              updated_at: now, updated_by: userId,
+              version: (mov.version || 0) + 1,
+              // Demo-coherencia: si la factura NO se va a pushear (demo/prueba), el
+              // movimiento tampoco debe subir su accounting_movement_id (sería un
+              // puntero a una factura inexistente en el server).
+              sync_status: (facturaNoSube || mov.demo === true) ? 'synced' : (mov.sync_status === 'pending_create' ? 'pending_create' : 'pending_update'),
+            });
+            primerMov = primerMov || it.mov_existente_id;
+            vinculados++;
+            vinculadosIds.add(it.mov_existente_id);
+            if (idx >= 0) recibidoPorIdx.set(idx, (recibidoPorIdx.get(idx) || 0) + cantVinc);
+            continue;
+          }
+
+          // ── Camino NUEVO: crea movimiento + sube stock ──
+          // Clamp a lo que realmente falta según la BD fresca (salvo exceso
+          // confirmado): si el modal venía con estado stale y la línea ya estaba
+          // recibida, cant=0 y no se dobla el stock.
+          const falta = Math.max(0, (Number(it.cantidad) || 0) - yaFreshDe(idx));
+          const pedido = Number(it.cantidad_recibida) || 0;
+          const cant = permitirExceso ? pedido : Math.min(pedido, falta);
+          if (cant <= 0) continue;
+          const movId = window.__newId();
+          const obs = ['Recepción factura ' + facFresh.document_number, obsGlobal, it.obs_item].filter(Boolean).join(' · ');
+          const baseMov = {
+            id: movId, obra_id: obraId, fecha: now.slice(0, 10), hora: now.slice(11, 16),
+            cantidad: cant, unidad: it.unidad || 'und', observaciones: obs,
+            proveedor_id: facFresh.proveedor_id || null, documento_asociado: facFresh.document_number || null,
+            accounting_movement_id: facFresh.id || null,
+            ubicacion_id: it.ubicacion_id || null,
+            created_by: userId, updated_by: userId, created_at: now, updated_at: now,
+            version: 1, sync_status: isPrueba ? 'synced' : 'pending_create', idempotency_key: `${userId}_${cfg.idkey}_${movId}`,
+            ...(isPrueba ? { demo: true } : {}),
+          };
+          if (cfg.cat === 'herramientas') Object.assign(baseMov, { herramienta_id: it.match_id, accion: 'entrada', tipo_movimiento: 'ingreso', estado_devolucion: 'nuevo' });
+          else if (cfg.cat === 'epps') Object.assign(baseMov, { epp_id: it.match_id, tipo_movimiento: 'entrada', precio_unitario_real: Number(it.precio_unitario) || 0 });
+          else Object.assign(baseMov, { material_id: it.match_id, tipo_movimiento: 'entrada', precio_unitario_real: Number(it.precio_unitario) || 0, partida_id: null });
+          await window.__db[cfg.mov].add(baseMov);
+          primerMov = primerMov || movId;
+
+          // SUBIR stock_actual del insumo (sin catch silencioso: si falla, la
+          // transacción revierte el movimiento también).
           const rec = await window.__db[cfg.cat].get(it.match_id);
           if (rec) {
             const nuevoStock = Math.max(0, (Number(rec.stock_actual) || 0) + cant);
@@ -419,51 +593,57 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
             if (cfg.cat === 'materiales' && it.ubicacion_id && !rec.ubicacion_id) patch.ubicacion_id = it.ubicacion_id;
             await window.__db[cfg.cat].update(it.match_id, patch);
           }
-        } catch {}
-        // Desglose por almacén si se eligió ubicación.
-        if (it.ubicacion_id) {
-          try { await aplicarDelta({ obraId, itemTipo: cfg.itemTipo, itemId: it.match_id, ubicacionId: it.ubicacion_id, delta: cant, userId }); } catch {}
+          // Desglose por almacén: se encola y se aplica al cerrar la tx.
+          if (it.ubicacion_id) {
+            desgloseQueue.push({ obraId, itemTipo: cfg.itemTipo, itemId: it.match_id, ubicacionId: it.ubicacion_id, delta: cant, userId });
+          }
+          creados++;
+          if (idx >= 0) recibidoPorIdx.set(idx, (recibidoPorIdx.get(idx) || 0) + cant);
         }
-        creados++;
-        if (idx >= 0) recibidoPorIdx.set(idx, (recibidoPorIdx.get(idx) || 0) + cant);
+
+        // items_factura con lo recibido acumulado (base FRESCA) + match elegido.
+        const itemsActualizados = itemsFresh.map((orig, idx) => {
+          const fila = recep[idx];
+          const sumNow = recibidoPorIdx.get(idx) || 0;
+          const recibido = (Number(orig.recibido) || 0) + sumNow;
+          const tipoFinal = NO_STOCK.has(orig.tipo_insumo) ? orig.tipo_insumo : (fila?.tipo || orig.tipo_insumo);
+          const linkExtra = (fila?.modo === 'existente' && fila?.mov_existente_id)
+            ? { recepcion_modo: 'vinculado', mov_vinculado_id: fila.mov_existente_id }
+            : {};
+          return { ...orig, recibido, material_id: fila?.match_id || orig.material_id, tipo_insumo: tipoFinal, ...linkExtra };
+        });
+        todoCompleto = itemsActualizados.every(it =>
+          NO_STOCK.has(it.tipo_insumo) ||
+          (Number(it.recibido) || 0) >= (Number(it.cantidad) || 0) - 0.0001);
+        notasObj.items_factura = itemsActualizados;
+
+        await window.__db.accounting_movements.update(facFresh.id, {
+          notas: JSON.stringify(notasObj),
+          recepcion_status: todoCompleto ? 'recibido' : 'parcial',
+          recepcion_movimiento_id: primerMov || facFresh.recepcion_movimiento_id || null,
+          recepcion_fecha: now, recepcion_por: userId,
+          updated_at: now, updated_by: userId,
+          version: (facFresh.version || 0) + 1,
+          sync_status: facturaNoSube ? 'synced' : (facFresh.sync_status === 'pending_create' ? 'pending_create' : 'pending_update'),
+        });
+      });
+
+      // Desglose por almacén (best-effort, fuera de la tx; el total ya quedó
+      // consistente en stock_actual aunque esto falle).
+      for (const d of desgloseQueue) { try { await aplicarDelta(d); } catch (e) { console.warn('[recepcion] desglose', e?.message || e); } }
+
+      try { await window.__logAudit?.({ action: 'update', table: 'accounting_movements', recordId: factura.id, reason: `Recepción ${todoCompleto ? 'completa' : 'PARCIAL'} — ${creados} ingreso(s) nuevo(s), ${vinculados} vinculado(s) · factura ${factura.document_number}` }); } catch {}
+      TX_TABLAS.forEach(t => { try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: t } })); } catch {} });
+
+      const avisoLink = noVinculados.length ? ` · ⚠ ${noVinculados.length} vínculo(s) no se aplicaron (el movimiento ya no existe): esas líneas siguen pendientes` : '';
+      if (creados === 0 && vinculados === 0) {
+        showToast?.(noVinculados.length
+          ? `No se aplicó ningún vínculo: ${noVinculados.slice(0, 3).join(', ')} ya no existe(n). Reabrí la lista.`
+          : 'No había nada nuevo para recibir (las líneas ya estaban recibidas).', noVinculados.length ? 'red' : 'amber');
+      } else {
+        const resumen = [creados ? `${creados} ingreso(s) nuevo(s)` : '', vinculados ? `${vinculados} vinculado(s) a movimientos ya registrados` : ''].filter(Boolean).join(' · ');
+        showToast?.(`✓ ${resumen}${todoCompleto ? '' : ' · queda PARCIAL (falta recibir el resto)'}${avisoLink}`, noVinculados.length ? 'amber' : 'green');
       }
-
-      // Actualizar items_factura con lo recibido acumulado + el match elegido, y
-      // decidir si la factura queda RECIBIDA (todo completo) o PARCIAL.
-      let notasObj = {};
-      try { notasObj = JSON.parse(factura.notas || '{}'); } catch {}
-      // Tipos que NO ingresan al almacén (servicios, fletes, alquiler de
-      // maquinaria): no son "recibibles" físicamente, así que NO cuentan para
-      // decidir si la factura está completa. Si no se excluyen, una factura con
-      // una línea de servicio quedaría PARCIAL para siempre.
-      const NO_STOCK = new Set(['servicio', 'maquinaria']);
-      const itemsActualizados = (Array.isArray(notasObj.items_factura) ? notasObj.items_factura : items).map((orig, idx) => {
-        const fila = recep[idx];
-        const sumNow = recibidoPorIdx.get(idx) || 0;
-        const recibido = (Number(orig.recibido) || 0) + sumNow;
-        // Conservamos el tipo original si era no-stock (servicio/maquinaria);
-        // para el resto, el tipo corregido por el almacenero.
-        const tipoFinal = NO_STOCK.has(orig.tipo_insumo) ? orig.tipo_insumo : (fila?.tipo || orig.tipo_insumo);
-        return { ...orig, recibido, material_id: fila?.match_id || orig.material_id, tipo_insumo: tipoFinal };
-      });
-      const todoCompleto = itemsActualizados.every(it =>
-        NO_STOCK.has(it.tipo_insumo) ||
-        (Number(it.recibido) || 0) >= (Number(it.cantidad) || 0) - 0.0001);
-      notasObj.items_factura = itemsActualizados;
-
-      await window.__db.accounting_movements.update(factura.id, {
-        notas: JSON.stringify(notasObj),
-        recepcion_status: todoCompleto ? 'recibido' : 'parcial',
-        recepcion_movimiento_id: primerMov,
-        recepcion_fecha: now, recepcion_por: userId,
-        updated_at: now, updated_by: userId,
-        version: (factura.version || 0) + 1,
-        sync_status: (isPrueba || factura.demo === true) ? 'synced' : (factura.sync_status === 'pending_create' ? 'pending_create' : 'pending_update'),
-      });
-
-      try { await window.__logAudit?.({ action: 'update', table: 'accounting_movements', recordId: factura.id, reason: `Recepción ${todoCompleto ? 'completa' : 'PARCIAL'} — ${creados} ingreso(s) · factura ${factura.document_number}` }); } catch {}
-      showToast?.(`✓ ${creados} ingreso(s) registrados${todoCompleto ? '' : ' · queda PARCIAL (falta recibir el resto)'}`, 'green');
-      ['movimientos_materiales', 'movimientos_herramientas', 'movimientos_epp', 'materiales', 'herramientas', 'epps', 'accounting_movements', 'stock_ubicaciones'].forEach(t => { try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: t } })); } catch {} });
       onClose();
     } catch (e) {
       showToast?.('Error al registrar recepción: ' + (e?.message || e), 'red');
@@ -479,7 +659,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
       <div style={{ marginBottom: 12, padding: '10px 12px', background: 'rgba(52,152,219,0.08)', border: '1px solid rgba(52,152,219,0.25)', borderRadius: 6, fontSize: 12 }}>
         <strong>{provName || '—'}</strong> · factura del {factura.date}<br/>
         <span style={{ color: 'var(--tm)', fontSize: 11 }}>
-          Corregí el tipo y vinculá cada ítem al insumo del catálogo (aunque el nombre difiera). Ajustá la cantidad recibida, el almacén y observaciones. Si recibís solo una parte, registrá lo que llegó: la factura queda <strong>parcial</strong> y el resto sigue pendiente (sirve para repartir entre almacenes).
+          Corregí el tipo y vinculá cada ítem al insumo del catálogo (aunque el nombre difiera). Si la mercadería <strong>ya entró</strong> y registraste el ingreso, usá <strong>"¿Ya se registró este ingreso? Vincularlo"</strong> para atar esta factura a ese movimiento (no se vuelve a sumar stock). Si entra por primera vez, registrá el ingreso y subí stock. Recepción parcial: registrá lo que llegó y la factura queda <strong>parcial</strong> hasta recibir el resto (sirve para repartir entre almacenes).
         </span>
       </div>
 
@@ -531,16 +711,82 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
                   </td>
                   <td>
                     <div style={{ fontSize: 12, color: 'var(--ts)', marginBottom: 3 }}>{it.descripcion}</div>
-                    <SearchableSelect value={it.match_id || ''} onChange={v => upd(i, { match_id: v || null, verificado: !!v && Number(it.cantidad_recibida) > 0 })}
-                      options={opciones} fontSize={11} placeholder="— Buscar insumo del catálogo —" />
-                    {!it.match_id && (
-                      <button className="btn btn-ghost btn-xs" style={{ marginTop: 3 }} onClick={() => crearYVincular(i)}>
-                        <JxIcon name="plus" size={10} /> Crear "{(it.descripcion || '').slice(0, 22)}" como {TIPOS.find(t => t[0] === it.tipo)?.[1]}
-                      </button>
+                    {it.modo === 'existente' ? (
+                      // Ya resuelta vinculando un movimiento de ingreso existente.
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        <span className="badge b-green" style={{ fontSize: 9.5 }}>
+                          <JxIcon name="check" size={9} /> Vinculado a un ingreso ya registrado
+                        </span>
+                        <button className="btn btn-ghost btn-xs" onClick={() => { const resta = Math.max(0, (Number(it.cantidad) || 0) - (Number(it.ya_recibido) || 0)); upd(i, { modo: 'nuevo', mov_existente_id: null, cantidad_recibida: resta, verificado: !!it.match_id && resta > 0 }); }}>
+                          Deshacer
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <SearchableSelect value={it.match_id || ''} onChange={v => { if (candOpen === i) setCandOpen(null); upd(i, { match_id: v || null, verificado: !!v && Number(it.cantidad_recibida) > 0 }); }}
+                          options={opciones} fontSize={11} placeholder="— Buscar insumo del catálogo —" />
+                        {/* Sugerencias de insumo parecido (los nombres rara vez coinciden) */}
+                        {!it.match_id && (sugerenciasPorIdx[i] || []).length > 0 && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4, alignItems: 'center' }}>
+                            <span style={{ fontSize: 9.5, color: 'var(--tm)' }}>¿Es alguno?</span>
+                            {(sugerenciasPorIdx[i] || []).map(s => (
+                              <button key={s.id} className="badge b-blue" style={{ cursor: 'pointer', fontSize: 9.5, border: 'none' }}
+                                title="Vincular a este insumo del catálogo"
+                                onClick={() => upd(i, { match_id: s.id, verificado: Number(it.cantidad_recibida) > 0 })}>
+                                {s.nombre}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        {!it.match_id && (
+                          <button className="btn btn-ghost btn-xs" style={{ marginTop: 3 }} onClick={() => crearYVincular(i)}>
+                            <JxIcon name="plus" size={10} /> Crear "{(it.descripcion || '').slice(0, 22)}" como {TIPOS.find(t => t[0] === it.tipo)?.[1]}
+                          </button>
+                        )}
+                        {/* Vincular a un movimiento de ingreso YA registrado (la mercadería ya entró) */}
+                        {it.match_id && (
+                          <button className="btn btn-ghost btn-xs" style={{ marginTop: 3 }}
+                            onClick={() => { setCandOpen(candOpen === i ? null : i); cargarCandidatos(it.tipo, it.match_id); }}>
+                            <JxIcon name="arrowIn" size={10} /> {candOpen === i ? 'Ocultar' : '¿Ya se registró este ingreso? Vincularlo'}
+                          </button>
+                        )}
+                        {candOpen === i && it.match_id && (() => {
+                          const k = `${it.tipo}:${it.match_id}`;
+                          // Excluimos los movimientos ya elegidos por OTRA fila de
+                          // esta misma factura (no vincular el mismo ingreso dos veces).
+                          const usadosOtras = new Set(recep.filter((r, j) => j !== i && r.modo === 'existente' && r.mov_existente_id).map(r => r.mov_existente_id));
+                          const lista = (candCache[k] || []).filter(c => !usadosOtras.has(c.id));
+                          return (
+                            <div style={{ marginTop: 4, padding: 6, background: 'var(--bg2)', border: '1px solid var(--bd)', borderRadius: 5 }}>
+                              {candLoading[k] ? (
+                                <span style={{ fontSize: 10.5, color: 'var(--tm)' }}>Buscando movimientos…</span>
+                              ) : lista.length === 0 ? (
+                                <span style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+                                  No hay ingresos sin factura para este insumo. Registralo como ingreso nuevo.
+                                </span>
+                              ) : (
+                                <div style={{ display: 'grid', gap: 3 }}>
+                                  <span style={{ fontSize: 9.5, color: 'var(--tm)' }}>Ingresos sin factura (cercanos a la fecha):</span>
+                                  {lista.map(c => (
+                                    <button key={c.id} className="btn btn-ghost btn-xs" style={{ justifyContent: 'flex-start', textAlign: 'left', whiteSpace: 'normal', height: 'auto' }}
+                                      onClick={() => { upd(i, { modo: 'existente', mov_existente_id: c.id, cantidad_recibida: c.cantidad, verificado: true }); setCandOpen(null); }}>
+                                      {c.fecha || 's/f'} · {Number(c.cantidad).toLocaleString('es-PE')} {c.unidad}
+                                      {isFinite(c.dist) && c.dist <= 3 ? ' · mismo período' : ''}
+                                      {c.observaciones ? <span style={{ display: 'block', fontSize: 9, color: 'var(--tm)' }}>{String(c.observaciones).slice(0, 60)}</span> : null}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </>
                     )}
                   </td>
                   <td>
                     <select className="fi" value={it.tipo} style={{ fontSize: 11, padding: '5px 6px' }}
+                      disabled={it.modo === 'existente'}
+                      title={it.modo === 'existente' ? 'El tipo lo define el movimiento vinculado' : undefined}
                       onChange={e => { const nt = e.target.value; const keep = it.match_id && tipoDeId(it.match_id) === nt; upd(i, { tipo: nt, match_id: keep ? it.match_id : null, verificado: keep ? it.verificado : false }); }}>
                       {TIPOS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                     </select>
@@ -550,15 +796,26 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
                     {it.ya_recibido > 0 && <div style={{ fontSize: 9, color: 'var(--green)' }}>de {Number(it.cantidad).toLocaleString('es-PE')}</div>}
                   </td>
                   <td>
-                    <input className="fi" type="number" min="0" step="0.01" value={it.cantidad_recibida} disabled={!it.verificado}
-                      title="Por defecto, lo que falta. Si recibís más de lo facturado se te pedirá confirmar."
-                      onChange={e => upd(i, { cantidad_recibida: e.target.value })} style={{ fontSize: 12, textAlign: 'right' }} />
+                    {it.modo === 'existente' ? (
+                      <div style={{ textAlign: 'right', fontWeight: 600, color: 'var(--green)' }}
+                        title="Cantidad del movimiento de ingreso vinculado (no se vuelve a sumar al stock)">
+                        {Number(it.cantidad_recibida).toLocaleString('es-PE')}
+                      </div>
+                    ) : (
+                      <input className="fi" type="number" min="0" step="0.01" value={it.cantidad_recibida} disabled={!it.verificado}
+                        title="Por defecto, lo que falta. Si recibís más de lo facturado se te pedirá confirmar."
+                        onChange={e => upd(i, { cantidad_recibida: e.target.value })} style={{ fontSize: 12, textAlign: 'right' }} />
+                    )}
                   </td>
                   <td>
-                    <select className="fi" value={it.ubicacion_id || ''} onChange={e => upd(i, { ubicacion_id: e.target.value || null })} style={{ fontSize: 11, padding: '5px 6px' }}>
-                      <option value="">— Sin asignar —</option>
-                      {ubicaciones.map(u => <option key={u.id} value={u.id}>{u.nombre}</option>)}
-                    </select>
+                    {it.modo === 'existente' ? (
+                      <span style={{ color: 'var(--tm)', fontSize: 11 }}>ya asignado en el ingreso</span>
+                    ) : (
+                      <select className="fi" value={it.ubicacion_id || ''} onChange={e => upd(i, { ubicacion_id: e.target.value || null })} style={{ fontSize: 11, padding: '5px 6px' }}>
+                        <option value="">— Sin asignar —</option>
+                        {ubicaciones.map(u => <option key={u.id} value={u.id}>{u.nombre}</option>)}
+                      </select>
+                    )}
                   </td>
                   <td>
                     <input className="fi" value={it.obs_item} onChange={e => upd(i, { obs_item: e.target.value })} placeholder="faltó / dañado…" style={{ fontSize: 11, padding: '5px 6px' }} />
