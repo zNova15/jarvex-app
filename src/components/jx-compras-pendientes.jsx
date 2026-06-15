@@ -29,9 +29,13 @@ const SearchableSelect = (props) => (window.SearchableSelect ? <window.Searchabl
 // Config por tipo de insumo: tabla de movimiento, fk, item_tipo de
 // stock_ubicaciones y la tabla de catálogo (para subir stock_actual).
 const CFG_TIPO = {
-  material:    { mov: 'movimientos_materiales',         fk: 'material_id',    itemTipo: 'material',    cat: 'materiales',   nombreCol: 'nombre_material',    idkey: 'movmat' },
-  herramienta: { mov: 'movimientos_herramientas',       fk: 'herramienta_id', itemTipo: 'herramienta', cat: 'herramientas', nombreCol: 'nombre_herramienta', idkey: 'movherr' },
-  epp:         { mov: 'movimientos_epp',                fk: 'epp_id',         itemTipo: 'epp',         cat: 'epps',         nombreCol: 'nombre_epp',         idkey: 'movepp' },
+  material:    { mov: 'movimientos_materiales',         fk: 'material_id',         itemTipo: 'material',    cat: 'materiales',         nombreCol: 'nombre_material',    idkey: 'movmat' },
+  herramienta: { mov: 'movimientos_herramientas',       fk: 'herramienta_id',      itemTipo: 'herramienta', cat: 'herramientas',       nombreCol: 'nombre_herramienta', idkey: 'movherr' },
+  epp:         { mov: 'movimientos_epp',                fk: 'epp_id',              itemTipo: 'epp',         cat: 'epps',               nombreCol: 'nombre_epp',         idkey: 'movepp' },
+  // Maquinaria por cantidad vive en activos_pesados (maneja_cantidad); emergencia
+  // en insumos_emergencia. Sus movimientos usan tipo_movimiento 'entrada'.
+  maquinaria:  { mov: 'movimientos_maquinaria',         fk: 'activo_id',           itemTipo: 'maquinaria',  cat: 'activos_pesados',    nombreCol: 'nombre',            idkey: 'movmaq' },
+  emergencia:  { mov: 'movimientos_insumos_emergencia', fk: 'insumo_emergencia_id', itemTipo: 'emergencia',  cat: 'insumos_emergencia', nombreCol: 'nombre',            idkey: 'movemerg' },
 };
 
 // Normaliza un nombre para comparar (sin tildes, sin signos, minúsculas).
@@ -89,6 +93,8 @@ function ComprasPendientesPage({ showToast }) {
   const [materiales, setMateriales] = uS([]);
   const [herramientas, setHerramientas] = uS([]);
   const [epps, setEpps] = uS([]);
+  const [maquinarias, setMaquinarias] = uS([]);   // activos_pesados por cantidad
+  const [emergencias, setEmergencias] = uS([]);    // insumos_emergencia
   const [proveedores, setProveedores] = uS([]);
   const [loading, setLoading] = uS(true);
   const [recibiendoId, setRecibiendoId] = uS(null);   // id del mov contable a recibir
@@ -105,11 +111,14 @@ function ComprasPendientesPage({ showToast }) {
         // Pasar `.where('obra_id')` con un keyPath no indexado en Dexie
         // tira SchemaError y la promesa rechaza → la lista queda vacía
         // sin que el usuario se entere.
-        const [mcAll, mt, hr, ep, pr] = await Promise.all([
+        const [mcAll, mt, hr, ep, mq, em, pr] = await Promise.all([
           window.__db.accounting_movements.toArray(),
           window.__db.materiales.where('obra_id').equals(obraId).toArray(),
           window.__db.herramientas.where('obra_id').equals(obraId).toArray(),
           window.__db.epps.where('obra_id').equals(obraId).toArray(),
+          // activos_pesados se indexa por obra_actual_id (no obra_id) → toArray + filtro.
+          window.__db.activos_pesados.toArray().catch(() => []),
+          window.__db.insumos_emergencia.where('obra_id').equals(obraId).toArray().catch(() => []),
           window.__db.proveedores.toArray(),
         ]);
         const mc = mcAll.filter(m =>
@@ -123,6 +132,10 @@ function ComprasPendientesPage({ showToast }) {
         setMateriales(mt);
         setHerramientas(hr);
         setEpps(ep);
+        // Maquinaria: solo los activos por cantidad (los individuales no encajan
+        // en una recepción por unidades) de esta obra (obra_id u obra_actual_id).
+        setMaquinarias((mq || []).filter(x => x.maneja_cantidad && !x.deleted_at && (x.obra_id === obraId || x.obra_actual_id === obraId)));
+        setEmergencias(em || []);
         setProveedores(pr);
       } catch (e) {
         console.warn('[compras-pendientes]', e?.message || e);
@@ -133,7 +146,7 @@ function ComprasPendientesPage({ showToast }) {
     load();
     const onChange = (e) => {
       const t = e?.detail?.tabla || e?.detail?.table;
-      if (!t || ['accounting_movements','materiales','herramientas','epps','proveedores'].includes(t)) load();
+      if (!t || ['accounting_movements','materiales','herramientas','epps','activos_pesados','insumos_emergencia','proveedores'].includes(t)) load();
     };
     window.addEventListener('jx_data_changed', onChange);
     window.addEventListener('jarvex_master_updated', onChange);
@@ -154,15 +167,19 @@ function ComprasPendientesPage({ showToast }) {
     materiales.forEach(x => m.set(x.id, { tipo: 'material', record: x }));
     herramientas.forEach(x => m.set(x.id, { tipo: 'herramienta', record: x }));
     epps.forEach(x => m.set(x.id, { tipo: 'epp', record: x }));
+    maquinarias.forEach(x => m.set(x.id, { tipo: 'maquinaria', record: x }));
+    emergencias.forEach(x => m.set(x.id, { tipo: 'emergencia', record: x }));
     return m;
-  }, [materiales, herramientas, epps]);
+  }, [materiales, herramientas, epps, maquinarias, emergencias]);
   // Lista plana para el selector de match manual (vincular el ítem de la factura
-  // a un insumo del catálogo aunque el nombre difiera).
+  // a un insumo del catálogo aunque el nombre difiera) — los 5 tipos.
   const catalogoTodos = uM(() => [
     ...materiales.filter(x => !x.deleted_at && !x.es_grupo).map(x => ({ id: x.id, tipo: 'material', nombre: x.nombre_material || '—' })),
     ...herramientas.filter(x => !x.deleted_at && !x.es_grupo).map(x => ({ id: x.id, tipo: 'herramienta', nombre: x.nombre_herramienta || '—' })),
     ...epps.filter(x => !x.deleted_at && !x.es_grupo).map(x => ({ id: x.id, tipo: 'epp', nombre: x.nombre_epp || '—' })),
-  ], [materiales, herramientas, epps]);
+    ...maquinarias.filter(x => !x.deleted_at && !x.es_grupo).map(x => ({ id: x.id, tipo: 'maquinaria', nombre: x.nombre || '—' })),
+    ...emergencias.filter(x => !x.deleted_at && !x.es_grupo).map(x => ({ id: x.id, tipo: 'emergencia', nombre: x.nombre || '—' })),
+  ], [materiales, herramientas, epps, maquinarias, emergencias]);
 
   // Parse items del JSON de notas (los guarda captura mágica)
   const parseItems = (notasRaw) => {
@@ -315,7 +332,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
   // 'material' —el select de Tipo solo ofrece material/herramienta/epp— se
   // crearía un insumo fantasma con stock que contamina inventario y reportes.
   // Los mostramos como N/A, igual que la lista de Compras Pendientes.
-  const NO_STOCK = new Set(['servicio', 'maquinaria']);
+  const NO_STOCK = new Set(['servicio']);
   const [recep, setRecep] = uS(() =>
     items.map(it => {
       const ya = Number(it.recibido) || 0;
@@ -347,6 +364,9 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
     })
   );
   const [obsGlobal, setObsGlobal] = uS('');
+  // Fecha del MOVIMIENTO de ingreso (editable): por defecto hoy, pero se puede
+  // backdatear si la mercadería se recibió antes y recién ahora la vinculamos.
+  const [fechaMov, setFechaMov] = uS(() => new Date().toISOString().slice(0, 10));
   const [ubicaciones, setUbicaciones] = uS([]);
   // Movimientos de ingreso candidatos para VINCULAR (cache por insumo).
   const [candCache, setCandCache] = uS({});     // `${tipo}:${matchId}` -> array
@@ -377,7 +397,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
   // Opciones de match para el SearchableSelect, filtradas por el tipo elegido en
   // la fila (material/herramienta/epp). value = id del insumo del catálogo.
   const opcionesPorTipo = uM(() => {
-    const o = { material: [], herramienta: [], epp: [] };
+    const o = { material: [], herramienta: [], epp: [], maquinaria: [], emergencia: [] };
     for (const c of (catalogoTodos || [])) (o[c.tipo] || o.material).push({ value: c.id, label: c.nombre });
     return o;
   }, [catalogoTodos]);
@@ -447,11 +467,17 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
     };
     if (cfg.cat === 'herramientas') Object.assign(base, { tipo_herramienta: 'manual', estado_actual: 'nuevo', ubicacion_actual: 'almacen', disponible: true, maneja_cantidad: true });
     if (cfg.cat === 'epps') Object.assign(base, { tipo_epp: 'Otro' });
+    // activos_pesados: estado tiene CHECK ('operativo'|'mantenimiento'|'reparacion'|'baja')
+    // → 'operativo' (no 'activo'); y tipo tiene CHECK (…,'maquinaria','equipo','otro')
+    // → 'equipo' (NO 'menor', que no existe en el CHECK y trababa el push 23514).
+    // Lo manejamos por cantidad (maneja_cantidad).
+    if (cfg.cat === 'activos_pesados') Object.assign(base, { estado: 'operativo', maneja_cantidad: true, tipo: 'equipo' });
+    // insumos_emergencia: estado 'activo' (sin CHECK) ya queda del base.
     return base;
   };
 
   // Tablas que la recepción toca: el set fijo para la transacción atómica.
-  const TX_TABLAS = ['movimientos_materiales', 'movimientos_herramientas', 'movimientos_epp', 'materiales', 'herramientas', 'epps', 'accounting_movements', 'stock_ubicaciones', 'material_precios_historial', 'insumo_precios_historial'];
+  const TX_TABLAS = ['movimientos_materiales', 'movimientos_herramientas', 'movimientos_epp', 'movimientos_maquinaria', 'movimientos_insumos_emergencia', 'materiales', 'herramientas', 'epps', 'activos_pesados', 'insumos_emergencia', 'accounting_movements', 'stock_ubicaciones', 'material_precios_historial', 'insumo_precios_historial'];
 
   const confirmar = async () => {
     const validos = recep.filter(r => !r.no_stock && r.verificado && (
@@ -527,7 +553,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
       // el load() del padre (lee `proveedores`, fuera del scope de la tx) en
       // pleno commit. Lo encolamos y lo aplicamos best-effort al cerrar la tx.
       const desgloseQueue = [];
-      const NO_STOCK = new Set(['servicio', 'maquinaria']);
+      const NO_STOCK = new Set(['servicio']);
       let creados = 0, vinculados = 0, primerMov = null, todoCompleto = false, preciosReg = 0;
 
       // Historial de precio unitario fundamentado en el comprobante: si el precio
@@ -609,7 +635,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
           const movId = window.__newId();
           const obs = ['Recepción factura ' + facFresh.document_number, obsGlobal, it.obs_item].filter(Boolean).join(' · ');
           const baseMov = {
-            id: movId, obra_id: obraId, fecha: now.slice(0, 10), hora: now.slice(11, 16),
+            id: movId, obra_id: obraId, fecha: (fechaMov || now.slice(0, 10)), hora: now.slice(11, 16),
             cantidad: cant, unidad: it.unidad || 'und', observaciones: obs,
             proveedor_id: facFresh.proveedor_id || null, documento_asociado: facFresh.document_number || null,
             accounting_movement_id: facFresh.id || null,
@@ -620,6 +646,10 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
           };
           if (cfg.cat === 'herramientas') Object.assign(baseMov, { herramienta_id: matchId, accion: 'entrada', tipo_movimiento: 'ingreso', estado_devolucion: 'nuevo' });
           else if (cfg.cat === 'epps') Object.assign(baseMov, { epp_id: matchId, tipo_movimiento: 'entrada', precio_unitario_real: Number(it.precio_unitario) || 0 });
+          // movimientos_maquinaria / movimientos_insumos_emergencia: tipo 'entrada',
+          // sin precio_unitario_real ni partida_id (esas columnas no existen ahí).
+          else if (cfg.cat === 'activos_pesados') Object.assign(baseMov, { activo_id: matchId, tipo_movimiento: 'entrada' });
+          else if (cfg.cat === 'insumos_emergencia') Object.assign(baseMov, { insumo_emergencia_id: matchId, tipo_movimiento: 'entrada' });
           else Object.assign(baseMov, { material_id: matchId, tipo_movimiento: 'entrada', precio_unitario_real: Number(it.precio_unitario) || 0, partida_id: null });
           await window.__db[cfg.mov].add(baseMov);
           primerMov = primerMov || movId;
@@ -703,7 +733,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
   };
 
   const provName = factura.proveedor_id ? (provsById.get(factura.proveedor_id)?.razon_social || factura.third_party_name) : factura.third_party_name;
-  const TIPOS = [['material', 'Material'], ['herramienta', 'Herramienta'], ['epp', 'EPP']];
+  const TIPOS = [['material', 'Material'], ['herramienta', 'Herramienta'], ['epp', 'EPP'], ['maquinaria', 'Maquinaria'], ['emergencia', 'Emergencia']];
 
   return (
     <Modal title={`Registrar recepción · ${factura.document_number}`} icon="arrowIn" onClose={onClose} size="xl">
@@ -928,9 +958,17 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
         </table>
       </div>
 
-      <div style={{ marginBottom: 12 }}>
-        <label className="flabel">Observación general de la recepción</label>
-        <input className="fi" value={obsGlobal} onChange={e => setObsGlobal(e.target.value)} placeholder="Ej: llegó parcial, el resto lo recibe el almacén Central…" />
+      <div style={{ marginBottom: 12, display: 'grid', gridTemplateColumns: '180px 1fr', gap: 10 }}>
+        <div>
+          <label className="flabel">Fecha del ingreso</label>
+          <input className="fi" type="date" value={fechaMov} max={new Date().toISOString().slice(0, 10)}
+            title="Fecha del movimiento de ingreso al almacén. Cambiala si la mercadería llegó otro día (no hoy)."
+            onChange={e => setFechaMov(e.target.value || new Date().toISOString().slice(0, 10))} />
+        </div>
+        <div>
+          <label className="flabel">Observación general de la recepción</label>
+          <input className="fi" value={obsGlobal} onChange={e => setObsGlobal(e.target.value)} placeholder="Ej: llegó parcial, el resto lo recibe el almacén Central…" />
+        </div>
       </div>
 
       <div className="modal-actions">

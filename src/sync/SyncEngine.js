@@ -539,7 +539,7 @@ const FK_DEPS = {
   movimientos_materiales:    [{ campo: 'material_id', tabla: 'materiales' }, { campo: 'responsable_id', tabla: 'personal' }, { campo: 'subcontratista_id', tabla: 'subcontratistas' }, { campo: 'proveedor_id', tabla: 'proveedores' }, { campo: 'partida_id', tabla: 'partidas' }],
   movimientos_herramientas:  [{ campo: 'herramienta_id', tabla: 'herramientas' }, { campo: 'responsable_id', tabla: 'personal' }, { campo: 'subcontratista_id', tabla: 'subcontratistas' }],
   movimientos_epp:           [{ campo: 'epp_id', tabla: 'epps' }, { campo: 'personal_id', tabla: 'personal' }, { campo: 'subcontratista_id', tabla: 'subcontratistas' }],
-  movimientos_maquinaria:    [{ campo: 'activo_id', tabla: 'activos_pesados' }, { campo: 'responsable_id', tabla: 'personal' }, { campo: 'subcontratista_id', tabla: 'subcontratistas' }],
+  movimientos_maquinaria:    [{ campo: 'activo_id', tabla: 'activos_pesados' }, { campo: 'responsable_id', tabla: 'personal' }, { campo: 'subcontratista_id', tabla: 'subcontratistas' }, { campo: 'proveedor_id', tabla: 'proveedores' }],
   // Datasets de maquinaria + caja chica (import histórico/restore los crea en
   // el mismo lote que activos/personal pending; sin esto el INSERT hijo puede
   // ganarle la carrera al padre dentro del mismo batch paralelo → FK 23503).
@@ -547,7 +547,7 @@ const FK_DEPS = {
   consumos_combustible:      [{ campo: 'activo_id', tabla: 'activos_pesados' }, { campo: 'operador_id', tabla: 'personal' }],
   mantenimientos_maquinaria: [{ campo: 'activo_id', tabla: 'activos_pesados' }],
   caja_chica_movimientos:    [{ campo: 'responsable_id', tabla: 'personal' }],
-  movimientos_insumos_emergencia: [{ campo: 'insumo_emergencia_id', tabla: 'insumos_emergencia' }, { campo: 'responsable_id', tabla: 'personal' }, { campo: 'subcontratista_id', tabla: 'subcontratistas' }],
+  movimientos_insumos_emergencia: [{ campo: 'insumo_emergencia_id', tabla: 'insumos_emergencia' }, { campo: 'responsable_id', tabla: 'personal' }, { campo: 'subcontratista_id', tabla: 'subcontratistas' }, { campo: 'proveedor_id', tabla: 'proveedores' }],
   asistencia:                [{ campo: 'personal_id', tabla: 'personal' }],
   // Un trabajador puede pertenecer a la cuadrilla de un subcontratista; si ese
   // subcontratista aún es PENDING local, esperamos a que sincronice primero
@@ -1188,11 +1188,19 @@ async function reconciliarProveedorDuplicado(record) {
   if (!serverProv?.id || serverProv.id === record.id) return false;
 
   const now = new Date().toISOString();
-  // Re-apuntar todas las referencias locales del id duplicado → id real.
+  // Re-apuntar todas las referencias locales del id duplicado → id real. El dup
+  // siempre es local-nuevo, así que sus referencias están PENDING: acotamos el
+  // scan por sync_status (índice) en vez de barrer tablas de 50k+ filas enteras.
   for (const t of PROVEEDOR_REF_TABLAS) {
     if (!db[t]) continue;
     let rows = [];
-    try { rows = await db[t].filter(x => x.proveedor_id === record.id).toArray(); } catch { continue; }
+    try {
+      rows = await db[t].where('sync_status').anyOf([SYNC_STATUS.PENDING_CREATE, SYNC_STATUS.PENDING_UPDATE, SYNC_STATUS.FAILED])
+        .filter(x => x.proveedor_id === record.id).toArray();
+    } catch {
+      // Sin índice sync_status en esa tabla → fallback al scan completo.
+      try { rows = await db[t].filter(x => x.proveedor_id === record.id).toArray(); } catch { continue; }
+    }
     for (const row of rows) {
       try {
         await db[t].update(row.id, {
