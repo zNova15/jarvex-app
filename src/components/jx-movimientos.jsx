@@ -358,6 +358,23 @@ function almacenesDeMov(m, ubicNombre) {
   };
 }
 
+// La observación legible de un movimiento: saca la codificación de traspaso
+// ('Traspaso A → B' / 'Traspaso → X' / 'Traspaso ← Y'), que ya se ve en las
+// columnas de almacén, y deja la nota humana que escribió quien lo registró.
+function obsLegible(m) {
+  let s = String(m?.observaciones || '');
+  s = s.replace(/Traspaso\s+[^·→←]*→\s*[^·]+/g, '')
+       .replace(/Traspaso\s*→\s*[^·]+/g, '')
+       .replace(/Traspaso\s*←\s*[^·]+/g, '');
+  return s.split('·').map(x => x.trim()).filter(Boolean).join(' · ');
+}
+
+// Celda de observación compartida (truncada con tooltip del texto completo).
+function CeldaObs({ texto }) {
+  if (!texto) return <span style={{ color: 'var(--tm)', fontSize: 12 }}>—</span>;
+  return <span title={texto} style={{ fontSize: 11, color: 'var(--tm)' }}>{texto.length > 70 ? texto.slice(0, 70) + '…' : texto}</span>;
+}
+
 // Celda de almacén compartida por las tablas de movimientos.
 function CeldaAlmacen({ nombre, esTraspaso }) {
   if (!nombre) return <span style={{ color:'var(--tm)', fontSize:12 }}>—</span>;
@@ -1350,6 +1367,7 @@ function MovMaterialesPage({ showToast }) {
               <th style={{ textAlign:'right' }}>Cantidad</th>
               <th>Almacén salida</th><th>Almacén llegada</th>
               <th>Responsable</th><th>Frente</th><th>Documento</th>
+              <th style={{ minWidth:140 }}>Observación</th>
               <th style={{ textAlign:'right' }}>Precio</th>
               <th style={{ textAlign:'center' }}>Guía</th>
               <th>Sync</th>
@@ -1394,6 +1412,7 @@ function MovMaterialesPage({ showToast }) {
                       : (prov?.razon_social || '—')}</td>
                     <td>{m.frente_zona ? <span className="badge b-amber" title="Frente / zona al que va">{m.frente_zona}</span> : <span style={{ color:'var(--tm)', fontSize:12 }}>—</span>}</td>
                     <td className="col-m">{m.documento_asociado || '—'}</td>
+                    <td style={{ maxWidth:220 }}><CeldaObs texto={obsLegible(m)}/></td>
                     <td style={{ textAlign:'right' }} className="col-num">{m.precio_unitario_real ? fmtS(m.precio_unitario_real) : '—'}</td>
                     <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
                       {(() => {
