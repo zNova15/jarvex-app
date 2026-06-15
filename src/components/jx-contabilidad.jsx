@@ -1,5 +1,6 @@
 import React from "react";
 import { sugerirCuentaPcge } from "../lib/sugerir-cuenta-pcge.js";
+import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { getCurrentMode } from "../hooks/useAppMode";
 import { usePagination } from "../hooks/usePagination.js";
 import { TablePagination } from "./jx-pagination.jsx";
@@ -696,22 +697,13 @@ function MovimientosContablesPage({ showToast }) {
         const map = new Map();
         for (const ev of evs) {
           if (map.has(ev.registro_relacionado_id)) continue;
-          let url = null;
-          if (ev.url_archivo) {
-            url = ev.url_archivo;
-          } else {
-            try {
-              const blobId = ev.blob_ref || ev.id;
-              const row = await window.__db.evidencias_blobs.get(blobId);
-              if (row?.blob) {
-                url = URL.createObjectURL(row.blob);
-                blobUrlsLocales.push(url);
-              }
-            } catch {}
-          }
-          if (url) {
+          // Blob local si existe; si no, signed URL del bucket privado (la
+          // url_archivo cruda NO sirve en un bucket privado → factura no abre).
+          const src = await getEvidenciaSrc(ev);
+          if (src?.url) {
+            if (src.isBlob) blobUrlsLocales.push(src.url);
             map.set(ev.registro_relacionado_id, {
-              url,
+              url: src.url,
               mime: ev.mime_type || 'application/pdf',
               nombre: ev.nombre_archivo || 'comprobante',
             });

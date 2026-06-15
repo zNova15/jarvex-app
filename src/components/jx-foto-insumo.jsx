@@ -12,6 +12,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import React from "react";
+import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 
 const { useState: uS, useEffect: uE } = React;
 
@@ -40,17 +41,12 @@ export function useFotosEvidencias(obraId, tipoEvidencia) {
         const urlsNuevas = [];
         for (const ev of evidencias) {
           if (map.has(ev.registro_relacionado_id)) continue;
-          if (ev.url_archivo) {
-            map.set(ev.registro_relacionado_id, { url: ev.url_archivo, isRemote: true });
-          } else {
-            try {
-              const row = await window.__db.evidencias_blobs.get(ev.id);
-              if (row?.blob) {
-                const url = URL.createObjectURL(row.blob);
-                urlsNuevas.push(url);
-                map.set(ev.registro_relacionado_id, { url, isRemote: false });
-              }
-            } catch {}
+          // Blob local si existe; si no, signed URL del bucket privado (la
+          // url_archivo cruda NO sirve en un bucket privado → imagen rota).
+          const src = await getEvidenciaSrc(ev);
+          if (src?.url) {
+            if (src.isBlob) urlsNuevas.push(src.url);
+            map.set(ev.registro_relacionado_id, { url: src.url, isRemote: !src.isBlob });
           }
         }
         if (cancelled) { urlsNuevas.forEach(u => { try { URL.revokeObjectURL(u); } catch {} }); return; }

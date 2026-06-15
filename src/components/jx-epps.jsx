@@ -12,6 +12,7 @@ import React from "react";
 import { CATALOGO_EPP, epppTipo, detectarEPP } from "../lib/epp-utils.js";
 import { calcAlerta } from "../lib/stock-utils.js";
 import { getDesgloseBulk, aplicarDelta, traspasar } from "../lib/stock-ubicaciones.js";
+import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { DesglosePopup, TraspasoStockModal, ubicacionAutoOrigen, validarSalidaUbic } from "./jx-stock-ubic.jsx";
 import { detectarSugerencias, detectarDuplicados, fusionarInsumos } from "../lib/variantes.js";
 import { usePagination } from "../hooks/usePagination.js";
@@ -407,17 +408,10 @@ function EppsInventarioPage({ showToast }) {
         const map = new Map();
         for (const ev of evidencias) {
           if (map.has(ev.registro_relacionado_id)) continue; // primera = más reciente
-          if (ev.url_archivo) {
-            map.set(ev.registro_relacionado_id, { url: ev.url_archivo, isRemote: true });
-          } else {
-            try {
-              const row = await window.__db.evidencias_blobs.get(ev.id);
-              if (row?.blob) {
-                const url = URL.createObjectURL(row.blob);
-                blobUrlsLocales.push(url);
-                map.set(ev.registro_relacionado_id, { url, isRemote: false });
-              }
-            } catch {}
+          const src = await getEvidenciaSrc(ev);
+          if (src?.url) {
+            if (src.isBlob) blobUrlsLocales.push(src.url);
+            map.set(ev.registro_relacionado_id, { url: src.url, isRemote: !src.isBlob });
           }
         }
         if (!cancelled) setFotosMap(map);

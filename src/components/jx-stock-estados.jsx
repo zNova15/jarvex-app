@@ -11,6 +11,7 @@
 
 import React from "react";
 import { ESTADOS_COND, getEstados, setCantidadEstado, setFotoEstado } from "../lib/stock-estados.js";
+import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 
 const { useState: uS, useEffect: uE, useMemo: uM } = React;
 
@@ -42,11 +43,8 @@ export function EstadosModal({ itemTipo = 'herramienta', item, obraId, userId, s
         for (const ev of evs) {
           const estado = String(ev.registro_relacionado_id).split(':')[1];
           if (!estado || fm[estado]) continue;
-          if (ev.url_archivo) fm[estado] = { url: ev.url_archivo };
-          else {
-            const row = await window.__db.evidencias_blobs.get(ev.id).catch(() => null);
-            if (row?.blob) { const u = URL.createObjectURL(row.blob); urls.push(u); fm[estado] = { url: u }; }
-          }
+          const src = await getEvidenciaSrc(ev);
+          if (src?.url) { if (src.isBlob) urls.push(src.url); fm[estado] = { url: src.url }; }
         }
         if (!cancel) { setCant(c); setFotos(fm); setLoading(false); }
       } catch (e) { if (!cancel) { setLoading(false); } showToast?.('Error cargando estados: ' + (e.message || e), 'red'); }
@@ -76,7 +74,12 @@ export function EstadosModal({ itemTipo = 'herramienta', item, obraId, userId, s
       });
       await setFotoEstado({ obraId, itemTipo, itemId: item.id, estado, fotoEvidenciaId: evId, userId });
       const url = URL.createObjectURL(file);
-      setFotos(f => ({ ...f, [estado]: { url } }));
+      // Revocar la URL anterior de ese estado antes de reemplazarla (si no, se fuga).
+      setFotos(f => {
+        const prev = f[estado]?.url;
+        if (prev && String(prev).startsWith('blob:')) { try { URL.revokeObjectURL(prev); } catch {} }
+        return { ...f, [estado]: { url } };
+      });
       showToast?.('Foto guardada', 'green');
     } catch (e) { showToast?.('Error con la foto: ' + (e.message || e), 'red'); }
   };

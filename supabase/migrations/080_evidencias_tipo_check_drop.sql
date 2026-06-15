@@ -1,0 +1,11 @@
+-- 080: el CHECK de evidencias.tipo_evidencia solo admitía 8 valores legacy
+-- (foto_asistencia, pdf_formato_firmado, guia_remision, factura,
+-- foto_herramienta_danada, foto_avance, acta, documento_general), pero la app
+-- usa ~14 (comprobante_captura, foto_material, foto_herramienta, foto_epp,
+-- foto_activo, foto_insumo_emergencia, foto_estado, firma_epp, oc_firmada,
+-- movimiento_maquinaria, registro_diario_materiales, …). Por eso el upsert de
+-- METADATA de TODA evidencia fallaba 23514 → 0 filas en el server → los blobs
+-- subían al Storage pero ningún otro dispositivo veía la evidencia. tipo_evidencia
+-- es una etiqueta controlada por la app: quitamos el CHECK para que no se vuelva
+-- a desfasar (el front decide los valores).
+ALTER TABLE public.evidencias DROP CONSTRAINT IF EXISTS evidencias_tipo_evidencia_check;

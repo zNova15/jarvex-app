@@ -1,5 +1,6 @@
 import React from "react";
 import { calcAlerta } from "../lib/stock-utils.js";
+import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { aplicarDelta } from "../lib/stock-ubicaciones.js";
 import { exportarDataset } from "../lib/export-historico.js";
 const { useState: uSM, useMemo: uMM, useEffect: uEM } = React;
@@ -60,6 +61,9 @@ function RegistroFisicoModal({ modulo, obraId, onClose, showToast, refreshKey })
 
   uEM(() => {
     let cancelled = false;
+    // Revocamos los objectURL CREADOS en esta corrida (no el estado `thumbs`, que
+    // en el cleanup es el valor stale de la closure → fugaba las URLs nuevas).
+    const creadas = [];
     (async () => {
       try {
         const [evs, allPers] = await Promise.all([
@@ -77,16 +81,17 @@ function RegistroFisicoModal({ modulo, obraId, onClose, showToast, refreshKey })
         for (const ev of evs.slice(0, 30)) {
           try {
             const blobEntry = await window.__db.evidencias_blobs.get(ev.id);
-            if (blobEntry?.blob) thumbsMap[ev.id] = URL.createObjectURL(blobEntry.blob);
+            if (blobEntry?.blob) { const u = URL.createObjectURL(blobEntry.blob); creadas.push(u); thumbsMap[ev.id] = u; }
           } catch {}
         }
         if (!cancelled) setThumbs(thumbsMap);
+        else creadas.forEach(u => { try { URL.revokeObjectURL(u); } catch {} });
       } catch (e) { console.error('[regfisico]', e); }
       finally { if (!cancelled) setLoading(false); }
     })();
     return () => {
       cancelled = true;
-      Object.values(thumbs).forEach(u => { try { URL.revokeObjectURL(u); } catch {} });
+      creadas.forEach(u => { try { URL.revokeObjectURL(u); } catch {} });
     };
   }, [modulo, obraId, refreshKey]);
 
@@ -110,11 +115,12 @@ function RegistroFisicoModal({ modulo, obraId, onClose, showToast, refreshKey })
 
   const verFoto = async (ev) => {
     try {
-      const blobEntry = await window.__db.evidencias_blobs.get(ev.id);
-      if (blobEntry?.blob) {
-        setPhotoOpen({ url: URL.createObjectURL(blobEntry.blob), ev });
+      // Blob local o signed URL del bucket privado (cross-device).
+      const src = await getEvidenciaSrc(ev);
+      if (src?.url) {
+        setPhotoOpen({ url: src.url, ev });
       } else {
-        showToast?.('Foto no disponible localmente', 'amber');
+        showToast?.('Foto no disponible', 'amber');
       }
     } catch (e) {
       showToast?.('Error: ' + e.message, 'red');
@@ -995,23 +1001,15 @@ function MovMaterialesPage({ showToast }) {
 
   const verGuia = async (evidencia) => {
     try {
-      // Si ya está en cloud (uploaded), abrir url
-      if (evidencia.upload_status === 'uploaded' && evidencia.storage_path) {
-        const sb = window.__supabase;
-        if (sb) {
-          const { data } = sb.storage.from('evidencias').getPublicUrl(evidencia.storage_path);
-          if (data?.publicUrl) { window.open(data.publicUrl, '_blank'); return; }
-        }
-      }
-      // Si está local, leer del blob
-      const blobRow = await window.__db.evidencias_blobs.get(evidencia.id);
-      if (blobRow?.blob) {
-        const url = URL.createObjectURL(blobRow.blob);
-        window.open(url, '_blank');
-        setTimeout(() => URL.revokeObjectURL(url), 60000);
+      // Blob local si existe; si no, signed URL del bucket privado. (Antes
+      // miraba campos inexistentes upload_status/storage_path → nunca abría.)
+      const src = await getEvidenciaSrc(evidencia);
+      if (src?.url) {
+        window.open(src.url, '_blank');
+        if (src.isBlob) setTimeout(() => { try { URL.revokeObjectURL(src.url); } catch {} }, 60000);
         return;
       }
-      showToast?.('No se encontró el archivo localmente. Sincroniza primero.', 'amber');
+      showToast?.('No se encontró el archivo. Sincronizá primero.', 'amber');
     } catch (err) {
       showToast?.('Error al abrir: ' + (err.message || err), 'red');
     }
