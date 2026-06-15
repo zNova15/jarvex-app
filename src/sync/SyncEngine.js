@@ -571,6 +571,16 @@ const FK_DEPS = {
   // que insumos_partida → partidas, arriba.
   partidas_versionadas:        [{ campo: 'version_id', tabla: 'presupuestos_versiones' }],
   insumos_partida_versionadas: [{ campo: 'version_id', tabla: 'presupuestos_versiones' }, { campo: 'partida_versionada_id', tabla: 'partidas_versionadas' }],
+  // El historial de precios referencia DOS FKs reales del server (mig 020):
+  // material_id (NOT NULL) y origen_movimiento_id. La recepción de Compras
+  // Pendientes ("crear insumo nuevo + registrar precio") crea el material, el
+  // movimiento y la fila de historial en el MISMO lote pending. material_precios_historial
+  // (idx 13 en TRANSACTIONAL_TABLES) pushea ANTES que movimientos_materiales
+  // (idx ~52), así que sin gate la fila de historial llega al server antes que
+  // su movimiento → 23503 garantizado en origen_movimiento_id (no es carrera:
+  // el orden de las tablas lo determina). Gateamos ambos padres, igual que
+  // personal_historial → personal.
+  material_precios_historial:  [{ campo: 'material_id', tabla: 'materiales' }, { campo: 'origen_movimiento_id', tabla: 'movimientos_materiales' }],
 };
 
 // True si todas las FKs del record están sincronizadas (o no hay FKs).

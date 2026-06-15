@@ -337,6 +337,11 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
         // 'existente' = se vincula a un movimiento de ingreso YA registrado
         // (la mercadería ya entró): solo le estampa la factura, NO toca stock.
         modo: 'nuevo', mov_existente_id: null,
+        // creado_aqui = el insumo se creó en esta misma recepción (exige almacén).
+        creado_aqui: false,
+        // crear_nuevo = { nombre, unidad } de un insumo a crear EN confirmar()
+        // (creación diferida, atómica con el movimiento). null = no crear.
+        crear_nuevo: null,
       };
     })
   );
@@ -346,6 +351,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
   const [candCache, setCandCache] = uS({});     // `${tipo}:${matchId}` -> array
   const [candLoading, setCandLoading] = uS({}); // misma clave -> bool
   const [candOpen, setCandOpen] = uS(null);     // idx de fila con el panel abierto
+  const [crearForm, setCrearForm] = uS(null);   // { idx, nombre, unidad } del panel de creación
   // Candado SÍNCRONO contra doble-post. `busy` (estado de React) no protege de
   // un doble-click rápido: el 2do click dispara su handler ANTES de que React
   // re-renderice el botón con disabled, así que confirmar() correría dos veces
@@ -424,47 +430,38 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
     }
   };
 
-  // Crear un insumo nuevo del tipo elegido y vincularlo a la fila (cuando la
-  // factura trae algo que no está en el catálogo).
-  const crearYVincular = async (idx) => {
-    const it = recep[idx];
-    if (it.no_stock) { showToast?.('Servicios y maquinaria no se crean como insumo de almacén', 'red'); return; }
-    const cfg = CFG_TIPO[it.tipo] || CFG_TIPO.material;
-    const nombre = String(it.descripcion || '').trim();
-    if (!nombre) { showToast?.('La fila no tiene descripción para crear el insumo', 'red'); return; }
-    try {
-      const now = new Date().toISOString();
-      const id = window.__newId();
-      // En modo prueba el insumo es demo: queda 'synced' (no entra a la cola de
-      // push) y lleva demo:true para que lo vea el filtro de modo prueba y el
-      // SyncEngine no lo suba a Supabase. Mismo patrón que crearItemEnTabla.
-      const isPrueba = getCurrentMode() === 'prueba';
-      const base = {
-        id, obra_id: obraId, [cfg.nombreCol]: nombre, unidad: it.unidad || 'und',
-        stock_inicial: 0, stock_actual: 0, stock_minimo: 0, alerta: 'ok', estado: 'activo',
-        created_by: userId, updated_by: userId, created_at: now, updated_at: now,
-        version: 1, sync_status: isPrueba ? 'synced' : 'pending_create', last_synced_at: null,
-        idempotency_key: `${userId}_${cfg.cat}_${id}`,
-        ...(isPrueba ? { demo: true } : {}),
-      };
-      if (cfg.cat === 'herramientas') Object.assign(base, { tipo_herramienta: 'manual', estado_actual: 'nuevo', ubicacion_actual: 'almacen', disponible: true, maneja_cantidad: true });
-      if (cfg.cat === 'epps') Object.assign(base, { tipo_epp: 'Otro' });
-      await window.__db[cfg.cat].add(base);
-      upd(idx, { match_id: id, verificado: Number(it.cantidad_recibida) > 0 });
-      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: cfg.cat } })); } catch {}
-      showToast?.(`"${nombre}" creado en ${cfg.cat} y vinculado`, 'green');
-    } catch (e) { showToast?.('Error al crear: ' + (e.message || e), 'red'); }
+  // Arma el registro de catálogo de un insumo nuevo (NO lo escribe). La creación
+  // real se DIFIERE a la transacción de confirmar(): así un insumo "a crear" que
+  // se descarta (cambio de match, reclasificar, cancelar) nunca queda huérfano en
+  // el catálogo, y un doble-click no crea dos. El nombre y la unidad son
+  // editables (la factura suele traer el nombre mal escrito o una unidad distinta).
+  const construirBaseInsumo = (cfg, id, nombre, unidad, isPrueba, now) => {
+    const base = {
+      id, obra_id: obraId, [cfg.nombreCol]: nombre, unidad: unidad || 'und',
+      stock_inicial: 0, stock_actual: 0, stock_minimo: 0, alerta: 'ok', estado: 'activo',
+      created_by: userId, updated_by: userId, created_at: now, updated_at: now,
+      version: 1, sync_status: isPrueba ? 'synced' : 'pending_create', last_synced_at: null,
+      idempotency_key: `${userId}_${cfg.cat}_${id}`,
+      ...(isPrueba ? { demo: true } : {}),
+    };
+    if (cfg.cat === 'herramientas') Object.assign(base, { tipo_herramienta: 'manual', estado_actual: 'nuevo', ubicacion_actual: 'almacen', disponible: true, maneja_cantidad: true });
+    if (cfg.cat === 'epps') Object.assign(base, { tipo_epp: 'Otro' });
+    return base;
   };
 
   // Tablas que la recepción toca: el set fijo para la transacción atómica.
-  const TX_TABLAS = ['movimientos_materiales', 'movimientos_herramientas', 'movimientos_epp', 'materiales', 'herramientas', 'epps', 'accounting_movements', 'stock_ubicaciones'];
+  const TX_TABLAS = ['movimientos_materiales', 'movimientos_herramientas', 'movimientos_epp', 'materiales', 'herramientas', 'epps', 'accounting_movements', 'stock_ubicaciones', 'material_precios_historial'];
 
   const confirmar = async () => {
     const validos = recep.filter(r => !r.no_stock && r.verificado && (
       (r.modo === 'existente' && r.mov_existente_id) ||
-      (r.modo !== 'existente' && r.match_id && Number(r.cantidad_recibida) > 0)
+      (r.modo !== 'existente' && (r.match_id || r.crear_nuevo) && Number(r.cantidad_recibida) > 0)
     ));
     if (validos.length === 0) { showToast?.('Marcá al menos 1 ítem verificado: vinculá a un insumo (cantidad > 0) o a un movimiento ya registrado', 'red'); return; }
+    // Una fila verificada de stock tiene que apuntar a un insumo (match) o tener
+    // un insumo a crear; si no, no sabríamos a qué sumarle el ingreso.
+    const sinMatch = recep.filter(r => !r.no_stock && r.verificado && r.modo !== 'existente' && !r.match_id && !r.crear_nuevo);
+    if (sinMatch.length > 0) { showToast?.(`Vinculá o creá el insumo para: ${sinMatch.map(r => r.descripcion).slice(0, 3).join(', ')}${sinMatch.length > 3 ? '…' : ''}`, 'red'); return; }
     // Candado SÍNCRONO contra doble-click ANTES de cualquier await (incluido el
     // re-read y el prompt de exceso): si ya estaba cerrado, es un 2do disparo.
     if (enviandoRef.current) return;
@@ -508,10 +505,20 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
         permitirExceso = true;
       }
 
+      // Almacén de llegada OBLIGATORIO para insumos recién creados: si nace en
+      // esta recepción, tiene que entrar a un almacén concreto (no "sin asignar",
+      // que dejaría stock sin ubicación y rompería el desglose desde el día 1).
+      const faltaAlmacen = validos.filter(r => r.modo === 'nuevo' && r.creado_aqui && !r.ubicacion_id);
+      if (faltaAlmacen.length > 0) {
+        showToast?.(`Asigná un almacén de llegada a los insumos nuevos: ${faltaAlmacen.map(r => r.descripcion).slice(0, 3).join(', ')}${faltaAlmacen.length > 3 ? '…' : ''}`, 'red');
+        return;
+      }
+
       // Reconciliamos por ÍNDICE de fila, no por descripción: una misma factura
       // puede traer dos renglones con idéntica `descripcion`. `recep` es 1:1 y en
       // orden con items_factura (ambos derivan del mismo JSON), así que es estable.
       const recibidoPorIdx = new Map(); // idx de fila → cantidad recibida ahora
+      const creadoPorIdx = new Map();   // idx de fila → id del insumo creado en la tx
       const vinculadosIds = new Set();  // mov_existente_id ya estampados en este envío
       const noVinculados = [];          // vínculos que no se pudieron aplicar (mov borrado)
       // El desglose por almacén (stock_ubicaciones) se aplica DESPUÉS de la
@@ -520,7 +527,47 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
       // pleno commit. Lo encolamos y lo aplicamos best-effort al cerrar la tx.
       const desgloseQueue = [];
       const NO_STOCK = new Set(['servicio', 'maquinaria']);
-      let creados = 0, vinculados = 0, primerMov = null, todoCompleto = false;
+      let creados = 0, vinculados = 0, primerMov = null, todoCompleto = false, preciosReg = 0;
+
+      // Historial de precio unitario fundamentado en el comprobante: si el precio
+      // de la factura difiere del precio estimado del MATERIAL, deja una fila en
+      // material_precios_historial (precio anterior→nuevo, doc, mov) y actualiza
+      // el precio estimado. Solo materiales (es la única tabla con historial).
+      const registrarPrecioMat = async ({ cfg, matchId, precio, movId }) => {
+        if (cfg.cat !== 'materiales' || !matchId) return;
+        // Tolerante a coma decimal por si items_factura se editó/importó a mano.
+        const p = Number(String(precio ?? '').replace(',', '.')) || 0;
+        if (!(p > 0)) return;
+        const mat = await window.__db.materiales.get(matchId);
+        if (!mat) return;
+        const anterior = Number(mat.precio_unitario_estimado) || 0;
+        if (Math.abs(p - anterior) < 0.0001) return; // no cambió
+        // Demo-coherencia: si el material o la factura no se pushean (demo/prueba),
+        // la fila de historial tampoco — si no, quedaría apuntando a un material que
+        // el server nunca recibió (FK 23503).
+        const filaNoSube = isPrueba || mat.demo === true || facFresh.demo === true;
+        const histId = window.__newId();
+        await window.__db.material_precios_historial.add({
+          id: histId, material_id: matchId, obra_id: obraId,
+          precio_anterior: anterior, precio_nuevo: p, fecha: now.slice(0, 10),
+          motivo: 'Recepción comprobante ' + (facFresh.document_number || ''),
+          // fuente DEBE ser uno de ('manual','apu','movimiento','importacion') por
+          // el CHECK del server (mig 020); 'movimiento' = precio detectado en una
+          // compra real. El nº de comprobante va en documento_ref.
+          documento_ref: facFresh.document_number || null, fuente: 'movimiento',
+          origen_movimiento_id: movId || null,
+          created_by: userId, updated_by: userId, created_at: now, updated_at: now,
+          version: 1, sync_status: filaNoSube ? 'synced' : 'pending_create', last_synced_at: null,
+          idempotency_key: `${userId}_mph_${histId}`,
+          ...(filaNoSube ? { demo: true } : {}),
+        });
+        await window.__db.materiales.update(matchId, {
+          precio_unitario_estimado: p, updated_at: now, updated_by: userId,
+          version: (mat.version || 0) + 1,
+          sync_status: filaNoSube ? 'synced' : (mat.sync_status === 'pending_create' ? 'pending_create' : 'pending_update'),
+        });
+        preciosReg++;
+      };
 
       // TODO en una sola transacción Dexie: si algo falla a mitad, se revierte
       // todo (no quedan movimientos creados ni stock subido sin que la factura
@@ -555,6 +602,8 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
             vinculados++;
             vinculadosIds.add(it.mov_existente_id);
             if (idx >= 0) recibidoPorIdx.set(idx, (recibidoPorIdx.get(idx) || 0) + cantVinc);
+            // El comprobante ahora respalda el precio de ese ingreso.
+            await registrarPrecioMat({ cfg, matchId: it.match_id, precio: it.precio_unitario, movId: it.mov_existente_id });
             continue;
           }
 
@@ -566,6 +615,21 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
           const pedido = Number(it.cantidad_recibida) || 0;
           const cant = permitirExceso ? pedido : Math.min(pedido, falta);
           if (cant <= 0) continue;
+
+          // Creación DIFERIDA del insumo: si la fila pidió crear uno nuevo, se
+          // crea acá DENTRO de la tx (atómico con el movimiento). Si se cancela la
+          // recepción o se reabre, no queda ningún insumo huérfano en el catálogo.
+          let matchId = it.match_id;
+          if (!matchId && it.crear_nuevo) {
+            const nom = String(it.crear_nuevo.nombre || it.descripcion || '').trim();
+            if (!nom) continue; // sin nombre no se crea (el botón ya lo exige)
+            const uni = String(it.crear_nuevo.unidad || it.unidad || 'und').trim() || 'und';
+            matchId = window.__newId();
+            await window.__db[cfg.cat].add(construirBaseInsumo(cfg, matchId, nom, uni, isPrueba, now));
+            if (idx >= 0) creadoPorIdx.set(idx, matchId);
+          }
+          if (!matchId) continue;
+
           const movId = window.__newId();
           const obs = ['Recepción factura ' + facFresh.document_number, obsGlobal, it.obs_item].filter(Boolean).join(' · ');
           const baseMov = {
@@ -578,25 +642,27 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
             version: 1, sync_status: isPrueba ? 'synced' : 'pending_create', idempotency_key: `${userId}_${cfg.idkey}_${movId}`,
             ...(isPrueba ? { demo: true } : {}),
           };
-          if (cfg.cat === 'herramientas') Object.assign(baseMov, { herramienta_id: it.match_id, accion: 'entrada', tipo_movimiento: 'ingreso', estado_devolucion: 'nuevo' });
-          else if (cfg.cat === 'epps') Object.assign(baseMov, { epp_id: it.match_id, tipo_movimiento: 'entrada', precio_unitario_real: Number(it.precio_unitario) || 0 });
-          else Object.assign(baseMov, { material_id: it.match_id, tipo_movimiento: 'entrada', precio_unitario_real: Number(it.precio_unitario) || 0, partida_id: null });
+          if (cfg.cat === 'herramientas') Object.assign(baseMov, { herramienta_id: matchId, accion: 'entrada', tipo_movimiento: 'ingreso', estado_devolucion: 'nuevo' });
+          else if (cfg.cat === 'epps') Object.assign(baseMov, { epp_id: matchId, tipo_movimiento: 'entrada', precio_unitario_real: Number(it.precio_unitario) || 0 });
+          else Object.assign(baseMov, { material_id: matchId, tipo_movimiento: 'entrada', precio_unitario_real: Number(it.precio_unitario) || 0, partida_id: null });
           await window.__db[cfg.mov].add(baseMov);
           primerMov = primerMov || movId;
 
           // SUBIR stock_actual del insumo (sin catch silencioso: si falla, la
           // transacción revierte el movimiento también).
-          const rec = await window.__db[cfg.cat].get(it.match_id);
+          const rec = await window.__db[cfg.cat].get(matchId);
           if (rec) {
             const nuevoStock = Math.max(0, (Number(rec.stock_actual) || 0) + cant);
             const patch = { stock_actual: nuevoStock, alerta: calcAlerta(nuevoStock, Number(rec.stock_minimo || 0)), updated_at: now, updated_by: userId, version: (rec.version || 0) + 1, sync_status: (isPrueba || rec.demo === true) ? 'synced' : (rec.sync_status === 'pending_create' ? 'pending_create' : 'pending_update') };
             if (cfg.cat === 'materiales' && it.ubicacion_id && !rec.ubicacion_id) patch.ubicacion_id = it.ubicacion_id;
-            await window.__db[cfg.cat].update(it.match_id, patch);
+            await window.__db[cfg.cat].update(matchId, patch);
           }
           // Desglose por almacén: se encola y se aplica al cerrar la tx.
           if (it.ubicacion_id) {
-            desgloseQueue.push({ obraId, itemTipo: cfg.itemTipo, itemId: it.match_id, ubicacionId: it.ubicacion_id, delta: cant, userId });
+            desgloseQueue.push({ obraId, itemTipo: cfg.itemTipo, itemId: matchId, ubicacionId: it.ubicacion_id, delta: cant, userId });
           }
+          // Historial de precio fundamentado en el comprobante.
+          await registrarPrecioMat({ cfg, matchId, precio: it.precio_unitario, movId });
           creados++;
           if (idx >= 0) recibidoPorIdx.set(idx, (recibidoPorIdx.get(idx) || 0) + cant);
         }
@@ -606,11 +672,20 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
           const fila = recep[idx];
           const sumNow = recibidoPorIdx.get(idx) || 0;
           const recibido = (Number(orig.recibido) || 0) + sumNow;
-          const tipoFinal = NO_STOCK.has(orig.tipo_insumo) ? orig.tipo_insumo : (fila?.tipo || orig.tipo_insumo);
+          // Solo persistimos un cambio de tipo (reclasificación de gasto→insumo,
+          // o el tipo corregido) si la fila REALMENTE se procesó (se recibió o
+          // vinculó algo). Una reclasificación abandonada NO debe mutar el tipo:
+          // si no, una línea de servicio sin recibir quedaría como 'material' con
+          // recibido<cantidad y dejaría la factura 'parcial' para siempre.
+          const procesada = recibidoPorIdx.has(idx) || (fila?.modo === 'existente' && fila?.mov_existente_id);
+          const tipoFinal = (fila && !fila.no_stock && procesada) ? (fila.tipo || orig.tipo_insumo)
+            : (NO_STOCK.has(orig.tipo_insumo) ? orig.tipo_insumo : (fila?.tipo || orig.tipo_insumo));
+          // material_id: el insumo recién creado en la tx, o el match elegido, o el original.
+          const matId = creadoPorIdx.get(idx) || fila?.match_id || orig.material_id;
           const linkExtra = (fila?.modo === 'existente' && fila?.mov_existente_id)
             ? { recepcion_modo: 'vinculado', mov_vinculado_id: fila.mov_existente_id }
             : {};
-          return { ...orig, recibido, material_id: fila?.match_id || orig.material_id, tipo_insumo: tipoFinal, ...linkExtra };
+          return { ...orig, recibido, material_id: matId, tipo_insumo: tipoFinal, ...linkExtra };
         });
         todoCompleto = itemsActualizados.every(it =>
           NO_STOCK.has(it.tipo_insumo) ||
@@ -641,7 +716,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
           ? `No se aplicó ningún vínculo: ${noVinculados.slice(0, 3).join(', ')} ya no existe(n). Reabrí la lista.`
           : 'No había nada nuevo para recibir (las líneas ya estaban recibidas).', noVinculados.length ? 'red' : 'amber');
       } else {
-        const resumen = [creados ? `${creados} ingreso(s) nuevo(s)` : '', vinculados ? `${vinculados} vinculado(s) a movimientos ya registrados` : ''].filter(Boolean).join(' · ');
+        const resumen = [creados ? `${creados} ingreso(s) nuevo(s)` : '', vinculados ? `${vinculados} vinculado(s) a movimientos ya registrados` : '', preciosReg ? `${preciosReg} precio(s) actualizado(s)` : ''].filter(Boolean).join(' · ');
         showToast?.(`✓ ${resumen}${todoCompleto ? '' : ' · queda PARCIAL (falta recibir el resto)'}${avisoLink}`, noVinculados.length ? 'amber' : 'green');
       }
       onClose();
@@ -693,6 +768,12 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
                       <div style={{ fontSize: 10.5, color: 'var(--tm)', fontStyle: 'italic' }}>
                         No va a inventario — se registró solo como costo en contabilidad.
                       </div>
+                      {/* La IA pudo equivocarse (ej. combustible marcado como gasto):
+                          reclasificar a insumo de stock para recibirlo/vincularlo. */}
+                      <button className="btn btn-ghost btn-xs" style={{ marginTop: 4 }}
+                        onClick={() => { const resta = Math.max(0, (Number(it.cantidad) || 0) - (Number(it.ya_recibido) || 0)); upd(i, { no_stock: false, tipo: 'material', match_id: null, creado_aqui: false, modo: 'nuevo', mov_existente_id: null, cantidad_recibida: resta, verificado: false }); }}>
+                        <JxIcon name="arrowIn" size={10} /> Es un insumo, no un gasto — recibirlo
+                      </button>
                     </td>
                     <td>
                       <span className={`badge ${TIPO_INSUMO_BADGE[it.tipo_insumo] || 'b-purple'}`} style={{ fontSize: 9 }}>{etiqueta}</span>
@@ -723,25 +804,64 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
                       </div>
                     ) : (
                       <>
-                        <SearchableSelect value={it.match_id || ''} onChange={v => { if (candOpen === i) setCandOpen(null); upd(i, { match_id: v || null, verificado: !!v && Number(it.cantidad_recibida) > 0 }); }}
-                          options={opciones} fontSize={11} placeholder="— Buscar insumo del catálogo —" />
+                        {/* Fila reclasificada desde servicio/gasto: dejar volver atrás. */}
+                        {NO_STOCK.has(it.tipo_insumo) && (
+                          <div style={{ marginBottom: 3 }}>
+                            <span className="badge b-amber" style={{ fontSize: 9 }}>Reclasificado de gasto a insumo</span>
+                            <button className="btn btn-ghost btn-xs" style={{ marginLeft: 6 }}
+                              onClick={() => upd(i, { no_stock: true, match_id: null, crear_nuevo: null, creado_aqui: false, modo: 'nuevo', mov_existente_id: null, verificado: false })}>
+                              Volver a gasto
+                            </button>
+                          </div>
+                        )}
+                        {/* Insumo a crear (creación diferida): chip editable, sin escribir aún. */}
+                        {!it.match_id && it.crear_nuevo && crearForm?.idx !== i ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                            <span className="badge b-green" style={{ fontSize: 9.5 }}>
+                              <JxIcon name="plus" size={9} /> Se creará: {it.crear_nuevo.nombre} · {it.crear_nuevo.unidad}
+                            </span>
+                            <button className="btn btn-ghost btn-xs" onClick={() => setCrearForm({ idx: i, nombre: it.crear_nuevo.nombre, unidad: it.crear_nuevo.unidad })}>Editar</button>
+                            <button className="btn btn-ghost btn-xs" onClick={() => upd(i, { crear_nuevo: null, creado_aqui: false, verificado: false })}>Quitar</button>
+                          </div>
+                        ) : (
+                          <SearchableSelect value={it.match_id || ''} onChange={v => { if (candOpen === i) setCandOpen(null); upd(i, { match_id: v || null, crear_nuevo: null, creado_aqui: false, verificado: !!v && Number(it.cantidad_recibida) > 0 }); }}
+                            options={opciones} fontSize={11} placeholder="— Buscar insumo del catálogo —" />
+                        )}
                         {/* Sugerencias de insumo parecido (los nombres rara vez coinciden) */}
-                        {!it.match_id && (sugerenciasPorIdx[i] || []).length > 0 && (
+                        {!it.match_id && !it.crear_nuevo && crearForm?.idx !== i && (sugerenciasPorIdx[i] || []).length > 0 && (
                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4, alignItems: 'center' }}>
                             <span style={{ fontSize: 9.5, color: 'var(--tm)' }}>¿Es alguno?</span>
                             {(sugerenciasPorIdx[i] || []).map(s => (
                               <button key={s.id} className="badge b-blue" style={{ cursor: 'pointer', fontSize: 9.5, border: 'none' }}
                                 title="Vincular a este insumo del catálogo"
-                                onClick={() => upd(i, { match_id: s.id, verificado: Number(it.cantidad_recibida) > 0 })}>
+                                onClick={() => upd(i, { match_id: s.id, crear_nuevo: null, creado_aqui: false, verificado: Number(it.cantidad_recibida) > 0 })}>
                                 {s.nombre}
                               </button>
                             ))}
                           </div>
                         )}
-                        {!it.match_id && (
-                          <button className="btn btn-ghost btn-xs" style={{ marginTop: 3 }} onClick={() => crearYVincular(i)}>
-                            <JxIcon name="plus" size={10} /> Crear "{(it.descripcion || '').slice(0, 22)}" como {TIPOS.find(t => t[0] === it.tipo)?.[1]}
+                        {/* Crear insumo nuevo con nombre y unidad EDITABLES */}
+                        {!it.match_id && !it.crear_nuevo && crearForm?.idx !== i && (
+                          <button className="btn btn-ghost btn-xs" style={{ marginTop: 3 }}
+                            onClick={() => setCrearForm({ idx: i, nombre: it.descripcion || '', unidad: it.unidad || 'und' })}>
+                            <JxIcon name="plus" size={10} /> Crear nuevo insumo ({TIPOS.find(t => t[0] === it.tipo)?.[1]})
                           </button>
+                        )}
+                        {!it.match_id && crearForm?.idx === i && (
+                          <div style={{ marginTop: 4, padding: 6, background: 'var(--bg2)', border: '1px solid var(--bd)', borderRadius: 5, display: 'grid', gap: 4 }}>
+                            <span style={{ fontSize: 9.5, color: 'var(--tm)' }}>Nuevo {TIPOS.find(t => t[0] === it.tipo)?.[1]} — corregí nombre y unidad si hace falta:</span>
+                            <input className="fi" value={crearForm.nombre} autoFocus placeholder="Nombre del insumo"
+                              onChange={e => setCrearForm(f => ({ ...f, nombre: e.target.value }))} style={{ fontSize: 11, padding: '5px 6px' }} />
+                            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                              <input className="fi" value={crearForm.unidad} placeholder="und" title="Unidad"
+                                onChange={e => setCrearForm(f => ({ ...f, unidad: e.target.value }))} style={{ fontSize: 11, padding: '5px 6px', width: 90 }} />
+                              <button className="btn btn-amber btn-xs" disabled={!String(crearForm.nombre || '').trim()}
+                                onClick={() => { const nombre = String(crearForm.nombre || '').trim(); const unidad = String(crearForm.unidad || 'und').trim() || 'und'; upd(i, { crear_nuevo: { nombre, unidad }, unidad, creado_aqui: true, match_id: null, verificado: Number(it.cantidad_recibida) > 0 }); setCrearForm(null); }}>
+                                <JxIcon name="check" size={10} /> Usar este insumo nuevo
+                              </button>
+                              <button className="btn btn-ghost btn-xs" onClick={() => setCrearForm(null)}>Cancelar</button>
+                            </div>
+                          </div>
                         )}
                         {/* Vincular a un movimiento de ingreso YA registrado (la mercadería ya entró) */}
                         {it.match_id && (
@@ -810,12 +930,17 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
                   <td>
                     {it.modo === 'existente' ? (
                       <span style={{ color: 'var(--tm)', fontSize: 11 }}>ya asignado en el ingreso</span>
-                    ) : (
-                      <select className="fi" value={it.ubicacion_id || ''} onChange={e => upd(i, { ubicacion_id: e.target.value || null })} style={{ fontSize: 11, padding: '5px 6px' }}>
-                        <option value="">— Sin asignar —</option>
-                        {ubicaciones.map(u => <option key={u.id} value={u.id}>{u.nombre}</option>)}
-                      </select>
-                    )}
+                    ) : (() => {
+                      // Para insumos recién creados el almacén es OBLIGATORIO: lo marcamos.
+                      const obligatorio = it.creado_aqui && !it.ubicacion_id;
+                      return (
+                        <select className="fi" value={it.ubicacion_id || ''} onChange={e => upd(i, { ubicacion_id: e.target.value || null })}
+                          style={{ fontSize: 11, padding: '5px 6px', ...(obligatorio ? { borderColor: 'var(--red)' } : {}) }}>
+                          <option value="">{it.creado_aqui ? '— Elegí almacén (obligatorio) —' : '— Sin asignar —'}</option>
+                          {ubicaciones.map(u => <option key={u.id} value={u.id}>{u.nombre}</option>)}
+                        </select>
+                      );
+                    })()}
                   </td>
                   <td>
                     <input className="fi" value={it.obs_item} onChange={e => upd(i, { obs_item: e.target.value })} placeholder="faltó / dañado…" style={{ fontSize: 11, padding: '5px 6px' }} />
