@@ -35,6 +35,13 @@ export const db = new Dexie('JarvexDB');
 // Versión 24: ubicacion_id en movimientos de emergencia — paridad con
 // mat/epp/herr/maquinaria (mig 074). Permite desglosar el stock de emergencia
 // por almacén y hacer traspasos. Aditivo (las demás tablas se heredan).
+// Versión 25: historial de precios UNIFICADO para herramienta/epp/emergencia
+// (los materiales conservan material_precios_historial). Genérico por
+// (item_tipo,item_id), igual que stock_ubicaciones. Aditivo.
+db.version(25).stores({
+  insumo_precios_historial: 'id, obra_id, item_id, fecha, deleted_at, sync_status, idempotency_key, [item_tipo+item_id]',
+});
+
 db.version(24).stores({
   movimientos_insumos_emergencia: 'id, obra_id, insumo_emergencia_id, ubicacion_id, fecha, sync_status, idempotency_key',
 });

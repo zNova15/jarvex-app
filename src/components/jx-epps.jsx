@@ -19,6 +19,9 @@ import { TablePagination } from "./jx-pagination.jsx";
 import { SearchableSelect } from "./jx-searchable-select.jsx";
 import { opcionesDestinoFlat, splitDestino } from "../lib/destino-mov.js";
 import { exportarDataset } from "../lib/export-historico.js";
+import { PrecioHistorialModal } from "./jx-precio-historial.jsx";
+import { registrarSoloHistorial, registrarCambioPrecio } from "../lib/precio-historial.js";
+import { getCurrentMode } from "../hooks/useAppMode.js";
 
 const { useState: uS, useEffect: uE, useMemo: uM, useRef: uR } = React;
 
@@ -232,6 +235,7 @@ function EppsInventarioPage({ showToast }) {
     if (!dupModal?.survivorId || dupBusy) return;
     setDupBusy(true);
     try {
+      const userId = auth?.profile?.id || null;
       const dupIds = dupModal.grupo.items.map(i => i.id).filter(id => id !== dupModal.survivorId);
       const r = await fusionarInsumos({
         db: window.__db, tabla: 'epps', movTabla: 'movimientos_epp', fk: 'epp_id',
@@ -331,7 +335,8 @@ function EppsInventarioPage({ showToast }) {
         <td><span className={`badge ${a.class}`}>{a.label}</span></td>
         <td>{e.sync_status && e.sync_status !== 'synced' ? <span className="badge b-amber">⏱</span> : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}</td>
         <td style={{textAlign:'center', whiteSpace:'nowrap'}}>
-          <button className="btn btn-ghost btn-xs" title="Editar" onClick={() => openEditar(e)}><JxIcon name="edit" size={11}/></button>
+          <button className="btn btn-ghost btn-xs" title="Historial de precios" onClick={() => setHistPrecioItem(e)}><JxIcon name="dollar" size={11}/></button>
+          <button className="btn btn-ghost btn-xs" title="Editar" onClick={() => openEditar(e)} style={{ marginLeft:4 }}><JxIcon name="edit" size={11}/></button>
           {canDelete && <button className="btn btn-red btn-xs" title="Eliminar" onClick={() => handleDelete(e)} style={{ marginLeft:4 }}><JxIcon name="trash" size={11}/></button>}
         </td>
       </tr>
@@ -372,6 +377,7 @@ function EppsInventarioPage({ showToast }) {
 
   const [q, setQ] = uS('');
   const [filtroTipo, setFiltroTipo] = uS('todos');
+  const [histPrecioItem, setHistPrecioItem] = uS(null); // EPP para el visor de historial de precios
   const [modal, setModal] = uS(null); // 'nuevo' | 'editar' | 'ingreso' | 'salida'
   const [form, setForm] = uS({});
   const [editingId, setEditingId] = uS(null);
@@ -567,6 +573,21 @@ function EppsInventarioPage({ showToast }) {
         }
         await updateEpp(editingId, newFields);
         try { await window.__logAudit?.({ action:'update', table:'epps', recordId:editingId, oldData, newData:newFields }); } catch {}
+        // Historial de precio: si cambió el precio estimado, dejamos la fila
+        // 'manual' (el form ya persistió el nuevo precio en newFields).
+        try {
+          const registrado = await registrarSoloHistorial({
+            itemTipo: 'epp', itemId: editingId, obraId,
+            precioAnterior: oldData?.precio_unitario_estimado,
+            precioNuevo: newFields.precio_unitario_estimado,
+            fuente: 'manual', motivo: 'Edición manual del precio',
+            // La demo-ness sigue al ÍTEM (editar un EPP real sincroniza aunque
+            // estemos en prueba), no al modo global — así historial y catálogo
+            // suben/no-suben juntos.
+            userId: auth?.profile?.id || null, esDemo: oldData?.demo === true,
+          });
+          if (registrado) { try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'insumo_precios_historial' } })); } catch {} }
+        } catch (e) { console.warn('[epp historial precio]', e?.message || e); }
         // Si el user adjuntó una foto nueva, la guardamos como evidencia.
         // No bloquea el flow si falla — el EPP queda igual y avisamos.
         if (foto?.blob && editingId) {
@@ -772,12 +793,31 @@ function EppsInventarioPage({ showToast }) {
           stock_actual: nuevoStock,
           alerta: nuevaAlerta,
         });
+        // Historial de precio desde el ingreso: si el ítem trae precio > 0,
+        // registramos el cambio (fuente 'movimiento' = "Comprobante") y
+        // actualizamos el estimado del EPP.
+        if (tipo === 'ingreso') {
+          const precioItem = parseFloat(it.precio) || 0;
+          if (precioItem > 0) {
+            try {
+              await registrarCambioPrecio({
+                itemTipo: 'epp', itemId: it.epp_id, obraId,
+                precioNuevo: precioItem, fuente: 'movimiento',
+                documentoRef: form.documento || null, origenMovId: movCreated?.id || null,
+                motivo: 'Ingreso EPP', userId: auth?.profile?.id || null,
+                isPrueba: getCurrentMode() === 'prueba',
+              });
+            } catch (err) { console.warn('[epp ingreso precio]', err?.message || err); }
+          }
+        }
         exitosos++;
       } catch (e) {
         fallidos++;
       }
     }
     refresh();
+    // Avisar al visor de historial de precios (los ingresos con precio dejaron filas).
+    if (tipo === 'ingreso') { try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'insumo_precios_historial' } })); } catch {} }
     if (fallidos === 0) {
       showToast(`✓ ${exitosos} ${tipo === 'ingreso' ? 'ingresos' : 'salidas con firma'}`, 'green');
     } else {
@@ -1349,6 +1389,16 @@ function EppsInventarioPage({ showToast }) {
           getDesgloseDe={(id) => desgloseUbic.get(id)}
           itemLabel="EPP" preItemId={traspasoPreId}
           onClose={() => setModal(null)} onConfirm={ejecutarTraspasoEpp} />
+      )}
+
+      {/* Visor de historial de precios del EPP */}
+      {histPrecioItem && (
+        <PrecioHistorialModal
+          itemTipo="epp"
+          itemId={histPrecioItem.id}
+          nombre={histPrecioItem.nombre_epp}
+          precioActual={histPrecioItem.precio_unitario_estimado}
+          onClose={() => setHistPrecioItem(null)} />
       )}
     </div>
   );

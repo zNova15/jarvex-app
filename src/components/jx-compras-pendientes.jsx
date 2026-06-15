@@ -18,6 +18,7 @@ import { TIPO_INSUMO_LABEL, TIPO_INSUMO_BADGE } from "../lib/insumo-clasificador
 import { aplicarDelta } from "../lib/stock-ubicaciones.js";
 import { calcAlerta } from "../lib/stock-utils.js";
 import { getCurrentMode } from "../hooks/useAppMode.js";
+import { registrarCambioPrecio } from "../lib/precio-historial.js";
 
 const { useState: uS, useEffect: uE, useMemo: uM } = React;
 
@@ -450,7 +451,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
   };
 
   // Tablas que la recepción toca: el set fijo para la transacción atómica.
-  const TX_TABLAS = ['movimientos_materiales', 'movimientos_herramientas', 'movimientos_epp', 'materiales', 'herramientas', 'epps', 'accounting_movements', 'stock_ubicaciones', 'material_precios_historial'];
+  const TX_TABLAS = ['movimientos_materiales', 'movimientos_herramientas', 'movimientos_epp', 'materiales', 'herramientas', 'epps', 'accounting_movements', 'stock_ubicaciones', 'material_precios_historial', 'insumo_precios_historial'];
 
   const confirmar = async () => {
     const validos = recep.filter(r => !r.no_stock && r.verificado && (
@@ -530,43 +531,18 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
       let creados = 0, vinculados = 0, primerMov = null, todoCompleto = false, preciosReg = 0;
 
       // Historial de precio unitario fundamentado en el comprobante: si el precio
-      // de la factura difiere del precio estimado del MATERIAL, deja una fila en
-      // material_precios_historial (precio anterior→nuevo, doc, mov) y actualiza
-      // el precio estimado. Solo materiales (es la única tabla con historial).
-      const registrarPrecioMat = async ({ cfg, matchId, precio, movId }) => {
-        if (cfg.cat !== 'materiales' || !matchId) return;
-        // Tolerante a coma decimal por si items_factura se editó/importó a mano.
-        const p = Number(String(precio ?? '').replace(',', '.')) || 0;
-        if (!(p > 0)) return;
-        const mat = await window.__db.materiales.get(matchId);
-        if (!mat) return;
-        const anterior = Number(mat.precio_unitario_estimado) || 0;
-        if (Math.abs(p - anterior) < 0.0001) return; // no cambió
-        // Demo-coherencia: si el material o la factura no se pushean (demo/prueba),
-        // la fila de historial tampoco — si no, quedaría apuntando a un material que
-        // el server nunca recibió (FK 23503).
-        const filaNoSube = isPrueba || mat.demo === true || facFresh.demo === true;
-        const histId = window.__newId();
-        await window.__db.material_precios_historial.add({
-          id: histId, material_id: matchId, obra_id: obraId,
-          precio_anterior: anterior, precio_nuevo: p, fecha: now.slice(0, 10),
-          motivo: 'Recepción comprobante ' + (facFresh.document_number || ''),
-          // fuente DEBE ser uno de ('manual','apu','movimiento','importacion') por
-          // el CHECK del server (mig 020); 'movimiento' = precio detectado en una
-          // compra real. El nº de comprobante va en documento_ref.
-          documento_ref: facFresh.document_number || null, fuente: 'movimiento',
-          origen_movimiento_id: movId || null,
-          created_by: userId, updated_by: userId, created_at: now, updated_at: now,
-          version: 1, sync_status: filaNoSube ? 'synced' : 'pending_create', last_synced_at: null,
-          idempotency_key: `${userId}_mph_${histId}`,
-          ...(filaNoSube ? { demo: true } : {}),
+      // de la factura difiere del estimado del insumo, deja una fila de historial
+      // (material→material_precios_historial; herr/epp→insumo_precios_historial) y
+      // actualiza el precio estimado. Lo hace el helper compartido; acá solo
+      // contamos. forzarDemo si la factura es demo aunque el insumo no lo sea.
+      const registrarPrecio = async ({ itemTipo, matchId, precio, movId }) => {
+        const ok = await registrarCambioPrecio({
+          itemTipo, itemId: matchId, obraId, precioNuevo: precio,
+          fuente: 'movimiento', documentoRef: facFresh.document_number || null,
+          origenMovId: movId, motivo: 'Recepción comprobante ' + (facFresh.document_number || ''),
+          userId, isPrueba, forzarDemo: facFresh.demo === true, now,
         });
-        await window.__db.materiales.update(matchId, {
-          precio_unitario_estimado: p, updated_at: now, updated_by: userId,
-          version: (mat.version || 0) + 1,
-          sync_status: filaNoSube ? 'synced' : (mat.sync_status === 'pending_create' ? 'pending_create' : 'pending_update'),
-        });
-        preciosReg++;
+        if (ok) preciosReg++;
       };
 
       // TODO en una sola transacción Dexie: si algo falla a mitad, se revierte
@@ -603,7 +579,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
             vinculadosIds.add(it.mov_existente_id);
             if (idx >= 0) recibidoPorIdx.set(idx, (recibidoPorIdx.get(idx) || 0) + cantVinc);
             // El comprobante ahora respalda el precio de ese ingreso.
-            await registrarPrecioMat({ cfg, matchId: it.match_id, precio: it.precio_unitario, movId: it.mov_existente_id });
+            await registrarPrecio({ itemTipo: it.tipo, matchId: it.match_id, precio: it.precio_unitario, movId: it.mov_existente_id });
             continue;
           }
 
@@ -662,7 +638,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
             desgloseQueue.push({ obraId, itemTipo: cfg.itemTipo, itemId: matchId, ubicacionId: it.ubicacion_id, delta: cant, userId });
           }
           // Historial de precio fundamentado en el comprobante.
-          await registrarPrecioMat({ cfg, matchId, precio: it.precio_unitario, movId });
+          await registrarPrecio({ itemTipo: it.tipo, matchId, precio: it.precio_unitario, movId });
           creados++;
           if (idx >= 0) recibidoPorIdx.set(idx, (recibidoPorIdx.get(idx) || 0) + cant);
         }

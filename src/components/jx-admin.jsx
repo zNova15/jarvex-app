@@ -1412,7 +1412,7 @@ const DB_TABLES_LIST = [
   'insumos_partida','cronograma','profiles',
   // Versionado de presupuesto
   'presupuestos_versiones','partidas_versionadas','insumos_partida_versionadas',
-  'material_precios_historial',
+  'material_precios_historial','insumo_precios_historial',
   // Contabilidad
   'companies','accounting_movements','intercompany_transactions',
   // Compras

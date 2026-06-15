@@ -15,6 +15,9 @@ import { getEstadosBulk, ESTADOS_COND, ESTADO_LABEL, aplicarDeltaEstado } from "
 import { detectarSugerencias, detectarDuplicados, fusionarInsumos } from "../lib/variantes.js";
 import { compararNombresReniec, titleCaseNombre } from "../lib/migracion-parser.js";
 import { exportarDataset } from "../lib/export-historico.js";
+import { PrecioHistorialModal } from "./jx-precio-historial.jsx";
+import { registrarSoloHistorial } from "../lib/precio-historial.js";
+import { getCurrentMode } from "../hooks/useAppMode.js";
 const { useState: uS, useMemo: uM, useEffect: uE, useCallback: uCB, useRef: uR } = React;
 
 // ─── DATA ───────────────────────────────────────────────
@@ -3310,6 +3313,8 @@ function HerramientasPage({ showToast }) {
   // Doble click guard
   const [busyHerr, setBusyHerr] = uS(false);
   const [requestTarget, setRequestTarget] = uS(null);
+  // Visor de historial de precios (insumo unificado, itemTipo="herramienta")
+  const [histPrecioItem, setHistPrecioItem] = uS(null);
 
   uE(() => {
     let cancelled = false;
@@ -3775,6 +3780,9 @@ function HerramientasPage({ showToast }) {
           ? <span className="badge b-amber">⏱</span>
           : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}</td>
         <td style={{textAlign:'center', whiteSpace:'nowrap'}}>
+          <button className="btn btn-ghost btn-xs" title="Historial de precios" onClick={()=>setHistPrecioItem(h)} style={{ marginRight:4 }}>
+            <JxIcon name="dollar" size={11}/>
+          </button>
           {/* Editar = permiso de escritura del módulo (el almacenero tiene 'w'
               en Herramientas y necesita editar para adjuntar la foto). */}
           {canWrite ? (
@@ -3977,6 +3985,7 @@ function HerramientasPage({ showToast }) {
       estado_actual: h.estado_actual || 'bueno',
       ubicacion_id: h.ubicacion_id || '',
       stock_minimo: h.stock_minimo ?? '',
+      precio_unitario_estimado: h.precio_unitario_estimado ?? '',
       fecha_registro: (h.created_at || '').slice(0, 10),
     });
     setEditingId(h.id);
@@ -4023,6 +4032,9 @@ function HerramientasPage({ showToast }) {
       let herramientaId = editingId;
       if (editingId) {
         const oldData = herramientas.find(h => h.id === editingId);
+        const precioAnterior = Number(oldData?.precio_unitario_estimado || 0);
+        const precioNuevo = form.precio_unitario_estimado === '' || form.precio_unitario_estimado == null
+          ? null : parseFloat(form.precio_unitario_estimado);
         const newFields = {
           nombre_herramienta: form.nombre_herramienta,
           tipo_herramienta: form.tipo_herramienta || 'manual',
@@ -4032,6 +4044,7 @@ function HerramientasPage({ showToast }) {
           estado_actual: form.estado_actual || 'bueno',
           ubicacion_id: form.ubicacion_id || null,
           stock_minimo: Number(form.stock_minimo || 0),
+          precio_unitario_estimado: precioNuevo,
           padre_id: form.padre_id || null,
         };
         if (superAdmin && form.fecha_registro && form.fecha_registro !== (oldData?.created_at || '').slice(0, 10)) {
@@ -4039,6 +4052,19 @@ function HerramientasPage({ showToast }) {
         }
         await updateHerr(editingId, newFields);
         try { await window.__logAudit?.({ action:'update', table:'herramientas', recordId:editingId, oldData, newData:newFields }); } catch(e) {}
+        // Historial de precios (solo si cambió y hay precio nuevo > 0)
+        try {
+          const registrado = await registrarSoloHistorial({
+            itemTipo: 'herramienta', itemId: editingId, obraId,
+            precioAnterior, precioNuevo,
+            fuente: 'manual', motivo: 'Edición manual del precio',
+            // demo-ness sigue al ítem (no al modo global): editar una herramienta
+            // real sincroniza aunque estemos en prueba, y el historial igual.
+            userId: auth?.profile?.id ?? 'offline',
+            esDemo: oldData?.demo === true,
+          });
+          if (registrado) window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'insumo_precios_historial' } }));
+        } catch (e) { console.error('[herr historial precio]', e); }
         showToast(`Herramienta "${form.nombre_herramienta}" actualizada`, 'green');
       } else {
         const created = await createHerr({
@@ -4060,6 +4086,8 @@ function HerramientasPage({ showToast }) {
           unidad: form.unidad || 'Und',
           stock_actual: 0,
           stock_minimo: Number(form.stock_minimo || 0),
+          precio_unitario_estimado: form.precio_unitario_estimado === '' || form.precio_unitario_estimado == null
+            ? null : parseFloat(form.precio_unitario_estimado),
           alerta: 'ok',
           padre_id: form.padre_id || null,
         });
@@ -4279,6 +4307,7 @@ function HerramientasPage({ showToast }) {
           )}
           <div><label className="flabel">N° Serie</label><input className="fi" placeholder="Ej: BS-2024-001" value={form.serie||''} onChange={e=>setForm({...form, serie:e.target.value})}/></div>
           <div><label className="flabel">Stock mínimo (alerta)</label><input className="fi" type="number" min="0" step="1" placeholder="0" value={form.stock_minimo ?? ''} onChange={e=>setForm({...form, stock_minimo:e.target.value})}/></div>
+          <div><label className="flabel">Precio estimado (S/)</label><input className="fi" type="number" min="0" step="0.01" placeholder="0.00" value={form.precio_unitario_estimado ?? ''} onChange={e=>setForm({...form, precio_unitario_estimado:e.target.value})}/></div>
           <div style={{gridColumn:'1/-1', fontSize:11, color:'var(--tm)', background:'rgba(52,152,219,0.06)', border:'1px solid rgba(52,152,219,0.2)', borderRadius:6, padding:'8px 10px' }}>
             <JxIcon name="info" size={12} color="var(--blue)"/> El <strong>almacén</strong> de la herramienta se define al registrar su <strong>Ingreso</strong>, no acá. Esto es solo el catálogo.
           </div>
@@ -4394,6 +4423,16 @@ function HerramientasPage({ showToast }) {
           showToast={showToast}
           onClose={() => setEstadosItem(null)}
           onDone={() => refresh?.()}
+        />
+      )}
+
+      {histPrecioItem && (
+        <PrecioHistorialModal
+          itemTipo="herramienta"
+          itemId={histPrecioItem.id}
+          nombre={histPrecioItem.nombre_herramienta}
+          precioActual={histPrecioItem.precio_unitario_estimado}
+          onClose={() => setHistPrecioItem(null)}
         />
       )}
 

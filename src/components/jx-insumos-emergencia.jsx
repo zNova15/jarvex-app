@@ -14,6 +14,9 @@ import { opcionesDestinoFlat, splitDestino, joinDestino, nombreDestinoMov } from
 import { useFotosEvidencias, FotoInsumoCell } from "./jx-foto-insumo.jsx";
 import { getDesgloseBulk, aplicarDelta, traspasar } from "../lib/stock-ubicaciones.js";
 import { DesglosePopup, TraspasoStockModal, ubicacionAutoOrigen, validarSalidaUbic } from "./jx-stock-ubic.jsx";
+import { PrecioHistorialModal } from "./jx-precio-historial.jsx";
+import { registrarSoloHistorial } from "../lib/precio-historial.js";
+import { getCurrentMode } from "../hooks/useAppMode.js";
 
 const ITEM_TIPO = 'emergencia'; // item_tipo en stock_ubicaciones (mig 074)
 
@@ -49,6 +52,7 @@ function InsumosEmergenciaPage({ showToast }) {
   const [editingMovId, setEditingMovId] = uS(null); // id del movimiento en edición (Super Admin)
   const [form, setForm] = uS({});
   const [busy, setBusy] = uS(false);
+  const [histPrecioItem, setHistPrecioItem] = uS(null); // insumo cuyo historial de precios se ve
   // Proveedores (tabla global): carga directa de Dexie como el resto de pantallas.
   const [proveedores, setProveedores] = uS([]);
   uE(() => { window.__db.proveedores.filter(p => !p.deleted_at).toArray().then(setProveedores).catch(() => {}); }, []);
@@ -196,19 +200,47 @@ function InsumosEmergenciaPage({ showToast }) {
     setBusy(true);
     try {
       const stockMin = parseFloat(form.stock_minimo) || 0;
+      // Precio "no informado" = null (no 0): así no se confunde "cuesta 0" con
+      // "sin precio", igual que materiales/herramientas/epp. Si el campo viene
+      // vacío en una EDICIÓN, NO se pisa el precio existente (evita perder un
+      // precio real bajándolo a 0 sin dejar rastro).
+      const precioRaw = form.precio_unitario_estimado;
+      const precioInformado = precioRaw !== '' && precioRaw != null;
+      const precioNuevo = precioInformado ? (parseFloat(String(precioRaw).replace(',', '.')) || null) : null;
+      const esGrupo = form.es_grupo === true;
       if (modal === 'editar' && form.id) {
+        // Precio anterior tal como estaba en la BD ANTES de guardar (para el historial).
+        const prevItem = insumoById.get(form.id);
+        const precioAnterior = Number(prevItem?.precio_unitario_estimado ?? 0);
         await updateInsumo(form.id, {
           nombre: form.nombre.trim(), categoria: form.categoria?.trim() || null, unidad: form.unidad.trim(),
-          stock_minimo: stockMin, vencimiento: form.vencimiento || null, observaciones: form.observaciones?.trim() || null,
+          stock_minimo: stockMin,
+          // Solo tocamos el precio si el usuario informó uno y el ítem NO es grupo.
+          ...((!esGrupo && precioInformado) ? { precio_unitario_estimado: precioNuevo } : {}),
+          vencimiento: form.vencimiento || null, observaciones: form.observaciones?.trim() || null,
           alerta: calcAlerta(Number(form.stock_actual ?? 0), stockMin),
           padre_id: form.es_grupo ? (form.padre_id ?? null) : (form.padre_id || null),
         });
+        // Si el precio cambió, dejar el evento en el historial unificado. La
+        // demo-ness sigue al ÍTEM (no al modo global): una edición de un insumo
+        // real sincroniza aunque estemos en modo prueba, y el historial igual.
+        if (!esGrupo && precioInformado) {
+          try {
+            const registrado = await registrarSoloHistorial({
+              itemTipo: 'emergencia', itemId: form.id, obraId,
+              precioAnterior, precioNuevo, fuente: 'manual', motivo: 'Edición manual del precio',
+              userId, esDemo: prevItem?.demo === true,
+            });
+            if (registrado) window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'insumo_precios_historial' } }));
+          } catch (e) { console.warn('[emergencia historial precio]', e?.message || e); }
+        }
         showToast('Insumo actualizado', 'green');
       } else {
         const stockIni = parseFloat(form.stock_inicial) || 0;
         await createInsumo({
           obra_id: obraId, nombre: form.nombre.trim(), categoria: form.categoria?.trim() || null, unidad: form.unidad.trim(),
           stock_inicial: stockIni, stock_actual: stockIni, stock_minimo: stockMin,
+          precio_unitario_estimado: esGrupo ? null : precioNuevo,
           vencimiento: form.vencimiento || null, observaciones: form.observaciones?.trim() || null,
           alerta: calcAlerta(stockIni, stockMin), estado: 'activo', padre_id: form.padre_id || null,
         });
@@ -454,7 +486,8 @@ function InsumosEmergenciaPage({ showToast }) {
                         <td className="col-m" style={{ fontSize: 11 }}>{it.vencimiento || '—'}</td>
                         <td>{it.sync_status && it.sync_status !== 'synced' ? <span className="badge b-amber">⏱</span> : <span style={{ color: 'var(--green)', fontSize: 11 }}>✓</span>}</td>
                         <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
-                          {canWrite && <button className="btn btn-ghost btn-xs" title="Editar" onClick={() => abrirEditar(it)}><JxIcon name="edit" size={11} /></button>}
+                          <button className="btn btn-ghost btn-xs" title="Historial de precios" onClick={() => setHistPrecioItem(it)}><JxIcon name="dollar" size={11} /></button>
+                          {canWrite && <button className="btn btn-ghost btn-xs" title="Editar" onClick={() => abrirEditar(it)} style={{ marginLeft: 4 }}><JxIcon name="edit" size={11} /></button>}
                           {canDelete && <button className="btn btn-red btn-xs" title="Eliminar (modo edición)" onClick={() => eliminarInsumo(it)} style={{ marginLeft: 4 }}><JxIcon name="trash" size={11} /></button>}
                         </td>
                       </tr>
@@ -549,6 +582,11 @@ function InsumosEmergenciaPage({ showToast }) {
               <input className="fi" value={form.categoria || ''} onChange={e => setForm({ ...form, categoria: e.target.value })} placeholder="Primeros auxilios, contra incendios…" /></div>
             <div><label className="flabel">Unidad *</label>
               <input className="fi" value={form.unidad || ''} onChange={e => setForm({ ...form, unidad: e.target.value })} placeholder="Und, caja, kit…" /></div>
+            {/* Un grupo (padre) no tiene precio propio: su stock es la suma de variantes. */}
+            {!form.es_grupo && (
+              <div><label className="flabel">Precio unitario estimado (S/)</label>
+                <input className="fi" type="number" min="0" step="0.01" value={form.precio_unitario_estimado ?? ''} onChange={e => setForm({ ...form, precio_unitario_estimado: e.target.value })} placeholder="0.00" /></div>
+            )}
             {modal === 'nuevo' && (
               <div><label className="flabel">Stock inicial</label>
                 <input className="fi" type="number" min="0" step="0.01" value={form.stock_inicial || ''} onChange={e => setForm({ ...form, stock_inicial: e.target.value })} placeholder="0" /></div>
@@ -679,6 +717,17 @@ function InsumosEmergenciaPage({ showToast }) {
           canTraspaso={canWrite && ubicacionesActivas.length >= 2}
           onTraspaso={() => setTraspasoOpen(true)}
           onClose={() => setPopupInsumo(null)}
+        />
+      )}
+
+      {/* Visor: historial de precios de un insumo */}
+      {histPrecioItem && (
+        <PrecioHistorialModal
+          itemTipo="emergencia"
+          itemId={histPrecioItem.id}
+          nombre={histPrecioItem.nombre}
+          precioActual={histPrecioItem.precio_unitario_estimado}
+          onClose={() => setHistPrecioItem(null)}
         />
       )}
 

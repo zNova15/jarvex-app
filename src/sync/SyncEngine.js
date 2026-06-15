@@ -69,6 +69,9 @@ const TRANSACTIONAL_TABLES = [
   'caja_chica_movimientos',
   'insumos_emergencia',
   'movimientos_insumos_emergencia',
+  // Historial de precios unificado (herramienta/epp/emergencia). FK-less, así que
+  // no necesita FK_DEPS ni un orden particular respecto de catálogos/movimientos.
+  'insumo_precios_historial',
 ];
 
 // Tablas maestras que se descargan del servidor en cada sync.
@@ -141,6 +144,7 @@ const MASTER_TABLES = [
   { tabla: 'caja_chica_movimientos',         query: () => supabase.from('caja_chica_movimientos').select('*') },
   { tabla: 'insumos_emergencia',             query: () => supabase.from('insumos_emergencia').select('*').is('deleted_at', null) },
   { tabla: 'movimientos_insumos_emergencia', query: () => supabase.from('movimientos_insumos_emergencia').select('*') },
+  { tabla: 'insumo_precios_historial',       query: () => supabase.from('insumo_precios_historial').select('*').is('deleted_at', null) },
   { tabla: 'profiles',               query: () => supabase.from('profiles').select('*') },
 ];
 
@@ -580,7 +584,12 @@ const FK_DEPS = {
   // su movimiento → 23503 garantizado en origen_movimiento_id (no es carrera:
   // el orden de las tablas lo determina). Gateamos ambos padres, igual que
   // personal_historial → personal.
-  material_precios_historial:  [{ campo: 'material_id', tabla: 'materiales' }, { campo: 'origen_movimiento_id', tabla: 'movimientos_materiales' }],
+  material_precios_historial:  [{ campo: 'material_id', tabla: 'materiales' }, { campo: 'origen_movimiento_id', tabla: 'movimientos_materiales' }, { campo: 'obra_id', tabla: 'obras' }],
+  // insumo_precios_historial (herr/epp/emergencia) es FK-less respecto a
+  // item_id/origen_movimiento_id (polimórfico, como stock_ubicaciones), pero
+  // obra_id SÍ es FK NOT NULL real → la gateamos para no pushear el historial de
+  // una obra recién creada offline antes que la obra (23503).
+  insumo_precios_historial:    [{ campo: 'obra_id', tabla: 'obras' }],
 };
 
 // True si todas las FKs del record están sincronizadas (o no hay FKs).
