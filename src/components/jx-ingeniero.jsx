@@ -227,6 +227,17 @@ function IngenieroInboxPage({ showToast }) {
 
       {!loading && tab === 'inbox' && (
         <>
+          {salidasPendientes.length > 0 && (() => {
+            const todosColapsados = inboxPorDia.length > 0 && inboxPorDia.every(([d]) => diasColapsados.has(d));
+            return (
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+                <button className="btn btn-ghost btn-xs"
+                  onClick={() => setDiasColapsados(todosColapsados ? new Set() : new Set(inboxPorDia.map(([d]) => d)))}>
+                  {todosColapsados ? '▸ Expandir todo' : '▾ Colapsar todo'}
+                </button>
+              </div>
+            );
+          })()}
           {salidasPendientes.length === 0 ? (
             <div className="card card-p" style={{ textAlign: 'center', color: 'var(--green)', padding: 40 }}>
               <JxIcon name="check" size={36} color="var(--green)"/>

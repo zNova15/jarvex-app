@@ -12,6 +12,8 @@ const JxIcon = (props) => (window.JxIcon ? <window.JxIcon {...props} /> : null);
 const COLOR = { rojo: 'var(--red)', ambar: 'var(--amber)', verde: 'var(--green)', sin_presupuesto: 'var(--tm)' };
 const LABEL = { rojo: 'Sobreconsumo', ambar: 'Atención', verde: 'En línea', sin_presupuesto: 'Sin presupuesto' };
 const pct = (x) => x == null ? '—' : `${(x * 100).toFixed(0)}%`;
+// "Capítulo" = primer segmento del código Delphin (ej. 02.04.07 → 02).
+const capDeCodigo = (cod) => { const s = String(cod || '').trim(); return s ? s.split('.')[0] : '—'; };
 
 function ControlConsumoPage({ showToast }) {
   const obraHook = window.__useObraActiva ? window.__useObraActiva() : { obraId: null };
@@ -20,6 +22,9 @@ function ControlConsumoPage({ showToast }) {
   const [insumos, setInsumos] = uS([]);
   const [loading, setLoading] = uS(true);
   const [abiertas, setAbiertas] = uS(() => new Set());
+  const [busqueda, setBusqueda] = uS('');
+  const [filtroEstado, setFiltroEstado] = uS('todos');
+  const [filtroCap, setFiltroCap] = uS('todos');
 
   uE(() => {
     if (!obraId) return;
@@ -51,6 +56,20 @@ function ControlConsumoPage({ showToast }) {
     filas.forEach(f => { if (c[f.estado] != null) c[f.estado]++; });
     return c;
   }, [filas]);
+  const capitulos = uM(() => Array.from(new Set(filas.map(f => capDeCodigo(f.partida.codigo_delfin)))).sort(), [filas]);
+  const filasFiltradas = uM(() => {
+    const q = busqueda.trim().toLowerCase();
+    return filas.filter(f => {
+      if (filtroEstado !== 'todos' && f.estado !== filtroEstado) return false;
+      if (filtroCap !== 'todos' && capDeCodigo(f.partida.codigo_delfin) !== filtroCap) return false;
+      if (q) {
+        const enPartida = `${f.partida.codigo_delfin || ''} ${f.partida.nombre_partida || ''}`.toLowerCase().includes(q);
+        const enInsumo = f.insumos.some(x => String(x.ip.nombre_insumo || '').toLowerCase().includes(q));
+        if (!enPartida && !enInsumo) return false;
+      }
+      return true;
+    });
+  }, [filas, busqueda, filtroEstado, filtroCap]);
 
   const toggle = (id) => setAbiertas(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
@@ -70,15 +89,39 @@ function ControlConsumoPage({ showToast }) {
         </div>
       </div>
 
+      {!loading && filas.length > 0 && (
+        <div className="card card-p" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
+          <input className="fi" style={{ maxWidth: 240 }} placeholder="Buscar partida o insumo…" value={busqueda} onChange={e => setBusqueda(e.target.value)} />
+          <select className="fi" style={{ maxWidth: 180 }} value={filtroEstado} onChange={e => setFiltroEstado(e.target.value)}>
+            <option value="todos">Todos los estados</option>
+            <option value="rojo">🔴 Sobreconsumo</option>
+            <option value="ambar">🟡 Atención</option>
+            <option value="verde">🟢 En línea</option>
+          </select>
+          <select className="fi" style={{ maxWidth: 170 }} value={filtroCap} onChange={e => setFiltroCap(e.target.value)}>
+            <option value="todos">Todos los capítulos</option>
+            {capitulos.map(c => <option key={c} value={c}>Capítulo {c}</option>)}
+          </select>
+          {(busqueda || filtroEstado !== 'todos' || filtroCap !== 'todos') && (
+            <button className="btn btn-ghost btn-xs" onClick={() => { setBusqueda(''); setFiltroEstado('todos'); setFiltroCap('todos'); }}>Limpiar</button>
+          )}
+          <span style={{ marginLeft: 'auto', fontSize: 11.5, color: 'var(--tm)' }}>{filasFiltradas.length} de {filas.length} partidas</span>
+        </div>
+      )}
+
       {loading ? (
         <div className="card card-p" style={{ textAlign: 'center', color: 'var(--tm)' }}>Cargando…</div>
       ) : filas.length === 0 ? (
         <div className="card card-p" style={{ textAlign: 'center', color: 'var(--tm)' }}>
           No hay partidas con presupuesto en esta obra todavía.
         </div>
+      ) : filasFiltradas.length === 0 ? (
+        <div className="card card-p" style={{ textAlign: 'center', color: 'var(--tm)' }}>
+          Ninguna partida coincide con el filtro.
+        </div>
       ) : (
         <div style={{ display: 'grid', gap: 8 }}>
-          {filas.map(f => {
+          {filasFiltradas.map(f => {
             const open = abiertas.has(f.partida.id);
             return (
               <div key={f.partida.id} className="card card-p" style={{ borderLeft: `3px solid ${COLOR[f.estado]}` }}>
