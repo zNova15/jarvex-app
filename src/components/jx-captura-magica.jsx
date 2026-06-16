@@ -588,8 +588,19 @@ function CapturaMagicaPage({ showToast }) {
     let companyIdFinal = r.company_id;
 
     try {
-      // 0) Crear empresa del grupo si nueva
+      // 0) Crear empresa del grupo si nueva. El review se arma al EXTRAER la
+      // factura: si otra factura ya creó esa empresa (mismo RUC) en el ínterin,
+      // el review sigue diciendo "crear nueva". Acá re-chequeamos contra Dexie
+      // FRESCO por RUC y REUSAMOS la existente en vez de duplicarla (companies no
+      // tiene unique(ruc) en el server, así que duplicaba libremente).
       if (r.company_accion === 'crear_nueva') {
+        const rucC = String(r.nueva_company_ruc || '').trim();
+        const yaExiste = rucC
+          ? (await window.__db.companies.where('ruc').equals(rucC).filter(c => !c.deleted_at).toArray())
+              .sort((a, b) => (a.status === 'activa' ? -1 : 1) - (b.status === 'activa' ? -1 : 1))[0]
+          : null;
+        if (yaExiste) { companyIdFinal = yaExiste.id; }
+        else {
         const cid = window.__newId();
         await window.__db.companies.add({
           id: cid,
@@ -613,10 +624,17 @@ function CapturaMagicaPage({ showToast }) {
           newData: { name: r.nueva_company_name, ruc: r.nueva_company_ruc, rol_grupo: r.nueva_company_rol },
           reason:'Captura mágica · empresa nueva del grupo' }); } catch {}
         companyIdFinal = cid;
+        }
       }
 
-      // 1) Crear proveedor si nuevo
+      // 1) Crear proveedor si nuevo (mismo dedup por RUC fresco que la empresa).
       if (r.proveedor_accion === 'crear_nuevo') {
+        const rucP = String(r.proveedor_ruc || '').trim();
+        const provExiste = rucP
+          ? await window.__db.proveedores.where('ruc').equals(rucP).filter(p => !p.deleted_at).first()
+          : null;
+        if (provExiste) { proveedorIdFinal = provExiste.id; }
+        else {
         if (!r.proveedor_razon_social?.trim()) {
           showToast('Falta razón social del proveedor', 'red'); return;
         }
@@ -636,6 +654,7 @@ function CapturaMagicaPage({ showToast }) {
         try { await window.__logAudit?.({ action:'insert', table:'proveedores', recordId: pid,
           newData: { ruc: r.proveedor_ruc, razon: r.proveedor_razon_social }, reason:'Captura mágica · crear proveedor' }); } catch {}
         proveedorIdFinal = pid;
+        }
       }
 
       // 2) Crear insumos nuevos en su tabla correspondiente, SIN stock.
