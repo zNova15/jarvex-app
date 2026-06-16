@@ -73,6 +73,7 @@ function IngenieroInboxPage({ showToast }) {
   const [subcontratistas, setSubcontratistas] = uS([]);
   const [partidas, setPartidas] = uS([]);
   const [busquedaPartida, setBusquedaPartida] = uS('');
+  const [diasColapsados, setDiasColapsados] = uS(() => new Set()); // días plegados en el inbox
   const [asignarModal, setAsignarModal] = uS(null);          // mov a asignar (modo inbox)
   const [cambiarModal, setCambiarModal] = uS(null);          // mov a re-asignar (modo historial)
   const auth = window.__useAuth?.();
@@ -235,11 +236,18 @@ function IngenieroInboxPage({ showToast }) {
               </div>
             </div>
           ) : (
-            inboxPorDia.map(([dia, items]) => (
+            inboxPorDia.map(([dia, items]) => {
+              const colapsado = diasColapsados.has(dia);
+              const toggleDia = () => setDiasColapsados(prev => { const n = new Set(prev); n.has(dia) ? n.delete(dia) : n.add(dia); return n; });
+              return (
               <div key={dia} style={{ marginBottom: 18 }}>
-                <div style={{ fontSize: 12, color: 'var(--tm)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8, fontWeight: 600 }}>
+                {/* Header del día CLICKEABLE para plegar/desplegar las salidas. */}
+                <div onClick={toggleDia} title={colapsado ? 'Desplegar' : 'Plegar'}
+                  style={{ fontSize: 12, color: 'var(--tm)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8, fontWeight: 600, cursor: 'pointer', userSelect: 'none', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ display: 'inline-block', transition: 'transform .15s', transform: colapsado ? 'rotate(-90deg)' : 'none' }}>▾</span>
                   📅 {dia} · {items.length} salida(s)
                 </div>
+                {!colapsado && (
                 <div className="card" style={{ overflow: 'hidden' }}>
                   <table className="tbl" style={{ fontSize: 12.5 }}>
                     <thead>
@@ -272,8 +280,10 @@ function IngenieroInboxPage({ showToast }) {
                     </tbody>
                   </table>
                 </div>
+                )}
               </div>
-            ))
+              );
+            })
           )}
         </>
       )}
