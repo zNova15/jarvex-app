@@ -98,6 +98,7 @@ const NAV = [
 
   { section: 'GESTIÓN DE OBRA' },
   { id: 'partidas', label: 'Partidas', icon: 'list' },
+  { id: 'control-consumo', label: 'Control de Consumo', icon: 'trending' },
   { id: 'insumos', label: 'Insumos por Partida', icon: 'layers' },
   { id: 'versiones', label: 'Versiones de Presupuesto', icon: 'compare' },
   { id: 'cronograma', label: 'Cronograma / Gantt', icon: 'gantt' },

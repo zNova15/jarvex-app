@@ -333,7 +333,7 @@ function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStat
     personal:'Personal',asistencia:'Asistencia',materiales:'Materiales',
     'mov-materiales':'Movimiento de Materiales','herramientas':'Herramientas',
     'mov-herramientas':'Movimiento de Herramientas',proveedores:'Proveedores',
-    evidencias:'Evidencias',plantillas:'Plantillas','vinculacion-salidas':'Vinculación de Salidas',partidas:'Partidas',insumos:'Insumos por Partida',
+    evidencias:'Evidencias',plantillas:'Plantillas','vinculacion-salidas':'Vinculación de Salidas','control-consumo':'Control de Consumo',partidas:'Partidas',insumos:'Insumos por Partida',
     versiones:'Versiones de Presupuesto',
     cronograma:'Cronograma / Gantt',avance:'Avance de Obra',comparativo:'Planificado vs Real',
     costos:'Costos',incidencias:'Incidencias',usuarios:'Usuarios',roles:'Roles y Permisos',
@@ -540,6 +540,7 @@ const PAGE_REGISTRY = {
   'plantillas':             { chunk: 'jx-evidencias', component: 'PlantillasPage' },
   // === jx-ingeniero ===
   'vinculacion-salidas':    { chunk: 'jx-ingeniero', component: 'IngenieroInboxPage' },
+  'control-consumo':        { chunk: 'jx-control-consumo', component: 'ControlConsumoPage' },
   // === jx-reportes ===
   'reportes':               { chunk: 'jx-reportes', component: 'ReportesPage' },
   // === jx-admin ===

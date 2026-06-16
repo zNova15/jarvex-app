@@ -193,6 +193,7 @@ const PAGE_CHUNKS = {
   'jx-compras':               () => import('./components/jx-compras.jsx'),
   'jx-compras-pendientes':    () => import('./components/jx-compras-pendientes.jsx'),
   'jx-ingeniero':             () => import('./components/jx-ingeniero.jsx'),
+  'jx-control-consumo':       () => import('./components/jx-control-consumo.jsx'),
   'jx-valorizaciones':        () => import('./components/jx-valorizaciones.jsx'),
   'jx-tesoreria':             () => import('./components/jx-tesoreria.jsx'),
   'jx-activos':               () => import('./components/jx-activos.jsx'),

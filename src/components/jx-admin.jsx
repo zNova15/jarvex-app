@@ -877,6 +877,7 @@ window.__moduleIdMap = {
   'proveedores': 'Proveedores',
   // Gestión de obra
   'partidas': 'Partidas',
+  'control-consumo': 'Partidas', // reusa el permiso de Partidas (mismos roles)
   'insumos': 'Insumos',
   'versiones': 'Versiones presupuesto',
   'cronograma': 'Cronograma',
