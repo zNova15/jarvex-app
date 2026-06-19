@@ -204,6 +204,15 @@ export function useFrentesObra(obra_id, { soloActivas = false } = {}) {
   , [obra_id, soloActivas]);
 }
 
+// F1: vínculo frente↔partida (nodos asignados; expansión vía lib/frente-partidas.js).
+export function useFrentePartidas(obra_id) {
+  return useOfflineData('frente_partidas', q =>
+    obra_id
+      ? q.where('obra_id').equals(obra_id).filter(fp => !fp.deleted_at).toArray()
+      : []
+  , [obra_id]);
+}
+
 export function useMovimientosMateriales(obra_id) {
   return useOfflineData('movimientos_materiales', q =>
     obra_id ? q.where('obra_id').equals(obra_id).toArray() : q.toArray()

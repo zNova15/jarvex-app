@@ -38,6 +38,13 @@ export const db = new Dexie('JarvexDB');
 // Versión 25: historial de precios UNIFICADO para herramienta/epp/emergencia
 // (los materiales conservan material_precios_historial). Genérico por
 // (item_tipo,item_id), igual que stock_ubicaciones. Aditivo.
+// Versión 26: vínculo frente↔partida (F1). Guarda el NODO asignado (codigo_delfin);
+// la expansión a las partidas hijas se calcula al leer (src/lib/frente-partidas.js).
+// Muchos-a-muchos; un capítulo = 1 fila. Aditivo.
+db.version(26).stores({
+  frente_partidas: 'id, obra_id, frente_id, codigo_delfin, deleted_at, sync_status',
+});
+
 db.version(25).stores({
   insumo_precios_historial: 'id, obra_id, item_id, fecha, deleted_at, sync_status, idempotency_key, [item_tipo+item_id]',
 });

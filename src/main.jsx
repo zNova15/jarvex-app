@@ -28,7 +28,7 @@ import { useRealtimeNotifications } from './hooks/useRealtimeNotifications';
 import { useObraActiva, getObraActivaIdSync, setObraActivaId } from './hooks/useObraActiva';
 import {
   useObras, usePersonal, useMateriales, useHerramientas,
-  useUbicacionesObra, useFrentesObra,
+  useUbicacionesObra, useFrentesObra, useFrentePartidas,
   useMovimientosMateriales, useMovimientosHerramientas, useMovimientosMaquinaria,
   useAsistencia, usePartidas, useAvanceObra, useIncidencias,
   useEvidencias, useConflicts,
@@ -90,7 +90,7 @@ window.__getObraActivaId = getObraActivaIdSync;
 window.__setObraActivaId = setObraActivaId;
 window.__hooks = {
   useObras, usePersonal, useMateriales, useHerramientas,
-  useUbicacionesObra, useFrentesObra,
+  useUbicacionesObra, useFrentesObra, useFrentePartidas,
   useMovimientosMateriales, useMovimientosHerramientas, useMovimientosMaquinaria,
   useAsistencia, usePartidas, useAvanceObra, useIncidencias,
   useEvidencias, useConflicts,

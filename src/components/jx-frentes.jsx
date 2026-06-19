@@ -1,4 +1,6 @@
 import React from "react";
+import { cubre, partidasDeFrente } from "../lib/frente-partidas.js";
+import { hijosDirectos, cadenaBreadcrumb } from "../lib/partida-arbol.js";
 const { useState: uS, useEffect: uE, useMemo: uM } = React;
 
 // Catálogo de FRENTES DE TRABAJO por obra (zonas/sub-obras: Captación, Línea de
@@ -38,7 +40,15 @@ function FrentesPage({ showToast }) {
   const { data: frentes, loading, create, update, remove, refresh } = window.__hooks.useFrentesObra(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
   const { data: obras } = window.__hooks.useObras();
+  const { data: partidas } = window.__hooks.usePartidas(obraId);
+  const { data: frentePartidas, create: fpCreate, remove: fpRemove } = window.__hooks.useFrentePartidas(obraId);
   const obra = (obras || []).find(o => o.id === obraId);
+  // F1: partidas cubiertas por cada frente (expande los nodos asignados).
+  const coberturaPorFrente = uM(() => {
+    const m = {};
+    for (const f of (frentes || [])) m[f.id] = partidasDeFrente(f.id, { frentePartidas: frentePartidas || [], partidas: partidas || [] }).length;
+    return m;
+  }, [frentes, frentePartidas, partidas]);
   const personalById = uM(() => { const m = new Map(); (personal || []).forEach(p => m.set(p.id, p)); return m; }, [personal]);
   const nombrePers = (id) => { const p = personalById.get(id); return p ? `${p.nombres} ${p.apellidos || ''}`.trim() : '—'; };
 
@@ -57,6 +67,11 @@ function FrentesPage({ showToast }) {
   const [modal, setModal] = uS(null);
   const [editing, setEditing] = uS(null);
   const [form, setForm] = uS({ nombre: '', descripcion: '', ingeniero_id: '', orden: 0, activo: true });
+  const [asignarFrente, setAsignarFrente] = uS(null);  // F1: frente cuyo árbol de partidas se edita
+  const [foco, setFoco] = uS('');                       // nodo actual del árbol ('' = raíz)
+  const asignadasDelFrente = uM(() => (frentePartidas || []).filter(fp => asignarFrente && fp.frente_id === asignarFrente.id && !fp.deleted_at), [frentePartidas, asignarFrente]);
+  const codigosAsignados = uM(() => asignadasDelFrente.map(fp => String(fp.codigo_delfin).trim()), [asignadasDelFrente]);
+  const nodos = uM(() => hijosDirectos(partidas || [], foco), [partidas, foco]);
 
   const openNueva = () => {
     const orden = ((frentes || []).reduce((m, f) => Math.max(m, Number(f.orden) || 0), 0) || 0) + 1;
@@ -68,6 +83,16 @@ function FrentesPage({ showToast }) {
     setEditing(f);
     setForm({ nombre: f.nombre || '', descripcion: f.descripcion || '', ingeniero_id: f.ingeniero_id || '', orden: Number(f.orden) || 0, activo: f.activo !== false });
     setModal('form');
+  };
+  const openAsignar = (f) => { setAsignarFrente(f); setFoco(''); setModal('partidas'); };
+  const toggleNodo = async (nodo) => {
+    if (!canWrite || !asignarFrente) return;
+    const C = String(nodo.code).trim();
+    const directa = asignadasDelFrente.find(fp => String(fp.codigo_delfin).trim() === C);
+    try {
+      if (directa) await fpRemove(directa.id);
+      else await fpCreate({ obra_id: obraId, frente_id: asignarFrente.id, codigo_delfin: C, partida_id: nodo.partida?.id || null, nivel: C.split('.').filter(Boolean).length });
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
   };
 
   const guardar = async () => {
@@ -172,6 +197,7 @@ function FrentesPage({ showToast }) {
                       <td style={{ textAlign: 'right', fontWeight: 600 }}>{c || <span style={{ color: 'var(--tm)' }}>0</span>}</td>
                       <td><span className={`badge ${inactivo ? 'b-gray' : 'b-green'}`}>{inactivo ? 'Inactivo' : 'Activo'}</span></td>
                       <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
+                        <button className="btn btn-ghost btn-xs" title="Partidas asignadas a este frente" onClick={() => openAsignar(f)} style={{ marginRight: 4 }}>Partidas · {coberturaPorFrente[f.id] || 0}</button>
                         {canWrite && (
                           <>
                             <button className="btn btn-ghost btn-xs" title="Editar" onClick={() => openEditar(f)}><JxIcon name="edit" size={11} /></button>
@@ -213,6 +239,46 @@ function FrentesPage({ showToast }) {
           <div className="modal-actions">
             <button className="btn btn-ghost" onClick={() => { setModal(null); setEditing(null); }}>Cancelar</button>
             <button className="btn btn-amber" onClick={guardar}><JxIcon name="check" size={13} />{editing ? 'Guardar' : 'Crear'}</button>
+          </div>
+        </Modal>
+      )}
+
+      {modal === 'partidas' && asignarFrente && (
+        <Modal title={`Partidas · ${asignarFrente.nombre}`} icon="flag" onClose={() => { setModal(null); setAsignarFrente(null); }}>
+          <div style={{ fontSize: 12, color: 'var(--tm)', marginBottom: 8 }}>
+            Marcá capítulos, subcapítulos o ítems; los hijos se incluyen solos.{' '}
+            <strong style={{ color: 'var(--text)' }}>{coberturaPorFrente[asignarFrente.id] || 0} partidas cubiertas</strong>
+            {asignarFrente.ingeniero_id ? <> · Ing. {nombrePers(asignarFrente.ingeniero_id)}</> : null}.
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 2, fontSize: 12, marginBottom: 8, alignItems: 'center' }}>
+            {cadenaBreadcrumb(foco).map((code, i) => (
+              <span key={code || 'root'} style={{ display: 'inline-flex', alignItems: 'center' }}>
+                {i > 0 && <span style={{ color: 'var(--tm)' }}>/</span>}
+                <button className="btn btn-ghost btn-xs" onClick={() => setFoco(code)}>{code === '' ? 'Raíz' : code}</button>
+              </span>
+            ))}
+          </div>
+          <div style={{ maxHeight: 360, overflow: 'auto', display: 'grid', gap: 2 }}>
+            {nodos.length === 0 && <div style={{ color: 'var(--tm)', fontSize: 12, fontStyle: 'italic', padding: 6 }}>Sin partidas en este nivel.</div>}
+            {nodos.map(nodo => {
+              const C = nodo.code;
+              const directa = codigosAsignados.includes(C);
+              const heredada = !directa && codigosAsignados.some(a => a !== C && cubre(a, C));
+              const checked = directa || heredada;
+              const nombre = nodo.partida?.nombre_partida || (nodo.esFolder ? '(capítulo)' : '');
+              return (
+                <div key={C} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 6px', borderRadius: 6, background: directa ? 'rgba(245,180,40,0.10)' : 'transparent' }}>
+                  <input type="checkbox" checked={checked} disabled={heredada || !canWrite} onChange={() => toggleNodo(nodo)} title={heredada ? 'Cubierta por un nivel superior ya asignado' : ''} />
+                  <span style={{ fontFamily: 'monospace', fontSize: 12, minWidth: 96 }}>{C}</span>
+                  <span style={{ fontSize: 12, flex: 1 }}>{nombre}</span>
+                  {heredada && <span className="badge b-gray" style={{ fontSize: 9 }}>heredada</span>}
+                  {nodo.esFolder && <button className="btn btn-ghost btn-xs" onClick={() => setFoco(C)}>Abrir ▸</button>}
+                </div>
+              );
+            })}
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-amber" onClick={() => { setModal(null); setAsignarFrente(null); }}>Listo</button>
           </div>
         </Modal>
       )}

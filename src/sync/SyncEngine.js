@@ -22,6 +22,7 @@ const TRANSACTIONAL_TABLES = [
   'proveedores',
   'partidas',
   'insumos_partida',
+  'frente_partidas',     // F1: vínculo frente↔partida (después de frentes_obra y partidas)
   'presupuestos_versiones',
   'partidas_versionadas',
   'insumos_partida_versionadas',
@@ -86,6 +87,7 @@ const MASTER_TABLES = [
   { tabla: 'proveedores',            query: () => supabase.from('proveedores').select('*').is('deleted_at', null) },
   { tabla: 'partidas',               query: () => supabase.from('partidas').select('*').is('deleted_at', null) },
   { tabla: 'insumos_partida',        query: () => supabase.from('insumos_partida').select('*') },
+  { tabla: 'frente_partidas',        query: () => supabase.from('frente_partidas').select('*').is('deleted_at', null) },
   { tabla: 'presupuestos_versiones', query: () => supabase.from('presupuestos_versiones').select('*').is('deleted_at', null) },
   { tabla: 'partidas_versionadas',         query: () => supabase.from('partidas_versionadas').select('*').is('deleted_at', null) },
   { tabla: 'insumos_partida_versionadas',  query: () => supabase.from('insumos_partida_versionadas').select('*').is('deleted_at', null) },
@@ -565,6 +567,7 @@ const FK_DEPS = {
   // partidas e insumos_partida van en el MISMO batch paralelo del push: sin
   // el gate, un insumo podía llegar al server antes que su partida → 23503.
   insumos_partida:           [{ campo: 'partida_id', tabla: 'partidas' }],
+  frente_partidas:           [{ campo: 'frente_id', tabla: 'frentes_obra' }, { campo: 'partida_id', tabla: 'partidas' }],
   // Espejo versionado: el snapshot de versión (jx-gestion / jx-importar) crea
   // presupuestos_versiones + partidas_versionadas + insumos_partida_versionadas
   // pending_create en el MISMO lote, y las tres caen en el MISMO batch paralelo
