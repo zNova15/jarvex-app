@@ -1,7 +1,11 @@
 # Control de Consumo — Nivel 3: Mano de Obra (Personal Directo, Productividad HH)
 
 **Fecha:** 2026-06-16
-**Estado:** Diseño aprobado por el dueño (Gabriel) — listo para plan de implementación.
+**Estado:** Diseño aprobado por el dueño (Gabriel). **PENDIENTE DE REESCRITURA** para consumir la
+fundación F1 (ver `2026-06-19-f1-frentes-partidas-design.md` §10): este spec deja de crear su propia
+tabla `frente_partidas`, lee las partidas del frente vía `partidasDeFrente`, y mueve el
+`override_real_hh` a la tabla de F1. El `asistencia.frente_id_snapshot` se conserva. Reescribir antes
+de su plan.
 **Alcance de este spec:** SOLO la mirada de **personal directo** (productividad en horas-hombre).
 La mirada de **subcontratos** (avance + costo por tarea) es un spec aparte, posterior.
 
