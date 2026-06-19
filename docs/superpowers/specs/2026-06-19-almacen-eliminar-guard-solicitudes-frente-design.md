@@ -81,21 +81,26 @@ export function deltaPorAlmacen(mov) {
   }
 }
 
-// ¿Es seguro borrar `movIdABorrar`? Reconstruye el saldo CRONOLÓGICO del (item, almacén)
-// EXCLUYENDO ese movimiento y verifica que no haya prefijo negativo.
-// movimientos: filas del MISMO tipo de tabla, mismo item, mismo ubicacion_id.
-export function simularBorrado({ movimientos, movIdABorrar }) {
+// Reconstruye el saldo CRONOLÓGICO del (item, almacén) aplicando un CAMBIO al
+// movimiento `movId`: nuevoDelta=0 ⇒ borrado; nuevoDelta=<número con signo> ⇒
+// edición de cantidad/tipo (reemplaza su contribución). Verifica que ningún
+// prefijo quede negativo. movimientos: filas del MISMO tipo, item y ubicacion_id.
+export function simularCambio({ movimientos, movId, nuevoDelta = 0 }) {
   const vivos = movimientos
-    .filter(m => !m.deleted_at && !m.reverses_id && !m.reversed_by_id && m.id !== movIdABorrar)
+    .filter(m => !m.deleted_at && !m.reverses_id && !m.reversed_by_id)
     .sort((a, b) => String(a.fecha).localeCompare(String(b.fecha))
       || String(a.created_at || '').localeCompare(String(b.created_at || '')));
   let saldo = 0, min = 0, fechaViol = null;
   for (const m of vivos) {
-    saldo += deltaPorAlmacen(m);
+    const d = m.id === movId ? Number(nuevoDelta) : deltaPorAlmacen(m);
+    saldo += d;
     if (saldo < min) { min = saldo; fechaViol = m.fecha; }
   }
   return { seguro: min >= 0, minSaldo: min, fechaViolacion: fechaViol };
 }
+// Borrado = cambiar la contribución del movimiento a 0.
+export const simularBorrado = ({ movimientos, movId }) =>
+  simularCambio({ movimientos, movId, nuevoDelta: 0 });
 ```
 
 - El componente arma `movimientos` = todos los del item en ese `ubicacion_id` (de la tabla del tipo)
@@ -141,6 +146,21 @@ Helper compartido `eliminarMovimiento({ tabla, mov, ... })` (lógica común, por
     de stock/costo en edición, que hoy ni siquiera existe.)
 - Reusa la cola offline y el panel de Solicitudes existentes.
 
+## M3-bis — Super Admin: editar cantidad con aviso
+
+Solo **Super Admin** puede editar la **cantidad** (y el tipo) de un movimiento — la edición que
+mueve stock. Admin regular y almacenero **no** editan cantidad. Al editarla:
+1. Calcular el nuevo delta del movimiento (`deltaPorAlmacen` con la nueva cantidad/tipo).
+2. **Previsualizar con `simularCambio({ ..., nuevoDelta })`** — **AVISA, no bloquea**: muestra si el
+   cambio es seguro o si dejaría el stock de {item} en {Almacén} **negativo el {fecha}**, más
+   cualquier otra complicación (movimiento imputado a una partida → su costo se reajustará). El SA
+   confirma con conocimiento.
+3. Al confirmar: ajustar `stock_actual` + `stock_ubicaciones` por el **delta de la diferencia**
+   (nuevo − viejo); si es salida imputada, reajustar la partida (`revertirConsumoPartida` con la
+   cantidad vieja + `aplicarConsumoPartida` con la nueva); actualizar el movimiento; audit log.
+- Es un **aviso suave** (el SA es la máxima autoridad y asume el cambio), a diferencia del borrado de
+  admin que es **bloqueo duro**.
+
 ## S1 — Frente (opcional) en las salidas
 
 - Picker `SearchableSelect` de frentes (`useFrentesObra`, solo activos) **tras "Almacén de origen"** en
@@ -151,10 +171,11 @@ Helper compartido `eliminarMovimiento({ tabla, mov, ... })` (lógica común, por
 
 ## Helpers puros + pruebas
 
-- **`src/lib/stock-guard.js`** (`deltaPorAlmacen`, `simularBorrado`) — **`src/lib/__tests__/stock-guard.test.js`**:
+- **`src/lib/stock-guard.js`** (`deltaPorAlmacen`, `simularCambio`, `simularBorrado`) — **`src/lib/__tests__/stock-guard.test.js`**:
   - borrar un ingreso del día 13 con consumo posterior el 14 que deja saldo negativo → `seguro:false`,
     `fechaViolacion` correcta (el ejemplo de Gabriel).
   - borrar una salida → siempre seguro (sube el saldo).
+  - editar (reducir) la cantidad de un ingreso del que ya se consumió → `seguro:false`; subirla → seguro.
   - cadena sin violación → `seguro:true`.
   - excluye `deleted_at`/reversados; ordena por fecha y `created_at`.
   - `deltaPorAlmacen` por cada `tipo_movimiento`.
@@ -179,7 +200,7 @@ Helper compartido `eliminarMovimiento({ tabla, mov, ... })` (lógica común, por
 
 ## Fuera de alcance (v1)
 
-- Override de admin para forzar un borrado que deja negativo.
-- Editar `cantidad`/`tipo` por solicitud (almacenero elimina + re-registra).
+- Override de admin REGULAR para forzar un borrado que deja negativo (el Super Admin sí puede, con aviso).
+- Editar `cantidad`/`tipo` por el almacenero o admin regular (solo Super Admin; el almacenero elimina + re-registra).
 - S2 (frente obligatorio + alerta diferida) → necesita F3.
-- Recalcular costo de partida ante edición de `cantidad`/`precio` por solicitud.
+- Recalcular costo de partida ante edición de `precio` (la edición de `cantidad` del Super Admin sí reajusta partida).
