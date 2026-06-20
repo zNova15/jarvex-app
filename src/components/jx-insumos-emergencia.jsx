@@ -13,6 +13,7 @@ import { detectarSugerencias, detectarDuplicados, fusionarInsumos } from "../lib
 import { opcionesDestinoFlat, splitDestino, joinDestino, nombreDestinoMov } from "../lib/destino-mov.js";
 import { useFotosEvidencias, FotoInsumoCell } from "./jx-foto-insumo.jsx";
 import { getDesgloseBulk, aplicarDelta, traspasar } from "../lib/stock-ubicaciones.js";
+import { simularBorrado } from "../lib/stock-guard.js";
 import { DesglosePopup, TraspasoStockModal, ubicacionAutoOrigen, validarSalidaUbic } from "./jx-stock-ubic.jsx";
 import { PrecioHistorialModal } from "./jx-precio-historial.jsx";
 import { registrarSoloHistorial } from "../lib/precio-historial.js";
@@ -104,7 +105,12 @@ function InsumosEmergenciaPage({ showToast }) {
 
   // Eliminar un movimiento (soft-delete) y revertir su efecto en el stock.
   const eliminarMov = async (mv) => {
+    if (!canDelete) return;
     const ins = insumoById.get(mv.insumo_emergencia_id);
+    // Guard de stock negativo por almacén: bloquea si dejaría el saldo negativo a futuro.
+    const movsItem = (movHook.data || []).filter(x => x.insumo_emergencia_id === mv.insumo_emergencia_id && (mv.ubicacion_id ? x.ubicacion_id === mv.ubicacion_id : true));
+    const g = simularBorrado({ movimientos: movsItem, movId: mv.id });
+    if (!g.seguro) { showToast(`No se puede eliminar: dejaría el stock negativo${g.fechaViolacion ? ' el ' + g.fechaViolacion : ''}. Eliminá primero los movimientos posteriores.`, 'red'); return; }
     if (!confirm(`¿Eliminar este movimiento (${mv.tipo_movimiento} de ${mv.cantidad} ${mv.unidad || ''} · ${ins?.nombre || 'insumo'})?\n\nEl stock se ajusta automáticamente.`)) return;
     try {
       const now = new Date().toISOString();
