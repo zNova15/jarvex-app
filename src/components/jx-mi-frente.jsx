@@ -148,6 +148,17 @@ function MiFrenteShell({ showToast, vista }) {
     } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
   };
 
+  // Gantt del frente (HOOKS antes de cualquier return temprano — regla de hooks).
+  const ganttPartidas = uM(() => partidasDelFrente
+    .filter(p => p.fecha_inicio_planificada && p.fecha_fin_planificada)
+    .sort((a, b) => String(a.fecha_inicio_planificada).localeCompare(String(b.fecha_inicio_planificada))), [partidasDelFrente]);
+  const ganttRango = uM(() => {
+    if (!ganttPartidas.length) return null;
+    const ini = Math.min(...ganttPartidas.map(p => new Date(p.fecha_inicio_planificada).getTime()));
+    const fin = Math.max(...ganttPartidas.map(p => new Date(p.fecha_fin_planificada).getTime()));
+    return { ini, fin, span: Math.max(1, fin - ini) };
+  }, [ganttPartidas]);
+
   if (!obraId) return <div className="page-wrap"><div className="card card-p empty-state"><p>Seleccioná una obra activa.</p></div></div>;
   if (misFrentes.length === 0) {
     return (
@@ -212,17 +223,6 @@ function MiFrenteShell({ showToast, vista }) {
     }
     return filas;
   };
-
-  // Gantt del frente: partidas (hoja) con fechas planificadas.
-  const ganttPartidas = uM(() => partidasDelFrente
-    .filter(p => p.fecha_inicio_planificada && p.fecha_fin_planificada)
-    .sort((a, b) => String(a.fecha_inicio_planificada).localeCompare(String(b.fecha_inicio_planificada))), [partidasDelFrente]);
-  const ganttRango = uM(() => {
-    if (!ganttPartidas.length) return null;
-    const ini = Math.min(...ganttPartidas.map(p => new Date(p.fecha_inicio_planificada).getTime()));
-    const fin = Math.max(...ganttPartidas.map(p => new Date(p.fecha_fin_planificada).getTime()));
-    return { ini, fin, span: Math.max(1, fin - ini) };
-  }, [ganttPartidas]);
 
   return (
     <div className="page-wrap">
