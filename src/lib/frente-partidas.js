@@ -55,3 +55,15 @@ export function frentesDePartida(partidaId, { frentePartidas = [], partidas = []
   }
   return [...ids];
 }
+
+/**
+ * F2: frentes (filas) donde `userId` es el ingeniero a cargo (soporta varios).
+ * Filtra activos y no borrados.
+ * @param {string} userId  profiles.id del usuario logueado
+ * @param {Object} ctx { frentes }  filas de frentes_obra
+ * @returns {Array} filas de frentes_obra
+ */
+export function frentesDeUsuario(userId, { frentes = [] } = {}) {
+  if (!userId) return [];
+  return frentes.filter(f => f && !f.deleted_at && f.activo !== false && f.ingeniero_user_id === userId);
+}

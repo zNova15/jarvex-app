@@ -39,6 +39,12 @@ function FrentesPage({ showToast }) {
 
   const { data: frentes, loading, create, update, remove, refresh } = window.__hooks.useFrentesObra(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
+  // Usuarios del sistema (profiles, sincronizados a Dexie) → "Ingeniero a cargo" (F2).
+  const [usuarios, setUsuarios] = uS([]);
+  uE(() => { window.__db.profiles.toArray().then(setUsuarios).catch(() => {}); }, []);
+  const usuariosById = uM(() => { const m = new Map(); (usuarios || []).forEach(u => m.set(u.id, u)); return m; }, [usuarios]);
+  const nombreUsuario = (id) => { const u = usuariosById.get(id); return u ? (`${u.nombres || ''} ${u.apellidos || ''}`.trim() || u.email || '—') : '—'; };
+  const usuariosIngOpts = uM(() => (usuarios || []).filter(u => !u.deleted_at && u.activo !== false && ['ingeniero', 'ingeniero_residente'].includes(u.rol)).sort((a, b) => `${a.apellidos || ''} ${a.nombres || ''}`.localeCompare(`${b.apellidos || ''} ${b.nombres || ''}`)), [usuarios]);
   const { data: obras } = window.__hooks.useObras();
   const { data: partidas } = window.__hooks.usePartidas(obraId);
   const { data: frentePartidas, create: fpCreate, remove: fpRemove } = window.__hooks.useFrentePartidas(obraId);
@@ -66,7 +72,7 @@ function FrentesPage({ showToast }) {
 
   const [modal, setModal] = uS(null);
   const [editing, setEditing] = uS(null);
-  const [form, setForm] = uS({ nombre: '', descripcion: '', ingeniero_id: '', orden: 0, activo: true });
+  const [form, setForm] = uS({ nombre: '', descripcion: '', ingeniero_user_id: '', orden: 0, activo: true });
   const [asignarFrente, setAsignarFrente] = uS(null);  // F1: frente cuyo árbol de partidas se edita
   const [foco, setFoco] = uS('');                       // nodo actual del árbol ('' = raíz)
   const asignadasDelFrente = uM(() => (frentePartidas || []).filter(fp => asignarFrente && fp.frente_id === asignarFrente.id && !fp.deleted_at), [frentePartidas, asignarFrente]);
@@ -76,12 +82,12 @@ function FrentesPage({ showToast }) {
   const openNueva = () => {
     const orden = ((frentes || []).reduce((m, f) => Math.max(m, Number(f.orden) || 0), 0) || 0) + 1;
     setEditing(null);
-    setForm({ nombre: '', descripcion: '', ingeniero_id: '', orden, activo: true });
+    setForm({ nombre: '', descripcion: '', ingeniero_user_id: '', orden, activo: true });
     setModal('form');
   };
   const openEditar = (f) => {
     setEditing(f);
-    setForm({ nombre: f.nombre || '', descripcion: f.descripcion || '', ingeniero_id: f.ingeniero_id || '', orden: Number(f.orden) || 0, activo: f.activo !== false });
+    setForm({ nombre: f.nombre || '', descripcion: f.descripcion || '', ingeniero_user_id: f.ingeniero_user_id || '', orden: Number(f.orden) || 0, activo: f.activo !== false });
     setModal('form');
   };
   const openAsignar = (f) => { setAsignarFrente(f); setFoco(''); setModal('partidas'); };
@@ -103,10 +109,10 @@ function FrentesPage({ showToast }) {
     if (dup) { showToast('Ya existe un frente con ese nombre', 'red'); return; }
     try {
       if (editing) {
-        await update(editing.id, { nombre, descripcion: form.descripcion || null, ingeniero_id: form.ingeniero_id || null, orden: Number(form.orden) || 0, activo: !!form.activo });
+        await update(editing.id, { nombre, descripcion: form.descripcion || null, ingeniero_user_id: form.ingeniero_user_id || null, orden: Number(form.orden) || 0, activo: !!form.activo });
         showToast('Frente actualizado', 'green');
       } else {
-        await create({ obra_id: obraId, nombre, descripcion: form.descripcion || null, ingeniero_id: form.ingeniero_id || null, orden: Number(form.orden) || 0, activo: true });
+        await create({ obra_id: obraId, nombre, descripcion: form.descripcion || null, ingeniero_user_id: form.ingeniero_user_id || null, orden: Number(form.orden) || 0, activo: true });
         showToast(`Frente "${nombre}" creado`, 'green');
       }
       setModal(null); setEditing(null);
@@ -193,7 +199,7 @@ function FrentesPage({ showToast }) {
                       <td style={{ textAlign: 'right', fontFamily: 'monospace' }}>{f.orden ?? '—'}</td>
                       <td className="col-p"><strong>{f.nombre}</strong></td>
                       <td style={{ fontSize: 11, color: 'var(--tm)' }}>{f.descripcion || '—'}</td>
-                      <td style={{ fontSize: 12 }}>{f.ingeniero_id ? nombrePers(f.ingeniero_id) : '—'}</td>
+                      <td style={{ fontSize: 12 }}>{f.ingeniero_user_id ? nombreUsuario(f.ingeniero_user_id) : '—'}</td>
                       <td style={{ textAlign: 'right', fontWeight: 600 }}>{c || <span style={{ color: 'var(--tm)' }}>0</span>}</td>
                       <td><span className={`badge ${inactivo ? 'b-gray' : 'b-green'}`}>{inactivo ? 'Inactivo' : 'Activo'}</span></td>
                       <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
@@ -223,10 +229,11 @@ function FrentesPage({ showToast }) {
             <div style={{ gridColumn: '1/-1' }}><label className="flabel">Descripción</label>
               <input className="fi" placeholder="Detalle opcional" value={form.descripcion} onChange={e => setForm({ ...form, descripcion: e.target.value })} /></div>
             <div style={{ gridColumn: '1/-1' }}><label className="flabel">Ingeniero a cargo</label>
-              <select className="fi" value={form.ingeniero_id} onChange={e => setForm({ ...form, ingeniero_id: e.target.value })}>
+              <select className="fi" value={form.ingeniero_user_id} onChange={e => setForm({ ...form, ingeniero_user_id: e.target.value })}>
                 <option value="">— Sin asignar —</option>
-                {personalOpts.map(p => <option key={p.id} value={p.id}>{p.nombres} {p.apellidos || ''}{p.cargo ? ` · ${p.cargo}` : ''}</option>)}
-              </select></div>
+                {usuariosIngOpts.map(u => <option key={u.id} value={u.id}>{nombreUsuario(u.id)}{u.email ? ` · ${u.email}` : ''}</option>)}
+              </select>
+              <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3 }}>Usuario del sistema con rol ingeniero. Verá solo este frente al entrar.</div></div>
             <div><label className="flabel">Orden</label>
               <input className="fi" type="number" value={form.orden} onChange={e => setForm({ ...form, orden: e.target.value })} /></div>
             {editing && (
@@ -248,7 +255,7 @@ function FrentesPage({ showToast }) {
           <div style={{ fontSize: 12, color: 'var(--tm)', marginBottom: 8 }}>
             Marcá capítulos, subcapítulos o ítems; los hijos se incluyen solos.{' '}
             <strong style={{ color: 'var(--text)' }}>{coberturaPorFrente[asignarFrente.id] || 0} partidas cubiertas</strong>
-            {asignarFrente.ingeniero_id ? <> · Ing. {nombrePers(asignarFrente.ingeniero_id)}</> : null}.
+            {asignarFrente.ingeniero_user_id ? <> · Ing. {nombreUsuario(asignarFrente.ingeniero_user_id)}</> : null}.
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 2, fontSize: 12, marginBottom: 8, alignItems: 'center' }}>
             {cadenaBreadcrumb(foco).map((code, i) => (

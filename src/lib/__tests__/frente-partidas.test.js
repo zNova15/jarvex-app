@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { cubre, partidasDeFrente, frentesDePartida } from '../frente-partidas.js';
+import { cubre, partidasDeFrente, frentesDePartida, frentesDeUsuario } from '../frente-partidas.js';
 
 // Partidas de prueba (jerarquía por codigo_delfin).
 const PARTIDAS = [
@@ -80,5 +80,28 @@ describe('frentesDePartida', () => {
   });
   it('partida inexistente → []', () => {
     expect(frentesDePartida('nope', { frentePartidas: FP, partidas: PARTIDAS })).toEqual([]);
+  });
+});
+
+describe('frentesDeUsuario (F2)', () => {
+  const FRENTES = [
+    { id: 'f1', ingeniero_user_id: 'u1', activo: true },
+    { id: 'f2', ingeniero_user_id: 'u1', activo: true },
+    { id: 'f3', ingeniero_user_id: 'u2', activo: true },
+    { id: 'f4', ingeniero_user_id: 'u1', activo: false },          // inactivo
+    { id: 'f5', ingeniero_user_id: 'u1', deleted_at: '2026-01-01' }, // borrado
+  ];
+  it('devuelve los frentes (varios) del usuario, activos y no borrados', () => {
+    const ids = frentesDeUsuario('u1', { frentes: FRENTES }).map(f => f.id).sort();
+    expect(ids).toEqual(['f1', 'f2']);
+  });
+  it('otro usuario ve solo lo suyo', () => {
+    expect(frentesDeUsuario('u2', { frentes: FRENTES }).map(f => f.id)).toEqual(['f3']);
+  });
+  it('userId nulo → []', () => {
+    expect(frentesDeUsuario(null, { frentes: FRENTES })).toEqual([]);
+  });
+  it('usuario sin frentes → []', () => {
+    expect(frentesDeUsuario('uX', { frentes: FRENTES })).toEqual([]);
   });
 });

@@ -690,13 +690,11 @@ const PERM_MATRIX = {
     // Write: lo que el ingeniero ejecuta directamente
     if (['Vinculación Salidas','Avance','Incidencias','Evidencias',
          'Cumplimiento Cronograma','Solicitudes Cambio'].includes(m)) return 'w';
-    // Read: catálogo y datos operativos para ver el contexto de las salidas
-    if (['Obras','Materiales','Mov. Materiales','Herramientas','Mov. Herramientas',
-         'Partidas','Insumos','Cronograma','Versiones presupuesto','Comparativo',
-         'Personal','Asistencia','Proveedores','Ubicaciones','Requisiciones','Activos Pesados',
-         'KPIs por Obra','Dashboard Ejecutivo','Centro Alertas','Búsqueda Global','Reportes',
-         'Importar','Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones',
-         'Mantenimiento','Horas Máquina'].includes(m)) return 'r';
+    // Read ACOTADO: solo lo de su frente/obra. El ingeniero NO ve catálogo de
+    // almacén, proveedores, activos, KPIs ni dashboards de obra-completa (eso es
+    // del admin/residente). El data-scoping a su frente llega en O1.
+    if (['Obras','Partidas','Cronograma','Comparativo',
+         'Centro Alertas','Búsqueda Global','Reportes'].includes(m)) return 'r';
     return 'x';
   }),
 
@@ -999,6 +997,7 @@ const __HOME_POR_ROL = {
   admin: 'dashboard',
   gerente: 'dashboard-ejecutivo',
   ingeniero_residente: 'avance',
+  ingeniero: 'avance',
   supervisor: 'asistencia',
   almacenero: 'mov-materiales',
   asistente_admin: 'requisiciones',
