@@ -10,7 +10,7 @@ import { frentesDeUsuario, partidasDeFrente } from "../lib/frente-partidas.js";
 import { resumenFrente, planVsReal, rollupMensual, rendimientoPartida } from "../lib/mi-frente.js";
 import { hijosDirectos, cadenaBreadcrumb } from "../lib/partida-arbol.js";
 
-const { useState: uS, useMemo: uM, useEffect: uE } = React;
+const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 const hoyISO = () => new Date().toISOString().slice(0, 10);
 const num = (x) => Number(x || 0).toLocaleString('es-PE');
@@ -76,6 +76,23 @@ function MiFrenteShell({ showToast, vista }) {
   const insumosPorPartida = uM(() => { const m = new Map(); for (const i of insumosObra) { const a = m.get(i.partida_id) || []; a.push(i); m.set(i.partida_id, a); } return m; }, [insumosObra]);
   const [expandidos, setExpandidos] = uS(() => new Set());
   const toggleExp = (code) => setExpandidos(prev => { const n = new Set(prev); n.has(code) ? n.delete(code) : n.add(code); return n; });
+  const [filtroPart, setFiltroPart] = uS('');
+  // Todos los códigos "carpeta" (con descendientes) → para expandir todo de inicio.
+  const foldersTodos = uM(() => {
+    const s = new Set();
+    for (const p of partidasDelFrente) { const segs = String(p.codigo_delfin || '').split('.').filter(Boolean); for (let i = 1; i < segs.length; i++) s.add(segs.slice(0, i).join('.')); }
+    return s;
+  }, [partidasDelFrente]);
+  const autoExpRef = uR(false);
+  uE(() => { if (!autoExpRef.current && partidasDelFrente.length) { autoExpRef.current = true; setExpandidos(new Set(foldersTodos)); } }, [partidasDelFrente, foldersTodos]);
+  const partidasFiltradas = uM(() => {
+    const q = filtroPart.trim().toLowerCase();
+    if (!q) return null;
+    return partidasDelFrente.filter(p => String(p.codigo_delfin || '').toLowerCase().includes(q) || String(p.nombre_partida || '').toLowerCase().includes(q));
+  }, [partidasDelFrente, filtroPart]);
+  // Gantt: orden + filtro.
+  const [ganttSort, setGanttSort] = uS('fecha');   // 'fecha' | 'codigo' | 'rendimiento'
+  const [ganttFiltro, setGanttFiltro] = uS('');
 
   // ── Reporte diario ────────────────────────────────────────────────
   const [rep, setRep] = uS({ partida_id: '', descripcion: '', metrado: '', pct: '' });
@@ -149,9 +166,17 @@ function MiFrenteShell({ showToast, vista }) {
   };
 
   // Gantt del frente (HOOKS antes de cualquier return temprano — regla de hooks).
-  const ganttPartidas = uM(() => partidasDelFrente
-    .filter(p => p.fecha_inicio_planificada && p.fecha_fin_planificada)
-    .sort((a, b) => String(a.fecha_inicio_planificada).localeCompare(String(b.fecha_inicio_planificada))), [partidasDelFrente]);
+  const ganttPartidas = uM(() => {
+    const q = ganttFiltro.trim().toLowerCase();
+    let arr = partidasDelFrente.filter(p => p.fecha_inicio_planificada && p.fecha_fin_planificada);
+    if (q) arr = arr.filter(p => String(p.codigo_delfin || '').toLowerCase().includes(q) || String(p.nombre_partida || '').toLowerCase().includes(q));
+    const rank = { rojo: 0, ambar: 1, verde: 2, sin_dato: 3 };
+    return [...arr].sort((a, b) => {
+      if (ganttSort === 'codigo') return String(a.codigo_delfin || '').localeCompare(String(b.codigo_delfin || ''), 'es', { numeric: true });
+      if (ganttSort === 'rendimiento') return rank[rendimientoPartida(a, avances || [], hoy).semaforo] - rank[rendimientoPartida(b, avances || [], hoy).semaforo];
+      return String(a.fecha_inicio_planificada).localeCompare(String(b.fecha_inicio_planificada));
+    });
+  }, [partidasDelFrente, ganttFiltro, ganttSort, avances, hoy]);
   const ganttRango = uM(() => {
     if (!ganttPartidas.length) return null;
     const ini = Math.min(...ganttPartidas.map(p => new Date(p.fecha_inicio_planificada).getTime()));
@@ -276,12 +301,36 @@ function MiFrenteShell({ showToast, vista }) {
 
       {vista === 'partidas' && (
         <div className="card" style={{ overflow: 'auto' }}>
-          <div style={{ padding: '8px 12px', fontSize: 11.5, color: 'var(--tm)' }}>Desplegá los capítulos (▸) hasta las partidas específicas. Tocá ▸ en una partida para ver sus insumos a utilizar.</div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 12px', flexWrap: 'wrap' }}>
+            <input className="fi" style={{ maxWidth: 300 }} placeholder="Buscar por nombre o número (ej. 3.02.07.06)…" value={filtroPart} onChange={e => setFiltroPart(e.target.value)} />
+            {!partidasFiltradas && (<>
+              <button className="btn btn-ghost btn-xs" onClick={() => setExpandidos(new Set(foldersTodos))}>Expandir todo</button>
+              <button className="btn btn-ghost btn-xs" onClick={() => setExpandidos(new Set())}>Colapsar todo</button>
+            </>)}
+            <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--tm)' }}>{partidasFiltradas ? `${partidasFiltradas.length} coinciden` : `${partidasDelFrente.length} partidas`}</span>
+          </div>
           <table className="tbl" style={{ fontSize: 12 }}>
             <thead><tr><th>Código</th><th>Partida</th><th style={{ textAlign: 'right' }}>Metrado</th><th style={{ textAlign: 'right' }}>% Avance</th><th>Rendimiento</th><th></th></tr></thead>
             <tbody>
-              {renderNodos('', 0)}
+              {partidasFiltradas ? partidasFiltradas.flatMap(p => {
+                const r = rendimientoPartida(p, avances || [], hoy);
+                const ins = insumosPorPartida.get(p.id) || [];
+                const open = expandidos.has(p.codigo_delfin);
+                const rows = [
+                  <tr key={p.id}>
+                    <td style={{ whiteSpace: 'nowrap' }}>{ins.length ? <button className="btn btn-ghost btn-xs" onClick={() => toggleExp(p.codigo_delfin)} style={{ padding: '0 4px' }}>{open ? '▾' : '▸'}</button> : <span style={{ display: 'inline-block', width: 18 }} />}<span style={{ fontFamily: 'monospace', fontSize: 11.5 }}>{p.codigo_delfin}</span></td>
+                    <td>{p.nombre_partida || '—'}</td>
+                    <td style={{ textAlign: 'right' }}>{num(p.metrado_contratado)} {p.unidad || ''}</td>
+                    <td style={{ textAlign: 'right' }}>{Number(p.porcentaje_avance) || 0}%</td>
+                    <td><SemBadge s={r.semaforo} /></td>
+                    <td style={{ textAlign: 'right' }}><button className="btn btn-ghost btn-xs" onClick={() => window.__navTo?.('reporte-diario')}>Reportar</button></td>
+                  </tr>,
+                ];
+                if (open && ins.length) rows.push(<tr key={p.id + '_ins'} style={{ background: 'rgba(245,180,40,0.05)' }}><td></td><td colSpan={5}><div style={{ fontSize: 10.5, color: 'var(--tm)', margin: '2px 0' }}>Insumos a utilizar:</div><table style={{ width: '100%', fontSize: 11 }}><tbody>{ins.map(i => <tr key={i.id}><td style={{ width: 96, color: 'var(--tm)' }}>{i.tipo_insumo}</td><td>{i.nombre_insumo}</td><td style={{ textAlign: 'right', width: 130 }}>{num(i.cantidad_presupuestada)} {i.unidad || ''}</td></tr>)}</tbody></table></td></tr>);
+                return rows;
+              }) : renderNodos('', 0)}
               {partidasDelFrente.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>Tu frente no tiene partidas asignadas.</td></tr>}
+              {partidasFiltradas && partidasFiltradas.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>Ninguna partida coincide con “{filtroPart}”.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -289,35 +338,52 @@ function MiFrenteShell({ showToast, vista }) {
 
       {vista === 'cronograma' && (
         <div className="card card-p">
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
+            <input className="fi" style={{ maxWidth: 240 }} placeholder="Filtrar partida…" value={ganttFiltro} onChange={e => setGanttFiltro(e.target.value)} />
+            <select className="fi" style={{ maxWidth: 230 }} value={ganttSort} onChange={e => setGanttSort(e.target.value)}>
+              <option value="fecha">Ordenar: fecha de inicio</option>
+              <option value="codigo">Ordenar: código</option>
+              <option value="rendimiento">Ordenar: atrasadas primero</option>
+            </select>
+            <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--tm)' }}>{ganttPartidas.length} partidas</span>
+          </div>
           {!ganttRango ? (
             <div style={{ color: 'var(--tm)', fontStyle: 'italic', fontSize: 12 }}>Tus partidas no tienen fechas planificadas cargadas todavía.</div>
-          ) : (
-            <div>
-              <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 8 }}>
-                {new Date(ganttRango.ini).toLocaleDateString('es-PE')} → {new Date(ganttRango.fin).toLocaleDateString('es-PE')} · {ganttPartidas.length} partidas con fecha · tocá una barra para ir a Mis Partidas
-              </div>
-              <div style={{ display: 'grid', gap: 4 }}>
-                {ganttPartidas.map(p => {
-                  const ini = new Date(p.fecha_inicio_planificada).getTime();
-                  const fin = new Date(p.fecha_fin_planificada).getTime();
-                  const left = ((ini - ganttRango.ini) / ganttRango.span) * 100;
-                  const width = Math.max(1.5, ((fin - ini) / ganttRango.span) * 100);
-                  const r = rendimientoPartida(p, avances || [], hoy);
-                  return (
-                    <div key={p.id} style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 8, alignItems: 'center', cursor: 'pointer' }} onClick={() => window.__navTo?.('mis-partidas')}>
-                      <div style={{ fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${p.codigo_delfin} · ${p.nombre_partida}`}>
-                        <span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{p.codigo_delfin}</span> {p.nombre_partida}
+          ) : (() => {
+            const hoyMs = new Date(hoy).getTime();
+            const hoyPct = (hoyMs >= ganttRango.ini && hoyMs <= ganttRango.fin) ? ((hoyMs - ganttRango.ini) / ganttRango.span) * 100 : null;
+            return (
+              <div>
+                <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 8 }}>
+                  {new Date(ganttRango.ini).toLocaleDateString('es-PE')} → {new Date(ganttRango.fin).toLocaleDateString('es-PE')}
+                  {hoyPct != null ? <span style={{ color: 'var(--amber)' }}> · ▼ hoy {new Date(hoy).toLocaleDateString('es-PE')}</span> : ' · hoy fuera del rango'}
+                  {' '}· tocá una barra para ir a Mis Partidas
+                </div>
+                <div style={{ display: 'grid', gap: 4 }}>
+                  {ganttPartidas.map(p => {
+                    const ini = new Date(p.fecha_inicio_planificada).getTime();
+                    const fin = new Date(p.fecha_fin_planificada).getTime();
+                    const left = ((ini - ganttRango.ini) / ganttRango.span) * 100;
+                    const width = Math.max(1.5, ((fin - ini) / ganttRango.span) * 100);
+                    const r = rendimientoPartida(p, avances || [], hoy);
+                    const atrasada = hoyMs > fin && (Number(p.porcentaje_avance) || 0) < 100;
+                    return (
+                      <div key={p.id} style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 8, alignItems: 'center', cursor: 'pointer' }} onClick={() => window.__navTo?.('mis-partidas')}>
+                        <div style={{ fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${p.codigo_delfin} · ${p.nombre_partida}`}>
+                          <span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{p.codigo_delfin}</span> {p.nombre_partida}{atrasada ? <span style={{ color: 'var(--red)' }}> ⚠</span> : null}
+                        </div>
+                        <div style={{ position: 'relative', height: 18, background: 'rgba(255,255,255,0.04)', borderRadius: 4 }}>
+                          <div style={{ position: 'absolute', left: left + '%', width: width + '%', top: 2, bottom: 2, background: SEM[r.semaforo], borderRadius: 3, opacity: 0.9 }}
+                            title={`${num(p.metrado_contratado)} ${p.unidad || ''} · ${p.fecha_inicio_planificada} → ${p.fecha_fin_planificada}`} />
+                          {hoyPct != null && <div style={{ position: 'absolute', left: hoyPct + '%', top: -1, bottom: -1, width: 2, background: 'var(--amber)', zIndex: 1 }} title="Hoy" />}
+                        </div>
                       </div>
-                      <div style={{ position: 'relative', height: 18, background: 'rgba(255,255,255,0.04)', borderRadius: 4 }}>
-                        <div style={{ position: 'absolute', left: left + '%', width: width + '%', top: 2, bottom: 2, background: SEM[r.semaforo], borderRadius: 3, opacity: 0.9 }}
-                          title={`${num(p.metrado_contratado)} ${p.unidad || ''} · ${p.fecha_inicio_planificada} → ${p.fecha_fin_planificada}`} />
-                      </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
         </div>
       )}
 
