@@ -184,6 +184,18 @@ function SolicitudesPage({ showToast }) {
       } catch (e) {}
     }
 
+    // ── HOOK ESPECIAL: borrado de un movimiento de almacén ──
+    // Aprobar una solicitud de eliminación debe correr el Eliminar unificado
+    // (ajusta stock + revierte partida), no solo poner deleted_at. Si dejaría
+    // stock negativo, lanza y la aprobación falla (queda pendiente).
+    const MOV_TABLES = ['movimientos_materiales', 'movimientos_herramientas', 'movimientos_epp', 'movimientos_maquinaria', 'movimientos_insumos_emergencia'];
+    if (MOV_TABLES.includes(req.target_table) && 'deleted_at' in fields && fields.deleted_at) {
+      const { eliminarMovimientoCompleto } = await import('../lib/eliminar-movimiento.js');
+      const userId = window.__currentUserId || 'admin-approval';
+      await eliminarMovimientoCompleto({ tabla: req.target_table, movId: req.target_record_id, userId });
+      return { oldData, newData: { deleted_at: fields.deleted_at } };
+    }
+
     // ── HOOK ESPECIAL: cambio de partida_id en movimientos_materiales ──
     // Cuando un ingeniero pide reasignar una salida a otra partida, no
     // basta con UPDATE — hay que revertir el consumo de la partida vieja
