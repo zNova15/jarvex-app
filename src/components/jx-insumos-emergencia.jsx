@@ -43,6 +43,8 @@ function InsumosEmergenciaPage({ showToast }) {
   const { data: personal } = window.__hooks.usePersonal(obraId);
   const { data: subcontratistas } = window.__hooks.useSubcontratistas();
   const { data: ubicaciones } = window.__hooks.useUbicacionesObra?.(obraId) || { data: [] };
+  // Frentes de trabajo activos de la obra → picker opcional en la salida.
+  const { data: frentes } = window.__hooks.useFrentesObra(obraId, { soloActivas: true });
   const ubicacionesActivas = uM(() => (ubicaciones || []).filter(u => u.activo !== false), [ubicaciones]);
   const ubicacionesById = uM(() => { const m = new Map(); (ubicaciones || []).forEach(u => m.set(u.id, u)); return m; }, [ubicaciones]);
 
@@ -51,6 +53,7 @@ function InsumosEmergenciaPage({ showToast }) {
   const [modal, setModal] = uS(null);   // 'nuevo' | 'editar' | 'mov'
   const [editingMovId, setEditingMovId] = uS(null); // id del movimiento en edición (Super Admin)
   const [form, setForm] = uS({});
+  const [frenteSalida, setFrenteSalida] = uS(''); // frente de trabajo de la salida (opcional, solo salida)
   const [busy, setBusy] = uS(false);
   const [histPrecioItem, setHistPrecioItem] = uS(null); // insumo cuyo historial de precios se ve
   // Proveedores (tabla global): carga directa de Dexie como el resto de pantallas.
@@ -258,10 +261,11 @@ function InsumosEmergenciaPage({ showToast }) {
   };
 
   // ── Movimiento (entrada/salida) ────────────────────────────────────
-  const abrirMov = (tipo) => { setEditingMovId(null); setForm({ tipo_movimiento: tipo, fecha: hoyISO(), insumo_emergencia_id: '', cantidad: '', responsable_id: '', proveedor_id: '', almacen_id: '', observaciones: '' }); setModal('mov'); };
+  const abrirMov = (tipo) => { setEditingMovId(null); setFrenteSalida(''); setForm({ tipo_movimiento: tipo, fecha: hoyISO(), insumo_emergencia_id: '', cantidad: '', responsable_id: '', proveedor_id: '', almacen_id: '', observaciones: '' }); setModal('mov'); };
   // Super Admin: editar un movimiento existente (corrige stock revirtiendo el viejo y aplicando el nuevo).
   const abrirEditarMov = (mv) => {
     setEditingMovId(mv.id);
+    setFrenteSalida(mv.frente_id || '');
     setForm({ tipo_movimiento: mv.tipo_movimiento, fecha: (mv.fecha || '').slice(0, 10), insumo_emergencia_id: mv.insumo_emergencia_id || '', cantidad: String(mv.cantidad ?? ''), responsable_id: joinDestino(mv), proveedor_id: mv.proveedor_id || '', almacen_id: mv.ubicacion_id || '', observaciones: mv.observaciones || '' });
     setModal('mov');
   };
@@ -332,6 +336,8 @@ function InsumosEmergenciaPage({ showToast }) {
         ...splitDestino(esEntrada ? null : form.responsable_id),
         proveedor_id: form.proveedor_id || null,
         ubicacion_id: ubicMov || null,
+        // Frente de trabajo (opcional) solo en salida.
+        frente_id: esEntrada ? null : (frenteSalida || null),
         observaciones: form.observaciones?.trim() || null,
       };
       if (editingMovId) {
@@ -365,7 +371,7 @@ function InsumosEmergenciaPage({ showToast }) {
         try { await window.__logAudit?.({ action: 'insert', table: 'movimientos_insumos_emergencia', reason: `${form.tipo_movimiento} ${cant} ${insumo.unidad} de ${insumo.nombre}` }); } catch {}
         showToast(esEntrada ? 'Ingreso registrado' : 'Salida registrada', 'green');
       }
-      setModal(null); setForm({}); setEditingMovId(null); refresh?.();
+      setModal(null); setForm({}); setEditingMovId(null); setFrenteSalida(''); refresh?.();
     } catch (e) { showToast('Error: ' + (e.message || e), 'red'); } finally { setBusy(false); }
   };
 
@@ -650,7 +656,7 @@ function InsumosEmergenciaPage({ showToast }) {
 
       {/* Modal movimiento */}
       {modal === 'mov' && (
-        <Modal title={editingMovId ? '⚡ Editar movimiento de emergencia' : (form.tipo_movimiento === 'entrada' ? 'Ingreso de insumo de emergencia' : 'Salida de insumo de emergencia')} icon={form.tipo_movimiento === 'entrada' ? 'arrowIn' : 'arrowOut'} size="wide" onClose={() => { setModal(null); setForm({}); setEditingMovId(null); }}>
+        <Modal title={editingMovId ? '⚡ Editar movimiento de emergencia' : (form.tipo_movimiento === 'entrada' ? 'Ingreso de insumo de emergencia' : 'Salida de insumo de emergencia')} icon={form.tipo_movimiento === 'entrada' ? 'arrowIn' : 'arrowOut'} size="wide" onClose={() => { setModal(null); setForm({}); setEditingMovId(null); setFrenteSalida(''); }}>
           <div className="g2">
             {editingMovId && (
               <div style={{ gridColumn: '1/-1' }}><label className="flabel">Tipo</label>
@@ -682,6 +688,15 @@ function InsumosEmergenciaPage({ showToast }) {
                 </div>
               );
             })()}
+            {form.tipo_movimiento === 'salida' && (
+              <div style={{ gridColumn: '1/-1' }}>
+                <label className="flabel">Frente de trabajo (opcional)</label>
+                <select className="fi" value={frenteSalida} onChange={e => setFrenteSalida(e.target.value)}>
+                  <option value="">— Sin frente —</option>
+                  {(frentes || []).map(f => <option key={f.id} value={f.id}>{f.nombre}</option>)}
+                </select>
+              </div>
+            )}
             <div><label className="flabel">Fecha</label>
               <input className="fi" type="date" value={form.fecha || ''} max={hoyISO()} onChange={e => setForm({ ...form, fecha: e.target.value })} /></div>
             <div><label className="flabel">Cantidad *</label>
@@ -701,7 +716,7 @@ function InsumosEmergenciaPage({ showToast }) {
               <textarea className="fi" rows={2} value={form.observaciones || ''} onChange={e => setForm({ ...form, observaciones: e.target.value })} /></div>
           </div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
-            <button className="btn btn-ghost" onClick={() => { setModal(null); setForm({}); setEditingMovId(null); }} disabled={busy}>Cancelar</button>
+            <button className="btn btn-ghost" onClick={() => { setModal(null); setForm({}); setEditingMovId(null); setFrenteSalida(''); }} disabled={busy}>Cancelar</button>
             <button className={`btn ${form.tipo_movimiento === 'entrada' ? 'btn-green' : 'btn-amber'}`} onClick={guardarMov} disabled={busy}>{busy ? 'Guardando…' : editingMovId ? 'Guardar cambios' : 'Registrar'}</button>
           </div>
         </Modal>

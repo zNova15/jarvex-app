@@ -48,6 +48,8 @@ function ActivosPesadosPage({ showToast }) {
   // id → razón social para etiquetar personas con su subcontrato en el selector.
   const subNameAct = uM(() => new Map((subcontratistas || []).map(s => [s.id, s.razon_social])), [subcontratistas]);
   const movMaqHook = window.__hooks.useMovimientosMaquinaria(obraActivaId);
+  // Frentes de trabajo activos de la obra → picker opcional en la salida de custodia.
+  const { data: frentes } = window.__hooks.useFrentesObra(obraActivaId, { soloActivas: true });
   // Fotos del catálogo de máquinas (todas las obras: los activos rotan entre obras).
   const fotosActivos = useFotosEvidencias(null, 'foto_activo');
 
@@ -59,6 +61,7 @@ function ActivosPesadosPage({ showToast }) {
   // Asignación / devolución de custodia
   const [asignModal, setAsignModal] = uS(null); // { activo, mode:'salida'|'entrada' }
   const [asignForm, setAsignForm] = uS({});
+  const [frenteSalida, setFrenteSalida] = uS(''); // frente donde opera la máquina (opcional, solo salida)
   const [asignFoto, setAsignFoto] = uS(null);   // { blob, url }
   const [busyAsign, setBusyAsign] = uS(false);
   const [editFechaMaq, setEditFechaMaq] = uS(null); // { tipo, row } en edición de fecha (Super Admin)
@@ -260,6 +263,7 @@ function ActivosPesadosPage({ showToast }) {
   const openAsignar = (a, mode) => {
     setAsignModal({ activo: a, mode });
     setAsignForm({ fecha: new Date().toISOString().slice(0, 10), destino_tipo: 'personal', destino_id: '', observaciones: '' });
+    setFrenteSalida('');
     if (asignFoto?.url) { try { URL.revokeObjectURL(asignFoto.url); } catch {} }
     setAsignFoto(null);
   };
@@ -298,6 +302,7 @@ function ActivosPesadosPage({ showToast }) {
         tipo_movimiento: esSalida ? 'salida' : 'entrada',
         cantidad: null, unidad: null,
         responsable_id, subcontratista_id, destino_tipo,
+        frente_id: esSalida ? (frenteSalida || null) : null,
         observaciones: asignForm.observaciones?.trim() || (esSalida ? `Asignado a ${destino_nombre || '—'}` : 'Devolución'),
       });
       // Foto (prueba física) → evidencia local enlazada al movimiento
@@ -328,7 +333,7 @@ function ActivosPesadosPage({ showToast }) {
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'activos_pesados' } })); } catch {}
       showToast(esSalida ? `Equipo asignado a ${destino_nombre || '—'}` : 'Devolución registrada', 'green');
       if (asignFoto?.url) { try { URL.revokeObjectURL(asignFoto.url); } catch {} }
-      setAsignModal(null); setAsignForm({}); setAsignFoto(null);
+      setAsignModal(null); setAsignForm({}); setFrenteSalida(''); setAsignFoto(null);
     } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
     finally { setBusyAsign(false); }
   };
@@ -827,7 +832,7 @@ function ActivosPesadosPage({ showToast }) {
         const esSalida = asignModal.mode === 'salida';
         const a = asignModal.activo;
         return (
-          <Modal title={esSalida ? `Asignar equipo — ${a.nombre}` : `Devolución — ${a.nombre}`} icon={esSalida ? 'arrowOut' : 'arrowIn'} onClose={()=>{ setAsignModal(null); setAsignForm({}); if (asignFoto?.url) { try { URL.revokeObjectURL(asignFoto.url); } catch {} } setAsignFoto(null); }}>
+          <Modal title={esSalida ? `Asignar equipo — ${a.nombre}` : `Devolución — ${a.nombre}`} icon={esSalida ? 'arrowOut' : 'arrowIn'} onClose={()=>{ setAsignModal(null); setAsignForm({}); setFrenteSalida(''); if (asignFoto?.url) { try { URL.revokeObjectURL(asignFoto.url); } catch {} } setAsignFoto(null); }}>
             {!esSalida && a.asignado_a_id && (
               <div style={{ padding:'10px 12px', background:'rgba(242,183,5,0.08)', border:'1px solid rgba(242,183,5,0.25)', borderRadius:8, fontSize:12.5, color:'var(--ts)', marginBottom:12 }}>
                 Actualmente en uso por <strong style={{ color:'var(--amber)' }}>{a.asignado_a_nombre || '—'}</strong>{a.fecha_asignacion ? ` desde el ${a.fecha_asignacion}` : ''}.
@@ -852,6 +857,13 @@ function ActivosPesadosPage({ showToast }) {
                           {(personal||[]).filter(p=>!p.deleted_at).map(p => <option key={p.id} value={p.id}>{etiquetaPersona(p, subNameAct)}</option>)}
                         </select>}
                   </div>
+                  <div style={{ gridColumn:'1/-1' }}>
+                    <label className="flabel">Frente de trabajo (opcional)</label>
+                    <select className="fi" value={frenteSalida} onChange={e => setFrenteSalida(e.target.value)}>
+                      <option value="">— Sin frente —</option>
+                      {(frentes || []).map(f => <option key={f.id} value={f.id}>{f.nombre}</option>)}
+                    </select>
+                  </div>
                 </>
               )}
               <div><label className="flabel">Fecha</label>
@@ -865,7 +877,7 @@ function ActivosPesadosPage({ showToast }) {
               </div>
             </div>
             <div className="modal-actions" style={{ marginTop:16 }}>
-              <button className="btn btn-ghost" onClick={()=>{ setAsignModal(null); setAsignForm({}); if (asignFoto?.url) { try { URL.revokeObjectURL(asignFoto.url); } catch {} } setAsignFoto(null); }} disabled={busyAsign}>Cancelar</button>
+              <button className="btn btn-ghost" onClick={()=>{ setAsignModal(null); setAsignForm({}); setFrenteSalida(''); if (asignFoto?.url) { try { URL.revokeObjectURL(asignFoto.url); } catch {} } setAsignFoto(null); }} disabled={busyAsign}>Cancelar</button>
               <button className={`btn ${esSalida ? 'btn-amber' : 'btn-green'}`} onClick={guardarAsignacion} disabled={busyAsign}>{busyAsign ? 'Guardando…' : (esSalida ? 'Asignar equipo' : 'Registrar devolución')}</button>
             </div>
           </Modal>

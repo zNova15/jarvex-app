@@ -247,6 +247,8 @@ function MaterialesPage({ showToast }) {
   }, [obraId]);
   const { data: personal } = window.__hooks.usePersonal(obraId);
   const movHook = window.__hooks.useMovimientosMateriales(obraId);
+  // Frentes de trabajo activos de la obra (para el picker opcional en la salida)
+  const { data: frentes } = window.__hooks.useFrentesObra(obraId, { soloActivas: true });
 
   // Ubicaciones de almacenaje per-obra (para selector en modal y display en tabla)
   const { data: ubicaciones } = window.__hooks.useUbicacionesObra?.(obraId) || { data: [] };
@@ -1058,6 +1060,8 @@ function MaterialesPage({ showToast }) {
   // el valor global de loteComunes.{proveedor_id, responsable_id}.
   const [loteItems, setLoteItems] = uS([]);
   const [loteComunes, setLoteComunes] = uS({ usarMismoProveedor: true, usarMismaPersona: true, proveedor_id: null, responsable_id: null, sinFactura: false, observacionesAlmacen: '' });
+  // Frente de trabajo (opcional) común a toda la salida del lote.
+  const [frenteSalida, setFrenteSalida] = uS('');
   // Facturas pendientes de recepción (cargadas por contadora vía captura
   // mágica). Cuando el almacenero abre el modal de "Registrar Ingreso",
   // se le muestra un banner con la lista. Click → pre-rellena items.
@@ -1735,6 +1739,9 @@ function MaterialesPage({ showToast }) {
           // (Antes el almacenero la elegía con un dropdown, pero no tenía
           // contexto técnico para asignar bien — Paquete C del plan.)
           partida_id: null,
+          // Frente de trabajo (opcional) — mismo para todas las filas del lote.
+          // Solo aplica en SALIDA; en ingreso queda null.
+          frente_id: tipo === 'salida' ? (frenteSalida || null) : null,
           // Almacén de origen (salida) / llegada (ingreso). Auditable en la fila.
           ubicacion_id: ubicMov,
           precio_unitario_real: parseFloat(it.precio) || null,
@@ -1870,6 +1877,7 @@ function MaterialesPage({ showToast }) {
     setForm({});
     setLoteItems([]);
     setFacturaVinculadaId(null);
+    setFrenteSalida('');
     } finally {
       // Liberamos SIEMPRE — aunque haya excepción en el loop, el usuario
       // debe poder reintentar sin recargar la app.
@@ -2615,6 +2623,16 @@ function MaterialesPage({ showToast }) {
             </div>
           </div>
 
+          {/* Frente de trabajo (opcional) — común a todo el lote de salida. Va
+              después de la columna "Almacén de origen" de la tabla. */}
+          <div style={{ marginTop:14 }}>
+            <label className="flabel">Frente de trabajo (opcional)</label>
+            <select className="fi" value={frenteSalida} onChange={e => setFrenteSalida(e.target.value)}>
+              <option value="">— Sin frente —</option>
+              {(frentes || []).map(f => <option key={f.id} value={f.id}>{f.nombre}</option>)}
+            </select>
+          </div>
+
           <div style={{ marginTop:14 }}>
             <label className="flabel">Observaciones (se aplica a todos)</label>
             <textarea className="fi" value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})} placeholder="Notas adicionales del lote…"/>
@@ -3344,6 +3362,8 @@ function HerramientasPage({ showToast }) {
   const { data: personal } = window.__hooks.usePersonal(obraId);
   const { data: subcontratistas } = window.__hooks.useSubcontratistas();
   const movHook = window.__hooks.useMovimientosHerramientas(obraId);
+  // Frentes de trabajo activos de la obra (para el picker opcional en la salida).
+  const { data: frentes } = window.__hooks.useFrentesObra(obraId, { soloActivas: true });
   // Personal activo de la obra + subcontratos, para atribuir salidas (Fase B).
   const personalActivoHerr = uM(() => (personal || []).filter(p => p.estado === 'activo' && (!p.obra_id || !obraId || p.obra_id === obraId)), [personal, obraId]);
   const destinoOptsHerr = uM(() => opcionesDestinoFlat(personalActivoHerr, subcontratistas), [personalActivoHerr, subcontratistas]);
@@ -3356,6 +3376,8 @@ function HerramientasPage({ showToast }) {
   const [loteCantItems, setLoteCantItems] = uS([]);
   const [loteCantForm, setLoteCantForm] = uS({});
   const [busyLoteCant, setBusyLoteCant] = uS(false);
+  // Frente de trabajo (opcional) común a toda la salida del lote de herramientas.
+  const [frenteSalida, setFrenteSalida] = uS('');
   uE(() => {
     if (!obraId) return;
     let cancelled = false;
@@ -3448,6 +3470,7 @@ function HerramientasPage({ showToast }) {
     // herramienta; si la devuelve otra persona se marca la excepción + motivo.
     setLoteCantForm({ fecha: new Date().toISOString().slice(0, 10), hora: new Date().toTimeString().slice(0, 5), ubicacion_id: ubicDefaultH(), responsable_id: '', observaciones: '', es_excepcion: false, motivo_excepcion: '' });
     setLoteCantItems([nuevaFilaCant(tipo)]);
+    setFrenteSalida('');
     setLoteCant(tipo);
   };
   const submitLoteCant = async () => {
@@ -3561,6 +3584,9 @@ function HerramientasPage({ showToast }) {
             // lleva la semántica fina (ingreso ≠ devolución) para los reportes.
             accion: esEntrada ? 'entrada' : 'salida', tipo_movimiento: tipo, cantidad: cant,
             ...dest,
+            // Frente de trabajo (opcional) — mismo para todas las filas del lote.
+            // Solo aplica en SALIDA; en ingreso/devolución queda null.
+            frente_id: tipo === 'salida' ? (frenteSalida || null) : null,
             ubicacion_id: ubicMov,
             observaciones: obsFinal,
             idempotency_key: `${loteKey}_${idx}_${it.herramienta_id}`,
@@ -3607,7 +3633,7 @@ function HerramientasPage({ showToast }) {
       refresh();
       const etq = tipo === 'ingreso' ? 'ingresos' : tipo === 'devolucion' ? 'devoluciones' : 'salidas';
       showToast(fail ? `⚠ ${ok} ok, ${fail} fallaron` : `✓ ${ok} ${etq}`, fail ? 'amber' : 'green');
-      setLoteCant(null); setLoteCantItems([]); setLoteCantForm({});
+      setLoteCant(null); setLoteCantItems([]); setLoteCantForm({}); setFrenteSalida('');
     } finally { setBusyLoteCant(false); }
   };
   const ejecutarTraspasoHerr = async ({ item_id, origenId, destinoId, cantidad }) => {
@@ -4507,6 +4533,15 @@ function HerramientasPage({ showToast }) {
                     {ubicacionesActivasH.map(u => <option key={u.id} value={u.id}>{u.nombre}</option>)}
                   </select>
                 )}
+              </div>
+            )}
+            {esSalida && (
+              <div>
+                <label className="flabel">Frente de trabajo (opcional)</label>
+                <select className="fi" value={frenteSalida} onChange={e => setFrenteSalida(e.target.value)}>
+                  <option value="">— Sin frente —</option>
+                  {(frentes || []).map(f => <option key={f.id} value={f.id}>{f.nombre}</option>)}
+                </select>
               </div>
             )}
             {esSalida && (

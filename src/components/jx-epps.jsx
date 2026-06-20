@@ -151,6 +151,10 @@ function EppsInventarioPage({ showToast }) {
   // Destino de salida EPP: personal activo + subcontratos (Fase B)
   const destinoOptsEpp = uM(() => opcionesDestinoFlat((personal || []).filter(p => p.estado === 'activo'), subcontratistas), [personal, subcontratistas]);
 
+  // Frentes de trabajo activos de la obra (picker opcional en la salida).
+  const { data: frentes } = window.__hooks.useFrentesObra?.(obraId, { soloActivas: true }) || { data: [] };
+  const [frenteSalida, setFrenteSalida] = uS('');
+
   // Ubicaciones (almacenes) de la obra + desglose de stock por ubicación.
   const { data: ubicaciones = [] } = window.__hooks.useUbicacionesObra?.(obraId) || { data: [] };
   const ubicacionesActivas = uM(() => (ubicaciones || []).filter(u => u.activo !== false && !u.deleted_at), [ubicaciones]);
@@ -518,6 +522,7 @@ function EppsInventarioPage({ showToast }) {
     setLoteItems([{ id: crypto.randomUUID(), epp_id:'', cantidad:'', talla:'' }]);
     setLoteComunes({ usarMismoProveedor: true, usarMismaPersona: true, proveedor_id: null, personal_id: null, ubicacion_id: ubicacionDefault() });
     setFirmaBlob(null);
+    setFrenteSalida('');
     setModal('salida');
   };
   const openTraspaso = (preId = '') => { setTraspasoPreId(preId || ''); setModal('traspaso'); };
@@ -746,6 +751,7 @@ function EppsInventarioPage({ showToast }) {
           destino_tipo: dest.destino_tipo,
           proveedor_id,
           ubicacion_id: ubicMov,
+          frente_id: tipo === 'salida' ? (frenteSalida || null) : null,
           documento_asociado: form.documento || null,
           precio_unitario_real: parseFloat(it.precio) || null,
           motivo: form.motivo || (tipo === 'ingreso' ? 'reposicion' : 'dotacion'),
@@ -821,6 +827,7 @@ function EppsInventarioPage({ showToast }) {
     setForm({});
     setLoteItems([]);
     setFirmaBlob(null);
+    setFrenteSalida('');
   };
 
   if (!obraId) {
@@ -1271,6 +1278,14 @@ function EppsInventarioPage({ showToast }) {
               )}
             </div>
           )}
+
+          <div style={{ marginTop:12 }}>
+            <label className="flabel">Frente de trabajo (opcional)</label>
+            <select className="fi" value={frenteSalida} onChange={e => setFrenteSalida(e.target.value)}>
+              <option value="">— Sin frente —</option>
+              {(frentes || []).map(f => <option key={f.id} value={f.id}>{f.nombre}</option>)}
+            </select>
+          </div>
 
           <div style={{ marginTop:14 }}>
             <div style={{ fontSize:12, fontWeight:700, color:'var(--ts)', marginBottom:6, display:'flex', justifyContent:'space-between' }}>
