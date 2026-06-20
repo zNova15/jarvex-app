@@ -880,7 +880,8 @@ window.__moduleIdMap = {
   'versiones': 'Versiones presupuesto',
   'cronograma': 'Cronograma',
   'avance': 'Avance',
-  'mi-frente': 'Avance',
+  'dashboard-tecnico': 'Avance', 'mis-partidas': 'Avance', 'salidas-frente': 'Avance',
+  'reporte-diario': 'Avance', 'plan-real': 'Avance', 'emitir-alerta': 'Avance',
   'comparativo': 'Comparativo',
   'costos': 'Costos',
   'valorizaciones': 'Valorizaciones',
@@ -968,8 +969,14 @@ const __ROLES_CANONICOS = new Set([
 // Política deny-by-default: si el rol está vacío o no está en la lista canónica,
 // NO se muestra nada salvo los items utility (dashboard/búsqueda/configuración)
 // que están explícitamente marcados como `null` en moduleIdMap.
+// Módulos de "Ingeniería de Frente" (rol ingeniero). Menú ULTRA-acotado.
+const __INGENIERO_ITEMS = ['dashboard-tecnico', 'mis-partidas', 'salidas-frente', 'reporte-diario', 'plan-real', 'emitir-alerta'];
 window.__canSeeSidebarItem = function(rol, itemId) {
   const modulo = window.__moduleIdMap?.[itemId];
+  // Los módulos del ingeniero solo los ven el ingeniero (y admin).
+  if (__INGENIERO_ITEMS.includes(itemId)) return rol === 'admin' || rol === 'ingeniero';
+  // El ingeniero ve EXCLUSIVAMENTE sus módulos de frente (nada más, ni utilities).
+  if (rol === 'ingeniero') return false;
   // Items utility (sin restricción) siempre visibles
   if (modulo === null) return true;
   // Sin rol válido → no se ve nada que requiera permisos
@@ -998,7 +1005,7 @@ const __HOME_POR_ROL = {
   admin: 'dashboard',
   gerente: 'dashboard-ejecutivo',
   ingeniero_residente: 'avance',
-  ingeniero: 'mi-frente',
+  ingeniero: 'dashboard-tecnico',
   supervisor: 'asistencia',
   almacenero: 'mov-materiales',
   asistente_admin: 'requisiciones',

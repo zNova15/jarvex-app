@@ -31,6 +31,28 @@ export function planVsReal({ partidasDelFrente = [], metas = [], avances = [], f
   });
 }
 
+/**
+ * Rendimiento de una partida (O4 / control de rendimiento): meta diaria
+ * (metrado_contratado ÷ días planificados) vs avance real. Devuelve un semáforo.
+ * `hoy` = fecha ISO de referencia (se pasa para testeabilidad).
+ */
+export function rendimientoPartida(partida = {}, avances = [], hoy = null) {
+  const metrado = Number(partida.metrado_contratado) || 0;
+  const ini = partida.fecha_inicio_planificada;
+  const fin = partida.fecha_fin_planificada;
+  const dias = (a, b) => Math.round((new Date(b).getTime() - new Date(a).getTime()) / 86400000);
+  const diasPlan = (ini && fin) ? Math.max(1, dias(ini, fin) + 1) : 0;
+  const metaDiaria = diasPlan > 0 ? metrado / diasPlan : 0;
+  const realAcum = avances
+    .filter(a => a && !a.deleted_at && a.partida_id === partida.id)
+    .reduce((s, a) => s + (Number(a.metrado_ejecutado) || 0), 0);
+  const diasTrans = (ini && hoy) ? Math.max(0, Math.min(diasPlan, dias(ini, hoy) + 1)) : 0;
+  const esperadoAcum = Math.min(metrado, metaDiaria * diasTrans);
+  const indice = esperadoAcum > 0 ? realAcum / esperadoAcum : null; // <1 = atrasado
+  const semaforo = indice == null ? 'sin_dato' : indice >= 0.95 ? 'verde' : indice >= 0.75 ? 'ambar' : 'rojo';
+  return { metrado, diasPlan, metaDiaria, realAcum, esperadoAcum, indice, semaforo };
+}
+
 /** Rollup mensual: metrado real sumado por partida en el mes 'YYYY-MM'. Solo partidas con avance. */
 export function rollupMensual({ partidasDelFrente = [], avances = [], mes = null } = {}) {
   return partidasDelFrente.map(p => {

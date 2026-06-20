@@ -94,7 +94,12 @@ const NAV = [
   { id: 'busqueda', label: 'Búsqueda Global', icon: 'search' },
 
   { section: 'INGENIERÍA' },
-  { id: 'mi-frente', label: 'Mi Frente', icon: 'flag' },
+  { id: 'dashboard-tecnico', label: 'Dashboard Técnico', icon: 'dashboard' },
+  { id: 'mis-partidas', label: 'Mis Partidas', icon: 'list' },
+  { id: 'salidas-frente', label: 'Salidas a mi Frente', icon: 'arrowOut' },
+  { id: 'reporte-diario', label: 'Reporte Diario', icon: 'edit' },
+  { id: 'plan-real', label: 'Plan vs Real', icon: 'trending' },
+  { id: 'emitir-alerta', label: 'Emitir Alerta', icon: 'alert' },
   { id: 'vinculacion-salidas', label: 'Vinculación de Salidas', icon: 'link' },
 
   { section: 'GESTIÓN DE OBRA' },

@@ -333,7 +333,7 @@ function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStat
     personal:'Personal',asistencia:'Asistencia',materiales:'Materiales',
     'mov-materiales':'Movimiento de Materiales','herramientas':'Herramientas',
     'mov-herramientas':'Movimiento de Herramientas',proveedores:'Proveedores',
-    evidencias:'Evidencias',plantillas:'Plantillas','vinculacion-salidas':'Vinculación de Salidas','mi-frente':'Mi Frente','control-consumo':'Control de Consumo',partidas:'Partidas',insumos:'Insumos por Partida',
+    evidencias:'Evidencias',plantillas:'Plantillas','vinculacion-salidas':'Vinculación de Salidas','dashboard-tecnico':'Dashboard Técnico','mis-partidas':'Mis Partidas','salidas-frente':'Salidas a mi Frente','reporte-diario':'Reporte Diario','plan-real':'Plan vs Real','emitir-alerta':'Emitir Alerta','control-consumo':'Control de Consumo',partidas:'Partidas',insumos:'Insumos por Partida',
     versiones:'Versiones de Presupuesto',
     cronograma:'Cronograma / Gantt',avance:'Avance de Obra',comparativo:'Planificado vs Real',
     costos:'Costos',incidencias:'Incidencias',usuarios:'Usuarios',roles:'Roles y Permisos',
@@ -541,7 +541,12 @@ const PAGE_REGISTRY = {
   // === jx-ingeniero ===
   'vinculacion-salidas':    { chunk: 'jx-ingeniero', component: 'IngenieroInboxPage' },
   'control-consumo':        { chunk: 'jx-control-consumo', component: 'ControlConsumoPage' },
-  'mi-frente':              { chunk: 'jx-mi-frente', component: 'MiFrentePage' },
+  'dashboard-tecnico':      { chunk: 'jx-mi-frente', component: 'DashboardTecnicoPage' },
+  'mis-partidas':           { chunk: 'jx-mi-frente', component: 'MisPartidasPage' },
+  'salidas-frente':         { chunk: 'jx-mi-frente', component: 'SalidasFrentePage' },
+  'reporte-diario':         { chunk: 'jx-mi-frente', component: 'ReporteDiarioPage' },
+  'plan-real':              { chunk: 'jx-mi-frente', component: 'PlanRealPage' },
+  'emitir-alerta':          { chunk: 'jx-mi-frente', component: 'EmitirAlertaPage' },
   // === jx-reportes ===
   'reportes':               { chunk: 'jx-reportes', component: 'ReportesPage' },
   // === jx-admin ===
@@ -733,6 +738,7 @@ function App() {
     if (rol && window.__defaultPageForRol) return window.__defaultPageForRol(rol);
     return 'dashboard';
   });
+  window.__navTo = setPage; // navegación programática (botones que llevan a otra página)
 
   // Al cargar el profile (post-login):
   //   1. Redirigir a la home del rol (solo la primera vez).

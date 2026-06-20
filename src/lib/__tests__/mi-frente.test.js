@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resumenFrente, planVsReal, rollupMensual } from '../mi-frente.js';
+import { resumenFrente, planVsReal, rollupMensual, rendimientoPartida } from '../mi-frente.js';
 
 const PART = [
   { id: 'p1', codigo_delfin: '02.01', porcentaje_avance: 40 },
@@ -53,5 +53,24 @@ describe('rollupMensual', () => {
     expect(r.length).toBe(1);                 // solo p1 tiene avance en junio
     expect(r[0].partida.id).toBe('p1');
     expect(r[0].metradoMes).toBe(8);          // 5+3
+  });
+});
+
+describe('rendimientoPartida', () => {
+  const P = { id: 'pX', metrado_contratado: 100, fecha_inicio_planificada: '2026-06-01', fecha_fin_planificada: '2026-06-10' };
+  const av = (metrado) => [{ id: 'a', partida_id: 'pX', metrado_ejecutado: metrado }];
+  it('meta diaria = metrado / dias planificados', () => {
+    const r = rendimientoPartida(P, [], '2026-06-05');
+    expect(r.diasPlan).toBe(10);
+    expect(r.metaDiaria).toBe(10);
+    expect(r.esperadoAcum).toBe(50); // 10/dia × 5 dias transcurridos
+  });
+  it('atrasado → rojo; al día → verde; intermedio → ámbar', () => {
+    expect(rendimientoPartida(P, av(30), '2026-06-05').semaforo).toBe('rojo');   // 30/50=0.6
+    expect(rendimientoPartida(P, av(48), '2026-06-05').semaforo).toBe('verde');  // 48/50=0.96
+    expect(rendimientoPartida(P, av(40), '2026-06-05').semaforo).toBe('ambar');  // 40/50=0.8
+  });
+  it('sin fechas planificadas → sin_dato', () => {
+    expect(rendimientoPartida({ id: 'pY', metrado_contratado: 50 }, av(10), '2026-06-05').semaforo).toBe('sin_dato');
   });
 });
