@@ -937,6 +937,7 @@ function MovMaterialesPage({ showToast }) {
 
   const [reversoTarget, setReversoTarget] = uSM(null);
   const [editFechaTarget, setEditFechaTarget] = uSM(null);
+  const [requestTarget, setRequestTarget] = uSM(null); // movimiento para "Solicitar cambio" (no-admin)
   const isAdmin = auth?.profile?.rol === 'admin';
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
   const superAdmin = !!appMode.superAdmin;
@@ -1391,7 +1392,7 @@ function MovMaterialesPage({ showToast }) {
               <th style={{ textAlign:'right' }}>Precio</th>
               <th style={{ textAlign:'center' }}>Guía</th>
               <th>Sync</th>
-              {isAdmin && <th style={{ textAlign:'center' }}>Acción</th>}
+              <th style={{ textAlign:'center' }}>Acción</th>
             </tr></thead>
             <tbody>
               {filtered.map(m=>{
@@ -1503,22 +1504,28 @@ function MovMaterialesPage({ showToast }) {
                       return <span style={{color:'var(--green)',fontSize:11}} title="Sincronizado con el servidor">✓</span>;
                     })()}
                     </td>
-                    {isAdmin && (
-                      <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
-                        {superAdmin && (
-                          <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar fecha/hora del movimiento" onClick={()=>setEditFechaTarget(m)} style={{ marginRight:4, color:'#E74C3C' }}>
-                            📅
-                          </button>
-                        )}
-                        {canDelete ? (
-                          <button className="btn btn-red btn-xs" title="Eliminar — ajusta el stock automáticamente" onClick={()=>handleDeleteMov(m)}>
-                            <JxIcon name="trash" size={10}/> Eliminar
-                          </button>
-                        ) : (
-                          <span style={{ fontSize:10, color:'var(--tm)' }}>—</span>
-                        )}
-                      </td>
-                    )}
+                    <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
+                      {isAdmin ? (
+                        <>
+                          {superAdmin && (
+                            <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar fecha/hora del movimiento" onClick={()=>setEditFechaTarget(m)} style={{ marginRight:4, color:'#E74C3C' }}>
+                              📅
+                            </button>
+                          )}
+                          {canDelete ? (
+                            <button className="btn btn-red btn-xs" title="Eliminar — ajusta el stock automáticamente" onClick={()=>handleDeleteMov(m)}>
+                              <JxIcon name="trash" size={10}/> Eliminar
+                            </button>
+                          ) : (
+                            <span style={{ fontSize:10, color:'var(--tm)' }}>—</span>
+                          )}
+                        </>
+                      ) : (
+                        <button className="btn btn-ghost btn-xs" title="Solicitar cambio o eliminación al administrador" onClick={()=>setRequestTarget(m)}>
+                          <JxIcon name="edit" size={10}/> Solicitar
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
@@ -1538,6 +1545,21 @@ function MovMaterialesPage({ showToast }) {
           lookupNombre={(m)=>lookupMat(m.material_id)?.nombre_material || '(material)'}
           onClose={()=>setReversoTarget(null)}
           onConfirm={handleReversoMaterial}
+        />
+      )}
+      {requestTarget && (
+        <RequestChangeModal
+          table="movimientos_materiales"
+          record={requestTarget}
+          recordLabel={`${requestTarget.tipo_movimiento} · ${matsByIdAll.get(requestTarget.material_id)?.nombre_material || 'material'}`}
+          allowDelete
+          fields={[
+            { key: 'fecha', label: 'Fecha', type: 'date' },
+            { key: 'documento_asociado', label: 'Documento / Vale' },
+            { key: 'observaciones', label: 'Observaciones' },
+          ]}
+          showToast={showToast}
+          onClose={() => setRequestTarget(null)}
         />
       )}
       {editFechaTarget && (
@@ -1564,6 +1586,7 @@ function MovHerramientasPage({ showToast }) {
 
   const [reversoTarget, setReversoTarget] = uSM(null);
   const [editFechaTarget, setEditFechaTarget] = uSM(null);
+  const [requestTarget, setRequestTarget] = uSM(null); // movimiento para "Solicitar cambio" (no-admin)
   const isAdmin = auth?.profile?.rol === 'admin';
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
   const superAdmin = !!appMode.superAdmin;
@@ -1870,7 +1893,7 @@ function MovHerramientasPage({ showToast }) {
               <th>Almacén salida</th><th>Almacén llegada</th>
               <th>Responsable</th><th>Estado Salida</th><th>Estado Devol.</th>
               <th>Observaciones</th><th>Sync</th>
-              {isAdmin && <th style={{ textAlign:'center' }}>Acción</th>}
+              <th style={{ textAlign:'center' }}>Acción</th>
             </tr></thead>
             <tbody>
               {filtered.map(m=>{
@@ -1918,22 +1941,28 @@ function MovHerramientasPage({ showToast }) {
                       return <span style={{color:'var(--green)',fontSize:11}} title="Sincronizado con el servidor">✓</span>;
                     })()}
                     </td>
-                    {isAdmin && (
-                      <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
-                        {superAdmin && (
-                          <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar fecha/hora del movimiento" onClick={()=>setEditFechaTarget(m)} style={{ marginRight:4, color:'#E74C3C' }}>
-                            📅
-                          </button>
-                        )}
-                        {canDelete ? (
-                          <button className="btn btn-red btn-xs" title="Eliminar — ajusta el stock automáticamente" onClick={()=>handleDeleteMov(m)}>
-                            <JxIcon name="trash" size={10}/> Eliminar
-                          </button>
-                        ) : (
-                          <span style={{ fontSize:10, color:'var(--tm)' }}>—</span>
-                        )}
-                      </td>
-                    )}
+                    <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
+                      {isAdmin ? (
+                        <>
+                          {superAdmin && (
+                            <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar fecha/hora del movimiento" onClick={()=>setEditFechaTarget(m)} style={{ marginRight:4, color:'#E74C3C' }}>
+                              📅
+                            </button>
+                          )}
+                          {canDelete ? (
+                            <button className="btn btn-red btn-xs" title="Eliminar — ajusta el stock automáticamente" onClick={()=>handleDeleteMov(m)}>
+                              <JxIcon name="trash" size={10}/> Eliminar
+                            </button>
+                          ) : (
+                            <span style={{ fontSize:10, color:'var(--tm)' }}>—</span>
+                          )}
+                        </>
+                      ) : (
+                        <button className="btn btn-ghost btn-xs" title="Solicitar cambio o eliminación al administrador" onClick={()=>setRequestTarget(m)}>
+                          <JxIcon name="edit" size={10}/> Solicitar
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
@@ -1953,6 +1982,20 @@ function MovHerramientasPage({ showToast }) {
           lookupNombre={(m)=>lookupHerr(m.herramienta_id)?.nombre_herramienta || '(herramienta)'}
           onClose={()=>setReversoTarget(null)}
           onConfirm={handleReversoHerramienta}
+        />
+      )}
+      {requestTarget && (
+        <RequestChangeModal
+          table="movimientos_herramientas"
+          record={requestTarget}
+          recordLabel={`${requestTarget.accion} · ${lookupHerr(requestTarget.herramienta_id)?.nombre_herramienta || 'herramienta'}`}
+          allowDelete
+          fields={[
+            { key: 'fecha', label: 'Fecha', type: 'date' },
+            { key: 'observaciones', label: 'Observaciones' },
+          ]}
+          showToast={showToast}
+          onClose={() => setRequestTarget(null)}
         />
       )}
       {editFechaTarget && (
