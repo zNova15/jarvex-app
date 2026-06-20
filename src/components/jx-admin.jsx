@@ -880,7 +880,7 @@ window.__moduleIdMap = {
   'versiones': 'Versiones presupuesto',
   'cronograma': 'Cronograma',
   'avance': 'Avance',
-  'dashboard-tecnico': 'Avance', 'mis-partidas': 'Avance', 'salidas-frente': 'Avance',
+  'dashboard-tecnico': 'Avance', 'mis-partidas': 'Avance', 'cronograma-frente': 'Avance', 'salidas-frente': 'Avance',
   'reporte-diario': 'Avance', 'plan-real': 'Avance', 'emitir-alerta': 'Avance',
   'comparativo': 'Comparativo',
   'costos': 'Costos',
@@ -970,7 +970,7 @@ const __ROLES_CANONICOS = new Set([
 // NO se muestra nada salvo los items utility (dashboard/búsqueda/configuración)
 // que están explícitamente marcados como `null` en moduleIdMap.
 // Módulos de "Ingeniería de Frente" (rol ingeniero). Menú ULTRA-acotado.
-const __INGENIERO_ITEMS = ['dashboard-tecnico', 'mis-partidas', 'salidas-frente', 'reporte-diario', 'plan-real', 'emitir-alerta'];
+const __INGENIERO_ITEMS = ['dashboard-tecnico', 'mis-partidas', 'cronograma-frente', 'salidas-frente', 'reporte-diario', 'plan-real', 'emitir-alerta'];
 window.__canSeeSidebarItem = function(rol, itemId) {
   const modulo = window.__moduleIdMap?.[itemId];
   // Los módulos del ingeniero solo los ven el ingeniero (y admin).

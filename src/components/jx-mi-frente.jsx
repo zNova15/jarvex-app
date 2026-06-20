@@ -10,7 +10,7 @@ import { frentesDeUsuario, partidasDeFrente } from "../lib/frente-partidas.js";
 import { resumenFrente, planVsReal, rollupMensual, rendimientoPartida } from "../lib/mi-frente.js";
 import { hijosDirectos, cadenaBreadcrumb } from "../lib/partida-arbol.js";
 
-const { useState: uS, useMemo: uM } = React;
+const { useState: uS, useMemo: uM, useEffect: uE } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 const hoyISO = () => new Date().toISOString().slice(0, 10);
 const num = (x) => Number(x || 0).toLocaleString('es-PE');
@@ -62,9 +62,20 @@ function MiFrenteShell({ showToast, vista }) {
   const nombrePart = (p) => `${p.codigo_delfin ? p.codigo_delfin + ' · ' : ''}${p.nombre_partida || '—'}`;
   const partById = uM(() => { const m = new Map(); partidasDelFrente.forEach(p => m.set(p.id, p)); return m; }, [partidasDelFrente]);
 
-  // ── Mis Partidas (jerárquico) ─────────────────────────────────────
-  const [foco, setFoco] = uS('');
-  const nodos = uM(() => hijosDirectos(partidasDelFrente, foco), [partidasDelFrente, foco]);
+  // ── Mis Partidas: árbol desplegable + insumos (SIN costos) ────────
+  const [insumosObra, setInsumosObra] = uS([]);
+  uE(() => {
+    if (!obraId) { setInsumosObra([]); return; }
+    let c = false;
+    const load = () => window.__db.insumos_partida.where('obra_id').equals(obraId).filter(i => !i.deleted_at).toArray().then(r => { if (!c) setInsumosObra(r); }).catch(() => {});
+    load();
+    const on = (e) => { const t = e?.detail?.tabla; if (!t || t === 'insumos_partida') load(); };
+    window.addEventListener('jx_data_changed', on);
+    return () => { c = true; window.removeEventListener('jx_data_changed', on); };
+  }, [obraId]);
+  const insumosPorPartida = uM(() => { const m = new Map(); for (const i of insumosObra) { const a = m.get(i.partida_id) || []; a.push(i); m.set(i.partida_id, a); } return m; }, [insumosObra]);
+  const [expandidos, setExpandidos] = uS(() => new Set());
+  const toggleExp = (code) => setExpandidos(prev => { const n = new Set(prev); n.has(code) ? n.delete(code) : n.add(code); return n; });
 
   // ── Reporte diario ────────────────────────────────────────────────
   const [rep, setRep] = uS({ partida_id: '', descripcion: '', metrado: '', pct: '' });
@@ -148,9 +159,70 @@ function MiFrenteShell({ showToast, vista }) {
     );
   }
 
-  const TITULOS = { dashboard: 'Dashboard Técnico', partidas: 'Mis Partidas', salidas: 'Salidas a mi Frente', reporte: 'Reporte Diario', plan: 'Plan vs Real' };
+  const TITULOS = { dashboard: 'Dashboard Técnico', partidas: 'Mis Partidas', cronograma: 'Cronograma de mis Partidas', salidas: 'Salidas a mi Frente', reporte: 'Reporte Diario', plan: 'Plan vs Real' };
 
   const SemBadge = ({ s }) => <span className="badge" style={{ background: SEM[s], color: '#000', fontSize: 9 }}>{SEM_LBL[s]}</span>;
+
+  // Árbol desplegable de Mis Partidas (recursivo): nodo → hijos → insumos (sin costos).
+  const renderNodos = (code, depth) => {
+    const filas = [];
+    for (const nodo of hijosDirectos(partidasDelFrente, code)) {
+      const open = expandidos.has(nodo.code);
+      const p = nodo.partida;
+      const r = p ? rendimientoPartida(p, avances || [], hoy) : null;
+      const ins = p ? (insumosPorPartida.get(p.id) || []) : [];
+      const puedeExpandir = nodo.esFolder || ins.length > 0;
+      filas.push(
+        <tr key={nodo.code}>
+          <td style={{ paddingLeft: 6 + depth * 16, whiteSpace: 'nowrap' }}>
+            {puedeExpandir
+              ? <button className="btn btn-ghost btn-xs" onClick={() => toggleExp(nodo.code)} style={{ padding: '0 4px' }}>{open ? '▾' : '▸'}</button>
+              : <span style={{ display: 'inline-block', width: 18 }} />}
+            <span style={{ fontFamily: 'monospace', fontSize: 11.5 }}>{nodo.code}</span>
+          </td>
+          <td>{p ? (p.nombre_partida || '—') : <span style={{ color: 'var(--tm)' }}>capítulo</span>}</td>
+          <td style={{ textAlign: 'right' }}>{p ? `${num(p.metrado_contratado)} ${p.unidad || ''}` : ''}</td>
+          <td style={{ textAlign: 'right' }}>{p ? `${Number(p.porcentaje_avance) || 0}%` : ''}</td>
+          <td>{r ? <SemBadge s={r.semaforo} /> : ''}</td>
+          <td style={{ textAlign: 'right' }}>{p && <button className="btn btn-ghost btn-xs" onClick={() => window.__navTo?.('reporte-diario')}>Reportar</button>}</td>
+        </tr>
+      );
+      if (open) {
+        if (nodo.esFolder) filas.push(...renderNodos(nodo.code, depth + 1));
+        if (ins.length) {
+          filas.push(
+            <tr key={nodo.code + '_ins'} style={{ background: 'rgba(245,180,40,0.05)' }}>
+              <td></td>
+              <td colSpan={5} style={{ paddingLeft: 6 + (depth + 1) * 16 }}>
+                <div style={{ fontSize: 10.5, color: 'var(--tm)', margin: '2px 0' }}>Insumos a utilizar:</div>
+                <table style={{ width: '100%', fontSize: 11 }}><tbody>
+                  {ins.map(i => (
+                    <tr key={i.id}>
+                      <td style={{ width: 96, color: 'var(--tm)' }}>{i.tipo_insumo}</td>
+                      <td>{i.nombre_insumo}</td>
+                      <td style={{ textAlign: 'right', width: 130 }}>{num(i.cantidad_presupuestada)} {i.unidad || ''}</td>
+                    </tr>
+                  ))}
+                </tbody></table>
+              </td>
+            </tr>
+          );
+        }
+      }
+    }
+    return filas;
+  };
+
+  // Gantt del frente: partidas (hoja) con fechas planificadas.
+  const ganttPartidas = uM(() => partidasDelFrente
+    .filter(p => p.fecha_inicio_planificada && p.fecha_fin_planificada)
+    .sort((a, b) => String(a.fecha_inicio_planificada).localeCompare(String(b.fecha_inicio_planificada))), [partidasDelFrente]);
+  const ganttRango = uM(() => {
+    if (!ganttPartidas.length) return null;
+    const ini = Math.min(...ganttPartidas.map(p => new Date(p.fecha_inicio_planificada).getTime()));
+    const fin = Math.max(...ganttPartidas.map(p => new Date(p.fecha_fin_planificada).getTime()));
+    return { ini, fin, span: Math.max(1, fin - ini) };
+  }, [ganttPartidas]);
 
   return (
     <div className="page-wrap">
@@ -204,34 +276,48 @@ function MiFrenteShell({ showToast, vista }) {
 
       {vista === 'partidas' && (
         <div className="card" style={{ overflow: 'auto' }}>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 2, fontSize: 12, padding: '8px 12px', alignItems: 'center' }}>
-            {cadenaBreadcrumb(foco).map((code, i) => (
-              <span key={code || 'root'} style={{ display: 'inline-flex', alignItems: 'center' }}>
-                {i > 0 && <span style={{ color: 'var(--tm)' }}>/</span>}
-                <button className="btn btn-ghost btn-xs" onClick={() => setFoco(code)}>{code === '' ? 'Raíz' : code}</button>
-              </span>
-            ))}
-          </div>
+          <div style={{ padding: '8px 12px', fontSize: 11.5, color: 'var(--tm)' }}>Desplegá los capítulos (▸) hasta las partidas específicas. Tocá ▸ en una partida para ver sus insumos a utilizar.</div>
           <table className="tbl" style={{ fontSize: 12 }}>
             <thead><tr><th>Código</th><th>Partida</th><th style={{ textAlign: 'right' }}>Metrado</th><th style={{ textAlign: 'right' }}>% Avance</th><th>Rendimiento</th><th></th></tr></thead>
             <tbody>
-              {nodos.map(nodo => {
-                const p = nodo.partida;
-                const r = p ? rendimientoPartida(p, avances || [], hoy) : null;
-                return (
-                  <tr key={nodo.code}>
-                    <td style={{ fontFamily: 'monospace' }}>{nodo.code}</td>
-                    <td>{p ? (p.nombre_partida || '—') : <button className="btn btn-ghost btn-xs" onClick={() => setFoco(nodo.code)}>📂 abrir capítulo</button>}</td>
-                    <td style={{ textAlign: 'right' }}>{p ? `${num(p.metrado_contratado)} ${p.unidad || ''}` : ''}</td>
-                    <td style={{ textAlign: 'right' }}>{p ? `${Number(p.porcentaje_avance) || 0}%` : ''}</td>
-                    <td>{r ? <SemBadge s={r.semaforo} /> : ''}</td>
-                    <td style={{ textAlign: 'right' }}>{p && <button className="btn btn-ghost btn-xs" onClick={() => window.__navTo?.('reporte-diario')}>Reportar</button>}</td>
-                  </tr>
-                );
-              })}
-              {nodos.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>Tu frente no tiene partidas en este nivel.</td></tr>}
+              {renderNodos('', 0)}
+              {partidasDelFrente.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>Tu frente no tiene partidas asignadas.</td></tr>}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {vista === 'cronograma' && (
+        <div className="card card-p">
+          {!ganttRango ? (
+            <div style={{ color: 'var(--tm)', fontStyle: 'italic', fontSize: 12 }}>Tus partidas no tienen fechas planificadas cargadas todavía.</div>
+          ) : (
+            <div>
+              <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 8 }}>
+                {new Date(ganttRango.ini).toLocaleDateString('es-PE')} → {new Date(ganttRango.fin).toLocaleDateString('es-PE')} · {ganttPartidas.length} partidas con fecha · tocá una barra para ir a Mis Partidas
+              </div>
+              <div style={{ display: 'grid', gap: 4 }}>
+                {ganttPartidas.map(p => {
+                  const ini = new Date(p.fecha_inicio_planificada).getTime();
+                  const fin = new Date(p.fecha_fin_planificada).getTime();
+                  const left = ((ini - ganttRango.ini) / ganttRango.span) * 100;
+                  const width = Math.max(1.5, ((fin - ini) / ganttRango.span) * 100);
+                  const r = rendimientoPartida(p, avances || [], hoy);
+                  return (
+                    <div key={p.id} style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 8, alignItems: 'center', cursor: 'pointer' }} onClick={() => window.__navTo?.('mis-partidas')}>
+                      <div style={{ fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${p.codigo_delfin} · ${p.nombre_partida}`}>
+                        <span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{p.codigo_delfin}</span> {p.nombre_partida}
+                      </div>
+                      <div style={{ position: 'relative', height: 18, background: 'rgba(255,255,255,0.04)', borderRadius: 4 }}>
+                        <div style={{ position: 'absolute', left: left + '%', width: width + '%', top: 2, bottom: 2, background: SEM[r.semaforo], borderRadius: 3, opacity: 0.9 }}
+                          title={`${num(p.metrado_contratado)} ${p.unidad || ''} · ${p.fecha_inicio_planificada} → ${p.fecha_fin_planificada}`} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -395,8 +481,9 @@ function EmitirAlertaPage({ showToast }) {
 
 const DashboardTecnicoPage = (p) => <MiFrenteShell {...p} vista="dashboard" />;
 const MisPartidasPage = (p) => <MiFrenteShell {...p} vista="partidas" />;
+const CronogramaFrentePage = (p) => <MiFrenteShell {...p} vista="cronograma" />;
 const SalidasFrentePage = (p) => <MiFrenteShell {...p} vista="salidas" />;
 const ReporteDiarioPage = (p) => <MiFrenteShell {...p} vista="reporte" />;
 const PlanRealPage = (p) => <MiFrenteShell {...p} vista="plan" />;
 
-Object.assign(window, { DashboardTecnicoPage, MisPartidasPage, SalidasFrentePage, ReporteDiarioPage, PlanRealPage, EmitirAlertaPage, MiFrentePage: DashboardTecnicoPage });
+Object.assign(window, { DashboardTecnicoPage, MisPartidasPage, CronogramaFrentePage, SalidasFrentePage, ReporteDiarioPage, PlanRealPage, EmitirAlertaPage, MiFrentePage: DashboardTecnicoPage });
