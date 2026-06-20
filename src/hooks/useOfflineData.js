@@ -273,6 +273,13 @@ export function useAvanceObra(obra_id) {
   , [obra_id]);
 }
 
+// O3: metas de metrado del ingeniero (plan-vs-real).
+export function useAvanceMetas(obra_id) {
+  return useOfflineData('avance_metas', q =>
+    obra_id ? q.where('obra_id').equals(obra_id).filter(m => !m.deleted_at).toArray() : []
+  , [obra_id]);
+}
+
 export function useIncidencias(obra_id) {
   return useOfflineData('incidencias', q =>
     obra_id ? q.where('obra_id').equals(obra_id).toArray() : q.toArray()

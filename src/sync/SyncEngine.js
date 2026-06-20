@@ -53,6 +53,7 @@ const TRANSACTIONAL_TABLES = [
   'movimientos_materiales',
   'movimientos_herramientas',
   'avance_obra',
+  'avance_metas',
   'incidencias',
   'evidencias',
   // Trazabilidad
@@ -88,6 +89,7 @@ const MASTER_TABLES = [
   { tabla: 'partidas',               query: () => supabase.from('partidas').select('*').is('deleted_at', null) },
   { tabla: 'insumos_partida',        query: () => supabase.from('insumos_partida').select('*') },
   { tabla: 'frente_partidas',        query: () => supabase.from('frente_partidas').select('*').is('deleted_at', null) },
+  { tabla: 'avance_metas',           query: () => supabase.from('avance_metas').select('*').is('deleted_at', null) },
   { tabla: 'presupuestos_versiones', query: () => supabase.from('presupuestos_versiones').select('*').is('deleted_at', null) },
   { tabla: 'partidas_versionadas',         query: () => supabase.from('partidas_versionadas').select('*').is('deleted_at', null) },
   { tabla: 'insumos_partida_versionadas',  query: () => supabase.from('insumos_partida_versionadas').select('*').is('deleted_at', null) },
@@ -568,6 +570,7 @@ const FK_DEPS = {
   // el gate, un insumo podía llegar al server antes que su partida → 23503.
   insumos_partida:           [{ campo: 'partida_id', tabla: 'partidas' }],
   frente_partidas:           [{ campo: 'frente_id', tabla: 'frentes_obra' }, { campo: 'partida_id', tabla: 'partidas' }],
+  avance_metas:              [{ campo: 'partida_id', tabla: 'partidas' }],
   // Espejo versionado: el snapshot de versión (jx-gestion / jx-importar) crea
   // presupuestos_versiones + partidas_versionadas + insumos_partida_versionadas
   // pending_create en el MISMO lote, y las tres caen en el MISMO batch paralelo

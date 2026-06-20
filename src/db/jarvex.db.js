@@ -41,6 +41,13 @@ export const db = new Dexie('JarvexDB');
 // Versión 26: vínculo frente↔partida (F1). Guarda el NODO asignado (codigo_delfin);
 // la expansión a las partidas hijas se calcula al leer (src/lib/frente-partidas.js).
 // Muchos-a-muchos; un capítulo = 1 fila. Aditivo.
+// Versión 27: metas de metrado del ingeniero (O3 / plan-vs-real). El ingeniero
+// proyecta cuánto avanzar de una partida en una fecha. Aditivo. (avance_obra
+// suma descripcion+frente_id como campos sueltos, sin índice.)
+db.version(27).stores({
+  avance_metas: 'id, obra_id, partida_id, fecha, deleted_at, sync_status',
+});
+
 db.version(26).stores({
   frente_partidas: 'id, obra_id, frente_id, codigo_delfin, deleted_at, sync_status',
 });
