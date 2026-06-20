@@ -6,7 +6,7 @@
 // stock (callback por tipo), revierte la imputación a partida si la salida
 // estaba imputada, soft-deletea y audita. NO crea movimiento compensatorio.
 // ═══════════════════════════════════════════════════════════════════
-import { simularBorrado, deltaPorAlmacen } from './stock-guard.js';
+import { deltaPorAlmacen, stockTrasBorrar, dejaNegativo } from './stock-guard.js';
 
 // Config por tabla de movimiento: campo del item, catálogo, si lleva stock por cantidad.
 const CFG_MOV = {
@@ -57,13 +57,19 @@ export async function eliminarMovimientoCompleto({ tabla, movId, userId = null, 
   const itemId = mov[cfg.itemField];
   const item = itemId ? await db[cfg.catalog].get(itemId) : null;
 
-  // 1. Guard de stock negativo (tipos por cantidad con tipo_movimiento entrada/salida; herramientas usa accion → sin guard).
-  if (conGuard && cfg.porCantidad && !cfg.herramienta) {
-    const todos = await db[tabla].where('obra_id').equals(mov.obra_id).toArray();
-    const movsItem = todos.filter(x => x[cfg.itemField] === itemId && (mov.ubicacion_id ? x.ubicacion_id === mov.ubicacion_id : true));
-    const g = simularBorrado({ movimientos: movsItem, movId });
-    if (!g.seguro) {
-      const e = new Error(`No se puede eliminar: dejaría el stock negativo${g.fechaViolacion ? ' el ' + g.fechaViolacion : ''}.`);
+  // 1. Guard de stock negativo: BLOQUEO DURO basado en el stock REAL (incluye herramientas).
+  if (conGuard && item && cfg.porCantidad) {
+    let nuevoStock;
+    if (cfg.herramienta) {
+      const accionInv = invertirAccionHerr(mov.accion);
+      const cant = Number(mov.cantidad) || 0;
+      const delta = (accionInv === 'entrada' || accionInv === 'reposicion') ? cant : accionInv === 'salida' ? -cant : 0;
+      nuevoStock = Number(item.stock_actual || 0) + delta;
+    } else {
+      nuevoStock = stockTrasBorrar(item.stock_actual, mov);
+    }
+    if (dejaNegativo(nuevoStock)) {
+      const e = new Error(`No se puede eliminar: dejaría el stock en ${nuevoStock}. No se permite stock negativo.`);
       e.code = 'STOCK_NEGATIVO'; throw e;
     }
   }
@@ -111,20 +117,18 @@ export async function eliminarMovimientoCompleto({ tabla, movId, userId = null, 
  * @param {Function} o.updateMov        (id, fields) => Promise — el update del hook
  */
 export async function eliminarMovimiento({
-  tabla, mov, movimientosDelItem = null,
+  tabla, mov, nuevoStockGlobal = null,
   revertirStock = null, material = null, userId = null, updateMov,
 }) {
-  // 1. Guard de stock negativo (solo tipos con cantidad).
-  if (movimientosDelItem) {
-    const r = simularBorrado({ movimientos: movimientosDelItem, movId: mov.id });
-    if (!r.seguro) {
-      const e = new Error(
-        `No se puede eliminar: dejaría el stock negativo${r.fechaViolacion ? ' el ' + r.fechaViolacion : ''}. ` +
-        `Eliminá primero los movimientos posteriores que dependen de este.`
-      );
-      e.code = 'STOCK_NEGATIVO';
-      throw e;
-    }
+  // 1. Guard de stock negativo: BLOQUEO DURO para todos (admin y super admin incluidos).
+  //    Se basa en el stock REAL resultante (no en una reconstrucción).
+  if (nuevoStockGlobal != null && dejaNegativo(nuevoStockGlobal)) {
+    const e = new Error(
+      `No se puede eliminar: dejaría el stock en ${Number(nuevoStockGlobal)}. ` +
+      `El stock no puede quedar negativo — registrá o ajustá primero el ingreso que falta.`
+    );
+    e.code = 'STOCK_NEGATIVO';
+    throw e;
   }
   // 2. Revertir el stock (lógica por tipo).
   if (revertirStock) await revertirStock();

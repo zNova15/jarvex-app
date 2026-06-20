@@ -3,7 +3,7 @@ import { calcAlerta } from "../lib/stock-utils.js";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { aplicarDelta } from "../lib/stock-ubicaciones.js";
 import { eliminarMovimiento } from "../lib/eliminar-movimiento.js";
-import { simularCambio } from "../lib/stock-guard.js";
+import { stockTrasEditar, dejaNegativo } from "../lib/stock-guard.js";
 import { exportarDataset } from "../lib/export-historico.js";
 const { useState: uSM, useMemo: uMM, useEffect: uEM } = React;
 
@@ -1029,14 +1029,13 @@ function MovMaterialesPage({ showToast }) {
     const nuevaCant = Number(entrada);
     if (!(nuevaCant > 0)) { showToast('Cantidad inválida', 'red'); return; }
     if (nuevaCant === Number(m.cantidad)) return;
-    const delItem = (movs || []).filter(x => x.material_id === m.material_id && (m.ubicacion_id ? x.ubicacion_id === m.ubicacion_id : true));
-    const nuevoDelta = deltaStockMaterial(m.tipo_movimiento, nuevaCant);
-    const sim = simularCambio({ movimientos: delItem, movId: m.id, nuevoDelta });
-    const aviso = sim.seguro
-      ? 'El cambio es seguro (no deja stock negativo).'
-      : `⚠ ATENCIÓN: este cambio dejaría el stock negativo${sim.fechaViolacion ? ' el ' + sim.fechaViolacion : ''}.`;
+    const nuevoStockResultante = stockTrasEditar(matLive?.stock_actual ?? 0, m, nuevaCant);
+    if (dejaNegativo(nuevoStockResultante)) {
+      showToast(`No se puede: este cambio dejaría el stock en ${nuevoStockResultante}. El stock no puede quedar negativo.`, 'red');
+      return;
+    }
     const extra = m.partida_id ? '\nSe reajustará el consumo de la partida vinculada.' : '';
-    if (!confirm(`Cambiar cantidad de ${m.cantidad} → ${nuevaCant}.\n\n${aviso}${extra}\n\n¿Confirmás? (Super Admin)`)) return;
+    if (!confirm(`Cambiar cantidad de ${m.cantidad} → ${nuevaCant}.\nStock resultante: ${nuevoStockResultante}.${extra}\n\n¿Confirmás? (Super Admin)`)) return;
     try {
       const diff = deltaStockMaterial(m.tipo_movimiento, nuevaCant) - deltaStockMaterial(m.tipo_movimiento, m.cantidad);
       if (matLive) {
@@ -1067,23 +1066,20 @@ function MovMaterialesPage({ showToast }) {
     if (!canDelete) return;
     const nombre = matsByIdAll.get(m.material_id)?.nombre_material || '(material no encontrado)';
     const matLive = materiales?.find(x => x.id === m.material_id) || null; // fila viva con stock_actual
-    // Movimientos del mismo material en el mismo almacén (para el guard por almacén).
-    const delItem = (movs || []).filter(x =>
-      x.material_id === m.material_id && (m.ubicacion_id ? x.ubicacion_id === m.ubicacion_id : true));
+    const deltaUndo = -deltaStockMaterial(m.tipo_movimiento, m.cantidad);
+    const nuevoStockGlobal = (matLive?.stock_actual ?? 0) + deltaUndo;
     if (!confirm(`¿Eliminar este movimiento?\n\n${m.tipo_movimiento} de ${m.cantidad || 0} ${m.unidad || ''} de ${nombre}\nFecha: ${m.fecha || ''}\n\nEl stock SE AJUSTA automáticamente${m.partida_id ? ' y se revierte el consumo de la partida' : ''}.`)) return;
     try {
       await eliminarMovimiento({
-        tabla: 'movimientos_materiales', mov: m, movimientosDelItem: delItem,
+        tabla: 'movimientos_materiales', mov: m, nuevoStockGlobal,
         material: matLive, userId: auth?.profile?.id || null, updateMov,
         revertirStock: async () => {
           if (!matLive) return;
-          const deltaUndo = -deltaStockMaterial(m.tipo_movimiento, m.cantidad);
-          const nuevoStock = (matLive.stock_actual ?? 0) + deltaUndo;
           const min = Number(matLive.stock_minimo || 0);
-          const nuevaAlerta = nuevoStock <= 0 ? 'sin_stock'
-            : (min > 0 && nuevoStock <= min * 0.5) ? 'critico'
-            : (min > 0 && nuevoStock <= min) ? 'reponer' : 'ok';
-          await window.__db.materiales.update(m.material_id, { stock_actual: nuevoStock, alerta: nuevaAlerta });
+          const nuevaAlerta = nuevoStockGlobal <= 0 ? 'sin_stock'
+            : (min > 0 && nuevoStockGlobal <= min * 0.5) ? 'critico'
+            : (min > 0 && nuevoStockGlobal <= min) ? 'reponer' : 'ok';
+          await window.__db.materiales.update(m.material_id, { stock_actual: nuevoStockGlobal, alerta: nuevaAlerta });
           if (m.ubicacion_id) {
             try { await aplicarDelta({ obraId, itemTipo: 'material', itemId: m.material_id, ubicacionId: m.ubicacion_id, delta: deltaUndo, userId: auth?.profile?.id || null }); }
             catch (err) { console.warn('[elim mat desglose]', err?.message); }
@@ -1670,10 +1666,13 @@ function MovHerramientasPage({ showToast }) {
     const herr = herramientas?.find(h => h.id === m.herramienta_id) || null;
     const nombre = herr?.nombre_herramienta || '(herramienta)';
     const cant = Number(m.cantidad) || 0;
+    const accionInvH = invertirAccionHerramienta(m.accion);
+    const deltaHerr = cant > 0 ? ((accionInvH === 'entrada' || accionInvH === 'reposicion') ? cant : accionInvH === 'salida' ? -cant : 0) : 0;
+    const nuevoStockGlobal = herr ? Number(herr.stock_actual || 0) + deltaHerr : null;
     if (!confirm(`¿Eliminar este movimiento?\n\n${m.accion} de "${nombre}"\nFecha: ${m.fecha || ''}\n\nSe revierte el estado/stock de la herramienta automáticamente.`)) return;
     try {
       await eliminarMovimiento({
-        tabla: 'movimientos_herramientas', mov: m, movimientosDelItem: null,
+        tabla: 'movimientos_herramientas', mov: m, nuevoStockGlobal,
         material: null, userId: auth?.profile?.id || null, updateMov,
         revertirStock: async () => {
           if (!herr) return;

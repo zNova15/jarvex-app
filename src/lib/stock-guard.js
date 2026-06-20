@@ -47,3 +47,18 @@ export function simularCambio({ movimientos = [], movId, nuevoDelta = 0 }) {
 /** Borrado = cambiar la contribución del movimiento a 0. */
 export const simularBorrado = ({ movimientos, movId }) =>
   simularCambio({ movimientos, movId, nuevoDelta: 0 });
+
+// ─── Chequeo CONFIABLE basado en el stock REAL materializado ───────────
+// (El de reconstrucción de arriba divergía del stock_actual cuando había
+// reversos/stock_inicial. Para el bloqueo duro usamos el stock real.)
+
+/** Stock resultante tras DESHACER (borrar) un movimiento con tipo entrada/salida. */
+export const stockTrasBorrar = (stockActual, mov) =>
+  Number(stockActual || 0) - deltaPorAlmacen(mov);
+
+/** Stock resultante tras EDITAR la cantidad de un movimiento a `nuevaCant`. */
+export const stockTrasEditar = (stockActual, mov, nuevaCant) =>
+  Number(stockActual || 0) - deltaPorAlmacen(mov) + deltaPorAlmacen({ ...mov, cantidad: nuevaCant });
+
+/** ¿Quedaría negativo? (tolera epsilon de redondeo). */
+export const dejaNegativo = (stockResultante) => Number(stockResultante) < -1e-9;

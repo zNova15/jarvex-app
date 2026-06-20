@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { deltaPorAlmacen, simularCambio, simularBorrado } from '../stock-guard.js';
+import { deltaPorAlmacen, simularCambio, simularBorrado, stockTrasBorrar, stockTrasEditar, dejaNegativo } from '../stock-guard.js';
 
 const mov = (id, fecha, tipo, cantidad, extra = {}) => ({ id, fecha, tipo_movimiento: tipo, cantidad, ...extra });
 
@@ -45,6 +45,32 @@ describe('simularCambio (edición de cantidad)', () => {
   });
   it('subir la cantidad → seguro', () => {
     expect(simularCambio({ movimientos: BASE, movId: 'e13', nuevoDelta: 20 }).seguro).toBe(true);
+  });
+});
+
+describe('chequeo confiable por stock real (bloqueo duro)', () => {
+  it('stockTrasBorrar: borrar un ingreso resta del stock real', () => {
+    // ingreso de 4, stock real 1 → quedaría 1 - 4 = -3
+    const r = stockTrasBorrar(1, mov('e', '2026-01-13', 'entrada', 4));
+    expect(r).toBe(-3);
+    expect(dejaNegativo(r)).toBe(true);
+  });
+  it('stockTrasBorrar: borrar una salida suma de vuelta (nunca negativo)', () => {
+    expect(stockTrasBorrar(5, mov('s', '2026-01-13', 'salida', 4))).toBe(9);
+  });
+  it('stockTrasEditar: subir una salida puede dejar negativo', () => {
+    // salida de 10, stock 5 → editar a 20: 5 + 10 - 20 = -5
+    const r = stockTrasEditar(5, mov('s', '2026-01-13', 'salida', 10), 20);
+    expect(r).toBe(-5);
+    expect(dejaNegativo(r)).toBe(true);
+  });
+  it('stockTrasEditar: bajar una salida es seguro', () => {
+    expect(stockTrasEditar(5, mov('s', '2026-01-13', 'salida', 10), 12)).toBe(3);
+  });
+  it('dejaNegativo: tolera epsilon de redondeo', () => {
+    expect(dejaNegativo(0)).toBe(false);
+    expect(dejaNegativo(-0.0000000001)).toBe(false);
+    expect(dejaNegativo(-0.5)).toBe(true);
   });
 });
 
