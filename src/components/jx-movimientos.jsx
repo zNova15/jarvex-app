@@ -859,6 +859,10 @@ function MovMaterialesPage({ showToast }) {
   const { data: evidencias } = window.__hooks.useEvidencias(obraId);
   const { data: ubicaciones } = window.__hooks.useUbicacionesObra?.(obraId) || { data: [] };
   const { data: subcontratistas } = window.__hooks.useSubcontratistas?.() || { data: [] };
+  const { data: frentesObra } = window.__hooks.useFrentesObra?.(obraId, { soloActivas: true }) || { data: [] };
+  const frentesById = uMM(() => { const m = new Map(); (frentesObra || []).forEach(f => m.set(f.id, f)); return m; }, [frentesObra]);
+  const [asignarFrenteTarget, setAsignarFrenteTarget] = uSM(null); // salida con frente pendiente a asignar
+  const [selFrente, setSelFrente] = uSM('');
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
 
   // ── Mapa de TODOS los materiales (incluye soft-deleted Y de otras obras) ──
@@ -1327,6 +1331,16 @@ function MovMaterialesPage({ showToast }) {
         </div>
       </div>
 
+      {/* Aviso de urgencia: salidas sin frente asignado (S2 — completar después) */}
+      {(movs || []).filter(m => m.frente_pendiente && !m.deleted_at).length > 0 && (
+        <div style={{ marginBottom: 14, padding: '10px 14px', background: 'rgba(231,76,60,0.10)', border: '1px solid rgba(231,76,60,0.45)', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 10, fontSize: 12.5 }}>
+          <span style={{ fontSize: 16, lineHeight: 1 }}>⚠</span>
+          <div style={{ flex: 1, color: 'var(--ts)' }}>
+            <strong style={{ color: 'var(--red)' }}>{(movs || []).filter(m => m.frente_pendiente && !m.deleted_at).length} salida(s) sin frente asignado</strong>
+            <div style={{ marginTop: 3, fontSize: 11.5, color: 'var(--tm)' }}>Asigná el frente cuanto antes con el botón “⚠ Asignar frente” de la columna FRENTE.</div>
+          </div>
+        </div>
+      )}
       {/* Banner diagnóstico de sync: solo aparece si hay records pendientes/fallidos */}
       {(syncStats.pending > 0 || syncStats.failed > 0) && (
         <div style={{
@@ -1471,7 +1485,15 @@ function MovMaterialesPage({ showToast }) {
                     <td>{pers
                       ? <>{pers.nombres} {pers.apellidos}{pers.alias ? <span style={{ color:'var(--tm)' }}> «{pers.alias}»</span> : null}{pers.cargo ? <div style={{ fontSize:10.5, color:'var(--tm)' }}>{pers.cargo}{pers.subcontratista_id ? ` · ${subNameMov.get(pers.subcontratista_id) || 'subcontrato'}` : ''}</div> : null}</>
                       : (prov?.razon_social || '—')}</td>
-                    <td>{m.frente_zona ? <span className="badge b-amber" title="Frente / zona al que va">{m.frente_zona}</span> : <span style={{ color:'var(--tm)', fontSize:12 }}>—</span>}</td>
+                    <td>{
+                      m.frente_pendiente
+                        ? <button className="btn btn-red btn-xs" title="Falta el frente — asignalo" onClick={()=>{ setSelFrente(''); setAsignarFrenteTarget(m); }}>⚠ Asignar frente</button>
+                        : m.frente_id
+                          ? <span className="badge b-amber" title="Frente de trabajo">{frentesById.get(m.frente_id)?.nombre || 'frente'}</span>
+                          : m.frente_zona
+                            ? <span className="badge b-amber" title="Frente / zona al que va">{m.frente_zona}</span>
+                            : <span style={{ color:'var(--tm)', fontSize:12 }}>—</span>
+                    }</td>
                     <td className="col-m">{m.documento_asociado || '—'}</td>
                     <td style={{ maxWidth:220 }}><CeldaObs texto={obsLegible(m)}/></td>
                     <td style={{ textAlign:'right' }} className="col-num">{m.precio_unitario_real ? fmtS(m.precio_unitario_real) : '—'}</td>
@@ -1591,6 +1613,30 @@ function MovMaterialesPage({ showToast }) {
           onClose={()=>setReversoTarget(null)}
           onConfirm={handleReversoMaterial}
         />
+      )}
+      {asignarFrenteTarget && (
+        <Modal title="Asignar frente de trabajo" icon="flag" onClose={()=>setAsignarFrenteTarget(null)}>
+          <div style={{ fontSize:12, color:'var(--tm)', marginBottom:8 }}>
+            Salida de {asignarFrenteTarget.cantidad} {asignarFrenteTarget.unidad||''} · {matsByIdAll.get(asignarFrenteTarget.material_id)?.nombre_material || 'material'}
+          </div>
+          <label className="flabel">Frente *</label>
+          <select className="fi" value={selFrente} onChange={e=>setSelFrente(e.target.value)}>
+            <option value="">— Elegí el frente —</option>
+            {(frentesObra||[]).map(f => <option key={f.id} value={f.id}>{f.nombre}</option>)}
+          </select>
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={()=>setAsignarFrenteTarget(null)}>Cancelar</button>
+            <button className="btn btn-amber" onClick={async ()=>{
+              if (!selFrente) { showToast('Elegí un frente', 'red'); return; }
+              try {
+                await updateMov(asignarFrenteTarget.id, { frente_id: selFrente, frente_pendiente: false });
+                try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'movimientos_materiales' } })); } catch {}
+                showToast('Frente asignado', 'green');
+                setAsignarFrenteTarget(null); setSelFrente('');
+              } catch(e){ showToast('Error: '+(e.message||e), 'red'); }
+            }}>Asignar</button>
+          </div>
+        </Modal>
       )}
       {requestTarget && (
         <RequestChangeModal

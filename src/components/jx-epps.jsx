@@ -154,6 +154,7 @@ function EppsInventarioPage({ showToast }) {
   // Frentes de trabajo activos de la obra (picker opcional en la salida).
   const { data: frentes } = window.__hooks.useFrentesObra?.(obraId, { soloActivas: true }) || { data: [] };
   const [frenteSalida, setFrenteSalida] = uS('');
+  const [frentePendiente, setFrentePendiente] = uS(false);
 
   // Ubicaciones (almacenes) de la obra + desglose de stock por ubicación.
   const { data: ubicaciones = [] } = window.__hooks.useUbicacionesObra?.(obraId) || { data: [] };
@@ -523,6 +524,7 @@ function EppsInventarioPage({ showToast }) {
     setLoteComunes({ usarMismoProveedor: true, usarMismaPersona: true, proveedor_id: null, personal_id: null, ubicacion_id: ubicacionDefault() });
     setFirmaBlob(null);
     setFrenteSalida('');
+    setFrentePendiente(false);
     setModal('salida');
   };
   const openTraspaso = (preId = '') => { setTraspasoPreId(preId || ''); setModal('traspaso'); };
@@ -688,6 +690,10 @@ function EppsInventarioPage({ showToast }) {
       showToast('La salida de EPPs requiere firma del trabajador', 'red');
       return;
     }
+    if (tipo === 'salida' && !frenteSalida && !frentePendiente) {
+      showToast('Elegí el frente de trabajo, o marcá "lo completo después".', 'red');
+      return;
+    }
 
     // Almacén del movimiento (destino en ingreso, ORIGEN obligatorio en salida).
     const ubicMov = loteComunes.ubicacion_id || null;
@@ -752,6 +758,7 @@ function EppsInventarioPage({ showToast }) {
           proveedor_id,
           ubicacion_id: ubicMov,
           frente_id: tipo === 'salida' ? (frenteSalida || null) : null,
+          frente_pendiente: (tipo === 'salida' && !frenteSalida) ? true : false,
           documento_asociado: form.documento || null,
           precio_unitario_real: parseFloat(it.precio) || null,
           motivo: form.motivo || (tipo === 'ingreso' ? 'reposicion' : 'dotacion'),
@@ -828,6 +835,7 @@ function EppsInventarioPage({ showToast }) {
     setLoteItems([]);
     setFirmaBlob(null);
     setFrenteSalida('');
+    setFrentePendiente(false);
   };
 
   if (!obraId) {
@@ -1280,11 +1288,15 @@ function EppsInventarioPage({ showToast }) {
           )}
 
           <div style={{ marginTop:12 }}>
-            <label className="flabel">Frente de trabajo (opcional)</label>
-            <select className="fi" value={frenteSalida} onChange={e => setFrenteSalida(e.target.value)}>
+            <label className="flabel">Frente de trabajo *</label>
+            <select className="fi" value={frenteSalida} disabled={frentePendiente} onChange={e => setFrenteSalida(e.target.value)}>
               <option value="">— Sin frente —</option>
               {(frentes || []).map(f => <option key={f.id} value={f.id}>{f.nombre}</option>)}
             </select>
+            <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:11.5, marginTop:4, color:'var(--tm)' }}>
+              <input type="checkbox" checked={frentePendiente} onChange={e => { setFrentePendiente(e.target.checked); if (e.target.checked) setFrenteSalida(''); }} />
+              No sé el frente todavía — lo completo después (queda marcado como pendiente)
+            </label>
           </div>
 
           <div style={{ marginTop:14 }}>

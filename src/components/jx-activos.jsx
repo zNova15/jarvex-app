@@ -61,7 +61,8 @@ function ActivosPesadosPage({ showToast }) {
   // Asignación / devolución de custodia
   const [asignModal, setAsignModal] = uS(null); // { activo, mode:'salida'|'entrada' }
   const [asignForm, setAsignForm] = uS({});
-  const [frenteSalida, setFrenteSalida] = uS(''); // frente donde opera la máquina (opcional, solo salida)
+  const [frenteSalida, setFrenteSalida] = uS(''); // frente donde opera la máquina (obligatorio salvo "completar después", solo salida)
+  const [frentePendiente, setFrentePendiente] = uS(false); // salida sin frente → marcada como pendiente para completar luego
   const [asignFoto, setAsignFoto] = uS(null);   // { blob, url }
   const [busyAsign, setBusyAsign] = uS(false);
   const [editFechaMaq, setEditFechaMaq] = uS(null); // { tipo, row } en edición de fecha (Super Admin)
@@ -263,7 +264,7 @@ function ActivosPesadosPage({ showToast }) {
   const openAsignar = (a, mode) => {
     setAsignModal({ activo: a, mode });
     setAsignForm({ fecha: new Date().toISOString().slice(0, 10), destino_tipo: 'personal', destino_id: '', observaciones: '' });
-    setFrenteSalida('');
+    setFrenteSalida(''); setFrentePendiente(false);
     if (asignFoto?.url) { try { URL.revokeObjectURL(asignFoto.url); } catch {} }
     setAsignFoto(null);
   };
@@ -279,6 +280,7 @@ function ActivosPesadosPage({ showToast }) {
     const { activo, mode } = asignModal;
     const esSalida = mode === 'salida';
     if (esSalida && !asignForm.destino_id) { showToast('Elegí a quién se le asigna el equipo', 'red'); return; }
+    if (esSalida && !frenteSalida && !frentePendiente) { showToast('Elegí el frente de trabajo, o marcá "lo completo después".', 'red'); return; }
     const obraId = obraActivaId || activo.obra_actual_id || null;
     setBusyAsign(true);
     try {
@@ -303,6 +305,7 @@ function ActivosPesadosPage({ showToast }) {
         cantidad: null, unidad: null,
         responsable_id, subcontratista_id, destino_tipo,
         frente_id: esSalida ? (frenteSalida || null) : null,
+        frente_pendiente: (esSalida && !frenteSalida) ? true : false,
         observaciones: asignForm.observaciones?.trim() || (esSalida ? `Asignado a ${destino_nombre || '—'}` : 'Devolución'),
       });
       // Foto (prueba física) → evidencia local enlazada al movimiento
@@ -333,7 +336,7 @@ function ActivosPesadosPage({ showToast }) {
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'activos_pesados' } })); } catch {}
       showToast(esSalida ? `Equipo asignado a ${destino_nombre || '—'}` : 'Devolución registrada', 'green');
       if (asignFoto?.url) { try { URL.revokeObjectURL(asignFoto.url); } catch {} }
-      setAsignModal(null); setAsignForm({}); setFrenteSalida(''); setAsignFoto(null);
+      setAsignModal(null); setAsignForm({}); setFrenteSalida(''); setFrentePendiente(false); setAsignFoto(null);
     } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
     finally { setBusyAsign(false); }
   };
@@ -832,7 +835,7 @@ function ActivosPesadosPage({ showToast }) {
         const esSalida = asignModal.mode === 'salida';
         const a = asignModal.activo;
         return (
-          <Modal title={esSalida ? `Asignar equipo — ${a.nombre}` : `Devolución — ${a.nombre}`} icon={esSalida ? 'arrowOut' : 'arrowIn'} onClose={()=>{ setAsignModal(null); setAsignForm({}); setFrenteSalida(''); if (asignFoto?.url) { try { URL.revokeObjectURL(asignFoto.url); } catch {} } setAsignFoto(null); }}>
+          <Modal title={esSalida ? `Asignar equipo — ${a.nombre}` : `Devolución — ${a.nombre}`} icon={esSalida ? 'arrowOut' : 'arrowIn'} onClose={()=>{ setAsignModal(null); setAsignForm({}); setFrenteSalida(''); setFrentePendiente(false); if (asignFoto?.url) { try { URL.revokeObjectURL(asignFoto.url); } catch {} } setAsignFoto(null); }}>
             {!esSalida && a.asignado_a_id && (
               <div style={{ padding:'10px 12px', background:'rgba(242,183,5,0.08)', border:'1px solid rgba(242,183,5,0.25)', borderRadius:8, fontSize:12.5, color:'var(--ts)', marginBottom:12 }}>
                 Actualmente en uso por <strong style={{ color:'var(--amber)' }}>{a.asignado_a_nombre || '—'}</strong>{a.fecha_asignacion ? ` desde el ${a.fecha_asignacion}` : ''}.
@@ -858,11 +861,15 @@ function ActivosPesadosPage({ showToast }) {
                         </select>}
                   </div>
                   <div style={{ gridColumn:'1/-1' }}>
-                    <label className="flabel">Frente de trabajo (opcional)</label>
-                    <select className="fi" value={frenteSalida} onChange={e => setFrenteSalida(e.target.value)}>
+                    <label className="flabel">Frente de trabajo *</label>
+                    <select className="fi" value={frenteSalida} disabled={frentePendiente} onChange={e => setFrenteSalida(e.target.value)}>
                       <option value="">— Sin frente —</option>
                       {(frentes || []).map(f => <option key={f.id} value={f.id}>{f.nombre}</option>)}
                     </select>
+                    <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:11.5, marginTop:4, color:'var(--tm)' }}>
+                      <input type="checkbox" checked={frentePendiente} onChange={e => { setFrentePendiente(e.target.checked); if (e.target.checked) setFrenteSalida(''); }} />
+                      No sé el frente todavía — lo completo después (queda marcado como pendiente)
+                    </label>
                   </div>
                 </>
               )}
@@ -877,7 +884,7 @@ function ActivosPesadosPage({ showToast }) {
               </div>
             </div>
             <div className="modal-actions" style={{ marginTop:16 }}>
-              <button className="btn btn-ghost" onClick={()=>{ setAsignModal(null); setAsignForm({}); setFrenteSalida(''); if (asignFoto?.url) { try { URL.revokeObjectURL(asignFoto.url); } catch {} } setAsignFoto(null); }} disabled={busyAsign}>Cancelar</button>
+              <button className="btn btn-ghost" onClick={()=>{ setAsignModal(null); setAsignForm({}); setFrenteSalida(''); setFrentePendiente(false); if (asignFoto?.url) { try { URL.revokeObjectURL(asignFoto.url); } catch {} } setAsignFoto(null); }} disabled={busyAsign}>Cancelar</button>
               <button className={`btn ${esSalida ? 'btn-amber' : 'btn-green'}`} onClick={guardarAsignacion} disabled={busyAsign}>{busyAsign ? 'Guardando…' : (esSalida ? 'Asignar equipo' : 'Registrar devolución')}</button>
             </div>
           </Modal>

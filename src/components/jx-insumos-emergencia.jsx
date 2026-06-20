@@ -54,7 +54,8 @@ function InsumosEmergenciaPage({ showToast }) {
   const [modal, setModal] = uS(null);   // 'nuevo' | 'editar' | 'mov'
   const [editingMovId, setEditingMovId] = uS(null); // id del movimiento en edición (Super Admin)
   const [form, setForm] = uS({});
-  const [frenteSalida, setFrenteSalida] = uS(''); // frente de trabajo de la salida (opcional, solo salida)
+  const [frenteSalida, setFrenteSalida] = uS(''); // frente de trabajo de la salida (obligatorio en salida, solo salida)
+  const [frentePendiente, setFrentePendiente] = uS(false); // "lo completo después": salida sin frente queda marcada como pendiente
   const [busy, setBusy] = uS(false);
   const [histPrecioItem, setHistPrecioItem] = uS(null); // insumo cuyo historial de precios se ve
   // Proveedores (tabla global): carga directa de Dexie como el resto de pantallas.
@@ -270,11 +271,12 @@ function InsumosEmergenciaPage({ showToast }) {
   };
 
   // ── Movimiento (entrada/salida) ────────────────────────────────────
-  const abrirMov = (tipo) => { setEditingMovId(null); setFrenteSalida(''); setForm({ tipo_movimiento: tipo, fecha: hoyISO(), insumo_emergencia_id: '', cantidad: '', responsable_id: '', proveedor_id: '', almacen_id: '', observaciones: '' }); setModal('mov'); };
+  const abrirMov = (tipo) => { setEditingMovId(null); setFrenteSalida(''); setFrentePendiente(false); setForm({ tipo_movimiento: tipo, fecha: hoyISO(), insumo_emergencia_id: '', cantidad: '', responsable_id: '', proveedor_id: '', almacen_id: '', observaciones: '' }); setModal('mov'); };
   // Super Admin: editar un movimiento existente (corrige stock revirtiendo el viejo y aplicando el nuevo).
   const abrirEditarMov = (mv) => {
     setEditingMovId(mv.id);
     setFrenteSalida(mv.frente_id || '');
+    setFrentePendiente(!!mv.frente_pendiente && !mv.frente_id);
     setForm({ tipo_movimiento: mv.tipo_movimiento, fecha: (mv.fecha || '').slice(0, 10), insumo_emergencia_id: mv.insumo_emergencia_id || '', cantidad: String(mv.cantidad ?? ''), responsable_id: joinDestino(mv), proveedor_id: mv.proveedor_id || '', almacen_id: mv.ubicacion_id || '', observaciones: mv.observaciones || '' });
     setModal('mov');
   };
@@ -313,6 +315,9 @@ function InsumosEmergenciaPage({ showToast }) {
     const cant = parseFloat(form.cantidad);
     if (!(cant > 0)) { showToast('Cantidad debe ser mayor a 0', 'red'); return; }
     const esEntrada = form.tipo_movimiento === 'entrada';
+    const esSalida = form.tipo_movimiento === 'salida';
+    // Frente obligatorio en salida, salvo que se difiera ("lo completo después").
+    if (esSalida && !frenteSalida && !frentePendiente) { showToast('Elegí el frente de trabajo, o marcá "lo completo después".', 'red'); return; }
     const viejo = editingMovId ? (movHook.data || []).find(x => x.id === editingMovId) : null;
     // Validación de stock insuficiente solo en creación (la edición SA recalcula).
     if (!editingMovId && !esEntrada && cant > Number(insumo.stock_actual ?? 0)) {
@@ -345,8 +350,10 @@ function InsumosEmergenciaPage({ showToast }) {
         ...splitDestino(esEntrada ? null : form.responsable_id),
         proveedor_id: form.proveedor_id || null,
         ubicacion_id: ubicMov || null,
-        // Frente de trabajo (opcional) solo en salida.
+        // Frente de trabajo (obligatorio) solo en salida.
         frente_id: esEntrada ? null : (frenteSalida || null),
+        // Salida sin frente = diferida → queda pendiente. Ingreso/devolución → false.
+        frente_pendiente: (!esEntrada && !frenteSalida) ? true : false,
         observaciones: form.observaciones?.trim() || null,
       };
       if (editingMovId) {
@@ -380,7 +387,7 @@ function InsumosEmergenciaPage({ showToast }) {
         try { await window.__logAudit?.({ action: 'insert', table: 'movimientos_insumos_emergencia', reason: `${form.tipo_movimiento} ${cant} ${insumo.unidad} de ${insumo.nombre}` }); } catch {}
         showToast(esEntrada ? 'Ingreso registrado' : 'Salida registrada', 'green');
       }
-      setModal(null); setForm({}); setEditingMovId(null); setFrenteSalida(''); refresh?.();
+      setModal(null); setForm({}); setEditingMovId(null); setFrenteSalida(''); setFrentePendiente(false); refresh?.();
     } catch (e) { showToast('Error: ' + (e.message || e), 'red'); } finally { setBusy(false); }
   };
 
@@ -665,7 +672,7 @@ function InsumosEmergenciaPage({ showToast }) {
 
       {/* Modal movimiento */}
       {modal === 'mov' && (
-        <Modal title={editingMovId ? '⚡ Editar movimiento de emergencia' : (form.tipo_movimiento === 'entrada' ? 'Ingreso de insumo de emergencia' : 'Salida de insumo de emergencia')} icon={form.tipo_movimiento === 'entrada' ? 'arrowIn' : 'arrowOut'} size="wide" onClose={() => { setModal(null); setForm({}); setEditingMovId(null); setFrenteSalida(''); }}>
+        <Modal title={editingMovId ? '⚡ Editar movimiento de emergencia' : (form.tipo_movimiento === 'entrada' ? 'Ingreso de insumo de emergencia' : 'Salida de insumo de emergencia')} icon={form.tipo_movimiento === 'entrada' ? 'arrowIn' : 'arrowOut'} size="wide" onClose={() => { setModal(null); setForm({}); setEditingMovId(null); setFrenteSalida(''); setFrentePendiente(false); }}>
           <div className="g2">
             {editingMovId && (
               <div style={{ gridColumn: '1/-1' }}><label className="flabel">Tipo</label>
@@ -699,11 +706,15 @@ function InsumosEmergenciaPage({ showToast }) {
             })()}
             {form.tipo_movimiento === 'salida' && (
               <div style={{ gridColumn: '1/-1' }}>
-                <label className="flabel">Frente de trabajo (opcional)</label>
-                <select className="fi" value={frenteSalida} onChange={e => setFrenteSalida(e.target.value)}>
+                <label className="flabel">Frente de trabajo *</label>
+                <select className="fi" value={frenteSalida} disabled={frentePendiente} onChange={e => setFrenteSalida(e.target.value)}>
                   <option value="">— Sin frente —</option>
                   {(frentes || []).map(f => <option key={f.id} value={f.id}>{f.nombre}</option>)}
                 </select>
+                <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:11.5, marginTop:4, color:'var(--tm)' }}>
+                  <input type="checkbox" checked={frentePendiente} onChange={e => { setFrentePendiente(e.target.checked); if (e.target.checked) setFrenteSalida(''); }} />
+                  No sé el frente todavía — lo completo después (queda marcado como pendiente)
+                </label>
               </div>
             )}
             <div><label className="flabel">Fecha</label>
@@ -725,7 +736,7 @@ function InsumosEmergenciaPage({ showToast }) {
               <textarea className="fi" rows={2} value={form.observaciones || ''} onChange={e => setForm({ ...form, observaciones: e.target.value })} /></div>
           </div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
-            <button className="btn btn-ghost" onClick={() => { setModal(null); setForm({}); setEditingMovId(null); setFrenteSalida(''); }} disabled={busy}>Cancelar</button>
+            <button className="btn btn-ghost" onClick={() => { setModal(null); setForm({}); setEditingMovId(null); setFrenteSalida(''); setFrentePendiente(false); }} disabled={busy}>Cancelar</button>
             <button className={`btn ${form.tipo_movimiento === 'entrada' ? 'btn-green' : 'btn-amber'}`} onClick={guardarMov} disabled={busy}>{busy ? 'Guardando…' : editingMovId ? 'Guardar cambios' : 'Registrar'}</button>
           </div>
         </Modal>

@@ -1052,6 +1052,8 @@ function MaterialesPage({ showToast }) {
     // Reseteamos el lote cada vez que se abre un modal de mov.
     setLoteItems([{ id: window.__newId?.() || crypto.randomUUID(), material_id:'', cantidad:'', precio:'', proveedor_id:null, responsable_id:null }]);
     setLoteComunes({ usarMismoProveedor: true, usarMismaPersona: true, proveedor_id: null, responsable_id: null, sinFactura: false, observacionesAlmacen: '' });
+    setFrenteSalida('');
+    setFrentePendiente(false);
     setModal(type);
   };
 
@@ -1060,8 +1062,10 @@ function MaterialesPage({ showToast }) {
   // el valor global de loteComunes.{proveedor_id, responsable_id}.
   const [loteItems, setLoteItems] = uS([]);
   const [loteComunes, setLoteComunes] = uS({ usarMismoProveedor: true, usarMismaPersona: true, proveedor_id: null, responsable_id: null, sinFactura: false, observacionesAlmacen: '' });
-  // Frente de trabajo (opcional) común a toda la salida del lote.
+  // Frente de trabajo (OBLIGATORIO) común a toda la salida del lote, con
+  // escape "lo completo después" → queda marcado como pendiente.
   const [frenteSalida, setFrenteSalida] = uS('');
+  const [frentePendiente, setFrentePendiente] = uS(false);
   // Facturas pendientes de recepción (cargadas por contadora vía captura
   // mágica). Cuando el almacenero abre el modal de "Registrar Ingreso",
   // se le muestra un banner con la lista. Click → pre-rellena items.
@@ -1645,6 +1649,13 @@ function MaterialesPage({ showToast }) {
       }
     }
 
+    // Frente OBLIGATORIO en salida: hay que elegir uno, o marcar
+    // explícitamente "lo completo después" (queda pendiente).
+    if (tipo === 'salida' && !frenteSalida && !frentePendiente) {
+      showToast('Elegí el frente de trabajo, o marcá "lo completo después".', 'red');
+      return;
+    }
+
     // Idempotency a nivel LOTE: una clave por click → cada item usa
     // una sub-clave determinista. Si el browser dobla submit por
     // cualquier motivo (network glitch, react re-render anómalo), el
@@ -1739,9 +1750,12 @@ function MaterialesPage({ showToast }) {
           // (Antes el almacenero la elegía con un dropdown, pero no tenía
           // contexto técnico para asignar bien — Paquete C del plan.)
           partida_id: null,
-          // Frente de trabajo (opcional) — mismo para todas las filas del lote.
+          // Frente de trabajo — mismo para todas las filas del lote.
           // Solo aplica en SALIDA; en ingreso queda null.
           frente_id: tipo === 'salida' ? (frenteSalida || null) : null,
+          // Una salida que termina SIN frente es necesariamente diferida →
+          // marcarla como pendiente. Ingreso → false.
+          frente_pendiente: (tipo === 'salida' && !frenteSalida) ? true : false,
           // Almacén de origen (salida) / llegada (ingreso). Auditable en la fila.
           ubicacion_id: ubicMov,
           precio_unitario_real: parseFloat(it.precio) || null,
@@ -1878,6 +1892,7 @@ function MaterialesPage({ showToast }) {
     setLoteItems([]);
     setFacturaVinculadaId(null);
     setFrenteSalida('');
+    setFrentePendiente(false);
     } finally {
       // Liberamos SIEMPRE — aunque haya excepción en el loop, el usuario
       // debe poder reintentar sin recargar la app.
@@ -2623,14 +2638,19 @@ function MaterialesPage({ showToast }) {
             </div>
           </div>
 
-          {/* Frente de trabajo (opcional) — común a todo el lote de salida. Va
-              después de la columna "Almacén de origen" de la tabla. */}
+          {/* Frente de trabajo (OBLIGATORIO) — común a todo el lote de salida. Va
+              después de la columna "Almacén de origen" de la tabla. Si no se sabe
+              el frente todavía, se puede diferir marcando el checkbox. */}
           <div style={{ marginTop:14 }}>
-            <label className="flabel">Frente de trabajo (opcional)</label>
-            <select className="fi" value={frenteSalida} onChange={e => setFrenteSalida(e.target.value)}>
+            <label className="flabel">Frente de trabajo *</label>
+            <select className="fi" value={frenteSalida} disabled={frentePendiente} onChange={e => setFrenteSalida(e.target.value)}>
               <option value="">— Sin frente —</option>
               {(frentes || []).map(f => <option key={f.id} value={f.id}>{f.nombre}</option>)}
             </select>
+            <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:11.5, marginTop:4, color:'var(--tm)' }}>
+              <input type="checkbox" checked={frentePendiente} onChange={e => { setFrentePendiente(e.target.checked); if (e.target.checked) setFrenteSalida(''); }} />
+              No sé el frente todavía — lo completo después (queda marcado como pendiente)
+            </label>
           </div>
 
           <div style={{ marginTop:14 }}>
@@ -3376,8 +3396,10 @@ function HerramientasPage({ showToast }) {
   const [loteCantItems, setLoteCantItems] = uS([]);
   const [loteCantForm, setLoteCantForm] = uS({});
   const [busyLoteCant, setBusyLoteCant] = uS(false);
-  // Frente de trabajo (opcional) común a toda la salida del lote de herramientas.
+  // Frente de trabajo (OBLIGATORIO) común a toda la salida del lote de
+  // herramientas, con escape "lo completo después" → queda pendiente.
   const [frenteSalida, setFrenteSalida] = uS('');
+  const [frentePendiente, setFrentePendiente] = uS(false);
   uE(() => {
     if (!obraId) return;
     let cancelled = false;
@@ -3471,6 +3493,7 @@ function HerramientasPage({ showToast }) {
     setLoteCantForm({ fecha: new Date().toISOString().slice(0, 10), hora: new Date().toTimeString().slice(0, 5), ubicacion_id: ubicDefaultH(), responsable_id: '', observaciones: '', es_excepcion: false, motivo_excepcion: '' });
     setLoteCantItems([nuevaFilaCant(tipo)]);
     setFrenteSalida('');
+    setFrentePendiente(false);
     setLoteCant(tipo);
   };
   const submitLoteCant = async () => {
@@ -3549,6 +3572,12 @@ function HerramientasPage({ showToast }) {
     const obsFinal = tipo === 'devolucion'
       ? ['[Devolución]', obsLimpia, (loteCantForm.es_excepcion ? `Excepción (la devuelve otra persona): ${(loteCantForm.motivo_excepcion || '').trim()}` : '')].filter(Boolean).join(' · ')
       : (obsLimpia || null);
+    // Frente OBLIGATORIO en salida: hay que elegir uno, o marcar
+    // explícitamente "lo completo después" (queda pendiente).
+    if (tipo === 'salida' && !frenteSalida && !frentePendiente) {
+      showToast('Elegí el frente de trabajo, o marcá "lo completo después".', 'red');
+      return;
+    }
     // Idempotencia a nivel LOTE: una clave por click → sub-clave determinista por
     // item. Si el browser re-envía, el server rechaza el duplicado por UNIQUE.
     const loteKey = (typeof crypto !== 'undefined' && crypto.randomUUID)
@@ -3584,9 +3613,12 @@ function HerramientasPage({ showToast }) {
             // lleva la semántica fina (ingreso ≠ devolución) para los reportes.
             accion: esEntrada ? 'entrada' : 'salida', tipo_movimiento: tipo, cantidad: cant,
             ...dest,
-            // Frente de trabajo (opcional) — mismo para todas las filas del lote.
+            // Frente de trabajo — mismo para todas las filas del lote.
             // Solo aplica en SALIDA; en ingreso/devolución queda null.
             frente_id: tipo === 'salida' ? (frenteSalida || null) : null,
+            // Una salida que termina SIN frente es necesariamente diferida →
+            // marcarla como pendiente. Ingreso/devolución → false.
+            frente_pendiente: (tipo === 'salida' && !frenteSalida) ? true : false,
             ubicacion_id: ubicMov,
             observaciones: obsFinal,
             idempotency_key: `${loteKey}_${idx}_${it.herramienta_id}`,
@@ -3633,7 +3665,7 @@ function HerramientasPage({ showToast }) {
       refresh();
       const etq = tipo === 'ingreso' ? 'ingresos' : tipo === 'devolucion' ? 'devoluciones' : 'salidas';
       showToast(fail ? `⚠ ${ok} ok, ${fail} fallaron` : `✓ ${ok} ${etq}`, fail ? 'amber' : 'green');
-      setLoteCant(null); setLoteCantItems([]); setLoteCantForm({}); setFrenteSalida('');
+      setLoteCant(null); setLoteCantItems([]); setLoteCantForm({}); setFrenteSalida(''); setFrentePendiente(false);
     } finally { setBusyLoteCant(false); }
   };
   const ejecutarTraspasoHerr = async ({ item_id, origenId, destinoId, cantidad }) => {
@@ -4537,11 +4569,15 @@ function HerramientasPage({ showToast }) {
             )}
             {esSalida && (
               <div>
-                <label className="flabel">Frente de trabajo (opcional)</label>
-                <select className="fi" value={frenteSalida} onChange={e => setFrenteSalida(e.target.value)}>
+                <label className="flabel">Frente de trabajo *</label>
+                <select className="fi" value={frenteSalida} disabled={frentePendiente} onChange={e => setFrenteSalida(e.target.value)}>
                   <option value="">— Sin frente —</option>
                   {(frentes || []).map(f => <option key={f.id} value={f.id}>{f.nombre}</option>)}
                 </select>
+                <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:11.5, marginTop:4, color:'var(--tm)' }}>
+                  <input type="checkbox" checked={frentePendiente} onChange={e => { setFrentePendiente(e.target.checked); if (e.target.checked) setFrenteSalida(''); }} />
+                  No sé el frente todavía — lo completo después (queda marcado como pendiente)
+                </label>
               </div>
             )}
             {esSalida && (
