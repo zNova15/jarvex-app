@@ -13,6 +13,7 @@ import { CATALOGO_EPP, epppTipo, detectarEPP } from "../lib/epp-utils.js";
 import { calcAlerta } from "../lib/stock-utils.js";
 import { getDesgloseBulk, aplicarDelta, traspasar } from "../lib/stock-ubicaciones.js";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
+import { useFotosEvidencias, FotoInsumoCell } from "./jx-foto-insumo.jsx";
 import { DesglosePopup, TraspasoStockModal, ubicacionAutoOrigen, validarSalidaUbic } from "./jx-stock-ubic.jsx";
 import { detectarSugerencias, detectarDuplicados, fusionarInsumos } from "../lib/variantes.js";
 import { usePagination } from "../hooks/usePagination.js";
@@ -123,8 +124,15 @@ function EppsInventarioPage({ showToast }) {
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
   const superAdmin = !!appMode.superAdmin;
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'EPP', 'w') ?? false);
+  // Adjuntar foto = permiso de Evidencias (el almacenero le pone foto al EPP
+  // aunque no edite el catálogo).
+  const canFoto = canWrite || (window.__hasPerm?.(myRol, 'Evidencias', 'w') ?? false);
+  const userId = auth?.profile?.id ?? 'offline';
 
   const [obraId, setObraId] = uS(null);
+  // "Solicitar cambio": un no-admin no edita el catálogo directo; abre una
+  // solicitud que el admin aprueba (RequestChangeModal global).
+  const [requestTarget, setRequestTarget] = uS(null);
 
   uE(() => {
     let cancelled = false;
@@ -307,17 +315,9 @@ function EppsInventarioPage({ showToast }) {
         <td className="col-p" style={esHijo ? { paddingLeft: 26 } : undefined}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {esHijo && <span style={{ color: 'var(--tm)' }}>└</span>}
-            {(() => {
-              const f = fotosMap.get(e.id);
-              return f ? (
-                <img src={f.url} alt="foto" style={{ width: 32, height: 32, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--bd)', flexShrink: 0, cursor: 'pointer' }}
-                     onClick={(ev) => { ev.stopPropagation(); window.open(f.url, '_blank'); }} title="Click para ampliar" />
-              ) : (
-                <div style={{ width: 32, height: 32, borderRadius: 4, background: 'rgba(255,255,255,0.04)', border: '1px dashed var(--bd)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }} title="Sin foto">
-                  <JxIcon name="image" size={12} color="var(--tm)" />
-                </div>
-              );
-            })()}
+            <FotoInsumoCell obraId={obraId} tipoEvidencia="foto_epp" modulo="epps"
+              registroId={e.id} nombre={e.nombre_epp} foto={fotosMapEpp.get(e.id)}
+              canFoto={canFoto} userId={userId} showToast={showToast}/>
             <div>
               <span>{e.nombre_epp}</span>
               {e.marca && <div style={{ fontSize:10.5, color:'var(--tm)' }}>{e.marca} {e.modelo || ''}</div>}
@@ -342,7 +342,9 @@ function EppsInventarioPage({ showToast }) {
         <td>{e.sync_status && e.sync_status !== 'synced' ? <span className="badge b-amber">⏱</span> : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}</td>
         <td style={{textAlign:'center', whiteSpace:'nowrap'}}>
           <button className="btn btn-ghost btn-xs" title="Historial de precios" onClick={() => setHistPrecioItem(e)}><JxIcon name="dollar" size={11}/></button>
-          <button className="btn btn-ghost btn-xs" title="Editar" onClick={() => openEditar(e)} style={{ marginLeft:4 }}><JxIcon name="edit" size={11}/></button>
+          {isAdmin
+            ? <button className="btn btn-ghost btn-xs" title="Editar" onClick={() => openEditar(e)} style={{ marginLeft:4 }}><JxIcon name="edit" size={11}/></button>
+            : <button className="btn btn-ghost btn-xs" title="Solicitar cambio" onClick={() => setRequestTarget(e)} style={{ marginLeft:4 }}><JxIcon name="alert" size={11}/></button>}
           {canDelete && <button className="btn btn-red btn-xs" title="Eliminar" onClick={() => handleDelete(e)} style={{ marginLeft:4 }}><JxIcon name="trash" size={11}/></button>}
         </td>
       </tr>
@@ -394,6 +396,10 @@ function EppsInventarioPage({ showToast }) {
   // las fotos viven en la tabla `evidencias` separada.
   const [foto, setFoto] = uS(null);
   const [fotosMap, setFotosMap] = uS(() => new Map());
+  // Foto de catálogo vía componente compartido (evidencia foto_epp).
+  // Permite al almacenero adjuntar/reemplazar la foto del EPP sin editar el
+  // catálogo (permiso de Evidencias, no de EPP).
+  const fotosMapEpp = useFotosEvidencias(obraId, 'foto_epp');
 
   // Carga las fotos existentes para mostrarlas en el modal de edición y
   // como thumbnail en la lista. Hace blob URLs locales para fotos que
@@ -1420,6 +1426,21 @@ function EppsInventarioPage({ showToast }) {
           nombre={histPrecioItem.nombre_epp}
           precioActual={histPrecioItem.precio_unitario_estimado}
           onClose={() => setHistPrecioItem(null)} />
+      )}
+
+      {/* Solicitar cambio (no-admin): la edición del catálogo la aprueba el admin */}
+      {requestTarget && (
+        <RequestChangeModal
+          table="epps"
+          record={requestTarget}
+          recordLabel={requestTarget.nombre_epp}
+          allowDelete
+          fields={[
+            { key: 'nombre_epp', label: 'Nombre' },
+            { key: 'unidad', label: 'Unidad' },
+          ]}
+          showToast={showToast}
+          onClose={() => setRequestTarget(null)} />
       )}
     </div>
   );

@@ -58,6 +58,7 @@ function InsumosEmergenciaPage({ showToast }) {
   const [frentePendiente, setFrentePendiente] = uS(false); // "lo completo después": salida sin frente queda marcada como pendiente
   const [busy, setBusy] = uS(false);
   const [histPrecioItem, setHistPrecioItem] = uS(null); // insumo cuyo historial de precios se ve
+  const [requestTarget, setRequestTarget] = uS(null); // insumo para "Solicitar cambio" (no-admin)
   // Proveedores (tabla global): carga directa de Dexie como el resto de pantallas.
   const [proveedores, setProveedores] = uS([]);
   uE(() => { window.__db.proveedores.filter(p => !p.deleted_at).toArray().then(setProveedores).catch(() => {}); }, []);
@@ -509,7 +510,9 @@ function InsumosEmergenciaPage({ showToast }) {
                         <td>{it.sync_status && it.sync_status !== 'synced' ? <span className="badge b-amber">⏱</span> : <span style={{ color: 'var(--green)', fontSize: 11 }}>✓</span>}</td>
                         <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
                           <button className="btn btn-ghost btn-xs" title="Historial de precios" onClick={() => setHistPrecioItem(it)}><JxIcon name="dollar" size={11} /></button>
-                          {canWrite && <button className="btn btn-ghost btn-xs" title="Editar" onClick={() => abrirEditar(it)} style={{ marginLeft: 4 }}><JxIcon name="edit" size={11} /></button>}
+                          {isAdmin
+                            ? <button className="btn btn-ghost btn-xs" title="Editar" onClick={() => abrirEditar(it)} style={{ marginLeft: 4 }}><JxIcon name="edit" size={11} /></button>
+                            : canWrite && <button className="btn btn-ghost btn-xs" title="Solicitar cambio" onClick={() => setRequestTarget(it)} style={{ marginLeft: 4 }}><JxIcon name="alert" size={11} /></button>}
                           {canDelete && <button className="btn btn-red btn-xs" title="Eliminar (modo edición)" onClick={() => eliminarInsumo(it)} style={{ marginLeft: 4 }}><JxIcon name="trash" size={11} /></button>}
                         </td>
                       </tr>
@@ -763,6 +766,25 @@ function InsumosEmergenciaPage({ showToast }) {
           nombre={histPrecioItem.nombre}
           precioActual={histPrecioItem.precio_unitario_estimado}
           onClose={() => setHistPrecioItem(null)}
+        />
+      )}
+
+      {/* Solicitar cambio (no-admin): el almacenero pide editar el catálogo, el admin aprueba */}
+      {requestTarget && (
+        <RequestChangeModal
+          table="insumos_emergencia"
+          record={requestTarget}
+          recordLabel={requestTarget.nombre}
+          allowDelete
+          fields={[
+            { key: 'nombre', label: 'Nombre' },
+            { key: 'categoria', label: 'Categoría' },
+            { key: 'unidad', label: 'Unidad' },
+            { key: 'stock_minimo', label: 'Stock mínimo', type: 'number' },
+            { key: 'precio_unitario_estimado', label: 'Precio estimado (S/)', type: 'number' },
+          ]}
+          showToast={showToast}
+          onClose={() => setRequestTarget(null)}
         />
       )}
 

@@ -17,6 +17,7 @@ import { compararNombresReniec, titleCaseNombre } from "../lib/migracion-parser.
 import { exportarDataset } from "../lib/export-historico.js";
 import { PrecioHistorialModal } from "./jx-precio-historial.jsx";
 import { registrarSoloHistorial } from "../lib/precio-historial.js";
+import { useFotosEvidencias, FotoInsumoCell } from "./jx-foto-insumo.jsx";
 import { getCurrentMode } from "../hooks/useAppMode.js";
 const { useState: uS, useMemo: uM, useEffect: uE, useCallback: uCB, useRef: uR } = React;
 
@@ -156,6 +157,11 @@ function MaterialesPage({ showToast }) {
   // escritura.
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Materiales', 'w') ?? false);
   const canWriteMov = isAdmin || (window.__hasPerm?.(myRol, 'Mov. Materiales', 'w') ?? false);
+  // Adjuntar foto del catálogo es LIBRE para el almacenero: gobierna el
+  // permiso de Evidencias, no el de Materiales (que ahora es solo-admin para
+  // editar campos). userId para firmar la evidencia.
+  const userId = auth?.profile?.id ?? null;
+  const canFoto = canWrite || (window.__hasPerm?.(myRol, 'Evidencias', 'w') ?? false);
   // Doble-click guard para "Registrar Salida/Ingreso" en lote.
   // Sin esto, un click ansioso del almacenero crea 2 movimientos
   // duplicados (mismo timestamp). Se vio en producción: arenas y
@@ -182,6 +188,10 @@ function MaterialesPage({ showToast }) {
   // Supabase Storage (cuando ya se subió); blob_url es objectURL local
   // mientras está pendiente. Se rellena al cargar materiales/evidencias.
   const [fotosMap, setFotosMap] = uS(() => new Map());
+  // Foto de catálogo libre por fila (adjuntar/reemplazar sin abrir el modal),
+  // vía el componente compartido FotoInsumoCell. Usa su propio tipo_evidencia
+  // ('foto_material') para no chocar con la foto del formulario.
+  const fotosCatMap = useFotosEvidencias(obraId, 'foto_material');
   // Flag busy para deshabilitar el botón Guardar mientras se procesa el
   // submit. Sin esto, doble click podía disparar 2 submits simultáneos
   // (1 update + 1 create si el primer await ya había reset editingId).
@@ -429,23 +439,14 @@ function MaterialesPage({ showToast }) {
     const stockColor = m.alerta === 'critico' ? 'var(--red)'
       : m.alerta === 'sin_stock' ? 'var(--tm)'
       : m.alerta === 'reponer' ? 'var(--yellow)' : 'var(--tp)';
-    const fotoMat = fotosMap.get(m.id);
     return (
       <tr key={m.id} style={esHijo ? { background: 'rgba(255,255,255,0.015)' } : undefined}>
         <td className="col-p" style={esHijo ? { paddingLeft: 26 } : undefined}>
           <div style={{ display:'flex', alignItems:'center', gap:8 }}>
             {esHijo && <span style={{ color:'var(--tm)' }}>└</span>}
-            {fotoMat ? (
-              <img src={fotoMat.url} alt="foto"
-                   style={{ width:32, height:32, objectFit:'cover', borderRadius:4, border:'1px solid var(--bd)', flexShrink:0, cursor:'pointer' }}
-                   onClick={(e) => { e.stopPropagation(); window.open(fotoMat.url, '_blank'); }}
-                   title="Click para ampliar"/>
-            ) : (
-              <div style={{ width:32, height:32, borderRadius:4, background:'rgba(255,255,255,0.04)', border:'1px dashed var(--bd)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
-                   title="Sin foto">
-                <JxIcon name="image" size={12} color="var(--tm)"/>
-              </div>
-            )}
+            <FotoInsumoCell obraId={obraId} tipoEvidencia="foto_material" modulo="materiales"
+              registroId={m.id} nombre={m.nombre_material} foto={fotosCatMap.get(m.id)}
+              canFoto={canFoto} userId={userId} showToast={showToast}/>
             <span>{m.nombre_material}</span>
           </div>
         </td>
@@ -499,10 +500,11 @@ function MaterialesPage({ showToast }) {
               <JxIcon name="edit" size={11}/>$
             </button>
           )}
-          {/* Editar = permiso de escritura del módulo (el almacenero tiene 'w'
-              en Materiales y necesita editar para adjuntar la foto). Mover a
-              EPP y eliminar siguen siendo de admin. */}
-          {canWrite ? (
+          {/* Editar campos del catálogo = SOLO admin. El almacenero (no-admin)
+              no edita el nombre/unidad directo: pide "Solicitar cambio" que el
+              admin aprueba. La FOTO sí es libre (FotoInsumoCell en la celda de
+              nombre, permiso de Evidencias). Mover a EPP y eliminar son admin. */}
+          {isAdmin ? (
             <>
               <button className="btn btn-ghost btn-xs" title="Editar material" onClick={()=>openEditMaterial(m)}>
                 <JxIcon name="edit" size={11}/>
@@ -3339,6 +3341,10 @@ function HerramientasPage({ showToast }) {
   const superAdmin = !!appMode.superAdmin;
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Herramientas', 'w') ?? false);
   const canWriteMov = isAdmin || (window.__hasPerm?.(myRol, 'Mov. Herramientas', 'w') ?? false);
+  // Foto del catálogo: libre para el almacenero (permiso de Evidencias), aunque
+  // editar campos ahora sea solo-admin.
+  const userId = auth?.profile?.id ?? null;
+  const canFoto = canWrite || (window.__hasPerm?.(myRol, 'Evidencias', 'w') ?? false);
   const [q, setQ] = uS('');
   const [modal, setModal] = uS(null);
   const [form, setForm] = uS({});
@@ -3348,6 +3354,9 @@ function HerramientasPage({ showToast }) {
   const [foto, setFoto] = uS(null);
   // Map<herramienta_id, { url, isRemote }>: thumbnails para la lista.
   const [fotosMap, setFotosMap] = uS(() => new Map());
+  // Foto de catálogo libre por fila (FotoInsumoCell compartido), con su propio
+  // tipo_evidencia para no chocar con la foto del formulario.
+  const fotosCatMap = useFotosEvidencias(obraId, 'foto_herramienta');
   // Doble click guard
   const [busyHerr, setBusyHerr] = uS(false);
   const [requestTarget, setRequestTarget] = uS(null);
@@ -3785,23 +3794,14 @@ function HerramientasPage({ showToast }) {
     const u = UBIC_STYLE[h.ubicacion_actual] || UBIC_STYLE.almacen;
     const resp = personal.find(p => p.id === h.ultimo_responsable_id);
     const ubicCat = h.ubicacion_id ? ubicacionesByIdH.get(h.ubicacion_id) : null;
-    const fotoH = fotosMap.get(h.id);
     return (
       <tr key={h.id} style={esHijo ? { background: 'rgba(255,255,255,0.015)' } : undefined}>
         <td className="col-p" style={esHijo ? { paddingLeft: 26 } : undefined}>
           <div style={{ display:'flex', alignItems:'center', gap:8 }}>
             {esHijo && <span style={{ color:'var(--tm)' }}>└</span>}
-            {fotoH ? (
-              <img src={fotoH.url} alt="foto"
-                   style={{ width:32, height:32, objectFit:'cover', borderRadius:4, border:'1px solid var(--bd)', flexShrink:0, cursor:'pointer' }}
-                   onClick={(ev) => { ev.stopPropagation(); window.open(fotoH.url, '_blank'); }}
-                   title="Click para ampliar"/>
-            ) : (
-              <div style={{ width:32, height:32, borderRadius:4, background:'rgba(255,255,255,0.04)', border:'1px dashed var(--bd)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
-                   title="Sin foto">
-                <JxIcon name="image" size={12} color="var(--tm)"/>
-              </div>
-            )}
+            <FotoInsumoCell obraId={obraId} tipoEvidencia="foto_herramienta" modulo="herramientas"
+              registroId={h.id} nombre={h.nombre_herramienta} foto={fotosCatMap.get(h.id)}
+              canFoto={canFoto} userId={userId} showToast={showToast}/>
             <div>
               <div>{h.nombre_herramienta}</div>
               {ubicCat && <div style={{ fontSize:10.5, color: ubicCat.activo === false ? 'var(--tm)' : 'var(--amber)', marginTop:2 }}>📍 {ubicCat.nombre}{ubicCat.activo === false ? ' (inactiva)' : ''}</div>}
@@ -3841,9 +3841,10 @@ function HerramientasPage({ showToast }) {
           <button className="btn btn-ghost btn-xs" title="Historial de precios" onClick={()=>setHistPrecioItem(h)} style={{ marginRight:4 }}>
             <JxIcon name="dollar" size={11}/>
           </button>
-          {/* Editar = permiso de escritura del módulo (el almacenero tiene 'w'
-              en Herramientas y necesita editar para adjuntar la foto). */}
-          {canWrite ? (
+          {/* Editar campos del catálogo = SOLO admin. El almacenero (no-admin)
+              usa "Solicitar cambio". La FOTO sí es libre (FotoInsumoCell en la
+              celda de nombre, permiso de Evidencias). */}
+          {isAdmin ? (
             <>
               <button className="btn btn-ghost btn-xs" title="Editar herramienta" onClick={()=>openEditHerr(h)}>
                 <JxIcon name="edit" size={11}/>
