@@ -94,6 +94,7 @@ const NAV = [
   { id: 'busqueda', label: 'Búsqueda Global', icon: 'search' },
 
   { section: 'INGENIERÍA' },
+  { id: 'mi-frente', label: 'Mi Frente', icon: 'flag' },
   { id: 'vinculacion-salidas', label: 'Vinculación de Salidas', icon: 'link' },
 
   { section: 'GESTIÓN DE OBRA' },
