@@ -3,6 +3,7 @@ import { calcAlerta } from "../lib/stock-utils.js";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { aplicarDelta } from "../lib/stock-ubicaciones.js";
 import { eliminarMovimiento } from "../lib/eliminar-movimiento.js";
+import { simularCambio } from "../lib/stock-guard.js";
 import { exportarDataset } from "../lib/export-historico.js";
 const { useState: uSM, useMemo: uMM, useEffect: uEM } = React;
 
@@ -1017,6 +1018,49 @@ function MovMaterialesPage({ showToast }) {
     }
   };
 
+  // Super Admin: editar la cantidad de un movimiento (ajusta stock + reajusta partida).
+  // AVISA si dejaría stock negativo, pero NO bloquea (el SA asume el cambio).
+  const editarCantidadSA = async (m) => {
+    if (!superAdmin) return;
+    const matLive = materiales?.find(x => x.id === m.material_id) || null;
+    const nombre = matsByIdAll.get(m.material_id)?.nombre_material || 'material';
+    const entrada = prompt(`Editar cantidad — ${m.tipo_movimiento} de "${nombre}".\nCantidad actual: ${m.cantidad}\n\nNueva cantidad:`, String(m.cantidad ?? ''));
+    if (entrada == null) return;
+    const nuevaCant = Number(entrada);
+    if (!(nuevaCant > 0)) { showToast('Cantidad inválida', 'red'); return; }
+    if (nuevaCant === Number(m.cantidad)) return;
+    const delItem = (movs || []).filter(x => x.material_id === m.material_id && (m.ubicacion_id ? x.ubicacion_id === m.ubicacion_id : true));
+    const nuevoDelta = deltaStockMaterial(m.tipo_movimiento, nuevaCant);
+    const sim = simularCambio({ movimientos: delItem, movId: m.id, nuevoDelta });
+    const aviso = sim.seguro
+      ? 'El cambio es seguro (no deja stock negativo).'
+      : `⚠ ATENCIÓN: este cambio dejaría el stock negativo${sim.fechaViolacion ? ' el ' + sim.fechaViolacion : ''}.`;
+    const extra = m.partida_id ? '\nSe reajustará el consumo de la partida vinculada.' : '';
+    if (!confirm(`Cambiar cantidad de ${m.cantidad} → ${nuevaCant}.\n\n${aviso}${extra}\n\n¿Confirmás? (Super Admin)`)) return;
+    try {
+      const diff = deltaStockMaterial(m.tipo_movimiento, nuevaCant) - deltaStockMaterial(m.tipo_movimiento, m.cantidad);
+      if (matLive) {
+        const nuevoStock = (matLive.stock_actual ?? 0) + diff;
+        const min = Number(matLive.stock_minimo || 0);
+        const alerta = nuevoStock <= 0 ? 'sin_stock' : (min > 0 && nuevoStock <= min * 0.5) ? 'critico' : (min > 0 && nuevoStock <= min) ? 'reponer' : 'ok';
+        await window.__db.materiales.update(m.material_id, { stock_actual: nuevoStock, alerta });
+        if (m.ubicacion_id) { try { await aplicarDelta({ obraId, itemTipo: 'material', itemId: m.material_id, ubicacionId: m.ubicacion_id, delta: diff, userId: auth?.profile?.id || null }); } catch {} }
+      }
+      if (m.tipo_movimiento === 'salida' && m.partida_id && matLive) {
+        try {
+          const { revertirConsumoPartida, aplicarConsumoPartida } = await import('../lib/partida-allocation.js');
+          await revertirConsumoPartida({ mov: m, partida_id: m.partida_id, material: matLive, userId: auth?.profile?.id || null });
+          await aplicarConsumoPartida({ mov: { ...m, cantidad: nuevaCant }, partida_id: m.partida_id, material: matLive, userId: auth?.profile?.id || null });
+        } catch (e) { console.warn('[SA cantidad partida]', e?.message); }
+      }
+      await updateMov(m.id, { cantidad: nuevaCant });
+      try { await window.__logAudit?.({ action: 'update', table: 'movimientos_materiales', recordId: m.id, oldData: { cantidad: m.cantidad }, newData: { cantidad: nuevaCant }, reason: 'Super Admin · edición de cantidad' }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'movimientos_materiales' } })); } catch {}
+      showToast('Cantidad actualizada · stock reajustado', 'green');
+      movHook.refresh && movHook.refresh();
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
+
   // Eliminar unificado: ajusta el stock (global + desglose por almacén) y revierte
   // la imputación a partida; el guard bloquea si dejaría stock negativo a futuro.
   const handleDeleteMov = async (m) => {
@@ -1512,6 +1556,11 @@ function MovMaterialesPage({ showToast }) {
                               📅
                             </button>
                           )}
+                          {superAdmin && (
+                            <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar cantidad (ajusta stock; avisa si deja negativo)" onClick={()=>editarCantidadSA(m)} style={{ marginRight:4, color:'#E74C3C' }}>
+                              #️⃣
+                            </button>
+                          )}
                           {canDelete ? (
                             <button className="btn btn-red btn-xs" title="Eliminar — ajusta el stock automáticamente" onClick={()=>handleDeleteMov(m)}>
                               <JxIcon name="trash" size={10}/> Eliminar
@@ -1605,6 +1654,12 @@ function MovHerramientasPage({ showToast }) {
     } catch (e) {
       showToast('Error: ' + (e.message || e), 'red');
     }
+  };
+
+  // Para herramientas, la edición de cantidad del Super Admin no está soportada
+  // (su stock es por estado/acción): se corrige eliminando y re-registrando.
+  const editarCantidadSA = async () => {
+    showToast('En herramientas, corregí la cantidad eliminando el movimiento y registrándolo de nuevo.', 'amber');
   };
 
   // Eliminar unificado de herramientas: revierte estado/disponibilidad/stock de la
@@ -1947,6 +2002,11 @@ function MovHerramientasPage({ showToast }) {
                           {superAdmin && (
                             <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar fecha/hora del movimiento" onClick={()=>setEditFechaTarget(m)} style={{ marginRight:4, color:'#E74C3C' }}>
                               📅
+                            </button>
+                          )}
+                          {superAdmin && (
+                            <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar cantidad (ajusta stock; avisa si deja negativo)" onClick={()=>editarCantidadSA(m)} style={{ marginRight:4, color:'#E74C3C' }}>
+                              #️⃣
                             </button>
                           )}
                           {canDelete ? (
