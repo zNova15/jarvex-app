@@ -2,6 +2,7 @@ import React from "react";
 import { calcAlerta } from "../lib/stock-utils.js";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { aplicarDelta } from "../lib/stock-ubicaciones.js";
+import { eliminarMovimiento } from "../lib/eliminar-movimiento.js";
 import { exportarDataset } from "../lib/export-historico.js";
 const { useState: uSM, useMemo: uMM, useEffect: uEM } = React;
 
@@ -1015,20 +1016,41 @@ function MovMaterialesPage({ showToast }) {
     }
   };
 
+  // Eliminar unificado: ajusta el stock (global + desglose por almacén) y revierte
+  // la imputación a partida; el guard bloquea si dejaría stock negativo a futuro.
   const handleDeleteMov = async (m) => {
     if (!canDelete) return;
-    const fecha = m.fecha || '';
-    const cant = m.cantidad || 0;
-    // Lookup contra TODOS los materiales (incluso soft-deleted) para que
-    // siempre se muestre el nombre histórico aunque el catálogo esté borrado.
-    const mat = matsByIdAll.get(m.material_id);
-    const nombre = mat?.nombre_material || '(material no encontrado)';
-    if (!confirm(`¿Eliminar este movimiento?\n\n${m.tipo_movimiento} de ${cant} ${m.unidad || ''} de ${nombre}\nFecha: ${fecha}\n\nEl stock NO se reajusta — usa "Reversar" si quieres compensar el stock.`)) return;
+    const nombre = matsByIdAll.get(m.material_id)?.nombre_material || '(material no encontrado)';
+    const matLive = materiales?.find(x => x.id === m.material_id) || null; // fila viva con stock_actual
+    // Movimientos del mismo material en el mismo almacén (para el guard por almacén).
+    const delItem = (movs || []).filter(x =>
+      x.material_id === m.material_id && (m.ubicacion_id ? x.ubicacion_id === m.ubicacion_id : true));
+    if (!confirm(`¿Eliminar este movimiento?\n\n${m.tipo_movimiento} de ${m.cantidad || 0} ${m.unidad || ''} de ${nombre}\nFecha: ${m.fecha || ''}\n\nEl stock SE AJUSTA automáticamente${m.partida_id ? ' y se revierte el consumo de la partida' : ''}.`)) return;
     try {
-      await updateMov(m.id, { deleted_at: new Date().toISOString() });
-      try { await window.__logAudit?.({ action:'delete', table:'movimientos_materiales', recordId:m.id, oldData:m, reason:'Eliminación manual (modo edición)' }); } catch(e) {}
-      showToast('Movimiento eliminado', 'amber');
-    } catch (e) { showToast('Error al eliminar: ' + (e.message||e), 'red'); }
+      await eliminarMovimiento({
+        tabla: 'movimientos_materiales', mov: m, movimientosDelItem: delItem,
+        material: matLive, userId: auth?.profile?.id || null, updateMov,
+        revertirStock: async () => {
+          if (!matLive) return;
+          const deltaUndo = -deltaStockMaterial(m.tipo_movimiento, m.cantidad);
+          const nuevoStock = (matLive.stock_actual ?? 0) + deltaUndo;
+          const min = Number(matLive.stock_minimo || 0);
+          const nuevaAlerta = nuevoStock <= 0 ? 'sin_stock'
+            : (min > 0 && nuevoStock <= min * 0.5) ? 'critico'
+            : (min > 0 && nuevoStock <= min) ? 'reponer' : 'ok';
+          await window.__db.materiales.update(m.material_id, { stock_actual: nuevoStock, alerta: nuevaAlerta });
+          if (m.ubicacion_id) {
+            try { await aplicarDelta({ obraId, itemTipo: 'material', itemId: m.material_id, ubicacionId: m.ubicacion_id, delta: deltaUndo, userId: auth?.profile?.id || null }); }
+            catch (err) { console.warn('[elim mat desglose]', err?.message); }
+          }
+        },
+      });
+      showToast('Movimiento eliminado · stock ajustado', 'green');
+      movHook.refresh && movHook.refresh();
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'movimientos_materiales' } })); } catch {}
+    } catch (e) {
+      showToast(e?.code === 'STOCK_NEGATIVO' ? e.message : ('Error al eliminar: ' + (e.message || e)), 'red');
+    }
   };
 
   const [provs, setProvs] = uSM([]);
@@ -1488,17 +1510,12 @@ function MovMaterialesPage({ showToast }) {
                             📅
                           </button>
                         )}
-                        {puedeReversar ? (
-                          <button className="btn btn-red btn-xs" title="Reversar movimiento" onClick={()=>setReversoTarget(m)}>
-                            <JxIcon name="arrowOut" size={10}/>Reversar
+                        {canDelete ? (
+                          <button className="btn btn-red btn-xs" title="Eliminar — ajusta el stock automáticamente" onClick={()=>handleDeleteMov(m)}>
+                            <JxIcon name="trash" size={10}/> Eliminar
                           </button>
                         ) : (
                           <span style={{ fontSize:10, color:'var(--tm)' }}>—</span>
-                        )}
-                        {canDelete && (
-                          <button className="btn btn-ghost btn-xs" title="Eliminar (solo modo edición)" onClick={()=>handleDeleteMov(m)} style={{ marginLeft:4, color:'var(--red)' }}>
-                            <JxIcon name="trash" size={10}/>
-                          </button>
                         )}
                       </td>
                     )}
@@ -1567,16 +1584,49 @@ function MovHerramientasPage({ showToast }) {
     }
   };
 
+  // Eliminar unificado de herramientas: revierte estado/disponibilidad/stock de la
+  // herramienta (deshace el efecto del movimiento). Sin guard de negativo: el stock
+  // de herramientas es por accion (no consumible como materiales).
   const handleDeleteMov = async (m) => {
     if (!canDelete) return;
-    const herr = herramientas?.find(h => h.id === m.herramienta_id);
+    const herr = herramientas?.find(h => h.id === m.herramienta_id) || null;
     const nombre = herr?.nombre_herramienta || '(herramienta)';
-    if (!confirm(`¿Eliminar este movimiento?\n\n${m.accion} de "${nombre}"\nFecha: ${m.fecha}\n\nEl estado de la herramienta NO se reajusta — usa "Reversar" si quieres compensar.`)) return;
+    const cant = Number(m.cantidad) || 0;
+    if (!confirm(`¿Eliminar este movimiento?\n\n${m.accion} de "${nombre}"\nFecha: ${m.fecha || ''}\n\nSe revierte el estado/stock de la herramienta automáticamente.`)) return;
     try {
-      await updateMov(m.id, { deleted_at: new Date().toISOString() });
-      try { await window.__logAudit?.({ action:'delete', table:'movimientos_herramientas', recordId:m.id, oldData:m, reason:'Eliminación manual (modo edición)' }); } catch(e) {}
-      showToast('Movimiento eliminado', 'amber');
-    } catch (e) { showToast('Error al eliminar: ' + (e.message||e), 'red'); }
+      await eliminarMovimiento({
+        tabla: 'movimientos_herramientas', mov: m, movimientosDelItem: null,
+        material: null, userId: auth?.profile?.id || null, updateMov,
+        revertirStock: async () => {
+          if (!herr) return;
+          const accionInv = invertirAccionHerramienta(m.accion);
+          const patch = { fecha_ultimo_movimiento: new Date().toISOString().slice(0, 10) };
+          if (cant > 0) {
+            const delta = (accionInv === 'entrada' || accionInv === 'reposicion') ? cant
+              : accionInv === 'salida' ? -cant : 0;
+            if (delta !== 0) {
+              const nuevoStock = Math.max(0, Number(herr.stock_actual || 0) + delta);
+              patch.stock_actual = nuevoStock;
+              patch.alerta = calcAlerta(nuevoStock, Number(herr.stock_minimo || 0));
+              if (m.ubicacion_id) {
+                try { await aplicarDelta({ obraId, itemTipo: 'herramienta', itemId: herr.id, ubicacionId: m.ubicacion_id, delta, userId: auth?.profile?.id || null }); }
+                catch (err) { console.warn('[elim herr desglose]', err?.message); }
+              }
+            }
+          }
+          if (accionInv === 'entrada' || accionInv === 'reposicion') { patch.disponible = true; patch.ubicacion_actual = 'almacen'; patch.ultimo_responsable_id = null; }
+          if (accionInv === 'salida') { patch.disponible = false; patch.ubicacion_actual = 'en_uso'; patch.ultimo_responsable_id = m.responsable_id || null; }
+          if (accionInv === 'mantenimiento') { patch.disponible = false; patch.ubicacion_actual = 'mantenimiento'; patch.estado_actual = 'mantenimiento'; }
+          if (accionInv === 'baja') { patch.disponible = false; patch.ubicacion_actual = 'baja'; patch.estado_actual = 'baja'; }
+          await updateHerr(herr.id, patch);
+        },
+      });
+      showToast('Movimiento eliminado · estado revertido', 'green');
+      movHook.refresh && movHook.refresh();
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'movimientos_herramientas' } })); } catch {}
+    } catch (e) {
+      showToast(e?.code === 'STOCK_NEGATIVO' ? e.message : ('Error al eliminar: ' + (e.message || e)), 'red');
+    }
   };
 
   const [q, setQ] = uSM('');
@@ -1875,17 +1925,12 @@ function MovHerramientasPage({ showToast }) {
                             📅
                           </button>
                         )}
-                        {puedeReversar ? (
-                          <button className="btn btn-red btn-xs" title="Reversar movimiento" onClick={()=>setReversoTarget(m)}>
-                            <JxIcon name="arrowOut" size={10}/>Reversar
+                        {canDelete ? (
+                          <button className="btn btn-red btn-xs" title="Eliminar — ajusta el stock automáticamente" onClick={()=>handleDeleteMov(m)}>
+                            <JxIcon name="trash" size={10}/> Eliminar
                           </button>
                         ) : (
                           <span style={{ fontSize:10, color:'var(--tm)' }}>—</span>
-                        )}
-                        {canDelete && (
-                          <button className="btn btn-ghost btn-xs" title="Eliminar (solo modo edición)" onClick={()=>handleDeleteMov(m)} style={{ marginLeft:4, color:'var(--red)' }}>
-                            <JxIcon name="trash" size={10}/>
-                          </button>
                         )}
                       </td>
                     )}
