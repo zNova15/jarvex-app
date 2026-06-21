@@ -39,3 +39,11 @@ jarvex-backups/
 # Las skills "globales" (.agents/skills) sí se commitean para todo el equipo;
 # los symlinks de .claude/skills cada dev los regenera con `npx skills add`.
 .claude/
+
+# Google Drive (secretos — NUNCA commitear)
+credenciales*.json
+**/credenciales*.json
+.drive-config.json
+scripts/google-drive/.drive-config.json
+oauth-client*.json
+scripts/google-drive/oauth-client.json

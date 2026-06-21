@@ -14,7 +14,8 @@
     "test:e2e:headed": "cd tests && npm run test:e2e:headed",
     "test:e2e:install": "cd tests && npm install && npx playwright install chromium",
     "deploy:preview": "vercel",
-    "deploy:prod": "vercel --prod"
+    "deploy:prod": "vercel --prod",
+    "drive": "node scripts/google-drive/drive-cli.js"
   },
   "dependencies": {
     "@peculiar/x509": "^2.0.0",
@@ -22,6 +23,7 @@
     "@supabase/supabase-js": "^2.104.1",
     "chart.js": "^4.5.1",
     "dexie": "^4.4.2",
+    "googleapis": "^173.0.0",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.7",
     "jszip": "^3.10.1",
