@@ -14,6 +14,7 @@ import { colorIngeniero, segmentarAvance } from "../lib/color-ingeniero.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
+const Modal = (p) => (window.Modal ? <window.Modal {...p} /> : null);
 const hoyISO = () => hoyLocal();
 const num = (x) => Number(x || 0).toLocaleString('es-PE');
 const SEM = { verde: 'var(--green)', ambar: 'var(--amber)', rojo: 'var(--red)', sin_dato: 'var(--tm)' };
@@ -139,13 +140,28 @@ function MiFrenteShell({ showToast, vista }) {
   const [ganttFiltro, setGanttFiltro] = uS('');
 
   // ── Reporte diario GENERAL del ingeniero (no por frente; cualquier partida) ──
-  const [repLineas, setRepLineas] = uS([]);   // [{partida_id, descripcion, metrado, fotos:[File]}]
+  // Buffer en memoria (window) del reporte EN CURSO: sobrevive al desmontar/montar
+  // que ocurre al navegar entre páginas (cada página es un MiFrenteShell nuevo, ver
+  // jx-app.jsx key={page}). Así, al ir a "Partidas del Proyecto", agregar otra partida
+  // y volver, NO se pierden las partidas ya cargadas (ni las fotos adjuntadas, que son
+  // File en memoria y no caben en el borrador de localStorage).
+  const repLiveKey = (obraId && userId) ? `${obraId}_${userId}` : '';
+  const repLiveInit = repLiveKey ? (window.__miFrenteRepLive?.[repLiveKey] || null) : null;
+  const [repLineas, setRepLineas] = uS(() => Array.isArray(repLiveInit?.lineas) ? repLiveInit.lineas : []);   // [{partida_id, descripcion, metrado, fotos:[File]}]
   const [addPartQuery, setAddPartQuery] = uS('');   // buscador de partidas a agregar
   const [busyRep, setBusyRep] = uS(false);
   const [repTodas, setRepTodas] = uS(false);   // alcance del buscador del reporte (mis partidas vs todas) — local al reporte
-  const [repFecha, setRepFecha] = uS(hoy);     // día que se reporta (default hoy; permite días pasados con motivo)
-  const [repMotivoTardio, setRepMotivoTardio] = uS('');
+  const [repFecha, setRepFecha] = uS(() => repLiveInit?.fecha || hoy);     // día que se reporta (default hoy; permite días pasados con motivo)
+  const [repMotivoTardio, setRepMotivoTardio] = uS(() => repLiveInit?.motivo || '');
   const MAX_FOTOS = 5;
+  const REP_MIN_PALABRAS = 50;   // mínimo de palabras en la descripción de cada partida reportada
+  const [confirmRep, setConfirmRep] = uS(null);   // [{linea, partida}] validadas, a confirmar antes de subir
+  // Espejar el reporte en curso al buffer en cada cambio (incluye los File de las fotos).
+  uE(() => {
+    if (!repLiveKey) return;
+    window.__miFrenteRepLive = window.__miFrenteRepLive || {};
+    window.__miFrenteRepLive[repLiveKey] = { lineas: repLineas, fecha: repFecha, motivo: repMotivoTardio };
+  }, [repLiveKey, repLineas, repFecha, repMotivoTardio]);
   // Candidatas a reportar: todas las partidas o solo las de mis frentes (toggle propio del reporte).
   const partidasReporteBase = uM(() => {
     if (repTodas) return allPartidas;
@@ -168,6 +184,15 @@ function MiFrenteShell({ showToast, vista }) {
   const setLinea = (pid, campo, val) => setRepLineas(prev => prev.map(l => l.partida_id === pid ? { ...l, [campo]: val } : l));
   const agregarFotos = (pid, files) => setRepLineas(prev => prev.map(l => l.partida_id === pid ? { ...l, fotos: [...(l.fotos || []), ...files].slice(0, MAX_FOTOS) } : l));
   const quitarFoto = (pid, idx) => setRepLineas(prev => prev.map(l => l.partida_id === pid ? { ...l, fotos: (l.fotos || []).filter((_, j) => j !== idx) } : l));
+  // Validación por partida: metrado avanzado > 0, al menos 1 foto de evidencia y descripción ≥ REP_MIN_PALABRAS.
+  const contarPalabras = (s) => String(s || '').trim().split(/\s+/).filter(Boolean).length;
+  const estadoLinea = (l) => {
+    const metr = Number(l.metrado) > 0;                 // cubre vacío, no-numérico, 0 y negativos
+    const foto = (l.fotos || []).length >= 1;
+    const palabras = contarPalabras(l.descripcion);
+    const desc = palabras >= REP_MIN_PALABRAS;
+    return { metr, foto, desc, palabras, ok: metr && foto && desc };
+  };
   // % acumulado calculado solo desde el metrado real (no editable por el ingeniero).
   const calcAcum = (pid, metradoHoy) => {
     const p = partByIdAll.get(pid); if (!p) return null;
@@ -186,11 +211,25 @@ function MiFrenteShell({ showToast, vista }) {
   const cargarBorrador = (keyOverride) => { const k = keyOverride || draftKey; try { const d = JSON.parse(localStorage.getItem(k) || '[]'); if (Array.isArray(d)) setRepLineas(d.map(l => ({ partida_id: l.partida_id, descripcion: l.descripcion || '', metrado: l.metrado ?? '', fotos: [] }))); } catch {} };
   const descartarBorrador = () => { try { localStorage.removeItem(draftKey); } catch {} setHayBorrador(false); };
   const [draftTick, setDraftTick] = uS(0);   // fuerza recálculo de la lista de Borradores tras eliminar
-  const guardarReporte = async () => {
-    const lineas = repLineas.filter(l => l.partida_id && (l.metrado !== '' || (l.descripcion || '').trim() || (l.fotos && l.fotos.length)));
+  // Valida TODAS las partidas del reporte; recién si todo cumple abre el modal de confirmación.
+  const nomLinea = (l) => { const p = partByIdAll.get(l.partida_id); return p ? `${p.codigo_delfin || ''} · ${p.nombre_partida || ''}`.trim().replace(/^· /, '') : 'una partida'; };
+  const pedirConfirmReporte = () => {
+    const lineas = repLineas.filter(l => l.partida_id);
     if (!lineas.length) { showToast('Agregá al menos una partida con avance', 'red'); return; }
     const esTardio = repFecha !== hoy;
     if (esTardio && !repMotivoTardio.trim()) { showToast('Indicá el motivo por el que subís el reporte de otro día', 'red'); return; }
+    for (const l of lineas) {
+      const st = estadoLinea(l);
+      if (!st.metr) { showToast(`Indicá el metrado avanzado (mayor a 0) en: ${nomLinea(l)}`, 'red'); return; }
+      if (!st.foto) { showToast(`Debés colocar al menos una foto de evidencia en: ${nomLinea(l)}`, 'red'); return; }
+      if (!st.desc) { showToast(`La descripción de "${nomLinea(l)}" debe tener al menos ${REP_MIN_PALABRAS} palabras (tiene ${st.palabras})`, 'red'); return; }
+    }
+    setConfirmRep(lineas.map(l => ({ linea: l, partida: partByIdAll.get(l.partida_id) || null })));
+  };
+  const guardarReporte = async () => {
+    const lineas = (confirmRep || []).map(c => c.linea).filter(l => l && l.partida_id);
+    if (!lineas.length) { setConfirmRep(null); return; }
+    const esTardio = repFecha !== hoy;
     setBusyRep(true);
     try {
       for (const l of lineas) {
@@ -218,7 +257,7 @@ function MiFrenteShell({ showToast, vista }) {
       }
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'avance_obra' } })); } catch {}
       showToast(`Reporte guardado · ${lineas.length} partida(s)`, 'green');
-      setRepLineas([]); descartarBorrador(); setRepMotivoTardio('');
+      setRepLineas([]); descartarBorrador(); setRepMotivoTardio(''); setConfirmRep(null);
     } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
     finally { setBusyRep(false); }
   };
@@ -345,6 +384,8 @@ function MiFrenteShell({ showToast, vista }) {
     if (vista === 'reporte') { agregarLinea(p.id); }
     else { window.__miFrenteIntent = { tipo: 'reporte', partidaId: p.id, frenteId: frenteActivo?.id, ts: Date.now() }; window.__navTo?.('reporte-diario'); }
   };
+  // ¿Es capítulo? (tiene descendientes en TODA la obra → no es partida específica/hoja → no se reporta)
+  const esCapitulo = (p) => { const c = String(p?.codigo_delfin || ''); return !!c && allPartidas.some(o => o.id !== p.id && String(o.codigo_delfin || '').startsWith(c + '.')); };
   // Partida huérfana → pedir al admin/gerente que cree/oficialice un frente para ella.
   const solicitarFrente = async (p) => {
     if (!p) return;
@@ -392,18 +433,22 @@ function MiFrenteShell({ showToast, vista }) {
           const p = partByIdAll.get(l.partida_id);
           const ac = calcAcum(l.partida_id, l.metrado);
           const pctPrev = p ? (Number(p.porcentaje_avance) || 0) : 0;
+          const st = estadoLinea(l);
           return (
             <div key={l.partida_id} className="card card-p">
               <div className="frow-sb" style={{ marginBottom: 6 }}>
                 <div style={{ fontSize: 12.5, fontWeight: 600 }}><span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{p?.codigo_delfin}</span> {p?.nombre_partida || '—'}</div>
                 <button className="btn btn-ghost btn-xs" onClick={() => quitarLinea(l.partida_id)}>✕ Quitar</button>
               </div>
-              <label className="flabel">Descripción del avance</label>
-              <textarea className="fi" rows={2} value={l.descripcion} onChange={e => setLinea(l.partida_id, 'descripcion', e.target.value)} placeholder="Qué se avanzó en esta partida…" />
+              <label className="flabel" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                <span>Descripción del avance (mín. {REP_MIN_PALABRAS} palabras) *</span>
+                <span style={{ fontSize: 10.5, fontWeight: 600, color: st.desc ? 'var(--green)' : 'var(--amber)' }}>{st.palabras}/{REP_MIN_PALABRAS} palabras</span>
+              </label>
+              <textarea className="fi" rows={3} value={l.descripcion} onChange={e => setLinea(l.partida_id, 'descripcion', e.target.value)} placeholder={`Detallá qué se avanzó en esta partida (mínimo ${REP_MIN_PALABRAS} palabras)…`} />
               <div className="g2" style={{ marginTop: 8 }}>
-                <div><label className="flabel">Metrado avanzado ({p?.unidad || 'und'})</label><input className="fi" type="number" step="0.01" value={l.metrado} onChange={e => setLinea(l.partida_id, 'metrado', e.target.value)} /></div>
+                <div><label className="flabel">Metrado avanzado ({p?.unidad || 'und'}) *</label><input className="fi" type="number" step="0.01" min="0" value={l.metrado} onChange={e => setLinea(l.partida_id, 'metrado', e.target.value)} style={!st.metr ? { borderColor: 'var(--red)' } : undefined} /></div>
                 <div>
-                  <label className="flabel">Fotos (hasta {MAX_FOTOS})</label>
+                  <label className="flabel">Fotos de evidencia (1 a {MAX_FOTOS}) *</label>
                   <input className="fi" type="file" accept="image/*" multiple disabled={(l.fotos || []).length >= MAX_FOTOS} onChange={e => { agregarFotos(l.partida_id, Array.from(e.target.files || [])); e.target.value = ''; }} />
                   {(l.fotos || []).length > 0 && (
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
@@ -416,6 +461,11 @@ function MiFrenteShell({ showToast, vista }) {
                     </div>
                   )}
                 </div>
+              </div>
+              <div style={{ marginTop: 8, display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 11, fontWeight: 600 }}>
+                {[['Metrado avanzado', st.metr], ['Foto de evidencia', st.foto], [`Descripción ≥ ${REP_MIN_PALABRAS} palabras`, st.desc]].map(([txt, ok]) => (
+                  <span key={txt} style={{ color: ok ? 'var(--green)' : 'var(--red)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>{ok ? '✓' : '✗'} {txt}</span>
+                ))}
               </div>
               <div style={{ marginTop: 8, padding: '7px 10px', borderRadius: 6, background: 'rgba(255,255,255,0.04)', fontSize: 11.5 }}>
                 {ac && ac.pct != null ? (
@@ -457,7 +507,7 @@ function MiFrenteShell({ showToast, vista }) {
           <td style={{ textAlign: 'right' }}>{p ? `${num(p.metrado_contratado)} ${p.unidad || ''}` : ''}</td>
           <td>{p ? <BarraAvance partida={p} avancesPartida={avancesPorPartida.get(p.id)} nombreUsuario={nombreUsuario} /> : ''}</td>
           <td>{r ? <SemBadge s={r.semaforo} /> : ''}</td>
-          <td style={{ textAlign: 'right' }}>{p && <button className="btn btn-ghost btn-xs" onClick={() => generarReporteDe(p)}>Reportar</button>}</td>
+          <td style={{ textAlign: 'right' }}>{esHoja && <button className="btn btn-ghost btn-xs" onClick={() => generarReporteDe(p)}>Agregar reporte</button>}</td>
         </tr>
       );
       if (open) {
@@ -563,6 +613,7 @@ function MiFrenteShell({ showToast, vista }) {
         const mostrarFrente = partidasTab === 'otras';
         const q = filtroPart.trim().toLowerCase();
         const filtradas = q ? parts.filter(p => String(p.codigo_delfin || '').toLowerCase().includes(q) || String(p.nombre_partida || '').toLowerCase().includes(q)) : null;
+        const folderCodes = foldersDe(parts);   // códigos que son capítulo (prefijo de otra partida) → sin botón de reporte
         const otrosFrentesList = (frentes || []).filter(f => !f.deleted_at && !misFrentes.some(m => m.id === f.id));
         return (
           <div style={{ display: 'grid', gap: 10 }}>
@@ -605,7 +656,7 @@ function MiFrenteShell({ showToast, vista }) {
                         <td style={{ textAlign: 'right' }}>{num(p.metrado_contratado)} {p.unidad || ''}</td>
                         <td><BarraAvance partida={p} avancesPartida={avancesPorPartida.get(p.id)} nombreUsuario={nombreUsuario} /></td>
                         <td><SemBadge s={r.semaforo} /></td>
-                        <td style={{ textAlign: 'right' }}><button className="btn btn-ghost btn-xs" onClick={() => generarReporteDe(p)}>Reportar</button></td>
+                        <td style={{ textAlign: 'right' }}>{!folderCodes.has(p.codigo_delfin) && <button className="btn btn-ghost btn-xs" onClick={() => generarReporteDe(p)}>Agregar reporte</button>}</td>
                       </tr>,
                     ];
                     if (open && ins.length) rows.push(<tr key={p.id + '_ins'} style={{ background: 'rgba(46,204,113,0.05)' }}><td></td><td colSpan={5}><div style={{ fontSize: 10.5, color: 'var(--green)', margin: '2px 0', fontWeight: 600 }}>🔧 Insumos a utilizar ({ins.length}):</div><table style={{ width: '100%', fontSize: 11 }}><tbody>{ins.map(i => <tr key={i.id}><td style={{ width: 110 }}><span className="badge" style={{ background: TIPO_COLOR[String(i.tipo_insumo || '').toLowerCase()] || 'var(--tm)', color: '#000', fontSize: 9 }}>{i.tipo_insumo}</span></td><td>{i.nombre_insumo}</td><td style={{ textAlign: 'right', width: 130, fontWeight: 600 }}>{num(i.cantidad_presupuestada)} {i.unidad || ''}</td></tr>)}</tbody></table></td></tr>);
@@ -770,7 +821,7 @@ function MiFrenteShell({ showToast, vista }) {
           {editorLineas(true)}
           {repLineas.length > 0 && (
             <div className="modal-actions" style={{ display: 'flex', gap: 8 }}>
-              <button className="btn btn-amber" disabled={busyRep} onClick={guardarReporte}><JxIcon name="check" size={13} />Guardar reporte</button>
+              <button className="btn btn-amber" disabled={busyRep} onClick={pedirConfirmReporte}><JxIcon name="check" size={13} />Enviar reporte</button>
               <button className="btn btn-ghost" disabled={busyRep} onClick={guardarBorrador}>Guardar como borrador</button>
             </div>
           )}
@@ -871,11 +922,42 @@ function MiFrenteShell({ showToast, vista }) {
             <span style={{ fontFamily: 'monospace' }}>{ctx.partida.codigo_delfin}</span> · {ctx.partida.nombre_partida}
           </div>
           <button style={ctxBtn} onClick={() => { irACostoUnitario(ctx.partida); setCtx(null); }} onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>📋 Ir al costo unitario de la partida</button>
-          <button style={ctxBtn} onClick={() => { generarReporteDe(ctx.partida); setCtx(null); }} onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>📝 Generar reporte diario de esta partida</button>
+          {!esCapitulo(ctx.partida) && (
+            <button style={ctxBtn} onClick={() => { generarReporteDe(ctx.partida); setCtx(null); }} onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>📝 Agregar reporte de esta partida</button>
+          )}
           {frentesNombresDe(ctx.partida.id).length === 0 && (
             <button style={{ ...ctxBtn, borderTop: '1px solid var(--bd)' }} onClick={() => { solicitarFrente(ctx.partida); setCtx(null); }} onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>🏗️ {solFrentePend(ctx.partida.id) ? 'Frente solicitado (pendiente)' : 'Solicitar crear frente para esta partida'}</button>
           )}
         </div>
+      )}
+
+      {confirmRep && (
+        <Modal title="Confirmar reporte diario" icon="check" onClose={() => !busyRep && setConfirmRep(null)}>
+          <div style={{ fontSize: 12.5, color: 'var(--tm)', marginBottom: 4 }}>
+            Vas a subir el reporte del <strong style={{ color: 'var(--tx)' }}>{repFecha}{repFecha !== hoy ? ' (otro día)' : ''}</strong> con avance en estas <strong style={{ color: 'var(--tx)' }}>{confirmRep.length}</strong> partida(s):
+          </div>
+          <div style={{ maxHeight: 320, overflow: 'auto', border: '1px solid var(--bd)', borderRadius: 6, marginTop: 8 }}>
+            <table className="tbl" style={{ fontSize: 12 }}>
+              <thead><tr><th>Partida</th><th style={{ textAlign: 'right' }}>Metrado</th><th style={{ textAlign: 'center' }}>Fotos</th></tr></thead>
+              <tbody>
+                {confirmRep.map(({ linea, partida }) => (
+                  <tr key={linea.partida_id}>
+                    <td><span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{partida?.codigo_delfin}</span> {partida?.nombre_partida || '—'}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 600 }}>{num(linea.metrado)} {partida?.unidad || ''}</td>
+                    <td style={{ textAlign: 'center' }}>📷 {(linea.fotos || []).length}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {repFecha !== hoy && repMotivoTardio.trim() && (
+            <div style={{ marginTop: 8, fontSize: 11.5, color: 'var(--amber)' }}>Motivo del reporte tardío: {repMotivoTardio.trim()}</div>
+          )}
+          <div className="modal-actions">
+            <button className="btn btn-ghost" disabled={busyRep} onClick={() => setConfirmRep(null)}>Cancelar</button>
+            <button className="btn btn-amber" disabled={busyRep} onClick={guardarReporte}><JxIcon name="check" size={13} />{busyRep ? 'Subiendo…' : 'Confirmar y subir reporte'}</button>
+          </div>
+        </Modal>
       )}
     </div>
   );
