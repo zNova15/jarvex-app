@@ -118,20 +118,22 @@ function MiFrenteShell({ showToast, vista }) {
   const [expandidos, setExpandidos] = uS(() => new Set());
   const toggleExp = (code) => setExpandidos(prev => { const n = new Set(prev); n.has(code) ? n.delete(code) : n.add(code); return n; });
   const [filtroPart, setFiltroPart] = uS('');
-  // Todos los códigos "carpeta" (con descendientes) → para expandir todo de inicio.
-  const foldersTodos = uM(() => {
-    const s = new Set();
-    for (const p of partidasDelFrente) { const segs = String(p.codigo_delfin || '').split('.').filter(Boolean); for (let i = 1; i < segs.length; i++) s.add(segs.slice(0, i).join('.')); }
-    return s;
-  }, [partidasDelFrente]);
+  // Pestañas de "Partidas del Proyecto": Mis partidas vs Otras partidas.
+  const [partidasTab, setPartidasTab] = uS('mias');   // 'mias' | 'otras'
+  const [otrasScope, setOtrasScope] = uS('todas');    // 'todas' | frenteId
+  const misPartidas = uM(() => {
+    const m = new Map();
+    for (const f of misFrentes) for (const p of partidasDeFrente(f.id, { frentePartidas: frentePartidas || [], partidas: partidas || [] })) m.set(p.id, p);
+    return [...m.values()];
+  }, [misFrentes, frentePartidas, partidas]);
+  const misPartidasIds = uM(() => new Set(misPartidas.map(p => p.id)), [misPartidas]);
+  const otrasPartidas = uM(() => otrasScope !== 'todas'
+    ? partidasDeFrente(otrasScope, { frentePartidas: frentePartidas || [], partidas: partidas || [] })
+    : allPartidas.filter(p => !misPartidasIds.has(p.id)), [otrasScope, allPartidas, misPartidasIds, frentePartidas, partidas]);
+  // Códigos "carpeta" (con descendientes) de un conjunto → expandir/colapsar todo.
+  const foldersDe = (parts) => { const s = new Set(); for (const p of parts) { const segs = String(p.codigo_delfin || '').split('.').filter(Boolean); for (let i = 1; i < segs.length; i++) s.add(segs.slice(0, i).join('.')); } return s; };
   const autoExpRef = uR(false);
-  // Auto-expandir al inicio SOLO en vista de frente (en "Todas" puede haber miles de partidas).
-  uE(() => { if (!autoExpRef.current && !esTodas && partidasDelFrente.length) { autoExpRef.current = true; setExpandidos(new Set(foldersTodos)); } }, [partidasDelFrente, foldersTodos, esTodas]);
-  const partidasFiltradas = uM(() => {
-    const q = filtroPart.trim().toLowerCase();
-    if (!q) return null;
-    return partidasDelFrente.filter(p => String(p.codigo_delfin || '').toLowerCase().includes(q) || String(p.nombre_partida || '').toLowerCase().includes(q));
-  }, [partidasDelFrente, filtroPart]);
+  uE(() => { if (!autoExpRef.current && misPartidas.length) { autoExpRef.current = true; setExpandidos(foldersDe(misPartidas)); } }, [misPartidas]);
   // Gantt: orden + filtro.
   const [ganttSort, setGanttSort] = uS('fecha');   // 'fecha' | 'codigo' | 'rendimiento'
   const [ganttFiltro, setGanttFiltro] = uS('');
@@ -247,13 +249,13 @@ function MiFrenteShell({ showToast, vista }) {
     if (it.tipo === 'costo' && vista === 'partidas') {
       const p = partByIdAll.get(it.partidaId);
       if (!p) return;
-      // Asegurar que la partida sea visible: si no está en el alcance actual, ir a "Todas".
-      const enScope = partidasDelFrente.some(x => x.id === p.id);
-      if (!enScope && !esTodas) { setVerOtros(true); setFrenteSelId('__todas'); return; }   // re-entra al cambiar el alcance
+      // Ir a la pestaña donde está la partida: Mis partidas si es mía, si no Otras.
+      if (misPartidasIds.has(p.id)) { setPartidasTab('mias'); }
+      else { setPartidasTab('otras'); setOtrasScope('todas'); }
       setFiltroPart(p.codigo_delfin || ''); setExpandidos(prev => new Set(prev).add(p.codigo_delfin));
       intentRef.current = it.ts; window.__miFrenteIntent = null;
     }
-  }, [vista, partidasDelFrente, esTodas, partByIdAll]);
+  }, [vista, misPartidasIds, partByIdAll]);
 
   // ── Plan vs Real ──────────────────────────────────────────────────
   const [meta, setMeta] = uS({ partida_id: '', fecha: hoy, meta_metrado: '', meta_descripcion: '' });
@@ -328,7 +330,7 @@ function MiFrenteShell({ showToast, vista }) {
     );
   }
 
-  const TITULOS = { dashboard: 'Dashboard Técnico', partidas: 'Mis Partidas', cronograma: 'Cronograma de mis Partidas', salidas: 'Vinculación de insumos', reporte: 'Reporte Diario', plan: 'Plan vs Real', borradores: 'Borradores' };
+  const TITULOS = { dashboard: 'Dashboard Técnico', partidas: 'Partidas del Proyecto', cronograma: 'Cronograma de mis Partidas', salidas: 'Vinculación de insumos', reporte: 'Reporte Diario', plan: 'Plan vs Real', borradores: 'Borradores' };
 
   const SemBadge = ({ s }) => <span className="badge" style={{ background: SEM[s], color: '#000', fontSize: 9 }}>{SEM_LBL[s]}</span>;
 
@@ -430,23 +432,27 @@ function MiFrenteShell({ showToast, vista }) {
   };
 
   // Árbol desplegable de Mis Partidas (recursivo): nodo → hijos → insumos (sin costos).
-  const renderNodos = (code, depth) => {
+  const TIPO_COLOR = { material: 'var(--green)', materiales: 'var(--green)', mano_obra: '#8e7cff', equipo: '#3aa3ff', equipos: '#3aa3ff', herramienta: '#ff9f43', subcontrato: '#ff6b9d' };
+  const renderNodos = (code, depth, parts, mostrarFrente) => {
     const filas = [];
-    for (const nodo of hijosDirectos(partidasDelFrente, code)) {
+    for (const nodo of hijosDirectos(parts, code)) {
       const open = expandidos.has(nodo.code);
       const p = nodo.partida;
+      const esCap = nodo.esFolder;            // capítulo/carpeta (tiene descendientes)
+      const esHoja = !nodo.esFolder && !!p;   // partida específica (hoja)
       const r = p ? rendimientoPartida(p, avances || [], hoy) : null;
       const ins = p ? (insumosPorPartida.get(p.id) || []) : [];
       const puedeExpandir = nodo.esFolder || ins.length > 0;
       filas.push(
-        <tr key={nodo.code} onContextMenu={p ? (e) => openCtx(e, p) : undefined} style={p ? { cursor: 'context-menu' } : undefined}>
+        <tr key={nodo.code} onContextMenu={p ? (e) => openCtx(e, p) : undefined}
+          style={{ background: esCap ? 'rgba(245,180,40,0.06)' : (esHoja ? 'rgba(46,204,113,0.04)' : 'transparent'), cursor: p ? 'context-menu' : 'default', borderLeft: esHoja ? '3px solid rgba(46,204,113,0.5)' : (esCap ? '3px solid rgba(245,180,40,0.5)' : '3px solid transparent') }}>
           <td style={{ paddingLeft: 6 + depth * 16, whiteSpace: 'nowrap' }}>
             {puedeExpandir
-              ? <button className="btn btn-ghost btn-xs" onClick={() => toggleExp(nodo.code)} style={{ padding: '0 4px' }}>{open ? '▾' : '▸'}</button>
+              ? <button className="btn btn-ghost btn-xs" onClick={() => toggleExp(nodo.code)} style={{ padding: '0 4px', color: esCap ? 'var(--amber)' : 'var(--green)' }}>{open ? '▾' : '▸'}</button>
               : <span style={{ display: 'inline-block', width: 18 }} />}
-            <span style={{ fontFamily: 'monospace', fontSize: 11.5 }}>{nodo.code}</span>
+            <span style={{ fontFamily: 'monospace', fontSize: 11.5, color: esCap ? 'var(--amber)' : (esHoja ? 'var(--green)' : 'var(--tx)'), fontWeight: esCap ? 700 : 500 }}>{esCap ? '📁 ' : '• '}{nodo.code}</span>
           </td>
-          <td>{p ? <>{p.nombre_partida || '—'}{esTodas && (() => { const fs = frentesNombresDe(p.id); return fs.length ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }} title="Frente(s)">{fs.join(', ')}</span> : <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }} title="No pertenece a ningún frente">sin frente</span>; })()}</> : <span style={{ color: 'var(--tm)' }}>capítulo</span>}</td>
+          <td style={{ fontWeight: esCap ? 600 : 400 }}>{p ? <>{p.nombre_partida || '—'}{mostrarFrente && (() => { const fs = frentesNombresDe(p.id); return fs.length ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }} title="Frente(s)">{fs.join(', ')}</span> : <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }} title="No pertenece a ningún frente">sin frente</span>; })()}</> : <span style={{ color: 'var(--tm)', fontStyle: 'italic' }}>capítulo</span>}</td>
           <td style={{ textAlign: 'right' }}>{p ? `${num(p.metrado_contratado)} ${p.unidad || ''}` : ''}</td>
           <td>{p ? <BarraAvance partida={p} avancesPartida={avancesPorPartida.get(p.id)} nombreUsuario={nombreUsuario} /> : ''}</td>
           <td>{r ? <SemBadge s={r.semaforo} /> : ''}</td>
@@ -454,19 +460,19 @@ function MiFrenteShell({ showToast, vista }) {
         </tr>
       );
       if (open) {
-        if (nodo.esFolder) filas.push(...renderNodos(nodo.code, depth + 1));
+        if (nodo.esFolder) filas.push(...renderNodos(nodo.code, depth + 1, parts, mostrarFrente));
         if (ins.length) {
           filas.push(
-            <tr key={nodo.code + '_ins'} style={{ background: 'rgba(245,180,40,0.05)' }}>
+            <tr key={nodo.code + '_ins'} style={{ background: 'rgba(46,204,113,0.05)' }}>
               <td></td>
               <td colSpan={5} style={{ paddingLeft: 6 + (depth + 1) * 16 }}>
-                <div style={{ fontSize: 10.5, color: 'var(--tm)', margin: '2px 0' }}>Insumos a utilizar:</div>
+                <div style={{ fontSize: 10.5, color: 'var(--green)', margin: '2px 0', fontWeight: 600 }}>🔧 Insumos a utilizar ({ins.length}):</div>
                 <table style={{ width: '100%', fontSize: 11 }}><tbody>
                   {ins.map(i => (
                     <tr key={i.id}>
-                      <td style={{ width: 96, color: 'var(--tm)' }}>{i.tipo_insumo}</td>
+                      <td style={{ width: 110 }}><span className="badge" style={{ background: TIPO_COLOR[String(i.tipo_insumo || '').toLowerCase()] || 'var(--tm)', color: '#000', fontSize: 9 }}>{i.tipo_insumo}</span></td>
                       <td>{i.nombre_insumo}</td>
-                      <td style={{ textAlign: 'right', width: 130 }}>{num(i.cantidad_presupuestada)} {i.unidad || ''}</td>
+                      <td style={{ textAlign: 'right', width: 130, fontWeight: 600 }}>{num(i.cantidad_presupuestada)} {i.unidad || ''}</td>
                     </tr>
                   ))}
                 </tbody></table>
@@ -487,12 +493,14 @@ function MiFrenteShell({ showToast, vista }) {
           <div className="pg-sub">
             {vista === 'reporte' ? 'Reporte general del ingeniero (de todos tus frentes)'
               : vista === 'borradores' ? 'Tus reportes guardados a medias'
-              : esTodas
-                ? <>Todas las partidas · {partidasDelFrente.length} partidas (incl. sin frente)</>
-                : <>{frenteActivo?.nombre || '—'} · {resumen.nPartidas} partidas · {Math.round(resumen.avancePromedio)}% avance prom.{!esMiFrente && frenteActivo && <span style={{ color: 'var(--amber)' }}> · otro frente</span>}</>}
+              : vista === 'partidas'
+                ? <>{partidasTab === 'mias' ? 'Mis partidas' : 'Otras partidas'} · {(partidasTab === 'mias' ? misPartidas : otrasPartidas).length} partidas</>
+                : esTodas
+                  ? <>Todas las partidas · {partidasDelFrente.length} partidas (incl. sin frente)</>
+                  : <>{frenteActivo?.nombre || '—'} · {resumen.nPartidas} partidas · {Math.round(resumen.avancePromedio)}% avance prom.{!esMiFrente && frenteActivo && <span style={{ color: 'var(--amber)' }}> · otro frente</span>}</>}
           </div>
         </div>
-        <div style={{ display: vista === 'reporte' || vista === 'borradores' ? 'none' : 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ display: vista === 'cronograma' ? 'flex' : 'none', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           {(frentesVisibles.length > 1 || verOtros) && (
             <select className="fi" style={{ maxWidth: 280 }} value={esTodas ? '__todas' : (frenteActivo?.id || '')} onChange={e => setFrenteSelId(e.target.value)}>
               <optgroup label="Mis frentes">
@@ -549,42 +557,67 @@ function MiFrenteShell({ showToast, vista }) {
         </div>
       )}
 
-      {vista === 'partidas' && (
-        <div className="card" style={{ overflow: 'auto' }}>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 12px', flexWrap: 'wrap' }}>
-            <input className="fi" style={{ maxWidth: 300 }} placeholder="Buscar por nombre o número (ej. 3.02.07.06)…" value={filtroPart} onChange={e => setFiltroPart(e.target.value)} />
-            {!partidasFiltradas && (<>
-              <button className="btn btn-ghost btn-xs" onClick={() => setExpandidos(new Set(foldersTodos))}>Expandir todo</button>
-              <button className="btn btn-ghost btn-xs" onClick={() => setExpandidos(new Set())}>Colapsar todo</button>
-            </>)}
-            <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--tm)' }}>{partidasFiltradas ? `${partidasFiltradas.length} coinciden` : `${partidasDelFrente.length} partidas`}</span>
+      {vista === 'partidas' && (() => {
+        const parts = partidasTab === 'mias' ? misPartidas : otrasPartidas;
+        const mostrarFrente = partidasTab === 'otras';
+        const q = filtroPart.trim().toLowerCase();
+        const filtradas = q ? parts.filter(p => String(p.codigo_delfin || '').toLowerCase().includes(q) || String(p.nombre_partida || '').toLowerCase().includes(q)) : null;
+        const otrosFrentesList = (frentes || []).filter(f => !f.deleted_at && !misFrentes.some(m => m.id === f.id));
+        return (
+          <div style={{ display: 'grid', gap: 10 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', gap: 4 }}>
+                <button className={`btn btn-sm ${partidasTab === 'mias' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setPartidasTab('mias')}>Mis partidas</button>
+                <button className={`btn btn-sm ${partidasTab === 'otras' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setPartidasTab('otras')}>Otras partidas</button>
+              </div>
+              {partidasTab === 'otras' && (
+                <select className="fi" style={{ maxWidth: 260 }} value={otrasScope} onChange={e => setOtrasScope(e.target.value)}>
+                  <option value="todas">Todas las demás (incl. sin frente)</option>
+                  {otrosFrentesList.map(f => <option key={f.id} value={f.id}>Frente: {f.nombre}</option>)}
+                </select>
+              )}
+            </div>
+            <div className="card" style={{ overflow: 'auto' }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 12px', flexWrap: 'wrap' }}>
+                <input className="fi" style={{ maxWidth: 300 }} placeholder="Buscar por nombre o número (ej. 3.02.07.06)…" value={filtroPart} onChange={e => setFiltroPart(e.target.value)} />
+                {!filtradas && (<>
+                  <button className="btn btn-ghost btn-xs" onClick={() => setExpandidos(prev => { const n = new Set(prev); foldersDe(parts).forEach(c => n.add(c)); return n; })}>Expandir todo</button>
+                  <button className="btn btn-ghost btn-xs" onClick={() => setExpandidos(new Set())}>Colapsar todo</button>
+                </>)}
+                <span style={{ display: 'inline-flex', gap: 10, marginLeft: 8, fontSize: 10.5, color: 'var(--tm)' }}>
+                  <span><span style={{ color: 'var(--amber)' }}>📁</span> capítulo</span>
+                  <span><span style={{ color: 'var(--green)' }}>•</span> partida específica</span>
+                </span>
+                <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--tm)' }}>{filtradas ? `${filtradas.length} coinciden` : `${parts.length} partidas`}</span>
+              </div>
+              <table className="tbl" style={{ fontSize: 12 }}>
+                <thead><tr><th>Código</th><th>Partida</th><th style={{ textAlign: 'right' }}>Metrado</th><th>Avance (por ingeniero)</th><th>Rendimiento</th><th></th></tr></thead>
+                <tbody>
+                  {filtradas ? filtradas.flatMap(p => {
+                    const r = rendimientoPartida(p, avances || [], hoy);
+                    const ins = insumosPorPartida.get(p.id) || [];
+                    const open = expandidos.has(p.codigo_delfin);
+                    const rows = [
+                      <tr key={p.id} onContextMenu={(e) => openCtx(e, p)} style={{ cursor: 'context-menu', background: 'rgba(46,204,113,0.04)', borderLeft: '3px solid rgba(46,204,113,0.5)' }}>
+                        <td style={{ whiteSpace: 'nowrap' }}>{ins.length ? <button className="btn btn-ghost btn-xs" onClick={() => toggleExp(p.codigo_delfin)} style={{ padding: '0 4px', color: 'var(--green)' }}>{open ? '▾' : '▸'}</button> : <span style={{ display: 'inline-block', width: 18 }} />}<span style={{ fontFamily: 'monospace', fontSize: 11.5, color: 'var(--green)', fontWeight: 500 }}>• {p.codigo_delfin}</span></td>
+                        <td>{p.nombre_partida || '—'}{mostrarFrente && (() => { const fs = frentesNombresDe(p.id); return fs.length ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>{fs.join(', ')}</span> : <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }}>sin frente</span>; })()}</td>
+                        <td style={{ textAlign: 'right' }}>{num(p.metrado_contratado)} {p.unidad || ''}</td>
+                        <td><BarraAvance partida={p} avancesPartida={avancesPorPartida.get(p.id)} nombreUsuario={nombreUsuario} /></td>
+                        <td><SemBadge s={r.semaforo} /></td>
+                        <td style={{ textAlign: 'right' }}><button className="btn btn-ghost btn-xs" onClick={() => generarReporteDe(p)}>Reportar</button></td>
+                      </tr>,
+                    ];
+                    if (open && ins.length) rows.push(<tr key={p.id + '_ins'} style={{ background: 'rgba(46,204,113,0.05)' }}><td></td><td colSpan={5}><div style={{ fontSize: 10.5, color: 'var(--green)', margin: '2px 0', fontWeight: 600 }}>🔧 Insumos a utilizar ({ins.length}):</div><table style={{ width: '100%', fontSize: 11 }}><tbody>{ins.map(i => <tr key={i.id}><td style={{ width: 110 }}><span className="badge" style={{ background: TIPO_COLOR[String(i.tipo_insumo || '').toLowerCase()] || 'var(--tm)', color: '#000', fontSize: 9 }}>{i.tipo_insumo}</span></td><td>{i.nombre_insumo}</td><td style={{ textAlign: 'right', width: 130, fontWeight: 600 }}>{num(i.cantidad_presupuestada)} {i.unidad || ''}</td></tr>)}</tbody></table></td></tr>);
+                    return rows;
+                  }) : renderNodos('', 0, parts, mostrarFrente)}
+                  {parts.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>{partidasTab === 'mias' ? 'No tenés partidas asignadas a tus frentes.' : 'No hay otras partidas en este alcance.'}</td></tr>}
+                  {filtradas && filtradas.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>Ninguna partida coincide con “{filtroPart}”.</td></tr>}
+                </tbody>
+              </table>
+            </div>
           </div>
-          <table className="tbl" style={{ fontSize: 12 }}>
-            <thead><tr><th>Código</th><th>Partida</th><th style={{ textAlign: 'right' }}>Metrado</th><th>Avance (por ingeniero)</th><th>Rendimiento</th><th></th></tr></thead>
-            <tbody>
-              {partidasFiltradas ? partidasFiltradas.flatMap(p => {
-                const r = rendimientoPartida(p, avances || [], hoy);
-                const ins = insumosPorPartida.get(p.id) || [];
-                const open = expandidos.has(p.codigo_delfin);
-                const rows = [
-                  <tr key={p.id} onContextMenu={(e) => openCtx(e, p)} style={{ cursor: 'context-menu' }}>
-                    <td style={{ whiteSpace: 'nowrap' }}>{ins.length ? <button className="btn btn-ghost btn-xs" onClick={() => toggleExp(p.codigo_delfin)} style={{ padding: '0 4px' }}>{open ? '▾' : '▸'}</button> : <span style={{ display: 'inline-block', width: 18 }} />}<span style={{ fontFamily: 'monospace', fontSize: 11.5 }}>{p.codigo_delfin}</span></td>
-                    <td>{p.nombre_partida || '—'}{esTodas && (() => { const fs = frentesNombresDe(p.id); return fs.length ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }} title="Frente(s)">{fs.join(', ')}</span> : <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }} title="No pertenece a ningún frente">sin frente</span>; })()}</td>
-                    <td style={{ textAlign: 'right' }}>{num(p.metrado_contratado)} {p.unidad || ''}</td>
-                    <td><BarraAvance partida={p} avancesPartida={avancesPorPartida.get(p.id)} nombreUsuario={nombreUsuario} /></td>
-                    <td><SemBadge s={r.semaforo} /></td>
-                    <td style={{ textAlign: 'right' }}><button className="btn btn-ghost btn-xs" onClick={() => generarReporteDe(p)}>Reportar</button></td>
-                  </tr>,
-                ];
-                if (open && ins.length) rows.push(<tr key={p.id + '_ins'} style={{ background: 'rgba(245,180,40,0.05)' }}><td></td><td colSpan={5}><div style={{ fontSize: 10.5, color: 'var(--tm)', margin: '2px 0' }}>Insumos a utilizar:</div><table style={{ width: '100%', fontSize: 11 }}><tbody>{ins.map(i => <tr key={i.id}><td style={{ width: 96, color: 'var(--tm)' }}>{i.tipo_insumo}</td><td>{i.nombre_insumo}</td><td style={{ textAlign: 'right', width: 130 }}>{num(i.cantidad_presupuestada)} {i.unidad || ''}</td></tr>)}</tbody></table></td></tr>);
-                return rows;
-              }) : renderNodos('', 0)}
-              {partidasDelFrente.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>Tu frente no tiene partidas asignadas.</td></tr>}
-              {partidasFiltradas && partidasFiltradas.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>Ninguna partida coincide con “{filtroPart}”.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-      )}
+        );
+      })()}
 
       {vista === 'cronograma' && (
         <div className="card card-p">
@@ -618,7 +651,7 @@ function MiFrenteShell({ showToast, vista }) {
                     const r = rendimientoPartida(p, avances || [], hoy);
                     const atrasada = hoyMs > fin && (Number(p.porcentaje_avance) || 0) < 100;
                     return (
-                      <div key={p.id} style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 8, alignItems: 'center', cursor: 'pointer' }} onClick={() => window.__navTo?.('mis-partidas')} onContextMenu={(e) => openCtx(e, p)}>
+                      <div key={p.id} style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 8, alignItems: 'center', cursor: 'pointer' }} onClick={() => { window.__miFrenteIntent = { tipo: 'costo', partidaId: p.id, ts: Date.now() }; window.__navTo?.('mis-partidas'); }} onContextMenu={(e) => openCtx(e, p)}>
                         <div style={{ fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${p.codigo_delfin} · ${p.nombre_partida}`}>
                           <span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{p.codigo_delfin}</span> {p.nombre_partida}{atrasada ? <span style={{ color: 'var(--red)' }}> ⚠</span> : null}
                         </div>
