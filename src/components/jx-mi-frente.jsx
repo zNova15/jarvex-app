@@ -6,12 +6,13 @@
 // y cantidades). El semáforo de rendimiento sale de rendimientoPartida.
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
-import { frentesDeUsuario, partidasDeFrente } from "../lib/frente-partidas.js";
+import { frentesDeUsuario, partidasDeFrente, frentesDePartida } from "../lib/frente-partidas.js";
 import { resumenFrente, planVsReal, rollupMensual, rendimientoPartida } from "../lib/mi-frente.js";
 import { hijosDirectos, cadenaBreadcrumb } from "../lib/partida-arbol.js";
 import { solicitudActiva, solicitudesPendientes, construirAvancesDeSolicitud, solEstadoInfo } from "../lib/solicitudes-reporte.js";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { hoyLocal } from "../lib/fecha.js";
+import { colorIngeniero, segmentarAvance } from "../lib/color-ingeniero.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -19,6 +20,22 @@ const hoyISO = () => hoyLocal();
 const num = (x) => Number(x || 0).toLocaleString('es-PE');
 const SEM = { verde: 'var(--green)', ambar: 'var(--amber)', rojo: 'var(--red)', sin_dato: 'var(--tm)' };
 const SEM_LBL = { verde: 'En ritmo', ambar: 'Atención', rojo: 'Atrasado', sin_dato: 's/plan' };
+
+// Barra de avance multicolor: cada segmento = lo que avanzó un ingeniero (color por id).
+function BarraAvance({ partida, avancesPartida, nombreUsuario }) {
+  const { segmentos, pctTotal } = segmentarAvance(partida, avancesPartida || []);
+  return (
+    <div style={{ minWidth: 96 }}>
+      <div style={{ display: 'flex', height: 10, borderRadius: 5, overflow: 'hidden', background: 'rgba(255,255,255,0.08)' }}>
+        {segmentos.map((s, i) => (
+          <div key={i} title={`${nombreUsuario ? nombreUsuario(s.uid) : 'ingeniero'} · ${num(s.metrado)} ${partida.unidad || ''}`}
+            style={{ width: s.pct + '%', background: colorIngeniero(s.uid) }} />
+        ))}
+      </div>
+      <div style={{ fontSize: 10, color: 'var(--tm)', marginTop: 2 }}>{Math.round(pctTotal)}%{segmentos.length > 1 ? ` · ${segmentos.length} ing.` : ''}</div>
+    </div>
+  );
+}
 
 function MiFrenteShell({ showToast, vista }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
@@ -41,24 +58,39 @@ function MiFrenteShell({ showToast, vista }) {
 
   const materialesById = uM(() => { const m = new Map(); (materiales || []).forEach(x => m.set(x.id, x)); return m; }, [materiales]);
   const personalById = uM(() => { const m = new Map(); (personal || []).forEach(x => m.set(x.id, x)); return m; }, [personal]);
+  // Usuarios (profiles) para el nombre del ingeniero en la barra de avance multicolor.
+  const [usuarios, setUsuarios] = uS([]);
+  uE(() => { window.__db.profiles.toArray().then(setUsuarios).catch(() => {}); }, []);
+  const usuariosById = uM(() => { const m = new Map(); (usuarios || []).forEach(u => m.set(u.id, u)); return m; }, [usuarios]);
+  const nombreUsuario = (id) => { if (!id || id === 'sin') return '—'; const u = usuariosById.get(id); return u ? (`${u.nombres || ''} ${u.apellidos || ''}`.trim() || u.email || 'ingeniero') : 'ingeniero'; };
+  const avancesPorPartida = uM(() => { const m = new Map(); for (const a of (avances || [])) { if (a.deleted_at) continue; const arr = m.get(a.partida_id) || []; arr.push(a); m.set(a.partida_id, arr); } return m; }, [avances]);
 
   const solHook = window.__hooks.useSolicitudesReporte(obraId);
   const { data: solicitudes } = solHook;
 
   const misFrentes = uM(() => frentesDeUsuario(userId, { frentes: frentes || [] }), [userId, frentes]);
-  // Ver otros frentes activos (solo lectura, salvo reporte con permiso aprobado).
+  // "Habilitar otros frentes y partidas": desbloquea seleccionar cualquier frente
+  // activo y la vista "Todas las partidas" (incluidas las que no están en ningún frente).
   const [verOtros, setVerOtros] = uS(false);
   const frentesVisibles = uM(() => verOtros ? (frentes || []).filter(f => !f.deleted_at) : misFrentes, [verOtros, frentes, misFrentes]);
-  const [frenteSelId, setFrenteSelId] = uS(null);
-  const frenteActivo = uM(() => frentesVisibles.find(f => f.id === frenteSelId) || misFrentes[0] || frentesVisibles[0] || null, [frentesVisibles, frenteSelId, misFrentes]);
+  const [frenteSelId, setFrenteSelId] = uS(null);   // id de frente | '__todas'
+  const esTodas = verOtros && frenteSelId === '__todas';
+  const frenteActivo = uM(() => esTodas ? null : (frentesVisibles.find(f => f.id === frenteSelId) || misFrentes[0] || frentesVisibles[0] || null), [esTodas, frentesVisibles, frenteSelId, misFrentes]);
   const esMiFrente = uM(() => !!frenteActivo && misFrentes.some(f => f.id === frenteActivo.id), [frenteActivo, misFrentes]);
-  const partidasDelFrente = uM(() => frenteActivo
-    ? partidasDeFrente(frenteActivo.id, { frentePartidas: frentePartidas || [], partidas: partidas || [] })
-    : [], [frenteActivo, frentePartidas, partidas]);
+  const allPartidas = uM(() => (partidas || []).filter(p => !p.deleted_at), [partidas]);
+  // Conjunto de partidas mostrado/operado: todas (incl. sin frente) o las del frente activo.
+  const partidasDelFrente = uM(() => esTodas
+    ? allPartidas
+    : (frenteActivo ? partidasDeFrente(frenteActivo.id, { frentePartidas: frentePartidas || [], partidas: partidas || [] }) : []),
+    [esTodas, allPartidas, frenteActivo, frentePartidas, partidas]);
+  const fNomById = uM(() => new Map((frentes || []).map(f => [f.id, f.nombre])), [frentes]);
+  // Nombres de frente(s) que cubren una partida (para badges); frente principal (para atribuir el avance).
+  const frentesNombresDe = (pid) => frentesDePartida(pid, { frentePartidas: frentePartidas || [], partidas: partidas || [] }).map(id => fNomById.get(id)).filter(Boolean);
+  const frenteDePartida = (pid) => { const ids = frentesDePartida(pid, { frentePartidas: frentePartidas || [], partidas: partidas || [] }); return ids[0] || null; };
+  const partByIdAll = uM(() => { const m = new Map(); allPartidas.forEach(p => m.set(p.id, p)); return m; }, [allPartidas]);
 
-  const resumen = uM(() => frenteActivo
-    ? resumenFrente({ partidasDelFrente, movimientos: movs || [], avances: avances || [], frenteId: frenteActivo.id })
-    : { nPartidas: 0, avancePromedio: 0, nSalidas: 0, metradoReal: 0 }, [frenteActivo, partidasDelFrente, movs, avances]);
+  const resumen = uM(() => resumenFrente({ partidasDelFrente, movimientos: movs || [], avances: avances || [], frenteId: frenteActivo?.id }),
+    [frenteActivo, partidasDelFrente, movs, avances]);
 
   const hoy = hoyISO();
   const rendimientos = uM(() => partidasDelFrente.map(p => ({ p, r: rendimientoPartida(p, avances || [], hoy) })), [partidasDelFrente, avances, hoy]);
@@ -94,7 +126,8 @@ function MiFrenteShell({ showToast, vista }) {
     return s;
   }, [partidasDelFrente]);
   const autoExpRef = uR(false);
-  uE(() => { if (!autoExpRef.current && partidasDelFrente.length) { autoExpRef.current = true; setExpandidos(new Set(foldersTodos)); } }, [partidasDelFrente, foldersTodos]);
+  // Auto-expandir al inicio SOLO en vista de frente (en "Todas" puede haber miles de partidas).
+  uE(() => { if (!autoExpRef.current && !esTodas && partidasDelFrente.length) { autoExpRef.current = true; setExpandidos(new Set(foldersTodos)); } }, [partidasDelFrente, foldersTodos, esTodas]);
   const partidasFiltradas = uM(() => {
     const q = filtroPart.trim().toLowerCase();
     if (!q) return null;
@@ -104,19 +137,33 @@ function MiFrenteShell({ showToast, vista }) {
   const [ganttSort, setGanttSort] = uS('fecha');   // 'fecha' | 'codigo' | 'rendimiento'
   const [ganttFiltro, setGanttFiltro] = uS('');
 
-  // ── Reporte diario (multi-partida + % automático + borradores) ────
+  // ── Reporte diario LIBRE (multi-partida de cualquier frente o sin frente) ──
   const [repLineas, setRepLineas] = uS([]);   // [{partida_id, descripcion, metrado, foto}]
-  const [addPartSel, setAddPartSel] = uS('');
+  const [addPartQuery, setAddPartQuery] = uS('');   // buscador de partidas a agregar
   const [busyRep, setBusyRep] = uS(false);
-  const draftKey = obraId && frenteActivo ? `jx_repdraft_${obraId}_${frenteActivo.id}_${hoy}` : '';
+  // Candidatas a reportar: todas las partidas (si "habilitar otros") o solo las de mis frentes.
+  const partidasReporteBase = uM(() => {
+    if (verOtros) return allPartidas;
+    const m = new Map();
+    for (const f of misFrentes) for (const p of partidasDeFrente(f.id, { frentePartidas: frentePartidas || [], partidas: partidas || [] })) m.set(p.id, p);
+    return [...m.values()];
+  }, [verOtros, allPartidas, misFrentes, frentePartidas, partidas]);
+  // Solo partidas específicas (hojas, no capítulos).
+  const hojasReporte = uM(() => {
+    const folders = new Set();
+    for (const p of partidasReporteBase) { const segs = String(p.codigo_delfin || '').split('.').filter(Boolean); for (let i = 1; i < segs.length; i++) folders.add(segs.slice(0, i).join('.')); }
+    return partidasReporteBase.filter(p => !folders.has(String(p.codigo_delfin || '')));
+  }, [partidasReporteBase]);
+  // Borrador por USUARIO+día (el reporte ya no es por-frente).
+  const draftKey = obraId && userId ? `jx_repdraft_${obraId}_${userId}_${hoy}` : '';
   const [hayBorrador, setHayBorrador] = uS(false);
   uE(() => { if (!draftKey) { setHayBorrador(false); return; } try { setHayBorrador(!!localStorage.getItem(draftKey)); } catch { setHayBorrador(false); } }, [draftKey]);
-  const agregarLinea = (pid) => { if (!pid) return; setRepLineas(prev => prev.some(l => l.partida_id === pid) ? prev : [...prev, { partida_id: pid, descripcion: '', metrado: '', foto: null }]); setAddPartSel(''); };
+  const agregarLinea = (pid) => { if (!pid) return; setRepLineas(prev => prev.some(l => l.partida_id === pid) ? prev : [...prev, { partida_id: pid, descripcion: '', metrado: '', foto: null }]); setAddPartQuery(''); };
   const quitarLinea = (pid) => setRepLineas(prev => prev.filter(l => l.partida_id !== pid));
   const setLinea = (pid, campo, val) => setRepLineas(prev => prev.map(l => l.partida_id === pid ? { ...l, [campo]: val } : l));
   // % acumulado calculado solo desde el metrado real (no editable por el ingeniero).
   const calcAcum = (pid, metradoHoy) => {
-    const p = partById.get(pid); if (!p) return null;
+    const p = partByIdAll.get(pid); if (!p) return null;
     const mc = Number(p.metrado_contratado) || 0;
     const r = rendimientoPartida(p, avances || [], hoy);
     const real = (r.realAcum || 0) + (Number(metradoHoy) || 0);
@@ -133,7 +180,6 @@ function MiFrenteShell({ showToast, vista }) {
   const descartarBorrador = () => { try { localStorage.removeItem(draftKey); } catch {} setHayBorrador(false); };
   const [draftTick, setDraftTick] = uS(0);   // fuerza recálculo de la lista de Borradores tras eliminar
   const guardarReporte = async () => {
-    if (!frenteActivo) return;
     const lineas = repLineas.filter(l => l.partida_id && (l.metrado !== '' || (l.descripcion || '').trim() || l.foto));
     if (!lineas.length) { showToast('Agregá al menos una partida con avance', 'red'); return; }
     setBusyRep(true);
@@ -142,7 +188,7 @@ function MiFrenteShell({ showToast, vista }) {
         const ac = calcAcum(l.partida_id, l.metrado);
         const id = window.__newId();
         await avanceHook.create({
-          id, obra_id: obraId, partida_id: l.partida_id, frente_id: frenteActivo.id, fecha: hoy,
+          id, obra_id: obraId, partida_id: l.partida_id, frente_id: frenteDePartida(l.partida_id), fecha: hoy,
           porcentaje_avance_reportado: ac && ac.pct != null ? Math.round(ac.pct * 10) / 10 : null,
           metrado_ejecutado: l.metrado !== '' ? Number(l.metrado) : null,
           descripcion: l.descripcion || null, responsable_id: userId,
@@ -165,68 +211,10 @@ function MiFrenteShell({ showToast, vista }) {
     finally { setBusyRep(false); }
   };
 
-  // ── Reporte de FRENTE AJENO (con permiso del admin/gerente) ───────
-  const solActiva = uM(() => solicitudActiva(solicitudes || [], { frenteId: frenteActivo?.id, fecha: hoy, userId }),
-    [solicitudes, frenteActivo, hoy, userId]);
-  const [motivoSol, setMotivoSol] = uS('');
-  const solicitarPermiso = async () => {
-    if (!frenteActivo) return;
-    if (!motivoSol.trim()) { showToast('Indicá el motivo (ej. ing. titular ausente)', 'red'); return; }
-    try {
-      await solHook.create({
-        id: window.__newId(), obra_id: obraId, frente_id: frenteActivo.id, solicitante_user_id: userId,
-        fecha: hoy, motivo: motivoSol.trim(), estado: 'solicitado', reporte_payload: null, created_by: userId,
-      });
-      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'solicitudes_reporte' } })); } catch {}
-      showToast('Permiso solicitado al administrador/gerente', 'green'); setMotivoSol('');
-    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
-  };
-  const cancelarSolicitud = async () => {
-    if (!solActiva) return;
-    try { await solHook.remove(solActiva.id); try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'solicitudes_reporte' } })); } catch {} showToast('Solicitud cancelada', 'amber'); }
-    catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
-  };
-  const enviarReporteAjeno = async () => {
-    if (!frenteActivo) return;
-    const lineas = repLineas.filter(l => l.partida_id && (l.metrado !== '' || (l.descripcion || '').trim() || l.foto));
-    if (!lineas.length) { showToast('Agregá al menos una partida con avance', 'red'); return; }
-    setBusyRep(true);
-    try {
-      const payload = lineas.map(l => ({ partida_id: l.partida_id, descripcion: l.descripcion || null, metrado: l.metrado !== '' ? Number(l.metrado) : null, tiene_foto: !!l.foto }));
-      // Crear-o-actualizar la solicitud directamente como 'enviado' (el permiso previo es opcional).
-      let solId = solActiva?.id;
-      if (solId) {
-        await solHook.update(solId, { estado: 'enviado', updated_by: userId, reporte_payload: payload, motivo: solActiva.motivo || motivoSol || null });
-      } else {
-        solId = window.__newId();
-        await solHook.create({ id: solId, obra_id: obraId, frente_id: frenteActivo.id, solicitante_user_id: userId, fecha: hoy, motivo: motivoSol || null, estado: 'enviado', reporte_payload: payload, created_by: userId });
-      }
-      // Fotos como evidencia ligada a la SOLICITUD (el avance_obra todavía no existe; se crea al aceptar).
-      for (const l of lineas) {
-        if (!l.foto) continue;
-        try {
-          await window.__saveEvidenciaLocal({
-            id: window.__newId(), obra_id: obraId, tipo_evidencia: 'foto_avance', modulo_relacionado: 'solicitudes_reporte',
-            registro_relacionado_id: solId, nombre_archivo: l.foto.name, mime_type: l.foto.type || 'image/jpeg',
-            blob: l.foto, fecha: hoy, created_by: userId,
-            observaciones: `Foto avance frente ajeno · partida ${partById.get(l.partida_id)?.codigo_delfin || ''}`,
-          });
-        } catch (e) { console.warn('[ajeno foto]', e?.message); }
-      }
-      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'solicitudes_reporte' } })); } catch {}
-      showToast('Reporte enviado — esperando aceptación del admin/gerente', 'green');
-      setRepLineas([]); descartarBorrador(); setMotivoSol('');
-    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
-    finally { setBusyRep(false); }
-  };
-  // Al cambiar de frente, limpiar el editor (no contaminar partidas entre frentes).
-  const frenteRef = uR(null);
-  uE(() => {
-    const fid = frenteActivo?.id || null;
-    if (frenteRef.current === fid) return;
-    frenteRef.current = fid;
-    setRepLineas([]); setFiltroPart(''); setAddPartSel('');
-  }, [frenteActivo]);
+  // (El reporte ya no es por-frente ni requiere aprobación: el ingeniero arma un único
+  //  reporte del día con partidas de cualquier frente o sin frente; los avances acumulan
+  //  y se trazan por color de ingeniero. La aprobación admin/gerente se reserva para crear
+  //  un frente desde una partida huérfana. El editor NO se limpia al cambiar de alcance.)
 
   // ── Menú anti-click sobre partidas (árbol + Gantt) ────────────────
   const [ctx, setCtx] = uS(null);   // {x, y, partida}
@@ -236,26 +224,25 @@ function MiFrenteShell({ showToast, vista }) {
   uE(() => {
     const it = window.__miFrenteIntent;
     if (!it || intentRef.current === it.ts) return;
-    // Si el frente objetivo no es el activo, cambiarlo (activando "ver otros" si es ajeno) y re-entrar.
-    if (it.frenteId && frenteActivo && it.frenteId !== frenteActivo.id) {
-      if (!misFrentes.some(f => f.id === it.frenteId)) setVerOtros(true);
-      setFrenteSelId(it.frenteId); return;
-    }
     if (it.tipo === 'borrador' && vista === 'reporte') {
-      cargarBorrador(`jx_repdraft_${obraId}_${it.frenteId}_${it.fecha}`);
-      intentRef.current = it.ts; window.__miFrenteIntent = null;
-      return;
+      cargarBorrador(`jx_repdraft_${obraId}_${userId}_${it.fecha}`);
+      intentRef.current = it.ts; window.__miFrenteIntent = null; return;
     }
-    if (!partidasDelFrente.length) return;
-    const p = partidasDelFrente.find(x => x.id === it.partidaId);
-    if (it.tipo === 'costo' && vista === 'partidas') {
-      if (p) { setFiltroPart(p.codigo_delfin || ''); setExpandidos(prev => new Set(prev).add(p.codigo_delfin)); }
-      intentRef.current = it.ts; window.__miFrenteIntent = null;
-    } else if (it.tipo === 'reporte' && vista === 'reporte') {
+    if (it.tipo === 'reporte' && vista === 'reporte') {
+      const p = partByIdAll.get(it.partidaId);
       if (p) setRepLineas(prev => prev.some(l => l.partida_id === p.id) ? prev : [...prev, { partida_id: p.id, descripcion: '', metrado: '', foto: null }]);
+      intentRef.current = it.ts; window.__miFrenteIntent = null; return;
+    }
+    if (it.tipo === 'costo' && vista === 'partidas') {
+      const p = partByIdAll.get(it.partidaId);
+      if (!p) return;
+      // Asegurar que la partida sea visible: si no está en el alcance actual, ir a "Todas".
+      const enScope = partidasDelFrente.some(x => x.id === p.id);
+      if (!enScope && !esTodas) { setVerOtros(true); setFrenteSelId('__todas'); return; }   // re-entra al cambiar el alcance
+      setFiltroPart(p.codigo_delfin || ''); setExpandidos(prev => new Set(prev).add(p.codigo_delfin));
       intentRef.current = it.ts; window.__miFrenteIntent = null;
     }
-  }, [vista, partidasDelFrente, frenteActivo]);
+  }, [vista, partidasDelFrente, esTodas, partByIdAll]);
 
   // ── Plan vs Real ──────────────────────────────────────────────────
   const [meta, setMeta] = uS({ partida_id: '', fecha: hoy, meta_metrado: '', meta_descripcion: '' });
@@ -341,9 +328,12 @@ function MiFrenteShell({ showToast, vista }) {
 
   // Editor multi-partida reutilizado por el reporte propio (con foto) y el ajeno (sin foto).
   const editorLineas = (showFoto) => {
-    const leaf = partidasDelFrente.filter(p => !hijosDirectos(partidasDelFrente, p.codigo_delfin).length);
     const yaIds = new Set(repLineas.map(l => l.partida_id));
-    const disponibles = leaf.filter(p => !yaIds.has(p.id));
+    const q = addPartQuery.trim().toLowerCase();
+    const sugeridas = (q
+      ? hojasReporte.filter(p => String(p.codigo_delfin || '').toLowerCase().includes(q) || String(p.nombre_partida || '').toLowerCase().includes(q))
+      : hojasReporte
+    ).filter(p => !yaIds.has(p.id)).slice(0, 25);
     return (
       <>
         <div className="card card-p">
@@ -351,17 +341,22 @@ function MiFrenteShell({ showToast, vista }) {
             <div style={{ fontSize: 13, fontWeight: 600 }}>Partidas avanzadas · {hoy}</div>
             <span style={{ fontSize: 11, color: 'var(--tm)' }}>{repLineas.length} partida(s)</span>
           </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <select className="fi" style={{ maxWidth: 380 }} value={addPartSel} onChange={e => setAddPartSel(e.target.value)}>
-              <option value="">— Agregar una partida que avanzaste hoy —</option>
-              {disponibles.map(p => <option key={p.id} value={p.id}>{nombrePart(p)}</option>)}
-            </select>
-            <button className="btn btn-amber btn-sm" disabled={!addPartSel} onClick={() => agregarLinea(addPartSel)}>+ Agregar</button>
-          </div>
-          {repLineas.length === 0 && <div style={{ color: 'var(--tm)', fontStyle: 'italic', fontSize: 12, marginTop: 10 }}>Agregá las partidas que avanzaste hoy. Podés cargar varias en un mismo reporte; el % acumulado se calcula solo.</div>}
+          <input className="fi" placeholder={verOtros ? 'Buscar cualquier partida por código o nombre…' : 'Buscar una partida de tus frentes…'} value={addPartQuery} onChange={e => setAddPartQuery(e.target.value)} />
+          {(q || sugeridas.length > 0) && (
+            <div style={{ marginTop: 6, maxHeight: 230, overflow: 'auto', border: '1px solid var(--bd)', borderRadius: 6 }}>
+              {sugeridas.map(p => (
+                <button key={p.id} onClick={() => agregarLinea(p.id)} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid var(--bd)', color: 'var(--tx)', padding: '7px 10px', fontSize: 12, cursor: 'pointer' }} onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>
+                  <span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{p.codigo_delfin}</span> {p.nombre_partida}
+                  {verOtros && (() => { const fs = frentesNombresDe(p.id); return fs.length ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>{fs.join(', ')}</span> : <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }}>sin frente</span>; })()}
+                </button>
+              ))}
+              {q && sugeridas.length === 0 && <div style={{ padding: '7px 10px', color: 'var(--tm)', fontStyle: 'italic', fontSize: 12 }}>Sin coincidencias.</div>}
+            </div>
+          )}
+          {repLineas.length === 0 && <div style={{ color: 'var(--tm)', fontStyle: 'italic', fontSize: 12, marginTop: 10 }}>Buscá y agregá las partidas que avanzaste hoy (de cualquier frente o sin frente); el % acumulado se calcula solo.{!verOtros && ' Activá "Habilitar otros frentes y partidas" para reportar fuera de tus frentes.'}</div>}
         </div>
         {repLineas.map(l => {
-          const p = partById.get(l.partida_id);
+          const p = partByIdAll.get(l.partida_id);
           const ac = calcAcum(l.partida_id, l.metrado);
           const pctPrev = p ? (Number(p.porcentaje_avance) || 0) : 0;
           return (
@@ -408,9 +403,9 @@ function MiFrenteShell({ showToast, vista }) {
               : <span style={{ display: 'inline-block', width: 18 }} />}
             <span style={{ fontFamily: 'monospace', fontSize: 11.5 }}>{nodo.code}</span>
           </td>
-          <td>{p ? (p.nombre_partida || '—') : <span style={{ color: 'var(--tm)' }}>capítulo</span>}</td>
+          <td>{p ? <>{p.nombre_partida || '—'}{esTodas && (() => { const fs = frentesNombresDe(p.id); return fs.length ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }} title="Frente(s)">{fs.join(', ')}</span> : <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }} title="No pertenece a ningún frente">sin frente</span>; })()}</> : <span style={{ color: 'var(--tm)' }}>capítulo</span>}</td>
           <td style={{ textAlign: 'right' }}>{p ? `${num(p.metrado_contratado)} ${p.unidad || ''}` : ''}</td>
-          <td style={{ textAlign: 'right' }}>{p ? `${Number(p.porcentaje_avance) || 0}%` : ''}</td>
+          <td>{p ? <BarraAvance partida={p} avancesPartida={avancesPorPartida.get(p.id)} nombreUsuario={nombreUsuario} /> : ''}</td>
           <td>{r ? <SemBadge s={r.semaforo} /> : ''}</td>
           <td style={{ textAlign: 'right' }}>{p && <button className="btn btn-ghost btn-xs" onClick={() => generarReporteDe(p)}>Reportar</button>}</td>
         </tr>
@@ -447,19 +442,28 @@ function MiFrenteShell({ showToast, vista }) {
         <div>
           <div className="pg-title">{TITULOS[vista]}</div>
           <div className="pg-sub">
-            {frenteActivo?.nombre || '—'} · {resumen.nPartidas} partidas · {Math.round(resumen.avancePromedio)}% avance prom.
-            {!esMiFrente && frenteActivo && <span style={{ color: 'var(--amber)' }}> · frente ajeno (solo lectura)</span>}
+            {esTodas
+              ? <>Todas las partidas · {partidasDelFrente.length} partidas (incl. sin frente)</>
+              : <>{frenteActivo?.nombre || '—'} · {resumen.nPartidas} partidas · {Math.round(resumen.avancePromedio)}% avance prom.{!esMiFrente && frenteActivo && <span style={{ color: 'var(--amber)' }}> · otro frente</span>}</>}
           </div>
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-          {frentesVisibles.length > 1 && (
-            <select className="fi" style={{ maxWidth: 240 }} value={frenteActivo?.id || ''} onChange={e => setFrenteSelId(e.target.value)}>
-              {frentesVisibles.map(f => <option key={f.id} value={f.id}>{f.nombre}{misFrentes.some(m => m.id === f.id) ? '' : ' · ajeno'}</option>)}
+          {(frentesVisibles.length > 1 || verOtros) && (
+            <select className="fi" style={{ maxWidth: 280 }} value={esTodas ? '__todas' : (frenteActivo?.id || '')} onChange={e => setFrenteSelId(e.target.value)}>
+              <optgroup label="Mis frentes">
+                {misFrentes.map(f => <option key={f.id} value={f.id}>{f.nombre}</option>)}
+              </optgroup>
+              {verOtros && frentesVisibles.filter(f => !misFrentes.some(m => m.id === f.id)).length > 0 && (
+                <optgroup label="Otros frentes">
+                  {frentesVisibles.filter(f => !misFrentes.some(m => m.id === f.id)).map(f => <option key={f.id} value={f.id}>{f.nombre}</option>)}
+                </optgroup>
+              )}
+              {verOtros && <option value="__todas">★ Todas las partidas (incl. sin frente)</option>}
             </select>
           )}
           <label style={{ fontSize: 11.5, display: 'flex', alignItems: 'center', gap: 5, color: 'var(--tm)', cursor: 'pointer' }}>
-            <input type="checkbox" checked={verOtros} onChange={e => { setVerOtros(e.target.checked); if (!e.target.checked && !esMiFrente) setFrenteSelId(misFrentes[0]?.id || null); }} />
-            Ver otros frentes
+            <input type="checkbox" checked={verOtros} onChange={e => { const on = e.target.checked; setVerOtros(on); if (!on && (esTodas || !esMiFrente)) setFrenteSelId(misFrentes[0]?.id || null); }} />
+            Habilitar otros frentes y partidas
           </label>
         </div>
       </div>
@@ -511,7 +515,7 @@ function MiFrenteShell({ showToast, vista }) {
             <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--tm)' }}>{partidasFiltradas ? `${partidasFiltradas.length} coinciden` : `${partidasDelFrente.length} partidas`}</span>
           </div>
           <table className="tbl" style={{ fontSize: 12 }}>
-            <thead><tr><th>Código</th><th>Partida</th><th style={{ textAlign: 'right' }}>Metrado</th><th style={{ textAlign: 'right' }}>% Avance</th><th>Rendimiento</th><th></th></tr></thead>
+            <thead><tr><th>Código</th><th>Partida</th><th style={{ textAlign: 'right' }}>Metrado</th><th>Avance (por ingeniero)</th><th>Rendimiento</th><th></th></tr></thead>
             <tbody>
               {partidasFiltradas ? partidasFiltradas.flatMap(p => {
                 const r = rendimientoPartida(p, avances || [], hoy);
@@ -520,9 +524,9 @@ function MiFrenteShell({ showToast, vista }) {
                 const rows = [
                   <tr key={p.id} onContextMenu={(e) => openCtx(e, p)} style={{ cursor: 'context-menu' }}>
                     <td style={{ whiteSpace: 'nowrap' }}>{ins.length ? <button className="btn btn-ghost btn-xs" onClick={() => toggleExp(p.codigo_delfin)} style={{ padding: '0 4px' }}>{open ? '▾' : '▸'}</button> : <span style={{ display: 'inline-block', width: 18 }} />}<span style={{ fontFamily: 'monospace', fontSize: 11.5 }}>{p.codigo_delfin}</span></td>
-                    <td>{p.nombre_partida || '—'}</td>
+                    <td>{p.nombre_partida || '—'}{esTodas && (() => { const fs = frentesNombresDe(p.id); return fs.length ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }} title="Frente(s)">{fs.join(', ')}</span> : <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }} title="No pertenece a ningún frente">sin frente</span>; })()}</td>
                     <td style={{ textAlign: 'right' }}>{num(p.metrado_contratado)} {p.unidad || ''}</td>
-                    <td style={{ textAlign: 'right' }}>{Number(p.porcentaje_avance) || 0}%</td>
+                    <td><BarraAvance partida={p} avancesPartida={avancesPorPartida.get(p.id)} nombreUsuario={nombreUsuario} /></td>
                     <td><SemBadge s={r.semaforo} /></td>
                     <td style={{ textAlign: 'right' }}><button className="btn btn-ghost btn-xs" onClick={() => generarReporteDe(p)}>Reportar</button></td>
                   </tr>,
@@ -619,13 +623,13 @@ function MiFrenteShell({ showToast, vista }) {
         </div>
       )}
 
-      {vista === 'reporte' && esMiFrente && (
+      {vista === 'reporte' && (
         <div style={{ display: 'grid', gap: 12, maxWidth: 700 }}>
           {hayBorrador && repLineas.length === 0 && (
             <div className="card card-p" style={{ background: 'rgba(245,180,40,0.08)', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               <span style={{ width: 9, height: 9, borderRadius: '50%', background: 'var(--amber)', display: 'inline-block' }} />
               <span style={{ fontSize: 12.5 }}>Tenés un borrador de hoy sin terminar.</span>
-              <button className="btn btn-amber btn-xs" onClick={cargarBorrador}>Cargar borrador</button>
+              <button className="btn btn-amber btn-xs" onClick={() => cargarBorrador()}>Cargar borrador</button>
               <button className="btn btn-ghost btn-xs" onClick={descartarBorrador}>Descartar</button>
             </div>
           )}
@@ -638,65 +642,6 @@ function MiFrenteShell({ showToast, vista }) {
           )}
         </div>
       )}
-
-      {vista === 'reporte' && !esMiFrente && frenteActivo && (() => {
-        const info = solActiva ? solEstadoInfo(solActiva.estado) : null;
-        const yaAceptado = solActiva?.estado === 'aceptado';
-        const tienePayload = Array.isArray(solActiva?.reporte_payload) && solActiva.reporte_payload.length > 0;
-        return (
-          <div style={{ display: 'grid', gap: 12, maxWidth: 700 }}>
-            <div className="card card-p" style={{ background: 'rgba(245,180,40,0.06)' }}>
-              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Reportar un frente ajeno · {frenteActivo.nombre}</div>
-              <div style={{ fontSize: 12, color: 'var(--tm)' }}>Este frente no es tuyo. Llená el reporte igual que el tuyo (descripción, metrado y foto por partida) y mandalo a aprobación: el avance recién queda registrado cuando el administrador o gerente lo acepta.</div>
-              {info && <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}><span className="badge" style={{ background: info.color, color: '#000', fontSize: 10 }}>{info.label}</span>{solActiva.motivo && <span style={{ fontSize: 11, color: 'var(--tm)' }}>Motivo: {solActiva.motivo}</span>}</div>}
-              {solActiva?.nota_decision && <div style={{ marginTop: 6, fontSize: 11.5, color: 'var(--red)' }}>Nota del admin: {solActiva.nota_decision}</div>}
-            </div>
-
-            {yaAceptado ? (
-              <div className="card card-p" style={{ fontSize: 12.5 }}>El reporte fue aceptado y los avances ya se aplicaron al frente. ✓</div>
-            ) : (<>
-              {!solActiva && (
-                <div className="card card-p" style={{ display: 'grid', gap: 6 }}>
-                  <div style={{ fontSize: 12, color: 'var(--tm)' }}>Opcional: avisá al admin/gerente antes de empezar (no hace falta para poder enviar).</div>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <input className="fi" style={{ maxWidth: 360 }} value={motivoSol} onChange={e => setMotivoSol(e.target.value)} placeholder="Motivo (ej. el ingeniero titular no asistió hoy)" />
-                    <button className="btn btn-ghost btn-sm" onClick={solicitarPermiso}>Solicitar permiso primero</button>
-                  </div>
-                </div>
-              )}
-              {solActiva?.estado === 'solicitado' && (
-                <div className="card card-p" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 12.5 }}>
-                  <span>Pediste permiso (esperando respuesta). Igual podés llenar y enviar el reporte directamente.</span>
-                  <button className="btn btn-ghost btn-xs" onClick={cancelarSolicitud}>Cancelar solicitud</button>
-                </div>
-              )}
-
-              {hayBorrador && repLineas.length === 0 && (
-                <div className="card card-p" style={{ background: 'rgba(245,180,40,0.08)', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  <span style={{ width: 9, height: 9, borderRadius: '50%', background: 'var(--amber)', display: 'inline-block' }} />
-                  <span style={{ fontSize: 12.5 }}>Tenés un borrador de hoy sin terminar.</span>
-                  <button className="btn btn-amber btn-xs" onClick={() => cargarBorrador()}>Cargar borrador</button>
-                  <button className="btn btn-ghost btn-xs" onClick={descartarBorrador}>Descartar</button>
-                </div>
-              )}
-              {(solActiva?.estado === 'enviado' || solActiva?.estado === 'devuelto') && tienePayload && repLineas.length === 0 && (
-                <div className="card card-p" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: 12.5 }}>{solActiva.estado === 'devuelto' ? 'El admin te devolvió el reporte para corregir.' : 'Ya enviaste un reporte (esperando aceptación). Podés editarlo y reenviarlo.'}</span>
-                  <button className="btn btn-amber btn-xs" onClick={() => setRepLineas(solActiva.reporte_payload.map(l => ({ partida_id: l.partida_id, descripcion: l.descripcion || '', metrado: l.metrado ?? '', foto: null })))}>Cargar lo enviado</button>
-                </div>
-              )}
-
-              {editorLineas(true)}
-              {repLineas.length > 0 && (
-                <div className="modal-actions" style={{ display: 'flex', gap: 8 }}>
-                  <button className="btn btn-amber" disabled={busyRep} onClick={enviarReporteAjeno}><JxIcon name="check" size={13} />{solActiva?.estado === 'enviado' ? 'Reenviar para aprobación' : 'Enviar para aprobación'}</button>
-                  <button className="btn btn-ghost" disabled={busyRep} onClick={guardarBorrador}>Guardar como borrador</button>
-                </div>
-              )}
-            </>)}
-          </div>
-        );
-      })()}
 
       {vista === 'plan' && (
         <div style={{ display: 'grid', gap: 12 }}>
@@ -745,38 +690,32 @@ function MiFrenteShell({ showToast, vista }) {
       )}
 
       {vista === 'borradores' && (() => {
-        const _tick = draftTick;   // re-evaluar al eliminar
-        const prefix = `jx_repdraft_${obraId}_`;
-        const rx = /^jx_repdraft_(.+)_(.+)_(\d{4}-\d{2}-\d{2})$/;
+        void draftTick;   // re-evaluar al eliminar
+        const prefix = `jx_repdraft_${obraId}_${userId}_`;
         const items = [];
         try {
           for (let i = 0; i < localStorage.length; i++) {
             const k = localStorage.key(i);
             if (!k || !k.startsWith(prefix)) continue;
-            const m = k.match(rx);
-            if (!m) continue;
-            const [, oid, fid, fecha] = m;
-            if (oid !== obraId) continue;
+            const fecha = k.slice(prefix.length);
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) continue;
             let lineas = []; try { lineas = JSON.parse(localStorage.getItem(k) || '[]'); } catch {}
-            items.push({ key: k, frenteId: fid, fecha, n: Array.isArray(lineas) ? lineas.length : 0 });
+            items.push({ key: k, fecha, n: Array.isArray(lineas) ? lineas.length : 0 });
           }
         } catch {}
         items.sort((a, b) => b.fecha.localeCompare(a.fecha));
-        const frNombre = (id) => (frentes || []).find(f => f.id === id)?.nombre || '—';
-        const esPropio = (id) => misFrentes.some(f => f.id === id);
-        const retomar = (it) => { window.__miFrenteIntent = { tipo: 'borrador', frenteId: it.frenteId, fecha: it.fecha, ts: Date.now() }; window.__navTo?.('reporte-diario'); };
+        const retomar = (it) => { window.__miFrenteIntent = { tipo: 'borrador', fecha: it.fecha, ts: Date.now() }; window.__navTo?.('reporte-diario'); };
         const eliminar = (it) => { try { localStorage.removeItem(it.key); } catch {} if (it.key === draftKey) setHayBorrador(false); setDraftTick(t => t + 1); };
         return (
           <div className="card" style={{ overflow: 'auto' }}>
             <div style={{ padding: '8px 12px', fontSize: 12.5, fontWeight: 600 }}>Borradores guardados ({items.length})</div>
             <div style={{ padding: '0 12px 8px', fontSize: 11, color: 'var(--tm)' }}>Reportes que dejaste a medias. Retomá uno para terminarlo o eliminalo. Las fotos no se guardan en el borrador; se vuelven a adjuntar al terminar.</div>
             <table className="tbl" style={{ fontSize: 12 }}>
-              <thead><tr><th>Frente</th><th>Día</th><th style={{ textAlign: 'right' }}>Partidas</th><th></th></tr></thead>
+              <thead><tr><th>Día</th><th style={{ textAlign: 'right' }}>Partidas</th><th></th></tr></thead>
               <tbody>
                 {items.map(it => (
                   <tr key={it.key}>
-                    <td>{frNombre(it.frenteId)} {esPropio(it.frenteId) ? <span className="badge b-green" style={{ fontSize: 9 }}>mío</span> : <span className="badge" style={{ background: 'var(--amber)', color: '#000', fontSize: 9 }}>ajeno</span>}</td>
-                    <td>{it.fecha}</td>
+                    <td>{it.fecha}{it.fecha === hoy ? <span className="badge b-green" style={{ marginLeft: 6, fontSize: 9 }}>hoy</span> : null}</td>
                     <td style={{ textAlign: 'right' }}>{it.n}</td>
                     <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                       <button className="btn btn-amber btn-xs" onClick={() => retomar(it)}>Retomar</button>
@@ -784,7 +723,7 @@ function MiFrenteShell({ showToast, vista }) {
                     </td>
                   </tr>
                 ))}
-                {items.length === 0 && <tr><td colSpan={4} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>No tenés borradores guardados.</td></tr>}
+                {items.length === 0 && <tr><td colSpan={3} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>No tenés borradores guardados.</td></tr>}
               </tbody>
             </table>
           </div>
