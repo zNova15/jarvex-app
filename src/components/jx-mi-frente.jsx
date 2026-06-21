@@ -314,10 +314,11 @@ function MiFrenteShell({ showToast, vista }) {
   }, [partidasDelFrente, ganttFiltro, ganttSort, avances, hoy]);
   const ganttRango = uM(() => {
     if (!ganttPartidas.length) return null;
-    const ini = Math.min(...ganttPartidas.map(p => new Date(p.fecha_inicio_planificada).getTime()));
-    const fin = Math.max(...ganttPartidas.map(p => new Date(p.fecha_fin_planificada).getTime()));
+    const hoyMs = new Date(hoy).getTime();   // incluir HOY en el rango → la línea de hoy siempre se ve
+    const ini = Math.min(hoyMs, ...ganttPartidas.map(p => new Date(p.fecha_inicio_planificada).getTime()));
+    const fin = Math.max(hoyMs, ...ganttPartidas.map(p => new Date(p.fecha_fin_planificada).getTime()));
     return { ini, fin, span: Math.max(1, fin - ini) };
-  }, [ganttPartidas]);
+  }, [ganttPartidas, hoy]);
 
   if (!obraId) return <div className="page-wrap"><div className="card card-p empty-state"><p>Seleccioná una obra activa.</p></div></div>;
   if (misFrentes.length === 0) {
@@ -639,8 +640,8 @@ function MiFrenteShell({ showToast, vista }) {
               <div>
                 <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 8 }}>
                   {new Date(ganttRango.ini).toLocaleDateString('es-PE')} → {new Date(ganttRango.fin).toLocaleDateString('es-PE')}
-                  {hoyPct != null ? <span style={{ color: 'var(--amber)' }}> · ▼ hoy {new Date(hoy).toLocaleDateString('es-PE')}</span> : ' · hoy fuera del rango'}
-                  {' '}· tocá una barra para ir a Mis Partidas
+                  {hoyPct != null && <span style={{ color: 'var(--amber)' }}> · ▼ hoy {new Date(hoy).toLocaleDateString('es-PE')}</span>}
+                  {' '}· la barra clara = plan, la rellena = avance · tocá una barra para ir a la partida
                 </div>
                 <div style={{ display: 'grid', gap: 4 }}>
                   {ganttPartidas.map(p => {
@@ -649,16 +650,22 @@ function MiFrenteShell({ showToast, vista }) {
                     const left = ((ini - ganttRango.ini) / ganttRango.span) * 100;
                     const width = Math.max(1.5, ((fin - ini) / ganttRango.span) * 100);
                     const r = rendimientoPartida(p, avances || [], hoy);
-                    const atrasada = hoyMs > fin && (Number(p.porcentaje_avance) || 0) < 100;
+                    const pct = Math.max(0, Math.min(100, Number(p.porcentaje_avance) || 0));
+                    const atrasada = hoyMs > fin && pct < 100;
+                    const cFrente = colorIngeniero(frenteDePartida(p.id) || 'sin');
                     return (
                       <div key={p.id} style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 8, alignItems: 'center', cursor: 'pointer' }} onClick={() => { window.__miFrenteIntent = { tipo: 'costo', partidaId: p.id, ts: Date.now() }; window.__navTo?.('mis-partidas'); }} onContextMenu={(e) => openCtx(e, p)}>
-                        <div style={{ fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${p.codigo_delfin} · ${p.nombre_partida}`}>
+                        <div style={{ fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${p.codigo_delfin} · ${p.nombre_partida} · frente ${(frentesNombresDe(p.id)[0] || 'sin')}`}>
+                          <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: cFrente, marginRight: 5 }} />
                           <span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{p.codigo_delfin}</span> {p.nombre_partida}{atrasada ? <span style={{ color: 'var(--red)' }}> ⚠</span> : null}
                         </div>
                         <div style={{ position: 'relative', height: 18, background: 'rgba(255,255,255,0.04)', borderRadius: 4 }}>
-                          <div style={{ position: 'absolute', left: left + '%', width: width + '%', top: 2, bottom: 2, background: SEM[r.semaforo], borderRadius: 3, opacity: 0.9 }}
-                            title={`${num(p.metrado_contratado)} ${p.unidad || ''} · ${p.fecha_inicio_planificada} → ${p.fecha_fin_planificada}`} />
-                          {hoyPct != null && <div style={{ position: 'absolute', left: hoyPct + '%', top: -1, bottom: -1, width: 2, background: 'var(--amber)', zIndex: 1 }} title="Hoy" />}
+                          {/* barra planificada (color del frente) */}
+                          <div style={{ position: 'absolute', left: left + '%', width: width + '%', top: 2, bottom: 2, background: cFrente, opacity: 0.32, borderRadius: 3 }}
+                            title={`${num(p.metrado_contratado)} ${p.unidad || ''} · ${p.fecha_inicio_planificada} → ${p.fecha_fin_planificada} · ${pct}% avance`} />
+                          {/* avance real (color del semáforo) */}
+                          {pct > 0 && <div style={{ position: 'absolute', left: left + '%', width: (width * pct / 100) + '%', top: 2, bottom: 2, background: SEM[r.semaforo], opacity: 0.95, borderRadius: 3 }} />}
+                          {hoyPct != null && <div style={{ position: 'absolute', left: hoyPct + '%', top: -2, bottom: -2, width: 2, background: 'var(--amber)', zIndex: 2 }} title={`Hoy ${hoy}`} />}
                         </div>
                       </div>
                     );
