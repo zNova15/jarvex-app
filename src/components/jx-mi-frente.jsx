@@ -263,10 +263,16 @@ function MiFrenteShell({ showToast, vista }) {
   const planFila = uM(() => planVsReal({ partidasDelFrente, metas: metas || [], avances: avances || [] }), [partidasDelFrente, metas, avances]);
   const rollup = uM(() => rollupMensual({ partidasDelFrente, avances: avances || [], mes }), [partidasDelFrente, avances, mes]);
 
-  // ── Salidas: vincular a partida ───────────────────────────────────
-  const [vincSel, setVincSel] = uS({});
-  const vincularSalida = async (m) => {
-    const pid = vincSel[m.id];
+  // ── Vinculación de insumos: salidas → partida ─────────────────────
+  const [vincSel, setVincSel] = uS({});         // {movId: textoCódigo}
+  const [tabSalidas, setTabSalidas] = uS('mis'); // 'mis' | 'generales'
+  const [filtroDiaSal, setFiltroDiaSal] = uS('');
+  const [filtroPartSal, setFiltroPartSal] = uS('');
+  const misFrentesIds = uM(() => new Set(misFrentes.map(f => f.id)), [misFrentes]);
+  const salidasMisFrentes = uM(() => (movs || []).filter(m => !m.deleted_at && m.tipo_movimiento === 'salida' && m.frente_id && misFrentesIds.has(m.frente_id)).sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || ''))), [movs, misFrentesIds]);
+  const salidasGenerales = uM(() => (movs || []).filter(m => !m.deleted_at && m.tipo_movimiento === 'salida').sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || ''))), [movs]);
+  const partidaPorCodigo = uM(() => { const m = new Map(); allPartidas.forEach(p => { if (p.codigo_delfin) m.set(String(p.codigo_delfin).trim(), p.id); }); return m; }, [allPartidas]);
+  const vincularSalida = async (m, pid) => {
     if (!pid) { showToast('Elegí una partida', 'red'); return; }
     try {
       await movHook.update(m.id, { partida_id: pid });
@@ -276,6 +282,7 @@ function MiFrenteShell({ showToast, vista }) {
         await aplicarConsumoPartida({ mov: { ...m, partida_id: pid }, partida_id: pid, material, userId });
       } catch (e) { console.warn('[vincular salida]', e?.message); }
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'movimientos_materiales' } })); } catch {}
+      setVincSel(prev => { const n = { ...prev }; delete n[m.id]; return n; });
       showToast('Salida vinculada a la partida', 'green');
     } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
   };
@@ -310,7 +317,7 @@ function MiFrenteShell({ showToast, vista }) {
     );
   }
 
-  const TITULOS = { dashboard: 'Dashboard Técnico', partidas: 'Mis Partidas', cronograma: 'Cronograma de mis Partidas', salidas: 'Salidas a mi Frente', reporte: 'Reporte Diario', plan: 'Plan vs Real', borradores: 'Borradores' };
+  const TITULOS = { dashboard: 'Dashboard Técnico', partidas: 'Mis Partidas', cronograma: 'Cronograma de mis Partidas', salidas: 'Vinculación de insumos', reporte: 'Reporte Diario', plan: 'Plan vs Real', borradores: 'Borradores' };
 
   const SemBadge = ({ s }) => <span className="badge" style={{ background: SEM[s], color: '#000', fontSize: 9 }}>{SEM_LBL[s]}</span>;
 
@@ -592,36 +599,67 @@ function MiFrenteShell({ showToast, vista }) {
         </div>
       )}
 
-      {vista === 'salidas' && (
-        <div className="card" style={{ overflow: 'auto' }}>
-          <table className="tbl" style={{ fontSize: 12 }}>
-            <thead><tr><th>Fecha</th><th>Material</th><th style={{ textAlign: 'right' }}>Cantidad</th><th>Responsable</th><th>Partida</th><th></th></tr></thead>
-            <tbody>
-              {salidasDelFrente.map(m => {
-                const yaVinc = m.partida_id;
-                return (
-                  <tr key={m.id}>
-                    <td>{m.fecha || '—'}</td><td>{materialesById.get(m.material_id)?.nombre_material || '—'}</td>
-                    <td style={{ textAlign: 'right' }}>{num(m.cantidad)} {m.unidad || ''}</td>
-                    <td>{(() => { const p = personalById.get(m.responsable_id); return p ? `${p.nombres} ${p.apellidos || ''}`.trim() : '—'; })()}</td>
-                    <td>{yaVinc ? <span className="badge b-green" style={{ fontSize: 9 }}>{partById.get(m.partida_id) ? partById.get(m.partida_id).codigo_delfin : '✓'}</span> : <span style={{ color: 'var(--tm)' }}>—</span>}</td>
-                    <td style={{ whiteSpace: 'nowrap' }}>
-                      {!yaVinc && esMiFrente && (<>
-                        <select className="fi" style={{ display: 'inline-block', width: 150, fontSize: 11 }} value={vincSel[m.id] || ''} onChange={e => setVincSel({ ...vincSel, [m.id]: e.target.value })}>
-                          <option value="">— Partida —</option>
-                          {partidasDelFrente.map(p => <option key={p.id} value={p.id}>{nombrePart(p)}</option>)}
-                        </select>
-                        <button className="btn btn-amber btn-xs" style={{ marginLeft: 4 }} onClick={() => vincularSalida(m)}>Vincular</button>
-                      </>)}
-                    </td>
-                  </tr>
-                );
-              })}
-              {salidasDelFrente.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>No hay salidas de almacén vinculadas a tu frente.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-      )}
+      {vista === 'salidas' && (() => {
+        const base = tabSalidas === 'mis' ? salidasMisFrentes : salidasGenerales;
+        const q = filtroPartSal.trim().toLowerCase();
+        const lista = base.filter(m => {
+          if (filtroDiaSal && m.fecha !== filtroDiaSal) return false;
+          if (tabSalidas === 'generales' && q) {
+            const p = partByIdAll.get(m.partida_id);
+            const matName = (materialesById.get(m.material_id)?.nombre_material || '').toLowerCase();
+            const pc = (p ? `${p.codigo_delfin} ${p.nombre_partida}` : '').toLowerCase();
+            if (!pc.includes(q) && !matName.includes(q)) return false;
+          }
+          return true;
+        });
+        const colSpan = tabSalidas === 'generales' ? 7 : 6;
+        return (
+          <div style={{ display: 'grid', gap: 10 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', gap: 4 }}>
+                <button className={`btn btn-sm ${tabSalidas === 'mis' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTabSalidas('mis')}>Insumos a mis Frentes</button>
+                <button className={`btn btn-sm ${tabSalidas === 'generales' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTabSalidas('generales')}>Insumos generales</button>
+              </div>
+              <input className="fi" type="date" style={{ maxWidth: 160 }} value={filtroDiaSal} onChange={e => setFiltroDiaSal(e.target.value)} title="Filtrar por día" />
+              {filtroDiaSal && <button className="btn btn-ghost btn-xs" onClick={() => setFiltroDiaSal('')}>✕ día</button>}
+              {tabSalidas === 'generales' && <input className="fi" style={{ maxWidth: 240 }} placeholder="Filtrar por partida o material…" value={filtroPartSal} onChange={e => setFiltroPartSal(e.target.value)} />}
+              <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--tm)' }}>{lista.length} salida(s)</span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--tm)' }}>
+              {tabSalidas === 'mis'
+                ? 'Salidas de almacén registradas a tus frentes. Vinculá cada una a la partida en la que se usó.'
+                : 'Todas las salidas de la obra. Si un insumo salió a otro frente pero lo usaste en tu partida (incluso una sin frente), vinculalo acá.'}
+            </div>
+            <div className="card" style={{ overflow: 'auto' }}>
+              <datalist id="jx-vinc-partidas">{hojasReporte.slice(0, 2000).map(p => <option key={p.id} value={p.codigo_delfin}>{p.nombre_partida}</option>)}</datalist>
+              <table className="tbl" style={{ fontSize: 12 }}>
+                <thead><tr><th>Fecha</th><th>Material</th><th style={{ textAlign: 'right' }}>Cantidad</th><th>Responsable</th>{tabSalidas === 'generales' && <th>Frente</th>}<th>Partida</th><th>Vincular a partida</th></tr></thead>
+                <tbody>
+                  {lista.map(m => {
+                    const yaVinc = m.partida_id;
+                    const pv = yaVinc ? partByIdAll.get(m.partida_id) : null;
+                    return (
+                      <tr key={m.id}>
+                        <td>{m.fecha || '—'}</td>
+                        <td>{materialesById.get(m.material_id)?.nombre_material || '—'}</td>
+                        <td style={{ textAlign: 'right' }}>{num(m.cantidad)} {m.unidad || ''}</td>
+                        <td>{(() => { const p = personalById.get(m.responsable_id); return p ? `${p.nombres} ${p.apellidos || ''}`.trim() : '—'; })()}</td>
+                        {tabSalidas === 'generales' && <td>{m.frente_id ? <span className="badge b-amber" style={{ fontSize: 9 }}>{fNomById.get(m.frente_id) || 'frente'}</span> : <span style={{ color: 'var(--tm)' }}>—</span>}</td>}
+                        <td>{yaVinc ? <span className="badge b-green" style={{ fontSize: 9 }} title={pv ? `${pv.codigo_delfin} · ${pv.nombre_partida}` : ''}>{pv ? pv.codigo_delfin : '✓'}</span> : <span style={{ color: 'var(--tm)' }}>—</span>}</td>
+                        <td style={{ whiteSpace: 'nowrap' }}>
+                          <input list="jx-vinc-partidas" className="fi" style={{ display: 'inline-block', width: 120, fontSize: 11 }} placeholder="código…" value={vincSel[m.id] || ''} onChange={e => setVincSel({ ...vincSel, [m.id]: e.target.value })} />
+                          <button className="btn btn-amber btn-xs" style={{ marginLeft: 4 }} onClick={() => { const pid = partidaPorCodigo.get((vincSel[m.id] || '').trim()); if (!pid) { showToast('Escribí un código de partida válido', 'red'); return; } vincularSalida(m, pid); }}>{yaVinc ? 'Re-vincular' : 'Vincular'}</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {lista.length === 0 && <tr><td colSpan={colSpan} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>No hay salidas{filtroDiaSal ? ` del ${filtroDiaSal}` : ''}{q ? ' que coincidan' : ''}.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })()}
 
       {vista === 'reporte' && (
         <div style={{ display: 'grid', gap: 12, maxWidth: 700 }}>

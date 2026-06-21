@@ -97,7 +97,7 @@ const NAV = [
   { id: 'dashboard-tecnico', label: 'Dashboard Técnico', icon: 'dashboard' },
   { id: 'mis-partidas', label: 'Mis Partidas', icon: 'list' },
   { id: 'cronograma-frente', label: 'Cronograma de mis Partidas', icon: 'calendar' },
-  { id: 'salidas-frente', label: 'Salidas a mi Frente', icon: 'arrowOut' },
+  { id: 'salidas-frente', label: 'Vinculación de insumos', icon: 'link' },
   { id: 'reporte-diario', label: 'Reporte Diario', icon: 'edit' },
   { id: 'borradores-reporte', label: 'Borradores', icon: 'copy' },
   { id: 'plan-real', label: 'Plan vs Real', icon: 'trending' },
