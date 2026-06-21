@@ -11,10 +11,11 @@ import { resumenFrente, planVsReal, rollupMensual, rendimientoPartida } from "..
 import { hijosDirectos, cadenaBreadcrumb } from "../lib/partida-arbol.js";
 import { solicitudActiva, solicitudesPendientes, construirAvancesDeSolicitud, solEstadoInfo } from "../lib/solicitudes-reporte.js";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
+import { hoyLocal } from "../lib/fecha.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
-const hoyISO = () => new Date().toISOString().slice(0, 10);
+const hoyISO = () => hoyLocal();
 const num = (x) => Number(x || 0).toLocaleString('es-PE');
 const SEM = { verde: 'var(--green)', ambar: 'var(--amber)', rojo: 'var(--red)', sin_dato: 'var(--tm)' };
 const SEM_LBL = { verde: 'En ritmo', ambar: 'Atención', rojo: 'Atrasado', sin_dato: 's/plan' };

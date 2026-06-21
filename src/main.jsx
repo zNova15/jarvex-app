@@ -49,6 +49,7 @@ import { syncAll } from './sync/SyncEngine';
 import { uploadPendingEvidencias, saveEvidenciaLocal } from './sync/EvidenceUploader';
 import { db, newId } from './db/jarvex.db';
 import { supabase } from './lib/supabase';
+import * as fechaTZ from './lib/fecha';
 // reports.js + excel.js ya hacen lazy load internamente de jsPDF y xlsx —
 // importarlos acá NO trae las libs pesadas al bundle inicial.
 import { generatePDF, downloadPDF, generateExcel } from './lib/reports';
@@ -80,6 +81,7 @@ import './index.css';
 window.__db = db;
 window.__supabase = supabase;
 window.__newId = newId;
+window.__fecha = fechaTZ;   // hoyLocal(), horaLocal(), getTZ/setTZ — zona horaria global (default Perú)
 window.__useAuth = useAuth;
 window.__useSync = useSync;
 window.__useOnline = useOnline;

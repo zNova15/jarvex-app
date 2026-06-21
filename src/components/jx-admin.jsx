@@ -1,5 +1,6 @@
 import React from "react";
 import { listAuditLogs } from "../lib/audit";
+import { getTZ, setTZ, ZONAS_HORARIAS, hoyLocal, horaLocal, etiquetaTZ } from "../lib/fecha.js";
 const { useState: uSAd, useMemo: uMAd, useEffect: uEAd } = React;
 
 // ── Constantes ────────────────────────────────────────────
@@ -2059,6 +2060,7 @@ function SistemaTab({ showToast }) {
   const [demoCount, setDemoCount] = uSAd(0);
   const [seedBusy, setSeedBusy] = uSAd(false);
   const [borrarServer, setBorrarServer] = uSAd(false); // checkbox del modal de purga
+  const [tzSel, setTzSel] = uSAd(getTZ());
 
   uEAd(() => {
     let cancelled = false;
@@ -2343,6 +2345,21 @@ function SistemaTab({ showToast }) {
 
   return (
     <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
+      <div className="card card-p" style={{ gridColumn:'1 / -1', borderLeft:'3px solid var(--amber)' }}>
+        <div style={{ fontSize:13, fontWeight:700, display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
+          <JxIcon name="clock" size={14} color="var(--amber)"/> Zona horaria y fecha
+        </div>
+        <div style={{ fontSize:12, color:'var(--tm)', marginBottom:10 }}>
+          Define cómo se calcula "hoy" en toda la app (fechas de registros, reportes, borradores). Es global para todos los usuarios; por defecto, Perú.
+        </div>
+        <div style={{ display:'flex', gap:12, alignItems:'center', flexWrap:'wrap' }}>
+          <select className="fi" style={{ maxWidth:320 }} disabled={!isAdmin} value={tzSel} onChange={e=>{ const v=e.target.value; setTzSel(v); setTZ(v); showToast?.('Zona horaria: '+etiquetaTZ(v), 'green'); }}>
+            {ZONAS_HORARIAS.map(z => <option key={z.id} value={z.id}>{z.label}</option>)}
+          </select>
+          <span style={{ fontSize:12, color:'var(--tm)' }}>Ahora: <strong style={{ color:'var(--tx)' }}>{hoyLocal(tzSel)} {horaLocal(tzSel)}</strong></span>
+        </div>
+        {!isAdmin && <div style={{ fontSize:11, color:'var(--tm)', marginTop:6 }}>Solo el administrador puede cambiarla.</div>}
+      </div>
       <div className="card card-p" style={{ gridColumn:'1 / -1', borderLeft: isPrueba ? '3px solid #9B59B6' : isEdicion ? '3px solid var(--amber)' : '3px solid var(--green)' }}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12, flexWrap:'wrap', gap:10 }}>
           <div style={{ fontSize:13, fontWeight:700, display:'flex', alignItems:'center', gap:8 }}>
