@@ -280,6 +280,13 @@ export function useAvanceMetas(obra_id) {
   , [obra_id]);
 }
 
+// Solicitudes de reporte de frente ajeno (ingeniero ↔ admin/gerente).
+export function useSolicitudesReporte(obra_id) {
+  return useOfflineData('solicitudes_reporte', q =>
+    obra_id ? q.where('obra_id').equals(obra_id).filter(s => !s.deleted_at).toArray() : []
+  , [obra_id]);
+}
+
 export function useIncidencias(obra_id) {
   return useOfflineData('incidencias', q =>
     obra_id ? q.where('obra_id').equals(obra_id).toArray() : q.toArray()

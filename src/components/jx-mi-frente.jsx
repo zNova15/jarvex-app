@@ -9,6 +9,7 @@ import React from "react";
 import { frentesDeUsuario, partidasDeFrente } from "../lib/frente-partidas.js";
 import { resumenFrente, planVsReal, rollupMensual, rendimientoPartida } from "../lib/mi-frente.js";
 import { hijosDirectos, cadenaBreadcrumb } from "../lib/partida-arbol.js";
+import { solicitudActiva, solicitudesPendientes, construirAvancesDeSolicitud, puedeEditarReporte, esperaDecision, esTerminal, solEstadoInfo } from "../lib/solicitudes-reporte.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -39,9 +40,16 @@ function MiFrenteShell({ showToast, vista }) {
   const materialesById = uM(() => { const m = new Map(); (materiales || []).forEach(x => m.set(x.id, x)); return m; }, [materiales]);
   const personalById = uM(() => { const m = new Map(); (personal || []).forEach(x => m.set(x.id, x)); return m; }, [personal]);
 
+  const solHook = window.__hooks.useSolicitudesReporte(obraId);
+  const { data: solicitudes } = solHook;
+
   const misFrentes = uM(() => frentesDeUsuario(userId, { frentes: frentes || [] }), [userId, frentes]);
+  // Ver otros frentes activos (solo lectura, salvo reporte con permiso aprobado).
+  const [verOtros, setVerOtros] = uS(false);
+  const frentesVisibles = uM(() => verOtros ? (frentes || []).filter(f => !f.deleted_at) : misFrentes, [verOtros, frentes, misFrentes]);
   const [frenteSelId, setFrenteSelId] = uS(null);
-  const frenteActivo = uM(() => misFrentes.find(f => f.id === frenteSelId) || misFrentes[0] || null, [misFrentes, frenteSelId]);
+  const frenteActivo = uM(() => frentesVisibles.find(f => f.id === frenteSelId) || misFrentes[0] || frentesVisibles[0] || null, [frentesVisibles, frenteSelId, misFrentes]);
+  const esMiFrente = uM(() => !!frenteActivo && misFrentes.some(f => f.id === frenteActivo.id), [frenteActivo, misFrentes]);
   const partidasDelFrente = uM(() => frenteActivo
     ? partidasDeFrente(frenteActivo.id, { frentePartidas: frentePartidas || [], partidas: partidas || [] })
     : [], [frenteActivo, frentePartidas, partidas]);
@@ -154,6 +162,52 @@ function MiFrenteShell({ showToast, vista }) {
     finally { setBusyRep(false); }
   };
 
+  // ── Reporte de FRENTE AJENO (con permiso del admin/gerente) ───────
+  const solActiva = uM(() => solicitudActiva(solicitudes || [], { frenteId: frenteActivo?.id, fecha: hoy, userId }),
+    [solicitudes, frenteActivo, hoy, userId]);
+  const [motivoSol, setMotivoSol] = uS('');
+  const solicitarPermiso = async () => {
+    if (!frenteActivo) return;
+    if (!motivoSol.trim()) { showToast('Indicá el motivo (ej. ing. titular ausente)', 'red'); return; }
+    try {
+      await solHook.create({
+        id: window.__newId(), obra_id: obraId, frente_id: frenteActivo.id, solicitante_user_id: userId,
+        fecha: hoy, motivo: motivoSol.trim(), estado: 'solicitado', reporte_payload: null, created_by: userId,
+      });
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'solicitudes_reporte' } })); } catch {}
+      showToast('Permiso solicitado al administrador/gerente', 'green'); setMotivoSol('');
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
+  const cancelarSolicitud = async () => {
+    if (!solActiva) return;
+    try { await solHook.remove(solActiva.id); try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'solicitudes_reporte' } })); } catch {} showToast('Solicitud cancelada', 'amber'); }
+    catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
+  const enviarReporteAjeno = async () => {
+    if (!solActiva) return;
+    const lineas = repLineas.filter(l => l.partida_id && (l.metrado !== '' || (l.descripcion || '').trim()));
+    if (!lineas.length) { showToast('Agregá al menos una partida con avance', 'red'); return; }
+    setBusyRep(true);
+    try {
+      await solHook.update(solActiva.id, {
+        estado: 'enviado', updated_by: userId,
+        reporte_payload: lineas.map(l => ({ partida_id: l.partida_id, descripcion: l.descripcion || null, metrado: l.metrado !== '' ? Number(l.metrado) : null })),
+      });
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'solicitudes_reporte' } })); } catch {}
+      showToast('Reporte enviado — esperando aceptación', 'green');
+      setRepLineas([]); descartarBorrador();
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+    finally { setBusyRep(false); }
+  };
+  // Al cambiar de frente, limpiar el editor (no contaminar partidas entre frentes).
+  const frenteRef = uR(null);
+  uE(() => {
+    const fid = frenteActivo?.id || null;
+    if (frenteRef.current === fid) return;
+    frenteRef.current = fid;
+    setRepLineas([]); setFiltroPart(''); setAddPartSel('');
+  }, [frenteActivo]);
+
   // ── Menú anti-click sobre partidas (árbol + Gantt) ────────────────
   const [ctx, setCtx] = uS(null);   // {x, y, partida}
   uE(() => { if (!ctx) return; const close = () => setCtx(null); window.addEventListener('click', close); window.addEventListener('scroll', close, true); return () => { window.removeEventListener('click', close); window.removeEventListener('scroll', close, true); }; }, [ctx]);
@@ -251,10 +305,63 @@ function MiFrenteShell({ showToast, vista }) {
     else { window.__miFrenteIntent = { tipo: 'costo', partidaId: p.id, frenteId: frenteActivo?.id, ts: Date.now() }; window.__navTo?.('mis-partidas'); }
   };
   const generarReporteDe = (p) => {
+    if (!esMiFrente) { if (vista !== 'reporte') window.__navTo?.('reporte-diario'); return; }   // frente ajeno → flujo con permiso
     if (vista === 'reporte') { agregarLinea(p.id); }
     else { window.__miFrenteIntent = { tipo: 'reporte', partidaId: p.id, frenteId: frenteActivo?.id, ts: Date.now() }; window.__navTo?.('reporte-diario'); }
   };
   const ctxBtn = { display: 'flex', alignItems: 'center', gap: 8, width: '100%', background: 'none', border: 'none', color: 'var(--tx)', padding: '9px 11px', fontSize: 12.5, textAlign: 'left', cursor: 'pointer' };
+
+  // Editor multi-partida reutilizado por el reporte propio (con foto) y el ajeno (sin foto).
+  const editorLineas = (showFoto) => {
+    const leaf = partidasDelFrente.filter(p => !hijosDirectos(partidasDelFrente, p.codigo_delfin).length);
+    const yaIds = new Set(repLineas.map(l => l.partida_id));
+    const disponibles = leaf.filter(p => !yaIds.has(p.id));
+    return (
+      <>
+        <div className="card card-p">
+          <div className="frow-sb" style={{ marginBottom: 8 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Partidas avanzadas · {hoy}</div>
+            <span style={{ fontSize: 11, color: 'var(--tm)' }}>{repLineas.length} partida(s)</span>
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <select className="fi" style={{ maxWidth: 380 }} value={addPartSel} onChange={e => setAddPartSel(e.target.value)}>
+              <option value="">— Agregar una partida que avanzaste hoy —</option>
+              {disponibles.map(p => <option key={p.id} value={p.id}>{nombrePart(p)}</option>)}
+            </select>
+            <button className="btn btn-amber btn-sm" disabled={!addPartSel} onClick={() => agregarLinea(addPartSel)}>+ Agregar</button>
+          </div>
+          {repLineas.length === 0 && <div style={{ color: 'var(--tm)', fontStyle: 'italic', fontSize: 12, marginTop: 10 }}>Agregá las partidas que avanzaste hoy. Podés cargar varias en un mismo reporte; el % acumulado se calcula solo.</div>}
+        </div>
+        {repLineas.map(l => {
+          const p = partById.get(l.partida_id);
+          const ac = calcAcum(l.partida_id, l.metrado);
+          const pctPrev = p ? (Number(p.porcentaje_avance) || 0) : 0;
+          return (
+            <div key={l.partida_id} className="card card-p">
+              <div className="frow-sb" style={{ marginBottom: 6 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 600 }}><span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{p?.codigo_delfin}</span> {p?.nombre_partida || '—'}</div>
+                <button className="btn btn-ghost btn-xs" onClick={() => quitarLinea(l.partida_id)}>✕ Quitar</button>
+              </div>
+              <label className="flabel">Descripción del avance</label>
+              <textarea className="fi" rows={2} value={l.descripcion} onChange={e => setLinea(l.partida_id, 'descripcion', e.target.value)} placeholder="Qué se avanzó en esta partida…" />
+              <div className={showFoto ? 'g2' : ''} style={{ marginTop: 8 }}>
+                <div><label className="flabel">Metrado avanzado hoy ({p?.unidad || 'und'})</label><input className="fi" type="number" step="0.01" value={l.metrado} onChange={e => setLinea(l.partida_id, 'metrado', e.target.value)} /></div>
+                {showFoto && <div><label className="flabel">Foto (evidencia)</label><input className="fi" type="file" accept="image/*" onChange={e => setLinea(l.partida_id, 'foto', e.target.files?.[0] || null)} /></div>}
+              </div>
+              <div style={{ marginTop: 8, padding: '7px 10px', borderRadius: 6, background: 'rgba(255,255,255,0.04)', fontSize: 11.5 }}>
+                {ac && ac.pct != null ? (
+                  <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <span>Avance acumulado: <strong>{pctPrev}%</strong> → <strong style={{ color: 'var(--amber)' }}>{Math.round(ac.pct * 10) / 10}%</strong></span>
+                    <span style={{ color: 'var(--tm)' }}>real {num(ac.real)} / {num(ac.mc)} {p?.unidad || ''} · te falta {num(ac.falta)} {p?.unidad || ''}</span>
+                  </div>
+                ) : <span style={{ color: 'var(--tm)' }}>Esta partida no tiene metrado contratado: no se puede calcular el % automáticamente.</span>}
+              </div>
+            </div>
+          );
+        })}
+      </>
+    );
+  };
 
   // Árbol desplegable de Mis Partidas (recursivo): nodo → hijos → insumos (sin costos).
   const renderNodos = (code, depth) => {
@@ -277,7 +384,7 @@ function MiFrenteShell({ showToast, vista }) {
           <td style={{ textAlign: 'right' }}>{p ? `${num(p.metrado_contratado)} ${p.unidad || ''}` : ''}</td>
           <td style={{ textAlign: 'right' }}>{p ? `${Number(p.porcentaje_avance) || 0}%` : ''}</td>
           <td>{r ? <SemBadge s={r.semaforo} /> : ''}</td>
-          <td style={{ textAlign: 'right' }}>{p && <button className="btn btn-ghost btn-xs" onClick={() => generarReporteDe(p)}>Reportar</button>}</td>
+          <td style={{ textAlign: 'right' }}>{p && esMiFrente && <button className="btn btn-ghost btn-xs" onClick={() => generarReporteDe(p)}>Reportar</button>}</td>
         </tr>
       );
       if (open) {
@@ -311,13 +418,22 @@ function MiFrenteShell({ showToast, vista }) {
       <div className="pg-hd frow-sb" style={{ alignItems: 'flex-end', flexWrap: 'wrap', gap: 8 }}>
         <div>
           <div className="pg-title">{TITULOS[vista]}</div>
-          <div className="pg-sub">{frenteActivo?.nombre || '—'} · {resumen.nPartidas} partidas · {Math.round(resumen.avancePromedio)}% avance prom.</div>
+          <div className="pg-sub">
+            {frenteActivo?.nombre || '—'} · {resumen.nPartidas} partidas · {Math.round(resumen.avancePromedio)}% avance prom.
+            {!esMiFrente && frenteActivo && <span style={{ color: 'var(--amber)' }}> · frente ajeno (solo lectura)</span>}
+          </div>
         </div>
-        {misFrentes.length > 1 && (
-          <select className="fi" style={{ maxWidth: 220 }} value={frenteActivo?.id || ''} onChange={e => setFrenteSelId(e.target.value)}>
-            {misFrentes.map(f => <option key={f.id} value={f.id}>{f.nombre}</option>)}
-          </select>
-        )}
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          {frentesVisibles.length > 1 && (
+            <select className="fi" style={{ maxWidth: 240 }} value={frenteActivo?.id || ''} onChange={e => setFrenteSelId(e.target.value)}>
+              {frentesVisibles.map(f => <option key={f.id} value={f.id}>{f.nombre}{misFrentes.some(m => m.id === f.id) ? '' : ' · ajeno'}</option>)}
+            </select>
+          )}
+          <label style={{ fontSize: 11.5, display: 'flex', alignItems: 'center', gap: 5, color: 'var(--tm)', cursor: 'pointer' }}>
+            <input type="checkbox" checked={verOtros} onChange={e => { setVerOtros(e.target.checked); if (!e.target.checked && !esMiFrente) setFrenteSelId(misFrentes[0]?.id || null); }} />
+            Ver otros frentes
+          </label>
+        </div>
       </div>
 
       {vista === 'dashboard' && (
@@ -380,7 +496,7 @@ function MiFrenteShell({ showToast, vista }) {
                     <td style={{ textAlign: 'right' }}>{num(p.metrado_contratado)} {p.unidad || ''}</td>
                     <td style={{ textAlign: 'right' }}>{Number(p.porcentaje_avance) || 0}%</td>
                     <td><SemBadge s={r.semaforo} /></td>
-                    <td style={{ textAlign: 'right' }}><button className="btn btn-ghost btn-xs" onClick={() => generarReporteDe(p)}>Reportar</button></td>
+                    <td style={{ textAlign: 'right' }}>{esMiFrente && <button className="btn btn-ghost btn-xs" onClick={() => generarReporteDe(p)}>Reportar</button>}</td>
                   </tr>,
                 ];
                 if (open && ins.length) rows.push(<tr key={p.id + '_ins'} style={{ background: 'rgba(245,180,40,0.05)' }}><td></td><td colSpan={5}><div style={{ fontSize: 10.5, color: 'var(--tm)', margin: '2px 0' }}>Insumos a utilizar:</div><table style={{ width: '100%', fontSize: 11 }}><tbody>{ins.map(i => <tr key={i.id}><td style={{ width: 96, color: 'var(--tm)' }}>{i.tipo_insumo}</td><td>{i.nombre_insumo}</td><td style={{ textAlign: 'right', width: 130 }}>{num(i.cantidad_presupuestada)} {i.unidad || ''}</td></tr>)}</tbody></table></td></tr>);
@@ -458,7 +574,7 @@ function MiFrenteShell({ showToast, vista }) {
                     <td>{(() => { const p = personalById.get(m.responsable_id); return p ? `${p.nombres} ${p.apellidos || ''}`.trim() : '—'; })()}</td>
                     <td>{yaVinc ? <span className="badge b-green" style={{ fontSize: 9 }}>{partById.get(m.partida_id) ? partById.get(m.partida_id).codigo_delfin : '✓'}</span> : <span style={{ color: 'var(--tm)' }}>—</span>}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>
-                      {!yaVinc && (<>
+                      {!yaVinc && esMiFrente && (<>
                         <select className="fi" style={{ display: 'inline-block', width: 150, fontSize: 11 }} value={vincSel[m.id] || ''} onChange={e => setVincSel({ ...vincSel, [m.id]: e.target.value })}>
                           <option value="">— Partida —</option>
                           {partidasDelFrente.map(p => <option key={p.id} value={p.id}>{nombrePart(p)}</option>)}
@@ -475,68 +591,95 @@ function MiFrenteShell({ showToast, vista }) {
         </div>
       )}
 
-      {vista === 'reporte' && (() => {
-        const leaf = partidasDelFrente.filter(p => !hijosDirectos(partidasDelFrente, p.codigo_delfin).length);
-        const yaIds = new Set(repLineas.map(l => l.partida_id));
-        const disponibles = leaf.filter(p => !yaIds.has(p.id));
+      {vista === 'reporte' && esMiFrente && (
+        <div style={{ display: 'grid', gap: 12, maxWidth: 700 }}>
+          {hayBorrador && repLineas.length === 0 && (
+            <div className="card card-p" style={{ background: 'rgba(245,180,40,0.08)', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <span style={{ width: 9, height: 9, borderRadius: '50%', background: 'var(--amber)', display: 'inline-block' }} />
+              <span style={{ fontSize: 12.5 }}>Tenés un borrador de hoy sin terminar.</span>
+              <button className="btn btn-amber btn-xs" onClick={cargarBorrador}>Cargar borrador</button>
+              <button className="btn btn-ghost btn-xs" onClick={descartarBorrador}>Descartar</button>
+            </div>
+          )}
+          {editorLineas(true)}
+          {repLineas.length > 0 && (
+            <div className="modal-actions" style={{ display: 'flex', gap: 8 }}>
+              <button className="btn btn-amber" disabled={busyRep} onClick={guardarReporte}><JxIcon name="check" size={13} />Guardar reporte</button>
+              <button className="btn btn-ghost" disabled={busyRep} onClick={guardarBorrador}>Guardar como borrador</button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {vista === 'reporte' && !esMiFrente && frenteActivo && (() => {
+        const editable = puedeEditarReporte(solActiva);
+        const info = solActiva ? solEstadoInfo(solActiva.estado) : null;
         return (
           <div style={{ display: 'grid', gap: 12, maxWidth: 700 }}>
-            {hayBorrador && repLineas.length === 0 && (
-              <div className="card card-p" style={{ background: 'rgba(245,180,40,0.08)', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                <span style={{ width: 9, height: 9, borderRadius: '50%', background: 'var(--amber)', display: 'inline-block' }} />
-                <span style={{ fontSize: 12.5 }}>Tenés un borrador de hoy sin terminar.</span>
-                <button className="btn btn-amber btn-xs" onClick={cargarBorrador}>Cargar borrador</button>
-                <button className="btn btn-ghost btn-xs" onClick={descartarBorrador}>Descartar</button>
-              </div>
-            )}
-            <div className="card card-p">
-              <div className="frow-sb" style={{ marginBottom: 8 }}>
-                <div style={{ fontSize: 13, fontWeight: 600 }}>Reporte de avance · {hoy}</div>
-                <span style={{ fontSize: 11, color: 'var(--tm)' }}>{repLineas.length} partida(s) en este reporte</span>
-              </div>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                <select className="fi" style={{ maxWidth: 380 }} value={addPartSel} onChange={e => setAddPartSel(e.target.value)}>
-                  <option value="">— Agregar una partida que avanzaste hoy —</option>
-                  {disponibles.map(p => <option key={p.id} value={p.id}>{nombrePart(p)}</option>)}
-                </select>
-                <button className="btn btn-amber btn-sm" disabled={!addPartSel} onClick={() => agregarLinea(addPartSel)}>+ Agregar</button>
-              </div>
-              {repLineas.length === 0 && <div style={{ color: 'var(--tm)', fontStyle: 'italic', fontSize: 12, marginTop: 10 }}>Agregá las partidas que avanzaste hoy. Podés cargar varias en un mismo reporte; el % acumulado se calcula solo.</div>}
+            <div className="card card-p" style={{ background: 'rgba(245,180,40,0.06)' }}>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Reportar un frente ajeno · {frenteActivo.nombre}</div>
+              <div style={{ fontSize: 12, color: 'var(--tm)' }}>Este frente no es tuyo. Para presentar un reporte necesitás permiso del administrador o gerente, y el reporte recién se aplica cuando ellos lo aceptan.</div>
+              {info && <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}><span className="badge" style={{ background: info.color, color: '#000', fontSize: 10 }}>{info.label}</span>{solActiva.motivo && <span style={{ fontSize: 11, color: 'var(--tm)' }}>Motivo: {solActiva.motivo}</span>}</div>}
+              {solActiva?.nota_decision && <div style={{ marginTop: 6, fontSize: 11.5, color: 'var(--red)' }}>Nota del admin: {solActiva.nota_decision}</div>}
             </div>
 
-            {repLineas.map(l => {
-              const p = partById.get(l.partida_id);
-              const ac = calcAcum(l.partida_id, l.metrado);
-              const pctPrev = p ? (Number(p.porcentaje_avance) || 0) : 0;
-              return (
-                <div key={l.partida_id} className="card card-p">
-                  <div className="frow-sb" style={{ marginBottom: 6 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 600 }}><span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{p?.codigo_delfin}</span> {p?.nombre_partida || '—'}</div>
-                    <button className="btn btn-ghost btn-xs" onClick={() => quitarLinea(l.partida_id)}>✕ Quitar</button>
-                  </div>
-                  <label className="flabel">Descripción del avance</label>
-                  <textarea className="fi" rows={2} value={l.descripcion} onChange={e => setLinea(l.partida_id, 'descripcion', e.target.value)} placeholder="Qué se avanzó en esta partida…" />
-                  <div className="g2" style={{ marginTop: 8 }}>
-                    <div><label className="flabel">Metrado avanzado hoy ({p?.unidad || 'und'})</label><input className="fi" type="number" step="0.01" value={l.metrado} onChange={e => setLinea(l.partida_id, 'metrado', e.target.value)} /></div>
-                    <div><label className="flabel">Foto (evidencia)</label><input className="fi" type="file" accept="image/*" onChange={e => setLinea(l.partida_id, 'foto', e.target.files?.[0] || null)} /></div>
-                  </div>
-                  <div style={{ marginTop: 8, padding: '7px 10px', borderRadius: 6, background: 'rgba(255,255,255,0.04)', fontSize: 11.5 }}>
-                    {ac && ac.pct != null ? (
-                      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-                        <span>Avance acumulado: <strong>{pctPrev}%</strong> → <strong style={{ color: 'var(--amber)' }}>{Math.round(ac.pct * 10) / 10}%</strong></span>
-                        <span style={{ color: 'var(--tm)' }}>real {num(ac.real)} / {num(ac.mc)} {p?.unidad || ''} · te falta {num(ac.falta)} {p?.unidad || ''}</span>
-                      </div>
-                    ) : <span style={{ color: 'var(--tm)' }}>Esta partida no tiene metrado contratado: no se puede calcular el % automáticamente.</span>}
-                  </div>
+            {(!solActiva || solActiva.estado === 'rechazado') && (
+              <div className="card card-p">
+                <label className="flabel">Motivo de la solicitud *</label>
+                <input className="fi" value={motivoSol} onChange={e => setMotivoSol(e.target.value)} placeholder="Ej. el ingeniero titular no asistió hoy" />
+                <div className="modal-actions" style={{ marginTop: 10 }}>
+                  <button className="btn btn-amber" onClick={solicitarPermiso}><JxIcon name="check" size={13} />Solicitar permiso para reportar</button>
                 </div>
-              );
-            })}
-
-            {repLineas.length > 0 && (
-              <div className="modal-actions" style={{ display: 'flex', gap: 8 }}>
-                <button className="btn btn-amber" disabled={busyRep} onClick={guardarReporte}><JxIcon name="check" size={13} />Guardar reporte</button>
-                <button className="btn btn-ghost" disabled={busyRep} onClick={guardarBorrador}>Guardar como borrador</button>
               </div>
+            )}
+
+            {solActiva?.estado === 'solicitado' && (
+              <div className="card card-p" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12.5 }}>Tu solicitud está esperando aprobación del administrador o gerente.</span>
+                <button className="btn btn-ghost btn-xs" onClick={cancelarSolicitud}>Cancelar solicitud</button>
+              </div>
+            )}
+
+            {editable && (<>
+              {hayBorrador && repLineas.length === 0 && (
+                <div className="card card-p" style={{ background: 'rgba(245,180,40,0.08)', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <span style={{ width: 9, height: 9, borderRadius: '50%', background: 'var(--amber)', display: 'inline-block' }} />
+                  <span style={{ fontSize: 12.5 }}>Tenés un borrador de hoy sin terminar.</span>
+                  <button className="btn btn-amber btn-xs" onClick={cargarBorrador}>Cargar borrador</button>
+                  <button className="btn btn-ghost btn-xs" onClick={descartarBorrador}>Descartar</button>
+                </div>
+              )}
+              {solActiva.estado === 'devuelto' && Array.isArray(solActiva.reporte_payload) && solActiva.reporte_payload.length > 0 && repLineas.length === 0 && (
+                <div className="card card-p" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 12.5 }}>El admin te devolvió el reporte para corregir.</span>
+                  <button className="btn btn-amber btn-xs" onClick={() => setRepLineas(solActiva.reporte_payload.map(l => ({ partida_id: l.partida_id, descripcion: l.descripcion || '', metrado: l.metrado ?? '', foto: null })))}>Cargar lo que enviaste</button>
+                </div>
+              )}
+              {editorLineas(false)}
+              {repLineas.length > 0 && (
+                <div className="modal-actions" style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn btn-amber" disabled={busyRep} onClick={enviarReporteAjeno}><JxIcon name="check" size={13} />Enviar reporte para aceptación</button>
+                  <button className="btn btn-ghost" disabled={busyRep} onClick={guardarBorrador}>Guardar como borrador</button>
+                </div>
+              )}
+            </>)}
+
+            {solActiva?.estado === 'enviado' && (
+              <div className="card" style={{ overflow: 'auto' }}>
+                <div style={{ padding: '8px 12px', fontSize: 12.5, fontWeight: 600 }}>Reporte enviado — esperando aceptación del administrador/gerente</div>
+                <table className="tbl" style={{ fontSize: 12 }}>
+                  <thead><tr><th>Partida</th><th>Descripción</th><th style={{ textAlign: 'right' }}>Metrado</th></tr></thead>
+                  <tbody>
+                    {(solActiva.reporte_payload || []).map((l, i) => { const p = partById.get(l.partida_id); return (
+                      <tr key={i}><td>{p ? nombrePart(p) : l.partida_id}</td><td>{l.descripcion || '—'}</td><td style={{ textAlign: 'right' }}>{num(l.metrado)} {p?.unidad || ''}</td></tr>
+                    ); })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {solActiva?.estado === 'aceptado' && (
+              <div className="card card-p" style={{ fontSize: 12.5 }}>El reporte fue aceptado y los avances ya se aplicaron al frente. ✓</div>
             )}
           </div>
         );
@@ -544,6 +687,7 @@ function MiFrenteShell({ showToast, vista }) {
 
       {vista === 'plan' && (
         <div style={{ display: 'grid', gap: 12 }}>
+          {esMiFrente && (
           <div className="card card-p" style={{ maxWidth: 580 }}>
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Programar meta (lookahead)</div>
             <div className="g2">
@@ -557,6 +701,7 @@ function MiFrenteShell({ showToast, vista }) {
               <div style={{ display: 'flex', alignItems: 'flex-end' }}><button className="btn btn-amber btn-sm" onClick={guardarMeta}>Guardar meta</button></div>
             </div>
           </div>
+          )}
           <div className="card" style={{ overflow: 'auto' }}>
             <div style={{ padding: '8px 12px', fontSize: 12.5, fontWeight: 600 }}>Plan vs Real (acumulado)</div>
             <table className="tbl" style={{ fontSize: 12 }}>
@@ -593,7 +738,7 @@ function MiFrenteShell({ showToast, vista }) {
             <span style={{ fontFamily: 'monospace' }}>{ctx.partida.codigo_delfin}</span> · {ctx.partida.nombre_partida}
           </div>
           <button style={ctxBtn} onClick={() => { irACostoUnitario(ctx.partida); setCtx(null); }} onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>📋 Ir al costo unitario de la partida</button>
-          <button style={ctxBtn} onClick={() => { generarReporteDe(ctx.partida); setCtx(null); }} onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>📝 Generar reporte diario de esta partida</button>
+          <button style={ctxBtn} onClick={() => { generarReporteDe(ctx.partida); setCtx(null); }} onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>📝 {esMiFrente ? 'Generar reporte diario de esta partida' : 'Reportar este frente (pedir permiso)'}</button>
         </div>
       )}
     </div>
@@ -652,6 +797,114 @@ function EmitirAlertaPage({ showToast }) {
   );
 }
 
+// Bandeja del ADMIN/GERENTE: aprobar permisos y aceptar reportes de frente ajeno.
+function AprobacionesReportePage({ showToast }) {
+  const auth = window.__useAuth ? window.__useAuth() : null;
+  const userId = auth?.profile?.id || null;
+  const obraHook = window.__useObraActiva ? window.__useObraActiva() : { obraId: null };
+  const obraId = obraHook?.obraId || null;
+  const solHook = window.__hooks.useSolicitudesReporte(obraId);
+  const { data: solicitudes } = solHook;
+  const { data: frentes } = window.__hooks.useFrentesObra(obraId);
+  const partidasHook = window.__hooks.usePartidas(obraId);
+  const { data: partidas } = partidasHook;
+  const avanceHook = window.__hooks.useAvanceObra(obraId);
+  const { data: avances } = avanceHook;
+  const [usuarios, setUsuarios] = uS([]);
+  uE(() => { window.__db.profiles.toArray().then(setUsuarios).catch(() => {}); }, []);
+  const usuariosById = uM(() => { const m = new Map(); (usuarios || []).forEach(u => m.set(u.id, u)); return m; }, [usuarios]);
+  const nombreUsuario = (id) => { const u = usuariosById.get(id); return u ? (`${u.nombres || ''} ${u.apellidos || ''}`.trim() || u.email || '—') : '—'; };
+  const frentesById = uM(() => { const m = new Map(); (frentes || []).forEach(f => m.set(f.id, f)); return m; }, [frentes]);
+  const partById = uM(() => { const m = new Map(); (partidas || []).forEach(p => m.set(p.id, p)); return m; }, [partidas]);
+  const [busy, setBusy] = uS(false);
+
+  const pend = uM(() => solicitudesPendientes(solicitudes || []), [solicitudes]);
+  const histo = uM(() => (solicitudes || []).filter(s => !s.deleted_at && ['aprobado', 'rechazado', 'aceptado', 'devuelto'].includes(s.estado))
+    .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || ''))).slice(0, 30), [solicitudes]);
+
+  const decidir = async (sol, patch, okMsg) => {
+    setBusy(true);
+    try {
+      await solHook.update(sol.id, { ...patch, decidido_por: userId, decidido_at: new Date().toISOString(), updated_by: userId });
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'solicitudes_reporte' } })); } catch {}
+      showToast(okMsg, 'green');
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+    finally { setBusy(false); }
+  };
+  const aprobar = (sol) => decidir(sol, { estado: 'aprobado', nota_decision: null }, 'Permiso aprobado');
+  const rechazar = (sol) => { const nota = window.prompt('Motivo del rechazo (opcional):') ?? ''; decidir(sol, { estado: 'rechazado', nota_decision: nota || null }, 'Solicitud rechazada'); };
+  const devolver = (sol) => { const nota = window.prompt('¿Qué hay que corregir? (se le muestra al ingeniero)') ?? ''; decidir(sol, { estado: 'devuelto', nota_decision: nota || null }, 'Reporte devuelto al ingeniero'); };
+  const aceptar = async (sol) => {
+    setBusy(true);
+    try {
+      const { avanceRows, partidaUpdates } = construirAvancesDeSolicitud(sol, { partidas: partidas || [], avances: avances || [], newId: window.__newId });
+      for (const row of avanceRows) { try { await avanceHook.create(row); } catch (e) { console.warn('[aceptar avance]', e?.message); } }
+      for (const u of partidaUpdates) { if (partidasHook.update) { try { await partidasHook.update(u.id, { porcentaje_avance: u.porcentaje_avance }); } catch {} } }
+      await solHook.update(sol.id, { estado: 'aceptado', decidido_por: userId, decidido_at: new Date().toISOString(), updated_by: userId });
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'avance_obra' } })); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'solicitudes_reporte' } })); } catch {}
+      showToast(`Reporte aceptado · ${avanceRows.length} avance(s) aplicado(s)`, 'green');
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+    finally { setBusy(false); }
+  };
+
+  if (!obraId) return <div className="page-wrap"><div className="card card-p empty-state"><p>Seleccioná una obra activa.</p></div></div>;
+  return (
+    <div className="page-wrap">
+      <div className="pg-hd"><div className="pg-title">Aprobaciones de Reporte</div><div className="pg-sub">Permisos y reportes de frente ajeno que esperan tu decisión.</div></div>
+      <div className="card" style={{ overflow: 'auto', marginBottom: 14 }}>
+        <div style={{ padding: '8px 12px', fontSize: 12.5, fontWeight: 600 }}>Pendientes ({pend.length})</div>
+        {pend.length === 0 && <div style={{ padding: '0 12px 12px', color: 'var(--tm)', fontStyle: 'italic', fontSize: 12 }}>No hay solicitudes pendientes.</div>}
+        {pend.map(sol => {
+          const f = frentesById.get(sol.frente_id);
+          return (
+            <div key={sol.id} className="card card-p" style={{ margin: '0 12px 12px' }}>
+              <div className="frow-sb" style={{ flexWrap: 'wrap', gap: 6 }}>
+                <div>
+                  <div style={{ fontSize: 12.5, fontWeight: 600 }}>{f?.nombre || sol.frente_id} · {sol.fecha}</div>
+                  <div style={{ fontSize: 11.5, color: 'var(--tm)' }}>Solicita: {nombreUsuario(sol.solicitante_user_id)} · {sol.motivo || '—'}</div>
+                </div>
+                <span className="badge" style={{ background: solEstadoInfo(sol.estado).color, color: '#000', fontSize: 10, height: 'fit-content' }}>{solEstadoInfo(sol.estado).label}</span>
+              </div>
+              {sol.estado === 'enviado' && Array.isArray(sol.reporte_payload) && (
+                <table className="tbl" style={{ fontSize: 11.5, marginTop: 8 }}>
+                  <thead><tr><th>Partida</th><th>Descripción</th><th style={{ textAlign: 'right' }}>Metrado</th></tr></thead>
+                  <tbody>
+                    {sol.reporte_payload.map((l, i) => { const p = partById.get(l.partida_id); return (
+                      <tr key={i}><td>{p ? `${p.codigo_delfin} · ${p.nombre_partida}` : l.partida_id}</td><td>{l.descripcion || '—'}</td><td style={{ textAlign: 'right' }}>{num(l.metrado)} {p?.unidad || ''}</td></tr>
+                    ); })}
+                  </tbody>
+                </table>
+              )}
+              <div className="modal-actions" style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {sol.estado === 'solicitado' && <>
+                  <button className="btn btn-green btn-sm" disabled={busy} onClick={() => aprobar(sol)}>Aprobar permiso</button>
+                  <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => rechazar(sol)}>Rechazar</button>
+                </>}
+                {sol.estado === 'enviado' && <>
+                  <button className="btn btn-green btn-sm" disabled={busy} onClick={() => aceptar(sol)}>Aceptar y aplicar avances</button>
+                  <button className="btn btn-amber btn-sm" disabled={busy} onClick={() => devolver(sol)}>Devolver para corregir</button>
+                  <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => rechazar(sol)}>Rechazar</button>
+                </>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="card" style={{ overflow: 'auto' }}>
+        <div style={{ padding: '8px 12px', fontSize: 12.5, fontWeight: 600 }}>Historial reciente</div>
+        <table className="tbl" style={{ fontSize: 12 }}>
+          <thead><tr><th>Frente</th><th>Fecha</th><th>Solicita</th><th>Estado</th></tr></thead>
+          <tbody>
+            {histo.map(sol => <tr key={sol.id}><td>{frentesById.get(sol.frente_id)?.nombre || '—'}</td><td>{sol.fecha}</td><td>{nombreUsuario(sol.solicitante_user_id)}</td><td><span className="badge" style={{ background: solEstadoInfo(sol.estado).color, color: '#000', fontSize: 9 }}>{solEstadoInfo(sol.estado).label}</span></td></tr>)}
+            {histo.length === 0 && <tr><td colSpan={4} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>Sin historial.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 const DashboardTecnicoPage = (p) => <MiFrenteShell {...p} vista="dashboard" />;
 const MisPartidasPage = (p) => <MiFrenteShell {...p} vista="partidas" />;
 const CronogramaFrentePage = (p) => <MiFrenteShell {...p} vista="cronograma" />;
@@ -659,4 +912,4 @@ const SalidasFrentePage = (p) => <MiFrenteShell {...p} vista="salidas" />;
 const ReporteDiarioPage = (p) => <MiFrenteShell {...p} vista="reporte" />;
 const PlanRealPage = (p) => <MiFrenteShell {...p} vista="plan" />;
 
-Object.assign(window, { DashboardTecnicoPage, MisPartidasPage, CronogramaFrentePage, SalidasFrentePage, ReporteDiarioPage, PlanRealPage, EmitirAlertaPage, MiFrentePage: DashboardTecnicoPage });
+Object.assign(window, { DashboardTecnicoPage, MisPartidasPage, CronogramaFrentePage, SalidasFrentePage, ReporteDiarioPage, PlanRealPage, EmitirAlertaPage, AprobacionesReportePage, MiFrentePage: DashboardTecnicoPage });

@@ -333,7 +333,7 @@ function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStat
     personal:'Personal',asistencia:'Asistencia',materiales:'Materiales',
     'mov-materiales':'Movimiento de Materiales','herramientas':'Herramientas',
     'mov-herramientas':'Movimiento de Herramientas',proveedores:'Proveedores',
-    evidencias:'Evidencias',plantillas:'Plantillas','vinculacion-salidas':'Vinculación de Salidas','dashboard-tecnico':'Dashboard Técnico','mis-partidas':'Mis Partidas','cronograma-frente':'Cronograma de mis Partidas','salidas-frente':'Salidas a mi Frente','reporte-diario':'Reporte Diario','plan-real':'Plan vs Real','emitir-alerta':'Emitir Alerta','control-consumo':'Control de Consumo',partidas:'Partidas',insumos:'Insumos por Partida',
+    evidencias:'Evidencias',plantillas:'Plantillas','vinculacion-salidas':'Vinculación de Salidas','dashboard-tecnico':'Dashboard Técnico','mis-partidas':'Mis Partidas','cronograma-frente':'Cronograma de mis Partidas','salidas-frente':'Salidas a mi Frente','reporte-diario':'Reporte Diario','plan-real':'Plan vs Real','emitir-alerta':'Emitir Alerta','aprobaciones-reporte':'Aprobaciones de Reporte','control-consumo':'Control de Consumo',partidas:'Partidas',insumos:'Insumos por Partida',
     versiones:'Versiones de Presupuesto',
     cronograma:'Cronograma / Gantt',avance:'Avance de Obra',comparativo:'Planificado vs Real',
     costos:'Costos',incidencias:'Incidencias',usuarios:'Usuarios',roles:'Roles y Permisos',
@@ -548,6 +548,7 @@ const PAGE_REGISTRY = {
   'reporte-diario':         { chunk: 'jx-mi-frente', component: 'ReporteDiarioPage' },
   'plan-real':              { chunk: 'jx-mi-frente', component: 'PlanRealPage' },
   'emitir-alerta':          { chunk: 'jx-mi-frente', component: 'EmitirAlertaPage' },
+  'aprobaciones-reporte':   { chunk: 'jx-mi-frente', component: 'AprobacionesReportePage' },
   // === jx-reportes ===
   'reportes':               { chunk: 'jx-reportes', component: 'ReportesPage' },
   // === jx-admin ===

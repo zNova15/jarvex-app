@@ -54,6 +54,7 @@ const TRANSACTIONAL_TABLES = [
   'movimientos_herramientas',
   'avance_obra',
   'avance_metas',
+  'solicitudes_reporte',
   'incidencias',
   'evidencias',
   // Trazabilidad
@@ -90,6 +91,7 @@ const MASTER_TABLES = [
   { tabla: 'insumos_partida',        query: () => supabase.from('insumos_partida').select('*') },
   { tabla: 'frente_partidas',        query: () => supabase.from('frente_partidas').select('*').is('deleted_at', null) },
   { tabla: 'avance_metas',           query: () => supabase.from('avance_metas').select('*').is('deleted_at', null) },
+  { tabla: 'solicitudes_reporte',    query: () => supabase.from('solicitudes_reporte').select('*').is('deleted_at', null) },
   { tabla: 'presupuestos_versiones', query: () => supabase.from('presupuestos_versiones').select('*').is('deleted_at', null) },
   { tabla: 'partidas_versionadas',         query: () => supabase.from('partidas_versionadas').select('*').is('deleted_at', null) },
   { tabla: 'insumos_partida_versionadas',  query: () => supabase.from('insumos_partida_versionadas').select('*').is('deleted_at', null) },
@@ -474,6 +476,7 @@ const TABLA_TO_MODULO = {
   movimientos_insumos_emergencia: 'Insumos de Emergencia',
   asistencia: 'Asistencia',
   avance_obra: 'Avance',
+  solicitudes_reporte: 'Avance',
   incidencias: 'Incidencias',
   evidencias: 'Evidencias',
   ubicaciones_obra: 'Ubicaciones',
@@ -571,6 +574,7 @@ const FK_DEPS = {
   insumos_partida:           [{ campo: 'partida_id', tabla: 'partidas' }],
   frente_partidas:           [{ campo: 'frente_id', tabla: 'frentes_obra' }, { campo: 'partida_id', tabla: 'partidas' }],
   avance_metas:              [{ campo: 'partida_id', tabla: 'partidas' }],
+  solicitudes_reporte:       [{ campo: 'frente_id', tabla: 'frentes_obra' }],
   // Espejo versionado: el snapshot de versión (jx-gestion / jx-importar) crea
   // presupuestos_versiones + partidas_versionadas + insumos_partida_versionadas
   // pending_create en el MISMO lote, y las tres caen en el MISMO batch paralelo

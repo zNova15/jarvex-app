@@ -110,6 +110,7 @@ const NAV = [
   { id: 'versiones', label: 'Versiones de Presupuesto', icon: 'compare' },
   { id: 'cronograma', label: 'Cronograma / Gantt', icon: 'gantt' },
   { id: 'avance', label: 'Avance de Obra', icon: 'hardHat' },
+  { id: 'aprobaciones-reporte', label: 'Aprobaciones de Reporte', icon: 'check' },
   { id: 'comparativo', label: 'Planificado vs Real', icon: 'compare' },
   { id: 'costos', label: 'Costos', icon: 'dollar' },
   { id: 'valorizaciones', label: 'Valorizaciones', icon: 'dollar' },
