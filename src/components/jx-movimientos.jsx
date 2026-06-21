@@ -33,6 +33,28 @@ const JxIconRF = (props) => {
   return I ? <I {...props}/> : null;
 };
 
+// Modal reusable (Super Admin / Admin): editar el FRENTE al que se atribuye un
+// movimiento histórico. Sirve para materiales, herramientas, EPP, emergencia,
+// maquinaria — cualquier movimiento que guarde frente_id. onSave recibe el
+// frente_id elegido ('' = sin frente).
+function EditarFrenteMovModal({ frenteActual, frentes, label, busy, onSave, onClose }) {
+  const [sel, setSel] = React.useState(frenteActual || '');
+  return (
+    <Modal title="Editar frente del movimiento" icon="flag" onClose={onClose}>
+      {label && <div style={{ fontSize: 12, color: 'var(--tm)', marginBottom: 8 }}>{label}</div>}
+      <label className="flabel">Frente al que se envió</label>
+      <select className="fi" value={sel} onChange={e => setSel(e.target.value)}>
+        <option value="">— Sin frente —</option>
+        {(frentes || []).map(f => <option key={f.id} value={f.id}>{f.nombre}</option>)}
+      </select>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
+        <button className="btn btn-amber" disabled={busy} onClick={() => onSave(sel)}>Guardar frente</button>
+      </div>
+    </Modal>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // REGISTRO FÍSICO DIARIO
 // Flujo: el almacenero al final del día firma su registro físico (hoja
@@ -1488,11 +1510,14 @@ function MovMaterialesPage({ showToast }) {
                     <td>{
                       m.frente_pendiente
                         ? <button className="btn btn-red btn-xs" title="Falta el frente — asignalo" onClick={()=>{ setSelFrente(''); setAsignarFrenteTarget(m); }}>⚠ Asignar frente</button>
-                        : m.frente_id
-                          ? <span className="badge b-amber" title="Frente de trabajo">{frentesById.get(m.frente_id)?.nombre || 'frente'}</span>
-                          : m.frente_zona
-                            ? <span className="badge b-amber" title="Frente / zona al que va">{m.frente_zona}</span>
-                            : <span style={{ color:'var(--tm)', fontSize:12 }}>—</span>
+                        : <span style={{ display:'inline-flex', alignItems:'center', gap:4 }}>
+                            {m.frente_id
+                              ? <span className="badge b-amber" title="Frente de trabajo">{frentesById.get(m.frente_id)?.nombre || 'frente'}</span>
+                              : m.frente_zona
+                                ? <span className="badge b-amber" title="Frente / zona al que va">{m.frente_zona}</span>
+                                : <span style={{ color:'var(--tm)', fontSize:12 }}>—</span>}
+                            {isAdmin && <button className="btn btn-ghost btn-xs" title="Editar el frente al que se envió este movimiento" onClick={()=>{ setSelFrente(m.frente_id||''); setAsignarFrenteTarget(m); }} style={{ color:'#E74C3C', padding:'0 4px' }}>✎</button>}
+                          </span>
                     }</td>
                     <td className="col-m">{m.documento_asociado || '—'}</td>
                     <td style={{ maxWidth:220 }}><CeldaObs texto={obsLegible(m)}/></td>
@@ -1629,12 +1654,14 @@ function MovMaterialesPage({ showToast }) {
             <button className="btn btn-amber" onClick={async ()=>{
               if (!selFrente) { showToast('Elegí un frente', 'red'); return; }
               try {
+                const prev = asignarFrenteTarget.frente_id || null;
                 await updateMov(asignarFrenteTarget.id, { frente_id: selFrente, frente_pendiente: false });
+                if (prev && prev !== selFrente) { try { await window.__logAudit?.({ action:'update', table:'movimientos_materiales', recordId: asignarFrenteTarget.id, oldData:{ frente_id: prev }, newData:{ frente_id: selFrente }, reason:'Super Admin · corrección de frente histórico' }); } catch {} }
                 try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'movimientos_materiales' } })); } catch {}
-                showToast('Frente asignado', 'green');
+                showToast(prev ? 'Frente actualizado' : 'Frente asignado', 'green');
                 setAsignarFrenteTarget(null); setSelFrente('');
               } catch(e){ showToast('Error: '+(e.message||e), 'red'); }
-            }}>Asignar</button>
+            }}>Guardar</button>
           </div>
         </Modal>
       )}
@@ -1672,15 +1699,30 @@ function MovHerramientasPage({ showToast }) {
   const { data: herramientas, update: updateHerr } = window.__hooks.useHerramientas(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
   const { data: ubicacionesH } = window.__hooks.useUbicacionesObra?.(obraId) || { data: [] };
+  const { data: frentesObra } = window.__hooks.useFrentesObra?.(obraId, { soloActivas: true }) || { data: [] };
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
   const ubicNombreH = uMM(() => { const m = new Map(); (ubicacionesH || []).forEach(u => m.set(u.id, u.nombre)); return m; }, [ubicacionesH]);
+  const frentesById = uMM(() => { const m = new Map(); (frentesObra || []).forEach(f => m.set(f.id, f)); return m; }, [frentesObra]);
 
   const [reversoTarget, setReversoTarget] = uSM(null);
   const [editFechaTarget, setEditFechaTarget] = uSM(null);
+  const [editFrenteTarget, setEditFrenteTarget] = uSM(null);
   const [requestTarget, setRequestTarget] = uSM(null); // movimiento para "Solicitar cambio" (no-admin)
   const isAdmin = auth?.profile?.rol === 'admin';
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
   const superAdmin = !!appMode.superAdmin;
+
+  // Super Admin / Admin: editar el frente al que se atribuye un movimiento de herramienta.
+  const guardarFrenteMovHerr = async (frenteId) => {
+    const mov = editFrenteTarget; if (!mov) return;
+    try {
+      await updateMov(mov.id, { frente_id: frenteId || null, frente_pendiente: false });
+      try { await window.__logAudit?.({ action:'update', table:'movimientos_herramientas', recordId: mov.id, oldData:{ frente_id: mov.frente_id || null }, newData:{ frente_id: frenteId || null }, reason:'Super Admin · corrección de frente histórico' }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'movimientos_herramientas' } })); } catch {}
+      showToast('Frente actualizado', 'green');
+      setEditFrenteTarget(null);
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
 
   // Super Admin: editar fecha/hora de un movimiento de herramienta histórico.
   const guardarFechaMov = async (mov, nuevaFecha, nuevaHora) => {
@@ -1991,7 +2033,7 @@ function MovHerramientasPage({ showToast }) {
               <th>Fecha / Hora</th><th>Herramienta</th><th>Acción</th>
               <th style={{ textAlign:'right' }}>Cantidad</th>
               <th>Almacén salida</th><th>Almacén llegada</th>
-              <th>Responsable</th><th>Estado Salida</th><th>Estado Devol.</th>
+              <th>Responsable</th><th>Frente</th><th>Estado Salida</th><th>Estado Devol.</th>
               <th>Observaciones</th><th>Sync</th>
               <th style={{ textAlign:'center' }}>Acción</th>
             </tr></thead>
@@ -2027,6 +2069,12 @@ function MovHerramientasPage({ showToast }) {
                       </>);
                     })()}
                     <td>{p ? <>{p.nombres} {p.apellidos}{p.alias ? <span style={{ color:'var(--tm)' }}> «{p.alias}»</span> : null}{p.cargo ? <div style={{ fontSize:10.5, color:'var(--tm)' }}>{p.cargo}</div> : null}</> : '—'}</td>
+                    <td><span style={{ display:'inline-flex', alignItems:'center', gap:4 }}>
+                      {m.frente_id
+                        ? <span className="badge b-amber" title="Frente de trabajo">{frentesById.get(m.frente_id)?.nombre || 'frente'}</span>
+                        : <span style={{ color:'var(--tm)', fontSize:12 }}>—</span>}
+                      {isAdmin && <button className="btn btn-ghost btn-xs" title="Editar el frente al que se envió este movimiento" onClick={()=>setEditFrenteTarget(m)} style={{ color:'#E74C3C', padding:'0 4px' }}>✎</button>}
+                    </span></td>
                     <td>{m.estado_salida ? <span className={`badge ${EST_HER[m.estado_salida]||'b-gray'}`} style={{ textTransform:'capitalize' }}>{m.estado_salida}</span> : <span className="col-m">—</span>}</td>
                     <td>{m.estado_devolucion ? <span className={`badge ${EST_HER[m.estado_devolucion]||'b-gray'}`} style={{ textTransform:'capitalize' }}>{m.estado_devolucion}</span> : <span className="col-m">—</span>}</td>
                     <td className="col-m" style={{ color: danado?'var(--red)':'', fontSize:11 }}>{m.observaciones || '—'}</td>
@@ -2108,6 +2156,14 @@ function MovHerramientasPage({ showToast }) {
           mov={editFechaTarget}
           onClose={()=>setEditFechaTarget(null)}
           onSave={(f,h)=>guardarFechaMov(editFechaTarget, f, h)}/>
+      )}
+      {editFrenteTarget && (
+        <EditarFrenteMovModal
+          frenteActual={editFrenteTarget.frente_id || ''}
+          frentes={frentesObra}
+          label={`${badgeMovHerr(editFrenteTarget).lbl} · ${lookupHerr(editFrenteTarget.herramienta_id)?.nombre_herramienta || 'herramienta'}`}
+          onSave={guardarFrenteMovHerr}
+          onClose={()=>setEditFrenteTarget(null)}/>
       )}
     </div>
   );

@@ -46,6 +46,7 @@ function InsumosEmergenciaPage({ showToast }) {
   const { data: ubicaciones } = window.__hooks.useUbicacionesObra?.(obraId) || { data: [] };
   // Frentes de trabajo activos de la obra → picker opcional en la salida.
   const { data: frentes } = window.__hooks.useFrentesObra(obraId, { soloActivas: true });
+  const frentesById = uM(() => { const m = new Map(); (frentes || []).forEach(f => m.set(f.id, f)); return m; }, [frentes]);
   const ubicacionesActivas = uM(() => (ubicaciones || []).filter(u => u.activo !== false), [ubicaciones]);
   const ubicacionesById = uM(() => { const m = new Map(); (ubicaciones || []).forEach(u => m.set(u.id, u)); return m; }, [ubicaciones]);
 
@@ -561,7 +562,7 @@ function InsumosEmergenciaPage({ showToast }) {
                 <thead><tr>
                   <th>Fecha</th><th>Tipo</th><th>Insumo</th>
                   <th style={{ textAlign: 'right' }}>Cantidad</th>
-                  <th>Proveedor / Responsable</th><th>Observaciones</th>
+                  <th>Proveedor / Responsable</th><th>Frente</th><th>Observaciones</th>
                   {(canDelete || superAdmin) && <th style={{ textAlign: 'center' }}>Acciones</th>}
                 </tr></thead>
                 <tbody>
@@ -580,6 +581,7 @@ function InsumosEmergenciaPage({ showToast }) {
                           {esEntrada ? '+' : '−'}{Number(mv.cantidad || 0).toLocaleString('es-PE')} <span style={{ color: 'var(--tm)', fontSize: 10.5, fontWeight: 400 }}>{mv.unidad || ins?.unidad || ''}</span>
                         </td>
                         <td>{quien}</td>
+                        <td>{esEntrada ? <span style={{ color: 'var(--tm)', fontSize: 12 }}>—</span> : (mv.frente_id ? <span className="badge b-amber" title="Frente de trabajo">{frentesById.get(mv.frente_id)?.nombre || 'frente'}</span> : (mv.frente_pendiente ? <span className="badge b-red" title="Falta el frente">⚠ pendiente</span> : <span style={{ color: 'var(--tm)', fontSize: 12 }}>—</span>))}</td>
                         <td style={{ fontSize: 11, color: 'var(--tm)' }}>{mv.observaciones || '—'}</td>
                         {(canDelete || superAdmin) && (
                           <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
