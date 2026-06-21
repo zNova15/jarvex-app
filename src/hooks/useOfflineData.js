@@ -280,9 +280,16 @@ export function useAvanceMetas(obra_id) {
   , [obra_id]);
 }
 
-// Solicitudes de reporte de frente ajeno (ingeniero ↔ admin/gerente).
+// Solicitudes de reporte de frente ajeno (legacy; el reporte ahora es libre).
 export function useSolicitudesReporte(obra_id) {
   return useOfflineData('solicitudes_reporte', q =>
+    obra_id ? q.where('obra_id').equals(obra_id).filter(s => !s.deleted_at).toArray() : []
+  , [obra_id]);
+}
+
+// Solicitudes de creación de frente desde una partida huérfana (ingeniero ↔ admin/gerente).
+export function useSolicitudesFrente(obra_id) {
+  return useOfflineData('solicitudes_frente', q =>
     obra_id ? q.where('obra_id').equals(obra_id).filter(s => !s.deleted_at).toArray() : []
   , [obra_id]);
 }

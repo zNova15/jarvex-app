@@ -45,6 +45,12 @@ export const db = new Dexie('JarvexDB');
 // al admin/gerente para reportar un frente que no es suyo (titular ausente);
 // tras la aprobación carga el reporte en reporte_payload (jsonb, prop sin índice)
 // y lo envía; el admin acepta y recién ahí se aplican los avances. Aditivo.
+// Versión 29: solicitudes de creación de frente desde una partida huérfana (sin
+// frente). El admin/gerente las aprueba creando/oficializando un frente. Aditivo.
+db.version(29).stores({
+  solicitudes_frente: 'id, obra_id, partida_id, estado, deleted_at, sync_status',
+});
+
 db.version(28).stores({
   solicitudes_reporte: 'id, obra_id, frente_id, estado, fecha, deleted_at, sync_status',
 });

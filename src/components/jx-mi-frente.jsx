@@ -9,8 +9,6 @@ import React from "react";
 import { frentesDeUsuario, partidasDeFrente, frentesDePartida } from "../lib/frente-partidas.js";
 import { resumenFrente, planVsReal, rollupMensual, rendimientoPartida } from "../lib/mi-frente.js";
 import { hijosDirectos, cadenaBreadcrumb } from "../lib/partida-arbol.js";
-import { solicitudActiva, solicitudesPendientes, construirAvancesDeSolicitud, solEstadoInfo } from "../lib/solicitudes-reporte.js";
-import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { hoyLocal } from "../lib/fecha.js";
 import { colorIngeniero, segmentarAvance } from "../lib/color-ingeniero.js";
 
@@ -65,8 +63,9 @@ function MiFrenteShell({ showToast, vista }) {
   const nombreUsuario = (id) => { if (!id || id === 'sin') return '—'; const u = usuariosById.get(id); return u ? (`${u.nombres || ''} ${u.apellidos || ''}`.trim() || u.email || 'ingeniero') : 'ingeniero'; };
   const avancesPorPartida = uM(() => { const m = new Map(); for (const a of (avances || [])) { if (a.deleted_at) continue; const arr = m.get(a.partida_id) || []; arr.push(a); m.set(a.partida_id, arr); } return m; }, [avances]);
 
-  const solHook = window.__hooks.useSolicitudesReporte(obraId);
-  const { data: solicitudes } = solHook;
+  const solFrenteHook = window.__hooks.useSolicitudesFrente(obraId);
+  const { data: solicitudesFrente } = solFrenteHook;
+  const solFrentePend = (pid) => (solicitudesFrente || []).some(s => !s.deleted_at && s.partida_id === pid && s.estado === 'solicitado');
 
   const misFrentes = uM(() => frentesDeUsuario(userId, { frentes: frentes || [] }), [userId, frentes]);
   // "Habilitar otros frentes y partidas": desbloquea seleccionar cualquier frente
@@ -330,6 +329,18 @@ function MiFrenteShell({ showToast, vista }) {
   const generarReporteDe = (p) => {
     if (vista === 'reporte') { agregarLinea(p.id); }
     else { window.__miFrenteIntent = { tipo: 'reporte', partidaId: p.id, frenteId: frenteActivo?.id, ts: Date.now() }; window.__navTo?.('reporte-diario'); }
+  };
+  // Partida huérfana → pedir al admin/gerente que cree/oficialice un frente para ella.
+  const solicitarFrente = async (p) => {
+    if (!p) return;
+    if (solFrentePend(p.id)) { showToast('Ya hay una solicitud pendiente para esta partida', 'amber'); return; }
+    const motivo = window.prompt(`Solicitar crear un frente para:\n${p.codigo_delfin} · ${p.nombre_partida}\n\nMotivo (opcional):`, '');
+    if (motivo === null) return;   // canceló
+    try {
+      await solFrenteHook.create({ obra_id: obraId, partida_id: p.id, solicitante_user_id: userId, nombre_sugerido: p.nombre_partida || null, motivo: motivo || null, estado: 'solicitado', created_by: userId });
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'solicitudes_frente' } })); } catch {}
+      showToast('Solicitud enviada al administrador/gerente', 'green');
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
   };
   const ctxBtn = { display: 'flex', alignItems: 'center', gap: 8, width: '100%', background: 'none', border: 'none', color: 'var(--tx)', padding: '9px 11px', fontSize: 12.5, textAlign: 'left', cursor: 'pointer' };
 
@@ -776,6 +787,9 @@ function MiFrenteShell({ showToast, vista }) {
           </div>
           <button style={ctxBtn} onClick={() => { irACostoUnitario(ctx.partida); setCtx(null); }} onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>📋 Ir al costo unitario de la partida</button>
           <button style={ctxBtn} onClick={() => { generarReporteDe(ctx.partida); setCtx(null); }} onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>📝 Generar reporte diario de esta partida</button>
+          {frentesNombresDe(ctx.partida.id).length === 0 && (
+            <button style={{ ...ctxBtn, borderTop: '1px solid var(--bd)' }} onClick={() => { solicitarFrente(ctx.partida); setCtx(null); }} onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>🏗️ {solFrentePend(ctx.partida.id) ? 'Frente solicitado (pendiente)' : 'Solicitar crear frente para esta partida'}</button>
+          )}
         </div>
       )}
     </div>
@@ -834,29 +848,25 @@ function EmitirAlertaPage({ showToast }) {
   );
 }
 
-// Miniatura de evidencia (resuelve blob local o signed URL del bucket).
-function EviThumb({ ev }) {
-  const [src, setSrc] = uS(null);
-  uE(() => { let c = false; getEvidenciaSrc(ev).then(s => { if (!c) setSrc(s); }).catch(() => {}); return () => { c = true; }; }, [ev?.id]);
-  if (!src) return <span style={{ width: 46, height: 46, borderRadius: 4, background: 'rgba(255,255,255,0.06)', display: 'inline-block' }} />;
-  return <a href={src} target="_blank" rel="noreferrer"><img src={src} alt="" style={{ width: 46, height: 46, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--bd)' }} /></a>;
-}
-
-// Bandeja del ADMIN/GERENTE: aprobar permisos y aceptar reportes de frente ajeno.
+// Bandeja del ADMIN/GERENTE: oficializar partidas huérfanas como frente.
 function AprobacionesReportePage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
   const userId = auth?.profile?.id || null;
   const obraHook = window.__useObraActiva ? window.__useObraActiva() : { obraId: null };
   const obraId = obraHook?.obraId || null;
-  const solHook = window.__hooks.useSolicitudesReporte(obraId);
-  const { data: solicitudes } = solHook;
-  const { data: frentes } = window.__hooks.useFrentesObra(obraId);
+  const solFrenteHook = window.__hooks.useSolicitudesFrente(obraId);
+  const { data: solicitudes } = solFrenteHook;
+  const frentesHook = window.__hooks.useFrentesObra(obraId);
+  const { data: frentes } = frentesHook;
+  const fpHook = window.__hooks.useFrentePartidas(obraId);
   const partidasHook = window.__hooks.usePartidas(obraId);
   const { data: partidas } = partidasHook;
+  const movHook = window.__hooks.useMovimientosMateriales(obraId);
+  const { data: movs } = movHook;
   const avanceHook = window.__hooks.useAvanceObra(obraId);
   const { data: avances } = avanceHook;
-  const { data: evidencias } = window.__hooks.useEvidencias(obraId);
-  const fotosDeSol = (solId) => (evidencias || []).filter(e => !e.deleted_at && e.modulo_relacionado === 'solicitudes_reporte' && e.registro_relacionado_id === solId);
+  const { data: materiales } = window.__hooks.useMateriales(obraId);
+  const materialesById = uM(() => { const m = new Map(); (materiales || []).forEach(x => m.set(x.id, x)); return m; }, [materiales]);
   const [usuarios, setUsuarios] = uS([]);
   uE(() => { window.__db.profiles.toArray().then(setUsuarios).catch(() => {}); }, []);
   const usuariosById = uM(() => { const m = new Map(); (usuarios || []).forEach(u => m.set(u.id, u)); return m; }, [usuarios]);
@@ -864,33 +874,40 @@ function AprobacionesReportePage({ showToast }) {
   const frentesById = uM(() => { const m = new Map(); (frentes || []).forEach(f => m.set(f.id, f)); return m; }, [frentes]);
   const partById = uM(() => { const m = new Map(); (partidas || []).forEach(p => m.set(p.id, p)); return m; }, [partidas]);
   const [busy, setBusy] = uS(false);
+  const EST = { solicitado: { label: 'Pendiente', color: 'var(--amber)' }, aprobado: { label: 'Frente creado', color: 'var(--green)' }, rechazado: { label: 'Rechazada', color: 'var(--red)' } };
+  const estInfo = (e) => EST[e] || { label: e || '—', color: 'var(--tm)' };
 
-  const pend = uM(() => solicitudesPendientes(solicitudes || []), [solicitudes]);
-  const histo = uM(() => (solicitudes || []).filter(s => !s.deleted_at && ['aprobado', 'rechazado', 'aceptado', 'devuelto'].includes(s.estado))
-    .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || ''))).slice(0, 30), [solicitudes]);
+  const pend = uM(() => (solicitudes || []).filter(s => !s.deleted_at && s.estado === 'solicitado').sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || ''))), [solicitudes]);
+  const histo = uM(() => (solicitudes || []).filter(s => !s.deleted_at && s.estado !== 'solicitado').sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || ''))).slice(0, 30), [solicitudes]);
+  // Salidas vinculadas a la partida de la solicitud (insumos que se transferirán al nuevo frente).
+  const insumosDeSol = (sol) => (movs || []).filter(m => !m.deleted_at && m.tipo_movimiento === 'salida' && m.partida_id === sol.partida_id);
 
-  const decidir = async (sol, patch, okMsg) => {
+  const rechazar = async (sol) => {
+    const nota = window.prompt('Motivo del rechazo (opcional):') ?? '';
     setBusy(true);
     try {
-      await solHook.update(sol.id, { ...patch, decidido_por: userId, decidido_at: new Date().toISOString(), updated_by: userId });
-      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'solicitudes_reporte' } })); } catch {}
-      showToast(okMsg, 'green');
+      await solFrenteHook.update(sol.id, { estado: 'rechazado', nota_decision: nota || null, decidido_por: userId, decidido_at: new Date().toISOString(), updated_by: userId });
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'solicitudes_frente' } })); } catch {}
+      showToast('Solicitud rechazada', 'amber');
     } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
     finally { setBusy(false); }
   };
-  const aprobar = (sol) => decidir(sol, { estado: 'aprobado', nota_decision: null }, 'Permiso aprobado');
-  const rechazar = (sol) => { const nota = window.prompt('Motivo del rechazo (opcional):') ?? ''; decidir(sol, { estado: 'rechazado', nota_decision: nota || null }, 'Solicitud rechazada'); };
-  const devolver = (sol) => { const nota = window.prompt('¿Qué hay que corregir? (se le muestra al ingeniero)') ?? ''; decidir(sol, { estado: 'devuelto', nota_decision: nota || null }, 'Reporte devuelto al ingeniero'); };
-  const aceptar = async (sol) => {
+  const crearFrente = async (sol, esPequeno) => {
+    const p = partById.get(sol.partida_id);
+    if (!p) { showToast('No encuentro la partida', 'red'); return; }
+    const sugerido = esPequeno ? `Frente ${p.codigo_delfin}` : (sol.nombre_sugerido || p.nombre_partida || `Frente ${p.codigo_delfin}`);
+    const nombre = window.prompt(esPequeno ? 'Oficializar como frente pequeño — nombre:' : 'Crear frente — nombre:', sugerido);
+    if (nombre === null) return;
+    if (!nombre.trim()) { showToast('Poné un nombre', 'red'); return; }
     setBusy(true);
     try {
-      const { avanceRows, partidaUpdates } = construirAvancesDeSolicitud(sol, { partidas: partidas || [], avances: avances || [], newId: window.__newId });
-      for (const row of avanceRows) { try { await avanceHook.create(row); } catch (e) { console.warn('[aceptar avance]', e?.message); } }
-      for (const u of partidaUpdates) { if (partidasHook.update) { try { await partidasHook.update(u.id, { porcentaje_avance: u.porcentaje_avance }); } catch {} } }
-      await solHook.update(sol.id, { estado: 'aceptado', decidido_por: userId, decidido_at: new Date().toISOString(), updated_by: userId });
-      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'avance_obra' } })); } catch {}
-      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'solicitudes_reporte' } })); } catch {}
-      showToast(`Reporte aceptado · ${avanceRows.length} avance(s) aplicado(s)`, 'green');
+      const fNuevo = await frentesHook.create({ obra_id: obraId, nombre: nombre.trim(), descripcion: esPequeno ? 'Frente pequeño (1 partida) oficializado desde una partida huérfana.' : (sol.motivo || null), ingeniero_user_id: sol.solicitante_user_id || null, orden: 999, activo: true });
+      try { await fpHook.create({ obra_id: obraId, frente_id: fNuevo.id, codigo_delfin: p.codigo_delfin, partida_id: p.id, nivel: String(p.codigo_delfin || '').split('.').filter(Boolean).length }); } catch (e) { console.warn('[crearFrente fp]', e?.message); }
+      for (const m of insumosDeSol(sol)) { try { await movHook.update(m.id, { frente_id: fNuevo.id, frente_pendiente: false }); } catch {} }
+      for (const a of (avances || [])) { if (a.deleted_at || a.partida_id !== sol.partida_id || a.frente_id) continue; try { await avanceHook.update(a.id, { frente_id: fNuevo.id }); } catch {} }
+      await solFrenteHook.update(sol.id, { estado: 'aprobado', es_pequeno: !!esPequeno, frente_creado_id: fNuevo.id, decidido_por: userId, decidido_at: new Date().toISOString(), updated_by: userId });
+      for (const t of ['frentes_obra', 'frente_partidas', 'movimientos_materiales', 'avance_obra', 'solicitudes_frente']) { try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: t } })); } catch {} }
+      showToast(`Frente "${nombre.trim()}" creado · ${nombreUsuario(sol.solicitante_user_id)} responsable`, 'green');
     } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
     finally { setBusy(false); }
   };
@@ -898,47 +915,35 @@ function AprobacionesReportePage({ showToast }) {
   if (!obraId) return <div className="page-wrap"><div className="card card-p empty-state"><p>Seleccioná una obra activa.</p></div></div>;
   return (
     <div className="page-wrap">
-      <div className="pg-hd"><div className="pg-title">Aprobaciones de Reporte</div><div className="pg-sub">Permisos y reportes de frente ajeno que esperan tu decisión.</div></div>
+      <div className="pg-hd"><div className="pg-title">Aprobación de Frentes</div><div className="pg-sub">Partidas sin frente que un ingeniero pide oficializar como frente de trabajo.</div></div>
       <div className="card" style={{ overflow: 'auto', marginBottom: 14 }}>
         <div style={{ padding: '8px 12px', fontSize: 12.5, fontWeight: 600 }}>Pendientes ({pend.length})</div>
         {pend.length === 0 && <div style={{ padding: '0 12px 12px', color: 'var(--tm)', fontStyle: 'italic', fontSize: 12 }}>No hay solicitudes pendientes.</div>}
         {pend.map(sol => {
-          const f = frentesById.get(sol.frente_id);
+          const p = partById.get(sol.partida_id);
+          const insumos = insumosDeSol(sol);
           return (
             <div key={sol.id} className="card card-p" style={{ margin: '0 12px 12px' }}>
               <div className="frow-sb" style={{ flexWrap: 'wrap', gap: 6 }}>
                 <div>
-                  <div style={{ fontSize: 12.5, fontWeight: 600 }}>{f?.nombre || sol.frente_id} · {sol.fecha}</div>
-                  <div style={{ fontSize: 11.5, color: 'var(--tm)' }}>Solicita: {nombreUsuario(sol.solicitante_user_id)} · {sol.motivo || '—'}</div>
+                  <div style={{ fontSize: 12.5, fontWeight: 600 }}>{p ? <><span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{p.codigo_delfin}</span> {p.nombre_partida}</> : sol.partida_id}</div>
+                  <div style={{ fontSize: 11.5, color: 'var(--tm)' }}>Solicita: {nombreUsuario(sol.solicitante_user_id)}{sol.motivo ? ` · ${sol.motivo}` : ''}</div>
                 </div>
-                <span className="badge" style={{ background: solEstadoInfo(sol.estado).color, color: '#000', fontSize: 10, height: 'fit-content' }}>{solEstadoInfo(sol.estado).label}</span>
+                <span className="badge" style={{ background: estInfo(sol.estado).color, color: '#000', fontSize: 10, height: 'fit-content' }}>{estInfo(sol.estado).label}</span>
               </div>
-              {sol.estado === 'enviado' && Array.isArray(sol.reporte_payload) && (
-                <table className="tbl" style={{ fontSize: 11.5, marginTop: 8 }}>
-                  <thead><tr><th>Partida</th><th>Descripción</th><th style={{ textAlign: 'right' }}>Metrado</th></tr></thead>
-                  <tbody>
-                    {sol.reporte_payload.map((l, i) => { const p = partById.get(l.partida_id); return (
-                      <tr key={i}><td>{p ? `${p.codigo_delfin} · ${p.nombre_partida}` : l.partida_id}{l.tiene_foto ? ' 📷' : ''}</td><td>{l.descripcion || '—'}</td><td style={{ textAlign: 'right' }}>{num(l.metrado)} {p?.unidad || ''}</td></tr>
-                    ); })}
-                  </tbody>
-                </table>
-              )}
-              {sol.estado === 'enviado' && (() => { const fotos = fotosDeSol(sol.id); return fotos.length > 0 ? (
+              {insumos.length > 0 && (
                 <div style={{ marginTop: 8 }}>
-                  <div style={{ fontSize: 11, color: 'var(--tm)', marginBottom: 4 }}>Fotos del avance ({fotos.length}):</div>
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>{fotos.map(e => <EviThumb key={e.id} ev={e} />)}</div>
+                  <div style={{ fontSize: 11, color: 'var(--tm)', marginBottom: 4 }}>Insumos vinculados (se transferirán al frente): {insumos.length}</div>
+                  <table className="tbl" style={{ fontSize: 11.5 }}><tbody>
+                    {insumos.slice(0, 8).map(m => <tr key={m.id}><td>{m.fecha || '—'}</td><td>{materialesById.get(m.material_id)?.nombre_material || '—'}</td><td style={{ textAlign: 'right' }}>{num(m.cantidad)} {m.unidad || ''}</td><td>{frentesById.get(m.frente_id)?.nombre || <span style={{ color: 'var(--tm)' }}>sin frente</span>}</td></tr>)}
+                  </tbody></table>
+                  {insumos.length > 8 && <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>… y {insumos.length - 8} más</div>}
                 </div>
-              ) : null; })()}
+              )}
               <div className="modal-actions" style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {sol.estado === 'solicitado' && <>
-                  <button className="btn btn-green btn-sm" disabled={busy} onClick={() => aprobar(sol)}>Aprobar permiso</button>
-                  <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => rechazar(sol)}>Rechazar</button>
-                </>}
-                {sol.estado === 'enviado' && <>
-                  <button className="btn btn-green btn-sm" disabled={busy} onClick={() => aceptar(sol)}>Aceptar y aplicar avances</button>
-                  <button className="btn btn-amber btn-sm" disabled={busy} onClick={() => devolver(sol)}>Devolver para corregir</button>
-                  <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => rechazar(sol)}>Rechazar</button>
-                </>}
+                <button className="btn btn-green btn-sm" disabled={busy} onClick={() => crearFrente(sol, false)}>Crear frente</button>
+                <button className="btn btn-amber btn-sm" disabled={busy} onClick={() => crearFrente(sol, true)}>Oficializar como frente pequeño</button>
+                <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => rechazar(sol)}>Rechazar</button>
               </div>
             </div>
           );
@@ -947,9 +952,11 @@ function AprobacionesReportePage({ showToast }) {
       <div className="card" style={{ overflow: 'auto' }}>
         <div style={{ padding: '8px 12px', fontSize: 12.5, fontWeight: 600 }}>Historial reciente</div>
         <table className="tbl" style={{ fontSize: 12 }}>
-          <thead><tr><th>Frente</th><th>Fecha</th><th>Solicita</th><th>Estado</th></tr></thead>
+          <thead><tr><th>Partida</th><th>Solicita</th><th>Resultado</th><th>Frente</th></tr></thead>
           <tbody>
-            {histo.map(sol => <tr key={sol.id}><td>{frentesById.get(sol.frente_id)?.nombre || '—'}</td><td>{sol.fecha}</td><td>{nombreUsuario(sol.solicitante_user_id)}</td><td><span className="badge" style={{ background: solEstadoInfo(sol.estado).color, color: '#000', fontSize: 9 }}>{solEstadoInfo(sol.estado).label}</span></td></tr>)}
+            {histo.map(sol => { const p = partById.get(sol.partida_id); return (
+              <tr key={sol.id}><td>{p ? p.codigo_delfin : '—'}</td><td>{nombreUsuario(sol.solicitante_user_id)}</td><td><span className="badge" style={{ background: estInfo(sol.estado).color, color: '#000', fontSize: 9 }}>{estInfo(sol.estado).label}{sol.es_pequeno ? ' · pequeño' : ''}</span></td><td>{frentesById.get(sol.frente_creado_id)?.nombre || '—'}</td></tr>
+            ); })}
             {histo.length === 0 && <tr><td colSpan={4} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>Sin historial.</td></tr>}
           </tbody>
         </table>
