@@ -9,7 +9,8 @@ import React from "react";
 import { frentesDeUsuario, partidasDeFrente } from "../lib/frente-partidas.js";
 import { resumenFrente, planVsReal, rollupMensual, rendimientoPartida } from "../lib/mi-frente.js";
 import { hijosDirectos, cadenaBreadcrumb } from "../lib/partida-arbol.js";
-import { solicitudActiva, solicitudesPendientes, construirAvancesDeSolicitud, puedeEditarReporte, esperaDecision, esTerminal, solEstadoInfo } from "../lib/solicitudes-reporte.js";
+import { solicitudActiva, solicitudesPendientes, construirAvancesDeSolicitud, solEstadoInfo } from "../lib/solicitudes-reporte.js";
+import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -127,8 +128,9 @@ function MiFrenteShell({ showToast, vista }) {
     try { localStorage.setItem(draftKey, JSON.stringify(repLineas.map(({ foto, ...l }) => l))); setHayBorrador(true); showToast('Borrador guardado (las fotos se vuelven a adjuntar al terminar)', 'amber'); }
     catch { showToast('No se pudo guardar el borrador', 'red'); }
   };
-  const cargarBorrador = () => { try { const d = JSON.parse(localStorage.getItem(draftKey) || '[]'); if (Array.isArray(d)) setRepLineas(d.map(l => ({ partida_id: l.partida_id, descripcion: l.descripcion || '', metrado: l.metrado ?? '', foto: null }))); } catch {} };
+  const cargarBorrador = (keyOverride) => { const k = keyOverride || draftKey; try { const d = JSON.parse(localStorage.getItem(k) || '[]'); if (Array.isArray(d)) setRepLineas(d.map(l => ({ partida_id: l.partida_id, descripcion: l.descripcion || '', metrado: l.metrado ?? '', foto: null }))); } catch {} };
   const descartarBorrador = () => { try { localStorage.removeItem(draftKey); } catch {} setHayBorrador(false); };
+  const [draftTick, setDraftTick] = uS(0);   // fuerza recálculo de la lista de Borradores tras eliminar
   const guardarReporte = async () => {
     if (!frenteActivo) return;
     const lineas = repLineas.filter(l => l.partida_id && (l.metrado !== '' || (l.descripcion || '').trim() || l.foto));
@@ -184,18 +186,35 @@ function MiFrenteShell({ showToast, vista }) {
     catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
   };
   const enviarReporteAjeno = async () => {
-    if (!solActiva) return;
-    const lineas = repLineas.filter(l => l.partida_id && (l.metrado !== '' || (l.descripcion || '').trim()));
+    if (!frenteActivo) return;
+    const lineas = repLineas.filter(l => l.partida_id && (l.metrado !== '' || (l.descripcion || '').trim() || l.foto));
     if (!lineas.length) { showToast('Agregá al menos una partida con avance', 'red'); return; }
     setBusyRep(true);
     try {
-      await solHook.update(solActiva.id, {
-        estado: 'enviado', updated_by: userId,
-        reporte_payload: lineas.map(l => ({ partida_id: l.partida_id, descripcion: l.descripcion || null, metrado: l.metrado !== '' ? Number(l.metrado) : null })),
-      });
+      const payload = lineas.map(l => ({ partida_id: l.partida_id, descripcion: l.descripcion || null, metrado: l.metrado !== '' ? Number(l.metrado) : null, tiene_foto: !!l.foto }));
+      // Crear-o-actualizar la solicitud directamente como 'enviado' (el permiso previo es opcional).
+      let solId = solActiva?.id;
+      if (solId) {
+        await solHook.update(solId, { estado: 'enviado', updated_by: userId, reporte_payload: payload, motivo: solActiva.motivo || motivoSol || null });
+      } else {
+        solId = window.__newId();
+        await solHook.create({ id: solId, obra_id: obraId, frente_id: frenteActivo.id, solicitante_user_id: userId, fecha: hoy, motivo: motivoSol || null, estado: 'enviado', reporte_payload: payload, created_by: userId });
+      }
+      // Fotos como evidencia ligada a la SOLICITUD (el avance_obra todavía no existe; se crea al aceptar).
+      for (const l of lineas) {
+        if (!l.foto) continue;
+        try {
+          await window.__saveEvidenciaLocal({
+            id: window.__newId(), obra_id: obraId, tipo_evidencia: 'foto_avance', modulo_relacionado: 'solicitudes_reporte',
+            registro_relacionado_id: solId, nombre_archivo: l.foto.name, mime_type: l.foto.type || 'image/jpeg',
+            blob: l.foto, fecha: hoy, created_by: userId,
+            observaciones: `Foto avance frente ajeno · partida ${partById.get(l.partida_id)?.codigo_delfin || ''}`,
+          });
+        } catch (e) { console.warn('[ajeno foto]', e?.message); }
+      }
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'solicitudes_reporte' } })); } catch {}
-      showToast('Reporte enviado — esperando aceptación', 'green');
-      setRepLineas([]); descartarBorrador();
+      showToast('Reporte enviado — esperando aceptación del admin/gerente', 'green');
+      setRepLineas([]); descartarBorrador(); setMotivoSol('');
     } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
     finally { setBusyRep(false); }
   };
@@ -216,7 +235,16 @@ function MiFrenteShell({ showToast, vista }) {
   uE(() => {
     const it = window.__miFrenteIntent;
     if (!it || intentRef.current === it.ts) return;
-    if (it.frenteId && frenteActivo && it.frenteId !== frenteActivo.id) { setFrenteSelId(it.frenteId); return; }
+    // Si el frente objetivo no es el activo, cambiarlo (activando "ver otros" si es ajeno) y re-entrar.
+    if (it.frenteId && frenteActivo && it.frenteId !== frenteActivo.id) {
+      if (!misFrentes.some(f => f.id === it.frenteId)) setVerOtros(true);
+      setFrenteSelId(it.frenteId); return;
+    }
+    if (it.tipo === 'borrador' && vista === 'reporte') {
+      cargarBorrador(`jx_repdraft_${obraId}_${it.frenteId}_${it.fecha}`);
+      intentRef.current = it.ts; window.__miFrenteIntent = null;
+      return;
+    }
     if (!partidasDelFrente.length) return;
     const p = partidasDelFrente.find(x => x.id === it.partidaId);
     if (it.tipo === 'costo' && vista === 'partidas') {
@@ -294,7 +322,7 @@ function MiFrenteShell({ showToast, vista }) {
     );
   }
 
-  const TITULOS = { dashboard: 'Dashboard Técnico', partidas: 'Mis Partidas', cronograma: 'Cronograma de mis Partidas', salidas: 'Salidas a mi Frente', reporte: 'Reporte Diario', plan: 'Plan vs Real' };
+  const TITULOS = { dashboard: 'Dashboard Técnico', partidas: 'Mis Partidas', cronograma: 'Cronograma de mis Partidas', salidas: 'Salidas a mi Frente', reporte: 'Reporte Diario', plan: 'Plan vs Real', borradores: 'Borradores' };
 
   const SemBadge = ({ s }) => <span className="badge" style={{ background: SEM[s], color: '#000', fontSize: 9 }}>{SEM_LBL[s]}</span>;
 
@@ -305,7 +333,6 @@ function MiFrenteShell({ showToast, vista }) {
     else { window.__miFrenteIntent = { tipo: 'costo', partidaId: p.id, frenteId: frenteActivo?.id, ts: Date.now() }; window.__navTo?.('mis-partidas'); }
   };
   const generarReporteDe = (p) => {
-    if (!esMiFrente) { if (vista !== 'reporte') window.__navTo?.('reporte-diario'); return; }   // frente ajeno → flujo con permiso
     if (vista === 'reporte') { agregarLinea(p.id); }
     else { window.__miFrenteIntent = { tipo: 'reporte', partidaId: p.id, frenteId: frenteActivo?.id, ts: Date.now() }; window.__navTo?.('reporte-diario'); }
   };
@@ -384,7 +411,7 @@ function MiFrenteShell({ showToast, vista }) {
           <td style={{ textAlign: 'right' }}>{p ? `${num(p.metrado_contratado)} ${p.unidad || ''}` : ''}</td>
           <td style={{ textAlign: 'right' }}>{p ? `${Number(p.porcentaje_avance) || 0}%` : ''}</td>
           <td>{r ? <SemBadge s={r.semaforo} /> : ''}</td>
-          <td style={{ textAlign: 'right' }}>{p && esMiFrente && <button className="btn btn-ghost btn-xs" onClick={() => generarReporteDe(p)}>Reportar</button>}</td>
+          <td style={{ textAlign: 'right' }}>{p && <button className="btn btn-ghost btn-xs" onClick={() => generarReporteDe(p)}>Reportar</button>}</td>
         </tr>
       );
       if (open) {
@@ -496,7 +523,7 @@ function MiFrenteShell({ showToast, vista }) {
                     <td style={{ textAlign: 'right' }}>{num(p.metrado_contratado)} {p.unidad || ''}</td>
                     <td style={{ textAlign: 'right' }}>{Number(p.porcentaje_avance) || 0}%</td>
                     <td><SemBadge s={r.semaforo} /></td>
-                    <td style={{ textAlign: 'right' }}>{esMiFrente && <button className="btn btn-ghost btn-xs" onClick={() => generarReporteDe(p)}>Reportar</button>}</td>
+                    <td style={{ textAlign: 'right' }}><button className="btn btn-ghost btn-xs" onClick={() => generarReporteDe(p)}>Reportar</button></td>
                   </tr>,
                 ];
                 if (open && ins.length) rows.push(<tr key={p.id + '_ins'} style={{ background: 'rgba(245,180,40,0.05)' }}><td></td><td colSpan={5}><div style={{ fontSize: 10.5, color: 'var(--tm)', margin: '2px 0' }}>Insumos a utilizar:</div><table style={{ width: '100%', fontSize: 11 }}><tbody>{ins.map(i => <tr key={i.id}><td style={{ width: 96, color: 'var(--tm)' }}>{i.tipo_insumo}</td><td>{i.nombre_insumo}</td><td style={{ textAlign: 'right', width: 130 }}>{num(i.cantidad_presupuestada)} {i.unidad || ''}</td></tr>)}</tbody></table></td></tr>);
@@ -612,75 +639,60 @@ function MiFrenteShell({ showToast, vista }) {
       )}
 
       {vista === 'reporte' && !esMiFrente && frenteActivo && (() => {
-        const editable = puedeEditarReporte(solActiva);
         const info = solActiva ? solEstadoInfo(solActiva.estado) : null;
+        const yaAceptado = solActiva?.estado === 'aceptado';
+        const tienePayload = Array.isArray(solActiva?.reporte_payload) && solActiva.reporte_payload.length > 0;
         return (
           <div style={{ display: 'grid', gap: 12, maxWidth: 700 }}>
             <div className="card card-p" style={{ background: 'rgba(245,180,40,0.06)' }}>
               <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Reportar un frente ajeno · {frenteActivo.nombre}</div>
-              <div style={{ fontSize: 12, color: 'var(--tm)' }}>Este frente no es tuyo. Para presentar un reporte necesitás permiso del administrador o gerente, y el reporte recién se aplica cuando ellos lo aceptan.</div>
+              <div style={{ fontSize: 12, color: 'var(--tm)' }}>Este frente no es tuyo. Llená el reporte igual que el tuyo (descripción, metrado y foto por partida) y mandalo a aprobación: el avance recién queda registrado cuando el administrador o gerente lo acepta.</div>
               {info && <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}><span className="badge" style={{ background: info.color, color: '#000', fontSize: 10 }}>{info.label}</span>{solActiva.motivo && <span style={{ fontSize: 11, color: 'var(--tm)' }}>Motivo: {solActiva.motivo}</span>}</div>}
               {solActiva?.nota_decision && <div style={{ marginTop: 6, fontSize: 11.5, color: 'var(--red)' }}>Nota del admin: {solActiva.nota_decision}</div>}
             </div>
 
-            {(!solActiva || solActiva.estado === 'rechazado') && (
-              <div className="card card-p">
-                <label className="flabel">Motivo de la solicitud *</label>
-                <input className="fi" value={motivoSol} onChange={e => setMotivoSol(e.target.value)} placeholder="Ej. el ingeniero titular no asistió hoy" />
-                <div className="modal-actions" style={{ marginTop: 10 }}>
-                  <button className="btn btn-amber" onClick={solicitarPermiso}><JxIcon name="check" size={13} />Solicitar permiso para reportar</button>
+            {yaAceptado ? (
+              <div className="card card-p" style={{ fontSize: 12.5 }}>El reporte fue aceptado y los avances ya se aplicaron al frente. ✓</div>
+            ) : (<>
+              {!solActiva && (
+                <div className="card card-p" style={{ display: 'grid', gap: 6 }}>
+                  <div style={{ fontSize: 12, color: 'var(--tm)' }}>Opcional: avisá al admin/gerente antes de empezar (no hace falta para poder enviar).</div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <input className="fi" style={{ maxWidth: 360 }} value={motivoSol} onChange={e => setMotivoSol(e.target.value)} placeholder="Motivo (ej. el ingeniero titular no asistió hoy)" />
+                    <button className="btn btn-ghost btn-sm" onClick={solicitarPermiso}>Solicitar permiso primero</button>
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
+              {solActiva?.estado === 'solicitado' && (
+                <div className="card card-p" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 12.5 }}>
+                  <span>Pediste permiso (esperando respuesta). Igual podés llenar y enviar el reporte directamente.</span>
+                  <button className="btn btn-ghost btn-xs" onClick={cancelarSolicitud}>Cancelar solicitud</button>
+                </div>
+              )}
 
-            {solActiva?.estado === 'solicitado' && (
-              <div className="card card-p" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 12.5 }}>Tu solicitud está esperando aprobación del administrador o gerente.</span>
-                <button className="btn btn-ghost btn-xs" onClick={cancelarSolicitud}>Cancelar solicitud</button>
-              </div>
-            )}
-
-            {editable && (<>
               {hayBorrador && repLineas.length === 0 && (
                 <div className="card card-p" style={{ background: 'rgba(245,180,40,0.08)', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                   <span style={{ width: 9, height: 9, borderRadius: '50%', background: 'var(--amber)', display: 'inline-block' }} />
                   <span style={{ fontSize: 12.5 }}>Tenés un borrador de hoy sin terminar.</span>
-                  <button className="btn btn-amber btn-xs" onClick={cargarBorrador}>Cargar borrador</button>
+                  <button className="btn btn-amber btn-xs" onClick={() => cargarBorrador()}>Cargar borrador</button>
                   <button className="btn btn-ghost btn-xs" onClick={descartarBorrador}>Descartar</button>
                 </div>
               )}
-              {solActiva.estado === 'devuelto' && Array.isArray(solActiva.reporte_payload) && solActiva.reporte_payload.length > 0 && repLineas.length === 0 && (
+              {(solActiva?.estado === 'enviado' || solActiva?.estado === 'devuelto') && tienePayload && repLineas.length === 0 && (
                 <div className="card card-p" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: 12.5 }}>El admin te devolvió el reporte para corregir.</span>
-                  <button className="btn btn-amber btn-xs" onClick={() => setRepLineas(solActiva.reporte_payload.map(l => ({ partida_id: l.partida_id, descripcion: l.descripcion || '', metrado: l.metrado ?? '', foto: null })))}>Cargar lo que enviaste</button>
+                  <span style={{ fontSize: 12.5 }}>{solActiva.estado === 'devuelto' ? 'El admin te devolvió el reporte para corregir.' : 'Ya enviaste un reporte (esperando aceptación). Podés editarlo y reenviarlo.'}</span>
+                  <button className="btn btn-amber btn-xs" onClick={() => setRepLineas(solActiva.reporte_payload.map(l => ({ partida_id: l.partida_id, descripcion: l.descripcion || '', metrado: l.metrado ?? '', foto: null })))}>Cargar lo enviado</button>
                 </div>
               )}
-              {editorLineas(false)}
+
+              {editorLineas(true)}
               {repLineas.length > 0 && (
                 <div className="modal-actions" style={{ display: 'flex', gap: 8 }}>
-                  <button className="btn btn-amber" disabled={busyRep} onClick={enviarReporteAjeno}><JxIcon name="check" size={13} />Enviar reporte para aceptación</button>
+                  <button className="btn btn-amber" disabled={busyRep} onClick={enviarReporteAjeno}><JxIcon name="check" size={13} />{solActiva?.estado === 'enviado' ? 'Reenviar para aprobación' : 'Enviar para aprobación'}</button>
                   <button className="btn btn-ghost" disabled={busyRep} onClick={guardarBorrador}>Guardar como borrador</button>
                 </div>
               )}
             </>)}
-
-            {solActiva?.estado === 'enviado' && (
-              <div className="card" style={{ overflow: 'auto' }}>
-                <div style={{ padding: '8px 12px', fontSize: 12.5, fontWeight: 600 }}>Reporte enviado — esperando aceptación del administrador/gerente</div>
-                <table className="tbl" style={{ fontSize: 12 }}>
-                  <thead><tr><th>Partida</th><th>Descripción</th><th style={{ textAlign: 'right' }}>Metrado</th></tr></thead>
-                  <tbody>
-                    {(solActiva.reporte_payload || []).map((l, i) => { const p = partById.get(l.partida_id); return (
-                      <tr key={i}><td>{p ? nombrePart(p) : l.partida_id}</td><td>{l.descripcion || '—'}</td><td style={{ textAlign: 'right' }}>{num(l.metrado)} {p?.unidad || ''}</td></tr>
-                    ); })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {solActiva?.estado === 'aceptado' && (
-              <div className="card card-p" style={{ fontSize: 12.5 }}>El reporte fue aceptado y los avances ya se aplicaron al frente. ✓</div>
-            )}
           </div>
         );
       })()}
@@ -731,6 +743,53 @@ function MiFrenteShell({ showToast, vista }) {
         </div>
       )}
 
+      {vista === 'borradores' && (() => {
+        const _tick = draftTick;   // re-evaluar al eliminar
+        const prefix = `jx_repdraft_${obraId}_`;
+        const rx = /^jx_repdraft_(.+)_(.+)_(\d{4}-\d{2}-\d{2})$/;
+        const items = [];
+        try {
+          for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (!k || !k.startsWith(prefix)) continue;
+            const m = k.match(rx);
+            if (!m) continue;
+            const [, oid, fid, fecha] = m;
+            if (oid !== obraId) continue;
+            let lineas = []; try { lineas = JSON.parse(localStorage.getItem(k) || '[]'); } catch {}
+            items.push({ key: k, frenteId: fid, fecha, n: Array.isArray(lineas) ? lineas.length : 0 });
+          }
+        } catch {}
+        items.sort((a, b) => b.fecha.localeCompare(a.fecha));
+        const frNombre = (id) => (frentes || []).find(f => f.id === id)?.nombre || '—';
+        const esPropio = (id) => misFrentes.some(f => f.id === id);
+        const retomar = (it) => { window.__miFrenteIntent = { tipo: 'borrador', frenteId: it.frenteId, fecha: it.fecha, ts: Date.now() }; window.__navTo?.('reporte-diario'); };
+        const eliminar = (it) => { try { localStorage.removeItem(it.key); } catch {} if (it.key === draftKey) setHayBorrador(false); setDraftTick(t => t + 1); };
+        return (
+          <div className="card" style={{ overflow: 'auto' }}>
+            <div style={{ padding: '8px 12px', fontSize: 12.5, fontWeight: 600 }}>Borradores guardados ({items.length})</div>
+            <div style={{ padding: '0 12px 8px', fontSize: 11, color: 'var(--tm)' }}>Reportes que dejaste a medias. Retomá uno para terminarlo o eliminalo. Las fotos no se guardan en el borrador; se vuelven a adjuntar al terminar.</div>
+            <table className="tbl" style={{ fontSize: 12 }}>
+              <thead><tr><th>Frente</th><th>Día</th><th style={{ textAlign: 'right' }}>Partidas</th><th></th></tr></thead>
+              <tbody>
+                {items.map(it => (
+                  <tr key={it.key}>
+                    <td>{frNombre(it.frenteId)} {esPropio(it.frenteId) ? <span className="badge b-green" style={{ fontSize: 9 }}>mío</span> : <span className="badge" style={{ background: 'var(--amber)', color: '#000', fontSize: 9 }}>ajeno</span>}</td>
+                    <td>{it.fecha}</td>
+                    <td style={{ textAlign: 'right' }}>{it.n}</td>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      <button className="btn btn-amber btn-xs" onClick={() => retomar(it)}>Retomar</button>
+                      <button className="btn btn-ghost btn-xs" style={{ marginLeft: 4 }} onClick={() => eliminar(it)}>Eliminar</button>
+                    </td>
+                  </tr>
+                ))}
+                {items.length === 0 && <tr><td colSpan={4} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>No tenés borradores guardados.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        );
+      })()}
+
       {ctx && (
         <div onClick={e => e.stopPropagation()} onContextMenu={e => e.preventDefault()}
           style={{ position: 'fixed', left: Math.min(ctx.x, (window.innerWidth || 800) - 260), top: Math.min(ctx.y, (window.innerHeight || 600) - 110), zIndex: 9999, background: '#23232a', border: '1px solid var(--bd)', borderRadius: 8, boxShadow: '0 8px 28px rgba(0,0,0,.45)', minWidth: 240, overflow: 'hidden' }}>
@@ -738,7 +797,7 @@ function MiFrenteShell({ showToast, vista }) {
             <span style={{ fontFamily: 'monospace' }}>{ctx.partida.codigo_delfin}</span> · {ctx.partida.nombre_partida}
           </div>
           <button style={ctxBtn} onClick={() => { irACostoUnitario(ctx.partida); setCtx(null); }} onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>📋 Ir al costo unitario de la partida</button>
-          <button style={ctxBtn} onClick={() => { generarReporteDe(ctx.partida); setCtx(null); }} onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>📝 {esMiFrente ? 'Generar reporte diario de esta partida' : 'Reportar este frente (pedir permiso)'}</button>
+          <button style={ctxBtn} onClick={() => { generarReporteDe(ctx.partida); setCtx(null); }} onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>📝 Generar reporte diario de esta partida</button>
         </div>
       )}
     </div>
@@ -797,6 +856,14 @@ function EmitirAlertaPage({ showToast }) {
   );
 }
 
+// Miniatura de evidencia (resuelve blob local o signed URL del bucket).
+function EviThumb({ ev }) {
+  const [src, setSrc] = uS(null);
+  uE(() => { let c = false; getEvidenciaSrc(ev).then(s => { if (!c) setSrc(s); }).catch(() => {}); return () => { c = true; }; }, [ev?.id]);
+  if (!src) return <span style={{ width: 46, height: 46, borderRadius: 4, background: 'rgba(255,255,255,0.06)', display: 'inline-block' }} />;
+  return <a href={src} target="_blank" rel="noreferrer"><img src={src} alt="" style={{ width: 46, height: 46, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--bd)' }} /></a>;
+}
+
 // Bandeja del ADMIN/GERENTE: aprobar permisos y aceptar reportes de frente ajeno.
 function AprobacionesReportePage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
@@ -810,6 +877,8 @@ function AprobacionesReportePage({ showToast }) {
   const { data: partidas } = partidasHook;
   const avanceHook = window.__hooks.useAvanceObra(obraId);
   const { data: avances } = avanceHook;
+  const { data: evidencias } = window.__hooks.useEvidencias(obraId);
+  const fotosDeSol = (solId) => (evidencias || []).filter(e => !e.deleted_at && e.modulo_relacionado === 'solicitudes_reporte' && e.registro_relacionado_id === solId);
   const [usuarios, setUsuarios] = uS([]);
   uE(() => { window.__db.profiles.toArray().then(setUsuarios).catch(() => {}); }, []);
   const usuariosById = uM(() => { const m = new Map(); (usuarios || []).forEach(u => m.set(u.id, u)); return m; }, [usuarios]);
@@ -871,11 +940,17 @@ function AprobacionesReportePage({ showToast }) {
                   <thead><tr><th>Partida</th><th>Descripción</th><th style={{ textAlign: 'right' }}>Metrado</th></tr></thead>
                   <tbody>
                     {sol.reporte_payload.map((l, i) => { const p = partById.get(l.partida_id); return (
-                      <tr key={i}><td>{p ? `${p.codigo_delfin} · ${p.nombre_partida}` : l.partida_id}</td><td>{l.descripcion || '—'}</td><td style={{ textAlign: 'right' }}>{num(l.metrado)} {p?.unidad || ''}</td></tr>
+                      <tr key={i}><td>{p ? `${p.codigo_delfin} · ${p.nombre_partida}` : l.partida_id}{l.tiene_foto ? ' 📷' : ''}</td><td>{l.descripcion || '—'}</td><td style={{ textAlign: 'right' }}>{num(l.metrado)} {p?.unidad || ''}</td></tr>
                     ); })}
                   </tbody>
                 </table>
               )}
+              {sol.estado === 'enviado' && (() => { const fotos = fotosDeSol(sol.id); return fotos.length > 0 ? (
+                <div style={{ marginTop: 8 }}>
+                  <div style={{ fontSize: 11, color: 'var(--tm)', marginBottom: 4 }}>Fotos del avance ({fotos.length}):</div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>{fotos.map(e => <EviThumb key={e.id} ev={e} />)}</div>
+                </div>
+              ) : null; })()}
               <div className="modal-actions" style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {sol.estado === 'solicitado' && <>
                   <button className="btn btn-green btn-sm" disabled={busy} onClick={() => aprobar(sol)}>Aprobar permiso</button>
@@ -911,5 +986,6 @@ const CronogramaFrentePage = (p) => <MiFrenteShell {...p} vista="cronograma" />;
 const SalidasFrentePage = (p) => <MiFrenteShell {...p} vista="salidas" />;
 const ReporteDiarioPage = (p) => <MiFrenteShell {...p} vista="reporte" />;
 const PlanRealPage = (p) => <MiFrenteShell {...p} vista="plan" />;
+const BorradoresPage = (p) => <MiFrenteShell {...p} vista="borradores" />;
 
-Object.assign(window, { DashboardTecnicoPage, MisPartidasPage, CronogramaFrentePage, SalidasFrentePage, ReporteDiarioPage, PlanRealPage, EmitirAlertaPage, AprobacionesReportePage, MiFrentePage: DashboardTecnicoPage });
+Object.assign(window, { DashboardTecnicoPage, MisPartidasPage, CronogramaFrentePage, SalidasFrentePage, ReporteDiarioPage, PlanRealPage, BorradoresPage, EmitirAlertaPage, AprobacionesReportePage, MiFrentePage: DashboardTecnicoPage });

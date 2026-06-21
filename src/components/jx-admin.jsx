@@ -882,7 +882,7 @@ window.__moduleIdMap = {
   'avance': 'Avance',
   'dashboard-tecnico': 'Avance', 'mis-partidas': 'Avance', 'cronograma-frente': 'Avance', 'salidas-frente': 'Avance',
   'reporte-diario': 'Avance', 'plan-real': 'Avance', 'emitir-alerta': 'Avance',
-  'aprobaciones-reporte': 'Avance',
+  'borradores-reporte': 'Avance', 'aprobaciones-reporte': 'Avance',
   'comparativo': 'Comparativo',
   'costos': 'Costos',
   'valorizaciones': 'Valorizaciones',
@@ -971,7 +971,7 @@ const __ROLES_CANONICOS = new Set([
 // NO se muestra nada salvo los items utility (dashboard/búsqueda/configuración)
 // que están explícitamente marcados como `null` en moduleIdMap.
 // Módulos de "Ingeniería de Frente" (rol ingeniero). Menú ULTRA-acotado.
-const __INGENIERO_ITEMS = ['dashboard-tecnico', 'mis-partidas', 'cronograma-frente', 'salidas-frente', 'reporte-diario', 'plan-real', 'emitir-alerta'];
+const __INGENIERO_ITEMS = ['dashboard-tecnico', 'mis-partidas', 'cronograma-frente', 'salidas-frente', 'reporte-diario', 'borradores-reporte', 'plan-real', 'emitir-alerta'];
 window.__canSeeSidebarItem = function(rol, itemId) {
   const modulo = window.__moduleIdMap?.[itemId];
   // La bandeja de aprobaciones de reporte de frente ajeno: solo admin/gerente.
