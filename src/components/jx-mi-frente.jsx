@@ -282,7 +282,8 @@ function MiFrenteShell({ showToast, vista }) {
     }
     if (it.tipo === 'reporte' && vista === 'reporte') {
       const p = partByIdAll.get(it.partidaId);
-      if (p) setRepLineas(prev => prev.some(l => l.partida_id === p.id) ? prev : [...prev, { partida_id: p.id, descripcion: '', metrado: '', fotos: [] }]);
+      if (!p) return;   // partidas aún no cargaron de Dexie → NO consumir el intent; reintentar cuando partByIdAll cambie
+      setRepLineas(prev => prev.some(l => l.partida_id === p.id) ? prev : [...prev, { partida_id: p.id, descripcion: '', metrado: '', fotos: [] }]);
       intentRef.current = it.ts; window.__miFrenteIntent = null; return;
     }
     if (it.tipo === 'costo' && vista === 'partidas') {
