@@ -2355,7 +2355,8 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                   filas.push(
                     { label:'Tareas', val: parsed.summary.total, icon:'gantt', color:'var(--tp)' },
                     { label:'Rango fechas', val: `${parsed.summary.fecha_inicio} → ${parsed.summary.fecha_fin}`, icon:'calendar', color:'var(--blue)' },
-                    { label:'Modo', val:'Update partidas por código', icon:'refresh', color:'var(--amber)' },
+                    { label:'Aplica', val:'Fechas + % de avance + estado (match por código)', icon:'refresh', color:'var(--amber)' },
+                    { label:'Modo', val: gantReplaceAll ? '⚠ Reemplazar todo (incluso vaciar)' : 'Saltar vacíos (no borra lo existente)', icon:'gantt', color: gantReplaceAll ? 'var(--red)' : 'var(--green)' },
                   );
                 }
                 return filas.map((r,i)=>(

@@ -182,17 +182,18 @@ function MiFrenteShell({ showToast, vista }) {
     for (const f of misFrentes) for (const p of partidasDeFrente(f.id, { frentePartidas: frentePartidas || [], partidas: partidas || [] })) m.set(p.id, p);
     return [...m.values()];
   }, [repTodas, allPartidas, misFrentes, frentePartidas, partidas]);
-  // Solo partidas específicas (hojas, no capítulos).
+  // Solo partidas específicas (hojas, no capítulos) y NO terminadas (las terminadas ya no
+  // se sugieren para reportar; si igual se reportan vía "Agregar reporte" se avisa + motivo).
   const hojasReporte = uM(() => {
     const folders = new Set();
     for (const p of partidasReporteBase) { const segs = String(p.codigo_delfin || '').split('.').filter(Boolean); for (let i = 1; i < segs.length; i++) folders.add(segs.slice(0, i).join('.')); }
-    return partidasReporteBase.filter(p => !folders.has(String(p.codigo_delfin || '')));
+    return partidasReporteBase.filter(p => !folders.has(String(p.codigo_delfin || '')) && p.estado !== 'terminado');
   }, [partidasReporteBase]);
   // Borrador por USUARIO + DÍA reportado (no por-frente).
   const draftKey = obraId && userId ? `jx_repdraft_${obraId}_${userId}_${repFecha}` : '';
   const [hayBorrador, setHayBorrador] = uS(false);
   uE(() => { if (!draftKey) { setHayBorrador(false); return; } try { setHayBorrador(!!localStorage.getItem(draftKey)); } catch { setHayBorrador(false); } }, [draftKey]);
-  const agregarLinea = (pid) => { if (!pid) return; setRepLineas(prev => prev.some(l => l.partida_id === pid) ? prev : [...prev, { partida_id: pid, descripcion: '', metrado: '', fotos: [] }]); setAddPartQuery(''); };
+  const agregarLinea = (pid) => { if (!pid) return; setRepLineas(prev => prev.some(l => l.partida_id === pid) ? prev : [...prev, { partida_id: pid, descripcion: '', metrado: '', fotos: [], motivo: '' }]); setAddPartQuery(''); };
   const quitarLinea = (pid) => setRepLineas(prev => prev.filter(l => l.partida_id !== pid));
   const setLinea = (pid, campo, val) => setRepLineas(prev => prev.map(l => l.partida_id === pid ? { ...l, [campo]: val } : l));
   const agregarFotos = (pid, files) => setRepLineas(prev => prev.map(l => l.partida_id === pid ? { ...l, fotos: [...(l.fotos || []), ...files].slice(0, MAX_FOTOS) } : l));
@@ -216,12 +217,21 @@ function MiFrenteShell({ showToast, vista }) {
     const pct = Math.max(0, Math.min(100, (real / mc) * 100));
     return { mc, real, pct, falta: Math.max(0, mc - real) };
   };
+  // SOBRE-REPORTE: reportar avance en una partida ya terminada, o que con este reporte
+  // pasaría el 100% del metrado contratado. Exige motivo y dispara alerta a gerentes/admins.
+  const esSobreReporteLinea = (l) => {
+    const p = partByIdAll.get(l.partida_id);
+    if (!p) return false;
+    if (p.estado === 'terminado') return true;
+    const ac = calcAcum(l.partida_id, l.metrado);
+    return !!(ac && ac.mc > 0 && ac.real > ac.mc);
+  };
   const guardarBorrador = () => {
     if (!draftKey) return;
     try { localStorage.setItem(draftKey, JSON.stringify(repLineas.map(({ fotos, ...l }) => l))); setHayBorrador(true); showToast('Borrador guardado (las fotos se vuelven a adjuntar al terminar)', 'amber'); }
     catch { showToast('No se pudo guardar el borrador', 'red'); }
   };
-  const cargarBorrador = (keyOverride) => { const k = keyOverride || draftKey; try { const d = JSON.parse(localStorage.getItem(k) || '[]'); if (Array.isArray(d)) setRepLineas(d.map(l => ({ partida_id: l.partida_id, descripcion: l.descripcion || '', metrado: l.metrado ?? '', fotos: [] }))); } catch {} };
+  const cargarBorrador = (keyOverride) => { const k = keyOverride || draftKey; try { const d = JSON.parse(localStorage.getItem(k) || '[]'); if (Array.isArray(d)) setRepLineas(d.map(l => ({ partida_id: l.partida_id, descripcion: l.descripcion || '', metrado: l.metrado ?? '', fotos: [], motivo: l.motivo || '' }))); } catch {} };
   const descartarBorrador = () => { try { localStorage.removeItem(draftKey); } catch {} setHayBorrador(false); };
   const [draftTick, setDraftTick] = uS(0);   // fuerza recálculo de la lista de Borradores tras eliminar
   // Valida TODAS las partidas del reporte; recién si todo cumple abre el modal de confirmación.
@@ -236,8 +246,9 @@ function MiFrenteShell({ showToast, vista }) {
       if (!st.metr) { showToast(`Indicá el metrado avanzado (mayor a 0) en: ${nomLinea(l)}`, 'red'); return; }
       if (!st.foto) { showToast(`Debés colocar al menos una foto de evidencia en: ${nomLinea(l)}`, 'red'); return; }
       if (!st.desc) { showToast(`La descripción de "${nomLinea(l)}" debe tener al menos ${REP_MIN_PALABRAS} palabras (tiene ${st.palabras})`, 'red'); return; }
+      if (esSobreReporteLinea(l) && !(l.motivo || '').trim()) { showToast(`"${nomLinea(l)}" ya está al 100% / terminada — indicá el MOTIVO por el que reportás más avance (irá como alerta a gerencia)`, 'red'); return; }
     }
-    setConfirmRep(lineas.map(l => ({ linea: l, partida: partByIdAll.get(l.partida_id) || null })));
+    setConfirmRep(lineas.map(l => ({ linea: l, partida: partByIdAll.get(l.partida_id) || null, sobre: esSobreReporteLinea(l) })));
   };
   const guardarReporte = async () => {
     const lineas = (confirmRep || []).map(c => c.linea).filter(l => l && l.partida_id);
@@ -247,6 +258,8 @@ function MiFrenteShell({ showToast, vista }) {
     try {
       for (const l of lineas) {
         const ac = calcAcum(l.partida_id, l.metrado);
+        const p = partByIdAll.get(l.partida_id);
+        const sobre = esSobreReporteLinea(l);
         const id = window.__newId();
         const desc = esTardio
           ? `[Reporte tardío subido ${hoy} · motivo: ${repMotivoTardio.trim()}]${l.descripcion ? ' ' + l.descripcion : ''}`
@@ -255,9 +268,14 @@ function MiFrenteShell({ showToast, vista }) {
           id, obra_id: obraId, partida_id: l.partida_id, frente_id: frenteDePartida(l.partida_id), fecha: repFecha,
           porcentaje_avance_reportado: ac && ac.pct != null ? Math.round(ac.pct * 10) / 10 : null,
           metrado_ejecutado: l.metrado !== '' ? Number(l.metrado) : null,
-          descripcion: desc, responsable_id: userId,
+          descripcion: desc, responsable_id: userId, origen: 'reporte',
+          sobre_reporte: sobre, motivo_sobrereporte: sobre ? (l.motivo || '').trim() || null : null,
         });
-        if (ac && ac.pct != null && partidasHook.update) { try { await partidasHook.update(l.partida_id, { porcentaje_avance: Math.round(ac.pct * 10) / 10 }); } catch {} }
+        if (ac && ac.pct != null && partidasHook.update) {
+          // Al llegar al 100% la partida se marca terminado (salvo 'observado', que se respeta).
+          const nuevoEstado = (ac.pct >= 100 && p && p.estado !== 'observado' && p.estado !== 'terminado') ? { estado: 'terminado' } : {};
+          try { await partidasHook.update(l.partida_id, { porcentaje_avance: Math.round(ac.pct * 10) / 10, ...nuevoEstado }); } catch {}
+        }
         for (const f of (l.fotos || []).slice(0, MAX_FOTOS)) {
           try {
             await window.__saveEvidenciaLocal({
@@ -451,12 +469,20 @@ function MiFrenteShell({ showToast, vista }) {
           const metHoy = Number(l.metrado) || 0;
           const idxDiario = rend && rend.metaDiaria > 0 ? metHoy / rend.metaDiaria : null;
           const semDiario = idxDiario == null ? 'sin_dato' : idxDiario >= 1 ? 'verde' : idxDiario >= 0.75 ? 'ambar' : 'rojo';
+          const esSobre = esSobreReporteLinea(l);
           return (
-            <div key={l.partida_id} className="card card-p">
+            <div key={l.partida_id} className="card card-p" style={esSobre ? { border: '1px solid var(--red)' } : undefined}>
               <div className="frow-sb" style={{ marginBottom: 6 }}>
-                <div style={{ fontSize: 12.5, fontWeight: 600 }}><span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{p?.codigo_delfin}</span> {p?.nombre_partida || '—'}</div>
+                <div style={{ fontSize: 12.5, fontWeight: 600 }}><span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{p?.codigo_delfin}</span> {p?.nombre_partida || '—'}{p?.estado === 'terminado' && <span className="badge b-green" style={{ marginLeft: 6, fontSize: 9 }}>terminada</span>}</div>
                 <button className="btn btn-ghost btn-xs" onClick={() => quitarLinea(l.partida_id)}>✕ Quitar</button>
               </div>
+              {esSobre && (
+                <div style={{ marginBottom: 8, padding: '8px 10px', borderRadius: 6, background: 'rgba(231,76,60,0.08)', border: '1px solid rgba(231,76,60,0.3)' }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--red)', marginBottom: 4 }}>⚠ Esta partida ya está al 100% / terminada</div>
+                  <div style={{ fontSize: 11, color: 'var(--tm)', marginBottom: 6 }}>Si reportás más avance, se avisará a gerencia/administración para revisar (quizá no estaba realmente terminada). Indicá el motivo:</div>
+                  <textarea className="fi" rows={2} value={l.motivo || ''} onChange={e => setLinea(l.partida_id, 'motivo', e.target.value)} placeholder="Motivo por el que reportás avance en una partida ya terminada…" style={!(l.motivo || '').trim() ? { borderColor: 'var(--red)' } : undefined} />
+                </div>
+              )}
               <label className="flabel" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
                 <span>Descripción del avance (mín. {REP_MIN_PALABRAS} palabras) *</span>
                 <span style={{ fontSize: 10.5, fontWeight: 600, color: st.desc ? 'var(--green)' : 'var(--amber)' }}>{st.palabras}/{REP_MIN_PALABRAS} palabras</span>
@@ -968,9 +994,9 @@ function MiFrenteShell({ showToast, vista }) {
             <table className="tbl" style={{ fontSize: 12 }}>
               <thead><tr><th>Partida</th><th style={{ textAlign: 'right' }}>Metrado</th><th style={{ textAlign: 'center' }}>Fotos</th></tr></thead>
               <tbody>
-                {confirmRep.map(({ linea, partida }) => (
+                {confirmRep.map(({ linea, partida, sobre }) => (
                   <tr key={linea.partida_id}>
-                    <td><span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{partida?.codigo_delfin}</span> {partida?.nombre_partida || '—'}</td>
+                    <td><span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{partida?.codigo_delfin}</span> {partida?.nombre_partida || '—'}{sobre && <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }} title="Reporte sobre una partida ya terminada → alerta a gerencia">⚠ sobre-reporte</span>}</td>
                     <td style={{ textAlign: 'right', fontWeight: 600 }}>{num(linea.metrado)} {partida?.unidad || ''}</td>
                     <td style={{ textAlign: 'center' }}>📷 {(linea.fotos || []).length}</td>
                   </tr>
@@ -978,6 +1004,9 @@ function MiFrenteShell({ showToast, vista }) {
               </tbody>
             </table>
           </div>
+          {confirmRep.some(c => c.sobre) && (
+            <div style={{ marginTop: 8, fontSize: 11.5, color: 'var(--red)' }}>⚠ Hay reporte(s) sobre partidas ya terminadas — se enviará una alerta a gerencia/administración para revisar.</div>
+          )}
           {repFecha !== hoy && repMotivoTardio.trim() && (
             <div style={{ marginTop: 8, fontSize: 11.5, color: 'var(--amber)' }}>Motivo del reporte tardío: {repMotivoTardio.trim()}</div>
           )}
@@ -1270,11 +1299,14 @@ function RendimientoIngenierosPage() {
     return { frente: f, ing: nombreUsuario(f.ingeniero_user_id), nPartidas: ps.length, avgPct, rc };
   }).sort((a, b) => idxOrd(a.rc.indice) - idxOrd(b.rc.indice)), [activos, frentePartidas, partidas, avances, hoy, usuariosById]);
   const partidasSel = uM(() => selIng ? partidasDeIng(selIng) : [], [selIng, activos, frentePartidas, partidas]);
-  const reportes = uM(() => (avances || []).filter(a => !a.deleted_at
+  const reportes = uM(() => (avances || []).filter(a => !a.deleted_at && a.origen !== 'importacion'
       && (!selIng || a.responsable_id === selIng)
       && (!desde || (a.fecha || '') >= desde)
       && (!hasta || (a.fecha || '') <= hasta))
     .sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || ''))), [avances, selIng, desde, hasta]);
+  // Alertas de SOBRE-REPORTE: reportes hechos sobre partidas ya terminadas.
+  const alertasSobre = uM(() => (avances || []).filter(a => !a.deleted_at && a.sobre_reporte)
+    .sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || ''))), [avances]);
 
   if (!obraId) return <div className="page-wrap"><div className="card card-p empty-state"><p>Seleccioná una obra activa.</p></div></div>;
 
@@ -1290,6 +1322,7 @@ function RendimientoIngenierosPage() {
         <div style={{ display: 'flex', gap: 4 }}>
           <button className={`btn btn-sm ${tab === 'ingenieros' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('ingenieros')}>Por ingeniero</button>
           <button className={`btn btn-sm ${tab === 'frentes' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('frentes')}>Por frente</button>
+          <button className={`btn btn-sm ${tab === 'alertas' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('alertas')}>⚠ Alertas de avance{alertasSobre.length > 0 && <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }}>{alertasSobre.length}</span>}</button>
         </div>
       </div>
 
@@ -1341,6 +1374,29 @@ function RendimientoIngenierosPage() {
                 </tr>
               ))}
               {statsFrentes.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>No hay frentes en esta obra.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {tab === 'alertas' && (
+        <div className="card" style={{ overflow: 'auto' }}>
+          <div style={{ padding: '8px 12px', fontSize: 12.5, fontWeight: 600 }}>⚠ Alertas de sobre-reporte ({alertasSobre.length})</div>
+          <div style={{ padding: '0 12px 8px', fontSize: 11, color: 'var(--tm)' }}>Reportes de avance hechos sobre partidas que ya estaban al 100% / terminadas. Revisá el motivo: la partida puede no haber estado realmente lista.</div>
+          <table className="tbl" style={{ fontSize: 12 }}>
+            <thead><tr><th>Fecha</th><th>Ingeniero</th><th>Partida</th><th style={{ textAlign: 'right' }}>Metrado</th><th>Motivo</th><th style={{ textAlign: 'center' }}>Fotos</th></tr></thead>
+            <tbody>
+              {alertasSobre.map(a => { const p = partById.get(a.partida_id); const evs = eviPorAvance.get(a.id) || []; return (
+                <tr key={a.id}>
+                  <td style={{ whiteSpace: 'nowrap' }}>{a.fecha || '—'}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>{nombreUsuario(a.responsable_id)}</td>
+                  <td>{p ? <><span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{p.codigo_delfin}</span> {p.nombre_partida}</> : '—'}</td>
+                  <td style={{ textAlign: 'right', fontWeight: 600 }}>{num(a.metrado_ejecutado)} {p?.unidad || ''}</td>
+                  <td style={{ maxWidth: 340, fontSize: 11, color: 'var(--ts)' }}>{a.motivo_sobrereporte || a.descripcion || <span style={{ color: 'var(--tm)', fontStyle: 'italic' }}>—</span>}</td>
+                  <td style={{ textAlign: 'center' }}>{evs.length > 0 ? <button className="btn btn-ghost btn-xs" onClick={() => setVerFotos(evs)}>📷 {evs.length}</button> : <span style={{ color: 'var(--tm)' }}>—</span>}</td>
+                </tr>
+              ); })}
+              {alertasSobre.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>Sin alertas de sobre-reporte. 👍</td></tr>}
             </tbody>
           </table>
         </div>
