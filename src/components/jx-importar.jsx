@@ -4,7 +4,7 @@ import { normalizeCodigo, fuzzyScore } from "../lib/match-helpers.js";
 import { calcularPresupuesto, fmtSoles } from "../lib/presupuesto-obra.js";
 import { aplicarNombresDesdePartidas } from "../lib/partida-nombres.js";
 import { dedupePartidasLocal } from "../lib/partida-dedup.js";
-import { camposCronograma, updateDominioGantt, hayCambioDominio, avanceInicialGantt, pctDesdeMetrado } from "../lib/gantt-aplicar.js";
+import { camposCronograma, decidirEstadoGantt, updateDominioGantt, hayCambioDominio, avanceInicialGantt, pctDesdeMetrado } from "../lib/gantt-aplicar.js";
 import { ventanaPartida } from "../lib/mi-frente.js";
 import { MigracionFlow, descargarPlantilla as descargarPlantillaMigracion } from "./jx-migracion-import.jsx";
 import { FORMATOS as MIGRACION_FORMATOS } from "../lib/migracion-parser.js";
