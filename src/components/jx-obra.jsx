@@ -1627,6 +1627,23 @@ function PartidasPage({ showToast }) {
   };
   const collapseAll = () => setExpanded(new Set());
 
+  // Exporta las partidas específicas SIN fecha de ejecución (CSV con BOM → abre en
+  // Excel) para compararlas 1 a 1 contra el archivo de Gantt y cargar lo que falte.
+  const descargarSinFechas = () => {
+    const filas = (partidas || []).filter(esEspecificaSinFechas)
+      .sort((a, b) => String(a.codigo_delfin || '').localeCompare(String(b.codigo_delfin || ''), 'es', { numeric: true }));
+    if (!filas.length) { showToast('No hay partidas sin fecha', 'amber'); return; }
+    const esc = (v) => { const s = String(v ?? ''); return /[",\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+    const lines = ['codigo,partida,metrado,unidad'].concat(
+      filas.map(p => [p.codigo_delfin, p.nombre_partida, p.metrado_contratado ?? '', p.unidad ?? ''].map(esc).join(','))
+    );
+    const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'JARVEX_partidas_sin_fecha.csv'; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showToast(`${filas.length} partidas sin fecha exportadas`, 'green');
+  };
+
   const totalPres = partidas?.reduce((s,p) => s + Number(p.costo_total_presupuestado || 0), 0) ?? 0;
   const totalReal = partidas?.reduce((s,p) => s + Number(p.costo_real_acumulado || 0), 0) ?? 0;
 
@@ -1746,6 +1763,7 @@ function PartidasPage({ showToast }) {
           <input type="checkbox" checked={soloSinFechas} onChange={e=>setSoloSinFechas(e.target.checked)}/>
           ⚠ Solo sin programar ({sinFechasCount})
         </label>
+        {sinFechasCount > 0 && <button className="btn btn-ghost btn-xs" onClick={descargarSinFechas} title="Descargar CSV de las partidas específicas sin fecha para compararlas con tu Gantt"><JxIcon name="download" size={11}/> Descargar sin fecha</button>}
         <select className="fi" style={{maxWidth:160,fontSize:12}} value={estadoFilter} onChange={e=>setEstadoFilter(e.target.value)}>
           <option value="todos">Todos los estados</option>
           <option value="pendiente">Pendiente</option>

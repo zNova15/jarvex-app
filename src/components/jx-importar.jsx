@@ -4,6 +4,8 @@ import { normalizeCodigo, fuzzyScore } from "../lib/match-helpers.js";
 import { calcularPresupuesto, fmtSoles } from "../lib/presupuesto-obra.js";
 import { aplicarNombresDesdePartidas } from "../lib/partida-nombres.js";
 import { dedupePartidasLocal } from "../lib/partida-dedup.js";
+import { camposCronograma, updateDominioGantt, hayCambioDominio } from "../lib/gantt-aplicar.js";
+import { ventanaPartida } from "../lib/mi-frente.js";
 import { MigracionFlow, descargarPlantilla as descargarPlantillaMigracion } from "./jx-migracion-import.jsx";
 import { FORMATOS as MIGRACION_FORMATOS } from "../lib/migracion-parser.js";
 import { DATASETS as EXPORT_DATASETS, exportarDataset, exportarTodo, contarDatasets, exportarFotosZip } from "../lib/export-historico.js";
@@ -328,6 +330,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
   // por exacto / normalizado / fuzzy / sin match. Así el usuario sabe
   // exactamente qué va a pasar.
   const [gantPreview, setGantPreview] = uSI(null); // null|{computing, exactas, normalizadas, sugerencias[], noMatch[]}
+  const [gantReplaceAll, setGantReplaceAll] = uSI(false); // false=saltar vacíos (no borrar); true=reemplazar todo (incl. vaciar fechas)
 
   // Cargar partidas existentes y comparar al entrar a step 2 con tipo apu
   uEI(() => {
@@ -1087,31 +1090,25 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       }
     }
 
+    // Metadata de sync (solo se aplica si hubo cambio real de dominio → evita churn).
+    const baseUpd = (p) => ({
+      updated_at: now, updated_by: userId,
+      version: (p.version ?? 0) + 1,
+      sync_status: p.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+    });
+    // Hoja: campos de cronograma + estado (lib pura gantt-aplicar). Saltar vacíos por
+    // defecto o reemplazar todo según gantReplaceAll. NO toca porcentaje_avance.
     const aplicar = async (p, t) => {
-      await window.__db.partidas.update(p.id, {
-        fecha_inicio_planificada: t.fecha_inicio,
-        fecha_fin_planificada:    t.fecha_fin,
-        duracion_dias: t.duracion_dias,
-        predecesoras: t.predecesoras,
-        ...(t.porcentaje_avance > 0 && p.estado === 'pendiente' ? { estado: 'en_ejecucion' } : {}),
-        updated_at: now, updated_by: userId,
-        version: (p.version ?? 0) + 1,
-        sync_status: p.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
-      });
+      const dom = updateDominioGantt(p, t, gantReplaceAll);
+      if (!hayCambioDominio(p, dom)) return;   // re-import sin cambio real → no escribir (no churn de sync)
+      await window.__db.partidas.update(p.id, { ...dom, ...baseUpd(p) });
     };
-    // Capítulo existente: actualiza nombre + fechas. (El nombre del Gantt es
-    // el título real; el capítulo en BD suele venir sin nombre o como "—".)
+    // Capítulo existente: nombre + cronograma (sin estado — los capítulos no lo llevan).
     const aplicarCapitulo = async (p, t) => {
-      await window.__db.partidas.update(p.id, {
-        nombre_partida: t.descripcion || p.nombre_partida,
-        fecha_inicio_planificada: t.fecha_inicio,
-        fecha_fin_planificada:    t.fecha_fin,
-        duracion_dias: t.duracion_dias,
-        predecesoras: t.predecesoras,
-        updated_at: now, updated_by: userId,
-        version: (p.version ?? 0) + 1,
-        sync_status: p.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
-      });
+      const dom = camposCronograma(t, gantReplaceAll);
+      if ((t.descripcion || p.nombre_partida) !== p.nombre_partida) dom.nombre_partida = t.descripcion || p.nombre_partida;
+      if (!hayCambioDominio(p, dom)) return;
+      await window.__db.partidas.update(p.id, { ...dom, ...baseUpd(p) });
     };
 
     let exactas = 0, normalizadas = 0, capActualizados = 0;
@@ -1189,6 +1186,15 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
     // normalizado) con partidas ya creadas por el presupuesto/APU. Idempotente.
     let dedupBorradas = 0;
     try { dedupBorradas = (await dedupePartidasLocal(window.__db, obraId, userId)).borradas; } catch {}
+    // Diagnóstico: cuántas partidas ESPECÍFICAS (hojas) quedaron SIN fecha tras importar
+    // (no estaban en el Gantt, vinieron con fecha vacía, o no matchearon).
+    let leavesSinFecha = 0;
+    try {
+      const after = (await window.__db.partidas.where('obra_id').equals(obraId).toArray()).filter(p => !p.deleted_at);
+      const prefijos = new Set();
+      for (const p of after) { const segs = normalizeCodigo(String(p.codigo_delfin || '').trim()).split('.').filter(Boolean); for (let k = 1; k < segs.length; k++) prefijos.add(segs.slice(0, k).join('.')); }
+      leavesSinFecha = after.filter(p => { const c = String(p.codigo_delfin || '').trim(); return c && !prefijos.has(normalizeCodigo(c)) && !ventanaPartida(p).completa; }).length;
+    } catch {}
     const actualizadas = exactas + normalizadas;
     return {
       tipo: 'gantt',
@@ -1199,7 +1205,8 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
         (capActualizados ? ` · ${capActualizados} capítulos actualizados` : '') +
         (dedupBorradas ? ` · ${dedupBorradas} duplicadas depuradas` : '') +
         (sugerencias.length ? ` · ${sugerencias.length} sugerencias por revisar` : '') +
-        (noMatch.length ? ` · ${noMatch.length} sin match` : ''),
+        (noMatch.length ? ` · ${noMatch.length} sin match` : '') +
+        (leavesSinFecha ? ` · ⚠ ${leavesSinFecha} partidas específicas siguen sin fecha (revisá la lista en Partidas → Sin programar)` : ''),
       errors: noMatch.length,
       errorList: noMatch.slice(0, 20),
       sugerencias, // si hay, ImportarPage abre el modal de revisión
@@ -1210,6 +1217,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
   async function aplicarSugerenciasGantt(aprobadas) {
     if (!aprobadas?.length) return 0;
     const now = new Date().toISOString();
+    const baseUpd = (p) => ({ updated_at: now, updated_by: userId, version: (p.version ?? 0) + 1, sync_status: p.sync_status === 'pending_create' ? 'pending_create' : 'pending_update' });
     let n = 0;
     setProgress({ phase:`Aplicando ${aprobadas.length} sugerencias…`, current:0, total: aprobadas.length });
     for (let i = 0; i < aprobadas.length; i++) {
@@ -1217,17 +1225,10 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       try {
         const p = await window.__db.partidas.get(s.candidatoId);
         if (!p || p.deleted_at) continue;
-        const t = s.tarea;
-        await window.__db.partidas.update(p.id, {
-          fecha_inicio_planificada: t.fecha_inicio,
-          fecha_fin_planificada:    t.fecha_fin,
-          duracion_dias: t.duracion_dias,
-          predecesoras: t.predecesoras,
-          ...(t.porcentaje_avance > 0 && p.estado === 'pendiente' ? { estado: 'en_ejecucion' } : {}),
-          updated_at: now, updated_by: userId,
-          version: (p.version ?? 0) + 1,
-          sync_status: p.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
-        });
+        // Mismo criterio que importGantt (lib gantt-aplicar): saltar vacíos/reemplazar +
+        // estado desde % (respeta 'observado', sin degradar, sin tocar porcentaje_avance).
+        const dom = updateDominioGantt(p, s.tarea, gantReplaceAll);
+        if (hayCambioDominio(p, dom)) await window.__db.partidas.update(p.id, { ...dom, ...baseUpd(p) });
         n++;
       } catch (e) { console.warn('[aplicar sugerencia gantt]', e); }
       if (i % 25 === 0) {
@@ -2121,6 +2122,21 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                   <div style={{ fontSize:14, fontWeight:700, color:'var(--orange)', marginTop:6 }}>{parsed.summary.fecha_fin || '—'}</div>
                   <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:6, textTransform:'uppercase' }}>Fin</div>
                 </div>
+              </div>
+
+              {/* ── Modo de actualización de fechas ── */}
+              <div className="card card-p" style={{ marginBottom:14, background: gantReplaceAll ? 'rgba(231,76,60,0.06)' : 'rgba(46,204,113,0.04)', border: gantReplaceAll ? '1px solid rgba(231,76,60,0.3)' : '1px solid rgba(46,204,113,0.2)' }}>
+                <label style={{ display:'flex', gap:10, alignItems:'flex-start', cursor:'pointer' }}>
+                  <input type="checkbox" checked={gantReplaceAll} onChange={e=>setGantReplaceAll(e.target.checked)} style={{ marginTop:2 }}/>
+                  <span>
+                    <span style={{ fontSize:12.5, fontWeight:700, color: gantReplaceAll ? 'var(--red)' : 'var(--tp)' }}>{gantReplaceAll ? '⚠ Reemplazar TODO (incluso vaciar)' : 'Saltar vacíos (recomendado)'}</span>
+                    <span style={{ display:'block', fontSize:11, color:'var(--tm)', marginTop:3 }}>
+                      {gantReplaceAll
+                        ? 'Una fila SIN fecha en el archivo BORRARÁ la fecha/duración/predecesora que la partida ya tenía. Usalo solo para resincronizar por completo desde un Gantt maestro.'
+                        : 'Si una fila del archivo viene sin fecha, se conserva la que la partida ya tenía (no se borra). Re-importar archivos parciales es seguro.'}
+                    </span>
+                  </span>
+                </label>
               </div>
 
               {/* ── Análisis de match (dry-run) ── */}
@@ -3207,6 +3223,35 @@ function ImportarPage({ showToast }) {
                 </button>
               </div>
             ))}
+          </div>
+
+          {/* Importaciones desde Delphin (APU/Presupuesto/Insumos = export nativo; Gantt = plantilla editable) */}
+          <div style={{ marginTop:28 }}>
+            <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
+              <JxIcon name="gantt" size={16} color="#16A34A"/>
+              <span style={{ fontSize:14, fontWeight:800, color:'#16A34A' }}>Importaciones desde Delphin</span>
+            </div>
+            <div className="info-banner" style={{ marginBottom:14, background:'rgba(22,163,74,0.08)', border:'1px solid rgba(22,163,74,0.3)' }}>
+              <JxIcon name="alert" size={14} color="#16A34A"/>
+              <span>El <strong>Presupuesto APU</strong>, el <strong>Presupuesto de obra</strong> y la <strong>Lista de Insumos</strong> se importan directo desde el archivo que <strong>exportás de Delphin</strong> — no necesitan plantilla, la app detecta el formato sola. El <strong>Cronograma Gantt</strong> también, pero acá tenés una plantilla editable para cargar/actualizar fechas y <strong>marcar partidas ya avanzadas o terminadas</strong> a mano (el % de avance fija el estado al importar).</span>
+            </div>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14 }}>
+              <div className="card card-p card-hover">
+                <div style={{ display:'flex', gap:12, alignItems:'flex-start', marginBottom:12 }}>
+                  <div style={{ width:40, height:40, borderRadius:10, background:'rgba(22,163,74,0.15)', border:'1px solid rgba(22,163,74,0.28)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                    <JxIcon name="gantt" size={18} color="#16A34A"/>
+                  </div>
+                  <div>
+                    <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)', lineHeight:1.3, marginBottom:4 }}>Cronograma Gantt (con avance)</div>
+                    <div style={{ fontSize:11, color:'var(--tm)' }}>Código, fechas, duración y % de avance (100 = terminada). Matchea por código con las partidas; importá el APU primero.</div>
+                  </div>
+                </div>
+                <button className="btn btn-ghost btn-sm" style={{ width:'100%', justifyContent:'center' }}
+                  onClick={()=>{ try { window.__excel.downloadTemplate('gantt'); showToast('Plantilla Cronograma Gantt descargada','green'); } catch(e) { showToast(e.message,'red'); } }}>
+                  <JxIcon name="download" size={13}/>Descargar .xlsx
+                </button>
+              </div>
+            </div>
           </div>
 
           {superAdmin && (

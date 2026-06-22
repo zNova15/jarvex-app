@@ -69,6 +69,19 @@ export async function downloadTemplate(modulo) {
         ['Amoladora 7"','electrica','Bosch','GA7020','BS-2024-001','bueno'],
       ],
     },
+    // Cronograma Gantt: layout POSICIONAL que lee parseGantt (col 0 código, 1 desc,
+    // 2 duración, 3 inicio, 4 fin, 5 predecesoras, 6 % avance, 7 días). El encabezado
+    // "Numeracion" hace que el parser salte esta fila. El % de avance fija el ESTADO al
+    // importar (100 = terminada, >0 = en ejecución); NO pisa el avance de los reportes.
+    // El código debe coincidir con las partidas ya importadas (APU primero).
+    gantt: {
+      headers: ['Numeracion','Descripcion','Duración (días)','Fecha inicio','Fecha fin','Predecesoras','% Avance (0-100)','Días calendario'],
+      sample: [
+        ['02.01.01.01.01','Cerco de malla HDP 1m de altura',10,'2026-06-02','2026-06-11','',100,10],
+        ['02.01.01.01.02.02','Trazo y replanteo preliminar',5,'2026-06-12','2026-06-16','02.01.01.01.01',60,5],
+        ['02.01.01.01.03.01','Excavación manual de terreno',8,'2026-06-17','2026-06-24','',0,8],
+      ],
+    },
   };
   const t = templates[modulo];
   if (!t) throw new Error('Módulo no soportado');
