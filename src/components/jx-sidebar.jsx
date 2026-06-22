@@ -112,6 +112,7 @@ const NAV = [
   { id: 'cronograma', label: 'Cronograma / Gantt', icon: 'gantt' },
   { id: 'avance', label: 'Avance de Obra', icon: 'hardHat' },
   { id: 'aprobaciones-reporte', label: 'Aprobación de Frentes', icon: 'flag' },
+  { id: 'rendimiento-ingenieros', label: 'Rendimiento de Ingenieros', icon: 'trendUp' },
   { id: 'comparativo', label: 'Planificado vs Real', icon: 'compare' },
   { id: 'costos', label: 'Costos', icon: 'dollar' },
   { id: 'valorizaciones', label: 'Valorizaciones', icon: 'dollar' },

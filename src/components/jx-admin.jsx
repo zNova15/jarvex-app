@@ -883,7 +883,7 @@ window.__moduleIdMap = {
   'avance': 'Avance',
   'dashboard-tecnico': 'Avance', 'mis-partidas': 'Avance', 'cronograma-frente': 'Avance', 'salidas-frente': 'Avance',
   'reporte-diario': 'Avance', 'plan-real': 'Avance', 'emitir-alerta': 'Avance',
-  'borradores-reporte': 'Avance', 'aprobaciones-reporte': 'Avance',
+  'borradores-reporte': 'Avance', 'aprobaciones-reporte': 'Avance', 'rendimiento-ingenieros': 'Avance',
   'comparativo': 'Comparativo',
   'costos': 'Costos',
   'valorizaciones': 'Valorizaciones',
@@ -977,6 +977,7 @@ window.__canSeeSidebarItem = function(rol, itemId) {
   const modulo = window.__moduleIdMap?.[itemId];
   // La bandeja de aprobaciones de reporte de frente ajeno: solo admin/gerente.
   if (itemId === 'aprobaciones-reporte') return rol === 'admin' || rol === 'gerente';
+  if (itemId === 'rendimiento-ingenieros') return rol === 'admin' || rol === 'gerente';
   // Los módulos del ingeniero solo los ven el ingeniero (y admin).
   if (__INGENIERO_ITEMS.includes(itemId)) return rol === 'admin' || rol === 'ingeniero';
   // El ingeniero ve EXCLUSIVAMENTE sus módulos de frente (nada más, ni utilities).

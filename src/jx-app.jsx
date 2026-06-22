@@ -333,7 +333,7 @@ function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStat
     personal:'Personal',asistencia:'Asistencia',materiales:'Materiales',
     'mov-materiales':'Movimiento de Materiales','herramientas':'Herramientas',
     'mov-herramientas':'Movimiento de Herramientas',proveedores:'Proveedores',
-    evidencias:'Evidencias',plantillas:'Plantillas','vinculacion-salidas':'Vinculación de Salidas','dashboard-tecnico':'Dashboard Técnico','mis-partidas':'Partidas del Proyecto','cronograma-frente':'Cronograma de mis Partidas','salidas-frente':'Vinculación de insumos','reporte-diario':'Reporte Diario','borradores-reporte':'Borradores','plan-real':'Plan vs Real','emitir-alerta':'Emitir Alerta','aprobaciones-reporte':'Aprobación de Frentes','control-consumo':'Control de Consumo',partidas:'Partidas',insumos:'Insumos por Partida',
+    evidencias:'Evidencias',plantillas:'Plantillas','vinculacion-salidas':'Vinculación de Salidas','dashboard-tecnico':'Dashboard Técnico','mis-partidas':'Partidas del Proyecto','cronograma-frente':'Cronograma de mis Partidas','salidas-frente':'Vinculación de insumos','reporte-diario':'Reporte Diario','borradores-reporte':'Borradores','plan-real':'Plan vs Real','emitir-alerta':'Emitir Alerta','aprobaciones-reporte':'Aprobación de Frentes','rendimiento-ingenieros':'Rendimiento de Ingenieros','control-consumo':'Control de Consumo',partidas:'Partidas',insumos:'Insumos por Partida',
     versiones:'Versiones de Presupuesto',
     cronograma:'Cronograma / Gantt',avance:'Avance de Obra',comparativo:'Planificado vs Real',
     costos:'Costos',incidencias:'Incidencias',usuarios:'Usuarios',roles:'Roles y Permisos',
@@ -550,6 +550,7 @@ const PAGE_REGISTRY = {
   'plan-real':              { chunk: 'jx-mi-frente', component: 'PlanRealPage' },
   'emitir-alerta':          { chunk: 'jx-mi-frente', component: 'EmitirAlertaPage' },
   'aprobaciones-reporte':   { chunk: 'jx-mi-frente', component: 'AprobacionesReportePage' },
+  'rendimiento-ingenieros': { chunk: 'jx-mi-frente', component: 'RendimientoIngenierosPage' },
   // === jx-reportes ===
   'reportes':               { chunk: 'jx-reportes', component: 'ReportesPage' },
   // === jx-admin ===

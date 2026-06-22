@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resumenFrente, planVsReal, rollupMensual, rendimientoPartida } from '../mi-frente.js';
+import { resumenFrente, planVsReal, rollupMensual, rendimientoPartida, rendimientoConjunto } from '../mi-frente.js';
 
 const PART = [
   { id: 'p1', codigo_delfin: '02.01', porcentaje_avance: 40 },
@@ -72,5 +72,35 @@ describe('rendimientoPartida', () => {
   });
   it('sin fechas planificadas → sin_dato', () => {
     expect(rendimientoPartida({ id: 'pY', metrado_contratado: 50 }, av(10), '2026-06-05').semaforo).toBe('sin_dato');
+  });
+});
+
+describe('rendimientoConjunto', () => {
+  const P1 = { id: 'p1', metrado_contratado: 100, fecha_inicio_planificada: '2026-06-01', fecha_fin_planificada: '2026-06-10' }; // metaDiaria 10, esperado@05 = 50
+  const P2 = { id: 'p2', metrado_contratado: 200, fecha_inicio_planificada: '2026-06-01', fecha_fin_planificada: '2026-06-10' }; // metaDiaria 20, esperado@05 = 100
+  const SINPLAN = { id: 'p3', metrado_contratado: 50 }; // sin fechas → sin_dato, no pondera
+  const AVS = [
+    { id: 'a1', partida_id: 'p1', metrado_ejecutado: 48 },   // 48/50 = 0.96 → verde
+    { id: 'a2', partida_id: 'p2', metrado_ejecutado: 60 },   // 60/100 = 0.6 → rojo
+  ];
+  it('índice ponderado = Σreal / Σesperado y semáforo agregado', () => {
+    const r = rendimientoConjunto([P1, P2, SINPLAN], AVS, '2026-06-05');
+    expect(r.nPartidas).toBe(3);
+    expect(r.conDato).toBe(2);                         // p3 sin plan no pondera
+    expect(r.realAcum).toBe(108);                      // 48+60
+    expect(r.esperadoAcum).toBe(150);                  // 50+100
+    expect(r.indice).toBeCloseTo(0.72, 2);             // 108/150
+    expect(r.semaforo).toBe('rojo');                   // 0.72 < 0.75
+    expect(r.conteo).toEqual({ verde: 1, ambar: 0, rojo: 1, sin_dato: 1 });
+  });
+  it('dedup: una partida repetida (2 frentes) cuenta una sola vez', () => {
+    const r = rendimientoConjunto([P1, P1], AVS, '2026-06-05');
+    expect(r.nPartidas).toBe(1);
+    expect(r.realAcum).toBe(48);
+  });
+  it('sin partidas con plan → sin_dato', () => {
+    const r = rendimientoConjunto([SINPLAN], AVS, '2026-06-05');
+    expect(r.indice).toBe(null);
+    expect(r.semaforo).toBe('sin_dato');
   });
 });

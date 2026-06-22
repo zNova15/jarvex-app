@@ -7,7 +7,7 @@
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
 import { frentesDeUsuario, partidasDeFrente, frentesDePartida } from "../lib/frente-partidas.js";
-import { resumenFrente, planVsReal, rollupMensual, rendimientoPartida } from "../lib/mi-frente.js";
+import { resumenFrente, planVsReal, rollupMensual, rendimientoPartida, rendimientoConjunto } from "../lib/mi-frente.js";
 import { hijosDirectos, cadenaBreadcrumb } from "../lib/partida-arbol.js";
 import { hoyLocal } from "../lib/fecha.js";
 import { colorIngeniero, segmentarAvance } from "../lib/color-ingeniero.js";
@@ -19,6 +19,8 @@ const hoyISO = () => hoyLocal();
 const num = (x) => Number(x || 0).toLocaleString('es-PE');
 const SEM = { verde: 'var(--green)', ambar: 'var(--amber)', rojo: 'var(--red)', sin_dato: 'var(--tm)' };
 const SEM_LBL = { verde: 'En ritmo', ambar: 'Atención', rojo: 'Atrasado', sin_dato: 's/plan' };
+// Badge de semáforo de rendimiento (a nivel de módulo: lo usan MiFrenteShell y RendimientoIngenierosPage).
+const SemBadge = ({ s }) => <span className="badge" style={{ background: SEM[s], color: '#000', fontSize: 9 }}>{SEM_LBL[s]}</span>;
 
 // Barra de avance multicolor: cada segmento = lo que avanzó un ingeniero (color por id).
 function BarraAvance({ partida, avancesPartida, nombreUsuario }) {
@@ -256,6 +258,7 @@ function MiFrenteShell({ showToast, vista }) {
         }
       }
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'avance_obra' } })); } catch {}
+      if (lineas.some(l => (l.fotos || []).length)) { try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'evidencias' } })); } catch {} }
       showToast(`Reporte guardado · ${lineas.length} partida(s)`, 'green');
       setRepLineas([]); descartarBorrador(); setRepMotivoTardio(''); setConfirmRep(null);
     } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
@@ -373,8 +376,6 @@ function MiFrenteShell({ showToast, vista }) {
 
   const TITULOS = { dashboard: 'Dashboard Técnico', partidas: 'Partidas del Proyecto', cronograma: 'Cronograma de mis Partidas', salidas: 'Vinculación de insumos', reporte: 'Reporte Diario', plan: 'Plan vs Real', borradores: 'Borradores' };
 
-  const SemBadge = ({ s }) => <span className="badge" style={{ background: SEM[s], color: '#000', fontSize: 9 }}>{SEM_LBL[s]}</span>;
-
   // Menú anti-click: abrir + acciones.
   const openCtx = (e, p) => { e.preventDefault(); e.stopPropagation(); setCtx({ x: e.clientX, y: e.clientY, partida: p }); };
   const irACostoUnitario = (p) => {
@@ -435,6 +436,10 @@ function MiFrenteShell({ showToast, vista }) {
           const ac = calcAcum(l.partida_id, l.metrado);
           const pctPrev = p ? (Number(p.porcentaje_avance) || 0) : 0;
           const st = estadoLinea(l);
+          const rend = p ? rendimientoPartida(p, avances || [], hoy) : null;   // ritmo requerido + semáforo acumulado
+          const metHoy = Number(l.metrado) || 0;
+          const idxDiario = rend && rend.metaDiaria > 0 ? metHoy / rend.metaDiaria : null;
+          const semDiario = idxDiario == null ? 'sin_dato' : idxDiario >= 1 ? 'verde' : idxDiario >= 0.75 ? 'ambar' : 'rojo';
           return (
             <div key={l.partida_id} className="card card-p">
               <div className="frow-sb" style={{ marginBottom: 6 }}>
@@ -476,6 +481,15 @@ function MiFrenteShell({ showToast, vista }) {
                   </div>
                 ) : <span style={{ color: 'var(--tm)' }}>Esta partida no tiene metrado contratado: no se puede calcular el % automáticamente.</span>}
               </div>
+              {rend && rend.metaDiaria > 0 ? (
+                <div style={{ marginTop: 6, padding: '7px 10px', borderRadius: 6, background: 'rgba(58,163,255,0.07)', fontSize: 11.5, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <span>📈 Rendimiento diario requerido: <strong>{num(rend.metaDiaria)} {p?.unidad || ''}/día</strong> <span style={{ color: 'var(--tm)' }}>({rend.diasPlan} días plan)</span></span>
+                  {metHoy > 0 && <span>Hoy: <strong>{num(metHoy)} {p?.unidad || ''}</strong> → <SemBadge s={semDiario} /></span>}
+                  <span style={{ color: 'var(--tm)' }}>Acumulado: <SemBadge s={rend.semaforo} /></span>
+                </div>
+              ) : (
+                <div style={{ marginTop: 6, fontSize: 11, color: 'var(--tm)' }}>📈 Sin fechas planificadas: no se puede estimar el ritmo diario requerido de esta partida.</div>
+              )}
             </div>
           );
         })}
@@ -507,7 +521,7 @@ function MiFrenteShell({ showToast, vista }) {
           <td style={{ fontWeight: esCap ? 600 : 400 }}>{p ? <>{p.nombre_partida || '—'}{mostrarFrente && (() => { const fs = frentesNombresDe(p.id); return fs.length ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }} title="Frente(s)">{fs.join(', ')}</span> : <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }} title="No pertenece a ningún frente">sin frente</span>; })()}</> : <span style={{ color: 'var(--tm)', fontStyle: 'italic' }}>capítulo</span>}</td>
           <td style={{ textAlign: 'right' }}>{p ? `${num(p.metrado_contratado)} ${p.unidad || ''}` : ''}</td>
           <td>{p ? <BarraAvance partida={p} avancesPartida={avancesPorPartida.get(p.id)} nombreUsuario={nombreUsuario} /> : ''}</td>
-          <td>{r ? <SemBadge s={r.semaforo} /> : ''}</td>
+          <td>{r ? <div><SemBadge s={r.semaforo} />{r.metaDiaria > 0 && <div style={{ fontSize: 9.5, color: 'var(--tm)', marginTop: 2 }} title="Ritmo diario requerido (metrado ÷ días planificados)">{num(r.metaDiaria)} {p.unidad || ''}/día</div>}</div> : ''}</td>
           <td style={{ textAlign: 'right' }}>{esHoja && <button className="btn btn-ghost btn-xs" onClick={() => generarReporteDe(p)}>Agregar reporte</button>}</td>
         </tr>
       );
@@ -656,7 +670,7 @@ function MiFrenteShell({ showToast, vista }) {
                         <td>{p.nombre_partida || '—'}{mostrarFrente && (() => { const fs = frentesNombresDe(p.id); return fs.length ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>{fs.join(', ')}</span> : <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }}>sin frente</span>; })()}</td>
                         <td style={{ textAlign: 'right' }}>{num(p.metrado_contratado)} {p.unidad || ''}</td>
                         <td><BarraAvance partida={p} avancesPartida={avancesPorPartida.get(p.id)} nombreUsuario={nombreUsuario} /></td>
-                        <td><SemBadge s={r.semaforo} /></td>
+                        <td><div><SemBadge s={r.semaforo} />{r.metaDiaria > 0 && <div style={{ fontSize: 9.5, color: 'var(--tm)', marginTop: 2 }} title="Ritmo diario requerido (metrado ÷ días planificados)">{num(r.metaDiaria)} {p.unidad || ''}/día</div>}</div></td>
                         <td style={{ textAlign: 'right' }}>{!folderCodes.has(p.codigo_delfin) && <button className="btn btn-ghost btn-xs" onClick={() => generarReporteDe(p)}>Agregar reporte</button>}</td>
                       </tr>,
                     ];
@@ -1133,6 +1147,249 @@ function AprobacionesReportePage({ showToast }) {
   );
 }
 
+// Visor de fotos de un reporte (carga las firmas/blobs vía getEvidenciaSrc).
+function EvidenciaViewer({ evidencias, onClose }) {
+  const [srcs, setSrcs] = uS([]);
+  const [cargando, setCargando] = uS(true);
+  uE(() => {
+    let c = false; const creadas = [];
+    setCargando(true); setSrcs([]);
+    (async () => {
+      try {
+        const { getEvidenciaSrc } = await import('../lib/evidencias-url.js');
+        const out = [];
+        for (const ev of (evidencias || [])) {
+          const r = await getEvidenciaSrc(ev);
+          if (c) { if (r?.isBlob) { try { URL.revokeObjectURL(r.url); } catch {} } break; }   // se cerró el modal mientras cargaba → revocar el blob recién creado y salir (sin fuga)
+          if (r) { out.push({ ev, url: r.url }); if (r.isBlob) creadas.push(r.url); }
+        }
+        if (!c) { setSrcs(out); setCargando(false); }
+      } catch { if (!c) setCargando(false); }
+    })();
+    return () => { c = true; creadas.forEach(u => { try { URL.revokeObjectURL(u); } catch {} }); };
+  }, [evidencias]);
+  return (
+    <Modal title={`Fotos del reporte (${(evidencias || []).length})`} icon="image" onClose={onClose} size="wide">
+      {cargando
+        ? <div style={{ color: 'var(--tm)', fontStyle: 'italic', padding: 8 }}>Cargando fotos…</div>
+        : srcs.length === 0
+          ? <div style={{ color: 'var(--tm)', fontStyle: 'italic', padding: 8 }}>No se pudieron cargar las fotos de este reporte.</div>
+          : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 10 }}>
+              {srcs.map((s, i) => (
+                <a key={i} href={s.url} target="_blank" rel="noreferrer" style={{ display: 'block' }} title={s.ev.nombre_archivo || 'foto'}>
+                  <img src={s.url} alt={s.ev.nombre_archivo || 'foto'} style={{ width: '100%', height: 160, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--bd)' }} />
+                </a>
+              ))}
+            </div>
+          )}
+    </Modal>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// RENDIMIENTO DE INGENIEROS (admin/gerente): desempeño por ingeniero y por
+// frente (ritmo requerido del Gantt vs avance reportado) + bandeja de reportes
+// diarios filtrable por ingeniero/fecha. Reusa rendimientoPartida/Conjunto.
+// ═══════════════════════════════════════════════════════════════════
+function RendimientoIngenierosPage() {
+  const obraHook = window.__useObraActiva ? window.__useObraActiva() : { obraId: null };
+  const obraId = obraHook?.obraId || null;
+  const { data: frentes } = window.__hooks.useFrentesObra(obraId, { soloActivas: true });
+  const { data: frentePartidas } = window.__hooks.useFrentePartidas(obraId);
+  const { data: partidas } = window.__hooks.usePartidas(obraId);
+  const { data: avances } = window.__hooks.useAvanceObra(obraId);
+  const [usuarios, setUsuarios] = uS([]);
+  uE(() => { window.__db.profiles.toArray().then(setUsuarios).catch(() => {}); }, []);
+  // Evidencias de avance (para contar/mostrar las fotos de cada reporte).
+  const [eviAvance, setEviAvance] = uS([]);
+  uE(() => {
+    if (!obraId) { setEviAvance([]); return; }
+    let c = false;
+    const load = () => window.__db.evidencias.where('obra_id').equals(obraId)
+      .filter(e => !e.deleted_at && e.modulo_relacionado === 'avance_obra').toArray()
+      .then(r => { if (!c) setEviAvance(r); }).catch(() => {});
+    load();
+    const on = (e) => { const t = e?.detail?.tabla; if (!t || t === 'evidencias') load(); };
+    window.addEventListener('jx_data_changed', on);
+    return () => { c = true; window.removeEventListener('jx_data_changed', on); };
+  }, [obraId]);
+  const [tab, setTab] = uS('ingenieros');   // 'ingenieros' | 'frentes'
+  const [selIng, setSelIng] = uS('');        // filtro por ingeniero (reportes + drill-down)
+  const [desde, setDesde] = uS('');
+  const [hasta, setHasta] = uS('');
+  const [verFotos, setVerFotos] = uS(null);  // evidencias del reporte abierto
+
+  const hoy = hoyISO();
+  const usuariosById = uM(() => { const m = new Map(); (usuarios || []).forEach(u => m.set(u.id, u)); return m; }, [usuarios]);
+  const nombreUsuario = (id) => { if (!id) return '—'; const u = usuariosById.get(id); return u ? (`${u.nombres || ''} ${u.apellidos || ''}`.trim() || u.email || '—') : '—'; };
+  const activos = uM(() => (frentes || []).filter(f => !f.deleted_at), [frentes]);
+  const allPartidas = uM(() => (partidas || []).filter(p => !p.deleted_at), [partidas]);
+  const partById = uM(() => { const m = new Map(); allPartidas.forEach(p => m.set(p.id, p)); return m; }, [allPartidas]);
+  const eviPorAvance = uM(() => { const m = new Map(); for (const e of eviAvance) { if (!e.registro_relacionado_id) continue; const a = m.get(e.registro_relacionado_id) || []; a.push(e); m.set(e.registro_relacionado_id, a); } return m; }, [eviAvance]);
+  // Ingenieros = quienes están a cargo de un frente ∪ quienes han reportado avances.
+  const ingenieros = uM(() => {
+    const ids = new Set();
+    activos.forEach(f => { if (f.ingeniero_user_id) ids.add(f.ingeniero_user_id); });
+    (avances || []).forEach(a => { if (!a.deleted_at && a.responsable_id) ids.add(a.responsable_id); });
+    return [...ids];
+  }, [activos, avances]);
+  const partidasDeIng = (id) => {
+    const m = new Map();
+    for (const f of activos.filter(f => f.ingeniero_user_id === id)) for (const p of partidasDeFrente(f.id, { frentePartidas: frentePartidas || [], partidas: partidas || [] })) m.set(p.id, p);
+    return [...m.values()];
+  };
+  const idxOrd = (i) => (i == null ? Number.POSITIVE_INFINITY : i);   // sin_dato SIEMPRE al final al ordenar peor→mejor (aún detrás de índices >1)
+  const statsIng = uM(() => ingenieros.map(id => {
+    const ps = partidasDeIng(id);
+    const rc = rendimientoConjunto(ps, avances || [], hoy);
+    const sus = (avances || []).filter(a => !a.deleted_at && a.responsable_id === id);
+    const metradoRep = sus.reduce((s, a) => s + (Number(a.metrado_ejecutado) || 0), 0);
+    const ultimo = sus.reduce((mx, a) => (a.fecha && a.fecha > mx) ? a.fecha : mx, '');
+    const nFrentes = activos.filter(f => f.ingeniero_user_id === id).length;
+    const avgPct = ps.length ? ps.reduce((s, p) => s + (Number(p.porcentaje_avance) || 0), 0) / ps.length : 0;
+    return { id, nombre: nombreUsuario(id), nFrentes, nPartidas: ps.length, avgPct, metradoRep, nReportes: sus.length, ultimo, rc };
+  }).sort((a, b) => idxOrd(a.rc.indice) - idxOrd(b.rc.indice)), [ingenieros, activos, frentePartidas, partidas, avances, hoy, usuariosById]);
+  const statsFrentes = uM(() => activos.map(f => {
+    const ps = partidasDeFrente(f.id, { frentePartidas: frentePartidas || [], partidas: partidas || [] });
+    const rc = rendimientoConjunto(ps, avances || [], hoy);
+    const avgPct = ps.length ? ps.reduce((s, p) => s + (Number(p.porcentaje_avance) || 0), 0) / ps.length : 0;
+    return { frente: f, ing: nombreUsuario(f.ingeniero_user_id), nPartidas: ps.length, avgPct, rc };
+  }).sort((a, b) => idxOrd(a.rc.indice) - idxOrd(b.rc.indice)), [activos, frentePartidas, partidas, avances, hoy, usuariosById]);
+  const partidasSel = uM(() => selIng ? partidasDeIng(selIng) : [], [selIng, activos, frentePartidas, partidas]);
+  const reportes = uM(() => (avances || []).filter(a => !a.deleted_at
+      && (!selIng || a.responsable_id === selIng)
+      && (!desde || (a.fecha || '') >= desde)
+      && (!hasta || (a.fecha || '') <= hasta))
+    .sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || ''))), [avances, selIng, desde, hasta]);
+
+  if (!obraId) return <div className="page-wrap"><div className="card card-p empty-state"><p>Seleccioná una obra activa.</p></div></div>;
+
+  const conteoMini = (c) => <span style={{ fontSize: 9.5, color: 'var(--tm)' }}>{c.verde}🟢 {c.ambar}🟡 {c.rojo}🔴{c.sin_dato ? ` ${c.sin_dato}⚪` : ''}</span>;
+
+  return (
+    <div className="page-wrap">
+      <div className="pg-hd frow-sb" style={{ alignItems: 'flex-end', flexWrap: 'wrap', gap: 8 }}>
+        <div>
+          <div className="pg-title">Rendimiento de Ingenieros</div>
+          <div className="pg-sub">Desempeño por ingeniero y por frente: ritmo requerido (del cronograma) vs avance reportado.</div>
+        </div>
+        <div style={{ display: 'flex', gap: 4 }}>
+          <button className={`btn btn-sm ${tab === 'ingenieros' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('ingenieros')}>Por ingeniero</button>
+          <button className={`btn btn-sm ${tab === 'frentes' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('frentes')}>Por frente</button>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 14, fontSize: 11, color: 'var(--tm)', margin: '0 0 4px', flexWrap: 'wrap', alignItems: 'center' }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><SemBadge s="verde" /> a ritmo o mejor</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><SemBadge s="ambar" /> cercano</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><SemBadge s="rojo" /> por debajo</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><SemBadge s="sin_dato" /> sin fechas plan</span>
+        <span style={{ marginLeft: 'auto' }}>índice = real ÷ esperado a hoy (ponderado por metrado)</span>
+      </div>
+
+      {tab === 'ingenieros' && (
+        <div className="card" style={{ overflow: 'auto' }}>
+          <table className="tbl" style={{ fontSize: 12 }}>
+            <thead><tr><th>Ingeniero</th><th>Rendimiento</th><th style={{ textAlign: 'right' }}>Frentes</th><th style={{ textAlign: 'right' }}>Partidas</th><th style={{ textAlign: 'right' }}>% avance</th><th style={{ textAlign: 'right' }}>Metrado rep.</th><th style={{ textAlign: 'right' }}>Reportes</th><th>Último</th><th></th></tr></thead>
+            <tbody>
+              {statsIng.map(s => (
+                <tr key={s.id} style={{ background: selIng === s.id ? 'rgba(242,183,5,0.08)' : 'transparent' }}>
+                  <td style={{ fontWeight: 600 }}>{s.nombre}</td>
+                  <td><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><SemBadge s={s.rc.semaforo} />{s.rc.indice != null && <span style={{ fontSize: 10, color: 'var(--tm)' }}>{Math.round(s.rc.indice * 100)}%</span>}</div><div style={{ marginTop: 2 }}>{conteoMini(s.rc.conteo)}</div></td>
+                  <td style={{ textAlign: 'right' }}>{s.nFrentes}</td>
+                  <td style={{ textAlign: 'right' }}>{s.nPartidas}</td>
+                  <td style={{ textAlign: 'right' }}>{Math.round(s.avgPct)}%</td>
+                  <td style={{ textAlign: 'right' }}>{num(s.metradoRep)}</td>
+                  <td style={{ textAlign: 'right' }}>{s.nReportes}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>{s.ultimo || '—'}</td>
+                  <td style={{ textAlign: 'right' }}><button className="btn btn-ghost btn-xs" onClick={() => setSelIng(selIng === s.id ? '' : s.id)}>{selIng === s.id ? 'Ocultar' : 'Ver detalle'}</button></td>
+                </tr>
+              ))}
+              {statsIng.length === 0 && <tr><td colSpan={9} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>No hay ingenieros con frentes asignados ni reportes en esta obra.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {tab === 'frentes' && (
+        <div className="card" style={{ overflow: 'auto' }}>
+          <table className="tbl" style={{ fontSize: 12 }}>
+            <thead><tr><th>Frente</th><th>Ingeniero a cargo</th><th>Rendimiento</th><th style={{ textAlign: 'right' }}>Partidas</th><th style={{ textAlign: 'right' }}>% avance</th><th style={{ textAlign: 'right' }}>índice</th></tr></thead>
+            <tbody>
+              {statsFrentes.map(s => (
+                <tr key={s.frente.id}>
+                  <td style={{ fontWeight: 600 }}>{s.frente.nombre}</td>
+                  <td>{s.ing}</td>
+                  <td><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><SemBadge s={s.rc.semaforo} />{conteoMini(s.rc.conteo)}</div></td>
+                  <td style={{ textAlign: 'right' }}>{s.nPartidas}</td>
+                  <td style={{ textAlign: 'right' }}>{Math.round(s.avgPct)}%</td>
+                  <td style={{ textAlign: 'right', fontWeight: 600 }}>{s.rc.indice != null ? Math.round(s.rc.indice * 100) + '%' : '—'}</td>
+                </tr>
+              ))}
+              {statsFrentes.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>No hay frentes en esta obra.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {selIng && partidasSel.length > 0 && (
+        <div className="card" style={{ overflow: 'auto' }}>
+          <div style={{ padding: '8px 12px', fontSize: 12.5, fontWeight: 600 }}>Partidas de {nombreUsuario(selIng)} · rendimiento por partida</div>
+          <table className="tbl" style={{ fontSize: 12 }}>
+            <thead><tr><th>Código</th><th>Partida</th><th style={{ textAlign: 'right' }}>Metrado</th><th style={{ textAlign: 'right' }}>Ritmo req.</th><th style={{ textAlign: 'right' }}>Real / esperado</th><th>Rendimiento</th></tr></thead>
+            <tbody>
+              {partidasSel.map(p => { const r = rendimientoPartida(p, avances || [], hoy); return (
+                <tr key={p.id}>
+                  <td style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--tm)' }}>{p.codigo_delfin}</td>
+                  <td>{p.nombre_partida}</td>
+                  <td style={{ textAlign: 'right' }}>{num(p.metrado_contratado)} {p.unidad || ''}</td>
+                  <td style={{ textAlign: 'right' }}>{r.metaDiaria > 0 ? `${num(r.metaDiaria)} ${p.unidad || ''}/día` : '—'}</td>
+                  <td style={{ textAlign: 'right' }}>{r.indice != null ? `${num(r.realAcum)} / ${num(r.esperadoAcum)}` : '—'}</td>
+                  <td><SemBadge s={r.semaforo} /></td>
+                </tr>
+              ); })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="card" style={{ overflow: 'auto' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 12px', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12.5, fontWeight: 600 }}>Reportes diarios</span>
+          <select className="fi" style={{ maxWidth: 240 }} value={selIng} onChange={e => setSelIng(e.target.value)}>
+            <option value="">Todos los ingenieros</option>
+            {ingenieros.map(id => <option key={id} value={id}>{nombreUsuario(id)}</option>)}
+          </select>
+          <label style={{ fontSize: 11, color: 'var(--tm)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>Desde <input className="fi" type="date" style={{ maxWidth: 150 }} value={desde} onChange={e => setDesde(e.target.value)} /></label>
+          <label style={{ fontSize: 11, color: 'var(--tm)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>Hasta <input className="fi" type="date" style={{ maxWidth: 150 }} value={hasta} onChange={e => setHasta(e.target.value)} /></label>
+          {(desde || hasta || selIng) && <button className="btn btn-ghost btn-xs" onClick={() => { setDesde(''); setHasta(''); setSelIng(''); }}>Limpiar filtros</button>}
+          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--tm)' }}>{reportes.length} reporte(s)</span>
+        </div>
+        <table className="tbl" style={{ fontSize: 12 }}>
+          <thead><tr><th>Fecha</th><th>Ingeniero</th><th>Partida</th><th style={{ textAlign: 'right' }}>Metrado</th><th>Descripción</th><th style={{ textAlign: 'center' }}>Fotos</th></tr></thead>
+          <tbody>
+            {reportes.slice(0, 300).map(a => { const p = partById.get(a.partida_id); const evs = eviPorAvance.get(a.id) || []; return (
+              <tr key={a.id}>
+                <td style={{ whiteSpace: 'nowrap' }}>{a.fecha || '—'}</td>
+                <td style={{ whiteSpace: 'nowrap' }}>{nombreUsuario(a.responsable_id)}</td>
+                <td>{p ? <><span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{p.codigo_delfin}</span> {p.nombre_partida}</> : '—'}</td>
+                <td style={{ textAlign: 'right', fontWeight: 600 }}>{num(a.metrado_ejecutado)} {p?.unidad || ''}</td>
+                <td style={{ maxWidth: 340, fontSize: 11, color: 'var(--ts)' }}>{a.descripcion || <span style={{ color: 'var(--tm)', fontStyle: 'italic' }}>—</span>}</td>
+                <td style={{ textAlign: 'center' }}>{evs.length > 0 ? <button className="btn btn-ghost btn-xs" onClick={() => setVerFotos(evs)}>📷 {evs.length}</button> : <span style={{ color: 'var(--tm)' }}>—</span>}</td>
+              </tr>
+            ); })}
+            {reportes.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>Sin reportes para el filtro elegido.</td></tr>}
+          </tbody>
+        </table>
+        {reportes.length > 300 && <div style={{ padding: '6px 12px', fontSize: 11, color: 'var(--tm)' }}>Mostrando los 300 reportes más recientes. Afiná el filtro de fechas para ver más.</div>}
+      </div>
+
+      {verFotos && <EvidenciaViewer evidencias={verFotos} onClose={() => setVerFotos(null)} />}
+    </div>
+  );
+}
+
 const DashboardTecnicoPage = (p) => <MiFrenteShell {...p} vista="dashboard" />;
 const MisPartidasPage = (p) => <MiFrenteShell {...p} vista="partidas" />;
 const CronogramaFrentePage = (p) => <MiFrenteShell {...p} vista="cronograma" />;
@@ -1141,4 +1398,4 @@ const ReporteDiarioPage = (p) => <MiFrenteShell {...p} vista="reporte" />;
 const PlanRealPage = (p) => <MiFrenteShell {...p} vista="plan" />;
 const BorradoresPage = (p) => <MiFrenteShell {...p} vista="borradores" />;
 
-Object.assign(window, { DashboardTecnicoPage, MisPartidasPage, CronogramaFrentePage, SalidasFrentePage, ReporteDiarioPage, PlanRealPage, BorradoresPage, EmitirAlertaPage, AprobacionesReportePage, MiFrentePage: DashboardTecnicoPage });
+Object.assign(window, { DashboardTecnicoPage, MisPartidasPage, CronogramaFrentePage, SalidasFrentePage, ReporteDiarioPage, PlanRealPage, BorradoresPage, EmitirAlertaPage, AprobacionesReportePage, RendimientoIngenierosPage, MiFrentePage: DashboardTecnicoPage });

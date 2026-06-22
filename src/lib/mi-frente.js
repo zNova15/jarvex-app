@@ -53,6 +53,28 @@ export function rendimientoPartida(partida = {}, avances = [], hoy = null) {
   return { metrado, diasPlan, metaDiaria, realAcum, esperadoAcum, indice, semaforo };
 }
 
+/**
+ * Rendimiento CONJUNTO de un grupo de partidas (un frente, un ingeniero o la obra
+ * entera): índice ponderado por metrado esperado = Σ realAcum ÷ Σ esperadoAcum
+ * sobre las partidas con plan. Dedup por id (una partida puede caer en 2 frentes).
+ * Devuelve el semáforo agregado + conteo por color (mismas reglas que rendimientoPartida).
+ */
+export function rendimientoConjunto(partidas = [], avances = [], hoy = null) {
+  let realAcum = 0, esperadoAcum = 0, conDato = 0;
+  const conteo = { verde: 0, ambar: 0, rojo: 0, sin_dato: 0 };
+  const vistos = new Set();
+  for (const p of partidas) {
+    if (!p || vistos.has(p.id)) continue;
+    vistos.add(p.id);
+    const r = rendimientoPartida(p, avances, hoy);
+    conteo[r.semaforo] = (conteo[r.semaforo] || 0) + 1;
+    if (r.indice != null) { realAcum += r.realAcum; esperadoAcum += r.esperadoAcum; conDato++; }
+  }
+  const indice = esperadoAcum > 0 ? realAcum / esperadoAcum : null;
+  const semaforo = indice == null ? 'sin_dato' : indice >= 0.95 ? 'verde' : indice >= 0.75 ? 'ambar' : 'rojo';
+  return { nPartidas: vistos.size, conDato, realAcum, esperadoAcum, indice, semaforo, conteo };
+}
+
 /** Rollup mensual: metrado real sumado por partida en el mes 'YYYY-MM'. Solo partidas con avance. */
 export function rollupMensual({ partidasDelFrente = [], avances = [], mes = null } = {}) {
   return partidasDelFrente.map(p => {
