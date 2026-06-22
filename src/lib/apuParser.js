@@ -396,6 +396,14 @@ export function excelDateToISO(serial) {
   return d.toISOString().slice(0, 10);
 }
 
+// % de avance de una tarea del Gantt. Si la celda viene formateada como Porcentaje, Excel
+// guarda el valor como FRACCIÓN (0.6401 = 64.01%): lo detectamos por el "%" del texto
+// formateado (rowsTexto, raw:false) y lo escalamos ×100. Si es número plano, se asume 0-100.
+export function parsePctGantt(raw, textoFormateado) {
+  const n = Number(raw) || 0;
+  return /%/.test(String(textoFormateado ?? '')) ? n * 100 : n;
+}
+
 export function parseGantt(rows, rowsTexto = null) {
   const tareas = [];
   let startIdx = 0;
@@ -429,7 +437,7 @@ export function parseGantt(rows, rowsTexto = null) {
       fecha_inicio: excelDateToISO(r[3]),
       fecha_fin:    excelDateToISO(r[4]),
       predecesoras: String(r[5] ?? '').trim() || null,
-      porcentaje_avance: Number(r[6]) || 0,
+      porcentaje_avance: parsePctGantt(r[6], rowsTexto?.[i]?.[6]),
       dias_calendario: Number(r[7]) || null,
     });
   }

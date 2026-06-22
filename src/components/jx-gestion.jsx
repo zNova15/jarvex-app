@@ -59,9 +59,13 @@ function InsumosPage({ showToast }) {
     return (w.__insumosTargetCodigo && !w.__insumosTargetEsHoja) ? String(w.__insumosTargetCodigo) : null;
   });
   const [fromGantt] = uSG(() => typeof window !== 'undefined' && !!window.__insumosFromGantt);
-  uEG(() => { try { ['__insumosTargetPartida','__insumosTargetCodigo','__insumosTargetEsHoja','__insumosFromGantt'].forEach(k => delete window[k]); } catch {} }, []);
+  const [fromPartidas] = uSG(() => typeof window !== 'undefined' && !!window.__insumosFromPartidas);
+  uEG(() => { try { ['__insumosTargetPartida','__insumosTargetCodigo','__insumosTargetEsHoja','__insumosFromGantt','__insumosFromPartidas'].forEach(k => delete window[k]); } catch {} }, []);
   const volverAlCronograma = () => {
     try { window.dispatchEvent(new CustomEvent('jx_navigate', { detail: { page: 'cronograma' } })); } catch {}
+  };
+  const volverAPartidas = () => {
+    try { window.dispatchEvent(new CustomEvent('jx_navigate', { detail: { page: 'partidas' } })); } catch {}
   };
   const [insumosPres, setInsumosPres] = uSG([]);
   // Conteo de insumos presupuestados POR PARTIDA (una sola query por obra):
@@ -283,6 +287,11 @@ function InsumosPage({ showToast }) {
           {fromGantt && (
             <button className="btn btn-ghost btn-sm" onClick={volverAlCronograma} style={{ marginBottom: 8 }}>
               <JxIcon name="chevL" size={13} />Volver al cronograma
+            </button>
+          )}
+          {fromPartidas && (
+            <button className="btn btn-ghost btn-sm" onClick={volverAPartidas} style={{ marginBottom: 8 }}>
+              <JxIcon name="chevL" size={13} />Volver a Partidas
             </button>
           )}
           <div className="pg-title">Insumos por Partida</div>

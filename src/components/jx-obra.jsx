@@ -1627,6 +1627,19 @@ function PartidasPage({ showToast }) {
   };
   const collapseAll = () => setExpanded(new Set());
 
+  // Ver insumos de una partida → navega a "Insumos por Partida" (en vez de un modal),
+  // con botón "Volver a Partidas". (Las hojas tienen el ojo; siempre es partida específica.)
+  const irAInsumos = (p) => {
+    try {
+      window.__insumosTargetPartida = p.id;
+      window.__insumosTargetCodigo = p.codigo_delfin || '';
+      window.__insumosTargetEsHoja = true;
+      window.__insumosFromPartidas = true;
+      window.__insumosFromGantt = false;
+      window.dispatchEvent(new CustomEvent('jx_navigate', { detail: { page: 'insumos' } }));
+    } catch {}
+  };
+
   // Exporta las partidas específicas SIN fecha de ejecución (CSV con BOM → abre en
   // Excel) para compararlas 1 a 1 contra el archivo de Gantt y cargar lo que falte.
   const descargarSinFechas = () => {
@@ -1804,7 +1817,7 @@ function PartidasPage({ showToast }) {
                 searchTerms={searchTerms}
                 isAdmin={isAdmin}
                 onEdit={openEditPartida}
-                onVerAPU={setVerAPU}
+                onVerAPU={irAInsumos}
                 consumoMap={consumoMap}
               />
             ))}
@@ -1817,7 +1830,7 @@ function PartidasPage({ showToast }) {
                 searchTerms={searchTerms}
                 isAdmin={isAdmin}
                 onEdit={openEditPartida}
-                onVerAPU={setVerAPU}
+                onVerAPU={irAInsumos}
                 consumoMap={consumoMap}
               />
             ))}

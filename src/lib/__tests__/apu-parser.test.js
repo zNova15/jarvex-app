@@ -1,6 +1,19 @@
 import { describe, it, expect } from 'vitest';
-import { parsePresupuestoObra, parseGantt } from '../apuParser.js';
+import { parsePresupuestoObra, parseGantt, parsePctGantt } from '../apuParser.js';
 import { normalizeCodigo } from '../match-helpers.js';
+
+describe('parsePctGantt — % de avance (formato Porcentaje vs número plano)', () => {
+  it('celda formateada como Porcentaje (raw fracción) → escala ×100', () => {
+    expect(parsePctGantt(0.6401, '64.01%')).toBeCloseTo(64.01, 4);
+    expect(parsePctGantt(1, '100.00%')).toBe(100);
+    expect(parsePctGantt(0.0901639, '9.02%')).toBeCloseTo(9.01639, 4);
+  });
+  it('número plano 0-100 (sin %) → tal cual', () => {
+    expect(parsePctGantt(64.01, '64.01')).toBe(64.01);
+    expect(parsePctGantt(100, '100')).toBe(100);
+    expect(parsePctGantt(0, null)).toBe(0);
+  });
+});
 
 describe('normalizeCodigo — equivalencia de formatos Delphin', () => {
   it('quita el padding de ceros por segmento', () => {
