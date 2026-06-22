@@ -4,7 +4,7 @@ import { normalizeCodigo, fuzzyScore } from "../lib/match-helpers.js";
 import { calcularPresupuesto, fmtSoles } from "../lib/presupuesto-obra.js";
 import { aplicarNombresDesdePartidas } from "../lib/partida-nombres.js";
 import { dedupePartidasLocal } from "../lib/partida-dedup.js";
-import { camposCronograma, updateDominioGantt, hayCambioDominio } from "../lib/gantt-aplicar.js";
+import { camposCronograma, updateDominioGantt, hayCambioDominio, avanceInicialGantt, pctDesdeMetrado } from "../lib/gantt-aplicar.js";
 import { ventanaPartida } from "../lib/mi-frente.js";
 import { MigracionFlow, descargarPlantilla as descargarPlantillaMigracion } from "./jx-migracion-import.jsx";
 import { FORMATOS as MIGRACION_FORMATOS } from "../lib/migracion-parser.js";
@@ -1090,18 +1090,59 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       }
     }
 
+    // Avances existentes por partida → para inyectar el AVANCE INICIAL del cronograma
+    // (origen='importacion') sin pisar lo que reportaron los ingenieros, y recomputar el %.
+    const avancePorPartida = new Map();
+    for (const a of await window.__db.avance_obra.where('obra_id').equals(obraId).toArray()) {
+      if (a.deleted_at) continue;
+      const arr = avancePorPartida.get(a.partida_id) || []; arr.push(a); avancePorPartida.set(a.partida_id, arr);
+    }
+    const nuevosAvances = [];     // baseline a crear (bulkPut)
+    const avancesBorrados = [];   // baseline viejo a soft-delete (bulkPut)
+
     // Metadata de sync (solo se aplica si hubo cambio real de dominio → evita churn).
     const baseUpd = (p) => ({
       updated_at: now, updated_by: userId,
       version: (p.version ?? 0) + 1,
       sync_status: p.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
     });
-    // Hoja: campos de cronograma + estado (lib pura gantt-aplicar). Saltar vacíos por
-    // defecto o reemplazar todo según gantReplaceAll. NO toca porcentaje_avance.
+    // Hoja: campos de cronograma + AVANCE INICIAL (semilla en el ledger) + estado/%.
+    // El % del archivo se inyecta como un avance origen='importacion' (reemplaza el
+    // anterior, sin tocar los reportes de los ingenieros); el % de la partida se recomputa
+    // sobre TODO el metrado acumulado (semilla + reportes). NO se pisa el avance reportado.
     const aplicar = async (p, t) => {
-      const dom = updateDominioGantt(p, t, gantReplaceAll);
-      if (!hayCambioDominio(p, dom)) return;   // re-import sin cambio real → no escribir (no churn de sync)
-      await window.__db.partidas.update(p.id, { ...dom, ...baseUpd(p) });
+      const dom = camposCronograma(t, gantReplaceAll);   // fechas/duración/predecesoras
+      const existentes = avancePorPartida.get(p.id) || [];
+      const reportes = existentes.filter(a => a.origen !== 'importacion');
+      const baselineViejo = existentes.filter(a => a.origen === 'importacion');
+      const inicial = avanceInicialGantt(t.porcentaje_avance, p.metrado_contratado);
+      // Reemplazar el avance inicial: soft-delete del viejo (si lo hay).
+      for (const a of baselineViejo) {
+        avancesBorrados.push({ ...a, deleted_at: now, updated_at: now, updated_by: userId, version: (a.version ?? 0) + 1, sync_status: a.sync_status === 'pending_create' ? 'pending_create' : 'pending_update' });
+      }
+      let metradoBaseline = 0;
+      if (inicial) {
+        metradoBaseline = inicial.metrado;
+        const aid = window.__newId();
+        nuevosAvances.push({
+          id: aid, obra_id: obraId, partida_id: p.id, frente_id: p.frente_id || null,
+          fecha: t.fecha_fin || t.fecha_inicio || now.slice(0, 10),
+          metrado_ejecutado: inicial.metrado, porcentaje_avance_reportado: inicial.pct,
+          responsable_id: null, descripcion: 'Avance inicial importado del cronograma',
+          observaciones: null, origen: 'importacion',
+          created_by: userId, updated_by: userId, created_at: now, updated_at: now,
+          version: 1, sync_status: 'pending_create', last_synced_at: null,
+          idempotency_key: `${userId}_avance_${aid}`,
+        });
+      }
+      // % total = (semilla nueva + metrado de los reportes) / contratado.
+      const sumReportes = reportes.reduce((s, a) => s + (Number(a.metrado_ejecutado) || 0), 0);
+      const pct = pctDesdeMetrado(sumReportes + metradoBaseline, p.metrado_contratado);
+      if (pct != null && pct !== (Number(p.porcentaje_avance) || 0)) dom.porcentaje_avance = pct;   // solo si cambia (evita churn en pendientes)
+      const est = decidirEstadoGantt(pct ?? 0, p.estado);   // estado según el % TOTAL (respeta 'observado', no degrada)
+      if (est) dom.estado = est;
+      const cambioBaseline = inicial || baselineViejo.length;
+      if (hayCambioDominio(p, dom) || cambioBaseline) await window.__db.partidas.update(p.id, { ...dom, ...baseUpd(p) });
     };
     // Capítulo existente: nombre + cronograma (sin estado — los capítulos no lo llevan).
     const aplicarCapitulo = async (p, t) => {
@@ -1182,6 +1223,10 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       await window.__db.partidas.bulkPut(nuevosCapitulos);
       capCreados = nuevosCapitulos.length;
     }
+    // Avance inicial: soft-delete del baseline viejo + alta del nuevo (bulk).
+    if (avancesBorrados.length) await window.__db.avance_obra.bulkPut(avancesBorrados);
+    if (nuevosAvances.length) await window.__db.avance_obra.bulkPut(nuevosAvances);
+    if (nuevosAvances.length || avancesBorrados.length) { try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'avance_obra' } })); } catch {} }
     // Dedup defensivo: el Gantt crea capítulos que pueden colisionar (por código
     // normalizado) con partidas ya creadas por el presupuesto/APU. Idempotente.
     let dedupBorradas = 0;
@@ -1203,6 +1248,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
         (normalizadas ? ` (${exactas} match exacto + ${normalizadas} match normalizado)` : '') +
         (capCreados ? ` · ${capCreados} capítulos creados` : '') +
         (capActualizados ? ` · ${capActualizados} capítulos actualizados` : '') +
+        (nuevosAvances.length ? ` · ${nuevosAvances.length} con avance inicial` : '') +
         (dedupBorradas ? ` · ${dedupBorradas} duplicadas depuradas` : '') +
         (sugerencias.length ? ` · ${sugerencias.length} sugerencias por revisar` : '') +
         (noMatch.length ? ` · ${noMatch.length} sin match` : '') +

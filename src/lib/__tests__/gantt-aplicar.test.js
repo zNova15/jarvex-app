@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { camposCronograma, decidirEstadoGantt, updateDominioGantt, hayCambioDominio } from '../gantt-aplicar.js';
+import { camposCronograma, decidirEstadoGantt, updateDominioGantt, hayCambioDominio, avanceInicialGantt, pctDesdeMetrado } from '../gantt-aplicar.js';
 
 describe('camposCronograma', () => {
   const t = { fecha_inicio: '2026-06-02', fecha_fin: '2026-06-11', duracion_dias: 10, predecesoras: '02.01' };
@@ -40,6 +40,31 @@ describe('decidirEstadoGantt', () => {
   });
   it('avance 0 → sin cambio', () => {
     expect(decidirEstadoGantt(0, 'pendiente')).toBe(undefined);
+  });
+});
+
+describe('avanceInicialGantt', () => {
+  it('metrado = (avance/100) × contratado, pct = avance', () => {
+    expect(avanceInicialGantt(64.01, 195.28)).toEqual({ metrado: 124.999, pct: 64.01 });
+    expect(avanceInicialGantt(100, 50)).toEqual({ metrado: 50, pct: 100 });
+  });
+  it('avance > 100 → pct cap 100 (metrado sin cap, lo limita pctDesdeMetrado)', () => {
+    expect(avanceInicialGantt(120, 10).pct).toBe(100);
+  });
+  it('avance 0 o sin metrado → null (no crea avance inicial)', () => {
+    expect(avanceInicialGantt(0, 100)).toBe(null);
+    expect(avanceInicialGantt(50, 0)).toBe(null);
+  });
+});
+
+describe('pctDesdeMetrado', () => {
+  it('min(100, suma/contratado×100), 1 decimal', () => {
+    expect(pctDesdeMetrado(125.018, 195.28)).toBe(64);   // ~64.01 → 64.0
+    expect(pctDesdeMetrado(50, 50)).toBe(100);
+    expect(pctDesdeMetrado(60, 50)).toBe(100);            // cap
+  });
+  it('sin metrado contratado → null', () => {
+    expect(pctDesdeMetrado(10, 0)).toBe(null);
   });
 });
 

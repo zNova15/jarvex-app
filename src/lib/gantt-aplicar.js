@@ -59,3 +59,22 @@ export function updateDominioGantt(p = {}, t = {}, replaceAll = false) {
 export function hayCambioDominio(p = {}, dom = {}) {
   return Object.keys(dom).some(k => p[k] !== dom[k]);
 }
+
+/**
+ * Avance INICIAL a inyectar en el ledger desde el % del Gantt: { metrado, pct }.
+ * metrado = (avance/100) × metrado_contratado (3 decimales). null si no corresponde
+ * (avance ≤ 0 o sin metrado contratado). Es la "semilla" desde la que siguen los reportes.
+ */
+export function avanceInicialGantt(avance, metradoContratado) {
+  const av = Number(avance) || 0;
+  const mc = Number(metradoContratado) || 0;
+  if (av <= 0 || mc <= 0) return null;
+  return { metrado: Math.round((av / 100) * mc * 1000) / 1000, pct: Math.min(100, av) };
+}
+
+/** % de avance de una partida desde el metrado acumulado: min(100, suma/contratado×100). */
+export function pctDesdeMetrado(sumaMetrado, metradoContratado) {
+  const mc = Number(metradoContratado) || 0;
+  if (mc <= 0) return null;
+  return Math.min(100, Math.round((Number(sumaMetrado) || 0) / mc * 100 * 10) / 10);
+}
