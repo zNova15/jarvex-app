@@ -54,6 +54,21 @@ export function rendimientoPartida(partida = {}, avances = [], hoy = null) {
 }
 
 /**
+ * Ventana de ejecución planificada de una partida: fechas de inicio/fin + días
+ * (inclusive, mismo criterio que rendimientoPartida.diasPlan). `completa` es false
+ * si le falta alguna de las dos fechas (no se importó del cronograma Delphin).
+ */
+export function ventanaPartida(p = {}) {
+  const ini = p.fecha_inicio_planificada || null;
+  const fin = p.fecha_fin_planificada || null;
+  if (!ini || !fin) return { ini, fin, dias: null, completa: false };
+  const ms = new Date(fin).getTime() - new Date(ini).getTime();
+  if (!Number.isFinite(ms)) return { ini, fin, dias: null, completa: false };   // fecha truthy pero no parseable (ej. "pendiente") → tratar como sin fechas
+  const dias = Math.max(1, Math.round(ms / 86400000) + 1);
+  return { ini, fin, dias, completa: true };
+}
+
+/**
  * Rendimiento CONJUNTO de un grupo de partidas (un frente, un ingeniero o la obra
  * entera): índice ponderado por metrado esperado = Σ realAcum ÷ Σ esperadoAcum
  * sobre las partidas con plan. Dedup por id (una partida puede caer en 2 frentes).

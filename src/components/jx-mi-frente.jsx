@@ -7,9 +7,9 @@
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
 import { frentesDeUsuario, partidasDeFrente, frentesDePartida } from "../lib/frente-partidas.js";
-import { resumenFrente, planVsReal, rollupMensual, rendimientoPartida, rendimientoConjunto } from "../lib/mi-frente.js";
+import { resumenFrente, planVsReal, rollupMensual, rendimientoPartida, rendimientoConjunto, ventanaPartida } from "../lib/mi-frente.js";
 import { hijosDirectos, cadenaBreadcrumb } from "../lib/partida-arbol.js";
-import { hoyLocal } from "../lib/fecha.js";
+import { hoyLocal, fmtFechaCorta } from "../lib/fecha.js";
 import { colorIngeniero, segmentarAvance } from "../lib/color-ingeniero.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
@@ -21,6 +21,17 @@ const SEM = { verde: 'var(--green)', ambar: 'var(--amber)', rojo: 'var(--red)', 
 const SEM_LBL = { verde: 'En ritmo', ambar: 'Atención', rojo: 'Atrasado', sin_dato: 's/plan' };
 // Badge de semáforo de rendimiento (a nivel de módulo: lo usan MiFrenteShell y RendimientoIngenierosPage).
 const SemBadge = ({ s }) => <span className="badge" style={{ background: SEM[s], color: '#000', fontSize: 9 }}>{SEM_LBL[s]}</span>;
+// Plazo planificado de una partida: inicio→fin · N días, o aviso si no se importó del cronograma.
+const PlazoMini = ({ p }) => {
+  const v = ventanaPartida(p || {});
+  if (!v.completa) return <span className="badge b-red" style={{ fontSize: 9 }} title="Sin fechas de ejecución importadas del cronograma">⚠ sin fechas</span>;
+  return (
+    <div style={{ fontSize: 10, lineHeight: 1.3 }} title={`${v.ini} → ${v.fin} (${v.dias} días)`}>
+      <div style={{ color: 'var(--tm)' }}>{fmtFechaCorta(v.ini)} → {fmtFechaCorta(v.fin)}</div>
+      <div style={{ color: 'var(--amber)', fontWeight: 600 }}>{v.dias} días</div>
+    </div>
+  );
+};
 
 // Barra de avance multicolor: cada segmento = lo que avanzó un ingeniero (color por id).
 function BarraAvance({ partida, avancesPartida, nombreUsuario }) {
@@ -156,7 +167,7 @@ function MiFrenteShell({ showToast, vista }) {
   const [repFecha, setRepFecha] = uS(() => repLiveInit?.fecha || hoy);     // día que se reporta (default hoy; permite días pasados con motivo)
   const [repMotivoTardio, setRepMotivoTardio] = uS(() => repLiveInit?.motivo || '');
   const MAX_FOTOS = 5;
-  const REP_MIN_PALABRAS = 50;   // mínimo de palabras en la descripción de cada partida reportada
+  const REP_MIN_PALABRAS = 20;   // mínimo de palabras en la descripción de cada partida reportada
   const [confirmRep, setConfirmRep] = uS(null);   // [{linea, partida}] validadas, a confirmar antes de subir
   // Espejar el reporte en curso al buffer en cada cambio (incluye los File de las fotos).
   uE(() => {
@@ -520,6 +531,7 @@ function MiFrenteShell({ showToast, vista }) {
           </td>
           <td style={{ fontWeight: esCap ? 600 : 400 }}>{p ? <>{p.nombre_partida || '—'}{mostrarFrente && (() => { const fs = frentesNombresDe(p.id); return fs.length ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }} title="Frente(s)">{fs.join(', ')}</span> : <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }} title="No pertenece a ningún frente">sin frente</span>; })()}</> : <span style={{ color: 'var(--tm)', fontStyle: 'italic' }}>capítulo</span>}</td>
           <td style={{ textAlign: 'right' }}>{p ? `${num(p.metrado_contratado)} ${p.unidad || ''}` : ''}</td>
+          <td>{p ? <PlazoMini p={p} /> : ''}</td>
           <td>{p ? <BarraAvance partida={p} avancesPartida={avancesPorPartida.get(p.id)} nombreUsuario={nombreUsuario} /> : ''}</td>
           <td>{r ? <div><SemBadge s={r.semaforo} />{r.metaDiaria > 0 && <div style={{ fontSize: 9.5, color: 'var(--tm)', marginTop: 2 }} title="Ritmo diario requerido (metrado ÷ días planificados)">{num(r.metaDiaria)} {p.unidad || ''}/día</div>}</div> : ''}</td>
           <td style={{ textAlign: 'right' }}>{esHoja && <button className="btn btn-ghost btn-xs" onClick={() => generarReporteDe(p)}>Agregar reporte</button>}</td>
@@ -531,7 +543,7 @@ function MiFrenteShell({ showToast, vista }) {
           filas.push(
             <tr key={nodo.code + '_ins'} style={{ background: 'rgba(46,204,113,0.05)' }}>
               <td></td>
-              <td colSpan={5} style={{ paddingLeft: 6 + (depth + 1) * 16 }}>
+              <td colSpan={6} style={{ paddingLeft: 6 + (depth + 1) * 16 }}>
                 <div style={{ fontSize: 10.5, color: 'var(--green)', margin: '2px 0', fontWeight: 600 }}>🔧 Insumos a utilizar ({ins.length}):</div>
                 <table style={{ width: '100%', fontSize: 11 }}><tbody>
                   {ins.map(i => (
@@ -658,7 +670,7 @@ function MiFrenteShell({ showToast, vista }) {
                 <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--tm)' }}>{filtradas ? `${filtradas.length} coinciden` : `${parts.length} partidas`}</span>
               </div>
               <table className="tbl" style={{ fontSize: 12 }}>
-                <thead><tr><th>Código</th><th>Partida</th><th style={{ textAlign: 'right' }}>Metrado</th><th>Avance (por ingeniero)</th><th>Rendimiento</th><th></th></tr></thead>
+                <thead><tr><th>Código</th><th>Partida</th><th style={{ textAlign: 'right' }}>Metrado</th><th>Plazo plan.</th><th>Avance (por ingeniero)</th><th>Rendimiento</th><th></th></tr></thead>
                 <tbody>
                   {filtradas ? filtradas.flatMap(p => {
                     const r = rendimientoPartida(p, avances || [], hoy);
@@ -669,16 +681,17 @@ function MiFrenteShell({ showToast, vista }) {
                         <td style={{ whiteSpace: 'nowrap' }}>{ins.length ? <button className="btn btn-ghost btn-xs" onClick={() => toggleExp(p.codigo_delfin)} style={{ padding: '0 4px', color: 'var(--green)' }}>{open ? '▾' : '▸'}</button> : <span style={{ display: 'inline-block', width: 18 }} />}<span style={{ fontFamily: 'monospace', fontSize: 11.5, color: 'var(--green)', fontWeight: 500 }}>• {p.codigo_delfin}</span></td>
                         <td>{p.nombre_partida || '—'}{mostrarFrente && (() => { const fs = frentesNombresDe(p.id); return fs.length ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>{fs.join(', ')}</span> : <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }}>sin frente</span>; })()}</td>
                         <td style={{ textAlign: 'right' }}>{num(p.metrado_contratado)} {p.unidad || ''}</td>
+                        <td><PlazoMini p={p} /></td>
                         <td><BarraAvance partida={p} avancesPartida={avancesPorPartida.get(p.id)} nombreUsuario={nombreUsuario} /></td>
                         <td><div><SemBadge s={r.semaforo} />{r.metaDiaria > 0 && <div style={{ fontSize: 9.5, color: 'var(--tm)', marginTop: 2 }} title="Ritmo diario requerido (metrado ÷ días planificados)">{num(r.metaDiaria)} {p.unidad || ''}/día</div>}</div></td>
                         <td style={{ textAlign: 'right' }}>{!folderCodes.has(p.codigo_delfin) && <button className="btn btn-ghost btn-xs" onClick={() => generarReporteDe(p)}>Agregar reporte</button>}</td>
                       </tr>,
                     ];
-                    if (open && ins.length) rows.push(<tr key={p.id + '_ins'} style={{ background: 'rgba(46,204,113,0.05)' }}><td></td><td colSpan={5}><div style={{ fontSize: 10.5, color: 'var(--green)', margin: '2px 0', fontWeight: 600 }}>🔧 Insumos a utilizar ({ins.length}):</div><table style={{ width: '100%', fontSize: 11 }}><tbody>{ins.map(i => <tr key={i.id}><td style={{ width: 110 }}><span className="badge" style={{ background: TIPO_COLOR[String(i.tipo_insumo || '').toLowerCase()] || 'var(--tm)', color: '#000', fontSize: 9 }}>{i.tipo_insumo}</span></td><td>{i.nombre_insumo}</td><td style={{ textAlign: 'right', width: 130, fontWeight: 600 }}>{num(i.cantidad_presupuestada)} {i.unidad || ''}</td></tr>)}</tbody></table></td></tr>);
+                    if (open && ins.length) rows.push(<tr key={p.id + '_ins'} style={{ background: 'rgba(46,204,113,0.05)' }}><td></td><td colSpan={6}><div style={{ fontSize: 10.5, color: 'var(--green)', margin: '2px 0', fontWeight: 600 }}>🔧 Insumos a utilizar ({ins.length}):</div><table style={{ width: '100%', fontSize: 11 }}><tbody>{ins.map(i => <tr key={i.id}><td style={{ width: 110 }}><span className="badge" style={{ background: TIPO_COLOR[String(i.tipo_insumo || '').toLowerCase()] || 'var(--tm)', color: '#000', fontSize: 9 }}>{i.tipo_insumo}</span></td><td>{i.nombre_insumo}</td><td style={{ textAlign: 'right', width: 130, fontWeight: 600 }}>{num(i.cantidad_presupuestada)} {i.unidad || ''}</td></tr>)}</tbody></table></td></tr>);
                     return rows;
                   }) : renderNodos('', 0, parts, mostrarFrente)}
-                  {parts.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>{partidasTab === 'mias' ? 'No tenés partidas asignadas a tus frentes.' : 'No hay otras partidas en este alcance.'}</td></tr>}
-                  {filtradas && filtradas.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>Ninguna partida coincide con “{filtroPart}”.</td></tr>}
+                  {parts.length === 0 && <tr><td colSpan={7} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>{partidasTab === 'mias' ? 'No tenés partidas asignadas a tus frentes.' : 'No hay otras partidas en este alcance.'}</td></tr>}
+                  {filtradas && filtradas.length === 0 && <tr><td colSpan={7} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>Ninguna partida coincide con “{filtroPart}”.</td></tr>}
                 </tbody>
               </table>
             </div>

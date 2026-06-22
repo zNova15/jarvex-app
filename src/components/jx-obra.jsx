@@ -3,7 +3,21 @@ import { useBusy } from "../hooks/useBusy.js";
 import { normalizeCodigo, fuzzyScore } from "../lib/match-helpers.js";
 import { parsePresupuestoObra, parseTablaCostos } from "../lib/apuParser.js";
 import { calcularPresupuesto, fmtSoles } from "../lib/presupuesto-obra.js";
+import { ventanaPartida } from "../lib/mi-frente.js";
+import { fmtFechaCorta } from "../lib/fecha.js";
 const { useState: uSO, useMemo: uMO, useEffect: uEO } = React;
+
+// Celda de plazo planificado (inicio→fin · N días) o aviso si no se importó del cronograma.
+function PlazoCell({ p }) {
+  const v = ventanaPartida(p || {});
+  if (!v.completa) return <div style={{ textAlign: 'center' }}><span className="badge b-red" style={{ fontSize: 9 }} title="Sin fechas de ejecución importadas del cronograma Delphin">⚠ sin fechas</span></div>;
+  return (
+    <div style={{ textAlign: 'center', fontSize: 10.5, lineHeight: 1.3 }} title={`${v.ini} → ${v.fin} (${v.dias} días)`}>
+      <div style={{ color: 'var(--tm)' }}>{fmtFechaCorta(v.ini)} → {fmtFechaCorta(v.fin)}</div>
+      <div style={{ color: 'var(--amber)', fontWeight: 600 }}>{v.dias} d</div>
+    </div>
+  );
+}
 
 const EST_PART = { terminado:'b-green', en_ejecucion:'b-blue', atrasado:'b-red', pendiente:'b-gray', observado:'b-yellow' };
 const EST_LBL  = { terminado:'Terminado', en_ejecucion:'En Ejecución', atrasado:'Atrasado', pendiente:'Pendiente', observado:'Observado' };
@@ -933,7 +947,7 @@ function PartidaLeafRow({ partida: p, depth, searchTerms, isAdmin, onEdit, onVer
     <div
       style={{
         display: 'grid',
-        gridTemplateColumns: '1fr 110px 110px 220px 90px 60px',
+        gridTemplateColumns: '1fr 110px 110px 140px 220px 90px 60px',
         gap: 8,
         alignItems: 'center',
         padding: '8px 12px',
@@ -957,6 +971,7 @@ function PartidaLeafRow({ partida: p, depth, searchTerms, isAdmin, onEdit, onVer
       </div>
       <div style={{ textAlign: 'right', color: 'var(--tp)' }}>{fmtS(ctPres)}</div>
       <div style={{ textAlign: 'right', color: ctReal > ctPres ? 'var(--red)' : 'var(--tp)' }}>{fmtS(ctReal)}</div>
+      <PlazoCell p={p} />
       <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
         <MiniBar value={av} label="Reportado" color={colorAv} title={`Avance reportado: ${av.toFixed(1)}%`}/>
         <MiniBar value={avFin} label="Financiero" color={colorFin} title={`Avance financiero: ${avFin.toFixed(1)}% (S/ ${ctReal.toLocaleString()} de S/ ${ctPres.toLocaleString()})`}/>
@@ -1035,7 +1050,7 @@ function TreeNode({ node, visibleCodes, expanded, onToggle, searchTerms, isAdmin
         onClick={() => hasChildren && onToggle(node.code)}
         style={{
           display: 'grid',
-          gridTemplateColumns: '1fr 110px 110px 220px 90px 60px',
+          gridTemplateColumns: '1fr 110px 110px 140px 220px 90px 60px',
           gap: 8,
           alignItems: 'center',
           padding: '8px 12px',
@@ -1065,6 +1080,7 @@ function TreeNode({ node, visibleCodes, expanded, onToggle, searchTerms, isAdmin
         </div>
         <div style={{ textAlign: 'right', color: 'var(--tp)' }}>{fmtSk(agg.presupuesto)}</div>
         <div style={{ textAlign: 'right', color: agg.real > agg.presupuesto ? 'var(--red)' : 'var(--tp)' }}>{fmtSk(agg.real)}</div>
+        <div></div>
         <div>
           <MiniBar
             value={agg.avancePct}
@@ -1466,6 +1482,7 @@ function PartidasPage({ showToast }) {
   const [expanded, setExpanded] = uSO(() => new Set());
   const [soloActivas, setSoloActivas] = uSO(false);
   const [estadoFilter, setEstadoFilter] = uSO('todos');
+  const [soloSinFechas, setSoloSinFechas] = uSO(false);   // ver solo partidas específicas sin fechas de ejecución importadas
   const [consumoMap, setConsumoMap] = uSO({}); // partida_id -> avance_consumo_pct
   const [verAPU, setVerAPU] = uSO(null); // partida cuyos insumos estamos viendo
   const [insumosDetalle, setInsumosDetalle] = uSO([]); // insumos de la partida activa
@@ -1551,17 +1568,42 @@ function PartidasPage({ showToast }) {
     return q.trim().toLowerCase().split(/\s+/).filter(Boolean);
   }, [q]);
 
-  const visibleCodes = uMO(() => {
-    if (!searchTerms.length) return null; // null = no filtrar por búsqueda
-    const predicate = (p) => {
+  // Prefijos = códigos que son ancestro de otra partida (capítulos). Una partida
+  // es ESPECÍFICA (hoja) si su código no es prefijo de ningún otro.
+  const prefijosPart = uMO(() => {
+    const s = new Set();
+    for (const p of (partidas || [])) {
+      const segs = normalizeCodigo(String(p.codigo_delfin || '').trim()).split('.').filter(Boolean);
+      for (let i = 1; i < segs.length; i++) s.add(segs.slice(0, i).join('.'));   // mismo criterio normalizado que buildPartidasTree
+    }
+    return s;
+  }, [partidas]);
+  const esEspecificaSinFechas = (p) => {
+    const c = String(p.codigo_delfin || '').trim();
+    return !!c && !prefijosPart.has(normalizeCodigo(c)) && !ventanaPartida(p).completa;
+  };
+  // Partidas específicas (hojas) que NO tienen fechas de ejecución importadas.
+  const sinFechasCount = uMO(() => (partidas || []).filter(esEspecificaSinFechas).length, [partidas, prefijosPart]);
+
+  // Predicate de visibilidad de una partida (búsqueda + soloSinFechas). Compartido por
+  // filterTreeMatches (nodos del árbol) y por el render de las hojas SIN código (que
+  // cuelgan de root.partidas y no pasan por visibleCodes).
+  const hayFiltroPartida = searchTerms.length > 0 || soloSinFechas;
+  const partidaVisible = (p) => {
+    if (searchTerms.length) {
       const code = (p.codigo_delfin || '').toLowerCase();
       const name = (p.nombre_partida || '').toLowerCase();
-      return searchTerms.every(t => code.includes(t) || name.includes(t));
-    };
+      if (!searchTerms.every(t => code.includes(t) || name.includes(t))) return false;
+    }
+    if (soloSinFechas && !esEspecificaSinFechas(p)) return false;
+    return true;
+  };
+  const visibleCodes = uMO(() => {
+    if (!hayFiltroPartida) return null; // null = no filtrar
     const set = new Set();
-    filterTreeMatches(tree, predicate, [], set);
+    filterTreeMatches(tree, partidaVisible, [], set);
     return set;
-  }, [tree, searchTerms]);
+  }, [tree, searchTerms, soloSinFechas, prefijosPart]);
 
   // Auto-expandir nodos cuando hay búsqueda activa
   const effectiveExpanded = uMO(() => {
@@ -1679,7 +1721,7 @@ function PartidasPage({ showToast }) {
         </div>
       </div>
 
-      <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:18}}>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:12,marginBottom:18}}>
         {[
           {label:'Terminadas',val:stats.terminadas,color:'var(--green)'},
           {label:'En Ejecución',val:stats.ejecucion,color:'var(--blue)'},
@@ -1688,6 +1730,10 @@ function PartidasPage({ showToast }) {
         ].map((s,i)=>(
           <div key={i} className="card card-p"><div style={{fontSize:11,color:'var(--tm)'}}>{s.label}</div><div style={{fontSize:26,fontWeight:800,color:s.color,margin:'4px 0'}}>{s.val}</div></div>
         ))}
+        <div className="card card-p" onClick={()=>sinFechasCount>0 && setSoloSinFechas(v=>!v)} title="Partidas específicas sin fechas de ejecución importadas del cronograma. Click para filtrar." style={{cursor:sinFechasCount>0?'pointer':'default',border:soloSinFechas?'1px solid var(--amber)':undefined}}>
+          <div style={{fontSize:11,color:'var(--tm)'}}>⚠ Sin programar</div>
+          <div style={{fontSize:26,fontWeight:800,color:sinFechasCount>0?'var(--amber)':'var(--green)',margin:'4px 0'}}>{sinFechasCount}</div>
+        </div>
       </div>
 
       <div style={{display:'flex',gap:8,marginBottom:14,flexWrap:'wrap',alignItems:'center'}}>
@@ -1695,6 +1741,10 @@ function PartidasPage({ showToast }) {
         <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'var(--tm)',cursor:'pointer'}}>
           <input type="checkbox" checked={soloActivas} onChange={e=>setSoloActivas(e.target.checked)}/>
           Solo activas
+        </label>
+        <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:soloSinFechas?'var(--amber)':'var(--tm)',cursor:'pointer'}} title="Mostrar solo partidas específicas sin fechas de ejecución importadas">
+          <input type="checkbox" checked={soloSinFechas} onChange={e=>setSoloSinFechas(e.target.checked)}/>
+          ⚠ Solo sin programar ({sinFechasCount})
         </label>
         <select className="fi" style={{maxWidth:160,fontSize:12}} value={estadoFilter} onChange={e=>setEstadoFilter(e.target.value)}>
           <option value="todos">Todos los estados</option>
@@ -1715,10 +1765,11 @@ function PartidasPage({ showToast }) {
       ) : (
         <div className="card" style={{overflow:'hidden'}}>
           <div style={{padding:'8px 12px',background:'rgba(0,0,0,0.18)',fontSize:11,color:'var(--tm)',fontWeight:600,letterSpacing:0.4,textTransform:'uppercase',borderBottom:'1px solid rgba(255,255,255,0.05)'}}>
-            <div style={{display:'grid',gridTemplateColumns:'1fr 110px 110px 220px 90px 60px',gap:8,alignItems:'center'}}>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 110px 110px 140px 220px 90px 60px',gap:8,alignItems:'center'}}>
               <div>Código / Partida</div>
               <div style={{textAlign:'right'}}>Presupuesto</div>
               <div style={{textAlign:'right'}}>Real</div>
+              <div style={{textAlign:'center'}}>Plazo plan.</div>
               <div style={{textAlign:'center'}}>Avance: Reportado · Financiero · Consumo</div>
               <div>Estado</div>
               <div style={{textAlign:'center'}}>{isAdmin ? 'Acc.' : ''}</div>
@@ -1739,8 +1790,8 @@ function PartidasPage({ showToast }) {
                 consumoMap={consumoMap}
               />
             ))}
-            {/* Hojas sin código */}
-            {tree.partidas.map(p => (
+            {/* Hojas sin código (cuelgan de root; respetan búsqueda + soloSinFechas) */}
+            {(hayFiltroPartida ? tree.partidas.filter(partidaVisible) : tree.partidas).map(p => (
               <PartidaLeafRow
                 key={p.id}
                 partida={p}
@@ -1753,10 +1804,11 @@ function PartidasPage({ showToast }) {
               />
             ))}
           </div>
-          <div style={{padding:'10px 14px',background:'rgba(0,0,0,0.18)',borderTop:'1px solid rgba(255,255,255,0.05)',display:'grid',gridTemplateColumns:'1fr 110px 110px 130px',gap:8,fontSize:12,fontWeight:700,color:'var(--tp)'}}>
+          <div style={{padding:'10px 14px',background:'rgba(0,0,0,0.18)',borderTop:'1px solid rgba(255,255,255,0.05)',display:'grid',gridTemplateColumns:'1fr 110px 110px 140px 130px',gap:8,fontSize:12,fontWeight:700,color:'var(--tp)'}}>
             <div style={{color:'var(--ts)'}}>TOTALES</div>
             <div style={{textAlign:'right'}}>{fmtS(totalPres)}</div>
             <div style={{textAlign:'right'}}>{fmtS(totalReal)}</div>
+            <div></div>{/* columna Plazo */}
             {/* Saldo = presupuesto − real consumido. Positivo (verde) = aún
                 queda presupuesto disponible. Negativo (rojo) = sobregasto. */}
             {(() => {
@@ -2237,6 +2289,7 @@ function CronogramaPage() {
   // Filtro nivel: específicas = nodos hoja (sin sub-partidas), no específicas
   // = capítulos/sub-capítulos (1, 1.01, 1.01.01…) que agrupan a otras.
   const [tipoFilter, setTipoFilter] = uSO(VISTA_GANTT.tipoFilter ?? 'todas'); // 'todas' | 'especificas' | 'no_especificas'
+  const [verSinProgramar, setVerSinProgramar] = uSO(false);   // panel de partidas específicas sin fechas (no aparecen en el Gantt)
   // Modo de ordenamiento del listado
   const [sortMode, setSortMode] = uSO(VISTA_GANTT.sortMode ?? 'codigo_especificas_al_final');
   // 'codigo' = orden jerárquico puro
@@ -2307,6 +2360,18 @@ function CronogramaPage() {
         return String(a.codigo_delfin || '').localeCompare(String(b.codigo_delfin || ''), 'es', { numeric: true });
       });
   }, [partidasRaw]);
+
+  // Partidas ESPECÍFICAS (hojas) sin fechas de ejecución → no caen en partidasConFechas,
+  // así que el Gantt no las dibuja. Las listamos aparte para que el admin las complete.
+  const sinProgramar = uMO(() => {
+    if (!partidasRaw) return [];
+    // Mismo criterio de fecha válida que partidasConFechas (parseDate): así el panel
+    // cubre EXACTAMENTE lo que el Gantt no dibuja, incl. fechas truthy no parseables.
+    return partidasRaw
+      .filter(p => !p.deleted_at && esEspecifica(p.codigo_delfin) && !(parseDate(p.fecha_inicio_planificada) != null && parseDate(p.fecha_fin_planificada) != null))
+      .slice()
+      .sort((a, b) => String(a.codigo_delfin || '').localeCompare(String(b.codigo_delfin || ''), 'es', { numeric: true }));
+  }, [partidasRaw, codigosLive]);
 
   // Rango global
   const range = uMO(() => {
@@ -2572,6 +2637,7 @@ function CronogramaPage() {
             <span style={{color:'var(--blue)'}}>{stats.enCurso} en curso</span> ·{' '}
             <span style={{color:'var(--tm)'}}>{stats.futuras} futuras</span>
             {stats.terminadas > 0 && <> · <span style={{color:'var(--green)'}}>{stats.terminadas} terminadas</span></>}
+            {sinProgramar.length > 0 && <> · <span onClick={()=>setVerSinProgramar(v=>!v)} style={{color:'var(--red)',cursor:'pointer',textDecoration:'underline',fontWeight:600}} title="Partidas específicas sin fechas de ejecución importadas — no aparecen en el Gantt. Click para verlas.">⚠ {sinProgramar.length} sin programar</span></>}
           </div>
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
@@ -2641,6 +2707,30 @@ function CronogramaPage() {
           <span className="badge b-gray">Futura</span>
         </div>
       </div>
+
+      {verSinProgramar && sinProgramar.length > 0 && (
+        <div className="card card-p" style={{marginTop:12,borderColor:'var(--red)',background:'rgba(231,76,60,0.04)'}}>
+          <div className="frow-sb" style={{marginBottom:8}}>
+            <div style={{fontSize:12.5,fontWeight:600,color:'var(--ts)'}}>⚠ {sinProgramar.length} partida(s) específica(s) sin fechas de ejecución — no aparecen en el Gantt</div>
+            <button className="btn btn-ghost btn-xs" onClick={()=>setVerSinProgramar(false)}>Cerrar</button>
+          </div>
+          <div style={{fontSize:11,color:'var(--tm)',marginBottom:8}}>No se importó su tiempo de ejecución del cronograma Delphin, así que no se les puede estimar avance diario. Reimportá el Gantt o editá la partida para cargar inicio y fin.</div>
+          <div style={{maxHeight:260,overflowY:'auto'}}>
+            <table className="tbl" style={{fontSize:12,width:'100%'}}>
+              <thead><tr><th>Código</th><th>Partida</th><th style={{textAlign:'right'}}>Metrado</th></tr></thead>
+              <tbody>
+                {sinProgramar.map(p => (
+                  <tr key={p.id}>
+                    <td style={{fontFamily:'monospace',color:'var(--amber)',whiteSpace:'nowrap'}}>{p.codigo_delfin || '—'}</td>
+                    <td>{p.nombre_partida || '—'}</td>
+                    <td style={{textAlign:'right'}}>{Number(p.metrado_contratado||0).toLocaleString('es-PE')} {p.unidad || ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Gantt */}
       <div className="card" style={{overflow:'hidden',marginTop:12}}>

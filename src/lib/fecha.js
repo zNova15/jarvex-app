@@ -49,3 +49,11 @@ export function horaLocal(tz) {
 }
 // "YYYY-MM-DD HH:MM" ahora, en la zona configurada.
 export function ahoraLocal(tz) { return `${hoyLocal(tz)} ${horaLocal(tz)}`; }
+
+// 'YYYY-MM-DD' → 'dd/mm' por string-split (NO pasa por Date: evita el corrimiento
+// de un día por zona horaria de new Date('2026-06-01')). '' si no hay fecha.
+export function fmtFechaCorta(iso) {
+  if (!iso) return '';
+  const [y, m, d] = String(iso).slice(0, 10).split('-');
+  return (d && m) ? `${d}/${m}` : String(iso);
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resumenFrente, planVsReal, rollupMensual, rendimientoPartida, rendimientoConjunto } from '../mi-frente.js';
+import { resumenFrente, planVsReal, rollupMensual, rendimientoPartida, rendimientoConjunto, ventanaPartida } from '../mi-frente.js';
 
 const PART = [
   { id: 'p1', codigo_delfin: '02.01', porcentaje_avance: 40 },
@@ -72,6 +72,25 @@ describe('rendimientoPartida', () => {
   });
   it('sin fechas planificadas → sin_dato', () => {
     expect(rendimientoPartida({ id: 'pY', metrado_contratado: 50 }, av(10), '2026-06-05').semaforo).toBe('sin_dato');
+  });
+});
+
+describe('ventanaPartida', () => {
+  it('días inclusive entre inicio y fin', () => {
+    const r = ventanaPartida({ fecha_inicio_planificada: '2026-06-02', fecha_fin_planificada: '2026-06-11' });
+    expect(r.completa).toBe(true);
+    expect(r.dias).toBe(10);   // 2→11 de junio inclusive
+    expect(r.ini).toBe('2026-06-02');
+    expect(r.fin).toBe('2026-06-11');
+  });
+  it('falta una fecha → incompleta, dias null', () => {
+    expect(ventanaPartida({ fecha_inicio_planificada: '2026-06-02' }).completa).toBe(false);
+    expect(ventanaPartida({}).dias).toBe(null);
+  });
+  it('fecha truthy pero no parseable → incompleta (no NaN)', () => {
+    const r = ventanaPartida({ fecha_inicio_planificada: '2026-06-02', fecha_fin_planificada: 'pendiente' });
+    expect(r.completa).toBe(false);
+    expect(r.dias).toBe(null);
   });
 });
 
