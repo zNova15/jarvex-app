@@ -1156,6 +1156,11 @@ export const TRIGGER_MANAGED_FIELDS = {
   // local: la UI recalcula desde las dos columnas base.
   partidas: new Set([
     'diferencia',
+    // porcentaje_avance y metrado_ejecutado los calcula el trigger del server
+    // (actualizar_avance_partida) sumando avance_obra no borrado. Si el cliente los
+    // pushea (import del Gantt / reporte diario), choca con el valor del trigger ->
+    // "Conflicto de sincronizacion - partidas". El trigger es la fuente de verdad.
+    'porcentaje_avance', 'metrado_ejecutado',
   ]),
 };
 
