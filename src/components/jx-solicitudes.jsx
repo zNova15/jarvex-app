@@ -79,6 +79,14 @@ function ChangeDiff({ changes }) {
       {entries.map(([field, val]) => {
         const oldV = val && typeof val === 'object' ? val.old : undefined;
         const newV = val && typeof val === 'object' ? val.new : val;
+        // Pedido descriptivo (campo no estructurado): requiere acción manual del admin.
+        if (field.startsWith('__')) {
+          return (
+            <div key={field} style={{ display: 'flex', flexWrap: 'wrap', gap: 6, fontSize: 12, alignItems: 'center' }}>
+              <span style={{ background: 'rgba(242,183,5,0.12)', border: '1px solid rgba(242,183,5,0.3)', color: 'var(--amber)', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>📝 Pedido descrito en el motivo · acción manual del admin</span>
+            </div>
+          );
+        }
         return (
           <div key={field} style={{ display: 'flex', flexWrap: 'wrap', gap: 6, fontSize: 12, alignItems: 'center' }}>
             <span style={{ color: 'var(--tm)', fontWeight: 600, minWidth: 100 }}>{field}:</span>
@@ -155,6 +163,7 @@ function SolicitudesPage({ showToast }) {
   const applyChange = async (req) => {
     const fields = {};
     for (const [k, v] of Object.entries(req.proposed_changes || {})) {
+      if (k.startsWith('__')) continue;   // pedido descriptivo: no es columna real, el admin lo aplica a mano
       fields[k] = v && typeof v === 'object' && 'new' in v ? v.new : v;
     }
 
@@ -219,6 +228,12 @@ function SolicitudesPage({ showToast }) {
       } catch (e) {
         console.warn('[solicitudes] no se pudo recalcular consumo partida:', e?.message);
       }
+    }
+
+    // Pedido descriptivo-only (sin columnas reales): nada que aplicar
+    // automáticamente. Aprobar = acusar recibo; el admin hizo el cambio a mano.
+    if (Object.keys(fields).length === 0) {
+      return { oldData, newData: {} };
     }
 
     // Aplicar en Supabase
@@ -473,13 +488,21 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
   // NINGÚN call site pasa showToast hoy → sin este fallback, enviar la
   // solicitud tiraba TypeError. Cae al toast global del shell.
   const showToast = showToastProp || window.__showToast || (() => {});
+  // Escape hatch universal: si el campo que el usuario quiere cambiar NO está en
+  // la lista (ej. foto, un dato no editable), elige "Otro dato" y lo describe en
+  // el motivo. Así nunca se ve forzado a falsear un campo (el bug que veía el admin).
+  const DESCRIPTIVE = { key: '__descripcion', label: 'Otro dato (lo describo en el motivo)', descriptive: true };
+  const allFields = [...fields, DESCRIPTIVE];
   const [mode, setMode] = uSS('edit'); // 'edit' | 'delete'
-  const [field, setField] = uSS(fields[0]?.key || '');
+  // Arranca SIN campo elegido (antes defaulteaba a fields[0] → el usuario que no
+  // encontraba su campo dejaba el default y tecleaba un valor cualquiera).
+  const [field, setField] = uSS('');
   const [newValue, setNewValue] = uSS('');
   const [reason, setReason] = uSS('');
   const [busy, setBusy] = uSS(false);
 
-  const fieldDef = fields.find(f => f.key === field) || fields[0];
+  const fieldDef = allFields.find(f => f.key === field) || null;
+  const esDescriptivo = fieldDef?.descriptive === true;
   const oldValue = record?.[field];
 
   // Algunos campos tienen una opción con value '' legítima (ej. subcontratista_id
@@ -488,20 +511,53 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
   const hasEmptyOption = fieldDef?.options?.some(o => (o.value ?? o) === '');
 
   const submitEdit = async () => {
-    if (!field) { showToast('Selecciona un campo', 'red'); return; }
-    if (!hasEmptyOption && (newValue === '' || newValue === null || newValue === undefined)) {
-      showToast('Indica el valor propuesto', 'red'); return;
-    }
+    if (!field) { showToast('Selecciona el campo a modificar', 'red'); return; }
     if (!reason || reason.trim().length < 10) {
       showToast('El motivo debe tener al menos 10 caracteres', 'red'); return;
     }
+
+    // Pedido DESCRIPTIVO: el campo no está en la lista. No se captura un valor
+    // estructurado — el admin lee el motivo y lo aplica a mano al aprobar.
+    if (esDescriptivo) {
+      setBusy(true);
+      try {
+        await window.__changeRequests.create({
+          table,
+          recordId: record.id,
+          recordLabel: recordLabel || record.id,
+          proposedChanges: { __descripcion: { old: null, new: reason.trim() } },
+          reason: reason.trim(),
+        });
+        showToast('Solicitud enviada al admin', 'green');
+        onClose();
+      } catch (e) {
+        showToast('Error: ' + (e?.message || e), 'red');
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
+    if (!hasEmptyOption && (newValue === '' || newValue === null || newValue === undefined)) {
+      showToast('Indica el valor propuesto', 'red'); return;
+    }
+
+    let parsedNew = newValue;
+    if (fieldDef?.type === 'number') parsedNew = parseFloat(newValue);
+    // '' en un campo con opción-vacía = limpiar → null (no '', que rompería un FK uuid)
+    if (newValue === '' && hasEmptyOption) parsedNew = null;
+
+    // Guard anti-fantasma: el valor propuesto no puede ser igual al actual
+    // (mataba la confianza del admin: solicitudes "fecha X → misma X").
+    const oldStr = oldValue == null ? '' : String(oldValue);
+    const newStr = parsedNew == null ? '' : String(parsedNew);
+    if (oldStr === newStr) {
+      showToast('El valor propuesto es igual al actual. Cambialo o elegí "Otro dato".', 'red');
+      return;
+    }
+
     setBusy(true);
     try {
-      let parsedNew = newValue;
-      if (fieldDef?.type === 'number') parsedNew = parseFloat(newValue);
-      // '' en un campo con opción-vacía = limpiar → null (no '', que rompería un FK uuid)
-      if (newValue === '' && hasEmptyOption) parsedNew = null;
-
       await window.__changeRequests.create({
         table,
         recordId: record.id,
@@ -573,33 +629,43 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
           <div>
             <label className="flabel">Campo a modificar *</label>
             <select className="fi" value={field} onChange={e => { setField(e.target.value); setNewValue(''); }}>
-              {fields.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
+              <option value="">— Selecciona el campo —</option>
+              {allFields.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
             </select>
           </div>
-          <div>
-            <label className="flabel">Valor actual</label>
-            <input className="fi" disabled value={oldValue == null ? '—' : String(oldValue)} />
-          </div>
-          <div style={{ gridColumn: '1/-1' }}>
-            <label className="flabel">Valor propuesto *</label>
-            {fieldDef?.options ? (
-              <select className="fi" value={newValue} onChange={e => setNewValue(e.target.value)}>
-                {!hasEmptyOption && <option value="">— Selecciona —</option>}
-                {fieldDef.options.map(o => (
-                  <option key={o.value ?? o} value={o.value ?? o}>{o.label ?? o}</option>
-                ))}
-              </select>
-            ) : (
-              <input
-                className="fi"
-                type={fieldDef?.type === 'number' ? 'number' : fieldDef?.type === 'date' ? 'date' : 'text'}
-                step={fieldDef?.type === 'number' ? '0.01' : undefined}
-                placeholder="Nuevo valor"
-                value={newValue}
-                onChange={e => setNewValue(e.target.value)}
-              />
-            )}
-          </div>
+          {field && !esDescriptivo && (
+            <div>
+              <label className="flabel">Valor actual</label>
+              <input className="fi" disabled value={oldValue == null ? '—' : String(oldValue)} />
+            </div>
+          )}
+          {field && !esDescriptivo && (
+            <div style={{ gridColumn: '1/-1' }}>
+              <label className="flabel">Valor propuesto *</label>
+              {fieldDef?.options ? (
+                <select className="fi" value={newValue} onChange={e => setNewValue(e.target.value)}>
+                  {!hasEmptyOption && <option value="">— Selecciona —</option>}
+                  {fieldDef.options.map(o => (
+                    <option key={o.value ?? o} value={o.value ?? o}>{o.label ?? o}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  className="fi"
+                  type={fieldDef?.type === 'number' ? 'number' : fieldDef?.type === 'date' ? 'date' : 'text'}
+                  step={fieldDef?.type === 'number' ? '0.01' : undefined}
+                  placeholder="Nuevo valor"
+                  value={newValue}
+                  onChange={e => setNewValue(e.target.value)}
+                />
+              )}
+            </div>
+          )}
+          {esDescriptivo && (
+            <div style={{ gridColumn: '1/-1', background: 'rgba(242,183,5,0.08)', border: '1px solid rgba(242,183,5,0.25)', borderRadius: 6, padding: '9px 12px', fontSize: 12, color: 'var(--ts)' }}>
+              Describí abajo, en el <strong>Motivo</strong>, exactamente qué necesitás cambiar (qué campo y a qué valor). El admin lo revisará y lo aplicará manualmente.
+            </div>
+          )}
           <div style={{ gridColumn: '1/-1' }}>
             <label className="flabel">Motivo * (mín. 10 caracteres)</label>
             <textarea className="fi" rows={3} placeholder="Explica por qué este registro debe cambiar…"

@@ -110,6 +110,11 @@ function UsuariosPage({ showToast }) {
   const [modalObras, setModalObras] = uSAd(null);   // user al que se le editan obras
   const [obrasObrasSeleccion, setObrasObrasSeleccion] = uSAd(new Set());
   const [form, setForm] = uSAd({ email:'', password:'', nombres:'', apellidos:'', rol:'solo_lectura', obras: new Set() });
+  const [modalEdit, setModalEdit] = uSAd(null);     // user al que se le editan nombres/apellidos
+  const [editForm, setEditForm] = uSAd({ nombres:'', apellidos:'' });
+  const [modalReset, setModalReset] = uSAd(null);   // user al que se le resetea la contraseña
+  const [resetPass, setResetPass] = uSAd('');
+  const [resetPass2, setResetPass2] = uSAd('');
   const [busy, setBusy] = uSAd(false);
 
   const reload = async () => {
@@ -343,6 +348,68 @@ function UsuariosPage({ showToast }) {
     finally { setBusy(false); }
   };
 
+  // Abrir modal de edición de datos (nombres/apellidos) de un usuario.
+  const openEditDatos = (user) => {
+    setEditForm({ nombres: user.nombres || '', apellidos: user.apellidos || '' });
+    setModalEdit(user);
+  };
+
+  // Guardar nombres/apellidos. CRÍTICO: enviar SOLO esos dos campos — el trigger
+  // protect_profile_rol() lanza si un cambio toca rol/activo sin ser admin (acá
+  // somos admin, pero igual mantenemos el update mínimo y limpio). RLS ya permite
+  // a admin editar cualquier perfil.
+  const handleSaveDatos = async () => {
+    if (!modalEdit) return;
+    const nombres = (editForm.nombres || '').trim();
+    const apellidos = (editForm.apellidos || '').trim();
+    if (!nombres && !apellidos) { showToast?.('Indicá al menos un nombre o apellido','red'); return; }
+    setBusy(true);
+    try {
+      const sb = window.__supabase;
+      const { data, error } = await sb
+        .from('profiles')
+        .update({ nombres: nombres || null, apellidos: apellidos || null })
+        .eq('id', modalEdit.id)
+        .select();
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        throw new Error('No se pudo actualizar (sin permisos o RLS bloqueó la operación)');
+      }
+      try { await window.__logAudit?.({ action:'update', table:'profiles', recordId: modalEdit.id, oldData:{ nombres: modalEdit.nombres, apellidos: modalEdit.apellidos }, newData:{ nombres, apellidos }, reason:'Corrección de nombre de usuario' }); } catch {}
+      showToast?.('Datos actualizados','green');
+      setModalEdit(null);
+      reload();
+    } catch (e) { showToast?.('Error: ' + (e.message||e),'red'); }
+    finally { setBusy(false); }
+  };
+
+  // Resetear la contraseña de un usuario (admin fija una nueva). Usa el endpoint
+  // serverless /api/set-password (Admin API con service_role) — robusto para una
+  // app de escritorio/PWA donde el reset por email depende de config externa.
+  const handleResetPassword = async () => {
+    if (!modalReset) return;
+    if (!resetPass || resetPass.length < 8) { showToast?.('Mínimo 8 caracteres','red'); return; }
+    if (resetPass !== resetPass2) { showToast?.('Las contraseñas no coinciden','red'); return; }
+    setBusy(true);
+    try {
+      const sb = window.__supabase;
+      const { data: { session } } = await sb.auth.getSession();
+      const token = session?.access_token;
+      if (!token) throw new Error('No hay sesión activa. Volvé a loguearte.');
+      const resp = await fetch('/api/set-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ user_id: modalReset.id, password: resetPass }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || data.detail || `HTTP ${resp.status}`);
+      try { await window.__logAudit?.({ action:'update', table:'auth.users', recordId: modalReset.id, reason:`Reseteo de contraseña de ${modalReset.email}` }); } catch {}
+      showToast?.(`Contraseña actualizada. Pasale la nueva contraseña a ${modalReset.email}.`, 'green');
+      setModalReset(null); setResetPass(''); setResetPass2('');
+    } catch (e) { showToast?.('Error: ' + (e.message||e),'red'); }
+    finally { setBusy(false); }
+  };
+
   const handleToggleActivo = async (u) => {
     if (u.id === myId) { showToast?.('No puedes desactivarte a ti mismo','amber'); return; }
     try {
@@ -419,6 +486,10 @@ function UsuariosPage({ showToast }) {
                 <div style={{ display:'flex', gap:4 }}>
                   {isAdmin ? (
                     <>
+                      <button className="btn btn-ghost btn-xs" title="Editar nombre y apellidos"
+                              onClick={()=>openEditDatos(u)}>
+                        <JxIcon name="user" size={11}/>
+                      </button>
                       {!esAdminRow && (
                         <>
                           <button className="btn btn-ghost btn-xs" title="Cambiar rol"
@@ -431,6 +502,10 @@ function UsuariosPage({ showToast }) {
                           </button>
                         </>
                       )}
+                      <button className="btn btn-ghost btn-xs" title="Resetear contraseña"
+                              onClick={()=>{ setResetPass(''); setResetPass2(''); setModalReset(u); }}>
+                        <JxIcon name="lock" size={11}/>
+                      </button>
                       <button className={`btn ${activo?'btn-red':'btn-green'} btn-xs`}
                               title={activo?'Desactivar (no podrá entrar)':'Reactivar'}
                               disabled={isMe} onClick={()=>handleToggleActivo(u)}>
@@ -592,6 +667,48 @@ function UsuariosPage({ showToast }) {
           </Modal>
         );
       })()}
+
+      {modalEdit && (
+        <Modal title="Editar datos del usuario" icon="user" onClose={()=>setModalEdit(null)}>
+          <div style={{ fontSize:12, color:'var(--tm)', marginBottom:12 }}>{modalEdit.email}</div>
+          <div className="g2">
+            <div><label className="flabel">Nombres</label>
+              <input className="fi" value={editForm.nombres} autoFocus
+                     onChange={e=>setEditForm({...editForm, nombres:e.target.value})}/></div>
+            <div><label className="flabel">Apellidos</label>
+              <input className="fi" value={editForm.apellidos}
+                     onChange={e=>setEditForm({...editForm, apellidos:e.target.value})}/></div>
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={()=>setModalEdit(null)}>Cancelar</button>
+            <button className="btn btn-amber" disabled={busy} onClick={handleSaveDatos}>
+              <JxIcon name="check" size={13}/>{busy?'Guardando...':'Guardar Cambios'}
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {modalReset && (
+        <Modal title="Resetear contraseña" icon="lock" onClose={()=>setModalReset(null)}>
+          <div style={{ fontSize:12.5, color:'var(--ts)', marginBottom:12, lineHeight:1.5 }}>
+            Vas a fijar una nueva contraseña para <strong>{modalReset.nombres||''} {modalReset.apellidos||''}</strong> <span style={{ color:'var(--tm)' }}>({modalReset.email})</span>. El usuario podrá entrar de inmediato con esta contraseña — pasásela por un canal seguro.
+          </div>
+          <div className="g2">
+            <div><label className="flabel">Nueva contraseña * (mín 8)</label>
+              <input className="fi" type="password" value={resetPass} autoFocus
+                     onChange={e=>setResetPass(e.target.value)}/></div>
+            <div><label className="flabel">Repetir contraseña *</label>
+              <input className="fi" type="password" value={resetPass2}
+                     onChange={e=>setResetPass2(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleResetPassword()}/></div>
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={()=>setModalReset(null)}>Cancelar</button>
+            <button className="btn btn-amber" disabled={busy} onClick={handleResetPassword}>
+              <JxIcon name="lock" size={13}/>{busy?'Aplicando...':'Fijar contraseña'}
+            </button>
+          </div>
+        </Modal>
+      )}
 
       {modalRol && (
         <Modal title={`Cambiar Rol: ${modalRol.nombres||''} ${modalRol.apellidos||''}`} icon="edit" onClose={()=>setModalRol(null)}>

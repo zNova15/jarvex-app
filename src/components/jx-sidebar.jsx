@@ -179,6 +179,9 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
   const profile = auth?.profile;
   const isAdmin = profile?.rol === 'admin';
 
+  // Modal "Mi Perfil" (auto-edición de nombres/apellidos, cualquier rol)
+  const [showPerfil, setShowPerfil] = useState(false);
+
   // Re-render cuando admin cambia overrides de permisos
   const [permTick, setPermTick] = useState(0);
   useEffect(() => {
@@ -543,10 +546,21 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
         </div>
         {!navCollapsed && (
           <>
-            <div style={{ flex: 1, overflow: 'hidden' }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: '#BFC7D1', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={profile?.email}>{fullName}</div>
-              <div style={{ fontSize: 10.5, color: '#4A5A6A', textTransform: 'capitalize' }}>{rolLabel}</div>
-            </div>
+            <button
+              onClick={() => setShowPerfil(true)}
+              style={{ flex: 1, overflow: 'hidden', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', padding: 0 }}
+              title="Mi perfil — editar mis datos">
+              <span style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#BFC7D1', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={profile?.email}>{fullName}</span>
+              <span style={{ display: 'block', fontSize: 10.5, color: '#4A5A6A', textTransform: 'capitalize' }}>{rolLabel}</span>
+            </button>
+            <button
+              onClick={() => setShowPerfil(true)}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#4A5A6A', padding: 4, display: 'flex' }}
+              title="Editar mis datos"
+              onMouseEnter={e => e.currentTarget.style.color = '#F2B705'}
+              onMouseLeave={e => e.currentTarget.style.color = '#4A5A6A'}>
+              <JxIcon name="user" size={14} />
+            </button>
             <button
               onClick={() => auth?.logout?.()}
               style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#4A5A6A', padding: 4, display: 'flex' }}
@@ -559,7 +573,99 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
         )}
       </div>
     </aside>
+    {showPerfil && <MiPerfilModal profile={profile} onClose={() => setShowPerfil(false)} />}
     </>
+  );
+}
+
+// ─── MiPerfilModal ─────────────────────────────────────────────────
+// Auto-edición de datos personales (nombres/apellidos) + cambio de contraseña
+// propia. Disponible para CUALQUIER rol desde el chip de usuario. RLS permite a
+// un usuario editar su propia fila de profiles; el cambio de contraseña usa
+// supabase.auth.updateUser (sesión propia). Tras guardar nombres recargamos para
+// refrescar el profile cacheado (useAuth no expone refresh).
+function MiPerfilModal({ profile, onClose }) {
+  const [nombres, setNombres] = useState(profile?.nombres || '');
+  const [apellidos, setApellidos] = useState(profile?.apellidos || '');
+  const [pass, setPass] = useState('');
+  const [pass2, setPass2] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+  const toast = (m, type) => { try { window.__showToast?.(m, type); } catch {} };
+
+  const guardarDatos = async () => {
+    setErr(''); setMsg('');
+    const n = (nombres || '').trim(); const a = (apellidos || '').trim();
+    if (!n && !a) { setErr('Indicá al menos un nombre o apellido.'); return; }
+    setBusy(true);
+    try {
+      const sb = window.__supabase;
+      if (!sb || !profile?.id) throw new Error('Sesión no disponible.');
+      // SOLO nombres/apellidos (el trigger protect_profile_rol bloquea rol/activo).
+      const { data, error } = await sb.from('profiles')
+        .update({ nombres: n || null, apellidos: a || null })
+        .eq('id', profile.id).select();
+      if (error) throw error;
+      if (!data || data.length === 0) throw new Error('No se pudo guardar (permisos).');
+      toast('Datos actualizados', 'green');
+      setTimeout(() => window.location.reload(), 600);
+    } catch (e) { setErr(e?.message || String(e)); }
+    finally { setBusy(false); }
+  };
+
+  const cambiarPass = async () => {
+    setErr(''); setMsg('');
+    if (!pass || pass.length < 8) { setErr('La contraseña debe tener al menos 8 caracteres.'); return; }
+    if (pass !== pass2) { setErr('Las contraseñas no coinciden.'); return; }
+    setBusy(true);
+    try {
+      const sb = window.__supabase;
+      if (!sb) throw new Error('Sesión no disponible (offline).');
+      const { error } = await sb.auth.updateUser({ password: pass });
+      if (error) throw error;
+      setPass(''); setPass2(''); setMsg('Contraseña actualizada.');
+      toast('Contraseña actualizada', 'green');
+    } catch (e) { setErr(e?.message || String(e)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(8,12,18,0.7)', backdropFilter:'blur(6px)', zIndex:9000, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }} onClick={onClose}>
+      <div style={{ width:'100%', maxWidth:440, background:'#1C2D40', border:'1px solid rgba(255,255,255,0.1)', borderRadius:14, padding:'24px 26px 20px', boxShadow:'0 24px 80px rgba(0,0,0,0.6)' }} onClick={e=>e.stopPropagation()}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
+          <div style={{ fontSize:17, fontWeight:800, color:'#F0F2F5' }}>Mi Perfil</div>
+          <button onClick={onClose} style={{ background:'none', border:'none', color:'#5A6A7A', cursor:'pointer', padding:4 }}><JxIcon name="x" size={16}/></button>
+        </div>
+        <div style={{ fontSize:12, color:'#5A6A7A', marginBottom:16 }}>{profile?.email}</div>
+
+        {err && <div style={{ background:'rgba(231,76,60,0.1)', border:'1px solid rgba(231,76,60,0.25)', borderRadius:8, padding:'9px 13px', fontSize:12.5, color:'#EF6B5E', marginBottom:12 }}>{err}</div>}
+        {msg && <div style={{ background:'rgba(46,204,113,0.08)', border:'1px solid rgba(46,204,113,0.25)', borderRadius:8, padding:'9px 13px', fontSize:12.5, color:'#7BD99B', marginBottom:12 }}>{msg}</div>}
+
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginBottom:12 }}>
+          <div><label className="flabel">Nombres</label>
+            <input className="fi" value={nombres} onChange={e=>setNombres(e.target.value)} autoFocus/></div>
+          <div><label className="flabel">Apellidos</label>
+            <input className="fi" value={apellidos} onChange={e=>setApellidos(e.target.value)}/></div>
+        </div>
+        <button className="btn btn-amber" disabled={busy} onClick={guardarDatos} style={{ width:'100%', justifyContent:'center', padding:'11px', marginBottom:18 }}>
+          {busy ? 'Guardando…' : 'Guardar datos'}
+        </button>
+
+        <div style={{ borderTop:'1px solid rgba(255,255,255,0.08)', paddingTop:14 }}>
+          <div style={{ fontSize:12.5, fontWeight:700, color:'#BFC7D1', marginBottom:10 }}>Cambiar mi contraseña</div>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginBottom:10 }}>
+            <div><label className="flabel">Nueva (mín 8)</label>
+              <input className="fi" type="password" value={pass} onChange={e=>setPass(e.target.value)}/></div>
+            <div><label className="flabel">Repetir</label>
+              <input className="fi" type="password" value={pass2} onChange={e=>setPass2(e.target.value)}/></div>
+          </div>
+          <button className="btn btn-ghost" disabled={busy} onClick={cambiarPass} style={{ width:'100%', justifyContent:'center', padding:'10px' }}>
+            {busy ? 'Aplicando…' : 'Actualizar contraseña'}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

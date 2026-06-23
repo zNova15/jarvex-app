@@ -1437,7 +1437,18 @@ function EppsInventarioPage({ showToast }) {
           allowDelete
           fields={[
             { key: 'nombre_epp', label: 'Nombre' },
-            { key: 'unidad', label: 'Unidad' },
+            { key: 'unidad', label: 'Unidad', options: [
+              { value: 'Und', label: 'Und (unidad)' },
+              { value: 'Par', label: 'Par' },
+              { value: 'Juego', label: 'Juego' },
+              { value: 'Set', label: 'Set' },
+              { value: 'Caja', label: 'Caja' },
+              { value: 'Docena', label: 'Docena' },
+              { value: 'Rollo', label: 'Rollo' },
+              { value: 'Bolsa', label: 'Bolsa' },
+              { value: 'Metro', label: 'Metro' },
+              { value: 'Kg', label: 'Kg' },
+            ] },
           ]}
           showToast={showToast}
           onClose={() => setRequestTarget(null)} />
