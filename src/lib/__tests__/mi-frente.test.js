@@ -1,5 +1,35 @@
 import { describe, it, expect } from 'vitest';
-import { resumenFrente, planVsReal, rollupMensual, rendimientoPartida, rendimientoConjunto, ventanaPartida, rollupAvancePorCodigo } from '../mi-frente.js';
+import { resumenFrente, planVsReal, rollupMensual, rendimientoPartida, rendimientoConjunto, ventanaPartida, rollupAvancePorCodigo, hojasDeCapitulo, consolidarInsumos } from '../mi-frente.js';
+
+describe('hojasDeCapitulo', () => {
+  const P = [
+    { id: 'c', codigo_delfin: '02.01' },
+    { id: 'h1', codigo_delfin: '02.01.01' },
+    { id: 'h2', codigo_delfin: '02.01.02' },
+    { id: 'o', codigo_delfin: '02.02.01' },   // de otro capítulo
+  ];
+  it('devuelve solo las hojas descendientes del capítulo', () => {
+    const r = hojasDeCapitulo('02.01', P).map(p => p.id).sort();
+    expect(r).toEqual(['h1', 'h2']);
+  });
+});
+
+describe('consolidarInsumos', () => {
+  const INS = [
+    { insumo_codigo: '210020001', nombre_insumo: 'CEMENTO', tipo_insumo: 'material', unidad: 'bol', cantidad_presupuestada: 10, costo_presupuestado: 300 },
+    { insumo_codigo: '210020001', nombre_insumo: 'CEMENTO', tipo_insumo: 'material', unidad: 'bol', cantidad_presupuestada: 5, costo_presupuestado: 150 },
+    { insumo_codigo: '470020001', nombre_insumo: 'OPERARIO', tipo_insumo: 'mano_obra', unidad: 'hh', cantidad_presupuestada: 8, costo_presupuestado: 200 },
+  ];
+  it('agrupa por código, suma cantidades/costos y ordena por costo desc', () => {
+    const r = consolidarInsumos(INS);
+    expect(r.length).toBe(2);
+    expect(r[0].codigo).toBe('210020001');   // mayor costo (450) primero
+    expect(r[0].cantidad).toBe(15);
+    expect(r[0].costo).toBe(450);
+    expect(r[0].nPartidas).toBe(2);
+    expect(r[1].codigo).toBe('470020001');
+  });
+});
 
 describe('rollupAvancePorCodigo', () => {
   const P = [

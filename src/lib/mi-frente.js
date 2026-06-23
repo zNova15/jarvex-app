@@ -118,6 +118,38 @@ export function rollupAvancePorCodigo(partidas = []) {
   return m;
 }
 
+/** Partidas HOJA (específicas) descendientes de un capítulo (por prefijo de código). */
+export function hojasDeCapitulo(capituloCode, partidas = []) {
+  const c = String(capituloCode || '').trim();
+  if (!c) return [];
+  const pref = c + '.';
+  const vivas = partidas.filter(p => p && !p.deleted_at && p.codigo_delfin);
+  const prefijos = new Set();
+  for (const p of vivas) { const s = String(p.codigo_delfin).trim().split('.'); for (let i = 1; i < s.length; i++) prefijos.add(s.slice(0, i).join('.')); }
+  return vivas.filter(p => { const cod = String(p.codigo_delfin).trim(); return cod.startsWith(pref) && !prefijos.has(cod); });
+}
+
+/**
+ * Consolida una lista de insumos_partida (de varias partidas) en uno por recurso:
+ * agrupa por insumo_codigo (o nombre|tipo|unidad), suma cantidades y costos.
+ * Devuelve ordenado por costo presupuestado desc (los más relevantes primero).
+ */
+export function consolidarInsumos(insumos = []) {
+  const m = new Map();
+  for (const i of insumos) {
+    if (!i || i.deleted_at) continue;
+    const key = (i.insumo_codigo && String(i.insumo_codigo).trim()) || `${i.nombre_insumo}|${i.tipo_insumo}|${i.unidad}`;
+    const e = m.get(key) || { codigo: i.insumo_codigo || '', nombre: i.nombre_insumo || '', tipo: i.tipo_insumo || '', unidad: i.unidad || '', cantidad: 0, costo: 0, cantidadReal: 0, costoReal: 0, nPartidas: 0 };
+    e.cantidad += Number(i.cantidad_presupuestada) || 0;
+    e.costo += Number(i.costo_presupuestado) || 0;
+    e.cantidadReal += Number(i.cantidad_real_usada) || 0;
+    e.costoReal += Number(i.costo_real) || 0;
+    e.nPartidas += 1;
+    m.set(key, e);
+  }
+  return [...m.values()].sort((a, b) => b.costo - a.costo);
+}
+
 /** Rollup mensual: metrado real sumado por partida en el mes 'YYYY-MM'. Solo partidas con avance. */
 export function rollupMensual({ partidasDelFrente = [], avances = [], mes = null } = {}) {
   return partidasDelFrente.map(p => {

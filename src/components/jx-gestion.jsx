@@ -1,7 +1,7 @@
 import React from "react";
 import { SearchableSelect } from "./jx-searchable-select.jsx";
 import { hijosDirectos, cadenaBreadcrumb } from "../lib/partida-arbol.js";
-import { ventanaPartida, rendimientoPartida } from "../lib/mi-frente.js";
+import { ventanaPartida, rendimientoPartida, rollupAvancePorCodigo, hojasDeCapitulo, consolidarInsumos } from "../lib/mi-frente.js";
 import { hoyLocal, fmtFechaCorta } from "../lib/fecha.js";
 const { useState: uSG, useMemo: uMG, useEffect: uEG } = React;
 
@@ -130,6 +130,10 @@ function InsumosPage({ showToast }) {
     return lista.map(p => ({ p, hoja: esHoja(String(p.codigo_delfin || '').trim()) }));
   }, [partidas]);
 
+  // Avance roll-up por capítulo (ponderado por costo de las hojas) — alimenta las
+  // barras de los capítulos en la vista de carpetas y el resumen del capítulo.
+  const rollupAvanceMap = uMG(() => rollupAvancePorCodigo(partidas || []), [partidas]);
+
   const opcionesPartida = uMG(() => partidasOrdenadas.map(({ p, hoja }) => {
     const nivel = Math.max(0, String(p.codigo_delfin || '').split('.').filter(Boolean).length - 1);
     const sangria = '\u2002\u2002'.repeat(nivel);
@@ -147,8 +151,13 @@ function InsumosPage({ showToast }) {
   const nodosFoco = uMG(() => {
     if (foco === null) return null;
     return hijosDirectos(partidas, foco)
-      .map(n => ({ ...n, nInsumos: n.partida ? (insumosPorPartida?.get(n.partida.id) || 0) : 0 }));
-  }, [foco, partidas, insumosPorPartida]);
+      .map(n => ({
+        ...n,
+        nInsumos: n.partida ? (insumosPorPartida?.get(n.partida.id) || 0) : 0,
+        // avance: hoja → su propio %, capítulo → roll-up ponderado de sus hojas
+        avance: n.esFolder ? (rollupAvanceMap.get(n.code) || 0) : (Number(n.partida?.porcentaje_avance) || 0),
+      }));
+  }, [foco, partidas, insumosPorPartida, rollupAvanceMap]);
 
   // Cadena de breadcrumb (raíz → … → código actual) del foco o de la partida.
   const codigoActual = foco !== null ? foco : (partidas?.find(p => p.id === partidaSel)?.codigo_delfin || '');
@@ -213,6 +222,45 @@ function InsumosPage({ showToast }) {
     window.addEventListener('jx_data_changed', on);
     return () => { c = true; window.removeEventListener('jx_data_changed', on); };
   }, [partidaSel]);
+  // ── Resumen del CAPÍTULO en foco (#4): insumos consolidados de TODAS sus hojas,
+  // avance ponderado, plazo (min inicio / max fin) y valoración de costos. Solo para
+  // un capítulo real (foco !== '' raíz). Carga los insumos de las hojas vía anyOf
+  // (partida_id indexado) — subconjunto liviano del capítulo, no toda la tabla.
+  const hojasFoco = uMG(() => (foco ? hojasDeCapitulo(foco, partidas || []) : []), [foco, partidas]);
+  const [insumosCapitulo, setInsumosCapitulo] = uSG([]);
+  const [capVerTodos, setCapVerTodos] = uSG(false);
+  uEG(() => { setCapVerTodos(false); }, [foco]);
+  uEG(() => {
+    let cancelled = false;
+    if (!foco || !hojasFoco.length) { setInsumosCapitulo([]); return; }
+    const ids = hojasFoco.map(h => h.id);
+    const cargar = async () => {
+      try {
+        const rows = await window.__db.insumos_partida.where('partida_id').anyOf(ids).filter(r => !r.deleted_at).toArray();
+        if (!cancelled) setInsumosCapitulo(rows);
+      } catch { if (!cancelled) setInsumosCapitulo([]); }
+    };
+    cargar();
+    const onData = (e) => { const t = e?.detail?.tabla; if (!t || t === 'insumos_partida') cargar(); };
+    window.addEventListener('jx_data_changed', onData);
+    return () => { cancelled = true; window.removeEventListener('jx_data_changed', onData); };
+  }, [foco, hojasFoco]);
+  const capConsolidado = uMG(() => consolidarInsumos(insumosCapitulo), [insumosCapitulo]);
+  const capResumen = uMG(() => {
+    if (!foco || !hojasFoco.length) return null;
+    const presup = hojasFoco.reduce((s, h) => s + (Number(h.costo_total_presupuestado) || 0), 0);
+    const real = capConsolidado.reduce((s, c) => s + (c.costoReal || 0), 0);
+    const inis = hojasFoco.map(h => h.fecha_inicio_planificada).filter(Boolean).sort();
+    const fins = hojasFoco.map(h => h.fecha_fin_planificada).filter(Boolean).sort();
+    const sinFechas = hojasFoco.filter(h => !ventanaPartida(h).completa).length;
+    return {
+      avance: rollupAvanceMap.get(foco) || 0,
+      nHojas: hojasFoco.length, presup, real,
+      ini: inis[0] || null, fin: fins[fins.length - 1] || null,
+      sinFechas, nInsumos: capConsolidado.length,
+    };
+  }, [foco, hojasFoco, capConsolidado, rollupAvanceMap]);
+
   const [usuariosG, setUsuariosG] = uSG([]);
   uEG(() => { window.__db.profiles.toArray().then(setUsuariosG).catch(() => {}); }, []);
   const nombreIng = (id) => { if (!id) return 'Importación'; const u = (usuariosG || []).find(x => x.id === id); return u ? (`${u.nombres || ''} ${u.apellidos || ''}`.trim() || u.email || '—') : '—'; };
@@ -366,6 +414,74 @@ function InsumosPage({ showToast }) {
 
       {/* Vista de CARPETAS: hijos del capítulo en foco */}
       {foco !== null ? (
+        <>
+        {/* ── Resumen del CAPÍTULO (#4): avance ponderado, plazo, valoración de
+            costos e insumos consolidados de todas sus partidas específicas ── */}
+        {capResumen && (
+          <div className="card card-p" style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--tp)' }}>
+              <span style={{ fontFamily: 'ui-monospace,monospace', color: 'var(--amber)' }}>{foco}</span> · {nombrePorCodigo.get(foco) || 'Capítulo'}
+            </div>
+            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 11.5, color: 'var(--tm)', margin: '7px 0 12px', alignItems: 'center' }}>
+              <span>{capResumen.nHojas} partida{capResumen.nHojas !== 1 ? 's' : ''} específica{capResumen.nHojas !== 1 ? 's' : ''}</span>
+              {capResumen.ini && capResumen.fin
+                ? <span>📅 {fmtFechaCorta(capResumen.ini)} → {fmtFechaCorta(capResumen.fin)}{capResumen.sinFechas > 0 && <span style={{ color: 'var(--amber)' }}> · {capResumen.sinFechas} sin fechas</span>}</span>
+                : <span>📅 Sin fechas de ejecución planificadas</span>}
+              <span>{capResumen.nInsumos} insumo{capResumen.nInsumos !== 1 ? 's' : ''} consolidado{capResumen.nInsumos !== 1 ? 's' : ''}</span>
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--tm)', marginBottom: 4 }}>
+                <span>Avance del capítulo (ponderado por costo de sus partidas)</span>
+                <strong style={{ color: 'var(--green)' }}>{capResumen.avance.toFixed(1)}%</strong>
+              </div>
+              <div style={{ height: 8, background: 'var(--border)', borderRadius: 4, overflow: 'hidden' }}>
+                <div style={{ width: `${Math.min(100, capResumen.avance)}%`, height: '100%', background: 'var(--green)' }} />
+              </div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12, marginBottom: capConsolidado.length ? 14 : 0 }}>
+              <div className="card card-p"><div style={{fontSize:11,color:'var(--tm)'}}>Presupuesto (APU)</div><div style={{fontSize:18,fontWeight:800,color:'var(--blue)',margin:'4px 0 0'}}>{fmtSk(capResumen.presup)}</div></div>
+              <div className="card card-p"><div style={{fontSize:11,color:'var(--tm)'}}>Costo real consumido</div><div style={{fontSize:18,fontWeight:800,color:'var(--amber)',margin:'4px 0 0'}}>{fmtSk(capResumen.real)}</div></div>
+              <div className="card card-p"><div style={{fontSize:11,color:'var(--tm)'}}>Desviación</div><div style={{fontSize:18,fontWeight:800,color:(capResumen.real-capResumen.presup)>0?'var(--red)':'var(--green)',margin:'4px 0 0'}}>{(capResumen.real-capResumen.presup)>0?'+':''}{fmtSk(capResumen.real-capResumen.presup)}</div></div>
+            </div>
+            {capConsolidado.length > 0 && (
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--ts)', marginBottom: 8 }}>
+                  Insumos consolidados {capConsolidado.length > 10 && !capVerTodos ? '· top 10 por costo' : `· ${capConsolidado.length}`}
+                </div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table className="tbl" style={{ fontSize: 11.5 }}>
+                    <thead><tr>
+                      <th>Código</th><th>Insumo</th><th>Tipo</th><th>Unidad</th>
+                      <th style={{textAlign:'right'}}>Cant. Pres.</th><th style={{textAlign:'right'}}>Cant. Real</th>
+                      <th style={{textAlign:'right'}}>Costo Pres.</th><th style={{textAlign:'right'}}>Costo Real</th>
+                      <th style={{textAlign:'right'}}>Partidas</th>
+                    </tr></thead>
+                    <tbody>
+                      {(capVerTodos ? capConsolidado : capConsolidado.slice(0, 10)).map((c, i) => (
+                        <tr key={(c.codigo || c.nombre || '_') + '_' + i}>
+                          <td className="col-m" style={{ fontFamily:'monospace', fontSize:11 }}>{c.codigo || '—'}</td>
+                          <td className="col-p">{c.nombre || '—'}</td>
+                          <td className="col-m" style={{ textTransform:'capitalize' }}>{(c.tipo || '—').replace('_',' ')}</td>
+                          <td className="col-m">{c.unidad || '—'}</td>
+                          <td className="col-m" style={{ textAlign:'right' }}>{numG(c.cantidad)}</td>
+                          <td className="col-m" style={{ textAlign:'right' }}>{numG(c.cantidadReal)}</td>
+                          <td className="col-m" style={{ textAlign:'right', fontWeight:600 }}>{fmtSk(c.costo)}</td>
+                          <td className="col-m" style={{ textAlign:'right' }}>{fmtSk(c.costoReal)}</td>
+                          <td className="col-m" style={{ textAlign:'center', color:'var(--tm)' }}>{c.nPartidas}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {capConsolidado.length > 10 && (
+                  <button className="btn btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={() => setCapVerTodos(v => !v)}>
+                    {capVerTodos ? 'Ver menos' : `Ver todos (${capConsolidado.length})`}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
         <div className="card" style={{ overflow: 'hidden' }}>
           {(!nodosFoco || nodosFoco.length === 0) ? (
             <div className="card-p empty-state"><JxIcon name="layers" size={36} color="var(--tm)" /><p>Este capítulo no tiene sub-partidas. Usá el buscador de arriba o subí de nivel en la ruta.</p></div>
@@ -395,12 +511,19 @@ function InsumosPage({ showToast }) {
                     {n.nInsumos > 0 ? `${n.nInsumos} insumo${n.nInsumos > 1 ? 's' : ''}` : 'sin APU'}
                   </span>
                 )}
+                <span style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6, width: 130 }} title={`Avance ${n.avance.toFixed(1)}%`}>
+                  <span style={{ flex: 1, height: 6, background: 'var(--border)', borderRadius: 3, overflow: 'hidden' }}>
+                    <span style={{ display: 'block', width: `${Math.min(100, n.avance)}%`, height: '100%', background: n.avance >= 100 ? 'var(--green)' : 'var(--blue)' }} />
+                  </span>
+                  <span style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--ts)', width: 32, textAlign: 'right' }}>{n.avance.toFixed(0)}%</span>
+                </span>
                 <span style={{ flexShrink: 0, color: 'var(--amber)', opacity: 0.6 }}>›</span>
               </div>
             ))}
             </>
           )}
         </div>
+        </>
       ) : partida && (
       <>
         <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:18}}>
