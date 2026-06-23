@@ -69,7 +69,8 @@ export function avanceInicialGantt(avance, metradoContratado) {
   const av = Number(avance) || 0;
   const mc = Number(metradoContratado) || 0;
   if (av <= 0 || mc <= 0) return null;
-  return { metrado: Math.round((av / 100) * mc * 1000) / 1000, pct: Math.min(100, av) };
+  const eff = Math.min(100, av);   // el avance importado nunca supera el 100% del contratado (metrado y % topados)
+  return { metrado: Math.round((eff / 100) * mc * 1000) / 1000, pct: eff };
 }
 
 /** % de avance de una partida desde el metrado acumulado: min(100, suma/contratado×100). */

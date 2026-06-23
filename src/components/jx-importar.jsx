@@ -1112,13 +1112,13 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
     // El % del archivo se inyecta como un avance origen='importacion' (reemplaza el
     // anterior, sin tocar los reportes de los ingenieros); el % de la partida se recomputa
     // sobre TODO el metrado acumulado (semilla + reportes). NO se pisa el avance reportado.
-    // Crea el registro de "avance inicial" (semilla) de una partida.
-    const pushBaseline = (p, t, inicial) => {
+    // Crea el registro de "avance inicial" (semilla) de una partida con un metrado/% dados.
+    const pushBaseline = (p, t, metrado, pct) => {
       const aid = window.__newId();
       nuevosAvances.push({
         id: aid, obra_id: obraId, partida_id: p.id, frente_id: p.frente_id || null,
         fecha: t.fecha_fin || t.fecha_inicio || now.slice(0, 10),
-        metrado_ejecutado: inicial.metrado, porcentaje_avance_reportado: inicial.pct,
+        metrado_ejecutado: metrado, porcentaje_avance_reportado: pct,
         responsable_id: null, descripcion: 'Avance inicial importado del cronograma',
         observaciones: null, origen: 'importacion',
         created_by: userId, updated_by: userId, created_at: now, updated_at: now,
@@ -1126,17 +1126,20 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
         idempotency_key: `${userId}_avance_${aid}`,
       });
     };
+    const hojasAplicadas = new Set();   // dedup: una partida no recibe 2 semillas en el mismo import (filas duplicadas/colisión de código)
     const aplicar = async (p, t) => {
       // Saltar partidas cuyo row no trae fechas completas (mantener lo que ya tenían).
       if (gantSaltarSinFechas && (!t.fecha_inicio || !t.fecha_fin)) return;
       const dom = camposCronograma(t, gantReplaceAll);   // fechas/duración/predecesoras
       const existentes = avancePorPartida.get(p.id) || [];
       const inicial = avanceInicialGantt(t.porcentaje_avance, p.metrado_contratado);
+      const mcG = Number(p.metrado_contratado) || 0;
       let metradoBaseline = 0, sumPrevio = 0, cambioBaseline = false;
       if (gantAvanceModo === 'sumar') {
-        // SUMAR: el % del archivo se AGREGA (no reemplaza). Total = todo lo existente + lo nuevo.
+        // SUMAR: el % del archivo se AGREGA (no reemplaza). Total = todo lo existente + lo nuevo,
+        // topado a lo contratado para que el ledger nunca supere el 100%.
         sumPrevio = existentes.reduce((s, a) => s + (Number(a.metrado_ejecutado) || 0), 0);
-        if (inicial) { metradoBaseline = inicial.metrado; cambioBaseline = true; pushBaseline(p, t, inicial); }
+        if (inicial) { metradoBaseline = Math.max(0, Math.min(inicial.metrado, mcG - sumPrevio)); cambioBaseline = true; pushBaseline(p, t, metradoBaseline, pctDesdeMetrado(sumPrevio + metradoBaseline, mcG)); }
       } else {
         // ACUMULADO (default): el % es el TOTAL → REEMPLAZA el avance inicial importado
         // (soft-delete del viejo, ahora persiste por mig 095) sin tocar los reportes.
@@ -1146,7 +1149,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
           cambioBaseline = true;
         }
         sumPrevio = existentes.filter(a => a.origen !== 'importacion').reduce((s, a) => s + (Number(a.metrado_ejecutado) || 0), 0);
-        if (inicial) { metradoBaseline = inicial.metrado; cambioBaseline = true; pushBaseline(p, t, inicial); }
+        if (inicial) { metradoBaseline = inicial.metrado; cambioBaseline = true; pushBaseline(p, t, inicial.metrado, inicial.pct); }
       }
       const pct = pctDesdeMetrado(sumPrevio + metradoBaseline, p.metrado_contratado);
       if (pct != null && pct !== (Number(p.porcentaje_avance) || 0)) dom.porcentaje_avance = pct;   // solo si cambia (evita churn en pendientes)
@@ -1213,14 +1216,16 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
         }
       } else {
         // Hoja: aplicar fechas. Match SOLO por código: exacto → normalizado.
-        let p = porCodigo.get(t.codigo);
-        if (p) { await aplicar(p, t); exactas++; }
-        else {
-          p = porCodigoNorm.get(norm);
-          if (p) { await aplicar(p, t); normalizadas++; }
-          else {
-            noMatch.push({ row: t.codigo, error: `"${t.descripcion}" — código ${t.codigo} no existe en partidas (ni con padding de ceros)` });
-          }
+        const exacto = porCodigo.get(t.codigo);
+        const p = exacto || porCodigoNorm.get(norm);
+        if (!p) {
+          noMatch.push({ row: t.codigo, error: `"${t.descripcion}" — código ${t.codigo} no existe en partidas (ni con padding de ceros)` });
+        } else if (hojasAplicadas.has(p.id)) {
+          // Fila duplicada en el archivo (mismo código o colisión de padding) → ya aplicada; no crear otra semilla.
+        } else {
+          hojasAplicadas.add(p.id);
+          await aplicar(p, t);
+          if (exacto) exactas++; else normalizadas++;
         }
       }
       if (i % 25 === 0) {

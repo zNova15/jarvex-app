@@ -48,8 +48,8 @@ describe('avanceInicialGantt', () => {
     expect(avanceInicialGantt(64.01, 195.28)).toEqual({ metrado: 124.999, pct: 64.01 });
     expect(avanceInicialGantt(100, 50)).toEqual({ metrado: 50, pct: 100 });
   });
-  it('avance > 100 → pct cap 100 (metrado sin cap, lo limita pctDesdeMetrado)', () => {
-    expect(avanceInicialGantt(120, 10).pct).toBe(100);
+  it('avance > 100 → cap 100 en pct Y en metrado (no supera el contratado)', () => {
+    expect(avanceInicialGantt(120, 10)).toEqual({ metrado: 10, pct: 100 });
   });
   it('avance 0 o sin metrado → null (no crea avance inicial)', () => {
     expect(avanceInicialGantt(0, 100)).toBe(null);
