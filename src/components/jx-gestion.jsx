@@ -1,7 +1,14 @@
 import React from "react";
 import { SearchableSelect } from "./jx-searchable-select.jsx";
 import { hijosDirectos, cadenaBreadcrumb } from "../lib/partida-arbol.js";
+import { ventanaPartida, rendimientoPartida } from "../lib/mi-frente.js";
+import { hoyLocal, fmtFechaCorta } from "../lib/fecha.js";
 const { useState: uSG, useMemo: uMG, useEffect: uEG } = React;
+
+const numG = (x) => Number(x || 0).toLocaleString('es-PE');
+const SEMc = { verde: 'var(--green)', ambar: 'var(--amber)', rojo: 'var(--red)', sin_dato: 'var(--tm)' };
+const SEMl = { verde: 'En ritmo', ambar: 'Atención', rojo: 'Atrasado', sin_dato: 's/plan' };
+const SemBadgeG = ({ s }) => <span className="badge" style={{ background: SEMc[s] || 'var(--tm)', color: '#000', fontSize: 9 }}>{SEMl[s] || s}</span>;
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 const fmtSk = (n) => {
@@ -194,6 +201,22 @@ function InsumosPage({ showToast }) {
 
   const partida = partidas?.find(p => p.id === partidaSel);
 
+  // Avances de la partida seleccionada (semilla importada + reportes diarios) para el panel.
+  const [avancesPartida, setAvancesPartida] = uSG([]);
+  uEG(() => {
+    if (!partidaSel) { setAvancesPartida([]); return; }
+    let c = false;
+    const load = () => window.__db.avance_obra.where('partida_id').equals(partidaSel).filter(a => !a.deleted_at).toArray()
+      .then(r => { if (!c) setAvancesPartida(r.sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')))); }).catch(() => {});
+    load();
+    const on = (e) => { const t = e?.detail?.tabla; if (!t || t === 'avance_obra') load(); };
+    window.addEventListener('jx_data_changed', on);
+    return () => { c = true; window.removeEventListener('jx_data_changed', on); };
+  }, [partidaSel]);
+  const [usuariosG, setUsuariosG] = uSG([]);
+  uEG(() => { window.__db.profiles.toArray().then(setUsuariosG).catch(() => {}); }, []);
+  const nombreIng = (id) => { if (!id) return 'Importación'; const u = (usuariosG || []).find(x => x.id === id); return u ? (`${u.nombres || ''} ${u.apellidos || ''}`.trim() || u.email || '—') : '—'; };
+
   // Real consumido desde movimientos
   const realPorMaterial = uMG(() => {
     if (!partida || !movimientos) return new Map();
@@ -279,6 +302,16 @@ function InsumosPage({ showToast }) {
   const desv = totalReal - totalPres;
   const desvPct = totalPres > 0 ? (desv / totalPres * 100) : 0;
   const sinAPU = insumosPres.length === 0;
+
+  // ── Avance de la partida: plazo, rendimiento y las 3 barras (Reportado/Financiero/Consumo) ──
+  const hoyG = hoyLocal();
+  const ven = ventanaPartida(partida || {});
+  const rend = rendimientoPartida(partida || {}, avancesPartida, hoyG);
+  const barReportado = Number(partida?.porcentaje_avance) || 0;
+  const barFinanciero = totalPres > 0 ? Math.min(100, totalReal / totalPres * 100) : 0;
+  const matsConPres = insumosPres.filter(i => String(i.tipo_insumo || '').toLowerCase() === 'material' && Number(i.cantidad_presupuestada) > 0);
+  const barConsumo = matsConPres.length ? Math.min(100, Math.max(...matsConPres.map(i => (Number(i.cantidad_real_usada) || 0) / Number(i.cantidad_presupuestada) * 100))) : 0;
+  const mcG = Number(partida?.metrado_contratado) || 0;
 
   return (
     <div className="page-wrap">
@@ -375,6 +408,57 @@ function InsumosPage({ showToast }) {
           <div className="card card-p"><div style={{fontSize:11,color:'var(--tm)'}}>Costo Real (movs)</div><div style={{fontSize:22,fontWeight:800,color:'var(--amber)',margin:'6px 0 2px'}}>{fmtSk(totalReal)}</div><div style={{fontSize:11,color:'var(--tm)'}}>{realPorMaterial.size} materiales consumidos</div></div>
           <div className="card card-p"><div style={{fontSize:11,color:'var(--tm)'}}>Desviación</div><div style={{fontSize:22,fontWeight:800,color:desv>0?'var(--red)':'var(--green)',margin:'6px 0 2px'}}>{desv>0?'+':''}{fmtSk(desv)}</div><div style={{fontSize:11,color:'var(--tm)'}}>{totalPres>0 ? `${desvPct.toFixed(1)}%` : '—'}</div></div>
           <div className="card card-p"><div style={{fontSize:11,color:'var(--tm)'}}>% Avance</div><div style={{fontSize:22,fontWeight:800,color:'var(--green)',margin:'6px 0 2px'}}>{Number(partida.porcentaje_avance||0).toFixed(0)}%</div></div>
+        </div>
+
+        {/* ── Avance de la partida: título, plazo, rendimiento y las 3 barras explicadas ── */}
+        <div className="card card-p" style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--tp)' }}>
+            <span style={{ fontFamily: 'ui-monospace,monospace', color: 'var(--amber)' }}>{partida.codigo_delfin}</span> · {partida.nombre_partida}
+          </div>
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 11.5, color: 'var(--tm)', margin: '7px 0 12px', alignItems: 'center' }}>
+            {ven.completa ? (<>
+              <span>📅 {fmtFechaCorta(ven.ini)} → {fmtFechaCorta(ven.fin)} <span style={{ color: 'var(--ts)', fontWeight: 600 }}>({ven.dias} días)</span></span>
+              {rend.metaDiaria > 0 && <span>📈 Ritmo requerido: <strong style={{ color: 'var(--ts)' }}>{numG(rend.metaDiaria)} {partida.unidad || ''}/día</strong></span>}
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>Rendimiento: <SemBadgeG s={rend.semaforo} /></span>
+              <span>Falta <strong style={{ color: 'var(--ts)' }}>{numG(Math.max(0, mcG - (rend.realAcum || 0)))} {partida.unidad || ''}</strong> de {numG(mcG)}</span>
+            </>) : <span>📅 Sin fechas de ejecución planificadas — no se puede estimar el ritmo/rendimiento.</span>}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12 }}>
+            {[
+              { lbl: 'Reportado', val: barReportado, color: barReportado >= 100 ? 'var(--green)' : 'var(--blue)', desc: 'Avance físico: semilla importada del Gantt + reportes diarios de los ingenieros (metrado ejecutado ÷ contratado). Ver el detalle abajo.' },
+              { lbl: 'Financiero', val: barFinanciero, color: barFinanciero >= 80 ? 'var(--amber)' : 'var(--green)', desc: 'Costo real ejecutado ÷ presupuesto. Se llena con los movimientos/compras vinculados a la partida (columna "Costo Real" de la tabla).' },
+              { lbl: 'Consumo', val: barConsumo, color: barConsumo >= 80 ? 'var(--amber)' : 'var(--green)', desc: 'Mayor % de consumo de un insumo material (cantidad usada ÷ presupuestada), por salidas vinculadas a la partida (columna "Cant. Real").' },
+            ].map(b => (
+              <div key={b.lbl} style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 8, padding: '10px 12px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                  <span style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ts)' }}>{b.lbl}</span>
+                  <span style={{ fontSize: 16, fontWeight: 800, color: b.color }}>{Math.round(b.val)}%</span>
+                </div>
+                <div style={{ height: 7, borderRadius: 4, background: 'rgba(255,255,255,0.07)', overflow: 'hidden', margin: '5px 0' }}><div style={{ width: Math.min(100, b.val) + '%', height: '100%', background: b.color }} /></div>
+                <div style={{ fontSize: 10, color: 'var(--tm)', lineHeight: 1.35 }}>{b.desc}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* ── Detalle de los avances reportados (lo que llena la barra "Reportado") ── */}
+        <div className="card" style={{ overflow: 'auto', marginBottom: 14 }}>
+          <div style={{ padding: '8px 12px', fontSize: 12.5, fontWeight: 600 }}>Avances reportados ({avancesPartida.length}) — qué llena la barra "Reportado"</div>
+          <table className="tbl" style={{ fontSize: 12 }}>
+            <thead><tr><th>Fecha</th><th>Origen</th><th style={{ textAlign: 'right' }}>Metrado</th><th style={{ textAlign: 'right' }}>% acum.</th><th>Detalle</th></tr></thead>
+            <tbody>
+              {avancesPartida.map(a => (
+                <tr key={a.id} style={a.sobre_reporte ? { background: 'rgba(231,76,60,0.06)' } : undefined}>
+                  <td style={{ whiteSpace: 'nowrap' }}>{a.fecha || '—'}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>{a.origen === 'importacion' ? <span className="badge b-gray" style={{ fontSize: 9 }}>importación</span> : nombreIng(a.responsable_id)}{a.sobre_reporte && <span className="badge b-red" style={{ marginLeft: 4, fontSize: 9 }}>⚠ sobre-reporte</span>}</td>
+                  <td style={{ textAlign: 'right', fontWeight: 600 }}>{numG(a.metrado_ejecutado)} {partida.unidad || ''}</td>
+                  <td style={{ textAlign: 'right' }}>{a.porcentaje_avance_reportado != null ? Math.round(a.porcentaje_avance_reportado) + '%' : '—'}</td>
+                  <td style={{ fontSize: 11, color: 'var(--ts)', maxWidth: 360 }}>{a.motivo_sobrereporte ? <span style={{ color: 'var(--red)' }}>Motivo: {a.motivo_sobrereporte}. </span> : ''}{a.descripcion || <span style={{ color: 'var(--tm)', fontStyle: 'italic' }}>—</span>}</td>
+                </tr>
+              ))}
+              {avancesPartida.length === 0 && <tr><td colSpan={5} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>Sin avances registrados todavía.</td></tr>}
+            </tbody>
+          </table>
         </div>
 
         {sinAPU && (
