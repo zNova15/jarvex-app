@@ -3,6 +3,7 @@ import { SearchableSelect } from "./jx-searchable-select.jsx";
 import { hijosDirectos, cadenaBreadcrumb } from "../lib/partida-arbol.js";
 import { ventanaPartida, rendimientoPartida, rollupAvancePorCodigo, hojasDeCapitulo, consolidarInsumos } from "../lib/mi-frente.js";
 import { hoyLocal, fmtFechaCorta } from "../lib/fecha.js";
+import { segmentarAvance, colorIngeniero } from "../lib/color-ingeniero.js";
 const { useState: uSG, useMemo: uMG, useEffect: uEG } = React;
 
 const numG = (x) => Number(x || 0).toLocaleString('es-PE');
@@ -264,6 +265,9 @@ function InsumosPage({ showToast }) {
   const [usuariosG, setUsuariosG] = uSG([]);
   uEG(() => { window.__db.profiles.toArray().then(setUsuariosG).catch(() => {}); }, []);
   const nombreIng = (id) => { if (!id) return 'Importación'; const u = (usuariosG || []).find(x => x.id === id); return u ? (`${u.nombres || ''} ${u.apellidos || ''}`.trim() || u.email || '—') : '—'; };
+  // Segmentación del avance por ingeniero (responsable_id) para la barra "Reportado"
+  // multicolor: importado (responsable null) → gris, cada ingeniero → su color.
+  const segAvance = uMG(() => segmentarAvance(partida || {}, avancesPartida), [partida, avancesPartida]);
 
   // Real consumido desde movimientos
   const realPorMaterial = uMG(() => {
@@ -557,7 +561,27 @@ function InsumosPage({ showToast }) {
                   <span style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ts)' }}>{b.lbl}</span>
                   <span style={{ fontSize: 16, fontWeight: 800, color: b.color }}>{Math.round(b.val)}%</span>
                 </div>
-                <div style={{ height: 7, borderRadius: 4, background: 'rgba(255,255,255,0.07)', overflow: 'hidden', margin: '5px 0' }}><div style={{ width: Math.min(100, b.val) + '%', height: '100%', background: b.color }} /></div>
+                {b.lbl === 'Reportado' && segAvance.segmentos.length > 0 ? (
+                  // Multicolor por ingeniero: cada segmento = lo que avanzó ese responsable (gris = importado).
+                  <div style={{ height: 7, borderRadius: 4, background: 'rgba(255,255,255,0.07)', overflow: 'hidden', margin: '5px 0', display: 'flex' }}>
+                    {segAvance.segmentos.map((s, i) => (
+                      <div key={s.uid + '_' + i} title={`${nombreIng(s.uid === 'sin' ? null : s.uid)}: ${s.pct.toFixed(1)}%`}
+                           style={{ width: s.pct + '%', height: '100%', background: colorIngeniero(s.uid) }} />
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ height: 7, borderRadius: 4, background: 'rgba(255,255,255,0.07)', overflow: 'hidden', margin: '5px 0' }}><div style={{ width: Math.min(100, b.val) + '%', height: '100%', background: b.color }} /></div>
+                )}
+                {b.lbl === 'Reportado' && segAvance.segmentos.length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '2px 8px', margin: '0 0 4px', fontSize: 9.5, color: 'var(--tm)' }}>
+                    {segAvance.segmentos.map((s, i) => (
+                      <span key={s.uid + '_lg_' + i} style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                        <span style={{ width: 8, height: 8, borderRadius: 2, background: colorIngeniero(s.uid), display: 'inline-block' }} />
+                        {s.uid === 'sin' ? 'Importación' : nombreIng(s.uid)} {s.pct.toFixed(1)}%
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <div style={{ fontSize: 10, color: 'var(--tm)', lineHeight: 1.35 }}>{b.desc}</div>
               </div>
             ))}
@@ -568,18 +592,22 @@ function InsumosPage({ showToast }) {
         <div className="card" style={{ overflow: 'auto', marginBottom: 14 }}>
           <div style={{ padding: '8px 12px', fontSize: 12.5, fontWeight: 600 }}>Avances reportados ({avancesPartida.length}) — qué llena la barra "Reportado"</div>
           <table className="tbl" style={{ fontSize: 12 }}>
-            <thead><tr><th>Fecha</th><th>Origen</th><th style={{ textAlign: 'right' }}>Metrado</th><th style={{ textAlign: 'right' }}>% acum.</th><th>Detalle</th></tr></thead>
+            <thead><tr><th>Fecha</th><th>Origen</th><th style={{ textAlign: 'right' }}>Metrado</th><th style={{ textAlign: 'right' }} title="Lo avanzado SOLO en este reporte (metrado del día ÷ contratado)">% del día</th><th style={{ textAlign: 'right' }} title="Avance total acumulado tras este reporte">% acum.</th><th>Detalle</th></tr></thead>
             <tbody>
-              {avancesPartida.map(a => (
+              {avancesPartida.map(a => {
+                const incr = (mcG > 0 && a.metrado_ejecutado != null) ? (Number(a.metrado_ejecutado) / mcG) * 100 : null;
+                return (
                 <tr key={a.id} style={a.sobre_reporte ? { background: 'rgba(231,76,60,0.06)' } : undefined}>
                   <td style={{ whiteSpace: 'nowrap' }}>{a.fecha || '—'}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>{a.origen === 'importacion' ? <span className="badge b-gray" style={{ fontSize: 9 }}>importación</span> : nombreIng(a.responsable_id)}{a.sobre_reporte && <span className="badge b-red" style={{ marginLeft: 4, fontSize: 9 }}>⚠ sobre-reporte</span>}</td>
                   <td style={{ textAlign: 'right', fontWeight: 600 }}>{numG(a.metrado_ejecutado)} {partida.unidad || ''}</td>
-                  <td style={{ textAlign: 'right' }}>{a.porcentaje_avance_reportado != null ? Math.round(a.porcentaje_avance_reportado) + '%' : '—'}</td>
+                  <td style={{ textAlign: 'right', color: 'var(--ts)' }}>{incr != null ? incr.toFixed(1) + '%' : '—'}</td>
+                  <td style={{ textAlign: 'right' }}>{a.porcentaje_avance_reportado != null ? Number(a.porcentaje_avance_reportado).toFixed(1) + '%' : '—'}</td>
                   <td style={{ fontSize: 11, color: 'var(--ts)', maxWidth: 360 }}>{a.motivo_sobrereporte ? <span style={{ color: 'var(--red)' }}>Motivo: {a.motivo_sobrereporte}. </span> : ''}{a.descripcion || <span style={{ color: 'var(--tm)', fontStyle: 'italic' }}>—</span>}</td>
                 </tr>
-              ))}
-              {avancesPartida.length === 0 && <tr><td colSpan={5} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>Sin avances registrados todavía.</td></tr>}
+                );
+              })}
+              {avancesPartida.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>Sin avances registrados todavía.</td></tr>}
             </tbody>
           </table>
         </div>

@@ -182,7 +182,7 @@ function MiFrenteShell({ showToast, vista }) {
   const [repFecha, setRepFecha] = uS(() => repLiveInit?.fecha || hoy);     // día que se reporta (default hoy; permite días pasados con motivo)
   const [repMotivoTardio, setRepMotivoTardio] = uS(() => repLiveInit?.motivo || '');
   const MAX_FOTOS = 5;
-  const REP_MIN_PALABRAS = 20;   // mínimo de palabras en la descripción de cada partida reportada
+  const REP_MIN_PALABRAS = 5;   // mínimo de palabras en la descripción de cada partida reportada
   const [confirmRep, setConfirmRep] = uS(null);   // [{linea, partida}] validadas, a confirmar antes de subir
   // Espejar el reporte en curso al buffer en cada cambio (incluye los File de las fotos).
   uE(() => {
@@ -1363,6 +1363,77 @@ function EvidenciaViewer({ evidencias, onClose }) {
 // frente (ritmo requerido del Gantt vs avance reportado) + bandeja de reportes
 // diarios filtrable por ingeniero/fecha. Reusa rendimientoPartida/Conjunto.
 // ═══════════════════════════════════════════════════════════════════
+// ─── Mis Reportes (ingeniero): ve sus reportes y solicita cambios (aprueba admin) ───
+function MisReportesPage() {
+  const auth = window.__useAuth ? window.__useAuth() : null;
+  const userId = auth?.profile?.id || null;
+  const obraHook = window.__useObraActiva ? window.__useObraActiva() : { obraId: null };
+  const obraId = obraHook?.obraId || null;
+  const { data: avances } = window.__hooks.useAvanceObra(obraId);
+  const { data: partidas } = window.__hooks.usePartidas(obraId);
+  const RCM = window.RequestChangeModal;
+  const [solChange, setSolChange] = uS(null);   // avance al que se le solicita un cambio
+  const [verFotos, setVerFotos] = uS(null);
+  const [evis, setEvis] = uS([]);
+  uE(() => {
+    if (!obraId) { setEvis([]); return; }
+    let c = false;
+    const load = () => window.__db.evidencias.where('obra_id').equals(obraId)
+      .filter(e => !e.deleted_at && e.modulo_relacionado === 'avance_obra').toArray()
+      .then(r => { if (!c) setEvis(r); }).catch(() => {});
+    load();
+    const on = (e) => { const t = e?.detail?.tabla; if (!t || t === 'evidencias') load(); };
+    window.addEventListener('jx_data_changed', on);
+    return () => { c = true; window.removeEventListener('jx_data_changed', on); };
+  }, [obraId]);
+  const partById = uM(() => { const m = new Map(); (partidas || []).filter(p => !p.deleted_at).forEach(p => m.set(p.id, p)); return m; }, [partidas]);
+  const eviPorAvance = uM(() => { const m = new Map(); for (const e of evis) { if (!e.registro_relacionado_id) continue; const a = m.get(e.registro_relacionado_id) || []; a.push(e); m.set(e.registro_relacionado_id, a); } return m; }, [evis]);
+  const misReportes = uM(() => (avances || []).filter(a => !a.deleted_at && a.responsable_id === userId && a.origen !== 'importacion')
+    .sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || ''))), [avances, userId]);
+  const labelPartida = (a) => { const p = partById.get(a.partida_id); return p ? `${p.codigo_delfin || ''} · ${p.nombre_partida || ''}`.trim().replace(/^· /, '') : 'partida'; };
+
+  if (!obraId) return <div className="page-wrap"><div className="card card-p empty-state"><p>Seleccioná una obra activa.</p></div></div>;
+
+  return (
+    <div className="page-wrap">
+      <div className="pg-hd">
+        <div className="pg-title">Mis Reportes</div>
+        <div className="pg-sub">Los avances que reportaste. Podés solicitar un cambio (fecha, descripción, metrado o fotos) con su justificación — lo aplica un administrador al aprobarlo.</div>
+      </div>
+      <div className="card" style={{ overflow: 'auto' }}>
+        <table className="tbl" style={{ fontSize: 12 }}>
+          <thead><tr><th>Fecha</th><th>Partida</th><th style={{ textAlign: 'right' }}>Metrado</th><th style={{ textAlign: 'right' }}>% acum.</th><th>Descripción</th><th style={{ textAlign: 'center' }}>Fotos</th><th></th></tr></thead>
+          <tbody>
+            {misReportes.map(a => { const p = partById.get(a.partida_id); const evs = eviPorAvance.get(a.id) || []; return (
+              <tr key={a.id} style={a.sobre_reporte ? { background: 'rgba(231,76,60,0.06)' } : undefined}>
+                <td style={{ whiteSpace: 'nowrap' }}>{a.fecha || '—'}</td>
+                <td>{p ? <><span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{p.codigo_delfin}</span> {p.nombre_partida}</> : '—'}</td>
+                <td style={{ textAlign: 'right', fontWeight: 600 }}>{num(a.metrado_ejecutado)} {p?.unidad || ''}</td>
+                <td style={{ textAlign: 'right' }}>{a.porcentaje_avance_reportado != null ? Number(a.porcentaje_avance_reportado).toFixed(1) + '%' : '—'}</td>
+                <td style={{ maxWidth: 320, fontSize: 11, color: 'var(--ts)' }}>{a.descripcion || <span style={{ color: 'var(--tm)', fontStyle: 'italic' }}>—</span>}</td>
+                <td style={{ textAlign: 'center' }}>{evs.length > 0 ? <button className="btn btn-ghost btn-xs" onClick={() => setVerFotos(evs)}>📷 {evs.length}</button> : <span style={{ color: 'var(--tm)' }}>—</span>}</td>
+                <td style={{ textAlign: 'right' }}><button className="btn btn-ghost btn-xs" title="Solicitar un cambio en este reporte (lo aprueba un admin)" onClick={() => setSolChange(a)} disabled={!RCM}><JxIcon name="edit" size={11} /> Solicitar cambio</button></td>
+              </tr>
+            ); })}
+            {misReportes.length === 0 && <tr><td colSpan={7} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>Todavía no enviaste reportes. Andá a "Reporte Diario" para registrar tu primer avance.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      {verFotos && <EvidenciaViewer evidencias={verFotos} onClose={() => setVerFotos(null)} />}
+      {solChange && RCM && <RCM
+        table="avance_obra"
+        record={solChange}
+        recordLabel={`Reporte ${solChange.fecha || ''} · ${labelPartida(solChange)}`}
+        fields={[
+          { key: 'fecha', label: 'Fecha del reporte', type: 'date' },
+          { key: 'descripcion', label: 'Descripción del avance' },
+          { key: 'metrado_ejecutado', label: 'Metrado ejecutado', type: 'number' },
+        ]}
+        onClose={() => setSolChange(null)} />}
+    </div>
+  );
+}
+
 function RendimientoIngenierosPage() {
   const obraHook = window.__useObraActiva ? window.__useObraActiva() : { obraId: null };
   const obraId = obraHook?.obraId || null;
@@ -1390,8 +1461,22 @@ function RendimientoIngenierosPage() {
   const [desde, setDesde] = uS('');
   const [hasta, setHasta] = uS('');
   const [verFotos, setVerFotos] = uS(null);  // evidencias del reporte abierto
+  const [secOpen, setSecOpen] = uS({ reportes: true, partidas: true });  // secciones colapsables del detalle
+  const [busqDetalle, setBusqDetalle] = uS('');  // búsqueda dentro del detalle de un ingeniero
 
   const hoy = hoyISO();
+  // Navegar a "Insumos por Partida" (admin) — mismo canal que jx-obra.jsx irAInsumos.
+  const irAInsumosPartida = (p) => {
+    if (!p) return;
+    try {
+      window.__insumosTargetPartida = p.id;
+      window.__insumosTargetCodigo = p.codigo_delfin || '';
+      window.__insumosTargetEsHoja = true;
+      window.__insumosFromPartidas = true;
+      window.__insumosFromGantt = false;
+      window.dispatchEvent(new CustomEvent('jx_navigate', { detail: { page: 'insumos' } }));
+    } catch {}
+  };
   const usuariosById = uM(() => { const m = new Map(); (usuarios || []).forEach(u => m.set(u.id, u)); return m; }, [usuarios]);
   const nombreUsuario = (id) => { if (!id) return '—'; const u = usuariosById.get(id); return u ? (`${u.nombres || ''} ${u.apellidos || ''}`.trim() || u.email || '—') : '—'; };
   const activos = uM(() => (frentes || []).filter(f => !f.deleted_at), [frentes]);
@@ -1436,6 +1521,15 @@ function RendimientoIngenierosPage() {
   // Alertas de SOBRE-REPORTE: reportes hechos sobre partidas ya terminadas.
   const alertasSobre = uM(() => (avances || []).filter(a => !a.deleted_at && a.sobre_reporte)
     .sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || ''))), [avances]);
+  // Filtro de búsqueda dentro del detalle de un ingeniero (código/nombre de partida, descripción, fecha).
+  const matchBusq = (p, extra) => {
+    const q = busqDetalle.trim().toLowerCase();
+    if (!q) return true;
+    const hay = `${p?.codigo_delfin || ''} ${p?.nombre_partida || ''} ${extra || ''}`.toLowerCase();
+    return q.split(/\s+/).every(t => hay.includes(t));
+  };
+  const reportesDetalle = uM(() => reportes.filter(a => matchBusq(partById.get(a.partida_id), `${a.descripcion || ''} ${a.fecha || ''}`)), [reportes, busqDetalle, partById]);
+  const partidasSelFiltradas = uM(() => partidasSel.filter(p => matchBusq(p)), [partidasSel, busqDetalle]);
 
   if (!obraId) return <div className="page-wrap"><div className="card card-p empty-state"><p>Seleccioná una obra activa.</p></div></div>;
 
@@ -1519,7 +1613,7 @@ function RendimientoIngenierosPage() {
                 <tr key={a.id}>
                   <td style={{ whiteSpace: 'nowrap' }}>{a.fecha || '—'}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>{nombreUsuario(a.responsable_id)}</td>
-                  <td>{p ? <><span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{p.codigo_delfin}</span> {p.nombre_partida}</> : '—'}</td>
+                  <td>{p ? <button className="lnk-partida" title="Ver en Insumos por Partida →" onClick={() => irAInsumosPartida(p)} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--blue)', textAlign: 'left' }}><span style={{ fontFamily: 'monospace' }}>{p.codigo_delfin}</span> {p.nombre_partida} ›</button> : '—'}</td>
                   <td style={{ textAlign: 'right', fontWeight: 600 }}>{num(a.metrado_ejecutado)} {p?.unidad || ''}</td>
                   <td style={{ maxWidth: 340, fontSize: 11, color: 'var(--ts)' }}>{a.motivo_sobrereporte || a.descripcion || <span style={{ color: 'var(--tm)', fontStyle: 'italic' }}>—</span>}</td>
                   <td style={{ textAlign: 'center' }}>{evs.length > 0 ? <button className="btn btn-ghost btn-xs" onClick={() => setVerFotos(evs)}>📷 {evs.length}</button> : <span style={{ color: 'var(--tm)' }}>—</span>}</td>
@@ -1531,56 +1625,92 @@ function RendimientoIngenierosPage() {
         </div>
       )}
 
-      {selIng && partidasSel.length > 0 && (
-        <div className="card" style={{ overflow: 'auto' }}>
-          <div style={{ padding: '8px 12px', fontSize: 12.5, fontWeight: 600 }}>Partidas de {nombreUsuario(selIng)} · rendimiento por partida</div>
-          <table className="tbl" style={{ fontSize: 12 }}>
-            <thead><tr><th>Código</th><th>Partida</th><th style={{ textAlign: 'right' }}>Metrado</th><th style={{ textAlign: 'right' }}>Ritmo req.</th><th style={{ textAlign: 'right' }}>Real / esperado</th><th>Rendimiento</th></tr></thead>
-            <tbody>
-              {partidasSel.map(p => { const r = rendimientoPartida(p, avances || [], hoy); return (
-                <tr key={p.id}>
-                  <td style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--tm)' }}>{p.codigo_delfin}</td>
-                  <td>{p.nombre_partida}</td>
-                  <td style={{ textAlign: 'right' }}>{num(p.metrado_contratado)} {p.unidad || ''}</td>
-                  <td style={{ textAlign: 'right' }}>{r.metaDiaria > 0 ? `${num(r.metaDiaria)} ${p.unidad || ''}/día` : '—'}</td>
-                  <td style={{ textAlign: 'right' }}>{r.indice != null ? `${num(r.realAcum)} / ${num(r.esperadoAcum)}` : '—'}</td>
-                  <td><SemBadge s={r.semaforo} /></td>
-                </tr>
-              ); })}
-            </tbody>
-          </table>
-        </div>
-      )}
-
+      {/* Filtro + (detalle del ingeniero seleccionado | log global de reportes) */}
       <div className="card" style={{ overflow: 'auto' }}>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 12px', flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 12.5, fontWeight: 600 }}>Reportes diarios</span>
-          <select className="fi" style={{ maxWidth: 240 }} value={selIng} onChange={e => setSelIng(e.target.value)}>
+          <span style={{ fontSize: 12.5, fontWeight: 600 }}>{selIng ? `Detalle de ${nombreUsuario(selIng)}` : 'Reportes diarios'}</span>
+          <select className="fi" style={{ maxWidth: 240 }} value={selIng} onChange={e => { setSelIng(e.target.value); setBusqDetalle(''); }}>
             <option value="">Todos los ingenieros</option>
             {ingenieros.map(id => <option key={id} value={id}>{nombreUsuario(id)}</option>)}
           </select>
+          {selIng && <input className="fi" style={{ maxWidth: 220 }} placeholder="Buscar partida / descripción…" value={busqDetalle} onChange={e => setBusqDetalle(e.target.value)} />}
           <label style={{ fontSize: 11, color: 'var(--tm)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>Desde <input className="fi" type="date" style={{ maxWidth: 150 }} value={desde} onChange={e => setDesde(e.target.value)} /></label>
           <label style={{ fontSize: 11, color: 'var(--tm)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>Hasta <input className="fi" type="date" style={{ maxWidth: 150 }} value={hasta} onChange={e => setHasta(e.target.value)} /></label>
-          {(desde || hasta || selIng) && <button className="btn btn-ghost btn-xs" onClick={() => { setDesde(''); setHasta(''); setSelIng(''); }}>Limpiar filtros</button>}
-          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--tm)' }}>{reportes.length} reporte(s)</span>
+          {(desde || hasta || selIng || busqDetalle) && <button className="btn btn-ghost btn-xs" onClick={() => { setDesde(''); setHasta(''); setSelIng(''); setBusqDetalle(''); }}>Limpiar filtros</button>}
         </div>
-        <table className="tbl" style={{ fontSize: 12 }}>
-          <thead><tr><th>Fecha</th><th>Ingeniero</th><th>Partida</th><th style={{ textAlign: 'right' }}>Metrado</th><th>Descripción</th><th style={{ textAlign: 'center' }}>Fotos</th></tr></thead>
-          <tbody>
-            {reportes.slice(0, 300).map(a => { const p = partById.get(a.partida_id); const evs = eviPorAvance.get(a.id) || []; return (
-              <tr key={a.id}>
-                <td style={{ whiteSpace: 'nowrap' }}>{a.fecha || '—'}</td>
-                <td style={{ whiteSpace: 'nowrap' }}>{nombreUsuario(a.responsable_id)}</td>
-                <td>{p ? <><span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{p.codigo_delfin}</span> {p.nombre_partida}</> : '—'}</td>
-                <td style={{ textAlign: 'right', fontWeight: 600 }}>{num(a.metrado_ejecutado)} {p?.unidad || ''}</td>
-                <td style={{ maxWidth: 340, fontSize: 11, color: 'var(--ts)' }}>{a.descripcion || <span style={{ color: 'var(--tm)', fontStyle: 'italic' }}>—</span>}</td>
-                <td style={{ textAlign: 'center' }}>{evs.length > 0 ? <button className="btn btn-ghost btn-xs" onClick={() => setVerFotos(evs)}>📷 {evs.length}</button> : <span style={{ color: 'var(--tm)' }}>—</span>}</td>
-              </tr>
-            ); })}
-            {reportes.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>Sin reportes para el filtro elegido.</td></tr>}
-          </tbody>
-        </table>
-        {reportes.length > 300 && <div style={{ padding: '6px 12px', fontSize: 11, color: 'var(--tm)' }}>Mostrando los 300 reportes más recientes. Afiná el filtro de fechas para ver más.</div>}
+
+        {selIng ? (
+          <div style={{ padding: '0 4px 6px' }}>
+            {/* Sección A: reportes del ingeniero (colapsable + buscable) */}
+            <div style={{ borderTop: '1px solid var(--border)' }}>
+              <button onClick={() => setSecOpen(s => ({ ...s, reportes: !s.reportes }))} style={{ width: '100%', textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ts)', fontSize: 12.5, fontWeight: 600, padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span>{secOpen.reportes ? '▾' : '▸'}</span> 📋 Reportes diarios <span style={{ color: 'var(--tm)', fontWeight: 400 }}>({reportesDetalle.length})</span>
+              </button>
+              {secOpen.reportes && (
+                <table className="tbl" style={{ fontSize: 12 }}>
+                  <thead><tr><th>Fecha</th><th>Partida</th><th style={{ textAlign: 'right' }}>Metrado</th><th>Descripción</th><th style={{ textAlign: 'center' }}>Fotos</th></tr></thead>
+                  <tbody>
+                    {reportesDetalle.slice(0, 300).map(a => { const p = partById.get(a.partida_id); const evs = eviPorAvance.get(a.id) || []; return (
+                      <tr key={a.id}>
+                        <td style={{ whiteSpace: 'nowrap' }}>{a.fecha || '—'}</td>
+                        <td>{p ? <button className="lnk-partida" title="Ver en Insumos por Partida →" onClick={() => irAInsumosPartida(p)} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--blue)', textAlign: 'left' }}><span style={{ fontFamily: 'monospace' }}>{p.codigo_delfin}</span> {p.nombre_partida} ›</button> : '—'}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>{num(a.metrado_ejecutado)} {p?.unidad || ''}</td>
+                        <td style={{ maxWidth: 340, fontSize: 11, color: 'var(--ts)' }}>{a.descripcion || <span style={{ color: 'var(--tm)', fontStyle: 'italic' }}>—</span>}</td>
+                        <td style={{ textAlign: 'center' }}>{evs.length > 0 ? <button className="btn btn-ghost btn-xs" onClick={() => setVerFotos(evs)}>📷 {evs.length}</button> : <span style={{ color: 'var(--tm)' }}>—</span>}</td>
+                      </tr>
+                    ); })}
+                    {reportesDetalle.length === 0 && <tr><td colSpan={5} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>Sin reportes para el filtro elegido.</td></tr>}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            {/* Sección B: partidas del ingeniero + rendimiento estimado (colapsable + buscable) */}
+            <div style={{ borderTop: '1px solid var(--border)' }}>
+              <button onClick={() => setSecOpen(s => ({ ...s, partidas: !s.partidas }))} style={{ width: '100%', textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ts)', fontSize: 12.5, fontWeight: 600, padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span>{secOpen.partidas ? '▾' : '▸'}</span> 🎯 Partidas y rendimiento estimado <span style={{ color: 'var(--tm)', fontWeight: 400 }}>({partidasSelFiltradas.length})</span>
+              </button>
+              {secOpen.partidas && (
+                <table className="tbl" style={{ fontSize: 12 }}>
+                  <thead><tr><th>Código</th><th>Partida</th><th style={{ textAlign: 'right' }}>Metrado</th><th style={{ textAlign: 'right' }}>Ritmo req.</th><th style={{ textAlign: 'right' }}>Real / esperado</th><th>Rendimiento</th></tr></thead>
+                  <tbody>
+                    {partidasSelFiltradas.map(p => { const r = rendimientoPartida(p, avances || [], hoy); return (
+                      <tr key={p.id}>
+                        <td style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--tm)' }}>{p.codigo_delfin}</td>
+                        <td><button className="lnk-partida" title="Ver en Insumos por Partida →" onClick={() => irAInsumosPartida(p)} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--blue)', textAlign: 'left' }}>{p.nombre_partida} ›</button></td>
+                        <td style={{ textAlign: 'right' }}>{num(p.metrado_contratado)} {p.unidad || ''}</td>
+                        <td style={{ textAlign: 'right' }}>{r.metaDiaria > 0 ? `${num(r.metaDiaria)} ${p.unidad || ''}/día` : '—'}</td>
+                        <td style={{ textAlign: 'right' }}>{r.indice != null ? `${num(r.realAcum)} / ${num(r.esperadoAcum)}` : '—'}</td>
+                        <td><SemBadge s={r.semaforo} /></td>
+                      </tr>
+                    ); })}
+                    {partidasSelFiltradas.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>{partidasSel.length === 0 ? 'Este ingeniero no tiene partidas en frentes asignados.' : 'Sin partidas para la búsqueda.'}</td></tr>}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        ) : (
+          <>
+            <div style={{ padding: '0 12px 6px', fontSize: 11, color: 'var(--tm)' }}>{reportes.length} reporte(s) · elegí un ingeniero para ver su detalle (reportes + partidas).</div>
+            <table className="tbl" style={{ fontSize: 12 }}>
+              <thead><tr><th>Fecha</th><th>Ingeniero</th><th>Partida</th><th style={{ textAlign: 'right' }}>Metrado</th><th>Descripción</th><th style={{ textAlign: 'center' }}>Fotos</th></tr></thead>
+              <tbody>
+                {reportes.slice(0, 300).map(a => { const p = partById.get(a.partida_id); const evs = eviPorAvance.get(a.id) || []; return (
+                  <tr key={a.id}>
+                    <td style={{ whiteSpace: 'nowrap' }}>{a.fecha || '—'}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>{nombreUsuario(a.responsable_id)}</td>
+                    <td>{p ? <button className="lnk-partida" title="Ver en Insumos por Partida →" onClick={() => irAInsumosPartida(p)} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--blue)', textAlign: 'left' }}><span style={{ fontFamily: 'monospace' }}>{p.codigo_delfin}</span> {p.nombre_partida} ›</button> : '—'}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 600 }}>{num(a.metrado_ejecutado)} {p?.unidad || ''}</td>
+                    <td style={{ maxWidth: 340, fontSize: 11, color: 'var(--ts)' }}>{a.descripcion || <span style={{ color: 'var(--tm)', fontStyle: 'italic' }}>—</span>}</td>
+                    <td style={{ textAlign: 'center' }}>{evs.length > 0 ? <button className="btn btn-ghost btn-xs" onClick={() => setVerFotos(evs)}>📷 {evs.length}</button> : <span style={{ color: 'var(--tm)' }}>—</span>}</td>
+                  </tr>
+                ); })}
+                {reportes.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>Sin reportes para el filtro elegido.</td></tr>}
+              </tbody>
+            </table>
+            {reportes.length > 300 && <div style={{ padding: '6px 12px', fontSize: 11, color: 'var(--tm)' }}>Mostrando los 300 reportes más recientes. Afiná el filtro de fechas para ver más.</div>}
+          </>
+        )}
       </div>
 
       {verFotos && <EvidenciaViewer evidencias={verFotos} onClose={() => setVerFotos(null)} />}
@@ -1597,4 +1727,4 @@ const PlanRealPage = (p) => <MiFrenteShell {...p} vista="plan" />;
 const BorradoresPage = (p) => <MiFrenteShell {...p} vista="borradores" />;
 const DetallePartidaPage = (p) => <MiFrenteShell {...p} vista="detalle" />;
 
-Object.assign(window, { DashboardTecnicoPage, MisPartidasPage, CronogramaFrentePage, SalidasFrentePage, ReporteDiarioPage, PlanRealPage, BorradoresPage, DetallePartidaPage, EmitirAlertaPage, AprobacionesReportePage, RendimientoIngenierosPage, MiFrentePage: DashboardTecnicoPage });
+Object.assign(window, { DashboardTecnicoPage, MisPartidasPage, CronogramaFrentePage, SalidasFrentePage, ReporteDiarioPage, PlanRealPage, BorradoresPage, DetallePartidaPage, MisReportesPage, EmitirAlertaPage, AprobacionesReportePage, RendimientoIngenierosPage, MiFrentePage: DashboardTecnicoPage });

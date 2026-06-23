@@ -2936,6 +2936,13 @@ function AvancePage({ showToast }) {
   const [modal, setModal] = uSO(false);
   const [form, setForm] = uSO({});
   const [editingId, setEditingId] = uSO(null);
+  const [filtroOrigen, setFiltroOrigen] = uSO('todos');   // 'todos' | 'reportes' | 'importado'
+
+  // Perfiles para resolver el nombre del ingeniero que reportó (responsable_id → profiles).
+  const [usuariosAv, setUsuariosAv] = uSO([]);
+  uEO(() => { window.__db?.profiles?.toArray?.().then(setUsuariosAv).catch(() => {}); }, []);
+  const usuariosAvById = uMO(() => { const m = new Map(); (usuariosAv || []).forEach(u => m.set(u.id, u)); return m; }, [usuariosAv]);
+  const nombreIngAv = (id) => { if (!id) return '—'; const u = usuariosAvById.get(id); return u ? (`${u.nombres || ''} ${u.apellidos || ''}`.trim() || u.email || '—') : '—'; };
 
   const openEditAvance = (r) => {
     setForm({
@@ -2990,6 +2997,7 @@ function AvancePage({ showToast }) {
         porcentaje_avance_reportado: parseFloat(form.porcentaje_avance_reportado) || null,
         personal_asignado: parseInt(form.personal_asignado) || null,
         observaciones: form.observaciones || null,
+        origen: 'manual',   // distinguir de los reportes de ingeniero (que traen responsable_id) y de la semilla del Gantt
       });
       // Optimistic: actualizar partida local
       const totalEjecutado = registros
@@ -3023,7 +3031,27 @@ function AvancePage({ showToast }) {
   if (loading) return <div className="page-wrap"><div className="empty-state"><JxIcon name="hardHat" size={32} color="var(--tm)"/><p>Cargando avance…</p></div></div>;
 
   // Stats
-  const ordenados = [...registros].sort((a,b) => (b.fecha || '').localeCompare(a.fecha || ''));
+  // Lista visible: descarta borrados, aplica el filtro de origen, y ordena
+  // poniendo PRIMERO los reportes diarios de ingenieros (origen!=='importacion')
+  // — antes la semilla del Gantt (fechas futuras) los enterraba al fondo.
+  // Clasificación: 'importado' (semilla del Gantt) · 'ingeniero' (reporte diario,
+  // con responsable_id) · 'manual' (alta a mano desde "Registrar Avance", sin
+  // responsable). Antes se clasificaba por origen!=='importacion', pero los
+  // avances manuales heredan origen DEFAULT 'reporte' (mig 092) y caían mal como
+  // "reporte de ingeniero" sin nombre.
+  const tipoAvance = (r) => r.origen === 'importacion' ? 'importado' : (r.responsable_id ? 'ingeniero' : 'manual');
+  const ordenados = [...registros]
+    .filter(r => !r.deleted_at)
+    .filter(r => {
+      if (filtroOrigen === 'todos') return true;
+      if (filtroOrigen === 'reportes') return tipoAvance(r) === 'ingeniero';
+      return tipoAvance(r) === 'importado';
+    })
+    .sort((a,b) => {
+      const ra = tipoAvance(a) === 'importado' ? 1 : 0, rb = tipoAvance(b) === 'importado' ? 1 : 0;
+      if (ra !== rb) return ra - rb;                       // importados (plan) al fondo
+      return (b.fecha || '').localeCompare(a.fecha || '');  // luego por fecha desc
+    });
   const semanaActual = calcSemana(new Date().toISOString().slice(0,10));
   const avSemActual = registros
     .filter(r => r.semana === semanaActual)
@@ -3032,12 +3060,19 @@ function AvancePage({ showToast }) {
   return (
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
-        <div><div className="pg-title">Avance de Obra</div><div className="pg-sub">Registros diarios y semanales · {registros.length} registros</div></div>
-        {canWrite ? (
-          <button className="btn btn-amber btn-sm" onClick={openModal}><JxIcon name="plus" size={13}/>Registrar Avance</button>
-        ) : (
-          <span className="badge b-gray" title="Tu rol es solo lectura para Avance">Solo lectura</span>
-        )}
+        <div><div className="pg-title">Avance de Obra</div><div className="pg-sub">Registros diarios y semanales · {ordenados.length} de {registros.length} registros</div></div>
+        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+          <select className="fi" style={{ maxWidth:230 }} value={filtroOrigen} onChange={e=>setFiltroOrigen(e.target.value)}>
+            <option value="todos">Todos los registros</option>
+            <option value="reportes">Reportes de ingenieros</option>
+            <option value="importado">Plan importado (Gantt)</option>
+          </select>
+          {canWrite ? (
+            <button className="btn btn-amber btn-sm" onClick={openModal}><JxIcon name="plus" size={13}/>Registrar Avance</button>
+          ) : (
+            <span className="badge b-gray" title="Tu rol es solo lectura para Avance">Solo lectura</span>
+          )}
+        </div>
       </div>
 
       <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:14,marginBottom:20}}>
@@ -3064,7 +3099,7 @@ function AvancePage({ showToast }) {
       <div className="card" style={{overflow:'hidden'}}>
         <table className="tbl">
           <thead><tr>
-            <th>Fecha</th><th>Semana</th><th>Partida Ejecutada</th>
+            <th>Fecha</th><th>Semana</th><th>Origen</th><th>Partida Ejecutada</th>
             <th style={{textAlign:'right'}}>Metrado</th><th style={{textAlign:'right'}}>% Reportado</th>
             <th style={{textAlign:'right'}}>Personal</th><th>Observaciones</th><th>Sync</th>
             {isAdmin && <th style={{textAlign:'center'}}>Acciones</th>}
@@ -3072,15 +3107,21 @@ function AvancePage({ showToast }) {
           <tbody>
             {ordenados.map(r => {
               const partida = partidas.find(p => p.id === r.partida_id);
+              const tipo = tipoAvance(r);
               return (
                 <tr key={r.id}>
                   <td className="col-m">{r.fecha}</td>
                   <td><span className="badge b-blue">{r.semana || '—'}</span></td>
+                  <td style={{whiteSpace:'nowrap'}}>{tipo === 'ingeniero'
+                    ? <span className="badge b-green" title="Reporte diario de un ingeniero">{nombreIngAv(r.responsable_id)}</span>
+                    : tipo === 'manual'
+                      ? <span className="badge b-blue" title="Avance registrado a mano (Registrar Avance)">Manual</span>
+                      : <span className="badge b-gray" title="Semilla importada del cronograma Gantt">Plan (importado)</span>}</td>
                   <td className="col-p">{partida?.nombre_partida || '(partida eliminada)'}</td>
                   <td style={{textAlign:'right'}} className="col-num">{Number(r.metrado_ejecutado).toLocaleString('es-PE')} {partida?.unidad || ''}</td>
-                  <td style={{textAlign:'right'}} className="col-num">{r.porcentaje_avance_reportado ? r.porcentaje_avance_reportado + '%' : '—'}</td>
+                  <td style={{textAlign:'right'}} className="col-num">{r.porcentaje_avance_reportado ? Number(r.porcentaje_avance_reportado).toFixed(1) + '%' : '—'}</td>
                   <td style={{textAlign:'right'}} className="col-num">{r.personal_asignado || '—'}</td>
-                  <td className="col-m">{r.observaciones || '—'}</td>
+                  <td className="col-m" title={r.descripcion || r.observaciones || ''}>{r.descripcion || r.observaciones || '—'}</td>
                   <td>{r.sync_status && r.sync_status !== 'synced' ? <span className="badge b-amber">⏱</span> : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}</td>
                   {isAdmin && <td style={{textAlign:'center'}}>
                     <button className="btn btn-ghost btn-xs" title="Editar campos seguros (observaciones, % reportado, personal)" onClick={()=>openEditAvance(r)}>
