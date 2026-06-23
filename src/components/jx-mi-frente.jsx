@@ -7,7 +7,7 @@
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
 import { frentesDeUsuario, partidasDeFrente, frentesDePartida } from "../lib/frente-partidas.js";
-import { resumenFrente, planVsReal, rollupMensual, rendimientoPartida, rendimientoConjunto, ventanaPartida } from "../lib/mi-frente.js";
+import { resumenFrente, planVsReal, rollupMensual, rendimientoPartida, rendimientoConjunto, ventanaPartida, rollupAvancePorCodigo } from "../lib/mi-frente.js";
 import { hijosDirectos, cadenaBreadcrumb } from "../lib/partida-arbol.js";
 import { hoyLocal, fmtFechaCorta } from "../lib/fecha.js";
 import { colorIngeniero, segmentarAvance } from "../lib/color-ingeniero.js";
@@ -21,6 +21,19 @@ const SEM = { verde: 'var(--green)', ambar: 'var(--amber)', rojo: 'var(--red)', 
 const SEM_LBL = { verde: 'En ritmo', ambar: 'Atención', rojo: 'Atrasado', sin_dato: 's/plan' };
 // Badge de semáforo de rendimiento (a nivel de módulo: lo usan MiFrenteShell y RendimientoIngenierosPage).
 const SemBadge = ({ s }) => <span className="badge" style={{ background: SEM[s], color: '#000', fontSize: 9 }}>{SEM_LBL[s]}</span>;
+// Barra de avance simple (un solo %): para capítulos (roll-up ponderado de sus hojas).
+const BarraSimple = ({ pct }) => {
+  const v = Math.max(0, Math.min(100, Number(pct) || 0));
+  const color = v >= 100 ? 'var(--green)' : v > 0 ? 'var(--blue)' : 'var(--tm)';
+  return (
+    <div style={{ minWidth: 96 }}>
+      <div style={{ height: 10, borderRadius: 5, overflow: 'hidden', background: 'rgba(255,255,255,0.08)' }}>
+        <div style={{ width: v + '%', height: '100%', background: color }} />
+      </div>
+      <div style={{ fontSize: 10, color: 'var(--tm)', marginTop: 2 }}>{Math.round(v)}% <span style={{ opacity: 0.7 }}>· capítulo</span></div>
+    </div>
+  );
+};
 // Plazo planificado de una partida: inicio→fin · N días, o aviso si no se importó del cronograma.
 const PlazoMini = ({ p }) => {
   const v = ventanaPartida(p || {});
@@ -101,6 +114,8 @@ function MiFrenteShell({ showToast, vista }) {
   const frentesNombresDe = (pid) => frentesDePartida(pid, { frentePartidas: frentePartidas || [], partidas: partidas || [] }).map(id => fNomById.get(id)).filter(Boolean);
   const frenteDePartida = (pid) => { const ids = frentesDePartida(pid, { frentePartidas: frentePartidas || [], partidas: partidas || [] }); return ids[0] || null; };
   const partByIdAll = uM(() => { const m = new Map(); allPartidas.forEach(p => m.set(p.id, p)); return m; }, [allPartidas]);
+  // Avance roll-up por capítulo (las barras de los capítulos se llenan con el avance ponderado de sus hojas).
+  const rollupAvanceMap = uM(() => rollupAvancePorCodigo(allPartidas), [allPartidas]);
 
   const resumen = uM(() => resumenFrente({ partidasDelFrente, movimientos: movs || [], avances: avances || [], frenteId: frenteActivo?.id }),
     [frenteActivo, partidasDelFrente, movs, avances]);
@@ -558,7 +573,7 @@ function MiFrenteShell({ showToast, vista }) {
           <td style={{ fontWeight: esCap ? 600 : 400 }}>{p ? <>{p.nombre_partida || '—'}{mostrarFrente && (() => { const fs = frentesNombresDe(p.id); return fs.length ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }} title="Frente(s)">{fs.join(', ')}</span> : <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }} title="No pertenece a ningún frente">sin frente</span>; })()}</> : <span style={{ color: 'var(--tm)', fontStyle: 'italic' }}>capítulo</span>}</td>
           <td style={{ textAlign: 'right' }}>{p ? `${num(p.metrado_contratado)} ${p.unidad || ''}` : ''}</td>
           <td>{p ? <PlazoMini p={p} /> : ''}</td>
-          <td>{p ? <BarraAvance partida={p} avancesPartida={avancesPorPartida.get(p.id)} nombreUsuario={nombreUsuario} /> : ''}</td>
+          <td>{esCap ? <BarraSimple pct={rollupAvanceMap.get(nodo.code) || 0} /> : (p ? <BarraAvance partida={p} avancesPartida={avancesPorPartida.get(p.id)} nombreUsuario={nombreUsuario} /> : '')}</td>
           <td>{r ? <div><SemBadge s={r.semaforo} />{r.metaDiaria > 0 && <div style={{ fontSize: 9.5, color: 'var(--tm)', marginTop: 2 }} title="Ritmo diario requerido (metrado ÷ días planificados)">{num(r.metaDiaria)} {p.unidad || ''}/día</div>}</div> : ''}</td>
           <td style={{ textAlign: 'right' }}>{esHoja && <button className="btn btn-ghost btn-xs" onClick={() => generarReporteDe(p)}>Agregar reporte</button>}</td>
         </tr>
@@ -755,7 +770,7 @@ function MiFrenteShell({ showToast, vista }) {
                     const left = ((ini - ganttRango.ini) / ganttRango.span) * 100;
                     const width = Math.max(1.5, ((fin - ini) / ganttRango.span) * 100);
                     const r = rendimientoPartida(p, avances || [], hoy);
-                    const pct = Math.max(0, Math.min(100, Number(p.porcentaje_avance) || 0));
+                    const pct = Math.max(0, Math.min(100, rollupAvanceMap.has(p.codigo_delfin) ? (rollupAvanceMap.get(p.codigo_delfin) || 0) : (Number(p.porcentaje_avance) || 0)));
                     const atrasada = hoyMs > fin && pct < 100;
                     const cFrente = colorIngeniero(frenteDePartida(p.id) || 'sin');
                     return (

@@ -333,6 +333,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
   const [gantReplaceAll, setGantReplaceAll] = uSI(false); // false=saltar vacíos (no borrar); true=reemplazar todo (incl. vaciar fechas)
   const [gantSaltarSinFechas, setGantSaltarSinFechas] = uSI(false); // saltar partidas cuyo row no tiene inicio+fin (mantener lo existente)
   const [gantLimpiando, setGantLimpiando] = uSI(false); // botón "limpiar avances importados anteriores"
+  const [gantAvanceModo, setGantAvanceModo] = uSI('reemplazar'); // 'reemplazar'=el % es el TOTAL (default); 'sumar'=el % se suma al avance ya registrado (período)
 
   // Cargar partidas existentes y comparar al entrar a step 2 con tipo apu
   uEI(() => {
@@ -1133,18 +1134,25 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
       const dom = camposCronograma(t, gantReplaceAll);   // fechas/duración/predecesoras
       const existentes = avancePorPartida.get(p.id) || [];
       const inicial = avanceInicialGantt(t.porcentaje_avance, p.metrado_contratado);
-      let metradoBaseline = 0, cambioBaseline = false;
-      // El % del archivo es el TOTAL de la partida → REEMPLAZA el avance inicial importado
-      // anterior (soft-delete, persiste por mig 095) sin tocar los reportes de los ingenieros.
-      // Re-importar NO acumula. (El trigger del server recomputa porcentaje_avance/metrado.)
-      const baselineViejo = existentes.filter(a => a.origen === 'importacion');
-      for (const a of baselineViejo) {
-        avancesBorrados.push({ ...a, deleted_at: now, updated_at: now, updated_by: userId, version: (a.version ?? 0) + 1, sync_status: a.sync_status === 'pending_create' ? 'pending_create' : 'pending_update' });
-        cambioBaseline = true;
+      const mcG = Number(p.metrado_contratado) || 0;
+      let metradoBaseline = 0, sumPrevio = 0, cambioBaseline = false;
+      if (gantAvanceModo === 'sumar') {
+        // SUMAR (período): el % del archivo se AGREGA al avance ya registrado (importado +
+        // reportado). Total = todo lo existente + lo nuevo, topado a lo contratado. NO borra.
+        sumPrevio = existentes.reduce((s, a) => s + (Number(a.metrado_ejecutado) || 0), 0);
+        if (inicial) { metradoBaseline = Math.max(0, Math.min(inicial.metrado, mcG - sumPrevio)); cambioBaseline = true; pushBaseline(p, t, metradoBaseline, pctDesdeMetrado(sumPrevio + metradoBaseline, mcG)); }
+      } else {
+        // REEMPLAZAR (default): el % es el TOTAL → reemplaza el avance inicial importado anterior
+        // (soft-delete, persiste por mig 095) sin tocar los reportes. Re-importar NO acumula.
+        const baselineViejo = existentes.filter(a => a.origen === 'importacion');
+        for (const a of baselineViejo) {
+          avancesBorrados.push({ ...a, deleted_at: now, updated_at: now, updated_by: userId, version: (a.version ?? 0) + 1, sync_status: a.sync_status === 'pending_create' ? 'pending_create' : 'pending_update' });
+          cambioBaseline = true;
+        }
+        sumPrevio = existentes.filter(a => a.origen !== 'importacion').reduce((s, a) => s + (Number(a.metrado_ejecutado) || 0), 0);
+        if (inicial) { metradoBaseline = inicial.metrado; cambioBaseline = true; pushBaseline(p, t, inicial.metrado, inicial.pct); }
       }
-      const sumReportes = existentes.filter(a => a.origen !== 'importacion').reduce((s, a) => s + (Number(a.metrado_ejecutado) || 0), 0);
-      if (inicial) { metradoBaseline = inicial.metrado; cambioBaseline = true; pushBaseline(p, t, inicial.metrado, inicial.pct); }
-      const pct = pctDesdeMetrado(sumReportes + metradoBaseline, p.metrado_contratado);
+      const pct = pctDesdeMetrado(sumPrevio + metradoBaseline, p.metrado_contratado);
       if (pct != null && pct !== (Number(p.porcentaje_avance) || 0)) dom.porcentaje_avance = pct;   // solo si cambia (evita churn en pendientes)
       const est = decidirEstadoGantt(pct ?? 0, p.estado);   // estado según el % TOTAL (respeta 'observado', no degrada)
       if (est) dom.estado = est;
@@ -2211,15 +2219,25 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                 </label>
               </div>
 
-              {/* ── % de avance: siempre acumulado (reemplaza) + limpiar lo importado antes ── */}
-              <div className="card card-p" style={{ marginBottom:14, display:'flex', gap:12, alignItems:'center', flexWrap:'wrap' }}>
-                <div style={{ flex:'1 1 320px' }}>
-                  <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)' }}>% de avance: acumulado (reemplaza)</div>
-                  <div style={{ fontSize:11, color:'var(--tm)', marginTop:3 }}>El % del archivo es el TOTAL de cada partida → reemplaza el avance inicial importado anterior (NO se suma). Si querés arrancar de cero, limpiá los importados anteriores con el botón.</div>
+              {/* ── % de avance del archivo: reemplazar (default) vs sumar (período) + limpiar ── */}
+              <div className="card card-p" style={{ marginBottom:14 }}>
+                <div className="frow-sb" style={{ flexWrap:'wrap', gap:8, marginBottom:8 }}>
+                  <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)' }}>¿Cómo aplicar el % de avance del archivo?</div>
+                  <button className="btn btn-ghost btn-xs" disabled={gantLimpiando} onClick={limpiarAvancesImportados} title="Borra los avances iniciales importados del Gantt de esta obra (deja solo lo reportado por los ingenieros)">
+                    <JxIcon name="trash" size={12}/>{gantLimpiando ? 'Limpiando…' : 'Limpiar avances importados anteriores'}
+                  </button>
                 </div>
-                <button className="btn btn-ghost btn-sm" disabled={gantLimpiando} onClick={limpiarAvancesImportados} title="Borra los avances iniciales importados del Gantt de esta obra (deja solo lo reportado por los ingenieros)">
-                  <JxIcon name="trash" size={13}/>{gantLimpiando ? 'Limpiando…' : 'Limpiar avances importados anteriores'}
-                </button>
+                <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+                  {[
+                    { v:'reemplazar', t:'Reemplazar (recomendado)', d:'El % del archivo es el avance TOTAL de cada partida → reemplaza el avance importado anterior. Re-importar el mismo archivo NO acumula.' },
+                    { v:'sumar', t:'Sumar al avance existente', d:'El % del archivo se SUMA al avance ya registrado. Para cargar el avance de un período/mes (ej. "este mes 20%"). Cada importación acumula sobre lo previo.' },
+                  ].map(o => (
+                    <label key={o.v} style={{ flex:'1 1 300px', display:'flex', gap:8, alignItems:'flex-start', cursor:'pointer', padding:'9px 11px', borderRadius:6, border:`1px solid ${gantAvanceModo===o.v?'var(--amber)':'var(--bd)'}`, background: gantAvanceModo===o.v?'rgba(242,183,5,0.06)':'transparent' }}>
+                      <input type="radio" name="gantAvanceModo" checked={gantAvanceModo===o.v} onChange={()=>setGantAvanceModo(o.v)} style={{ marginTop:2 }}/>
+                      <span><span style={{ fontSize:12, fontWeight:700, color:'var(--tp)' }}>{o.t}</span><span style={{ display:'block', fontSize:10.5, color:'var(--tm)', marginTop:2 }}>{o.d}</span></span>
+                    </label>
+                  ))}
+                </div>
               </div>
 
               {/* ── Saltar partidas con fechas incompletas ── */}
@@ -2405,7 +2423,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                     { label:'Rango fechas', val: `${parsed.summary.fecha_inicio} → ${parsed.summary.fecha_fin}`, icon:'calendar', color:'var(--blue)' },
                     { label:'Aplica', val:'Fechas + % de avance + estado (match por código)', icon:'refresh', color:'var(--amber)' },
                     { label:'Fechas', val: gantReplaceAll ? '⚠ Reemplazar todo (incluso vaciar)' : 'Saltar vacíos (no borra lo existente)', icon:'gantt', color: gantReplaceAll ? 'var(--red)' : 'var(--green)' },
-                    { label:'Avance', val: 'Acumulado (reemplaza, no suma)' + (gantSaltarSinFechas ? ' · salta partidas sin fechas completas' : ''), icon:'refresh', color:'var(--green)' },
+                    { label:'Avance', val: (gantAvanceModo==='sumar' ? '➕ Sumar al avance existente (período)' : 'Reemplazar (el % es el total)') + (gantSaltarSinFechas ? ' · salta partidas sin fechas completas' : ''), icon:'refresh', color: gantAvanceModo==='sumar' ? 'var(--amber)' : 'var(--green)' },
                   );
                 }
                 return filas.map((r,i)=>(

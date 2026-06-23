@@ -90,6 +90,34 @@ export function rendimientoConjunto(partidas = [], avances = [], hoy = null) {
   return { nPartidas: vistos.size, conDato, realAcum, esperadoAcum, indice, semaforo, conteo };
 }
 
+/**
+ * Avance roll-up por CAPÍTULO: para cada código que es prefijo de otro (capítulo/título),
+ * el % de avance ponderado de sus partidas HOJA descendientes. Peso = costo_total_presupuestado
+ * (o metrado_contratado, o 1 equiponderado). Una pasada O(n×profundidad). Las hojas no se
+ * incluyen (su % ya vive en porcentaje_avance). Devuelve Map<codigo_capitulo, avancePct>.
+ */
+export function rollupAvancePorCodigo(partidas = []) {
+  const vivas = partidas.filter(p => p && !p.deleted_at && p.codigo_delfin);
+  const codes = vivas.map(p => String(p.codigo_delfin).trim());
+  const prefijos = new Set();
+  for (const c of codes) { const s = c.split('.'); for (let i = 1; i < s.length; i++) prefijos.add(s.slice(0, i).join('.')); }
+  const acc = new Map();   // codigo_ancestro -> { peso, sum }
+  for (const p of vivas) {
+    const c = String(p.codigo_delfin).trim();
+    if (prefijos.has(c)) continue;   // solo las HOJAS aportan (un código que es prefijo de otro es capítulo)
+    const peso = (Number(p.costo_total_presupuestado) || Number(p.metrado_contratado) || 0) || 1;
+    const pct = Number(p.porcentaje_avance) || 0;
+    const segs = c.split('.');
+    for (let i = 1; i < segs.length; i++) {
+      const anc = segs.slice(0, i).join('.');
+      const e = acc.get(anc) || { peso: 0, sum: 0 }; e.peso += peso; e.sum += pct * peso; acc.set(anc, e);
+    }
+  }
+  const m = new Map();
+  for (const [code, e] of acc) m.set(code, e.peso > 0 ? e.sum / e.peso : 0);
+  return m;
+}
+
 /** Rollup mensual: metrado real sumado por partida en el mes 'YYYY-MM'. Solo partidas con avance. */
 export function rollupMensual({ partidasDelFrente = [], avances = [], mes = null } = {}) {
   return partidasDelFrente.map(p => {

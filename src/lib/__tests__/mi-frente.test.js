@@ -1,5 +1,22 @@
 import { describe, it, expect } from 'vitest';
-import { resumenFrente, planVsReal, rollupMensual, rendimientoPartida, rendimientoConjunto, ventanaPartida } from '../mi-frente.js';
+import { resumenFrente, planVsReal, rollupMensual, rendimientoPartida, rendimientoConjunto, ventanaPartida, rollupAvancePorCodigo } from '../mi-frente.js';
+
+describe('rollupAvancePorCodigo', () => {
+  const P = [
+    { id: 'c', codigo_delfin: '02', porcentaje_avance: 0 },          // capítulo (no aporta)
+    { id: 'c1', codigo_delfin: '02.01', porcentaje_avance: 0 },      // capítulo
+    { id: 'h1', codigo_delfin: '02.01.01', porcentaje_avance: 100, costo_total_presupuestado: 300 }, // hoja
+    { id: 'h2', codigo_delfin: '02.01.02', porcentaje_avance: 0, costo_total_presupuestado: 100 },   // hoja
+  ];
+  it('pondera por costo el avance de las hojas hacia sus capítulos', () => {
+    const m = rollupAvancePorCodigo(P);
+    expect(m.get('02.01')).toBeCloseTo(75, 5);   // (100*300 + 0*100)/400 = 75
+    expect(m.get('02')).toBeCloseTo(75, 5);       // mismo: solo cuelgan esas 2 hojas
+  });
+  it('no genera entrada para una hoja (solo capítulos)', () => {
+    expect(rollupAvancePorCodigo(P).has('02.01.01')).toBe(false);
+  });
+});
 
 const PART = [
   { id: 'p1', codigo_delfin: '02.01', porcentaje_avance: 40 },
