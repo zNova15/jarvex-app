@@ -396,10 +396,10 @@ function UsuariosPage({ showToast }) {
       const { data: { session } } = await sb.auth.getSession();
       const token = session?.access_token;
       if (!token) throw new Error('No hay sesión activa. Volvé a loguearte.');
-      const resp = await fetch('/api/set-password', {
+      const resp = await fetch('/api/create-user', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ user_id: modalReset.id, password: resetPass }),
+        body: JSON.stringify({ action: 'set_password', user_id: modalReset.id, password: resetPass }),
       });
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(data.error || data.detail || `HTTP ${resp.status}`);

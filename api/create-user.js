@@ -44,17 +44,12 @@ export default async function handler(req, res) {
   }
 
   const body = req.body || {};
-  const { email, password, nombres, apellidos, rol } = body;
+  // Este endpoint maneja DOS acciones (fusionadas para no pasar el límite de 12
+  // funciones serverless del plan Vercel): 'create' (default) crea un usuario;
+  // 'set_password' fija la contraseña de un usuario existente (reset por admin).
+  const action = body.action === 'set_password' ? 'set_password' : 'create';
 
-  if (!email || !password) {
-    return res.status(422).json({ error: 'Email y password requeridos' });
-  }
-  if (typeof password !== 'string' || password.length < 8) {
-    return res.status(422).json({ error: 'Password mínimo 8 caracteres' });
-  }
-  const rolFinal = rol && ROLES_VALIDOS.has(rol) ? rol : 'solo_lectura';
-
-  // ── 1. Validar que el solicitante es admin ──────────────────
+  // ── 1. Validar que el solicitante es admin (común a ambas acciones) ──
   const authHeader = req.headers.authorization || req.headers.Authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Falta token Authorization Bearer' });
@@ -94,6 +89,51 @@ export default async function handler(req, res) {
   } catch (e) {
     return res.status(502).json({ error: 'Error validando admin', detail: e.message });
   }
+
+  // ── Acción 'set_password': fijar la contraseña de un usuario existente ──
+  // (reset por admin; robusto en apps de escritorio/PWA donde el email falla).
+  if (action === 'set_password') {
+    const { user_id, password: newPass } = body;
+    if (!user_id) {
+      return res.status(422).json({ error: 'user_id requerido' });
+    }
+    if (typeof newPass !== 'string' || newPass.length < 8) {
+      return res.status(422).json({ error: 'Password mínimo 8 caracteres' });
+    }
+    try {
+      const updResp = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${user_id}`, {
+        method: 'PUT',
+        headers: {
+          apikey: SERVICE_ROLE,
+          Authorization: `Bearer ${SERVICE_ROLE}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ password: newPass, email_confirm: true }),
+      });
+      if (!updResp.ok) {
+        const errBody = await updResp.json().catch(() => ({}));
+        const msg = errBody?.msg || errBody?.error_description || errBody?.error || `HTTP ${updResp.status}`;
+        return res.status(updResp.status).json({ error: 'No se pudo actualizar la contraseña', detail: msg });
+      }
+    } catch (e) {
+      return res.status(502).json({ error: 'Error en Admin API', detail: e.message });
+    }
+    return res.status(200).json({
+      ok: true,
+      user_id,
+      message: 'Contraseña actualizada. El usuario ya puede ingresar con ella.',
+    });
+  }
+
+  // ── Acción 'create' (default): validar datos de creación ──
+  const { email, password, nombres, apellidos, rol } = body;
+  if (!email || !password) {
+    return res.status(422).json({ error: 'Email y password requeridos' });
+  }
+  if (typeof password !== 'string' || password.length < 8) {
+    return res.status(422).json({ error: 'Password mínimo 8 caracteres' });
+  }
+  const rolFinal = rol && ROLES_VALIDOS.has(rol) ? rol : 'solo_lectura';
 
   // ── 2. Crear usuario via Admin API con email_confirm:true ───
   // Si el email ya existe (porque el admin lo creó antes con signUp normal y
