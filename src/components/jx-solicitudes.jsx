@@ -510,6 +510,29 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
   // representa "vaciar" el campo, no "no elegí".
   const hasEmptyOption = fieldDef?.options?.some(o => (o.value ?? o) === '');
 
+  // Aviso de stock negativo al solicitar la ELIMINACIÓN de un movimiento: si borrarlo
+  // dejaría el stock del item en negativo, avisamos (no bloquea — el admin decide; a
+  // veces también hay que borrar otro movimiento, ej. la entrada que compensa la salida).
+  const [delWarn, setDelWarn] = uSS(null);
+  uES(() => {
+    let cancel = false;
+    const MOV_CAT = { movimientos_materiales: 'materiales', movimientos_epp: 'epps', movimientos_insumos_emergencia: 'insumos_emergencia' };
+    const cat = MOV_CAT[table];
+    if (mode !== 'delete' || !cat || !record) { setDelWarn(null); return; }
+    (async () => {
+      try {
+        const itemId = record.material_id || record.epp_id || record.insumo_emergencia_id;
+        if (!itemId) { setDelWarn(null); return; }
+        const item = await window.__db?.[cat]?.get(itemId);
+        if (cancel || !item) return;
+        const { stockTrasBorrar, dejaNegativo } = await import('../lib/stock-guard.js');
+        const ns = stockTrasBorrar(item.stock_actual, record);
+        setDelWarn(dejaNegativo(ns) ? { nuevoStock: ns, unidad: item.unidad || '' } : null);
+      } catch { if (!cancel) setDelWarn(null); }
+    })();
+    return () => { cancel = true; };
+  }, [mode, table, record]);
+
   const submitEdit = async () => {
     if (!field) { showToast('Selecciona el campo a modificar', 'red'); return; }
     if (!reason || reason.trim().length < 10) {
@@ -678,6 +701,14 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
             <strong style={{ color: '#EF6B5E' }}>⚠ Solicitud de eliminación</strong>
             <div style={{ marginTop: 4 }}>El registro quedará marcado como eliminado (soft-delete) cuando el admin apruebe. Los movimientos históricos no se ven afectados.</div>
           </div>
+          {delWarn && (
+            <div style={{ background: 'rgba(242,183,5,0.10)', border: '1px solid rgba(242,183,5,0.35)', borderRadius: 6, padding: 10, marginBottom: 12, fontSize: 12, color: 'var(--ts)' }}>
+              <strong style={{ color: 'var(--amber)' }}>⚠ Ojo con el stock</strong>
+              <div style={{ marginTop: 4 }}>
+                Borrar SOLO este movimiento dejaría el stock en <strong>{Number(delWarn.nuevoStock)} {delWarn.unidad}</strong> (negativo). Si te equivocaste de movimiento, probablemente también tengas que borrar el otro que lo compensa (ej. la entrada que va con esta salida). Podés enviar la solicitud igual — el admin decidirá; pero avisale para que los apruebe juntos.
+              </div>
+            </div>
+          )}
           <label className="flabel">Motivo de la eliminación * (mín. 10 caracteres)</label>
           <textarea className="fi" rows={3} placeholder="Explica por qué este registro debe eliminarse…"
                     value={reason} onChange={e => setReason(e.target.value)} />
