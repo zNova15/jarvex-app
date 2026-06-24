@@ -3,6 +3,10 @@ import { cubre, partidasDeFrente } from "../lib/frente-partidas.js";
 import { hijosDirectos, cadenaBreadcrumb } from "../lib/partida-arbol.js";
 const { useState: uS, useEffect: uE, useMemo: uM } = React;
 
+// ¿Es el frente especial "Gastos Generales"? (insumos de oficina/generales).
+const esGastosGenerales = (f) => !!(f && (f.es_gastos_generales || String(f.nombre || '').trim().toLowerCase() === 'gastos generales'));
+const __ggEnsuredObras = new Set();   // obras donde ya disparamos la auto-creación del GG
+
 // Catálogo de FRENTES DE TRABAJO por obra (zonas/sub-obras: Captación, Línea de
 // Conducción, Alcantarillado, etc.). El personal se asigna a un frente; los
 // frentes de un subcontrato se derivan de los frentes de su personal.
@@ -66,9 +70,23 @@ function FrentesPage({ showToast }) {
   }, [personal]);
 
   const sorted = uM(() => [...(frentes || [])].sort((a, b) => {
+    if (esGastosGenerales(a) !== esGastosGenerales(b)) return esGastosGenerales(a) ? 1 : -1;  // GG siempre al final
     if ((a.activo !== false) !== (b.activo !== false)) return a.activo === false ? 1 : -1;
     return Number(a.orden ?? 99) - Number(b.orden ?? 99) || (a.nombre || '').localeCompare(b.nombre || '');
   }), [frentes]);
+
+  // Auto-ensure: toda obra tiene un frente "Gastos Generales" (insumos de oficina,
+  // fuera de partidas). La mig 101 lo creó para las obras existentes; esto cubre las
+  // nuevas. Idempotente vía guard module-level + chequeo del listado.
+  uE(() => {
+    if (!obraId || !Array.isArray(frentes) || loading) return;
+    if (frentes.some(esGastosGenerales) || __ggEnsuredObras.has(obraId)) return;
+    __ggEnsuredObras.add(obraId);
+    Promise.resolve(create({ obra_id: obraId, nombre: 'Gastos Generales',
+      descripcion: 'Insumos de oficina / generales que no entran en partidas de ejecución (ej. agua de oficina).',
+      es_gastos_generales: true, ingeniero_user_id: null, orden: 999, activo: true }))
+      .catch(() => { __ggEnsuredObras.delete(obraId); });
+  }, [obraId, frentes, loading]);
 
   const [modal, setModal] = uS(null);
   const [editing, setEditing] = uS(null);
@@ -194,23 +212,28 @@ function FrentesPage({ showToast }) {
                 {sorted.map(f => {
                   const c = conteos[f.id] || 0;
                   const inactivo = f.activo === false;
+                  const gg = esGastosGenerales(f);
                   return (
-                    <tr key={f.id} style={{ opacity: inactivo ? 0.55 : 1 }}>
-                      <td style={{ textAlign: 'right', fontFamily: 'monospace' }}>{f.orden ?? '—'}</td>
-                      <td className="col-p"><strong>{f.nombre}</strong></td>
-                      <td style={{ fontSize: 11, color: 'var(--tm)' }}>{f.descripcion || '—'}</td>
-                      <td style={{ fontSize: 12 }}>{f.ingeniero_user_id ? nombreUsuario(f.ingeniero_user_id) : '—'}</td>
+                    <tr key={f.id} style={{ opacity: inactivo ? 0.55 : 1, background: gg ? 'rgba(52,152,219,0.05)' : undefined }}>
+                      <td style={{ textAlign: 'right', fontFamily: 'monospace' }}>{gg ? '—' : (f.orden ?? '—')}</td>
+                      <td className="col-p"><strong>{f.nombre}</strong>{gg && <span className="badge b-blue" style={{ marginLeft: 6, fontSize: 9 }} title="Frente del sistema: insumos de oficina/generales">sistema</span>}</td>
+                      <td style={{ fontSize: 11, color: 'var(--tm)' }}>{f.descripcion || (gg ? 'Insumos de oficina / generales (fuera de partidas)' : '—')}</td>
+                      <td style={{ fontSize: 12 }}>{gg ? <span style={{ color: 'var(--tm)' }}>—</span> : (f.ingeniero_user_id ? nombreUsuario(f.ingeniero_user_id) : '—')}</td>
                       <td style={{ textAlign: 'right', fontWeight: 600 }}>{c || <span style={{ color: 'var(--tm)' }}>0</span>}</td>
                       <td><span className={`badge ${inactivo ? 'b-gray' : 'b-green'}`}>{inactivo ? 'Inactivo' : 'Activo'}</span></td>
                       <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
-                        <button className="btn btn-ghost btn-xs" title="Partidas asignadas a este frente" onClick={() => openAsignar(f)} style={{ marginRight: 4 }}>Partidas · {coberturaPorFrente[f.id] || 0}</button>
-                        {canWrite && (
-                          <>
-                            <button className="btn btn-ghost btn-xs" title="Editar" onClick={() => openEditar(f)}><JxIcon name="edit" size={11} /></button>
-                            <button className={`btn btn-xs ${inactivo ? 'btn-amber' : 'btn-ghost'}`} title={inactivo ? 'Reactivar' : 'Desactivar'} onClick={() => toggleActivo(f)} style={{ marginLeft: 4 }}>{inactivo ? '↻' : '⏸'}</button>
-                            <button className="btn btn-red btn-xs" title="Eliminar" onClick={() => eliminar(f)} style={{ marginLeft: 4 }}><JxIcon name="trash" size={11} /></button>
-                          </>
-                        )}
+                        {gg ? (
+                          <span style={{ fontSize: 11, color: 'var(--tm)' }} title="Frente del sistema. La almacenera asigna acá los insumos de oficina/generales que no entran en partidas. No se edita ni se borra.">Destino de insumos de oficina/generales</span>
+                        ) : (<>
+                          <button className="btn btn-ghost btn-xs" title="Partidas asignadas a este frente" onClick={() => openAsignar(f)} style={{ marginRight: 4 }}>Partidas · {coberturaPorFrente[f.id] || 0}</button>
+                          {canWrite && (
+                            <>
+                              <button className="btn btn-ghost btn-xs" title="Editar" onClick={() => openEditar(f)}><JxIcon name="edit" size={11} /></button>
+                              <button className={`btn btn-xs ${inactivo ? 'btn-amber' : 'btn-ghost'}`} title={inactivo ? 'Reactivar' : 'Desactivar'} onClick={() => toggleActivo(f)} style={{ marginLeft: 4 }}>{inactivo ? '↻' : '⏸'}</button>
+                              <button className="btn btn-red btn-xs" title="Eliminar" onClick={() => eliminar(f)} style={{ marginLeft: 4 }}><JxIcon name="trash" size={11} /></button>
+                            </>
+                          )}
+                        </>)}
                       </td>
                     </tr>
                   );

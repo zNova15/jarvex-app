@@ -853,10 +853,10 @@ const PERM_MATRIX = {
     if (m === 'Usuarios/Config') return 'x';
     if (['Costos','Plan de Cuentas','Libro Diario','Balance General','Estado Resultados',
          'Empresas','Intercompany','Config SUNAT'].includes(m)) return 'x';
-    if (['Personal','Asistencia','Proveedores','Subcontratistas','Contratos Laborales','Planillas',
+    if (['Personal','Asistencia','Proveedores','Subcontratistas','Subcontratos','Partidas','Contratos Laborales','Planillas',
          'CTS','Gratificaciones','Comprobantes Electrónicos','PLAME / T-Registro',
          'Movs. Contables','Cuentas Bancarias','Solicitudes Cambio','Importar','Captura Mágica'].includes(m)) return 'w';
-    return 'r';
+    return 'r';  // Avance/Incidencias/Cronograma quedan en 'r' (leer, no reportar avances)
   }),
 
   // Contador: w en contabilidad, plan de cuentas, libros, balance/estado;

@@ -1647,8 +1647,16 @@ function MovMaterialesPage({ showToast }) {
           <label className="flabel">Frente *</label>
           <select className="fi" value={selFrente} onChange={e=>setSelFrente(e.target.value)}>
             <option value="">— Elegí el frente —</option>
-            {(frentesObra||[]).map(f => <option key={f.id} value={f.id}>{f.nombre}</option>)}
+            {(frentesObra||[]).slice().sort((a,b)=>{
+              const ga = !!(a.es_gastos_generales || /gastos generales/i.test(a.nombre||'')), gb = !!(b.es_gastos_generales || /gastos generales/i.test(b.nombre||''));
+              if (ga!==gb) return ga?1:-1;
+              return Number(a.orden??99)-Number(b.orden??99) || String(a.nombre||'').localeCompare(String(b.nombre||''));
+            }).map(f => {
+              const gg = f.es_gastos_generales || /gastos generales/i.test(f.nombre||'');
+              return <option key={f.id} value={f.id}>{gg ? '⚑ Gastos Generales (oficina / fuera de partidas)' : f.nombre}</option>;
+            })}
           </select>
+          <div style={{ fontSize:11, color:'var(--tm)', marginTop:6 }}>Si el insumo fue para oficina o algo general (no para una partida de ejecución), elegí <strong>Gastos Generales</strong> en vez de dejarlo sin frente.</div>
           <div className="modal-actions">
             <button className="btn btn-ghost" onClick={()=>setAsignarFrenteTarget(null)}>Cancelar</button>
             <button className="btn btn-amber" onClick={async ()=>{
