@@ -1090,12 +1090,21 @@ const __ROLES_CANONICOS = new Set([
 // que están explícitamente marcados como `null` en moduleIdMap.
 // Módulos de "Ingeniería de Frente" (rol ingeniero). Menú ULTRA-acotado.
 const __INGENIERO_ITEMS = ['dashboard-tecnico', 'mis-partidas', 'cronograma-frente', 'salidas-frente', 'reporte-diario', 'borradores-reporte', 'mis-reportes', 'plan-real', 'emitir-alerta', 'detalle-partida'];
+// Asistente de Administrador: menú ACOTADO a Gestión de Obra + Insumos por Persona
+// (SSOMA) + Personal/Frentes (RRHH). Ve EXCLUSIVAMENTE estos ítems, nada más.
+const __ASISTENTE_ADMIN_ITEMS = [
+  'dashboard-gestion', 'partidas', 'insumos', 'cronograma', 'avance',
+  'aprobaciones-reporte', 'rendimiento-ingenieros', 'subcontratistas', 'subcontratos', 'incidencias',
+  'insumos-persona', 'personal', 'frentes',
+];
 window.__canSeeSidebarItem = function(rol, itemId) {
   const modulo = window.__moduleIdMap?.[itemId];
-  // La bandeja de aprobaciones de reporte de frente ajeno + rendimiento: admin/gerente
-  // y el Asistente de Administrador (acceso de gestión de obra).
-  if (itemId === 'aprobaciones-reporte') return rol === 'admin' || rol === 'gerente' || rol === 'asistente_admin';
-  if (itemId === 'rendimiento-ingenieros') return rol === 'admin' || rol === 'gerente' || rol === 'asistente_admin';
+  // El Asistente de Administrador ve EXCLUSIVAMENTE su lista acotada (igual patrón
+  // que el ingeniero) — gana sobre cualquier permiso de la matriz.
+  if (rol === 'asistente_admin') return __ASISTENTE_ADMIN_ITEMS.includes(itemId);
+  // La bandeja de aprobaciones de reporte de frente ajeno + rendimiento: admin/gerente.
+  if (itemId === 'aprobaciones-reporte') return rol === 'admin' || rol === 'gerente';
+  if (itemId === 'rendimiento-ingenieros') return rol === 'admin' || rol === 'gerente';
   // Los módulos del ingeniero solo los ven el ingeniero (y admin).
   if (__INGENIERO_ITEMS.includes(itemId)) return rol === 'admin' || rol === 'ingeniero';
   // El ingeniero ve EXCLUSIVAMENTE sus módulos de frente (nada más, ni utilities).
