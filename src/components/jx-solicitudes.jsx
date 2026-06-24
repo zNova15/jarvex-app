@@ -224,6 +224,9 @@ function SolicitudesPage({ showToast }) {
         // 2) aplicar a la nueva
         if (fields.partida_id) {
           await aplicarConsumoPartida({ mov: { ...oldData, ...fields }, partida_id: fields.partida_id, material, userId });
+          // Si la salida estaba marcada como "general al frente", al asignarle una
+          // partida real deja de ser general (evita el registro contradictorio).
+          fields.vinculacion_general = false;
         }
       } catch (e) {
         console.warn('[solicitudes] no se pudo recalcular consumo partida:', e?.message);

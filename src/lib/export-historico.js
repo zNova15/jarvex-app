@@ -78,6 +78,7 @@ async function cargarContexto(obraId, { porModo = false } = {}) {
     mantsAll, horas, comb, caja, asist,
     mats, herrs, epps, activos, insEmer,
     personal, subs, provs, ubic, evid, fren, pcb,
+    partidas, companies, accMovs, avances, obra,
   ] = await Promise.all([
     porObra('movimientos_materiales'), porObra('movimientos_herramientas'), porObra('movimientos_epp'),
     porObra('movimientos_maquinaria'), porObra('movimientos_insumos_emergencia'),
@@ -88,6 +89,10 @@ async function cargarContexto(obraId, { porModo = false } = {}) {
     porObra('personal'), todos('subcontratistas'), todos('proveedores'), porObra('ubicaciones_obra'),
     porObra('evidencias').catch(() => []), porObra('frentes_obra').catch(() => []),
     porObra('personal_cuentas_bancarias').catch(() => []),
+    // accounting_movements NO está indexado por obra_id → porObraSinIndice.
+    porObra('partidas').catch(() => []), todos('companies').catch(() => []),
+    porObraSinIndice('accounting_movements').catch(() => []), porObra('avance_obra').catch(() => []),
+    db.obras.get(obraId).catch(() => null),
   ]);
   // mantenimientos_maquinaria NO tiene obra_id → lo scopeamos a los activos de
   // esta obra (asignados a la obra o que tienen movimientos en ella).
@@ -105,9 +110,11 @@ async function cargarContexto(obraId, { porModo = false } = {}) {
   return {
     movMat, movHerr, movEpp, movMaq, movEmer, mants, horas, comb, caja, asist,
     mats, herrs, epps, activos, insEmer, personal, subs, provs, ubic, evid, fren, pcb,
+    partidas, companies, accMovs, avances, obra,
     matById: byId(mats), herrById: byId(herrs), eppById: byId(epps), activoById: byId(activos),
     insEmerById: byId(insEmer), personalById: byId(personal), subsById: byId(subs),
     provById: byId(provs), ubicById: byId(ubic), frenById: byId(fren), pcbByPersonal,
+    partById: byId(partidas), companyById: byId(companies),
   };
 }
 
@@ -294,6 +301,49 @@ export const DATASETS = [
       rows = rows.slice().sort((a, b) => isoFecha(a.fecha).localeCompare(isoFecha(b.fecha)));
       return { headers: ['Tipo', 'Módulo', 'Registro ID', 'Nombre archivo', 'Fecha', 'Observaciones', 'Estado', 'MIME', 'Tamaño (KB)', 'URL / Path'],
         rows: rows.map((e) => [e.tipo_evidencia || '', e.modulo_relacionado || '', e.registro_relacionado_id || '', e.nombre_archivo || '', isoFecha(e.fecha), e.observaciones || '', e.sync_status || '', e.mime_type || '', e.tamano_bytes ? Math.round(e.tamano_bytes / 1024) : '', e.url_archivo || e.local_path_temporal || '']) };
+    } },
+
+  // ── Movimientos contables (accounting_movements) con el máximo de datos ──
+  { id: 'accounting', label: 'Movimientos Contables', icon: 'dollar', color: '#16A085', grupo: 'Contabilidad', filtrable: true,
+    build: (c, f) => {
+      const cn = (id) => c.companyById.get(id)?.name || c.companyById.get(id)?.legal_name || '';
+      let rows = (c.accMovs || []);
+      const { desde, hasta, q } = f || {};
+      if (desde) rows = rows.filter((m) => isoFecha(m.date) >= desde);
+      if (hasta) rows = rows.filter((m) => isoFecha(m.date) <= hasta);
+      if (q) { const t = q.toLowerCase(); rows = rows.filter((m) => `${m.description || ''} ${m.third_party_name || ''} ${m.document_number || ''}`.toLowerCase().includes(t)); }
+      rows = rows.slice().sort((a, b) => isoFecha(a.date).localeCompare(isoFecha(b.date)));
+      return { headers: ['ID', 'Fecha', 'Tipo', 'Categoría', 'Descripción', 'Monto', 'Moneda', 'Empresa', 'Contraparte', 'RUC Contraparte', 'Estado Pago', 'Tipo Doc', 'N° Documento', 'Método Pago', 'Cuenta PCGE', 'Intercompany', 'Empresa Relacionada', 'Obra', 'Proveedor', 'Estado Factura', 'Recepción', 'Notas', 'Creado'],
+        rows: rows.map((m) => [m.id, isoFecha(m.date), m.type || '', m.category || '', m.description || '', n2(m.amount), m.currency || 'PEN', cn(m.company_id), m.third_party_name || '', m.third_party_ruc || '', m.payment_status || '', m.document_type || '', m.document_number || '', m.metodo_pago || '', m.cuenta_pcge || '', m.is_intercompany ? 'Sí' : '', cn(m.related_company_id), c.obra?.nombre_obra || '', c.provById.get(m.proveedor_id)?.razon_social || '', m.estado_factura || '', m.recepcion_status || '', m.notas || '', isoFecha(m.created_at)]) };
+    } },
+
+  // ── Reportes de avance de los ingenieros (avance_obra origen='reporte') ──
+  { id: 'reportes_avance', label: 'Reportes de Ingenieros', icon: 'edit', color: '#3498DB', grupo: 'Avance de Obra', filtrable: true,
+    build: (c, f) => {
+      let rows = (c.avances || []).filter((a) => a.origen === 'reporte');
+      const { desde, hasta, q } = f || {};
+      if (desde) rows = rows.filter((a) => isoFecha(a.fecha) >= desde);
+      if (hasta) rows = rows.filter((a) => isoFecha(a.fecha) <= hasta);
+      if (q) { const t = q.toLowerCase(); rows = rows.filter((a) => `${a.descripcion || ''}`.toLowerCase().includes(t)); }
+      rows = rows.slice().sort((a, b) => isoFecha(a.fecha).localeCompare(isoFecha(b.fecha)));
+      const nEvi = (aid) => (c.evid || []).filter((e) => e.modulo_relacionado === 'avance_obra' && String(e.registro_relacionado_id) === String(aid)).length;
+      return { headers: ['ID', 'Fecha', 'Semana', 'Código Partida', 'Partida', 'Frente', 'Ingeniero', 'Metrado Ejecutado', '% Avance Acum.', 'Personal', 'Sobre-reporte', 'Motivo Sobre-reporte', 'Descripción', 'N° Fotos'],
+        rows: rows.map((a) => { const p = c.partById.get(a.partida_id); return [a.id, isoFecha(a.fecha), a.semana || '', p?.codigo_delfin || '', p?.nombre_partida || '', c.frenById.get(a.frente_id)?.nombre || '', nombrePersona(c.personalById.get(a.responsable_id)), n2(a.metrado_ejecutado), a.porcentaje_avance_reportado != null ? Number(a.porcentaje_avance_reportado) : '', n2(a.personal_asignado), a.sobre_reporte ? 'Sí' : '', a.motivo_sobrereporte || '', a.descripcion || '', nEvi(a.id)]; }) };
+    } },
+
+  // ── Vinculaciones de insumos (salidas que el ingeniero vinculó a partida/frente) ──
+  { id: 'vinculaciones_insumos', label: 'Vinculaciones de Insumos (Ingeniero)', icon: 'link', color: '#E67E22', grupo: 'Avance de Obra', filtrable: true,
+    build: (c, f) => {
+      const nombre = (m) => c.matById.get(m.material_id)?.nombre_material || '';
+      const vinc = (c.movMat || []).filter((m) => m.tipo_movimiento === 'salida' && (m.partida_id || m.vinculacion_general));
+      const rows = filtrarMovs(vinc, f, nombre).map((m) => {
+        const d = destino(m, c.personalById, c.subsById);
+        const p = c.partById.get(m.partida_id);
+        return [isoFecha(m.fecha), nombre(m) || '(eliminado)', n2(m.cantidad), m.unidad || '', tipoLabel(m.tipo_movimiento),
+          c.frenById.get(m.frente_id)?.nombre || '', m.vinculacion_general ? '(General al frente)' : (p?.codigo_delfin || ''), m.vinculacion_general ? '' : (p?.nombre_partida || ''),
+          d.responsable, d.subcontrato, nombrePersona(c.personalById.get(m.partida_asignada_por)), isoFecha(m.partida_asignada_at), m.observaciones || ''];
+      });
+      return { headers: ['Fecha', 'Material', 'Cantidad', 'Unidad', 'Tipo', 'Frente', 'Código Partida', 'Partida', 'Responsable', 'Subcontrato', 'Vinculada por', 'Fecha vinculación', 'Observaciones'], rows };
     } },
 ];
 

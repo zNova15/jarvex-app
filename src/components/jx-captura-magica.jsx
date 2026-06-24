@@ -549,6 +549,7 @@ function CapturaMagicaPage({ showToast }) {
   };
 
   // ── Confirmar e insertar en DB ──────────────────────────────
+  const enProcesoRef = uRCM(new Set());   // ids de items en confirmación (anti doble-submit)
   const confirmarItem = async (id) => {
     const it = items.find(x => x.id === id);
     if (!it || !it.review) return;
@@ -587,6 +588,10 @@ function CapturaMagicaPage({ showToast }) {
     let proveedorIdFinal = r.proveedor_id;
     let companyIdFinal = r.company_id;
 
+    // Guard anti doble-submit: si este item ya se está confirmando, no lo
+    // proceses otra vez (evitaba el race que creó empresas/proveedores duplicados).
+    if (enProcesoRef.current.has(id)) return;
+    enProcesoRef.current.add(id);
     try {
       // 0) Crear empresa del grupo si nueva. El review se arma al EXTRAER la
       // factura: si otra factura ya creó esa empresa (mismo RUC) en el ínterin,
@@ -618,7 +623,12 @@ function CapturaMagicaPage({ showToast }) {
           created_by: userId, updated_by: userId,
           created_at: now, updated_at: now,
           version: 1, sync_status: 'pending_create',
-          idempotency_key: `${userId}_company_${cid}`,
+          // Determinístico por RUC: si dos capturas/dispositivos crean la misma
+          // empresa (race que el dedup por RUC fresco no alcanzó), el UNIQUE de
+          // companies.idempotency_key del server rechaza la 2ª y NO duplica. Antes
+          // embebía el id nuevo (`_company_${cid}`) → nunca deduplicaba (bug de las
+          // 3 TEATINO MARTINEZ). Sin RUC, cae al key por instancia.
+          idempotency_key: rucC ? `company_ruc_${rucC}` : `${userId}_company_${cid}`,
         });
         try { await window.__logAudit?.({ action:'insert', table:'companies', recordId: cid,
           newData: { name: r.nueva_company_name, ruc: r.nueva_company_ruc, rol_grupo: r.nueva_company_rol },
@@ -1065,6 +1075,8 @@ function CapturaMagicaPage({ showToast }) {
       setReviewing(null);
     } catch (e) {
       showToast('Error al registrar: ' + (e.message || e), 'red');
+    } finally {
+      enProcesoRef.current.delete(id);
     }
   };
 

@@ -11,6 +11,7 @@ import { resumenFrente, planVsReal, rollupMensual, rendimientoPartida, rendimien
 import { hijosDirectos, cadenaBreadcrumb } from "../lib/partida-arbol.js";
 import { hoyLocal, fmtFechaCorta } from "../lib/fecha.js";
 import { colorIngeniero, segmentarAvance } from "../lib/color-ingeniero.js";
+import { SearchableSelect } from "./jx-searchable-select.jsx";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -373,21 +374,27 @@ function MiFrenteShell({ showToast, vista }) {
   const rollup = uM(() => rollupMensual({ partidasDelFrente, avances: avances || [], mes }), [partidasDelFrente, avances, mes]);
 
   // ── Vinculación de insumos: salidas → partida ─────────────────────
-  const [vincSel, setVincSel] = uS({});         // {movId: textoCódigo}
-  const [tabSalidas, setTabSalidas] = uS('mis'); // 'mis' | 'generales'
+  const [vincSel, setVincSel] = uS({});         // {movId: partidaId | '__general'}
+  const [tabSalidas, setTabSalidas] = uS('mis'); // 'mis' | 'generales' | 'registro'
   const [filtroDiaSal, setFiltroDiaSal] = uS('');
   const [filtroPartSal, setFiltroPartSal] = uS('');
+  const [solCambioVinc, setSolCambioVinc] = uS(null);   // salida a la que se solicita cambio de vinculación
   const misFrentesIds = uM(() => new Set(misFrentes.map(f => f.id)), [misFrentes]);
   const salidasMisFrentes = uM(() => (movs || []).filter(m => !m.deleted_at && m.tipo_movimiento === 'salida' && m.frente_id && misFrentesIds.has(m.frente_id)).sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || ''))), [movs, misFrentesIds]);
   const salidasGenerales = uM(() => (movs || []).filter(m => !m.deleted_at && m.tipo_movimiento === 'salida').sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || ''))), [movs]);
   const partidaPorCodigo = uM(() => { const m = new Map(); allPartidas.forEach(p => { if (p.codigo_delfin) m.set(String(p.codigo_delfin).trim(), p.id); }); return m; }, [allPartidas]);
   const vincularSalida = async (m, pid) => {
     if (!pid) { showToast('Elegí una partida', 'red'); return; }
+    const prevPid = m.partida_id || null;
+    if (prevPid === pid) { showToast('Ya está vinculada a esa partida', 'amber'); return; }   // no-op (evita doble conteo)
     try {
-      await movHook.update(m.id, { partida_id: pid });
+      await movHook.update(m.id, { partida_id: pid, vinculacion_general: false });
       try {
-        const { aplicarConsumoPartida } = await import('../lib/partida-allocation.js');
+        const { aplicarConsumoPartida, revertirConsumoPartida } = await import('../lib/partida-allocation.js');
         const material = materialesById.get(m.material_id);
+        // Re-vinculación: revertir el consumo de la partida ANTERIOR antes de aplicar el nuevo
+        // (si no, queda doblemente imputado — mismo patrón que la aprobación en jx-solicitudes).
+        if (prevPid) await revertirConsumoPartida({ mov: m, partida_id: prevPid, material, userId });
         await aplicarConsumoPartida({ mov: { ...m, partida_id: pid }, partida_id: pid, material, userId });
       } catch (e) { console.warn('[vincular salida]', e?.message); }
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'movimientos_materiales' } })); } catch {}
@@ -395,6 +402,29 @@ function MiFrenteShell({ showToast, vista }) {
       showToast('Salida vinculada a la partida', 'green');
     } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
   };
+  // Vinculación GENERAL al frente: el insumo no corresponde a ninguna partida del
+  // presupuesto (ej. bidón de agua). No imputa consumo a ninguna partida.
+  const vincularGeneral = async (m) => {
+    try {
+      await movHook.update(m.id, { vinculacion_general: true, partida_id: null });
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'movimientos_materiales' } })); } catch {}
+      setVincSel(prev => { const n = { ...prev }; delete n[m.id]; return n; });
+      showToast('Salida vinculada en general al frente', 'green');
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
+  // Opciones de partida (hojas, no capítulos) para el selector buscable.
+  const partidaOpts = uM(() => {
+    const folders = new Set();
+    for (const p of allPartidas) { const segs = String(p.codigo_delfin || '').split('.').filter(Boolean); for (let i = 1; i < segs.length; i++) folders.add(segs.slice(0, i).join('.')); }
+    return allPartidas
+      .filter(p => p.codigo_delfin && !folders.has(String(p.codigo_delfin).trim()))
+      .sort((a, b) => String(a.codigo_delfin).localeCompare(String(b.codigo_delfin), 'es', { numeric: true }))
+      .map(p => ({ value: p.id, label: `${p.codigo_delfin} · ${p.nombre_partida}` }));
+  }, [allPartidas]);
+  // Salidas YA vinculadas (a partida o general) — para la pestaña "Registro".
+  const salidasVinculadas = uM(() => (movs || [])
+    .filter(m => !m.deleted_at && m.tipo_movimiento === 'salida' && (m.partida_id || m.vinculacion_general))
+    .sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || ''))), [movs]);
 
   // Gantt del frente (HOOKS antes de cualquier return temprano — regla de hooks).
   const ganttPartidas = uM(() => {
@@ -912,6 +942,74 @@ function MiFrenteShell({ showToast, vista }) {
       )}
 
       {vista === 'salidas' && (() => {
+        const RCM = window.RequestChangeModal;
+        // Opciones del selector buscable: la opción "general al frente" primero, luego las partidas (código · nombre).
+        const opcionesVinc = [{ value: '__general', label: '⚑ Vinculación general al frente (fuera de presupuesto)' }, ...partidaOpts];
+        const tabsHdr = (
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            <button className={`btn btn-sm ${tabSalidas === 'mis' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTabSalidas('mis')}>Insumos a mis Frentes</button>
+            <button className={`btn btn-sm ${tabSalidas === 'generales' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTabSalidas('generales')}>Insumos generales</button>
+            <button className={`btn btn-sm ${tabSalidas === 'registro' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTabSalidas('registro')}>Registro de vinculaciones</button>
+          </div>
+        );
+
+        // ── Pestaña REGISTRO: salidas ya vinculadas + solicitar cambio al admin ──
+        if (tabSalidas === 'registro') {
+          const q = filtroPartSal.trim().toLowerCase();
+          const lista = salidasVinculadas.filter(m => {
+            if (filtroDiaSal && m.fecha !== filtroDiaSal) return false;
+            if (q) {
+              const p = partByIdAll.get(m.partida_id);
+              const matName = (materialesById.get(m.material_id)?.nombre_material || '').toLowerCase();
+              const pc = (p ? `${p.codigo_delfin} ${p.nombre_partida}` : '').toLowerCase();
+              if (!pc.includes(q) && !matName.includes(q)) return false;
+            }
+            return true;
+          });
+          return (
+            <div style={{ display: 'grid', gap: 10 }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                {tabsHdr}
+                <input className="fi" type="date" style={{ maxWidth: 160 }} value={filtroDiaSal} onChange={e => setFiltroDiaSal(e.target.value)} title="Filtrar por día" />
+                {filtroDiaSal && <button className="btn btn-ghost btn-xs" onClick={() => setFiltroDiaSal('')}>✕ día</button>}
+                <input className="fi" style={{ maxWidth: 240 }} placeholder="Filtrar por partida o material…" value={filtroPartSal} onChange={e => setFiltroPartSal(e.target.value)} />
+                <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--tm)' }}>{lista.length} vinculada(s)</span>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--tm)' }}>Los insumos que ya vinculaste. Si te equivocaste de partida, pedí al admin el cambio (con un motivo) — él lo aprueba y recalcula el consumo.</div>
+              <div className="card" style={{ overflow: 'auto' }}>
+                <table className="tbl" style={{ fontSize: 12 }}>
+                  <thead><tr><th>Fecha</th><th>Material</th><th style={{ textAlign: 'right' }}>Cantidad</th><th>Frente</th><th>Vinculado a</th><th></th></tr></thead>
+                  <tbody>
+                    {lista.map(m => {
+                      const p = partByIdAll.get(m.partida_id);
+                      return (
+                        <tr key={m.id}>
+                          <td>{m.fecha || '—'}</td>
+                          <td>{materialesById.get(m.material_id)?.nombre_material || '—'}</td>
+                          <td style={{ textAlign: 'right' }}>{num(m.cantidad)} {m.unidad || ''}</td>
+                          <td>{m.frente_id ? <span className="badge b-amber" style={{ fontSize: 9 }}>{fNomById.get(m.frente_id) || 'frente'}</span> : <span style={{ color: 'var(--tm)' }}>—</span>}</td>
+                          <td>{m.vinculacion_general
+                            ? <span className="badge b-blue" style={{ fontSize: 9 }}>General al frente</span>
+                            : (p ? <><span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{p.codigo_delfin}</span> {p.nombre_partida}</> : '—')}</td>
+                          <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>{RCM && <button className="btn btn-ghost btn-xs" title="Solicitar al admin el cambio de vinculación (lo aprueba él)" onClick={() => setSolCambioVinc(m)}><JxIcon name="edit" size={11} /> Solicitar cambio</button>}</td>
+                        </tr>
+                      );
+                    })}
+                    {lista.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>Todavía no vinculaste ninguna salida.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+              {solCambioVinc && RCM && <RCM
+                table="movimientos_materiales"
+                record={solCambioVinc}
+                recordLabel={`${materialesById.get(solCambioVinc.material_id)?.nombre_material || 'material'} · ${num(solCambioVinc.cantidad)} ${solCambioVinc.unidad || ''} · ${solCambioVinc.fecha || ''}`}
+                fields={[{ key: 'partida_id', label: 'Partida vinculada', options: partidaOpts }]}
+                onClose={() => setSolCambioVinc(null)} />}
+            </div>
+          );
+        }
+
+        // ── Pestañas MIS / GENERALES: vincular ──
         const base = tabSalidas === 'mis' ? salidasMisFrentes : salidasGenerales;
         const q = filtroPartSal.trim().toLowerCase();
         const lista = base.filter(m => {
@@ -928,10 +1026,7 @@ function MiFrenteShell({ showToast, vista }) {
         return (
           <div style={{ display: 'grid', gap: 10 }}>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <div style={{ display: 'flex', gap: 4 }}>
-                <button className={`btn btn-sm ${tabSalidas === 'mis' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTabSalidas('mis')}>Insumos a mis Frentes</button>
-                <button className={`btn btn-sm ${tabSalidas === 'generales' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTabSalidas('generales')}>Insumos generales</button>
-              </div>
+              {tabsHdr}
               <input className="fi" type="date" style={{ maxWidth: 160 }} value={filtroDiaSal} onChange={e => setFiltroDiaSal(e.target.value)} title="Filtrar por día" />
               {filtroDiaSal && <button className="btn btn-ghost btn-xs" onClick={() => setFiltroDiaSal('')}>✕ día</button>}
               {tabSalidas === 'generales' && <input className="fi" style={{ maxWidth: 240 }} placeholder="Filtrar por partida o material…" value={filtroPartSal} onChange={e => setFiltroPartSal(e.target.value)} />}
@@ -939,17 +1034,16 @@ function MiFrenteShell({ showToast, vista }) {
             </div>
             <div style={{ fontSize: 11, color: 'var(--tm)' }}>
               {tabSalidas === 'mis'
-                ? 'Salidas de almacén registradas a tus frentes. Vinculá cada una a la partida en la que se usó.'
+                ? 'Salidas de almacén registradas a tus frentes. Vinculá cada una a la partida en la que se usó (o "general al frente" si no está en el presupuesto).'
                 : 'Todas las salidas de la obra. Si un insumo salió a otro frente pero lo usaste en tu partida (incluso una sin frente), vinculalo acá.'}
             </div>
             <div className="card" style={{ overflow: 'auto' }}>
-              <datalist id="jx-vinc-partidas">{hojasReporte.slice(0, 2000).map(p => <option key={p.id} value={p.codigo_delfin}>{p.nombre_partida}</option>)}</datalist>
               <table className="tbl" style={{ fontSize: 12 }}>
-                <thead><tr><th>Fecha</th><th>Material</th><th style={{ textAlign: 'right' }}>Cantidad</th><th>Responsable</th>{tabSalidas === 'generales' && <th>Frente</th>}<th>Partida</th><th>Vincular a partida</th></tr></thead>
+                <thead><tr><th>Fecha</th><th>Material</th><th style={{ textAlign: 'right' }}>Cantidad</th><th>Responsable</th>{tabSalidas === 'generales' && <th>Frente</th>}<th>Vinculado</th><th>Vincular a partida / frente</th></tr></thead>
                 <tbody>
                   {lista.map(m => {
-                    const yaVinc = m.partida_id;
-                    const pv = yaVinc ? partByIdAll.get(m.partida_id) : null;
+                    const yaVinc = m.partida_id || m.vinculacion_general;
+                    const pv = m.partida_id ? partByIdAll.get(m.partida_id) : null;
                     return (
                       <tr key={m.id}>
                         <td>{m.fecha || '—'}</td>
@@ -957,10 +1051,19 @@ function MiFrenteShell({ showToast, vista }) {
                         <td style={{ textAlign: 'right' }}>{num(m.cantidad)} {m.unidad || ''}</td>
                         <td>{(() => { const p = personalById.get(m.responsable_id); return p ? `${p.nombres} ${p.apellidos || ''}`.trim() : '—'; })()}</td>
                         {tabSalidas === 'generales' && <td>{m.frente_id ? <span className="badge b-amber" style={{ fontSize: 9 }}>{fNomById.get(m.frente_id) || 'frente'}</span> : <span style={{ color: 'var(--tm)' }}>—</span>}</td>}
-                        <td>{yaVinc ? <span className="badge b-green" style={{ fontSize: 9 }} title={pv ? `${pv.codigo_delfin} · ${pv.nombre_partida}` : ''}>{pv ? pv.codigo_delfin : '✓'}</span> : <span style={{ color: 'var(--tm)' }}>—</span>}</td>
-                        <td style={{ whiteSpace: 'nowrap' }}>
-                          <input list="jx-vinc-partidas" className="fi" style={{ display: 'inline-block', width: 120, fontSize: 11 }} placeholder="código…" value={vincSel[m.id] || ''} onChange={e => setVincSel({ ...vincSel, [m.id]: e.target.value })} />
-                          <button className="btn btn-amber btn-xs" style={{ marginLeft: 4 }} onClick={() => { const pid = partidaPorCodigo.get((vincSel[m.id] || '').trim()); if (!pid) { showToast('Escribí un código de partida válido', 'red'); return; } vincularSalida(m, pid); }}>{yaVinc ? 'Re-vincular' : 'Vincular'}</button>
+                        <td>{m.vinculacion_general
+                          ? <span className="badge b-blue" style={{ fontSize: 9 }} title="Usado en el frente, fuera de presupuesto">General</span>
+                          : (pv ? <span className="badge b-green" style={{ fontSize: 9 }} title={`${pv.codigo_delfin} · ${pv.nombre_partida}`}>{pv.codigo_delfin}</span> : <span style={{ color: 'var(--tm)' }}>—</span>)}</td>
+                        <td style={{ whiteSpace: 'nowrap', minWidth: 280 }}>
+                          <div style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+                            <SearchableSelect value={vincSel[m.id] || ''} onChange={v => setVincSel({ ...vincSel, [m.id]: v })} options={opcionesVinc}
+                              placeholder="Buscar partida…" fontSize={11} style={{ minWidth: 230, display: 'inline-block' }} />
+                            <button className="btn btn-amber btn-xs" onClick={() => {
+                              const v = vincSel[m.id];
+                              if (!v) { showToast('Elegí una partida o "general al frente"', 'red'); return; }
+                              if (v === '__general') vincularGeneral(m); else vincularSalida(m, v);
+                            }}>{yaVinc ? 'Re-vincular' : 'Vincular'}</button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -1435,6 +1538,7 @@ function MisReportesPage() {
 }
 
 function RendimientoIngenierosPage() {
+  const showToast = window.__showToast || (() => {});   // esta página no recibe showToast por prop
   const obraHook = window.__useObraActiva ? window.__useObraActiva() : { obraId: null };
   const obraId = obraHook?.obraId || null;
   const { data: frentes } = window.__hooks.useFrentesObra(obraId, { soloActivas: true });
@@ -1463,6 +1567,7 @@ function RendimientoIngenierosPage() {
   const [verFotos, setVerFotos] = uS(null);  // evidencias del reporte abierto
   const [secOpen, setSecOpen] = uS({ reportes: true, partidas: true });  // secciones colapsables del detalle
   const [busqDetalle, setBusqDetalle] = uS('');  // búsqueda dentro del detalle de un ingeniero
+  const [exportando, setExportando] = uS(false);
 
   const hoy = hoyISO();
   // Navegar a "Insumos por Partida" (admin) — mismo canal que jx-obra.jsx irAInsumos.
@@ -1482,7 +1587,25 @@ function RendimientoIngenierosPage() {
   const activos = uM(() => (frentes || []).filter(f => !f.deleted_at), [frentes]);
   const allPartidas = uM(() => (partidas || []).filter(p => !p.deleted_at), [partidas]);
   const partById = uM(() => { const m = new Map(); allPartidas.forEach(p => m.set(p.id, p)); return m; }, [allPartidas]);
-  const eviPorAvance = uM(() => { const m = new Map(); for (const e of eviAvance) { if (!e.registro_relacionado_id) continue; const a = m.get(e.registro_relacionado_id) || []; a.push(e); m.set(e.registro_relacionado_id, a); } return m; }, [eviAvance]);
+  const eviPorAvance = uM(() => {
+    const m = new Map();
+    const eviById = new Map();
+    for (const e of eviAvance) {
+      eviById.set(e.id, e);
+      if (!e.registro_relacionado_id) continue;
+      const a = m.get(String(e.registro_relacionado_id)) || []; a.push(e); m.set(String(e.registro_relacionado_id), a);
+    }
+    // Robustez: algunas fotos podrían estar enlazadas por el campo legacy
+    // avance_obra.evidencia_id en vez de registro_relacionado_id.
+    for (const av of (avances || [])) {
+      if (!av.evidencia_id) continue;
+      const ev = eviById.get(av.evidencia_id);
+      if (!ev) continue;
+      const a = m.get(String(av.id)) || [];
+      if (!a.some(x => x.id === ev.id)) { a.push(ev); m.set(String(av.id), a); }
+    }
+    return m;
+  }, [eviAvance, avances]);
   // Ingenieros = quienes están a cargo de un frente ∪ quienes han reportado avances.
   const ingenieros = uM(() => {
     const ids = new Set();
@@ -1530,6 +1653,31 @@ function RendimientoIngenierosPage() {
   };
   const reportesDetalle = uM(() => reportes.filter(a => matchBusq(partById.get(a.partida_id), `${a.descripcion || ''} ${a.fecha || ''}`)), [reportes, busqDetalle, partById]);
   const partidasSelFiltradas = uM(() => partidasSel.filter(p => matchBusq(p)), [partidasSel, busqDetalle]);
+
+  // Export a Excel de los reportes (respeta los filtros activos: ingeniero/fechas).
+  const exportarReportesExcel = async () => {
+    if (!reportes.length) { showToast('No hay reportes para exportar', 'amber'); return; }
+    setExportando(true);
+    try {
+      const XLSX = await import('xlsx');
+      const headers = ['Fecha', 'Ingeniero', 'Frente', 'Codigo Partida', 'Partida', 'Unidad', 'Metrado', '% Acum', 'Descripcion', 'N Fotos', 'Sobre-reporte', 'Motivo sobre-reporte'];
+      const rows = reportes.map(a => {
+        const p = partById.get(a.partida_id);
+        const fr = activos.find(f => f.id === a.frente_id);
+        const evs = eviPorAvance.get(a.id) || [];
+        return [a.fecha || '', nombreUsuario(a.responsable_id), fr?.nombre || '', p?.codigo_delfin || '', p?.nombre_partida || '', p?.unidad || '',
+          a.metrado_ejecutado != null ? Number(a.metrado_ejecutado) : '', a.porcentaje_avance_reportado != null ? Number(a.porcentaje_avance_reportado) : '',
+          a.descripcion || '', evs.length, a.sobre_reporte ? 'SI' : '', a.motivo_sobrereporte || ''];
+      });
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+      ws['!cols'] = headers.map((h, i) => ({ wch: Math.max(10, Math.min(48, i === 8 ? 40 : h.length + 4)) }));
+      XLSX.utils.book_append_sheet(wb, ws, 'Reportes');
+      XLSX.writeFile(wb, `JARVEX_reportes_avance_${hoy}.xlsx`);
+      showToast(`${rows.length} reporte(s) exportados`, 'green');
+    } catch (e) { showToast('Error al exportar: ' + (e.message || e), 'red'); }
+    finally { setExportando(false); }
+  };
 
   if (!obraId) return <div className="page-wrap"><div className="card card-p empty-state"><p>Seleccioná una obra activa.</p></div></div>;
 
@@ -1637,6 +1785,9 @@ function RendimientoIngenierosPage() {
           <label style={{ fontSize: 11, color: 'var(--tm)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>Desde <input className="fi" type="date" style={{ maxWidth: 150 }} value={desde} onChange={e => setDesde(e.target.value)} /></label>
           <label style={{ fontSize: 11, color: 'var(--tm)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>Hasta <input className="fi" type="date" style={{ maxWidth: 150 }} value={hasta} onChange={e => setHasta(e.target.value)} /></label>
           {(desde || hasta || selIng || busqDetalle) && <button className="btn btn-ghost btn-xs" onClick={() => { setDesde(''); setHasta(''); setSelIng(''); setBusqDetalle(''); }}>Limpiar filtros</button>}
+          <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto' }} disabled={exportando || reportes.length === 0} onClick={exportarReportesExcel} title="Exportar a Excel los reportes (respeta los filtros)">
+            <JxIcon name="download" size={12} /> {exportando ? 'Exportando…' : 'Exportar a Excel'}
+          </button>
         </div>
 
         {selIng ? (

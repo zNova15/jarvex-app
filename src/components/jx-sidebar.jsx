@@ -106,6 +106,7 @@ const NAV = [
   { id: 'vinculacion-salidas', label: 'Vinculación de Salidas', icon: 'link' },
 
   { section: 'GESTIÓN DE OBRA' },
+  { id: 'dashboard-gestion', label: 'Dashboard Gestión de Obra', icon: 'dashboard' },
   { id: 'partidas', label: 'Partidas', icon: 'list' },
   { id: 'control-consumo', label: 'Control de Consumo', icon: 'trending' },
   { id: 'insumos', label: 'Insumos por Partida', icon: 'layers' },

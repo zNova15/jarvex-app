@@ -209,6 +209,7 @@ const PAGE_CHUNKS = {
   'jx-planillas':             () => import('./components/jx-planillas.jsx'),
   'jx-personal-contratos':    () => import('./components/jx-personal-contratos.jsx'),
   'jx-dashboard-ejecutivo':   () => import('./components/jx-dashboard-ejecutivo.jsx'),
+  'jx-dashboard-gestion':     () => import('./components/jx-dashboard-gestion.jsx'),
   'jx-mantenimiento':         () => import('./components/jx-mantenimiento.jsx'),
   'jx-cts-grati':             () => import('./components/jx-cts-grati.jsx'),
   'jx-plame':                 () => import('./components/jx-plame.jsx'),
