@@ -96,6 +96,18 @@ export async function eliminarMovimientoCompleto({ tabla, movId, userId = null, 
     try { const { revertirConsumoPartida } = await import('./partida-allocation.js'); await revertirConsumoPartida({ mov, partida_id: mov.partida_id, material: item, userId }); }
     catch (e) { console.warn('[elim completo partida]', e?.message); }
   }
+  // 3b. Maquinaria (serializada): si borro la SALIDA que dejó el activo asignado,
+  // liberar la custodia (mismo criterio que jx-activos.jsx borrarHistorial). Sin
+  // esto, aprobar el borrado de una salida dejaba el equipo mal asignado.
+  if (tabla === 'movimientos_maquinaria' && mov.tipo_movimiento === 'salida' && item
+      && item.asignado_a_id && item.fecha_asignacion === mov.fecha) {
+    const nowM = new Date().toISOString();
+    await db.activos_pesados.update(item.id, {
+      asignado_a_tipo: null, asignado_a_id: null, asignado_a_nombre: null, fecha_asignacion: null,
+      updated_at: nowM, updated_by: userId, version: (item.version ?? 0) + 1,
+      sync_status: item.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+    });
+  }
   // 4. Soft-delete.
   const now = new Date().toISOString();
   await db[tabla].update(movId, { deleted_at: now, updated_at: now, updated_by: userId,
