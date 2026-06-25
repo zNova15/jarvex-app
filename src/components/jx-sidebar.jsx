@@ -181,6 +181,8 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
   const auth = window.__useAuth ? window.__useAuth() : null;
   const profile = auth?.profile;
   const isAdmin = profile?.rol === 'admin';
+  // Revisores de solicitudes de cambio (ven el contador de pendientes): admin + Contador Jefe.
+  const esRevisorSolic = isAdmin || profile?.rol === 'contador';
 
   // Modal "Mi Perfil" (auto-edición de nombres/apellidos, cualquier rol)
   const [showPerfil, setShowPerfil] = useState(false);
@@ -196,7 +198,7 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
   // Poll de solicitudes pendientes (solo admin)
   const [pendingReqCount, setPendingReqCount] = useState(0);
   useEffect(() => {
-    if (!isAdmin) { setPendingReqCount(0); return; }
+    if (!esRevisorSolic) { setPendingReqCount(0); return; }
     let cancelled = false;
     const poll = async () => {
       try {
@@ -207,7 +209,7 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
     poll();
     const id = setInterval(poll, 30000);
     return () => { cancelled = true; clearInterval(id); };
-  }, [isAdmin]);
+  }, [esRevisorSolic]);
 
   // Conteo de alertas críticas (badge en sidebar → "Centro de Alertas")
   const [alertasCount, setAlertasCount] = useState(0);
@@ -417,12 +419,12 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
             >
               <JxIcon name={item.icon} size={isMobile ? 17 : 15} color={isActive ? '#F2B705' : isHov ? '#BFC7D1' : '#556070'} />
               {!navCollapsed && <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.label}</span>}
-              {item.id === 'solicitudes' && isAdmin && pendingReqCount > 0 && !navCollapsed && (
+              {item.id === 'solicitudes' && esRevisorSolic && pendingReqCount > 0 && !navCollapsed && (
                 <span style={{ marginLeft: 'auto', minWidth: 18, height: 18, borderRadius: 9, background: '#F2B705', color: '#0D1822', fontSize: 10, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 6px', flexShrink: 0 }}>
                   {pendingReqCount > 99 ? '99+' : pendingReqCount}
                 </span>
               )}
-              {item.id === 'solicitudes' && isAdmin && pendingReqCount > 0 && navCollapsed && (
+              {item.id === 'solicitudes' && esRevisorSolic && pendingReqCount > 0 && navCollapsed && (
                 <span style={{ position: 'absolute', top: 6, right: 8, minWidth: 14, height: 14, borderRadius: 7, background: '#F2B705', color: '#0D1822', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px' }}>
                   {pendingReqCount > 9 ? '9+' : pendingReqCount}
                 </span>

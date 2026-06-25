@@ -882,8 +882,8 @@ const PERM_MATRIX = {
       'Cuentas Bancarias','Flujo de Caja','Flujo Proyectado','Comparativo Periodos',
       // SUNAT (Comprobantes, Libros Electrónicos, PLAME/T-Registro, Config SUNAT)
       'Comprobantes Electrónicos','Libros Electrónicos','PLAME / T-Registro','Config SUNAT',
-      // Herramienta de captura (General)
-      'Captura Mágica',
+      // Herramienta de captura (General) + bandeja de solicitudes (aprueba cambios)
+      'Captura Mágica','Solicitudes Cambio',
     ];
     if (wList.includes(m)) return 'w';
     if (m === 'Obras') return 'r';   // ve la lista de obras asignadas (solo lectura)
@@ -1128,6 +1128,7 @@ const __ASISTENTE_ADMIN_ITEMS = [
 // 'movimientos-contables', así que sin allowlist el ayudante vería el dashboard (no debe).
 const __AYUDANTE_CONTADOR_ITEMS = [
   'captura-magica', 'personal', 'empresas', 'movimientos-contables', 'cuentas-bancarias',
+  'solicitudes', // ve "Mis solicitudes" (sus pedidos de cambio); la aprobación es del contador/admin
 ];
 window.__canSeeSidebarItem = function(rol, itemId) {
   const modulo = window.__moduleIdMap?.[itemId];
@@ -1916,7 +1917,14 @@ function ObraUsuariosModal({ obra, isAdmin, showToast, onClose }) {
                 <div>
                   <label className="flabel">Usuario</label>
                   <select className="fi" value={form.usuario_id}
-                          onChange={e=>setForm({...form, usuario_id:e.target.value})}>
+                          onChange={e=>{
+                            const uid = e.target.value;
+                            const prof = (profiles||[]).find(p => p.id === uid);
+                            // El rol en la obra refleja por defecto el rol del usuario (no
+                            // 'solo_lectura', que le bloquearía subir evidencias por la RLS
+                            // de Storage). El admin puede ajustarlo en el selector de al lado.
+                            setForm({...form, usuario_id: uid, rol_obra: prof?.rol || form.rol_obra });
+                          }}>
                     <option value="">— Selecciona —</option>
                     {profilesDisponibles.map(p => (
                       <option key={p.id} value={p.id}>

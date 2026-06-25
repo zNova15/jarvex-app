@@ -688,27 +688,68 @@ function MovimientosContablesPage({ showToast }) {
   const isAdmin = myRol === 'admin';
   const userId = auth?.profile?.id ?? 'offline';
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Movs. Contables', 'w') ?? false);
+  // El Ayudante de Contabilidad PUEDE crear y enlazar compras, pero NO editar/borrar
+  // movimientos existentes → para un cambio usa "Solicitar cambio". El Contador Jefe
+  // (y admin) sí editan directo.
+  const esAyudante = myRol === 'ayudante_contador';
+  const canCreate = canWrite;
+  const canEditExisting = isAdmin || (canWrite && !esAyudante);
   const { data: companies } = window.__hooks.useCompanies();
   const { data: movs } = window.__hooks.useAccountingMovements();
+  const { data: obras } = window.__hooks.useObras();
+
+  // Obras a las que el usuario está asignado (para enlazar la compra/factura a la obra).
+  // Admin/gerente ven todas; el resto, solo sus obras (obra_usuarios). Sin asignación = todas.
+  const [misObrasIds, setMisObrasIds] = uSC(null);
+  uEC(() => {
+    const verTodas = isAdmin || myRol === 'gerente';
+    if (verTodas || !userId || userId === 'offline') { setMisObrasIds(null); return; }
+    let cancel = false;
+    (async () => {
+      try {
+        const sb = window.__supabase;
+        if (!sb) { setMisObrasIds(null); return; }
+        const { data, error } = await sb.from('obra_usuarios')
+          .select('obra_id').eq('usuario_id', userId).eq('activo', true);
+        if (cancel || error) return;
+        const ids = (data || []).map(r => r.obra_id);
+        setMisObrasIds(ids.length ? new Set(ids) : null);
+      } catch {}
+    })();
+    return () => { cancel = true; };
+  }, [userId, myRol, isAdmin]);
+  const obrasParaSelector = uMC(() => {
+    const vivas = (obras || []).filter(o => !o.deleted_at);
+    return misObrasIds ? vivas.filter(o => misObrasIds.has(o.id)) : vivas;
+  }, [obras, misObrasIds]);
+  const obraNombre = (id) => (obras || []).find(o => o.id === id)?.nombre_obra || null;
 
   const [filtroEmpresa, setFiltroEmpresa] = uSC('todas');
+  const [filtroClase, setFiltroClase] = uSC('todos');
   const [filtroTipo, setFiltroTipo] = uSC('todos');
   const [filtroEstado, setFiltroEstado] = uSC('todos');
   const [busqueda, setBusqueda] = uSC('');
   const [modal, setModal] = uSC(null);
   const [editingId, setEditingId] = uSC(null);
   const [form, setForm] = uSC({});
+  const [solicitarTarget, setSolicitarTarget] = uSC(null); // mov para "Solicitar cambio" (ayudante)
 
   // Evidencias adjuntas a movs contables (factura PDF/imagen guardada
   // por Captura Mágica). Map<accId, {url, mime}>. Cuando la contadora
   // entra a verificar, ve un botón 👁️ para abrir el archivo.
   const [evidenciasPorMov, setEvidenciasPorMov] = uSC(() => new Map());
+  const [bancarizacionPorMov, setBancarizacionPorMov] = uSC(() => new Map()); // tipo_evidencia='bancarizacion'
   const [evidenciaModal, setEvidenciaModal] = uSC(null); // { url, mime, nombre }
 
   uEC(() => {
     let cancelled = false;
-    const blobUrlsLocales = [];
+    let blobUrlsActuales = [];   // objectURLs de la corrida vigente (se revocan antes de recrear)
     const cargar = async () => {
+      // Revocar la tanda anterior ANTES de crear nuevos objectURLs: sin esto, cada
+      // reload (sync/Captura Mágica/guardar) acumulaba objectURLs nunca revocados → fuga.
+      blobUrlsActuales.forEach(u => { try { URL.revokeObjectURL(u); } catch {} });
+      blobUrlsActuales = [];
+      const nuevos = [];
       try {
         const evs = await window.__db.evidencias
           .filter(e =>
@@ -718,23 +759,28 @@ function MovimientosContablesPage({ showToast }) {
           )
           .toArray();
         evs.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
-        const map = new Map();
+        const map = new Map();       // facturas / comprobantes
+        const mapBanc = new Map();    // evidencias de bancarización
         for (const ev of evs) {
-          if (map.has(ev.registro_relacionado_id)) continue;
+          const esBanc = ev.tipo_evidencia === 'bancarizacion';
+          const target = esBanc ? mapBanc : map;
+          if (target.has(ev.registro_relacionado_id)) continue;
           // Blob local si existe; si no, signed URL del bucket privado (la
           // url_archivo cruda NO sirve en un bucket privado → factura no abre).
           const src = await getEvidenciaSrc(ev);
           if (src?.url) {
-            if (src.isBlob) blobUrlsLocales.push(src.url);
-            map.set(ev.registro_relacionado_id, {
+            if (src.isBlob) nuevos.push(src.url);
+            target.set(ev.registro_relacionado_id, {
               url: src.url,
               mime: ev.mime_type || 'application/pdf',
-              nombre: ev.nombre_archivo || 'comprobante',
+              nombre: ev.nombre_archivo || (esBanc ? 'bancarizacion' : 'comprobante'),
+              sync: ev.sync_status,   // para distinguir subido vs pendiente/falló
             });
           }
         }
-        if (!cancelled) setEvidenciasPorMov(map);
-      } catch (e) { console.warn('[contab evidencias]', e?.message); }
+        if (!cancelled) { setEvidenciasPorMov(map); setBancarizacionPorMov(mapBanc); blobUrlsActuales = nuevos; }
+        else nuevos.forEach(u => { try { URL.revokeObjectURL(u); } catch {} });
+      } catch (e) { console.warn('[contab evidencias]', e?.message); nuevos.forEach(u => { try { URL.revokeObjectURL(u); } catch {} }); }
     };
     cargar();
     const onChange = (e) => {
@@ -747,7 +793,7 @@ function MovimientosContablesPage({ showToast }) {
       cancelled = true;
       window.removeEventListener('jx_data_changed', onChange);
       window.removeEventListener('jarvex_master_updated', onChange);
-      blobUrlsLocales.forEach(u => { try { URL.revokeObjectURL(u); } catch {} });
+      blobUrlsActuales.forEach(u => { try { URL.revokeObjectURL(u); } catch {} });
     };
   }, []);
   // IA: sugerencia de cuenta PCGE
@@ -804,6 +850,7 @@ function MovimientosContablesPage({ showToast }) {
     if (!movs) return [];
     let f = [...movs];
     if (filtroEmpresa !== 'todas') f = f.filter(m => m.company_id === filtroEmpresa);
+    if (filtroClase !== 'todos') f = f.filter(m => (m.clase || (m.type === 'income' ? 'venta' : 'compra')) === filtroClase);
     if (filtroTipo !== 'todos') f = f.filter(m => m.type === filtroTipo);
     if (filtroEstado !== 'todos') f = f.filter(m => m.payment_status === filtroEstado);
     if (busqueda) {
@@ -813,7 +860,7 @@ function MovimientosContablesPage({ showToast }) {
         || (m.document_number||'').toLowerCase().includes(q));
     }
     return f.sort((a,b) => (b.date||'').localeCompare(a.date||''));
-  }, [movs, filtroEmpresa, filtroTipo, filtroEstado, busqueda]);
+  }, [movs, filtroEmpresa, filtroClase, filtroTipo, filtroEstado, busqueda]);
 
   // Paginación: tabla puede tener miles de movimientos contables.
   const movPg = usePagination(filtered, 100);
@@ -823,7 +870,9 @@ function MovimientosContablesPage({ showToast }) {
     setForm({
       company_id: companiesActivas[0].id,
       date: new Date().toISOString().slice(0,10),
-      type: 'income',
+      clase: 'compra',          // explícito: la mayoría de su flujo son compras
+      type: 'cost',
+      obra_id: '',
       category: '',
       cuenta_pcge: '',
       description: '',
@@ -834,6 +883,7 @@ function MovimientosContablesPage({ showToast }) {
       document_type: 'factura',
       document_number: '',
       notas: '',
+      _bancFile: null,
     });
     setEditingId(null);
     setModal('nuevo');
@@ -847,7 +897,9 @@ function MovimientosContablesPage({ showToast }) {
     setForm({
       company_id: m.company_id,
       date: m.date || '',
+      clase: m.clase || (m.type === 'income' ? 'venta' : 'compra'),
       type: m.type,
+      obra_id: m.obra_id || '',
       category: m.category || '',
       cuenta_pcge: m.cuenta_pcge || '',
       description: m.description || '',
@@ -872,12 +924,15 @@ function MovimientosContablesPage({ showToast }) {
     const monto = parseFloat(form.amount);
     if (!Number.isFinite(monto) || monto < 0) { showToast('Monto inválido', 'red'); return; }
     const now = new Date().toISOString();
+    let savedId = editingId;
     try {
       if (editingId) {
         const orig = movs.find(m => m.id === editingId);
         await window.__db.accounting_movements.update(editingId, {
           company_id: form.company_id,
           date: form.date,
+          clase: form.clase || null,
+          obra_id: form.obra_id || null,
           type: form.type,
           category: form.category || null,
           cuenta_pcge: form.cuenta_pcge || null,
@@ -898,11 +953,14 @@ function MovimientosContablesPage({ showToast }) {
         showToast('Movimiento actualizado', 'green');
       } else {
         const id = window.__newId();
+        savedId = id;
         const isPrueba = getCurrentMode() === 'prueba';
         await window.__db.accounting_movements.add({
           id,
           company_id: form.company_id,
           date: form.date,
+          clase: form.clase || null,
+          obra_id: form.obra_id || null,
           type: form.type,
           category: form.category || null,
           cuenta_pcge: form.cuenta_pcge || null,
@@ -929,6 +987,23 @@ function MovimientosContablesPage({ showToast }) {
         });
         try { await window.__logAudit?.({ action:'insert', table:'accounting_movements', recordId:id, newData:form }); } catch {}
         showToast('Movimiento registrado', 'green');
+      }
+      // Evidencia de bancarización (> S/2000). Requiere obra para el bucket de storage.
+      if (form._bancFile && savedId) {
+        if (!form.obra_id) {
+          showToast('Mov. guardado. Para subir la bancarización, asigná una obra al movimiento.', 'amber');
+        } else {
+          try {
+            await window.__saveEvidenciaLocal({
+              id: window.__newId(), obra_id: form.obra_id, tipo_evidencia: 'bancarizacion',
+              modulo_relacionado: 'accounting_movements', registro_relacionado_id: savedId,
+              nombre_archivo: form._bancFile.name, mime_type: form._bancFile.type || 'image/jpeg',
+              blob: form._bancFile, fecha: form.date, created_by: userId,
+              observaciones: 'Evidencia de bancarización (> S/2000)',
+            });
+            try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'evidencias' } })); } catch {}
+          } catch (e) { showToast('Mov. guardado, pero falló adjuntar la bancarización: ' + (e.message||e), 'amber'); }
+        }
       }
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'accounting_movements' } })); } catch {}
       try { window.dispatchEvent(new Event('online')); } catch {}
@@ -994,6 +1069,11 @@ function MovimientosContablesPage({ showToast }) {
           <option value="todas">Todas las empresas</option>
           {(companies || []).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
+        <select className="fi" value={filtroClase} onChange={e=>setFiltroClase(e.target.value)} style={{ minWidth:120 }} title="Compras (a proveedoras) vs Ventas (emitidas a la ejecutora)">
+          <option value="todos">Compras y ventas</option>
+          <option value="compra">🛒 Compras</option>
+          <option value="venta">🧾 Ventas</option>
+        </select>
         <select className="fi" value={filtroTipo} onChange={e=>setFiltroTipo(e.target.value)} style={{ minWidth:120 }}>
           <option value="todos">Todos</option>
           <option value="income">Ingresos</option>
@@ -1032,15 +1112,29 @@ function MovimientosContablesPage({ showToast }) {
                       <td className="col-m">{m.date}</td>
                       <td className="col-p">{c?.name || '—'}</td>
                       <td>
-                        <span className={`badge ${TYPE_BADGE[m.type]}`}>{TYPE_LABEL[m.type]}</span>
+                        {(() => { const cl = m.clase || (m.type === 'income' ? 'venta' : 'compra'); return (
+                          <span className={`badge ${cl === 'venta' ? 'b-green' : 'b-amber'}`} title={cl === 'venta' ? 'Venta (emitida a la ejecutora)' : 'Compra (a proveedora)'}>{cl === 'venta' ? '🧾 Venta' : '🛒 Compra'}</span>
+                        ); })()}
+                        <div style={{ marginTop:3 }}><span className={`badge ${TYPE_BADGE[m.type]}`} style={{ fontSize:9 }}>{TYPE_LABEL[m.type]}</span></div>
                         {isIc && <div style={{ marginTop:3 }}><span className="badge b-blue" title="Operación interna entre empresas del grupo" style={{ fontSize:9 }}>INTERCO</span></div>}
                       </td>
-                      <td>{m.description || '—'}{m.category && <div style={{ fontSize:10, color:'var(--tm)' }}>{m.category}</div>}</td>
+                      <td>
+                        {m.description || '—'}
+                        {m.category && <div style={{ fontSize:10, color:'var(--tm)' }}>{m.category}</div>}
+                        {m.obra_id && <div style={{ fontSize:10, color:'var(--blue)' }}>🏗 {obraNombre(m.obra_id) || 'obra'}</div>}
+                        {m.currency === 'PEN' && Number(m.amount) > 2000 && (() => {
+                          const evB = bancarizacionPorMov.get(m.id);
+                          if (!evB) return <div style={{ fontSize:10, color:'var(--amber)' }} title="Monto > S/2000 sin evidencia de bancarización">⚠ Falta bancarización</div>;
+                          if (evB.sync === 'uploaded') return <div style={{ fontSize:10, color:'var(--green)' }}>✅ Bancarizado</div>;
+                          if (evB.sync === 'failed') return <div style={{ fontSize:10, color:'var(--red)' }} title="La evidencia no se pudo subir (revisá que estés asignado a la obra con un rol que no sea solo lectura)">⚠ Bancarización no subió</div>;
+                          return <div style={{ fontSize:10, color:'var(--tm)' }} title="Subiendo evidencia de bancarización…">⏳ Subiendo bancarización</div>;
+                        })()}
+                      </td>
                       <td>{m.third_party_name || '—'}</td>
                       <td className="col-m" style={{ fontSize:11 }}>{m.document_type ? `${m.document_type} ${m.document_number || ''}` : '—'}</td>
                       <td style={{ textAlign:'right', fontWeight:700, color:TYPE_COLOR[m.type] }} className="col-num">{fmtCur(m.amount, m.currency)}</td>
                       <td>
-                        <select className="fi" value={m.payment_status} onChange={e=>cambiarEstadoPago(m, e.target.value)} style={{ fontSize:11, padding:'4px 6px', minWidth:110 }}>
+                        <select className="fi" value={m.payment_status} disabled={esAyudante || isIc} title={esAyudante ? 'Solo lectura — usá "Solicitar" para pedir un cambio' : undefined} onChange={e=>cambiarEstadoPago(m, e.target.value)} style={{ fontSize:11, padding:'4px 6px', minWidth:110 }}>
                           <option value="pending">⏱ Pendiente</option>
                           <option value="paid">✓ Pagado</option>
                           <option value="credit">≡ Crédito</option>
@@ -1061,9 +1155,15 @@ function MovimientosContablesPage({ showToast }) {
                             </button>
                           );
                         })()}
-                        <button className="btn btn-ghost btn-xs" title={isIc?'Editar desde Operaciones entre empresas':'Editar'} onClick={()=>openEditar(m)} disabled={isIc}>
-                          <JxIcon name="edit" size={11}/>
-                        </button>
+                        {esAyudante ? (
+                          <button className="btn btn-ghost btn-xs" title="Solicitar un cambio (lo aprueba el Contador Jefe o un Admin)" onClick={()=>setSolicitarTarget(m)} disabled={isIc}>
+                            <JxIcon name="edit" size={11}/> Solicitar
+                          </button>
+                        ) : (
+                          <button className="btn btn-ghost btn-xs" title={isIc?'Editar desde Operaciones entre empresas':'Editar'} onClick={()=>openEditar(m)} disabled={isIc || !canEditExisting}>
+                            <JxIcon name="edit" size={11}/>
+                          </button>
+                        )}
                         {isAdmin && (
                           <button className="btn btn-red btn-xs" title="Eliminar" onClick={()=>eliminar(m)} style={{ marginLeft:4 }} disabled={isIc}>
                             <JxIcon name="trash" size={11}/>
@@ -1105,6 +1205,25 @@ function MovimientosContablesPage({ showToast }) {
         </Modal>
       )}
 
+      {solicitarTarget && (
+        <RequestChangeModal
+          table="accounting_movements"
+          record={solicitarTarget}
+          recordLabel={`${solicitarTarget.document_type || 'doc'} ${solicitarTarget.document_number || ''} · ${fmtCur(solicitarTarget.amount, solicitarTarget.currency)}`}
+          allowDelete
+          fields={[
+            { key: 'amount', label: 'Monto', type: 'number' },
+            { key: 'date', label: 'Fecha', type: 'date' },
+            { key: 'description', label: 'Descripción' },
+            { key: 'clase', label: 'Clase (compra/venta)' },
+            { key: 'payment_status', label: 'Estado de pago' },
+            { key: 'document_number', label: 'N° documento' },
+            { key: 'third_party_name', label: 'Cliente / Proveedor' },
+          ]}
+          showToast={showToast}
+          onClose={() => setSolicitarTarget(null)}
+        />
+      )}
       {(modal === 'nuevo' || modal === 'editar') && (
         <Modal title={editingId ? 'Editar Movimiento' : 'Nuevo Movimiento'} icon="dollar" onClose={()=>{setModal(null); setEditingId(null);}} wide>
           {/* Si el mov tiene factura adjunta (vino de Captura Mágica),
@@ -1135,6 +1254,24 @@ function MovimientosContablesPage({ showToast }) {
             );
           })()}
           <div className="g2">
+            <div>
+              <label className="flabel">Clase *</label>
+              <select className="fi" value={form.clase||'compra'} onChange={e=>{
+                const clase = e.target.value;
+                // Sugerir el tipo contable acorde (venta→ingreso, compra→costo); editable después.
+                setForm({...form, clase, type: clase === 'venta' ? 'income' : (form.type === 'income' ? 'cost' : (form.type || 'cost'))});
+              }}>
+                <option value="compra">🛒 Compra (a proveedora)</option>
+                <option value="venta">🧾 Venta (emitida a la ejecutora)</option>
+              </select>
+            </div>
+            <div>
+              <label className="flabel">Obra {form.clase === 'venta' ? '(opcional)' : '(dónde se usan los insumos)'}</label>
+              <select className="fi" value={form.obra_id||''} onChange={e=>setForm({...form, obra_id:e.target.value})}>
+                <option value="">— Sin obra —</option>
+                {obrasParaSelector.map(o => <option key={o.id} value={o.id}>{o.nombre_obra}</option>)}
+              </select>
+            </div>
             <div>
               <label className="flabel">Empresa *</label>
               <select className="fi" value={form.company_id||''} onChange={e=>setForm({...form, company_id:e.target.value})}>
@@ -1292,6 +1429,28 @@ function MovimientosContablesPage({ showToast }) {
               <label className="flabel">Notas</label>
               <textarea className="fi" rows={2} value={form.notas||''} onChange={e=>setForm({...form, notas:e.target.value})}/>
             </div>
+            {(() => {
+              const monto = parseFloat(form.amount);
+              const requiere = form.currency === 'PEN' && Number.isFinite(monto) && monto > 2000;
+              if (!requiere) return null;
+              const evBanc = editingId && bancarizacionPorMov.get(editingId);
+              return (
+                <div style={{ gridColumn:'1/-1', padding:'10px 12px', borderRadius:6, background:'rgba(242,183,5,0.06)', border:'1px solid rgba(242,183,5,0.3)' }}>
+                  <div style={{ fontSize:12, fontWeight:600, color:'var(--amber)', marginBottom:6, display:'flex', alignItems:'center', gap:6 }}>
+                    <JxIcon name="alert" size={13} color="var(--amber)"/> Bancarización requerida (monto &gt; S/2000)
+                  </div>
+                  {evBanc && (
+                    <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6, fontSize:12, color:'var(--green)' }}>
+                      <span>✅ Evidencia adjunta · {evBanc.nombre}</span>
+                      <button type="button" className="btn btn-ghost btn-xs" onClick={()=>setEvidenciaModal(evBanc)}><JxIcon name="eye" size={11}/> Ver</button>
+                    </div>
+                  )}
+                  <input className="fi" type="file" accept="image/*,application/pdf" onChange={e=>setForm({...form, _bancFile: (e.target.files||[])[0] || null})}/>
+                  {form._bancFile && <div style={{ fontSize:11, color:'var(--green)', marginTop:4 }}>📎 {form._bancFile.name} — se subirá al guardar{!form.obra_id ? ' (asigná una obra para poder subirla)' : ''}</div>}
+                  {!form.obra_id && <div style={{ fontSize:11, color:'var(--tm)', marginTop:4 }}>Tip: elegí la obra arriba para subir la foto/voucher de la bancarización.</div>}
+                </div>
+              );
+            })()}
           </div>
           <div className="modal-actions">
             <button className="btn btn-ghost" onClick={()=>{setModal(null); setEditingId(null);}}>Cancelar</button>

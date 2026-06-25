@@ -110,9 +110,11 @@ function ChangeDiff({ changes }) {
 function SolicitudesPage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
   const isAdmin = auth?.profile?.rol === 'admin';
+  // Revisores que pueden ver "Pendientes" y aprobar/rechazar: admin y Contador Jefe.
+  const esRevisor = isAdmin || auth?.profile?.rol === 'contador';
   const myId = auth?.profile?.id;
 
-  const [tab, setTab] = uSS(isAdmin ? 'pendientes' : 'mias');
+  const [tab, setTab] = uSS(esRevisor ? 'pendientes' : 'mias');
   const [requests, setRequests] = uSS([]);
   const [loading, setLoading] = uSS(true);
   const [busy, setBusy] = uSS(false);
@@ -127,7 +129,7 @@ function SolicitudesPage({ showToast }) {
     setLoading(true);
     try {
       let data;
-      if (tab === 'pendientes' && isAdmin) {
+      if (tab === 'pendientes' && esRevisor) {
         data = await cr.list?.({ status: 'pendiente', limit: 200 }) || [];
       } else {
         data = await cr.list?.({ requesterId: myId, limit: 200 }) || [];
@@ -138,7 +140,7 @@ function SolicitudesPage({ showToast }) {
     } finally {
       setLoading(false);
     }
-  }, [tab, isAdmin, myId]);
+  }, [tab, esRevisor, myId]);
 
   uES(() => { reload(); }, [reload]);
 
@@ -233,6 +235,20 @@ function SolicitudesPage({ showToast }) {
       }
     }
 
+    // ── COHERENCIA clase↔type en movimientos contables ──
+    // El formulario auto-deriva `type` al cambiar `clase` (venta→income, compra→cost).
+    // Una solicitud de SOLO clase no trae `type` → re-derivarlo aquí; si no, la fila
+    // queda contradictoria (ej. clase='venta' con type='cost') y descuadra los totales
+    // de P&L (que agregan por `type`).
+    if (req.target_table === 'accounting_movements' && 'clase' in fields) {
+      if (fields.clase === 'venta') {
+        fields.type = 'income';
+      } else if (fields.clase === 'compra') {
+        const cur = oldData?.type;
+        fields.type = (cur === 'cost' || cur === 'expense') ? cur : 'cost';
+      }
+    }
+
     // Pedido descriptivo-only (sin columnas reales): nada que aplicar
     // automáticamente. Aprobar = acusar recibo; el admin hizo el cambio a mano.
     if (Object.keys(fields).length === 0) {
@@ -321,7 +337,7 @@ function SolicitudesPage({ showToast }) {
           }}>
           <JxIcon name="user" size={13} /> Mis Solicitudes
         </button>
-        {isAdmin && (
+        {esRevisor && (
           <button
             className={`btn btn-ghost btn-sm`}
             onClick={() => setTab('pendientes')}
@@ -346,8 +362,8 @@ function SolicitudesPage({ showToast }) {
           <JxIcon name="checkCircle" size={40} color="var(--tm)" />
           <p>{tab === 'pendientes' ? 'No hay solicitudes pendientes de revisión.' : 'Aún no has creado solicitudes de cambio.'}</p>
         </div>
-      ) : tab === 'pendientes' && isAdmin ? (
-        // ── ADMIN: cards con diff y botones ─────────────
+      ) : tab === 'pendientes' && esRevisor ? (
+        // ── REVISOR (admin / Contador Jefe): cards con diff y botones ─────────────
         <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12 }}>
           {requests.map(req => (
             <div key={req.id} className="card card-p">
