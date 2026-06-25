@@ -1001,6 +1001,7 @@ window.__moduleIdMap = {
   'dashboard-tecnico': 'Avance', 'mis-partidas': 'Avance', 'cronograma-frente': 'Avance', 'salidas-frente': 'Avance',
   'reporte-diario': 'Avance', 'plan-real': 'Avance', 'emitir-alerta': 'Avance',
   'borradores-reporte': 'Avance', 'aprobaciones-reporte': 'Avance', 'rendimiento-ingenieros': 'Avance', 'mis-reportes': 'Avance', 'dashboard-gestion': 'Avance',
+  'movimientos-insumos': 'Avance',              // vista consolidada de solo lectura (gestión/asistente)
   'comparativo': 'Comparativo',
   'costos': 'Costos',
   'valorizaciones': 'Valorizaciones',
@@ -1095,6 +1096,7 @@ const __INGENIERO_ITEMS = ['dashboard-tecnico', 'mis-partidas', 'cronograma-fren
 const __ASISTENTE_ADMIN_ITEMS = [
   'dashboard-gestion', 'partidas', 'insumos', 'cronograma', 'avance',
   'aprobaciones-reporte', 'rendimiento-ingenieros', 'subcontratistas', 'subcontratos', 'incidencias',
+  'movimientos-insumos',
   'insumos-persona', 'personal', 'frentes',
 ];
 window.__canSeeSidebarItem = function(rol, itemId) {

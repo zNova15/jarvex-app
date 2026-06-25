@@ -333,7 +333,7 @@ function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStat
     personal:'Personal',asistencia:'Asistencia',materiales:'Materiales',
     'mov-materiales':'Movimiento de Materiales','herramientas':'Herramientas',
     'mov-herramientas':'Movimiento de Herramientas',proveedores:'Proveedores',
-    evidencias:'Evidencias',plantillas:'Plantillas','vinculacion-salidas':'Vinculación de Salidas','dashboard-tecnico':'Dashboard Técnico','mis-partidas':'Partidas del Proyecto','cronograma-frente':'Cronograma de mis Partidas','salidas-frente':'Vinculación de insumos','reporte-diario':'Reporte Diario','borradores-reporte':'Borradores','mis-reportes':'Mis Reportes','detalle-partida':'Detalle de partida','plan-real':'Plan vs Real','emitir-alerta':'Emitir Alerta','aprobaciones-reporte':'Aprobación de Frentes','rendimiento-ingenieros':'Rendimiento de Ingenieros','control-consumo':'Control de Consumo',partidas:'Partidas',insumos:'Insumos por Partida','dashboard-gestion':'Dashboard Gestión de Obra',
+    evidencias:'Evidencias',plantillas:'Plantillas','vinculacion-salidas':'Vinculación de Salidas','dashboard-tecnico':'Dashboard Técnico','mis-partidas':'Partidas del Proyecto','cronograma-frente':'Cronograma de mis Partidas','salidas-frente':'Vinculación de insumos','reporte-diario':'Reporte Diario','borradores-reporte':'Borradores','mis-reportes':'Mis Reportes','detalle-partida':'Detalle de partida','plan-real':'Plan vs Real','emitir-alerta':'Emitir Alerta','aprobaciones-reporte':'Aprobación de Frentes','rendimiento-ingenieros':'Rendimiento de Ingenieros','control-consumo':'Control de Consumo',partidas:'Partidas',insumos:'Insumos por Partida','dashboard-gestion':'Dashboard Gestión de Obra','movimientos-insumos':'Movimientos de Insumos',
     versiones:'Versiones de Presupuesto',
     cronograma:'Cronograma / Gantt',avance:'Avance de Obra',comparativo:'Planificado vs Real',
     costos:'Costos',incidencias:'Incidencias',usuarios:'Usuarios',roles:'Roles y Permisos',
@@ -354,7 +354,7 @@ function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStat
     'subcontrato-valorizaciones':'Valorizaciones de Subcontrato',
     'personal-contratos':'Contratos Laborales',
     planillas:'Planillas / Sueldos',
-    'dashboard-ejecutivo':'Dashboard Ejecutivo','dashboard-gestion':'Dashboard Gestión de Obra',
+    'dashboard-ejecutivo':'Dashboard Ejecutivo','dashboard-gestion':'Dashboard Gestión de Obra','movimientos-insumos':'Movimientos de Insumos',
     conflictos:'Bandeja de Conflictos',
     solicitudes:'Solicitudes de Cambio',
   };
@@ -588,6 +588,7 @@ const PAGE_REGISTRY = {
   // === jx-epps (inventario separado de materiales) ===
   'epps-inventario':        { chunk: 'jx-epps', component: 'EppsInventarioPage' },
   'insumos-persona':        { chunk: 'jx-insumos-persona', component: 'InsumosPorPersonaPage' },
+  'movimientos-insumos':    { chunk: 'jx-movimientos-insumos', component: 'MovimientosInsumosPage' },
   // === jx-ssoma-extra ===
   'inspecciones-seguridad': { chunk: 'jx-ssoma-extra', component: 'InspeccionesSeguridadPage' },
   'capacitaciones':         { chunk: 'jx-ssoma-extra', component: 'CapacitacionesPage' },

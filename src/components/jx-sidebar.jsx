@@ -122,6 +122,7 @@ const NAV = [
   { id: 'subcontratos', label: 'Subcontratos', icon: 'package' },
   { id: 'subcontrato-valorizaciones', label: 'Valorizaciones de Subcontrato', icon: 'dollar' },
   { id: 'incidencias', label: 'Incidencias', icon: 'alert' },
+  { id: 'movimientos-insumos', label: 'Movimientos de Insumos', icon: 'inbox' },
 
   { section: 'SSOMA / SEGURIDAD' },
   { id: 'charlas-seguridad', label: 'Charlas de 5 minutos', icon: 'alert' },
