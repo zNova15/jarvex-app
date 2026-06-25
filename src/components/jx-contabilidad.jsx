@@ -4,7 +4,31 @@ import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { getCurrentMode } from "../hooks/useAppMode";
 import { usePagination } from "../hooks/usePagination.js";
 import { TablePagination } from "./jx-pagination.jsx";
-const { useState: uSC, useMemo: uMC, useEffect: uEC } = React;
+import { useChart } from "../lib/chart-loader.js";
+const { useState: uSC, useMemo: uMC, useEffect: uEC, useRef: uRC } = React;
+
+// ─── Gráfica genérica (Chart.js lazy via useChart) ───────────────────
+// Se reconstruye sólo cuando cambia `sig` (firma de los datos), no en cada render.
+function ChartCanvas({ type, data, options, sig, height = 240 }) {
+  const Chart = useChart();
+  const ref = uRC(null);
+  const inst = uRC(null);
+  uEC(() => {
+    if (!Chart || !ref.current) return;
+    if (inst.current) { inst.current.destroy(); inst.current = null; }
+    inst.current = new Chart(ref.current, { type, data, options });
+    return () => { if (inst.current) { inst.current.destroy(); inst.current = null; } };
+  }, [Chart, sig]); // eslint-disable-line react-hooks/exhaustive-deps
+  return <div style={{ height }}><canvas ref={ref} /></div>;
+}
+// Paleta y estilos consistentes con el tema oscuro (Chart.js no lee CSS vars).
+const CHART_GREEN = 'rgba(46,204,113,0.72)', CHART_RED = 'rgba(231,76,60,0.72)', CHART_AMBER = 'rgba(242,183,5,0.72)', CHART_BLUE = 'rgba(74,144,226,1)';
+const CHART_AXIS = {
+  x: { ticks: { color: '#5A6A7A', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)' }, border: { display: false } },
+  y: { ticks: { color: '#5A6A7A', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)' }, border: { display: false } },
+};
+const CHART_LEGEND = { labels: { color: '#7A8A9A', font: { size: 11 }, boxWidth: 12, padding: 14 } };
+const nombreMes = (ym) => { const [y, m] = (ym || '').split('-'); return ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'][Number(m) - 1] + ' ' + String(y).slice(2); };
 
 // ─── Helpers de formato ──────────────────────────────────────
 const fmtCur = (n, currency = 'PEN') => {
@@ -1720,6 +1744,35 @@ function ContabilidadDashboardPage({ showToast }) {
     return { ingresos, costos, gastos, utilidad, margen, porCobrar, porPagar };
   }, [filtered]);
 
+  // Datos para las gráficas: evolución mensual (hasta 12 meses) de ingresos /
+  // costos / gastos / utilidad. `sig` = firma para reconstruir el chart sólo
+  // cuando los datos cambian (no en cada render).
+  const chartData = uMC(() => {
+    const porMes = new Map(); // 'YYYY-MM' -> { ing, cos, gas }
+    for (const m of filtered) {
+      if (m.payment_status === 'cancelled') continue;
+      const ym = (m.date || '').slice(0, 7);
+      if (!ym) continue;
+      const a = Number(m.amount || 0);
+      const cur = porMes.get(ym) || { ing: 0, cos: 0, gas: 0 };
+      if (m.type === 'income') cur.ing += a;
+      else if (m.type === 'cost') cur.cos += a;
+      else if (m.type === 'expense') cur.gas += a;
+      porMes.set(ym, cur);
+    }
+    const meses = Array.from(porMes.keys()).sort().slice(-12);
+    const ing = meses.map(k => porMes.get(k).ing);
+    const cos = meses.map(k => porMes.get(k).cos);
+    const gas = meses.map(k => porMes.get(k).gas);
+    const uti = meses.map((k, i) => ing[i] - cos[i] - gas[i]);
+    // sig DEBE reflejar todos los valores renderizados (no solo el total): así el
+    // chart se reconstruye también si se edita un tipo (income↔cost, mismo monto) o
+    // se mueve un movimiento entre meses ya presentes. Incluimos las series y los 3
+    // totales del doughnut.
+    const sig = `${filtroMoneda}|${filtroEmpresa}|${filtroDesde}|${filtroHasta}|${meses.join(',')}|${ing.join(',')}|${cos.join(',')}|${gas.join(',')}|${Math.round(kpis.ingresos)}|${Math.round(kpis.costos)}|${Math.round(kpis.gastos)}`;
+    return { meses, labels: meses.map(nombreMes), ing, cos, gas, uti, sig, hayDatos: meses.length > 0 };
+  }, [filtered, filtroMoneda, filtroEmpresa, filtroDesde, filtroHasta, kpis]);
+
   // ── Handlers de pendientes de sustento ────────────────────────────
   const userId = window.__useAuth?.()?.profile?.id || 'offline';
 
@@ -1944,6 +1997,37 @@ function ContabilidadDashboardPage({ showToast }) {
         <div className="card card-p" style={{ borderLeft:'3px solid var(--orange)' }}>
           <div style={{ fontSize:11, color:'var(--tm)', textTransform:'uppercase' }}>Por pagar</div>
           <div style={{ fontSize:22, fontWeight:800, color:'var(--orange)', marginTop:4 }}>{fmtCurK(kpis.porPagar, filtroMoneda)}</div>
+        </div>
+      </div>
+
+      {/* Gráficas interactivas */}
+      <div style={{ display:'grid', gridTemplateColumns:'minmax(0,2fr) minmax(0,1fr)', gap:14, marginBottom:18 }}>
+        <div className="card card-p">
+          <div style={{ fontSize:12.5, fontWeight:700, color:'var(--ts)', marginBottom:8 }}>Evolución mensual ({filtroMoneda})</div>
+          {chartData.hayDatos ? (
+            <ChartCanvas type="bar" height={260} sig={chartData.sig}
+              data={{ labels: chartData.labels, datasets: [
+                { label:'Ingresos', data: chartData.ing, backgroundColor: CHART_GREEN, borderRadius:4, order:2 },
+                { label:'Costos',   data: chartData.cos, backgroundColor: CHART_RED,   borderRadius:4, order:2 },
+                { label:'Gastos',   data: chartData.gas, backgroundColor: CHART_AMBER, borderRadius:4, order:2 },
+                { type:'line', label:'Utilidad', data: chartData.uti, borderColor: CHART_BLUE, backgroundColor:'rgba(74,144,226,0.15)', borderWidth:2, tension:0.25, fill:false, order:1, pointRadius:3 },
+              ] }}
+              options={{ responsive:true, maintainAspectRatio:false, interaction:{ mode:'index', intersect:false },
+                plugins:{ legend:{ position:'bottom', ...CHART_LEGEND } },
+                scales:{ ...CHART_AXIS, y:{ ...CHART_AXIS.y, ticks:{ ...CHART_AXIS.y.ticks, callback:(v)=>fmtCurK(v, filtroMoneda) } } } }}/>
+          ) : (
+            <div className="empty-state" style={{ padding:'34px 0' }}><JxIcon name="chart" size={28} color="var(--tm)"/><p style={{ fontSize:12 }}>Sin movimientos en el rango.</p></div>
+          )}
+        </div>
+        <div className="card card-p">
+          <div style={{ fontSize:12.5, fontWeight:700, color:'var(--ts)', marginBottom:8 }}>Distribución por tipo</div>
+          {(kpis.ingresos + kpis.costos + kpis.gastos) > 0 ? (
+            <ChartCanvas type="doughnut" height={260} sig={chartData.sig}
+              data={{ labels:['Ingresos','Costos','Gastos'], datasets:[{ data:[kpis.ingresos, kpis.costos, kpis.gastos], backgroundColor:[CHART_GREEN, CHART_RED, CHART_AMBER], borderWidth:2, borderColor:'#1C2D40' }] }}
+              options={{ responsive:true, maintainAspectRatio:false, cutout:'62%', plugins:{ legend:{ position:'bottom', ...CHART_LEGEND } } }}/>
+          ) : (
+            <div className="empty-state" style={{ padding:'34px 0' }}><JxIcon name="chart" size={28} color="var(--tm)"/><p style={{ fontSize:12 }}>Sin datos.</p></div>
+          )}
         </div>
       </div>
 

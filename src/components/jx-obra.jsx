@@ -89,6 +89,31 @@ function ObrasPage({ showToast }) {
   const [quickAdd, setQuickAdd] = uSO(null);
   const [quickForm, setQuickForm] = uSO(null);
 
+  // Obras asignadas al usuario (tabla obra_usuarios). Admin/gerente ven TODAS.
+  // El resto ve sólo sus obras asignadas; si no tiene ninguna asignación, ve todas
+  // por defecto (el administrador acota desde Usuarios → "Editar obras asignadas").
+  const [misObrasIds, setMisObrasIds] = uSO(null); // null = sin restricción
+  uEO(() => {
+    const verTodas = isAdmin || myRol === 'gerente';
+    if (verTodas || !userId || userId === 'offline') { setMisObrasIds(null); return; }
+    let cancel = false;
+    (async () => {
+      try {
+        const sb = window.__supabase;
+        if (!sb) { setMisObrasIds(null); return; }
+        const { data, error } = await sb.from('obra_usuarios')
+          .select('obra_id').eq('usuario_id', userId).eq('activo', true);
+        if (cancel) return;
+        // En error NO caemos a "ve todas" (eso filtraría abierto a un usuario restringido);
+        // dejamos el valor previo y reintentará en el próximo render del effect.
+        if (error) { console.warn('[ObrasPage] obra_usuarios load falló:', error?.message); return; }
+        const ids = (data || []).map(r => r.obra_id);
+        setMisObrasIds(ids.length ? new Set(ids) : null); // solo SIN error: sin asignaciones → ve todas
+      } catch { if (!cancel) setMisObrasIds(null); }
+    })();
+    return () => { cancel = true; };
+  }, [userId, myRol, isAdmin]);
+
   const openQuickAdd = (target) => {
     setQuickForm({
       ruc: '',
@@ -378,12 +403,14 @@ function ObrasPage({ showToast }) {
 
   if (loading) return <div className="page-wrap"><div className="empty-state"><JxIcon name="building" size={32} color="var(--tm)"/><p>Cargando obras…</p></div></div>;
 
-  const activas = obras.filter(o => o.estado === 'activo').length;
+  // Lista visible según asignación (admin/gerente o sin restricción = todas).
+  const obrasVisibles = misObrasIds ? obras.filter(o => misObrasIds.has(o.id)) : obras;
+  const activas = obrasVisibles.filter(o => o.estado === 'activo').length;
 
   return (
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
-        <div><div className="pg-title">Obras / Proyectos</div><div className="pg-sub">{obras.length} proyectos · {activas} activos</div></div>
+        <div><div className="pg-title">Obras / Proyectos</div><div className="pg-sub">{obrasVisibles.length} proyectos · {activas} activos</div></div>
         {canWrite ? (
           <button className="btn btn-amber btn-sm" onClick={openNuevaObra}><JxIcon name="plus" size={13}/>Nueva Obra</button>
         ) : (
@@ -391,11 +418,11 @@ function ObrasPage({ showToast }) {
         )}
       </div>
 
-      {obras.length === 0 ? (
-        <div className="card card-p empty-state"><JxIcon name="building" size={40} color="var(--tm)"/><p>No hay obras registradas. Click en "Nueva Obra".</p></div>
+      {obrasVisibles.length === 0 ? (
+        <div className="card card-p empty-state"><JxIcon name="building" size={40} color="var(--tm)"/><p>{obras.length === 0 ? 'No hay obras registradas. Click en "Nueva Obra".' : 'No tenés obras asignadas. Pedile al administrador que te asigne en Usuarios → "Editar obras asignadas".'}</p></div>
       ) : (
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
-        {obras.map(o => {
+        {obrasVisibles.map(o => {
           const pres = Number(o.presupuesto_total || 0);
           const real = Number(o.costo_real_acumulado || 0);
           const margen = pres > 0 ? ((pres - real) / pres * 100).toFixed(1) : 0;

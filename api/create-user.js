@@ -22,8 +22,8 @@
 // el header Authorization. Si su perfil no tiene rol='admin' rechazamos.
 
 const ROLES_VALIDOS = new Set([
-  'admin','gerente','ingeniero_residente','supervisor','almacenero',
-  'asistente_admin','contador','tesorero','jefe_compras','rrhh',
+  'admin','gerente','ingeniero_residente','ingeniero','supervisor','almacenero',
+  'asistente_admin','contador','ayudante_contador','tesorero','jefe_compras','rrhh',
   'prevencionista','maestro_obra','solo_lectura',
 ]);
 

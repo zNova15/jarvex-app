@@ -9,7 +9,7 @@ export const AuthContext = createContext(null);
 // se trata como inválido (NO se asume admin para evitar escalación).
 const ROLES_VALIDOS = new Set([
   'admin','gerente','ingeniero_residente','ingeniero','supervisor','almacenero',
-  'asistente_admin','contador','tesorero','jefe_compras','rrhh',
+  'asistente_admin','contador','ayudante_contador','tesorero','jefe_compras','rrhh',
   'prevencionista','maestro_obra','solo_lectura',
 ]);
 

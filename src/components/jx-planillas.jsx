@@ -45,7 +45,9 @@ function PlanillasPage({ showToast }) {
   const userId = auth?.profile?.id ?? 'offline';
   const isAdmin = auth?.profile?.rol === 'admin';
   const myRol = auth?.profile?.rol;
-  const puedeGestionar = isAdmin || ['gerente','asistente_admin'].includes(myRol);
+  // Gate por la matriz de permisos (no rol hard-coded): así Contador Jefe, RR.HH.,
+  // gerente y asistente_admin (todos con 'w' en Planillas) pueden gestionar.
+  const puedeGestionar = isAdmin || (window.__hasPerm?.(myRol, 'Planillas', 'w') ?? false);
 
   const { data: planillas } = window.__hooks.usePlanillas(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);

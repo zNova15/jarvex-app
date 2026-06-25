@@ -12,7 +12,8 @@ const ROL_LABELS = {
   supervisor:          'Supervisor',
   almacenero:          'Almacenero',
   asistente_admin:     'Asist. Admin',
-  contador:            'Contador',
+  contador:            'Contador Jefe',
+  ayudante_contador:   'Ayudante Contab.',
   tesorero:            'Tesorero',
   jefe_compras:        'Jefe de Compras',
   rrhh:                'RR.HH.',
@@ -30,6 +31,7 @@ const ROL_COLORS_ADM = {
   almacenero:          'b-green',
   asistente_admin:     'b-blue',
   contador:            'b-purple',
+  ayudante_contador:   'b-yellow',
   tesorero:            'b-amber',
   jefe_compras:        'b-orange',
   rrhh:                'b-yellow',
@@ -38,7 +40,7 @@ const ROL_COLORS_ADM = {
   solo_lectura:        'b-gray',
 };
 
-const ROL_KEYS = ['admin','gerente','ingeniero_residente','ingeniero','supervisor','almacenero','asistente_admin','contador','tesorero','jefe_compras','rrhh','prevencionista','maestro_obra','solo_lectura'];
+const ROL_KEYS = ['admin','gerente','ingeniero_residente','ingeniero','supervisor','almacenero','asistente_admin','contador','ayudante_contador','tesorero','jefe_compras','rrhh','prevencionista','maestro_obra','solo_lectura'];
 
 // ── Roles Custom (definidos por el admin, persistidos en localStorage) ──
 // Cada rol custom: { key, label, color }
@@ -859,20 +861,36 @@ const PERM_MATRIX = {
     return 'r';  // Avance/Incidencias/Cronograma quedan en 'r' (leer, no reportar avances)
   }),
 
-  // Contador: w en contabilidad, plan de cuentas, libros, balance/estado;
-  // r en compras/valorizaciones/proveedores/empresas (necesita verlas);
-  // x en operaciones de obra (almacén/asistencia/SSOMA), tesorería, RRHH, SUNAT
+  // Contador Jefe (key 'contador'): w en TODA la sección Contabilidad del menú
+  // (contabilidad + tesorería + SUNAT) y TODA la sección RRHH (Personal, Asistencia,
+  // contratos, planillas, CTS, grati, PLAME). r en Obras (ve las obras asignadas).
+  // w en Captura Mágica (herramienta que usa). x en el resto.
   contador: PERM_MATRIX_MODULES.map(m => {
     if (m === 'Usuarios/Config') return 'x';
-    if (['Movs. Contables','Plan de Cuentas','Libro Diario','Balance General','Estado Resultados',
-         'Empresas','Intercompany','Trazabilidad','Consolidado','Auditoría','Captura Mágica'].includes(m)) return 'w';
-    // Compras / Logística → 'x' explícito. El contador no debe entrar a
-    // requisiciones, órdenes de compra, cotizaciones ni recepciones —
-    // esos son del jefe de compras / almacén. El contador sustenta con
-    // facturas, no decide compras.
-    if (['Requisiciones','Órdenes de Compra','Cotizaciones','Recepciones'].includes(m)) return 'x';
-    if (['Obras','Personal','Proveedores','Subcontratistas','Subcontratos','Valor. Subcontrato',
-         'Valorizaciones','Reportes','Comprobantes Electrónicos','Libros Electrónicos'].includes(m)) return 'r';
+    const wList = [
+      // RRHH (sección completa del menú)
+      'Personal','Asistencia','Contratos Laborales','Planillas','CTS','Gratificaciones',
+      // Contabilidad
+      'Empresas','Movs. Contables','Intercompany','Trazabilidad','Consolidado',
+      'Plan de Cuentas','Libro Diario','Balance General','Estado Resultados',
+      // Tesorería
+      'Cuentas Bancarias','Flujo de Caja','Flujo Proyectado','Comparativo Periodos',
+      // SUNAT (Comprobantes, Libros Electrónicos, PLAME/T-Registro, Config SUNAT)
+      'Comprobantes Electrónicos','Libros Electrónicos','PLAME / T-Registro','Config SUNAT',
+      // Herramienta de captura (General)
+      'Captura Mágica',
+    ];
+    if (wList.includes(m)) return 'w';
+    if (m === 'Obras') return 'r';   // ve la lista de obras asignadas (solo lectura)
+    return 'x';
+  }),
+
+  // Ayudante de Contabilidad (key 'ayudante_contador'): acceso ACOTADO (allowlist
+  // __AYUDANTE_CONTADOR_ITEMS controla la visibilidad). w en Empresas, Movimientos
+  // Contables, Cuentas Bancarias y Captura Mágica; Personal SOLO LECTURA; x el resto.
+  ayudante_contador: PERM_MATRIX_MODULES.map(m => {
+    if (['Empresas','Movs. Contables','Cuentas Bancarias','Captura Mágica'].includes(m)) return 'w';
+    if (m === 'Personal') return 'r';  // solo lectura, sin edición
     return 'x';
   }),
 
@@ -1081,7 +1099,7 @@ window.__moduleIdMap = {
 // "sin permisos" — NUNCA como admin.
 const __ROLES_CANONICOS = new Set([
   'admin','gerente','ingeniero_residente','ingeniero','supervisor','almacenero',
-  'asistente_admin','contador','tesorero','jefe_compras','rrhh',
+  'asistente_admin','contador','ayudante_contador','tesorero','jefe_compras','rrhh',
   'prevencionista','maestro_obra','solo_lectura',
 ]);
 
@@ -1099,11 +1117,20 @@ const __ASISTENTE_ADMIN_ITEMS = [
   'movimientos-insumos',
   'insumos-persona', 'personal', 'frentes',
 ];
+// Ayudante de Contabilidad: menú ACOTADO. Captura Mágica (General) + Personal (RRHH,
+// solo lectura por la matriz) + Empresas / Movimientos / Cuentas Bancarias (Contabilidad).
+// Allowlist necesaria: 'cont-dashboard' comparte el módulo 'Movs. Contables' con
+// 'movimientos-contables', así que sin allowlist el ayudante vería el dashboard (no debe).
+const __AYUDANTE_CONTADOR_ITEMS = [
+  'captura-magica', 'personal', 'empresas', 'movimientos-contables', 'cuentas-bancarias',
+];
 window.__canSeeSidebarItem = function(rol, itemId) {
   const modulo = window.__moduleIdMap?.[itemId];
   // El Asistente de Administrador ve EXCLUSIVAMENTE su lista acotada (igual patrón
   // que el ingeniero) — gana sobre cualquier permiso de la matriz.
   if (rol === 'asistente_admin') return __ASISTENTE_ADMIN_ITEMS.includes(itemId);
+  // El Ayudante de Contabilidad ve EXCLUSIVAMENTE su lista acotada.
+  if (rol === 'ayudante_contador') return __AYUDANTE_CONTADOR_ITEMS.includes(itemId);
   // La bandeja de aprobaciones de reporte de frente ajeno + rendimiento: admin/gerente.
   if (itemId === 'aprobaciones-reporte') return rol === 'admin' || rol === 'gerente';
   if (itemId === 'rendimiento-ingenieros') return rol === 'admin' || rol === 'gerente';
@@ -1143,7 +1170,8 @@ const __HOME_POR_ROL = {
   supervisor: 'asistencia',
   almacenero: 'mov-materiales',
   asistente_admin: 'dashboard-gestion',
-  contador: 'movimientos-contables',
+  contador: 'cont-dashboard',
+  ayudante_contador: 'movimientos-contables',
   tesorero: 'cuentas-bancarias',
   jefe_compras: 'requisiciones',
   rrhh: 'planillas',

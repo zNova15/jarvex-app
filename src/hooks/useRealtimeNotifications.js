@@ -248,7 +248,7 @@ export function useRealtimeNotifications() {
           // contabilidad), solo notifica a contabilidad/admin — no le suena
           // a todo el mundo.
           if (payload.new.pendiente_sustento === true) {
-            const esContable = ['contador', 'asistente_admin', 'admin', 'gerente'].includes(profile.rol);
+            const esContable = ['contador', 'ayudante_contador', 'asistente_admin', 'admin', 'gerente'].includes(profile.rol);
             if (esContable) {
               addNotif({
                 tipo: 'pendiente_sustento',

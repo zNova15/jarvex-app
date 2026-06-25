@@ -227,7 +227,8 @@ function DashboardPage() {
   const dashboardVacio = !canManagement && !canMateriales && !canHerramientas && !canAsistencia;
   // Sugerencia de página principal según rol
   const PAGINA_RECOMENDADA = {
-    contador:        { page: 'cont-dashboard',         label: 'Dashboard Contable' },
+    contador:          { page: 'cont-dashboard',       label: 'Dashboard Contable' },
+    ayudante_contador: { page: 'movimientos-contables', label: 'Movimientos Contables' },
     tesorero:        { page: 'cuentas-bancarias',      label: 'Cuentas Bancarias' },
     jefe_compras:    { page: 'requisiciones',          label: 'Requisiciones' },
     rrhh:            { page: 'planillas',              label: 'Planillas' },

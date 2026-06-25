@@ -25,7 +25,9 @@ function PersonalContratosPage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
   const myRol = auth?.profile?.rol;
   const isAdmin = myRol === 'admin';
-  const puedeGestionar = isAdmin || ['gerente', 'asistente_admin'].includes(myRol);
+  // Gate por la matriz de permisos (no rol hard-coded): así Contador Jefe, RR.HH.,
+  // gerente y asistente_admin (todos con 'w' en Contratos Laborales) pueden gestionar.
+  const puedeGestionar = isAdmin || (window.__hasPerm?.(myRol, 'Contratos Laborales', 'w') ?? false);
 
   const [obraId, setObraId] = uS(null);
   const [contratosByPersonal, setContratosByPersonal] = uS({}); // { personal_id: contrato }
