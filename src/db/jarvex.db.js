@@ -45,6 +45,14 @@ export const db = new Dexie('JarvexDB');
 // al admin/gerente para reportar un frente que no es suyo (titular ausente);
 // tras la aprobación carga el reporte en reporte_payload (jsonb, prop sin índice)
 // y lo envía; el admin acepta y recién ahí se aplican los avances. Aditivo.
+// Versión 30: Conciliación Tripartita (Feature 4) — Vinculación 2 (Facturas↔Presupuesto).
+// conciliacion_vinculos: junction N-a-M que enlaza un ítem de factura
+// (accounting_movements.notas.items_factura[idx]) con un insumo presupuestado
+// (insumos_partida consolidado por insumo_codigo de Delfín). Aditivo.
+db.version(30).stores({
+  conciliacion_vinculos: 'id, obra_id, insumo_codigo, accounting_movement_id, deleted_at, sync_status',
+});
+
 // Versión 29: solicitudes de creación de frente desde una partida huérfana (sin
 // frente). El admin/gerente las aprueba creando/oficializando un frente. Aditivo.
 db.version(29).stores({

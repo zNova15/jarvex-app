@@ -1061,6 +1061,7 @@ window.__moduleIdMap = {
   'plame': 'PLAME / T-Registro',
   // Contabilidad
   'cont-dashboard': 'Movs. Contables',
+  'conciliacion-insumos': 'Movs. Contables',   // conciliación factura↔presupuesto (contabilidad)
   'empresas': 'Empresas',
   'movimientos-contables': 'Movs. Contables',
   'intercompany': 'Intercompany',
@@ -1128,6 +1129,7 @@ const __ASISTENTE_ADMIN_ITEMS = [
 // 'movimientos-contables', así que sin allowlist el ayudante vería el dashboard (no debe).
 const __AYUDANTE_CONTADOR_ITEMS = [
   'captura-magica', 'personal', 'empresas', 'movimientos-contables', 'cuentas-bancarias',
+  'conciliacion-insumos', // enlaza facturas ↔ insumos presupuestados (Vinculación 2)
   'solicitudes', // ve "Mis solicitudes" (sus pedidos de cambio); la aprobación es del contador/admin
 ];
 window.__canSeeSidebarItem = function(rol, itemId) {

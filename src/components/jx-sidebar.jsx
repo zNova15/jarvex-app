@@ -148,6 +148,7 @@ const NAV = [
   { id: 'cont-dashboard', label: 'Dashboard Contable', icon: 'dashboard' },
   { id: 'empresas', label: 'Empresas', icon: 'building' },
   { id: 'movimientos-contables', label: 'Movimientos', icon: 'dollar' },
+  { id: 'conciliacion-insumos', label: 'Conciliación de Insumos', icon: 'compare' },
   { id: 'intercompany', label: 'Operaciones entre Empresas', icon: 'compare' },
   { id: 'trazabilidad', label: 'Trazabilidad de Cadenas', icon: 'compare' },
   { id: 'consolidado', label: 'Consolidado', icon: 'list' },

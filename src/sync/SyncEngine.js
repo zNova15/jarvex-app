@@ -76,6 +76,9 @@ const TRANSACTIONAL_TABLES = [
   // Historial de precios unificado (herramienta/epp/emergencia). FK-less, así que
   // no necesita FK_DEPS ni un orden particular respecto de catálogos/movimientos.
   'insumo_precios_historial',
+  // Conciliación Tripartita (Feature 4): vínculo factura↔presupuesto. Después de
+  // accounting_movements (FK accounting_movement_id) y obras (FK obra_id).
+  'conciliacion_vinculos',
 ];
 
 // Tablas maestras que se descargan del servidor en cada sync.
@@ -100,6 +103,7 @@ const MASTER_TABLES = [
   { tabla: 'material_precios_historial',   query: () => supabase.from('material_precios_historial').select('*').is('deleted_at', null) },
   { tabla: 'companies',                    query: () => supabase.from('companies').select('*').is('deleted_at', null) },
   { tabla: 'accounting_movements',         query: () => supabase.from('accounting_movements').select('*').is('deleted_at', null) },
+  { tabla: 'conciliacion_vinculos',        query: () => supabase.from('conciliacion_vinculos').select('*').is('deleted_at', null) },
   { tabla: 'intercompany_transactions',    query: () => supabase.from('intercompany_transactions').select('*').is('deleted_at', null) },
   // Compras
   { tabla: 'requisiciones',         query: () => supabase.from('requisiciones').select('*').is('deleted_at', null) },

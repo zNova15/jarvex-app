@@ -338,7 +338,7 @@ function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStat
     cronograma:'Cronograma / Gantt',avance:'Avance de Obra',comparativo:'Planificado vs Real',
     costos:'Costos',incidencias:'Incidencias',usuarios:'Usuarios',roles:'Roles y Permisos',
     configuracion:'Configuración',
-    'cont-dashboard':'Dashboard Contable', empresas:'Empresas',
+    'cont-dashboard':'Dashboard Contable', 'conciliacion-insumos':'Conciliación de Insumos', empresas:'Empresas',
     'movimientos-contables':'Movimientos Contables', intercompany:'Operaciones entre Empresas',
     consolidado:'Consolidado del Grupo',
     trazabilidad:'Trazabilidad de Cadenas',
@@ -565,6 +565,7 @@ const PAGE_REGISTRY = {
   'captura-magica':         { chunk: 'jx-captura-magica', component: 'CapturaMagicaPage' },
   // === jx-contabilidad ===
   'cont-dashboard':         { chunk: 'jx-contabilidad', component: 'ContabilidadDashboardPage' },
+  'conciliacion-insumos':   { chunk: 'jx-conciliacion', component: 'ConciliacionInsumosPage' },
   'empresas':               { chunk: 'jx-contabilidad', component: 'EmpresasPage' },
   'movimientos-contables':  { chunk: 'jx-contabilidad', component: 'MovimientosContablesPage' },
   'intercompany':           { chunk: 'jx-contabilidad', component: 'IntercompanyPage' },
