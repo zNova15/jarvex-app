@@ -155,10 +155,39 @@ async function recuperarMetadataSubidas() {
   }
 }
 
+// Reactiva (una vez por sesión) las evidencias 'failed' cuyo blob aún existe en
+// IndexedDB → las vuelve 'pending' con retries=0 para que se reintenten. Sin blob
+// no hay nada que recuperar (se quedan 'failed'). Recupera fotos perdidas por la
+// RLS de Storage que bloqueaba a los ingenieros (ver mig 104).
+let _reactivacionFallidasHecha = false;
+async function reactivarFallidasConBlob() {
+  if (_reactivacionFallidasHecha) return;
+  _reactivacionFallidasHecha = true;
+  try {
+    const fallidas = await db.evidencias
+      .where('sync_status').equals(UPLOAD_STATUS.FAILED)
+      .toArray();
+    for (const ev of fallidas) {
+      const blobEntry = await db.evidencias_blobs.get(ev.blob_ref || ev.id);
+      if (blobEntry?.blob) {
+        await db.evidencias.update(ev.id, { sync_status: UPLOAD_STATUS.PENDING, upload_retries: 0 });
+      }
+    }
+  } catch (e) {
+    console.warn('[EvidenceUploader] reactivar fallidas:', e?.message || e);
+  }
+}
+
 // ── Upload de todas las evidencias pendientes ─────────────────────────
 
 export async function uploadPendingEvidencias() {
   if (!navigator.onLine) return;
+
+  // Recuperar evidencias que quedaron 'failed' pero cuyo blob SIGUE en IndexedDB
+  // (el blob solo se borra tras subir blob+metadata OK). Caso real: los ingenieros
+  // no podían subir a Storage por la RLS (mig 104) → sus fotos de avance quedaron
+  // 'failed' localmente. Tras el fix, reactivarlas para que se suban al fin.
+  await reactivarFallidasConBlob();
 
   const pending = await db.evidencias
     .where('sync_status').equals(UPLOAD_STATUS.PENDING)

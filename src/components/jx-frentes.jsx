@@ -5,7 +5,6 @@ const { useState: uS, useEffect: uE, useMemo: uM } = React;
 
 // ¿Es el frente especial "Gastos Generales"? (insumos de oficina/generales).
 const esGastosGenerales = (f) => !!(f && (f.es_gastos_generales || String(f.nombre || '').trim().toLowerCase() === 'gastos generales'));
-const __ggEnsuredObras = new Set();   // obras donde ya disparamos la auto-creación del GG
 
 // Catálogo de FRENTES DE TRABAJO por obra (zonas/sub-obras: Captación, Línea de
 // Conducción, Alcantarillado, etc.). El personal se asigna a un frente; los
@@ -75,18 +74,10 @@ function FrentesPage({ showToast }) {
     return Number(a.orden ?? 99) - Number(b.orden ?? 99) || (a.nombre || '').localeCompare(b.nombre || '');
   }), [frentes]);
 
-  // Auto-ensure: toda obra tiene un frente "Gastos Generales" (insumos de oficina,
-  // fuera de partidas). La mig 101 lo creó para las obras existentes; esto cubre las
-  // nuevas. Idempotente vía guard module-level + chequeo del listado.
-  uE(() => {
-    if (!obraId || !Array.isArray(frentes) || loading) return;
-    if (frentes.some(esGastosGenerales) || __ggEnsuredObras.has(obraId)) return;
-    __ggEnsuredObras.add(obraId);
-    Promise.resolve(create({ obra_id: obraId, nombre: 'Gastos Generales',
-      descripcion: 'Insumos de oficina / generales que no entran en partidas de ejecución (ej. agua de oficina).',
-      es_gastos_generales: true, ingeniero_user_id: null, orden: 999, activo: true }))
-      .catch(() => { __ggEnsuredObras.delete(obraId); });
-  }, [obraId, frentes, loading]);
+  // El frente "Gastos Generales" lo crea la BD: la mig 101 lo sembró para las obras
+  // existentes y un TRIGGER en `obras` (mig 105) lo crea para las nuevas — race-free.
+  // (Se quitó el auto-ensure del cliente: corría en cada device antes de sincronizar
+  //  el GG de la BD y generaba duplicados.)
 
   const [modal, setModal] = uS(null);
   const [editing, setEditing] = uS(null);
