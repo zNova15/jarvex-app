@@ -343,6 +343,11 @@ function UsuariosPage({ showToast }) {
       if (!data || data.length === 0) {
         throw new Error('No se pudo actualizar (sin permisos o RLS bloqueó la operación)');
       }
+      // Propagar el rol a las asignaciones de obra: `obra_usuarios.rol_obra` debe
+      // reflejar el rol del perfil (la RLS de Storage y la visibilidad lo usan). Si no
+      // se propaga, queda desincronizado — fue el bug por el que los ingenieros, creados
+      // como solo_lectura y luego corregidos a 'ingeniero', no podían subir fotos.
+      try { await sb.from('obra_usuarios').update({ rol_obra: newRol }).eq('usuario_id', modalRol.id); } catch (e) { console.warn('[handleChangeRol] propagar rol_obra:', e?.message); }
       showToast?.('Rol actualizado','green');
       setModalRol(null);
       reload();
