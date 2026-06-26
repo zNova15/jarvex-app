@@ -97,7 +97,11 @@ function ConciliacionInsumosPage({ showToast }) {
           try { notas = typeof mv.notas === 'string' ? JSON.parse(mv.notas) : mv.notas; } catch { notas = null; }
           const arr = notas && Array.isArray(notas.items_factura) ? notas.items_factura : null;
           if (!arr) continue;
-          arr.forEach((it, idx) => its.push({
+          arr.forEach((it, idx) => {
+            // Los ítems de consumo general de empresa (oficina) NO entran al presupuesto
+            // de la obra → no se ofrecen para conciliar. (itemIdx conserva el índice real.)
+            if ((it.destino || 'obra') === 'empresa') return;
+            its.push({
             facturaId: mv.id, itemIdx: idx,
             descripcion: it.descripcion || it.nombre || '—',
             unidad: it.unidad || 'und',
@@ -106,7 +110,8 @@ function ConciliacionInsumosPage({ showToast }) {
             catId: it.material_id || null,
             doc: `${mv.document_type || ''} ${mv.document_number || ''}`.trim(),
             fecha: mv.date || '', proveedor: mv.third_party_name || '',
-          }));
+            });
+          });
         }
         // 3) VÍNCULOS existentes.
         const vin = await db.conciliacion_vinculos.where('obra_id').equals(obraId).filter(r => !r.deleted_at).toArray();

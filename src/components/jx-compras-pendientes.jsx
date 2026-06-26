@@ -265,8 +265,8 @@ function ComprasPendientesPage({ showToast }) {
                           const enCatalogo = it.material_id && catalogoCompleto.has(it.material_id);
                           const tipo = it.tipo_insumo || 'material';
                           return (
-                            <tr key={i}>
-                              <td style={{ color:'var(--ts)' }}>{it.descripcion || '—'}</td>
+                            <tr key={i} style={it.destino === 'empresa' ? { opacity: 0.6 } : null}>
+                              <td style={{ color:'var(--ts)' }}>{it.descripcion || '—'}{it.destino === 'empresa' && <span className="badge b-gray" style={{ marginLeft: 6, fontSize: 9 }} title="Consumo general de la empresa (oficina) — no se recibe en el almacén de la obra">🏢 empresa</span>}</td>
                               <td>
                                 <span className={`badge ${TIPO_INSUMO_BADGE[tipo] || 'b-gray'}`} style={{ fontSize:9 }}>
                                   {TIPO_INSUMO_LABEL[tipo] || tipo}
@@ -345,10 +345,13 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
       const tipo = noStock
         ? it.tipo_insumo
         : ((matchId && tipoDeId(matchId)) || (it.tipo_insumo || 'material'));
+      // Consumo general de empresa (oficina): NO entra al almacén de la obra → por defecto
+      // no se recibe (cantidad 0, sin verificar). El almacenero puede forzarlo si corresponde.
+      const esEmpresa = it.destino === 'empresa';
       return {
-        ...it, ya_recibido: ya, no_stock: noStock,
-        cantidad_recibida: resta,                        // por defecto, lo que falta
-        verificado: !noStock && resta > 0 && !!matchId,  // listo si hay match y falta recibir
+        ...it, ya_recibido: ya, no_stock: noStock, es_empresa: esEmpresa,
+        cantidad_recibida: esEmpresa ? 0 : resta,        // por defecto, lo que falta (0 si es de empresa)
+        verificado: !esEmpresa && !noStock && resta > 0 && !!matchId,  // listo si hay match y falta recibir
         match_id: noStock ? null : matchId, tipo,
         ubicacion_id: null, obs_item: '',
         // 'nuevo' = crea un movimiento de ingreso y sube stock (default).
@@ -695,6 +698,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
         });
         todoCompleto = itemsActualizados.every(it =>
           NO_STOCK.has(it.tipo_insumo) ||
+          (it.destino || 'obra') === 'empresa' ||   // consumo de empresa: no se recibe en obra, no bloquea el cierre
           (Number(it.recibido) || 0) >= (Number(it.cantidad) || 0) - 0.0001);
         notasObj.items_factura = itemsActualizados;
 
@@ -797,7 +801,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
                     <input type="checkbox" checked={it.verificado} onChange={e => upd(i, { verificado: e.target.checked })} />
                   </td>
                   <td>
-                    <div style={{ fontSize: 12, color: 'var(--ts)', marginBottom: 3 }}>{it.descripcion}</div>
+                    <div style={{ fontSize: 12, color: 'var(--ts)', marginBottom: 3 }}>{it.descripcion}{it.es_empresa && <span className="badge b-gray" style={{ marginLeft: 6, fontSize: 9 }} title="Consumo general de la empresa (oficina) — por defecto no se recibe en la obra">🏢 empresa</span>}</div>
                     {it.modo === 'existente' ? (
                       // Ya resuelta vinculando un movimiento de ingreso existente.
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
