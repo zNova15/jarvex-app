@@ -388,9 +388,6 @@ function CapturaMagicaPage({ showToast }) {
         accion_material: top ? 'usar_existente' : 'crear_nuevo',
         unidad: it.unidad || top?.m.unidad || 'und',
         tipo_insumo: tipoInsumo,
-        // Destino del ítem: 'obra' (va al almacén/conciliación de la obra) o 'empresa'
-        // (consumo general/oficina, no entra a la obra). Servicios/gastos → empresa por defecto.
-        destino: tipoInsumo === 'servicio' ? 'empresa' : 'obra',
       };
     });
     return {
@@ -567,8 +564,16 @@ function CapturaMagicaPage({ showToast }) {
       r = { ...r, obra_id: valida ? activa : '' };
     }
 
+    // ¿VENTA o COMPRA? Si el EMISOR de la factura es UNA DE NUESTRAS empresas afiliadas,
+    // la emitimos nosotros como vendedores → VENTA. Si la emite una distribuidora/proveedor
+    // externo → COMPRA (le compramos). Captura Mágica ya matcheó el emisor (r.emisor_company_id).
+    const esVenta = !!r.emisor_company_id;
+
     // Validaciones
-    if (r.company_accion === 'crear_nueva') {
+    if (esVenta) {
+      // VENTA: la empresa es el EMISOR (ya matcheado, nuestra). El receptor es el cliente
+      // (puede ser externo) → no exigimos "empresa compradora del grupo".
+    } else if (r.company_accion === 'crear_nueva') {
       if (!r.nueva_company_name?.trim()) { showToast('Falta nombre de la empresa nueva', 'red'); return; }
     } else if (!r.company_id) {
       showToast('Falta empresa compradora del grupo', 'red'); return;
@@ -601,7 +606,10 @@ function CapturaMagicaPage({ showToast }) {
       // el review sigue diciendo "crear nueva". Acá re-chequeamos contra Dexie
       // FRESCO por RUC y REUSAMOS la existente en vez de duplicarla (companies no
       // tiene unique(ruc) en el server, así que duplicaba libremente).
-      if (r.company_accion === 'crear_nueva') {
+      if (esVenta) {
+        // VENTA: la empresa del movimiento es NUESTRO emisor (ya existe en companies).
+        companyIdFinal = r.emisor_company_id;
+      } else if (r.company_accion === 'crear_nueva') {
         const rucC = String(r.nueva_company_ruc || '').trim();
         const yaExiste = rucC
           ? (await window.__db.companies.where('ruc').equals(rucC).filter(c => !c.deleted_at).toArray())
@@ -641,7 +649,8 @@ function CapturaMagicaPage({ showToast }) {
       }
 
       // 1) Crear proveedor si nuevo (mismo dedup por RUC fresco que la empresa).
-      if (r.proveedor_accion === 'crear_nuevo') {
+      //    Solo en COMPRAS: en una venta el "emisor" es nuestra empresa, no un proveedor.
+      if (!esVenta && r.proveedor_accion === 'crear_nuevo') {
         const rucP = String(r.proveedor_ruc || '').trim();
         const provExiste = rucP
           ? await window.__db.proveedores.where('ruc').equals(rucP).filter(p => !p.deleted_at).first()
@@ -682,7 +691,7 @@ function CapturaMagicaPage({ showToast }) {
       const materialesCreados = [];
       const movsMatCreados = []; // queda vacío — el almacenero los crea
 
-      if (r.crear_materiales_catalogo && r.obra_id) {
+      if (!esVenta && r.crear_materiales_catalogo && r.obra_id) {
         for (const it of r.items) {
           if (it.accion_material !== 'crear_nuevo') continue;
           if (!it.descripcion?.trim()) continue;
@@ -776,32 +785,37 @@ function CapturaMagicaPage({ showToast }) {
       // 3) Accounting movement (cost) + posible vinculación con OC
       const accId = window.__newId();
       const tipoAcc = TIPO_DOC_MAP[r.tipo_documento]?.acc || 'factura';
-      // Destino por ítem: si TODOS los ítems son consumo general de la empresa, la factura
-      // NO se ata a la obra (gasto puro de empresa). Si hay ≥1 ítem de obra, va a la obra.
-      const hayObraItems = (r.items || []).some(it => (it.destino || 'obra') === 'obra');
-      const obraIdFinal = hayObraItems ? (r.obra_id || null) : null;
+      // COMPRA: tercero = proveedor (emisor externo), type=cost. VENTA: tercero = receptor
+      // (cliente), type=income, company = nuestro emisor. La venta NO genera recepción de almacén.
+      const claseFinal = esVenta ? 'venta' : 'compra';
+      const typeFinal = esVenta ? 'income' : 'cost';
+      const terceroNombre = esVenta ? (r.receptor_razon_social || null) : (r.proveedor_razon_social || null);
+      const terceroRuc = esVenta ? (r.receptor_documento || null) : (r.proveedor_ruc || null);
+      const docLabel = TIPO_DOC_MAP[r.tipo_documento]?.label || 'Factura';
       await window.__db.accounting_movements.add({
         id: accId,
         company_id: companyIdFinal,
-        obra_id: obraIdFinal,
-        clase: 'compra',                  // Captura Mágica siempre registra COMPRAS
+        obra_id: r.obra_id || null,
+        clase: claseFinal,
+        // Operación interna del grupo (emisor Y receptor son empresas nuestras): debe
+        // marcarse SIEMPRE, no solo si se vinculó a una cadena de trazabilidad. Si no,
+        // una venta intercompany sin cadena se cuenta como ingreso real (infla ventas).
+        is_intercompany: !!r.es_intercompany,
+        related_company_id: r.es_intercompany ? (r.company_id || null) : null,
         date: r.fecha_emision,
-        type: 'cost',
-        category: TIPO_DOC_MAP[r.tipo_documento]?.label || 'Factura',
-        description: `${TIPO_DOC_MAP[r.tipo_documento]?.label || 'Factura'} ${r.serie_correlativo} · ${r.proveedor_razon_social}`,
+        type: typeFinal,
+        category: docLabel,
+        description: `${docLabel} ${r.serie_correlativo} · ${terceroNombre || ''}`,
         amount: Number(r.total) || 0,
         currency: r.moneda || 'PEN',
-        third_party_name: r.proveedor_razon_social || null,
-        third_party_ruc: r.proveedor_ruc || null,
+        third_party_name: terceroNombre,
+        third_party_ruc: terceroRuc,
         // Nuevos: método y estado de pago (registrados desde la UI).
         // Si el contador no eligió, usamos defaults razonables.
         metodo_pago: r.metodo_pago || null,
         payment_status: r.payment_status || 'pending',
-        // Recepción de almacén: si la factura "genera ingreso al almacén"
-        // queda como pendiente para que el almacenero confirme cuando
-        // llegue físicamente. Si NO (combustible, servicios, fletes),
-        // no aplica.
-        recepcion_status: (r.genera_recepcion_almacen && obraIdFinal && hayObraItems)
+        // Recepción de almacén: solo en COMPRAS con obra (una venta no ingresa al almacén).
+        recepcion_status: (!esVenta && r.genera_recepcion_almacen && r.obra_id && r.items?.length > 0)
           ? 'pendiente_recepcion'
           : 'no_aplica',
         document_type: tipoAcc,
@@ -827,7 +841,7 @@ function CapturaMagicaPage({ showToast }) {
             cantidad: Number(it.cantidad) || 0,
             precio_unitario: Number(it.precio_unitario) || 0,
             tipo_insumo: it.tipo_insumo || 'material',
-            destino: it.destino || 'obra',   // 'obra' | 'empresa' (consumo general/oficina)
+            // 'destino' (obra/empresa) lo clasifica el contador en "Insumos Comprados".
           })),
         }),
         created_by: userId, updated_by: userId,
@@ -1851,9 +1865,6 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
                     Genera ingreso al almacén (esperar recepción física)
                   </label>
                   <button type="button" className="btn btn-ghost btn-xs" onClick={recalcular}>↻ Recalcular total</button>
-                  <span style={{ fontSize:10.5, color:'var(--tm)', marginLeft:4 }}>Destino:</span>
-                  <button type="button" className="btn btn-ghost btn-xs" title="Marcar TODOS los ítems como destino Obra (activa)" onClick={()=>upd({ items: r.items.map(it => ({ ...it, destino: 'obra' })) })}>🏗 Todo a Obra</button>
-                  <button type="button" className="btn btn-ghost btn-xs" title="Marcar TODOS como consumo general de la empresa (oficina), no entra a la obra" onClick={()=>upd({ items: r.items.map(it => ({ ...it, destino: 'empresa' })) })}>🏢 Todo a Empresa</button>
                 </div>
               </div>
               {/* La columna "Material" (crear/vincular insumo) se quitó a propósito:
@@ -1862,9 +1873,8 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
               <div style={{ overflow:'auto', maxHeight:460, border:'1px solid var(--border)', borderRadius:6 }}>
                 <table className="tbl" style={{ fontSize:12 }}>
                   <thead><tr>
-                    <th style={{ minWidth:260 }}>Descripción</th>
+                    <th style={{ minWidth:300 }}>Descripción</th>
                     <th style={{ width:130 }}>Tipo</th>
-                    <th style={{ width:140 }}>Destino</th>
                     <th style={{ textAlign:'right', width:90 }}>Cant</th>
                     <th style={{ width:70 }}>Unid</th>
                     <th style={{ textAlign:'right', width:100 }}>P.Unit</th>
@@ -1886,17 +1896,6 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
                             <option value="maquinaria">Maquinaria</option>
                             <option value="emergencia">Emergencia</option>
                             <option value="servicio">Servicio/Gasto</option>
-                          </select>
-                        </td>
-                        <td>
-                          {/* Destino del ítem: Obra (almacén/conciliación de la obra) o
-                              consumo general de la empresa (oficina) — pueden mezclarse en
-                              la misma factura (ej. cintas → obra, hojas bond → oficina). */}
-                          <select style={{ fontSize:11, padding:'5px 6px' }} className="fi"
-                            value={it.destino || 'obra'}
-                            onChange={e => updateItem(i, { destino: e.target.value })}>
-                            <option value="obra">🏗 Obra</option>
-                            <option value="empresa">🏢 Empresa (general)</option>
                           </select>
                         </td>
                         <td><input className="fi" type="number" step="0.01" style={{ fontSize:12, padding:'6px 8px', width:80, textAlign:'right' }} value={it.cantidad ?? ''} onChange={e=>updateItem(i, { cantidad: e.target.value })}/></td>

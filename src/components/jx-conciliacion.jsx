@@ -67,6 +67,9 @@ function ConciliacionInsumosPage({ showToast }) {
   const [estadoFiltro, setEstadoFiltro] = uS('todos'); // todos | con_saldo | facturados
   const [linkInsumo, setLinkInsumo] = uS(null); // insumo de la maestra que se está vinculando
   const [busy, setBusy] = uS(false);
+  const [tab, setTab] = uS('presupuesto'); // 'presupuesto' (por insumo) | 'comprados' (por ítem de factura)
+  const [qItems, setQItems] = uS('');       // búsqueda en la pestaña Insumos Comprados
+  const [pickItem, setPickItem] = uS(null); // ítem de factura que se está vinculando a un insumo
 
   // ── Carga de las 3 fuentes + los vínculos ──
   uE(() => {
@@ -93,15 +96,12 @@ function ConciliacionInsumosPage({ showToast }) {
         const movs = await db.accounting_movements.filter(x => x.obra_id === obraId && !x.deleted_at).toArray();
         const its = [];
         for (const mv of movs) {
+          if (mv.clase === 'venta') continue; // "Insumos Comprados" = solo COMPRAS
           let notas = null;
           try { notas = typeof mv.notas === 'string' ? JSON.parse(mv.notas) : mv.notas; } catch { notas = null; }
           const arr = notas && Array.isArray(notas.items_factura) ? notas.items_factura : null;
           if (!arr) continue;
-          arr.forEach((it, idx) => {
-            // Los ítems de consumo general de empresa (oficina) NO entran al presupuesto
-            // de la obra → no se ofrecen para conciliar. (itemIdx conserva el índice real.)
-            if ((it.destino || 'obra') === 'empresa') return;
-            its.push({
+          arr.forEach((it, idx) => its.push({
             facturaId: mv.id, itemIdx: idx,
             descripcion: it.descripcion || it.nombre || '—',
             unidad: it.unidad || 'und',
@@ -110,8 +110,9 @@ function ConciliacionInsumosPage({ showToast }) {
             catId: it.material_id || null,
             doc: `${mv.document_type || ''} ${mv.document_number || ''}`.trim(),
             fecha: mv.date || '', proveedor: mv.third_party_name || '',
-            });
-          });
+            // Clasificación obra/empresa (la pone el contador en "Insumos Comprados").
+            destino: it.destino || 'obra',
+          }));
         }
         // 3) VÍNCULOS existentes.
         const vin = await db.conciliacion_vinculos.where('obra_id').equals(obraId).filter(r => !r.deleted_at).toArray();
@@ -262,6 +263,60 @@ function ConciliacionInsumosPage({ showToast }) {
     finally { setBusy(false); }
   };
 
+  // Clasificar el destino de un ítem de factura (obra/empresa) → escribe notas.items_factura[idx].destino.
+  const setDestinoItem = async (it, destino) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const mv = await window.__db.accounting_movements.get(it.facturaId);
+      if (!mv) { toast('Factura no encontrada', 'red'); setBusy(false); return; }
+      let notas; try { notas = typeof mv.notas === 'string' ? JSON.parse(mv.notas) : (mv.notas || {}); } catch { notas = {}; }
+      const arr = Array.isArray(notas.items_factura) ? notas.items_factura.slice() : [];
+      if (!arr[it.itemIdx]) { toast('Ítem no encontrado en la factura', 'red'); setBusy(false); return; }
+      arr[it.itemIdx] = { ...arr[it.itemIdx], destino };
+      notas.items_factura = arr;
+      const now = new Date().toISOString();
+      await window.__db.accounting_movements.update(it.facturaId, {
+        notas: JSON.stringify(notas), updated_at: now, updated_by: userId,
+        version: (mv.version || 0) + 1,
+        sync_status: mv.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      // Si pasa a 'empresa', quitar sus vínculos al presupuesto — si no, el costo de un
+      // ítem de empresa seguiría sumando al Facturado del insumo presupuestado (vínculo huérfano).
+      if (destino === 'empresa') {
+        const vs = await window.__db.conciliacion_vinculos
+          .where('accounting_movement_id').equals(it.facturaId)
+          .filter(v => v.item_idx === it.itemIdx && !v.deleted_at).toArray();
+        for (const v of vs) {
+          if (v.sync_status === 'pending_create') await window.__db.conciliacion_vinculos.delete(v.id);
+          else await window.__db.conciliacion_vinculos.update(v.id, { deleted_at: now, updated_at: now, updated_by: userId, version: (v.version || 0) + 1, sync_status: 'pending_update' });
+        }
+        if (vs.length) { try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'conciliacion_vinculos' } })); } catch {} }
+      }
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'accounting_movements' } })); } catch {}
+      try { window.dispatchEvent(new Event('online')); } catch {}
+    } catch (e) { toast('Error: ' + (e.message || e), 'red'); }
+    finally { setBusy(false); }
+  };
+
+  // Vínculos agrupados por ítem (factura|itemIdx) — para la pestaña por-ítem.
+  const vincPorItem = uM(() => {
+    const m = new Map();
+    for (const v of vinculos) {
+      const k = `${v.accounting_movement_id}|${v.item_idx}`;
+      const a = m.get(k) || []; a.push(v); m.set(k, a);
+    }
+    return m;
+  }, [vinculos]);
+
+  // Ítems comprados filtrados (pestaña "Insumos Comprados").
+  const itemsComprados = uM(() => {
+    const qn = norm(qItems);
+    return items
+      .filter(it => !qn || norm(it.descripcion).includes(qn) || norm(it.proveedor).includes(qn))
+      .sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
+  }, [items, qItems]);
+
   if (!obraId) {
     return <div className="page-wrap"><div className="card card-p empty-state"><JxIcon name="compare" size={32} color="var(--tm)" /><p>Seleccioná una obra activa para conciliar sus insumos.</p></div></div>;
   }
@@ -275,6 +330,17 @@ function ConciliacionInsumosPage({ showToast }) {
         <div className="pg-sub">Cruce Presupuesto (Delfín) ↔ Facturas ↔ Almacén · enlazá cada ítem de factura con su insumo presupuestado</div>
       </div>
 
+      {/* Pestañas */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 14, borderBottom: '1px solid var(--bd)' }}>
+        {[{ k: 'presupuesto', lbl: 'Por Presupuesto', icon: 'list' }, { k: 'comprados', lbl: 'Insumos Comprados', icon: 'package' }].map(t => (
+          <button key={t.k} onClick={() => setTab(t.k)}
+            style={{ background: 'none', border: 'none', borderBottom: tab === t.k ? '2px solid var(--amber)' : '2px solid transparent', color: tab === t.k ? 'var(--tp)' : 'var(--tm)', fontWeight: tab === t.k ? 700 : 500, padding: '8px 14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13.5 }}>
+            <JxIcon name={t.icon} size={14} />{t.lbl}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'presupuesto' && (<>
       {/* KPIs */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px,1fr))', gap: 12, marginBottom: 16 }}>
         <div className="kpi-card"><div style={{ fontSize: 11.5, color: 'var(--tm)' }}>Presupuestado</div><div className="kpi-val" style={{ fontSize: 19 }}>{loading ? '…' : fmtS(kpis.presup)}</div></div>
@@ -338,6 +404,81 @@ function ConciliacionInsumosPage({ showToast }) {
           {filas.length > 400 && <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--tm)', borderTop: '1px solid var(--bd)' }}>Mostrando 400 de {fmtN(filas.length)} — refiná los filtros.</div>}
         </div>
       )}
+      </>)}
+
+      {tab === 'comprados' && (<>
+        <div className="card card-p" style={{ marginBottom: 12 }}>
+          <div className="search-bar"><JxIcon name="search" size={14} color="var(--tm)" /><input placeholder="Buscar ítem comprado / proveedor…" value={qItems} onChange={e => setQItems(e.target.value)} /></div>
+          <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 6 }}>Clasificá cada ítem comprado: 🏗 Obra (entra al presupuesto/almacén de la obra) o 🏢 Empresa (consumo general/oficina). Vinculá los de obra a su insumo presupuestado.</div>
+        </div>
+        {loading ? (
+          <div className="card card-p empty-state"><JxIcon name="package" size={32} color="var(--tm)" /><p>Cargando ítems comprados…</p></div>
+        ) : itemsComprados.length === 0 ? (
+          <div className="card card-p empty-state"><JxIcon name="package" size={40} color="var(--tm)" /><p>No hay ítems comprados (de Captura Mágica) para esta obra.</p></div>
+        ) : (
+          <div className="card" style={{ overflow: 'hidden' }}>
+            <div style={{ overflowX: 'auto' }}>
+              <table className="tbl">
+                <thead><tr>
+                  <th>Ítem comprado</th>
+                  <th style={{ width: 150 }}>Factura</th>
+                  <th style={{ textAlign: 'right', width: 90 }}>Cantidad</th>
+                  <th style={{ textAlign: 'right', width: 100 }}>Monto</th>
+                  <th style={{ width: 150 }}>Destino</th>
+                  <th style={{ width: 170 }}>Presupuesto</th>
+                </tr></thead>
+                <tbody>
+                  {itemsComprados.slice(0, 500).map(it => {
+                    const vs = vincPorItem.get(`${it.facturaId}|${it.itemIdx}`) || [];
+                    const esEmpresa = it.destino === 'empresa';
+                    return (
+                      <tr key={`${it.facturaId}|${it.itemIdx}`} style={esEmpresa ? { opacity: 0.7 } : null}>
+                        <td className="col-p">{it.descripcion}<div style={{ fontSize: 10, color: 'var(--tm)' }}>{it.proveedor}</div></td>
+                        <td style={{ fontSize: 11, color: 'var(--tm)' }}>{it.doc || '—'}<div style={{ fontSize: 10 }}>{it.fecha}</div></td>
+                        <td style={{ textAlign: 'right', fontSize: 12 }}>{fmtN(it.cantidad)} {it.unidad}</td>
+                        <td style={{ textAlign: 'right', fontSize: 12 }}>{fmtS(it.cantidad * it.precio)}</td>
+                        <td>
+                          <select className="fi" style={{ fontSize: 11, padding: '4px 6px' }} value={it.destino || 'obra'} disabled={busy}
+                            onChange={e => setDestinoItem(it, e.target.value)}>
+                            <option value="obra">🏗 Obra</option>
+                            <option value="empresa">🏢 Empresa (general)</option>
+                          </select>
+                        </td>
+                        <td>
+                          {esEmpresa ? (
+                            <span style={{ fontSize: 11, color: 'var(--tm)' }}>— (consumo empresa)</span>
+                          ) : vs.length > 0 ? (
+                            <button className="btn btn-ghost btn-xs" title={vs.map(v => v.insumo_nombre).join(', ')} onClick={() => setPickItem(it)}>
+                              <JxIcon name="check" size={10} color="var(--green)" /> {(vs.length === 1 ? (vs[0].insumo_nombre || 'vinculado') : `${vs.length} insumos`).slice(0, 18)} ✎
+                            </button>
+                          ) : (
+                            <button className="btn btn-amber btn-xs" disabled={busy} onClick={() => setPickItem(it)}>
+                              <JxIcon name="link" size={10} /> Vincular
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {itemsComprados.length > 500 && <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--tm)', borderTop: '1px solid var(--bd)' }}>Mostrando 500 de {fmtN(itemsComprados.length)} — refiná la búsqueda.</div>}
+          </div>
+        )}
+      </>)}
+
+      {pickItem && (
+        <PickInsumoModal
+          item={pickItem}
+          maestra={maestra}
+          vinculos={(vincPorItem.get(`${pickItem.facturaId}|${pickItem.itemIdx}`) || [])}
+          busy={busy}
+          onVincular={(ins) => vincularItem(ins, pickItem)}
+          onDesvincular={desvincular}
+          onClose={() => setPickItem(null)}
+        />
+      )}
 
       {linkInsumo && (
         <VincularModal
@@ -364,6 +505,7 @@ function VincularModal({ insumo, items, vinculos, itemsVinculados, busy, onVincu
   const candidatos = uM(() => {
     const qn = norm(buscar);
     return items
+      .filter(it => it.destino !== 'empresa')   // los de consumo de empresa no van al presupuesto de obra
       .filter(it => !yaAqui.has(`${it.facturaId}|${it.itemIdx}`))
       .map(it => ({ it, score: fuzzyScore(insumo.nombre, it.descripcion), enOtro: itemsVinculados.has(`${it.facturaId}|${it.itemIdx}`) }))
       .filter(({ it }) => !qn || norm(it.descripcion).includes(qn) || norm(it.proveedor).includes(qn))
@@ -419,6 +561,65 @@ function VincularModal({ insumo, items, vinculos, itemsVinculados, busy, onVincu
         </table>
       </div>
       <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 8 }}>Verde = sugerencia automática por similitud de nombre (≥50%). Podés vincular varios ítems al mismo insumo.</div>
+      <div className="modal-actions"><button className="btn btn-ghost" onClick={onClose}>Cerrar</button></div>
+    </Modal>
+  );
+}
+
+// ── Modal item→presupuesto: elegir el insumo presupuestado para un ítem comprado ──
+function PickInsumoModal({ item, maestra, vinculos, busy, onVincular, onDesvincular, onClose }) {
+  const [buscar, setBuscar] = uS('');
+  const yaVinc = uM(() => new Set((vinculos || []).map(v => v.insumo_codigo)), [vinculos]);
+  const candidatos = uM(() => {
+    const qn = norm(buscar);
+    return maestra
+      .filter(ins => !yaVinc.has(ins.codigo))
+      .map(ins => ({ ins, score: fuzzyScore(item.descripcion, ins.nombre) }))
+      .filter(({ ins }) => !qn || norm(ins.nombre).includes(qn) || String(ins.codigo).toLowerCase().includes(qn.replace(/ /g, '')))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 60);
+  }, [maestra, yaVinc, item, buscar]);
+  return (
+    <Modal title={`Vincular a presupuesto: ${item.descripcion}`} icon="link" onClose={onClose} wide>
+      <div style={{ fontSize: 12, color: 'var(--tm)', marginBottom: 10 }}>
+        Comprado: <strong style={{ color: 'var(--ts)' }}>{fmtN(item.cantidad)} {item.unidad}</strong> × {fmtS(item.precio)} · {item.doc} · {item.proveedor}
+      </div>
+      {vinculos.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--ts)', marginBottom: 6 }}>Insumos presupuestados vinculados ({vinculos.length})</div>
+          <div className="card" style={{ overflow: 'hidden' }}>
+            <table className="tbl"><tbody>
+              {vinculos.map(v => (
+                <tr key={v.id}>
+                  <td className="col-p" style={{ fontSize: 12 }}>{v.insumo_nombre}<div style={{ fontSize: 10, color: 'var(--tm)' }}>{v.insumo_codigo}</div></td>
+                  <td style={{ textAlign: 'center', width: 40 }}><button className="btn btn-ghost btn-xs" disabled={busy} title="Quitar vínculo" onClick={() => onDesvincular(v)}><JxIcon name="x" size={11} /></button></td>
+                </tr>
+              ))}
+            </tbody></table>
+          </div>
+        </div>
+      )}
+      <div className="search-bar" style={{ marginBottom: 8 }}><JxIcon name="search" size={14} color="var(--tm)" /><input placeholder="Buscar insumo presupuestado…" value={buscar} onChange={e => setBuscar(e.target.value)} /></div>
+      <div style={{ maxHeight: 320, overflow: 'auto', border: '1px solid var(--bd)', borderRadius: 6 }}>
+        <table className="tbl">
+          <thead><tr><th>Insumo presupuestado</th><th style={{ textAlign: 'right', width: 90 }}>Presup.</th><th style={{ width: 70 }}>Match</th><th style={{ width: 70 }}></th></tr></thead>
+          <tbody>
+            {candidatos.length === 0 && <tr><td colSpan={4} style={{ color: 'var(--tm)', fontStyle: 'italic', padding: 10 }}>Sin insumos presupuestados disponibles (¿importaste el presupuesto Delfín?).</td></tr>}
+            {candidatos.map(({ ins, score }) => {
+              const sug = score >= 0.5;
+              return (
+                <tr key={ins.codigo} style={sug ? { background: 'rgba(46,204,113,0.06)' } : null}>
+                  <td className="col-p" style={{ fontSize: 12 }}>{ins.nombre}<div style={{ fontSize: 10, color: 'var(--tm)' }}>{ins.codigo.startsWith('sc:') ? 'sin código' : ins.codigo}</div></td>
+                  <td style={{ textAlign: 'right', fontSize: 11 }}>{fmtN(ins.cantPresup)} {ins.unidad}</td>
+                  <td style={{ textAlign: 'center' }}>{score > 0 ? <span className={`badge ${sug ? 'b-green' : 'b-gray'}`} style={{ fontSize: 9 }}>{Math.round(score * 100)}%</span> : <span style={{ color: 'var(--tm)', fontSize: 11 }}>—</span>}</td>
+                  <td style={{ textAlign: 'center' }}><button className="btn btn-amber btn-xs" disabled={busy} onClick={() => onVincular(ins)}>Vincular</button></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 8 }}>Verde = sugerencia automática por similitud (≥50%). Un ítem puede vincularse a varios insumos del presupuesto.</div>
       <div className="modal-actions"><button className="btn btn-ghost" onClick={onClose}>Cerrar</button></div>
     </Modal>
   );
