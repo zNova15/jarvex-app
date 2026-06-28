@@ -532,6 +532,17 @@ function canPushTabla(tabla) {
     const rol = window.__currentRol;
     if (!rol) return true;          // sin rol todavía: dejar pasar
     if (rol === 'admin') return true;
+    // companies es dependencia transversal de la contabilidad: si el rol puede
+    // crear movimientos contables / intercompany, debe poder subir la empresa que
+    // esos referencian. La RLS del server YA permite INSERT de companies a
+    // cualquier autenticado (migs 030/034), el bloqueo era 100% client-side: un
+    // contador con Captura Mágica sin módulo 'Empresas' dejaba la empresa PENDING
+    // eterna y sus movimientos morían en 23503 (JARVEX-APP-8, 241x).
+    if (tabla === 'companies') {
+      const haceContab = window.__hasPerm?.(rol, 'Movs. Contables', 'w') === true
+        || window.__hasPerm?.(rol, 'Intercompany', 'w') === true;
+      if (haceContab) return true;
+    }
     const modulo = TABLA_TO_MODULO[tabla];
     if (!modulo) return true;       // sin mapping: defensivo, dejar pasar
     return window.__hasPerm?.(rol, modulo, 'w') ?? true;
@@ -608,6 +619,17 @@ const FK_DEPS = {
   // obra_id SÍ es FK NOT NULL real → la gateamos para no pushear el historial de
   // una obra recién creada offline antes que la obra (23503).
   insumo_precios_historial:    [{ campo: 'obra_id', tabla: 'obras' }],
+  // Contabilidad: el movimiento (y la transacción intercompany) referencian la
+  // empresa. Captura Mágica crea empresa + movimiento en el MISMO lote; companies
+  // (idx 15) y accounting_movements (idx 16) caen en el MISMO batch paralelo del
+  // push → el hijo le ganaba la carrera al padre → 23503
+  // (accounting_movements_company_id_fkey), 5 retries → FAILED → 241 en Sentry
+  // (JARVEX-APP-8). Constraints con naming default <tabla>_<campo>_fkey (verificado
+  // en schema: company_id/related_company_id/related_movement_id/obra_id/proveedor_id
+  // y seller_/buyer_company_id/movement_id), así el self-heal 23503 también aplica.
+  // Las FKs null se saltan solas (guard `if (!id) continue` en fkDepsReady).
+  accounting_movements:      [{ campo: 'company_id', tabla: 'companies' }, { campo: 'related_company_id', tabla: 'companies' }, { campo: 'related_movement_id', tabla: 'accounting_movements' }, { campo: 'obra_id', tabla: 'obras' }, { campo: 'proveedor_id', tabla: 'proveedores' }],
+  intercompany_transactions: [{ campo: 'seller_company_id', tabla: 'companies' }, { campo: 'buyer_company_id', tabla: 'companies' }, { campo: 'seller_movement_id', tabla: 'accounting_movements' }, { campo: 'buyer_movement_id', tabla: 'accounting_movements' }],
 };
 
 // True si todas las FKs del record están sincronizadas (o no hay FKs).
@@ -1245,6 +1267,65 @@ async function reconciliarProveedorDuplicado(record) {
   return true;
 }
 
+// Tablas/columnas locales que apuntan a una empresa (companies) — para re-apuntar
+// en una fusión de duplicado. A diferencia de proveedores, varias tablas tienen
+// MÁS de una FK a companies (ej. accounting_movements: company_id + related_company_id).
+const COMPANY_REF_TABLAS = [
+  { tabla: 'accounting_movements', campos: ['company_id', 'related_company_id'] },
+  { tabla: 'intercompany_transactions', campos: ['seller_company_id', 'buyer_company_id'] },
+  { tabla: 'obras', campos: ['ejecutora_company_id'] },
+];
+
+// Análogo a reconciliarProveedorDuplicado pero para companies. Captura Mágica crea
+// una empresa LOCAL por RUC que ya existe en el server (otra sesión/dispositivo, aún
+// no pulleada): el push choca 23505 y la empresa queda con un id que el server nunca
+// tuvo → sus movimientos revientan 23503 para siempre. companies NO tiene UNIQUE(ruc),
+// solo idempotency_key global unique (mig 021), así que deduplicamos por ese key
+// ('company_ruc_<ruc>', el mismo que arma jx-captura-magica). Adoptamos el id real,
+// re-apuntamos las referencias locales pending y borramos el duplicado.
+async function reconciliarCompanyDuplicado(record) {
+  const key = String(record?.idempotency_key || '').trim();
+  if (!key.startsWith('company_ruc_')) return false; // sin RUC el key es por-instancia → no dedup determinístico
+  let serverCompany = null;
+  try {
+    const { data, error } = await supabase.from('companies').select('*').eq('idempotency_key', key).limit(1).maybeSingle();
+    if (error || !data) return false;
+    serverCompany = data;
+  } catch { return false; }
+  if (!serverCompany?.id || serverCompany.id === record.id) return false;
+
+  const now = new Date().toISOString();
+  for (const { tabla: t, campos } of COMPANY_REF_TABLAS) {
+    if (!db[t]) continue;
+    for (const campo of campos) {
+      let rows = [];
+      try {
+        rows = await db[t].where('sync_status').anyOf([SYNC_STATUS.PENDING_CREATE, SYNC_STATUS.PENDING_UPDATE, SYNC_STATUS.FAILED])
+          .filter(x => x[campo] === record.id).toArray();
+      } catch {
+        try { rows = await db[t].filter(x => x[campo] === record.id).toArray(); } catch { continue; }
+      }
+      for (const row of rows) {
+        try {
+          await db[t].update(row.id, {
+            [campo]: serverCompany.id, updated_at: now,
+            version: (row.version || 0) + 1,
+            sync_status: row.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+          });
+        } catch {}
+      }
+    }
+  }
+  try { await db.companies.put({ ...serverCompany, sync_status: SYNC_STATUS.SYNCED, last_synced_at: now }); } catch {}
+  try { await db.companies.delete(record.id); } catch {}
+  try {
+    window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'companies' } }));
+    window.dispatchEvent(new CustomEvent('jarvex_master_updated', { detail: { tabla: 'companies' } }));
+  } catch {}
+  console.info(`[SyncEngine] company dup ${record.id.slice(0, 8)} reconciliado → ${serverCompany.id.slice(0, 8)} (key ${key})`);
+  return true;
+}
+
 async function pushCreate(tabla, record) {
   // Anti-fantasma: no pushear si una FK referenciada todavía está
   // pendiente en local. Si pusheamos el mov antes que el material,
@@ -1294,6 +1375,10 @@ async function pushCreate(tabla, record) {
       // referencias y borramos el duplicado local. Las facturas que lo apuntaban
       // quedan pending_update con el id real y suben solas en el próximo ciclo.
       trackEvent('record_pushed', { tabla, operacion: 'create_dedup_ruc' });
+    } else if (tabla === 'companies' && await reconciliarCompanyDuplicado(record)) {
+      // Empresa duplicada por RUC (idempotency_key): adoptamos el id del server,
+      // re-apuntamos movimientos/intercompany/obras pending y borramos el dup local.
+      trackEvent('record_pushed', { tabla, operacion: 'create_dedup_company' });
     } else {
       await handleSyncError(tabla, record, 'create', {
         ...error,
