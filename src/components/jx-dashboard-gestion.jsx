@@ -1,4 +1,6 @@
 import React from "react";
+import { calcAvanceFinanciero } from "../lib/avance-financiero.js";
+import { esUnidadPorcentaje } from "../lib/apuParser.js";
 const { useMemo: uM } = React;
 
 // ─── Helpers ─────────────────────────────────────────────────
@@ -41,6 +43,29 @@ function DashboardGestionPage() {
   const [usuarios, setUsuarios] = React.useState([]);
   React.useEffect(() => { window.__db?.profiles?.toArray?.().then(setUsuarios).catch(() => {}); }, []);
 
+  // Avance financiero = lo que los contadores vincularon en Conciliación de Insumos
+  // (factura ↔ insumo presupuestado) ÷ presupuesto facturable de la obra.
+  const [vincObra, setVincObra] = React.useState([]);
+  const [insumosObra, setInsumosObra] = React.useState([]);
+  React.useEffect(() => {
+    if (!obraId) { setVincObra([]); setInsumosObra([]); return; }
+    let c = false;
+    const load = async () => {
+      try {
+        const [vin, ins] = await Promise.all([
+          window.__db.conciliacion_vinculos.where('obra_id').equals(obraId).filter(r => !r.deleted_at).toArray(),
+          window.__db.insumos_partida.where('obra_id').equals(obraId).filter(r => !r.deleted_at).toArray(),
+        ]);
+        if (!c) { setVincObra(vin); setInsumosObra(ins); }
+      } catch { /* Dexie viejo sin conciliacion_vinculos */ }
+    };
+    load();
+    let deb;
+    const on = (e) => { const t = e?.detail?.tabla; if (!t || t === 'conciliacion_vinculos' || t === 'insumos_partida' || t === 'accounting_movements') { clearTimeout(deb); deb = setTimeout(load, 400); } };
+    window.addEventListener('jx_data_changed', on);
+    return () => { c = true; clearTimeout(deb); window.removeEventListener('jx_data_changed', on); };
+  }, [obraId]);
+
   const obra = uM(() => (obras || []).find(o => o.id === obraId) || null, [obras, obraId]);
   const usuariosById = uM(() => { const m = new Map(); (usuarios || []).forEach(u => m.set(u.id, u)); return m; }, [usuarios]);
   const nombreUsuario = (id) => { const u = usuariosById.get(id); return u ? (`${u.nombres || ''} ${u.apellidos || ''}`.trim() || u.email || '—') : '—'; };
@@ -81,6 +106,15 @@ function DashboardGestionPage() {
     };
   }, [hojas, avances, frentes, incidencias]);
 
+  const avanceFin = uM(() => {
+    const partidasById = new Map(); (partidas || []).forEach(p => partidasById.set(p.id, p));
+    return calcAvanceFinanciero({
+      insumosPartida: insumosObra.filter(i => i.tipo_insumo !== 'mano_obra' && !esUnidadPorcentaje(i.unidad)),
+      vinculos: vincObra,
+      partidasById,
+    });
+  }, [insumosObra, vincObra, partidas]);
+
   // Resumen por ingeniero: avance promedio reportado + nº reportes + metrado.
   const porIngeniero = uM(() => {
     const m = new Map();
@@ -111,6 +145,7 @@ function DashboardGestionPage() {
       {/* KPIs principales */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))', gap: 12, marginBottom: 18 }}>
         <KpiG label="Avance físico general" value={pct(kpis.avanceFisico)} sub={`${kpis.nHojas} partidas específicas`} color="#3498DB" icon="trending" />
+        <KpiG label="Avance financiero" value={pct(avanceFin.obraPct)} sub={`S/ ${num(Math.round(avanceFin.obraFacturado))} facturado · vinculado por contabilidad`} color="#F39C12" icon="dollar" />
         <KpiG label="Presupuesto (CD)" value={`S/ ${num(Math.round(kpis.sumPres))}`} sub={`Real: S/ ${num(Math.round(kpis.sumReal))}`} color="#16A085" icon="dollar" />
         <KpiG label="Frentes activos" value={kpis.nFrentesActivos} sub={`${kpis.nFrentes} en total`} color="#D35400" icon="flag" />
         <KpiG label="Reportes de avance" value={kpis.nReportes} sub={kpis.ultimoReporte ? `último: ${kpis.ultimoReporte}` : 'sin reportes'} color="#8E44AD" icon="edit" />

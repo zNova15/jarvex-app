@@ -91,6 +91,10 @@ function ConciliacionInsumosPage({ showToast }) {
       try {
         // 1) PRESUPUESTO: consolidar insumos_partida por insumo_codigo.
         const ips = await db.insumos_partida.where('obra_id').equals(obraId).filter(r => !r.deleted_at).toArray();
+        // Avance por partida → para marcar qué insumos pertenecen a una partida EN EJECUCIÓN
+        // (señal que el recomendador IA usa para priorizar).
+        const partidaAvance = new Map();
+        try { (await db.partidas.where('obra_id').equals(obraId).filter(r => !r.deleted_at).toArray()).forEach(p => partidaAvance.set(p.id, Number(p.porcentaje_avance) || 0)); } catch {}
         const m = new Map();
         for (const ip of ips) {
           // Sin código Delfín: consolidar por nombre RAW + tipo + unidad (igual que el helper
@@ -99,8 +103,9 @@ function ConciliacionInsumosPage({ showToast }) {
             || ('sc:' + (ip.nombre_insumo || '') + '|' + (ip.tipo_insumo || '') + '|' + (ip.unidad || ''));
           const cant = Number(ip.cantidad_presupuestada) || 0;
           const monto = Number(ip.costo_presupuestado) || (cant * (Number(ip.precio_presupuestado) || 0));
-          const cur = m.get(codigo) || { codigo, nombre: ip.nombre_insumo || '—', unidad: ip.unidad || '', tipo: ip.tipo_insumo || 'material', cantPresup: 0, montoPresup: 0, nPartidas: 0 };
+          const cur = m.get(codigo) || { codigo, nombre: ip.nombre_insumo || '—', unidad: ip.unidad || '', tipo: ip.tipo_insumo || 'material', cantPresup: 0, montoPresup: 0, nPartidas: 0, enEjecucion: false };
           cur.cantPresup += cant; cur.montoPresup += monto; cur.nPartidas += 1;
+          if ((partidaAvance.get(ip.partida_id) || 0) > 0) cur.enEjecucion = true;
           m.set(codigo, cur);
         }
         // 2) FACTURAS: items_factura de los movimientos contables de la obra.
@@ -602,7 +607,7 @@ function PickInsumoModal({ item, maestra, obraId, vinculos, busy, toast, onVincu
       const sug = await sugerirInsumoMatch({
         itemName: item.descripcion, obraId,
         third_party_name: item.proveedor || '',
-        insumos: pre.map(i => ({ codigo: i.codigo, nombre: i.nombre, unidad: i.unidad })),
+        insumos: pre.map(i => ({ codigo: i.codigo, nombre: i.nombre, unidad: i.unidad, enEjecucion: !!i.enEjecucion })),
       });
       setAiSug(sug);
       if (!(sug?.result?.coincidencias || []).length) toast?.('La IA no encontró un insumo presupuestado que corresponda', 'amber');

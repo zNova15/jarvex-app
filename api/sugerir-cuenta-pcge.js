@@ -98,7 +98,7 @@ async function sugerirInsumoMatch(req, res, apiKey, body) {
   }
   const codigosValidos = new Set(insumos.map(x => String(x.codigo)));
   const lista = insumos.map((x, i) =>
-    `${i + 1}. [${sanitizeForPrompt(x.codigo, 40)}] ${sanitizeForPrompt(x.nombre, 120)}${x.unidad ? ' (' + sanitizeForPrompt(x.unidad, 12) + ')' : ''}`
+    `${i + 1}. [${sanitizeForPrompt(x.codigo, 40)}] ${sanitizeForPrompt(x.nombre, 120)}${x.unidad ? ' (' + sanitizeForPrompt(x.unidad, 12) + ')' : ''}${x.enEjecucion ? '  ★EN EJECUCION' : ''}`
   ).join('\n');
 
   const sys = `Eres un experto en insumos de construcción civil (Perú). Te dan el nombre de un ÍTEM COMPRADO (de una factura de proveedor) y una lista numerada de INSUMOS PRESUPUESTADOS (de un expediente técnico / S10 Delfín). Tu tarea: encontrar cuál(es) insumo(s) presupuestado(s) corresponden SEMÁNTICAMENTE al ítem comprado — es el MISMO material aunque esté escrito distinto (ej. "Clavo número 3" = "Clavo N3" = "Clavo de 3 pulgadas"; "Cemento Sol tipo I" = "Cemento Portland Tipo I"). Considerá sinónimos, abreviaturas, marca vs genérico, medidas y la unidad.
@@ -113,6 +113,7 @@ Devolvés SOLO JSON válido (sin markdown):
 Reglas:
 - 'codigo' DEBE ser uno de los códigos de la lista (cópialo exacto, entre corchetes).
 - Ordená por confianza descendente. Máximo 4 coincidencias.
+- Algunos insumos están marcados con ★EN EJECUCION: pertenecen a una partida que se está ejecutando ahora, así que es más probable que la compra sea para ellos. Ante EMPATE o duda entre insumos parecidos, preferí el que está EN EJECUCION (subí un poco su confianza y ponelo primero). NO inventes una coincidencia solo porque está en ejecución — el material debe corresponder igual.
 - Solo incluí las que de verdad correspondan (confianza >= 0.5). Si NINGUNO corresponde, devolvé "coincidencias": [].`;
   const usr = `ÍTEM COMPRADO: "${itemName}"${cat ? `\nCategoría: ${cat}` : ''}${tercero ? `\nProveedor: ${tercero}` : ''}\n\nINSUMOS PRESUPUESTADOS:\n${lista}\n\nDevolvé el JSON con las coincidencias.`;
 

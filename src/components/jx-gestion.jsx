@@ -4,6 +4,8 @@ import { hijosDirectos, cadenaBreadcrumb } from "../lib/partida-arbol.js";
 import { ventanaPartida, rendimientoPartida, rollupAvancePorCodigo, hojasDeCapitulo, consolidarInsumos } from "../lib/mi-frente.js";
 import { hoyLocal, fmtFechaCorta } from "../lib/fecha.js";
 import { segmentarAvance, colorIngeniero } from "../lib/color-ingeniero.js";
+import { calcAvanceFinanciero } from "../lib/avance-financiero.js";
+import { esUnidadPorcentaje } from "../lib/apuParser.js";
 const { useState: uSG, useMemo: uMG, useEffect: uEG } = React;
 
 const numG = (x) => Number(x || 0).toLocaleString('es-PE');
@@ -223,6 +225,37 @@ function InsumosPage({ showToast }) {
     window.addEventListener('jx_data_changed', on);
     return () => { c = true; window.removeEventListener('jx_data_changed', on); };
   }, [partidaSel]);
+
+  // ── Avance FINANCIERO de la obra: lo que los contadores VINCULARON en Conciliación
+  // (factura ↔ insumo presupuestado) repartido a las partidas en ejecución. Se computa
+  // para toda la obra una vez y se lee por partida. El denominador excluye mano de obra
+  // y unidades % (no se facturan). ──
+  const [vincObra, setVincObra] = uSG([]);
+  const [insumosObra, setInsumosObra] = uSG([]);
+  uEG(() => {
+    if (!obraId) { setVincObra([]); setInsumosObra([]); return; }
+    let c = false;
+    const load = async () => {
+      try {
+        const [vin, ins] = await Promise.all([
+          window.__db.conciliacion_vinculos.where('obra_id').equals(obraId).filter(r => !r.deleted_at).toArray(),
+          window.__db.insumos_partida.where('obra_id').equals(obraId).filter(r => !r.deleted_at).toArray(),
+        ]);
+        if (!c) { setVincObra(vin); setInsumosObra(ins); }
+      } catch { /* conciliacion_vinculos puede no existir aún en Dexie viejos */ }
+    };
+    load();
+    let deb;
+    const on = (e) => { const t = e?.detail?.tabla; if (!t || t === 'conciliacion_vinculos' || t === 'insumos_partida' || t === 'accounting_movements') { clearTimeout(deb); deb = setTimeout(load, 400); } };
+    window.addEventListener('jx_data_changed', on);
+    return () => { c = true; clearTimeout(deb); window.removeEventListener('jx_data_changed', on); };
+  }, [obraId]);
+  const partidasById = uMG(() => { const m = new Map(); (partidas || []).forEach(p => m.set(p.id, p)); return m; }, [partidas]);
+  const avanceFin = uMG(() => calcAvanceFinanciero({
+    insumosPartida: insumosObra.filter(i => i.tipo_insumo !== 'mano_obra' && !esUnidadPorcentaje(i.unidad)),
+    vinculos: vincObra,
+    partidasById,
+  }), [insumosObra, vincObra, partidasById]);
   // ── Resumen del CAPÍTULO en foco (#4): insumos consolidados de TODAS sus hojas,
   // avance ponderado, plazo (min inicio / max fin) y valoración de costos. Solo para
   // un capítulo real (foco !== '' raíz). Carga los insumos de las hojas vía anyOf
@@ -254,13 +287,18 @@ function InsumosPage({ showToast }) {
     const inis = hojasFoco.map(h => h.fecha_inicio_planificada).filter(Boolean).sort();
     const fins = hojasFoco.map(h => h.fecha_fin_planificada).filter(Boolean).sort();
     const sinFechas = hojasFoco.filter(h => !ventanaPartida(h).completa).length;
+    // Avance financiero del capítulo = Σ facturado-vinculado de sus hojas ÷ Σ presupuesto facturable.
+    const facturadoCap = hojasFoco.reduce((s, h) => s + (avanceFin.porPartida.get(h.id)?.facturado || 0), 0);
+    const presupFacturableCap = hojasFoco.reduce((s, h) => s + (avanceFin.porPartida.get(h.id)?.presup || 0), 0);
     return {
       avance: rollupAvanceMap.get(foco) || 0,
       nHojas: hojasFoco.length, presup, real,
+      facturado: facturadoCap, presupFacturable: presupFacturableCap,
+      avanceFinanciero: presupFacturableCap > 0 ? Math.min(100, facturadoCap / presupFacturableCap * 100) : 0,
       ini: inis[0] || null, fin: fins[fins.length - 1] || null,
       sinFechas, nInsumos: capConsolidado.length,
     };
-  }, [foco, hojasFoco, capConsolidado, rollupAvanceMap]);
+  }, [foco, hojasFoco, capConsolidado, rollupAvanceMap, avanceFin]);
 
   const [usuariosG, setUsuariosG] = uSG([]);
   uEG(() => { window.__db.profiles.toArray().then(setUsuariosG).catch(() => {}); }, []);
@@ -361,6 +399,8 @@ function InsumosPage({ showToast }) {
   const rend = rendimientoPartida(partida || {}, avancesPartida, hoyG);
   const barReportado = Number(partida?.porcentaje_avance) || 0;
   const barFinanciero = totalPres > 0 ? Math.min(100, totalReal / totalPres * 100) : 0;
+  const finFila = avanceFin.porPartida.get(partidaSel) || null;     // avance financiero (facturado) de esta partida
+  const barFacturado = finFila ? finFila.pct : 0;
   const matsConPres = insumosPres.filter(i => String(i.tipo_insumo || '').toLowerCase() === 'material' && Number(i.cantidad_presupuestada) > 0);
   const barConsumo = matsConPres.length ? Math.min(100, Math.max(...matsConPres.map(i => (Number(i.cantidad_real_usada) || 0) / Number(i.cantidad_presupuestada) * 100))) : 0;
   const mcG = Number(partida?.metrado_contratado) || 0;
@@ -440,6 +480,15 @@ function InsumosPage({ showToast }) {
               </div>
               <div style={{ height: 8, background: 'var(--border)', borderRadius: 4, overflow: 'hidden' }}>
                 <div style={{ width: `${Math.min(100, capResumen.avance)}%`, height: '100%', background: 'var(--green)' }} />
+              </div>
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--tm)', marginBottom: 4 }}>
+                <span>Avance financiero (facturas vinculadas ÷ presupuesto facturable de sus partidas)</span>
+                <strong style={{ color: 'var(--amber)' }}>{capResumen.avanceFinanciero.toFixed(1)}%</strong>
+              </div>
+              <div style={{ height: 8, background: 'var(--border)', borderRadius: 4, overflow: 'hidden' }}>
+                <div style={{ width: `${Math.min(100, capResumen.avanceFinanciero)}%`, height: '100%', background: 'var(--amber)' }} />
               </div>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12, marginBottom: capConsolidado.length ? 14 : 0 }}>
@@ -550,10 +599,11 @@ function InsumosPage({ showToast }) {
               <span>Falta <strong style={{ color: 'var(--ts)' }}>{numG(Math.max(0, mcG - (rend.realAcum || 0)))} {partida.unidad || ''}</strong> de {numG(mcG)}</span>
             </>) : <span>📅 Sin fechas de ejecución planificadas — no se puede estimar el ritmo/rendimiento.</span>}
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(155px,1fr))', gap: 12 }}>
             {[
               { lbl: 'Reportado', val: barReportado, color: barReportado >= 100 ? 'var(--green)' : 'var(--blue)', desc: 'Avance físico: semilla importada del Gantt + reportes diarios de los ingenieros (metrado ejecutado ÷ contratado). Ver el detalle abajo.' },
-              { lbl: 'Financiero', val: barFinanciero, color: barFinanciero >= 80 ? 'var(--amber)' : 'var(--green)', desc: 'Costo real ejecutado ÷ presupuesto. Se llena con los movimientos/compras vinculados a la partida (columna "Costo Real" de la tabla).' },
+              { lbl: 'Facturado', val: barFacturado, color: barFacturado >= 80 ? 'var(--amber)' : 'var(--green)', desc: 'Avance financiero: lo que los CONTADORES vincularon de facturas (Conciliación de Insumos) a los insumos de esta partida ÷ su presupuesto facturable (sin mano de obra).' + (finFila?.estimado ? ' ⚠ Estimado: algún insumo está en varias partidas en ejecución y se repartió por presupuesto.' : '') },
+              { lbl: 'Costo real', val: barFinanciero, color: barFinanciero >= 80 ? 'var(--amber)' : 'var(--green)', desc: 'Costo real CONSUMIDO ÷ presupuesto: se llena con las salidas de almacén que los ingenieros imputan a esta partida (columna "Costo Real"). Distinto de "Facturado" (lo comprado).' },
               { lbl: 'Consumo', val: barConsumo, color: barConsumo >= 80 ? 'var(--amber)' : 'var(--green)', desc: 'Mayor % de consumo de un insumo material (cantidad usada ÷ presupuestada), por salidas vinculadas a la partida (columna "Cant. Real").' },
             ].map(b => (
               <div key={b.lbl} style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 8, padding: '10px 12px' }}>

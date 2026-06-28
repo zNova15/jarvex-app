@@ -30,7 +30,7 @@ export async function sugerirInsumoMatch(payload) {
       itemName,
       category: payload.category || '',
       third_party_name: payload.third_party_name || '',
-      insumos: insumos.slice(0, 60).map(x => ({ codigo: String(x.codigo), nombre: String(x.nombre || ''), unidad: x.unidad || '' })),
+      insumos: insumos.slice(0, 60).map(x => ({ codigo: String(x.codigo), nombre: String(x.nombre || ''), unidad: x.unidad || '', enEjecucion: !!x.enEjecucion })),
     }),
   });
   if (!resp.ok) { let e; try { e = await resp.json(); } catch {} throw new Error(e?.error || `HTTP ${resp.status}`); }
