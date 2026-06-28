@@ -379,24 +379,33 @@ function MiFrenteShell({ showToast, vista }) {
   const [filtroDiaSal, setFiltroDiaSal] = uS('');
   const [filtroPartSal, setFiltroPartSal] = uS('');
   const [solCambioVinc, setSolCambioVinc] = uS(null);   // salida a la que se solicita cambio de vinculación
+  const [soloSinVincular, setSoloSinVincular] = uS(true); // por defecto, solo lo pendiente
+  const [bulkBusy, setBulkBusy] = uS(false);
   const misFrentesIds = uM(() => new Set(misFrentes.map(f => f.id)), [misFrentes]);
   const salidasMisFrentes = uM(() => (movs || []).filter(m => !m.deleted_at && m.tipo_movimiento === 'salida' && m.frente_id && misFrentesIds.has(m.frente_id)).sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || ''))), [movs, misFrentesIds]);
   const salidasGenerales = uM(() => (movs || []).filter(m => !m.deleted_at && m.tipo_movimiento === 'salida').sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || ''))), [movs]);
   const partidaPorCodigo = uM(() => { const m = new Map(); allPartidas.forEach(p => { if (p.codigo_delfin) m.set(String(p.codigo_delfin).trim(), p.id); }); return m; }, [allPartidas]);
+  // Núcleo SILENCIOSO (sin toast/dispatch) — reutilizable por el lote.
+  const vincularSalidaCore = async (m, pid) => {
+    const prevPid = m.partida_id || null;
+    if (prevPid === pid) return false;   // no-op (evita doble conteo)
+    await movHook.update(m.id, { partida_id: pid, vinculacion_general: false });
+    try {
+      const { aplicarConsumoPartida, revertirConsumoPartida } = await import('../lib/partida-allocation.js');
+      const material = materialesById.get(m.material_id);
+      // Re-vinculación: revertir el consumo de la partida ANTERIOR antes de aplicar el nuevo
+      // (si no, queda doblemente imputado — mismo patrón que la aprobación en jx-solicitudes).
+      if (prevPid) await revertirConsumoPartida({ mov: m, partida_id: prevPid, material, userId });
+      await aplicarConsumoPartida({ mov: { ...m, partida_id: pid }, partida_id: pid, material, userId });
+    } catch (e) { console.warn('[vincular salida]', e?.message); }
+    return true;
+  };
+  const vincularSalidaSilent = async (m, pid) => { await vincularSalidaCore(m, pid); };
   const vincularSalida = async (m, pid) => {
     if (!pid) { showToast('Elegí una partida', 'red'); return; }
-    const prevPid = m.partida_id || null;
-    if (prevPid === pid) { showToast('Ya está vinculada a esa partida', 'amber'); return; }   // no-op (evita doble conteo)
+    if ((m.partida_id || null) === pid) { showToast('Ya está vinculada a esa partida', 'amber'); return; }
     try {
-      await movHook.update(m.id, { partida_id: pid, vinculacion_general: false });
-      try {
-        const { aplicarConsumoPartida, revertirConsumoPartida } = await import('../lib/partida-allocation.js');
-        const material = materialesById.get(m.material_id);
-        // Re-vinculación: revertir el consumo de la partida ANTERIOR antes de aplicar el nuevo
-        // (si no, queda doblemente imputado — mismo patrón que la aprobación en jx-solicitudes).
-        if (prevPid) await revertirConsumoPartida({ mov: m, partida_id: prevPid, material, userId });
-        await aplicarConsumoPartida({ mov: { ...m, partida_id: pid }, partida_id: pid, material, userId });
-      } catch (e) { console.warn('[vincular salida]', e?.message); }
+      await vincularSalidaCore(m, pid);
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'movimientos_materiales' } })); } catch {}
       setVincSel(prev => { const n = { ...prev }; delete n[m.id]; return n; });
       showToast('Salida vinculada a la partida', 'green');
@@ -421,6 +430,59 @@ function MiFrenteShell({ showToast, vista }) {
       .sort((a, b) => String(a.codigo_delfin).localeCompare(String(b.codigo_delfin), 'es', { numeric: true }))
       .map(p => ({ value: p.id, label: `${p.codigo_delfin} · ${p.nombre_partida}` }));
   }, [allPartidas]);
+  // ── SUGERENCIA AUTOMÁTICA de partida para una salida ──────────────
+  // La mejor pista NO es el nombre de la partida (no se parece al material), sino
+  // QUÉ partidas PRESUPUESTAN ese material (insumos_partida, por codigo_s10 o por
+  // nombre). Entre esas, se prioriza la del frente de la salida y las en ejecución.
+  const normTxtSug = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+  const hojaIds = uM(() => new Set(partidaOpts.map(o => o.value)), [partidaOpts]);
+  const partidasPorMaterial = uM(() => {
+    const porCodigo = new Map(), porNombre = new Map();
+    for (const ip of (insumosObra || [])) {
+      if (!ip.partida_id || !hojaIds.has(ip.partida_id)) continue;
+      const costo = Number(ip.costo_presupuestado) || (Number(ip.cantidad_presupuestada || 0) * Number(ip.precio_presupuestado || 0));
+      const rec = { pid: ip.partida_id, costo };
+      if (ip.insumo_codigo) { const k = String(ip.insumo_codigo).trim(); const a = porCodigo.get(k) || []; a.push(rec); porCodigo.set(k, a); }
+      const nk = normTxtSug(ip.nombre_insumo); if (nk) { const a = porNombre.get(nk) || []; a.push(rec); porNombre.set(nk, a); }
+    }
+    return { porCodigo, porNombre };
+  }, [insumosObra, hojaIds]);
+  // Partidas de cada frente (set por frente) para priorizar la sugerencia.
+  const partidasDeFrenteSet = uM(() => {
+    const m = new Map();
+    for (const f of (frentes || [])) { if (f.deleted_at) continue; try { m.set(f.id, new Set(partidasDeFrente(f.id, { frentePartidas: frentePartidas || [], partidas: partidas || [] }).map(p => p.id))); } catch {} }
+    return m;
+  }, [frentes, frentePartidas, partidas]);
+  const sugerenciaDe = (m) => {
+    const mat = materialesById.get(m.material_id);
+    if (!mat) return null;
+    let cand = (mat.codigo_s10 && partidasPorMaterial.porCodigo.get(String(mat.codigo_s10).trim())) || [];
+    if (!cand.length) cand = partidasPorMaterial.porNombre.get(normTxtSug(mat.nombre_material)) || [];
+    if (!cand.length) return null;
+    const delFrente = partidasDeFrenteSet.get(m.frente_id || frenteActivo?.id) || new Set();
+    const score = (c) => {
+      const p = partByIdAll.get(c.pid);
+      return (delFrente.has(c.pid) ? 1e6 : 0) + ((Number(p?.porcentaje_avance) || 0) > 0 ? 1e3 : 0) + Math.min(999, (c.costo || 0) / 1000);
+    };
+    const best = [...cand].sort((a, b) => score(b) - score(a))[0];
+    const p = partByIdAll.get(best.pid);
+    if (!p) return null;
+    return { pid: best.pid, label: `${p.codigo_delfin} · ${p.nombre_partida}`, enFrente: delFrente.has(best.pid) };
+  };
+
+  // Aplicar sugerencias EN LOTE a una lista de salidas sin vincular.
+  const aplicarSugerencias = async (listaSalidas) => {
+    const conSug = (listaSalidas || []).filter(m => !m.partida_id && !m.vinculacion_general).map(m => ({ m, sug: sugerenciaDe(m) })).filter(x => x.sug);
+    if (!conSug.length) { showToast('No hay sugerencias automáticas para las salidas pendientes', 'amber'); return; }
+    if (!window.confirm(`Vincular ${conSug.length} salida(s) a su partida sugerida automáticamente?\nPodés re-vincular cualquiera después si alguna no corresponde.`)) return;
+    setBulkBusy(true);
+    let ok = 0;
+    try { for (const { m, sug } of conSug) { try { await vincularSalidaSilent(m, sug.pid); ok++; } catch {} } }
+    finally { setBulkBusy(false); }
+    try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'movimientos_materiales' } })); } catch {}
+    showToast(`${ok} salida(s) vinculadas a su partida sugerida`, ok ? 'green' : 'amber');
+  };
+
   // Salidas YA vinculadas (a partida o general) — para la pestaña "Registro".
   const salidasVinculadas = uM(() => (movs || [])
     .filter(m => !m.deleted_at && m.tipo_movimiento === 'salida' && (m.partida_id || m.vinculacion_general))
@@ -1013,6 +1075,7 @@ function MiFrenteShell({ showToast, vista }) {
         const base = tabSalidas === 'mis' ? salidasMisFrentes : salidasGenerales;
         const q = filtroPartSal.trim().toLowerCase();
         const lista = base.filter(m => {
+          if (soloSinVincular && (m.partida_id || m.vinculacion_general)) return false;
           if (filtroDiaSal && m.fecha !== filtroDiaSal) return false;
           if (tabSalidas === 'generales' && q) {
             const p = partByIdAll.get(m.partida_id);
@@ -1023,6 +1086,7 @@ function MiFrenteShell({ showToast, vista }) {
           return true;
         });
         const colSpan = tabSalidas === 'generales' ? 7 : 6;
+        const pendientesConSug = lista.filter(m => !m.partida_id && !m.vinculacion_general && sugerenciaDe(m)).length;
         return (
           <div style={{ display: 'grid', gap: 10 }}>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1030,12 +1094,20 @@ function MiFrenteShell({ showToast, vista }) {
               <input className="fi" type="date" style={{ maxWidth: 160 }} value={filtroDiaSal} onChange={e => setFiltroDiaSal(e.target.value)} title="Filtrar por día" />
               {filtroDiaSal && <button className="btn btn-ghost btn-xs" onClick={() => setFiltroDiaSal('')}>✕ día</button>}
               {tabSalidas === 'generales' && <input className="fi" style={{ maxWidth: 240 }} placeholder="Filtrar por partida o material…" value={filtroPartSal} onChange={e => setFiltroPartSal(e.target.value)} />}
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: 'var(--ts)', cursor: 'pointer' }} title="Ocultar las que ya vinculaste">
+                <input type="checkbox" checked={soloSinVincular} onChange={e => setSoloSinVincular(e.target.checked)} /> Solo sin vincular
+              </label>
+              {pendientesConSug > 0 && (
+                <button className="btn btn-amber btn-sm" disabled={bulkBusy} onClick={() => aplicarSugerencias(lista)} title="Vincular automáticamente las salidas pendientes a la partida que las presupuesta">
+                  ✨ Aplicar {pendientesConSug} sugerencia{pendientesConSug !== 1 ? 's' : ''}
+                </button>
+              )}
               <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--tm)' }}>{lista.length} salida(s)</span>
             </div>
             <div style={{ fontSize: 11, color: 'var(--tm)' }}>
               {tabSalidas === 'mis'
-                ? 'Salidas de almacén registradas a tus frentes. Vinculá cada una a la partida en la que se usó (o "general al frente" si no está en el presupuesto).'
-                : 'Todas las salidas de la obra. Si un insumo salió a otro frente pero lo usaste en tu partida (incluso una sin frente), vinculalo acá.'}
+                ? 'Salidas de almacén registradas a tus frentes. El sistema te SUGIERE la partida que presupuesta cada material (💡) — confirmá con un clic o elegí otra. "✨ Aplicar sugerencias" vincula todas las pendientes de un toque.'
+                : 'Todas las salidas de la obra. Si un insumo salió a otro frente pero lo usaste en tu partida (incluso una sin frente), vinculalo acá. La 💡 sugiere la partida que lo presupuesta.'}
             </div>
             <div className="card" style={{ overflow: 'auto' }}>
               <table className="tbl" style={{ fontSize: 12 }}>
@@ -1044,6 +1116,7 @@ function MiFrenteShell({ showToast, vista }) {
                   {lista.map(m => {
                     const yaVinc = m.partida_id || m.vinculacion_general;
                     const pv = m.partida_id ? partByIdAll.get(m.partida_id) : null;
+                    const sug = !yaVinc ? sugerenciaDe(m) : null;   // partida que PRESUPUESTA este material
                     return (
                       <tr key={m.id}>
                         <td>{m.fecha || '—'}</td>
@@ -1055,6 +1128,14 @@ function MiFrenteShell({ showToast, vista }) {
                           ? <span className="badge b-blue" style={{ fontSize: 9 }} title="Usado en el frente, fuera de presupuesto">General</span>
                           : (pv ? <span className="badge b-green" style={{ fontSize: 9 }} title={`${pv.codigo_delfin} · ${pv.nombre_partida}`}>{pv.codigo_delfin}</span> : <span style={{ color: 'var(--tm)' }}>—</span>)}</td>
                         <td style={{ whiteSpace: 'nowrap', minWidth: 280 }}>
+                          {sug && (
+                            <div style={{ display: 'flex', gap: 5, alignItems: 'center', marginBottom: 4 }}>
+                              <span style={{ fontSize: 10.5, color: 'var(--tm)' }}>💡 Sugerido{sug.enFrente ? ' (de tu frente)' : ''}:</span>
+                              <button className="btn btn-green btn-xs" disabled={bulkBusy} title={`Vincular a ${sug.label}`} onClick={() => vincularSalida(m, sug.pid)}>
+                                ✓ {sug.label.length > 34 ? sug.label.slice(0, 33) + '…' : sug.label}
+                              </button>
+                            </div>
+                          )}
                           <div style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
                             <SearchableSelect value={vincSel[m.id] || ''} onChange={v => setVincSel({ ...vincSel, [m.id]: v })} options={opcionesVinc}
                               placeholder="Buscar partida…" fontSize={11} style={{ minWidth: 230, display: 'inline-block' }} />
@@ -1068,7 +1149,7 @@ function MiFrenteShell({ showToast, vista }) {
                       </tr>
                     );
                   })}
-                  {lista.length === 0 && <tr><td colSpan={colSpan} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>No hay salidas{filtroDiaSal ? ` del ${filtroDiaSal}` : ''}{q ? ' que coincidan' : ''}.</td></tr>}
+                  {lista.length === 0 && <tr><td colSpan={colSpan} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>{soloSinVincular ? '✓ No tenés salidas pendientes de vincular' : 'No hay salidas'}{filtroDiaSal ? ` del ${filtroDiaSal}` : ''}{q ? ' que coincidan' : ''}.</td></tr>}
                 </tbody>
               </table>
             </div>
