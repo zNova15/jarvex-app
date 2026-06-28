@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { soloDigitos, normalizarRuc, normalizarDni, esRucValido, mismoRuc, mismoDni } from '../doc-id.js';
+import { soloDigitos, normalizarRuc, normalizarDni, esRucValido, mismoRuc, mismoDni, normalizarComprobante, mismoComprobante } from '../doc-id.js';
 import { gruposDuplicadosPorRuc } from '../fusion-entidad.js';
 
 describe('doc-id — normalización de RUC/DNI', () => {
@@ -26,6 +26,18 @@ describe('doc-id — normalización de RUC/DNI', () => {
     expect(normalizarDni('MIG-abc123')).toBe('MIG-abc123');
     expect(mismoDni('MIG-1', 'MIG-1')).toBe(false); // placeholders no se consideran "el mismo"
     expect(mismoDni('70123456', '70.123.456')).toBe(true);
+  });
+});
+
+describe('normalizarComprobante — serie-correlativo estable (foto vs XML SUNAT)', () => {
+  it('iguala el correlativo con y sin ceros a la izquierda y con espacios', () => {
+    // La foto trae "F001-123"; el XML de SUNAT "F001-00000123" → mismo comprobante.
+    expect(normalizarComprobante('F001-00000123')).toBe('F001-123');
+    expect(normalizarComprobante('F001-123')).toBe('F001-123');
+    expect(normalizarComprobante('f001 - 123')).toBe('F001-123');
+    expect(mismoComprobante('F001-00000123', 'F001-123')).toBe(true);
+    expect(mismoComprobante('F001-123', 'F002-123')).toBe(false);
+    expect(mismoComprobante('', 'F001-123')).toBe(false);
   });
 });
 

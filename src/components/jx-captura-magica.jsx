@@ -3,7 +3,7 @@ import {
   clasificarInsumo, TIPO_INSUMO_LABEL, TIPO_INSUMO_BADGE, TIPO_INSUMO_TABLA,
 } from "../lib/insumo-clasificador.js";
 import { epppTipo } from "../lib/epp-utils.js";
-import { normalizarRuc } from "../lib/doc-id.js";
+import { normalizarRuc, normalizarComprobante } from "../lib/doc-id.js";
 const { useState: uSCM, useMemo: uMCM, useEffect: uECM, useRef: uRCM } = React;
 
 // ╔════════════════════════════════════════════════════════════╗
@@ -307,12 +307,17 @@ function CapturaMagicaPage({ showToast }) {
         throw new Error(data.error || data.detail || `HTTP ${resp.status}`);
       }
       const ext = data.extracted || {};
-      // Detectar duplicado: mismo emisor RUC + serie_correlativo
-      const dup = (movs || []).find(m =>
+      // Detectar duplicado: mismo emisor RUC + serie_correlativo, NORMALIZADOS
+      // (la foto y el XML de SUNAT traen el RUC/serie en formatos distintos → si
+      // comparáramos exacto, el re-import digital de una factura ya subida como
+      // foto se colaría como movimiento nuevo). Requiere RUC para no falsos +.
+      const rucEmisorN = normalizarRuc(ext.emisor?.ruc);
+      const compN = normalizarComprobante(ext.serie_correlativo);
+      const dup = (rucEmisorN && compN) ? (movs || []).find(m =>
         !m.deleted_at &&
-        (m.third_party_ruc === ext.emisor?.ruc) &&
-        (m.document_number === ext.serie_correlativo)
-      );
+        normalizarRuc(m.third_party_ruc) === rucEmisorN &&
+        normalizarComprobante(m.document_number) === compN
+      ) : null;
       setItems(prev => prev.map(x => x.id === id ? {
         ...x,
         base64,
@@ -588,6 +593,28 @@ function CapturaMagicaPage({ showToast }) {
     }
     if (!r.serie_correlativo) { showToast('Falta serie-correlativo', 'red'); return; }
     if (!(Number(r.total) > 0)) { showToast('El total debe ser mayor a 0', 'red'); return; }
+
+    // ── Guard anti-duplicado de comprobante (COMPRAS) ──
+    // Re-chequea FRESCO contra la BD: `movs` puede estar desactualizado y, al
+    // importar un lote de SUNAT, dos archivos pueden ser el mismo comprobante o
+    // una factura ya subida como foto. Si ya existe el movimiento (mismo emisor +
+    // serie-correlativo NORMALIZADOS), NO crea otro → evita los dos movimientos.
+    if (!esVenta) {
+      const compN = normalizarComprobante(r.serie_correlativo);
+      const rucN = normalizarRuc(r.proveedor_ruc);
+      if (compN && rucN) {
+        const dupMov = (await window.__db.accounting_movements
+          .filter(m => !m.deleted_at &&
+            normalizarComprobante(m.document_number) === compN &&
+            normalizarRuc(m.third_party_ruc) === rucN)
+          .toArray())[0];
+        if (dupMov) {
+          setItems(prev => prev.map(x => x.id === id ? { ...x, status: 'duplicado', duplicate_of: dupMov.id } : x));
+          showToast(`Ya existe el comprobante ${r.serie_correlativo} de ese proveedor (${dupMov.date || 's/fecha'} · S/ ${Number(dupMov.amount || 0).toLocaleString('es-PE')}). No se creó un duplicado — descartá este archivo.`, 'red');
+          return;
+        }
+      }
+    }
 
     // Obra: se pre-popula con la obra activa del contexto. Si el usuario
     // explícitamente la deja en "Sin obra (gasto general)", interpretamos
@@ -1519,7 +1546,7 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
 
         {item.duplicate_of && (
           <div style={{ background:'rgba(241,196,15,0.1)', borderBottom:'1px solid rgba(241,196,15,0.3)', padding:'10px 18px', fontSize:12, color:'var(--amber)' }}>
-            ⚠ DUPLICADO: ya existe un movimiento contable con este RUC y serie-correlativo. Si confirmás creará otro registro.
+            ⚠ DUPLICADO: ya existe un movimiento contable con este RUC y serie-correlativo (mismo comprobante, quizás subido antes como foto). <strong>No se creará un segundo movimiento</strong> — descartá este archivo. Si de verdad es distinto, corregí el RUC o la serie-correlativo.
           </div>
         )}
 

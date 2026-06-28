@@ -29,3 +29,22 @@ export const mismoRuc = (a, b) => { const x = soloDigitos(a); return !!x && x ==
 
 /** ¿Dos DNI son el mismo (normalizados, sin contar placeholders)? */
 export const mismoDni = (a, b) => { const x = normalizarDni(a); return !!x && !/^(MIG-|RES-)/i.test(x) && x === normalizarDni(b); };
+
+// ── Comprobante (serie-correlativo) ────────────────────────────────
+// Identifica un comprobante de pago de forma estable: el mismo (emisor RUC +
+// serie-correlativo) es el MISMO documento aunque venga escrito distinto. La foto
+// (OCR) puede traer "F001-123" y el XML de SUNAT "F001-00000123" (con ceros) o con
+// espacios → se normaliza a MAYÚSCULAS, sin espacios, y el correlativo SIN ceros a
+// la izquierda. Sirve para no duplicar el movimiento al re-importar de SUNAT.
+export const normalizarComprobante = (s) => {
+  const raw = String(s || '').toUpperCase().replace(/\s+/g, '');
+  if (!raw) return '';
+  const m = raw.match(/^(.*?)[-]*(\d+)$/);
+  if (!m) return raw.replace(/[^A-Z0-9]/g, '');
+  const serie = m[1].replace(/[^A-Z0-9]/g, '');
+  const corr = String(parseInt(m[2], 10) || 0);
+  return `${serie}-${corr}`;
+};
+
+/** ¿Dos comprobantes son el mismo (normalizados)? Falso si alguno está vacío. */
+export const mismoComprobante = (a, b) => { const x = normalizarComprobante(a); return !!x && x === normalizarComprobante(b); };
