@@ -413,8 +413,10 @@ function CapturaMagicaPage({ showToast }) {
       nueva_company_direccion: ext.receptor?.direccion || '',
       nueva_company_rol: 'origen',
       nueva_company_rubro: 'distribuidora_materiales',
-      // Obra
+      // Obra / destino de la compra: la obra activa por defecto; el usuario puede elegir
+      // otra obra o "Gastos Generales de la Empresa" ('__empresa__') en el selector.
       obra_id: obraSugerida,
+      obra_destino: obraSugerida || '',
       // Items
       items,
       // Totales
@@ -554,14 +556,17 @@ function CapturaMagicaPage({ showToast }) {
     const it = items.find(x => x.id === id);
     if (!it || !it.review) return;
     let r = it.review;
-    // La obra destino es SIEMPRE la obra activa del header al momento de
-    // confirmar (validada contra las obras vivas) — igual que el resto de
-    // los módulos. Si no hay obra activa válida, queda solo en contabilidad
-    // (el aviso de abajo lo dice).
+    // Destino de la compra: la OBRA elegida en el selector (r.obra_destino), o "Gastos
+    // Generales de la Empresa" ('__empresa__') → sin obra (gasto de la empresa). Si la obra
+    // elegida ya no existe, cae a "sin obra" (queda solo en contabilidad).
     {
-      const activa = window.__getObraActivaId?.();
-      const valida = activa && (obras || []).some(o => o.id === activa && !o.deleted_at);
-      r = { ...r, obra_id: valida ? activa : '' };
+      const dest = r.obra_destino;
+      if (dest === '__empresa__') {
+        r = { ...r, obra_id: '' };
+      } else {
+        const valida = dest && (obras || []).some(o => o.id === dest && !o.deleted_at);
+        r = { ...r, obra_id: valida ? dest : '' };
+      }
     }
 
     // ¿VENTA o COMPRA? Si el EMISOR de la factura es UNA DE NUESTRAS empresas afiliadas,
@@ -589,7 +594,12 @@ function CapturaMagicaPage({ showToast }) {
       it.tipo_insumo && it.tipo_insumo !== 'servicio'
     );
     if (algunItemRealAlmacen && (r.crear_materiales_catalogo || r.genera_recepcion_almacen) && !r.obra_id) {
-      showToast('Sin obra: los items quedaron solo en contabilidad, no se crearon en almacén.', 'orange');
+      if (r.obra_destino === '__empresa__') {
+        // Elección deliberada: gasto general de la empresa → no es un descuido.
+        showToast('Gasto general de la empresa: los items quedan solo en contabilidad (sin almacén de obra).', 'blue');
+      } else {
+        showToast('Sin obra: los items quedaron solo en contabilidad, no se crearon en almacén.', 'orange');
+      }
     }
 
     const now = new Date().toISOString();
@@ -1424,13 +1434,21 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
     const activa = window.__getObraActivaId?.();
     const valida = activa && (obras || []).some(o => o.id === activa && !o.deleted_at);
     const destino = valida ? activa : '';
-    if (rr.obra_id !== destino) {
-      // onChange espera el review COMPLETO (upd hace {...r, ...patch}).
-      onChange({ ...rr, obra_id: destino });
-    }
+    const patch = {};
+    if (rr.obra_id !== destino) patch.obra_id = destino;
+    // Backward-compat: reviews VIEJOS (sin obra_destino, hechos antes del selector) →
+    // sembrar la obra activa, que era su destino por defecto. `== null` preserva un ''
+    // elegido a propósito por el usuario ("Sin obra").
+    if (rr.obra_destino == null) patch.obra_destino = destino;
+    if (Object.keys(patch).length) onChange({ ...rr, ...patch });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item?.id]);
   const r = item.review;
+  // Destino resuelto (obra real o '' si "Gastos Generales Empresa"/"Sin obra") — para que
+  // el resumen de abajo NO use r.obra_id (que solo se recalcula al confirmar) y no mienta.
+  const obraDestinoResuelta = r.obra_destino === '__empresa__'
+    ? ''
+    : (r.obra_destino && (obras || []).some(o => o.id === r.obra_destino && !o.deleted_at) ? r.obra_destino : '');
   const upd = (patch) => onChange({ ...r, ...patch });
   const [previewUrl, setPreviewUrl] = uSCM(null);
 
@@ -1761,29 +1779,6 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
                     <option value="">— Seleccionar —</option>
                     {companiesActivas.map(c => <option key={c.id} value={c.id}>{c.name} {c.ruc ? `· ${c.ruc}` : ''}</option>)}
                   </select>
-                  {(() => {
-                    // La obra destino SIGUE SIEMPRE a la obra activa del header
-                    // (arriba a la derecha) — como todos los módulos de JARVEX.
-                    // Acá solo se MUESTRA cuál es; para cambiarla se cambia la
-                    // obra activa (con su ventana de confirmación).
-                    const activaId = window.__getObraActivaId?.();
-                    const obraActiva = (obras || []).find(o => o.id === activaId && !o.deleted_at);
-                    if (obraActiva) {
-                      return (
-                        <div style={{ marginTop: 8, padding: '8px 12px', background: 'rgba(39,174,96,0.07)', border: '1px solid rgba(39,174,96,0.3)', borderRadius: 8, fontSize: 11.5, color: 'var(--ts)' }}>
-                          📍 <strong>Obra activa:</strong> los materiales e ingresos de almacén van a{' '}
-                          <strong style={{ color: 'var(--green)' }}>{obraActiva.nombre_obra}</strong>
-                          {obraActiva.cui ? ` con CUI ${obraActiva.cui}` : ''}.
-                          <span style={{ color: 'var(--tm)' }}> Para asignar a otra obra, cambiá la obra activa arriba a la derecha.</span>
-                        </div>
-                      );
-                    }
-                    return (
-                      <div style={{ marginTop: 8, padding: '8px 12px', background: 'rgba(242,183,5,0.08)', border: '1px solid rgba(242,183,5,0.3)', borderRadius: 8, fontSize: 11.5, color: 'var(--amber)' }}>
-                        ⚠ No hay obra activa seleccionada (arriba a la derecha): el documento quedará solo en contabilidad, sin catálogo ni ingreso de almacén.
-                      </div>
-                    );
-                  })()}
                 </div>
               ) : (
                 <div className="g2">
@@ -1846,10 +1841,27 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
                     </select>
                   </div>
                   <div style={{ gridColumn:'1/-1', fontSize:11, color:'var(--tm)' }}>
-                    Esta empresa se creará al confirmar. Como aún no tiene obras asignadas, el dropdown de obra abajo aparecerá vacío.
+                    Esta empresa se creará al confirmar.
                   </div>
                 </div>
               )}
+              {/* Destino de la compra (en AMBOS modos: empresa existente o nueva). El
+                  usuario elige a qué OBRA va, o si es Gasto General de la Empresa. */}
+              <label className="flabel" style={{ marginTop: 10, display: 'block' }}>Destino de la compra *</label>
+              <select className="fi" value={r.obra_destino ?? ''} onChange={e => upd({ obra_destino: e.target.value })}>
+                <option value="">— Sin obra (solo contabilidad) —</option>
+                <option value="__empresa__">🏢 Gastos Generales de la Empresa</option>
+                <optgroup label="Obras">
+                  {(obras || []).filter(o => !o.deleted_at).map(o => <option key={o.id} value={o.id}>🏗 {o.nombre_obra}{o.cui ? ` · CUI ${o.cui}` : ''}</option>)}
+                </optgroup>
+              </select>
+              <div style={{ marginTop: 6, fontSize: 11, color: 'var(--tm)' }}>
+                {r.obra_destino === '__empresa__'
+                  ? '🏢 Gasto general de la empresa — no entra a ninguna obra ni al almacén de obra.'
+                  : r.obra_destino
+                    ? '🏗 Va a esta obra: aparece en su Conciliación de Insumos y, si marcás recepción, en su almacén.'
+                    : '⚠ Sin obra: la factura queda solo en contabilidad (sin almacén ni conciliación).'}
+              </div>
             </div>
 
             {/* ITEMS */}
@@ -1926,8 +1938,8 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
         <div style={{ padding:'12px 18px', borderTop:'1px solid var(--border)', display:'flex', justifyContent:'space-between', gap:10 }}>
           <div style={{ fontSize:11, color:'var(--tm)' }}>
             Al confirmar se crea: {r.proveedor_accion === 'crear_nuevo' && '1 proveedor + '}1 movimiento contable
-            {r.crear_materiales_catalogo && r.obra_id ? ` + ${r.items.filter(i=>i.accion_material==='crear_nuevo').length} material(es) en catálogo (sin stock)` : ''}
-            {r.genera_recepcion_almacen && r.obra_id && r.items?.length > 0 ? ` + 1 recepción pendiente para almacén` : ''}
+            {r.crear_materiales_catalogo && obraDestinoResuelta ? ` + ${r.items.filter(i=>i.accion_material==='crear_nuevo').length} material(es) en catálogo (sin stock)` : ''}
+            {r.genera_recepcion_almacen && obraDestinoResuelta && r.items?.length > 0 ? ` + 1 recepción pendiente para almacén` : ''}
             {' + 1 evidencia.'}
           </div>
           <div style={{ display:'flex', gap:8 }}>

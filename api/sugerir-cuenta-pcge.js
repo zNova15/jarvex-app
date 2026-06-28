@@ -86,6 +86,69 @@ Confianza:
 - <0.6: la descripción es ambigua, necesita revisión humana`;
 }
 
+// ── Matching semántico: ítem comprado (factura) ↔ insumo presupuestado (Delfín) ──
+// Resuelve que el mismo insumo tiene nombres distintos ("Clavo número 3" = "Clavo N3").
+async function sugerirInsumoMatch(req, res, apiKey, body) {
+  const itemName = sanitizeForPrompt(body.itemName, 200);
+  const cat = sanitizeForPrompt(body.category, 100);
+  const tercero = sanitizeForPrompt(body.third_party_name, 200);
+  const insumos = Array.isArray(body.insumos) ? body.insumos.slice(0, 60) : [];
+  if (!itemName || insumos.length === 0) {
+    return res.status(422).json({ error: 'Se requiere itemName e insumos[]' });
+  }
+  const codigosValidos = new Set(insumos.map(x => String(x.codigo)));
+  const lista = insumos.map((x, i) =>
+    `${i + 1}. [${sanitizeForPrompt(x.codigo, 40)}] ${sanitizeForPrompt(x.nombre, 120)}${x.unidad ? ' (' + sanitizeForPrompt(x.unidad, 12) + ')' : ''}`
+  ).join('\n');
+
+  const sys = `Eres un experto en insumos de construcción civil (Perú). Te dan el nombre de un ÍTEM COMPRADO (de una factura de proveedor) y una lista numerada de INSUMOS PRESUPUESTADOS (de un expediente técnico / S10 Delfín). Tu tarea: encontrar cuál(es) insumo(s) presupuestado(s) corresponden SEMÁNTICAMENTE al ítem comprado — es el MISMO material aunque esté escrito distinto (ej. "Clavo número 3" = "Clavo N3" = "Clavo de 3 pulgadas"; "Cemento Sol tipo I" = "Cemento Portland Tipo I"). Considerá sinónimos, abreviaturas, marca vs genérico, medidas y la unidad.
+
+Devolvés SOLO JSON válido (sin markdown):
+{
+  "coincidencias": [
+    {"codigo": "<codigo EXACTO de la lista>", "confianza": 0.95, "razon": "mismo material, distinta nomenclatura"}
+  ],
+  "razonamiento": "breve"
+}
+Reglas:
+- 'codigo' DEBE ser uno de los códigos de la lista (cópialo exacto, entre corchetes).
+- Ordená por confianza descendente. Máximo 4 coincidencias.
+- Solo incluí las que de verdad correspondan (confianza >= 0.5). Si NINGUNO corresponde, devolvé "coincidencias": [].`;
+  const usr = `ÍTEM COMPRADO: "${itemName}"${cat ? `\nCategoría: ${cat}` : ''}${tercero ? `\nProveedor: ${tercero}` : ''}\n\nINSUMOS PRESUPUESTADOS:\n${lista}\n\nDevolvé el JSON con las coincidencias.`;
+
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 30000);
+    const upstream = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST', signal: ctrl.signal,
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 700, system: sys, messages: [{ role: 'user', content: usr }] }),
+    });
+    clearTimeout(timer);
+    if (!upstream.ok) {
+      const t = await upstream.text();
+      console.error('[sugerir-insumo] upstream', upstream.status, t.slice(0, 200));
+      return res.status(upstream.status).json({ error: `Claude respondió ${upstream.status}` });
+    }
+    const data = await upstream.json();
+    const text = data.content?.[0]?.text || '';
+    const jm = text.match(/\{[\s\S]*\}/);
+    if (!jm) return res.status(502).json({ error: 'Claude no devolvió JSON', rawText: text.slice(0, 300) });
+    let parsed; try { parsed = JSON.parse(jm[0]); } catch (e) { return res.status(502).json({ error: 'JSON inválido de Claude', detail: e.message }); }
+    const coincidencias = Array.isArray(parsed.coincidencias)
+      ? parsed.coincidencias
+          .map(c => ({ codigo: String(c.codigo || ''), confianza: typeof c.confianza === 'number' ? Math.max(0, Math.min(1, c.confianza)) : 0.5, razon: String(c.razon || '').slice(0, 200) }))
+          .filter(c => codigosValidos.has(c.codigo))   // anti-alucinación: solo códigos de la lista
+          .sort((a, b) => b.confianza - a.confianza)
+          .slice(0, 4)
+      : [];
+    return res.status(200).json({ result: { coincidencias }, razonamiento: String(parsed.razonamiento || '').slice(0, 300), _model: data.model, _usage: data.usage });
+  } catch (e) {
+    if (e.name === 'AbortError') return res.status(504).json({ error: 'Claude tardó demasiado (>30s)' });
+    return res.status(502).json({ error: 'Error consultando Claude', detail: e.message });
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Solo POST' });
@@ -107,6 +170,13 @@ export default async function handler(req, res) {
   }
 
   const body = req.body || {};
+
+  // ── Acción 'sugerir_insumo': matching SEMÁNTICO ítem comprado ↔ insumo presupuestado.
+  // (Misma función serverless — el límite de Vercel es 12, así que no se agrega un endpoint.)
+  if (body.action === 'sugerir_insumo') {
+    return await sugerirInsumoMatch(req, res, apiKey, body);
+  }
+
   const type = ['income', 'cost', 'expense'].includes(body.type) ? body.type : 'expense';
   // Sanitización: caracteres de control y newlines fuera para evitar prompt injection.
   const description = sanitizeForPrompt(body.description, 500);

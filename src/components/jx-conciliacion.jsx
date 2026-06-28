@@ -16,6 +16,7 @@
 
 import React from "react";
 import { getCurrentMode } from "../hooks/useAppMode";
+import { sugerirInsumoMatch } from "../lib/sugerir-insumo-match.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 const fmtN = (n) => Number(n || 0).toLocaleString('es-PE', { maximumFractionDigits: 2 });
@@ -472,8 +473,10 @@ function ConciliacionInsumosPage({ showToast }) {
         <PickInsumoModal
           item={pickItem}
           maestra={maestra}
+          obraId={obraId}
           vinculos={(vincPorItem.get(`${pickItem.facturaId}|${pickItem.itemIdx}`) || [])}
           busy={busy}
+          toast={toast}
           onVincular={(ins) => vincularItem(ins, pickItem)}
           onDesvincular={desvincular}
           onClose={() => setPickItem(null)}
@@ -567,9 +570,31 @@ function VincularModal({ insumo, items, vinculos, itemsVinculados, busy, onVincu
 }
 
 // ── Modal item→presupuesto: elegir el insumo presupuestado para un ítem comprado ──
-function PickInsumoModal({ item, maestra, vinculos, busy, onVincular, onDesvincular, onClose }) {
+function PickInsumoModal({ item, maestra, obraId, vinculos, busy, toast, onVincular, onDesvincular, onClose }) {
   const [buscar, setBuscar] = uS('');
+  const [aiSug, setAiSug] = uS(null);   // { coincidencias:[{codigo,confianza,razon}], razonamiento, _cached }
+  const [aiLoading, setAiLoading] = uS(false);
+  const maestraByCodigo = uM(() => { const m = new Map(); maestra.forEach(i => m.set(i.codigo, i)); return m; }, [maestra]);
   const yaVinc = uM(() => new Set((vinculos || []).map(v => v.insumo_codigo)), [vinculos]);
+
+  // Asistente IA: matching semántico del ítem comprado contra los insumos del presupuesto
+  // de ESTA obra. Pre-filtramos por similitud a los 50 más cercanos para no mandar todo.
+  const sugerirIA = async () => {
+    setAiLoading(true); setAiSug(null);
+    try {
+      const pre = maestra
+        .map(ins => ({ ins, s: fuzzyScore(item.descripcion, ins.nombre) }))
+        .sort((a, b) => b.s - a.s).slice(0, 50).map(x => x.ins);
+      const sug = await sugerirInsumoMatch({
+        itemName: item.descripcion, obraId,
+        third_party_name: item.proveedor || '',
+        insumos: pre.map(i => ({ codigo: i.codigo, nombre: i.nombre, unidad: i.unidad })),
+      });
+      setAiSug(sug);
+      if (!(sug?.result?.coincidencias || []).length) toast?.('La IA no encontró un insumo presupuestado que corresponda', 'amber');
+    } catch (e) { toast?.('Error de la IA: ' + (e.message || e), 'red'); }
+    finally { setAiLoading(false); }
+  };
   const candidatos = uM(() => {
     const qn = norm(buscar);
     return maestra
@@ -599,7 +624,38 @@ function PickInsumoModal({ item, maestra, vinculos, busy, onVincular, onDesvincu
           </div>
         </div>
       )}
-      <div className="search-bar" style={{ marginBottom: 8 }}><JxIcon name="search" size={14} color="var(--tm)" /><input placeholder="Buscar insumo presupuestado…" value={buscar} onChange={e => setBuscar(e.target.value)} /></div>
+      {/* Asistente IA: matching semántico contra el presupuesto de la obra */}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+        <div className="search-bar" style={{ flex: 1 }}><JxIcon name="search" size={14} color="var(--tm)" /><input placeholder="Buscar insumo presupuestado…" value={buscar} onChange={e => setBuscar(e.target.value)} /></div>
+        <button className="btn btn-amber btn-sm" disabled={aiLoading || busy} onClick={sugerirIA} title="Que la IA busque el insumo presupuestado que corresponde a este ítem">
+          {aiLoading ? '⏳ Analizando…' : '✨ Sugerir con IA'}
+        </button>
+      </div>
+      {aiSug && (aiSug.result?.coincidencias || []).length > 0 && (
+        <div style={{ marginBottom: 10, padding: '8px 10px', borderRadius: 6, background: 'rgba(46,204,113,0.07)', border: '1px solid rgba(46,204,113,0.3)' }}>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--green)', marginBottom: 6 }}>✨ Sugerencias de la IA{aiSug._cached ? ' (cacheada)' : ''} — revisá y aprobá:</div>
+          {(aiSug.result.coincidencias).map((c, i) => {
+            const ins = maestraByCodigo.get(c.codigo);
+            if (!ins) return null;
+            const yaTiene = yaVinc.has(c.codigo);
+            return (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderTop: i ? '1px solid rgba(255,255,255,0.05)' : 'none' }}>
+                <span className="badge b-green" style={{ fontSize: 9 }}>{Math.round((c.confianza || 0) * 100)}%</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12.5, color: 'var(--ts)' }}>{ins.nombre} <span style={{ fontSize: 10, color: 'var(--tm)' }}>· {fmtN(ins.cantPresup)} {ins.unidad}</span></div>
+                  {c.razon && <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>{c.razon}</div>}
+                </div>
+                {yaTiene
+                  ? <span className="badge b-gray" style={{ fontSize: 9 }}>ya vinculado</span>
+                  : <button className="btn btn-amber btn-xs" disabled={busy} onClick={() => onVincular(ins)}>Aprobar</button>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {aiSug && (aiSug.result?.coincidencias || []).length === 0 && !aiLoading && (
+        <div style={{ marginBottom: 10, fontSize: 11, color: 'var(--tm)' }}>La IA no encontró coincidencia clara — buscá manualmente abajo.</div>
+      )}
       <div style={{ maxHeight: 320, overflow: 'auto', border: '1px solid var(--bd)', borderRadius: 6 }}>
         <table className="tbl">
           <thead><tr><th>Insumo presupuestado</th><th style={{ textAlign: 'right', width: 90 }}>Presup.</th><th style={{ width: 70 }}>Match</th><th style={{ width: 70 }}></th></tr></thead>
