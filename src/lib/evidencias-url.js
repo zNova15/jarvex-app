@@ -27,12 +27,39 @@ export function pathDeEvidencia(url) {
   return p || null;
 }
 
+// ─── Caché PERSISTENTE de signed URLs (anti-egress) ──────────────────
+// El bucket es privado, así que cada visualización firma el path. Si se firma
+// con un token NUEVO en cada render, la URL cambia siempre y el navegador (y el
+// CDN de Storage) NUNCA cachean la imagen → la re-descargan completa una y otra
+// vez = EGRESS disparado (el exceso del plan venía de acá). Para evitarlo,
+// reusamos la MISMA signed URL por path mientras siga válida: URL estable → el
+// navegador cachea la imagen entre renders y recargas → egress mínimo.
+const _SIGNED_TTL = 86400; // 24h en segundos (igual al expiresIn)
+const _SIGNED_LS_KEY = 'jx_signed_urls';
+let _signedCache = null;
+function _loadSigned() {
+  if (_signedCache) return _signedCache;
+  try { _signedCache = JSON.parse(localStorage.getItem(_SIGNED_LS_KEY) || '{}'); }
+  catch { _signedCache = {}; }
+  // purgar entradas expiradas para que el localStorage no crezca sin control
+  const now = Date.now();
+  let changed = false;
+  for (const k in _signedCache) {
+    if (!_signedCache[k] || _signedCache[k].exp <= now) { delete _signedCache[k]; changed = true; }
+  }
+  if (changed) _saveSigned();
+  return _signedCache;
+}
+function _saveSigned() {
+  try { localStorage.setItem(_SIGNED_LS_KEY, JSON.stringify(_signedCache || {})); } catch {}
+}
+
 // Devuelve { url, isBlob } mostrable, o null si no hay nada que mostrar.
 // Si isBlob, el caller debería revokeObjectURL(url) al desmontar.
 // expiresIn 24h: los visores cachean la URL firmada en mapas que solo se
 // reconstruyen ante cambios de datos; con 1h se rompían las miniaturas en
 // pestañas abiertas mucho tiempo.
-export async function getEvidenciaSrc(ev, expiresIn = 86400) {
+export async function getEvidenciaSrc(ev, expiresIn = _SIGNED_TTL) {
   if (!ev) return null;
   // 1) Blob local (recién capturada, aún no subida — o no se borró todavía).
   try {
@@ -40,12 +67,24 @@ export async function getEvidenciaSrc(ev, expiresIn = 86400) {
     const entry = await db.evidencias_blobs.get(blobId);
     if (entry?.blob) return { url: URL.createObjectURL(entry.blob), isBlob: true };
   } catch {}
-  // 2) Remoto: firmar el path del bucket privado.
+  // 2) Remoto: firmar el path del bucket privado, REUSANDO la signed URL
+  // cacheada mientras siga válida (URL estable = el navegador cachea la imagen).
   const path = pathDeEvidencia(ev.url_archivo);
   if (path) {
+    const cache = _loadSigned();
+    const now = Date.now();
+    const hit = cache[path];
+    // margen de 5 min para no devolver una URL a punto de expirar
+    if (hit && hit.url && hit.exp - 300000 > now) {
+      return { url: hit.url, isBlob: false };
+    }
     try {
       const { data } = await supabase.storage.from('evidencias').createSignedUrl(path, expiresIn);
-      if (data?.signedUrl) return { url: data.signedUrl, isBlob: false };
+      if (data?.signedUrl) {
+        cache[path] = { url: data.signedUrl, exp: now + expiresIn * 1000 };
+        _saveSigned();
+        return { url: data.signedUrl, isBlob: false };
+      }
     } catch {}
   }
   // 3) Último recurso: la url guardada tal cual (sirve solo si el bucket fuera público).
