@@ -1680,6 +1680,12 @@ function MovMaterialesPage({ showToast }) {
           recordLabel={`${requestTarget.tipo_movimiento} · ${matsByIdAll.get(requestTarget.material_id)?.nombre_material || 'material'}`}
           allowDelete
           fields={[
+            // Al aprobar, el admin la cantidad reajusta stock + consumo de partida automáticamente.
+            { key: 'cantidad', label: 'Cantidad', type: 'number' },
+            { key: 'frente_id', label: 'Frente de trabajo', options: [
+              { value: '', label: 'Sin frente' },
+              ...(frentesObra || []).filter(f => !f.deleted_at).map(f => ({ value: f.id, label: f.nombre })),
+            ] },
             { key: 'fecha', label: 'Fecha', type: 'date' },
             { key: 'documento_asociado', label: 'Documento / Vale' },
             { key: 'observaciones', label: 'Observaciones' },

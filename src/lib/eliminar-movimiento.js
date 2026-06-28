@@ -19,6 +19,20 @@ const CFG_MOV = {
 
 const invertirAccionHerr = (a) => ({ salida:'entrada', entrada:'salida', mantenimiento:'entrada', baja:'reposicion', reposicion:'baja' }[a] || 'entrada');
 
+// Efecto (con signo) de UNA herramienta-movimiento sobre el stock por cantidad.
+const efectoHerr = (accion) => ({ entrada:1, devolucion:1, reposicion:1, salida:-1, baja:-1, mantenimiento:0 }[accion] ?? 0);
+
+// Efecto (con signo) por tipo_movimiento — DEBE espejar a los triggers de stock
+// del server (recalcular_stock_material / ajustar_stock_material_update_cantidad):
+// 'ajuste' suma (≠ deltaPorAlmacen, que lo trata como neutro). Se usa para el
+// delta al EDITAR la cantidad, de modo que el ajuste local no diverja del server.
+const efectoCantidad = (tipo) => ({ entrada:1, devolucion:1, ajuste:1, salida:-1, merma:-1 }[tipo] ?? 0);
+
+const calcAlertaStock = (nuevoStock, min) =>
+  nuevoStock <= 0 ? 'sin_stock'
+    : (min > 0 && nuevoStock <= min * 0.5) ? 'critico'
+    : (min > 0 && nuevoStock <= min) ? 'reponer' : 'ok';
+
 async function revertirHerramientaStock(db, mov, herr, userId) {
   const accionInv = invertirAccionHerr(mov.accion);
   const cant = Number(mov.cantidad) || 0;
@@ -115,6 +129,92 @@ export async function eliminarMovimientoCompleto({ tabla, movId, userId = null, 
   // 5. Audit + refresh.
   try { await window.__logAudit?.({ action: 'delete', table: tabla, recordId: movId, oldData: mov, reason: 'Eliminación unificada (aprobación de solicitud)' }); } catch {}
   try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla } })); } catch {}
+}
+
+/**
+ * Versión SELF-CONTAINED de "editar la cantidad" de un movimiento. La usa
+ * jx-solicitudes al APROBAR una solicitud de cambio de cantidad del almacenero,
+ * para que el cambio ajuste el stock (global + desglose por almacén) y reajuste
+ * la imputación a partida — igual que el "editar cantidad" del Super Admin, pero
+ * para los 4 tipos con stock por cantidad. Si dejaría stock negativo, lanza
+ * (code STOCK_NEGATIVO) y la aprobación falla (la solicitud queda pendiente).
+ * @param {Object} o { tabla, movId, nuevaCantidad, userId, conGuard=true }
+ * @returns {{oldData:Object, newData:Object}}
+ */
+export async function editarCantidadMovimiento({ tabla, movId, nuevaCantidad, userId = null, conGuard = true }) {
+  const db = window.__db;
+  const cfg = CFG_MOV[tabla];
+  if (!cfg) throw new Error('Tabla de movimiento no soportada: ' + tabla);
+  const mov = await db[tabla].get(movId);
+  if (!mov || mov.deleted_at) throw new Error('Movimiento no encontrado o ya eliminado.');
+
+  const nueva = Number(nuevaCantidad);
+  if (!Number.isFinite(nueva) || nueva <= 0) {
+    const e = new Error('La cantidad debe ser un número mayor que 0.'); e.code = 'CANTIDAD_INVALIDA'; throw e;
+  }
+  const vieja = Number(mov.cantidad) || 0;
+  if (nueva === vieja) return { oldData: { cantidad: vieja }, newData: {} };
+
+  const now = new Date().toISOString();
+  const bumpMov = { cantidad: nueva, updated_at: now, updated_by: userId,
+    version: (mov.version ?? 0) + 1, sync_status: mov.sync_status === 'pending_create' ? 'pending_create' : 'pending_update' };
+
+  // Maquinaria (serializada): no lleva stock por cantidad → solo el campo.
+  if (!cfg.porCantidad) {
+    await db[tabla].update(movId, bumpMov);
+    try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla } })); } catch {}
+    return { oldData: { cantidad: vieja }, newData: { cantidad: nueva } };
+  }
+
+  const itemId = mov[cfg.itemField];
+  const item = itemId ? await db[cfg.catalog].get(itemId) : null;
+
+  // Delta (con signo) que el cambio de cantidad provoca en el stock. Usa la misma
+  // convención de signo que los triggers del server para no divergir al sincronizar.
+  const diff = cfg.herramienta
+    ? efectoHerr(mov.accion) * (nueva - vieja)
+    : efectoCantidad(mov.tipo_movimiento) * (nueva - vieja);
+
+  // Guard de stock negativo (BLOQUEO DURO, igual que el Eliminar).
+  if (conGuard && item) {
+    const nuevoStock = Number(item.stock_actual || 0) + diff;
+    if (dejaNegativo(nuevoStock)) {
+      const e = new Error(`No se puede aplicar: dejaría el stock en ${nuevoStock}. No se permite stock negativo.`);
+      e.code = 'STOCK_NEGATIVO'; throw e;
+    }
+  }
+
+  // 1) Ajustar stock del catálogo (+ desglose por almacén).
+  if (item && diff !== 0) {
+    const nuevoStock = Math.max(0, Number(item.stock_actual || 0) + diff);
+    await db[cfg.catalog].update(itemId, {
+      stock_actual: nuevoStock, alerta: calcAlertaStock(nuevoStock, Number(item.stock_minimo || 0)),
+      updated_at: now, updated_by: userId, version: (item.version ?? 0) + 1,
+      sync_status: item.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+    });
+    if (mov.ubicacion_id) {
+      try { const { aplicarDelta } = await import('./stock-ubicaciones.js'); await aplicarDelta({ obraId: mov.obra_id, itemTipo: cfg.itemTipo, itemId, ubicacionId: mov.ubicacion_id, delta: diff, userId }); }
+      catch (e) { console.warn('[editar cantidad desglose]', e?.message); }
+    }
+  }
+
+  // 2) Reajustar imputación a partida (solo materiales, salida imputada): revertir
+  //    el consumo viejo y aplicar el nuevo.
+  if (tabla === 'movimientos_materiales' && mov.tipo_movimiento === 'salida' && mov.partida_id && item) {
+    try {
+      const { revertirConsumoPartida, aplicarConsumoPartida } = await import('./partida-allocation.js');
+      await revertirConsumoPartida({ mov, partida_id: mov.partida_id, material: item, userId });
+      await aplicarConsumoPartida({ mov: { ...mov, cantidad: nueva }, partida_id: mov.partida_id, material: item, userId });
+    } catch (e) { console.warn('[editar cantidad partida]', e?.message); }
+  }
+
+  // 3) Persistir la nueva cantidad en el movimiento.
+  await db[tabla].update(movId, bumpMov);
+
+  // 4) Audit + refresh.
+  try { await window.__logAudit?.({ action: 'update', table: tabla, recordId: movId, oldData: { cantidad: vieja }, newData: { cantidad: nueva }, reason: 'Edición de cantidad (aprobación de solicitud)' }); } catch {}
+  try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla } })); } catch {}
+  return { oldData: { cantidad: vieja }, newData: { cantidad: nueva } };
 }
 
 /**

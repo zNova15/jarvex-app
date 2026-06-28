@@ -1,6 +1,46 @@
 import { describe, it, expect } from 'vitest';
-import { parsePresupuestoObra, parseGantt, parsePctGantt } from '../apuParser.js';
+import { parsePresupuestoObra, parseGantt, parsePctGantt, parseAPU, esUnidadPorcentaje } from '../apuParser.js';
 import { normalizeCodigo } from '../match-helpers.js';
+
+describe('esUnidadPorcentaje — unidades de % (mano de obra/equipo)', () => {
+  it('reconoce %mo, %MO, % y variantes', () => {
+    expect(esUnidadPorcentaje('%mo')).toBe(true);
+    expect(esUnidadPorcentaje('%MO')).toBe(true);
+    expect(esUnidadPorcentaje(' %eq')).toBe(true);
+    expect(esUnidadPorcentaje('%')).toBe(true);
+  });
+  it('NO marca unidades normales', () => {
+    expect(esUnidadPorcentaje('m')).toBe(false);
+    expect(esUnidadPorcentaje('und')).toBe(false);
+    expect(esUnidadPorcentaje('kg')).toBe(false);
+    expect(esUnidadPorcentaje('')).toBe(false);
+  });
+});
+
+describe('parseAPU — insumos %mo: el % entero pasa a fracción (no infla ×100)', () => {
+  // Bug real Miraflores: HERRAMIENTAS MANUALES (%mo) traía la cantidad como
+  // porcentaje entero (2.994) y costo = cantidad×precio quedaba ×100.
+  const fila = (m) => { const r = []; for (const [k, v] of Object.entries(m)) r[k] = v; return r; };
+  const rows = [
+    fila({ 0: 'Partida: 01.01', 12: 'Cant. Total:', 13: '1.00 und' }),
+    fila({ 1: 'Trazo y replanteo' }),
+    fila({ 1: 'EQUIPO' }),
+    // insumo %mo en columnas por defecto (unidad:8, cantidad:9, costo:12, total:13)
+    fila({ 0: '370020009', 1: 'HERRAMIENTAS MANUALES', 8: '%mo', 9: 2.994, 12: 534241.17, 13: 15997.07 }),
+    // insumo normal de control: no se toca
+    fila({ 0: '430020009', 1: 'MADERA TORNILLO', 8: 'p2', 9: 39.88, 12: 12, 13: 478.6 }),
+  ];
+
+  it('divide entre 100 la cantidad de la unidad %mo y deja las normales intactas', () => {
+    const { partidas } = parseAPU(rows);
+    const ins = partidas[0].insumos;
+    const herr = ins.find(x => x.codigo === '370020009');
+    const madera = ins.find(x => x.codigo === '430020009');
+    expect(herr.cantidad).toBeCloseTo(0.02994, 6);          // 2.994% → 0.02994
+    expect(herr.cantidad * herr.precio_unitario).toBeCloseTo(15995.18, 1); // = costo real (no ×100)
+    expect(madera.cantidad).toBe(39.88);                    // unidad normal: intacta
+  });
+});
 
 describe('parsePctGantt — % de avance (formato Porcentaje vs número plano)', () => {
   it('celda formateada como Porcentaje (raw fracción) → escala ×100', () => {

@@ -79,6 +79,11 @@ function ChangeDiff({ changes }) {
       {entries.map(([field, val]) => {
         const oldV = val && typeof val === 'object' ? val.old : undefined;
         const newV = val && typeof val === 'object' ? val.new : val;
+        // Etiquetas legibles opcionales (ej. frente_id → "Frente de trabajo" y los
+        // nombres de frente en vez de los uuid). Las pone RequestChangeModal.
+        const fieldLabel = (val && typeof val === 'object' && val.label) ? val.label : field;
+        const oldLabel = (val && typeof val === 'object' && 'oldLabel' in val) ? val.oldLabel : oldV;
+        const newLabel = (val && typeof val === 'object' && 'newLabel' in val) ? val.newLabel : newV;
         // Pedido descriptivo (campo no estructurado): requiere acción manual del admin.
         if (field.startsWith('__')) {
           return (
@@ -89,15 +94,15 @@ function ChangeDiff({ changes }) {
         }
         return (
           <div key={field} style={{ display: 'flex', flexWrap: 'wrap', gap: 6, fontSize: 12, alignItems: 'center' }}>
-            <span style={{ color: 'var(--tm)', fontWeight: 600, minWidth: 100 }}>{field}:</span>
+            <span style={{ color: 'var(--tm)', fontWeight: 600, minWidth: 100 }}>{fieldLabel}:</span>
             {oldV !== undefined && (
               <span style={{ background: 'rgba(231,76,60,0.1)', border: '1px solid rgba(231,76,60,0.25)', color: '#EF6B5E', padding: '2px 8px', borderRadius: 4, textDecoration: 'line-through', fontSize: 11.5 }}>
-                {String(oldV ?? '—')}
+                {String(oldLabel ?? '—')}
               </span>
             )}
             {oldV !== undefined && <span style={{ color: 'var(--tm)' }}>→</span>}
             <span style={{ background: 'rgba(46,204,113,0.1)', border: '1px solid rgba(46,204,113,0.25)', color: '#2ECC71', padding: '2px 8px', borderRadius: 4, fontSize: 11.5 }}>
-              {String(newV ?? '—')}
+              {String(newLabel ?? '—')}
             </span>
           </div>
         );
@@ -233,6 +238,21 @@ function SolicitudesPage({ showToast }) {
       } catch (e) {
         console.warn('[solicitudes] no se pudo recalcular consumo partida:', e?.message);
       }
+    }
+
+    // ── HOOK ESPECIAL: cambio de `cantidad` en un movimiento de materiales ──
+    // Editar la cantidad NO es un UPDATE plano: ajusta el stock del catálogo
+    // (+ desglose por almacén) y, si es una salida imputada, el consumo de la
+    // partida. Si dejaría stock negativo, lanza y la aprobación falla (queda
+    // pendiente). Reutiliza el helper unificado (mismo criterio que el borrado).
+    // Solo materiales: es el único tipo con trigger server-side en UPDATE de
+    // cantidad (mig 112) → el stock no diverge al re-sincronizar.
+    const MOV_CANT_TABLES = ['movimientos_materiales'];
+    if (MOV_CANT_TABLES.includes(req.target_table) && 'cantidad' in fields) {
+      const { editarCantidadMovimiento } = await import('../lib/eliminar-movimiento.js');
+      const userId = window.__currentUserId || 'admin-approval';
+      await editarCantidadMovimiento({ tabla: req.target_table, movId: req.target_record_id, nuevaCantidad: fields.cantidad, userId });
+      return { oldData, newData: { cantidad: fields.cantidad } };
     }
 
     // ── COHERENCIA clase↔type en movimientos contables ──
@@ -598,13 +618,21 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
       return;
     }
 
+    // Etiquetas legibles para el diff (ej. frente_id → nombre del frente). El
+    // admin verá "Frente de trabajo: Frente A → Frente B" en vez de uuids.
+    const labelDe = (v) => {
+      if (!fieldDef?.options) return v == null ? null : String(v);
+      const o = fieldDef.options.find(x => String(x.value ?? x) === String(v ?? ''));
+      return o ? (o.label ?? o) : (v == null ? null : String(v));
+    };
+
     setBusy(true);
     try {
       await window.__changeRequests.create({
         table,
         recordId: record.id,
         recordLabel: recordLabel || record.id,
-        proposedChanges: { [field]: { old: oldValue ?? null, new: parsedNew } },
+        proposedChanges: { [field]: { old: oldValue ?? null, new: parsedNew, label: fieldDef?.label || field, oldLabel: labelDe(oldValue), newLabel: labelDe(parsedNew) } },
         reason: reason.trim(),
       });
       showToast('Solicitud enviada al admin', 'green');
@@ -678,7 +706,11 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
           {field && !esDescriptivo && (
             <div>
               <label className="flabel">Valor actual</label>
-              <input className="fi" disabled value={oldValue == null ? '—' : String(oldValue)} />
+              <input className="fi" disabled value={
+                fieldDef?.options
+                  ? (fieldDef.options.find(o => String(o.value ?? o) === String(oldValue ?? ''))?.label ?? (oldValue == null ? '—' : String(oldValue)))
+                  : (oldValue == null ? '—' : String(oldValue))
+              } />
             </div>
           )}
           {field && !esDescriptivo && (

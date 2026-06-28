@@ -18,6 +18,12 @@
 import * as XLSX from 'xlsx';
 import { normalizeCodigo } from './match-helpers.js';
 
+// Unidades de PORCENTAJE de Delphin (%mo = % de mano de obra, %eq, etc.). En el
+// APU la cantidad viene como porcentaje ENTERO (2.994 = 2.994%), no como fracción.
+// Como costo = cantidad × precio (columna generada en BD), guardarla tal cual
+// infla el costo ×100. Hay que dividirla entre 100 para dejarla como fracción.
+export const esUnidadPorcentaje = (u) => /^\s*%/.test(String(u || ''));
+
 const CATS = {
   'MANO DE OBRA': 'mano_obra',
   'MATERIALES':   'material',
@@ -201,17 +207,21 @@ export function parseAPU(rows) {
       if (detectarCategoria(desc)) continue;
       const codigo = r[cols.codigo] != null && r[cols.codigo] !== ''
         ? String(r[cols.codigo]).trim() : '';
-      const cantidad = Number(r[cols.cantidad]) || 0;
+      const unidad = String(r[cols.unidad] ?? 'und').trim() || 'und';
+      let cantidad = Number(r[cols.cantidad]) || 0;
       const precio = Number(r[cols.costo]) || 0;
       const total = Number(r[cols.total]) || 0;
       // Aceptar el insumo si tiene al menos algún dato económico real
       // (cantidad o precio o total). Las filas vacías intermedias se filtran.
       if (cantidad === 0 && precio === 0 && total === 0) continue;
+      // Unidad de porcentaje (%mo, …): el APU trae el % entero (2.994). Lo
+      // pasamos a fracción para que costo = cantidad × precio no quede ×100.
+      if (esUnidadPorcentaje(unidad) && cantidad > 1) cantidad = cantidad / 100;
       current.insumos.push({
         codigo,
         descripcion: desc,
         categoria: categoriaActual,
-        unidad: String(r[cols.unidad] ?? 'und').trim() || 'und',
+        unidad,
         cantidad, precio_unitario: precio, total,
       });
     }

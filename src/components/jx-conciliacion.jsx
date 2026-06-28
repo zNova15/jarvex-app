@@ -55,7 +55,13 @@ const TIPO_BADGE = { material: 'b-blue', herramienta: 'b-amber', epp: 'b-green',
 function ConciliacionInsumosPage({ showToast }) {
   const toast = showToast || window.__showToast || (() => {});
   const { obraId } = window.__useObraActiva ? window.__useObraActiva() : { obraId: null };
-  const userId = (window.__useAuth?.()?.profile?.id) || 'offline';
+  const profile = (window.__useAuth?.()?.profile) || null;
+  const userId = profile?.id || 'offline';
+  // La pestaña "Por Presupuesto" (cruce con el presupuesto Delfín) es solo para la
+  // Contadora Jefe (y supervisores). El Ayudante de Contabilidad ve únicamente
+  // "Insumos Comprados" (clasificar/vincular ítems de factura), no el presupuesto.
+  const rol = profile?.rol || '';
+  const puedePresupuesto = ['admin', 'gerente', 'contador'].includes(rol);
 
   const [maestra, setMaestra] = uS([]);       // insumos presupuestados consolidados por codigo
   const [items, setItems] = uS([]);           // ítems de factura (flat)
@@ -68,9 +74,13 @@ function ConciliacionInsumosPage({ showToast }) {
   const [estadoFiltro, setEstadoFiltro] = uS('todos'); // todos | con_saldo | facturados
   const [linkInsumo, setLinkInsumo] = uS(null); // insumo de la maestra que se está vinculando
   const [busy, setBusy] = uS(false);
-  const [tab, setTab] = uS('presupuesto'); // 'presupuesto' (por insumo) | 'comprados' (por ítem de factura)
+  const [tab, setTab] = uS(puedePresupuesto ? 'presupuesto' : 'comprados'); // 'presupuesto' (por insumo) | 'comprados' (por ítem de factura)
   const [qItems, setQItems] = uS('');       // búsqueda en la pestaña Insumos Comprados
   const [pickItem, setPickItem] = uS(null); // ítem de factura que se está vinculando a un insumo
+
+  // Si el rol carga tarde (o cambia) y un no-autorizado quedó en "Por Presupuesto",
+  // lo devolvemos a "Insumos Comprados".
+  uE(() => { if (!puedePresupuesto && tab === 'presupuesto') setTab('comprados'); }, [puedePresupuesto, tab]);
 
   // ── Carga de las 3 fuentes + los vínculos ──
   uE(() => {
@@ -322,7 +332,11 @@ function ConciliacionInsumosPage({ showToast }) {
     return <div className="page-wrap"><div className="card card-p empty-state"><JxIcon name="compare" size={32} color="var(--tm)" /><p>Seleccioná una obra activa para conciliar sus insumos.</p></div></div>;
   }
 
-  const TIPOS = ['material', 'herramienta', 'epp', 'todos'];
+  // Tipos reales del presupuesto Delfín (tipo_insumo): Material, Mano de Obra y Equipo.
+  // (Antes filtraba por 'herramienta'/'epp', que NO existen como tipo de insumo
+  // presupuestado → esos botones nunca mostraban nada.)
+  const TIPOS = ['material', 'mano_obra', 'equipo', 'todos'];
+  const TIPO_FILTRO_LABEL = { material: 'Materiales', mano_obra: 'Mano de Obra', equipo: 'Equipos', todos: 'Todos' };
 
   return (
     <div className="page-wrap">
@@ -333,7 +347,7 @@ function ConciliacionInsumosPage({ showToast }) {
 
       {/* Pestañas */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 14, borderBottom: '1px solid var(--bd)' }}>
-        {[{ k: 'presupuesto', lbl: 'Por Presupuesto', icon: 'list' }, { k: 'comprados', lbl: 'Insumos Comprados', icon: 'package' }].map(t => (
+        {[{ k: 'presupuesto', lbl: 'Por Presupuesto', icon: 'list' }, { k: 'comprados', lbl: 'Insumos Comprados', icon: 'package' }].filter(t => t.k !== 'presupuesto' || puedePresupuesto).map(t => (
           <button key={t.k} onClick={() => setTab(t.k)}
             style={{ background: 'none', border: 'none', borderBottom: tab === t.k ? '2px solid var(--amber)' : '2px solid transparent', color: tab === t.k ? 'var(--tp)' : 'var(--tm)', fontWeight: tab === t.k ? 700 : 500, padding: '8px 14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13.5 }}>
             <JxIcon name={t.icon} size={14} />{t.lbl}
@@ -341,7 +355,7 @@ function ConciliacionInsumosPage({ showToast }) {
         ))}
       </div>
 
-      {tab === 'presupuesto' && (<>
+      {tab === 'presupuesto' && puedePresupuesto && (<>
       {/* KPIs */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px,1fr))', gap: 12, marginBottom: 16 }}>
         <div className="kpi-card"><div style={{ fontSize: 11.5, color: 'var(--tm)' }}>Presupuestado</div><div className="kpi-val" style={{ fontSize: 19 }}>{loading ? '…' : fmtS(kpis.presup)}</div></div>
@@ -354,7 +368,7 @@ function ConciliacionInsumosPage({ showToast }) {
       <div className="card card-p" style={{ marginBottom: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
         <div className="search-bar" style={{ flex: '1 1 220px' }}><JxIcon name="search" size={14} color="var(--tm)" /><input placeholder="Buscar insumo presupuestado (nombre o código)…" value={q} onChange={e => setQ(e.target.value)} /></div>
         <div style={{ display: 'flex', gap: 4 }}>
-          {TIPOS.map(t => <button key={t} className={`btn btn-sm ${tipoFiltro === t ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTipoFiltro(t)}>{t === 'todos' ? 'Todos' : (TIPO_LABEL[t] || t) + 's'}</button>)}
+          {TIPOS.map(t => <button key={t} className={`btn btn-sm ${tipoFiltro === t ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTipoFiltro(t)}>{TIPO_FILTRO_LABEL[t] || t}</button>)}
         </div>
         <select className="fi" value={estadoFiltro} onChange={e => setEstadoFiltro(e.target.value)} style={{ minWidth: 150 }}>
           <option value="todos">Todos</option>
