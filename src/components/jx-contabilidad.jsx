@@ -5,6 +5,7 @@ import { getCurrentMode } from "../hooks/useAppMode";
 import { usePagination } from "../hooks/usePagination.js";
 import { TablePagination } from "./jx-pagination.jsx";
 import { useChart } from "../lib/chart-loader.js";
+import { FusionEntidadModal } from "./jx-fusion-entidad.jsx";
 const { useState: uSC, useMemo: uMC, useEffect: uEC, useRef: uRC } = React;
 
 // ─── Gráfica genérica (Chart.js lazy via useChart) ───────────────────
@@ -139,7 +140,14 @@ function EmpresasPage({ showToast }) {
 
   const [modal, setModal] = uSC(null); // null | 'nueva' | 'editar'
   const [editingId, setEditingId] = uSC(null);
+  const [fusionOpen, setFusionOpen] = uSC(false);
   const [form, setForm] = uSC({});
+  // Cuántas empresas comparten RUC (para el badge del botón de fusión).
+  const dupsRuc = uMC(() => {
+    const m = new Map();
+    (companies || []).forEach(c => { if (c.deleted_at) return; const r = String(c.ruc || '').replace(/\D/g, ''); if (r.length >= 8) m.set(r, (m.get(r) || 0) + 1); });
+    return [...m.values()].filter(n => n > 1).length;
+  }, [companies]);
   // Último lookup SUNAT (para mostrar panel diagnóstico con todos los datos extraídos)
   const [sunatData, setSunatData] = uSC(null);
   const [sunatLoading, setSunatLoading] = uSC(false);
@@ -291,14 +299,22 @@ function EmpresasPage({ showToast }) {
           <div className="pg-title">Empresas</div>
           <div className="pg-sub">{sorted.length} empresas registradas · {sorted.filter(c=>c.status==='activa').length} activas</div>
         </div>
-        {canWrite ? (
-          <button className="btn btn-amber btn-sm" onClick={openNueva}>
-            <JxIcon name="plus" size={13}/>Nueva Empresa
-          </button>
-        ) : (
-          <span className="badge b-gray" title="Tu rol es solo lectura para Empresas">Solo lectura</span>
-        )}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {isAdmin && (
+            <button className="btn btn-ghost btn-sm" onClick={() => setFusionOpen(true)} title="Fusionar empresas duplicadas (mismo RUC)">
+              <JxIcon name="compare" size={13}/>Fusionar{dupsRuc > 0 ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>{dupsRuc}</span> : ''}
+            </button>
+          )}
+          {canWrite ? (
+            <button className="btn btn-amber btn-sm" onClick={openNueva}>
+              <JxIcon name="plus" size={13}/>Nueva Empresa
+            </button>
+          ) : (
+            <span className="badge b-gray" title="Tu rol es solo lectura para Empresas">Solo lectura</span>
+          )}
+        </div>
       </div>
+      {fusionOpen && <FusionEntidadModal tipo="companies" registros={companies} showToast={showToast} onClose={() => setFusionOpen(false)} onDone={() => {}} />}
 
       {sorted.length === 0 ? (
         <div className="card card-p empty-state">

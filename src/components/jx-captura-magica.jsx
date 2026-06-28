@@ -3,6 +3,7 @@ import {
   clasificarInsumo, TIPO_INSUMO_LABEL, TIPO_INSUMO_BADGE, TIPO_INSUMO_TABLA,
 } from "../lib/insumo-clasificador.js";
 import { epppTipo } from "../lib/epp-utils.js";
+import { normalizarRuc } from "../lib/doc-id.js";
 const { useState: uSCM, useMemo: uMCM, useEffect: uECM, useRef: uRCM } = React;
 
 // ╔════════════════════════════════════════════════════════════╗
@@ -341,11 +342,13 @@ function CapturaMagicaPage({ showToast }) {
     if (!ext) return null;
     // Emisor: puede ser proveedor externo O empresa nuestra (intercompany)
     const ruc = ext.emisor?.ruc || '';
-    const proveedorMatch = ruc ? proveedoresDB.find(p => p.ruc === ruc) : null;
-    const emisorCompanyMatch = ruc ? (companies || []).find(c => c.ruc === ruc && c.status === 'activa' && !c.deleted_at) : null;
+    const rucN = normalizarRuc(ruc);   // matchear por RUC normalizado (no por formato/nombre)
+    const proveedorMatch = rucN ? proveedoresDB.find(p => normalizarRuc(p.ruc) === rucN) : null;
+    const emisorCompanyMatch = rucN ? (companies || []).find(c => normalizarRuc(c.ruc) === rucN && c.status === 'activa' && !c.deleted_at) : null;
     // Receptor (empresa del grupo)
     const rucRec = ext.receptor?.documento || '';
-    const companyMatch = rucRec ? (companies || []).find(c => c.ruc === rucRec && c.status === 'activa') : null;
+    const rucRecN = normalizarRuc(rucRec);
+    const companyMatch = rucRecN ? (companies || []).find(c => normalizarRuc(c.ruc) === rucRecN && c.status === 'activa') : null;
     // Si emisor es nuestra empresa Y receptor es nuestra empresa → operación intercompany.
     const esIntercompany = !!(emisorCompanyMatch && companyMatch);
     // Si no hay match pero la factura sí tiene datos del receptor, autoseteamos
@@ -620,9 +623,11 @@ function CapturaMagicaPage({ showToast }) {
         // VENTA: la empresa del movimiento es NUESTRO emisor (ya existe en companies).
         companyIdFinal = r.emisor_company_id;
       } else if (r.company_accion === 'crear_nueva') {
-        const rucC = String(r.nueva_company_ruc || '').trim();
+        // RUC normalizado (solo dígitos): el dedup compara por DOCUMENTO, no por nombre
+        // (el bug de Gasomi: mismo RUC, nombre MAYÚS vs minús → 2 empresas).
+        const rucC = normalizarRuc(r.nueva_company_ruc);
         const yaExiste = rucC
-          ? (await window.__db.companies.where('ruc').equals(rucC).filter(c => !c.deleted_at).toArray())
+          ? (await window.__db.companies.filter(c => !c.deleted_at && normalizarRuc(c.ruc) === rucC).toArray())
               .sort((a, b) => (a.status === 'activa' ? -1 : 1) - (b.status === 'activa' ? -1 : 1))[0]
           : null;
         if (yaExiste) { companyIdFinal = yaExiste.id; }
@@ -632,7 +637,7 @@ function CapturaMagicaPage({ showToast }) {
           id: cid,
           name: r.nueva_company_name.trim(),
           legal_name: r.nueva_company_legal?.trim() || r.nueva_company_name.trim(),
-          ruc: r.nueva_company_ruc || null,
+          ruc: rucC || null,
           company_type: 'comercial',
           status: 'activa',
           rubro: r.nueva_company_rubro || null,
@@ -661,9 +666,9 @@ function CapturaMagicaPage({ showToast }) {
       // 1) Crear proveedor si nuevo (mismo dedup por RUC fresco que la empresa).
       //    Solo en COMPRAS: en una venta el "emisor" es nuestra empresa, no un proveedor.
       if (!esVenta && r.proveedor_accion === 'crear_nuevo') {
-        const rucP = String(r.proveedor_ruc || '').trim();
+        const rucP = normalizarRuc(r.proveedor_ruc);
         const provExiste = rucP
-          ? await window.__db.proveedores.where('ruc').equals(rucP).filter(p => !p.deleted_at).first()
+          ? (await window.__db.proveedores.filter(p => !p.deleted_at && normalizarRuc(p.ruc) === rucP).toArray())[0]
           : null;
         if (provExiste) { proveedorIdFinal = provExiste.id; }
         else {
@@ -674,14 +679,17 @@ function CapturaMagicaPage({ showToast }) {
         await window.__db.proveedores.add({
           id: pid,
           razon_social: r.proveedor_razon_social.trim(),
-          ruc: r.proveedor_ruc || null,
+          ruc: rucP || null,
           direccion: r.proveedor_direccion || null,
           estado: 'activo',
           tipo_proveedor: 'proveedor',
           created_by: userId, updated_by: userId,
           created_at: now, updated_at: now,
           version: 1, sync_status: 'pending_create',
-          idempotency_key: `${userId}_prov_${pid}`,
+          // Determinístico por RUC: el UNIQUE(ruc) y el idempotency_key del server
+          // (+ reconciliarProveedorDuplicado en 23505) deduplican aunque dos capturas
+          // offline creen el mismo proveedor. Sin RUC, cae al key por instancia.
+          idempotency_key: rucP ? `prov_ruc_${rucP}` : `${userId}_prov_${pid}`,
         });
         try { await window.__logAudit?.({ action:'insert', table:'proveedores', recordId: pid,
           newData: { ruc: r.proveedor_ruc, razon: r.proveedor_razon_social }, reason:'Captura mágica · crear proveedor' }); } catch {}

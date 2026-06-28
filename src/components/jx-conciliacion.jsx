@@ -524,6 +524,9 @@ function VincularModal({ insumo, items, vinculos, itemsVinculados, busy, onVincu
   // Ítems ya vinculados A ESTE insumo (se excluyen). Un ítem vinculado a OTRO insumo SÍ se
   // puede ofrecer (1 ítem → N insumos = N-M), con una marca "↔ otro" para avisar.
   const yaAqui = uM(() => new Set((vinculos || []).map(v => `${v.accounting_movement_id}|${v.item_idx}`)), [vinculos]);
+  // Índice de ítems de factura por (factura|idx) para enriquecer el registro con
+  // QUÉ factura / proveedor / fecha quedó vinculada a este insumo.
+  const itemByKey = uM(() => { const m = new Map(); (items || []).forEach(it => m.set(`${it.facturaId}|${it.itemIdx}`, it)); return m; }, [items]);
   const candidatos = uM(() => {
     const qn = norm(buscar);
     return items
@@ -541,20 +544,27 @@ function VincularModal({ insumo, items, vinculos, itemsVinculados, busy, onVincu
         Presupuestado: <strong style={{ color: 'var(--ts)' }}>{fmtN(insumo.cantPresup)} {insumo.unidad}</strong> · {fmtS(insumo.montoPresup)} · código {insumo.codigo.startsWith('sc:') ? '—' : insumo.codigo}
       </div>
 
-      {/* Vínculos actuales */}
+      {/* Registro: qué ítems de qué facturas se han vinculado a ESTE insumo */}
       {vinculos.length > 0 && (
         <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--ts)', marginBottom: 6 }}>Facturas vinculadas ({vinculos.length})</div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--ts)', marginBottom: 6 }}>
+            Registro de facturas vinculadas ({vinculos.length}) · total {fmtS(vinculos.reduce((s, v) => s + (Number(v.cantidad) || 0) * (Number(v.precio_unitario) || 0), 0))}
+          </div>
           <div className="card" style={{ overflow: 'hidden' }}>
             <table className="tbl"><tbody>
-              {vinculos.map(v => (
-                <tr key={v.id}>
-                  <td className="col-p" style={{ fontSize: 12 }}>{v.item_descripcion}</td>
-                  <td style={{ textAlign: 'right', fontSize: 12 }}>{fmtN(v.cantidad)} × {fmtS(v.precio_unitario)}</td>
-                  <td style={{ textAlign: 'right', width: 90 }}>{fmtS((Number(v.cantidad) || 0) * (Number(v.precio_unitario) || 0))}</td>
-                  <td style={{ textAlign: 'center', width: 40 }}><button className="btn btn-ghost btn-xs" disabled={busy} title="Quitar vínculo" onClick={() => onDesvincular(v)}><JxIcon name="x" size={11} /></button></td>
-                </tr>
-              ))}
+              {vinculos.map(v => {
+                const it = itemByKey.get(`${v.accounting_movement_id}|${v.item_idx}`);
+                return (
+                  <tr key={v.id}>
+                    <td className="col-p" style={{ fontSize: 12 }}>{v.item_descripcion}
+                      <div style={{ fontSize: 10, color: 'var(--tm)' }}>{it ? `${it.doc || 's/doc'} · ${it.proveedor || 's/proveedor'}${it.fecha ? ' · ' + it.fecha : ''}` : 'factura no encontrada (¿borrada?)'}</div>
+                    </td>
+                    <td style={{ textAlign: 'right', fontSize: 12 }}>{fmtN(v.cantidad)} × {fmtS(v.precio_unitario)}</td>
+                    <td style={{ textAlign: 'right', width: 90 }}>{fmtS((Number(v.cantidad) || 0) * (Number(v.precio_unitario) || 0))}</td>
+                    <td style={{ textAlign: 'center', width: 40 }}><button className="btn btn-ghost btn-xs" disabled={busy} title="Quitar vínculo" onClick={() => onDesvincular(v)}><JxIcon name="x" size={11} /></button></td>
+                  </tr>
+                );
+              })}
             </tbody></table>
           </div>
         </div>

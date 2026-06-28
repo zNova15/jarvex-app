@@ -5,6 +5,7 @@ import { aplicarDelta } from "../lib/stock-ubicaciones.js";
 import { eliminarMovimiento } from "../lib/eliminar-movimiento.js";
 import { stockTrasEditar, dejaNegativo } from "../lib/stock-guard.js";
 import { exportarDataset } from "../lib/export-historico.js";
+import { FusionEntidadModal } from "./jx-fusion-entidad.jsx";
 const { useState: uSM, useMemo: uMM, useEffect: uEM } = React;
 
 // Botón "Exportar Excel" de las páginas de movimientos: descarga el dataset
@@ -2195,6 +2196,12 @@ function ProveedoresPage({ showToast }) {
   const [provs, setProvs] = uSM([]);
   const [loading, setLoading] = uSM(true);
   const [requestTarget, setRequestTarget] = uSM(null);
+  const [fusionOpen, setFusionOpen] = uSM(false);
+  const dupsRuc = uMM(() => {
+    const m = new Map();
+    (provs || []).forEach(p => { if (p.deleted_at) return; const r = String(p.ruc || '').replace(/\D/g, ''); if (r.length >= 8) m.set(r, (m.get(r) || 0) + 1); });
+    return [...m.values()].filter(n => n > 1).length;
+  }, [provs]);
 
   uEM(() => {
     let cancelled = false;
@@ -2367,8 +2374,16 @@ function ProveedoresPage({ showToast }) {
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div><div className="pg-title">Proveedores</div><div className="pg-sub">{provs.length} proveedores · {activos} activos</div></div>
-        <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setEditingId(null); setModal(true);}}><JxIcon name="plus" size={13}/>Nuevo Proveedor</button>
+        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+          {isAdmin && (
+            <button className="btn btn-ghost btn-sm" onClick={()=>setFusionOpen(true)} title="Fusionar proveedores duplicados (mismo RUC)">
+              <JxIcon name="compare" size={13}/>Fusionar{dupsRuc>0 ? <span className="badge b-amber" style={{ marginLeft:6, fontSize:9 }}>{dupsRuc}</span> : ''}
+            </button>
+          )}
+          <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setEditingId(null); setModal(true);}}><JxIcon name="plus" size={13}/>Nuevo Proveedor</button>
+        </div>
       </div>
+      {fusionOpen && <FusionEntidadModal tipo="proveedores" registros={provs} showToast={showToast} onClose={()=>setFusionOpen(false)} onDone={()=>{}} />}
 
       <div style={{ display:'flex', gap:8, marginBottom:14 }}>
         <div className="search-bar"><JxIcon name="search" size={14} color="var(--tm)"/><input placeholder="Buscar por razón social o RUC…" value={q} onChange={e=>setQ(e.target.value)}/></div>
