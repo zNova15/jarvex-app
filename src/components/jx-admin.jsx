@@ -1133,6 +1133,9 @@ const __AYUDANTE_CONTADOR_ITEMS = [
   'solicitudes', // ve "Mis solicitudes" (sus pedidos de cambio); la aprobación es del contador/admin
 ];
 window.__canSeeSidebarItem = function(rol, itemId) {
+  // El INICIO (launcher de 2 planos) es seguro para todos los roles — no muestra
+  // datos, solo deriva a las secciones que cada rol sí puede ver.
+  if (itemId === 'inicio') return true;
   const modulo = window.__moduleIdMap?.[itemId];
   // El Asistente de Administrador ve EXCLUSIVAMENTE su lista acotada (igual patrón
   // que el ingeniero) — gana sobre cualquier permiso de la matriz.

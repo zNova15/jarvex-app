@@ -376,7 +376,9 @@ function Header({ page, plano = 'obra', onInicio, onToggleSidebar, onLogout, pro
   // obra que el admin les asignó (sin dropdown).
   const obraHook = window.__useObraActiva ? window.__useObraActiva() : { obras:[], obraId:null, obra:null, setObraActiva:()=>{} };
   const [obraDropdownOpen, setObraDropdownOpen] = uSA(false);
-  const canSwitchObra = profile?.rol === 'admin' || profile?.rol === 'gerente';
+  // Cambio rápido de obra: admin/gerente + los roles contables que trabajan
+  // entre varias obras (la contadora salta de una obra a otra para conciliar).
+  const canSwitchObra = ['admin', 'gerente', 'contador', 'ayudante_contador'].includes(profile?.rol);
   const handleSelectObra = (id) => {
     setObraDropdownOpen(false);
     if (!canSwitchObra) return;
@@ -404,6 +406,12 @@ function Header({ page, plano = 'obra', onInicio, onToggleSidebar, onLogout, pro
   return (
     <div style={{ height:58, background:'#0D1822', borderBottom:'1px solid rgba(255,255,255,0.06)', display:'flex', alignItems:'center', paddingLeft: isMobile ? 10 : 16, paddingRight: isMobile ? 10 : 20, gap: isMobile ? 8 : 12, flexShrink:0, zIndex:5 }}>
       <button onClick={onToggleSidebar} className="btn btn-ghost btn-icon" aria-label="Abrir menú"><JxIcon name="menu" size={16}/></button>
+      {page !== 'inicio' && onInicio && (
+        <button onClick={onInicio} className="btn btn-ghost btn-sm" title="Volver al inicio"
+                style={{ display:'flex', alignItems:'center', gap:4, color:'var(--ts)', flexShrink:0 }}>
+          <JxIcon name="chevL" size={14}/>{!isMobile && 'Inicio'}
+        </button>
+      )}
       <div style={{ fontSize: isMobile ? 13 : 14, fontWeight:600, color:'var(--tp)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', minWidth:0 }}>{pageLabels[page] || page}</div>
       <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap: isMobile ? 6 : 10, flexShrink:0 }}>
         {syncStatus && (
@@ -413,7 +421,7 @@ function Header({ page, plano = 'obra', onInicio, onToggleSidebar, onLogout, pro
             {!isMobile && <span style={{ color: syncStatus.color }}>{syncStatus.label}</span>}
           </div>
         )}
-        {obraDisplay && !isMobile && (
+        {plano === 'obra' && obraDisplay && !isMobile && (
           <div style={{ position:'relative' }}>
             <button
               onClick={canSwitchObra ? (()=>setObraDropdownOpen(o=>!o)) : undefined}
