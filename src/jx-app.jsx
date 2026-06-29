@@ -2,6 +2,7 @@ import React from "react";
 import { trackPageView } from "./lib/posthog.js";
 import SyncDetailModal from "./components/SyncDetailModal.jsx";
 import { planoDe, resolveLanding } from "./lib/nav-planos.js";
+import { cargarObrasAsignadas } from "./lib/obras-asignadas.js";
 const { useState: uSA, useEffect: uEA, useCallback: uCA } = React;
 
 // Hook compartido: detecta viewport móvil
@@ -777,6 +778,30 @@ function App() {
       window.__prefetchChunksForRol(rol);
     }
   }, [auth?.profile?.rol]);
+
+  // Landing por rol: los roles operativos (almacenero/ingeniero/…) con UNA sola
+  // obra asignada entran DIRECTO a su workspace y su página de siempre, saltando
+  // el launcher. Los roles globales (admin/gerente/contador/…) o con varias/ninguna
+  // obra se quedan en el Inicio. (Async porque obra_usuarios se consulta a Supabase.)
+  const _landingRef = React.useRef(false);
+  uEA(() => {
+    if (_landingRef.current) return;
+    const rol = auth?.profile?.rol;
+    const uid = auth?.profile?.id;
+    if (!rol) return;
+    _landingRef.current = true;
+    (async () => {
+      const ids = await cargarObrasAsignadas({ userId: uid, rol });
+      const obrasAsignadas = ids ? [...ids] : [];   // null (ve todas) → no auto-entrar
+      const home = window.__defaultPageForRol?.(rol) || 'dashboard-gestion';
+      const { page: lpage, obraId } = resolveLanding({ rol, obrasAsignadas, homePorRol: { [rol]: home } });
+      if (lpage !== 'inicio') {
+        const destino = planoDe(lpage) === 'obra' ? lpage : 'dashboard-gestion';
+        if (obraId && window.__setObraActivaId) window.__setObraActivaId(obraId);
+        setPage(destino);
+      }
+    })();
+  }, [auth?.profile?.rol, auth?.profile?.id]);
   // Contador de versión de permisos. Aumenta cada vez que el admin
   // cambia la matriz desde Roles & Permisos. Lo agregamos al `key` del
   // contenedor de la página para forzar un remount completo de la
