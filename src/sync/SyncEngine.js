@@ -294,6 +294,56 @@ export async function getFailedCount() {
  * Devuelve el desglose de records FAILED por tabla con info útil para
  * mostrar al usuario en el modal de detalle.
  */
+// Nombre técnico de columna → etiqueta humana, para los mensajes de error de sync.
+const CAMPO_HUMANO = {
+  payment_status: 'estado de pago', status: 'estado', estado: 'estado', type: 'tipo',
+  clase: 'clase', currency: 'moneda', amount: 'monto', document_type: 'tipo de documento',
+  tipo_evidencia: 'tipo de evidencia', tipo_movimiento: 'tipo de movimiento', rol: 'rol',
+  rol_obra: 'rol en la obra', seguro_a_cargo: 'seguro a cargo', metodo_pago: 'método de pago',
+  obra_id: 'obra', company_id: 'empresa', proveedor_id: 'proveedor', personal_id: 'personal',
+  cuenta_pcge: 'cuenta contable', fecha: 'fecha', date: 'fecha',
+};
+// Valores aceptados por campos con CHECK conocidos (para sugerir la corrección).
+const VALORES_VALIDOS = {
+  payment_status: 'pendiente, pagado o anulado',
+  tipo_evidencia: 'foto, documento, bancarización, etc.',
+};
+// Dado un nombre de constraint (<tabla>_<campo>_check/_fkey/_key) y el record,
+// halla la columna real: el sufijo más largo que sea una clave del record.
+function campoDeConstraint(cons, r) {
+  const base = String(cons || '').replace(/_(check|fkey|key|chk|excl|unique)\d*$/i, '');
+  const parts = base.split('_');
+  for (let i = 0; i < parts.length; i++) {
+    const cand = parts.slice(i).join('_');
+    if (cand && r && Object.prototype.hasOwnProperty.call(r, cand)) return cand;
+  }
+  return parts[parts.length - 1] || base;
+}
+// A partir del error de Postgres + el record FAILED, intenta extraer QUÉ campo y
+// QUÉ valor incumplen la regla, en términos entendibles. Devuelve null si no aplica.
+function explicarErrorRegla(r) {
+  const msg = r?._last_error || '';
+  const det = r?._last_error_details || '';
+  let m = /violates check constraint "([^"]+)"/i.exec(msg);
+  if (m) {
+    const campo = campoDeConstraint(m[1], r);
+    return { regla: 'check', campo, campoHumano: CAMPO_HUMANO[campo] || campo,
+      valor: r?.[campo], validos: VALORES_VALIDOS[campo] || null };
+  }
+  m = /null value in column "([^"]+)"/i.exec(msg);
+  if (m) {
+    const campo = m[1];
+    return { regla: 'not_null', campo, campoHumano: CAMPO_HUMANO[campo] || campo, valor: null, validos: null };
+  }
+  m = /Key \(([^)]+)\)=\(([^)]+)\)/i.exec(det) || /Key \(([^)]+)\)=\(([^)]+)\)/i.exec(msg);
+  if (m) {
+    const campo = m[1].trim();
+    return { regla: /foreign key/i.test(msg) ? 'fk' : 'unique', campo,
+      campoHumano: CAMPO_HUMANO[campo] || campo, valor: m[2], validos: null };
+  }
+  return null;
+}
+
 export async function getFailedDetails() {
   const out = [];
   // Precargar personal una vez para resolver nombres legibles (el error de
@@ -333,6 +383,10 @@ export async function getFailedDetails() {
         descripcion: r.nombre_material || r.nombre_partida || r.descripcion || r.nombre_insumo || '',
         error: r._last_error || 'Error desconocido',
         errorCode: r._last_error_code || null,
+        errorDetails: r._last_error_details || null,
+        errorHint: r._last_error_hint || null,
+        // Campo + valor concretos que incumplen la regla (parseados del error).
+        regla: explicarErrorRegla(r),
         isRLS: !!r._last_error_is_rls,
         retries: r._sync_retries || 0,
         updatedAt: r.updated_at,
@@ -1843,6 +1897,40 @@ async function repairPersonalChecksOnce() {
   } catch (e) { console.warn('[SyncEngine] repair personal CHECKs:', e?.message || e); }
 }
 
+async function repairAccountingPaymentStatusOnce() {
+  // Cura los movimientos contables con payment_status fuera del CHECK de la BD
+  // (021_contabilidad: solo 'pending'|'paid'|'cancelled'). La app ofrecía un
+  // estado 'credit' ("Crédito") que el server SIEMPRE rechazó (23514) → esos
+  // movimientos quedaban FAILED y rebotaban en cada sync sin que se entendiera
+  // por qué. 'Crédito' no es un estado de pago sino una forma de pago: una
+  // compra al crédito sigue PENDIENTE de pago → la mapeamos a 'pending'.
+  // Solo toca filas no-sincronizadas (una synced no puede tener 'credit', el
+  // CHECK lo habría impedido), así que es auto-limitante sin flag.
+  try {
+    if (!db.accounting_movements) return;
+    const VALIDOS = ['pending', 'paid', 'cancelled'];
+    const rows = await db.accounting_movements.filter(m =>
+      m.sync_status === SYNC_STATUS.PENDING_CREATE ||
+      m.sync_status === SYNC_STATUS.PENDING_UPDATE ||
+      m.sync_status === SYNC_STATUS.FAILED).toArray();
+    let arreglados = 0;
+    for (const m of rows) {
+      if (m.payment_status == null || VALIDOS.includes(m.payment_status)) continue;
+      const patch = { payment_status: 'pending', version: (m.version ?? 0) + 1, updated_at: new Date().toISOString() };
+      if (m.sync_status === SYNC_STATUS.FAILED) {
+        patch.sync_status = m.last_synced_at ? SYNC_STATUS.PENDING_UPDATE : SYNC_STATUS.PENDING_CREATE;
+        patch._sync_retries = 0;
+      }
+      await db.accounting_movements.update(m.id, patch);
+      arreglados++;
+    }
+    if (arreglados) {
+      console.log(`[SyncEngine] repair accounting payment_status: ${arreglados} movimiento(s) normalizado(s) (estado inválido→pending) y re-encolado(s)`);
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { source: 'repair_payment_status' } })); } catch {}
+    }
+  } catch (e) { console.warn('[SyncEngine] repair accounting payment_status:', e?.message || e); }
+}
+
 async function repairTransactionalWatermarksOnce() {
   try {
     if (typeof localStorage !== 'undefined' && localStorage.getItem(_TXWM_REPAIR_KEY)) return;
@@ -1866,6 +1954,7 @@ async function pullTransactionalChanges() {
   await repairTransactionalWatermarksOnce();
   await limpiarFantasmas();
   await repairPersonalChecksOnce();
+  await repairAccountingPaymentStatusOnce();
   let cacheChanged = false;
 
   for (const tabla of TRANSACTIONAL_TABLES) {
@@ -2046,6 +2135,11 @@ async function handleSyncError(tabla, record, operacion, error) {
     _last_error: error.message,
     _last_error_code: error.code || null,
     _last_error_is_rls: isRLS,
+    // details/hint de Postgres/PostgREST: suelen traer el dato concreto que falla
+    // (ej. "Key (campo)=(valor) ...", o la sugerencia de corrección). El modal de
+    // sync los usa para decir QUÉ campo y QUÉ valor incumplen la regla.
+    _last_error_details: error.details || null,
+    _last_error_hint: error.hint || null,
   });
 
   if (isRLS) {

@@ -893,8 +893,11 @@ const PERM_MATRIX = {
   // Ayudante de Contabilidad (key 'ayudante_contador'): acceso ACOTADO (allowlist
   // __AYUDANTE_CONTADOR_ITEMS controla la visibilidad). w en Empresas, Movimientos
   // Contables, Cuentas Bancarias y Captura Mágica; Personal SOLO LECTURA; x el resto.
+  // 'Evidencias' = w para que pueda SUBIR bancarizaciones desde Movimientos sin
+  // entrar a editar (la tabla evidencias mapea al módulo 'Evidencias' en el push;
+  // sin write acá, la bancarización subida quedaría PENDING para siempre).
   ayudante_contador: PERM_MATRIX_MODULES.map(m => {
-    if (['Empresas','Movs. Contables','Cuentas Bancarias','Captura Mágica'].includes(m)) return 'w';
+    if (['Empresas','Movs. Contables','Cuentas Bancarias','Captura Mágica','Evidencias'].includes(m)) return 'w';
     if (m === 'Personal') return 'r';  // solo lectura, sin edición
     return 'x';
   }),

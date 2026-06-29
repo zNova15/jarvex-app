@@ -60,6 +60,27 @@ function fuzzyScore(a, b) {
   return inter / Math.max(A.size, B.size);
 }
 
+// Tokens jurídicos/genéricos de razón social peruana que NO distinguen una
+// empresa de otra (presentes en casi todas) → se ignoran al comparar nombres,
+// para que el match por razón social no se infle por "COMERCIAL … SAC".
+const RS_STOPWORDS = new Set([
+  'sociedad','anonima','cerrada','responsabilidad','limitada','empresa','individual',
+  'comercial','servicios','generales','distribuidora','distribuciones','importaciones',
+  'exportaciones','representaciones','inversiones','corporacion','negocios','contratistas',
+  'ingenieria','construcciones','constructora','grupo','multiservicios','comercializadora',
+  'industrias','soluciones','peru','sac','eirl','srl','sociedad','del','los','las','company',
+]);
+// Similitud de razón social robusta: Jaccard sobre los tokens DISTINTIVOS
+// (descartando los jurídicos/genéricos y los muy cortos). Devuelve 0..1.
+function razonSimilar(a, b) {
+  const toks = (s) => norm(s).split(' ').filter(w => w.length > 2 && !RS_STOPWORDS.has(w));
+  const A = new Set(toks(a)), B = new Set(toks(b));
+  if (!A.size || !B.size) return 0;
+  let inter = 0;
+  for (const w of A) if (B.has(w)) inter++;
+  return inter / Math.max(A.size, B.size);
+}
+
 // Convierte File → base64 string (sin prefijo data:...).
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -349,6 +370,22 @@ function CapturaMagicaPage({ showToast }) {
     const ruc = ext.emisor?.ruc || '';
     const rucN = normalizarRuc(ruc);   // matchear por RUC normalizado (no por formato/nombre)
     const proveedorMatch = rucN ? proveedoresDB.find(p => normalizarRuc(p.ruc) === rucN) : null;
+    // Fallback por RAZÓN SOCIAL: el OCR a veces lee mal/omite el RUC, así que un
+    // proveedor ya existente "no se detecta" y se pide crear uno nuevo (duplicado).
+    // Si no hubo match por RUC, buscamos el proveedor con razón social más parecida
+    // (≥0.7 sobre tokens distintivos). Es una SUGERENCIA para verificar — el RUC
+    // sigue siendo el ancla del dedup duro al confirmar, no se crea nada solo.
+    const razonEmisor = ext.emisor?.razon_social || '';
+    let provNombreMatch = null, provNombreScore = 0;
+    if (!proveedorMatch && razonEmisor.trim()) {
+      for (const p of proveedoresDB) {
+        const s = razonSimilar(razonEmisor, p.razon_social || p.nombre || p.nombre_comercial || '');
+        if (s > provNombreScore) { provNombreScore = s; provNombreMatch = p; }
+      }
+      if (provNombreScore < 0.7) provNombreMatch = null;
+    }
+    const proveedorElegido = proveedorMatch || provNombreMatch;
+    const proveedorPorNombre = !proveedorMatch && !!provNombreMatch;
     const emisorCompanyMatch = rucN ? (companies || []).find(c => normalizarRuc(c.ruc) === rucN && c.status === 'activa' && !c.deleted_at) : null;
     // Receptor (empresa del grupo)
     const rucRec = ext.receptor?.documento || '';
@@ -404,9 +441,15 @@ function CapturaMagicaPage({ showToast }) {
       fecha_emision: ext.fecha_emision || new Date().toISOString().slice(0,10),
       moneda: ext.moneda || 'PEN',
       // Proveedor
-      proveedor_id: proveedorMatch?.id || '',
-      proveedor_accion: proveedorMatch ? 'usar_existente' : 'crear_nuevo',
-      proveedor_ruc: ruc,
+      proveedor_id: proveedorElegido?.id || '',
+      proveedor_accion: proveedorElegido ? 'usar_existente' : 'crear_nuevo',
+      // Marca que el match salió por RAZÓN SOCIAL (no por RUC) → la UI pide verificar.
+      proveedor_match_por_nombre: proveedorPorNombre,
+      proveedor_match_score: proveedorPorNombre ? Math.round(provNombreScore * 100) : null,
+      proveedor_match_nombre_db: proveedorPorNombre ? (provNombreMatch.razon_social || provNombreMatch.nombre || '') : null,
+      // Si se emparejó por nombre, el RUC del OCR no coincidió → usamos el RUC
+      // canónico del proveedor existente para no guardar un RUC errado.
+      proveedor_ruc: proveedorPorNombre ? (provNombreMatch.ruc || ruc) : ruc,
       proveedor_razon_social: ext.emisor?.razon_social || '',
       proveedor_direccion: ext.emisor?.direccion || '',
       // Receptor
@@ -858,7 +901,10 @@ function CapturaMagicaPage({ showToast }) {
         // Nuevos: método y estado de pago (registrados desde la UI).
         // Si el contador no eligió, usamos defaults razonables.
         metodo_pago: r.metodo_pago || null,
-        payment_status: r.payment_status || 'pending',
+        // 'credit' NO es un estado de pago válido en el server (CHECK 021: solo
+        // pending/paid/cancelled) → lo saneamos a 'pending' acá también, por si
+        // un review quedó en estado con un 'credit' legacy.
+        payment_status: (r.payment_status === 'credit' ? 'pending' : (r.payment_status || 'pending')),
         // Recepción de almacén: solo en COMPRAS con obra (una venta no ingresa al almacén).
         recepcion_status: (!esVenta && r.genera_recepcion_almacen && r.obra_id && r.items?.length > 0)
           ? 'pendiente_recepcion'
@@ -1607,10 +1653,10 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
               </div>
               <div>
                 <label className="flabel">Estado del pago</label>
-                <select className="fi" value={r.payment_status || 'pending'} onChange={e=>upd({ payment_status: e.target.value })}>
+                <select className="fi" value={r.payment_status === 'credit' ? 'pending' : (r.payment_status || 'pending')} onChange={e=>upd({ payment_status: e.target.value })}>
                   <option value="paid">Pagado</option>
                   <option value="pending">Pendiente</option>
-                  <option value="credit">Crédito (plazo)</option>
+                  <option value="cancelled">Anulado</option>
                 </select>
               </div>
             </div>
@@ -1624,10 +1670,18 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
                 <button type="button" className={`btn btn-xs ${r.proveedor_accion === 'crear_nuevo' ? 'btn-amber' : 'btn-ghost'}`}
                   onClick={()=>upd({ proveedor_accion:'crear_nuevo' })}>Crear nuevo</button>
               </div>
+              {r.proveedor_match_por_nombre && r.proveedor_accion === 'usar_existente' && (
+                <div style={{ marginBottom:8, padding:'8px 10px', background:'rgba(242,183,5,0.08)', border:'1px solid rgba(242,183,5,0.35)', borderRadius:6, fontSize:11.5, color:'var(--amber)', lineHeight:1.45 }}>
+                  ⚠ Lo emparejé por <strong>razón social</strong> ({r.proveedor_match_score}% parecido a “{r.proveedor_match_nombre_db}”), no por RUC — el RUC de la factura no coincidió con ninguno. <strong>Verificá</strong> que sea el mismo proveedor; si no, elegí “Crear nuevo”.
+                </div>
+              )}
               {r.proveedor_accion === 'usar_existente' ? (
                 <select className="fi" value={r.proveedor_id||''} onChange={e=>{
                   const p = proveedoresDB.find(x => x.id === e.target.value);
-                  upd({ proveedor_id: e.target.value, proveedor_ruc: p?.ruc || r.proveedor_ruc, proveedor_razon_social: p?.razon_social || r.proveedor_razon_social });
+                  // Elección MANUAL → el aviso "lo emparejé por razón social" ya no
+                  // aplica (apuntaba a la sugerencia automática, ahora obsoleta).
+                  upd({ proveedor_id: e.target.value, proveedor_ruc: p?.ruc || r.proveedor_ruc, proveedor_razon_social: p?.razon_social || r.proveedor_razon_social,
+                    proveedor_match_por_nombre: false, proveedor_match_score: null, proveedor_match_nombre_db: null });
                 }}>
                   <option value="">— Seleccionar —</option>
                   {proveedoresDB.map(p => <option key={p.id} value={p.id}>{p.razon_social} {p.ruc ? `· ${p.ruc}` : ''}</option>)}

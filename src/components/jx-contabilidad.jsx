@@ -755,6 +755,14 @@ function MovimientosContablesPage({ showToast }) {
   const [editingId, setEditingId] = uSC(null);
   const [form, setForm] = uSC({});
   const [solicitarTarget, setSolicitarTarget] = uSC(null); // mov para "Solicitar cambio" (ayudante)
+  // Subir bancarización SIN entrar a editar (lo puede hacer el ayudante de
+  // contabilidad: editar es solo de admin/contador jefe, pero adjuntar la
+  // bancarización es una evidencia, no una edición del movimiento).
+  const [bancTarget, setBancTarget] = uSC(null);   // movimiento al que se le sube la bancarización
+  const [bancFile, setBancFile] = uSC(null);
+  const [bancObra, setBancObra] = uSC('');
+  const [bancSaving, setBancSaving] = uSC(false);
+  const [soloSinBanc, setSoloSinBanc] = uSC(false); // filtro: ver solo los que faltan bancarización
 
   // Evidencias adjuntas a movs contables (factura PDF/imagen guardada
   // por Captura Mágica). Map<accId, {url, mime}>. Cuando la contadora
@@ -885,6 +893,15 @@ function MovimientosContablesPage({ showToast }) {
     }
   }, [filtroAmbito, obrasParaSelector, companiesActivas, obras, companies]);
 
+  // ¿El movimiento (>S/2000 en soles) está sin bancarización (ninguna o falló)?
+  // Definida antes de `filtered` porque el useMemo la llama al filtrar por
+  // "solo sin bancarización" (los const no se hoistean → TDZ si va después).
+  const faltaBancarizacion = (m) => {
+    if (!(m.currency === 'PEN' && Number(m.amount) > 2000)) return false;
+    const evB = bancarizacionPorMov.get(m.id);
+    return !evB || evB.sync === 'failed';
+  };
+
   const filtered = uMC(() => {
     if (!movs) return [];
     let f = [...movs];
@@ -900,8 +917,9 @@ function MovimientosContablesPage({ showToast }) {
         || (m.third_party_name||'').toLowerCase().includes(q)
         || (m.document_number||'').toLowerCase().includes(q));
     }
+    if (soloSinBanc) f = f.filter(faltaBancarizacion);
     return f.sort((a,b) => (b.date||'').localeCompare(a.date||''));
-  }, [movs, filtroAmbito, filtroClase, filtroTipo, filtroEstado, busqueda]);
+  }, [movs, filtroAmbito, filtroClase, filtroTipo, filtroEstado, busqueda, soloSinBanc, bancarizacionPorMov]);
 
   // Paginación: tabla puede tener miles de movimientos contables.
   const movPg = usePagination(filtered, 100);
@@ -1088,6 +1106,38 @@ function MovimientosContablesPage({ showToast }) {
 
   const lookupCompany = (id) => companies?.find(c => c.id === id);
 
+  const openBanc = (m) => { setBancTarget(m); setBancObra(m.obra_id || ''); setBancFile(null); };
+
+  const subirBancarizacion = async () => {
+    if (!bancTarget) return;
+    if (!bancFile) { showToast('Elegí el archivo de la bancarización (foto o PDF)', 'red'); return; }
+    const obraId = bancTarget.obra_id || bancObra;
+    if (!obraId) { showToast('Elegí la obra para poder archivar la bancarización', 'red'); return; }
+    setBancSaving(true);
+    try {
+      await window.__saveEvidenciaLocal({
+        id: window.__newId(),
+        obra_id: obraId,
+        tipo_evidencia: 'bancarizacion',
+        modulo_relacionado: 'accounting_movements',
+        registro_relacionado_id: bancTarget.id,
+        nombre_archivo: bancFile.name,
+        mime_type: bancFile.type || 'application/octet-stream',
+        blob: bancFile,
+        observaciones: 'Evidencia de bancarización (> S/2000)',
+        created_by: userId,
+      });
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'evidencias', source:'banc-upload' } })); } catch {}
+      try { await window.__logAudit?.({ action:'insert', table:'evidencias', recordId: bancTarget.id, reason:'Bancarización adjunta desde Movimientos (sin edición)' }); } catch {}
+      showToast('Bancarización adjunta. Se sincronizará en breve.', 'green');
+      setBancTarget(null); setBancFile(null); setBancObra('');
+    } catch (e) {
+      showToast('No se pudo adjuntar la bancarización: ' + (e.message || e), 'red');
+    } finally {
+      setBancSaving(false);
+    }
+  };
+
   return (
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
@@ -1134,10 +1184,36 @@ function MovimientosContablesPage({ showToast }) {
         </select>
       </div>
 
+      {/* Aviso visible de bancarizaciones faltantes. Cualquiera con acceso de
+          escritura (incluido el ayudante de contabilidad) puede subirlas sin
+          entrar a editar el movimiento. */}
+      {canWrite && (() => {
+        const pend = filtered.filter(faltaBancarizacion);
+        if (!pend.length && !soloSinBanc) return null;
+        return (
+          <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', padding:'10px 14px', marginBottom:12, borderRadius:8, background: pend.length ? 'rgba(242,183,5,0.08)' : 'rgba(46,204,113,0.08)', border: `1px solid ${pend.length ? 'rgba(242,183,5,0.35)' : 'rgba(46,204,113,0.35)'}` }}>
+            <JxIcon name={pend.length ? 'alert' : 'check'} size={16} color={pend.length ? 'var(--amber)' : 'var(--green)'}/>
+            {pend.length ? (
+              <>
+                <span style={{ fontSize:13, color:'var(--amber)', fontWeight:600 }}>
+                  {pend.length} movimiento{pend.length>1?'s':''} de más de S/2000 sin bancarización
+                </span>
+                <span style={{ fontSize:11, color:'var(--tm)' }}>Subí el voucher/constancia desde el botón “Subir” de cada fila — no hace falta editar.</span>
+              </>
+            ) : (
+              <span style={{ fontSize:13, color:'var(--green)', fontWeight:600 }}>No quedan movimientos sin bancarización en este filtro.</span>
+            )}
+            <button className="btn btn-ghost btn-xs" style={{ marginLeft:'auto' }} onClick={()=>setSoloSinBanc(v=>!v)}>
+              {soloSinBanc ? 'Ver todos' : `Ver los ${pend.length} pendientes`}
+            </button>
+          </div>
+        );
+      })()}
+
       {filtered.length === 0 ? (
         <div className="card card-p empty-state">
           <JxIcon name="dollar" size={40} color="var(--tm)"/>
-          <p>No hay movimientos {(movs || []).length > 0 ? 'que coincidan con el filtro' : 'registrados aún'}.</p>
+          <p>No hay movimientos {(movs || []).length > 0 ? (soloSinBanc ? 'sin bancarización con este filtro' : 'que coincidan con el filtro') : 'registrados aún'}.</p>
         </div>
       ) : (
         <div className="card" style={{ overflow:'hidden' }}>
@@ -1170,9 +1246,14 @@ function MovimientosContablesPage({ showToast }) {
                         {m.obra_id && <div style={{ fontSize:10, color:'var(--blue)' }}>🏗 {obraNombre(m.obra_id) || 'obra'}</div>}
                         {m.currency === 'PEN' && Number(m.amount) > 2000 && (() => {
                           const evB = bancarizacionPorMov.get(m.id);
-                          if (!evB) return <div style={{ fontSize:10, color:'var(--amber)' }} title="Monto > S/2000 sin evidencia de bancarización">⚠ Falta bancarización</div>;
+                          const subirBtn = canWrite ? (
+                            <button className="btn btn-amber btn-xs" style={{ marginLeft:6, padding:'1px 6px', fontSize:9, verticalAlign:'middle' }} onClick={()=>openBanc(m)} title="Subir la bancarización sin entrar a editar">
+                              <JxIcon name="upload" size={9}/> Subir
+                            </button>
+                          ) : null;
+                          if (!evB) return <div style={{ fontSize:10, color:'var(--amber)' }} title="Monto > S/2000 sin evidencia de bancarización">⚠ Falta bancarización{subirBtn}</div>;
                           if (evB.sync === 'uploaded') return <div style={{ fontSize:10, color:'var(--green)' }}>✅ Bancarizado</div>;
-                          if (evB.sync === 'failed') return <div style={{ fontSize:10, color:'var(--red)' }} title="La evidencia no se pudo subir (revisá que estés asignado a la obra con un rol que no sea solo lectura)">⚠ Bancarización no subió</div>;
+                          if (evB.sync === 'failed') return <div style={{ fontSize:10, color:'var(--red)' }} title="La evidencia no se pudo subir (revisá que estés asignado a la obra con un rol que no sea solo lectura)">⚠ Bancarización no subió{subirBtn}</div>;
                           return <div style={{ fontSize:10, color:'var(--tm)' }} title="Subiendo evidencia de bancarización…">⏳ Subiendo bancarización</div>;
                         })()}
                       </td>
@@ -1183,7 +1264,6 @@ function MovimientosContablesPage({ showToast }) {
                         <select className="fi" value={m.payment_status} disabled={esAyudante || isIc} title={esAyudante ? 'Solo lectura — usá "Solicitar" para pedir un cambio' : undefined} onChange={e=>cambiarEstadoPago(m, e.target.value)} style={{ fontSize:11, padding:'4px 6px', minWidth:110 }}>
                           <option value="pending">⏱ Pendiente</option>
                           <option value="paid">✓ Pagado</option>
-                          <option value="credit">≡ Crédito</option>
                           <option value="cancelled">✗ Anulado</option>
                         </select>
                       </td>
@@ -1224,6 +1304,39 @@ function MovimientosContablesPage({ showToast }) {
           </div>
           <TablePagination {...movPg} />
         </div>
+      )}
+
+      {/* Subir bancarización sin entrar a editar (acceso para ayudante de contabilidad) */}
+      {bancTarget && (
+        <Modal title="Subir bancarización" icon="upload" onClose={()=>{ setBancTarget(null); setBancFile(null); }}>
+          <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
+            <div style={{ fontSize:12, color:'var(--tm)', padding:'8px 10px', borderRadius:6, background:'var(--bg-s)' }}>
+              <strong style={{ color:'var(--tp)' }}>{bancTarget.third_party_name || 'Movimiento'}</strong> · {fmtCur(bancTarget.amount, bancTarget.currency)} · {bancTarget.date}
+              {bancTarget.obra_id && <div style={{ fontSize:11, marginTop:2 }}>🏗 {obraNombre(bancTarget.obra_id) || 'obra'}</div>}
+            </div>
+            {!bancTarget.obra_id && (
+              <div>
+                <label className="flabel">Obra (para archivar la bancarización)</label>
+                <select className="fi" value={bancObra} onChange={e=>setBancObra(e.target.value)}>
+                  <option value="">— Elegí una obra —</option>
+                  {obrasParaSelector.map(o => <option key={o.id} value={o.id}>{o.nombre_obra}</option>)}
+                </select>
+              </div>
+            )}
+            <div>
+              <label className="flabel">Archivo (foto o PDF del voucher / constancia)</label>
+              <input className="fi" type="file" accept="image/*,application/pdf" onChange={e=>setBancFile((e.target.files||[])[0]||null)}/>
+              {bancFile && <div style={{ fontSize:11, color:'var(--green)', marginTop:4 }}>📎 {bancFile.name}</div>}
+            </div>
+            <div style={{ fontSize:11, color:'var(--tm)' }}>Esto solo adjunta la bancarización al movimiento — no modifica el movimiento, así que no requiere permiso de edición.</div>
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={()=>{ setBancTarget(null); setBancFile(null); }} disabled={bancSaving}>Cancelar</button>
+            <button className="btn btn-amber" onClick={subirBancarizacion} disabled={bancSaving || !bancFile}>
+              <JxIcon name="check" size={13}/> {bancSaving ? 'Subiendo…' : 'Subir bancarización'}
+            </button>
+          </div>
+        </Modal>
       )}
 
       {/* Visor de factura adjunta (PDF/imagen) */}
@@ -1467,7 +1580,6 @@ function MovimientosContablesPage({ showToast }) {
               <select className="fi" value={form.payment_status||'pending'} onChange={e=>setForm({...form, payment_status:e.target.value})}>
                 <option value="pending">Pendiente</option>
                 <option value="paid">Pagado</option>
-                <option value="credit">Crédito</option>
                 <option value="cancelled">Anulado</option>
               </select>
             </div>
@@ -1823,7 +1935,6 @@ function IntercompanyPage({ showToast }) {
               <select className="fi" value={form.payment_status||'pending'} onChange={e=>setForm({...form, payment_status:e.target.value})}>
                 <option value="pending">Pendiente</option>
                 <option value="paid">Pagado</option>
-                <option value="credit">Crédito</option>
                 <option value="cancelled">Anulado</option>
               </select>
             </div>

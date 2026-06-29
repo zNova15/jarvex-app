@@ -24,7 +24,9 @@ const { useState, useEffect } = React;
 const JxIcon = (props) => (window.JxIcon ? <window.JxIcon {...props}/> : null);
 
 // Traduce el error técnico del server a un mensaje entendible + qué hacer.
-function mensajeAmigable(code, error) {
+// `regla` (opcional) viene de getFailedDetails y trae el campo/valor concretos
+// que incumplen la regla, ya parseados → permite decir EXACTAMENTE qué corregir.
+function mensajeAmigable(code, error, regla) {
   const m = String(error || '').toLowerCase();
   if (code === 'PGRST204' || /could not find the .* column/.test(m))
     return 'El servidor no reconoce una columna que el programa quiso guardar (esquema desactualizado). Suele resolverse al recargar la página; si persiste, avisá.';
@@ -34,6 +36,20 @@ function mensajeAmigable(code, error) {
     return 'El movimiento dejaría el stock en negativo, lo que no está permitido. Revisá el archivo: probablemente falta una entrada previa o la cantidad de la salida está mal.';
   if (/violates check constraint/.test(m) && /alerta/.test(m))
     return 'Valor de "alerta" no permitido para ese insumo.';
+  // Mensaje PRECISO cuando pudimos identificar el campo y el valor que falla.
+  if (regla && regla.campoHumano) {
+    const v = (regla.valor === null || regla.valor === undefined || regla.valor === '')
+      ? '(vacío)' : `“${regla.valor}”`;
+    if (regla.regla === 'check')
+      return `El campo «${regla.campoHumano}» tiene un valor que el servidor no acepta: ${v}.`
+        + (regla.validos ? ` Valores válidos: ${regla.validos}.` : ' Corregí ese campo y reintentá.');
+    if (regla.regla === 'not_null')
+      return `Falta completar «${regla.campoHumano}»: es obligatorio y llegó vacío.`;
+    if (regla.regla === 'fk')
+      return `El «${regla.campoHumano}» referenciado (${v}) todavía no está en el servidor. Reintentá: al subir primero ese registro, este entra solo.`;
+    if (regla.regla === 'unique')
+      return `Ya existe otro registro con el mismo «${regla.campoHumano}» (${v}).`;
+  }
   if (/violates check constraint/.test(m))
     return 'Un valor del registro no cumple una regla del servidor (CHECK). Revisá los datos del archivo.';
   if (code === '23503' || /foreign key|violates foreign key/.test(m))
@@ -171,11 +187,13 @@ export default function SyncDetailModal({ open, onClose, showToast }) {
                               {r.isRLS && <span style={{ fontSize:9, padding:'1px 5px', borderRadius:3, background:'rgba(239,68,68,0.18)', color:'var(--red)' }}>RLS</span>}
                             </div>
                             {r.descripcion && r.descripcion !== r.nombre && <div style={{ color:'var(--ts)', marginTop:2 }}>{r.descripcion}</div>}
-                            <div style={{ color:'var(--amber)', fontSize:11, marginTop:3 }}>{mensajeAmigable(r.errorCode, r.error)}</div>
+                            <div style={{ color:'var(--amber)', fontSize:11, marginTop:3 }}>{mensajeAmigable(r.errorCode, r.error, r.regla)}</div>
                             <details style={{ marginTop:3 }}>
                               <summary style={{ cursor:'pointer', color:'var(--tm)', fontSize:9.5 }}>Detalle técnico</summary>
                               <div style={{ color:'var(--tm)', fontSize:10, marginTop:2 }}>
                                 {r.errorCode && <span style={{ fontFamily:'monospace' }}>[{r.errorCode}]</span>} {r.error}
+                                {r.errorDetails && <div style={{ marginTop:2 }}>{r.errorDetails}</div>}
+                                {r.errorHint && <div style={{ marginTop:2, fontStyle:'italic' }}>💡 {r.errorHint}</div>}
                               </div>
                             </details>
                           </div>
