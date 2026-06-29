@@ -19,20 +19,40 @@ const fmtSk = (n) => {
   return 'S/ ' + Math.round(v);
 };
 
-// Accesos del plano GENERAL (los mosaicos). Cada uno se muestra solo si el rol
-// puede verlo (__canSeeSidebarItem). El resto de páginas generales se alcanzan
-// desde el sidebar general una vez que entrás a una de estas.
+// Mosaicos del plano GENERAL (global, sin obra). Cada uno se muestra solo si el
+// rol puede verlo (__canSeeSidebarItem). Empresas se FUSIONÓ en Contabilidad (era
+// redundante: ambos llevan al área contable, donde el sidebar ya tiene Empresas).
 const TILES = [
-  { id: 'empresas',           label: 'Empresas',          icon: 'building', desc: 'Las empresas que manejamos y su contabilidad' },
-  { id: 'proveedores',        label: 'Proveedores',       icon: 'truck',    desc: 'Proveedores y distribuidoras (global)' },
+  { id: 'cont-dashboard',     label: 'Contabilidad',      icon: 'dollar',   desc: 'Empresas, movimientos, balance, libros, SUNAT' },
   { id: 'captura-magica',     label: 'Captura Mágica',    icon: 'upload',   desc: 'Subí comprobantes y routealos a su obra' },
-  { id: 'cont-dashboard',     label: 'Contabilidad',      icon: 'dollar',   desc: 'Dashboard contable, balance, libros, SUNAT' },
+  { id: 'proveedores',        label: 'Proveedores',       icon: 'truck',    desc: 'Proveedores y distribuidoras (global)' },
   { id: 'dashboard-ejecutivo',label: 'Dirección',         icon: 'dashboard',desc: 'Dashboard ejecutivo, KPIs, alertas' },
-  { id: 'obras',              label: 'Obras / Proyectos', icon: 'building', desc: 'Crear y administrar obras' },
   { id: 'reportes',           label: 'Reportes',          icon: 'chart',    desc: 'Reportes generales' },
+  { id: 'obras',              label: 'Obras / Proyectos', icon: 'building', desc: 'Crear y administrar obras' },
   { id: 'usuarios',           label: 'Usuarios y Roles',  icon: 'user',     desc: 'Usuarios, roles y permisos' },
   { id: 'configuracion',      label: 'Configuración',     icon: 'settings', desc: 'Ajustes del sistema' },
 ];
+
+// Accesos rápidos POR ROL dentro de cada obra (páginas de plano OBRA). El almacén,
+// las partidas, etc. son por-obra → cada rol ve su entrada en la tarjeta de la obra,
+// que lo lleva directo a su trabajo en ESA obra. Se filtran por __canSeeSidebarItem.
+const ACCESOS_OBRA = {
+  admin:               [['Gestión', 'dashboard-gestion'], ['Almacén', 'mov-materiales'], ['Contabilidad', 'movimientos-contables'], ['Conciliación', 'conciliacion-insumos']],
+  gerente:             [['Gestión', 'dashboard-gestion'], ['Avance', 'avance'], ['Contabilidad', 'movimientos-contables']],
+  ingeniero_residente: [['Avance', 'avance'], ['Partidas', 'partidas'], ['Aprobaciones', 'aprobaciones-reporte']],
+  ingeniero:           [['Mis Partidas', 'mis-partidas'], ['Reporte Diario', 'reporte-diario'], ['Vinculación', 'salidas-frente']],
+  supervisor:          [['Asistencia', 'asistencia'], ['Avance', 'avance'], ['Almacén', 'mov-materiales']],
+  almacenero:          [['Almacén', 'mov-materiales'], ['Herramientas', 'mov-herramientas'], ['Compras pend.', 'compras-pendientes']],
+  asistente_admin:     [['Gestión', 'dashboard-gestion'], ['Partidas', 'partidas'], ['Personal', 'personal']],
+  contador:            [['Movimientos', 'movimientos-contables'], ['Conciliación', 'conciliacion-insumos'], ['Avance', 'avance']],
+  ayudante_contador:   [['Movimientos', 'movimientos-contables'], ['Conciliación', 'conciliacion-insumos']],
+  tesorero:            [['Movimientos', 'movimientos-contables']],
+  jefe_compras:        [['Requisiciones', 'requisiciones'], ['Órdenes de Compra', 'ordenes-compra'], ['Compras pend.', 'compras-pendientes']],
+  rrhh:                [['Personal', 'personal'], ['Asistencia', 'asistencia'], ['Planillas', 'planillas']],
+  prevencionista:      [['IPERC', 'iperc'], ['Charlas', 'charlas-seguridad'], ['Inspecciones', 'inspecciones-seguridad']],
+  maestro_obra:        [['Avance', 'avance'], ['Asistencia', 'asistencia']],
+  solo_lectura:        [['Gestión', 'dashboard-gestion'], ['Avance', 'avance']],
+};
 
 function InicioPage({ onNav, onEnterObra }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
@@ -41,6 +61,8 @@ function InicioPage({ onNav, onEnterObra }) {
 
   const canSee = (id) => (!rol || rol === 'admin') ? true : (window.__canSeeSidebarItem?.(rol, id) ?? true);
   const tiles = uMI(() => TILES.filter(t => canSee(t.id)), [rol]);
+  // Accesos rápidos por rol DENTRO de cada obra (máx 4, solo los permitidos).
+  const accesosObra = uMI(() => (ACCESOS_OBRA[rol] || []).filter(([, p]) => canSee(p)).slice(0, 4), [rol]);
 
   // Obras asignadas (null = ve todas). Y avance físico + facturado por obra para
   // las tarjetas (partidas + conciliacion_vinculos — tablas livianas; NO cargamos
@@ -95,7 +117,9 @@ function InicioPage({ onNav, onEnterObra }) {
     <div className="page-wrap" style={{ maxWidth: 1100, margin: '0 auto' }}>
       <div className="pg-hd">
         <div className="pg-title">Inicio{nombreUsuario ? ` · ${nombreUsuario}` : ''}</div>
-        <div className="pg-sub">Elegí una sección general, o entrá a una obra para trabajar en ella.</div>
+        <div className="pg-sub">{tiles.length > 0
+          ? 'Elegí una sección general, o entrá a una obra para trabajar en ella.'
+          : 'Entrá a una de tus obras para trabajar (tu almacén, partidas, reportes, etc.).'}</div>
       </div>
 
       {/* ── DATOS GENERALES (mosaicos) ── */}
@@ -128,24 +152,40 @@ function InicioPage({ onNav, onEnterObra }) {
           {obrasVivas.map(o => {
             const av = avancePorObra.get(o.id);
             return (
-            <button key={o.id} className="card card-p" onClick={() => onEnterObra?.(o.id)}
-              style={{ textAlign: 'left', cursor: 'pointer', border: '1px solid var(--bd)', display: 'flex', alignItems: 'flex-start', gap: 10, minHeight: 78 }}>
-              <div style={{ width: 36, height: 36, borderRadius: 9, background: 'rgba(52,152,219,0.14)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                <Icon name="building" size={17} color="#3498DB" />
-              </div>
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--tp)', lineHeight: 1.3 }}>{o.nombre_obra || '(obra sin nombre)'}</div>
-                {av && (
-                  <div style={{ display: 'flex', gap: 12, marginTop: 6, fontSize: 11 }}>
-                    <span style={{ color: 'var(--tm)' }}>Físico <strong style={{ color: '#3498DB' }}>{av.fisico.toFixed(0)}%</strong></span>
-                    <span style={{ color: 'var(--tm)' }}>Facturado <strong style={{ color: 'var(--amber)' }}>{fmtSk(av.facturado)}</strong></span>
-                  </div>
-                )}
-                <div style={{ fontSize: 11, color: 'var(--amber)', marginTop: 5, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                  Entrar al workspace <Icon name="chevR" size={12} color="var(--amber)" />
+            <div key={o.id} className="card card-p" style={{ border: '1px solid var(--bd)', display: 'flex', flexDirection: 'column', gap: 8, minHeight: 78 }}>
+              {/* Cabecera clickeable: entra al workspace (home del rol) */}
+              <div onClick={() => onEnterObra?.(o.id)} role="button" title="Entrar al workspace de esta obra"
+                   style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
+                <div style={{ width: 36, height: 36, borderRadius: 9, background: 'rgba(52,152,219,0.14)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <Icon name="building" size={17} color="#3498DB" />
+                </div>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--tp)', lineHeight: 1.3 }}>{o.nombre_obra || '(obra sin nombre)'}</div>
+                  {av && (
+                    <div style={{ display: 'flex', gap: 12, marginTop: 6, fontSize: 11 }}>
+                      <span style={{ color: 'var(--tm)' }}>Físico <strong style={{ color: '#3498DB' }}>{av.fisico.toFixed(0)}%</strong></span>
+                      <span style={{ color: 'var(--tm)' }}>Facturado <strong style={{ color: 'var(--amber)' }}>{fmtSk(av.facturado)}</strong></span>
+                    </div>
+                  )}
                 </div>
               </div>
-            </button>
+              {/* Accesos rápidos del rol DENTRO de esta obra */}
+              {accesosObra.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, paddingLeft: 46 }}>
+                  {accesosObra.map(([lbl, pg]) => (
+                    <button key={pg} className="btn btn-ghost btn-xs" title={`${lbl} de esta obra`}
+                            onClick={() => onEnterObra?.(o.id, pg)}
+                            style={{ border: '1px solid var(--bd)', fontSize: 10.5, padding: '3px 8px' }}>
+                      {lbl}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div onClick={() => onEnterObra?.(o.id)} role="button"
+                   style={{ fontSize: 11, color: 'var(--amber)', marginTop: 'auto', paddingLeft: 46, display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
+                Entrar al workspace <Icon name="chevR" size={12} color="var(--amber)" />
+              </div>
+            </div>
             );
           })}
         </div>

@@ -1043,10 +1043,14 @@ function App() {
   };
   // Entrar a una obra desde el Inicio: fija la obra activa (sin recarga) y navega
   // a una página de plano OBRA (la home del rol si es de obra, si no Gestión).
-  const entrarObra = (oid) => {
+  // Entrar a una obra: fija la obra activa (sin recarga) y navega a una página de
+  // plano OBRA. Si se pide una página concreta (acceso rápido del Inicio) y es de
+  // obra, va a esa; si no, a la home del rol (o Gestión).
+  const entrarObra = (oid, pageDestino) => {
     if (oid && window.__setObraActivaId) window.__setObraActivaId(oid);
-    const h = window.__defaultPageForRol?.(rolActual) || 'dashboard-gestion';
-    irAPagina(planoDe(h) === 'obra' ? h : 'dashboard-gestion', 'obra');
+    let destino = pageDestino && planoDe(pageDestino) === 'obra' ? pageDestino : null;
+    if (!destino) { const h = window.__defaultPageForRol?.(rolActual) || 'dashboard-gestion'; destino = planoDe(h) === 'obra' ? h : 'dashboard-gestion'; }
+    irAPagina(destino, 'obra');
   };
   const NoAcceso = () => (
     <div className="page-wrap" style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:'60vh' }}>
