@@ -1,4 +1,5 @@
 import React from "react";
+import { planoDe } from "../lib/nav-planos.js";
 const { useState, useEffect } = React;
 
 // Hook: detecta si el viewport es móvil (≤ 768px)
@@ -173,7 +174,7 @@ const NAV = [
   { id: 'audit-log', label: 'Auditoría', icon: 'shield' },
 ];
 
-function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle', onReconnectRealtime }) {
+function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle', onReconnectRealtime, plano = 'obra' }) {
   const appMode = window.__useAppMode ? window.__useAppMode() : { mode: 'edicion', isPrueba: false, isEdicion: true, isProduccion: false, isImpersonating: false, roleOverride: null, clearRoleOverride: ()=>{}, superAdmin: false, setSuperAdmin: ()=>{}, canSuperAdmin: false };
   const { mode, isPrueba, isEdicion, isProduccion, isImpersonating, roleOverride, clearRoleOverride, superAdmin, setSuperAdmin, canSuperAdmin } = appMode;
   const [hovered, setHovered] = useState(null);
@@ -353,12 +354,14 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
       <nav style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '8px 0' }}>
         {(() => {
           const userRol = profile?.rol;
-          // Si aún no cargó el profile, NO filtrar (evita parpadeo en login)
-          // Si cargó pero es admin, NO filtrar (ve todo)
-          if (!userRol || userRol === 'admin') {
-            return NAV.map((it, idx) => ({ ...it, _idx: idx }));
-          }
-          const canSee = (id) => window.__canSeeSidebarItem?.(userRol, id) ?? true;
+          // Filtro de PLANO (general/obra): el sidebar solo muestra los ítems del
+          // plano actual. Filtro de PERMISO: admin/sin-rol ve todo; el resto via
+          // __canSeeSidebarItem. Las secciones se ocultan si quedan vacías.
+          const esPlano = (id) => planoDe(id) === plano;
+          const canSee = (!userRol || userRol === 'admin')
+            ? (() => true)
+            : ((id) => window.__canSeeSidebarItem?.(userRol, id) ?? true);
+          const visible = (id) => esPlano(id) && canSee(id);
           const items = [];
           for (let i = 0; i < NAV.length; i++) {
             const it = NAV[i];
@@ -366,10 +369,10 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
               // Mirar adelante hasta la próxima sección — si hay al menos 1 item visible, agrego
               let hasVisible = false;
               for (let j = i + 1; j < NAV.length && !NAV[j].section; j++) {
-                if (canSee(NAV[j].id)) { hasVisible = true; break; }
+                if (visible(NAV[j].id)) { hasVisible = true; break; }
               }
               if (hasVisible) items.push({ ...it, _idx: i });
-            } else if (canSee(it.id)) {
+            } else if (visible(it.id)) {
               items.push({ ...it, _idx: i });
             }
           }
