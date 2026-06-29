@@ -60,7 +60,6 @@ function usePwaInstall() {
 
 const NAV = [
   { section: 'GENERAL' },
-  { id: 'importar', label: 'Importar Datos', icon: 'upload' },
   { id: 'captura-magica', label: '✨ Captura Mágica', icon: 'upload' },
   { id: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
   { id: 'obras', label: 'Obras / Proyectos', icon: 'building' },
@@ -108,6 +107,7 @@ const NAV = [
 
   { section: 'GESTIÓN DE OBRA' },
   { id: 'dashboard-gestion', label: 'Dashboard Gestión de Obra', icon: 'dashboard' },
+  { id: 'importar', label: 'Importar Presupuesto', icon: 'upload' },
   { id: 'partidas', label: 'Partidas', icon: 'list' },
   { id: 'control-consumo', label: 'Control de Consumo', icon: 'trending' },
   { id: 'insumos', label: 'Insumos por Partida', icon: 'layers' },
@@ -124,6 +124,12 @@ const NAV = [
   { id: 'subcontrato-valorizaciones', label: 'Valorizaciones de Subcontrato', icon: 'dollar' },
   { id: 'incidencias', label: 'Incidencias', icon: 'alert' },
   { id: 'movimientos-insumos', label: 'Movimientos de Insumos', icon: 'inbox' },
+
+  { section: 'CONTABILIDAD DE LA OBRA' },
+  { id: 'movimientos-contables', label: 'Movimientos', icon: 'dollar' },
+  { id: 'conciliacion-insumos', label: 'Conciliación de Insumos', icon: 'compare' },
+  { id: 'flujo-caja', label: 'Flujo de Caja / Pagos', icon: 'calendar' },
+  { id: 'flujo-proyectado', label: 'Flujo de Caja Proyectado', icon: 'calendar' },
 
   { section: 'SSOMA / SEGURIDAD' },
   { id: 'charlas-seguridad', label: 'Charlas de 5 minutos', icon: 'alert' },
@@ -145,16 +151,13 @@ const NAV = [
   { id: 'gratificaciones', label: 'Gratificaciones', icon: 'dollar' },
   { id: 'plame', label: 'PLAME / T-Registro SUNAT', icon: 'list' },
 
-  { section: 'CONTABILIDAD' },
+  { section: 'EMPRESAS Y CONTABILIDAD' },
   { id: 'cont-dashboard', label: 'Dashboard Contable', icon: 'dashboard' },
   { id: 'empresas', label: 'Empresas', icon: 'building' },
-  { id: 'movimientos-contables', label: 'Movimientos', icon: 'dollar' },
-  { id: 'conciliacion-insumos', label: 'Conciliación de Insumos', icon: 'compare' },
   { id: 'intercompany', label: 'Operaciones entre Empresas', icon: 'compare' },
   { id: 'trazabilidad', label: 'Trazabilidad de Cadenas', icon: 'compare' },
   { id: 'consolidado', label: 'Consolidado', icon: 'list' },
   { id: 'cuentas-bancarias', label: 'Cuentas Bancarias', icon: 'dollar' },
-  { id: 'flujo-caja', label: 'Flujo de Caja / Pagos', icon: 'calendar' },
   { id: 'plan-cuentas', label: 'Plan de Cuentas (PCGE)', icon: 'list' },
   { id: 'libro-diario', label: 'Libro Diario / Asientos', icon: 'list' },
   { id: 'balance-general', label: 'Balance General', icon: 'compare' },
@@ -162,7 +165,6 @@ const NAV = [
   { id: 'comprobantes', label: 'Comprobantes Electrónicos SUNAT', icon: 'list' },
   { id: 'libros-electronicos', label: 'Libros Electrónicos PLE / PDT', icon: 'list' },
   { id: 'config-sunat', label: 'Configuración SUNAT', icon: 'settings' },
-  { id: 'flujo-proyectado', label: 'Flujo de Caja Proyectado', icon: 'calendar' },
   { id: 'comparativo-periodos', label: 'Comparativo Periodos', icon: 'compare' },
 
   { section: 'ADMINISTRACIÓN' },
