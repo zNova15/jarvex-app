@@ -330,6 +330,7 @@ function LoginScreen({ onLogin }) {
 // ── HEADER BAR ────────────────────────────────────────────
 function Header({ page, plano = 'obra', onInicio, onToggleSidebar, onLogout, profile, obraActiva, syncStatus, onSync, isMobile, notifs: notifsProp }) {
   const pageLabels = {
+    inicio:'Inicio',
     dashboard:'Dashboard',obras:'Obras / Proyectos',reportes:'Reportes',
     personal:'Personal',asistencia:'Asistencia',materiales:'Materiales',
     'mov-materiales':'Movimiento de Materiales','herramientas':'Herramientas',
