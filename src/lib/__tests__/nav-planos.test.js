@@ -1,5 +1,19 @@
 import { describe, it, expect } from 'vitest';
-import { planoDe, GENERAL_ITEMS, resolveLanding } from '../nav-planos.js';
+import { planoDe, GENERAL_ITEMS, resolveLanding, areaDe } from '../nav-planos.js';
+
+describe('areaDe — sub-áreas del plano general', () => {
+  it('contabilidad / direccion / admin / general', () => {
+    expect(areaDe('empresas')).toBe('contabilidad');
+    expect(areaDe('balance-general')).toBe('contabilidad');
+    expect(areaDe('flujo-caja')).toBe('contabilidad');
+    expect(areaDe('movimientos-contables')).toBe('contabilidad');
+    expect(areaDe('dashboard-ejecutivo')).toBe('direccion');
+    expect(areaDe('usuarios')).toBe('admin');
+    expect(areaDe('configuracion')).toBe('admin');
+    expect(areaDe('proveedores')).toBe('general');
+    expect(areaDe('captura-magica')).toBe('general');
+  });
+});
 
 describe('planoDe — clasifica general vs obra', () => {
   it('general: empresas, proveedores, contabilidad de empresa, captura, admin', () => {
@@ -15,8 +29,7 @@ describe('planoDe — clasifica general vs obra', () => {
   it('obra: movimientos/conciliación/partidas/almacén y cualquier no listada', () => {
     expect(planoDe('mov-materiales')).toBe('obra');
     expect(planoDe('conciliacion-insumos')).toBe('obra');
-    expect(planoDe('movimientos-contables')).toBe('obra');
-    expect(planoDe('flujo-caja')).toBe('obra');
+    expect(planoDe('movimientos-contables')).toBe('obra'); // por defecto obra (workspace); también se ofrece en el área contabilidad vía nav explícito
     expect(planoDe('partidas')).toBe('obra');
     expect(planoDe('personal')).toBe('obra');
     expect(planoDe('una-pagina-nueva-cualquiera')).toBe('obra');

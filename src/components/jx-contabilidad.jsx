@@ -740,7 +740,13 @@ function MovimientosContablesPage({ showToast }) {
   }, [obras, misObrasIds]);
   const obraNombre = (id) => (obras || []).find(o => o.id === id)?.nombre_obra || null;
 
-  const [filtroEmpresa, setFiltroEmpresa] = uSC('todas');
+  // Ámbito unificado: 'todas' | 'obra:<id>' | 'emp:<id>'. En el workspace de una
+  // obra (window.__plano==='obra') arranca scopeado a la obra activa; en la
+  // Contabilidad general arranca en 'todas'.
+  const [filtroAmbito, setFiltroAmbito] = uSC(() => {
+    const o = window.__getObraActivaId?.();
+    return (window.__plano === 'obra' && o) ? ('obra:' + o) : 'todas';
+  });
   const [filtroClase, setFiltroClase] = uSC('todos');
   const [filtroTipo, setFiltroTipo] = uSC('todos');
   const [filtroEstado, setFiltroEstado] = uSC('todos');
@@ -862,10 +868,29 @@ function MovimientosContablesPage({ showToast }) {
 
   const companiesActivas = uMC(() => (companies || []).filter(c => c.status === 'activa'), [companies]);
 
+  // Reconciliación del ámbito: si filtroAmbito apunta a una obra/empresa que YA no
+  // figura en el selector (usuario no asignado a esa obra, obra eliminada, empresa
+  // inactivada), el <select> controlado mostraría 'Todas' pero `filtered` seguiría
+  // filtrando por ese id → tabla vacía/sub-filtrada sin recuperación. Lo reseteamos.
+  // Guard: no resetear mientras la fuente aún no cargó (evita reset prematuro).
+  uEC(() => {
+    if (filtroAmbito.startsWith('obra:')) {
+      if (!(obras || []).length) return;
+      const oid = filtroAmbito.slice(5);
+      if (!obrasParaSelector.some(o => o.id === oid)) setFiltroAmbito('todas');
+    } else if (filtroAmbito.startsWith('emp:')) {
+      if (!(companies || []).length) return;
+      const cid = filtroAmbito.slice(4);
+      if (!companiesActivas.some(c => c.id === cid)) setFiltroAmbito('todas');
+    }
+  }, [filtroAmbito, obrasParaSelector, companiesActivas, obras, companies]);
+
   const filtered = uMC(() => {
     if (!movs) return [];
     let f = [...movs];
-    if (filtroEmpresa !== 'todas') f = f.filter(m => m.company_id === filtroEmpresa);
+    // Ámbito: por OBRA (m.obra_id) o por EMPRESA (m.company_id).
+    if (filtroAmbito.startsWith('obra:')) { const oid = filtroAmbito.slice(5); f = f.filter(m => m.obra_id === oid); }
+    else if (filtroAmbito.startsWith('emp:')) { const cid = filtroAmbito.slice(4); f = f.filter(m => m.company_id === cid); }
     if (filtroClase !== 'todos') f = f.filter(m => (m.clase || (m.type === 'income' ? 'venta' : 'compra')) === filtroClase);
     if (filtroTipo !== 'todos') f = f.filter(m => m.type === filtroTipo);
     if (filtroEstado !== 'todos') f = f.filter(m => m.payment_status === filtroEstado);
@@ -876,7 +901,7 @@ function MovimientosContablesPage({ showToast }) {
         || (m.document_number||'').toLowerCase().includes(q));
     }
     return f.sort((a,b) => (b.date||'').localeCompare(a.date||''));
-  }, [movs, filtroEmpresa, filtroClase, filtroTipo, filtroEstado, busqueda]);
+  }, [movs, filtroAmbito, filtroClase, filtroTipo, filtroEstado, busqueda]);
 
   // Paginación: tabla puede tener miles de movimientos contables.
   const movPg = usePagination(filtered, 100);
@@ -1081,9 +1106,14 @@ function MovimientosContablesPage({ showToast }) {
 
       <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', marginBottom:14 }}>
         <div className="search-bar" style={{ flex:'1 1 200px' }}><JxIcon name="search" size={14} color="var(--tm)"/><input placeholder="Buscar descripción / cliente / doc…" value={busqueda} onChange={e=>setBusqueda(e.target.value)}/></div>
-        <select className="fi" value={filtroEmpresa} onChange={e=>setFiltroEmpresa(e.target.value)} style={{ minWidth:160 }}>
-          <option value="todas">Todas las empresas</option>
-          {(companies || []).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+        <select className="fi" value={filtroAmbito} onChange={e=>setFiltroAmbito(e.target.value)} style={{ minWidth:220 }} title="Trabajá la contabilidad de una obra o empresa específica, o de todas">
+          <option value="todas">Todas las obras y empresas</option>
+          <optgroup label="Por obra">
+            {obrasParaSelector.map(o => <option key={o.id} value={'obra:'+o.id}>{o.nombre_obra}</option>)}
+          </optgroup>
+          <optgroup label="Por empresa">
+            {companiesActivas.map(c => <option key={c.id} value={'emp:'+c.id}>{c.name}</option>)}
+          </optgroup>
         </select>
         <select className="fi" value={filtroClase} onChange={e=>setFiltroClase(e.target.value)} style={{ minWidth:120 }} title="Compras (a proveedoras) vs Ventas (emitidas a la ejecutora)">
           <option value="todos">Compras y ventas</option>

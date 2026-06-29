@@ -1,7 +1,7 @@
 import React from "react";
 import { trackPageView } from "./lib/posthog.js";
 import SyncDetailModal from "./components/SyncDetailModal.jsx";
-import { planoDe, resolveLanding } from "./lib/nav-planos.js";
+import { planoDe, resolveLanding, areaDe } from "./lib/nav-planos.js";
 import { cargarObrasAsignadas } from "./lib/obras-asignadas.js";
 const { useState: uSA, useEffect: uEA, useCallback: uCA } = React;
 
@@ -757,7 +757,12 @@ function App() {
   // entran a una sección general o a una obra. (Fase 3: auto-entrar a la obra
   // única para roles operativos, con el filtro de asignación real.)
   const [page, setPage]             = uSA(() => 'inicio');
-  window.__navTo = setPage; // navegación programática (botones que llevan a otra página)
+  // Override de plano para los ítems DUALES (ej. movimientos-contables aparece en
+  // el workspace de obra Y en el área general de contabilidad). El sidebar pasa el
+  // plano del ítem clickeado; null = usar planoDe(page).
+  const [navPlano, setNavPlano]     = uSA(null);
+  const irAPagina = React.useCallback((p, planoItem) => { setPage(p); setNavPlano(planoItem || null); }, []);
+  window.__navTo = (p) => irAPagina(p); // navegación programática (resetea el override de plano)
 
   // Al cargar el profile (post-login):
   //   1. Redirigir a la home del rol (solo la primera vez).
@@ -942,7 +947,7 @@ function App() {
     const onKey = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
-        setPage('busqueda');
+        irAPagina('busqueda');   // irAPagina resetea navPlano (no dejar el plano pegado)
       }
     };
     window.addEventListener('keydown', onKey);
@@ -953,7 +958,7 @@ function App() {
   uEA(() => {
     const onNav = (e) => {
       const p = e?.detail?.page;
-      if (p && typeof p === 'string') setPage(p);
+      if (p && typeof p === 'string') irAPagina(p);   // resetea navPlano
     };
     window.addEventListener('jx_navigate', onNav);
     return () => window.removeEventListener('jx_navigate', onNav);
@@ -963,7 +968,7 @@ function App() {
   uEA(() => {
     const fromHash = () => {
       const h = (window.location.hash || '').replace(/^#\/?/, '').trim();
-      if (h) setPage(h);
+      if (h) irAPagina(h);   // resetea navPlano
     };
     fromHash();
     window.addEventListener('hashchange', fromHash);
@@ -1041,7 +1046,7 @@ function App() {
   const entrarObra = (oid) => {
     if (oid && window.__setObraActivaId) window.__setObraActivaId(oid);
     const h = window.__defaultPageForRol?.(rolActual) || 'dashboard-gestion';
-    setPage(planoDe(h) === 'obra' ? h : 'dashboard-gestion');
+    irAPagina(planoDe(h) === 'obra' ? h : 'dashboard-gestion', 'obra');
   };
   const NoAcceso = () => (
     <div className="page-wrap" style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:'60vh' }}>
@@ -1060,7 +1065,7 @@ function App() {
     // Páginas EAGER (en chunk principal): dashboard + solicitudes.
     // Las páginas de almacén ahora son lazy (PAGE_REGISTRY abajo).
     switch(page) {
-      case 'inicio':        return <window.InicioPage onNav={setPage} onEnterObra={entrarObra}/>;
+      case 'inicio':        return <window.InicioPage onNav={(p)=>irAPagina(p)} onEnterObra={entrarObra}/>;
       case 'dashboard':     return <DashboardPage showToast={showToast}/>;
       case 'solicitudes':   return <SolicitudesPage showToast={showToast}/>;
     }
@@ -1090,20 +1095,29 @@ function App() {
 
   if (!auth?.profile) return <LoginScreen onLogin={(email, pass) => auth.login(email, pass)}/>;
 
-  // El plano de la página actual decide qué sidebar/header se muestra. El INICIO
-  // es un launcher full-width: sin sidebar.
-  const planoActual = page === 'inicio' ? 'general' : planoDe(page);
+  // El plano de la página actual decide qué sidebar/header se muestra (navPlano
+  // overridea para ítems duales). El INICIO es un launcher full-width: sin sidebar.
+  // En el plano general, `areaActual` sub-divide el sidebar (Contabilidad ≠ Admin).
+  // navPlano (override de ítems duales como movimientos-contables) SOLO aplica
+  // cuando la página NO es inequívocamente general; así un navPlano='obra' stale
+  // (p.ej. tras Cmd+K/hash a una página general) no fuerza el sidebar/header de
+  // obra. El caso dual real (movimientos-contables) tiene planoDe='obra', por lo
+  // que sigue respetando navPlano='general' al entrar desde Contabilidad.
+  const planoBase = page === 'inicio' ? 'general' : planoDe(page);
+  const planoActual = planoBase === 'general' ? 'general' : (navPlano || planoBase);
+  const areaActual = planoActual === 'general' ? (page === 'inicio' ? null : areaDe(page)) : null;
+  window.__plano = planoActual;   // lo leen páginas lazy (ej. Movimientos: scope por obra)
   return (
     <div style={{ display:'flex', height:'100vh', overflow:'hidden' }}>
       {page !== 'inicio' && (
-        <Sidebar current={page} onNav={p=>{setPage(p);}} collapsed={collapsed} onToggle={()=>setCollapsed(c=>!c)}
-                 plano={planoActual}
+        <Sidebar current={page} onNav={irAPagina} collapsed={collapsed} onToggle={()=>setCollapsed(c=>!c)}
+                 plano={planoActual} area={areaActual}
                  realtimeStatus={notifs.realtimeStatus} onReconnectRealtime={notifs.forceReconnect}/>
       )}
       <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', minWidth:0 }}>
         <Header page={page}
                 plano={planoActual}
-                onInicio={()=>setPage('inicio')}
+                onInicio={()=>irAPagina('inicio')}
                 onToggleSidebar={()=>setCollapsed(c=>!c)}
                 onLogout={()=>auth.logout()}
                 profile={auth.profile}
@@ -1119,7 +1133,7 @@ function App() {
                   else if (sync.sync) sync.sync();
                 }}
                 isMobile={isMobile}/>
-        <div style={{ flex:1, overflow:'hidden', background:'var(--bg-p)' }} key={`${page}_${permsVer}`}>
+        <div style={{ flex:1, overflow:'hidden', background:'var(--bg-p)' }} key={`${page}_${planoActual}_${permsVer}`}>
           {renderPage()}
         </div>
       </div>

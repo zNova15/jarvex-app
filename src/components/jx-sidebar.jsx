@@ -59,8 +59,9 @@ function usePwaInstall() {
 }
 
 const NAV = [
-  { section: 'GENERAL' },
+  { section: 'GENERAL', area: 'general' },
   { id: 'captura-magica', label: '✨ Captura Mágica', icon: 'upload' },
+  { id: 'proveedores', label: 'Proveedores', icon: 'truck' },
   { id: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
   { id: 'obras', label: 'Obras / Proyectos', icon: 'building' },
   { id: 'reportes', label: 'Reportes', icon: 'chart' },
@@ -72,7 +73,6 @@ const NAV = [
   { id: 'mov-herramientas', label: 'Mov. Herramientas', icon: 'arrowOut' },
   { id: 'caja-chica', label: 'Caja Chica', icon: 'dollar' },
   { id: 'ubicaciones', label: 'Ubicaciones de Obra', icon: 'map' },
-  { id: 'proveedores', label: 'Proveedores', icon: 'truck' },
   { id: 'evidencias', label: 'Evidencias', icon: 'camera' },
   { id: 'plantillas', label: 'Plantillas', icon: 'file' },
 
@@ -86,7 +86,7 @@ const NAV = [
   { id: 'activos-pesados', label: 'Equipos Pesados', icon: 'tool' },
   { id: 'mantenimiento-programado', label: 'Mantenimiento Programado', icon: 'tool' },
 
-  { section: 'EJECUTIVO' },
+  { section: 'DIRECCIÓN', area: 'direccion' },
   { id: 'dashboard-ejecutivo', label: 'Dashboard Ejecutivo', icon: 'dashboard' },
   { id: 'kpis-obra', label: 'KPIs por Obra', icon: 'trending' },
   { id: 'cumplimiento-cronograma', label: 'Cumplimiento Cronograma', icon: 'calendar' },
@@ -126,10 +126,8 @@ const NAV = [
   { id: 'movimientos-insumos', label: 'Movimientos de Insumos', icon: 'inbox' },
 
   { section: 'CONTABILIDAD DE LA OBRA' },
-  { id: 'movimientos-contables', label: 'Movimientos', icon: 'dollar' },
+  { id: 'movimientos-contables', label: 'Movimientos', icon: 'dollar', plano: 'obra' },
   { id: 'conciliacion-insumos', label: 'Conciliación de Insumos', icon: 'compare' },
-  { id: 'flujo-caja', label: 'Flujo de Caja / Pagos', icon: 'calendar' },
-  { id: 'flujo-proyectado', label: 'Flujo de Caja Proyectado', icon: 'calendar' },
 
   { section: 'SSOMA / SEGURIDAD' },
   { id: 'charlas-seguridad', label: 'Charlas de 5 minutos', icon: 'alert' },
@@ -151,13 +149,16 @@ const NAV = [
   { id: 'gratificaciones', label: 'Gratificaciones', icon: 'dollar' },
   { id: 'plame', label: 'PLAME / T-Registro SUNAT', icon: 'list' },
 
-  { section: 'EMPRESAS Y CONTABILIDAD' },
+  { section: 'EMPRESAS Y CONTABILIDAD', area: 'contabilidad' },
   { id: 'cont-dashboard', label: 'Dashboard Contable', icon: 'dashboard' },
   { id: 'empresas', label: 'Empresas', icon: 'building' },
+  { id: 'movimientos-contables', label: 'Movimientos (todas / por obra)', icon: 'dollar', plano: 'general' },
   { id: 'intercompany', label: 'Operaciones entre Empresas', icon: 'compare' },
   { id: 'trazabilidad', label: 'Trazabilidad de Cadenas', icon: 'compare' },
   { id: 'consolidado', label: 'Consolidado', icon: 'list' },
   { id: 'cuentas-bancarias', label: 'Cuentas Bancarias', icon: 'dollar' },
+  { id: 'flujo-caja', label: 'Flujo de Caja / Pagos', icon: 'calendar' },
+  { id: 'flujo-proyectado', label: 'Flujo de Caja Proyectado', icon: 'calendar' },
   { id: 'plan-cuentas', label: 'Plan de Cuentas (PCGE)', icon: 'list' },
   { id: 'libro-diario', label: 'Libro Diario / Asientos', icon: 'list' },
   { id: 'balance-general', label: 'Balance General', icon: 'compare' },
@@ -167,7 +168,7 @@ const NAV = [
   { id: 'config-sunat', label: 'Configuración SUNAT', icon: 'settings' },
   { id: 'comparativo-periodos', label: 'Comparativo Periodos', icon: 'compare' },
 
-  { section: 'ADMINISTRACIÓN' },
+  { section: 'ADMINISTRACIÓN', area: 'admin' },
   { id: 'usuarios', label: 'Usuarios', icon: 'user' },
   { id: 'roles', label: 'Roles y Permisos', icon: 'shield' },
   { id: 'solicitudes', label: 'Solicitudes', icon: 'shield' },
@@ -176,7 +177,7 @@ const NAV = [
   { id: 'audit-log', label: 'Auditoría', icon: 'shield' },
 ];
 
-function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle', onReconnectRealtime, plano = 'obra' }) {
+function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle', onReconnectRealtime, plano = 'obra', area = null }) {
   const appMode = window.__useAppMode ? window.__useAppMode() : { mode: 'edicion', isPrueba: false, isEdicion: true, isProduccion: false, isImpersonating: false, roleOverride: null, clearRoleOverride: ()=>{}, superAdmin: false, setSuperAdmin: ()=>{}, canSuperAdmin: false };
   const { mode, isPrueba, isEdicion, isProduccion, isImpersonating, roleOverride, clearRoleOverride, superAdmin, setSuperAdmin, canSuperAdmin } = appMode;
   const [hovered, setHovered] = useState(null);
@@ -304,8 +305,11 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
   const navCollapsed = isMobile ? false : collapsed;
 
   // Cierra el drawer al hacer click en un nav item (solo móvil)
-  const handleNav = (id) => {
-    onNav(id);
+  // Pasa el PLANO del ítem clickeado (it.plano explícito o planoDe) para que el
+  // shell sepa en qué plano renderizar — clave para los ítems duales como
+  // 'movimientos-contables' (aparece en obra y en general).
+  const handleNav = (id, planoItem) => {
+    onNav(id, planoItem);
     if (isMobile) onToggle();
   };
 
@@ -356,26 +360,31 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
       <nav style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '8px 0' }}>
         {(() => {
           const userRol = profile?.rol;
-          // Filtro de PLANO (general/obra): el sidebar solo muestra los ítems del
-          // plano actual. Filtro de PERMISO: admin/sin-rol ve todo; el resto via
-          // __canSeeSidebarItem. Las secciones se ocultan si quedan vacías.
-          const esPlano = (id) => planoDe(id) === plano;
+          // Filtro de PLANO: cada ítem muestra en su plano (it.plano explícito, p.ej.
+          // movimientos-contables aparece en obra Y en general; si no, planoDe(id)).
+          // Filtro de ÁREA: solo en el plano general — cuando `area` viene seteada,
+          // el sidebar muestra SOLO las secciones de esa área (Contabilidad ≠
+          // Administración). Filtro de PERMISO: admin/sin-rol todo; resto via helper.
+          const esPlano = (it) => (it.plano || planoDe(it.id)) === plano;
           const canSee = (!userRol || userRol === 'admin')
             ? (() => true)
             : ((id) => window.__canSeeSidebarItem?.(userRol, id) ?? true);
-          const visible = (id) => esPlano(id) && canSee(id);
           const items = [];
+          let curSecArea;   // área de la sección en curso (solo definida en el plano general)
           for (let i = 0; i < NAV.length; i++) {
             const it = NAV[i];
             if (it.section) {
-              // Mirar adelante hasta la próxima sección — si hay al menos 1 item visible, agrego
+              curSecArea = it.area;
+              if (area && curSecArea !== area) continue;   // sección de otra área → oculta (con sus ítems)
+              // Mirar adelante hasta la próxima sección — si hay >=1 ítem visible, agrego.
               let hasVisible = false;
               for (let j = i + 1; j < NAV.length && !NAV[j].section; j++) {
-                if (visible(NAV[j].id)) { hasVisible = true; break; }
+                if (esPlano(NAV[j]) && canSee(NAV[j].id)) { hasVisible = true; break; }
               }
               if (hasVisible) items.push({ ...it, _idx: i });
-            } else if (visible(it.id)) {
-              items.push({ ...it, _idx: i });
+            } else {
+              if (area && curSecArea !== area) continue;   // ítem de otra área
+              if (esPlano(it) && canSee(it.id)) items.push({ ...it, _idx: i });
             }
           }
           return items;
@@ -396,7 +405,7 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
           return (
             <button
               key={item.id}
-              onClick={() => handleNav(item.id)}
+              onClick={() => handleNav(item.id, item.plano || planoDe(item.id))}
               onMouseEnter={() => setHovered(item.id)}
               onMouseLeave={() => setHovered(null)}
               title={navCollapsed ? item.label : undefined}

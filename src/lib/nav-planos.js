@@ -15,11 +15,12 @@
 export const GENERAL_ITEMS = new Set([
   'inicio', 'captura-magica', 'obras', 'dashboard', 'reportes',
   'proveedores',
-  // Empresas + su contabilidad de empresa (por entidad legal, no por obra)
+  // Empresas + su contabilidad de empresa (por entidad legal, no por obra).
+  // Flujo de caja/proyectado son por-empresa (cronograma_pagos no tiene obra_id).
   'empresas', 'cont-dashboard', 'intercompany', 'trazabilidad', 'consolidado',
   'cuentas-bancarias', 'plan-cuentas', 'libro-diario', 'balance-general',
   'estado-resultados', 'comprobantes', 'libros-electronicos', 'config-sunat',
-  'comparativo-periodos',
+  'comparativo-periodos', 'flujo-caja', 'flujo-proyectado',
   // Dirección / Ejecutivo (vistas cross-obra)
   'dashboard-ejecutivo', 'kpis-obra', 'cumplimiento-cronograma', 'alertas', 'busqueda',
   // Administración
@@ -28,6 +29,28 @@ export const GENERAL_ITEMS = new Set([
 
 /** Plano de una página: 'general' (global) | 'obra' (workspace). */
 export const planoDe = (id) => GENERAL_ITEMS.has(id) ? 'general' : 'obra';
+
+// ── ÁREAS del plano GENERAL ────────────────────────────────────────
+// El plano general se sub-divide en áreas para que el sidebar muestre SOLO la
+// relevante (entrar a "Contabilidad" no debe mostrar Administración). El área de
+// una página se usa solo cuando estás en el plano general.
+// 'movimientos-contables' es plano 'obra' por defecto (workspace, scopeado a la
+// obra) pero también se ofrece en el área 'contabilidad' (vista general con
+// selector) — por eso figura acá.
+const AREA = {
+  contabilidad: new Set(['cont-dashboard', 'empresas', 'movimientos-contables', 'intercompany',
+    'trazabilidad', 'consolidado', 'cuentas-bancarias', 'flujo-caja', 'flujo-proyectado',
+    'plan-cuentas', 'libro-diario', 'balance-general', 'estado-resultados', 'comprobantes',
+    'libros-electronicos', 'config-sunat', 'comparativo-periodos']),
+  direccion: new Set(['dashboard-ejecutivo', 'kpis-obra', 'cumplimiento-cronograma', 'alertas', 'busqueda']),
+  admin: new Set(['usuarios', 'roles', 'solicitudes', 'configuracion', 'conflictos', 'audit-log']),
+};
+
+/** Área general de una página: 'contabilidad' | 'direccion' | 'admin' | 'general'. */
+export const areaDe = (id) => {
+  for (const a in AREA) if (AREA[a].has(id)) return a;
+  return 'general';
+};
 
 // Roles que trabajan en lo global o entre varias obras → aterrizan en Inicio.
 const ROLES_GLOBALES = new Set(['admin', 'gerente', 'contador', 'ayudante_contador', 'tesorero']);
