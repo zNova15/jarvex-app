@@ -1,6 +1,7 @@
 import React from "react";
 import { trackPageView } from "./lib/posthog.js";
 import SyncDetailModal from "./components/SyncDetailModal.jsx";
+import { planoDe, resolveLanding } from "./lib/nav-planos.js";
 const { useState: uSA, useEffect: uEA, useCallback: uCA } = React;
 
 // Hook compartido: detecta viewport móvil
@@ -327,7 +328,7 @@ function LoginScreen({ onLogin }) {
 }
 
 // ── HEADER BAR ────────────────────────────────────────────
-function Header({ page, onToggleSidebar, onLogout, profile, obraActiva, syncStatus, onSync, isMobile, notifs: notifsProp }) {
+function Header({ page, plano = 'obra', onInicio, onToggleSidebar, onLogout, profile, obraActiva, syncStatus, onSync, isMobile, notifs: notifsProp }) {
   const pageLabels = {
     dashboard:'Dashboard',obras:'Obras / Proyectos',reportes:'Reportes',
     personal:'Personal',asistencia:'Asistencia',materiales:'Materiales',
@@ -742,11 +743,10 @@ function App() {
   // el contador en "Movs. Contables", el gerente en "Dashboard Ejecutivo", etc.
   // Si el rol todavía no se cargó (auth pendiente), arrancamos en 'dashboard'
   // y el effect de abajo lo cambia cuando el profile esté disponible.
-  const [page, setPage]             = uSA(() => {
-    const rol = auth?.profile?.rol;
-    if (rol && window.__defaultPageForRol) return window.__defaultPageForRol(rol);
-    return 'dashboard';
-  });
+  // Aterrizaje: TODOS arrancan en el INICIO (launcher de 2 planos). Desde ahí
+  // entran a una sección general o a una obra. (Fase 3: auto-entrar a la obra
+  // única para roles operativos, con el filtro de asignación real.)
+  const [page, setPage]             = uSA(() => 'inicio');
   window.__navTo = setPage; // navegación programática (botones que llevan a otra página)
 
   // Al cargar el profile (post-login):
@@ -994,11 +994,20 @@ function App() {
   // bloqueadas por su rol.
   const rolActual = auth?.profile?.rol || '';
   const puedeVerPagina = (p) => {
+    // El INICIO (launcher) es seguro para todos: no muestra datos, solo deriva.
+    if (p === 'inicio') return true;
     // Política deny-by-default: si no hay rol o no es canónico, delegamos al
     // helper que ya hace el chequeo correcto. Antes acá había un short-circuit
     // a true que era una fuga de info — un usuario sin rol asignado veía todo.
     if (rolActual === 'admin') return true;
     return window.__canSeeSidebarItem?.(rolActual, p) ?? false;
+  };
+  // Entrar a una obra desde el Inicio: fija la obra activa (sin recarga) y navega
+  // a una página de plano OBRA (la home del rol si es de obra, si no Gestión).
+  const entrarObra = (oid) => {
+    if (oid && window.__setObraActivaId) window.__setObraActivaId(oid);
+    const h = window.__defaultPageForRol?.(rolActual) || 'dashboard-gestion';
+    setPage(planoDe(h) === 'obra' ? h : 'dashboard-gestion');
   };
   const NoAcceso = () => (
     <div className="page-wrap" style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:'60vh' }}>
@@ -1017,6 +1026,7 @@ function App() {
     // Páginas EAGER (en chunk principal): dashboard + solicitudes.
     // Las páginas de almacén ahora son lazy (PAGE_REGISTRY abajo).
     switch(page) {
+      case 'inicio':        return <window.InicioPage onNav={setPage} onEnterObra={entrarObra}/>;
       case 'dashboard':     return <DashboardPage showToast={showToast}/>;
       case 'solicitudes':   return <SolicitudesPage showToast={showToast}/>;
     }
@@ -1046,12 +1056,20 @@ function App() {
 
   if (!auth?.profile) return <LoginScreen onLogin={(email, pass) => auth.login(email, pass)}/>;
 
+  // El plano de la página actual decide qué sidebar/header se muestra. El INICIO
+  // es un launcher full-width: sin sidebar.
+  const planoActual = page === 'inicio' ? 'general' : planoDe(page);
   return (
     <div style={{ display:'flex', height:'100vh', overflow:'hidden' }}>
-      <Sidebar current={page} onNav={p=>{setPage(p);}} collapsed={collapsed} onToggle={()=>setCollapsed(c=>!c)}
-               realtimeStatus={notifs.realtimeStatus} onReconnectRealtime={notifs.forceReconnect}/>
+      {page !== 'inicio' && (
+        <Sidebar current={page} onNav={p=>{setPage(p);}} collapsed={collapsed} onToggle={()=>setCollapsed(c=>!c)}
+                 plano={planoActual}
+                 realtimeStatus={notifs.realtimeStatus} onReconnectRealtime={notifs.forceReconnect}/>
+      )}
       <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', minWidth:0 }}>
         <Header page={page}
+                plano={planoActual}
+                onInicio={()=>setPage('inicio')}
                 onToggleSidebar={()=>setCollapsed(c=>!c)}
                 onLogout={()=>auth.logout()}
                 profile={auth.profile}
