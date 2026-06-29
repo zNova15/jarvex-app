@@ -166,6 +166,7 @@ import './components/jx-searchable-select.jsx';
 import './components/jx-sidebar.jsx';
 import './components/jx-solicitudes.jsx';
 import './components/jx-dashboard.jsx';
+import './components/jx-inicio.jsx';
 import './components/jx-admin.jsx';
 import './jx-app.jsx';
 
