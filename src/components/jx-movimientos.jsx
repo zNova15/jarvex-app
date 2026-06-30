@@ -2189,9 +2189,15 @@ function ProveedoresPage({ showToast }) {
   // Hooks SIEMPRE al top-level del componente, nunca dentro de handlers/callbacks
   // (llamarlos en un onClick rompe las reglas de React → minified error #321).
   const auth = window.__useAuth ? window.__useAuth() : null;
-  const isAdmin = auth?.profile?.rol === 'admin';
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
+  // canWrite gobierna crear/editar (alineado con canPushTabla('proveedores'),
+  // que también exige 'Proveedores'-w): un rol sin write NO debe poder crear un
+  // proveedor que luego no puede sincronizar (quedaría PENDING eterno). Los roles
+  // de solo lectura (p.ej. ayudante_contador) ven la página + "Solicitar cambio".
+  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Proveedores', 'w') ?? false);
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
-  const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
+  const canDelete = canWrite && (appMode.isEdicion || appMode.isPrueba);
 
   const [provs, setProvs] = uSM([]);
   const [loading, setLoading] = uSM(true);
@@ -2300,6 +2306,7 @@ function ProveedoresPage({ showToast }) {
   };
 
   const handleSubmit = async () => {
+    if (!canWrite) { showToast('No tenés permiso para crear/editar proveedores — usá "Solicitar cambio"', 'red'); return; }
     const razon = (form.razon_social || '').trim();
     const ruc = (form.ruc || '').trim();
     if (!razon) { showToast('Falta la razón social', 'red'); return; }
@@ -2380,7 +2387,9 @@ function ProveedoresPage({ showToast }) {
               <JxIcon name="compare" size={13}/>Fusionar{dupsRuc>0 ? <span className="badge b-amber" style={{ marginLeft:6, fontSize:9 }}>{dupsRuc}</span> : ''}
             </button>
           )}
-          <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setEditingId(null); setModal(true);}}><JxIcon name="plus" size={13}/>Nuevo Proveedor</button>
+          {canWrite && (
+            <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setEditingId(null); setModal(true);}}><JxIcon name="plus" size={13}/>Nuevo Proveedor</button>
+          )}
         </div>
       </div>
       {fusionOpen && <FusionEntidadModal tipo="proveedores" registros={provs} showToast={showToast} onClose={()=>setFusionOpen(false)} onDone={()=>{}} />}
@@ -2404,7 +2413,7 @@ function ProveedoresPage({ showToast }) {
               </div>
               <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:6, flexShrink:0 }}>
                 <span className={`badge ${p.estado==='activo'?'b-green':'b-gray'}`} style={{ textTransform:'capitalize' }}>{p.estado || 'activo'}</span>
-                {isAdmin ? (
+                {canWrite ? (
                   <div style={{ display:'flex', gap:4 }}>
                     <button className="btn btn-ghost btn-xs" title="Editar proveedor" onClick={()=>openEditProv(p)}>
                       <JxIcon name="edit" size={11}/>

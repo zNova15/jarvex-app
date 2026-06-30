@@ -876,7 +876,7 @@ const PERM_MATRIX = {
       // RRHH (sección completa del menú)
       'Personal','Asistencia','Contratos Laborales','Planillas','CTS','Gratificaciones',
       // Contabilidad
-      'Empresas','Movs. Contables','Intercompany','Trazabilidad','Consolidado',
+      'Empresas','Proveedores','Movs. Contables','Intercompany','Trazabilidad','Consolidado',
       'Plan de Cuentas','Libro Diario','Balance General','Estado Resultados',
       // Tesorería
       'Cuentas Bancarias','Flujo de Caja','Flujo Proyectado','Comparativo Periodos',
@@ -898,7 +898,7 @@ const PERM_MATRIX = {
   // sin write acá, la bancarización subida quedaría PENDING para siempre).
   ayudante_contador: PERM_MATRIX_MODULES.map(m => {
     if (['Empresas','Movs. Contables','Cuentas Bancarias','Captura Mágica','Evidencias'].includes(m)) return 'w';
-    if (m === 'Personal') return 'r';  // solo lectura, sin edición
+    if (m === 'Personal' || m === 'Proveedores') return 'r';  // solo lectura (ve qué empresas/proveedores hay)
     return 'x';
   }),
 
@@ -1131,7 +1131,7 @@ const __ASISTENTE_ADMIN_ITEMS = [
 // Allowlist necesaria: 'cont-dashboard' comparte el módulo 'Movs. Contables' con
 // 'movimientos-contables', así que sin allowlist el ayudante vería el dashboard (no debe).
 const __AYUDANTE_CONTADOR_ITEMS = [
-  'captura-magica', 'personal', 'empresas', 'movimientos-contables', 'cuentas-bancarias',
+  'captura-magica', 'personal', 'empresas', 'proveedores', 'movimientos-contables', 'cuentas-bancarias',
   'conciliacion-insumos', // enlaza facturas ↔ insumos presupuestados (Vinculación 2)
   'solicitudes', // ve "Mis solicitudes" (sus pedidos de cambio); la aprobación es del contador/admin
 ];

@@ -62,6 +62,10 @@ function ConciliacionInsumosPage({ showToast }) {
   // "Insumos Comprados" (clasificar/vincular ítems de factura), no el presupuesto.
   const rol = profile?.rol || '';
   const puedePresupuesto = ['admin', 'gerente', 'contador'].includes(rol);
+  // El Ayudante de Contabilidad NO reclasifica el destino acá (ya se decidió en
+  // Captura Mágica): para él es solo lectura y, si cree que está mal, pide el
+  // cambio con "Solicitar cambio de vinculación" (lo aplica la jefe/admin).
+  const esAyudante = rol === 'ayudante_contador';
 
   const [maestra, setMaestra] = uS([]);       // insumos presupuestados consolidados por codigo
   const [items, setItems] = uS([]);           // ítems de factura (flat)
@@ -77,6 +81,7 @@ function ConciliacionInsumosPage({ showToast }) {
   const [tab, setTab] = uS(puedePresupuesto ? 'presupuesto' : 'comprados'); // 'presupuesto' (por insumo) | 'comprados' (por ítem de factura)
   const [qItems, setQItems] = uS('');       // búsqueda en la pestaña Insumos Comprados
   const [pickItem, setPickItem] = uS(null); // ítem de factura que se está vinculando a un insumo
+  const [solicitarTarget, setSolicitarTarget] = uS(null); // ítem para "Solicitar cambio de vinculación" (ayudante)
 
   // Si el rol carga tarde (o cambia) y un no-autorizado quedó en "Por Presupuesto",
   // lo devolvemos a "Insumos Comprados".
@@ -458,11 +463,21 @@ function ConciliacionInsumosPage({ showToast }) {
                         <td style={{ textAlign: 'right', fontSize: 12 }}>{fmtN(it.cantidad)} {it.unidad}</td>
                         <td style={{ textAlign: 'right', fontSize: 12 }}>{fmtS(it.cantidad * it.precio)}</td>
                         <td>
-                          <select className="fi" style={{ fontSize: 11, padding: '4px 6px' }} value={it.destino || 'obra'} disabled={busy}
-                            onChange={e => setDestinoItem(it, e.target.value)}>
-                            <option value="obra">🏗 Obra</option>
-                            <option value="empresa">🏢 Empresa (general)</option>
-                          </select>
+                          {esAyudante ? (
+                            <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
+                              <span style={{ fontSize: 11, color: 'var(--ts)' }}>{esEmpresa ? '🏢 Empresa (general)' : '🏗 Obra'}</span>
+                              <button className="btn btn-ghost btn-xs" style={{ fontSize:10, padding:'2px 6px', alignSelf:'flex-start' }}
+                                title="Pedir a la contadora jefe que cambie el destino de este ítem" onClick={() => setSolicitarTarget(it)}>
+                                <JxIcon name="edit" size={9}/> Solicitar cambio
+                              </button>
+                            </div>
+                          ) : (
+                            <select className="fi" style={{ fontSize: 11, padding: '4px 6px' }} value={it.destino || 'obra'} disabled={busy}
+                              onChange={e => setDestinoItem(it, e.target.value)}>
+                              <option value="obra">🏗 Obra</option>
+                              <option value="empresa">🏢 Empresa (general)</option>
+                            </select>
+                          )}
                         </td>
                         <td>
                           {esEmpresa ? (
@@ -512,6 +527,17 @@ function ConciliacionInsumosPage({ showToast }) {
           onVincular={(it) => vincularItem(linkInsumo, it)}
           onDesvincular={desvincular}
           onClose={() => setLinkInsumo(null)}
+        />
+      )}
+
+      {solicitarTarget && (
+        <RequestChangeModal
+          table="accounting_movements"
+          record={{ id: solicitarTarget.facturaId }}
+          recordLabel={`${solicitarTarget.descripcion || 'ítem'} · ${solicitarTarget.doc || ''} · destino actual: ${solicitarTarget.destino === 'empresa' ? 'Empresa (general)' : 'Obra'}`}
+          fields={[]}
+          showToast={toast}
+          onClose={() => setSolicitarTarget(null)}
         />
       )}
     </div>

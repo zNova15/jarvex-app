@@ -81,6 +81,40 @@ function razonSimilar(a, b) {
   return inter / Math.max(A.size, B.size);
 }
 
+// ── Verificación de razón social contra SUNAT (con caché) ────────────
+// apis.net.pe v1 (gratis) limita ~30 req/min y conviene no re-gastar la cuota.
+// Cacheamos por RUC en localStorage (TTL 7 días) → el mismo RUC no se re-consulta.
+const SUNAT_CACHE_KEY = 'jx_sunat_cache_v1';
+const SUNAT_CACHE_TTL = 7 * 24 * 60 * 60 * 1000;
+function _sunatCacheAll() {
+  try { return JSON.parse(localStorage.getItem(SUNAT_CACHE_KEY) || '{}'); } catch { return {}; }
+}
+function getSunatCached(ruc) {
+  const c = _sunatCacheAll()[ruc];
+  if (c && (Date.now() - (c.at || 0)) < SUNAT_CACHE_TTL) return c;
+  return null;
+}
+function setSunatCached(ruc, razonSocial) {
+  try {
+    const c = _sunatCacheAll();
+    c[ruc] = { razonSocial, at: Date.now() };
+    localStorage.setItem(SUNAT_CACHE_KEY, JSON.stringify(c));
+  } catch {}
+}
+// Consulta SUNAT por RUC reutilizando la caché. Devuelve { razonSocial, _cached }
+// o null si el RUC es inválido / la consulta falla (offline, 429, etc.).
+async function consultarRucCacheado(ruc) {
+  const r = String(ruc || '').replace(/\D/g, '');
+  if (!/^\d{11}$/.test(r)) return null;
+  const cached = getSunatCached(r);
+  if (cached) return { razonSocial: cached.razonSocial, _cached: true };
+  try {
+    const res = await window.__identity?.consultarRUC?.(r);
+    if (res?.razonSocial) { setSunatCached(r, res.razonSocial); return { razonSocial: res.razonSocial, _cached: false }; }
+  } catch {}
+  return null;
+}
+
 // Convierte File → base64 string (sin prefijo data:...).
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -112,6 +146,11 @@ function CapturaMagicaPage({ showToast }) {
   const isAdmin = myRol === 'admin';
   const userId = auth?.profile?.id ?? 'offline';
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Captura Mágica', 'w') ?? false);
+  // El verificador masivo escribe en DOS tablas: proveedores ('Proveedores') y,
+  // como snapshot, accounting_movements ('Movs. Contables'). Requiere write de
+  // AMBOS módulos, si no los cambios de la tabla que no puede pushear quedarían
+  // PENDING eternos (trampa TABLA_TO_MODULO). Así solo lo usan jefe contable/admin.
+  const canWritePro = isAdmin || ((window.__hasPerm?.(myRol, 'Proveedores', 'w') ?? false) && (window.__hasPerm?.(myRol, 'Movs. Contables', 'w') ?? false));
 
   const { data: companies } = window.__hooks?.useCompanies?.() || { data: [] };
   const { data: obras } = window.__hooks?.useObras?.() || { data: [] };
@@ -136,6 +175,66 @@ function CapturaMagicaPage({ showToast }) {
   const [cadenasActivasDB, setCadenasActivasDB] = uSCM([]); // cadenas en borrador o confirmadas (no facturadas/cerradas)
   const [restored, setRestored] = uSCM(false);
   const fileInputRef = uRCM(null);
+  // Verificador masivo de RUCs (corrección retroactiva de razón social vs SUNAT).
+  const [rucVerif, setRucVerif] = uSCM(null); // null | { running, checked, total, results, error }
+  const verifCancelRef = uRCM(false);
+
+  const verificarTodosRucs = async () => {
+    const provs = (proveedoresDB || []).filter(p => /^\d{11}$/.test(String(p.ruc || '').replace(/\D/g, '')));
+    if (!provs.length) { showToast('No hay proveedores con RUC válido para verificar', 'amber'); return; }
+    verifCancelRef.current = false;
+    setRucVerif({ running: true, checked: 0, total: provs.length, results: [] });
+    const results = [];
+    for (let i = 0; i < provs.length; i++) {
+      if (verifCancelRef.current) break;
+      const p = provs[i];
+      const ruc = String(p.ruc).replace(/\D/g, '');
+      const eraCache = !!getSunatCached(ruc);
+      const res = await consultarRucCacheado(ruc);
+      setRucVerif(v => v ? { ...v, checked: i + 1 } : v);
+      if (res?.razonSocial) {
+        const sim = razonSimilar(p.razon_social || '', res.razonSocial);
+        if (sim < 0.6) results.push({ id: p.id, ruc, actual: p.razon_social || '', sunat: res.razonSocial, similar: Math.round(sim * 100), applied: false });
+      }
+      // Throttle SOLO cuando hubo consulta real (no cacheada): ≤30/min en apis.net.pe.
+      if (!eraCache && i < provs.length - 1 && !verifCancelRef.current) await new Promise(r => setTimeout(r, 2300));
+    }
+    // Functional update con rama else = null: si el usuario CERRÓ el modal (v ya es
+    // null) NO lo resucitamos; si solo presionó "Detener" (v sigue vivo) mostramos
+    // los resultados parciales encontrados hasta el corte.
+    setRucVerif(v => v ? { ...v, running: false, results } : null);
+  };
+
+  const aplicarCorreccionRuc = async (row) => {
+    try {
+      const existing = await window.__db.proveedores.get(row.id);
+      if (!existing) { showToast('El proveedor ya no existe', 'amber'); return; }
+      const now = new Date().toISOString();
+      await window.__db.proveedores.update(row.id, {
+        razon_social: row.sunat,
+        updated_at: now, updated_by: userId,
+        version: (existing.version ?? 0) + 1,
+        sync_status: existing.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      // accounting_movements guarda third_party_name como SNAPSHOT desnormalizado:
+      // hay que actualizar los movimientos de este proveedor por separado.
+      const movs = await window.__db.accounting_movements.filter(m => m.proveedor_id === row.id && !m.deleted_at).toArray();
+      for (const m of movs) {
+        await window.__db.accounting_movements.update(m.id, {
+          third_party_name: row.sunat,
+          updated_at: now, updated_by: userId,
+          version: (m.version ?? 0) + 1,
+          sync_status: m.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+        });
+      }
+      try { await window.__logAudit?.({ action: 'update', table: 'proveedores', recordId: row.id, reason: `Razón social corregida vía SUNAT: "${row.actual}" → "${row.sunat}" (+${movs.length} mov.)` }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'proveedores', source: 'ruc-verify' } })); } catch {}
+      showToast(`Corregido: ${row.sunat}${movs.length ? ` · ${movs.length} mov. actualizados` : ''}`, 'green');
+      setRucVerif(v => v ? { ...v, results: v.results.map(x => x.id === row.id ? { ...x, applied: true } : x) } : v);
+    } catch (e) {
+      showToast('Error al corregir: ' + (e.message || e), 'red');
+    }
+  };
 
   // ── Persistencia en Dexie ───────────────────────────────────
   const saveItemToDB = async (item) => {
@@ -492,8 +591,10 @@ function CapturaMagicaPage({ showToast }) {
       // (combustible, servicios, fletes), el contador desactiva ese checkbox.
       crear_materiales_catalogo: false,
       genera_recepcion_almacen: true,
-      metodo_pago: null,
-      payment_status: 'pending',
+      // Defaults: la mayoría de comprobantes que sube el contador ya están
+      // pagados en efectivo (Gabriel). El usuario corrige en el review si no.
+      metodo_pago: 'efectivo',
+      payment_status: 'paid',
       // Legacy: si llega un payload viejo lo respetamos pero la UI ya no
       // expone este flag — los movimientos de inventario los crea el
       // almacenero al confirmar recepción, no la captura mágica.
@@ -1253,21 +1354,29 @@ function CapturaMagicaPage({ showToast }) {
           <div className="pg-title">✨ Captura Mágica</div>
           <div className="pg-sub">Subí PDFs o fotos de facturas/boletas. La IA extrae proveedor, items y totales · {stats.total} archivo(s)</div>
         </div>
-        {(() => {
-          // La obra destino sigue SIEMPRE a la obra activa del header — acá
-          // se recuerda visiblemente a cuál se está importando.
-          const activaId = window.__getObraActivaId?.();
-          const obraActiva = (obras || []).find(o => o.id === activaId && !o.deleted_at);
-          return obraActiva ? (
-            <span className="badge b-green" title="Los comprobantes confirmados asignan materiales e ingresos de almacén a esta obra. Para cambiarla, usá el selector de obra activa (arriba a la derecha)." style={{ maxWidth: 360, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-              📍 Importando a: {obraActiva.nombre_obra}
-            </span>
-          ) : (
-            <span className="badge b-amber" title="Sin obra activa, los comprobantes quedan solo en contabilidad (sin catálogo ni ingreso de almacén).">
-              ⚠ Sin obra activa — solo contabilidad
-            </span>
-          );
-        })()}
+        <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap', justifyContent:'flex-end' }}>
+          {canWritePro && (
+            <button className="btn btn-ghost btn-sm" onClick={verificarTodosRucs} disabled={rucVerif?.running}
+              title="Consulta SUNAT el RUC de cada proveedor y lista los que tienen una razón social distinta para que la corrijas">
+              <JxIcon name="search" size={13}/> {rucVerif?.running ? `Verificando ${rucVerif.checked}/${rucVerif.total}…` : 'Verificar RUCs'}
+            </button>
+          )}
+          {(() => {
+            // La obra destino sigue SIEMPRE a la obra activa del header — acá
+            // se recuerda visiblemente a cuál se está importando.
+            const activaId = window.__getObraActivaId?.();
+            const obraActiva = (obras || []).find(o => o.id === activaId && !o.deleted_at);
+            return obraActiva ? (
+              <span className="badge b-green" title="Los comprobantes confirmados asignan materiales e ingresos de almacén a esta obra. Para cambiarla, usá el selector de obra activa (arriba a la derecha)." style={{ maxWidth: 360, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                📍 Importando a: {obraActiva.nombre_obra}
+              </span>
+            ) : (
+              <span className="badge b-amber" title="Sin obra activa, los comprobantes quedan solo en contabilidad (sin catálogo ni ingreso de almacén).">
+                ⚠ Sin obra activa — solo contabilidad
+              </span>
+            );
+          })()}
+        </div>
       </div>
 
       <div className="card card-p" style={{ marginBottom:14, background:'rgba(155,89,182,0.06)', border:'1px solid rgba(155,89,182,0.25)', fontSize:12, color:'var(--ts)' }}>
@@ -1420,6 +1529,59 @@ function CapturaMagicaPage({ showToast }) {
           onClose={() => setVincularPendientesModal(null)}
           onConfirm={(movIds) => vincularPendientesAFactura(vincularPendientesModal.accId, movIds)}/>
       )}
+
+      {rucVerif && (
+        <Modal title="Verificación de RUCs contra SUNAT" icon="search" size="xl"
+          onClose={() => { verifCancelRef.current = true; setRucVerif(null); }}>
+          {rucVerif.running ? (
+            <div style={{ padding:'10px 0', fontSize:13, color:'var(--ts)' }}>
+              <div style={{ marginBottom:8 }}>Consultando SUNAT… {rucVerif.checked}/{rucVerif.total} proveedores</div>
+              <div style={{ height:8, background:'var(--bg-s)', borderRadius:4, overflow:'hidden' }}>
+                <div style={{ height:'100%', width:`${Math.round((rucVerif.checked/Math.max(1,rucVerif.total))*100)}%`, background:'var(--amber)', transition:'width .3s' }}/>
+              </div>
+              <div style={{ fontSize:11, color:'var(--tm)', marginTop:8 }}>Se consulta de a uno para no exceder el límite de SUNAT (los ya consultados hoy salen al instante de la caché).</div>
+            </div>
+          ) : rucVerif.results.length === 0 ? (
+            <div style={{ padding:'20px 0', textAlign:'center', color:'var(--green)', fontSize:13 }}>
+              ✓ Revisé {rucVerif.total} proveedor(es) con RUC válido. Ninguno tiene la razón social muy distinta a SUNAT.
+            </div>
+          ) : (
+            <div>
+              <div style={{ fontSize:12.5, color:'var(--ts)', marginBottom:10, lineHeight:1.5 }}>
+                {rucVerif.results.length} proveedor(es) con razón social <strong>distinta</strong> a la de SUNAT. Revisá y elegí cuáles corregir — al aplicar, también se actualiza el nombre en los movimientos contables de ese proveedor.
+              </div>
+              <div style={{ maxHeight:'52vh', overflow:'auto' }}>
+                <table className="tbl" style={{ fontSize:12 }}>
+                  <thead><tr>
+                    <th>RUC</th><th>Nombre actual</th><th>Razón social SUNAT</th><th style={{ textAlign:'center' }}>Parecido</th><th style={{ textAlign:'center' }}>Acción</th>
+                  </tr></thead>
+                  <tbody>
+                    {rucVerif.results.map(row => (
+                      <tr key={row.id}>
+                        <td className="col-m" style={{ fontFamily:'monospace' }}>{row.ruc}</td>
+                        <td>{row.actual || <span style={{ color:'var(--tm)' }}>—</span>}</td>
+                        <td style={{ color:'#3498DB', fontWeight:600 }}>{row.sunat}</td>
+                        <td style={{ textAlign:'center', color: row.similar < 30 ? 'var(--red)' : 'var(--amber)' }}>{row.similar}%</td>
+                        <td style={{ textAlign:'center' }}>
+                          {row.applied ? (
+                            <span style={{ fontSize:11, color:'var(--green)' }}>✓ Corregido</span>
+                          ) : (
+                            <button className="btn btn-amber btn-xs" onClick={()=>aplicarCorreccionRuc(row)}>Usar SUNAT</button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+          <div className="modal-actions">
+            {rucVerif.running && <button className="btn btn-ghost" onClick={()=>{ verifCancelRef.current = true; }}>Detener</button>}
+            <button className="btn btn-amber" onClick={()=>{ verifCancelRef.current = true; setRucVerif(null); }}>Cerrar</button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -1532,6 +1694,24 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
     : (r.obra_destino && (obras || []).some(o => o.id === r.obra_destino && !o.deleted_at) ? r.obra_destino : '');
   const upd = (patch) => onChange({ ...r, ...patch });
   const [previewUrl, setPreviewUrl] = uSCM(null);
+
+  // Verificación del RUC del emisor contra SUNAT (cacheada). Si el nombre oficial
+  // difiere del capturado por el OCR, recomendamos el cambio — el usuario decide.
+  const [sunatCheck, setSunatCheck] = uSCM(null); // { razonSocial, mismatch } | null
+  uECM(() => {
+    let cancel = false;
+    const ruc = String(r.proveedor_ruc || '').replace(/\D/g, '');
+    if (!/^\d{11}$/.test(ruc)) { setSunatCheck(null); return; }
+    (async () => {
+      const res = await consultarRucCacheado(ruc);
+      if (cancel || !res?.razonSocial) return;
+      const actual = r.proveedor_razon_social || '';
+      const mismatch = razonSimilar(actual, res.razonSocial) < 0.6;
+      setSunatCheck({ razonSocial: res.razonSocial, mismatch });
+    })();
+    return () => { cancel = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [r.proveedor_ruc]);
 
   uECM(() => {
     if (!item.file) return;
@@ -1673,6 +1853,16 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
               {r.proveedor_match_por_nombre && r.proveedor_accion === 'usar_existente' && (
                 <div style={{ marginBottom:8, padding:'8px 10px', background:'rgba(242,183,5,0.08)', border:'1px solid rgba(242,183,5,0.35)', borderRadius:6, fontSize:11.5, color:'var(--amber)', lineHeight:1.45 }}>
                   ⚠ Lo emparejé por <strong>razón social</strong> ({r.proveedor_match_score}% parecido a “{r.proveedor_match_nombre_db}”), no por RUC — el RUC de la factura no coincidió con ninguno. <strong>Verificá</strong> que sea el mismo proveedor; si no, elegí “Crear nuevo”.
+                </div>
+              )}
+              {sunatCheck?.mismatch && (
+                <div style={{ marginBottom:8, padding:'8px 10px', background:'rgba(52,152,219,0.08)', border:'1px solid rgba(52,152,219,0.4)', borderRadius:6, fontSize:11.5, color:'var(--ts)', lineHeight:1.45 }}>
+                  🔎 Según <strong>SUNAT</strong>, el RUC {r.proveedor_ruc} corresponde a <strong style={{ color:'#3498DB' }}>{sunatCheck.razonSocial}</strong> — distinto del nombre capturado (“{r.proveedor_razon_social || '—'}”).
+                  <div style={{ marginTop:6, display:'flex', gap:8, flexWrap:'wrap' }}>
+                    <button type="button" className="btn btn-xs" style={{ background:'#3498DB', color:'#fff' }}
+                      onClick={()=>upd({ proveedor_razon_social: sunatCheck.razonSocial })}>Usar nombre SUNAT</button>
+                    <span style={{ fontSize:10.5, color:'var(--tm)', alignSelf:'center' }}>o dejá el nombre comercial de la factura si preferís.</span>
+                  </div>
                 </div>
               )}
               {r.proveedor_accion === 'usar_existente' ? (

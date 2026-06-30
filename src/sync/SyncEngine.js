@@ -597,6 +597,15 @@ function canPushTabla(tabla) {
         || window.__hasPerm?.(rol, 'Intercompany', 'w') === true;
       if (haceContab) return true;
     }
+    // proveedores: misma lógica que companies. Captura Mágica crea el proveedor
+    // emisor de cada factura; quien puede hacer Captura debe poder subirlo, si no
+    // el proveedor queda PENDING y sus movimientos mueren en 23503. La RLS del
+    // server ya permite INSERT a cualquier autenticado (mig 030). Esto NO habilita
+    // editar proveedores desde su página (esa gatea por 'Proveedores'-w aparte),
+    // solo desbloquea el push de los que crea la Captura.
+    if (tabla === 'proveedores') {
+      if (window.__hasPerm?.(rol, 'Captura Mágica', 'w') === true) return true;
+    }
     const modulo = TABLA_TO_MODULO[tabla];
     if (!modulo) return true;       // sin mapping: defensivo, dejar pasar
     return window.__hasPerm?.(rol, modulo, 'w') ?? true;

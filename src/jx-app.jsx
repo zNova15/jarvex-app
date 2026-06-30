@@ -397,17 +397,19 @@ function Header({ page, plano = 'obra', onInicio, onToggleSidebar, onLogout, pro
       `A:  ${destino?.nombre_obra || '(obra)'}\n\n` +
       `TODOS los módulos (almacén, movimientos, personal, caja chica, ` +
       `Captura Mágica…) pasarán a mostrar y registrar sobre la obra nueva. ` +
-      `La app se recargará.`
+      `Te quedás en la misma pantalla, ahora sobre la obra nueva.`
     )) return;
+    // SIN recarga: el `key` del contenedor incluye la obra activa, así la página
+    // actual se remonta sola sobre la obra nueva y el usuario no sale de donde está.
     if (window.__setObraActivaId) window.__setObraActivaId(id);
-    // Reload de toda la app: la mayoría de componentes leen la obra al montar.
-    setTimeout(() => window.location.reload(), 100);
   };
   const obraDisplay = obraHook.obra || obraActiva;
 
   return (
     <div style={{ height:58, background:'#0D1822', borderBottom:'1px solid rgba(255,255,255,0.06)', display:'flex', alignItems:'center', paddingLeft: isMobile ? 10 : 16, paddingRight: isMobile ? 10 : 20, gap: isMobile ? 8 : 12, flexShrink:0, zIndex:5 }}>
-      <button onClick={onToggleSidebar} className="btn btn-ghost btn-icon" aria-label="Abrir menú"><JxIcon name="menu" size={16}/></button>
+      {page !== 'inicio' && (
+        <button onClick={onToggleSidebar} className="btn btn-ghost btn-icon" aria-label="Abrir menú"><JxIcon name="menu" size={16}/></button>
+      )}
       {page !== 'inicio' && onInicio && (
         <button onClick={onInicio} className="btn btn-ghost btn-sm" title="Volver al inicio"
                 style={{ display:'flex', alignItems:'center', gap:4, color:'var(--ts)', flexShrink:0 }}>
@@ -492,6 +494,30 @@ function Header({ page, plano = 'obra', onInicio, onToggleSidebar, onLogout, pro
                 </div>
               ))}
             </div>
+          )}
+        </div>
+        {/* Menú de usuario: nombre/rol + Cerrar sesión. Visible en TODAS las
+            pantallas (incluido Inicio, donde no hay sidebar con logout). */}
+        <div style={{ position:'relative' }}>
+          <button className="btn btn-ghost btn-icon" onClick={()=>setMenu(o=>!o)} title={`${profile?.nombres||''} ${profile?.apellidos||''}`.trim() || profile?.email || 'Cuenta'} aria-label="Cuenta">
+            <span style={{ width:26, height:26, borderRadius:'50%', background:'var(--amber)', color:'#0D1822', fontSize:12, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center' }}>
+              {(profile?.nombres?.[0] || profile?.email?.[0] || '?').toUpperCase()}
+            </span>
+          </button>
+          {menu && (
+            <>
+              <div onClick={()=>setMenu(false)} style={{ position:'fixed', inset:0, zIndex:90 }}/>
+              <div style={{ position:'absolute', top:42, right:0, width:240, background:'var(--bg-c)', border:'1px solid var(--border)', borderRadius:10, boxShadow:'0 8px 32px rgba(0,0,0,0.5)', zIndex:100, overflow:'hidden' }}>
+                <div style={{ padding:'12px 14px', borderBottom:'1px solid var(--border)' }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:'var(--tp)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{`${profile?.nombres||''} ${profile?.apellidos||''}`.trim() || profile?.email || 'Usuario'}</div>
+                  {profile?.rol && <div style={{ fontSize:11, color:'var(--tm)', marginTop:2, textTransform:'capitalize' }}>{String(profile.rol).replace(/_/g,' ')}</div>}
+                </div>
+                <button onClick={()=>{ setMenu(false); onLogout?.(); }}
+                  style={{ display:'flex', alignItems:'center', gap:10, width:'100%', padding:'12px 14px', background:'none', border:'none', cursor:'pointer', textAlign:'left', color:'var(--red)', fontSize:13, fontWeight:600 }}>
+                  <JxIcon name="logout" size={15} color="var(--red)"/> Cerrar sesión
+                </button>
+              </div>
+            </>
           )}
         </div>
       </div>
@@ -820,6 +846,16 @@ function App() {
     return () => window.removeEventListener('jx_perms_changed', onPerms);
   }, []);
 
+  // Obra activa reactiva SOLO para el `key` del contenedor: al cambiar de obra
+  // desde el header, remontamos la página actual (que re-lee la obra al montar)
+  // en vez de recargar toda la app — así el usuario se queda donde estaba.
+  const [obraKey, setObraKey] = uSA(() => (typeof window !== 'undefined' && window.__getObraActivaId?.()) || '');
+  uEA(() => {
+    const onObra = () => setObraKey(window.__getObraActivaId?.() || '');
+    window.addEventListener('obra_activa_change', onObra);
+    return () => window.removeEventListener('obra_activa_change', onObra);
+  }, []);
+
   // En móvil arrancamos con el drawer cerrado (collapsed=true).
   // En desktop arrancamos con el sidebar expandido (collapsed=false).
   const [collapsed, setCollapsed]   = uSA(() =>
@@ -1137,7 +1173,7 @@ function App() {
                   else if (sync.sync) sync.sync();
                 }}
                 isMobile={isMobile}/>
-        <div style={{ flex:1, overflow:'hidden', background:'var(--bg-p)' }} key={`${page}_${planoActual}_${permsVer}`}>
+        <div style={{ flex:1, overflow:'hidden', background:'var(--bg-p)' }} key={`${page}_${planoActual}_${permsVer}_${planoActual === 'obra' ? obraKey : ''}`}>
           {renderPage()}
         </div>
       </div>
