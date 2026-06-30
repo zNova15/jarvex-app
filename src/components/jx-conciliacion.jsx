@@ -55,6 +55,8 @@ const TIPO_BADGE = { material: 'b-blue', herramienta: 'b-amber', epp: 'b-green',
 function ConciliacionInsumosPage({ showToast }) {
   const toast = showToast || window.__showToast || (() => {});
   const { obraId } = window.__useObraActiva ? window.__useObraActiva() : { obraId: null };
+  const { data: companies } = window.__hooks?.useCompanies?.() || { data: [] };
+  const companyNombre = (id) => (companies || []).find(c => c.id === id)?.name || null;
   const profile = (window.__useAuth?.()?.profile) || null;
   const userId = profile?.id || 'offline';
   // La pestaña "Por Presupuesto" (cruce con el presupuesto Delfín) es solo para la
@@ -82,6 +84,7 @@ function ConciliacionInsumosPage({ showToast }) {
   const [qItems, setQItems] = uS('');       // búsqueda en la pestaña Insumos Comprados
   const [pickItem, setPickItem] = uS(null); // ítem de factura que se está vinculando a un insumo
   const [solicitarTarget, setSolicitarTarget] = uS(null); // ítem para "Solicitar cambio de vinculación" (ayudante)
+  const [filtroVinc, setFiltroVinc] = uS('todos'); // 'todos' | 'sin' | 'con' (separa vinculados de no vinculados)
 
   // Si el rol carga tarde (o cambia) y un no-autorizado quedó en "Por Presupuesto",
   // lo devolvemos a "Insumos Comprados".
@@ -124,6 +127,7 @@ function ConciliacionInsumosPage({ showToast }) {
           if (!arr) continue;
           arr.forEach((it, idx) => its.push({
             facturaId: mv.id, itemIdx: idx,
+            companyId: mv.company_id || null,   // empresa COMPRADORA del comprobante
             descripcion: it.descripcion || it.nombre || '—',
             unidad: it.unidad || 'und',
             cantidad: Number(it.cantidad) || 0,
@@ -330,13 +334,52 @@ function ConciliacionInsumosPage({ showToast }) {
     return m;
   }, [vinculos]);
 
+  // ¿El ítem tiene al menos un vínculo a un insumo presupuestado?
+  const estaVinculado = (it) => (vincPorItem.get(`${it.facturaId}|${it.itemIdx}`) || []).length > 0;
+
   // Ítems comprados filtrados (pestaña "Insumos Comprados").
   const itemsComprados = uM(() => {
     const qn = norm(qItems);
     return items
       .filter(it => !qn || norm(it.descripcion).includes(qn) || norm(it.proveedor).includes(qn))
+      .filter(it => filtroVinc === 'todos' || (filtroVinc === 'con' ? estaVinculado(it) : !estaVinculado(it)))
       .sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
-  }, [items, qItems]);
+  }, [items, qItems, filtroVinc, vincPorItem]);
+
+  // Conteos para los chips del filtro (sobre TODOS los ítems, sin el filtro de vínculo).
+  const vincCounts = uM(() => {
+    let con = 0; for (const it of items) if (estaVinculado(it)) con++;
+    return { total: items.length, con, sin: items.length - con };
+  }, [items, vincPorItem]);
+
+  // Exporta a Excel los ítems comprados de la obra en 2 hojas: "Sin vincular" y
+  // "Vinculados" (con destino + insumo presupuestado al que se vinculó).
+  const exportarExcel = async () => {
+    try {
+      const { generateExcelSheets } = await import('../lib/reports.js');
+      const sin = [], con = [];
+      for (const it of items) {
+        const emp = companyNombre(it.companyId) || '';
+        const monto = +(it.cantidad * it.precio).toFixed(2);
+        const vs = vincPorItem.get(`${it.facturaId}|${it.itemIdx}`) || [];
+        const base = [it.descripcion, emp, it.doc || '', it.cantidad, it.unidad, monto];
+        if (vs.length > 0) {
+          con.push([...base, it.destino === 'empresa' ? 'Empresa' : 'Obra', vs.map(v => v.insumo_nombre || v.insumo_codigo || '').filter(Boolean).join(' + ')]);
+        } else {
+          sin.push(base);
+        }
+      }
+      const fecha = new Date().toISOString().slice(0, 10);
+      await generateExcelSheets({
+        filename: `JARVEX_insumos_comprados_${fecha}.xlsx`,
+        sheets: [
+          { name: 'Sin vincular', columnas: ['Ítem', 'Empresa', 'Factura', 'Cantidad', 'Unidad', 'Monto'], filas: sin },
+          { name: 'Vinculados', columnas: ['Ítem', 'Empresa', 'Factura', 'Cantidad', 'Unidad', 'Monto', 'Destino', 'Insumo vinculado'], filas: con },
+        ],
+      });
+      toast(`Exportado: ${sin.length} sin vincular + ${con.length} vinculados`, 'green');
+    } catch (e) { toast('Error al exportar: ' + (e?.message || e), 'red'); }
+  };
 
   if (!obraId) {
     return <div className="page-wrap"><div className="card card-p empty-state"><JxIcon name="compare" size={32} color="var(--tm)" /><p>Seleccioná una obra activa para conciliar sus insumos.</p></div></div>;
@@ -433,19 +476,30 @@ function ConciliacionInsumosPage({ showToast }) {
 
       {tab === 'comprados' && (<>
         <div className="card card-p" style={{ marginBottom: 12 }}>
-          <div className="search-bar"><JxIcon name="search" size={14} color="var(--tm)" /><input placeholder="Buscar ítem comprado / proveedor…" value={qItems} onChange={e => setQItems(e.target.value)} /></div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <div className="search-bar" style={{ flex: '1 1 220px' }}><JxIcon name="search" size={14} color="var(--tm)" /><input placeholder="Buscar ítem comprado / proveedor…" value={qItems} onChange={e => setQItems(e.target.value)} /></div>
+            <div style={{ display: 'flex', gap: 4, background: 'var(--bg-s)', borderRadius: 8, padding: 3 }}>
+              {[['todos', `Todos (${vincCounts.total})`], ['sin', `Sin vincular (${vincCounts.sin})`], ['con', `Vinculados (${vincCounts.con})`]].map(([k, lbl]) => (
+                <button key={k} className={`btn btn-xs ${filtroVinc === k ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setFiltroVinc(k)} style={{ fontSize: 11 }}>{lbl}</button>
+              ))}
+            </div>
+            <button className="btn btn-ghost btn-sm" onClick={exportarExcel} disabled={!items.length} title="Exportar a Excel (2 hojas: sin vincular y vinculados)">
+              <JxIcon name="download" size={13} /> Exportar Excel
+            </button>
+          </div>
           <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 6 }}>Clasificá cada ítem comprado: 🏗 Obra (entra al presupuesto/almacén de la obra) o 🏢 Empresa (consumo general/oficina). Vinculá los de obra a su insumo presupuestado.</div>
         </div>
         {loading ? (
           <div className="card card-p empty-state"><JxIcon name="package" size={32} color="var(--tm)" /><p>Cargando ítems comprados…</p></div>
         ) : itemsComprados.length === 0 ? (
-          <div className="card card-p empty-state"><JxIcon name="package" size={40} color="var(--tm)" /><p>No hay ítems comprados (de Captura Mágica) para esta obra.</p></div>
+          <div className="card card-p empty-state"><JxIcon name="package" size={40} color="var(--tm)" /><p>{items.length === 0 ? 'No hay ítems comprados (de Captura Mágica) para esta obra.' : (filtroVinc === 'con' ? 'No hay ítems vinculados con este criterio.' : filtroVinc === 'sin' ? 'No hay ítems sin vincular con este criterio.' : 'Ningún ítem coincide con la búsqueda.')}</p></div>
         ) : (
           <div className="card" style={{ overflow: 'hidden' }}>
             <div style={{ overflowX: 'auto' }}>
               <table className="tbl">
                 <thead><tr>
                   <th>Ítem comprado</th>
+                  <th style={{ width: 160 }}>Empresa</th>
                   <th style={{ width: 150 }}>Factura</th>
                   <th style={{ textAlign: 'right', width: 90 }}>Cantidad</th>
                   <th style={{ textAlign: 'right', width: 100 }}>Monto</th>
@@ -459,6 +513,7 @@ function ConciliacionInsumosPage({ showToast }) {
                     return (
                       <tr key={`${it.facturaId}|${it.itemIdx}`} style={esEmpresa ? { opacity: 0.7 } : null}>
                         <td className="col-p">{it.descripcion}<div style={{ fontSize: 10, color: 'var(--tm)' }}>{it.proveedor}</div></td>
+                        <td style={{ fontSize: 11.5, color: 'var(--ts)' }}>{companyNombre(it.companyId) || <span style={{ color: 'var(--tm)' }}>—</span>}</td>
                         <td style={{ fontSize: 11, color: 'var(--tm)' }}>{it.doc || '—'}<div style={{ fontSize: 10 }}>{it.fecha}</div></td>
                         <td style={{ textAlign: 'right', fontSize: 12 }}>{fmtN(it.cantidad)} {it.unidad}</td>
                         <td style={{ textAlign: 'right', fontSize: 12 }}>{fmtS(it.cantidad * it.precio)}</td>

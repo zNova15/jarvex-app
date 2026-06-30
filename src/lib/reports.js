@@ -92,3 +92,26 @@ export async function generateExcel({ sheetName, columnas, filas, filename }) {
   XLSX.utils.book_append_sheet(wb, ws, sheetName.substring(0, 31));
   XLSX.writeFile(wb, filename);
 }
+
+// Igual que generateExcel pero con VARIAS hojas en un mismo libro.
+// sheets: [{ name, columnas, filas }]. Hojas vacías (sin filas) se incluyen
+// igual (solo con los encabezados) para no confundir al usuario.
+export async function generateExcelSheets({ sheets, filename }) {
+  const XLSX = await loadXLSX();
+  const wb = XLSX.utils.book_new();
+  const usados = new Set();
+  (sheets || []).forEach((s, idx) => {
+    const columnas = s.columnas || [];
+    const filas = s.filas || [];
+    const ws = XLSX.utils.aoa_to_sheet([columnas, ...filas]);
+    ws['!cols'] = columnas.map((col, i) => ({
+      wch: Math.min(Math.max(String(col).length, ...filas.map(row => String(row[i] ?? '').length), 0) + 2, 40),
+    }));
+    // Nombre de hoja: ≤31 chars, único (Excel rechaza duplicados).
+    let nombre = String(s.name || `Hoja${idx + 1}`).substring(0, 31) || `Hoja${idx + 1}`;
+    while (usados.has(nombre.toLowerCase())) nombre = nombre.substring(0, 28) + (idx + 1);
+    usados.add(nombre.toLowerCase());
+    XLSX.utils.book_append_sheet(wb, ws, nombre);
+  });
+  XLSX.writeFile(wb, filename);
+}
