@@ -1131,6 +1131,11 @@ const __ASISTENTE_ADMIN_ITEMS = [
 // Allowlist necesaria: 'cont-dashboard' comparte el módulo 'Movs. Contables' con
 // 'movimientos-contables', así que sin allowlist el ayudante vería el dashboard (no debe).
 const __AYUDANTE_CONTADOR_ITEMS = [
+  // 'cont-dashboard' = tile "Contabilidad" en el Inicio: sin él, el ayudante no
+  // tenía ENTRADA al área Contabilidad general y por eso no veía Empresas (que
+  // vive en esa área, no tiene tile propio). Con él entra y el sidebar de esa
+  // área le muestra Empresas + Movimientos.
+  'cont-dashboard',
   'captura-magica', 'personal', 'empresas', 'proveedores', 'movimientos-contables', 'cuentas-bancarias',
   'conciliacion-insumos', // enlaza facturas ↔ insumos presupuestados (Vinculación 2)
   'solicitudes', // ve "Mis solicitudes" (sus pedidos de cambio); la aprobación es del contador/admin

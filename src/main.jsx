@@ -335,6 +335,32 @@ function Root() {
     }
   }, [auth?.profile?.id]);
 
+  // Subir evidencias PENDIENTES de forma continua. Antes SOLO se disparaba al
+  // montar y al login → una foto guardada durante la sesión (ej. un ingeniero
+  // reportando avance desde el celular en obra, sin recargar la app en horas)
+  // quedaba PENDING con el blob solo en el dispositivo y NUNCA subía al server:
+  // ni el admin ni el propio ingeniero (en otro equipo) la veían, y si el
+  // navegador desalojaba el IndexedDB, se perdía. Ahora también disparamos:
+  //   · tras guardar una evidencia (evento jx_data_changed, debounced)
+  //   · cada 45s (respaldo para sesiones largas / reintentos)
+  //   · al recuperar conexión
+  // El guard interno de uploadPendingEvidencias evita corridas concurrentes.
+  React.useEffect(() => {
+    let deb = null;
+    const kick = (delay = 1500) => { clearTimeout(deb); deb = setTimeout(() => { uploadPendingEvidencias().catch(() => {}); }, delay); };
+    const onData = (e) => {
+      const src = e?.detail?.source;
+      if (src === 'evidence-upload' || src === 'pull' || src === 'realtime') return; // no re-disparar por nuestro propio aviso ni por datos que llegan del server
+      const t = e?.detail?.tabla || e?.detail?.table;
+      if (!t || t === 'evidencias') kick();
+    };
+    const onOnline = () => kick(500);
+    window.addEventListener('jx_data_changed', onData);
+    window.addEventListener('online', onOnline);
+    const iv = setInterval(() => { if (navigator.onLine) uploadPendingEvidencias().catch(() => {}); }, 45000);
+    return () => { clearTimeout(deb); clearInterval(iv); window.removeEventListener('jx_data_changed', onData); window.removeEventListener('online', onOnline); };
+  }, []);
+
   const App = window.App;
   if (!App) return <div style={{ color: '#fff', padding: 20 }}>Cargando JARVEX...</div>;
 

@@ -180,26 +180,48 @@ async function reactivarFallidasConBlob() {
 
 // ── Upload de todas las evidencias pendientes ─────────────────────────
 
+// Guard anti-concurrencia: esta función ahora se dispara desde varios lados
+// (montar, login, tras guardar una evidencia, cada 45s, al reconectar). Sin el
+// guard, dos corridas simultáneas procesarían el mismo PENDING → doble compresión
+// y doble subida (egress desperdiciado, carreras al borrar el blob).
+let _uploadingPending = false;
+
 export async function uploadPendingEvidencias() {
   if (!navigator.onLine) return;
+  if (_uploadingPending) return;
+  _uploadingPending = true;
+  try {
+    // Recuperar evidencias que quedaron 'failed' pero cuyo blob SIGUE en IndexedDB
+    // (el blob solo se borra tras subir blob+metadata OK). Caso real: los ingenieros
+    // no podían subir a Storage por la RLS (mig 104) → sus fotos de avance quedaron
+    // 'failed' localmente. Tras el fix, reactivarlas para que se suban al fin.
+    await reactivarFallidasConBlob();
 
-  // Recuperar evidencias que quedaron 'failed' pero cuyo blob SIGUE en IndexedDB
-  // (el blob solo se borra tras subir blob+metadata OK). Caso real: los ingenieros
-  // no podían subir a Storage por la RLS (mig 104) → sus fotos de avance quedaron
-  // 'failed' localmente. Tras el fix, reactivarlas para que se suban al fin.
-  await reactivarFallidasConBlob();
+    const pending = await db.evidencias
+      .where('sync_status').equals(UPLOAD_STATUS.PENDING)
+      .toArray();
 
-  const pending = await db.evidencias
-    .where('sync_status').equals(UPLOAD_STATUS.PENDING)
-    .toArray();
+    let subidas = 0;
+    for (const ev of pending) {
+      await uploadEvidencia(ev.id);
+      try {
+        const post = await db.evidencias.get(ev.id);
+        if (post?.sync_status === UPLOAD_STATUS.UPLOADED) subidas++;
+      } catch {}
+    }
+    // Avisar a los visores abiertos (source propio para que el trigger de main.jsx
+    // no re-dispare en bucle). Sin esto, tras subir en segundo plano la foto seguía
+    // mostrándose como "subiendo" hasta recargar.
+    if (subidas > 0) {
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'evidencias', source: 'evidence-upload' } })); } catch {}
+    }
 
-  for (const ev of pending) {
-    await uploadEvidencia(ev.id);
+    // Recuperar la metadata de evidencias ya subidas que el bug del CHECK dejó
+    // fuera del server (una sola vez por sesión).
+    await recuperarMetadataSubidas();
+  } finally {
+    _uploadingPending = false;
   }
-
-  // Recuperar la metadata de evidencias ya subidas que el bug del CHECK dejó
-  // fuera del server (una sola vez por sesión).
-  await recuperarMetadataSubidas();
 }
 
 // ── Guardar evidencia localmente (con blob) ───────────────────────────

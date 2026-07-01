@@ -1959,6 +1959,14 @@ function IntercompanyPage({ showToast }) {
 // ║  DASHBOARD CONTABLE                                        ║
 // ╚════════════════════════════════════════════════════════════╝
 function ContabilidadDashboardPage({ showToast }) {
+  // Vincular/cerrar un ingreso sin sustento ESCRIBE en movimientos_materiales
+  // (módulo 'Mov. Materiales'). Si el rol no puede pushear esa tabla (contador y
+  // ayudante tienen 'x' ahí), el cambio se aplicaría solo en local y nunca
+  // sincronizaría → inconsistencia entre dispositivos. Por eso solo mostramos las
+  // acciones a quien SÍ puede pushear (almacén/admin); el resto ve el aviso pero
+  // no puede disparar la escritura rota (lo resuelve almacén en "Compras pendientes").
+  const _dashRol = window.__useAuth?.()?.profile?.rol;
+  const canVincSustento = _dashRol === 'admin' || (window.__hasPerm?.(_dashRol, 'Mov. Materiales', 'w') ?? false);
   const { data: companies } = window.__hooks.useCompanies();
   const { data: movs } = window.__hooks.useAccountingMovements();
   const { data: materiales } = window.__hooks.useMateriales();
@@ -2194,12 +2202,18 @@ function ContabilidadDashboardPage({ showToast }) {
                     <div style={{ fontSize:10.5, color:'var(--tm)', fontStyle:'italic' }}>
                       {mov.observaciones_almacen || '—'}
                     </div>
-                    <button className="btn btn-amber btn-sm" onClick={()=>setVincularModal(mov)} title="Vincular a una factura existente de este proveedor">
-                      <JxIcon name="link" size={11}/> Vincular factura
-                    </button>
-                    <button className="btn btn-ghost btn-sm" onClick={()=>setCerrarSinFacturaModal(mov)} title="Marcar como consumo sin factura">
-                      <JxIcon name="x" size={11}/> Sin factura
-                    </button>
+                    {canVincSustento ? (
+                      <>
+                        <button className="btn btn-amber btn-sm" onClick={()=>setVincularModal(mov)} title="Vincular a una factura existente de este proveedor">
+                          <JxIcon name="link" size={11}/> Vincular factura
+                        </button>
+                        <button className="btn btn-ghost btn-sm" onClick={()=>setCerrarSinFacturaModal(mov)} title="Marcar como consumo sin factura">
+                          <JxIcon name="x" size={11}/> Sin factura
+                        </button>
+                      </>
+                    ) : (
+                      <span style={{ gridColumn:'3 / span 2', fontSize:10.5, color:'var(--tm)', fontStyle:'italic', textAlign:'right' }} title="Esta acción escribe en almacén; la resuelve el almacenero en 'Compras pendientes'">Lo vincula almacén</span>
+                    )}
                   </div>
                 ))}
               </div>
