@@ -36,22 +36,26 @@ const TILES = [
 // Accesos rápidos POR ROL dentro de cada obra (páginas de plano OBRA). El almacén,
 // las partidas, etc. son por-obra → cada rol ve su entrada en la tarjeta de la obra,
 // que lo lleva directo a su trabajo en ESA obra. Se filtran por __canSeeSidebarItem.
+// [label, page, icono]. El ícono hace los chips más visibles como accesos reales
+// (antes eran píldoras sutiles que pasaban desapercibidas). El admin/gerente/jefe
+// de compras ahora tienen ALMACÉN directo (materiales y herramientas) sin tener
+// que entrar al workspace y navegar las secciones.
 const ACCESOS_OBRA = {
-  admin:               [['Gestión', 'dashboard-gestion'], ['Almacén', 'mov-materiales'], ['Contabilidad', 'movimientos-contables'], ['Conciliación', 'conciliacion-insumos']],
-  gerente:             [['Gestión', 'dashboard-gestion'], ['Avance', 'avance'], ['Contabilidad', 'movimientos-contables']],
-  ingeniero_residente: [['Avance', 'avance'], ['Partidas', 'partidas'], ['Aprobaciones', 'aprobaciones-reporte']],
-  ingeniero:           [['Mis Partidas', 'mis-partidas'], ['Reporte Diario', 'reporte-diario'], ['Vinculación', 'salidas-frente']],
-  supervisor:          [['Asistencia', 'asistencia'], ['Avance', 'avance'], ['Almacén', 'mov-materiales']],
-  almacenero:          [['Almacén', 'mov-materiales'], ['Herramientas', 'mov-herramientas'], ['Compras pend.', 'compras-pendientes']],
-  asistente_admin:     [['Gestión', 'dashboard-gestion'], ['Partidas', 'partidas'], ['Personal', 'personal']],
-  contador:            [['Movimientos', 'movimientos-contables'], ['Conciliación', 'conciliacion-insumos'], ['Avance', 'avance']],
-  ayudante_contador:   [['Movimientos', 'movimientos-contables'], ['Conciliación', 'conciliacion-insumos']],
-  tesorero:            [['Movimientos', 'movimientos-contables']],
-  jefe_compras:        [['Requisiciones', 'requisiciones'], ['Órdenes de Compra', 'ordenes-compra'], ['Compras pend.', 'compras-pendientes']],
-  rrhh:                [['Personal', 'personal'], ['Asistencia', 'asistencia'], ['Planillas', 'planillas']],
-  prevencionista:      [['IPERC', 'iperc'], ['Charlas', 'charlas-seguridad'], ['Inspecciones', 'inspecciones-seguridad']],
-  maestro_obra:        [['Avance', 'avance'], ['Asistencia', 'asistencia']],
-  solo_lectura:        [['Gestión', 'dashboard-gestion'], ['Avance', 'avance']],
+  admin:               [['Gestión', 'dashboard-gestion', 'dashboard'], ['Materiales', 'mov-materiales', 'package'], ['Herramientas', 'mov-herramientas', 'tool'], ['Contabilidad', 'movimientos-contables', 'dollar'], ['Conciliación', 'conciliacion-insumos', 'compare'], ['Avance', 'avance', 'chart']],
+  gerente:             [['Gestión', 'dashboard-gestion', 'dashboard'], ['Almacén', 'mov-materiales', 'package'], ['Avance', 'avance', 'chart'], ['Contabilidad', 'movimientos-contables', 'dollar']],
+  ingeniero_residente: [['Avance', 'avance', 'chart'], ['Partidas', 'partidas', 'clipboard'], ['Aprobaciones', 'aprobaciones-reporte', 'checkCircle']],
+  ingeniero:           [['Mis Partidas', 'mis-partidas', 'clipboard'], ['Reporte Diario', 'reporte-diario', 'chart'], ['Vinculación', 'salidas-frente', 'compare']],
+  supervisor:          [['Asistencia', 'asistencia', 'clipboard'], ['Avance', 'avance', 'chart'], ['Almacén', 'mov-materiales', 'package']],
+  almacenero:          [['Materiales', 'mov-materiales', 'package'], ['Herramientas', 'mov-herramientas', 'tool'], ['Compras pend.', 'compras-pendientes', 'clipboard']],
+  asistente_admin:     [['Gestión', 'dashboard-gestion', 'dashboard'], ['Partidas', 'partidas', 'clipboard'], ['Personal', 'personal', 'clipboard']],
+  contador:            [['Movimientos', 'movimientos-contables', 'dollar'], ['Conciliación', 'conciliacion-insumos', 'compare'], ['Avance', 'avance', 'chart']],
+  ayudante_contador:   [['Movimientos', 'movimientos-contables', 'dollar'], ['Conciliación', 'conciliacion-insumos', 'compare']],
+  tesorero:            [['Movimientos', 'movimientos-contables', 'dollar']],
+  jefe_compras:        [['Requisiciones', 'requisiciones', 'clipboard'], ['Órdenes de Compra', 'ordenes-compra', 'truck'], ['Compras pend.', 'compras-pendientes', 'clipboard'], ['Almacén', 'mov-materiales', 'package']],
+  rrhh:                [['Personal', 'personal', 'clipboard'], ['Asistencia', 'asistencia', 'clipboard'], ['Planillas', 'planillas', 'dollar']],
+  prevencionista:      [['IPERC', 'iperc', 'clipboard'], ['Charlas', 'charlas-seguridad', 'clipboard'], ['Inspecciones', 'inspecciones-seguridad', 'checkCircle']],
+  maestro_obra:        [['Avance', 'avance', 'chart'], ['Asistencia', 'asistencia', 'clipboard']],
+  solo_lectura:        [['Gestión', 'dashboard-gestion', 'dashboard'], ['Avance', 'avance', 'chart']],
 };
 
 function InicioPage({ onNav, onEnterObra }) {
@@ -62,7 +66,7 @@ function InicioPage({ onNav, onEnterObra }) {
   const canSee = (id) => (!rol || rol === 'admin') ? true : (window.__canSeeSidebarItem?.(rol, id) ?? true);
   const tiles = uMI(() => TILES.filter(t => canSee(t.id)), [rol]);
   // Accesos rápidos por rol DENTRO de cada obra (máx 4, solo los permitidos).
-  const accesosObra = uMI(() => (ACCESOS_OBRA[rol] || []).filter(([, p]) => canSee(p)).slice(0, 4), [rol]);
+  const accesosObra = uMI(() => (ACCESOS_OBRA[rol] || []).filter(([, p]) => canSee(p)).slice(0, 6), [rol]);
 
   // Obras asignadas (null = ve todas). Y avance físico + facturado por obra para
   // las tarjetas (partidas + conciliacion_vinculos — tablas livianas; NO cargamos
@@ -169,14 +173,15 @@ function InicioPage({ onNav, onEnterObra }) {
                   )}
                 </div>
               </div>
-              {/* Accesos rápidos del rol DENTRO de esta obra */}
+              {/* Accesos rápidos del rol DENTRO de esta obra (entran directo a la
+                  página, sin pasar por el workspace + navegar secciones) */}
               {accesosObra.length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, paddingLeft: 46 }}>
-                  {accesosObra.map(([lbl, pg]) => (
+                  {accesosObra.map(([lbl, pg, ic]) => (
                     <button key={pg} className="btn btn-ghost btn-xs" title={`${lbl} de esta obra`}
                             onClick={() => onEnterObra?.(o.id, pg)}
-                            style={{ border: '1px solid var(--bd)', fontSize: 10.5, padding: '3px 8px' }}>
-                      {lbl}
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px solid var(--bd)', fontSize: 10.5, padding: '3px 8px' }}>
+                      {ic && <Icon name={ic} size={11} color="var(--amber)" />}{lbl}
                     </button>
                   ))}
                 </div>

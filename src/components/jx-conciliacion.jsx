@@ -85,6 +85,8 @@ function ConciliacionInsumosPage({ showToast }) {
   const [pickItem, setPickItem] = uS(null); // ítem de factura que se está vinculando a un insumo
   const [solicitarTarget, setSolicitarTarget] = uS(null); // ítem para "Solicitar cambio de vinculación" (ayudante)
   const [filtroVinc, setFiltroVinc] = uS('todos'); // 'todos' | 'sin' | 'con' (separa vinculados de no vinculados)
+  const [fechaDesde, setFechaDesde] = uS(''); // rango de fechas para filtrar/exportar (por fecha del comprobante)
+  const [fechaHasta, setFechaHasta] = uS('');
 
   // Si el rol carga tarde (o cambia) y un no-autorizado quedó en "Por Presupuesto",
   // lo devolvemos a "Insumos Comprados".
@@ -337,44 +339,54 @@ function ConciliacionInsumosPage({ showToast }) {
   // ¿El ítem tiene al menos un vínculo a un insumo presupuestado?
   const estaVinculado = (it) => (vincPorItem.get(`${it.facturaId}|${it.itemIdx}`) || []).length > 0;
 
-  // Ítems comprados filtrados (pestaña "Insumos Comprados").
-  const itemsComprados = uM(() => {
+  // Base: ítems filtrados por BÚSQUEDA + RANGO DE FECHAS (sin el filtro de vínculo).
+  // La exportación usa esta base → sale filtrada por fecha, con ambos tipos.
+  const itemsBase = uM(() => {
     const qn = norm(qItems);
-    return items
-      .filter(it => !qn || norm(it.descripcion).includes(qn) || norm(it.proveedor).includes(qn))
+    return items.filter(it =>
+      (!qn || norm(it.descripcion).includes(qn) || norm(it.proveedor).includes(qn)) &&
+      (!fechaDesde || (it.fecha || '') >= fechaDesde) &&
+      (!fechaHasta || (it.fecha || '') <= fechaHasta)
+    );
+  }, [items, qItems, fechaDesde, fechaHasta]);
+
+  // Ítems comprados mostrados en la tabla (base + filtro de vínculo).
+  const itemsComprados = uM(() =>
+    itemsBase
       .filter(it => filtroVinc === 'todos' || (filtroVinc === 'con' ? estaVinculado(it) : !estaVinculado(it)))
-      .sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
-  }, [items, qItems, filtroVinc, vincPorItem]);
+      .sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)))
+  , [itemsBase, filtroVinc, vincPorItem]);
 
-  // Conteos para los chips del filtro (sobre TODOS los ítems, sin el filtro de vínculo).
+  // Conteos para los chips del filtro (sobre la base ya filtrada por fecha/búsqueda).
   const vincCounts = uM(() => {
-    let con = 0; for (const it of items) if (estaVinculado(it)) con++;
-    return { total: items.length, con, sin: items.length - con };
-  }, [items, vincPorItem]);
+    let con = 0; for (const it of itemsBase) if (estaVinculado(it)) con++;
+    return { total: itemsBase.length, con, sin: itemsBase.length - con };
+  }, [itemsBase, vincPorItem]);
 
-  // Exporta a Excel los ítems comprados de la obra en 2 hojas: "Sin vincular" y
-  // "Vinculados" (con destino + insumo presupuestado al que se vinculó).
+  // Exporta a Excel en 2 hojas ("Sin vincular" y "Vinculados") los ítems del
+  // RANGO/búsqueda actual (ambos tipos — el filtro de vínculo es solo de vista).
   const exportarExcel = async () => {
     try {
       const { generateExcelSheets } = await import('../lib/reports.js');
       const sin = [], con = [];
-      for (const it of items) {
+      for (const it of itemsBase) {
         const emp = companyNombre(it.companyId) || '';
         const monto = +(it.cantidad * it.precio).toFixed(2);
         const vs = vincPorItem.get(`${it.facturaId}|${it.itemIdx}`) || [];
-        const base = [it.descripcion, emp, it.doc || '', it.cantidad, it.unidad, monto];
+        const base = [it.descripcion, emp, it.doc || '', it.fecha || '', it.cantidad, it.unidad, monto];
         if (vs.length > 0) {
           con.push([...base, it.destino === 'empresa' ? 'Empresa' : 'Obra', vs.map(v => v.insumo_nombre || v.insumo_codigo || '').filter(Boolean).join(' + ')]);
         } else {
           sin.push(base);
         }
       }
-      const fecha = new Date().toISOString().slice(0, 10);
+      if (!sin.length && !con.length) { toast('No hay ítems en el filtro seleccionado para exportar', 'amber'); return; }
+      const rango = (fechaDesde || fechaHasta) ? `_${fechaDesde || 'inicio'}_a_${fechaHasta || 'hoy'}` : '';
       await generateExcelSheets({
-        filename: `JARVEX_insumos_comprados_${fecha}.xlsx`,
+        filename: `JARVEX_insumos_comprados${rango || '_' + new Date().toISOString().slice(0, 10)}.xlsx`,
         sheets: [
-          { name: 'Sin vincular', columnas: ['Ítem', 'Empresa', 'Factura', 'Cantidad', 'Unidad', 'Monto'], filas: sin },
-          { name: 'Vinculados', columnas: ['Ítem', 'Empresa', 'Factura', 'Cantidad', 'Unidad', 'Monto', 'Destino', 'Insumo vinculado'], filas: con },
+          { name: 'Sin vincular', columnas: ['Ítem', 'Empresa', 'Factura', 'Fecha', 'Cantidad', 'Unidad', 'Monto'], filas: sin },
+          { name: 'Vinculados', columnas: ['Ítem', 'Empresa', 'Factura', 'Fecha', 'Cantidad', 'Unidad', 'Monto', 'Destino', 'Insumo vinculado'], filas: con },
         ],
       });
       toast(`Exportado: ${sin.length} sin vincular + ${con.length} vinculados`, 'green');
@@ -479,17 +491,24 @@ function ConciliacionInsumosPage({ showToast }) {
       {tab === 'comprados' && (<>
         <div className="card card-p" style={{ marginBottom: 12 }}>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-            <div className="search-bar" style={{ flex: '1 1 220px' }}><JxIcon name="search" size={14} color="var(--tm)" /><input placeholder="Buscar ítem comprado / proveedor…" value={qItems} onChange={e => setQItems(e.target.value)} /></div>
+            <div className="search-bar" style={{ flex: '1 1 200px' }}><JxIcon name="search" size={14} color="var(--tm)" /><input placeholder="Buscar ítem comprado / proveedor…" value={qItems} onChange={e => setQItems(e.target.value)} /></div>
             <div style={{ display: 'flex', gap: 4, background: 'var(--bg-s)', borderRadius: 8, padding: 3 }}>
               {[['todos', `Todos (${vincCounts.total})`], ['sin', `Sin vincular (${vincCounts.sin})`], ['con', `Vinculados (${vincCounts.con})`]].map(([k, lbl]) => (
                 <button key={k} className={`btn btn-xs ${filtroVinc === k ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setFiltroVinc(k)} style={{ fontSize: 11 }}>{lbl}</button>
               ))}
             </div>
-            <button className="btn btn-ghost btn-sm" onClick={exportarExcel} disabled={!items.length} title="Exportar a Excel (2 hojas: sin vincular y vinculados)">
+            <div style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 11, color: 'var(--tm)' }} title="Filtra y exporta por fecha del comprobante">
+              <span>Desde</span>
+              <input type="date" className="fi" value={fechaDesde} onChange={e => setFechaDesde(e.target.value)} style={{ padding: '4px 6px', fontSize: 11, width: 140 }} />
+              <span>Hasta</span>
+              <input type="date" className="fi" value={fechaHasta} onChange={e => setFechaHasta(e.target.value)} style={{ padding: '4px 6px', fontSize: 11, width: 140 }} />
+              {(fechaDesde || fechaHasta) && <button className="btn btn-ghost btn-xs" title="Limpiar rango" onClick={() => { setFechaDesde(''); setFechaHasta(''); }}><JxIcon name="x" size={11} /></button>}
+            </div>
+            <button className="btn btn-amber btn-sm" onClick={exportarExcel} disabled={!itemsBase.length} title="Exporta a Excel el rango/búsqueda actual (2 hojas: sin vincular y vinculados)">
               <JxIcon name="download" size={13} /> Exportar Excel
             </button>
           </div>
-          <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 6 }}>Clasificá cada ítem comprado: 🏗 Obra (entra al presupuesto/almacén de la obra) o 🏢 Empresa (consumo general/oficina). Vinculá los de obra a su insumo presupuestado.</div>
+          <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 6 }}>Clasificá cada ítem comprado: 🏗 Obra (entra al presupuesto/almacén de la obra) o 🏢 Empresa (consumo general/oficina). La exportación respeta la búsqueda y el rango de fechas.</div>
         </div>
         {loading ? (
           <div className="card card-p empty-state"><JxIcon name="package" size={32} color="var(--tm)" /><p>Cargando ítems comprados…</p></div>
