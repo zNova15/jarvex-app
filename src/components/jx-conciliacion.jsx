@@ -443,6 +443,7 @@ function ConciliacionInsumosPage({ showToast }) {
                 <th>Insumo presupuestado</th>
                 <th style={{ width: 90 }}>Tipo</th>
                 <th style={{ textAlign: 'right', width: 110 }}>Presupuestado</th>
+                <th style={{ textAlign: 'right', width: 100 }}>Costo unit.</th>
                 <th style={{ textAlign: 'right', width: 110 }}>Facturado</th>
                 <th style={{ textAlign: 'right', width: 100 }}>Almacén</th>
                 <th style={{ textAlign: 'right', width: 110 }}>Por comprar</th>
@@ -455,6 +456,7 @@ function ConciliacionInsumosPage({ showToast }) {
                     <td className="col-p">{f.nombre}<div style={{ fontSize: 10, color: 'var(--tm)' }}>{f.codigo.startsWith('sc:') ? 'sin código' : f.codigo}</div></td>
                     <td><span className={`badge ${TIPO_BADGE[f.tipo] || 'b-gray'}`} style={{ fontSize: 10 }}>{TIPO_LABEL[f.tipo] || f.tipo}</span></td>
                     <td style={{ textAlign: 'right' }}><div style={{ fontWeight: 600 }}>{fmtN(f.cantPresup)} {f.unidad}</div><div style={{ fontSize: 10, color: 'var(--tm)' }}>{fmtS(f.montoPresup)}</div></td>
+                    <td style={{ textAlign: 'right', fontSize: 12 }} title="Costo unitario presupuestado (monto ÷ cantidad; promedio ponderado si el insumo está en varias partidas)">{f.cantPresup > 0 ? fmtS(f.montoPresup / f.cantPresup) : '—'}</td>
                     <td style={{ textAlign: 'right', color: f.cantFact > 0 ? 'var(--green)' : 'var(--tm)' }}><div style={{ fontWeight: 600 }}>{fmtN(f.cantFact)}</div><div style={{ fontSize: 10 }}>{fmtS(f.montoFact)}</div></td>
                     <td style={{ textAlign: 'right', fontSize: 12, color: 'var(--blue)' }}>{fmtN(f.cantIngresada)}</td>
                     <td style={{ textAlign: 'right', fontWeight: 700, color: f.saldoComprarCant > 0.001 ? 'var(--amber)' : 'var(--green)' }}>{fmtN(f.saldoComprarCant)}<div style={{ fontSize: 10, fontWeight: 400 }}>{fmtS(f.saldoComprarMonto)}</div></td>
