@@ -111,6 +111,108 @@ function ChangeDiff({ changes }) {
   );
 }
 
+// ─── Contexto del registro objetivo de una solicitud ─────────────────
+// El admin veía "salida · CODO INY..." sin saber QUÉ movimiento era (fecha,
+// cantidad, frente...). Esto lee el registro real de Dexie y muestra un
+// resumen + un modal "Ver registro" con todos los campos legibles.
+const CTX_OCULTOS = new Set(['id', 'sync_status', 'version', 'created_by', 'updated_by', 'last_synced_at', 'idempotency_key', 'demo', 'blob_ref', 'local_path_temporal', 'upload_retries', 'updated_at']);
+// FK conocidas → cómo resolver su nombre legible.
+const CTX_LOOKUPS = {
+  material_id: { tabla: 'materiales', campo: 'nombre_material' },
+  herramienta_id: { tabla: 'herramientas', campo: 'nombre_herramienta' },
+  epp_id: { tabla: 'epps', campo: 'nombre_epp' },
+  frente_id: { tabla: 'frentes_obra', campo: 'nombre' },
+  obra_id: { tabla: 'obras', campo: 'nombre_obra' },
+  personal_id: { tabla: 'personal', campo: (p) => `${p.nombres || ''} ${p.apellidos || ''}`.trim() },
+  // responsable_id: en almacén apunta a personal; en avance_obra (reportes de
+  // ingeniero) es el id del USUARIO (profiles) → fallback si personal no lo tiene.
+  responsable_id: { tabla: 'personal', campo: (p) => `${p.nombres || ''} ${p.apellidos || ''}`.trim(), fallback: { tabla: 'profiles', campo: (p) => `${p.nombres || ''} ${p.apellidos || ''}`.trim() || p.email || '' } },
+  proveedor_id: { tabla: 'proveedores', campo: 'razon_social' },
+  partida_id: { tabla: 'partidas', campo: 'nombre_partida' },
+  ubicacion_id: { tabla: 'ubicaciones_obra', campo: 'nombre' },
+  subcontratista_id: { tabla: 'subcontratistas', campo: 'razon_social' },
+};
+function ContextoRegistro({ table, recordId }) {
+  const [reg, setReg] = uSS(undefined);          // undefined=cargando · null=no está · objeto
+  const [nombres, setNombres] = uSS({});         // fk campo → nombre legible
+  const [verDetalle, setVerDetalle] = uSS(false);
+  uES(() => {
+    let cancel = false;
+    (async () => {
+      try {
+        const r = await window.__db?.[table]?.get(recordId);
+        if (cancel) return;
+        if (!r) { setReg(null); return; }
+        setReg(r);
+        const res = {};
+        for (const [campo, lk] of Object.entries(CTX_LOOKUPS)) {
+          if (!r[campo]) continue;
+          try {
+            const row = await window.__db?.[lk.tabla]?.get(r[campo]);
+            let val = row ? (typeof lk.campo === 'function' ? lk.campo(row) : (row[lk.campo] || null)) : null;
+            if (!val && lk.fallback) {
+              const row2 = await window.__db?.[lk.fallback.tabla]?.get(r[campo]);
+              if (row2) val = typeof lk.fallback.campo === 'function' ? lk.fallback.campo(row2) : (row2[lk.fallback.campo] || null);
+            }
+            if (val) res[campo] = val;
+          } catch {}
+        }
+        if (!cancel) setNombres(res);
+      } catch { if (!cancel) setReg(null); }
+    })();
+    return () => { cancel = true; };
+  }, [table, recordId]);
+
+  if (reg === undefined) return null;
+  if (reg === null) {
+    return <div style={{ fontSize: 11, color: 'var(--tm)', fontStyle: 'italic', marginBottom: 8 }}>⚠ El registro no está en este dispositivo (pudo ser eliminado o aún no sincronizó).</div>;
+  }
+  // Resumen: los datos que ubican el registro de un vistazo.
+  const partes = [];
+  if (reg.fecha) partes.push(String(reg.fecha));
+  if (reg.tipo_movimiento || reg.accion) partes.push(String(reg.tipo_movimiento || reg.accion).toUpperCase());
+  const insumo = nombres.material_id || nombres.herramienta_id || nombres.epp_id;
+  if (insumo) partes.push(insumo);
+  if (reg.cantidad != null) partes.push(`${reg.cantidad} ${reg.unidad || ''}`.trim());
+  if (nombres.frente_id) partes.push(`Frente: ${nombres.frente_id}`);
+  if (nombres.personal_id || nombres.responsable_id) partes.push(`Resp.: ${nombres.personal_id || nombres.responsable_id}`);
+  if (nombres.obra_id) partes.push(`Obra: ${nombres.obra_id}`);
+  const fmtV = (k, v) => {
+    if (v == null || v === '') return '—';
+    if (typeof v === 'boolean') return v ? 'Sí' : 'No';
+    if (nombres[k]) return `${nombres[k]}`;
+    if (typeof v === 'object') { try { return JSON.stringify(v).slice(0, 200); } catch { return '[objeto]'; } }
+    const s = String(v);
+    if (/_at$/.test(k)) { try { return new Date(s).toLocaleString('es-PE'); } catch { return s; } }
+    return s.length > 220 ? s.slice(0, 220) + '…' : s;
+  };
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--tm)', letterSpacing: '.08em' }}>REGISTRO A MODIFICAR</div>
+        <button className="btn btn-ghost btn-xs" style={{ fontSize: 10 }} onClick={() => setVerDetalle(v => !v)}>
+          {verDetalle ? 'Ocultar detalle' : 'Ver registro completo'}
+        </button>
+      </div>
+      {partes.length > 0 && (
+        <div style={{ fontSize: 12, color: 'var(--ts)', marginTop: 4 }}>📄 {partes.join(' · ')}</div>
+      )}
+      {verDetalle && (
+        <div style={{ marginTop: 8, background: 'var(--bg-s)', border: '1px solid var(--bd)', borderRadius: 8, padding: '10px 12px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '6px 16px' }}>
+          {Object.entries(reg)
+            .filter(([k, v]) => !CTX_OCULTOS.has(k) && !k.startsWith('_') && v !== null && v !== '' && v !== undefined)
+            .map(([k, v]) => (
+              <div key={k} style={{ fontSize: 11.5, minWidth: 0 }}>
+                <span style={{ color: 'var(--tm)' }}>{k.replace(/_/g, ' ')}: </span>
+                <span style={{ color: 'var(--ts)', wordBreak: 'break-word' }}>{fmtV(k, v)}</span>
+              </div>
+            ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── SolicitudesPage ─────────────────────────────────────
 function SolicitudesPage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
@@ -400,6 +502,8 @@ function SolicitudesPage({ showToast }) {
                 <span className={`badge ${STATUS_BADGE.pendiente.class}`}>{STATUS_BADGE.pendiente.label}</span>
               </div>
 
+              <ContextoRegistro table={req.target_table} recordId={req.target_record_id} />
+
               <div style={{ marginBottom: 10 }}>
                 <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--tm)', letterSpacing: '.08em', marginBottom: 6 }}>CAMBIOS PROPUESTOS</div>
                 <ChangeDiff changes={req.proposed_changes} />
@@ -543,6 +647,33 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
   const fieldDef = allFields.find(f => f.key === field) || null;
   const esDescriptivo = fieldDef?.descriptive === true;
   const oldValue = record?.[field];
+  // Paso de CONFIRMACIÓN antes de enviar: la solicitante ve el diff exacto
+  // ("pasará de X → Y") y confirma. Nació del caso real: se quería cambiar
+  // 'VARILLA ... 7cm' → '...70cm' (agregar un 0) y llegó "nombre → 10" porque
+  // el valor propuesto arrancaba VACÍO e invitaba a escribir "lo que cambia"
+  // en vez del valor completo. Ahora el campo se PRE-LLENA con el valor actual
+  // (se EDITA, no se re-escribe) y el diff se confirma antes de salir.
+  const [confirmData, setConfirmData] = uSS(null); // null | { parsedNew }
+
+  // Al elegir campo: pre-llenar el valor propuesto con el ACTUAL para editarlo
+  // (solo campos de texto/número/fecha; los de opciones usan su select).
+  const elegirCampo = (k) => {
+    setField(k);
+    setConfirmData(null);
+    const def = allFields.find(f => f.key === k);
+    if (!k || !def || def.descriptive || def.options) { setNewValue(''); return; }
+    let v = record?.[k];
+    if (v == null || v === '') { setNewValue(''); return; }
+    if (def.type === 'date') v = String(v).slice(0, 10);
+    setNewValue(String(v));
+  };
+
+  // Etiqueta legible de un valor (para campos con options: uuid → nombre).
+  const labelDe = (v) => {
+    if (!fieldDef?.options) return v == null ? null : String(v);
+    const o = fieldDef.options.find(x => String(x.value ?? x) === String(v ?? ''));
+    return o ? (o.label ?? o) : (v == null ? null : String(v));
+  };
 
   // Algunos campos tienen una opción con value '' legítima (ej. subcontratista_id
   // → "Directo de la empresa"). En esos casos '' es una elección válida que
@@ -614,18 +745,18 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
     const oldStr = oldValue == null ? '' : String(oldValue);
     const newStr = parsedNew == null ? '' : String(parsedNew);
     if (oldStr === newStr) {
-      showToast('El valor propuesto es igual al actual. Cambialo o elegí "Otro dato".', 'red');
+      showToast('El valor propuesto es igual al actual. Editalo o elegí "Otro dato".', 'red');
       return;
     }
 
-    // Etiquetas legibles para el diff (ej. frente_id → nombre del frente). El
-    // admin verá "Frente de trabajo: Frente A → Frente B" en vez de uuids.
-    const labelDe = (v) => {
-      if (!fieldDef?.options) return v == null ? null : String(v);
-      const o = fieldDef.options.find(x => String(x.value ?? x) === String(v ?? ''));
-      return o ? (o.label ?? o) : (v == null ? null : String(v));
-    };
+    // Paso de confirmación: mostrar el diff exacto antes de enviar.
+    setConfirmData({ parsedNew });
+  };
 
+  // Envío real (tras confirmar el diff). Las etiquetas legibles (uuid → nombre
+  // de frente, etc.) van en oldLabel/newLabel para el diff del admin.
+  const enviarConfirmado = async () => {
+    const parsedNew = confirmData?.parsedNew;
     setBusy(true);
     try {
       await window.__changeRequests.create({
@@ -694,11 +825,39 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
         </div>
       )}
 
-      {mode === 'edit' ? (
+      {mode === 'edit' && confirmData ? (
+        // ── Paso 2: CONFIRMACIÓN — la solicitante ve el diff exacto y confirma ──
+        (() => {
+          const oldStr = oldValue == null ? '' : String(oldValue);
+          const newStr = confirmData.parsedNew == null ? '' : String(confirmData.parsedNew);
+          const esTextoLibre = !fieldDef?.type && !fieldDef?.options;
+          const warnCorto = esTextoLibre && oldStr.length >= 8 && newStr.length > 0 && newStr.length < oldStr.length * 0.5;
+          return (
+            <div>
+              <div style={{ fontSize: 12.5, color: 'var(--ts)', marginBottom: 10 }}>Revisá que el cambio sea EXACTAMENTE lo que querés pedir:</div>
+              <div style={{ background: 'var(--bg-s)', border: '1px solid var(--bd)', borderRadius: 8, padding: '12px 14px', marginBottom: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--tm)', marginBottom: 8 }}>{fieldDef?.label || field}</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', fontSize: 13 }}>
+                  <span style={{ background: 'rgba(231,76,60,0.1)', border: '1px solid rgba(231,76,60,0.25)', color: '#EF6B5E', padding: '4px 10px', borderRadius: 6, textDecoration: 'line-through' }}>{labelDe(oldValue) ?? '—'}</span>
+                  <span style={{ color: 'var(--tm)' }}>→</span>
+                  <span style={{ background: 'rgba(46,204,113,0.1)', border: '1px solid rgba(46,204,113,0.25)', color: '#2ECC71', padding: '4px 10px', borderRadius: 6, fontWeight: 600 }}>{labelDe(confirmData.parsedNew) ?? '—'}</span>
+                </div>
+              </div>
+              {warnCorto && (
+                <div style={{ background: 'rgba(242,183,5,0.10)', border: '1px solid rgba(242,183,5,0.35)', borderRadius: 6, padding: 10, marginBottom: 10, fontSize: 12, color: 'var(--ts)' }}>
+                  <strong style={{ color: 'var(--amber)' }}>⚠ El valor nuevo es mucho más corto que el actual.</strong>
+                  <div style={{ marginTop: 4 }}>Recordá que esto reemplaza el campo <strong>completo</strong>. Si solo querías corregir una parte (ej. agregar un número), volvé con "Corregir" y editá el valor entero.</div>
+                </div>
+              )}
+              <div style={{ fontSize: 11.5, color: 'var(--tm)' }}>Motivo: <span style={{ color: 'var(--ts)' }}>{reason}</span></div>
+            </div>
+          );
+        })()
+      ) : mode === 'edit' ? (
         <div className="g2">
           <div>
             <label className="flabel">Campo a modificar *</label>
-            <select className="fi" value={field} onChange={e => { setField(e.target.value); setNewValue(''); }}>
+            <select className="fi" value={field} onChange={e => elegirCampo(e.target.value)}>
               <option value="">— Selecciona el campo —</option>
               {allFields.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
             </select>
@@ -724,14 +883,21 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
                   ))}
                 </select>
               ) : (
-                <input
-                  className="fi"
-                  type={fieldDef?.type === 'number' ? 'number' : fieldDef?.type === 'date' ? 'date' : 'text'}
-                  step={fieldDef?.type === 'number' ? '0.01' : undefined}
-                  placeholder="Nuevo valor"
-                  value={newValue}
-                  onChange={e => setNewValue(e.target.value)}
-                />
+                <>
+                  <input
+                    className="fi"
+                    type={fieldDef?.type === 'number' ? 'number' : fieldDef?.type === 'date' ? 'date' : 'text'}
+                    step={fieldDef?.type === 'number' ? '0.01' : undefined}
+                    placeholder="Valor completo del campo"
+                    value={newValue}
+                    onChange={e => setNewValue(e.target.value)}
+                  />
+                  {!fieldDef?.type && (
+                    <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 4, lineHeight: 1.4 }}>
+                      Este valor <strong>reemplaza el campo completo</strong>: editá arriba lo que necesites cambiar (no escribas solo la parte nueva).
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -767,15 +933,27 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
       )}
 
       <div className="modal-actions">
-        <button className="btn btn-ghost" disabled={busy} onClick={onClose}>Cancelar</button>
-        {mode === 'delete' ? (
-          <button className="btn btn-red" disabled={busy} onClick={submitDelete}>
-            <JxIcon name="trash" size={13} />{busy ? 'Enviando…' : 'Enviar Solicitud de Eliminación'}
-          </button>
+        {mode === 'edit' && confirmData ? (
+          <>
+            <button className="btn btn-ghost" disabled={busy} onClick={() => setConfirmData(null)}>← Corregir</button>
+            <button className="btn btn-amber" disabled={busy} onClick={enviarConfirmado}>
+              <JxIcon name="check" size={13} />{busy ? 'Enviando…' : 'Confirmar y enviar'}
+            </button>
+          </>
+        ) : mode === 'delete' ? (
+          <>
+            <button className="btn btn-ghost" disabled={busy} onClick={onClose}>Cancelar</button>
+            <button className="btn btn-red" disabled={busy} onClick={submitDelete}>
+              <JxIcon name="trash" size={13} />{busy ? 'Enviando…' : 'Enviar Solicitud de Eliminación'}
+            </button>
+          </>
         ) : (
-          <button className="btn btn-amber" disabled={busy} onClick={submitEdit}>
-            <JxIcon name="check" size={13} />{busy ? 'Enviando…' : 'Enviar Solicitud'}
-          </button>
+          <>
+            <button className="btn btn-ghost" disabled={busy} onClick={onClose}>Cancelar</button>
+            <button className="btn btn-amber" disabled={busy} onClick={submitEdit}>
+              <JxIcon name="check" size={13} />{busy ? 'Enviando…' : (esDescriptivo ? 'Enviar Solicitud' : 'Revisar y enviar')}
+            </button>
+          </>
         )}
       </div>
     </Modal>
