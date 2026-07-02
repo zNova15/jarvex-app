@@ -888,11 +888,16 @@ function PickInsumoModal({ item, maestra, obraId, vinculos, busy, toast, onVincu
   const sugerirIA = async () => {
     setAiLoading(true); setAiSug(null);
     try {
+      // La subcategoría clasificada (Fase 1) acota el pre-filtro: un ítem
+      // "cemento" prioriza insumos presupuestados de cemento.
+      const boost = (ins) => item.subcategoria ? 0.5 * fuzzyScore(item.subcategoria, ins.nombre) : 0;
       const pre = maestra
-        .map(ins => ({ ins, s: fuzzyScore(item.descripcion, ins.nombre) }))
+        .map(ins => ({ ins, s: fuzzyScore(item.descripcion, ins.nombre) + boost(ins) }))
         .sort((a, b) => b.s - a.s).slice(0, 50).map(x => x.ins);
       const sug = await sugerirInsumoMatch({
         itemName: item.descripcion, obraId,
+        // Clasificación como contexto para el matching semántico de la IA.
+        category: [item.categoria, item.subcategoria].filter(Boolean).join(' / '),
         third_party_name: item.proveedor || '',
         insumos: pre.map(i => ({ codigo: i.codigo, nombre: i.nombre, unidad: i.unidad, enEjecucion: !!i.enEjecucion })),
       });
@@ -903,11 +908,16 @@ function PickInsumoModal({ item, maestra, obraId, vinculos, busy, toast, onVincu
   };
   const candidatos = uM(() => {
     const qn = norm(buscar);
+    // Boost por subcategoría clasificada (Fase 2): los insumos del mismo grupo
+    // (cemento, fierro, tubería…) suben en la lista. El boost afecta SOLO el
+    // ORDEN — el % mostrado y el umbral verde usan la similitud pura del
+    // nombre (con boost sumado el badge podía superar el 100%).
+    const boost = (ins) => item.subcategoria ? 0.5 * fuzzyScore(item.subcategoria, ins.nombre) : 0;
     return maestra
       .filter(ins => !yaVinc.has(ins.codigo))
-      .map(ins => ({ ins, score: fuzzyScore(item.descripcion, ins.nombre) }))
+      .map(ins => { const base = fuzzyScore(item.descripcion, ins.nombre); return { ins, score: base, orden: base + boost(ins) }; })
       .filter(({ ins }) => !qn || norm(ins.nombre).includes(qn) || String(ins.codigo).toLowerCase().includes(qn.replace(/ /g, '')))
-      .sort((a, b) => b.score - a.score)
+      .sort((a, b) => b.orden - a.orden)
       .slice(0, 60);
   }, [maestra, yaVinc, item, buscar]);
   return (

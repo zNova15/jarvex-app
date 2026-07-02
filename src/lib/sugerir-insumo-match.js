@@ -3,7 +3,10 @@
 // Reusa el endpoint /api/sugerir-cuenta-pcge con action:'sugerir_insumo' (límite 12 funciones).
 import { apiFetch } from './api-client.js';
 
-const CACHE_KEY = 'jx_insumo_match_v1';
+// v2: la clave ahora incluye la CATEGORÍA clasificada (Fase 2) — sin eso, un
+// ítem clasificado después de cachear seguía devolviendo la sugerencia vieja
+// sin contexto por 24h. El bump invalida los hits pre-Fase-2 de un golpe.
+const CACHE_KEY = 'jx_insumo_match_v2';
 const TTL = 24 * 60 * 60 * 1000; // 24h
 const norm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
@@ -17,8 +20,9 @@ export async function sugerirInsumoMatch(payload) {
   const insumos = Array.isArray(payload?.insumos) ? payload.insumos : [];
   if (!itemName || !insumos.length) return { result: { coincidencias: [] }, razonamiento: '' };
 
-  // Cache por (obra | ítem): los insumos del presupuesto de una obra son estables.
-  const key = `${payload.obraId || ''}::${norm(itemName)}`;
+  // Cache por (obra | ítem | categoría): los insumos del presupuesto de una obra
+  // son estables; la categoría entra a la clave porque cambia el resultado.
+  const key = `${payload.obraId || ''}::${norm(itemName)}::${norm(payload.category || '')}`;
   const cache = readCache();
   const hit = cache[key];
   if (hit && (Date.now() - hit.t) < TTL) return { ...hit.v, _cached: true };

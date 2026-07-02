@@ -1069,6 +1069,9 @@ window.__moduleIdMap = {
   'movimientos-contables': 'Movs. Contables',
   'intercompany': 'Intercompany',
   'trazabilidad': 'Trazabilidad',
+  // Panel de designación de empresa emisora (Fase 3 del clasificador): decisión
+  // entre empresas del grupo → mismo módulo que Intercompany (jefe/admin; ayudante no).
+  'compras-categoria': 'Intercompany',
   'consolidado': 'Consolidado',
   'plan-cuentas': 'Plan de Cuentas',
   'libro-diario': 'Libro Diario',

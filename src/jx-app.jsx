@@ -345,6 +345,7 @@ function Header({ page, plano = 'obra', onInicio, onToggleSidebar, onLogout, pro
     'movimientos-contables':'Movimientos Contables', intercompany:'Operaciones entre Empresas',
     consolidado:'Consolidado del Grupo',
     trazabilidad:'Trazabilidad de Cadenas',
+    'compras-categoria':'Compras por Categoría',
     'captura-magica':'✨ Captura Mágica',
     'cuentas-bancarias':'Cuentas Bancarias', 'flujo-caja':'Flujo de Caja / Cronograma de Pagos',
     requisiciones:'Requisiciones', 'ordenes-compra':'Órdenes de Compra',
@@ -602,6 +603,7 @@ const PAGE_REGISTRY = {
   'captura-magica':         { chunk: 'jx-captura-magica', component: 'CapturaMagicaPage' },
   // === jx-contabilidad ===
   'cont-dashboard':         { chunk: 'jx-contabilidad', component: 'ContabilidadDashboardPage' },
+  'compras-categoria':      { chunk: 'jx-compras-categoria', component: 'ComprasCategoriaPage' },
   'conciliacion-insumos':   { chunk: 'jx-conciliacion', component: 'ConciliacionInsumosPage' },
   'empresas':               { chunk: 'jx-contabilidad', component: 'EmpresasPage' },
   'movimientos-contables':  { chunk: 'jx-contabilidad', component: 'MovimientosContablesPage' },

@@ -45,6 +45,13 @@ export const db = new Dexie('JarvexDB');
 // al admin/gerente para reportar un frente que no es suyo (titular ausente);
 // tras la aprobación carga el reporte en reporte_payload (jsonb, prop sin índice)
 // y lo envía; el admin acepta y recién ahí se aplican los avances. Aditivo.
+// Versión 32: reglas de designación de empresa emisora por subcategoría
+// (Fase 3 del clasificador: "las compras de <subcategoría> las factura
+// <empresa del grupo>"). Global, chica. Aditivo.
+db.version(32).stores({
+  emision_reglas: 'id, subcategoria, company_id, deleted_at, sync_status',
+});
+
 // Versión 31: catálogo de aprendizaje del clasificador de ítems de factura
 // (Conciliación → Insumos Comprados). Mapea descripción normalizada →
 // categoría/subcategoría; fuente 'manual' (corrección de la contadora) pisa

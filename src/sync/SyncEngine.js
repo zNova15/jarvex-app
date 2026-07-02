@@ -82,6 +82,9 @@ const TRANSACTIONAL_TABLES = [
   // Catálogo de aprendizaje del clasificador de ítems de factura. Global,
   // FK-less; correcciones 'manual' pisan a 'ia' (resolución al leer).
   'clasificacion_catalogo',
+  // Reglas subcategoría → empresa emisora (panel Compras por Categoría).
+  // Después de companies (FK company_id).
+  'emision_reglas',
 ];
 
 // Tablas maestras que se descargan del servidor en cada sync.
@@ -108,6 +111,7 @@ const MASTER_TABLES = [
   { tabla: 'accounting_movements',         query: () => supabase.from('accounting_movements').select('*').is('deleted_at', null) },
   { tabla: 'conciliacion_vinculos',        query: () => supabase.from('conciliacion_vinculos').select('*').is('deleted_at', null) },
   { tabla: 'clasificacion_catalogo',       query: () => supabase.from('clasificacion_catalogo').select('*').is('deleted_at', null) },
+  { tabla: 'emision_reglas',               query: () => supabase.from('emision_reglas').select('*').is('deleted_at', null) },
   { tabla: 'intercompany_transactions',    query: () => supabase.from('intercompany_transactions').select('*').is('deleted_at', null) },
   // Compras
   { tabla: 'requisiciones',         query: () => supabase.from('requisiciones').select('*').is('deleted_at', null) },
@@ -580,6 +584,9 @@ const TABLA_TO_MODULO = {
   // Catálogo del clasificador: lo escriben contadora jefe y ayudante (ambos
   // con Movs. Contables 'w') al clasificar/corregir ítems de factura.
   clasificacion_catalogo: 'Movs. Contables',
+  // Reglas de emisión: designación entre empresas del grupo → solo quien tiene
+  // Intercompany 'w' (contadora jefe/admin; el ayudante NO).
+  emision_reglas: 'Intercompany',
   intercompany_transactions: 'Intercompany',
   trazabilidad_cadenas: 'Trazabilidad',
 };
@@ -642,6 +649,8 @@ const FK_DEPS = {
   consumos_combustible:      [{ campo: 'activo_id', tabla: 'activos_pesados' }, { campo: 'operador_id', tabla: 'personal' }],
   mantenimientos_maquinaria: [{ campo: 'activo_id', tabla: 'activos_pesados' }],
   caja_chica_movimientos:    [{ campo: 'responsable_id', tabla: 'personal' }],
+  // La regla de emisión referencia la empresa emisora (FK real en server).
+  emision_reglas:            [{ campo: 'company_id', tabla: 'companies' }],
   movimientos_insumos_emergencia: [{ campo: 'insumo_emergencia_id', tabla: 'insumos_emergencia' }, { campo: 'responsable_id', tabla: 'personal' }, { campo: 'subcontratista_id', tabla: 'subcontratistas' }, { campo: 'proveedor_id', tabla: 'proveedores' }],
   asistencia:                [{ campo: 'personal_id', tabla: 'personal' }],
   // Un trabajador puede pertenecer a la cuadrilla de un subcontratista; si ese

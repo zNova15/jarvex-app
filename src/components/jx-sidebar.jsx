@@ -155,6 +155,7 @@ const NAV = [
   { id: 'movimientos-contables', label: 'Movimientos (todas / por obra)', icon: 'dollar', plano: 'general' },
   { id: 'intercompany', label: 'Operaciones entre Empresas', icon: 'compare' },
   { id: 'trazabilidad', label: 'Trazabilidad de Cadenas', icon: 'compare' },
+  { id: 'compras-categoria', label: 'Compras por Categoría', icon: 'layers' },
   { id: 'consolidado', label: 'Consolidado', icon: 'list' },
   { id: 'cuentas-bancarias', label: 'Cuentas Bancarias', icon: 'dollar' },
   { id: 'flujo-caja', label: 'Flujo de Caja / Pagos', icon: 'calendar' },
