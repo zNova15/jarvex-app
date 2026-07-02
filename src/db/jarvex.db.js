@@ -45,6 +45,14 @@ export const db = new Dexie('JarvexDB');
 // al admin/gerente para reportar un frente que no es suyo (titular ausente);
 // tras la aprobación carga el reporte en reporte_payload (jsonb, prop sin índice)
 // y lo envía; el admin acepta y recién ahí se aplican los avances. Aditivo.
+// Versión 31: catálogo de aprendizaje del clasificador de ítems de factura
+// (Conciliación → Insumos Comprados). Mapea descripción normalizada →
+// categoría/subcategoría; fuente 'manual' (corrección de la contadora) pisa
+// a 'ia'. Global (sin obra_id), compartido entre devices. Aditivo.
+db.version(31).stores({
+  clasificacion_catalogo: 'id, descripcion_normalizada, categoria, fuente, deleted_at, sync_status',
+});
+
 // Versión 30: Conciliación Tripartita (Feature 4) — Vinculación 2 (Facturas↔Presupuesto).
 // conciliacion_vinculos: junction N-a-M que enlaza un ítem de factura
 // (accounting_movements.notas.items_factura[idx]) con un insumo presupuestado

@@ -265,8 +265,11 @@ function ComprasPendientesPage({ showToast }) {
                           const enCatalogo = it.material_id && catalogoCompleto.has(it.material_id);
                           const tipo = it.tipo_insumo || 'material';
                           return (
-                            <tr key={i} style={it.destino === 'empresa' ? { opacity: 0.6 } : null}>
-                              <td style={{ color:'var(--ts)' }}>{it.descripcion || '—'}{it.destino === 'empresa' && <span className="badge b-gray" style={{ marginLeft: 6, fontSize: 9 }} title="Consumo general de la empresa (oficina) — no se recibe en el almacén de la obra">🏢 empresa</span>}</td>
+                            <tr key={i} style={(it.destino === 'empresa' || it.destino === 'obra_general') ? { opacity: 0.6 } : null}>
+                              <td style={{ color:'var(--ts)' }}>{it.descripcion || '—'}
+                                {it.destino === 'empresa' && <span className="badge b-gray" style={{ marginLeft: 6, fontSize: 9 }} title="Consumo general de la empresa (oficina) — no se recibe en el almacén de la obra">🏢 empresa</span>}
+                                {it.destino === 'obra_general' && <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }} title="Gasto general de la obra (ej. comida del personal) — normalmente no se recibe en el almacén">🍽 gasto obra</span>}
+                              </td>
                               <td>
                                 <span className={`badge ${TIPO_INSUMO_BADGE[tipo] || 'b-gray'}`} style={{ fontSize:9 }}>
                                   {TIPO_INSUMO_LABEL[tipo] || tipo}
@@ -345,9 +348,10 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
       const tipo = noStock
         ? it.tipo_insumo
         : ((matchId && tipoDeId(matchId)) || (it.tipo_insumo || 'material'));
-      // Consumo general de empresa (oficina): NO entra al almacén de la obra → por defecto
-      // no se recibe (cantidad 0, sin verificar). El almacenero puede forzarlo si corresponde.
-      const esEmpresa = it.destino === 'empresa';
+      // Consumo general de empresa (oficina) o gasto general de la obra (ej. comida
+      // del personal): NO entra al almacén → por defecto no se recibe (cantidad 0,
+      // sin verificar). El almacenero puede forzarlo si corresponde (ej. bidón de agua).
+      const esEmpresa = it.destino === 'empresa' || it.destino === 'obra_general';
       return {
         ...it, ya_recibido: ya, no_stock: noStock, es_empresa: esEmpresa,
         cantidad_recibida: esEmpresa ? 0 : resta,        // por defecto, lo que falta (0 si es de empresa)
@@ -698,7 +702,8 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
         });
         todoCompleto = itemsActualizados.every(it =>
           NO_STOCK.has(it.tipo_insumo) ||
-          (it.destino || 'obra') === 'empresa' ||   // consumo de empresa: no se recibe en obra, no bloquea el cierre
+          (it.destino || 'obra') === 'empresa' ||        // consumo de empresa: no se recibe en obra, no bloquea el cierre
+          (it.destino || 'obra') === 'obra_general' ||   // gasto general de obra (comida, etc.): tampoco bloquea
           (Number(it.recibido) || 0) >= (Number(it.cantidad) || 0) - 0.0001);
         notasObj.items_factura = itemsActualizados;
 
@@ -801,7 +806,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
                     <input type="checkbox" checked={it.verificado} onChange={e => upd(i, { verificado: e.target.checked })} />
                   </td>
                   <td>
-                    <div style={{ fontSize: 12, color: 'var(--ts)', marginBottom: 3 }}>{it.descripcion}{it.es_empresa && <span className="badge b-gray" style={{ marginLeft: 6, fontSize: 9 }} title="Consumo general de la empresa (oficina) — por defecto no se recibe en la obra">🏢 empresa</span>}</div>
+                    <div style={{ fontSize: 12, color: 'var(--ts)', marginBottom: 3 }}>{it.descripcion}{it.es_empresa && <span className="badge b-gray" style={{ marginLeft: 6, fontSize: 9 }} title={it.destino === 'obra_general' ? 'Gasto general de la obra (ej. comida) — por defecto no se recibe en el almacén' : 'Consumo general de la empresa (oficina) — por defecto no se recibe en la obra'}>{it.destino === 'obra_general' ? '🍽 gasto obra' : '🏢 empresa'}</span>}</div>
                     {it.modo === 'existente' ? (
                       // Ya resuelta vinculando un movimiento de ingreso existente.
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>

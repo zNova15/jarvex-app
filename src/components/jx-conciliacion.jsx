@@ -52,6 +52,22 @@ function esEntrada(t, mv) {
 const TIPO_LABEL = { material: 'Material', herramienta: 'Herramienta', epp: 'EPP', mano_obra: 'Mano de obra', equipo: 'Equipo', subcontrato: 'Subcontrato', subpartida: 'Subpartida' };
 const TIPO_BADGE = { material: 'b-blue', herramienta: 'b-amber', epp: 'b-green', mano_obra: 'b-gray', equipo: 'b-orange', subcontrato: 'b-purple' };
 
+// Destino del ítem comprado (3 valores). 'obra_general' = gasto general DE LA
+// OBRA (comida del personal, etc.): costo de la obra pero fuera del presupuesto
+// de partidas → no vinculable, igual que 'empresa'.
+const DESTINO_LABEL = { obra: '🏗 Obra', obra_general: '🍽 Obra — gasto general', empresa: '🏢 Empresa (general)' };
+
+// Categorías del clasificador de ítems (badge + color).
+const CAT_ITEM = {
+  materiales:         { lbl: 'Materiales',       cls: 'b-blue' },
+  herramientas:       { lbl: 'Herramientas',     cls: 'b-amber' },
+  maquinaria:         { lbl: 'Maquinaria',       cls: 'b-purple' },
+  epp:                { lbl: 'EPP',              cls: 'b-green' },
+  insumos_emergencia: { lbl: 'Emergencia',       cls: 'b-red' },
+  gastos_generales:   { lbl: 'G. generales',     cls: 'b-gray' },
+  otros:              { lbl: 'Otros',            cls: 'b-gray' },
+};
+
 function ConciliacionInsumosPage({ showToast }) {
   const toast = showToast || window.__showToast || (() => {});
   const { obraId } = window.__useObraActiva ? window.__useObraActiva() : { obraId: null };
@@ -87,6 +103,7 @@ function ConciliacionInsumosPage({ showToast }) {
   const [filtroVinc, setFiltroVinc] = uS('todos'); // 'todos' | 'sin' | 'con' (separa vinculados de no vinculados)
   const [fechaDesde, setFechaDesde] = uS(''); // rango de fechas para filtrar/exportar (por fecha del comprobante)
   const [fechaHasta, setFechaHasta] = uS('');
+  const [filtroCat, setFiltroCat] = uS('todas'); // 'todas' | categoría | 'sin_clasificar' — entra a itemsBase (afecta export)
 
   // Si el rol carga tarde (o cambia) y un no-autorizado quedó en "Por Presupuesto",
   // lo devolvemos a "Insumos Comprados".
@@ -137,8 +154,14 @@ function ConciliacionInsumosPage({ showToast }) {
             catId: it.material_id || null,
             doc: `${mv.document_type || ''} ${mv.document_number || ''}`.trim(),
             fecha: mv.date || '', proveedor: mv.third_party_name || '',
-            // Clasificación obra/empresa (la pone el contador en "Insumos Comprados").
+            // Clasificación de destino (la pone el contador en "Insumos Comprados"):
+            // 'obra' (presupuesto/almacén) | 'obra_general' (gasto general de la
+            // obra, ej. comida del personal) | 'empresa' (consumo general/oficina).
             destino: it.destino || 'obra',
+            // Clasificación IA/manual (categoría + subcategoría, persistida en el ítem).
+            categoria: it.categoria || null,
+            subcategoria: it.subcategoria || null,
+            clasif_fuente: it.clasif_fuente || null,
           }));
         }
         // 3) VÍNCULOS existentes.
@@ -308,9 +331,10 @@ function ConciliacionInsumosPage({ showToast }) {
         version: (mv.version || 0) + 1,
         sync_status: mv.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
       });
-      // Si pasa a 'empresa', quitar sus vínculos al presupuesto — si no, el costo de un
-      // ítem de empresa seguiría sumando al Facturado del insumo presupuestado (vínculo huérfano).
-      if (destino === 'empresa') {
+      // Si deja de ser 'obra' (pasa a 'empresa' u 'obra_general'), quitar sus vínculos
+      // al presupuesto — si no, el costo de un ítem fuera del presupuesto seguiría
+      // sumando al Facturado del insumo presupuestado (vínculo huérfano).
+      if (destino !== 'obra') {
         const vs = await window.__db.conciliacion_vinculos
           .where('accounting_movement_id').equals(it.facturaId)
           .filter(v => v.item_idx === it.itemIdx && !v.deleted_at).toArray();
@@ -324,6 +348,104 @@ function ConciliacionInsumosPage({ showToast }) {
       try { window.dispatchEvent(new Event('online')); } catch {}
     } catch (e) { toast('Error: ' + (e.message || e), 'red'); }
     finally { setBusy(false); }
+  };
+
+  // ── Clasificación IA/manual de ítems (categoría + subcategoría) ──────
+  // Escribe notas.items_factura[idx].{categoria,subcategoria,clasif_fuente}.
+  // A diferencia del destino, la clasificación la hacen la contadora jefe Y la
+  // ayudante (ambas con Movs. Contables 'w' → su push sincroniza).
+  const canClasificar = rol === 'admin' || (window.__hasPerm?.(rol, 'Movs. Contables', 'w') ?? false);
+  const [clasifBusy, setClasifBusy] = uS(false);
+  const [clasifProg, setClasifProg] = uS(null);   // { hechas, total } durante el batch IA
+  const [clasifEdit, setClasifEdit] = uS(null);   // { key, categoria, subcategoria } editor inline
+  const [subcatsSugeridas, setSubcatsSugeridas] = uS([]);
+
+  // Aplica clasificaciones en LOTE: un solo get+update por factura (varios ítems
+  // comparten la misma fila accounting_movements — read-modify-write por ítem en
+  // paralelo se pisaría entre hermanos y bumpearía version N veces).
+  const aplicarClasifLote = async (porFactura) => {
+    const now = new Date().toISOString();
+    for (const [facturaId, cambios] of porFactura) {
+      const mv = await window.__db.accounting_movements.get(facturaId);
+      if (!mv) continue;
+      let notas; try { notas = typeof mv.notas === 'string' ? JSON.parse(mv.notas) : (mv.notas || {}); } catch { notas = {}; }
+      const arr = Array.isArray(notas.items_factura) ? notas.items_factura.slice() : [];
+      let tocado = false;
+      for (const c of cambios) {
+        if (!arr[c.itemIdx]) continue;
+        // La IA nunca pisa una clasificación ya presente en la lectura FRESCA:
+        // si la contadora corrigió a mano (u otro batch clasificó) mientras este
+        // batch corría, ese ítem se salta. Lo manual siempre aplica.
+        if (c.fuente === 'ia' && (arr[c.itemIdx].clasif_fuente === 'manual' || arr[c.itemIdx].categoria)) continue;
+        arr[c.itemIdx] = { ...arr[c.itemIdx], categoria: c.categoria, subcategoria: c.subcategoria || null, clasif_fuente: c.fuente };
+        tocado = true;
+      }
+      if (!tocado) continue;
+      notas.items_factura = arr;
+      await window.__db.accounting_movements.update(facturaId, {
+        notas: JSON.stringify(notas), updated_at: now, updated_by: userId,
+        version: (mv.version || 0) + 1,
+        sync_status: mv.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+    }
+    try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'accounting_movements' } })); } catch {}
+    try { window.dispatchEvent(new Event('online')); } catch {}
+  };
+
+  // Botón "Clasificar con IA": clasifica los ítems SIN categoría del filtro actual.
+  // Catálogo-first (lo ya aprendido no consulta la IA) → solo lo desconocido va
+  // al batch; el resultado se aprende como fuente 'ia'.
+  const clasificarConIA = async () => {
+    if (clasifBusy) return;
+    const sinClasif = itemsBase.filter(it => !it.categoria);
+    if (!sinClasif.length) { toast('No hay ítems sin clasificar en el filtro actual', 'amber'); return; }
+    setClasifBusy(true);
+    setClasifProg({ hechas: 0, total: 0 });
+    try {
+      const { clasificarDescripciones, normDesc } = await import('../lib/clasificar-items.js');
+      const mapa = await clasificarDescripciones(sinClasif.map(it => it.descripcion), {
+        userId, onProgress: (hechas, total) => setClasifProg({ hechas, total }),
+      });
+      const porFactura = new Map();
+      let aplicados = 0;
+      for (const it of sinClasif) {
+        const entry = mapa.get(normDesc(it.descripcion));
+        if (!entry) continue;
+        const a = porFactura.get(it.facturaId) || [];
+        a.push({ itemIdx: it.itemIdx, categoria: entry.categoria, subcategoria: entry.subcategoria, fuente: entry.fuente });
+        porFactura.set(it.facturaId, a);
+        aplicados++;
+      }
+      await aplicarClasifLote(porFactura);
+      toast(`Clasificados ${aplicados} ítem(s) — corregí los que estén mal para enseñarle a la IA`, 'green');
+    } catch (e) { toast('Error clasificando: ' + (e.message || e), 'red'); }
+    finally { setClasifBusy(false); setClasifProg(null); }
+  };
+
+  // Corrección manual de un ítem: aplica al ítem Y aprende como fuente 'manual'
+  // (pisa a la IA para esa descripción, en todos los dispositivos).
+  const guardarClasifManual = async (it, categoria, subcategoria) => {
+    if (!categoria) { toast('Elegí la categoría', 'red'); return; }
+    if (clasifBusy) { toast('Esperá a que termine la clasificación con IA', 'amber'); return; }
+    try {
+      // La subcategoría se normaliza IGUAL que en el catálogo/IA (trim+minúsculas):
+      // sin esto el mismo grupo saldría como "Fierro " y "fierro" en el Excel.
+      const { aprenderClasificacion, normSubcat } = await import('../lib/clasificar-items.js');
+      const sub = normSubcat(subcategoria);
+      await aplicarClasifLote(new Map([[it.facturaId, [{ itemIdx: it.itemIdx, categoria, subcategoria: sub, fuente: 'manual' }]]]));
+      await aprenderClasificacion({ descripcion: it.descripcion, categoria, subcategoria: sub, fuente: 'manual', userId });
+      setClasifEdit(null);
+      toast('Clasificación guardada — la IA la usará para ítems similares', 'green');
+    } catch (e) { toast('Error: ' + (e.message || e), 'red'); }
+  };
+
+  const abrirClasifEdit = async (it) => {
+    const cat = it.categoria || 'materiales';
+    setClasifEdit({ key: `${it.facturaId}|${it.itemIdx}`, categoria: cat, subcategoria: it.subcategoria || '' });
+    try {
+      const { subcategoriasDe } = await import('../lib/clasificar-items.js');
+      setSubcatsSugeridas(await subcategoriasDe(cat));
+    } catch { setSubcatsSugeridas([]); }
   };
 
   // Vínculos agrupados por ítem (factura|itemIdx) — para la pestaña por-ítem.
@@ -346,9 +468,10 @@ function ConciliacionInsumosPage({ showToast }) {
     return items.filter(it =>
       (!qn || norm(it.descripcion).includes(qn) || norm(it.proveedor).includes(qn)) &&
       (!fechaDesde || (it.fecha || '') >= fechaDesde) &&
-      (!fechaHasta || (it.fecha || '') <= fechaHasta)
+      (!fechaHasta || (it.fecha || '') <= fechaHasta) &&
+      (filtroCat === 'todas' || (filtroCat === 'sin_clasificar' ? !it.categoria : it.categoria === filtroCat))
     );
-  }, [items, qItems, fechaDesde, fechaHasta]);
+  }, [items, qItems, fechaDesde, fechaHasta, filtroCat]);
 
   // Ítems comprados mostrados en la tabla (base + filtro de vínculo).
   const itemsComprados = uM(() =>
@@ -369,24 +492,28 @@ function ConciliacionInsumosPage({ showToast }) {
     try {
       const { generateExcelSheets } = await import('../lib/reports.js');
       const sin = [], con = [];
+      const destinoTxt = { obra: 'Obra', obra_general: 'Obra — gasto general', empresa: 'Empresa' };
       for (const it of itemsBase) {
         const emp = companyNombre(it.companyId) || '';
         const monto = +(it.cantidad * it.precio).toFixed(2);
         const vs = vincPorItem.get(`${it.facturaId}|${it.itemIdx}`) || [];
-        const base = [it.descripcion, emp, it.doc || '', it.fecha || '', it.cantidad, it.unidad, monto];
+        const base = [it.descripcion, emp, it.doc || '', it.fecha || '', it.cantidad, it.unidad, monto,
+          it.categoria ? (CAT_ITEM[it.categoria]?.lbl || it.categoria) : '', it.subcategoria || '',
+          destinoTxt[it.destino] || 'Obra'];
         if (vs.length > 0) {
-          con.push([...base, it.destino === 'empresa' ? 'Empresa' : 'Obra', vs.map(v => v.insumo_nombre || v.insumo_codigo || '').filter(Boolean).join(' + ')]);
+          con.push([...base, vs.map(v => v.insumo_nombre || v.insumo_codigo || '').filter(Boolean).join(' + ')]);
         } else {
           sin.push(base);
         }
       }
       if (!sin.length && !con.length) { toast('No hay ítems en el filtro seleccionado para exportar', 'amber'); return; }
       const rango = (fechaDesde || fechaHasta) ? `_${fechaDesde || 'inicio'}_a_${fechaHasta || 'hoy'}` : '';
+      const COLS = ['Ítem', 'Empresa', 'Factura', 'Fecha', 'Cantidad', 'Unidad', 'Monto', 'Categoría', 'Subcategoría', 'Destino'];
       await generateExcelSheets({
         filename: `JARVEX_insumos_comprados${rango || '_' + new Date().toISOString().slice(0, 10)}.xlsx`,
         sheets: [
-          { name: 'Sin vincular', columnas: ['Ítem', 'Empresa', 'Factura', 'Fecha', 'Cantidad', 'Unidad', 'Monto'], filas: sin },
-          { name: 'Vinculados', columnas: ['Ítem', 'Empresa', 'Factura', 'Fecha', 'Cantidad', 'Unidad', 'Monto', 'Destino', 'Insumo vinculado'], filas: con },
+          { name: 'Sin vincular', columnas: COLS, filas: sin },
+          { name: 'Vinculados', columnas: [...COLS, 'Insumo vinculado'], filas: con },
         ],
       });
       toast(`Exportado: ${sin.length} sin vincular + ${con.length} vinculados`, 'green');
@@ -504,11 +631,22 @@ function ConciliacionInsumosPage({ showToast }) {
               <input type="date" className="fi" value={fechaHasta} onChange={e => setFechaHasta(e.target.value)} style={{ padding: '4px 6px', fontSize: 11, width: 140 }} />
               {(fechaDesde || fechaHasta) && <button className="btn btn-ghost btn-xs" title="Limpiar rango" onClick={() => { setFechaDesde(''); setFechaHasta(''); }}><JxIcon name="x" size={11} /></button>}
             </div>
-            <button className="btn btn-amber btn-sm" onClick={exportarExcel} disabled={!itemsBase.length} title="Exporta a Excel el rango/búsqueda actual (2 hojas: sin vincular y vinculados)">
+            <select className="fi" value={filtroCat} onChange={e => setFiltroCat(e.target.value)} style={{ width: 160, padding: '5px 8px', fontSize: 11 }} title="Filtra (y exporta) por la categoría clasificada">
+              <option value="todas">Todas las categorías</option>
+              {Object.entries(CAT_ITEM).map(([k, v]) => <option key={k} value={k}>{v.lbl}</option>)}
+              <option value="sin_clasificar">— Sin clasificar —</option>
+            </select>
+            {canClasificar && (
+              <button className="btn btn-ghost btn-sm" onClick={clasificarConIA} disabled={clasifBusy || !itemsBase.some(it => !it.categoria)}
+                title="Clasifica con IA los ítems sin categoría del filtro actual. Lo ya corregido a mano no se toca; lo nuevo se aprende para la próxima.">
+                ✨ {clasifBusy ? (clasifProg?.total ? `Clasificando ${clasifProg.hechas}/${clasifProg.total}…` : 'Clasificando…') : `Clasificar IA (${itemsBase.filter(it => !it.categoria).length})`}
+              </button>
+            )}
+            <button className="btn btn-amber btn-sm" onClick={exportarExcel} disabled={!itemsBase.length} title="Exporta a Excel el filtro actual (búsqueda + fechas + categoría; 2 hojas: sin vincular y vinculados)">
               <JxIcon name="download" size={13} /> Exportar Excel
             </button>
           </div>
-          <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 6 }}>Clasificá cada ítem comprado: 🏗 Obra (entra al presupuesto/almacén de la obra) o 🏢 Empresa (consumo general/oficina). La exportación respeta la búsqueda y el rango de fechas.</div>
+          <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 6 }}>Destino: 🏗 Obra (presupuesto/almacén) · 🍽 Obra — gasto general (comida del personal, consumos de obra fuera del presupuesto) · 🏢 Empresa (consumo general/oficina). La exportación respeta búsqueda, fechas y categoría. Corregí las clasificaciones de la IA para que aprenda.</div>
         </div>
         {loading ? (
           <div className="card card-p empty-state"><JxIcon name="package" size={32} color="var(--tm)" /><p>Cargando ítems comprados…</p></div>
@@ -524,24 +662,60 @@ function ConciliacionInsumosPage({ showToast }) {
                   <th style={{ width: 150 }}>Factura</th>
                   <th style={{ textAlign: 'right', width: 90 }}>Cantidad</th>
                   <th style={{ textAlign: 'right', width: 100 }}>Monto</th>
+                  <th style={{ width: 150 }}>Clasificación</th>
                   <th style={{ width: 150 }}>Destino</th>
                   <th style={{ width: 170 }}>Presupuesto</th>
                 </tr></thead>
                 <tbody>
                   {itemsComprados.slice(0, 500).map(it => {
                     const vs = vincPorItem.get(`${it.facturaId}|${it.itemIdx}`) || [];
-                    const esEmpresa = it.destino === 'empresa';
+                    const key = `${it.facturaId}|${it.itemIdx}`;
+                    // 'empresa' y 'obra_general' quedan FUERA del presupuesto de partidas
+                    // (no vinculables); solo 'obra' entra al presupuesto/almacén.
+                    const sinPresupuesto = it.destino === 'empresa' || it.destino === 'obra_general';
+                    const enEdicion = clasifEdit?.key === key;
                     return (
-                      <tr key={`${it.facturaId}|${it.itemIdx}`} style={esEmpresa ? { opacity: 0.7 } : null}>
+                      <tr key={key} style={sinPresupuesto ? { opacity: 0.75 } : null}>
                         <td className="col-p">{it.descripcion}<div style={{ fontSize: 10, color: 'var(--tm)' }}>{it.proveedor}</div></td>
                         <td style={{ fontSize: 11.5, color: 'var(--ts)' }}>{companyNombre(it.companyId) || <span style={{ color: 'var(--tm)' }}>—</span>}</td>
                         <td style={{ fontSize: 11, color: 'var(--tm)' }}>{it.doc || '—'}<div style={{ fontSize: 10 }}>{it.fecha}</div></td>
                         <td style={{ textAlign: 'right', fontSize: 12 }}>{fmtN(it.cantidad)} {it.unidad}</td>
                         <td style={{ textAlign: 'right', fontSize: 12 }}>{fmtS(it.cantidad * it.precio)}</td>
                         <td>
+                          {enEdicion ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              <select className="fi" style={{ fontSize: 11, padding: '3px 6px' }} value={clasifEdit.categoria}
+                                onChange={async e => {
+                                  const cat = e.target.value;
+                                  setClasifEdit(prev => ({ ...prev, categoria: cat }));
+                                  try { const { subcategoriasDe } = await import('../lib/clasificar-items.js'); setSubcatsSugeridas(await subcategoriasDe(cat)); } catch {}
+                                }}>
+                                {Object.entries(CAT_ITEM).map(([k, v]) => <option key={k} value={k}>{v.lbl}</option>)}
+                              </select>
+                              <input className="fi" style={{ fontSize: 11, padding: '3px 6px' }} placeholder="Subcategoría (ej. fierro)" list="clasif-subcats"
+                                value={clasifEdit.subcategoria} onChange={e => setClasifEdit(prev => ({ ...prev, subcategoria: e.target.value }))} />
+                              <datalist id="clasif-subcats">{subcatsSugeridas.map(s => <option key={s} value={s} />)}</datalist>
+                              <div style={{ display: 'flex', gap: 4 }}>
+                                <button className="btn btn-amber btn-xs" style={{ fontSize: 10 }} onClick={() => guardarClasifManual(it, clasifEdit.categoria, clasifEdit.subcategoria)}>✓ Guardar</button>
+                                <button className="btn btn-ghost btn-xs" style={{ fontSize: 10 }} onClick={() => setClasifEdit(null)}>✕</button>
+                              </div>
+                            </div>
+                          ) : it.categoria ? (
+                            <div style={{ cursor: canClasificar ? 'pointer' : 'default' }} onClick={canClasificar ? () => abrirClasifEdit(it) : undefined}
+                                 title={canClasificar ? `Clasificado por ${it.clasif_fuente === 'manual' ? 'corrección manual' : 'IA'} — click para corregir (le enseña a la IA)` : undefined}>
+                              <span className={`badge ${CAT_ITEM[it.categoria]?.cls || 'b-gray'}`} style={{ fontSize: 10 }}>{CAT_ITEM[it.categoria]?.lbl || it.categoria}{it.clasif_fuente === 'ia' ? ' ✨' : ''}</span>
+                              {it.subcategoria && <div style={{ fontSize: 10, color: 'var(--tm)', marginTop: 2 }}>{it.subcategoria}</div>}
+                            </div>
+                          ) : canClasificar ? (
+                            <button className="btn btn-ghost btn-xs" style={{ fontSize: 10 }} title="Clasificar este ítem a mano" onClick={() => abrirClasifEdit(it)}>+ Clasificar</button>
+                          ) : (
+                            <span style={{ fontSize: 10, color: 'var(--tm)' }}>—</span>
+                          )}
+                        </td>
+                        <td>
                           {esAyudante ? (
                             <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
-                              <span style={{ fontSize: 11, color: 'var(--ts)' }}>{esEmpresa ? '🏢 Empresa (general)' : '🏗 Obra'}</span>
+                              <span style={{ fontSize: 11, color: 'var(--ts)' }}>{DESTINO_LABEL[it.destino] || DESTINO_LABEL.obra}</span>
                               <button className="btn btn-ghost btn-xs" style={{ fontSize:10, padding:'2px 6px', alignSelf:'flex-start' }}
                                 title="Pedir a la contadora jefe que cambie el destino de este ítem" onClick={() => setSolicitarTarget(it)}>
                                 <JxIcon name="edit" size={9}/> Solicitar cambio
@@ -551,13 +725,14 @@ function ConciliacionInsumosPage({ showToast }) {
                             <select className="fi" style={{ fontSize: 11, padding: '4px 6px' }} value={it.destino || 'obra'} disabled={busy}
                               onChange={e => setDestinoItem(it, e.target.value)}>
                               <option value="obra">🏗 Obra</option>
+                              <option value="obra_general">🍽 Obra — gasto general</option>
                               <option value="empresa">🏢 Empresa (general)</option>
                             </select>
                           )}
                         </td>
                         <td>
-                          {esEmpresa ? (
-                            <span style={{ fontSize: 11, color: 'var(--tm)' }}>— (consumo empresa)</span>
+                          {sinPresupuesto ? (
+                            <span style={{ fontSize: 11, color: 'var(--tm)' }}>{it.destino === 'empresa' ? '— (consumo empresa)' : '— (gasto general de obra)'}</span>
                           ) : vs.length > 0 ? (
                             <button className="btn btn-ghost btn-xs" title={vs.map(v => v.insumo_nombre).join(', ')} onClick={() => setPickItem(it)}>
                               <JxIcon name="check" size={10} color="var(--green)" /> {(vs.length === 1 ? (vs[0].insumo_nombre || 'vinculado') : `${vs.length} insumos`).slice(0, 18)} ✎
@@ -610,7 +785,7 @@ function ConciliacionInsumosPage({ showToast }) {
         <RequestChangeModal
           table="accounting_movements"
           record={{ id: solicitarTarget.facturaId }}
-          recordLabel={`${solicitarTarget.descripcion || 'ítem'} · ${solicitarTarget.doc || ''} · destino actual: ${solicitarTarget.destino === 'empresa' ? 'Empresa (general)' : 'Obra'}`}
+          recordLabel={`${solicitarTarget.descripcion || 'ítem'} · ${solicitarTarget.doc || ''} · destino actual: ${(DESTINO_LABEL[solicitarTarget.destino] || DESTINO_LABEL.obra).replace(/^[^\s]+\s/, '')}`}
           fields={[]}
           showToast={toast}
           onClose={() => setSolicitarTarget(null)}
@@ -632,7 +807,7 @@ function VincularModal({ insumo, items, vinculos, itemsVinculados, busy, onVincu
   const candidatos = uM(() => {
     const qn = norm(buscar);
     return items
-      .filter(it => it.destino !== 'empresa')   // los de consumo de empresa no van al presupuesto de obra
+      .filter(it => it.destino !== 'empresa' && it.destino !== 'obra_general')   // consumo de empresa y gastos generales de obra no van al presupuesto de partidas
       .filter(it => !yaAqui.has(`${it.facturaId}|${it.itemIdx}`))
       .map(it => ({ it, score: fuzzyScore(insumo.nombre, it.descripcion), enOtro: itemsVinculados.has(`${it.facturaId}|${it.itemIdx}`) }))
       .filter(({ it }) => !qn || norm(it.descripcion).includes(qn) || norm(it.proveedor).includes(qn))

@@ -79,6 +79,9 @@ const TRANSACTIONAL_TABLES = [
   // Conciliación Tripartita (Feature 4): vínculo factura↔presupuesto. Después de
   // accounting_movements (FK accounting_movement_id) y obras (FK obra_id).
   'conciliacion_vinculos',
+  // Catálogo de aprendizaje del clasificador de ítems de factura. Global,
+  // FK-less; correcciones 'manual' pisan a 'ia' (resolución al leer).
+  'clasificacion_catalogo',
 ];
 
 // Tablas maestras que se descargan del servidor en cada sync.
@@ -104,6 +107,7 @@ const MASTER_TABLES = [
   { tabla: 'companies',                    query: () => supabase.from('companies').select('*').is('deleted_at', null) },
   { tabla: 'accounting_movements',         query: () => supabase.from('accounting_movements').select('*').is('deleted_at', null) },
   { tabla: 'conciliacion_vinculos',        query: () => supabase.from('conciliacion_vinculos').select('*').is('deleted_at', null) },
+  { tabla: 'clasificacion_catalogo',       query: () => supabase.from('clasificacion_catalogo').select('*').is('deleted_at', null) },
   { tabla: 'intercompany_transactions',    query: () => supabase.from('intercompany_transactions').select('*').is('deleted_at', null) },
   // Compras
   { tabla: 'requisiciones',         query: () => supabase.from('requisiciones').select('*').is('deleted_at', null) },
@@ -573,6 +577,9 @@ const TABLA_TO_MODULO = {
   planilla_boletas: 'Planillas',
   companies: 'Empresas',
   accounting_movements: 'Movs. Contables',
+  // Catálogo del clasificador: lo escriben contadora jefe y ayudante (ambos
+  // con Movs. Contables 'w') al clasificar/corregir ítems de factura.
+  clasificacion_catalogo: 'Movs. Contables',
   intercompany_transactions: 'Intercompany',
   trazabilidad_cadenas: 'Trazabilidad',
 };

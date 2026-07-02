@@ -17,7 +17,33 @@ const CATEGORIAS_HERRAMIENTA = [
   'maquinaria_pesada', 'medicion', 'seguridad',
 ];
 
+// Clasificación de ÍTEMS DE FACTURA (Conciliación de Insumos): categoría
+// principal cerrada + subcategoría corta libre (fierro, tubería, cemento,
+// herramienta manual, guantes, alimentación…). La subcategoría agrupa las
+// compras para que la contadora jefe designe qué empresa del grupo emite
+// qué tipo de facturas.
+const CATEGORIAS_FACTURA = [
+  'materiales', 'herramientas', 'maquinaria', 'epp',
+  'insumos_emergencia', 'gastos_generales', 'otros',
+];
+
 function buildSystemPrompt(type) {
+  if (type === 'factura') {
+    return `Eres un experto en compras de construcción peruana. Las descripciones vienen de facturas reales y suelen tener mala escritura, abreviaciones o errores de tipeo — interprétalas con criterio. Clasifica cada ítem comprado en UNA categoría exacta y UNA subcategoría corta.
+
+Categorías exactas:
+- materiales: insumos que se incorporan a la obra (fierro/varillas, tubería PVC, codos y accesorios, cemento, ladrillos, arena/agregados, clavos, alambre, pintura, cables, pegamento)
+- herramientas: herramientas de trabajo manuales o eléctricas (palana, pico, martillo, llave stilson, wincha, amoladora, taladro, pistola de calor, juego de llaves, brocas, discos de corte)
+- maquinaria: equipos y maquinaria (generador, trompo/mezcladora, soldadora, vibradora, rotomartillo, demoledor, motobomba, compresora; también vehículos como motocarga/motocar)
+- epp: equipos de protección personal (guantes, cascos, chalecos, lentes, botas, arnés, tapones, respiradores, uniformes)
+- insumos_emergencia: botiquín, camillas, extintores, alcohol, medicinas, primeros auxilios
+- gastos_generales: consumo no-inventariable (menú/comida/alimentación del personal, agua para consumo, útiles de oficina, servicios, fletes, alquileres, combustible de administración)
+- otros: solo si de verdad no cuadra en ninguna
+
+Subcategoría: palabra o frase corta en minúsculas que agrupe el ítem con sus similares. Ejemplos: fierro, tubería, accesorios pvc, cemento, clavos, agregados, pintura, eléctrico, herramienta manual, herramienta eléctrica, maquinaria liviana, vehículo, guantes, chalecos, cascos, botiquín, alimentación, combustible, flete, alquiler. Usa la MISMA subcategoría para ítems similares (consistencia > precisión).
+
+Responde SOLO con JSON válido: {"results":[{"id":"<id>","categoria":"<categoria_exacta>","subcategoria":"<subcategoria_corta>"}]}`;
+  }
   if (type === 'herramienta') {
     return `Eres un experto en construcción peruana. Clasifica herramientas de obra en una de estas categorías exactas:
 - manual: martillos, palas, picos, llaves, alicates, carretillas, escaleras, andamios, plomadas
@@ -69,7 +95,7 @@ export default async function handler(req, res) {
 
   const body = req.body || {};
   const items = Array.isArray(body.items) ? body.items : [];
-  const type = body.type === 'herramienta' ? 'herramienta' : 'material';
+  const type = body.type === 'herramienta' ? 'herramienta' : (body.type === 'factura' ? 'factura' : 'material');
 
   if (!items.length) {
     return res.status(422).json({ error: 'Sin items para clasificar' });
@@ -78,8 +104,8 @@ export default async function handler(req, res) {
     return res.status(422).json({ error: 'Máximo 200 items por llamada' });
   }
 
-  const validas = type === 'herramienta' ? CATEGORIAS_HERRAMIENTA : CATEGORIAS_MATERIAL;
-  const userMessage = `Clasifica los siguientes ${items.length} ${type === 'material' ? 'materiales' : 'herramientas'}:\n\n` +
+  const validas = type === 'herramienta' ? CATEGORIAS_HERRAMIENTA : (type === 'factura' ? CATEGORIAS_FACTURA : CATEGORIAS_MATERIAL);
+  const userMessage = `Clasifica los siguientes ${items.length} ${type === 'material' ? 'materiales' : (type === 'factura' ? 'ítems de factura' : 'herramientas')}:\n\n` +
     items.map(i =>
       `id="${sanitizeForPrompt(i.id, 60)}" nombre="${sanitizeForPrompt(i.nombre, 200)}"`
     ).join('\n') +
@@ -131,9 +157,17 @@ export default async function handler(req, res) {
       return res.status(502).json({ error: 'JSON inválido de Claude', detail: e.message });
     }
 
+    // Anti-alucinación: categoria clampada a la whitelist; subcategoria (solo
+    // type factura) saneada a texto corto en minúsculas.
+    const fallbackCat = type === 'herramienta' ? 'maquinaria_liviana' : (type === 'factura' ? 'otros' : 'Otro');
     const results = (parsed.results || []).map(r => ({
       id: r.id,
-      categoria: validas.includes(r.categoria) ? r.categoria : (type === 'herramienta' ? 'maquinaria_liviana' : 'Otro'),
+      categoria: validas.includes(r.categoria) ? r.categoria : fallbackCat,
+      ...(type === 'factura' ? {
+        subcategoria: (typeof r.subcategoria === 'string' && r.subcategoria.trim())
+          ? r.subcategoria.trim().toLowerCase().replace(/[^a-záéíóúñü0-9 /-]/gi, '').slice(0, 40) || null
+          : null,
+      } : {}),
       _suggested: r.categoria,
     }));
 
