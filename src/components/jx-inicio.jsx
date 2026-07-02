@@ -10,6 +10,7 @@
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
 import { cargarObrasAsignadas } from "../lib/obras-asignadas.js";
+import { planoDe } from "../lib/nav-planos.js";
 const { useMemo: uMI, useState: uSI, useEffect: uEI } = React;
 const Icon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 const fmtSk = (n) => {
@@ -58,6 +59,25 @@ const ACCESOS_OBRA = {
   solo_lectura:        [['Gestión', 'dashboard-gestion', 'dashboard'], ['Avance', 'avance', 'chart']],
 };
 
+// Secciones de OBRA que el rol puede ver, derivadas del MENÚ REAL (window.NAV
+// del sidebar) — no de una lista a mano que se desactualiza. Devuelve
+// [{ section, items: [{id,label,icon}] }] solo con secciones no vacías.
+// Esto es lo que hace que el Inicio muestre TODO el trabajo del rol (antes
+// quedaba escondido dentro del workspace y solo asomaban 3-4 chips).
+function seccionesObraDelRol(canSee) {
+  const nav = window.NAV || [];
+  const out = [];
+  let cur = null;
+  for (const it of nav) {
+    if (it.section) { cur = { section: it.section, items: [] }; out.push(cur); continue; }
+    if (!cur || !it.id) continue;
+    if ((it.plano || planoDe(it.id)) !== 'obra') continue;   // solo trabajo POR OBRA
+    if (!canSee(it.id)) continue;
+    cur.items.push({ id: it.id, label: String(it.label || it.id).replace(/^✨\s*/, ''), icon: it.icon });
+  }
+  return out.filter(s => s.items.length > 0);
+}
+
 function InicioPage({ onNav, onEnterObra }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
   const rol = auth?.profile?.rol;
@@ -67,6 +87,11 @@ function InicioPage({ onNav, onEnterObra }) {
   const tiles = uMI(() => TILES.filter(t => canSee(t.id)), [rol]);
   // Accesos rápidos por rol DENTRO de cada obra (máx 4, solo los permitidos).
   const accesosObra = uMI(() => (ACCESOS_OBRA[rol] || []).filter(([, p]) => canSee(p)).slice(0, 6), [rol]);
+  // Mapa COMPLETO del trabajo del rol en una obra (derivado del menú real).
+  const seccionesObra = uMI(() => seccionesObraDelRol(canSee), [rol]);
+  // Obra cuyo panel de secciones está abierto: null = ninguno aún (se auto-abre
+  // si hay UNA sola obra), 'none' = cerrado a propósito por el usuario.
+  const [obraExpandida, setObraExpandida] = uSI(null);
 
   // Obras asignadas (null = ve todas). Y avance físico + facturado por obra para
   // las tarjetas (partidas + conciliacion_vinculos — tablas livianas; NO cargamos
@@ -115,6 +140,13 @@ function InicioPage({ onNav, onEnterObra }) {
   const obrasVivas = uMI(() => (obras || []).filter(o => !o.deleted_at && (!misObrasIds || misObrasIds.has(o.id)))
     .sort((a, b) => String(a.nombre_obra || '').localeCompare(String(b.nombre_obra || ''))), [obras, misObrasIds]);
 
+  // Con UNA sola obra, el panel de secciones arranca abierto (el usuario ve todo
+  // su trabajo de entrada — caso típico de almacenero/ingeniero). 'none' (cerrado
+  // a propósito) se respeta: solo se auto-abre desde el estado inicial null.
+  uEI(() => {
+    if (obrasVivas.length === 1) setObraExpandida(prev => prev === null ? obrasVivas[0].id : prev);
+  }, [obrasVivas]);
+
   const nombreUsuario = `${auth?.profile?.nombres || ''} ${auth?.profile?.apellidos || ''}`.trim() || auth?.profile?.email || '';
 
   return (
@@ -122,8 +154,8 @@ function InicioPage({ onNav, onEnterObra }) {
       <div className="pg-hd">
         <div className="pg-title">Inicio{nombreUsuario ? ` · ${nombreUsuario}` : ''}</div>
         <div className="pg-sub">{tiles.length > 0
-          ? 'Elegí una sección general, o entrá a una obra para trabajar en ella.'
-          : 'Entrá a una de tus obras para trabajar (tu almacén, partidas, reportes, etc.).'}</div>
+          ? 'Elegí una sección general, o abrí "Secciones" en una obra para ver todo tu trabajo en ella.'
+          : 'Este es tu espacio: abajo tenés todas tus secciones de trabajo en la obra — entrá con un clic.'}</div>
       </div>
 
       {/* ── DATOS GENERALES (mosaicos) ── */}
@@ -186,15 +218,62 @@ function InicioPage({ onNav, onEnterObra }) {
                   ))}
                 </div>
               )}
-              <div onClick={() => onEnterObra?.(o.id)} role="button"
-                   style={{ fontSize: 11, color: 'var(--amber)', marginTop: 'auto', paddingLeft: 46, display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
-                Entrar al workspace <Icon name="chevR" size={12} color="var(--amber)" />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 'auto', paddingLeft: 46 }}>
+                {seccionesObra.length > 0 && (
+                  <div onClick={() => setObraExpandida(prev => prev === o.id ? 'none' : o.id)} role="button"
+                       style={{ fontSize: 11, color: obraExpandida === o.id ? 'var(--tp)' : 'var(--ts)', display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontWeight: obraExpandida === o.id ? 700 : 400 }}>
+                    Secciones {obraExpandida === o.id ? '▴' : '▾'}
+                  </div>
+                )}
+                <div onClick={() => onEnterObra?.(o.id)} role="button"
+                     style={{ fontSize: 11, color: 'var(--amber)', display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
+                  Entrar al workspace <Icon name="chevR" size={12} color="var(--amber)" />
+                </div>
               </div>
             </div>
             );
           })}
         </div>
       )}
+
+      {/* ── TU TRABAJO EN LA OBRA (mapa completo de secciones del rol) ──
+          Derivado del menú real: muestra desde el Inicio TODO lo que el rol
+          puede hacer en la obra elegida — antes quedaba escondido dentro del
+          workspace. Con una sola obra se abre solo. */}
+      {(() => {
+        if (!obraExpandida || obraExpandida === 'none' || seccionesObra.length === 0) return null;
+        const o = obrasVivas.find(x => x.id === obraExpandida);
+        if (!o) return null;
+        return (
+          <div className="card card-p" style={{ marginTop: 16, border: '1px solid var(--bd)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)' }}>TU TRABAJO EN</div>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--tp)', flex: 1, minWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.nombre_obra}</div>
+              {obrasVivas.length > 1 && (
+                <button className="btn btn-ghost btn-xs" onClick={() => setObraExpandida('none')} title="Ocultar secciones">✕</button>
+              )}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(215px, 1fr))', gap: '14px 18px' }}>
+              {seccionesObra.map(sec => (
+                <div key={sec.section}>
+                  <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.08em', color: 'var(--tm)', marginBottom: 6, textTransform: 'uppercase' }}>{sec.section}</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    {sec.items.map(it => (
+                      <button key={it.id} onClick={() => onEnterObra?.(o.id, it.id)} title={`${it.label} · ${o.nombre_obra}`}
+                              style={{ display: 'flex', alignItems: 'center', gap: 7, background: 'none', border: 'none', cursor: 'pointer', padding: '4px 6px', borderRadius: 6, textAlign: 'left', color: 'var(--ts)', fontSize: 12 }}
+                              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(242,183,5,0.08)'; e.currentTarget.style.color = 'var(--tp)'; }}
+                              onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--ts)'; }}>
+                        <Icon name={it.icon} size={13} color="var(--amber)" />
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
