@@ -649,8 +649,8 @@ const FK_DEPS = {
   consumos_combustible:      [{ campo: 'activo_id', tabla: 'activos_pesados' }, { campo: 'operador_id', tabla: 'personal' }],
   mantenimientos_maquinaria: [{ campo: 'activo_id', tabla: 'activos_pesados' }],
   caja_chica_movimientos:    [{ campo: 'responsable_id', tabla: 'personal' }],
-  // La regla de emisión referencia la empresa emisora (FK real en server).
-  emision_reglas:            [{ campo: 'company_id', tabla: 'companies' }],
+  // La regla de emisión referencia la empresa emisora + intermediarias (FKs reales).
+  emision_reglas:            [{ campo: 'company_id', tabla: 'companies' }, { campo: 'intermediaria1_company_id', tabla: 'companies' }, { campo: 'intermediaria2_company_id', tabla: 'companies' }],
   movimientos_insumos_emergencia: [{ campo: 'insumo_emergencia_id', tabla: 'insumos_emergencia' }, { campo: 'responsable_id', tabla: 'personal' }, { campo: 'subcontratista_id', tabla: 'subcontratistas' }, { campo: 'proveedor_id', tabla: 'proveedores' }],
   asistencia:                [{ campo: 'personal_id', tabla: 'personal' }],
   // Un trabajador puede pertenecer a la cuadrilla de un subcontratista; si ese
