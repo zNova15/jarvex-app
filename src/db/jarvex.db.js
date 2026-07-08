@@ -45,6 +45,12 @@ export const db = new Dexie('JarvexDB');
 // al admin/gerente para reportar un frente que no es suyo (titular ausente);
 // tras la aprobación carga el reporte en reporte_payload (jsonb, prop sin índice)
 // y lo envía; el admin acepta y recién ahí se aplican los avances. Aditivo.
+// Versión 33: órdenes de compra/servicio intercompany (Fase 4). Borrador de la
+// contadora jefe → aprobación del admin → lista para emitir. Aditivo.
+db.version(33).stores({
+  ordenes_intercompany: 'id, obra_id, company_id, estado, deleted_at, sync_status',
+});
+
 // Versión 32: reglas de designación de empresa emisora por subcategoría
 // (Fase 3 del clasificador: "las compras de <subcategoría> las factura
 // <empresa del grupo>"). Global, chica. Aditivo.

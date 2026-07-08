@@ -1072,6 +1072,8 @@ window.__moduleIdMap = {
   // Panel de designación de empresa emisora (Fase 3 del clasificador): decisión
   // entre empresas del grupo → mismo módulo que Intercompany (jefe/admin; ayudante no).
   'compras-categoria': 'Intercompany',
+  // Órdenes de compra/servicio entre empresas del grupo (Fase 4) — mismo módulo.
+  'ordenes-intercompany': 'Intercompany',
   'consolidado': 'Consolidado',
   'plan-cuentas': 'Plan de Cuentas',
   'libro-diario': 'Libro Diario',

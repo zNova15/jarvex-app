@@ -99,6 +99,11 @@ function ComprasPendientesPage({ showToast }) {
   const [loading, setLoading] = uS(true);
   const [recibiendoId, setRecibiendoId] = uS(null);   // id del mov contable a recibir
   const [busy, setBusy] = uS(false);
+  // Negar recepción: facturas/ítems que NO debían llegar al almacén (la contadora
+  // olvidó desmarcar el envío, le reportaron que no ingresará, etc.).
+  const [negarTarget, setNegarTarget] = uS(null);     // { mc, idx|null } — idx null = factura completa
+  const [negadas, setNegadas] = uS([]);               // facturas recepcion_status='no_recepcionado'
+  const [verNegadas, setVerNegadas] = uS(false);
 
   // Carga inicial + reactivo a sync
   uE(() => {
@@ -126,9 +131,15 @@ function ComprasPendientesPage({ showToast }) {
           ['pendiente_recepcion', 'parcial'].includes(m.recepcion_status) &&
           !m.deleted_at
         );
+        // Negadas: facturas que el almacén marcó como "no ingresó" (la contadora
+        // olvidó desmarcar, le reportaron que no entra, etc.). Fuera de la lista
+        // principal, visibles en "Ver negadas" y reabribles.
+        const neg = mcAll.filter(m => m.obra_id === obraId && m.recepcion_status === 'no_recepcionado' && !m.deleted_at);
+        neg.sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
         if (cancelled) return;
         mc.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
         setMovsContables(mc);
+        setNegadas(neg);
         setMateriales(mt);
         setHerramientas(hr);
         setEpps(ep);
@@ -193,6 +204,94 @@ function ComprasPendientesPage({ showToast }) {
     ? movsContables.find(m => m.id === recibiendoId)
     : null;
 
+  // Estado de recepción derivado de los ítems (espejo del cierre en el modal):
+  // un ítem está "resuelto" si se recibió completo, no va al almacén (servicio /
+  // empresa / gasto de obra) o el almacén lo NEGÓ. Sirve para recalcular el
+  // estado al negar/reabrir un ítem suelto sin abrir el modal de recepción.
+  const recomputeStatus = (items) => {
+    const resuelto = (it) => it.rechazado || it.tipo_insumo === 'servicio'
+      || ['empresa', 'obra_general'].includes(it.destino)
+      || (Number(it.recibido) || 0) >= (Number(it.cantidad) || 0) - 0.0001;
+    const algoRecibido = items.some(it => (Number(it.recibido) || 0) > 0);
+    const hayRechazo = items.some(it => it.rechazado);
+    if (!items.every(resuelto)) return algoRecibido ? 'parcial' : 'pendiente_recepcion';
+    if (algoRecibido) return 'recibido';
+    return hayRechazo ? 'no_recepcionado' : 'recibido';
+  };
+
+  // Negar la entrada: factura completa (idx null) o un ítem suelto. NO toca stock
+  // (no crea movimientos): solo marca los ítems y reubica la factura fuera de la
+  // lista de pendientes. Idempotente y reversible con "Reabrir".
+  const negarRecepcion = async ({ mc, idx }, motivo) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const isPrueba = getCurrentMode() === 'prueba';
+      const fresh = await window.__db.accounting_movements.get(mc.id);
+      if (!fresh) { showToast?.('La factura ya no existe (se sincronizó otro cambio)', 'red'); return; }
+      const notasObj = (() => { try { return JSON.parse(fresh.notas || '{}'); } catch { return {}; } })();
+      const items = Array.isArray(notasObj.items_factura) ? notasObj.items_factura : [];
+      const now = new Date().toISOString();
+      const sello = { rechazado: true, rechazo_motivo: motivo, rechazo_por: userId, rechazo_fecha: now };
+      let nuevoStatus;
+      if (idx == null) {
+        // Factura completa: negar todo lo que no se recibió por completo.
+        notasObj.items_factura = items.map(it =>
+          (Number(it.recibido) || 0) >= (Number(it.cantidad) || 0) - 0.0001 ? it : { ...it, ...sello });
+        notasObj.recepcion_rechazo = { motivo, por: userId, fecha: now };
+        nuevoStatus = 'no_recepcionado';
+      } else {
+        // Un ítem suelto: marcarlo y recalcular el estado de la factura.
+        notasObj.items_factura = items.map((it, i) => i === idx ? { ...it, ...sello } : it);
+        nuevoStatus = recomputeStatus(notasObj.items_factura);
+        if (nuevoStatus === 'no_recepcionado') notasObj.recepcion_rechazo = { motivo, por: userId, fecha: now };
+      }
+      const facturaNoSube = isPrueba || fresh.demo === true;
+      await window.__db.accounting_movements.update(fresh.id, {
+        notas: JSON.stringify(notasObj), recepcion_status: nuevoStatus,
+        recepcion_fecha: now, recepcion_por: userId, updated_at: now, updated_by: userId,
+        version: (fresh.version || 0) + 1,
+        sync_status: facturaNoSube ? 'synced' : (fresh.sync_status === 'pending_create' ? 'pending_create' : 'pending_update'),
+      });
+      try { await window.__logAudit?.({ action: 'update', table: 'accounting_movements', recordId: fresh.id, reason: `Recepción NEGADA (${idx == null ? 'factura completa' : 'ítem'}) — ${motivo} · ${fresh.document_number || ''}` }); } catch {}
+      window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'accounting_movements' } }));
+      try { window.dispatchEvent(new Event('online')); } catch {}
+      showToast?.(idx == null ? 'Factura negada — sale de compras pendientes' : 'Ítem negado', 'green');
+      setNegarTarget(null);
+    } catch (e) { showToast?.('Error al negar: ' + (e?.message || e), 'red'); }
+    finally { setBusy(false); }
+  };
+
+  // Reabrir una factura negada: limpia las marcas de rechazo y la devuelve a la
+  // cola (pendiente / parcial según lo ya recibido).
+  const reabrirNegada = async (mc) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const isPrueba = getCurrentMode() === 'prueba';
+      const fresh = await window.__db.accounting_movements.get(mc.id);
+      if (!fresh) { showToast?.('La factura ya no existe', 'red'); return; }
+      const notasObj = (() => { try { return JSON.parse(fresh.notas || '{}'); } catch { return {}; } })();
+      const items = Array.isArray(notasObj.items_factura) ? notasObj.items_factura : [];
+      notasObj.items_factura = items.map(({ rechazado, rechazo_motivo, rechazo_por, rechazo_fecha, ...rest }) => rest);
+      delete notasObj.recepcion_rechazo;
+      const now = new Date().toISOString();
+      const nuevoStatus = recomputeStatus(notasObj.items_factura);
+      const facturaNoSube = isPrueba || fresh.demo === true;
+      await window.__db.accounting_movements.update(fresh.id, {
+        notas: JSON.stringify(notasObj),
+        recepcion_status: nuevoStatus === 'no_recepcionado' ? 'pendiente_recepcion' : nuevoStatus,
+        updated_at: now, updated_by: userId, version: (fresh.version || 0) + 1,
+        sync_status: facturaNoSube ? 'synced' : (fresh.sync_status === 'pending_create' ? 'pending_create' : 'pending_update'),
+      });
+      try { await window.__logAudit?.({ action: 'update', table: 'accounting_movements', recordId: fresh.id, reason: `Recepción REABIERTA — ${fresh.document_number || ''}` }); } catch {}
+      window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'accounting_movements' } }));
+      try { window.dispatchEvent(new Event('online')); } catch {}
+      showToast?.('Factura reabierta — vuelve a compras pendientes', 'green');
+    } catch (e) { showToast?.('Error al reabrir: ' + (e?.message || e), 'red'); }
+    finally { setBusy(false); }
+  };
+
   if (!obraId) {
     return (
       <div className="page-wrap">
@@ -243,9 +342,16 @@ function ComprasPendientesPage({ showToast }) {
                       Fecha factura: {mc.date} · cargada el {(mc.created_at || '').slice(0,10)}
                     </div>
                   </div>
-                  <button className="btn btn-amber btn-sm" onClick={() => setRecibiendoId(mc.id)}>
-                    <JxIcon name="arrowIn" size={12}/> Registrar recepción
-                  </button>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
+                    <button className="btn btn-amber btn-sm" onClick={() => setRecibiendoId(mc.id)}>
+                      <JxIcon name="arrowIn" size={12}/> Registrar recepción
+                    </button>
+                    <button className="btn btn-ghost btn-xs" style={{ color: 'var(--red)' }} disabled={busy}
+                      title="La mercadería NO ingresó al almacén (la contadora olvidó desmarcarla, o te reportaron que no entra). Sale de compras pendientes sin tocar el stock."
+                      onClick={() => setNegarTarget({ mc, idx: null })}>
+                      <JxIcon name="x" size={11}/> Negar recepción
+                    </button>
+                  </div>
                 </div>
                 {items.length > 0 ? (
                   <div style={{ marginTop:10, padding:'8px 10px', background:'var(--bg2)', border:'1px solid var(--bd)', borderRadius:6 }}>
@@ -259,14 +365,18 @@ function ComprasPendientesPage({ showToast }) {
                         <th style={{ width:80, textAlign:'right' }}>Cantidad</th>
                         <th style={{ width:60 }}>Unidad</th>
                         <th style={{ width:80 }}>En catálogo</th>
+                        <th style={{ width:34 }}></th>
                       </tr></thead>
                       <tbody>
                         {items.map((it, i) => {
                           const enCatalogo = it.material_id && catalogoCompleto.has(it.material_id);
                           const tipo = it.tipo_insumo || 'material';
+                          const negado = !!it.rechazado;
+                          const yaRecibido = (Number(it.recibido) || 0) >= (Number(it.cantidad) || 0) - 0.0001;
                           return (
-                            <tr key={i} style={(it.destino === 'empresa' || it.destino === 'obra_general') ? { opacity: 0.6 } : null}>
+                            <tr key={i} style={negado ? { opacity: 0.45, textDecoration: 'line-through' } : (it.destino === 'empresa' || it.destino === 'obra_general') ? { opacity: 0.6 } : null}>
                               <td style={{ color:'var(--ts)' }}>{it.descripcion || '—'}
+                                {negado && <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }} title={it.rechazo_motivo || 'No ingresó al almacén'}>🚫 negado</span>}
                                 {it.destino === 'empresa' && <span className="badge b-gray" style={{ marginLeft: 6, fontSize: 9 }} title="Consumo general de la empresa (oficina) — no se recibe en el almacén de la obra">🏢 empresa</span>}
                                 {it.destino === 'obra_general' && <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }} title="Gasto general de la obra (ej. comida del personal) — normalmente no se recibe en el almacén">🍽 gasto obra</span>}
                               </td>
@@ -287,6 +397,16 @@ function ComprasPendientesPage({ showToast }) {
                                     ? <span className="badge b-green" style={{ fontSize:9 }}>OK</span>
                                     : <span className="badge b-yellow" style={{ fontSize:9 }}>Falta</span>}
                               </td>
+                              <td style={{ textAlign:'center' }}>
+                                {/* Negar un ítem suelto (los ya recibidos no se pueden negar). */}
+                                {!negado && !yaRecibido && (
+                                  <button className="btn btn-ghost btn-xs" style={{ padding:'2px 5px', color:'var(--red)' }} disabled={busy}
+                                    title="Este ítem no ingresó al almacén — negarlo (no toca stock)"
+                                    onClick={() => setNegarTarget({ mc, idx: i })}>
+                                    <JxIcon name="x" size={10}/>
+                                  </button>
+                                )}
+                              </td>
                             </tr>
                           );
                         })}
@@ -302,6 +422,48 @@ function ComprasPendientesPage({ showToast }) {
             );
           })}
         </div>
+      )}
+
+      {/* Facturas negadas — colapsable, reversible */}
+      {negadas.length > 0 && (
+        <div style={{ marginTop: 18 }}>
+          <button className="btn btn-ghost btn-sm" onClick={() => setVerNegadas(v => !v)}>
+            <JxIcon name="eye" size={12} /> {verNegadas ? 'Ocultar' : 'Ver'} facturas negadas ({negadas.length})
+          </button>
+          {verNegadas && (
+            <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+              {negadas.map(mc => {
+                const prov = mc.proveedor_id ? provsById.get(mc.proveedor_id) : null;
+                const provName = prov?.razon_social || mc.third_party_name || '—';
+                let rechazo = null; try { rechazo = JSON.parse(mc.notas || '{}').recepcion_rechazo; } catch {}
+                return (
+                  <div key={mc.id} className="card card-p" style={{ borderLeft: '3px solid var(--red)', opacity: 0.9 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap' }}>
+                      <div style={{ flex: 1, minWidth: 260 }}>
+                        <div style={{ fontSize: 11, color: 'var(--red)', fontWeight: 700 }}>🚫 {mc.document_type || 'comprobante'} {mc.document_number}</div>
+                        <div style={{ fontSize: 13, color: 'var(--ts)', marginTop: 2 }}>{provName}</div>
+                        {rechazo?.motivo && <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 3 }}>Motivo: <em>{rechazo.motivo}</em>{rechazo.fecha ? ` · ${String(rechazo.fecha).slice(0, 10)}` : ''}</div>}
+                      </div>
+                      <button className="btn btn-ghost btn-sm" disabled={busy} title="Devolver esta factura a compras pendientes" onClick={() => reabrirNegada(mc)}>
+                        <JxIcon name="arrowIn" size={12} /> Reabrir
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Modal: motivo de la negación */}
+      {negarTarget && (
+        <NegarRecepcionModal
+          target={negarTarget}
+          busy={busy}
+          onConfirm={(motivo) => negarRecepcion(negarTarget, motivo)}
+          onClose={() => setNegarTarget(null)}
+        />
       )}
 
       {/* Modal Registrar Recepción */}
@@ -321,6 +483,47 @@ function ComprasPendientesPage({ showToast }) {
         />
       )}
     </div>
+  );
+}
+
+// ─── Modal: negar la recepción (factura completa o un ítem) ───────────────────
+function NegarRecepcionModal({ target, busy, onConfirm, onClose }) {
+  const esFactura = target.idx == null;
+  const MOTIVOS = [
+    'La contadora olvidó desmarcar el envío al almacén',
+    'Me reportaron que no ingresará',
+    'Ya lo recibí por otro medio',
+    'No corresponde a esta obra',
+  ];
+  const [motivo, setMotivo] = uS('');
+  const [libre, setLibre] = uS('');
+  const final = (libre.trim() || motivo).trim();
+  return (
+    <Modal title={esFactura ? 'Negar recepción de la factura' : 'Negar este ítem'} icon="x" onClose={onClose}>
+      <div style={{ fontSize: 12, color: 'var(--tm)', marginBottom: 12 }}>
+        {esFactura
+          ? 'La factura completa saldrá de compras pendientes. No se toca el stock. Podés reabrirla después desde "Facturas negadas".'
+          : 'Este ítem se marca como NO ingresado. No se toca el stock.'}
+      </div>
+      <label className="flabel">Motivo</label>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 10 }}>
+        {MOTIVOS.map(m => (
+          <label key={m} style={{ display: 'flex', gap: 7, alignItems: 'center', fontSize: 12, cursor: 'pointer', color: 'var(--ts)' }}>
+            <input type="radio" name="motivo-negar" checked={motivo === m && !libre.trim()} onChange={() => { setMotivo(m); setLibre(''); }} />
+            {m}
+          </label>
+        ))}
+      </div>
+      <label className="flabel">Otro motivo (opcional)</label>
+      <input className="fi" value={libre} placeholder="Escribí un motivo distinto…" onChange={e => setLibre(e.target.value)} style={{ marginBottom: 14 }} />
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose} disabled={busy}>Cancelar</button>
+        <button className="btn btn-amber" style={{ background: 'var(--red)', borderColor: 'var(--red)' }} disabled={busy || !final}
+          onClick={() => onConfirm(final)}>
+          <JxIcon name="x" size={13} /> {busy ? 'Procesando…' : (esFactura ? 'Negar factura' : 'Negar ítem')}
+        </button>
+      </div>
+    </Modal>
   );
 }
 
@@ -352,10 +555,12 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
       // del personal): NO entra al almacén → por defecto no se recibe (cantidad 0,
       // sin verificar). El almacenero puede forzarlo si corresponde (ej. bidón de agua).
       const esEmpresa = it.destino === 'empresa' || it.destino === 'obra_general';
+      // Ítem NEGADO por el almacén (no ingresó): no se recibe, no bloquea el cierre.
+      const negado = !!it.rechazado;
       return {
-        ...it, ya_recibido: ya, no_stock: noStock, es_empresa: esEmpresa,
-        cantidad_recibida: esEmpresa ? 0 : resta,        // por defecto, lo que falta (0 si es de empresa)
-        verificado: !esEmpresa && !noStock && resta > 0 && !!matchId,  // listo si hay match y falta recibir
+        ...it, ya_recibido: ya, no_stock: noStock, es_empresa: esEmpresa, negado,
+        cantidad_recibida: (esEmpresa || negado) ? 0 : resta,        // por defecto, lo que falta (0 si es de empresa/negado)
+        verificado: !esEmpresa && !noStock && !negado && resta > 0 && !!matchId,  // listo si hay match y falta recibir
         match_id: noStock ? null : matchId, tipo,
         ubicacion_id: null, obs_item: '',
         // 'nuevo' = crea un movimiento de ingreso y sube stock (default).
@@ -701,6 +906,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
           return { ...orig, recibido, material_id: matId, tipo_insumo: tipoFinal, ...linkExtra };
         });
         todoCompleto = itemsActualizados.every(it =>
+          it.rechazado ||                                // negado por el almacén: no ingresa, no bloquea el cierre
           NO_STOCK.has(it.tipo_insumo) ||
           (it.destino || 'obra') === 'empresa' ||        // consumo de empresa: no se recibe en obra, no bloquea el cierre
           (it.destino || 'obra') === 'obra_general' ||   // gasto general de obra (comida, etc.): tampoco bloquea
@@ -749,7 +955,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
       <div style={{ marginBottom: 12, padding: '10px 12px', background: 'rgba(52,152,219,0.08)', border: '1px solid rgba(52,152,219,0.25)', borderRadius: 6, fontSize: 12 }}>
         <strong>{provName || '—'}</strong> · factura del {factura.date}<br/>
         <span style={{ color: 'var(--tm)', fontSize: 11 }}>
-          Corregí el tipo y vinculá cada ítem al insumo del catálogo (aunque el nombre difiera). Si la mercadería <strong>ya entró</strong> y registraste el ingreso, usá <strong>"¿Ya se registró este ingreso? Vincularlo"</strong> para atar esta factura a ese movimiento (no se vuelve a sumar stock). Si entra por primera vez, registrá el ingreso y subí stock. Recepción parcial: registrá lo que llegó y la factura queda <strong>parcial</strong> hasta recibir el resto (sirve para repartir entre almacenes).
+          Vinculá cada ítem al insumo del catálogo (aunque el nombre difiera) y elegí cómo registrar el ingreso: <strong>🆕 "Recién lo estoy recibiendo"</strong> crea el ingreso y sube stock; <strong>🔗 "Ya había entrado antes"</strong> lo ata a un ingreso ya registrado sin volver a sumar stock. Recepción parcial: registrá lo que llegó y la factura queda <strong>parcial</strong> hasta recibir el resto. Si un ítem <strong>no debía llegar al almacén</strong> (ej. la contadora olvidó desmarcarlo), cerrá este modal y usá <strong>"Negar recepción"</strong> en la tarjeta.
         </span>
       </div>
 
@@ -793,6 +999,24 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
                     <td>
                       <span className={`badge ${TIPO_INSUMO_BADGE[it.tipo_insumo] || 'b-purple'}`} style={{ fontSize: 9 }}>{etiqueta}</span>
                     </td>
+                    <td style={{ textAlign: 'right', color: 'var(--tm)' }}>—</td>
+                    <td style={{ textAlign: 'right', color: 'var(--tm)' }}>—</td>
+                    <td style={{ color: 'var(--tm)' }}>—</td>
+                    <td style={{ color: 'var(--tm)' }}>—</td>
+                  </tr>
+                );
+              }
+              // Ítem NEGADO por el almacén: fila informativa bloqueada (no se recibe).
+              // Para reactivarlo, se reabre desde la lista de compras pendientes.
+              if (it.negado) {
+                return (
+                  <tr key={i} style={{ opacity: 0.5 }}>
+                    <td style={{ textAlign: 'center' }}><span className="badge b-red" style={{ fontSize: 9 }}>🚫</span></td>
+                    <td>
+                      <div style={{ fontSize: 12, color: 'var(--ts)', textDecoration: 'line-through' }}>{it.descripcion}</div>
+                      <div style={{ fontSize: 10.5, color: 'var(--tm)', fontStyle: 'italic' }}>Negado — no ingresó{it.rechazo_motivo ? ` · ${it.rechazo_motivo}` : ''}. Reabrilo desde la lista si fue un error.</div>
+                    </td>
+                    <td style={{ color: 'var(--tm)' }}>—</td>
                     <td style={{ textAlign: 'right', color: 'var(--tm)' }}>—</td>
                     <td style={{ textAlign: 'right', color: 'var(--tm)' }}>—</td>
                     <td style={{ color: 'var(--tm)' }}>—</td>
@@ -878,12 +1102,24 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
                             </div>
                           </div>
                         )}
-                        {/* Vincular a un movimiento de ingreso YA registrado (la mercadería ya entró) */}
+                        {/* Elección EXPLÍCITA: crear un ingreso nuevo (sube stock) vs
+                            vincular a un ingreso ya registrado (no suma stock). Antes
+                            era un botón escondido y no se entendía la diferencia. */}
                         {it.match_id && (
-                          <button className="btn btn-ghost btn-xs" style={{ marginTop: 3 }}
-                            onClick={() => { setCandOpen(candOpen === i ? null : i); cargarCandidatos(it.tipo, it.match_id); }}>
-                            <JxIcon name="arrowIn" size={10} /> {candOpen === i ? 'Ocultar' : '¿Ya se registró este ingreso? Vincularlo'}
-                          </button>
+                          <div style={{ marginTop: 6, padding: '7px 9px', background: 'var(--bg2)', border: '1px solid var(--bd)', borderRadius: 5 }}>
+                            <div style={{ fontSize: 9.5, color: 'var(--tm)', marginBottom: 5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em' }}>¿Cómo registrar este ingreso?</div>
+                            <label style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 10.5, cursor: 'pointer', marginBottom: 5 }}>
+                              <input type="radio" name={`modo-${i}`} checked={candOpen !== i} onChange={() => { setCandOpen(null); upd(i, { verificado: !!it.match_id && Number(it.cantidad_recibida) > 0 }); }} style={{ marginTop: 2, flexShrink: 0 }} />
+                              <span><strong style={{ color: 'var(--ts)' }}>🆕 Recién lo estoy recibiendo</strong><br /><span style={{ color: 'var(--tm)' }}>Crea el ingreso y <strong>sube el stock</strong> del almacén.</span></span>
+                            </label>
+                            {/* Al elegir "ya había entrado" desmarcamos la fila hasta que se
+                                elija un movimiento concreto: si no, quedaba verificada en modo
+                                'nuevo' y al confirmar creaba un ingreso (doble stock). */}
+                            <label style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 10.5, cursor: 'pointer' }}>
+                              <input type="radio" name={`modo-${i}`} checked={candOpen === i} onChange={() => { setCandOpen(i); cargarCandidatos(it.tipo, it.match_id); upd(i, { verificado: false }); }} style={{ marginTop: 2, flexShrink: 0 }} />
+                              <span><strong style={{ color: 'var(--ts)' }}>🔗 Ya había entrado antes</strong><br /><span style={{ color: 'var(--tm)' }}>La mercadería ya se registró: <strong>elegí el ingreso</strong> abajo para vincular (no vuelve a sumar stock).</span></span>
+                            </label>
+                          </div>
                         )}
                         {candOpen === i && it.match_id && (() => {
                           const k = `${it.tipo}:${it.match_id}`;
@@ -897,7 +1133,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
                                 <span style={{ fontSize: 10.5, color: 'var(--tm)' }}>Buscando movimientos…</span>
                               ) : lista.length === 0 ? (
                                 <span style={{ fontSize: 10.5, color: 'var(--tm)' }}>
-                                  No hay ingresos sin factura para este insumo. Registralo como ingreso nuevo.
+                                  No hay ingresos sin factura para este insumo. Volvé a <strong>"🆕 Recién lo estoy recibiendo"</strong> para registrarlo.
                                 </span>
                               ) : (
                                 <div style={{ display: 'grid', gap: 3 }}>

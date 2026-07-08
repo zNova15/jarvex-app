@@ -156,6 +156,7 @@ const NAV = [
   { id: 'intercompany', label: 'Operaciones entre Empresas', icon: 'compare' },
   { id: 'trazabilidad', label: 'Trazabilidad de Cadenas', icon: 'compare' },
   { id: 'compras-categoria', label: 'Compras por Categoría', icon: 'layers' },
+  { id: 'ordenes-intercompany', label: 'Órdenes Intercompany', icon: 'list' },
   { id: 'consolidado', label: 'Consolidado', icon: 'list' },
   { id: 'cuentas-bancarias', label: 'Cuentas Bancarias', icon: 'dollar' },
   { id: 'flujo-caja', label: 'Flujo de Caja / Pagos', icon: 'calendar' },

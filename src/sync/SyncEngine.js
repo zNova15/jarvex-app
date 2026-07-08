@@ -85,6 +85,8 @@ const TRANSACTIONAL_TABLES = [
   // Reglas subcategoría → empresa emisora (panel Compras por Categoría).
   // Después de companies (FK company_id).
   'emision_reglas',
+  // Órdenes intercompany (Fase 4). Después de obras + companies (FKs).
+  'ordenes_intercompany',
 ];
 
 // Tablas maestras que se descargan del servidor en cada sync.
@@ -112,6 +114,7 @@ const MASTER_TABLES = [
   { tabla: 'conciliacion_vinculos',        query: () => supabase.from('conciliacion_vinculos').select('*').is('deleted_at', null) },
   { tabla: 'clasificacion_catalogo',       query: () => supabase.from('clasificacion_catalogo').select('*').is('deleted_at', null) },
   { tabla: 'emision_reglas',               query: () => supabase.from('emision_reglas').select('*').is('deleted_at', null) },
+  { tabla: 'ordenes_intercompany',         query: () => supabase.from('ordenes_intercompany').select('*').is('deleted_at', null) },
   { tabla: 'intercompany_transactions',    query: () => supabase.from('intercompany_transactions').select('*').is('deleted_at', null) },
   // Compras
   { tabla: 'requisiciones',         query: () => supabase.from('requisiciones').select('*').is('deleted_at', null) },
@@ -587,6 +590,8 @@ const TABLA_TO_MODULO = {
   // Reglas de emisión: designación entre empresas del grupo → solo quien tiene
   // Intercompany 'w' (contadora jefe/admin; el ayudante NO).
   emision_reglas: 'Intercompany',
+  // Órdenes intercompany: las escriben jefe/admin (aprobación admin en UI).
+  ordenes_intercompany: 'Intercompany',
   intercompany_transactions: 'Intercompany',
   trazabilidad_cadenas: 'Trazabilidad',
 };
@@ -651,6 +656,7 @@ const FK_DEPS = {
   caja_chica_movimientos:    [{ campo: 'responsable_id', tabla: 'personal' }],
   // La regla de emisión referencia la empresa emisora + intermediarias (FKs reales).
   emision_reglas:            [{ campo: 'company_id', tabla: 'companies' }, { campo: 'intermediaria1_company_id', tabla: 'companies' }, { campo: 'intermediaria2_company_id', tabla: 'companies' }],
+  ordenes_intercompany:      [{ campo: 'obra_id', tabla: 'obras' }, { campo: 'company_id', tabla: 'companies' }, { campo: 'intermediaria1_company_id', tabla: 'companies' }, { campo: 'intermediaria2_company_id', tabla: 'companies' }, { campo: 'ejecutora_company_id', tabla: 'companies' }],
   movimientos_insumos_emergencia: [{ campo: 'insumo_emergencia_id', tabla: 'insumos_emergencia' }, { campo: 'responsable_id', tabla: 'personal' }, { campo: 'subcontratista_id', tabla: 'subcontratistas' }, { campo: 'proveedor_id', tabla: 'proveedores' }],
   asistencia:                [{ campo: 'personal_id', tabla: 'personal' }],
   // Un trabajador puede pertenecer a la cuadrilla de un subcontratista; si ese

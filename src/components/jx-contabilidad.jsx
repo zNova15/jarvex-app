@@ -2254,6 +2254,7 @@ function ContabilidadDashboardPage({ showToast }) {
                         {f.recepcion_status === 'recibido' ? '✓ recibida'
                           : f.recepcion_status === 'parcial' ? '⏳ parcial'
                           : f.recepcion_status === 'pendiente_recepcion' ? '🆕 pendiente'
+                          : f.recepcion_status === 'no_recepcionado' ? '🚫 negada por almacén'
                           : '—'}
                       </div>
                     </div>
