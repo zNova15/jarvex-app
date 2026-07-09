@@ -1,11 +1,23 @@
 // Vercel serverless function: POST /api/captura-magica
 //
 // Body: { file: "<base64-string>", mimeType: "application/pdf" | "image/jpeg" | "image/png" | "image/webp" }
-// Returns: { extracted: {...}, model, usage, raw_text_preview }
+// Returns: { extracted: {...}, model, usage, engine, ... }
 //
-// Usa Claude Sonnet 4.6 con Vision API para parsear comprobantes peruanos
-// (factura, boleta, NC/ND, recibo) desde PDF o imagen y devolver JSON estructurado.
-// Requiere ANTHROPIC_API_KEY en Vercel env vars.
+// Parsea comprobantes peruanos (factura, boleta, NC/ND, recibo) desde PDF o
+// imagen y devuelve JSON estructurado. Motor HÍBRIDO:
+//   1) Mistral OCR lee el documento → markdown (barato + fuerte en escaneados),
+//      y Claude estructura ese TEXTO → JSON. Claude procesa texto, no visión →
+//      mucho menos tokens = mucho más barato.
+//   2) FALLBACK automático a Claude visión (flujo original) si no hay
+//      MISTRAL_API_KEY o si Mistral falla por cualquier motivo. Producción nunca
+//      se rompe: sin key válida, corre exactamente como antes.
+//
+// Env vars:
+//   ANTHROPIC_API_KEY  (requerida) — estructuración + fallback de visión.
+//   MISTRAL_API_KEY    (opcional)  — activa el motor híbrido/OCR barato.
+//   MISTRAL_OCR_MODEL  (opcional)  — default 'mistral-ocr-latest'. Poné
+//                                    'mistral-ocr-2512' para pagar la mitad
+//                                    ($2 vs $4 / 1000 págs) con igual lectura.
 
 const ALLOWED_MIME = [
   'application/pdf',
@@ -16,6 +28,12 @@ const ALLOWED_MIME = [
 
 // Máximo 8 MB de string base64 (≈6 MB binario)
 const MAX_BASE64_BYTES = 8 * 1024 * 1024;
+
+const CLAUDE_MODEL = 'claude-sonnet-4-6';
+const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
+const MISTRAL_OCR_URL = 'https://api.mistral.ai/v1/ocr';
+// Alias móvil siempre válido por default; overridable a un snapshot barato.
+const MISTRAL_OCR_MODEL = process.env.MISTRAL_OCR_MODEL || 'mistral-ocr-latest';
 
 const SYSTEM_PROMPT = `Eres un experto parser de comprobantes peruanos emitidos bajo SUNAT (factura electrónica, boleta de venta, nota de crédito, nota de débito, recibo por honorarios). Tu tarea es leer el documento (PDF o imagen) y extraer los datos a JSON estructurado.
 
@@ -69,6 +87,181 @@ Responde SOLO con JSON válido (sin markdown, sin texto extra) con esta estructu
 }`;
 
 import { requireAuth, rateLimit, sanitizeError, validateFileBytes } from '../lib/api-helpers.js';
+
+// El híbrido encadena 2 upstreams (Mistral OCR + Claude). Damos margen explícito
+// para que el peor caso no lo mate el default de la plataforma (~10s en Hobby).
+export const maxDuration = 60;
+
+// ── Anthropic Messages con retry+backoff respetando un deadline compartido ──
+// Devuelve el JSON de la respuesta, o lanza un Error con .upstreamStatus /
+// .upstreamText (o AbortError si se agotó el presupuesto).
+async function anthropicMessages(apiKey, body, deadline) {
+  let upstream = null;
+  let errText = '';
+  for (let intento = 0; intento < 3; intento++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), Math.min(60000, Math.max(deadline - Date.now(), 1000)));
+    let fetchErr = null;
+    try {
+      upstream = await fetch(ANTHROPIC_URL, {
+        method: 'POST',
+        signal: ctrl.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      fetchErr = e;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (fetchErr) {
+      // Errores de red (ECONNRESET, DNS, socket hang up) son transitorios → se
+      // reintentan como un 5xx. AbortError NO se reintenta (ya se gastó el
+      // presupuesto). Idem en el último intento.
+      if (fetchErr.name === 'AbortError' || intento === 2) throw fetchErr;
+      const esperaMs = Math.min(2000 * Math.pow(4, intento), 20000);
+      if (Date.now() + esperaMs + 10000 > deadline) throw fetchErr;
+      console.warn(`[captura-magica] Anthropic fetch lanzó (${fetchErr.message || fetchErr.name}) — reintento ${intento + 1}/2 en ${esperaMs}ms`);
+      await new Promise((r) => setTimeout(r, esperaMs));
+      continue;
+    }
+    if (upstream.ok) return await upstream.json();
+    errText = await upstream.text().catch(() => '');
+    const retriable = upstream.status === 429 || upstream.status === 529 || upstream.status >= 500;
+    if (!retriable || intento === 2) break;
+    const retryAfter = Number(upstream.headers.get('retry-after')) || 0;
+    const esperaMs = Math.min((retryAfter * 1000) || (2000 * Math.pow(4, intento)), 20000);
+    if (Date.now() + esperaMs + 10000 > deadline) break;
+    console.warn(`[captura-magica] Anthropic ${upstream.status} — reintento ${intento + 1}/2 en ${esperaMs}ms`);
+    await new Promise((r) => setTimeout(r, esperaMs));
+  }
+  const err = new Error(`anthropic ${upstream ? upstream.status : 'sin respuesta'}`);
+  if (upstream) err.upstreamStatus = upstream.status;
+  err.upstreamText = errText;
+  throw err;
+}
+
+// ── Mistral OCR: base64 (PDF o imagen) → markdown ──
+// Devuelve { texto, usage, model }. Lanza ante fallo (el caller cae a visión).
+async function mistralOcr(cleanBase64, mimeType, apiKey, deadline) {
+  // El data URI (con prefijo data:<mime>;base64,) es OBLIGATORIO; base64 pelado
+  // se rechaza. PDF va en document_url; imagen en image_url (campos distintos:
+  // cruzarlos es el error #1). El MIME ya fue validado contra los bytes reales.
+  const dataUri = `data:${mimeType};base64,${cleanBase64}`;
+  const document = mimeType === 'application/pdf'
+    ? { type: 'document_url', document_url: dataUri }
+    : { type: 'image_url', image_url: dataUri };
+  const body = { model: MISTRAL_OCR_MODEL, document, include_image_base64: false };
+
+  let upstream = null;
+  let errText = '';
+  for (let intento = 0; intento < 3; intento++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), Math.min(45000, Math.max(deadline - Date.now(), 1000)));
+    let fetchErr = null;
+    try {
+      upstream = await fetch(MISTRAL_OCR_URL, {
+        method: 'POST',
+        signal: ctrl.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      fetchErr = e;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (fetchErr) {
+      if (fetchErr.name === 'AbortError' || intento === 2) throw fetchErr;
+      const esperaMs = Math.min(1500 * Math.pow(4, intento), 15000);
+      if (Date.now() + esperaMs + 8000 > deadline) throw fetchErr;
+      console.warn(`[captura-magica] Mistral fetch lanzó (${fetchErr.message || fetchErr.name}) — reintento ${intento + 1}/2 en ${esperaMs}ms`);
+      await new Promise((r) => setTimeout(r, esperaMs));
+      continue;
+    }
+    if (upstream.ok) break;
+    errText = await upstream.text().catch(() => '');
+    const retriable = upstream.status === 429 || upstream.status === 529 || upstream.status >= 500;
+    if (!retriable || intento === 2) break;
+    const retryAfter = Number(upstream.headers.get('retry-after')) || 0;
+    const esperaMs = Math.min((retryAfter * 1000) || (1500 * Math.pow(4, intento)), 15000);
+    if (Date.now() + esperaMs + 8000 > deadline) break;
+    console.warn(`[captura-magica] Mistral OCR ${upstream.status} — reintento ${intento + 1}/2 en ${esperaMs}ms`);
+    await new Promise((r) => setTimeout(r, esperaMs));
+  }
+  if (!upstream || !upstream.ok) {
+    const err = new Error(`mistral ocr ${upstream ? upstream.status : 'sin respuesta'}`);
+    if (upstream) err.upstreamStatus = upstream.status;
+    err.upstreamText = errText;
+    throw err;
+  }
+  const data = await upstream.json();
+  // El texto vive SIEMPRE en pages[].markdown — iterar y concatenar (una factura
+  // suele ser 1 página, pero no lo asumimos).
+  const pages = Array.isArray(data && data.pages) ? data.pages : [];
+  let texto = pages
+    .map((p) => (p && typeof p.markdown === 'string' ? p.markdown : ''))
+    .join('\n\n')
+    .trim();
+  // Quitar placeholders de imagen (![img-0.jpeg](img-0.jpeg)) que Mistral inserta
+  // con include_image_base64:false — a Claude no le aportan y pueden confundir.
+  texto = texto.replace(/!\[[^\]]*\]\([^)]*\)/g, '').trim();
+  return {
+    texto,
+    usage: (data && data.usage_info) || null,
+    model: (data && data.model) || MISTRAL_OCR_MODEL,
+  };
+}
+
+// Extrae el JSON de la respuesta de Claude (puede venir con markdown wrapping).
+function extractJson(data) {
+  const text = (data && data.content && data.content[0] && data.content[0].text) || '';
+  const m = text.match(/\{[\s\S]*\}/);
+  if (!m) {
+    const e = new Error('no-json');
+    e.rawText = text;
+    throw e;
+  }
+  try {
+    return { extracted: JSON.parse(m[0]), text };
+  } catch (err) {
+    const e = new Error('bad-json');
+    e.rawText = text;
+    e.detail = err.message;
+    throw e;
+  }
+}
+
+// Traduce un error del pipeline a la respuesta HTTP amigable (igual que antes).
+function respondError(e, res, isProd) {
+  if (e && e.name === 'AbortError') {
+    return res.status(504).json({ error: 'La IA tardó demasiado en responder' });
+  }
+  if (e && e.message === 'no-json') {
+    return res.status(502).json({ error: 'Claude no devolvió JSON parseable', rawText: (e.rawText || '').slice(0, 500) });
+  }
+  if (e && e.message === 'bad-json') {
+    return res.status(502).json({ error: 'JSON inválido de Claude', detail: e.detail, rawText: (e.rawText || '').slice(0, 500) });
+  }
+  if (e && e.upstreamStatus) {
+    console.error('[captura-magica] upstream error:', e.upstreamStatus, (e.upstreamText || '').slice(0, 200));
+    return res.status(e.upstreamStatus).json({
+      error: e.upstreamStatus === 429
+        ? 'El servicio de IA está saturado (429) — reintenta en un minuto (la fila tiene botón Reintentar)'
+        : `Claude API respondió ${e.upstreamStatus}`,
+      ...(isProd ? {} : { detail: (e.upstreamText || '').slice(0, 500) }),
+    });
+  }
+  const sanitized = sanitizeError(e, 'Error consultando la IA');
+  return res.status(sanitized.status).json(sanitized.body);
+}
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -135,136 +328,71 @@ export default async function handler(req, res) {
     return res.status(422).json({ error: 'No se pudo decodificar base64' });
   }
 
-  // Construir el bloque de contenido según sea PDF o imagen
+  const isProd = process.env.NODE_ENV === 'production';
+  // Deadline compartido para TODO el pipeline (OCR + estructuración). Vive por
+  // debajo de maxDuration=60 para que la respuesta de error amigable salga ANTES
+  // de que la plataforma mate la función. El cliente aborta a los 90s
+  // (jx-captura-magica → apiFetch timeout 90000), así que el error real siempre
+  // le llega.
+  const deadline = Date.now() + 55000;
+  const mistralKey = process.env.MISTRAL_API_KEY;
+
+  // Bloque de contenido para el fallback de visión (PDF vs imagen).
   const isPdf = mimeType === 'application/pdf';
   const fileBlock = isPdf
-    ? {
-        type: 'document',
-        source: { type: 'base64', media_type: 'application/pdf', data: cleanBase64 },
+    ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: cleanBase64 } }
+    : { type: 'image', source: { type: 'base64', media_type: mimeType, data: cleanBase64 } };
+  const userInstruction = 'Analiza este comprobante peruano y extrae todos los datos al JSON estructurado descrito en las instrucciones del sistema. Responde SOLO con el JSON, sin texto adicional ni markdown.';
+
+  // ── Paso 1 (opcional): Mistral OCR lee el documento → markdown ──
+  // SOLO el OCR va en este try; su fallo (incl. AbortError/key inválida) cae a
+  // visión. La estructuración de Claude va DESPUÉS, fuera de este catch, para
+  // que sus errores (429/502/504) lleguen a respondError y NO disparen una 2da
+  // tanda de llamadas a Claude — si no, un lote de facturas durante un storm de
+  // 429 duplicaría la carga sobre Claude, justo lo que el híbrido busca evitar.
+  let ocr = null;
+  if (mistralKey) {
+    try {
+      const r = await mistralOcr(cleanBase64, mimeType, mistralKey, deadline);
+      if (r.texto && r.texto.length >= 20) {
+        ocr = r;
+      } else {
+        console.warn('[captura-magica] Mistral OCR devolvió texto vacío/insuficiente — uso Claude visión');
       }
-    : {
-        type: 'image',
-        source: { type: 'base64', media_type: mimeType, data: cleanBase64 },
-      };
+    } catch (e) {
+      console.warn('[captura-magica] Mistral OCR falló, uso Claude visión:', (e && (e.upstreamStatus || e.message)) || e);
+      // ocr queda null → path de visión ↓
+    }
+  }
 
-  const userInstruction = `Analiza este comprobante peruano y extrae todos los datos al JSON estructurado descrito en las instrucciones del sistema. Responde SOLO con el JSON, sin texto adicional ni markdown.`;
-
+  // ── Paso 2: Claude estructura. UNA sola llamada: sobre el TEXTO del OCR (si lo
+  // hubo, barato) o sobre el documento por visión (fallback). Sus errores van a
+  // respondError (429/502/504 correctos), sin re-disparar otra llamada. ──
   try {
-    // Retry con backoff para 429 (rate limit) y 5xx/529 (sobrecarga): hasta 3
-    // intentos respetando retry-after. Sin esto, un lote de facturas moría con
-    // "Claude API respondió 429" en filas que hubieran pasado reintentando 2
-    // segundos después.
-    // Presupuesto compartido (deadline): el cliente aborta a los 90s
-    // (jx-captura-magica → apiFetch timeout 90000). Sin deadline, el peor caso
-    // (respuestas 5xx lentas) era 60+20+60+20+60 ≈ 220s: el usuario veía un
-    // abort genérico (el mensaje amigable del 429 nunca llegaba) y la función
-    // seguía quemando intentos/tokens para nadie. Con el deadline, el error
-    // real siempre sale antes de que el cliente corte.
-    const deadline = Date.now() + 80000;
-    let upstream = null;
-    let errText = '';
-    for (let intento = 0; intento < 3; intento++) {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), Math.min(60000, Math.max(deadline - Date.now(), 1000)));
-      let fetchErr = null;
-      try {
-        upstream = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          signal: ctrl.signal,
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': apiKey,
-            'anthropic-version': '2023-06-01',
-          },
-          body: JSON.stringify({
-            model: 'claude-sonnet-4-6',
-            max_tokens: 4000,
-            system: SYSTEM_PROMPT,
-            messages: [
-              {
-                role: 'user',
-                content: [fileBlock, { type: 'text', text: userInstruction }],
-              },
-            ],
-          }),
-        });
-      } catch (e) {
-        fetchErr = e;
-      } finally {
-        clearTimeout(timer);
-      }
-      if (fetchErr) {
-        // Errores de red (ECONNRESET, DNS, socket hang up) son transitorios:
-        // se reintentan igual que un 5xx. AbortError NO se reintenta — ya se
-        // consumieron 60s y otro intento reventaría el presupuesto de 90s del
-        // cliente (sale al catch externo → 504, como antes).
-        if (fetchErr.name === 'AbortError' || intento === 2) throw fetchErr;
-        const esperaMs = Math.min(2000 * Math.pow(4, intento), 20000);
-        // Sin presupuesto para esperar + un intento útil (10s) → propagar ya.
-        if (Date.now() + esperaMs + 10000 > deadline) throw fetchErr;
-        console.warn(`[captura-magica] fetch lanzó (${fetchErr.message || fetchErr.name}) — reintento ${intento + 1}/2 en ${esperaMs}ms`);
-        await new Promise((r) => setTimeout(r, esperaMs));
-        continue;
-      }
-      if (upstream.ok) break;
-      errText = await upstream.text().catch(() => '');
-      const retriable = upstream.status === 429 || upstream.status === 529 || upstream.status >= 500;
-      if (!retriable || intento === 2) break;
-      const retryAfter = Number(upstream.headers.get('retry-after')) || 0;
-      const esperaMs = Math.min((retryAfter * 1000) || (2000 * Math.pow(4, intento)), 20000);
-      // Sin presupuesto para esperar + un intento útil (10s) → devolver el
-      // error real ya (incl. mensaje amigable del 429; la fila tiene Reintentar).
-      if (Date.now() + esperaMs + 10000 > deadline) break;
-      console.warn(`[captura-magica] upstream ${upstream.status} — reintento ${intento + 1}/2 en ${esperaMs}ms`);
-      await new Promise((r) => setTimeout(r, esperaMs));
-    }
+    const engine = ocr ? 'mistral-ocr+claude' : 'claude-vision';
+    const content = ocr
+      ? [{ type: 'text', text: `A continuación está el TEXTO extraído por OCR (formato markdown) de un comprobante peruano. Extrae los datos al JSON estructurado descrito en las instrucciones del sistema. Basáte ÚNICAMENTE en este texto; si un dato no aparece, devuelve null. Responde SOLO con el JSON, sin markdown ni texto adicional.\n\n===== TEXTO OCR DEL COMPROBANTE =====\n${ocr.texto}` }]
+      : [fileBlock, { type: 'text', text: userInstruction }];
 
-    if (!upstream.ok) {
-      console.error('[captura-magica] upstream error:', upstream.status, errText.slice(0, 200));
-      const isProd = process.env.NODE_ENV === 'production';
-      return res.status(upstream.status).json({
-        error: upstream.status === 429
-          ? 'El servicio de IA está saturado (429) — reintenta en un minuto (la fila tiene botón Reintentar)'
-          : `Claude API respondió ${upstream.status}`,
-        ...(isProd ? {} : { detail: errText.slice(0, 500) }),
-      });
-    }
-
-    const data = await upstream.json();
-    const text = data.content?.[0]?.text || '';
-
-    // Extraer JSON del response (puede venir con markdown wrapping aunque pidamos lo contrario)
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      return res.status(502).json({
-        error: 'Claude no devolvió JSON parseable',
-        rawText: text.slice(0, 500),
-      });
-    }
-
-    let extracted;
-    try { extracted = JSON.parse(jsonMatch[0]); }
-    catch (e) {
-      return res.status(502).json({
-        error: 'JSON inválido de Claude',
-        detail: e.message,
-        rawText: text.slice(0, 500),
-      });
-    }
-
-    const isProd = process.env.NODE_ENV === 'production';
+    const data = await anthropicMessages(apiKey, {
+      model: CLAUDE_MODEL,
+      max_tokens: 4000,
+      system: SYSTEM_PROMPT,
+      messages: [{ role: 'user', content }],
+    }, deadline);
+    const { extracted, text } = extractJson(data);
     return res.status(200).json({
       extracted,
       model: data.model,
       usage: data.usage,
-      // raw_text_preview solo en dev — en prod se omite para no fugar info
-      ...(isProd ? {} : { raw_text_preview: text.slice(0, 300) }),
+      engine,
+      ...(ocr ? { ocr_model: ocr.model } : {}),
+      ...(isProd ? {} : {
+        raw_text_preview: text.slice(0, 300),
+        ...(ocr ? { ocr_usage: ocr.usage, ocr_text_preview: ocr.texto.slice(0, 300) } : {}),
+      }),
     });
   } catch (e) {
-    if (e.name === 'AbortError') {
-      return res.status(504).json({ error: 'Claude tardó demasiado (>60s)' });
-    }
-    const sanitized = sanitizeError(e, 'Error consultando Claude');
-    return res.status(sanitized.status).json(sanitized.body);
+    return respondError(e, res, isProd);
   }
 }
