@@ -45,6 +45,13 @@ export const db = new Dexie('JarvexDB');
 // al admin/gerente para reportar un frente que no es suyo (titular ausente);
 // tras la aprobación carga el reporte en reporte_payload (jsonb, prop sin índice)
 // y lo envía; el admin acepta y recién ahí se aplican los avances. Aditivo.
+// Versión 34: reporte "día sin avance" del ingeniero (motivo + foto; la foto va
+// como evidencia tipo foto_sin_avance). Base del recordatorio de días sin
+// reportar. Aditivo.
+db.version(34).stores({
+  reportes_dia: 'id, obra_id, fecha, responsable_id, deleted_at, sync_status',
+});
+
 // Versión 33: órdenes de compra/servicio intercompany (Fase 4). Borrador de la
 // contadora jefe → aprobación del admin → lista para emitir. Aditivo.
 db.version(33).stores({

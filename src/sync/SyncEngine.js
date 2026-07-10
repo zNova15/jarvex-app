@@ -87,6 +87,8 @@ const TRANSACTIONAL_TABLES = [
   'emision_reglas',
   // Órdenes intercompany (Fase 4). Después de obras + companies (FKs).
   'ordenes_intercompany',
+  // Reporte "día sin avance" del ingeniero. Después de obras + frentes_obra.
+  'reportes_dia',
 ];
 
 // Tablas maestras que se descargan del servidor en cada sync.
@@ -115,6 +117,7 @@ const MASTER_TABLES = [
   { tabla: 'clasificacion_catalogo',       query: () => supabase.from('clasificacion_catalogo').select('*').is('deleted_at', null) },
   { tabla: 'emision_reglas',               query: () => supabase.from('emision_reglas').select('*').is('deleted_at', null) },
   { tabla: 'ordenes_intercompany',         query: () => supabase.from('ordenes_intercompany').select('*').is('deleted_at', null) },
+  { tabla: 'reportes_dia',                 query: () => supabase.from('reportes_dia').select('*').is('deleted_at', null) },
   { tabla: 'intercompany_transactions',    query: () => supabase.from('intercompany_transactions').select('*').is('deleted_at', null) },
   // Compras
   { tabla: 'requisiciones',         query: () => supabase.from('requisiciones').select('*').is('deleted_at', null) },
@@ -592,6 +595,8 @@ const TABLA_TO_MODULO = {
   emision_reglas: 'Intercompany',
   // Órdenes intercompany: las escriben jefe/admin (aprobación admin en UI).
   ordenes_intercompany: 'Intercompany',
+  // Reporte "día sin avance": lo escribe el ingeniero (mismo módulo que avance_obra).
+  reportes_dia: 'Avance',
   intercompany_transactions: 'Intercompany',
   trazabilidad_cadenas: 'Trazabilidad',
 };
@@ -657,6 +662,7 @@ const FK_DEPS = {
   // La regla de emisión referencia la empresa emisora + intermediarias (FKs reales).
   emision_reglas:            [{ campo: 'company_id', tabla: 'companies' }, { campo: 'intermediaria1_company_id', tabla: 'companies' }, { campo: 'intermediaria2_company_id', tabla: 'companies' }],
   ordenes_intercompany:      [{ campo: 'obra_id', tabla: 'obras' }, { campo: 'company_id', tabla: 'companies' }, { campo: 'intermediaria1_company_id', tabla: 'companies' }, { campo: 'intermediaria2_company_id', tabla: 'companies' }, { campo: 'ejecutora_company_id', tabla: 'companies' }],
+  reportes_dia:              [{ campo: 'frente_id', tabla: 'frentes_obra' }],
   movimientos_insumos_emergencia: [{ campo: 'insumo_emergencia_id', tabla: 'insumos_emergencia' }, { campo: 'responsable_id', tabla: 'personal' }, { campo: 'subcontratista_id', tabla: 'subcontratistas' }, { campo: 'proveedor_id', tabla: 'proveedores' }],
   asistencia:                [{ campo: 'personal_id', tabla: 'personal' }],
   // Un trabajador puede pertenecer a la cuadrilla de un subcontratista; si ese

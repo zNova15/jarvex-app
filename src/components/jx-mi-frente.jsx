@@ -209,6 +209,101 @@ function MiFrenteShell({ showToast, vista }) {
   const draftKey = obraId && userId ? `jx_repdraft_${obraId}_${userId}_${repFecha}` : '';
   const [hayBorrador, setHayBorrador] = uS(false);
   uE(() => { if (!draftKey) { setHayBorrador(false); return; } try { setHayBorrador(!!localStorage.getItem(draftKey)); } catch { setHayBorrador(false); } }, [draftKey]);
+
+  // ── "DÍA SIN AVANCE" + recordatorio de días no reportados ──────────────
+  // Si un día no se avanzó metrado, igual SE REPORTA: motivo + foto (pedido de
+  // Gabriel: que todos los ingenieros reporten TODOS los días). El registro va
+  // a reportes_dia (tabla propia — avance_obra exige partida y dispara el
+  // trigger de metrados). El recordatorio lista los días de los últimos 14 sin
+  // reporte propio (ni avance ni sin-avance) desde que hay datos.
+  const [sinAvanceOpen, setSinAvanceOpen] = uS(null);   // { fecha } — modal abierto
+  const [misReportesDia, setMisReportesDia] = uS([]);   // reportes_dia propios (obra)
+  const [misDiasAvance, setMisDiasAvance] = uS(new Set());
+  const [busySinAvance, setBusySinAvance] = uS(false);
+  uE(() => {
+    if (!obraId || !userId) return;
+    let cancel = false;
+    const load = async () => {
+      try {
+        const [rd, av] = await Promise.all([
+          window.__db.reportes_dia.where('obra_id').equals(obraId)
+            .filter(r => !r.deleted_at && r.responsable_id === userId).toArray(),
+          window.__db.avance_obra.where('obra_id').equals(obraId)
+            .filter(a => !a.deleted_at && a.responsable_id === userId).toArray(),
+        ]);
+        if (cancel) return;
+        setMisReportesDia(rd);
+        setMisDiasAvance(new Set(av.map(a => a.fecha).filter(Boolean)));
+      } catch { /* tabla nueva puede no existir aún en un build viejo */ }
+    };
+    load();
+    const on = (e) => { const t = e?.detail?.tabla; if (!t || t === 'reportes_dia' || t === 'avance_obra') load(); };
+    window.addEventListener('jx_data_changed', on);
+    window.addEventListener('jarvex_master_updated', on);
+    return () => { cancel = true; window.removeEventListener('jx_data_changed', on); window.removeEventListener('jarvex_master_updated', on); };
+  }, [obraId, userId]);
+  // Días pendientes: desde hace 14 días (o el primer dato propio) hasta AYER.
+  // ANCLADO a `hoy` (hoyLocal, zona America/Lima) — con new Date().toISOString()
+  // (UTC) a las 19:00 de Perú el "día" ya sería mañana y el banner correría fechas.
+  const diasPendientes = uM(() => {
+    const diasRep = new Set([...misDiasAvance, ...misReportesDia.map(r => r.fecha)]);
+    if (!diasRep.size && !misFrentes.length) return [];   // sin actividad propia: no perseguir
+    const out = [];
+    const base = new Date(`${hoy}T00:00:00Z`);            // hoy LOCAL como ancla UTC-fija
+    for (let i = 1; i <= 14; i++) {
+      const dia = new Date(base); dia.setUTCDate(base.getUTCDate() - i);
+      const iso = dia.toISOString().slice(0, 10);
+      if (!diasRep.has(iso)) out.push(iso);
+    }
+    // Piso: ni días anteriores a su primer reporte NI a su ASIGNACIÓN a un
+    // frente (a un ingeniero recién asignado no se le reclama el pasado ajeno).
+    const primerRep = [...diasRep].sort()[0];
+    const asignado = misFrentes.map(f => String(f.created_at || '').slice(0, 10)).filter(Boolean).sort()[0];
+    const piso = [primerRep, asignado].filter(Boolean).sort()[0];
+    return (piso ? out.filter(x => x >= piso) : out).sort();
+  }, [misDiasAvance, misReportesDia, misFrentes, hoy]);
+
+  const guardarSinAvance = async ({ fecha, motivo, fotos, frenteId }) => {
+    if (busySinAvance) return;
+    setBusySinAvance(true);
+    try {
+      const { newId, newIdempotencyKey, SYNC_STATUS } = await import('../db/jarvex.db');
+      const { getCurrentMode } = await import('../hooks/useAppMode');
+      const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
+      const now = new Date().toISOString();
+      const id = newId();
+      await window.__db.reportes_dia.add({
+        id, obra_id: obraId, frente_id: frenteId || null, fecha, motivo: motivo.trim(),
+        responsable_id: userId, created_by: userId, updated_by: userId,
+        created_at: now, updated_at: now, version: 1,
+        idempotency_key: newIdempotencyKey(userId, 'reportes_dia'),
+        ...(esPrueba ? { demo: true, sync_status: SYNC_STATUS.SYNCED } : { sync_status: SYNC_STATUS.PENDING_CREATE }),
+      });
+      let fotosOk = 0;
+      for (const f of (fotos || []).slice(0, 3)) {
+        try {
+          await window.__saveEvidenciaLocal({
+            id: window.__newId(), obra_id: obraId, tipo_evidencia: 'foto_sin_avance', modulo_relacionado: 'reportes_dia',
+            registro_relacionado_id: id, nombre_archivo: f.name, mime_type: f.type || '',
+            blob: f, fecha, created_by: userId, observaciones: `Sin avance: ${motivo.trim().slice(0, 80)}`,
+          });
+          fotosOk++;
+        } catch (e) { console.warn('[sin-avance foto]', e?.message); }
+      }
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'reportes_dia' } })); } catch {}
+      try { window.dispatchEvent(new Event('online')); } catch {}
+      // El motivo quedó registrado igual, pero la foto es requisito del flujo:
+      // si ninguna se pudo guardar (archivo >8MB indecodificable, cuota llena),
+      // avisar en ámbar para que reintente desde la galería — no toast verde.
+      if (fotosOk === 0 && (fotos || []).length > 0) {
+        showToast(`Reportado ${fecha} sin avance, pero NINGUNA foto se pudo guardar — subila desde Evidencias`, 'amber');
+      } else {
+        showToast(`Reportado: ${fecha} sin avance de metrado (${fotosOk} foto(s))`, 'green');
+      }
+      setSinAvanceOpen(null);
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+    finally { setBusySinAvance(false); }
+  };
   const agregarLinea = (pid) => { if (!pid) return; setRepLineas(prev => prev.some(l => l.partida_id === pid) ? prev : [...prev, { partida_id: pid, descripcion: '', metrado: '', fotos: [], motivo: '' }]); setAddPartQuery(''); };
   const quitarLinea = (pid) => setRepLineas(prev => prev.filter(l => l.partida_id !== pid));
   const setLinea = (pid, campo, val) => setRepLineas(prev => prev.map(l => l.partida_id === pid ? { ...l, [campo]: val } : l));
@@ -280,13 +375,16 @@ function MiFrenteShell({ showToast, vista }) {
         const desc = esTardio
           ? `[Reporte tardío subido ${hoy} · motivo: ${repMotivoTardio.trim()}]${l.descripcion ? ' ' + l.descripcion : ''}`
           : (l.descripcion || null);
-        await avanceHook.create({
+        // OJO: usar el id REALMENTE persistido (create lo devuelve) para enlazar
+        // las fotos. Si el padre quedara con otro id, las fotos serían huérfanas.
+        const avanceRec = await avanceHook.create({
           id, obra_id: obraId, partida_id: l.partida_id, frente_id: frenteDePartida(l.partida_id), fecha: repFecha,
           porcentaje_avance_reportado: ac && ac.pct != null ? Math.round(ac.pct * 10) / 10 : null,
           metrado_ejecutado: l.metrado !== '' ? Number(l.metrado) : null,
           descripcion: desc, responsable_id: userId, origen: 'reporte',
           sobre_reporte: sobre, motivo_sobrereporte: sobre ? (l.motivo || '').trim() || null : null,
         });
+        const avanceId = avanceRec?.id || id;
         if (ac && ac.pct != null && partidasHook.update) {
           // Al llegar al 100% la partida se marca terminado (salvo 'observado', que se respeta).
           const nuevoEstado = (ac.pct >= 100 && p && p.estado !== 'observado' && p.estado !== 'terminado') ? { estado: 'terminado' } : {};
@@ -296,7 +394,7 @@ function MiFrenteShell({ showToast, vista }) {
           try {
             await window.__saveEvidenciaLocal({
               id: window.__newId(), obra_id: obraId, tipo_evidencia: 'foto_avance', modulo_relacionado: 'avance_obra',
-              registro_relacionado_id: id, nombre_archivo: f.name, mime_type: f.type || 'image/jpeg',
+              registro_relacionado_id: avanceId, nombre_archivo: f.name, mime_type: f.type || '',
               blob: f, fecha: repFecha, created_by: userId, observaciones: 'Foto de avance diario',
             });
           } catch (e) { console.warn('[mi-frente foto]', e?.message); }
@@ -1159,6 +1257,27 @@ function MiFrenteShell({ showToast, vista }) {
 
       {vista === 'reporte' && (
         <div style={{ display: 'grid', gap: 12, maxWidth: 700 }}>
+          {/* Recordatorio: días sin reportar (ni avance ni "sin avance"). */}
+          {diasPendientes.length > 0 && (
+            <div className="card card-p" style={{ background: 'rgba(231,76,60,0.07)', border: '1px solid rgba(231,76,60,0.3)' }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--red)', marginBottom: 6 }}>
+                ⏰ Te falta reportar {diasPendientes.length} día(s)
+              </div>
+              <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 8 }}>
+                Todos los días se reporta — si no se avanzó metrado, indicá el motivo con una foto.
+              </div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {diasPendientes.slice(-7).map(d => (
+                  <span key={d} style={{ display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 11, background: 'var(--bg2)', border: '1px solid var(--bd)', borderRadius: 6, padding: '3px 6px' }}>
+                    <strong>{d.slice(5)}</strong>
+                    <button className="btn btn-ghost btn-xs" style={{ padding: '1px 5px', fontSize: 10 }} title="Reportar avance de ese día" onClick={() => setRepFecha(d)}>avance</button>
+                    <button className="btn btn-ghost btn-xs" style={{ padding: '1px 5px', fontSize: 10, color: 'var(--amber)' }} title="Reportar que ese día no se avanzó" onClick={() => setSinAvanceOpen({ fecha: d })}>sin avance</button>
+                  </span>
+                ))}
+                {diasPendientes.length > 7 && <span style={{ fontSize: 10.5, color: 'var(--tm)', alignSelf: 'center' }}>…y {diasPendientes.length - 7} día(s) más antiguos</span>}
+              </div>
+            </div>
+          )}
           <div className="card card-p">
             <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
               <div>
@@ -1169,6 +1288,11 @@ function MiFrenteShell({ showToast, vista }) {
                 <button className={`btn btn-sm ${!repTodas ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setRepTodas(false)}>Mis partidas</button>
                 <button className={`btn btn-sm ${repTodas ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setRepTodas(true)}>Todas las partidas</button>
               </div>
+              <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto', color: 'var(--amber)' }}
+                title="Hoy (o el día elegido) no se avanzó metrado: reportalo con motivo y foto"
+                onClick={() => setSinAvanceOpen({ fecha: repFecha })}>
+                🚫 Sin avance este día
+              </button>
             </div>
             {repFecha !== hoy && (
               <div style={{ marginTop: 10 }}>
@@ -1296,6 +1420,17 @@ function MiFrenteShell({ showToast, vista }) {
             <button style={{ ...ctxBtn, borderTop: '1px solid var(--bd)' }} onClick={() => { solicitarFrente(ctx.partida); setCtx(null); }} onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>🏗️ {solFrentePend(ctx.partida.id) ? 'Frente solicitado (pendiente)' : 'Solicitar crear frente para esta partida'}</button>
           )}
         </div>
+      )}
+
+      {sinAvanceOpen && (
+        <SinAvanceModal
+          fecha={sinAvanceOpen.fecha}
+          hoy={hoy}
+          misFrentes={misFrentes}
+          busy={busySinAvance}
+          onConfirm={guardarSinAvance}
+          onClose={() => setSinAvanceOpen(null)}
+        />
       )}
 
       {confirmRep && (
@@ -1947,6 +2082,51 @@ function RendimientoIngenierosPage() {
 
       {verFotos && <EvidenciaViewer evidencias={verFotos} onClose={() => setVerFotos(null)} />}
     </div>
+  );
+}
+
+// ─── Modal: reportar "día SIN avance de metrado" (motivo + foto) ──────────────
+function SinAvanceModal({ fecha, hoy, misFrentes, busy, onConfirm, onClose }) {
+  const [motivo, setMotivo] = uS('');
+  const [frenteId, setFrenteId] = uS(misFrentes?.length === 1 ? misFrentes[0].id : '');
+  const [fotos, setFotos] = uS([]);
+  const MOTIVOS = ['Lluvia / clima', 'Falta de material', 'Falta de frente / interferencia', 'Paralización de la obra', 'Solo trabajos preliminares (sin metrado)'];
+  const ok = motivo.trim().length >= 5 && fotos.length >= 1;
+  return (
+    <Modal title={`Sin avance · ${fecha}${fecha === hoy ? ' (hoy)' : ''}`} icon="alert" onClose={() => !busy && onClose()}>
+      <div style={{ fontSize: 12, color: 'var(--tm)', marginBottom: 10 }}>
+        Registrá por qué ese día no se avanzó metrado, con una foto del estado de la obra. Cuenta como reporte del día.
+      </div>
+      <label className="flabel">Motivo *</label>
+      <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 6 }}>
+        {MOTIVOS.map(m => (
+          <button key={m} className={`btn btn-xs ${motivo === m ? 'btn-amber' : 'btn-ghost'}`} style={{ fontSize: 10.5 }} onClick={() => setMotivo(m)}>{m}</button>
+        ))}
+      </div>
+      <textarea className="fi" rows={2} value={motivo} onChange={e => setMotivo(e.target.value)}
+        placeholder="Explicá el motivo (mínimo 5 caracteres)…" style={{ marginBottom: 10, resize: 'vertical' }} />
+      {misFrentes?.length > 1 && (
+        <div style={{ marginBottom: 10 }}>
+          <label className="flabel">Frente (opcional)</label>
+          <select className="fi" value={frenteId} onChange={e => setFrenteId(e.target.value)}>
+            <option value="">— Todos mis frentes —</option>
+            {misFrentes.map(f => <option key={f.id} value={f.id}>{f.nombre}</option>)}
+          </select>
+        </div>
+      )}
+      <label className="flabel">Foto del estado de la obra * (mín. 1, máx. 3)</label>
+      <input className="fi" type="file" accept="image/*" multiple
+        onChange={e => setFotos([...(e.target.files || [])].slice(0, 3))} style={{ marginBottom: 4 }} />
+      {fotos.length > 0 && <div style={{ fontSize: 10.5, color: 'var(--green)', marginBottom: 8 }}>{fotos.length} foto(s) lista(s)</div>}
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose} disabled={busy}>Cancelar</button>
+        <button className="btn btn-amber" disabled={busy || !ok}
+          title={ok ? undefined : 'Falta el motivo (≥5 caracteres) y al menos 1 foto'}
+          onClick={() => onConfirm({ fecha, motivo, fotos, frenteId: frenteId || null })}>
+          {busy ? 'Guardando…' : 'Reportar sin avance'}
+        </button>
+      </div>
+    </Modal>
   );
 }
 

@@ -1,0 +1,61 @@
+{
+  "name": "JARVEX · Recordatorio diario de reportes (ingenieros)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "cronExpression", "expression": "0 18 * * *" }
+          ]
+        }
+      },
+      "name": "Todos los días 18:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://kztnttgzgkvsgornjfln.supabase.co/rest/v1/v_dias_sin_reporte?select=user_id,email,nombre,nombre_obra,fecha&order=fecha.asc",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "options": {}
+      },
+      "name": "Días sin reporte (vista)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 0],
+      "notes": "Atar la credencial 'Supabase account' (service key) a este nodo A MANO — el MCP no ata credenciales supabaseApi a httpRequest (gotcha conocido)."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Agrupa por ingeniero×OBRA → un correo por obra (un ingeniero en 2 obras\n// recibiría fechas mezcladas bajo un solo nombre de obra si se agrupara solo\n// por email).\nconst porClave = new Map();\nfor (const item of $input.all()) {\n  const r = item.json;\n  if (!r.email) continue;\n  const k = `${r.email}|${r.nombre_obra || ''}`;\n  const e = porClave.get(k) || { email: r.email, nombre: r.nombre || 'Ingeniero', obra: r.nombre_obra || '', dias: new Set() };\n  e.dias.add(r.fecha);\n  porClave.set(k, e);\n}\nreturn [...porClave.values()].map(e => { const dias = [...e.dias].sort(); return { json: {\n  email: e.email,\n  nombre: e.nombre,\n  obra: e.obra,\n  n: dias.length,\n  lista: dias.map(d => `• ${d}`).join('\\n'),\n} }; });"
+      },
+      "name": "Agrupar por ingeniero",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.email }}",
+        "subject": "=JARVEX · Te faltan reportar {{ $json.n }} día(s) en obra",
+        "emailType": "text",
+        "message": "=Hola {{ $json.nombre }},\n\nEn la obra \"{{ $json.obra }}\" aún no registraste el reporte diario de estos días:\n\n{{ $json.lista }}\n\nRecordá: se reporta TODOS los días. Si un día no se avanzó metrado, entrá a JARVEX → Reporte Diario → \"🚫 Sin avance este día\" e indicá el motivo con una foto.\n\nhttps://jarvex-app.vercel.app\n\n— JARVEX (mensaje automático)",
+        "options": {}
+      },
+      "name": "Email al ingeniero (Gmail)",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [660, 0],
+      "notes": "Atar la credencial OAuth de Gmail (la misma cuenta Google ya conectada en n8n para Drive sirve; habilitar scope de Gmail)."
+    }
+  ],
+  "connections": {
+    "Todos los días 18:00": { "main": [[{ "node": "Días sin reporte (vista)", "type": "main", "index": 0 }]] },
+    "Días sin reporte (vista)": { "main": [[{ "node": "Agrupar por ingeniero", "type": "main", "index": 0 }]] },
+    "Agrupar por ingeniero": { "main": [[{ "node": "Email al ingeniero (Gmail)", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "timezone": "America/Lima" }
+}

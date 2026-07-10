@@ -5,6 +5,7 @@ const { useState: uSE, useMemo: uME, useEffect: uEE, useRef: uRE, useCallback: u
 const TIPO_META = {
   foto_asistencia:        { lbl:'Foto Asistencia',   cls:'b-blue',   cat:'asistencia',  icon:'camera' },
   foto_avance:            { lbl:'Foto de Avance',    cls:'b-green',  cat:'avance',      icon:'camera' },
+  foto_sin_avance:        { lbl:'Sin Avance',        cls:'b-amber',  cat:'avance',      icon:'camera' },
   guia_remision:          { lbl:'Guía de Remisión',  cls:'b-amber',  cat:'materiales',  icon:'truck'  },
   factura:                { lbl:'Factura',           cls:'b-orange', cat:'materiales',  icon:'file'   },
   pdf_formato_firmado:    { lbl:'Formato Firmado',   cls:'b-blue',   cat:'documentos',  icon:'clipboard' },
@@ -134,11 +135,20 @@ function Thumb({ ev, signedRef, blobUrlRef, onClick }) {
 }
 
 // ─── EVIDENCIAS PAGE ────────────────────────────────────
+// Evidencias CONTABLES (facturas, comprobantes, bancarización): solo las ven
+// el ADMIN y la CONTADORA JEFE ('contador'), más quien las subió (el ayudante
+// necesita re-ver las suyas). La almacenera y el resto de la obra NO — mismo
+// criterio que el RLS del server (mig 119); acá se filtra también lo que ya
+// quedó cacheado en el IndexedDB local del dispositivo.
+const TIPOS_CONTABLES = new Set(['bancarizacion', 'comprobante_captura', 'factura']);
+
 function EvidenciasPage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
   const myRol = auth?.profile?.rol;
+  const myId = auth?.profile?.id || null;
   const isAdmin = myRol === 'admin';
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Evidencias', 'w') ?? false);
+  const puedeVerContable = isAdmin || myRol === 'contador';
   const [obraId, setObraId] = uSE(null);
 
   // Detectar obra activa
@@ -186,14 +196,22 @@ function EvidenciasPage({ showToast }) {
     blobUrlRef.current = {};
   }, []);
 
+  // Visibles según el rol: lo contable queda FUERA para quien no corresponde
+  // (antes de stats y de filtered, así ni el contador de totales lo delata).
+  const visibles = uME(() => evidencias.filter(e =>
+    !TIPOS_CONTABLES.has(e.tipo_evidencia)
+    || puedeVerContable
+    || (myId && (e.subido_por === myId || e.created_by === myId))
+  ), [evidencias, puedeVerContable, myId]);
+
   const stats = uME(() => {
-    const total = evidencias.length;
-    const pendientes = evidencias.filter(e => e.sync_status === 'pending_upload').length;
+    const total = visibles.length;
+    const pendientes = visibles.filter(e => e.sync_status === 'pending_upload').length;
     return { total, pendientes };
-  }, [evidencias]);
+  }, [visibles]);
 
   const filtered = uME(() => {
-    return evidencias
+    return visibles
       .slice()
       .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
       .filter(e => {
@@ -203,7 +221,7 @@ function EvidenciasPage({ showToast }) {
                           || (e.observaciones||'').toLowerCase().includes(q.toLowerCase());
         return matchCat && matchQ;
       });
-  }, [evidencias, cat, q]);
+  }, [visibles, cat, q]);
 
   if (!obraId) return <SinObraEmpty icon="image"/>;
   if (loading) {
@@ -255,7 +273,7 @@ function EvidenciasPage({ showToast }) {
       {filtered.length === 0 ? (
         <div className="card card-p empty-state">
           <JxIcon name="image" size={40} color="var(--tm)"/>
-          <p>{evidencias.length === 0
+          <p>{visibles.length === 0
                 ? 'Aún no hay evidencias registradas. Click en "Subir Archivo" para comenzar.'
                 : 'No se encontraron evidencias con los filtros aplicados.'}</p>
         </div>

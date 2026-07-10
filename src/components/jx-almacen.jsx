@@ -310,21 +310,18 @@ function MaterialesPage({ showToast }) {
         // Si hay varias fotos por material, usamos la más reciente
         evidencias.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
         const map = new Map();
+        const { getEvidenciaSrc } = await import('../lib/evidencias-url.js');
         for (const ev of evidencias) {
           if (map.has(ev.registro_relacionado_id)) continue;
-          if (ev.url_archivo) {
-            map.set(ev.registro_relacionado_id, { url: ev.url_archivo, isRemote: true });
-          } else {
-            // Aún no se subió: tomamos el blob local
-            try {
-              const row = await window.__db.evidencias_blobs.get(ev.id);
-              if (row?.blob) {
-                const url = URL.createObjectURL(row.blob);
-                blobUrlsLocales.push(url);
-                map.set(ev.registro_relacionado_id, { url, isRemote: false });
-              }
-            } catch {}
-          }
+          // getEvidenciaSrc resuelve blob local o FIRMA el path del bucket
+          // privado (url_archivo cruda es /public/ y da 400 → imagen rota).
+          try {
+            const r = await getEvidenciaSrc(ev);
+            if (r?.url) {
+              if (r.isBlob) blobUrlsLocales.push(r.url);
+              map.set(ev.registro_relacionado_id, { url: r.url, isRemote: !r.isBlob });
+            }
+          } catch {}
         }
         if (!cancelled) setFotosMap(map);
       } catch (e) {

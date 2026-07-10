@@ -77,7 +77,11 @@ export function useOfflineData(tabla, queryFn = null, deps = []) {
 
     const record = {
       ...fields,
-      id,
+      // Respetar el id que trae el caller. Antes se pisaba SIEMPRE con newId():
+      // quien generaba un id para enlazar hijos (ej. el reporte del ingeniero
+      // guardaba sus fotos con registro_relacionado_id = ese id) terminaba con
+      // el padre guardado bajo OTRO id → hijos huérfanos e invisibles.
+      id: fields.id ?? id,
       created_by: userId,
       updated_by: userId,
       created_at: now,

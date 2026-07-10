@@ -1,5 +1,6 @@
 import { db, UPLOAD_STATUS } from '../db/jarvex.db';
 import { supabase } from '../lib/supabase';
+import { optimizarImagenEvidencia } from '../lib/optimizar-imagen';
 
 const MAX_RETRIES = 5;
 const MAX_PHOTO_BYTES = 8 * 1024 * 1024; // 8 MB
@@ -227,6 +228,18 @@ export async function uploadPendingEvidencias() {
 // ── Guardar evidencia localmente (con blob) ───────────────────────────
 
 export async function saveEvidenciaLocal({ id, obra_id, tipo_evidencia, modulo_relacionado, registro_relacionado_id, nombre_archivo, mime_type, blob, observaciones, fecha, created_by }) {
+  // Optimizar ANTES de guardar: HEIC de iPhone → JPEG (si no, nadie lo ve en
+  // desktop), reescala a 1920px y comprime (~20× menos storage/egress), y
+  // corrige el MIME real (los File de iOS llegan con type vacío y se
+  // etiquetaban 'image/jpeg' aunque fueran HEIC → imagen rota en los visores).
+  try {
+    const opt = await optimizarImagenEvidencia(blob, nombre_archivo || '');
+    if (opt?.blob) {
+      blob = opt.blob;
+      mime_type = opt.mime || mime_type;
+      if (opt.convertida && opt.nombre) nombre_archivo = opt.nombre;
+    }
+  } catch { /* si la optimización falla, se guarda el original tal cual */ }
   if (blob.size > MAX_PHOTO_BYTES) {
     throw new Error(`Archivo muy grande (${(blob.size / 1024 / 1024).toFixed(1)} MB). Máximo 8 MB.`);
   }

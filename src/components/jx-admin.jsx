@@ -884,6 +884,9 @@ const PERM_MATRIX = {
       'Comprobantes Electrónicos','Libros Electrónicos','PLAME / T-Registro','Config SUNAT',
       // Herramienta de captura (General) + bandeja de solicitudes (aprueba cambios)
       'Captura Mágica','Solicitudes Cambio',
+      // Galería de evidencias: la contadora jefe es (junto al admin) quien ve
+      // las evidencias CONTABLES (facturas/bancarización) — pedido de Gabriel.
+      'Evidencias',
     ];
     if (wList.includes(m)) return 'w';
     if (m === 'Obras') return 'r';   // ve la lista de obras asignadas (solo lectura)
