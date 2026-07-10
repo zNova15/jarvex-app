@@ -18,7 +18,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import React from "react";
-import { getCurrentMode } from "../hooks/useAppMode.js";
+import { getCurrentMode } from "../lib/app-mode-core.js";
 import { detectarEPP } from "../lib/epp-utils.js";
 import { calcAlerta } from "../lib/stock-utils.js";
 import { aplicarDelta } from "../lib/stock-ubicaciones.js";

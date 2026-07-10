@@ -13,7 +13,7 @@
 // Permisos: generar/editar borrador = admin | contador (jefe). Aprobar = admin.
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
-import { getCurrentMode } from "../hooks/useAppMode";
+import { getCurrentMode } from "../lib/app-mode-core.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);

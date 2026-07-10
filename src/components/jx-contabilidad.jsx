@@ -1,7 +1,7 @@
 import React from "react";
 import { sugerirCuentaPcge } from "../lib/sugerir-cuenta-pcge.js";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
-import { getCurrentMode } from "../hooks/useAppMode";
+import { getCurrentMode } from "../lib/app-mode-core.js";
 import { usePagination } from "../hooks/usePagination.js";
 import { TablePagination } from "./jx-pagination.jsx";
 import { useChart } from "../lib/chart-loader.js";

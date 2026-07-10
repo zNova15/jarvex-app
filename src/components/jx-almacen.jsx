@@ -18,7 +18,7 @@ import { exportarDataset } from "../lib/export-historico.js";
 import { PrecioHistorialModal } from "./jx-precio-historial.jsx";
 import { registrarSoloHistorial } from "../lib/precio-historial.js";
 import { useFotosEvidencias, FotoInsumoCell } from "./jx-foto-insumo.jsx";
-import { getCurrentMode } from "../hooks/useAppMode.js";
+import { getCurrentMode } from "../lib/app-mode-core.js";
 const { useState: uS, useMemo: uM, useEffect: uE, useCallback: uCB, useRef: uR } = React;
 
 // ─── DATA ───────────────────────────────────────────────

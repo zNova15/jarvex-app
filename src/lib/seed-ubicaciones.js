@@ -1,5 +1,5 @@
 import { db, newId, newIdempotencyKey, SYNC_STATUS } from '../db/jarvex.db';
-import { getCurrentMode } from '../hooks/useAppMode';
+import { getCurrentMode } from './app-mode-core.js';
 
 export const UBICACIONES_DEFAULT = [
   { nombre: 'Almacén Central', descripcion: 'Almacén principal cubierto',     orden: 1 },

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { db, newId, newIdempotencyKey, SYNC_STATUS } from '../db/jarvex.db';
 import { useAuth } from './useAuth';
-import { getCurrentMode } from './useAppMode';
+import { getCurrentMode } from '../lib/app-mode-core.js';
 
 // Filtra registros según el modo actual:
 //   'prueba'    → solo registros con demo === true

@@ -13,7 +13,7 @@
 // el ayudante NO participa de la designación).
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
-import { getCurrentMode } from "../hooks/useAppMode";
+import { getCurrentMode } from "../lib/app-mode-core.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);

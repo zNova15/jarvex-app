@@ -8,7 +8,7 @@
 // related_movement_id (par), related_company_id (contraparte), chain_id, chain_step_index.
 
 import { db, newId, newIdempotencyKey, SYNC_STATUS } from '../db/jarvex.db';
-import { getCurrentMode } from '../hooks/useAppMode';
+import { getCurrentMode } from './app-mode-core.js';
 
 const IGV_RATE = 0.18;
 

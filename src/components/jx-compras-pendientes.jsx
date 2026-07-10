@@ -17,7 +17,7 @@ import React from "react";
 import { TIPO_INSUMO_LABEL, TIPO_INSUMO_BADGE } from "../lib/insumo-clasificador.js";
 import { aplicarDelta } from "../lib/stock-ubicaciones.js";
 import { calcAlerta } from "../lib/stock-utils.js";
-import { getCurrentMode } from "../hooks/useAppMode.js";
+import { getCurrentMode } from "../lib/app-mode-core.js";
 import { registrarCambioPrecio } from "../lib/precio-historial.js";
 
 const { useState: uS, useEffect: uE, useMemo: uM } = React;

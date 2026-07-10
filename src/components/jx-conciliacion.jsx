@@ -15,7 +15,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import React from "react";
-import { getCurrentMode } from "../hooks/useAppMode";
+import { getCurrentMode } from "../lib/app-mode-core.js";
 import { sugerirInsumoMatch } from "../lib/sugerir-insumo-match.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;

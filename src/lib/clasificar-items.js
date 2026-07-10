@@ -19,7 +19,7 @@
 // ═══════════════════════════════════════════════════════════════════
 import { db, newId, newIdempotencyKey, SYNC_STATUS } from '../db/jarvex.db';
 import { apiFetch } from './api-client.js';
-import { getCurrentMode } from '../hooks/useAppMode';
+import { getCurrentMode } from './app-mode-core.js';
 
 export const CATEGORIAS_ITEM = [
   'materiales', 'herramientas', 'maquinaria', 'epp',

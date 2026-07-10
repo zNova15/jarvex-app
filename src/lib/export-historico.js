@@ -9,7 +9,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import { db } from '../db/jarvex.db.js';
-import { getCurrentMode } from '../hooks/useAppMode.js';
+import { getCurrentMode } from './app-mode-core.js';
 
 // Predicado de modo — espejo de filterByMode (useOfflineData.js): en 'prueba'
 // solo registros demo (demo === true); en 'edicion'/'produccion' solo reales.

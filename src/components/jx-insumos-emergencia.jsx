@@ -17,7 +17,7 @@ import { dejaNegativo } from "../lib/stock-guard.js";
 import { DesglosePopup, TraspasoStockModal, ubicacionAutoOrigen, validarSalidaUbic } from "./jx-stock-ubic.jsx";
 import { PrecioHistorialModal } from "./jx-precio-historial.jsx";
 import { registrarSoloHistorial } from "../lib/precio-historial.js";
-import { getCurrentMode } from "../hooks/useAppMode.js";
+import { getCurrentMode } from "../lib/app-mode-core.js";
 
 const ITEM_TIPO = 'emergencia'; // item_tipo en stock_ubicaciones (mig 074)
 

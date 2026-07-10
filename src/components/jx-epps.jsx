@@ -23,7 +23,7 @@ import { opcionesDestinoFlat, splitDestino } from "../lib/destino-mov.js";
 import { exportarDataset } from "../lib/export-historico.js";
 import { PrecioHistorialModal } from "./jx-precio-historial.jsx";
 import { registrarSoloHistorial, registrarCambioPrecio } from "../lib/precio-historial.js";
-import { getCurrentMode } from "../hooks/useAppMode.js";
+import { getCurrentMode } from "../lib/app-mode-core.js";
 
 const { useState: uS, useEffect: uE, useMemo: uM, useRef: uR } = React;
 

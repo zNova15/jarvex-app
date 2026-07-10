@@ -268,7 +268,7 @@ function MiFrenteShell({ showToast, vista }) {
     setBusySinAvance(true);
     try {
       const { newId, newIdempotencyKey, SYNC_STATUS } = await import('../db/jarvex.db');
-      const { getCurrentMode } = await import('../hooks/useAppMode');
+      const { getCurrentMode } = await import('../lib/app-mode-core.js');
       const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
       const now = new Date().toISOString();
       const id = newId();

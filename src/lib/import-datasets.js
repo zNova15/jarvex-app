@@ -15,7 +15,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import { normTxt } from './migracion-parser.js';
-import { getCurrentMode } from '../hooks/useAppMode.js';
+import { getCurrentMode } from './app-mode-core.js';
 
 const hoyISO = () => new Date().toISOString().slice(0, 10);
 
