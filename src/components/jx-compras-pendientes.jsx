@@ -634,26 +634,50 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
   // Carga (lazy, cacheado) los movimientos de ingreso de un insumo que TODAVÍA
   // no están atados a una factura, ordenados por cercanía a la fecha de la
   // factura. Son los candidatos a vincular ("la mercadería ya entró").
-  const cargarCandidatos = async (tipo, matchId) => {
-    const k = `${tipo}:${matchId}`;
+  // Candidatos a vincular: ingresos sin factura del insumo ELEGIDO y también de
+  // insumos con NOMBRE SIMILAR al de la factura (la almacenera suele registrar
+  // "Yeso" y la factura dice "Yeso de 7 kilos" — el movimiento vive en OTRO
+  // insumo del catálogo). Cada candidato lleva el NOMBRE de su insumo para que
+  // ella pueda corroborar antes de vincular.
+  const _normDescCand = (d) => String(d || '').toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 60);
+  const cargarCandidatos = async (tipo, matchId, descripcion) => {
+    const k = `${tipo}:${matchId}:${_normDescCand(descripcion)}`;
     if (!matchId || candCache[k] || candLoading[k]) return;
     setCandLoading(s => ({ ...s, [k]: true }));
     try {
       const cfg = CFG_TIPO[tipo] || CFG_TIPO.material;
-      const rows = await window.__db[cfg.mov].where(cfg.fk).equals(matchId).toArray();
       const facDate = factura.date || '';
+      const nombreDe = (id) => {
+        const rec = catalogoCompleto.get(id)?.record;
+        return rec ? (rec[cfg.nombreCol] || rec.nombre || '—') : '—';
+      };
+      // Insumos "parecidos" del mismo tipo (por la descripción de la factura Y
+      // por el nombre del insumo elegido), sin el propio match.
+      const nombreMatch = nombreDe(matchId);
+      const similares = (catalogoTodos || [])
+        .filter(c => c.tipo === tipo && c.id !== matchId)
+        .map(c => ({ ...c, score: Math.max(simNombre(descripcion || '', c.nombre), simNombre(nombreMatch, c.nombre)) }))
+        .filter(c => c.score >= 0.3)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 6);
+      const ids = [matchId, ...similares.map(s => s.id)];
+      const rows = await window.__db[cfg.mov].where(cfg.fk).anyOf(ids).toArray();
       const cand = rows
         .filter(m => !m.deleted_at && m.obra_id === obraId && _esIngreso(m)
           && !String(m.documento_asociado || '').trim() && !m.accounting_movement_id)
         .map(m => ({
           id: m.id,
+          insumoId: m[cfg.fk],
+          insumoNombre: nombreDe(m[cfg.fk]),
+          esMismoInsumo: m[cfg.fk] === matchId,
           fecha: m.fecha || (m.created_at || '').slice(0, 10),
           cantidad: Number(m.cantidad) || 0,
-          unidad: m.unidad || '',
+          unidad: m.unidad || (catalogoCompleto.get(m[cfg.fk])?.record?.unidad) || '',
           observaciones: m.observaciones || '',
           dist: diasEntre(m.fecha || (m.created_at || '').slice(0, 10), facDate),
         }))
-        .sort((a, b) => a.dist - b.dist || (b.fecha || '').localeCompare(a.fecha || ''))
+        // primero los del insumo elegido, luego por cercanía de fecha
+        .sort((a, b) => (b.esMismoInsumo - a.esMismoInsumo) || (a.dist - b.dist) || (b.fecha || '').localeCompare(a.fecha || ''))
         .slice(0, 15);
       setCandCache(s => ({ ...s, [k]: cand }));
     } catch {
@@ -759,6 +783,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
       const recibidoPorIdx = new Map(); // idx de fila → cantidad recibida ahora
       const creadoPorIdx = new Map();   // idx de fila → id del insumo creado en la tx
       const vinculadosIds = new Set();  // mov_existente_id ya estampados en este envío
+      const factorPorIdx = new Map();   // idx → factor de conversión aplicado (unidades insumo por unidad factura)
       const noVinculados = [];          // vínculos que no se pudieron aplicar (mov borrado)
       // El desglose por almacén (stock_ubicaciones) se aplica DESPUÉS de la
       // transacción: aplicarDelta dispara un evento jx_data_changed que correría
@@ -798,8 +823,27 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
             if (vinculadosIds.has(it.mov_existente_id)) continue; // un ingreso → una sola estampa
             const mov = await window.__db[cfg.mov].get(it.mov_existente_id);
             if (!mov || mov.deleted_at) { noVinculados.push(it.descripcion || 'ítem'); continue; }
-            const cantVinc = Number(mov.cantidad) || Number(it.cantidad_recibida) || 0;
-            const obsLink = [mov.observaciones, it.obs_item, 'Factura ' + (facFresh.document_number || '')].filter(Boolean).join(' · ');
+            // `recibido` del ítem se acumula en unidades de la FACTURA: si la
+            // factura dice 2 bolsas y el movimiento se anotó como 14 kg, la
+            // equivalencia (editable en la fila) manda — sin esto quedaba
+            // "recibido 14 de 2" y los números no cuadraban.
+            const cantMov = Number(mov.cantidad) || 0;
+            const faltaVinc = Math.max(0, (Number(it.cantidad) || 0) - yaFreshDe(idx));
+            const mismaUnidadVinc = String(it.unidad || '').trim().toLowerCase() === String(mov.unidad || it.equiv_mov?.unidad || '').trim().toLowerCase();
+            // Base: lo tipeado en la equivalencia; si quedó vacío, con misma
+            // unidad cae a la cantidad del movimiento y con unidad distinta a lo
+            // que falta. SIEMPRE clampeado a lo que falta: un vínculo nunca
+            // sobre-acredita el ítem (no hay prompt de exceso en este camino).
+            const baseVinc = Number(it.equiv_factura_cant) > 0
+              ? Number(it.equiv_factura_cant)
+              : (mismaUnidadVinc ? (cantMov || Number(it.cantidad_recibida) || 0) : faltaVinc);
+            const cantVinc = Math.min(baseVinc, faltaVinc);
+            // Registro legible de la conversión en el movimiento (auditable).
+            const unidadesDistintas = String(it.unidad || '').toLowerCase() !== String(mov.unidad || it.equiv_mov?.unidad || '').toLowerCase();
+            const notaEquiv = (unidadesDistintas && cantMov > 0 && cantVinc > 0)
+              ? `Equivalencia: ${cantVinc} ${it.unidad || 'und'} (factura) = ${cantMov} ${mov.unidad || it.equiv_mov?.unidad || ''}`
+              : null;
+            const obsLink = [mov.observaciones, it.obs_item, notaEquiv, 'Factura ' + (facFresh.document_number || '')].filter(Boolean).join(' · ');
             await window.__db[cfg.mov].update(it.mov_existente_id, {
               documento_asociado: facFresh.document_number || mov.documento_asociado || null,
               accounting_movement_id: facFresh.id,
@@ -817,7 +861,14 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
             vinculadosIds.add(it.mov_existente_id);
             if (idx >= 0) recibidoPorIdx.set(idx, (recibidoPorIdx.get(idx) || 0) + cantVinc);
             // El comprobante ahora respalda el precio de ese ingreso.
-            await registrarPrecio({ itemTipo: it.tipo, matchId: it.match_id, precio: it.precio_unitario, movId: it.mov_existente_id });
+            // Precio al historial en unidades del INSUMO: con equivalencia
+            // (2 und = 14 kg a S/21 la bolsa) el precio por kg = 21×2/14 = S/3.
+            // Sin datos confiables de conversión, se omite (mejor sin dato que
+            // envenenar el historial con S/21 "por kg").
+            const precioVinc = !unidadesDistintas
+              ? it.precio_unitario
+              : (cantMov > 0 && cantVinc > 0 ? +(((Number(it.precio_unitario) || 0) * cantVinc) / cantMov).toFixed(4) : null);
+            if (precioVinc != null) await registrarPrecio({ itemTipo: it.tipo, matchId: it.match_id, precio: precioVinc, movId: it.mov_existente_id });
             continue;
           }
 
@@ -844,11 +895,29 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
           }
           if (!matchId) continue;
 
+          // CONVERSIÓN DE UNIDADES (factura en bolsas/und, insumo del catálogo en
+          // kg): factor = cuántas unidades del INSUMO trae 1 unidad de la FACTURA
+          // (ej. 7 kg por bolsa). El stock y el movimiento van en unidades del
+          // insumo (cant × factor); `recibido` de la factura queda en unidades de
+          // la factura (cant). factor 1 = sin conversión (comportamiento de siempre).
+          // El factor SOLO aplica si las unidades realmente difieren AHORA
+          // (para insumos creados en esta recepción, la unidad es la del form).
+          // Un factor tipeado para un match anterior y ya no visible en la UI
+          // no debe multiplicar el stock en silencio.
+          const unidadInsumo = (it.crear_nuevo ? it.crear_nuevo.unidad : catalogoCompleto.get(matchId)?.record?.unidad) || null;
+          const unidadesDifierenAhora = !!unidadInsumo && String(unidadInsumo).trim().toLowerCase() !== String(it.unidad || 'und').trim().toLowerCase();
+          const factor = (unidadesDifierenAhora && Number(it.factor_conv) > 0) ? Number(it.factor_conv) : 1;
+          const cantStock = +(cant * factor).toFixed(4);
+          // Precio por unidad del INSUMO (S/21 la bolsa de 7 kg → S/3 el kg).
+          const precioUnitInsumo = factor !== 1 ? +((Number(it.precio_unitario) || 0) / factor).toFixed(4) : (Number(it.precio_unitario) || 0);
+          const notaConv = factor !== 1
+            ? `Equivalencia: ${cant} ${it.unidad || 'und'} (factura) × ${factor} = ${cantStock} ${unidadInsumo || ''}`
+            : null;
           const movId = window.__newId();
-          const obs = ['Recepción factura ' + facFresh.document_number, obsGlobal, it.obs_item].filter(Boolean).join(' · ');
+          const obs = ['Recepción factura ' + facFresh.document_number, obsGlobal, it.obs_item, notaConv].filter(Boolean).join(' · ');
           const baseMov = {
             id: movId, obra_id: obraId, fecha: (fechaMov || now.slice(0, 10)), hora: now.slice(11, 16),
-            cantidad: cant, unidad: it.unidad || 'und', observaciones: obs,
+            cantidad: cantStock, unidad: (factor !== 1 ? (unidadInsumo || it.unidad) : it.unidad) || 'und', observaciones: obs,
             proveedor_id: facFresh.proveedor_id || null, documento_asociado: facFresh.document_number || null,
             accounting_movement_id: facFresh.id || null,
             ubicacion_id: it.ubicacion_id || null,
@@ -857,12 +926,12 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
             ...(isPrueba ? { demo: true } : {}),
           };
           if (cfg.cat === 'herramientas') Object.assign(baseMov, { herramienta_id: matchId, accion: 'entrada', tipo_movimiento: 'ingreso', estado_devolucion: 'nuevo' });
-          else if (cfg.cat === 'epps') Object.assign(baseMov, { epp_id: matchId, tipo_movimiento: 'entrada', precio_unitario_real: Number(it.precio_unitario) || 0 });
+          else if (cfg.cat === 'epps') Object.assign(baseMov, { epp_id: matchId, tipo_movimiento: 'entrada', precio_unitario_real: precioUnitInsumo });
           // movimientos_maquinaria / movimientos_insumos_emergencia: tipo 'entrada',
           // sin precio_unitario_real ni partida_id (esas columnas no existen ahí).
           else if (cfg.cat === 'activos_pesados') Object.assign(baseMov, { activo_id: matchId, tipo_movimiento: 'entrada' });
           else if (cfg.cat === 'insumos_emergencia') Object.assign(baseMov, { insumo_emergencia_id: matchId, tipo_movimiento: 'entrada' });
-          else Object.assign(baseMov, { material_id: matchId, tipo_movimiento: 'entrada', precio_unitario_real: Number(it.precio_unitario) || 0, partida_id: null });
+          else Object.assign(baseMov, { material_id: matchId, tipo_movimiento: 'entrada', precio_unitario_real: precioUnitInsumo, partida_id: null });
           await window.__db[cfg.mov].add(baseMov);
           primerMov = primerMov || movId;
 
@@ -870,19 +939,24 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
           // transacción revierte el movimiento también).
           const rec = await window.__db[cfg.cat].get(matchId);
           if (rec) {
-            const nuevoStock = Math.max(0, (Number(rec.stock_actual) || 0) + cant);
+            const nuevoStock = Math.max(0, (Number(rec.stock_actual) || 0) + cantStock);
             const patch = { stock_actual: nuevoStock, alerta: calcAlerta(nuevoStock, Number(rec.stock_minimo || 0)), updated_at: now, updated_by: userId, version: (rec.version || 0) + 1, sync_status: (isPrueba || rec.demo === true) ? 'synced' : (rec.sync_status === 'pending_create' ? 'pending_create' : 'pending_update') };
             if (cfg.cat === 'materiales' && it.ubicacion_id && !rec.ubicacion_id) patch.ubicacion_id = it.ubicacion_id;
             await window.__db[cfg.cat].update(matchId, patch);
           }
           // Desglose por almacén: se encola y se aplica al cerrar la tx.
           if (it.ubicacion_id) {
-            desgloseQueue.push({ obraId, itemTipo: cfg.itemTipo, itemId: matchId, ubicacionId: it.ubicacion_id, delta: cant, userId });
+            desgloseQueue.push({ obraId, itemTipo: cfg.itemTipo, itemId: matchId, ubicacionId: it.ubicacion_id, delta: cantStock, userId });
           }
-          // Historial de precio fundamentado en el comprobante.
-          await registrarPrecio({ itemTipo: it.tipo, matchId, precio: it.precio_unitario, movId });
+          // Historial de precio fundamentado en el comprobante. Con conversión,
+          // el precio por unidad del INSUMO = precio de factura ÷ factor
+          // (S/21 la bolsa de 7 kg → S/3 el kg).
+          await registrarPrecio({ itemTipo: it.tipo, matchId, precio: precioUnitInsumo, movId });
           creados++;
           if (idx >= 0) recibidoPorIdx.set(idx, (recibidoPorIdx.get(idx) || 0) + cant);
+          // Persistir el factor en el ítem: la Conciliación necesita volver la
+          // entrada (en unidades del insumo) a unidades de factura.
+          if (idx >= 0 && factor !== 1) factorPorIdx.set(idx, factor);
         }
 
         // items_factura con lo recibido acumulado (base FRESCA) + match elegido.
@@ -903,7 +977,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
           const linkExtra = (fila?.modo === 'existente' && fila?.mov_existente_id)
             ? { recepcion_modo: 'vinculado', mov_vinculado_id: fila.mov_existente_id }
             : {};
-          return { ...orig, recibido, material_id: matId, tipo_insumo: tipoFinal, ...linkExtra };
+          return { ...orig, recibido, material_id: matId, tipo_insumo: tipoFinal, ...(factorPorIdx.has(idx) ? { factor_conv: factorPorIdx.get(idx) } : {}), ...linkExtra };
         });
         todoCompleto = itemsActualizados.every(it =>
           it.rechazado ||                                // negado por el almacén: no ingresa, no bloquea el cierre
@@ -1033,13 +1107,37 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
                     <div style={{ fontSize: 12, color: 'var(--ts)', marginBottom: 3 }}>{it.descripcion}{it.es_empresa && <span className="badge b-gray" style={{ marginLeft: 6, fontSize: 9 }} title={it.destino === 'obra_general' ? 'Gasto general de la obra (ej. comida) — por defecto no se recibe en el almacén' : 'Consumo general de la empresa (oficina) — por defecto no se recibe en la obra'}>{it.destino === 'obra_general' ? '🍽 gasto obra' : '🏢 empresa'}</span>}</div>
                     {it.modo === 'existente' ? (
                       // Ya resuelta vinculando un movimiento de ingreso existente.
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                        <span className="badge b-green" style={{ fontSize: 9.5 }}>
-                          <JxIcon name="check" size={9} /> Vinculado a un ingreso ya registrado
-                        </span>
-                        <button className="btn btn-ghost btn-xs" onClick={() => { const resta = Math.max(0, (Number(it.cantidad) || 0) - (Number(it.ya_recibido) || 0)); upd(i, { modo: 'nuevo', mov_existente_id: null, cantidad_recibida: resta, verificado: !!it.match_id && resta > 0 }); }}>
-                          Deshacer
-                        </button>
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                          <span className="badge b-green" style={{ fontSize: 9.5 }}>
+                            <JxIcon name="check" size={9} /> Vinculado: {it.equiv_mov?.insumoNombre || 'ingreso ya registrado'}
+                          </span>
+                          <button className="btn btn-ghost btn-xs" onClick={() => {
+                            const resta = Math.max(0, (Number(it.cantidad) || 0) - (Number(it.ya_recibido) || 0));
+                            // Restaurar el match ORIGINAL (el candidato similar pudo haberlo
+                            // pisado) y forzar re-verificación manual.
+                            const matchRestaurado = it.match_id_prev !== undefined ? it.match_id_prev : it.match_id;
+                            upd(i, { modo: 'nuevo', mov_existente_id: null, cantidad_recibida: resta, match_id: matchRestaurado, match_id_prev: undefined, verificado: false, equiv_mov: null, equiv_factura_cant: null });
+                          }}>
+                            Deshacer
+                          </button>
+                        </div>
+                        {/* EQUIVALENCIA de unidades: la factura vino en bolsas/und y el
+                            movimiento se anotó en kg (u otra unidad). Ella indica cuántas
+                            unidades de la FACTURA cubre ese movimiento y queda el registro
+                            "2 und = 14 kg (7 kg por und)". */}
+                        {it.equiv_mov && (
+                          <div style={{ marginTop: 4, padding: '5px 7px', background: 'var(--bg2)', border: '1px solid var(--bd)', borderRadius: 5, fontSize: 10.5, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                            <span style={{ color: 'var(--tm)' }}>Equivale a</span>
+                            <input className="fi" type="number" min="0" step="0.01" value={it.equiv_factura_cant ?? ''}
+                              onChange={e => upd(i, { equiv_factura_cant: e.target.value })}
+                              style={{ width: 64, fontSize: 11, padding: '3px 5px', textAlign: 'right' }} />
+                            <span style={{ color: 'var(--ts)' }}>{it.unidad || 'und'} de la factura = <strong>{Number(it.equiv_mov.cantidad).toLocaleString('es-PE')} {it.equiv_mov.unidad}</strong> del movimiento</span>
+                            {Number(it.equiv_factura_cant) > 0 && Number(it.equiv_mov.cantidad) > 0 && String(it.unidad || '').toLowerCase() !== String(it.equiv_mov.unidad || '').toLowerCase() && (
+                              <span style={{ color: 'var(--green)' }}>({(Number(it.equiv_mov.cantidad) / Number(it.equiv_factura_cant)).toLocaleString('es-PE', { maximumFractionDigits: 2 })} {it.equiv_mov.unidad} por {it.unidad || 'und'})</span>
+                            )}
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <>
@@ -1063,7 +1161,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
                             <button className="btn btn-ghost btn-xs" onClick={() => upd(i, { crear_nuevo: null, creado_aqui: false, verificado: false })}>Quitar</button>
                           </div>
                         ) : (
-                          <SearchableSelect value={it.match_id || ''} onChange={v => { if (candOpen === i) setCandOpen(null); upd(i, { match_id: v || null, crear_nuevo: null, creado_aqui: false, verificado: !!v && Number(it.cantidad_recibida) > 0 }); }}
+                          <SearchableSelect value={it.match_id || ''} onChange={v => { if (candOpen === i) setCandOpen(null); upd(i, { match_id: v || null, crear_nuevo: null, creado_aqui: false, factor_conv: null, verificado: !!v && Number(it.cantidad_recibida) > 0 }); }}
                             options={opciones} fontSize={11} placeholder="— Buscar insumo del catálogo —" />
                         )}
                         {/* Sugerencias de insumo parecido (los nombres rara vez coinciden) */}
@@ -1073,7 +1171,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
                             {(sugerenciasPorIdx[i] || []).map(s => (
                               <button key={s.id} className="badge b-blue" style={{ cursor: 'pointer', fontSize: 9.5, border: 'none' }}
                                 title="Vincular a este insumo del catálogo"
-                                onClick={() => upd(i, { match_id: s.id, crear_nuevo: null, creado_aqui: false, verificado: Number(it.cantidad_recibida) > 0 })}>
+                                onClick={() => upd(i, { match_id: s.id, crear_nuevo: null, creado_aqui: false, factor_conv: null, verificado: Number(it.cantidad_recibida) > 0 })}>
                                 {s.nombre}
                               </button>
                             ))}
@@ -1095,7 +1193,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
                               <input className="fi" value={crearForm.unidad} placeholder="und" title="Unidad"
                                 onChange={e => setCrearForm(f => ({ ...f, unidad: e.target.value }))} style={{ fontSize: 11, padding: '5px 6px', width: 90 }} />
                               <button className="btn btn-amber btn-xs" disabled={!String(crearForm.nombre || '').trim()}
-                                onClick={() => { const nombre = String(crearForm.nombre || '').trim(); const unidad = String(crearForm.unidad || 'und').trim() || 'und'; upd(i, { crear_nuevo: { nombre, unidad }, unidad, creado_aqui: true, match_id: null, verificado: Number(it.cantidad_recibida) > 0 }); setCrearForm(null); }}>
+                                onClick={() => { const nombre = String(crearForm.nombre || '').trim(); const unidad = String(crearForm.unidad || 'und').trim() || 'und'; upd(i, { crear_nuevo: { nombre, unidad }, unidad, creado_aqui: true, match_id: null, factor_conv: null, verificado: Number(it.cantidad_recibida) > 0 }); setCrearForm(null); }}>
                                 <JxIcon name="check" size={10} /> Usar este insumo nuevo
                               </button>
                               <button className="btn btn-ghost btn-xs" onClick={() => setCrearForm(null)}>Cancelar</button>
@@ -1116,13 +1214,13 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
                                 elija un movimiento concreto: si no, quedaba verificada en modo
                                 'nuevo' y al confirmar creaba un ingreso (doble stock). */}
                             <label style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 10.5, cursor: 'pointer' }}>
-                              <input type="radio" name={`modo-${i}`} checked={candOpen === i} onChange={() => { setCandOpen(i); cargarCandidatos(it.tipo, it.match_id); upd(i, { verificado: false }); }} style={{ marginTop: 2, flexShrink: 0 }} />
+                              <input type="radio" name={`modo-${i}`} checked={candOpen === i} onChange={() => { setCandOpen(i); cargarCandidatos(it.tipo, it.match_id, it.descripcion); upd(i, { verificado: false }); }} style={{ marginTop: 2, flexShrink: 0 }} />
                               <span><strong style={{ color: 'var(--ts)' }}>🔗 Ya había entrado antes</strong><br /><span style={{ color: 'var(--tm)' }}>La mercadería ya se registró: <strong>elegí el ingreso</strong> abajo para vincular (no vuelve a sumar stock).</span></span>
                             </label>
                           </div>
                         )}
                         {candOpen === i && it.match_id && (() => {
-                          const k = `${it.tipo}:${it.match_id}`;
+                          const k = `${it.tipo}:${it.match_id}:${_normDescCand(it.descripcion)}`;
                           // Excluimos los movimientos ya elegidos por OTRA fila de
                           // esta misma factura (no vincular el mismo ingreso dos veces).
                           const usadosOtras = new Set(recep.filter((r, j) => j !== i && r.modo === 'existente' && r.mov_existente_id).map(r => r.mov_existente_id));
@@ -1137,12 +1235,38 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
                                 </span>
                               ) : (
                                 <div style={{ display: 'grid', gap: 3 }}>
-                                  <span style={{ fontSize: 9.5, color: 'var(--tm)' }}>Ingresos sin factura (cercanos a la fecha):</span>
+                                  <span style={{ fontSize: 9.5, color: 'var(--tm)' }}>Ingresos sin factura (cercanos a la fecha) — el nombre es el del insumo del movimiento:</span>
                                   {lista.map(c => (
                                     <button key={c.id} className="btn btn-ghost btn-xs" style={{ justifyContent: 'flex-start', textAlign: 'left', whiteSpace: 'normal', height: 'auto' }}
-                                      onClick={() => { upd(i, { modo: 'existente', mov_existente_id: c.id, cantidad_recibida: c.cantidad, verificado: true }); setCandOpen(null); }}>
-                                      {c.fecha || 's/f'} · {Number(c.cantidad).toLocaleString('es-PE')} {c.unidad}
-                                      {isFinite(c.dist) && c.dist <= 3 ? ' · mismo período' : ''}
+                                      title={c.esMismoInsumo ? undefined : 'Movimiento de OTRO insumo del catálogo con nombre parecido — al elegirlo, el ítem queda vinculado a ese insumo'}
+                                      onClick={() => {
+                                        const resta = Math.max(0, (Number(it.cantidad) || 0) - (Number(it.ya_recibido) || 0));
+                                        // Default de "cuántas unidades de la FACTURA cubre":
+                                        // mismas unidades → la cantidad del movimiento (clampeada a
+                                        // lo que falta: un mov parcial de 14 sobre factura de 20 NO
+                                        // debe cerrar los 20); unidades distintas → lo que falta
+                                        // (no se puede inferir la conversión; editable en la fila).
+                                        const mismaUnidad = String(it.unidad || '').trim().toLowerCase() === String(c.unidad || '').trim().toLowerCase();
+                                        const defEquiv = mismaUnidad ? Math.min(Number(c.cantidad) || 0, resta) : resta;
+                                        // Si el movimiento es de OTRO insumo (nombre similar), el ítem
+                                        // queda vinculado a ESE insumo (precio e historial al correcto);
+                                        // guardamos el match previo para que "Deshacer" lo restaure.
+                                        upd(i, {
+                                          modo: 'existente', mov_existente_id: c.id,
+                                          match_id: c.insumoId,
+                                          match_id_prev: it.match_id,
+                                          cantidad_recibida: c.cantidad, verificado: true,
+                                          equiv_mov: { cantidad: c.cantidad, unidad: c.unidad, insumoNombre: c.insumoNombre },
+                                          equiv_factura_cant: defEquiv,
+                                        });
+                                        setCandOpen(null);
+                                      }}>
+                                      <span style={{ fontWeight: 600, color: 'var(--ts)' }}>{c.insumoNombre}</span>
+                                      {!c.esMismoInsumo && <span className="badge b-blue" style={{ fontSize: 8.5, marginLeft: 5 }}>≈ similar</span>}
+                                      <span style={{ display: 'block', fontSize: 10 }}>
+                                        {c.fecha || 's/f'} · {Number(c.cantidad).toLocaleString('es-PE')} {c.unidad}
+                                        {isFinite(c.dist) && c.dist <= 3 ? ' · mismo período' : ''}
+                                      </span>
                                       {c.observaciones ? <span style={{ display: 'block', fontSize: 9, color: 'var(--tm)' }}>{String(c.observaciones).slice(0, 60)}</span> : null}
                                     </button>
                                   ))}
@@ -1158,7 +1282,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
                     <select className="fi" value={it.tipo} style={{ fontSize: 11, padding: '5px 6px' }}
                       disabled={it.modo === 'existente'}
                       title={it.modo === 'existente' ? 'El tipo lo define el movimiento vinculado' : undefined}
-                      onChange={e => { const nt = e.target.value; const keep = it.match_id && tipoDeId(it.match_id) === nt; upd(i, { tipo: nt, match_id: keep ? it.match_id : null, verificado: keep ? it.verificado : false }); }}>
+                      onChange={e => { const nt = e.target.value; const keep = it.match_id && tipoDeId(it.match_id) === nt; upd(i, { tipo: nt, match_id: keep ? it.match_id : null, factor_conv: keep ? it.factor_conv : null, verificado: keep ? it.verificado : false }); }}>
                       {TIPOS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                     </select>
                   </td>
@@ -1169,14 +1293,36 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
                   <td>
                     {it.modo === 'existente' ? (
                       <div style={{ textAlign: 'right', fontWeight: 600, color: 'var(--green)' }}
-                        title="Cantidad del movimiento de ingreso vinculado (no se vuelve a sumar al stock)">
-                        {Number(it.cantidad_recibida).toLocaleString('es-PE')}
+                        title="Lo que se acredita a la FACTURA con este vínculo (en unidades de la factura; editable en el cuadro de equivalencia). No se vuelve a sumar stock.">
+                        {Number(it.equiv_factura_cant ?? it.cantidad_recibida).toLocaleString('es-PE')} {it.unidad || ''}
                       </div>
-                    ) : (
-                      <input className="fi" type="number" min="0" step="0.01" value={it.cantidad_recibida} disabled={!it.verificado}
-                        title="Por defecto, lo que falta. Si recibís más de lo facturado se te pedirá confirmar."
-                        onChange={e => upd(i, { cantidad_recibida: e.target.value })} style={{ fontSize: 12, textAlign: 'right' }} />
-                    )}
+                    ) : (() => {
+                      // Conversión: la factura viene en una unidad (bolsa/und) y el
+                      // insumo del catálogo en otra (kg) → factor editable: el stock
+                      // sube convertido y la factura cierra en sus propias unidades.
+                      const uniIns = it.match_id ? (catalogoCompleto.get(it.match_id)?.record?.unidad || '') : '';
+                      const uniFac = it.unidad || 'und';
+                      const distinta = !!uniIns && String(uniIns).trim().toLowerCase() !== String(uniFac).trim().toLowerCase();
+                      const f = Number(it.factor_conv) > 0 ? Number(it.factor_conv) : null;
+                      return (
+                        <div>
+                          <input className="fi" type="number" min="0" step="0.01" value={it.cantidad_recibida} disabled={!it.verificado}
+                            title="Por defecto, lo que falta (en unidades de la FACTURA). Si recibís más de lo facturado se te pedirá confirmar."
+                            onChange={e => upd(i, { cantidad_recibida: e.target.value })} style={{ fontSize: 12, textAlign: 'right' }} />
+                          {distinta && it.verificado && (
+                            <div style={{ marginTop: 3, fontSize: 9.5, color: 'var(--tm)', textAlign: 'right' }}
+                              title={`La factura está en ${uniFac} y el insumo del catálogo en ${uniIns}: indicá cuántos ${uniIns} trae cada ${uniFac} (ej. 7 kg por bolsa) y el stock sube convertido.`}>
+                              × <input className="fi" type="number" min="0" step="0.01" value={it.factor_conv ?? ''} placeholder="factor"
+                                onChange={e => upd(i, { factor_conv: e.target.value })}
+                                style={{ width: 56, fontSize: 10.5, padding: '2px 4px', textAlign: 'right', display: 'inline-block' }} /> {uniIns}/{uniFac}
+                              {f && Number(it.cantidad_recibida) > 0 && (
+                                <div style={{ color: 'var(--green)' }}>→ al stock: {(Number(it.cantidad_recibida) * f).toLocaleString('es-PE', { maximumFractionDigits: 2 })} {uniIns}</div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </td>
                   <td>
                     {it.modo === 'existente' ? (

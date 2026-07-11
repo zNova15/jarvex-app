@@ -139,6 +139,8 @@ window.__catalogos = catalogos;
 window.__demo = { seed: seedDemoData, clear: clearDemoData, count: countDemoRecords };
 window.__identity = { consultarRUC, consultarDNI };
 window.__logAudit = logAudit;
+// Push manual desde los banners de "reintentar" (movimientos con error).
+window.__syncAll = syncAll;
 window.__changeRequests = {
   create: createChangeRequest,
   list: listChangeRequests,

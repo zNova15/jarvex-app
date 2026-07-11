@@ -162,6 +162,11 @@ function ConciliacionInsumosPage({ showToast }) {
             categoria: it.categoria || null,
             subcategoria: it.subcategoria || null,
             clasif_fuente: it.clasif_fuente || null,
+            // Factor de conversión aplicado en la recepción (unidades del
+            // insumo por unidad de factura, ej. 7 kg por bolsa): la entrada
+            // de almacén viene en unidades del insumo y hay que volverla a
+            // unidades de factura para comparar.
+            factor_conv: Number(it.factor_conv) > 0 ? Number(it.factor_conv) : null,
           }));
         }
         // 3) VÍNCULOS existentes.
@@ -231,7 +236,10 @@ function ConciliacionInsumosPage({ showToast }) {
         const it = itemByKey.get(`${v.accounting_movement_id}|${v.item_idx}`);
         if (it && it.catId) {
           const k = `${v.accounting_movement_id}|${it.catId}`;
-          cantIngresada += (entradaMap.get(k) || 0) / (vincPorEntradaKey.get(k) || 1);
+          // La entrada está en unidades del INSUMO; si la recepción usó factor
+          // (bolsas→kg), se divide para comparar en unidades de factura.
+          const fConv = it.factor_conv || 1;
+          cantIngresada += ((entradaMap.get(k) || 0) / fConv) / (vincPorEntradaKey.get(k) || 1);
         }
       }
       const saldoComprarCant = ins.cantPresup - cantFact;

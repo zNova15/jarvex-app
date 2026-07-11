@@ -1407,7 +1407,7 @@ function MovMaterialesPage({ showToast }) {
                     })
                   ));
                   showToast?.('Movimientos puestos en cola — reintentando…', 'amber');
-                  if (window.__sync?.sync) await window.__sync.sync();
+                  if (window.__syncAll) await window.__syncAll(); else if (window.__sync?.sync) await window.__sync.sync();
                 } catch (e) { showToast?.('Error: ' + (e?.message || e), 'red'); }
               }}>
               <JxIcon name="refresh" size={11}/> Reintentar
@@ -1829,6 +1829,16 @@ function MovHerramientasPage({ showToast }) {
     });
   }, [movs]);
 
+  // Resumen de sync (mismo patrón que Materiales): la almacenera reportó
+  // movimientos de herramientas que "no se subían" SIN ningún aviso — el
+  // banner + reintentar le da visibilidad y auto-servicio.
+  const syncStatsH = uMM(() => {
+    const pending = (movs || []).filter(m =>
+      m.sync_status && ['pending_create', 'pending_update', 'pending_delete'].includes(m.sync_status));
+    const failed = (movs || []).filter(m => m.sync_status === 'failed');
+    return { pending: pending.length, failed: failed.length, failedRecords: failed };
+  }, [movs]);
+
   const filtered = uMM(() => {
     return sorted.filter(m => {
       // Filtros tipo-aware: "Ingreso" = entradas que NO son devolución;
@@ -1992,6 +2002,55 @@ function MovHerramientasPage({ showToast }) {
           </button>
         </div>
       </div>
+      {/* Aviso de movimientos SIN SUBIR (pendientes o con error) + reintento. */}
+      {(syncStatsH.pending > 0 || syncStatsH.failed > 0) && (
+        <div style={{
+          marginBottom: 14, padding: '10px 14px',
+          background: syncStatsH.failed > 0 ? 'rgba(231,76,60,0.10)' : 'rgba(242,183,5,0.10)',
+          border: `1px solid ${syncStatsH.failed > 0 ? 'rgba(231,76,60,0.4)' : 'rgba(242,183,5,0.4)'}`,
+          borderRadius: 6, display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: 12.5,
+        }}>
+          <span style={{ fontSize: 16, lineHeight: 1 }}>{syncStatsH.failed > 0 ? '🔴' : '🟡'}</span>
+          <div style={{ flex: 1, color: 'var(--ts)' }}>
+            <strong style={{ color: syncStatsH.failed > 0 ? 'var(--red)' : 'var(--amber)' }}>
+              {syncStatsH.failed > 0
+                ? `${syncStatsH.failed} movimiento${syncStatsH.failed === 1 ? '' : 's'} de herramientas NO se subieron al servidor`
+                : `${syncStatsH.pending} movimiento${syncStatsH.pending === 1 ? '' : 's'} esperando subir`}
+            </strong>
+            <div style={{ marginTop: 4, fontSize: 11.5, color: 'var(--tm)', lineHeight: 1.4 }}>
+              {syncStatsH.failed > 0
+                ? 'Existen solo en esta computadora (las otras PCs no los ven). Tocá "Reintentar" — si sigue fallando, avisale al admin con el detalle de abajo. La columna "Sync" de la tabla marca cada uno con ⚠.'
+                : 'Se suben solos en el próximo ciclo. Si en 1 minuto siguen acá, recargá la página.'}
+            </div>
+            {syncStatsH.failed > 0 && syncStatsH.failedRecords[0]?._last_error && (
+              <div style={{ marginTop: 6, fontSize: 11, color: 'var(--red)', fontFamily: 'monospace' }}>
+                Error: {syncStatsH.failedRecords[0]._last_error}
+              </div>
+            )}
+          </div>
+          {syncStatsH.failed > 0 && (
+            <button className="btn btn-ghost btn-xs" title="Volver a intentar subir los movimientos fallidos"
+              onClick={async () => {
+                try {
+                  await Promise.all(syncStatsH.failedRecords.map(r =>
+                    window.__db.movimientos_herramientas.update(r.id, {
+                      // pending_create si nunca llegó al server (version<=1);
+                      // así el push reintenta el INSERT y no un UPDATE huérfano.
+                      sync_status: r.deleted_at ? 'pending_delete'
+                        : ((Number(r.version) || 1) <= 1 ? 'pending_create' : 'pending_update'),
+                      _sync_retries: 0,
+                      _last_error: null,
+                    })
+                  ));
+                  showToast?.('Movimientos en cola — reintentando la subida…', 'amber');
+                  if (window.__syncAll) await window.__syncAll(); else if (window.__sync?.sync) await window.__sync.sync();
+                } catch (e) { showToast?.('Error: ' + (e?.message || e), 'red'); }
+              }}>
+              🔄 Reintentar
+            </button>
+          )}
+        </div>
+      )}
       {regFisicoOpen && (
         <RegistroFisicoModal modulo="movimientos_herramientas" obraId={obraId}
           onClose={()=>setRegFisicoOpen(false)} showToast={showToast} refreshKey={rfRefresh}/>

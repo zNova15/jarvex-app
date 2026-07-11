@@ -18,7 +18,7 @@ const styles = {
 
 export function SyncIndicator({ onClick }) {
   const online = useOnline();
-  const { syncing, pending, lastSync, error, phase, current, total } = useSync();
+  const { syncing, pending, failed, lastSync, error, phase, current, total } = useSync();
 
   let color, label, bg;
 
@@ -31,6 +31,12 @@ export function SyncIndicator({ onClick }) {
     // Si hay un push en lote en curso, mostramos el avance X/Y.
     label = total > 0 ? `Sincronizando ${current}/${total}` : 'Sincronizando…';
     bg = 'rgba(96,165,250,0.12)';
+  } else if (failed > 0) {
+    // ⚠ ANTES este estado quedaba VERDE "Sincronizado": los registros FAILED
+    // (push rechazado tras reintentos) no se mostraban y la almacenera creía
+    // que sus movimientos habían subido. Rojo + click abre el detalle con
+    // "Reintentar todos".
+    color = '#EF4444'; label = `${failed} sin subir — click acá`; bg = 'rgba(239,68,68,0.12)';
   } else if (pending > 0) {
     color = '#F59E0B'; label = `${pending} pendiente${pending > 1 ? 's' : ''}`; bg = 'rgba(245,158,11,0.12)';
   } else {
