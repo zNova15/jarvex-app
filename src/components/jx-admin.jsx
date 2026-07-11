@@ -1070,6 +1070,11 @@ window.__moduleIdMap = {
   'conciliacion-insumos': 'Movs. Contables',   // conciliación factura↔presupuesto (contabilidad)
   'empresas': 'Empresas',
   'movimientos-contables': 'Movs. Contables',
+  // Pagos de personal/subcontratos con evidencias (área contable sensible).
+  // OJO: el gate real de visibilidad es el allowlist de __canSeeSidebarItem
+  // (alineado con el RLS de la tabla pagos) — no la matriz de Planillas, que
+  // dejaría entrar a rrhh/solo_lectura a una página vacía por RLS.
+  'pagos': 'Planillas',
   'intercompany': 'Intercompany',
   'trazabilidad': 'Trazabilidad',
   // Panel de designación de empresa emisora (Fase 3 del clasificador): decisión
@@ -1161,6 +1166,10 @@ window.__canSeeSidebarItem = function(rol, itemId) {
   // La bandeja de aprobaciones de reporte de frente ajeno + rendimiento: admin/gerente.
   if (itemId === 'aprobaciones-reporte') return rol === 'admin' || rol === 'gerente';
   if (itemId === 'rendimiento-ingenieros') return rol === 'admin' || rol === 'gerente';
+  // Pagos (sueldos/subcontratos): EXACTAMENTE los roles que el RLS de la tabla
+  // deja leer — con la matriz de Planillas, rrhh/solo_lectura entraban a una
+  // página que el server les devuelve vacía.
+  if (itemId === 'pagos') return ['admin', 'contador', 'gerente', 'tesorero', 'ayudante_contador'].includes(rol);
   // Los módulos del ingeniero solo los ven el ingeniero (y admin).
   if (__INGENIERO_ITEMS.includes(itemId)) return rol === 'admin' || rol === 'ingeniero';
   // El ingeniero ve EXCLUSIVAMENTE sus módulos de frente (nada más, ni utilities).

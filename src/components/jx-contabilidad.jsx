@@ -760,6 +760,12 @@ function MovimientosContablesPage({ showToast }) {
   // bancarización es una evidencia, no una edición del movimiento).
   const [bancTarget, setBancTarget] = uSC(null);   // movimiento al que se le sube la bancarización
   const [bancFile, setBancFile] = uSC(null);
+  // Bancarización EN PARTES: monto/método/n° operación de ESTA constancia
+  // (un pago de S/7,000 puede bancarizarse en 3 transferencias: 900+3200+2900).
+  const [bancMonto, setBancMonto] = uSC('');
+  const [bancMetodo, setBancMetodo] = uSC('transferencia');
+  const [bancRef, setBancRef] = uSC('');
+  const [partesPorMov, setPartesPorMov] = uSC(() => new Map());   // mov_id → [{monto,...}]
   const [bancObra, setBancObra] = uSC('');
   const [bancSaving, setBancSaving] = uSC(false);
   const [soloSinBanc, setSoloSinBanc] = uSC(false); // filtro: ver solo los que faltan bancarización
@@ -1106,7 +1112,26 @@ function MovimientosContablesPage({ showToast }) {
 
   const lookupCompany = (id) => companies?.find(c => c.id === id);
 
-  const openBanc = (m) => { setBancTarget(m); setBancObra(m.obra_id || ''); setBancFile(null); };
+  // Partes de pago (pagos_partes con accounting_movement_id) → Σ por movimiento.
+  uEC(() => {
+    let cancel = false;
+    const load = async () => {
+      try {
+        const rows = await window.__db.pagos_partes.filter(p => !p.deleted_at && p.accounting_movement_id).toArray();
+        if (cancel) return;
+        const m = new Map();
+        for (const r of rows) { const a = m.get(r.accounting_movement_id) || []; a.push(r); m.set(r.accounting_movement_id, a); }
+        setPartesPorMov(m);
+      } catch {}
+    };
+    load();
+    const on = (e) => { const t = e?.detail?.tabla; if (!t || t === 'pagos_partes') load(); };
+    window.addEventListener('jx_data_changed', on);
+    window.addEventListener('jarvex_master_updated', on);
+    return () => { cancel = true; window.removeEventListener('jx_data_changed', on); window.removeEventListener('jarvex_master_updated', on); };
+  }, []);
+
+  const openBanc = (m) => { setBancTarget(m); setBancObra(m.obra_id || ''); setBancFile(null); setBancMonto(''); setBancMetodo('transferencia'); setBancRef(''); };
 
   const subirBancarizacion = async () => {
     if (!bancTarget) return;
@@ -1127,10 +1152,36 @@ function MovimientosContablesPage({ showToast }) {
         observaciones: 'Evidencia de bancarización (> S/2000)',
         created_by: userId,
       });
+      // Si indicó el MONTO de esta constancia, se registra como PARTE del pago
+      // del movimiento (bancarización en partes: 900+3200+2900 = 7000). La suma
+      // de partes vs el total del movimiento se ve en la columna Bancarización.
+      let parteOk = false;
+      if (Number(bancMonto) > 0) {
+        try {
+          const { newId, newIdempotencyKey, SYNC_STATUS } = await import('../db/jarvex.db');
+          const { getCurrentMode } = await import('../lib/app-mode-core.js');
+          const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
+          const now = new Date().toISOString();
+          await window.__db.pagos_partes.add({
+            id: newId(), pago_id: null, accounting_movement_id: bancTarget.id, obra_id: obraId,
+            fecha: (window.__fecha?.hoyLocal ? window.__fecha.hoyLocal() : now.slice(0, 10)),
+            monto: Number(bancMonto), metodo: bancMetodo || 'transferencia', referencia: bancRef || null,
+            evidencia_id: null, observaciones: 'Bancarización parcial',
+            created_by: userId, updated_by: userId, created_at: now, updated_at: now, version: 1,
+            idempotency_key: newIdempotencyKey(userId, 'pagos_partes'),
+            ...(esPrueba || bancTarget.demo === true ? { demo: true, sync_status: SYNC_STATUS.SYNCED } : { sync_status: SYNC_STATUS.PENDING_CREATE }),
+          });
+          parteOk = true;
+          try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'pagos_partes' } })); } catch {}
+        } catch (e2) {
+          console.warn('[banc-parte]', e2?.message);
+          showToast('La evidencia se adjuntó, pero la PARTE (monto) no se pudo registrar — reintentá desde el modal', 'amber');
+        }
+      }
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'evidencias', source:'banc-upload' } })); } catch {}
       try { await window.__logAudit?.({ action:'insert', table:'evidencias', recordId: bancTarget.id, reason:'Bancarización adjunta desde Movimientos (sin edición)' }); } catch {}
-      showToast('Bancarización adjunta. Se sincronizará en breve.', 'green');
-      setBancTarget(null); setBancFile(null); setBancObra('');
+      showToast(parteOk ? `Bancarización adjunta · parte de ${fmtCur(Number(bancMonto), bancTarget.currency)}` : 'Bancarización adjunta. Se sincronizará en breve.', 'green');
+      setBancTarget(null); setBancFile(null); setBancObra(''); setBancMonto(''); setBancRef('');
     } catch (e) {
       showToast('No se pudo adjuntar la bancarización: ' + (e.message || e), 'red');
     } finally {
@@ -1251,8 +1302,15 @@ function MovimientosContablesPage({ showToast }) {
                               <JxIcon name="upload" size={9}/> Subir
                             </button>
                           ) : null;
-                          if (!evB) return <div style={{ fontSize:10, color:'var(--amber)' }} title="Monto > S/2000 sin evidencia de bancarización">⚠ Falta bancarización{subirBtn}</div>;
-                          if (evB.sync === 'uploaded') return <div style={{ fontSize:10, color:'var(--green)' }}>✅ Bancarizado</div>;
+                          // Suma de PARTES registradas (bancarización parcial).
+                          const _partes = partesPorMov.get(m.id) || [];
+                          const _suma = _partes.reduce((t, x) => t + (Number(x.monto) || 0), 0);
+                          const _total = Number(m.amount) || 0;
+                          const _tagPartes = _partes.length > 0
+                            ? <div style={{ fontSize:9.5, color: _suma >= _total - 0.01 ? 'var(--green)' : 'var(--amber)' }} title={_partes.map(x => fmtCur(x.monto, m.currency)).join(' + ')}>{_partes.length} parte(s): {fmtCur(_suma, m.currency)} de {fmtCur(_total, m.currency)}</div>
+                            : null;
+                          if (!evB) return <div style={{ fontSize:10, color:'var(--amber)' }} title="Monto > S/2000 sin evidencia de bancarización">⚠ Falta bancarización{subirBtn}{_tagPartes}</div>;
+                          if (evB.sync === 'uploaded') return <div style={{ fontSize:10, color:'var(--green)' }}>✅ Bancarizado{_suma > 0 && _suma < _total - 0.01 ? <span style={{ color:'var(--amber)' }} title="Las partes registradas no completan el total"> (parcial)</span> : null}{subirBtn}{_tagPartes}</div>;
                           if (evB.sync === 'failed') return <div style={{ fontSize:10, color:'var(--red)' }} title="La evidencia no se pudo subir (revisá que estés asignado a la obra con un rol que no sea solo lectura)">⚠ Bancarización no subió{subirBtn}</div>;
                           return <div style={{ fontSize:10, color:'var(--tm)' }} title="Subiendo evidencia de bancarización…">⏳ Subiendo bancarización</div>;
                         })()}
@@ -1328,6 +1386,39 @@ function MovimientosContablesPage({ showToast }) {
               <input className="fi" type="file" accept="image/*,application/pdf" onChange={e=>setBancFile((e.target.files||[])[0]||null)}/>
               {bancFile && <div style={{ fontSize:11, color:'var(--green)', marginTop:4 }}>📎 {bancFile.name}</div>}
             </div>
+            {/* Bancarización EN PARTES: monto de ESTA constancia (opcional). */}
+            {(() => {
+              const partesMov = (partesPorMov.get(bancTarget.id) || []);
+              const sumaPartes = partesMov.reduce((t, x) => t + (Number(x.monto) || 0), 0);
+              const totalMov = Number(bancTarget.amount) || 0;
+              return (
+                <div style={{ padding:'8px 10px', borderRadius:6, background:'var(--bg-s)' }}>
+                  <div style={{ fontSize:11.5, fontWeight:700, marginBottom:6 }}>¿Este voucher es una PARTE del pago?</div>
+                  {partesMov.length > 0 && (
+                    <div style={{ fontSize:11, color:'var(--tm)', marginBottom:6 }}>
+                      Partes ya registradas: {partesMov.map(x => fmtCur(x.monto, bancTarget.currency)).join(' + ')} = <strong style={{ color: sumaPartes >= totalMov - 0.01 ? 'var(--green)' : 'var(--amber)' }}>{fmtCur(sumaPartes, bancTarget.currency)}</strong> de {fmtCur(totalMov, bancTarget.currency)}
+                      {sumaPartes < totalMov - 0.01 && <span> · faltan {fmtCur(totalMov - sumaPartes, bancTarget.currency)}</span>}
+                    </div>
+                  )}
+                  <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+                    <div><label className="flabel">Monto de esta constancia</label>
+                      <input className="fi" type="number" min="0" step="0.01" value={bancMonto} placeholder="opcional"
+                        onChange={e=>setBancMonto(e.target.value)} style={{ width:130, textAlign:'right' }}/></div>
+                    <div><label className="flabel">Método</label>
+                      <select className="fi" value={bancMetodo} onChange={e=>setBancMetodo(e.target.value)} style={{ width:150 }}>
+                        <option value="transferencia">Transferencia</option>
+                        <option value="deposito">Depósito</option>
+                        <option value="agente">Agente bancario</option>
+                        <option value="cheque">Cheque</option>
+                        <option value="otro">Otro</option>
+                      </select></div>
+                    <div><label className="flabel">N° operación</label>
+                      <input className="fi" value={bancRef} placeholder="opcional" onChange={e=>setBancRef(e.target.value)} style={{ width:130 }}/></div>
+                  </div>
+                  <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:6 }}>Si dejás el monto vacío, solo se adjunta el archivo (como siempre). Con monto, además queda registrada la parte para saber cuánto va del total.</div>
+                </div>
+              );
+            })()}
             <div style={{ fontSize:11, color:'var(--tm)' }}>Esto solo adjunta la bancarización al movimiento — no modifica el movimiento, así que no requiere permiso de edición.</div>
           </div>
           <div className="modal-actions">

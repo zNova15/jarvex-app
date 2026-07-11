@@ -6,6 +6,8 @@ const TIPO_META = {
   foto_asistencia:        { lbl:'Foto Asistencia',   cls:'b-blue',   cat:'asistencia',  icon:'camera' },
   foto_avance:            { lbl:'Foto de Avance',    cls:'b-green',  cat:'avance',      icon:'camera' },
   foto_sin_avance:        { lbl:'Sin Avance',        cls:'b-amber',  cat:'avance',      icon:'camera' },
+  recibo_honorarios:      { lbl:'Recibo x Honorarios', cls:'b-orange', cat:'documentos', icon:'file' },
+  pago_evidencia:         { lbl:'Constancia de Pago',  cls:'b-orange', cat:'documentos', icon:'dollar' },
   guia_remision:          { lbl:'Guía de Remisión',  cls:'b-amber',  cat:'materiales',  icon:'truck'  },
   factura:                { lbl:'Factura',           cls:'b-orange', cat:'materiales',  icon:'file'   },
   pdf_formato_firmado:    { lbl:'Formato Firmado',   cls:'b-blue',   cat:'documentos',  icon:'clipboard' },
@@ -140,7 +142,7 @@ function Thumb({ ev, signedRef, blobUrlRef, onClick }) {
 // necesita re-ver las suyas). La almacenera y el resto de la obra NO — mismo
 // criterio que el RLS del server (mig 119); acá se filtra también lo que ya
 // quedó cacheado en el IndexedDB local del dispositivo.
-const TIPOS_CONTABLES = new Set(['bancarizacion', 'comprobante_captura', 'factura']);
+const TIPOS_CONTABLES = new Set(['bancarizacion', 'comprobante_captura', 'factura', 'recibo_honorarios', 'pago_evidencia']);
 
 function EvidenciasPage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : null;

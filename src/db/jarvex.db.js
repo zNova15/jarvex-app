@@ -45,6 +45,14 @@ export const db = new Dexie('JarvexDB');
 // al admin/gerente para reportar un frente que no es suyo (titular ausente);
 // tras la aprobación carga el reporte en reporte_payload (jsonb, prop sin índice)
 // y lo envía; el admin acepta y recién ahí se aplican los avances. Aditivo.
+// Versión 35: pagos de personal/subcontratos (compromiso con monto acordado) +
+// partes de pago (transferencias parciales, también para bancarizaciones en
+// partes de facturas vía accounting_movement_id). Aditivo.
+db.version(35).stores({
+  pagos: 'id, obra_id, personal_id, subcontrato_id, estado, deleted_at, sync_status',
+  pagos_partes: 'id, pago_id, accounting_movement_id, obra_id, deleted_at, sync_status',
+});
+
 // Versión 34: reporte "día sin avance" del ingeniero (motivo + foto; la foto va
 // como evidencia tipo foto_sin_avance). Base del recordatorio de días sin
 // reportar. Aditivo.

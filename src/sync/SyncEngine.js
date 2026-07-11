@@ -89,6 +89,10 @@ const TRANSACTIONAL_TABLES = [
   'ordenes_intercompany',
   // Reporte "día sin avance" del ingeniero. Después de obras + frentes_obra.
   'reportes_dia',
+  // Pagos (compromisos) y sus partes. Después de personal/subcontratos/
+  // accounting_movements (FKs) y pagos_partes después de pagos.
+  'pagos',
+  'pagos_partes',
 ];
 
 // Tablas maestras que se descargan del servidor en cada sync.
@@ -118,6 +122,8 @@ const MASTER_TABLES = [
   { tabla: 'emision_reglas',               query: () => supabase.from('emision_reglas').select('*').is('deleted_at', null) },
   { tabla: 'ordenes_intercompany',         query: () => supabase.from('ordenes_intercompany').select('*').is('deleted_at', null) },
   { tabla: 'reportes_dia',                 query: () => supabase.from('reportes_dia').select('*').is('deleted_at', null) },
+  { tabla: 'pagos',                        query: () => supabase.from('pagos').select('*').is('deleted_at', null) },
+  { tabla: 'pagos_partes',                 query: () => supabase.from('pagos_partes').select('*').is('deleted_at', null) },
   { tabla: 'intercompany_transactions',    query: () => supabase.from('intercompany_transactions').select('*').is('deleted_at', null) },
   // Compras
   { tabla: 'requisiciones',         query: () => supabase.from('requisiciones').select('*').is('deleted_at', null) },
@@ -597,6 +603,12 @@ const TABLA_TO_MODULO = {
   ordenes_intercompany: 'Intercompany',
   // Reporte "día sin avance": lo escribe el ingeniero (mismo módulo que avance_obra).
   reportes_dia: 'Avance',
+  // Pagos de personal/subcontratos: área contable (contadora jefe/admin).
+  pagos: 'Planillas',
+  // Las PARTES también las registra el ayudante al bancarizar facturas
+  // (tiene Movs. Contables 'w' pero Planillas 'x' — con 'Planillas' su push
+  // quedaba bloqueado client-side y la parte en pending eterno).
+  pagos_partes: 'Movs. Contables',
   intercompany_transactions: 'Intercompany',
   trazabilidad_cadenas: 'Trazabilidad',
 };
@@ -663,6 +675,8 @@ const FK_DEPS = {
   emision_reglas:            [{ campo: 'company_id', tabla: 'companies' }, { campo: 'intermediaria1_company_id', tabla: 'companies' }, { campo: 'intermediaria2_company_id', tabla: 'companies' }],
   ordenes_intercompany:      [{ campo: 'obra_id', tabla: 'obras' }, { campo: 'company_id', tabla: 'companies' }, { campo: 'intermediaria1_company_id', tabla: 'companies' }, { campo: 'intermediaria2_company_id', tabla: 'companies' }, { campo: 'ejecutora_company_id', tabla: 'companies' }],
   reportes_dia:              [{ campo: 'frente_id', tabla: 'frentes_obra' }],
+  pagos:                     [{ campo: 'personal_id', tabla: 'personal' }, { campo: 'subcontrato_id', tabla: 'subcontratos' }],
+  pagos_partes:              [{ campo: 'pago_id', tabla: 'pagos' }, { campo: 'accounting_movement_id', tabla: 'accounting_movements' }],
   movimientos_insumos_emergencia: [{ campo: 'insumo_emergencia_id', tabla: 'insumos_emergencia' }, { campo: 'responsable_id', tabla: 'personal' }, { campo: 'subcontratista_id', tabla: 'subcontratistas' }, { campo: 'proveedor_id', tabla: 'proveedores' }],
   asistencia:                [{ campo: 'personal_id', tabla: 'personal' }],
   // Un trabajador puede pertenecer a la cuadrilla de un subcontratista; si ese

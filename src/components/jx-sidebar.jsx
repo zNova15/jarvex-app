@@ -128,6 +128,7 @@ const NAV = [
   { section: 'CONTABILIDAD DE LA OBRA' },
   { id: 'movimientos-contables', label: 'Movimientos', icon: 'dollar', plano: 'obra' },
   { id: 'conciliacion-insumos', label: 'Conciliación de Insumos', icon: 'compare' },
+  { id: 'pagos', label: 'Pagos', icon: 'dollar' },
 
   { section: 'SSOMA / SEGURIDAD' },
   { id: 'charlas-seguridad', label: 'Charlas de 5 minutos', icon: 'alert' },
