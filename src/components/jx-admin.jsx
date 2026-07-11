@@ -1070,6 +1070,7 @@ window.__moduleIdMap = {
   'conciliacion-insumos': 'Movs. Contables',   // conciliación factura↔presupuesto (contabilidad)
   'empresas': 'Empresas',
   'movimientos-contables': 'Movs. Contables',
+  'guias-remision': 'Movs. Contables',
   // Pagos de personal/subcontratos con evidencias (área contable sensible).
   // OJO: el gate real de visibilidad es el allowlist de __canSeeSidebarItem
   // (alineado con el RLS de la tabla pagos) — no la matriz de Planillas, que
@@ -1152,7 +1153,7 @@ const __AYUDANTE_CONTADOR_ITEMS = [
   'captura-magica', 'personal', 'empresas', 'proveedores', 'movimientos-contables', 'cuentas-bancarias',
   'conciliacion-insumos', // enlaza facturas ↔ insumos presupuestados (Vinculación 2)
   'solicitudes', // ve "Mis solicitudes" (sus pedidos de cambio); la aprobación es del contador/admin
-];
+, 'guias-remision'];
 window.__canSeeSidebarItem = function(rol, itemId) {
   // El INICIO (launcher de 2 planos) es seguro para todos los roles — no muestra
   // datos, solo deriva a las secciones que cada rol sí puede ver.

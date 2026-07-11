@@ -93,6 +93,8 @@ const TRANSACTIONAL_TABLES = [
   // accounting_movements (FKs) y pagos_partes después de pagos.
   'pagos',
   'pagos_partes',
+  // Guías de remisión: después de proveedores/companies/accounting_movements.
+  'guias_remision',
 ];
 
 // Tablas maestras que se descargan del servidor en cada sync.
@@ -124,6 +126,7 @@ const MASTER_TABLES = [
   { tabla: 'reportes_dia',                 query: () => supabase.from('reportes_dia').select('*').is('deleted_at', null) },
   { tabla: 'pagos',                        query: () => supabase.from('pagos').select('*').is('deleted_at', null) },
   { tabla: 'pagos_partes',                 query: () => supabase.from('pagos_partes').select('*').is('deleted_at', null) },
+  { tabla: 'guias_remision',               query: () => supabase.from('guias_remision').select('*').is('deleted_at', null) },
   { tabla: 'intercompany_transactions',    query: () => supabase.from('intercompany_transactions').select('*').is('deleted_at', null) },
   // Compras
   { tabla: 'requisiciones',         query: () => supabase.from('requisiciones').select('*').is('deleted_at', null) },
@@ -609,6 +612,8 @@ const TABLA_TO_MODULO = {
   // (tiene Movs. Contables 'w' pero Planillas 'x' — con 'Planillas' su push
   // quedaba bloqueado client-side y la parte en pending eterno).
   pagos_partes: 'Movs. Contables',
+  // Guías de remisión: las sube Captura (contador/ayudante/admin con Captura-w).
+  guias_remision: 'Movs. Contables',
   intercompany_transactions: 'Intercompany',
   trazabilidad_cadenas: 'Trazabilidad',
 };
@@ -677,6 +682,7 @@ const FK_DEPS = {
   reportes_dia:              [{ campo: 'frente_id', tabla: 'frentes_obra' }],
   pagos:                     [{ campo: 'personal_id', tabla: 'personal' }, { campo: 'subcontrato_id', tabla: 'subcontratos' }],
   pagos_partes:              [{ campo: 'pago_id', tabla: 'pagos' }, { campo: 'accounting_movement_id', tabla: 'accounting_movements' }],
+  guias_remision:            [{ campo: 'company_id', tabla: 'companies' }, { campo: 'proveedor_id', tabla: 'proveedores' }, { campo: 'accounting_movement_id', tabla: 'accounting_movements' }],
   movimientos_insumos_emergencia: [{ campo: 'insumo_emergencia_id', tabla: 'insumos_emergencia' }, { campo: 'responsable_id', tabla: 'personal' }, { campo: 'subcontratista_id', tabla: 'subcontratistas' }, { campo: 'proveedor_id', tabla: 'proveedores' }],
   asistencia:                [{ campo: 'personal_id', tabla: 'personal' }],
   // Un trabajador puede pertenecer a la cuadrilla de un subcontratista; si ese
@@ -1317,6 +1323,7 @@ const PROVEEDOR_REF_TABLAS = [
   'accounting_movements', 'cotizaciones', 'ordenes_compra',
   'movimientos_materiales', 'movimientos_herramientas', 'movimientos_epp',
   'movimientos_insumos_emergencia', 'movimientos_maquinaria',
+  'guias_remision',
 ];
 
 // El caso clásico: captura mágica crea un proveedor LOCAL por RUC que ya existe
@@ -1379,6 +1386,7 @@ const COMPANY_REF_TABLAS = [
   { tabla: 'accounting_movements', campos: ['company_id', 'related_company_id'] },
   { tabla: 'intercompany_transactions', campos: ['seller_company_id', 'buyer_company_id'] },
   { tabla: 'obras', campos: ['ejecutora_company_id'] },
+  { tabla: 'guias_remision', campos: ['company_id'] },
 ];
 
 // Análogo a reconciliarProveedorDuplicado pero para companies. Captura Mágica crea

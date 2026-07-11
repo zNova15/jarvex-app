@@ -766,6 +766,7 @@ function MovimientosContablesPage({ showToast }) {
   const [bancMetodo, setBancMetodo] = uSC('transferencia');
   const [bancRef, setBancRef] = uSC('');
   const [partesPorMov, setPartesPorMov] = uSC(() => new Map());   // mov_id → [{monto,...}]
+  const [guiasPorMov, setGuiasPorMov] = uSC(() => new Map());      // mov_id → [guias]
   const [bancObra, setBancObra] = uSC('');
   const [bancSaving, setBancSaving] = uSC(false);
   const [soloSinBanc, setSoloSinBanc] = uSC(false); // filtro: ver solo los que faltan bancarización
@@ -1123,12 +1124,26 @@ function MovimientosContablesPage({ showToast }) {
         for (const r of rows) { const a = m.get(r.accounting_movement_id) || []; a.push(r); m.set(r.accounting_movement_id, a); }
         setPartesPorMov(m);
       } catch {}
+      try {
+        const _esP = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
+        const gs = await window.__db.guias_remision.filter(g => !g.deleted_at && g.accounting_movement_id && (_esP ? g.demo === true : g.demo !== true)).toArray();
+        if (cancel) return;
+        const gm = new Map();
+        for (const g of gs) { const a = gm.get(g.accounting_movement_id) || []; a.push(g); gm.set(g.accounting_movement_id, a); }
+        setGuiasPorMov(gm);
+      } catch {}
     };
     load();
-    const on = (e) => { const t = e?.detail?.tabla; if (!t || t === 'pagos_partes') load(); };
+    const on = (e) => { const t = e?.detail?.tabla; if (!t || t === 'pagos_partes' || t === 'guias_remision') load(); };
     window.addEventListener('jx_data_changed', on);
     window.addEventListener('jarvex_master_updated', on);
     return () => { cancel = true; window.removeEventListener('jx_data_changed', on); window.removeEventListener('jarvex_master_updated', on); };
+  }, []);
+
+  // Deep-link desde Guías de Remisión: pre-cargar la búsqueda con el documento.
+  uEC(() => {
+    const intent = window.__movsBuscarIntent;
+    if (intent) { window.__movsBuscarIntent = null; setBusqueda(String(intent)); }
   }, []);
 
   const openBanc = (m) => { setBancTarget(m); setBancObra(m.obra_id || ''); setBancFile(null); setBancMonto(''); setBancMetodo('transferencia'); setBancRef(''); };
@@ -1316,7 +1331,16 @@ function MovimientosContablesPage({ showToast }) {
                         })()}
                       </td>
                       <td>{m.third_party_name || '—'}</td>
-                      <td className="col-m" style={{ fontSize:11 }}>{m.document_type ? `${m.document_type} ${m.document_number || ''}` : '—'}</td>
+                      <td className="col-m" style={{ fontSize:11 }}>
+                        {m.document_type ? `${m.document_type} ${m.document_number || ''}` : '—'}
+                        {(guiasPorMov.get(m.id) || []).map(g => (
+                          <button key={g.id} className="btn btn-ghost btn-xs" style={{ display:'block', padding:'1px 4px', fontSize:9.5, color:'var(--blue, #3498DB)' }}
+                            title={`Guía de remisión vinculada — click para abrirla`}
+                            onClick={() => { window.__guiasFocusIntent = g.serie_correlativo || ''; window.__navTo?.('guias-remision'); }}>
+                            📄 {g.serie_correlativo || 'guía'}
+                          </button>
+                        ))}
+                      </td>
                       <td style={{ textAlign:'right', fontWeight:700, color:TYPE_COLOR[m.type] }} className="col-num">{fmtCur(m.amount, m.currency)}</td>
                       <td>
                         <select className="fi" value={m.payment_status} disabled={esAyudante || isIc} title={esAyudante ? 'Solo lectura — usá "Solicitar" para pedir un cambio' : undefined} onChange={e=>cambiarEstadoPago(m, e.target.value)} style={{ fontSize:11, padding:'4px 6px', minWidth:110 }}>

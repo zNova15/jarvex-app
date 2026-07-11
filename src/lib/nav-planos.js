@@ -20,7 +20,7 @@ export const GENERAL_ITEMS = new Set([
   'empresas', 'cont-dashboard', 'intercompany', 'trazabilidad', 'consolidado',
   'cuentas-bancarias', 'plan-cuentas', 'libro-diario', 'balance-general',
   'estado-resultados', 'comprobantes', 'libros-electronicos', 'config-sunat',
-  'comparativo-periodos', 'flujo-caja', 'flujo-proyectado', 'compras-categoria', 'ordenes-intercompany',
+  'comparativo-periodos', 'flujo-caja', 'flujo-proyectado', 'compras-categoria', 'ordenes-intercompany', 'guias-remision',
   // Dirección / Ejecutivo (vistas cross-obra)
   'dashboard-ejecutivo', 'kpis-obra', 'cumplimiento-cronograma', 'alertas', 'busqueda',
   // Administración
@@ -41,7 +41,7 @@ const AREA = {
   contabilidad: new Set(['cont-dashboard', 'empresas', 'movimientos-contables', 'intercompany',
     'trazabilidad', 'consolidado', 'cuentas-bancarias', 'flujo-caja', 'flujo-proyectado',
     'plan-cuentas', 'libro-diario', 'balance-general', 'estado-resultados', 'comprobantes',
-    'libros-electronicos', 'config-sunat', 'comparativo-periodos', 'compras-categoria', 'ordenes-intercompany']),
+    'libros-electronicos', 'config-sunat', 'comparativo-periodos', 'compras-categoria', 'ordenes-intercompany', 'guias-remision']),
   direccion: new Set(['dashboard-ejecutivo', 'kpis-obra', 'cumplimiento-cronograma', 'alertas', 'busqueda']),
   admin: new Set(['usuarios', 'roles', 'solicitudes', 'configuracion', 'conflictos', 'audit-log']),
 };

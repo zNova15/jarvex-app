@@ -154,6 +154,7 @@ const NAV = [
   { id: 'cont-dashboard', label: 'Dashboard Contable', icon: 'dashboard' },
   { id: 'empresas', label: 'Empresas', icon: 'building' },
   { id: 'movimientos-contables', label: 'Movimientos (todas / por obra)', icon: 'dollar', plano: 'general' },
+  { id: 'guias-remision', label: 'Guías de Remisión', icon: 'truck' },
   { id: 'intercompany', label: 'Operaciones entre Empresas', icon: 'compare' },
   { id: 'trazabilidad', label: 'Trazabilidad de Cadenas', icon: 'compare' },
   { id: 'compras-categoria', label: 'Compras por Categoría', icon: 'layers' },

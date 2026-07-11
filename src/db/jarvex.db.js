@@ -45,6 +45,12 @@ export const db = new Dexie('JarvexDB');
 // al admin/gerente para reportar un frente que no es suyo (titular ausente);
 // tras la aprobación carga el reporte en reporte_payload (jsonb, prop sin índice)
 // y lo envía; el admin acepta y recién ahí se aplican los avances. Aditivo.
+// Versión 36: guías de remisión (detectadas por Captura Mágica) con vínculo
+// bidireccional a la factura (accounting_movement_id). Aditivo.
+db.version(36).stores({
+  guias_remision: 'id, obra_id, accounting_movement_id, serie_correlativo, deleted_at, sync_status',
+});
+
 // Versión 35: pagos de personal/subcontratos (compromiso con monto acordado) +
 // partes de pago (transferencias parciales, también para bancarizaciones en
 // partes de facturas vía accounting_movement_id). Aditivo.

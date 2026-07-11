@@ -42,6 +42,10 @@ const TIPO_DOC_MAP = {
   nota_credito: { label: 'Nota de Crédito', acc: 'nota_credito' },
   nota_debito: { label: 'Nota de Débito', acc: 'nota_debito' },
   recibo: { label: 'Recibo Honorarios', acc: 'recibo' },
+  // Guía de remisión: NO es comprobante de pago — va a su tabla propia
+  // (guias_remision) con vínculo a la factura; acc 'otro' porque el CHECK de
+  // accounting_movements.document_type no la admite (y no se crea movimiento).
+  guia_remision: { label: 'Guía de Remisión', acc: 'otro' },
   otro: { label: 'Otro', acc: 'otro' },
 };
 
@@ -567,6 +571,14 @@ function CapturaMagicaPage({ showToast }) {
       // otra obra o "Gastos Generales de la Empresa" ('__empresa__') en el selector.
       obra_id: obraSugerida,
       obra_destino: obraSugerida || '',
+      // GUÍA DE REMISIÓN: referencia a la factura + datos de traslado (solo
+      // cuando tipo_documento === 'guia_remision'; el resto queda null).
+      guia_doc_referencia: ext.guia?.doc_referencia || null,
+      guia_fecha_traslado: ext.guia?.fecha_traslado || null,
+      guia_punto_partida: ext.guia?.punto_partida || null,
+      guia_punto_llegada: ext.guia?.punto_llegada || null,
+      guia_motivo: ext.guia?.motivo_traslado || null,
+      guia_transportista: ext.guia?.transportista || null,
       // Items
       items,
       // Totales
@@ -704,6 +716,92 @@ function CapturaMagicaPage({ showToast }) {
 
   // ── Confirmar e insertar en DB ──────────────────────────────
   const enProcesoRef = uRCM(new Set());   // ids de items en confirmación (anti doble-submit)
+  // Confirmar una GUÍA DE REMISIÓN: crea la fila en guias_remision + la
+  // evidencia PDF (tipo 'guia_remision') + auto-match a la factura por el
+  // "Doc. Ref." (vínculo bidireccional; si es ambiguo queda sin vincular y se
+  // resuelve a mano en la página Guías de Remisión).
+  const confirmarGuia = async (it, r) => {
+    if (!r.serie_correlativo?.trim()) { showToast('Falta la serie de la guía (ej. T001-000309)', 'red'); return; }
+    // Anti doble-submit (mismo candado que confirmarItem): un doble click creaba
+    // DOS guías con el mismo idempotency_key → la 2ª moría 23505 en el server.
+    if (enProcesoRef.current.has(it.id)) return;
+    enProcesoRef.current.add(it.id);
+    setItems(prev => prev.map(x => x.id === it.id ? { ...x, status: 'procesando' } : x));
+    try {
+      const { getCurrentMode } = await import('../lib/app-mode-core.js');
+      const { matchFacturaDeGuia } = await import('../lib/guias.js');
+      const isPrueba = getCurrentMode() === 'prueba';
+      const now = new Date().toISOString();
+      const guiaId = window.__newId();
+      // Duplicado de guía: misma serie del mismo emisor.
+      const serieN = normalizarComprobante(r.serie_correlativo);
+      const dupG = (await window.__db.guias_remision
+        .filter(g => !g.deleted_at && normalizarComprobante(g.serie_correlativo) === serieN
+          && normalizarRuc(g.emisor_ruc) === normalizarRuc(r.proveedor_ruc)).toArray())[0];
+      if (dupG) {
+        setItems(prev => prev.map(x => x.id === it.id ? { ...x, status: 'duplicado', duplicate_of: dupG.id } : x));
+        showToast(`Ya existe la guía ${r.serie_correlativo} de ese emisor. No se duplicó.`, 'red');
+        return;
+      }
+      // Proveedor: SOLO usar existente por RUC (no se crean proveedores desde guías).
+      const rucProv = normalizarRuc(r.proveedor_ruc);
+      const provMatch = rucProv ? (proveedoresDB || []).find(p => !p.deleted_at && normalizarRuc(p.ruc) === rucProv) : null;
+      // Auto-match a la factura (movs FRESCOS de Dexie, no del hook).
+      const movsFrescos = await window.__db.accounting_movements.filter(m => !m.deleted_at && (isPrueba ? m.demo === true : m.demo !== true)).toArray();
+      const match = matchFacturaDeGuia({ doc_referencia: r.guia_doc_referencia, emisor_ruc: r.proveedor_ruc }, movsFrescos);
+      // Evidencia PDF (tipo guia_remision — visible para almacén, NO contable).
+      const evidenciaId = window.__newId();
+      let evidenciaOk = false;
+      if (it.file) {
+        try {
+          await window.__saveEvidenciaLocal({
+            id: evidenciaId, obra_id: r.obra_id || null, tipo_evidencia: 'guia_remision',
+            modulo_relacionado: 'guias_remision', registro_relacionado_id: guiaId,
+            nombre_archivo: it.file.name, mime_type: it.file.type || '', blob: it.file,
+            fecha: r.fecha_emision || now.slice(0, 10), created_by: userId,
+            observaciones: `Guía ${r.serie_correlativo}${r.guia_doc_referencia ? ' · ref ' + r.guia_doc_referencia : ''}`,
+          });
+          evidenciaOk = true;
+        } catch (e) { console.warn('[guia evidencia]', e?.message); }
+      }
+      await window.__db.guias_remision.add({
+        id: guiaId, obra_id: r.obra_id || null,
+        company_id: r.company_accion === 'usar_existente' ? (r.company_id || null) : null,
+        proveedor_id: provMatch?.id || null,
+        emisor_ruc: r.proveedor_ruc || null, emisor_razon_social: r.proveedor_razon_social || null,
+        serie_correlativo: r.serie_correlativo.trim(),
+        fecha_emision: r.fecha_emision || null, fecha_traslado: r.guia_fecha_traslado || null,
+        punto_partida: r.guia_punto_partida || null, punto_llegada: r.guia_punto_llegada || null,
+        motivo_traslado: r.guia_motivo || null,
+        doc_referencia: r.guia_doc_referencia || null,
+        accounting_movement_id: match?.mov?.id || null,
+        items: (r.items || []).map(x => ({ descripcion: x.descripcion, cantidad: x.cantidad, unidad: x.unidad })),
+        transportista: r.guia_transportista || null,
+        evidencia_id: evidenciaOk ? evidenciaId : null, observaciones: null,
+        created_by: userId, updated_by: userId, created_at: now, updated_at: now, version: 1,
+        idempotency_key: `guia_${normalizarRuc(r.proveedor_ruc) || 'x'}_${serieN || guiaId}`,
+        ...(isPrueba ? { demo: true, sync_status: 'synced' } : { sync_status: 'pending_create' }),
+      });
+      try { await window.__logAudit?.({ action: 'create', table: 'guias_remision', recordId: guiaId, reason: `Guía ${r.serie_correlativo} vía Captura Mágica${match ? ' · vinculada a ' + (match.mov.document_number || 'factura') : ''}` }); } catch {}
+      window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'guias_remision' } }));
+      try { window.dispatchEvent(new Event('online')); } catch {}
+      // 'confirmado' es el estado terminal que la bandeja SÍ conoce (badge ✓) y
+      // que saveItemToDB excluye de captura_magica_pending; borrar el item
+      // persistido para que no re-aparezca como Pendiente en cada recarga.
+      setItems(prev => prev.map(x => x.id === it.id ? { ...x, status: 'confirmado' } : x));
+      deleteItemFromDB(it.id);
+      setReviewing(null);
+      showToast(match
+        ? `✓ Guía ${r.serie_correlativo} guardada y VINCULADA a la factura ${match.mov.document_number || ''} (confianza ${match.confianza})`
+        : `✓ Guía ${r.serie_correlativo} guardada — sin factura vinculada aún (vinculála en Guías de Remisión)`, 'green');
+    } catch (e) {
+      setItems(prev => prev.map(x => x.id === it.id ? { ...x, status: 'error', error: e?.message } : x));
+      showToast('Error al guardar la guía: ' + (e?.message || e), 'red');
+    } finally {
+      enProcesoRef.current.delete(it.id);
+    }
+  };
+
   const confirmarItem = async (id) => {
     const it = items.find(x => x.id === id);
     if (!it || !it.review) return;
@@ -720,6 +818,12 @@ function CapturaMagicaPage({ showToast }) {
         r = { ...r, obra_id: valida ? dest : '' };
       }
     }
+
+    // ── GUÍA DE REMISIÓN: flujo PROPIO ──
+    // No es comprobante de pago: NO crea movimiento contable ni recepción ni
+    // proveedor. Va a la tabla guias_remision con su evidencia y el auto-match
+    // a la factura referenciada ("Doc. Ref.").
+    if (r.tipo_documento === 'guia_remision') { await confirmarGuia(it, r); return; }
 
     // ¿VENTA o COMPRA? Si el EMISOR de la factura es UNA DE NUESTRAS empresas afiliadas,
     // la emitimos nosotros como vendedores → VENTA. Si la emite una distribuidora/proveedor
@@ -797,10 +901,16 @@ function CapturaMagicaPage({ showToast }) {
         // RUC normalizado (solo dígitos): el dedup compara por DOCUMENTO, no por nombre
         // (el bug de Gasomi: mismo RUC, nombre MAYÚS vs minús → 2 empresas).
         const rucC = normalizarRuc(r.nueva_company_ruc);
-        const yaExiste = rucC
-          ? (await window.__db.companies.filter(c => !c.deleted_at && normalizarRuc(c.ruc) === rucC).toArray())
-              .sort((a, b) => (a.status === 'activa' ? -1 : 1) - (b.status === 'activa' ? -1 : 1))[0]
-          : null;
+        // Guard FRESH anti-duplicado: por RUC, y si el OCR no leyó el RUC,
+        // por RAZÓN SOCIAL normalizada (sin esto, un lote con RUC ilegible
+        // creaba la misma empresa N veces — el idempotency_key del server no
+        // deduplica lo local).
+        const nomN = String(r.nueva_company_name || '').trim().toUpperCase().replace(/\s+/g, ' ');
+        const yaExiste = (await window.__db.companies.filter(c => !c.deleted_at && (
+            (rucC && normalizarRuc(c.ruc) === rucC) ||
+            (!rucC && nomN && String(c.name || '').trim().toUpperCase().replace(/\s+/g, ' ') === nomN)
+          )).toArray())
+          .sort((a, b) => (a.status === 'activa' ? -1 : 1) - (b.status === 'activa' ? -1 : 1))[0] || null;
         if (yaExiste) { companyIdFinal = yaExiste.id; }
         else {
         const cid = window.__newId();
@@ -827,6 +937,9 @@ function CapturaMagicaPage({ showToast }) {
           // 3 TEATINO MARTINEZ). Sin RUC, cae al key por instancia.
           idempotency_key: rucC ? `company_ruc_${rucC}` : `${userId}_company_${cid}`,
         });
+        // Refrescar useCompanies YA: el re-match del ReviewModal de los demás
+        // items del lote depende de esta señal (sin ella seguían proponiendo 'Crear nueva').
+        try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'companies' } })); } catch {}
         try { await window.__logAudit?.({ action:'insert', table:'companies', recordId: cid,
           newData: { name: r.nueva_company_name, ruc: r.nueva_company_ruc, rol_grupo: r.nueva_company_rol },
           reason:'Captura mágica · empresa nueva del grupo' }); } catch {}
@@ -1516,6 +1629,7 @@ function CapturaMagicaPage({ showToast }) {
           materialesDB={materialesDB}
           ocsActivasDB={ocsActivasDB}
           onChange={(newReview) => setItems(prev => prev.map(x => x.id === reviewItem.id ? { ...x, review: newReview } : x))}
+          onPatch={(patch) => setItems(prev => prev.map(x => x.id === reviewItem.id ? { ...x, review: { ...x.review, ...patch } } : x))}
           onConfirm={() => confirmarItem(reviewItem.id)}
           onClose={() => setReviewing(null)}
         />
@@ -1666,7 +1780,7 @@ function VincularPendientesModal({ data, materialesDB, onClose, onConfirm }) {
 }
 
 // ─── MODAL DE REVISIÓN ───────────────────────────────────────
-function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsActivasDB, onChange, onConfirm, onClose }) {
+function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsActivasDB, onChange, onPatch, onConfirm, onClose }) {
   // La obra destino SIGUE a la obra activa del header (decisión de producto:
   // todos los módulos operan sobre la obra activa). Al abrir el modal,
   // sincronizar el review con la obra activa actual — cubre reviews viejos
@@ -1683,9 +1797,38 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
     // sembrar la obra activa, que era su destino por defecto. `== null` preserva un ''
     // elegido a propósito por el usuario ("Sin obra").
     if (rr.obra_destino == null) patch.obra_destino = destino;
-    if (Object.keys(patch).length) onChange({ ...rr, ...patch });
+    if (Object.keys(patch).length) (onPatch || ((pp) => onChange({ ...rr, ...pp })))(patch);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item?.id]);
+
+  // ── RE-MATCH FRESCO por RUC (bug de duplicados en lote) ──
+  // El match empresa/proveedor se computó UNA vez al analizar el lote: si la
+  // 1ª factura CREÓ la empresa del grupo (o el proveedor), las siguientes
+  // seguían proponiendo "Crear nueva" con su review congelado → duplicados.
+  // Al abrir cada revisión (y cuando companies/proveedores cambian) se
+  // re-matchea contra la base FRESCA. Solo auto-corrige de crear→usar (nunca
+  // pisa una elección explícita de "usar existente").
+  uECM(() => {
+    const rr = item?.review;
+    if (!rr) return;
+    const limpiar = (x) => String(x || '').replace(/\D/g, '');
+    const patch = {};
+    if (rr.company_accion === 'crear_nueva') {
+      const rucC = limpiar(rr.nueva_company_ruc || rr.receptor_documento);
+      const match = rucC ? (companies || []).find(c => !c.deleted_at && c.status !== 'inactiva' && limpiar(c.ruc) === rucC) : null;
+      if (match) { patch.company_accion = 'usar_existente'; patch.company_id = match.id; }
+    }
+    if (rr.proveedor_accion === 'crear_nuevo') {
+      const rucP = limpiar(rr.proveedor_ruc);
+      const matchP = rucP ? (proveedoresDB || []).find(p => !p.deleted_at && limpiar(p.ruc) === rucP) : null;
+      if (matchP) { patch.proveedor_accion = 'usar_existente'; patch.proveedor_id = matchP.id; }
+    }
+    // onPatch mergea sobre el review MÁS RECIENTE en el padre — con onChange
+    // wholesale este efecto pisaba el patch de obra del efecto anterior (ambos
+    // leen el mismo review stale en el commit de montaje).
+    if (Object.keys(patch).length) (onPatch || ((pp) => onChange({ ...rr, ...pp })))(patch);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item?.id, companies, proveedoresDB]);
   const r = item.review;
   // Destino resuelto (obra real o '' si "Gastos Generales Empresa"/"Sin obra") — para que
   // el resumen de abajo NO use r.obra_id (que solo se recalcula al confirmar) y no mienta.
@@ -1807,6 +1950,26 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
                 <label className="flabel">Serie - Correlativo</label>
                 <input className="fi" value={r.serie_correlativo} onChange={e=>upd({ serie_correlativo: e.target.value })}/>
               </div>
+              {/* GUÍA DE REMISIÓN: referencia a la factura + preview del auto-match. */}
+              {r.tipo_documento === 'guia_remision' && (
+                <div style={{ gridColumn: '1/-1', padding: '10px 12px', background: 'rgba(52,152,219,0.08)', border: '1px solid rgba(52,152,219,0.3)', borderRadius: 6 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>📄 Guía de remisión — se guarda en el apartado "Guías de Remisión" (no crea movimiento contable)</div>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                    <div>
+                      <label className="flabel">Factura referenciada (Doc. Ref.)</label>
+                      <input className="fi" value={r.guia_doc_referencia || ''} placeholder="Ej: F001-025131"
+                        onChange={e => upd({ guia_doc_referencia: e.target.value })} style={{ width: 170 }} />
+                    </div>
+                    <div>
+                      <label className="flabel">Fecha traslado</label>
+                      <input className="fi" type="date" value={r.guia_fecha_traslado || ''} onChange={e => upd({ guia_fecha_traslado: e.target.value })} style={{ width: 150 }} />
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--tm)', flex: 1, minWidth: 180 }}>
+                      Al confirmar se busca la factura por esa referencia y quedan VINCULADAS (ida y vuelta). Si no se encuentra o es ambigua, la vinculás después en Guías de Remisión.
+                    </div>
+                  </div>
+                </div>
+              )}
               <div>
                 <label className="flabel">Fecha emisión</label>
                 <input className="fi" type="date" value={r.fecha_emision} onChange={e=>upd({ fecha_emision: e.target.value })}/>

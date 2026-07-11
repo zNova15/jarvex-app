@@ -197,6 +197,7 @@ const PAGE_CHUNKS = {
   'jx-contabilidad':          () => import('./components/jx-contabilidad.jsx'),
   'jx-compras-categoria':     () => import('./components/jx-compras-categoria.jsx'),
   'jx-pagos':                 () => import('./components/jx-pagos.jsx'),
+  'jx-guias':                 () => import('./components/jx-guias.jsx'),
   'jx-ordenes-intercompany':  () => import('./components/jx-ordenes-intercompany.jsx'),
   'jx-compras':               () => import('./components/jx-compras.jsx'),
   'jx-compras-pendientes':    () => import('./components/jx-compras-pendientes.jsx'),

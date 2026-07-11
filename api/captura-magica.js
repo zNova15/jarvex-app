@@ -35,7 +35,7 @@ const MISTRAL_OCR_URL = 'https://api.mistral.ai/v1/ocr';
 // Alias móvil siempre válido por default; overridable a un snapshot barato.
 const MISTRAL_OCR_MODEL = process.env.MISTRAL_OCR_MODEL || 'mistral-ocr-latest';
 
-const SYSTEM_PROMPT = `Eres un experto parser de comprobantes peruanos emitidos bajo SUNAT (factura electrónica, boleta de venta, nota de crédito, nota de débito, recibo por honorarios). Tu tarea es leer el documento (PDF o imagen) y extraer los datos a JSON estructurado.
+const SYSTEM_PROMPT = `Eres un experto parser de documentos peruanos emitidos bajo SUNAT (factura electrónica, boleta de venta, nota de crédito, nota de débito, recibo por honorarios, y GUÍAS DE REMISIÓN remitente/transportista). Tu tarea es leer el documento (PDF o imagen) y extraer los datos a JSON estructurado.
 
 Reglas estrictas:
 - NO inventes datos. Si un campo no se ve con confianza, devuelve null.
@@ -45,12 +45,14 @@ Reglas estrictas:
 - Moneda: "PEN" (soles, S/) o "USD" (dólares, $). Si no es claro, usa "PEN".
 - Tasa IGV peruana estándar es 0.18 (18%). Si el documento muestra otra tasa, úsala.
 - Items: cada fila/línea de producto o servicio. Mantén descripciones tal cual aparecen.
-- Si el documento NO es un comprobante peruano (boleta/factura/NC/ND/recibo), devuelve tipo_documento="otro" y el resto vacío o null.
+- GUÍA DE REMISIÓN: si el documento dice "Guía de Remisión" (remitente o transportista), tiene punto de partida/llegada, motivo de traslado o datos de transportista → tipo_documento="guia_remision". Las guías NO llevan montos (deja totales en null/0, sin advertir por eso) y suelen referenciar la factura como "Doc. Ref." / "Documento(s) de referencia" → extrae ese número en guia.doc_referencia.
+- Si el documento NO es un comprobante peruano NI una guía de remisión, devuelve tipo_documento="otro" y el resto vacío o null.
 - Si la imagen está borrosa, torcida, cortada o ilegible, agrega advertencias específicas y baja la confianza.
 
 Responde SOLO con JSON válido (sin markdown, sin texto extra) con esta estructura exacta:
 {
-  "tipo_documento": "factura" | "boleta" | "nota_credito" | "nota_debito" | "recibo" | "otro",
+  "tipo_documento": "factura" | "boleta" | "nota_credito" | "nota_debito" | "recibo" | "guia_remision" | "otro",
+  "guia": { "doc_referencia": "F001-025131" | null, "fecha_traslado": "YYYY-MM-DD" | null, "punto_partida": string | null, "punto_llegada": string | null, "motivo_traslado": string | null, "transportista": { "placa": string | null, "chofer": string | null, "dni": string | null, "licencia": string | null, "ruc": string | null, "razon_social": string | null } | null } | null,
   "serie_correlativo": "F001-12345" | null,
   "fecha_emision": "YYYY-MM-DD" | null,
   "fecha_vencimiento": "YYYY-MM-DD" | null,
@@ -342,7 +344,7 @@ export default async function handler(req, res) {
   const fileBlock = isPdf
     ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: cleanBase64 } }
     : { type: 'image', source: { type: 'base64', media_type: mimeType, data: cleanBase64 } };
-  const userInstruction = 'Analiza este comprobante peruano y extrae todos los datos al JSON estructurado descrito en las instrucciones del sistema. Responde SOLO con el JSON, sin texto adicional ni markdown.';
+  const userInstruction = 'Analiza este documento peruano (comprobante o guía de remisión) y extrae todos los datos al JSON estructurado descrito en las instrucciones del sistema. Responde SOLO con el JSON, sin texto adicional ni markdown.';
 
   // ── Paso 1 (opcional): Mistral OCR lee el documento → markdown ──
   // SOLO el OCR va en este try; su fallo (incl. AbortError/key inválida) cae a
@@ -371,7 +373,7 @@ export default async function handler(req, res) {
   try {
     const engine = ocr ? 'mistral-ocr+claude' : 'claude-vision';
     const content = ocr
-      ? [{ type: 'text', text: `A continuación está el TEXTO extraído por OCR (formato markdown) de un comprobante peruano. Extrae los datos al JSON estructurado descrito en las instrucciones del sistema. Basáte ÚNICAMENTE en este texto; si un dato no aparece, devuelve null. Responde SOLO con el JSON, sin markdown ni texto adicional.\n\n===== TEXTO OCR DEL COMPROBANTE =====\n${ocr.texto}` }]
+      ? [{ type: 'text', text: `A continuación está el TEXTO extraído por OCR (formato markdown) de un documento peruano (comprobante o guía de remisión). Extrae los datos al JSON estructurado descrito en las instrucciones del sistema. Basáte ÚNICAMENTE en este texto; si un dato no aparece, devuelve null. Responde SOLO con el JSON, sin markdown ni texto adicional.\n\n===== TEXTO OCR DEL DOCUMENTO =====\n${ocr.texto}` }]
       : [fileBlock, { type: 'text', text: userInstruction }];
 
     const data = await anthropicMessages(apiKey, {
