@@ -79,6 +79,29 @@ function seccionesObraDelRol(canSee) {
 }
 
 function InicioPage({ onNav, onEnterObra }) {
+  // ── PENDIENTES DE ATENCIÓN (acceso directo desde el Inicio — pedido de
+  // Gabriel: solicitudes de cambio y conflictos de sync sin bucear el menú). ──
+  const [atencion, setAtencion] = React.useState({ solicitudes: 0, conflictos: 0, failed: 0 });
+  React.useEffect(() => {
+    let cancel = false;
+    const load = async () => {
+      try {
+        const [sol, conf, failed] = await Promise.all([
+          // Las solicitudes viven en el server (countPending consulta Supabase;
+          // devuelve 0 offline — el badge del sidebar cubre ese caso).
+          window.__changeRequests?.countPending ? window.__changeRequests.countPending().catch(() => 0) : 0,
+          window.__db.sync_conflicts.where('estado').equals('pendiente').count().catch(() => 0),
+          import('../sync/SyncEngine').then(m => m.getFailedCount()).catch(() => 0),
+        ]);
+        if (!cancel) setAtencion({ solicitudes: sol || 0, conflictos: conf || 0, failed: Number(failed) || 0 });
+      } catch {}
+    };
+    load();
+    const on = () => load();
+    window.addEventListener('jx_data_changed', on);
+    return () => { cancel = true; window.removeEventListener('jx_data_changed', on); };
+  }, []);
+
   const auth = window.__useAuth ? window.__useAuth() : null;
   const rol = auth?.profile?.rol;
   const { data: obras } = window.__hooks?.useObras?.() || { data: [] };
@@ -235,6 +258,28 @@ function InicioPage({ onNav, onEnterObra }) {
           })}
         </div>
       )}
+
+      {/* ── PENDIENTES DE ATENCIÓN: chips con contador y salto directo. ── */}
+      {(() => {
+        const puedeSolicitudes = rol === 'admin' || (window.__hasPerm?.(rol, 'Solicitudes Cambio', 'r') ?? false);
+        const puedeConflictos = rol === 'admin' || (window.__hasPerm?.(rol, 'Conflictos Sync', 'r') ?? false);
+        const chips = [];
+        if (puedeSolicitudes && atencion.solicitudes > 0) chips.push({ id: 'solicitudes', icon: '🔔', lbl: `${atencion.solicitudes} solicitud(es) de cambio por revisar`, color: 'var(--amber)' });
+        if (puedeConflictos && atencion.conflictos > 0) chips.push({ id: 'conflictos', icon: '⚔️', lbl: `${atencion.conflictos} conflicto(s) de sync`, color: 'var(--red)' });
+        if (atencion.failed > 0) chips.push({ id: null, icon: '🔴', lbl: `${atencion.failed} registro(s) sin subir — click en el badge de sync (arriba)`, color: 'var(--red)' });
+        if (!chips.length) return null;
+        return (
+          <div className="card card-p" style={{ marginTop: 16, border: '1px solid rgba(242,183,5,0.35)', display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)' }}>PENDIENTES DE ATENCIÓN</div>
+            {chips.map((c, i) => (
+              <button key={i} className="btn btn-ghost btn-sm" style={{ color: c.color, cursor: c.id ? 'pointer' : 'default' }}
+                onClick={() => c.id && onNav?.(c.id)}>
+                {c.icon} {c.lbl} {c.id && '→'}
+              </button>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* ── TU TRABAJO EN LA OBRA (mapa completo de secciones del rol) ──
           Derivado del menú real: muestra desde el Inicio TODO lo que el rol

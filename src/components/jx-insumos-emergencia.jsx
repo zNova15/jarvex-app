@@ -557,7 +557,7 @@ function InsumosEmergenciaPage({ showToast }) {
           <div className="card card-p empty-state"><JxIcon name="compare" size={40} color="var(--tm)" /><p>Sin movimientos todavía. Registrá un Ingreso o una Salida.</p></div>
         ) : (
           <div className="card" style={{ overflow: 'hidden' }}>
-            <div style={{ overflowX: 'auto' }}>
+            <div className="tbl-sticky">
               <table className="tbl">
                 <thead><tr>
                   <th>Fecha</th><th>Tipo</th><th>Insumo</th>

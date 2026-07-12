@@ -132,6 +132,27 @@ const CTX_LOOKUPS = {
   ubicacion_id: { tabla: 'ubicaciones_obra', campo: 'nombre' },
   subcontratista_id: { tabla: 'subcontratistas', campo: 'razon_social' },
 };
+// Página de la app donde VIVE cada tabla objetivo (para saltar directo desde
+// la solicitud a la sección del registro — pedido de Gabriel).
+const TABLA_A_PAGINA = {
+  movimientos_materiales: 'mov-materiales',
+  movimientos_herramientas: 'mov-herramientas',
+  movimientos_epp: 'epp',
+  movimientos_maquinaria: 'activos-pesados',
+  movimientos_insumos_emergencia: 'insumos-emergencia',
+  materiales: 'materiales',
+  herramientas: 'herramientas',
+  epps: 'epps-inventario',
+  insumos_emergencia: 'insumos-emergencia',
+  personal: 'personal',
+  asistencia: 'asistencia',
+  avance_obra: 'avance',
+  accounting_movements: 'movimientos-contables',
+  activos_pesados: 'activos-pesados',
+  proveedores: 'proveedores',
+  caja_chica_movimientos: 'caja-chica',
+};
+
 function ContextoRegistro({ table, recordId }) {
   const [reg, setReg] = uSS(undefined);          // undefined=cargando · null=no está · objeto
   const [nombres, setNombres] = uSS({});         // fk campo → nombre legible
@@ -193,6 +214,13 @@ function ContextoRegistro({ table, recordId }) {
         <button className="btn btn-ghost btn-xs" style={{ fontSize: 10 }} onClick={() => setVerDetalle(v => !v)}>
           {verDetalle ? 'Ocultar detalle' : 'Ver registro completo'}
         </button>
+        {TABLA_A_PAGINA[table] && (
+          <button className="btn btn-ghost btn-xs" style={{ fontSize: 10, color: 'var(--amber)' }}
+            title="Abrir la sección donde vive este registro"
+            onClick={() => { window.__navTo?.(TABLA_A_PAGINA[table]); }}>
+            ↗ Ir a la sección
+          </button>
+        )}
       </div>
       {partes.length > 0 && (
         <div style={{ fontSize: 12, color: 'var(--ts)', marginTop: 4 }}>📄 {partes.join(' · ')}</div>

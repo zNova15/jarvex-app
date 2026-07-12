@@ -315,7 +315,7 @@ function MovimientosInsumosPage({ showToast }) {
           <div className="card card-p empty-state"><JxIcon name="package" size={40} color="var(--tm)" /><p>No hay insumos con estos filtros.</p></div>
         ) : (
           <div className="card" style={{ overflow: 'hidden' }}>
-            <div style={{ overflowX: 'auto' }}>
+            <div className="tbl-sticky">
               <table className="tbl">
                 <thead><tr>
                   <th style={{ width: 120 }}>Tipo</th>
@@ -350,7 +350,7 @@ function MovimientosInsumosPage({ showToast }) {
           <div className="card card-p empty-state"><JxIcon name="inbox" size={40} color="var(--tm)" /><p>No hay movimientos con estos filtros.</p></div>
         ) : (
           <div className="card" style={{ overflow: 'hidden' }}>
-            <div style={{ overflowX: 'auto' }}>
+            <div className="tbl-sticky">
               <table className="tbl">
                 <thead><tr>
                   <th style={{ width: 92 }}>Fecha</th>

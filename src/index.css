@@ -74,6 +74,13 @@ textarea.fi { resize: vertical; min-height: 80px; }
 /* ── TABLES ── */
 .tbl { width: 100%; border-collapse: collapse; }
 .tbl thead th { text-align: left; padding: 11px 14px; font-size: 10.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--tm); border-bottom: 1px solid var(--border); background: rgba(0,0,0,.18); white-space: nowrap; }
+
+/* Cabecera de columnas FIJA al scrollear (pedido: en listas largas de
+   movimientos se perdían los títulos). El wrapper es el scrollport (vertical
+   y horizontal) y el thead queda sticky con fondo OPACO (el translúcido
+   dejaba ver las filas debajo). */
+.tbl-sticky { overflow: auto; max-height: calc(100vh - 250px); }
+.tbl-sticky .tbl thead th { position: sticky; top: 0; z-index: 6; background: #131a23; box-shadow: 0 1px 0 var(--border); }
 .tbl tbody td { padding: 12px 14px; font-size: 12.5px; color: var(--ts); border-bottom: 1px solid rgba(255,255,255,.04); vertical-align: middle; }
 .tbl tbody tr:last-child td { border-bottom: none; }
 .tbl tbody tr:hover td { background: rgba(255,255,255,.025); }

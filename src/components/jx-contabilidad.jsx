@@ -1463,8 +1463,7 @@ function MovimientosContablesPage({ showToast }) {
               <img src={evidenciaModal.url} alt={evidenciaModal.nombre}
                 style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}/>
             ) : (
-              <iframe src={evidenciaModal.url} title={evidenciaModal.nombre}
-                style={{ width: '100%', height: '70vh', border: 'none', background: 'white' }}/>
+              <PdfFrame url={evidenciaModal.url} nombre={evidenciaModal.nombre} />
             )}
           </div>
           <div className="modal-actions">
@@ -4056,6 +4055,39 @@ function CerrarSinFacturaModal({ mov, matName, onClose, onConfirm }) {
       </div>
     </Modal>
   );
+}
+
+
+// Visor de PDF robusto: muchos PDFs viejos se subieron con content-type
+// genérico (octet-stream) y el iframe directo mostraba un recuadro GRIS.
+// Se re-tipa vía blob local (application/pdf) — el navegador siempre lo
+// renderiza; si ni así, queda el aviso + "Abrir en nueva pestaña".
+function PdfFrame({ url, nombre }) {
+  const [src, setSrc] = uSC(null);
+  const [err, setErr] = uSC(false);
+  uEC(() => {
+    let obj = null, cancel = false;
+    (async () => {
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const buf = await resp.arrayBuffer();
+        obj = URL.createObjectURL(new Blob([buf], { type: 'application/pdf' }));
+        if (cancel) { URL.revokeObjectURL(obj); obj = null; return; }
+        setSrc(obj);
+      } catch { if (!cancel) setErr(true); }
+    })();
+    return () => { cancel = true; if (obj) { try { URL.revokeObjectURL(obj); } catch {} } };
+  }, [url]);
+  if (err) return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '60vh', gap: 10, color: 'var(--tm)' }}>
+      <JxIcon name="file" size={40} />
+      <div style={{ fontSize: 12 }}>No se pudo previsualizar {nombre || 'el PDF'} acá.</div>
+      <a href={url} target="_blank" rel="noopener noreferrer" className="btn btn-amber btn-sm">Abrir en nueva pestaña</a>
+    </div>
+  );
+  if (!src) return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '60vh', color: 'var(--tm)', fontSize: 12 }}>Cargando PDF…</div>;
+  return <iframe src={src} title={nombre || 'PDF'} style={{ width: '100%', height: '70vh', border: 'none', background: 'white' }} />;
 }
 
 Object.assign(window, {

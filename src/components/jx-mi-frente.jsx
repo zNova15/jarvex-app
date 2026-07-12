@@ -1666,11 +1666,27 @@ function EvidenciaViewer({ evidencias, onClose }) {
           ? <div style={{ color: 'var(--tm)', fontStyle: 'italic', padding: 8 }}>No se pudieron cargar las fotos de este reporte.</div>
           : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 10 }}>
-              {srcs.map((s, i) => (
-                <a key={i} href={s.url} target="_blank" rel="noreferrer" style={{ display: 'block' }} title={s.ev.nombre_archivo || 'foto'}>
-                  <img src={s.url} alt={s.ev.nombre_archivo || 'foto'} style={{ width: '100%', height: 160, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--bd)' }} />
-                </a>
-              ))}
+              {srcs.map((s, i) => {
+                // HEIC legacy (fotos de iPhone subidas ANTES del conversor):
+                // ningún navegador de escritorio las renderiza — tarjeta de
+                // descarga en vez de un <img> roto que solo mostraba el nombre.
+                const esHeic = /\.hei[cf]$/i.test(String(s.ev.nombre_archivo || '')) || String(s.ev.mime_type || '').includes('hei');
+                if (esHeic) return (
+                  <a key={i} href={s.url} target="_blank" rel="noreferrer" download
+                    style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, height: 160, borderRadius: 8, border: '1px dashed var(--bd)', background: 'var(--bg2)', textDecoration: 'none' }}
+                    title="Foto en formato HEIC (iPhone) — el navegador no la muestra; descargala para verla. Las fotos nuevas ya se convierten solas.">
+                    <span style={{ fontSize: 22 }}>📷</span>
+                    <span style={{ fontSize: 10.5, color: 'var(--ts)', textAlign: 'center', padding: '0 8px' }}>{String(s.ev.nombre_archivo || 'foto').slice(0, 28)}</span>
+                    <span className="badge b-amber" style={{ fontSize: 9 }}>HEIC — descargar ⬇</span>
+                  </a>
+                );
+                return (
+                  <a key={i} href={s.url} target="_blank" rel="noreferrer" style={{ display: 'block' }} title={s.ev.nombre_archivo || 'foto'}>
+                    <img src={s.url} alt={s.ev.nombre_archivo || 'foto'} style={{ width: '100%', height: 160, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--bd)' }}
+                      onError={e => { e.currentTarget.outerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:160px;border:1px dashed #333;border-radius:8px;font-size:11px;color:#889">no se pudo mostrar — usá el link</div>'; }} />
+                  </a>
+                );
+              })}
             </div>
           )}
     </Modal>

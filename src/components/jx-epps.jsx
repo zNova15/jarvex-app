@@ -937,7 +937,7 @@ function EppsInventarioPage({ showToast }) {
         </div>
       ) : (
       <div className="card" style={{ overflow:'hidden' }}>
-        <div style={{ overflowX:'auto' }}>
+        <div className="tbl-sticky">
           <table className="tbl">
             <thead>
               <tr>

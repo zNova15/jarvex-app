@@ -1458,7 +1458,7 @@ function MovMaterialesPage({ showToast }) {
         <div className="card card-p empty-state"><JxIcon name="arrowIn" size={40} color="var(--tm)"/><p>No hay movimientos {tipo!=='todos' || q ? 'que coincidan con el filtro' : 'registrados aún'}.</p></div>
       ) : (
       <div className="card" style={{ overflow:'hidden' }}>
-        <div style={{ overflowX:'auto' }}>
+        <div className="tbl-sticky">
           <table className="tbl">
             <thead><tr>
               <th>Fecha / Hora</th><th>Tipo</th><th>Material</th>
@@ -2101,7 +2101,7 @@ function MovHerramientasPage({ showToast }) {
         <div className="card card-p empty-state"><JxIcon name="tool" size={40} color="var(--tm)"/><p>No hay movimientos {accion!=='todas' || q ? 'que coincidan con el filtro' : 'registrados aún'}.</p></div>
       ) : (
       <div className="card" style={{ overflow:'hidden' }}>
-        <div style={{ overflowX:'auto' }}>
+        <div className="tbl-sticky">
           <table className="tbl">
             <thead><tr>
               <th>Fecha / Hora</th><th>Herramienta</th><th>Acción</th>
