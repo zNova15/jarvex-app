@@ -24,9 +24,17 @@ export function ubicacionAutoOrigen(desgloseMap) {
   return conStock.length === 1 ? conStock[0][0] : null;
 }
 
-/** Valida que una ubicación tenga stock suficiente para una salida. */
-export function validarSalidaUbic(desgloseMap, ubicacionId, cantidad) {
-  const disponible = Number(desgloseMap?.get(ubicacionId) || 0);
+/** Valida que una ubicación tenga stock suficiente para una salida.
+ * `stockActual` (opcional) = fuente de verdad: si el desglose quedó ATRÁS
+ * (drift — caso "hay 7, pedís 8" con stock real 8), la diferencia cuenta
+ * como disponible en la ubicación consultada. */
+export function validarSalidaUbic(desgloseMap, ubicacionId, cantidad, stockActual = null) {
+  let disponible = Number(desgloseMap?.get(ubicacionId) || 0);
+  if (stockActual != null) {
+    const suma = desgloseMap ? [...desgloseMap.values()].reduce((a, b) => a + (Number(b) || 0), 0) : 0;
+    const faltante = Number(stockActual) - suma;
+    if (faltante > 0.0001) disponible += faltante;
+  }
   return { ok: Number(cantidad) <= disponible, disponible };
 }
 

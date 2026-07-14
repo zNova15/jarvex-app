@@ -412,6 +412,35 @@ function CeldaAlmacen({ nombre, esTraspaso }) {
   return <span className="tag" title={esTraspaso ? 'Parte de un traspaso entre almacenes' : 'Almacén'}>{esTraspaso ? '⇄ ' : ''}{nombre}</span>;
 }
 
+// Modal: cambiar el RESPONSABLE de un movimiento (personal o subcontrato).
+// Solo atribución — no toca stock ni desglose. Patrón del lápiz de frente.
+function EditarResponsableModal({ mov, selDestino, setSelDestino, personal, subcontratistas, matNombre, onSave, onClose }) {
+  const [ops, setOps] = React.useState([]);
+  React.useEffect(() => {
+    import('../lib/destino-mov.js').then(dm => setOps(dm.opcionesDestinoFlat(personal || [], subcontratistas || [])));
+  }, [personal, subcontratistas]);
+  const Modal = window.Modal;
+  const Sel = window.SearchableSelect;
+  return (
+    <Modal title="Cambiar responsable" icon="users" onClose={onClose}>
+      <div style={{ fontSize: 12, color: 'var(--tm)', marginBottom: 10 }}>
+        {String(mov.tipo_movimiento || '').toUpperCase()} de {mov.cantidad} {mov.unidad || ''} · {matNombre} · {mov.fecha}
+      </div>
+      <label className="flabel">Responsable (trabajador o subcontrato)</label>
+      {Sel
+        ? <Sel value={selDestino} onChange={v => setSelDestino(v)} options={[{ value: '', label: '— Sin responsable —' }, ...ops]} placeholder="Buscar persona o subcontrato…" />
+        : <select className="fi" value={selDestino} onChange={e => setSelDestino(e.target.value)}>
+            <option value="">— Sin responsable —</option>
+            {ops.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>}
+      <div className="modal-actions" style={{ marginTop: 14 }}>
+        <button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
+        <button className="btn btn-amber" onClick={() => onSave(selDestino)}>Guardar</button>
+      </div>
+    </Modal>
+  );
+}
+
 const MOV_MAT_TIPO = {
   entrada:    { cls:'b-green',  lbl:'Entrada',    icon:'arrowIn'  },
   salida:     { cls:'b-orange', lbl:'Salida',     icon:'arrowOut' },
@@ -885,6 +914,8 @@ function MovMaterialesPage({ showToast }) {
   const { data: frentesObra } = window.__hooks.useFrentesObra?.(obraId, { soloActivas: true }) || { data: [] };
   const frentesById = uMM(() => { const m = new Map(); (frentesObra || []).forEach(f => m.set(f.id, f)); return m; }, [frentesObra]);
   const [asignarFrenteTarget, setAsignarFrenteTarget] = uSM(null); // salida con frente pendiente a asignar
+  const [editRespTarget, setEditRespTarget] = uSM(null);   // movimiento al que se le cambia el responsable
+  const [selDestino, setSelDestino] = uSM('');              // value combinado personal|sub (destino-mov)
   const [selFrente, setSelFrente] = uSM('');
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
 
@@ -1151,6 +1182,12 @@ function MovMaterialesPage({ showToast }) {
 
   const [q, setQ] = uSM('');
   const [tipo, setTipo] = uSM('todos');
+  const [soloSinFrente, setSoloSinFrente] = uSM(false);   // filtro del banner "salidas sin frente"
+  // Auto-reset: al asignar el último frente pendiente, el banner (con el
+  // toggle) desaparece — sin esto el filtro quedaba atascado en tabla vacía.
+  uEM(() => {
+    if (soloSinFrente && !(movs || []).some(m => m.frente_pendiente && !m.deleted_at)) setSoloSinFrente(false);
+  }, [soloSinFrente, movs]);
   const [regFisicoOpen, setRegFisicoOpen] = uSM(false);
   const [regDiarioOpen, setRegDiarioOpen] = uSM(false);
   const [regAtrasadoOpen, setRegAtrasadoOpen] = uSM(false);
@@ -1180,6 +1217,7 @@ function MovMaterialesPage({ showToast }) {
 
   const filtered = uMM(() => {
     return sorted.filter(m => {
+      if (soloSinFrente && !m.frente_pendiente) return false;
       const matchT = tipo === 'todos' || m.tipo_movimiento === tipo;
       if (!matchT) return false;
       if (!q) return true;
@@ -1194,7 +1232,7 @@ function MovMaterialesPage({ showToast }) {
              (alm.salida || '').toLowerCase().includes(ql) ||
              (alm.llegada || '').toLowerCase().includes(ql);
     });
-  }, [sorted, q, tipo, materiales, personal, ubicNombre, matsByIdAll, matsServer]);
+  }, [sorted, q, tipo, soloSinFrente, materiales, personal, ubicNombre, matsByIdAll, matsServer]);
 
   const today = new Date().toISOString().slice(0, 10);
   const monthStart = today.slice(0, 7);
@@ -1362,6 +1400,11 @@ function MovMaterialesPage({ showToast }) {
             <strong style={{ color: 'var(--red)' }}>{(movs || []).filter(m => m.frente_pendiente && !m.deleted_at).length} salida(s) sin frente asignado</strong>
             <div style={{ marginTop: 3, fontSize: 11.5, color: 'var(--tm)' }}>Asigná el frente cuanto antes con el botón “⚠ Asignar frente” de la columna FRENTE.</div>
           </div>
+          <button className={`btn btn-sm ${soloSinFrente ? 'btn-amber' : 'btn-ghost'}`}
+            title="Filtrar la tabla para ver SOLO las salidas sin frente"
+            onClick={() => setSoloSinFrente(v => !v)}>
+            {soloSinFrente ? '✕ Ver todos' : '🔍 Ver solo esas'}
+          </button>
         </div>
       )}
       {/* Banner diagnóstico de sync: solo aparece si hay records pendientes/fallidos */}
@@ -1507,7 +1550,17 @@ function MovMaterialesPage({ showToast }) {
                     })()}
                     <td>{pers
                       ? <>{pers.nombres} {pers.apellidos}{pers.alias ? <span style={{ color:'var(--tm)' }}> «{pers.alias}»</span> : null}{pers.cargo ? <div style={{ fontSize:10.5, color:'var(--tm)' }}>{pers.cargo}{pers.subcontratista_id ? ` · ${subNameMov.get(pers.subcontratista_id) || 'subcontrato'}` : ''}</div> : null}</>
-                      : (prov?.razon_social || '—')}</td>
+                      : (prov?.razon_social || '—')}
+                      {isAdmin && m.tipo_movimiento !== 'entrada' && (
+                        <button className="btn btn-ghost btn-xs" title="Cambiar el responsable de esta salida (pedido frecuente de la almacenera)"
+                          onClick={() => {
+                            import('../lib/destino-mov.js').then(dm => {
+                              setSelDestino(dm.joinDestino(m));
+                              setEditRespTarget(m);
+                            });
+                          }} style={{ color: '#E74C3C', padding: '0 4px' }}>✎</button>
+                      )}
+                    </td>
                     <td>{
                       m.frente_pendiente
                         ? <button className="btn btn-red btn-xs" title="Falta el frente — asignalo" onClick={()=>{ setSelFrente(''); setAsignarFrenteTarget(m); }}>⚠ Asignar frente</button>
@@ -1638,6 +1691,28 @@ function MovMaterialesPage({ showToast }) {
           lookupNombre={(m)=>lookupMat(m.material_id)?.nombre_material || '(material)'}
           onClose={()=>setReversoTarget(null)}
           onConfirm={handleReversoMaterial}
+        />
+      )}
+      {editRespTarget && (
+        <EditarResponsableModal
+          mov={editRespTarget}
+          selDestino={selDestino} setSelDestino={setSelDestino}
+          personal={personal} subcontratistas={subcontratistas}
+          matNombre={matsByIdAll.get(editRespTarget.material_id)?.nombre_material || 'material'}
+          onSave={async (destinoValue) => {
+            try {
+              const dm = await import('../lib/destino-mov.js');
+              const d = dm.splitDestino(destinoValue);
+              await updateMov(editRespTarget.id, {
+                responsable_id: d.responsable_id, subcontratista_id: d.subcontratista_id, destino_tipo: d.destino_tipo,
+              });
+              try { await window.__logAudit?.({ action: 'update', table: 'movimientos_materiales', recordId: editRespTarget.id, reason: 'Cambio de responsable (admin)' }); } catch {}
+              window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'movimientos_materiales' } }));
+              showToast('Responsable actualizado', 'green');
+              setEditRespTarget(null);
+            } catch (e) { showToast('Error: ' + (e?.message || e), 'red'); }
+          }}
+          onClose={() => setEditRespTarget(null)}
         />
       )}
       {asignarFrenteTarget && (

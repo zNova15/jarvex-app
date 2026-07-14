@@ -158,6 +158,7 @@ function InsumosEmergenciaPage({ showToast }) {
   const sugerencias = uM(() => detectarSugerencias(insumos, 'nombre'), [insumos]);
   const dups = uM(() => detectarDuplicados(insumos, 'nombre'), [insumos]);
   const [descartadas, setDescartadas] = uS(() => new Set());
+  const [sugOpen, setSugOpen] = uS(false);
   const [grupoModal, setGrupoModal] = uS(null);
   const [dupModal, setDupModal] = uS(null);
   const [opBusy, setOpBusy] = uS(false);
@@ -338,7 +339,7 @@ function InsumosEmergenciaPage({ showToast }) {
         showToast('Elegí el almacén de origen: este insumo tiene stock repartido en varios.', 'red'); return;
       }
       if (!editingMovId && ubicMov && tieneDesglose) {
-        const { ok, disponible } = validarSalidaUbic(dgItem, ubicMov, cant);
+        const { ok, disponible } = validarSalidaUbic(dgItem, ubicMov, cant, insumo?.stock_actual);
         if (!ok) { showToast(`En ese almacén hay ${disponible} ${insumo.unidad} de "${insumo.nombre}", pedís ${cant}.`, 'red'); return; }
       }
     }
@@ -430,8 +431,18 @@ function InsumosEmergenciaPage({ showToast }) {
         <div className="search-bar"><JxIcon name="search" size={14} color="var(--tm)" /><input placeholder="Buscar insumo…" value={q} onChange={e => setQ(e.target.value)} /></div>
       </div>
 
-      {/* Sugerencias de agrupación (variantes) */}
-      {canWrite && sugerencias.filter(s => !descartadas.has(s.clave)).map(s => (
+      {/* Sugerencias de agrupación: DESPLEGABLE. */}
+      {canWrite && (() => {
+        const vivas = sugerencias.filter(s => !descartadas.has(s.clave));
+        if (!vivas.length) return null;
+        return (
+          <div className="card card-p" style={{ marginBottom: 12, border: '1px solid rgba(245,158,11,0.3)', display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }} onClick={() => setSugOpen(v => !v)} role="button">
+            <span style={{ fontSize: 12.5, color: 'var(--ts)', flex: 1 }}>💡 <strong>{vivas.length}</strong> sugerencia(s) de agrupación</span>
+            <button className="btn btn-ghost btn-xs">{sugOpen ? 'Ocultar ▴' : 'Ver ▾'}</button>
+          </div>
+        );
+      })()}
+      {canWrite && sugOpen && sugerencias.filter(s => !descartadas.has(s.clave)).map(s => (
         <div key={'sug-' + s.clave} className="card card-p" style={{ marginBottom: 12, background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.3)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <div style={{ flex: '1 1 320px', fontSize: 12.5, color: 'var(--ts)' }}>
             {s.tipo === 'add'

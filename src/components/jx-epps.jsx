@@ -11,7 +11,7 @@
 import React from "react";
 import { CATALOGO_EPP, epppTipo, detectarEPP } from "../lib/epp-utils.js";
 import { calcAlerta } from "../lib/stock-utils.js";
-import { getDesgloseBulk, aplicarDelta, traspasar } from "../lib/stock-ubicaciones.js";
+import { getDesgloseBulk, aplicarDelta, traspasar, baseSalidaUbicacion } from "../lib/stock-ubicaciones.js";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { useFotosEvidencias, FotoInsumoCell } from "./jx-foto-insumo.jsx";
 import { DesglosePopup, TraspasoStockModal, ubicacionAutoOrigen, validarSalidaUbic } from "./jx-stock-ubic.jsx";
@@ -228,6 +228,7 @@ function EppsInventarioPage({ showToast }) {
   const sugerenciasGrupo = uM(() => detectarSugerencias(epps, 'nombre_epp'), [epps]);
   const duplicados = uM(() => detectarDuplicados(epps, 'nombre_epp'), [epps]);
   const [sugDescartadas, setSugDescartadas] = uS(() => new Set());
+  const [sugOpenEpp, setSugOpenEpp] = uS(false);
   const [grupoModal, setGrupoModal] = uS(null); // { titulo, items } para confirmar agrupación
   const [dupModal, setDupModal] = uS(null);     // { grupo:{nombre,items}, survivorId }
 
@@ -715,8 +716,10 @@ function EppsInventarioPage({ showToast }) {
         const epp = epps.find(e => e.id === it.epp_id);
         const dgItem = desgloseUbic.get(it.epp_id);
         const tieneDesglose = dgItem && Array.from(dgItem.values()).some(c => Number(c) > 0);
+        // baseSalidaUbicacion tolera el DRIFT del desglose (si quedó atrás de
+        // stock_actual, la diferencia cuenta como disponible — caso 7 vs 8).
         const base = proyec.has(it.epp_id) ? proyec.get(it.epp_id)
-          : (tieneDesglose ? Number(dgItem.get(ubicMov) || 0) : stockDe(epp));
+          : (tieneDesglose ? baseSalidaUbicacion(dgItem, ubicMov, stockDe(epp)).base : stockDe(epp));
         const cant = parseFloat(it.cantidad) || 0;
         if (base - cant < 0) {
           showToast(`❌ Stock insuficiente de "${epp?.nombre_epp}" en ${ubicacionesById.get(ubicMov)?.nombre || 'ese almacén'}: hay ${base}, pedís ${cant}.`, 'red');
@@ -897,8 +900,18 @@ function EppsInventarioPage({ showToast }) {
         <span style={{ fontSize:11, color:'var(--tm)' }}>{filtered.length} de {epps.length}</span>
       </div>
 
-      {/* Detección: insumos genéricos que conviene dividir en variantes (SKU) */}
-      {canWrite && sugerenciasGrupo.filter(s => !sugDescartadas.has(s.clave)).map(s => (
+      {/* Detección de variantes: DESPLEGABLE (antes N banners invadían la pantalla). */}
+      {canWrite && (() => {
+        const vivas = sugerenciasGrupo.filter(s => !sugDescartadas.has(s.clave));
+        if (!vivas.length) return null;
+        return (
+          <div className="card card-p" style={{ marginBottom: 12, border: '1px solid rgba(245,158,11,0.3)', display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }} onClick={() => setSugOpenEpp(v => !v)} role="button">
+            <span style={{ fontSize: 12.5, color: 'var(--ts)', flex: 1 }}>💡 <strong>{vivas.length}</strong> sugerencia(s) de agrupación de EPPs</span>
+            <button className="btn btn-ghost btn-xs">{sugOpenEpp ? 'Ocultar ▴' : 'Ver ▾'}</button>
+          </div>
+        );
+      })()}
+      {canWrite && sugOpenEpp && sugerenciasGrupo.filter(s => !sugDescartadas.has(s.clave)).map(s => (
         <div key={'sug-'+s.clave} className="card card-p" style={{ marginBottom: 12, background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.3)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <div style={{ flex: '1 1 320px', fontSize: 12.5, color: 'var(--ts)' }}>
             {s.tipo === 'add'

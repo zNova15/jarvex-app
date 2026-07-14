@@ -53,6 +53,34 @@ export async function getDesgloseBulk(itemTipo, itemIds) {
 }
 
 /**
+ * Base VALIDABLE de una salida por ubicación, tolerante al DRIFT del desglose.
+ *
+ * stock_actual es la fuente de verdad (trigger-managed en el server);
+ * stock_ubicaciones es 100% client-driven y queda ATRÁS cuando: el
+ * stock_inicial nunca se sembró (inicializarDesglose no tiene callers), una
+ * recepción falló el apply post-commit, o un movimiento vino sin ubicación.
+ * Caso real: material con stock_actual=8 y desglose "Almacén Central: 7" →
+ * la salida legítima de 8 se bloqueaba con "hay 7, pedís 8".
+ *
+ * Si Σdesglose < stock_actual, la DIFERENCIA se considera disponible en la
+ * ubicación elegida (donde físicamente está: el desglose es el que miente) y
+ * se devuelve `reconciliarDelta` para sanear la fila vía aplicarDelta.
+ * La sobre-salida REAL la sigue bloqueando el check global contra stock_actual.
+ *
+ * @returns { base:number, reconciliarDelta:number }
+ */
+export function baseSalidaUbicacion(dgItem, ubicacionId, stockActual) {
+  const enUbic = Number(dgItem?.get?.(ubicacionId) || 0);
+  const suma = dgItem ? [...dgItem.values()].reduce((a, b) => a + (Number(b) || 0), 0) : 0;
+  const real = Number(stockActual ?? 0);
+  const faltante = real - suma;
+  if (faltante > 0.0001) {
+    return { base: enUbic + faltante, reconciliarDelta: faltante };
+  }
+  return { base: enUbic, reconciliarDelta: 0 };
+}
+
+/**
  * Suma (delta > 0) o resta (delta < 0) cantidad de un item en una ubicación.
  * Hace upsert sobre la fila (item_tipo, item_id, ubicacion_id). No deja la
  * cantidad bajar de 0.

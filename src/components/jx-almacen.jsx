@@ -7,7 +7,7 @@ import { useBusy } from "../hooks/useBusy.js";
 import { TablePagination } from "./jx-pagination.jsx";
 import { SearchableSelect } from "./jx-searchable-select.jsx";
 import { opcionesDestinoFlat, splitDestino } from "../lib/destino-mov.js";
-import { getDesgloseBulk, aplicarDelta, traspasar } from "../lib/stock-ubicaciones.js";
+import { getDesgloseBulk, aplicarDelta, traspasar, baseSalidaUbicacion } from "../lib/stock-ubicaciones.js";
 import { DesglosePopup, TraspasoStockModal, ubicacionAutoOrigen } from "./jx-stock-ubic.jsx";
 import { EstadosModal } from "./jx-stock-estados.jsx";
 import { FusionPersonasModal } from "./jx-fusion-personas.jsx";
@@ -383,6 +383,7 @@ function MaterialesPage({ showToast }) {
   const sugerencias = uM(() => detectarSugerencias(materiales, 'nombre_material'), [materiales]);
   const dups = uM(() => detectarDuplicados(materiales, 'nombre_material'), [materiales]);
   const [descartadas, setDescartadas] = uS(() => new Set());
+  const [sugerenciasOpen, setSugerenciasOpen] = uS(false);   // desplegable: no invadir la pantalla con banners
   const [grupoModal, setGrupoModal] = uS(null);
   const [dupModal, setDupModal] = uS(null);
   const [varBusy, setVarBusy] = uS(false);
@@ -1622,8 +1623,17 @@ function MaterialesPage({ showToast }) {
     // Origen obligatorio + validación POR UBICACIÓN (salida). Si el material
     // está distribuido por almacén, exige elegir de cuál sale y valida que ahí
     // haya stock. Materiales sin desglose siguen con la validación global de arriba.
+    // reconciliacionesDrift: cuando el desglose quedó ATRÁS de stock_actual
+    // (la fuente de verdad), la diferencia se acredita a la ubicación elegida
+    // y se sanea la fila tras registrar la salida — sin esto, la salida
+    // LEGÍTIMA de 8 con "Almacén Central: 7" se bloqueaba (caso reportado).
+    const reconciliacionesDrift = [];
     if (tipo === 'salida' && ubicacionesActivas.length >= 1) {
       const proyecUbic = new Map();
+      // El faltante (stock_actual − Σdesglose) es POR MATERIAL: si el mismo
+      // material sale de DOS almacenes en el lote, solo la primera fila lo
+      // acredita (sin esto se reconciliaba duplicado).
+      const driftAcreditado = new Set();
       for (const it of itemsValidos) {
         const mat = materiales.find(m => m.id === it.material_id);
         const dgItem = desgloseUbic.get(it.material_id);
@@ -1638,7 +1648,21 @@ function MaterialesPage({ showToast }) {
           setBusyMovLote(false); return;
         }
         const key = `${it.material_id}__${ubic}`;
-        const base = proyecUbic.has(key) ? proyecUbic.get(key) : Number(dgItem.get(ubic) || 0);
+        let base;
+        if (proyecUbic.has(key)) {
+          base = proyecUbic.get(key);
+        } else if (driftAcreditado.has(it.material_id)) {
+          // El faltante de este material ya se acreditó a OTRA ubicación del
+          // mismo lote — esta fila valida contra su desglose puro.
+          base = Number(dgItem.get(ubic) || 0);
+        } else {
+          const r = baseSalidaUbicacion(dgItem, ubic, mat?.stock_actual);
+          base = r.base;
+          if (r.reconciliarDelta > 0) {
+            reconciliacionesDrift.push({ itemTipo: 'material', itemId: it.material_id, ubicacionId: ubic, delta: r.reconciliarDelta });
+            driftAcreditado.add(it.material_id);
+          }
+        }
         const cant = parseFloat(it.cantidad) || 0;
         if (base - cant < 0) {
           showToast(`❌ Stock insuficiente de "${mat?.nombre_material}" en ${ubicacionesById.get(ubic)?.nombre || 'ese almacén'}: hay ${base}, pedís ${cant}.`, 'red');
@@ -1779,6 +1803,15 @@ function MaterialesPage({ showToast }) {
         });
         try { await window.__logAudit?.({ action:'insert', table:'movimientos_materiales', recordId:movCreated?.id, newData:movCreated, reason:`${tipo} en LOTE de ${cantNum} ${material.unidad} de ${material.nombre_material}` }); } catch {}
 
+        // Saneo de DRIFT (una sola vez por lote): acreditar al desglose la
+        // diferencia detectada contra stock_actual antes de restar la salida.
+        while (reconciliacionesDrift.length) {
+          const rec = reconciliacionesDrift.shift();
+          try {
+            await aplicarDelta({ obraId, itemTipo: rec.itemTipo, itemId: rec.itemId, ubicacionId: rec.ubicacionId, delta: rec.delta, userId: auth?.profile?.id || null });
+            try { await window.__logAudit?.({ action: 'update', table: 'stock_ubicaciones', recordId: rec.itemId, reason: `Reconciliación de desglose (+${rec.delta}) — stock_actual manda` }); } catch {}
+          } catch (e) { console.warn('[drift-reconciliar]', e?.message); }
+        }
         // Stock por ubicación (desglose). INGRESO suma a la ubicación
         // elegida; SALIDA resta de la ubicación elegida (ya resuelta arriba
         // con auto-origen). Si no hay ubicación, solo cambia el stock global.
@@ -2094,8 +2127,25 @@ function MaterialesPage({ showToast }) {
         </span>
       </div>
 
-      {/* Sugerencias de agrupación (variantes SKU) */}
-      {isAdmin && sugerencias.filter(s => !descartadas.has(s.clave)).map(s => (
+      {/* Sugerencias de agrupación + duplicados: DESPLEGABLE (antes eran N
+          banners que invadían la pantalla — pedido de Gabriel). */}
+      {isAdmin && (() => {
+        const sugsVivas = sugerencias.filter(s => !descartadas.has(s.clave));
+        const dupsVivos = dups.filter(d => !descartadas.has('dup-' + d.clave));
+        if (!sugsVivas.length && !dupsVivos.length) return null;
+        return (
+          <div className="card card-p" style={{ marginBottom: 12, border: '1px solid rgba(245,158,11,0.3)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }} onClick={() => setSugerenciasOpen(v => !v)} role="button">
+              <span style={{ fontSize: 12.5, color: 'var(--ts)', flex: 1 }}>
+                💡 <strong>{sugsVivas.length}</strong> sugerencia(s) de agrupación
+                {dupsVivos.length > 0 && <> · ⚠ <strong style={{ color: 'var(--red)' }}>{dupsVivos.length}</strong> posible(s) duplicado(s)</>}
+              </span>
+              <button className="btn btn-ghost btn-xs">{sugerenciasOpen ? 'Ocultar ▴' : 'Ver ▾'}</button>
+            </div>
+          </div>
+        );
+      })()}
+      {isAdmin && sugerenciasOpen && sugerencias.filter(s => !descartadas.has(s.clave)).map(s => (
         <div key={'sug-'+s.clave} className="card card-p" style={{ marginBottom:12, background:'rgba(245,158,11,0.07)', border:'1px solid rgba(245,158,11,0.3)', display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
           <div style={{ flex:'1 1 320px', fontSize:12.5, color:'var(--ts)' }}>
             {s.tipo === 'add'
@@ -2111,7 +2161,7 @@ function MaterialesPage({ showToast }) {
         </div>
       ))}
       {/* Revisión de duplicados */}
-      {isAdmin && dups.filter(d => !descartadas.has('dup-'+d.clave)).map(d => (
+      {isAdmin && sugerenciasOpen && dups.filter(d => !descartadas.has('dup-'+d.clave)).map(d => (
         <div key={'dup-'+d.clave} className="card card-p" style={{ marginBottom:12, background:'rgba(239,68,68,0.07)', border:'1px solid rgba(239,68,68,0.3)', display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
           <div style={{ flex:'1 1 320px', fontSize:12.5, color:'var(--ts)' }}>⚠ <strong>{d.items.length} materiales</strong> con el mismo nombre <strong>“{d.nombre}”</strong> (probable duplicado). Conviene fusionarlos.</div>
           <div style={{ display:'flex', gap:8 }}>
@@ -3523,7 +3573,7 @@ function HerramientasPage({ showToast }) {
         const h = herramientas.find(x => x.id === it.herramienta_id);
         const dgItem = desgloseUbicH.get(it.herramienta_id);
         const tieneDesglose = dgItem && Array.from(dgItem.values()).some(c => Number(c) > 0);
-        const base = proyec.has(it.herramienta_id) ? proyec.get(it.herramienta_id) : (tieneDesglose ? Number(dgItem.get(ubicMov) || 0) : stockDeHerr(h));
+        const base = proyec.has(it.herramienta_id) ? proyec.get(it.herramienta_id) : (tieneDesglose ? baseSalidaUbicacion(dgItem, ubicMov, stockDeHerr(h)).base : stockDeHerr(h));
         const cant = parseFloat(it.cantidad) || 0;
         if (base - cant < 0) { showToast(`❌ Stock insuficiente de "${h?.nombre_herramienta}" en ${ubicacionesByIdH.get(ubicMov)?.nombre || 'ese almacén'}: hay ${base}, pedís ${cant}.`, 'red'); return; }
         proyec.set(it.herramienta_id, base - cant);
@@ -3707,6 +3757,7 @@ function HerramientasPage({ showToast }) {
   const sugerencias = uM(() => detectarSugerencias(herramientas, 'nombre_herramienta'), [herramientas]);
   const dups = uM(() => detectarDuplicados(herramientas, 'nombre_herramienta'), [herramientas]);
   const [descartadas, setDescartadas] = uS(() => new Set());
+  const [sugerenciasOpen, setSugerenciasOpen] = uS(false);   // desplegable de sugerencias (no invadir)
   const [grupoModal, setGrupoModal] = uS(null);
   const [dupModal, setDupModal] = uS(null);
   const [varBusy, setVarBusy] = uS(false);
@@ -4216,8 +4267,25 @@ function HerramientasPage({ showToast }) {
         <div className="search-bar"><JxIcon name="search" size={14} color="var(--tm)"/><input placeholder="Buscar herramienta…" value={q} onChange={e=>setQ(e.target.value)}/></div>
       </div>
 
-      {/* Sugerencias de agrupación (variantes SKU) */}
-      {isAdmin && sugerencias.filter(s => !descartadas.has(s.clave)).map(s => (
+      {/* Sugerencias de agrupación + duplicados: DESPLEGABLE (antes eran N
+          banners que invadían la pantalla — pedido de Gabriel). */}
+      {isAdmin && (() => {
+        const sugsVivas = sugerencias.filter(s => !descartadas.has(s.clave));
+        const dupsVivos = dups.filter(d => !descartadas.has('dup-' + d.clave));
+        if (!sugsVivas.length && !dupsVivos.length) return null;
+        return (
+          <div className="card card-p" style={{ marginBottom: 12, border: '1px solid rgba(245,158,11,0.3)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }} onClick={() => setSugerenciasOpen(v => !v)} role="button">
+              <span style={{ fontSize: 12.5, color: 'var(--ts)', flex: 1 }}>
+                💡 <strong>{sugsVivas.length}</strong> sugerencia(s) de agrupación
+                {dupsVivos.length > 0 && <> · ⚠ <strong style={{ color: 'var(--red)' }}>{dupsVivos.length}</strong> posible(s) duplicado(s)</>}
+              </span>
+              <button className="btn btn-ghost btn-xs">{sugerenciasOpen ? 'Ocultar ▴' : 'Ver ▾'}</button>
+            </div>
+          </div>
+        );
+      })()}
+      {isAdmin && sugerenciasOpen && sugerencias.filter(s => !descartadas.has(s.clave)).map(s => (
         <div key={'sug-'+s.clave} className="card card-p" style={{ marginBottom:12, background:'rgba(245,158,11,0.07)', border:'1px solid rgba(245,158,11,0.3)', display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
           <div style={{ flex:'1 1 320px', fontSize:12.5, color:'var(--ts)' }}>
             {s.tipo === 'add'
@@ -4233,7 +4301,7 @@ function HerramientasPage({ showToast }) {
         </div>
       ))}
       {/* Revisión de duplicados */}
-      {isAdmin && dups.filter(d => !descartadas.has('dup-'+d.clave)).map(d => (
+      {isAdmin && sugerenciasOpen && dups.filter(d => !descartadas.has('dup-'+d.clave)).map(d => (
         <div key={'dup-'+d.clave} className="card card-p" style={{ marginBottom:12, background:'rgba(239,68,68,0.07)', border:'1px solid rgba(239,68,68,0.3)', display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
           <div style={{ flex:'1 1 320px', fontSize:12.5, color:'var(--ts)' }}>⚠ <strong>{d.items.length} herramientas</strong> con el mismo nombre <strong>“{d.nombre}”</strong> (probable duplicado). Conviene fusionarlas.</div>
           <div style={{ display:'flex', gap:8 }}>
