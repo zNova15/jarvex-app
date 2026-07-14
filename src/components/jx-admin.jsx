@@ -1158,6 +1158,13 @@ window.__canSeeSidebarItem = function(rol, itemId) {
   // El INICIO (launcher de 2 planos) es seguro para todos los roles — no muestra
   // datos, solo deriva a las secciones que cada rol sí puede ver.
   if (itemId === 'inicio') return true;
+  // SOLICITUDES: cualquier rol que crea solicitudes de cambio (almacenera,
+  // ingeniero, etc.) debe poder ver "Mis Solicitudes" para editarlas/anularlas
+  // — antes ni sabían qué habían pedido. La pestaña "Pendientes de Revisión"
+  // sigue gateada dentro de la página (admin/contador), y el RLS (mig 125)
+  // solo deja leer solicitudes propias salvo a los revisores. Va ANTES de las
+  // allowlists exclusivas (asistente_admin/ayudante/ingeniero) a propósito.
+  if (itemId === 'solicitudes') return !!rol;
   const modulo = window.__moduleIdMap?.[itemId];
   // El Asistente de Administrador ve EXCLUSIVAMENTE su lista acotada (igual patrón
   // que el ingeniero) — gana sobre cualquier permiso de la matriz.

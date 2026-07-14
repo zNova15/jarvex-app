@@ -70,6 +70,7 @@ import {
   approveChangeRequest,
   rejectChangeRequest,
   cancelChangeRequest,
+  updateOwnChangeRequest,
   syncPendingChangeRequests,
   countPendingChangeRequests,
 } from './lib/changeRequests';
@@ -147,6 +148,7 @@ window.__changeRequests = {
   approve: approveChangeRequest,
   reject: rejectChangeRequest,
   cancel: cancelChangeRequest,
+  updateOwn: updateOwnChangeRequest,
   sync: syncPendingChangeRequests,
   countPending: countPendingChangeRequests,
 };

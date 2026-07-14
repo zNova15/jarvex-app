@@ -1093,8 +1093,16 @@ function App() {
   const entrarObra = (oid, pageDestino) => {
     if (oid && window.__setObraActivaId) window.__setObraActivaId(oid);
     let destino = pageDestino && planoDe(pageDestino) === 'obra' ? pageDestino : null;
-    if (!destino) { const h = window.__defaultPageForRol?.(rolActual) || 'dashboard-gestion'; destino = planoDe(h) === 'obra' ? h : 'dashboard-gestion'; }
-    irAPagina(destino, 'obra');
+    if (!destino) { const h = window.__defaultPageForRol?.(rolActual) || 'dashboard-gestion'; if (planoDe(h) === 'obra') destino = h; }
+    if (!destino && rolActual !== 'admin') {
+      // El fallback fijo 'dashboard-gestion' (módulo Avance) era un callejón
+      // "Sin acceso" para contador/tesorero (cuyo home es de plano general):
+      // primera página de plano OBRA que el rol sí puede ver, en orden del menú.
+      for (const it of (window.NAV || [])) {
+        if (it.id && (it.plano || planoDe(it.id)) === 'obra' && (window.__canSeeSidebarItem?.(rolActual, it.id) ?? false)) { destino = it.id; break; }
+      }
+    }
+    irAPagina(destino || 'dashboard-gestion', 'obra');
   };
   const NoAcceso = () => (
     <div className="page-wrap" style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:'60vh' }}>
@@ -1113,7 +1121,7 @@ function App() {
     // Páginas EAGER (en chunk principal): dashboard + solicitudes.
     // Las páginas de almacén ahora son lazy (PAGE_REGISTRY abajo).
     switch(page) {
-      case 'inicio':        return <window.InicioPage onNav={(p)=>irAPagina(p)} onEnterObra={entrarObra}/>;
+      case 'inicio':        return <window.InicioPage onNav={(p, plano)=>irAPagina(p, plano)} onEnterObra={entrarObra}/>;
       case 'dashboard':     return <DashboardPage showToast={showToast}/>;
       case 'solicitudes':   return <SolicitudesPage showToast={showToast}/>;
     }

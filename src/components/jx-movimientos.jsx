@@ -712,30 +712,40 @@ function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast, m
             : `${yaExiste ? 'Reemplazado por admin' : 'Subida'} de registro diario · ${modulo}`,
         });
       } catch {}
+      let solicitudFallo = null;
       if (necesitaAprobacion) {
         try {
           const labelTipo = esCorreccion ? 'corrección' : 'atraso';
+          // Solicitud DESCRIPTIVA (__descripcion): la API espera proposedChanges
+          // — el `fields:{...}` anterior tiraba "proposedChanges requerido" y la
+          // solicitud nunca se creaba aunque el toast decía "enviada". Además
+          // esos campos (tipo_cambio/motivo/modulo) no son columnas de
+          // evidencias: aprobar habría reventado el UPDATE. Aprobar un pedido
+          // descriptivo = acusar recibo (no aplica nada automático).
+          const desc = [
+            `Registro diario con ${labelTipo} · ${fecha} · ${modulo === 'movimientos_materiales' ? 'Materiales' : 'Herramientas'}`,
+            esCorreccion && registroACorregir ? `corrige el registro del ${registroACorregir.fecha}` : null,
+            `Motivo: ${motivoAtraso.trim()}`,
+          ].filter(Boolean).join(' — ');
           await window.__changeRequests?.create({
             table: 'evidencias',
             recordId: id,
             recordLabel: `Registro diario ${labelTipo} · ${fecha} (${modulo === 'movimientos_materiales' ? 'Materiales' : 'Herramientas'})`,
-            fields: {
-              fecha,
-              tipo_cambio: tipoCambio,
-              motivo: motivoAtraso.trim(),
-              modulo,
-              obra_id: obraId,
-              ...(esCorreccion && registroACorregir ? { registro_a_corregir_id: registroACorregir.id, fecha_original: registroACorregir.fecha } : {}),
-            },
-            reason: `Solicitud de ${labelTipo}: ${motivoAtraso.trim()}`,
+            proposedChanges: { __descripcion: { old: null, new: desc } },
+            reason: desc,
           });
-        } catch (e) { console.warn('change request no creada:', e); }
+        } catch (e) {
+          console.warn('change request no creada:', e);
+          solicitudFallo = e?.message || String(e);
+        }
       }
       showToast?.(
         necesitaAprobacion
-          ? `📤 Solicitud enviada al admin · ${tipoCambioLabel.toLowerCase()} (${fecha})`
+          ? (solicitudFallo
+              ? `⚠ El registro se subió, pero la solicitud al admin NO se envió: ${solicitudFallo}`
+              : `📤 Solicitud enviada al admin · ${tipoCambioLabel.toLowerCase()} (${fecha})`)
           : `✓ Registro diario subido (${fecha})`,
-        necesitaAprobacion ? 'amber' : 'green'
+        solicitudFallo ? 'red' : (necesitaAprobacion ? 'amber' : 'green')
       );
       if (foto?.url) try { URL.revokeObjectURL(foto.url); } catch {}
       onSaved?.();

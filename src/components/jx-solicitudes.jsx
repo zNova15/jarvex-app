@@ -241,6 +241,122 @@ function ContextoRegistro({ table, recordId }) {
   );
 }
 
+// ─── EditarSolicitudModal — el solicitante corrige su solicitud pendiente ───
+// Pedido de Gabriel: la almacenera (y otros roles) no veían qué solicitaron;
+// ahora además pueden corregir el valor propuesto o el motivo sin re-crear.
+// Solo se editan valores "planos" (texto/número/fecha). Los campos con
+// etiqueta legible distinta al valor (FK tipo frente_id → nombre) no se
+// editan acá: el selector con las opciones vive en el registro original.
+function EditarSolicitudModal({ req, onClose, onSaved, showToast }) {
+  const entries = Object.entries(req.proposed_changes || {});
+  const esEliminacion = entries.some(([k]) => k === 'deleted_at');
+  const esEditable = ([k, v]) => {
+    if (k.startsWith('__') || k === 'deleted_at') return false;
+    // Solo changes ESTRUCTURADOS de RequestChangeModal (traen label). Los
+    // pseudo-campos crudos de flujos especiales y el timestamp de eliminación
+    // no deben aparecer como inputs de texto libre.
+    if (!v || typeof v !== 'object' || !v.label) return false;
+    // Valor elegido de una lista (select) → no editable como texto libre.
+    if (v.conOpciones) return false;
+    const newLabel = 'newLabel' in v ? v.newLabel : undefined;
+    return newLabel === undefined || newLabel === null || String(newLabel) === String(v.new ?? '');
+  };
+  const editables = entries.filter(esEditable);
+  const soloDescriptivo = editables.length === 0 && entries.some(([k]) => k.startsWith('__'));
+  const [vals, setVals] = uSS(() => {
+    const o = {};
+    for (const [k, v] of editables) o[k] = String((v && typeof v === 'object' && 'new' in v ? v.new : v) ?? '');
+    return o;
+  });
+  const [reason, setReason] = uSS(req.reason || '');
+  const [busy, setBusy] = uSS(false);
+
+  const guardar = async () => {
+    if (!reason.trim() || reason.trim().length < 10) {
+      showToast('El motivo debe tener al menos 10 caracteres', 'red'); return;
+    }
+    const pc = {};
+    let cambio = reason.trim() !== String(req.reason || '').trim();
+    for (const [k, v] of entries) {
+      const base = v && typeof v === 'object' ? { ...v } : { old: null, new: v };
+      if (k.startsWith('__')) {
+        // El pedido descriptivo ES el motivo → mantenerlos en sincronía.
+        if (String(base.new ?? '') !== reason.trim()) cambio = true;
+        base.new = reason.trim();
+        pc[k] = base; continue;
+      }
+      if (k in vals) {
+        let nv = vals[k];
+        if (String(nv).trim() === '') { showToast('El valor propuesto no puede quedar vacío', 'red'); return; }
+        if (typeof base.new === 'number') {
+          // Coma decimal peruana: "12,5" — parseFloat la truncaría a 12 en silencio.
+          const norm = String(nv).trim().replace(',', '.');
+          if (!/^-?\d+(\.\d+)?$/.test(norm)) { showToast('El valor propuesto debe ser un número', 'red'); return; }
+          nv = parseFloat(norm);
+        }
+        if (String(base.new ?? '') !== String(nv)) cambio = true;
+        base.new = nv;
+        if ('newLabel' in base) base.newLabel = String(nv);
+      }
+      pc[k] = base;
+    }
+    if (!cambio) { showToast('No cambiaste nada todavía', 'amber'); return; }
+    setBusy(true);
+    try {
+      await window.__changeRequests.updateOwn(req.id, { proposedChanges: pc, reason: reason.trim() });
+      showToast('Solicitud actualizada', 'green');
+      onSaved();
+    } catch (e) {
+      showToast('Error: ' + (e?.message || e), 'red');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title="Editar mi solicitud" icon="edit" onClose={onClose}>
+      <div style={{ marginBottom: 10 }}>
+        <div style={{ fontSize: 11, color: 'var(--tm)', marginBottom: 4 }}>Registro:</div>
+        <div style={{ fontSize: 13, color: 'var(--tp)', fontWeight: 600 }}>
+          {TABLE_LABELS[req.target_table] || req.target_table} · {req.target_record_label || req.target_record_id}
+        </div>
+      </div>
+      {editables.map(([k, v]) => {
+        const label = (v && typeof v === 'object' && v.label) ? v.label : k;
+        const oldV = v && typeof v === 'object' ? v.old : undefined;
+        return (
+          <div key={k} style={{ marginBottom: 10 }}>
+            <label className="flabel">{label} — valor propuesto *</label>
+            {oldV !== undefined && oldV !== null && (
+              <div style={{ fontSize: 11, color: 'var(--tm)', marginBottom: 4 }}>Actual: {String(v.oldLabel ?? oldV)}</div>
+            )}
+            <input className="fi" value={vals[k]} onChange={e => setVals(s => ({ ...s, [k]: e.target.value }))} />
+          </div>
+        );
+      })}
+      {esEliminacion ? (
+        <div style={{ background: 'rgba(231,76,60,0.08)', border: '1px solid rgba(231,76,60,0.25)', borderRadius: 6, padding: '8px 12px', fontSize: 11.5, color: 'var(--ts)', marginBottom: 10 }}>
+          <strong style={{ color: '#EF6B5E' }}>Solicitud de eliminación</strong> — acá solo se corrige el motivo. Si ya no querés eliminar el registro, anulá la solicitud.
+        </div>
+      ) : entries.some(([k, v]) => !k.startsWith('__') && !esEditable([k, v])) && (
+        <div style={{ background: 'rgba(242,183,5,0.08)', border: '1px solid rgba(242,183,5,0.25)', borderRadius: 6, padding: '8px 12px', fontSize: 11.5, color: 'var(--ts)', marginBottom: 10 }}>
+          Esta solicitud propone un valor elegido de una lista (ej. un frente o una unidad). Para cambiarlo, anulala y creá una nueva desde el registro. Acá podés corregir el motivo.
+        </div>
+      )}
+      <div>
+        <label className="flabel">{soloDescriptivo ? 'Pedido / motivo * (describe qué cambiar)' : 'Motivo * (mín. 10 caracteres)'}</label>
+        <textarea className="fi" rows={3} value={reason} onChange={e => setReason(e.target.value)} />
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" disabled={busy} onClick={onClose}>Cancelar</button>
+        <button className="btn btn-amber" disabled={busy} onClick={guardar}>
+          <JxIcon name="check" size={13} />{busy ? 'Guardando…' : 'Guardar cambios'}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 // ─── SolicitudesPage ─────────────────────────────────────
 function SolicitudesPage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
@@ -257,6 +373,7 @@ function SolicitudesPage({ showToast }) {
   const [reviewing, setReviewing] = uSS(null);     // request en revisión
   const [reviewMode, setReviewMode] = uSS(null);   // 'approve' | 'reject'
   const [reviewComment, setReviewComment] = uSS('');
+  const [editando, setEditando] = uSS(null);       // request propia en edición
 
   const cr = window.__changeRequests || {};
 
@@ -280,7 +397,7 @@ function SolicitudesPage({ showToast }) {
   uES(() => { reload(); }, [reload]);
 
   const handleCancel = async (req) => {
-    if (!confirm('¿Cancelar esta solicitud?')) return;
+    if (!confirm('¿Anular esta solicitud? El admin ya no la verá.')) return;
     setBusy(true);
     try {
       await cr.cancel(req.id);
@@ -464,7 +581,7 @@ function SolicitudesPage({ showToast }) {
           <div className="pg-sub">
             {tab === 'pendientes'
               ? `${requests.length} solicitudes esperando revisión`
-              : `${requests.length} solicitudes propias`}
+              : `${requests.length} solicitudes propias — las pendientes se pueden editar o anular`}
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -582,11 +699,16 @@ function SolicitudesPage({ showToast }) {
                       <td style={{ fontSize: 12, maxWidth: 220 }}>{req.reason}</td>
                       <td><span className={`badge ${st.class}`}>{st.label}</span></td>
                       <td style={{ fontSize: 11.5, color: 'var(--ts)', maxWidth: 200 }}>{req.reviewer_comment || '—'}</td>
-                      <td style={{ textAlign: 'center' }}>
+                      <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
                         {req.status === 'pendiente' && req.requester_id === myId && (
-                          <button className="btn btn-ghost btn-xs" disabled={busy} title="Cancelar solicitud" onClick={() => handleCancel(req)}>
-                            <JxIcon name="x" size={11} />
-                          </button>
+                          <>
+                            <button className="btn btn-ghost btn-xs" disabled={busy} title="Editar solicitud (valor propuesto / motivo)" onClick={() => setEditando(req)}>
+                              <JxIcon name="edit" size={11} />
+                            </button>
+                            <button className="btn btn-ghost btn-xs" disabled={busy} title="Anular solicitud" style={{ color: '#EF6B5E' }} onClick={() => handleCancel(req)}>
+                              <JxIcon name="x" size={11} /> Anular
+                            </button>
+                          </>
                         )}
                       </td>
                     </tr>
@@ -596,6 +718,16 @@ function SolicitudesPage({ showToast }) {
             </table>
           </div>
         </div>
+      )}
+
+      {/* Modal de edición de solicitud propia (solicitante) */}
+      {editando && (
+        <EditarSolicitudModal
+          req={editando}
+          showToast={showToast}
+          onClose={() => setEditando(null)}
+          onSaved={() => { setEditando(null); reload(); }}
+        />
       )}
 
       {/* Modal de revisión (admin) */}
@@ -791,7 +923,10 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
         table,
         recordId: record.id,
         recordLabel: recordLabel || record.id,
-        proposedChanges: { [field]: { old: oldValue ?? null, new: parsedNew, label: fieldDef?.label || field, oldLabel: labelDe(oldValue), newLabel: labelDe(parsedNew) } },
+        // conOpciones marca que el valor salió de un SELECT: el editor de "Mis
+        // Solicitudes" no debe ofrecerlo como texto libre (rompería la convención,
+        // ej. unidad 'Par' → 'pares').
+        proposedChanges: { [field]: { old: oldValue ?? null, new: parsedNew, label: fieldDef?.label || field, oldLabel: labelDe(oldValue), newLabel: labelDe(parsedNew), ...(fieldDef?.options ? { conOpciones: true } : {}) } },
         reason: reason.trim(),
       });
       showToast('Solicitud enviada al admin', 'green');

@@ -1,12 +1,22 @@
 // ═══════════════════════════════════════════════════════════════════
-// JARVEX — Pantalla de INICIO (launcher, plano GENERAL).
+// JARVEX — Pantalla de INICIO (launcher por BLOQUES, plano GENERAL).
 //
-// Estilo Delphin: antes de entrar a trabajar, una pantalla que separa
-//  · DATOS GENERALES (global, sin obra): Empresas, Proveedores, Captura, etc.
-//  · OBRAS: entrás a una y trabajás SU workspace (almacén/partidas/conciliación…).
+// Rediseño (pedido de Gabriel, jul 2026): el Inicio anterior mezclaba
+// mosaicos generales + tarjetas de obra + "Tu trabajo en" y se sentía
+// desordenado. Ahora:
+//  · OBRA DE TRABAJO: un selector arriba fija la obra activa (los bloques
+//    por-obra operan sobre ella). El cambio rápido del header sigue vivo.
+//  · BLOQUES temáticos (Almacén, Logística, Gestión de Obra, Contabilidad…)
+//    que derivan a las secciones. Un bloque puede repetir secciones de otro
+//    (ej. EPPs vive en Almacén y en SSOMA). Cada bloque muestra SOLO las
+//    secciones que el rol puede ver (__canSeeSidebarItem); bloque vacío no
+//    se muestra.
+//  · Bloques "por obra" vs "generales" (Contabilidad, Reportes, IA, Empresas
+//    y Proveedores, Solicitudes, Usuarios y Configuración son cross-obra).
 //
-// Usa globales: window.JxIcon, window.__useAuth, window.__hooks.useObras,
-// window.__canSeeSidebarItem. Se registra como window.InicioPage.
+// Usa globales: window.JxIcon, window.__useAuth, window.NAV,
+// window.__canSeeSidebarItem, window.__get/setObraActivaId.
+// Se registra como window.InicioPage.
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
 import { cargarObrasAsignadas } from "../lib/obras-asignadas.js";
@@ -20,75 +30,143 @@ const fmtSk = (n) => {
   return 'S/ ' + Math.round(v);
 };
 
-// Mosaicos del plano GENERAL (global, sin obra). Cada uno se muestra solo si el
-// rol puede verlo (__canSeeSidebarItem). Empresas se FUSIONÓ en Contabilidad (era
-// redundante: ambos llevan al área contable, donde el sidebar ya tiene Empresas).
-const TILES = [
-  { id: 'cont-dashboard',     label: 'Contabilidad',      icon: 'dollar',   desc: 'Empresas, movimientos, balance, libros, SUNAT' },
-  { id: 'captura-magica',     label: 'Captura Mágica',    icon: 'upload',   desc: 'Subí comprobantes y routealos a su obra' },
-  { id: 'proveedores',        label: 'Proveedores',       icon: 'truck',    desc: 'Proveedores y distribuidoras (global)' },
-  { id: 'dashboard-ejecutivo',label: 'Dirección',         icon: 'dashboard',desc: 'Dashboard ejecutivo, KPIs, alertas' },
-  { id: 'reportes',           label: 'Reportes',          icon: 'chart',    desc: 'Reportes generales' },
-  { id: 'obras',              label: 'Obras / Proyectos', icon: 'building', desc: 'Crear y administrar obras' },
-  { id: 'usuarios',           label: 'Usuarios y Roles',  icon: 'user',     desc: 'Usuarios, roles y permisos' },
-  { id: 'configuracion',      label: 'Configuración',     icon: 'settings', desc: 'Ajustes del sistema' },
+// ── BLOQUES del Inicio ──────────────────────────────────────────────
+// items = ids de página (labels/íconos salen del menú real window.NAV — una
+// sola fuente de verdad; si una página se renombra, acá se actualiza sola).
+// tipo 'obra' = opera sobre la obra de trabajo elegida; 'general' = cross-obra.
+const BLOQUES = [
+  {
+    id: 'almacen', titulo: 'Almacén', icon: 'package', tipo: 'obra', color: '#F2B705',
+    desc: 'Inventarios, movimientos, ubicaciones y evidencias',
+    items: ['materiales', 'mov-materiales', 'herramientas', 'mov-herramientas', 'epps-inventario', 'epp',
+      'insumos-emergencia', 'insumos-persona', 'ubicaciones', 'movimientos-insumos', 'caja-chica',
+      'evidencias', 'plantillas'],
+  },
+  {
+    id: 'logistica', titulo: 'Logística', icon: 'truck', tipo: 'obra', color: '#3498DB',
+    desc: 'Solicitudes de materiales, requisiciones, órdenes y recepciones',
+    items: ['solicitud-residente', 'requisiciones', 'ordenes-compra', 'compras-pendientes'],
+  },
+  {
+    id: 'gestion-obra', titulo: 'Gestión de Obra', icon: 'hardHat', tipo: 'obra', color: '#2ECC71',
+    desc: 'Presupuesto, partidas, avance, costos, maquinaria e ingeniería',
+    items: ['obras', 'dashboard-gestion', 'importar', 'partidas', 'insumos', 'control-consumo', 'versiones',
+      'cronograma', 'avance', 'aprobaciones-reporte', 'rendimiento-ingenieros', 'comparativo', 'costos',
+      'valorizaciones', 'incidencias', 'activos-pesados', 'mantenimiento-programado',
+      'dashboard-tecnico', 'mis-partidas', 'cronograma-frente', 'salidas-frente', 'reporte-diario',
+      'mis-reportes', 'borradores-reporte', 'plan-real', 'emitir-alerta'],
+  },
+  {
+    id: 'personal', titulo: 'Personal y Subcontratos', icon: 'users', tipo: 'obra', color: '#9B59B6',
+    desc: 'RRHH, asistencia, planillas y subcontratos',
+    items: ['personal', 'frentes', 'asistencia', 'personal-contratos', 'planillas', 'cts', 'gratificaciones',
+      'plame', 'subcontratistas', 'subcontratos', 'subcontrato-valorizaciones'],
+  },
+  {
+    id: 'ssoma', titulo: 'SSOMA / Seguridad', icon: 'shield', tipo: 'obra', color: '#E67E22',
+    desc: 'Charlas, IPERC, inspecciones, capacitaciones y EPPs',
+    items: ['charlas-seguridad', 'iperc', 'inspecciones-seguridad', 'capacitaciones', 'epps-inventario',
+      'epp', 'insumos-persona', 'insumos-emergencia'],
+  },
+  {
+    id: 'contabilidad', titulo: 'Contabilidad', icon: 'dollar', tipo: 'general', color: '#F2B705',
+    desc: 'Empresas del grupo, movimientos, conciliación, tesorería y SUNAT',
+    items: ['cont-dashboard', 'movimientos-contables', 'conciliacion-insumos', 'guias-remision', 'pagos',
+      'compras-categoria', 'ordenes-intercompany', 'intercompany', 'trazabilidad', 'consolidado',
+      'cuentas-bancarias', 'flujo-caja', 'flujo-proyectado', 'plan-cuentas', 'libro-diario',
+      'balance-general', 'estado-resultados', 'comprobantes', 'libros-electronicos', 'config-sunat',
+      'comparativo-periodos'],
+  },
+  {
+    id: 'reportes', titulo: 'Reportes y Dashboards', icon: 'chart', tipo: 'general', color: '#3498DB',
+    desc: 'Visión ejecutiva, KPIs, cumplimiento y alertas',
+    items: ['dashboard', 'reportes', 'dashboard-ejecutivo', 'kpis-obra', 'cumplimiento-cronograma', 'alertas'],
+  },
+  {
+    id: 'ia', titulo: 'Herramientas IA', icon: 'upload', tipo: 'general', color: '#2ECC71',
+    desc: 'Captura Mágica de comprobantes y búsqueda global',
+    items: ['captura-magica', 'busqueda'],
+  },
+  {
+    id: 'empresas-prov', titulo: 'Empresas y Proveedores', icon: 'building', tipo: 'general', color: '#9B59B6',
+    desc: 'Entidades del grupo y proveedores (global)',
+    items: ['empresas', 'proveedores'],
+  },
+  {
+    id: 'solicitudes-blq', titulo: 'Solicitudes', icon: 'bell', tipo: 'general', color: '#E67E22',
+    desc: 'Tus solicitudes de cambio y conflictos de sync',
+    items: ['solicitudes', 'conflictos'],
+  },
+  {
+    id: 'usuarios-blq', titulo: 'Usuarios y Roles', icon: 'user', tipo: 'general', color: '#EF6B5E',
+    desc: 'Cuentas, permisos y auditoría',
+    items: ['usuarios', 'roles', 'audit-log'],
+  },
+  {
+    id: 'config-blq', titulo: 'Configuración', icon: 'settings', tipo: 'general', color: '#95A5A6',
+    desc: 'Ajustes del sistema',
+    items: ['configuracion'],
+  },
 ];
 
-// Accesos rápidos POR ROL dentro de cada obra (páginas de plano OBRA). El almacén,
-// las partidas, etc. son por-obra → cada rol ve su entrada en la tarjeta de la obra,
-// que lo lleva directo a su trabajo en ESA obra. Se filtran por __canSeeSidebarItem.
-// [label, page, icono]. El ícono hace los chips más visibles como accesos reales
-// (antes eran píldoras sutiles que pasaban desapercibidas). El admin/gerente/jefe
-// de compras ahora tienen ALMACÉN directo (materiales y herramientas) sin tener
-// que entrar al workspace y navegar las secciones.
-const ACCESOS_OBRA = {
-  admin:               [['Gestión', 'dashboard-gestion', 'dashboard'], ['Materiales', 'mov-materiales', 'package'], ['Herramientas', 'mov-herramientas', 'tool'], ['Contabilidad', 'movimientos-contables', 'dollar'], ['Conciliación', 'conciliacion-insumos', 'compare'], ['Avance', 'avance', 'chart']],
-  gerente:             [['Gestión', 'dashboard-gestion', 'dashboard'], ['Almacén', 'mov-materiales', 'package'], ['Avance', 'avance', 'chart'], ['Contabilidad', 'movimientos-contables', 'dollar']],
-  ingeniero_residente: [['Avance', 'avance', 'chart'], ['Partidas', 'partidas', 'clipboard'], ['Aprobaciones', 'aprobaciones-reporte', 'checkCircle']],
-  ingeniero:           [['Mis Partidas', 'mis-partidas', 'clipboard'], ['Reporte Diario', 'reporte-diario', 'chart'], ['Vinculación', 'salidas-frente', 'compare']],
-  supervisor:          [['Asistencia', 'asistencia', 'clipboard'], ['Avance', 'avance', 'chart'], ['Almacén', 'mov-materiales', 'package']],
-  almacenero:          [['Materiales', 'mov-materiales', 'package'], ['Herramientas', 'mov-herramientas', 'tool'], ['Compras pend.', 'compras-pendientes', 'clipboard']],
-  asistente_admin:     [['Gestión', 'dashboard-gestion', 'dashboard'], ['Partidas', 'partidas', 'clipboard'], ['Personal', 'personal', 'clipboard']],
-  contador:            [['Movimientos', 'movimientos-contables', 'dollar'], ['Conciliación', 'conciliacion-insumos', 'compare'], ['Avance', 'avance', 'chart']],
-  ayudante_contador:   [['Movimientos', 'movimientos-contables', 'dollar'], ['Conciliación', 'conciliacion-insumos', 'compare']],
-  tesorero:            [['Movimientos', 'movimientos-contables', 'dollar']],
-  jefe_compras:        [['Requisiciones', 'requisiciones', 'clipboard'], ['Órdenes de Compra', 'ordenes-compra', 'truck'], ['Compras pend.', 'compras-pendientes', 'clipboard'], ['Almacén', 'mov-materiales', 'package']],
-  rrhh:                [['Personal', 'personal', 'clipboard'], ['Asistencia', 'asistencia', 'clipboard'], ['Planillas', 'planillas', 'dollar']],
-  prevencionista:      [['IPERC', 'iperc', 'clipboard'], ['Charlas', 'charlas-seguridad', 'clipboard'], ['Inspecciones', 'inspecciones-seguridad', 'checkCircle']],
-  maestro_obra:        [['Avance', 'avance', 'chart'], ['Asistencia', 'asistencia', 'clipboard']],
-  solo_lectura:        [['Gestión', 'dashboard-gestion', 'dashboard'], ['Avance', 'avance', 'chart']],
-};
+// Cuántas secciones muestra un bloque antes del "+N más".
+const MAX_VISIBLES = 7;
 
-// Secciones de OBRA que el rol puede ver, derivadas del MENÚ REAL (window.NAV
-// del sidebar) — no de una lista a mano que se desactualiza. Devuelve
-// [{ section, items: [{id,label,icon}] }] solo con secciones no vacías.
-// Esto es lo que hace que el Inicio muestre TODO el trabajo del rol (antes
-// quedaba escondido dentro del workspace y solo asomaban 3-4 chips).
-function seccionesObraDelRol(canSee) {
-  const nav = window.NAV || [];
-  const out = [];
-  let cur = null;
-  for (const it of nav) {
-    if (it.section) { cur = { section: it.section, items: [] }; out.push(cur); continue; }
-    if (!cur || !it.id) continue;
-    if ((it.plano || planoDe(it.id)) !== 'obra') continue;   // solo trabajo POR OBRA
-    if (!canSee(it.id)) continue;
-    cur.items.push({ id: it.id, label: String(it.label || it.id).replace(/^✨\s*/, ''), icon: it.icon });
-  }
-  return out.filter(s => s.items.length > 0);
+// ── Tarjeta de un bloque ────────────────────────────────────────────
+function BloqueCard({ blq, items, onAbrir }) {
+  const [verTodo, setVerTodo] = uSI(false);
+  const visibles = verTodo ? items : items.slice(0, MAX_VISIBLES);
+  const ocultos = items.length - MAX_VISIBLES;
+  return (
+    <div className="card card-p" style={{ border: '1px solid var(--bd)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ width: 36, height: 36, borderRadius: 9, background: `${blq.color}1f`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <Icon name={blq.icon} size={17} color={blq.color} />
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--tp)' }}>{blq.titulo}</div>
+          <div style={{ fontSize: 10.5, color: 'var(--tm)', lineHeight: 1.3 }}>{blq.desc}</div>
+        </div>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+        {visibles.map(it => (
+          <button key={it.id} onClick={() => onAbrir(it.id)} title={it.label}
+            style={{ display: 'flex', alignItems: 'center', gap: 7, background: 'none', border: 'none', cursor: 'pointer', padding: '4px 6px', borderRadius: 6, textAlign: 'left', color: 'var(--ts)', fontSize: 12 }}
+            onMouseEnter={e => { e.currentTarget.style.background = `${blq.color}14`; e.currentTarget.style.color = 'var(--tp)'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--ts)'; }}>
+            <Icon name={it.icon} size={13} color={blq.color} />
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.label}</span>
+          </button>
+        ))}
+        {ocultos > 0 && (
+          <button onClick={() => setVerTodo(v => !v)}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px 6px', textAlign: 'left', color: 'var(--tm)', fontSize: 11.5, fontWeight: 600 }}>
+            {verTodo ? '▴ Ver menos' : `+${ocultos} más ▾`}
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function InicioPage({ onNav, onEnterObra }) {
-  // ── PENDIENTES DE ATENCIÓN (acceso directo desde el Inicio — pedido de
-  // Gabriel: solicitudes de cambio y conflictos de sync sin bucear el menú). ──
-  const [atencion, setAtencion] = React.useState({ solicitudes: 0, conflictos: 0, failed: 0 });
-  React.useEffect(() => {
+  const auth = window.__useAuth ? window.__useAuth() : null;
+  const rol = auth?.profile?.rol;
+  const { data: obras } = window.__hooks?.useObras?.() || { data: [] };
+  // Deny-by-default (igual que el route-guard puedeVerPagina): un profile sin
+  // rol NO ve los bloques llenos para después chocar con "Sin acceso" en cada
+  // click — __canSeeSidebarItem ya deja pasar los utilities (dashboard/búsqueda).
+  const canSee = (id) => rol === 'admin' ? true : (window.__canSeeSidebarItem?.(rol, id) ?? false);
+
+  // ── PENDIENTES DE ATENCIÓN (solicitudes / conflictos / sync fallido) ──
+  // countPending consulta el server: con el RLS estricto, para un no-revisor
+  // cuenta SUS solicitudes pendientes (la almacenera ve las suyas).
+  const [atencion, setAtencion] = uSI({ solicitudes: 0, conflictos: 0, failed: 0 });
+  uEI(() => {
     let cancel = false;
     const load = async () => {
       try {
         const [sol, conf, failed] = await Promise.all([
-          // Las solicitudes viven en el server (countPending consulta Supabase;
-          // devuelve 0 offline — el badge del sidebar cubre ese caso).
           window.__changeRequests?.countPending ? window.__changeRequests.countPending().catch(() => 0) : 0,
           window.__db.sync_conflicts.where('estado').equals('pendiente').count().catch(() => 0),
           import('../sync/SyncEngine').then(m => m.getFailedCount()).catch(() => 0),
@@ -102,23 +180,8 @@ function InicioPage({ onNav, onEnterObra }) {
     return () => { cancel = true; window.removeEventListener('jx_data_changed', on); };
   }, []);
 
-  const auth = window.__useAuth ? window.__useAuth() : null;
-  const rol = auth?.profile?.rol;
-  const { data: obras } = window.__hooks?.useObras?.() || { data: [] };
-
-  const canSee = (id) => (!rol || rol === 'admin') ? true : (window.__canSeeSidebarItem?.(rol, id) ?? true);
-  const tiles = uMI(() => TILES.filter(t => canSee(t.id)), [rol]);
-  // Accesos rápidos por rol DENTRO de cada obra (máx 4, solo los permitidos).
-  const accesosObra = uMI(() => (ACCESOS_OBRA[rol] || []).filter(([, p]) => canSee(p)).slice(0, 6), [rol]);
-  // Mapa COMPLETO del trabajo del rol en una obra (derivado del menú real).
-  const seccionesObra = uMI(() => seccionesObraDelRol(canSee), [rol]);
-  // Obra cuyo panel de secciones está abierto: null = ninguno aún (se auto-abre
-  // si hay UNA sola obra), 'none' = cerrado a propósito por el usuario.
-  const [obraExpandida, setObraExpandida] = uSI(null);
-
-  // Obras asignadas (null = ve todas). Y avance físico + facturado por obra para
-  // las tarjetas (partidas + conciliacion_vinculos — tablas livianas; NO cargamos
-  // insumos_partida acá por ser pesada).
+  // Obras asignadas (null = ve todas) + avance físico/facturado por obra
+  // (partidas + conciliacion_vinculos — livianas; insumos_partida NO se carga acá).
   const [misObrasIds, setMisObrasIds] = uSI(null);
   const [avancePorObra, setAvancePorObra] = uSI(() => new Map());
   uEI(() => {
@@ -134,7 +197,6 @@ function InicioPage({ onNav, onEnterObra }) {
           window.__db.partidas.filter(p => !p.deleted_at && p.codigo_delfin).toArray(),
           window.__db.conciliacion_vinculos.filter(v => !v.deleted_at).toArray(),
         ]);
-        // Facturado por obra (Σ cantidad × precio de los vínculos del contador).
         const fact = new Map();
         for (const v of vinculos) fact.set(v.obra_id, (fact.get(v.obra_id) || 0) + (Number(v.cantidad) || 0) * (Number(v.precio_unitario) || 0));
         // Físico por obra (avance ponderado por costo, solo HOJAS).
@@ -148,7 +210,6 @@ function InicioPage({ onNav, onEnterObra }) {
           for (const p of ps) { if (folders.has(String(p.codigo_delfin).trim())) continue; const pres = Number(p.costo_total_presupuestado) || 0; sumPres += pres; sumAv += (Number(p.porcentaje_avance) || 0) * pres; }
           m.set(oid, { fisico: sumPres > 0 ? sumAv / sumPres : 0, facturado: fact.get(oid) || 0 });
         }
-        // Obras con facturado pero sin partidas igual muestran el facturado.
         for (const [oid, f] of fact) if (!m.has(oid)) m.set(oid, { fisico: 0, facturado: f });
         if (!cancel) setAvancePorObra(m);
       } catch { /* conciliacion_vinculos puede no existir en Dexie viejos */ }
@@ -163,113 +224,129 @@ function InicioPage({ onNav, onEnterObra }) {
   const obrasVivas = uMI(() => (obras || []).filter(o => !o.deleted_at && (!misObrasIds || misObrasIds.has(o.id)))
     .sort((a, b) => String(a.nombre_obra || '').localeCompare(String(b.nombre_obra || ''))), [obras, misObrasIds]);
 
-  // Con UNA sola obra, el panel de secciones arranca abierto (el usuario ve todo
-  // su trabajo de entrada — caso típico de almacenero/ingeniero). 'none' (cerrado
-  // a propósito) se respeta: solo se auto-abre desde el estado inicial null.
+  // ── OBRA DE TRABAJO (selector). Arranca en la obra activa persistida; si no
+  // está entre las visibles, cae a la primera. Elegir acá fija la obra activa
+  // global (misma que el cambio rápido del header en las secciones).
+  const [obraSelId, setObraSelId] = uSI(() => window.__getObraActivaId?.() || null);
+  const obraSel = uMI(() => obrasVivas.find(o => o.id === obraSelId) || obrasVivas[0] || null, [obrasVivas, obraSelId]);
+  const elegirObra = (id) => {
+    setObraSelId(id);
+    if (window.__setObraActivaId) window.__setObraActivaId(id);
+  };
+  // Si el id persistido no está entre las obras visibles (obra borrada o ya no
+  // asignada), el display cae a la primera — alinear el GLOBAL con lo que la
+  // pantalla anuncia: si no, los flujos que resuelven la obra por localStorage
+  // (ej. Captura Mágica) operarían sobre una obra distinta a la mostrada.
   uEI(() => {
-    if (obrasVivas.length === 1) setObraExpandida(prev => prev === null ? obrasVivas[0].id : prev);
-  }, [obrasVivas]);
+    if (!obraSel) return;
+    const stored = window.__getObraActivaId?.();
+    if (stored !== obraSel.id) elegirObra(obraSel.id);
+  }, [obraSel?.id]);
+
+  // Labels/íconos desde el menú real (window.NAV): una sola fuente de verdad.
+  const navInfo = uMI(() => {
+    const m = new Map();
+    for (const it of (window.NAV || [])) {
+      if (it.id) m.set(it.id, { label: String(it.label || it.id).replace(/^✨\s*/, ''), icon: it.icon });
+    }
+    return m;
+  }, []);
+
+  // Bloques con sus secciones permitidas para el rol (bloque vacío no se muestra).
+  const bloques = uMI(() => BLOQUES.map(b => ({
+    ...b,
+    items: b.items.filter(id => navInfo.has(id) && canSee(id))
+      .map(id => ({ id, ...navInfo.get(id) })),
+  })).filter(b => b.items.length > 0), [rol, navInfo]);
+  const bloquesObra = bloques.filter(b => b.tipo === 'obra');
+  const bloquesGeneral = bloques.filter(b => b.tipo === 'general');
+
+  // Abrir una sección: las de plano OBRA fijan la obra de trabajo y entran;
+  // las generales navegan directo. 'movimientos-contables' es DUAL (obra y
+  // general): desde el bloque Contabilidad se abre su vista general
+  // ("todas / por obra"), igual que desde el sidebar del área contable.
+  const abrir = (pageId) => {
+    if (pageId === 'movimientos-contables') { onNav?.(pageId, 'general'); return; }
+    if (planoDe(pageId) === 'obra') {
+      if (!obraSel) { window.__showToast?.('Primero elegí una obra de trabajo', 'amber'); return; }
+      onEnterObra?.(obraSel.id, pageId);
+    } else {
+      onNav?.(pageId);
+    }
+  };
 
   const nombreUsuario = `${auth?.profile?.nombres || ''} ${auth?.profile?.apellidos || ''}`.trim() || auth?.profile?.email || '';
+  const av = obraSel ? avancePorObra.get(obraSel.id) : null;
+  const esRevisorSol = rol === 'admin' || rol === 'contador';
+  // Con la MISMA función del route-guard (asistente_admin pasa la matriz de
+  // 'Conflictos Sync' pero su allowlist exclusiva no incluye la página →
+  // chip clickeable que moría en "Sin acceso").
+  const puedeConflictos = canSee('conflictos');
 
   return (
     <div className="page-wrap" style={{ maxWidth: 1100, margin: '0 auto' }}>
       <div className="pg-hd">
         <div className="pg-title">Inicio{nombreUsuario ? ` · ${nombreUsuario}` : ''}</div>
-        <div className="pg-sub">{tiles.length > 0
-          ? 'Elegí una sección general, o abrí "Secciones" en una obra para ver todo tu trabajo en ella.'
-          : 'Este es tu espacio: abajo tenés todas tus secciones de trabajo en la obra — entrá con un clic.'}</div>
+        <div className="pg-sub">Elegí tu obra de trabajo y entrá a las secciones desde los bloques.</div>
       </div>
 
-      {/* ── DATOS GENERALES (mosaicos) ── */}
-      {tiles.length > 0 && (<>
-        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)', margin: '6px 0 10px' }}>DATOS GENERALES</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: 12, marginBottom: 26 }}>
-          {tiles.map(t => (
-            <button key={t.id} className="card card-p" onClick={() => onNav?.(t.id)}
-              style={{ textAlign: 'left', cursor: 'pointer', border: '1px solid var(--bd)', display: 'flex', flexDirection: 'column', gap: 8, minHeight: 96 }}>
-              <div style={{ width: 38, height: 38, borderRadius: 9, background: 'rgba(242,183,5,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <Icon name={t.icon} size={18} color="var(--amber)" />
-              </div>
-              <div>
-                <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--tp)' }}>{t.label}</div>
-                <div style={{ fontSize: 11, color: 'var(--tm)', lineHeight: 1.35, marginTop: 2 }}>{t.desc}</div>
-              </div>
-            </button>
-          ))}
-        </div>
-      </>)}
-
-      {/* ── OBRAS ── */}
+      {/* ── OBRA DE TRABAJO ── */}
       <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)', margin: '6px 0 10px' }}>
-        OBRAS <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>· entrá a una para trabajar</span>
+        OBRA DE TRABAJO <span style={{ fontWeight: 400, letterSpacing: 0 }}>· los bloques "de obra" trabajan sobre ella</span>
       </div>
       {obrasVivas.length === 0 ? (
-        <div className="card card-p empty-state"><Icon name="building" size={36} color="var(--tm)" /><p>No hay obras todavía. Creá una desde "Obras / Proyectos".</p></div>
+        <div className="card card-p" style={{ marginBottom: 22, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <Icon name="building" size={22} color="var(--tm)" />
+          <div style={{ flex: 1, minWidth: 200, fontSize: 12.5, color: 'var(--ts)' }}>No hay obras todavía (o no tenés obras asignadas).</div>
+          {canSee('obras') && (
+            <button className="btn btn-amber btn-sm" onClick={() => onNav?.('obras')}>
+              <Icon name="plus" size={13} /> Crear obra
+            </button>
+          )}
+        </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
-          {obrasVivas.map(o => {
-            const av = avancePorObra.get(o.id);
-            return (
-            <div key={o.id} className="card card-p" style={{ border: '1px solid var(--bd)', display: 'flex', flexDirection: 'column', gap: 8, minHeight: 78 }}>
-              {/* Cabecera clickeable: entra al workspace (home del rol) */}
-              <div onClick={() => onEnterObra?.(o.id)} role="button" title="Entrar al workspace de esta obra"
-                   style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
-                <div style={{ width: 36, height: 36, borderRadius: 9, background: 'rgba(52,152,219,0.14)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                  <Icon name="building" size={17} color="#3498DB" />
-                </div>
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--tp)', lineHeight: 1.3 }}>{o.nombre_obra || '(obra sin nombre)'}</div>
-                  {av && (
-                    <div style={{ display: 'flex', gap: 12, marginTop: 6, fontSize: 11 }}>
-                      <span style={{ color: 'var(--tm)' }}>Físico <strong style={{ color: '#3498DB' }}>{av.fisico.toFixed(0)}%</strong></span>
-                      <span style={{ color: 'var(--tm)' }}>Facturado <strong style={{ color: 'var(--amber)' }}>{fmtSk(av.facturado)}</strong></span>
-                    </div>
-                  )}
-                </div>
+        <div className="card card-p" style={{ marginBottom: 22, border: '1px solid var(--bd)', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+          <div style={{ width: 38, height: 38, borderRadius: 9, background: 'rgba(52,152,219,0.14)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <Icon name="building" size={18} color="#3498DB" />
+          </div>
+          <div style={{ flex: 1, minWidth: 240 }}>
+            {obrasVivas.length === 1 ? (
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--tp)', lineHeight: 1.35 }}>{obraSel?.nombre_obra || '(obra sin nombre)'}</div>
+            ) : (
+              <select className="fi" value={obraSel?.id || ''} onChange={e => elegirObra(e.target.value)}
+                style={{ width: '100%', fontWeight: 600 }}>
+                {obrasVivas.map(o => <option key={o.id} value={o.id}>{o.nombre_obra || '(obra sin nombre)'}</option>)}
+              </select>
+            )}
+            {av && (
+              <div style={{ display: 'flex', gap: 14, marginTop: 6, fontSize: 11 }}>
+                <span style={{ color: 'var(--tm)' }}>Físico <strong style={{ color: '#3498DB' }}>{av.fisico.toFixed(0)}%</strong></span>
+                <span style={{ color: 'var(--tm)' }}>Facturado <strong style={{ color: 'var(--amber)' }}>{fmtSk(av.facturado)}</strong></span>
               </div>
-              {/* Accesos rápidos del rol DENTRO de esta obra (entran directo a la
-                  página, sin pasar por el workspace + navegar secciones) */}
-              {accesosObra.length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, paddingLeft: 46 }}>
-                  {accesosObra.map(([lbl, pg, ic]) => (
-                    <button key={pg} className="btn btn-ghost btn-xs" title={`${lbl} de esta obra`}
-                            onClick={() => onEnterObra?.(o.id, pg)}
-                            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px solid var(--bd)', fontSize: 10.5, padding: '3px 8px' }}>
-                      {ic && <Icon name={ic} size={11} color="var(--amber)" />}{lbl}
-                    </button>
-                  ))}
-                </div>
-              )}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 'auto', paddingLeft: 46 }}>
-                {seccionesObra.length > 0 && (
-                  <div onClick={() => setObraExpandida(prev => prev === o.id ? 'none' : o.id)} role="button"
-                       style={{ fontSize: 11, color: obraExpandida === o.id ? 'var(--tp)' : 'var(--ts)', display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontWeight: obraExpandida === o.id ? 700 : 400 }}>
-                    Secciones {obraExpandida === o.id ? '▴' : '▾'}
-                  </div>
-                )}
-                <div onClick={() => onEnterObra?.(o.id)} role="button"
-                     style={{ fontSize: 11, color: 'var(--amber)', display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
-                  Entrar al workspace <Icon name="chevR" size={12} color="var(--amber)" />
-                </div>
-              </div>
-            </div>
-            );
-          })}
+            )}
+          </div>
+          <button className="btn btn-ghost btn-sm" title="Abrir el workspace completo de esta obra (con su menú lateral)"
+            style={{ color: 'var(--amber)', border: '1px solid var(--bd)' }}
+            onClick={() => obraSel && onEnterObra?.(obraSel.id)}>
+            Entrar al workspace <Icon name="chevR" size={12} color="var(--amber)" />
+          </button>
         </div>
       )}
 
-      {/* ── PENDIENTES DE ATENCIÓN: chips con contador y salto directo. ── */}
+      {/* ── PENDIENTES DE ATENCIÓN ── */}
       {(() => {
-        const puedeSolicitudes = rol === 'admin' || (window.__hasPerm?.(rol, 'Solicitudes Cambio', 'r') ?? false);
-        const puedeConflictos = rol === 'admin' || (window.__hasPerm?.(rol, 'Conflictos Sync', 'r') ?? false);
         const chips = [];
-        if (puedeSolicitudes && atencion.solicitudes > 0) chips.push({ id: 'solicitudes', icon: '🔔', lbl: `${atencion.solicitudes} solicitud(es) de cambio por revisar`, color: 'var(--amber)' });
+        if (atencion.solicitudes > 0) chips.push({
+          id: 'solicitudes', icon: '🔔', color: 'var(--amber)',
+          lbl: esRevisorSol
+            ? `${atencion.solicitudes} solicitud(es) de cambio por revisar`
+            : `${atencion.solicitudes} solicitud(es) tuya(s) esperando respuesta`,
+        });
         if (puedeConflictos && atencion.conflictos > 0) chips.push({ id: 'conflictos', icon: '⚔️', lbl: `${atencion.conflictos} conflicto(s) de sync`, color: 'var(--red)' });
         if (atencion.failed > 0) chips.push({ id: null, icon: '🔴', lbl: `${atencion.failed} registro(s) sin subir — click en el badge de sync (arriba)`, color: 'var(--red)' });
         if (!chips.length) return null;
         return (
-          <div className="card card-p" style={{ marginTop: 16, border: '1px solid rgba(242,183,5,0.35)', display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div className="card card-p" style={{ marginBottom: 22, border: '1px solid rgba(242,183,5,0.35)', display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)' }}>PENDIENTES DE ATENCIÓN</div>
             {chips.map((c, i) => (
               <button key={i} className="btn btn-ghost btn-sm" style={{ color: c.color, cursor: c.id ? 'pointer' : 'default' }}
@@ -281,44 +358,26 @@ function InicioPage({ onNav, onEnterObra }) {
         );
       })()}
 
-      {/* ── TU TRABAJO EN LA OBRA (mapa completo de secciones del rol) ──
-          Derivado del menú real: muestra desde el Inicio TODO lo que el rol
-          puede hacer en la obra elegida — antes quedaba escondido dentro del
-          workspace. Con una sola obra se abre solo. */}
-      {(() => {
-        if (!obraExpandida || obraExpandida === 'none' || seccionesObra.length === 0) return null;
-        const o = obrasVivas.find(x => x.id === obraExpandida);
-        if (!o) return null;
-        return (
-          <div className="card card-p" style={{ marginTop: 16, border: '1px solid var(--bd)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
-              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)' }}>TU TRABAJO EN</div>
-              <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--tp)', flex: 1, minWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.nombre_obra}</div>
-              {obrasVivas.length > 1 && (
-                <button className="btn btn-ghost btn-xs" onClick={() => setObraExpandida('none')} title="Ocultar secciones">✕</button>
-              )}
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(215px, 1fr))', gap: '14px 18px' }}>
-              {seccionesObra.map(sec => (
-                <div key={sec.section}>
-                  <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.08em', color: 'var(--tm)', marginBottom: 6, textTransform: 'uppercase' }}>{sec.section}</div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    {sec.items.map(it => (
-                      <button key={it.id} onClick={() => onEnterObra?.(o.id, it.id)} title={`${it.label} · ${o.nombre_obra}`}
-                              style={{ display: 'flex', alignItems: 'center', gap: 7, background: 'none', border: 'none', cursor: 'pointer', padding: '4px 6px', borderRadius: 6, textAlign: 'left', color: 'var(--ts)', fontSize: 12 }}
-                              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(242,183,5,0.08)'; e.currentTarget.style.color = 'var(--tp)'; }}
-                              onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--ts)'; }}>
-                        <Icon name={it.icon} size={13} color="var(--amber)" />
-                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.label}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-      })()}
+      {/* ── BLOQUES DE OBRA ── */}
+      {bloquesObra.length > 0 && obrasVivas.length > 0 && (<>
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)', margin: '6px 0 10px', display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+          TRABAJO EN LA OBRA
+          {obraSel && <span style={{ fontWeight: 400, letterSpacing: 0, textTransform: 'none', color: 'var(--ts)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 520 }}>· {obraSel.nombre_obra}</span>}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: 12, marginBottom: 26 }}>
+          {bloquesObra.map(b => <BloqueCard key={b.id} blq={b} items={b.items} onAbrir={abrir} />)}
+        </div>
+      </>)}
+
+      {/* ── BLOQUES GENERALES ── */}
+      {bloquesGeneral.length > 0 && (<>
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)', margin: '6px 0 10px' }}>
+          GENERAL <span style={{ fontWeight: 400, letterSpacing: 0 }}>· cruzan todas las obras</span>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: 12 }}>
+          {bloquesGeneral.map(b => <BloqueCard key={b.id} blq={b} items={b.items} onAbrir={abrir} />)}
+        </div>
+      </>)}
     </div>
   );
 }

@@ -216,6 +216,34 @@ export async function rejectChangeRequest(requestId, comment) {
 }
 
 /**
+ * El solicitante EDITA su propia request pendiente (valor propuesto y/o motivo).
+ * RLS (mig 124) solo lo permite si es suya y sigue pendiente — el status no
+ * puede salir de pendiente/cancelada por este camino.
+ */
+export async function updateOwnChangeRequest(requestId, { proposedChanges, reason } = {}) {
+  const patch = {};
+  if (proposedChanges && Object.keys(proposedChanges).length > 0) patch.proposed_changes = proposedChanges;
+  if (reason != null) {
+    if (String(reason).trim().length < 10) throw new Error('El motivo debe tener al menos 10 caracteres');
+    patch.reason = String(reason).trim();
+  }
+  if (Object.keys(patch).length === 0) throw new Error('Nada que actualizar');
+
+  const { id: userId } = await getCurrentUser();
+  if (!userId || !navigator.onLine) throw new Error('Necesitás conexión para editar una solicitud');
+  const { data, error } = await supabase
+    .from('change_requests')
+    .update(patch)
+    .eq('id', requestId)
+    .eq('requester_id', userId)
+    .eq('status', 'pendiente')
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+/**
  * El solicitante cancela su propia request pendiente.
  */
 export async function cancelChangeRequest(requestId) {
@@ -246,9 +274,18 @@ export async function syncPendingChangeRequests() {
   }
   if (!pending.length) return 0;
 
+  // RLS (mig 125): el INSERT exige requester_id = auth.uid(). La cola es por
+  // DEVICE (Dexie compartido), así que en una PC compartida solo se suben las
+  // filas del usuario logueado AHORA; las de otro usuario esperan a que él
+  // vuelva a loguearse acá (antes el insert por rol las subía; hoy fallaría
+  // 42501 en silencio en cada sync).
+  let uid = null;
+  try { const { data } = await supabase.auth.getUser(); uid = data?.user?.id || null; } catch {}
+  if (!uid) return 0;
+
   let synced = 0;
   for (const row of pending) {
-    if (!row.requester_id) continue;
+    if (!row.requester_id || row.requester_id !== uid) continue;
     const payload = {
       requester_id: row.requester_id,
       requester_email: row.requester_email,
