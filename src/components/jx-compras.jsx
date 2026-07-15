@@ -777,7 +777,7 @@ function OrdenesCompraPage({ showToast }) {
       for (const i of itemsValidos) {
         const id = window.__newId();
         const c = Number(i.cantidad); const p = Number(i.precio_unitario);
-        await window.__db.oc_items.add({ id, orden_compra_id: ocId, tipo_insumo: i.tipo_insumo || 'material', insumo_id: i.insumo_id || i.material_id || null, material_id: i.material_id || null, nombre: i.nombre || i.nombre_libre || null, nombre_libre: i.material_id ? null : (i.nombre || i.nombre_libre || null), unidad: i.unidad || null, cantidad: c, cantidad_recibida: i.cantidad_recibida || 0, precio_unitario: p, subtotal: +(c*p).toFixed(2), created_at: now, updated_at: now, version: 1, sync_status: 'pending_create', last_synced_at: null, idempotency_key: `${userId}_oc_item_${id}` });
+        await window.__db.oc_items.add({ id, orden_compra_id: ocId, tipo_insumo: i.tipo_insumo || 'material', insumo_id: i.insumo_id || i.material_id || null, insumo_pendiente_id: i.insumo_pendiente_id || null, requisicion_item_id: i.requisicion_item_id || null, material_id: i.material_id || null, nombre: i.nombre || i.nombre_libre || null, nombre_libre: i.material_id ? null : (i.nombre || i.nombre_libre || null), unidad: i.unidad || null, cantidad: c, cantidad_recibida: i.cantidad_recibida || 0, precio_unitario: p, subtotal: +(c*p).toFixed(2), created_at: now, updated_at: now, version: 1, sync_status: 'pending_create', last_synced_at: null, idempotency_key: `${userId}_oc_item_${id}` });
       }
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'ordenes_compra' } })); window.dispatchEvent(new Event('online')); } catch {}
       showToast(editing ? 'OC actualizada' : `OC ${form.codigo} creada por ${fmtS(totales.total)}`, 'green');
@@ -827,9 +827,11 @@ function OrdenesCompraPage({ showToast }) {
       </div>
 
       <div style={{ display:'flex', gap:6, marginBottom:10, flexWrap:'wrap' }}>
-        <button className={`btn btn-sm ${vista === 'aceptadas' ? 'btn-amber' : 'btn-ghost'}`} onClick={()=>setVista('aceptadas')}>Aceptadas ({conteoActivas})</button>
-        <button className={`btn btn-sm ${vista === 'anuladas' ? 'btn-amber' : 'btn-ghost'}`} onClick={()=>setVista('anuladas')}>Anuladas ({conteoAnuladas})</button>
-        <button className={`btn btn-sm ${vista === 'compradas' ? 'btn-amber' : 'btn-ghost'}`} onClick={()=>setVista('compradas')}>✓ Compradas</button>
+        {/* Al cambiar de pestaña, reseteo el filtro de estado: si no, un filtro
+            (ej. 'enviada') dejaba la pestaña Anuladas vacía sin explicación. */}
+        <button className={`btn btn-sm ${vista === 'aceptadas' ? 'btn-amber' : 'btn-ghost'}`} onClick={()=>{ setVista('aceptadas'); setFiltroEstado('todos'); }}>Aceptadas ({conteoActivas})</button>
+        <button className={`btn btn-sm ${vista === 'anuladas' ? 'btn-amber' : 'btn-ghost'}`} onClick={()=>{ setVista('anuladas'); setFiltroEstado('todos'); }}>Anuladas ({conteoAnuladas})</button>
+        <button className={`btn btn-sm ${vista === 'compradas' ? 'btn-amber' : 'btn-ghost'}`} onClick={()=>{ setVista('compradas'); setFiltroEstado('todos'); }}>✓ Compradas</button>
       </div>
 
       <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', marginBottom:14 }}>

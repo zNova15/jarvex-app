@@ -351,6 +351,7 @@ function Header({ page, plano = 'obra', onInicio, onToggleSidebar, onLogout, pro
     'ordenes-intercompany':'Órdenes Intercompany',
     'captura-magica':'✨ Captura Mágica',
     'cuentas-bancarias':'Cuentas Bancarias', 'flujo-caja':'Flujo de Caja / Cronograma de Pagos',
+    'solicitud-residente':'Solicitud de Insumos', 'compras-pendientes':'Vinculación de Compras',
     requisiciones:'Requisiciones', 'ordenes-compra':'Órdenes de Compra',
     valorizaciones:'Valorizaciones', 'activos-pesados':'Activos Pesados / Maquinaria',
     'charlas-seguridad':'Charlas de Seguridad', iperc:'IPERC — Matriz de Riesgos',
