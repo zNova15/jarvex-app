@@ -1178,6 +1178,11 @@ window.__canSeeSidebarItem = function(rol, itemId) {
   // deja leer — con la matriz de Planillas, rrhh/solo_lectura entraban a una
   // página que el server les devuelve vacía.
   if (itemId === 'pagos') return ['admin', 'contador', 'gerente', 'tesorero', 'ayudante_contador'].includes(rol);
+  // REPORTES: la página muestra familias (Movimientos/Avance/Contable) gateadas
+  // cada una por su módulo. Sin acceso a NINGUNA familia, la página queda vacía
+  // → gateamos la entrada por tener al menos una (evita el item/tile que lleva a
+  // una pantalla "sin reportes asignados" para rrhh/prevencionista).
+  if (itemId === 'reportes') return rol === 'admin' || ['Mov. Materiales', 'Avance', 'Movs. Contables'].some(m => window.__hasPerm?.(rol, m, 'r'));
   // Órdenes de Compra: SOLO usuarios delegados (con write en el módulo). Por
   // defecto solo admin — la almacenera crea solicitudes pero no ve las OCs; ve
   // el resultado (aceptada/rechazada) en Requisiciones → Mis Solicitudes.
