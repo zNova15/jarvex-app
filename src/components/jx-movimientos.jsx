@@ -4,6 +4,7 @@ import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { aplicarDelta } from "../lib/stock-ubicaciones.js";
 import { eliminarMovimiento } from "../lib/eliminar-movimiento.js";
 import { stockTrasEditar, dejaNegativo } from "../lib/stock-guard.js";
+import { hoyLocal, horaLocal } from "../lib/fecha.js";
 import { exportarDataset } from "../lib/export-historico.js";
 import { FusionEntidadModal } from "./jx-fusion-entidad.jsx";
 const { useState: uSM, useMemo: uMM, useEffect: uEM } = React;
@@ -1244,7 +1245,7 @@ function MovMaterialesPage({ showToast }) {
     });
   }, [sorted, q, tipo, soloSinFrente, materiales, personal, ubicNombre, matsByIdAll, matsServer]);
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = hoyLocal();
   const monthStart = today.slice(0, 7);
 
   const stats = uMM(() => ({
@@ -1298,9 +1299,8 @@ function MovMaterialesPage({ showToast }) {
 
     const tipoInv = invertirTipoMaterial(original.tipo_movimiento);
     // Crear movimiento de reverso (positivo, mismo cantidad pero tipo invertido)
-    const nowIso = new Date().toISOString();
-    const fecha = nowIso.slice(0, 10);
-    const hora = nowIso.slice(11, 16);
+    const fecha = hoyLocal();
+    const hora = horaLocal();
     const reverso = await movHook.create({
       obra_id: original.obra_id,
       material_id: original.material_id,
@@ -1534,11 +1534,16 @@ function MovMaterialesPage({ showToast }) {
                 const esReverso = !!m.reverses_id;
                 const reversoOriginalShort = esReverso ? String(m.reverses_id).slice(0, 6) : '';
                 const puedeReversar = isAdmin && !yaReversado && !esReverso;
+                const alm = almacenesDe(m);
                 return (
                   <tr key={m.id} style={{ opacity: yaReversado ? 0.55 : 1 }}>
                     <td className="col-m">{m.fecha || '—'}<br/><span style={{ fontSize:11 }}>{m.hora || ''}</span></td>
                     <td>
-                      <span className={`badge ${t.cls}`}><JxIcon name={t.icon} size={10}/>{t.lbl}</span>
+                      {/* Un traspaso son 2 movimientos (salida+entrada): lo rotulamos
+                          como TRASPASO para que se lea como una sola operación. */}
+                      {alm.esTraspaso
+                        ? <span className="badge b-blue" title={`Traspaso entre almacenes (${t.lbl.toLowerCase()})`}><JxIcon name="refresh" size={10}/>Traspaso <span style={{ opacity:0.75, fontWeight:400 }}>· {t.lbl.toLowerCase()}</span></span>
+                        : <span className={`badge ${t.cls}`}><JxIcon name={t.icon} size={10}/>{t.lbl}</span>}
                       {yaReversado && <div style={{ marginTop:4 }}><span className="badge b-gray" title="Este movimiento fue reversado">Reversado</span></div>}
                       {esReverso && <div style={{ marginTop:4 }}><span className="badge b-amber" title={`Reverso del movimiento ${m.reverses_id}`}>Reverso de #{reversoOriginalShort}</span></div>}
                     </td>
@@ -1551,13 +1556,8 @@ function MovMaterialesPage({ showToast }) {
                       )}
                     </td>
                     <td style={{ textAlign:'right' }} className="col-num">{Number(m.cantidad || 0).toLocaleString('es-PE')} <span style={{ color:'var(--tm)', fontSize:11 }}>{m.unidad || mat?.unidad || ''}</span></td>
-                    {(() => {
-                      const alm = almacenesDe(m);
-                      return (<>
-                        <td><CeldaAlmacen nombre={alm.salida} esTraspaso={alm.esTraspaso}/></td>
-                        <td><CeldaAlmacen nombre={alm.llegada} esTraspaso={alm.esTraspaso}/></td>
-                      </>);
-                    })()}
+                    <td><CeldaAlmacen nombre={alm.salida} esTraspaso={alm.esTraspaso}/></td>
+                    <td><CeldaAlmacen nombre={alm.llegada} esTraspaso={alm.esTraspaso}/></td>
                     <td>{pers
                       ? <>{pers.nombres} {pers.apellidos}{pers.alias ? <span style={{ color:'var(--tm)' }}> «{pers.alias}»</span> : null}{pers.cargo ? <div style={{ fontSize:10.5, color:'var(--tm)' }}>{pers.cargo}{pers.subcontratista_id ? ` · ${subNameMov.get(pers.subcontratista_id) || 'subcontrato'}` : ''}</div> : null}</>
                       : (prov?.razon_social || '—')}
@@ -1943,7 +1943,7 @@ function MovHerramientasPage({ showToast }) {
     });
   }, [sorted, q, accion, herramientas, personal]);
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = hoyLocal();
   const sevenDaysAgo = new Date(Date.now() - 7*24*60*60*1000).toISOString().slice(0, 10);
 
   const stats = uMM(() => ({
@@ -1975,9 +1975,8 @@ function MovHerramientasPage({ showToast }) {
     if (original.reversed_by_id) throw new Error('Este movimiento ya fue reversado.');
     if (original.reverses_id)    throw new Error('No se puede reversar un movimiento que ya es un reverso.');
 
-    const nowIso = new Date().toISOString();
-    const fecha = nowIso.slice(0, 10);
-    const hora = nowIso.slice(11, 16);
+    const fecha = hoyLocal();
+    const hora = horaLocal();
     const accionInv = invertirAccionHerramienta(original.accion);
 
     const cantRev = Number(original.cantidad) || 0;   // 0 → herramienta serializada (sin cantidad)
@@ -2206,12 +2205,15 @@ function MovHerramientasPage({ showToast }) {
                 const esReverso = !!m.reverses_id;
                 const reversoOriginalShort = esReverso ? String(m.reverses_id).slice(0, 6) : '';
                 const puedeReversar = isAdmin && !yaReversado && !esReverso;
+                const alm = almacenesDeMov(m, ubicNombreH);
                 return (
                   <tr key={m.id} style={{ background: danado ? 'rgba(231,76,60,0.06)' : '', opacity: yaReversado ? 0.55 : 1 }}>
                     <td className="col-m">{m.fecha || '—'}<br/><span style={{ fontSize:11 }}>{m.hora || ''}</span></td>
                     <td className="col-p">{h?.nombre_herramienta || '(herramienta eliminada)'}</td>
                     <td>
-                      <span className={`badge ${a.cls}`}><JxIcon name={a.icon} size={10}/>{a.lbl}</span>
+                      {alm.esTraspaso
+                        ? <span className="badge b-blue" title={`Traspaso entre almacenes (${a.lbl.toLowerCase()})`}><JxIcon name="refresh" size={10}/>Traspaso <span style={{ opacity:0.75, fontWeight:400 }}>· {a.lbl.toLowerCase()}</span></span>
+                        : <span className={`badge ${a.cls}`}><JxIcon name={a.icon} size={10}/>{a.lbl}</span>}
                       {yaReversado && <div style={{ marginTop:4 }}><span className="badge b-gray" title="Movimiento reversado">Reversado</span></div>}
                       {esReverso && <div style={{ marginTop:4 }}><span className="badge b-amber" title={`Reverso del movimiento ${m.reverses_id}`}>Reverso de #{reversoOriginalShort}</span></div>}
                     </td>
@@ -2220,13 +2222,8 @@ function MovHerramientasPage({ showToast }) {
                         ? <span style={{ fontWeight:700 }}>{Number(m.cantidad).toLocaleString('es-PE')} <span style={{ color:'var(--tm)', fontSize:11, fontWeight:400 }}>{h?.unidad || 'und'}</span></span>
                         : <span className="col-m">—</span>}
                     </td>
-                    {(() => {
-                      const alm = almacenesDeMov(m, ubicNombreH);
-                      return (<>
-                        <td><CeldaAlmacen nombre={alm.salida} esTraspaso={alm.esTraspaso}/></td>
-                        <td><CeldaAlmacen nombre={alm.llegada} esTraspaso={alm.esTraspaso}/></td>
-                      </>);
-                    })()}
+                    <td><CeldaAlmacen nombre={alm.salida} esTraspaso={alm.esTraspaso}/></td>
+                    <td><CeldaAlmacen nombre={alm.llegada} esTraspaso={alm.esTraspaso}/></td>
                     <td>{p ? <>{p.nombres} {p.apellidos}{p.alias ? <span style={{ color:'var(--tm)' }}> «{p.alias}»</span> : null}{p.cargo ? <div style={{ fontSize:10.5, color:'var(--tm)' }}>{p.cargo}</div> : null}</> : '—'}</td>
                     <td><span style={{ display:'inline-flex', alignItems:'center', gap:4 }}>
                       {m.frente_id

@@ -9,6 +9,7 @@ import { SearchableSelect } from "./jx-searchable-select.jsx";
 import { opcionesDestinoFlat, splitDestino } from "../lib/destino-mov.js";
 import { getDesgloseBulk, aplicarDelta, traspasar, baseSalidaUbicacion } from "../lib/stock-ubicaciones.js";
 import { DesglosePopup, TraspasoStockModal, ubicacionAutoOrigen } from "./jx-stock-ubic.jsx";
+import { hoyLocal, horaLocal } from "../lib/fecha.js";
 import { EstadosModal } from "./jx-stock-estados.jsx";
 import { FusionPersonasModal } from "./jx-fusion-personas.jsx";
 import { getEstadosBulk, ESTADOS_COND, ESTADO_LABEL, aplicarDeltaEstado } from "../lib/stock-estados.js";
@@ -664,7 +665,11 @@ function MaterialesPage({ showToast }) {
     const mat = materiales.find(m => m.id === material_id);
     if (!mat) { showToast('Material no encontrado', 'red'); return false; }
     const userId = auth?.profile?.id || null;
-    const now = new Date().toISOString();
+    // MISMA marca de tiempo (hora de Lima) para las DOS patas del traspaso: antes
+    // se guardaba en UTC (+5h) y podía divergir de otros caminos → salida y
+    // entrada con horas distintas. Ver lib/fecha.js.
+    const fecha = hoyLocal();
+    const hora = horaLocal();
     const cant = Number(cantidad) || 0;
     try {
       await traspasar({ obraId, itemTipo: 'material', itemId: material_id, origenId, destinoId, cantidad: cant, userId });
@@ -677,13 +682,13 @@ function MaterialesPage({ showToast }) {
       // en observaciones ('Traspaso → X' / 'Traspaso ← Y').
       const key = `traspaso-${crypto.randomUUID ? crypto.randomUUID() : Date.now()}`;
       await movHook.create({
-        obra_id: obraId, material_id, fecha: now.slice(0,10), hora: now.slice(11,16),
+        obra_id: obraId, material_id, fecha, hora,
         tipo_movimiento: 'salida', cantidad: cant, unidad: mat.unidad,
         ubicacion_id: origenId, observaciones: `Traspaso → ${uD}`, partida_id: null,
         idempotency_key: `${key}_out`,
       });
       await movHook.create({
-        obra_id: obraId, material_id, fecha: now.slice(0,10), hora: now.slice(11,16),
+        obra_id: obraId, material_id, fecha, hora,
         tipo_movimiento: 'entrada', cantidad: cant, unidad: mat.unidad,
         ubicacion_id: destinoId, observaciones: `Traspaso ← ${uO}`, partida_id: null,
         idempotency_key: `${key}_in`,
@@ -1045,8 +1050,8 @@ function MaterialesPage({ showToast }) {
 
   const openModal = (type) => {
     setForm({
-      fecha: new Date().toISOString().slice(0, 10),
-      hora: new Date().toTimeString().slice(0, 5),
+      fecha: hoyLocal(),
+      hora: horaLocal(),
       tipo_movimiento: type === 'ingreso' ? 'entrada' : 'salida',
     });
     // Reseteamos el lote cada vez que se abre un modal de mov.
@@ -3546,7 +3551,7 @@ function HerramientasPage({ showToast }) {
   const openLoteCant = (tipo) => {
     // es_excepcion/motivo: la devolución la hace por defecto quien sacó la
     // herramienta; si la devuelve otra persona se marca la excepción + motivo.
-    setLoteCantForm({ fecha: new Date().toISOString().slice(0, 10), hora: new Date().toTimeString().slice(0, 5), ubicacion_id: ubicDefaultH(), responsable_id: '', observaciones: '', es_excepcion: false, motivo_excepcion: '' });
+    setLoteCantForm({ fecha: hoyLocal(), hora: horaLocal(), ubicacion_id: ubicDefaultH(), responsable_id: '', observaciones: '', es_excepcion: false, motivo_excepcion: '' });
     setLoteCantItems([nuevaFilaCant(tipo)]);
     setFrenteSalida('');
     setFrentePendiente(false);
@@ -3731,7 +3736,8 @@ function HerramientasPage({ showToast }) {
       const uO = ubicacionesByIdH.get(origenId)?.nombre || 'origen';
       const uD = ubicacionesByIdH.get(destinoId)?.nombre || 'destino';
       const key = `traspaso-herr-${crypto.randomUUID ? crypto.randomUUID() : Date.now()}`;
-      const base = { obra_id: obraId, herramienta_id: item_id, fecha: new Date().toISOString().slice(0, 10), cantidad, responsable_id: null };
+      // Misma fecha+hora de Lima para ambas patas (antes: fecha UTC, sin hora).
+      const base = { obra_id: obraId, herramienta_id: item_id, fecha: hoyLocal(), hora: horaLocal(), cantidad, responsable_id: null };
       await movHook.create({ ...base, accion: 'salida', tipo_movimiento: 'salida', ubicacion_id: origenId, observaciones: `Traspaso → ${uD}`, idempotency_key: `${key}_out` });
       await movHook.create({ ...base, accion: 'entrada', tipo_movimiento: 'entrada', ubicacion_id: destinoId, observaciones: `Traspaso ← ${uO}`, idempotency_key: `${key}_in` });
       showToast(`Traspaso: ${cantidad} de ${uO} → ${uD}`, 'green');
