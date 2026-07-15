@@ -46,29 +46,47 @@ function safe(x, fallback = '') {
   return (x === null || x === undefined || x === '') ? fallback : x;
 }
 
+// Dibuja el logo de la empresa ejecutora (company.logo_dataurl) si existe.
+// Devuelve el desplazamiento horizontal a aplicar al texto (0 si no hay logo).
+// Nunca lanza: un data-url inválido no debe romper la generación del PDF.
+function drawCompanyLogo(doc, company) {
+  const src = company?.logo_dataurl;
+  if (!src || typeof src !== 'string' || !src.startsWith('data:image')) return 0;
+  try {
+    const fmt = /^data:image\/png/i.test(src) ? 'PNG'
+      : /^data:image\/jpe?g/i.test(src) ? 'JPEG'
+      : /^data:image\/webp/i.test(src) ? 'WEBP' : 'PNG';
+    doc.addImage(src, fmt, 13, 4, 20, 20);   // 20×20mm dentro de la banda
+    return 22;                               // corrimiento del texto a la derecha
+  } catch { return 0; }
+}
+
 // ─── Estilo común ────────────────────────────────────────────
 function drawHeader(doc, { company, title, subtitle, pageWidth = 210 }) {
   // Banda oscura
   doc.setFillColor(...COLOR_DARK);
   doc.rect(0, 0, pageWidth, 28, 'F');
 
+  // Logo de la empresa ejecutora (personalizable). Corre el texto si hay logo.
+  const dx = drawCompanyLogo(doc, company);
+
   // Marca JARVEX
   doc.setTextColor(...COLOR_GOLD);
   doc.setFontSize(15);
   doc.setFont('helvetica', 'bold');
-  doc.text('JARVEX', 14, 12);
+  doc.text('JARVEX', 14 + dx, 12);
 
   // Empresa emisora
   doc.setTextColor(255, 255, 255);
   doc.setFontSize(8);
   doc.setFont('helvetica', 'normal');
   const companyName = safe(company?.name || company?.legal_name, 'Tecnología, Ingeniería y Proyectos E.I.R.L.');
-  doc.text(companyName, 14, 17);
+  doc.text(companyName, 14 + dx, 17);
   if (company?.legal_name && company?.name && company.legal_name !== company.name) {
-    doc.text(String(company.legal_name), 14, 21);
+    doc.text(String(company.legal_name), 14 + dx, 21);
   }
   if (company?.ruc) {
-    doc.text(`RUC: ${company.ruc}`, 14, 25);
+    doc.text(`RUC: ${company.ruc}`, 14 + dx, 25);
   }
 
   // Título a la derecha
@@ -269,7 +287,7 @@ export function generateOCPdf(oc, items, proveedor, obra, company) {
 // ─────────────────────────────────────────────────────────────
 // 2. Requisición
 // ─────────────────────────────────────────────────────────────
-export function generateRequisicionPdf(req, items, obra, solicitanteNombre) {
+export function generateRequisicionPdf(req, items, obra, solicitanteNombre, company) {
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   const pageWidth = 210;
   req = req || {};
@@ -277,8 +295,8 @@ export function generateRequisicionPdf(req, items, obra, solicitanteNombre) {
   obra = obra || {};
 
   drawHeader(doc, {
-    company: {},
-    title: 'REQUISICIÓN DE MATERIALES',
+    company: company || {},
+    title: 'SOLICITUD DE INSUMOS',
     subtitle: req.codigo ? `N° ${req.codigo}` : '',
     pageWidth,
   });
@@ -303,9 +321,9 @@ export function generateRequisicionPdf(req, items, obra, solicitanteNombre) {
   doc.text(safe(obra.nombre || obra.codigo, '—'), 30, y);
 
   doc.setFont('helvetica', 'bold');
-  doc.text('Solicitante:', 110, y);
+  doc.text('Responsable:', 110, y);
   doc.setFont('helvetica', 'normal');
-  doc.text(safe(solicitanteNombre || req.solicitante, '—'), 132, y);
+  doc.text(safe(req.responsable_nombre || solicitanteNombre || req.solicitante, '—'), 135, y);
 
   y += 5;
   doc.setFont('helvetica', 'bold');
@@ -317,36 +335,74 @@ export function generateRequisicionPdf(req, items, obra, solicitanteNombre) {
     doc.setFont('helvetica', 'bold');
     doc.text('Prioridad:', 110, y);
     doc.setFont('helvetica', 'normal');
-    doc.text(String(req.prioridad).toUpperCase(), 130, y);
+    doc.text(String(req.prioridad).toUpperCase(), 132, y);
   }
 
-  // Tabla de items (sin precios)
+  y += 5;
+  doc.setFont('helvetica', 'bold');
+  doc.text('Fecha deseada:', 14, y);
+  doc.setFont('helvetica', 'normal');
+  doc.text(safe(req.fecha_necesidad || req.fecha_requerida, '—'), 44, y);
+  if (req.fecha_urgente) {
+    doc.setFont('helvetica', 'bold');
+    doc.text('Urgente:', 110, y);
+    doc.setFont('helvetica', 'normal');
+    doc.text(String(req.fecha_urgente), 128, y);
+  }
+
+  if (req.razon) {
+    y += 5;
+    doc.setFont('helvetica', 'bold');
+    doc.text('Razón:', 14, y);
+    doc.setFont('helvetica', 'normal');
+    const rz = doc.splitTextToSize(String(req.razon), pageWidth - 44);
+    doc.text(rz, 30, y);
+    y += (rz.length - 1) * 4;
+  }
+
+  const TIPO_LBL = { material:'Material', herramienta:'Herramienta', epp:'EPP', emergencia:'Emergencia', maquinaria:'Maquinaria' };
+  // Tabla de items (sin precios). Muestra tipo + nombre + mínimo urgente.
   const body = items.map((it, idx) => [
     String(idx + 1),
-    safe(it.material || it.nombre || it.descripcion, '—'),
+    TIPO_LBL[it.tipo_insumo] || 'Material',
+    safe(it.nombre || it.descripcion || it.material || it.nombre_libre, '—'),
     safe(it.unidad || it.und, '—'),
     fmtNum(it.cantidad ?? it.cant ?? 0, 2),
-    safe(it.observacion || it.obs, ''),
+    it.cantidad_minima ? fmtNum(it.cantidad_minima, 2) : '—',
+    safe(it.notas || it.observacion || it.obs, ''),
   ]);
 
   autoTable(doc, {
     startY: y + 6,
-    head: [['#', 'Material', 'Und', 'Cantidad', 'Observación']],
+    head: [['#', 'Tipo', 'Insumo', 'Und', 'Cant.', 'Mín.', 'Observación']],
     body,
     headStyles: { fillColor: COLOR_HEAD, textColor: 255, fontSize: 9 },
     bodyStyles: { fontSize: 8 },
     alternateRowStyles: { fillColor: COLOR_ALT },
     columnStyles: {
-      0: { cellWidth: 10, halign: 'center' },
-      1: { cellWidth: 'auto' },
-      2: { cellWidth: 18, halign: 'center' },
-      3: { cellWidth: 24, halign: 'right' },
-      4: { cellWidth: 60 },
+      0: { cellWidth: 8, halign: 'center' },
+      1: { cellWidth: 22 },
+      2: { cellWidth: 'auto' },
+      3: { cellWidth: 14, halign: 'center' },
+      4: { cellWidth: 18, halign: 'right' },
+      5: { cellWidth: 16, halign: 'right' },
+      6: { cellWidth: 44 },
     },
     margin: { left: 14, right: 14 },
   });
 
   let endY = doc.lastAutoTable.finalY + 8;
+
+  if (req.motivo_revision || req.observaciones_parcial) {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.text('Resolución:', 14, endY);
+    doc.setFont('helvetica', 'normal');
+    const txt = [req.motivo_revision, req.observaciones_parcial ? `Parcial: ${req.observaciones_parcial}` : null].filter(Boolean).join(' — ');
+    const lines = doc.splitTextToSize(txt, pageWidth - 40);
+    doc.text(lines, 38, endY);
+    endY += (lines.length * 4) + 4;
+  }
 
   if (req.notas || req.observaciones) {
     doc.setFont('helvetica', 'bold');

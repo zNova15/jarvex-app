@@ -31,6 +31,7 @@ const TRANSACTIONAL_TABLES = [
   'accounting_movements',
   'intercompany_transactions',
   // Compras
+  'insumos_pendientes',
   'requisiciones', 'requisicion_items',
   'cotizaciones', 'cotizacion_items',
   'ordenes_compra', 'oc_items',
@@ -129,6 +130,7 @@ const MASTER_TABLES = [
   { tabla: 'guias_remision',               query: () => supabase.from('guias_remision').select('*').is('deleted_at', null) },
   { tabla: 'intercompany_transactions',    query: () => supabase.from('intercompany_transactions').select('*').is('deleted_at', null) },
   // Compras
+  { tabla: 'insumos_pendientes',    query: () => supabase.from('insumos_pendientes').select('*').is('deleted_at', null) },
   { tabla: 'requisiciones',         query: () => supabase.from('requisiciones').select('*').is('deleted_at', null) },
   { tabla: 'requisicion_items',     query: () => supabase.from('requisicion_items').select('*').is('deleted_at', null) },
   { tabla: 'cotizaciones',          query: () => supabase.from('cotizaciones').select('*').is('deleted_at', null) },
@@ -564,6 +566,7 @@ const TABLA_TO_MODULO = {
   incidencias: 'Incidencias',
   evidencias: 'Evidencias',
   ubicaciones_obra: 'Ubicaciones',
+  insumos_pendientes: 'Requisiciones',
   requisiciones: 'Requisiciones',
   requisicion_items: 'Requisiciones',
   cotizaciones: 'Cotizaciones',
@@ -692,7 +695,7 @@ const FK_DEPS = {
   personal_historial:        [{ campo: 'personal_id', tabla: 'personal' }],
   personal_cuentas_bancarias: [{ campo: 'personal_id', tabla: 'personal' }],
   recepcion_items:           [{ campo: 'recepcion_id', tabla: 'recepciones' }],
-  oc_items:                  [{ campo: 'oc_id', tabla: 'ordenes_compra' }],
+  oc_items:                  [{ campo: 'orden_compra_id', tabla: 'ordenes_compra' }],
   cotizacion_items:          [{ campo: 'cotizacion_id', tabla: 'cotizaciones' }],
   requisicion_items:         [{ campo: 'requisicion_id', tabla: 'requisiciones' }],
   // El desglose de stock referencia la ubicación (FK real en server). El

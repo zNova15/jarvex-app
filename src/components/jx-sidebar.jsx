@@ -73,14 +73,14 @@ const NAV = [
   { id: 'mov-herramientas', label: 'Mov. Herramientas', icon: 'arrowOut' },
   { id: 'caja-chica', label: 'Caja Chica', icon: 'dollar' },
   { id: 'ubicaciones', label: 'Ubicaciones de Obra', icon: 'map' },
+  { id: 'compras-pendientes', label: 'Vinculación de Compras', icon: 'arrowIn' },
   { id: 'evidencias', label: 'Evidencias', icon: 'camera' },
   { id: 'plantillas', label: 'Plantillas', icon: 'file' },
 
   { section: 'COMPRAS / LOGÍSTICA' },
-  { id: 'solicitud-residente', label: 'Solicitud de Materiales', icon: 'plus' },
+  { id: 'solicitud-residente', label: 'Solicitud de Insumos', icon: 'plus' },
   { id: 'requisiciones', label: 'Requisiciones', icon: 'list' },
   { id: 'ordenes-compra', label: 'Órdenes de Compra', icon: 'package' },
-  { id: 'compras-pendientes', label: 'Compras Pendientes', icon: 'arrowIn' },
 
   { section: 'MAQUINARIA' },
   { id: 'activos-pesados', label: 'Equipos Pesados', icon: 'tool' },

@@ -1178,6 +1178,10 @@ window.__canSeeSidebarItem = function(rol, itemId) {
   // deja leer — con la matriz de Planillas, rrhh/solo_lectura entraban a una
   // página que el server les devuelve vacía.
   if (itemId === 'pagos') return ['admin', 'contador', 'gerente', 'tesorero', 'ayudante_contador'].includes(rol);
+  // Órdenes de Compra: SOLO usuarios delegados (con write en el módulo). Por
+  // defecto solo admin — la almacenera crea solicitudes pero no ve las OCs; ve
+  // el resultado (aceptada/rechazada) en Requisiciones → Mis Solicitudes.
+  if (itemId === 'ordenes-compra') return rol === 'admin' || (window.__hasPerm?.(rol, 'Órdenes de Compra', 'w') ?? false);
   // Los módulos del ingeniero solo los ven el ingeniero (y admin).
   if (__INGENIERO_ITEMS.includes(itemId)) return rol === 'admin' || rol === 'ingeniero';
   // El ingeniero ve EXCLUSIVAMENTE sus módulos de frente (nada más, ni utilities).

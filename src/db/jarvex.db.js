@@ -45,6 +45,15 @@ export const db = new Dexie('JarvexDB');
 // al admin/gerente para reportar un frente que no es suyo (titular ausente);
 // tras la aprobación carga el reporte en reporte_payload (jsonb, prop sin índice)
 // y lo envía; el admin acepta y recién ahí se aplican los avances. Aditivo.
+// Versión 37: "Solicitud de Insumos" — catálogo SEPARADO de nombres de insumo
+// solicitados que aún no existen en las tablas reales de la obra (evita
+// ensuciar materiales/herramientas/... con nombres que quizá nunca se usen).
+// Las columnas nuevas de requisiciones/requisicion_items/oc_items son aditivas
+// (Dexie no las indexa; no requieren bump de esas tablas). Aditivo.
+db.version(37).stores({
+  insumos_pendientes: 'id, obra_id, tipo_insumo, nombre_norm, deleted_at, sync_status',
+});
+
 // Versión 36: guías de remisión (detectadas por Captura Mágica) con vínculo
 // bidireccional a la factura (accounting_movement_id). Aditivo.
 db.version(36).stores({

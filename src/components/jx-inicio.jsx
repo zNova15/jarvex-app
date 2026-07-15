@@ -37,15 +37,15 @@ const fmtSk = (n) => {
 const BLOQUES = [
   {
     id: 'almacen', titulo: 'Almacén', icon: 'package', tipo: 'obra', color: '#F2B705',
-    desc: 'Inventarios, movimientos, ubicaciones y evidencias',
+    desc: 'Inventarios, movimientos, ubicaciones y vinculación de compras',
     items: ['materiales', 'mov-materiales', 'herramientas', 'mov-herramientas', 'epps-inventario', 'epp',
-      'insumos-emergencia', 'insumos-persona', 'ubicaciones', 'movimientos-insumos', 'caja-chica',
+      'insumos-emergencia', 'insumos-persona', 'ubicaciones', 'compras-pendientes', 'movimientos-insumos', 'caja-chica',
       'evidencias', 'plantillas'],
   },
   {
     id: 'logistica', titulo: 'Logística', icon: 'truck', tipo: 'obra', color: '#3498DB',
-    desc: 'Solicitudes de materiales, requisiciones, órdenes y recepciones',
-    items: ['solicitud-residente', 'requisiciones', 'ordenes-compra', 'compras-pendientes'],
+    desc: 'Solicitud de insumos, requisiciones y órdenes de compra',
+    items: ['solicitud-residente', 'requisiciones', 'ordenes-compra'],
   },
   {
     id: 'gestion-obra', titulo: 'Gestión de Obra', icon: 'hardHat', tipo: 'obra', color: '#2ECC71',
@@ -94,8 +94,8 @@ const BLOQUES = [
   },
   {
     id: 'solicitudes-blq', titulo: 'Solicitudes', icon: 'bell', tipo: 'general', color: '#E67E22',
-    desc: 'Tus solicitudes de cambio y conflictos de sync',
-    items: ['solicitudes', 'conflictos'],
+    desc: 'Solicitud de insumos, requisiciones, cambios y conflictos',
+    items: ['solicitud-residente', 'requisiciones', 'solicitudes', 'conflictos'],
   },
   {
     id: 'usuarios-blq', titulo: 'Usuarios y Roles', icon: 'user', tipo: 'general', color: '#EF6B5E',
