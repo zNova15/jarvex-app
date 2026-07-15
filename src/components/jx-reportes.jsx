@@ -1,378 +1,222 @@
 import React from "react";
-const { useState: uSR, useMemo: uMR, useEffect: uER } = React;
+import { useChart } from "../lib/chart-loader.js";
+import { CATS_MOV, cargarMovimientosObra, agregarMovimientos } from "../lib/reportes-movimientos.js";
+import { generateReportePDF, downloadPDF } from "../lib/reports.js";
+import { hoyLocal } from "../lib/fecha.js";
+const { useState: uSR, useMemo: uMR, useEffect: uER, useRef: uRR } = React;
 
-// ── PERIOD HELPERS ────────────────────────────────────────
-function getPeriodDates(periodo, customFrom, customTo) {
-  const today = new Date();
-  const todayStr = today.toISOString().slice(0, 10);
-  if (periodo === 'semana_actual') {
-    const day = today.getDay() || 7;
-    const start = new Date(today);
-    start.setDate(today.getDate() - day + 1);
-    return { from: start.toISOString().slice(0, 10), to: todayStr };
-  }
-  if (periodo === 'mes_actual') {
-    const start = new Date(today.getFullYear(), today.getMonth(), 1);
-    return { from: start.toISOString().slice(0, 10), to: todayStr };
-  }
-  if (periodo === 'custom') {
-    return { from: customFrom || '2000-01-01', to: customTo || todayStr };
-  }
-  return { from: '2000-01-01', to: todayStr };
-}
+const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
+const fmtN = (n) => Number(n || 0).toLocaleString('es-PE', { maximumFractionDigits: 2 });
+const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-function slugify(s) {
-  return String(s || 'obra').toLowerCase()
-    .normalize('NFD').replace(/[̀-ͯ]/g, '')
-    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').substring(0, 30);
-}
+const DIR_LABEL = { entrada: 'Entrada', salida: 'Salida', devolucion: 'Devolución', otro: 'Otro', reverso: 'Reverso' };
+const TIPO_OPCIONES = [{ key: 'todos', label: 'Todos' }, ...CATS_MOV.map(c => ({ key: c.key, label: c.label }))];
+const AGOTAR_META = {
+  agotado: { cls: 'b-red', lbl: '⛔ Agotado' },
+  critico: { cls: 'b-amber', lbl: '⚠ Crítico' },
+  ok: { cls: 'b-green', lbl: '✓ OK' },
+  desconocido: { cls: 'b-gray', lbl: '—' },
+};
+// Etiqueta plana para el PDF (sin emoji; no derivar por regex del label con emoji).
+const AGOTAR_PDF = { agotado: 'Agotado', critico: 'Crítico', ok: 'OK', desconocido: '—' };
 
-function fechaStamp() {
-  const d = new Date();
-  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-}
-
-const REPORT_CARDS = [
-  { id: 'materiales',  titulo: 'Reporte de Materiales',     desc: 'Stock, movimientos y alertas de inventario',                icon: 'package',   modulo: 'Almacén',     formato: 'PDF / Excel' },
-  { id: 'asistencia',  titulo: 'Reporte de Asistencia',      desc: 'Historial de asistencia por período',                       icon: 'calendar',  modulo: 'Almacén',     formato: 'PDF / Excel' },
-  { id: 'herramientas',titulo: 'Reporte de Herramientas',    desc: 'Estado actual y movimientos de herramientas',               icon: 'tool',      modulo: 'Almacén',     formato: 'PDF / Excel' },
-  { id: 'avance',      titulo: 'Reporte de Avance de Obra',  desc: 'Progreso físico por partidas y semanas',                    icon: 'hardHat',   modulo: 'Gestión Obra',formato: 'PDF / Excel' },
-  { id: 'costos',      titulo: 'Reporte de Costos',          desc: 'Análisis presupuestado vs real, desviaciones',              icon: 'dollar',    modulo: 'Gestión Obra',formato: 'PDF / Excel' },
-  { id: 'partidas',    titulo: 'Reporte de Partidas',        desc: 'Estado de todas las partidas, metrados y % avance',         icon: 'list',      modulo: 'Gestión Obra',formato: 'PDF / Excel' },
-  { id: 'ejecutivo',   titulo: 'Reporte Ejecutivo General',  desc: 'Resumen de indicadores clave para gerencia y cliente',      icon: 'chart',     modulo: 'General',     formato: 'PDF' },
-  { id: 'valorizacion',titulo: 'Valorización de Obra',       desc: 'Valorización mensual para presentación al cliente',         icon: 'clipboard', modulo: 'General',     formato: 'PDF' },
+// Familias de reporte (Fase 1 = Movimientos). Cada una gateada por su PERMISO
+// real (no una lista de roles paralela que se desincroniza de la matriz).
+// Movimientos = quien tiene lectura de movimientos de almacén.
+const FAMILIAS = [
+  { id: 'movimientos', label: 'Movimientos de Insumos', icon: 'package',
+    puede: (rol) => rol === 'admin' || (window.__hasPerm?.(rol, 'Mov. Materiales', 'r') ?? false) },
 ];
 
-// ── DATA LOADERS ──────────────────────────────────────────
-async function loadReportData(reportId, obraId, period) {
-  const db = window.__db;
-  const inRange = (fecha) => fecha && fecha >= period.from && fecha <= period.to;
-
-  if (reportId === 'materiales') {
-    const items = await db.materiales.where('obra_id').equals(obraId).filter(m => !m.deleted_at).toArray();
-    const movs  = await db.movimientos_materiales.where('obra_id').equals(obraId).toArray();
-    return items.map(m => {
-      const ms = movs.filter(x => x.material_id === m.id);
-      const entradas = ms.filter(x => x.tipo === 'entrada' || x.tipo === 'ingreso').reduce((a,b) => a + (Number(b.cantidad) || 0), 0);
-      const salidas  = ms.filter(x => x.tipo === 'salida').reduce((a,b) => a + (Number(b.cantidad) || 0), 0);
-      return [
-        m.nombre || '',
-        m.categoria || '',
-        m.unidad || '',
-        Number(m.stock_inicial ?? 0),
-        Number(m.stock_actual ?? 0),
-        Number(m.stock_minimo ?? 0),
-        entradas,
-        salidas,
-        Number(m.precio_unitario ?? 0),
-        m.alerta || 'ok',
-      ];
-    });
-  }
-
-  if (reportId === 'asistencia') {
-    const items = await db.asistencia.where('obra_id').equals(obraId).filter(a => inRange(a.fecha)).toArray();
-    const personal = await db.personal.where('obra_id').equals(obraId).toArray();
-    const pmap = Object.fromEntries(personal.map(p => [p.id, p]));
-    return items.map(a => {
-      const p = pmap[a.personal_id] || {};
-      return [
-        a.fecha || '',
-        p.nombre || a.personal_id || '',
-        p.dni || '',
-        p.cargo || '',
-        a.hora_ingreso || '—',
-        a.hora_salida || '—',
-        Number(a.horas_trabajadas ?? 0),
-        a.estado || '',
-      ];
-    });
-  }
-
-  if (reportId === 'herramientas') {
-    const items = await db.herramientas.where('obra_id').equals(obraId).filter(h => !h.deleted_at).toArray();
-    const movs  = await db.movimientos_herramientas.where('obra_id').equals(obraId).toArray();
-    return items.map(h => {
-      const ms = movs.filter(x => x.herramienta_id === h.id).sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
-      const ult = ms[0]?.fecha || '';
-      return [
-        h.nombre || '',
-        h.tipo || '',
-        h.marca || '',
-        h.modelo || '',
-        h.numero_serie || '',
-        h.estado_actual || '',
-        h.ubicacion || '',
-        h.disponible ? 'Sí' : 'No',
-        ult,
-      ];
-    });
-  }
-
-  if (reportId === 'avance') {
-    const items = await db.avance_obra.where('obra_id').equals(obraId).filter(a => inRange(a.fecha)).toArray();
-    const partidas = await db.partidas.where('obra_id').equals(obraId).toArray();
-    const pmap = Object.fromEntries(partidas.map(p => [p.id, p]));
-    return items.map(a => {
-      const p = pmap[a.partida_id] || {};
-      return [
-        a.fecha || '',
-        a.semana || '',
-        p.descripcion || p.nombre || a.partida_id || '',
-        Number(a.metrado_ejecutado ?? 0),
-        Number(a.porcentaje_avance ?? 0),
-        Number(a.personal_asignado ?? 0),
-        a.observaciones || '',
-      ];
-    });
-  }
-
-  if (reportId === 'costos' || reportId === 'partidas') {
-    const items = await db.partidas.where('obra_id').equals(obraId).filter(p => !p.deleted_at).toArray();
-    if (reportId === 'partidas') {
-      return items.map(p => [
-        p.codigo || '',
-        p.descripcion || p.nombre || '',
-        p.categoria || '',
-        p.unidad || '',
-        Number(p.metrado_contractual ?? 0),
-        Number(p.metrado_ejecutado ?? 0),
-        Number(p.porcentaje_avance ?? 0),
-        p.estado || '',
-        p.fecha_inicio || '',
-        p.fecha_fin || '',
-      ]);
-    }
-    return items.map(p => {
-      const pres = Number(p.costo_presupuestado ?? 0);
-      const real = Number(p.costo_real ?? 0);
-      const dif  = real - pres;
-      const desv = pres ? (dif / pres) * 100 : 0;
-      return [
-        p.codigo || '',
-        p.descripcion || p.nombre || '',
-        p.categoria || '',
-        Number(p.metrado_contractual ?? 0),
-        Number(p.metrado_ejecutado ?? 0),
-        Number(p.porcentaje_avance ?? 0),
-        pres.toFixed(2),
-        real.toFixed(2),
-        dif.toFixed(2),
-        desv.toFixed(1) + '%',
-      ];
-    });
-  }
-
-  return [];
+function familiasVisibles(rol) {
+  return FAMILIAS.filter(f => f.puede(rol));
 }
 
-const REPORT_COLS = {
-  materiales:   ['Material', 'Categoría', 'Unidad', 'Stock Ini', 'Stock Act', 'Stock Mín', 'Entradas', 'Salidas', 'Precio Unit', 'Alerta'],
-  asistencia:   ['Fecha', 'Trabajador', 'DNI', 'Cargo', 'Ingreso', 'Salida', 'Horas', 'Estado'],
-  herramientas: ['Herramienta', 'Tipo', 'Marca', 'Modelo', 'Serie', 'Estado', 'Ubicación', 'Disponible', 'Último Mov'],
-  avance:       ['Fecha', 'Semana', 'Partida', 'Metrado Ejec', '% Avance', 'Personal', 'Observaciones'],
-  costos:       ['Código', 'Partida', 'Categoría', 'Met Cont', 'Met Ejec', '% Avance', 'Costo Pres', 'Costo Real', 'Diferencia', '% Desv'],
-  partidas:     ['Código', 'Partida', 'Categoría', 'Unidad', 'Met Cont', 'Met Ejec', '% Avance', 'Estado', 'Fecha Ini', 'Fecha Fin'],
-};
+// Rango del período ANCLADO en la fecha local (America/Lima) — nunca mezcla
+// componentes locales de Date con toISOString UTC (ese corrimiento hacía que la
+// "semana actual" vista de noche omitiera el lunes). La aritmética se hace sobre
+// un Date a mediodía UTC de la fecha local, así getUTCDay/getUTCDate no cruzan día.
+function getPeriod(periodo, from, to) {
+  const hoy = hoyLocal(); // 'YYYY-MM-DD' en la zona configurada
+  const parse = (s) => { const [y, m, d] = String(s).split('-').map(Number); return new Date(Date.UTC(y, (m || 1) - 1, d || 1, 12)); };
+  const fmt = (dt) => dt.toISOString().slice(0, 10);
+  if (periodo === 'dia') return { from: hoy, to: hoy };
+  if (periodo === 'semana') { const dt = parse(hoy); const day = dt.getUTCDay() || 7; dt.setUTCDate(dt.getUTCDate() - day + 1); return { from: fmt(dt), to: hoy }; }
+  if (periodo === 'mes') { const [y, m] = hoy.split('-'); return { from: `${y}-${m}-01`, to: hoy }; }
+  if (periodo === 'custom') return { from: from || '2000-01-01', to: to || hoy };
+  return { from: null, to: null }; // acumulado
+}
+const PERIODO_LABEL = { dia: 'Hoy', semana: 'Semana actual', mes: 'Mes actual', acumulado: 'Acumulado', custom: 'Rango personalizado' };
 
-// ── EJECUTIVO PDF (no autoTable) ──────────────────────────
-async function buildEjecutivoPDF(obra) {
-  const db = window.__db;
-  const obraId = obra.id;
+function loadHistorial() { try { return JSON.parse(localStorage.getItem('reportes_historial') || '[]'); } catch { return []; } }
+function saveHistorial(a) { try { localStorage.setItem('reportes_historial', JSON.stringify(a)); } catch {} }
 
-  const [materiales, personal, asistHoy, partidas, incidencias] = await Promise.all([
-    db.materiales.where('obra_id').equals(obraId).filter(m => !m.deleted_at).toArray(),
-    db.personal.where('obra_id').equals(obraId).filter(p => !p.deleted_at).toArray(),
-    db.asistencia.where('obra_id').equals(obraId).filter(a => a.fecha === new Date().toISOString().slice(0, 10)).toArray(),
-    db.partidas.where('obra_id').equals(obraId).filter(p => !p.deleted_at).toArray(),
-    db.incidencias.where('obra_id').equals(obraId).toArray(),
-  ]);
-
-  const alertas = materiales.filter(m => m.alerta && m.alerta !== 'ok').length;
-  const valorInv = materiales.reduce((a, m) => a + (Number(m.stock_actual || 0) * Number(m.precio_unitario || 0)), 0);
-  const presentes = asistHoy.filter(a => a.estado === 'asistio' || a.estado === 'tardanza').length;
-  const partTerm = partidas.filter(p => p.estado === 'terminada' || p.estado === 'completada').length;
-  const partEjec = partidas.filter(p => p.estado === 'en_ejecucion' || p.estado === 'en-ejecucion').length;
-  const partAtr  = partidas.filter(p => p.estado === 'atrasada').length;
-  const partPend = partidas.filter(p => p.estado === 'pendiente' || p.estado === 'no_iniciada').length;
-  const incAbier = incidencias.filter(i => i.estado === 'abierta' || i.estado === 'en_proceso').length;
-
-  const totalPres = partidas.reduce((a, p) => a + Number(p.costo_presupuestado || 0), 0);
-  const totalReal = partidas.reduce((a, p) => a + Number(p.costo_real || 0), 0);
-  const avgAvance = partidas.length ? partidas.reduce((a, p) => a + Number(p.porcentaje_avance || 0), 0) / partidas.length : 0;
-  const sobre = totalReal - totalPres;
-
-  // Use the helper to build a base PDF with branding header, then append narrative content
-  const doc = await window.__reports.generatePDF({
-    titulo: 'Reporte Ejecutivo General',
-    subtitulo: `Obra: ${(obra.nombre_obra || obra.nombre) || '—'}    Cliente: ${obra.cliente || '—'}`,
-    columnas: ['Indicador', 'Valor'],
-    filas: [
-      ['Avance físico promedio', `${avgAvance.toFixed(1)}%`],
-      ['Costo presupuestado total', `S/ ${totalPres.toLocaleString('es-PE', { minimumFractionDigits: 2 })}`],
-      ['Costo real total', `S/ ${totalReal.toLocaleString('es-PE', { minimumFractionDigits: 2 })}`],
-      [sobre >= 0 ? 'Sobrecosto' : 'Ahorro', `S/ ${Math.abs(sobre).toLocaleString('es-PE', { minimumFractionDigits: 2 })}`],
-      ['Total materiales', materiales.length],
-      ['Materiales en alerta', alertas],
-      ['Valor del inventario', `S/ ${valorInv.toLocaleString('es-PE', { minimumFractionDigits: 2 })}`],
-      ['Total personal', personal.length],
-      ['Presentes hoy', presentes],
-      ['Partidas terminadas', partTerm],
-      ['Partidas en ejecución', partEjec],
-      ['Partidas atrasadas', partAtr],
-      ['Partidas pendientes', partPend],
-      ['Incidencias abiertas', incAbier],
-      ['Ubicación', obra.ubicacion || obra.direccion || '—'],
-      ['Inicio / Fin', `${obra.fecha_inicio || '—'} a ${obra.fecha_fin || '—'}`],
-      ['Presupuesto contractual', `S/ ${Number(obra.presupuesto || 0).toLocaleString('es-PE', { minimumFractionDigits: 2 })}`],
-    ],
-    footer: 'Reporte Ejecutivo — JARVEX',
-  });
-  return doc;
+// ── Gráfico de barras horizontal (registra su instancia para exportar a PDF) ──
+function ChartTop({ chartId, labels, data, color, onInstance, height = 200 }) {
+  const Chart = useChart();
+  const ref = uRR(null);
+  const inst = uRR(null);
+  uER(() => {
+    if (!Chart || !ref.current || !labels.length) return;
+    if (inst.current) inst.current.destroy();
+    inst.current = new Chart(ref.current, {
+      type: 'bar',
+      data: { labels, datasets: [{ data, backgroundColor: color, borderRadius: 4, maxBarThickness: 22 }] },
+      options: {
+        indexAxis: 'y', responsive: true, maintainAspectRatio: false, animation: false,
+        plugins: { legend: { display: false }, tooltip: { enabled: true } },
+        scales: {
+          x: { ticks: { color: '#7A8A9A', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' }, border: { display: false } },
+          y: { ticks: { color: '#9AA7B4', font: { size: 10 } }, grid: { display: false }, border: { display: false } },
+        },
+      },
+    });
+    onInstance?.(chartId, inst.current);
+    return () => { try { inst.current?.destroy(); } catch {} onInstance?.(chartId, null); };
+  }, [Chart, labels.join('|'), data.join('|'), color]);
+  if (!labels.length) return <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--tm)', fontSize: 12 }}>Sin datos en el período</div>;
+  return <div style={{ height }}><canvas ref={ref} /></div>;
 }
 
-async function buildValorizacionPDF(obra) {
-  const db = window.__db;
-  const partidas = await db.partidas.where('obra_id').equals(obra.id).filter(p => !p.deleted_at).toArray();
-  const valorizables = partidas.filter(p => Number(p.metrado_ejecutado || 0) > 0);
-
-  const filas = valorizables.map(p => {
-    const met = Number(p.metrado_ejecutado || 0);
-    const precio = Number(p.precio_unitario || 0);
-    return [
-      p.codigo || '',
-      p.descripcion || p.nombre || '',
-      p.unidad || '',
-      met,
-      precio.toFixed(2),
-      (met * precio).toFixed(2),
-    ];
-  });
-  const total = valorizables.reduce((a, p) => a + Number(p.metrado_ejecutado || 0) * Number(p.precio_unitario || 0), 0);
-
-  const doc = await window.__reports.generatePDF({
-    titulo: `Valorización de Obra — ${(obra.nombre_obra || obra.nombre) || ''}`,
-    subtitulo: `Cliente: ${obra.cliente || '—'}    Ubicación: ${obra.ubicacion || obra.direccion || '—'}`,
-    columnas: ['Código', 'Partida', 'Unidad', 'Metrado Ejec', 'P. Unitario', 'Subtotal'],
-    filas,
-    footer: `Total a valorizar: S/ ${total.toLocaleString('es-PE', { minimumFractionDigits: 2 })}`,
-  });
-  return doc;
-}
-
-// ── HISTORIAL ─────────────────────────────────────────────
-function loadHistorial() {
-  try { return JSON.parse(localStorage.getItem('reportes_historial') || '[]'); }
-  catch { return []; }
-}
-function saveHistorial(arr) {
-  localStorage.setItem('reportes_historial', JSON.stringify(arr));
-}
-
-// ── COMPONENT ─────────────────────────────────────────────
 function ReportesPage({ showToast }) {
-  const [tab, setTab] = uSR('generar');
-  // useObras() retorna { data, loading, create, ... } — extraer el array
-  const obrasHook = (window.__hooks && window.__hooks.useObras) ? window.__hooks.useObras() : null;
-  const obras = obrasHook?.data || [];
-  const auth = (window.__useAuth && window.__useAuth()) || {};
-  const userName = auth.user?.email || auth.user?.nombre || auth.profile?.email || 'Usuario';
+  const toast = showToast || window.__showToast || (() => {});
+  const auth = window.__useAuth ? window.__useAuth() : {};
+  const rol = auth?.profile?.rol || '';
+  const userName = `${auth?.profile?.nombres || ''} ${auth?.profile?.apellidos || ''}`.trim() || auth?.profile?.email || 'Usuario';
 
-  const [obraId, setObraId] = uSR('');
-  const [periodo, setPeriodo] = uSR('mes_actual');
+  const familias = uMR(() => familiasVisibles(rol), [rol]);
+  const [familia, setFamilia] = uSR(() => familias[0]?.id || null);
+  const [tab, setTab] = uSR('dashboard'); // dashboard | historial
+
+  const { data: obras } = window.__hooks?.useObras?.() || { data: [] };
+  const { data: personal } = window.__hooks?.usePersonal?.(undefined) || { data: [] };
+  const { data: subcontratistas } = window.__hooks?.useSubcontratistas?.() || { data: [] };
+
+  const [obraId, setObraId] = uSR(() => window.__getObraActivaId?.() || '');
+  const [periodo, setPeriodo] = uSR('mes');
   const [customFrom, setCustomFrom] = uSR('');
   const [customTo, setCustomTo] = uSR('');
-  const [formato, setFormato] = uSR('pdf');
-  const [busy, setBusy] = uSR(null);
+  const [tipo, setTipo] = uSR('todos');
+  const [modo, setModo] = uSR('resumen'); // resumen | detallado
+  const [pdfBusy, setPdfBusy] = uSR(false);
   const [historial, setHistorial] = uSR(loadHistorial());
 
+  // Frentes de la obra (para nombres de TOP frentes).
+  const { data: frentes } = window.__hooks?.useFrentesObra?.(obraId, { soloActivas: false }) || { data: [] };
+
+  const obrasVivas = uMR(() => (obras || []).filter(o => !o.deleted_at), [obras]);
+  uER(() => { if (!obraId && obrasVivas.length) setObraId(obrasVivas[0].id); }, [obrasVivas, obraId]);
+  const obraActual = uMR(() => obrasVivas.find(o => o.id === obraId), [obrasVivas, obraId]);
+
+  // Carga de movimientos + catálogo de la obra (se recarga al cambiar obra o datos).
+  const [datos, setDatos] = uSR({ catalogo: [], movimientos: [] });
+  const [cargando, setCargando] = uSR(false);
   uER(() => {
-    if (!obraId && obras.length) setObraId(obras[0].id);
-  }, [obras, obraId]);
+    if (!obraId) { setDatos({ catalogo: [], movimientos: [] }); return; }
+    let cancel = false;
+    const cargar = async () => {
+      setCargando(true);
+      try { const r = await cargarMovimientosObra(window.__db, obraId); if (!cancel) setDatos(r); }
+      catch { if (!cancel) setDatos({ catalogo: [], movimientos: [] }); }
+      finally { if (!cancel) setCargando(false); }
+    };
+    cargar();
+    let deb; const on = () => { clearTimeout(deb); deb = setTimeout(cargar, 400); };
+    window.addEventListener('jx_data_changed', on);
+    window.addEventListener('jarvex_master_updated', on);
+    return () => { cancel = true; clearTimeout(deb); window.removeEventListener('jx_data_changed', on); window.removeEventListener('jarvex_master_updated', on); };
+  }, [obraId]);
 
-  const obraActual = uMR(() => obras.find(o => o.id === obraId), [obras, obraId]);
+  const personalById = uMR(() => { const m = new Map(); (personal || []).forEach(p => m.set(p.id, p)); return m; }, [personal]);
+  const subById = uMR(() => { const m = new Map(); (subcontratistas || []).forEach(s => m.set(s.id, s)); return m; }, [subcontratistas]);
+  const frenteById = uMR(() => { const m = new Map(); (frentes || []).forEach(f => m.set(f.id, f.nombre || '—')); return m; }, [frentes]);
 
-  async function handleGenerate(card) {
-    if (!obraActual) { showToast?.('Selecciona una obra primero', 'red'); return; }
-    setBusy(card.id);
+  const period = uMR(() => getPeriod(periodo, customFrom, customTo), [periodo, customFrom, customTo]);
+  const agg = uMR(() => agregarMovimientos({
+    movimientos: datos.movimientos, catalogo: datos.catalogo,
+    personalById, subById, frenteById, tipo, from: period.from, to: period.to, topN: 10,
+  }), [datos, personalById, subById, frenteById, tipo, period]);
+
+  // Instancias de gráficos (para exportar a PDF).
+  const chartInsts = uRR({});
+  const onInstance = (id, inst) => { if (inst) chartInsts.current[id] = inst; else delete chartInsts.current[id]; };
+
+  const nombrePersona = (m) => {
+    if (m.subId) return (subById.get(m.subId)?.razon_social || 'Subcontrato') + ' (subc.)';
+    if (m.personaId) { const p = personalById.get(m.personaId); return p ? `${p.nombres || ''} ${p.apellidos || ''}`.trim() : '(persona)'; }
+    return '—';
+  };
+  const nombreFrente = (m) => (m.frenteId ? (frenteById.get(m.frenteId) || 'Frente') : 'Sin frente');
+  const tipoLabelDe = (k) => (CATS_MOV.find(c => c.key === k)?.label || k);
+
+  const detalleCap = 500;
+  const detalleRender = uMR(() => agg.detalle.slice(0, detalleCap), [agg]);
+
+  async function exportarPDF() {
+    if (!obraActual) { toast('Selecciona una obra', 'red'); return; }
+    setPdfBusy(true);
     try {
-      const period = getPeriodDates(periodo, customFrom, customTo);
-      const slug = slugify((obraActual.nombre_obra || obraActual.nombre));
-      const stamp = fechaStamp();
-      const baseFilename = `JARVEX_${card.id}_${slug}_${stamp}`;
-
-      let pdfDoc = null;
-      let filas = null;
-      let columnas = null;
-
-      if (card.id === 'ejecutivo') {
-        pdfDoc = await buildEjecutivoPDF(obraActual);
-      } else if (card.id === 'valorizacion') {
-        pdfDoc = await buildValorizacionPDF(obraActual);
+      let company = {};
+      try { const cs = await window.__db.companies.toArray(); company = cs.find(c => !c.deleted_at && c.status === 'activa') || cs[0] || {}; } catch {}
+      const tipoLbl = TIPO_OPCIONES.find(t => t.key === tipo)?.label || 'Todos';
+      const meta = [
+        `Obra: ${obraActual.nombre_obra || obraActual.nombre || '—'}`,
+        `Período: ${PERIODO_LABEL[periodo]}${period.from ? ` (${period.from} a ${period.to})` : ''}`,
+        `Tipo de insumo: ${tipoLbl} · Modo: ${modo === 'resumen' ? 'Resumen' : 'Detallado'}`,
+      ];
+      const kpis = [
+        { label: 'Salidas', value: fmtN(agg.kpis.totalSalidas) },
+        { label: 'Entradas', value: fmtN(agg.kpis.totalEntradas) },
+        { label: 'Movimientos', value: fmtN(agg.kpis.nMovimientos) },
+        { label: 'Insumos distintos', value: fmtN(agg.kpis.insumosDistintos) },
+        { label: 'Valor salidas', value: fmtS(agg.kpis.valorSalidas) },
+      ];
+      const charts = [];
+      const tablas = [];
+      if (modo === 'resumen') {
+        for (const [id, titulo] of [['chart-insumos', 'TOP insumos más movidos'], ['chart-personal', 'TOP personal por salidas'], ['chart-frentes', 'TOP frentes por consumo']]) {
+          const inst = chartInsts.current[id];
+          if (!inst) continue;
+          // El PDF va sobre página BLANCA: paso ticks/grid oscuros solo para
+          // capturar la imagen, luego restauro el tema oscuro del dashboard.
+          try {
+            const sc = inst.options.scales;
+            const prev = { xt: sc.x.ticks.color, yt: sc.y.ticks.color, xg: sc.x.grid.color };
+            sc.x.ticks.color = '#334155'; sc.y.ticks.color = '#1E293B'; sc.x.grid.color = 'rgba(0,0,0,0.08)';
+            inst.update('none');
+            charts.push({ titulo, png: inst.toBase64Image('image/png', 1), height: 55 });
+            sc.x.ticks.color = prev.xt; sc.y.ticks.color = prev.yt; sc.x.grid.color = prev.xg;
+            inst.update('none');
+          } catch { try { charts.push({ titulo, png: inst.toBase64Image('image/png', 1), height: 55 }); } catch {} }
+        }
+        tablas.push({
+          titulo: 'Más salen y por agotarse',
+          columnas: ['Insumo', 'Salidas período', 'Stock actual', 'Stock mín.', 'Estado'],
+          filas: agg.porAgotarse.map(r => [r.nombre, fmtN(r.salidas), r.stock == null ? '—' : fmtN(r.stock), fmtN(r.stockMin), AGOTAR_PDF[r.estado] || '—']),
+        });
       } else {
-        filas = await loadReportData(card.id, obraActual.id, period);
-        columnas = REPORT_COLS[card.id];
-      }
-
-      const wantsPdf = formato === 'pdf' || formato === 'ambos' || card.formato === 'PDF';
-      const wantsExcel = (formato === 'excel' || formato === 'ambos') && card.id !== 'ejecutivo' && card.id !== 'valorizacion';
-
-      if (wantsPdf) {
-        const doc = pdfDoc || await window.__reports.generatePDF({
-          titulo: card.titulo,
-          subtitulo: `Obra: ${(obraActual.nombre_obra || obraActual.nombre) || '—'}    Período: ${period.from} a ${period.to}`,
-          columnas,
-          filas,
-          footer: `Generado por ${userName} — JARVEX`,
+        tablas.push({
+          titulo: `Detalle de movimientos (${agg.detalle.length})`,
+          columnas: ['Fecha', 'Tipo', 'Insumo', 'Mov.', 'Cantidad', 'Unidad', 'Responsable / Destino', 'Frente'],
+          filas: agg.detalle.slice(0, 1000).map(m => [m.fecha, tipoLabelDe(m.cat), m.insumoNombre, DIR_LABEL[m.dir] || m.dir, fmtN(m.cantidad), m.unidad || '', nombrePersona(m), nombreFrente(m)]),
         });
-        window.__reports.downloadPDF(doc, `${baseFilename}.pdf`);
-        const newEntry = {
-          nombre: card.titulo,
-          fecha: new Date().toLocaleString('es-PE'),
-          user: userName,
-          formato: 'PDF',
-          size: '—',
-          obra: (obraActual.nombre_obra || obraActual.nombre),
-        };
-        const updated = [newEntry, ...historial].slice(0, 100);
-        setHistorial(updated);
-        saveHistorial(updated);
+        if (agg.detalle.length > 1000) tablas[0].titulo += ' — se muestran las primeras 1000';
       }
-
-      if (wantsExcel) {
-        window.__reports.generateExcel({
-          sheetName: card.id,
-          columnas,
-          filas,
-          filename: `${baseFilename}.xlsx`,
-        });
-        const newEntry = {
-          nombre: card.titulo,
-          fecha: new Date().toLocaleString('es-PE'),
-          user: userName,
-          formato: 'Excel',
-          size: '—',
-          obra: (obraActual.nombre_obra || obraActual.nombre),
-        };
-        const updated = [newEntry, ...historial].slice(0, 100);
-        setHistorial(updated);
-        saveHistorial(updated);
-      }
-
-      showToast?.(`Reporte generado: ${baseFilename}`, 'green');
-    } catch (e) {
-      console.error(e);
-      showToast?.(`Error generando reporte: ${e.message}`, 'red');
-    } finally {
-      setBusy(null);
-    }
+      const doc = await generateReportePDF({
+        company, titulo: 'REPORTE DE MOVIMIENTOS', subtitulo: 'Movimientos de Insumos', meta, kpis, charts, tablas,
+        footer: `Generado por ${userName} — JARVEX`,
+      });
+      const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      downloadPDF(doc, `JARVEX_movimientos_${tipo}_${stamp}.pdf`);
+      const entry = { nombre: `Movimientos · ${tipoLbl} · ${PERIODO_LABEL[periodo]}`, fecha: new Date().toLocaleString('es-PE'), user: userName, formato: 'PDF', obra: obraActual.nombre_obra || obraActual.nombre };
+      const upd = [entry, ...historial].slice(0, 100); setHistorial(upd); saveHistorial(upd);
+      toast('PDF generado', 'green');
+    } catch (e) { toast('Error PDF: ' + (e.message || e), 'red'); }
+    finally { setPdfBusy(false); }
   }
 
-  function clearHistorial() {
-    if (!confirm('¿Limpiar todo el historial?')) return;
-    setHistorial([]);
-    saveHistorial([]);
-    showToast?.('Historial limpiado', 'amber');
+  if (!familias.length) {
+    return <div className="page-wrap"><div className="card card-p empty-state"><JxIcon name="chart" size={40} color="var(--tm)" /><p>Tu rol no tiene reportes asignados por ahora.</p></div></div>;
   }
 
   return (
@@ -380,107 +224,171 @@ function ReportesPage({ showToast }) {
       <div className="pg-hd frow-sb">
         <div>
           <div className="pg-title">Reportes</div>
-          <div className="pg-sub">Generación y descarga de reportes del sistema</div>
+          <div className="pg-sub">Dashboard interactivo y exportación a PDF</div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          {['generar', 'historial'].map(t => (
-            <button key={t} onClick={() => setTab(t)}
-              className={`btn ${tab === t ? 'btn-amber' : 'btn-ghost'} btn-sm`}
-              style={{ textTransform: 'capitalize' }}>
-              {t === 'generar' ? 'Generar Reporte' : 'Historial'}
-            </button>
+          {['dashboard', 'historial'].map(t => (
+            <button key={t} onClick={() => setTab(t)} className={`btn ${tab === t ? 'btn-amber' : 'btn-ghost'} btn-sm`} style={{ textTransform: 'capitalize' }}>{t}</button>
           ))}
         </div>
       </div>
 
-      {tab === 'generar' && <>
-        <div className="card card-p" style={{ marginBottom: 18, display: 'grid', gridTemplateColumns: periodo === 'custom' ? '1fr 1fr 1fr 1fr 1fr' : '1fr 1fr 1fr', gap: 12, alignItems: 'end' }}>
-          <div>
-            <label className="flabel">Obra / Proyecto</label>
+      {/* Selector de familia (Fase 1: solo Movimientos, pero listo para crecer) */}
+      {familias.length > 1 && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
+          {familias.map(f => (
+            <button key={f.id} className={`btn btn-sm ${familia === f.id ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setFamilia(f.id)}>
+              <JxIcon name={f.icon} size={12} /> {f.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {tab === 'dashboard' && (<>
+        {/* Controles */}
+        <div className="card card-p" style={{ marginBottom: 16, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <div style={{ flex: '1 1 240px', minWidth: 200 }}>
+            <label className="flabel">Obra</label>
             <select className="fi" value={obraId} onChange={e => setObraId(e.target.value)}>
-              {obras.length === 0 && <option value="">— Sin obras —</option>}
-              {obras.map(o => <option key={o.id} value={o.id}>{o.nombre_obra || o.nombre}</option>)}
+              {obrasVivas.length === 0 && <option value="">— Sin obras —</option>}
+              {obrasVivas.map(o => <option key={o.id} value={o.id}>{o.nombre_obra || o.nombre}</option>)}
             </select>
           </div>
-          <div>
+          <div style={{ flex: '0 0 150px' }}>
             <label className="flabel">Período</label>
             <select className="fi" value={periodo} onChange={e => setPeriodo(e.target.value)}>
-              <option value="semana_actual">Semana actual</option>
-              <option value="mes_actual">Mes actual</option>
-              <option value="acumulado">Acumulado</option>
+              <option value="dia">Hoy</option><option value="semana">Semana actual</option>
+              <option value="mes">Mes actual</option><option value="acumulado">Acumulado</option>
               <option value="custom">Rango personalizado</option>
             </select>
           </div>
           {periodo === 'custom' && <>
-            <div>
-              <label className="flabel">Desde</label>
-              <input type="date" className="fi" value={customFrom} onChange={e => setCustomFrom(e.target.value)} />
-            </div>
-            <div>
-              <label className="flabel">Hasta</label>
-              <input type="date" className="fi" value={customTo} onChange={e => setCustomTo(e.target.value)} />
-            </div>
+            <div style={{ flex: '0 0 140px' }}><label className="flabel">Desde</label><input type="date" className="fi" value={customFrom} onChange={e => setCustomFrom(e.target.value)} /></div>
+            <div style={{ flex: '0 0 140px' }}><label className="flabel">Hasta</label><input type="date" className="fi" value={customTo} onChange={e => setCustomTo(e.target.value)} /></div>
           </>}
-          <div>
-            <label className="flabel">Formato de salida</label>
-            <select className="fi" value={formato} onChange={e => setFormato(e.target.value)}>
-              <option value="pdf">PDF</option>
-              <option value="excel">Excel</option>
-              <option value="ambos">Ambos</option>
+          <div style={{ flex: '0 0 150px' }}>
+            <label className="flabel">Tipo de insumo</label>
+            <select className="fi" value={tipo} onChange={e => setTipo(e.target.value)}>
+              {TIPO_OPCIONES.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
             </select>
+          </div>
+          <div style={{ flex: '0 0 auto' }}>
+            <label className="flabel">Modo</label>
+            <div style={{ display: 'flex', gap: 4 }}>
+              <button className={`btn btn-sm ${modo === 'resumen' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setModo('resumen')}>Resumen</button>
+              <button className={`btn btn-sm ${modo === 'detallado' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setModo('detallado')}>Detallado</button>
+            </div>
+          </div>
+          <div style={{ flex: '0 0 auto', marginLeft: 'auto' }}>
+            <button className="btn btn-amber btn-sm" disabled={pdfBusy || cargando} onClick={exportarPDF} style={{ height: 38 }}>
+              <JxIcon name="download" size={13} /> {pdfBusy ? 'Generando…' : 'Descargar PDF'}
+            </button>
           </div>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14 }}>
-          {REPORT_CARDS.map(r => (
-            <div key={r.id} className="card card-p card-hover">
-              <div style={{ width: 40, height: 40, borderRadius: 10, background: 'rgba(242,183,5,0.1)', border: '1px solid rgba(242,183,5,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 12 }}>
-                <JxIcon name={r.icon} size={18} color="var(--amber)" />
-              </div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--tp)', marginBottom: 6, lineHeight: 1.3 }}>{r.titulo}</div>
-              <div style={{ fontSize: 11.5, color: 'var(--tm)', lineHeight: 1.5, marginBottom: 12 }}>{r.desc}</div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                <span className="tag">{r.modulo}</span>
-                <span style={{ fontSize: 10.5, color: 'var(--tm)' }}>{r.formato}</span>
-              </div>
-              <button className="btn btn-amber btn-sm" style={{ width: '100%', justifyContent: 'center' }}
-                disabled={busy === r.id}
-                onClick={() => handleGenerate(r)}>
-                <JxIcon name="download" size={12} />{busy === r.id ? 'Generando…' : 'Generar'}
-              </button>
+        {/* KPIs */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 16 }}>
+          {[
+            { lbl: 'SALIDAS', val: fmtN(agg.kpis.totalSalidas), color: 'var(--amber)' },
+            { lbl: 'ENTRADAS', val: fmtN(agg.kpis.totalEntradas), color: 'var(--green)' },
+            { lbl: 'DEVOLUCIONES', val: fmtN(agg.kpis.totalDevoluciones), color: 'var(--blue)' },
+            { lbl: 'MOVIMIENTOS', val: fmtN(agg.kpis.nMovimientos), color: 'var(--tp)' },
+            { lbl: 'INSUMOS DISTINTOS', val: fmtN(agg.kpis.insumosDistintos), color: 'var(--tp)' },
+            { lbl: 'VALOR SALIDAS', val: fmtS(agg.kpis.valorSalidas), color: 'var(--amber)' },
+          ].map((k, i) => (
+            <div key={i} className="card card-p" style={{ borderLeft: `3px solid ${k.color}` }}>
+              <div style={{ fontSize: 10.5, color: 'var(--tm)', letterSpacing: '.05em' }}>{k.lbl}</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: k.color, marginTop: 4 }}>{k.val}</div>
             </div>
           ))}
         </div>
-      </>}
 
-      {tab === 'historial' && <>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-          <button className="btn btn-ghost btn-sm" onClick={clearHistorial}>
-            <JxIcon name="trash" size={12} /> Limpiar historial
-          </button>
-        </div>
+        {cargando ? (
+          <div className="card card-p empty-state"><JxIcon name="package" size={32} color="var(--tm)" /><p>Cargando movimientos…</p></div>
+        ) : modo === 'resumen' ? (<>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 14, marginBottom: 16 }}>
+            <div className="card card-p">
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--tp)', marginBottom: 10 }}>TOP insumos más movidos</div>
+              <ChartTop chartId="chart-insumos" labels={agg.topInsumos.map(i => i.nombre)} data={agg.topInsumos.map(i => i.cantidad)} color="rgba(242,183,5,0.75)" onInstance={onInstance} />
+            </div>
+            <div className="card card-p">
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--tp)', marginBottom: 10 }}>TOP personal por salidas</div>
+              <ChartTop chartId="chart-personal" labels={agg.topPersonal.map(p => p.nombre)} data={agg.topPersonal.map(p => p.cantidad)} color="rgba(52,152,219,0.75)" onInstance={onInstance} />
+            </div>
+            <div className="card card-p">
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--tp)', marginBottom: 10 }}>TOP frentes por consumo</div>
+              <ChartTop chartId="chart-frentes" labels={agg.topFrentes.map(f => f.nombre)} data={agg.topFrentes.map(f => f.cantidad)} color="rgba(46,204,113,0.75)" onInstance={onInstance} />
+            </div>
+          </div>
+
+          <div className="card" style={{ overflow: 'hidden' }}>
+            <div style={{ padding: '10px 14px', fontSize: 13, fontWeight: 700, color: 'var(--tp)', borderBottom: '1px solid var(--border)' }}>Más salen y por agotarse</div>
+            <div style={{ overflowX: 'auto' }}>
+              <table className="tbl">
+                <thead><tr><th>Insumo</th><th style={{ textAlign: 'right' }}>Salidas período</th><th style={{ textAlign: 'right' }}>Stock actual</th><th style={{ textAlign: 'right' }}>Stock mín.</th><th>Estado</th></tr></thead>
+                <tbody>
+                  {agg.porAgotarse.length === 0 ? (
+                    <tr><td colSpan={5} style={{ textAlign: 'center', padding: 20, color: 'var(--tm)' }}>Sin salidas en el período</td></tr>
+                  ) : agg.porAgotarse.map((r, i) => (
+                    <tr key={i}>
+                      <td className="col-p">{r.nombre}</td>
+                      <td style={{ textAlign: 'right' }}>{fmtN(r.salidas)}</td>
+                      <td style={{ textAlign: 'right', color: r.estado === 'agotado' ? 'var(--red)' : r.estado === 'critico' ? 'var(--amber)' : 'var(--ts)' }}>{r.stock == null ? '—' : fmtN(r.stock)}</td>
+                      <td style={{ textAlign: 'right', color: 'var(--tm)' }}>{fmtN(r.stockMin)}</td>
+                      <td><span className={`badge ${AGOTAR_META[r.estado].cls}`}>{AGOTAR_META[r.estado].lbl}</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>) : (
+          <div className="card" style={{ overflow: 'hidden' }}>
+            <div style={{ padding: '10px 14px', fontSize: 13, fontWeight: 700, color: 'var(--tp)', borderBottom: '1px solid var(--border)' }}>
+              Detalle de movimientos · {agg.detalle.length}{agg.detalle.length > detalleCap ? ` (se muestran ${detalleCap}, el PDF incluye hasta 1000)` : ''}
+            </div>
+            <div style={{ overflowX: 'auto', maxHeight: 'calc(100vh - 360px)' }}>
+              <table className="tbl">
+                <thead><tr><th>Fecha</th><th>Tipo</th><th>Insumo</th><th>Mov.</th><th style={{ textAlign: 'right' }}>Cantidad</th><th>Unidad</th><th>Responsable / Destino</th><th>Frente</th></tr></thead>
+                <tbody>
+                  {detalleRender.length === 0 ? (
+                    <tr><td colSpan={8} style={{ textAlign: 'center', padding: 20, color: 'var(--tm)' }}>Sin movimientos en el período</td></tr>
+                  ) : detalleRender.map(m => (
+                    <tr key={m.cat + ':' + m.id}>
+                      <td className="col-m">{m.fecha}</td>
+                      <td>{tipoLabelDe(m.cat)}</td>
+                      <td className="col-p">{m.insumoNombre}</td>
+                      <td><span className={`badge ${m.dir === 'salida' ? 'b-orange' : m.dir === 'entrada' ? 'b-green' : m.dir === 'devolucion' ? 'b-blue' : 'b-gray'}`}>{DIR_LABEL[m.dir] || m.dir}</span></td>
+                      <td style={{ textAlign: 'right', fontWeight: 600 }}>{fmtN(m.cantidad)}</td>
+                      <td>{m.unidad || '—'}</td>
+                      <td>{nombrePersona(m)}</td>
+                      <td>{nombreFrente(m)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </>)}
+
+      {tab === 'historial' && (
         <div className="card" style={{ overflow: 'hidden' }}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', padding: 10 }}>
+            <button className="btn btn-ghost btn-sm" onClick={() => { if (confirm('¿Limpiar historial?')) { setHistorial([]); saveHistorial([]); } }}><JxIcon name="trash" size={12} /> Limpiar</button>
+          </div>
           <table className="tbl">
             <thead><tr><th>Reporte</th><th>Obra</th><th>Generado</th><th>Usuario</th><th>Tipo</th></tr></thead>
             <tbody>
-              {historial.length === 0 && (
+              {historial.length === 0 ? (
                 <tr><td colSpan={5} style={{ textAlign: 'center', padding: 24, color: 'var(--tm)' }}>Sin reportes generados aún</td></tr>
-              )}
-              {historial.map((h, i) => (
-                <tr key={i}>
-                  <td className="col-p">
-                    <JxIcon name={h.formato === 'PDF' ? 'file' : 'chart'} size={13} color={h.formato === 'PDF' ? 'var(--red)' : 'var(--green)'} /> {h.nombre}
-                  </td>
-                  <td className="col-m">{h.obra || '—'}</td>
-                  <td className="col-m">{h.fecha}</td>
-                  <td>{h.user}</td>
-                  <td><span className={`badge ${h.formato === 'PDF' ? 'b-red' : 'b-green'}`}>{h.formato}</span></td>
-                </tr>
+              ) : historial.map((h, i) => (
+                <tr key={i}><td className="col-p"><JxIcon name="file" size={13} color="var(--red)" /> {h.nombre}</td><td className="col-m">{h.obra || '—'}</td><td className="col-m">{h.fecha}</td><td>{h.user}</td><td><span className="badge b-red">{h.formato}</span></td></tr>
               ))}
             </tbody>
           </table>
         </div>
-      </>}
+      )}
     </div>
   );
 }
