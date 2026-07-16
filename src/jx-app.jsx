@@ -353,6 +353,7 @@ function Header({ page, plano = 'obra', onInicio, onToggleSidebar, onLogout, pro
     'cuentas-bancarias':'Cuentas Bancarias', 'flujo-caja':'Flujo de Caja / Cronograma de Pagos',
     'solicitud-residente':'Solicitud de Insumos', 'compras-pendientes':'Vinculación de Compras',
     'reporte-especialidad':'Reporte Diario de Especialidad', 'panel-residente':'Panel del Residente',
+    'charlas-plan':'Planificador de Charlas', 'sctr-personal':'SCTR del Personal', 'inducciones':'Inducciones',
     requisiciones:'Requisiciones', 'ordenes-compra':'Órdenes de Compra',
     valorizaciones:'Valorizaciones', 'activos-pesados':'Activos Pesados / Maquinaria',
     'charlas-seguridad':'Charlas de Seguridad', iperc:'IPERC — Matriz de Riesgos',
@@ -631,6 +632,9 @@ const PAGE_REGISTRY = {
   'activos-pesados':        { chunk: 'jx-activos', component: 'ActivosPesadosPage' },
   // === jx-ssoma ===
   'reporte-especialidad':   { chunk: 'jx-especialidad', component: 'ReporteEspecialidadPage' },
+  'charlas-plan':           { chunk: 'jx-seguridad', component: 'CharlasPlanPage' },
+  'sctr-personal':          { chunk: 'jx-seguridad', component: 'SctrPage' },
+  'inducciones':            { chunk: 'jx-seguridad', component: 'InduccionesPage' },
   'panel-residente':        { chunk: 'jx-especialidad', component: 'PanelResidentePage' },
   'charlas-seguridad':      { chunk: 'jx-ssoma', component: 'CharlasSeguridadPage' },
   'iperc':                  { chunk: 'jx-ssoma', component: 'IpercPage' },

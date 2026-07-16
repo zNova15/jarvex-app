@@ -13,6 +13,8 @@
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
 import { hoyLocal } from "../lib/fecha.js";
+import { esObrero } from "../lib/personal-scope.js";
+import { getCurrentMode } from "../lib/app-mode-core.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -41,10 +43,12 @@ function useObraActivaLocal() {
   return obraId;
 }
 
+const esPrueba = () => getCurrentMode() === 'prueba';
 async function cargarReportes(obraId) {
   try {
-    return await window.__db.reportes_especialidad
+    const rows = await window.__db.reportes_especialidad
       .where('obra_id').equals(obraId).filter(r => !r.deleted_at).toArray();
+    return esPrueba() ? rows.filter(r => r.demo === true) : rows.filter(r => !r.demo);
   } catch { return []; }
 }
 
@@ -101,8 +105,9 @@ function ReporteEspecialidadPage({ showToast }) {
         descripcion: descripcion.trim(), responsable_id: userId,
         created_by: userId, updated_by: userId,
         created_at: now, updated_at: now,
-        version: 1, sync_status: 'pending_create', last_synced_at: null,
+        version: 1, last_synced_at: null,
         idempotency_key: `${userId}_repesp_${id}`,
+        ...(esPrueba() ? { sync_status: 'synced', demo: true } : { sync_status: 'pending_create' }),
       });
       // Fotos como evidencias enlazadas al reporte.
       let subidas = 0;
@@ -210,13 +215,9 @@ function ReporteEspecialidadPage({ showToast }) {
 }
 
 // ── Panel del Residente ─────────────────────────────────────────────
-// Cargos considerados "personal obrero" (el residente y la ing. de seguridad
-// solo gestionan estos). Comparación laxa: sin acentos, case-insensitive.
-export const CARGOS_OBRERO = ['peon', 'oficial', 'operario'];
-const esObrero = (cargo) => {
-  const c = String(cargo || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
-  return CARGOS_OBRERO.some(k => c === k || c.startsWith(k + ' '));
-};
+// El scope de "personal obrero" (Peón/Oficial/Operario) vive en
+// lib/personal-scope.js (esObrero, importado arriba) — compartido con
+// PersonalPage y las páginas de seguridad.
 
 function PanelResidentePage({ showToast }) {
   const obraId = useObraActivaLocal();

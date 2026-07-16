@@ -45,6 +45,14 @@ export const db = new Dexie('JarvexDB');
 // al admin/gerente para reportar un frente que no es suyo (titular ausente);
 // tras la aprobación carga el reporte en reporte_payload (jsonb, prop sin índice)
 // y lo envía; el admin acepta y recién ahí se aplican los avances. Aditivo.
+// Versión 39: Fase 2 Seguridad — planificador de charlas (compartido
+// seguridad/ambiental/social) + fichas de inducción del personal directo.
+// personal.sctr_vencimiento/aseguradora son columnas aditivas (sin índice). Aditivo.
+db.version(39).stores({
+  charlas_plan: 'id, obra_id, area, fecha, estado, deleted_at, sync_status',
+  inducciones: 'id, obra_id, personal_id, tipo, fecha, deleted_at, sync_status',
+});
+
 // Versión 38: reporte diario de ESPECIALISTAS (seguridad/ambiental/calidad/
 // social) — cada ingeniero especialista reporta su día; el Residente supervisa
 // el cumplimiento. Aditivo.

@@ -31,6 +31,7 @@ const TRANSACTIONAL_TABLES = [
   'accounting_movements',
   'intercompany_transactions',
   'reportes_especialidad',
+  'charlas_plan', 'inducciones',
   // Compras
   'insumos_pendientes',
   'requisiciones', 'requisicion_items',
@@ -127,6 +128,8 @@ const MASTER_TABLES = [
   { tabla: 'ordenes_intercompany',         query: () => supabase.from('ordenes_intercompany').select('*').is('deleted_at', null) },
   { tabla: 'reportes_dia',                 query: () => supabase.from('reportes_dia').select('*').is('deleted_at', null) },
   { tabla: 'reportes_especialidad',        query: () => supabase.from('reportes_especialidad').select('*').is('deleted_at', null) },
+  { tabla: 'charlas_plan',                 query: () => supabase.from('charlas_plan').select('*').is('deleted_at', null) },
+  { tabla: 'inducciones',                  query: () => supabase.from('inducciones').select('*').is('deleted_at', null) },
   { tabla: 'pagos',                        query: () => supabase.from('pagos').select('*').is('deleted_at', null) },
   { tabla: 'pagos_partes',                 query: () => supabase.from('pagos_partes').select('*').is('deleted_at', null) },
   { tabla: 'guias_remision',               query: () => supabase.from('guias_remision').select('*').is('deleted_at', null) },
@@ -537,7 +540,9 @@ const TABLA_TO_MODULO = {
   obras: 'Obras',
   personal: 'Personal',
   personal_historial: 'Personal',
-  personal_cuentas_bancarias: 'Personal',
+  // Datos bancarios del personal: módulo PROPIO — el almacenero ganó Personal 'w'
+  // (scope obrero) pero NO debe poder tocar cuentas bancarias (contador/tesorero sí).
+  personal_cuentas_bancarias: 'Cuentas Bancarias',
   // frentes_obra: sin mapear a propósito → canPushTabla deja pasar (no existe
   // módulo 'Frentes' en la matriz de permisos; el CRUD ya gatea por rol).
   materiales: 'Materiales',
@@ -569,6 +574,8 @@ const TABLA_TO_MODULO = {
   evidencias: 'Evidencias',
   ubicaciones_obra: 'Ubicaciones',
   reportes_especialidad: 'Reporte Especialidad',
+  charlas_plan: 'Charlas Seguridad',
+  inducciones: 'Charlas Seguridad',
   insumos_pendientes: 'Requisiciones',
   requisiciones: 'Requisiciones',
   requisicion_items: 'Requisiciones',
@@ -698,6 +705,7 @@ const FK_DEPS = {
   personal_historial:        [{ campo: 'personal_id', tabla: 'personal' }],
   personal_cuentas_bancarias: [{ campo: 'personal_id', tabla: 'personal' }],
   recepcion_items:           [{ campo: 'recepcion_id', tabla: 'recepciones' }],
+  inducciones:               [{ campo: 'personal_id', tabla: 'personal' }],
   oc_items:                  [{ campo: 'orden_compra_id', tabla: 'ordenes_compra' }],
   cotizacion_items:          [{ campo: 'cotizacion_id', tabla: 'cotizaciones' }],
   requisicion_items:         [{ campo: 'requisicion_id', tabla: 'requisiciones' }],

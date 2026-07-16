@@ -133,6 +133,9 @@ const NAV = [
 
   { section: 'SSOMA / SEGURIDAD' },
   { id: 'reporte-especialidad', label: 'Reporte Diario (especialidad)', icon: 'edit' },
+  { id: 'charlas-plan', label: 'Planificador de Charlas', icon: 'calendar' },
+  { id: 'sctr-personal', label: 'SCTR del Personal', icon: 'shield' },
+  { id: 'inducciones', label: 'Inducciones', icon: 'check' },
   { id: 'charlas-seguridad', label: 'Charlas de 5 minutos', icon: 'alert' },
   { id: 'iperc', label: 'IPERC (riesgos)', icon: 'alert' },
   { id: 'epps-inventario', label: 'EPPs (inventario)', icon: 'shield' },

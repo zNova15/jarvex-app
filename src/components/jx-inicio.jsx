@@ -65,13 +65,13 @@ const BLOQUES = [
   {
     id: 'ssoma', titulo: 'Seguridad (SSOMA)', icon: 'shield', tipo: 'obra', color: '#E67E22',
     desc: 'Reporte diario, charlas, IPERC, inspecciones y EPPs',
-    items: ['reporte-especialidad', 'charlas-seguridad', 'iperc', 'inspecciones-seguridad', 'capacitaciones', 'epps-inventario',
+    items: ['reporte-especialidad', 'charlas-plan', 'sctr-personal', 'inducciones', 'charlas-seguridad', 'iperc', 'inspecciones-seguridad', 'capacitaciones', 'epps-inventario',
       'epp', 'insumos-persona', 'insumos-emergencia'],
   },
   {
     id: 'ambiental', titulo: 'Ambiental', icon: 'map', tipo: 'obra', color: '#2ECC71',
     desc: 'Reporte diario y evidencias de gestión ambiental (ISO 14001)',
-    items: ['reporte-especialidad', 'charlas-seguridad', 'capacitaciones', 'evidencias'],
+    items: ['reporte-especialidad', 'charlas-plan', 'inducciones', 'charlas-seguridad', 'capacitaciones', 'evidencias'],
   },
   {
     id: 'calidad', titulo: 'Calidad', icon: 'checkCircle', tipo: 'obra', color: '#3498DB',
@@ -81,7 +81,7 @@ const BLOQUES = [
   {
     id: 'social', titulo: 'Social', icon: 'users', tipo: 'obra', color: '#9B59B6',
     desc: 'Reporte diario, charlas comunitarias y gestión social',
-    items: ['reporte-especialidad', 'charlas-seguridad', 'capacitaciones', 'evidencias'],
+    items: ['reporte-especialidad', 'charlas-plan', 'charlas-seguridad', 'capacitaciones', 'evidencias'],
   },
   {
     id: 'contabilidad', titulo: 'Contabilidad', icon: 'dollar', tipo: 'general', color: '#F2B705',

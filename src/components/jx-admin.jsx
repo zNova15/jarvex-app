@@ -868,9 +868,10 @@ const PERM_MATRIX = {
     // stock que vive en el almacén (botiquín, extintores) → también lo gestiona.
     if (['Materiales','Mov. Materiales','Herramientas','Mov. Herramientas',
          'Recepciones','EPP','Requisiciones','Evidencias','Incidencias','Caja Chica',
-         'Insumos de Emergencia'].includes(m)) return 'w';
+         'Insumos de Emergencia',
+         'Personal'].includes(m)) return 'w';   // Personal w: crea/inhabilita SOLO obreros (scope en la página)
     // Lectura: lo que necesita consultar para hacer su trabajo
-    if (['Órdenes de Compra','Cotizaciones','Proveedores','Personal','Asistencia',
+    if (['Órdenes de Compra','Cotizaciones','Proveedores','Asistencia',
          'Activos Pesados','Mantenimiento','Horas Máquina','Ubicaciones'].includes(m)) return 'r';
     // Resto (RRHH, contabilidad, SUNAT, ejecutivo, SSOMA distinto a EPP, auditoría) → sin acceso
     return 'x';
@@ -1115,6 +1116,9 @@ window.__moduleIdMap = {
   'capacitaciones': 'Capacitaciones',
   'insumos-emergencia': 'Insumos de Emergencia',
   'reporte-especialidad': 'Reporte Especialidad',
+  'charlas-plan': 'Charlas Seguridad',
+  'inducciones': 'Charlas Seguridad',
+  'sctr-personal': 'Personal',
   // RRHH
   'personal-contratos': 'Contratos Laborales',
   'planillas': 'Planillas',

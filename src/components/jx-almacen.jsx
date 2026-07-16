@@ -10,6 +10,7 @@ import { opcionesDestinoFlat, splitDestino } from "../lib/destino-mov.js";
 import { getDesgloseBulk, aplicarDelta, traspasar, baseSalidaUbicacion } from "../lib/stock-ubicaciones.js";
 import { DesglosePopup, TraspasoStockModal, ubicacionAutoOrigen } from "./jx-stock-ubic.jsx";
 import { hoyLocal, horaLocal } from "../lib/fecha.js";
+import { esObrero, rolScopeObrero, CARGOS_OBRERO_CANONICOS } from "../lib/personal-scope.js";
 import { EstadosModal } from "./jx-stock-estados.jsx";
 import { FusionPersonasModal } from "./jx-fusion-personas.jsx";
 import { getEstadosBulk, ESTADOS_COND, ESTADO_LABEL, aplicarDeltaEstado } from "../lib/stock-estados.js";
@@ -4811,6 +4812,9 @@ function PersonalPage({ showToast }) {
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Personal', 'w') ?? false);
+  // SCOPE OBRERO (Gabriel): ing. de seguridad, almacenera y residente gestionan
+  // SOLO personal con cargo Peón/Oficial/Operario — no ven al resto del personal.
+  const scopeObrero = !isAdmin && rolScopeObrero(myRol);
   const superAdminP = !!appMode.superAdmin;
   const [fusionOpen, setFusionOpen] = uS(false);
   // Verificación masiva de DNIs del roster contra RENIEC (pacing 30/min).
@@ -4936,9 +4940,17 @@ function PersonalPage({ showToast }) {
     return () => clearTimeout(t);
   }, [form.dni, editingId, personal]);
 
+  // Fuente única bajo scope obrero: lista, KPIs del header, Verificar DNIs y
+  // export usan ESTE subconjunto (no `personal` completo) para no filtrar datos
+  // de personal no-obrero a los roles con scope.
+  const baseScoped = uM(() => {
+    if (!personal) return [];
+    return scopeObrero ? personal.filter(p => esObrero(p.cargo)) : personal;
+  }, [personal, scopeObrero]);
+
   const filtered = uM(() => {
     if (!personal) return [];
-    let list = personal;
+    let list = baseScoped;
     // Vínculo: directos (sin subcontratista), subcontratados (con cualquiera), o uno específico
     if (filtroVinculo === 'directos') list = list.filter(p => !p.subcontratista_id);
     else if (filtroVinculo === 'subcontratados') list = list.filter(p => !!p.subcontratista_id);
@@ -4963,7 +4975,7 @@ function PersonalPage({ showToast }) {
       );
     }
     return list;
-  }, [q, personal, filtroVinculo, filtroEstado, filtroFrente, subsById]);
+  }, [q, personal, baseScoped, filtroVinculo, filtroEstado, filtroFrente, subsById]);
 
   const personalPg = usePagination(filtered, 50);
 
@@ -4975,6 +4987,7 @@ function PersonalPage({ showToast }) {
   };
 
   const openEditPersonal = (p) => {
+    if (scopeObrero && !esObrero(p.cargo)) { showToast('Tu rol solo gestiona personal obrero (Peón/Oficial/Operario)', 'red'); return; }
     setForm({
       nombres: p.nombres || '',
       apellidos: p.apellidos || '',
@@ -5037,6 +5050,11 @@ function PersonalPage({ showToast }) {
   };
 
   const handleSubmit = async () => {
+    // Scope obrero: estos roles solo crean/editan Peón/Oficial/Operario.
+    if (scopeObrero && !esObrero(form.cargo)) {
+      showToast('Tu rol solo puede registrar personal obrero: elegí cargo Peón, Oficial u Operario.', 'red');
+      return;
+    }
     const tipoDoc = form.tipo_documento || 'dni';
     // DNI: 8 dígitos. CE/Pasaporte: alfanumérico 5-12 (sin formato estricto —
     // los formatos varían por país y por serie de carnet).
@@ -5203,7 +5221,7 @@ function PersonalPage({ showToast }) {
   // ── Verificar los DNIs del roster contra RENIEC ──────────────────
   // Reusable también para reanudar tras el límite de 30/min: lo verificado
   // queda en el Map y solo se consultan los pendientes.
-  const dniCandidatos = () => (personal || []).filter(p =>
+  const dniCandidatos = () => (baseScoped || []).filter(p =>
     !p.deleted_at && (p.tipo_documento || 'dni') === 'dni' &&
     /^\d{8}$/.test(String(p.dni || '')));
   // Pendiente = sin resultado, con error transitorio, o cuyo DNI cambió desde
@@ -5259,6 +5277,7 @@ function PersonalPage({ showToast }) {
 
   // Aplicar el nombre de RENIEC a una persona (corrección sugerida).
   const aplicarNombreReniec = async (p, rn) => {
+    if (scopeObrero && !esObrero(p.cargo)) { showToast('Tu rol solo gestiona personal obrero', 'red'); return; }
     const nuevos = { nombres: titleCaseNombre(rn.nombres), apellidos: titleCaseNombre(rn.apellidos) };
     try {
       await updatePersonal(p.id, nuevos);
@@ -5281,7 +5300,7 @@ function PersonalPage({ showToast }) {
   return (
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
-        <div><div className="pg-title">Personal</div><div className="pg-sub">{personal.length} trabajadores · {personal.filter(p=>p.estado==='activo').length} activos · {personal.filter(p=>!p.subcontratista_id).length} directos · {personal.filter(p=>!!p.subcontratista_id).length} en subcontrato</div></div>
+        <div><div className="pg-title">Personal</div><div className="pg-sub">{baseScoped.length} trabajadores{scopeObrero ? ' (obreros)' : ''} · {baseScoped.filter(p=>p.estado==='activo').length} activos · {baseScoped.filter(p=>!p.subcontratista_id).length} directos · {baseScoped.filter(p=>!!p.subcontratista_id).length} en subcontrato</div></div>
         <div style={{display:'flex',gap:8}}>
           {superAdminP && (
             <button className="btn btn-sm" style={{ background:'rgba(231,76,60,0.12)', color:'#E74C3C', border:'1px solid rgba(231,76,60,0.3)' }}
@@ -5300,7 +5319,7 @@ function PersonalPage({ showToast }) {
                 // alcanza con canWrite (rrhh / residente tienen Personal 'w'
                 // pero Cuentas Bancarias 'x').
                 const sinBancos = !(isAdmin || (window.__hasPerm?.(myRol, 'Cuentas Bancarias', 'r') ?? false));
-                const r = await exportarDataset('personal', obraId, obra?.nombre_obra || obra?.nombre || 'obra', { sinBancos }, { porModo: true });
+                const r = await exportarDataset('personal', obraId, obra?.nombre_obra || obra?.nombre || 'obra', { sinBancos, soloObreros: scopeObrero, esObrero }, { porModo: true });
                 showToast(`Exportado: ${r.filas} trabajadores → ${r.archivo}`, 'green');
               } catch (e) { showToast('Error al exportar: ' + (e.message || e), 'red'); }
             }}>
@@ -5577,10 +5596,11 @@ function PersonalPage({ showToast }) {
               setForm({...form, cargo:v});
             }}>
               <option value="">— Selecciona —</option>
-              {form.cargo && !cargosDisponibles.includes(form.cargo) && <option value={form.cargo}>{form.cargo}</option>}
-              {cargosDisponibles.map(c => <option key={c} value={c}>{c}</option>)}
-              <option value="__add__">+ Agregar cargo…</option>
+              {form.cargo && !(scopeObrero ? CARGOS_OBRERO_CANONICOS : cargosDisponibles).includes(form.cargo) && <option value={form.cargo}>{form.cargo}</option>}
+              {(scopeObrero ? CARGOS_OBRERO_CANONICOS : cargosDisponibles).map(c => <option key={c} value={c}>{c}</option>)}
+              {!scopeObrero && <option value="__add__">+ Agregar cargo…</option>}
             </select>
+            {scopeObrero && <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:3 }}>Tu rol gestiona solo personal obrero (Peón / Oficial / Operario).</div>}
           </div>
           <div><label className="flabel">Área</label>
             <select className="fi" value={form.area||''} onChange={e=>setForm({...form, area:e.target.value})}>
