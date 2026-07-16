@@ -54,16 +54,21 @@ export default defineConfig({
       },
     }),
     VitePWA({
-      registerType: 'autoUpdate',
+      // 'prompt': el SW nuevo NO se activa solo. La app detecta que hay versión
+      // nueva y muestra un banner "Actualizar"; recién al tocarlo se recarga.
+      // Antes ('autoUpdate' + skipWaiting) la app se recargaba SOLA mientras el
+      // usuario la usaba → pedido de Gabriel de que las mejoras no aparezcan
+      // de golpe a mitad de trabajo. El registro se hace a mano en main.jsx.
+      registerType: 'prompt',
+      injectRegister: false,
       includeAssets: ['favicon.ico', 'icons/*.png'],
       workbox: {
         // El bundle creció con Versiones + Contabilidad; el default de 2MiB
         // ya quedó corto. Subimos a 5MiB para que workbox lo precachee.
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
-        // skipWaiting + clientsClaim para que el SW nuevo tome control
-        // inmediatamente sin esperar a que el usuario cierre la pestaña.
-        skipWaiting: true,
-        clientsClaim: true,
+        // SIN skipWaiting/clientsClaim: el SW nuevo espera a que el usuario
+        // acepte el banner. Hasta entonces sigue sirviendo la versión vieja
+        // (consistente), sin cambios sorpresivos ni pantallas a medias.
         // Limpia precaches viejos al activar el nuevo SW. Sin esto, los
         // usuarios existentes pueden quedar con index.html viejo apuntando
         // a bundles JS que ya no existen en el server → pantalla negra.

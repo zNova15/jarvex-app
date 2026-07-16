@@ -7,7 +7,7 @@ const { useState: uSAd, useMemo: uMAd, useEffect: uEAd } = React;
 const ROL_LABELS = {
   admin:               'Admin',
   gerente:             'Gerente',
-  ingeniero_residente: 'Ing. Residente',
+  ingeniero_residente: 'Residente de Obra',
   ingeniero:           'Ingeniero',
   supervisor:          'Supervisor',
   almacenero:          'Almacenero',
@@ -785,16 +785,27 @@ const PERM_MATRIX = {
   }),
 
   // Ing. Residente: w en operaciones de obra, SSOMA y partidas; r resto; x Contabilidad/SUNAT/Usuarios
+  // Residente de Obra: SOLO técnico y cronología (pedido de Gabriel). NADA
+  // contable/financiero/tesorería/nómina/SUNAT/administración, ni compras con
+  // dinero (la SOLICITUD técnica de insumos sí, la orden de compra no). Antes el
+  // default 'r' le filtraba Costos, Movs. Contables, OC, etc. → ahora explícito.
   ingeniero_residente: PERM_MATRIX_MODULES.map(m => {
-    if (m === 'Usuarios/Config') return 'x';
-    if (['Empresas','Intercompany','Consolidado','Libro Diario','Balance General','Estado Resultados',
-         'Cuentas Bancarias','Flujo de Caja','Comprobantes Electrónicos','Libros Electrónicos',
-         'PLAME / T-Registro','Config SUNAT'].includes(m)) return 'x';
-    if (['Personal','Asistencia','Partidas','Insumos','Cronograma','Avance','Comparativo',
-         'Valorizaciones','Subcontratos','Valor. Subcontrato','Mantenimiento','Horas Máquina',
-         'Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones',
-         'Incidencias','Evidencias','Requisiciones','Ubicaciones','KPIs por Obra','Cumplimiento Cronograma',
-         'Vinculación Salidas'].includes(m)) return 'w';
+    const SIN = ['Caja Chica','Costos',
+      'Órdenes de Compra','Cotizaciones','Recepciones',
+      'Contratos Laborales','Planillas','CTS','Gratificaciones',
+      'Empresas','Movs. Contables','Intercompany','Trazabilidad','Consolidado',
+      'Plan de Cuentas','Libro Diario','Balance General','Estado Resultados',
+      'Cuentas Bancarias','Flujo de Caja','Flujo Proyectado','Comparativo Periodos',
+      'Comprobantes Electrónicos','Libros Electrónicos','PLAME / T-Registro','Config SUNAT',
+      'Dashboard Ejecutivo','Importar','Captura Mágica','Conflictos Sync','Auditoría','Usuarios/Config'];
+    if (SIN.includes(m)) return 'x';
+    const EDITA = ['Partidas','Insumos','Cronograma','Avance','Comparativo','Incidencias','Evidencias','Vinculación Salidas',
+      'Requisiciones','Ubicaciones','KPIs por Obra','Cumplimiento Cronograma',
+      'Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones','Insumos de Emergencia',
+      'Personal','Asistencia','Mantenimiento','Horas Máquina','Solicitudes Cambio'];
+    if (EDITA.includes(m)) return 'w';
+    // Resto técnico/operativo → lectura (Obras, Materiales, Herramientas, Mov.*,
+    // Proveedores, Activos, Versiones, Valorizaciones, Subcontratos, Reportes, Alertas, Búsqueda).
     return 'r';
   }),
 

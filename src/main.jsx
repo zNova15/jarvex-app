@@ -3,6 +3,7 @@
 // PRIMERO. Ver src/instrument.js para la configuración.
 import './instrument.js';
 import * as Sentry from '@sentry/react';
+import { registerSW } from 'virtual:pwa-register';
 // PostHog: telemetría de uso (qué pantallas se usan, clicks, flows).
 // Se inicializa aquí también temprano para que capture el primer pageview.
 import { initPostHog } from './lib/posthog.js';
@@ -321,6 +322,28 @@ class AppErrorBoundary extends React.Component {
   }
 }
 
+// Banner discreto "hay versión nueva". No recarga solo: el usuario decide.
+function UpdateBanner() {
+  const [show, setShow] = React.useState(() => (typeof window !== 'undefined' && !!window.__jxUpdateAvailable));
+  React.useEffect(() => {
+    const on = () => setShow(true);
+    window.addEventListener('jx_update_available', on);
+    return () => window.removeEventListener('jx_update_available', on);
+  }, []);
+  if (!show) return null;
+  return (
+    <div style={{ position: 'fixed', bottom: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 99999, background: '#1C2D40', color: '#F0F2F5', border: '1px solid rgba(242,183,5,0.5)', borderRadius: 10, padding: '11px 14px', display: 'flex', alignItems: 'center', gap: 12, boxShadow: '0 6px 24px rgba(0,0,0,0.4)', maxWidth: '92vw', flexWrap: 'wrap' }}>
+      <span style={{ fontSize: 13 }}>✨ Hay una versión nueva de JARVEX.</span>
+      <button onClick={() => { try { window.__jxUpdateSW ? window.__jxUpdateSW() : window.location.reload(); } catch { window.location.reload(); } }}
+        style={{ background: '#F2B705', color: '#0D1520', border: 'none', padding: '7px 14px', borderRadius: 7, fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>
+        Actualizar ahora
+      </button>
+      <button onClick={() => setShow(false)} title="Más tarde"
+        style={{ background: 'transparent', color: '#9AA7B4', border: 'none', cursor: 'pointer', fontSize: 16, lineHeight: 1 }}>✕</button>
+    </div>
+  );
+}
+
 function Root() {
   const auth = useAuthProvider();
 
@@ -376,26 +399,34 @@ function Root() {
     <AppErrorBoundary>
       <AuthContext.Provider value={auth}>
         <App />
+        <UpdateBanner />
       </AuthContext.Provider>
     </AppErrorBoundary>
   );
 }
 
-// ── Auto-reload cuando el Service Worker se actualiza ─────────────
-// El SW está configurado con skipWaiting+clientsClaim, pero la página
-// abierta sigue corriendo el bundle viejo hasta un reload manual.
-// 'controllerchange' dispara cuando el SW nuevo toma control → forzamos
-// recarga para que el usuario reciba la versión nueva sin tener que
-// pulsar Ctrl+Shift+R.
-if ('serviceWorker' in navigator) {
-  let swReloaded = false;
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (swReloaded) return;
-    swReloaded = true;
-    console.log('[SW] Nueva versión activa — recargando...');
-    window.location.reload();
+// ── Versión nueva del Service Worker → banner "Actualizar" ─────────
+// Modo 'prompt': el SW nuevo se instala y ESPERA. Avisamos con un banner
+// (UpdateBanner en Root) y recién al tocar "Actualizar" (updateSW(true))
+// se activa y recarga. Así las mejoras NO aparecen de golpe a mitad de uso.
+try {
+  const updateSW = registerSW({
+    immediate: true,
+    onNeedRefresh() {
+      window.__jxUpdateSW = () => updateSW(true);   // aplica y recarga
+      window.__jxUpdateAvailable = true;            // por si el banner monta después
+      window.dispatchEvent(new Event('jx_update_available'));
+    },
+    onOfflineReady() {},
+    onRegisteredSW(swUrl, r) {
+      if (!r) return;
+      // Chequear si hay versión nueva cada 5 min y al volver el foco a la pestaña.
+      const check = () => { try { r.update(); } catch {} };
+      setInterval(check, 5 * 60 * 1000);
+      window.addEventListener('focus', check);
+    },
   });
-}
+} catch (e) { console.warn('[SW] registro falló:', e?.message || e); }
 
 // Dar un tick para que todos los window.* estén registrados
 requestAnimationFrame(() => {
