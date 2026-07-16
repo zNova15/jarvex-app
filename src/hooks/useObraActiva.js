@@ -37,7 +37,12 @@ export function useObraActiva() {
       if (cancelled) return;
       try {
         const all = await window.__db.obras.toArray();
-        const visibles = all.filter(o => !o.deleted_at);
+        // AISLAMIENTO POR OBRA: solo las obras asignadas al usuario
+        // (window.__obrasPermitidas la mantiene main.jsx desde obra_usuarios;
+        // null = sin restricción). Antes el selector mostraba TODAS las obras
+        // a cualquier rol — pedido explícito de Gabriel de separarlas.
+        const permitidas = window.__obrasPermitidas ?? null;
+        const visibles = all.filter(o => !o.deleted_at && (!permitidas || permitidas.has(o.id)));
         if (cancelled) return;
         setObras(visibles);
         const stored = getObraActivaIdSync();
@@ -64,12 +69,14 @@ export function useObraActiva() {
     window.addEventListener('jx_data_changed', onChange);
     window.addEventListener('jx_sync_pull', load);
     window.addEventListener('jarvex_master_updated', load);
+    window.addEventListener('obras_permitidas_change', load);
     const interval = setInterval(load, 60_000);
     return () => {
       cancelled = true;
       window.removeEventListener('jx_data_changed', onChange);
       window.removeEventListener('jx_sync_pull', load);
       window.removeEventListener('jarvex_master_updated', load);
+      window.removeEventListener('obras_permitidas_change', load);
       clearInterval(interval);
     };
   }, []);

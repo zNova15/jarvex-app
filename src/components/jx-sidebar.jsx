@@ -107,6 +107,7 @@ const NAV = [
 
   { section: 'GESTIÓN DE OBRA' },
   { id: 'dashboard-gestion', label: 'Dashboard Gestión de Obra', icon: 'dashboard' },
+  { id: 'panel-residente', label: 'Panel del Residente', icon: 'hardHat' },
   { id: 'importar', label: 'Importar Presupuesto', icon: 'upload' },
   { id: 'partidas', label: 'Partidas', icon: 'list' },
   { id: 'control-consumo', label: 'Control de Consumo', icon: 'trending' },
@@ -131,6 +132,7 @@ const NAV = [
   { id: 'pagos', label: 'Pagos', icon: 'dollar' },
 
   { section: 'SSOMA / SEGURIDAD' },
+  { id: 'reporte-especialidad', label: 'Reporte Diario (especialidad)', icon: 'edit' },
   { id: 'charlas-seguridad', label: 'Charlas de 5 minutos', icon: 'alert' },
   { id: 'iperc', label: 'IPERC (riesgos)', icon: 'alert' },
   { id: 'epps-inventario', label: 'EPPs (inventario)', icon: 'shield' },

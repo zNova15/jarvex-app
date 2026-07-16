@@ -45,6 +45,13 @@ export const db = new Dexie('JarvexDB');
 // al admin/gerente para reportar un frente que no es suyo (titular ausente);
 // tras la aprobación carga el reporte en reporte_payload (jsonb, prop sin índice)
 // y lo envía; el admin acepta y recién ahí se aplican los avances. Aditivo.
+// Versión 38: reporte diario de ESPECIALISTAS (seguridad/ambiental/calidad/
+// social) — cada ingeniero especialista reporta su día; el Residente supervisa
+// el cumplimiento. Aditivo.
+db.version(38).stores({
+  reportes_especialidad: 'id, obra_id, area, fecha, responsable_id, deleted_at, sync_status',
+});
+
 // Versión 37: "Solicitud de Insumos" — catálogo SEPARADO de nombres de insumo
 // solicitados que aún no existen en las tablas reales de la obra (evita
 // ensuciar materiales/herramientas/... con nombres que quizá nunca se usen).

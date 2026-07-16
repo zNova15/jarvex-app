@@ -352,6 +352,7 @@ function Header({ page, plano = 'obra', onInicio, onToggleSidebar, onLogout, pro
     'captura-magica':'✨ Captura Mágica',
     'cuentas-bancarias':'Cuentas Bancarias', 'flujo-caja':'Flujo de Caja / Cronograma de Pagos',
     'solicitud-residente':'Solicitud de Insumos', 'compras-pendientes':'Vinculación de Compras',
+    'reporte-especialidad':'Reporte Diario de Especialidad', 'panel-residente':'Panel del Residente',
     requisiciones:'Requisiciones', 'ordenes-compra':'Órdenes de Compra',
     valorizaciones:'Valorizaciones', 'activos-pesados':'Activos Pesados / Maquinaria',
     'charlas-seguridad':'Charlas de Seguridad', iperc:'IPERC — Matriz de Riesgos',
@@ -629,6 +630,8 @@ const PAGE_REGISTRY = {
   // === jx-activos ===
   'activos-pesados':        { chunk: 'jx-activos', component: 'ActivosPesadosPage' },
   // === jx-ssoma ===
+  'reporte-especialidad':   { chunk: 'jx-especialidad', component: 'ReporteEspecialidadPage' },
+  'panel-residente':        { chunk: 'jx-especialidad', component: 'PanelResidentePage' },
   'charlas-seguridad':      { chunk: 'jx-ssoma', component: 'CharlasSeguridadPage' },
   'iperc':                  { chunk: 'jx-ssoma', component: 'IpercPage' },
   'epp':                    { chunk: 'jx-ssoma', component: 'EppPage' },
@@ -1092,6 +1095,9 @@ function App() {
   // plano OBRA. Si se pide una página concreta (acceso rápido del Inicio) y es de
   // obra, va a esa; si no, a la home del rol (o Gestión).
   const entrarObra = (oid, pageDestino) => {
+    // AISLAMIENTO: no entrar a una obra que no está asignada al usuario.
+    const perm = window.__obrasPermitidas;
+    if (oid && perm && !perm.has(oid)) { showToast('No tenés asignada esa obra', 'red'); return; }
     if (oid && window.__setObraActivaId) window.__setObraActivaId(oid);
     let destino = pageDestino && planoDe(pageDestino) === 'obra' ? pageDestino : null;
     if (!destino) { const h = window.__defaultPageForRol?.(rolActual) || 'dashboard-gestion'; if (planoDe(h) === 'obra') destino = h; }

@@ -17,7 +17,10 @@ const ROL_LABELS = {
   tesorero:            'Tesorero',
   jefe_compras:        'Jefe de Compras',
   rrhh:                'RR.HH.',
-  prevencionista:      'Prevencionista SSOMA',
+  prevencionista:      'Ing. de Seguridad (SSOMA)',
+  ing_ambiental:       'Ing. Ambiental',
+  ing_calidad:         'Ing. de Calidad',
+  ing_social:          'Ing. Social',
   maestro_obra:        'Maestro de Obra',
   solo_lectura:        'Solo Lectura',
 };
@@ -36,11 +39,14 @@ const ROL_COLORS_ADM = {
   jefe_compras:        'b-orange',
   rrhh:                'b-yellow',
   prevencionista:      'b-red',
+  ing_ambiental:       'b-green',
+  ing_calidad:         'b-blue',
+  ing_social:          'b-purple',
   maestro_obra:        'b-green',
   solo_lectura:        'b-gray',
 };
 
-const ROL_KEYS = ['admin','gerente','ingeniero_residente','ingeniero','supervisor','almacenero','asistente_admin','contador','ayudante_contador','tesorero','jefe_compras','rrhh','prevencionista','maestro_obra','solo_lectura'];
+const ROL_KEYS = ['admin','gerente','ingeniero_residente','ingeniero','supervisor','almacenero','asistente_admin','contador','ayudante_contador','tesorero','jefe_compras','rrhh','prevencionista','ing_ambiental','ing_calidad','ing_social','maestro_obra','solo_lectura'];
 
 // ── Roles Custom (definidos por el admin, persistidos en localStorage) ──
 // Cada rol custom: { key, label, color }
@@ -746,7 +752,7 @@ const MODULE_GROUPS = [
   { group: 'Compras / Logística', modules: ['Requisiciones','Órdenes de Compra','Cotizaciones','Recepciones'] },
   { group: 'Subcontratos', modules: ['Subcontratistas','Subcontratos','Valor. Subcontrato'] },
   { group: 'Maquinaria', modules: ['Activos Pesados','Mantenimiento','Horas Máquina'] },
-  { group: 'SSOMA', modules: ['Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones','Insumos de Emergencia'] },
+  { group: 'SSOMA', modules: ['Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones','Insumos de Emergencia','Reporte Especialidad'] },
   { group: 'RRHH', modules: ['Contratos Laborales','Planillas','CTS','Gratificaciones'] },
   { group: 'Contabilidad', modules: ['Empresas','Movs. Contables','Intercompany','Trazabilidad','Consolidado','Plan de Cuentas','Libro Diario','Balance General','Estado Resultados'] },
   { group: 'Tesorería', modules: ['Cuentas Bancarias','Flujo de Caja','Flujo Proyectado','Comparativo Periodos'] },
@@ -797,15 +803,19 @@ const PERM_MATRIX = {
       'Plan de Cuentas','Libro Diario','Balance General','Estado Resultados',
       'Cuentas Bancarias','Flujo de Caja','Flujo Proyectado','Comparativo Periodos',
       'Comprobantes Electrónicos','Libros Electrónicos','PLAME / T-Registro','Config SUNAT',
-      'Dashboard Ejecutivo','Importar','Captura Mágica','Conflictos Sync','Auditoría','Usuarios/Config'];
+      'Dashboard Ejecutivo','Importar','Captura Mágica','Conflictos Sync','Auditoría','Usuarios/Config',
+      // "tampoco nada con respecto a dinero" (Gabriel): las valorizaciones y
+      // versiones de presupuesto muestran S/ → fuera también.
+      'Valorizaciones','Valor. Subcontrato','Versiones presupuesto'];
     if (SIN.includes(m)) return 'x';
     const EDITA = ['Partidas','Insumos','Cronograma','Avance','Comparativo','Incidencias','Evidencias','Vinculación Salidas',
       'Requisiciones','Ubicaciones','KPIs por Obra','Cumplimiento Cronograma',
       'Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones','Insumos de Emergencia',
-      'Personal','Asistencia','Mantenimiento','Horas Máquina','Solicitudes Cambio'];
+      'Personal','Asistencia','Mantenimiento','Horas Máquina','Solicitudes Cambio',
+      'Reporte Especialidad'];
     if (EDITA.includes(m)) return 'w';
     // Resto técnico/operativo → lectura (Obras, Materiales, Herramientas, Mov.*,
-    // Proveedores, Activos, Versiones, Valorizaciones, Subcontratos, Reportes, Alertas, Búsqueda).
+    // Proveedores, Activos, Subcontratos, Reportes, Alertas, Búsqueda).
     return 'r';
   }),
 
@@ -953,12 +963,46 @@ const PERM_MATRIX = {
 
   // Prevencionista SSOMA: w en charlas, IPERC, EPP, inspecciones, capacitaciones, incidencias;
   // r en obras, personal (a quién capacita), asistencia; x en compras/contabilidad/almacén destructivo
+  // Ing. de Seguridad (SSOMA, ex "Prevencionista"): su área en w + PERSONAL en w
+  // (crea/inhabilita SOLO obreros — el scope por cargo se aplica en la página).
+  // CERO dinero (igual que el Residente).
   prevencionista: PERM_MATRIX_MODULES.map(m => {
     if (m === 'Usuarios/Config') return 'x';
     if (['Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones',
-         'Incidencias','Evidencias','Insumos de Emergencia'].includes(m)) return 'w';
-    if (['Obras','Personal','Asistencia','Activos Pesados','Mantenimiento','Subcontratistas',
+         'Incidencias','Evidencias','Insumos de Emergencia','Reporte Especialidad',
+         'Personal','Solicitudes Cambio'].includes(m)) return 'w';
+    if (['Obras','Asistencia','Activos Pesados','Mantenimiento','Subcontratistas',
          'Subcontratos','Reportes'].includes(m)) return 'r';
+    return 'x';
+  }),
+
+  // Ing. Ambiental: reporte diario + evidencias + charlas/capacitaciones (comparte
+  // herramientas con seguridad). Lectura de lo básico de la obra. CERO dinero.
+  ing_ambiental: PERM_MATRIX_MODULES.map(m => {
+    if (m === 'Usuarios/Config') return 'x';
+    if (['Reporte Especialidad','Evidencias','Charlas Seguridad','Capacitaciones',
+         'Incidencias','Solicitudes Cambio'].includes(m)) return 'w';
+    if (['Obras','Personal','Asistencia','Reportes'].includes(m)) return 'r';
+    return 'x';
+  }),
+
+  // Ing. de Calidad: reporte diario + evidencias; lectura de insumos/partidas para
+  // sus verificaciones (specs técnicas, NO precios). La herramienta IA de
+  // certificados llega en Fase 4. CERO dinero.
+  ing_calidad: PERM_MATRIX_MODULES.map(m => {
+    if (m === 'Usuarios/Config') return 'x';
+    if (['Reporte Especialidad','Evidencias','Incidencias','Solicitudes Cambio'].includes(m)) return 'w';
+    if (['Obras','Materiales','Mov. Materiales','Partidas','Insumos','Recepciones','Reportes'].includes(m)) return 'r';
+    return 'x';
+  }),
+
+  // Ing. Social: reporte diario + evidencias + charlas (comunitarias). Las
+  // herramientas de compromisos/quejas llegan en Fase 5. CERO dinero.
+  ing_social: PERM_MATRIX_MODULES.map(m => {
+    if (m === 'Usuarios/Config') return 'x';
+    if (['Reporte Especialidad','Evidencias','Charlas Seguridad','Capacitaciones',
+         'Incidencias','Solicitudes Cambio'].includes(m)) return 'w';
+    if (['Obras','Personal','Reportes'].includes(m)) return 'r';
     return 'x';
   }),
 
@@ -1070,6 +1114,7 @@ window.__moduleIdMap = {
   'inspecciones-seguridad': 'Inspecciones SSOMA',
   'capacitaciones': 'Capacitaciones',
   'insumos-emergencia': 'Insumos de Emergencia',
+  'reporte-especialidad': 'Reporte Especialidad',
   // RRHH
   'personal-contratos': 'Contratos Laborales',
   'planillas': 'Planillas',
@@ -1135,6 +1180,7 @@ const __ROLES_CANONICOS = new Set([
   'admin','gerente','ingeniero_residente','ingeniero','supervisor','almacenero',
   'asistente_admin','contador','ayudante_contador','tesorero','jefe_compras','rrhh',
   'prevencionista','maestro_obra','solo_lectura',
+  'ing_ambiental','ing_calidad','ing_social',
 ]);
 
 // Helper que devuelve si el rol puede ver el item del sidebar (lectura mínimo).
@@ -1198,6 +1244,8 @@ window.__canSeeSidebarItem = function(rol, itemId) {
   // defecto solo admin — la almacenera crea solicitudes pero no ve las OCs; ve
   // el resultado (aceptada/rechazada) en Requisiciones → Mis Solicitudes.
   if (itemId === 'ordenes-compra') return rol === 'admin' || (window.__hasPerm?.(rol, 'Órdenes de Compra', 'w') ?? false);
+  // Panel del Residente: tablero de cumplimiento (admin y residente).
+  if (itemId === 'panel-residente') return rol === 'admin' || rol === 'ingeniero_residente';
   // Los módulos del ingeniero solo los ven el ingeniero (y admin).
   if (__INGENIERO_ITEMS.includes(itemId)) return rol === 'admin' || rol === 'ingeniero';
   // El ingeniero ve EXCLUSIVAMENTE sus módulos de frente (nada más, ni utilities).
@@ -1239,7 +1287,10 @@ const __HOME_POR_ROL = {
   tesorero: 'cuentas-bancarias',
   jefe_compras: 'requisiciones',
   rrhh: 'planillas',
-  prevencionista: 'iperc',
+  prevencionista: 'reporte-especialidad',
+  ing_ambiental: 'reporte-especialidad',
+  ing_calidad: 'reporte-especialidad',
+  ing_social: 'reporte-especialidad',
   maestro_obra: 'avance',
   solo_lectura: 'dashboard',
 };
@@ -1254,6 +1305,12 @@ window.__defaultPageForRol = function(rol) {
   } catch {}
   return 'dashboard';
 };
+
+// Roles SIN dinero: no ven precios/costos/valorizaciones en ninguna vista.
+// (El gate de páginas lo da la matriz; esto es para columnas de S/ embebidas
+// en páginas técnicas, ej. el precio del catálogo de materiales.)
+const __ROLES_SIN_DINERO = new Set(['ingeniero_residente','ingeniero','prevencionista','ing_ambiental','ing_calidad','ing_social','maestro_obra']);
+window.__rolVeDinero = function(rol) { return !__ROLES_SIN_DINERO.has(rol); };
 
 window.__hasPerm = function(rol, modulo, nivel = 'r') {
   if (!rol) return false;

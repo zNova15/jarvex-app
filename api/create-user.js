@@ -25,6 +25,7 @@ const ROLES_VALIDOS = new Set([
   'admin','gerente','ingeniero_residente','ingeniero','supervisor','almacenero',
   'asistente_admin','contador','ayudante_contador','tesorero','jefe_compras','rrhh',
   'prevencionista','maestro_obra','solo_lectura',
+  'ing_ambiental','ing_calidad','ing_social',
 ]);
 
 export default async function handler(req, res) {

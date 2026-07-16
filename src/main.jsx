@@ -194,6 +194,7 @@ const PAGE_CHUNKS = {
   // siga funcionando sin disparar el warning de "ineffective dynamic import".
   'jx-admin':                 () => Promise.resolve(true),
   'jx-importar':              () => import('./components/jx-importar.jsx'),
+  'jx-especialidad':          () => import('./components/jx-especialidad.jsx'),
   'jx-caja-chica':            () => import('./components/jx-caja-chica.jsx'),
   'jx-insumos-emergencia':    () => import('./components/jx-insumos-emergencia.jsx'),
   'jx-captura-magica':        () => import('./components/jx-captura-magica.jsx'),
@@ -365,6 +366,23 @@ function Root() {
       }, 500);
     }
   }, [auth?.profile?.id]);
+
+  // ── AISLAMIENTO POR OBRA ──────────────────────────────────────────
+  // window.__obrasPermitidas = Set de obra_ids asignadas (obra_usuarios) o
+  // null = sin restricción (admin/gerente o sin asignaciones). Lo consumen
+  // useObraActiva (selector del header y todas las páginas), jx-reportes y
+  // el guard de navegación: un usuario NO debe ver ni entrar a obras ajenas.
+  React.useEffect(() => {
+    let cancel = false;
+    const uid = auth?.profile?.id; const rol = auth?.profile?.rol;
+    if (!uid) { window.__obrasPermitidas = null; return; }
+    import('./lib/obras-asignadas.js').then(m => m.cargarObrasAsignadas({ userId: uid, rol })).then(set => {
+      if (cancel) return;
+      window.__obrasPermitidas = set; // Set | null
+      try { window.dispatchEvent(new Event('obras_permitidas_change')); } catch {}
+    }).catch(() => { if (!cancel) window.__obrasPermitidas = null; });
+    return () => { cancel = true; };
+  }, [auth?.profile?.id, auth?.profile?.rol]);
 
   // Subir evidencias PENDIENTES de forma continua. Antes SOLO se disparaba al
   // montar y al login → una foto guardada durante la sesión (ej. un ingeniero

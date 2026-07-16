@@ -123,7 +123,11 @@ function ReportesPage({ showToast }) {
   const [companies, setCompanies] = uS([]);
   uE(() => { window.__db.companies.filter(c => !c.deleted_at).toArray().then(setCompanies).catch(() => setCompanies([])); }, []);
 
-  const obrasVivas = uM(() => (obras || []).filter(o => !o.deleted_at), [obras]);
+  // Aislamiento por obra: solo las asignadas (window.__obrasPermitidas; null = todas).
+  const obrasVivas = uM(() => {
+    const perm = window.__obrasPermitidas ?? null;
+    return (obras || []).filter(o => !o.deleted_at && (!perm || perm.has(o.id)));
+  }, [obras]);
   uE(() => { if (!obraId && obrasVivas.length) setObraId(obrasVivas[0].id); }, [obrasVivas, obraId]);
   const obraActual = uM(() => obrasVivas.find(o => o.id === obraId), [obrasVivas, obraId]);
 

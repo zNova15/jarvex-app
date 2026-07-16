@@ -30,6 +30,7 @@ const TRANSACTIONAL_TABLES = [
   'companies',
   'accounting_movements',
   'intercompany_transactions',
+  'reportes_especialidad',
   // Compras
   'insumos_pendientes',
   'requisiciones', 'requisicion_items',
@@ -125,6 +126,7 @@ const MASTER_TABLES = [
   { tabla: 'emision_reglas',               query: () => supabase.from('emision_reglas').select('*').is('deleted_at', null) },
   { tabla: 'ordenes_intercompany',         query: () => supabase.from('ordenes_intercompany').select('*').is('deleted_at', null) },
   { tabla: 'reportes_dia',                 query: () => supabase.from('reportes_dia').select('*').is('deleted_at', null) },
+  { tabla: 'reportes_especialidad',        query: () => supabase.from('reportes_especialidad').select('*').is('deleted_at', null) },
   { tabla: 'pagos',                        query: () => supabase.from('pagos').select('*').is('deleted_at', null) },
   { tabla: 'pagos_partes',                 query: () => supabase.from('pagos_partes').select('*').is('deleted_at', null) },
   { tabla: 'guias_remision',               query: () => supabase.from('guias_remision').select('*').is('deleted_at', null) },
@@ -566,6 +568,7 @@ const TABLA_TO_MODULO = {
   incidencias: 'Incidencias',
   evidencias: 'Evidencias',
   ubicaciones_obra: 'Ubicaciones',
+  reportes_especialidad: 'Reporte Especialidad',
   insumos_pendientes: 'Requisiciones',
   requisiciones: 'Requisiciones',
   requisicion_items: 'Requisiciones',

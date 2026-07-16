@@ -150,6 +150,8 @@ function MaterialesPage({ showToast }) {
   const isAdmin = myRol === 'admin';
   // Gerencia/contabilidad/admin actualizan precios — almacenero NO
   const puedeActualizarPrecios = isAdmin || ['gerente','asistente_admin'].includes(myRol);
+  // Roles sin dinero (residente/especialistas/etc.): no ven precios en el catálogo.
+  const veDinero = window.__rolVeDinero ? window.__rolVeDinero(myRol) : true;
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
   const superAdmin = !!appMode.superAdmin;
@@ -468,11 +470,11 @@ function MaterialesPage({ showToast }) {
           })()}
         </td>
         <td className="col-m">{m.unidad}</td>
-        <td style={{textAlign:'right'}} className="col-num">
+        {veDinero && <td style={{textAlign:'right'}} className="col-num">
           {Number(m.precio_unitario_estimado || 0) > 0
             ? <span>S/ {Number(m.precio_unitario_estimado).toFixed(2)}</span>
             : <span style={{ color:'var(--tm)' }}>—</span>}
-        </td>
+        </td>}
         <td style={{textAlign:'right'}} className="col-num">
           <span style={{ color: stockColor, fontWeight: 600 }}>{Number(m.stock_actual ?? 0).toLocaleString('es-PE')}</span>
         </td>
@@ -491,9 +493,9 @@ function MaterialesPage({ showToast }) {
               <JxIcon name="plus" size={11}/> Reponer
             </button>
           )}
-          <button className="btn btn-ghost btn-xs" title="Ver historial de precios" onClick={()=>verHistorialPrecios(m)} style={{ marginRight:4 }}>
+          {veDinero && <button className="btn btn-ghost btn-xs" title="Ver historial de precios" onClick={()=>verHistorialPrecios(m)} style={{ marginRight:4 }}>
             <JxIcon name="dollar" size={11}/>
-          </button>
+          </button>}
           {puedeActualizarPrecios && (
             <button className="btn btn-ghost btn-xs" title="Actualizar precio (gerencia/contabilidad)" onClick={()=>abrirModalPrecio(m)} style={{ marginRight:4, color:'var(--amber)' }}>
               <JxIcon name="edit" size={11}/>$
@@ -2187,7 +2189,7 @@ function MaterialesPage({ showToast }) {
           <table className="tbl">
             <thead><tr>
               <th>Material</th><th>Categoría</th><th>Ubicación</th><th>Unidad</th>
-              <th style={{textAlign:'right'}}>Precio est.</th>
+              {veDinero && <th style={{textAlign:'right'}}>Precio est.</th>}
               <th style={{textAlign:'right'}}>Stock Actual</th><th style={{textAlign:'right'}}>Stock Mín.</th>
               <th style={{textAlign:'right'}}>Entradas</th><th style={{textAlign:'right'}}>Salidas</th>
               <th>Estado</th><th>Sync</th><th style={{textAlign:'center'}}>Acciones</th>
