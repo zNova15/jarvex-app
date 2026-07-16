@@ -19,6 +19,84 @@ const FAMILIAS = [
 function loadHistorial() { try { return JSON.parse(localStorage.getItem('reportes_historial') || '[]'); } catch { return []; } }
 function saveHistorial(a) { try { localStorage.setItem('reportes_historial', JSON.stringify(a)); } catch {} }
 
+const DIAS_SEMANA = [['1','Lunes'],['2','Martes'],['3','Miércoles'],['4','Jueves'],['5','Viernes'],['6','Sábado'],['7','Domingo']];
+
+// Config del email programado (tabla reportes_email_config, leída/escrita directo
+// en Supabase — no está en Dexie). El envío lo hace n8n a las 18:00 (hora Lima).
+function EmailConfigModal({ onClose, showToast }) {
+  const Modal = window.Modal;
+  const [cfg, setCfg] = uS(null);
+  const [destText, setDestText] = uS('');
+  const [busy, setBusy] = uS(false);
+  uE(() => {
+    (async () => {
+      try {
+        const { data, error } = await window.__supabase.from('reportes_email_config').select('*').order('updated_at', { ascending: false }).limit(1).maybeSingle();
+        if (error) throw error;
+        const c = data || { activo: true, frecuencia: 'diario', dia_semana: 1, destinatarios: [], incluir: ['movimientos', 'contable'] };
+        setCfg(c); setDestText((c.destinatarios || []).join('\n'));
+      } catch (e) { showToast('No se pudo cargar la configuración: ' + (e.message || e), 'red'); onClose(); }
+    })();
+  }, []);
+  const guardar = async () => {
+    if (!cfg) return;
+    const destinatarios = destText.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+    const invalido = destinatarios.find(d => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(d));
+    if (invalido) { showToast(`Correo inválido: ${invalido}`, 'red'); return; }
+    if (cfg.activo && !destinatarios.length) { showToast('Agregá al menos un correo (o desactivá el envío)', 'red'); return; }
+    setBusy(true);
+    try {
+      const patch = { activo: !!cfg.activo, frecuencia: cfg.frecuencia, dia_semana: Number(cfg.dia_semana) || 1, destinatarios, updated_at: new Date().toISOString() };
+      const res = cfg.id
+        ? await window.__supabase.from('reportes_email_config').update(patch).eq('id', cfg.id)
+        : await window.__supabase.from('reportes_email_config').insert(patch);
+      if (res.error) throw res.error;
+      showToast('Configuración de email guardada', 'green');
+      onClose();
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+    finally { setBusy(false); }
+  };
+  if (!Modal) return null;
+  if (!cfg) return <Modal title="Reporte por email" icon="chart" onClose={onClose}><div style={{ padding: 20, color: 'var(--tm)' }}>Cargando…</div></Modal>;
+  return (
+    <Modal title="Reporte diario por email" icon="chart" onClose={onClose}>
+      <div style={{ background: 'rgba(52,152,219,0.08)', border: '1px solid rgba(52,152,219,0.25)', borderRadius: 6, padding: '9px 12px', fontSize: 11.5, color: 'var(--ts)', marginBottom: 14 }}>
+        Se envía automáticamente por n8n a las <strong>18:00 (hora Lima)</strong> un resumen con los movimientos del día por obra y la bancarización pendiente. El PDF completo sigue siendo descarga manual desde acá.
+      </div>
+      <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+        <input type="checkbox" id="ec-activo" checked={!!cfg.activo} onChange={e => setCfg({ ...cfg, activo: e.target.checked })} />
+        <label htmlFor="ec-activo" style={{ fontSize: 13, fontWeight: 600, color: 'var(--tp)' }}>Envío automático activo</label>
+      </div>
+      <div className="g2">
+        <div>
+          <label className="flabel">Frecuencia</label>
+          <select className="fi" value={cfg.frecuencia} onChange={e => setCfg({ ...cfg, frecuencia: e.target.value })}>
+            <option value="diario">Todos los días</option>
+            <option value="cada_3_dias">Cada 3 días</option>
+            <option value="semanal">Semanal</option>
+          </select>
+        </div>
+        {cfg.frecuencia === 'semanal' && (
+          <div>
+            <label className="flabel">Día de la semana</label>
+            <select className="fi" value={String(cfg.dia_semana || 1)} onChange={e => setCfg({ ...cfg, dia_semana: e.target.value })}>
+              {DIAS_SEMANA.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+          </div>
+        )}
+        <div style={{ gridColumn: '1/-1' }}>
+          <label className="flabel">Correos que reciben <span style={{ color: 'var(--tm)', fontWeight: 400 }}>(uno por línea)</span></label>
+          <textarea className="fi" rows={4} value={destText} onChange={e => setDestText(e.target.value)} placeholder={'admin@empresa.com\ngerencia@empresa.com'} />
+        </div>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" disabled={busy} onClick={onClose}>Cancelar</button>
+        <button className="btn btn-amber" disabled={busy} onClick={guardar}><JxIcon name="check" size={13} />{busy ? 'Guardando…' : 'Guardar'}</button>
+      </div>
+    </Modal>
+  );
+}
+
 function ReportesPage({ showToast }) {
   const toast = showToast || window.__showToast || (() => {});
   const auth = window.__useAuth ? window.__useAuth() : {};
@@ -39,6 +117,7 @@ function ReportesPage({ showToast }) {
   const [customFrom, setCustomFrom] = uS('');
   const [customTo, setCustomTo] = uS('');
   const [historial, setHistorial] = uS(loadHistorial());
+  const [emailCfgOpen, setEmailCfgOpen] = uS(false);
 
   const { data: frentes } = window.__hooks?.useFrentesObra?.(obraId, { soloActivas: false }) || { data: [] };
   const [companies, setCompanies] = uS([]);
@@ -77,6 +156,11 @@ function ReportesPage({ showToast }) {
           <div className="pg-sub">Dashboard interactivo y exportación a PDF</div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
+          {rol === 'admin' && (
+            <button className="btn btn-ghost btn-sm" onClick={() => setEmailCfgOpen(true)} title="Configurar el envío automático de reportes por email">
+              <JxIcon name="bell" size={13} /> Envío por email
+            </button>
+          )}
           {['dashboard', 'historial'].map(t => (
             <button key={t} onClick={() => setTab(t)} className={`btn ${tab === t ? 'btn-amber' : 'btn-ghost'} btn-sm`} style={{ textTransform: 'capitalize' }}>{t}</button>
           ))}
@@ -140,6 +224,8 @@ function ReportesPage({ showToast }) {
           </table>
         </div>
       )}
+
+      {emailCfgOpen && <EmailConfigModal onClose={() => setEmailCfgOpen(false)} showToast={toast} />}
     </div>
   );
 }

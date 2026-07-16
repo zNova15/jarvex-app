@@ -673,7 +673,15 @@ function EppsInventarioPage({ showToast }) {
 
   const handleDelete = async (e) => {
     if (!canDelete) return;
-    if (!confirm(`¿Eliminar el EPP "${e.nombre_epp}"?`)) return;
+    // Guard anti-huérfanos: borrar un EPP con movimientos deja su historial
+    // desconectado (invisible en vistas y reportes aunque siga en la base). Fue
+    // lo que pasó con las botas. Avisamos con la cantidad; el admin decide.
+    let nMovs = 0;
+    try { nMovs = await window.__db.movimientos_epp.where('epp_id').equals(e.id).filter(m => !m.deleted_at).count(); } catch {}
+    const aviso = nMovs > 0
+      ? `⚠ "${e.nombre_epp}" tiene ${nMovs} movimiento(s) registrado(s).\n\nSi lo eliminás, esos movimientos quedan HUÉRFANOS: dejan de aparecer en el historial y en los reportes (aunque sigan guardados). No conviene borrar insumos con movimientos.\n\n¿Eliminar de todos modos?`
+      : `¿Eliminar el EPP "${e.nombre_epp}"?`;
+    if (!confirm(aviso)) return;
     try {
       await updateEpp(e.id, { deleted_at: new Date().toISOString() });
       try { await window.__logAudit?.({ action:'delete', table:'epps', recordId:e.id, oldData:e, reason:'Eliminación manual' }); } catch {}
