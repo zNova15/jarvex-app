@@ -145,6 +145,9 @@ const NAV = [
   { id: 'capacitaciones', label: 'Capacitaciones', icon: 'users' },
   { id: 'insumos-emergencia', label: 'Insumos de Emergencia', icon: 'package' },
 
+  { section: 'AMBIENTAL' },
+  { id: 'gestion-ambiental', label: 'Gestión Ambiental (ISO 14001)', icon: 'map' },
+
   { section: 'RRHH' },
   { id: 'personal', label: 'Personal', icon: 'users' },
   { id: 'frentes', label: 'Frentes de Trabajo', icon: 'flag' },

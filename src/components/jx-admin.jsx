@@ -752,7 +752,7 @@ const MODULE_GROUPS = [
   { group: 'Compras / Logística', modules: ['Requisiciones','Órdenes de Compra','Cotizaciones','Recepciones'] },
   { group: 'Subcontratos', modules: ['Subcontratistas','Subcontratos','Valor. Subcontrato'] },
   { group: 'Maquinaria', modules: ['Activos Pesados','Mantenimiento','Horas Máquina'] },
-  { group: 'SSOMA', modules: ['Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones','Insumos de Emergencia','Reporte Especialidad'] },
+  { group: 'SSOMA', modules: ['Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones','Insumos de Emergencia','Reporte Especialidad','Gestión Ambiental'] },
   { group: 'RRHH', modules: ['Contratos Laborales','Planillas','CTS','Gratificaciones'] },
   { group: 'Contabilidad', modules: ['Empresas','Movs. Contables','Intercompany','Trazabilidad','Consolidado','Plan de Cuentas','Libro Diario','Balance General','Estado Resultados'] },
   { group: 'Tesorería', modules: ['Cuentas Bancarias','Flujo de Caja','Flujo Proyectado','Comparativo Periodos'] },
@@ -812,7 +812,7 @@ const PERM_MATRIX = {
       'Requisiciones','Ubicaciones','KPIs por Obra','Cumplimiento Cronograma',
       'Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones','Insumos de Emergencia',
       'Personal','Asistencia','Mantenimiento','Horas Máquina','Solicitudes Cambio',
-      'Reporte Especialidad'];
+      'Reporte Especialidad','Gestión Ambiental'];
     if (EDITA.includes(m)) return 'w';
     // Resto técnico/operativo → lectura (Obras, Materiales, Herramientas, Mov.*,
     // Proveedores, Activos, Subcontratos, Reportes, Alertas, Búsqueda).
@@ -982,7 +982,7 @@ const PERM_MATRIX = {
   ing_ambiental: PERM_MATRIX_MODULES.map(m => {
     if (m === 'Usuarios/Config') return 'x';
     if (['Reporte Especialidad','Evidencias','Charlas Seguridad','Capacitaciones',
-         'Incidencias','Solicitudes Cambio'].includes(m)) return 'w';
+         'Incidencias','Solicitudes Cambio','Gestión Ambiental'].includes(m)) return 'w';
     if (['Obras','Personal','Asistencia','Reportes'].includes(m)) return 'r';
     return 'x';
   }),
@@ -1119,6 +1119,7 @@ window.__moduleIdMap = {
   'charlas-plan': 'Charlas Seguridad',
   'inducciones': 'Charlas Seguridad',
   'sctr-personal': 'Personal',
+  'gestion-ambiental': 'Gestión Ambiental',
   // RRHH
   'personal-contratos': 'Contratos Laborales',
   'planillas': 'Planillas',

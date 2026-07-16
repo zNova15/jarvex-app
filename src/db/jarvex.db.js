@@ -45,6 +45,12 @@ export const db = new Dexie('JarvexDB');
 // al admin/gerente para reportar un frente que no es suyo (titular ausente);
 // tras la aprobación carga el reporte en reporte_payload (jsonb, prop sin índice)
 // y lo envía; el admin acepta y recién ahí se aplican los avances. Aditivo.
+// Versión 40: Fase 3 Ambiental — archivo de cumplimiento ISO 14001 (evidencias
+// por categoría × mes; la matriz mensual se calcula al leer). Aditivo.
+db.version(40).stores({
+  ambiental_registros: 'id, obra_id, categoria, fecha, deleted_at, sync_status',
+});
+
 // Versión 39: Fase 2 Seguridad — planificador de charlas (compartido
 // seguridad/ambiental/social) + fichas de inducción del personal directo.
 // personal.sctr_vencimiento/aseguradora son columnas aditivas (sin índice). Aditivo.

@@ -71,7 +71,7 @@ const BLOQUES = [
   {
     id: 'ambiental', titulo: 'Ambiental', icon: 'map', tipo: 'obra', color: '#2ECC71',
     desc: 'Reporte diario y evidencias de gestión ambiental (ISO 14001)',
-    items: ['reporte-especialidad', 'charlas-plan', 'inducciones', 'charlas-seguridad', 'capacitaciones', 'evidencias'],
+    items: ['reporte-especialidad', 'gestion-ambiental', 'charlas-plan', 'inducciones', 'charlas-seguridad', 'capacitaciones', 'evidencias'],
   },
   {
     id: 'calidad', titulo: 'Calidad', icon: 'checkCircle', tipo: 'obra', color: '#3498DB',

@@ -110,8 +110,11 @@ function ReporteEspecialidadPage({ showToast }) {
         ...(esPrueba() ? { sync_status: 'synced', demo: true } : { sync_status: 'pending_create' }),
       });
       // Fotos como evidencias enlazadas al reporte.
+      // En modo prueba no se suben (la evidencia PENDING iría al bucket real
+      // apuntando a un reporte demo que nunca llega al server).
       let subidas = 0;
-      for (const f of fotos) {
+      const prueba = esPrueba();
+      if (!prueba) for (const f of fotos) {
         try {
           await window.__saveEvidenciaLocal?.({
             id: window.__newId(), obra_id: obraId,
@@ -127,7 +130,8 @@ function ReporteEspecialidadPage({ showToast }) {
       }
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'reportes_especialidad' } })); } catch {}
       try { window.dispatchEvent(new Event('online')); } catch {}
-      toast(`✓ Reporte de ${AREA_META[miArea].label} guardado${fotos.length ? ` · ${subidas}/${fotos.length} foto(s)` : ''}`, 'green');
+      if (prueba && fotos.length) toast(`✓ Reporte de ${AREA_META[miArea].label} guardado · en modo prueba las fotos no se suben`, 'amber');
+      else toast(`✓ Reporte de ${AREA_META[miArea].label} guardado${fotos.length ? ` · ${subidas}/${fotos.length} foto(s)` : ''}`, 'green');
       setDescripcion(''); setFotos([]); setFecha(hoyLocal());
       recargar();
     } catch (e) { toast('Error: ' + (e.message || e), 'red'); }

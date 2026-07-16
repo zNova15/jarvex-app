@@ -309,7 +309,8 @@ function SctrPage({ showToast }) {
         version: (editando.version ?? 0) + 1,
         sync_status: syncUpdate(editando),
       });
-      if (form.archivo) {
+      // En modo prueba no se suben archivos (la evidencia PENDING iría al bucket real).
+      if (form.archivo && !esPrueba()) {
         await window.__saveEvidenciaLocal?.({
           id: window.__newId(), obra_id: editando.obra_id,
           tipo_evidencia: 'sctr', modulo_relacionado: 'personal', registro_relacionado_id: editando.id,
@@ -449,7 +450,8 @@ function InduccionesPage({ showToast }) {
       const now = new Date().toISOString();
       const id = window.__newId();
       await window.__db.inducciones.add({ id, obra_id: obraId, personal_id: form.personal_id, tipo: form.tipo, fecha: form.fecha, observaciones: form.observaciones?.trim() || null, responsable_id: userId, created_by: userId, updated_by: userId, created_at: now, updated_at: now, version: 1, last_synced_at: null, idempotency_key: `${userId}_induc_${id}`, ...camposCreate() });
-      if (form.archivo) {
+      // En modo prueba no se suben archivos (la evidencia PENDING iría al bucket real).
+      if (form.archivo && !esPrueba()) {
         await window.__saveEvidenciaLocal?.({ id: window.__newId(), obra_id: obraId, tipo_evidencia: 'ficha_induccion', modulo_relacionado: 'inducciones', registro_relacionado_id: id, nombre_archivo: form.archivo.name, mime_type: form.archivo.type, blob: form.archivo, fecha: form.fecha, observaciones: `Ficha inducción ${form.tipo}`, created_by: userId });
       }
       syncKick('inducciones');
