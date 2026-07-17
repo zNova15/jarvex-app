@@ -151,6 +151,9 @@ const NAV = [
   { section: 'CALIDAD' },
   { id: 'gestion-calidad', label: 'Gestión de Calidad (Certificados)', icon: 'checkCircle' },
 
+  { section: 'SOCIAL' },
+  { id: 'gestion-social', label: 'Gestión Social (Comunidad)', icon: 'users' },
+
   { section: 'RRHH' },
   { id: 'personal', label: 'Personal', icon: 'users' },
   { id: 'frentes', label: 'Frentes de Trabajo', icon: 'flag' },

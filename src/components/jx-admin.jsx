@@ -752,7 +752,7 @@ const MODULE_GROUPS = [
   { group: 'Compras / Logística', modules: ['Requisiciones','Órdenes de Compra','Cotizaciones','Recepciones'] },
   { group: 'Subcontratos', modules: ['Subcontratistas','Subcontratos','Valor. Subcontrato'] },
   { group: 'Maquinaria', modules: ['Activos Pesados','Mantenimiento','Horas Máquina'] },
-  { group: 'SSOMA', modules: ['Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones','Insumos de Emergencia','Reporte Especialidad','Gestión Ambiental','Gestión Calidad'] },
+  { group: 'SSOMA', modules: ['Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones','Insumos de Emergencia','Reporte Especialidad','Gestión Ambiental','Gestión Calidad','Gestión Social'] },
   { group: 'RRHH', modules: ['Contratos Laborales','Planillas','CTS','Gratificaciones'] },
   { group: 'Contabilidad', modules: ['Empresas','Movs. Contables','Intercompany','Trazabilidad','Consolidado','Plan de Cuentas','Libro Diario','Balance General','Estado Resultados'] },
   { group: 'Tesorería', modules: ['Cuentas Bancarias','Flujo de Caja','Flujo Proyectado','Comparativo Periodos'] },
@@ -812,7 +812,7 @@ const PERM_MATRIX = {
       'Requisiciones','Ubicaciones','KPIs por Obra','Cumplimiento Cronograma',
       'Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones','Insumos de Emergencia',
       'Personal','Asistencia','Mantenimiento','Horas Máquina','Solicitudes Cambio',
-      'Reporte Especialidad','Gestión Ambiental','Gestión Calidad'];
+      'Reporte Especialidad','Gestión Ambiental','Gestión Calidad','Gestión Social'];
     if (EDITA.includes(m)) return 'w';
     // Resto técnico/operativo → lectura (Obras, Materiales, Herramientas, Mov.*,
     // Proveedores, Activos, Subcontratos, Reportes, Alertas, Búsqueda).
@@ -1002,7 +1002,7 @@ const PERM_MATRIX = {
   ing_social: PERM_MATRIX_MODULES.map(m => {
     if (m === 'Usuarios/Config') return 'x';
     if (['Reporte Especialidad','Evidencias','Charlas Seguridad','Capacitaciones',
-         'Incidencias','Solicitudes Cambio'].includes(m)) return 'w';
+         'Incidencias','Solicitudes Cambio','Gestión Social'].includes(m)) return 'w';
     if (['Obras','Personal','Reportes'].includes(m)) return 'r';
     return 'x';
   }),
@@ -1121,6 +1121,7 @@ window.__moduleIdMap = {
   'sctr-personal': 'Personal',
   'gestion-ambiental': 'Gestión Ambiental',
   'gestion-calidad': 'Gestión Calidad',
+  'gestion-social': 'Gestión Social',
   // RRHH
   'personal-contratos': 'Contratos Laborales',
   'planillas': 'Planillas',

@@ -80,8 +80,8 @@ const BLOQUES = [
   },
   {
     id: 'social', titulo: 'Social', icon: 'users', tipo: 'obra', color: '#9B59B6',
-    desc: 'Reporte diario, charlas comunitarias y gestión social',
-    items: ['reporte-especialidad', 'charlas-plan', 'charlas-seguridad', 'capacitaciones', 'evidencias'],
+    desc: 'Compromisos con la comunidad, quejas/reclamos, padrón y charlas',
+    items: ['reporte-especialidad', 'gestion-social', 'charlas-plan', 'charlas-seguridad', 'capacitaciones', 'evidencias'],
   },
   {
     id: 'contabilidad', titulo: 'Contabilidad', icon: 'dollar', tipo: 'general', color: '#F2B705',

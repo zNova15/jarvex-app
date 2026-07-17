@@ -34,6 +34,8 @@ const TRANSACTIONAL_TABLES = [
   'charlas_plan', 'inducciones', 'ambiental_registros',
   // Calidad: requisitos ANTES que certificados (FK requisito_id)
   'calidad_requisitos', 'calidad_certificados',
+  // Social: actores ANTES que compromisos/quejas (FK actor_id)
+  'social_actores', 'social_compromisos', 'social_quejas',
   // Compras
   'insumos_pendientes',
   'requisiciones', 'requisicion_items',
@@ -135,6 +137,9 @@ const MASTER_TABLES = [
   { tabla: 'ambiental_registros',          query: () => supabase.from('ambiental_registros').select('*').is('deleted_at', null) },
   { tabla: 'calidad_requisitos',           query: () => supabase.from('calidad_requisitos').select('*').is('deleted_at', null) },
   { tabla: 'calidad_certificados',         query: () => supabase.from('calidad_certificados').select('*').is('deleted_at', null) },
+  { tabla: 'social_actores',               query: () => supabase.from('social_actores').select('*').is('deleted_at', null) },
+  { tabla: 'social_compromisos',           query: () => supabase.from('social_compromisos').select('*').is('deleted_at', null) },
+  { tabla: 'social_quejas',                query: () => supabase.from('social_quejas').select('*').is('deleted_at', null) },
   { tabla: 'pagos',                        query: () => supabase.from('pagos').select('*').is('deleted_at', null) },
   { tabla: 'pagos_partes',                 query: () => supabase.from('pagos_partes').select('*').is('deleted_at', null) },
   { tabla: 'guias_remision',               query: () => supabase.from('guias_remision').select('*').is('deleted_at', null) },
@@ -248,9 +253,14 @@ export async function forceFullResync() {
         continue;
       }
       const before = await db[tabla].count();
+      // Conservar registros demo (modo prueba): nacen SYNCED y no cuentan
+      // como pendientes, pero no existen en el server — el clear() los
+      // perdería para siempre.
+      const demos = await db[tabla].filter(r => r.demo === true).toArray().catch(() => []);
       await db[tabla].clear();
+      if (demos.length) await db[tabla].bulkAdd(demos).catch(() => {});
       await setLastSync(tabla, null);
-      wiped.push({ tabla, count: before });
+      wiped.push({ tabla, count: before - demos.length });
     } catch (e) {
       console.warn(`[forceFullResync] error wipeando ${tabla}:`, e?.message);
     }
@@ -584,6 +594,9 @@ const TABLA_TO_MODULO = {
   ambiental_registros: 'Gestión Ambiental',
   calidad_requisitos: 'Gestión Calidad',
   calidad_certificados: 'Gestión Calidad',
+  social_actores: 'Gestión Social',
+  social_compromisos: 'Gestión Social',
+  social_quejas: 'Gestión Social',
   insumos_pendientes: 'Requisiciones',
   requisiciones: 'Requisiciones',
   requisicion_items: 'Requisiciones',
@@ -715,6 +728,8 @@ const FK_DEPS = {
   recepcion_items:           [{ campo: 'recepcion_id', tabla: 'recepciones' }],
   inducciones:               [{ campo: 'personal_id', tabla: 'personal' }],
   calidad_certificados:      [{ campo: 'requisito_id', tabla: 'calidad_requisitos' }],
+  social_compromisos:        [{ campo: 'actor_id', tabla: 'social_actores' }],
+  social_quejas:             [{ campo: 'actor_id', tabla: 'social_actores' }],
   oc_items:                  [{ campo: 'orden_compra_id', tabla: 'ordenes_compra' }],
   cotizacion_items:          [{ campo: 'cotizacion_id', tabla: 'cotizaciones' }],
   requisicion_items:         [{ campo: 'requisicion_id', tabla: 'requisiciones' }],
@@ -1788,8 +1803,12 @@ async function pullMasterTables() {
           const localesSynced = await db[tabla]
             .where('sync_status').equals(SYNC_STATUS.SYNCED)
             .toArray();
+          // demo !== true: los registros de modo prueba nacen SYNCED (no se
+          // pushean) y nunca existen en el server — sin este filtro el full
+          // pull los borraría en silencio (mismo criterio que el purge de
+          // fantasmas del push).
           const aReconciliar = localesSynced
-            .filter(l => !serverIds.has(l.id))
+            .filter(l => !serverIds.has(l.id) && l.demo !== true)
             .map(l => l.id);
           if (aReconciliar.length) {
             await db[tabla].bulkDelete(aReconciliar);

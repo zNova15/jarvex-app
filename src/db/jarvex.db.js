@@ -47,6 +47,15 @@ export const db = new Dexie('JarvexDB');
 // y lo envía; el admin acepta y recién ahí se aplican los avances. Aditivo.
 // Versión 40: Fase 3 Ambiental — archivo de cumplimiento ISO 14001 (evidencias
 // por categoría × mes; la matriz mensual se calcula al leer). Aditivo.
+// Versión 42: Fase 5 Social — padrón de actores, compromisos de actas con la
+// comunidad (semáforo por vencimiento en cliente) y quejas/reclamos con
+// seguimiento. Actas/evidencias de cierre van como evidencias (modulo social_*).
+db.version(42).stores({
+  social_actores: 'id, obra_id, nombre, deleted_at, sync_status',
+  social_compromisos: 'id, obra_id, actor_id, fecha_limite, deleted_at, sync_status',
+  social_quejas: 'id, obra_id, actor_id, fecha, deleted_at, sync_status',
+});
+
 // Versión 41: Fase 4 Calidad — requisitos del expediente (specs mínimas por
 // insumo) + certificados comparados vs requisito (IA con override manual).
 // El PDF del certificado va como evidencia (modulo 'calidad_certificados').
