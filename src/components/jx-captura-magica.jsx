@@ -435,12 +435,22 @@ function CapturaMagicaPage({ showToast }) {
       // (la foto y el XML de SUNAT traen el RUC/serie en formatos distintos → si
       // comparáramos exacto, el re-import digital de una factura ya subida como
       // foto se colaría como movimiento nuevo). Requiere RUC para no falsos +.
+      // El emisor puede ser un proveedor (COMPRA: su RUC queda en third_party_ruc)
+      // o una empresa NUESTRA (VENTA: third_party_ruc guarda al RECEPTOR y el
+      // emisor queda en company_id) — sin la segunda rama, la misma VENTA
+      // re-subida jamás se marcaba 'duplicado' (las E001 repetidas de la
+      // asistente entraron por acá).
       const rucEmisorN = normalizarRuc(ext.emisor?.ruc);
       const compN = normalizarComprobante(ext.serie_correlativo);
+      const emisorNuestro = rucEmisorN
+        ? (companies || []).find(c => !c.deleted_at && normalizarRuc(c.ruc) === rucEmisorN)
+        : null;
       const dup = (rucEmisorN && compN) ? (movs || []).find(m =>
         !m.deleted_at &&
-        normalizarRuc(m.third_party_ruc) === rucEmisorN &&
-        normalizarComprobante(m.document_number) === compN
+        normalizarComprobante(m.document_number) === compN &&
+        (normalizarRuc(m.third_party_ruc) === rucEmisorN
+          || (emisorNuestro && m.company_id === emisorNuestro.id
+              && (m.clase || (m.type === 'income' ? 'venta' : 'compra')) === 'venta'))
       ) : null;
       setItems(prev => prev.map(x => x.id === id ? {
         ...x,
@@ -842,25 +852,39 @@ function CapturaMagicaPage({ showToast }) {
     if (!r.serie_correlativo) { showToast('Falta serie-correlativo', 'red'); return; }
     if (!(Number(r.total) > 0)) { showToast('El total debe ser mayor a 0', 'red'); return; }
 
-    // ── Guard anti-duplicado de comprobante (COMPRAS) ──
+    // ── Guard anti-duplicado de comprobante (COMPRAS y VENTAS) ──
     // Re-chequea FRESCO contra la BD: `movs` puede estar desactualizado y, al
     // importar un lote de SUNAT, dos archivos pueden ser el mismo comprobante o
-    // una factura ya subida como foto. Si ya existe el movimiento (mismo emisor +
-    // serie-correlativo NORMALIZADOS), NO crea otro → evita los dos movimientos.
-    if (!esVenta) {
+    // una factura ya subida como foto. Si ya existe el movimiento, NO crea otro.
+    // COMPRA: mismo proveedor (third_party_ruc) + serie-correlativo.
+    // VENTA: misma empresa emisora NUESTRA (company_id) + serie-correlativo —
+    // en una venta third_party_ruc guarda al RECEPTOR, por eso el guard de
+    // compras nunca atrapaba una venta re-confirmada y la misma E001 quedaba
+    // registrada dos veces (bug reportado por contabilidad, jul 2026).
+    {
       const compN = normalizarComprobante(r.serie_correlativo);
-      const rucN = normalizarRuc(r.proveedor_ruc);
-      if (compN && rucN) {
-        const dupMov = (await window.__db.accounting_movements
+      let dupMov = null;
+      if (compN && esVenta) {
+        dupMov = (await window.__db.accounting_movements
           .filter(m => !m.deleted_at &&
-            normalizarComprobante(m.document_number) === compN &&
-            normalizarRuc(m.third_party_ruc) === rucN)
+            m.company_id === r.emisor_company_id &&
+            (m.clase || (m.type === 'income' ? 'venta' : 'compra')) === 'venta' &&
+            normalizarComprobante(m.document_number) === compN)
           .toArray())[0];
-        if (dupMov) {
-          setItems(prev => prev.map(x => x.id === id ? { ...x, status: 'duplicado', duplicate_of: dupMov.id } : x));
-          showToast(`Ya existe el comprobante ${r.serie_correlativo} de ese proveedor (${dupMov.date || 's/fecha'} · S/ ${Number(dupMov.amount || 0).toLocaleString('es-PE')}). No se creó un duplicado — descartá este archivo.`, 'red');
-          return;
+      } else if (compN && !esVenta) {
+        const rucN = normalizarRuc(r.proveedor_ruc);
+        if (rucN) {
+          dupMov = (await window.__db.accounting_movements
+            .filter(m => !m.deleted_at &&
+              normalizarComprobante(m.document_number) === compN &&
+              normalizarRuc(m.third_party_ruc) === rucN)
+            .toArray())[0];
         }
+      }
+      if (dupMov) {
+        setItems(prev => prev.map(x => x.id === id ? { ...x, status: 'duplicado', duplicate_of: dupMov.id } : x));
+        showToast(`Ya existe el comprobante ${r.serie_correlativo} ${esVenta ? 'emitido por esa empresa' : 'de ese proveedor'} (${dupMov.date || 's/fecha'} · S/ ${Number(dupMov.amount || 0).toLocaleString('es-PE')}). No se creó un duplicado — descartá este archivo.`, 'red');
+        return;
       }
     }
 

@@ -127,6 +127,16 @@ const BLOQUES = [
 // Cuántas secciones muestra un bloque antes del "+N más".
 const MAX_VISIBLES = 7;
 
+// ── Bloques de ESPECIALIDAD: cada especialista ve SOLO el suyo ──────
+// Los 4 bloques comparten ids de página (reporte-especialidad, evidencias,
+// charlas-plan…), y como un bloque se muestra si el rol ve ≥1 item, canSee()
+// solo no alcanza: ing_calidad veía también SSOMA/Ambiental/Social (bug
+// reportado por Gabriel). Regla: un ESPECIALISTA solo ve el bloque de su
+// especialidad; los demás roles (admin/gerente/residente/etc.) no cambian —
+// siguen viendo lo que su matriz permita.
+const DUENO_ESPECIALIDAD = { ssoma: 'prevencionista', ambiental: 'ing_ambiental', calidad: 'ing_calidad', social: 'ing_social' };
+const ROLES_ESPECIALISTAS = new Set(Object.values(DUENO_ESPECIALIDAD));
+
 // ── Tarjeta de un bloque ────────────────────────────────────────────
 function BloqueCard({ blq, items, onAbrir }) {
   const [verTodo, setVerTodo] = uSI(false);
@@ -267,12 +277,18 @@ function InicioPage({ onNav, onEnterObra }) {
     return m;
   }, []);
 
-  // Bloques con sus secciones permitidas para el rol (bloque vacío no se muestra).
+  // Bloques con sus secciones permitidas para el rol (bloque vacío no se
+  // muestra). Además, un ESPECIALISTA no ve los bloques de OTRAS especialidades
+  // aunque comparta páginas con ellas (ver DUENO_ESPECIALIDAD arriba).
   const bloques = uMI(() => BLOQUES.map(b => ({
     ...b,
     items: b.items.filter(id => navInfo.has(id) && canSee(id))
       .map(id => ({ id, ...navInfo.get(id) })),
-  })).filter(b => b.items.length > 0), [rol, navInfo]);
+  })).filter(b => {
+    if (b.items.length === 0) return false;
+    const dueno = DUENO_ESPECIALIDAD[b.id];
+    return !(dueno && ROLES_ESPECIALISTAS.has(rol) && rol !== dueno);
+  }), [rol, navInfo]);
   const bloquesObra = bloques.filter(b => b.tipo === 'obra');
   const bloquesGeneral = bloques.filter(b => b.tipo === 'general');
 

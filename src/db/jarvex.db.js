@@ -47,6 +47,18 @@ export const db = new Dexie('JarvexDB');
 // y lo envía; el admin acepta y recién ahí se aplican los avances. Aditivo.
 // Versión 40: Fase 3 Ambiental — archivo de cumplimiento ISO 14001 (evidencias
 // por categoría × mes; la matriz mensual se calcula al leer). Aditivo.
+// Versión 43: DEPÓSITOS de bancarización multi-factura (mig 137). Un depósito/
+// transferencia con monto_total que cubre VARIAS facturas: cada vínculo es una
+// fila de pagos_partes con deposito_id que consume saldo (la validación de
+// saldo y del par pagador→cobrador vive en lib/depositos-bancarizacion.js +
+// trigger server). La constancia va como evidencia con
+// modulo_relacionado='depositos_bancarizacion'. Se re-indexa pagos_partes
+// para poder listar "las partes de este depósito". Aditivo.
+db.version(43).stores({
+  depositos_bancarizacion: 'id, obra_id, company_id, referencia, deleted_at, sync_status',
+  pagos_partes: 'id, pago_id, accounting_movement_id, deposito_id, obra_id, deleted_at, sync_status',
+});
+
 // Versión 42: Fase 5 Social — padrón de actores, compromisos de actas con la
 // comunidad (semáforo por vencimiento en cliente) y quejas/reclamos con
 // seguimiento. Actas/evidencias de cierre van como evidencias (modulo social_*).

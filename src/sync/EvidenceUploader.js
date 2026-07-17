@@ -146,7 +146,7 @@ async function recuperarMetadataSubidas() {
   try {
     const subidas = await db.evidencias
       .where('sync_status').equals(UPLOAD_STATUS.UPLOADED)
-      .filter(e => !!e.url_archivo)
+      .filter(e => !!e.url_archivo && e.demo !== true)
       .toArray();
     for (const ev of subidas) {
       await upsertMetadataEvidencia(ev, ev.url_archivo);
@@ -227,7 +227,7 @@ export async function uploadPendingEvidencias() {
 
 // ── Guardar evidencia localmente (con blob) ───────────────────────────
 
-export async function saveEvidenciaLocal({ id, obra_id, tipo_evidencia, modulo_relacionado, registro_relacionado_id, nombre_archivo, mime_type, blob, observaciones, fecha, created_by }) {
+export async function saveEvidenciaLocal({ id, obra_id, tipo_evidencia, modulo_relacionado, registro_relacionado_id, nombre_archivo, mime_type, blob, observaciones, fecha, created_by, demo }) {
   // Optimizar ANTES de guardar: HEIC de iPhone → JPEG (si no, nadie lo ve en
   // desktop), reescala a 1920px y comprime (~20× menos storage/egress), y
   // corrige el MIME real (los File de iOS llegan con type vacío y se
@@ -258,7 +258,13 @@ export async function saveEvidenciaLocal({ id, obra_id, tipo_evidencia, modulo_r
     subido_por: created_by,
     fecha: fecha ?? new Date().toISOString().slice(0, 10),
     observaciones,
-    sync_status: UPLOAD_STATUS.PENDING,
+    // Modo PRUEBA (demo:true): la evidencia queda SOLO local — no debe subir
+    // al Storage/BD reales apuntando a un registro demo (fuga demo→real).
+    // sync 'uploaded' la saca del pipeline de subida; el visor la sirve del
+    // blob local (que no se borra porque nunca hay upload OK).
+    ...(demo === true
+      ? { demo: true, sync_status: UPLOAD_STATUS.UPLOADED }
+      : { sync_status: UPLOAD_STATUS.PENDING }),
     upload_retries: 0,
     created_by,
     created_at: new Date().toISOString(),

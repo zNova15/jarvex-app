@@ -97,8 +97,10 @@ const TRANSACTIONAL_TABLES = [
   // Reporte "día sin avance" del ingeniero. Después de obras + frentes_obra.
   'reportes_dia',
   // Pagos (compromisos) y sus partes. Después de personal/subcontratos/
-  // accounting_movements (FKs) y pagos_partes después de pagos.
+  // accounting_movements (FKs) y pagos_partes después de pagos. Los depósitos
+  // de bancarización van ANTES de pagos_partes (FK deposito_id).
   'pagos',
+  'depositos_bancarizacion',
   'pagos_partes',
   // Guías de remisión: después de proveedores/companies/accounting_movements.
   'guias_remision',
@@ -141,6 +143,7 @@ const MASTER_TABLES = [
   { tabla: 'social_compromisos',           query: () => supabase.from('social_compromisos').select('*').is('deleted_at', null) },
   { tabla: 'social_quejas',                query: () => supabase.from('social_quejas').select('*').is('deleted_at', null) },
   { tabla: 'pagos',                        query: () => supabase.from('pagos').select('*').is('deleted_at', null) },
+  { tabla: 'depositos_bancarizacion',      query: () => supabase.from('depositos_bancarizacion').select('*').is('deleted_at', null) },
   { tabla: 'pagos_partes',                 query: () => supabase.from('pagos_partes').select('*').is('deleted_at', null) },
   { tabla: 'guias_remision',               query: () => supabase.from('guias_remision').select('*').is('deleted_at', null) },
   { tabla: 'intercompany_transactions',    query: () => supabase.from('intercompany_transactions').select('*').is('deleted_at', null) },
@@ -642,6 +645,7 @@ const TABLA_TO_MODULO = {
   reportes_dia: 'Avance',
   // Pagos de personal/subcontratos: área contable (contadora jefe/admin).
   pagos: 'Planillas',
+  depositos_bancarizacion: 'Movs. Contables',
   // Las PARTES también las registra el ayudante al bancarizar facturas
   // (tiene Movs. Contables 'w' pero Planillas 'x' — con 'Planillas' su push
   // quedaba bloqueado client-side y la parte en pending eterno).
@@ -715,7 +719,8 @@ const FK_DEPS = {
   ordenes_intercompany:      [{ campo: 'obra_id', tabla: 'obras' }, { campo: 'company_id', tabla: 'companies' }, { campo: 'intermediaria1_company_id', tabla: 'companies' }, { campo: 'intermediaria2_company_id', tabla: 'companies' }, { campo: 'ejecutora_company_id', tabla: 'companies' }],
   reportes_dia:              [{ campo: 'frente_id', tabla: 'frentes_obra' }],
   pagos:                     [{ campo: 'personal_id', tabla: 'personal' }, { campo: 'subcontrato_id', tabla: 'subcontratos' }],
-  pagos_partes:              [{ campo: 'pago_id', tabla: 'pagos' }, { campo: 'accounting_movement_id', tabla: 'accounting_movements' }],
+  pagos_partes:              [{ campo: 'pago_id', tabla: 'pagos' }, { campo: 'accounting_movement_id', tabla: 'accounting_movements' }, { campo: 'deposito_id', tabla: 'depositos_bancarizacion' }],
+  depositos_bancarizacion:   [{ campo: 'company_id', tabla: 'companies' }],
   guias_remision:            [{ campo: 'company_id', tabla: 'companies' }, { campo: 'proveedor_id', tabla: 'proveedores' }, { campo: 'accounting_movement_id', tabla: 'accounting_movements' }],
   movimientos_insumos_emergencia: [{ campo: 'insumo_emergencia_id', tabla: 'insumos_emergencia' }, { campo: 'responsable_id', tabla: 'personal' }, { campo: 'subcontratista_id', tabla: 'subcontratistas' }, { campo: 'proveedor_id', tabla: 'proveedores' }],
   asistencia:                [{ campo: 'personal_id', tabla: 'personal' }],

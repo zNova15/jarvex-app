@@ -14,7 +14,9 @@
 //  · pagos: beneficiario_tipo (personal|subcontrato), monto_acordado, estado.
 // ═══════════════════════════════════════════════════════════════════
 
-/** Set de ids de movimientos que YA tienen evidencia de bancarización (no fallida). */
+/** Set de ids de movimientos bancarizados: con evidencia directa (no fallida)
+ * O cubiertos al 100% por partes cuyos depósitos multi-factura siguen vivos
+ * (mig 137 — la constancia vive en el depósito, no en el movimiento). */
 export async function cargarBancarizados(db) {
   const set = new Set();
   try {
@@ -22,6 +24,24 @@ export async function cargarBancarizados(db) {
       .filter(e => e.modulo_relacionado === 'accounting_movements' && e.tipo_evidencia === 'bancarizacion' && !e.deleted_at && e.registro_relacionado_id && e.sync_status !== 'failed')
       .toArray();
     for (const e of evs) set.add(e.registro_relacionado_id);
+  } catch {}
+  try {
+    const partes = await db.pagos_partes.filter(p => !p.deleted_at && p.accounting_movement_id).toArray();
+    const deps = db.depositos_bancarizacion
+      ? await db.depositos_bancarizacion.filter(d => !d.deleted_at).toArray().catch(() => [])
+      : [];
+    const depIds = new Set(deps.map(d => d.id));
+    const porMov = new Map();
+    for (const p of partes) { const a = porMov.get(p.accounting_movement_id) || []; a.push(p); porMov.set(p.accounting_movement_id, a); }
+    for (const [movId, arr] of porMov) {
+      if (set.has(movId)) continue;
+      const m = await db.accounting_movements.get(movId);
+      if (!m || m.deleted_at) continue;
+      const suma = arr.reduce((t, p) => t + (Number(p.monto) || 0), 0);
+      if (suma >= (Number(m.amount) || 0) - 0.01 && arr.every(p => !p.deposito_id || depIds.has(p.deposito_id))) {
+        set.add(movId);
+      }
+    }
   } catch {}
   return set;
 }

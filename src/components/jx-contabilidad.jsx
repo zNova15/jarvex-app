@@ -4,6 +4,8 @@ import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 import { usePagination } from "../hooks/usePagination.js";
 import { TablePagination } from "./jx-pagination.jsx";
+import { detectarDuplicados, claseDe } from "../lib/dedupe-movs-contables.js";
+import { validarVinculoDeposito, saldoDeposito, parMovimiento, parDeposito, mismoPar, movimientoBancarizado, TOL } from "../lib/depositos-bancarizacion.js";
 import { useChart } from "../lib/chart-loader.js";
 import { FusionEntidadModal } from "./jx-fusion-entidad.jsx";
 const { useState: uSC, useMemo: uMC, useEffect: uEC, useRef: uRC } = React;
@@ -770,6 +772,14 @@ function MovimientosContablesPage({ showToast }) {
   const [bancObra, setBancObra] = uSC('');
   const [bancSaving, setBancSaving] = uSC(false);
   const [soloSinBanc, setSoloSinBanc] = uSC(false); // filtro: ver solo los que faltan bancarización
+  // DEPÓSITOS multi-factura: un depósito de p.ej. 20,000 cubre facturas de
+  // 3,000+7,000+10,000 del mismo pagador→cobrador, consumiendo saldo.
+  const [depositos, setDepositos] = uSC([]);                            // depósitos vivos
+  const [partesPorDeposito, setPartesPorDeposito] = uSC(() => new Map()); // deposito_id → [partes]
+  const [bancPorDeposito, setBancPorDeposito] = uSC(() => new Map());     // deposito_id → evidencia (constancia)
+  const [bancModo, setBancModo] = uSC('sola');       // 'sola' | 'dep_nuevo' | 'dep_existente'
+  const [bancTotalDep, setBancTotalDep] = uSC('');   // monto TOTAL del depósito nuevo
+  const [bancDepId, setBancDepId] = uSC('');         // depósito existente elegido
 
   // Evidencias adjuntas a movs contables (factura PDF/imagen guardada
   // por Captura Mágica). Map<accId, {url, mime}>. Cuando la contadora
@@ -790,17 +800,19 @@ function MovimientosContablesPage({ showToast }) {
       try {
         const evs = await window.__db.evidencias
           .filter(e =>
-            e.modulo_relacionado === 'accounting_movements' &&
+            (e.modulo_relacionado === 'accounting_movements' || e.modulo_relacionado === 'depositos_bancarizacion') &&
             !e.deleted_at &&
             e.registro_relacionado_id
           )
           .toArray();
         evs.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
         const map = new Map();       // facturas / comprobantes
-        const mapBanc = new Map();    // evidencias de bancarización
+        const mapBanc = new Map();    // evidencias de bancarización (directas al mov)
+        const mapDep = new Map();     // constancias de DEPÓSITOS multi-factura
         for (const ev of evs) {
+          const esDeposito = ev.modulo_relacionado === 'depositos_bancarizacion';
           const esBanc = ev.tipo_evidencia === 'bancarizacion';
-          const target = esBanc ? mapBanc : map;
+          const target = esDeposito ? mapDep : (esBanc ? mapBanc : map);
           if (target.has(ev.registro_relacionado_id)) continue;
           // Blob local si existe; si no, signed URL del bucket privado (la
           // url_archivo cruda NO sirve en un bucket privado → factura no abre).
@@ -815,7 +827,7 @@ function MovimientosContablesPage({ showToast }) {
             });
           }
         }
-        if (!cancelled) { setEvidenciasPorMov(map); setBancarizacionPorMov(mapBanc); blobUrlsActuales = nuevos; }
+        if (!cancelled) { setEvidenciasPorMov(map); setBancarizacionPorMov(mapBanc); setBancPorDeposito(mapDep); blobUrlsActuales = nuevos; }
         else nuevos.forEach(u => { try { URL.revokeObjectURL(u); } catch {} });
       } catch (e) { console.warn('[contab evidencias]', e?.message); nuevos.forEach(u => { try { URL.revokeObjectURL(u); } catch {} }); }
     };
@@ -903,10 +915,19 @@ function MovimientosContablesPage({ showToast }) {
   // ¿El movimiento (>S/2000 en soles) está sin bancarización (ninguna o falló)?
   // Definida antes de `filtered` porque el useMemo la llama al filtrar por
   // "solo sin bancarización" (los const no se hoistean → TDZ si va después).
+  // Solo CONTABILIDAD + admin evalúan bancarización: al resto de roles la RLS
+  // del server les oculta las evidencias contables, así que verían "falta"
+  // en movimientos que SÍ la tienen (falsa alarma).
+  const puedeVerBanc = isAdmin || myRol === 'contador' || myRol === 'ayudante_contador';
+  const depositosById = uMC(() => new Map((depositos || []).map(d => [d.id, d])), [depositos]);
   const faltaBancarizacion = (m) => {
+    if (!puedeVerBanc) return false;
     if (!(m.currency === 'PEN' && Number(m.amount) > 2000)) return false;
     const evB = bancarizacionPorMov.get(m.id);
-    return !evB || evB.sync === 'failed';
+    if (evB && evB.sync !== 'failed') return false;
+    // También cuenta como bancarizado si las partes cubren el total y las que
+    // usan depósito apuntan a un depósito vivo (su constancia vive allí).
+    return !movimientoBancarizado({ mov: m, tieneEvidenciaDirecta: false, partes: partesPorMov.get(m.id) || [], depositosById });
   };
 
   const filtered = uMC(() => {
@@ -926,7 +947,7 @@ function MovimientosContablesPage({ showToast }) {
     }
     if (soloSinBanc) f = f.filter(faltaBancarizacion);
     return f.sort((a,b) => (b.date||'').localeCompare(a.date||''));
-  }, [movs, filtroAmbito, filtroClase, filtroTipo, filtroEstado, busqueda, soloSinBanc, bancarizacionPorMov]);
+  }, [movs, filtroAmbito, filtroClase, filtroTipo, filtroEstado, busqueda, soloSinBanc, bancarizacionPorMov, partesPorMov, depositosById]);
 
   // Paginación: tabla puede tener miles de movimientos contables.
   const movPg = usePagination(filtered, 100);
@@ -1097,6 +1118,80 @@ function MovimientosContablesPage({ showToast }) {
     } catch (e) { showToast('Error: ' + (e.message||e), 'red'); }
   };
 
+  // ── Duplicados: detectar y fusionar (admin / contador jefe) ─────────
+  // Caso real: la misma factura de VENTA confirmada dos veces en Captura
+  // Mágica (el guard anti-dup solo cubría compras). El botón de eliminar está
+  // deshabilitado para INTERCO, así que sin esta herramienta el duplicado no
+  // se podía limpiar desde la UI.
+  const puedeDedup = isAdmin || myRol === 'contador';
+  const [dupGrupos, setDupGrupos] = uSC(null);   // null = modal cerrado
+  const [fusionando, setFusionando] = uSC(false);
+  const abrirDuplicados = () => setDupGrupos(detectarDuplicados(movs || []));
+
+  // Fusiona un grupo: reasigna los hijos del duplicado (evidencias, partes de
+  // bancarización, guías) al movimiento conservado y soft-borra el resto.
+  // Requiere conexión: las evidencias no siguen el sync estándar (su ciclo es
+  // del EvidenceUploader), así que su reasignación va directo al server.
+  const fusionarGrupo = async (g) => {
+    const sb = window.__supabase;
+    if (!sb || !navigator.onLine) { showToast('Necesitás conexión para fusionar duplicados', 'red'); return false; }
+    const now = new Date().toISOString();
+    for (const dup of g.duplicados) {
+      try {
+        const { error } = await sb.from('evidencias')
+          .update({ registro_relacionado_id: g.conservar.id, updated_at: now })
+          .eq('registro_relacionado_id', dup.id)
+          .eq('modulo_relacionado', 'accounting_movements');
+        if (error) throw error;
+      } catch (e) { showToast('No se pudo reasignar evidencias: ' + (e.message || e), 'red'); return false; }
+      await window.__db.evidencias
+        .filter(ev => ev.registro_relacionado_id === dup.id && ev.modulo_relacionado === 'accounting_movements')
+        .modify({ registro_relacionado_id: g.conservar.id, updated_at: now });
+      await window.__db.pagos_partes
+        .filter(p => p.accounting_movement_id === dup.id && !p.deleted_at)
+        .modify(p => {
+          p.accounting_movement_id = g.conservar.id;
+          p.updated_at = now; p.version = (p.version ?? 0) + 1;
+          if (p.demo !== true && p.sync_status !== 'pending_create') p.sync_status = 'pending_update';
+        });
+      try {
+        await window.__db.guias_remision
+          .filter(gr => gr.accounting_movement_id === dup.id && !gr.deleted_at)
+          .modify(gr => {
+            gr.accounting_movement_id = g.conservar.id;
+            gr.updated_at = now; gr.version = (gr.version ?? 0) + 1;
+            if (gr.demo !== true && gr.sync_status !== 'pending_create') gr.sync_status = 'pending_update';
+          });
+      } catch { /* guias_remision puede no existir en Dexie viejos */ }
+      await window.__db.accounting_movements.update(dup.id, {
+        deleted_at: now,
+        sync_status: dup.demo === true ? 'synced' : (dup.sync_status === 'pending_create' ? 'pending_create' : 'pending_delete'),
+      });
+      try { await window.__logAudit?.({ action:'delete', table:'accounting_movements', recordId: dup.id, oldData: dup,
+        reason: `Fusión de duplicado → se conserva ${g.conservar.id} (${g.conservar.document_number || ''})` }); } catch {}
+    }
+    try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'accounting_movements' } })); } catch {}
+    return true;
+  };
+  const fusionarUno = async (g) => {
+    setFusionando(true);
+    try {
+      if (await fusionarGrupo(g)) {
+        showToast('Duplicado fusionado', 'green');
+        setDupGrupos(gs => (gs || []).filter(x => x !== g));
+      }
+    } finally { setFusionando(false); }
+  };
+  const fusionarTodos = async () => {
+    setFusionando(true);
+    try {
+      let ok = 0;
+      for (const g of (dupGrupos || [])) { if (!(await fusionarGrupo(g))) break; ok++; }
+      if (ok) showToast(`${ok} grupo(s) de duplicados fusionados`, 'green');
+      setDupGrupos(null);
+    } finally { setFusionando(false); }
+  };
+
   const cambiarEstadoPago = async (m, nuevoEstado) => {
     try {
       await window.__db.accounting_movements.update(m.id, {
@@ -1113,17 +1208,27 @@ function MovimientosContablesPage({ showToast }) {
 
   const lookupCompany = (id) => companies?.find(c => c.id === id);
 
-  // Partes de pago (pagos_partes con accounting_movement_id) → Σ por movimiento.
+  // Partes de pago (pagos_partes) → Σ por movimiento y por depósito, más el
+  // catálogo de depósitos multi-factura.
   uEC(() => {
     let cancel = false;
     const load = async () => {
       try {
-        const rows = await window.__db.pagos_partes.filter(p => !p.deleted_at && p.accounting_movement_id).toArray();
+        const rows = await window.__db.pagos_partes.filter(p => !p.deleted_at).toArray();
         if (cancel) return;
         const m = new Map();
-        for (const r of rows) { const a = m.get(r.accounting_movement_id) || []; a.push(r); m.set(r.accounting_movement_id, a); }
+        const pd = new Map();
+        for (const r of rows) {
+          if (r.accounting_movement_id) { const a = m.get(r.accounting_movement_id) || []; a.push(r); m.set(r.accounting_movement_id, a); }
+          if (r.deposito_id) { const a = pd.get(r.deposito_id) || []; a.push(r); pd.set(r.deposito_id, a); }
+        }
         setPartesPorMov(m);
+        setPartesPorDeposito(pd);
       } catch {}
+      try {
+        const deps = await window.__db.depositos_bancarizacion.filter(d => !d.deleted_at).toArray();
+        if (!cancel) setDepositos(deps);
+      } catch { /* Dexie viejo sin la tabla (pre-v43) */ }
       try {
         const _esP = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
         const gs = await window.__db.guias_remision.filter(g => !g.deleted_at && g.accounting_movement_id && (_esP ? g.demo === true : g.demo !== true)).toArray();
@@ -1134,7 +1239,7 @@ function MovimientosContablesPage({ showToast }) {
       } catch {}
     };
     load();
-    const on = (e) => { const t = e?.detail?.tabla; if (!t || t === 'pagos_partes' || t === 'guias_remision') load(); };
+    const on = (e) => { const t = e?.detail?.tabla; if (!t || t === 'pagos_partes' || t === 'guias_remision' || t === 'depositos_bancarizacion') load(); };
     window.addEventListener('jx_data_changed', on);
     window.addEventListener('jarvex_master_updated', on);
     return () => { cancel = true; window.removeEventListener('jx_data_changed', on); window.removeEventListener('jarvex_master_updated', on); };
@@ -1146,49 +1251,108 @@ function MovimientosContablesPage({ showToast }) {
     if (intent) { window.__movsBuscarIntent = null; setBusqueda(String(intent)); }
   }, []);
 
-  const openBanc = (m) => { setBancTarget(m); setBancObra(m.obra_id || ''); setBancFile(null); setBancMonto(''); setBancMetodo('transferencia'); setBancRef(''); };
+  const openBanc = (m) => { setBancTarget(m); setBancObra(m.obra_id || ''); setBancFile(null); setBancMonto(''); setBancMetodo('transferencia'); setBancRef(''); setBancModo('sola'); setBancTotalDep(''); setBancDepId(''); };
 
   const subirBancarizacion = async () => {
     if (!bancTarget) return;
-    if (!bancFile) { showToast('Elegí el archivo de la bancarización (foto o PDF)', 'red'); return; }
+    const esDepNuevo = bancModo === 'dep_nuevo';
+    const esDepExistente = bancModo === 'dep_existente';
+    if (!esDepExistente && !bancFile) { showToast('Elegí el archivo de la bancarización (foto o PDF)', 'red'); return; }
     // Anti-duplicado: reintentar "porque no se ve" creaba una segunda evidencia
     // idéntica (el badge rojo de sync era de OTRO registro, no de esta subida).
-    const yaSubida = bancarizacionPorMov.get(bancTarget.id);
-    if (yaSubida && yaSubida.sync !== 'failed' && !window.confirm('Este movimiento YA tiene una bancarización subida (aunque el estado de sync general muestre errores de otros registros). ¿Subir OTRA constancia de todos modos?')) return;
+    if (bancModo === 'sola') {
+      const yaSubida = bancarizacionPorMov.get(bancTarget.id);
+      if (yaSubida && yaSubida.sync !== 'failed' && !window.confirm('Este movimiento YA tiene una bancarización subida (aunque el estado de sync general muestre errores de otros registros). ¿Subir OTRA constancia de todos modos?')) return;
+    }
     const obraId = bancTarget.obra_id || bancObra;
     if (!obraId) { showToast('Elegí la obra para poder archivar la bancarización', 'red'); return; }
+
+    const { newId, newIdempotencyKey, SYNC_STATUS } = await import('../db/jarvex.db');
+    const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
+    // Modo PRUEBA (o movimiento demo): NADA sube al server — antes la evidencia
+    // se guardaba sin flag demo y el uploader la subía al Storage REAL apuntando
+    // a un movimiento demo (fuga demo→real).
+    const esDemo = esPrueba || bancTarget.demo === true;
+    const now = new Date().toISOString();
+    const hoy = (window.__fecha?.hoyLocal ? window.__fecha.hoyLocal() : now.slice(0, 10));
+    const syncDemo = esDemo ? { demo: true, sync_status: SYNC_STATUS.SYNCED } : { sync_status: SYNC_STATUS.PENDING_CREATE };
+
+    // Validaciones de los modos DEPÓSITO (multi-factura) ANTES de tocar la BD:
+    // saldo suficiente + mismo pagador→cobrador (lib/depositos-bancarizacion).
+    let depositoNuevo = null;
+    let depositoElegido = null;
+    if (esDepNuevo) {
+      const total = Number(bancTotalDep);
+      if (!(total > 0)) { showToast('Indicá el monto TOTAL del depósito/transferencia', 'red'); return; }
+      if (!(Number(bancMonto) > 0)) { showToast('Indicá cuánto de este depósito cubre ESTA factura', 'red'); return; }
+      depositoNuevo = {
+        id: newId(), obra_id: obraId, company_id: bancTarget.company_id || null,
+        clase: claseDe(bancTarget),
+        tercero_ruc: bancTarget.third_party_ruc || null,
+        tercero_nombre: bancTarget.third_party_name || null,
+        fecha: hoy, monto_total: total, moneda: bancTarget.currency || 'PEN',
+        metodo: bancMetodo || 'transferencia', referencia: bancRef || null,
+        evidencia_id: null, observaciones: 'Depósito de bancarización multi-factura',
+        created_by: userId, updated_by: userId, created_at: now, updated_at: now, version: 1,
+        idempotency_key: newIdempotencyKey(userId, 'depositos_bancarizacion'),
+        ...syncDemo,
+      };
+      const v = validarVinculoDeposito({ deposito: depositoNuevo, partesDeposito: [], movimiento: bancTarget, monto: Number(bancMonto) });
+      if (!v.ok) { showToast(v.error, 'red'); return; }
+    } else if (esDepExistente) {
+      depositoElegido = depositosById.get(bancDepId);
+      if (!depositoElegido) { showToast('Elegí el depósito con saldo a usar', 'red'); return; }
+      if (!(Number(bancMonto) > 0)) { showToast('Indicá cuánto del depósito cubre ESTA factura', 'red'); return; }
+      const v = validarVinculoDeposito({ deposito: depositoElegido, partesDeposito: partesPorDeposito.get(bancDepId) || [], movimiento: bancTarget, monto: Number(bancMonto) });
+      if (!v.ok) { showToast(v.error, 'red'); return; }
+    }
+
     setBancSaving(true);
     try {
-      await window.__saveEvidenciaLocal({
-        id: window.__newId(),
-        obra_id: obraId,
-        tipo_evidencia: 'bancarizacion',
-        modulo_relacionado: 'accounting_movements',
-        registro_relacionado_id: bancTarget.id,
-        nombre_archivo: bancFile.name,
-        mime_type: bancFile.type || 'application/octet-stream',
-        blob: bancFile,
-        observaciones: 'Evidencia de bancarización (> S/2000)',
-        created_by: userId,
-      });
-      // Si indicó el MONTO de esta constancia, se registra como PARTE del pago
-      // del movimiento (bancarización en partes: 900+3200+2900 = 7000). La suma
-      // de partes vs el total del movimiento se ve en la columna Bancarización.
+      // 1) Evidencia (constancia). En modo 'sola' va al MOVIMIENTO; en depósito
+      // NUEVO va al DEPÓSITO (una sola constancia respalda varias facturas).
+      // En depósito EXISTENTE no hay archivo: ya se subió al crear el depósito.
+      let evidenciaId = null;
+      if (!esDepExistente) {
+        evidenciaId = window.__newId();
+        await window.__saveEvidenciaLocal({
+          id: evidenciaId,
+          obra_id: obraId,
+          tipo_evidencia: 'bancarizacion',
+          modulo_relacionado: esDepNuevo ? 'depositos_bancarizacion' : 'accounting_movements',
+          registro_relacionado_id: esDepNuevo ? depositoNuevo.id : bancTarget.id,
+          nombre_archivo: bancFile.name,
+          mime_type: bancFile.type || 'application/octet-stream',
+          blob: bancFile,
+          observaciones: esDepNuevo
+            ? `Constancia de depósito multi-factura (${fmtCur(Number(bancTotalDep), bancTarget.currency)})`
+            : 'Evidencia de bancarización (> S/2000)',
+          created_by: userId,
+          demo: esDemo,
+        });
+      }
+      // 2) Depósito nuevo (si aplica).
+      if (esDepNuevo) {
+        depositoNuevo.evidencia_id = evidenciaId;
+        await window.__db.depositos_bancarizacion.add(depositoNuevo);
+        try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'depositos_bancarizacion' } })); } catch {}
+      }
+      // 3) PARTE del pago: registra cuánto va cubierto de ESTA factura (con
+      // depósito o suelta). La suma vs el total se ve en la columna.
       let parteOk = false;
-      if (Number(bancMonto) > 0) {
+      if (esDepNuevo || esDepExistente || Number(bancMonto) > 0) {
         try {
-          const { newId, newIdempotencyKey, SYNC_STATUS } = await import('../db/jarvex.db');
-          const { getCurrentMode } = await import('../lib/app-mode-core.js');
-          const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
-          const now = new Date().toISOString();
           await window.__db.pagos_partes.add({
             id: newId(), pago_id: null, accounting_movement_id: bancTarget.id, obra_id: obraId,
-            fecha: (window.__fecha?.hoyLocal ? window.__fecha.hoyLocal() : now.slice(0, 10)),
-            monto: Number(bancMonto), metodo: bancMetodo || 'transferencia', referencia: bancRef || null,
-            evidencia_id: null, observaciones: 'Bancarización parcial',
+            deposito_id: esDepNuevo ? depositoNuevo.id : (esDepExistente ? depositoElegido.id : null),
+            fecha: hoy,
+            monto: Number(bancMonto), metodo: bancMetodo || 'transferencia',
+            referencia: esDepExistente ? (depositoElegido.referencia || null) : (bancRef || null),
+            evidencia_id: esDepNuevo ? evidenciaId : null,
+            observaciones: (esDepNuevo || esDepExistente) ? 'Cubierto por depósito multi-factura' : 'Bancarización parcial',
             created_by: userId, updated_by: userId, created_at: now, updated_at: now, version: 1,
             idempotency_key: newIdempotencyKey(userId, 'pagos_partes'),
-            ...(esPrueba || bancTarget.demo === true ? { demo: true, sync_status: SYNC_STATUS.SYNCED } : { sync_status: SYNC_STATUS.PENDING_CREATE }),
+            ...syncDemo,
           });
           parteOk = true;
           try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'pagos_partes' } })); } catch {}
@@ -1198,9 +1362,19 @@ function MovimientosContablesPage({ showToast }) {
         }
       }
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'evidencias', source:'banc-upload' } })); } catch {}
-      try { await window.__logAudit?.({ action:'insert', table:'evidencias', recordId: bancTarget.id, reason:'Bancarización adjunta desde Movimientos (sin edición)' }); } catch {}
-      showToast(parteOk ? `Bancarización adjunta · parte de ${fmtCur(Number(bancMonto), bancTarget.currency)}` : 'Bancarización adjunta. Se sincronizará en breve.', 'green');
-      setBancTarget(null); setBancFile(null); setBancObra(''); setBancMonto(''); setBancRef('');
+      try { await window.__logAudit?.({ action:'insert', table:'evidencias', recordId: bancTarget.id,
+        reason: esDepNuevo ? 'Depósito de bancarización multi-factura creado desde Movimientos'
+          : esDepExistente ? 'Factura cubierta con saldo de depósito existente'
+          : 'Bancarización adjunta desde Movimientos (sin edición)' }); } catch {}
+      const saldoTxt = esDepNuevo
+        ? ` · saldo restante del depósito: ${fmtCur(Number(bancTotalDep) - Number(bancMonto), bancTarget.currency)}`
+        : esDepExistente
+          ? ` · saldo restante del depósito: ${fmtCur(saldoDeposito(depositoElegido, partesPorDeposito.get(bancDepId) || []) - Number(bancMonto), bancTarget.currency)}`
+          : '';
+      showToast(parteOk
+        ? `Bancarización registrada · ${fmtCur(Number(bancMonto), bancTarget.currency)} aplicados${saldoTxt}`
+        : 'Bancarización adjunta. Se sincronizará en breve.', 'green');
+      setBancTarget(null); setBancFile(null); setBancObra(''); setBancMonto(''); setBancRef(''); setBancModo('sola'); setBancTotalDep(''); setBancDepId('');
     } catch (e) {
       showToast('No se pudo adjuntar la bancarización: ' + (e.message || e), 'red');
     } finally {
@@ -1215,13 +1389,20 @@ function MovimientosContablesPage({ showToast }) {
           <div className="pg-title">Movimientos Contables</div>
           <div className="pg-sub">{filtered.length} de {(movs || []).length} movimientos · ingresos / costos / gastos por empresa</div>
         </div>
-        {canWrite ? (
-          <button className="btn btn-amber btn-sm" onClick={openNuevo}>
-            <JxIcon name="plus" size={13}/>Nuevo Movimiento
-          </button>
-        ) : (
-          <span className="badge b-gray" title="Tu rol es solo lectura para Movs. Contables">Solo lectura</span>
-        )}
+        <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+          {puedeDedup && (
+            <button className="btn btn-ghost btn-sm" title="Detectar comprobantes registrados dos veces y fusionarlos" onClick={abrirDuplicados}>
+              <JxIcon name="search" size={13}/> Duplicados
+            </button>
+          )}
+          {canWrite ? (
+            <button className="btn btn-amber btn-sm" onClick={openNuevo}>
+              <JxIcon name="plus" size={13}/>Nuevo Movimiento
+            </button>
+          ) : (
+            <span className="badge b-gray" title="Tu rol es solo lectura para Movs. Contables">Solo lectura</span>
+          )}
+        </div>
       </div>
 
       <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', marginBottom:14 }}>
@@ -1314,21 +1495,42 @@ function MovimientosContablesPage({ showToast }) {
                         {m.description || '—'}
                         {m.category && <div style={{ fontSize:10, color:'var(--tm)' }}>{m.category}</div>}
                         {m.obra_id && <div style={{ fontSize:10, color:'var(--blue)' }}>🏗 {obraNombre(m.obra_id) || 'obra'}</div>}
-                        {m.currency === 'PEN' && Number(m.amount) > 2000 && (() => {
+                        {puedeVerBanc && m.currency === 'PEN' && Number(m.amount) > 2000 && (() => {
                           const evB = bancarizacionPorMov.get(m.id);
                           const subirBtn = canWrite ? (
                             <button className="btn btn-amber btn-xs" style={{ marginLeft:6, padding:'1px 6px', fontSize:9, verticalAlign:'middle' }} onClick={()=>openBanc(m)} title="Subir la bancarización sin entrar a editar">
                               <JxIcon name="upload" size={9}/> Subir
                             </button>
                           ) : null;
-                          // Suma de PARTES registradas (bancarización parcial).
+                          // Suma de PARTES registradas (bancarización parcial y/o depósitos).
                           const _partes = partesPorMov.get(m.id) || [];
                           const _suma = _partes.reduce((t, x) => t + (Number(x.monto) || 0), 0);
                           const _total = Number(m.amount) || 0;
+                          // Depósitos multi-factura que respaldan partes de este movimiento
+                          // (la constancia vive en el depósito → botón para verla).
+                          const _depsIds = [...new Set(_partes.filter(x => x.deposito_id && depositosById.get(x.deposito_id)).map(x => x.deposito_id))];
+                          const _depsBtns = _depsIds.map(did => {
+                            const d = depositosById.get(did);
+                            const evD = bancPorDeposito.get(did);
+                            return (
+                              <button key={did} className="btn btn-ghost btn-xs" disabled={!evD}
+                                style={{ padding:'0 4px', fontSize:9, color:'var(--blue)', verticalAlign:'middle' }}
+                                title={`Depósito ${d.referencia || 's/ref'} de ${fmtCur(d.monto_total, d.moneda)} — click para ver la constancia`}
+                                onClick={() => evD && setEvidenciaModal(evD)}>
+                                🏦 {d.referencia || 'depósito'}
+                              </button>
+                            );
+                          });
                           const _tagPartes = _partes.length > 0
-                            ? <div style={{ fontSize:9.5, color: _suma >= _total - 0.01 ? 'var(--green)' : 'var(--amber)' }} title={_partes.map(x => fmtCur(x.monto, m.currency)).join(' + ')}>{_partes.length} parte(s): {fmtCur(_suma, m.currency)} de {fmtCur(_total, m.currency)}</div>
+                            ? <div style={{ fontSize:9.5, color: _suma >= _total - 0.01 ? 'var(--green)' : 'var(--amber)' }} title={_partes.map(x => fmtCur(x.monto, m.currency)).join(' + ')}>{_partes.length} parte(s): {fmtCur(_suma, m.currency)} de {fmtCur(_total, m.currency)}{_depsBtns}</div>
                             : null;
-                          if (!evB) return <div style={{ fontSize:10, color:'var(--amber)' }} title="Monto > S/2000 sin evidencia de bancarización">⚠ Falta bancarización{subirBtn}{_tagPartes}</div>;
+                          if (!evB) {
+                            // Sin constancia propia pero cubierto por depósito(s) = bancarizado.
+                            if (movimientoBancarizado({ mov: m, tieneEvidenciaDirecta: false, partes: _partes, depositosById })) {
+                              return <div style={{ fontSize:10, color:'var(--green)' }}>✅ Bancarizado (depósito){subirBtn}{_tagPartes}</div>;
+                            }
+                            return <div style={{ fontSize:10, color:'var(--amber)' }} title="Monto > S/2000 sin evidencia de bancarización">⚠ Falta bancarización{subirBtn}{_tagPartes}</div>;
+                          }
                           if (evB.sync === 'uploaded') return <div style={{ fontSize:10, color:'var(--green)' }}>✅ Bancarizado{_suma > 0 && _suma < _total - 0.01 ? <span style={{ color:'var(--amber)' }} title="Las partes registradas no completan el total"> (parcial)</span> : null}{subirBtn}{_tagPartes}</div>;
                           if (evB.sync === 'failed') return <div style={{ fontSize:10, color:'var(--red)' }} title="La evidencia no se pudo subir (revisá que estés asignado a la obra con un rol que no sea solo lectura)">⚠ Bancarización no subió{subirBtn}</div>;
                           return <div style={{ fontSize:10, color:'var(--tm)' }} title="Subiendo evidencia de bancarización…">⏳ Subiendo bancarización</div>;
@@ -1392,6 +1594,45 @@ function MovimientosContablesPage({ showToast }) {
         </div>
       )}
 
+      {/* Duplicados: comprobantes registrados 2+ veces (fusión admin/contador) */}
+      {dupGrupos !== null && (
+        <Modal title="Comprobantes duplicados" icon="search" onClose={()=>setDupGrupos(null)}>
+          {dupGrupos.length === 0 ? (
+            <div style={{ fontSize:13, color:'var(--green)', padding:'8px 0' }}>✅ No se detectaron comprobantes duplicados.</div>
+          ) : (
+            <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+              <div style={{ fontSize:12, color:'var(--tm)' }}>
+                El mismo comprobante quedó registrado más de una vez (p.ej. confirmado dos veces
+                en Captura Mágica). Al fusionar se conserva UNO (el más antiguo ya sincronizado),
+                sus evidencias/bancarizaciones/guías pasan al conservado y el resto se elimina.
+              </div>
+              {dupGrupos.map((g, i) => (
+                <div key={i} style={{ border:'1px solid var(--bd)', borderRadius:8, padding:'8px 10px', display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
+                  <div style={{ flex:1, minWidth:220 }}>
+                    <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)' }}>
+                      {(g.conservar.document_type || 'doc')} {g.conservar.document_number} · {g.conservar.third_party_name || '—'}
+                    </div>
+                    <div style={{ fontSize:11, color:'var(--tm)' }}>
+                      {g.conservar.date || 's/fecha'} · {fmtCur(g.conservar.amount, g.conservar.currency)} · {1 + g.duplicados.length} registros
+                      {g.montosDistintos && <span style={{ color:'var(--amber)' }}> · ⚠ montos distintos — revisá antes de fusionar</span>}
+                    </div>
+                  </div>
+                  <button className="btn btn-amber btn-xs" disabled={fusionando} onClick={()=>fusionarUno(g)}>
+                    Fusionar ({g.duplicados.length})
+                  </button>
+                </div>
+              ))}
+              <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
+                <button className="btn btn-ghost btn-sm" onClick={()=>setDupGrupos(null)}>Cerrar</button>
+                <button className="btn btn-amber btn-sm" disabled={fusionando} onClick={fusionarTodos}>
+                  {fusionando ? 'Fusionando…' : `Fusionar todos (${dupGrupos.length})`}
+                </button>
+              </div>
+            </div>
+          )}
+        </Modal>
+      )}
+
       {/* Subir bancarización sin entrar a editar (acceso para ayudante de contabilidad) */}
       {bancTarget && (
         <Modal title="Subir bancarización" icon="upload" onClose={()=>{ setBancTarget(null); setBancFile(null); }}>
@@ -1409,19 +1650,63 @@ function MovimientosContablesPage({ showToast }) {
                 </select>
               </div>
             )}
-            <div>
-              <label className="flabel">Archivo (foto o PDF del voucher / constancia)</label>
-              <input className="fi" type="file" accept="image/*,application/pdf" onChange={e=>setBancFile((e.target.files||[])[0]||null)}/>
-              {bancFile && <div style={{ fontSize:11, color:'var(--green)', marginTop:4 }}>📎 {bancFile.name}</div>}
-            </div>
-            {/* Bancarización EN PARTES: monto de ESTA constancia (opcional). */}
+            {/* Modo: constancia de esta factura / depósito multi-factura nuevo / usar saldo existente */}
             {(() => {
+              const candidatos = (depositos || []).filter(d =>
+                mismoPar(parDeposito(d), parMovimiento(bancTarget)) &&
+                saldoDeposito(d, partesPorDeposito.get(d.id) || []) > TOL);
               const partesMov = (partesPorMov.get(bancTarget.id) || []);
               const sumaPartes = partesMov.reduce((t, x) => t + (Number(x.monto) || 0), 0);
               const totalMov = Number(bancTarget.amount) || 0;
-              return (
+              const pendiente = Math.max(0, totalMov - sumaPartes);
+              const elegirModo = (m) => { setBancModo(m); setBancDepId(''); if (m !== 'sola') setBancMonto(String(pendiente || '')); else setBancMonto(''); };
+              return (<>
+                <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                  {[['sola', 'Constancia de ESTA factura'], ['dep_nuevo', 'Depósito que cubre VARIAS facturas'], ['dep_existente', `Usar depósito con saldo${candidatos.length ? ` (${candidatos.length})` : ''}`]].map(([k, lbl]) => (
+                    <button key={k} className={`btn btn-sm ${bancModo === k ? 'btn-amber' : 'btn-ghost'}`}
+                      style={{ fontSize:11 }} disabled={k === 'dep_existente' && !candidatos.length}
+                      title={k === 'dep_existente' && !candidatos.length ? 'No hay depósitos del mismo pagador→cobrador con saldo disponible' : undefined}
+                      onClick={() => elegirModo(k)}>{lbl}</button>
+                  ))}
+                </div>
+                {bancModo === 'dep_nuevo' && (
+                  <div style={{ fontSize:11, color:'var(--tm)', padding:'6px 10px', borderRadius:6, background:'rgba(52,152,219,0.08)', border:'1px solid rgba(52,152,219,0.3)' }}>
+                    Registrás UNA transferencia/depósito (p.ej. S/ 20,000) que cubre varias facturas del mismo
+                    {claseDe(bancTarget) === 'venta' ? ' cliente' : ' proveedor'}. Acá indicás el TOTAL del depósito y cuánto
+                    cubre esta factura; el resto queda como saldo para aplicar a otras facturas (no se puede exceder el total).
+                  </div>
+                )}
+                {bancModo !== 'dep_existente' && (
+                  <div>
+                    <label className="flabel">Archivo (foto o PDF del voucher / constancia)</label>
+                    <input className="fi" type="file" accept="image/*,application/pdf" onChange={e=>setBancFile((e.target.files||[])[0]||null)}/>
+                    {bancFile && <div style={{ fontSize:11, color:'var(--green)', marginTop:4 }}>📎 {bancFile.name}</div>}
+                  </div>
+                )}
+                {bancModo === 'dep_existente' && (
+                  <div>
+                    <label className="flabel">Depósito (mismo pagador→cobrador, con saldo)</label>
+                    <select className="fi" value={bancDepId} onChange={e=>{
+                      const id = e.target.value; setBancDepId(id);
+                      const d = depositosById.get(id);
+                      if (d) setBancMonto(String(Math.min(saldoDeposito(d, partesPorDeposito.get(id) || []), pendiente || Infinity).toFixed(2)));
+                    }}>
+                      <option value="">— Elegí el depósito —</option>
+                      {candidatos.map(d => (
+                        <option key={d.id} value={d.id}>
+                          {d.fecha || 's/fecha'} · {d.referencia || 's/ref'} · total {fmtCur(d.monto_total, d.moneda)} · saldo {fmtCur(saldoDeposito(d, partesPorDeposito.get(d.id) || []), d.moneda)}
+                        </option>
+                      ))}
+                    </select>
+                    {bancDepId && (() => { const evD = bancPorDeposito.get(bancDepId); return evD
+                      ? <button className="btn btn-ghost btn-xs" style={{ marginTop:4, color:'var(--blue)' }} onClick={()=>setEvidenciaModal(evD)}><JxIcon name="eye" size={11}/> Ver constancia del depósito</button>
+                      : null; })()}
+                  </div>
+                )}
                 <div style={{ padding:'8px 10px', borderRadius:6, background:'var(--bg-s)' }}>
-                  <div style={{ fontSize:11.5, fontWeight:700, marginBottom:6 }}>¿Este voucher es una PARTE del pago?</div>
+                  <div style={{ fontSize:11.5, fontWeight:700, marginBottom:6 }}>
+                    {bancModo === 'sola' ? '¿Este voucher es una PARTE del pago?' : 'Montos'}
+                  </div>
                   {partesMov.length > 0 && (
                     <div style={{ fontSize:11, color:'var(--tm)', marginBottom:6 }}>
                       Partes ya registradas: {partesMov.map(x => fmtCur(x.monto, bancTarget.currency)).join(' + ')} = <strong style={{ color: sumaPartes >= totalMov - 0.01 ? 'var(--green)' : 'var(--amber)' }}>{fmtCur(sumaPartes, bancTarget.currency)}</strong> de {fmtCur(totalMov, bancTarget.currency)}
@@ -1429,30 +1714,57 @@ function MovimientosContablesPage({ showToast }) {
                     </div>
                   )}
                   <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-                    <div><label className="flabel">Monto de esta constancia</label>
-                      <input className="fi" type="number" min="0" step="0.01" value={bancMonto} placeholder="opcional"
+                    {bancModo === 'dep_nuevo' && (
+                      <div><label className="flabel">TOTAL del depósito</label>
+                        <input className="fi" type="number" min="0" step="0.01" value={bancTotalDep} placeholder="ej. 20000"
+                          onChange={e=>setBancTotalDep(e.target.value)} style={{ width:130, textAlign:'right' }}/></div>
+                    )}
+                    <div><label className="flabel">{bancModo === 'sola' ? 'Monto de esta constancia' : 'Cubre de ESTA factura'}</label>
+                      <input className="fi" type="number" min="0" step="0.01" value={bancMonto} placeholder={bancModo === 'sola' ? 'opcional' : 'requerido'}
                         onChange={e=>setBancMonto(e.target.value)} style={{ width:130, textAlign:'right' }}/></div>
-                    <div><label className="flabel">Método</label>
-                      <select className="fi" value={bancMetodo} onChange={e=>setBancMetodo(e.target.value)} style={{ width:150 }}>
-                        <option value="transferencia">Transferencia</option>
-                        <option value="deposito">Depósito</option>
-                        <option value="agente">Agente bancario</option>
-                        <option value="cheque">Cheque</option>
-                        <option value="otro">Otro</option>
-                      </select></div>
-                    <div><label className="flabel">N° operación</label>
-                      <input className="fi" value={bancRef} placeholder="opcional" onChange={e=>setBancRef(e.target.value)} style={{ width:130 }}/></div>
+                    {bancModo !== 'dep_existente' && (<>
+                      <div><label className="flabel">Método</label>
+                        <select className="fi" value={bancMetodo} onChange={e=>setBancMetodo(e.target.value)} style={{ width:150 }}>
+                          <option value="transferencia">Transferencia</option>
+                          <option value="deposito">Depósito</option>
+                          <option value="agente">Agente bancario</option>
+                          <option value="cheque">Cheque</option>
+                          <option value="otro">Otro</option>
+                        </select></div>
+                      <div><label className="flabel">N° operación</label>
+                        <input className="fi" value={bancRef} placeholder="opcional" onChange={e=>setBancRef(e.target.value)} style={{ width:130 }}/></div>
+                    </>)}
                   </div>
-                  <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:6 }}>Si dejás el monto vacío, solo se adjunta el archivo (como siempre). Con monto, además queda registrada la parte para saber cuánto va del total.</div>
+                  {bancModo === 'sola' && (
+                    <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:6 }}>Si dejás el monto vacío, solo se adjunta el archivo (como siempre). Con monto, además queda registrada la parte para saber cuánto va del total.</div>
+                  )}
+                  {bancModo === 'dep_nuevo' && Number(bancTotalDep) > 0 && Number(bancMonto) > 0 && (
+                    <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:6 }}>
+                      Saldo que quedará para otras facturas: <strong style={{ color:'var(--blue)' }}>{fmtCur(Math.max(0, Number(bancTotalDep) - Number(bancMonto)), bancTarget.currency)}</strong>
+                    </div>
+                  )}
+                  {bancModo === 'dep_existente' && bancDepId && (() => {
+                    const d = depositosById.get(bancDepId);
+                    const saldo = d ? saldoDeposito(d, partesPorDeposito.get(bancDepId) || []) : 0;
+                    const excede = Number(bancMonto) > saldo + TOL;
+                    return (
+                      <div style={{ fontSize:10.5, marginTop:6, color: excede ? 'var(--red)' : 'var(--tm)' }}>
+                        {excede
+                          ? `⚠ Excede el saldo del depósito (${fmtCur(saldo, d?.moneda)}) — no se puede cubrir más de lo transferido`
+                          : <>Saldo restante tras aplicar: <strong style={{ color:'var(--blue)' }}>{fmtCur(Math.max(0, saldo - (Number(bancMonto) || 0)), d?.moneda)}</strong></>}
+                      </div>
+                    );
+                  })()}
                 </div>
-              );
+              </>);
             })()}
             <div style={{ fontSize:11, color:'var(--tm)' }}>Esto solo adjunta la bancarización al movimiento — no modifica el movimiento, así que no requiere permiso de edición.</div>
           </div>
           <div className="modal-actions">
             <button className="btn btn-ghost" onClick={()=>{ setBancTarget(null); setBancFile(null); }} disabled={bancSaving}>Cancelar</button>
-            <button className="btn btn-amber" onClick={subirBancarizacion} disabled={bancSaving || !bancFile}>
-              <JxIcon name="check" size={13}/> {bancSaving ? 'Subiendo…' : 'Subir bancarización'}
+            <button className="btn btn-amber" onClick={subirBancarizacion}
+              disabled={bancSaving || (bancModo !== 'dep_existente' && !bancFile) || (bancModo === 'dep_existente' && !bancDepId)}>
+              <JxIcon name="check" size={13}/> {bancSaving ? 'Guardando…' : (bancModo === 'dep_existente' ? 'Aplicar saldo del depósito' : bancModo === 'dep_nuevo' ? 'Registrar depósito y cubrir factura' : 'Subir bancarización')}
             </button>
           </div>
         </Modal>

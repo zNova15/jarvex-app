@@ -137,11 +137,11 @@ function Thumb({ ev, signedRef, blobUrlRef, onClick }) {
 }
 
 // ─── EVIDENCIAS PAGE ────────────────────────────────────
-// Evidencias CONTABLES (facturas, comprobantes, bancarización): solo las ven
-// el ADMIN y la CONTADORA JEFE ('contador'), más quien las subió (el ayudante
-// necesita re-ver las suyas). La almacenera y el resto de la obra NO — mismo
-// criterio que el RLS del server (mig 119); acá se filtra también lo que ya
-// quedó cacheado en el IndexedDB local del dispositivo.
+// Evidencias CONTABLES (facturas, comprobantes, bancarización): solo las ve
+// CONTABILIDAD (asistente 'ayudante_contador' + contadora jefe 'contador') y
+// el ADMIN, más quien las subió. La almacenera y el resto de la obra NO —
+// mismo criterio que el RLS del server (mig 136); acá se filtra también lo
+// que ya quedó cacheado en el IndexedDB local del dispositivo.
 const TIPOS_CONTABLES = new Set(['bancarizacion', 'comprobante_captura', 'factura', 'recibo_honorarios', 'pago_evidencia']);
 
 function EvidenciasPage({ showToast }) {
@@ -150,7 +150,7 @@ function EvidenciasPage({ showToast }) {
   const myId = auth?.profile?.id || null;
   const isAdmin = myRol === 'admin';
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Evidencias', 'w') ?? false);
-  const puedeVerContable = isAdmin || myRol === 'contador';
+  const puedeVerContable = isAdmin || myRol === 'contador' || myRol === 'ayudante_contador';
   const [obraId, setObraId] = uSE(null);
 
   // Detectar obra activa
