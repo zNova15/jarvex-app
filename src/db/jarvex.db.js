@@ -47,6 +47,14 @@ export const db = new Dexie('JarvexDB');
 // y lo envía; el admin acepta y recién ahí se aplican los avances. Aditivo.
 // Versión 40: Fase 3 Ambiental — archivo de cumplimiento ISO 14001 (evidencias
 // por categoría × mes; la matriz mensual se calcula al leer). Aditivo.
+// Versión 41: Fase 4 Calidad — requisitos del expediente (specs mínimas por
+// insumo) + certificados comparados vs requisito (IA con override manual).
+// El PDF del certificado va como evidencia (modulo 'calidad_certificados').
+db.version(41).stores({
+  calidad_requisitos: 'id, obra_id, insumo_nombre, deleted_at, sync_status',
+  calidad_certificados: 'id, obra_id, requisito_id, fecha, deleted_at, sync_status',
+});
+
 db.version(40).stores({
   ambiental_registros: 'id, obra_id, categoria, fecha, deleted_at, sync_status',
 });

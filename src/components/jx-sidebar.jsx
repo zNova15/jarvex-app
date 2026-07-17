@@ -148,6 +148,9 @@ const NAV = [
   { section: 'AMBIENTAL' },
   { id: 'gestion-ambiental', label: 'Gestión Ambiental (ISO 14001)', icon: 'map' },
 
+  { section: 'CALIDAD' },
+  { id: 'gestion-calidad', label: 'Gestión de Calidad (Certificados)', icon: 'checkCircle' },
+
   { section: 'RRHH' },
   { id: 'personal', label: 'Personal', icon: 'users' },
   { id: 'frentes', label: 'Frentes de Trabajo', icon: 'flag' },

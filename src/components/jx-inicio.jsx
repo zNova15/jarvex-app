@@ -76,7 +76,7 @@ const BLOQUES = [
   {
     id: 'calidad', titulo: 'Calidad', icon: 'checkCircle', tipo: 'obra', color: '#3498DB',
     desc: 'Reporte diario y verificación de insumos (certificados vs expediente)',
-    items: ['reporte-especialidad', 'materiales', 'evidencias'],
+    items: ['reporte-especialidad', 'gestion-calidad', 'materiales', 'evidencias'],
   },
   {
     id: 'social', titulo: 'Social', icon: 'users', tipo: 'obra', color: '#9B59B6',

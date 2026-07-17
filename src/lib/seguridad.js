@@ -33,14 +33,19 @@ const ALIAS = {
   expositor: ['expositor', 'responsable', 'encargado', 'dicta', 'facilitador', 'ponente'],
   notas: ['notas', 'observaciones', 'obs', 'comentarios', 'detalle'],
 };
-const norm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+const norm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
 
+// Dos pasadas: nombres PRIMARIOS exactos primero, alias débiles después — un
+// Excel 'Fecha | Tipo | Área' no debe mapear area→'Tipo' tapando a 'Área'.
+const PRIMARIOS = { fecha: ['fecha'], tema: ['tema'], area: ['area'], expositor: ['expositor'], notas: ['notas'] };
 function mapHeaders(headers) {
   const out = {};
-  for (const h of headers || []) {
-    const n = norm(h);
-    for (const [campo, aliases] of Object.entries(ALIAS)) {
-      if (!out[campo] && aliases.includes(n)) out[campo] = h;
+  for (const fuentes of [PRIMARIOS, ALIAS]) {
+    for (const h of headers || []) {
+      const n = norm(h);
+      for (const [campo, aliases] of Object.entries(fuentes)) {
+        if (!out[campo] && aliases.includes(n)) out[campo] = h;
+      }
     }
   }
   return out;

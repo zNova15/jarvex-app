@@ -752,7 +752,7 @@ const MODULE_GROUPS = [
   { group: 'Compras / Logística', modules: ['Requisiciones','Órdenes de Compra','Cotizaciones','Recepciones'] },
   { group: 'Subcontratos', modules: ['Subcontratistas','Subcontratos','Valor. Subcontrato'] },
   { group: 'Maquinaria', modules: ['Activos Pesados','Mantenimiento','Horas Máquina'] },
-  { group: 'SSOMA', modules: ['Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones','Insumos de Emergencia','Reporte Especialidad','Gestión Ambiental'] },
+  { group: 'SSOMA', modules: ['Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones','Insumos de Emergencia','Reporte Especialidad','Gestión Ambiental','Gestión Calidad'] },
   { group: 'RRHH', modules: ['Contratos Laborales','Planillas','CTS','Gratificaciones'] },
   { group: 'Contabilidad', modules: ['Empresas','Movs. Contables','Intercompany','Trazabilidad','Consolidado','Plan de Cuentas','Libro Diario','Balance General','Estado Resultados'] },
   { group: 'Tesorería', modules: ['Cuentas Bancarias','Flujo de Caja','Flujo Proyectado','Comparativo Periodos'] },
@@ -812,7 +812,7 @@ const PERM_MATRIX = {
       'Requisiciones','Ubicaciones','KPIs por Obra','Cumplimiento Cronograma',
       'Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones','Insumos de Emergencia',
       'Personal','Asistencia','Mantenimiento','Horas Máquina','Solicitudes Cambio',
-      'Reporte Especialidad','Gestión Ambiental'];
+      'Reporte Especialidad','Gestión Ambiental','Gestión Calidad'];
     if (EDITA.includes(m)) return 'w';
     // Resto técnico/operativo → lectura (Obras, Materiales, Herramientas, Mov.*,
     // Proveedores, Activos, Subcontratos, Reportes, Alertas, Búsqueda).
@@ -987,12 +987,12 @@ const PERM_MATRIX = {
     return 'x';
   }),
 
-  // Ing. de Calidad: reporte diario + evidencias; lectura de insumos/partidas para
-  // sus verificaciones (specs técnicas, NO precios). La herramienta IA de
-  // certificados llega en Fase 4. CERO dinero.
+  // Ing. de Calidad: reporte diario + evidencias + Gestión Calidad (requisitos
+  // del expediente + certificados vs IA, Fase 4); lectura de insumos/partidas
+  // para sus verificaciones (specs técnicas, NO precios). CERO dinero.
   ing_calidad: PERM_MATRIX_MODULES.map(m => {
     if (m === 'Usuarios/Config') return 'x';
-    if (['Reporte Especialidad','Evidencias','Incidencias','Solicitudes Cambio'].includes(m)) return 'w';
+    if (['Reporte Especialidad','Evidencias','Incidencias','Solicitudes Cambio','Gestión Calidad'].includes(m)) return 'w';
     if (['Obras','Materiales','Mov. Materiales','Partidas','Insumos','Recepciones','Reportes'].includes(m)) return 'r';
     return 'x';
   }),
@@ -1120,6 +1120,7 @@ window.__moduleIdMap = {
   'inducciones': 'Charlas Seguridad',
   'sctr-personal': 'Personal',
   'gestion-ambiental': 'Gestión Ambiental',
+  'gestion-calidad': 'Gestión Calidad',
   // RRHH
   'personal-contratos': 'Contratos Laborales',
   'planillas': 'Planillas',
