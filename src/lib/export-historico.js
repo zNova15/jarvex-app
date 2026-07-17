@@ -226,8 +226,10 @@ export const DATASETS = [
     build: (c, f) => {
       const q = (f?.q || '').toLowerCase();
       let list = c.personal.slice();
-      // soloObreros: roles con scope obrero exportan SOLO Peón/Oficial/Operario.
-      if (f?.soloObreros && f?.esObrero) list = list.filter((p) => f.esObrero(p.cargo));
+      // scope: roles con scope exportan SOLO su alcance (Obrero+Profesionales+
+      // Subcontratos vía scopeFiltro; compat con el viejo esObrero por cargo).
+      if (f?.soloObreros && typeof f?.scopeFiltro === 'function') list = list.filter((p) => f.scopeFiltro(p));
+      else if (f?.soloObreros && f?.esObrero) list = list.filter((p) => f.esObrero(p.cargo));
       if (f?.responsable && !f.responsable.startsWith('sub:')) { const id = f.responsable.startsWith('p:') ? f.responsable.slice(2) : f.responsable; list = list.filter((p) => p.id === id); }
       if (f?.responsable && f.responsable.startsWith('sub:')) { const id = f.responsable.slice(4); list = list.filter((p) => p.subcontratista_id === id); }
       if (q) list = list.filter((p) => `${p.nombres} ${p.apellidos} ${p.dni}`.toLowerCase().includes(q));

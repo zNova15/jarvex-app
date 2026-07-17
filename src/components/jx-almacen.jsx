@@ -10,7 +10,8 @@ import { opcionesDestinoFlat, splitDestino } from "../lib/destino-mov.js";
 import { getDesgloseBulk, aplicarDelta, traspasar, baseSalidaUbicacion } from "../lib/stock-ubicaciones.js";
 import { DesglosePopup, TraspasoStockModal, ubicacionAutoOrigen } from "./jx-stock-ubic.jsx";
 import { hoyLocal, horaLocal } from "../lib/fecha.js";
-import { esObrero, rolScopeObrero, CARGOS_OBRERO_CANONICOS } from "../lib/personal-scope.js";
+import { rolScopeObrero } from "../lib/personal-scope.js";
+import { categoriaDe, esGestionableSeguridad, CATEGORIAS, CATEGORIA_LABEL, CATEGORIA_BADGE, CARGOS_GESTIONABLES_CANONICOS } from "../lib/personal-categoria.js";
 import { EstadosModal } from "./jx-stock-estados.jsx";
 import { FusionPersonasModal } from "./jx-fusion-personas.jsx";
 import { getEstadosBulk, ESTADOS_COND, ESTADO_LABEL, aplicarDeltaEstado } from "../lib/stock-estados.js";
@@ -4856,6 +4857,7 @@ function PersonalPage({ showToast }) {
   const [requestTarget, setRequestTarget] = uS(null);
   const [filtroVinculo, setFiltroVinculo] = uS('todos'); // todos | directos | subcontratados | sub:<id>
   const [filtroEstado, setFiltroEstado] = uS('todos');   // todos | activos | inactivos
+  const [filtroCategoria, setFiltroCategoria] = uS('todos'); // todos | obrero | profesionales | subcontratos | otros
 
   uE(() => {
     let cancelled = false;
@@ -4972,12 +4974,16 @@ function PersonalPage({ showToast }) {
   // de personal no-obrero a los roles con scope.
   const baseScoped = uM(() => {
     if (!personal) return [];
-    return scopeObrero ? personal.filter(p => esObrero(p.cargo)) : personal;
-  }, [personal, scopeObrero]);
+    // Roles con scope (ing. seguridad / almacenera / residente) gestionan
+    // Obrero + Profesionales + Subcontratos — NO "Otros".
+    return scopeObrero ? personal.filter(p => esGestionableSeguridad(p, subsById)) : personal;
+  }, [personal, scopeObrero, subsById]);
 
   const filtered = uM(() => {
     if (!personal) return [];
     let list = baseScoped;
+    // Categoría (Obrero / Profesionales / Subcontratos / Otros — deriva del cargo/vínculo).
+    if (filtroCategoria !== 'todos') list = list.filter(p => categoriaDe(p, subsById).categoria === filtroCategoria);
     // Vínculo: directos (sin subcontratista), subcontratados (con cualquiera), o uno específico
     if (filtroVinculo === 'directos') list = list.filter(p => !p.subcontratista_id);
     else if (filtroVinculo === 'subcontratados') list = list.filter(p => !!p.subcontratista_id);
@@ -5002,7 +5008,7 @@ function PersonalPage({ showToast }) {
       );
     }
     return list;
-  }, [q, personal, baseScoped, filtroVinculo, filtroEstado, filtroFrente, subsById]);
+  }, [q, personal, baseScoped, filtroCategoria, filtroVinculo, filtroEstado, filtroFrente, subsById]);
 
   const personalPg = usePagination(filtered, 50);
 
@@ -5014,7 +5020,7 @@ function PersonalPage({ showToast }) {
   };
 
   const openEditPersonal = (p) => {
-    if (scopeObrero && !esObrero(p.cargo)) { showToast('Tu rol solo gestiona personal obrero (Peón/Oficial/Operario)', 'red'); return; }
+    if (scopeObrero && !esGestionableSeguridad(p, subsById)) { showToast('Tu rol gestiona Obrero, Profesionales y Subcontratos — no la categoría "Otros".', 'red'); return; }
     setForm({
       nombres: p.nombres || '',
       apellidos: p.apellidos || '',
@@ -5037,6 +5043,7 @@ function PersonalPage({ showToast }) {
       es_jefe_subcontrato: !!p.es_jefe_subcontrato,
       seguro_a_cargo: p.seguro_a_cargo || '',
       frente_id: p.frente_id || '',
+      categoria: p.categoria || '',
     });
     setEditingId(p.id);
     setModal('editar');
@@ -5077,9 +5084,9 @@ function PersonalPage({ showToast }) {
   };
 
   const handleSubmit = async () => {
-    // Scope obrero: estos roles solo crean/editan Peón/Oficial/Operario.
-    if (scopeObrero && !esObrero(form.cargo)) {
-      showToast('Tu rol solo puede registrar personal obrero: elegí cargo Peón, Oficial u Operario.', 'red');
+    // Scope: estos roles crean/editan Obrero + Profesionales + Subcontratos (no "Otros").
+    if (scopeObrero && !esGestionableSeguridad({ cargo: form.cargo, subcontratista_id: form.subcontratista_id, categoria: form.categoria }, subsById)) {
+      showToast('Tu rol gestiona Obrero, Profesionales y Subcontratos — ese cargo cae en "Otros".', 'red');
       return;
     }
     const tipoDoc = form.tipo_documento || 'dni';
@@ -5197,6 +5204,8 @@ function PersonalPage({ showToast }) {
           es_jefe_subcontrato: esJefe,
           seguro_a_cargo: seguro,
           frente_id: frenteId,
+          // Override manual de categoría ('' = derivar del cargo/vínculo).
+          categoria: form.categoria || null,
           // Forzar mantener la obra original — NUNCA cambiarla en edición
           // (preserva trazabilidad de asistencia y movimientos históricos)
           obra_id: oldData?.obra_id || obraId,
@@ -5233,6 +5242,7 @@ function PersonalPage({ showToast }) {
           es_jefe_subcontrato: esJefe,
           seguro_a_cargo: seguro,
           frente_id: frenteId,
+          categoria: form.categoria || null,
         });
         try { await window.__logAudit?.({ action:'insert', table:'personal', recordId:created?.id, newData:created }); } catch(e) {}
         // Historial: alta del trabajador (cargo · frente inicial).
@@ -5304,7 +5314,7 @@ function PersonalPage({ showToast }) {
 
   // Aplicar el nombre de RENIEC a una persona (corrección sugerida).
   const aplicarNombreReniec = async (p, rn) => {
-    if (scopeObrero && !esObrero(p.cargo)) { showToast('Tu rol solo gestiona personal obrero', 'red'); return; }
+    if (scopeObrero && !esGestionableSeguridad(p, subsById)) { showToast('Tu rol no gestiona personal de la categoría "Otros"', 'red'); return; }
     const nuevos = { nombres: titleCaseNombre(rn.nombres), apellidos: titleCaseNombre(rn.apellidos) };
     try {
       await updatePersonal(p.id, nuevos);
@@ -5327,7 +5337,7 @@ function PersonalPage({ showToast }) {
   return (
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
-        <div><div className="pg-title">Personal</div><div className="pg-sub">{baseScoped.length} trabajadores{scopeObrero ? ' (obreros)' : ''} · {baseScoped.filter(p=>p.estado==='activo').length} activos · {baseScoped.filter(p=>!p.subcontratista_id).length} directos · {baseScoped.filter(p=>!!p.subcontratista_id).length} en subcontrato</div></div>
+        <div><div className="pg-title">Personal</div><div className="pg-sub">{baseScoped.length} trabajadores{scopeObrero ? ' (tu alcance)' : ''} · {baseScoped.filter(p=>p.estado==='activo').length} activos · {baseScoped.filter(p=>!p.subcontratista_id).length} directos · {baseScoped.filter(p=>!!p.subcontratista_id).length} en subcontrato</div></div>
         <div style={{display:'flex',gap:8}}>
           {superAdminP && (
             <button className="btn btn-sm" style={{ background:'rgba(231,76,60,0.12)', color:'#E74C3C', border:'1px solid rgba(231,76,60,0.3)' }}
@@ -5346,7 +5356,7 @@ function PersonalPage({ showToast }) {
                 // alcanza con canWrite (rrhh / residente tienen Personal 'w'
                 // pero Cuentas Bancarias 'x').
                 const sinBancos = !(isAdmin || (window.__hasPerm?.(myRol, 'Cuentas Bancarias', 'r') ?? false));
-                const r = await exportarDataset('personal', obraId, obra?.nombre_obra || obra?.nombre || 'obra', { sinBancos, soloObreros: scopeObrero, esObrero }, { porModo: true });
+                const r = await exportarDataset('personal', obraId, obra?.nombre_obra || obra?.nombre || 'obra', { sinBancos, soloObreros: scopeObrero, scopeFiltro: (p) => esGestionableSeguridad(p, subsById) }, { porModo: true });
                 showToast(`Exportado: ${r.filas} trabajadores → ${r.archivo}`, 'green');
               } catch (e) { showToast('Error al exportar: ' + (e.message || e), 'red'); }
             }}>
@@ -5400,6 +5410,10 @@ function PersonalPage({ showToast }) {
           {subsActivos.length > 0 && <option disabled>──────────</option>}
           {subsActivos.map(s => <option key={s.id} value={`sub:${s.id}`}>{s.razon_social}</option>)}
         </select>
+        <select className="fi" style={{width:'auto',minWidth:170}} value={filtroCategoria} onChange={e=>{setFiltroCategoria(e.target.value); personalPg.setPage?.(1);}} title="Filtrar por categoría de personal">
+          <option value="todos">Categoría: todas</option>
+          {CATEGORIAS.filter(c => !scopeObrero || c.key !== 'otros').map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+        </select>
         <select className="fi" style={{width:'auto',minWidth:150}} value={filtroEstado} onChange={e=>setFiltroEstado(e.target.value)} title="Filtrar por estado">
           <option value="todos">Estado: todos</option>
           <option value="activos">Solo activos</option>
@@ -5419,7 +5433,7 @@ function PersonalPage({ showToast }) {
       <div className="card" style={{overflow:'hidden'}}>
         <table className="tbl">
           <thead><tr>
-            <th>Nombre Completo</th><th>DNI</th><th>Cargo</th><th>Frente</th><th>Área</th><th>Vínculo</th>
+            <th>Nombre Completo</th><th>DNI</th><th>Cargo</th><th>Categoría</th><th>Frente</th><th>Área</th><th>Vínculo</th>
             <th>F. Ingreso</th><th>Estado</th><th>Teléfono</th><th>Sync</th>
             <th style={{textAlign:'center'}}>Acciones</th>
           </tr></thead>
@@ -5431,6 +5445,12 @@ function PersonalPage({ showToast }) {
                   <td className="col-p">{p.nombres} {p.apellidos}{p.alias ? <span style={{color:'var(--tm)',fontWeight:400}}> «{p.alias}»</span> : null}</td>
                   <td className="col-m">{p.dni}</td>
                   <td>{p.cargo || '—'}</td>
+                  <td>{(() => { const { categoria, sub } = categoriaDe(p, subsById); return (
+                    <span style={{display:'inline-flex',flexDirection:'column',gap:2,alignItems:'flex-start'}}>
+                      <span className={`badge ${CATEGORIA_BADGE[categoria]}`} title={p.categoria ? 'Categoría fijada a mano' : 'Categoría derivada del cargo/vínculo'}>{CATEGORIA_LABEL[categoria]}{p.categoria ? ' ✎' : ''}</span>
+                      {sub && <span style={{fontSize:10,color:'var(--tm)'}}>{sub}</span>}
+                    </span>
+                  ); })()}</td>
                   <td>{p.frente_id ? <span className="badge b-amber" title="Frente de trabajo">{nombreFrente(p.frente_id) || '(frente)'}</span> : <span style={{color:'var(--tm)',fontSize:12}}>—</span>}</td>
                   <td><span className="tag">{p.area || '—'}</span></td>
                   <td>
@@ -5623,11 +5643,23 @@ function PersonalPage({ showToast }) {
               setForm({...form, cargo:v});
             }}>
               <option value="">— Selecciona —</option>
-              {form.cargo && !(scopeObrero ? CARGOS_OBRERO_CANONICOS : cargosDisponibles).includes(form.cargo) && <option value={form.cargo}>{form.cargo}</option>}
-              {(scopeObrero ? CARGOS_OBRERO_CANONICOS : cargosDisponibles).map(c => <option key={c} value={c}>{c}</option>)}
+              {form.cargo && !(scopeObrero ? CARGOS_GESTIONABLES_CANONICOS : cargosDisponibles).includes(form.cargo) && <option value={form.cargo}>{form.cargo}</option>}
+              {(scopeObrero ? CARGOS_GESTIONABLES_CANONICOS : cargosDisponibles).map(c => <option key={c} value={c}>{c}</option>)}
               {!scopeObrero && <option value="__add__">+ Agregar cargo…</option>}
             </select>
-            {scopeObrero && <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:3 }}>Tu rol gestiona solo personal obrero (Peón / Oficial / Operario).</div>}
+            {scopeObrero && <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:3 }}>Tu rol gestiona Obrero, Profesionales y Subcontratos (no "Otros").</div>}
+          </div>
+          <div><label className="flabel">Categoría</label>
+            <select className="fi" value={form.categoria || ''} onChange={e=>setForm({...form, categoria:e.target.value})}
+              title="Se deriva del cargo/vínculo. Fijala a mano solo si querés forzar otra.">
+              <option value="">Automática (según cargo / subcontrato)</option>
+              {CATEGORIAS.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+            </select>
+            {(() => { const der = categoriaDe({ cargo: form.cargo, subcontratista_id: form.subcontratista_id }, subsById).categoria; return (
+              <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:3 }}>
+                {form.categoria ? `Fijada a mano: ${CATEGORIA_LABEL[form.categoria]}.` : `Se clasificará como: ${CATEGORIA_LABEL[der]}.`}
+              </div>
+            ); })()}
           </div>
           <div><label className="flabel">Área</label>
             <select className="fi" value={form.area||''} onChange={e=>setForm({...form, area:e.target.value})}>

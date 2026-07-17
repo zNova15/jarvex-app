@@ -9,7 +9,7 @@
 import React from "react";
 import { hoyLocal } from "../lib/fecha.js";
 import { estadoSctr, parseCharlasExcel } from "../lib/seguridad.js";
-import { esObrero } from "../lib/personal-scope.js";
+import { esGestionableSeguridad } from "../lib/personal-categoria.js";
 import { SearchableSelect } from "./jx-searchable-select.jsx";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
@@ -256,16 +256,20 @@ function SctrPage({ showToast }) {
   const userId = auth?.profile?.id || 'offline';
   const obraId = useObraActivaLocal();
   const rol = auth?.profile?.rol || '';
-  const canW = puedeW(rol, 'Personal');
+  // SUBIR el SCTR (vencimiento/aseguradora/evidencia) lo hace SOLO la contadora
+  // jefe + admin (pedido de Gabriel). La ing. de seguridad / almacenera VEN los
+  // vencimientos para advertir y CREAN personal (en la página Personal), pero NO
+  // suben el SCTR acá.
+  const puedeSubir = rol === 'admin' || rol === 'contador';
   const { data: personal } = window.__hooks.usePersonal(obraId);
   const hoy = hoyLocal();
 
-  // SCTR aplica al personal DIRECTO obrero (el de subcontrato lo cubre el
-  // subcontrato según seguro_a_cargo; NULL significa 'empresa' — mismo default
-  // que el resto de la app — así que esos también se listan).
-  const obreros = uM(() => (personal || []).filter(p => !p.deleted_at && esObrero(p.cargo) && (!p.subcontratista_id || (p.seguro_a_cargo || 'empresa') === 'empresa')), [personal]);
-  const conEstado = uM(() => obreros.map(p => ({ ...p, _sctr: estadoSctr(p.sctr_vencimiento, hoy) }))
-    .sort((a, b) => ({ vencido: 0, sin: 1, por_vencer: 2, vigente: 3 }[a._sctr] - { vencido: 0, sin: 1, por_vencer: 2, vigente: 3 }[b._sctr]) || String(a.apellidos || '').localeCompare(String(b.apellidos || ''))), [obreros, hoy]);
+  // SCTR del personal en scope (Obrero + Profesionales + Subcontratos, NO "Otros")
+  // DIRECTO o asegurado por la empresa (el de subcontrato con seguro a cargo del
+  // subcontrato lo cubre el subcontrato; NULL='empresa' → también se lista).
+  const elegibles = uM(() => (personal || []).filter(p => !p.deleted_at && esGestionableSeguridad(p) && (!p.subcontratista_id || (p.seguro_a_cargo || 'empresa') === 'empresa')), [personal]);
+  const conEstado = uM(() => elegibles.map(p => ({ ...p, _sctr: estadoSctr(p.sctr_vencimiento, hoy) }))
+    .sort((a, b) => ({ vencido: 0, sin: 1, por_vencer: 2, vigente: 3 }[a._sctr] - { vencido: 0, sin: 1, por_vencer: 2, vigente: 3 }[b._sctr]) || String(a.apellidos || '').localeCompare(String(b.apellidos || ''))), [elegibles, hoy]);
   // KPIs SOLO sobre personal activo (un retirado con SCTR vencido no es alerta).
   const activos = uM(() => conEstado.filter(p => !ESTADOS_NO_ACTIVOS.has(p.estado)), [conEstado]);
   const kpis = uM(() => ({
@@ -301,7 +305,7 @@ function SctrPage({ showToast }) {
     setBusy(true);
     try {
       const now = new Date().toISOString();
-      if (!canW) { toast('Tu rol no puede editar el SCTR', 'red'); setBusy(false); return; }
+      if (!puedeSubir) { toast('Solo la Contadora Jefe o el Admin pueden subir el SCTR', 'red'); setBusy(false); return; }
       await window.__db.personal.update(editando.id, {
         sctr_vencimiento: form.sctr_vencimiento || null,
         sctr_aseguradora: form.sctr_aseguradora?.trim() || null,
@@ -344,7 +348,7 @@ function SctrPage({ showToast }) {
     <div className="page-wrap">
       <div className="pg-hd">
         <div className="pg-title">SCTR del Personal</div>
-        <div className="pg-sub">Personal obrero (Peón / Oficial / Operario) directo o asegurado por la empresa · evidencia y vencimientos</div>
+        <div className="pg-sub">Personal en obra (Obrero / Profesionales / Subcontratos) directo o asegurado por la empresa · evidencia y vencimientos{!puedeSubir ? ' · solo lectura (la Contadora Jefe sube el SCTR)' : ''}</div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 16 }}>
@@ -362,7 +366,7 @@ function SctrPage({ showToast }) {
             <thead><tr><th>Trabajador</th><th>Cargo</th><th>Aseguradora</th><th>Vence</th><th>Estado</th><th>Evidencia</th><th style={{ textAlign: 'center' }}>Acciones</th></tr></thead>
             <tbody>
               {conEstado.length === 0 ? (
-                <tr><td colSpan={7} style={{ textAlign: 'center', padding: 22, color: 'var(--tm)' }}>No hay personal obrero en esta obra.</td></tr>
+                <tr><td colSpan={7} style={{ textAlign: 'center', padding: 22, color: 'var(--tm)' }}>No hay personal en obra para SCTR.</td></tr>
               ) : conEstado.map(p => {
                 const est = EST_SCTR[p._sctr];
                 return (
@@ -374,7 +378,7 @@ function SctrPage({ showToast }) {
                     <td><span className={`badge ${est.cls}`}>{est.lbl}</span></td>
                     <td>{evidencias.has(p.id) ? <button className="btn btn-ghost btn-xs" onClick={() => verEvidencia(p)}>📄 Ver</button> : <span style={{ color: 'var(--tm)', fontSize: 11 }}>—</span>}</td>
                     <td style={{ textAlign: 'center' }}>
-                      {canW ? <button className="btn btn-amber btn-xs" onClick={() => abrirEditar(p)}><JxIcon name="edit" size={11} /> SCTR</button> : <span style={{ color: 'var(--tm)', fontSize: 11 }}>solo lectura</span>}
+                      {puedeSubir ? <button className="btn btn-amber btn-xs" onClick={() => abrirEditar(p)}><JxIcon name="edit" size={11} /> SCTR</button> : <span style={{ color: 'var(--tm)', fontSize: 11 }}>solo lectura</span>}
                     </td>
                   </tr>
                 );
