@@ -1151,6 +1151,10 @@ function MovimientosContablesPage({ showToast }) {
   const subirBancarizacion = async () => {
     if (!bancTarget) return;
     if (!bancFile) { showToast('Elegí el archivo de la bancarización (foto o PDF)', 'red'); return; }
+    // Anti-duplicado: reintentar "porque no se ve" creaba una segunda evidencia
+    // idéntica (el badge rojo de sync era de OTRO registro, no de esta subida).
+    const yaSubida = bancarizacionPorMov.get(bancTarget.id);
+    if (yaSubida && yaSubida.sync !== 'failed' && !window.confirm('Este movimiento YA tiene una bancarización subida (aunque el estado de sync general muestre errores de otros registros). ¿Subir OTRA constancia de todos modos?')) return;
     const obraId = bancTarget.obra_id || bancObra;
     if (!obraId) { showToast('Elegí la obra para poder archivar la bancarización', 'red'); return; }
     setBancSaving(true);

@@ -30,8 +30,10 @@ function mensajeAmigable(code, error, regla) {
   const m = String(error || '').toLowerCase();
   if (code === 'PGRST204' || /could not find the .* column/.test(m))
     return 'El servidor no reconoce una columna que el programa quiso guardar (esquema desactualizado). Suele resolverse al recargar la página; si persiste, avisá.';
-  if (/row-level security|violates row-level security|insufficient_privilege|42501|pgrst301/.test(m + code))
-    return 'Permisos (RLS): tu rol no puede guardar este registro en el servidor, o la sesión expiró. Cerrá sesión y volvé a entrar; si sos admin y sigue, revisá las políticas de la tabla.';
+  if (/pgrst301|jwt expired|jwt is expired/.test(m + code))
+    return 'Tu sesión expiró en ese momento — el registro se reintenta solo con la sesión renovada. Si sigue acá, tocá "Reintentar todos" o recargá la página.';
+  if (/row-level security|violates row-level security|insufficient_privilege|42501/.test(m + code))
+    return 'Permisos (RLS): tu rol no puede guardar este registro en el servidor. Avisale al admin; si sos admin, revisá las políticas de la tabla.';
   if (/violates check constraint/.test(m) && /stock/.test(m))
     return 'El movimiento dejaría el stock en negativo, lo que no está permitido. Revisá el archivo: probablemente falta una entrada previa o la cantidad de la salida está mal.';
   if (/violates check constraint/.test(m) && /alerta/.test(m))

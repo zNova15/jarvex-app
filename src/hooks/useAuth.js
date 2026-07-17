@@ -11,6 +11,9 @@ const ROLES_VALIDOS = new Set([
   'admin','gerente','ingeniero_residente','ingeniero','supervisor','almacenero',
   'asistente_admin','contador','ayudante_contador','tesorero','jefe_compras','rrhh',
   'prevencionista','maestro_obra','solo_lectura',
+  // Especialistas (Fase 1 gestiones de obra) — sin estos, un usuario real con
+  // el rol era expulsado al hidratar sesión y su login rechazado.
+  'ing_ambiental','ing_calidad','ing_social',
 ]);
 
 function rolEsValido(rol) {

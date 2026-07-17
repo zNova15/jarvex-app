@@ -2196,12 +2196,39 @@ function esErrorRLS(error) {
   // (23514, ej. stock negativo transitorio por orden de llegada) dicen
   // "new row ... violates check constraint" y NO son RLS: clasificarlos
   // como RLS los mandaba a FAILED sin reintentos.
+  // OJO: PGRST301 (JWT expirado) NO va acá — es esErrorSesion. Clasificarlo
+  // como RLS congelaba el registro en FAILED "requiere intervención humana"
+  // por un token vencido que se cura solo (caso real: ayudante contable con
+  // la laptop suspendida al final del día — registro FAILED eterno con
+  // mensaje de permisos, cuando el dato hasta había llegado al server).
   return code === '42501'
-    || code === 'PGRST301'
     || msg.includes('row-level security')
     || msg.includes('insufficient_privilege')
     || msg.includes('row level security')
     || msg.includes('violates row-level security');
+}
+
+// Sesión expirada (JWT): error TRANSITORIO de autenticación, no de permisos.
+function esErrorSesion(error) {
+  if (!error) return false;
+  const code = error.code || '';
+  const msg = String(error.message || '').toLowerCase();
+  return code === 'PGRST301' || msg.includes('jwt expired') || msg.includes('jwt is expired');
+}
+
+// Ante sesión expirada durante el push, intentamos renovar el token una vez
+// por minuto — el siguiente ciclo de sync reintenta con la sesión fresca.
+let _ultimoRefreshSesion = 0;
+async function intentarRefreshSesion() {
+  const now = Date.now();
+  if (now - _ultimoRefreshSesion < 60000) return;
+  _ultimoRefreshSesion = now;
+  try {
+    await supabase.auth.refreshSession();
+    console.warn('[SyncEngine] sesión expirada durante el push — token renovado, se reintenta en el próximo ciclo');
+  } catch (e) {
+    console.warn('[SyncEngine] refreshSession falló:', e?.message || e);
+  }
 }
 
 let _ultimoEventoRLSEmitido = 0;
@@ -2225,7 +2252,9 @@ const _rlsLogged = new Set();
 
 async function handleSyncError(tabla, record, operacion, error) {
   const retries = (record._sync_retries ?? 0) + 1;
-  const isRLS = esErrorRLS(error);
+  const esSesion = esErrorSesion(error);
+  if (esSesion) intentarRefreshSesion();
+  const isRLS = !esSesion && esErrorRLS(error);
   // Si es RLS, marcamos como FAILED inmediatamente — reintentar 5 veces no
   // va a cambiar nada y solo gasta cuota Supabase.
   const newStatus = isRLS || retries >= 5 ? SYNC_STATUS.FAILED : record.sync_status;

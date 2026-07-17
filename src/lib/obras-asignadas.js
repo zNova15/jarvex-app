@@ -8,6 +8,14 @@
 // ═══════════════════════════════════════════════════════════════════
 
 export async function cargarObrasAsignadas({ userId, rol } = {}) {
+  // MODO PRUEBA: sin restricción. En prueba solo se renderizan filas demo
+  // (filterByMode) que viven solo en Dexie y JAMÁS están en obra_usuarios —
+  // cualquier Set del server excluiría TODA obra demo (al impersonar un rol
+  // no-admin, la intersección daba vacío y el Inicio quedaba sin obras).
+  try {
+    const { getCurrentMode } = await import('./app-mode-core.js');
+    if (getCurrentMode() === 'prueba') return null;
+  } catch {}
   if (rol === 'admin' || rol === 'gerente' || !userId || userId === 'offline') return null;
   try {
     const sb = window.__supabase;

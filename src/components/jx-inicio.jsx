@@ -313,7 +313,7 @@ function InicioPage({ onNav, onEnterObra }) {
         <div className="card card-p" style={{ marginBottom: 22, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <Icon name="building" size={22} color="var(--tm)" />
           <div style={{ flex: 1, minWidth: 200, fontSize: 12.5, color: 'var(--ts)' }}>No hay obras todavía (o no tenés obras asignadas).</div>
-          {canSee('obras') && (
+          {(rol === 'admin' || (window.__hasPerm?.(rol, 'Obras', 'w') ?? false)) && (
             <button className="btn btn-amber btn-sm" onClick={() => onNav?.('obras')}>
               <Icon name="plus" size={13} /> Crear obra
             </button>
