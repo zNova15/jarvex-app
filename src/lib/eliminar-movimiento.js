@@ -48,6 +48,9 @@ async function revertirHerramientaStock(db, mov, herr, userId) {
       if (mov.ubicacion_id) { try { const { aplicarDelta } = await import('./stock-ubicaciones.js'); await aplicarDelta({ obraId: mov.obra_id, itemTipo: 'herramienta', itemId: herr.id, ubicacionId: mov.ubicacion_id, delta, userId }); } catch (e) { console.warn('[revert herr desglose]', e?.message); } }
     }
   }
+  // Revertir también el bucket de condición (stock_estados). Antes se omitía →
+  // borrar un ingreso dejaba el +Nuevo vivo (drift del ROTOMARTILLOS).
+  try { const { revertirEstadoMovHerr } = await import('./stock-estados.js'); await revertirEstadoMovHerr(mov, userId); } catch (e) { console.warn('[revert herr estado]', e?.message); }
   if (accionInv === 'entrada' || accionInv === 'reposicion') { patch.disponible = true; patch.ubicacion_actual = 'almacen'; patch.ultimo_responsable_id = null; }
   if (accionInv === 'salida') { patch.disponible = false; patch.ubicacion_actual = 'en_uso'; patch.ultimo_responsable_id = mov.responsable_id || null; }
   if (accionInv === 'mantenimiento') { patch.disponible = false; patch.ubicacion_actual = 'mantenimiento'; patch.estado_actual = 'mantenimiento'; }
@@ -195,6 +198,11 @@ export async function editarCantidadMovimiento({ tabla, movId, nuevaCantidad, us
     if (mov.ubicacion_id) {
       try { const { aplicarDelta } = await import('./stock-ubicaciones.js'); await aplicarDelta({ obraId: mov.obra_id, itemTipo: cfg.itemTipo, itemId, ubicacionId: mov.ubicacion_id, delta: diff, userId }); }
       catch (e) { console.warn('[editar cantidad desglose]', e?.message); }
+    }
+    // Herramientas: el bucket de condición se mueve en lockstep con el stock.
+    if (cfg.herramienta) {
+      try { const { ajustarEstadoMovHerrEdicion } = await import('./stock-estados.js'); await ajustarEstadoMovHerrEdicion(mov, diff, userId); }
+      catch (e) { console.warn('[editar cantidad estado]', e?.message); }
     }
   }
 

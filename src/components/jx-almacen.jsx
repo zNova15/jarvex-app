@@ -3684,6 +3684,12 @@ function HerramientasPage({ showToast }) {
             // marcarla como pendiente. Ingreso/devolución → false.
             frente_pendiente: (tipo === 'salida' && !frenteSalida) ? true : false,
             ubicacion_id: ubicMov,
+            // Condición del movimiento (columnas existentes, antes null en el
+            // flujo por cantidad): salida = de qué condición salió; devolución =
+            // en qué condición volvió. Sirve para revertir el bucket EXACTO de
+            // stock_estados si el movimiento se elimina/reversa después.
+            estado_salida: tipo === 'salida' ? (condSalida.get(it.id) || null) : null,
+            estado_devolucion: tipo === 'devolucion' ? (it.condicion || 'bueno') : null,
             observaciones: obsFinal,
             idempotency_key: `${loteKey}_${idx}_${it.herramienta_id}`,
           });
@@ -4703,7 +4709,24 @@ function HerramientasPage({ showToast }) {
                   {loteCantItems.map(it => {
                     const h = listaHerr.find(x => x.id === it.herramienta_id) || herrMovibles.find(x => x.id === it.herramienta_id);
                     const cant = parseFloat(it.cantidad) || 0;
-                    const stockOk = stockDeHerr(h) >= cant;
+                    // STOCK a mostrar: en SALIDA es el del ALMACÉN DE ORIGEN
+                    // elegido (no el agregado). Antes mostraba el total (ej. "1")
+                    // aunque el almacén de origen tuviera 0 → la almacenera creía
+                    // que podía sacar y el guardia la rechazaba. Ahora coincide
+                    // con lo que valida el guardia (baseSalidaUbicacion, la misma
+                    // función de la validación de salida). Ingreso/devolución: total.
+                    const ubicSelH = loteCantForm.ubicacion_id || (ubicacionesActivasH.length === 1 ? ubicacionesActivasH[0].id : null);
+                    let stockCelda = stockDeHerr(h);
+                    let faltaAlmacen = false;
+                    if (esSalida && h) {
+                      if (!ubicSelH) { faltaAlmacen = true; }
+                      else {
+                        const dgItem = desgloseUbicH.get(it.herramienta_id);
+                        const tieneDg = dgItem && Array.from(dgItem.values()).some(c => Number(c) > 0);
+                        stockCelda = tieneDg ? baseSalidaUbicacion(dgItem, ubicSelH, stockDeHerr(h)).base : stockDeHerr(h);
+                      }
+                    }
+                    const stockOk = !faltaAlmacen && stockCelda >= cant;
                     const fuentes = esSalida && it.herramienta_id ? fuentesSalidaHerr(it.herramienta_id) : [];
                     const respAuto = h?.ultimo_responsable_id || '';
                     const respPers = respAuto ? personal?.find(p => p.id === respAuto) : null;
@@ -4711,7 +4734,11 @@ function HerramientasPage({ showToast }) {
                       <tr key={it.id}>
                         <td><SearchableSelect value={it.herramienta_id} onChange={v=>updateLoteCantItem(it.id,{herramienta_id:v, condicion: esDevol ? (it.condicion||'bueno') : ''})} options={[{value:'',label:'— Selecciona —'}, ...listaHerr.map(x=>({value:x.id,label:x.nombre_herramienta}))]} fontSize={12} placeholder="— Selecciona —"/></td>
                         <td><input className="fi" type="number" min="0" step="0.01" value={it.cantidad} style={{ fontSize:12 }} onChange={e=>updateLoteCantItem(it.id,{cantidad:e.target.value})}/></td>
-                        {mostrarStock && <td>{h ? <span style={{ color: stockOk ? 'var(--green)' : 'var(--red)', fontWeight:600, fontSize:11 }}>{stockOk ? '✓' : '⚠'} {stockDeHerr(h)}</span> : '—'}</td>}
+                        {mostrarStock && <td>{h
+                          ? (faltaAlmacen
+                              ? <span style={{ fontSize:10.5, color:'var(--tm)' }} title="Elegí el almacén de origen para ver cuánto hay disponible ahí">elegí almacén</span>
+                              : <span style={{ color: stockOk ? 'var(--green)' : 'var(--red)', fontWeight:600, fontSize:11 }} title={esSalida ? 'Stock en el almacén de origen elegido' : undefined}>{stockOk ? '✓' : '⚠'} {stockCelda}</span>)
+                          : '—'}</td>}
                         {esSalida && (
                           <td>
                             {!h ? <span style={{ color:'var(--tm)' }}>—</span>

@@ -95,6 +95,49 @@ export async function aplicarDeltaEstado({ obraId, itemTipo, itemId, estado, del
   try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'stock_estados' } })); } catch {}
 }
 
+/** Bucket de condición (stock_estados) que un movimiento de HERRAMIENTA afecta,
+ *  y con qué signo entró (efecto sobre el bucket = signo·cantidad):
+ *   · ingreso   → 'nuevo',           signo +1
+ *   · devolución→ estado_devolucion, signo +1
+ *   · salida    → estado_salida,     signo −1  ('_sin'/sin dato → no toca bucket)
+ *  Devuelve { estado, signo } o null si el movimiento no toca ningún bucket
+ *  (salida/devolución vieja sin la condición persistida — stock_estados es capa
+ *  blanda, mejor no adivinar el bucket). */
+export function bucketDeMovHerr(mov) {
+  if (!mov) return null;
+  const tipo = mov.tipo_movimiento || (mov.accion === 'salida' ? 'salida' : 'ingreso');
+  if (tipo === 'devolucion') return mov.estado_devolucion ? { estado: mov.estado_devolucion, signo: +1 } : null;
+  if (tipo === 'salida' || mov.accion === 'salida') {
+    const c = mov.estado_salida || null;
+    return (c && c !== '_sin') ? { estado: c, signo: -1 } : null;
+  }
+  return { estado: 'nuevo', signo: +1 }; // ingreso
+}
+
+/** Revierte en stock_estados el efecto que un movimiento de HERRAMIENTA tuvo
+ *  sobre su bucket de condición, al ELIMINAR o REVERSAR ese movimiento. Es la
+ *  contraparte del ajuste que se hace al CREAR el movimiento (jx-almacen.jsx):
+ *  sin esto, borrar un ingreso dejaba el +Nuevo vivo y stock_estados quedaba
+ *  inflado (drift del ROTOMARTILLOS: nuevo=2 con total 1). */
+export async function revertirEstadoMovHerr(mov, userId) {
+  if (!mov || !mov.herramienta_id || !mov.obra_id) return;
+  const cant = Number(mov.cantidad || 0);
+  if (!(cant > 0)) return;
+  const b = bucketDeMovHerr(mov);
+  if (!b) return;
+  await aplicarDeltaEstado({ obraId: mov.obra_id, itemTipo: 'herramienta', itemId: mov.herramienta_id, estado: b.estado, delta: -b.signo * cant, userId });
+}
+
+/** Ajusta stock_estados cuando se EDITA la cantidad de un movimiento de
+ *  herramienta: el bucket se mueve en lockstep con el stock, así que el delta
+ *  del bucket = deltaStock (mismo signo que el aplicado a stock_actual). */
+export async function ajustarEstadoMovHerrEdicion(mov, deltaStock, userId) {
+  if (!mov || !mov.herramienta_id || !mov.obra_id || !deltaStock) return;
+  const b = bucketDeMovHerr(mov);
+  if (!b) return;
+  await aplicarDeltaEstado({ obraId: mov.obra_id, itemTipo: 'herramienta', itemId: mov.herramienta_id, estado: b.estado, delta: Number(deltaStock), userId });
+}
+
 /** Asocia/cambia la foto (evidencia) y/o nota de un bucket de estado. */
 export async function setFotoEstado({ obraId, itemTipo, itemId, estado, fotoEvidenciaId, notas, userId }) {
   const patch = {};

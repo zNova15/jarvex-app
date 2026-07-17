@@ -2,6 +2,7 @@ import React from "react";
 import { calcAlerta } from "../lib/stock-utils.js";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { aplicarDelta } from "../lib/stock-ubicaciones.js";
+import { revertirEstadoMovHerr } from "../lib/stock-estados.js";
 import { eliminarMovimiento } from "../lib/eliminar-movimiento.js";
 import { stockTrasEditar, dejaNegativo } from "../lib/stock-guard.js";
 import { hoyLocal, horaLocal } from "../lib/fecha.js";
@@ -1884,6 +1885,9 @@ function MovHerramientasPage({ showToast }) {
           if (accionInv === 'mantenimiento') { patch.disponible = false; patch.ubicacion_actual = 'mantenimiento'; patch.estado_actual = 'mantenimiento'; }
           if (accionInv === 'baja') { patch.disponible = false; patch.ubicacion_actual = 'baja'; patch.estado_actual = 'baja'; }
           await updateHerr(herr.id, patch);
+          // Revertir también el bucket de condición (stock_estados) — antes se
+          // omitía y borrar un ingreso dejaba el +Nuevo vivo (drift ROTOMARTILLOS).
+          try { await revertirEstadoMovHerr(m, auth?.profile?.id || null); } catch (err) { console.warn('[elim herr estado]', err?.message); }
         },
       });
       showToast('Movimiento eliminado · estado revertido', 'green');
@@ -2048,6 +2052,8 @@ function MovHerramientasPage({ showToast }) {
           patch.estado_actual = 'baja';
         }
         await updateHerr(h.id, patch);
+        // Revertir también el bucket de condición (stock_estados), igual que el stock.
+        try { await revertirEstadoMovHerr(original, auth?.profile?.id || null); } catch (err) { console.warn('[reverso herr estado]', err?.message); }
       }
     } catch (e) { console.warn('No se pudo sincronizar el estado de la herramienta tras reverso:', e?.message); }
 
