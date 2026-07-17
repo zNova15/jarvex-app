@@ -777,7 +777,7 @@ function MovimientosContablesPage({ showToast }) {
   const [depositos, setDepositos] = uSC([]);                            // depósitos vivos
   const [partesPorDeposito, setPartesPorDeposito] = uSC(() => new Map()); // deposito_id → [partes]
   const [bancPorDeposito, setBancPorDeposito] = uSC(() => new Map());     // deposito_id → evidencia (constancia)
-  const [bancModo, setBancModo] = uSC('sola');       // 'sola' | 'dep_nuevo' | 'dep_existente'
+  const [bancModo, setBancModo] = uSC('exacto');     // 'exacto' (Caso 1) | 'parcial' (Caso 3) | 'dep_nuevo' / 'dep_existente' (Caso 2)
   const [bancTotalDep, setBancTotalDep] = uSC('');   // monto TOTAL del depósito nuevo
   const [bancDepId, setBancDepId] = uSC('');         // depósito existente elegido
 
@@ -1251,7 +1251,18 @@ function MovimientosContablesPage({ showToast }) {
     if (intent) { window.__movsBuscarIntent = null; setBusqueda(String(intent)); }
   }, []);
 
-  const openBanc = (m) => { setBancTarget(m); setBancObra(m.obra_id || ''); setBancFile(null); setBancMonto(''); setBancMetodo('transferencia'); setBancRef(''); setBancModo('sola'); setBancTotalDep(''); setBancDepId(''); };
+  const openBanc = (m) => {
+    // Arranca en el caso más probable: sin pagos previos → Pago exacto (Caso 1)
+    // con el monto pre-llenado; con partes ya registradas → Pago en partes
+    // (Caso 3), continuando la cobertura.
+    const partesPrev = partesPorMov.get(m.id) || [];
+    const pagado = partesPrev.reduce((t, x) => t + (Number(x.monto) || 0), 0);
+    const pend = Math.max(0, (Number(m.amount) || 0) - pagado);
+    setBancTarget(m); setBancObra(m.obra_id || ''); setBancFile(null);
+    setBancMetodo('transferencia'); setBancRef(''); setBancTotalDep(''); setBancDepId('');
+    setBancModo(partesPrev.length > 0 ? 'parcial' : 'exacto');
+    setBancMonto(partesPrev.length > 0 ? '' : (pend > 0 ? pend.toFixed(2) : ''));
+  };
 
   const subirBancarizacion = async () => {
     if (!bancTarget) return;
@@ -1259,13 +1270,27 @@ function MovimientosContablesPage({ showToast }) {
     const esDepExistente = bancModo === 'dep_existente';
     if (!esDepExistente && !bancFile) { showToast('Elegí el archivo de la bancarización (foto o PDF)', 'red'); return; }
     // Anti-duplicado: reintentar "porque no se ve" creaba una segunda evidencia
-    // idéntica (el badge rojo de sync era de OTRO registro, no de esta subida).
-    if (bancModo === 'sola') {
+    // idéntica. Solo aplica al PAGO EXACTO (en pago-en-partes es normal subir
+    // varios vouchers a la misma factura).
+    if (bancModo === 'exacto') {
       const yaSubida = bancarizacionPorMov.get(bancTarget.id);
       if (yaSubida && yaSubida.sync !== 'failed' && !window.confirm('Este movimiento YA tiene una bancarización subida (aunque el estado de sync general muestre errores de otros registros). ¿Subir OTRA constancia de todos modos?')) return;
     }
     const obraId = bancTarget.obra_id || bancObra;
     if (!obraId) { showToast('Elegí la obra para poder archivar la bancarización', 'red'); return; }
+
+    // ── Tope de la FACTURA (todos los casos): lo aplicado no puede exceder lo
+    // pendiente. Pago exacto = cubre exactamente lo que falta (monto automático).
+    const _partesMov = partesPorMov.get(bancTarget.id) || [];
+    const _pagado = _partesMov.reduce((t, x) => t + (Number(x.monto) || 0), 0);
+    const _pendiente = Math.max(0, (Number(bancTarget.amount) || 0) - _pagado);
+    const montoAplicar = bancModo === 'exacto' ? _pendiente : Number(bancMonto);
+    if (bancModo === 'exacto' && !(_pendiente > TOL)) { showToast('Esta factura ya está cubierta al 100% por los pagos registrados', 'amber'); return; }
+    if (bancModo === 'parcial' && !(montoAplicar > 0)) { showToast('Indicá el monto de ESTE pago (la factura se está pagando en partes)', 'red'); return; }
+    if (montoAplicar > _pendiente + TOL) {
+      showToast(`El pago excede lo pendiente de la factura: quedan ${fmtCur(_pendiente, bancTarget.currency)} por cubrir (de ${fmtCur(bancTarget.amount, bancTarget.currency)})`, 'red');
+      return;
+    }
 
     const { newId, newIdempotencyKey, SYNC_STATUS } = await import('../db/jarvex.db');
     const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
@@ -1284,7 +1309,7 @@ function MovimientosContablesPage({ showToast }) {
     if (esDepNuevo) {
       const total = Number(bancTotalDep);
       if (!(total > 0)) { showToast('Indicá el monto TOTAL del depósito/transferencia', 'red'); return; }
-      if (!(Number(bancMonto) > 0)) { showToast('Indicá cuánto de este depósito cubre ESTA factura', 'red'); return; }
+      if (!(montoAplicar > 0)) { showToast('Indicá cuánto de este depósito cubre ESTA factura', 'red'); return; }
       depositoNuevo = {
         id: newId(), obra_id: obraId, company_id: bancTarget.company_id || null,
         clase: claseDe(bancTarget),
@@ -1297,19 +1322,19 @@ function MovimientosContablesPage({ showToast }) {
         idempotency_key: newIdempotencyKey(userId, 'depositos_bancarizacion'),
         ...syncDemo,
       };
-      const v = validarVinculoDeposito({ deposito: depositoNuevo, partesDeposito: [], movimiento: bancTarget, monto: Number(bancMonto) });
+      const v = validarVinculoDeposito({ deposito: depositoNuevo, partesDeposito: [], movimiento: bancTarget, monto: montoAplicar });
       if (!v.ok) { showToast(v.error, 'red'); return; }
     } else if (esDepExistente) {
       depositoElegido = depositosById.get(bancDepId);
-      if (!depositoElegido) { showToast('Elegí el depósito con saldo a usar', 'red'); return; }
-      if (!(Number(bancMonto) > 0)) { showToast('Indicá cuánto del depósito cubre ESTA factura', 'red'); return; }
-      const v = validarVinculoDeposito({ deposito: depositoElegido, partesDeposito: partesPorDeposito.get(bancDepId) || [], movimiento: bancTarget, monto: Number(bancMonto) });
+      if (!depositoElegido) { showToast('Elegí el voucher con saldo a usar', 'red'); return; }
+      if (!(montoAplicar > 0)) { showToast('Indicá cuánto del voucher cubre ESTA factura', 'red'); return; }
+      const v = validarVinculoDeposito({ deposito: depositoElegido, partesDeposito: partesPorDeposito.get(bancDepId) || [], movimiento: bancTarget, monto: montoAplicar });
       if (!v.ok) { showToast(v.error, 'red'); return; }
     }
 
     setBancSaving(true);
     try {
-      // 1) Evidencia (constancia). En modo 'sola' va al MOVIMIENTO; en depósito
+      // 1) Evidencia (constancia). En pago exacto/parcial va al MOVIMIENTO; en depósito
       // NUEVO va al DEPÓSITO (una sola constancia respalda varias facturas).
       // En depósito EXISTENTE no hay archivo: ya se subió al crear el depósito.
       let evidenciaId = null;
@@ -1340,16 +1365,17 @@ function MovimientosContablesPage({ showToast }) {
       // 3) PARTE del pago: registra cuánto va cubierto de ESTA factura (con
       // depósito o suelta). La suma vs el total se ve en la columna.
       let parteOk = false;
-      if (esDepNuevo || esDepExistente || Number(bancMonto) > 0) {
+      if (esDepNuevo || esDepExistente || montoAplicar > 0) {
         try {
           await window.__db.pagos_partes.add({
             id: newId(), pago_id: null, accounting_movement_id: bancTarget.id, obra_id: obraId,
             deposito_id: esDepNuevo ? depositoNuevo.id : (esDepExistente ? depositoElegido.id : null),
             fecha: hoy,
-            monto: Number(bancMonto), metodo: bancMetodo || 'transferencia',
+            monto: montoAplicar, metodo: bancMetodo || 'transferencia',
             referencia: esDepExistente ? (depositoElegido.referencia || null) : (bancRef || null),
             evidencia_id: esDepNuevo ? evidenciaId : null,
-            observaciones: (esDepNuevo || esDepExistente) ? 'Cubierto por depósito multi-factura' : 'Bancarización parcial',
+            observaciones: (esDepNuevo || esDepExistente) ? 'Cubierto por voucher multi-factura'
+              : bancModo === 'exacto' ? 'Pago exacto de la factura' : 'Pago parcial (bancarización en partes)',
             created_by: userId, updated_by: userId, created_at: now, updated_at: now, version: 1,
             idempotency_key: newIdempotencyKey(userId, 'pagos_partes'),
             ...syncDemo,
@@ -1367,14 +1393,15 @@ function MovimientosContablesPage({ showToast }) {
           : esDepExistente ? 'Factura cubierta con saldo de depósito existente'
           : 'Bancarización adjunta desde Movimientos (sin edición)' }); } catch {}
       const saldoTxt = esDepNuevo
-        ? ` · saldo restante del depósito: ${fmtCur(Number(bancTotalDep) - Number(bancMonto), bancTarget.currency)}`
+        ? ` · saldo restante del voucher: ${fmtCur(Number(bancTotalDep) - montoAplicar, bancTarget.currency)}`
         : esDepExistente
-          ? ` · saldo restante del depósito: ${fmtCur(saldoDeposito(depositoElegido, partesPorDeposito.get(bancDepId) || []) - Number(bancMonto), bancTarget.currency)}`
+          ? ` · saldo restante del voucher: ${fmtCur(saldoDeposito(depositoElegido, partesPorDeposito.get(bancDepId) || []) - montoAplicar, bancTarget.currency)}`
           : '';
+      const cubiertaTxt = (_pagado + montoAplicar) >= (Number(bancTarget.amount) || 0) - TOL ? ' · factura cubierta al 100% ✅' : ` · faltan ${fmtCur(Math.max(0, (Number(bancTarget.amount) || 0) - _pagado - montoAplicar), bancTarget.currency)}`;
       showToast(parteOk
-        ? `Bancarización registrada · ${fmtCur(Number(bancMonto), bancTarget.currency)} aplicados${saldoTxt}`
+        ? `Bancarización registrada · ${fmtCur(montoAplicar, bancTarget.currency)} aplicados${saldoTxt}${cubiertaTxt}`
         : 'Bancarización adjunta. Se sincronizará en breve.', 'green');
-      setBancTarget(null); setBancFile(null); setBancObra(''); setBancMonto(''); setBancRef(''); setBancModo('sola'); setBancTotalDep(''); setBancDepId('');
+      setBancTarget(null); setBancFile(null); setBancObra(''); setBancMonto(''); setBancRef(''); setBancModo('exacto'); setBancTotalDep(''); setBancDepId('');
     } catch (e) {
       showToast('No se pudo adjuntar la bancarización: ' + (e.message || e), 'red');
     } finally {
@@ -1650,7 +1677,7 @@ function MovimientosContablesPage({ showToast }) {
                 </select>
               </div>
             )}
-            {/* Modo: constancia de esta factura / depósito multi-factura nuevo / usar saldo existente */}
+            {/* ── Los 3 CASOS de bancarización (rediseño UX, feedback jul 2026) ── */}
             {(() => {
               const candidatos = (depositos || []).filter(d =>
                 mismoPar(parDeposito(d), parMovimiento(bancTarget)) &&
@@ -1659,23 +1686,121 @@ function MovimientosContablesPage({ showToast }) {
               const sumaPartes = partesMov.reduce((t, x) => t + (Number(x.monto) || 0), 0);
               const totalMov = Number(bancTarget.amount) || 0;
               const pendiente = Math.max(0, totalMov - sumaPartes);
-              const elegirModo = (m) => { setBancModo(m); setBancDepId(''); if (m !== 'sola') setBancMonto(String(pendiente || '')); else setBancMonto(''); };
+              const esMulti = bancModo === 'dep_nuevo' || bancModo === 'dep_existente';
+              const montoNum = bancModo === 'exacto' ? pendiente : (Number(bancMonto) || 0);
+              const excedeFactura = montoNum > pendiente + TOL;
+              const elegirCaso = (caso) => {
+                setBancDepId('');
+                if (caso === 'multi') { setBancModo(candidatos.length ? 'dep_existente' : 'dep_nuevo'); setBancMonto(pendiente > 0 ? pendiente.toFixed(2) : ''); }
+                else if (caso === 'exacto') { setBancModo('exacto'); setBancMonto(pendiente > 0 ? pendiente.toFixed(2) : ''); }
+                else { setBancModo('parcial'); setBancMonto(''); }
+              };
+              const Card = ({ id, sel, icon, titulo, sub, ejemplo }) => (
+                <button type="button" onClick={() => elegirCaso(id)}
+                  style={{ flex:'1 1 155px', textAlign:'left', cursor:'pointer', padding:'10px 12px', borderRadius:8,
+                    border: sel ? '2px solid var(--amber)' : '1px solid var(--bd)',
+                    background: sel ? 'rgba(242,183,5,0.08)' : 'var(--bg-s)', color:'var(--tp)' }}>
+                  <div style={{ fontSize:12.5, fontWeight:700 }}>{icon} {titulo}</div>
+                  <div style={{ fontSize:10.5, color:'var(--ts)', marginTop:3, lineHeight:1.35 }}>{sub}</div>
+                  <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>{ejemplo}</div>
+                </button>
+              );
+              const pctCub = totalMov > 0 ? Math.min(100, (sumaPartes / totalMov) * 100) : 0;
+              const pctEste = totalMov > 0 ? Math.max(0, Math.min(100 - pctCub, (montoNum / totalMov) * 100)) : 0;
               return (<>
-                <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
-                  {[['sola', 'Constancia de ESTA factura'], ['dep_nuevo', 'Depósito que cubre VARIAS facturas'], ['dep_existente', `Usar depósito con saldo${candidatos.length ? ` (${candidatos.length})` : ''}`]].map(([k, lbl]) => (
-                    <button key={k} className={`btn btn-sm ${bancModo === k ? 'btn-amber' : 'btn-ghost'}`}
-                      style={{ fontSize:11 }} disabled={k === 'dep_existente' && !candidatos.length}
-                      title={k === 'dep_existente' && !candidatos.length ? 'No hay depósitos del mismo pagador→cobrador con saldo disponible' : undefined}
-                      onClick={() => elegirModo(k)}>{lbl}</button>
-                  ))}
+                <div style={{ fontSize:11.5, fontWeight:700, color:'var(--ts)' }}>¿Cómo se pagó esta factura?</div>
+                <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+                  <Card id="exacto" sel={bancModo === 'exacto'} icon="1️⃣" titulo="Pago exacto"
+                    sub="Un solo voucher cubre esta factura completa" ejemplo="Ej: factura 2,500 → depósito de 2,500" />
+                  <Card id="parcial" sel={bancModo === 'parcial'} icon="🧩" titulo="Pago en partes"
+                    sub="Esta factura se paga con varios depósitos (cuotas)" ejemplo="Ej: 48,000 = 20,000 + 24,000 + 4,000" />
+                  <Card id="multi" sel={esMulti} icon="🏦" titulo={`Voucher multi-factura${candidatos.length ? ` · ${candidatos.length} con saldo` : ''}`}
+                    sub="Un depósito grande cubre 2 o más facturas, con control de saldo" ejemplo="Ej: depósito 5,000 cubre 2,600 + 2,400" />
                 </div>
-                {bancModo === 'dep_nuevo' && (
-                  <div style={{ fontSize:11, color:'var(--tm)', padding:'6px 10px', borderRadius:6, background:'rgba(52,152,219,0.08)', border:'1px solid rgba(52,152,219,0.3)' }}>
-                    Registrás UNA transferencia/depósito (p.ej. S/ 20,000) que cubre varias facturas del mismo
-                    {claseDe(bancTarget) === 'venta' ? ' cliente' : ' proveedor'}. Acá indicás el TOTAL del depósito y cuánto
-                    cubre esta factura; el resto queda como saldo para aplicar a otras facturas (no se puede exceder el total).
+
+                {/* Barra de cobertura de la FACTURA: pagado (verde) + este pago (azul). */}
+                <div>
+                  <div style={{ display:'flex', justifyContent:'space-between', fontSize:10.5, color:'var(--tm)', marginBottom:3, gap:8, flexWrap:'wrap' }}>
+                    <span>Cobertura de la factura</span>
+                    <span>
+                      {sumaPartes > 0 && <span style={{ color:'var(--green)' }}>{fmtCur(sumaPartes, bancTarget.currency)} pagado</span>}
+                      {sumaPartes > 0 && montoNum > 0 && ' + '}
+                      {montoNum > 0 && <span style={{ color:'var(--blue)' }}>{fmtCur(montoNum, bancTarget.currency)} este pago</span>}
+                      {' '}de {fmtCur(totalMov, bancTarget.currency)}
+                    </span>
+                  </div>
+                  <div style={{ display:'flex', height:8, borderRadius:4, overflow:'hidden', background:'rgba(255,255,255,0.08)' }}>
+                    <div style={{ width:`${pctCub}%`, background:'var(--green)' }}/>
+                    <div style={{ width:`${pctEste}%`, background:'var(--blue)' }}/>
+                  </div>
+                  {excedeFactura && (
+                    <div style={{ fontSize:10.5, color:'var(--red)', marginTop:3 }}>⚠ Este pago excede lo pendiente de la factura ({fmtCur(pendiente, bancTarget.currency)}) — ajustá el monto.</div>
+                  )}
+                  {pendiente <= TOL && (
+                    <div style={{ fontSize:10.5, color:'var(--green)', marginTop:3 }}>✅ Esta factura ya está cubierta al 100% por los pagos registrados.</div>
+                  )}
+                  {partesMov.length > 0 && bancModo === 'parcial' && (
+                    <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:3 }}>
+                      {partesMov.map((x, i) => `Pago ${i + 1}: ${fmtCur(x.monto, bancTarget.currency)} (${x.fecha || 's/fecha'})`).join(' · ')}
+                    </div>
+                  )}
+                </div>
+
+                {/* Sub-elección del Caso 2: usar voucher con saldo vs subir uno nuevo. */}
+                {esMulti && (
+                  <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                    <button type="button" className={`btn btn-xs ${bancModo === 'dep_existente' ? 'btn-amber' : 'btn-ghost'}`} disabled={!candidatos.length}
+                      title={!candidatos.length ? 'No hay vouchers del mismo pagador→cobrador con saldo disponible' : undefined}
+                      onClick={() => { setBancModo('dep_existente'); setBancDepId(''); }}>Usar voucher con saldo ({candidatos.length})</button>
+                    <button type="button" className={`btn btn-xs ${bancModo === 'dep_nuevo' ? 'btn-amber' : 'btn-ghost'}`}
+                      onClick={() => { setBancModo('dep_nuevo'); setBancDepId(''); }}>Subir voucher nuevo</button>
                   </div>
                 )}
+                {bancModo === 'dep_nuevo' && (
+                  <div style={{ fontSize:11, color:'var(--tm)', padding:'6px 10px', borderRadius:6, background:'rgba(52,152,219,0.08)', border:'1px solid rgba(52,152,219,0.3)' }}>
+                    Subís UNA transferencia/depósito grande (ej: S/ 5,000) del mismo {claseDe(bancTarget) === 'venta' ? 'cliente' : 'proveedor'}:
+                    indicás el TOTAL del voucher y cuánto cubre ESTA factura; el resto queda como <strong>saldo</strong> para aplicar
+                    a otras facturas. El sistema NO deja usar más que el total del voucher.
+                  </div>
+                )}
+
+                {/* Vouchers con saldo (Caso 2): tarjetas con barra de saldo visible. */}
+                {bancModo === 'dep_existente' && (
+                  <div style={{ display:'flex', flexDirection:'column', gap:6, maxHeight:190, overflowY:'auto' }}>
+                    {candidatos.map(d => {
+                      const saldo = saldoDeposito(d, partesPorDeposito.get(d.id) || []);
+                      const usado = Math.max(0, Number(d.monto_total) - saldo);
+                      const pctUso = Number(d.monto_total) > 0 ? Math.min(100, (usado / Number(d.monto_total)) * 100) : 0;
+                      const sel = bancDepId === d.id;
+                      return (
+                        <button key={d.id} type="button"
+                          onClick={() => { setBancDepId(d.id); setBancMonto(Math.min(saldo, pendiente > 0 ? pendiente : saldo).toFixed(2)); }}
+                          style={{ textAlign:'left', cursor:'pointer', padding:'8px 10px', borderRadius:8,
+                            border: sel ? '2px solid var(--amber)' : '1px solid var(--bd)',
+                            background: sel ? 'rgba(242,183,5,0.08)' : 'var(--bg-s)', color:'var(--tp)' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', gap:8, fontSize:11.5, flexWrap:'wrap' }}>
+                            <span style={{ fontWeight:600 }}>🏦 {d.referencia || 's/ref'} · {d.fecha || 's/fecha'}</span>
+                            <span>total {fmtCur(d.monto_total, d.moneda)}</span>
+                          </div>
+                          <div style={{ height:6, borderRadius:3, background:'rgba(255,255,255,0.08)', margin:'6px 0 4px', overflow:'hidden' }}>
+                            <div style={{ width:`${pctUso}%`, height:'100%', background:'var(--tm)' }}/>
+                          </div>
+                          <div style={{ fontSize:10.5, color:'var(--ts)' }}>
+                            usado {fmtCur(usado, d.moneda)} · <strong style={{ color:'var(--green)' }}>saldo disponible {fmtCur(saldo, d.moneda)}</strong>
+                          </div>
+                        </button>
+                      );
+                    })}
+                    {bancDepId && bancPorDeposito.get(bancDepId) && (
+                      <button className="btn btn-ghost btn-xs" style={{ alignSelf:'flex-start', color:'var(--blue)' }}
+                        onClick={() => setEvidenciaModal(bancPorDeposito.get(bancDepId))}>
+                        <JxIcon name="eye" size={11}/> Ver constancia del voucher
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Archivo del voucher (no aplica al usar uno con saldo: ya está subido). */}
                 {bancModo !== 'dep_existente' && (
                   <div>
                     <label className="flabel">Archivo (foto o PDF del voucher / constancia)</label>
@@ -1683,45 +1808,31 @@ function MovimientosContablesPage({ showToast }) {
                     {bancFile && <div style={{ fontSize:11, color:'var(--green)', marginTop:4 }}>📎 {bancFile.name}</div>}
                   </div>
                 )}
-                {bancModo === 'dep_existente' && (
-                  <div>
-                    <label className="flabel">Depósito (mismo pagador→cobrador, con saldo)</label>
-                    <select className="fi" value={bancDepId} onChange={e=>{
-                      const id = e.target.value; setBancDepId(id);
-                      const d = depositosById.get(id);
-                      if (d) setBancMonto(String(Math.min(saldoDeposito(d, partesPorDeposito.get(id) || []), pendiente || Infinity).toFixed(2)));
-                    }}>
-                      <option value="">— Elegí el depósito —</option>
-                      {candidatos.map(d => (
-                        <option key={d.id} value={d.id}>
-                          {d.fecha || 's/fecha'} · {d.referencia || 's/ref'} · total {fmtCur(d.monto_total, d.moneda)} · saldo {fmtCur(saldoDeposito(d, partesPorDeposito.get(d.id) || []), d.moneda)}
-                        </option>
-                      ))}
-                    </select>
-                    {bancDepId && (() => { const evD = bancPorDeposito.get(bancDepId); return evD
-                      ? <button className="btn btn-ghost btn-xs" style={{ marginTop:4, color:'var(--blue)' }} onClick={()=>setEvidenciaModal(evD)}><JxIcon name="eye" size={11}/> Ver constancia del depósito</button>
-                      : null; })()}
-                  </div>
-                )}
+
+                {/* Montos según el caso. */}
                 <div style={{ padding:'8px 10px', borderRadius:6, background:'var(--bg-s)' }}>
-                  <div style={{ fontSize:11.5, fontWeight:700, marginBottom:6 }}>
-                    {bancModo === 'sola' ? '¿Este voucher es una PARTE del pago?' : 'Montos'}
-                  </div>
-                  {partesMov.length > 0 && (
-                    <div style={{ fontSize:11, color:'var(--tm)', marginBottom:6 }}>
-                      Partes ya registradas: {partesMov.map(x => fmtCur(x.monto, bancTarget.currency)).join(' + ')} = <strong style={{ color: sumaPartes >= totalMov - 0.01 ? 'var(--green)' : 'var(--amber)' }}>{fmtCur(sumaPartes, bancTarget.currency)}</strong> de {fmtCur(totalMov, bancTarget.currency)}
-                      {sumaPartes < totalMov - 0.01 && <span> · faltan {fmtCur(totalMov - sumaPartes, bancTarget.currency)}</span>}
-                    </div>
-                  )}
                   <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+                    {bancModo === 'exacto' && (
+                      <div style={{ fontSize:12, alignSelf:'center' }}>
+                        Se registrará el pago por <strong style={{ color:'var(--blue)' }}>{fmtCur(pendiente, bancTarget.currency)}</strong>
+                        {sumaPartes > 0 ? ' (lo pendiente de la factura)' : ' (el total de la factura)'}.
+                      </div>
+                    )}
+                    {bancModo === 'parcial' && (
+                      <div><label className="flabel">Monto de ESTE pago *</label>
+                        <input className="fi" type="number" min="0" step="0.01" value={bancMonto} placeholder={`hasta ${pendiente.toFixed(2)}`}
+                          onChange={e=>setBancMonto(e.target.value)} style={{ width:140, textAlign:'right' }}/></div>
+                    )}
                     {bancModo === 'dep_nuevo' && (
-                      <div><label className="flabel">TOTAL del depósito</label>
-                        <input className="fi" type="number" min="0" step="0.01" value={bancTotalDep} placeholder="ej. 20000"
+                      <div><label className="flabel">TOTAL del voucher</label>
+                        <input className="fi" type="number" min="0" step="0.01" value={bancTotalDep} placeholder="ej. 5000"
                           onChange={e=>setBancTotalDep(e.target.value)} style={{ width:130, textAlign:'right' }}/></div>
                     )}
-                    <div><label className="flabel">{bancModo === 'sola' ? 'Monto de esta constancia' : 'Cubre de ESTA factura'}</label>
-                      <input className="fi" type="number" min="0" step="0.01" value={bancMonto} placeholder={bancModo === 'sola' ? 'opcional' : 'requerido'}
-                        onChange={e=>setBancMonto(e.target.value)} style={{ width:130, textAlign:'right' }}/></div>
+                    {esMulti && (
+                      <div><label className="flabel">Cubre de ESTA factura</label>
+                        <input className="fi" type="number" min="0" step="0.01" value={bancMonto} placeholder="requerido"
+                          onChange={e=>setBancMonto(e.target.value)} style={{ width:130, textAlign:'right' }}/></div>
+                    )}
                     {bancModo !== 'dep_existente' && (<>
                       <div><label className="flabel">Método</label>
                         <select className="fi" value={bancMetodo} onChange={e=>setBancMetodo(e.target.value)} style={{ width:150 }}>
@@ -1735,23 +1846,21 @@ function MovimientosContablesPage({ showToast }) {
                         <input className="fi" value={bancRef} placeholder="opcional" onChange={e=>setBancRef(e.target.value)} style={{ width:130 }}/></div>
                     </>)}
                   </div>
-                  {bancModo === 'sola' && (
-                    <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:6 }}>Si dejás el monto vacío, solo se adjunta el archivo (como siempre). Con monto, además queda registrada la parte para saber cuánto va del total.</div>
-                  )}
-                  {bancModo === 'dep_nuevo' && Number(bancTotalDep) > 0 && Number(bancMonto) > 0 && (
+                  {bancModo === 'dep_nuevo' && Number(bancTotalDep) > 0 && montoNum > 0 && (
                     <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:6 }}>
-                      Saldo que quedará para otras facturas: <strong style={{ color:'var(--blue)' }}>{fmtCur(Math.max(0, Number(bancTotalDep) - Number(bancMonto)), bancTarget.currency)}</strong>
+                      Saldo del voucher que quedará para otras facturas: <strong style={{ color:'var(--blue)' }}>{fmtCur(Math.max(0, Number(bancTotalDep) - montoNum), bancTarget.currency)}</strong>
+                      {montoNum > Number(bancTotalDep) + TOL && <span style={{ color:'var(--red)' }}> · ⚠ cubrís más que el total del voucher</span>}
                     </div>
                   )}
                   {bancModo === 'dep_existente' && bancDepId && (() => {
                     const d = depositosById.get(bancDepId);
                     const saldo = d ? saldoDeposito(d, partesPorDeposito.get(bancDepId) || []) : 0;
-                    const excede = Number(bancMonto) > saldo + TOL;
+                    const excede = montoNum > saldo + TOL;
                     return (
                       <div style={{ fontSize:10.5, marginTop:6, color: excede ? 'var(--red)' : 'var(--tm)' }}>
                         {excede
-                          ? `⚠ Excede el saldo del depósito (${fmtCur(saldo, d?.moneda)}) — no se puede cubrir más de lo transferido`
-                          : <>Saldo restante tras aplicar: <strong style={{ color:'var(--blue)' }}>{fmtCur(Math.max(0, saldo - (Number(bancMonto) || 0)), d?.moneda)}</strong></>}
+                          ? `⚠ Excede el saldo del voucher (${fmtCur(saldo, d?.moneda)}) — no se puede cubrir más de lo depositado`
+                          : <>Saldo del voucher tras aplicar: <strong style={{ color:'var(--blue)' }}>{fmtCur(Math.max(0, saldo - montoNum), d?.moneda)}</strong></>}
                       </div>
                     );
                   })()}
@@ -1763,8 +1872,15 @@ function MovimientosContablesPage({ showToast }) {
           <div className="modal-actions">
             <button className="btn btn-ghost" onClick={()=>{ setBancTarget(null); setBancFile(null); }} disabled={bancSaving}>Cancelar</button>
             <button className="btn btn-amber" onClick={subirBancarizacion}
-              disabled={bancSaving || (bancModo !== 'dep_existente' && !bancFile) || (bancModo === 'dep_existente' && !bancDepId)}>
-              <JxIcon name="check" size={13}/> {bancSaving ? 'Guardando…' : (bancModo === 'dep_existente' ? 'Aplicar saldo del depósito' : bancModo === 'dep_nuevo' ? 'Registrar depósito y cubrir factura' : 'Subir bancarización')}
+              disabled={bancSaving
+                || (bancModo !== 'dep_existente' && !bancFile)
+                || (bancModo === 'dep_existente' && !bancDepId)
+                || (bancModo === 'parcial' && !(Number(bancMonto) > 0))}>
+              <JxIcon name="check" size={13}/> {bancSaving ? 'Guardando…'
+                : bancModo === 'exacto' ? 'Registrar pago exacto'
+                : bancModo === 'parcial' ? 'Registrar pago parcial'
+                : bancModo === 'dep_nuevo' ? 'Registrar voucher y cubrir factura'
+                : 'Aplicar saldo del voucher'}
             </button>
           </div>
         </Modal>
