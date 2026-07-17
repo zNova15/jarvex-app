@@ -816,24 +816,34 @@ function CapturaMagicaPage({ showToast }) {
     const it = items.find(x => x.id === id);
     if (!it || !it.review) return;
     let r = it.review;
-    // Destino de la compra: la OBRA elegida en el selector (r.obra_destino), o "Gastos
-    // Generales de la Empresa" ('__empresa__') → sin obra (gasto de la empresa). Si la obra
-    // elegida ya no existe, cae a "sin obra" (queda solo en contabilidad).
+    // Destino de la factura: OBRA / Gastos Generales ('__empresa__') /
+    // Contabilidad Neta ('__otros__') / "No sé" ('__nose__' → bandeja de la
+    // Contadora Jefe). Si la obra elegida ya no existe, cae a contabilidad neta.
+    let destinoContable = 'obra';
     {
       const dest = r.obra_destino;
-      if (dest === '__empresa__') {
-        r = { ...r, obra_id: '' };
-      } else {
+      if (dest === '__empresa__') { r = { ...r, obra_id: '' }; destinoContable = 'gastos_generales'; }
+      else if (dest === '__otros__') { r = { ...r, obra_id: '' }; destinoContable = 'contabilidad_neta'; }
+      else if (dest === '__nose__') { r = { ...r, obra_id: '' }; destinoContable = 'sin_clasificar'; }
+      else {
         const valida = dest && (obras || []).some(o => o.id === dest && !o.deleted_at);
         r = { ...r, obra_id: valida ? dest : '' };
+        if (!valida && dest) destinoContable = 'contabilidad_neta';
       }
     }
 
     // ── GUÍA DE REMISIÓN: flujo PROPIO ──
     // No es comprobante de pago: NO crea movimiento contable ni recepción ni
     // proveedor. Va a la tabla guias_remision con su evidencia y el auto-match
-    // a la factura referenciada ("Doc. Ref.").
+    // a la factura referenciada ("Doc. Ref."). (El destino no aplica a guías.)
     if (r.tipo_documento === 'guia_remision') { await confirmarGuia(it, r); return; }
+
+    // Destino OBLIGATORIO (pedido de Gabriel): las asistentes vinculaban facturas
+    // a obras equivocadas; ahora eligen explícitamente — o "No sé" honesto.
+    if (!r.obra_destino) {
+      showToast('Elegí el destino de la factura: una obra, Gastos Generales, Contabilidad Neta — o "No sé / No me acuerdo" para que lo revise la Contadora Jefe.', 'red');
+      return;
+    }
 
     // ¿VENTA o COMPRA? Si el EMISOR de la factura es UNA DE NUESTRAS empresas afiliadas,
     // la emitimos nosotros como vendedores → VENTA. Si la emite una distribuidora/proveedor
@@ -899,6 +909,8 @@ function CapturaMagicaPage({ showToast }) {
       if (r.obra_destino === '__empresa__') {
         // Elección deliberada: gasto general de la empresa → no es un descuido.
         showToast('Gasto general de la empresa: los items quedan solo en contabilidad (sin almacén de obra).', 'blue');
+      } else if (r.obra_destino === '__nose__') {
+        showToast('Sin clasificar: la factura queda solo en contabilidad hasta que la Contadora Jefe le asigne el destino.', 'amber');
       } else {
         showToast('Sin obra: los items quedaron solo en contabilidad, no se crearon en almacén.', 'orange');
       }
@@ -1122,6 +1134,9 @@ function CapturaMagicaPage({ showToast }) {
         id: accId,
         company_id: companyIdFinal,
         obra_id: r.obra_id || null,
+        // Destino contable explícito (obra / gastos_generales / contabilidad_neta /
+        // sin_clasificar — este último cae a la bandeja de la Contadora Jefe).
+        destino_contable: destinoContable,
         clase: claseFinal,
         // Operación interna del grupo (emisor Y receptor son empresas nuestras): debe
         // marcarse SIEMPRE, no solo si se vinculó a una cadena de trazabilidad. Si no,
@@ -2311,22 +2326,32 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
                   </div>
                 </div>
               )}
-              {/* Destino de la compra (en AMBOS modos: empresa existente o nueva). El
-                  usuario elige a qué OBRA va, o si es Gasto General de la Empresa. */}
-              <label className="flabel" style={{ marginTop: 10, display: 'block' }}>Destino de la compra *</label>
-              <select className="fi" value={r.obra_destino ?? ''} onChange={e => upd({ obra_destino: e.target.value })}>
-                <option value="">— Sin obra (solo contabilidad) —</option>
-                <option value="__empresa__">🏢 Gastos Generales de la Empresa</option>
-                <optgroup label="Obras">
+              {/* Destino de la compra (OBLIGATORIO — las asistentes vinculaban facturas
+                  a obras equivocadas por apuro; ahora la elección es explícita y existe
+                  la salida honesta "No sé", que cae a la bandeja de la Contadora Jefe). */}
+              <label className="flabel" style={{ marginTop: 10, display: 'block' }}>Destino de la factura *</label>
+              <select className="fi" value={r.obra_destino ?? ''} onChange={e => upd({ obra_destino: e.target.value })}
+                style={!r.obra_destino ? { borderColor: 'var(--amber)' } : undefined}>
+                <option value="">— Elegí el destino (obligatorio) —</option>
+                <optgroup label="🏗 Obras específicas">
                   {(obras || []).filter(o => !o.deleted_at).map(o => <option key={o.id} value={o.id}>🏗 {o.nombre_obra}{o.cui ? ` · CUI ${o.cui}` : ''}</option>)}
+                </optgroup>
+                <optgroup label="Sin obra">
+                  <option value="__empresa__">🏢 Gastos Generales de la Empresa</option>
+                  <option value="__otros__">📄 Contabilidad Neta (otros — no es obra actual ni gasto general)</option>
+                  <option value="__nose__">🤔 No sé / No me acuerdo — que lo revise la Contadora Jefe</option>
                 </optgroup>
               </select>
               <div style={{ marginTop: 6, fontSize: 11, color: 'var(--tm)' }}>
                 {r.obra_destino === '__empresa__'
-                  ? '🏢 Gasto general de la empresa — no entra a ninguna obra ni al almacén de obra.'
-                  : r.obra_destino
-                    ? '🏗 Va a esta obra: aparece en su Conciliación de Insumos y, si marcás recepción, en su almacén.'
-                    : '⚠ Sin obra: la factura queda solo en contabilidad (sin almacén ni conciliación).'}
+                  ? '🏢 Gasto operativo de la empresa — no entra a ninguna obra ni al almacén de obra.'
+                  : r.obra_destino === '__otros__'
+                    ? '📄 Contabilidad neta: facturación antigua o de otros rubros — solo contabilidad, sin obra.'
+                    : r.obra_destino === '__nose__'
+                      ? '🤔 Queda marcada "Sin clasificar" en la bandeja de la Contadora Jefe, que la asignará al destino correcto. Mejor esto que adivinar.'
+                      : r.obra_destino
+                        ? '🏗 Va a esta obra: aparece en su Conciliación de Insumos y, si marcás recepción, en su almacén.'
+                        : '⚠ Obligatorio: elegí una obra, gastos generales, contabilidad neta — o "No sé" si tenés dudas.'}
               </div>
             </div>
 

@@ -12,6 +12,7 @@ import React from "react";
 import { CATALOGO_EPP, epppTipo, detectarEPP } from "../lib/epp-utils.js";
 import { calcAlerta } from "../lib/stock-utils.js";
 import { getDesgloseBulk, aplicarDelta, traspasar, baseSalidaUbicacion } from "../lib/stock-ubicaciones.js";
+import { validarSalidaCronologica, agruparCantidades } from "../lib/stock-cronologia.js";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { useFotosEvidencias, FotoInsumoCell } from "./jx-foto-insumo.jsx";
 import { DesglosePopup, TraspasoStockModal, ubicacionAutoOrigen, validarSalidaUbic } from "./jx-stock-ubic.jsx";
@@ -734,6 +735,22 @@ function EppsInventarioPage({ showToast }) {
           return;
         }
         proyec.set(it.epp_id, base - cant);
+      }
+    }
+    // ── Validación CRONOLÓGICA (salida): no puede salir mercadería que a ESA
+    // fecha aún no había ingresado, ni dejar negativo un punto posterior de la
+    // línea de tiempo (mismo candado que materiales/herramientas).
+    if (tipo === 'salida' && form.fecha) {
+      const porItem = agruparCantidades(itemsValidos, it => it.epp_id);
+      for (const [eid, cantTotal] of porItem) {
+        const epp = epps.find(e => e.id === eid);
+        let hist = [];
+        try { hist = await window.__db.movimientos_epp.filter(m => m.epp_id === eid).toArray(); } catch {}
+        const rc = validarSalidaCronologica({ movimientos: hist, fecha: form.fecha, cantidad: cantTotal, stockActualHoy: stockDe(epp) });
+        if (!rc.ok) {
+          showToast(`❌ Incongruencia de fechas: al ${form.fecha}, "${epp?.nombre_epp}" solo tenía ${rc.disponible} disponible(s) — las entradas posteriores a esa fecha no cuentan. Corregí la fecha de la salida o la cantidad.`, 'red');
+          return;
+        }
       }
     }
 

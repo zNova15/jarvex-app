@@ -342,6 +342,18 @@ function InsumosEmergenciaPage({ showToast }) {
         const { ok, disponible } = validarSalidaUbic(dgItem, ubicMov, cant, insumo?.stock_actual);
         if (!ok) { showToast(`En ese almacén hay ${disponible} ${insumo.unidad} de "${insumo.nombre}", pedís ${cant}.`, 'red'); return; }
       }
+      // Validación CRONOLÓGICA: no puede salir lo que a ESA fecha aún no había
+      // ingresado (mismo candado que materiales/herramientas/EPP).
+      if (!editingMovId && form.fecha) {
+        let hist = [];
+        try { hist = await window.__db.movimientos_insumos_emergencia.filter(m => m.insumo_emergencia_id === insumo.id).toArray(); } catch {}
+        const { validarSalidaCronologica } = await import('../lib/stock-cronologia.js');
+        const rc = validarSalidaCronologica({ movimientos: hist, fecha: form.fecha, cantidad: cant, stockActualHoy: Number(insumo.stock_actual ?? 0) });
+        if (!rc.ok) {
+          showToast(`❌ Incongruencia de fechas: al ${form.fecha}, "${insumo.nombre}" solo tenía ${rc.disponible} ${insumo.unidad} disponible(s) — las entradas posteriores a esa fecha no cuentan. Corregí la fecha o la cantidad.`, 'red');
+          return;
+        }
+      }
     }
 
     setBusy(true);

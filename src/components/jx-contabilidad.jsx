@@ -1192,6 +1192,35 @@ function MovimientosContablesPage({ showToast }) {
     } finally { setFusionando(false); }
   };
 
+  // ── BANDEJA "Sin clasificar" (Contadora Jefe): facturas subidas con
+  // "No sé / No me acuerdo" en Captura Mágica. La jefa las revisa y les asigna
+  // el destino correcto (obra / gastos generales / contabilidad neta) — así
+  // las asistentes no adivinan ni alteran los reportes.
+  const esRevisorDestino = isAdmin || myRol === 'contador';
+  const sinClasificar = uMC(() => (movs || []).filter(m => !m.deleted_at && m.destino_contable === 'sin_clasificar'), [movs]);
+  const [bandejaOpen, setBandejaOpen] = uSC(false);
+  const [bandejaSel, setBandejaSel] = uSC(() => new Map()); // mov_id → destino elegido ('' | obra_id | '__empresa__' | '__otros__')
+  const asignarDestino = async (m, eleccion) => {
+    if (!eleccion) { showToast('Elegí el destino para esta factura', 'red'); return; }
+    const esObraDest = eleccion !== '__empresa__' && eleccion !== '__otros__';
+    const patch = {
+      obra_id: esObraDest ? eleccion : null,
+      destino_contable: esObraDest ? 'obra' : (eleccion === '__empresa__' ? 'gastos_generales' : 'contabilidad_neta'),
+      updated_at: new Date().toISOString(),
+      updated_by: userId,
+      version: (m.version ?? 0) + 1,
+      sync_status: m.demo === true ? 'synced' : (m.sync_status === 'pending_create' ? 'pending_create' : 'pending_update'),
+    };
+    try {
+      await window.__db.accounting_movements.update(m.id, patch);
+      try { await window.__logAudit?.({ action:'update', table:'accounting_movements', recordId:m.id,
+        oldData:{ destino_contable:'sin_clasificar' }, newData:{ destino_contable: patch.destino_contable, obra_id: patch.obra_id },
+        reason:'Bandeja de la Contadora Jefe: destino asignado a factura "No sé"' }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'accounting_movements' } })); } catch {}
+      showToast(`✓ Destino asignado: ${esObraDest ? (obraNombre(eleccion) || 'obra') : (eleccion === '__empresa__' ? 'Gastos Generales' : 'Contabilidad Neta')}`, 'green');
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
+
   const cambiarEstadoPago = async (m, nuevoEstado) => {
     try {
       await window.__db.accounting_movements.update(m.id, {
@@ -1488,6 +1517,21 @@ function MovimientosContablesPage({ showToast }) {
         );
       })()}
 
+      {/* Bandeja de la Contadora Jefe: facturas "No sé / No me acuerdo". */}
+      {esRevisorDestino && sinClasificar.length > 0 && (
+        <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', padding:'10px 14px', marginBottom:12, borderRadius:8, background:'rgba(155,89,182,0.10)', border:'1px solid rgba(155,89,182,0.4)' }}>
+          <span style={{ fontSize:15 }}>🤔</span>
+          <span style={{ fontSize:13, fontWeight:600, color:'#B980D6' }}>
+            {sinClasificar.length} factura{sinClasificar.length > 1 ? 's' : ''} sin clasificar — las asistentes marcaron "No sé"
+          </span>
+          <span style={{ fontSize:11, color:'var(--tm)' }}>Revisalas y asignales obra, gastos generales o contabilidad neta.</span>
+          <button className="btn btn-sm" style={{ marginLeft:'auto', background:'rgba(155,89,182,0.18)', color:'#B980D6', border:'1px solid rgba(155,89,182,0.4)' }}
+            onClick={()=>{ setBandejaSel(new Map()); setBandejaOpen(true); }}>
+            Revisar bandeja →
+          </button>
+        </div>
+      )}
+
       {filtered.length === 0 ? (
         <div className="card card-p empty-state">
           <JxIcon name="dollar" size={40} color="var(--tm)"/>
@@ -1522,6 +1566,13 @@ function MovimientosContablesPage({ showToast }) {
                         {m.description || '—'}
                         {m.category && <div style={{ fontSize:10, color:'var(--tm)' }}>{m.category}</div>}
                         {m.obra_id && <div style={{ fontSize:10, color:'var(--blue)' }}>🏗 {obraNombre(m.obra_id) || 'obra'}</div>}
+                        {!m.obra_id && m.destino_contable === 'sin_clasificar' && (
+                          <div><span className="badge" style={{ fontSize:9, background:'rgba(155,89,182,0.18)', color:'#B980D6', cursor: esRevisorDestino ? 'pointer' : 'default' }}
+                            title={esRevisorDestino ? 'Sin clasificar — click para abrir la bandeja y asignarle destino' : 'Sin clasificar — pendiente de la Contadora Jefe'}
+                            onClick={()=>{ if (esRevisorDestino) { setBandejaSel(new Map()); setBandejaOpen(true); } }}>🤔 Sin clasificar</span></div>
+                        )}
+                        {!m.obra_id && m.destino_contable === 'gastos_generales' && <div style={{ fontSize:10, color:'var(--tm)' }}>🏢 Gastos Generales</div>}
+                        {!m.obra_id && m.destino_contable === 'contabilidad_neta' && <div style={{ fontSize:10, color:'var(--tm)' }}>📄 Contabilidad Neta</div>}
                         {puedeVerBanc && m.currency === 'PEN' && Number(m.amount) > 2000 && (() => {
                           const evB = bancarizacionPorMov.get(m.id);
                           const subirBtn = canWrite ? (
@@ -1657,6 +1708,62 @@ function MovimientosContablesPage({ showToast }) {
               </div>
             </div>
           )}
+        </Modal>
+      )}
+
+      {/* Bandeja "Sin clasificar" — la Contadora Jefe asigna destino a las facturas "No sé" */}
+      {bandejaOpen && (
+        <Modal title={`Bandeja: facturas sin clasificar (${sinClasificar.length})`} icon="bell" onClose={()=>setBandejaOpen(false)} wide>
+          {sinClasificar.length === 0 ? (
+            <div style={{ fontSize:13, color:'var(--green)', padding:'8px 0' }}>✅ No quedan facturas sin clasificar — bandeja vacía.</div>
+          ) : (
+            <div style={{ display:'flex', flexDirection:'column', gap:8, maxHeight:'60vh', overflowY:'auto' }}>
+              <div style={{ fontSize:11.5, color:'var(--tm)' }}>
+                Estas facturas se subieron con <strong>"No sé / No me acuerdo"</strong>. Asignales el destino correcto —
+                al guardar salen de la bandeja y quedan clasificadas.
+              </div>
+              {sinClasificar.map(m => {
+                const c = lookupCompany(m.company_id);
+                const sel = bandejaSel.get(m.id) || '';
+                return (
+                  <div key={m.id} style={{ border:'1px solid var(--bd)', borderRadius:8, padding:'8px 10px', display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
+                    <div style={{ flex:'1 1 240px', minWidth:220 }}>
+                      <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)' }}>
+                        {(m.document_type || 'doc')} {m.document_number || 's/n'} · {m.third_party_name || '—'}
+                      </div>
+                      <div style={{ fontSize:11, color:'var(--tm)' }}>
+                        {m.date || 's/fecha'} · {c?.name || '—'} · <strong style={{ color:'var(--tp)' }}>{fmtCur(m.amount, m.currency)}</strong>
+                        {m.description ? ` · ${String(m.description).slice(0, 60)}` : ''}
+                      </div>
+                    </div>
+                    {evidenciasPorMov.has(m.id) && (
+                      <button className="btn btn-ghost btn-xs" title="Ver la factura adjunta" style={{ color:'var(--blue)' }}
+                        onClick={()=>setEvidenciaModal(evidenciasPorMov.get(m.id))}>
+                        <JxIcon name="eye" size={11}/>
+                      </button>
+                    )}
+                    <select className="fi" value={sel} style={{ minWidth:210, fontSize:12 }}
+                      onChange={e=>setBandejaSel(prev => { const nm = new Map(prev); nm.set(m.id, e.target.value); return nm; })}>
+                      <option value="">— Elegí el destino —</option>
+                      <optgroup label="🏗 Obras">
+                        {obrasParaSelector.map(o => <option key={o.id} value={o.id}>🏗 {o.nombre_obra}</option>)}
+                      </optgroup>
+                      <optgroup label="Sin obra">
+                        <option value="__empresa__">🏢 Gastos Generales de la Empresa</option>
+                        <option value="__otros__">📄 Contabilidad Neta (otros)</option>
+                      </optgroup>
+                    </select>
+                    <button className="btn btn-amber btn-xs" disabled={!sel} onClick={()=>asignarDestino(m, sel)}>
+                      Asignar
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={()=>setBandejaOpen(false)}>Cerrar</button>
+          </div>
         </Modal>
       )}
 

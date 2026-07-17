@@ -8,6 +8,7 @@ import { TablePagination } from "./jx-pagination.jsx";
 import { SearchableSelect } from "./jx-searchable-select.jsx";
 import { opcionesDestinoFlat, splitDestino } from "../lib/destino-mov.js";
 import { getDesgloseBulk, aplicarDelta, traspasar, baseSalidaUbicacion } from "../lib/stock-ubicaciones.js";
+import { validarSalidaCronologica, agruparCantidades } from "../lib/stock-cronologia.js";
 import { DesglosePopup, TraspasoStockModal, ubicacionAutoOrigen } from "./jx-stock-ubic.jsx";
 import { hoyLocal, horaLocal } from "../lib/fecha.js";
 import { rolScopeObrero } from "../lib/personal-scope.js";
@@ -1678,6 +1679,24 @@ function MaterialesPage({ showToast }) {
           setBusyMovLote(false); return;
         }
         proyecUbic.set(key, base - cant);
+      }
+    }
+
+    // ── Validación CRONOLÓGICA (salida) ─────────────────────────────
+    // No puede salir mercadería que a ESA fecha aún no había ingresado, ni
+    // dejar negativo un punto posterior de la línea de tiempo (caso real
+    // rotomartillos: salida retro 11/05 con la entrada recién el 15/05).
+    if (tipo === 'salida' && form.fecha) {
+      const porItem = agruparCantidades(itemsValidos, it => it.material_id);
+      for (const [mid, cantTotal] of porItem) {
+        const mat = materiales.find(m => m.id === mid);
+        let hist = [];
+        try { hist = await window.__db.movimientos_materiales.filter(m => m.material_id === mid).toArray(); } catch {}
+        const rc = validarSalidaCronologica({ movimientos: hist, fecha: form.fecha, cantidad: cantTotal, stockActualHoy: Number(mat?.stock_actual ?? 0) });
+        if (!rc.ok) {
+          showToast(`❌ Incongruencia de fechas: al ${form.fecha}, "${mat?.nombre_material}" solo tenía ${rc.disponible} ${mat?.unidad || ''} disponible(s) — las entradas posteriores a esa fecha no cuentan. Corregí la fecha de la salida o la cantidad.`, 'red');
+          setBusyMovLote(false); return;
+        }
       }
     }
 
@@ -3612,6 +3631,23 @@ function HerramientasPage({ showToast }) {
         const lblCond = cond === '_sin' ? 'Sin clasificar' : (ESTADO_LABEL[cond] || cond);
         if (baseE - cant < 0) { showToast(`❌ De "${lblCond}" solo hay ${baseE} de "${h?.nombre_herramienta}", pedís ${cant}.`, 'red'); return; }
         proyecEst.set(k, baseE - cant);
+      }
+    }
+    // ── Validación CRONOLÓGICA (salida) ─────────────────────────────
+    // No puede salir mercadería que a ESA fecha aún no había ingresado, ni
+    // dejar negativo un punto posterior de la línea de tiempo (caso real
+    // rotomartillos: salida retro 11/05 con la entrada recién el 15/05).
+    if (tipo === 'salida' && loteCantForm.fecha) {
+      const porItem = agruparCantidades(itemsValidos, it => it.herramienta_id);
+      for (const [hid, cantTotal] of porItem) {
+        const h = herramientas.find(x => x.id === hid);
+        let hist = [];
+        try { hist = await window.__db.movimientos_herramientas.filter(m => m.herramienta_id === hid).toArray(); } catch {}
+        const rc = validarSalidaCronologica({ movimientos: hist, fecha: loteCantForm.fecha, hora: loteCantForm.hora, cantidad: cantTotal, stockActualHoy: stockDeHerr(h) });
+        if (!rc.ok) {
+          showToast(`❌ Incongruencia de fechas: al ${loteCantForm.fecha}, "${h?.nombre_herramienta}" solo tenía ${rc.disponible} disponible(s) — las entradas posteriores a esa fecha no cuentan. Corregí la fecha de la salida o la cantidad.`, 'red');
+          return;
+        }
       }
     }
     // Devolución: el responsable es OBLIGATORIO. Por defecto la devuelve quien la
