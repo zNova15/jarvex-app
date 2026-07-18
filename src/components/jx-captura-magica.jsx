@@ -844,6 +844,17 @@ function CapturaMagicaPage({ showToast }) {
       showToast('Elegí el destino de la factura: una obra, Gastos Generales, Contabilidad Neta — o "No sé / No me acuerdo" para que lo revise la Contadora Jefe.', 'red');
       return;
     }
+    // Filtro de facturación (advierte, NO bloquea): factura con fecha anterior
+    // al inicio de la obra elegida — el caso típico es histórico de la empresa
+    // vinculado a la obra por apuro; las compras anticipadas legítimas pasan
+    // confirmando.
+    if (r.obra_id) {
+      const od = (obras || []).find(o => o.id === r.obra_id);
+      if (od?.fecha_inicio && r.fecha_emision && r.fecha_emision < od.fecha_inicio &&
+          !window.confirm(`⚠ La factura (${r.fecha_emision}) es ANTERIOR al inicio de la obra "${od.nombre_obra}" (${od.fecha_inicio}).\n\nPuede ser una compra anticipada válida. ¿Confirmás que va a ESTA obra?`)) {
+        return;
+      }
+    }
 
     // ¿VENTA o COMPRA? Si el EMISOR de la factura es UNA DE NUESTRAS empresas afiliadas,
     // la emitimos nosotros como vendedores → VENTA. Si la emite una distribuidora/proveedor
@@ -2353,6 +2364,20 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
                         ? '🏗 Va a esta obra: aparece en su Conciliación de Insumos y, si marcás recepción, en su almacén.'
                         : '⚠ Obligatorio: elegí una obra, gastos generales, contabilidad neta — o "No sé" si tenés dudas.'}
               </div>
+              {/* Filtro de facturación: factura ANTERIOR al inicio de la obra elegida.
+                  Advierte (no bloquea): hay compras anticipadas legítimas, pero el
+                  caso típico es histórico de la empresa vinculado a la obra por apuro. */}
+              {(() => {
+                const od = (obras || []).find(o => o.id === r.obra_destino && !o.deleted_at);
+                if (!od?.fecha_inicio || !r.fecha_emision || r.fecha_emision >= od.fecha_inicio) return null;
+                return (
+                  <div style={{ marginTop: 6, fontSize: 11, color: 'var(--amber)', padding: '6px 8px', borderRadius: 6, background: 'rgba(242,183,5,0.08)', border: '1px solid rgba(242,183,5,0.35)' }}>
+                    ⚠ Esta factura ({r.fecha_emision}) es <strong>ANTERIOR al inicio de la obra</strong> ({od.fecha_inicio}).
+                    Puede ser una compra anticipada válida, pero verificá que sea la obra correcta — si es del
+                    histórico de la empresa, va en 🏢 Gastos Generales o 📄 Contabilidad Neta.
+                  </div>
+                );
+              })()}
             </div>
 
             {/* ITEMS */}

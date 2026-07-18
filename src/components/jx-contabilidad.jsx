@@ -987,6 +987,7 @@ function MovimientosContablesPage({ showToast }) {
       clase: m.clase || (m.type === 'income' ? 'venta' : 'compra'),
       type: m.type,
       obra_id: m.obra_id || '',
+      destino_contable: m.destino_contable || (m.obra_id ? 'obra' : null),
       category: m.category || '',
       cuenta_pcge: m.cuenta_pcge || '',
       description: m.description || '',
@@ -1020,6 +1021,7 @@ function MovimientosContablesPage({ showToast }) {
           date: form.date,
           clase: form.clase || null,
           obra_id: form.obra_id || null,
+          destino_contable: form.obra_id ? 'obra' : (form.destino_contable || null),
           type: form.type,
           category: form.category || null,
           cuenta_pcge: form.cuenta_pcge || null,
@@ -1048,6 +1050,7 @@ function MovimientosContablesPage({ showToast }) {
           date: form.date,
           clase: form.clase || null,
           obra_id: form.obra_id || null,
+          destino_contable: form.obra_id ? 'obra' : (form.destino_contable || null),
           type: form.type,
           category: form.category || null,
           cuenta_pcge: form.cuenta_pcge || null,
@@ -1203,6 +1206,12 @@ function MovimientosContablesPage({ showToast }) {
   const asignarDestino = async (m, eleccion) => {
     if (!eleccion) { showToast('Elegí el destino para esta factura', 'red'); return; }
     const esObraDest = eleccion !== '__empresa__' && eleccion !== '__otros__';
+    // Filtro de facturación: factura anterior al inicio de la obra elegida (advierte, no bloquea).
+    if (esObraDest) {
+      const od = obrasParaSelector.find(o => o.id === eleccion);
+      if (od?.fecha_inicio && m.date && m.date < od.fecha_inicio &&
+          !window.confirm(`⚠ La factura (${m.date}) es ANTERIOR al inicio de "${od.nombre_obra}" (${od.fecha_inicio}).\n\n¿Confirmás que va a esta obra?`)) return;
+    }
     const patch = {
       obra_id: esObraDest ? eleccion : null,
       destino_contable: esObraDest ? 'obra' : (eleccion === '__empresa__' ? 'gastos_generales' : 'contabilidad_neta'),
@@ -2031,6 +2040,10 @@ function MovimientosContablesPage({ showToast }) {
             { key: 'payment_status', label: 'Estado de pago' },
             { key: 'document_number', label: 'N° documento' },
             { key: 'third_party_name', label: 'Cliente / Proveedor' },
+            // Vinculación (obra / gastos generales / contabilidad neta): la
+            // asistente describe en el motivo a dónde debe ir; el Contador Jefe
+            // o Admin lo aplican desde Editar Movimiento → Vinculación.
+            { key: '__vinculacion', label: 'Obra / Vinculación (destino)', descriptive: true },
           ]}
           showToast={showToast}
           onClose={() => setSolicitarTarget(null)}
@@ -2078,11 +2091,42 @@ function MovimientosContablesPage({ showToast }) {
               </select>
             </div>
             <div>
-              <label className="flabel">Obra {form.clase === 'venta' ? '(opcional)' : '(dónde se usan los insumos)'}</label>
-              <select className="fi" value={form.obra_id||''} onChange={e=>setForm({...form, obra_id:e.target.value})}>
-                <option value="">— Sin obra —</option>
-                {obrasParaSelector.map(o => <option key={o.id} value={o.id}>{o.nombre_obra}</option>)}
-              </select>
+              <label className="flabel">Vinculación {form.clase === 'venta' ? '(opcional)' : '(dónde se usan los insumos)'}</label>
+              {(() => {
+                // Valor combinado: obra real, o los destinos "sin obra".
+                const vincVal = form.obra_id
+                  ? form.obra_id
+                  : form.destino_contable === 'gastos_generales' ? '__empresa__'
+                  : form.destino_contable === 'contabilidad_neta' ? '__otros__'
+                  : form.destino_contable === 'sin_clasificar' ? '__nose__'
+                  : '';
+                const obraSelForm = form.obra_id ? obrasParaSelector.find(o => o.id === form.obra_id) : null;
+                const preInicio = obraSelForm?.fecha_inicio && form.date && form.date < obraSelForm.fecha_inicio;
+                return (<>
+                  <select className="fi" value={vincVal} onChange={e=>{
+                    const v = e.target.value;
+                    if (v === '__empresa__') setForm({...form, obra_id:'', destino_contable:'gastos_generales'});
+                    else if (v === '__otros__') setForm({...form, obra_id:'', destino_contable:'contabilidad_neta'});
+                    else if (v === '__nose__') setForm({...form, obra_id:'', destino_contable:'sin_clasificar'});
+                    else setForm({...form, obra_id:v, destino_contable: v ? 'obra' : null});
+                  }}>
+                    <option value="">— Sin vinculación —</option>
+                    <optgroup label="🏗 Obras">
+                      {obrasParaSelector.map(o => <option key={o.id} value={o.id}>🏗 {o.nombre_obra}</option>)}
+                    </optgroup>
+                    <optgroup label="Sin obra">
+                      <option value="__empresa__">🏢 Gastos Generales de la Empresa</option>
+                      <option value="__otros__">📄 Contabilidad Neta (otros)</option>
+                      <option value="__nose__">🤔 Sin clasificar (bandeja de la Contadora)</option>
+                    </optgroup>
+                  </select>
+                  {preInicio && (
+                    <div style={{ fontSize:10.5, color:'var(--amber)', marginTop:3 }}>
+                      ⚠ La factura ({form.date}) es ANTERIOR al inicio de esta obra ({obraSelForm.fecha_inicio}). Puede ser una compra anticipada válida — verificá que sea la obra correcta.
+                    </div>
+                  )}
+                </>);
+              })()}
             </div>
             <div>
               <label className="flabel">Empresa *</label>
