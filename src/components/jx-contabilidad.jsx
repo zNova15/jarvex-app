@@ -1078,22 +1078,19 @@ function MovimientosContablesPage({ showToast }) {
         try { await window.__logAudit?.({ action:'insert', table:'accounting_movements', recordId:id, newData:form }); } catch {}
         showToast('Movimiento registrado', 'green');
       }
-      // Evidencia de bancarización (> S/2000). Requiere obra para el bucket de storage.
+      // Evidencia de bancarización (> S/2000). La obra es opcional: las facturas
+      // de Gastos Generales / Contabilidad Neta se archivan sin obra (mig 141).
       if (form._bancFile && savedId) {
-        if (!form.obra_id) {
-          showToast('Mov. guardado. Para subir la bancarización, asigná una obra al movimiento.', 'amber');
-        } else {
-          try {
-            await window.__saveEvidenciaLocal({
-              id: window.__newId(), obra_id: form.obra_id, tipo_evidencia: 'bancarizacion',
-              modulo_relacionado: 'accounting_movements', registro_relacionado_id: savedId,
-              nombre_archivo: form._bancFile.name, mime_type: form._bancFile.type || 'image/jpeg',
-              blob: form._bancFile, fecha: form.date, created_by: userId,
-              observaciones: 'Evidencia de bancarización (> S/2000)',
-            });
-            try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'evidencias' } })); } catch {}
-          } catch (e) { showToast('Mov. guardado, pero falló adjuntar la bancarización: ' + (e.message||e), 'amber'); }
-        }
+        try {
+          await window.__saveEvidenciaLocal({
+            id: window.__newId(), obra_id: form.obra_id || null, tipo_evidencia: 'bancarizacion',
+            modulo_relacionado: 'accounting_movements', registro_relacionado_id: savedId,
+            nombre_archivo: form._bancFile.name, mime_type: form._bancFile.type || 'image/jpeg',
+            blob: form._bancFile, fecha: form.date, created_by: userId,
+            observaciones: 'Evidencia de bancarización (> S/2000)',
+          });
+          try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'evidencias' } })); } catch {}
+        } catch (e) { showToast('Mov. guardado, pero falló adjuntar la bancarización: ' + (e.message||e), 'amber'); }
       }
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'accounting_movements' } })); } catch {}
       try { window.dispatchEvent(new Event('online')); } catch {}
@@ -1314,8 +1311,10 @@ function MovimientosContablesPage({ showToast }) {
       const yaSubida = bancarizacionPorMov.get(bancTarget.id);
       if (yaSubida && yaSubida.sync !== 'failed' && !window.confirm('Este movimiento YA tiene una bancarización subida (aunque el estado de sync general muestre errores de otros registros). ¿Subir OTRA constancia de todos modos?')) return;
     }
-    const obraId = bancTarget.obra_id || bancObra;
-    if (!obraId) { showToast('Elegí la obra para poder archivar la bancarización', 'red'); return; }
+    // Obra para archivar: la del movimiento o la elegida en el modal. Puede ser
+    // NINGUNA: las facturas de Gastos Generales / Contabilidad Neta van sin obra
+    // (evidencias.obra_id es opcional desde mig 141).
+    const obraId = bancTarget.obra_id || bancObra || null;
 
     // ── Tope de la FACTURA (todos los casos): lo aplicado no puede exceder lo
     // pendiente. Pago exacto = cubre exactamente lo que falta (monto automático).
@@ -1822,9 +1821,9 @@ function MovimientosContablesPage({ showToast }) {
             </div>
             {!bancTarget.obra_id && (
               <div>
-                <label className="flabel">Obra (para archivar la bancarización)</label>
+                <label className="flabel">Obra (opcional — solo si querés archivarla junto a una obra)</label>
                 <select className="fi" value={bancObra} onChange={e=>setBancObra(e.target.value)}>
-                  <option value="">— Elegí una obra —</option>
+                  <option value="">— Sin obra (Gastos Generales / Contabilidad) —</option>
                   {obrasParaSelector.map(o => <option key={o.id} value={o.id}>{o.nombre_obra}</option>)}
                 </select>
               </div>
