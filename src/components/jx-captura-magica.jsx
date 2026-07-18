@@ -616,7 +616,10 @@ function CapturaMagicaPage({ showToast }) {
       // Defaults: la mayoría de comprobantes que sube el contador ya están
       // pagados en efectivo (Gabriel). El usuario corrige en el review si no.
       metodo_pago: 'efectivo',
-      payment_status: 'paid',
+      // Regla de cumplimiento (Gabriel, jul 2026): los comprobantes de MÁS de
+      // S/2,000 entran PENDIENTES y pasan a "Pagado" recién cuando se sube su
+      // bancarización completa. Los de S/2,000 o menos entran pagados como antes.
+      payment_status: ((ext.moneda || 'PEN') === 'PEN' && Number(ext.totales?.total || 0) > 2000) ? 'pending' : 'paid',
       // Legacy: si llega un payload viejo lo respetamos pero la UI ya no
       // expone este flag — los movimientos de inventario los crea el
       // almacenero al confirmar recepción, no la captura mágica.
@@ -1168,7 +1171,12 @@ function CapturaMagicaPage({ showToast }) {
         // 'credit' NO es un estado de pago válido en el server (CHECK 021: solo
         // pending/paid/cancelled) → lo saneamos a 'pending' acá también, por si
         // un review quedó en estado con un 'credit' legacy.
-        payment_status: (r.payment_status === 'credit' ? 'pending' : (r.payment_status || 'pending')),
+        // >S/2,000 en soles: SIEMPRE entra pendiente — se marca "Pagado" solo al
+        // subir la bancarización completa (regla de cumplimiento; no depende de
+        // lo que quede seleccionado en el review). ≤S/2,000: como antes.
+        payment_status: ((r.moneda || 'PEN') === 'PEN' && Number(r.total) > 2000)
+          ? 'pending'
+          : (r.payment_status === 'credit' ? 'pending' : (r.payment_status || 'pending')),
         // Recepción de almacén: solo en COMPRAS con obra (una venta no ingresa al almacén).
         recepcion_status: (!esVenta && r.genera_recepcion_almacen && r.obra_id && r.items?.length > 0)
           ? 'pendiente_recepcion'
@@ -2046,11 +2054,22 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
               </div>
               <div>
                 <label className="flabel">Estado del pago</label>
-                <select className="fi" value={r.payment_status === 'credit' ? 'pending' : (r.payment_status || 'pending')} onChange={e=>upd({ payment_status: e.target.value })}>
-                  <option value="paid">Pagado</option>
-                  <option value="pending">Pendiente</option>
-                  <option value="cancelled">Anulado</option>
-                </select>
+                {((r.moneda || 'PEN') === 'PEN' && Number(r.total) > 2000) ? (
+                  <>
+                    <select className="fi" value="pending" disabled title="Mayor a S/2,000: entra Pendiente y pasa a Pagado al subir su bancarización">
+                      <option value="pending">Pendiente (hasta bancarizar)</option>
+                    </select>
+                    <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:3 }}>
+                      &gt; S/2,000: se marcará <strong>Pagado</strong> automáticamente al subir la bancarización completa.
+                    </div>
+                  </>
+                ) : (
+                  <select className="fi" value={r.payment_status === 'credit' ? 'pending' : (r.payment_status || 'pending')} onChange={e=>upd({ payment_status: e.target.value })}>
+                    <option value="paid">Pagado</option>
+                    <option value="pending">Pendiente</option>
+                    <option value="cancelled">Anulado</option>
+                  </select>
+                )}
               </div>
             </div>
 

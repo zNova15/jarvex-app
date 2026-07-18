@@ -1430,12 +1430,30 @@ function MovimientosContablesPage({ showToast }) {
         reason: esDepNuevo ? 'Depósito de bancarización multi-factura creado desde Movimientos'
           : esDepExistente ? 'Factura cubierta con saldo de depósito existente'
           : 'Bancarización adjunta desde Movimientos (sin edición)' }); } catch {}
+      // Regla de cumplimiento (jul 2026): al quedar la factura CUBIERTA al 100%
+      // por su(s) bancarización(es), pasa automáticamente a "Pagado".
+      let marcadaPagada = false;
+      const quedaCubierta = (_pagado + montoAplicar) >= (Number(bancTarget.amount) || 0) - TOL;
+      if (quedaCubierta && bancTarget.payment_status !== 'paid') {
+        try {
+          await window.__db.accounting_movements.update(bancTarget.id, {
+            payment_status: 'paid',
+            updated_at: now, updated_by: userId,
+            version: (bancTarget.version ?? 0) + 1,
+            sync_status: bancTarget.demo === true ? 'synced' : (bancTarget.sync_status === 'pending_create' ? 'pending_create' : 'pending_update'),
+          });
+          marcadaPagada = true;
+          try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'accounting_movements' } })); } catch {}
+        } catch (e3) { console.warn('[banc→pagado]', e3?.message); }
+      }
       const saldoTxt = esDepNuevo
         ? ` · saldo restante del voucher: ${fmtCur(Number(bancTotalDep) - montoAplicar, bancTarget.currency)}`
         : esDepExistente
           ? ` · saldo restante del voucher: ${fmtCur(saldoDeposito(depositoElegido, partesPorDeposito.get(bancDepId) || []) - montoAplicar, bancTarget.currency)}`
           : '';
-      const cubiertaTxt = (_pagado + montoAplicar) >= (Number(bancTarget.amount) || 0) - TOL ? ' · factura cubierta al 100% ✅' : ` · faltan ${fmtCur(Math.max(0, (Number(bancTarget.amount) || 0) - _pagado - montoAplicar), bancTarget.currency)}`;
+      const cubiertaTxt = quedaCubierta
+        ? ` · factura cubierta al 100% ✅${marcadaPagada ? ' · estado → Pagado' : ''}`
+        : ` · faltan ${fmtCur(Math.max(0, (Number(bancTarget.amount) || 0) - _pagado - montoAplicar), bancTarget.currency)}`;
       showToast(parteOk
         ? `Bancarización registrada · ${fmtCur(montoAplicar, bancTarget.currency)} aplicados${saldoTxt}${cubiertaTxt}`
         : 'Bancarización adjunta. Se sincronizará en breve.', 'green');
@@ -1621,6 +1639,24 @@ function MovimientosContablesPage({ showToast }) {
                           if (evB.sync === 'uploaded') return <div style={{ fontSize:10, color:'var(--green)' }}>✅ Bancarizado{_suma > 0 && _suma < _total - 0.01 ? <span style={{ color:'var(--amber)' }} title="Las partes registradas no completan el total"> (parcial)</span> : null}{subirBtn}{_tagPartes}</div>;
                           if (evB.sync === 'failed') return <div style={{ fontSize:10, color:'var(--red)' }} title="La evidencia no se pudo subir (revisá que estés asignado a la obra con un rol que no sea solo lectura)">⚠ Bancarización no subió{subirBtn}</div>;
                           return <div style={{ fontSize:10, color:'var(--tm)' }} title="Subiendo evidencia de bancarización…">⏳ Subiendo bancarización</div>;
+                        })()}
+                        {/* ≤ S/2,000 (o moneda extranjera): evidencia de pago OPCIONAL —
+                            no es exigencia de bancarización, pero pueden adjuntarla. */}
+                        {puedeVerBanc && !(m.currency === 'PEN' && Number(m.amount) > 2000) && (() => {
+                          const evB = bancarizacionPorMov.get(m.id);
+                          if (evB) return (
+                            <div style={{ fontSize:10, color:'var(--green)' }}>
+                              <span style={{ cursor:'pointer' }} title="Ver la constancia del pago" onClick={()=>setEvidenciaModal(evB)}>✅ Pago adjunto</span>
+                              {canWrite && <button className="btn btn-ghost btn-xs" style={{ marginLeft:4, padding:'0 4px', fontSize:9 }} onClick={()=>openBanc(m)} title="Adjuntar otra constancia">+</button>}
+                            </div>
+                          );
+                          if (!canWrite) return null;
+                          return (
+                            <div><button className="btn btn-ghost btn-xs" style={{ padding:'1px 6px', fontSize:9, color:'var(--tm)' }}
+                              onClick={()=>openBanc(m)} title="Opcional: adjuntar la constancia del pago (voucher, transferencia, depósito)">
+                              📎 Subir pago (opcional)
+                            </button></div>
+                          );
                         })()}
                       </td>
                       <td>{m.third_party_name || '—'}</td>
