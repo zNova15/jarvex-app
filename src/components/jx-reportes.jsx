@@ -21,77 +21,131 @@ function saveHistorial(a) { try { localStorage.setItem('reportes_historial', JSO
 
 const DIAS_SEMANA = [['1','Lunes'],['2','Martes'],['3','Miércoles'],['4','Jueves'],['5','Viernes'],['6','Sábado'],['7','Domingo']];
 
-// Config del email programado (tabla reportes_email_config, leída/escrita directo
-// en Supabase — no está en Dexie). El envío lo hace n8n a las 18:00 (hora Lima).
+// Config de los REPORTES POR EMAIL (tabla reportes_email_config, una fila por
+// tipo: diario / semanal / mensual — leída/escrita directo en Supabase). El
+// HTML lo arma un builder que corre cada hora (GitHub Actions) según esta
+// config, lo deja en reportes_email_outbox y n8n lo envía por Gmail.
+const HORAS = Array.from({ length: 24 }, (_, h) => String(h).padStart(2, '0') + ':00');
+const TIPOS_EMAIL = [
+  { key: 'diario', label: '📅 Diario', desc: 'Resumen del día: movimientos por obra con tops, reportes de ingenieros y especialidades, contabilidad y alertas.' },
+  { key: 'semanal', label: '🗓 Semanal', desc: 'Agregado de los últimos 7 días + SCTR por vencer y facturas sin clasificar. Elegí el día y la hora.' },
+  { key: 'mensual', label: '📈 Mensual', desc: 'Súper detallado (últimos 30 días): todo lo anterior + top proveedores y avance físico por obra. Elegí el día del mes.' },
+];
 function EmailConfigModal({ onClose, showToast }) {
   const Modal = window.Modal;
-  const [cfg, setCfg] = uS(null);
-  const [destText, setDestText] = uS('');
+  const [cfgs, setCfgs] = uS(null);       // { diario: fila, semanal: fila, mensual: fila }
+  const [dest, setDest] = uS({});          // tipo → texto del textarea
+  const [tab, setTab] = uS('diario');
   const [busy, setBusy] = uS(false);
   uE(() => {
     (async () => {
       try {
-        const { data, error } = await window.__supabase.from('reportes_email_config').select('*').order('updated_at', { ascending: false }).limit(1).maybeSingle();
+        const { data, error } = await window.__supabase.from('reportes_email_config').select('*');
         if (error) throw error;
-        const c = data || { activo: true, frecuencia: 'diario', dia_semana: 1, destinatarios: [], incluir: ['movimientos', 'contable'] };
-        setCfg(c); setDestText((c.destinatarios || []).join('\n'));
+        const porTipo = {};
+        const destIni = {};
+        for (const t of TIPOS_EMAIL) {
+          const fila = (data || []).find(r => (r.tipo || 'diario') === t.key)
+            || { tipo: t.key, activo: false, hora_envio: t.key === 'diario' ? '18:00' : '08:00', dia_semana: 1, dia_mes: 1, destinatarios: [] };
+          porTipo[t.key] = fila;
+          destIni[t.key] = (fila.destinatarios || []).join('\n');
+        }
+        setCfgs(porTipo); setDest(destIni);
       } catch (e) { showToast('No se pudo cargar la configuración: ' + (e.message || e), 'red'); onClose(); }
     })();
   }, []);
+  const upd = (tipo, patch) => setCfgs(prev => ({ ...prev, [tipo]: { ...prev[tipo], ...patch } }));
   const guardar = async () => {
-    if (!cfg) return;
-    const destinatarios = destText.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
-    const invalido = destinatarios.find(d => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(d));
-    if (invalido) { showToast(`Correo inválido: ${invalido}`, 'red'); return; }
-    if (cfg.activo && !destinatarios.length) { showToast('Agregá al menos un correo (o desactivá el envío)', 'red'); return; }
+    if (!cfgs) return;
+    // Validar todos los tipos antes de escribir nada.
+    for (const t of TIPOS_EMAIL) {
+      const emails = (dest[t.key] || '').split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+      const invalido = emails.find(d => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(d));
+      if (invalido) { showToast(`${t.label}: correo inválido "${invalido}"`, 'red'); setTab(t.key); return; }
+      if (cfgs[t.key].activo && !emails.length) { showToast(`${t.label}: agregá al menos un correo (o desactivalo)`, 'red'); setTab(t.key); return; }
+    }
     setBusy(true);
     try {
-      const patch = { activo: !!cfg.activo, frecuencia: cfg.frecuencia, dia_semana: Number(cfg.dia_semana) || 1, destinatarios, updated_at: new Date().toISOString() };
-      const res = cfg.id
-        ? await window.__supabase.from('reportes_email_config').update(patch).eq('id', cfg.id)
-        : await window.__supabase.from('reportes_email_config').insert(patch);
-      if (res.error) throw res.error;
-      showToast('Configuración de email guardada', 'green');
+      for (const t of TIPOS_EMAIL) {
+        const c = cfgs[t.key];
+        const destinatarios = (dest[t.key] || '').split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+        const patch = {
+          tipo: t.key, activo: !!c.activo, hora_envio: c.hora_envio || '18:00',
+          dia_semana: Number(c.dia_semana) || 1, dia_mes: Math.min(28, Math.max(1, Number(c.dia_mes) || 1)),
+          frecuencia: c.frecuencia || (t.key === 'diario' ? 'diario' : t.key), destinatarios,
+          updated_at: new Date().toISOString(),
+        };
+        const res = c.id
+          ? await window.__supabase.from('reportes_email_config').update(patch).eq('id', c.id)
+          : await window.__supabase.from('reportes_email_config').insert(patch);
+        if (res.error) throw res.error;
+      }
+      showToast('Reportes por email configurados ✓', 'green');
       onClose();
     } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
     finally { setBusy(false); }
   };
   if (!Modal) return null;
-  if (!cfg) return <Modal title="Reporte por email" icon="chart" onClose={onClose}><div style={{ padding: 20, color: 'var(--tm)' }}>Cargando…</div></Modal>;
+  if (!cfgs) return <Modal title="Reportes por email" icon="chart" onClose={onClose}><div style={{ padding: 20, color: 'var(--tm)' }}>Cargando…</div></Modal>;
+  const t = TIPOS_EMAIL.find(x => x.key === tab);
+  const c = cfgs[tab];
   return (
-    <Modal title="Reporte diario por email" icon="chart" onClose={onClose}>
-      <div style={{ background: 'rgba(52,152,219,0.08)', border: '1px solid rgba(52,152,219,0.25)', borderRadius: 6, padding: '9px 12px', fontSize: 11.5, color: 'var(--ts)', marginBottom: 14 }}>
-        Se envía automáticamente por n8n a las <strong>18:00 (hora Lima)</strong> un resumen con los movimientos del día por obra y la bancarización pendiente. El PDF completo sigue siendo descarga manual desde acá.
+    <Modal title="Reportes por email" icon="chart" onClose={onClose}>
+      <div style={{ background: 'rgba(52,152,219,0.08)', border: '1px solid rgba(52,152,219,0.25)', borderRadius: 6, padding: '9px 12px', fontSize: 11.5, color: 'var(--ts)', marginBottom: 12 }}>
+        Tres reportes independientes, cada uno con su horario y sus destinatarios (hora de Perú).
+        El sistema revisa cada hora qué toca enviar — los cambios rigen desde la próxima hora.
       </div>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
+        {TIPOS_EMAIL.map(x => (
+          <button key={x.key} className={`btn btn-sm ${tab === x.key ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab(x.key)}>
+            {x.label}{cfgs[x.key]?.activo ? ' ●' : ''}
+          </button>
+        ))}
+      </div>
+      <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 10 }}>{t.desc}</div>
       <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
-        <input type="checkbox" id="ec-activo" checked={!!cfg.activo} onChange={e => setCfg({ ...cfg, activo: e.target.checked })} />
-        <label htmlFor="ec-activo" style={{ fontSize: 13, fontWeight: 600, color: 'var(--tp)' }}>Envío automático activo</label>
+        <input type="checkbox" id={`ec-activo-${tab}`} checked={!!c.activo} onChange={e => upd(tab, { activo: e.target.checked })} />
+        <label htmlFor={`ec-activo-${tab}`} style={{ fontSize: 13, fontWeight: 600, color: 'var(--tp)' }}>Envío automático activo</label>
+        {c.ultimo_envio && <span style={{ fontSize: 10.5, color: 'var(--tm)' }}>· último envío: {String(c.ultimo_envio).slice(0, 10)}</span>}
       </div>
       <div className="g2">
         <div>
-          <label className="flabel">Frecuencia</label>
-          <select className="fi" value={cfg.frecuencia} onChange={e => setCfg({ ...cfg, frecuencia: e.target.value })}>
-            <option value="diario">Todos los días</option>
-            <option value="cada_3_dias">Cada 3 días</option>
-            <option value="semanal">Semanal</option>
+          <label className="flabel">Hora de envío (Perú)</label>
+          <select className="fi" value={(c.hora_envio || '18:00').slice(0, 2) + ':00'} onChange={e => upd(tab, { hora_envio: e.target.value })}>
+            {HORAS.map(h => <option key={h} value={h}>{h}</option>)}
           </select>
         </div>
-        {cfg.frecuencia === 'semanal' && (
+        {tab === 'diario' && (
+          <div>
+            <label className="flabel">Frecuencia</label>
+            <select className="fi" value={c.frecuencia === 'cada_3_dias' ? 'cada_3_dias' : 'diario'} onChange={e => upd(tab, { frecuencia: e.target.value })}>
+              <option value="diario">Todos los días</option>
+              <option value="cada_3_dias">Cada 3 días</option>
+            </select>
+          </div>
+        )}
+        {tab === 'semanal' && (
           <div>
             <label className="flabel">Día de la semana</label>
-            <select className="fi" value={String(cfg.dia_semana || 1)} onChange={e => setCfg({ ...cfg, dia_semana: e.target.value })}>
+            <select className="fi" value={String(c.dia_semana || 1)} onChange={e => upd(tab, { dia_semana: e.target.value })}>
               {DIAS_SEMANA.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
             </select>
           </div>
         )}
+        {tab === 'mensual' && (
+          <div>
+            <label className="flabel">Día del mes (1-28)</label>
+            <input className="fi" type="number" min="1" max="28" value={c.dia_mes || 1} onChange={e => upd(tab, { dia_mes: e.target.value })} />
+          </div>
+        )}
         <div style={{ gridColumn: '1/-1' }}>
           <label className="flabel">Correos que reciben <span style={{ color: 'var(--tm)', fontWeight: 400 }}>(uno por línea)</span></label>
-          <textarea className="fi" rows={4} value={destText} onChange={e => setDestText(e.target.value)} placeholder={'admin@empresa.com\ngerencia@empresa.com'} />
+          <textarea className="fi" rows={4} value={dest[tab] || ''} onChange={e => setDest(prev => ({ ...prev, [tab]: e.target.value }))} placeholder={'admin@empresa.com\ngerencia@empresa.com'} />
         </div>
       </div>
       <div className="modal-actions">
         <button className="btn btn-ghost" disabled={busy} onClick={onClose}>Cancelar</button>
-        <button className="btn btn-amber" disabled={busy} onClick={guardar}><JxIcon name="check" size={13} />{busy ? 'Guardando…' : 'Guardar'}</button>
+        <button className="btn btn-amber" disabled={busy} onClick={guardar}><JxIcon name="check" size={13} />{busy ? 'Guardando…' : 'Guardar los 3 reportes'}</button>
       </div>
     </Modal>
   );

@@ -1,0 +1,49 @@
+# ═══════════════════════════════════════════════════════════════════
+# JARVEX — Reportes por email programables (diario / semanal / mensual)
+#
+# Corre CADA HORA. El script decide qué reportes tocan según la config de la
+# app (Reportes → Envío por email: hora Lima, día de semana/mes, on/off) y
+# deja el HTML listo en reportes_email_outbox — n8n toma lo pendiente y lo
+# envía por Gmail. Con catch-up: si una corrida se salta, el reporte sale a
+# la hora siguiente del mismo día (nunca duplica: máx. 1 por día por tipo).
+#
+# Para probar a mano: tab Actions → "Reportes por email" → Run workflow
+# (opcionalmente con force_tipo=diario para generar YA sin mirar la hora).
+#
+# Secrets (los mismos del backup):
+#   - VITE_SUPABASE_URL
+#   - SUPABASE_SERVICE_ROLE_KEY
+# ═══════════════════════════════════════════════════════════════════
+name: Reportes por email
+
+on:
+  schedule:
+    # Cada hora a los :07 (UTC — el script convierte a hora Lima).
+    - cron: '7 * * * *'
+  workflow_dispatch:
+    inputs:
+      force_tipo:
+        description: 'Forzar un tipo YA (diario | semanal | mensual) — para pruebas'
+        required: false
+        default: ''
+
+jobs:
+  reportes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Generar reportes que tocan esta hora
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          FORCE_TIPO: ${{ github.event.inputs.force_tipo }}
+        run: node scripts/reporte-email/build.mjs
