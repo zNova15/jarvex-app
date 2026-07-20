@@ -990,10 +990,12 @@ const PERM_MATRIX = {
   // CERO dinero (igual que el Residente).
   prevencionista: PERM_MATRIX_MODULES.map(m => {
     if (m === 'Usuarios/Config') return 'x';
-    if (['Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones',
+    if (['Charlas Seguridad','IPERC','Inspecciones SSOMA','Capacitaciones',
          'Incidencias','Evidencias','Insumos de Emergencia','Reporte Especialidad',
          'Personal','Solicitudes Cambio'].includes(m)) return 'w';
-    if (['Obras','Asistencia','Activos Pesados','Mantenimiento','Subcontratistas',
+    // EPP en LECTURA (pedido 20-jul): las entradas/salidas y entregas de EPP
+    // las registra la almacenera; la ing. de seguridad consulta y cuadra.
+    if (['EPP','Obras','Asistencia','Activos Pesados','Mantenimiento','Subcontratistas',
          'Subcontratos','Reportes'].includes(m)) return 'r';
     return 'x';
   }),
@@ -1257,6 +1259,23 @@ const __RESIDENTE_ITEMS = [
   'reportes', 'kpis-obra', 'cumplimiento-cronograma', 'alertas', 'busqueda',
   'solicitudes', 'configuracion',
 ];
+// Ing. de Seguridad (SSOMA): menú acotado a SU área (pedido 20-jul-2026). Sin
+// Gestión de Obra (Obras/Incidencias/maquinaria) y sin bloque de Almacén — lo
+// de EPP le queda en su bloque SSOMA en modo CONSULTA (las entradas/salidas y
+// entregas las registra la almacenera; ella cuadra con ella). Sin Frentes
+// (partidas no son su área). Personal sí: crea obreros directos o de
+// subcontrato y puede SOLICITAR subcontratos nuevos.
+const __SEGURIDAD_ITEMS = [
+  // SSOMA (su especialidad)
+  'reporte-especialidad', 'charlas-plan', 'sctr-personal', 'inducciones', 'charlas-seguridad',
+  'iperc', 'inspecciones-seguridad', 'capacitaciones',
+  // EPP e insumos: CONSULTA para cuadrar con almacén
+  'epps-inventario', 'epp', 'insumos-persona', 'insumos-emergencia',
+  // Personal y subcontratos
+  'personal', 'asistencia', 'subcontratistas', 'subcontratos',
+  // Utilitarios
+  'evidencias', 'plantillas', 'dashboard', 'busqueda', 'solicitudes', 'configuracion',
+];
 window.__canSeeSidebarItem = function(rol, itemId) {
   // El INICIO (launcher de 2 planos) es seguro para todos los roles — no muestra
   // datos, solo deriva a las secciones que cada rol sí puede ver.
@@ -1276,6 +1295,8 @@ window.__canSeeSidebarItem = function(rol, itemId) {
   if (rol === 'ayudante_contador') return __AYUDANTE_CONTADOR_ITEMS.includes(itemId);
   // El Residente de Obra ve EXCLUSIVAMENTE su menú técnico (pedido 20-jul).
   if (rol === 'ingeniero_residente') return __RESIDENTE_ITEMS.includes(itemId);
+  // La Ing. de Seguridad ve EXCLUSIVAMENTE su área SSOMA + personal (pedido 20-jul).
+  if (rol === 'prevencionista') return __SEGURIDAD_ITEMS.includes(itemId);
   // La bandeja de aprobaciones de reporte de frente ajeno + rendimiento: admin/gerente.
   if (itemId === 'aprobaciones-reporte') return rol === 'admin' || rol === 'gerente';
   if (itemId === 'rendimiento-ingenieros') return rol === 'admin' || rol === 'gerente';

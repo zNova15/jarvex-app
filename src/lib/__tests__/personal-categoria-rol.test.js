@@ -9,10 +9,12 @@ describe('alcance de Personal por rol (pedido 20-jul)', () => {
     expect(categoriasParaRol('prevencionista')).toEqual(['obrero', 'profesionales', 'subcontratos']);
     expect(categoriasParaRol('almacenero')).toEqual(['obrero', 'profesionales', 'subcontratos']);
   });
-  it('cargos ofrecidos al crear: residente solo cargos obreros', () => {
+  it('cargos ofrecidos al crear bajo scope: SOLO obreros para todos (20-jul)', () => {
     expect(cargosParaRol('ingeniero_residente')).toEqual(CARGOS_OBRERO_CANONICOS);
-    expect(cargosParaRol('almacenero')).toEqual(CARGOS_GESTIONABLES_CANONICOS);
+    expect(cargosParaRol('almacenero')).toEqual(CARGOS_OBRERO_CANONICOS);
+    expect(cargosParaRol('prevencionista')).toEqual(CARGOS_OBRERO_CANONICOS);
     expect(CARGOS_OBRERO_CANONICOS).not.toContain('Ingeniero');
+    expect(CARGOS_GESTIONABLES_CANONICOS).toContain('Ingeniero'); // el admin sí los usa
   });
   it('el residente NO alcanza a un profesional pero sí a un obrero y a un subcontratado', () => {
     const cats = categoriasParaRol('ingeniero_residente');

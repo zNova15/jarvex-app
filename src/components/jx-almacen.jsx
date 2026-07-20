@@ -4884,6 +4884,24 @@ function PersonalPage({ showToast }) {
   const catsScope = uM(() => categoriasParaRol(myRol), [myRol]);
   const superAdminP = !!appMode.superAdmin;
   const [fusionOpen, setFusionOpen] = uS(false);
+  // Solicitar un SUBCONTRATO nuevo (pedido 20-jul): seguridad/almacenera piden,
+  // el admin lo aprueba y crea (y otro con permisos asigna partidas/ingeniero);
+  // después ellas ya pueden vincular personal a ese subcontrato.
+  const [subSol, setSubSol] = uS(null); // null | { nombre, alcance, motivo }
+  const enviarSolicitudSub = async () => {
+    if (!subSol?.nombre?.trim()) { showToast('Poné la razón social del subcontratista', 'red'); return; }
+    if (!subSol?.motivo || subSol.motivo.trim().length < 10) { showToast('Contá el motivo (mínimo 10 caracteres)', 'red'); return; }
+    try {
+      await window.__changeRequests?.create({
+        table: 'subcontratos', recordId: null, recordLabel: subSol.nombre.trim(),
+        proposedChanges: { __nuevo_subcontrato: { old: null, new: `${subSol.nombre.trim()}${subSol.alcance?.trim() ? ' — ' + subSol.alcance.trim() : ''}` } },
+        reason: subSol.motivo.trim(),
+      });
+      try { await window.__logAudit?.({ action: 'insert', table: 'change_requests', recordId: null, reason: `Solicitud de subcontrato nuevo: ${subSol.nombre.trim()}` }); } catch {}
+      showToast('Solicitud enviada — el admin la verá en "Solicitudes" y creará el subcontrato', 'green');
+      setSubSol(null);
+    } catch (e) { showToast('No se pudo enviar: ' + (e.message || e), 'red'); }
+  };
   // Verificación masiva de DNIs del roster contra RENIEC (pacing 30/min).
   const [dniCheck, setDniCheck] = uS(null); // null | { running, current, total, resultados: Map(pid→{estado,reniec,mensaje}) }
   const dniAbort = uR({ stop: false }).current; // ref estable: el loop y "Pausar" comparten SIEMPRE el mismo objeto
@@ -5410,6 +5428,12 @@ function PersonalPage({ showToast }) {
               <JxIcon name="search" size={13}/>Verificar DNIs{dniCheck?.running ? ` ${dniCheck.current}/${dniCheck.total}` : ''}
             </button>
           )}
+          {canWrite && scopeObrero && (
+            <button className="btn btn-ghost btn-sm" title="Pedile al admin crear un subcontrato nuevo — cuando lo cree vas a poder vincularle personal"
+              onClick={()=>setSubSol({ nombre:'', alcance:'', motivo:'' })}>
+              <JxIcon name="plus" size={13}/>Solicitar subcontrato
+            </button>
+          )}
           {canWrite ? (
             <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setModal('nuevo');}}><JxIcon name="plus" size={13}/>Nuevo Trabajador</button>
           ) : (
@@ -5626,6 +5650,27 @@ function PersonalPage({ showToast }) {
         <FusionPersonasModal personal={personal} showToast={showToast}
           onClose={()=>setFusionOpen(false)} onDone={()=>{ /* el hook se refresca solo vía jx_data_changed */ }}/>
       )}
+      {subSol && (
+        <div style={{ position:'fixed', inset:0, zIndex:400, background:'rgba(0,0,0,0.55)', display:'flex', alignItems:'center', justifyContent:'center' }} onClick={()=>setSubSol(null)}>
+          <div className="card card-p" style={{ width:'min(480px, 92vw)' }} onClick={e=>e.stopPropagation()}>
+            <div style={{ fontSize:15, fontWeight:800, color:'var(--tp)', marginBottom:6 }}>Solicitar nuevo subcontrato</div>
+            <div style={{ fontSize:11.5, color:'var(--tm)', marginBottom:12 }}>
+              El admin ve la solicitud en <strong>Solicitudes</strong>, crea el subcontrato y le asigna partidas e ingeniero.
+              Cuando esté creado vas a poder vincularle personal desde "Nuevo Trabajador".
+            </div>
+            <label className="flabel">Subcontratista (razón social) *</label>
+            <input className="fi" value={subSol.nombre} onChange={e=>setSubSol({ ...subSol, nombre: e.target.value })} placeholder="Ej: Subcontrato JR S.A.C."/>
+            <label className="flabel" style={{ marginTop:8 }}>Alcance / trabajos que haría</label>
+            <textarea className="fi" rows={2} value={subSol.alcance} onChange={e=>setSubSol({ ...subSol, alcance: e.target.value })} placeholder="Ej: excavación de zanjas del sector Cashaloma"/>
+            <label className="flabel" style={{ marginTop:8 }}>Motivo *</label>
+            <textarea className="fi" rows={2} value={subSol.motivo} onChange={e=>setSubSol({ ...subSol, motivo: e.target.value })} placeholder="Por qué se necesita este subcontrato (mín. 10 caracteres)"/>
+            <div className="modal-actions" style={{ marginTop:12 }}>
+              <button className="btn btn-ghost" onClick={()=>setSubSol(null)}>Cancelar</button>
+              <button className="btn btn-amber" onClick={enviarSolicitudSub}><JxIcon name="check" size={13}/> Enviar solicitud</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {(modal === 'nuevo' || modal === 'editar') && <Modal title={editingId ? 'Editar Trabajador' : 'Nuevo Trabajador'} icon="user" onClose={()=>{setModal(null); setEditingId(null); setForm({});}}>
         <div className="g2">
@@ -5690,9 +5735,12 @@ function PersonalPage({ showToast }) {
           </div>
           <div><label className="flabel">Categoría</label>
             <select className="fi" value={form.categoria || ''} onChange={e=>setForm({...form, categoria:e.target.value})}
-              title="Se deriva del cargo/vínculo. Fijala a mano solo si querés forzar otra.">
+              disabled={scopeObrero}
+              title={scopeObrero ? 'La categoría se deriva sola del cargo/subcontratista — el override manual es del admin.' : 'Se deriva del cargo/vínculo. Fijala a mano solo si querés forzar otra.'}>
               <option value="">Automática (según cargo / subcontrato)</option>
-              {CATEGORIAS.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+              {scopeObrero
+                ? (form.categoria && <option value={form.categoria}>{CATEGORIA_LABEL[form.categoria]}</option>)
+                : CATEGORIAS.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
             </select>
             {(() => { const der = categoriaDe({ cargo: form.cargo, subcontratista_id: form.subcontratista_id }, subsById).categoria; return (
               <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:3 }}>

@@ -87,7 +87,10 @@ export function categoriasParaRol(rol) {
   if (rol === 'ingeniero_residente') return ['obrero', 'subcontratos'];
   return CATEGORIAS_GESTIONABLES;
 }
-/** Cargos ofrecidos al crear personal según el rol con scope. */
-export function cargosParaRol(rol) {
-  return rol === 'ingeniero_residente' ? CARGOS_OBRERO_CANONICOS : CARGOS_GESTIONABLES_CANONICOS;
+/** Cargos ofrecidos al CREAR personal bajo scope: SOLO obreros (pedido 20-jul —
+ *  "ingeniero residente" o similares NO son cargos que seguridad/almacenera/
+ *  residente puedan crear; los profesionales los registra el admin). El
+ *  personal de subcontrato se crea con estos mismos cargos + su subcontratista. */
+export function cargosParaRol(_rol) {
+  return CARGOS_OBRERO_CANONICOS;
 }

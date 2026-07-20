@@ -202,6 +202,7 @@ function EvidenciasPage({ showToast }) {
 
   const [q, setQ]         = uSE('');
   const [cat, setCat]     = uSE('todos');
+  const [tipoF, setTipoF] = uSE('todos');   // filtro fino por TIPO de evidencia (pedido 20-jul)
   const [modal, setModal] = uSE(false);
   const [plantillasOpen, setPlantillasOpen] = uSE(false);
   const [light, setLight] = uSE(null); // evidencia seleccionada
@@ -231,6 +232,14 @@ function EvidenciasPage({ showToast }) {
     return { total, pendientes };
   }, [visibles]);
 
+  // Tipos presentes en lo VISIBLE para este rol, con conteo (ordena la galería:
+  // p. ej. filtrar solo "Firma EPP" cuando hay decenas de firmas mezcladas).
+  const tiposDisponibles = uME(() => {
+    const m = new Map();
+    for (const e of visibles) m.set(e.tipo_evidencia, (m.get(e.tipo_evidencia) || 0) + 1);
+    return [...m.entries()].sort((a, b) => b[1] - a[1]);
+  }, [visibles]);
+
   const filtered = uME(() => {
     return visibles
       .slice()
@@ -238,11 +247,12 @@ function EvidenciasPage({ showToast }) {
       .filter(e => {
         const meta = TIPO_META[e.tipo_evidencia] || TIPO_META.documento_general;
         const matchCat = cat === 'todos' || meta.cat === cat;
+        const matchTipo = tipoF === 'todos' || e.tipo_evidencia === tipoF;
         const matchQ = !q || (e.nombre_archivo||'').toLowerCase().includes(q.toLowerCase())
                           || (e.observaciones||'').toLowerCase().includes(q.toLowerCase());
-        return matchCat && matchQ;
+        return matchCat && matchTipo && matchQ;
       });
-  }, [visibles, cat, q]);
+  }, [visibles, cat, tipoF, q]);
 
   if (!obraId) return <SinObraEmpty icon="image"/>;
   if (loading) {
@@ -280,6 +290,15 @@ function EvidenciasPage({ showToast }) {
             {c.lbl}
           </button>
         ))}
+        {/* Filtro FINO por tipo exacto (con conteo) — ordena galerías con
+            muchos archivos del mismo tipo (p. ej. decenas de firmas EPP). */}
+        <select className="fi" value={tipoF} onChange={e=>setTipoF(e.target.value)}
+          style={{ minWidth:170, maxWidth:240 }} title="Filtrar por el tipo exacto de evidencia">
+          <option value="todos">Tipo: todos</option>
+          {tiposDisponibles.map(([t, n]) => (
+            <option key={t} value={t}>{(TIPO_META[t]?.lbl || t)} ({n})</option>
+          ))}
+        </select>
       </div>
 
       <div style={{ marginBottom:16 }}>

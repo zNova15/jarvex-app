@@ -18,7 +18,7 @@ const ROL_GENERAL = {
   almacenero: 'Tu día a día vive en el grupo "Control de Almacén". Registrá cada entrada/salida el mismo día que ocurre — el candado cronológico rechaza salidas con fecha en la que no había stock.',
   ayudante_contador: 'Podés registrar y subir documentos contables. Lo ya registrado (bancarizaciones, estados de pago) no se cambia solo: usá el botón "Solicitar" y el admin o la Contadora Jefe lo aplican.',
   contador: 'Como Contadora Jefe ves y editás todo lo contable de todas las empresas y obras, incluida la bandeja "Sin clasificar" y las solicitudes de cambio de las asistentes.',
-  prevencionista: 'Tu foco: SSOMA (charlas, IPERC, EPP, inducciones, SCTR en modo consulta) y tu reporte diario de especialidad.',
+  prevencionista: 'Tu foco: SSOMA (charlas, IPERC, inducciones, inspecciones, SCTR en consulta) y tu reporte diario. Los EPP los ves en CONSULTA para cuadrar con la almacenera (ella registra entradas/salidas y entregas). En Personal creás obreros (directos o de subcontrato) y podés SOLICITAR subcontratos nuevos.',
   ing_ambiental: 'Tu foco: Gestión Ambiental y tu reporte diario de especialidad con evidencias.',
   ing_calidad: 'Tu foco: Gestión de Calidad (certificados vs expediente) y tu reporte diario de especialidad.',
   ing_social: 'Tu foco: Gestión Social (compromisos, quejas, padrón) y tu reporte diario de especialidad.',
@@ -92,6 +92,7 @@ const AYUDA = {
     como: [
       'Cada rol ve SOLO lo pertinente a su función; lo contable (facturas, guías, bancarizaciones) es exclusivo de contabilidad y admin.',
       'Lo que subís vos siempre lo ves, aunque sea de otro ámbito.',
+      'Ordená la galería con las pestañas de categoría y el selector "Tipo" (muestra cada tipo con su cantidad — útil cuando hay decenas de firmas EPP).',
       'Subí archivos con "Subir Archivo" eligiendo el tipo correcto — de eso depende quién puede verlo.',
     ],
     rol: {
@@ -221,8 +222,16 @@ const AYUDA = {
   'inducciones': { titulo: 'Inducciones', que: 'Registro de inducciones de seguridad del personal nuevo con su ficha firmada.', como: ['Subí la ficha de inducción firmada como evidencia de cada trabajador.'] },
   'charlas-seguridad': { titulo: 'Charlas de 5 minutos', que: 'El registro diario de charlas de seguridad con asistencia.', como: ['Registrá la charla del día con tema y asistentes.'] },
   'iperc': { titulo: 'IPERC', que: 'Matriz de identificación de peligros y evaluación de riesgos por actividad.', como: ['Mantené la matriz al día cuando cambien las actividades del frente.'] },
-  'epps-inventario': { titulo: 'EPPs (inventario)', que: 'El stock de equipos de protección personal.', como: ['Igual que materiales: el stock se mueve con entregas y reposiciones, no a mano.'] },
-  'epp': { titulo: 'Entregas de EPP', que: 'La entrega de EPPs al personal con firma digital del trabajador.', como: ['Registrá la entrega y capturá la FIRMA del trabajador — queda como evidencia (tipo "Firma EPP").'] },
+  'epps-inventario': {
+    titulo: 'EPPs (inventario)', que: 'El stock de equipos de protección personal.',
+    como: ['Igual que materiales: el stock se mueve con entregas y reposiciones, no a mano.'],
+    rol: { prevencionista: 'Lo ves en CONSULTA: las entradas y salidas las registra la almacenera — tu rol es verificar y cuadrar con ella.' },
+  },
+  'epp': {
+    titulo: 'Entregas de EPP', que: 'La entrega de EPPs al personal con firma digital del trabajador.',
+    como: ['Registrá la entrega y capturá la FIRMA del trabajador — queda como evidencia (tipo "Firma EPP").'],
+    rol: { prevencionista: 'Lo ves en CONSULTA: las entregas las registra la almacenera; vos verificás a quién se entregó y cuadrás con ella.' },
+  },
   'insumos-persona': { titulo: 'Insumos por Persona', que: 'Qué EPPs/insumos tiene asignados cada trabajador.', como: ['Consultalo antes de reponer: muestra la última entrega de cada ítem.'] },
   'inspecciones-seguridad': { titulo: 'Inspecciones', que: 'Inspecciones de seguridad programadas y sus hallazgos.', como: ['Registrá hallazgos con foto y hacé seguimiento hasta cerrarlos.'] },
   'capacitaciones': { titulo: 'Capacitaciones', que: 'Las capacitaciones del personal y su asistencia.', como: ['Registrá cada capacitación con sus asistentes y evidencia.'] },
@@ -236,8 +245,9 @@ const AYUDA = {
     titulo: 'Personal',
     que: 'El padrón del personal de la obra con su CATEGORÍA: Personal Obrero, Profesionales, Subcontratos (por subcontratista) y Otros.',
     como: [
-      'Filtrá por categoría con el selector; la categoría se deriva del cargo (editable).',
-      'Ing. de seguridad y almacenero gestionan Obrero + Profesionales + Subcontratos; el residente SOLO Obrero + Subcontratos. La categoría "Otros" la maneja solo el admin.',
+      'Filtrá por categoría con el selector; la categoría se deriva sola del cargo/subcontratista.',
+      'Los roles con scope (seguridad/almacenera/residente) crean SOLO personal obrero — directo (Peón/Oficial/Operario/Maestro/Capataz) o de subcontrato (eligiendo el subcontratista). Los profesionales y "Otros" los registra el admin.',
+      'Si el subcontrato aún no existe, usá "Solicitar subcontrato": el admin lo aprueba y lo crea, y después le vinculás el personal.',
       'Inactivá al personal que cesa (estado inactivo/retirado) — deja de ofrecerse en Pagos y demás módulos, pero conserva su historial.',
     ],
     rol: { ingeniero_residente: 'Ves y gestionás SOLO Personal Obrero y de Subcontratos — los profesionales y "Otros" están fuera de tu alcance.' },
