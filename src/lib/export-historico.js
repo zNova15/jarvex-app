@@ -423,7 +423,7 @@ export async function exportarFotosZip(obraId, obraNombre = 'obra', filtros = {}
     const e = evid[i];
     let blob = null;
     try {
-      if (e.sync_status === 'uploaded' && e.url_archivo) {
+      if ((e.sync_status === 'uploaded' || e.sync_status === 'synced') && e.url_archivo) {
         const path = pathFromUrl(e.url_archivo);
         if (path) {
           const { data } = await window.__supabase.storage.from('evidencias').createSignedUrl(path, 3600);

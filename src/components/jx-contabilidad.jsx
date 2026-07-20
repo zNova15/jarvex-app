@@ -807,13 +807,18 @@ function MovimientosContablesPage({ showToast }) {
             e.registro_relacionado_id
           )
           .toArray();
+        // Estado EFECTIVO de una evidencia: el SyncEngine estampa 'synced' al
+        // BAJAR registros creados en otros dispositivos — si además tiene URL,
+        // la constancia ESTÁ subida. Sin esta normalización, el dispositivo
+        // que NO la creó mostraba "⏳ Subiendo bancarización" eterno aunque el
+        // archivo estuviera en el server (bug reportado por Gabriel, 20-jul).
+        const estadoEv = (ev) => (ev.url_archivo && (ev.sync_status === 'uploaded' || ev.sync_status === 'synced')) ? 'uploaded' : ev.sync_status;
         // Por registro se muestra UNA evidencia: gana la ya SUBIDA ('uploaded')
         // sobre cualquier pendiente/fallida, y entre iguales la más nueva.
         // (Antes ganaba la más nueva a secas: un registro fantasma atascado en
-        // 'pending_upload' tapaba a la constancia ya subida → "⏳ Subiendo
-        // bancarización" eterno aunque el archivo SÍ estuviera en el server.)
+        // 'pending_upload' tapaba a la constancia ya subida.)
         const rankSync = (s) => s === 'uploaded' ? 0 : s === 'failed' ? 2 : 1;
-        evs.sort((a, b) => (rankSync(a.sync_status) - rankSync(b.sync_status)) || (b.created_at || '').localeCompare(a.created_at || ''));
+        evs.sort((a, b) => (rankSync(estadoEv(a)) - rankSync(estadoEv(b))) || (b.created_at || '').localeCompare(a.created_at || ''));
         const map = new Map();       // facturas / comprobantes
         const mapBanc = new Map();    // evidencias de bancarización (directas al mov)
         const mapDep = new Map();     // constancias de DEPÓSITOS multi-factura
@@ -831,7 +836,7 @@ function MovimientosContablesPage({ showToast }) {
               url: src.url,
               mime: ev.mime_type || 'application/pdf',
               nombre: ev.nombre_archivo || (esBanc ? 'bancarizacion' : 'comprobante'),
-              sync: ev.sync_status,   // para distinguir subido vs pendiente/falló
+              sync: estadoEv(ev),   // subido vs pendiente/falló ('synced' con URL = subido)
             });
           }
         }
@@ -1345,7 +1350,9 @@ function MovimientosContablesPage({ showToast }) {
     const _pagado = _partesMov.reduce((t, x) => t + (Number(x.monto) || 0), 0);
     const _pendiente = Math.max(0, (Number(bancTarget.amount) || 0) - _pagado);
     const montoAplicar = bancModo === 'exacto' ? _pendiente : Number(bancMonto);
-    if (bancModo === 'exacto' && !(_pendiente > TOL)) { showToast('Esta factura ya está cubierta al 100% por los pagos registrados', 'amber'); return; }
+    // Cubierta al 100% + "pago exacto" = botón CAMBIAR: se adjunta la nueva
+    // constancia SIN registrar otra parte (monto 0) en vez de bloquear.
+    const esSoloConstancia = bancModo === 'exacto' && !(_pendiente > TOL);
     if (bancModo === 'parcial' && !(montoAplicar > 0)) { showToast('Indicá el monto de ESTE pago (la factura se está pagando en partes)', 'red'); return; }
     if (montoAplicar > _pendiente + TOL) {
       showToast(`El pago excede lo pendiente de la factura: quedan ${fmtCur(_pendiente, bancTarget.currency)} por cubrir (de ${fmtCur(bancTarget.amount, bancTarget.currency)})`, 'red');
@@ -1398,6 +1405,7 @@ function MovimientosContablesPage({ showToast }) {
     {
       const _restan = Math.max(0, _pendiente - montoAplicar);
       const _queSube =
+        esSoloConstancia ? 'Vas a adjuntar una NUEVA constancia a esta factura (ya cubierta al 100%) — no se registra ningún monto adicional.' :
         esDepNuevo ? `Vas a registrar un VOUCHER de ${fmtCur(Number(bancTotalDep), bancTarget.currency)} y aplicarle ${fmtCur(montoAplicar, bancTarget.currency)} a esta factura.` :
         esDepExistente ? `Vas a aplicar ${fmtCur(montoAplicar, bancTarget.currency)} del voucher elegido a esta factura.` :
         bancModo === 'parcial' ? `Vas a subir la constancia n.º ${_partesMov.length + 1} de esta factura, por ${fmtCur(montoAplicar, bancTarget.currency)}.` :
@@ -1651,15 +1659,26 @@ function MovimientosContablesPage({ showToast }) {
                         {!m.obra_id && m.destino_contable === 'contabilidad_neta' && <div style={{ fontSize:10, color:'var(--tm)' }}>📄 Contabilidad Neta</div>}
                         {puedeVerBanc && m.currency === 'PEN' && Number(m.amount) > 2000 && (() => {
                           const evB = bancarizacionPorMov.get(m.id);
-                          const subirBtn = canWrite ? (
-                            <button className="btn btn-amber btn-xs" style={{ marginLeft:6, padding:'1px 6px', fontSize:9, verticalAlign:'middle' }} onClick={()=>openBanc(m)} title="Subir la bancarización sin entrar a editar">
-                              <JxIcon name="upload" size={9}/> Subir
-                            </button>
-                          ) : null;
                           // Suma de PARTES registradas (bancarización parcial y/o depósitos).
                           const _partes = partesPorMov.get(m.id) || [];
                           const _suma = _partes.reduce((t, x) => t + (Number(x.monto) || 0), 0);
                           const _total = Number(m.amount) || 0;
+                          const _completa = (evB && evB.sync === 'uploaded' && _partes.length === 0) || _suma >= _total - 0.01;
+                          // "Subir" cuando falta; "Cambiar" cuando ya está cubierta al
+                          // 100% (pedido 20-jul: subir otra constancia = reemplazo).
+                          const subirBtn = canWrite ? (
+                            <button className="btn btn-amber btn-xs" style={{ marginLeft:6, padding:'1px 6px', fontSize:9, verticalAlign:'middle' }} onClick={()=>openBanc(m)}
+                              title={_completa ? 'Adjuntar OTRA constancia (reemplazo) — no registra montos nuevos' : 'Subir la bancarización sin entrar a editar'}>
+                              <JxIcon name="upload" size={9}/> {_completa ? 'Cambiar' : 'Subir'}
+                            </button>
+                          ) : null;
+                          // Ver la constancia de bancarización (pedido 20-jul).
+                          const verBanc = (evB && evB.url) ? (
+                            <button className="btn btn-ghost btn-xs" style={{ marginLeft:4, padding:'0 4px', fontSize:9, verticalAlign:'middle', color:'var(--blue)' }}
+                              title="Ver la constancia de bancarización" onClick={()=>setEvidenciaModal(evB)}>
+                              <JxIcon name="eye" size={9}/> Ver
+                            </button>
+                          ) : null;
                           // Depósitos multi-factura que respaldan partes de este movimiento
                           // (la constancia vive en el depósito → botón para verla).
                           const _depsIds = [...new Set(_partes.filter(x => x.deposito_id && depositosById.get(x.deposito_id)).map(x => x.deposito_id))];
@@ -1678,16 +1697,14 @@ function MovimientosContablesPage({ showToast }) {
                           const _tagPartes = _partes.length > 0
                             ? <div style={{ fontSize:9.5, color: _suma >= _total - 0.01 ? 'var(--green)' : 'var(--amber)' }} title={_partes.map(x => fmtCur(x.monto, m.currency)).join(' + ')}>{_partes.length} parte(s): {fmtCur(_suma, m.currency)} de {fmtCur(_total, m.currency)}{_depsBtns}</div>
                             : null;
-                          if (!evB) {
-                            // Sin constancia propia pero cubierto por depósito(s) = bancarizado.
-                            if (movimientoBancarizado({ mov: m, tieneEvidenciaDirecta: false, partes: _partes, depositosById })) {
-                              return <div style={{ fontSize:10, color:'var(--green)' }}>✅ Bancarizado (depósito){subirBtn}{_tagPartes}</div>;
-                            }
-                            return <div style={{ fontSize:10, color:'var(--amber)' }} title="Monto > S/2000 sin evidencia de bancarización">⚠ Falta bancarización{subirBtn}{_tagPartes}</div>;
-                          }
-                          if (evB.sync === 'uploaded') return <div style={{ fontSize:10, color:'var(--green)' }}>✅ Bancarizado{_suma > 0 && _suma < _total - 0.01 ? <span style={{ color:'var(--amber)' }} title="Las partes registradas no completan el total"> (parcial)</span> : null}{subirBtn}{_tagPartes}</div>;
-                          if (evB.sync === 'failed') return <div style={{ fontSize:10, color:'var(--red)' }} title="La evidencia no se pudo subir (revisá que estés asignado a la obra con un rol que no sea solo lectura)">⚠ Bancarización no subió{subirBtn}</div>;
-                          return <div style={{ fontSize:10, color:'var(--tm)' }} title="Subiendo evidencia de bancarización…">⏳ Subiendo bancarización</div>;
+                          const _cubiertaPorPartes = movimientoBancarizado({ mov: m, tieneEvidenciaDirecta: false, partes: _partes, depositosById });
+                          if (evB && evB.sync === 'uploaded') return <div style={{ fontSize:10, color:'var(--green)' }}>✅ Bancarizado{_suma > 0 && _suma < _total - 0.01 ? <span style={{ color:'var(--amber)' }} title="Las partes registradas no completan el total"> (parcial)</span> : null}{verBanc}{subirBtn}{_tagPartes}</div>;
+                          {/* Cubierta por partes/depósitos = bancarizada — una evidencia
+                              directa vieja atascada NO debe tapar el estado bueno. */}
+                          if (_cubiertaPorPartes) return <div style={{ fontSize:10, color:'var(--green)' }}>✅ Bancarizado{_partes.some(x => x.deposito_id) ? ' (depósito)' : ''}{verBanc}{subirBtn}{_tagPartes}</div>;
+                          if (evB && evB.sync === 'failed') return <div style={{ fontSize:10, color:'var(--red)' }} title="La evidencia no se pudo subir (revisá que estés asignado a la obra con un rol que no sea solo lectura)">⚠ Bancarización no subió{subirBtn}</div>;
+                          if (evB) return <div style={{ fontSize:10, color:'var(--tm)' }} title="Subiendo evidencia de bancarización…">⏳ Subiendo bancarización{subirBtn}</div>;
+                          return <div style={{ fontSize:10, color:'var(--amber)' }} title="Monto > S/2000 sin evidencia de bancarización">⚠ Falta bancarización{subirBtn}{_tagPartes}</div>;
                         })()}
                         {/* ≤ S/2,000 (o moneda extranjera): evidencia de pago OPCIONAL —
                             no es exigencia de bancarización, pero pueden adjuntarla. */}

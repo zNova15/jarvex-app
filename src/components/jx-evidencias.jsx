@@ -69,6 +69,9 @@ function pathFromUrl(url) {
 
 const SYNC_BADGE = {
   uploaded:       { cls:'b-green',  lbl:'✓ Subido'    },
+  // 'synced' = registro bajado de otro dispositivo por el SyncEngine (que
+  // estampa ese valor al pullear) — con URL presente, el archivo está subido.
+  synced:         { cls:'b-green',  lbl:'✓ Subido'    },
   pending_upload: { cls:'b-amber',  lbl:'⏱ Pendiente' },
   failed:         { cls:'b-red',    lbl:'⚠ Falló'     },
 };
@@ -85,7 +88,7 @@ function Thumb({ ev, signedRef, blobUrlRef, onClick }) {
     async function load() {
       if (!isImg) return;
       try {
-        if (ev.sync_status === 'uploaded' && ev.url_archivo) {
+        if ((ev.sync_status === 'uploaded' || ev.sync_status === 'synced') && ev.url_archivo) {
           if (signedRef.current[ev.id]) {
             setSrc(signedRef.current[ev.id]);
             return;
@@ -517,7 +520,7 @@ function Lightbox({ ev, signedRef, blobUrlRef, onClose }) {
     let cancelled = false;
     async function load() {
       try {
-        if (ev.sync_status === 'uploaded' && ev.url_archivo) {
+        if ((ev.sync_status === 'uploaded' || ev.sync_status === 'synced') && ev.url_archivo) {
           if (signedRef.current[ev.id]) { setSrc(signedRef.current[ev.id]); return; }
           const path = pathFromUrl(ev.url_archivo);
           if (!path) return;
