@@ -19,6 +19,7 @@ import React from "react";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 import { MODOS_PAGO, MODO_PAGO_LABEL, METODOS_PARTE, METODO_PARTE_LABEL, ESTADOS_PAGO, calcularEstadoPago, validarParte, evidenciasRequeridas, checklistPago } from "../lib/pagos.js";
 import { etiquetaPersona } from "../lib/destino-mov.js";
+import { categoriaDe } from "../lib/personal-categoria.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -101,10 +102,22 @@ function PagosPage({ showToast }) {
     return m;
   }, [evidencias, partes]);
 
-  const personalActivo = uM(() => (personal || []).filter(p => !p.deleted_at && p.estado !== 'retirado' && p.estado !== 'inactivo'), [personal]);
-  const subsVivos = uM(() => (subcontratos || []).filter(s => !s.deleted_at && s.estado !== 'cancelado'), [subcontratos]);
   const pagosDePersona = uM(() => { const m = new Map(); for (const p of pagos) if (p.personal_id) { const a = m.get(p.personal_id) || []; a.push(p); m.set(p.personal_id, a); } return m; }, [pagos]);
   const pagosDeSub = uM(() => { const m = new Map(); for (const p of pagos) if (p.subcontrato_id) { const a = m.get(p.subcontrato_id) || []; a.push(p); m.set(p.subcontrato_id, a); } return m; }, [pagos]);
+
+  // Personal PAGABLE directo (pedido 20-jul): tiene que estar ACTIVO (almacén /
+  // ing. de seguridad van inactivando al que cesa) y NO pertenecer a un
+  // SUBCONTRATO — a esa gente no se le paga directo: se le paga al subcontrato
+  // (pestaña Subcontratos) y él le paga a su propia gente.
+  const noActivo = (p) => ['inactivo', 'retirado', 'suspendido'].includes(p.estado);
+  const esDeSubcontrato = (p) => categoriaDe(p) === 'subcontratos';
+  const personalActivo = uM(() => (personal || []).filter(p => !p.deleted_at && !noActivo(p) && !esDeSubcontrato(p)), [personal]);
+  const subsVivos = uM(() => (subcontratos || []).filter(s => !s.deleted_at && s.estado !== 'cancelado'), [subcontratos]);
+  // Base de seguimiento: el personal que YA tiene pagos no desaparece de la
+  // vista aunque esté inactivo o haya pasado a un subcontrato — su historial
+  // de recibos/planillas queda visible (solo consulta, sin botón Pagar).
+  const personalHistorial = uM(() => (personal || []).filter(p => !p.deleted_at && (noActivo(p) || esDeSubcontrato(p)) && (pagosDePersona.get(p.id) || []).some(x => x.estado !== 'anulado')), [personal, pagosDePersona]);
+  const nSubcontratoOcultos = uM(() => (personal || []).filter(p => !p.deleted_at && !noActivo(p) && esDeSubcontrato(p)).length, [personal]);
 
   // ── Escrituras (patrón manual Dexie, coherente con el RLS del server) ──
   const cambiarModoPago = async (persona, modo) => {
@@ -273,7 +286,7 @@ function PagosPage({ showToast }) {
         </div>
       </div>
 
-      {tab === 'personal' && (
+      {tab === 'personal' && (<>
         <div className="card" style={{ overflow: 'hidden' }}>
           <div style={{ overflowX: 'auto' }}>
             <table className="tbl">
@@ -309,6 +322,11 @@ function PagosPage({ showToast }) {
                           );
                         })}
                         {pgs.length > 3 && <span style={{ color: 'var(--tm)', fontSize: 10 }}>+{pgs.length - 3} más</span>}
+                        {pgs.length > 0 && (
+                          <div style={{ fontSize: 10, color: 'var(--ts)', fontWeight: 700, marginTop: 2 }}>
+                            Σ pagado: {fmtS(pgs.reduce((t, p) => t + calcularEstadoPago(p.monto_acordado, partesDe.get(p.id)).pagado, 0))}
+                          </div>
+                        )}
                       </td>
                       <td style={{ textAlign: 'right' }}>
                         {canGestionar && (
@@ -325,8 +343,55 @@ function PagosPage({ showToast }) {
               </tbody>
             </table>
           </div>
+          {nSubcontratoOcultos > 0 && (
+            <div style={{ padding: '9px 14px', borderTop: '1px solid var(--border)', fontSize: 11.5, color: 'var(--tm)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span>👷 {nSubcontratoOcultos} trabajador{nSubcontratoOcultos > 1 ? 'es' : ''} de SUBCONTRATOS no {nSubcontratoOcultos > 1 ? 'aparecen' : 'aparece'} acá: a esa gente le paga su subcontratista.</span>
+              <button className="btn btn-ghost btn-xs" onClick={() => setTab('subcontratos')}>Pagar al subcontrato →</button>
+            </div>
+          )}
         </div>
-      )}
+        {/* Base de seguimiento: personal inactivo o pasado a subcontrato que YA
+            tiene recibos/planillas registrados — solo consulta, sin "Pagar". */}
+        {personalHistorial.length > 0 && (
+          <div className="card" style={{ overflow: 'hidden', marginTop: 12 }}>
+            <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', fontSize: 11, fontWeight: 700, color: 'var(--tm)', letterSpacing: '.05em', textTransform: 'uppercase' }}>
+              Historial · personal inactivo o de subcontrato con pagos registrados
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <table className="tbl">
+                <tbody>
+                  {personalHistorial.map(per => {
+                    const pgs = (pagosDePersona.get(per.id) || []).filter(p => p.estado !== 'anulado');
+                    const total = pgs.reduce((t, p) => t + calcularEstadoPago(p.monto_acordado, partesDe.get(p.id)).pagado, 0);
+                    return (
+                      <tr key={per.id}>
+                        <td className="col-p" style={{ fontSize: 12.5 }}>
+                          {etiquetaPersona(per, subNombre)}
+                          <span className={`badge ${esDeSubcontrato(per) ? 'b-purple' : 'b-gray'}`} style={{ marginLeft: 6, fontSize: 9, textTransform: 'capitalize' }}>
+                            {esDeSubcontrato(per) ? 'Subcontrato' : (per.estado || 'inactivo')}
+                          </span>
+                        </td>
+                        <td style={{ fontSize: 11 }}>
+                          {pgs.map(p => {
+                            const st = calcularEstadoPago(p.monto_acordado, partesDe.get(p.id));
+                            const e = ESTADOS_PAGO[st.estado] || ESTADOS_PAGO.pendiente;
+                            return (
+                              <button key={p.id} className="btn btn-ghost btn-xs" style={{ marginRight: 4, marginBottom: 2 }} onClick={() => setDetalleId(p.id)}>
+                                {p.periodo || p.concepto || 'pago'} · {fmtS(st.pagado)}/{fmtS(p.monto_acordado)} <span className={`badge ${e.cls}`} style={{ fontSize: 8.5, marginLeft: 3 }}>{e.lbl}</span>
+                              </button>
+                            );
+                          })}
+                        </td>
+                        <td style={{ textAlign: 'right', fontSize: 11.5, fontWeight: 700, color: 'var(--ts)', whiteSpace: 'nowrap' }}>Σ {fmtS(total)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </>)}
 
       {tab === 'subcontratos' && (
         <div className="card" style={{ overflow: 'hidden' }}>

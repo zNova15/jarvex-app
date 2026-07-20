@@ -173,7 +173,8 @@ const AYUDA = {
     como: [
       'Elegí la persona (o subcontrato) y creá el compromiso de pago con su monto y modalidad (planilla / recibo por honorarios).',
       'Registrá cada transferencia como PARTE del pago, adjuntando su constancia y/o el recibo por honorarios.',
-      'El historial por persona queda como base de datos de todo lo pagado.',
+      'Solo aparece personal ACTIVO y que no sea de subcontratos: a la gente de un subcontrato le paga su subcontratista — el pago va al SUBCONTRATO en su pestaña.',
+      'El historial por persona (con Σ total pagado) queda como base de datos de todo lo pagado; el personal inactivado conserva su historial en la sección de abajo.',
     ],
     rol: { ayudante_contador: 'Podés registrar pagos y subir recibos por honorarios y constancias. Los recibos y constancias son material contable: solo contabilidad y admin los ven en Evidencias.' },
   },
