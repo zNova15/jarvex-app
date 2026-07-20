@@ -1,6 +1,7 @@
 import React from "react";
 import { trackPageView } from "./lib/posthog.js";
 import SyncDetailModal from "./components/SyncDetailModal.jsx";
+import BotonAyuda from "./components/jx-ayuda.jsx";
 import { planoDe, resolveLanding, areaDe } from "./lib/nav-planos.js";
 import { cargarObrasAsignadas } from "./lib/obras-asignadas.js";
 const { useState: uSA, useEffect: uEA, useCallback: uCA } = React;
@@ -467,6 +468,8 @@ function Header({ page, plano = 'obra', onInicio, onToggleSidebar, onLogout, pro
             )}
           </div>
         )}
+        {/* Ayuda contextual de la sección activa (personalizada por rol). */}
+        <BotonAyuda page={page} rol={profile?.rol}/>
         <div style={{ position:'relative' }}>
           <button className="btn btn-ghost btn-icon"
                   onClick={() => { setNotifOpen(o => !o); if (!notifOpen) notifs.markAllRead(); }}
