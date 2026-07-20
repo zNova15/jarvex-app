@@ -1323,8 +1323,39 @@ function MovimientosContablesPage({ showToast }) {
     const pend = Math.max(0, (Number(m.amount) || 0) - pagado);
     setBancTarget(m); setBancObra(m.obra_id || ''); setBancFile(null);
     setBancMetodo('transferencia'); setBancRef(''); setBancTotalDep(''); setBancDepId('');
-    setBancModo(partesPrev.length > 0 ? 'parcial' : 'exacto');
+    // Modo por defecto: 'exacto' salvo que haya un pago EN CURSO real (partes
+    // que aún NO cubren el total). Con la factura ya cubierta, abrir en
+    // "pago en partes" confundía a las asistentes (pedido 20-jul).
+    setBancModo(partesPrev.length > 0 && pend > TOL ? 'parcial' : 'exacto');
     setBancMonto(partesPrev.length > 0 ? '' : (pend > 0 ? pend.toFixed(2) : ''));
+  };
+
+  // Eliminar un PAGO registrado (solo admin / contadora jefe): permite corregir
+  // montos o rehacer la bancarización con OTRO tipo (p. ej. era voucher
+  // multi-factura y se registró como pago directo). Soft-delete → viaja al
+  // server como UPDATE con deleted_at; la cobertura de la factura y el saldo
+  // del voucher se recalculan solos (los loaders filtran deleted_at).
+  const eliminarParteBanc = async (p) => {
+    if (!(isAdmin || myRol === 'contador')) return;
+    const msj = `¿Eliminar el pago de ${fmtCur(p.monto, bancTarget?.currency)}${p.deposito_id ? ' (aplicado desde un voucher — su saldo se libera)' : ''}?\n\nDespués registrá la bancarización correcta (otro monto u otro tipo). Si la factura quedó "Pagado" por esta cobertura, ajustá el estado a mano si corresponde.`;
+    if (!window.confirm(msj)) return;
+    try {
+      const { SYNC_STATUS } = await import('../db/jarvex.db');
+      const now = new Date().toISOString();
+      const p0 = await window.__db.pagos_partes.get(p.id);
+      if (!p0) return;
+      if (!p0.last_synced_at) {
+        await window.__db.pagos_partes.delete(p.id); // nunca llegó al server
+      } else {
+        await window.__db.pagos_partes.update(p.id, { deleted_at: now, updated_at: now, sync_status: SYNC_STATUS.PENDING_UPDATE });
+      }
+      try { await window.__logAudit?.({ action:'delete', table:'pagos_partes', recordId: p.id, oldData:{ monto: p.monto, deposito_id: p.deposito_id || null }, reason:'Corrección de bancarización (pago eliminado por admin/contador)' }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'pagos_partes' } })); } catch {}
+      try { window.dispatchEvent(new Event('online')); } catch {}
+      showToast('Pago eliminado — ahora registrá la bancarización correcta', 'green');
+    } catch (e) {
+      showToast('No se pudo eliminar el pago: ' + (e.message || e), 'red');
+    }
   };
 
   const subirBancarizacion = async () => {
@@ -1664,14 +1695,23 @@ function MovimientosContablesPage({ showToast }) {
                           const _suma = _partes.reduce((t, x) => t + (Number(x.monto) || 0), 0);
                           const _total = Number(m.amount) || 0;
                           const _completa = (evB && evB.sync === 'uploaded' && _partes.length === 0) || _suma >= _total - 0.01;
-                          // "Subir" cuando falta; "Cambiar" cuando ya está cubierta al
-                          // 100% (pedido 20-jul: subir otra constancia = reemplazo).
-                          const subirBtn = canWrite ? (
+                          // "Subir" cuando falta. Cuando ya está cubierta al 100%,
+                          // "Cambiar" es SOLO de admin/contadora jefe; la asistente
+                          // pide el cambio con "Solicitar cambio" (pedido 20-jul).
+                          const _puedeCambiar = isAdmin || myRol === 'contador';
+                          const subirBtn = !canWrite ? null : (_completa && !_puedeCambiar) ? (
+                            esAyudante ? (
+                              <button className="btn btn-ghost btn-xs" style={{ marginLeft:6, padding:'1px 6px', fontSize:9, verticalAlign:'middle' }}
+                                title="La bancarización ya está registrada: el cambio lo aplica el admin o la Contadora Jefe" onClick={()=>setSolicitarTarget(m)}>
+                                <JxIcon name="edit" size={9}/> Solicitar cambio
+                              </button>
+                            ) : null
+                          ) : (
                             <button className="btn btn-amber btn-xs" style={{ marginLeft:6, padding:'1px 6px', fontSize:9, verticalAlign:'middle' }} onClick={()=>openBanc(m)}
-                              title={_completa ? 'Adjuntar OTRA constancia (reemplazo) — no registra montos nuevos' : 'Subir la bancarización sin entrar a editar'}>
+                              title={_completa ? 'Cambiar la constancia o corregir los pagos registrados (incluso el tipo)' : 'Subir la bancarización sin entrar a editar'}>
                               <JxIcon name="upload" size={9}/> {_completa ? 'Cambiar' : 'Subir'}
                             </button>
-                          ) : null;
+                          );
                           // Ver la constancia de bancarización (pedido 20-jul).
                           const verBanc = (evB && evB.url) ? (
                             <button className="btn btn-ghost btn-xs" style={{ marginLeft:4, padding:'0 4px', fontSize:9, verticalAlign:'middle', color:'var(--blue)' }}
@@ -1957,9 +1997,21 @@ function MovimientosContablesPage({ showToast }) {
                   {pendiente <= TOL && (
                     <div style={{ fontSize:10.5, color:'var(--green)', marginTop:3 }}>✅ Esta factura ya está cubierta al 100% por los pagos registrados.</div>
                   )}
-                  {partesMov.length > 0 && bancModo === 'parcial' && (
-                    <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:3 }}>
-                      {partesMov.map((x, i) => `Pago ${i + 1}: ${fmtCur(x.monto, bancTarget.currency)} (${x.fecha || 's/fecha'})`).join(' · ')}
+                  {/* Pagos ya registrados. Admin/contadora jefe pueden ELIMINAR
+                      cada uno (✕) para corregir montos o rehacer la bancarización
+                      con otro tipo (pedido 20-jul). */}
+                  {partesMov.length > 0 && (
+                    <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:4, display:'flex', flexWrap:'wrap', gap:5, alignItems:'center' }}>
+                      {partesMov.map((x, i) => (
+                        <span key={x.id || i} style={{ display:'inline-flex', alignItems:'center', gap:3, padding:'1px 7px', borderRadius:4, background:'rgba(255,255,255,0.06)' }}>
+                          Pago {i + 1}: {fmtCur(x.monto, bancTarget.currency)} ({x.fecha || 's/fecha'}){x.deposito_id ? ' 🏦' : ''}
+                          {(isAdmin || myRol === 'contador') && (
+                            <button type="button" className="btn btn-ghost btn-xs" style={{ padding:'0 3px', fontSize:10, color:'var(--red)', lineHeight:1 }}
+                              title="Eliminar este pago registrado (corregir monto o cambiar el tipo de bancarización)"
+                              onClick={() => eliminarParteBanc(x)}>✕</button>
+                          )}
+                        </span>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -2032,8 +2084,12 @@ function MovimientosContablesPage({ showToast }) {
                   <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                     {bancModo === 'exacto' && (
                       <div style={{ fontSize:12, alignSelf:'center' }}>
-                        Se registrará el pago por <strong style={{ color:'var(--blue)' }}>{fmtCur(pendiente, bancTarget.currency)}</strong>
-                        {sumaPartes > 0 ? ' (lo pendiente de la factura)' : ' (el total de la factura)'}.
+                        {pendiente > TOL ? (
+                          <>Se registrará el pago por <strong style={{ color:'var(--blue)' }}>{fmtCur(pendiente, bancTarget.currency)}</strong>
+                          {sumaPartes > 0 ? ' (lo pendiente de la factura)' : ' (el total de la factura)'}.</>
+                        ) : (
+                          <>Se <strong style={{ color:'var(--amber)' }}>cambiará la constancia</strong> — no se registra ningún monto nuevo (la factura ya está cubierta al 100%).</>
+                        )}
                       </div>
                     )}
                     {bancModo === 'parcial' && (
@@ -2095,7 +2151,7 @@ function MovimientosContablesPage({ showToast }) {
                 || (bancModo === 'dep_existente' && !bancDepId)
                 || (bancModo === 'parcial' && !(Number(bancMonto) > 0))}>
               <JxIcon name="check" size={13}/> {bancSaving ? 'Guardando…'
-                : bancModo === 'exacto' ? 'Registrar pago exacto'
+                : bancModo === 'exacto' ? (pendiente > TOL ? 'Registrar pago exacto' : 'Cambiar constancia')
                 : bancModo === 'parcial' ? 'Registrar pago parcial'
                 : bancModo === 'dep_nuevo' ? 'Registrar voucher y cubrir factura'
                 : 'Aplicar saldo del voucher'}
@@ -2146,6 +2202,10 @@ function MovimientosContablesPage({ showToast }) {
             // asistente describe en el motivo a dónde debe ir; el Contador Jefe
             // o Admin lo aplican desde Editar Movimiento → Vinculación.
             { key: '__vinculacion', label: 'Obra / Vinculación (destino)', descriptive: true },
+            // Cambios de BANCARIZACIÓN (constancia equivocada, tipo de pago mal
+            // elegido, montos de partes): la asistente describe QUÉ corregir y
+            // el admin o la Contadora Jefe lo aplican desde "Cambiar".
+            { key: '__bancarizacion', label: 'Bancarización (constancia / tipo / montos)', descriptive: true },
           ]}
           showToast={showToast}
           onClose={() => setSolicitarTarget(null)}
