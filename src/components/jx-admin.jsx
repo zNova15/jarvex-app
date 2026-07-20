@@ -1238,6 +1238,7 @@ const __AYUDANTE_CONTADOR_ITEMS = [
   'captura-magica', 'personal', 'empresas', 'proveedores', 'movimientos-contables', 'cuentas-bancarias',
   'conciliacion-insumos', // enlaza facturas ↔ insumos presupuestados (Vinculación 2)
   'solicitudes', // ve "Mis solicitudes" (sus pedidos de cambio); la aprobación es del contador/admin
+  'pagos', // pagos al personal (planilla / recibos por honorarios) — registra y sube constancias (pedido 20-jul)
 , 'guias-remision'];
 window.__canSeeSidebarItem = function(rol, itemId) {
   // El INICIO (launcher de 2 planos) es seguro para todos los roles — no muestra

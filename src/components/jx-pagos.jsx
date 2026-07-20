@@ -33,8 +33,10 @@ function PagosPage({ showToast }) {
   const rol = auth?.profile?.rol;
   const userId = auth?.profile?.id ?? 'offline';
   const isAdmin = rol === 'admin';
-  // Gestión (crear pagos, partes, cambiar modo de pago): contadora jefe + admin.
-  const canGestionar = isAdmin || rol === 'contador';
+  // Gestión (crear pagos, partes, subir recibos/constancias, cambiar modo de
+  // pago): contadora jefe + admin + AYUDANTE de contabilidad (pedido 20-jul:
+  // las asistentes registran pagos al personal y suben recibos por honorarios).
+  const canGestionar = isAdmin || rol === 'contador' || rol === 'ayudante_contador';
   const obraHook = window.__useObraActiva ? window.__useObraActiva() : { obraId: null };
   const obraId = obraHook?.obraId || null;
 

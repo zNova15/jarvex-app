@@ -643,8 +643,11 @@ const TABLA_TO_MODULO = {
   ordenes_intercompany: 'Intercompany',
   // Reporte "día sin avance": lo escribe el ingeniero (mismo módulo que avance_obra).
   reportes_dia: 'Avance',
-  // Pagos de personal/subcontratos: área contable (contadora jefe/admin).
-  pagos: 'Planillas',
+  // Pagos de personal/subcontratos: área contable. Con 'Planillas' el push del
+  // AYUDANTE quedaba bloqueado (tiene Planillas 'x' pero Movs. Contables 'w') —
+  // desde el 20-jul el ayudante también registra pagos y sube recibos, así que
+  // se gatea igual que pagos_partes. El RLS del server sigue siendo el guard real.
+  pagos: 'Movs. Contables',
   depositos_bancarizacion: 'Movs. Contables',
   // Las PARTES también las registra el ayudante al bancarizar facturas
   // (tiene Movs. Contables 'w' pero Planillas 'x' — con 'Planillas' su push

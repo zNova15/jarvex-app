@@ -167,7 +167,16 @@ const AYUDA = {
     },
   },
   'conciliacion-insumos': { titulo: 'Conciliación de Insumos', que: 'Cruce entre lo comprado (facturas) y lo ingresado al almacén.', como: ['Las diferencias señalan compras sin ingreso o ingresos sin factura.'] },
-  'pagos': { titulo: 'Pagos', que: 'Compromisos de pago (planillas, honorarios) y sus transferencias parciales con constancias.', como: ['Registrá cada parte de pago con su evidencia (tipo "Constancia de Pago").'] },
+  'pagos': {
+    titulo: 'Pagos',
+    que: 'Los pagos al PERSONAL y a subcontratos: sueldos de planilla, recibos por honorarios y sus transferencias parciales, con historial por cada persona.',
+    como: [
+      'Elegí la persona (o subcontrato) y creá el compromiso de pago con su monto y modalidad (planilla / recibo por honorarios).',
+      'Registrá cada transferencia como PARTE del pago, adjuntando su constancia y/o el recibo por honorarios.',
+      'El historial por persona queda como base de datos de todo lo pagado.',
+    ],
+    rol: { ayudante_contador: 'Podés registrar pagos y subir recibos por honorarios y constancias. Los recibos y constancias son material contable: solo contabilidad y admin los ven en Evidencias.' },
+  },
   'cont-dashboard': { titulo: 'Dashboard Contable', que: 'Resumen financiero del grupo: ingresos, egresos y pendientes por empresa.', como: ['Es la portada de contabilidad; cada indicador baja a su libro o listado.'] },
   'empresas': { titulo: 'Empresas', que: 'Las entidades legales del grupo (ejecutoras y proveedoras internas).', como: ['El RUC y la clase de cada empresa alimentan el cruce INTERCO y los filtros de emisor/receptor.'] },
   'guias-remision': { titulo: 'Guías de Remisión', que: 'Las guías de remisión electrónicas vinculadas a las facturas y al traslado de materiales.', como: ['Se cargan principalmente por Captura Mágica y quedan vinculadas a su factura.', 'Su PDF es material contable: solo contabilidad y admin lo ven en Evidencias.'] },
