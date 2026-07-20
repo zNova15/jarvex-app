@@ -110,7 +110,8 @@ function PagosPage({ showToast }) {
   // SUBCONTRATO — a esa gente no se le paga directo: se le paga al subcontrato
   // (pestaña Subcontratos) y él le paga a su propia gente.
   const noActivo = (p) => ['inactivo', 'retirado', 'suspendido'].includes(p.estado);
-  const esDeSubcontrato = (p) => categoriaDe(p) === 'subcontratos';
+  // OJO: categoriaDe devuelve { categoria, sub } — comparar el campo, no el objeto.
+  const esDeSubcontrato = (p) => categoriaDe(p).categoria === 'subcontratos';
   const personalActivo = uM(() => (personal || []).filter(p => !p.deleted_at && !noActivo(p) && !esDeSubcontrato(p)), [personal]);
   const subsVivos = uM(() => (subcontratos || []).filter(s => !s.deleted_at && s.estado !== 'cancelado'), [subcontratos]);
   // Base de seguimiento: el personal que YA tiene pagos no desaparece de la

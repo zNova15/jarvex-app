@@ -14,6 +14,7 @@
 // Notas generales por rol (se muestran en TODAS las secciones, arriba de la
 // nota específica si la hay).
 const ROL_GENERAL = {
+  ingeniero_residente: 'Tu vista es netamente TÉCNICA: partidas, avance, cronograma, incidencias, personal obrero y subcontratos. Almacén, dinero y los módulos de especialistas no aparecen en tu menú — el avance de los especialistas lo ves resumido en tu Panel.',
   almacenero: 'Tu día a día vive en el grupo "Control de Almacén". Registrá cada entrada/salida el mismo día que ocurre — el candado cronológico rechaza salidas con fecha en la que no había stock.',
   ayudante_contador: 'Podés registrar y subir documentos contables. Lo ya registrado (bancarizaciones, estados de pago) no se cambia solo: usá el botón "Solicitar" y el admin o la Contadora Jefe lo aplican.',
   contador: 'Como Contadora Jefe ves y editás todo lo contable de todas las empresas y obras, incluida la bandeja "Sin clasificar" y las solicitudes de cambio de las asistentes.',
@@ -130,7 +131,14 @@ const AYUDA = {
 
   // ── GESTIÓN DE OBRA ──────────────────────────────────────────────
   'dashboard-gestion': { titulo: 'Dashboard de Gestión', que: 'El tablero de la obra: avance físico, costos, incidencias y stock crítico.', como: ['Es la home del residente/supervisión: cada tarjeta baja al módulo respectivo.'] },
-  'panel-residente': { titulo: 'Panel del Residente', que: 'Vista operativa del residente: aprobaciones pendientes, reportes del día y alertas de su obra.', como: ['Aprobá o observá los reportes de tus ingenieros desde acá.'] },
+  'panel-residente': {
+    titulo: 'Panel del Residente',
+    que: 'La vista de control del residente: quién reportó hoy (ingenieros de frente y especialistas), el avance de los especialistas en los últimos 7 días y accesos a su gestión.',
+    como: [
+      'La tabla muestra por responsable si presentó su reporte de HOY.',
+      'La columna "Últimos 7 días" resume cuántos días reportó cada especialista (SSOMA, Ambiental, Calidad, Social) y su último reporte — seguimiento de solo lectura, sin entrar a sus módulos.',
+    ],
+  },
   'importar': { titulo: 'Importar Presupuesto', que: 'Carga del presupuesto de obra (partidas + insumos) desde Excel.', como: ['Importá la estructura una vez; después trabajá versiones en vez de re-importar.'] },
   'partidas': { titulo: 'Partidas', que: 'La estructura del presupuesto de obra: partidas, metrados y precios.', como: ['Asigná partidas a frentes para que los ingenieros reporten sobre ellas.'] },
   'control-consumo': { titulo: 'Control de Consumo', que: 'Consumo real de insumos contra lo presupuestado por partida.', como: ['Los desvíos fuertes ameritan revisar salidas mal vinculadas o mermas.'] },
@@ -229,8 +237,10 @@ const AYUDA = {
     que: 'El padrón del personal de la obra con su CATEGORÍA: Personal Obrero, Profesionales, Subcontratos (por subcontratista) y Otros.',
     como: [
       'Filtrá por categoría con el selector; la categoría se deriva del cargo (editable).',
-      'Ing. de seguridad, almacenero y residente pueden crear/activar personal de las 3 categorías gestionables — la categoría "Otros" la maneja solo el admin.',
+      'Ing. de seguridad y almacenero gestionan Obrero + Profesionales + Subcontratos; el residente SOLO Obrero + Subcontratos. La categoría "Otros" la maneja solo el admin.',
+      'Inactivá al personal que cesa (estado inactivo/retirado) — deja de ofrecerse en Pagos y demás módulos, pero conserva su historial.',
     ],
+    rol: { ingeniero_residente: 'Ves y gestionás SOLO Personal Obrero y de Subcontratos — los profesionales y "Otros" están fuera de tu alcance.' },
   },
   'frentes': { titulo: 'Frentes de Trabajo', que: 'Los frentes de la obra y qué personal/partidas tiene cada uno.', como: ['Asigná ingenieros y partidas a cada frente para ordenar la reportería.'] },
   'asistencia': { titulo: 'Asistencia', que: 'El control diario de asistencia del personal, con foto/lista.', como: ['Registrá la asistencia del día; la foto de la lista queda como evidencia.'] },

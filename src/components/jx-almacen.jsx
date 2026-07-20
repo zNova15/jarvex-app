@@ -12,7 +12,7 @@ import { validarSalidaCronologica, agruparCantidades } from "../lib/stock-cronol
 import { DesglosePopup, TraspasoStockModal, ubicacionAutoOrigen } from "./jx-stock-ubic.jsx";
 import { hoyLocal, horaLocal } from "../lib/fecha.js";
 import { rolScopeObrero } from "../lib/personal-scope.js";
-import { categoriaDe, esGestionableSeguridad, CATEGORIAS, CATEGORIA_LABEL, CATEGORIA_BADGE, CARGOS_GESTIONABLES_CANONICOS } from "../lib/personal-categoria.js";
+import { categoriaDe, esGestionableSeguridad, CATEGORIAS, CATEGORIA_LABEL, CATEGORIA_BADGE, CARGOS_GESTIONABLES_CANONICOS, categoriasParaRol, cargosParaRol } from "../lib/personal-categoria.js";
 import { EstadosModal } from "./jx-stock-estados.jsx";
 import { FusionPersonasModal } from "./jx-fusion-personas.jsx";
 import { getEstadosBulk, ESTADOS_COND, ESTADO_LABEL, aplicarDeltaEstado } from "../lib/stock-estados.js";
@@ -4879,6 +4879,9 @@ function PersonalPage({ showToast }) {
   // SCOPE OBRERO (Gabriel): ing. de seguridad, almacenera y residente gestionan
   // SOLO personal con cargo Peón/Oficial/Operario — no ven al resto del personal.
   const scopeObrero = !isAdmin && rolScopeObrero(myRol);
+  // Categorías que ESTE rol ve/gestiona bajo scope: seguridad/almacenera las 3
+  // gestionables; el RESIDENTE solo Obrero + Subcontratos (pedido 20-jul).
+  const catsScope = uM(() => categoriasParaRol(myRol), [myRol]);
   const superAdminP = !!appMode.superAdmin;
   const [fusionOpen, setFusionOpen] = uS(false);
   // Verificación masiva de DNIs del roster contra RENIEC (pacing 30/min).
@@ -5010,10 +5013,10 @@ function PersonalPage({ showToast }) {
   // de personal no-obrero a los roles con scope.
   const baseScoped = uM(() => {
     if (!personal) return [];
-    // Roles con scope (ing. seguridad / almacenera / residente) gestionan
-    // Obrero + Profesionales + Subcontratos — NO "Otros".
-    return scopeObrero ? personal.filter(p => esGestionableSeguridad(p, subsById)) : personal;
-  }, [personal, scopeObrero, subsById]);
+    // Roles con scope: ing. seguridad / almacenera gestionan Obrero +
+    // Profesionales + Subcontratos; el residente SOLO Obrero + Subcontratos.
+    return scopeObrero ? personal.filter(p => catsScope.includes(categoriaDe(p, subsById).categoria)) : personal;
+  }, [personal, scopeObrero, subsById, catsScope]);
 
   const filtered = uM(() => {
     if (!personal) return [];
@@ -5056,7 +5059,7 @@ function PersonalPage({ showToast }) {
   };
 
   const openEditPersonal = (p) => {
-    if (scopeObrero && !esGestionableSeguridad(p, subsById)) { showToast('Tu rol gestiona Obrero, Profesionales y Subcontratos — no la categoría "Otros".', 'red'); return; }
+    if (scopeObrero && !catsScope.includes(categoriaDe(p, subsById).categoria)) { showToast(`Tu rol gestiona: ${catsScope.map(c => CATEGORIA_LABEL[c]).join(', ')} — esta persona está fuera de tu alcance.`, 'red'); return; }
     setForm({
       nombres: p.nombres || '',
       apellidos: p.apellidos || '',
@@ -5121,7 +5124,7 @@ function PersonalPage({ showToast }) {
 
   const handleSubmit = async () => {
     // Scope: estos roles crean/editan Obrero + Profesionales + Subcontratos (no "Otros").
-    if (scopeObrero && !esGestionableSeguridad({ cargo: form.cargo, subcontratista_id: form.subcontratista_id, categoria: form.categoria }, subsById)) {
+    if (scopeObrero && !catsScope.includes(categoriaDe({ cargo: form.cargo, subcontratista_id: form.subcontratista_id, categoria: form.categoria }, subsById).categoria)) {
       showToast('Tu rol gestiona Obrero, Profesionales y Subcontratos — ese cargo cae en "Otros".', 'red');
       return;
     }
@@ -5350,7 +5353,7 @@ function PersonalPage({ showToast }) {
 
   // Aplicar el nombre de RENIEC a una persona (corrección sugerida).
   const aplicarNombreReniec = async (p, rn) => {
-    if (scopeObrero && !esGestionableSeguridad(p, subsById)) { showToast('Tu rol no gestiona personal de la categoría "Otros"', 'red'); return; }
+    if (scopeObrero && !catsScope.includes(categoriaDe(p, subsById).categoria)) { showToast(`Tu rol gestiona: ${catsScope.map(c => CATEGORIA_LABEL[c]).join(', ')} — esta persona está fuera de tu alcance.`, 'red'); return; }
     const nuevos = { nombres: titleCaseNombre(rn.nombres), apellidos: titleCaseNombre(rn.apellidos) };
     try {
       await updatePersonal(p.id, nuevos);
@@ -5392,7 +5395,7 @@ function PersonalPage({ showToast }) {
                 // alcanza con canWrite (rrhh / residente tienen Personal 'w'
                 // pero Cuentas Bancarias 'x').
                 const sinBancos = !(isAdmin || (window.__hasPerm?.(myRol, 'Cuentas Bancarias', 'r') ?? false));
-                const r = await exportarDataset('personal', obraId, obra?.nombre_obra || obra?.nombre || 'obra', { sinBancos, soloObreros: scopeObrero, scopeFiltro: (p) => esGestionableSeguridad(p, subsById) }, { porModo: true });
+                const r = await exportarDataset('personal', obraId, obra?.nombre_obra || obra?.nombre || 'obra', { sinBancos, soloObreros: scopeObrero, scopeFiltro: (p) => catsScope.includes(categoriaDe(p, subsById).categoria) }, { porModo: true });
                 showToast(`Exportado: ${r.filas} trabajadores → ${r.archivo}`, 'green');
               } catch (e) { showToast('Error al exportar: ' + (e.message || e), 'red'); }
             }}>
@@ -5679,11 +5682,11 @@ function PersonalPage({ showToast }) {
               setForm({...form, cargo:v});
             }}>
               <option value="">— Selecciona —</option>
-              {form.cargo && !(scopeObrero ? CARGOS_GESTIONABLES_CANONICOS : cargosDisponibles).includes(form.cargo) && <option value={form.cargo}>{form.cargo}</option>}
-              {(scopeObrero ? CARGOS_GESTIONABLES_CANONICOS : cargosDisponibles).map(c => <option key={c} value={c}>{c}</option>)}
+              {form.cargo && !(scopeObrero ? cargosParaRol(myRol) : cargosDisponibles).includes(form.cargo) && <option value={form.cargo}>{form.cargo}</option>}
+              {(scopeObrero ? cargosParaRol(myRol) : cargosDisponibles).map(c => <option key={c} value={c}>{c}</option>)}
               {!scopeObrero && <option value="__add__">+ Agregar cargo…</option>}
             </select>
-            {scopeObrero && <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:3 }}>Tu rol gestiona Obrero, Profesionales y Subcontratos (no "Otros").</div>}
+            {scopeObrero && <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:3 }}>Tu rol gestiona: {catsScope.map(c => CATEGORIA_LABEL[c]).join(', ')}.</div>}
           </div>
           <div><label className="flabel">Categoría</label>
             <select className="fi" value={form.categoria || ''} onChange={e=>setForm({...form, categoria:e.target.value})}

@@ -1240,6 +1240,23 @@ const __AYUDANTE_CONTADOR_ITEMS = [
   'solicitudes', // ve "Mis solicitudes" (sus pedidos de cambio); la aprobación es del contador/admin
   'pagos', // pagos al personal (planilla / recibos por honorarios) — registra y sube constancias (pedido 20-jul)
 , 'guias-remision'];
+// Residente de Obra: menú NETAMENTE TÉCNICO (pedido 20-jul-2026). Sin almacén,
+// sin bloques de especialistas (los ve resumidos en su Panel), sin pantallas
+// con dinero global (Dashboard general, Control de Consumo, Planificado vs
+// Real), sin Obras, sin maquinaria (la mira el almacenero) y sin
+// Empresas/Proveedores. En Personal solo ve Obreros + Subcontratos
+// (lib/personal-categoria: categoriasParaRol).
+const __RESIDENTE_ITEMS = [
+  // Gestión técnica de la obra
+  'panel-residente', 'partidas', 'insumos', 'cronograma', 'avance', 'incidencias',
+  // Logística (pedir insumos y seguir requisiciones)
+  'solicitud-residente', 'requisiciones',
+  // Personal y subcontratos
+  'personal', 'frentes', 'asistencia', 'subcontratistas', 'subcontratos',
+  // General técnico
+  'reportes', 'kpis-obra', 'cumplimiento-cronograma', 'alertas', 'busqueda',
+  'solicitudes', 'configuracion',
+];
 window.__canSeeSidebarItem = function(rol, itemId) {
   // El INICIO (launcher de 2 planos) es seguro para todos los roles — no muestra
   // datos, solo deriva a las secciones que cada rol sí puede ver.
@@ -1257,6 +1274,8 @@ window.__canSeeSidebarItem = function(rol, itemId) {
   if (rol === 'asistente_admin') return __ASISTENTE_ADMIN_ITEMS.includes(itemId);
   // El Ayudante de Contabilidad ve EXCLUSIVAMENTE su lista acotada.
   if (rol === 'ayudante_contador') return __AYUDANTE_CONTADOR_ITEMS.includes(itemId);
+  // El Residente de Obra ve EXCLUSIVAMENTE su menú técnico (pedido 20-jul).
+  if (rol === 'ingeniero_residente') return __RESIDENTE_ITEMS.includes(itemId);
   // La bandeja de aprobaciones de reporte de frente ajeno + rendimiento: admin/gerente.
   if (itemId === 'aprobaciones-reporte') return rol === 'admin' || rol === 'gerente';
   if (itemId === 'rendimiento-ingenieros') return rol === 'admin' || rol === 'gerente';

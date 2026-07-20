@@ -226,17 +226,21 @@ function ReporteEspecialidadPage({ showToast }) {
 function PanelResidentePage({ showToast }) {
   const obraId = useObraActivaLocal();
   const hoy = hoyLocal();
-  const [datos, setDatos] = uS({ avanceHoy: [], repDiaHoy: [], repEspHoy: [], especialistas: [], ingenieros: [], obreros: [] });
+  const [datos, setDatos] = uS({ avanceHoy: [], repDiaHoy: [], repEspHoy: [], repEsp7: [], especialistas: [], ingenieros: [], obreros: [] });
 
   uE(() => {
     if (!obraId) return;
     let cancel = false;
+    // Ventana de 7 días para el seguimiento de especialistas (pedido 20-jul:
+    // el residente ve de manera GENERAL cómo avanza cada profesional, sin
+    // entrar a sus módulos de reporte).
+    const hace6 = (() => { const d = new Date(hoy + 'T00:00:00'); d.setDate(d.getDate() - 6); return d.toISOString().slice(0, 10); })();
     const cargar = async () => {
       try {
-        const [avance, repDia, repEsp, profiles, personal] = await Promise.all([
+        const [avance, repDia, repEsp7, profiles, personal] = await Promise.all([
           window.__db.avance_obra.where('obra_id').equals(obraId).filter(r => !r.deleted_at && r.fecha === hoy).toArray().catch(() => []),
           window.__db.reportes_dia.where('obra_id').equals(obraId).filter(r => !r.deleted_at && r.fecha === hoy).toArray().catch(() => []),
-          window.__db.reportes_especialidad.where('obra_id').equals(obraId).filter(r => !r.deleted_at && r.fecha === hoy).toArray().catch(() => []),
+          window.__db.reportes_especialidad.where('obra_id').equals(obraId).filter(r => !r.deleted_at && r.fecha >= hace6 && r.fecha <= hoy).toArray().catch(() => []),
           window.__db.profiles.toArray().catch(() => []),
           window.__db.personal.where('obra_id').equals(obraId).filter(p => !p.deleted_at).toArray().catch(() => []),
         ]);
@@ -244,7 +248,7 @@ function PanelResidentePage({ showToast }) {
         const especialistas = profiles.filter(p => AREA_POR_ROL[p.rol] && p.activo !== false);
         const ingenieros = profiles.filter(p => p.rol === 'ingeniero' && p.activo !== false);
         const obreros = personal.filter(p => esObrero(p.cargo));
-        setDatos({ avanceHoy: avance, repDiaHoy: repDia, repEspHoy: repEsp, especialistas, ingenieros, obreros });
+        setDatos({ avanceHoy: avance, repDiaHoy: repDia, repEspHoy: repEsp7.filter(r => r.fecha === hoy), repEsp7, especialistas, ingenieros, obreros });
       } catch {}
     };
     cargar();
@@ -264,10 +268,23 @@ function PanelResidentePage({ showToast }) {
     for (const ing of datos.ingenieros) out.push({ nombre: nombreDe(ing), rolLbl: 'Ing. de frente', area: 'frente', reporto: repIng.has(ing.id) });
     const repEspPor = new Map();
     for (const r of datos.repEspHoy) repEspPor.set(r.responsable_id, r.area);
+    // Seguimiento 7 días por especialista: cuántos días reportó y cuándo fue
+    // el último (para ver de un vistazo cómo viene avanzando cada profesional).
+    const dias7Por = new Map(); const ultimaPor = new Map();
+    for (const r of (datos.repEsp7 || [])) {
+      if (!r.responsable_id) continue;
+      const s = dias7Por.get(r.responsable_id) || new Set(); s.add(r.fecha); dias7Por.set(r.responsable_id, s);
+      if (!ultimaPor.get(r.responsable_id) || r.fecha > ultimaPor.get(r.responsable_id)) ultimaPor.set(r.responsable_id, r.fecha);
+    }
     for (const esp of datos.especialistas) {
       const area = AREA_POR_ROL[esp.rol];
       const meta = AREA_META[area] || {};
-      out.push({ nombre: nombreDe(esp), rolLbl: meta.label || area, area, reporto: [...datos.repEspHoy].some(r => r.responsable_id === esp.id || r.area === area && r.responsable_id === esp.id) || repEspPor.has(esp.id) });
+      out.push({
+        nombre: nombreDe(esp), rolLbl: meta.label || area, area,
+        reporto: [...datos.repEspHoy].some(r => r.responsable_id === esp.id || r.area === area && r.responsable_id === esp.id) || repEspPor.has(esp.id),
+        dias7: dias7Por.get(esp.id)?.size || 0,
+        ultima: ultimaPor.get(esp.id) || null,
+      });
     }
     return out.sort((a, b) => Number(a.reporto) - Number(b.reporto) || a.nombre.localeCompare(b.nombre));
   }, [datos]);
@@ -301,23 +318,29 @@ function PanelResidentePage({ showToast }) {
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
         <button className="btn btn-ghost btn-sm" onClick={() => window.__navTo?.('frentes')}><JxIcon name="flag" size={12} /> Frentes y partidas</button>
         <button className="btn btn-ghost btn-sm" onClick={() => window.__navTo?.('personal')}><JxIcon name="users" size={12} /> Personal (crear obrero)</button>
-        <button className="btn btn-ghost btn-sm" onClick={() => window.__navTo?.('aprobaciones-reporte')}><JxIcon name="checkCircle" size={12} /> Aprobaciones</button>
-        <button className="btn btn-ghost btn-sm" onClick={() => window.__navTo?.('reporte-especialidad')}><JxIcon name="shield" size={12} /> Reportes de especialidad</button>
         <button className="btn btn-ghost btn-sm" onClick={() => window.__navTo?.('avance')}><JxIcon name="chart" size={12} /> Avance de obra</button>
       </div>
 
       <div className="card" style={{ overflow: 'hidden' }}>
         <div style={{ padding: '10px 14px', fontSize: 13, fontWeight: 700, color: 'var(--tp)', borderBottom: '1px solid var(--border)' }}>¿Quién reportó hoy?</div>
         <table className="tbl">
-          <thead><tr><th>Responsable</th><th>Rol / Área</th><th>Reporte de hoy</th></tr></thead>
+          <thead><tr><th>Responsable</th><th>Rol / Área</th><th>Reporte de hoy</th><th>Últimos 7 días</th></tr></thead>
           <tbody>
             {filas.length === 0 ? (
-              <tr><td colSpan={3} style={{ textAlign: 'center', padding: 22, color: 'var(--tm)' }}>No hay ingenieros ni especialistas registrados como usuarios.</td></tr>
+              <tr><td colSpan={4} style={{ textAlign: 'center', padding: 22, color: 'var(--tm)' }}>No hay ingenieros ni especialistas registrados como usuarios.</td></tr>
             ) : filas.map((f, i) => (
               <tr key={i}>
                 <td className="col-p">{f.nombre}</td>
                 <td style={{ fontSize: 12 }}>{f.rolLbl}</td>
                 <td>{f.reporto ? <span className="badge b-green">✓ Presentado</span> : <span className="badge b-red">Pendiente</span>}</td>
+                <td style={{ fontSize: 11.5 }}>
+                  {f.area === 'frente' ? <span style={{ color: 'var(--tm)' }}>—</span> : (
+                    <span title={f.ultima ? `Último reporte: ${f.ultima}` : 'Sin reportes en la semana'}>
+                      <span style={{ fontWeight: 700, color: f.dias7 >= 5 ? 'var(--green)' : f.dias7 >= 3 ? 'var(--amber)' : 'var(--red)' }}>{f.dias7}/7</span>
+                      <span style={{ color: 'var(--tm)' }}> días{f.ultima ? ` · últ: ${f.ultima.slice(5)}` : ''}</span>
+                    </span>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

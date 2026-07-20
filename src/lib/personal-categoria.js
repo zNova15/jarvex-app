@@ -77,3 +77,17 @@ export const CARGOS_GESTIONABLES_CANONICOS = [
   'Ingeniero', 'Ingeniero Residente', 'Ingeniero de Campo', 'Ingeniero Sanitario',
   'Ingeniero Ambiental', 'Ingeniero de Seguridad', 'Arquitecto', 'Topógrafo', 'Asistente de Ingeniería',
 ];
+export const CARGOS_OBRERO_CANONICOS = ['Peón', 'Oficial', 'Operario', 'Maestro de Obra', 'Capataz'];
+
+// ── Alcance por ROL (pedido 20-jul-2026) ────────────────────────────
+// El RESIDENTE es netamente técnico: en Personal ve y gestiona SOLO Personal
+// Obrero y Subcontratos (los Profesionales y "Otros" no son su alcance).
+// Ing. de seguridad y almacenera mantienen las 3 categorías gestionables.
+export function categoriasParaRol(rol) {
+  if (rol === 'ingeniero_residente') return ['obrero', 'subcontratos'];
+  return CATEGORIAS_GESTIONABLES;
+}
+/** Cargos ofrecidos al crear personal según el rol con scope. */
+export function cargosParaRol(rol) {
+  return rol === 'ingeniero_residente' ? CARGOS_OBRERO_CANONICOS : CARGOS_GESTIONABLES_CANONICOS;
+}
