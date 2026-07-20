@@ -1,4 +1,5 @@
 import React from "react";
+import { puedeVerEvidencia, TIPOS_CONTABLES as TIPOS_CONTABLES_LIB } from "../lib/evidencias-visibilidad.js";
 const { useState: uSE, useMemo: uME, useEffect: uEE, useRef: uRE, useCallback: uCB } = React;
 
 // ─── CONFIG ─────────────────────────────────────────────
@@ -10,8 +11,23 @@ const TIPO_META = {
   pago_evidencia:         { lbl:'Constancia de Pago',  cls:'b-orange', cat:'documentos', icon:'dollar' },
   guia_remision:          { lbl:'Guía de Remisión',  cls:'b-amber',  cat:'materiales',  icon:'truck'  },
   factura:                { lbl:'Factura',           cls:'b-orange', cat:'materiales',  icon:'file'   },
+  comprobante_captura:    { lbl:'Comprobante',       cls:'b-orange', cat:'documentos',  icon:'file'   },
+  bancarizacion:          { lbl:'Bancarización',     cls:'b-orange', cat:'documentos',  icon:'dollar' },
   pdf_formato_firmado:    { lbl:'Formato Firmado',   cls:'b-blue',   cat:'documentos',  icon:'clipboard' },
   foto_herramienta_danada:{ lbl:'Herr. Dañada',      cls:'b-red',    cat:'herramientas',icon:'tool'   },
+  foto_herramienta:       { lbl:'Foto Herramienta',  cls:'b-blue',   cat:'herramientas',icon:'tool'   },
+  foto_estado:            { lbl:'Estado de Herr.',   cls:'b-blue',   cat:'herramientas',icon:'tool'   },
+  foto_material:          { lbl:'Foto de Material',  cls:'b-green',  cat:'materiales',  icon:'camera' },
+  registro_diario_materiales: { lbl:'Registro Diario', cls:'b-blue', cat:'materiales',  icon:'clipboard' },
+  foto_epp:               { lbl:'Foto EPP',          cls:'b-amber',  cat:'documentos',  icon:'camera' },
+  firma_epp:              { lbl:'Firma EPP',         cls:'b-amber',  cat:'documentos',  icon:'clipboard' },
+  sctr:                   { lbl:'SCTR',              cls:'b-red',    cat:'documentos',  icon:'file'   },
+  ficha_induccion:        { lbl:'Ficha Inducción',   cls:'b-red',    cat:'documentos',  icon:'clipboard' },
+  foto_especialidad:      { lbl:'Reporte Especialidad', cls:'b-purple', cat:'documentos', icon:'camera' },
+  evidencia_ambiental:    { lbl:'Ambiental',         cls:'b-green',  cat:'documentos',  icon:'camera' },
+  certificado_calidad:    { lbl:'Cert. Calidad',     cls:'b-blue',   cat:'documentos',  icon:'file'   },
+  movimiento_maquinaria:  { lbl:'Maquinaria',        cls:'b-gray',   cat:'documentos',  icon:'camera' },
+  oc_firmada:             { lbl:'OC Firmada',        cls:'b-orange', cat:'documentos',  icon:'clipboard' },
   acta:                   { lbl:'Acta',              cls:'b-gray',   cat:'documentos',  icon:'file'   },
   documento_general:      { lbl:'Documento',         cls:'b-gray',   cat:'documentos',  icon:'file'   },
 };
@@ -137,12 +153,13 @@ function Thumb({ ev, signedRef, blobUrlRef, onClick }) {
 }
 
 // ─── EVIDENCIAS PAGE ────────────────────────────────────
-// Evidencias CONTABLES (facturas, comprobantes, bancarización): solo las ve
-// CONTABILIDAD (asistente 'ayudante_contador' + contadora jefe 'contador') y
-// el ADMIN, más quien las subió. La almacenera y el resto de la obra NO —
-// mismo criterio que el RLS del server (mig 136); acá se filtra también lo
-// que ya quedó cacheado en el IndexedDB local del dispositivo.
-const TIPOS_CONTABLES = new Set(['bancarizacion', 'comprobante_captura', 'factura', 'recibo_honorarios', 'pago_evidencia']);
+// Visibilidad por ROL (pedido 20-jul-2026): cada rol ve SOLO lo pertinente a
+// su función — el almacenero lo de almacén/EPP/asistencia, cada especialista
+// lo suyo, y lo CONTABLE (facturas, comprobantes, bancarización y AHORA
+// también guías de remisión) únicamente contabilidad + admin. La matriz vive
+// en lib/evidencias-visibilidad (espejo del RLS del server, migs 136 + 143);
+// acá se filtra también lo que ya quedó cacheado en el IndexedDB local.
+const TIPOS_CONTABLES = new Set(TIPOS_CONTABLES_LIB);
 
 function EvidenciasPage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
@@ -198,13 +215,12 @@ function EvidenciasPage({ showToast }) {
     blobUrlRef.current = {};
   }, []);
 
-  // Visibles según el rol: lo contable queda FUERA para quien no corresponde
-  // (antes de stats y de filtered, así ni el contador de totales lo delata).
+  // Visibles según el rol: cada rol ve solo lo de su función y lo contable
+  // queda FUERA para quien no corresponde (antes de stats y de filtered, así
+  // ni el contador de totales lo delata). El autor siempre ve lo suyo.
   const visibles = uME(() => evidencias.filter(e =>
-    !TIPOS_CONTABLES.has(e.tipo_evidencia)
-    || puedeVerContable
-    || (myId && (e.subido_por === myId || e.created_by === myId))
-  ), [evidencias, puedeVerContable, myId]);
+    puedeVerEvidencia({ rol: myRol, userId: myId, ev: e })
+  ), [evidencias, myRol, myId]);
 
   const stats = uME(() => {
     const total = visibles.length;

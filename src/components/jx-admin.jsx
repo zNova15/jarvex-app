@@ -239,7 +239,28 @@ function UsuariosPage({ showToast }) {
       // Asignar obras al usuario recién creado. Si falla esta parte, igual
       // el user ya existe — avisamos pero no rollback (admin puede asignar
       // después con "Editar obras").
-      const newUserId = data?.user?.id || data?.id;
+      // OJO: el endpoint devuelve { user_id } — antes se leía data.user.id /
+      // data.id (undefined) y el insert de obras se salteaba EN SILENCIO →
+      // usuarios nuevos con 0 obras (bug Roxana, 20-jul-2026).
+      const newUserId = data?.user_id || data?.user?.id || data?.id;
+
+      // Cinturón de seguridad: si el upsert del profile del endpoint no dejó
+      // el rol pedido (carrera con el trigger handle_new_user, o fallo
+      // silencioso → quedaba 'solo_lectura'), lo forzamos desde acá con el
+      // mismo permiso que usa "Cambiar Rol".
+      if (newUserId) {
+        try {
+          const rolEsperado = form.rol || 'solo_lectura';
+          const { data: perfil } = await sb.from('profiles').select('id, rol, nombres').eq('id', newUserId).maybeSingle();
+          if (!perfil || perfil.rol !== rolEsperado || !perfil.nombres) {
+            const { error: eFix } = await sb.from('profiles')
+              .update({ rol: rolEsperado, nombres: form.nombres || null, apellidos: form.apellidos || null, activo: true })
+              .eq('id', newUserId);
+            if (eFix) showToast?.(`Usuario creado, pero no se pudo fijar el rol (${eFix.message}). Usá "Cambiar rol".`, 'amber');
+          }
+        } catch (e2) { console.warn('[create-user] verificación de perfil:', e2?.message); }
+      }
+
       if (newUserId && obrasArr.length > 0) {
         const filas = obrasArr.map(obra_id => ({
           obra_id,

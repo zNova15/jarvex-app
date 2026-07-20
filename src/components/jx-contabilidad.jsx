@@ -752,6 +752,8 @@ function MovimientosContablesPage({ showToast }) {
   const [filtroClase, setFiltroClase] = uSC('todos');
   const [filtroTipo, setFiltroTipo] = uSC('todos');
   const [filtroEstado, setFiltroEstado] = uSC('todos');
+  const [filtroEmisor, setFiltroEmisor] = uSC('todos');     // quién EMITIÓ el comprobante
+  const [filtroReceptor, setFiltroReceptor] = uSC('todos'); // quién lo RECIBIÓ
   const [busqueda, setBusqueda] = uSC('');
   const [modal, setModal] = uSC(null);
   const [editingId, setEditingId] = uSC(null);
@@ -805,7 +807,13 @@ function MovimientosContablesPage({ showToast }) {
             e.registro_relacionado_id
           )
           .toArray();
-        evs.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+        // Por registro se muestra UNA evidencia: gana la ya SUBIDA ('uploaded')
+        // sobre cualquier pendiente/fallida, y entre iguales la más nueva.
+        // (Antes ganaba la más nueva a secas: un registro fantasma atascado en
+        // 'pending_upload' tapaba a la constancia ya subida → "⏳ Subiendo
+        // bancarización" eterno aunque el archivo SÍ estuviera en el server.)
+        const rankSync = (s) => s === 'uploaded' ? 0 : s === 'failed' ? 2 : 1;
+        evs.sort((a, b) => (rankSync(a.sync_status) - rankSync(b.sync_status)) || (b.created_at || '').localeCompare(a.created_at || ''));
         const map = new Map();       // facturas / comprobantes
         const mapBanc = new Map();    // evidencias de bancarización (directas al mov)
         const mapDep = new Map();     // constancias de DEPÓSITOS multi-factura
@@ -930,6 +938,19 @@ function MovimientosContablesPage({ showToast }) {
     return !movimientoBancarizado({ mov: m, tieneEvidenciaDirecta: false, partes: partesPorMov.get(m.id) || [], depositosById });
   };
 
+  // Emisor / receptor del comprobante (pedido 20-jul): en una VENTA nuestra
+  // empresa EMITE al tercero; en una COMPRA el proveedor emite y nuestra
+  // empresa RECIBE. Permite ubicar un comprobante por quién lo emitió/recibió.
+  const nombreCompanyDe = uMC(() => {
+    const m = new Map((companies || []).map(c => [c.id, c.name]));
+    return (id) => m.get(id) || '—';
+  }, [companies]);
+  const esVentaMov = (m) => (m.clase || (m.type === 'income' ? 'venta' : 'compra')) === 'venta';
+  const emisorDe = (m) => esVentaMov(m) ? nombreCompanyDe(m.company_id) : (m.third_party_name || '—');
+  const receptorDe = (m) => esVentaMov(m) ? (m.third_party_name || '—') : nombreCompanyDe(m.company_id);
+  const opcionesEmisor = uMC(() => [...new Set((movs || []).map(emisorDe).filter(n => n && n !== '—'))].sort((a, b) => a.localeCompare(b)), [movs, nombreCompanyDe]);
+  const opcionesReceptor = uMC(() => [...new Set((movs || []).map(receptorDe).filter(n => n && n !== '—'))].sort((a, b) => a.localeCompare(b)), [movs, nombreCompanyDe]);
+
   const filtered = uMC(() => {
     if (!movs) return [];
     let f = [...movs];
@@ -939,6 +960,8 @@ function MovimientosContablesPage({ showToast }) {
     if (filtroClase !== 'todos') f = f.filter(m => (m.clase || (m.type === 'income' ? 'venta' : 'compra')) === filtroClase);
     if (filtroTipo !== 'todos') f = f.filter(m => m.type === filtroTipo);
     if (filtroEstado !== 'todos') f = f.filter(m => m.payment_status === filtroEstado);
+    if (filtroEmisor !== 'todos') f = f.filter(m => emisorDe(m) === filtroEmisor);
+    if (filtroReceptor !== 'todos') f = f.filter(m => receptorDe(m) === filtroReceptor);
     if (busqueda) {
       const q = busqueda.toLowerCase();
       f = f.filter(m => (m.description||'').toLowerCase().includes(q)
@@ -947,7 +970,7 @@ function MovimientosContablesPage({ showToast }) {
     }
     if (soloSinBanc) f = f.filter(faltaBancarizacion);
     return f.sort((a,b) => (b.date||'').localeCompare(a.date||''));
-  }, [movs, filtroAmbito, filtroClase, filtroTipo, filtroEstado, busqueda, soloSinBanc, bancarizacionPorMov, partesPorMov, depositosById]);
+  }, [movs, filtroAmbito, filtroClase, filtroTipo, filtroEstado, filtroEmisor, filtroReceptor, nombreCompanyDe, busqueda, soloSinBanc, bancarizacionPorMov, partesPorMov, depositosById]);
 
   // Paginación: tabla puede tener miles de movimientos contables.
   const movPg = usePagination(filtered, 100);
@@ -1369,6 +1392,25 @@ function MovimientosContablesPage({ showToast }) {
       if (!v.ok) { showToast(v.error, 'red'); return; }
     }
 
+    // Ventana de confirmación (pedido 20-jul): una vez subida, la bancarización
+    // queda FIJA para las asistentes — el cambio se solicita al admin o a la
+    // Contadora Jefe. En pagos en partes se confirma parte por parte.
+    {
+      const _restan = Math.max(0, _pendiente - montoAplicar);
+      const _queSube =
+        esDepNuevo ? `Vas a registrar un VOUCHER de ${fmtCur(Number(bancTotalDep), bancTarget.currency)} y aplicarle ${fmtCur(montoAplicar, bancTarget.currency)} a esta factura.` :
+        esDepExistente ? `Vas a aplicar ${fmtCur(montoAplicar, bancTarget.currency)} del voucher elegido a esta factura.` :
+        bancModo === 'parcial' ? `Vas a subir la constancia n.º ${_partesMov.length + 1} de esta factura, por ${fmtCur(montoAplicar, bancTarget.currency)}.` :
+        `Vas a subir la bancarización de esta factura por ${fmtCur(montoAplicar, bancTarget.currency)} (cubre todo lo pendiente).`;
+      const _aviso = myRol === 'ayudante_contador'
+        ? 'IMPORTANTE: una vez subida NO podrás cambiarla ni eliminarla por tu cuenta — el cambio se solicita al administrador o a la Contadora Jefe (botón "Solicitar").'
+        : 'Revisá que el archivo y el monto sean correctos antes de confirmar.';
+      const _lineas = [_queSube];
+      if (_restan > TOL) _lineas.push(`Tras este pago quedarán ${fmtCur(_restan, bancTarget.currency)} por cubrir.`);
+      _lineas.push('', _aviso, '', '¿Confirmás subir esta bancarización?');
+      if (!window.confirm(_lineas.join('\n'))) return;
+    }
+
     setBancSaving(true);
     try {
       // 1) Evidencia (constancia). En pago exacto/parcial va al MOVIMIENTO; en depósito
@@ -1514,6 +1556,14 @@ function MovimientosContablesPage({ showToast }) {
           <option value="paid">Pagados</option>
           <option value="pending">Pendientes</option>
           <option value="cancelled">Anulados</option>
+        </select>
+        <select className="fi" value={filtroEmisor} onChange={e=>setFiltroEmisor(e.target.value)} style={{ minWidth:170, maxWidth:240 }} title="Quién EMITIÓ el comprobante (proveedores o nuestras empresas)">
+          <option value="todos">Emisor: todos</option>
+          {opcionesEmisor.map(n => <option key={n} value={n}>{n}</option>)}
+        </select>
+        <select className="fi" value={filtroReceptor} onChange={e=>setFiltroReceptor(e.target.value)} style={{ minWidth:170, maxWidth:240 }} title="Quién RECIBIÓ el comprobante (normalmente nuestras empresas)">
+          <option value="todos">Receptor: todos</option>
+          {opcionesReceptor.map(n => <option key={n} value={n}>{n}</option>)}
         </select>
       </div>
 
