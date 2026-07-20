@@ -2150,11 +2150,18 @@ function MovimientosContablesPage({ showToast }) {
                 || (bancModo !== 'dep_existente' && !bancFile)
                 || (bancModo === 'dep_existente' && !bancDepId)
                 || (bancModo === 'parcial' && !(Number(bancMonto) > 0))}>
-              <JxIcon name="check" size={13}/> {bancSaving ? 'Guardando…'
-                : bancModo === 'exacto' ? (pendiente > TOL ? 'Registrar pago exacto' : 'Cambiar constancia')
-                : bancModo === 'parcial' ? 'Registrar pago parcial'
-                : bancModo === 'dep_nuevo' ? 'Registrar voucher y cubrir factura'
-                : 'Aplicar saldo del voucher'}
+              <JxIcon name="check" size={13}/> {(() => {
+                if (bancSaving) return 'Guardando…';
+                if (bancModo === 'parcial') return 'Registrar pago parcial';
+                if (bancModo === 'dep_nuevo') return 'Registrar voucher y cubrir factura';
+                if (bancModo === 'dep_existente') return 'Aplicar saldo del voucher';
+                // 'exacto': si ya está cubierta al 100%, el submit CAMBIA la
+                // constancia (sin registrar monto). OJO: `pendiente` del bloque
+                // de arriba no llega hasta acá — se recalcula localmente.
+                const _pagado = (partesPorMov.get(bancTarget.id) || []).reduce((t, x) => t + (Number(x.monto) || 0), 0);
+                const _pend = Math.max(0, (Number(bancTarget.amount) || 0) - _pagado);
+                return _pend > TOL ? 'Registrar pago exacto' : 'Cambiar constancia';
+              })()}
             </button>
           </div>
         </Modal>
