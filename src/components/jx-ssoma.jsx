@@ -563,6 +563,18 @@ function EppPage({ showToast }) {
     }
   };
 
+  // "Solicitar cambio" para la almacenera y demás roles con escritura (pedido
+  // 21-jul: se equivocó en una cantidad y no tenía NINGUNA salida). Abre el
+  // RequestChangeModal genérico (jx-solicitudes) con allowDelete: puede pedir
+  // corregir cantidad/fecha/motivo o ELIMINAR el registro — lo aprueba el
+  // admin desde Solicitudes.
+  const [solicitarEpp, setSolicitarEpp] = uS(null);
+  const abrirSolicitudEpp = async (reg) => {
+    // El modal vive en el chunk de Solicitudes: cargarlo si aún no está.
+    if (!window.RequestChangeModal) { try { await import('./jx-solicitudes.jsx'); } catch { /* sin chunk no hay modal */ } }
+    setSolicitarEpp(reg);
+  };
+
   // Super Admin: edición COMPLETA de un movimiento de inventario EPP
   // (movimientos_epp): tipo (entrada/salida), EPP, cantidad, costo unitario y
   // motivo. Tras guardar, el stock se recalcula solo (live desde movimientos).
@@ -989,6 +1001,10 @@ function EppPage({ showToast }) {
                     <tr key={e.id} onClick={()=>setDetalleOpen(e)} style={{ cursor:'pointer' }}>
                       <td className="col-m">
                         {e.fecha}
+                        {canWrite && !superAdmin && (
+                          <button className="btn btn-ghost btn-xs" title="Solicitar cambio o eliminación de este registro (lo aprueba el admin)" style={{ marginLeft:4, padding:'0 4px' }}
+                            onClick={(ev)=>{ ev.stopPropagation(); abrirSolicitudEpp(e); }}><JxIcon name="alert" size={11}/></button>
+                        )}
                         {superAdmin && (
                           <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar fecha" style={{ marginLeft:4, color:'#E74C3C', padding:'0 4px' }}
                             onClick={(ev)=>{ ev.stopPropagation(); setEditFechaEpp(e); setEditFechaEppValue(e.fecha || ''); }}>📅</button>
@@ -1060,6 +1076,10 @@ function EppPage({ showToast }) {
                     <tr key={e.id} onClick={()=>setDetalleOpen(e)} style={{ cursor:'pointer' }}>
                       <td className="col-m">
                         {e.fecha}
+                        {canWrite && !superAdmin && (
+                          <button className="btn btn-ghost btn-xs" title="Solicitar cambio o eliminación de este registro (lo aprueba el admin)" style={{ marginLeft:4, padding:'0 4px' }}
+                            onClick={(ev)=>{ ev.stopPropagation(); abrirSolicitudEpp(e); }}><JxIcon name="alert" size={11}/></button>
+                        )}
                         {superAdmin && (
                           <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar fecha" style={{ marginLeft:4, color:'#E74C3C', padding:'0 4px' }}
                             onClick={(ev)=>{ ev.stopPropagation(); setEditFechaEpp(e); setEditFechaEppValue(e.fecha || ''); }}>📅</button>
@@ -1139,6 +1159,35 @@ function EppPage({ showToast }) {
         </Modal>
       )}
 
+      {/* Solicitar cambio/eliminación (no-admin): lo aplica el admin desde Solicitudes */}
+      {solicitarEpp && (() => {
+        const RCM = window.RequestChangeModal;
+        if (!RCM) return null;
+        const esMov = solicitarEpp._esMovEpp === true;
+        const desc = esMov
+          ? `${solicitarEpp.tipo_movimiento === 'entrada' ? 'Ingreso' : 'Entrega'} EPP · ${solicitarEpp._eppNombre} ×${solicitarEpp.items?.[0]?.cantidad ?? '?'} · ${solicitarEpp.fecha}`
+          : `Entrega EPP del ${solicitarEpp.fecha} · ${(solicitarEpp.items || []).map(i => `${i.nombre || i.tipo_epp} ×${i.cantidad}`).join(', ')}`;
+        return (
+          <RCM
+            table={esMov ? 'movimientos_epp' : 'epp_entregas'}
+            record={esMov ? { ...solicitarEpp, cantidad: solicitarEpp.items?.[0]?.cantidad } : solicitarEpp}
+            recordLabel={desc}
+            allowDelete
+            fields={esMov ? [
+              { key: 'cantidad', label: 'Cantidad', type: 'number' },
+              { key: 'fecha', label: 'Fecha', type: 'date' },
+              { key: 'motivo', label: 'Motivo' },
+              { key: 'observaciones', label: 'Observaciones' },
+            ] : [
+              { key: 'fecha', label: 'Fecha', type: 'date' },
+              { key: 'motivo', label: 'Motivo' },
+              { key: 'observaciones', label: 'Observaciones' },
+            ]}
+            showToast={showToast}
+            onClose={() => setSolicitarEpp(null)}
+          />
+        );
+      })()}
       {/* ── MODAL DETALLE ─────────────────────────────────────── */}
       {editFechaEpp && (
         <Modal title="⚡ Editar fecha de la entrega EPP" icon="edit" onClose={()=>setEditFechaEpp(null)}>

@@ -229,8 +229,11 @@ const AYUDA = {
     rol: { prevencionista: 'Lo ves en CONSULTA: las entradas y salidas las registra la almacenera — tu rol es verificar y cuadrar con ella.' },
   },
   'epp': {
-    titulo: 'Entregas de EPP', que: 'La entrega de EPPs al personal con firma digital del trabajador.',
-    como: ['Registrá la entrega y capturá la FIRMA del trabajador — queda como evidencia (tipo "Firma EPP").'],
+    titulo: 'Entregas de EPP', que: 'La entrega de EPPs al personal con firma digital del trabajador, y las entradas (compras) al inventario.',
+    como: [
+      'Registrá la entrega y capturá la FIRMA del trabajador — queda como evidencia (tipo "Firma EPP").',
+      '¿Te equivocaste en una cantidad o fecha? Usá el botón de alerta (⚠) de la fila: pedís el cambio o la ELIMINACIÓN del registro y el admin lo aprueba desde Solicitudes — el stock se reajusta solo.',
+    ],
     rol: { prevencionista: 'Lo ves en CONSULTA: las entregas las registra la almacenera; vos verificás a quién se entregó y cuadrás con ella.' },
   },
   'insumos-persona': { titulo: 'Insumos por Persona', que: 'Qué EPPs/insumos tiene asignados cada trabajador.', como: ['Consultalo antes de reponer: muestra la última entrega de cada ítem.'] },
