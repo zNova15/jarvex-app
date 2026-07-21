@@ -54,9 +54,10 @@ const AYUDA = {
     titulo: 'Reportes',
     que: 'Reportes ejecutivos de la operación y la configuración del ENVÍO POR EMAIL (diario, semanal y mensual).',
     como: [
-      'En "Envío por email" hay 3 pestañas: Diario, Semanal y Mensual — cada una con su hora (Perú), su día y sus destinatarios.',
+      'En "Envío por email" hay 3 pestañas: Diario, Semanal y Mensual — cada una con su interruptor, su hora (Perú), su día y sus DESTINATARIOS propios (los correos que quieras).',
       'El correo llega con resumen ejecutivo, tops de materiales con barras, ranking de ingenieros, especialidades y contabilidad, legible desde el teléfono.',
       'El reporte mensual es el más detallado: incluye top proveedores y avance físico por obra.',
+      'El envío es automático (cada hora se revisa qué toca y se despacha por Gmail) — si un reporte no llega, revisá que la pestaña esté ACTIVA y con destinatarios.',
     ],
   },
   'busqueda': { titulo: 'Búsqueda Global', que: 'Buscador que cruza todos los módulos: materiales, movimientos, facturas, personal, etc.', como: ['Escribí cualquier dato (nombre, serie de factura, DNI) y saltá directo al registro.'] },

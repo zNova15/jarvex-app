@@ -2,17 +2,19 @@
 # JARVEX — Reportes por email programables (diario / semanal / mensual)
 #
 # Corre CADA HORA. El script decide qué reportes tocan según la config de la
-# app (Reportes → Envío por email: hora Lima, día de semana/mes, on/off) y
-# deja el HTML listo en reportes_email_outbox — n8n toma lo pendiente y lo
-# envía por Gmail. Con catch-up: si una corrida se salta, el reporte sale a
-# la hora siguiente del mismo día (nunca duplica: máx. 1 por día por tipo).
+# app (Reportes → Envío por email: hora Lima, día de semana/mes, on/off),
+# deja el HTML listo en reportes_email_outbox y DESPACHA lo pendiente por
+# Gmail SMTP (send.mjs) — sin n8n. Con catch-up: si una corrida se salta, el
+# reporte sale a la hora siguiente del mismo día (máx. 1 por día por tipo).
 #
 # Para probar a mano: tab Actions → "Reportes por email" → Run workflow
 # (opcionalmente con force_tipo=diario para generar YA sin mirar la hora).
 #
-# Secrets (los mismos del backup):
-#   - VITE_SUPABASE_URL
-#   - SUPABASE_SERVICE_ROLE_KEY
+# Secrets:
+#   - VITE_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY (los mismos del backup)
+#   - GMAIL_USER (correo emisor) + GMAIL_APP_PASSWORD (contraseña de
+#     APLICACIÓN de Gmail — no la contraseña normal). Sin estos dos, el paso
+#     de envío se omite y el outbox queda para otro canal.
 # ═══════════════════════════════════════════════════════════════════
 name: Reportes por email
 
@@ -47,3 +49,13 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           FORCE_TIPO: ${{ github.event.inputs.force_tipo }}
         run: node scripts/reporte-email/build.mjs
+
+      - name: Enviar pendientes del outbox por Gmail
+        # Corre aunque el paso anterior falle: lo ya generado se despacha igual.
+        if: always()
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: node scripts/reporte-email/send.mjs
