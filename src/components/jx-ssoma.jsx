@@ -569,9 +569,13 @@ function EppPage({ showToast }) {
   // corregir cantidad/fecha/motivo o ELIMINAR el registro — lo aprueba el
   // admin desde Solicitudes.
   const [solicitarEpp, setSolicitarEpp] = uS(null);
-  const abrirSolicitudEpp = async (reg) => {
-    // El modal vive en el chunk de Solicitudes: cargarlo si aún no está.
-    if (!window.RequestChangeModal) { try { await import('./jx-solicitudes.jsx'); } catch { /* sin chunk no hay modal */ } }
+  // OJO: NO usar import('./jx-solicitudes.jsx') acá — ese módulo es EAGER (va
+  // en el chunk principal y expone window.RequestChangeModal al arrancar).
+  // Un import dinámico del mismo módulo obliga a Rollup a partirlo en un
+  // chunk aparte con init circular → "TypeError: r is not a function" al
+  // bootear y PANTALLA EN BLANCO para todos (incidente del 21-jul).
+  const abrirSolicitudEpp = (reg) => {
+    if (!window.RequestChangeModal) { showToast('El módulo de solicitudes no cargó — recargá la página (Ctrl+Shift+R)', 'red'); return; }
     setSolicitarEpp(reg);
   };
 
