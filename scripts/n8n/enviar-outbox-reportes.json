@@ -1,0 +1,67 @@
+{
+  "name": "JARVEX · Enviar reportes del outbox (email)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "minutes", "minutesInterval": 10 }
+          ]
+        }
+      },
+      "name": "Cada 10 minutos",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://kztnttgzgkvsgornjfln.supabase.co/rest/v1/reportes_email_outbox?estado=eq.pendiente&select=id,tipo,subject,html,destinatarios,created_at&order=created_at.asc",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "options": {}
+      },
+      "name": "Pendientes del outbox",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 0],
+      "notes": "La app (GitHub Action horaria) deja acá los correos LISTOS (HTML + destinatarios) según la programación de Reportes → Envío por email. Este flujo solo despacha."
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ ($json.destinatarios || []).join(',') }}",
+        "subject": "={{ $json.subject }}",
+        "emailType": "html",
+        "message": "={{ $json.html }}",
+        "options": { "appendAttribution": false }
+      },
+      "name": "Enviar por Gmail",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://kztnttgzgkvsgornjfln.supabase.co/rest/v1/reportes_email_outbox?id=eq.{{ $('Pendientes del outbox').item.json.id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"estado\":\"enviado\",\"sent_at\":\"{{ $now.toISO() }}\"}",
+        "options": {}
+      },
+      "name": "Marcar enviado",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 0]
+    }
+  ],
+  "connections": {
+    "Cada 10 minutos": { "main": [[{ "node": "Pendientes del outbox", "type": "main", "index": 0 }]] },
+    "Pendientes del outbox": { "main": [[{ "node": "Enviar por Gmail", "type": "main", "index": 0 }]] },
+    "Enviar por Gmail": { "main": [[{ "node": "Marcar enviado", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "timezone": "America/Lima" }
+}
