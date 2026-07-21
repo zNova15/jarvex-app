@@ -87,6 +87,9 @@ const BLOQUES = [
     id: 'contabilidad', titulo: 'Contabilidad', icon: 'dollar', tipo: 'general', color: '#F2B705',
     desc: 'Empresas del grupo, movimientos, conciliación, tesorería y SUNAT',
     items: ['cont-dashboard', 'movimientos-contables', 'conciliacion-insumos', 'guias-remision', 'pagos',
+      // SCTR vive acá para contabilidad (la contadora sube el trámite) — así no
+      // necesita ver el bloque de Seguridad (pedido 21-jul).
+      'sctr-personal',
       'compras-categoria', 'ordenes-intercompany', 'intercompany', 'trazabilidad', 'consolidado',
       'cuentas-bancarias', 'flujo-caja', 'flujo-proyectado', 'plan-cuentas', 'libro-diario',
       'balance-general', 'estado-resultados', 'comprobantes', 'libros-electronicos', 'config-sunat',
@@ -287,7 +290,11 @@ function InicioPage({ onNav, onEnterObra }) {
   })).filter(b => {
     if (b.items.length === 0) return false;
     const dueno = DUENO_ESPECIALIDAD[b.id];
-    return !(dueno && ROLES_ESPECIALISTAS.has(rol) && rol !== dueno);
+    // Bloques de ESPECIALIDAD: solo su especialista y el admin (pedido 21-jul:
+    // la contadora no debe ver el bloque de Seguridad solo por el SCTR — esa
+    // sección vive también en su bloque de Contabilidad).
+    if (dueno) return rol === 'admin' || rol === dueno;
+    return true;
   }), [rol, navInfo]);
   const bloquesObra = bloques.filter(b => b.tipo === 'obra');
   const bloquesGeneral = bloques.filter(b => b.tipo === 'general');

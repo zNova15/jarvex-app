@@ -120,6 +120,24 @@ function PagosPage({ showToast }) {
   const personalHistorial = uM(() => (personal || []).filter(p => !p.deleted_at && (noActivo(p) || esDeSubcontrato(p)) && (pagosDePersona.get(p.id) || []).some(x => x.estado !== 'anulado')), [personal, pagosDePersona]);
   const nSubcontratoOcultos = uM(() => (personal || []).filter(p => !p.deleted_at && !noActivo(p) && esDeSubcontrato(p)).length, [personal]);
 
+  // Subcontratistas CON PERSONAL en la obra pero SIN contrato formal creado:
+  // se muestran igual en la pestaña Subcontratos (pedido 21-jul: "hay 3
+  // subcontratos y no aparecen") y se les puede registrar pagos — quedan
+  // ligados por nombre hasta que se cree el contrato en "Subcontratos".
+  const subsSinContrato = uM(() => {
+    const conContrato = new Set(subsVivos.map(s => s.subcontratista_id).filter(Boolean));
+    const ids = [...new Set((personal || []).filter(p => !p.deleted_at && p.subcontratista_id).map(p => p.subcontratista_id))];
+    return ids.filter(id => !conContrato.has(id)).map(id => ({
+      subcontratista_id: id,
+      nPersonal: (personal || []).filter(p => !p.deleted_at && p.subcontratista_id === id).length,
+    }));
+  }, [subsVivos, personal]);
+  const pagosPorNombre = uM(() => {
+    const m = new Map();
+    for (const p of pagos) if (p.beneficiario_tipo === 'subcontrato' && !p.subcontrato_id && p.beneficiario_nombre) { const a = m.get(p.beneficiario_nombre) || []; a.push(p); m.set(p.beneficiario_nombre, a); }
+    return m;
+  }, [pagos]);
+
   // ── Escrituras (patrón manual Dexie, coherente con el RLS del server) ──
   const cambiarModoPago = async (persona, modo) => {
     if (!canGestionar || busy) return;
@@ -405,7 +423,7 @@ function PagosPage({ showToast }) {
                 <th style={{ width: 130 }}></th>
               </tr></thead>
               <tbody>
-                {subsVivos.length === 0 && <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--tm)', padding: 14 }}>Sin subcontratos en esta obra.</td></tr>}
+                {subsVivos.length === 0 && subsSinContrato.length === 0 && <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--tm)', padding: 14 }}>Sin subcontratos en esta obra.</td></tr>}
                 {subsVivos.map(sc => {
                   const pgs = (pagosDeSub.get(sc.id) || []).filter(p => p.estado !== 'anulado');
                   return (
@@ -430,6 +448,39 @@ function PagosPage({ showToast }) {
                       <td style={{ textAlign: 'right' }}>
                         {canGestionar && (
                           <button className="btn btn-amber btn-xs" disabled={busy} onClick={() => setNuevoPago({ beneficiario_tipo: 'subcontrato', subcontrato: sc })}>
+                            💸 Registrar pago
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+                {/* Subcontratistas con personal en la obra pero SIN contrato formal */}
+                {subsSinContrato.map(sx => {
+                  const nombre = subNombre.get(sx.subcontratista_id) || 'Subcontratista';
+                  const pgs = (pagosPorNombre.get(nombre) || []).filter(p => p.estado !== 'anulado');
+                  return (
+                    <tr key={'sx-' + sx.subcontratista_id}>
+                      <td className="col-p" style={{ fontSize: 12.5 }}>
+                        {nombre} <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>sin contrato</span>
+                        <div style={{ fontSize: 10, color: 'var(--tm)' }}>{sx.nPersonal} trabajador(es) vinculados · creá el contrato en "Subcontratos" para fijar monto y valorizaciones</div>
+                      </td>
+                      <td style={{ textAlign: 'right', fontSize: 12, color: 'var(--tm)' }}>—</td>
+                      <td style={{ fontSize: 11 }}>
+                        {pgs.length === 0 ? <span style={{ color: 'var(--tm)' }}>—</span> : pgs.slice(0, 3).map(p => {
+                          const st = calcularEstadoPago(p.monto_acordado, partesDe.get(p.id));
+                          const e = ESTADOS_PAGO[st.estado] || ESTADOS_PAGO.pendiente;
+                          return (
+                            <button key={p.id} className="btn btn-ghost btn-xs" style={{ marginRight: 4, marginBottom: 2 }} onClick={() => setDetalleId(p.id)}>
+                              {p.concepto || 'pago'} · {fmtS(st.pagado)}/{fmtS(p.monto_acordado)} <span className={`badge ${e.cls}`} style={{ fontSize: 8.5, marginLeft: 3 }}>{e.lbl}</span>
+                            </button>
+                          );
+                        })}
+                        {pgs.length > 3 && <span style={{ color: 'var(--tm)', fontSize: 10 }}>+{pgs.length - 3} más</span>}
+                      </td>
+                      <td style={{ textAlign: 'right' }}>
+                        {canGestionar && (
+                          <button className="btn btn-amber btn-xs" disabled={busy} onClick={() => setNuevoPago({ beneficiario_tipo: 'subcontrato', subcontratista: { id: sx.subcontratista_id, nombre } })}>
                             💸 Registrar pago
                           </button>
                         )}
@@ -471,8 +522,9 @@ function NuevoPagoModal({ ctx, busy, subNombre, onConfirm, onClose }) {
   const [concepto, setConcepto] = uS(esSub ? '' : `Pago ${MODO_PAGO_LABEL[ctx.persona?.modo_pago] || ''}`.trim());
   const [monto, setMonto] = uS(esSub ? String(ctx.subcontrato?.monto_contrato ?? '') : '');
   const [periodo, setPeriodo] = uS(() => (window.__fecha?.hoyLocal ? window.__fecha.hoyLocal() : new Date().toISOString().slice(0, 10)).slice(0, 7));
+  const nombreSub = subNombre.get(ctx.subcontrato?.subcontratista_id) || ctx.subcontratista?.nombre || '';
   const titulo = esSub
-    ? `Pago a subcontrato · ${subNombre.get(ctx.subcontrato?.subcontratista_id) || ''}`
+    ? `Pago a subcontrato · ${nombreSub}`
     : `Pago a ${`${ctx.persona?.nombres || ''} ${ctx.persona?.apellidos || ''}`.trim()}`;
   const ok = Number(monto) > 0;
   return (
@@ -497,7 +549,7 @@ function NuevoPagoModal({ ctx, busy, subNombre, onConfirm, onClose }) {
             beneficiario_tipo: ctx.beneficiario_tipo,
             personal_id: ctx.persona?.id || null,
             subcontrato_id: ctx.subcontrato?.id || null,
-            beneficiario_nombre: esSub ? (subNombre.get(ctx.subcontrato?.subcontratista_id) || null) : `${ctx.persona?.nombres || ''} ${ctx.persona?.apellidos || ''}`.trim(),
+            beneficiario_nombre: esSub ? (nombreSub || null) : `${ctx.persona?.nombres || ''} ${ctx.persona?.apellidos || ''}`.trim(),
             concepto: concepto.trim() || null,
             modo_pago: esSub ? 'subcontrato' : (ctx.persona?.modo_pago || null),
             monto_acordado: monto, periodo,
@@ -565,22 +617,33 @@ function PagoDetalleModal({ pago, partes, evidencias, nombre, canGestionar, isAd
         {check.completo && <span className="badge b-green" style={{ fontSize: 10 }}>✓ COMPLETO (dinero + evidencias)</span>}
       </div>
 
-      {/* Recibo por honorarios (a nivel del pago) */}
-      {reqs.some(r => r.tipo === 'recibo_honorarios') && editable && (
-        <div style={{ marginBottom: 12, padding: '8px 10px', background: 'var(--bg2)', border: '1px solid var(--bd)', borderRadius: 6, fontSize: 11.5, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <strong>Recibo por honorarios:</strong>
-          {evsDelPago.filter(e => e.tipo_evidencia === 'recibo_honorarios').map(e => (
-            <button key={e.id} className="btn btn-ghost btn-xs" onClick={() => abrirEvidencia(e)}>📎 {String(e.nombre_archivo || 'recibo').slice(0, 24)}</button>
-          ))}
-          <label className="btn btn-ghost btn-xs" style={{ cursor: 'pointer' }}>
-            + Subir recibo
-            <input type="file" accept="image/*,application/pdf" style={{ display: 'none' }} disabled={busy}
-              onChange={e => { const f = e.target.files?.[0]; if (f) onSubirEvidencia(pago, 'recibo_honorarios', f); e.target.value = ''; }} />
-          </label>
-        </div>
-      )}
+      {/* 1️⃣ DOCUMENTO del pago (a nivel del PAGO): recibo por honorarios o
+          boleta/planilla firmada — bien separado de las constancias de
+          transferencia (pedido 21-jul: "separadito y organizado"). */}
+      {editable && (() => {
+        const esRxh = pago.modo_pago === 'rxh';
+        const titulo = esRxh ? '1️⃣ Recibo por honorarios (emitido por el trabajador)'
+          : pago.modo_pago === 'planilla' ? '1️⃣ Boleta de pago / planilla firmada'
+          : '1️⃣ Documento del pago (opcional)';
+        const tipoDoc = esRxh ? 'recibo_honorarios' : 'pago_evidencia';
+        return (
+          <div style={{ marginBottom: 12, padding: '8px 10px', background: 'var(--bg2)', border: '1px solid var(--bd)', borderRadius: 6, fontSize: 11.5, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <strong>{titulo}:</strong>
+            {evsDelPago.map(e => (
+              <button key={e.id} className="btn btn-ghost btn-xs" onClick={() => abrirEvidencia(e)}>📎 {String(e.nombre_archivo || 'documento').slice(0, 24)}</button>
+            ))}
+            {evsDelPago.length === 0 && <span style={{ color: 'var(--tm)' }}>aún sin documento</span>}
+            <label className="btn btn-ghost btn-xs" style={{ cursor: 'pointer' }}>
+              + Subir {esRxh ? 'recibo' : pago.modo_pago === 'planilla' ? 'boleta / planilla' : 'documento'}
+              <input type="file" accept="image/*,application/pdf" style={{ display: 'none' }} disabled={busy}
+                onChange={e => { const f = e.target.files?.[0]; if (f) onSubirEvidencia(pago, tipoDoc, f); e.target.value = ''; }} />
+            </label>
+          </div>
+        );
+      })()}
 
-      {/* Partes registradas */}
+      {/* 2️⃣ Partes registradas (transferencias, cada una con su constancia) */}
+      <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ts)', marginBottom: 4 }}>2️⃣ Transferencias / constancias del pago <span style={{ fontWeight: 400, color: 'var(--tm)' }}>— una fila por transferencia, cada una con su constancia adjunta</span></div>
       <div style={{ border: '1px solid var(--bd)', borderRadius: 6, overflow: 'auto', maxHeight: 260, marginBottom: 12 }}>
         <table className="tbl" style={{ fontSize: 12 }}>
           <thead><tr>

@@ -28,6 +28,7 @@
     "jspdf-autotable": "^5.0.7",
     "jszip": "^3.10.1",
     "node-forge": "^1.4.0",
+    "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^5.7.284",
     "posthog-js": "^1.372.10",
     "react": "^19.2.5",

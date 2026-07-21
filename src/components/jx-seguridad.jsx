@@ -333,11 +333,128 @@ function SctrPage({ showToast }) {
 
   const verEvidencia = async (p) => {
     const ev = evidencias.get(p.id);
-    if (!ev) { toast('Sin evidencia de SCTR cargada', 'amber'); return; }
+    if (!ev) { toast('Sin evidencia individual — el certificado del grupo está en la pestaña Documentos', 'amber'); return; }
     try {
       const { getEvidenciaSrc } = await import('../lib/evidencias-url.js');
       const src = await getEvidenciaSrc(ev);
       if (src?.url) window.open(src.url, '_blank'); else toast('Archivo no disponible', 'red');
+    } catch (e) { toast('Error: ' + (e.message || e), 'red'); }
+  };
+
+  // ── VENTANA "DOCUMENTOS" (pedido 21-jul): la contadora sube UN PDF del
+  // trámite completo (cotización + constancia + pago + factura); la IA lo
+  // clasifica por páginas, se SEPARA con pdf-lib (visibilidad por rol: la ing.
+  // de seguridad SOLO ve el certificado) y se corrobora la lista de asegurados
+  // contra el personal para vincular vigencia/aseguradora de un golpe. ──
+  const [tab, setTab] = uS('trabajadores'); // 'trabajadores' | 'documentos'
+  const [docs, setDocs] = uS([]);           // evidencias modulo 'sctr_docs' de la obra
+  const [procesando, setProcesando] = uS(null); // null | texto de progreso
+  const [preview, setPreview] = uS(null);   // resultado IA para corroborar antes de guardar
+  const puedeVerDocs = puedeSubir || rol === 'prevencionista';
+
+  const cargarDocs = React.useCallback(async () => {
+    if (!obraId) return;
+    try {
+      const evs = await window.__db.evidencias.filter(e => e.modulo_relacionado === 'sctr_docs' && !e.deleted_at && e.obra_id === obraId).toArray();
+      setDocs(evs.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || ''))));
+    } catch {}
+  }, [obraId]);
+  uE(() => { cargarDocs(); }, [cargarDocs]);
+  uE(() => {
+    const on = (e) => { const t = e?.detail?.tabla; if (!t || t === 'evidencias') cargarDocs(); };
+    window.addEventListener('jx_data_changed', on);
+    return () => window.removeEventListener('jx_data_changed', on);
+  }, [cargarDocs]);
+
+  // Paquetes agrupados (registro_relacionado_id = id del paquete subido).
+  const paquetes = uM(() => {
+    const m = new Map();
+    for (const e of docs) { const a = m.get(e.registro_relacionado_id) || []; a.push(e); m.set(e.registro_relacionado_id, a); }
+    const ORDEN = { sctr_cotizacion: 0, sctr: 1, sctr_pago: 2, sctr_factura: 3, sctr_otro: 4 };
+    return [...m.entries()].map(([id, evs]) => ({
+      id,
+      evs: evs.sort((a, b) => (ORDEN[a.tipo_evidencia] ?? 9) - (ORDEN[b.tipo_evidencia] ?? 9)),
+      fecha: evs[0]?.fecha || String(evs[0]?.created_at || '').slice(0, 10),
+      resumen: evs.find(e => e.tipo_evidencia === 'sctr')?.observaciones || null,
+    }));
+  }, [docs]);
+
+  const procesarPaquete = async (file) => {
+    if (!file) return;
+    if (esPrueba()) { toast('En modo PRUEBA no se procesan documentos reales', 'amber'); return; }
+    setProcesando('Analizando con IA…');
+    try {
+      const { analizarPaqueteSctr, validarSecciones, matchAsegurados } = await import('../lib/sctr-paquete.js');
+      const bytes = await file.arrayBuffer();
+      const { PDFDocument } = await import('pdf-lib');
+      const totalPaginas = (await PDFDocument.load(bytes, { ignoreEncryption: true })).getPageCount();
+      const ia = await analizarPaqueteSctr(file);
+      const secciones = validarSecciones(ia.secciones, totalPaginas);
+      const matches = matchAsegurados(ia.certificado?.asegurados || [], personal || []);
+      setPreview({
+        bytes, totalPaginas, secciones,
+        certificado: ia.certificado || null,
+        confianza: ia.confianza || 'baja',
+        advertencias: ia.advertencias || [],
+        matches,
+        sel: new Set(matches.filter(x => x.persona).map(x => x.persona.id)),
+      });
+    } catch (e) { toast('No se pudo analizar el paquete: ' + (e.message || e), 'red'); }
+    finally { setProcesando(null); }
+  };
+
+  const confirmarPaquete = async () => {
+    if (!preview) return;
+    setProcesando('Separando y guardando…');
+    try {
+      const { separarPdf, TIPOS_DOC_SCTR } = await import('../lib/sctr-paquete.js');
+      const partes = await separarPdf(preview.bytes, preview.secciones);
+      const paqueteId = window.__newId();
+      const cert = preview.certificado;
+      for (const parte of partes) {
+        const meta = TIPOS_DOC_SCTR[parte.tipo] || TIPOS_DOC_SCTR.otro;
+        const obs = parte.tipo === 'certificado' && cert
+          ? `Constancia ${cert.constancia_numero || 's/n'} · ${cert.aseguradora || 'aseguradora ¿?'} · vigencia ${cert.vigencia_desde || '¿?'} → ${cert.vigencia_hasta || '¿?'} · ${(cert.asegurados || []).length} asegurado(s)`
+          : `${meta.lbl} · paquete SCTR del ${hoy}`;
+        await window.__saveEvidenciaLocal?.({
+          id: window.__newId(), obra_id: obraId,
+          tipo_evidencia: meta.tipo_evidencia, modulo_relacionado: 'sctr_docs', registro_relacionado_id: paqueteId,
+          nombre_archivo: `SCTR_${parte.tipo}_${hoy}.pdf`, mime_type: 'application/pdf', blob: parte.blob,
+          fecha: hoy, observaciones: obs, created_by: userId,
+        });
+      }
+      // Vincular vigencia/aseguradora a los trabajadores corroborados.
+      let aplicados = 0;
+      if (cert?.vigencia_hasta) {
+        const asegTxt = [cert.aseguradora, cert.poliza_pension && `póliza ${cert.poliza_pension}`, cert.constancia_numero && `constancia ${cert.constancia_numero}`].filter(Boolean).join(' · ');
+        const now = new Date().toISOString();
+        for (const m of preview.matches) {
+          if (!m.persona || !preview.sel.has(m.persona.id)) continue;
+          await window.__db.personal.update(m.persona.id, {
+            sctr_vencimiento: cert.vigencia_hasta,
+            sctr_aseguradora: asegTxt || cert.aseguradora || null,
+            updated_at: now, updated_by: userId,
+            version: (m.persona.version ?? 0) + 1,
+            sync_status: syncUpdate(m.persona),
+          });
+          aplicados++;
+        }
+      }
+      try { await window.__logAudit?.({ action: 'insert', table: 'evidencias', recordId: paqueteId, reason: `Paquete SCTR procesado con IA · ${partes.length} documento(s) · ${aplicados} trabajador(es) vinculados` }); } catch {}
+      syncKick('personal');
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'evidencias' } })); } catch {}
+      toast(`✓ Paquete guardado (${partes.length} documentos) · ${aplicados} trabajador(es) vinculados`, 'green');
+      setPreview(null);
+      cargarDocs();
+    } catch (e) { toast('Error guardando el paquete: ' + (e.message || e), 'red'); }
+    finally { setProcesando(null); }
+  };
+
+  const verDoc = async (ev) => {
+    try {
+      const { getEvidenciaSrc } = await import('../lib/evidencias-url.js');
+      const src = await getEvidenciaSrc(ev);
+      if (src?.url) window.open(src.url, '_blank'); else toast('Archivo aún subiendo — probá en unos segundos', 'amber');
     } catch (e) { toast('Error: ' + (e.message || e), 'red'); }
   };
 
@@ -346,11 +463,65 @@ function SctrPage({ showToast }) {
 
   return (
     <div className="page-wrap">
-      <div className="pg-hd">
-        <div className="pg-title">SCTR del Personal</div>
-        <div className="pg-sub">Personal en obra (Obrero / Profesionales / Subcontratos) directo o asegurado por la empresa · evidencia y vencimientos{!puedeSubir ? ' · solo lectura (la Contadora Jefe sube el SCTR)' : ''}</div>
+      <div className="pg-hd frow-sb">
+        <div>
+          <div className="pg-title">SCTR del Personal</div>
+          <div className="pg-sub">Personal en obra (Obrero / Profesionales / Subcontratos) directo o asegurado por la empresa · evidencia y vencimientos{!puedeSubir ? ' · solo lectura (la Contadora Jefe sube el SCTR)' : ''}</div>
+        </div>
+        {puedeVerDocs && (
+          <div style={{ display: 'flex', gap: 4 }}>
+            <button className={`btn btn-sm ${tab === 'trabajadores' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('trabajadores')}>Trabajadores</button>
+            <button className={`btn btn-sm ${tab === 'documentos' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('documentos')}>
+              Documentos{paquetes.length > 0 ? ` (${paquetes.length})` : ''}
+            </button>
+          </div>
+        )}
       </div>
 
+      {tab === 'documentos' && puedeVerDocs && (
+        <>
+          {puedeSubir ? (
+            <div className="card card-p" style={{ marginBottom: 14, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 240, fontSize: 12, color: 'var(--tm)' }}>
+                Subí el <strong style={{ color: 'var(--ts)' }}>PDF del trámite completo</strong> (cotización + constancia + pago + factura, todo junto):
+                la IA lo separa en documentos, extrae los asegurados y la vigencia, y te deja <strong style={{ color: 'var(--ts)' }}>corroborar</strong> antes de vincular a los trabajadores.
+              </div>
+              <label className="btn btn-amber btn-sm" style={{ cursor: procesando ? 'wait' : 'pointer', opacity: procesando ? 0.6 : 1 }}>
+                <JxIcon name="upload" size={13} /> {procesando || '✨ Subir paquete SCTR (PDF)'}
+                <input type="file" accept="application/pdf" style={{ display: 'none' }} disabled={!!procesando}
+                  onChange={e => { const f = e.target.files?.[0]; if (f) procesarPaquete(f); e.target.value = ''; }} />
+              </label>
+            </div>
+          ) : (
+            <div className="card card-p" style={{ marginBottom: 14, fontSize: 12, color: 'var(--tm)' }}>
+              Consulta de <strong>certificados/constancias</strong> del SCTR (los demás documentos del trámite son del área contable).
+            </div>
+          )}
+          {paquetes.length === 0 ? (
+            <div className="card card-p empty-state"><JxIcon name="shield" size={32} color="var(--tm)" /><p>Aún no hay documentos de SCTR subidos.</p></div>
+          ) : paquetes.map(pq => {
+            const visibles = pq.evs.filter(e => puedeSubir || e.tipo_evidencia === 'sctr');
+            if (!visibles.length) return null;
+            return (
+              <div key={pq.id} className="card card-p" style={{ marginBottom: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: pq.resumen ? 4 : 0 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--tp)' }}>📦 Paquete del {pq.fecha || '—'}</span>
+                  {visibles.map(ev => (
+                    <button key={ev.id} className="btn btn-ghost btn-xs" title={`${ev.observaciones || ev.nombre_archivo} — click para ver`} onClick={() => verDoc(ev)}>
+                      {ev.tipo_evidencia === 'sctr_cotizacion' ? '📋 Cotización' : ev.tipo_evidencia === 'sctr' ? '🛡️ Certificado' : ev.tipo_evidencia === 'sctr_pago' ? '💳 Pago' : ev.tipo_evidencia === 'sctr_factura' ? '🧾 Factura' : '📄 Otro'}
+                      <JxIcon name="eye" size={10} />
+                    </button>
+                  ))}
+                  {pq.evs.some(e => e.sync_status === 'pending_upload') && <span className="badge b-amber" style={{ fontSize: 9 }}>⏱ subiendo</span>}
+                </div>
+                {pq.resumen && <div style={{ fontSize: 11, color: 'var(--tm)' }}>{pq.resumen}</div>}
+              </div>
+            );
+          })}
+        </>
+      )}
+
+      {tab === 'trabajadores' && (<>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 16 }}>
         {[['VENCIDOS', kpis.vencidos, 'var(--red)'], ['SIN SCTR', kpis.sin, 'var(--tm)'], ['POR VENCER (30d)', kpis.porVencer, 'var(--amber)'], ['VIGENTES', kpis.vigentes, 'var(--green)']].map(([l, v, c], i) => (
           <div key={i} className="card card-p" style={{ borderLeft: `3px solid ${c}` }}>
@@ -387,6 +558,70 @@ function SctrPage({ showToast }) {
           </table>
         </div>
       </div>
+      </>)}
+
+      {/* Corroboración del paquete analizado por IA (antes de guardar nada) */}
+      {preview && Modal && (
+        <Modal title="✨ Corroborar paquete SCTR" icon="shield" onClose={() => !procesando && setPreview(null)} size="xl">
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10, fontSize: 11.5 }}>
+            <span className={`badge ${preview.confianza === 'alta' ? 'b-green' : preview.confianza === 'media' ? 'b-amber' : 'b-red'}`}>confianza {preview.confianza}</span>
+            <span style={{ color: 'var(--tm)' }}>{preview.totalPaginas} página(s) → {preview.secciones.length} documento(s):</span>
+            {preview.secciones.map((s, i) => (
+              <span key={i} className="badge b-blue" style={{ fontSize: 10 }}>
+                {s.tipo} · pág. {s.desde}{s.hasta !== s.desde ? `–${s.hasta}` : ''}
+              </span>
+            ))}
+          </div>
+          {preview.advertencias.length > 0 && (
+            <div style={{ fontSize: 11, color: 'var(--amber)', marginBottom: 8 }}>⚠ {preview.advertencias.join(' · ')}</div>
+          )}
+          {preview.certificado ? (
+            <div style={{ padding: '8px 10px', background: 'var(--bg2)', border: '1px solid var(--bd)', borderRadius: 6, fontSize: 12, marginBottom: 10 }}>
+              <strong>{preview.certificado.aseguradora || 'Aseguradora ¿?'}</strong>
+              {preview.certificado.constancia_numero && <> · constancia {preview.certificado.constancia_numero}</>}
+              {preview.certificado.poliza_pension && <> · póliza {preview.certificado.poliza_pension}</>}
+              <span style={{ color: 'var(--green)', fontWeight: 700 }}> · vigencia {preview.certificado.vigencia_desde || '¿?'} → {preview.certificado.vigencia_hasta || '¿?'}</span>
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: 'var(--red)', marginBottom: 10 }}>No se detectó la constancia/certificado en el PDF — se guardarán los documentos pero no se vinculará a nadie.</div>
+          )}
+          {preview.matches.length > 0 && (
+            <div style={{ border: '1px solid var(--bd)', borderRadius: 6, overflow: 'auto', maxHeight: 300, marginBottom: 10 }}>
+              <table className="tbl" style={{ fontSize: 12 }}>
+                <thead><tr><th style={{ width: 34 }}></th><th>Asegurado (según constancia)</th><th style={{ width: 110 }}>Documento</th><th>Trabajador en JARVEX</th></tr></thead>
+                <tbody>
+                  {preview.matches.map((m, i) => (
+                    <tr key={i}>
+                      <td style={{ textAlign: 'center' }}>
+                        {m.persona ? (
+                          <input type="checkbox" checked={preview.sel.has(m.persona.id)}
+                            onChange={() => setPreview(pv => { const sel = new Set(pv.sel); sel.has(m.persona.id) ? sel.delete(m.persona.id) : sel.add(m.persona.id); return { ...pv, sel }; })} />
+                        ) : '—'}
+                      </td>
+                      <td>{m.asegurado.nombre}</td>
+                      <td className="col-m" style={{ fontSize: 11 }}>{m.asegurado.tipo_doc} {m.asegurado.documento}</td>
+                      <td style={{ fontSize: 12 }}>
+                        {m.persona
+                          ? <span style={{ color: 'var(--green)' }}>✓ {m.persona.nombres} {m.persona.apellidos}{m.persona.cargo ? ` (${m.persona.cargo})` : ''}</span>
+                          : <span style={{ color: 'var(--amber)' }}>sin match — creá/corregí el personal y volvé a subir, o vinculalo a mano</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 6 }}>
+            Al confirmar: se guardan los documentos separados en la pestaña Documentos y los trabajadores marcados quedan con vencimiento <strong>{preview.certificado?.vigencia_hasta || '—'}</strong> y su aseguradora/póliza.
+          </div>
+          <div className="modal-actions">
+            <button className="btn btn-ghost" disabled={!!procesando} onClick={() => setPreview(null)}>Cancelar</button>
+            <button className="btn btn-amber" disabled={!!procesando} onClick={confirmarPaquete}>
+              <JxIcon name="check" size={13} /> {procesando || `Guardar y vincular ${preview.sel.size} trabajador(es)`}
+            </button>
+          </div>
+        </Modal>
+      )}
 
       {editando && Modal && (
         <Modal title={`SCTR · ${editando.nombres || ''} ${editando.apellidos || ''}`} icon="shield" onClose={() => setEditando(null)}>

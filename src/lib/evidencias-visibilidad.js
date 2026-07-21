@@ -16,9 +16,12 @@
 // ═══════════════════════════════════════════════════════════════════
 
 // Ámbito contable: SOLO admin + contador + ayudante_contador.
+// Del paquete SCTR (21-jul): cotización, pago y factura son contables; el
+// CERTIFICADO ('sctr') NO — lo consulta también la ing. de seguridad.
 export const TIPOS_CONTABLES = [
   'bancarizacion', 'comprobante_captura', 'factura', 'recibo_honorarios',
   'pago_evidencia', 'guia_remision',
+  'sctr_cotizacion', 'sctr_pago', 'sctr_factura', 'sctr_otro',
 ];
 
 // Bloques por función (un tipo puede estar en varios bloques).
