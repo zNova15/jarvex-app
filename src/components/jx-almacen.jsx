@@ -1578,7 +1578,19 @@ function MaterialesPage({ showToast }) {
   // operación. Usa los campos comunes del form (fecha, hora, observaciones,
   // documento) + items individuales. Para proveedor/persona, si el flag
   // "usar mismo X" está activo, se aplica el valor global a todos.
+  // Guard SÍNCRONO anti doble-click. El guard por estado (busyMovLote) tiene
+  // una VENTANA DE CARRERA: setBusyMovLote(true) recién corre después de las
+  // validaciones (que tienen awaits a Dexie) — dos clicks en esa ventana
+  // pasaban AMBOS (duplicados del 22-jul: CEMENTO/ARENA/HORMIGÓN con 35-211ms
+  // de delta). El ref corta el segundo click en el MISMO tick.
+  const loteEnCursoRef = React.useRef(false);
   const handleSubmitMovLote = async (tipo) => {
+    if (loteEnCursoRef.current) return;
+    loteEnCursoRef.current = true;
+    try { await handleSubmitMovLoteInner(tipo); }
+    finally { loteEnCursoRef.current = false; }
+  };
+  const handleSubmitMovLoteInner = async (tipo) => {
     // Doble-click guard: si ya estamos procesando, ignorar clicks extra.
     // Bug en prod: ARENAS GRUESA / PIEDRA CHANCADA aparecieron 2x con
     // mismo timestamp 10:48 → stock cayó a -45. Causa: click rápido
@@ -1597,6 +1609,29 @@ function MaterialesPage({ showToast }) {
     if (tipo === 'salida' && loteComunes.usarMismaPersona && !loteComunes.responsable_id) {
       // No es obligatorio responsable, pero advertir
     }
+
+    // ── AVISO ANTI-DUPLICADO (22-jul): la otra mitad de los duplicados fueron
+    // RE-REGISTROS humanos minutos después (TUBO PVC ×2 a 34 min, ENMALLADO
+    // ×3). Si en las últimas 6 horas ya se registró un movimiento IDÉNTICO
+    // (mismo material, tipo, cantidad y fecha), avisar antes de guardar.
+    // Nunca bloquea: el confirm deja registrar si es legítimo.
+    try {
+      const hace6h = Date.now() - 6 * 3600 * 1000;
+      const tipoMov = tipo === 'ingreso' ? 'entrada' : 'salida';
+      const repetidos = [];
+      for (const it of itemsValidos) {
+        const cant = parseFloat(it.cantidad) || 0;
+        const previos = await window.__db.movimientos_materiales
+          .filter(m => !m.deleted_at && m.material_id === it.material_id && m.tipo_movimiento === tipoMov
+            && Number(m.cantidad) === cant && m.fecha === form.fecha && Date.parse(m.created_at || 0) > hace6h)
+          .count();
+        if (previos > 0) {
+          const mat = materiales.find(x => x.id === it.material_id);
+          repetidos.push(`${mat?.nombre_material || 'material'} ×${cant}`);
+        }
+      }
+      if (repetidos.length && !window.confirm(`⚠ POSIBLE DUPLICADO\n\nHoy ya registraste un movimiento IDÉNTICO de:\n• ${repetidos.join('\n• ')}\n\nSi solo estás verificando, cancelá — el registro anterior YA quedó guardado.\n\n¿Registrar OTRA VEZ de todos modos?`)) return;
+    } catch { /* el aviso nunca debe romper el flujo */ }
 
     // ── Validación CUMULATIVA de stock para SALIDA ────────────────
     // Antes solo se chequeaba cada fila contra el stock actual, pero si
@@ -3580,7 +3615,17 @@ function HerramientasPage({ showToast }) {
     setFrentePendiente(false);
     setLoteCant(tipo);
   };
+  // Guard SÍNCRONO anti doble-click (22-jul): mismo patrón que el lote de
+  // materiales — el estado busyLoteCant se activa tras validaciones con
+  // awaits y un doble click en esa ventana creaba lotes duplicados.
+  const loteHerrEnCursoRef = React.useRef(false);
   const submitLoteCant = async () => {
+    if (loteHerrEnCursoRef.current) return;
+    loteHerrEnCursoRef.current = true;
+    try { await submitLoteCantInner(); }
+    finally { loteHerrEnCursoRef.current = false; }
+  };
+  const submitLoteCantInner = async () => {
     if (busyLoteCant) return;
     const tipo = loteCant;                       // 'ingreso' | 'salida' | 'devolucion'
     const esEntrada = tipo !== 'salida';         // ingreso (compra) y devolución suman stock

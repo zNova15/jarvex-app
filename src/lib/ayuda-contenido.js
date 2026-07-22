@@ -79,6 +79,7 @@ const AYUDA = {
     como: [
       'Registrá el movimiento con la FECHA REAL en que ocurrió.',
       'La app rechaza salidas con fecha en la que no había stock suficiente (candado cronológico) — suele significar que falta registrar una entrada previa.',
+      'ANTI-DUPLICADOS: si registrás un movimiento idéntico a uno de las últimas horas, la app te avisa antes de guardar — si solo estabas verificando, cancelá: el anterior ya quedó guardado.',
       'Si un registro queda "con error de sincronización", abrí el detalle y tocá "Reintentar todos".',
     ],
   },

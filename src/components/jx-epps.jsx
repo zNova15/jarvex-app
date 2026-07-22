@@ -204,7 +204,15 @@ function EppsInventarioPage({ showToast }) {
     }
     return m;
   }, [movEppLive]);
-  const stockDe = (e) => liveStockById.has(e?.id) ? Math.max(0, liveStockById.get(e.id)) : Number(e?.stock_actual ?? 0);
+  // Si el balance vivo queda NEGATIVO, el historial tiene huecos o duplicados
+  // (caso real 22-jul: ZAPATOS 41 con 3 salidas de triple-click el 13-jul →
+  // vivo -1 → mostraba 0 aunque el server decía 2 tras la entrada nueva). En
+  // ese caso el denormalizado del server (con sus clamps) es mejor señal.
+  const stockDe = (e) => {
+    if (!liveStockById.has(e?.id)) return Number(e?.stock_actual ?? 0);
+    const live = liveStockById.get(e.id);
+    return live < 0 ? Number(e?.stock_actual ?? 0) : live;
+  };
   const alertaDe = (e) => calcAlerta(stockDe(e), Number(e?.stock_minimo || 0));
 
   // ── Variantes padre-hijo (SKU) ──────────────────────────────────────
@@ -692,7 +700,20 @@ function EppsInventarioPage({ showToast }) {
     }
   };
 
+  // Guard SÍNCRONO anti doble-click (22-jul): este lote NO tenía guard y en
+  // producción hubo TRIPLE-click (ZAPATOS 41 ×3 salidas con 130 ms entre sí,
+  // 13-jul) que dejó el balance vivo negativo. El ref corta en el mismo tick;
+  // el estado deshabilita los botones.
+  const loteEppEnCursoRef = uR(false);
+  const [busyLoteEpp, setBusyLoteEpp] = uS(false);
   const handleSubmitLote = async (tipo) => {
+    if (loteEppEnCursoRef.current) return;
+    loteEppEnCursoRef.current = true;
+    setBusyLoteEpp(true);
+    try { await handleSubmitLoteInner(tipo); }
+    finally { loteEppEnCursoRef.current = false; setBusyLoteEpp(false); }
+  };
+  const handleSubmitLoteInner = async (tipo) => {
     const itemsValidos = loteItems.filter(it => it.epp_id && parseFloat(it.cantidad) > 0);
     if (itemsValidos.length === 0) {
       showToast('Agregá al menos un EPP con cantidad', 'red');
@@ -1272,8 +1293,8 @@ function EppsInventarioPage({ showToast }) {
           </div>
           <div className="modal-actions">
             <button className="btn btn-ghost" onClick={() => setModal(null)}>Cancelar</button>
-            <button className="btn btn-amber" onClick={() => handleSubmitLote('ingreso')}>
-              <JxIcon name="check" size={13}/>Registrar Ingreso ({loteItems.filter(it => it.epp_id && parseFloat(it.cantidad) > 0).length})
+            <button className="btn btn-amber" disabled={busyLoteEpp} onClick={() => handleSubmitLote('ingreso')}>
+              <JxIcon name="check" size={13}/>{busyLoteEpp ? 'Registrando…' : `Registrar Ingreso (${loteItems.filter(it => it.epp_id && parseFloat(it.cantidad) > 0).length})`}
             </button>
           </div>
         </Modal>
@@ -1430,8 +1451,8 @@ function EppsInventarioPage({ showToast }) {
           </div>
           <div className="modal-actions">
             <button className="btn btn-ghost" onClick={() => setModal(null)}>Cancelar</button>
-            <button className="btn btn-amber" onClick={() => handleSubmitLote('salida')}>
-              <JxIcon name="check" size={13}/>Registrar Salida con firma ({loteItems.filter(it => it.epp_id && parseFloat(it.cantidad) > 0).length})
+            <button className="btn btn-amber" disabled={busyLoteEpp} onClick={() => handleSubmitLote('salida')}>
+              <JxIcon name="check" size={13}/>{busyLoteEpp ? 'Registrando…' : `Registrar Salida con firma (${loteItems.filter(it => it.epp_id && parseFloat(it.cantidad) > 0).length})`}
             </button>
           </div>
         </Modal>
