@@ -123,7 +123,16 @@ const AYUDA = {
   'dashboard-tecnico': { titulo: 'Dashboard Técnico', que: 'Resumen del frente del ingeniero: sus partidas, avance y pendientes.', como: ['Es tu página de arranque: de acá saltás a reportar avance o pedir insumos.'] },
   'mis-partidas': { titulo: 'Partidas del Proyecto', que: 'Las partidas asignadas a tu frente con su avance y metrado.', como: ['Revisá el % de avance de cada partida — se actualiza con tus reportes diarios.'] },
   'cronograma-frente': { titulo: 'Cronograma de mis Partidas', que: 'Fechas planificadas de tus partidas.', como: ['Compará lo planificado contra tu avance real para anticipar atrasos.'] },
-  'salidas-frente': { titulo: 'Vinculación de Insumos', que: 'Vincula las salidas de almacén con las partidas donde se usaron.', como: ['Asigná cada salida a su partida — así el control de consumo por partida es real.'] },
+  'salidas-frente': {
+    titulo: 'Vinculación de Insumos',
+    que: 'Vincula las salidas de almacén con las partidas donde realmente se usaron — así el control de consumo por partida es real.',
+    como: [
+      'La 💡 te SUGIERE la partida que presupuesta cada material: confirmala con un clic, o elegí otra con el buscador.',
+      'EN LOTE: marcá varias salidas con su casilla ☑ y vinculalas todas a una partida de un solo golpe; repetí por grupo ("estas 3 a esta partida, estas 2 a esta otra").',
+      '"✨ Aplicar sugerencias" vincula automáticamente todas las pendientes que tengan sugerencia.',
+      'Si te equivocaste, en "Registro de vinculaciones" pedís el cambio y lo aprueba el admin.',
+    ],
+  },
   'reporte-diario': { titulo: 'Reporte Diario', que: 'Tu reporte de avance del día: partidas trabajadas, metrados y fotos.', como: ['Reportá el mismo día con fotos; si es atrasado, requiere motivo y aprobación del admin.', 'Al llegar al 100% la partida se marca terminada sola.'] },
   'mis-reportes': { titulo: 'Mis Reportes', que: 'El historial de tus reportes diarios enviados.', como: ['Revisá el estado de cada reporte (aprobado/observado) y sus fotos.'] },
   'borradores-reporte': { titulo: 'Borradores', que: 'Reportes a medio llenar que guardaste para completar después.', como: ['Retomá el borrador y envialo — no cuenta como reporte hasta enviarlo.'] },

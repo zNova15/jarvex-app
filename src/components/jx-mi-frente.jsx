@@ -499,6 +499,44 @@ function MiFrenteShell({ showToast, vista }) {
     return true;
   };
   const vincularSalidaSilent = async (m, pid) => { await vincularSalidaCore(m, pid); };
+  // Núcleo de vinculación GENERAL (sin toast). Si venía de una partida,
+  // revierte su consumo (si no, quedaba imputado a una partida ya desvinculada).
+  const vincularGeneralCore = async (m) => {
+    const prevPid = m.partida_id || null;
+    await movHook.update(m.id, { vinculacion_general: true, partida_id: null });
+    if (prevPid) {
+      try {
+        const { revertirConsumoPartida } = await import('../lib/partida-allocation.js');
+        await revertirConsumoPartida({ mov: m, partida_id: prevPid, material: materialesById.get(m.material_id), userId });
+      } catch (e) { console.warn('[vincular general]', e?.message); }
+    }
+  };
+  // ── VINCULACIÓN EN LOTE manual (pedido 21-jul): marcar varias salidas con su
+  // casilla y mandarlas a UNA partida (o "general") de un solo golpe; se repite
+  // por grupo — "estas 3 a esta partida, estas 2 a esta otra". ──
+  const [selVinc, setSelVinc] = uS(() => new Set());
+  const [bulkPartida, setBulkPartida] = uS('');
+  const vincularLote = async (listaVisible) => {
+    const v = bulkPartida;
+    if (!v) { showToast('Elegí la partida destino (o "general al frente") para el lote', 'red'); return; }
+    const seleccion = (listaVisible || []).filter(m => selVinc.has(m.id));
+    if (!seleccion.length) { showToast('Marcá al menos una salida con su casilla', 'amber'); return; }
+    const destino = v === '__general' ? 'General al frente' : (partidaOpts.find(o => o.value === v)?.label || 'la partida elegida');
+    if (!window.confirm(`¿Vincular ${seleccion.length} salida(s) a:\n${destino}?\n\nPodés re-vincular cualquiera después si alguna no corresponde.`)) return;
+    setBulkBusy(true);
+    let ok = 0;
+    try {
+      for (const m of seleccion) {
+        try {
+          if (v === '__general') await vincularGeneralCore(m); else await vincularSalidaCore(m, v);
+          ok++;
+        } catch (e) { console.warn('[lote vincular]', e?.message); }
+      }
+    } finally { setBulkBusy(false); }
+    setSelVinc(new Set()); setBulkPartida('');
+    try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'movimientos_materiales' } })); } catch {}
+    showToast(`${ok} salida(s) vinculadas a ${destino}`, ok ? 'green' : 'amber');
+  };
   const vincularSalida = async (m, pid) => {
     if (!pid) { showToast('Elegí una partida', 'red'); return; }
     if ((m.partida_id || null) === pid) { showToast('Ya está vinculada a esa partida', 'amber'); return; }
@@ -513,7 +551,7 @@ function MiFrenteShell({ showToast, vista }) {
   // presupuesto (ej. bidón de agua). No imputa consumo a ninguna partida.
   const vincularGeneral = async (m) => {
     try {
-      await movHook.update(m.id, { vinculacion_general: true, partida_id: null });
+      await vincularGeneralCore(m);
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'movimientos_materiales' } })); } catch {}
       setVincSel(prev => { const n = { ...prev }; delete n[m.id]; return n; });
       showToast('Salida vinculada en general al frente', 'green');
@@ -1183,7 +1221,7 @@ function MiFrenteShell({ showToast, vista }) {
           }
           return true;
         });
-        const colSpan = tabSalidas === 'generales' ? 7 : 6;
+        const colSpan = tabSalidas === 'generales' ? 8 : 7;
         const pendientesConSug = lista.filter(m => !m.partida_id && !m.vinculacion_general && sugerenciaDe(m)).length;
         return (
           <div style={{ display: 'grid', gap: 10 }}>
@@ -1204,19 +1242,42 @@ function MiFrenteShell({ showToast, vista }) {
             </div>
             <div style={{ fontSize: 11, color: 'var(--tm)' }}>
               {tabSalidas === 'mis'
-                ? 'Salidas de almacén registradas a tus frentes. El sistema te SUGIERE la partida que presupuesta cada material (💡) — confirmá con un clic o elegí otra. "✨ Aplicar sugerencias" vincula todas las pendientes de un toque.'
-                : 'Todas las salidas de la obra. Si un insumo salió a otro frente pero lo usaste en tu partida (incluso una sin frente), vinculalo acá. La 💡 sugiere la partida que lo presupuesta.'}
+                ? 'Salidas de almacén registradas a tus frentes. El sistema te SUGIERE la partida que presupuesta cada material (💡) — confirmá con un clic o elegí otra. Marcá varias con su casilla ☑ para vincularlas EN LOTE, o usá "✨ Aplicar sugerencias".'
+                : 'Todas las salidas de la obra. Si un insumo salió a otro frente pero lo usaste en tu partida (incluso una sin frente), vinculalo acá. Marcá varias con su casilla ☑ para vincularlas en lote. La 💡 sugiere la partida que lo presupuesta.'}
             </div>
+            {selVinc.size > 0 && (
+              <div className="card card-p" style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', borderLeft: '3px solid var(--amber)' }}>
+                <strong style={{ fontSize: 12.5 }}>☑ {selVinc.size} seleccionada(s)</strong>
+                <SearchableSelect value={bulkPartida} onChange={setBulkPartida} options={opcionesVinc}
+                  placeholder="Partida destino del lote…" fontSize={11} style={{ minWidth: 260, display: 'inline-block' }} />
+                <button className="btn btn-amber btn-sm" disabled={bulkBusy} onClick={() => vincularLote(lista)}>
+                  {bulkBusy ? 'Vinculando…' : `Vincular las ${selVinc.size} →`}
+                </button>
+                <button className="btn btn-ghost btn-xs" disabled={bulkBusy} onClick={() => { setSelVinc(new Set()); setBulkPartida(''); }}>✕ limpiar</button>
+              </div>
+            )}
             <div className="card" style={{ overflow: 'auto' }}>
               <table className="tbl" style={{ fontSize: 12 }}>
-                <thead><tr><th>Fecha</th><th>Material</th><th style={{ textAlign: 'right' }}>Cantidad</th><th>Responsable</th>{tabSalidas === 'generales' && <th>Frente</th>}<th>Vinculado</th><th>Vincular a partida / frente</th></tr></thead>
+                <thead><tr>
+                  <th style={{ width: 30, textAlign: 'center' }}>
+                    <input type="checkbox" title="Seleccionar / deseleccionar todas las visibles"
+                      checked={lista.length > 0 && lista.every(m => selVinc.has(m.id))}
+                      onChange={e => setSelVinc(e.target.checked
+                        ? new Set([...selVinc, ...lista.map(m => m.id)])
+                        : new Set([...selVinc].filter(id => !lista.some(m => m.id === id))))} />
+                  </th>
+                  <th>Fecha</th><th>Material</th><th style={{ textAlign: 'right' }}>Cantidad</th><th>Responsable</th>{tabSalidas === 'generales' && <th>Frente</th>}<th>Vinculado</th><th>Vincular a partida / frente</th></tr></thead>
                 <tbody>
                   {lista.map(m => {
                     const yaVinc = m.partida_id || m.vinculacion_general;
                     const pv = m.partida_id ? partByIdAll.get(m.partida_id) : null;
                     const sug = !yaVinc ? sugerenciaDe(m) : null;   // partida que PRESUPUESTA este material
                     return (
-                      <tr key={m.id}>
+                      <tr key={m.id} style={selVinc.has(m.id) ? { background: 'rgba(242,183,5,0.06)' } : undefined}>
+                        <td style={{ textAlign: 'center' }}>
+                          <input type="checkbox" checked={selVinc.has(m.id)}
+                            onChange={() => setSelVinc(prev => { const n = new Set(prev); n.has(m.id) ? n.delete(m.id) : n.add(m.id); return n; })} />
+                        </td>
                         <td>{m.fecha || '—'}</td>
                         <td>{materialesById.get(m.material_id)?.nombre_material || '—'}</td>
                         <td style={{ textAlign: 'right' }}>{num(m.cantidad)} {m.unidad || ''}</td>
