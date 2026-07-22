@@ -286,7 +286,14 @@ const AYUDA = {
     ],
   },
   'roles': { titulo: 'Roles y Permisos', que: 'La matriz de qué módulos ve y edita cada rol.', como: ['Cambiá con cuidado: un permiso de más expone información sensible.'] },
-  'solicitudes': { titulo: 'Solicitudes', que: 'La bandeja de solicitudes de cambio que envían los usuarios (p. ej. la asistente contable pidiendo cambiar una bancarización o la vinculación de una factura).', como: ['Revisá el motivo, aplicá el cambio en el módulo correspondiente y cerrá la solicitud.'] },
+  'solicitudes': {
+    titulo: 'Solicitudes',
+    que: 'La bandeja de solicitudes de cambio que envían los usuarios: cambios de campos, eliminaciones de movimientos, vinculación de facturas, bancarizaciones equivocadas, subcontratos nuevos.',
+    como: [
+      'La mayoría se APLICA SOLA al aprobar: cantidades y eliminaciones de movimientos (recalculan stock/consumo), la vinculación de facturas (obra / Gastos Generales / Contabilidad Neta) y la eliminación de bancarizaciones (borra partes/constancias, libera vouchers y devuelve la factura a Pendiente si queda descubierta).',
+      'Las marcadas "acción manual del admin" son descriptivas: hacé el cambio en su módulo y aprobá como acuse.',
+    ],
+  },
   'configuracion': { titulo: 'Configuración', que: 'Parámetros generales de la app.', como: ['Tras cada actualización de la app, cerrá y reabrila para tomar la versión nueva.'] },
   'conflictos': { titulo: 'Conflictos de Sincronización', que: 'Registros donde dos dispositivos editaron lo mismo sin conexión.', como: ['Elegí qué versión gana; el resto de dispositivos se actualiza solo.'] },
   'audit-log': { titulo: 'Auditoría', que: 'El registro de quién hizo qué y cuándo en toda la app.', como: ['Buscá por usuario, tabla o registro para reconstruir cualquier cambio.'] },

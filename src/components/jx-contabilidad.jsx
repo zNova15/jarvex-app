@@ -2208,11 +2208,23 @@ function MovimientosContablesPage({ showToast }) {
             // Vinculación (obra / gastos generales / contabilidad neta): la
             // asistente describe en el motivo a dónde debe ir; el Contador Jefe
             // o Admin lo aplican desde Editar Movimiento → Vinculación.
-            { key: '__vinculacion', label: 'Obra / Vinculación (destino)', descriptive: true },
-            // Cambios de BANCARIZACIÓN (constancia equivocada, tipo de pago mal
-            // elegido, montos de partes): la asistente describe QUÉ corregir y
-            // el admin o la Contadora Jefe lo aplican desde "Cambiar".
-            { key: '__bancarizacion', label: 'Bancarización (constancia / tipo / montos)', descriptive: true },
+            // Vinculación ESTRUCTURADA (21-jul): al aprobar se aplica sola —
+            // obra_id + destino_contable (hook en jx-solicitudes.applyChange).
+            { key: '__vinculacion_destino', label: 'Obra / Vinculación (destino)', options: [
+              { value: '__empresa__', label: '🏢 Gastos Generales de la Empresa' },
+              { value: '__otros__', label: '📄 Contabilidad Neta (Otros)' },
+              { value: '__nose__', label: '🤔 Sin clasificar (lo revisa la Contadora)' },
+              ...obrasParaSelector.map(o => ({ value: 'obra:' + o.id, label: '🏗 ' + o.nombre_obra })),
+            ] },
+            // Bancarización equivocada (21-jul): al aprobar se ELIMINAN las
+            // partes (y constancias en 'todas'), se libera el voucher y si la
+            // factura queda descubierta vuelve a "Pendiente" — automático.
+            { key: '__banc_eliminar', label: 'Bancarización: ELIMINAR lo registrado', options: [
+              { value: 'todas', label: 'Eliminar TODA la bancarización (partes y constancias)' },
+              { value: 'ultima', label: 'Eliminar solo la ÚLTIMA parte registrada' },
+            ] },
+            // Otros cambios de bancarización (tipo mal elegido, montos): descriptivo.
+            { key: '__bancarizacion', label: 'Bancarización: otro cambio (describilo en el motivo)', descriptive: true },
           ]}
           showToast={showToast}
           onClose={() => setSolicitarTarget(null)}

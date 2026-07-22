@@ -84,8 +84,12 @@ function ChangeDiff({ changes }) {
         const fieldLabel = (val && typeof val === 'object' && val.label) ? val.label : field;
         const oldLabel = (val && typeof val === 'object' && 'oldLabel' in val) ? val.oldLabel : oldV;
         const newLabel = (val && typeof val === 'object' && 'newLabel' in val) ? val.newLabel : newV;
+        // Claves __* ESTRUCTURADAS que SÍ se auto-aplican al aprobar (no son
+        // pedidos manuales): vinculación de factura y eliminación de
+        // bancarización (21-jul). Se muestran como un cambio normal.
+        const AUTO_KEYS = new Set(['__vinculacion_destino', '__banc_eliminar']);
         // Pedido descriptivo (campo no estructurado): requiere acción manual del admin.
-        if (field.startsWith('__')) {
+        if (field.startsWith('__') && !AUTO_KEYS.has(field)) {
           return (
             <div key={field} style={{ display: 'flex', flexWrap: 'wrap', gap: 6, fontSize: 12, alignItems: 'center' }}>
               <span style={{ background: 'rgba(242,183,5,0.12)', border: '1px solid rgba(242,183,5,0.3)', color: 'var(--amber)', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>📝 Pedido descrito en el motivo · acción manual del admin</span>
@@ -513,6 +517,64 @@ function SolicitudesPage({ showToast }) {
       } else if (fields.clase === 'compra') {
         const cur = oldData?.type;
         fields.type = (cur === 'cost' || cur === 'expense') ? cur : 'cost';
+      }
+    }
+
+    // ── HOOK ESPECIAL: VINCULACIÓN de una factura (obra / gastos generales /
+    // contabilidad neta / sin clasificar). Solicitud ESTRUCTURADA de la
+    // asistente contable — antes era un pedido descriptivo manual (21-jul).
+    const _rawVinc = req.proposed_changes?.['__vinculacion_destino'];
+    const _vincDestino = _rawVinc && typeof _rawVinc === 'object' && 'new' in _rawVinc ? _rawVinc.new : _rawVinc;
+    if (req.target_table === 'accounting_movements' && _vincDestino) {
+      const v = String(_vincDestino);
+      if (v.startsWith('obra:')) { fields.obra_id = v.slice(5); fields.destino_contable = 'obra'; }
+      else if (v === '__empresa__') { fields.obra_id = null; fields.destino_contable = 'gastos_generales'; }
+      else if (v === '__otros__') { fields.obra_id = null; fields.destino_contable = 'contabilidad_neta'; }
+      else if (v === '__nose__') { fields.obra_id = null; fields.destino_contable = 'sin_clasificar'; }
+    }
+
+    // ── HOOK ESPECIAL: ELIMINAR la bancarización de una factura (la asistente
+    // se confundió de constancia/monto). 'todas' borra todas las partes y las
+    // constancias directas; 'ultima' solo la última parte. Libera saldo de
+    // vouchers (el trigger del server ignora partes con deleted_at) y si la
+    // factura >S/2,000 queda descubierta, vuelve a "Pendiente".
+    const _rawBanc = req.proposed_changes?.['__banc_eliminar'];
+    const _bancDel = _rawBanc && typeof _rawBanc === 'object' && 'new' in _rawBanc ? _rawBanc.new : _rawBanc;
+    if (req.target_table === 'accounting_movements' && (_bancDel === 'todas' || _bancDel === 'ultima')) {
+      const movId = req.target_record_id;
+      const now = new Date().toISOString();
+      const userId = window.__currentUserId || 'admin-approval';
+      const { SYNC_STATUS } = await import('../db/jarvex.db');
+      const partes = (await window.__db.pagos_partes.where('accounting_movement_id').equals(movId).filter(p => !p.deleted_at).toArray())
+        .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+      const aBorrar = _bancDel === 'todas' ? partes : partes.slice(-1);
+      for (const p of aBorrar) {
+        if (!p.last_synced_at) {
+          await window.__db.pagos_partes.delete(p.id); // nunca llegó al server
+        } else {
+          await window.__db.pagos_partes.update(p.id, { deleted_at: now, updated_at: now, updated_by: userId, sync_status: SYNC_STATUS.PENDING_UPDATE });
+        }
+      }
+      if (_bancDel === 'todas') {
+        // Constancias directas del movimiento: DELETE en server (RLS lo permite
+        // al admin; si aprueba la contadora y el server lo rechaza, al menos
+        // desaparecen de este dispositivo y el admin puede purgarlas después).
+        const evs = await window.__db.evidencias.filter(e => e.modulo_relacionado === 'accounting_movements' && e.registro_relacionado_id === movId && e.tipo_evidencia === 'bancarizacion' && !e.deleted_at).toArray();
+        for (const ev of evs) {
+          try { await window.__supabase.from('evidencias').delete().eq('id', ev.id); } catch (e2) { console.warn('[solicitudes] delete evidencia server:', e2?.message); }
+          try { await window.__db.evidencias.delete(ev.id); } catch {}
+          try { await window.__db.evidencias_blobs.delete(ev.id); } catch {}
+        }
+      }
+      const restantes = partes.filter(p => !aBorrar.includes(p)).reduce((t, p) => t + (Number(p.monto) || 0), 0);
+      const monto = Number(oldData?.amount || 0);
+      if (oldData && oldData.currency === 'PEN' && monto > 2000 && restantes < monto - 0.01 && oldData.payment_status === 'paid') {
+        fields.payment_status = 'pending'; // quedó descubierta → vuelve a Pendiente
+      }
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'pagos_partes' } })); } catch {}
+      try { window.dispatchEvent(new Event('online')); } catch {}
+      if (Object.keys(fields).length === 0) {
+        return { oldData, newData: { bancarizacion_eliminada: _bancDel, partes_eliminadas: aBorrar.length } };
       }
     }
 
