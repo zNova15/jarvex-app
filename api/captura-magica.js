@@ -25,6 +25,11 @@
 //   MISTRAL_OCR_MODEL  (opcional)  — default 'mistral-ocr-latest'. Poné
 //                                    'mistral-ocr-2512' para pagar la mitad
 //                                    ($2 vs $4 / 1000 págs) con igual lectura.
+//   CLAUDE_STRUCT_MODEL (opcional) — modelo que estructura facturas/guías desde
+//                                    texto OCR. default 'claude-haiku-4-5-20251001'
+//                                    (~67% más barato). 'claude-sonnet-4-6' revierte.
+//   CLAUDE_VISION_MODEL (opcional) — modelo fuerte: fallback de visión + certifi-
+//                                    cados de calidad + SCTR. default 'claude-sonnet-4-6'.
 
 const ALLOWED_MIME = [
   'application/pdf',
@@ -36,7 +41,13 @@ const ALLOWED_MIME = [
 // Máximo 8 MB de string base64 (≈6 MB binario)
 const MAX_BASE64_BYTES = 8 * 1024 * 1024;
 
-const CLAUDE_MODEL = 'claude-sonnet-4-6';
+// Modelo FUERTE (Sonnet): fallback de visión + certificados de calidad + SCTR
+// (razonamiento/veredicto — no conviene abaratar). Overridable por env.
+const CLAUDE_VISION_MODEL = process.env.CLAUDE_VISION_MODEL || 'claude-sonnet-4-6';
+// Modelo BARATO (Haiku) para estructurar facturas/guías desde el texto OCR
+// (camino común y de alto volumen). ≈67% más barato que Sonnet sobre texto
+// limpio; overridable por env para revertir/A-B al instante sin redeploy.
+const CLAUDE_STRUCT_MODEL = process.env.CLAUDE_STRUCT_MODEL || 'claude-haiku-4-5-20251001';
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const MISTRAL_OCR_URL = 'https://api.mistral.ai/v1/ocr';
 // Alias móvil siempre válido por default; overridable a un snapshot barato.
@@ -475,7 +486,9 @@ export default async function handler(req, res) {
       : [fileBlock, { type: 'text', text: userInstruction }];
 
     const data = await anthropicMessages(apiKey, {
-      model: CLAUDE_MODEL,
+      // Facturas/guías desde texto OCR → Haiku (barato, alto volumen). Certificados
+      // de calidad y SCTR (razonamiento) + fallback de visión → Sonnet (fuerte).
+      model: (ocr && !esCert && !esSctr) ? CLAUDE_STRUCT_MODEL : CLAUDE_VISION_MODEL,
       max_tokens: 4000,
       system: systemPrompt,
       messages: [{ role: 'user', content }],
