@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { soloDigitos, normalizarRuc, normalizarDni, esRucValido, mismoRuc, mismoDni, normalizarComprobante, mismoComprobante } from '../doc-id.js';
+import { soloDigitos, normalizarRuc, normalizarDni, esRucValido, esRucPersonaNatural, dniDeRuc, mismoRuc, mismoDni, normalizarComprobante, mismoComprobante } from '../doc-id.js';
 import { gruposDuplicadosPorRuc } from '../fusion-entidad.js';
 
 describe('doc-id — normalización de RUC/DNI', () => {
@@ -20,6 +20,16 @@ describe('doc-id — normalización de RUC/DNI', () => {
     expect(esRucValido('10123456789')).toBe(true);
     expect(esRucValido('30123456789')).toBe(false); // prefijo inválido
     expect(esRucValido('2012345678')).toBe(false);  // 10 dígitos
+  });
+  it('esRucPersonaNatural / dniDeRuc: RUC 10 = persona natural con DNI embebido', () => {
+    // RUC persona natural = 10 + DNI(8 díg.) + verificador → recibos por honorarios.
+    expect(esRucPersonaNatural('10439320121')).toBe(true);
+    expect(esRucPersonaNatural('20123456789')).toBe(false); // empresa
+    expect(esRucPersonaNatural('1043932012')).toBe(false);   // 10 dígitos
+    expect(dniDeRuc('10439320121')).toBe('43932012');
+    expect(dniDeRuc('10-43932012-1')).toBe('43932012');       // robusto a formato
+    expect(dniDeRuc('20123456789')).toBe(null);               // empresa: no aplica
+    expect(dniDeRuc(null)).toBe(null);
   });
   it('normalizarDni respeta placeholders MIG-/RES- (no son DNI reales)', () => {
     expect(normalizarDni('70123456')).toBe('70123456');

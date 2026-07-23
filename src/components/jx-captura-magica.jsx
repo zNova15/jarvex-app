@@ -3,7 +3,8 @@ import {
   clasificarInsumo, TIPO_INSUMO_LABEL, TIPO_INSUMO_BADGE, TIPO_INSUMO_TABLA,
 } from "../lib/insumo-clasificador.js";
 import { epppTipo } from "../lib/epp-utils.js";
-import { normalizarRuc, normalizarComprobante } from "../lib/doc-id.js";
+import { normalizarRuc, normalizarComprobante, esRucPersonaNatural, dniDeRuc } from "../lib/doc-id.js";
+import { matchAsegurados } from "../lib/sctr-paquete.js";
 const { useState: uSCM, useMemo: uMCM, useEffect: uECM, useRef: uRCM } = React;
 
 // ╔════════════════════════════════════════════════════════════╗
@@ -159,6 +160,8 @@ function CapturaMagicaPage({ showToast }) {
   const { data: companies } = window.__hooks?.useCompanies?.() || { data: [] };
   const { data: obras } = window.__hooks?.useObras?.() || { data: [] };
   const { data: movs } = window.__hooks?.useAccountingMovements?.() || { data: [] };
+  // Todo el personal (sin obra_id → todas las obras): para vincular recibos por honorarios.
+  const { data: personal } = window.__hooks?.usePersonal?.() || { data: [] };
 
   // [items] cada item = { id, file, name, status, base64, mimeType, parsed, error, review }
   // Se persisten en Dexie (tabla captura_magica_pending) hasta que el usuario
@@ -459,7 +462,7 @@ function CapturaMagicaPage({ showToast }) {
         base64,
         parsed: ext,
         status: dup ? 'duplicado' : 'revisar',
-        review: buildInitialReview(ext, companies, obras, proveedoresDB, materialesDB, ocsActivasDB, cadenasActivasDB),
+        review: buildInitialReview(ext, companies, obras, proveedoresDB, materialesDB, ocsActivasDB, cadenasActivasDB, personal),
         duplicate_of: dup?.id || null,
       } : x));
     } catch (e) {
@@ -503,7 +506,7 @@ function CapturaMagicaPage({ showToast }) {
   procesarItemRef.current = procesarItem;
 
   // ── Build review state desde el JSON extraído ───────────────
-  const buildInitialReview = (ext, companies, obras, proveedoresDB, materialesDB, ocsActivasDB, cadenasActivasDB) => {
+  const buildInitialReview = (ext, companies, obras, proveedoresDB, materialesDB, ocsActivasDB, cadenasActivasDB, personal = []) => {
     if (!ext) return null;
     // Emisor: puede ser proveedor externo O empresa nuestra (intercompany)
     const ruc = ext.emisor?.ruc || '';
@@ -574,11 +577,25 @@ function CapturaMagicaPage({ showToast }) {
         tipo_insumo: tipoInsumo,
       };
     });
+    // ── RECIBO POR HONORARIOS: detección + pre-match del trabajador ──
+    // Un RxH tiene emisor PERSONA NATURAL (RUC empieza en 10). Se vincula a un
+    // trabajador (por DNI derivado del RUC, o por nombre) y crea un pago, no una compra.
+    const esRxh = (ext.tipo_documento === 'recibo') && esRucPersonaNatural(ext.emisor?.ruc);
+    let personalMatchId = '';
+    if (esRxh) {
+      const dniDer = dniDeRuc(ext.emisor?.ruc);
+      const m = matchAsegurados([{ documento: dniDer || '', nombre: ext.emisor?.razon_social || '' }], personal);
+      personalMatchId = m?.[0]?.persona?.id || '';
+    }
     return {
       tipo_documento: ext.tipo_documento || 'factura',
       serie_correlativo: ext.serie_correlativo || '',
       fecha_emision: ext.fecha_emision || new Date().toISOString().slice(0,10),
       moneda: ext.moneda || 'PEN',
+      // Recibo por honorarios (vinculación al trabajador; ver confirmarRxH).
+      es_rxh: esRxh,
+      personal_id: personalMatchId,
+      rxh_concepto: esRxh ? (ext.items?.[0]?.descripcion || ext.observaciones || '') : '',
       // Proveedor
       proveedor_id: proveedorElegido?.id || '',
       proveedor_accion: proveedorElegido ? 'usar_existente' : 'crear_nuevo',
@@ -846,6 +863,52 @@ function CapturaMagicaPage({ showToast }) {
     }
   };
 
+  // ── RECIBO POR HONORARIOS: flujo PROPIO (pedido de Gabriel, 23-jul) ──
+  // No es una compra a proveedor: crea el COMPROMISO DE PAGO del trabajador
+  // (tabla pagos, modo 'rxh') con el recibo adjunto como documento. Después, en
+  // el módulo Pagos, la asistente sube el/los voucher(s) de la transferencia. NO
+  // crea proveedor ni movimiento contable (evita duplicar el costo del personal,
+  // que se lleva por Pagos). El historial de RxH = los pagos con modo 'rxh'.
+  const confirmarRxH = async (it, r) => {
+    if (!r.personal_id) { showToast('Elegí a qué TRABAJADOR corresponde este recibo por honorarios.', 'red'); return; }
+    if (!(Number(r.total) > 0)) { showToast('El total del recibo debe ser mayor a 0.', 'red'); return; }
+    try {
+      const now = new Date().toISOString();
+      const persona = (personal || []).find(p => p.id === r.personal_id);
+      const obraId = r.obra_id || persona?.obra_id || (window.__getObraActivaId?.()) || (obras || []).find(o => !o.deleted_at)?.id || null;
+      const periodo = String(r.fecha_emision || now.slice(0, 10)).slice(0, 7); // YYYY-MM
+      const concepto = String(r.rxh_concepto || r.items?.[0]?.descripcion || 'Recibo por honorarios').trim();
+      const pagoId = window.__newId();
+      await window.__db.pagos.add({
+        id: pagoId, obra_id: obraId,
+        beneficiario_tipo: 'personal', personal_id: r.personal_id, subcontrato_id: null,
+        beneficiario_nombre: persona ? `${persona.nombres || ''} ${persona.apellidos || ''}`.trim() : (r.proveedor_razon_social || null),
+        concepto, modo_pago: 'rxh',
+        monto_acordado: Number(r.total) || 0, moneda: r.moneda || 'PEN',
+        periodo, estado: 'pendiente',
+        notas: JSON.stringify({ captura_magica: true, rxh_serie: r.serie_correlativo || null, rxh_ruc_emisor: r.proveedor_ruc || null, fecha_emision: r.fecha_emision || null }),
+        created_by: userId, updated_by: userId, created_at: now, updated_at: now, version: 1,
+        sync_status: 'pending_create',
+        idempotency_key: `${userId}_pago_${pagoId}`,
+      });
+      // El recibo por honorarios (PDF/imagen) como DOCUMENTO del pago.
+      await window.__saveEvidenciaLocal?.({
+        id: window.__newId(), obra_id: obraId,
+        tipo_evidencia: 'recibo_honorarios', modulo_relacionado: 'pagos', registro_relacionado_id: pagoId,
+        nombre_archivo: it.name, mime_type: it.mimeType, blob: it.file,
+        fecha: r.fecha_emision, created_by: userId,
+        observaciones: `Recibo por honorarios ${r.serie_correlativo || ''} · ${concepto}`.trim(),
+      });
+      try { await window.__logAudit?.({ action: 'create', table: 'pagos', recordId: pagoId, reason: `Recibo por honorarios vía Captura Mágica · ${concepto} · S/${(Number(r.total) || 0).toFixed(2)}` }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'pagos' } })); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'evidencias', source: 'rxh-capture' } })); } catch {}
+      setItems(prev => prev.map(x => x.id === it.id ? { ...x, status: 'confirmado' } : x));
+      showToast(`Recibo por honorarios registrado como pago de ${persona ? (persona.nombres || 'el trabajador') : 'el trabajador'}. Ahora subí el voucher en el módulo Pagos.`, 'green');
+    } catch (e) {
+      showToast('No se pudo registrar el recibo por honorarios: ' + (e.message || e), 'red');
+    }
+  };
+
   const confirmarItem = async (id) => {
     const it = items.find(x => x.id === id);
     if (!it || !it.review) return;
@@ -871,6 +934,9 @@ function CapturaMagicaPage({ showToast }) {
     // proveedor. Va a la tabla guias_remision con su evidencia y el auto-match
     // a la factura referenciada ("Doc. Ref."). (El destino no aplica a guías.)
     if (r.tipo_documento === 'guia_remision') { await confirmarGuia(it, r); return; }
+
+    // ── RECIBO POR HONORARIOS: crea el pago del trabajador (no compra a proveedor) ──
+    if (r.es_rxh) { await confirmarRxH(it, r); return; }
 
     // Destino OBLIGATORIO (pedido de Gabriel): las asistentes vinculaban facturas
     // a obras equivocadas; ahora eligen explícitamente — o "No sé" honesto.
@@ -1727,6 +1793,7 @@ function CapturaMagicaPage({ showToast }) {
         <ReviewModal
           item={reviewItem}
           companies={companies || []}
+          personal={personal || []}
           obras={obras || []}
           proveedoresDB={proveedoresDB}
           materialesDB={materialesDB}
@@ -1883,7 +1950,7 @@ function VincularPendientesModal({ data, materialesDB, onClose, onConfirm }) {
 }
 
 // ─── MODAL DE REVISIÓN ───────────────────────────────────────
-function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsActivasDB, onChange, onPatch, onConfirm, onClose }) {
+function ReviewModal({ item, companies, personal, obras, proveedoresDB, materialesDB, ocsActivasDB, onChange, onPatch, onConfirm, onClose }) {
   // La obra destino SIGUE a la obra activa del header (decisión de producto:
   // todos los módulos operan sobre la obra activa). Al abrir el modal,
   // sincronizar el review con la obra activa actual — cubre reviews viejos
@@ -2118,7 +2185,31 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
               </div>
             </div>
 
-            {/* PROVEEDOR (emisor) */}
+            {r.es_rxh ? (
+            /* RECIBO POR HONORARIOS — vincular al TRABAJADOR (no proveedor) */
+            <div style={{ marginTop:8, padding:'10px 12px', background:'rgba(46,204,113,0.06)', border:'1px solid rgba(46,204,113,0.28)', borderRadius:8 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:'var(--green)', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:8 }}>Recibo por honorarios · Trabajador</div>
+              <div style={{ fontSize:11.5, color:'var(--tm)', marginBottom:8, lineHeight:1.45 }}>
+                Emisor del recibo: <strong>{r.proveedor_razon_social || '—'}</strong>{r.proveedor_ruc ? ` · RUC ${r.proveedor_ruc}` : ''}. Confirmá a qué trabajador corresponde.
+              </div>
+              <label className="flabel">Trabajador *</label>
+              <select className="fi" value={r.personal_id || ''} onChange={e=>upd({ personal_id: e.target.value })}>
+                <option value="">— Elegir trabajador —</option>
+                {(personal || []).filter(p=>!p.deleted_at)
+                  .slice().sort((a,b)=>(`${a.apellidos||''} ${a.nombres||''}`).localeCompare(`${b.apellidos||''} ${b.nombres||''}`))
+                  .map(p => <option key={p.id} value={p.id}>{`${p.nombres||''} ${p.apellidos||''}`.trim()}{p.dni ? ` · DNI ${p.dni}` : ''}{p.cargo ? ` · ${p.cargo}` : ''}</option>)}
+              </select>
+              {!r.personal_id && <div style={{ fontSize:10.5, color:'var(--amber)', marginTop:4 }}>No lo pude vincular automáticamente — elegilo de la lista.</div>}
+              <div style={{ marginTop:8 }}>
+                <label className="flabel">Concepto / servicio</label>
+                <input className="fi" value={r.rxh_concepto || ''} onChange={e=>upd({ rxh_concepto: e.target.value })} placeholder="Ej. Asistente del residente de obra"/>
+              </div>
+              <div style={{ fontSize:11, color:'var(--tm)', marginTop:8, lineHeight:1.45 }}>
+                Al confirmar se crea el <strong>pago del trabajador</strong> (S/ {(Number(r.total)||0).toFixed(2)} · {r.fecha_emision || ''}) con este recibo adjunto. El voucher de la transferencia se sube después en <strong>Pagos</strong>.
+              </div>
+            </div>
+            ) : (
+            /* PROVEEDOR (emisor) */
             <div style={{ marginTop:8, padding:'10px 12px', background:'rgba(52,152,219,0.06)', border:'1px solid rgba(52,152,219,0.2)', borderRadius:8 }}>
               <div style={{ fontSize:11, fontWeight:700, color:'var(--blue)', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:8 }}>Proveedor (emisor)</div>
               <div style={{ display:'flex', gap:8, marginBottom:8 }}>
@@ -2161,6 +2252,7 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
                 </div>
               )}
             </div>
+            )}
 
             {/* INTERCOMPANY — operación entre nuestras empresas */}
             {r.es_intercompany && (

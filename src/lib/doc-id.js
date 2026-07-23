@@ -24,6 +24,12 @@ export const normalizarDni = (s) => {
 /** ¿RUC peruano plausible? (11 dígitos, prefijo 10/15/16/17/20). */
 export const esRucValido = (s) => { const d = soloDigitos(s); return d.length === 11 && /^(10|15|16|17|20)/.test(d); };
 
+/** ¿RUC de PERSONA NATURAL? (empieza en 10 → su titular es una persona con recibo por honorarios). */
+export const esRucPersonaNatural = (s) => { const d = soloDigitos(s); return d.length === 11 && d.startsWith('10'); };
+
+/** DNI contenido en un RUC de persona natural: 10 + <DNI 8 díg.> + verificador. null si no aplica. */
+export const dniDeRuc = (s) => { const m = /^10(\d{8})\d$/.exec(soloDigitos(s)); return m ? m[1] : null; };
+
 /** ¿Dos RUC son el mismo (normalizados)? Falso si alguno está vacío. */
 export const mismoRuc = (a, b) => { const x = soloDigitos(a); return !!x && x === soloDigitos(b); };
 
