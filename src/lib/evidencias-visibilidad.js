@@ -22,6 +22,7 @@ export const TIPOS_CONTABLES = [
   'bancarizacion', 'comprobante_captura', 'factura', 'recibo_honorarios',
   'pago_evidencia', 'guia_remision',
   'sctr_cotizacion', 'sctr_pago', 'sctr_factura', 'sctr_otro',
+  'constancia_detraccion',
 ];
 
 // Bloques por función (un tipo puede estar en varios bloques).

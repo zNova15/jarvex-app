@@ -789,6 +789,17 @@ function MovimientosContablesPage({ showToast }) {
   const [evidenciasPorMov, setEvidenciasPorMov] = uSC(() => new Map());
   const [bancarizacionPorMov, setBancarizacionPorMov] = uSC(() => new Map()); // tipo_evidencia='bancarizacion'
   const [evidenciaModal, setEvidenciaModal] = uSC(null); // { url, mime, nombre }
+  // Detracción (SPOT): la asistente registra el depósito (constancia del Banco de
+  // la Nación) y marca 'depositada'. Aplica a compras y ventas, sobre el mismo mov.
+  const [detraccionPorMov, setDetraccionPorMov] = uSC(() => new Map()); // tipo_evidencia='constancia_detraccion'
+  const [detrTarget, setDetrTarget] = uSC(null);
+  const [detrFile, setDetrFile] = uSC(null);
+  const [detrAplica, setDetrAplica] = uSC(true);
+  const [detrPct, setDetrPct] = uSC('');
+  const [detrMonto, setDetrMonto] = uSC('');
+  const [detrCodigo, setDetrCodigo] = uSC('');
+  const [detrFecha, setDetrFecha] = uSC('');
+  const [detrSaving, setDetrSaving] = uSC(false);
 
   uEC(() => {
     let cancelled = false;
@@ -822,10 +833,12 @@ function MovimientosContablesPage({ showToast }) {
         const map = new Map();       // facturas / comprobantes
         const mapBanc = new Map();    // evidencias de bancarización (directas al mov)
         const mapDep = new Map();     // constancias de DEPÓSITOS multi-factura
+        const mapDetr = new Map();    // constancias de DETRACCIÓN (directas al mov)
         for (const ev of evs) {
           const esDeposito = ev.modulo_relacionado === 'depositos_bancarizacion';
           const esBanc = ev.tipo_evidencia === 'bancarizacion';
-          const target = esDeposito ? mapDep : (esBanc ? mapBanc : map);
+          const esDetr = ev.tipo_evidencia === 'constancia_detraccion';
+          const target = esDeposito ? mapDep : (esBanc ? mapBanc : (esDetr ? mapDetr : map));
           if (target.has(ev.registro_relacionado_id)) continue;
           // Blob local si existe; si no, signed URL del bucket privado (la
           // url_archivo cruda NO sirve en un bucket privado → factura no abre).
@@ -840,7 +853,7 @@ function MovimientosContablesPage({ showToast }) {
             });
           }
         }
-        if (!cancelled) { setEvidenciasPorMov(map); setBancarizacionPorMov(mapBanc); setBancPorDeposito(mapDep); blobUrlsActuales = nuevos; }
+        if (!cancelled) { setEvidenciasPorMov(map); setBancarizacionPorMov(mapBanc); setBancPorDeposito(mapDep); setDetraccionPorMov(mapDetr); blobUrlsActuales = nuevos; }
         else nuevos.forEach(u => { try { URL.revokeObjectURL(u); } catch {} });
       } catch (e) { console.warn('[contab evidencias]', e?.message); nuevos.forEach(u => { try { URL.revokeObjectURL(u); } catch {} }); }
     };
@@ -1330,6 +1343,85 @@ function MovimientosContablesPage({ showToast }) {
     setBancMonto(partesPrev.length > 0 ? '' : (pend > 0 ? pend.toFixed(2) : ''));
   };
 
+  // ── DETRACCIÓN (SPOT) ───────────────────────────────────────────────
+  // La IA de Captura Mágica RECOMIENDA la detracción al registrar la factura;
+  // acá la asistente sube la constancia del depósito (Banco de la Nación) y la
+  // marca 'depositada', o registra/corrige una detracción que la IA no detectó.
+  const openDetraccion = (m) => {
+    setDetrTarget(m);
+    setDetrFile(null);
+    setDetrAplica(m.detraccion_aplica !== false); // si la abren, por defecto aplica
+    setDetrPct(m.detraccion_pct != null ? String(m.detraccion_pct) : '');
+    setDetrMonto(m.detraccion_monto != null ? String(m.detraccion_monto) : '');
+    setDetrCodigo(m.detraccion_codigo || '');
+    setDetrFecha(m.detraccion_constancia_fecha || new Date().toISOString().slice(0, 10));
+  };
+
+  const subirDetraccion = async () => {
+    if (!detrTarget) return;
+    const m = detrTarget;
+    const monto = detrMonto !== '' ? Number(detrMonto) : null;
+    const pct = detrPct !== '' ? Number(detrPct) : null;
+    if (detrAplica) {
+      if (!(monto > 0)) { showToast('Ingresá el monto de la detracción.', 'red'); return; }
+    } else if (!window.confirm('¿Marcar que esta factura NO tiene detracción? Se quitarán sus datos de detracción del movimiento.')) {
+      return;
+    }
+    setDetrSaving(true);
+    try {
+      const now = new Date().toISOString();
+      const esDemo = m.demo === true;
+      let evidenciaId = null;
+      let depositada = false;
+      // Constancia del depósito (opcional): si la sube, la detracción queda 'depositada'.
+      if (detrAplica && detrFile) {
+        evidenciaId = window.__newId();
+        await window.__saveEvidenciaLocal({
+          id: evidenciaId,
+          obra_id: m.obra_id || null,
+          tipo_evidencia: 'constancia_detraccion',
+          modulo_relacionado: 'accounting_movements',
+          registro_relacionado_id: m.id,
+          nombre_archivo: detrFile.name,
+          mime_type: detrFile.type || 'application/octet-stream',
+          blob: detrFile,
+          observaciones: `Constancia de detracción (Banco de la Nación)${pct != null ? ' · ' + pct + '%' : ''}`,
+          created_by: userId,
+          demo: esDemo,
+        });
+        depositada = true;
+      }
+      const patch = detrAplica ? {
+        detraccion_aplica: true,
+        detraccion_pct: pct,
+        detraccion_monto: monto,
+        detraccion_codigo: String(detrCodigo || '').trim() || null,
+        detraccion_estado: depositada ? 'depositada' : (m.detraccion_estado === 'depositada' ? 'depositada' : 'pendiente'),
+        detraccion_constancia_fecha: depositada ? (detrFecha || now.slice(0, 10)) : (m.detraccion_constancia_fecha || null),
+      } : {
+        detraccion_aplica: false,
+        detraccion_pct: null, detraccion_monto: null, detraccion_codigo: null,
+        detraccion_estado: null, detraccion_constancia_fecha: null,
+      };
+      await window.__db.accounting_movements.update(m.id, {
+        ...patch,
+        updated_at: now, updated_by: userId,
+        version: (m.version ?? 0) + 1,
+        sync_status: esDemo ? 'synced' : (m.sync_status === 'pending_create' ? 'pending_create' : 'pending_update'),
+      });
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'accounting_movements' } })); } catch {}
+      if (evidenciaId) { try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'evidencias', source: 'detr-upload' } })); } catch {} }
+      try { await window.__logAudit?.({ action: 'update', table: 'accounting_movements', recordId: m.id,
+        reason: detrAplica ? (depositada ? 'Detracción: constancia de depósito registrada' : 'Detracción registrada/corregida') : 'Detracción quitada del movimiento' }); } catch {}
+      showToast(detrAplica ? (depositada ? 'Detracción depositada y constancia adjunta.' : 'Detracción registrada (pendiente de depósito).') : 'Detracción quitada.', 'green');
+      setDetrTarget(null); setDetrFile(null);
+    } catch (e) {
+      showToast('No se pudo registrar la detracción: ' + (e.message || e), 'red');
+    } finally {
+      setDetrSaving(false);
+    }
+  };
+
   // Eliminar un PAGO registrado (solo admin / contadora jefe): permite corregir
   // montos o rehacer la bancarización con OTRO tipo (p. ej. era voucher
   // multi-factura y se registró como pago directo). Soft-delete → viaja al
@@ -1764,6 +1856,41 @@ function MovimientosContablesPage({ showToast }) {
                             </button></div>
                           );
                         })()}
+                        {/* DETRACCIÓN (SPOT) — compras y ventas. La IA la recomienda al capturar;
+                            la asistente sube la constancia del depósito (BN) y marca 'depositada'. */}
+                        {puedeVerBanc && (() => {
+                          const evD = detraccionPorMov.get(m.id);
+                          if (m.detraccion_aplica) {
+                            const _monto = Number(m.detraccion_monto) || 0;
+                            const _neto = Math.max(0, (Number(m.amount) || 0) - _monto);
+                            const depositada = m.detraccion_estado === 'depositada';
+                            return (
+                              <div style={{ fontSize:10, marginTop:2, color: depositada ? 'var(--green)' : 'var(--amber)' }}
+                                title={`Detracción${m.detraccion_pct != null ? ' ' + m.detraccion_pct + '%' : ''}${m.detraccion_codigo ? ' · código ' + m.detraccion_codigo : ''} · neto a pagar ${fmtCur(_neto, m.currency)}`}>
+                                {depositada ? '✅' : '⏳'} Detracción {fmtCur(_monto, m.currency)}{m.detraccion_pct != null ? ` (${m.detraccion_pct}%)` : ''}{depositada ? ' · depositada' : ' · falta depósito'}
+                                {evD && evD.url && (
+                                  <button className="btn btn-ghost btn-xs" style={{ marginLeft:4, padding:'0 4px', fontSize:9, color:'var(--blue)', verticalAlign:'middle' }}
+                                    title="Ver la constancia de detracción" onClick={()=>setEvidenciaModal(evD)}>
+                                    <JxIcon name="eye" size={9}/> Ver
+                                  </button>
+                                )}
+                                {canWrite && (
+                                  <button className="btn btn-amber btn-xs" style={{ marginLeft:4, padding:'1px 6px', fontSize:9, verticalAlign:'middle' }}
+                                    onClick={()=>openDetraccion(m)} title={depositada ? 'Cambiar la constancia o corregir la detracción' : 'Registrar el depósito de detracción (subir constancia)'}>
+                                    <JxIcon name="upload" size={9}/> {depositada ? 'Cambiar' : 'Registrar depósito'}
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          }
+                          if (!canWrite) return null;
+                          return (
+                            <div><button className="btn btn-ghost btn-xs" style={{ padding:'1px 6px', fontSize:9, color:'var(--tm)' }}
+                              onClick={()=>openDetraccion(m)} title="¿Esta factura tiene detracción (SPOT)? Registrala acá.">
+                              ＋ Detracción
+                            </button></div>
+                          );
+                        })()}
                       </td>
                       <td>{m.third_party_name || '—'}</td>
                       <td className="col-m" style={{ fontSize:11 }}>
@@ -2162,6 +2289,48 @@ function MovimientosContablesPage({ showToast }) {
                 const _pend = Math.max(0, (Number(bancTarget.amount) || 0) - _pagado);
                 return _pend > TOL ? 'Registrar pago exacto' : 'Cambiar constancia';
               })()}
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal: registrar DETRACCIÓN + subir la constancia del depósito (Banco de la Nación) */}
+      {detrTarget && (
+        <Modal title="Detracción (SPOT)" icon="upload" onClose={()=>{ setDetrTarget(null); setDetrFile(null); }}>
+          <div style={{ fontSize:12, color:'var(--tm)', marginBottom:10 }}>
+            {detrTarget.description || 'Movimiento'} · Total {fmtCur(detrTarget.amount, detrTarget.currency)} ({claseDe(detrTarget) === 'venta' ? 'venta' : 'compra'})
+          </div>
+          <label style={{ display:'flex', alignItems:'center', gap:8, cursor:'pointer', fontSize:13, fontWeight:600, marginBottom:10 }}>
+            <input type="checkbox" checked={detrAplica} onChange={e=>setDetrAplica(e.target.checked)}/>
+            Esta factura tiene detracción
+          </label>
+          {detrAplica && (
+            <>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8 }}>
+                <div><label className="flabel">Detracción %</label><input className="fi" type="number" step="0.01" value={detrPct} onChange={e=>setDetrPct(e.target.value)}/></div>
+                <div><label className="flabel">Monto detraído (S/)</label><input className="fi" type="number" step="0.01" value={detrMonto} onChange={e=>setDetrMonto(e.target.value)}/></div>
+                <div><label className="flabel">Código SPOT</label><input className="fi" value={detrCodigo} onChange={e=>setDetrCodigo(e.target.value)} placeholder="ej. 037"/></div>
+              </div>
+              <div style={{ marginTop:6, fontSize:11, color:'var(--tm)' }}>
+                Neto a pagar al proveedor: <b>{fmtCur(Math.max(0, (Number(detrTarget.amount)||0) - (Number(detrMonto)||0)), detrTarget.currency)}</b>
+              </div>
+              <div style={{ marginTop:12, paddingTop:10, borderTop:'1px solid var(--border)' }}>
+                <label className="flabel">Constancia del depósito (Banco de la Nación) — opcional</label>
+                <input className="fi" type="file" accept="image/*,application/pdf" onChange={e=>setDetrFile(e.target.files?.[0] || null)}/>
+                <div style={{ marginTop:6 }}>
+                  <label className="flabel">Fecha del depósito</label>
+                  <input className="fi" type="date" value={detrFecha} onChange={e=>setDetrFecha(e.target.value)}/>
+                </div>
+                <div style={{ fontSize:11, color:'var(--tm)', marginTop:6 }}>
+                  Si subís la constancia, la detracción queda marcada como <b>depositada</b>. Sin archivo, queda <b>pendiente de depósito</b> y la subís después.
+                </div>
+              </div>
+            </>
+          )}
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={()=>{ setDetrTarget(null); setDetrFile(null); }} disabled={detrSaving}>Cancelar</button>
+            <button className="btn btn-amber" onClick={subirDetraccion} disabled={detrSaving || (detrAplica && !(Number(detrMonto) > 0))}>
+              <JxIcon name="check" size={13}/> {detrSaving ? 'Guardando…' : (!detrAplica ? 'Quitar detracción' : (detrFile ? 'Guardar y marcar depositada' : 'Guardar detracción'))}
             </button>
           </div>
         </Modal>

@@ -428,7 +428,9 @@ function CapturaMagicaPage({ showToast }) {
       });
       const data = await resp.json();
       if (!resp.ok) {
-        throw new Error(data.error || data.detail || `HTTP ${resp.status}`);
+        const err = new Error(data.error || data.detail || `HTTP ${resp.status}`);
+        err.code = data.code || null; // ej. 'ia_sin_credito' → la UI ofrece avisar al admin
+        throw err;
       }
       const ext = data.extracted || {};
       // Detectar duplicado: mismo emisor RUC + serie_correlativo, NORMALIZADOS
@@ -462,10 +464,34 @@ function CapturaMagicaPage({ showToast }) {
       } : x));
     } catch (e) {
       setItems(prev => prev.map(x => x.id === id ? {
-        ...x, status: 'error', error: e.message || String(e),
+        ...x, status: 'error', error: e.message || String(e), errorCode: e.code || null,
       } : x));
     } finally {
       enVuelo.current.delete(id);
+    }
+  };
+
+  // Aviso al administrador cuando la IA está caída por falta de crédito. Reutiliza
+  // la bandeja de solicitudes del admin (change_requests), sin endpoints nuevos.
+  // Descriptivo-only (__aviso_ia): al aprobarlo NO toca ninguna tabla; es solo el aviso.
+  const avisoIaEnviadoRef = uRCM(false);
+  const [avisoIaOk, setAvisoIaOk] = uSCM(false);
+  const reportarIaSinCredito = async () => {
+    if (avisoIaEnviadoRef.current) { setAvisoIaOk(true); return; }
+    avisoIaEnviadoRef.current = true;
+    try {
+      await window.__changeRequests?.create({
+        table: 'sistema',
+        recordId: null,
+        recordLabel: 'IA sin crédito (Anthropic)',
+        proposedChanges: { __aviso_ia: { old: null, new: 'La Captura Mágica no funciona: la IA (Claude) está sin crédito. Recargar saldo en Anthropic para restaurar la lectura de facturas.' } },
+        reason: 'La IA de Captura Mágica devolvió error de crédito insuficiente. Recargá Anthropic para que las asistentes puedan volver a subir facturas.',
+      });
+      setAvisoIaOk(true);
+      showToast('Aviso enviado al administrador. Te avisamos cuando la IA vuelva a funcionar.', 'green');
+    } catch (e) {
+      avisoIaEnviadoRef.current = false;
+      showToast('No se pudo enviar el aviso: ' + (e?.message || e), 'red');
     }
   };
   // El restore al montar corre con el closure del PRIMER render (obras/
@@ -595,6 +621,11 @@ function CapturaMagicaPage({ showToast }) {
       subtotal: Number(ext.totales?.subtotal || 0),
       igv: Number(ext.totales?.igv || 0),
       total: Number(ext.totales?.total || 0),
+      // Detracción (SPOT): la IA la RECOMIENDA; la asistente confirma/corrige en el modal.
+      detraccion_aplica: !!ext.detraccion?.aplica,
+      detraccion_pct: ext.detraccion?.porcentaje != null ? Number(ext.detraccion.porcentaje) : null,
+      detraccion_monto: ext.detraccion?.monto != null ? Number(ext.detraccion.monto) : null,
+      detraccion_codigo: ext.detraccion?.codigo_spot || '',
       observaciones: ext.observaciones || '',
       confianza: ext.confianza || 'media',
       // La IA a veces marca mal "fecha futura" (su 'hoy' interno no es el real,
@@ -1157,6 +1188,13 @@ function CapturaMagicaPage({ showToast }) {
         // una venta intercompany sin cadena se cuenta como ingreso real (infla ventas).
         is_intercompany: !!r.es_intercompany,
         related_company_id: r.es_intercompany ? (r.company_id || null) : null,
+        // Detracción (SPOT): recomendada por la IA y confirmada/corregida por la asistente.
+        // El estado y la constancia del depósito (Banco de la Nación) se registran luego en Contabilidad.
+        detraccion_aplica: !!r.detraccion_aplica,
+        detraccion_pct: r.detraccion_aplica && r.detraccion_pct != null && r.detraccion_pct !== '' ? Number(r.detraccion_pct) : null,
+        detraccion_monto: r.detraccion_aplica && r.detraccion_monto != null && r.detraccion_monto !== '' ? Number(r.detraccion_monto) : null,
+        detraccion_codigo: r.detraccion_aplica ? (String(r.detraccion_codigo || '').trim() || null) : null,
+        detraccion_estado: r.detraccion_aplica ? 'pendiente' : null,
         date: r.fecha_emision,
         type: typeFinal,
         category: docLabel,
@@ -1628,7 +1666,7 @@ function CapturaMagicaPage({ showToast }) {
                         <span className={`badge ${est.color}`}>
                           <JxIcon name={est.icon} size={10}/> {est.label}
                         </span>
-                        {it.error && <div style={{ fontSize:10, color:'var(--red)', marginTop:3, maxWidth:180 }}>{it.error}</div>}
+                        {it.error && <div style={{ fontSize:10, color: it.errorCode==='ia_sin_credito' ? 'var(--amber)' : 'var(--red)', marginTop:3, maxWidth:200 }}>{it.error}</div>}
                         {it.status === 'duplicado' && <div style={{ fontSize:10, color:'var(--amber)', marginTop:3 }}>Ya existe en la DB</div>}
                       </td>
                       <td>
@@ -1660,9 +1698,16 @@ function CapturaMagicaPage({ showToast }) {
                           <span style={{ fontSize:11, color:'var(--green)' }}>✓ Insertado</span>
                         )}
                         {it.status === 'error' && (
-                          <button className="btn btn-ghost btn-xs" onClick={()=>procesarItem(it.id, it.file)}>
-                            <JxIcon name="refresh" size={11}/> Reintentar
-                          </button>
+                          <>
+                            <button className="btn btn-ghost btn-xs" onClick={()=>procesarItem(it.id, it.file)}>
+                              <JxIcon name="refresh" size={11}/> Reintentar
+                            </button>
+                            {it.errorCode === 'ia_sin_credito' && (
+                              <button className="btn btn-amber btn-xs" style={{ marginLeft:4 }} onClick={reportarIaSinCredito} disabled={avisoIaOk} title="Avisar al administrador que la IA está sin crédito">
+                                📨 {avisoIaOk ? 'Aviso enviado' : 'Avisar al admin'}
+                              </button>
+                            )}
+                          </>
                         )}
                         <button className="btn btn-ghost btn-xs" onClick={()=>descartarItem(it.id)} style={{ marginLeft:4 }} title="Descartar">
                           <JxIcon name="x" size={11}/>
@@ -2461,6 +2506,26 @@ function ReviewModal({ item, companies, obras, proveedoresDB, materialesDB, ocsA
               <div><label className="flabel">Subtotal</label><input className="fi" type="number" step="0.01" value={r.subtotal} onChange={e=>upd({ subtotal: e.target.value })}/></div>
               <div><label className="flabel">IGV</label><input className="fi" type="number" step="0.01" value={r.igv} onChange={e=>upd({ igv: e.target.value })}/></div>
               <div><label className="flabel">Total *</label><input className="fi" type="number" step="0.01" value={r.total} onChange={e=>upd({ total: e.target.value })} style={{ fontWeight:700 }}/></div>
+            </div>
+
+            {/* DETRACCIÓN (SPOT) — recomendada por la IA; la asistente confirma/corrige */}
+            <div style={{ marginTop:10, padding:'8px 10px', border:'1px solid var(--border)', borderRadius:8 }}>
+              <label style={{ display:'flex', alignItems:'center', gap:8, cursor:'pointer', fontSize:12.5, fontWeight:600 }}>
+                <input type="checkbox" checked={!!r.detraccion_aplica} onChange={e=>upd({ detraccion_aplica: e.target.checked })}/>
+                Detracción (SPOT) — la IA la detecta; corregí si hace falta
+              </label>
+              {r.detraccion_aplica && (
+                <>
+                  <div style={{ marginTop:8, display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8 }}>
+                    <div><label className="flabel">Detracción %</label><input className="fi" type="number" step="0.01" value={r.detraccion_pct ?? ''} onChange={e=>upd({ detraccion_pct: e.target.value })}/></div>
+                    <div><label className="flabel">Monto detraído (S/)</label><input className="fi" type="number" step="0.01" value={r.detraccion_monto ?? ''} onChange={e=>upd({ detraccion_monto: e.target.value })}/></div>
+                    <div><label className="flabel">Código SPOT</label><input className="fi" value={r.detraccion_codigo || ''} onChange={e=>upd({ detraccion_codigo: e.target.value })} placeholder="ej. 037"/></div>
+                  </div>
+                  <div style={{ marginTop:6, fontSize:11, color:'var(--tm)' }}>
+                    Neto a pagar al proveedor: <b>S/ {(Math.max(0, (Number(r.total)||0) - (Number(r.detraccion_monto)||0))).toFixed(2)}</b>. La constancia del depósito (Banco de la Nación) se sube luego en Contabilidad.
+                  </div>
+                </>
+              )}
             </div>
 
             <div style={{ marginTop:10 }}>

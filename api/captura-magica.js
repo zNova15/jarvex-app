@@ -64,6 +64,7 @@ Reglas estrictas:
 - Tasa IGV peruana estándar es 0.18 (18%). Si el documento muestra otra tasa, úsala.
 - Items: cada fila/línea de producto o servicio. Mantén descripciones tal cual aparecen.
 - GUÍA DE REMISIÓN: si el documento dice "Guía de Remisión" (remitente o transportista), tiene punto de partida/llegada, motivo de traslado o datos de transportista → tipo_documento="guia_remision". Las guías NO llevan montos (deja totales en null/0, sin advertir por eso) y suelen referenciar la factura como "Doc. Ref." / "Documento(s) de referencia" → extrae ese número en guia.doc_referencia.
+- DETRACCIÓN (SPOT): si el comprobante trae leyenda de detracción ("Operación sujeta al Sistema de Pago de Obligaciones Tributarias", "SPOT", "detracción", o un recuadro con porcentaje y cuenta del Banco de la Nación), devuelve detraccion.aplica=true con su porcentaje (número, ej. 12 para 12%), el monto detraído en soles y el código SPOT de bien/servicio (2 dígitos, ej. "037"). Si NO hay leyenda de detracción, devuelve detraccion=null.
 - Si el documento NO es un comprobante peruano NI una guía de remisión, devuelve tipo_documento="otro" y el resto vacío o null.
 - Si la imagen está borrosa, torcida, cortada o ilegible, agrega advertencias específicas y baja la confianza.
 
@@ -101,6 +102,7 @@ Responde SOLO con JSON válido (sin markdown, sin texto extra) con esta estructu
     "total": number,
     "tasa_igv": number
   },
+  "detraccion": { "aplica": boolean, "porcentaje": number | null, "monto": number | null, "codigo_spot": string | null } | null,
   "observaciones": string | null,
   "confianza": "alta" | "media" | "baja",
   "advertencias": [string]
@@ -325,6 +327,13 @@ function respondError(e, res, isProd) {
   }
   if (e && e.message === 'bad-json') {
     return res.status(502).json({ error: 'JSON inválido de Claude', detail: e.detail, rawText: (e.rawText || '').slice(0, 500) });
+  }
+  if (e && e.upstreamStatus === 400 && /credit balance is too low|insufficient.*credit|billing/i.test(e.upstreamText || '')) {
+    console.error('[captura-magica] Anthropic sin crédito');
+    return res.status(402).json({
+      error: 'El servicio de IA no tiene crédito disponible. Avisá al administrador para que recargue el saldo.',
+      code: 'ia_sin_credito',
+    });
   }
   if (e && e.upstreamStatus) {
     console.error('[captura-magica] upstream error:', e.upstreamStatus, (e.upstreamText || '').slice(0, 200));
