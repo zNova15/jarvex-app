@@ -379,6 +379,46 @@ function SolicitudesPage({ showToast }) {
   const [reviewComment, setReviewComment] = uSS('');
   const [editando, setEditando] = uSS(null);       // request propia en edición
 
+  // Buscador + clasificación (pedido de Gabriel): la bandeja mezclaba 33
+  // solicitudes de varias personas y áreas — las 27 de la contadora quedaban
+  // enterradas bajo las de almacén y sin forma de filtrarlas.
+  const [q, setQ] = uSS('');                        // texto de búsqueda libre
+  const [fPersona, setFPersona] = uSS('');          // filtro por requester_email
+  const [fTipo, setFTipo] = uSS('');                // filtro por target_table
+  // Al cambiar de pestaña, los filtros ya no aplican (otra lista) → resetear.
+  uES(() => { setQ(''); setFPersona(''); setFTipo(''); }, [tab]);
+
+  const norm = (s) => String(s == null ? '' : s).toLowerCase();
+  // Personas que enviaron solicitudes (con conteo) → chips de clasificación.
+  const personas = uMS(() => {
+    const m = new Map();
+    for (const r of requests) { const k = r.requester_email || '—'; m.set(k, (m.get(k) || 0) + 1); }
+    return [...m.entries()].sort((a, b) => b[1] - a[1]);
+  }, [requests]);
+  // Tipos (tabla objetivo) con conteo → select de clasificación por área.
+  const tipos = uMS(() => {
+    const m = new Map();
+    for (const r of requests) { const k = r.target_table || '—'; m.set(k, (m.get(k) || 0) + 1); }
+    return [...m.entries()].sort((a, b) => b[1] - a[1]);
+  }, [requests]);
+  const filtered = uMS(() => {
+    const term = norm(q).trim();
+    const words = term ? term.split(/\s+/) : [];
+    return requests.filter(r => {
+      if (fPersona && (r.requester_email || '—') !== fPersona) return false;
+      if (fTipo && (r.target_table || '—') !== fTipo) return false;
+      if (!words.length) return true;
+      const hay = norm([
+        r.requester_email,
+        r.target_record_label,
+        r.reason,
+        TABLE_LABELS[r.target_table] || r.target_table,
+        JSON.stringify(r.proposed_changes || {}),  // captura valores/motivos descriptivos
+      ].join(' • '));
+      return words.every(w => hay.includes(w));
+    });
+  }, [requests, q, fPersona, fTipo]);
+
   const cr = window.__changeRequests || {};
 
   const reload = uCS(async () => {
@@ -641,9 +681,13 @@ function SolicitudesPage({ showToast }) {
         <div>
           <div className="pg-title">Solicitudes de Cambio</div>
           <div className="pg-sub">
-            {tab === 'pendientes'
-              ? `${requests.length} solicitudes esperando revisión`
-              : `${requests.length} solicitudes propias — las pendientes se pueden editar o anular`}
+            {(() => {
+              const filtroActivo = q || fPersona || fTipo;
+              const base = tab === 'pendientes'
+                ? `${requests.length} solicitudes esperando revisión`
+                : `${requests.length} solicitudes propias — las pendientes se pueden editar o anular`;
+              return filtroActivo ? `${filtered.length} de ${base}` : base;
+            })()}
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -691,10 +735,58 @@ function SolicitudesPage({ showToast }) {
           <JxIcon name="checkCircle" size={40} color="var(--tm)" />
           <p>{tab === 'pendientes' ? 'No hay solicitudes pendientes de revisión.' : 'Aún no has creado solicitudes de cambio.'}</p>
         </div>
-      ) : tab === 'pendientes' && esRevisor ? (
+      ) : (
+        // ── Lista con BUSCADOR + CLASIFICACIÓN (por persona y por tipo) ──────
+        <>
+          <div className="card card-p" style={{ marginBottom: 12 }}>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: personas.length > 1 ? 10 : 0 }}>
+              <div style={{ position: 'relative', flex: '1 1 240px', minWidth: 180 }}>
+                <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', opacity: .55, display: 'flex' }}>
+                  <JxIcon name="search" size={14} />
+                </span>
+                <input className="fi" style={{ paddingLeft: 30 }} placeholder="Buscar por persona, registro o motivo…"
+                       value={q} onChange={e => setQ(e.target.value)} />
+              </div>
+              <select className="fi" style={{ flex: '0 1 220px' }} value={fTipo} onChange={e => setFTipo(e.target.value)}>
+                <option value="">🗂 Todos los tipos</option>
+                {tipos.map(([t, n]) => <option key={t} value={t}>{(TABLE_LABELS[t] || t)} ({n})</option>)}
+              </select>
+              {(q || fPersona || fTipo) && (
+                <button className="btn btn-ghost btn-sm" onClick={() => { setQ(''); setFPersona(''); setFTipo(''); }}>
+                  <JxIcon name="x" size={12} /> Limpiar
+                </button>
+              )}
+              <span style={{ fontSize: 11.5, color: 'var(--tm)', marginLeft: 'auto', whiteSpace: 'nowrap' }}>{filtered.length} de {requests.length}</span>
+            </div>
+            {personas.length > 1 && (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                <span style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--tm)', letterSpacing: '.06em', marginRight: 2, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  <JxIcon name="users" size={12} /> PERSONA:
+                </span>
+                <button className={fPersona === '' ? 'btn btn-amber btn-xs' : 'btn btn-ghost btn-xs'} onClick={() => setFPersona('')}>
+                  Todas ({requests.length})
+                </button>
+                {personas.map(([email, n]) => (
+                  <button key={email} title={email}
+                          className={fPersona === email ? 'btn btn-amber btn-xs' : 'btn btn-ghost btn-xs'}
+                          onClick={() => setFPersona(p => p === email ? '' : email)}>
+                    {email} ({n})
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {filtered.length === 0 ? (
+            <div className="card card-p empty-state">
+              <JxIcon name="search" size={34} color="var(--tm)" />
+              <p>Ningún resultado con estos filtros.</p>
+              <button className="btn btn-ghost btn-sm" onClick={() => { setQ(''); setFPersona(''); setFTipo(''); }}>Limpiar filtros</button>
+            </div>
+          ) : tab === 'pendientes' && esRevisor ? (
         // ── REVISOR (admin / Contador Jefe): cards con diff y botones ─────────────
         <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12 }}>
-          {requests.map(req => (
+          {filtered.map(req => (
             <div key={req.id} className="card card-p">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 10 }}>
                 <div style={{ flex: 1 }}>
@@ -750,7 +842,7 @@ function SolicitudesPage({ showToast }) {
                 <th style={{ textAlign: 'center' }}>Acciones</th>
               </tr></thead>
               <tbody>
-                {requests.map(req => {
+                {filtered.map(req => {
                   const st = STATUS_BADGE[req.status] || STATUS_BADGE.pendiente;
                   return (
                     <tr key={req.id}>
@@ -780,6 +872,8 @@ function SolicitudesPage({ showToast }) {
             </table>
           </div>
         </div>
+          )}
+        </>
       )}
 
       {/* Modal de edición de solicitud propia (solicitante) */}
@@ -925,6 +1019,33 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
     return () => { cancel = true; };
   }, [mode, table, record]);
 
+  // Envío real del cambio ESTRUCTURADO. Las etiquetas legibles (uuid → nombre de
+  // frente / obra, etc.) van en oldLabel/newLabel para el diff del admin.
+  const enviarPayload = async (parsedNew) => {
+    setBusy(true);
+    try {
+      const r = await window.__changeRequests.create({
+        table,
+        recordId: record.id,
+        recordLabel: recordLabel || record.id,
+        // conOpciones marca que el valor salió de un SELECT: el editor de "Mis
+        // Solicitudes" no debe ofrecerlo como texto libre (rompería la convención,
+        // ej. unidad 'Par' → 'pares').
+        proposedChanges: { [field]: { old: oldValue ?? null, new: parsedNew, label: fieldDef?.label || field, oldLabel: labelDe(oldValue), newLabel: labelDe(parsedNew), ...(fieldDef?.options ? { conOpciones: true } : {}) } },
+        reason: reason.trim(),
+      });
+      // Honestidad: si solo se pudo encolar local (sin conexión / falló el server),
+      // NO decir "enviada al admin" — la asistente creía haber enviado y nunca llegaba.
+      if (r && r._pending) showToast('Guardada. Se enviará al admin apenas haya conexión.', 'amber');
+      else showToast('Solicitud enviada al admin', 'green');
+      onClose();
+    } catch (e) {
+      showToast('Error: ' + (e?.message || e), 'red');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const submitEdit = async () => {
     if (!field) { showToast('Selecciona el campo a modificar', 'red'); return; }
     if (!reason || reason.trim().length < 10) {
@@ -936,14 +1057,15 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
     if (esDescriptivo) {
       setBusy(true);
       try {
-        await window.__changeRequests.create({
+        const r = await window.__changeRequests.create({
           table,
           recordId: record.id,
           recordLabel: recordLabel || record.id,
           proposedChanges: { __descripcion: { old: null, new: reason.trim() } },
           reason: reason.trim(),
         });
-        showToast('Solicitud enviada al admin', 'green');
+        if (r && r._pending) showToast('Guardada. Se enviará al admin apenas haya conexión.', 'amber');
+        else showToast('Solicitud enviada al admin', 'green');
         onClose();
       } catch (e) {
         showToast('Error: ' + (e?.message || e), 'red');
@@ -971,34 +1093,19 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
       return;
     }
 
-    // Paso de confirmación: mostrar el diff exacto antes de enviar.
+    // Campos de LISTA (select): el valor sale de opciones cerradas → NO hay
+    // riesgo de "valor parcial" (el motivo del paso de confirmación). Enviar
+    // DIRECTO. Bug real: la vinculación de facturas es un select; la asistente
+    // pulsaba "Revisar y enviar", veía la pantalla de confirmar y creía haber
+    // enviado → cerraba y la solicitud NUNCA llegaba (0 llegaron en 4 días).
+    if (fieldDef?.options) { await enviarPayload(parsedNew); return; }
+
+    // Texto libre / número: sí mostrar el diff exacto antes de enviar.
     setConfirmData({ parsedNew });
   };
 
-  // Envío real (tras confirmar el diff). Las etiquetas legibles (uuid → nombre
-  // de frente, etc.) van en oldLabel/newLabel para el diff del admin.
-  const enviarConfirmado = async () => {
-    const parsedNew = confirmData?.parsedNew;
-    setBusy(true);
-    try {
-      await window.__changeRequests.create({
-        table,
-        recordId: record.id,
-        recordLabel: recordLabel || record.id,
-        // conOpciones marca que el valor salió de un SELECT: el editor de "Mis
-        // Solicitudes" no debe ofrecerlo como texto libre (rompería la convención,
-        // ej. unidad 'Par' → 'pares').
-        proposedChanges: { [field]: { old: oldValue ?? null, new: parsedNew, label: fieldDef?.label || field, oldLabel: labelDe(oldValue), newLabel: labelDe(parsedNew), ...(fieldDef?.options ? { conOpciones: true } : {}) } },
-        reason: reason.trim(),
-      });
-      showToast('Solicitud enviada al admin', 'green');
-      onClose();
-    } catch (e) {
-      showToast('Error: ' + (e?.message || e), 'red');
-    } finally {
-      setBusy(false);
-    }
-  };
+  // Envío tras confirmar el diff (solo texto libre / número).
+  const enviarConfirmado = () => enviarPayload(confirmData?.parsedNew);
 
   const submitDelete = async () => {
     if (!reason || reason.trim().length < 10) {
@@ -1006,14 +1113,15 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
     }
     setBusy(true);
     try {
-      await window.__changeRequests.create({
+      const r = await window.__changeRequests.create({
         table,
         recordId: record.id,
         recordLabel: recordLabel || record.id,
         proposedChanges: { deleted_at: { old: null, new: new Date().toISOString() } },
         reason: reason.trim(),
       });
-      showToast('Solicitud de eliminación enviada al admin', 'green');
+      if (r && r._pending) showToast('Guardada. Se enviará al admin apenas haya conexión.', 'amber');
+      else showToast('Solicitud de eliminación enviada al admin', 'green');
       onClose();
     } catch (e) {
       showToast('Error: ' + (e?.message || e), 'red');
@@ -1176,7 +1284,7 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
           <>
             <button className="btn btn-ghost" disabled={busy} onClick={onClose}>Cancelar</button>
             <button className="btn btn-amber" disabled={busy} onClick={submitEdit}>
-              <JxIcon name="check" size={13} />{busy ? 'Enviando…' : (esDescriptivo ? 'Enviar Solicitud' : 'Revisar y enviar')}
+              <JxIcon name="check" size={13} />{busy ? 'Enviando…' : ((esDescriptivo || fieldDef?.options) ? 'Enviar Solicitud' : 'Revisar y enviar')}
             </button>
           </>
         )}
