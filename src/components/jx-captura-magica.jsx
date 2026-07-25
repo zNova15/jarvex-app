@@ -587,6 +587,16 @@ function CapturaMagicaPage({ showToast }) {
       const m = matchAsegurados([{ documento: dniDer || '', nombre: ext.emisor?.razon_social || '' }], personal);
       personalMatchId = m?.[0]?.persona?.id || '';
     }
+    // ── NOTA DE CRÉDITO/DÉBITO: pre-match de la factura que modifica ──
+    const esNotaDoc = ext.tipo_documento === 'nota_credito' || ext.tipo_documento === 'nota_debito';
+    let notaRefMovId = '';
+    if (esNotaDoc && ext.nota_ref?.doc_modifica) {
+      const refN = normalizarComprobante(ext.nota_ref.doc_modifica);
+      const rucEmisorNota = normalizarRuc(ext.emisor?.ruc);
+      const cand = (movs || []).filter(mv => !mv.deleted_at && normalizarComprobante(mv.document_number) === refN);
+      const exacto = cand.find(mv => rucEmisorNota && normalizarRuc(mv.third_party_ruc) === rucEmisorNota);
+      notaRefMovId = (exacto || cand[0])?.id || '';
+    }
     return {
       tipo_documento: ext.tipo_documento || 'factura',
       serie_correlativo: ext.serie_correlativo || '',
@@ -596,6 +606,12 @@ function CapturaMagicaPage({ showToast }) {
       es_rxh: esRxh,
       personal_id: personalMatchId,
       rxh_concepto: esRxh ? (ext.items?.[0]?.descripcion || ext.observaciones || '') : '',
+      // Nota de crédito/débito: factura que modifica + motivo (ver confirmarItem).
+      es_nota_credito: ext.tipo_documento === 'nota_credito',
+      es_nota_debito: ext.tipo_documento === 'nota_debito',
+      nota_doc_modifica: ext.nota_ref?.doc_modifica || '',
+      nota_motivo: ext.nota_ref?.motivo || '',
+      nota_ref_mov_id: notaRefMovId,
       // Proveedor
       proveedor_id: proveedorElegido?.id || '',
       proveedor_accion: proveedorElegido ? 'usar_existente' : 'crear_nuevo',
@@ -960,6 +976,12 @@ function CapturaMagicaPage({ showToast }) {
     // la emitimos nosotros como vendedores → VENTA. Si la emite una distribuidora/proveedor
     // externo → COMPRA (le compramos). Captura Mágica ya matcheó el emisor (r.emisor_company_id).
     const esVenta = !!r.emisor_company_id;
+    // NOTA DE CRÉDITO/DÉBITO: ajusta una factura previa. La NC RESTA (monto
+    // negativo); la ND SUMA (positivo). Ambas del mismo tipo/clase que la
+    // operación; NO generan recepción de almacén, materiales ni bancarización
+    // (es un ajuste, no una compra/venta nueva). Se vincula a la factura que modifica.
+    const esNota = r.tipo_documento === 'nota_credito' || r.tipo_documento === 'nota_debito';
+    const esNotaCredito = r.tipo_documento === 'nota_credito';
 
     // Validaciones
     if (esVenta) {
@@ -1140,7 +1162,7 @@ function CapturaMagicaPage({ showToast }) {
       const materialesCreados = [];
       const movsMatCreados = []; // queda vacío — el almacenero los crea
 
-      if (!esVenta && r.crear_materiales_catalogo && r.obra_id) {
+      if (!esVenta && !esNota && r.crear_materiales_catalogo && r.obra_id) {
         for (const it of r.items) {
           if (it.accion_material !== 'crear_nuevo') continue;
           if (!it.descripcion?.trim()) continue;
@@ -1241,6 +1263,8 @@ function CapturaMagicaPage({ showToast }) {
       const terceroNombre = esVenta ? (r.receptor_razon_social || null) : (r.proveedor_razon_social || null);
       const terceroRuc = esVenta ? (r.receptor_documento || null) : (r.proveedor_ruc || null);
       const docLabel = TIPO_DOC_MAP[r.tipo_documento]?.label || 'Factura';
+      // NC resta (monto negativo); ND y el resto se registran con el total tal cual.
+      const montoFinal = esNotaCredito ? -Math.abs(Number(r.total) || 0) : (Number(r.total) || 0);
       await window.__db.accounting_movements.add({
         id: accId,
         company_id: companyIdFinal,
@@ -1254,6 +1278,8 @@ function CapturaMagicaPage({ showToast }) {
         // una venta intercompany sin cadena se cuenta como ingreso real (infla ventas).
         is_intercompany: !!r.es_intercompany,
         related_company_id: r.es_intercompany ? (r.company_id || null) : null,
+        // Nota de crédito/débito → vinculada a la factura que modifica (si se encontró en el sistema).
+        related_movement_id: esNota ? (r.nota_ref_mov_id || null) : null,
         // Detracción (SPOT): recomendada por la IA y confirmada/corregida por la asistente.
         // El estado y la constancia del depósito (Banco de la Nación) se registran luego en Contabilidad.
         detraccion_aplica: !!r.detraccion_aplica,
@@ -1265,7 +1291,7 @@ function CapturaMagicaPage({ showToast }) {
         type: typeFinal,
         category: docLabel,
         description: `${docLabel} ${r.serie_correlativo} · ${terceroNombre || ''}`,
-        amount: Number(r.total) || 0,
+        amount: montoFinal,
         currency: r.moneda || 'PEN',
         third_party_name: terceroNombre,
         third_party_ruc: terceroRuc,
@@ -1278,11 +1304,12 @@ function CapturaMagicaPage({ showToast }) {
         // >S/2,000 en soles: SIEMPRE entra pendiente — se marca "Pagado" solo al
         // subir la bancarización completa (regla de cumplimiento; no depende de
         // lo que quede seleccionado en el review). ≤S/2,000: como antes.
-        payment_status: ((r.moneda || 'PEN') === 'PEN' && Number(r.total) > 2000)
-          ? 'pending'
-          : (r.payment_status === 'credit' ? 'pending' : (r.payment_status || 'pending')),
+        payment_status: esNota ? 'paid'  // una nota es un ajuste, no un pago pendiente de bancarizar
+          : (((r.moneda || 'PEN') === 'PEN' && Number(r.total) > 2000)
+            ? 'pending'
+            : (r.payment_status === 'credit' ? 'pending' : (r.payment_status || 'pending'))),
         // Recepción de almacén: solo en COMPRAS con obra (una venta no ingresa al almacén).
-        recepcion_status: (!esVenta && r.genera_recepcion_almacen && r.obra_id && r.items?.length > 0)
+        recepcion_status: (!esVenta && !esNota && r.genera_recepcion_almacen && r.obra_id && r.items?.length > 0)
           ? 'pendiente_recepcion'
           : 'no_aplica',
         document_type: tipoAcc,
@@ -2599,6 +2626,29 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
               <div><label className="flabel">IGV</label><input className="fi" type="number" step="0.01" value={r.igv} onChange={e=>upd({ igv: e.target.value })}/></div>
               <div><label className="flabel">Total *</label><input className="fi" type="number" step="0.01" value={r.total} onChange={e=>upd({ total: e.target.value })} style={{ fontWeight:700 }}/></div>
             </div>
+
+            {/* NOTA DE CRÉDITO/DÉBITO — factura que modifica + efecto contable */}
+            {(r.es_nota_credito || r.es_nota_debito) && (
+              <div style={{ marginTop:10, padding:'8px 10px', border:'1px solid rgba(155,89,182,0.35)', borderRadius:8, background:'rgba(155,89,182,0.06)' }}>
+                <div style={{ fontSize:11, fontWeight:700, color:'#B980D6', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:6 }}>
+                  {r.es_nota_credito ? 'Nota de crédito — RESTA la factura' : 'Nota de débito — SUMA a la factura'}
+                </div>
+                <div className="g2">
+                  <div><label className="flabel">Factura que modifica</label><input className="fi" value={r.nota_doc_modifica || ''} onChange={e=>upd({ nota_doc_modifica: e.target.value })} placeholder="Ej. F001-123"/></div>
+                  <div><label className="flabel">Motivo</label><input className="fi" value={r.nota_motivo || ''} onChange={e=>upd({ nota_motivo: e.target.value })} placeholder="Ej. anulación / descuento"/></div>
+                </div>
+                <div style={{ fontSize:11, marginTop:6, color: r.nota_ref_mov_id ? 'var(--green)' : 'var(--amber)' }}>
+                  {r.nota_ref_mov_id
+                    ? '✓ Vinculada a la factura original que ya está en el sistema.'
+                    : 'No encontré esa factura en el sistema — la nota se registra igual (verificá la serie).'}
+                </div>
+                <div style={{ fontSize:11, marginTop:4, color:'var(--tm)' }}>
+                  {r.es_nota_credito
+                    ? `Se registrará como −S/ ${(Number(r.total)||0).toFixed(2)} (reduce ${r.emisor_company_id ? 'las ventas' : 'el costo del proveedor'}). No pide bancarización ni recepción.`
+                    : `Se registrará como +S/ ${(Number(r.total)||0).toFixed(2)} (aumenta ${r.emisor_company_id ? 'las ventas' : 'el costo del proveedor'}).`}
+                </div>
+              </div>
+            )}
 
             {/* DETRACCIÓN (SPOT) — recomendada por la IA; la asistente confirma/corrige */}
             <div style={{ marginTop:10, padding:'8px 10px', border:'1px solid var(--border)', borderRadius:8 }}>

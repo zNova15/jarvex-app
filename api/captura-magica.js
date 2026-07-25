@@ -65,6 +65,7 @@ Reglas estrictas:
 - Items: cada fila/línea de producto o servicio. Mantén descripciones tal cual aparecen.
 - GUÍA DE REMISIÓN: si el documento dice "Guía de Remisión" (remitente o transportista), tiene punto de partida/llegada, motivo de traslado o datos de transportista → tipo_documento="guia_remision". Las guías NO llevan montos (deja totales en null/0, sin advertir por eso) y suelen referenciar la factura como "Doc. Ref." / "Documento(s) de referencia" → extrae ese número en guia.doc_referencia.
 - DETRACCIÓN (SPOT): si el comprobante trae leyenda de detracción ("Operación sujeta al Sistema de Pago de Obligaciones Tributarias", "SPOT", "detracción", o un recuadro con porcentaje y cuenta del Banco de la Nación), devuelve detraccion.aplica=true con su porcentaje (número, ej. 12 para 12%), el monto detraído en soles y el código SPOT de bien/servicio (2 dígitos, ej. "037"). Si NO hay leyenda de detracción, devuelve detraccion=null.
+- NOTA DE CRÉDITO / DÉBITO: si tipo_documento es nota_credito o nota_debito, SIEMPRE modifica un comprobante previo → extrae en nota_ref.doc_modifica la SERIE-CORRELATIVO del documento que modifica (ej. "F001-123"; suele figurar como "Documento que modifica", "Doc. modificado", "Comprobante que modifica" o "Referencia") y en nota_ref.motivo el motivo (ej. "anulación de la operación", "descuento", "devolución de mercadería", "corrección"). El total de la nota es el MONTO del ajuste en positivo. Si no es una nota, nota_ref=null.
 - Si el documento NO es un comprobante peruano NI una guía de remisión, devuelve tipo_documento="otro" y el resto vacío o null.
 - Si la imagen está borrosa, torcida, cortada o ilegible, agrega advertencias específicas y baja la confianza.
 
@@ -72,6 +73,7 @@ Responde SOLO con JSON válido (sin markdown, sin texto extra) con esta estructu
 {
   "tipo_documento": "factura" | "boleta" | "nota_credito" | "nota_debito" | "recibo" | "guia_remision" | "otro",
   "guia": { "doc_referencia": "F001-025131" | null, "fecha_traslado": "YYYY-MM-DD" | null, "punto_partida": string | null, "punto_llegada": string | null, "motivo_traslado": string | null, "transportista": { "placa": string | null, "chofer": string | null, "dni": string | null, "licencia": string | null, "ruc": string | null, "razon_social": string | null } | null } | null,
+  "nota_ref": { "doc_modifica": "F001-123" | null, "motivo": string | null } | null,
   "serie_correlativo": "F001-12345" | null,
   "fecha_emision": "YYYY-MM-DD" | null,
   "fecha_vencimiento": "YYYY-MM-DD" | null,
