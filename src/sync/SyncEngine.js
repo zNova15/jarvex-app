@@ -1725,6 +1725,9 @@ async function fetchAllRows(buildQuery) {
 }
 
 async function pullMasterTables() {
+  // One-shot: resetea el watermark de la familia contable → esta corrida es un
+  // full re-pull + reconcile sweep que limpia fantasmas/duplicados (ver def).
+  await repairMasterFinanceWatermarksOnce();
   for (const { tabla } of MASTER_TABLES) {
     if (TABLAS_NO_EN_SERVER.has(tabla) || _tablasCon404.has(tabla)) {
       continue; // skip silencioso
@@ -2051,6 +2054,38 @@ async function repairTransactionalWatermarksOnce() {
     console.warn('[SyncEngine] watermarks transaccional-only reseteados una vez (repair v1) → próximo pull es full re-pull de esas tablas');
   } catch (e) {
     console.warn('[SyncEngine] repair de watermarks transaccionales falló:', e?.message);
+  }
+}
+
+// ── Reparación única v2: watermarks de las tablas MASTER de CONTABILIDAD ──
+// Las MASTER se re-bajan enteras SOLO cuando su watermark es null (full pull), y
+// SOLO el full pull corre el "reconcile sweep" que borra fantasmas (filas que el
+// server soft-borró DESPUÉS de que este device avanzó su watermark — el bug de
+// tombstones aplicado a MASTER). Un device con watermark ya avanzado nunca vuelve
+// a full-pull por sí solo → arrastra duplicados/fantasmas para siempre.
+// Caso real (25-jul): a la asistente le seguía apareciendo una venta E001-141 que
+// se borró en el server el 17-jul, y no le bajaban facturas de julio ya subidas.
+// Reseteamos UNA vez el watermark de la familia contable → el próximo sync es full
+// re-pull + reconcile: elimina los fantasmas y re-baja lo que faltara. NO pierde
+// cambios locales sin sincronizar (el full pull preserva las filas pending_*/failed).
+// Seguro: el RLS de estas tablas es por ROL con visibilidad total (no scoping por
+// obra/empresa), así que el pull trae todo lo que el usuario debe ver.
+const _MASTERFIN_WM_REPAIR_KEY = 'jx_masterfin_wm_repair_v1';
+const _MASTERFIN_TABLES = [
+  'accounting_movements', 'companies', 'pagos', 'pagos_partes',
+  'depositos_bancarizacion', 'intercompany_transactions', 'guias_remision',
+  'conciliacion_vinculos', 'ordenes_intercompany',
+];
+async function repairMasterFinanceWatermarksOnce() {
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage.getItem(_MASTERFIN_WM_REPAIR_KEY)) return;
+    for (const tabla of _MASTERFIN_TABLES) {
+      try { await setLastSync(tabla, null); } catch {}
+    }
+    if (typeof localStorage !== 'undefined') localStorage.setItem(_MASTERFIN_WM_REPAIR_KEY, new Date().toISOString());
+    console.warn('[SyncEngine] watermarks de contabilidad (MASTER) reseteados una vez (repair v2) → próximo pull es full re-pull + reconcile (limpia fantasmas/duplicados y re-baja faltantes)');
+  } catch (e) {
+    console.warn('[SyncEngine] repair de watermarks MASTER contabilidad falló:', e?.message);
   }
 }
 
