@@ -5,7 +5,7 @@ import { getCurrentMode } from "../lib/app-mode-core.js";
 import { usePagination } from "../hooks/usePagination.js";
 import { TablePagination } from "./jx-pagination.jsx";
 import { detectarDuplicados, claseDe } from "../lib/dedupe-movs-contables.js";
-import { resumenRecepcion } from "../lib/cruce-recepcion.js";
+import { resumenRecepcion, rankearIngresosParaItem, estadoRecepcionDeItems, parseNotas } from "../lib/cruce-recepcion.js";
 import { validarVinculoDeposito, saldoDeposito, parMovimiento, parDeposito, mismoPar, movimientoBancarizado, TOL } from "../lib/depositos-bancarizacion.js";
 import { useChart } from "../lib/chart-loader.js";
 import { FusionEntidadModal } from "./jx-fusion-entidad.jsx";
@@ -790,12 +790,104 @@ function MovimientosContablesPage({ showToast }) {
   const [evidenciasPorMov, setEvidenciasPorMov] = uSC(() => new Map());
   const [bancarizacionPorMov, setBancarizacionPorMov] = uSC(() => new Map()); // tipo_evidencia='bancarizacion'
   const [evidenciaModal, setEvidenciaModal] = uSC(null); // { url, mime, nombre }
+  // Puente CONTABILIDAD → ALMACÉN: "¿llegó?" — buscar los ingresos que respaldan
+  // las líneas de una factura y vincularlos en 1 clic (mismo motor determinista).
+  const [llegoTarget, setLlegoTarget] = uSC(null);   // { factura, grupos:[{idx,item,candidatos}] }
+  const [buscandoLlego, setBuscandoLlego] = uSC(false);
+  const vincLlegoRef = uRC(false);                    // guard SÍNCRONO anti-doble-click
   // Detracción (SPOT): la asistente registra el depósito (constancia del Banco de
   // la Nación) y marca 'depositada'. Aplica a compras y ventas, sobre el mismo mov.
   const [detraccionPorMov, setDetraccionPorMov] = uSC(() => new Map()); // tipo_evidencia='constancia_detraccion'
   const [detrTarget, setDetrTarget] = uSC(null);
   const [detrFile, setDetrFile] = uSC(null);
   const [detrAplica, setDetrAplica] = uSC(true);
+
+  // ── "¿llegó?" — buscar ingresos de almacén que respalden las líneas de una factura ──
+  // Corre el matcher determinista (rankearIngresosParaItem) por cada línea NO resuelta
+  // contra los ingresos (entradas) de la obra aún sin factura, ya replicados en Dexie.
+  const buscarIngresos = async (facArg) => {
+    setLlegoTarget({ factura: facArg, grupos: [] });
+    setBuscandoLlego(true);
+    try {
+      const fac = (await window.__db.accounting_movements.get(facArg.id).catch(() => null)) || facArg;
+      const notas = parseNotas(fac.notas);
+      const items = Array.isArray(notas.items_factura) ? notas.items_factura : [];
+      const ingresosRaw = (await window.__db.movimientos_materiales.toArray().catch(() => []))
+        .filter(mm => !mm.deleted_at && mm.tipo_movimiento === 'entrada'
+          && (fac.obra_id ? mm.obra_id === fac.obra_id : true)
+          && !mm.accounting_movement_id);
+      const matIds = [...new Set(ingresosRaw.map(m => m.material_id).filter(Boolean))];
+      const mats = await window.__db.materiales.bulkGet(matIds).catch(() => []);
+      const nombrePorId = new Map();
+      (mats || []).forEach(m => m && nombrePorId.set(m.id, m.nombre_material));
+      const ingresos = ingresosRaw.map(mm => ({
+        id: mm.id, material_id: mm.material_id, materialNombre: nombrePorId.get(mm.material_id) || '',
+        cantidad: mm.cantidad, unidad: mm.unidad, fecha: mm.fecha,
+        obra_id: mm.obra_id, proveedor_id: mm.proveedor_id || null, _mov: mm,
+      }));
+      const ctx = { proveedor_id: fac.proveedor_id, third_party_name: fac.third_party_name, obra_id: fac.obra_id, fecha: fac.date };
+      const noResuelto = (it) => !(it.rechazado || it.tipo_insumo === 'servicio'
+        || ['empresa', 'obra_general'].includes(it.destino)
+        || (Number(it.recibido) || 0) >= (Number(it.cantidad) || 0) - 0.0001);
+      const grupos = items
+        .map((item, idx) => ({ idx, item }))
+        .filter(g => noResuelto(g.item))
+        .map(g => ({ ...g, candidatos: rankearIngresosParaItem(g.item, ctx, ingresos) }));
+      setLlegoTarget({ factura: fac, grupos });
+    } catch (e) {
+      showToast?.('Error buscando ingresos: ' + (e?.message || e), 'red');
+    } finally {
+      setBuscandoLlego(false);
+    }
+  };
+
+  // Vincular una LÍNEA de factura a UN ingreso (1 clic). Escribe ambos lados y refresca.
+  const vincularItemAIngreso = async (fac, itemIdx, cand) => {
+    if (vincLlegoRef.current) return;
+    vincLlegoRef.current = true;
+    try {
+      const isPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
+      const uid = window.__currentUserId || userId || 'contador';
+      const now = new Date().toISOString();
+      const mov = cand.ingreso._mov;
+      const facFresh = await window.__db.accounting_movements.get(fac.id);
+      if (!facFresh) { showToast?.('La factura ya no está en este dispositivo', 'red'); return; }
+      const notas = parseNotas(facFresh.notas);
+      const items = Array.isArray(notas.items_factura) ? notas.items_factura.slice() : [];
+      const orig = items[itemIdx];
+      if (!orig) { showToast?.('La línea de la factura cambió — volvé a buscar', 'red'); return; }
+      const qty = Number(mov.cantidad) || 0;
+      const nuevoRecibido = Number(orig.cantidad) > 0
+        ? Math.min(Number(orig.cantidad), (Number(orig.recibido) || 0) + qty)
+        : (Number(orig.recibido) || 0) + qty;
+      items[itemIdx] = { ...orig, recibido: nuevoRecibido, mov_vinculado_id: mov.id, recepcion_modo: 'vinculado' };
+      notas.items_factura = items;
+      const facNoSube = isPrueba || facFresh.demo === true;
+      await window.__db.accounting_movements.update(facFresh.id, {
+        notas: JSON.stringify(notas),
+        recepcion_status: estadoRecepcionDeItems(items),
+        recepcion_movimiento_id: facFresh.recepcion_movimiento_id || mov.id,
+        recepcion_fecha: now, recepcion_por: uid,
+        updated_at: now, updated_by: uid, version: (facFresh.version || 0) + 1,
+        sync_status: facNoSube ? 'synced' : (facFresh.sync_status === 'pending_create' ? 'pending_create' : 'pending_update'),
+      });
+      const movNoSube = isPrueba || mov.demo === true;
+      await window.__db.movimientos_materiales.update(mov.id, {
+        accounting_movement_id: facFresh.id, pendiente_sustento: false,
+        updated_at: now, updated_by: uid, version: (mov.version || 0) + 1,
+        sync_status: movNoSube ? 'synced' : (mov.sync_status === 'pending_create' ? 'pending_create' : 'pending_update'),
+      });
+      try { await window.__logAudit?.({ action: 'update', table: 'accounting_movements', recordId: facFresh.id, reason: `Recepción vinculada — línea ${itemIdx + 1} ↔ ingreso de almacén · factura ${facFresh.document_number || ''}` }); } catch {}
+      ['accounting_movements', 'movimientos_materiales'].forEach(t => { try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: t } })); } catch {} });
+      try { window.dispatchEvent(new Event('online')); } catch {}
+      showToast?.('🔗 Ingreso vinculado — recepción registrada', 'green');
+      await buscarIngresos(facFresh); // refrescar: la línea resuelta sale de la lista
+    } catch (e) {
+      showToast?.('Error al vincular: ' + (e?.message || e), 'red');
+    } finally {
+      vincLlegoRef.current = false;
+    }
+  };
   const [detrPct, setDetrPct] = uSC('');
   const [detrMonto, setDetrMonto] = uSC('');
   const [detrCodigo, setDetrCodigo] = uSC('');
@@ -1899,10 +1991,17 @@ function MovimientosContablesPage({ showToast }) {
                           const rr = resumenRecepcion(m);
                           if (!rr.aplica) return null;
                           const col = rr.tone === 'green' ? 'var(--green)' : rr.tone === 'red' ? '#EF6B5E' : rr.tone === 'muted' ? 'var(--tm)' : 'var(--amber)';
+                          const accionable = canWrite && (rr.estado === 'sin_confirmar' || rr.estado === 'parcial');
                           return (
-                            <div style={{ fontSize:10, marginTop:2, color: col }}
+                            <div style={{ fontSize:10, marginTop:2, color: col, display:'flex', alignItems:'center', gap:4, flexWrap:'wrap' }}
                               title={`Recepción en almacén: ${rr.label}${rr.total ? ` · ${rr.recibidos}/${rr.total} ítems recibidos` : ''}`}>
-                              {rr.emoji} {rr.label}
+                              <span>{rr.emoji} {rr.label}</span>
+                              {accionable && (
+                                <button className="btn btn-ghost btn-xs" style={{ padding:'0 5px', fontSize:9, color:'var(--blue, #3498DB)' }}
+                                  onClick={()=>buscarIngresos(m)} title="Buscar los ingresos de almacén que corresponden a esta factura y vincularlos">
+                                  🔎 ¿llegó?
+                                </button>
+                              )}
                             </div>
                           );
                         })()}
@@ -2375,6 +2474,64 @@ function MovimientosContablesPage({ showToast }) {
         </Modal>
       )}
 
+      {llegoTarget && (() => {
+        const fac = llegoTarget.factura;
+        const grupos = llegoTarget.grupos || [];
+        return (
+          <Modal title="¿Llegó a almacén?" icon="search" onClose={()=>setLlegoTarget(null)}>
+            <div style={{ marginBottom:10, fontSize:12.5 }}>
+              <div style={{ fontSize:10.5, fontWeight:700, color:'var(--tm)', letterSpacing:'.06em' }}>FACTURA</div>
+              <strong>{fac.document_type} {fac.document_number || ''}</strong> · {fac.third_party_name || '—'} · {fac.date || 's/f'}
+            </div>
+            {buscandoLlego ? (
+              <div className="empty-state" style={{ padding:20 }}><p>Buscando ingresos candidatos…</p></div>
+            ) : grupos.length === 0 ? (
+              <p style={{ fontSize:12.5, color:'var(--ts)' }}>Todas las líneas de esta factura ya están resueltas (recibidas, o marcadas como consumo de empresa/servicio). No hay nada pendiente de vincular.</p>
+            ) : (
+              <div style={{ display:'flex', flexDirection:'column', gap:12, maxHeight:'56vh', overflowY:'auto' }}>
+                {grupos.map(g => (
+                  <div key={g.idx} className="card card-p" style={{ padding:'10px 12px' }}>
+                    <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)' }}>
+                      {g.item.descripcion || '(sin descripción)'} · {Number(g.item.cantidad)||0} {g.item.unidad || ''}
+                      {Number(g.item.recibido)>0 && <span style={{ color:'var(--amber)', fontWeight:500 }}> · ya recibido {Number(g.item.recibido)}</span>}
+                    </div>
+                    {g.candidatos.length === 0 ? (
+                      <div style={{ fontSize:11.5, color:'var(--tm)', marginTop:6 }}>Sin ingresos candidatos en almacén (por insumo/fecha/cantidad). La almacenera también puede vincularlo desde su lado con 🔎.</div>
+                    ) : (
+                      <div style={{ display:'flex', flexDirection:'column', gap:6, marginTop:8 }}>
+                        {g.candidatos.map(c => {
+                          const mm = c.ingreso;
+                          const pct = Math.round(c.score*100);
+                          const tone = pct>=75?'var(--green)':pct>=50?'var(--amber)':'var(--tm)';
+                          return (
+                            <div key={mm.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, borderTop:'1px solid var(--bd)', paddingTop:6 }}>
+                              <div style={{ minWidth:0, flex:1 }}>
+                                <div style={{ fontSize:12 }}><strong>{mm.materialNombre || 'insumo'}</strong> · {mm.cantidad} {mm.unidad||''} · {mm.fecha}</div>
+                                {c.motivos?.length>0 && (
+                                  <div style={{ display:'flex', flexWrap:'wrap', gap:4, marginTop:4 }}>
+                                    {c.motivos.map((mo,i)=><span key={i} style={{ fontSize:10, background:'rgba(52,152,219,0.1)', border:'1px solid rgba(52,152,219,0.25)', color:'var(--blue,#3498DB)', padding:'1px 6px', borderRadius:4 }}>{mo}</span>)}
+                                  </div>
+                                )}
+                              </div>
+                              <div style={{ textAlign:'center', whiteSpace:'nowrap' }}>
+                                <div style={{ fontSize:11, fontWeight:700, color:tone, marginBottom:4 }}>{pct}%</div>
+                                <button className="btn btn-green btn-sm" onClick={()=>vincularItemAIngreso(fac, g.idx, c)}><JxIcon name="check" size={12}/> Sí, este</button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="modal-actions" style={{ marginTop:12 }}>
+              <button className="btn btn-ghost" onClick={()=>setLlegoTarget(null)}>Cerrar</button>
+            </div>
+          </Modal>
+        );
+      })()}
       {solicitarTarget && (
         <RequestChangeModal
           table="accounting_movements"
