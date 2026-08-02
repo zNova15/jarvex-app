@@ -5,7 +5,7 @@ import { getCurrentMode } from "../lib/app-mode-core.js";
 import { usePagination } from "../hooks/usePagination.js";
 import { TablePagination } from "./jx-pagination.jsx";
 import { detectarDuplicados, claseDe } from "../lib/dedupe-movs-contables.js";
-import { resumenRecepcion, rankearIngresosParaItem, estadoRecepcionDeItems, parseNotas, referenciaSinCostos } from "../lib/cruce-recepcion.js";
+import { resumenRecepcion, rankearIngresosParaItem, estadoRecepcionDeItems, parseNotas, referenciaSinCostos, reporteRecepcion } from "../lib/cruce-recepcion.js";
 import { ConsultasPanel, useConsultasResumen } from "./jx-consultas.jsx";
 import { crearConsulta } from "../lib/consultas-puente.js";
 import { validarVinculoDeposito, saldoDeposito, parMovimiento, parDeposito, mismoPar, movimientoBancarizado, TOL } from "../lib/depositos-bancarizacion.js";
@@ -800,6 +800,14 @@ function MovimientosContablesPage({ showToast }) {
   // Fase 2 — hilo de consultas con almacén.
   const [showConsultas, setShowConsultas] = uSC(false);
   const consResumen = useConsultasResumen('contabilidad', null);
+  // Fase 3 — reporte de recepción por insumo (lee items_factura[].recibido/destino).
+  const [showReporte, setShowReporte] = uSC(false);
+  const [reporteTab, setReporteTab] = uSC('insumo');
+  const [repQ, setRepQ] = uSC('');
+  const reporte = uMC(() => reporteRecepcion((movs || []).filter(m =>
+    filtroAmbito.startsWith('obra:') ? m.obra_id === filtroAmbito.slice(5)
+      : filtroAmbito.startsWith('emp:') ? m.company_id === filtroAmbito.slice(4)
+        : true)), [movs, filtroAmbito]);
   // Detracción (SPOT): la asistente registra el depósito (constancia del Banco de
   // la Nación) y marca 'depositada'. Aplica a compras y ventas, sobre el mismo mov.
   const [detraccionPorMov, setDetraccionPorMov] = uSC(() => new Map()); // tipo_evidencia='constancia_detraccion'
@@ -1757,6 +1765,9 @@ function MovimientosContablesPage({ showToast }) {
           <div className="pg-sub">{filtered.length} de {(movs || []).length} movimientos · ingresos / costos / gastos por empresa</div>
         </div>
         <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+          <button className="btn btn-ghost btn-sm" title="Reporte de recepción: de lo facturado, cuánto llegó a obra, cuánto falta y cuánto es consumo de empresa" onClick={()=>setShowReporte(true)}>
+            📊 Recepción
+          </button>
           <button className="btn btn-ghost btn-sm" title="Consultas con almacén — preguntar/responder si un insumo llegó" onClick={()=>setShowConsultas(true)}>
             💬 Consultas{consResumen.pendientes ? <span className="badge b-amber" style={{ marginLeft:4 }}>{consResumen.pendientes}</span> : ''}
           </button>
@@ -2560,6 +2571,82 @@ function MovimientosContablesPage({ showToast }) {
       {showConsultas && (
         <ConsultasPanel rol="contabilidad" obraId={null} showToast={showToast} onClose={()=>setShowConsultas(false)} />
       )}
+      {showReporte && (() => {
+        const tarjeta = (label, valor, color) => (
+          <div style={{ flex:'1 1 120px', minWidth:110, background:'var(--bg-s)', border:'1px solid var(--bd)', borderRadius:8, padding:'8px 12px' }}>
+            <div style={{ fontSize:10, color:'var(--tm)', letterSpacing:'.04em' }}>{label}</div>
+            <div style={{ fontSize:18, fontWeight:700, color: color || 'var(--tp)' }}>{valor}</div>
+          </div>
+        );
+        const insumos = reporte.porInsumo.filter(i => !repQ || i.nombre.toLowerCase().includes(repQ.toLowerCase()));
+        return (
+          <Modal title="Reporte de Recepción — de lo facturado, ¿qué llegó a obra?" icon="activity" onClose={()=>setShowReporte(false)} wide>
+            <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:12 }}>
+              {tarjeta('Ítems facturados', reporte.totales.facturado)}
+              {tarjeta('Recibido en obra', reporte.totales.recibido, 'var(--green)')}
+              {tarjeta('Falta llegar', reporte.totales.faltante, reporte.totales.faltante > 0.001 ? '#EF6B5E' : 'var(--tm)')}
+              {tarjeta('Consumo empresa', reporte.totales.aEmpresa, 'var(--tm)')}
+              {tarjeta('Gasto general obra', reporte.totales.aObraGeneral, 'var(--tm)')}
+            </div>
+            <div style={{ display:'flex', gap:6, marginBottom:10, alignItems:'center', flexWrap:'wrap' }}>
+              <button className={reporteTab==='insumo'?'btn btn-amber btn-sm':'btn btn-ghost btn-sm'} onClick={()=>setReporteTab('insumo')}>Por insumo ({reporte.porInsumo.length})</button>
+              <button className={reporteTab==='factura'?'btn btn-amber btn-sm':'btn btn-ghost btn-sm'} onClick={()=>setReporteTab('factura')}>Por factura ({reporte.nFacturas})</button>
+              {reporteTab==='insumo' && (
+                <input className="fi" style={{ marginLeft:'auto', maxWidth:220 }} placeholder="Buscar insumo…" value={repQ} onChange={e=>setRepQ(e.target.value)} />
+              )}
+            </div>
+            {reporte.nFacturas === 0 ? (
+              <div className="empty-state" style={{ padding:20 }}><p>No hay facturas de compra con detalle de insumos en este ámbito.</p></div>
+            ) : reporteTab === 'insumo' ? (
+              <div style={{ overflowX:'auto', maxHeight:'52vh', overflowY:'auto' }}>
+                <table className="tbl">
+                  <thead><tr>
+                    <th>Insumo</th><th style={{ textAlign:'right' }}>Facturado</th>
+                    <th style={{ textAlign:'right' }}>Recibido</th><th style={{ textAlign:'right' }}>Falta</th>
+                    <th style={{ textAlign:'center' }}>% obra</th><th>Destino</th>
+                  </tr></thead>
+                  <tbody>
+                    {insumos.map((i, k) => (
+                      <tr key={k}>
+                        <td className="col-p">{i.nombre} <span style={{ color:'var(--tm)', fontSize:10 }}>· {i.nFacturas} fact.</span></td>
+                        <td style={{ textAlign:'right' }}>{i.facturado} {i.unidad}</td>
+                        <td style={{ textAlign:'right', color:'var(--green)' }}>{i.recibido}</td>
+                        <td style={{ textAlign:'right', color: i.faltante > 0.001 ? '#EF6B5E' : 'var(--tm)', fontWeight: i.faltante > 0.001 ? 700 : 400 }}>{i.faltante}</td>
+                        <td style={{ textAlign:'center' }}>{i.pctRecibido == null ? '—' : `${i.pctRecibido}%`}</td>
+                        <td style={{ fontSize:11 }}>
+                          {i.aObra > 0.001 && <span title="A obra">🏗 {i.aObra}</span>}
+                          {i.aEmpresa > 0.001 && <span title="Consumo empresa" style={{ marginLeft:6 }}>🏢 {i.aEmpresa}</span>}
+                          {i.aObraGeneral > 0.001 && <span title="Gasto general de obra" style={{ marginLeft:6 }}>🍽 {i.aObraGeneral}</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div style={{ overflowX:'auto', maxHeight:'52vh', overflowY:'auto' }}>
+                <table className="tbl">
+                  <thead><tr><th>Comprobante</th><th>Proveedor</th><th>Fecha</th><th>Recepción</th><th style={{ textAlign:'center' }}>Líneas</th></tr></thead>
+                  <tbody>
+                    {reporte.porFactura.map(f => (
+                      <tr key={f.facturaId}>
+                        <td className="col-p">{f.doc}</td>
+                        <td style={{ fontSize:11.5 }}>{f.proveedor || '—'}</td>
+                        <td className="col-m">{f.fecha || '—'}</td>
+                        <td style={{ fontSize:11.5, color: f.tone==='green'?'var(--green)':f.tone==='red'?'#EF6B5E':f.tone==='muted'?'var(--tm)':'var(--amber)' }}>{f.emoji} {f.label}</td>
+                        <td style={{ textAlign:'center' }}>{f.recibidos}/{f.total}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <div className="modal-actions" style={{ marginTop:12 }}>
+              <button className="btn btn-ghost" onClick={()=>setShowReporte(false)}>Cerrar</button>
+            </div>
+          </Modal>
+        );
+      })()}
       {solicitarTarget && (
         <RequestChangeModal
           table="accounting_movements"

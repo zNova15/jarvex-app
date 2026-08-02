@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   itemsDeFactura, estadoRecepcionDeItems, resumenRecepcion,
   itemSinCostos, referenciaSinCostos, puntuarCruce,
-  rankearIngresosParaItem, rankearFacturasParaIngreso,
+  rankearIngresosParaItem, rankearFacturasParaIngreso, reporteRecepcion,
 } from '../cruce-recepcion.js';
 
 // Ayuda: un movimiento contable "compra" con items_factura en notas (JSON).
@@ -149,5 +149,44 @@ describe('cruce-recepcion — reverso (almacén → factura), sin costos', () =>
     // la referencia que verá la almacenera NO trae ningún costo
     expect(JSON.stringify(r[0].referencia)).not.toMatch(/precio|subtotal|28\.5/i);
     expect(r[0].referencia.insumos[0]).toEqual({ descripcion: 'Cemento Portland', cantidad: 20, unidad: 'bls' });
+  });
+});
+
+describe('cruce-recepcion — reporteRecepcion (facturado / recibido / faltante / destino)', () => {
+  it('agrega por insumo, consolida por nombre y separa obra de consumo empresa', () => {
+    const movs = [
+      factura([
+        { descripcion: 'Cemento', unidad: 'bls', cantidad: 100, recibido: 80, destino: 'obra' },
+        { descripcion: 'Café', unidad: 'kg', cantidad: 5, recibido: 0, destino: 'empresa' },
+      ], { id: 'f1' }),
+      factura([
+        { descripcion: 'cemento', unidad: 'bls', cantidad: 50, recibido: 50, destino: 'obra' },
+      ], { id: 'f2', document_number: 'F001-124' }),
+      // venta: NO cuenta
+      { id: 'v1', clase: 'venta', type: 'income', notas: JSON.stringify({ items_factura: [{ descripcion: 'x', cantidad: 1 }] }) },
+    ];
+    const rep = reporteRecepcion(movs);
+    const cem = rep.porInsumo.find(i => /cemento/i.test(i.nombre));
+    expect(cem.facturado).toBe(150);
+    expect(cem.recibido).toBe(130);
+    expect(cem.faltante).toBe(20);
+    expect(cem.aObra).toBe(150);
+    expect(cem.pctRecibido).toBe(87);          // 130/150
+    expect(cem.nFacturas).toBe(2);
+    const cafe = rep.porInsumo.find(i => /caf/i.test(i.nombre));
+    expect(cafe.aEmpresa).toBe(5);
+    expect(cafe.faltante).toBe(0);             // consumo empresa: no "falta" en obra
+    expect(rep.totales).toMatchObject({ faltante: 20, aEmpresa: 5, aObra: 150 });
+    expect(rep.nFacturas).toBe(2);             // la venta se ignora
+  });
+
+  it('un ítem servicio/rechazado no genera faltante', () => {
+    const rep = reporteRecepcion([
+      factura([
+        { descripcion: 'Flete', unidad: 'srv', cantidad: 1, recibido: 0, tipo_insumo: 'servicio' },
+        { descripcion: 'Clavos', unidad: 'kg', cantidad: 10, recibido: 4, destino: 'obra' },
+      ]),
+    ]);
+    expect(rep.totales.faltante).toBe(6);      // solo clavos (10 − 4)
   });
 });

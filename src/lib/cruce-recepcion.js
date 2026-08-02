@@ -247,3 +247,94 @@ export function rankearFacturasParaIngreso(ingreso, facturas, opts = {}) {
   }
   return out.sort((a, b) => b.score - a.score).slice(0, opts.limite ?? 8);
 }
+
+// ── Reporte de RECEPCIÓN por insumo (factura-céntrico) ──────────────
+// Lee el enlace por-ítem que ya vive en items_factura[] (recibido/destino,
+// poblado por Captura Mágica, Vinculación de Compras y el matcher 1-clic) y
+// responde la pregunta de Gabriel: de lo FACTURADO, cuánto LLEGÓ a la obra,
+// cuánto FALTA, y cuánto es consumo de EMPRESA / gasto general (no va a obra).
+// Puro (sin IO) → testeable. NO usa costos.
+const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+const normNombreRep = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+
+/**
+ * @param {Array} movs  accounting_movements (se filtran a COMPRAS con ítems).
+ * @returns {{porInsumo:Array, porFactura:Array, totales:Object, porEstado:Object, nFacturas:number}}
+ */
+export function reporteRecepcion(movs) {
+  const compras = (Array.isArray(movs) ? movs : []).filter(m =>
+    m && !m.deleted_at && m.clase !== 'venta' && m.type !== 'income');
+  const insumoMap = new Map();
+  const porFactura = [];
+  const tot = { facturado: 0, recibido: 0, faltante: 0, aObra: 0, aObraGeneral: 0, aEmpresa: 0 };
+
+  for (const mv of compras) {
+    const items = itemsDeFactura(mv);
+    if (!items.length) continue;
+    const rr = resumenRecepcion(mv);
+    if (!rr.aplica) continue;
+    porFactura.push({
+      facturaId: mv.id,
+      doc: `${mv.document_type || 'doc'} ${mv.document_number || ''}`.trim(),
+      proveedor: mv.third_party_name || '',
+      fecha: mv.date || '',
+      obra_id: mv.obra_id || null,
+      estado: rr.estado, label: rr.label, emoji: rr.emoji, tone: rr.tone,
+      recibidos: rr.recibidos, total: rr.total,
+    });
+    for (const it of items) {
+      const cant = num(it.cantidad);
+      const recRaw = num(it.recibido);
+      if (cant <= 0 && recRaw <= 0) continue;
+      const rec = cant > 0 ? Math.min(recRaw, cant) : recRaw;
+      const destino = it.destino || 'obra';
+      const requiere = !itemNoRequiereAlmacen(it);
+      const key = it.material_id
+        ? ('m:' + it.material_id)
+        : ('n:' + normNombreRep(it.descripcion || it.nombre) + '|' + normNombreRep(it.unidad));
+      const cur = insumoMap.get(key) || {
+        nombre: it.descripcion || it.nombre || '—', unidad: it.unidad || 'und',
+        facturado: 0, recibido: 0, faltante: 0, aObra: 0, aObraGeneral: 0, aEmpresa: 0,
+        nLineas: 0, facturas: new Set(),
+      };
+      cur.facturado += cant;
+      cur.recibido += rec;
+      if (requiere) cur.faltante += Math.max(0, cant - rec);
+      if (destino === 'empresa') cur.aEmpresa += cant;
+      else if (destino === 'obra_general') cur.aObraGeneral += cant;
+      else cur.aObra += cant;
+      cur.nLineas += 1;
+      cur.facturas.add(mv.id);
+      insumoMap.set(key, cur);
+
+      tot.facturado += cant; tot.recibido += rec;
+      if (requiere) tot.faltante += Math.max(0, cant - rec);
+      if (destino === 'empresa') tot.aEmpresa += cant;
+      else if (destino === 'obra_general') tot.aObraGeneral += cant;
+      else tot.aObra += cant;
+    }
+  }
+
+  const porInsumo = [...insumoMap.values()].map(c => ({
+    nombre: c.nombre, unidad: c.unidad,
+    facturado: round2(c.facturado), recibido: round2(c.recibido), faltante: round2(c.faltante),
+    aObra: round2(c.aObra), aObraGeneral: round2(c.aObraGeneral), aEmpresa: round2(c.aEmpresa),
+    nLineas: c.nLineas, nFacturas: c.facturas.size,
+    // % recibido respecto de lo que SÍ debía llegar a obra (excluye empresa/general).
+    pctRecibido: c.aObra > 0 ? Math.round((Math.min(c.recibido, c.aObra) / c.aObra) * 100) : null,
+  })).sort((a, b) => b.faltante - a.faltante || b.facturado - a.facturado);
+
+  const porEstado = {};
+  for (const f of porFactura) porEstado[f.estado] = (porEstado[f.estado] || 0) + 1;
+
+  return {
+    porInsumo,
+    porFactura: porFactura.sort((a, b) => String(b.fecha).localeCompare(String(a.fecha))),
+    totales: {
+      facturado: round2(tot.facturado), recibido: round2(tot.recibido), faltante: round2(tot.faltante),
+      aObra: round2(tot.aObra), aObraGeneral: round2(tot.aObraGeneral), aEmpresa: round2(tot.aEmpresa),
+    },
+    porEstado,
+    nFacturas: porFactura.length,
+  };
+}

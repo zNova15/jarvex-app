@@ -186,6 +186,7 @@ const AYUDA = {
       'DETRACCIÓN (SPOT): las facturas con detracción muestran su desglose (detracción y neto a pagar). Registrá el depósito con "Registrar depósito" subiendo la constancia del Banco de la Nación — queda "depositada". Si la IA no la detectó, con "＋ Detracción" la registrás a mano (sirve para compras y ventas).',
       'RECEPCIÓN EN ALMACÉN: cada factura de compra muestra un semáforo de si sus insumos llegaron — ✅ Recibido, 🟡 Parcial, ⏳ Sin confirmar, ❌ No recibido, o 🏢 Consumo empresa/general. Con el botón "🔎 ¿llegó?" (en las que faltan confirmar) la app te muestra los ingresos de almacén que cuadran por insumo/fecha/cantidad y los vinculás en 1 clic ("Sí, este"). La almacenera hace lo mismo desde su lado. Así sabés cuáles fueron a la obra y cuáles son consumo de empresa u otra obra.',
       'CONSULTAS CON ALMACÉN (💬 arriba): desde "🔎 ¿llegó?" podés "Preguntar a almacén" por una línea puntual (queda un hilo con la referencia exacta, sin montos); la almacenera responde Sí / Parcial / No / Otra fecha. El número en el botón son las consultas que te toca responder.',
+      'REPORTE DE RECEPCIÓN (📊 arriba): resume, por insumo y por factura, cuánto de lo FACTURADO llegó a la obra, cuánto FALTA y cuánto es consumo de EMPRESA o gasto general (no fue a obra). Respeta el filtro de ámbito (obra/empresa) de arriba. Se alimenta de las vinculaciones que hacen los 🔎 ¿llegó? / buscar comprobante.',
       'El botón "Duplicados" detecta y fusiona comprobantes registrados dos veces.',
     ],
     rol: {
