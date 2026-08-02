@@ -182,6 +182,7 @@ const AYUDA = {
       'Tres formas de bancarizar: Pago exacto (1 voucher = la factura), Pago en partes (varios vouchers a 1 factura) y Voucher multi-factura (1 depósito cubre varias facturas del mismo pagador→cobrador, con control de saldo).',
       'Cuando la cobertura llega al 100%, la factura pasa sola a "Pagado".',
       'DETRACCIÓN (SPOT): las facturas con detracción muestran su desglose (detracción y neto a pagar). Registrá el depósito con "Registrar depósito" subiendo la constancia del Banco de la Nación — queda "depositada". Si la IA no la detectó, con "＋ Detracción" la registrás a mano (sirve para compras y ventas).',
+      'RECEPCIÓN EN ALMACÉN: cada factura de compra muestra un semáforo de si sus insumos llegaron — ✅ Recibido, 🟡 Parcial, ⏳ Sin confirmar, ❌ No recibido, o 🏢 Consumo empresa/general. El vínculo con el ingreso lo crean Captura Mágica y "Vinculación de Compras". Así sabés cuáles fueron a la obra y cuáles son consumo de empresa u otra obra.',
       'El botón "Duplicados" detecta y fusiona comprobantes registrados dos veces.',
     ],
     rol: {

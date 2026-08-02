@@ -5,6 +5,7 @@ import { getCurrentMode } from "../lib/app-mode-core.js";
 import { usePagination } from "../hooks/usePagination.js";
 import { TablePagination } from "./jx-pagination.jsx";
 import { detectarDuplicados, claseDe } from "../lib/dedupe-movs-contables.js";
+import { resumenRecepcion } from "../lib/cruce-recepcion.js";
 import { validarVinculoDeposito, saldoDeposito, parMovimiento, parDeposito, mismoPar, movimientoBancarizado, TOL } from "../lib/depositos-bancarizacion.js";
 import { useChart } from "../lib/chart-loader.js";
 import { FusionEntidadModal } from "./jx-fusion-entidad.jsx";
@@ -1889,6 +1890,20 @@ function MovimientosContablesPage({ showToast }) {
                               onClick={()=>openDetraccion(m)} title="¿Esta factura tiene detracción (SPOT)? Registrala acá.">
                               ＋ Detracción
                             </button></div>
+                          );
+                        })()}
+                        {/* SEMÁFORO DE RECEPCIÓN — ¿los insumos de esta factura llegaron a almacén?
+                            Solo lectura: lee recepcion_status + items_factura (el enlace lo crean
+                            Captura Mágica y "Vinculación de Compras"). Puente contabilidad↔almacén. */}
+                        {(() => {
+                          const rr = resumenRecepcion(m);
+                          if (!rr.aplica) return null;
+                          const col = rr.tone === 'green' ? 'var(--green)' : rr.tone === 'red' ? '#EF6B5E' : rr.tone === 'muted' ? 'var(--tm)' : 'var(--amber)';
+                          return (
+                            <div style={{ fontSize:10, marginTop:2, color: col }}
+                              title={`Recepción en almacén: ${rr.label}${rr.total ? ` · ${rr.recibidos}/${rr.total} ítems recibidos` : ''}`}>
+                              {rr.emoji} {rr.label}
+                            </div>
                           );
                         })()}
                       </td>
