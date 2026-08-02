@@ -8,6 +8,7 @@ import { stockTrasEditar, dejaNegativo } from "../lib/stock-guard.js";
 import { hoyLocal, horaLocal } from "../lib/fecha.js";
 import { exportarDataset } from "../lib/export-historico.js";
 import { FusionEntidadModal } from "./jx-fusion-entidad.jsx";
+import { rankearFacturasParaIngreso, estadoRecepcionDeItems, parseNotas } from "../lib/cruce-recepcion.js";
 const { useState: uSM, useMemo: uMM, useEffect: uEM } = React;
 
 // Botón "Exportar Excel" de las páginas de movimientos: descarga el dataset
@@ -1009,6 +1010,11 @@ function MovMaterialesPage({ showToast }) {
   const [reversoTarget, setReversoTarget] = uSM(null);
   const [editFechaTarget, setEditFechaTarget] = uSM(null);
   const [requestTarget, setRequestTarget] = uSM(null); // movimiento para "Solicitar cambio" (no-admin)
+  // Puente ALMACÉN → CONTABILIDAD: buscar el comprobante que respalda un ingreso.
+  const [buscarCompTarget, setBuscarCompTarget] = uSM(null); // el ingreso para el que se busca factura
+  const [candidatosFactura, setCandidatosFactura] = uSM([]);
+  const [buscandoComp, setBuscandoComp] = uSM(false);
+  const vinculandoCompRef = React.useRef(false); // guard SÍNCRONO anti-doble-click
   const isAdmin = auth?.profile?.rol === 'admin';
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
   const superAdmin = !!appMode.superAdmin;
@@ -1286,6 +1292,91 @@ function MovMaterialesPage({ showToast }) {
       showToast?.('📩 Avisado a contabilidad — aparecerá en su cola', 'green');
     } catch (e) {
       showToast?.('Error: ' + (e.message || e), 'red');
+    }
+  };
+
+  // ── Puente ALMACÉN → CONTABILIDAD: buscar el comprobante de un ingreso ──
+  // La almacenera pulsa 🔎 sobre un ingreso; buscamos entre las facturas de COMPRA
+  // (ya replicadas en su Dexie) las líneas candidatas por insumo/fecha/cantidad/
+  // proveedor (matcher determinista, sin IA). Ve SOLO referencia textual sin costos.
+  const buscarComprobante = async (mov) => {
+    setBuscarCompTarget(mov);
+    setCandidatosFactura([]);
+    setBuscandoComp(true);
+    try {
+      const facturas = (await window.__db.accounting_movements.toArray().catch(() => []))
+        .filter(f => !f.deleted_at
+          && (f.clase === 'compra' || f.type === 'cost')
+          && (mov.obra_id ? f.obra_id === mov.obra_id : true)
+          && f.recepcion_status !== 'no_aplica'
+          && (f.clase !== 'venta' && f.type !== 'income'));
+      const matName = matsByIdAll.get(mov.material_id)?.nombre_material
+        || matsServer.get(mov.material_id)?.nombre_material || '';
+      const ingreso = {
+        id: mov.id, material_id: mov.material_id, materialNombre: matName,
+        cantidad: mov.cantidad, unidad: mov.unidad, fecha: mov.fecha,
+        obra_id: mov.obra_id, proveedor_id: mov.proveedor_id || null,
+      };
+      setCandidatosFactura(rankearFacturasParaIngreso(ingreso, facturas));
+    } catch (e) {
+      showToast?.('Error buscando comprobante: ' + (e?.message || e), 'red');
+    } finally {
+      setBuscandoComp(false);
+    }
+  };
+
+  // Vincular el ingreso a UNA línea de factura (1 clic). Escribe AMBOS lados:
+  //  · movimiento: accounting_movement_id + pendiente_sustento=false (su tabla)
+  //  · factura: items_factura[idx].{recibido,mov_vinculado_id,recepcion_modo} +
+  //    recepcion_status recalculado (RLS "am: actualiza" permite a cualquier
+  //    autenticado). Guard síncrono: corta el doble-click en el mismo tick.
+  const vincularIngresoAFactura = async (mov, cand) => {
+    if (vinculandoCompRef.current) return;
+    vinculandoCompRef.current = true;
+    try {
+      const isPrueba = appMode.isPrueba;
+      const uid = window.__currentUserId || auth?.profile?.id || 'almacen';
+      const now = new Date().toISOString();
+
+      const fac = await window.__db.accounting_movements.get(cand.facturaId);
+      if (!fac) { showToast?.('La factura ya no está en este dispositivo (sincronizá)', 'red'); return; }
+      const notas = parseNotas(fac.notas);
+      const items = Array.isArray(notas.items_factura) ? notas.items_factura.slice() : [];
+      const orig = items[cand.item_idx];
+      if (!orig) { showToast?.('La línea de la factura cambió — volvé a buscar', 'red'); return; }
+
+      const qty = Number(mov.cantidad) || 0;
+      const nuevoRecibido = Number(orig.cantidad) > 0
+        ? Math.min(Number(orig.cantidad), (Number(orig.recibido) || 0) + qty)
+        : (Number(orig.recibido) || 0) + qty;
+      items[cand.item_idx] = { ...orig, recibido: nuevoRecibido, mov_vinculado_id: mov.id, recepcion_modo: 'vinculado' };
+      notas.items_factura = items;
+      const facNoSube = isPrueba || fac.demo === true;
+      await window.__db.accounting_movements.update(fac.id, {
+        notas: JSON.stringify(notas),
+        recepcion_status: estadoRecepcionDeItems(items),
+        recepcion_movimiento_id: fac.recepcion_movimiento_id || mov.id,
+        recepcion_fecha: now, recepcion_por: uid,
+        updated_at: now, updated_by: uid, version: (fac.version || 0) + 1,
+        sync_status: facNoSube ? 'synced' : (fac.sync_status === 'pending_create' ? 'pending_create' : 'pending_update'),
+      });
+
+      await window.__db.movimientos_materiales.update(mov.id, {
+        accounting_movement_id: fac.id,
+        pendiente_sustento: false,
+        updated_at: now, updated_by: uid, version: (mov.version || 0) + 1,
+        sync_status: mov.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+
+      try { await window.__logAudit?.({ action: 'update', table: 'movimientos_materiales', recordId: mov.id, newData: { accounting_movement_id: fac.id }, reason: `Almacén vinculó su ingreso a factura ${fac.document_number || ''} (línea ${cand.item_idx + 1})` }); } catch {}
+      ['accounting_movements', 'movimientos_materiales'].forEach(t => { try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: t } })); } catch {} });
+      try { window.dispatchEvent(new Event('online')); } catch {}
+      showToast?.('🔗 Ingreso vinculado a su comprobante', 'green');
+      setBuscarCompTarget(null); setCandidatosFactura([]);
+    } catch (e) {
+      showToast?.('Error al vincular: ' + (e?.message || e), 'red');
+    } finally {
+      vinculandoCompRef.current = false;
     }
   };
 
@@ -1595,9 +1686,18 @@ function MovMaterialesPage({ showToast }) {
                         if (m.accounting_movement_id) {
                           return <span className="badge b-green" title="Vinculado a factura por contabilidad">✓ Factura</span>;
                         }
-                        // Estado 2: avisado a contabilidad — esperando sustento
+                        // Estado 2: avisado a contabilidad — esperando sustento.
+                        // 🔎 permite buscar la factura y vincularla en el momento.
                         if (m.pendiente_sustento) {
-                          return <span className="badge b-amber" title="Almacén avisó a contabilidad — esperando que suban la factura">📩 Avisado</span>;
+                          return (
+                            <span style={{ display:'inline-flex', gap:4, alignItems:'center' }}>
+                              <span className="badge b-amber" title="Almacén avisó a contabilidad — esperando que suban la factura">📩 Avisado</span>
+                              {m.tipo_movimiento === 'entrada' && (
+                                <button className="btn btn-ghost btn-xs" style={{ padding:'0 4px' }}
+                                  title="Buscar el comprobante que respalda este ingreso y vincularlo" onClick={()=>buscarComprobante(m)}>🔎</button>
+                              )}
+                            </span>
+                          );
                         }
                         // Estado 3: tiene foto de guía adjunta
                         if (guia) {
@@ -1634,6 +1734,13 @@ function MovMaterialesPage({ showToast }) {
                                 style={{ display:'none' }}
                                 onChange={adjuntarGuia(m)}/>
                             </label>
+                            <button
+                              className="btn btn-ghost btn-xs"
+                              title="Buscar el comprobante (factura) que respalda este ingreso y vincularlo"
+                              onClick={()=>buscarComprobante(m)}
+                              style={{ fontSize:10 }}>
+                              🔎
+                            </button>
                             <button
                               className="btn btn-ghost btn-xs"
                               title="Avisar a contabilidad que falta la factura — aparecerá en su cola"
@@ -1704,6 +1811,76 @@ function MovMaterialesPage({ showToast }) {
           onConfirm={handleReversoMaterial}
         />
       )}
+      {buscarCompTarget && (() => {
+        const mv = buscarCompTarget;
+        const matName = matsByIdAll.get(mv.material_id)?.nombre_material || matsServer.get(mv.material_id)?.nombre_material || 'material';
+        return (
+          <Modal title="Buscar comprobante del ingreso" icon="search" onClose={()=>{ setBuscarCompTarget(null); setCandidatosFactura([]); }}>
+            <div style={{ background:'var(--bg-s)', border:'1px solid var(--bd)', borderRadius:8, padding:'8px 12px', marginBottom:12, fontSize:12.5 }}>
+              <div style={{ color:'var(--tm)', fontSize:10.5, fontWeight:700, letterSpacing:'.06em', marginBottom:2 }}>TU INGRESO</div>
+              <strong>{mv.cantidad} {mv.unidad || ''}</strong> de <strong>{matName}</strong> · {mv.fecha}
+            </div>
+            {buscandoComp ? (
+              <div className="empty-state" style={{ padding:20 }}><p>Buscando comprobantes candidatos…</p></div>
+            ) : candidatosFactura.length === 0 ? (
+              <div>
+                <p style={{ fontSize:12.5, color:'var(--ts)', marginBottom:12 }}>
+                  No encontramos una factura que cuadre con este ingreso (por insumo, fecha y cantidad). Podés avisar a contabilidad para que lo revise cuando suba el comprobante.
+                </p>
+                <div className="modal-actions">
+                  <button className="btn btn-ghost" onClick={()=>{ setBuscarCompTarget(null); setCandidatosFactura([]); }}>Cerrar</button>
+                  <button className="btn btn-amber" onClick={()=>{ const m=mv; setBuscarCompTarget(null); avisarContabilidad(m); }}>📩 Avisar a contabilidad</button>
+                </div>
+              </div>
+            ) : (
+              <div>
+                <p style={{ fontSize:11.5, color:'var(--tm)', marginBottom:10 }}>
+                  Comprobantes que podrían corresponder a este ingreso. Elegí el correcto para vincularlo (verás la referencia, sin montos).
+                </p>
+                <div style={{ display:'flex', flexDirection:'column', gap:8, maxHeight:'52vh', overflowY:'auto' }}>
+                  {candidatosFactura.map(cand => {
+                    const ins = cand.referencia.insumos[0] || {};
+                    const pct = Math.round(cand.score * 100);
+                    const tone = pct >= 75 ? 'var(--green)' : pct >= 50 ? 'var(--amber)' : 'var(--tm)';
+                    return (
+                      <div key={`${cand.facturaId}|${cand.item_idx}`} className="card card-p" style={{ padding:'10px 12px' }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:10 }}>
+                          <div style={{ minWidth:0, flex:1 }}>
+                            <div style={{ fontSize:13, fontWeight:700, color:'var(--tp)' }}>{cand.referencia.documento}</div>
+                            <div style={{ fontSize:11.5, color:'var(--ts)', marginTop:2 }}>
+                              {cand.referencia.proveedor || 'proveedor —'} · {cand.referencia.fecha || 's/f'}
+                            </div>
+                            <div style={{ fontSize:12, color:'var(--tp)', marginTop:4 }}>
+                              Línea: <strong>{ins.descripcion || '—'}</strong> · {ins.cantidad} {ins.unidad || ''}
+                            </div>
+                            {cand.motivos?.length > 0 && (
+                              <div style={{ display:'flex', flexWrap:'wrap', gap:4, marginTop:6 }}>
+                                {cand.motivos.map((mo, i) => (
+                                  <span key={i} style={{ fontSize:10, background:'rgba(52,152,219,0.1)', border:'1px solid rgba(52,152,219,0.25)', color:'var(--blue,#3498DB)', padding:'1px 6px', borderRadius:4 }}>{mo}</span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          <div style={{ textAlign:'center', whiteSpace:'nowrap' }}>
+                            <div style={{ fontSize:11, fontWeight:700, color:tone, marginBottom:4 }}>{pct}%</div>
+                            <button className="btn btn-green btn-sm" onClick={()=>vincularIngresoAFactura(mv, cand)}>
+                              <JxIcon name="check" size={12}/> Es esta
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="modal-actions" style={{ marginTop:12 }}>
+                  <button className="btn btn-ghost" onClick={()=>{ setBuscarCompTarget(null); setCandidatosFactura([]); }}>Cerrar</button>
+                  <button className="btn btn-amber" onClick={()=>{ const m=mv; setBuscarCompTarget(null); avisarContabilidad(m); }} title="Ninguna coincide — avisar a contabilidad">Ninguna · 📩 avisar</button>
+                </div>
+              </div>
+            )}
+          </Modal>
+        );
+      })()}
       {editRespTarget && (
         <EditarResponsableModal
           mov={editRespTarget}

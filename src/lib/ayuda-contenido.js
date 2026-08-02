@@ -83,6 +83,7 @@ const AYUDA = {
       'Registrá el movimiento con la FECHA REAL en que ocurrió.',
       'La app rechaza salidas con fecha en la que no había stock suficiente (candado cronológico) — suele significar que falta registrar una entrada previa.',
       'ANTI-DUPLICADOS: si registrás un movimiento idéntico a uno de las últimas horas, la app te avisa antes de guardar — si solo estabas verificando, cancelá: el anterior ya quedó guardado.',
+      'COMPROBANTE DE UN INGRESO: en la última columna, un ingreso sin factura muestra 🔎 (buscar comprobante), 📎 (adjuntar foto) y 📩 (avisar a contabilidad). Con 🔎 la app busca las facturas que cuadran por insumo, fecha y cantidad — elegís la correcta y queda vinculada (verás la referencia sin montos). "✓ Factura" = ya vinculado.',
       'Si un registro queda "con error de sincronización", abrí el detalle y tocá "Reintentar todos".',
     ],
   },
