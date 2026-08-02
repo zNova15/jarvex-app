@@ -54,6 +54,13 @@ export const db = new Dexie('JarvexDB');
 // trigger server). La constancia va como evidencia con
 // modulo_relacionado='depositos_bancarizacion'. Se re-indexa pagos_partes
 // para poder listar "las partes de este depósito". Aditivo.
+// Versión 44: HILO DE CONSULTA almacén↔contabilidad (Fase 2 del puente
+// insumo↔factura, mig 148). Buzón bidireccional: una parte pregunta con
+// referencia exacta (sin costos) y la otra responde/enlaza. FK-less. Aditivo.
+db.version(44).stores({
+  puente_consultas: 'id, obra_id, accounting_movement_id, movimiento_id, estado, origen, deleted_at, sync_status',
+});
+
 db.version(43).stores({
   depositos_bancarizacion: 'id, obra_id, company_id, referencia, deleted_at, sync_status',
   pagos_partes: 'id, pago_id, accounting_movement_id, deposito_id, obra_id, deleted_at, sync_status',

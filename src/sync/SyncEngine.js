@@ -104,6 +104,10 @@ const TRANSACTIONAL_TABLES = [
   'pagos_partes',
   // Guías de remisión: después de proveedores/companies/accounting_movements.
   'guias_remision',
+  // Hilo de consulta almacén↔contabilidad (mig 148). FK-less (soft refs a
+  // factura/ingreso) → sin orden ni FK_DEPS. NO va en TABLA_TO_MODULO: así el
+  // push no se gatea por permiso de módulo y ambos roles pueden conversar.
+  'puente_consultas',
 ];
 
 // Tablas maestras que se descargan del servidor en cada sync.
@@ -146,6 +150,7 @@ const MASTER_TABLES = [
   { tabla: 'depositos_bancarizacion',      query: () => supabase.from('depositos_bancarizacion').select('*').is('deleted_at', null) },
   { tabla: 'pagos_partes',                 query: () => supabase.from('pagos_partes').select('*').is('deleted_at', null) },
   { tabla: 'guias_remision',               query: () => supabase.from('guias_remision').select('*').is('deleted_at', null) },
+  { tabla: 'puente_consultas',             query: () => supabase.from('puente_consultas').select('*').is('deleted_at', null) },
   { tabla: 'intercompany_transactions',    query: () => supabase.from('intercompany_transactions').select('*').is('deleted_at', null) },
   // Compras
   { tabla: 'insumos_pendientes',    query: () => supabase.from('insumos_pendientes').select('*').is('deleted_at', null) },

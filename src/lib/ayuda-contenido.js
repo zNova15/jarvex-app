@@ -84,6 +84,7 @@ const AYUDA = {
       'La app rechaza salidas con fecha en la que no había stock suficiente (candado cronológico) — suele significar que falta registrar una entrada previa.',
       'ANTI-DUPLICADOS: si registrás un movimiento idéntico a uno de las últimas horas, la app te avisa antes de guardar — si solo estabas verificando, cancelá: el anterior ya quedó guardado.',
       'COMPROBANTE DE UN INGRESO: en la última columna, un ingreso sin factura muestra 🔎 (buscar comprobante), 📎 (adjuntar foto) y 📩 (avisar a contabilidad). Con 🔎 la app busca las facturas que cuadran por insumo, fecha y cantidad — elegís la correcta y queda vinculada (verás la referencia sin montos). "✓ Factura" = ya vinculado.',
+      'CONSULTAS CON CONTABILIDAD (💬 arriba): si no encontrás el comprobante, "Preguntar a contabilidad" abre un hilo con la referencia exacta del ingreso (sin montos); contabilidad responde Sí / Parcial / No / Otra fecha. El número en el botón son las consultas que te toca responder a vos.',
       'Si un registro queda "con error de sincronización", abrí el detalle y tocá "Reintentar todos".',
     ],
   },
@@ -184,6 +185,7 @@ const AYUDA = {
       'Cuando la cobertura llega al 100%, la factura pasa sola a "Pagado".',
       'DETRACCIÓN (SPOT): las facturas con detracción muestran su desglose (detracción y neto a pagar). Registrá el depósito con "Registrar depósito" subiendo la constancia del Banco de la Nación — queda "depositada". Si la IA no la detectó, con "＋ Detracción" la registrás a mano (sirve para compras y ventas).',
       'RECEPCIÓN EN ALMACÉN: cada factura de compra muestra un semáforo de si sus insumos llegaron — ✅ Recibido, 🟡 Parcial, ⏳ Sin confirmar, ❌ No recibido, o 🏢 Consumo empresa/general. Con el botón "🔎 ¿llegó?" (en las que faltan confirmar) la app te muestra los ingresos de almacén que cuadran por insumo/fecha/cantidad y los vinculás en 1 clic ("Sí, este"). La almacenera hace lo mismo desde su lado. Así sabés cuáles fueron a la obra y cuáles son consumo de empresa u otra obra.',
+      'CONSULTAS CON ALMACÉN (💬 arriba): desde "🔎 ¿llegó?" podés "Preguntar a almacén" por una línea puntual (queda un hilo con la referencia exacta, sin montos); la almacenera responde Sí / Parcial / No / Otra fecha. El número en el botón son las consultas que te toca responder.',
       'El botón "Duplicados" detecta y fusiona comprobantes registrados dos veces.',
     ],
     rol: {

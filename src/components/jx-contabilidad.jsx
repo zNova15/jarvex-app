@@ -5,7 +5,9 @@ import { getCurrentMode } from "../lib/app-mode-core.js";
 import { usePagination } from "../hooks/usePagination.js";
 import { TablePagination } from "./jx-pagination.jsx";
 import { detectarDuplicados, claseDe } from "../lib/dedupe-movs-contables.js";
-import { resumenRecepcion, rankearIngresosParaItem, estadoRecepcionDeItems, parseNotas } from "../lib/cruce-recepcion.js";
+import { resumenRecepcion, rankearIngresosParaItem, estadoRecepcionDeItems, parseNotas, referenciaSinCostos } from "../lib/cruce-recepcion.js";
+import { ConsultasPanel, useConsultasResumen } from "./jx-consultas.jsx";
+import { crearConsulta } from "../lib/consultas-puente.js";
 import { validarVinculoDeposito, saldoDeposito, parMovimiento, parDeposito, mismoPar, movimientoBancarizado, TOL } from "../lib/depositos-bancarizacion.js";
 import { useChart } from "../lib/chart-loader.js";
 import { FusionEntidadModal } from "./jx-fusion-entidad.jsx";
@@ -795,6 +797,9 @@ function MovimientosContablesPage({ showToast }) {
   const [llegoTarget, setLlegoTarget] = uSC(null);   // { factura, grupos:[{idx,item,candidatos}] }
   const [buscandoLlego, setBuscandoLlego] = uSC(false);
   const vincLlegoRef = uRC(false);                    // guard SÍNCRONO anti-doble-click
+  // Fase 2 — hilo de consultas con almacén.
+  const [showConsultas, setShowConsultas] = uSC(false);
+  const consResumen = useConsultasResumen('contabilidad', null);
   // Detracción (SPOT): la asistente registra el depósito (constancia del Banco de
   // la Nación) y marca 'depositada'. Aplica a compras y ventas, sobre el mismo mov.
   const [detraccionPorMov, setDetraccionPorMov] = uSC(() => new Map()); // tipo_evidencia='constancia_detraccion'
@@ -887,6 +892,20 @@ function MovimientosContablesPage({ showToast }) {
     } finally {
       vincLlegoRef.current = false;
     }
+  };
+
+  // Fase 2 — enviar una consulta a almacén por una línea (referencia SIN costos).
+  const preguntarAlmacen = async (fac, g) => {
+    try {
+      const it = g.item;
+      await crearConsulta({
+        obra_id: fac.obra_id || null, origen: 'contabilidad',
+        accounting_movement_id: fac.id, item_idx: g.idx,
+        referencia: referenciaSinCostos(fac, g.idx),
+        pregunta: `¿Llegó a almacén: ${it.descripcion || 'insumo'} · ${Number(it.cantidad) || 0} ${it.unidad || ''} (factura ${fac.document_type || ''} ${fac.document_number || ''})?`.replace(/\s+/g, ' ').trim(),
+      });
+      showToast?.('Consulta enviada a almacén 💬', 'green');
+    } catch (e) { showToast?.('Error al enviar la consulta: ' + (e?.message || e), 'red'); }
   };
   const [detrPct, setDetrPct] = uSC('');
   const [detrMonto, setDetrMonto] = uSC('');
@@ -1738,6 +1757,9 @@ function MovimientosContablesPage({ showToast }) {
           <div className="pg-sub">{filtered.length} de {(movs || []).length} movimientos · ingresos / costos / gastos por empresa</div>
         </div>
         <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+          <button className="btn btn-ghost btn-sm" title="Consultas con almacén — preguntar/responder si un insumo llegó" onClick={()=>setShowConsultas(true)}>
+            💬 Consultas{consResumen.pendientes ? <span className="badge b-amber" style={{ marginLeft:4 }}>{consResumen.pendientes}</span> : ''}
+          </button>
           {puedeDedup && (
             <button className="btn btn-ghost btn-sm" title="Detectar comprobantes registrados dos veces y fusionarlos" onClick={abrirDuplicados}>
               <JxIcon name="search" size={13}/> Duplicados
@@ -2522,6 +2544,9 @@ function MovimientosContablesPage({ showToast }) {
                         })}
                       </div>
                     )}
+                    <div style={{ marginTop:8, textAlign:'right' }}>
+                      <button className="btn btn-ghost btn-xs" style={{ color:'var(--blue,#3498DB)' }} onClick={()=>preguntarAlmacen(fac, g)} title="Enviar una consulta a almacén por esta línea (con la referencia exacta, sin montos)">💬 Preguntar a almacén</button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -2532,6 +2557,9 @@ function MovimientosContablesPage({ showToast }) {
           </Modal>
         );
       })()}
+      {showConsultas && (
+        <ConsultasPanel rol="contabilidad" obraId={null} showToast={showToast} onClose={()=>setShowConsultas(false)} />
+      )}
       {solicitarTarget && (
         <RequestChangeModal
           table="accounting_movements"

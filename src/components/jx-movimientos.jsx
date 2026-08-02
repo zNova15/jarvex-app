@@ -9,6 +9,8 @@ import { hoyLocal, horaLocal } from "../lib/fecha.js";
 import { exportarDataset } from "../lib/export-historico.js";
 import { FusionEntidadModal } from "./jx-fusion-entidad.jsx";
 import { rankearFacturasParaIngreso, estadoRecepcionDeItems, parseNotas } from "../lib/cruce-recepcion.js";
+import { ConsultasPanel, useConsultasResumen } from "./jx-consultas.jsx";
+import { crearConsulta } from "../lib/consultas-puente.js";
 const { useState: uSM, useMemo: uMM, useEffect: uEM } = React;
 
 // Botón "Exportar Excel" de las páginas de movimientos: descarga el dataset
@@ -1015,6 +1017,9 @@ function MovMaterialesPage({ showToast }) {
   const [candidatosFactura, setCandidatosFactura] = uSM([]);
   const [buscandoComp, setBuscandoComp] = uSM(false);
   const vinculandoCompRef = React.useRef(false); // guard SÍNCRONO anti-doble-click
+  // Fase 2 — hilo de consultas con contabilidad.
+  const [showConsultas, setShowConsultas] = uSM(false);
+  const consResumen = useConsultasResumen('almacen', obraId);
   const isAdmin = auth?.profile?.rol === 'admin';
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
   const superAdmin = !!appMode.superAdmin;
@@ -1380,6 +1385,21 @@ function MovMaterialesPage({ showToast }) {
     }
   };
 
+  // Fase 2 — enviar una consulta a contabilidad por este ingreso (sin costos).
+  const preguntarContabilidad = async (mov) => {
+    try {
+      const matName = matsByIdAll.get(mov.material_id)?.nombre_material || matsServer.get(mov.material_id)?.nombre_material || 'insumo';
+      await crearConsulta({
+        obra_id: mov.obra_id || null, origen: 'almacen',
+        movimiento_id: mov.id,
+        referencia: { insumos: [{ descripcion: matName, cantidad: Number(mov.cantidad) || 0, unidad: mov.unidad || '' }], fecha: mov.fecha || null },
+        pregunta: `¿De qué comprobante es este ingreso? ${matName} · ${Number(mov.cantidad) || 0} ${mov.unidad || ''} · ${mov.fecha || ''}`.replace(/\s+/g, ' ').trim(),
+      });
+      showToast?.('Consulta enviada a contabilidad 💬', 'green');
+      setBuscarCompTarget(null); setCandidatosFactura([]);
+    } catch (e) { showToast?.('Error al enviar la consulta: ' + (e?.message || e), 'red'); }
+  };
+
   // ── Reversar movimiento de materiales ───────────────────
   const handleReversoMaterial = async (motivo) => {
     if (!reversoTarget) return;
@@ -1481,6 +1501,9 @@ function MovMaterialesPage({ showToast }) {
       <div className="pg-hd frow-sb">
         <div><div className="pg-title">Movimiento de Materiales</div><div className="pg-sub">Historial completo · {sorted.length} movimientos registrados</div></div>
         <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+          <button className="btn btn-ghost btn-sm" onClick={()=>setShowConsultas(true)} title="Consultas con contabilidad — preguntar/responder de qué factura es un insumo">
+            💬 Consultas{consResumen.pendientes ? <span className="badge b-amber" style={{ marginLeft:4 }}>{consResumen.pendientes}</span> : ''}
+          </button>
           <BotonExportarMovs datasetId="mov_materiales" obraId={obraId} showToast={showToast}/>
           <button className="btn btn-ghost btn-sm" onClick={()=>setRegFisicoOpen(true)} title="Ver registros físicos diarios subidos">
             <JxIcon name="camera" size={13}/> Visualización registro físico
@@ -1811,6 +1834,9 @@ function MovMaterialesPage({ showToast }) {
           onConfirm={handleReversoMaterial}
         />
       )}
+      {showConsultas && (
+        <ConsultasPanel rol="almacen" obraId={obraId} showToast={showToast} onClose={()=>setShowConsultas(false)} />
+      )}
       {buscarCompTarget && (() => {
         const mv = buscarCompTarget;
         const matName = matsByIdAll.get(mv.material_id)?.nombre_material || matsServer.get(mv.material_id)?.nombre_material || 'material';
@@ -1829,7 +1855,8 @@ function MovMaterialesPage({ showToast }) {
                 </p>
                 <div className="modal-actions">
                   <button className="btn btn-ghost" onClick={()=>{ setBuscarCompTarget(null); setCandidatosFactura([]); }}>Cerrar</button>
-                  <button className="btn btn-amber" onClick={()=>{ const m=mv; setBuscarCompTarget(null); avisarContabilidad(m); }}>📩 Avisar a contabilidad</button>
+                  <button className="btn btn-ghost" onClick={()=>{ const m=mv; setBuscarCompTarget(null); avisarContabilidad(m); }} title="Marcar como pendiente de sustento en la cola de contabilidad">📩 Avisar</button>
+                  <button className="btn btn-amber" onClick={()=>preguntarContabilidad(mv)} title="Preguntarle a contabilidad de qué comprobante es (queda un hilo)">💬 Preguntar a contabilidad</button>
                 </div>
               </div>
             ) : (
@@ -1874,7 +1901,8 @@ function MovMaterialesPage({ showToast }) {
                 </div>
                 <div className="modal-actions" style={{ marginTop:12 }}>
                   <button className="btn btn-ghost" onClick={()=>{ setBuscarCompTarget(null); setCandidatosFactura([]); }}>Cerrar</button>
-                  <button className="btn btn-amber" onClick={()=>{ const m=mv; setBuscarCompTarget(null); avisarContabilidad(m); }} title="Ninguna coincide — avisar a contabilidad">Ninguna · 📩 avisar</button>
+                  <button className="btn btn-ghost" onClick={()=>{ const m=mv; setBuscarCompTarget(null); avisarContabilidad(m); }} title="Ninguna coincide — avisar a contabilidad">Ninguna · 📩 avisar</button>
+                  <button className="btn btn-amber" onClick={()=>preguntarContabilidad(mv)} title="Preguntarle a contabilidad de qué comprobante es (queda un hilo)">💬 Preguntar</button>
                 </div>
               </div>
             )}

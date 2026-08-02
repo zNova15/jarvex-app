@@ -373,6 +373,15 @@ export function useIntercompanyTransactions() {
   , []);
 }
 
+// Puente almacén↔contabilidad — hilo de consultas (Fase 2).
+export function useConsultasPuente(obra_id) {
+  return useOfflineData('puente_consultas', q =>
+    obra_id
+      ? q.where('obra_id').equals(obra_id).filter(c => !c.deleted_at).toArray()
+      : q.filter(c => !c.deleted_at).toArray()
+  , [obra_id]);
+}
+
 // Trazabilidad — cadenas de markups intercompany.
 export function useTrazabilidadCadenas(obra_id) {
   return useOfflineData('trazabilidad_cadenas', q =>
