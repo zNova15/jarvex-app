@@ -498,6 +498,11 @@ function PagosPage({ showToast }) {
       {nuevoPago && (
         <NuevoPagoModal
           ctx={nuevoPago} busy={busy} subNombre={subNombre}
+          pagosPrevios={nuevoPago.persona
+            ? (pagosDePersona.get(nuevoPago.persona.id) || [])
+                .filter(p => p.estado !== 'anulado')
+                .map(p => ({ id: p.id, periodo: p.periodo, concepto: p.concepto, estado: calcularEstadoPago(p.monto_acordado, partesDe.get(p.id)).estado }))
+            : []}
           onConfirm={crearPago} onClose={() => setNuevoPago(null)}
         />
       )}
@@ -518,8 +523,9 @@ function PagosPage({ showToast }) {
 }
 
 // ─── Modal: crear pago ─────────────────────────────────────────────────────
-function NuevoPagoModal({ ctx, busy, subNombre, onConfirm, onClose }) {
+function NuevoPagoModal({ ctx, busy, subNombre, onConfirm, onClose, pagosPrevios = [] }) {
   const esSub = ctx.beneficiario_tipo === 'subcontrato';
+  const sinCompletar = pagosPrevios.filter(p => p.estado !== 'pagado');
   const [concepto, setConcepto] = uS(esSub ? '' : `Pago ${MODO_PAGO_LABEL[ctx.persona?.modo_pago] || ''}`.trim());
   const [monto, setMonto] = uS(esSub ? String(ctx.subcontrato?.monto_contrato ?? '') : '');
   const [periodo, setPeriodo] = uS(() => (window.__fecha?.hoyLocal ? window.__fecha.hoyLocal() : new Date().toISOString().slice(0, 10)).slice(0, 7));
@@ -535,6 +541,14 @@ function NuevoPagoModal({ ctx, busy, subNombre, onConfirm, onClose }) {
           ? 'Definí el monto ACORDADO de este pago. Después vas a registrar cada transferencia/depósito parcial con su evidencia hasta completarlo.'
           : `Forma de pago: ${MODO_PAGO_LABEL[ctx.persona?.modo_pago] || '—'}. ${ctx.persona?.modo_pago === 'rxh' ? 'Vas a necesitar el RECIBO emitido por el trabajador además de la constancia del pago.' : 'Vas a necesitar la constancia del depósito/transferencia.'}`}
       </div>
+      {!esSub && sinCompletar.length > 0 && (
+        <div style={{ background: 'rgba(242,183,5,0.1)', border: '1px solid rgba(242,183,5,0.4)', borderRadius: 6, padding: '9px 12px', marginBottom: 10, fontSize: 12, color: 'var(--ts)', lineHeight: 1.45 }}>
+          <strong style={{ color: 'var(--amber)' }}>⚠ Esta persona ya tiene {sinCompletar.length} pago(s) sin completar.</strong> Si ese pago corresponde a este recibo (por ejemplo, ya lo subiste por <strong>Captura Mágica</strong>), <strong>cerrá esta ventana</strong> y completá el pago existente desde su chip en la tabla — así no lo duplicás.
+          <div style={{ marginTop: 5, color: 'var(--tm)', fontSize: 11 }}>
+            {sinCompletar.slice(0, 4).map((p, i) => <div key={i}>• {p.periodo || 's/período'} · {(p.concepto || 'pago').slice(0, 50)} <em>({p.estado})</em></div>)}
+          </div>
+        </div>
+      )}
       <div className="g2">
         <div><label className="flabel">Concepto</label>
           <input className="fi" value={concepto} placeholder={esSub ? 'Ej: Valorización 2 / Adelanto' : 'Ej: Sueldo julio / Quincena 1'} onChange={e => setConcepto(e.target.value)} /></div>

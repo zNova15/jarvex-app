@@ -208,6 +208,7 @@ const AYUDA = {
       'El historial por persona (con Σ total pagado) queda como base de datos de todo lo pagado; el personal inactivado conserva su historial en la sección de abajo.',
       'Los recibos por honorarios subidos por Captura Mágica ya crean acá el pago del trabajador con su recibo adjunto — solo te falta agregar la(s) transferencia(s)/voucher(s) hasta cubrir el total.',
       'Si una persona tiene muchos pagos, se muestran los primeros 3 y un botón "▾ +N más" que despliega TODOS (y "▲ ver menos" los colapsa).',
+      'EVITÁ DUPLICAR: un recibo por honorarios subido por Captura Mágica YA crea el pago acá — para pagarlo, abrí ese pago desde su chip y agregá la transferencia. Si tocás "💸 Pagar" y la persona ya tiene pagos sin completar, la app te avisa (no crees uno nuevo para el mismo recibo).',
     ],
     rol: { ayudante_contador: 'Podés registrar pagos y subir recibos por honorarios y constancias. Los recibos y constancias son material contable: solo contabilidad y admin los ven en Evidencias.' },
   },
