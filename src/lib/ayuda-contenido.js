@@ -207,6 +207,7 @@ const AYUDA = {
       'Solo aparece personal ACTIVO y que no sea de subcontratos: a la gente de un subcontrato le paga su subcontratista — el pago va al SUBCONTRATO en su pestaña (los subcontratistas sin contrato formal también aparecen ahí).',
       'El historial por persona (con Σ total pagado) queda como base de datos de todo lo pagado; el personal inactivado conserva su historial en la sección de abajo.',
       'Los recibos por honorarios subidos por Captura Mágica ya crean acá el pago del trabajador con su recibo adjunto — solo te falta agregar la(s) transferencia(s)/voucher(s) hasta cubrir el total.',
+      'Si una persona tiene muchos pagos, se muestran los primeros 3 y un botón "▾ +N más" que despliega TODOS (y "▲ ver menos" los colapsa).',
     ],
     rol: { ayudante_contador: 'Podés registrar pagos y subir recibos por honorarios y constancias. Los recibos y constancias son material contable: solo contabilidad y admin los ven en Evidencias.' },
   },

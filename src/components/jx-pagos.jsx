@@ -26,6 +26,39 @@ const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 const Modal = (p) => (window.Modal ? <window.Modal {...p} /> : null);
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// Chips de pagos de una fila con DESPLEGAR/colapsar: antes mostraba 3 y "+N más"
+// como texto muerto; ahora el "+N más" es un botón que despliega todos (útil con
+// muchos recibos por honorarios) y "ver menos" los vuelve a colapsar.
+function PagosChips({ pgs, partesDe, onDetalle, mostrarSuma = false }) {
+  const [verTodos, setVerTodos] = uS(false);
+  if (!pgs || pgs.length === 0) return <span style={{ color: 'var(--tm)' }}>—</span>;
+  const visibles = verTodos ? pgs : pgs.slice(0, 3);
+  return (
+    <>
+      {visibles.map(p => {
+        const st = calcularEstadoPago(p.monto_acordado, partesDe.get(p.id));
+        const e = ESTADOS_PAGO[st.estado] || ESTADOS_PAGO.pendiente;
+        return (
+          <button key={p.id} className="btn btn-ghost btn-xs" style={{ marginRight: 4, marginBottom: 2 }} onClick={() => onDetalle(p.id)}>
+            {p.periodo || p.concepto || 'pago'} · {fmtS(st.pagado)}/{fmtS(p.monto_acordado)} <span className={`badge ${e.cls}`} style={{ fontSize: 8.5, marginLeft: 3 }}>{e.lbl}</span>
+          </button>
+        );
+      })}
+      {pgs.length > 3 && (
+        <button className="btn btn-ghost btn-xs" style={{ color: 'var(--amber)', fontSize: 10, marginBottom: 2 }}
+          onClick={() => setVerTodos(v => !v)}>
+          {verTodos ? '▲ ver menos' : `▾ +${pgs.length - 3} más`}
+        </button>
+      )}
+      {mostrarSuma && (
+        <div style={{ fontSize: 10, color: 'var(--ts)', fontWeight: 700, marginTop: 2 }}>
+          Σ pagado: {fmtS(pgs.reduce((t, p) => t + calcularEstadoPago(p.monto_acordado, partesDe.get(p.id)).pagado, 0))}
+        </div>
+      )}
+    </>
+  );
+}
 const hoyISO = () => (window.__fecha?.hoyLocal ? window.__fecha.hoyLocal() : new Date().toISOString().slice(0, 10));
 
 function PagosPage({ showToast }) {
@@ -331,21 +364,7 @@ function PagosPage({ showToast }) {
                         </select>
                       </td>
                       <td style={{ fontSize: 11 }}>
-                        {pgs.length === 0 ? <span style={{ color: 'var(--tm)' }}>—</span> : pgs.slice(0, 3).map(p => {
-                          const st = calcularEstadoPago(p.monto_acordado, partesDe.get(p.id));
-                          const e = ESTADOS_PAGO[st.estado] || ESTADOS_PAGO.pendiente;
-                          return (
-                            <button key={p.id} className="btn btn-ghost btn-xs" style={{ marginRight: 4, marginBottom: 2 }} onClick={() => setDetalleId(p.id)}>
-                              {p.periodo || p.concepto || 'pago'} · {fmtS(st.pagado)}/{fmtS(p.monto_acordado)} <span className={`badge ${e.cls}`} style={{ fontSize: 8.5, marginLeft: 3 }}>{e.lbl}</span>
-                            </button>
-                          );
-                        })}
-                        {pgs.length > 3 && <span style={{ color: 'var(--tm)', fontSize: 10 }}>+{pgs.length - 3} más</span>}
-                        {pgs.length > 0 && (
-                          <div style={{ fontSize: 10, color: 'var(--ts)', fontWeight: 700, marginTop: 2 }}>
-                            Σ pagado: {fmtS(pgs.reduce((t, p) => t + calcularEstadoPago(p.monto_acordado, partesDe.get(p.id)).pagado, 0))}
-                          </div>
-                        )}
+                        <PagosChips pgs={pgs} partesDe={partesDe} onDetalle={setDetalleId} mostrarSuma />
                       </td>
                       <td style={{ textAlign: 'right' }}>
                         {canGestionar && (
@@ -434,16 +453,7 @@ function PagosPage({ showToast }) {
                       </td>
                       <td style={{ textAlign: 'right', fontSize: 12, fontWeight: 600 }}>{fmtS(sc.monto_contrato)}</td>
                       <td style={{ fontSize: 11 }}>
-                        {pgs.length === 0 ? <span style={{ color: 'var(--tm)' }}>—</span> : pgs.slice(0, 3).map(p => {
-                          const st = calcularEstadoPago(p.monto_acordado, partesDe.get(p.id));
-                          const e = ESTADOS_PAGO[st.estado] || ESTADOS_PAGO.pendiente;
-                          return (
-                            <button key={p.id} className="btn btn-ghost btn-xs" style={{ marginRight: 4, marginBottom: 2 }} onClick={() => setDetalleId(p.id)}>
-                              {p.concepto || 'pago'} · {fmtS(st.pagado)}/{fmtS(p.monto_acordado)} <span className={`badge ${e.cls}`} style={{ fontSize: 8.5, marginLeft: 3 }}>{e.lbl}</span>
-                            </button>
-                          );
-                        })}
-                        {pgs.length > 3 && <span style={{ color: 'var(--tm)', fontSize: 10 }}>+{pgs.length - 3} más</span>}
+                        <PagosChips pgs={pgs} partesDe={partesDe} onDetalle={setDetalleId} />
                       </td>
                       <td style={{ textAlign: 'right' }}>
                         {canGestionar && (
@@ -467,16 +477,7 @@ function PagosPage({ showToast }) {
                       </td>
                       <td style={{ textAlign: 'right', fontSize: 12, color: 'var(--tm)' }}>—</td>
                       <td style={{ fontSize: 11 }}>
-                        {pgs.length === 0 ? <span style={{ color: 'var(--tm)' }}>—</span> : pgs.slice(0, 3).map(p => {
-                          const st = calcularEstadoPago(p.monto_acordado, partesDe.get(p.id));
-                          const e = ESTADOS_PAGO[st.estado] || ESTADOS_PAGO.pendiente;
-                          return (
-                            <button key={p.id} className="btn btn-ghost btn-xs" style={{ marginRight: 4, marginBottom: 2 }} onClick={() => setDetalleId(p.id)}>
-                              {p.concepto || 'pago'} · {fmtS(st.pagado)}/{fmtS(p.monto_acordado)} <span className={`badge ${e.cls}`} style={{ fontSize: 8.5, marginLeft: 3 }}>{e.lbl}</span>
-                            </button>
-                          );
-                        })}
-                        {pgs.length > 3 && <span style={{ color: 'var(--tm)', fontSize: 10 }}>+{pgs.length - 3} más</span>}
+                        <PagosChips pgs={pgs} partesDe={partesDe} onDetalle={setDetalleId} />
                       </td>
                       <td style={{ textAlign: 'right' }}>
                         {canGestionar && (
