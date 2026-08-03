@@ -66,6 +66,7 @@ Reglas estrictas:
 - GUÍA DE REMISIÓN: si el documento dice "Guía de Remisión" (remitente o transportista), tiene punto de partida/llegada, motivo de traslado o datos de transportista → tipo_documento="guia_remision". Las guías NO llevan montos (deja totales en null/0, sin advertir por eso) y suelen referenciar la factura como "Doc. Ref." / "Documento(s) de referencia" → extrae ese número en guia.doc_referencia.
 - DETRACCIÓN (SPOT): si el comprobante trae leyenda de detracción ("Operación sujeta al Sistema de Pago de Obligaciones Tributarias", "SPOT", "detracción", o un recuadro con porcentaje y cuenta del Banco de la Nación), devuelve detraccion.aplica=true con su porcentaje (número, ej. 12 para 12%), el monto detraído en soles y el código SPOT de bien/servicio (2 dígitos, ej. "037"). Si NO hay leyenda de detracción, devuelve detraccion=null.
 - NOTA DE CRÉDITO / DÉBITO: si tipo_documento es nota_credito o nota_debito, SIEMPRE modifica un comprobante previo → extrae en nota_ref.doc_modifica la SERIE-CORRELATIVO del documento que modifica (ej. "F001-123"; suele figurar como "Documento que modifica", "Doc. modificado", "Comprobante que modifica" o "Referencia") y en nota_ref.motivo el motivo (ej. "anulación de la operación", "descuento", "devolución de mercadería", "corrección"). El total de la nota es el MONTO del ajuste en positivo. Si no es una nota, nota_ref=null.
+- RECIBO POR HONORARIOS (renta de 4ta categoría): NO lleva IGV → igv=0 y tasa_igv=0 (NO adviertas por "falta IGV"). El "Total por honorarios" / "Monto bruto" es el BRUTO → ponlo en totales.subtotal. Si hay RETENCIÓN de renta (suele figurar como "Retención (8%) IR", "Renta 4ta", "Retención de renta"), pon el monto retenido en totales.retencion_renta y el "Total Neto Recibido" / "Neto a pagar" (lo que efectivamente cobra el trabajador) en totales.total. Si NO hay retención, retencion_renta=0 y total=bruto. IMPORTANTE: en un recibo, totales.total debe ser el NETO recibido, no el bruto.
 - Si el documento NO es un comprobante peruano NI una guía de remisión, devuelve tipo_documento="otro" y el resto vacío o null.
 - Si la imagen está borrosa, torcida, cortada o ilegible, agrega advertencias específicas y baja la confianza.
 
@@ -102,7 +103,8 @@ Responde SOLO con JSON válido (sin markdown, sin texto extra) con esta estructu
     "subtotal": number,
     "igv": number,
     "total": number,
-    "tasa_igv": number
+    "tasa_igv": number,
+    "retencion_renta": number
   },
   "detraccion": { "aplica": boolean, "porcentaje": number | null, "monto": number | null, "codigo_spot": string | null } | null,
   "observaciones": string | null,

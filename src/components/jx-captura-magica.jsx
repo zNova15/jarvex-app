@@ -611,6 +611,11 @@ function CapturaMagicaPage({ showToast }) {
       const m = matchAsegurados([{ documento: dniDer || '', nombre: ext.emisor?.razon_social || '' }], personal);
       personalMatchId = m?.[0]?.persona?.id || '';
     }
+    // RxH: retención de renta (4ta cat.). Lo que se le paga al trabajador es el
+    // NETO (bruto − retención). Si el OCR no separó la retención, el neto = total.
+    const rxhBruto = esRxh ? Number(ext.totales?.subtotal || ext.totales?.total || 0) : 0;
+    const rxhRetencion = esRxh ? Number(ext.totales?.retencion_renta || 0) : 0;
+    const rxhNeto = esRxh ? (rxhRetencion > 0 ? Math.max(0, rxhBruto - rxhRetencion) : Number(ext.totales?.total || rxhBruto)) : 0;
     // ── NOTA DE CRÉDITO/DÉBITO: pre-match de la factura que modifica ──
     const esNotaDoc = ext.tipo_documento === 'nota_credito' || ext.tipo_documento === 'nota_debito';
     let notaRefMovId = '';
@@ -683,10 +688,12 @@ function CapturaMagicaPage({ showToast }) {
       guia_transportista: ext.guia?.transportista || null,
       // Items
       items,
-      // Totales
+      // Totales. En RxH, total = NETO a pagar al trabajador (bruto − retención).
       subtotal: Number(ext.totales?.subtotal || 0),
-      igv: Number(ext.totales?.igv || 0),
-      total: Number(ext.totales?.total || 0),
+      igv: esRxh ? 0 : Number(ext.totales?.igv || 0),
+      total: esRxh ? rxhNeto : Number(ext.totales?.total || 0),
+      rxh_bruto: esRxh ? rxhBruto : null,
+      rxh_retencion: esRxh ? rxhRetencion : null,
       // Detracción (SPOT): la IA la RECOMIENDA; la asistente confirma/corrige en el modal.
       detraccion_aplica: !!ext.detraccion?.aplica,
       detraccion_pct: ext.detraccion?.porcentaje != null ? Number(ext.detraccion.porcentaje) : null,
@@ -1005,7 +1012,8 @@ function CapturaMagicaPage({ showToast }) {
         concepto, modo_pago: 'rxh',
         monto_acordado: Number(r.total) || 0, moneda: r.moneda || 'PEN',
         periodo, estado: 'pendiente',
-        notas: JSON.stringify({ captura_magica: true, rxh_serie: r.serie_correlativo || null, rxh_ruc_emisor: r.proveedor_ruc || null, fecha_emision: r.fecha_emision || null }),
+        notas: JSON.stringify({ captura_magica: true, rxh_serie: r.serie_correlativo || null, rxh_ruc_emisor: r.proveedor_ruc || null, fecha_emision: r.fecha_emision || null,
+          rxh_bruto: r.rxh_bruto != null ? Number(r.rxh_bruto) : null, rxh_retencion: r.rxh_retencion != null ? Number(r.rxh_retencion) : null, rxh_neto: Number(r.total) || 0 }),
         created_by: userId, updated_by: userId, created_at: now, updated_at: now, version: 1,
         sync_status: 'pending_create',
         idempotency_key: `${userId}_pago_${pagoId}`,
@@ -2367,8 +2375,32 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
                 <label className="flabel">Concepto / servicio</label>
                 <input className="fi" value={r.rxh_concepto || ''} onChange={e=>upd({ rxh_concepto: e.target.value })} placeholder="Ej. Asistente del residente de obra"/>
               </div>
+              {/* Fecha + montos EDITABLES (corregí acá si el OCR se equivocó) */}
+              <div style={{ marginTop:8, display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1.1fr', gap:8 }}>
+                <div>
+                  <label className="flabel">Fecha de emisión</label>
+                  <input className="fi" type="date" value={r.fecha_emision || ''} onChange={e=>upd({ fecha_emision: e.target.value })}/>
+                </div>
+                <div>
+                  <label className="flabel">Honorarios (bruto)</label>
+                  <input className="fi" type="number" step="0.01" value={r.rxh_bruto ?? ''}
+                    onChange={e=>{ const b=e.target.value; const ret=Number(r.rxh_retencion)||0; upd({ rxh_bruto: b, total: Math.max(0, (Number(b)||0) - ret) }); }}/>
+                </div>
+                <div>
+                  <label className="flabel">Retención</label>
+                  <input className="fi" type="number" step="0.01" value={r.rxh_retencion ?? ''}
+                    onChange={e=>{ const ret=e.target.value; const b=Number(r.rxh_bruto)||Number(r.total)||0; upd({ rxh_retencion: ret, total: Math.max(0, b - (Number(ret)||0)) }); }}/>
+                </div>
+                <div>
+                  <label className="flabel">Neto a pagar (S/) *</label>
+                  <input className="fi" type="number" step="0.01" value={r.total} onChange={e=>upd({ total: e.target.value })} style={{ fontWeight:700 }}/>
+                </div>
+              </div>
+              <div style={{ fontSize:10.5, color:'var(--amber)', marginTop:4, lineHeight:1.4 }}>
+                El pago al trabajador es el <strong>NETO</strong> (honorarios − retención). Si el OCR leyó mal el monto, corregilo acá antes de confirmar.
+              </div>
               <div style={{ fontSize:11, color:'var(--tm)', marginTop:8, lineHeight:1.45 }}>
-                Al confirmar se crea el <strong>pago del trabajador</strong> (S/ {(Number(r.total)||0).toFixed(2)} · {r.fecha_emision || ''}) con este recibo adjunto. El voucher de la transferencia se sube después en <strong>Pagos</strong>.
+                Al confirmar se crea el <strong>pago del trabajador</strong> por <strong>S/ {(Number(r.total)||0).toFixed(2)}</strong> ({r.fecha_emision || ''}) con este recibo adjunto. El voucher de la transferencia se sube después en <strong>Pagos</strong>.
               </div>
             </div>
             ) : (
@@ -2758,12 +2790,14 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
               </div>
             </div>
 
-            {/* TOTALES */}
+            {/* TOTALES (para RxH se usan los campos Honorarios/Retención/Neto del bloque de arriba) */}
+            {!r.es_rxh && (
             <div style={{ marginTop:10, display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8 }}>
               <div><label className="flabel">Subtotal</label><input className="fi" type="number" step="0.01" value={r.subtotal} onChange={e=>upd({ subtotal: e.target.value })}/></div>
               <div><label className="flabel">IGV</label><input className="fi" type="number" step="0.01" value={r.igv} onChange={e=>upd({ igv: e.target.value })}/></div>
               <div><label className="flabel">Total *</label><input className="fi" type="number" step="0.01" value={r.total} onChange={e=>upd({ total: e.target.value })} style={{ fontWeight:700 }}/></div>
             </div>
+            )}
 
             {/* NOTA DE CRÉDITO/DÉBITO — factura que modifica + efecto contable */}
             {(r.es_nota_credito || r.es_nota_debito) && (
