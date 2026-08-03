@@ -988,6 +988,7 @@ function CapturaMagicaPage({ showToast }) {
           .find(p => { try { return normalizarComprobante(JSON.parse(p.notas || '{}').rxh_serie || '') === serieN; } catch { return false; } });
         if (dupPago) {
           setItems(prev => prev.map(x => x.id === it.id ? { ...x, status: 'confirmado' } : x));
+          deleteItemFromDB(it.id);   // sacarlo de la cola (si no, reaparece y se re-confirma)
           showToast('Este recibo por honorarios ya estaba registrado como pago — no se duplicó.', 'amber');
           setReviewing(null);
           return;
@@ -1021,6 +1022,8 @@ function CapturaMagicaPage({ showToast }) {
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'pagos' } })); } catch {}
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'evidencias', source: 'rxh-capture' } })); } catch {}
       setItems(prev => prev.map(x => x.id === it.id ? { ...x, status: 'confirmado' } : x));
+      deleteItemFromDB(it.id);   // sacarlo de la cola de Captura Mágica (igual que compra/guía);
+                                 // si no, al recargar reaparece como "Listo para revisar" y se re-confirma → duplica
       const quien = persona ? `${persona.nombres || ''} ${persona.apellidos || ''}`.trim() || 'el trabajador' : 'el trabajador';
       showToast(`${personaCreada ? `Trabajador ${quien} creado. ` : ''}Recibo por honorarios registrado como pago de ${quien}. Ahora subí el voucher en el módulo Pagos.`, 'green');
       setReviewing(null);   // cerrar la modal (evita el reclick que multiplicaba)
@@ -1830,8 +1833,8 @@ function CapturaMagicaPage({ showToast }) {
         </div>
       )}
 
-      {/* ── LISTA DE ITEMS ────────────────────────────────────── */}
-      {items.length === 0 ? (
+      {/* ── LISTA DE ITEMS (los confirmados desaparecen de la bandeja) ─────── */}
+      {items.filter(it => it.status !== 'confirmado').length === 0 ? (
         <div className="card card-p empty-state">
           <JxIcon name="inbox" size={36} color="var(--tm)"/>
           <p>No hay archivos en la bandeja. Subí tu primer comprobante arriba.</p>
@@ -1847,7 +1850,7 @@ function CapturaMagicaPage({ showToast }) {
                 <th style={{ textAlign:'center' }}>Acciones</th>
               </tr></thead>
               <tbody>
-                {items.map(it => {
+                {items.filter(it => it.status !== 'confirmado').map(it => {
                   const est = ESTADOS[it.status] || ESTADOS.pendiente;
                   const r = it.review;
                   return (
