@@ -16,6 +16,15 @@ function splitNombrePeru(full) {
   if (toks.length === 3) return { apellidos: toks.slice(0, 2).join(' '), nombres: toks[2] };
   return { apellidos: toks.slice(0, 2).join(' '), nombres: toks.slice(2).join(' ') };
 }
+
+// Opciones simples de "cargo" al crear un trabajador desde un recibo. El valor es
+// la CATEGORÍA (respetada por categoriaDe como override); el label va a personal.cargo.
+const RXH_CARGO_OPCIONES = [
+  { value: 'otros', label: 'Otros / Servicios' },
+  { value: 'profesionales', label: 'Personal directo / Profesional' },
+  { value: 'obrero', label: 'Obrero' },
+];
+const RXH_CARGO_LABEL = Object.fromEntries(RXH_CARGO_OPCIONES.map(o => [o.value, o.label]));
 const { useState: uSCM, useMemo: uMCM, useEffect: uECM, useRef: uRCM } = React;
 
 // ╔════════════════════════════════════════════════════════════╗
@@ -173,6 +182,10 @@ function CapturaMagicaPage({ showToast }) {
   const { data: movs } = window.__hooks?.useAccountingMovements?.() || { data: [] };
   // Todo el personal (sin obra_id → todas las obras): para vincular recibos por honorarios.
   const { data: personal } = window.__hooks?.usePersonal?.() || { data: [] };
+  // Dedup de trabajadores creados en ESTE lote/sesión (dni/RUC → personal_id):
+  // si suben varios recibos de la misma persona, se crea UNA sola vez (el hook
+  // `personal` puede tardar en refrescar entre confirmaciones seguidas).
+  const dnisCreadosRef = uRCM(new Map());
 
   // [items] cada item = { id, file, name, status, base64, mimeType, parsed, error, review }
   // Se persisten en Dexie (tabla captura_magica_pending) hasta que el usuario
@@ -623,7 +636,9 @@ function CapturaMagicaPage({ showToast }) {
       nuevo_personal_nombres: esRxh ? splitNombrePeru(ext.emisor?.razon_social).nombres : '',
       nuevo_personal_apellidos: esRxh ? splitNombrePeru(ext.emisor?.razon_social).apellidos : '',
       nuevo_personal_dni: esRxh ? (dniDeRuc(ext.emisor?.ruc) || '') : '',
-      nuevo_personal_cargo: esRxh ? (ext.items?.[0]?.descripcion || '') : '',
+      nuevo_personal_telefono: '',
+      nuevo_personal_email: '',
+      nuevo_personal_categoria: 'otros',   // honorarios: por defecto "Otros"; editable
       // Nota de crédito/débito: factura que modifica + motivo (ver confirmarItem).
       es_nota_credito: ext.tipo_documento === 'nota_credito',
       es_nota_debito: ext.tipo_documento === 'nota_debito',
@@ -917,26 +932,41 @@ function CapturaMagicaPage({ showToast }) {
       if (r.personal_accion === 'crear_nuevo') {
         const nombres = String(r.nuevo_personal_nombres || '').trim();
         const apellidos = String(r.nuevo_personal_apellidos || '').trim();
-        if (!nombres && !apellidos) { showToast('Indicá al menos el nombre o el apellido del trabajador nuevo.', 'red'); return; }
+        const categoria = ['obrero', 'profesionales', 'otros'].includes(r.nuevo_personal_categoria) ? r.nuevo_personal_categoria : 'otros';
+        if (!nombres || !apellidos) { showToast('Completá nombres y apellidos del trabajador nuevo.', 'red'); return; }
         const dniNuevo = String(r.nuevo_personal_dni || dniDeRuc(r.proveedor_ruc) || '').trim();
-        // Si ya hay un trabajador con ese DNI, reusarlo (no duplicar).
-        const yaExiste = dniNuevo ? (personal || []).find(p => !p.deleted_at && String(p.dni || '') === dniNuevo) : null;
-        if (yaExiste) {
-          personalId = yaExiste.id; persona = yaExiste;
+        const rucDig = String(r.proveedor_ruc || '').replace(/\D/g, '');
+        const dedupKey = dniNuevo || (rucDig ? `ruc:${rucDig}` : `tmp:${it.id}`);
+
+        // (1) MISMO lote/sesión: ya lo creamos por otro recibo → reusar (evita
+        //     duplicar cuando suben varios recibos de la misma persona).
+        if (dnisCreadosRef.current.has(dedupKey)) {
+          personalId = dnisCreadosRef.current.get(dedupKey);
+          persona = (personal || []).find(p => p.id === personalId) || (await window.__db.personal.get(personalId).catch(() => null)) || persona;
         } else {
-          const pid = window.__newId();
-          persona = {
-            id: pid, obra_id: obraId, nombres, apellidos,
-            dni: dniNuevo || `RXH-${(r.proveedor_ruc || '').replace(/\D/g, '').slice(-9) || String(pid).slice(0, 8)}`,
-            cargo: String(r.nuevo_personal_cargo || 'Servicios por honorarios').trim() || 'Servicios por honorarios',
-            estado: 'activo',
-            created_by: userId, updated_by: userId, created_at: now, updated_at: now, version: 1,
-            sync_status: 'pending_create', idempotency_key: `${userId}_pers_${pid}`,
-          };
-          await window.__db.personal.add(persona);
-          try { await window.__logAudit?.({ action: 'create', table: 'personal', recordId: pid, reason: `Trabajador creado desde Captura Mágica (recibo por honorarios)${dniNuevo ? ' · DNI ' + dniNuevo : ''}` }); } catch {}
-          try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'personal' } })); } catch {}
-          personalId = pid; personaCreada = true;
+          // (2) Ya existe en Dexie (dup real, o creado hace un instante por otro recibo).
+          let existente = null;
+          try { if (dniNuevo) existente = await window.__db.personal.where('dni').equals(dniNuevo).filter(p => !p.deleted_at).first(); } catch {}
+          if (existente) {
+            personalId = existente.id; persona = existente;
+          } else {
+            const pid = window.__newId();
+            persona = {
+              id: pid, obra_id: obraId, nombres, apellidos,
+              dni: dniNuevo || `RXH-${rucDig.slice(-9) || String(pid).slice(0, 8)}`,
+              telefono: String(r.nuevo_personal_telefono || '').trim() || null,
+              email: String(r.nuevo_personal_email || '').trim() || null,
+              categoria, cargo: RXH_CARGO_LABEL[categoria] || 'Servicios por honorarios',
+              estado: 'activo',
+              created_by: userId, updated_by: userId, created_at: now, updated_at: now, version: 1,
+              sync_status: 'pending_create', idempotency_key: `${userId}_pers_${pid}`,
+            };
+            await window.__db.personal.add(persona);
+            try { await window.__logAudit?.({ action: 'create', table: 'personal', recordId: pid, reason: `Trabajador creado desde Captura Mágica (recibo por honorarios)${dniNuevo ? ' · DNI ' + dniNuevo : ''}` }); } catch {}
+            try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'personal' } })); } catch {}
+            personalId = pid; personaCreada = true;
+          }
+          dnisCreadosRef.current.set(dedupKey, personalId);
         }
       }
       if (!personalId) { showToast('Elegí a qué TRABAJADOR corresponde este recibo por honorarios (o creá uno nuevo).', 'red'); return; }
@@ -2277,12 +2307,18 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
               </div>
               {r.personal_accion === 'crear_nuevo' ? (
                 <div style={{ padding:'8px 10px', background:'rgba(46,204,113,0.05)', border:'1px dashed rgba(46,204,113,0.4)', borderRadius:6 }}>
-                  <div style={{ fontSize:10.5, color:'var(--tm)', marginBottom:6, lineHeight:1.4 }}>Se creará el trabajador con estos datos (revisalos) y el recibo quedará vinculado a él.</div>
+                  <div style={{ fontSize:10.5, color:'var(--tm)', marginBottom:6, lineHeight:1.4 }}>Lo básico para crear al trabajador (revisalo). El <strong>cargo es obligatorio</strong>; teléfono y correo podés completarlos después.</div>
                   <div className="g2">
                     <div><label className="flabel">Nombres *</label><input className="fi" value={r.nuevo_personal_nombres || ''} onChange={e=>upd({ nuevo_personal_nombres: e.target.value })} placeholder="Nombres"/></div>
                     <div><label className="flabel">Apellidos *</label><input className="fi" value={r.nuevo_personal_apellidos || ''} onChange={e=>upd({ nuevo_personal_apellidos: e.target.value })} placeholder="Apellidos"/></div>
                     <div><label className="flabel">DNI</label><input className="fi" value={r.nuevo_personal_dni || ''} onChange={e=>upd({ nuevo_personal_dni: e.target.value })} placeholder="8 dígitos"/></div>
-                    <div><label className="flabel">Cargo / servicio</label><input className="fi" value={r.nuevo_personal_cargo || ''} onChange={e=>upd({ nuevo_personal_cargo: e.target.value })} placeholder="Ej. Servicios por honorarios"/></div>
+                    <div><label className="flabel">Cargo *</label>
+                      <select className="fi" value={r.nuevo_personal_categoria || 'otros'} onChange={e=>upd({ nuevo_personal_categoria: e.target.value })}>
+                        {RXH_CARGO_OPCIONES.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                      </select>
+                    </div>
+                    <div><label className="flabel">Teléfono</label><input className="fi" value={r.nuevo_personal_telefono || ''} onChange={e=>upd({ nuevo_personal_telefono: e.target.value })} placeholder="Opcional"/></div>
+                    <div><label className="flabel">Correo</label><input className="fi" type="email" value={r.nuevo_personal_email || ''} onChange={e=>upd({ nuevo_personal_email: e.target.value })} placeholder="Opcional"/></div>
                   </div>
                   {r.proveedor_ruc && dniDeRuc(r.proveedor_ruc) && <div style={{ fontSize:10, color:'var(--tm)', marginTop:5 }}>DNI derivado del RUC del recibo: {dniDeRuc(r.proveedor_ruc)}</div>}
                 </div>
