@@ -5,6 +5,17 @@ import {
 import { epppTipo } from "../lib/epp-utils.js";
 import { normalizarRuc, normalizarComprobante, esRucPersonaNatural, dniDeRuc } from "../lib/doc-id.js";
 import { matchAsegurados } from "../lib/sctr-paquete.js";
+
+// Nombre de persona natural en formato SUNAT ("APELLIDO1 APELLIDO2 NOMBRES"):
+// heurística para pre-llenar apellidos/nombres al crear un trabajador desde un
+// recibo por honorarios de alguien no registrado. La asistente puede corregirlo.
+function splitNombrePeru(full) {
+  const toks = String(full || '').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+  if (toks.length <= 1) return { apellidos: toks[0] || '', nombres: '' };
+  if (toks.length === 2) return { apellidos: toks[0], nombres: toks[1] };
+  if (toks.length === 3) return { apellidos: toks.slice(0, 2).join(' '), nombres: toks[2] };
+  return { apellidos: toks.slice(0, 2).join(' '), nombres: toks.slice(2).join(' ') };
+}
 const { useState: uSCM, useMemo: uMCM, useEffect: uECM, useRef: uRCM } = React;
 
 // ╔════════════════════════════════════════════════════════════╗
@@ -606,6 +617,13 @@ function CapturaMagicaPage({ showToast }) {
       es_rxh: esRxh,
       personal_id: personalMatchId,
       rxh_concepto: esRxh ? (ext.items?.[0]?.descripcion || ext.observaciones || '') : '',
+      // RxH de un trabajador NO registrado → se puede crear en el momento.
+      // Si no hubo match, arranca directamente en "crear nuevo" (pre-llenado).
+      personal_accion: (esRxh && !personalMatchId) ? 'crear_nuevo' : 'usar_existente',
+      nuevo_personal_nombres: esRxh ? splitNombrePeru(ext.emisor?.razon_social).nombres : '',
+      nuevo_personal_apellidos: esRxh ? splitNombrePeru(ext.emisor?.razon_social).apellidos : '',
+      nuevo_personal_dni: esRxh ? (dniDeRuc(ext.emisor?.ruc) || '') : '',
+      nuevo_personal_cargo: esRxh ? (ext.items?.[0]?.descripcion || '') : '',
       // Nota de crédito/débito: factura que modifica + motivo (ver confirmarItem).
       es_nota_credito: ext.tipo_documento === 'nota_credito',
       es_nota_debito: ext.tipo_documento === 'nota_debito',
@@ -886,18 +904,49 @@ function CapturaMagicaPage({ showToast }) {
   // crea proveedor ni movimiento contable (evita duplicar el costo del personal,
   // que se lleva por Pagos). El historial de RxH = los pagos con modo 'rxh'.
   const confirmarRxH = async (it, r) => {
-    if (!r.personal_id) { showToast('Elegí a qué TRABAJADOR corresponde este recibo por honorarios.', 'red'); return; }
     if (!(Number(r.total) > 0)) { showToast('El total del recibo debe ser mayor a 0.', 'red'); return; }
     try {
       const now = new Date().toISOString();
-      const persona = (personal || []).find(p => p.id === r.personal_id);
-      const obraId = r.obra_id || persona?.obra_id || (window.__getObraActivaId?.()) || (obras || []).find(o => !o.deleted_at)?.id || null;
+      const persona0 = (personal || []).find(p => p.id === r.personal_id) || null;
+      const obraId = r.obra_id || persona0?.obra_id || (window.__getObraActivaId?.()) || (obras || []).find(o => !o.deleted_at)?.id || null;
+
+      // ── Trabajador: existente o CREADO en el momento (RxH de personal no registrado) ──
+      let personalId = r.personal_id;
+      let persona = persona0;
+      let personaCreada = false;
+      if (r.personal_accion === 'crear_nuevo') {
+        const nombres = String(r.nuevo_personal_nombres || '').trim();
+        const apellidos = String(r.nuevo_personal_apellidos || '').trim();
+        if (!nombres && !apellidos) { showToast('Indicá al menos el nombre o el apellido del trabajador nuevo.', 'red'); return; }
+        const dniNuevo = String(r.nuevo_personal_dni || dniDeRuc(r.proveedor_ruc) || '').trim();
+        // Si ya hay un trabajador con ese DNI, reusarlo (no duplicar).
+        const yaExiste = dniNuevo ? (personal || []).find(p => !p.deleted_at && String(p.dni || '') === dniNuevo) : null;
+        if (yaExiste) {
+          personalId = yaExiste.id; persona = yaExiste;
+        } else {
+          const pid = window.__newId();
+          persona = {
+            id: pid, obra_id: obraId, nombres, apellidos,
+            dni: dniNuevo || `RXH-${(r.proveedor_ruc || '').replace(/\D/g, '').slice(-9) || String(pid).slice(0, 8)}`,
+            cargo: String(r.nuevo_personal_cargo || 'Servicios por honorarios').trim() || 'Servicios por honorarios',
+            estado: 'activo',
+            created_by: userId, updated_by: userId, created_at: now, updated_at: now, version: 1,
+            sync_status: 'pending_create', idempotency_key: `${userId}_pers_${pid}`,
+          };
+          await window.__db.personal.add(persona);
+          try { await window.__logAudit?.({ action: 'create', table: 'personal', recordId: pid, reason: `Trabajador creado desde Captura Mágica (recibo por honorarios)${dniNuevo ? ' · DNI ' + dniNuevo : ''}` }); } catch {}
+          try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'personal' } })); } catch {}
+          personalId = pid; personaCreada = true;
+        }
+      }
+      if (!personalId) { showToast('Elegí a qué TRABAJADOR corresponde este recibo por honorarios (o creá uno nuevo).', 'red'); return; }
+
       const periodo = String(r.fecha_emision || now.slice(0, 10)).slice(0, 7); // YYYY-MM
       const concepto = String(r.rxh_concepto || r.items?.[0]?.descripcion || 'Recibo por honorarios').trim();
       const pagoId = window.__newId();
       await window.__db.pagos.add({
         id: pagoId, obra_id: obraId,
-        beneficiario_tipo: 'personal', personal_id: r.personal_id, subcontrato_id: null,
+        beneficiario_tipo: 'personal', personal_id: personalId, subcontrato_id: null,
         beneficiario_nombre: persona ? `${persona.nombres || ''} ${persona.apellidos || ''}`.trim() : (r.proveedor_razon_social || null),
         concepto, modo_pago: 'rxh',
         monto_acordado: Number(r.total) || 0, moneda: r.moneda || 'PEN',
@@ -919,7 +968,8 @@ function CapturaMagicaPage({ showToast }) {
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'pagos' } })); } catch {}
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'evidencias', source: 'rxh-capture' } })); } catch {}
       setItems(prev => prev.map(x => x.id === it.id ? { ...x, status: 'confirmado' } : x));
-      showToast(`Recibo por honorarios registrado como pago de ${persona ? (persona.nombres || 'el trabajador') : 'el trabajador'}. Ahora subí el voucher en el módulo Pagos.`, 'green');
+      const quien = persona ? `${persona.nombres || ''} ${persona.apellidos || ''}`.trim() || 'el trabajador' : 'el trabajador';
+      showToast(`${personaCreada ? `Trabajador ${quien} creado. ` : ''}Recibo por honorarios registrado como pago de ${quien}. Ahora subí el voucher en el módulo Pagos.`, 'green');
     } catch (e) {
       showToast('No se pudo registrar el recibo por honorarios: ' + (e.message || e), 'red');
     }
@@ -2219,6 +2269,25 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
               <div style={{ fontSize:11.5, color:'var(--tm)', marginBottom:8, lineHeight:1.45 }}>
                 Emisor del recibo: <strong>{r.proveedor_razon_social || '—'}</strong>{r.proveedor_ruc ? ` · RUC ${r.proveedor_ruc}` : ''}. Confirmá a qué trabajador corresponde.
               </div>
+              <div style={{ display:'flex', gap:8, marginBottom:8 }}>
+                <button type="button" className={`btn btn-xs ${r.personal_accion !== 'crear_nuevo' ? 'btn-amber' : 'btn-ghost'}`}
+                  onClick={()=>upd({ personal_accion:'usar_existente' })}>Usar existente</button>
+                <button type="button" className={`btn btn-xs ${r.personal_accion === 'crear_nuevo' ? 'btn-amber' : 'btn-ghost'}`}
+                  onClick={()=>upd({ personal_accion:'crear_nuevo' })}>➕ Crear trabajador nuevo</button>
+              </div>
+              {r.personal_accion === 'crear_nuevo' ? (
+                <div style={{ padding:'8px 10px', background:'rgba(46,204,113,0.05)', border:'1px dashed rgba(46,204,113,0.4)', borderRadius:6 }}>
+                  <div style={{ fontSize:10.5, color:'var(--tm)', marginBottom:6, lineHeight:1.4 }}>Se creará el trabajador con estos datos (revisalos) y el recibo quedará vinculado a él.</div>
+                  <div className="g2">
+                    <div><label className="flabel">Nombres *</label><input className="fi" value={r.nuevo_personal_nombres || ''} onChange={e=>upd({ nuevo_personal_nombres: e.target.value })} placeholder="Nombres"/></div>
+                    <div><label className="flabel">Apellidos *</label><input className="fi" value={r.nuevo_personal_apellidos || ''} onChange={e=>upd({ nuevo_personal_apellidos: e.target.value })} placeholder="Apellidos"/></div>
+                    <div><label className="flabel">DNI</label><input className="fi" value={r.nuevo_personal_dni || ''} onChange={e=>upd({ nuevo_personal_dni: e.target.value })} placeholder="8 dígitos"/></div>
+                    <div><label className="flabel">Cargo / servicio</label><input className="fi" value={r.nuevo_personal_cargo || ''} onChange={e=>upd({ nuevo_personal_cargo: e.target.value })} placeholder="Ej. Servicios por honorarios"/></div>
+                  </div>
+                  {r.proveedor_ruc && dniDeRuc(r.proveedor_ruc) && <div style={{ fontSize:10, color:'var(--tm)', marginTop:5 }}>DNI derivado del RUC del recibo: {dniDeRuc(r.proveedor_ruc)}</div>}
+                </div>
+              ) : (
+              <>
               <label className="flabel">Trabajador *</label>
               <select className="fi" value={r.personal_id || ''} onChange={e=>upd({ personal_id: e.target.value })}>
                 <option value="">— Elegir trabajador —</option>
@@ -2226,7 +2295,9 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
                   .slice().sort((a,b)=>(`${a.apellidos||''} ${a.nombres||''}`).localeCompare(`${b.apellidos||''} ${b.nombres||''}`))
                   .map(p => <option key={p.id} value={p.id}>{`${p.nombres||''} ${p.apellidos||''}`.trim()}{p.dni ? ` · DNI ${p.dni}` : ''}{p.cargo ? ` · ${p.cargo}` : ''}</option>)}
               </select>
-              {!r.personal_id && <div style={{ fontSize:10.5, color:'var(--amber)', marginTop:4 }}>No lo pude vincular automáticamente — elegilo de la lista.</div>}
+              {!r.personal_id && <div style={{ fontSize:10.5, color:'var(--amber)', marginTop:4 }}>No lo pude vincular automáticamente — elegilo de la lista, o creá uno nuevo.</div>}
+              </>
+              )}
               <div style={{ marginTop:8 }}>
                 <label className="flabel">Concepto / servicio</label>
                 <input className="fi" value={r.rxh_concepto || ''} onChange={e=>upd({ rxh_concepto: e.target.value })} placeholder="Ej. Asistente del residente de obra"/>

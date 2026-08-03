@@ -45,6 +45,7 @@ const AYUDA = {
       'Facturas en soles > S/ 2,000 entran como "Pendiente" y pasan a "Pagado" solas cuando se sube su bancarización completa.',
       'DETRACCIÓN (SPOT): si la factura la tiene, la IA la detecta y te propone el %, el monto y el código — corregilo si hace falta antes de confirmar (el neto a pagar al proveedor se calcula solo). El depósito lo registrás después en Movimientos Contables.',
       'RECIBOS POR HONORARIOS: la IA los reconoce (emisor persona natural) y te deja elegir/confirmar el TRABAJADOR; al confirmar se crea el pago del trabajador con el recibo ya adjunto, listo para que subas el voucher en Pagos. No crea proveedor ni movimiento de compra.',
+      'RECIBO DE UN TRABAJADOR NO REGISTRADO: si no aparece en la lista, tocá "➕ Crear trabajador nuevo" en el mismo recibo — viene pre-llenado con nombres/apellidos y el DNI derivado del RUC; revisás, confirmás, y en un paso se crea el trabajador Y su pago (si ya existe uno con ese DNI, se reutiliza).',
       'NOTAS DE CRÉDITO/DÉBITO: la IA las reconoce y detecta qué factura modifican. La nota de CRÉDITO se registra RESTANDO (baja el costo del proveedor o las ventas) y queda vinculada a la factura original; la de DÉBITO suma. No piden bancarización ni recepción de almacén.',
       'Si la fecha de la factura es anterior al inicio de la obra elegida, la app te lo advierte (no bloquea).',
     ],
