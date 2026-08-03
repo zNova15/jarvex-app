@@ -709,7 +709,10 @@ function CapturaMagicaPage({ showToast }) {
       // la factura como pendiente de recepción. Si el comprobante NO es de almacén
       // (combustible, servicios, fletes), el contador desactiva ese checkbox.
       crear_materiales_catalogo: false,
-      genera_recepcion_almacen: true,
+      // Marcado INTELIGENTE por tipo de documento: solo los comprobantes de COMPRA
+      // de bienes van al almacén. Un recibo por honorarios (servicio), una nota de
+      // crédito/débito (ajuste) o una venta (emitimos nosotros) NO generan recepción.
+      genera_recepcion_almacen: !esRxh && !esNotaDoc && !emisorCompanyMatch,
       // Defaults: la mayoría de comprobantes que sube el contador ya están
       // pagados en efectivo (Gabriel). El usuario corrige en el review si no.
       metodo_pago: 'efectivo',
@@ -920,6 +923,11 @@ function CapturaMagicaPage({ showToast }) {
   // que se lleva por Pagos). El historial de RxH = los pagos con modo 'rxh'.
   const confirmarRxH = async (it, r) => {
     if (!(Number(r.total) > 0)) { showToast('El total del recibo debe ser mayor a 0.', 'red'); return; }
+    // Anti doble-submit (mismo candado que confirmarGuia): la modal NO se cerraba
+    // tras confirmar → los reclicks creaban PAGOS duplicados. Ahora: se corta el
+    // reclick, se deduplica por serie del recibo, y al final se cierra la modal.
+    if (enProcesoRef.current.has(it.id)) return;
+    enProcesoRef.current.add(it.id);
     try {
       const now = new Date().toISOString();
       const persona0 = (personal || []).find(p => p.id === r.personal_id) || null;
@@ -971,6 +979,21 @@ function CapturaMagicaPage({ showToast }) {
       }
       if (!personalId) { showToast('Elegí a qué TRABAJADOR corresponde este recibo por honorarios (o creá uno nuevo).', 'red'); return; }
 
+      // Dedup del PAGO: si ya se registró un pago de ESTE recibo (misma serie) para
+      // este trabajador, no crear otro (por si el guard/cierre fallara igual).
+      const serieN = normalizarComprobante(r.serie_correlativo || '');
+      if (serieN) {
+        const dupPago = (await window.__db.pagos.where('personal_id').equals(personalId)
+          .filter(p => !p.deleted_at && p.modo_pago === 'rxh').toArray())
+          .find(p => { try { return normalizarComprobante(JSON.parse(p.notas || '{}').rxh_serie || '') === serieN; } catch { return false; } });
+        if (dupPago) {
+          setItems(prev => prev.map(x => x.id === it.id ? { ...x, status: 'confirmado' } : x));
+          showToast('Este recibo por honorarios ya estaba registrado como pago — no se duplicó.', 'amber');
+          setReviewing(null);
+          return;
+        }
+      }
+
       const periodo = String(r.fecha_emision || now.slice(0, 10)).slice(0, 7); // YYYY-MM
       const concepto = String(r.rxh_concepto || r.items?.[0]?.descripcion || 'Recibo por honorarios').trim();
       const pagoId = window.__newId();
@@ -1000,8 +1023,11 @@ function CapturaMagicaPage({ showToast }) {
       setItems(prev => prev.map(x => x.id === it.id ? { ...x, status: 'confirmado' } : x));
       const quien = persona ? `${persona.nombres || ''} ${persona.apellidos || ''}`.trim() || 'el trabajador' : 'el trabajador';
       showToast(`${personaCreada ? `Trabajador ${quien} creado. ` : ''}Recibo por honorarios registrado como pago de ${quien}. Ahora subí el voucher en el módulo Pagos.`, 'green');
+      setReviewing(null);   // cerrar la modal (evita el reclick que multiplicaba)
     } catch (e) {
       showToast('No se pudo registrar el recibo por honorarios: ' + (e.message || e), 'red');
+    } finally {
+      enProcesoRef.current.delete(it.id);
     }
   };
 
@@ -2677,11 +2703,13 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
                   Ítems ({r.items.length})
                 </div>
                 <div style={{ display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
+                  {!(r.es_rxh || r.es_nota_credito || r.es_nota_debito || r.emisor_company_id) && (
                   <label style={{ fontSize:11, color:'var(--tm)', display:'flex', alignItems:'center', gap:4 }}
-                    title="Si está marcado, esta factura aparece en 'Compras pendientes' del almacenero, que decide allí crear el insumo nuevo o vincularlo a uno existente cuando confirme la recepción física.">
+                    title="Si está marcado, esta factura aparece en 'Compras pendientes' del almacenero, que decide allí crear el insumo nuevo o vincularlo a uno existente cuando confirme la recepción física. Solo aplica a compras de bienes: en recibos por honorarios, notas y ventas no aparece.">
                     <input type="checkbox" checked={r.genera_recepcion_almacen !== false} onChange={e=>upd({ genera_recepcion_almacen: e.target.checked })}/>
                     Genera ingreso al almacén (esperar recepción física)
                   </label>
+                  )}
                   <button type="button" className="btn btn-ghost btn-xs" onClick={recalcular}>↻ Recalcular total</button>
                 </div>
               </div>

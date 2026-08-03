@@ -47,6 +47,7 @@ const AYUDA = {
       'RECIBOS POR HONORARIOS: la IA los reconoce (emisor persona natural) y te deja elegir/confirmar el TRABAJADOR; al confirmar se crea el pago del trabajador con el recibo ya adjunto, listo para que subas el voucher en Pagos. No crea proveedor ni movimiento de compra.',
       'RECIBO DE UN TRABAJADOR NO REGISTRADO: si no aparece en la lista, tocá "➕ Crear trabajador nuevo" — pide solo lo básico (nombres, apellidos, DNI, cargo, y teléfono/correo opcionales), pre-llenado desde el recibo (el DNI sale del RUC). El CARGO es obligatorio; el resto se puede completar después. Al confirmar, en un paso se crea el trabajador Y su pago. Si subís varios recibos de la misma persona, se crea UNA sola vez (dedup por DNI).',
       'NOTAS DE CRÉDITO/DÉBITO: la IA las reconoce y detecta qué factura modifican. La nota de CRÉDITO se registra RESTANDO (baja el costo del proveedor o las ventas) y queda vinculada a la factura original; la de DÉBITO suma. No piden bancarización ni recepción de almacén.',
+      '"Genera ingreso al almacén": se marca solo cuando corresponde — en compras de bienes viene activado (aparece en Compras Pendientes del almacenero); en recibos por honorarios, notas de crédito/débito y ventas ni siquiera se muestra (no tienen nada que ver con el almacén).',
       'Si la fecha de la factura es anterior al inicio de la obra elegida, la app te lo advierte (no bloquea).',
     ],
     rol: { ayudante_contador: 'Evitá el doble registro: si el comprobante ya existe (misma serie y RUC), la app lo detecta y no lo duplica.' },
