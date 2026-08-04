@@ -283,6 +283,14 @@ function EmpresasPage({ showToast }) {
 
   const eliminar = async (c) => {
     if (!isAdmin) return;
+    // Anti-FANTASMA: si la empresa tiene movimientos contables, desactivarla dejaría
+    // esos movimientos con empresa "—" (no se ve el nombre ni se puede filtrar). No
+    // permitir; primero hay que reasignar/eliminar esos movimientos.
+    const conMovs = (movs || []).filter(m => !m.deleted_at && (m.company_id === c.id || m.related_company_id === c.id)).length;
+    if (conMovs > 0) {
+      showToast(`No se puede desactivar "${c.name}": tiene ${conMovs} movimiento(s) contable(s) asociado(s). Reasigná o eliminá esos movimientos primero (o dejala activa) para no dejar facturas "fantasma".`, 'red');
+      return;
+    }
     if (!confirm(`¿Desactivar la empresa "${c.name}"?\n\nLos movimientos contables NO se borran. Solo se marca como inactiva.`)) return;
     try {
       await window.__db.companies.update(c.id, {
@@ -1484,6 +1492,12 @@ function MovimientosContablesPage({ showToast }) {
     const pct = detrPct !== '' ? Number(detrPct) : null;
     if (detrAplica) {
       if (!(monto > 0)) { showToast('Ingresá el monto de la detracción.', 'red'); return; }
+      // Guard bruto/neto: la detracción es un % del total (típ. 4–12%), NO el neto.
+      // Si el monto es ≥ la mitad del total, casi seguro cargaron el neto por error.
+      const _tot = Number(m.amount) || 0;
+      if (_tot > 0 && monto >= _tot * 0.5) {
+        if (!window.confirm(`⚠ El monto de detracción (S/ ${monto.toFixed(2)}) es demasiado alto para el total de la factura (S/ ${_tot.toFixed(2)}).\n\nLa detracción es un PORCENTAJE del total (normalmente 4% a 12%), no el neto a pagar. ${pct ? `Al ${pct}% serían S/ ${(_tot * pct / 100).toFixed(2)}.` : ''}\n\n¿Confirmás igual?`)) return;
+      }
     } else if (!window.confirm('¿Marcar que esta factura NO tiene detracción? Se quitarán sus datos de detracción del movimiento.')) {
       return;
     }
