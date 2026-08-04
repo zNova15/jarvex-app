@@ -1529,6 +1529,18 @@ function MovimientosContablesPage({ showToast }) {
         version: (m.version ?? 0) + 1,
         sync_status: esDemo ? 'synced' : (m.sync_status === 'pending_create' ? 'pending_create' : 'pending_update'),
       });
+      // Al QUITAR la detracción, borrar también su constancia (si no, quedaba huérfana).
+      if (!detrAplica) {
+        try {
+          const evs = await window.__db.evidencias.filter(e => e.modulo_relacionado === 'accounting_movements' && e.registro_relacionado_id === m.id && e.tipo_evidencia === 'constancia_detraccion' && !e.deleted_at).toArray();
+          for (const ev of evs) {
+            if (!esDemo) { try { await window.__supabase.from('evidencias').delete().eq('id', ev.id); } catch (e2) { console.warn('[detraccion] delete constancia server:', e2?.message); } }
+            try { await window.__db.evidencias.delete(ev.id); } catch {}
+            try { await window.__db.evidencias_blobs.delete(ev.id); } catch {}
+          }
+          if (evs.length) { try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'evidencias', source: 'detr-remove' } })); } catch {} }
+        } catch (e3) { console.warn('[detraccion] cleanup constancia:', e3?.message); }
+      }
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'accounting_movements' } })); } catch {}
       if (evidenciaId) { try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'evidencias', source: 'detr-upload' } })); } catch {} }
       try { await window.__logAudit?.({ action: 'update', table: 'accounting_movements', recordId: m.id,
@@ -2678,6 +2690,11 @@ function MovimientosContablesPage({ showToast }) {
             { key: '__banc_eliminar', label: 'Bancarización: ELIMINAR lo registrado', options: [
               { value: 'todas', label: 'Eliminar TODA la bancarización (partes y constancias)' },
               { value: 'ultima', label: 'Eliminar solo la ÚLTIMA parte registrada' },
+            ] },
+            // Detracción mal registrada / confundida con la bancarización: al aprobar
+            // se borra la constancia_detraccion y se revierte la detracción del mov.
+            { key: '__detraccion_eliminar', label: 'Detracción: ELIMINAR lo registrado', options: [
+              { value: 'si', label: 'Quitar la detracción (borra su constancia y deja la factura sin detracción)' },
             ] },
             // Otros cambios de bancarización (tipo mal elegido, montos): descriptivo.
             { key: '__bancarizacion', label: 'Bancarización: otro cambio (describilo en el motivo)', descriptive: true },

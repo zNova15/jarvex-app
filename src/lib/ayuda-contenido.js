@@ -306,7 +306,7 @@ const AYUDA = {
     titulo: 'Solicitudes',
     que: 'La bandeja de solicitudes de cambio que envían los usuarios: cambios de campos, eliminaciones de movimientos, vinculación de facturas, bancarizaciones equivocadas, subcontratos nuevos.',
     como: [
-      'La mayoría se APLICA SOLA al aprobar: cantidades y eliminaciones de movimientos (recalculan stock/consumo), la vinculación de facturas (obra / Gastos Generales / Contabilidad Neta) y la eliminación de bancarizaciones (borra partes/constancias, libera vouchers y devuelve la factura a Pendiente si queda descubierta).',
+      'La mayoría se APLICA SOLA al aprobar: cantidades y eliminaciones de movimientos (recalculan stock/consumo), la vinculación de facturas (obra / Gastos Generales / Contabilidad Neta), la eliminación de bancarizaciones (borra partes/constancias, libera vouchers y devuelve la factura a Pendiente si queda descubierta) y la eliminación de DETRACCIONES (borra la constancia y deja la factura sin detracción).',
       'Las marcadas "acción manual del admin" son descriptivas: hacé el cambio en su módulo y aprobá como acuse.',
       'Usá el buscador y los filtros (chips por PERSONA y menú por TIPO) para no perder ninguna: la bandeja mezcla las solicitudes de almacén, obra y contabilidad de todos los usuarios.',
       'Al enviar: los campos que se eligen de una lista (ej. la vinculación de una factura) se mandan de una — no hay pantalla de "confirmar". Solo el texto libre pide revisar el cambio antes de enviarlo.',

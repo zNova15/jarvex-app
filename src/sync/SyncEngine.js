@@ -693,6 +693,16 @@ function canPushTabla(tabla) {
     if (tabla === 'proveedores') {
       if (window.__hasPerm?.(rol, 'Captura Mágica', 'w') === true) return true;
     }
+    // personal: misma lógica. El flujo de RECIBOS POR HONORARIOS de Captura Mágica
+    // CREA el trabajador (personal) cuando no está registrado; quien puede hacer
+    // Captura debe poder subir ese personal, si no queda PENDING eterno y ARRASTRA
+    // en cascada el pago (FK personal_id, retenido por fkDepsReady) y sus partes de
+    // bancarización → el ayudante_contador veía "N registros sin subir". La RLS del
+    // server ya permite INSERT a cualquier autenticado ('personal: autenticado crea').
+    // NO habilita gestionar personal desde su página (esa gatea por 'Personal'-w).
+    if (tabla === 'personal') {
+      if (window.__hasPerm?.(rol, 'Captura Mágica', 'w') === true) return true;
+    }
     const modulo = TABLA_TO_MODULO[tabla];
     if (!modulo) return true;       // sin mapping: defensivo, dejar pasar
     return window.__hasPerm?.(rol, modulo, 'w') ?? true;

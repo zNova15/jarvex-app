@@ -87,7 +87,7 @@ function ChangeDiff({ changes }) {
         // Claves __* ESTRUCTURADAS que SÍ se auto-aplican al aprobar (no son
         // pedidos manuales): vinculación de factura y eliminación de
         // bancarización (21-jul). Se muestran como un cambio normal.
-        const AUTO_KEYS = new Set(['__vinculacion_destino', '__banc_eliminar']);
+        const AUTO_KEYS = new Set(['__vinculacion_destino', '__banc_eliminar', '__detraccion_eliminar']);
         // Pedido descriptivo (campo no estructurado): requiere acción manual del admin.
         if (field.startsWith('__') && !AUTO_KEYS.has(field)) {
           return (
@@ -616,6 +616,30 @@ function SolicitudesPage({ showToast }) {
       if (Object.keys(fields).length === 0) {
         return { oldData, newData: { bancarizacion_eliminada: _bancDel, partes_eliminadas: aBorrar.length } };
       }
+    }
+
+    // ── HOOK ESPECIAL: ELIMINAR la DETRACCIÓN registrada (la asistente la subió por
+    // error o la confundió con la bancarización). Borra la constancia
+    // 'constancia_detraccion' y revierte los campos detraccion_* del movimiento.
+    // La detracción NO usa pagos_partes ni payment_status, así que no los toca.
+    const _rawDetr = req.proposed_changes?.['__detraccion_eliminar'];
+    const _detrDel = _rawDetr && typeof _rawDetr === 'object' && 'new' in _rawDetr ? _rawDetr.new : _rawDetr;
+    if (req.target_table === 'accounting_movements' && (_detrDel === 'si' || _detrDel === true || _detrDel === 'todas')) {
+      const movId = req.target_record_id;
+      const evs = await window.__db.evidencias.filter(e => e.modulo_relacionado === 'accounting_movements' && e.registro_relacionado_id === movId && e.tipo_evidencia === 'constancia_detraccion' && !e.deleted_at).toArray();
+      for (const ev of evs) {
+        try { await window.__supabase.from('evidencias').delete().eq('id', ev.id); } catch (e2) { console.warn('[solicitudes] delete constancia_detraccion server:', e2?.message); }
+        try { await window.__db.evidencias.delete(ev.id); } catch {}
+        try { await window.__db.evidencias_blobs.delete(ev.id); } catch {}
+      }
+      fields.detraccion_aplica = false;
+      fields.detraccion_monto = null;
+      fields.detraccion_pct = null;
+      fields.detraccion_codigo = null;
+      fields.detraccion_estado = null;
+      fields.detraccion_constancia_fecha = null;
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'evidencias' } })); } catch {}
+      try { window.dispatchEvent(new Event('online')); } catch {}
     }
 
     // Pedido descriptivo-only (sin columnas reales): nada que aplicar
