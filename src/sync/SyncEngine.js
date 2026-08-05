@@ -1967,7 +1967,12 @@ async function pullMasterTables() {
           }
           if (data2?.length) {
             await db[tabla].bulkPut(data2);
-            await setLastSync(tabla, new Date().toISOString());
+            // Watermark = MAX(updated_at) traído (no el reloj del cliente).
+            let maxUpd2 = null;
+            for (const r of data2) {
+              if (r.updated_at && (!maxUpd2 || r.updated_at > maxUpd2)) maxUpd2 = r.updated_at;
+            }
+            if (maxUpd2) await setLastSync(tabla, maxUpd2);
           }
           continue;
         }
@@ -2017,7 +2022,10 @@ async function pullMasterTables() {
 
       if (!dataArr.length) {
         console.log(`[SyncEngine] pull ${tabla}: 0 registros nuevos`);
-        await setLastSync(tabla, new Date().toISOString());
+        // NO avanzar el watermark al reloj del cliente: si no vino nada nuevo,
+        // dejamos el watermark como estaba (incremental) o null (full pull, tabla
+        // vacía → re-chequea barato la próxima). Avanzarlo al reloj adelantaba el
+        // cursor por delante de futuras filas con updated_at menor y las saltaba.
         continue;
       }
 
@@ -2072,7 +2080,16 @@ async function pullMasterTables() {
         }
       }
       console.log(`[SyncEngine] pull ${tabla}: ${vivos.length} vivos + ${tombstones.length} tombstones`);
-      await setLastSync(tabla, new Date().toISOString());
+      // Watermark = MAX(updated_at) de lo traído (vivos + tombstones), NUNCA el
+      // reloj del cliente. Con el reloj del device adelantado (skew), el
+      // .gt('updated_at', reloj) del próximo pull incremental SALTEABA facturas
+      // para siempre → causa raíz de "hoy veo las facturas solo hasta el 9-jul"
+      // (accounting_movements es MASTER). Mismo fix que ya tenían las transaccionales.
+      let maxUpd = lastSync || null;
+      for (const r of dataArr) {
+        if (r.updated_at && (!maxUpd || r.updated_at > maxUpd)) maxUpd = r.updated_at;
+      }
+      if (maxUpd) await setLastSync(tabla, maxUpd);
     } catch (e) {
       console.warn(`[SyncEngine] pull ${tabla} excepción:`, e?.message || e);
     }
@@ -2157,7 +2174,11 @@ function transactionalOnlyTables() {
   return TRANSACTIONAL_TABLES.filter(t => !MASTER_TABLES.some(m => m.tabla === t));
 }
 
-const _TXWM_REPAIR_KEY = 'jx_txwm_repair_v1';
+// v2 (ago-2026): re-disparo tras el fix de paginación de fetchAllRows. Los devices
+// que hicieron full pulls con el bug (paginación sin .order → filas salteadas y el
+// watermark avanzado por delante de ellas) nunca las re-bajaban solos. Un reset más
+// fuerza un full re-pull YA CORRECTO (completo) de las tablas transaccionales.
+const _TXWM_REPAIR_KEY = 'jx_txwm_repair_v2';
 // Saneo one-shot: personas locales pendientes/failed con valores que violan
 // los CHECK del server (seguro_a_cargo fuera de {empresa,subcontrato}, estado
 // fuera de la whitelist). Pasaba con Excels de roster con texto libre
@@ -2255,11 +2276,19 @@ async function repairTransactionalWatermarksOnce() {
 // cambios locales sin sincronizar (el full pull preserva las filas pending_*/failed).
 // Seguro: el RLS de estas tablas es por ROL con visibilidad total (no scoping por
 // obra/empresa), así que el pull trae todo lo que el usuario debe ver.
-const _MASTERFIN_WM_REPAIR_KEY = 'jx_masterfin_wm_repair_v1';
+// v2 (ago-2026): re-disparo tras el fix del watermark MASTER (antes avanzaba al
+// RELOJ DEL CLIENTE en vez de MAX(updated_at) → con el reloj del device adelantado,
+// el .gt('updated_at', reloj) saltaba facturas para siempre = "hoy veo facturas solo
+// hasta el 9-jul") y tras el fix de paginación. Reset → full re-pull correcto. Amplío
+// a materiales/herramientas/stock: el mismo bug de reloj podía ocultar actualizaciones
+// de stock (una entrada que ajustó stock_actual y el device no la re-bajaba).
+const _MASTERFIN_WM_REPAIR_KEY = 'jx_masterfin_wm_repair_v2';
 const _MASTERFIN_TABLES = [
   'accounting_movements', 'companies', 'pagos', 'pagos_partes',
   'depositos_bancarizacion', 'intercompany_transactions', 'guias_remision',
   'conciliacion_vinculos', 'ordenes_intercompany',
+  // Stock (el bug de reloj también ocultaba updates de stock_actual):
+  'materiales', 'herramientas', 'stock_ubicaciones', 'stock_estados',
 ];
 async function repairMasterFinanceWatermarksOnce() {
   try {
