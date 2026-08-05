@@ -76,9 +76,10 @@ const AYUDA = {
     como: [
       'El stock NO se edita a mano: se mueve registrando entradas/salidas en "Mov. de Materiales".',
       'Definí stock mínimo para que la app te avise cuándo reponer (alerta "reponer"/"crítico").',
-      '"Recalcular stocks" reconcilia el stock con el historial de movimientos si algo no cuadra.',
+      '"Recalcular stocks" reconcilia el stock guardado con el historial de movimientos si algo no cuadra (ahora también disponible para el almacén, no solo admin). No toca los movimientos, solo el número de stock.',
+      'DESAJUSTE POR SINCRONIZACIÓN: si registraste una entrada pero al sacar te dice "sin stock", suele ser que el número guardado no reflejó ese movimiento todavía. La app ahora se apoya en los MOVIMIENTOS (no solo en el número guardado) para no bloquearte una salida legítima, y te avisa del desajuste — tocá "Recalcular stocks" para corregir el número.',
     ],
-    rol: { almacenero: 'Si ves stock que no cuadra con la realidad física, avisá al admin antes de forzar salidas.' },
+    rol: { almacenero: 'Si ves stock que no cuadra: primero "Recalcular stocks" (reconcilia con los movimientos). Si aun así no coincide con lo FÍSICO, avisá — puede faltar registrar un movimiento o ser un tema de inventario real.' },
   },
   'mov-materiales': {
     titulo: 'Movimientos de Materiales',

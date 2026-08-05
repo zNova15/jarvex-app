@@ -1,5 +1,6 @@
-import { db, SYNC_STATUS, getLastSync, setLastSync } from '../db/jarvex.db';
+import { db, SYNC_STATUS, UPLOAD_STATUS, getLastSync, setLastSync } from '../db/jarvex.db';
 import { supabase } from '../lib/supabase';
+import { uploadPendingEvidencias } from './EvidenceUploader';
 import { syncPendingAuditLogs } from '../lib/audit';
 import { syncPendingChangeRequests } from '../lib/changeRequests';
 import { captureException, captureMessage } from '../instrument.js';
@@ -459,10 +460,24 @@ export async function getFailedDetails() {
 export async function retryAllFailed() {
   let total = 0;
   const tablas = [];
+  let huboEvidencias = false;
   for (const t of TRANSACTIONAL_TABLES) {
     const rows = await db[t].where('sync_status').equals(SYNC_STATUS.FAILED).toArray();
     if (rows.length === 0) continue;
     for (const r of rows) {
+      // EVIDENCIAS: su 'failed' es de UPLOAD (archivo al Storage), no de fila. Se
+      // reintenta por el EvidenceUploader (re-sube archivo Y metadata), NO por el
+      // push de SyncEngine (que insertaría una fila con url_archivo=null). Volver
+      // a 'pending_upload' con retries=0 y solo si el blob sigue disponible.
+      if (t === 'evidencias') {
+        let tieneBlob = false;
+        try { tieneBlob = !!(await db.evidencias_blobs.get(r.blob_ref || r.id))?.blob; } catch {}
+        if (!tieneBlob) continue; // sin archivo local no hay nada que re-subir
+        await db.evidencias.update(r.id, { sync_status: UPLOAD_STATUS.PENDING, upload_retries: 0 });
+        huboEvidencias = true;
+        total++;
+        continue;
+      }
       const restoreStatus = (Number(r.version) || 1) <= 1
         ? SYNC_STATUS.PENDING_CREATE
         : SYNC_STATUS.PENDING_UPDATE;
@@ -478,7 +493,130 @@ export async function retryAllFailed() {
   if (total > 0 && navigator.onLine) {
     setTimeout(() => { syncAll().catch(()=>{}); }, 100);
   }
+  // Y disparar la subida de evidencias reactivadas por su propio pipeline.
+  if (huboEvidencias && navigator.onLine) {
+    setTimeout(() => { uploadPendingEvidencias().catch(()=>{}); }, 120);
+  }
   return { tablas, total };
+}
+
+// ── VERIFICACIÓN DE INTEGRIDAD (local vs servidor) ──────────────────────────
+// Las usuarias necesitan CONFIRMAR que lo que ven es TODO lo que el server tiene
+// (contabilidad reportó "ayer veía facturas hasta el 31-jul, hoy solo hasta el
+// 9-jul"). Esto compara, por tabla crítica, el conteo LOCAL (Dexie, filas vivas)
+// contra el conteo del SERVER (respetando RLS y deleted_at). Si local < server,
+// a este dispositivo le FALTAN filas → hay que resincronizar. Es una lectura
+// barata: head:true trae solo el count, no las filas.
+// soft:true → el conteo del server excluye deleted_at (espejo del conteo local,
+// que ya filtra vivos). Si la tabla no tuviera esa columna, contarServer cae al
+// conteo sin filtro (42703). Todas las de acá tienen deleted_at.
+const HEALTH_TABLES = [
+  { tabla: 'accounting_movements',    label: 'Facturas y mov. contables', soft: true },
+  { tabla: 'evidencias',              label: 'Evidencias (bancarizaciones, detracciones, fotos)', soft: true },
+  { tabla: 'pagos',                   label: 'Pagos', soft: true },
+  { tabla: 'depositos_bancarizacion', label: 'Bancarizaciones (depósitos)', soft: true },
+  { tabla: 'pagos_partes',            label: 'Vouchers de pago', soft: true },
+  { tabla: 'movimientos_materiales',  label: 'Movimientos de materiales', soft: true },
+  { tabla: 'materiales',              label: 'Materiales (catálogo/stock)', soft: true },
+  { tabla: 'movimientos_herramientas',label: 'Movimientos de herramientas', soft: true },
+];
+
+// Conteo local de filas VIVAS (sin deleted_at). Los tombstones se borran de Dexie
+// en el pull, pero un soft-delete local pendiente aún conserva deleted_at.
+async function contarLocalVivos(tabla) {
+  try { return await db[tabla].filter(r => !r.deleted_at).count(); }
+  catch { return 0; }
+}
+
+// Conteo en el server (exact, sin bajar filas). Filtra deleted_at si la columna
+// existe; si no (42703), reintenta sin el filtro.
+async function contarServer(tabla, soft) {
+  try {
+    let res;
+    if (soft) {
+      res = await supabase.from(tabla).select('id', { count: 'exact', head: true }).is('deleted_at', null);
+      if (res.error && /column .* does not exist/i.test(res.error.message || '')) {
+        res = await supabase.from(tabla).select('id', { count: 'exact', head: true });
+      }
+    } else {
+      res = await supabase.from(tabla).select('id', { count: 'exact', head: true });
+    }
+    if (res.error) return { count: null, error: res.error.message || 'error' };
+    return { count: res.count ?? null, error: null };
+  } catch (e) {
+    return { count: null, error: e?.message || String(e) };
+  }
+}
+
+/**
+ * Compara local vs server para las tablas críticas. Devuelve, por tabla:
+ *   { tabla, label, local, server, faltan, extra, error, ok }
+ * - faltan  = max(0, server − local)  → filas que el server tiene y acá NO se ven.
+ * - extra   = max(0, local − server)  → filas locales aún no subidas (pending) o
+ *             borradas en server (raro). No es un problema de visualización.
+ * - ok      = server != null && faltan === 0.
+ * Requiere conexión; si no hay, cada fila viene con error.
+ */
+export async function getSyncHealth() {
+  if (!navigator.onLine) {
+    return HEALTH_TABLES.map(({ tabla, label }) => ({
+      tabla, label, local: null, server: null, faltan: null, extra: null,
+      error: 'Sin conexión — conectate para verificar contra el servidor.', ok: false,
+    }));
+  }
+  const out = [];
+  for (const { tabla, label, soft } of HEALTH_TABLES) {
+    if (!db[tabla]) continue;
+    const local = await contarLocalVivos(tabla);
+    const { count: server, error } = await contarServer(tabla, soft);
+    const faltan = server != null ? Math.max(0, server - local) : null;
+    const extra = server != null ? Math.max(0, local - server) : null;
+    // EVIDENCIAS: además del faltan/extra, lo más útil es cuántos comprobantes
+    // de ESTE dispositivo aún NO terminaron de subir (archivo o metadata). Son
+    // los que "parecen subidos" pero nadie más ve todavía.
+    let sinSubir = null;
+    if (tabla === 'evidencias') {
+      try {
+        sinSubir = await db.evidencias
+          .where('sync_status').anyOf([UPLOAD_STATUS.PENDING, UPLOAD_STATUS.FAILED])
+          .filter(e => !e.deleted_at && e.demo !== true)
+          .count();
+      } catch { sinSubir = null; }
+    }
+    out.push({
+      tabla, label, local, server, faltan, extra, error, sinSubir,
+      ok: server != null && faltan === 0 && !(sinSubir > 0),
+    });
+  }
+  return out;
+}
+
+/**
+ * Desglose de PENDIENTES por tabla (los que faltan SUBIR al server), con nombre
+ * humano por registro — espejo de getFailedDetails pero para pending_*. Sirve
+ * para que la usuaria vea EXACTAMENTE qué comprobante/evidencia aún no subió.
+ */
+export async function getPendingDetails() {
+  const out = [];
+  const estados = [SYNC_STATUS.PENDING_CREATE, SYNC_STATUS.PENDING_UPDATE, SYNC_STATUS.PENDING_DELETE];
+  for (const t of TRANSACTIONAL_TABLES) {
+    let rows = [];
+    try { rows = await db[t].where('sync_status').anyOf(estados).toArray(); } catch { continue; }
+    if (!rows.length) continue;
+    out.push({
+      tabla: t,
+      label: TABLA_TO_MODULO[t] || t,
+      count: rows.length,
+      rows: rows.slice(0, 30).map(r => ({
+        id: r.id,
+        codigo: r.serie_correlativo || r.codigo || r.documento_asociado || (r.id ? String(r.id).slice(0, 8) : ''),
+        descripcion: r.nombre_material || r.descripcion || r.tipo_evidencia || r.nombre_partida || r.nombre || '',
+        estado: r.sync_status,
+        updatedAt: r.updated_at,
+      })),
+    });
+  }
+  return out;
 }
 
 export async function syncAll() {
@@ -998,7 +1136,7 @@ async function pushTablePending(tabla) {
   //      cliente manda columna nueva, server todavía no la tiene. Después
   //      de aplicar la migration, retry funciona.
   // En ambos: PGRST204 + mensaje "column of" → reset a PENDING_UPDATE.
-  const stuckByPGRST204 = await db[tabla]
+  const stuckByPGRST204 = tabla === 'evidencias' ? [] : await db[tabla]
     .where('sync_status').equals(SYNC_STATUS.FAILED)
     .filter(r => (
       // a) PGRST204 + "column of" → schema cache desfasado
@@ -1151,7 +1289,14 @@ async function pushTablePending(tabla) {
   // (Corre DESPUÉS del self-heal #3 a propósito — ver comentario arriba.)
   const TEN_MIN = 10 * 60 * 1000;
   const ahora = Date.now();
-  const stuckTransients = await db[tabla]
+  // EVIDENCIAS: NO las toca este self-heal. Su columna sync_status la comparte
+  // con EvidenceUploader ('failed' es el MISMO literal en SYNC_STATUS y
+  // UPLOAD_STATUS). Si acá reseteáramos una evidencia 'failed' (que en realidad
+  // falló su UPLOAD de archivo al Storage) a pending_create, el push la
+  // insertaría como FILA con url_archivo=null y el blob quedaría huérfano
+  // (comprobante "subido" que nadie ve). Las evidencias fallidas las recupera el
+  // propio EvidenceUploader (reactivarFallidasConBlob → re-sube archivo+metadata).
+  const stuckTransients = tabla === 'evidencias' ? [] : await db[tabla]
     .where('sync_status').equals(SYNC_STATUS.FAILED)
     .filter(r => {
       // No tocar si fue RLS — eso requiere intervención humana.
@@ -1728,11 +1873,31 @@ const PULL_PAGE_SIZE = 1000;
 async function fetchAllRows(buildQuery) {
   let all = [];
   let from = 0;
+  const seen = new Set(); // dedup defensivo por si el server ya no está perfectamente ordenado
   for (;;) {
-    const { data, error } = await buildQuery().range(from, from + PULL_PAGE_SIZE - 1);
+    // ORDEN ESTABLE OBLIGATORIO: sin .order(), PostgREST/Postgres devuelven las
+    // filas en orden INDEFINIDO y ese orden puede cambiar entre páginas .range().
+    // Con tablas > PULL_PAGE_SIZE (ej. movimientos_materiales ~1600,
+    // accounting_movements), la paginación SALTEABA filas (y duplicaba otras) en
+    // cada full pull → "ayer veía las facturas hasta el 31-jul, hoy solo hasta el
+    // 9-jul" y movimientos de almacén que desaparecían. Peor: el reconcile sweep
+    // de MASTER borraba localmente lo que este fetch incompleto no trajo. Ordenar
+    // por `id` (PK uuid, único e inmutable en TODAS las tablas) da un orden total
+    // estable → las páginas tapizan el conjunto entero sin huecos ni solapes.
+    const { data, error } = await buildQuery()
+      .order('id', { ascending: true })
+      .range(from, from + PULL_PAGE_SIZE - 1);
     if (error) return { data: all.length ? all : null, error };
     const batch = data || [];
-    all = all.concat(batch);
+    for (const row of batch) {
+      // Dedup por id: aunque el orden ya es estable, si dos páginas se solaparan
+      // por cualquier razón, NUNCA agregamos la misma fila dos veces.
+      if (row && row.id != null) {
+        if (seen.has(row.id)) continue;
+        seen.add(row.id);
+      }
+      all.push(row);
+    }
     if (batch.length < PULL_PAGE_SIZE) break; // última página
     from += PULL_PAGE_SIZE;
   }
@@ -1823,7 +1988,12 @@ async function pullMasterTables() {
       // Dexie como SYNCED pero NO está en server → fue borrado, lo
       // eliminamos. Skip los locales con sync_status=pending_* (son
       // ediciones nuestras que aún no llegaron).
-      if (!lastSync) {
+      // Guard: NUNCA reconciliar (borrar local) si el full pull vino VACÍO. Un
+      // fetch que devuelve 0 filas en un full pull es casi siempre un problema
+      // (RLS transitoria, red, permiso) y NO significa "el server no tiene nada".
+      // Sin este guard, un fetch vacío borraría TODOS los SYNCED locales de la
+      // tabla. Si de verdad se borró todo, llegará por tombstones/incremental.
+      if (!lastSync && dataArr.length) {
         try {
           const serverIds = new Set(dataArr.map(r => r.id));
           const localesSynced = await db[tabla]

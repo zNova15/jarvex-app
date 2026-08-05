@@ -16,7 +16,7 @@
 import React from 'react';
 import {
   getFailedDetails, retryAllFailed, getPendingCount, getFailedCount,
-  syncAll, forceFullResync,
+  syncAll, forceFullResync, getSyncHealth,
 } from '../sync/SyncEngine';
 
 const { useState, useEffect } = React;
@@ -69,6 +69,9 @@ export default function SyncDetailModal({ open, onClose, showToast }) {
   const [pending, setPending] = useState(0);
   const [failedTotal, setFailedTotal] = useState(0);
   const [busy, setBusy] = useState(false);
+  // Verificación de integridad (local vs servidor) — bajo demanda (hace red).
+  const [health, setHealth] = useState(null);        // null | [] | [{...}]
+  const [verificando, setVerificando] = useState(false);
 
   const reload = async () => {
     setLoading(true);
@@ -116,6 +119,25 @@ export default function SyncDetailModal({ open, onClose, showToast }) {
       if (showToast) showToast(`Error: ${e.message || e}`, 'red');
     } finally {
       setBusy(false);
+    }
+  };
+
+  const handleVerificar = async () => {
+    setVerificando(true);
+    try {
+      const h = await getSyncHealth();
+      setHealth(h);
+      const faltantes = h.filter(x => x.faltan > 0);
+      if (showToast) {
+        if (faltantes.length === 0 && h.every(x => x.error == null))
+          showToast('✓ Todo lo del servidor está en este dispositivo.', 'green');
+        else if (faltantes.length)
+          showToast(`⚠ Faltan datos por descargar en ${faltantes.length} sección(es) — tocá "Forzar resync completo".`, 'amber');
+      }
+    } catch (e) {
+      if (showToast) showToast(`Error al verificar: ${e.message || e}`, 'red');
+    } finally {
+      setVerificando(false);
     }
   };
 
@@ -221,6 +243,66 @@ export default function SyncDetailModal({ open, onClose, showToast }) {
               )}
             </>
           )}
+
+          {/* ── VERIFICACIÓN DE INTEGRIDAD (local vs servidor) ── */}
+          <div className="card card-p" style={{ marginTop:14, background:'rgba(59,130,246,0.06)', border:'1px solid rgba(59,130,246,0.25)' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+              <div style={{ fontSize:13, fontWeight:700, color:'var(--blue)' }}>
+                🔎 Verificación con el servidor
+              </div>
+              <button className="btn btn-ghost btn-sm" disabled={verificando || busy} onClick={handleVerificar}
+                style={{ fontSize:11.5, color:'var(--blue)' }}>
+                <JxIcon name="refresh" size={12}/> {verificando ? 'Verificando…' : 'Verificar ahora'}
+              </button>
+            </div>
+            <div style={{ fontSize:11.5, color:'var(--ts)', lineHeight:1.6, marginTop:6 }}>
+              Compara lo que tenés en <strong>este dispositivo</strong> contra lo que hay en el <strong>servidor</strong>.
+              Sirve para confirmar que estás viendo <strong>todo</strong> lo subido (facturas, evidencias, movimientos) y detectar si te falta descargar algo.
+            </div>
+
+            {health && (
+              <div style={{ marginTop:10, display:'flex', flexDirection:'column', gap:5 }}>
+                {health.map(h => {
+                  const faltan = h.faltan;
+                  const sinSubir = h.sinSubir;
+                  const estado = h.error ? 'error' : (faltan > 0 || sinSubir > 0) ? 'alerta' : 'ok';
+                  const color = estado === 'error' ? 'var(--tm)' : estado === 'alerta' ? 'var(--red)' : 'var(--green)';
+                  const icono = estado === 'error' ? '—' : estado === 'alerta' ? '⚠' : '✓';
+                  return (
+                    <div key={h.tabla} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8,
+                      padding:'6px 9px', background:'rgba(0,0,0,0.16)', borderRadius:5, fontSize:11.5 }}>
+                      <span style={{ color:'var(--tp)', fontWeight:600, flex:1, minWidth:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{h.label}</span>
+                      {h.error ? (
+                        <span style={{ color:'var(--tm)', fontSize:10.5 }}>{h.error}</span>
+                      ) : (
+                        <span style={{ color:'var(--tm)', fontSize:10.5, whiteSpace:'nowrap' }}>
+                          acá <strong style={{ color:'var(--ts)' }}>{h.local}</strong> · servidor <strong style={{ color:'var(--ts)' }}>{h.server}</strong>
+                          {faltan > 0 && <strong style={{ color:'var(--red)' }}> · faltan {faltan}</strong>}
+                          {sinSubir > 0 && <strong style={{ color:'var(--amber)' }}> · {sinSubir} sin subir</strong>}
+                        </span>
+                      )}
+                      <span style={{ color, fontWeight:700, width:16, textAlign:'center' }}>{icono}</span>
+                    </div>
+                  );
+                })}
+                {health.some(h => h.faltan > 0) && (
+                  <div style={{ fontSize:11.5, color:'var(--red)', lineHeight:1.6, marginTop:4 }}>
+                    ⚠ A este dispositivo le faltan datos que sí están en el servidor. Tocá <strong>"Forzar resync completo"</strong> abajo para descargarlos. Si tras eso sigue faltando, avisá.
+                  </div>
+                )}
+                {health.some(h => h.sinSubir > 0) && (
+                  <div style={{ fontSize:11.5, color:'var(--amber)', lineHeight:1.6, marginTop:4 }}>
+                    ⚠ Hay comprobantes/evidencias que <strong>todavía no terminaron de subir</strong> desde este dispositivo (los demás aún no los ven). Tocá <strong>"Reintentar todos"</strong> o esperá al próximo ciclo; si quedan con error, revisá el detalle arriba.
+                  </div>
+                )}
+                {health.every(h => h.error == null && !(h.faltan > 0) && !(h.sinSubir > 0)) && (
+                  <div style={{ fontSize:11.5, color:'var(--green)', lineHeight:1.6, marginTop:4 }}>
+                    ✓ Estás viendo todo lo que hay en el servidor y todo lo tuyo ya subió.
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         <div style={{ padding:'12px 18px', borderTop:'1px solid var(--border)', display:'flex', gap:8, justifyContent:'space-between', alignItems:'center', flexWrap:'wrap' }}>

@@ -1287,6 +1287,42 @@ function MovimientosContablesPage({ showToast }) {
     } catch (e) { showToast('Error: ' + (e.message||e), 'red'); }
   };
 
+  // Eliminar la CONTRAPARTE AUTOMÁTICA (espejo intercompany que generó Captura
+  // Mágica al confirmar una venta interna). A diferencia de una operación interna
+  // MANUAL (bloqueada acá a propósito), esta la generó el sistema, así que se
+  // permite quitarla directo desde la fila — el caso de uso es reemplazarla por el
+  // comprobante real. Desvincula la venta original (related_movement_id) para no
+  // dejar un puntero colgando.
+  const eliminarEspejoAuto = async (m) => {
+    if (!isAdmin) return;
+    if (!confirm(`¿Eliminar la CONTRAPARTE AUTOMÁTICA de ${fmtCur(m.amount, m.currency)}?\n\nSe generó sola como espejo de una venta interna del grupo. Se quita SOLO esta compra automática; la venta original NO se toca. Después podés subir el comprobante real desde Captura Mágica.`)) return;
+    try {
+      const now = new Date().toISOString();
+      await window.__db.accounting_movements.update(m.id, {
+        deleted_at: now,
+        sync_status: m.sync_status === 'pending_create' ? 'pending_create' : 'pending_delete',
+      });
+      // Desvincular la venta original si apuntaba a este espejo.
+      let notas = {}; try { notas = JSON.parse(m.notas || '{}'); } catch {}
+      const ventaId = notas.intercompany_mirror_of || m.related_movement_id;
+      if (ventaId) {
+        try {
+          const venta = await window.__db.accounting_movements.get(ventaId);
+          if (venta && venta.related_movement_id === m.id) {
+            await window.__db.accounting_movements.update(ventaId, {
+              related_movement_id: null,
+              updated_at: now,
+              sync_status: venta.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+            });
+          }
+        } catch {}
+      }
+      try { await window.__logAudit?.({ action:'delete', table:'accounting_movements', recordId:m.id, oldData:m, reason:'Eliminación de contraparte intercompany automática (para reemplazar por el comprobante real)' }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'accounting_movements' } })); } catch {}
+      showToast('Contraparte automática eliminada. Podés subir el comprobante real cuando quieras.', 'amber');
+    } catch (e) { showToast('Error: ' + (e.message||e), 'red'); }
+  };
+
   // ── Duplicados: detectar y fusionar (admin / contador jefe) ─────────
   // Caso real: la misma factura de VENTA confirmada dos veces en Captura
   // Mágica (el guard anti-dup solo cubría compras). El botón de eliminar está
@@ -2111,7 +2147,10 @@ function MovimientosContablesPage({ showToast }) {
                           </button>
                         )}
                         {isAdmin && (
-                          <button className="btn btn-red btn-xs" title="Eliminar" onClick={()=>eliminar(m)} style={{ marginLeft:4 }} disabled={isIc}>
+                          <button className="btn btn-red btn-xs"
+                            title={esEspejoAuto ? 'Eliminar la contraparte automática (para reemplazarla por el comprobante real)' : 'Eliminar'}
+                            onClick={()=> esEspejoAuto ? eliminarEspejoAuto(m) : eliminar(m)}
+                            style={{ marginLeft:4 }} disabled={isIc && !esEspejoAuto}>
                             <JxIcon name="trash" size={11}/>
                           </button>
                         )}

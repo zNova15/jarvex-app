@@ -80,6 +80,18 @@ const SYNC_BADGE = {
   failed:         { cls:'b-red',    lbl:'⚠ Falló'     },
 };
 
+// Badge HONESTO: "✓ Subido" solo si de verdad hay archivo en el server. Una fila
+// 'uploaded'/'synced' con url_archivo=null NO está realmente subida (el blob no
+// llegó al Storage o la metadata entró sin url) → mostrarlo como subido engaña a
+// contabilidad. En ese caso avisamos "⚠ Sin archivo".
+function syncBadgeDe(ev) {
+  const st = ev?.sync_status;
+  if ((st === 'uploaded' || st === 'synced') && !ev?.url_archivo) {
+    return { cls:'b-red', lbl:'⚠ Sin archivo' };
+  }
+  return SYNC_BADGE[st] || SYNC_BADGE.pending_upload;
+}
+
 // ─── THUMBNAIL ──────────────────────────────────────────
 function Thumb({ ev, signedRef, blobUrlRef, onClick }) {
   const [src, setSrc] = uSE(null);
@@ -325,7 +337,7 @@ function EvidenciasPage({ showToast }) {
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(220px, 1fr))', gap:14 }}>
           {filtered.map(ev => {
             const meta = TIPO_META[ev.tipo_evidencia] || TIPO_META.documento_general;
-            const sync = SYNC_BADGE[ev.sync_status] || SYNC_BADGE.pending_upload;
+            const sync = syncBadgeDe(ev);
             const isPdf = (ev.mime_type || '').includes('pdf');
             const handleThumbClick = () => {
               if ((ev.mime_type||'').startsWith('image/')) {

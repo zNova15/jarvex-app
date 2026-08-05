@@ -1,6 +1,7 @@
 import { db, UPLOAD_STATUS } from '../db/jarvex.db';
 import { supabase } from '../lib/supabase';
 import { optimizarImagenEvidencia } from '../lib/optimizar-imagen';
+import { captureException } from '../instrument.js';
 
 const MAX_RETRIES = 5;
 const MAX_PHOTO_BYTES = 8 * 1024 * 1024; // 8 MB
@@ -70,10 +71,13 @@ export async function uploadEvidencia(evidenciaId) {
 
   if (error) {
     const retries = (evidencia.upload_retries ?? 0) + 1;
+    const alcanzoTope = retries >= MAX_RETRIES;
     await db.evidencias.update(evidenciaId, {
       upload_retries: retries,
-      sync_status: retries >= MAX_RETRIES ? UPLOAD_STATUS.FAILED : UPLOAD_STATUS.PENDING,
+      sync_status: alcanzoTope ? UPLOAD_STATUS.FAILED : UPLOAD_STATUS.PENDING,
+      _last_error: `Subida de archivo al Storage falló: ${error.message || error}`,
     });
+    if (alcanzoTope) { try { captureException(error, { tags:{ area:'evidencias-storage' }, extra:{ id: evidenciaId, tipo: evidencia.tipo_evidencia } }); } catch {} }
     return;
   }
 
@@ -84,16 +88,24 @@ export async function uploadEvidencia(evidenciaId) {
   // Sincronizar metadata al servidor. CRÍTICO: si esto falla NO borramos el blob
   // (si no, la evidencia se pierde: estaría en Storage pero ningún device la vería
   // — exactamente el bug que dejó la metadata fuera del server). Reintentamos.
-  const okMeta = await upsertMetadataEvidencia(evidencia, publicUrl);
-  if (!okMeta) {
+  const metaRes = await upsertMetadataEvidencia(evidencia, publicUrl);
+  if (!metaRes.ok) {
     const retries = (evidencia.upload_retries ?? 0) + 1;
+    const alcanzoTope = retries >= MAX_RETRIES;
     await db.evidencias.update(evidenciaId, {
       url_archivo: publicUrl, // el blob ya está en Storage
       upload_retries: retries,
-      sync_status: retries >= MAX_RETRIES ? UPLOAD_STATUS.FAILED : UPLOAD_STATUS.PENDING,
+      sync_status: alcanzoTope ? UPLOAD_STATUS.FAILED : UPLOAD_STATUS.PENDING,
+      // Motivo VISIBLE (antes era un console.warn silencioso). El fallo típico es
+      // RLS de la tabla evidencias o el CHECK de tipo_evidencia (mig 080) → la
+      // usuaria/el admin necesitan saberlo para corregir, no que se pierda callado.
+      _last_error: `Metadata no entró al servidor: ${metaRes.error}`,
+      _last_error_is_rls: /row-level security|violates row-level security|42501/i.test(metaRes.error || ''),
     });
     return;
   }
+  // Éxito: limpiar cualquier error previo.
+  if (evidencia._last_error) { try { await db.evidencias.update(evidenciaId, { _last_error: null, _last_error_is_rls: false }); } catch {} }
 
   // Actualizar local
   await db.evidencias.update(evidenciaId, {
@@ -130,9 +142,9 @@ async function upsertMetadataEvidencia(evidencia, url) {
   const { error } = await supabase.from('evidencias').upsert(serverRecord);
   if (error) {
     console.warn('[EvidenceUploader] upsert metadata falló:', error.message || error);
-    return false;
+    return { ok: false, error: error.message || String(error) };
   }
-  return true;
+  return { ok: true, error: null };
 }
 
 // Recuperación (una vez por sesión): evidencias marcadas 'uploaded' localmente
@@ -149,7 +161,12 @@ async function recuperarMetadataSubidas() {
       .filter(e => !!e.url_archivo && e.demo !== true)
       .toArray();
     for (const ev of subidas) {
-      await upsertMetadataEvidencia(ev, ev.url_archivo);
+      const res = await upsertMetadataEvidencia(ev, ev.url_archivo);
+      // Si una evidencia 'uploaded' resulta que su metadata NO estaba en el server
+      // y ahora tampoco entra (RLS/CHECK), dejamos rastro visible del motivo.
+      if (res && res.ok === false) {
+        try { await db.evidencias.update(ev.id, { _last_error: `Metadata no entró al servidor: ${res.error}` }); } catch {}
+      }
     }
   } catch (e) {
     console.warn('[EvidenceUploader] recuperación metadata:', e?.message || e);

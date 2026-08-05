@@ -9,6 +9,7 @@ import { SearchableSelect } from "./jx-searchable-select.jsx";
 import { opcionesDestinoFlat, splitDestino } from "../lib/destino-mov.js";
 import { getDesgloseBulk, aplicarDelta, traspasar, baseSalidaUbicacion } from "../lib/stock-ubicaciones.js";
 import { validarSalidaCronologica, agruparCantidades } from "../lib/stock-cronologia.js";
+import { stockDisponibleConfiable, stockSegunMovimientos } from "../lib/stock-conciliacion.js";
 import { DesglosePopup, TraspasoStockModal, ubicacionAutoOrigen } from "./jx-stock-ubic.jsx";
 import { hoyLocal, horaLocal } from "../lib/fecha.js";
 import { rolScopeObrero } from "../lib/personal-scope.js";
@@ -732,14 +733,20 @@ function MaterialesPage({ showToast }) {
     try {
       const movs = await window.__db.movimientos_materiales
         .where('obra_id').equals(obraId)
-        .filter(m => !m.reverses_id && !m.reversed_by_id)
         .toArray();
-      // Agrupar por material_id sumando entradas - salidas
-      const sums = new Map();
+      // Agrupar por material_id y sumar con la MISMA regla canónica que la
+      // validación (stockSegunMovimientos: entrada/devolución/ajuste suman,
+      // salida/merma/baja restan; excluye borrados y reversas). Antes esta
+      // función contaba TODO lo no-entrada como resta (la devolución bajaba
+      // stock) y NO excluía los borrados → recálculo divergente del validador.
+      const movsPorMat = new Map();
       for (const mov of movs) {
-        const cur = sums.get(mov.material_id) || 0;
-        const c = Number(mov.cantidad) || 0;
-        sums.set(mov.material_id, cur + (mov.tipo_movimiento === 'entrada' ? c : -c));
+        if (!movsPorMat.has(mov.material_id)) movsPorMat.set(mov.material_id, []);
+        movsPorMat.get(mov.material_id).push(mov);
+      }
+      const sums = new Map();
+      for (const [mid, lista] of movsPorMat) {
+        sums.set(mid, stockSegunMovimientos(lista));
       }
       const now = new Date().toISOString();
       const userId = auth?.profile?.id || 'admin';
@@ -1642,22 +1649,46 @@ function MaterialesPage({ showToast }) {
     // acumula el descuento proyectado por material y se rechaza si en
     // algún momento bajaría de 0. Esto impide TODO stock negativo
     // (sin permitir forzar), alineado con CHECK constraint del server.
+    // Stock CONFIABLE por material: si el snapshot stock_actual quedó por DEBAJO
+    // de lo que respaldan los MOVIMIENTOS (drift de sincronización — una entrada
+    // que existe pero el contador snapshot no reflejó; el caso real "registré el
+    // ingreso ayer y hoy me dice sin stock"), usamos el historial como base para
+    // no bloquear una salida LEGÍTIMA. Nunca habilita MÁS de lo que los
+    // movimientos respaldan (si el snapshot está inflado, se respeta el snapshot).
+    const stockConfiablePorMat = new Map();
+    if (tipo === 'salida') {
+      const idsSal = [...new Set(itemsValidos.map(it => it.material_id).filter(Boolean))];
+      for (const mid of idsSal) {
+        const mat = materiales.find(m => m.id === mid);
+        let hist = [];
+        try { hist = await window.__db.movimientos_materiales.filter(m => m.material_id === mid).toArray(); } catch {}
+        stockConfiablePorMat.set(mid, stockDisponibleConfiable({ stockActual: Number(mat?.stock_actual ?? 0), movimientos: hist }));
+      }
+    }
+
     if (tipo === 'salida') {
       const proyeccion = new Map(); // material_id → stock proyectado
       for (const it of itemsValidos) {
         const mat = materiales.find(m => m.id === it.material_id);
         if (!mat) continue;
         const cant = parseFloat(it.cantidad);
+        const baseConfiable = stockConfiablePorMat.has(it.material_id)
+          ? stockConfiablePorMat.get(it.material_id)
+          : Number(mat.stock_actual ?? 0);
         const stockBase = proyeccion.has(it.material_id)
           ? proyeccion.get(it.material_id)
-          : Number(mat.stock_actual ?? 0);
+          : baseConfiable;
         const stockProyectado = stockBase - cant;
         if (stockProyectado < 0) {
+          const snapshot = Number(mat.stock_actual ?? 0);
+          // Si el bloqueo lo causó el snapshot (menor que los movimientos), avisamos
+          // que es un desajuste de datos, no falta de material.
+          const hayDrift = baseConfiable > snapshot + 0.001;
           showToast(
-            `❌ Stock insuficiente para ${mat.nombre_material}: ` +
-            `stock actual ${Number(mat.stock_actual ?? 0)} ${mat.unidad}, ` +
-            `total pedido ${stockBase + cant - Number(mat.stock_actual ?? 0) + cant} ${mat.unidad}. ` +
-            `Quitá filas, reducí la cantidad o registrá primero el ingreso.`,
+            `❌ Stock insuficiente para ${mat.nombre_material}: disponible ${Math.max(0, stockBase)} ${mat.unidad}, pedís ${cant} ${mat.unidad}.` +
+            (hayDrift
+              ? ` (El stock guardado dice ${snapshot} pero los movimientos respaldan ${baseConfiable} — hay un desajuste; "Recalcular stocks" lo corrige.)`
+              : ` Quitá filas, reducí la cantidad o registrá primero el ingreso.`),
             'red'
           );
           setBusyMovLote(false);
@@ -1703,7 +1734,13 @@ function MaterialesPage({ showToast }) {
           // mismo lote — esta fila valida contra su desglose puro.
           base = Number(dgItem.get(ubic) || 0);
         } else {
-          const r = baseSalidaUbicacion(dgItem, ubic, mat?.stock_actual);
+          // Base por almacén: usa el stock CONFIABLE (derivado de movimientos si
+          // el snapshot quedó bajo) para que el faltante se acredite y no bloquee
+          // una salida legítima cuando el desglose/snapshot desincronizaron.
+          const stockRefUbic = stockConfiablePorMat.has(it.material_id)
+            ? Math.max(Number(mat?.stock_actual ?? 0), stockConfiablePorMat.get(it.material_id))
+            : Number(mat?.stock_actual ?? 0);
+          const r = baseSalidaUbicacion(dgItem, ubic, stockRefUbic);
           base = r.base;
           if (r.reconciliarDelta > 0) {
             reconciliacionesDrift.push({ itemTipo: 'material', itemId: it.material_id, ubicacionId: ubic, delta: r.reconciliarDelta });
@@ -2151,9 +2188,9 @@ function MaterialesPage({ showToast }) {
               <JxIcon name="settings" size={13}/>Categorizar con IA
             </button>
           )}
-          {isAdmin && (
+          {(isAdmin || canWriteMov) && (
             <button className="btn btn-ghost btn-sm" disabled={recalculandoStock} onClick={recalcularStocks}
-              title="Recalcula stock_actual sumando entradas − salidas de cada material (corrige desajustes históricos)">
+              title="Recalcula el stock guardado sumando entradas − salidas de cada material (corrige desajustes por sincronización). No toca los movimientos, solo el número de stock.">
               <JxIcon name="refresh" size={13}/>{recalculandoStock ? 'Recalculando…' : 'Recalcular stocks'}
             </button>
           )}
