@@ -1142,9 +1142,38 @@ function CapturaMagicaPage({ showToast }) {
         }
       }
       if (dupMov) {
-        setItems(prev => prev.map(x => x.id === id ? { ...x, status: 'duplicado', duplicate_of: dupMov.id } : x));
-        showToast(`Ya existe el comprobante ${r.serie_correlativo} ${esVenta ? 'emitido por esa empresa' : 'de ese proveedor'} (${dupMov.date || 's/fecha'} · S/ ${Number(dupMov.amount || 0).toLocaleString('es-PE')}). No se creó un duplicado — descartá este archivo.`, 'red');
-        return;
+        // ¿El duplicado es un ESPEJO automático de intercompany? Entonces NO es un
+        // duplicado real: es la contraparte que JARVEX generó sola cuando se subió
+        // la venta interna. Avisamos de forma ESPECIAL y ofrecemos REEMPLAZARLA por
+        // el comprobante real que el usuario está subiendo (con su evidencia/ítems).
+        let esEspejoAuto = false;
+        try { esEspejoAuto = !!(JSON.parse(dupMov.notas || '{}')?.intercompany_auto); } catch {}
+        if (esEspejoAuto) {
+          const ok = typeof window !== 'undefined' && window.confirm
+            ? window.confirm(`🔁 Contraparte automática\n\nLa compra ${r.serie_correlativo} ya existe, pero se generó AUTOMÁTICAMENTE como contraparte de una venta interna del grupo (no es un comprobante que alguien haya subido).\n\n¿Reemplazarla por el que estás subiendo ahora (con su comprobante real)?\n\n• Aceptar = reemplazar (borra la automática y registra la tuya)\n• Cancelar = conservar la automática y descartar este archivo`)
+            : false;
+          if (!ok) {
+            setItems(prev => prev.map(x => x.id === id ? { ...x, status: 'duplicado', duplicate_of: dupMov.id } : x));
+            showToast('Se conservó la contraparte automática. No se creó un duplicado.', 'blue');
+            return;
+          }
+          // Reemplazo: baja lógica del espejo automático y seguimos creando el real.
+          try {
+            const tsDel = new Date().toISOString();
+            await window.__db.accounting_movements.update(dupMov.id, {
+              deleted_at: tsDel, updated_by: userId, updated_at: tsDel,
+              version: (Number(dupMov.version) || 1) + 1, sync_status: 'pending_update',
+            });
+            await window.__logAudit?.({ action:'delete', table:'accounting_movements', recordId: dupMov.id,
+              reason:'Reemplazo de contraparte intercompany automática por el comprobante real (Captura Mágica)' });
+          } catch (e) { console.warn('[captura · reemplazo espejo]', e?.message); }
+          showToast('Se reemplazó la contraparte automática por el comprobante que subiste.', 'green');
+          // (sin return: la confirmación sigue y crea el movimiento real)
+        } else {
+          setItems(prev => prev.map(x => x.id === id ? { ...x, status: 'duplicado', duplicate_of: dupMov.id } : x));
+          showToast(`Ya existe el comprobante ${r.serie_correlativo} ${esVenta ? 'emitido por esa empresa' : 'de ese proveedor'} (${dupMov.date || 's/fecha'} · S/ ${Number(dupMov.amount || 0).toLocaleString('es-PE')}). No se creó un duplicado — descartá este archivo.`, 'red');
+          return;
+        }
       }
     }
 
@@ -1463,6 +1492,76 @@ function CapturaMagicaPage({ showToast }) {
       try { await window.__logAudit?.({ action:'insert', table:'accounting_movements', recordId: accId,
         newData: { tipo: r.tipo_documento, doc: r.serie_correlativo, total: r.total, oc: r.vincular_a_oc },
         reason:'Captura mágica · ingreso comprobante' + (r.vincular_a_oc ? ' (vinculado a OC)' : '') }); } catch {}
+
+      // ── AUTO-ESPEJO INTERCOMPANY ──────────────────────────────────────────
+      // Si es una VENTA entre DOS empresas del grupo, la COMPRA de la empresa
+      // receptora casi nunca se sube: falta la contraparte y la venta interna
+      // queda sin su costo espejo (infla resultados del grupo). La generamos
+      // AUTOMÁTICAMENTE con los mismos datos del comprobante, marcada como espejo
+      // automático (notas.intercompany_auto) para poder distinguirla y reemplazarla.
+      // Dedupe: si YA existe una compra de ese comprobante en la empresa receptora
+      // (subida a mano o un espejo previo), NO duplicamos — se evita el doble conteo.
+      if (esVenta && r.es_intercompany && !esNota && r.company_id && r.company_id !== companyIdFinal) {
+        try {
+          const compEsp = normalizarComprobante(r.serie_correlativo);
+          const yaHayCompra = compEsp ? (await window.__db.accounting_movements
+            .filter(m => !m.deleted_at &&
+              m.company_id === r.company_id &&
+              (m.clase || (m.type === 'income' ? 'venta' : 'compra')) === 'compra' &&
+              normalizarComprobante(m.document_number) === compEsp)
+            .toArray())[0] : null;
+          if (!yaHayCompra) {
+            const vendedora = (companies || []).find(c => c.id === companyIdFinal) || null;
+            const compradora = (companies || []).find(c => c.id === r.company_id) || null;
+            const espId = window.__newId();
+            await window.__db.accounting_movements.add({
+              id: espId,
+              company_id: r.company_id,
+              obra_id: r.obra_id || null,
+              destino_contable: destinoContable,
+              clase: 'compra',
+              is_intercompany: true,
+              related_company_id: companyIdFinal,
+              related_movement_id: accId,
+              detraccion_aplica: false, detraccion_pct: null, detraccion_monto: null,
+              detraccion_codigo: null, detraccion_estado: null,
+              date: r.fecha_emision,
+              type: 'cost',
+              category: docLabel,
+              description: `${docLabel} ${r.serie_correlativo} · ${vendedora?.name || ''} (contraparte automática)`,
+              amount: Number(r.total) || 0,
+              currency: r.moneda || 'PEN',
+              third_party_name: vendedora?.name || null,
+              third_party_ruc: vendedora?.ruc || null,
+              metodo_pago: null,
+              // Las operaciones internas del grupo no se bancarizan como una compra
+              // externa; queda 'paid' para no ensuciar la bandeja de pendientes.
+              payment_status: 'paid',
+              recepcion_status: 'no_aplica',
+              document_type: tipoAcc,
+              document_number: r.serie_correlativo,
+              proveedor_id: null,
+              orden_compra_id: null,
+              notas: JSON.stringify({
+                intercompany_auto: true,
+                intercompany_mirror_of: accId,
+                captura_magica: true,
+                nota: 'Compra generada automáticamente como contraparte de una venta interna del grupo. Se puede reemplazar subiendo el comprobante real.',
+              }),
+              created_by: userId, updated_by: userId,
+              created_at: now, updated_at: now,
+              version: 1, sync_status: 'pending_create',
+              idempotency_key: `${userId}_acc_${espId}`,
+            });
+            // Enlazar la venta ↔ su espejo (cada lado apunta al otro).
+            await window.__db.accounting_movements.update(accId, { related_movement_id: espId });
+            try { await window.__logAudit?.({ action:'insert', table:'accounting_movements', recordId: espId,
+              newData: { espejo_de: accId, doc: r.serie_correlativo, comprador: r.company_id },
+              reason:'Captura mágica · contraparte intercompany automática' }); } catch {}
+            showToast(`🔁 También registré la COMPRA espejo en ${compradora?.name || 'la otra empresa'} (automática — se puede reemplazar subiendo el comprobante real).`, 'blue');
+          }
+        } catch (e) { console.warn('[captura · auto-espejo intercompany]', e?.message); }
+      }
 
       // 3.5) VINCULAR A OC: actualizar cantidad_recibida en oc_items + recalcular estado
       if (r.vincular_a_oc && r.oc_match) {

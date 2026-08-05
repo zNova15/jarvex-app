@@ -1910,6 +1910,8 @@ function MovimientosContablesPage({ showToast }) {
                 {movPg.pagedItems.map(m => {
                   const c = lookupCompany(m.company_id);
                   const isIc = m.is_intercompany;
+                  let esEspejoAuto = false;
+                  try { esEspejoAuto = !!(JSON.parse(m.notas || '{}')?.intercompany_auto); } catch {}
                   return (
                     <tr key={m.id} style={isIc ? { background:'rgba(52,152,219,0.04)' } : null}>
                       <td className="col-m">{m.date}</td>
@@ -1920,6 +1922,7 @@ function MovimientosContablesPage({ showToast }) {
                         ); })()}
                         <div style={{ marginTop:3 }}><span className={`badge ${TYPE_BADGE[m.type]}`} style={{ fontSize:9 }}>{TYPE_LABEL[m.type]}</span></div>
                         {isIc && <div style={{ marginTop:3 }}><span className="badge b-blue" title="Operación interna entre empresas del grupo" style={{ fontSize:9 }}>INTERCO</span></div>}
+                        {esEspejoAuto && <div style={{ marginTop:3 }}><span className="badge" title="Contraparte generada automáticamente al subir la venta interna. Se puede reemplazar subiendo el comprobante real en Captura Mágica." style={{ fontSize:9, background:'rgba(243,156,18,0.18)', color:'#E39A2B' }}>🔁 AUTO</span></div>}
                       </td>
                       <td>
                         {m.description || '—'}

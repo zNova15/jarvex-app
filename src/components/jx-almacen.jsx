@@ -21,6 +21,7 @@ import { compararNombresReniec, titleCaseNombre } from "../lib/migracion-parser.
 import { exportarDataset } from "../lib/export-historico.js";
 import { PrecioHistorialModal } from "./jx-precio-historial.jsx";
 import { registrarSoloHistorial } from "../lib/precio-historial.js";
+import { coincideTokens } from "../lib/buscar-tokens.js";
 import { useFotosEvidencias, FotoInsumoCell } from "./jx-foto-insumo.jsx";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 const { useState: uS, useMemo: uM, useEffect: uE, useCallback: uCB, useRef: uR } = React;
@@ -361,11 +362,9 @@ function MaterialesPage({ showToast }) {
 
   const matchMat = (m) => {
     if (q) {
-      const ql = q.toLowerCase();
-      const matchQ = m.nombre_material?.toLowerCase().includes(ql)
-        || m.categoria?.toLowerCase().includes(ql)
-        || m.codigo_s10?.toLowerCase().includes(ql);
-      if (!matchQ) return false;
+      // Multi-palabra (AND): "Tubo 1/2" encuentra "TUBO PVC 1/2", no solo la frase exacta.
+      const hay = `${m.nombre_material || ''} ${m.categoria || ''} ${m.codigo_s10 || ''}`;
+      if (!coincideTokens(hay, q)) return false;
     }
     if (filtroCategoria !== 'todas' && m.categoria !== filtroCategoria) return false;
     if (filtroEstado !== 'todos') {
@@ -496,6 +495,9 @@ function MaterialesPage({ showToast }) {
               <JxIcon name="plus" size={11}/> Reponer
             </button>
           )}
+          <button className="btn btn-ghost btn-xs" title="Ver TODOS los movimientos (entradas/salidas) de este material" onClick={()=>{ try { window.__movMatBuscar = m.nombre_material || ''; } catch {} window.__navTo?.('mov-materiales'); }} style={{ marginRight:4 }}>
+            <JxIcon name="list" size={11}/>
+          </button>
           {veDinero && <button className="btn btn-ghost btn-xs" title="Ver historial de precios" onClick={()=>verHistorialPrecios(m)} style={{ marginRight:4 }}>
             <JxIcon name="dollar" size={11}/>
           </button>}

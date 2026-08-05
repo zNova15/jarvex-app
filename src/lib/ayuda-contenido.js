@@ -48,6 +48,7 @@ const AYUDA = {
       'RxH · RETENCIÓN Y MONTO EDITABLE: el pago al trabajador es el NETO (honorarios − retención de renta). En la revisión tenés los campos Honorarios (bruto), Retención y Neto a pagar — todos EDITABLES: si el OCR leyó mal el monto, corregilo ahí antes de confirmar (el neto se recalcula solo al cambiar bruto o retención). El recibo NO lleva IGV.',
       'RECIBO DE UN TRABAJADOR NO REGISTRADO: si no aparece en la lista, tocá "➕ Crear trabajador nuevo" — pide solo lo básico (nombres, apellidos, DNI, cargo, y teléfono/correo opcionales), pre-llenado desde el recibo (el DNI sale del RUC). El CARGO es obligatorio; el resto se puede completar después. Al confirmar, en un paso se crea el trabajador Y su pago. Si subís varios recibos de la misma persona, se crea UNA sola vez (dedup por DNI).',
       'NOTAS DE CRÉDITO/DÉBITO: la IA las reconoce y detecta qué factura modifican. La nota de CRÉDITO se registra RESTANDO (baja el costo del proveedor o las ventas) y queda vinculada a la factura original; la de DÉBITO suma. No piden bancarización ni recepción de almacén.',
+      'OPERACIONES ENTRE EMPRESAS DEL GRUPO (INTERCO): si el emisor Y el receptor son empresas nuestras, al confirmar la VENTA JARVEX crea SOLA la COMPRA espejo en la empresa compradora (marcada 🔁 AUTO en Contabilidad) — así la operación interna nunca queda a medias. Si esa compra ya existe (subida a mano), NO la duplica. Y si más tarde subís el comprobante real de esa compra, la app te avisa que la contraparte era automática y te deja REEMPLAZARLA por el tuyo.',
       '"Genera ingreso al almacén": se marca solo cuando corresponde — en compras de bienes viene activado (aparece en Compras Pendientes del almacenero); en recibos por honorarios, notas de crédito/débito y ventas ni siquiera se muestra (no tienen nada que ver con el almacén).',
       'Si la fecha de la factura es anterior al inicio de la obra elegida, la app te lo advierte (no bloquea).',
     ],
@@ -84,6 +85,8 @@ const AYUDA = {
     que: 'El registro de TODAS las entradas, salidas, devoluciones y mermas de materiales — es lo que mueve el stock.',
     como: [
       'Registrá el movimiento con la FECHA REAL en que ocurrió.',
+      'BÚSQUEDA POR PALABRAS: el buscador exige TODAS las palabras que escribís, en cualquier orden — "Tubo 1/2" encuentra "TUBO PVC SAP 1/2\\"" aunque no estén juntas. Sirve para acotar rápido (nombre del insumo, documento, responsable, frente o almacén).',
+      'HISTORIAL DE UN INSUMO: desde Almacén (Materiales), el botón 📜 de cada material te trae acá con la búsqueda ya cargada con su nombre — ves de una todas sus entradas y salidas.',
       'La app rechaza salidas con fecha en la que no había stock suficiente (candado cronológico) — suele significar que falta registrar una entrada previa.',
       'ANTI-DUPLICADOS: si registrás un movimiento idéntico a uno de las últimas horas, la app te avisa antes de guardar — si solo estabas verificando, cancelá: el anterior ya quedó guardado.',
       'COMPROBANTE DE UN INGRESO: en la última columna, un ingreso sin factura muestra 🔎 (buscar comprobante), 📎 (adjuntar foto) y 📩 (avisar a contabilidad). Con 🔎 la app busca las facturas que cuadran por insumo, fecha y cantidad — elegís la correcta y queda vinculada (verás la referencia sin montos). "✓ Factura" = ya vinculado.',

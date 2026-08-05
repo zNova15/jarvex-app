@@ -11,6 +11,7 @@ import { FusionEntidadModal } from "./jx-fusion-entidad.jsx";
 import { rankearFacturasParaIngreso, estadoRecepcionDeItems, parseNotas } from "../lib/cruce-recepcion.js";
 import { ConsultasPanel, useConsultasResumen } from "./jx-consultas.jsx";
 import { crearConsulta } from "../lib/consultas-puente.js";
+import { coincideTokens } from "../lib/buscar-tokens.js";
 const { useState: uSM, useMemo: uMM, useEffect: uEM } = React;
 
 // Botón "Exportar Excel" de las páginas de movimientos: descarga el dataset
@@ -1203,7 +1204,8 @@ function MovMaterialesPage({ showToast }) {
     };
   }, []);
 
-  const [q, setQ] = uSM('');
+  // q pre-llenado si se llegó desde "📜 Movimientos" de un material (Materiales).
+  const [q, setQ] = uSM(() => { try { const v = window.__movMatBuscar; if (v) { delete window.__movMatBuscar; return v; } } catch {} return ''; });
   const [tipo, setTipo] = uSM('todos');
   const [soloSinFrente, setSoloSinFrente] = uSM(false);   // filtro del banner "salidas sin frente"
   // Auto-reset: al asignar el último frente pendiente, el banner (con el
@@ -1247,13 +1249,10 @@ function MovMaterialesPage({ showToast }) {
       const mat = lookupMat(m.material_id);
       const pers = lookupPers(m.responsable_id);
       const alm = almacenesDe(m);
-      const ql = q.toLowerCase();
-      return (mat?.nombre_material || '').toLowerCase().includes(ql) ||
-             (m.documento_asociado || '').toLowerCase().includes(ql) ||
-             (pers ? `${pers.nombres} ${pers.apellidos} ${pers.alias || ''}`.toLowerCase().includes(ql) : false) ||
-             (m.frente_zona || '').toLowerCase().includes(ql) ||
-             (alm.salida || '').toLowerCase().includes(ql) ||
-             (alm.llegada || '').toLowerCase().includes(ql);
+      // Multi-palabra (AND): "Tubo 1/2" encuentra los que contengan "tubo" Y "1/2"
+      // en cualquier campo, no la frase exacta.
+      const hay = `${mat?.nombre_material || ''} ${m.documento_asociado || ''} ${pers ? `${pers.nombres} ${pers.apellidos} ${pers.alias || ''}` : ''} ${m.frente_zona || ''} ${alm.salida || ''} ${alm.llegada || ''}`;
+      return coincideTokens(hay, q);
     });
   }, [sorted, q, tipo, soloSinFrente, materiales, personal, ubicNombre, matsByIdAll, matsServer]);
 
