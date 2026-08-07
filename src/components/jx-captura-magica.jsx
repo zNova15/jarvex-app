@@ -106,6 +106,30 @@ function razonSimilar(a, b) {
   return inter / Math.max(A.size, B.size);
 }
 
+// Match de una empresa DEL GRUPO por RUC (ancla dura) con FALLBACK por razón
+// social. Si el OCR no leyó bien el RUC (o lo dejó vacío), igual detectamos la
+// operación cuando el NOMBRE coincide claramente con una empresa nuestra:
+// igualdad normalizada, o razonSimilar ≥ 0.9 (umbral ALTO para no marcar por
+// error una compra a un proveedor externo como venta interna). Solo activas.
+// Caso real: ventas a CONSORCIO SAMADAY/ESPERANZA que quedaban sin detectar.
+function matchCompanyGrupo(companies, ruc, razon) {
+  const activas = (companies || []).filter(c => c.status === 'activa' && !c.deleted_at);
+  const rn = normalizarRuc(ruc);
+  if (rn) {
+    const porRuc = activas.find(c => normalizarRuc(c.ruc) === rn);
+    if (porRuc) return porRuc;
+  }
+  const nom = String(razon || '').trim().toUpperCase().replace(/\s+/g, ' ');
+  if (nom.length >= 4) {
+    const exacta = activas.find(c => String(c.name || '').trim().toUpperCase().replace(/\s+/g, ' ') === nom);
+    if (exacta) return exacta;
+    let best = null, score = 0;
+    for (const c of activas) { const s = razonSimilar(nom, c.name || ''); if (s > score) { score = s; best = c; } }
+    if (best && score >= 0.9) return best;
+  }
+  return null;
+}
+
 // ── Verificación de razón social contra SUNAT (con caché) ────────────
 // apis.net.pe v1 (gratis) limita ~30 req/min y conviene no re-gastar la cuota.
 // Cacheamos por RUC en localStorage (TTL 7 días) → el mismo RUC no se re-consulta.
@@ -552,11 +576,13 @@ function CapturaMagicaPage({ showToast }) {
     }
     const proveedorElegido = proveedorMatch || provNombreMatch;
     const proveedorPorNombre = !proveedorMatch && !!provNombreMatch;
-    const emisorCompanyMatch = rucN ? (companies || []).find(c => normalizarRuc(c.ruc) === rucN && c.status === 'activa' && !c.deleted_at) : null;
-    // Receptor (empresa del grupo)
+    // Emisor: por RUC y, si el OCR falló, por razón social (fallback conservador).
+    const emisorCompanyMatch = matchCompanyGrupo(companies, ext.emisor?.ruc, razonEmisor);
+    // Receptor (empresa del grupo): igual, RUC con fallback por razón social — así
+    // una venta interna no se pierde si el RUC del receptor vino mal leído.
     const rucRec = ext.receptor?.documento || '';
     const rucRecN = normalizarRuc(rucRec);
-    const companyMatch = rucRecN ? (companies || []).find(c => normalizarRuc(c.ruc) === rucRecN && c.status === 'activa') : null;
+    const companyMatch = matchCompanyGrupo(companies, rucRec, ext.receptor?.razon_social_o_nombre);
     // Si emisor es nuestra empresa Y receptor es nuestra empresa → operación intercompany.
     const esIntercompany = !!(emisorCompanyMatch && companyMatch);
     // Si no hay match pero la factura sí tiene datos del receptor, autoseteamos
