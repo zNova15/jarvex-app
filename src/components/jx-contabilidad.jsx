@@ -14,6 +14,10 @@ import { useChart } from "../lib/chart-loader.js";
 import { FusionEntidadModal } from "./jx-fusion-entidad.jsx";
 const { useState: uSC, useMemo: uMC, useEffect: uEC, useRef: uRC } = React;
 
+// Etiqueta humana de un mes 'YYYY-MM' → 'Junio 2026' (filtro de período).
+const MESES_ES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+const mesLabel = (ym) => { const [y, m] = String(ym || '').split('-'); return `${MESES_ES[Number(m) - 1] || m || '?'} ${y || ''}`.trim(); };
+
 // ─── Gráfica genérica (Chart.js lazy via useChart) ───────────────────
 // Se reconstruye sólo cuando cambia `sig` (firma de los datos), no en cada render.
 function ChartCanvas({ type, data, options, sig, height = 240 }) {
@@ -767,6 +771,11 @@ function MovimientosContablesPage({ showToast }) {
   const [filtroEmisor, setFiltroEmisor] = uSC('todos');     // quién EMITIÓ el comprobante
   const [filtroReceptor, setFiltroReceptor] = uSC('todos'); // quién lo RECIBIÓ
   const [busqueda, setBusqueda] = uSC('');
+  // Período: un MES puntual ("¿puedo ver solo los comprobantes de Junio?") o un
+  // rango personalizado desde/hasta. 'todos' = sin filtro de fecha.
+  const [filtroMes, setFiltroMes] = uSC('todos');   // 'todos' | 'YYYY-MM' | 'custom'
+  const [filtroDesde, setFiltroDesde] = uSC('');
+  const [filtroHasta, setFiltroHasta] = uSC('');
   const [modal, setModal] = uSC(null);
   const [editingId, setEditingId] = uSC(null);
   const [form, setForm] = uSC({});
@@ -1095,6 +1104,15 @@ function MovimientosContablesPage({ showToast }) {
   const esVentaMov = (m) => (m.clase || (m.type === 'income' ? 'venta' : 'compra')) === 'venta';
   const emisorDe = (m) => esVentaMov(m) ? nombreCompanyDe(m.company_id) : (m.third_party_name || '—');
   const receptorDe = (m) => esVentaMov(m) ? (m.third_party_name || '—') : nombreCompanyDe(m.company_id);
+  // Meses que realmente tienen comprobantes (para el selector de período).
+  const opcionesMes = uMC(() => {
+    const set = new Set();
+    for (const m of (movs || [])) {
+      const k = String(m.date || '').slice(0, 7);
+      if (/^\d{4}-\d{2}$/.test(k)) set.add(k);
+    }
+    return Array.from(set).sort((a, b) => b.localeCompare(a));
+  }, [movs]);
   const opcionesEmisor = uMC(() => [...new Set((movs || []).map(emisorDe).filter(n => n && n !== '—'))].sort((a, b) => a.localeCompare(b)), [movs, nombreCompanyDe]);
   const opcionesReceptor = uMC(() => [...new Set((movs || []).map(receptorDe).filter(n => n && n !== '—'))].sort((a, b) => a.localeCompare(b)), [movs, nombreCompanyDe]);
 
@@ -1116,6 +1134,14 @@ function MovimientosContablesPage({ showToast }) {
         || (m.document_number||'').toLowerCase().includes(q));
     }
     if (soloSinBanc) f = f.filter(faltaBancarizacion);
+    // Período: mes puntual o rango personalizado (fechas en 'YYYY-MM-DD' →
+    // comparación lexicográfica segura).
+    if (filtroMes === 'custom') {
+      if (filtroDesde) f = f.filter(m => (m.date || '') >= filtroDesde);
+      if (filtroHasta) f = f.filter(m => (m.date || '') <= filtroHasta);
+    } else if (filtroMes !== 'todos') {
+      f = f.filter(m => String(m.date || '').slice(0, 7) === filtroMes);
+    }
     // Orden ESTABLE: por fecha desc, y dentro de la misma fecha por número de
     // comprobante (natural) y luego created_at. Sin el desempate, las facturas de
     // un mismo día quedaban en orden de `id` (aleatorio tras un resync) → la
@@ -1124,7 +1150,7 @@ function MovimientosContablesPage({ showToast }) {
       (b.date||'').localeCompare(a.date||'')
       || cmpComprobante(a.document_number, b.document_number)
       || (a.created_at||'').localeCompare(b.created_at||''));
-  }, [movs, filtroAmbito, filtroClase, filtroTipo, filtroEstado, filtroEmisor, filtroReceptor, nombreCompanyDe, busqueda, soloSinBanc, bancarizacionPorMov, partesPorMov, depositosById]);
+  }, [movs, filtroAmbito, filtroClase, filtroTipo, filtroEstado, filtroEmisor, filtroReceptor, nombreCompanyDe, busqueda, soloSinBanc, filtroMes, filtroDesde, filtroHasta, bancarizacionPorMov, partesPorMov, depositosById]);
 
   // Paginación: tabla puede tener miles de movimientos contables.
   const movPg = usePagination(filtered, 100);
@@ -1867,6 +1893,20 @@ function MovimientosContablesPage({ showToast }) {
             {companiesActivas.map(c => <option key={c.id} value={'emp:'+c.id}>{c.name}</option>)}
           </optgroup>
         </select>
+        <select className="fi" value={filtroMes} onChange={e=>setFiltroMes(e.target.value)} style={{ minWidth:150 }}
+          title="Ver solo los comprobantes de un mes, o un rango de fechas a medida">
+          <option value="todos">📅 Todo el período</option>
+          {opcionesMes.map(ym => <option key={ym} value={ym}>{mesLabel(ym)}</option>)}
+          <option value="custom">Personalizado…</option>
+        </select>
+        {filtroMes === 'custom' && (
+          <>
+            <label style={{ fontSize:11, color:'var(--tm)' }}>Del</label>
+            <input className="fi" type="date" value={filtroDesde} onChange={e=>setFiltroDesde(e.target.value)} style={{ minWidth:135 }}/>
+            <label style={{ fontSize:11, color:'var(--tm)' }}>al</label>
+            <input className="fi" type="date" value={filtroHasta} onChange={e=>setFiltroHasta(e.target.value)} style={{ minWidth:135 }}/>
+          </>
+        )}
         <select className="fi" value={filtroClase} onChange={e=>setFiltroClase(e.target.value)} style={{ minWidth:120 }} title="Compras (a proveedoras) vs Ventas (emitidas a la ejecutora)">
           <option value="todos">Compras y ventas</option>
           <option value="compra">🛒 Compras</option>
@@ -1893,6 +1933,38 @@ function MovimientosContablesPage({ showToast }) {
           {opcionesReceptor.map(n => <option key={n} value={n}>{n}</option>)}
         </select>
       </div>
+
+      {/* Resumen del PERÍODO filtrado: cuántos comprobantes y totales por clase.
+          Le responde a la asistente "¿cuánto compramos/vendimos en Junio?" sin
+          tener que sumar a mano. Anulados excluidos; NC restan (monto negativo). */}
+      {filtroMes !== 'todos' && (() => {
+        const sum = { venta: {}, compra: {} };
+        for (const m of filtered) {
+          if (m.payment_status === 'cancelled') continue;
+          const cl = (m.clase || (m.type === 'income' ? 'venta' : 'compra')) === 'venta' ? 'venta' : 'compra';
+          const cur = m.currency || 'PEN';
+          sum[cl][cur] = (sum[cl][cur] || 0) + (Number(m.amount) || 0);
+        }
+        const fmtSum = (obj) => {
+          const parts = Object.entries(obj).map(([c, v]) => `${c === 'USD' ? '$' : 'S/'} ${v.toLocaleString('es-PE', { maximumFractionDigits: 2 })}`);
+          return parts.length ? parts.join(' · ') : 'S/ 0';
+        };
+        const label = filtroMes === 'custom'
+          ? `${filtroDesde || 'inicio'} → ${filtroHasta || 'hoy'}`
+          : mesLabel(filtroMes);
+        return (
+          <div style={{ display:'flex', gap:14, flexWrap:'wrap', alignItems:'center', padding:'8px 14px', marginBottom:12, borderRadius:8, background:'rgba(59,130,246,0.07)', border:'1px solid rgba(59,130,246,0.3)', fontSize:12 }}>
+            <span style={{ fontWeight:700, color:'var(--blue)' }}>📅 {label}</span>
+            <span style={{ color:'var(--ts)' }}>{filtered.length} comprobante{filtered.length === 1 ? '' : 's'}</span>
+            <span style={{ color:'var(--green)' }}>🧾 Ventas: <strong>{fmtSum(sum.venta)}</strong></span>
+            <span style={{ color:'var(--amber)' }}>🛒 Compras: <strong>{fmtSum(sum.compra)}</strong></span>
+            <button className="btn btn-ghost btn-xs" style={{ marginLeft:'auto' }} title="Volver a ver todo el período"
+              onClick={()=>{ setFiltroMes('todos'); setFiltroDesde(''); setFiltroHasta(''); }}>
+              ✕ Quitar filtro de período
+            </button>
+          </div>
+        );
+      })()}
 
       {/* Aviso visible de bancarizaciones faltantes. Cualquiera con acceso de
           escritura (incluido el ayudante de contabilidad) puede subirlas sin

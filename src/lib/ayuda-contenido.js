@@ -187,6 +187,7 @@ const AYUDA = {
     que: 'Todas las compras y ventas del grupo: facturas, estados de pago y bancarizaciones.',
     como: [
       'Filtrá por obra/empresa, compra/venta, estado, EMISOR y RECEPTOR del comprobante, o buscá por texto.',
+      'FILTRO POR PERÍODO (📅): elegí un MES puntual (ej. "Junio 2026" — solo aparecen los meses que tienen comprobantes) o "Personalizado…" para un rango de fechas a medida. Al filtrar, arriba sale el RESUMEN del período: cuántos comprobantes y el total de Ventas y Compras (anulados excluidos; las notas de crédito restan). "✕ Quitar filtro" vuelve a todo el período.',
       'Facturas en soles > S/ 2,000 exigen bancarización: subila con el botón "Subir" de la fila (👁 "Ver" abre la constancia).',
       'Tres formas de bancarizar: Pago exacto (1 voucher = la factura), Pago en partes (varios vouchers a 1 factura) y Voucher multi-factura (1 depósito cubre varias facturas del mismo pagador→cobrador, con control de saldo).',
       'Cuando la cobertura llega al 100%, la factura pasa sola a "Pagado".',
