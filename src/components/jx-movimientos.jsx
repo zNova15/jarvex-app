@@ -588,6 +588,10 @@ function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast, m
   const userId = auth?.profile?.id ?? 'offline';
   const rol = auth?.profile?.rol || '';
   const isAdmin = rol === 'admin';
+  // Permiso TEMPORAL de carga retroactiva: puede elegir días ANTERIORES también
+  // en el modal normal de "Subir registro diario" (no solo en Solicitar cambio),
+  // y sus registros entran directo sin aprobación.
+  const retroDirecta = RETRO_DIRECTA_UIDS.includes(userId);
   const tipoEv = tipoEvidenciaPara(modulo);
   const hoy = new Date().toISOString().slice(0, 10);
   const ayer = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
@@ -658,8 +662,11 @@ function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast, m
     if (!foto?.blob) { showToast?.('Adjuntá una foto del registro físico', 'red'); return; }
     if (!fecha) { showToast?.('Seleccioná una fecha', 'red'); return; }
     // Validaciones por modo
-    if (modo === 'hoy' && !isAdmin && fecha !== hoy) {
+    if (modo === 'hoy' && !isAdmin && !retroDirecta && fecha !== hoy) {
       showToast?.('Solo podés subir el registro del día actual', 'red'); return;
+    }
+    if (modo === 'hoy' && retroDirecta && fecha > hoy) {
+      showToast?.('La fecha no puede ser futura', 'red'); return;
     }
     if (modo === 'cambio') {
       if (tipoCambio === 'atraso' && fecha >= hoy) {
@@ -692,10 +699,13 @@ function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast, m
       // Admin (o usuario con permiso temporal de retro-directa) sube directo.
       const necesitaAprobacion = esCambio && !isAdmin && !RETRO_DIRECTA_UIDS.includes(userId);
       const tipoCambioLabel = esCorreccion ? 'CORRECCIÓN' : (esCambio ? 'ATRASADO' : 'NORMAL');
+      // Registro de un día anterior subido DIRECTO por el permiso temporal
+      // (retroDirecta) desde el modal normal — se marca para trazabilidad.
+      const esRetroHoy = modo === 'hoy' && retroDirecta && fecha < hoy;
       const obsBase = notas.trim() || `Registro diario · ${fecha}`;
       const obsFinal = esCambio
         ? `${obsBase}\n\n⏰ ${tipoCambioLabel} · motivo: ${motivoAtraso.trim()}${necesitaAprobacion ? ' · ⏳ pendiente aprobación admin' : ''}${esCorreccion && registroACorregir ? `\n· Reemplaza registro previo del ${registroACorregir.fecha}` : ''}`
-        : obsBase;
+        : (esRetroHoy ? `${obsBase}\n\n⏰ RETROACTIVO · subido el ${hoy} con permiso temporal de carga de días anteriores` : obsBase);
       await window.__saveEvidenciaLocal({
         id, obra_id: obraId,
         tipo_evidencia: tipoEv,
@@ -707,7 +717,7 @@ function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast, m
         observaciones: obsFinal,
         fecha,
         created_by: userId,
-        registro_atrasado: esCambio && !esCorreccion || undefined,
+        registro_atrasado: (esCambio && !esCorreccion) || esRetroHoy || undefined,
         registro_correccion: esCorreccion || undefined,
         registro_id_a_corregir: esCorreccion ? registroACorregir?.id : undefined,
         motivo_atraso: esCambio ? motivoAtraso.trim() : undefined,
@@ -791,7 +801,9 @@ function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast, m
                 : 'Esto generará una solicitud al administrador. Explicá la razón. Tendrá que aprobarlo antes de quedar registrado.')
             : (isAdmin
                 ? 'Como admin podés subir varios o reemplazar el registro del día.'
-                : `Solo podés subir el registro del día de hoy (${hoy}). Si te atrasaste o te confundiste, usá "Solicitar cambio".`)}
+                : retroDirecta
+                  ? `✅ Permiso temporal activo: podés elegir también DÍAS ANTERIORES en la fecha para subir los registros físicos pendientes (materiales y herramientas). Entran directo, sin aprobación.`
+                  : `Solo podés subir el registro del día de hoy (${hoy}). Si te atrasaste o te confundiste, usá "Solicitar cambio".`)}
         </div>
 
         {/* ── Selector de tipo de cambio (solo modo cambio) ── */}
@@ -847,7 +859,7 @@ function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast, m
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
           <div>
             <label className="flabel">Fecha del registro *</label>
-            {modo === 'hoy' && !isAdmin ? (
+            {modo === 'hoy' && !isAdmin && !retroDirecta ? (
               <input className="fi" type="date" value={hoy} disabled readOnly
                 style={{ opacity: 0.7, cursor: 'not-allowed' }}/>
             ) : (
