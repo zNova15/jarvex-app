@@ -577,6 +577,12 @@ function ReversoModal({ mov, tipo /* 'mat' | 'her' */, lookupNombre, onClose, on
 //                no se subió en su momento, o (b) corrección, registro ya
 //                subido con fecha equivocada que hay que reemplazar.
 //                Queda pendiente_aprobacion hasta que el admin apruebe.
+// ⚠️ PERMISO TEMPORAL — registros diarios ATRASADOS que entran DIRECTO (sin
+// aprobación del admin) para los usuarios de esta lista. Abierto para Yanet (la
+// almacenera) para que cargue las evidencias físicas de días anteriores que
+// empezó a subir. QUITAR este id cuando Gabriel avise que terminó (ago-2026).
+const RETRO_DIRECTA_UIDS = ['4b31dd32-6a12-491c-a799-6b4a811894be']; // Yanet T (almacenera)
+
 function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast, modo = 'hoy' }) {
   const auth = window.__useAuth?.();
   const userId = auth?.profile?.id ?? 'offline';
@@ -683,8 +689,8 @@ function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast, m
       const esCambio = modo === 'cambio';
       const esCorreccion = esCambio && tipoCambio === 'correccion';
       // Almacenero pide cambio → queda pendiente de aprobación admin.
-      // Admin sube directamente sin necesidad de aprobación.
-      const necesitaAprobacion = esCambio && !isAdmin;
+      // Admin (o usuario con permiso temporal de retro-directa) sube directo.
+      const necesitaAprobacion = esCambio && !isAdmin && !RETRO_DIRECTA_UIDS.includes(userId);
       const tipoCambioLabel = esCorreccion ? 'CORRECCIÓN' : (esCambio ? 'ATRASADO' : 'NORMAL');
       const obsBase = notas.trim() || `Registro diario · ${fecha}`;
       const obsFinal = esCambio

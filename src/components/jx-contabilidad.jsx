@@ -5,6 +5,7 @@ import { getCurrentMode } from "../lib/app-mode-core.js";
 import { usePagination } from "../hooks/usePagination.js";
 import { TablePagination } from "./jx-pagination.jsx";
 import { detectarDuplicados, claseDe } from "../lib/dedupe-movs-contables.js";
+import { cmpComprobante } from "../lib/comparar-comprobante.js";
 import { resumenRecepcion, rankearIngresosParaItem, estadoRecepcionDeItems, parseNotas, referenciaSinCostos, reporteRecepcion } from "../lib/cruce-recepcion.js";
 import { ConsultasPanel, useConsultasResumen } from "./jx-consultas.jsx";
 import { crearConsulta } from "../lib/consultas-puente.js";
@@ -1115,7 +1116,14 @@ function MovimientosContablesPage({ showToast }) {
         || (m.document_number||'').toLowerCase().includes(q));
     }
     if (soloSinBanc) f = f.filter(faltaBancarizacion);
-    return f.sort((a,b) => (b.date||'').localeCompare(a.date||''));
+    // Orden ESTABLE: por fecha desc, y dentro de la misma fecha por número de
+    // comprobante (natural) y luego created_at. Sin el desempate, las facturas de
+    // un mismo día quedaban en orden de `id` (aleatorio tras un resync) → la
+    // contadora las veía "desordenadas".
+    return f.sort((a,b) =>
+      (b.date||'').localeCompare(a.date||'')
+      || cmpComprobante(a.document_number, b.document_number)
+      || (a.created_at||'').localeCompare(b.created_at||''));
   }, [movs, filtroAmbito, filtroClase, filtroTipo, filtroEstado, filtroEmisor, filtroReceptor, nombreCompanyDe, busqueda, soloSinBanc, bancarizacionPorMov, partesPorMov, depositosById]);
 
   // Paginación: tabla puede tener miles de movimientos contables.
