@@ -6,7 +6,7 @@ import { usePagination } from "../hooks/usePagination.js";
 import { TablePagination } from "./jx-pagination.jsx";
 import { detectarDuplicados, claseDe } from "../lib/dedupe-movs-contables.js";
 import { cmpComprobante } from "../lib/comparar-comprobante.js";
-import { resumenRecepcion, rankearIngresosParaItem, estadoRecepcionDeItems, parseNotas, referenciaSinCostos, reporteRecepcion } from "../lib/cruce-recepcion.js";
+import { resumenRecepcion, rankearIngresosParaItem, rankearFacturasParaIngreso, itemsDeFactura, estadoRecepcionDeItems, parseNotas, referenciaSinCostos, reporteRecepcion } from "../lib/cruce-recepcion.js";
 import { ConsultasPanel, useConsultasResumen } from "./jx-consultas.jsx";
 import { crearConsulta } from "../lib/consultas-puente.js";
 import { validarVinculoDeposito, saldoDeposito, parMovimiento, parDeposito, mismoPar, movimientoBancarizado, TOL } from "../lib/depositos-bancarizacion.js";
@@ -3457,6 +3457,31 @@ function ContabilidadDashboardPage({ showToast }) {
   const matName = (id) => (materiales || []).find(m => m.id === id)?.nombre_material || '—';
   const provName = (id) => id ? ((providers || []).find(p => p.id === id)?.razon_social || '—') : 'Sin proveedor';
 
+  // ── Sugerencias inteligentes para "Vincular factura" ──
+  // MISMO matcher determinista que usa la almacenera con el 🔎 (insumo/fecha/
+  // cantidad/proveedor/obra — rankearFacturasParaIngreso). Antes la contadora
+  // veía solo "número de factura + fecha + monto" y tenía que adivinar; ahora ve
+  // POR QUÉ cuadra cada factura y el ítem exacto de la factura que coincide.
+  const sugerenciasVincular = uMC(() => {
+    if (!vincularModal) return [];
+    const facturas = (movs || []).filter(f => !f.deleted_at
+      && (f.clase === 'compra' || f.type === 'cost')
+      && f.clase !== 'venta' && f.type !== 'income'
+      && f.recepcion_status !== 'no_aplica'
+      && (vincularModal.obra_id ? (f.obra_id === vincularModal.obra_id || !f.obra_id) : true));
+    const ingreso = {
+      id: vincularModal.id,
+      material_id: vincularModal.material_id,
+      materialNombre: matName(vincularModal.material_id),
+      cantidad: vincularModal.cantidad,
+      unidad: vincularModal.unidad,
+      fecha: vincularModal.fecha,
+      obra_id: vincularModal.obra_id,
+      proveedor_id: vincularModal.proveedor_id || null,
+    };
+    return rankearFacturasParaIngreso(ingreso, facturas);
+  }, [vincularModal, movs, materiales]);
+
   const filtered = uMC(() => {
     let f = (movs || []).filter(m => m.currency === filtroMoneda);
     if (filtroEmpresa !== 'todas') f = f.filter(m => m.company_id === filtroEmpresa);
@@ -3517,7 +3542,7 @@ function ContabilidadDashboardPage({ showToast }) {
 
   // Vincular un movimiento pendiente a una factura existente (accounting_movement
   // del mismo proveedor). Por simplicidad, se hace 1:1 — un mov ↔ una factura.
-  const vincularAFactura = async (mov, accountingMovId) => {
+  const vincularAFactura = async (mov, accountingMovId, itemIdx = null) => {
     try {
       const factura = (movs || []).find(m => m.id === accountingMovId);
       if (!factura) { showToast?.('Factura no encontrada', 'red'); return; }
@@ -3530,9 +3555,35 @@ function ContabilidadDashboardPage({ showToast }) {
         version: (mov.version ?? 0) + 1,
         sync_status: mov.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
       });
-      // La factura cambia a 'parcial' (la almacenera la cerrará completa después,
-      // ver Paquete B). Si todavía está como pendiente_recepcion, pasa a parcial.
-      if (factura.recepcion_status === 'pendiente_recepcion' || !factura.recepcion_status) {
+      // Si se vinculó desde una SUGERENCIA (sabemos el ítem exacto), escribimos
+      // también el lado de la factura como lo hace la almacenera con el 🔎:
+      // items_factura[idx].{recibido, mov_vinculado_id} + recepcion_status
+      // recalculado — así el reporte de recepción queda exacto en ambos flujos.
+      if (itemIdx != null) {
+        const facFresh = await window.__db.accounting_movements.get(accountingMovId);
+        const notas = parseNotas(facFresh?.notas);
+        const items = Array.isArray(notas.items_factura) ? notas.items_factura.slice() : [];
+        const orig = items[itemIdx];
+        if (orig) {
+          const qty = Number(mov.cantidad) || 0;
+          const nuevoRecibido = Number(orig.cantidad) > 0
+            ? Math.min(Number(orig.cantidad), (Number(orig.recibido) || 0) + qty)
+            : (Number(orig.recibido) || 0) + qty;
+          items[itemIdx] = { ...orig, recibido: nuevoRecibido, mov_vinculado_id: mov.id, recepcion_modo: 'vinculado' };
+          notas.items_factura = items;
+          await window.__db.accounting_movements.update(accountingMovId, {
+            notas: JSON.stringify(notas),
+            recepcion_status: estadoRecepcionDeItems(items),
+            recepcion_movimiento_id: facFresh.recepcion_movimiento_id || mov.id,
+            updated_at: now,
+            updated_by: userId,
+            version: (facFresh.version ?? 0) + 1,
+            sync_status: facFresh.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+          });
+        }
+      } else if (factura.recepcion_status === 'pendiente_recepcion' || !factura.recepcion_status) {
+        // Vinculación manual (sin ítem conocido): la factura pasa a 'parcial' —
+        // la almacenera la cerrará completa después.
         await window.__db.accounting_movements.update(accountingMovId, {
           recepcion_status: 'parcial',
           updated_at: now,
@@ -3644,11 +3695,17 @@ function ContabilidadDashboardPage({ showToast }) {
             Seleccioná la factura del proveedor <strong>{provName(vincularModal.proveedor_id)}</strong> que sustenta este ingreso de <strong>{vincularModal.cantidad} {vincularModal.unidad}</strong> de <strong>{matName(vincularModal.material_id)}</strong>.
           </div>
           {(() => {
+            const estadoRec = (f) => f.recepcion_status === 'recibido' ? '✓ recibida'
+              : f.recepcion_status === 'parcial' ? '⏳ parcial'
+              : f.recepcion_status === 'pendiente_recepcion' ? '🆕 pendiente'
+              : f.recepcion_status === 'no_recepcionado' ? '🚫 negada por almacén'
+              : '—';
+            const sugeridas = new Set(sugerenciasVincular.map(c => c.facturaId));
             const candidatas = (movs || []).filter(m =>
               (m.type === 'cost' || m.type === 'expense') &&
-              (!vincularModal.proveedor_id || m.proveedor_id === vincularModal.proveedor_id || m.third_party_doc) &&
-              !m.deleted_at);
-            if (!candidatas.length) {
+              (!vincularModal.proveedor_id || m.proveedor_id === vincularModal.proveedor_id) &&
+              !m.deleted_at && !sugeridas.has(m.id));
+            if (!sugerenciasVincular.length && !candidatas.length) {
               return (
                 <div style={{ padding:'14px', background:'rgba(231,76,60,0.08)', border:'1px solid rgba(231,76,60,0.3)', borderRadius:6, fontSize:12, color:'var(--ts)' }}>
                   No hay facturas registradas para este proveedor. Subí la factura primero por Captura Mágica.
@@ -3656,25 +3713,81 @@ function ContabilidadDashboardPage({ showToast }) {
               );
             }
             return (
-              <div style={{ maxHeight:300, overflowY:'auto', display:'flex', flexDirection:'column', gap:6 }}>
-                {candidatas.slice(0, 30).map(f => (
-                  <button key={f.id} className="card card-p" style={{ textAlign:'left', cursor:'pointer', border:'1px solid var(--bd)' }}
-                    onClick={()=>vincularAFactura(vincularModal, f.id)}>
-                    <div style={{ display:'flex', justifyContent:'space-between', fontSize:12 }}>
-                      <div>
-                        <div style={{ fontWeight:700, color:'var(--tp)' }}>{f.document_number || 'sin n°'}</div>
-                        <div style={{ fontSize:10.5, color:'var(--tm)' }}>{f.date} · S/ {Number(f.amount || 0).toLocaleString()}</div>
+              <div style={{ maxHeight:380, overflowY:'auto', display:'flex', flexDirection:'column', gap:6 }}>
+                {/* ── SUGERENCIAS: mismas señales que ve la almacenera (🔎) ── */}
+                {sugerenciasVincular.length > 0 && (
+                  <div style={{ fontSize:11, fontWeight:700, color:'var(--green)' }}>
+                    🎯 Coinciden con este ingreso (insumo · fecha · cantidad):
+                  </div>
+                )}
+                {sugerenciasVincular.map(cand => {
+                  const f = (movs || []).find(m => m.id === cand.facturaId);
+                  if (!f) return null;
+                  const it = itemsDeFactura(f)[cand.item_idx] || {};
+                  return (
+                    <button key={`sug-${cand.facturaId}`} className="card card-p"
+                      style={{ textAlign:'left', cursor:'pointer', border:'1px solid rgba(46,204,113,0.45)', background:'rgba(46,204,113,0.05)' }}
+                      title="Vincular: marca el ítem de la factura como recibido con este ingreso"
+                      onClick={()=>vincularAFactura(vincularModal, cand.facturaId, cand.item_idx)}>
+                      <div style={{ display:'flex', justifyContent:'space-between', gap:8, fontSize:12 }}>
+                        <div style={{ minWidth:0 }}>
+                          <div style={{ fontWeight:700, color:'var(--tp)' }}>
+                            {f.document_number || 'sin n°'}
+                            <span style={{ fontWeight:400, color:'var(--tm)', marginLeft:6, fontSize:10.5 }}>{f.date} · {f.third_party_name || provName(f.proveedor_id)} · S/ {Number(f.amount || 0).toLocaleString('es-PE')}</span>
+                          </div>
+                          {/* El ÍTEM exacto de la factura que cuadra con el ingreso */}
+                          <div style={{ fontSize:11.5, color:'var(--ts)', marginTop:3 }}>
+                            → <strong>{it.descripcion || '(ítem)'}</strong> · {Number(it.cantidad) || '?'} {it.unidad || ''}
+                            {Number(it.precio_unitario) > 0 && <span style={{ color:'var(--tm)' }}> · S/ {Number(it.precio_unitario).toLocaleString('es-PE')} c/u</span>}
+                            {Number(it.recibido) > 0 && <span style={{ color:'var(--amber)' }}> · ya recibido {Number(it.recibido)}</span>}
+                          </div>
+                          {/* Por qué cuadra (motivos del matcher) */}
+                          <div style={{ display:'flex', gap:4, flexWrap:'wrap', marginTop:4 }}>
+                            {(cand.motivos || []).map((mo, i) => (
+                              <span key={i} className="badge b-green" style={{ fontSize:9 }}>{mo}</span>
+                            ))}
+                          </div>
+                        </div>
+                        <div style={{ textAlign:'right', flexShrink:0 }}>
+                          <div style={{ fontSize:14, fontWeight:800, color:'var(--green)' }}>{Math.round(cand.score * 100)}%</div>
+                          <div style={{ fontSize:10, color:'var(--tm)' }}>{estadoRec(f)}</div>
+                        </div>
                       </div>
-                      <div style={{ fontSize:10.5, color:'var(--tm)' }}>
-                        {f.recepcion_status === 'recibido' ? '✓ recibida'
-                          : f.recepcion_status === 'parcial' ? '⏳ parcial'
-                          : f.recepcion_status === 'pendiente_recepcion' ? '🆕 pendiente'
-                          : f.recepcion_status === 'no_recepcionado' ? '🚫 negada por almacén'
-                          : '—'}
+                    </button>
+                  );
+                })}
+                {/* ── Resto de facturas del proveedor (elección manual) ── */}
+                {candidatas.length > 0 && (
+                  <div style={{ fontSize:11, fontWeight:700, color:'var(--tm)', marginTop: sugerenciasVincular.length ? 8 : 0 }}>
+                    {sugerenciasVincular.length ? 'Otras facturas (elección manual):' : 'Facturas del proveedor:'}
+                  </div>
+                )}
+                {candidatas.slice(0, 30).map(f => {
+                  const items = itemsDeFactura(f);
+                  return (
+                    <button key={f.id} className="card card-p" style={{ textAlign:'left', cursor:'pointer', border:'1px solid var(--bd)' }}
+                      onClick={()=>vincularAFactura(vincularModal, f.id)}>
+                      <div style={{ display:'flex', justifyContent:'space-between', gap:8, fontSize:12 }}>
+                        <div style={{ minWidth:0 }}>
+                          <div style={{ fontWeight:700, color:'var(--tp)' }}>{f.document_number || 'sin n°'}</div>
+                          <div style={{ fontSize:10.5, color:'var(--tm)' }}>{f.date} · {f.third_party_name || provName(f.proveedor_id)} · S/ {Number(f.amount || 0).toLocaleString('es-PE')}</div>
+                          {/* Ítems de la factura (hasta 3) para no vincular a ciegas */}
+                          {items.length > 0 && (
+                            <div style={{ fontSize:10.5, color:'var(--ts)', marginTop:3 }}>
+                              {items.slice(0, 3).map((it, i) => (
+                                <div key={i} style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                                  · {it.descripcion} — {Number(it.cantidad) || '?'} {it.unidad || ''}
+                                </div>
+                              ))}
+                              {items.length > 3 && <div style={{ color:'var(--tm)' }}>… y {items.length - 3} ítem(s) más</div>}
+                            </div>
+                          )}
+                        </div>
+                        <div style={{ fontSize:10.5, color:'var(--tm)', flexShrink:0 }}>{estadoRec(f)}</div>
                       </div>
-                    </div>
-                  </button>
-                ))}
+                    </button>
+                  );
+                })}
               </div>
             );
           })()}

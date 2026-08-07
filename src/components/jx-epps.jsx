@@ -25,6 +25,7 @@ import { exportarDataset } from "../lib/export-historico.js";
 import { PrecioHistorialModal } from "./jx-precio-historial.jsx";
 import { registrarSoloHistorial, registrarCambioPrecio } from "../lib/precio-historial.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
+import { coincideTokens } from "../lib/buscar-tokens.js";
 
 const { useState: uS, useEffect: uE, useMemo: uM, useRef: uR } = React;
 
@@ -351,6 +352,9 @@ function EppsInventarioPage({ showToast }) {
         <td><span className={`badge ${a.class}`}>{a.label}</span></td>
         <td>{e.sync_status && e.sync_status !== 'synced' ? <span className="badge b-amber">⏱</span> : <span style={{color:'var(--green)',fontSize:11}}>✓</span>}</td>
         <td style={{textAlign:'center', whiteSpace:'nowrap'}}>
+          <button className="btn btn-ghost btn-xs" title="Ver TODOS los movimientos (entregas/entradas) de este EPP"
+            onClick={() => { try { window.__movEppBuscar = e.nombre_epp || ''; } catch {} window.__navTo?.('mov-epp'); }}
+            style={{ marginRight:4 }}><JxIcon name="list" size={11}/></button>
           <button className="btn btn-ghost btn-xs" title="Historial de precios" onClick={() => setHistPrecioItem(e)}><JxIcon name="dollar" size={11}/></button>
           {isAdmin
             ? <button className="btn btn-ghost btn-xs" title="Editar" onClick={() => openEditar(e)} style={{ marginLeft:4 }}><JxIcon name="edit" size={11}/></button>
@@ -396,6 +400,7 @@ function EppsInventarioPage({ showToast }) {
   const [q, setQ] = uS('');
   const [filtroTipo, setFiltroTipo] = uS('todos');
   const [histPrecioItem, setHistPrecioItem] = uS(null); // EPP para el visor de historial de precios
+  const [porTrabajadorOpen, setPorTrabajadorOpen] = uS(false); // ventana "EPPs por trabajador"
   const [modal, setModal] = uS(null); // 'nuevo' | 'editar' | 'ingreso' | 'salida'
   const [form, setForm] = uS({});
   const [editingId, setEditingId] = uS(null);
@@ -918,6 +923,14 @@ function EppsInventarioPage({ showToast }) {
               } catch (e) { showToast?.('Error al exportar: ' + (e.message || e), 'red'); }
             }}>
             <JxIcon name="download" size={13}/> Exportar Excel
+          </button>
+          <button className="btn btn-ghost btn-sm" title="Ver, filtrar y organizar los EPPs entregados a cada trabajador"
+            onClick={() => setPorTrabajadorOpen(true)}>
+            👷 Por trabajador
+          </button>
+          <button className="btn btn-ghost btn-sm" title="Historial completo de movimientos de EPP (entregas y entradas)"
+            onClick={() => window.__navTo?.('mov-epp')}>
+            <JxIcon name="list" size={13}/> Movimientos
           </button>
           {canWrite && <button className="btn btn-ghost btn-sm" onClick={openSalida}><JxIcon name="arrowOut" size={13}/>Registrar Salida</button>}
           {canWrite && <button className="btn btn-ghost btn-sm" onClick={openIngreso}><JxIcon name="arrowIn" size={13}/>Registrar Ingreso</button>}
@@ -1512,9 +1525,325 @@ function EppsInventarioPage({ showToast }) {
           showToast={showToast}
           onClose={() => setRequestTarget(null)} />
       )}
+
+      {/* Ventana "EPPs por trabajador": revisar/organizar/filtrar lo entregado a cada persona */}
+      {porTrabajadorOpen && (
+        <EntregasPorTrabajadorModal
+          movs={movHook.data || []}
+          epps={epps}
+          personal={personal}
+          subcontratistas={subcontratistas}
+          onVerMovimientos={(nombreTrabajador) => {
+            try { window.__movEppBuscar = nombreTrabajador || ''; } catch {}
+            window.__navTo?.('mov-epp');
+          }}
+          onClose={() => setPorTrabajadorOpen(false)} />
+      )}
     </div>
   );
 }
 
-Object.assign(window, { EppsInventarioPage });
-export { EppsInventarioPage };
+// ═══════════════════════════════════════════════════════════════════
+// EPPs POR TRABAJADOR — pedido de la almacenera: una ventana en la "base de
+// datos" para revisar, organizar y filtrar los EPPs entregados a cada persona.
+// Fuente: movimientos_epp (salidas con personal_id/subcontratista_id). Sin
+// seleccionar a nadie muestra el RESUMEN por trabajador (entregas, unidades,
+// última entrega); al elegir uno, su historial detallado con filtro por EPP.
+// ═══════════════════════════════════════════════════════════════════
+function EntregasPorTrabajadorModal({ movs, epps, personal, subcontratistas, onVerMovimientos, onClose }) {
+  const [q, setQ] = uS('');
+  const [sel, setSel] = uS(null);        // clave del trabajador seleccionado
+  const [filtroEpp, setFiltroEpp] = uS('todos');
+
+  const eppById = uM(() => { const m = new Map(); (epps || []).forEach(e => m.set(e.id, e)); return m; }, [epps]);
+  const persById = uM(() => { const m = new Map(); (personal || []).forEach(p => m.set(p.id, p)); return m; }, [personal]);
+  const subById = uM(() => { const m = new Map(); (subcontratistas || []).forEach(s => m.set(s.id, s)); return m; }, [subcontratistas]);
+
+  // Nombre legible del destinatario de una entrega (persona o subcontrato).
+  const nombreDestino = (m) => {
+    if (m.personal_id) {
+      const p = persById.get(m.personal_id);
+      return p ? `${p.nombres || ''} ${p.apellidos || ''}`.trim() : '(trabajador no encontrado)';
+    }
+    if (m.subcontratista_id) {
+      const s = subById.get(m.subcontratista_id);
+      return `Subcontrato: ${s?.razon_social || s?.nombre || '—'}`;
+    }
+    return null;
+  };
+
+  // Entregas = salidas vivas con destinatario.
+  const entregas = uM(() => (movs || []).filter(m =>
+    !m.deleted_at && m.tipo_movimiento === 'salida' && (m.personal_id || m.subcontratista_id)
+  ), [movs]);
+
+  // Resumen por trabajador (clave = personal_id o sub:<id>).
+  const resumen = uM(() => {
+    const por = new Map();
+    for (const m of entregas) {
+      const key = m.personal_id || `sub:${m.subcontratista_id}`;
+      if (!por.has(key)) por.set(key, { key, nombre: nombreDestino(m) || '—', entregas: 0, unidades: 0, ultima: '', tipos: new Set() });
+      const r = por.get(key);
+      r.entregas++;
+      r.unidades += Number(m.cantidad) || 0;
+      const f = m.fecha || '';
+      if (f > r.ultima) r.ultima = f;
+      const epp = eppById.get(m.epp_id);
+      if (epp?.nombre_epp) r.tipos.add(epp.nombre_epp);
+    }
+    return Array.from(por.values())
+      .filter(r => coincideTokens(r.nombre, q))
+      .sort((a, b) => (b.ultima || '').localeCompare(a.ultima || ''));
+  }, [entregas, q, eppById, persById, subById]);
+
+  // Detalle del trabajador seleccionado.
+  const detalle = uM(() => {
+    if (!sel) return [];
+    return entregas
+      .filter(m => (m.personal_id || `sub:${m.subcontratista_id}`) === sel)
+      .filter(m => filtroEpp === 'todos' || m.epp_id === filtroEpp)
+      .sort((a, b) => (`${b.fecha || ''} ${b.hora || ''}`).localeCompare(`${a.fecha || ''} ${a.hora || ''}`));
+  }, [entregas, sel, filtroEpp]);
+
+  const selNombre = sel ? (resumen.find(r => r.key === sel)?.nombre
+    || nombreDestino(entregas.find(m => (m.personal_id || `sub:${m.subcontratista_id}`) === sel) || {})) : null;
+  // EPPs que ese trabajador recibió (para el filtro del detalle).
+  const eppsDelSel = uM(() => {
+    if (!sel) return [];
+    const ids = new Set(entregas.filter(m => (m.personal_id || `sub:${m.subcontratista_id}`) === sel).map(m => m.epp_id));
+    return Array.from(ids).map(id => eppById.get(id)).filter(Boolean)
+      .sort((a, b) => (a.nombre_epp || '').localeCompare(b.nombre_epp || ''));
+  }, [entregas, sel, eppById]);
+
+  return (
+    <Modal title={sel ? `EPPs entregados — ${selNombre}` : 'EPPs por trabajador'} icon="shield" onClose={onClose} size="xl">
+      {!sel ? (
+        <>
+          <input className="fi" placeholder="Buscar trabajador (cada palabra debe coincidir)…" value={q}
+            onChange={e => setQ(e.target.value)} style={{ marginBottom:10 }} autoFocus/>
+          {resumen.length === 0 ? (
+            <div style={{ padding:20, textAlign:'center', color:'var(--tm)', fontSize:12.5 }}>
+              {q ? 'Ningún trabajador coincide con la búsqueda.' : 'Todavía no hay entregas de EPP registradas.'}
+            </div>
+          ) : (
+            <div style={{ maxHeight:420, overflowY:'auto' }}>
+              <table className="tbl" style={{ fontSize:12 }}>
+                <thead><tr>
+                  <th>Trabajador</th>
+                  <th style={{ textAlign:'right' }}>Entregas</th>
+                  <th style={{ textAlign:'right' }}>Unidades</th>
+                  <th>EPPs distintos</th>
+                  <th>Última entrega</th>
+                  <th></th>
+                </tr></thead>
+                <tbody>
+                  {resumen.map(r => (
+                    <tr key={r.key} style={{ cursor:'pointer' }} onClick={() => { setSel(r.key); setFiltroEpp('todos'); }}>
+                      <td style={{ fontWeight:600, color:'var(--tp)' }}>{r.nombre}</td>
+                      <td style={{ textAlign:'right' }}>{r.entregas}</td>
+                      <td style={{ textAlign:'right' }}>{r.unidades.toLocaleString('es-PE')}</td>
+                      <td style={{ fontSize:11, color:'var(--ts)' }}>{r.tipos.size}</td>
+                      <td className="col-m">{r.ultima || '—'}</td>
+                      <td><button className="btn btn-ghost btn-xs" title="Ver el detalle de este trabajador">Ver ▸</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:10, flexWrap:'wrap' }}>
+            <button className="btn btn-ghost btn-sm" onClick={() => setSel(null)}>← Todos</button>
+            <select className="fi" value={filtroEpp} onChange={e => setFiltroEpp(e.target.value)} style={{ maxWidth:280 }}>
+              <option value="todos">Todos sus EPPs ({eppsDelSel.length})</option>
+              {eppsDelSel.map(e => <option key={e.id} value={e.id}>{e.nombre_epp}</option>)}
+            </select>
+            <button className="btn btn-ghost btn-sm" title="Abrir Mov. de EPPs filtrado por este trabajador"
+              onClick={() => onVerMovimientos?.(selNombre)}>
+              <JxIcon name="list" size={12}/> Ver en Movimientos
+            </button>
+          </div>
+          <div style={{ maxHeight:400, overflowY:'auto' }}>
+            <table className="tbl" style={{ fontSize:12 }}>
+              <thead><tr>
+                <th>Fecha</th><th>EPP</th><th style={{ textAlign:'right' }}>Cant.</th><th>Motivo</th><th>Obs.</th>
+              </tr></thead>
+              <tbody>
+                {detalle.map(m => {
+                  const epp = eppById.get(m.epp_id);
+                  return (
+                    <tr key={m.id}>
+                      <td className="col-m">{m.fecha || '—'}{m.hora ? ` ${String(m.hora).slice(0,5)}` : ''}</td>
+                      <td style={{ fontWeight:600, color:'var(--tp)' }}>{epp?.nombre_epp || '—'}{epp?.talla ? ` · ${epp.talla}` : ''}</td>
+                      <td style={{ textAlign:'right' }}>{Number(m.cantidad) || 0} {m.unidad || epp?.unidad || ''}</td>
+                      <td><span className="badge b-gray" style={{ fontSize:10 }}>{m.motivo || '—'}</span></td>
+                      <td style={{ fontSize:11, color:'var(--tm)', maxWidth:220, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{m.observaciones || '—'}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// MOV. DE EPPs — historial completo, espejo de "Mov. de Materiales" (pedido de
+// la almacenera: manejar EPPs igual que materiales). Búsqueda multi-palabra,
+// chips por tipo, y pre-filtro vía window.__movEppBuscar (botón 📜 del
+// inventario y "Ver en Movimientos" de la ventana por trabajador).
+// ═══════════════════════════════════════════════════════════════════
+function MovEppPage({ showToast }) {
+  const [obraId, setObraId] = uS(null);
+  uE(() => {
+    let cancelled = false;
+    const findObra = async () => {
+      const stored = window.__getObraActivaId?.();
+      const obras = await window.__db.obras.toArray();
+      const valida = stored && obras.find(o => o.id === stored);
+      if (!cancelled) setObraId(valida ? stored : (obras[0]?.id || null));
+    };
+    findObra();
+    const onChange = () => findObra();
+    window.addEventListener('obra_activa_change', onChange);
+    window.addEventListener('jarvex_master_updated', onChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('obra_activa_change', onChange);
+      window.removeEventListener('jarvex_master_updated', onChange);
+    };
+  }, []);
+
+  const { data: movs = [], loading } = window.__hooks.useMovimientosEpp?.(obraId) || { data: [] };
+  const { data: epps = [] } = window.__hooks.useEpps?.(obraId) || { data: [] };
+  const { data: personal = [] } = window.__hooks.usePersonal?.(obraId) || { data: [] };
+  const { data: subcontratistas = [] } = window.__hooks.useSubcontratistas?.() || { data: [] };
+  const { data: ubicaciones = [] } = window.__hooks.useUbicacionesObra?.(obraId) || { data: [] };
+  const { data: frentes = [] } = window.__hooks.useFrentesObra?.(obraId) || { data: [] };
+
+  const eppById = uM(() => { const m = new Map(); (epps || []).forEach(e => m.set(e.id, e)); return m; }, [epps]);
+  const persById = uM(() => { const m = new Map(); (personal || []).forEach(p => m.set(p.id, p)); return m; }, [personal]);
+  const subById = uM(() => { const m = new Map(); (subcontratistas || []).forEach(s => m.set(s.id, s)); return m; }, [subcontratistas]);
+  const ubicById = uM(() => { const m = new Map(); (ubicaciones || []).forEach(u => m.set(u.id, u)); return m; }, [ubicaciones]);
+  const frenteById = uM(() => { const m = new Map(); (frentes || []).forEach(f => m.set(f.id, f)); return m; }, [frentes]);
+
+  // Pre-filtro que dejan el 📜 del inventario y la ventana por trabajador.
+  const [q, setQ] = uS(() => { try { const v = window.__movEppBuscar; if (v) { delete window.__movEppBuscar; return v; } } catch {} return ''; });
+  const [filtroTipo, setFiltroTipo] = uS('todos');
+
+  const destinoDe = (m) => {
+    if (m.personal_id) { const p = persById.get(m.personal_id); return p ? `${p.nombres || ''} ${p.apellidos || ''}`.trim() : ''; }
+    if (m.subcontratista_id) { const s = subById.get(m.subcontratista_id); return s ? `Subcontrato ${s.razon_social || s.nombre || ''}` : ''; }
+    return '';
+  };
+
+  const sorted = uM(() => (movs || []).filter(m => !m.deleted_at).sort((a, b) =>
+    (`${b.fecha || ''} ${b.hora || ''}`).localeCompare(`${a.fecha || ''} ${a.hora || ''}`)
+  ), [movs]);
+
+  const filtered = uM(() => sorted.filter(m => {
+    if (filtroTipo !== 'todos' && m.tipo_movimiento !== filtroTipo) return false;
+    if (!q.trim()) return true;
+    const epp = eppById.get(m.epp_id);
+    const hay = `${epp?.nombre_epp || ''} ${epp?.talla || ''} ${destinoDe(m)} ${m.motivo || ''} ${m.documento_asociado || ''} ${ubicById.get(m.ubicacion_id)?.nombre || ''} ${frenteById.get(m.frente_id)?.nombre || ''}`;
+    return coincideTokens(hay, q);
+  }), [sorted, q, filtroTipo, eppById, persById, subById, ubicById, frenteById]);
+
+  const hoy = window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10);
+  const stats = uM(() => ({
+    total: sorted.length,
+    entregasHoy: sorted.filter(m => m.fecha === hoy && m.tipo_movimiento === 'salida').length,
+    entradasHoy: sorted.filter(m => m.fecha === hoy && m.tipo_movimiento === 'entrada').length,
+  }), [sorted, hoy]);
+
+  const movPg = usePagination(filtered, 100);
+
+  if (!obraId) return <div className="page-wrap"><div className="empty-state"><JxIcon name="shield" size={32} color="var(--tm)"/><p>No hay obra activa.</p></div></div>;
+  if (loading) return <div className="page-wrap"><div className="empty-state"><JxIcon name="shield" size={32} color="var(--tm)"/><p>Cargando movimientos…</p></div></div>;
+
+  const TIPO_BADGE = {
+    entrada:    { cls: 'b-green', lbl: '🛒 Entrada' },
+    salida:     { cls: 'b-amber', lbl: '👷 Entrega' },
+    devolucion: { cls: 'b-blue',  lbl: '↩ Devolución' },
+  };
+
+  return (
+    <div className="page-wrap">
+      <div className="pg-hd frow-sb">
+        <div>
+          <div className="pg-title">Movimientos de EPPs</div>
+          <div className="pg-sub">Historial completo · {sorted.length} movimientos registrados</div>
+        </div>
+        <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+          <button className="btn btn-ghost btn-sm" onClick={() => window.__navTo?.('epps-inventario')} title="Volver al inventario de EPPs">
+            <JxIcon name="shield" size={13}/> Inventario
+          </button>
+        </div>
+      </div>
+
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(170px, 1fr))', gap:10, marginBottom:14 }}>
+        <div className="card card-p"><div style={{ fontSize:11, color:'var(--tm)' }}>Total Movimientos</div><div style={{ fontSize:22, fontWeight:800, color:'var(--blue)' }}>{stats.total.toLocaleString('es-PE')}</div></div>
+        <div className="card card-p"><div style={{ fontSize:11, color:'var(--tm)' }}>Entregas Hoy</div><div style={{ fontSize:22, fontWeight:800, color:'var(--amber)' }}>{stats.entregasHoy}</div></div>
+        <div className="card card-p"><div style={{ fontSize:11, color:'var(--tm)' }}>Entradas Hoy</div><div style={{ fontSize:22, fontWeight:800, color:'var(--green)' }}>{stats.entradasHoy}</div></div>
+      </div>
+
+      <div style={{ display:'flex', gap:8, marginBottom:12, flexWrap:'wrap', alignItems:'center' }}>
+        <input className="fi" placeholder="Buscar EPP, trabajador, motivo, almacén o frente…" value={q}
+          onChange={e => setQ(e.target.value)} style={{ flex:1, minWidth:240 }}/>
+        {[['todos','Todos'],['entrada','Entradas'],['salida','Entregas'],['devolucion','Devoluciones']].map(([v, lbl]) => (
+          <button key={v} className={`btn btn-sm ${filtroTipo === v ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setFiltroTipo(v)}>{lbl}</button>
+        ))}
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="card card-p empty-state">
+          <JxIcon name="shield" size={40} color="var(--tm)"/>
+          <p>{q || filtroTipo !== 'todos' ? 'Ningún movimiento coincide con el filtro.' : 'Todavía no hay movimientos de EPP en esta obra.'}</p>
+        </div>
+      ) : (
+        <div className="card" style={{ overflow:'hidden' }}>
+          <div style={{ overflowX:'auto' }}>
+            <table className="tbl">
+              <thead><tr>
+                <th>Fecha / Hora</th><th>Tipo</th><th>EPP</th>
+                <th style={{ textAlign:'right' }}>Cantidad</th>
+                <th>Trabajador / Destino</th><th>Almacén</th><th>Frente</th><th>Motivo</th><th>Doc.</th>
+              </tr></thead>
+              <tbody>
+                {movPg.pagedItems.map(m => {
+                  const epp = eppById.get(m.epp_id);
+                  const tb = TIPO_BADGE[m.tipo_movimiento] || { cls: 'b-gray', lbl: m.tipo_movimiento || '—' };
+                  return (
+                    <tr key={m.id}>
+                      <td className="col-m">{m.fecha || '—'}{m.hora ? <div style={{ fontSize:10, color:'var(--tm)' }}>{String(m.hora).slice(0,5)}</div> : null}</td>
+                      <td><span className={`badge ${tb.cls}`} style={{ fontSize:10 }}>{tb.lbl}</span></td>
+                      <td style={{ fontWeight:600, color:'var(--tp)' }}>{epp?.nombre_epp || '—'}{epp?.talla ? <span style={{ color:'var(--tm)', fontWeight:400 }}> · {epp.talla}</span> : null}</td>
+                      <td style={{ textAlign:'right' }} className="col-num">{Number(m.cantidad) || 0} <span style={{ color:'var(--tm)', fontSize:10.5 }}>{m.unidad || epp?.unidad || ''}</span></td>
+                      <td style={{ fontSize:11.5 }}>{destinoDe(m) || <span style={{ color:'var(--tm)' }}>—</span>}</td>
+                      <td style={{ fontSize:11 }}>{ubicById.get(m.ubicacion_id)?.nombre ? <span className="badge b-gray" style={{ fontSize:10 }}>{ubicById.get(m.ubicacion_id).nombre}</span> : <span style={{ color:'var(--tm)' }}>—</span>}</td>
+                      <td style={{ fontSize:11 }}>{frenteById.get(m.frente_id)?.nombre ? <span className="badge b-amber" style={{ fontSize:10 }}>{frenteById.get(m.frente_id).nombre}</span> : <span style={{ color:'var(--tm)' }}>—</span>}</td>
+                      <td style={{ fontSize:11, color:'var(--ts)' }}>{m.motivo || '—'}</td>
+                      <td style={{ fontSize:11, color:'var(--tm)' }}>{m.documento_asociado || '—'}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <TablePagination {...movPg} />
+          <div style={{ padding:'8px 14px', fontSize:11, color:'var(--tm)', borderTop:'1px solid var(--border)' }}>
+            Mostrando {filtered.length} de {sorted.length} movimientos
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+Object.assign(window, { EppsInventarioPage, MovEppPage });
+export { EppsInventarioPage, MovEppPage };

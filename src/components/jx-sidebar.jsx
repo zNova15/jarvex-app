@@ -139,6 +139,7 @@ const NAV = [
   { id: 'charlas-seguridad', label: 'Charlas de 5 minutos', icon: 'alert' },
   { id: 'iperc', label: 'IPERC (riesgos)', icon: 'alert' },
   { id: 'epps-inventario', label: 'EPPs (inventario)', icon: 'shield' },
+  { id: 'mov-epp', label: 'Mov. de EPPs', icon: 'arrowOut' },
   { id: 'epp', label: 'Entregas EPP', icon: 'check' },
   { id: 'insumos-persona', label: 'Insumos por Persona', icon: 'users' },
   { id: 'inspecciones-seguridad', label: 'Inspecciones', icon: 'shield' },

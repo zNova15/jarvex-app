@@ -217,7 +217,10 @@ const AYUDA = {
     ],
     rol: { ayudante_contador: 'Podés registrar pagos y subir recibos por honorarios y constancias. Los recibos y constancias son material contable: solo contabilidad y admin los ven en Evidencias.' },
   },
-  'cont-dashboard': { titulo: 'Dashboard Contable', que: 'Resumen financiero del grupo: ingresos, egresos y pendientes por empresa.', como: ['Es la portada de contabilidad; cada indicador baja a su libro o listado.'] },
+  'cont-dashboard': { titulo: 'Dashboard Contable', que: 'Resumen financiero del grupo: ingresos, egresos y pendientes por empresa.', como: [
+    'Es la portada de contabilidad; cada indicador baja a su libro o listado.',
+    'INGRESOS SIN SUSTENTO: cuando almacén registra un material sin factura, aparece acá para vincularlo. Al tocar "Vincular factura", arriba salen las 🎯 SUGERENCIAS: las facturas que CUADRAN con ese ingreso (mismo insumo, fecha cercana, cantidad parecida) con su % de coincidencia, el ítem exacto de la factura y el porqué — elegí la correcta con un click y el ítem queda marcado como recibido. Abajo está el resto de facturas del proveedor (con sus ítems visibles) para elegir a mano si ninguna sugerencia aplica.',
+  ] },
   'empresas': { titulo: 'Empresas', que: 'Las entidades legales del grupo (ejecutoras y proveedoras internas).', como: ['El RUC y la clase de cada empresa alimentan el cruce INTERCO y los filtros de emisor/receptor.'] },
   'guias-remision': { titulo: 'Guías de Remisión', que: 'Las guías de remisión electrónicas vinculadas a las facturas y al traslado de materiales.', como: ['Se cargan principalmente por Captura Mágica y quedan vinculadas a su factura.', 'Su PDF es material contable: solo contabilidad y admin lo ven en Evidencias.'] },
   'intercompany': { titulo: 'Operaciones entre Empresas', que: 'Las operaciones INTERCO: ventas/compras entre empresas del propio grupo.', como: ['Editá los movimientos INTERCO desde acá (en Movimientos aparecen bloqueados).'] },
@@ -255,9 +258,23 @@ const AYUDA = {
   'charlas-seguridad': { titulo: 'Charlas de 5 minutos', que: 'El registro diario de charlas de seguridad con asistencia.', como: ['Registrá la charla del día con tema y asistentes.'] },
   'iperc': { titulo: 'IPERC', que: 'Matriz de identificación de peligros y evaluación de riesgos por actividad.', como: ['Mantené la matriz al día cuando cambien las actividades del frente.'] },
   'epps-inventario': {
-    titulo: 'EPPs (inventario)', que: 'El stock de equipos de protección personal.',
-    como: ['Igual que materiales: el stock se mueve con entregas y reposiciones, no a mano.'],
+    titulo: 'EPPs (inventario)', que: 'La BASE DE DATOS de equipos de protección personal: catálogo, stock y accesos rápidos a su historial — manejo igual que Materiales.',
+    como: [
+      'Igual que materiales: el stock se mueve con entregas y reposiciones, no a mano.',
+      '👷 POR TRABAJADOR: el botón "Por trabajador" abre la ventana para revisar, organizar y filtrar los EPPs entregados a CADA persona — resumen por trabajador (entregas, unidades, última entrega) y su detalle con filtro por EPP.',
+      'HISTORIAL DE UN EPP: el botón 📜 de cada fila te lleva a "Mov. de EPPs" con la búsqueda ya cargada con ese EPP.',
+      '"Movimientos" (arriba) abre el historial completo, igual que "Mov. de Materiales".',
+    ],
     rol: { prevencionista: 'Lo ves en CONSULTA: las entradas y salidas las registra la almacenera — tu rol es verificar y cuadrar con ella.' },
+  },
+  'mov-epp': {
+    titulo: 'Movimientos de EPPs',
+    que: 'El historial completo de entregas y entradas de EPP — espejo de "Mov. de Materiales".',
+    como: [
+      'BÚSQUEDA POR PALABRAS: cada palabra debe coincidir, en cualquier orden — buscá por EPP, trabajador, motivo, almacén o frente (ej. "guantes juan").',
+      'Filtrá por tipo con los botones: Entradas (compras), Entregas (salidas a trabajadores) o Devoluciones.',
+      'Llegás acá pre-filtrado desde el 📜 de un EPP del inventario o desde "Ver en Movimientos" de la ventana Por trabajador.',
+    ],
   },
   'epp': {
     titulo: 'Entregas de EPP', que: 'La entrega de EPPs al personal con firma digital del trabajador, y las entradas (compras) al inventario.',

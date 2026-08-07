@@ -1134,6 +1134,7 @@ window.__moduleIdMap = {
   'iperc': 'IPERC',
   'epp': 'EPP',
   'epps-inventario': 'EPP',
+  'mov-epp': 'EPP',
   'insumos-persona': 'EPP',
   'inspecciones-seguridad': 'Inspecciones SSOMA',
   'capacitaciones': 'Capacitaciones',
@@ -1270,7 +1271,7 @@ const __SEGURIDAD_ITEMS = [
   'reporte-especialidad', 'charlas-plan', 'sctr-personal', 'inducciones', 'charlas-seguridad',
   'iperc', 'inspecciones-seguridad', 'capacitaciones',
   // EPP e insumos: CONSULTA para cuadrar con almacén
-  'epps-inventario', 'epp', 'insumos-persona', 'insumos-emergencia',
+  'epps-inventario', 'mov-epp', 'epp', 'insumos-persona', 'insumos-emergencia',
   // Personal y subcontratos
   'personal', 'asistencia', 'subcontratistas', 'subcontratos',
   // Utilitarios

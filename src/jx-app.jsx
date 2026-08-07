@@ -362,6 +362,7 @@ function Header({ page, plano = 'obra', onInicio, onToggleSidebar, onLogout, pro
     valorizaciones:'Valorizaciones', 'activos-pesados':'Activos Pesados / Maquinaria',
     'charlas-seguridad':'Charlas de Seguridad', iperc:'IPERC — Matriz de Riesgos',
     epp:'Entregas de EPP',
+    'mov-epp':'Movimientos de EPPs',
     'inspecciones-seguridad':'Inspecciones de Seguridad',
     capacitaciones:'Capacitaciones',
     subcontratistas:'Subcontratistas', subcontratos:'Subcontratos',
@@ -650,6 +651,7 @@ const PAGE_REGISTRY = {
   'epp':                    { chunk: 'jx-ssoma', component: 'EppPage' },
   // === jx-epps (inventario separado de materiales) ===
   'epps-inventario':        { chunk: 'jx-epps', component: 'EppsInventarioPage' },
+  'mov-epp':                { chunk: 'jx-epps', component: 'MovEppPage' },
   'insumos-persona':        { chunk: 'jx-insumos-persona', component: 'InsumosPorPersonaPage' },
   'movimientos-insumos':    { chunk: 'jx-movimientos-insumos', component: 'MovimientosInsumosPage' },
   // === jx-ssoma-extra ===
