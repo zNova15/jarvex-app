@@ -115,10 +115,12 @@ function razonSimilar(a, b) {
 function matchCompanyGrupo(companies, ruc, razon) {
   const activas = (companies || []).filter(c => c.status === 'activa' && !c.deleted_at);
   const rn = normalizarRuc(ruc);
-  if (rn) {
-    const porRuc = activas.find(c => normalizarRuc(c.ruc) === rn);
-    if (porRuc) return porRuc;
-  }
+  // Con RUC LEGIBLE, el RUC es la ÚNICA verdad: si no matchea, es un tercero
+  // EXTERNO — sin fallback por nombre. (Un proveedor homónimo con RUC distinto
+  // se marcaba como empresa nuestra y la compra se registraba como VENTA interna.)
+  if (rn) return activas.find(c => normalizarRuc(c.ruc) === rn) || null;
+  // Solo cuando el OCR NO leyó el RUC entra el respaldo por razón social,
+  // con umbral ALTO (igualdad normalizada o similitud ≥ 0.9).
   const nom = String(razon || '').trim().toUpperCase().replace(/\s+/g, ' ');
   if (nom.length >= 4) {
     const exacta = activas.find(c => String(c.name || '').trim().toUpperCase().replace(/\s+/g, ' ') === nom);
@@ -1138,6 +1140,9 @@ function CapturaMagicaPage({ showToast }) {
     if (!r.serie_correlativo) { showToast('Falta serie-correlativo', 'red'); return; }
     if (!(Number(r.total) > 0)) { showToast('El total debe ser mayor a 0', 'red'); return; }
 
+    // Decisión de reemplazo de la contraparte automática (se ejecuta recién al
+    // crear el movimiento real, con guard y validaciones ya pasadas).
+    let espejoAReemplazar = null;
     // ── Guard anti-duplicado de comprobante (COMPRAS y VENTAS) ──
     // Re-chequea FRESCO contra la BD: `movs` puede estar desactualizado y, al
     // importar un lote de SUNAT, dos archivos pueden ser el mismo comprobante o
@@ -1183,18 +1188,11 @@ function CapturaMagicaPage({ showToast }) {
             showToast('Se conservó la contraparte automática. No se creó un duplicado.', 'blue');
             return;
           }
-          // Reemplazo: baja lógica del espejo automático y seguimos creando el real.
-          try {
-            const tsDel = new Date().toISOString();
-            await window.__db.accounting_movements.update(dupMov.id, {
-              deleted_at: tsDel, updated_by: userId, updated_at: tsDel,
-              version: (Number(dupMov.version) || 1) + 1, sync_status: 'pending_update',
-            });
-            await window.__logAudit?.({ action:'delete', table:'accounting_movements', recordId: dupMov.id,
-              reason:'Reemplazo de contraparte intercompany automática por el comprobante real (Captura Mágica)' });
-          } catch (e) { console.warn('[captura · reemplazo espejo]', e?.message); }
-          showToast('Se reemplazó la contraparte automática por el comprobante que subiste.', 'green');
-          // (sin return: la confirmación sigue y crea el movimiento real)
+          // NO borrar acá: esto corre ANTES del guard anti doble-submit y de las
+          // validaciones — si algo aborta después, la compradora quedaba SIN
+          // compra y sin reemplazo. Solo recordamos la decisión; el soft-delete
+          // ocurre junto con la creación del movimiento real, más abajo.
+          espejoAReemplazar = dupMov;
         } else {
           setItems(prev => prev.map(x => x.id === id ? { ...x, status: 'duplicado', duplicate_of: dupMov.id } : x));
           showToast(`Ya existe el comprobante ${r.serie_correlativo} ${esVenta ? 'emitido por esa empresa' : 'de ese proveedor'} (${dupMov.date || 's/fecha'} · S/ ${Number(dupMov.amount || 0).toLocaleString('es-PE')}). No se creó un duplicado — descartá este archivo.`, 'red');
@@ -1425,6 +1423,33 @@ function CapturaMagicaPage({ showToast }) {
         }
       }
 
+      // 3-pre) REEMPLAZO de contraparte automática (decidido en el guard): recién
+      // acá — guard anti doble-submit y validaciones YA pasadas — se soft-borra el
+      // espejo y se hereda su identidad intercompany para el movimiento real (en
+      // esta rama el review no detectó al emisor como empresa del grupo, así que
+      // sin la herencia el reemplazo quedaba como compra externa sin vínculo).
+      let herenciaEspejo = null;
+      if (espejoAReemplazar) {
+        try {
+          const esp = await window.__db.accounting_movements.get(espejoAReemplazar.id);
+          if (esp && !esp.deleted_at) {
+            const tsDel = new Date().toISOString();
+            await window.__db.accounting_movements.update(esp.id, {
+              deleted_at: tsDel, updated_by: userId, updated_at: tsDel,
+              version: (Number(esp.version) || 1) + 1,
+              sync_status: esp.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+            });
+            try { await window.__logAudit?.({ action:'delete', table:'accounting_movements', recordId: esp.id,
+              reason:'Reemplazo de contraparte intercompany automática por el comprobante real (Captura Mágica)' }); } catch {}
+            let notasEsp = {}; try { notasEsp = JSON.parse(esp.notas || '{}'); } catch {}
+            herenciaEspejo = {
+              related_company_id: esp.related_company_id || null,
+              ventaId: notasEsp.intercompany_mirror_of || esp.related_movement_id || null,
+            };
+          }
+        } catch (e) { console.warn('[captura · reemplazo espejo]', e?.message); }
+      }
+
       // 3) Accounting movement (cost) + posible vinculación con OC
       const accId = window.__newId();
       const tipoAcc = TIPO_DOC_MAP[r.tipo_documento]?.acc || 'factura';
@@ -1448,10 +1473,11 @@ function CapturaMagicaPage({ showToast }) {
         // Operación interna del grupo (emisor Y receptor son empresas nuestras): debe
         // marcarse SIEMPRE, no solo si se vinculó a una cadena de trazabilidad. Si no,
         // una venta intercompany sin cadena se cuenta como ingreso real (infla ventas).
-        is_intercompany: !!r.es_intercompany,
-        related_company_id: r.es_intercompany ? (r.company_id || null) : null,
-        // Nota de crédito/débito → vinculada a la factura que modifica (si se encontró en el sistema).
-        related_movement_id: esNota ? (r.nota_ref_mov_id || null) : null,
+        is_intercompany: herenciaEspejo ? true : !!r.es_intercompany,
+        related_company_id: herenciaEspejo ? herenciaEspejo.related_company_id : (r.es_intercompany ? (r.company_id || null) : null),
+        // Nota de crédito/débito → vinculada a la factura que modifica; reemplazo
+        // de espejo → vinculada a la VENTA interna original (ya synced en server).
+        related_movement_id: esNota ? (r.nota_ref_mov_id || null) : (herenciaEspejo?.ventaId || null),
         // Detracción (SPOT): recomendada por la IA y confirmada/corregida por la asistente.
         // El estado y la constancia del depósito (Banco de la Nación) se registran luego en Contabilidad.
         detraccion_aplica: !!r.detraccion_aplica,
@@ -1519,6 +1545,22 @@ function CapturaMagicaPage({ showToast }) {
         newData: { tipo: r.tipo_documento, doc: r.serie_correlativo, total: r.total, oc: r.vincular_a_oc },
         reason:'Captura mágica · ingreso comprobante' + (r.vincular_a_oc ? ' (vinculado a OC)' : '') }); } catch {}
 
+      // Cierre del reemplazo: re-apuntar la VENTA interna original al movimiento
+      // real (antes quedaba señalando al espejo borrado).
+      if (herenciaEspejo?.ventaId) {
+        try {
+          const venta = await window.__db.accounting_movements.get(herenciaEspejo.ventaId);
+          if (venta && (!venta.related_movement_id || venta.related_movement_id === espejoAReemplazar?.id)) {
+            await window.__db.accounting_movements.update(venta.id, {
+              related_movement_id: accId, updated_at: now, updated_by: userId,
+              version: (Number(venta.version) || 1) + 1,
+              sync_status: venta.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+            });
+          }
+        } catch {}
+        showToast('🔁 Se reemplazó la contraparte automática por el comprobante que subiste.', 'green');
+      }
+
       // ── AUTO-ESPEJO INTERCOMPANY ──────────────────────────────────────────
       // Si es una VENTA entre DOS empresas del grupo, la COMPRA de la empresa
       // receptora casi nunca se sube: falta la contraparte y la venta interna
@@ -1530,14 +1572,21 @@ function CapturaMagicaPage({ showToast }) {
       if (esVenta && r.es_intercompany && !esNota && r.company_id && r.company_id !== companyIdFinal) {
         try {
           const compEsp = normalizarComprobante(r.serie_correlativo);
+          const vendedora = (companies || []).find(c => c.id === companyIdFinal) || null;
+          const rucVendedora = normalizarRuc(vendedora?.ruc);
+          // Dedupe ANCLADO a la vendedora: además del número de comprobante, la
+          // compra existente debe ser DE ESTA vendedora (mismo RUC de tercero, o
+          // intercompany ya enlazada a ella). Sin el ancla, una compra EXTERNA de
+          // la compradora con la misma serie-correlativo suprimía el espejo.
           const yaHayCompra = compEsp ? (await window.__db.accounting_movements
             .filter(m => !m.deleted_at &&
               m.company_id === r.company_id &&
               (m.clase || (m.type === 'income' ? 'venta' : 'compra')) === 'compra' &&
-              normalizarComprobante(m.document_number) === compEsp)
+              normalizarComprobante(m.document_number) === compEsp &&
+              ((rucVendedora && normalizarRuc(m.third_party_ruc) === rucVendedora)
+                || (m.is_intercompany && m.related_company_id === companyIdFinal)))
             .toArray())[0] : null;
           if (!yaHayCompra) {
-            const vendedora = (companies || []).find(c => c.id === companyIdFinal) || null;
             const compradora = (companies || []).find(c => c.id === r.company_id) || null;
             const espId = window.__newId();
             await window.__db.accounting_movements.add({
@@ -1579,8 +1628,13 @@ function CapturaMagicaPage({ showToast }) {
               version: 1, sync_status: 'pending_create',
               idempotency_key: `${userId}_acc_${espId}`,
             });
-            // Enlazar la venta ↔ su espejo (cada lado apunta al otro).
-            await window.__db.accounting_movements.update(accId, { related_movement_id: espId });
+            // OJO: NO enlazar la venta → espejo acá. El par con related_movement_id
+            // MUTUO (ambos pending_create) se bloqueaba eternamente en el gate de
+            // FK del push (el server tiene FK real en related_movement_id): cada
+            // uno esperaba que el otro subiera primero. El vínculo queda
+            // derivable desde el espejo (related_movement_id + notas.
+            // intercompany_mirror_of), que es lo que leen Contabilidad y el
+            // flujo de reemplazo.
             try { await window.__logAudit?.({ action:'insert', table:'accounting_movements', recordId: espId,
               newData: { espejo_de: accId, doc: r.serie_correlativo, comprador: r.company_id },
               reason:'Captura mágica · contraparte intercompany automática' }); } catch {}

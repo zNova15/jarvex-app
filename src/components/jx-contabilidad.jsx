@@ -1159,7 +1159,8 @@ function MovimientosContablesPage({ showToast }) {
     if (!companiesActivas.length) { showToast('Crea primero una empresa', 'red'); return; }
     setForm({
       company_id: companiesActivas[0].id,
-      date: new Date().toISOString().slice(0,10),
+      // Fecha LOCAL (Lima): toISOString es UTC y desde las 19:00 pre-llenaba mañana.
+      date: window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0,10),
       clase: 'compra',          // explícito: la mayoría de su flujo son compras
       type: 'cost',
       obra_id: '',
@@ -3187,7 +3188,11 @@ function IntercompanyPage({ showToast }) {
         file_url: null,
         is_intercompany: true,
         related_company_id: buyer.id,
-        related_movement_id: buyerMovId,
+        // SIN link al comprador: el par con related_movement_id MUTUO (ambos
+        // pending_create) se bloqueaba eternamente en el gate de FK del push
+        // (el server tiene FK real). El vínculo queda derivable desde el
+        // comprador, que sí apunta al vendedor.
+        related_movement_id: null,
         notas: form.notas || null,
         created_by: userId, updated_by: userId,
         created_at: now, updated_at: now,
@@ -3494,7 +3499,8 @@ function ContabilidadDashboardPage({ showToast }) {
     const load = async () => {
       try {
         const rows = await window.__db.movimientos_materiales
-          .filter(m => m.pendiente_sustento === true && !m.accounting_movement_id)
+          .filter(m => m.pendiente_sustento === true && !m.accounting_movement_id
+            && !m.deleted_at && m.demo !== true)
           .toArray();
         rows.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
         if (!cancelled) setPendientesSustento(rows);
@@ -3614,7 +3620,19 @@ function ContabilidadDashboardPage({ showToast }) {
 
   // Vincular un movimiento pendiente a una factura existente (accounting_movement
   // del mismo proveedor). Por simplicidad, se hace 1:1 — un mov ↔ una factura.
+  // Guard SÍNCRONO anti doble-click (regla del repo): sin él, dos clicks en la
+  // misma sugerencia re-sumaban la cantidad del ingreso a items_factura[idx].recibido.
+  const vinculandoSustentoRef = uRC(false);
   const vincularAFactura = async (mov, accountingMovId, itemIdx = null) => {
+    if (vinculandoSustentoRef.current) return;
+    vinculandoSustentoRef.current = true;
+    try {
+      await vincularAFacturaInner(mov, accountingMovId, itemIdx);
+    } finally {
+      vinculandoSustentoRef.current = false;
+    }
+  };
+  const vincularAFacturaInner = async (mov, accountingMovId, itemIdx = null) => {
     try {
       const factura = (movs || []).find(m => m.id === accountingMovId);
       if (!factura) { showToast?.('Factura no encontrada', 'red'); return; }
@@ -3666,6 +3684,9 @@ function ContabilidadDashboardPage({ showToast }) {
       }
       try { await window.__logAudit?.({ action:'update', table:'movimientos_materiales', recordId: mov.id, oldData:{ pendiente_sustento:true }, newData:{ accounting_movement_id: accountingMovId }, reason:`Vinculado a factura ${factura.document_number || accountingMovId}` }); } catch {}
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'movimientos_materiales' } })); } catch {}
+      // También avisar el cambio en la FACTURA: sin esto, `movs` quedaba stale y
+      // el modal re-sugería la misma línea ya completada.
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'accounting_movements' } })); } catch {}
       try { window.dispatchEvent(new Event('online')); } catch {}
       showToast?.(`✓ Ingreso vinculado a factura ${factura.document_number || ''}`, 'green');
       setVincularModal(null);

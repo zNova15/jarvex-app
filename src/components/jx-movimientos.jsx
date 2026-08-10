@@ -593,8 +593,11 @@ function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast, m
   // y sus registros entran directo sin aprobación.
   const retroDirecta = RETRO_DIRECTA_UIDS.includes(userId);
   const tipoEv = tipoEvidenciaPara(modulo);
-  const hoy = new Date().toISOString().slice(0, 10);
-  const ayer = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  // Fechas LOCALES (Lima): con toISOString (UTC), desde las 19:00 el registro
+  // "de hoy" se guardaba con la fecha de MAÑANA y de paso bloqueaba el registro
+  // real del día siguiente (un solo registro por día).
+  const hoy = hoyLocal();
+  const ayer = (() => { const d = new Date(`${hoy}T12:00:00`); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })();
   // tipoCambio: 'atraso' (subir un día que se olvidó) | 'correccion' (reemplazar un registro existente con fecha equivocada).
   const [tipoCambio, setTipoCambio] = uSM('atraso');
   const [fecha, setFecha] = uSM(() => modo === 'cambio' ? ayer : hoy);
@@ -696,8 +699,11 @@ function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast, m
       const esCambio = modo === 'cambio';
       const esCorreccion = esCambio && tipoCambio === 'correccion';
       // Almacenero pide cambio → queda pendiente de aprobación admin.
-      // Admin (o usuario con permiso temporal de retro-directa) sube directo.
-      const necesitaAprobacion = esCambio && !isAdmin && !RETRO_DIRECTA_UIDS.includes(userId);
+      // Admin (o retro-directa) sube directo — PERO el permiso temporal solo
+      // cubre ATRASOS: una CORRECCIÓN necesita que el admin borre el registro
+      // equivocado (si entrara directa quedarían los dos registros vivos y
+      // nadie se enteraría), así que sigue yendo a aprobación.
+      const necesitaAprobacion = esCambio && !isAdmin && (esCorreccion || !RETRO_DIRECTA_UIDS.includes(userId));
       const tipoCambioLabel = esCorreccion ? 'CORRECCIÓN' : (esCambio ? 'ATRASADO' : 'NORMAL');
       // Registro de un día anterior subido DIRECTO por el permiso temporal
       // (retroDirecta) desde el modal normal — se marca para trazabilidad.

@@ -18,4 +18,10 @@ describe('buscar-tokens — coincidencia multi-palabra (AND)', () => {
     expect(coincideTokens('Cemento Sol 42.5', 'CEMENTO   sol')).toBe(true);
     expect(tokensDe('  Tubo   1/2  ')).toEqual(['tubo', '1/2']);
   });
+  it('es insensible a TILDES en ambas direcciones', () => {
+    expect(coincideTokens('ÁCIDO MURIÁTICO', 'acido muriatico')).toBe(true);
+    expect(coincideTokens('acido muriatico', 'Ácido')).toBe(true);
+    expect(coincideTokens('CAÑERÍA PVC', 'cañeria')).toBe(true);   // la ñ se conserva
+    expect(coincideTokens('CANERIA PVC', 'cañería')).toBe(false);  // ñ ≠ n (no sobre-plegar)
+  });
 });

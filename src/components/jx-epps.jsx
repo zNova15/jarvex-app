@@ -529,7 +529,7 @@ function EppsInventarioPage({ showToast }) {
   const ubicacionDefault = () => (ubicacionesActivas.length === 1 ? ubicacionesActivas[0].id : '');
   const openIngreso = () => {
     setForm({
-      fecha: new Date().toISOString().slice(0, 10),
+      fecha: window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10),
       hora: new Date().toTimeString().slice(0, 5),
     });
     setLoteItems([{ id: crypto.randomUUID(), epp_id:'', cantidad:'', precio:'', proveedor_id:null }]);
@@ -538,7 +538,7 @@ function EppsInventarioPage({ showToast }) {
   };
   const openSalida = () => {
     setForm({
-      fecha: new Date().toISOString().slice(0, 10),
+      fecha: window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10),
       hora: new Date().toTimeString().slice(0, 5),
     });
     setLoteItems([{ id: crypto.randomUUID(), epp_id:'', cantidad:'', talla:'' }]);
@@ -558,7 +558,7 @@ function EppsInventarioPage({ showToast }) {
       const uO = ubicacionesById.get(origenId)?.nombre || 'origen';
       const uD = ubicacionesById.get(destinoId)?.nombre || 'destino';
       const key = `traspaso-epp-${crypto.randomUUID ? crypto.randomUUID() : Date.now()}`;
-      const base = { obra_id: obraId, epp_id: item_id, fecha: new Date().toISOString().slice(0,10), cantidad, unidad: epp?.unidad || 'Und', personal_id: null, proveedor_id: null, motivo: 'traspaso' };
+      const base = { obra_id: obraId, epp_id: item_id, fecha: window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0,10), cantidad, unidad: epp?.unidad || 'Und', personal_id: null, proveedor_id: null, motivo: 'traspaso' };
       await movHook.create({ ...base, tipo_movimiento: 'salida', ubicacion_id: origenId, observaciones: `Traspaso → ${uD}`, idempotency_key: `${key}_out` });
       await movHook.create({ ...base, tipo_movimiento: 'entrada', ubicacion_id: destinoId, observaciones: `Traspaso ← ${uO}`, idempotency_key: `${key}_in` });
       try { await window.__logAudit?.({ action:'update', table:'stock_ubicaciones', recordId:item_id, reason:`Traspaso ${cantidad} ${epp?.nombre_epp||''}: ${uO} → ${uD}` }); } catch {}
@@ -624,7 +624,7 @@ function EppsInventarioPage({ showToast }) {
               mime_type: foto.blob.type || 'image/jpeg',
               blob: foto.blob,
               observaciones: `Foto referencial del EPP ${form.nombre_epp}`,
-              fecha: new Date().toISOString().slice(0, 10),
+              fecha: window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10),
               created_by: auth?.profile?.id || null,
             });
           } catch (e) {
@@ -668,7 +668,7 @@ function EppsInventarioPage({ showToast }) {
               mime_type: foto.blob.type || 'image/jpeg',
               blob: foto.blob,
               observaciones: `Foto referencial del EPP ${form.nombre_epp}`,
-              fecha: new Date().toISOString().slice(0, 10),
+              fecha: window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10),
               created_by: auth?.profile?.id || null,
             });
           } catch (e) {
@@ -1567,7 +1567,7 @@ function EntregasPorTrabajadorModal({ movs, epps, personal, subcontratistas, onV
     }
     if (m.subcontratista_id) {
       const s = subById.get(m.subcontratista_id);
-      return `Subcontrato: ${s?.razon_social || s?.nombre || '—'}`;
+      return `Subcontrato ${s?.razon_social || s?.nombre || ''}`.trim();
     }
     return null;
   };
@@ -1661,7 +1661,7 @@ function EntregasPorTrabajadorModal({ movs, epps, personal, subcontratistas, onV
               {eppsDelSel.map(e => <option key={e.id} value={e.id}>{e.nombre_epp}</option>)}
             </select>
             <button className="btn btn-ghost btn-sm" title="Abrir Mov. de EPPs filtrado por este trabajador"
-              onClick={() => onVerMovimientos?.(selNombre)}>
+              onClick={() => onVerMovimientos?.(String(selNombre || '').startsWith('(') ? '' : selNombre)}>
               <JxIcon name="list" size={12}/> Ver en Movimientos
             </button>
           </div>

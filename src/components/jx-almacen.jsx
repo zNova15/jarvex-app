@@ -727,6 +727,23 @@ function MaterialesPage({ showToast }) {
       `No toca movimientos — solo el snapshot stock_actual.`
     )) return;
     setRecalculandoStock(true);
+    // Con conexión: recalcular EN EL SERVER (RPC recalcular_stock_obra, mig 150).
+    // El recálculo local solo no servía: stock_actual está excluido del push
+    // (campo manejado por triggers del server), así que la corrección jamás
+    // llegaba al server y el siguiente pull la REVERTÍA en este mismo equipo.
+    if (navigator.onLine && window.__supabase) {
+      try {
+        const { data, error } = await window.__supabase.rpc('recalcular_stock_obra', { p_obra_id: obraId });
+        if (error) throw error;
+        try { window.dispatchEvent(new Event('online')); } catch {}
+        try { await window.__logAudit?.({ action:'alert', table:'materiales', reason:`Recálculo de stock EN SERVER obra ${obraId}: ${data ?? '?'} materiales ajustados` }); } catch {}
+        showToast(`✓ Stock recalculado en el SERVIDOR: ${data ?? 0} ajustado(s) — llega a todos los dispositivos con el próximo sync`, 'green');
+        setRecalculandoStock(false);
+        return;
+      } catch (e) {
+        console.warn('[recalcular] RPC del server falló — sigo con recálculo local:', e?.message);
+      }
+    }
     let ajustados = 0;
     let iguales = 0;
     let errores = 0;
@@ -777,7 +794,7 @@ function MaterialesPage({ showToast }) {
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'materiales' } })); } catch {}
       try { window.dispatchEvent(new Event('online')); } catch {}
       try { await window.__logAudit?.({ action:'alert', table:'materiales', reason:`Recálculo masivo de stock obra ${obraId}: ${ajustados} ajustados, ${iguales} ya correctos, ${errores} fallidos` }); } catch {}
-      showToast(`✓ Recálculo completo: ${ajustados} ajustados · ${iguales} sin cambios${errores ? ` · ${errores} errores` : ''}`, ajustados > 0 ? 'green' : 'amber');
+      showToast(`✓ Recálculo LOCAL: ${ajustados} ajustados · ${iguales} sin cambios${errores ? ` · ${errores} errores` : ''}. Sin conexión se aplicó solo en este dispositivo — repetilo con internet para corregir el servidor.`, ajustados > 0 ? 'green' : 'amber');
     } catch (e) {
       showToast('Error: ' + (e.message || e), 'red');
     } finally {
@@ -1655,14 +1672,21 @@ function MaterialesPage({ showToast }) {
     // ingreso ayer y hoy me dice sin stock"), usamos el historial como base para
     // no bloquear una salida LEGÍTIMA. Nunca habilita MÁS de lo que los
     // movimientos respaldan (si el snapshot está inflado, se respeta el snapshot).
-    const stockConfiablePorMat = new Map();
+    const stockConfiablePorMat = new Map(); // mid → { confiable, segunMovs, tieneHist }
     if (tipo === 'salida') {
       const idsSal = [...new Set(itemsValidos.map(it => it.material_id).filter(Boolean))];
       for (const mid of idsSal) {
         const mat = materiales.find(m => m.id === mid);
         let hist = [];
         try { hist = await window.__db.movimientos_materiales.filter(m => m.material_id === mid).toArray(); } catch {}
-        stockConfiablePorMat.set(mid, stockDisponibleConfiable({ stockActual: Number(mat?.stock_actual ?? 0), movimientos: hist }));
+        const snap = Number(mat?.stock_actual ?? 0);
+        const vivos = hist.filter(m => !m.deleted_at && !m.reverses_id && !m.reversed_by_id);
+        const segunMovs = Math.max(0, stockSegunMovimientos(hist));
+        stockConfiablePorMat.set(mid, {
+          confiable: stockDisponibleConfiable({ stockActual: snap, movimientos: hist }),
+          segunMovs,
+          tieneHist: vivos.length > 0,
+        });
       }
     }
 
@@ -1673,7 +1697,7 @@ function MaterialesPage({ showToast }) {
         if (!mat) continue;
         const cant = parseFloat(it.cantidad);
         const baseConfiable = stockConfiablePorMat.has(it.material_id)
-          ? stockConfiablePorMat.get(it.material_id)
+          ? stockConfiablePorMat.get(it.material_id).confiable
           : Number(mat.stock_actual ?? 0);
         const stockBase = proyeccion.has(it.material_id)
           ? proyeccion.get(it.material_id)
@@ -1734,12 +1758,20 @@ function MaterialesPage({ showToast }) {
           // mismo lote — esta fila valida contra su desglose puro.
           base = Number(dgItem.get(ubic) || 0);
         } else {
-          // Base por almacén: usa el stock CONFIABLE (derivado de movimientos si
-          // el snapshot quedó bajo) para que el faltante se acredite y no bloquee
-          // una salida legítima cuando el desglose/snapshot desincronizaron.
-          const stockRefUbic = stockConfiablePorMat.has(it.material_id)
-            ? Math.max(Number(mat?.stock_actual ?? 0), stockConfiablePorMat.get(it.material_id))
-            : Number(mat?.stock_actual ?? 0);
+          // Base por almacén: el drift solo se acredita cuando lo RESPALDAN los
+          // movimientos. Snapshot bajo → usar el historial (desbloquea la salida
+          // legítima). Snapshot INFLADO (mayor que los movimientos) → cap en
+          // min(snapshot, max(segunMovs, Σdesglose)): sin el cap, el "faltante"
+          // fantasma se acreditaba a la ubicación y se propagaba al server como
+          // stock que no existe. Sin historial (seed/import), snapshot manda.
+          const stockRefUbic = (() => {
+            const snap = Number(mat?.stock_actual ?? 0);
+            const info = stockConfiablePorMat.get(it.material_id);
+            if (!info || !info.tieneHist) return snap;
+            if (info.segunMovs >= snap) return info.segunMovs;
+            const sumaDesglose = dgItem ? Array.from(dgItem.values()).reduce((a, b) => a + (Number(b) || 0), 0) : 0;
+            return Math.min(snap, Math.max(info.segunMovs, sumaDesglose));
+          })();
           const r = baseSalidaUbicacion(dgItem, ubic, stockRefUbic);
           base = r.base;
           if (r.reconciliarDelta > 0) {
@@ -1828,6 +1860,12 @@ function MaterialesPage({ showToast }) {
     let exitosos = 0;
     let fallidos = 0;
     const errores = [];
+    // Stock optimista ACUMULADO por material: con 2+ filas del MISMO material en
+    // el lote, `materiales` (array de React, stale durante el loop) hacía que
+    // cada fila recalculara desde el stock original y solo quedara el delta de
+    // la ÚLTIMA (20−8−10 terminaba en 10 en vez de 2 → snapshot inflado que
+    // luego AUTORIZABA salidas sin respaldo).
+    const stockOptimista = new Map(); // material_id → stock proyectado
 
     try {
     for (let idx = 0; idx < itemsValidos.length; idx++) {
@@ -1946,9 +1984,14 @@ function MaterialesPage({ showToast }) {
         // en src/lib/partida-allocation.js. Almacén ya no se preocupa por
         // esto — Paquete C del plan.
 
-        // Stock optimist
+        // Stock optimist (acumulado: base = proyección de las filas anteriores
+        // del mismo material en este lote, no el array stale de React)
         const delta = tipo === 'ingreso' ? cantNum : -cantNum;
-        const nuevoStock = (material.stock_actual ?? 0) + delta;
+        const baseStock = stockOptimista.has(it.material_id)
+          ? stockOptimista.get(it.material_id)
+          : Number(material.stock_actual ?? 0);
+        const nuevoStock = baseStock + delta;
+        stockOptimista.set(it.material_id, nuevoStock);
         const minimo = Number(material.stock_minimo || 0);
         const nuevaAlerta = nuevoStock <= 0 ? 'agotado'
           : minimo > 0 && nuevoStock <= minimo * 0.5 ? 'critico'

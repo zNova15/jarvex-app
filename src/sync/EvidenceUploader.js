@@ -45,9 +45,17 @@ export async function uploadEvidencia(evidenciaId) {
   const evidencia = await db.evidencias.get(evidenciaId);
   if (!evidencia) return;
 
-  const blobEntry = await db.evidencias_blobs.get(evidenciaId);
+  // El blob puede vivir bajo OTRA clave (blob_ref): las evidencias "espejo" de
+  // Captura Mágica comparten un mismo blob. Antes se buscaba solo por el id
+  // propio → no encontraba el blob, marcaba FAILED, y reactivarFallidasConBlob
+  // (que SÍ mira blob_ref) la devolvía a pending → loop eterno sin subir nunca.
+  const blobKey = evidencia.blob_ref || evidenciaId;
+  const blobEntry = await db.evidencias_blobs.get(blobKey);
   if (!blobEntry?.blob) {
-    await db.evidencias.update(evidenciaId, { sync_status: UPLOAD_STATUS.FAILED });
+    await db.evidencias.update(evidenciaId, {
+      sync_status: UPLOAD_STATUS.FAILED,
+      _last_error: 'No hay archivo local para subir (blob ausente en este dispositivo)',
+    });
     return;
   }
 
@@ -114,8 +122,32 @@ export async function uploadEvidencia(evidenciaId) {
     sync_status: UPLOAD_STATUS.UPLOADED,
   });
 
-  // Liberar blob del IndexedDB (solo tras subir blob Y metadata OK).
-  await db.evidencias_blobs.delete(evidenciaId);
+  // Hermanas que comparten el MISMO blob (blob_ref) y aún no tienen URL: al
+  // subir la primaria, propagarles la url para que en otros devices no queden
+  // "Sin archivo" (su fila puede haber entrado al server con url_archivo null).
+  try {
+    const hermanas = await db.evidencias
+      .filter(e => e.id !== evidenciaId && (e.blob_ref === blobKey || e.id === evidencia.blob_ref) && !e.url_archivo)
+      .toArray();
+    for (const h of hermanas) {
+      await db.evidencias.update(h.id, { url_archivo: publicUrl });
+      await upsertMetadataEvidencia({ ...h, url_archivo: publicUrl }, publicUrl);
+    }
+  } catch {}
+
+  // Liberar blob del IndexedDB SOLO si ninguna otra evidencia sin subir lo
+  // referencia (blobs compartidos por blob_ref — borrar antes rompía la subida
+  // de las hermanas).
+  try {
+    const aunLoUsan = await db.evidencias
+      .filter(e => e.id !== evidenciaId
+        && (e.blob_ref === blobKey || e.id === blobKey)
+        && e.sync_status !== UPLOAD_STATUS.UPLOADED && e.sync_status !== 'synced')
+      .count();
+    if (aunLoUsan === 0) await db.evidencias_blobs.delete(blobKey);
+  } catch {
+    // ante la duda, conservar el blob (se limpia en un próximo pase)
+  }
 }
 
 // Columnas REALES de public.evidencias (allowlist). Usamos allowlist en vez de

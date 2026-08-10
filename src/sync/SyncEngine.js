@@ -283,6 +283,16 @@ export async function forceFullResync() {
   // transaccional-only (evita doble-clear y doble-conteo). Respeta pendientes.
   for (const tabla of transactionalOnlyTables()) {
     try {
+      // EVIDENCIAS: NUNCA se wipean. Sus estados de subida ('pending_upload',
+      // 'uploaded' con metadata que quizá nunca entró al server) NO están en la
+      // lista de "pendientes" de abajo → el clear() las borraría con el blob
+      // huérfano en evidencias_blobs y el comprobante se perdería PARA SIEMPRE
+      // (el server nunca lo recibió; no hay re-pull posible). Solo reseteamos su
+      // watermark: el full re-pull hace put/update sin destruir lo local.
+      if (tabla === 'evidencias') {
+        await setLastSync(`${tabla}_pull`, null);
+        continue;
+      }
       const pending = await db[tabla]
         .where('sync_status').anyOf([
           SYNC_STATUS.PENDING_CREATE,
@@ -292,9 +302,13 @@ export async function forceFullResync() {
         ]).count();
       if (pending > 0) { kept.push({ tabla, pending }); continue; }
       const before = await db[tabla].count();
+      // Conservar demos (modo prueba): nacen SYNCED, no existen en server —
+      // mismo rescate que hace el loop de MASTER arriba.
+      const demos = await db[tabla].filter(r => r.demo === true).toArray().catch(() => []);
       await db[tabla].clear();
+      if (demos.length) await db[tabla].bulkAdd(demos).catch(() => {});
       await setLastSync(`${tabla}_pull`, null);
-      wiped.push({ tabla, count: before });
+      wiped.push({ tabla, count: before - demos.length });
     } catch (e) {
       console.warn(`[forceFullResync] error wipeando tx ${tabla}:`, e?.message);
     }
@@ -1126,6 +1140,34 @@ async function pushTablePending(tabla) {
     return;
   }
 
+  // Rompe-ciclos INTERCOMPANY: un par venta↔espejo con related_movement_id MUTUO
+  // y ambos sin synced se bloquea eternamente en el gate de FK (cada uno espera
+  // que el otro suba primero; el server tiene FK real en related_movement_id).
+  // Cura: soltar el link del lado VENTA — sigue derivable desde el espejo (que
+  // guarda related_movement_id + notas.intercompany_mirror_of). La venta sube
+  // limpia y el espejo la sigue en el ciclo siguiente.
+  if (tabla === 'accounting_movements') {
+    try {
+      const noSynced = await db.accounting_movements
+        .where('sync_status').anyOf([SYNC_STATUS.PENDING_CREATE, SYNC_STATUS.FAILED])
+        .filter(r => !!r.related_movement_id)
+        .toArray();
+      const porId = new Map(noSynced.map(r => [r.id, r]));
+      const curados = new Set();
+      for (const r of noSynced) {
+        if (curados.has(r.id)) continue;
+        const otro = porId.get(r.related_movement_id);
+        if (otro && otro.related_movement_id === r.id) {
+          const esVentaR = (r.clase || (r.type === 'income' ? 'venta' : 'compra')) === 'venta';
+          const soltar = esVentaR ? r : otro;
+          await db.accounting_movements.update(soltar.id, { related_movement_id: null });
+          curados.add(r.id); curados.add(otro.id);
+          console.warn(`[SyncEngine] rompe-ciclos intercompany: ${String(soltar.id).slice(0, 8)} soltó related_movement_id (par mutuo sin sync)`);
+        }
+      }
+    } catch (e) { console.warn('[SyncEngine] rompe-ciclos intercompany:', e?.message); }
+  }
+
   // Self-heal #1: records FAILED por PGRST204 "Could not find the 'X'
   // column of 'tabla'" quedan bloqueados aunque la causa se haya resuelto
   // (ej: el admin corrió la migration que agrega la columna). Cubre dos
@@ -1393,11 +1435,25 @@ async function pushCreatesBatch(tabla, records) {
     const { error } = await supabase.from(tabla).insert(serverRows);
     if (!error) {
       const now = new Date().toISOString();
-      // bulkPut de los mismos records con sync_status actualizado — una
-      // sola operación Dexie en vez de N updates.
-      await db[tabla].bulkPut(chunk.map(r => ({
-        ...r, sync_status: SYNC_STATUS.SYNCED, last_synced_at: now,
-      })));
+      // NO reescribir la fila entera desde el snapshot leído ANTES del request:
+      // si el usuario la editó mientras el INSERT estaba en vuelo (ventana real
+      // de segundos con red de obra), el bulkPut viejo pisaba la edición y la
+      // marcaba synced → pérdida silenciosa en local Y server. Ahora: si la fila
+      // no cambió, solo se estampa synced; si cambió (updated_at distinto), se
+      // deja PENDING_UPDATE — la fila YA existe en el server, así que la edición
+      // sube como UPDATE en el próximo ciclo (pending_create re-insertaría y el
+      // dedup 23505 la marcaría synced sin subir los datos nuevos).
+      const snapById = new Map(chunk.map(r => [r.id, r]));
+      await db[tabla].where('id').anyOf(chunk.map(r => r.id)).modify(f => {
+        const snap = snapById.get(f.id);
+        if (snap && f.updated_at === snap.updated_at && f.sync_status === SYNC_STATUS.PENDING_CREATE) {
+          f.sync_status = SYNC_STATUS.SYNCED;
+          f.last_synced_at = now;
+        } else if (f.sync_status === SYNC_STATUS.PENDING_CREATE) {
+          f.sync_status = SYNC_STATUS.PENDING_UPDATE;
+          f._sync_retries = 0;
+        }
+      });
       trackEvent('record_pushed', { tabla, operacion: 'create_batch', count: chunk.length });
     } else {
       // El INSERT en lote falló entero — reintentar uno por uno para que
@@ -1872,26 +1928,23 @@ const _tablasCon404 = new Set();
 const PULL_PAGE_SIZE = 1000;
 async function fetchAllRows(buildQuery) {
   let all = [];
-  let from = 0;
-  const seen = new Set(); // dedup defensivo por si el server ya no está perfectamente ordenado
+  const seen = new Set(); // dedup defensivo
+  let cursor = null;      // último id de la página anterior (keyset)
   for (;;) {
-    // ORDEN ESTABLE OBLIGATORIO: sin .order(), PostgREST/Postgres devuelven las
-    // filas en orden INDEFINIDO y ese orden puede cambiar entre páginas .range().
-    // Con tablas > PULL_PAGE_SIZE (ej. movimientos_materiales ~1600,
-    // accounting_movements), la paginación SALTEABA filas (y duplicaba otras) en
-    // cada full pull → "ayer veía las facturas hasta el 31-jul, hoy solo hasta el
-    // 9-jul" y movimientos de almacén que desaparecían. Peor: el reconcile sweep
-    // de MASTER borraba localmente lo que este fetch incompleto no trajo. Ordenar
-    // por `id` (PK uuid, único e inmutable en TODAS las tablas) da un orden total
-    // estable → las páginas tapizan el conjunto entero sin huecos ni solapes.
-    const { data, error } = await buildQuery()
-      .order('id', { ascending: true })
-      .range(from, from + PULL_PAGE_SIZE - 1);
+    // PAGINACIÓN POR KEYSET sobre `id` (PK uuid, único e inmutable): página 1
+    // = .order('id').limit(N); siguientes = .gt('id', últimoId). A diferencia
+    // del offset (.range), es INMUNE a corrimientos por deletes/inserts
+    // concurrentes entre páginas: un soft-delete durante el full pull NO puede
+    // hacer que una fila viva "se corra" fuera de todas las páginas (bug real:
+    // el reconcile sweep luego borraba localmente esa fila salteada). Sin
+    // .order() el orden era indefinido y las páginas salteaban/duplicaban filas
+    // en tablas >1000 (la causa de "ayer veía facturas hasta el 31-jul...").
+    let q = buildQuery().order('id', { ascending: true }).limit(PULL_PAGE_SIZE);
+    if (cursor != null) q = q.gt('id', cursor);
+    const { data, error } = await q;
     if (error) return { data: all.length ? all : null, error };
     const batch = data || [];
     for (const row of batch) {
-      // Dedup por id: aunque el orden ya es estable, si dos páginas se solaparan
-      // por cualquier razón, NUNCA agregamos la misma fila dos veces.
       if (row && row.id != null) {
         if (seen.has(row.id)) continue;
         seen.add(row.id);
@@ -1899,7 +1952,8 @@ async function fetchAllRows(buildQuery) {
       all.push(row);
     }
     if (batch.length < PULL_PAGE_SIZE) break; // última página
-    from += PULL_PAGE_SIZE;
+    cursor = batch[batch.length - 1]?.id ?? cursor;
+    if (cursor == null) break; // sin id no se puede paginar — cortar defensivo
   }
   return { data: all, error: null };
 }
@@ -1942,7 +1996,10 @@ async function pullMasterTables() {
       //    "vivos" de "tombstones" para hacer bulkPut + bulkDelete.
       const buildQuery = () => {
         let q = supabase.from(tabla).select('*');
-        if (lastSync) q = q.gt('updated_at', lastSync);
+        // .gte (no .gt): con .gt, una fila cuyo updated_at empata EXACTO con el
+        // watermark quedaba fuera para siempre. El re-pull del borde es barato e
+        // idempotente (bulkPut). Igual criterio que el pull transaccional.
+        if (lastSync) q = q.gte('updated_at', lastSync);
         else q = q.is('deleted_at', null);
         return q;
       };
@@ -2178,7 +2235,10 @@ function transactionalOnlyTables() {
 // que hicieron full pulls con el bug (paginación sin .order → filas salteadas y el
 // watermark avanzado por delante de ellas) nunca las re-bajaban solos. Un reset más
 // fuerza un full re-pull YA CORRECTO (completo) de las tablas transaccionales.
-const _TXWM_REPAIR_KEY = 'jx_txwm_repair_v2';
+// v3 (ago-2026): tras sellar updated_at en INSERT server-side (mig 150) y el fix
+// de keyset, un último full re-pull recupera las filas que los bugs de watermark
+// (filas backdated) pudieron dejar ocultas en cada device.
+const _TXWM_REPAIR_KEY = 'jx_txwm_repair_v3';
 // Saneo one-shot: personas locales pendientes/failed con valores que violan
 // los CHECK del server (seguro_a_cargo fuera de {empresa,subcontrato}, estado
 // fuera de la whitelist). Pasaba con Excels de roster con texto libre
@@ -2282,7 +2342,7 @@ async function repairTransactionalWatermarksOnce() {
 // hasta el 9-jul") y tras el fix de paginación. Reset → full re-pull correcto. Amplío
 // a materiales/herramientas/stock: el mismo bug de reloj podía ocultar actualizaciones
 // de stock (una entrada que ajustó stock_actual y el device no la re-bajaba).
-const _MASTERFIN_WM_REPAIR_KEY = 'jx_masterfin_wm_repair_v2';
+const _MASTERFIN_WM_REPAIR_KEY = 'jx_masterfin_wm_repair_v3';
 const _MASTERFIN_TABLES = [
   'accounting_movements', 'companies', 'pagos', 'pagos_partes',
   'depositos_bancarizacion', 'intercompany_transactions', 'guias_remision',
