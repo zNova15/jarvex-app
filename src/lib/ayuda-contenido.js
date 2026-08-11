@@ -209,6 +209,8 @@ const AYUDA = {
     que: 'Los pagos al PERSONAL y a subcontratos: sueldos de planilla, recibos por honorarios y sus transferencias parciales, con historial por cada persona.',
     como: [
       'Definí la FORMA DE PAGO de cada trabajador (planilla / RxH / otro) y tocá 💸 Pagar para crear el compromiso del período.',
+      'PESTAÑA 📄 RECIBOS: todos los pagos en una sola lista estilo facturas, filtrable por EMPRESA pagadora, MES, forma de pago y búsqueda por palabras (trabajador, concepto, serie). Arriba ves el total acordado y pagado del filtro — ideal para ver, por ejemplo, "los recibos de Junio de CONSORCIO EL INCA".',
+      'EMPRESA PAGADORA: los recibos nuevos de Captura Mágica ya la traen sola (el receptor del recibo). Los pagos VIEJOS nacieron sin empresa — el botón "⚠ N sin empresa — clasificar" te los muestra y les asignás la suya con el selector de la fila (una sola vez).',
       'Dentro del pago todo va separadito: 1️⃣ el DOCUMENTO del pago (recibo por honorarios o boleta/planilla firmada) y 2️⃣ cada TRANSFERENCIA con su constancia adjunta.',
       'Solo aparece personal ACTIVO y que no sea de subcontratos: a la gente de un subcontrato le paga su subcontratista — el pago va al SUBCONTRATO en su pestaña (los subcontratistas sin contrato formal también aparecen ahí).',
       'El historial por persona (con Σ total pagado) queda como base de datos de todo lo pagado; el personal inactivado conserva su historial en la sección de abajo.',

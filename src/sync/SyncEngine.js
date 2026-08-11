@@ -888,7 +888,7 @@ const FK_DEPS = {
   emision_reglas:            [{ campo: 'company_id', tabla: 'companies' }, { campo: 'intermediaria1_company_id', tabla: 'companies' }, { campo: 'intermediaria2_company_id', tabla: 'companies' }],
   ordenes_intercompany:      [{ campo: 'obra_id', tabla: 'obras' }, { campo: 'company_id', tabla: 'companies' }, { campo: 'intermediaria1_company_id', tabla: 'companies' }, { campo: 'intermediaria2_company_id', tabla: 'companies' }, { campo: 'ejecutora_company_id', tabla: 'companies' }],
   reportes_dia:              [{ campo: 'frente_id', tabla: 'frentes_obra' }],
-  pagos:                     [{ campo: 'personal_id', tabla: 'personal' }, { campo: 'subcontrato_id', tabla: 'subcontratos' }],
+  pagos:                     [{ campo: 'personal_id', tabla: 'personal' }, { campo: 'subcontrato_id', tabla: 'subcontratos' }, { campo: 'company_id', tabla: 'companies' }],
   pagos_partes:              [{ campo: 'pago_id', tabla: 'pagos' }, { campo: 'accounting_movement_id', tabla: 'accounting_movements' }, { campo: 'deposito_id', tabla: 'depositos_bancarizacion' }],
   depositos_bancarizacion:   [{ campo: 'company_id', tabla: 'companies' }],
   guias_remision:            [{ campo: 'company_id', tabla: 'companies' }, { campo: 'proveedor_id', tabla: 'proveedores' }, { campo: 'accounting_movement_id', tabla: 'accounting_movements' }],

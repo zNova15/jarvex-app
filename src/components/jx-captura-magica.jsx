@@ -1054,6 +1054,12 @@ function CapturaMagicaPage({ showToast }) {
 
       const periodo = String(r.fecha_emision || now.slice(0, 10)).slice(0, 7); // YYYY-MM
       const concepto = String(r.rxh_concepto || r.items?.[0]?.descripcion || 'Recibo por honorarios').trim();
+      // Empresa PAGADORA (el RECEPTOR del recibo — a quién le facturó el
+      // trabajador). Sin esto, los RxH de un mismo trabajador emitidos a
+      // empresas distintas del grupo quedaban mezclados (pedido de la
+      // asistente: separarlos por empresa y mes como las facturas).
+      const rxhCompanyId = r.company_id || null;
+      const rxhEmpresaNombre = rxhCompanyId ? ((companies || []).find(c => c.id === rxhCompanyId)?.name || null) : null;
       const pagoId = window.__newId();
       await window.__db.pagos.add({
         id: pagoId, obra_id: obraId,
@@ -1062,7 +1068,9 @@ function CapturaMagicaPage({ showToast }) {
         concepto, modo_pago: 'rxh',
         monto_acordado: Number(r.total) || 0, moneda: r.moneda || 'PEN',
         periodo, estado: 'pendiente',
+        company_id: rxhCompanyId,
         notas: JSON.stringify({ captura_magica: true, rxh_serie: r.serie_correlativo || null, rxh_ruc_emisor: r.proveedor_ruc || null, fecha_emision: r.fecha_emision || null,
+          rxh_empresa: rxhEmpresaNombre,
           rxh_bruto: r.rxh_bruto != null ? Number(r.rxh_bruto) : null, rxh_retencion: r.rxh_retencion != null ? Number(r.rxh_retencion) : null, rxh_neto: Number(r.total) || 0 }),
         created_by: userId, updated_by: userId, created_at: now, updated_at: now, version: 1,
         sync_status: 'pending_create',

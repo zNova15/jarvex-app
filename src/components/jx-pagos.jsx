@@ -20,12 +20,18 @@ import { getCurrentMode } from "../lib/app-mode-core.js";
 import { MODOS_PAGO, MODO_PAGO_LABEL, METODOS_PARTE, METODO_PARTE_LABEL, ESTADOS_PAGO, calcularEstadoPago, validarParte, evidenciasRequeridas, checklistPago } from "../lib/pagos.js";
 import { etiquetaPersona } from "../lib/destino-mov.js";
 import { categoriaDe } from "../lib/personal-categoria.js";
+import { coincideTokens } from "../lib/buscar-tokens.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 const Modal = (p) => (window.Modal ? <window.Modal {...p} /> : null);
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// Etiqueta humana de un período 'YYYY-MM' → 'Junio 2026' (pestaña Recibos).
+const MESES_ES_PG = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+const mesLabelPg = (ym) => { const [y, m] = String(ym || '').split('-'); return `${MESES_ES_PG[Number(m) - 1] || m || '?'} ${y || ''}`.trim(); };
+const ESTADO_BADGE_REC = { pagado: 'b-green', parcial: 'b-amber', pendiente: 'b-gray' };
 
 // Chips de pagos de una fila con DESPLEGAR/colapsar: antes mostraba 3 y "+N más"
 // como texto muerto; ahora el "+N más" es un botón que despliega todos (útil con
@@ -89,6 +95,12 @@ function PagosPage({ showToast }) {
   const [busy, setBusy] = uS(false);
   const [nuevoPago, setNuevoPago] = uS(null);     // { beneficiario_tipo, personal?, subcontrato? }
   const [detalleId, setDetalleId] = uS(null);     // pago abierto
+  // ── Pestaña "Recibos": filtros (empresa pagadora / mes / modo / búsqueda) ──
+  const { data: companiesRec } = window.__hooks.useCompanies?.() || { data: [] };
+  const [filtroEmpresaRec, setFiltroEmpresaRec] = uS('todas');  // 'todas' | 'sin' | companyId
+  const [filtroMesRec, setFiltroMesRec] = uS('todos');          // 'todos' | 'YYYY-MM'
+  const [filtroModoRec, setFiltroModoRec] = uS('todos');        // 'todos' | rxh | planilla | otro | subcontrato
+  const [busquedaRec, setBusquedaRec] = uS('');
 
   const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
   const filaDelModo = (r) => (esPrueba ? r.demo === true : r.demo !== true);
@@ -318,6 +330,59 @@ function PagosPage({ showToast }) {
     return per ? `${per.nombres || ''} ${per.apellidos || ''}`.trim() : (p.beneficiario_nombre || '—');
   };
 
+  // ── Pestaña "Recibos": datos derivados ──
+  const companiesActivasRec = uM(() => (companiesRec || []).filter(c => c.status === 'activa' && !c.deleted_at)
+    .sort((a, b) => (a.name || '').localeCompare(b.name || '')), [companiesRec]);
+  const empresaNombreRec = (p) => {
+    if (p.company_id) return companiesActivasRec.find(c => c.id === p.company_id)?.name
+      || (companiesRec || []).find(c => c.id === p.company_id)?.name || '—';
+    try { return JSON.parse(p.notas || '{}').rxh_empresa || null; } catch { return null; }
+  };
+  const notasDe = (p) => { try { return JSON.parse(p.notas || '{}'); } catch { return {}; } };
+  const opcionesMesRec = uM(() => {
+    const set = new Set();
+    for (const p of pagos) { const k = String(p.periodo || '').slice(0, 7); if (/^\d{4}-\d{2}$/.test(k)) set.add(k); }
+    return Array.from(set).sort((a, b) => b.localeCompare(a));
+  }, [pagos]);
+  const recibosFiltrados = uM(() => {
+    let f = pagos.filter(p => p.estado !== 'anulado');
+    if (filtroModoRec !== 'todos') f = f.filter(p => (p.modo_pago || 'otro') === filtroModoRec);
+    if (filtroMesRec !== 'todos') f = f.filter(p => String(p.periodo || '').slice(0, 7) === filtroMesRec);
+    if (filtroEmpresaRec === 'sin') f = f.filter(p => !p.company_id);
+    else if (filtroEmpresaRec !== 'todas') f = f.filter(p => p.company_id === filtroEmpresaRec);
+    if (busquedaRec.trim()) {
+      f = f.filter(p => {
+        const n = notasDe(p);
+        return coincideTokens(`${nombrePago(p)} ${p.concepto || ''} ${n.rxh_serie || ''} ${empresaNombreRec(p) || ''}`, busquedaRec);
+      });
+    }
+    return f.sort((a, b) => String(b.periodo || '').localeCompare(String(a.periodo || ''))
+      || String(b.created_at || '').localeCompare(String(a.created_at || '')));
+  }, [pagos, filtroModoRec, filtroMesRec, filtroEmpresaRec, busquedaRec, companiesActivasRec, personal, subsVivos, subNombre]);
+
+  // Asignar/corregir la EMPRESA PAGADORA de un pago (también clasifica los
+  // pagos históricos, que nacieron sin empresa).
+  const asignarEmpresaPago = async (p, companyId) => {
+    if (!canGestionar || busy) return;
+    try {
+      const { SYNC_STATUS } = await import('../db/jarvex.db');
+      const fresh = await window.__db.pagos.get(p.id);
+      const emp = companiesActivasRec.find(c => c.id === companyId) || null;
+      const notas = notasDe(fresh || p);
+      notas.rxh_empresa = emp?.name || null;
+      await window.__db.pagos.update(p.id, {
+        company_id: companyId || null,
+        notas: JSON.stringify(notas),
+        updated_at: new Date().toISOString(), updated_by: userId,
+        version: (fresh?.version ?? 0) + 1,
+        sync_status: (esPrueba || fresh?.demo === true) ? SYNC_STATUS.SYNCED
+          : (fresh?.sync_status === SYNC_STATUS.PENDING_CREATE ? SYNC_STATUS.PENDING_CREATE : SYNC_STATUS.PENDING_UPDATE),
+      });
+      window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'pagos' } }));
+      toast(emp ? `Empresa asignada: ${emp.name}` : 'Empresa quitada del pago', 'green');
+    } catch (e) { toast('Error: ' + (e.message || e), 'red'); }
+  };
+
   if (!obraId) return <div className="page-wrap"><div className="empty-state"><JxIcon name="dollar" size={32} color="var(--tm)" /><p>Seleccioná una obra activa.</p></div></div>;
   if (!canGestionar && !['gerente', 'tesorero', 'ayudante_contador'].includes(rol)) {
     return <div className="page-wrap"><div className="empty-state"><p>Esta sección es del área contable (contadora jefe y administradores).</p></div></div>;
@@ -335,6 +400,8 @@ function PagosPage({ showToast }) {
         <div style={{ display: 'flex', gap: 4 }}>
           <button className={`btn btn-sm ${tab === 'personal' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('personal')}>Personal</button>
           <button className={`btn btn-sm ${tab === 'subcontratos' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('subcontratos')}>Subcontratos</button>
+          <button className={`btn btn-sm ${tab === 'recibos' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('recibos')}
+            title="Todos los recibos/pagos en una lista, filtrables por empresa, mes y forma de pago">📄 Recibos</button>
         </div>
       </div>
 
@@ -494,6 +561,127 @@ function PagosPage({ showToast }) {
           </div>
         </div>
       )}
+
+      {/* ── Pestaña RECIBOS: todos los pagos como lista plana estilo facturas,
+          separables por EMPRESA pagadora y por MES (pedido de la asistente:
+          "Luis tiene recibos en Jade y en el Consorcio el Inca y todos están
+          en un solo lugar"). La empresa se asigna EN LÍNEA — sirve también
+          para clasificar los pagos históricos que nacieron sin empresa. ── */}
+      {tab === 'recibos' && (() => {
+        const sinEmpresa = pagos.filter(p => p.estado !== 'anulado' && !p.company_id).length;
+        // Totales del filtro (por moneda): acordado y pagado.
+        const sums = {};
+        for (const p of recibosFiltrados) {
+          const cur = p.moneda || 'PEN';
+          if (!sums[cur]) sums[cur] = { acordado: 0, pagado: 0 };
+          sums[cur].acordado += Number(p.monto_acordado) || 0;
+          sums[cur].pagado += calcularEstadoPago(p.monto_acordado, partesDe.get(p.id)).pagado;
+        }
+        const fmtCur2 = (cur, n) => `${cur === 'USD' ? '$' : 'S/'} ${Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        return (
+          <>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+              <div className="search-bar" style={{ flex: '1 1 200px' }}>
+                <JxIcon name="search" size={14} color="var(--tm)" />
+                <input placeholder="Buscar trabajador, concepto, serie o empresa…" value={busquedaRec} onChange={e => setBusquedaRec(e.target.value)} />
+              </div>
+              <select className="fi" value={filtroEmpresaRec} onChange={e => setFiltroEmpresaRec(e.target.value)} style={{ minWidth: 190 }}
+                title="Empresa del grupo que paga (el RECEPTOR del recibo)">
+                <option value="todas">🏢 Todas las empresas</option>
+                {companiesActivasRec.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                <option value="sin">— Sin empresa asignada{sinEmpresa ? ` (${sinEmpresa})` : ''} —</option>
+              </select>
+              <select className="fi" value={filtroMesRec} onChange={e => setFiltroMesRec(e.target.value)} style={{ minWidth: 150 }}>
+                <option value="todos">📅 Todos los meses</option>
+                {opcionesMesRec.map(ym => <option key={ym} value={ym}>{mesLabelPg(ym)}</option>)}
+              </select>
+              <select className="fi" value={filtroModoRec} onChange={e => setFiltroModoRec(e.target.value)} style={{ minWidth: 140 }}>
+                <option value="todos">Todas las formas</option>
+                <option value="rxh">🧾 Recibo por honorarios</option>
+                <option value="planilla">📋 Planilla</option>
+                <option value="subcontrato">🏗 Subcontrato</option>
+                <option value="otro">Otro</option>
+              </select>
+            </div>
+
+            {/* Resumen del filtro activo */}
+            <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center', padding: '8px 14px', marginBottom: 12, borderRadius: 8, background: 'rgba(59,130,246,0.07)', border: '1px solid rgba(59,130,246,0.3)', fontSize: 12 }}>
+              <span style={{ color: 'var(--ts)' }}><strong>{recibosFiltrados.length}</strong> pago{recibosFiltrados.length === 1 ? '' : 's'}</span>
+              {Object.entries(sums).map(([cur, s]) => (
+                <span key={cur} style={{ color: 'var(--ts)' }}>
+                  Acordado: <strong>{fmtCur2(cur, s.acordado)}</strong> · Pagado: <strong style={{ color: 'var(--green)' }}>{fmtCur2(cur, s.pagado)}</strong>
+                </span>
+              ))}
+              {sinEmpresa > 0 && filtroEmpresaRec !== 'sin' && (
+                <button className="btn btn-ghost btn-xs" style={{ marginLeft: 'auto', color: 'var(--amber)' }}
+                  title="Pagos históricos sin empresa asignada — asignales la suya con el selector de cada fila"
+                  onClick={() => setFiltroEmpresaRec('sin')}>
+                  ⚠ {sinEmpresa} sin empresa — clasificar
+                </button>
+              )}
+            </div>
+
+            <div className="card" style={{ overflow: 'hidden' }}>
+              <div style={{ overflowX: 'auto' }}>
+                <table className="tbl">
+                  <thead><tr>
+                    <th style={{ width: 110 }}>Período</th>
+                    <th>Beneficiario</th>
+                    <th style={{ width: 110 }}>Serie</th>
+                    <th>Concepto</th>
+                    <th style={{ minWidth: 180 }}>Empresa pagadora</th>
+                    <th style={{ textAlign: 'right', width: 110 }}>Monto</th>
+                    <th style={{ width: 90 }}>Estado</th>
+                    <th style={{ width: 60 }}></th>
+                  </tr></thead>
+                  <tbody>
+                    {recibosFiltrados.length === 0 && <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--tm)', padding: 14 }}>Ningún pago coincide con el filtro.</td></tr>}
+                    {recibosFiltrados.map(p => {
+                      const n = notasDe(p);
+                      const st = calcularEstadoPago(p.monto_acordado, partesDe.get(p.id));
+                      const empNombre = empresaNombreRec(p);
+                      return (
+                        <tr key={p.id}>
+                          <td className="col-m" style={{ fontSize: 11.5 }}>
+                            {p.periodo ? mesLabelPg(p.periodo) : '—'}
+                            {n.fecha_emision && <div style={{ fontSize: 10, color: 'var(--tm)' }}>{n.fecha_emision}</div>}
+                          </td>
+                          <td style={{ fontSize: 12, fontWeight: 600, color: 'var(--tp)' }}>
+                            {nombrePago(p)}
+                            <div><span className="badge b-gray" style={{ fontSize: 9 }}>{MODO_PAGO_LABEL[p.modo_pago] || p.modo_pago || '—'}</span></div>
+                          </td>
+                          <td style={{ fontSize: 11, color: 'var(--ts)' }}>{n.rxh_serie || '—'}</td>
+                          <td style={{ fontSize: 11, color: 'var(--ts)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.concepto || '—'}</td>
+                          <td>
+                            {canGestionar ? (
+                              <select className="fi" style={{ fontSize: 11, padding: '4px 6px', borderColor: p.company_id ? undefined : 'var(--amber)' }}
+                                title={p.company_id ? 'Empresa del grupo que paga este recibo' : '⚠ Sin empresa — asignala para poder filtrar por empresa'}
+                                value={p.company_id || ''} disabled={busy}
+                                onChange={e => asignarEmpresaPago(p, e.target.value || null)}>
+                                <option value="">— Sin empresa —</option>
+                                {companiesActivasRec.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                              </select>
+                            ) : (
+                              <span style={{ fontSize: 11.5, color: empNombre ? 'var(--ts)' : 'var(--tm)' }}>{empNombre || '— sin empresa —'}</span>
+                            )}
+                          </td>
+                          <td style={{ textAlign: 'right', fontSize: 12, fontWeight: 600 }}>{(p.moneda === 'USD' ? '$ ' : 'S/ ') + Number(p.monto_acordado || 0).toLocaleString('es-PE', { minimumFractionDigits: 2 })}</td>
+                          <td><span className={`badge ${ESTADO_BADGE_REC[st.estado] || 'b-gray'}`} style={{ fontSize: 10 }}>{st.estado}</span></td>
+                          <td style={{ textAlign: 'right' }}>
+                            <button className="btn btn-ghost btn-xs" title="Ver detalle del pago (partes, recibo, constancias)" onClick={() => setDetalleId(p.id)}>
+                              <JxIcon name="eye" size={12} />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
+        );
+      })()}
 
       {nuevoPago && (
         <NuevoPagoModal
