@@ -1194,6 +1194,58 @@ function CapturaMagicaPage({ showToast }) {
           // ocurre junto con la creación del movimiento real, más abajo.
           espejoAReemplazar = dupMov;
         } else {
+          // MEJORA (contraparte real): si el "duplicado" es una VENTA interna cuya
+          // compra espejo es AUTOMÁTICA (sin comprobante adjunto), este archivo ES
+          // el documento que le falta al espejo — ofrecemos adjuntarlo ahí en vez
+          // de descartarlo. (Subir "la contraparte" re-lee el MISMO PDF del emisor,
+          // así que siempre cae en esta rama de venta duplicada, nunca en la de
+          // compra — por eso el reemplazo de espejo no alcanzaba este caso.)
+          let espejoDeVenta = null;
+          if (esVenta && it?.file) {
+            try {
+              const candidatos = await window.__db.accounting_movements
+                .filter(m => !m.deleted_at
+                  && (m.related_movement_id === dupMov.id
+                    || (dupMov.related_movement_id && m.id === dupMov.related_movement_id))
+                  && (m.clase || (m.type === 'income' ? 'venta' : 'compra')) === 'compra')
+                .toArray();
+              espejoDeVenta = candidatos.find(m => {
+                try { return !!JSON.parse(m.notas || '{}')?.intercompany_auto; } catch { return false; }
+              }) || null;
+            } catch {}
+          }
+          if (espejoDeVenta) {
+            const okAdj = window.confirm(`🔁 Esta factura YA está registrada como venta interna (${r.serie_correlativo}) y su COMPRA espejo se generó automáticamente, sin comprobante adjunto.\n\n¿Adjuntar este archivo como comprobante real de esa compra espejo?\n\n• Aceptar = el espejo queda respaldado con este documento (no se duplica nada)\n• Cancelar = descartar este archivo`);
+            if (okAdj) {
+              try {
+                await window.__saveEvidenciaLocal({
+                  id: window.__newId(),
+                  obra_id: espejoDeVenta.obra_id || r.obra_id || null,
+                  tipo_evidencia: 'comprobante_captura',
+                  modulo_relacionado: 'accounting_movements',
+                  registro_relacionado_id: espejoDeVenta.id,
+                  nombre_archivo: it.file.name, mime_type: it.file.type || '', blob: it.file,
+                  fecha: r.fecha_emision || undefined, created_by: userId,
+                  observaciones: `Comprobante real de la contraparte intercompany ${r.serie_correlativo}`,
+                });
+                let notasEsp = {}; try { notasEsp = JSON.parse(espejoDeVenta.notas || '{}'); } catch {}
+                notasEsp.intercompany_auto = false;          // deja de mostrarse 🔁 AUTO
+                notasEsp.intercompany_respaldada = true;     // quedó con documento real
+                const tsAdj = new Date().toISOString();
+                await window.__db.accounting_movements.update(espejoDeVenta.id, {
+                  notas: JSON.stringify(notasEsp), updated_at: tsAdj, updated_by: userId,
+                  version: (Number(espejoDeVenta.version) || 1) + 1,
+                  sync_status: espejoDeVenta.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+                });
+                try { await window.__logAudit?.({ action:'update', table:'accounting_movements', recordId: espejoDeVenta.id,
+                  reason:`Contraparte intercompany respaldada con el comprobante real ${r.serie_correlativo} (Captura Mágica)` }); } catch {}
+                try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'accounting_movements' } })); } catch {}
+                setItems(prev => prev.map(x => x.id === id ? { ...x, status: 'confirmado', accId: espejoDeVenta.id } : x));
+                showToast(`🔁 Comprobante adjuntado a la compra espejo de ${r.serie_correlativo} — dejó de ser automática.`, 'green');
+                return;
+              } catch (e) { console.warn('[captura · adjuntar a espejo]', e?.message); }
+            }
+          }
           setItems(prev => prev.map(x => x.id === id ? { ...x, status: 'duplicado', duplicate_of: dupMov.id } : x));
           showToast(`Ya existe el comprobante ${r.serie_correlativo} ${esVenta ? 'emitido por esa empresa' : 'de ese proveedor'} (${dupMov.date || 's/fecha'} · S/ ${Number(dupMov.amount || 0).toLocaleString('es-PE')}). No se creó un duplicado — descartá este archivo.`, 'red');
           return;

@@ -769,6 +769,10 @@ function MaterialesPage({ showToast }) {
       const userId = auth?.profile?.id || 'admin';
       for (const mat of materiales) {
         try {
+          // Sin movimientos NO se toca: un material importado con stock inicial
+          // (baseline sin historial) quedaría en 0. Mismo criterio que el RPC
+          // del server (solo ajusta materiales presentes en los movimientos).
+          if (!sums.has(mat.id)) { iguales++; continue; }
           const calculado = Math.max(0, sums.get(mat.id) || 0);
           const actual = Number(mat.stock_actual ?? 0);
           if (Math.abs(calculado - actual) < 0.001) { iguales++; continue; }

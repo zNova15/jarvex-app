@@ -488,7 +488,11 @@ function deltaStockMaterial(tipo, cantidad) {
     case 'devolucion': return  c; // entra al almacén
     case 'salida':     return -c;
     case 'merma':      return -c;
-    case 'ajuste':     return  0; // ajuste manual: stock ya fue editado fuera
+    // AJUSTE: los triggers del server lo SUMAN (+cantidad; el CHECK cantidad>0
+    // garantiza que siempre es positivo). Tratarlo como 0 acá desincronizaba el
+    // cliente del server al editar/eliminar/reversar un ajuste (verificado con
+    // simulación en el server, ago-2026).
+    case 'ajuste':     return  c;
     default:           return 0;
   }
 }
@@ -500,7 +504,11 @@ function invertirTipoMaterial(tipo) {
     case 'salida':     return 'entrada';
     case 'devolucion': return 'salida';
     case 'merma':      return 'entrada';
-    case 'ajuste':     return 'ajuste';
+    // El reverso de un AJUSTE debe RESTAR lo que el ajuste sumó. Otro 'ajuste'
+    // (con Math.abs) lo volvía a SUMAR en el server → stock DUPLICADO (simulado:
+    // ajuste +5 reversado dejaba 20 en vez de 10). Un 'ajuste' negativo violaría
+    // el CHECK cantidad>0 del server → el reverso correcto es una SALIDA.
+    case 'ajuste':     return 'salida';
     default:           return 'ajuste';
   }
 }
@@ -1456,7 +1464,9 @@ function MovMaterialesPage({ showToast }) {
     // Devolver el stock al desglose por almacén: el reverso de una salida
     // re-ingresa al almacén original (y viceversa).
     if (original.ubicacion_id) {
-      const deltaRev = (tipoInv === 'entrada' || tipoInv === 'devolucion' ? 1 : -1) * Math.abs(Number(original.cantidad || 0));
+      // Delta del desglose = opuesto EXACTO al efecto del original (uniforme
+      // para todos los tipos, incluido ajuste — antes el ajuste quedaba mal).
+      const deltaRev = -deltaStockMaterial(original.tipo_movimiento, original.cantidad);
       try { await aplicarDelta({ obraId, itemTipo: 'material', itemId: original.material_id, ubicacionId: original.ubicacion_id, delta: deltaRev, userId: auth?.profile?.id || null }); } catch (err) { console.warn('[reverso mat desglose]', err?.message); }
     }
 
