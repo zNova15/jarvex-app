@@ -344,17 +344,39 @@ function CapturaMagicaPage({ showToast }) {
         });
         // Construir el array de OCs activas con sus items
         setOcsActivasDB(ocsAll.map(oc => ({ oc, items: itemsPorOc[oc.id] || [] })));
+        // FILAS CORRUPTAS: IndexedDB puede devolver null para registros cuyo
+        // valor no se pudo deserializar (bug conocido de Chromium con File/Blob
+        // grandes tras reiniciar el navegador). Antes, UNA fila así tumbaba la
+        // carga de TODA la bandeja ("Cannot read properties of null"). Se
+        // purgan por clave (las claves sí sobreviven) para que no vuelvan.
+        if ((pending || []).some(x => !x)) {
+          try {
+            const keys = await window.__db.captura_magica_pending.toCollection().primaryKeys();
+            for (const k of keys) {
+              const row = await window.__db.captura_magica_pending.get(k).catch(() => null);
+              if (!row) await window.__db.captura_magica_pending.delete(k).catch(() => {});
+            }
+            console.warn('[captura-magica] fila(s) corrupta(s) purgadas de la bandeja');
+            const nCorruptas = (pending || []).filter(x => !x).length;
+            try { window.__showToast?.(`Se limpiaron ${nCorruptas} archivo(s) dañado(s) de la bandeja (no se pudieron recuperar). Si falta algún comprobante, volvé a subirlo.`, 'amber'); } catch {}
+          } catch {}
+        }
         // Reconstruir File desde blob persistido. Items que quedaron en
         // 'procesando' al cerrar la pestaña vuelven a 'pendiente' para
-        // reintentar; el efecto de abajo los reprocesa.
+        // reintentar; el efecto de abajo los reprocesa. Cada fila se restaura
+        // de forma DEFENSIVA: una fila mala se salta, el resto de la bandeja
+        // carga igual.
         const restoredItems = (pending || []).map(it => {
-          let file = null;
-          if (it.file_blob instanceof Blob) {
-            file = new File([it.file_blob], it.file_name || 'comprobante', { type: it.mimeType || 'application/pdf' });
-          }
-          const status = it.status === 'procesando' ? 'pendiente' : it.status;
-          return { ...it, file, status };
-        }).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+          try {
+            if (!it || it.id == null) return null;
+            let file = null;
+            if (it.file_blob instanceof Blob) {
+              file = new File([it.file_blob], it.file_name || 'comprobante', { type: it.mimeType || 'application/pdf' });
+            }
+            const status = it.status === 'procesando' ? 'pendiente' : it.status;
+            return { ...it, file, status };
+          } catch { return null; }
+        }).filter(Boolean).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
         // MERGE, no reemplazo ciego: esta pestaña es la ÚNICA escritora de
         // captura_magica_pending y la persistencia estado→Dexie es asíncrona,
         // así que el estado en memoria siempre está al menos tan fresco como
