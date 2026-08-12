@@ -9,6 +9,7 @@ import { cmpComprobante } from "../lib/comparar-comprobante.js";
 import { resumenRecepcion, rankearIngresosParaItem, rankearFacturasParaIngreso, itemsDeFactura, estadoRecepcionDeItems, parseNotas, referenciaSinCostos, reporteRecepcion } from "../lib/cruce-recepcion.js";
 import { ConsultasPanel, useConsultasResumen } from "./jx-consultas.jsx";
 import { crearConsulta } from "../lib/consultas-puente.js";
+import { candidatosSinIngreso, poolParaVenta, vendidosVenta, estadoConsultaItem } from "../lib/insumos-venta.js";
 import { validarVinculoDeposito, saldoDeposito, parMovimiento, parDeposito, mismoPar, movimientoBancarizado, TOL } from "../lib/depositos-bancarizacion.js";
 import { useChart } from "../lib/chart-loader.js";
 import { FusionEntidadModal } from "./jx-fusion-entidad.jsx";
@@ -820,6 +821,24 @@ function MovimientosContablesPage({ showToast }) {
   // Fase 2 — hilo de consultas con almacén.
   const [showConsultas, setShowConsultas] = uSC(false);
   const consResumen = useConsultasResumen('contabilidad', null);
+  // 🏷 Insumos para VENTA (jefa de contabilidad): ítems facturados que nunca
+  // ingresaron a obra → comprobar con almacén → separar → vincular la venta.
+  const [showVenta, setShowVenta] = uSC(false);
+  const [consultasVenta, setConsultasVenta] = uSC([]);   // puente_consultas (para leer respuestas)
+  uEC(() => {
+    if (!showVenta) return;
+    let cancel = false;
+    const load = async () => {
+      try {
+        const rows = await window.__db.puente_consultas.filter(c => !c.deleted_at && c.accounting_movement_id).toArray();
+        if (!cancel) setConsultasVenta(rows);
+      } catch {}
+    };
+    load();
+    const on = (e) => { const t = e?.detail?.tabla; if (!t || t === 'puente_consultas') load(); };
+    window.addEventListener('jx_data_changed', on);
+    return () => { cancel = true; window.removeEventListener('jx_data_changed', on); };
+  }, [showVenta]);
   // Fase 3 — reporte de recepción por insumo (lee items_factura[].recibido/destino).
   const [showReporte, setShowReporte] = uSC(false);
   const [reporteTab, setReporteTab] = uSC('insumo');
@@ -934,6 +953,74 @@ function MovimientosContablesPage({ showToast }) {
       });
       showToast?.('Consulta enviada a almacén 💬', 'green');
     } catch (e) { showToast?.('Error al enviar la consulta: ' + (e?.message || e), 'red'); }
+  };
+
+  // ── Insumos para VENTA: escritor genérico del estado de un ítem ──
+  const escribirVentaItem = async (facturaId, idx, patch, razon) => {
+    const fresh = await window.__db.accounting_movements.get(facturaId);
+    if (!fresh) { showToast('Factura no encontrada en este dispositivo — sincronizá', 'red'); return false; }
+    const notas = parseNotas(fresh.notas);
+    const items = Array.isArray(notas.items_factura) ? notas.items_factura.slice() : [];
+    if (!items[idx]) { showToast('El ítem de la factura cambió — recargá', 'red'); return false; }
+    items[idx] = { ...items[idx], ...patch };
+    notas.items_factura = items;
+    await window.__db.accounting_movements.update(facturaId, {
+      notas: JSON.stringify(notas),
+      updated_at: new Date().toISOString(), updated_by: userId,
+      version: (fresh.version ?? 0) + 1,
+      sync_status: fresh.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+    });
+    try { await window.__logAudit?.({ action:'update', table:'accounting_movements', recordId: facturaId, reason: razon }); } catch {}
+    try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'accounting_movements' } })); } catch {}
+    return true;
+  };
+  const canSepararVenta = isAdmin || myRol === 'contador'; // jefa de contabilidad + admin
+  const preguntarAlmacenVenta = async (row) => {
+    try {
+      const fac = (movs || []).find(m => m.id === row.facturaId);
+      if (!fac) return;
+      await crearConsulta({
+        obra_id: fac.obra_id || null, origen: 'contabilidad',
+        accounting_movement_id: fac.id, item_idx: row.idx,
+        referencia: referenciaSinCostos(fac, row.idx),
+        pregunta: `¿Este insumo ingresó o va a ingresar a obra?: ${row.descripcion} · ${row.pendiente} ${row.unidad} (factura ${row.doc}). Contabilidad evalúa separarlo para VENTA.`.replace(/\s+/g, ' ').trim(),
+      });
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'puente_consultas' } })); } catch {}
+      showToast('Consulta enviada a almacén 💬 — cuando respondan "No", vas a poder separarlo.', 'green');
+    } catch (e) { showToast('Error al enviar la consulta: ' + (e?.message || e), 'red'); }
+  };
+  const separarParaVenta = async (row, respuestaNo) => {
+    if (!canSepararVenta) return;
+    const aviso = respuestaNo
+      ? `🏷 Separar para VENTA:\n\n${row.descripcion} · ${row.pendiente} ${row.unidad}\nFactura ${row.doc} · ${row.proveedor}\n\nAlmacén confirmó que NO ingresó ni va a ingresar. ¿Separar?`
+      : `⚠ SIN comprobación de almacén (solo un admin puede saltarla):\n\n${row.descripcion} · ${row.pendiente} ${row.unidad} (factura ${row.doc})\n\n¿Separar para venta igual?`;
+    if (!window.confirm(aviso)) return;
+    const ok = await escribirVentaItem(row.facturaId, row.idx, {
+      venta_status: 'para_venta', venta_cantidad: row.pendiente,
+      venta_marcado_por: userId, venta_marcado_at: new Date().toISOString(),
+      venta_comprobado: respuestaNo ? 'almacen_no' : 'admin_directo',
+    }, `Ítem separado para VENTA: ${row.descripcion} × ${row.pendiente} (${respuestaNo ? 'almacén confirmó no-ingreso' : 'admin sin comprobación'})`);
+    if (ok) showToast(`🏷 ${row.descripcion} separado para venta (${row.pendiente} ${row.unidad}).`, 'green');
+  };
+  const devolverDeVenta = async (row) => {
+    if (!canSepararVenta) return;
+    if (!window.confirm(`↩ Quitar "${row.descripcion}" del pool de venta (vuelve a Sin ingreso a obra)?`)) return;
+    const ok = await escribirVentaItem(row.facturaId, row.idx, {
+      venta_status: undefined, venta_cantidad: undefined, venta_comprobado: undefined,
+      venta_marcado_por: undefined, venta_marcado_at: undefined,
+    }, `Ítem devuelto del pool de venta: ${row.descripcion}`);
+    if (ok) showToast('Ítem quitado del pool de venta.', 'amber');
+  };
+  const vincularVentaEmitida = async (row, ventaMovId) => {
+    if (!canSepararVenta || !ventaMovId) return;
+    const venta = (movs || []).find(m => m.id === ventaMovId);
+    if (!venta) return;
+    if (!window.confirm(`🧾 Vincular "${row.descripcion}" × ${row.cantidad} a la venta ${venta.document_number || ''} (${fmtCur(venta.amount, venta.currency)})?\n\nQueda la trazabilidad compra → venta.`)) return;
+    const ok = await escribirVentaItem(row.facturaId, row.idx, {
+      venta_status: 'vendido', venta_mov_id: ventaMovId,
+      venta_vendido_at: new Date().toISOString(),
+    }, `Ítem del pool de venta VINCULADO a la venta ${venta.document_number || ventaMovId}: ${row.descripcion} × ${row.cantidad}`);
+    if (ok) showToast(`🧾 Vinculado a la venta ${venta.document_number || ''} — trazabilidad completa.`, 'green');
   };
   const [detrPct, setDetrPct] = uSC('');
   const [detrMonto, setDetrMonto] = uSC('');
@@ -1865,6 +1952,9 @@ function MovimientosContablesPage({ showToast }) {
           <button className="btn btn-ghost btn-sm" title="Consultas con almacén — preguntar/responder si un insumo llegó" onClick={()=>setShowConsultas(true)}>
             💬 Consultas{consResumen.pendientes ? <span className="badge b-amber" style={{ marginLeft:4 }}>{consResumen.pendientes}</span> : ''}
           </button>
+          <button className="btn btn-ghost btn-sm" title="Insumos facturados que NO ingresaron a obra: comprobar con almacén, separarlos y venderlos" onClick={()=>setShowVenta(true)}>
+            🏷 Para venta
+          </button>
           {puedeDedup && (
             <button className="btn btn-ghost btn-sm" title="Detectar comprobantes registrados dos veces y fusionarlos" onClick={abrirDuplicados}>
               <JxIcon name="search" size={13}/> Duplicados
@@ -2722,6 +2812,134 @@ function MovimientosContablesPage({ showToast }) {
       {showConsultas && (
         <ConsultasPanel rol="contabilidad" obraId={null} showToast={showToast} onClose={()=>setShowConsultas(false)} />
       )}
+      {/* ── 🏷 INSUMOS PARA VENTA: ítems facturados sin ingreso a obra ── */}
+      {showVenta && (() => {
+        const candidatos = candidatosSinIngreso(movs || []);
+        const pool = poolParaVenta(movs || []);
+        const vendidos = vendidosVenta(movs || []);
+        const ventasDisponibles = (movs || [])
+          .filter(m => !m.deleted_at && (m.clase === 'venta' || m.type === 'income'))
+          .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+        const CONSULTA_BADGE = {
+          sin_consulta: { cls: 'b-gray', lbl: 'sin comprobar' },
+          esperando:    { cls: 'b-amber', lbl: '💬 esperando a almacén' },
+          no:           { cls: 'b-green', lbl: '✅ Almacén: NO ingresó' },
+          si:           { cls: 'b-red', lbl: '⚠ Almacén: SÍ ingresó' },
+          parcial:      { cls: 'b-red', lbl: '⚠ Almacén: ingresó parcial' },
+          otra_fecha:   { cls: 'b-amber', lbl: '📅 Almacén: otra fecha' },
+        };
+        return (
+          <Modal title="🏷 Insumos para Venta — sin ingreso a obra" icon="tag" onClose={()=>setShowVenta(false)} wide>
+            <div style={{ fontSize:11.5, color:'var(--tm)', marginBottom:12, lineHeight:1.6 }}>
+              Ítems FACTURADOS que no se vincularon a ningún ingreso de almacén. Flujo: <strong>1)</strong> preguntá a almacén si va a ingresar · <strong>2)</strong> con la respuesta "No", la Contadora Jefe/Admin lo separa · <strong>3)</strong> al emitir la factura de venta, se vincula (trazabilidad compra→venta).
+            </div>
+
+            {/* 1 · CANDIDATOS */}
+            <div style={{ fontSize:12.5, fontWeight:700, color:'var(--amber)', marginBottom:6 }}>⏳ Sin ingreso a obra ({candidatos.length})</div>
+            {candidatos.length === 0 ? (
+              <div style={{ fontSize:11.5, color:'var(--tm)', padding:'8px 0 14px' }}>No hay ítems pendientes de ingreso — todo lo facturado llegó o ya fue separado.</div>
+            ) : (
+              <div style={{ maxHeight:240, overflowY:'auto', marginBottom:14 }}>
+                <table className="tbl" style={{ fontSize:11.5 }}>
+                  <thead><tr><th>Insumo</th><th>Factura</th><th style={{ textAlign:'right' }}>Pendiente</th><th>Comprobación</th><th></th></tr></thead>
+                  <tbody>
+                    {candidatos.map(row => {
+                      const ec = estadoConsultaItem(consultasVenta, row.facturaId, row.idx);
+                      const b = CONSULTA_BADGE[ec.estado] || CONSULTA_BADGE.sin_consulta;
+                      const respuestaNo = ec.estado === 'no';
+                      const bloqueado = ec.estado === 'si' || ec.estado === 'parcial';
+                      return (
+                        <tr key={`${row.facturaId}_${row.idx}`}>
+                          <td style={{ fontWeight:600, color:'var(--tp)' }}>{row.descripcion}</td>
+                          <td style={{ fontSize:10.5, color:'var(--tm)' }}>{row.doc} · {row.fecha}<div>{row.proveedor}</div></td>
+                          <td style={{ textAlign:'right' }}>{row.pendiente} {row.unidad}</td>
+                          <td><span className={`badge ${b.cls}`} style={{ fontSize:9.5 }}>{b.lbl}</span></td>
+                          <td style={{ whiteSpace:'nowrap', textAlign:'right' }}>
+                            {ec.estado === 'sin_consulta' && (
+                              <button className="btn btn-ghost btn-xs" title="Preguntar a almacén si este insumo ingresó o va a ingresar" onClick={()=>preguntarAlmacenVenta(row)}>💬 Comprobar</button>
+                            )}
+                            {canSepararVenta && !bloqueado && (respuestaNo || isAdmin) && (
+                              <button className="btn btn-amber btn-xs" style={{ marginLeft:4 }}
+                                title={respuestaNo ? 'Almacén confirmó que no ingresó — separar para venta' : 'Separar SIN comprobación (solo admin)'}
+                                onClick={()=>separarParaVenta(row, respuestaNo)}>🏷 Separar</button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* 2 · POOL DISPONIBLE */}
+            <div style={{ fontSize:12.5, fontWeight:700, color:'var(--green)', marginBottom:6 }}>
+              🏷 Disponibles para venta ({pool.length})
+              {pool.length > 0 && <span style={{ fontWeight:400, color:'var(--tm)', marginLeft:8, fontSize:11 }}>costo total S/ {pool.reduce((t, r) => t + r.costoTotal, 0).toLocaleString('es-PE', { minimumFractionDigits:2 })}</span>}
+            </div>
+            {pool.length === 0 ? (
+              <div style={{ fontSize:11.5, color:'var(--tm)', padding:'8px 0 14px' }}>Nada separado todavía.</div>
+            ) : (
+              <div style={{ maxHeight:220, overflowY:'auto', marginBottom:14 }}>
+                <table className="tbl" style={{ fontSize:11.5 }}>
+                  <thead><tr><th>Insumo</th><th>Origen</th><th style={{ textAlign:'right' }}>Cant.</th><th style={{ textAlign:'right' }}>Costo</th><th></th></tr></thead>
+                  <tbody>
+                    {pool.map(row => (
+                      <tr key={`${row.facturaId}_${row.idx}`}>
+                        <td style={{ fontWeight:600, color:'var(--tp)' }}>{row.descripcion}</td>
+                        <td style={{ fontSize:10.5, color:'var(--tm)' }}>{row.doc} · {row.proveedor}</td>
+                        <td style={{ textAlign:'right' }}>{row.cantidad} {row.unidad}</td>
+                        <td style={{ textAlign:'right' }} title={`S/ ${row.costoUnit} c/u (costo de compra, referencia para el precio de venta)`}>S/ {row.costoTotal.toLocaleString('es-PE', { minimumFractionDigits:2 })}</td>
+                        <td style={{ whiteSpace:'nowrap', textAlign:'right' }}>
+                          {canSepararVenta && (
+                            <>
+                              <select className="fi" style={{ fontSize:10.5, padding:'3px 5px', maxWidth:190 }} value=""
+                                title="Vincular a una factura de VENTA ya emitida (registrala antes por Captura Mágica o Nuevo Movimiento)"
+                                onChange={e => { if (e.target.value) vincularVentaEmitida(row, e.target.value); e.target.value=''; }}>
+                                <option value="">🧾 Vincular venta…</option>
+                                {ventasDisponibles.slice(0, 40).map(v => (
+                                  <option key={v.id} value={v.id}>{v.document_number || 's/n'} · {v.date} · {fmtCur(v.amount, v.currency)}</option>
+                                ))}
+                              </select>
+                              <button className="btn btn-ghost btn-xs" style={{ marginLeft:4 }} title="Quitar del pool (vuelve a Sin ingreso)" onClick={()=>devolverDeVenta(row)}>↩</button>
+                            </>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* 3 · VENDIDOS */}
+            <div style={{ fontSize:12.5, fontWeight:700, color:'var(--blue)', marginBottom:6 }}>🧾 Vendidos ({vendidos.length})</div>
+            {vendidos.length === 0 ? (
+              <div style={{ fontSize:11.5, color:'var(--tm)', padding:'8px 0' }}>Todavía no hay ítems vendidos desde este flujo.</div>
+            ) : (
+              <div style={{ maxHeight:180, overflowY:'auto' }}>
+                <table className="tbl" style={{ fontSize:11.5 }}>
+                  <thead><tr><th>Insumo</th><th>Compra</th><th style={{ textAlign:'right' }}>Cant.</th><th style={{ textAlign:'right' }}>Costo</th><th>Venta vinculada</th></tr></thead>
+                  <tbody>
+                    {vendidos.map(row => (
+                      <tr key={`${row.facturaId}_${row.idx}`}>
+                        <td style={{ fontWeight:600, color:'var(--tp)' }}>{row.descripcion}</td>
+                        <td style={{ fontSize:10.5, color:'var(--tm)' }}>{row.doc}</td>
+                        <td style={{ textAlign:'right' }}>{row.cantidad} {row.unidad}</td>
+                        <td style={{ textAlign:'right' }}>S/ {row.costoTotal.toLocaleString('es-PE', { minimumFractionDigits:2 })}</td>
+                        <td style={{ fontSize:10.5 }}>
+                          {row.ventaDoc ? <span className="badge b-green" style={{ fontSize:9.5 }}>🧾 {row.ventaDoc} · {row.ventaFecha}</span> : <span style={{ color:'var(--tm)' }}>—</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Modal>
+        );
+      })()}
+
       {showReporte && (() => {
         const tarjeta = (label, valor, color) => (
           <div style={{ flex:'1 1 120px', minWidth:110, background:'var(--bg-s)', border:'1px solid var(--bd)', borderRadius:8, padding:'8px 12px' }}>
