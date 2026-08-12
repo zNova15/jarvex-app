@@ -586,10 +586,11 @@ function ReversoModal({ mov, tipo /* 'mat' | 'her' */, lookupNombre, onClose, on
 //                subido con fecha equivocada que hay que reemplazar.
 //                Queda pendiente_aprobacion hasta que el admin apruebe.
 // ⚠️ PERMISO TEMPORAL — registros diarios ATRASADOS que entran DIRECTO (sin
-// aprobación del admin) para los usuarios de esta lista. Abierto para Yanet (la
-// almacenera) para que cargue las evidencias físicas de días anteriores que
-// empezó a subir. QUITAR este id cuando Gabriel avise que terminó (ago-2026).
-const RETRO_DIRECTA_UIDS = ['4b31dd32-6a12-491c-a799-6b4a811894be']; // Yanet T (almacenera)
+// aprobación del admin) para los usuarios de esta lista. Vacía = nadie tiene el
+// permiso (comportamiento normal: los atrasados van como solicitud al admin).
+// Se usó para Yanet (almacenera) del 07 al 12-ago-2026 mientras cargaba las
+// evidencias físicas de días anteriores; desactivado a pedido de Gabriel.
+const RETRO_DIRECTA_UIDS = [];
 
 function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast, modo = 'hoy' }) {
   const auth = window.__useAuth?.();
