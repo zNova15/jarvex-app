@@ -186,7 +186,8 @@ const AYUDA = {
     titulo: 'Movimientos Contables',
     que: 'Todas las compras y ventas del grupo: facturas, estados de pago y bancarizaciones.',
     como: [
-      'Filtrá por obra/empresa, compra/venta, estado, EMISOR y RECEPTOR del comprobante, o buscá por texto.',
+      'Filtrá por OBRA y por EMPRESA con dos desplegables SEPARADOS que se combinan (ej. obra Miraflores + empresa GASOMI a la vez), más compra/venta, estado, EMISOR y RECEPTOR, o buscá por texto.',
+      'FACTURAS INTERCO: también se les puede pedir "Solicitar cambio" (p. ej. corregir la OBRA a la que se vinculó). Al aprobarse, el cambio de vinculación se aplica a la factura Y a su compra espejo automática, para que ambos lados queden consistentes.',
       'FILTRO POR PERÍODO (📅): elegí un MES puntual (ej. "Junio 2026" — solo aparecen los meses que tienen comprobantes) o "Personalizado…" para un rango de fechas a medida. Al filtrar, arriba sale el RESUMEN del período: cuántos comprobantes y el total de Ventas y Compras (anulados excluidos; las notas de crédito restan). "✕ Quitar filtro" vuelve a todo el período.',
       'Facturas en soles > S/ 2,000 exigen bancarización: subila con el botón "Subir" de la fila (👁 "Ver" abre la constancia).',
       'Tres formas de bancarizar: Pago exacto (1 voucher = la factura), Pago en partes (varios vouchers a 1 factura) y Voucher multi-factura (1 depósito cubre varias facturas del mismo pagador→cobrador, con control de saldo).',

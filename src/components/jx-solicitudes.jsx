@@ -571,6 +571,37 @@ function SolicitudesPage({ showToast }) {
       else if (v === '__empresa__') { fields.obra_id = null; fields.destino_contable = 'gastos_generales'; }
       else if (v === '__otros__') { fields.obra_id = null; fields.destino_contable = 'contabilidad_neta'; }
       else if (v === '__nose__') { fields.obra_id = null; fields.destino_contable = 'sin_clasificar'; }
+      // Propagar al ESPEJO intercompany AUTOMÁTICO (si existe): la compra espejo
+      // nació con la MISMA obra que la venta — al cambiar la vinculación de la
+      // factura, el espejo la sigue para que ambos lados del grupo queden
+      // consistentes. Solo espejos AUTO (una compra registrada a mano por la
+      // compradora puede tener legítimamente otra obra/destino).
+      if (fields.destino_contable) {
+        try {
+          const movId = req.target_record_id;
+          const candidatos = await window.__db.accounting_movements
+            .filter(m => !m.deleted_at && m.id !== movId &&
+              (m.related_movement_id === movId ||
+               (oldData?.related_movement_id && m.id === oldData.related_movement_id)))
+            .toArray();
+          const espejo = candidatos.find(m => {
+            try { return !!JSON.parse(m.notas || '{}')?.intercompany_auto; } catch { return false; }
+          });
+          if (espejo) {
+            const { SYNC_STATUS } = await import('../db/jarvex.db');
+            await window.__db.accounting_movements.update(espejo.id, {
+              obra_id: fields.obra_id ?? null,
+              destino_contable: fields.destino_contable,
+              updated_at: new Date().toISOString(),
+              updated_by: window.__currentUserId || 'admin-approval',
+              version: (Number(espejo.version) || 1) + 1,
+              sync_status: espejo.sync_status === SYNC_STATUS.PENDING_CREATE ? SYNC_STATUS.PENDING_CREATE : SYNC_STATUS.PENDING_UPDATE,
+            });
+            try { await window.__logAudit?.({ action:'update', table:'accounting_movements', recordId: espejo.id,
+              reason:`Vinculación propagada desde la solicitud aprobada de su factura (${v})` }); } catch {}
+          }
+        } catch (e) { console.warn('[solicitudes] espejo vinculación:', e?.message); }
+      }
     }
 
     // ── HOOK ESPECIAL: ELIMINAR la bancarización de una factura (la asistente

@@ -758,13 +758,15 @@ function MovimientosContablesPage({ showToast }) {
   }, [obras, misObrasIds]);
   const obraNombre = (id) => (obras || []).find(o => o.id === id)?.nombre_obra || null;
 
-  // Ámbito unificado: 'todas' | 'obra:<id>' | 'emp:<id>'. En el workspace de una
-  // obra (window.__plano==='obra') arranca scopeado a la obra activa; en la
-  // Contabilidad general arranca en 'todas'.
-  const [filtroAmbito, setFiltroAmbito] = uSC(() => {
+  // Ámbito en DOS filtros independientes (pedido de la asistente: poder
+  // filtrar por obra Y empresa A LA VEZ, no un solo desplegable combinado).
+  // En el workspace de una obra (window.__plano==='obra') la obra arranca
+  // scopeada a la activa; en la Contabilidad general ambos arrancan en 'todas'.
+  const [filtroObraSel, setFiltroObraSel] = uSC(() => {
     const o = window.__getObraActivaId?.();
-    return (window.__plano === 'obra' && o) ? ('obra:' + o) : 'todas';
+    return (window.__plano === 'obra' && o) ? o : 'todas';
   });
+  const [filtroEmpresaSel, setFiltroEmpresaSel] = uSC('todas');
   const [filtroClase, setFiltroClase] = uSC('todos');
   const [filtroTipo, setFiltroTipo] = uSC('todos');
   const [filtroEstado, setFiltroEstado] = uSC('todos');
@@ -823,9 +825,9 @@ function MovimientosContablesPage({ showToast }) {
   const [reporteTab, setReporteTab] = uSC('insumo');
   const [repQ, setRepQ] = uSC('');
   const reporte = uMC(() => reporteRecepcion((movs || []).filter(m =>
-    filtroAmbito.startsWith('obra:') ? m.obra_id === filtroAmbito.slice(5)
-      : filtroAmbito.startsWith('emp:') ? m.company_id === filtroAmbito.slice(4)
-        : true)), [movs, filtroAmbito]);
+    (filtroObraSel === 'todas' || m.obra_id === filtroObraSel) &&
+    (filtroEmpresaSel === 'todas' || m.company_id === filtroEmpresaSel)
+  )), [movs, filtroObraSel, filtroEmpresaSel]);
   // Detracción (SPOT): la asistente registra el depósito (constancia del Banco de
   // la Nación) y marca 'depositada'. Aplica a compras y ventas, sobre el mismo mov.
   const [detraccionPorMov, setDetraccionPorMov] = uSC(() => new Map()); // tipo_evidencia='constancia_detraccion'
@@ -1059,22 +1061,17 @@ function MovimientosContablesPage({ showToast }) {
 
   const companiesActivas = uMC(() => (companies || []).filter(c => c.status === 'activa'), [companies]);
 
-  // Reconciliación del ámbito: si filtroAmbito apunta a una obra/empresa que YA no
-  // figura en el selector (usuario no asignado a esa obra, obra eliminada, empresa
-  // inactivada), el <select> controlado mostraría 'Todas' pero `filtered` seguiría
-  // filtrando por ese id → tabla vacía/sub-filtrada sin recuperación. Lo reseteamos.
+  // Reconciliación de los filtros de ámbito: si apuntan a una obra/empresa que YA
+  // no figura en su selector (usuario no asignado a esa obra, obra eliminada,
+  // empresa inactivada), el <select> controlado mostraría 'Todas' pero `filtered`
+  // seguiría filtrando por ese id → tabla vacía/sub-filtrada sin recuperación.
   // Guard: no resetear mientras la fuente aún no cargó (evita reset prematuro).
   uEC(() => {
-    if (filtroAmbito.startsWith('obra:')) {
-      if (!(obras || []).length) return;
-      const oid = filtroAmbito.slice(5);
-      if (!obrasParaSelector.some(o => o.id === oid)) setFiltroAmbito('todas');
-    } else if (filtroAmbito.startsWith('emp:')) {
-      if (!(companies || []).length) return;
-      const cid = filtroAmbito.slice(4);
-      if (!companiesActivas.some(c => c.id === cid)) setFiltroAmbito('todas');
-    }
-  }, [filtroAmbito, obrasParaSelector, companiesActivas, obras, companies]);
+    if (filtroObraSel !== 'todas' && (obras || []).length &&
+        !obrasParaSelector.some(o => o.id === filtroObraSel)) setFiltroObraSel('todas');
+    if (filtroEmpresaSel !== 'todas' && (companies || []).length &&
+        !companiesActivas.some(c => c.id === filtroEmpresaSel)) setFiltroEmpresaSel('todas');
+  }, [filtroObraSel, filtroEmpresaSel, obrasParaSelector, companiesActivas, obras, companies]);
 
   // ¿El movimiento (>S/2000 en soles) está sin bancarización (ninguna o falló)?
   // Definida antes de `filtered` porque el useMemo la llama al filtrar por
@@ -1120,8 +1117,8 @@ function MovimientosContablesPage({ showToast }) {
     if (!movs) return [];
     let f = [...movs];
     // Ámbito: por OBRA (m.obra_id) o por EMPRESA (m.company_id).
-    if (filtroAmbito.startsWith('obra:')) { const oid = filtroAmbito.slice(5); f = f.filter(m => m.obra_id === oid); }
-    else if (filtroAmbito.startsWith('emp:')) { const cid = filtroAmbito.slice(4); f = f.filter(m => m.company_id === cid); }
+    if (filtroObraSel !== 'todas') f = f.filter(m => m.obra_id === filtroObraSel);
+    if (filtroEmpresaSel !== 'todas') f = f.filter(m => m.company_id === filtroEmpresaSel);
     if (filtroClase !== 'todos') f = f.filter(m => (m.clase || (m.type === 'income' ? 'venta' : 'compra')) === filtroClase);
     if (filtroTipo !== 'todos') f = f.filter(m => m.type === filtroTipo);
     if (filtroEstado !== 'todos') f = f.filter(m => m.payment_status === filtroEstado);
@@ -1150,7 +1147,7 @@ function MovimientosContablesPage({ showToast }) {
       (b.date||'').localeCompare(a.date||'')
       || cmpComprobante(a.document_number, b.document_number)
       || (a.created_at||'').localeCompare(b.created_at||''));
-  }, [movs, filtroAmbito, filtroClase, filtroTipo, filtroEstado, filtroEmisor, filtroReceptor, nombreCompanyDe, busqueda, soloSinBanc, filtroMes, filtroDesde, filtroHasta, bancarizacionPorMov, partesPorMov, depositosById]);
+  }, [movs, filtroObraSel, filtroEmpresaSel, filtroClase, filtroTipo, filtroEstado, filtroEmisor, filtroReceptor, nombreCompanyDe, busqueda, soloSinBanc, filtroMes, filtroDesde, filtroHasta, bancarizacionPorMov, partesPorMov, depositosById]);
 
   // Paginación: tabla puede tener miles de movimientos contables.
   const movPg = usePagination(filtered, 100);
@@ -1885,14 +1882,15 @@ function MovimientosContablesPage({ showToast }) {
 
       <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', marginBottom:14 }}>
         <div className="search-bar" style={{ flex:'1 1 200px' }}><JxIcon name="search" size={14} color="var(--tm)"/><input placeholder="Buscar descripción / cliente / doc…" value={busqueda} onChange={e=>setBusqueda(e.target.value)}/></div>
-        <select className="fi" value={filtroAmbito} onChange={e=>setFiltroAmbito(e.target.value)} style={{ minWidth:220 }} title="Trabajá la contabilidad de una obra o empresa específica, o de todas">
-          <option value="todas">Todas las obras y empresas</option>
-          <optgroup label="Por obra">
-            {obrasParaSelector.map(o => <option key={o.id} value={'obra:'+o.id}>{o.nombre_obra}</option>)}
-          </optgroup>
-          <optgroup label="Por empresa">
-            {companiesActivas.map(c => <option key={c.id} value={'emp:'+c.id}>{c.name}</option>)}
-          </optgroup>
+        <select className="fi" value={filtroObraSel} onChange={e=>setFiltroObraSel(e.target.value)} style={{ minWidth:170, maxWidth:240 }}
+          title="Filtrar por OBRA — se combina con el filtro de empresa">
+          <option value="todas">🏗 Todas las obras</option>
+          {obrasParaSelector.map(o => <option key={o.id} value={o.id}>{o.nombre_obra}</option>)}
+        </select>
+        <select className="fi" value={filtroEmpresaSel} onChange={e=>setFiltroEmpresaSel(e.target.value)} style={{ minWidth:170, maxWidth:240 }}
+          title="Filtrar por EMPRESA del grupo — se combina con el filtro de obra">
+          <option value="todas">🏢 Todas las empresas</option>
+          {companiesActivas.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
         <select className="fi" value={filtroMes} onChange={e=>setFiltroMes(e.target.value)} style={{ minWidth:150 }}
           title="Ver solo los comprobantes de un mes, o un rango de fechas a medida">
@@ -2218,8 +2216,12 @@ function MovimientosContablesPage({ showToast }) {
                             </button>
                           );
                         })()}
+                        {/* INTERCO ya NO bloquea la solicitud: la asistente puede pedir
+                            p.ej. el cambio de VINCULACIÓN (obra) de una factura interna
+                            — al aprobar, el cambio de obra se propaga también a su
+                            compra espejo automática (hook en jx-solicitudes). */}
                         {esAyudante ? (
-                          <button className="btn btn-ghost btn-xs" title="Solicitar un cambio (lo aprueba el Contador Jefe o un Admin)" onClick={()=>setSolicitarTarget(m)} disabled={isIc}>
+                          <button className="btn btn-ghost btn-xs" title="Solicitar un cambio (lo aprueba el Contador Jefe o un Admin)" onClick={()=>setSolicitarTarget(m)}>
                             <JxIcon name="edit" size={11}/> Solicitar
                           </button>
                         ) : (
