@@ -141,7 +141,7 @@ const CTX_LOOKUPS = {
 const TABLA_A_PAGINA = {
   movimientos_materiales: 'mov-materiales',
   movimientos_herramientas: 'mov-herramientas',
-  movimientos_epp: 'epp',
+  movimientos_epp: 'mov-epp',
   movimientos_maquinaria: 'activos-pesados',
   movimientos_insumos_emergencia: 'insumos-emergencia',
   materiales: 'materiales',
@@ -220,9 +220,35 @@ function ContextoRegistro({ table, recordId }) {
         </button>
         {TABLA_A_PAGINA[table] && (
           <button className="btn btn-ghost btn-xs" style={{ fontSize: 10, color: 'var(--amber)' }}
-            title="Abrir la sección donde vive este registro"
-            onClick={() => { window.__navTo?.(TABLA_A_PAGINA[table]); }}>
-            ↗ Ir a la sección
+            title="Abrir la sección con este registro YA BUSCADO (la búsqueda llega pre-cargada)"
+            onClick={() => {
+              // Dejar la BÚSQUEDA pre-cargada en la página destino para aterrizar
+              // en el REGISTRO exacto (cada página consume su "intent" al montar).
+              // Antes solo navegaba a la sección y el admin tenía que buscar a mano.
+              try {
+                switch (table) {
+                  case 'accounting_movements':
+                    window.__movsBuscarIntent = reg?.document_number || ''; break;
+                  case 'movimientos_materiales':
+                    window.__movMatBuscar = nombres.material_id || reg?.documento_asociado || ''; break;
+                  case 'movimientos_epp':
+                    window.__movEppBuscar = nombres.epp_id || ''; break;
+                  case 'materiales':
+                    window.__almMatBuscar = reg?.nombre_material || ''; break;
+                  case 'herramientas':
+                    window.__almHerrBuscar = reg?.nombre_herramienta || ''; break;
+                  case 'epps':
+                    window.__eppInvBuscar = reg?.nombre_epp || ''; break;
+                  case 'pagos':
+                    window.__pagosBuscarIntent = reg?.beneficiario_nombre || reg?.concepto || ''; break;
+                  case 'personal':
+                    window.__personalBuscar = `${reg?.nombres || ''} ${reg?.apellidos || ''}`.trim(); break;
+                  default: break;
+                }
+              } catch {}
+              window.__navTo?.(TABLA_A_PAGINA[table]);
+            }}>
+            ↗ Ir al registro
           </button>
         )}
       </div>
@@ -388,8 +414,14 @@ function SolicitudesPage({ showToast }) {
   const [q, setQ] = uSS('');                        // texto de búsqueda libre
   const [fPersona, setFPersona] = uSS('');          // filtro por requester_email
   const [fTipo, setFTipo] = uSS('');                // filtro por target_table
+  // Filtros extra de la pestaña RESUELTAS (historial del admin).
+  const [fEstado, setFEstado] = uSS('');            // '' | aprobada | rechazada
+  const [fPedidaDesde, setFPedidaDesde] = uSS('');  // rango de CUÁNDO la pidieron
+  const [fPedidaHasta, setFPedidaHasta] = uSS('');
+  const [fResDesde, setFResDesde] = uSS('');        // rango de CUÁNDO se resolvió
+  const [fResHasta, setFResHasta] = uSS('');
   // Al cambiar de pestaña, los filtros ya no aplican (otra lista) → resetear.
-  uES(() => { setQ(''); setFPersona(''); setFTipo(''); }, [tab]);
+  uES(() => { setQ(''); setFPersona(''); setFTipo(''); setFEstado(''); setFPedidaDesde(''); setFPedidaHasta(''); setFResDesde(''); setFResHasta(''); }, [tab]);
 
   const norm = (s) => String(s == null ? '' : s).toLowerCase();
   // Personas que enviaron solicitudes (con conteo) → chips de clasificación.
@@ -410,6 +442,12 @@ function SolicitudesPage({ showToast }) {
     return requests.filter(r => {
       if (fPersona && (r.requester_email || '—') !== fPersona) return false;
       if (fTipo && (r.target_table || '—') !== fTipo) return false;
+      // Filtros del historial de resueltas (fechas en ISO → comparación segura).
+      if (fEstado && r.status !== fEstado) return false;
+      if (fPedidaDesde && String(r.created_at || '').slice(0, 10) < fPedidaDesde) return false;
+      if (fPedidaHasta && String(r.created_at || '').slice(0, 10) > fPedidaHasta) return false;
+      if (fResDesde && String(r.reviewed_at || '').slice(0, 10) < fResDesde) return false;
+      if (fResHasta && String(r.reviewed_at || '').slice(0, 10) > fResHasta) return false;
       if (!words.length) return true;
       const hay = norm([
         r.requester_email,
@@ -420,7 +458,7 @@ function SolicitudesPage({ showToast }) {
       ].join(' • '));
       return words.every(w => hay.includes(w));
     });
-  }, [requests, q, fPersona, fTipo]);
+  }, [requests, q, fPersona, fTipo, fEstado, fPedidaDesde, fPedidaHasta, fResDesde, fResHasta]);
 
   const cr = window.__changeRequests || {};
 
@@ -428,7 +466,11 @@ function SolicitudesPage({ showToast }) {
     setLoading(true);
     try {
       let data;
-      if (tab === 'pendientes' && esRevisor) {
+      if (tab === 'resueltas' && esRevisor) {
+        // Historial del admin: todo lo APROBADO/RECHAZADO (filtros en la UI).
+        data = (await cr.list?.({ limit: 500 }) || []).filter(r => r.status !== 'pendiente');
+        setPendTotalServer(null);
+      } else if (tab === 'pendientes' && esRevisor) {
         data = await cr.list?.({ status: 'pendiente', limit: 500 }) || [];
         // Chequeo anti-fantasma: si el conteo del server supera lo listado, hay
         // solicitudes que la bandeja NO muestra (truncamiento) — avisar.
@@ -843,7 +885,43 @@ function SolicitudesPage({ showToast }) {
             <JxIcon name="shield" size={13} /> Pendientes de Revisión
           </button>
         )}
+        {esRevisor && (
+          <button
+            className={`btn btn-ghost btn-sm`}
+            onClick={() => setTab('resueltas')}
+            style={{
+              borderRadius: 0,
+              borderBottom: tab === 'resueltas' ? '2px solid var(--amber)' : '2px solid transparent',
+              color: tab === 'resueltas' ? 'var(--amber)' : 'var(--tm)',
+              fontWeight: tab === 'resueltas' ? 700 : 500,
+            }}>
+            <JxIcon name="checkCircle" size={13} /> Resueltas
+          </button>
+        )}
       </div>
+
+      {/* Filtros extra del historial de RESUELTAS: estado + cuándo la pidieron
+          + cuándo la resolviste (se suman al buscador y chips de persona/tipo). */}
+      {tab === 'resueltas' && esRevisor && !loading && requests.length > 0 && (
+        <div className="card card-p" style={{ marginBottom: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', fontSize: 11.5 }}>
+          <select className="fi" style={{ minWidth: 140 }} value={fEstado} onChange={e => setFEstado(e.target.value)}>
+            <option value="">✔✖ Aprobadas y rechazadas</option>
+            <option value="aprobada">✔ Solo aprobadas</option>
+            <option value="rechazada">✖ Solo rechazadas</option>
+          </select>
+          <span style={{ color: 'var(--tm)' }}>Pedida del</span>
+          <input className="fi" type="date" value={fPedidaDesde} onChange={e => setFPedidaDesde(e.target.value)} style={{ width: 135 }} />
+          <span style={{ color: 'var(--tm)' }}>al</span>
+          <input className="fi" type="date" value={fPedidaHasta} onChange={e => setFPedidaHasta(e.target.value)} style={{ width: 135 }} />
+          <span style={{ color: 'var(--tm)', marginLeft: 6 }}>· Resuelta del</span>
+          <input className="fi" type="date" value={fResDesde} onChange={e => setFResDesde(e.target.value)} style={{ width: 135 }} />
+          <span style={{ color: 'var(--tm)' }}>al</span>
+          <input className="fi" type="date" value={fResHasta} onChange={e => setFResHasta(e.target.value)} style={{ width: 135 }} />
+          {(fEstado || fPedidaDesde || fPedidaHasta || fResDesde || fResHasta) && (
+            <button className="btn btn-ghost btn-xs" onClick={() => { setFEstado(''); setFPedidaDesde(''); setFPedidaHasta(''); setFResDesde(''); setFResHasta(''); }}>✕ Limpiar fechas</button>
+          )}
+        </div>
+      )}
 
       {loading ? (
         <div className="card card-p empty-state">
@@ -853,7 +931,9 @@ function SolicitudesPage({ showToast }) {
       ) : requests.length === 0 ? (
         <div className="card card-p empty-state">
           <JxIcon name="checkCircle" size={40} color="var(--tm)" />
-          <p>{tab === 'pendientes' ? 'No hay solicitudes pendientes de revisión.' : 'Aún no has creado solicitudes de cambio.'}</p>
+          <p>{tab === 'pendientes' ? 'No hay solicitudes pendientes de revisión.'
+            : tab === 'resueltas' ? 'Todavía no aprobaste ni rechazaste ninguna solicitud.'
+            : 'Aún no has creado solicitudes de cambio.'}</p>
         </div>
       ) : (
         // ── Lista con BUSCADOR + CLASIFICACIÓN (por persona y por tipo) ──────
@@ -903,8 +983,10 @@ function SolicitudesPage({ showToast }) {
               <p>Ningún resultado con estos filtros.</p>
               <button className="btn btn-ghost btn-sm" onClick={() => { setQ(''); setFPersona(''); setFTipo(''); }}>Limpiar filtros</button>
             </div>
-          ) : tab === 'pendientes' && esRevisor ? (
-        // ── REVISOR (admin / Contador Jefe): cards con diff y botones ─────────────
+          ) : (tab === 'pendientes' || tab === 'resueltas') && esRevisor ? (
+        // ── REVISOR (admin / Contador Jefe): cards con diff. En 'pendientes' con
+        //    botones de aprobar/rechazar; en 'resueltas' como HISTORIAL de lo ya
+        //    decidido (cuándo la pidieron, cuándo la resolviste y tu comentario).
         <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12 }}>
           {filtered.map(req => (
             <div key={req.id} className="card card-p">
@@ -916,9 +998,15 @@ function SolicitudesPage({ showToast }) {
                   </div>
                   <div style={{ fontSize: 11.5, color: 'var(--tm)' }}>
                     Solicita: <span style={{ color: 'var(--ts)' }}>{req.requester_email || '—'}</span> · {fmtDate(req.created_at)}
+                    {req.reviewed_at && (
+                      <> · {req.status === 'aprobada' ? '✔ Aprobada' : '✖ Rechazada'} el <span style={{ color: 'var(--ts)' }}>{fmtDate(req.reviewed_at)}</span></>
+                    )}
                   </div>
+                  {tab === 'resueltas' && req.reviewer_comment && (
+                    <div style={{ fontSize: 11.5, color: 'var(--ts)', marginTop: 3, fontStyle: 'italic' }}>💬 Tu comentario: {req.reviewer_comment}</div>
+                  )}
                 </div>
-                <span className={`badge ${STATUS_BADGE.pendiente.class}`}>{STATUS_BADGE.pendiente.label}</span>
+                <span className={`badge ${(STATUS_BADGE[req.status] || STATUS_BADGE.pendiente).class}`}>{(STATUS_BADGE[req.status] || STATUS_BADGE.pendiente).label}</span>
               </div>
 
               <ContextoRegistro table={req.target_table} recordId={req.target_record_id} />
@@ -933,16 +1021,18 @@ function SolicitudesPage({ showToast }) {
                 <div style={{ fontSize: 12.5, color: 'var(--ts)', lineHeight: 1.5 }}>{req.reason}</div>
               </div>
 
-              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                <button className="btn btn-red btn-sm" disabled={busy}
-                        onClick={() => { setReviewing(req); setReviewMode('reject'); setReviewComment(''); }}>
-                  <JxIcon name="x" size={13} />Rechazar
-                </button>
-                <button className="btn btn-green btn-sm" disabled={busy}
-                        onClick={() => { setReviewing(req); setReviewMode('approve'); setReviewComment(''); }}>
-                  <JxIcon name="check" size={13} />Aprobar
-                </button>
-              </div>
+              {tab === 'pendientes' && (
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <button className="btn btn-red btn-sm" disabled={busy}
+                          onClick={() => { setReviewing(req); setReviewMode('reject'); setReviewComment(''); }}>
+                    <JxIcon name="x" size={13} />Rechazar
+                  </button>
+                  <button className="btn btn-green btn-sm" disabled={busy}
+                          onClick={() => { setReviewing(req); setReviewMode('approve'); setReviewComment(''); }}>
+                    <JxIcon name="check" size={13} />Aprobar
+                  </button>
+                </div>
+              )}
             </div>
           ))}
         </div>

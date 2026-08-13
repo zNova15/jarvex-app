@@ -88,7 +88,9 @@ function PagosPage({ showToast }) {
   const { data: subcontratos } = window.__hooks.useSubcontratos ? window.__hooks.useSubcontratos(obraId) : { data: [] };
   const { data: subcontratistas } = window.__hooks.useSubcontratistas ? window.__hooks.useSubcontratistas() : { data: [] };
 
-  const [tab, setTab] = uS('personal');           // personal | subcontratos
+  // Si Solicitudes dejó un intent de búsqueda, aterrizamos directo en la
+  // pestaña Recibos con el pago ya buscado ("Ir al registro").
+  const [tab, setTab] = uS(() => { try { if (window.__pagosBuscarIntent) return 'recibos'; } catch {} return 'personal'; }); // personal | subcontratos | recibos
   const [pagos, setPagos] = uS([]);
   const [partes, setPartes] = uS([]);
   const [evidencias, setEvidencias] = uS([]);
@@ -100,7 +102,7 @@ function PagosPage({ showToast }) {
   const [filtroEmpresaRec, setFiltroEmpresaRec] = uS('todas');  // 'todas' | 'sin' | companyId
   const [filtroMesRec, setFiltroMesRec] = uS('todos');          // 'todos' | 'YYYY-MM'
   const [filtroModoRec, setFiltroModoRec] = uS('todos');        // 'todos' | rxh | planilla | otro | subcontrato
-  const [busquedaRec, setBusquedaRec] = uS('');
+  const [busquedaRec, setBusquedaRec] = uS(() => { try { const v = window.__pagosBuscarIntent; if (v) { delete window.__pagosBuscarIntent; return v; } } catch {} return ''; });
 
   const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
   const filaDelModo = (r) => (esPrueba ? r.demo === true : r.demo !== true);

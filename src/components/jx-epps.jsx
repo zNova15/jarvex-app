@@ -397,7 +397,7 @@ function EppsInventarioPage({ showToast }) {
     finally { setRecalcBusy(false); }
   };
 
-  const [q, setQ] = uS('');
+  const [q, setQ] = uS(() => { try { const v = window.__eppInvBuscar; if (v) { delete window.__eppInvBuscar; return v; } } catch {} return ''; }); // pre-filtro desde Solicitudes (Ir al registro)
   const [filtroTipo, setFiltroTipo] = uS('todos');
   const [histPrecioItem, setHistPrecioItem] = uS(null); // EPP para el visor de historial de precios
   const [porTrabajadorOpen, setPorTrabajadorOpen] = uS(false); // ventana "EPPs por trabajador"

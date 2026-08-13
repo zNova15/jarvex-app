@@ -175,7 +175,7 @@ function MaterialesPage({ showToast }) {
   // duplicados (mismo timestamp). Se vio en producción: arenas y
   // tubos duplicados que dejaron stock en -45.
   const [busyMovLote, , setBusyMovLote] = useBusy();
-  const [q, setQ] = uS('');
+  const [q, setQ] = uS(() => { try { const v = window.__almMatBuscar; if (v) { delete window.__almMatBuscar; return v; } } catch {} return ''; }); // pre-filtro desde Solicitudes (Ir al registro)
   const [modal, setModal] = uS(null); // 'ingreso' | 'salida' | 'nuevo' | 'editar' | 'sync' | 'reposicion'
   const [reposicionForm, setReposicionForm] = uS(null); // { mat, cantidad, motivo, prioridad }
   const [editingId, setEditingId] = uS(null); // id del material en edición
@@ -3541,7 +3541,7 @@ function HerramientasPage({ showToast }) {
   // editar campos ahora sea solo-admin.
   const userId = auth?.profile?.id ?? null;
   const canFoto = canWrite || (window.__hasPerm?.(myRol, 'Evidencias', 'w') ?? false);
-  const [q, setQ] = uS('');
+  const [q, setQ] = uS(() => { try { const v = window.__almHerrBuscar; if (v) { delete window.__almHerrBuscar; return v; } } catch {} return ''; }); // pre-filtro desde Solicitudes (Ir al registro)
   const [modal, setModal] = uS(null);
   const [form, setForm] = uS({});
   const [editingId, setEditingId] = uS(null);
@@ -5036,7 +5036,7 @@ function PersonalPage({ showToast }) {
   // Verificación masiva de DNIs del roster contra RENIEC (pacing 30/min).
   const [dniCheck, setDniCheck] = uS(null); // null | { running, current, total, resultados: Map(pid→{estado,reniec,mensaje}) }
   const dniAbort = uR({ stop: false }).current; // ref estable: el loop y "Pausar" comparten SIEMPRE el mismo objeto
-  const [q, setQ] = uS('');
+  const [q, setQ] = uS(() => { try { const v = window.__personalBuscar; if (v) { delete window.__personalBuscar; return v; } } catch {} return ''; }); // pre-filtro desde Solicitudes (Ir al registro)
   const [modal, setModal] = uS(null);
   const [form, setForm] = uS({});
   const [editingId, setEditingId] = uS(null);
