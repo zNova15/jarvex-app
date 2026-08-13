@@ -334,6 +334,7 @@ class AppErrorBoundary extends React.Component {
 // Banner discreto "hay versión nueva". No recarga solo: el usuario decide.
 function UpdateBanner() {
   const [show, setShow] = React.useState(() => (typeof window !== 'undefined' && !!window.__jxUpdateAvailable));
+  const [updating, setUpdating] = React.useState(false);
   React.useEffect(() => {
     const on = () => setShow(true);
     window.addEventListener('jx_update_available', on);
@@ -343,9 +344,10 @@ function UpdateBanner() {
   return (
     <div style={{ position: 'fixed', bottom: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 99999, background: '#1C2D40', color: '#F0F2F5', border: '1px solid rgba(242,183,5,0.5)', borderRadius: 10, padding: '11px 14px', display: 'flex', alignItems: 'center', gap: 12, boxShadow: '0 6px 24px rgba(0,0,0,0.4)', maxWidth: '92vw', flexWrap: 'wrap' }}>
       <span style={{ fontSize: 13 }}>✨ Hay una versión nueva de JARVEX.</span>
-      <button onClick={() => { try { window.__jxUpdateSW ? window.__jxUpdateSW() : window.location.reload(); } catch { window.location.reload(); } }}
-        style={{ background: '#F2B705', color: '#0D1520', border: 'none', padding: '7px 14px', borderRadius: 7, fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>
-        Actualizar ahora
+      <button disabled={updating}
+        onClick={() => { setUpdating(true); try { window.__jxUpdateSW ? window.__jxUpdateSW() : window.location.reload(); } catch { window.location.reload(); } }}
+        style={{ background: '#F2B705', color: '#0D1520', border: 'none', padding: '7px 14px', borderRadius: 7, fontWeight: 700, cursor: updating ? 'wait' : 'pointer', fontSize: 12, opacity: updating ? 0.7 : 1 }}>
+        {updating ? 'Actualizando…' : 'Actualizar ahora'}
       </button>
       <button onClick={() => setShow(false)} title="Más tarde"
         style={{ background: 'transparent', color: '#9AA7B4', border: 'none', cursor: 'pointer', fontSize: 16, lineHeight: 1 }}>✕</button>
@@ -439,7 +441,20 @@ try {
   const updateSW = registerSW({
     immediate: true,
     onNeedRefresh() {
-      window.__jxUpdateSW = () => updateSW(true);   // aplica y recarga
+      // Aplicar y RECARGAR de forma ROBUSTA. updateSW(true) solo recarga cuando
+      // llega 'controllerchange'; si esta pestaña NO está controlada por el SW
+      // (típico tras un Ctrl+Shift+R: el hard-reload carga la página salteando
+      // el SW), ese evento jamás llega → el botón activaba el SW nuevo pero no
+      // recargaba nada y el usuario tenía que volver a Ctrl+Shift+R a mano.
+      // Red de seguridad: si en 1.5s no recargó sola, recargamos igual — el SW
+      // nuevo ya quedó activo y la recarga sirve la versión nueva.
+      window.__jxUpdateSW = () => {
+        let hecho = false;
+        const recargar = () => { if (!hecho) { hecho = true; try { window.location.reload(); } catch {} } };
+        try { navigator.serviceWorker?.addEventListener('controllerchange', recargar, { once: true }); } catch {}
+        try { const p = updateSW(true); if (p && typeof p.catch === 'function') p.catch(() => {}); } catch {}
+        setTimeout(recargar, 1500);
+      };
       window.__jxUpdateAvailable = true;            // por si el banner monta después
       window.dispatchEvent(new Event('jx_update_available'));
     },
