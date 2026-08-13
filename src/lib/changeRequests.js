@@ -300,13 +300,18 @@ export async function syncPendingChangeRequests() {
     try {
       const { error } = await supabase.from('change_requests').insert(payload);
       if (!error) {
-        await db.change_requests_pending.update(row.id, { synced: true });
+        await db.change_requests_pending.update(row.id, { synced: true, _last_error: null });
         synced++;
       } else {
         console.warn('[changeRequests] sync falló para', row.id, error.message);
+        // Motivo VISIBLE: antes el fallo era solo un console.warn — la solicitud
+        // quedaba "fantasma" en este dispositivo (el solicitante creía que la
+        // envió y el admin nunca la veía). El banner de Solicitudes lo muestra.
+        try { await db.change_requests_pending.update(row.id, { _last_error: error.message || 'error', _last_error_at: new Date().toISOString() }); } catch {}
       }
     } catch (e) {
       console.warn('[changeRequests] sync excepción para', row.id, e?.message || e);
+      try { await db.change_requests_pending.update(row.id, { _last_error: e?.message || String(e), _last_error_at: new Date().toISOString() }); } catch {}
     }
   }
 
@@ -319,4 +324,28 @@ export async function syncPendingChangeRequests() {
   } catch (e) {}
 
   return synced;
+}
+
+/**
+ * Cola LOCAL de solicitudes aún no subidas al servidor (las "fantasma": el
+ * solicitante cree que las envió pero el admin no las ve). Para el banner de
+ * la página de Solicitudes. Incluye el motivo del último fallo y si la fila
+ * pertenece a OTRO usuario (PC compartida: sube recién cuando él se loguee).
+ */
+export async function getColaLocalPendiente() {
+  let rows = [];
+  try { rows = await db.change_requests_pending.filter(r => !r.synced).toArray(); } catch { return []; }
+  if (!rows.length) return [];
+  let uid = null;
+  try { const { data } = await supabase.auth.getUser(); uid = data?.user?.id || null; } catch {}
+  return rows.map(r => ({
+    id: r.id,
+    target_table: r.target_table,
+    label: r.target_record_label || r.target_table || '(solicitud)',
+    reason: r.reason || '',
+    created_at: r.created_at || '',
+    requester_email: r.requester_email || null,
+    deOtroUsuario: !!(uid && r.requester_id && r.requester_id !== uid),
+    error: r._last_error || null,
+  })).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
 }

@@ -333,6 +333,8 @@ const AYUDA = {
     que: 'La bandeja de solicitudes de cambio que envían los usuarios: cambios de campos, eliminaciones de movimientos, vinculación de facturas, bancarizaciones equivocadas, subcontratos nuevos.',
     como: [
       'La mayoría se APLICA SOLA al aprobar: cantidades y eliminaciones de movimientos (recalculan stock/consumo), la vinculación de facturas (obra / Gastos Generales / Contabilidad Neta), la eliminación de bancarizaciones (borra partes/constancias, libera vouchers y devuelve la factura a Pendiente si queda descubierta) y la eliminación de DETRACCIONES (borra la constancia y deja la factura sin detracción).',
+      'SOLICITUDES "FANTASMA": si al enviar una solicitud no había señal (o falló la subida), queda guardada SOLO en tu dispositivo y el admin NO la ve. Ahora la página te lo muestra con un cartel rojo "⚠ N solicitud(es) SIN SUBIR" con el motivo del fallo y el botón "⬆ Subir ahora". Si enviaste una solicitud y el admin dice que no le llegó: entrá a Solicitudes y mirá ese cartel.',
+      'En una PC COMPARTIDA, las solicitudes encoladas por otro usuario suben recién cuando ESA persona vuelve a iniciar sesión ahí (aparecen con la etiqueta "de otro usuario").',
       'Las marcadas "acción manual del admin" son descriptivas: hacé el cambio en su módulo y aprobá como acuse.',
       'Usá el buscador y los filtros (chips por PERSONA y menú por TIPO) para no perder ninguna: la bandeja mezcla las solicitudes de almacén, obra y contabilidad de todos los usuarios.',
       'Al enviar: los campos que se eligen de una lista (ej. la vinculación de una factura) se mandan de una — no hay pantalla de "confirmar". Solo el texto libre pide revisar el cambio antes de enviarlo.',

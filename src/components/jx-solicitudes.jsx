@@ -373,6 +373,9 @@ function SolicitudesPage({ showToast }) {
   const [requests, setRequests] = uSS([]);
   const [loading, setLoading] = uSS(true);
   const [busy, setBusy] = uSS(false);
+  // Anti-fantasma: cola local sin subir + total real de pendientes en el server.
+  const [colaLocal, setColaLocal] = uSS([]);
+  const [pendTotalServer, setPendTotalServer] = uSS(null);
 
   const [reviewing, setReviewing] = uSS(null);     // request en revisión
   const [reviewMode, setReviewMode] = uSS(null);   // 'approve' | 'reject'
@@ -426,17 +429,44 @@ function SolicitudesPage({ showToast }) {
     try {
       let data;
       if (tab === 'pendientes' && esRevisor) {
-        data = await cr.list?.({ status: 'pendiente', limit: 200 }) || [];
+        data = await cr.list?.({ status: 'pendiente', limit: 500 }) || [];
+        // Chequeo anti-fantasma: si el conteo del server supera lo listado, hay
+        // solicitudes que la bandeja NO muestra (truncamiento) — avisar.
+        try {
+          const totalPend = await cr.countPending?.();
+          setPendTotalServer(typeof totalPend === 'number' ? totalPend : null);
+        } catch { setPendTotalServer(null); }
       } else {
-        data = await cr.list?.({ requesterId: myId, limit: 200 }) || [];
+        data = await cr.list?.({ requesterId: myId, limit: 500 }) || [];
+        setPendTotalServer(null);
       }
       setRequests(data);
+      // Cola LOCAL sin subir (las verdaderas "fantasma"): solicitudes que este
+      // dispositivo nunca logró insertar en el server.
+      try { setColaLocal(await cr.colaLocal?.() || []); } catch { setColaLocal([]); }
     } catch (e) {
       console.warn('[SolicitudesPage] load error', e);
     } finally {
       setLoading(false);
     }
   }, [tab, esRevisor, myId]);
+
+  const subirColaLocal = async () => {
+    setBusy(true);
+    try {
+      const n = await cr.sync?.();
+      const resto = await cr.colaLocal?.() || [];
+      setColaLocal(resto);
+      if (n > 0 && resto.length === 0) showToast(`✓ ${n} solicitud(es) subida(s) — el admin ya las ve.`, 'green');
+      else if (n > 0) showToast(`⚠ Subieron ${n}, pero ${resto.length} siguen sin poder subir (mirá el motivo en la lista).`, 'amber');
+      else showToast(resto.length ? `⚠ Ninguna pudo subir — revisá los motivos (o son de otro usuario de esta PC).` : 'Nada pendiente de subir.', resto.length ? 'red' : 'blue');
+      reload();
+    } catch (e) {
+      showToast('Error: ' + (e?.message || e), 'red');
+    } finally {
+      setBusy(false);
+    }
+  };
 
   uES(() => { reload(); }, [reload]);
 
@@ -751,6 +781,41 @@ function SolicitudesPage({ showToast }) {
           </button>
         </div>
       </div>
+
+      {/* ⚠ ANTI-FANTASMA 1: solicitudes guardadas en ESTE dispositivo que nunca
+          llegaron al server — el solicitante cree que las envió y el admin no
+          las ve. Con motivo del fallo y botón para reintentar la subida. */}
+      {colaLocal.length > 0 && (
+        <div className="card" style={{ marginBottom: 14, padding: '12px 14px', background: 'rgba(231,76,60,0.07)', border: '1px solid rgba(231,76,60,0.35)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--red)' }}>
+              ⚠ {colaLocal.length} solicitud(es) SIN SUBIR al servidor
+            </span>
+            <span style={{ fontSize: 11, color: 'var(--tm)' }}>Están solo en este dispositivo — el admin NO las ve todavía.</span>
+            <button className="btn btn-amber btn-xs" style={{ marginLeft: 'auto' }} disabled={busy} onClick={subirColaLocal}>
+              ⬆ {busy ? 'Subiendo…' : 'Subir ahora'}
+            </button>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 160, overflowY: 'auto' }}>
+            {colaLocal.map(c => (
+              <div key={c.id} style={{ fontSize: 11, color: 'var(--ts)', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: '4px 6px', background: 'rgba(0,0,0,0.15)', borderRadius: 4 }}>
+                <span style={{ fontWeight: 600 }}>{c.label}</span>
+                <span style={{ color: 'var(--tm)' }}>{String(c.created_at || '').slice(0, 16).replace('T', ' ')}</span>
+                {c.deOtroUsuario && <span className="badge b-amber" style={{ fontSize: 9 }} title={`La creó ${c.requester_email || 'otro usuario'} en esta PC — sube recién cuando esa persona vuelva a iniciar sesión acá`}>de otro usuario</span>}
+                {c.error && <span style={{ color: 'var(--red)', fontSize: 10.5 }} title={c.error}>✗ {String(c.error).slice(0, 80)}</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ⚠ ANTI-FANTASMA 2: el server tiene MÁS pendientes que las que lista la
+          bandeja (truncamiento por límite) — que el admin sepa que hay más. */}
+      {tab === 'pendientes' && esRevisor && pendTotalServer != null && pendTotalServer > requests.length && (
+        <div className="card" style={{ marginBottom: 14, padding: '10px 14px', background: 'rgba(242,183,5,0.07)', border: '1px solid rgba(242,183,5,0.35)', fontSize: 12, color: 'var(--ts)' }}>
+          ⚠ El servidor tiene <strong>{pendTotalServer}</strong> solicitudes pendientes pero la lista muestra <strong>{requests.length}</strong>. Las más antiguas no aparecen — usá el buscador o los filtros para encontrarlas, y resolvé/rechazá las viejas para destrabar la lista.
+        </div>
+      )}
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 14, borderBottom: '1px solid var(--border)' }}>

@@ -75,6 +75,7 @@ import {
   updateOwnChangeRequest,
   syncPendingChangeRequests,
   countPendingChangeRequests,
+  getColaLocalPendiente,
 } from './lib/changeRequests';
 import './index.css';
 
@@ -154,6 +155,7 @@ window.__changeRequests = {
   updateOwn: updateOwnChangeRequest,
   sync: syncPendingChangeRequests,
   countPending: countPendingChangeRequests,
+  colaLocal: getColaLocalPendiente,
 };
 
 // ── Componentes ESENCIALES (eager, van al chunk principal) ───────────
