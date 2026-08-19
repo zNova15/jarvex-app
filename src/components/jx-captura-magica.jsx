@@ -231,6 +231,12 @@ function CapturaMagicaPage({ showToast }) {
   const [ocsActivasDB, setOcsActivasDB] = uSCM([]); // [{ oc, items: [oc_items], company, proveedor }]
   const [cadenasActivasDB, setCadenasActivasDB] = uSCM([]); // cadenas en borrador o confirmadas (no facturadas/cerradas)
   const [restored, setRestored] = uSCM(false);
+  // Ids DESCARTADOS por el usuario en esta sesión. Sin esto, el efecto de
+  // persistencia (items.forEach(saveItemToDB)) podía correr con el array viejo
+  // y RE-INSERTAR en Dexie el item recién borrado, y cargar() (que se re-ejecuta
+  // con cada jx_data_changed) lo "resucitaba" desde Dexie → un archivo de ABRIL
+  // descartado volvía a aparecer al subir los de MAYO (reporte de la asistente).
+  const descartadosRef = uRCM(new Set());
   const fileInputRef = uRCM(null);
   // Verificador masivo de RUCs (corrección retroactiva de razón social vs SUNAT).
   const [rucVerif, setRucVerif] = uSCM(null); // null | { running, checked, total, results, error }
@@ -312,6 +318,10 @@ function CapturaMagicaPage({ showToast }) {
   };
 
   const deleteItemFromDB = async (id) => {
+    // Marcar como retirado ANTES de borrar: cualquier salida de la cola
+    // (confirmado, RxH duplicado, guía, descartar) queda protegida contra la
+    // carrera con el efecto de persistencia y contra el MERGE de cargar().
+    try { descartadosRef.current.add(id); } catch {}
     try { await window.__db.captura_magica_pending.delete(id); } catch {}
   };
 
@@ -387,10 +397,15 @@ function CapturaMagicaPage({ showToast }) {
         // de reintento) → atascada hasta remontar la pestaña. Regla: para ids
         // ya en estado gana el estado; Dexie solo aporta ids que faltan.
         setItems(prev => {
-          if (!prev.length) return restoredItems;
+          // Nunca resucitar lo que el usuario descartó en esta sesión (aunque una
+          // escritura tardía lo haya dejado en Dexie — se vuelve a purgar abajo).
+          const vivos = restoredItems.filter(r => !descartadosRef.current.has(r.id));
+          if (!prev.length) return vivos;
           const byId = new Map(prev.map(x => [x.id, x]));
-          return restoredItems.map(r => byId.get(r.id) || r);
+          return vivos.map(r => byId.get(r.id) || r);
         });
+        // Purga defensiva: si un descartado seguía en Dexie por la carrera, borrarlo.
+        for (const r of restoredItems) if (descartadosRef.current.has(r.id)) deleteItemFromDB(r.id);
         setRestored(true);
         // Re-procesar los que quedaron pendientes (sin parsed): UNA sola vez
         // (cargar() también corre con cada jx_data_changed — sin el guard se
@@ -435,7 +450,7 @@ function CapturaMagicaPage({ showToast }) {
   // Cuando el state items cambia, sincronizar en Dexie (después del primer load)
   uECM(() => {
     if (!restored) return;
-    items.forEach(it => { saveItemToDB(it); });
+    items.forEach(it => { if (!descartadosRef.current.has(it.id)) saveItemToDB(it); });
   }, [items, restored]);
 
   // ── Drop zone handlers ──────────────────────────────────────
@@ -522,13 +537,39 @@ function CapturaMagicaPage({ showToast }) {
       const emisorNuestro = rucEmisorN
         ? (companies || []).find(c => !c.deleted_at && normalizarRuc(c.ruc) === rucEmisorN)
         : null;
+      // MISMO TIPO de documento: una NOTA DE CRÉDITO cuyo OCR trae en
+      // serie_correlativo la serie de la FACTURA que modifica (la NC la muestra
+      // en grande como "Doc. que modifica") coincidía con esa factura ya
+      // registrada y se marcaba "duplicado" → la NC nunca se registraba ni
+      // restaba (caso real KOPLAST: NC USD 14,506.70 = factura F003-3436). Una
+      // nota solo puede ser duplicado de OTRA NOTA; una factura, de otra factura.
+      const tipoExt = ext.tipo_documento || 'factura';
+      const esNotaExt = tipoExt === 'nota_credito' || tipoExt === 'nota_debito';
+      const mismoTipo = (m) => {
+        const t = m.document_type || 'factura';
+        const esNotaM = t === 'nota_credito' || t === 'nota_debito';
+        return esNotaExt ? (t === tipoExt) : !esNotaM;
+      };
       const dup = (rucEmisorN && compN) ? (movs || []).find(m =>
-        !m.deleted_at &&
+        !m.deleted_at && mismoTipo(m) &&
         normalizarComprobante(m.document_number) === compN &&
         (normalizarRuc(m.third_party_ruc) === rucEmisorN
           || (emisorNuestro && m.company_id === emisorNuestro.id
               && (m.clase || (m.type === 'income' ? 'venta' : 'compra')) === 'venta'))
       ) : null;
+      // Aviso útil (no bloqueante): si es una NC y su serie coincide con una
+      // FACTURA registrada, casi seguro el OCR confundió la serie de la nota con
+      // la del documento que modifica → pre-cargar la referencia y avisar.
+      let ncSerieDeFactura = null;
+      if (esNotaExt && rucEmisorN && compN) {
+        ncSerieDeFactura = (movs || []).find(m => !m.deleted_at
+          && !['nota_credito','nota_debito'].includes(m.document_type || 'factura')
+          && normalizarComprobante(m.document_number) === compN
+          && normalizarRuc(m.third_party_ruc) === rucEmisorN) || null;
+        if (ncSerieDeFactura && !ext.nota_ref?.doc_modifica) {
+          ext.nota_ref = { ...(ext.nota_ref || {}), doc_modifica: ncSerieDeFactura.document_number };
+        }
+      }
       setItems(prev => prev.map(x => x.id === id ? {
         ...x,
         base64,
@@ -536,6 +577,10 @@ function CapturaMagicaPage({ showToast }) {
         status: dup ? 'duplicado' : 'revisar',
         review: buildInitialReview(ext, companies, obras, proveedoresDB, materialesDB, ocsActivasDB, cadenasActivasDB, personal),
         duplicate_of: dup?.id || null,
+        // Para mostrar EN LA FILA qué registro existente lo marcó como duplicado
+        // (antes solo decía "Ya existe en la DB" y la asistente no podía verificar).
+        duplicate_info: dup ? { doc: dup.document_number, fecha: dup.date, monto: dup.amount, moneda: dup.currency, tercero: dup.third_party_name, tipo: dup.document_type } : null,
+        nc_aviso: ncSerieDeFactura ? `La serie leída (${ext.serie_correlativo}) es la de la FACTURA que modifica — verificá la serie real de la nota en el PDF (suele empezar con FC/BC).` : null,
       } : x));
     } catch (e) {
       setItems(prev => prev.map(x => x.id === id ? {
@@ -1184,10 +1229,21 @@ function CapturaMagicaPage({ showToast }) {
     // registrada dos veces (bug reportado por contabilidad, jul 2026).
     {
       const compN = normalizarComprobante(r.serie_correlativo);
+      // MISMO TIPO de documento (igual que el guard post-OCR): una nota de
+      // crédito/débito solo duplica a otra nota del mismo tipo; una factura, a
+      // otra factura. Sin esto, una NC cuyo OCR trajo la serie de la factura
+      // que modifica se bloqueaba como "duplicado" de esa factura.
+      const tipoDocR = r.tipo_documento || 'factura';
+      const esNotaR = tipoDocR === 'nota_credito' || tipoDocR === 'nota_debito';
+      const mismoTipoDoc = (m) => {
+        const t = m.document_type || 'factura';
+        const esNotaM = t === 'nota_credito' || t === 'nota_debito';
+        return esNotaR ? (t === tipoDocR) : !esNotaM;
+      };
       let dupMov = null;
       if (compN && esVenta) {
         dupMov = (await window.__db.accounting_movements
-          .filter(m => !m.deleted_at &&
+          .filter(m => !m.deleted_at && mismoTipoDoc(m) &&
             m.company_id === r.emisor_company_id &&
             (m.clase || (m.type === 'income' ? 'venta' : 'compra')) === 'venta' &&
             normalizarComprobante(m.document_number) === compN)
@@ -1196,7 +1252,7 @@ function CapturaMagicaPage({ showToast }) {
         const rucN = normalizarRuc(r.proveedor_ruc);
         if (rucN) {
           dupMov = (await window.__db.accounting_movements
-            .filter(m => !m.deleted_at &&
+            .filter(m => !m.deleted_at && mismoTipoDoc(m) &&
               normalizarComprobante(m.document_number) === compN &&
               normalizarRuc(m.third_party_ruc) === rucN)
             .toArray())[0];
@@ -2015,8 +2071,12 @@ function CapturaMagicaPage({ showToast }) {
   };
 
   const descartarItem = (id) => {
+    descartadosRef.current.add(id);
     setItems(prev => prev.filter(x => x.id !== id));
     deleteItemFromDB(id);
+    // Segundo borrado diferido: si el efecto de persistencia alcanzó a re-guardar
+    // el item con el array viejo, esto lo limpia de forma definitiva.
+    setTimeout(() => deleteItemFromDB(id), 800);
   };
 
   const reviewItem = items.find(x => x.id === reviewing);
@@ -2138,7 +2198,13 @@ function CapturaMagicaPage({ showToast }) {
                           <JxIcon name={est.icon} size={10}/> {est.label}
                         </span>
                         {it.error && <div style={{ fontSize:10, color: it.errorCode==='ia_sin_credito' ? 'var(--amber)' : 'var(--red)', marginTop:3, maxWidth:200 }}>{it.error}</div>}
-                        {it.status === 'duplicado' && <div style={{ fontSize:10, color:'var(--amber)', marginTop:3 }}>Ya existe en la DB</div>}
+                        {it.status === 'duplicado' && (
+                          <div style={{ fontSize:10, color:'var(--amber)', marginTop:3, maxWidth:260, lineHeight:1.4 }}
+                            title="Este comprobante coincide con uno ya registrado (mismo emisor y misma serie-correlativo). Si estás seguro de que es OTRO documento, revisá la serie que leyó el OCR con 'Revisar'.">
+                            Ya existe en la DB{it.duplicate_info ? <>: <strong>{it.duplicate_info.doc}</strong> · {it.duplicate_info.fecha || 's/f'} · {it.duplicate_info.moneda === 'USD' ? '$' : 'S/'} {Number(it.duplicate_info.monto || 0).toLocaleString('es-PE', { minimumFractionDigits: 2 })}{it.duplicate_info.tercero ? ` · ${String(it.duplicate_info.tercero).slice(0, 26)}` : ''}</> : ''}
+                          </div>
+                        )}
+                        {it.nc_aviso && <div style={{ fontSize:10, color:'var(--blue)', marginTop:3, maxWidth:260, lineHeight:1.4 }}>ℹ {it.nc_aviso}</div>}
                       </td>
                       <td>
                         {r ? (
