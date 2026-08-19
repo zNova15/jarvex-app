@@ -963,9 +963,16 @@ function MovimientosContablesPage({ showToast }) {
     const items = Array.isArray(notas.items_factura) ? notas.items_factura.slice() : [];
     if (!items[idx]) { showToast('El ítem de la factura cambió — recargá', 'red'); return false; }
     items[idx] = { ...items[idx], ...patch };
+    // Limpiar claves undefined (JSON.stringify las omite, pero el objeto en
+    // memoria no debe arrastrarlas a estadoRecepcionDeItems).
+    for (const k of Object.keys(items[idx])) if (items[idx][k] === undefined) delete items[idx][k];
     notas.items_factura = items;
     await window.__db.accounting_movements.update(facturaId, {
       notas: JSON.stringify(notas),
+      // Un ítem separado/vendido deja de contar como pendiente de recepción
+      // (itemNoRequiereAlmacen lo excluye) → el semáforo de la factura se
+      // recalcula en el acto (antes quedaba 'parcial' para siempre).
+      recepcion_status: estadoRecepcionDeItems(items),
       updated_at: new Date().toISOString(), updated_by: userId,
       version: (fresh.version ?? 0) + 1,
       sync_status: fresh.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
@@ -975,19 +982,25 @@ function MovimientosContablesPage({ showToast }) {
     return true;
   };
   const canSepararVenta = isAdmin || myRol === 'contador'; // jefa de contabilidad + admin
+  const pregVentaRef = uRC(false);   // guard SÍNCRONO anti doble-click (consultas duplicadas)
   const preguntarAlmacenVenta = async (row) => {
+    if (pregVentaRef.current) return;
+    pregVentaRef.current = true;
     try {
       const fac = (movs || []).find(m => m.id === row.facturaId);
       if (!fac) return;
       await crearConsulta({
         obra_id: fac.obra_id || null, origen: 'contabilidad',
         accounting_movement_id: fac.id, item_idx: row.idx,
-        referencia: referenciaSinCostos(fac, row.idx),
+        // flujo:'venta' distingue esta consulta de la vieja "¿llegó?": solo el
+        // "No" de ESTA habilita separar (el "No llegó" de la otra = "todavía no").
+        referencia: { ...referenciaSinCostos(fac, row.idx), flujo: 'venta' },
         pregunta: `¿Este insumo ingresó o va a ingresar a obra?: ${row.descripcion} · ${row.pendiente} ${row.unidad} (factura ${row.doc}). Contabilidad evalúa separarlo para VENTA.`.replace(/\s+/g, ' ').trim(),
       });
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'puente_consultas' } })); } catch {}
       showToast('Consulta enviada a almacén 💬 — cuando respondan "No", vas a poder separarlo.', 'green');
     } catch (e) { showToast('Error al enviar la consulta: ' + (e?.message || e), 'red'); }
+    finally { pregVentaRef.current = false; }
   };
   const separarParaVenta = async (row, respuestaNo) => {
     if (!canSepararVenta) return;
@@ -1008,6 +1021,7 @@ function MovimientosContablesPage({ showToast }) {
     const ok = await escribirVentaItem(row.facturaId, row.idx, {
       venta_status: undefined, venta_cantidad: undefined, venta_comprobado: undefined,
       venta_marcado_por: undefined, venta_marcado_at: undefined,
+      venta_mov_id: undefined, venta_vendido_at: undefined,   // también al volver desde 'vendido'
     }, `Ítem devuelto del pool de venta: ${row.descripcion}`);
     if (ok) showToast('Ítem quitado del pool de venta.', 'amber');
   };
@@ -1637,7 +1651,7 @@ function MovimientosContablesPage({ showToast }) {
     setDetrPct(m.detraccion_pct != null ? String(m.detraccion_pct) : '');
     setDetrMonto(m.detraccion_monto != null ? String(m.detraccion_monto) : '');
     setDetrCodigo(m.detraccion_codigo || '');
-    setDetrFecha(m.detraccion_constancia_fecha || new Date().toISOString().slice(0, 10));
+    setDetrFecha(m.detraccion_constancia_fecha || window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10));
   };
 
   const subirDetraccion = async () => {
@@ -2821,12 +2835,13 @@ function MovimientosContablesPage({ showToast }) {
           .filter(m => !m.deleted_at && (m.clase === 'venta' || m.type === 'income'))
           .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
         const CONSULTA_BADGE = {
-          sin_consulta: { cls: 'b-gray', lbl: 'sin comprobar' },
-          esperando:    { cls: 'b-amber', lbl: '💬 esperando a almacén' },
-          no:           { cls: 'b-green', lbl: '✅ Almacén: NO ingresó' },
-          si:           { cls: 'b-red', lbl: '⚠ Almacén: SÍ ingresó' },
-          parcial:      { cls: 'b-red', lbl: '⚠ Almacén: ingresó parcial' },
-          otra_fecha:   { cls: 'b-amber', lbl: '📅 Almacén: otra fecha' },
+          sin_consulta:  { cls: 'b-gray', lbl: 'sin comprobar' },
+          esperando:     { cls: 'b-amber', lbl: '💬 esperando a almacén' },
+          no:            { cls: 'b-green', lbl: '✅ Almacén: NO va a ingresar' },
+          no_otro_flujo: { cls: 'b-gray', lbl: '"No llegó" (consulta ¿llegó?) — sin comprobar para venta' },
+          si:            { cls: 'b-red', lbl: '⚠ Almacén: SÍ ingresó' },
+          parcial:       { cls: 'b-red', lbl: '⚠ Almacén: ingresó parcial' },
+          otra_fecha:    { cls: 'b-red', lbl: '⚠ Almacén: ingresó en otra fecha' },
         };
         return (
           <Modal title="🏷 Insumos para Venta — sin ingreso a obra" icon="tag" onClose={()=>setShowVenta(false)} wide>
@@ -2847,7 +2862,8 @@ function MovimientosContablesPage({ showToast }) {
                       const ec = estadoConsultaItem(consultasVenta, row.facturaId, row.idx);
                       const b = CONSULTA_BADGE[ec.estado] || CONSULTA_BADGE.sin_consulta;
                       const respuestaNo = ec.estado === 'no';
-                      const bloqueado = ec.estado === 'si' || ec.estado === 'parcial';
+                      // Cualquier confirmación de llegada bloquea (si / parcial / otra fecha).
+                      const bloqueado = ['si', 'parcial', 'otra_fecha'].includes(ec.estado);
                       return (
                         <tr key={`${row.facturaId}_${row.idx}`}>
                           <td style={{ fontWeight:600, color:'var(--tp)' }}>{row.descripcion}</td>
@@ -2855,9 +2871,10 @@ function MovimientosContablesPage({ showToast }) {
                           <td style={{ textAlign:'right' }}>{row.pendiente} {row.unidad}</td>
                           <td><span className={`badge ${b.cls}`} style={{ fontSize:9.5 }}>{b.lbl}</span></td>
                           <td style={{ whiteSpace:'nowrap', textAlign:'right' }}>
-                            {ec.estado === 'sin_consulta' && (
+                            {(ec.estado === 'sin_consulta' || ec.estado === 'no_otro_flujo') && (
                               <button className="btn btn-ghost btn-xs" title="Preguntar a almacén si este insumo ingresó o va a ingresar" onClick={()=>preguntarAlmacenVenta(row)}>💬 Comprobar</button>
                             )}
+                            {bloqueado && <span style={{ fontSize:10, color:'var(--tm)' }} title="Almacén indica que el insumo ingresó: vinculá el ingreso con 🔎 ¿llegó? en vez de separarlo">ingresó → vinculá con ¿llegó?</span>}
                             {canSepararVenta && !bloqueado && (respuestaNo || isAdmin) && (
                               <button className="btn btn-amber btn-xs" style={{ marginLeft:4 }}
                                 title={respuestaNo ? 'Almacén confirmó que no ingresó — separar para venta' : 'Separar SIN comprobación (solo admin)'}
@@ -2888,7 +2905,10 @@ function MovimientosContablesPage({ showToast }) {
                       <tr key={`${row.facturaId}_${row.idx}`}>
                         <td style={{ fontWeight:600, color:'var(--tp)' }}>{row.descripcion}</td>
                         <td style={{ fontSize:10.5, color:'var(--tm)' }}>{row.doc} · {row.proveedor}</td>
-                        <td style={{ textAlign:'right' }}>{row.cantidad} {row.unidad}</td>
+                        <td style={{ textAlign:'right' }}>
+                          {row.cantidad} {row.unidad}
+                          {row.ingresoPosterior > 0 && <div style={{ fontSize:9.5, color:'var(--amber)' }} title="Después de separarlo, almacén recepcionó parte: lo disponible para venta es lo que queda pendiente">⚠ ingresó {row.ingresoPosterior} después</div>}
+                        </td>
                         <td style={{ textAlign:'right' }} title={`S/ ${row.costoUnit} c/u (costo de compra, referencia para el precio de venta)`}>S/ {row.costoTotal.toLocaleString('es-PE', { minimumFractionDigits:2 })}</td>
                         <td style={{ whiteSpace:'nowrap', textAlign:'right' }}>
                           {canSepararVenta && (
@@ -2927,8 +2947,13 @@ function MovimientosContablesPage({ showToast }) {
                         <td style={{ fontSize:10.5, color:'var(--tm)' }}>{row.doc}</td>
                         <td style={{ textAlign:'right' }}>{row.cantidad} {row.unidad}</td>
                         <td style={{ textAlign:'right' }}>S/ {row.costoTotal.toLocaleString('es-PE', { minimumFractionDigits:2 })}</td>
-                        <td style={{ fontSize:10.5 }}>
-                          {row.ventaDoc ? <span className="badge b-green" style={{ fontSize:9.5 }}>🧾 {row.ventaDoc} · {row.ventaFecha}</span> : <span style={{ color:'var(--tm)' }}>—</span>}
+                        <td style={{ fontSize:10.5, whiteSpace:'nowrap' }}>
+                          {row.ventaDoc ? <span className="badge b-green" style={{ fontSize:9.5 }}>🧾 {row.ventaDoc} · {row.ventaFecha}</span>
+                            : row.ventaBorrada ? <>
+                                <span className="badge b-red" style={{ fontSize:9.5 }} title="La factura de venta vinculada ya no existe (borrada/anulada)">venta borrada</span>
+                                {canSepararVenta && <button className="btn btn-ghost btn-xs" style={{ marginLeft:4 }} title="Devolver al pool de venta" onClick={()=>devolverDeVenta(row)}>↩</button>}
+                              </>
+                            : <span style={{ color:'var(--tm)' }}>—</span>}
                         </td>
                       </tr>
                     ))}
@@ -3021,8 +3046,13 @@ function MovimientosContablesPage({ showToast }) {
           table="accounting_movements"
           record={solicitarTarget}
           recordLabel={`${solicitarTarget.document_type || 'doc'} ${solicitarTarget.document_number || ''} · ${fmtCur(solicitarTarget.amount, solicitarTarget.currency)}`}
-          allowDelete
+          // INTERCO (no espejo AUTO): el par se edita/elimina desde "Operaciones
+          // entre empresas" — acá solo se permite pedir la VINCULACIÓN (obra/destino,
+          // que SÍ se propaga al espejo) y pedidos descriptivos. Sin allowDelete:
+          // aprobar un borrado/monto/estado tocaría UN solo lado del par.
+          allowDelete={!solicitarTarget.is_intercompany}
           fields={[
+            ...(solicitarTarget.is_intercompany ? [] : [
             { key: 'amount', label: 'Monto', type: 'number' },
             { key: 'date', label: 'Fecha', type: 'date' },
             { key: 'description', label: 'Descripción' },
@@ -3030,6 +3060,7 @@ function MovimientosContablesPage({ showToast }) {
             { key: 'payment_status', label: 'Estado de pago' },
             { key: 'document_number', label: 'N° documento' },
             { key: 'third_party_name', label: 'Cliente / Proveedor' },
+            ]),
             // Vinculación (obra / gastos generales / contabilidad neta): la
             // asistente describe en el motivo a dónde debe ir; el Contador Jefe
             // o Admin lo aplican desde Editar Movimiento → Vinculación.
@@ -3358,7 +3389,7 @@ function IntercompanyPage({ showToast }) {
     setForm({
       seller_company_id: companiesActivas[0].id,
       buyer_company_id: companiesActivas[1].id,
-      date: new Date().toISOString().slice(0,10),
+      date: window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0,10),
       operation_type: 'materiales',
       description: '',
       amount: '',
@@ -4694,7 +4725,7 @@ function TrazabilidadPage({ showToast }) {
       showToast('No hay empresas mixtas disponibles. Registrá al menos una empresa que no sea la ejecutora.', 'red');
       return;
     }
-    const today = new Date().toISOString().slice(0,10);
+    const today = window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0,10);
     setForm({
       obra_id: obraId,
       fecha: today,
@@ -4738,7 +4769,7 @@ function TrazabilidadPage({ showToast }) {
         }];
     setForm({
       obra_id: c.obra_id || '',
-      fecha: c.fecha || new Date().toISOString().slice(0,10),
+      fecha: c.fecha || window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0,10),
       comprobante_origen_id: c.comprobante_origen_id || '',
       proveedor_externo_nombre: c.proveedor_externo_nombre || '',
       proveedor_externo_ruc: c.proveedor_externo_ruc || '',

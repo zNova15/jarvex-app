@@ -130,8 +130,13 @@ export async function uploadEvidencia(evidenciaId) {
       .filter(e => e.id !== evidenciaId && (e.blob_ref === blobKey || e.id === evidencia.blob_ref) && !e.url_archivo)
       .toArray();
     for (const h of hermanas) {
-      await db.evidencias.update(h.id, { url_archivo: publicUrl });
-      await upsertMetadataEvidencia({ ...h, url_archivo: publicUrl }, publicUrl);
+      // Primero el SERVER; la url local se escribe solo si entró. Si falla, la
+      // hermana conserva url null y _last_error → sigue elegible para reintento
+      // (antes se fijaba la url local ANTES del upsert y se descartaba el
+      // resultado: hermana "con archivo" local pero sin url en server).
+      const res = await upsertMetadataEvidencia({ ...h, url_archivo: publicUrl }, publicUrl);
+      if (res && res.ok) await db.evidencias.update(h.id, { url_archivo: publicUrl, _last_error: null });
+      else { try { await db.evidencias.update(h.id, { _last_error: `Metadata (hermana) no entró al servidor: ${res?.error || 'error'}` }); } catch {} }
     }
   } catch {}
 
@@ -139,10 +144,15 @@ export async function uploadEvidencia(evidenciaId) {
   // referencia (blobs compartidos por blob_ref — borrar antes rompía la subida
   // de las hermanas).
   try {
+    // Una hermana 'pending_create' (espejo de OC que sube por el SyncEngine como
+    // FILA) no necesita el blob: su archivo es el de la primaria (url propagada
+    // arriba). Solo retienen el blob las que aún deben SUBIR ARCHIVO
+    // ('pending_upload'/'failed'). Antes cualquier estado ≠ uploaded/synced lo
+    // retenía → el blob quedaba huérfano para siempre si la primaria subía antes.
     const aunLoUsan = await db.evidencias
       .filter(e => e.id !== evidenciaId
         && (e.blob_ref === blobKey || e.id === blobKey)
-        && e.sync_status !== UPLOAD_STATUS.UPLOADED && e.sync_status !== 'synced')
+        && (e.sync_status === UPLOAD_STATUS.PENDING || e.sync_status === UPLOAD_STATUS.FAILED))
       .count();
     if (aunLoUsan === 0) await db.evidencias_blobs.delete(blobKey);
   } catch {

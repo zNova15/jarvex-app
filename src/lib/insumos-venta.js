@@ -23,8 +23,12 @@ const num = (v) => (Number(v) || 0);
 export function itemAplicaAlmacen(it) {
   if (!it) return false;
   if (String(it.tipo_insumo || '') === 'servicio') return false;
+  // Mismo criterio que itemNoRequiereAlmacen (cruce-recepcion): consumo de
+  // EMPRESA o gasto general de OBRA ('obra_general' — valor canónico del repo;
+  // antes se comparaba contra 'general', que no existe → esos ítems aparecían
+  // como candidatos a venta).
   const dest = String(it.destino || '');
-  if (dest === 'empresa' || dest === 'general') return false;
+  if (dest === 'empresa' || dest === 'obra_general') return false;
   return true;
 }
 
@@ -79,8 +83,14 @@ export function poolParaVenta(movs) {
     if (!m || m.deleted_at) continue;
     itemsDeFactura(m).forEach((it, idx) => {
       if (it.venta_status !== 'para_venta') return;
-      const cant = num(it.venta_cantidad) || pendienteDeIngreso(it) || num(it.cantidad);
-      out.push({ ...filaDe(m, it, idx), cantidad: cant, costoTotal: cant * num(it.precio_unitario), separadoAt: it.venta_marcado_at || null });
+      const separada = num(it.venta_cantidad) || pendienteDeIngreso(it) || num(it.cantidad);
+      // Si DESPUÉS de separar el ítem se recepcionó (los flujos de recepción no
+      // leen venta_status), lo que queda realmente disponible es lo pendiente.
+      const pendienteActual = pendienteDeIngreso(it);
+      const ingresoPosterior = Math.max(0, separada - pendienteActual);
+      const cant = Math.min(separada, pendienteActual);
+      out.push({ ...filaDe(m, it, idx), cantidad: cant, cantidadSeparada: separada, ingresoPosterior,
+        costoTotal: cant * num(it.precio_unitario), separadoAt: it.venta_marcado_at || null });
     });
   }
   return out.sort((a, b) => String(b.separadoAt || '').localeCompare(String(a.separadoAt || '')));
@@ -100,21 +110,35 @@ export function vendidosVenta(movs) {
         ...filaDe(m, it, idx), cantidad: cant, costoTotal: cant * num(it.precio_unitario),
         ventaDoc: venta?.document_number || null, ventaFecha: venta?.date || null,
         ventaMonto: venta ? num(venta.amount) : null, ventaMovId: it.venta_mov_id || null,
+        // La venta vinculada ya no existe (borrada/anulada): permitir devolver al pool.
+        ventaBorrada: !!it.venta_mov_id && (!venta || !!venta.deleted_at),
       });
     });
   }
   return out.sort((a, b) => String(b.ventaFecha || '').localeCompare(String(a.ventaFecha || '')));
 }
 
+const esConsultaVenta = (c) => {
+  try { const ref = typeof c.referencia === 'string' ? JSON.parse(c.referencia) : (c.referencia || {}); return ref?.flujo === 'venta'; } catch { return false; }
+};
+
 /** Resumen de la respuesta de almacén para un ítem (desde puente_consultas).
- *  'no' habilita la separación; 'si'/'parcial' la bloquean; null = sin datos. */
+ *  Reglas: 'si' / 'parcial' / 'otra_fecha' (= llegó) BLOQUEAN la separación
+ *  vengan de la consulta que vengan; 'no' HABILITA solo si la consulta es del
+ *  flujo VENTA (referencia.flujo='venta') — el "No llegó" de la consulta vieja
+ *  "¿llegó a almacén?" significa "todavía no", no "no va a ingresar".
+ *  Estados: sin_consulta | esperando | no | no_otro_flujo | si | parcial | otra_fecha */
 export function estadoConsultaItem(consultas, facturaId, idx) {
   const propias = (consultas || []).filter(c => !c.deleted_at &&
     c.accounting_movement_id === facturaId && Number(c.item_idx) === Number(idx));
   if (!propias.length) return { estado: 'sin_consulta', consulta: null };
-  // La respuesta MÁS RECIENTE manda.
   const conResp = propias.filter(c => c.respuesta_tipo)
     .sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
-  if (conResp.length) return { estado: conResp[0].respuesta_tipo, consulta: conResp[0] };
-  return { estado: 'esperando', consulta: propias[0] };
+  if (!conResp.length) return { estado: 'esperando', consulta: propias[0] };
+  // Cualquier confirmación de llegada manda (aunque no sea la más reciente).
+  const llego = conResp.find(c => ['si', 'parcial', 'otra_fecha'].includes(c.respuesta_tipo));
+  if (llego) return { estado: llego.respuesta_tipo, consulta: llego };
+  const reciente = conResp[0];
+  if (reciente.respuesta_tipo === 'no' && !esConsultaVenta(reciente)) return { estado: 'no_otro_flujo', consulta: reciente };
+  return { estado: reciente.respuesta_tipo, consulta: reciente };
 }

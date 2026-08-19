@@ -211,6 +211,7 @@ function ComprasPendientesPage({ showToast }) {
   const recomputeStatus = (items) => {
     const resuelto = (it) => it.rechazado || it.tipo_insumo === 'servicio'
       || ['empresa', 'obra_general'].includes(it.destino)
+      || ['para_venta', 'vendido'].includes(it.venta_status)   // separado para VENTA: no ingresa a obra
       || (Number(it.recibido) || 0) >= (Number(it.cantidad) || 0) - 0.0001;
     const algoRecibido = items.some(it => (Number(it.recibido) || 0) > 0);
     const hayRechazo = items.some(it => it.rechazado);
@@ -379,6 +380,7 @@ function ComprasPendientesPage({ showToast }) {
                                 {negado && <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }} title={it.rechazo_motivo || 'No ingresó al almacén'}>🚫 negado</span>}
                                 {it.destino === 'empresa' && <span className="badge b-gray" style={{ marginLeft: 6, fontSize: 9 }} title="Consumo general de la empresa (oficina) — no se recibe en el almacén de la obra">🏢 empresa</span>}
                                 {it.destino === 'obra_general' && <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }} title="Gasto general de la obra (ej. comida del personal) — normalmente no se recibe en el almacén">🍽 gasto obra</span>}
+                                {['para_venta', 'vendido'].includes(it.venta_status) && <span className="badge b-blue" style={{ marginLeft: 6, fontSize: 9 }} title="Contabilidad lo separó para VENTA (no va a ingresar a la obra). Si de verdad ingresó, avisá a contabilidad antes de recepcionarlo.">🏷 para venta</span>}
                               </td>
                               <td>
                                 <span className={`badge ${TIPO_INSUMO_BADGE[tipo] || 'b-gray'}`} style={{ fontSize:9 }}>

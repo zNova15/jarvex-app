@@ -317,7 +317,10 @@ function CapturaMagicaPage({ showToast }) {
         // misma PC veía y podía confirmar los comprobantes ajenos, y la asistente
         // veía como "duplicado" lo que otro confirmó desde acá). Ahora cada fila
         // lleva su usuario y cargar() filtra por el actual.
-        user_id: item.user_id || userId,
+        // Legacy sin dueño (bandeja previa a esta versión): se conserva SIN
+        // user_id — si la estampáramos con el primer usuario que abre la bandeja
+        // en una PC compartida, desaparecería para quien realmente la subió.
+        user_id: item.user_id ?? (item._legacy_sin_dueno ? null : userId),
         updated_at: new Date().toISOString(),
         created_at: item.created_at || new Date().toISOString(),
       });
@@ -387,8 +390,10 @@ function CapturaMagicaPage({ showToast }) {
           try {
             if (!it || it.id == null) return null;
             // Bandeja POR USUARIO: filas de otra cuenta en este dispositivo no se
-            // muestran (las legacy sin user_id sí, para no perder lo ya subido).
+            // muestran (las legacy sin user_id sí, para no perder lo ya subido,
+            // y se marcan para que la persistencia NO las adopte).
             if (it.user_id && userId !== 'offline' && it.user_id !== userId) return null;
+            if (!it.user_id) it = { ...it, _legacy_sin_dueno: true };
             let file = null;
             if (it.file_blob instanceof Blob) {
               file = new File([it.file_blob], it.file_name || 'comprobante', { type: it.mimeType || 'application/pdf' });
@@ -1162,7 +1167,17 @@ function CapturaMagicaPage({ showToast }) {
     }
   };
 
+  // Guard SÍNCRONO anti doble-submit (regla del repo): el lock se toma ANTES
+  // del primer await y se libera en un finally que cubre TODOS los returns —
+  // incluidos los window.confirm del guard anti-duplicado, la rama "adjuntar al
+  // espejo" y el reemplazo diferido, que antes corrían FUERA del guard interno.
   const confirmarItem = async (id) => {
+    if (enProcesoRef.current.has(id)) return;
+    enProcesoRef.current.add(id);
+    try { await confirmarItemInner(id); }
+    finally { enProcesoRef.current.delete(id); }
+  };
+  const confirmarItemInner = async (id) => {
     const it = items.find(x => x.id === id);
     if (!it || !it.review) return;
     let r = it.review;
@@ -1352,6 +1367,8 @@ function CapturaMagicaPage({ showToast }) {
                   reason:`Contraparte intercompany respaldada con el comprobante real ${r.serie_correlativo} (Captura Mágica)` }); } catch {}
                 try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'accounting_movements' } })); } catch {}
                 setItems(prev => prev.map(x => x.id === id ? { ...x, status: 'confirmado', accId: espejoDeVenta.id } : x));
+                deleteItemFromDB(id);   // salir de la cola (si no, reaparecía como 'duplicado')
+                setReviewing(null);     // cerrar el modal (el botón Confirmar seguía habilitado)
                 showToast(`🔁 Comprobante adjuntado a la compra espejo de ${r.serie_correlativo} — dejó de ser automática.`, 'green');
                 return;
               } catch (e) { console.warn('[captura · adjuntar a espejo]', e?.message); }
@@ -1386,10 +1403,8 @@ function CapturaMagicaPage({ showToast }) {
     let proveedorIdFinal = r.proveedor_id;
     let companyIdFinal = r.company_id;
 
-    // Guard anti doble-submit: si este item ya se está confirmando, no lo
-    // proceses otra vez (evitaba el race que creó empresas/proveedores duplicados).
-    if (enProcesoRef.current.has(id)) return;
-    enProcesoRef.current.add(id);
+    // (el guard anti doble-submit vive en el wrapper confirmarItem → cubre
+    //  también todo lo anterior a este punto)
     try {
       // 0) Crear empresa del grupo si nueva. El review se arma al EXTRAER la
       // factura: si otra factura ya creó esa empresa (mismo RUC) en el ínterin,
@@ -1708,14 +1723,20 @@ function CapturaMagicaPage({ showToast }) {
         newData: { tipo: r.tipo_documento, doc: r.serie_correlativo, total: r.total, oc: r.vincular_a_oc },
         reason:'Captura mágica · ingreso comprobante' + (r.vincular_a_oc ? ' (vinculado a OC)' : '') }); } catch {}
 
-      // Cierre del reemplazo: re-apuntar la VENTA interna original al movimiento
-      // real (antes quedaba señalando al espejo borrado).
+      // Cierre del reemplazo: la VENTA interna NO se re-apunta al movimiento
+      // nuevo. Hacerlo creaba un CICLO de FK (compra real pending_create →
+      // venta; venta pending_update → compra) que el gate del SyncEngine no
+      // destraba jamás: la compra real nunca subía y el espejo seguía vivo en el
+      // server. El vínculo queda DERIVABLE desde la compra real (que sí lleva
+      // related_movement_id = ventaId y sube apenas la venta está synced). Solo
+      // se limpia el puntero legacy venta→espejo borrado (a null), como hace
+      // Contabilidad en eliminarEspejoAuto.
       if (herenciaEspejo?.ventaId) {
         try {
           const venta = await window.__db.accounting_movements.get(herenciaEspejo.ventaId);
-          if (venta && (!venta.related_movement_id || venta.related_movement_id === espejoAReemplazar?.id)) {
+          if (venta && espejoAReemplazar?.id && venta.related_movement_id === espejoAReemplazar.id) {
             await window.__db.accounting_movements.update(venta.id, {
-              related_movement_id: accId, updated_at: now, updated_by: userId,
+              related_movement_id: null, updated_at: now, updated_by: userId,
               version: (Number(venta.version) || 1) + 1,
               sync_status: venta.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
             });
@@ -2051,8 +2072,6 @@ function CapturaMagicaPage({ showToast }) {
       setReviewing(null);
     } catch (e) {
       showToast('Error al registrar: ' + (e.message || e), 'red');
-    } finally {
-      enProcesoRef.current.delete(id);
     }
   };
 
@@ -2299,6 +2318,7 @@ function CapturaMagicaPage({ showToast }) {
       {reviewItem && reviewItem.review && (
         <ReviewModal
           item={reviewItem}
+          movs={movs || []}
           companies={companies || []}
           personal={personal || []}
           obras={obras || []}
@@ -2457,7 +2477,7 @@ function VincularPendientesModal({ data, materialesDB, onClose, onConfirm }) {
 }
 
 // ─── MODAL DE REVISIÓN ───────────────────────────────────────
-function ReviewModal({ item, companies, personal, obras, proveedoresDB, materialesDB, ocsActivasDB, onChange, onPatch, onConfirm, onClose }) {
+function ReviewModal({ item, companies, personal, obras, proveedoresDB, materialesDB, ocsActivasDB, movs = [], onChange, onPatch, onConfirm, onClose }) {
   // La obra destino SIGUE a la obra activa del header (decisión de producto:
   // todos los módulos operan sobre la obra activa). Al abrir el modal,
   // sincronizar el review con la obra activa actual — cubre reviews viejos
@@ -3180,18 +3200,19 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
                     // Re-matchear la factura referenciada al editar (antes solo se
                     // calculaba una vez en el OCR y la corrección a mano se perdía).
                     // Exige MISMO emisor (RUC) para no colgar la NC de otra empresa.
+                    // movs llega como PROP (antes se referenciaba una variable del
+                    // page que NO estaba en scope → ReferenceError tragado y el
+                    // vínculo se BORRABA al tipear).
                     let refId = '';
-                    try {
-                      const refN = normalizarComprobante(v);
-                      const rucN = normalizarRuc(r.proveedor_ruc);
-                      if (refN && rucN) {
-                        const cand = (movs || []).find(mv => !mv.deleted_at
-                          && !['nota_credito','nota_debito'].includes(mv.document_type || 'factura')
-                          && normalizarComprobante(mv.document_number) === refN
-                          && normalizarRuc(mv.third_party_ruc) === rucN);
-                        refId = cand?.id || '';
-                      }
-                    } catch {}
+                    const refN = normalizarComprobante(v);
+                    const rucN = normalizarRuc(r.proveedor_ruc);
+                    if (refN && rucN) {
+                      const cand = (movs || []).find(mv => !mv.deleted_at
+                        && !['nota_credito','nota_debito'].includes(mv.document_type || 'factura')
+                        && normalizarComprobante(mv.document_number) === refN
+                        && normalizarRuc(mv.third_party_ruc) === rucN);
+                      refId = cand?.id || '';
+                    }
                     upd({ nota_doc_modifica: v, nota_ref_mov_id: refId });
                   }} placeholder="Ej. F001-123"/></div>
                   <div><label className="flabel">Motivo</label><input className="fi" value={r.nota_motivo || ''} onChange={e=>upd({ nota_motivo: e.target.value })} placeholder="Ej. anulación / descuento"/></div>

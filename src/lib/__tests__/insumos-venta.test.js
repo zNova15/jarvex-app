@@ -24,6 +24,7 @@ describe('insumos-venta — detección de candidatos', () => {
       IT({ recibido: 40 }),                          // completo
       IT({ tipo_insumo: 'servicio' }),               // servicio
       IT({ destino: 'empresa' }),                    // consumo empresa
+      IT({ destino: 'obra_general' }),               // gasto general de OBRA (valor canónico)
     ])]);
     expect(c).toHaveLength(0);
   });
@@ -41,7 +42,8 @@ describe('insumos-venta — detección de candidatos', () => {
   });
   it('helpers: itemAplicaAlmacen / pendienteDeIngreso', () => {
     expect(itemAplicaAlmacen(IT())).toBe(true);
-    expect(itemAplicaAlmacen(IT({ destino: 'general' }))).toBe(false);
+    expect(itemAplicaAlmacen(IT({ destino: 'obra_general' }))).toBe(false);
+    expect(itemAplicaAlmacen(IT({ destino: 'obra' }))).toBe(true);
     expect(pendienteDeIngreso(IT({ cantidad: 5, recibido: 7 }))).toBe(0); // nunca negativo
   });
 });
@@ -52,6 +54,20 @@ describe('insumos-venta — pool y vendidos', () => {
     expect(p).toHaveLength(1);
     expect(p[0].cantidad).toBe(10);
     expect(p[0].costoTotal).toBeCloseTo(85);
+    expect(p[0].ingresoPosterior).toBe(0);
+  });
+  it('si tras separar el ítem se recepcionó, el pool lo refleja (ingresoPosterior)', () => {
+    // separó 10 pendientes; luego almacén recepcionó 36 de 40 → pendiente real 4
+    const p = poolParaVenta([factura('a', [IT({ venta_status: 'para_venta', venta_cantidad: 10, recibido: 36 })])]);
+    expect(p[0].cantidad).toBe(4);
+    expect(p[0].cantidadSeparada).toBe(10);
+    expect(p[0].ingresoPosterior).toBe(6);
+  });
+  it('vendidos marca ventaBorrada cuando la venta vinculada ya no existe', () => {
+    const compra = factura('a', [IT({ venta_status: 'vendido', venta_cantidad: 10, venta_mov_id: 'v-borrada' })]);
+    const v = vendidosVenta([compra]);
+    expect(v[0].ventaBorrada).toBe(true);
+    expect(v[0].ventaDoc).toBeNull();
   });
   it('vendidos resuelve la factura de venta vinculada', () => {
     const compra = factura('a', [IT({ venta_status: 'vendido', venta_cantidad: 10, venta_mov_id: 'v1' })]);
@@ -64,18 +80,25 @@ describe('insumos-venta — pool y vendidos', () => {
 });
 
 describe('insumos-venta — estadoConsultaItem', () => {
-  const cons = (over = {}) => ({ accounting_movement_id: 'a', item_idx: 0, respuesta_tipo: null, updated_at: '2026-08-01', ...over });
+  const cons = (over = {}) => ({ accounting_movement_id: 'a', item_idx: 0, respuesta_tipo: null, updated_at: '2026-08-01', referencia: { flujo: 'venta' }, ...over });
   it('sin consulta / esperando / respondida', () => {
     expect(estadoConsultaItem([], 'a', 0).estado).toBe('sin_consulta');
     expect(estadoConsultaItem([cons()], 'a', 0).estado).toBe('esperando');
     expect(estadoConsultaItem([cons({ respuesta_tipo: 'no' })], 'a', 0).estado).toBe('no');
   });
-  it('la respuesta más reciente manda', () => {
+  it('una confirmación de llegada (si/parcial/otra_fecha) BLOQUEA aunque haya un "no" más reciente', () => {
     const r = estadoConsultaItem([
       cons({ respuesta_tipo: 'si', updated_at: '2026-08-01' }),
       cons({ respuesta_tipo: 'no', updated_at: '2026-08-05' }),
     ], 'a', 0);
-    expect(r.estado).toBe('no');
+    expect(r.estado).toBe('si');
+    expect(estadoConsultaItem([cons({ respuesta_tipo: 'otra_fecha' })], 'a', 0).estado).toBe('otra_fecha');
+  });
+  it('un "no" de la consulta vieja "¿llegó?" (sin flujo venta) NO habilita separar', () => {
+    const r = estadoConsultaItem([cons({ respuesta_tipo: 'no', referencia: {} })], 'a', 0);
+    expect(r.estado).toBe('no_otro_flujo');
+    // referencia como string JSON también se entiende
+    expect(estadoConsultaItem([cons({ respuesta_tipo: 'no', referencia: JSON.stringify({ flujo: 'venta' }) })], 'a', 0).estado).toBe('no');
   });
   it('no cruza ítems ni facturas', () => {
     expect(estadoConsultaItem([cons({ item_idx: 1, respuesta_tipo: 'no' })], 'a', 0).estado).toBe('sin_consulta');

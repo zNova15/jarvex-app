@@ -49,6 +49,25 @@ export function horaLocal(tz) {
 }
 // "YYYY-MM-DD HH:MM" ahora, en la zona configurada.
 export function ahoraLocal(tz) { return `${hoyLocal(tz)} ${horaLocal(tz)}`; }
+// Un timestamp ISO (UTC, p.ej. created_at del server) → 'YYYY-MM-DD' en la zona
+// configurada. Para comparar contra un <input type=date> local sin el corrimiento
+// de día que da .slice(0,10) (día UTC) después de las 19:00 en Perú.
+export function fechaLocalDe(iso, tz) {
+  if (!iso) return '';
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: tz || getTZ(), year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(iso));
+  } catch { return String(iso).slice(0, 10); }
+}
+// Un ISO → 'YYYY-MM-DD HH:MM' en la zona configurada (para mostrar).
+export function fechaHoraLocalDe(iso, tz) {
+  if (!iso) return '';
+  try {
+    const d = new Date(iso);
+    const f = new Intl.DateTimeFormat('en-CA', { timeZone: tz || getTZ(), year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+    const h = new Intl.DateTimeFormat('en-GB', { timeZone: tz || getTZ(), hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
+    return `${f} ${h}`;
+  } catch { return String(iso).slice(0, 16).replace('T', ' '); }
+}
 
 // 'YYYY-MM-DD' → 'dd/mm' por string-split (NO pasa por Date: evita el corrimiento
 // de un día por zona horaria de new Date('2026-06-01')). '' si no hay fecha.

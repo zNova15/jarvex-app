@@ -815,7 +815,7 @@ function App() {
   // plano del ítem clickeado; null = usar planoDe(page).
   const [navPlano, setNavPlano]     = uSA(null);
   const irAPagina = React.useCallback((p, planoItem) => { setPage(p); setNavPlano(planoItem || null); }, []);
-  window.__navTo = (p) => irAPagina(p); // navegación programática (resetea el override de plano)
+  window.__navTo = (p, plano) => irAPagina(p, plano); // navegación programática (sin plano → resetea el override)
 
   // Al cargar el profile (post-login):
   //   1. Redirigir a la home del rol (solo la primera vez).

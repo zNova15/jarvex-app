@@ -42,8 +42,13 @@ export async function createChangeRequest({ table, recordId, recordLabel, propos
 
   const { id: userId, email: userEmail } = await getCurrentUser();
   const createdAt = new Date().toISOString();
+  // Id generado en el CLIENTE y reutilizado si hay que encolar: si el insert
+  // online "falló" pero en realidad entró (respuesta perdida), el reintento
+  // choca 23505 y se marca subida — no se duplica la solicitud en el server.
+  const reqId = newId();
 
   const row = {
+    id: reqId,
     requester_id: userId,
     requester_email: userEmail,
     target_table: table,
@@ -59,6 +64,7 @@ export async function createChangeRequest({ table, recordId, recordLabel, propos
     try {
       const { data, error } = await supabase.from('change_requests').insert(row).select().single();
       if (!error) return data;
+      if (error.code === '23505') return { ...row, created_at: createdAt }; // ya estaba (respuesta previa perdida)
       console.warn('[changeRequests] online insert falló, encolando:', error.message);
     } catch (e) {
       console.warn('[changeRequests] online insert excepción, encolando:', e?.message || e);
@@ -67,7 +73,7 @@ export async function createChangeRequest({ table, recordId, recordLabel, propos
 
   // Offline o falló → cola local
   try {
-    const localId = newId();
+    const localId = reqId;
     await db.change_requests_pending.put({
       id: localId,
       created_at: createdAt,
@@ -260,7 +266,17 @@ export async function cancelChangeRequest(requestId) {
 /**
  * Sube las solicitudes encoladas offline.
  */
-export async function syncPendingChangeRequests() {
+// Lock de módulo: la función la llama el SyncEngine (cada ciclo, al volver el
+// foco, al reconectar) y también el botón "Subir ahora" — concurrentes, ambos
+// leían la misma cola y la insertaban DOS veces. Con el lock, la segunda
+// llamada reutiliza la promesa en vuelo.
+let _syncCRInflight = null;
+export function syncPendingChangeRequests() {
+  if (_syncCRInflight) return _syncCRInflight;
+  _syncCRInflight = _syncPendingChangeRequestsImpl().finally(() => { _syncCRInflight = null; });
+  return _syncCRInflight;
+}
+async function _syncPendingChangeRequestsImpl() {
   if (!navigator.onLine) return 0;
 
   let pending;
@@ -287,6 +303,7 @@ export async function syncPendingChangeRequests() {
   for (const row of pending) {
     if (!row.requester_id || row.requester_id !== uid) continue;
     const payload = {
+      id: row.id,   // mismo id que la cola → el reintento es idempotente (23505 = ya subida)
       requester_id: row.requester_id,
       requester_email: row.requester_email,
       target_table: row.target_table,
@@ -299,7 +316,9 @@ export async function syncPendingChangeRequests() {
     };
     try {
       const { error } = await supabase.from('change_requests').insert(payload);
-      if (!error) {
+      if (!error || error.code === '23505') {
+        // 23505 = la fila YA está en el server (insert anterior cuya respuesta se
+        // perdió, o carrera) → contarla como subida, sin duplicar.
         await db.change_requests_pending.update(row.id, { synced: true, _last_error: null });
         synced++;
       } else {

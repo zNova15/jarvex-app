@@ -1144,7 +1144,11 @@ function MovMaterialesPage({ showToast }) {
     const nuevaCant = Number(entrada);
     if (!(nuevaCant > 0)) { showToast('Cantidad inválida', 'red'); return; }
     if (nuevaCant === Number(m.cantidad)) return;
-    const nuevoStockResultante = stockTrasEditar(matLive?.stock_actual ?? 0, m, nuevaCant);
+    // Mismo delta que luego se APLICA (deltaStockMaterial: ajuste = +cantidad).
+    // Antes el guard usaba stockTrasEditar (ajuste = 0) y para un 'ajuste' decía
+    // "no cambia" y dejaba pasar → stock local negativo sin aviso.
+    const nuevoStockResultante = (Number(matLive?.stock_actual ?? 0))
+      + (deltaStockMaterial(m.tipo_movimiento, nuevaCant) - deltaStockMaterial(m.tipo_movimiento, m.cantidad));
     if (dejaNegativo(nuevoStockResultante)) {
       showToast(`No se puede: este cambio dejaría el stock en ${nuevoStockResultante}. El stock no puede quedar negativo.`, 'red');
       return;

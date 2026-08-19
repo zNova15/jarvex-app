@@ -246,7 +246,18 @@ function ContextoRegistro({ table, recordId }) {
                   default: break;
                 }
               } catch {}
-              window.__navTo?.(TABLA_A_PAGINA[table]);
+              // Aterrizar en la OBRA del registro: las páginas de almacén/personal/EPP
+              // se scopean por obra activa — si quedó otra obra seleccionada, la
+              // búsqueda pre-cargada no encontraba nada. Se respeta el aislamiento
+              // por obra (window.__obrasPermitidas). Las facturas van a Contabilidad
+              // en plano GENERAL (filtro de obra arranca en "todas").
+              try {
+                const oid = reg?.obra_id;
+                const permitidas = window.__obrasPermitidas; // Set | null (sin restricción)
+                if (oid && window.__setObraActivaId && (!permitidas || permitidas.has(oid))) window.__setObraActivaId(oid);
+              } catch {}
+              if (table === 'accounting_movements') window.__navTo?.(TABLA_A_PAGINA[table], 'general');
+              else window.__navTo?.(TABLA_A_PAGINA[table]);
             }}>
             ↗ Ir al registro
           </button>
@@ -444,10 +455,12 @@ function SolicitudesPage({ showToast }) {
       if (fTipo && (r.target_table || '—') !== fTipo) return false;
       // Filtros del historial de resueltas (fechas en ISO → comparación segura).
       if (fEstado && r.status !== fEstado) return false;
-      if (fPedidaDesde && String(r.created_at || '').slice(0, 10) < fPedidaDesde) return false;
-      if (fPedidaHasta && String(r.created_at || '').slice(0, 10) > fPedidaHasta) return false;
-      if (fResDesde && String(r.reviewed_at || '').slice(0, 10) < fResDesde) return false;
-      if (fResHasta && String(r.reviewed_at || '').slice(0, 10) > fResHasta) return false;
+      // Fechas en zona LOCAL (el input type=date es local; .slice(0,10) daba el día UTC).
+      const fl = (iso) => (window.__fecha?.fechaLocalDe ? window.__fecha.fechaLocalDe(iso) : String(iso || '').slice(0, 10));
+      if (fPedidaDesde && fl(r.created_at) < fPedidaDesde) return false;
+      if (fPedidaHasta && fl(r.created_at) > fPedidaHasta) return false;
+      if (fResDesde && (!r.reviewed_at || fl(r.reviewed_at) < fResDesde)) return false;
+      if (fResHasta && (!r.reviewed_at || fl(r.reviewed_at) > fResHasta)) return false;
       if (!words.length) return true;
       const hay = norm([
         r.requester_email,
@@ -468,7 +481,7 @@ function SolicitudesPage({ showToast }) {
       let data;
       if (tab === 'resueltas' && esRevisor) {
         // Historial del admin: todo lo APROBADO/RECHAZADO (filtros en la UI).
-        data = (await cr.list?.({ limit: 500 }) || []).filter(r => r.status !== 'pendiente');
+        data = (await cr.list?.({ limit: 500 }) || []).filter(r => r.status === 'aprobada' || r.status === 'rechazada');
         setPendTotalServer(null);
       } else if (tab === 'pendientes' && esRevisor) {
         data = await cr.list?.({ status: 'pendiente', limit: 500 }) || [];
@@ -532,6 +545,7 @@ function SolicitudesPage({ showToast }) {
   // Aquí usamos un atajo: escribimos directo a Supabase y a Dexie local.
   const applyChange = async (req) => {
     const fields = {};
+    let espejoDiferido = null;   // { espejo, patch, v } — se aplica tras el update principal
     for (const [k, v] of Object.entries(req.proposed_changes || {})) {
       if (k.startsWith('__')) continue;   // pedido descriptivo: no es columna real, el admin lo aplica a mano
       fields[k] = v && typeof v === 'object' && 'new' in v ? v.new : v;
@@ -649,6 +663,9 @@ function SolicitudesPage({ showToast }) {
       // consistentes. Solo espejos AUTO (una compra registrada a mano por la
       // compradora puede tener legítimamente otra obra/destino).
       if (fields.destino_contable) {
+        // Solo RESOLVER el espejo acá; la escritura se hace DESPUÉS de que el
+        // update principal en Supabase tenga éxito (si ese update falla, la
+        // solicitud sigue pendiente y el espejo NO debe haber cambiado).
         try {
           const movId = req.target_record_id;
           const candidatos = await window.__db.accounting_movements
@@ -659,19 +676,7 @@ function SolicitudesPage({ showToast }) {
           const espejo = candidatos.find(m => {
             try { return !!JSON.parse(m.notas || '{}')?.intercompany_auto; } catch { return false; }
           });
-          if (espejo) {
-            const { SYNC_STATUS } = await import('../db/jarvex.db');
-            await window.__db.accounting_movements.update(espejo.id, {
-              obra_id: fields.obra_id ?? null,
-              destino_contable: fields.destino_contable,
-              updated_at: new Date().toISOString(),
-              updated_by: window.__currentUserId || 'admin-approval',
-              version: (Number(espejo.version) || 1) + 1,
-              sync_status: espejo.sync_status === SYNC_STATUS.PENDING_CREATE ? SYNC_STATUS.PENDING_CREATE : SYNC_STATUS.PENDING_UPDATE,
-            });
-            try { await window.__logAudit?.({ action:'update', table:'accounting_movements', recordId: espejo.id,
-              reason:`Vinculación propagada desde la solicitud aprobada de su factura (${v})` }); } catch {}
-          }
+          if (espejo) espejoDiferido = { espejo, patch: { obra_id: fields.obra_id ?? null, destino_contable: fields.destino_contable }, v };
         } catch (e) { console.warn('[solicitudes] espejo vinculación:', e?.message); }
       }
     }
@@ -765,6 +770,24 @@ function SolicitudesPage({ showToast }) {
       }
     } catch (e) {}
 
+    // Propagar la vinculación al ESPEJO intercompany automático — recién ahora,
+    // con el update principal confirmado (misma obra/destino en ambos lados).
+    if (espejoDiferido) {
+      try {
+        const { espejo, patch, v } = espejoDiferido;
+        const { SYNC_STATUS } = await import('../db/jarvex.db');
+        await window.__db.accounting_movements.update(espejo.id, {
+          ...patch,
+          updated_at: new Date().toISOString(),
+          updated_by: window.__currentUserId || 'admin-approval',
+          version: (Number(espejo.version) || 1) + 1,
+          sync_status: espejo.sync_status === SYNC_STATUS.PENDING_CREATE ? SYNC_STATUS.PENDING_CREATE : SYNC_STATUS.PENDING_UPDATE,
+        });
+        try { await window.__logAudit?.({ action:'update', table:'accounting_movements', recordId: espejo.id,
+          reason:`Vinculación propagada desde la solicitud aprobada de su factura (${v})` }); } catch {}
+      } catch (e) { console.warn('[solicitudes] espejo vinculación (post-update):', e?.message); }
+    }
+
     return { oldData, newData: fields };
   };
 
@@ -842,7 +865,7 @@ function SolicitudesPage({ showToast }) {
             {colaLocal.map(c => (
               <div key={c.id} style={{ fontSize: 11, color: 'var(--ts)', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: '4px 6px', background: 'rgba(0,0,0,0.15)', borderRadius: 4 }}>
                 <span style={{ fontWeight: 600 }}>{c.label}</span>
-                <span style={{ color: 'var(--tm)' }}>{String(c.created_at || '').slice(0, 16).replace('T', ' ')}</span>
+                <span style={{ color: 'var(--tm)' }}>{window.__fecha?.fechaHoraLocalDe ? window.__fecha.fechaHoraLocalDe(c.created_at) : String(c.created_at || '').slice(0, 16).replace('T', ' ')}</span>
                 {c.deOtroUsuario && <span className="badge b-amber" style={{ fontSize: 9 }} title={`La creó ${c.requester_email || 'otro usuario'} en esta PC — sube recién cuando esa persona vuelva a iniciar sesión acá`}>de otro usuario</span>}
                 {c.error && <span style={{ color: 'var(--red)', fontSize: 10.5 }} title={c.error}>✗ {String(c.error).slice(0, 80)}</span>}
               </div>
@@ -853,7 +876,7 @@ function SolicitudesPage({ showToast }) {
 
       {/* ⚠ ANTI-FANTASMA 2: el server tiene MÁS pendientes que las que lista la
           bandeja (truncamiento por límite) — que el admin sepa que hay más. */}
-      {tab === 'pendientes' && esRevisor && pendTotalServer != null && pendTotalServer > requests.length && (
+      {tab === 'pendientes' && esRevisor && !loading && requests.length > 0 && pendTotalServer != null && pendTotalServer > requests.length && (
         <div className="card" style={{ marginBottom: 14, padding: '10px 14px', background: 'rgba(242,183,5,0.07)', border: '1px solid rgba(242,183,5,0.35)', fontSize: 12, color: 'var(--ts)' }}>
           ⚠ El servidor tiene <strong>{pendTotalServer}</strong> solicitudes pendientes pero la lista muestra <strong>{requests.length}</strong>. Las más antiguas no aparecen — usá el buscador o los filtros para encontrarlas, y resolvé/rechazá las viejas para destrabar la lista.
         </div>
@@ -951,8 +974,8 @@ function SolicitudesPage({ showToast }) {
                 <option value="">🗂 Todos los tipos</option>
                 {tipos.map(([t, n]) => <option key={t} value={t}>{(TABLE_LABELS[t] || t)} ({n})</option>)}
               </select>
-              {(q || fPersona || fTipo) && (
-                <button className="btn btn-ghost btn-sm" onClick={() => { setQ(''); setFPersona(''); setFTipo(''); }}>
+              {(q || fPersona || fTipo || fEstado || fPedidaDesde || fPedidaHasta || fResDesde || fResHasta) && (
+                <button className="btn btn-ghost btn-sm" onClick={() => { setQ(''); setFPersona(''); setFTipo(''); setFEstado(''); setFPedidaDesde(''); setFPedidaHasta(''); setFResDesde(''); setFResHasta(''); }}>
                   <JxIcon name="x" size={12} /> Limpiar
                 </button>
               )}
@@ -981,7 +1004,7 @@ function SolicitudesPage({ showToast }) {
             <div className="card card-p empty-state">
               <JxIcon name="search" size={34} color="var(--tm)" />
               <p>Ningún resultado con estos filtros.</p>
-              <button className="btn btn-ghost btn-sm" onClick={() => { setQ(''); setFPersona(''); setFTipo(''); }}>Limpiar filtros</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => { setQ(''); setFPersona(''); setFTipo(''); setFEstado(''); setFPedidaDesde(''); setFPedidaHasta(''); setFResDesde(''); setFResHasta(''); }}>Limpiar filtros</button>
             </div>
           ) : (tab === 'pendientes' || tab === 'resueltas') && esRevisor ? (
         // ── REVISOR (admin / Contador Jefe): cards con diff. En 'pendientes' con

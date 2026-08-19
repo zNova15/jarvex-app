@@ -42,7 +42,11 @@ const casiIgual = (a, b) => Math.abs(a - b) < 0.0001;
 const itemNoRequiereAlmacen = (it) =>
   it?.rechazado === true ||
   it?.tipo_insumo === 'servicio' ||
-  ['empresa', 'obra_general'].includes(it?.destino);
+  ['empresa', 'obra_general'].includes(it?.destino) ||
+  // Separado para VENTA o ya vendido (flujo "Insumos para Venta"): por
+  // definición NO va a ingresar a obra → deja de contar como pendiente en el
+  // semáforo, en "¿llegó?", en la bandeja de almacén y en el reporte.
+  ['para_venta', 'vendido'].includes(it?.venta_status);
 
 const itemRecibidoCompleto = (it) => num(it?.recibido) >= num(it?.cantidad) - 0.0001 && num(it?.cantidad) > 0;
 

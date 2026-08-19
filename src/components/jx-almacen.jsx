@@ -731,13 +731,19 @@ function MaterialesPage({ showToast }) {
     // El recálculo local solo no servía: stock_actual está excluido del push
     // (campo manejado por triggers del server), así que la corrección jamás
     // llegaba al server y el siguiente pull la REVERTÍA en este mismo equipo.
-    if (navigator.onLine && window.__supabase) {
+    // En modo PRUEBA (demo) los materiales son solo locales → siempre recálculo local.
+    const esDemoLocal = (() => { try { return window.__appMode?.isPrueba || getCurrentMode?.() === 'prueba'; } catch { return false; } })();
+    if (navigator.onLine && window.__supabase && !esDemoLocal) {
       try {
         const { data, error } = await window.__supabase.rpc('recalcular_stock_obra', { p_obra_id: obraId });
         if (error) throw error;
-        try { window.dispatchEvent(new Event('online')); } catch {}
         try { await window.__logAudit?.({ action:'alert', table:'materiales', reason:`Recálculo de stock EN SERVER obra ${obraId}: ${data ?? '?'} materiales ajustados` }); } catch {}
-        showToast(`✓ Stock recalculado en el SERVIDOR: ${data ?? 0} ajustado(s) — llega a todos los dispositivos con el próximo sync`, 'green');
+        // Traer el resultado AHORA (antes solo se emitía 'online' y este equipo
+        // seguía mostrando el snapshot viejo hasta el próximo ciclo de sync).
+        try { await window.__syncAll?.(); } catch {}
+        try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'materiales' } })); } catch {}
+        refresh?.();
+        showToast(`✓ Stock recalculado en el SERVIDOR: ${data ?? 0} ajustado(s) — ya actualizado acá y llega al resto con su próximo sync`, 'green');
         setRecalculandoStock(false);
         return;
       } catch (e) {

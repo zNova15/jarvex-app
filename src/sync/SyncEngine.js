@@ -290,6 +290,16 @@ export async function forceFullResync() {
       // (el server nunca lo recibió; no hay re-pull posible). Solo reseteamos su
       // watermark: el full re-pull hace put/update sin destruir lo local.
       if (tabla === 'evidencias') {
+        // Sí se borran las que vinieron DEL SERVER (sync_status 'synced' — el
+        // re-pull las restaura): evidencias no tiene deleted_at y el server las
+        // borra FÍSICAMENTE, así que un borrado hecho mientras este device
+        // estaba cerrado dejaba la fila "fantasma" local para siempre. Se
+        // conservan pending_upload/uploaded/failed/pending_* (pueden NO estar
+        // en el server) y las demo (solo locales).
+        try {
+          await db.evidencias.where('sync_status').equals(SYNC_STATUS.SYNCED)
+            .filter(e => e.demo !== true).delete();
+        } catch {}
         await setLastSync(`${tabla}_pull`, null);
         continue;
       }
@@ -526,7 +536,7 @@ export async function retryAllFailed() {
 // conteo sin filtro (42703). Todas las de acá tienen deleted_at.
 const HEALTH_TABLES = [
   { tabla: 'accounting_movements',    label: 'Facturas y mov. contables', soft: true },
-  { tabla: 'evidencias',              label: 'Evidencias (bancarizaciones, detracciones, fotos)', soft: true },
+  { tabla: 'evidencias',              label: 'Evidencias (bancarizaciones, detracciones, fotos)', soft: false }, // sin deleted_at en server
   { tabla: 'pagos',                   label: 'Pagos', soft: true },
   { tabla: 'depositos_bancarizacion', label: 'Bancarizaciones (depósitos)', soft: true },
   { tabla: 'pagos_partes',            label: 'Vouchers de pago', soft: true },
@@ -1148,8 +1158,12 @@ async function pushTablePending(tabla) {
   // limpia y el espejo la sigue en el ciclo siguiente.
   if (tabla === 'accounting_movements') {
     try {
+      // Incluye PENDING_UPDATE: el par compra(pending_create) ↔ venta(pending_update)
+      // —que dejaba el reemplazo de espejo— también es un ciclo que el gate de FK
+      // nunca destraba. Se suelta SIEMPRE el lado venta (el vínculo queda derivable
+      // desde la compra, que apunta a la venta).
       const noSynced = await db.accounting_movements
-        .where('sync_status').anyOf([SYNC_STATUS.PENDING_CREATE, SYNC_STATUS.FAILED])
+        .where('sync_status').anyOf([SYNC_STATUS.PENDING_CREATE, SYNC_STATUS.PENDING_UPDATE, SYNC_STATUS.FAILED])
         .filter(r => !!r.related_movement_id)
         .toArray();
       const porId = new Map(noSynced.map(r => [r.id, r]));
@@ -1701,6 +1715,26 @@ async function reconciliarCompanyDuplicado(record) {
   return true;
 }
 
+// Tras un INSERT exitoso (o dedup 23505 confirmado): marcar SYNCED solo si la
+// fila local sigue siendo la MISMA versión que se mandó (updated_at igual y aún
+// pending_create). Si el usuario la editó durante el vuelo, queda PENDING_UPDATE
+// para que la edición suba en el próximo ciclo (antes se marcaba synced a ciegas
+// y la edición se perdía en el siguiente pull). Si ya es pending_update/delete/
+// failed por otra vía, no se toca.
+async function marcarCreadoSiNoCambio(tabla, record) {
+  const now = new Date().toISOString();
+  try {
+    await db[tabla].where('id').equals(record.id).modify(f => {
+      if (f.sync_status === SYNC_STATUS.PENDING_CREATE) {
+        if (f.updated_at === record.updated_at) { f.sync_status = SYNC_STATUS.SYNCED; f.last_synced_at = now; }
+        else { f.sync_status = SYNC_STATUS.PENDING_UPDATE; f._sync_retries = 0; f.last_synced_at = now; }
+      }
+    });
+  } catch {
+    try { await db[tabla].update(record.id, { sync_status: SYNC_STATUS.SYNCED, last_synced_at: now }); } catch {}
+  }
+}
+
 async function pushCreate(tabla, record) {
   // Anti-fantasma: no pushear si una FK referenciada todavía está
   // pendiente en local. Si pusheamos el mov antes que el material,
@@ -1718,10 +1752,7 @@ async function pushCreate(tabla, record) {
   const { error } = await supabase.from(tabla).insert(serverRecord);
 
   if (!error) {
-    await db[tabla].update(record.id, {
-      sync_status: SYNC_STATUS.SYNCED,
-      last_synced_at: new Date().toISOString(),
-    });
+    await marcarCreadoSiNoCambio(tabla, record);
     trackEvent('record_pushed', { tabla, operacion: 'create' });
   } else if (error.code === '23505') {
     // Unique constraint. Caso normal: idempotency_key duplicado → la MISMA
@@ -1732,7 +1763,7 @@ async function pushCreate(tabla, record) {
     // y revientan 23503 PARA SIEMPRE. Verificamos que el id real exista.
     const { data: enServer, error: selErr } = await supabase.from(tabla).select('id').eq('id', record.id).maybeSingle();
     if (enServer) {
-      await db[tabla].update(record.id, { sync_status: SYNC_STATUS.SYNCED });
+      await marcarCreadoSiNoCambio(tabla, record);
       trackEvent('record_pushed', { tabla, operacion: 'create_dedup' });
     } else if (selErr) {
       // El select de verificación FALLÓ (red caída a mitad de batch, timeout,

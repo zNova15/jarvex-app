@@ -265,11 +265,25 @@ async function contarFacturasPorEmpresa() {
   return map;
 }
 
+// Contraparte de un movimiento del par intercompany: por related_movement_id
+// directo o, si el rompe-ciclos del SyncEngine lo soltó (deja null el lado
+// venta), por el INVERSO (el otro lado sigue apuntando a este). Sin esto,
+// marcarFacturaEmitida/Recibida solo marcaba el lado vendedor.
+async function contraparteDe(mov) {
+  if (!mov) return null;
+  if (mov.related_movement_id) return mov.related_movement_id;
+  try {
+    const inv = await db.accounting_movements
+      .filter(m => !m.deleted_at && m.related_movement_id === mov.id).first();
+    return inv?.id || null;
+  } catch { return null; }
+}
+
 // Marca un par seller/buyer como "emitida" (listo para imprimir / enviar a SUNAT).
 export async function marcarFacturaEmitida(sellerMovId, userId) {
   const seller = await db.accounting_movements.get(sellerMovId);
   if (!seller) throw new Error('Factura no encontrada');
-  const buyerId = seller.related_movement_id;
+  const buyerId = await contraparteDe(seller);
   const now = new Date().toISOString();
   for (const id of [sellerMovId, buyerId].filter(Boolean)) {
     const m = await db.accounting_movements.get(id);
@@ -290,7 +304,8 @@ export async function marcarFacturaRecibida(sellerMovId, userId, evidenciaId = n
   const seller = await db.accounting_movements.get(sellerMovId);
   if (!seller) throw new Error('Factura no encontrada');
   const now = new Date().toISOString();
-  for (const id of [sellerMovId, seller.related_movement_id].filter(Boolean)) {
+  const buyerIdRec = await contraparteDe(seller);
+  for (const id of [sellerMovId, buyerIdRec].filter(Boolean)) {
     const m = await db.accounting_movements.get(id);
     if (!m) continue;
     await db.accounting_movements.update(id, {
