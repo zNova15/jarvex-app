@@ -87,11 +87,14 @@ export function initPostHog() {
     api_host: HOST,
     ui_host: UI_HOST,
     // Privacy / autocapture:
-    autocapture: true,                    // captura clicks/forms automáticamente
+    autocapture: false,                   // ❌ APAGADO — capturaba CADA click/input/form de
+                                          //   CADA usuario y (vía el proxy /ingest) reventó el
+                                          //   free tier de Vercel (~900k req/día, 28 GB origin).
+                                          //   El uso de PANTALLAS se sigue midiendo con
+                                          //   trackPageView() manual — que es lo que importaba.
     capture_pageview: false,              // lo manejamos manual con setPage (no hay rutas)
-    capture_pageleave: true,              // tiempo en pantalla
-    capture_performance: true,            // Web Vitals (LCP/FCP/INP/CLS) — útil para ver
-                                          //   cuán rápido se siente la app por user/rol/release.
+    capture_pageleave: false,             // ❌ APAGADO — reduce el volumen de eventos
+    capture_performance: false,           // ❌ APAGADO — Web Vitals por pageview inflaba eventos
     disable_session_recording: true,      // ❌ NO grabar pantalla (datos sensibles)
     persistence: 'localStorage',          // sin cookies de tracking
     cross_subdomain_cookie: false,
