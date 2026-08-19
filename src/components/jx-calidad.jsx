@@ -221,7 +221,7 @@ function CalidadPage({ showToast }) {
     setAnalizando(true); setIa(null);
     try {
       const base64 = await fileToBase64(formCert.archivo);
-      const { apiFetch } = await import('../lib/api-client');
+      const { apiFetch, apiParse } = await import('../lib/api-client');
       const resp = await apiFetch('/api/captura-magica', {
         method: 'POST', timeout: 90000,
         headers: { 'Content-Type': 'application/json' },
@@ -230,7 +230,7 @@ function CalidadPage({ showToast }) {
           requisito: { insumo: selReq.insumo_nombre, norma: selReq.norma || '', especificacion: selReq.especificacion },
         }),
       });
-      const data = await resp.json();
+      const data = await apiParse(resp);   // tolera respuestas no-JSON (402 de la plataforma)
       if (!resp.ok) throw new Error(data.error || data.detail || `HTTP ${resp.status}`);
       const ex = data.extracted || {};
       if (!RESULTADOS_CERT.includes(ex.veredicto)) ex.veredicto = 'observado';

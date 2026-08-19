@@ -531,17 +531,20 @@ function CapturaMagicaPage({ showToast }) {
     setItems(prev => prev.map(x => x.id === id ? { ...x, status: 'procesando' } : x));
     try {
       const base64 = await fileToBase64(file);
-      const { apiFetch } = await import('../lib/api-client');
+      const { apiFetch, apiParse } = await import('../lib/api-client');
       const resp = await apiFetch('/api/captura-magica', {
         method: 'POST',
         timeout: 90000,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file: base64, mimeType: file.type }),
       });
-      const data = await resp.json();
+      // apiParse NUNCA explota con respuestas no-JSON: traduce el 402
+      // "Payment required" de la plataforma (deployment deshabilitado por
+      // facturación) a un mensaje entendible con code 'servicio_deshabilitado'.
+      const data = await apiParse(resp);
       if (!resp.ok) {
         const err = new Error(data.error || data.detail || `HTTP ${resp.status}`);
-        err.code = data.code || null; // ej. 'ia_sin_credito' → la UI ofrece avisar al admin
+        err.code = data.code || null; // 'ia_sin_credito' / 'servicio_deshabilitado' → la UI ofrece avisar al admin
         throw err;
       }
       const ext = data.extracted || {};
@@ -2241,7 +2244,7 @@ function CapturaMagicaPage({ showToast }) {
                         <span className={`badge ${est.color}`}>
                           <JxIcon name={est.icon} size={10}/> {est.label}
                         </span>
-                        {it.error && <div style={{ fontSize:10, color: it.errorCode==='ia_sin_credito' ? 'var(--amber)' : 'var(--red)', marginTop:3, maxWidth:200 }}>{it.error}</div>}
+                        {it.error && <div style={{ fontSize:10, color: (it.errorCode==='ia_sin_credito' || it.errorCode==='servicio_deshabilitado') ? 'var(--amber)' : 'var(--red)', marginTop:3, maxWidth:280, lineHeight:1.4 }}>{it.error}</div>}
                         {it.status === 'duplicado' && (() => {
                           // Resolver SIEMPRE contra movs por duplicate_of (cubre también los
                           // duplicados detectados al CONFIRMAR, que no traen duplicate_info).
@@ -2294,7 +2297,7 @@ function CapturaMagicaPage({ showToast }) {
                             <button className="btn btn-ghost btn-xs" onClick={()=>procesarItem(it.id, it.file)}>
                               <JxIcon name="refresh" size={11}/> Reintentar
                             </button>
-                            {it.errorCode === 'ia_sin_credito' && (
+                            {(it.errorCode === 'ia_sin_credito' || it.errorCode === 'servicio_deshabilitado') && (
                               <button className="btn btn-amber btn-xs" style={{ marginLeft:4 }} onClick={reportarIaSinCredito} disabled={avisoIaOk} title="Avisar al administrador que la IA está sin crédito">
                                 📨 {avisoIaOk ? 'Aviso enviado' : 'Avisar al admin'}
                               </button>

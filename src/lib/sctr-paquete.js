@@ -87,14 +87,14 @@ export function fileABase64(file) {
 
 /** Manda el paquete PDF a la IA. Devuelve { secciones, certificado, confianza, advertencias }. */
 export async function analizarPaqueteSctr(file) {
-  const { apiFetch } = await import('./api-client');
+  const { apiFetch, apiParse } = await import('./api-client');
   const base64 = await fileABase64(file);
   const resp = await apiFetch('/api/captura-magica', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ file: base64, mimeType: 'application/pdf', tipo: 'sctr_paquete' }),
   });
-  const data = await resp.json();
+  const data = await apiParse(resp);   // tolera respuestas no-JSON (402 de la plataforma)
   if (!resp.ok) throw new Error(data?.error || `IA respondió ${resp.status}`);
   return data.extracted || {};
 }
