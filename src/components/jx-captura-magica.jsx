@@ -305,12 +305,19 @@ function CapturaMagicaPage({ showToast }) {
     try {
       // No persistimos confirmados (los borramos al confirmar)
       if (item.status === 'confirmado') return;
-      const { file, ...rest } = item;
+      // base64 NO se persiste (pesa ~1.3× el PDF y se recomputa desde file_blob):
+      // cada put re-escribía TODO el item con base64+blob en cada tecla del modal.
+      const { file, base64: _b64, ...rest } = item;
       await window.__db.captura_magica_pending.put({
         ...rest,
         // file_blob: persistimos el blob para reconstruir File luego
         file_blob: file || null,
         file_name: item.name,
+        // Dueño de la bandeja: la bandeja era por DISPOSITIVO (otra cuenta en la
+        // misma PC veía y podía confirmar los comprobantes ajenos, y la asistente
+        // veía como "duplicado" lo que otro confirmó desde acá). Ahora cada fila
+        // lleva su usuario y cargar() filtra por el actual.
+        user_id: item.user_id || userId,
         updated_at: new Date().toISOString(),
         created_at: item.created_at || new Date().toISOString(),
       });
@@ -379,6 +386,9 @@ function CapturaMagicaPage({ showToast }) {
         const restoredItems = (pending || []).map(it => {
           try {
             if (!it || it.id == null) return null;
+            // Bandeja POR USUARIO: filas de otra cuenta en este dispositivo no se
+            // muestran (las legacy sin user_id sí, para no perder lo ya subido).
+            if (it.user_id && userId !== 'offline' && it.user_id !== userId) return null;
             let file = null;
             if (it.file_blob instanceof Blob) {
               file = new File([it.file_blob], it.file_name || 'comprobante', { type: it.mimeType || 'application/pdf' });
@@ -402,7 +412,13 @@ function CapturaMagicaPage({ showToast }) {
           const vivos = restoredItems.filter(r => !descartadosRef.current.has(r.id));
           if (!prev.length) return vivos;
           const byId = new Map(prev.map(x => [x.id, x]));
-          return vivos.map(r => byId.get(r.id) || r);
+          const enSnapshot = new Set(vivos.map(r => r.id));
+          // Conservar también los items que están en el ESTADO pero aún no en el
+          // snapshot de Dexie (un archivo recién soltado mientras cargar() estaba
+          // en vuelo): antes el MERGE los tiraba → "Procesando" desaparecía, se
+          // perdía el OCR y la fila reaparecía luego como 'pendiente' sin datos.
+          const soloEnEstado = prev.filter(x => !enSnapshot.has(x.id) && !descartadosRef.current.has(x.id) && x.status !== 'confirmado');
+          return [...soloEnEstado, ...vivos.map(r => byId.get(r.id) || r)];
         });
         // Purga defensiva: si un descartado seguía en Dexie por la carrera, borrarlo.
         for (const r of restoredItems) if (descartadosRef.current.has(r.id)) deleteItemFromDB(r.id);
@@ -472,6 +488,7 @@ function CapturaMagicaPage({ showToast }) {
         name: f.name,
         size: f.size,
         mimeType: f.type,
+        user_id: userId,
         status: 'pendiente',
         base64: null,
         parsed: null,
@@ -1214,6 +1231,14 @@ function CapturaMagicaPage({ showToast }) {
     }
     if (!r.serie_correlativo) { showToast('Falta serie-correlativo', 'red'); return; }
     if (!(Number(r.total) > 0)) { showToast('El total debe ser mayor a 0', 'red'); return; }
+    // NC/ND: la serie de la NOTA no puede ser la misma que la de la factura que
+    // modifica — es la señal de que el OCR leyó el "Doc. que modifica" como serie.
+    // Registrarla así la dejaría con el número de la factura (y chocaría luego).
+    if (esNota && r.nota_doc_modifica &&
+        normalizarComprobante(r.serie_correlativo) === normalizarComprobante(r.nota_doc_modifica)) {
+      showToast(`La serie de la nota (${r.serie_correlativo}) es la MISMA que la de la factura que modifica. Corregí "Serie-correlativo" con la serie propia de la nota (en el PDF, suele empezar con FC/BC).`, 'red');
+      return;
+    }
 
     // Decisión de reemplazo de la contraparte automática (se ejecuta recién al
     // crear el movimiento real, con guard y validaciones ya pasadas).
@@ -2198,13 +2223,24 @@ function CapturaMagicaPage({ showToast }) {
                           <JxIcon name={est.icon} size={10}/> {est.label}
                         </span>
                         {it.error && <div style={{ fontSize:10, color: it.errorCode==='ia_sin_credito' ? 'var(--amber)' : 'var(--red)', marginTop:3, maxWidth:200 }}>{it.error}</div>}
-                        {it.status === 'duplicado' && (
-                          <div style={{ fontSize:10, color:'var(--amber)', marginTop:3, maxWidth:260, lineHeight:1.4 }}
-                            title="Este comprobante coincide con uno ya registrado (mismo emisor y misma serie-correlativo). Si estás seguro de que es OTRO documento, revisá la serie que leyó el OCR con 'Revisar'.">
-                            Ya existe en la DB{it.duplicate_info ? <>: <strong>{it.duplicate_info.doc}</strong> · {it.duplicate_info.fecha || 's/f'} · {it.duplicate_info.moneda === 'USD' ? '$' : 'S/'} {Number(it.duplicate_info.monto || 0).toLocaleString('es-PE', { minimumFractionDigits: 2 })}{it.duplicate_info.tercero ? ` · ${String(it.duplicate_info.tercero).slice(0, 26)}` : ''}</> : ''}
-                          </div>
+                        {it.status === 'duplicado' && (() => {
+                          // Resolver SIEMPRE contra movs por duplicate_of (cubre también los
+                          // duplicados detectados al CONFIRMAR, que no traen duplicate_info).
+                          const dm = it.duplicate_info || (() => {
+                            const m = it.duplicate_of ? (movs || []).find(x => x.id === it.duplicate_of) : null;
+                            return m ? { doc: m.document_number, fecha: m.date, monto: m.amount, moneda: m.currency, tercero: m.third_party_name, tipo: m.document_type, registrado: String(m.created_at || '').slice(0, 10) } : null;
+                          })();
+                          return (
+                            <div style={{ fontSize:10, color:'var(--amber)', marginTop:3, maxWidth:280, lineHeight:1.4 }}
+                              title="Este comprobante coincide con uno ya registrado (mismo emisor, misma serie-correlativo y mismo tipo de documento). Si estás seguro de que es OTRO documento, revisá la serie que leyó el OCR con 'Revisar'.">
+                              Ya existe en la DB{dm ? <>: <strong>{TIPO_DOC_MAP[dm.tipo]?.label || ''} {dm.doc}</strong> · {dm.fecha || 's/f'} · {dm.moneda === 'USD' ? '$' : 'S/'} {Number(dm.monto || 0).toLocaleString('es-PE', { minimumFractionDigits: 2 })}{dm.tercero ? ` · ${String(dm.tercero).slice(0, 26)}` : ''}{dm.registrado ? ` · reg. ${dm.registrado}` : ''}</> : ''}
+                            </div>
+                          );
+                        })()}
+                        {it.nc_aviso && <div style={{ fontSize:10, color:'var(--blue)', marginTop:3, maxWidth:280, lineHeight:1.4 }}>ℹ {it.nc_aviso}</div>}
+                        {r && it.status === 'revisar' && !(Number(r.total) > 0) && (
+                          <div style={{ fontSize:10, color:'var(--red)', marginTop:3, maxWidth:280, lineHeight:1.4 }}>⚠ Total no leído (0.00) — abrí "Revisar" y escribí el total del PDF antes de confirmar.</div>
                         )}
-                        {it.nc_aviso && <div style={{ fontSize:10, color:'var(--blue)', marginTop:3, maxWidth:260, lineHeight:1.4 }}>ℹ {it.nc_aviso}</div>}
                       </td>
                       <td>
                         {r ? (
@@ -2583,7 +2619,13 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
             <div className="g2" style={{ marginBottom:10 }}>
               <div>
                 <label className="flabel">Tipo doc</label>
-                <select className="fi" value={r.tipo_documento} onChange={e=>upd({ tipo_documento: e.target.value })}>
+                <select className="fi" value={r.tipo_documento} onChange={e=>{
+                  const t = e.target.value;
+                  // Los flags de nota se DERIVAN del tipo: si la asistente corrige
+                  // "factura"→"nota de crédito" (o al revés), el panel de NC y el
+                  // efecto contable (restar/sumar) deben seguir al select.
+                  upd({ tipo_documento: t, es_nota_credito: t === 'nota_credito', es_nota_debito: t === 'nota_debito' });
+                }}>
                   {Object.entries(TIPO_DOC_MAP).map(([k,v]) => <option key={k} value={k}>{v.label}</option>)}
                 </select>
               </div>
@@ -3133,7 +3175,25 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
                   {r.es_nota_credito ? 'Nota de crédito — RESTA la factura' : 'Nota de débito — SUMA a la factura'}
                 </div>
                 <div className="g2">
-                  <div><label className="flabel">Factura que modifica</label><input className="fi" value={r.nota_doc_modifica || ''} onChange={e=>upd({ nota_doc_modifica: e.target.value })} placeholder="Ej. F001-123"/></div>
+                  <div><label className="flabel">Factura que modifica</label><input className="fi" value={r.nota_doc_modifica || ''} onChange={e=>{
+                    const v = e.target.value;
+                    // Re-matchear la factura referenciada al editar (antes solo se
+                    // calculaba una vez en el OCR y la corrección a mano se perdía).
+                    // Exige MISMO emisor (RUC) para no colgar la NC de otra empresa.
+                    let refId = '';
+                    try {
+                      const refN = normalizarComprobante(v);
+                      const rucN = normalizarRuc(r.proveedor_ruc);
+                      if (refN && rucN) {
+                        const cand = (movs || []).find(mv => !mv.deleted_at
+                          && !['nota_credito','nota_debito'].includes(mv.document_type || 'factura')
+                          && normalizarComprobante(mv.document_number) === refN
+                          && normalizarRuc(mv.third_party_ruc) === rucN);
+                        refId = cand?.id || '';
+                      }
+                    } catch {}
+                    upd({ nota_doc_modifica: v, nota_ref_mov_id: refId });
+                  }} placeholder="Ej. F001-123"/></div>
                   <div><label className="flabel">Motivo</label><input className="fi" value={r.nota_motivo || ''} onChange={e=>upd({ nota_motivo: e.target.value })} placeholder="Ej. anulación / descuento"/></div>
                 </div>
                 <div style={{ fontSize:11, marginTop:6, color: r.nota_ref_mov_id ? 'var(--green)' : 'var(--amber)' }}>
