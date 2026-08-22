@@ -5,6 +5,7 @@ import {
 import { epppTipo } from "../lib/epp-utils.js";
 import { normalizarRuc, normalizarComprobante, esRucPersonaNatural, dniDeRuc } from "../lib/doc-id.js";
 import { matchAsegurados } from "../lib/sctr-paquete.js";
+import { getCurrentMode } from "../lib/app-mode-core.js";
 
 // Nombre de persona natural en formato SUNAT ("APELLIDO1 APELLIDO2 NOMBRES"):
 // heurística para pre-llenar apellidos/nombres al crear un trabajador desde un
@@ -300,14 +301,30 @@ function CapturaMagicaPage({ showToast }) {
   };
 
   // ── Persistencia en Dexie ───────────────────────────────────
+  // Ids cuyo BLOB ya está guardado: las actualizaciones posteriores usan
+  // .update() (sin file_blob) en vez de .put() completo. Antes, CADA tecla del
+  // modal reescribía el archivo entero (hasta 6 MB) de TODOS los items de la
+  // bandeja → la UI se trababa, se perdían caracteres y podía saltar
+  // QuotaExceededError (que solo se logueaba, dejando de persistir en silencio).
+  const blobPersistidoRef = uRCM(new Set());
+  const avisoPersistRef = uRCM(false);
   const saveItemToDB = async (item) => {
     if (!item) return;
     try {
       // No persistimos confirmados (los borramos al confirmar)
       if (item.status === 'confirmado') return;
-      // base64 NO se persiste (pesa ~1.3× el PDF y se recomputa desde file_blob):
-      // cada put re-escribía TODO el item con base64+blob en cada tecla del modal.
+      // base64 NO se persiste (pesa ~1.3× el PDF y se recomputa desde file_blob).
       const { file, base64: _b64, ...rest } = item;
+      // Ya tiene su blob guardado → update parcial, SIN tocar el binario.
+      if (blobPersistidoRef.current.has(item.id)) {
+        await window.__db.captura_magica_pending.update(item.id, {
+          ...rest,
+          file_name: item.name,
+          user_id: item.user_id ?? (item._legacy_sin_dueno ? null : userId),
+          updated_at: new Date().toISOString(),
+        });
+        return;
+      }
       await window.__db.captura_magica_pending.put({
         ...rest,
         // file_blob: persistimos el blob para reconstruir File luego
@@ -324,7 +341,16 @@ function CapturaMagicaPage({ showToast }) {
         updated_at: new Date().toISOString(),
         created_at: item.created_at || new Date().toISOString(),
       });
-    } catch (e) { console.warn('[captura-magica] saveItem', e); }
+      if (file) blobPersistidoRef.current.add(item.id);
+    } catch (e) {
+      console.warn('[captura-magica] saveItem', e);
+      // Cuota llena / IndexedDB caído: avisar UNA vez (antes fallaba mudo y al
+      // recargar se perdían las correcciones del modal).
+      if (!avisoPersistRef.current) {
+        avisoPersistRef.current = true;
+        try { showToast('No se pudo guardar la bandeja en este dispositivo (almacenamiento lleno). Confirmá los comprobantes que tengas listos y liberá espacio.', 'red'); } catch {}
+      }
+    }
   };
 
   const deleteItemFromDB = async (id) => {
@@ -399,6 +425,7 @@ function CapturaMagicaPage({ showToast }) {
               file = new File([it.file_blob], it.file_name || 'comprobante', { type: it.mimeType || 'application/pdf' });
             }
             const status = it.status === 'procesando' ? 'pendiente' : it.status;
+            if (it.file_blob) { try { blobPersistidoRef.current.add(it.id); } catch {} }
             return { ...it, file, status };
           } catch { return null; }
         }).filter(Boolean).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
@@ -468,14 +495,34 @@ function CapturaMagicaPage({ showToast }) {
     return () => { mounted = false; window.removeEventListener('jx_data_changed', onCh); };
   }, []);
 
-  // Cuando el state items cambia, sincronizar en Dexie (después del primer load)
+  // Cuando el state items cambia, sincronizar en Dexie (después del primer load).
+  // Solo se escriben los items que REALMENTE cambiaron: antes, una tecla del
+  // modal reescribía los N items de la bandeja (con su blob) — con 15 PDFs de
+  // 4 MB eso era ~60 MB por carácter.
+  const firmaItemsRef = uRCM(new Map());
   uECM(() => {
     if (!restored) return;
-    items.forEach(it => { if (!descartadosRef.current.has(it.id)) saveItemToDB(it); });
+    for (const it of items) {
+      if (descartadosRef.current.has(it.id)) continue;
+      let firma;
+      try { const { file, base64, ...rest } = it; firma = JSON.stringify(rest); }
+      catch { firma = String(it.updated_at || Math.random()); }
+      if (firmaItemsRef.current.get(it.id) === firma) continue;   // sin cambios
+      firmaItemsRef.current.set(it.id, firma);
+      saveItemToDB(it);
+    }
+    // Limpiar firmas de items que ya no están (confirmados/descartados).
+    if (firmaItemsRef.current.size > items.length) {
+      const vivos = new Set(items.map(x => x.id));
+      for (const k of Array.from(firmaItemsRef.current.keys())) if (!vivos.has(k)) firmaItemsRef.current.delete(k);
+    }
   }, [items, restored]);
 
   // ── Drop zone handlers ──────────────────────────────────────
   const handleFiles = async (fileList) => {
+    // COPIAR la FileList antes de cualquier cosa: el caller limpia input.value
+    // para permitir re-elegir el MISMO archivo, y en Chromium eso vacía la
+    // MISMA FileList (por eso hay que materializar el array acá).
     const files = Array.from(fileList || []);
     const nuevos = [];
     for (const f of files) {
@@ -907,7 +954,10 @@ function CapturaMagicaPage({ showToast }) {
           oc_match: mejorOC,
           oc_match_alternativas: ocsRelacionadas.slice(1, 4), // hasta 3 alternativas
           // Por default: si la mejor candidata cubre ≥70% de items, sugerir vinculación
-          vincular_a_oc: mejorOC && mejorOC.ratio >= 0.7 ? mejorOC.oc_id : null,
+          // Las NOTAS (repiten las líneas de la factura que anulan), las VENTAS y
+          // los RxH nunca deben auto-vincularse a una OC: al confirmar sumaban
+          // cantidad_recibida y marcaban la OC como comprada.
+          vincular_a_oc: (!esNotaDoc && !esRxh && !emisorCompanyMatch && mejorOC && mejorOC.ratio >= 0.7) ? mejorOC.oc_id : null,
         };
       })(),
       // ── Detección INTERCOMPANY ──────────────────────────────
@@ -962,10 +1012,11 @@ function CapturaMagicaPage({ showToast }) {
   // resuelve a mano en la página Guías de Remisión).
   const confirmarGuia = async (it, r) => {
     if (!r.serie_correlativo?.trim()) { showToast('Falta la serie de la guía (ej. T001-000309)', 'red'); return; }
-    // Anti doble-submit (mismo candado que confirmarItem): un doble click creaba
-    // DOS guías con el mismo idempotency_key → la 2ª moría 23505 en el server.
-    if (enProcesoRef.current.has(it.id)) return;
-    enProcesoRef.current.add(it.id);
+    // Anti doble-submit: el lock (enProcesoRef) lo toma y libera el WRAPPER
+    // confirmarItem, que es el único que llama acá. Tener otro guard con el
+    // MISMO Set hacía que esta función retornara SIEMPRE en su primera línea
+    // (el wrapper ya había hecho add(id)) → "Confirmar" no hacía NADA y las
+    // guías nunca se registraban. Regresión detectada 22-ago-2026.
     setItems(prev => prev.map(x => x.id === it.id ? { ...x, status: 'procesando' } : x));
     try {
       const { getCurrentMode } = await import('../lib/app-mode-core.js');
@@ -1037,8 +1088,6 @@ function CapturaMagicaPage({ showToast }) {
     } catch (e) {
       setItems(prev => prev.map(x => x.id === it.id ? { ...x, status: 'error', error: e?.message } : x));
       showToast('Error al guardar la guía: ' + (e?.message || e), 'red');
-    } finally {
-      enProcesoRef.current.delete(it.id);
     }
   };
 
@@ -1050,11 +1099,10 @@ function CapturaMagicaPage({ showToast }) {
   // que se lleva por Pagos). El historial de RxH = los pagos con modo 'rxh'.
   const confirmarRxH = async (it, r) => {
     if (!(Number(r.total) > 0)) { showToast('El total del recibo debe ser mayor a 0.', 'red'); return; }
-    // Anti doble-submit (mismo candado que confirmarGuia): la modal NO se cerraba
-    // tras confirmar → los reclicks creaban PAGOS duplicados. Ahora: se corta el
-    // reclick, se deduplica por serie del recibo, y al final se cierra la modal.
-    if (enProcesoRef.current.has(it.id)) return;
-    enProcesoRef.current.add(it.id);
+    // Anti doble-submit: lo maneja el WRAPPER confirmarItem (único llamador) —
+    // duplicar el guard con el mismo Set volvía esta función un no-op y los
+    // recibos por honorarios NUNCA se registraban. El dedup por serie del
+    // recibo (más abajo) sigue siendo la segunda barrera contra pagos dobles.
     try {
       const now = new Date().toISOString();
       const persona0 = (personal || []).find(p => p.id === r.personal_id) || null;
@@ -1146,14 +1194,19 @@ function CapturaMagicaPage({ showToast }) {
         sync_status: 'pending_create',
         idempotency_key: `${userId}_pago_${pagoId}`,
       });
-      // El recibo por honorarios (PDF/imagen) como DOCUMENTO del pago.
-      await window.__saveEvidenciaLocal?.({
-        id: window.__newId(), obra_id: obraId,
-        tipo_evidencia: 'recibo_honorarios', modulo_relacionado: 'pagos', registro_relacionado_id: pagoId,
-        nombre_archivo: it.name, mime_type: it.mimeType, blob: it.file,
-        fecha: r.fecha_emision, created_by: userId,
-        observaciones: `Recibo por honorarios ${r.serie_correlativo || ''} · ${concepto}`.trim(),
-      });
+      // El recibo por honorarios (PDF/imagen) como DOCUMENTO del pago. Si falla,
+      // el pago YA existe: no se revierte (perdería el trabajo), pero se avisa
+      // claro para re-adjuntarlo desde Pagos (antes el toast salía verde igual).
+      let reciboFallo = null;
+      try {
+        await window.__saveEvidenciaLocal?.({
+          id: window.__newId(), obra_id: obraId,
+          tipo_evidencia: 'recibo_honorarios', modulo_relacionado: 'pagos', registro_relacionado_id: pagoId,
+          nombre_archivo: it.name, mime_type: it.mimeType, blob: it.file,
+          fecha: r.fecha_emision, created_by: userId,
+          observaciones: `Recibo por honorarios ${r.serie_correlativo || ''} · ${concepto}`.trim(),
+        });
+      } catch (e) { reciboFallo = e?.message || String(e); console.warn('[captura-magica] evidencia RxH', e); }
       try { await window.__logAudit?.({ action: 'create', table: 'pagos', recordId: pagoId, reason: `Recibo por honorarios vía Captura Mágica · ${concepto} · S/${(Number(r.total) || 0).toFixed(2)}` }); } catch {}
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'pagos' } })); } catch {}
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'evidencias', source: 'rxh-capture' } })); } catch {}
@@ -1161,12 +1214,14 @@ function CapturaMagicaPage({ showToast }) {
       deleteItemFromDB(it.id);   // sacarlo de la cola de Captura Mágica (igual que compra/guía);
                                  // si no, al recargar reaparece como "Listo para revisar" y se re-confirma → duplica
       const quien = persona ? `${persona.nombres || ''} ${persona.apellidos || ''}`.trim() || 'el trabajador' : 'el trabajador';
-      showToast(`${personaCreada ? `Trabajador ${quien} creado. ` : ''}Recibo por honorarios registrado como pago de ${quien}. Ahora subí el voucher en el módulo Pagos.`, 'green');
+      showToast(
+        reciboFallo
+          ? `⚠ Pago de ${quien} registrado, PERO el archivo del recibo no se pudo guardar (${String(reciboFallo).slice(0, 70)}). Adjuntalo desde Pagos → detalle del pago.`
+          : `${personaCreada ? `Trabajador ${quien} creado. ` : ''}Recibo por honorarios registrado como pago de ${quien}. Ahora subí el voucher en el módulo Pagos.`,
+        reciboFallo ? 'red' : 'green');
       setReviewing(null);   // cerrar la modal (evita el reclick que multiplicaba)
     } catch (e) {
       showToast('No se pudo registrar el recibo por honorarios: ' + (e.message || e), 'red');
-    } finally {
-      enProcesoRef.current.delete(it.id);
     }
   };
 
@@ -1183,6 +1238,13 @@ function CapturaMagicaPage({ showToast }) {
   const confirmarItemInner = async (id) => {
     const it = items.find(x => x.id === id);
     if (!it || !it.review) return;
+    // MODO PRUEBA: todo lo que se cree acá debe quedar SOLO local (demo:true,
+    // synced) — antes confirmarItemInner era la única rama que no lo miraba, así
+    // que practicar en modo prueba escribía facturas REALES (y luego el filtro
+    // por modo las ocultaba de la pantalla: "confirmé y desapareció").
+    const esPruebaCM = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
+    let evidenciaFallo = null;   // motivo si el PDF no se pudo guardar (C8)
+    const marcaModo = esPruebaCM ? { demo: true, sync_status: 'synced' } : { sync_status: 'pending_create' };
     let r = it.review;
     // Destino de la factura: OBRA / Gastos Generales ('__empresa__') /
     // Contabilidad Neta ('__otros__') / "No sé" ('__nose__' → bandeja de la
@@ -1236,6 +1298,12 @@ function CapturaMagicaPage({ showToast }) {
     // operación; NO generan recepción de almacén, materiales ni bancarización
     // (es un ajuste, no una compra/venta nueva). Se vincula a la factura que modifica.
     const esNota = r.tipo_documento === 'nota_credito' || r.tipo_documento === 'nota_debito';
+    // Una NOTA o una VENTA no se vincula a una OC (la nota repite las líneas de
+    // la factura que anula y el fuzzy match daba ~100% → al confirmar sumaba
+    // cantidad_recibida y marcaba la OC como comprada). Se anula acá para que
+    // NINGÚN consumidor posterior (movimiento, evidencia espejo, recepción) la
+    // use, no solo el bloque de recepción.
+    if (esNota || esVenta) r = { ...r, vincular_a_oc: null };
     const esNotaCredito = r.tipo_documento === 'nota_credito';
 
     // Validaciones
@@ -1449,7 +1517,7 @@ function CapturaMagicaPage({ showToast }) {
           notas: 'Creada automáticamente desde Captura Mágica',
           created_by: userId, updated_by: userId,
           created_at: now, updated_at: now,
-          version: 1, sync_status: 'pending_create',
+          version: 1, ...marcaModo,
           // Determinístico por RUC: si dos capturas/dispositivos crean la misma
           // empresa (race que el dedup por RUC fresco no alcanzó), el UNIQUE de
           // companies.idempotency_key del server rechaza la 2ª y NO duplica. Antes
@@ -1489,7 +1557,7 @@ function CapturaMagicaPage({ showToast }) {
           tipo_proveedor: 'proveedor',
           created_by: userId, updated_by: userId,
           created_at: now, updated_at: now,
-          version: 1, sync_status: 'pending_create',
+          version: 1, ...marcaModo,
           // Determinístico por RUC: el UNIQUE(ruc) y el idempotency_key del server
           // (+ reconciliarProveedorDuplicado en 23505) deduplican aunque dos capturas
           // offline creen el mismo proveedor. Sin RUC, cae al key por instancia.
@@ -1536,7 +1604,7 @@ function CapturaMagicaPage({ showToast }) {
               estado: 'activo',
               created_by: userId, updated_by: userId,
               created_at: now, updated_at: now,
-              version: 1, sync_status: 'pending_create',
+              version: 1, ...marcaModo,
               idempotency_key: idemKey,
             };
 
@@ -1719,7 +1787,7 @@ function CapturaMagicaPage({ showToast }) {
         }),
         created_by: userId, updated_by: userId,
         created_at: now, updated_at: now,
-        version: 1, sync_status: 'pending_create',
+        version: 1, ...marcaModo,
         idempotency_key: `${userId}_acc_${accId}`,
       });
       try { await window.__logAudit?.({ action:'insert', table:'accounting_movements', recordId: accId,
@@ -1812,7 +1880,7 @@ function CapturaMagicaPage({ showToast }) {
               }),
               created_by: userId, updated_by: userId,
               created_at: now, updated_at: now,
-              version: 1, sync_status: 'pending_create',
+              version: 1, ...marcaModo,
               idempotency_key: `${userId}_acc_${espId}`,
             });
             // OJO: NO enlazar la venta → espejo acá. El par con related_movement_id
@@ -1831,7 +1899,11 @@ function CapturaMagicaPage({ showToast }) {
       }
 
       // 3.5) VINCULAR A OC: actualizar cantidad_recibida en oc_items + recalcular estado
-      if (r.vincular_a_oc && r.oc_match) {
+      // La OC elegida puede ser una ALTERNATIVA: el select solo escribe
+      // vincular_a_oc y r.oc_match seguía apuntando al "mejor match" → se
+      // descontaban las cantidades de la OC EQUIVOCADA.
+      const ocSel = [r.oc_match, ...(r.oc_match_alternativas || [])].find(o => o?.oc_id === r.vincular_a_oc) || null;
+      if (!esNota && !esVenta && r.vincular_a_oc && ocSel) {
         try {
           // 3.5.a) Crear recepción formal (uno solo por confirmación)
           const recepcionId = window.__newId();
@@ -1845,7 +1917,7 @@ function CapturaMagicaPage({ showToast }) {
             observaciones: `Recepción por factura ${r.serie_correlativo || ''} (Captura Mágica)`.trim(),
             created_by: userId, updated_by: userId,
             created_at: now, updated_at: now,
-            version: 1, sync_status: 'pending_create', last_synced_at: null,
+            version: 1, last_synced_at: null, ...marcaModo,
             idempotency_key: `${userId}_rec_${recepcionId}`,
             deleted_at: null,
           });
@@ -1853,7 +1925,7 @@ function CapturaMagicaPage({ showToast }) {
           // Para cada match (factura_idx → oc_item), sumar la cantidad de la
           // factura a cantidad_recibida del oc_item correspondiente + crear recepcion_item.
           const diffsPrecio = []; // se acumulan diferencias significativas para audit
-          for (const m of r.oc_match.matches) {
+          for (const m of ocSel.matches) {
             const facturaItem = r.items[m.factura_idx];
             if (!facturaItem) continue;
             const ocItem = await window.__db.oc_items.get(m.oc_item.id);
@@ -1885,7 +1957,7 @@ function CapturaMagicaPage({ showToast }) {
               observaciones: Math.abs(pct) >= 5 ? `Precio distinto a OC (${pct > 0 ? '+' : ''}${pct.toFixed(1)}%)` : null,
               created_by: userId, updated_by: userId,
               created_at: now, updated_at: now,
-              version: 1, sync_status: 'pending_create', last_synced_at: null,
+              version: 1, last_synced_at: null, ...marcaModo,
               idempotency_key: `${userId}_recit_${recItemId}`,
               deleted_at: null,
             });
@@ -1926,7 +1998,7 @@ function CapturaMagicaPage({ showToast }) {
                 detail: {
                   tipo: 'oc_actualizada',
                   titulo: `OC ${ocOriginal.codigo} → ${nuevoEstadoOC === 'recibida' ? 'Comprada' : 'Comprada parcial'}`,
-                  descripcion: `Factura ${r.serie_correlativo} cubrió ${r.oc_match.matches.length}/${todosOcItems.length} items`,
+                  descripcion: `Factura ${r.serie_correlativo} cubrió ${ocSel.matches.length}/${todosOcItems.length} items`,
                 }
               })); } catch {}
             }
@@ -1976,14 +2048,25 @@ function CapturaMagicaPage({ showToast }) {
             subido_por: userId,
             fecha: r.fecha_emision || new Date().toISOString().slice(0, 10),
             observaciones: `Factura ${r.serie_correlativo} (vinculada via Captura Mágica)`,
-            sync_status: 'pending_create',
+            ...marcaModo,
             upload_retries: 0,
             created_by: userId,
             created_at: now, updated_at: now,
           });
           try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'evidencias' } })); } catch {}
         }
-      } catch (e) { console.warn('[captura-magica] evidencia', e); }
+      } catch (e) {
+        console.warn('[captura-magica] evidencia', e);
+        // El movimiento YA se creó: no lo revertimos (la contadora perdería el
+        // trabajo), pero avisamos claro y dejamos la marca para re-adjuntar.
+        evidenciaFallo = e?.message || String(e);
+        try {
+          const movEv = await window.__db.accounting_movements.get(accId);
+          let nEv = {}; try { nEv = JSON.parse(movEv?.notas || '{}'); } catch { nEv = {}; }
+          nEv.evidencia_faltante = true;
+          await window.__db.accounting_movements.update(accId, { notas: JSON.stringify(nEv) });
+        } catch {}
+      }
 
       // 4.5) VINCULAR A CADENA DE TRAZABILIDAD (operación intercompany).
       // Si el user marcó vincular_a_cadena_step, marcamos la factura interna
@@ -2039,7 +2122,11 @@ function CapturaMagicaPage({ showToast }) {
         setOcsActivasDB(ocsAll.map(oc => ({ oc, items: itemsPorOc[oc.id] || [] })));
       } catch {}
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'accounting_movements' } })); } catch {}
-      showToast(`✓ Comprobante ${r.serie_correlativo} registrado`, 'green');
+      if (evidenciaFallo) {
+        showToast(`⚠ Se registró ${r.serie_correlativo} PERO el archivo del comprobante NO se pudo guardar (${String(evidenciaFallo).slice(0, 80)}). Adjuntalo desde Movimientos Contables o volvé a subirlo.`, 'red');
+      } else {
+        showToast(`✓ Comprobante ${r.serie_correlativo} registrado`, 'green');
+      }
 
       // ── Detección de ingresos pendientes de sustento ──
       // Si el almacenero registró ingresos del MISMO proveedor sin factura
@@ -2200,7 +2287,14 @@ function CapturaMagicaPage({ showToast }) {
             multiple
             accept=".pdf,image/jpeg,image/png,image/webp"
             style={{ display:'none' }}
-            onChange={e => handleFiles(e.target.files)}
+            onChange={e => {
+              // Materializar la lista ANTES de limpiar el value (Chromium vacía
+              // la misma FileList al resetear). Sin el reset, volver a elegir el
+              // MISMO archivo no dispara 'change' y no pasaba nada.
+              const files = Array.from(e.target.files || []);
+              e.target.value = '';
+              handleFiles(files);
+            }}
           />
         </div>
       ) : (
@@ -2481,6 +2575,10 @@ function VincularPendientesModal({ data, materialesDB, onClose, onConfirm }) {
 
 // ─── MODAL DE REVISIÓN ───────────────────────────────────────
 function ReviewModal({ item, companies, personal, obras, proveedoresDB, materialesDB, ocsActivasDB, movs = [], onChange, onPatch, onConfirm, onClose }) {
+  // Estado del botón Confirmar: sin esto los reclicks se tragaban en silencio
+  // (el guard vive en un ref del padre) y lo editado DESPUÉS del clic se
+  // descartaba sin que se notara. Va acá arriba por la regla de hooks.
+  const [confirmando, setConfirmando] = uSCM(false);
   // La obra destino SIGUE a la obra activa del header (decisión de producto:
   // todos los módulos operan sobre la obra activa). Al abrir el modal,
   // sincronizar el review con la obra activa actual — cubre reviews viejos
@@ -2585,6 +2683,10 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
 
   // Recalcula total al editar items
   const recalcular = () => {
+    // En un RxH el "total" es el NETO a pagar (bruto − retención) y NO lleva
+    // IGV: recalcular lo pisaba con subtotal+18% y rompía la relación con los
+    // campos Honorarios/Retención.
+    if (r.es_rxh) return;
     const sub = r.items.reduce((s, it) => s + (Number(it.cantidad)||0) * (Number(it.precio_unitario)||0), 0);
     const igv = +(sub * 0.18).toFixed(2);
     upd({ subtotal: sub, igv, total: sub + igv });
@@ -2647,7 +2749,29 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
                   // Los flags de nota se DERIVAN del tipo: si la asistente corrige
                   // "factura"→"nota de crédito" (o al revés), el panel de NC y el
                   // efecto contable (restar/sumar) deben seguir al select.
-                  upd({ tipo_documento: t, es_nota_credito: t === 'nota_credito', es_nota_debito: t === 'nota_debito' });
+                  // es_rxh TAMBIÉN se deriva: es la única bandera que decide el
+                  // panel del modal y el RUTEO al confirmar (confirmarRxH). Si
+                  // quedaba congelada del OCR, corregir el tipo a mano no tenía
+                  // ningún efecto: el documento se registraba por el camino
+                  // equivocado en las dos direcciones.
+                  const esRxhNuevo = t === 'recibo' && esRucPersonaNatural(r.proveedor_ruc);
+                  const patch = { tipo_documento: t, es_nota_credito: t === 'nota_credito', es_nota_debito: t === 'nota_debito', es_rxh: esRxhNuevo };
+                  if (esRxhNuevo) {
+                    // Sembrar lo que buildInitialReview solo llena cuando el OCR ya
+                    // había detectado el RxH (si no, el panel verde sale vacío).
+                    patch.genera_recepcion_almacen = false;
+                    patch.crear_materiales_catalogo = false;
+                    if (!r.rxh_concepto) patch.rxh_concepto = r.items?.[0]?.descripcion || '';
+                    if (!(Number(r.rxh_bruto) > 0)) patch.rxh_bruto = Number(r.subtotal) || Number(r.total) || 0;
+                    if (!r.nuevo_personal_dni) patch.nuevo_personal_dni = dniDeRuc(r.proveedor_ruc) || '';
+                    if (!r.personal_id && !r.nuevo_personal_nombres) {
+                      const partes = splitNombrePeru(r.proveedor_razon_social || '');
+                      patch.nuevo_personal_nombres = partes.nombres;
+                      patch.nuevo_personal_apellidos = partes.apellidos;
+                      patch.personal_accion = 'crear_nuevo';
+                    }
+                  }
+                  upd(patch);
                 }}>
                   {Object.entries(TIPO_DOC_MAP).map(([k,v]) => <option key={k} value={k}>{v.label}</option>)}
                 </select>
@@ -3137,7 +3261,7 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
                     Genera ingreso al almacén (esperar recepción física)
                   </label>
                   )}
-                  <button type="button" className="btn btn-ghost btn-xs" onClick={recalcular}>↻ Recalcular total</button>
+                  {!r.es_rxh && <button type="button" className="btn btn-ghost btn-xs" onClick={recalcular}>↻ Recalcular total</button>}
                 </div>
               </div>
               {/* La columna "Material" (crear/vincular insumo) se quitó a propósito:
@@ -3208,12 +3332,24 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
                     // vínculo se BORRABA al tipear).
                     let refId = '';
                     const refN = normalizarComprobante(v);
-                    const rucN = normalizarRuc(r.proveedor_ruc);
-                    if (refN && rucN) {
-                      const cand = (movs || []).find(mv => !mv.deleted_at
-                        && !['nota_credito','nota_debito'].includes(mv.document_type || 'factura')
-                        && normalizarComprobante(mv.document_number) === refN
-                        && normalizarRuc(mv.third_party_ruc) === rucN);
+                    const noEsNota = (mv) => !['nota_credito','nota_debito'].includes(mv.document_type || 'factura');
+                    if (refN) {
+                      let cand = null;
+                      if (r.emisor_company_id) {
+                        // NC/ND de VENTA: la factura original la emitió NUESTRA
+                        // empresa (company_id) — su third_party_ruc es el CLIENTE.
+                        // Comparar contra r.proveedor_ruc nunca matcheaba y el
+                        // vínculo se BORRABA al tipear.
+                        cand = (movs || []).find(mv => !mv.deleted_at && noEsNota(mv)
+                          && normalizarComprobante(mv.document_number) === refN
+                          && mv.company_id === r.emisor_company_id
+                          && (mv.clase || (mv.type === 'income' ? 'venta' : 'compra')) === 'venta');
+                      } else {
+                        const rucN = normalizarRuc(r.proveedor_ruc);
+                        if (rucN) cand = (movs || []).find(mv => !mv.deleted_at && noEsNota(mv)
+                          && normalizarComprobante(mv.document_number) === refN
+                          && normalizarRuc(mv.third_party_ruc) === rucN);
+                      }
                       refId = cand?.id || '';
                     }
                     upd({ nota_doc_modifica: v, nota_ref_mov_id: refId });
@@ -3268,9 +3404,15 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
             {' + 1 evidencia.'}
           </div>
           <div style={{ display:'flex', gap:8 }}>
-            <button className="btn btn-ghost btn-sm" onClick={onClose}>Cancelar</button>
-            <button className="btn btn-amber btn-sm" onClick={onConfirm}>
-              <JxIcon name="check" size={12}/> Confirmar e insertar
+            <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={confirmando}>Cancelar</button>
+            <button className="btn btn-amber btn-sm" disabled={confirmando}
+              style={{ opacity: confirmando ? 0.7 : 1, cursor: confirmando ? 'wait' : 'pointer' }}
+              onClick={async () => {
+                if (confirmando) return;
+                setConfirmando(true);
+                try { await onConfirm?.(); } finally { setConfirmando(false); }
+              }}>
+              <JxIcon name="check" size={12}/> {confirmando ? 'Confirmando…' : 'Confirmar e insertar'}
             </button>
           </div>
         </div>
