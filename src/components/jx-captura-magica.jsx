@@ -56,7 +56,11 @@ const fmtCurMagic = (n, cur = 'PEN') => {
 };
 
 const ALLOWED_MIME = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
-const MAX_FILE_BYTES = 6 * 1024 * 1024; // 6 MB binario (queda ~8 MB en base64)
+// 3 MB BINARIOS: al enviarse en base64 crece ×1.334 (~4.0 MB de body) y la
+// plataforma corta en ~4.5 MB. Antes el tope era 6 MB (≈8 MB de body): todo lo
+// que pesaba entre ~3.3 y 6 MB pasaba este control y moría en el servidor con
+// un error incomprensible tras subir el archivo entero.
+const MAX_FILE_BYTES = 3 * 1024 * 1024;
 
 const TIPO_DOC_MAP = {
   factura: { label: 'Factura', acc: 'factura' },
@@ -479,6 +483,13 @@ function CapturaMagicaPage({ showToast }) {
             // un reprocesoHecho fresco.
             if (!mounted) break;
             if (it.status === 'pendiente' && it.file && !it.parsed) {
+              if ((it.intentos || 0) >= 2) {
+                // Ya se intentó 2 veces: no volver a gastar ~60 s en cada recarga.
+                setItems(prev => prev.map(x => x.id === it.id ? { ...x, status: 'error',
+                  error: 'No se pudo leer automáticamente en 2 intentos (suele pasar con comprobantes de muchas líneas). Usá "Reintentar" si querés probar otra vez, o cargalo a mano desde Movimientos Contables.',
+                  errorCode: 'reintentos_agotados' } : x));
+                continue;
+              }
               await procesarItemRef.current(it.id, it.file);
             }
           }
@@ -531,7 +542,7 @@ function CapturaMagicaPage({ showToast }) {
         continue;
       }
       if (f.size > MAX_FILE_BYTES) {
-        showToast(`"${f.name}": muy grande (máx 6 MB)`, 'red');
+        showToast(`"${f.name}" pesa ${(f.size / 1048576).toFixed(1)} MB y el máximo es 3 MB. Reducilo: en el visor de PDF usá "Imprimir → Guardar como PDF" (baja mucho el peso) o escaneá en menor calidad; si son varias páginas, subilas por separado.`, 'red');
         continue;
       }
       nuevos.push({
@@ -655,8 +666,15 @@ function CapturaMagicaPage({ showToast }) {
         nc_aviso: ncSerieDeFactura ? `La serie leída (${ext.serie_correlativo}) es la de la FACTURA que modifica — verificá la serie real de la nota en el PDF (suele empezar con FC/BC).` : null,
       } : x));
     } catch (e) {
+      // AbortError = se cumplió el timeout del cliente (90 s). El mensaje nativo
+      // ("The user aborted a request.") es incomprensible para la usuaria.
+      const esAbort = e?.name === 'AbortError';
+      const msg = esAbort
+        ? 'La lectura tardó más de 90 segundos (comprobante muy extenso o conexión lenta). Probá "Reintentar"; si vuelve a fallar, cargalo a mano desde Movimientos Contables → Nuevo Movimiento.'
+        : (e.message || String(e));
       setItems(prev => prev.map(x => x.id === id ? {
-        ...x, status: 'error', error: e.message || String(e), errorCode: e.code || null,
+        ...x, status: 'error', error: msg, errorCode: esAbort ? 'timeout_cliente' : (e.code || null),
+        intentos: (x.intentos || 0) + 1,
       } : x));
     } finally {
       enVuelo.current.delete(id);
@@ -2279,7 +2297,7 @@ function CapturaMagicaPage({ showToast }) {
             Arrastrá facturas aquí o click para seleccionar
           </div>
           <div style={{ fontSize:11.5, color:'var(--tm)', marginTop:5 }}>
-            PDF · JPG · PNG · WEBP — máx 6 MB cada uno · podés subir varios a la vez
+            PDF · JPG · PNG · WEBP — máx 3 MB cada uno · podés subir varios a la vez
           </div>
           <input
             ref={fileInputRef}

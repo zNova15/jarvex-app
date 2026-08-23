@@ -70,7 +70,10 @@ Reglas estrictas:
 - Si el documento NO es un comprobante peruano NI una guía de remisión, devuelve tipo_documento="otro" y el resto vacío o null.
 - Si la imagen está borrosa, torcida, cortada o ilegible, agrega advertencias específicas y baja la confianza.
 
-Responde SOLO con JSON válido (sin markdown, sin texto extra) con esta estructura exacta:
+Responde SOLO con JSON válido MINIFICADO: UNA sola línea, sin markdown, sin saltos de línea ni
+espacios de indentación, sin texto extra. Con comprobantes de MUCHAS líneas de detalle esto es
+crítico: el formato compacto entra en el presupuesto de respuesta y el indentado no. La estructura
+exacta es la siguiente (se muestra indentada SOLO para que la leas, tu salida va en una línea):
 {
   "tipo_documento": "factura" | "boleta" | "nota_credito" | "nota_debito" | "recibo" | "guia_remision" | "otro",
   "guia": { "doc_referencia": "F001-025131" | null, "fecha_traslado": "YYYY-MM-DD" | null, "punto_partida": string | null, "punto_llegada": string | null, "motivo_traslado": string | null, "transportista": { "placa": string | null, "chofer": string | null, "dni": string | null, "licencia": string | null, "ruc": string | null, "razon_social": string | null } | null } | null,
@@ -122,7 +125,10 @@ Reglas estrictas:
 - Desglosa la especificación del requisito en exigencias individuales comparables (una por valor/propiedad exigida).
 - Fechas en formato ISO YYYY-MM-DD. Si el documento está borroso o cortado, agrega advertencias y baja la confianza.
 
-Responde SOLO con JSON válido (sin markdown, sin texto extra) con esta estructura exacta:
+Responde SOLO con JSON válido MINIFICADO: UNA sola línea, sin markdown, sin saltos de línea ni
+espacios de indentación, sin texto extra. Con comprobantes de MUCHAS líneas de detalle esto es
+crítico: el formato compacto entra en el presupuesto de respuesta y el indentado no. La estructura
+exacta es la siguiente (se muestra indentada SOLO para que la leas, tu salida va en una línea):
 {
   "es_certificado": boolean,
   "producto": string | null,
@@ -151,7 +157,10 @@ Reglas estrictas:
 - En los nombres de asegurados: transcribe EXACTAMENTE como aparecen (mayúsculas, tildes, orden apellidos/nombres tal cual).
 - La aseguradora suele ser MAPFRE, Rimac, Pacífico, La Positiva, etc.
 
-Responde SOLO con JSON válido (sin markdown, sin texto extra) con esta estructura exacta:
+Responde SOLO con JSON válido MINIFICADO: UNA sola línea, sin markdown, sin saltos de línea ni
+espacios de indentación, sin texto extra. Con comprobantes de MUCHAS líneas de detalle esto es
+crítico: el formato compacto entra en el presupuesto de respuesta y el indentado no. La estructura
+exacta es la siguiente (se muestra indentada SOLO para que la leas, tu salida va en una línea):
 {
   "secciones": [ { "tipo": "cotizacion" | "certificado" | "pago" | "factura" | "otro", "pagina_desde": 1, "pagina_hasta": 2 } ],
   "certificado": {
@@ -305,6 +314,15 @@ async function mistralOcr(cleanBase64, mimeType, apiKey, deadline) {
 // Extrae el JSON de la respuesta de Claude (puede venir con markdown wrapping).
 function extractJson(data) {
   const text = (data && data.content && data.content[0] && data.content[0].text) || '';
+  // La IA cortó la respuesta a la mitad (documento con demasiadas líneas de
+  // detalle): antes esto se disfrazaba de "JSON inválido" y la asistente
+  // reintentaba en vano. stop_reason es la señal más confiable.
+  if (data && data.stop_reason === 'max_tokens') {
+    const e = new Error('truncado');
+    e.rawText = text;
+    e.outputTokens = data.usage?.output_tokens || null;
+    throw e;
+  }
   const m = text.match(/\{[\s\S]*\}/);
   if (!m) {
     const e = new Error('no-json');
@@ -314,7 +332,10 @@ function extractJson(data) {
   try {
     return { extracted: JSON.parse(m[0]), text };
   } catch (err) {
-    const e = new Error('bad-json');
+    // Llaves/corchetes sin cerrar ⇒ también es un corte, no basura.
+    const abiertas = (m[0].match(/[{[]/g) || []).length;
+    const cerradas = (m[0].match(/[}\]]/g) || []).length;
+    const e = new Error(abiertas > cerradas ? 'truncado' : 'bad-json');
     e.rawText = text;
     e.detail = err.message;
     throw e;
@@ -324,7 +345,21 @@ function extractJson(data) {
 // Traduce un error del pipeline a la respuesta HTTP amigable (igual que antes).
 function respondError(e, res, isProd) {
   if (e && e.name === 'AbortError') {
-    return res.status(504).json({ error: 'La IA tardó demasiado en responder' });
+    return res.status(504).json({
+      error: 'La lectura automática tardó demasiado. Suele pasar con comprobantes de MUCHAS líneas de detalle: probá de nuevo con "Reintentar" o cargalo a mano desde Movimientos Contables → Nuevo Movimiento.',
+      code: 'timeout_ia',
+    });
+  }
+  // La IA cortó la respuesta por extensión del documento: mensaje ACCIONABLE
+  // (antes salía "JSON inválido de Claude" y la asistente reintentaba en vano,
+  // gastando una llamada completa por intento).
+  if (e && e.message === 'truncado') {
+    console.error('[captura-magica] respuesta TRUNCADA por extensión', { outputTokens: e.outputTokens || null, len: (e.rawText || '').length });
+    return res.status(502).json({
+      error: 'Este comprobante tiene demasiadas líneas de detalle y la lectura automática no pudo completarse. Reintentá una vez; si vuelve a fallar, cargalo a mano desde Movimientos Contables → Nuevo Movimiento (los datos de cabecera y el total sí podés copiarlos del PDF).',
+      code: 'doc_muy_extenso',
+      ...(isProd ? {} : { rawTextFin: (e.rawText || '').slice(-300) }),
+    });
   }
   if (e && e.message === 'no-json') {
     return res.status(502).json({ error: 'Claude no devolvió JSON parseable', rawText: (e.rawText || '').slice(0, 500) });
@@ -446,7 +481,10 @@ export default async function handler(req, res) {
   // de que la plataforma mate la función. El cliente aborta a los 90s
   // (jx-captura-magica → apiFetch timeout 90000), así que el error real siempre
   // le llega.
+  // Presupuesto por ETAPAS: el OCR no puede invadir lo que necesita la
+  // estructuración (con muchas líneas de detalle, generar el JSON tarda más).
   const deadline = Date.now() + 55000;
+  const RESERVA_STRUCT_MS = 28000;
   const mistralKey = process.env.MISTRAL_API_KEY;
 
   // Bloque de contenido para el fallback de visión (PDF vs imagen).
@@ -483,6 +521,16 @@ export default async function handler(req, res) {
       }
     } catch (e) {
       console.warn('[captura-magica] Mistral OCR falló, uso Claude visión:', (e && (e.upstreamStatus || e.message)) || e);
+      // Si se cayó por TIEMPO (o ya no queda presupuesto para estructurar), el
+      // fallback de visión —que es MÁS lento— solo consumiría el reloj otra vez
+      // y la usuaria esperaría el doble para el mismo error. Cortamos acá.
+      const sinTiempo = e?.name === 'AbortError' || (deadline - Date.now()) < RESERVA_STRUCT_MS;
+      if (sinTiempo) {
+        return res.status(504).json({
+          error: 'No se pudo leer este comprobante automáticamente en el tiempo disponible (suele pasar con documentos de muchas páginas o muchas líneas de detalle). Probá "Reintentar"; si vuelve a fallar, cargalo a mano desde Movimientos Contables → Nuevo Movimiento.',
+          code: 'timeout_ocr',
+        });
+      }
       // ocr queda null → path de visión ↓
     }
   }
@@ -498,11 +546,20 @@ export default async function handler(req, res) {
           : `A continuación está el TEXTO extraído por OCR (formato markdown) de un documento peruano (comprobante o guía de remisión). Extrae los datos al JSON estructurado descrito en las instrucciones del sistema. Basáte ÚNICAMENTE en este texto; si un dato no aparece, devuelve null. Responde SOLO con el JSON, sin markdown ni texto adicional.\n\n===== TEXTO OCR DEL DOCUMENTO =====\n${ocr.texto}` }]
       : [fileBlock, { type: 'text', text: userInstruction }];
 
+    // TECHO DE SALIDA DINÁMICO: 4000 fijo alcanzaba para una factura normal
+    // (5-15 líneas) pero NO para las de muchas líneas de detalle — la respuesta
+    // se cortaba y salía "JSON inválido" (caso real: F001-4446 con 66 ítems).
+    // Estimamos los ítems contando las filas de la tabla que devolvió el OCR y
+    // damos ~55 tokens por ítem (JSON minificado, precios de 10 decimales) más
+    // 900 de cabecera/totales, con techo de 16k (modelo) y piso de 4000.
+    const filasOcr = ocr ? ((ocr.texto || '').match(/^\s*\|.*\|\s*$/gm) || []).length : 0;
+    const itemsEstimados = Math.max(0, filasOcr - 2);   // menos header y separador
+    const maxTokensCalc = Math.min(16000, Math.max(4000, 900 + itemsEstimados * 55));
     const data = await anthropicMessages(apiKey, {
       // Facturas/guías desde texto OCR → Haiku (barato, alto volumen). Certificados
       // de calidad y SCTR (razonamiento) + fallback de visión → Sonnet (fuerte).
       model: (ocr && !esCert && !esSctr) ? CLAUDE_STRUCT_MODEL : CLAUDE_VISION_MODEL,
-      max_tokens: 4000,
+      max_tokens: maxTokensCalc,
       system: systemPrompt,
       messages: [{ role: 'user', content }],
     }, deadline);
