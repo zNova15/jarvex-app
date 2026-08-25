@@ -335,9 +335,9 @@ function SctrPage({ showToast }) {
     const ev = evidencias.get(p.id);
     if (!ev) { toast('Sin evidencia individual — el certificado del grupo está en la pestaña Documentos', 'amber'); return; }
     try {
-      const { getEvidenciaSrc } = await import('../lib/evidencias-url.js');
+      const { getEvidenciaSrc, abrirUrlEvidencia } = await import('../lib/evidencias-url.js');
       const src = await getEvidenciaSrc(ev);
-      if (src?.url) window.open(src.url, '_blank'); else toast('Archivo no disponible', 'red');
+      if (src?.url) abrirUrlEvidencia(src.url); else toast('Archivo no disponible', 'red');
     } catch (e) { toast('Error: ' + (e.message || e), 'red'); }
   };
 
@@ -452,9 +452,9 @@ function SctrPage({ showToast }) {
 
   const verDoc = async (ev) => {
     try {
-      const { getEvidenciaSrc } = await import('../lib/evidencias-url.js');
+      const { getEvidenciaSrc, abrirUrlEvidencia } = await import('../lib/evidencias-url.js');
       const src = await getEvidenciaSrc(ev);
-      if (src?.url) window.open(src.url, '_blank'); else toast('Archivo aún subiendo — probá en unos segundos', 'amber');
+      if (src?.url) abrirUrlEvidencia(src.url); else toast('Archivo aún subiendo — probá en unos segundos', 'amber');
     } catch (e) { toast('Error: ' + (e.message || e), 'red'); }
   };
 
@@ -716,9 +716,9 @@ function InduccionesPage({ showToast }) {
     const ev = evidenciasInd.get(ind.id);
     if (!ev) { toast('Sin ficha adjunta', 'amber'); return; }
     try {
-      const { getEvidenciaSrc } = await import('../lib/evidencias-url.js');
+      const { getEvidenciaSrc, abrirUrlEvidencia } = await import('../lib/evidencias-url.js');
       const src = await getEvidenciaSrc(ev);
-      if (src?.url) window.open(src.url, '_blank'); else toast('Archivo no disponible', 'red');
+      if (src?.url) abrirUrlEvidencia(src.url); else toast('Archivo no disponible', 'red');
     } catch (e) { toast('Error: ' + (e.message || e), 'red'); }
   };
 

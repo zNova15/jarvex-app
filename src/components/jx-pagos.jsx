@@ -790,9 +790,9 @@ function PagoDetalleModal({ pago, partes, evidencias, nombre, canGestionar, isAd
 
   const abrirEvidencia = async (ev) => {
     try {
-      const { getEvidenciaSrc } = await import('../lib/evidencias-url.js');
+      const { getEvidenciaSrc, abrirUrlEvidencia } = await import('../lib/evidencias-url.js');
       const r = await getEvidenciaSrc(ev);
-      if (r?.url) window.open(r.url, '_blank');
+      if (r?.url) abrirUrlEvidencia(r.url);
     } catch {}
   };
 

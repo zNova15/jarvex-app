@@ -598,7 +598,83 @@ async function contarServer(tabla, soft) {
 // Escape de emergencia sin deploy: localStorage.setItem('jx_sync_scope_off','1')
 // y recargar → vuelve al comportamiento de siempre (bajar todo).
 const PULL_SCOPE_POR_ROL = {
-  // rol: new Set(['tabla_1', 'tabla_2']),  ← se llena con exclusiones VERIFICADAS
+  // ── Roles de CAMPO técnico: sin finanzas, sin compras, sin maquinaria.
+  // (jx-busqueda / jx-solicitudes referencian alguna de estas tablas solo para
+  // pintar resultados de módulos que estos roles no pueden abrir — verificado.)
+  ingeniero: new Set([
+    'accounting_movements', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
+    'cotizacion_items', 'cotizaciones', 'cronograma_pagos', 'depositos_bancarizacion',
+    'emision_reglas', 'horas_maquina', 'insumos_partida_versionadas', 'insumos_pendientes',
+    'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
+    'oc_items', 'ordenes_compra', 'ordenes_intercompany', 'pagos',
+    'pagos_partes', 'partidas_versionadas', 'planilla_boletas', 'planillas',
+    'presupuestos_versiones', 'requisicion_items', 'requisiciones', 'trazabilidad_cadenas',
+    'valorizacion_adicionales', 'valorizacion_partidas', 'valorizaciones',
+  ]),
+  prevencionista: new Set([
+    'accounting_movements', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
+    'cotizacion_items', 'cotizaciones', 'cronograma_pagos', 'depositos_bancarizacion',
+    'emision_reglas', 'horas_maquina', 'insumos_partida_versionadas', 'insumos_pendientes',
+    'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
+    'oc_items', 'ordenes_compra', 'ordenes_intercompany', 'pagos',
+    'pagos_partes', 'partidas_versionadas', 'planilla_boletas', 'planillas',
+    'presupuestos_versiones', 'requisicion_items', 'requisiciones', 'trazabilidad_cadenas',
+    'valorizacion_adicionales', 'valorizacion_partidas', 'valorizaciones',
+  ]),
+  ing_ambiental: new Set([
+    'accounting_movements', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
+    'cotizacion_items', 'cotizaciones', 'cronograma_pagos', 'depositos_bancarizacion',
+    'emision_reglas', 'horas_maquina', 'insumos_partida_versionadas', 'insumos_pendientes',
+    'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
+    'oc_items', 'ordenes_compra', 'ordenes_intercompany', 'pagos',
+    'pagos_partes', 'partidas_versionadas', 'planilla_boletas', 'planillas',
+    'presupuestos_versiones', 'requisicion_items', 'requisiciones', 'trazabilidad_cadenas',
+    'valorizacion_adicionales', 'valorizacion_partidas', 'valorizaciones',
+  ]),
+  ing_calidad: new Set([
+    'accounting_movements', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
+    'cotizacion_items', 'cotizaciones', 'cronograma_pagos', 'depositos_bancarizacion',
+    'emision_reglas', 'horas_maquina', 'insumos_partida_versionadas', 'insumos_pendientes',
+    'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
+    'oc_items', 'ordenes_compra', 'ordenes_intercompany', 'pagos',
+    'pagos_partes', 'partidas_versionadas', 'planilla_boletas', 'planillas',
+    'presupuestos_versiones', 'requisicion_items', 'requisiciones', 'trazabilidad_cadenas',
+    'valorizacion_adicionales', 'valorizacion_partidas', 'valorizaciones',
+  ]),
+  ing_social: new Set([
+    'accounting_movements', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
+    'cotizacion_items', 'cotizaciones', 'cronograma_pagos', 'depositos_bancarizacion',
+    'emision_reglas', 'horas_maquina', 'insumos_partida_versionadas', 'insumos_pendientes',
+    'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
+    'oc_items', 'ordenes_compra', 'ordenes_intercompany', 'pagos',
+    'pagos_partes', 'partidas_versionadas', 'planilla_boletas', 'planillas',
+    'presupuestos_versiones', 'requisicion_items', 'requisiciones', 'trazabilidad_cadenas',
+    'valorizacion_adicionales', 'valorizacion_partidas', 'valorizaciones',
+  ]),
+  // ── Ayudante contable: sin SSOMA/campo/maquinaria. CONSERVA epps y
+  // movimientos_epp (la página Personal de su menú los lee) e iperc (badge
+  // de alertas del sidebar) — detectado por el análisis, no intuición.
+  ayudante_contador: new Set([
+    'ambiental_registros', 'avance_metas', 'avance_obra', 'calidad_certificados',
+    'calidad_requisitos', 'capacitaciones', 'charla_asistentes', 'charlas_plan',
+    'charlas_seguridad', 'consumos_combustible', 'epp_entregas', 'horas_maquina',
+    'incidencias', 'inducciones', 'inspecciones_seguridad', 'mantenimientos_maquinaria',
+    'movimientos_maquinaria', 'reportes_dia', 'reportes_especialidad', 'social_actores',
+    'social_compromisos', 'social_quejas', 'solicitudes_frente', 'solicitudes_reporte',
+  ]),
+  // ── Almacenera: sin familia financiera NI SSOMA. CONSERVA accounting_movements
+  // (Compras Pendientes cruza facturas) y calidad_* (certificados en recepción).
+  almacenero: new Set([
+    'ambiental_registros', 'caja_chica_movimientos', 'capacitaciones', 'charla_asistentes',
+    'charlas_plan', 'charlas_seguridad', 'cronograma_pagos', 'depositos_bancarizacion',
+    'emision_reglas', 'inducciones', 'inspecciones_seguridad', 'insumos_partida_versionadas',
+    'intercompany_transactions', 'movimientos_bancarios', 'ordenes_intercompany', 'pagos',
+    'pagos_partes', 'partidas_versionadas', 'planilla_boletas', 'planillas',
+    'presupuestos_versiones', 'reportes_especialidad', 'social_actores', 'social_compromisos',
+    'social_quejas', 'trazabilidad_cadenas', 'valorizacion_adicionales', 'valorizacion_partidas',
+    'valorizaciones',
+  ]),
+  // admin / contador / gerente / asistente_admin / resto: bajan TODO (sin entrada acá).
 };
 
 function tablaExcluidaPorRol(tabla) {

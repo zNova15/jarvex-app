@@ -97,6 +97,10 @@ export default defineConfig({
               // invalidaba el cache entero (la vida real era el TTL del token,
               // no los 30 días).
               matchOptions: { ignoreSearch: true },
+              // Los <img> piden en modo no-cors → respuesta OPACA (status 0).
+              // Sin esto, Workbox solo cacheaba status 200 y las imágenes de
+              // TODAS las galerías quedaban fuera del cache de 30 días.
+              cacheableResponse: { statuses: [0, 200] },
             },
           },
           // SUNAT/RENIEC y otros endpoints serverless propios: NO cachear

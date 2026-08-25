@@ -12,7 +12,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import React from "react";
-import { getEvidenciaSrc } from "../lib/evidencias-url.js";
+import { getEvidenciaSrc, abrirUrlEvidencia } from "../lib/evidencias-url.js";
 
 const { useState: uS, useEffect: uE } = React;
 
@@ -112,7 +112,7 @@ export function FotoInsumoCell({ obraId, tipoEvidencia, modulo, registroId, nomb
       {foto?.url ? (
         <img src={foto.url} alt="foto"
              style={{ width:32, height:32, objectFit:'cover', borderRadius:4, border:'1px solid var(--bd)', flexShrink:0, cursor:'pointer' }}
-             onClick={(e) => { e.stopPropagation(); window.open(foto.url, '_blank'); }}
+             onClick={(e) => { e.stopPropagation(); abrirUrlEvidencia(foto.url); }}
              title="Click para ampliar"/>
       ) : (
         <span style={{ width:32, height:32, borderRadius:4, background:'rgba(255,255,255,0.04)', border:'1px dashed var(--bd)', display:'inline-flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}

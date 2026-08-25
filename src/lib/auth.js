@@ -68,6 +68,9 @@ async function fullLocalCleanup() {
     'jx_recent_searches', 'jx_recent_global', 'jx_perm_overrides_v1',
     'app_mode', 'obra_activa_id', 'jarvex_notif_asked',
     'jx_pcge_suggestions_v1', // cache de IA por-usuario
+    'jx_signed_urls',         // URLs firmadas de evidencias: coherente con el
+                              // borrado de 'evidencias-cache' de abajo (que no
+                              // herede enlaces válidos el siguiente usuario)
   ];
   for (const k of keysToClear) {
     try { localStorage.removeItem(k); } catch {}

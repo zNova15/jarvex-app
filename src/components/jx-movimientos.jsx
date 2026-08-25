@@ -1,6 +1,6 @@
 import React from "react";
 import { calcAlerta } from "../lib/stock-utils.js";
-import { getEvidenciaSrc } from "../lib/evidencias-url.js";
+import { getEvidenciaSrc, abrirUrlEvidencia } from "../lib/evidencias-url.js";
 import { aplicarDelta } from "../lib/stock-ubicaciones.js";
 import { revertirEstadoMovHerr } from "../lib/stock-estados.js";
 import { eliminarMovimiento } from "../lib/eliminar-movimiento.js";
@@ -1123,7 +1123,7 @@ function MovMaterialesPage({ showToast }) {
       // miraba campos inexistentes upload_status/storage_path → nunca abría.)
       const src = await getEvidenciaSrc(evidencia);
       if (src?.url) {
-        window.open(src.url, '_blank');
+        abrirUrlEvidencia(src.url);
         if (src.isBlob) setTimeout(() => { try { URL.revokeObjectURL(src.url); } catch {} }, 60000);
         return;
       }

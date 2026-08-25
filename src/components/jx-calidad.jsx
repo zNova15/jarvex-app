@@ -99,9 +99,9 @@ function CalidadPage({ showToast }) {
 
   const verArchivo = async (ev) => {
     try {
-      const { getEvidenciaSrc } = await import('../lib/evidencias-url.js');
+      const { getEvidenciaSrc, abrirUrlEvidencia } = await import('../lib/evidencias-url.js');
       const src = await getEvidenciaSrc(ev);
-      if (src?.url) window.open(src.url, '_blank'); else toast('Archivo no disponible', 'red');
+      if (src?.url) abrirUrlEvidencia(src.url); else toast('Archivo no disponible', 'red');
     } catch (e) { toast('Error: ' + (e.message || e), 'red'); }
   };
 

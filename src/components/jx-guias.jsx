@@ -74,9 +74,9 @@ function GuiasRemisionPage({ showToast }) {
     try {
       const ev = g.evidencia_id ? await window.__db.evidencias.get(g.evidencia_id) : null;
       if (!ev) { toast('Esta guía no tiene el PDF adjunto', 'amber'); return; }
-      const { getEvidenciaSrc } = await import('../lib/evidencias-url.js');
+      const { getEvidenciaSrc, abrirUrlEvidencia } = await import('../lib/evidencias-url.js');
       const r = await getEvidenciaSrc(ev);
-      if (r?.url) window.open(r.url, '_blank');
+      if (r?.url) abrirUrlEvidencia(r.url);
     } catch {}
   };
 

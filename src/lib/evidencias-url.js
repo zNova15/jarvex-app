@@ -95,3 +95,19 @@ export async function getEvidenciaSrc(ev, expiresIn = _SIGNED_TTL) {
   // 3) Último recurso: la url guardada tal cual (sirve solo si el bucket fuera público).
   return ev.url_archivo ? { url: ev.url_archivo, isBlob: false } : null;
 }
+
+// Abre el archivo de una evidencia en pestaña nueva SIN esquivar el Service
+// Worker: una navegación directa a *.supabase.co no pasa por el SW (otro
+// origen/scope) y re-descargaba el archivo entero en CADA click. fetch() desde
+// la página sí es interceptado (cache de 30 días) → abrimos el blob resultante.
+export async function abrirUrlEvidencia(url) {
+  if (!url) return;
+  if (url.startsWith('blob:')) { window.open(url, '_blank'); return; }
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(String(resp.status));
+    window.open(URL.createObjectURL(await resp.blob()), '_blank');
+  } catch {
+    window.open(url, '_blank');   // fallback: al menos que abra
+  }
+}

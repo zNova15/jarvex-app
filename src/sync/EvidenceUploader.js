@@ -75,6 +75,10 @@ export async function uploadEvidencia(evidenciaId) {
     .upload(storagePath, fileBlob, {
       contentType: fileBlob.type ?? 'application/octet-stream',
       upsert: true,
+      // 30 días: una evidencia es INMUTABLE (el path incluye su id; el upsert
+      // solo re-sube el mismo contenido en reintentos). Sin esto viajaba con
+      // el default de 1 hora y el HTTP cache del navegador re-validaba/re-bajaba.
+      cacheControl: '2592000',
     });
 
   if (error) {
