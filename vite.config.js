@@ -85,10 +85,18 @@ export default defineConfig({
             handler: 'CacheFirst',
             options: {
               cacheName: 'evidencias-cache',
-              // 1 día máx (antes era 7d). Si una evidencia se borra del server,
-              // el SW sigue sirviendo la versión local pero por menos tiempo.
-              // Logout también borra esta cache desde el cliente (useAuth.js).
-              expiration: { maxEntries: 200, maxAgeSeconds: 24 * 60 * 60 },
+              // 30 días (ago-2026, ahorro de egress): un comprobante escaneado es
+              // INMUTABLE — re-descargarlo cada día en cada dispositivo era el
+              // mayor gasto de egress de Supabase. Si una evidencia se borra del
+              // server, el SW puede servir la copia local hasta 30 días (aceptable:
+              // el borrado ya la saca de las vistas vía Dexie). Logout sigue
+              // borrando esta cache desde el cliente (useAuth.js).
+              expiration: { maxEntries: 400, maxAgeSeconds: 30 * 24 * 60 * 60 },
+              // El path del Storage es INMUTABLE por evidencia; lo único que
+              // cambia es el ?token= firmado. Sin esto, cada rotación de token
+              // invalidaba el cache entero (la vida real era el TTL del token,
+              // no los 30 días).
+              matchOptions: { ignoreSearch: true },
             },
           },
           // SUNAT/RENIEC y otros endpoints serverless propios: NO cachear

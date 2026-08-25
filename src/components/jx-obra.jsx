@@ -1553,8 +1553,11 @@ function PartidasPage({ showToast }) {
       } catch (e) { /* offline o vista no disponible: ignorar */ }
     };
     fetchConsumo();
-    const id = setInterval(fetchConsumo, 30000);
-    return () => { cancelled = true; clearInterval(id); };
+    // Antes: poll de la vista cada 30 s (~1.000-2.900 req/día con la pantalla
+    // abierta). Ahora: refetch cuando un sync realmente corrió + fallback 5 min.
+    window.addEventListener('jx_sync_pull', fetchConsumo);
+    const id = setInterval(fetchConsumo, 300000);
+    return () => { cancelled = true; clearInterval(id); window.removeEventListener('jx_sync_pull', fetchConsumo); };
   }, [obraId]);
 
   const openEditPartida = (p) => {

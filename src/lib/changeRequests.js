@@ -11,8 +11,8 @@ import { logAudit } from './audit';
 
 async function getCurrentUser() {
   try {
-    const { data } = await supabase.auth.getUser();
-    const user = data?.user;
+    const { data } = await supabase.auth.getSession();   // local: 0 red (antes getUser = 1 request por acción)
+    const user = data?.session?.user;
     if (user) return { id: user.id, email: user.email || null };
   } catch (e) { /* offline */ }
   try {
@@ -296,7 +296,7 @@ async function _syncPendingChangeRequestsImpl() {
   // vuelva a loguearse acá (antes el insert por rol las subía; hoy fallaría
   // 42501 en silencio en cada sync).
   let uid = null;
-  try { const { data } = await supabase.auth.getUser(); uid = data?.user?.id || null; } catch {}
+  try { const { data } = await supabase.auth.getSession(); uid = data?.session?.user?.id || null; } catch {}
   if (!uid) return 0;
 
   let synced = 0;
@@ -356,7 +356,7 @@ export async function getColaLocalPendiente() {
   try { rows = await db.change_requests_pending.filter(r => !r.synced).toArray(); } catch { return []; }
   if (!rows.length) return [];
   let uid = null;
-  try { const { data } = await supabase.auth.getUser(); uid = data?.user?.id || null; } catch {}
+  try { const { data } = await supabase.auth.getSession(); uid = data?.session?.user?.id || null; } catch {}
   return rows.map(r => ({
     id: r.id,
     target_table: r.target_table,

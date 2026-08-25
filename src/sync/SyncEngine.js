@@ -581,6 +581,36 @@ async function contarServer(tabla, soft) {
  * - ok      = server != null && faltan === 0.
  * Requiere conexión; si no hay, cada fila viene con error.
  */
+// ── SYNC POR ROL (ahorro de consumo Supabase, ago-2026) ─────────────
+// Tablas transaccionales PESADAS que un dispositivo NO descarga cuando su rol
+// no puede abrir ningún módulo que las lea. Garantías:
+// - SOLO afecta el PULL (la descarga). El PUSH nunca se filtra: todo lo que
+//   este dispositivo escribe se sube igual, siempre.
+// - No borra nada, ni local ni en el server: solo deja de traer filas que ese
+//   rol no puede ver en ninguna pantalla. La data queda intacta en Supabase.
+// - Solo tablas TRANSACCIONALES (las maestras son catálogos chicos: se bajan
+//   todas, para todos — muchos módulos las cruzan).
+// - Rol desconocido / window.__currentRol ausente / admin-contador-gerente →
+//   se baja TODO (fallback conservador).
+// - Si el rol de un usuario cambia, el watermark quedó quieto mientras la
+//   tabla estuvo excluida → el próximo pull incremental trae TODO lo que se
+//   perdió desde entonces. No hay pérdida posible.
+// Escape de emergencia sin deploy: localStorage.setItem('jx_sync_scope_off','1')
+// y recargar → vuelve al comportamiento de siempre (bajar todo).
+const PULL_SCOPE_POR_ROL = {
+  // rol: new Set(['tabla_1', 'tabla_2']),  ← se llena con exclusiones VERIFICADAS
+};
+
+function tablaExcluidaPorRol(tabla) {
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('jx_sync_scope_off')) return false;
+    const rol = (typeof window !== 'undefined' && window.__currentRol) || null;
+    if (!rol) return false;
+    const excl = PULL_SCOPE_POR_ROL[rol];
+    return !!(excl && excl.has(tabla));
+  } catch { return false; }
+}
+
 export async function getSyncHealth() {
   if (!navigator.onLine) {
     return HEALTH_TABLES.map(({ tabla, label }) => ({
@@ -591,6 +621,7 @@ export async function getSyncHealth() {
   const out = [];
   for (const { tabla, label, soft } of HEALTH_TABLES) {
     if (!db[tabla]) continue;
+    if (tablaExcluidaPorRol(tabla)) continue;  // este rol no la sincroniza: no es un faltante
     const local = await contarLocalVivos(tabla);
     const { count: server, error } = await contarServer(tabla, soft);
     const faltan = server != null ? Math.max(0, server - local) : null;
@@ -643,8 +674,18 @@ export async function getPendingDetails() {
   return out;
 }
 
+let _lastSyncOkAt = 0;   // para throttlear el sync por focus (ver abajo)
+let _lastPullEventAt = 0; // throttle del evento jx_sync_pull (max 1/min)
+
 export async function syncAll() {
   if (syncInProgress || !navigator.onLine) return;
+  // Sin sesión no hay nada que sincronizar: antes una pestaña deslogueada o
+  // abandonada seguía consultando ~84 tablas maestras cada ciclo con la anon
+  // key (todas rechazadas o vacías por RLS). getSession() es local: 0 red.
+  try {
+    const sess = (await supabase.auth.getSession())?.data?.session;
+    if (!sess) return;
+  } catch { return; }
   syncInProgress = true;
   emit({ syncing: true, error: null });
 
@@ -670,6 +711,16 @@ export async function syncAll() {
     const [pending, failed] = await Promise.all([getPendingCount(), getFailedCount()]);
     const ms = Math.round(performance.now() - t0);
     console.log(`[SyncEngine] ✓ syncAll OK en ${ms}ms · pending=${pending} failed=${failed}`);
+    const emitirPull = Date.now() - _lastPullEventAt > 60_000;
+    _lastSyncOkAt = Date.now();
+    if (emitirPull) {
+      _lastPullEventAt = Date.now();
+      // Aviso a las vistas que consultan VISTAS del server (dashboard, APU de
+      // obra): "acaba de correr un sync, refrescate". Estaba documentado pero
+      // nunca se emitía — sus listeners eran código muerto y compensaban con
+      // polls agresivos.
+      try { window.dispatchEvent(new CustomEvent('jx_sync_pull')); } catch {}
+    }
     emit({ syncing: false, pending, failed, lastSync: new Date(), error: null, phase: null, current: 0, total: 0 });
   } catch (err) {
     console.error('[SyncEngine] ✗ Error en syncAll:', err);
@@ -2395,7 +2446,7 @@ async function repairMasterFinanceWatermarksOnce() {
 }
 
 async function pullTransactionalChanges() {
-  const userId = (await supabase.auth.getUser())?.data?.user?.id;
+  const userId = (await supabase.auth.getSession())?.data?.session?.user?.id;
   if (!userId) return;
 
   await hydrateNoCreatedByCache();
@@ -2407,6 +2458,7 @@ async function pullTransactionalChanges() {
   let cacheChanged = false;
 
   for (const tabla of TRANSACTIONAL_TABLES) {
+   if (tablaExcluidaPorRol(tabla)) continue;   // sync por rol (ver PULL_SCOPE_POR_ROL)
    try {
     let lastSync = await getLastSync(`${tabla}_pull`);
 
@@ -2694,8 +2746,41 @@ let _syncFailures = 0;
 const MIN_INTERVAL_MS = 30_000;
 const MAX_INTERVAL_MS = 600_000;
 
+// ── Backoff por INACTIVIDAD (ahorro de consumo Supabase, ago-2026) ──
+// Con el usuario activo se mantiene el ritmo de 30 s. Si nadie toca la app,
+// el polling afloja: cada ciclo son ~147 consultas (una por tabla), así que
+// una pestaña abierta sin uso pasaba de ~17.600 req/h a ~1.700 req/h con esto.
+// Cualquier interacción (click/tecla), una escritura local (jx_data_changed) o
+// volver a la pestaña reactivan el ritmo de 30 s Y adelantan el próximo tick,
+// así que el usuario nunca percibe la espera larga. Realtime sigue empujando
+// los cambios en vivo de las tablas suscritas, independiente de este timer.
+const IDLE_NIVELES = [
+  { idleMs: 3 * 60_000,  delay: 120_000 },  // 3 min sin actividad → cada 2 min
+  { idleMs: 15 * 60_000, delay: 300_000 },  // 15 min sin actividad → cada 5 min
+];
+let _lastActivity = Date.now();
+
+function delayPorInactividad() {
+  const idle = Date.now() - _lastActivity;
+  let d = MIN_INTERVAL_MS;
+  for (const n of IDLE_NIVELES) if (idle >= n.idleMs) d = n.delay;
+  return d;
+}
+
+function marcarActividad() {
+  const idleAntes = Date.now() - _lastActivity;
+  _lastActivity = Date.now();
+  // Si veníamos de inactividad larga, el próximo tick puede estar a minutos:
+  // lo adelantamos para que el usuario que "vuelve" vea datos frescos ya.
+  if (idleAntes >= IDLE_NIVELES[0].idleMs && _periodicId) {
+    clearTimeout(_periodicId);
+    _periodicId = null;
+    scheduleNextSync();
+  }
+}
+
 function nextSyncDelay() {
-  if (_syncFailures === 0) return MIN_INTERVAL_MS;
+  if (_syncFailures === 0) return delayPorInactividad();
   return Math.min(MIN_INTERVAL_MS * Math.pow(2, _syncFailures), MAX_INTERVAL_MS);
 }
 
@@ -2730,10 +2815,17 @@ function startPeriodicSync() {
 // Arrancar al cargar el módulo
 if (typeof window !== 'undefined') {
   startPeriodicSync();
+  // Actividad del usuario / escrituras locales → ritmo de 30 s (ver IDLE_NIVELES)
+  window.addEventListener('pointerdown', marcarActividad, { passive: true });
+  window.addEventListener('keydown', marcarActividad, { passive: true });
+  window.addEventListener('jx_data_changed', marcarActividad);
   // Re-sincronizar cuando el usuario vuelve a la pestaña tras estar en otra
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && navigator.onLine) {
-      setTimeout(syncAll, 500);
+      marcarActividad();
+      // Solo si el último sync exitoso ya está "viejo": un alt-tab rápido no
+      // amerita otras ~147 consultas (realtime cubre lo urgente en vivo).
+      if (Date.now() - _lastSyncOkAt > 120_000) setTimeout(syncAll, 500);
     }
   });
   // Re-sincronizar cuando vuelve la conexión: pueden haber registros en

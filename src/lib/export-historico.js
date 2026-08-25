@@ -9,6 +9,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import { db } from '../db/jarvex.db.js';
+import { getEvidenciaSrc } from './evidencias-url.js';
 import { getCurrentMode } from './app-mode-core.js';
 
 // Predicado de modo — espejo de filterByMode (useOfflineData.js): en 'prueba'
@@ -424,10 +425,11 @@ export async function exportarFotosZip(obraId, obraNombre = 'obra', filtros = {}
     let blob = null;
     try {
       if ((e.sync_status === 'uploaded' || e.sync_status === 'synced') && e.url_archivo) {
-        const path = pathFromUrl(e.url_archivo);
-        if (path) {
-          const { data } = await window.__supabase.storage.from('evidencias').createSignedUrl(path, 3600);
-          if (data?.signedUrl) { const resp = await fetch(data.signedUrl); if (resp.ok) blob = await resp.blob(); }
+        const r = await getEvidenciaSrc(e);
+        if (r?.url) {
+          const resp = await fetch(r.url);   // URL estable → el SW acierta su cache
+          if (resp.ok) blob = await resp.blob();
+          if (r.isBlob) { try { URL.revokeObjectURL(r.url); } catch {} }
         }
       }
       if (!blob) { const entry = await window.__db.evidencias_blobs.get(e.id); if (entry?.blob) blob = entry.blob; }

@@ -25,8 +25,8 @@ function sanitizeRecordId(recordId, newData) {
 
 async function getCurrentUser() {
   try {
-    const { data } = await supabase.auth.getUser();
-    const user = data?.user;
+    const { data } = await supabase.auth.getSession();   // local: 0 red (antes getUser = 1 request por acción)
+    const user = data?.session?.user;
     if (user) return { id: user.id, email: user.email || null };
   } catch (e) { /* offline */ }
 

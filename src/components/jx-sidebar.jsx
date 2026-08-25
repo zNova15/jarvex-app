@@ -231,8 +231,19 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
       } catch (e) { /* ignore */ }
     };
     poll();
-    const id = setInterval(poll, 30000);
-    return () => { cancelled = true; clearInterval(id); };
+    // Antes: COUNT al server cada 30 s (~1.000-2.900 req/día por admin).
+    // Ahora: recontar solo cuando cambian las solicitudes (evento local o
+    // realtime) con debounce, y un fallback lento de 5 min por si algo se pierde.
+    let deb = null;
+    const onCambio = (e) => {
+      const t = e?.detail?.tabla;
+      if (t && t !== 'change_requests') return;
+      clearTimeout(deb);
+      deb = setTimeout(poll, 2000);
+    };
+    window.addEventListener('jx_data_changed', onCambio);
+    const id = setInterval(poll, 300000);
+    return () => { cancelled = true; clearInterval(id); clearTimeout(deb); window.removeEventListener('jx_data_changed', onCambio); };
   }, [esRevisorSolic]);
 
   // Conteo de alertas críticas (badge en sidebar → "Centro de Alertas")

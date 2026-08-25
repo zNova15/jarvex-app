@@ -194,9 +194,13 @@ async function upsertMetadataEvidencia(evidencia, url) {
 // CHECK de tipo_evidencia, mig 080). Re-upserteamos su metadata (idempotente)
 // para que otros dispositivos al fin las vean.
 let _recuperacionMetadataHecha = false;
+const _RECUP_META_LS = 'jx_ev_metadata_repair_v1';  // persistente: era un repair one-shot del bug de mig 080
 async function recuperarMetadataSubidas() {
   if (_recuperacionMetadataHecha) return;
   _recuperacionMetadataHecha = true;
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage.getItem(_RECUP_META_LS)) return;
+  } catch {}
   try {
     const subidas = await db.evidencias
       .where('sync_status').equals(UPLOAD_STATUS.UPLOADED)
@@ -210,6 +214,7 @@ async function recuperarMetadataSubidas() {
         try { await db.evidencias.update(ev.id, { _last_error: `Metadata no entró al servidor: ${res.error}` }); } catch {}
       }
     }
+    try { if (typeof localStorage !== 'undefined') localStorage.setItem(_RECUP_META_LS, new Date().toISOString()); } catch {}
   } catch (e) {
     console.warn('[EvidenceUploader] recuperación metadata:', e?.message || e);
   }

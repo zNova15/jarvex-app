@@ -143,15 +143,25 @@ function UsuariosPage({ showToast }) {
 
   uEAd(() => {
     reload();
-    // Polling 5s → 60s + reactivo a eventos (-92% queries)
-    const onChange = () => reload();
+    // reload() son 3 queries directas al server. Antes corría cada 60 s Y en
+    // CADA jx_data_changed de cualquier tabla, sin debounce. Ahora: solo
+    // eventos de las tablas que esta página muestra, con debounce, y un
+    // fallback de 5 min.
+    let deb = null;
+    const pedir = () => { clearTimeout(deb); deb = setTimeout(reload, 2000); };
+    const onChange = (e) => {
+      const t = e?.detail?.tabla;
+      if (t && !['profiles', 'obra_usuarios', 'obras'].includes(t)) return;
+      pedir();
+    };
     window.addEventListener('jx_data_changed', onChange);
-    window.addEventListener('jx_sync_pull', onChange);
-    const t = setInterval(reload, 60000);
+    window.addEventListener('jx_sync_pull', pedir);
+    const t = setInterval(reload, 300000);
     return () => {
       window.removeEventListener('jx_data_changed', onChange);
-      window.removeEventListener('jx_sync_pull', onChange);
+      window.removeEventListener('jx_sync_pull', pedir);
       clearInterval(t);
+      clearTimeout(deb);
     };
   }, []);
 

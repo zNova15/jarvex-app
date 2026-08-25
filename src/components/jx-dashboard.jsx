@@ -201,7 +201,8 @@ function DashboardPage() {
     fetchView();
     const onSync = () => fetchView();
     window.addEventListener('jx_sync_pull', onSync);
-    const id = setInterval(fetchView, 60_000);
+    // 5 min de fallback: el refresco fino lo da jx_sync_pull (ahora sí se emite).
+    const id = setInterval(fetchView, 300_000);
     return () => {
       cancelled = true;
       window.removeEventListener('jx_sync_pull', onSync);

@@ -203,9 +203,18 @@ function InicioPage({ onNav, onEnterObra }) {
       } catch {}
     };
     load();
-    const on = () => load();
+    // Solo recargar cuando el evento es de solicitudes/conflictos (el COUNT de
+    // solicitudes va al SERVER; recontarlo por cambios de otras tablas era puro
+    // gasto) — y con debounce: un pull de sync emite ráfagas de eventos.
+    let deb = null;
+    const on = (e) => {
+      const t = e?.detail?.tabla;
+      if (t && !['change_requests', 'sync_conflicts'].includes(t)) return;
+      clearTimeout(deb);
+      deb = setTimeout(load, 2000);
+    };
     window.addEventListener('jx_data_changed', on);
-    return () => { cancel = true; window.removeEventListener('jx_data_changed', on); };
+    return () => { cancel = true; clearTimeout(deb); window.removeEventListener('jx_data_changed', on); };
   }, []);
 
   // Obras asignadas (null = ve todas) + avance físico/facturado por obra

@@ -34,7 +34,12 @@ export function pathDeEvidencia(url) {
 // vez = EGRESS disparado (el exceso del plan venía de acá). Para evitarlo,
 // reusamos la MISMA signed URL por path mientras siga válida: URL estable → el
 // navegador cachea la imagen entre renders y recargas → egress mínimo.
-const _SIGNED_TTL = 86400; // 24h en segundos (igual al expiresIn)
+// 7 días (antes 24h): la URL firmada se cachea en localStorage y se REUTILIZA
+// hasta su exp — mientras no cambie, el cache del Service Worker (que indexa
+// por URL completa) sirve el archivo sin volver a descargarlo de Supabase.
+// Con 24h, cada día se firmaba una URL nueva → cache miss → re-descarga del
+// PDF entero en cada dispositivo. Egress puro desperdiciado.
+const _SIGNED_TTL = 7 * 86400;
 const _SIGNED_LS_KEY = 'jx_signed_urls';
 let _signedCache = null;
 function _loadSigned() {

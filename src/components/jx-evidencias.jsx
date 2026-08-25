@@ -1,5 +1,6 @@
 import React from "react";
 import { puedeVerEvidencia, TIPOS_CONTABLES as TIPOS_CONTABLES_LIB } from "../lib/evidencias-visibilidad.js";
+import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 const { useState: uSE, useMemo: uME, useEffect: uEE, useRef: uRE, useCallback: uCB } = React;
 
 // ─── CONFIG ─────────────────────────────────────────────
@@ -109,13 +110,10 @@ function Thumb({ ev, signedRef, blobUrlRef, onClick }) {
             setSrc(signedRef.current[ev.id]);
             return;
           }
-          const path = pathFromUrl(ev.url_archivo);
-          if (!path) { setErr(true); return; }
-          const { data, error } = await window.__supabase
-            .storage.from('evidencias').createSignedUrl(path, 3600);
-          if (error || cancelled) { if (!cancelled) setErr(true); return; }
-          signedRef.current[ev.id] = data.signedUrl;
-          setSrc(data.signedUrl);
+          const r = await getEvidenciaSrc(ev);
+          if (!r?.url || cancelled) { if (!cancelled) setErr(true); return; }
+          signedRef.current[ev.id] = r.url;
+          setSrc(r.url);
         } else if (ev.sync_status === 'pending_upload') {
           if (blobUrlRef.current[ev.id]) {
             setSrc(blobUrlRef.current[ev.id]);
@@ -344,13 +342,17 @@ function EvidenciasPage({ showToast }) {
                 setLight(ev);
               } else if (isPdf) {
                 if (ev.url_archivo) {
-                  const path = pathFromUrl(ev.url_archivo);
-                  if (path) {
-                    window.__supabase.storage.from('evidencias').createSignedUrl(path, 3600)
-                      .then(({ data }) => { if (data?.signedUrl) window.open(data.signedUrl, '_blank'); });
-                    return;
-                  }
-                  window.open(ev.url_archivo, '_blank');
+                  (async () => {
+                    const r = await getEvidenciaSrc(ev);
+                    if (!r?.url) { window.open(ev.url_archivo, '_blank'); return; }
+                    if (r.isBlob) { window.open(r.url, '_blank'); return; }
+                    try {
+                      const resp = await fetch(r.url);   // pasa por el SW → cache 30d
+                      if (!resp.ok) throw new Error(String(resp.status));
+                      window.open(URL.createObjectURL(await resp.blob()), '_blank');
+                    } catch { window.open(r.url, '_blank'); }
+                  })();
+                  return;
                 } else {
                   // pendiente: abrir blob local
                   window.__db.evidencias_blobs.get(ev.id).then(entry => {
@@ -557,13 +559,10 @@ function Lightbox({ ev, signedRef, blobUrlRef, onClose }) {
       try {
         if ((ev.sync_status === 'uploaded' || ev.sync_status === 'synced') && ev.url_archivo) {
           if (signedRef.current[ev.id]) { setSrc(signedRef.current[ev.id]); return; }
-          const path = pathFromUrl(ev.url_archivo);
-          if (!path) return;
-          const { data } = await window.__supabase
-            .storage.from('evidencias').createSignedUrl(path, 3600);
-          if (cancelled || !data?.signedUrl) return;
-          signedRef.current[ev.id] = data.signedUrl;
-          setSrc(data.signedUrl);
+          const r = await getEvidenciaSrc(ev);
+          if (cancelled || !r?.url) return;
+          signedRef.current[ev.id] = r.url;
+          setSrc(r.url);
         } else {
           if (blobUrlRef.current[ev.id]) { setSrc(blobUrlRef.current[ev.id]); return; }
           const entry = await window.__db.evidencias_blobs.get(ev.id);
@@ -578,10 +577,17 @@ function Lightbox({ ev, signedRef, blobUrlRef, onClose }) {
     return () => { cancelled = true; };
   }, [ev.id]);
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
     if (!src) return;
+    let href = src;
+    if (!src.startsWith('blob:')) {
+      try {
+        const resp = await fetch(src);         // el SW cachea/acierta → 0 egress repetido
+        if (resp.ok) href = URL.createObjectURL(await resp.blob());
+      } catch {}
+    }
     const a = document.createElement('a');
-    a.href = src;
+    a.href = href;
     a.download = ev.nombre_archivo || 'evidencia';
     a.target = '_blank';
     a.rel = 'noopener';
