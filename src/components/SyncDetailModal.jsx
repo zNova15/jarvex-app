@@ -18,6 +18,10 @@ import {
   getFailedDetails, retryAllFailed, getPendingCount, getFailedCount,
   syncAll, forceFullResync, getSyncHealth,
 } from '../sync/SyncEngine';
+import { migrarEvidenciasHeic } from '../lib/migrar-heic';
+import { optimizarImagenEvidencia } from '../lib/optimizar-imagen';
+import { supabase } from '../lib/supabase';
+import { db } from '../db/jarvex.db';
 
 const { useState, useEffect } = React;
 
@@ -72,6 +76,9 @@ export default function SyncDetailModal({ open, onClose, showToast }) {
   // Verificación de integridad (local vs servidor) — bajo demanda (hace red).
   const [health, setHealth] = useState(null);        // null | [] | [{...}]
   const [verificando, setVerificando] = useState(false);
+  // Fase 3 consumo: migración one-shot de fotos HEIC antiguas (solo admin).
+  const [migrandoHeic, setMigrandoHeic] = useState(false);
+  const [heicMsg, setHeicMsg] = useState(null);
 
   const reload = async () => {
     setLoading(true);
@@ -160,6 +167,43 @@ export default function SyncDetailModal({ open, onClose, showToast }) {
       setBusy(false);
     }
   };
+
+  // Fase 3 consumo — convierte las fotos .heic viejas del server a JPEG 1920px
+  // (mismo estándar que la captura actual), re-apunta la fila y borra el
+  // original. Solo admin. Necesita un navegador que decodifique HEIC (Safari).
+  const handleMigrarHeic = async () => {
+    if (!confirm(
+      'CONVERTIR FOTOS HEIC ANTIGUAS\n\n' +
+      'Busca en el servidor las fotos .heic de iPhone subidas antes de la conversión automática ' +
+      '(hoy no se ven en las PC), las convierte a JPEG (1920px, el mismo estándar actual) y ' +
+      'REEMPLAZA el archivo original por el JPEG.\n\n' +
+      'Requiere un navegador que lea HEIC (Safari en Mac o iPhone). En Chrome no rompe nada: ' +
+      'las fotos que no pueda leer se saltan y se avisa al final.\n\n¿Continuar?'
+    )) return;
+    setMigrandoHeic(true);
+    setHeicMsg('Buscando fotos HEIC…');
+    try {
+      const r = await migrarEvidenciasHeic({
+        supabase, db, optimizar: optimizarImagenEvidencia,
+        onProgress: (msg) => setHeicMsg(msg),
+      });
+      const resumen = r.total === 0
+        ? '✓ No quedan fotos HEIC por convertir.'
+        : `✓ ${r.convertidas} convertidas (${r.mbAhorrados} MB recuperados)`
+          + (r.noDecodificadas ? ` · ${r.noDecodificadas} necesitan Safari` : '')
+          + (r.errores ? ` · ${r.errores} con error` : '')
+          + (r.sinBorrarOriginal ? ` · ${r.sinBorrarOriginal} convertidas sin poder borrar el original` : '');
+      setHeicMsg(resumen);
+      if (showToast) showToast(resumen, r.errores ? 'amber' : 'green');
+    } catch (e) {
+      setHeicMsg(`Error: ${e.message || e}`);
+      if (showToast) showToast(`Error al migrar HEIC: ${e.message || e}`, 'red');
+    } finally {
+      setMigrandoHeic(false);
+    }
+  };
+
+  const esAdmin = (typeof window !== 'undefined' && window.__currentRol) === 'admin';
 
   return (
     <div onClick={e => e.target === e.currentTarget && !busy && onClose()}
@@ -303,6 +347,29 @@ export default function SyncDetailModal({ open, onClose, showToast }) {
               </div>
             )}
           </div>
+
+          {/* ── MANTENIMIENTO (solo admin): migrar fotos HEIC antiguas ── */}
+          {esAdmin && (
+            <div className="card card-p" style={{ marginTop:14, background:'rgba(168,85,247,0.06)', border:'1px solid rgba(168,85,247,0.25)' }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+                <div style={{ fontSize:13, fontWeight:700, color:'var(--tp)' }}>
+                  🧹 Mantenimiento: fotos HEIC antiguas
+                </div>
+                <button className="btn btn-ghost btn-sm" disabled={migrandoHeic || busy} onClick={handleMigrarHeic}
+                  style={{ fontSize:11.5 }}>
+                  {migrandoHeic ? 'Convirtiendo…' : 'Convertir a JPEG'}
+                </button>
+              </div>
+              <div style={{ fontSize:11.5, color:'var(--ts)', lineHeight:1.6, marginTop:6 }}>
+                Convierte las fotos <strong>.heic de iPhone</strong> subidas antes de la conversión automática
+                (no se ven en las PC y ocupan ~20× más espacio) a JPEG estándar, y reemplaza el original.
+                Correlo desde <strong>Safari</strong> (Mac o iPhone) — Chrome no puede leer HEIC.
+              </div>
+              {heicMsg && (
+                <div style={{ fontSize:11.5, color:'var(--tp)', marginTop:8, fontWeight:600 }}>{heicMsg}</div>
+              )}
+            </div>
+          )}
         </div>
 
         <div style={{ padding:'12px 18px', borderTop:'1px solid var(--border)', display:'flex', gap:8, justifyContent:'space-between', alignItems:'center', flexWrap:'wrap' }}>
