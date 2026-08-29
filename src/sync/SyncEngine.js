@@ -5,6 +5,10 @@ import { syncPendingAuditLogs } from '../lib/audit';
 import { syncPendingChangeRequests } from '../lib/changeRequests';
 import { captureException, captureMessage } from '../instrument.js';
 import { trackEvent } from '../lib/posthog.js';
+import {
+  planPullRpc, interpretarRespuestaPull,
+  KEY_MASTER, KEY_TX, tablaDeKey, esKeyMaster,
+} from '../lib/pull-rpc';
 
 // Tablas que el cliente PUSHEA al servidor cuando hay cambios locales.
 // Antes solo eran las "transaccionales" (movimientos, asistencia, etc.)
@@ -769,20 +773,17 @@ export async function syncAll() {
   const t0 = performance.now();
 
   try {
-    console.log('[SyncEngine] 1/5 push de operaciones pendientes…');
+    console.log('[SyncEngine] 1/4 push de operaciones pendientes…');
     await pushPendingOperations();
 
-    console.log('[SyncEngine] 2/5 push de audit logs…');
+    console.log('[SyncEngine] 2/4 push de audit logs…');
     await pushPendingAuditLogs();
 
-    console.log('[SyncEngine] 3/5 push de change requests…');
+    console.log('[SyncEngine] 3/4 push de change requests…');
     await pushPendingChangeRequests();
 
-    console.log('[SyncEngine] 4/5 pull de master tables (obras, materiales, partidas, etc.)…');
-    await pullMasterTables();
-
-    console.log('[SyncEngine] 5/5 pull de transactional (movimientos, asistencia, evidencias)…');
-    await pullTransactionalChanges();
+    console.log('[SyncEngine] 4/4 pull consolidado (RPC fase 2 + legacy para full pulls)…');
+    await pullConsolidado();
 
     const [pending, failed] = await Promise.all([getPendingCount(), getFailedCount()]);
     const ms = Math.round(performance.now() - t0);
@@ -2116,14 +2117,20 @@ async function fetchAllRows(buildQuery) {
   return { data: all, error: null };
 }
 
-async function pullMasterTables() {
+async function pullMasterTables({ soloTablas = null, saltarReparaciones = false } = {}) {
   // One-shot: resetea el watermark de la familia contable → esta corrida es un
   // full re-pull + reconcile sweep que limpia fantasmas/duplicados (ver def).
-  await repairMasterFinanceWatermarksOnce();
+  if (!saltarReparaciones) await repairMasterFinanceWatermarksOnce();
   for (const { tabla } of MASTER_TABLES) {
+    if (soloTablas && !soloTablas.has(tabla)) continue; // fase 2: ya lo resolvió el RPC
     if (TABLAS_NO_EN_SERVER.has(tabla) || _tablasCon404.has(tabla)) {
       continue; // skip silencioso
     }
+    // Sync por rol TAMBIÉN en master (fase 2): la fase 1b aplicaba la exclusión
+    // solo en el loop transaccional, pero las 24-31 tablas excluidas por rol son
+    // TODAS master → se seguían bajando igual en cada ciclo. Mismo escape
+    // (jx_sync_scope_off) y coherente con getSyncHealth, que ya las salta.
+    if (tablaExcluidaPorRol(tabla)) continue;
     try {
       let lastSync = await getLastSync(tabla);
       // Auto-recovery: si Dexie tiene 0 records pero hay lastSync grabado,
@@ -2194,8 +2201,17 @@ async function pullMasterTables() {
         console.warn(`[SyncEngine] pull ${tabla} ERROR:`, error.message, '— posible causa: RLS o permisos');
         continue;
       }
-      const dataArr = data || [];
+      await aplicarPullMaster(tabla, data || [], lastSync);
+    } catch (e) {
+      console.warn(`[SyncEngine] pull ${tabla} excepción:`, e?.message || e);
+    }
+  }
+}
 
+// Aplica a Dexie el resultado de un pull MASTER (venga del REST por-tabla o del
+// RPC consolidado de fase 2). `lastSync` nulo = era un full pull (corre el
+// reconcile sweep); no nulo = incremental. Avanza el watermark a MAX(updated_at).
+async function aplicarPullMaster(tabla, dataArr, lastSync) {
       // ── RECONCILE SWEEP en FULL PULL ──
       // Caso típico: PC1 borró 100 partidas, PC2 hizo sync con código viejo
       // ANTES de este fix (lastSync se actualizó a un momento posterior al
@@ -2241,7 +2257,7 @@ async function pullMasterTables() {
         // dejamos el watermark como estaba (incremental) o null (full pull, tabla
         // vacía → re-chequea barato la próxima). Avanzarlo al reloj adelantaba el
         // cursor por delante de futuras filas con updated_at menor y las saltaba.
-        continue;
+        return;
       }
 
       // Separar tombstones (soft-deleted desde otro device) de los vivos.
@@ -2305,10 +2321,6 @@ async function pullMasterTables() {
         if (r.updated_at && (!maxUpd || r.updated_at > maxUpd)) maxUpd = r.updated_at;
       }
       if (maxUpd) await setLastSync(tabla, maxUpd);
-    } catch (e) {
-      console.warn(`[SyncEngine] pull ${tabla} excepción:`, e?.message || e);
-    }
-  }
 }
 
 // Tablas hijas/items que NO tienen columna created_by en el schema —
@@ -2521,19 +2533,22 @@ async function repairMasterFinanceWatermarksOnce() {
   }
 }
 
-async function pullTransactionalChanges() {
+async function pullTransactionalChanges({ soloTablas = null, saltarReparaciones = false } = {}) {
   const userId = (await supabase.auth.getSession())?.data?.session?.user?.id;
   if (!userId) return;
 
   await hydrateNoCreatedByCache();
-  // Cura una vez los devices con watermark transaccional "envenenado".
-  await repairTransactionalWatermarksOnce();
-  await limpiarFantasmas();
-  await repairPersonalChecksOnce();
-  await repairAccountingPaymentStatusOnce();
+  if (!saltarReparaciones) {
+    // Cura una vez los devices con watermark transaccional "envenenado".
+    await repairTransactionalWatermarksOnce();
+    await limpiarFantasmas();
+    await repairPersonalChecksOnce();
+    await repairAccountingPaymentStatusOnce();
+  }
   let cacheChanged = false;
 
   for (const tabla of TRANSACTIONAL_TABLES) {
+   if (soloTablas && !soloTablas.has(tabla)) continue; // fase 2: ya lo resolvió el RPC
    if (tablaExcluidaPorRol(tabla)) continue;   // sync por rol (ver PULL_SCOPE_POR_ROL)
    try {
     let lastSync = await getLastSync(`${tabla}_pull`);
@@ -2588,9 +2603,26 @@ async function pullTransactionalChanges() {
 
     if (error || !data?.length) continue;
 
-    // Loop: aplicar vivos (put) o tombstones (delete) según deleted_at,
-    // respetando cambios locales pendientes (no sobreescribir nuestras
-    // ediciones que todavía no se pushearon).
+    await aplicarPullTx(tabla, data, lastSync);
+   } catch (e) {
+     // Aislar el error por-tabla: antes un throw de Dexie en una tabla temprana
+     // (ej. durante el upgrade a v21 que solapa el primer sync) abortaba TODO el
+     // ciclo y movimientos_materiales (índice ~49) nunca se pulleaba. Igual que
+     // pullMasterTables, seguimos con la siguiente tabla.
+     console.warn(`[SyncEngine] pull tx ${tabla} falló (continúo con la siguiente):`, e?.message);
+     continue;
+   }
+  }
+
+  if (cacheChanged) await persistNoCreatedByCache();
+}
+
+// Aplica a Dexie el resultado de un pull TRANSACCIONAL (venga del REST por-tabla
+// o del RPC consolidado de fase 2): vivos (put) o tombstones (delete) según
+// deleted_at, respetando cambios locales pendientes (no sobreescribir nuestras
+// ediciones que todavía no se pushearon). Avanza el watermark `${tabla}_pull`
+// a MAX(updated_at) de lo traído.
+async function aplicarPullTx(tabla, data, lastSync) {
     let aplicados = 0, borrados = 0, skip = 0;
     // Watermark = MAX(updated_at) de lo traído (no el reloj del cliente).
     let maxUpd = lastSync || null;
@@ -2633,17 +2665,116 @@ async function pullTransactionalChanges() {
       // como último recurso (en la práctica todas las filas tienen updated_at).
       await setLastSync(`${tabla}_pull`, new Date().toISOString());
     }
-   } catch (e) {
-     // Aislar el error por-tabla: antes un throw de Dexie en una tabla temprana
-     // (ej. durante el upgrade a v21 que solapa el primer sync) abortaba TODO el
-     // ciclo y movimientos_materiales (índice ~49) nunca se pulleaba. Igual que
-     // pullMasterTables, seguimos con la siguiente tabla.
-     console.warn(`[SyncEngine] pull tx ${tabla} falló (continúo con la siguiente):`, e?.message);
-     continue;
-   }
+}
+
+// ── FASE 2 CONSUMO — pull consolidado ─────────────────────────────────
+// Un solo request RPC (sync_pull, mig 152) responde el incremental de TODAS las
+// tablas al día, en lugar de ~90-190 GETs por ciclo (uno por tabla, casi todos
+// vacíos). Los casos especiales (full pull con datos locales, recovery, tabla
+// truncada, error, tabla sin updated_at) caen al pull legacy por-tabla de
+// siempre — el RPC solo puede AHORRAR requests, nunca dejar una tabla sin
+// sincronizar. Escapes: localStorage.jx_pull_rpc_off = '1' (apaga el RPC) y
+// auto-apagado de la sesión si el server aún no tiene la función (PGRST202).
+const RPC_PULL_MAX_FILAS = 500;
+let _rpcPullNoDisponible = false; // la mig 152 aún no corrió en el server
+
+function rpcPullActivo() {
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('jx_pull_rpc_off')) return false;
+  } catch {}
+  return !_rpcPullNoDisponible;
+}
+
+async function pullConsolidado() {
+  if (!rpcPullActivo()) {
+    await pullMasterTables();
+    await pullTransactionalChanges();
+    return;
   }
 
-  if (cacheChanged) await persistNoCreatedByCache();
+  // Reparaciones one-shot ANTES de leer watermarks: pueden resetearlos, y esas
+  // tablas deben ir al full pull legacy en ESTE mismo ciclo.
+  await repairMasterFinanceWatermarksOnce();
+  await hydrateNoCreatedByCache();
+  await repairTransactionalWatermarksOnce();
+  await limpiarFantasmas();
+  await repairPersonalChecksOnce();
+  await repairAccountingPaymentStatusOnce();
+
+  const contar = async (tabla) => {
+    try { return db[tabla] ? await db[tabla].count() : 0; } catch { return 0; }
+  };
+  const candidatas = [];
+  for (const { tabla } of MASTER_TABLES) {
+    candidatas.push({
+      key: KEY_MASTER(tabla), tabla,
+      watermark: await getLastSync(tabla),
+      localCount: await contar(tabla),
+      excluida: tablaExcluidaPorRol(tabla),
+      sinServer: TABLAS_NO_EN_SERVER.has(tabla) || _tablasCon404.has(tabla),
+    });
+  }
+  for (const tabla of TRANSACTIONAL_TABLES) {
+    candidatas.push({
+      key: KEY_TX(tabla), tabla,
+      watermark: await getLastSync(`${tabla}_pull`),
+      localCount: await contar(tabla),
+      excluida: tablaExcluidaPorRol(tabla),
+      sinServer: TABLAS_NO_EN_SERVER.has(tabla) || _tablasCon404.has(tabla),
+    });
+  }
+
+  const { entries, legacy } = planPullRpc(candidatas);
+  const fallbackKeys = [];
+  let conCambios = 0, alDia = 0;
+
+  if (entries.length) {
+    let resp = null;
+    try {
+      const { data, error } = await supabase.rpc('sync_pull', {
+        p_entries: entries, p_limit: RPC_PULL_MAX_FILAS,
+      });
+      if (error) {
+        const msg = String(error.message || '').toLowerCase();
+        if (error.code === 'PGRST202' || msg.includes('could not find the function')) {
+          _rpcPullNoDisponible = true;
+          console.warn('[SyncEngine] sync_pull no existe en el server (mig 152 pendiente) — pull legacy.');
+        } else {
+          console.warn('[SyncEngine] sync_pull ERROR — este ciclo va por legacy:', error.message);
+        }
+      } else {
+        resp = data;
+      }
+    } catch (e) {
+      console.warn('[SyncEngine] sync_pull excepción — este ciclo va por legacy:', e?.message || e);
+    }
+
+    const r = interpretarRespuestaPull(entries, resp);
+    fallbackKeys.push(...r.fallback);
+    alDia = r.sinCambios.length;
+    for (const { key, rows } of r.aplicar) {
+      const tabla = tablaDeKey(key);
+      try {
+        if (esKeyMaster(key)) {
+          await aplicarPullMaster(tabla, rows, await getLastSync(tabla));
+        } else {
+          await aplicarPullTx(tabla, rows, await getLastSync(`${tabla}_pull`));
+        }
+        conCambios++;
+      } catch (e) {
+        console.warn(`[SyncEngine] aplicar RPC ${key} falló → legacy:`, e?.message || e);
+        fallbackKeys.push(key);
+      }
+    }
+    console.log(`[SyncEngine] pull RPC: ${entries.length} tablas en 1 request · ${conCambios} con cambios · ${alDia} al día · ${fallbackKeys.length} a legacy`);
+  }
+
+  // Legacy: full pulls/recovery del plan + lo que el RPC no pudo resolver.
+  const pendientes = [...legacy, ...fallbackKeys];
+  const masterLegacy = new Set(pendientes.filter(esKeyMaster).map(tablaDeKey));
+  const txLegacy = new Set(pendientes.filter(k => !esKeyMaster(k)).map(tablaDeKey));
+  await pullMasterTables({ soloTablas: masterLegacy, saltarReparaciones: true });
+  await pullTransactionalChanges({ soloTablas: txLegacy, saltarReparaciones: true });
 }
 
 // ── Conflictos ────────────────────────────────────────────────────────
