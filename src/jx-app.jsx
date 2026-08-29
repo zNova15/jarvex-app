@@ -1203,12 +1203,14 @@ function App() {
                 syncStatus={syncStatus}
                 notifs={notifs}
                 onSync={() => {
-                  // Si hay records FAILED → abrir modal de detalle (no
-                  // tiene sentido reintentar a ciegas). Si todo OK,
-                  // disparar un sync manual. Si solo hay pending,
-                  // también abre el modal para que el user vea qué falta.
-                  if ((sync.failed || 0) > 0 || (sync.pending || 0) > 0) setSyncDetailOpen(true);
-                  else if (sync.sync) sync.sync();
+                  // El modal se abre SIEMPRE: con FAILED/pending muestra el
+                  // detalle; con todo OK da acceso a la verificación con el
+                  // servidor, "Forzar resync" y el mantenimiento del admin
+                  // (antes esas herramientas eran INALCANZABLES estando todo
+                  // sincronizado — el click solo disparaba un sync a ciegas).
+                  setSyncDetailOpen(true);
+                  // Con todo OK, además dispara el sync manual de siempre.
+                  if (!((sync.failed || 0) > 0 || (sync.pending || 0) > 0) && sync.sync) sync.sync();
                 }}
                 isMobile={isMobile}/>
         <div style={{ flex:1, overflow:'hidden', background:'var(--bg-p)' }} key={`${page}_${planoActual}_${permsVer}_${planoActual === 'obra' ? obraKey : ''}`}>
