@@ -12,8 +12,66 @@ import { hijosDirectos, cadenaBreadcrumb } from "../lib/partida-arbol.js";
 import { hoyLocal, fmtFechaCorta } from "../lib/fecha.js";
 import { colorIngeniero, segmentarAvance } from "../lib/color-ingeniero.js";
 import { SearchableSelect } from "./jx-searchable-select.jsx";
+import { filtrarPartidasReporte, limpiarDescripcionReuso } from "../lib/filtrar-partidas.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
+
+// Los inputs del reporte llevan fontSize 16: iOS Safari hace ZOOM automático al
+// enfocar cualquier input con fuente <16px (el global .fi queda en 14px en móvil)
+// — con 4+ campos por partida el viewport saltaba en cada tap.
+const FI16 = { fontSize: 16 };
+
+// ── Campo de fotos móvil-first (mejora sep-2026) ─────────────────────
+// Reemplaza el input file crudo: dos botones grandes ("Tomar foto" abre la
+// cámara directo vía capture=environment; "Galería" abre el picker) +
+// miniaturas reales con botón de quitar. Los inputs viven ocultos dentro de
+// cada label — sin refs ni ids. El submit sigue siendo de quien lo usa.
+function ThumbFoto({ file, onQuitar }) {
+  const [url, setUrl] = uS(null);
+  uE(() => {
+    let u = null;
+    try { u = URL.createObjectURL(file); setUrl(u); } catch { setUrl(null); }
+    return () => { if (u) { try { URL.revokeObjectURL(u); } catch {} } };
+  }, [file]);
+  return (
+    <span style={{ position: 'relative', display: 'inline-block' }}>
+      {url
+        ? <img src={url} alt={file?.name || 'foto'} style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--bd)', display: 'block' }} />
+        : <span style={{ width: 64, height: 64, borderRadius: 6, border: '1px solid var(--bd)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>📷</span>}
+      <button onClick={onQuitar} title="Quitar foto"
+        style={{ position: 'absolute', top: -6, right: -6, width: 20, height: 20, borderRadius: '50%', border: 'none', background: 'var(--red)', color: '#fff', fontSize: 11, lineHeight: '20px', padding: 0, cursor: 'pointer' }}>✕</button>
+    </span>
+  );
+}
+
+function FotosField({ fotos, max, onAdd, onQuitar }) {
+  const lleno = (fotos || []).length >= max;
+  const recibir = (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length) onAdd(files);
+    e.target.value = '';   // permite re-elegir el mismo archivo
+  };
+  const btnStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, padding: '10px 14px', fontSize: 13, cursor: lleno ? 'not-allowed' : 'pointer', opacity: lleno ? 0.5 : 1 };
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <label className="btn btn-ghost" style={btnStyle}>
+          📷 Tomar foto
+          <input type="file" accept="image/*" capture="environment" disabled={lleno} onChange={recibir} style={{ display: 'none' }} />
+        </label>
+        <label className="btn btn-ghost" style={btnStyle}>
+          🖼️ Galería
+          <input type="file" accept="image/*" multiple disabled={lleno} onChange={recibir} style={{ display: 'none' }} />
+        </label>
+      </div>
+      {(fotos || []).length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 8 }}>
+          {fotos.map((f, i) => <ThumbFoto key={i} file={f} onQuitar={() => onQuitar(i)} />)}
+        </div>
+      )}
+    </div>
+  );
+}
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 const Modal = (p) => (window.Modal ? <window.Modal {...p} /> : null);
 const hoyISO = () => hoyLocal();
@@ -208,7 +266,57 @@ function MiFrenteShell({ showToast, vista }) {
   // Borrador por USUARIO + DÍA reportado (no por-frente).
   const draftKey = obraId && userId ? `jx_repdraft_${obraId}_${userId}_${repFecha}` : '';
   const [hayBorrador, setHayBorrador] = uS(false);
-  uE(() => { if (!draftKey) { setHayBorrador(false); return; } try { setHayBorrador(!!localStorage.getItem(draftKey)); } catch { setHayBorrador(false); } }, [draftKey]);
+  // Borrador PENDIENTE = existe en localStorage y el usuario aún no lo cargó ni
+  // descartó. Mientras esté pendiente el autosave NO escribe (lo protege de ser
+  // pisado por una línea nueva — p.ej. la que inyecta "Agregar reporte" desde
+  // Partidas) y el banner se muestra aunque ya haya líneas (ofrece fusionar).
+  const [draftPendiente, setDraftPendiente] = uS(false);
+  uE(() => {
+    if (!draftKey) { setHayBorrador(false); setDraftPendiente(false); return; }
+    try { const hay = !!localStorage.getItem(draftKey); setHayBorrador(hay); setDraftPendiente(hay); }
+    catch { setHayBorrador(false); setDraftPendiente(false); }
+  }, [draftKey]);
+  // Mi último avance por partida (fecha + descripción): ordena las sugerencias
+  // del buscador (lo que reporté esta semana va primero) y alimenta el chip
+  // "↺ Última descripción".
+  const miUltimoAvance = uM(() => {
+    const m = new Map();
+    for (const a of (avances || [])) {
+      if (a.deleted_at || a.responsable_id !== userId || !a.partida_id) continue;
+      const prev = m.get(a.partida_id);
+      const f = a.fecha || '';
+      if (!prev || f > prev.fecha) m.set(a.partida_id, { fecha: f, descripcion: a.descripcion || '' });
+    }
+    return m;
+  }, [avances, userId]);
+  const miUltimaFechaPorPartida = uM(() => {
+    const m = new Map();
+    for (const [pid, v] of miUltimoAvance) m.set(pid, v.fecha);
+    return m;
+  }, [miUltimoAvance]);
+  // AUTOSAVE del borrador (solo texto/metrado — las fotos son File en RAM):
+  // en móvil el SO mata la PWA sin aviso y el botón manual no alcanzaba.
+  // Debounce 1.5s. Guardas (hallazgos de la revisión adversarial):
+  //  · lista vacía → no escribe (vaciar es decisión explícita; enviar descarta);
+  //  · borrador PENDIENTE (no cargado/descartado) → no escribe (no pisarlo);
+  //  · cambio de fecha con líneas cargadas = MOVER el borrador: se borra la
+  //    clave de la fecha anterior — sin esto quedaba un duplicado huérfano que,
+  //    tras enviar, invitaba a re-enviar lo mismo (avances duplicados).
+  const draftKeyPrevRef = uR(draftKey);
+  uE(() => {
+    if (!draftKey || !repLineas.length || draftPendiente) return;
+    const t = setTimeout(() => {
+      try {
+        if (draftKeyPrevRef.current && draftKeyPrevRef.current !== draftKey) {
+          try { localStorage.removeItem(draftKeyPrevRef.current); } catch {}
+        }
+        draftKeyPrevRef.current = draftKey;
+        localStorage.setItem(draftKey, JSON.stringify(repLineas.map(({ fotos, ...l }) => l)));
+        setHayBorrador(true);
+      } catch {}
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [draftKey, repLineas, draftPendiente]);
 
   // ── "DÍA SIN AVANCE" + recordatorio de días no reportados ──────────────
   // Si un día no se avanzó metrado, igual SE REPORTA: motivo + foto (pedido de
@@ -337,13 +445,27 @@ function MiFrenteShell({ showToast, vista }) {
     const ac = calcAcum(l.partida_id, l.metrado);
     return !!(ac && ac.mc > 0 && ac.real > ac.mc);
   };
-  const guardarBorrador = () => {
-    if (!draftKey) return;
-    try { localStorage.setItem(draftKey, JSON.stringify(repLineas.map(({ fotos, ...l }) => l))); setHayBorrador(true); showToast('Borrador guardado (las fotos se vuelven a adjuntar al terminar)', 'amber'); }
-    catch { showToast('No se pudo guardar el borrador', 'red'); }
+  // (guardarBorrador manual eliminado sep-2026: el borrador ahora se autoguarda
+  //  con debounce en el uE de arriba — mismo formato y misma clave draftKey.)
+  // Cargar FUSIONA con lo ya escrito (no reemplaza): si el usuario llegó con
+  // una línea inyectada ("Agregar reporte") y encima tenía borrador, no se
+  // pierde ninguno de los dos. Las partidas repetidas conservan lo actual.
+  const cargarBorrador = (keyOverride) => {
+    const k = keyOverride || draftKey;
+    try {
+      const d = JSON.parse(localStorage.getItem(k) || '[]');
+      if (Array.isArray(d)) {
+        setRepLineas(prev => {
+          const ids = new Set(prev.map(l => l.partida_id));
+          const nuevas = d.filter(l => l && l.partida_id && !ids.has(l.partida_id))
+            .map(l => ({ partida_id: l.partida_id, descripcion: l.descripcion || '', metrado: l.metrado ?? '', fotos: [], motivo: l.motivo || '' }));
+          return [...prev, ...nuevas];
+        });
+      }
+    } catch {}
+    setDraftPendiente(false);
   };
-  const cargarBorrador = (keyOverride) => { const k = keyOverride || draftKey; try { const d = JSON.parse(localStorage.getItem(k) || '[]'); if (Array.isArray(d)) setRepLineas(d.map(l => ({ partida_id: l.partida_id, descripcion: l.descripcion || '', metrado: l.metrado ?? '', fotos: [], motivo: l.motivo || '' }))); } catch {} };
-  const descartarBorrador = () => { try { localStorage.removeItem(draftKey); } catch {} setHayBorrador(false); };
+  const descartarBorrador = () => { try { localStorage.removeItem(draftKey); } catch {} setHayBorrador(false); setDraftPendiente(false); };
   const [draftTick, setDraftTick] = uS(0);   // fuerza recálculo de la lista de Borradores tras eliminar
   // Valida TODAS las partidas del reporte; recién si todo cumple abre el modal de confirmación.
   const nomLinea = (l) => { const p = partByIdAll.get(l.partida_id); return p ? `${p.codigo_delfin || ''} · ${p.nombre_partida || ''}`.trim().replace(/^· /, '') : 'una partida'; };
@@ -691,11 +813,13 @@ function MiFrenteShell({ showToast, vista }) {
   // Editor multi-partida reutilizado por el reporte propio (con foto) y el ajeno (sin foto).
   const editorLineas = (showFoto) => {
     const yaIds = new Set(repLineas.map(l => l.partida_id));
-    const q = addPartQuery.trim().toLowerCase();
-    const sugeridas = (q
-      ? hojasReporte.filter(p => String(p.codigo_delfin || '').toLowerCase().includes(q) || String(p.nombre_partida || '').toLowerCase().includes(q))
-      : hojasReporte
-    ).filter(p => !yaIds.has(p.id)).slice(0, 25);
+    const q = addPartQuery.trim();
+    // Tolerante a tildes + multi-palabra AND + recientes primero (lib pura con tests).
+    const sugeridas = filtrarPartidasReporte(hojasReporte, q, {
+      ultimaFechaPorPartida: miUltimaFechaPorPartida,
+      excluirIds: yaIds,
+      max: 25,
+    });
     return (
       <>
         <div className="card card-p">
@@ -703,7 +827,8 @@ function MiFrenteShell({ showToast, vista }) {
             <div style={{ fontSize: 13, fontWeight: 600 }}>Partidas avanzadas · {repFecha}{repFecha !== hoy ? ' (otro día)' : ''}</div>
             <span style={{ fontSize: 11, color: 'var(--tm)' }}>{repLineas.length} partida(s)</span>
           </div>
-          <input className="fi" placeholder={repTodas ? 'Buscar cualquier partida por código o nombre…' : 'Buscar una partida de tus frentes…'} value={addPartQuery} onChange={e => setAddPartQuery(e.target.value)} />
+          <input className="fi" style={FI16} placeholder={repTodas ? 'Buscar cualquier partida por código o nombre…' : 'Buscar una partida de tus frentes…'} value={addPartQuery} onChange={e => setAddPartQuery(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && q && sugeridas.length) { e.preventDefault(); agregarLinea(sugeridas[0].id); } }} />
           {(q || sugeridas.length > 0) && (
             <div style={{ marginTop: 6, maxHeight: 230, overflow: 'auto', border: '1px solid var(--bd)', borderRadius: 6 }}>
               {sugeridas.map(p => (
@@ -744,22 +869,33 @@ function MiFrenteShell({ showToast, vista }) {
                 <span>Descripción del avance (mín. {REP_MIN_PALABRAS} palabras) *</span>
                 <span style={{ fontSize: 10.5, fontWeight: 600, color: st.desc ? 'var(--green)' : 'var(--amber)' }}>{st.palabras}/{REP_MIN_PALABRAS} palabras</span>
               </label>
-              <textarea className="fi" rows={3} value={l.descripcion} onChange={e => setLinea(l.partida_id, 'descripcion', e.target.value)} placeholder={`Detallá qué se avanzó en esta partida (mínimo ${REP_MIN_PALABRAS} palabras)…`} />
+              {(() => {
+                // Chips de arranque: teclear texto libre en obra es lo más costoso.
+                // Solo con la descripción VACÍA — un chip jamás pisa texto tecleado.
+                const vacia = !String(l.descripcion || '').trim();
+                if (!vacia) return null;
+                const ultima = limpiarDescripcionReuso(miUltimoAvance.get(l.partida_id)?.descripcion);
+                return (
+                  <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 5 }}>
+                    {ultima && (
+                      <button className="btn btn-ghost btn-xs" style={{ fontSize: 10.5 }} title={ultima}
+                        onClick={() => setLinea(l.partida_id, 'descripcion', ultima)}>↺ Última descripción</button>
+                    )}
+                    {['Se continuó con ', 'Se completó ', 'Se instaló '].map(f => (
+                      <button key={f} className="btn btn-ghost btn-xs" style={{ fontSize: 10.5 }}
+                        onClick={() => setLinea(l.partida_id, 'descripcion', f)}>{f.trim()}…</button>
+                    ))}
+                  </div>
+                );
+              })()}
+              <textarea className="fi" style={FI16} rows={3} value={l.descripcion} onChange={e => setLinea(l.partida_id, 'descripcion', e.target.value)} placeholder={`Detallá qué se avanzó en esta partida (mínimo ${REP_MIN_PALABRAS} palabras)…`} />
               <div className="g2" style={{ marginTop: 8 }}>
-                <div><label className="flabel">Metrado avanzado ({p?.unidad || 'und'}) *</label><input className="fi" type="number" step="0.01" min="0" value={l.metrado} onChange={e => setLinea(l.partida_id, 'metrado', e.target.value)} style={!st.metr ? { borderColor: 'var(--red)' } : undefined} /></div>
+                <div><label className="flabel">Metrado avanzado ({p?.unidad || 'und'}) *</label><input className="fi" type="number" step="0.01" min="0" value={l.metrado} onChange={e => setLinea(l.partida_id, 'metrado', e.target.value)} style={!st.metr ? { ...FI16, borderColor: 'var(--red)' } : FI16} /></div>
                 <div>
                   <label className="flabel">Fotos de evidencia (1 a {MAX_FOTOS}) *</label>
-                  <input className="fi" type="file" accept="image/*" multiple disabled={(l.fotos || []).length >= MAX_FOTOS} onChange={e => { agregarFotos(l.partida_id, Array.from(e.target.files || [])); e.target.value = ''; }} />
-                  {(l.fotos || []).length > 0 && (
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
-                      {l.fotos.map((f, i) => (
-                        <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10.5, background: 'rgba(255,255,255,0.06)', borderRadius: 4, padding: '2px 6px' }}>
-                          📷 {(f.name || 'foto').slice(0, 14)}
-                          <button onClick={() => quitarFoto(l.partida_id, i)} style={{ background: 'none', border: 'none', color: 'var(--red)', cursor: 'pointer', padding: 0 }}>✕</button>
-                        </span>
-                      ))}
-                    </div>
-                  )}
+                  <FotosField fotos={l.fotos || []} max={MAX_FOTOS}
+                    onAdd={files => agregarFotos(l.partida_id, files)}
+                    onQuitar={i => quitarFoto(l.partida_id, i)} />
                 </div>
               </div>
               <div style={{ marginTop: 8, display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 11, fontWeight: 600 }}>
@@ -864,6 +1000,13 @@ function MiFrenteShell({ showToast, vista }) {
 
       {vista === 'dashboard' && (
         <div style={{ display: 'grid', gap: 12 }}>
+          {/* Atajo directo: el reporte diario es LA tarea del día del ingeniero y
+              estaba a 2-3 taps enterrado en menús — causa real de postergarlo. */}
+          <div>
+            <button className="btn btn-amber" style={{ padding: '10px 18px', fontSize: 13.5 }} onClick={() => window.__navTo?.('reporte-diario')}>
+              📝 Reportar hoy
+            </button>
+          </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: 10 }}>
             {[['Partidas', resumen.nPartidas], ['Avance prom.', Math.round(resumen.avancePromedio) + '%'],
               ['Salidas a mi frente', resumen.nSalidas], ['Metrado real acum.', num(resumen.metradoReal)]].map(([t, v]) => (
@@ -1358,25 +1501,34 @@ function MiFrenteShell({ showToast, vista }) {
             {repFecha !== hoy && (
               <div style={{ marginTop: 10 }}>
                 <label className="flabel" style={{ color: 'var(--amber)' }}>Motivo del reporte de otro día * (¿por qué no lo subiste ese día?)</label>
-                <input className="fi" value={repMotivoTardio} onChange={e => setRepMotivoTardio(e.target.value)} placeholder="Ej. no tuve señal en obra / olvidé subirlo…" />
+                <input className="fi" style={FI16} value={repMotivoTardio} onChange={e => setRepMotivoTardio(e.target.value)} placeholder="Ej. no tuve señal en obra / olvidé subirlo…" />
               </div>
             )}
           </div>
-          {hayBorrador && repLineas.length === 0 && (
+          {hayBorrador && draftPendiente && (
             <div className="card card-p" style={{ background: 'rgba(245,180,40,0.08)', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               <span style={{ width: 9, height: 9, borderRadius: '50%', background: 'var(--amber)', display: 'inline-block' }} />
               <span style={{ fontSize: 12.5 }}>Tenés un borrador del {repFecha} sin terminar.</span>
-              <button className="btn btn-amber btn-xs" onClick={() => cargarBorrador()}>Cargar borrador</button>
+              <button className="btn btn-amber btn-xs" onClick={() => cargarBorrador()}>{repLineas.length ? 'Cargar (se suma a lo de abajo)' : 'Cargar borrador'}</button>
               <button className="btn btn-ghost btn-xs" onClick={descartarBorrador}>Descartar</button>
             </div>
           )}
-          {editorLineas(true)}
-          {repLineas.length > 0 && (
-            <div className="modal-actions" style={{ display: 'flex', gap: 8 }}>
-              <button className="btn btn-amber" disabled={busyRep} onClick={pedirConfirmReporte}><JxIcon name="check" size={13} />Enviar reporte</button>
-              <button className="btn btn-ghost" disabled={busyRep} onClick={guardarBorrador}>Guardar como borrador</button>
-            </div>
-          )}
+          {/* Wrapper BLOCK a propósito (hallazgo de la revisión adversarial): como
+              hijo directo del grid, el containing block de la barra sticky era su
+              propia fila auto → sticky inerte. Dentro de este bloque alto sí tiene
+              recorrido y se pega al fondo del scrollport (.page-wrap). */}
+          <div>
+            <div style={{ display: 'grid', gap: 12 }}>{editorLineas(true)}</div>
+            {repLineas.length > 0 && (
+              // Barra STICKY: en móvil, con 2-3 partidas cargadas el botón de enviar
+              // quedaba a dos pantallas de scroll. El borrador ahora se guarda solo
+              // (autosave con debounce) — ya no hace falta el botón manual.
+              <div className="modal-actions" style={{ display: 'flex', gap: 10, alignItems: 'center', position: 'sticky', bottom: 0, zIndex: 5, background: 'var(--bg-p)', padding: '10px 0' }}>
+                <button className="btn btn-amber" disabled={busyRep} onClick={pedirConfirmReporte} style={{ padding: '10px 16px' }}><JxIcon name="check" size={13} />Enviar reporte ({repLineas.length})</button>
+                <span style={{ fontSize: 10.5, color: 'var(--tm)' }}>El borrador se guarda solo (las fotos se re-adjuntan al retomar)</span>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -1442,7 +1594,21 @@ function MiFrenteShell({ showToast, vista }) {
         } catch {}
         items.sort((a, b) => b.fecha.localeCompare(a.fecha));
         const retomar = (it) => { window.__miFrenteIntent = { tipo: 'borrador', fecha: it.fecha, ts: Date.now() }; window.__navTo?.('reporte-diario'); };
-        const eliminar = (it) => { try { localStorage.removeItem(it.key); } catch {} if (it.key === draftKey) setHayBorrador(false); setDraftTick(t => t + 1); };
+        const eliminar = (it) => {
+          try { localStorage.removeItem(it.key); } catch {}
+          if (it.key === draftKey) { setHayBorrador(false); setDraftPendiente(false); }
+          // Si ese borrador sigue VIVO en el editor (buffer en RAM), vaciarlo
+          // también: si no, el autosave lo re-escribía a los 1.5s y "Eliminar"
+          // no eliminaba nada.
+          try {
+            const live = window.__miFrenteRepLive?.[repLiveKey];
+            if (live && (live.fecha || hoy) === it.fecha && Array.isArray(live.lineas) && live.lineas.length) {
+              window.__miFrenteRepLive[repLiveKey] = { ...live, lineas: [] };
+              setRepLineas([]);
+            }
+          } catch {}
+          setDraftTick(t => t + 1);
+        };
         return (
           <div className="card" style={{ overflow: 'auto' }}>
             <div style={{ padding: '8px 12px', fontSize: 12.5, fontWeight: 600 }}>Borradores guardados ({items.length})</div>
@@ -1499,19 +1665,20 @@ function MiFrenteShell({ showToast, vista }) {
           <div style={{ fontSize: 12.5, color: 'var(--tm)', marginBottom: 4 }}>
             Vas a subir el reporte del <strong style={{ color: 'var(--tx)' }}>{repFecha}{repFecha !== hoy ? ' (otro día)' : ''}</strong> con avance en estas <strong style={{ color: 'var(--tx)' }}>{confirmRep.length}</strong> partida(s):
           </div>
-          <div style={{ maxHeight: 320, overflow: 'auto', border: '1px solid var(--bd)', borderRadius: 6, marginTop: 8 }}>
-            <table className="tbl" style={{ fontSize: 12 }}>
-              <thead><tr><th>Partida</th><th style={{ textAlign: 'right' }}>Metrado</th><th style={{ textAlign: 'center' }}>Fotos</th></tr></thead>
-              <tbody>
-                {confirmRep.map(({ linea, partida, sobre }) => (
-                  <tr key={linea.partida_id}>
-                    <td><span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{partida?.codigo_delfin}</span> {partida?.nombre_partida || '—'}{sobre && <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }} title="Reporte sobre una partida ya terminada → alerta a gerencia">⚠ sobre-reporte</span>}</td>
-                    <td style={{ textAlign: 'right', fontWeight: 600 }}>{num(linea.metrado)} {partida?.unidad || ''}</td>
-                    <td style={{ textAlign: 'center' }}>📷 {(linea.fotos || []).length}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          {/* Tarjetas apiladas en vez de tabla: la tabla obligaba a scroll
+              HORIZONTAL en el celular justo en el paso final del envío. */}
+          <div style={{ maxHeight: 320, overflow: 'auto', display: 'grid', gap: 6, marginTop: 8 }}>
+            {confirmRep.map(({ linea, partida, sobre }) => (
+              <div key={linea.partida_id} style={{ padding: '8px 10px', border: '1px solid var(--bd)', borderRadius: 6, background: 'rgba(255,255,255,0.03)' }}>
+                <div style={{ fontSize: 12, fontWeight: 600 }}>
+                  <span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{partida?.codigo_delfin}</span> {partida?.nombre_partida || '—'}
+                  {sobre && <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }} title="Reporte sobre una partida ya terminada → alerta a gerencia">⚠ sobre-reporte</span>}
+                </div>
+                <div style={{ fontSize: 11.5, color: 'var(--tm)', marginTop: 3 }}>
+                  Metrado: <strong style={{ color: 'var(--tx)' }}>{num(linea.metrado)} {partida?.unidad || ''}</strong> · 📷 {(linea.fotos || []).length} foto(s)
+                </div>
+              </div>
+            ))}
           </div>
           {confirmRep.some(c => c.sobre) && (
             <div style={{ marginTop: 8, fontSize: 11.5, color: 'var(--red)' }}>⚠ Hay reporte(s) sobre partidas ya terminadas — se enviará una alerta a gerencia/administración para revisar.</div>
@@ -2181,7 +2348,7 @@ function SinAvanceModal({ fecha, hoy, misFrentes, busy, onConfirm, onClose }) {
         ))}
       </div>
       <textarea className="fi" rows={2} value={motivo} onChange={e => setMotivo(e.target.value)}
-        placeholder="Explicá el motivo (mínimo 5 caracteres)…" style={{ marginBottom: 10, resize: 'vertical' }} />
+        placeholder="Explicá el motivo (mínimo 5 caracteres)…" style={{ marginBottom: 10, resize: 'vertical', fontSize: 16 }} />
       {misFrentes?.length > 1 && (
         <div style={{ marginBottom: 10 }}>
           <label className="flabel">Frente (opcional)</label>
@@ -2192,9 +2359,11 @@ function SinAvanceModal({ fecha, hoy, misFrentes, busy, onConfirm, onClose }) {
         </div>
       )}
       <label className="flabel">Foto del estado de la obra * (mín. 1, máx. 3)</label>
-      <input className="fi" type="file" accept="image/*" multiple
-        onChange={e => setFotos([...(e.target.files || [])].slice(0, 3))} style={{ marginBottom: 4 }} />
-      {fotos.length > 0 && <div style={{ fontSize: 10.5, color: 'var(--green)', marginBottom: 8 }}>{fotos.length} foto(s) lista(s)</div>}
+      <div style={{ marginBottom: 8 }}>
+        <FotosField fotos={fotos} max={3}
+          onAdd={files => setFotos(prev => [...prev, ...files].slice(0, 3))}
+          onQuitar={i => setFotos(prev => prev.filter((_, j) => j !== i))} />
+      </div>
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose} disabled={busy}>Cancelar</button>
         <button className="btn btn-amber" disabled={busy || !ok}

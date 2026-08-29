@@ -392,12 +392,49 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Solo POST' });
   }
 
+  let authCtx;
   try {
-    await requireAuth(req);
+    authCtx = await requireAuth(req);
     rateLimit(req, { windowMs: 60_000, max: 30 });
   } catch (e) {
     const s = sanitizeError(e, 'No autorizado');
     return res.status(s.status).json(s.body);
+  }
+
+  // ── Blindaje de créditos ──────────────────────────────────────────
+  // Cada llamada cuesta 1 OCR Mistral + 1 estructuración Claude. requireAuth
+  // solo valida sesión activa — sin este check, CUALQUIER rol autenticado
+  // (incluso solo_lectura) podía quemar créditos. Allowlist por modo, espejo
+  // del gating REAL de la UI que dispara cada flujo (no de la matriz default):
+  // comprobantes → canWrite de jx-captura-magica; certificado → jx-calidad;
+  // sctr → puedeSubir de jx-seguridad (admin/contador: "la Contadora Jefe sube
+  // el SCTR") + prevencionista que vive en esa página.
+  // NOTA: los roles CUSTOM y los overrides de permisos del panel de Roles viven
+  // en localStorage del CLIENTE — el server no puede confiar en ellos y quedan
+  // fuera a propósito; si algún día se persisten en Supabase, esta allowlist
+  // debe volverse una consulta.
+  const ROLES_POR_MODO = {
+    comprobantes: ['admin', 'gerente', 'contador', 'ayudante_contador', 'asistente_admin', 'jefe_compras'],
+    certificado_calidad: ['admin', 'gerente', 'ing_calidad'],
+    sctr_paquete: ['admin', 'gerente', 'contador', 'prevencionista'],
+  };
+  const modoAuth = req.body?.tipo === 'certificado_calidad' ? 'certificado_calidad'
+    : req.body?.tipo === 'sctr_paquete' ? 'sctr_paquete'
+    : 'comprobantes';
+  const rolSolicitante = authCtx?.profile?.rol || null;
+  if (!rolSolicitante) {
+    // profile null = hiccup transitorio consultando profiles (requireAuth no
+    // lanza en ese caso). Fail-closed pero REINTENTABLE: 503, no un 403 que
+    // diagnostica mal ("revisá tu rol") un problema que se cura solo.
+    return res.status(503).json({
+      error: 'No se pudo verificar tu rol en este momento — reintentá en unos segundos.',
+      code: 'rol_no_verificable',
+    });
+  }
+  if (!ROLES_POR_MODO[modoAuth].includes(rolSolicitante)) {
+    return res.status(403).json({
+      error: 'Tu rol no tiene acceso a la lectura con IA. Pídele a contabilidad que procese este documento (o al admin que revise tu rol).',
+    });
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
