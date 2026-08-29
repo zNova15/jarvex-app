@@ -60,7 +60,17 @@ const AYUDA = {
     ],
     rol: { ayudante_contador: 'Evitá el doble registro: si el comprobante ya existe (misma serie, mismo RUC y mismo TIPO de documento), la app lo detecta y no lo duplica. Cuando una fila dice "Ya existe en la DB", ahora te muestra CUÁL registro coincide (serie · fecha · monto · proveedor · fecha de registro): si estás segura de que es OTRO documento, abrí "Revisar" y verificá la serie que leyó el OCR. NOTAS DE CRÉDITO: si el OCR leyó como serie el número de la FACTURA que modifica, la app te avisa (ℹ) y pre-carga esa factura como "documento que modifica" — corregí la serie propia de la nota (suele empezar con FC/BC) antes de confirmar. Los archivos que descartás con ✕ ya no vuelven a aparecer. Tu bandeja de pendientes es TUYA (otra cuenta en la misma PC no la ve).' },
   },
-  'proveedores': { titulo: 'Proveedores', que: 'Directorio de proveedores del grupo: RUC, contacto y su historial de compras.', como: ['Creá el proveedor una sola vez y reutilizalo en compras y captura mágica.', 'El RUC correcto es clave: con él se cruzan facturas, guías y trazabilidad.'] },
+  'proveedores': { titulo: 'Proveedores', que: 'Directorio de proveedores del grupo: RUC, contacto, dirección y su historial de compras.', como: ['Creá el proveedor una sola vez y reutilizalo en compras y captura mágica.', 'El RUC correcto es clave: con él se cruzan facturas, guías y trazabilidad.', 'La tarjeta muestra contacto, teléfono, dirección y correo; para comparar PRECIOS entre proveedores usá "Análisis de Insumos" (admin/gerencia).'] },
+  'analisis-insumos': {
+    titulo: 'Análisis de Insumos',
+    que: 'Panel de admin/gerencia: compara qué proveedor vende cada insumo más barato y unifica los nombres distintos con que facturan el mismo producto.',
+    como: [
+      'COMPARADOR: buscá el insumo (sin tildes) → ves cada proveedor con su último precio, mínimo, máximo y el gráfico de evolución, más todas las facturas donde apareció.',
+      'CORRELACIONES: el sistema propone pares tipo "Clavo 8 pulg" ≈ "Clavos de 8\'\'" — confirmá "Mismo insumo" o "Son distintos". Tu decisión queda grabada y NO se vuelve a preguntar; los unidos se cuentan como UN solo insumo en el comparador.',
+      '¿Te equivocaste? En "Decisiones tomadas", el botón ↺ Cambiar invierte la decisión.',
+      'El "más barato" solo se declara con la misma moneda y unidad — si hay mezcla, compará a ojo con la tabla.',
+    ],
+  },
   'dashboard': { titulo: 'Dashboard', que: 'Visión general de la operación: indicadores de obras, stock y contabilidad en un vistazo.', como: ['Usalo como resumen diario; cada tarjeta te lleva a su sección para el detalle.'] },
   'obras': { titulo: 'Obras / Proyectos', que: 'Catálogo de obras del grupo: datos generales, fecha de inicio, estado y avance.', como: ['La FECHA DE INICIO importa: la app la usa para advertir facturas anteriores al arranque de la obra.', 'Cerrá las obras terminadas para sacarlas de los selectores.'] },
   'reportes': {

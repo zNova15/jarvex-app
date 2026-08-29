@@ -806,6 +806,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
           fuente: 'movimiento', documentoRef: facFresh.document_number || null,
           origenMovId: movId, motivo: 'Recepción comprobante ' + (facFresh.document_number || ''),
           userId, isPrueba, forzarDemo: facFresh.demo === true, now,
+          proveedorId: facFresh.proveedor_id || null,   // mig 153: a quién se compró
         });
         if (ok) preciosReg++;
       };

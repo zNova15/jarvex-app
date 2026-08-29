@@ -8,8 +8,40 @@
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
 import { leerHistorialPrecios } from "../lib/precio-historial.js";
+import { useChart } from "../lib/chart-loader.js";
 
-const { useState: uS, useEffect: uE } = React;
+const { useState: uS, useEffect: uE, useRef: uR } = React;
+
+// Gráfico de evolución (mejora 1b): línea del precio nuevo por fecha.
+function GraficoHistorial({ lista }) {
+  const Chart = useChart();
+  const canvasRef = uR(null);
+  const chartRef = uR(null);
+  uE(() => {
+    if (!Chart || !canvasRef.current || !lista.length) return;
+    const crono = [...lista].reverse();   // leerHistorialPrecios viene desc
+    chartRef.current = new Chart(canvasRef.current, {
+      type: 'line',
+      data: {
+        labels: crono.map(h => h.fecha),
+        datasets: [{
+          label: 'Precio unitario (S/)',
+          data: crono.map(h => Number(h.precio_nuevo || 0)),
+          borderColor: '#3aa3ff', backgroundColor: '#3aa3ff', tension: 0.2, pointRadius: 3,
+        }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: { y: { ticks: { font: { size: 10 } } }, x: { ticks: { font: { size: 9 } } } },
+      },
+    });
+    return () => { try { chartRef.current?.destroy(); } catch {} };
+  }, [Chart, lista]);
+  if (!lista.length) return null;
+  if (!Chart) return <div style={{ fontSize: 11, color: 'var(--tm)' }}>Cargando gráfico…</div>;
+  return <div style={{ height: 160, marginBottom: 12 }}><canvas ref={canvasRef} /></div>;
+}
 const JxIcon = (props) => (window.JxIcon ? <window.JxIcon {...props} /> : null);
 const Modal = (props) => (window.Modal ? <window.Modal {...props} /> : null);
 
@@ -17,6 +49,20 @@ const FUENTE_LABEL = { manual: 'Manual', apu: 'APU', movimiento: 'Comprobante', 
 
 export function PrecioHistorialModal({ itemTipo, itemId, nombre, precioActual, onClose }) {
   const [rows, setRows] = uS(null);
+  // Nombres de proveedor (mig 153: el historial ahora sabe a quién se compró).
+  const [provMap, setProvMap] = uS(new Map());
+  uE(() => {
+    let cancel = false;
+    const ids = [...new Set((rows || []).map(h => h.proveedor_id).filter(Boolean))];
+    if (!ids.length) { setProvMap(new Map()); return; }
+    (async () => {
+      try {
+        const provs = await window.__db.proveedores.where('id').anyOf(ids).toArray();
+        if (!cancel) setProvMap(new Map(provs.map(p => [p.id, p.razon_social])));
+      } catch {}
+    })();
+    return () => { cancel = true; };
+  }, [rows]);
 
   uE(() => {
     let cancel = false;
@@ -70,6 +116,8 @@ export function PrecioHistorialModal({ itemTipo, itemId, nombre, precioActual, o
           <p>Sin historial de cambios. El primer cambio de precio (al recibir un comprobante o al editarlo) quedará registrado acá.</p>
         </div>
       ) : (
+        <>
+        <GraficoHistorial lista={lista} />
         <div className="card" style={{ overflow: 'auto', maxHeight: 400 }}>
           <table className="tbl" style={{ fontSize: 11 }}>
             <thead><tr>
@@ -77,6 +125,7 @@ export function PrecioHistorialModal({ itemTipo, itemId, nombre, precioActual, o
               <th style={{ textAlign: 'right' }}>Anterior</th>
               <th style={{ textAlign: 'right' }}>Nuevo</th>
               <th style={{ textAlign: 'right' }}>Δ</th>
+              <th>Proveedor</th>
               <th>Fuente</th>
               <th>Documento</th>
               <th>Motivo</th>
@@ -95,6 +144,7 @@ export function PrecioHistorialModal({ itemTipo, itemId, nombre, precioActual, o
                     <td style={{ textAlign: 'right', color: delta >= 0 ? 'var(--green)' : 'var(--red)' }}>
                       {delta >= 0 ? '+' : ''}{delta.toFixed(2)}{ant > 0 ? ` (${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%)` : ''}
                     </td>
+                    <td style={{ color: 'var(--ts)' }}>{provMap.get(h.proveedor_id) || '—'}</td>
                     <td><span className="badge b-gray" style={{ fontSize: 9 }}>{FUENTE_LABEL[h.fuente] || h.fuente || '—'}</span></td>
                     <td style={{ color: 'var(--tm)' }}>{h.documento_ref || '—'}</td>
                     <td style={{ color: 'var(--tm)' }}>{h.motivo || '—'}</td>
@@ -104,6 +154,7 @@ export function PrecioHistorialModal({ itemTipo, itemId, nombre, precioActual, o
             </tbody>
           </table>
         </div>
+        </>
       )}
     </Modal>
   );

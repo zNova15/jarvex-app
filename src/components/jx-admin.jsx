@@ -1178,6 +1178,9 @@ window.__moduleIdMap = {
   // Panel de designación de empresa emisora (Fase 3 del clasificador): decisión
   // entre empresas del grupo → mismo módulo que Intercompany (jefe/admin; ayudante no).
   'compras-categoria': 'Intercompany',
+  // Análisis de Insumos: costos por proveedor → visible solo donde 'Dashboard
+  // Ejecutivo' no es 'x' (admin/gerente); la página ADEMÁS tiene gate duro por rol.
+  'analisis-insumos': 'Dashboard Ejecutivo',
   // Órdenes de compra/servicio entre empresas del grupo (Fase 4) — mismo módulo.
   'ordenes-intercompany': 'Intercompany',
   'consolidado': 'Consolidado',
@@ -1315,6 +1318,9 @@ window.__canSeeSidebarItem = function(rol, itemId) {
   // deja leer — con la matriz de Planillas, rrhh/solo_lectura entraban a una
   // página que el server les devuelve vacía.
   if (itemId === 'pagos') return ['admin', 'contador', 'gerente', 'tesorero', 'ayudante_contador'].includes(rol);
+  // Análisis de Insumos: costos por proveedor — solo admin/gerente (el gate
+  // duro del componente lo repite; esto evita el ítem muerto en otros menús).
+  if (itemId === 'analisis-insumos') return ['admin', 'gerente'].includes(rol);
   // REPORTES: la página muestra familias (Movimientos/Avance/Contable) gateadas
   // cada una por su módulo. Sin acceso a NINGUNA familia, la página queda vacía
   // → gateamos la entrada por tener al menos una (evita el item/tile que lleva a

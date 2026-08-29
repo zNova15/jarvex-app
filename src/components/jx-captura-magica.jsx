@@ -1572,7 +1572,10 @@ function CapturaMagicaPage({ showToast }) {
           ruc: rucP || null,
           direccion: r.proveedor_direccion || null,
           estado: 'activo',
-          tipo_proveedor: 'proveedor',
+          // 'Otro' = el valor neutro del select de la UI de Proveedores. Antes
+          // se estampaba 'proveedor' (valor basura fuera del select; los viejos
+          // los normalizó la mig 153).
+          tipo_proveedor: 'Otro',
           created_by: userId, updated_by: userId,
           created_at: now, updated_at: now,
           version: 1, ...marcaModo,

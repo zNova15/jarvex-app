@@ -113,6 +113,10 @@ const TRANSACTIONAL_TABLES = [
   // factura/ingreso) → sin orden ni FK_DEPS. NO va en TABLA_TO_MODULO: así el
   // push no se gatea por permiso de módulo y ambos roles pueden conversar.
   'puente_consultas',
+  // Correlación de insumos supervisada (mig 154). FK-less, global (sin obra).
+  // Como puente_consultas, NO va en TABLA_TO_MODULO: las filas solo nacen del
+  // panel de Análisis de Insumos (gate duro admin/gerente en la UI).
+  'insumo_correlaciones',
 ];
 
 // Tablas maestras que se descargan del servidor en cada sync.
@@ -156,6 +160,7 @@ const MASTER_TABLES = [
   { tabla: 'pagos_partes',                 query: () => supabase.from('pagos_partes').select('*').is('deleted_at', null) },
   { tabla: 'guias_remision',               query: () => supabase.from('guias_remision').select('*').is('deleted_at', null) },
   { tabla: 'puente_consultas',             query: () => supabase.from('puente_consultas').select('*').is('deleted_at', null) },
+  { tabla: 'insumo_correlaciones',         query: () => supabase.from('insumo_correlaciones').select('*').is('deleted_at', null) },
   { tabla: 'intercompany_transactions',    query: () => supabase.from('intercompany_transactions').select('*').is('deleted_at', null) },
   // Compras
   { tabla: 'insumos_pendientes',    query: () => supabase.from('insumos_pendientes').select('*').is('deleted_at', null) },

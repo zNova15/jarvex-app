@@ -2831,6 +2831,14 @@ function ProveedoresPage({ showToast }) {
                 <div style={{ color:'var(--ts)' }}>{p.telefono || '—'}</div>
               </div>
             </div>
+            {/* Mejora 1a: dirección y correo YA se guardaban pero la card no los
+                mostraba — había que abrir Editar para verlos. */}
+            {(p.direccion || p.correo) && (
+              <div style={{ fontSize:11, color:'var(--tm)', marginBottom:6, lineHeight:1.5, overflowWrap:'anywhere' }}>
+                {p.direccion && <div>📍 {p.direccion}</div>}
+                {p.correo && <div>✉️ {p.correo}</div>}
+              </div>
+            )}
             {p.tipo_proveedor && <div style={{ marginTop:6 }}><span className="tag">{p.tipo_proveedor}</span></div>}
             {p.sync_status && p.sync_status !== 'synced' && (
               <div style={{ marginTop:8 }}><span className="badge b-amber" title={p.sync_status}>⏱ {p.sync_status}</span></div>

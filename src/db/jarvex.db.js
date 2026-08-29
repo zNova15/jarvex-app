@@ -57,6 +57,13 @@ export const db = new Dexie('JarvexDB');
 // Versión 44: HILO DE CONSULTA almacén↔contabilidad (Fase 2 del puente
 // insumo↔factura, mig 148). Buzón bidireccional: una parte pregunta con
 // referencia exacta (sin costos) y la otra responde/enlaza. FK-less. Aditivo.
+// Versión 45: correlación de insumos SUPERVISADA (mejora 1c, mig 154). Pares
+// 'mismo'/'distinto' confirmados por admin/gerente en Análisis de Insumos;
+// los grupos se arman al leer (union-find en insumo-correlacion.js). Aditivo.
+db.version(45).stores({
+  insumo_correlaciones: 'id, nombre_a, nombre_b, relacion, deleted_at, sync_status',
+});
+
 db.version(44).stores({
   puente_consultas: 'id, obra_id, accounting_movement_id, movimiento_id, estado, origen, deleted_at, sync_status',
 });

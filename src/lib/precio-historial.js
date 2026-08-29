@@ -32,7 +32,7 @@ const aNumero = (v) => Number(String(v ?? '').replace(',', '.')) || 0;
 
 // Construye e inserta la fila de historial en la tabla que corresponda. NO toca
 // el catálogo (eso lo decide el caller). Devuelve el id insertado.
-async function insertarFilaHistorial({ itemTipo, itemId, obraId, precioAnterior, precioNuevo, fuente, documentoRef, origenMovId, motivo, userId, noSube, ts }) {
+async function insertarFilaHistorial({ itemTipo, itemId, obraId, precioAnterior, precioNuevo, fuente, documentoRef, origenMovId, motivo, userId, noSube, ts, proveedorId }) {
   const histId = newId();
   const fila = {
     id: histId, obra_id: obraId,
@@ -40,6 +40,9 @@ async function insertarFilaHistorial({ itemTipo, itemId, obraId, precioAnterior,
     motivo: motivo || null, documento_ref: documentoRef || null,
     fuente: fuente || 'movimiento', // DEBE estar en el CHECK del server
     origen_movimiento_id: origenMovId || null,
+    // A QUIÉN se le compró en este cambio (mig 153; nullable — las fuentes
+    // manuales no lo conocen). Habilita la comparación por proveedor.
+    proveedor_id: proveedorId || null,
     created_by: userId, updated_by: userId, created_at: ts, updated_at: ts,
     version: 1, sync_status: noSube ? 'synced' : 'pending_create', last_synced_at: null,
     idempotency_key: `${userId || 'x'}_${itemTipo === 'material' ? 'mph' : 'iph'}_${histId}`,
@@ -64,7 +67,7 @@ async function insertarFilaHistorial({ itemTipo, itemId, obraId, precioAnterior,
 export async function registrarCambioPrecio({
   itemTipo, itemId, obraId, precioNuevo,
   fuente = 'movimiento', documentoRef = null, origenMovId = null, motivo = null,
-  userId = null, isPrueba = false, forzarDemo = false, now,
+  userId = null, isPrueba = false, forzarDemo = false, now, proveedorId = null,
 }) {
   const cat = CATALOGO_DE[itemTipo];
   if (!cat || !itemId || !obraId) return false;
@@ -79,7 +82,7 @@ export async function registrarCambioPrecio({
   // Demo-coherencia: si el insumo es demo, la factura no sube, o estamos en modo
   // prueba, la fila de historial tampoco sube (sería un puntero a algo ausente).
   const noSube = isPrueba || item.demo === true || forzarDemo;
-  await insertarFilaHistorial({ itemTipo, itemId, obraId, precioAnterior: anterior, precioNuevo: p, fuente, documentoRef, origenMovId, motivo, userId, noSube, ts });
+  await insertarFilaHistorial({ itemTipo, itemId, obraId, precioAnterior: anterior, precioNuevo: p, fuente, documentoRef, origenMovId, motivo, userId, noSube, ts, proveedorId });
   await db[cat].update(itemId, {
     precio_unitario_estimado: p, updated_at: ts, updated_by: userId,
     version: (item.version || 0) + 1,

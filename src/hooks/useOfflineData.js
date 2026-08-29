@@ -382,6 +382,13 @@ export function useConsultasPuente(obra_id) {
   , [obra_id]);
 }
 
+// Correlación de insumos supervisada (Análisis de Insumos, mejora 1c).
+export function useInsumoCorrelaciones() {
+  return useOfflineData('insumo_correlaciones', q =>
+    q.filter(c => !c.deleted_at).toArray()
+  , []);
+}
+
 // Trazabilidad — cadenas de markups intercompany.
 export function useTrazabilidadCadenas(obra_id) {
   return useOfflineData('trazabilidad_cadenas', q =>

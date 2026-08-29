@@ -40,6 +40,10 @@ export const FUSION_CONFIG = {
       { tabla: 'movimientos_epp',                campo: 'proveedor_id' },
       { tabla: 'movimientos_insumos_emergencia', campo: 'proveedor_id' },
       { tabla: 'movimientos_maquinaria',         campo: 'proveedor_id' },
+      // Historial de precios (mig 153): al fusionar duplicados, el historial
+      // del absorbido debe re-apuntar al proveedor que queda.
+      { tabla: 'material_precios_historial',     campo: 'proveedor_id' },
+      { tabla: 'insumo_precios_historial',       campo: 'proveedor_id' },
     ],
     // proveedores NO tiene 'notas' ni 'email' (usa observaciones / contacto).
     rellenables: ['ruc', 'direccion', 'telefono', 'contacto', 'tipo_proveedor'],
