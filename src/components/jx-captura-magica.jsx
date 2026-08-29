@@ -2372,7 +2372,10 @@ function CapturaMagicaPage({ showToast }) {
                           );
                         })()}
                         {it.nc_aviso && <div style={{ fontSize:10, color:'var(--blue)', marginTop:3, maxWidth:280, lineHeight:1.4 }}>ℹ {it.nc_aviso}</div>}
-                        {r && it.status === 'revisar' && !(Number(r.total) > 0) && (
+                        {/* Las guías de remisión NO llevan montos (norma SUNAT) — el server las
+                            devuelve con total 0 A PROPÓSITO. Advertir acá era pedir un dato
+                            incumplible: la asistente obedecía y dejaba las guías varadas. */}
+                        {r && it.status === 'revisar' && r.tipo_documento !== 'guia_remision' && !(Number(r.total) > 0) && (
                           <div style={{ fontSize:10, color:'var(--red)', marginTop:3, maxWidth:280, lineHeight:1.4 }}>⚠ Total no leído (0.00) — abrí "Revisar" y escribí el total del PDF antes de confirmar.</div>
                         )}
                       </td>
@@ -2393,7 +2396,7 @@ function CapturaMagicaPage({ showToast }) {
                         ) : '—'}
                       </td>
                       <td style={{ textAlign:'right', fontWeight:700 }} className="col-num">
-                        {r ? fmtCurMagic(r.total, r.moneda) : '—'}
+                        {r ? (r.tipo_documento === 'guia_remision' ? '—' : fmtCurMagic(r.total, r.moneda)) : '—'}
                       </td>
                       <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
                         {(it.status === 'revisar' || it.status === 'duplicado') && (
@@ -3324,8 +3327,9 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
               </div>
             </div>
 
-            {/* TOTALES (para RxH se usan los campos Honorarios/Retención/Neto del bloque de arriba) */}
-            {!r.es_rxh && (
+            {/* TOTALES (para RxH se usan los campos Honorarios/Retención/Neto del bloque de
+                arriba; las guías de remisión no llevan montos → sin grid de totales) */}
+            {!r.es_rxh && r.tipo_documento !== 'guia_remision' && (
             <div style={{ marginTop:10, display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8 }}>
               <div><label className="flabel">Subtotal</label><input className="fi" type="number" step="0.01" value={r.subtotal} onChange={e=>upd({ subtotal: e.target.value })}/></div>
               <div><label className="flabel">IGV</label><input className="fi" type="number" step="0.01" value={r.igv} onChange={e=>upd({ igv: e.target.value })}/></div>
