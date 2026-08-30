@@ -173,6 +173,7 @@ const EVIDENCIA_COLS = [
   'nombre_archivo', 'url_archivo', 'local_path_temporal', 'mime_type', 'tamano_bytes',
   'subido_por', 'fecha', 'observaciones', 'sync_status', 'upload_retries',
   'created_at', 'updated_at', 'created_by', 'blob_ref',
+  'campo_revision',   // estado de la bandeja de capturas de campo (mig 155)
 ];
 
 // Upsert de la metadata de una evidencia al server. Devuelve true/false (chequea
@@ -295,7 +296,7 @@ export async function uploadPendingEvidencias() {
 
 // ── Guardar evidencia localmente (con blob) ───────────────────────────
 
-export async function saveEvidenciaLocal({ id, obra_id, tipo_evidencia, modulo_relacionado, registro_relacionado_id, nombre_archivo, mime_type, blob, observaciones, fecha, created_by, demo }) {
+export async function saveEvidenciaLocal({ id, obra_id, tipo_evidencia, modulo_relacionado, registro_relacionado_id, nombre_archivo, mime_type, blob, observaciones, fecha, created_by, demo, campo_revision }) {
   // Optimizar ANTES de guardar: HEIC de iPhone → JPEG (si no, nadie lo ve en
   // desktop), reescala a 1920px y comprime (~20× menos storage/egress), y
   // corrige el MIME real (los File de iOS llegan con type vacío y se
@@ -330,6 +331,7 @@ export async function saveEvidenciaLocal({ id, obra_id, tipo_evidencia, modulo_r
     // al Storage/BD reales apuntando a un registro demo (fuga demo→real).
     // sync 'uploaded' la saca del pipeline de subida; el visor la sirve del
     // blob local (que no se borra porque nunca hay upload OK).
+    ...(campo_revision ? { campo_revision } : {}),
     ...(demo === true
       ? { demo: true, sync_status: UPLOAD_STATUS.UPLOADED }
       : { sync_status: UPLOAD_STATUS.PENDING }),

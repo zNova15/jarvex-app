@@ -26,6 +26,7 @@ const ROLES_VALIDOS = new Set([
   'asistente_admin','contador','ayudante_contador','tesorero','jefe_compras','rrhh',
   'prevencionista','maestro_obra','solo_lectura',
   'ing_ambiental','ing_calidad','ing_social',
+  'campo',   // cuenta compartida del portal de captura de campo (mig 155)
 ]);
 
 export default async function handler(req, res) {

@@ -241,6 +241,31 @@ function LoginScreen({ onLogin }) {
   });
   const [showPass, setShow] = uSA(false);
   const [resetOpen, setResetOpen] = uSA(false);
+  // Acceso rápido de CAMPO: email FIJO de la cuenta compartida (el admin la
+  // crea en Usuarios con rol 'campo' y este correo EXACTO; el PIN es su
+  // contraseña). No es un secreto — sin el PIN no abre nada, y el rol campo
+  // solo puede subir fotos de facturas (cerco RLS mig 155).
+  const CAMPO_EMAIL = 'campo@jarvex.pe';
+  const [campoOpen, setCampoOpen] = uSA(false);
+  const [campoPin, setCampoPin] = uSA('');
+
+  const handleCampoLogin = async () => {
+    if (!campoPin) { setErr('Ingresá el PIN que te dio el administrador.'); return; }
+    setErr(''); setLoad(true);
+    try {
+      await onLogin(CAMPO_EMAIL, campoPin);
+    } catch (e) {
+      const m = e.message || '';
+      // 'Invalid login' cubre DOS casos: PIN malo O que el admin nunca creó la
+      // cuenta campo@jarvex.pe — no afirmar categóricamente "PIN incorrecto".
+      setErr(m.includes('Invalid login')
+        ? 'No se pudo entrar: PIN incorrecto, o el administrador todavía no creó el acceso de campo. Avisale al admin.'
+        : m.includes('Email not confirmed')
+          ? 'El acceso de campo está pendiente de confirmación — avisale al administrador.'
+          : (m || 'Error al ingresar.'));
+      setLoad(false);
+    }
+  };
 
   const handleLogin = async () => {
     if (!email) { setErr('Ingresa tu correo electrónico.'); return; }
@@ -316,6 +341,31 @@ function LoginScreen({ onLogin }) {
           <div style={{ textAlign:'center', marginTop:16 }}>
             <a href="#" style={{ fontSize:12, color:'#3498DB', textDecoration:'none' }} onClick={e=>{ e.preventDefault(); setResetOpen(true); }}>¿Olvidaste tu contraseña?</a>
           </div>
+
+          {/* ── Acceso rápido de CAMPO (mejora 2): la cuenta compartida campo@
+              entra solo con el PIN que reparte el admin. Aterriza directo en el
+              portal de captura de facturas (resolveLanding) y no ve nada más
+              (allowlist + cerco RLS mig 155). ── */}
+          <div style={{ marginTop:18, paddingTop:14, borderTop:'1px solid rgba(255,255,255,0.08)' }}>
+            {!campoOpen ? (
+              <button onClick={()=>setCampoOpen(true)} className="btn btn-ghost" style={{ width:'100%', justifyContent:'center', padding:'11px', fontSize:13 }}>
+                📸 Personal de campo: subir factura de una compra
+              </button>
+            ) : (
+              <div>
+                <label className="flabel">PIN de campo (te lo da el administrador)</label>
+                <input className="fi" type="password" inputMode="numeric" placeholder="••••••" value={campoPin}
+                  onChange={e=>setCampoPin(e.target.value)} style={{ fontSize:16, textAlign:'center', letterSpacing:'.3em' }}
+                  onKeyDown={e=>e.key==='Enter'&&handleCampoLogin()}/>
+                <div style={{ display:'flex', gap:8, marginTop:8 }}>
+                  <button onClick={handleCampoLogin} disabled={loading} className="btn btn-amber" style={{ flex:1, justifyContent:'center', padding:'11px', fontSize:13 }}>
+                    {loading ? 'Verificando…' : '📸 Entrar y subir factura'}
+                  </button>
+                  <button onClick={()=>{ setCampoOpen(false); setCampoPin(''); }} className="btn btn-ghost" style={{ padding:'11px' }}>✕</button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         <div style={{ textAlign:'center', marginTop:20, fontSize:11, color:'#2A3A4A' }}>
@@ -350,6 +400,7 @@ function Header({ page, plano = 'obra', onInicio, onToggleSidebar, onLogout, pro
     trazabilidad:'Trazabilidad de Cadenas',
     'compras-categoria':'Compras por Categoría',
     'analisis-insumos':'Análisis de Insumos',
+    'captura-campo':'Captura de Campo',
     'ordenes-intercompany':'Órdenes Intercompany',
     'captura-magica':'✨ Captura Mágica',
     'cuentas-bancarias':'Cuentas Bancarias', 'flujo-caja':'Flujo de Caja / Cronograma de Pagos',
@@ -619,6 +670,7 @@ const PAGE_REGISTRY = {
   'cont-dashboard':         { chunk: 'jx-contabilidad', component: 'ContabilidadDashboardPage' },
   'compras-categoria':      { chunk: 'jx-compras-categoria', component: 'ComprasCategoriaPage' },
   'analisis-insumos':       { chunk: 'jx-analisis-insumos', component: 'AnalisisInsumosPage' },
+  'captura-campo':          { chunk: 'jx-captura-campo', component: 'CapturaCampoPage' },
   'pagos':                  { chunk: 'jx-pagos', component: 'PagosPage' },
   'guias-remision':         { chunk: 'jx-guias', component: 'GuiasRemisionPage' },
   'ordenes-intercompany':   { chunk: 'jx-ordenes-intercompany', component: 'OrdenesIntercompanyPage' },
@@ -856,9 +908,16 @@ function App() {
       const home = window.__defaultPageForRol?.(rol) || 'dashboard-gestion';
       const { page: lpage, obraId } = resolveLanding({ rol, obrasAsignadas, homePorRol: { [rol]: home } });
       if (lpage !== 'inicio') {
-        const destino = planoDe(lpage) === 'obra' ? lpage : 'dashboard-gestion';
+        // Aterrizaje de plano OBRA → entra al workspace. De plano GENERAL (ej.
+        // el rol campo → 'captura-campo') → ir DIRECTO a esa página: forzar
+        // 'dashboard-gestion' aquí dejaba al rol campo en "Sin acceso" (no puede
+        // ver dashboard-gestion) — su portal quedaba inalcanzable.
+        if (planoDe(lpage) !== 'obra') {
+          setPage(lpage);
+          return;
+        }
         if (obraId && window.__setObraActivaId) window.__setObraActivaId(obraId);
-        setPage(destino);
+        setPage(lpage);
       }
     })();
   }, [auth?.profile?.rol, auth?.profile?.id]);

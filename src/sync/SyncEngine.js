@@ -683,6 +683,11 @@ const PULL_SCOPE_POR_ROL = {
     'social_quejas', 'trazabilidad_cadenas', 'valorizacion_adicionales', 'valorizacion_partidas',
     'valorizaciones',
   ]),
+  // ── Rol CAMPO (portal de captura, mejora 2): solo necesita companies
+  // (torpedo de RUCs), obras (selector) y evidencias (las suyas — la RLS del
+  // server ya filtra). TODO lo demás excluido: el cerco de la mig 155 igual
+  // devolvería 0 filas, pero excluirlo evita ~100 consultas vacías por ciclo.
+  campo: new Set(TRANSACTIONAL_TABLES.filter(t => !['companies', 'obras', 'evidencias'].includes(t))),
   // admin / contador / gerente / asistente_admin / resto: bajan TODO (sin entrada acá).
 };
 

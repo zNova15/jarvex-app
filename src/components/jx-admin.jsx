@@ -1058,6 +1058,11 @@ const PERM_MATRIX = {
     if (['Usuarios/Config','Auditoría','Config SUNAT','Importar'].includes(m)) return 'x';
     return 'r';
   }),
+
+  // Rol CAMPO (cuenta compartida con PIN, mejora 2): 'x' en TODO — su única
+  // pantalla es el portal de captura (gate directo en __canSeeSidebarItem) y
+  // el cerco RLS de la mig 155 lo respalda server-side.
+  campo: PERM_MATRIX_MODULES.map(() => 'x'),
 };
 
 // Storage local de overrides de permisos por rol (UI-level)
@@ -1225,6 +1230,7 @@ const __ROLES_CANONICOS = new Set([
   'asistente_admin','contador','ayudante_contador','tesorero','jefe_compras','rrhh',
   'prevencionista','maestro_obra','solo_lectura',
   'ing_ambiental','ing_calidad','ing_social',
+  'campo',   // portal de captura de campo (mejora 2, mig 155)
 ]);
 
 // Helper que devuelve si el rol puede ver el item del sidebar (lectura mínimo).
@@ -1291,6 +1297,10 @@ const __SEGURIDAD_ITEMS = [
   'evidencias', 'plantillas', 'dashboard', 'busqueda', 'solicitudes', 'configuracion',
 ];
 window.__canSeeSidebarItem = function(rol, itemId) {
+  // Rol CAMPO (cuenta compartida con PIN): SOLO el portal de captura, NADA MÁS.
+  // Va PRIMERO — si no, los returns genéricos de abajo ('inicio', 'solicitudes'
+  // → return !!rol) le darían acceso a campo antes de llegar a su gate.
+  if (rol === 'campo') return itemId === 'captura-campo';
   // El INICIO (launcher de 2 planos) es seguro para todos los roles — no muestra
   // datos, solo deriva a las secciones que cada rol sí puede ver.
   if (itemId === 'inicio') return true;
@@ -1301,6 +1311,11 @@ window.__canSeeSidebarItem = function(rol, itemId) {
   // solo deja leer solicitudes propias salvo a los revisores. Va ANTES de las
   // allowlists exclusivas (asistente_admin/ayudante/ingeniero) a propósito.
   if (itemId === 'solicitudes') return !!rol;
+  // PORTAL DE CAPTURA DE CAMPO: atajo para TODOS los roles logueados (pedido
+  // de Gabriel: "más que todo para los que no tienen el área de contabilidad").
+  // Va ANTES de las allowlists exclusivas (ingeniero/ayudante/etc.) para que
+  // esos roles también lo vean. La página solo SUBE la foto; revisa contabilidad.
+  if (itemId === 'captura-campo') return !!rol;
   const modulo = window.__moduleIdMap?.[itemId];
   // El Asistente de Administrador ve EXCLUSIVAMENTE su lista acotada (igual patrón
   // que el ingeniero) — gana sobre cualquier permiso de la matriz.

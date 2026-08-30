@@ -6,6 +6,8 @@ import { epppTipo } from "../lib/epp-utils.js";
 import { normalizarRuc, normalizarComprobante, esRucPersonaNatural, dniDeRuc } from "../lib/doc-id.js";
 import { matchAsegurados } from "../lib/sctr-paquete.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
+import { supabase } from "../lib/supabase";
+import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 
 // Nombre de persona natural en formato SUNAT ("APELLIDO1 APELLIDO2 NOMBRES"):
 // heurística para pre-llenar apellidos/nombres al crear un trabajador desde un
@@ -196,6 +198,118 @@ const ESTADOS = {
 };
 
 // ─── PANTALLA PRINCIPAL ──────────────────────────────────────
+// ── Bandeja "Recibidas de campo" (mejora 2, sep-2026) ─────────────────
+// Fotos tipo 'factura_campo' subidas por el portal con PIN. "Leer con IA"
+// descarga el archivo (URL firmada, cache SW) y lo inyecta al pipeline normal
+// (handleFiles → OCR → Revisar → Confirmar). La contadora marca Registrada
+// tras confirmar, o Descarta las fotos inservibles — ambas quedan en el server
+// para que el que la subió vea el estado desde su portal.
+function RecibidasDeCampo({ onInyectar, showToast }) {
+  const [pendientes, setPendientes] = uSCM([]);
+  const [abierto, setAbierto] = uSCM(true);
+  const procesandoRef = uRCM(false);   // anti doble-click (regla crítica 2)
+
+  uECM(() => {
+    let cancel = false;
+    const cargar = async () => {
+      try {
+        const rows = await window.__db.evidencias
+          .filter(e => e.tipo_evidencia === 'factura_campo' && e.campo_revision === 'pendiente' && !e.deleted_at)
+          .toArray();
+        rows.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+        if (!cancel) setPendientes(rows);
+      } catch {}
+    };
+    cargar();
+    const onChange = (e) => {
+      const t = e?.detail?.tabla || e?.detail?.table;
+      if (!t || t === 'evidencias') cargar();
+    };
+    window.addEventListener('jx_data_changed', onChange);
+    window.addEventListener('jx_sync_pull', cargar);
+    return () => { cancel = true; window.removeEventListener('jx_data_changed', onChange); window.removeEventListener('jx_sync_pull', cargar); };
+  }, []);
+
+  const leerConIA = async (ev) => {
+    if (procesandoRef.current) return;
+    procesandoRef.current = true;
+    try {
+      // getEvidenciaSrc devuelve { url, isBlob } (o null) — NO un string.
+      const src = await getEvidenciaSrc(ev);
+      if (!src?.url) { showToast?.('Esta foto aún no terminó de subir desde el teléfono — probá en un rato.', 'amber'); return; }
+      const resp = await fetch(src.url);
+      if (src.isBlob) { try { URL.revokeObjectURL(src.url); } catch {} }
+      if (!resp.ok) throw new Error(`descarga falló (${resp.status})`);
+      const blob = await resp.blob();
+      const file = new File([blob], ev.nombre_archivo || 'factura-campo.jpg', { type: ev.mime_type || blob.type || 'image/jpeg' });
+      // La foto de campo ya se optimizó al subirse; pero si venía en HEIC de un
+      // iPhone que este equipo no pudo convertir, llega pesada y con mime no
+      // aceptado por handleFiles → aviso accionable en vez del error genérico.
+      const mimeOk = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'].includes(file.type);
+      if (!mimeOk || file.size > 3 * 1024 * 1024) {
+        showToast?.(`Esta foto es ${!mimeOk ? 'un formato que la IA no lee (HEIC de iPhone)' : 'muy pesada'} — abrila desde Evidencias, descargala y volvé a subirla comprimida, o cargá la factura a mano.`, 'amber');
+        return;
+      }
+      await onInyectar([file]);
+      showToast?.('✓ Enviada a la lectura con IA — revisala en la bandeja de abajo y, tras confirmarla, marcala "Registrada" acá.', 'green');
+    } catch (e) {
+      showToast?.('Error al leer la foto de campo: ' + (e.message || e), 'red');
+    } finally {
+      procesandoRef.current = false;
+    }
+  };
+
+  const marcar = async (ev, estado) => {
+    if (procesandoRef.current) return;
+    if (estado === 'descartada' && !confirm('¿Descartar esta foto? El que la subió verá "Descartada" en su portal.')) return;
+    procesandoRef.current = true;
+    try {
+      const { error } = await supabase.from('evidencias').update({ campo_revision: estado }).eq('id', ev.id);
+      if (error) throw new Error(error.message || 'update falló');
+      try { await window.__db.evidencias.update(ev.id, { campo_revision: estado }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'evidencias', source: 'campo-revision' } })); } catch {}
+      showToast?.(estado === 'registrada' ? '✓ Marcada como registrada' : 'Foto descartada', 'green');
+    } catch (e) {
+      showToast?.('No se pudo actualizar (¿sin señal?): ' + (e.message || e), 'red');
+    } finally {
+      procesandoRef.current = false;
+    }
+  };
+
+  if (!pendientes.length) return null;
+  return (
+    <div className="card card-p" style={{ marginBottom: 18, background: 'rgba(52,152,219,0.06)', border: '1px solid rgba(52,152,219,0.3)' }}>
+      <div className="frow-sb" style={{ cursor: 'pointer' }} onClick={() => setAbierto(a => !a)}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--blue)' }}>
+          📥 Recibidas de campo · {pendientes.length} foto(s) por revisar
+        </div>
+        <span style={{ color: 'var(--tm)', fontSize: 11 }}>{abierto ? '▲ ocultar' : '▼ mostrar'}</span>
+      </div>
+      {abierto && (
+        <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
+          {pendientes.map(ev => {
+            const sinArchivo = !ev.url_archivo;
+            return (
+              <div key={ev.id} style={{ padding: '8px 10px', border: '1px solid var(--bd)', borderRadius: 6, background: 'rgba(0,0,0,0.15)' }}>
+                <div style={{ fontSize: 12, fontWeight: 600 }}>
+                  {String(ev.created_at || '').slice(0, 10)} · {ev.nombre_archivo}
+                  {sinArchivo && <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>⬆ aún subiendo desde el teléfono</span>}
+                </div>
+                {ev.observaciones && <div style={{ fontSize: 11, color: 'var(--ts)', marginTop: 3 }}>{ev.observaciones}</div>}
+                <div style={{ display: 'flex', gap: 6, marginTop: 7, flexWrap: 'wrap' }}>
+                  <button className="btn btn-amber btn-xs" disabled={sinArchivo} onClick={() => leerConIA(ev)}>🤖 Leer con IA</button>
+                  <button className="btn btn-green btn-xs" onClick={() => marcar(ev, 'registrada')} title="Ya la confirmaste en la bandeja de abajo (o la registraste a mano)">✓ Registrada</button>
+                  <button className="btn btn-ghost btn-xs" onClick={() => marcar(ev, 'descartada')}>✗ Descartar</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CapturaMagicaPage({ showToast }) {
   const auth = window.__useAuth?.();
   const myRol = auth?.profile?.rol;
@@ -2323,6 +2437,11 @@ function CapturaMagicaPage({ showToast }) {
           👁️ Tu rol tiene acceso de solo lectura para Captura Mágica. Podés revisar facturas pero no adjuntar nuevas ni confirmarlas.
         </div>
       )}
+
+      {/* ── RECIBIDAS DE CAMPO (mejora 2): fotos de facturas subidas por el
+          personal de obra vía el portal con PIN. El OCR corre recién acá, con
+          TU sesión — por eso las fotos de campo no gastan créditos solas. ── */}
+      {canWrite && <RecibidasDeCampo onInyectar={handleFiles} showToast={showToast} />}
 
       {/* ── LISTA DE ITEMS (los confirmados desaparecen de la bandeja) ─────── */}
       {items.filter(it => it.status !== 'confirmado').length === 0 ? (

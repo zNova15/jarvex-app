@@ -103,7 +103,7 @@ const BLOQUES = [
   {
     id: 'ia', titulo: 'Herramientas IA', icon: 'upload', tipo: 'general', color: '#2ECC71',
     desc: 'Captura Mágica de comprobantes y búsqueda global',
-    items: ['captura-magica', 'busqueda'],
+    items: ['captura-magica', 'captura-campo', 'busqueda'],
   },
   {
     id: 'empresas-prov', titulo: 'Empresas y Proveedores', icon: 'building', tipo: 'general', color: '#9B59B6',

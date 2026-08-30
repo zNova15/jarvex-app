@@ -23,6 +23,10 @@ export const TIPOS_CONTABLES = [
   'pago_evidencia', 'guia_remision',
   'sctr_cotizacion', 'sctr_pago', 'sctr_factura', 'sctr_otro',
   'constancia_detraccion',
+  // Fotos de facturas subidas por el personal de CAMPO (mejora 2, mig 155):
+  // contables las revisan en la bandeja de Captura Mágica; el que la subió
+  // siempre ve la suya (regla del autor).
+  'factura_campo',
 ];
 
 // Bloques por función (un tipo puede estar en varios bloques).
@@ -55,6 +59,10 @@ const MATRIZ = {
   tesorero:            [...COMUN],
   rrhh:                [...ASISTENCIA, ...COMUN],
   solo_lectura:        BASICO,
+  // Rol campo (cuenta compartida con PIN): SOLO sus fotos de factura — y por
+  // la regla del autor, únicamente las que él mismo subió (el RLS del server
+  // lo garantiza además con el cerco de la mig 155).
+  campo:               ['factura_campo'],
 };
 
 /**

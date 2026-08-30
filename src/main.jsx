@@ -206,6 +206,7 @@ const PAGE_CHUNKS = {
   'jx-caja-chica':            () => import('./components/jx-caja-chica.jsx'),
   'jx-insumos-emergencia':    () => import('./components/jx-insumos-emergencia.jsx'),
   'jx-captura-magica':        () => import('./components/jx-captura-magica.jsx'),
+  'jx-captura-campo':         () => import('./components/jx-captura-campo.jsx'),
   'jx-contabilidad':          () => import('./components/jx-contabilidad.jsx'),
   'jx-compras-categoria':     () => import('./components/jx-compras-categoria.jsx'),
   'jx-analisis-insumos':      () => import('./components/jx-analisis-insumos.jsx'),

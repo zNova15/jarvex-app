@@ -57,4 +57,8 @@ describe('resolveLanding — a dónde aterriza cada rol', () => {
   it('operativo sin home definido → cae a dashboard-gestion', () => {
     expect(resolveLanding({ rol: 'supervisor', obrasAsignadas: ['o1'], homePorRol: home })).toEqual({ page: 'dashboard-gestion', obraId: 'o1' });
   });
+  it('rol campo (portal con PIN) → SIEMPRE el portal de captura, sin importar obras', () => {
+    expect(resolveLanding({ rol: 'campo', obrasAsignadas: [], homePorRol: home })).toEqual({ page: 'captura-campo', obraId: null });
+    expect(resolveLanding({ rol: 'campo', obrasAsignadas: ['o1'], homePorRol: home })).toEqual({ page: 'captura-campo', obraId: null });
+  });
 });

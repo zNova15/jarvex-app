@@ -61,6 +61,7 @@ function usePwaInstall() {
 const NAV = [
   { section: 'GENERAL', area: 'general' },
   { id: 'captura-magica', label: '✨ Captura Mágica', icon: 'upload' },
+  { id: 'captura-campo', label: '📸 Subir Factura (campo)', icon: 'camera' },
   { id: 'proveedores', label: 'Proveedores', icon: 'truck' },
   { id: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
   { id: 'obras', label: 'Obras / Proyectos', icon: 'building' },

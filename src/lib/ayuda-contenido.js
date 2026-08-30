@@ -55,12 +55,23 @@ const AYUDA = {
       'MODO PRUEBA: lo que confirmás mientras estás en modo prueba queda SOLO en tu dispositivo (no se registra de verdad ni se sincroniza) — para cargar comprobantes reales, salí del modo prueba primero.',
       'COMPROBANTES CON MUCHAS LÍNEAS (30, 50, 60 ítems): la lectura automática tarda más y puede no completarse. Si sale "demasiadas líneas de detalle", reintentá una vez; si vuelve a fallar, cargá la factura a mano desde Movimientos Contables → Nuevo Movimiento (cabecera y total los copiás del PDF).',
       'GUÍAS DE REMISIÓN: no llevan montos (así es el documento SUNAT) — es normal que salgan sin total. Revisá emisor/serie/datos del traslado y confirmá tranquila: se registran igual y se enlazan solas con su factura por el Doc. de referencia.',
+      'RECIBIDAS DE CAMPO 📥: las fotos de facturas que sube el personal de obra (portal con PIN) aparecen en esa bandeja azul. "🤖 Leer con IA" la mete al flujo normal; tras confirmarla marcala "✓ Registrada" (o "✗ Descartar" si la foto no sirve) — el que la subió ve ese estado desde su portal.',
       'ARCHIVOS: máximo 3 MB por comprobante. Si tu PDF pesa más, abrilo y usá "Imprimir → Guardar como PDF" (baja mucho el peso sin perder legibilidad) o escaneá en menor calidad; si son varias páginas, subilas por separado.',
       'SI TODAS LAS FILAS SALEN EN "Error": no es culpa del archivo. Si el mensaje habla de FACTURACIÓN/servicio deshabilitado, la cuenta del hosting (Vercel) tiene un pago pendiente y las funciones de IA están cortadas — avisá al admin con el botón "📨 Avisar al admin". Mientras tanto la app y la sincronización siguen funcionando: tus comprobantes quedan en la bandeja y se procesan al reintentar (botón "Reintentar" de cada fila) cuando el servicio vuelva. También podés cargar la factura a mano desde Movimientos Contables → Nuevo Movimiento.',
     ],
     rol: { ayudante_contador: 'Evitá el doble registro: si el comprobante ya existe (misma serie, mismo RUC y mismo TIPO de documento), la app lo detecta y no lo duplica. Cuando una fila dice "Ya existe en la DB", ahora te muestra CUÁL registro coincide (serie · fecha · monto · proveedor · fecha de registro): si estás segura de que es OTRO documento, abrí "Revisar" y verificá la serie que leyó el OCR. NOTAS DE CRÉDITO: si el OCR leyó como serie el número de la FACTURA que modifica, la app te avisa (ℹ) y pre-carga esa factura como "documento que modifica" — corregí la serie propia de la nota (suele empezar con FC/BC) antes de confirmar. Los archivos que descartás con ✕ ya no vuelven a aparecer. Tu bandeja de pendientes es TUYA (otra cuenta en la misma PC no la ve).' },
   },
   'proveedores': { titulo: 'Proveedores', que: 'Directorio de proveedores del grupo: RUC, contacto, dirección y su historial de compras.', como: ['Creá el proveedor una sola vez y reutilizalo en compras y captura mágica.', 'El RUC correcto es clave: con él se cruzan facturas, guías y trazabilidad.', 'La tarjeta muestra contacto, teléfono, dirección y correo; para comparar PRECIOS entre proveedores usá "Análisis de Insumos" (admin/gerencia).'] },
+  'captura-campo': {
+    titulo: 'Captura de Campo',
+    que: 'Guardá la FOTO de la factura de una compra apenas te la den — contabilidad la revisa y la registra después. Así ningún comprobante físico se pierde.',
+    como: [
+      'Mirá el "torpedo" de arriba: dictale al proveedor el RUC de la empresa del grupo según el rubro de la compra.',
+      'Elegí la obra, sacá la foto (📷 abre la cámara directo) y "Guardar factura". Listo — no llenás nada más. (Desde la cuenta compartida de campo también se te pide tu nombre; con tu usuario normal ya se sabe que fuiste vos.)',
+      'Sin señal también funciona: la foto queda en el teléfono y sube sola al recuperar internet.',
+      'NO gastes la foto en apuros: nítida, con el comprobante completo y sin dedos encima — contabilidad la lee con IA tal cual.',
+    ],
+  },
   'analisis-insumos': {
     titulo: 'Análisis de Insumos',
     que: 'Panel de admin/gerencia: compara qué proveedor vende cada insumo más barato y unifica los nombres distintos con que facturan el mismo producto.',

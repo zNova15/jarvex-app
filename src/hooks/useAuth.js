@@ -14,6 +14,8 @@ const ROLES_VALIDOS = new Set([
   // Especialistas (Fase 1 gestiones de obra) — sin estos, un usuario real con
   // el rol era expulsado al hidratar sesión y su login rechazado.
   'ing_ambiental','ing_calidad','ing_social',
+  // Portal de captura de campo (mejora 2, mig 155) — cuenta compartida con PIN.
+  'campo',
 ]);
 
 function rolEsValido(rol) {

@@ -13,7 +13,7 @@
 
 // Páginas del plano GENERAL (todo lo que no esté acá = 'obra').
 export const GENERAL_ITEMS = new Set([
-  'inicio', 'captura-magica', 'obras', 'dashboard', 'reportes',
+  'inicio', 'captura-magica', 'captura-campo', 'obras', 'dashboard', 'reportes',
   'proveedores',
   // Empresas + su contabilidad de empresa (por entidad legal, no por obra).
   // Flujo de caja/proyectado son por-empresa (cronograma_pagos no tiene obra_id).
@@ -65,6 +65,9 @@ const ROLES_GLOBALES = new Set(['admin', 'gerente', 'contador', 'ayudante_contad
  *   - operativos con 0 ó varias obras → Inicio (que elija).
  */
 export function resolveLanding({ rol, obrasAsignadas = [], homePorRol = {} } = {}) {
+  // Rol campo (cuenta compartida con PIN): aterriza DIRECTO en el portal de
+  // captura — es lo único que puede usar.
+  if (rol === 'campo') return { page: 'captura-campo', obraId: null };
   if (ROLES_GLOBALES.has(rol)) return { page: 'inicio', obraId: null };
   if (Array.isArray(obrasAsignadas) && obrasAsignadas.length === 1) {
     return { page: homePorRol[rol] || 'dashboard-gestion', obraId: obrasAsignadas[0] };
