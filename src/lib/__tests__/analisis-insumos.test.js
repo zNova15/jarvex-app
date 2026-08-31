@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extraerComprasDeFacturas, agruparComprasPorInsumo, proveedorMasBarato, seriePrecios } from '../analisis-insumos';
+import { extraerComprasDeFacturas, extraerLineasDeFacturas, agruparComprasPorInsumo, proveedorMasBarato, seriePrecios } from '../analisis-insumos';
 import { resolverPares, construirGrupos } from '../insumo-correlacion';
 
 const MOVS = [
@@ -35,6 +35,28 @@ describe('extraerComprasDeFacturas', () => {
     const compras = extraerComprasDeFacturas(MOVS, { demo: true });
     expect(compras.length).toBe(1);
     expect(compras[0].movId).toBe('m3');
+  });
+});
+
+describe('extraerLineasDeFacturas (base del inventario por empresa)', () => {
+  it('devuelve TODAS las líneas —ventas, NC y sin precio incluidas— marcadas', () => {
+    const lineas = extraerLineasDeFacturas(MOVS);
+    expect(lineas.length).toBe(6);   // 3 de m1 (con la de precio 0) + m2 + venta + NC
+    const venta = lineas.find(l => l.movId === 'm5');
+    expect(venta).toMatchObject({ clase: 'venta', esNota: false });
+    expect(lineas.find(l => l.movId === 'm6')).toMatchObject({ clase: 'compra', esNota: true });
+    expect(lineas.filter(l => l.precio === 0)).toHaveLength(1);
+  });
+
+  it('la clase sale de `clase` y cae a `type` solo si falta (filas viejas)', () => {
+    const movs = [
+      { id: 'a', clase: 'venta', type: 'cost', notas: { items_factura: [{ descripcion: 'X', cantidad: 1, precio_unitario: 1 }] } },
+      { id: 'b', type: 'cost', notas: { items_factura: [{ descripcion: 'Y', cantidad: 1, precio_unitario: 1 }] } },
+    ];
+    const lineas = extraerLineasDeFacturas(movs);
+    expect(lineas.map(l => l.clase)).toEqual(['venta', 'compra']);
+    // …y por eso esa venta mal tipada NO contamina el comparador de precios.
+    expect(extraerComprasDeFacturas(movs).map(l => l.nombre)).toEqual(['Y']);
   });
 });
 

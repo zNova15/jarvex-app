@@ -15,6 +15,7 @@ import { candidatosSinIngreso, poolParaVenta, vendidosVenta, estadoConsultaItem 
 import { validarVinculoDeposito, saldoDeposito, parMovimiento, parDeposito, mismoPar, movimientoBancarizado, TOL } from "../lib/depositos-bancarizacion.js";
 import { useChart } from "../lib/chart-loader.js";
 import { FusionEntidadModal } from "./jx-fusion-entidad.jsx";
+import { EmpresaDetalle } from "./jx-empresa-detalle.jsx";
 const { useState: uSC, useMemo: uMC, useEffect: uEC, useRef: uRC } = React;
 
 // Etiqueta humana de un mes 'YYYY-MM' → 'Junio 2026' (filtro de período).
@@ -136,6 +137,9 @@ function EmpresasPage({ showToast }) {
     return map;
   }, [obras]);
 
+  // Detalle de UNA empresa (punto 5): vive DENTRO de esta página (import
+  // estático, mismo chunk), no es una página registrada.
+  const [detalleId, setDetalleId] = uSC(null);
   const [modal, setModal] = uSC(null); // null | 'nueva' | 'editar'
   const [editingId, setEditingId] = uSC(null);
   const [fusionOpen, setFusionOpen] = uSC(false);
@@ -302,6 +306,18 @@ function EmpresasPage({ showToast }) {
 
   const sorted = uMC(() => [...(companies || [])].sort((a,b) => (a.name||'').localeCompare(b.name||'')), [companies]);
 
+  // Detalle: early return DESPUÉS de todos los hooks (regla crítica 3).
+  const empDetalle = detalleId ? (companies || []).find(c => c.id === detalleId) : null;
+  if (empDetalle) {
+    return (
+      <EmpresaDetalle
+        company={empDetalle}
+        obrasEjecutora={(rolesPorObra.get(empDetalle.id) || []).filter(x => x.rol === 'ejecutora' || x.rol === 'miembro_consorcio')}
+        onVolver={() => setDetalleId(null)}
+      />
+    );
+  }
+
   return (
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
@@ -348,6 +364,7 @@ function EmpresasPage({ showToast }) {
                 <th style={{ textAlign:'right' }}>Egresos</th>
                 <th style={{ textAlign:'right' }}>Utilidad</th>
                 <th>Estado</th>
+                <th style={{ textAlign:'center' }}>Detalle</th>
                 {isAdmin && <th style={{ textAlign:'center' }}>Acciones</th>}
               </tr></thead>
               <tbody>
@@ -386,6 +403,13 @@ function EmpresasPage({ showToast }) {
                       <td style={{ textAlign:'right' }} className="col-num">{fmtCurK(egresos)}</td>
                       <td style={{ textAlign:'right', fontWeight:700, color: utilidad>=0?'var(--green)':'var(--red)' }} className="col-num">{fmtCurK(utilidad)}</td>
                       <td><span className={`badge ${c.status==='activa'?'b-green':'b-gray'}`}>{c.status}</span></td>
+                      {/* Columna propia, NO gateada por isAdmin: las contadoras
+                          (contador/ayudante_contador) son las usuarias del detalle. */}
+                      <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
+                        <button className="btn btn-ghost btn-xs" title="Ver qué compró y vendió esta empresa" onClick={()=>setDetalleId(c.id)}>
+                          <JxIcon name="eye" size={11}/> Ver detalle
+                        </button>
+                      </td>
                       {isAdmin && (
                         <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
                           <button className="btn btn-ghost btn-xs" title="Editar" onClick={()=>openEditar(c)}>

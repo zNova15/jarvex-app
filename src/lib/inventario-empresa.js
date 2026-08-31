@@ -122,7 +122,11 @@ export function resumenFinancieroEmpresa(movs, opts = {}) {
     if (cur !== moneda) { otrasMonedas.set(cur, (otrasMonedas.get(cur) || 0) + 1); continue; }
 
     nMovs++;
-    if (!String(m.notas || '').includes('items_factura')) sinItems++;
+    // `notas` viaja como string JSON o ya parseado a objeto (según de dónde
+    // venga la fila): sin el stringify, un objeto daría "[object Object]" y
+    // TODA factura de Captura Mágica se contaría como "sin detalle".
+    const notasTxt = typeof m.notas === 'string' ? m.notas : (m.notas ? JSON.stringify(m.notas) : '');
+    if (!notasTxt.includes('items_factura')) sinItems++;
     if (['nota_credito', 'nota_debito'].includes(m.document_type)) notas++;
 
     const a = Number(m.amount || 0);
@@ -271,9 +275,13 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
     // Saldo = comprado − vendido, SOLO si la empresa además vendió ese insumo
     // (sin ventas el "saldo" sería la columna comprado repetida, y encima daría
     // a entender que eso es stock disponible — no lo es: falta el consumo de obra).
-    const saldo = venta.veces === 0 ? [] : compra.cantidades.map(c => {
-      const v = venta.cantidades.find(x => x.unidad === c.unidad);
-      return { unidad: c.unidad, label: c.label, cantidad: c.cantidad - (v ? v.cantidad : 0) };
+    const saldo = venta.veces === 0 ? [] : [...new Set([
+      ...compra.cantidades.map(c => c.unidad),
+      ...venta.cantidades.map(v => v.unidad),   // vendió en una unidad que no compró
+    ])].map(unidad => {
+      const c = compra.cantidades.find(x => x.unidad === unidad);
+      const v = venta.cantidades.find(x => x.unidad === unidad);
+      return { unidad, label: labelUnidad(unidad), cantidad: (c ? c.cantidad : 0) - (v ? v.cantidad : 0) };
     });
     return {
       clave: ins.clave,
@@ -301,12 +309,16 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
   };
 }
 
-/** Filtro de texto sobre el inventario (busca en el nombre y en las variantes). */
+/**
+ * Filtro de texto sobre el inventario: busca en el nombre a mostrar y en TODAS
+ * las variantes del grupo (con la misma normalización que las correlaciones,
+ * así "clavo 8" encuentra "Clavos de 8''"). Todos los tokens deben aparecer.
+ */
 export function filtrarInventario(insumos, texto) {
-  const toks = normTxtUnidad(texto).split(' ').filter(Boolean);
+  const toks = normInsumo(texto).split(' ').filter(Boolean);
   if (!toks.length) return insumos || [];
   return (insumos || []).filter(ins => {
-    const heno = normTxtUnidad([ins.display, ...ins.variantes].join(' '));
+    const heno = normInsumo([ins.display, ...ins.variantes].join(' '));
     return toks.every(t => heno.includes(t));
   });
 }
