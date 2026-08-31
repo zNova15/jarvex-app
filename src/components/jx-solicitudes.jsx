@@ -1,4 +1,5 @@
 import React from "react";
+import { derivarTypeContable } from "../lib/clasificacion-contable.js";
 const { useState: uSS, useEffect: uES, useMemo: uMS, useCallback: uCS } = React;
 
 // ─── Helpers ─────────────────────────────────────────────
@@ -632,20 +633,6 @@ function SolicitudesPage({ showToast }) {
       return { oldData, newData: { cantidad: fields.cantidad } };
     }
 
-    // ── COHERENCIA clase↔type en movimientos contables ──
-    // El formulario auto-deriva `type` al cambiar `clase` (venta→income, compra→cost).
-    // Una solicitud de SOLO clase no trae `type` → re-derivarlo aquí; si no, la fila
-    // queda contradictoria (ej. clase='venta' con type='cost') y descuadra los totales
-    // de P&L (que agregan por `type`).
-    if (req.target_table === 'accounting_movements' && 'clase' in fields) {
-      if (fields.clase === 'venta') {
-        fields.type = 'income';
-      } else if (fields.clase === 'compra') {
-        const cur = oldData?.type;
-        fields.type = (cur === 'cost' || cur === 'expense') ? cur : 'cost';
-      }
-    }
-
     // ── HOOK ESPECIAL: VINCULACIÓN de una factura (obra / gastos generales /
     // contabilidad neta / sin clasificar). Solicitud ESTRUCTURADA de la
     // asistente contable — antes era un pedido descriptivo manual (21-jul).
@@ -679,6 +666,22 @@ function SolicitudesPage({ showToast }) {
           if (espejo) espejoDiferido = { espejo, patch: { obra_id: fields.obra_id ?? null, destino_contable: fields.destino_contable }, v };
         } catch (e) { console.warn('[solicitudes] espejo vinculación:', e?.message); }
       }
+    }
+
+    // ── COHERENCIA clase / vinculación → `type` ──
+    // `type` (income/cost/expense) NO se pide en la solicitud: se DERIVA de la
+    // clase y de la vinculación con la misma lib que usan todos los puntos de
+    // escritura (src/lib/clasificacion-contable.js). Va DESPUÉS del hook de
+    // vinculación, que es el que escribe destino_contable/obra_id.
+    // Sin esto: aprobar "pasá esta factura a Gastos Generales" dejaba la fila
+    // contradictoria y el Estado de Resultados seguía contándola como costo.
+    // ⚠ Necesita la fila COMPLETA (oldData): sin ella no se sabe si es
+    //   intercompany, y marcar una interna como 'expense' rompe la eliminación
+    //   del Consolidado. Sin oldData solo se resuelve el caso inequívoco (venta).
+    if (req.target_table === 'accounting_movements'
+        && ('clase' in fields || 'destino_contable' in fields || 'obra_id' in fields)) {
+      if (oldData) fields.type = derivarTypeContable({ ...oldData, ...fields });
+      else if (fields.clase === 'venta') fields.type = 'income';
     }
 
     // ── HOOK ESPECIAL: ELIMINAR la bancarización de una factura (la asistente
@@ -778,6 +781,10 @@ function SolicitudesPage({ showToast }) {
         const { SYNC_STATUS } = await import('../db/jarvex.db');
         await window.__db.accounting_movements.update(espejo.id, {
           ...patch,
+          // El espejo es intercompany → sigue siendo 'cost' (regla dura), pero
+          // se re-deriva igual para no dejar el type a la deriva si algún día
+          // el espejo dejara de ser interno.
+          type: derivarTypeContable({ ...espejo, ...patch }),
           updated_at: new Date().toISOString(),
           updated_by: window.__currentUserId || 'admin-approval',
           version: (Number(espejo.version) || 1) + 1,

@@ -28,6 +28,9 @@
 // TODO: validar con docs SUNAT (Resolución 286-2009/SUNAT y modificatorias).
 // ─────────────────────────────────────────────────────────────
 
+import { desglosarIgv } from './igv-desglose.js';
+import { fmtFechaLarga, enPeriodo } from './fecha.js';
+
 // ─── Helpers ─────────────────────────────────────────────────
 function pad2(n)  { return String(n || 0).padStart(2, '0'); }
 function pad4(n)  { return String(n || 0).padStart(4, '0'); }
@@ -51,13 +54,11 @@ function r2(n) {
 }
 
 function fmtFechaSunat(d) {
-  // SUNAT pide dd/mm/aaaa en PLE
+  // SUNAT pide dd/mm/aaaa en PLE. new Date('YYYY-MM-DD') parsea medianoche UTC
+  // y en Perú (UTC−5) devolvía el día ANTERIOR: TODAS las fechas de los libros
+  // salían corridas un día. fmtFechaLarga parte el string cuando es fecha suelta.
   if (!d) return '';
-  try {
-    const date = (d instanceof Date) ? d : new Date(d);
-    if (isNaN(date.getTime())) return '';
-    return `${pad2(date.getDate())}/${pad2(date.getMonth() + 1)}/${date.getFullYear()}`;
-  } catch (_) { return ''; }
+  return fmtFechaLarga(d) || '';
 }
 
 function periodoSunat(periodo) {
@@ -68,11 +69,9 @@ function periodoSunat(periodo) {
 }
 
 function isInPeriodo(fecha, periodo) {
-  if (!fecha) return false;
-  const d = (fecha instanceof Date) ? fecha : new Date(fecha);
-  if (isNaN(d.getTime())) return false;
-  return d.getFullYear() === Number(periodo.anio)
-      && (d.getMonth() + 1) === Number(periodo.mes);
+  // Por string, no por new Date(): una factura del 01/07 caía en JUNIO (y una
+  // del 01/01, en el año anterior) porque 'YYYY-MM-DD' se parsea en UTC.
+  return enPeriodo(fecha, Number(periodo.anio), Number(periodo.mes));
 }
 
 function buildFilename(ruc, periodo, libroCode, oport = 0, est = 1, cont = 1) {
@@ -328,20 +327,18 @@ export function generateRegistroComprasPLE(movs_cost_expense, periodo, ruc) {
     if (m.type !== 'cost' && m.type !== 'expense') return;
 
     counter++;
-    const total    = r2(Number(m.amount || 0));
-    let subtotal   = m.subtotal != null  ? Number(m.subtotal)   : null;
-    let igv        = m.igv_amount != null ? Number(m.igv_amount) : null;
-    // Detección de operaciones no gravadas: si el cliente identifica con DNI
-    // (boleta consumidor final) o si igv_amount viene 0 explícito, no asumir 18%
-    const noGravado = (m.igv_amount === 0) || (m.tax_exemption_code && m.tax_exemption_code !== '10');
-    if (subtotal == null && igv == null) {
-      if (noGravado) { subtotal = total; igv = 0; }
-      else { subtotal = r2(total / 1.18); igv = r2(total - subtotal); }
-    } else if (subtotal == null) {
-      subtotal = r2(total - igv);
-    } else if (igv == null) {
-      igv = r2(total - subtotal);
-    }
+    // Desglose REAL del comprobante (IGV del propio documento, no un 18 %
+    // inventado): mismo criterio que el Libro Diario — src/lib/igv-desglose.js.
+    // El crédito fiscal que se declara acá tiene que ser el de la factura.
+    const dg       = desglosarIgv(m);
+    const total    = dg.total;
+    const igv      = dg.igv;
+    // Base GRAVADA del comprobante; lo que no paga IGV (exonerado / inafecto /
+    // ICBPER) va a su propia columna 20 ("adquisiciones no gravadas") en vez
+    // de inflar la base gravada.
+    const baseGrav = dg.baseGravada != null ? dg.baseGravada : dg.subtotal;
+    const noGrav   = r2(dg.subtotal - baseGrav);
+    const subtotal = baseGrav;
 
     totBase += subtotal;
     totIgv  += igv;
@@ -382,7 +379,7 @@ export function generateRegistroComprasPLE(movs_cost_expense, periodo, ruc) {
       '0.00',                    // IGV
       '0.00',                    // base no gravada
       '0.00',                    // IGV no afecta crédito
-      '0.00',                    // adquisiciones no gravadas
+      num(noGrav),               // adquisiciones no gravadas (exonerado/inafecto del comprobante)
       '0.00',                    // ISC
       '0.00',                    // otros tributos
       num(total),
@@ -463,26 +460,18 @@ export function generateRegistroVentasPLE(movs_income, periodo, ruc) {
     if (m.type !== 'income') return;
 
     counter++;
-    const total    = r2(Number(m.amount || 0));
-    let subtotal   = m.subtotal != null  ? Number(m.subtotal)   : null;
-    let igv        = m.igv_amount != null ? Number(m.igv_amount) : null;
-    const exonerado = r2(Number(m.exonerado || 0));
+    // Desglose REAL del comprobante (ver compras, arriba).
+    const dg       = desglosarIgv(m);
+    const total    = dg.total;
+    const igv      = dg.igv;
+    const baseGrav = dg.baseGravada != null ? dg.baseGravada : dg.subtotal;
     const inafecto  = r2(Number(m.inafecto  || 0));
-
-    if (subtotal == null && igv == null) {
-      // si todo es exonerado/inafecto el IGV es 0
-      if (exonerado + inafecto >= total - 0.01) {
-        subtotal = 0;
-        igv      = 0;
-      } else {
-        subtotal = r2(total / 1.18);
-        igv      = r2(total - subtotal);
-      }
-    } else if (subtotal == null) {
-      subtotal = r2(total - igv);
-    } else if (igv == null) {
-      igv = r2(total - subtotal - exonerado - inafecto);
-    }
+    // Lo no gravado del comprobante se declara como EXONERADO salvo que la
+    // fila traiga su propio desglose exonerado/inafecto.
+    const exonerado = m.exonerado != null
+      ? r2(Number(m.exonerado))
+      : r2(Math.max(dg.subtotal - baseGrav - inafecto, 0));
+    const subtotal = baseGrav;
 
     totBase += subtotal;
     totIgv  += igv;

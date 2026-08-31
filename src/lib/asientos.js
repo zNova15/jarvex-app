@@ -6,7 +6,8 @@
 //  No persiste en DB — es una vista derivada. Funciones puras.
 // ─────────────────────────────────────────────────────────────
 
-const IGV_RATE = 0.18;
+import { desglosarIgv, describirIgv } from './igv-desglose.js';
+import { fmtFechaLarga } from './fecha.js';
 
 function r2(n) {
   const v = Number(n);
@@ -21,19 +22,9 @@ function fmtS(n) {
   });
 }
 
-function fmtDate(d) {
-  if (!d) return '';
-  try {
-    const date = (d instanceof Date) ? d : new Date(d);
-    if (isNaN(date.getTime())) return String(d);
-    const dd = String(date.getDate()).padStart(2, '0');
-    const mm = String(date.getMonth() + 1).padStart(2, '0');
-    const yyyy = date.getFullYear();
-    return `${dd}/${mm}/${yyyy}`;
-  } catch (_) {
-    return String(d);
-  }
-}
+// Ojo: NO usar new Date('YYYY-MM-DD') — en Perú (UTC−5) devuelve el día
+// anterior. fmtFechaLarga parte el string cuando es una fecha de día suelta.
+const fmtDate = fmtFechaLarga;
 
 // ─── Mapeos PCGE ─────────────────────────────────────────────
 
@@ -90,30 +81,11 @@ export function cuentaCajaOBanco(payment_method) {
   return '10';
 }
 
-/**
- * Calcula subtotal e IGV faltantes.
- * Si vienen ambos campos, se respetan. Si solo uno, se infiere.
- * Si no viene ninguno, se asume amount = subtotal * 1.18.
- */
-function resolveMontos(mov) {
-  const total = r2(Number(mov.amount || 0));
-  let subtotal = mov.subtotal != null ? Number(mov.subtotal) : null;
-  let igv = mov.igv_amount != null ? Number(mov.igv_amount) : null;
-
-  if (subtotal == null && igv == null) {
-    subtotal = r2(total / (1 + IGV_RATE));
-    igv = r2(total - subtotal);
-  } else if (subtotal == null) {
-    subtotal = r2(total - igv);
-  } else if (igv == null) {
-    igv = r2(total - subtotal);
-  } else {
-    subtotal = r2(subtotal);
-    igv = r2(igv);
-  }
-
-  return { total, subtotal, igv };
-}
+// El desglose base/IGV sale de `src/lib/igv-desglose.js`: usa el IGV REAL del
+// comprobante (Captura Mágica lo guarda en el JSON de `notas`) y solo estima
+// al 18 % cuando el movimiento no trae ninguno. Antes se inventaba SIEMPRE el
+// 18 % y la repartición 70/4011 no era la de la factura (hallazgo de las
+// contadoras 31-ago: E001-263 con IGV real de S/9 asentaba S/474.25).
 
 // ─── Generador principal ─────────────────────────────────────
 
@@ -186,12 +158,26 @@ function finalizarAsiento(asiento) {
     delta,
     cuadra: Math.abs(delta) < 0.01,
     extorno: asiento.extorno === true,
+    // Desglose base/IGV usado (con su origen: 'comprobante' | 'estimado' |
+    // 'no_gravado'). El Libro Diario lo muestra cuando la tasa no es el 18 %
+    // general o cuando tuvo que estimarse.
+    desglose: asiento.desglose || null,
   };
 }
 
 function construirAsiento(movimiento) {
   const m = movimiento || {};
-  const { total, subtotal, igv } = resolveMontos(m);
+  const desglose = desglosarIgv(m);
+  const { total, subtotal, igv } = desglose;
+  // Sufijo de la línea 4011: deja ver en el propio asiento (y en el PDF/Excel)
+  // si el IGV salió del comprobante y a qué tasa, o si hubo que estimarlo.
+  const igvNota = ` (${describirIgv(desglose)})`;
+  // Parte del total que no paga IGV (exonerado / inafecto / ICBPER): va en la
+  // MISMA cuenta 60/63/70 que la base gravada (así lo manda el PCGE), pero se
+  // deja dicho en la glosa de la línea para que la contadora no lo busque.
+  const noGravNota = Math.abs(desglose.noGravado || 0) > 0.005
+    ? ` — incluye ${fmtS(Math.abs(desglose.noGravado))} no gravado`
+    : '';
   const tipo = m.type || 'expense';
   const pagado = m.payment_status === 'paid';
   // Columna real: metodo_pago (payment_method no existe en la tabla — antes
@@ -224,14 +210,14 @@ function construirAsiento(movimiento) {
     const cuentaIngreso = m.cuenta_pcge || mapTypeToCategoria('income', m.category);
     partidas.push({
       cuenta: cuentaIngreso,
-      descripcion: desc,
+      descripcion: desc + noGravNota,
       debe: 0,
       haber: subtotal,
     });
     if (igv > 0) {
       partidas.push({
         cuenta: '4011',
-        descripcion: 'IGV ventas',
+        descripcion: 'IGV ventas' + igvNota,
         debe: 0,
         haber: igv,
       });
@@ -243,14 +229,14 @@ function construirAsiento(movimiento) {
 
     partidas.push({
       cuenta: cuentaGasto,
-      descripcion: desc,
+      descripcion: desc + noGravNota,
       debe: subtotal,
       haber: 0,
     });
     if (igv > 0 && !esPlanilla) {
       partidas.push({
         cuenta: '4011',
-        descripcion: 'IGV crédito fiscal',
+        descripcion: 'IGV crédito fiscal' + igvNota,
         debe: igv,
         haber: 0,
       });
@@ -298,6 +284,7 @@ function construirAsiento(movimiento) {
     glosa: docRef ? `${desc} (${docRef})` : desc,
     type: tipo,
     movimiento_id: m.id,
+    desglose,
     partidas: partidas.map(p => ({
       cuenta: p.cuenta,
       descripcion: p.descripcion,
@@ -341,15 +328,15 @@ export function explicarDescuadre(asiento, movimiento) {
     return `Este movimiento${doc} tiene monto NEGATIVO (${fmtS(m.amount)}) — normalmente una nota de crédito. ` +
       `El generador debería asentarlo como extorno; si ves este aviso, recargá la app (versión vieja en caché). Δ ${d}: ${lado}.`;
   }
-  if (m.subtotal != null && m.igv_amount != null) {
-    // Comparar en valor absoluto: en una NC los tres campos vienen negativos y
-    // el signo no debe tapar la inconsistencia.
-    const suma = r2(Math.abs(Number(m.subtotal)) + Math.abs(Number(m.igv_amount)));
-    const total = r2(Math.abs(Number(m.amount || 0)));
-    if (Math.abs(suma - total) >= 0.05) {
-      return `La base imponible (${fmtS(Math.abs(m.subtotal))}) + IGV (${fmtS(Math.abs(m.igv_amount))}) registrados suman ${fmtS(suma)}, ` +
-        `pero el total del movimiento${doc} es ${fmtS(total)}. Corregí la base o el IGV en el movimiento. Δ ${d}: ${lado}.`;
-    }
+  // Desde el fix del desglose real (31-ago) la base se calcula como
+  // total − IGV del comprobante, así que un asiento NO debería descuadrar
+  // nunca por ahí. Si igual descuadra, el dato de origen está roto.
+  const dg = asiento.desglose;
+  if (dg) {
+    return `Las líneas de este asiento no suman igual: ${lado} por ${d}. ` +
+      `Se asentó base ${fmtS(Math.abs(dg.subtotal))} + IGV ${fmtS(Math.abs(dg.igv))} ` +
+      `(${dg.origen === 'estimado' ? 'IGV estimado al 18 %: el comprobante no trae desglose' : 'IGV tomado del comprobante'}) ` +
+      `sobre un total de ${fmtS(Math.abs(dg.total))}. Revisá el monto del movimiento${doc}.`;
   }
   return `Las líneas de este asiento no suman igual: ${lado} por ${d}. ` +
     `Revisá el movimiento origen${doc} — monto, base imponible e IGV.`;

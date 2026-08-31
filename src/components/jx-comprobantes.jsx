@@ -1,5 +1,6 @@
 import React from "react";
 import { validarComprobanteAI } from "../lib/validar-comprobante-ai.js";
+import { derivarTypeContable } from "../lib/clasificacion-contable.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 // Iconos
@@ -303,6 +304,8 @@ function ComprobantesElectronicosPage({ showToast }) {
     }));
   };
 
+  const r2c = (n) => Math.round(Number(n || 0) * 100) / 100;
+
   // ─── Guardar comprobante (crea movimiento contable) ───────────────
   const guardarComprobante = async () => {
     if (!form.company_id) { showToast?.('Selecciona empresa emisora', 'red'); return; }
@@ -336,7 +339,9 @@ function ComprobantesElectronicosPage({ showToast }) {
         company_id: form.company_id,
         obra_id: form.obra_id || null,
         date: form.fecha,
-        type: 'income',
+        clase: 'venta',
+        destino_contable: form.obra_id ? 'obra' : null,
+        type: derivarTypeContable({ clase: 'venta', obra_id: form.obra_id || null, is_intercompany: false }),
         category: tipoMeta.label,
         description: form.observaciones || (form.items[0]?.descripcion || tipoMeta.label),
         amount: tot.total_venta,
@@ -356,6 +361,14 @@ function ComprobantesElectronicosPage({ showToast }) {
           serie: form.serie,
           correlativo: form.correlativo,
           moneda: form.moneda,
+          // Desglose REAL calculado línea por línea (calcularTotalesIGV respeta
+          // la tasa y el código de exoneración de cada ítem). El Libro Diario y
+          // los PLE lo leen de acá en vez de inventar un 18 % — src/lib/igv-desglose.js.
+          subtotal: r2c(tot.total_gravado + tot.total_exonerado + tot.total_inafecto),
+          igv: tot.total_igv,
+          base_gravada: tot.total_gravado,
+          exonerado: tot.total_exonerado,
+          inafecto: tot.total_inafecto,
           items: form.items,
           cliente: {
             tipo_documento: form.cliente_tipo_doc,

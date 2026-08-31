@@ -8,6 +8,7 @@ import { matchAsegurados } from "../lib/sctr-paquete.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 import { supabase } from "../lib/supabase";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
+import { derivarTypeContable } from "../lib/clasificacion-contable.js";
 
 // Nombre de persona natural en formato SUNAT ("APELLIDO1 APELLIDO2 NOMBRES"):
 // heurística para pre-llenar apellidos/nombres al crear un trabajador desde un
@@ -1851,7 +1852,17 @@ function CapturaMagicaPage({ showToast }) {
       // COMPRA: tercero = proveedor (emisor externo), type=cost. VENTA: tercero = receptor
       // (cliente), type=income, company = nuestro emisor. La venta NO genera recepción de almacén.
       const claseFinal = esVenta ? 'venta' : 'compra';
-      const typeFinal = esVenta ? 'income' : 'cost';
+      // Operación interna del grupo: se calcula ANTES porque la clasificación
+      // contable la necesita (intercompany siempre 'cost' — regla dura).
+      const esInterco = herenciaEspejo ? true : !!r.es_intercompany;
+      // COSTO vs GASTO ya NO se elige a mano: sale de la vinculación
+      // (obra → costo · gastos generales → gasto). src/lib/clasificacion-contable.js
+      const typeFinal = derivarTypeContable({
+        clase: claseFinal,
+        destino_contable: destinoContable,
+        obra_id: r.obra_id || null,
+        is_intercompany: esInterco,
+      });
       const terceroNombre = esVenta ? (r.receptor_razon_social || null) : (r.proveedor_razon_social || null);
       const terceroRuc = esVenta ? (r.receptor_documento || null) : (r.proveedor_ruc || null);
       const docLabel = TIPO_DOC_MAP[r.tipo_documento]?.label || 'Factura';
@@ -1868,7 +1879,7 @@ function CapturaMagicaPage({ showToast }) {
         // Operación interna del grupo (emisor Y receptor son empresas nuestras): debe
         // marcarse SIEMPRE, no solo si se vinculó a una cadena de trazabilidad. Si no,
         // una venta intercompany sin cadena se cuenta como ingreso real (infla ventas).
-        is_intercompany: herenciaEspejo ? true : !!r.es_intercompany,
+        is_intercompany: esInterco,
         related_company_id: herenciaEspejo ? herenciaEspejo.related_company_id : (r.es_intercompany ? (r.company_id || null) : null),
         // Nota de crédito/débito → vinculada a la factura que modifica; reemplazo
         // de espejo → vinculada a la VENTA interna original (ya synced en server).
@@ -2002,7 +2013,8 @@ function CapturaMagicaPage({ showToast }) {
               detraccion_aplica: false, detraccion_pct: null, detraccion_monto: null,
               detraccion_codigo: null, detraccion_estado: null,
               date: r.fecha_emision,
-              type: 'cost',
+              // Espejo de una operación interna → 'cost' por la regla dura.
+              type: derivarTypeContable({ clase: 'compra', destino_contable: destinoContable, obra_id: r.obra_id || null, is_intercompany: true }),
               category: docLabel,
               description: `${docLabel} ${r.serie_correlativo} · ${vendedora?.name || ''} (contraparte automática)`,
               amount: Number(r.total) || 0,
@@ -2022,6 +2034,10 @@ function CapturaMagicaPage({ showToast }) {
                 intercompany_auto: true,
                 intercompany_mirror_of: accId,
                 captura_magica: true,
+                // Mismo comprobante que la venta → mismo desglose real de base e
+                // IGV. Sin esto el espejo no tenía desglose y su Libro Diario
+                // inventaba el 18 %, contradiciendo a la venta por la MISMA factura.
+                subtotal: r.subtotal, igv: r.igv,
                 nota: 'Compra generada automáticamente como contraparte de una venta interna del grupo. Se puede reemplazar subiendo el comprobante real.',
               }),
               created_by: userId, updated_by: userId,

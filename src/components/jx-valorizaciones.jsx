@@ -1,5 +1,6 @@
 import React from "react";
 import { useBusy } from "../hooks/useBusy.js";
+import { derivarTypeContable } from "../lib/clasificacion-contable.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -298,7 +299,11 @@ function ValorizacionesPage({ showToast }) {
         id: movId,
         company_id: val.company_id,
         date: val.fecha_emision || val.fecha_corte,
-        type: 'income',
+        clase: 'venta',
+        obra_id: val.obra_id || null,
+        destino_contable: val.obra_id ? 'obra' : null,
+        // Nivel 1 = venta → ingreso (src/lib/clasificacion-contable.js).
+        type: derivarTypeContable({ clase: 'venta', obra_id: val.obra_id || null, is_intercompany: false }),
         category: 'Valorización de obra',
         description: `Valorización N° ${val.numero} de ${MESES[val.periodo_mes-1]} ${val.periodo_anio}`,
         amount: val.monto_total,

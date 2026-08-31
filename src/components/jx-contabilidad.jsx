@@ -6,6 +6,7 @@ import { getCurrentMode } from "../lib/app-mode-core.js";
 import { usePagination } from "../hooks/usePagination.js";
 import { TablePagination } from "./jx-pagination.jsx";
 import { detectarDuplicados, claseDe } from "../lib/dedupe-movs-contables.js";
+import { derivarTypeContable, motivoClasificacion, TYPE_LABEL_LARGO } from "../lib/clasificacion-contable.js";
 import { cmpComprobante } from "../lib/comparar-comprobante.js";
 import { resumenRecepcion, rankearIngresosParaItem, rankearFacturasParaIngreso, itemsDeFactura, estadoRecepcionDeItems, parseNotas, referenciaSinCostos, reporteRecepcion } from "../lib/cruce-recepcion.js";
 import { ConsultasPanel, useConsultasResumen } from "./jx-consultas.jsx";
@@ -1146,7 +1147,15 @@ function MovimientosContablesPage({ showToast }) {
     setAiSugCuenta(null);
     try {
       const sug = await sugerirCuentaPcge({
-        type: form.type || 'expense',
+        // Tipo DERIVADO (clase + vinculación): con el select viejo la IA recibía
+        // 'cost' para un gasto general y sugería cuentas de costo de obra.
+        type: derivarTypeContable({
+          clase: form.clase || 'compra',
+          type: form.type,
+          obra_id: form.obra_id || null,
+          destino_contable: form.obra_id ? 'obra' : (form.destino_contable || null),
+          is_intercompany: false,
+        }),
         description: form.description || '',
         category: form.category || '',
         third_party_name: form.third_party_name || '',
@@ -1363,13 +1372,23 @@ function MovimientosContablesPage({ showToast }) {
     try {
       if (editingId) {
         const orig = movs.find(m => m.id === editingId);
+        // COSTO vs GASTO se DERIVA de clase + vinculación (nunca se teclea):
+        // src/lib/clasificacion-contable.js. is_intercompany sale de la fila
+        // original — el formulario ni siquiera abre movimientos internos.
+        const typeDerivado = derivarTypeContable({
+          clase: form.clase || null,
+          type: form.type,
+          obra_id: form.obra_id || null,
+          destino_contable: form.obra_id ? 'obra' : (form.destino_contable || null),
+          is_intercompany: orig?.is_intercompany === true,
+        });
         await window.__db.accounting_movements.update(editingId, {
           company_id: form.company_id,
           date: form.date,
           clase: form.clase || null,
           obra_id: form.obra_id || null,
           destino_contable: form.obra_id ? 'obra' : (form.destino_contable || null),
-          type: form.type,
+          type: typeDerivado,
           category: form.category || null,
           cuenta_pcge: form.cuenta_pcge || null,
           description: form.description || null,
@@ -1398,7 +1417,14 @@ function MovimientosContablesPage({ showToast }) {
           clase: form.clase || null,
           obra_id: form.obra_id || null,
           destino_contable: form.obra_id ? 'obra' : (form.destino_contable || null),
-          type: form.type,
+          // Derivado de clase + vinculación (ver el UPDATE de arriba).
+          type: derivarTypeContable({
+            clase: form.clase || null,
+            type: form.type,
+            obra_id: form.obra_id || null,
+            destino_contable: form.obra_id ? 'obra' : (form.destino_contable || null),
+            is_intercompany: false,
+          }),
           category: form.category || null,
           cuenta_pcge: form.cuenta_pcge || null,
           description: form.description || null,
@@ -1592,9 +1618,14 @@ function MovimientosContablesPage({ showToast }) {
       if (od?.fecha_inicio && m.date && m.date < od.fecha_inicio &&
           !window.confirm(`⚠ La factura (${m.date}) es ANTERIOR al inicio de "${od.nombre_obra}" (${od.fecha_inicio}).\n\n¿Confirmás que va a esta obra?`)) return;
     }
+    const destinoNuevo = esObraDest ? 'obra' : (eleccion === '__empresa__' ? 'gastos_generales' : 'contabilidad_neta');
     const patch = {
       obra_id: esObraDest ? eleccion : null,
-      destino_contable: esObraDest ? 'obra' : (eleccion === '__empresa__' ? 'gastos_generales' : 'contabilidad_neta'),
+      destino_contable: destinoNuevo,
+      // Asignar el destino RECLASIFICA el movimiento: si va a Gastos Generales
+      // pasa de costo a gasto. Sin esto la fila quedaba contradictoria y el
+      // Estado de Resultados seguía contando el gasto dentro de "Costos".
+      type: derivarTypeContable({ ...m, obra_id: esObraDest ? eleccion : null, destino_contable: destinoNuevo }),
       updated_at: new Date().toISOString(),
       updated_by: userId,
       version: (m.version ?? 0) + 1,
@@ -1603,7 +1634,7 @@ function MovimientosContablesPage({ showToast }) {
     try {
       await window.__db.accounting_movements.update(m.id, patch);
       try { await window.__logAudit?.({ action:'update', table:'accounting_movements', recordId:m.id,
-        oldData:{ destino_contable:'sin_clasificar' }, newData:{ destino_contable: patch.destino_contable, obra_id: patch.obra_id },
+        oldData:{ destino_contable:'sin_clasificar', type: m.type }, newData:{ destino_contable: patch.destino_contable, obra_id: patch.obra_id, type: patch.type },
         reason:'Bandeja de la Contadora Jefe: destino asignado a factura "No sé"' }); } catch {}
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'accounting_movements' } })); } catch {}
       showToast(`✓ Destino asignado: ${esObraDest ? (obraNombre(eleccion) || 'obra') : (eleccion === '__empresa__' ? 'Gastos Generales' : 'Contabilidad Neta')}`, 'green');
@@ -3271,9 +3302,9 @@ function MovimientosContablesPage({ showToast }) {
             <div>
               <label className="flabel">Clase *</label>
               <select className="fi" value={form.clase||'compra'} onChange={e=>{
-                const clase = e.target.value;
-                // Sugerir el tipo contable acorde (venta→ingreso, compra→costo); editable después.
-                setForm({...form, clase, type: clase === 'venta' ? 'income' : (form.type === 'income' ? 'cost' : (form.type || 'cost'))});
+                // La CLASE es el nivel 1 (ingreso/egreso). El nivel 2 —costo o
+                // gasto— ya no se elige: lo deriva la vinculación al guardar.
+                setForm({...form, clase: e.target.value});
               }}>
                 <option value="compra">🛒 Compra (a proveedora)</option>
                 <option value="venta">🧾 Venta (emitida a la ejecutora)</option>
@@ -3328,12 +3359,27 @@ function MovimientosContablesPage({ showToast }) {
               <input className="fi" type="date" value={form.date||''} onChange={e=>setForm({...form, date:e.target.value})}/>
             </div>
             <div>
-              <label className="flabel">Tipo *</label>
-              <select className="fi" value={form.type||'income'} onChange={e=>setForm({...form, type:e.target.value})}>
-                <option value="income">Ingreso</option>
-                <option value="cost">Costo</option>
-                <option value="expense">Gasto</option>
-              </select>
+              <label className="flabel">Clasificación contable</label>
+              {(() => {
+                // NO es un campo que se teclee: sale de Clase + Vinculación.
+                // Antes era un select y nadie elegía "Gasto" → los S/264 mil de
+                // Gastos Generales quedaban escondidos dentro de "Costos".
+                const movForm = {
+                  clase: form.clase || 'compra',
+                  type: form.type,
+                  obra_id: form.obra_id || null,
+                  destino_contable: form.obra_id ? 'obra' : (form.destino_contable || null),
+                  is_intercompany: editingId ? (movs.find(m => m.id === editingId)?.is_intercompany === true) : false,
+                };
+                const t = derivarTypeContable(movForm);
+                const color = t === 'income' ? 'var(--green)' : t === 'expense' ? 'var(--amber)' : 'var(--red)';
+                return (<>
+                  <div className="fi" style={{ display:'flex', alignItems:'center', fontWeight:700, color, background:'rgba(255,255,255,0.03)' }}>
+                    {TYPE_LABEL_LARGO[t] || t}
+                  </div>
+                  <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:3 }}>{motivoClasificacion(movForm)}</div>
+                </>);
+              })()}
             </div>
             <div>
               <label className="flabel">Categoría</label>
@@ -3352,7 +3398,7 @@ function MovimientosContablesPage({ showToast }) {
               </label>
               <select className="fi" value={form.cuenta_pcge||''} onChange={e=>setForm({...form, cuenta_pcge:e.target.value})}>
                 <option value="">Auto (según categoría)</option>
-                {form.type === 'income' ? (
+                {(form.clase || 'compra') === 'venta' ? (
                   <>
                     <option value="70">70 — Ventas</option>
                     <option value="704">704 — Prestación de servicios</option>
@@ -3573,7 +3619,8 @@ function IntercompanyPage({ showToast }) {
         id: sellerMovId,
         company_id: seller.id,
         date: form.date,
-        type: 'income',
+        clase: 'venta',
+        type: derivarTypeContable({ clase: 'venta', is_intercompany: true }),
         category: opLabel,
         description: form.description || `${opLabel} a ${buyer.name}`,
         amount: monto,
@@ -3604,7 +3651,10 @@ function IntercompanyPage({ showToast }) {
         id: buyerMovId,
         company_id: buyer.id,
         date: form.date,
-        type: 'cost',
+        clase: 'compra',
+        // Regla dura: interna del grupo → SIEMPRE 'cost' (el Consolidado las
+        // elimina de a pares sumando income+cost del lado is_intercompany).
+        type: derivarTypeContable({ clase: 'compra', is_intercompany: true }),
         category: opLabel,
         description: form.description || `${opLabel} desde ${seller.name}`,
         amount: monto,
@@ -4458,7 +4508,11 @@ function ConsolidadoPage({ showToast }) {
 
       if (m.is_intercompany) {
         if (m.type === 'income') inInt += a;
-        if (m.type === 'cost')   coInt += a;
+        // 'expense' NO debería existir en una interna (clasificacion-contable.js
+        // la fuerza a 'cost'), pero si una fila vieja quedó así, se elimina
+        // igual: sin esto se evaporaba de los dos lados y el consolidado
+        // dejaba de cuadrar.
+        if (m.type === 'cost' || m.type === 'expense') coInt += a;
       } else {
         if (m.type === 'income')  inExt += a;
         if (m.type === 'cost')    coExt += a;
@@ -4823,14 +4877,17 @@ function TrazabilidadPage({ showToast }) {
   };
 
   // Comprobantes (facturas de proveedor externo) disponibles para asociar a una cadena.
-  // Solo facturas tipo='cost' que NO sean intercompany y NO estén ya vinculadas a otra cadena.
+  // Solo EGRESOS (cost/expense) que NO sean intercompany y NO estén ya vinculados a otra cadena.
   const [comprobantesDisponibles, setComprobantesDisponibles] = uSC([]);
   uEC(() => {
     let cancelled = false;
     const load = async () => {
       try {
         const movs = await window.__db.accounting_movements
-          .filter(m => !m.deleted_at && m.type === 'cost' && !m.is_intercompany &&
+          // 'cost' O 'expense': tras la reclasificación de Gastos Generales (mig 162)
+          // un comprobante de gasto sigue siendo una factura de proveedor externo
+          // asociable a una cadena — filtrar solo por 'cost' las hacía desaparecer.
+          .filter(m => !m.deleted_at && (m.type === 'cost' || m.type === 'expense') && !m.is_intercompany &&
                   (m.document_type === 'factura' || m.document_type === 'boleta') &&
                   !m.chain_id)
           .toArray();

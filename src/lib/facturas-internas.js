@@ -9,6 +9,7 @@
 
 import { db, newId, newIdempotencyKey, SYNC_STATUS } from '../db/jarvex.db';
 import { getCurrentMode } from './app-mode-core.js';
+import { derivarTypeContable } from './clasificacion-contable.js';
 
 const IGV_RATE = 0.18;
 
@@ -141,7 +142,8 @@ export async function generarFacturasInternas(cadena, companies, userId) {
     await db.accounting_movements.add({
       id: sellerMovId,
       company_id: compVend.id,
-      type: 'income',
+      clase: 'venta',
+      type: derivarTypeContable({ clase: 'venta', is_intercompany: true }),
       date: fechaBase,
       amount: total,
       currency: moneda,
@@ -174,7 +176,12 @@ export async function generarFacturasInternas(cadena, companies, userId) {
     await db.accounting_movements.add({
       id: buyerMovId,
       company_id: compComp.id,
-      type: 'cost',
+      clase: 'compra',
+      // Regla dura: la pata interna de la cadena tiene que quedar 'cost' —
+      // listarFacturasDeCadena empareja byStep.income con byStep.cost y el
+      // Consolidado elimina las internas sumando income+cost. Ver
+      // src/lib/clasificacion-contable.js.
+      type: derivarTypeContable({ clase: 'compra', is_intercompany: true }),
       date: fechaBase,
       amount: total,
       currency: moneda,

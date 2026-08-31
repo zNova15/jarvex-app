@@ -2,8 +2,10 @@ import React from "react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { generarAsientosBatch, explicarDescuadre } from "../lib/asientos";
+import { describirIgv, igvDestacable } from "../lib/igv-desglose.js";
 import { PCGE_DEFAULT } from "../lib/pcge-default";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
+import { fmtFechaLarga, ymdDe } from "../lib/fecha.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 
@@ -44,17 +46,9 @@ const fmtS = (n) =>
     maximumFractionDigits: 2,
   });
 
-const fmtDate = (d) => {
-  if (!d) return '';
-  try {
-    const date = (d instanceof Date) ? d : new Date(d);
-    if (isNaN(date.getTime())) return String(d);
-    const dd = String(date.getDate()).padStart(2, '0');
-    const mm = String(date.getMonth() + 1).padStart(2, '0');
-    const yyyy = date.getFullYear();
-    return `${dd}/${mm}/${yyyy}`;
-  } catch (_) { return String(d); }
-};
+// new Date('YYYY-MM-DD') = medianoche UTC → en Perú mostraba el día ANTERIOR
+// en toda la columna Fecha del Libro Diario. fmtFechaLarga parte el string.
+const fmtDate = (d) => fmtFechaLarga(d);
 
 const MESES = [
   { v: 'all', label: 'Todo el año' },
@@ -107,11 +101,8 @@ function LibroDiarioPage({ showToast }) {
   const aniosDisp = uM(() => {
     const set = new Set();
     (movs || []).forEach(m => {
-      const d = m.date || m.created_at;
-      if (d) {
-        const y = new Date(d).getFullYear();
-        if (!isNaN(y)) set.add(String(y));
-      }
+      const y = ymdDe(m.date || m.created_at).slice(0, 4);
+      if (y) set.add(y);
     });
     set.add(String(ahora.getFullYear()));
     return Array.from(set).sort((a, b) => b.localeCompare(a));
@@ -124,13 +115,11 @@ function LibroDiarioPage({ showToast }) {
       if (m.payment_status === 'cancelled') return false;
       if (empresaId !== 'all' && m.company_id !== empresaId) return false;
       if (tipoFiltro !== 'all' && m.type !== tipoFiltro) return false;
-      const d = new Date(m.date || m.created_at);
-      if (isNaN(d.getTime())) return false;
-      if (String(d.getFullYear()) !== String(anio)) return false;
-      if (mes !== 'all') {
-        const mm = String(d.getMonth() + 1).padStart(2, '0');
-        if (mm !== mes) return false;
-      }
+      // Por string: con new Date('2026-01-01') el asiento caía en 2025.
+      const ymd = ymdDe(m.date || m.created_at);
+      if (!ymd) return false;
+      if (ymd.slice(0, 4) !== String(anio)) return false;
+      if (mes !== 'all' && ymd.slice(5, 7) !== mes) return false;
       return true;
     });
   }, [movs, empresaId, anio, mes, tipoFiltro]);
@@ -546,6 +535,19 @@ function LibroDiarioPage({ showToast }) {
                                 {!a.cuadra && (
                                   <span className="badge b-red" style={{ fontSize: 10 }} title="Este asiento no cuadra: su propio debe ≠ haber">
                                     Δ {fmtS(Math.abs(a.delta))}
+                                  </span>
+                                )}
+                                {/* IGV: solo se avisa cuando NO es el 18 % general — o sea,
+                                    cuando la tasa del comprobante es otra (comida al 10 %,
+                                    exonerados) o cuando hubo que estimarla. */}
+                                {a.desglose && igvDestacable(a.desglose) && (
+                                  <span
+                                    className={`badge ${a.desglose.origen === 'estimado' ? 'b-amber' : 'b-blue'}`}
+                                    style={{ fontSize: 10 }}
+                                    title={a.desglose.origen === 'estimado'
+                                      ? 'El comprobante no trae base e IGV: se estimó al 18 %. Corregí el movimiento si la tasa era otra.'
+                                      : `Base ${fmtS(Math.abs(a.desglose.subtotal))} + IGV ${fmtS(Math.abs(a.desglose.igv))} tomados del comprobante`}>
+                                    IGV {describirIgv(a.desglose)}
                                   </span>
                                 )}
                                 {evPorMov.has(a.movimiento_id) && (

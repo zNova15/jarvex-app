@@ -8,6 +8,7 @@ import {
 } from '../lib/sunat-ple.js';
 import { generatePDT601, buildPDT601Filename } from '../lib/sunat-pdt601.js';
 import { generarAsientosBatch } from '../lib/asientos.js';
+import { enPeriodo } from '../lib/fecha.js';
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
@@ -15,12 +16,9 @@ const MESES_LARGOS = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function pad2(n) { return String(n || 0).padStart(2, '0'); }
 
-function isInPeriodo(fecha, anio, mes) {
-  if (!fecha) return false;
-  const d = (fecha instanceof Date) ? fecha : new Date(fecha);
-  if (isNaN(d.getTime())) return false;
-  return d.getFullYear() === Number(anio) && (d.getMonth() + 1) === Number(mes);
-}
+// Por string (src/lib/fecha.js), no por new Date(): 'YYYY-MM-DD' se parsea como
+// medianoche UTC y en Perú una factura del 01/07 se declaraba en JUNIO.
+const isInPeriodo = (fecha, anio, mes) => enPeriodo(fecha, Number(anio), Number(mes));
 
 function LibrosElectronicosPage({ showToast }) {
   const today = new Date();

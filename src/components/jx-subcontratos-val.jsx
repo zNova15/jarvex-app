@@ -1,4 +1,5 @@
 import React from "react";
+import { derivarTypeContable } from "../lib/clasificacion-contable.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -226,12 +227,20 @@ function SubcontratoValorizacionesPage({ showToast }) {
     if (!confirm(`¿Aprobar y registrar movimiento de COSTO por ${fmtS(v.monto_total)} en ${company.name}?`)) return;
     const now = new Date().toISOString();
     const movId = window.__newId();
+    // La obra sale del subcontrato (subcontratos.obra_id): es lo que hace que
+    // la valorización quede clasificada como COSTO DE OBRA y no como gasto.
+    const obraId = subcontratoSel?.obra_id || null;
     try {
       await window.__db.accounting_movements.add({
         id: movId,
         company_id: company.id,
         date: v.fecha,
-        type: 'cost',
+        clase: 'compra',
+        obra_id: obraId || null,
+        // La valorización de un subcontrato es COSTO DE OBRA: se vincula a la
+        // obra del subcontrato y la clasificación sale de ahí, no de un literal.
+        destino_contable: obraId ? 'obra' : null,
+        type: derivarTypeContable({ clase: 'compra', obra_id: obraId || null, destino_contable: obraId ? 'obra' : null, is_intercompany: false }),
         category: 'Subcontrato — valorización',
         description: `Subcontrato ${subcontratoSel?.codigo || ''} · Val N° ${v.numero} ${v.periodo_mes ? MESES[v.periodo_mes-1] : ''} ${v.periodo_anio || ''}`.trim(),
         amount: v.monto_total,
