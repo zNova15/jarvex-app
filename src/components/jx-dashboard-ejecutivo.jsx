@@ -129,6 +129,9 @@ function DashboardEjecutivoPage() {
 
       return {
         id: c.id, nombre: c.name, tipo: c.company_type,
+        // egresos = costo de obra + gasto de la empresa (columna "Egresos" de
+        // la tabla). Se mantiene el nombre `costos` en el objeto por no tocar
+        // otros lugares que lo leen — el rename es solo del label visible.
         ingresos: ing, costos: cos + gas, utilidad: util, margen,
         cuentasActivas: cuentasCo.length, saldo,
       };
@@ -281,7 +284,10 @@ function DashboardEjecutivoPage() {
         <KpiCardEj label="Por cobrar" value={fmtCurK(kpis.porCobrar, moneda)} sub="Pendiente de clientes" color="#3498DB" icon="arrowIn" />
         <KpiCardEj label="Por pagar" value={fmtCurK(kpis.porPagar, moneda)} sub="Pendiente a proveedores" color="#E74C3C" icon="arrowOut" />
         <KpiCardEj label="Ingresos del rango" value={fmtCurK(kpis.ingresosMes, moneda)} sub="Sin intercompany" color="var(--green)" icon="trendingUp" />
-        <KpiCardEj label="Costos del rango" value={fmtCurK(kpis.costosMes + kpis.gastosMes, moneda)} sub="Sin intercompany" color="var(--red)" icon="trendingDown" />
+        {/* "Egresos", no "Costos": desde 4a (31-ago) suma costo de obra + gasto
+            de la empresa — con la reclasificación real, llamarlo "Costos" era
+            engañoso (excluía los S/264 mil de Gastos Generales). */}
+        <KpiCardEj label="Egresos del rango" value={fmtCurK(kpis.costosMes + kpis.gastosMes, moneda)} sub="Costo + gasto, sin intercompany" color="var(--red)" icon="trendingDown" />
         <KpiCardEj
           label="Utilidad del rango"
           value={fmtCurK(kpis.utilidadMes, moneda)}
@@ -305,7 +311,8 @@ function DashboardEjecutivoPage() {
                 <thead><tr>
                   <th>Empresa</th>
                   <th style={{ textAlign: 'right' }}>Ingresos</th>
-                  <th style={{ textAlign: 'right' }}>Costos</th>
+                  {/* r.costos = costo de obra + gasto de la empresa (ver kpis) */}
+                  <th style={{ textAlign: 'right' }}>Egresos</th>
                   <th style={{ textAlign: 'right' }}>Utilidad</th>
                   <th style={{ textAlign: 'right' }}>Margen</th>
                   <th style={{ textAlign: 'right' }}>Cuentas</th>

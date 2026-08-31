@@ -339,7 +339,13 @@ function EmpresasPage({ showToast }) {
                 <th>Empresa</th><th>RUC</th><th>Rubro · Rol</th>
                 <th style={{ textAlign:'right' }}>Margen</th>
                 <th style={{ textAlign:'right' }}>Ingresos</th>
-                <th style={{ textAlign:'right' }}>Costos</th>
+                {/* "Egresos" = costo de obra + gasto de la empresa. Antes decía
+                    "Costos" mostrando SOLO r.costos mientras Utilidad restaba
+                    los dos — desde el backfill de 4a (31-ago) el gasto es real
+                    y esa columna dejaba de reconciliar (Ingresos−Costos≠Utilidad
+                    sin explicación visible). Esta tabla es un resumen; el
+                    desglose Costo/Gasto detallado vive en Movimientos Contables. */}
+                <th style={{ textAlign:'right' }}>Egresos</th>
                 <th style={{ textAlign:'right' }}>Utilidad</th>
                 <th>Estado</th>
                 {isAdmin && <th style={{ textAlign:'center' }}>Acciones</th>}
@@ -347,7 +353,8 @@ function EmpresasPage({ showToast }) {
               <tbody>
                 {sorted.map(c => {
                   const r = resumenes.get(c.id) || { ingresos:0, costos:0, gastos:0 };
-                  const utilidad = r.ingresos - r.costos - r.gastos;
+                  const egresos = r.costos + r.gastos;
+                  const utilidad = r.ingresos - egresos;
                   const rubroLabel = RUBROS.find(t => t.v === c.rubro)?.label || (COMPANY_TYPES.find(t => t.v === c.company_type)?.label || '—');
                   const rolLabel = ROLES_GRUPO.find(rr => rr.v === c.rol_grupo)?.label?.split('(')[0]?.trim() || '—';
                   const rolBadge = c.rol_grupo === 'origen' ? 'b-blue'
@@ -376,7 +383,7 @@ function EmpresasPage({ showToast }) {
                         {c.margen_objetivo_pct != null ? `${Number(c.margen_objetivo_pct).toFixed(1)}%` : '—'}
                       </td>
                       <td style={{ textAlign:'right' }} className="col-num">{fmtCurK(r.ingresos)}</td>
-                      <td style={{ textAlign:'right' }} className="col-num">{fmtCurK(r.costos)}</td>
+                      <td style={{ textAlign:'right' }} className="col-num">{fmtCurK(egresos)}</td>
                       <td style={{ textAlign:'right', fontWeight:700, color: utilidad>=0?'var(--green)':'var(--red)' }} className="col-num">{fmtCurK(utilidad)}</td>
                       <td><span className={`badge ${c.status==='activa'?'b-green':'b-gray'}`}>{c.status}</span></td>
                       {isAdmin && (
