@@ -250,10 +250,12 @@ function LoginScreen({ onLogin }) {
   const [campoPin, setCampoPin] = uSA('');
 
   const handleCampoLogin = async () => {
-    if (!campoPin) { setErr('Ingresá el PIN que te dio el administrador.'); return; }
+    // trim: los teclados de celular meten espacios al autocompletar/autocorregir.
+    const pin = campoPin.trim();
+    if (!pin) { setErr('Ingresá el PIN que te dio el administrador.'); return; }
     setErr(''); setLoad(true);
     try {
-      await onLogin(CAMPO_EMAIL, campoPin);
+      await onLogin(CAMPO_EMAIL, pin);
     } catch (e) {
       const m = e.message || '';
       // 'Invalid login' cubre DOS casos: PIN malo O que el admin nunca creó la
@@ -354,8 +356,10 @@ function LoginScreen({ onLogin }) {
             ) : (
               <div>
                 <label className="flabel">PIN de campo (te lo da el administrador)</label>
-                <input className="fi" type="password" inputMode="numeric" placeholder="••••••" value={campoPin}
-                  onChange={e=>setCampoPin(e.target.value)} style={{ fontSize:16, textAlign:'center', letterSpacing:'.3em' }}
+                {/* SIN inputMode numeric: el PIN puede llevar LETRAS y el teclado
+                    numérico de Android impedía escribirlas (bug real, 31-ago). */}
+                <input className="fi" type="password" autoCapitalize="none" autoCorrect="off" placeholder="PIN (letras y/o números)" value={campoPin}
+                  onChange={e=>setCampoPin(e.target.value)} style={{ fontSize:16, textAlign:'center', letterSpacing:'.15em' }}
                   onKeyDown={e=>e.key==='Enter'&&handleCampoLogin()}/>
                 <div style={{ display:'flex', gap:8, marginTop:8 }}>
                   <button onClick={handleCampoLogin} disabled={loading} className="btn btn-amber" style={{ flex:1, justifyContent:'center', padding:'11px', fontSize:13 }}>

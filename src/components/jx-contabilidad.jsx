@@ -1,4 +1,5 @@
 import React from "react";
+import { RUBROS } from "../lib/rubros.js";
 import { sugerirCuentaPcge } from "../lib/sugerir-cuenta-pcge.js";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
@@ -72,23 +73,7 @@ const COMPANY_TYPES = [
 // Rubro / giro principal — define qué vende la empresa al grupo y al exterior.
 // Sirve para sugerir cadenas de trazabilidad (ej: una "importadora_acero" puede
 // abastecer a una "distribuidora_materiales" la cual abastece a la "ejecutora").
-const RUBROS = [
-  { v: 'importadora_acero',      label: 'Importadora · Acero / Fierro',     fam: 'acero' },
-  { v: 'importadora_cemento',    label: 'Importadora · Cemento / Aglomerantes', fam: 'cemento' },
-  { v: 'importadora_general',    label: 'Importadora · General',            fam: 'general' },
-  { v: 'distribuidora_materiales', label: 'Distribuidora de Materiales',    fam: 'materiales' },
-  { v: 'ferreteria',             label: 'Ferretería',                       fam: 'materiales' },
-  { v: 'transporte',             label: 'Transporte / Flete',               fam: 'transporte' },
-  { v: 'alquiler_maquinaria',    label: 'Alquiler de Maquinaria',           fam: 'maquinaria' },
-  { v: 'venta_maquinaria',       label: 'Venta de Maquinaria',              fam: 'maquinaria' },
-  { v: 'mano_obra',              label: 'Mano de Obra / Subcontratos',      fam: 'mano_obra' },
-  { v: 'supervision',            label: 'Supervisión / Consultoría',        fam: 'servicios' },
-  { v: 'estudios_proyectos',     label: 'Estudios y Proyectos',             fam: 'servicios' },
-  { v: 'ejecutora_obra',         label: 'Ejecutora de Obra (contratista)',  fam: 'ejecutora' },
-  { v: 'contratista_general',    label: 'Contratista General',              fam: 'ejecutora' },
-  { v: 'inmobiliaria',           label: 'Inmobiliaria',                     fam: 'inmobiliaria' },
-  { v: 'otro',                   label: 'Otro',                             fam: 'otro' },
-];
+// RUBROS vive ahora en src/lib/rubros.js (compartido con el portal de campo).
 
 // Rol de la empresa dentro del grupo del usuario (clave para trazabilidad).
 const ROLES_GRUPO = [

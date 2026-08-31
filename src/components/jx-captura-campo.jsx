@@ -16,6 +16,111 @@
 import React from "react";
 import { uploadPendingEvidencias } from "../sync/EvidenceUploader.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
+import { supabase } from "../lib/supabase";
+import { RUBROS, rubroLabel } from "../lib/rubros.js";
+
+// ── Configuración del portal (SOLO ADMIN, pedido de Gabriel 31-ago) ──
+// Acceso rápido sin abrir el form completo de cada Empresa ni el dashboard de
+// Supabase: (1) cambiar el PIN de la cuenta campo@ (usa el endpoint admin
+// set_password ya existente); (2) elegir qué empresas salen en el torpedo y
+// su rubro, inline con guardado inmediato.
+function ConfigPortalAdmin({ empresasTodas, companiesHook, showToast }) {
+  const [abierto, setAbierto] = uS(false);
+  const [pin, setPin] = uS('');
+  const [pin2, setPin2] = uS('');
+  const guardandoRef = uR(false);   // anti doble-click (regla crítica 2)
+  const [busyPin, setBusyPin] = uS(false);
+
+  const cambiarPin = async () => {
+    if (guardandoRef.current) return;
+    const p = pin.trim();
+    if (p.length < 8) { showToast?.('El PIN debe tener al menos 8 caracteres (mejor letras y números).', 'red'); return; }
+    if (p !== pin2.trim()) { showToast?.('Los PIN no coinciden.', 'red'); return; }
+    guardandoRef.current = true;
+    setBusyPin(true);
+    try {
+      const perfilCampo = await window.__db.profiles.filter(pr => pr.email === 'campo@jarvex.pe').first();
+      if (!perfilCampo?.id) throw new Error('No encuentro la cuenta campo@jarvex.pe (¿ya está creada y sincronizada?)');
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (!token) throw new Error('Sesión vencida — volvé a loguearte.');
+      const resp = await fetch('/api/create-user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: 'set_password', user_id: perfilCampo.id, password: p }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || data.detail || `HTTP ${resp.status}`);
+      try { await window.__logAudit?.({ action: 'update', table: 'auth.users', recordId: perfilCampo.id, reason: 'PIN del portal de campo cambiado desde Configuración del portal' }); } catch {}
+      setPin(''); setPin2('');
+      showToast?.('✓ PIN actualizado — repartí el nuevo. Los teléfonos ya logueados siguen hasta que se les cierre la sesión por inactividad.', 'green');
+    } catch (e) {
+      showToast?.('No se pudo cambiar el PIN: ' + (e.message || e), 'red');
+    } finally {
+      guardandoRef.current = false;
+      setBusyPin(false);
+    }
+  };
+
+  const actualizarEmpresa = async (id, patch) => {
+    if (guardandoRef.current) return;
+    guardandoRef.current = true;
+    try {
+      await companiesHook.update(id, patch);
+      showToast?.('✓ Guardado (sincroniza solo)', 'green');
+    } catch (e) {
+      showToast?.('Error: ' + (e.message || e), 'red');
+    } finally {
+      guardandoRef.current = false;
+    }
+  };
+
+  return (
+    <div className="card card-p" style={{ background: 'rgba(155,89,182,0.06)', border: '1px solid rgba(155,89,182,0.3)' }}>
+      <div className="frow-sb" style={{ cursor: 'pointer' }} onClick={() => setAbierto(a => !a)}>
+        <div style={{ fontSize: 13, fontWeight: 700 }}>⚙️ Configuración del portal (solo admin)</div>
+        <span style={{ color: 'var(--tm)', fontSize: 11 }}>{abierto ? '▲ ocultar' : '▼ abrir'}</span>
+      </div>
+      {abierto && (
+        <div style={{ marginTop: 10, display: 'grid', gap: 14 }}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>🔑 PIN de acceso del personal de campo</div>
+            <div className="g2">
+              <input className="fi" type="password" autoCapitalize="none" placeholder="Nuevo PIN (mín. 8)" value={pin} onChange={e => setPin(e.target.value)} style={{ fontSize: 16 }} />
+              <input className="fi" type="password" autoCapitalize="none" placeholder="Repetir PIN" value={pin2} onChange={e => setPin2(e.target.value)} style={{ fontSize: 16 }} />
+            </div>
+            <button className="btn btn-amber btn-sm" style={{ marginTop: 8 }} disabled={busyPin} onClick={cambiarPin}>
+              {busyPin ? 'Cambiando…' : 'Cambiar PIN'}
+            </button>
+            <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 5 }}>
+              Rotalo cuando alguien deje la obra. Con letras Y números es mucho más difícil de adivinar que solo dígitos.
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>🧾 Empresas del torpedo (qué ve el personal y con qué rubro)</div>
+            <div style={{ display: 'grid', gap: 5 }}>
+              {empresasTodas.map(c => (
+                <div key={c.id} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '6px 8px', background: 'rgba(255,255,255,0.03)', borderRadius: 5 }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', flex: 1, minWidth: 180, fontSize: 12 }}>
+                    <input type="checkbox" checked={c.mostrar_torpedo !== false}
+                      onChange={e => actualizarEmpresa(c.id, { mostrar_torpedo: e.target.checked })} />
+                    <strong>{c.name}</strong>
+                    <span style={{ color: 'var(--tm)', fontFamily: 'monospace', fontSize: 11 }}>{c.ruc || '—'}</span>
+                  </label>
+                  <select className="fi" style={{ maxWidth: 240, fontSize: 12, padding: '4px 8px' }} value={c.rubro || 'otro'}
+                    onChange={e => actualizarEmpresa(c.id, { rubro: e.target.value })}>
+                    {RUBROS.map(r => <option key={r.v} value={r.v}>{r.label}</option>)}
+                  </select>
+                </div>
+              ))}
+              {empresasTodas.length === 0 && <div style={{ fontSize: 11.5, color: 'var(--tm)', fontStyle: 'italic' }}>Sin empresas activas.</div>}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -62,14 +167,15 @@ function CapturaCampoPage({ showToast }) {
   const enviandoRef = uR(false);            // anti doble-tap (regla crítica 2)
   const [enviando, setEnviando] = uS(false);
 
-  const empresas = uM(() =>
+  // Todas las activas (para el panel de config del admin)…
+  const empresasTodas = uM(() =>
     (companiesHook.data || [])
-      .filter(c => !c.deleted_at && (c.status ? c.status === 'activa' : true)
-        // El admin elige cuáles salen en el torpedo (checkbox en Empresas,
-        // mig 156). Tolerante a filas viejas sin la columna: se muestran.
-        && c.mostrar_torpedo !== false)
+      .filter(c => !c.deleted_at && (c.status ? c.status === 'activa' : true))
       .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''))),
     [companiesHook.data]);
+  // …y las elegidas por el admin para el torpedo (mig 156; tolerante a filas
+  // viejas sin la columna: se muestran).
+  const empresas = uM(() => empresasTodas.filter(c => c.mostrar_torpedo !== false), [empresasTodas]);
   const obras = uM(() =>
     (obrasHook.data || []).filter(o => !o.deleted_at)
       .sort((a, b) => String(a.nombre || '').localeCompare(String(b.nombre || ''))),
@@ -142,6 +248,10 @@ function CapturaCampoPage({ showToast }) {
         </div>
       </div>
 
+      {rol === 'admin' && (
+        <ConfigPortalAdmin empresasTodas={empresasTodas} companiesHook={companiesHook} showToast={showToast} />
+      )}
+
       {/* Torpedo de RUCs: a nombre de qué empresa pedir la factura. */}
       <div className="card" style={{ overflow: 'auto' }}>
         <div style={{ padding: '8px 12px', fontSize: 12.5, fontWeight: 700 }}>🧾 ¿A qué RUC pido la factura?</div>
@@ -153,7 +263,7 @@ function CapturaCampoPage({ showToast }) {
               <tr key={c.id}>
                 <td style={{ fontWeight: 600 }}>{c.name}</td>
                 <td style={{ fontFamily: 'monospace' }}>{c.ruc || '—'}</td>
-                <td style={{ color: 'var(--ts)' }}>{c.rubro || '—'}</td>
+                <td style={{ color: 'var(--ts)' }}>{rubroLabel(c.rubro)}</td>
               </tr>
             ))}
             {empresas.length === 0 && <tr><td colSpan={3} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>Sin empresas cargadas aún (se descargan al tener señal).</td></tr>}
