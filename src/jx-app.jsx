@@ -251,7 +251,7 @@ function LoginScreen({ onLogin }) {
 
   const handleCampoLogin = async () => {
     const pin = campoPin.trim();
-    if (!/^\d{6,8}$/.test(pin)) { setErr('El PIN es de 6 a 8 dígitos — pedíselo al administrador.'); return; }
+    if (!/^\d{4,8}$/.test(pin)) { setErr('El PIN es de 4 a 8 dígitos — pedíselo al administrador.'); return; }
     setErr(''); setLoad(true);
     try {
       await onLogin(CAMPO_EMAIL, pin);
@@ -355,9 +355,9 @@ function LoginScreen({ onLogin }) {
             ) : (
               <div>
                 <label className="flabel">PIN de campo (te lo da el administrador)</label>
-                {/* PIN NUMÉRICO de 6-8 dígitos (decisión de Gabriel): teclado
+                {/* PIN NUMÉRICO de 4-8 dígitos (decisión de Gabriel): teclado
                     numérico del celular y filtro de solo dígitos. */}
-                <input className="fi" type="password" inputMode="numeric" maxLength={8} placeholder="PIN de 6 a 8 dígitos" value={campoPin}
+                <input className="fi" type="password" inputMode="numeric" maxLength={8} placeholder="PIN de 4 a 8 dígitos" value={campoPin}
                   onChange={e=>setCampoPin(e.target.value.replace(/\D/g, ''))} style={{ fontSize:16, textAlign:'center', letterSpacing:'.3em' }}
                   onKeyDown={e=>e.key==='Enter'&&handleCampoLogin()}/>
                 <div style={{ display:'flex', gap:8, marginTop:8 }}>

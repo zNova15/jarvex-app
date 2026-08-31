@@ -34,8 +34,8 @@ function ConfigPortalAdmin({ empresasTodas, companiesHook, showToast }) {
   const cambiarPin = async () => {
     if (guardandoRef.current) return;
     const p = pin.trim();
-    // PIN NUMÉRICO de 6 a 8 dígitos (decisión de Gabriel, 31-ago).
-    if (!/^\d{6,8}$/.test(p)) { showToast?.('El PIN debe ser numérico, de 6 a 8 dígitos.', 'red'); return; }
+    // PIN NUMÉRICO de 4 a 8 dígitos (pedido 31-ago: 4 para mayor rapidez).
+    if (!/^\d{4,8}$/.test(p)) { showToast?.('El PIN debe ser numérico, de 4 a 8 dígitos.', 'red'); return; }
     if (p !== pin2.trim()) { showToast?.('Los PIN no coinciden.', 'red'); return; }
     guardandoRef.current = true;
     setBusyPin(true);
@@ -87,14 +87,14 @@ function ConfigPortalAdmin({ empresasTodas, companiesHook, showToast }) {
           <div>
             <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>🔑 PIN de acceso del personal de campo</div>
             <div className="g2">
-              <input className="fi" type="password" inputMode="numeric" maxLength={8} placeholder="Nuevo PIN (6 a 8 dígitos)" value={pin} onChange={e => setPin(e.target.value.replace(/\D/g, ''))} style={{ fontSize: 16 }} />
+              <input className="fi" type="password" inputMode="numeric" maxLength={8} placeholder="Nuevo PIN (4 a 8 dígitos)" value={pin} onChange={e => setPin(e.target.value.replace(/\D/g, ''))} style={{ fontSize: 16 }} />
               <input className="fi" type="password" inputMode="numeric" maxLength={8} placeholder="Repetir PIN" value={pin2} onChange={e => setPin2(e.target.value.replace(/\D/g, ''))} style={{ fontSize: 16 }} />
             </div>
             <button className="btn btn-amber btn-sm" style={{ marginTop: 8 }} disabled={busyPin} onClick={cambiarPin}>
               {busyPin ? 'Cambiando…' : 'Cambiar PIN'}
             </button>
             <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 5 }}>
-              PIN numérico de 6 a 8 dígitos. Rotalo cuando alguien deje la obra (8 dígitos = 100× más difícil de adivinar que 6).
+              PIN numérico de 4 a 8 dígitos. Rotalo cuando alguien deje la obra — con 4 es rapidísimo de tipear pero fácil de adivinar; usá más dígitos si podés.
             </div>
           </div>
           <div>
@@ -126,7 +126,7 @@ function ConfigPortalAdmin({ empresasTodas, companiesHook, showToast }) {
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 const FI16 = { fontSize: 16 };
-const MAX_FOTOS_CAMPO = 4;
+const MAX_FOTOS_CAMPO = 3;
 
 // Miniatura + quitar (mismo patrón del Reporte Diario móvil).
 function ThumbFotoCampo({ file, onQuitar }) {
@@ -152,7 +152,6 @@ function CapturaCampoPage({ showToast }) {
   const userId = auth?.profile?.id || null;
   const rol = auth?.profile?.rol || null;
   const companiesHook = window.__hooks.useCompanies();
-  const obrasHook = window.__hooks.useObras();
 
   // ¿Es la cuenta COMPARTIDA de campo (entró con PIN, sin cuenta real)?
   // Desde fuera no sabemos quién es → se le PREGUNTA el nombre (obligatorio).
@@ -161,8 +160,6 @@ function CapturaCampoPage({ showToast }) {
   const identidadReal = auth?.profile?.nombre || auth?.profile?.full_name || auth?.profile?.email || 'usuario del sistema';
 
   const [quien, setQuien] = uS('');         // solo se usa con la cuenta de campo
-  const [obraId, setObraId] = uS('');
-  const [empresaId, setEmpresaId] = uS('');
   const [comentario, setComentario] = uS('');
   const [fotos, setFotos] = uS([]);
   const [torpedoAbierto, setTorpedoAbierto] = uS(false);   // tabla de RUCs desplegable (pedido 31-ago)
@@ -178,10 +175,6 @@ function CapturaCampoPage({ showToast }) {
   // …y las elegidas por el admin para el torpedo (mig 156; tolerante a filas
   // viejas sin la columna: se muestran).
   const empresas = uM(() => empresasTodas.filter(c => c.mostrar_torpedo !== false), [empresasTodas]);
-  const obras = uM(() =>
-    (obrasHook.data || []).filter(o => !o.deleted_at)
-      .sort((a, b) => String(a.nombre || '').localeCompare(String(b.nombre || ''))),
-    [obrasHook.data]);
 
   const recibirFotos = (e) => {
     const files = Array.from(e.target.files || []);
@@ -192,7 +185,6 @@ function CapturaCampoPage({ showToast }) {
   const enviar = async () => {
     if (enviandoRef.current) return;
     if (esCuentaCampo && !quien.trim()) { showToast?.('Escribí tu nombre (quién sube la foto)', 'red'); return; }
-    if (!obraId) { showToast?.('Elegí la obra de la compra', 'red'); return; }
     if (!fotos.length) { showToast?.('Tomá o elegí al menos una foto del comprobante', 'red'); return; }
     enviandoRef.current = true;
     setEnviando(true);
@@ -201,9 +193,7 @@ function CapturaCampoPage({ showToast }) {
     const quienSube = esCuentaCampo ? quien.trim() : identidadReal;
     const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
     try {
-      const emp = empresas.find(c => c.id === empresaId);
       const obs = `📸 Captura de campo · De: ${quienSube}${esCuentaCampo ? '' : ' (usuario del sistema)'}`
-        + (emp ? ` · Compró: ${emp.name} (RUC ${emp.ruc || '—'})` : '')
         + (comentario.trim() ? ` · ${comentario.trim()}` : '');
       // Guardar quitando cada foto ya persistida: si algo falla a mitad, un
       // reintento NO re-guarda las que ya entraron (evita duplicados).
@@ -211,7 +201,10 @@ function CapturaCampoPage({ showToast }) {
       for (const f of fotos) {
         await window.__saveEvidenciaLocal({
           id: window.__newId(),
-          obra_id: obraId,
+          // SIN obra (pedido 31-ago): la asigna contabilidad al registrarla en
+          // Captura Mágica. El archivo va a la carpeta 'captura-campo/' del
+          // bucket (EvidenceUploader usa esa carpeta cuando obra_id es null).
+          obra_id: null,
           tipo_evidencia: 'factura_campo',
           modulo_relacionado: 'captura_campo',
           registro_relacionado_id: null,
@@ -283,33 +276,18 @@ function CapturaCampoPage({ showToast }) {
             Subís como <strong style={{ color: 'var(--ts)' }}>{identidadReal}</strong> — contabilidad verá que fuiste vos.
           </div>
         )}
-        <div className="g2" style={{ marginTop: esCuentaCampo ? 10 : 0 }}>
-          {esCuentaCampo && (
-            <div>
-              <label className="flabel">¿Quién sube la foto? *</label>
-              <input className="fi" style={FI16} value={quien} onChange={e => setQuien(e.target.value)} placeholder="Tu nombre y apellido" />
-            </div>
-          )}
-          <div>
-            <label className="flabel">Obra de la compra *</label>
-            <select className="fi" style={FI16} value={obraId} onChange={e => setObraId(e.target.value)}>
-              <option value="">— Elegir obra —</option>
-              {obras.map(o => <option key={o.id} value={o.id}>{o.nombre}</option>)}
-            </select>
+        {/* SOLO lo esencial (pedido 31-ago): quién sube + comentario opcional.
+            Obra y empresa las asigna CONTABILIDAD al registrarla en Captura
+            Mágica — este portal es velocidad pura. */}
+        {esCuentaCampo && (
+          <div style={{ marginTop: 10 }}>
+            <label className="flabel">¿Quién sube la foto? *</label>
+            <input className="fi" style={FI16} value={quien} onChange={e => setQuien(e.target.value)} placeholder="Tu nombre y apellido" />
           </div>
-        </div>
-        <div className="g2" style={{ marginTop: 8 }}>
-          <div>
-            <label className="flabel">Empresa que compró (opcional)</label>
-            <select className="fi" style={FI16} value={empresaId} onChange={e => setEmpresaId(e.target.value)}>
-              <option value="">— No sé / otra —</option>
-              {empresas.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="flabel">Comentario (opcional)</label>
-            <input className="fi" style={FI16} value={comentario} onChange={e => setComentario(e.target.value)} placeholder="Ej. compra de urgencia de cemento" />
-          </div>
+        )}
+        <div style={{ marginTop: 8 }}>
+          <label className="flabel">Comentario (opcional)</label>
+          <input className="fi" style={FI16} value={comentario} onChange={e => setComentario(e.target.value)} placeholder="Ej. compra de urgencia de cemento" />
         </div>
 
         <div style={{ marginTop: 14 }}>

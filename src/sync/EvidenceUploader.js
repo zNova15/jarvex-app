@@ -67,7 +67,9 @@ export async function uploadEvidencia(evidenciaId) {
 
   const ext = evidencia.nombre_archivo.split('.').pop() ?? 'bin';
   const yyyy_mm = new Date().toISOString().slice(0, 7);
-  const storagePath = `${evidencia.obra_id}/${yyyy_mm}/${evidenciaId}.${ext}`;
+  // Sin obra (fotos del portal de campo, que la asigna contabilidad después):
+  // carpeta fija 'captura-campo' — tiene su propia política de subida (mig 158).
+  const storagePath = `${evidencia.obra_id || 'captura-campo'}/${yyyy_mm}/${evidenciaId}.${ext}`;
 
   // upsert:true → re-subir el mismo path es idempotente (no 409 en reintentos).
   const { error } = await supabase.storage

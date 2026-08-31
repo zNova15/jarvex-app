@@ -111,9 +111,9 @@ export default async function handler(req, res) {
     // Gabriel, 31-ago). Solo admins llegan acá (requireAdmin), así que aceptar
     // ambos formatos es política, no un hueco. OJO: si GoTrue tiene "minimum
     // password length" > 6 en Auth settings, un PIN de 6-7 rebotará ahí.
-    const esPinNumerico = typeof newPass === 'string' && /^\d{6,8}$/.test(newPass);
+    const esPinNumerico = typeof newPass === 'string' && /^\d{4,8}$/.test(newPass);
     if (typeof newPass !== 'string' || (!esPinNumerico && newPass.length < 8)) {
-      return res.status(422).json({ error: 'Password mínimo 8 caracteres (o PIN numérico de 6 a 8 dígitos)' });
+      return res.status(422).json({ error: 'Password mínimo 8 caracteres (o PIN numérico de 4 a 8 dígitos)' });
     }
     try {
       // ¿El target es la cuenta compartida del portal de campo? Su contraseña
@@ -134,7 +134,7 @@ export default async function handler(req, res) {
 
       if (esCampo) {
         if (!esPinNumerico) {
-          return res.status(422).json({ error: 'El PIN de campo debe ser numérico, de 6 a 8 dígitos' });
+          return res.status(422).json({ error: 'El PIN de campo debe ser numérico, de 4 a 8 dígitos' });
         }
         const rpcResp = await fetch(`${SUPABASE_URL}/rest/v1/rpc/admin_set_campo_pin`, {
           method: 'POST',
