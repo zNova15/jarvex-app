@@ -34,7 +34,8 @@ function ConfigPortalAdmin({ empresasTodas, companiesHook, showToast }) {
   const cambiarPin = async () => {
     if (guardandoRef.current) return;
     const p = pin.trim();
-    if (p.length < 8) { showToast?.('El PIN debe tener al menos 8 caracteres (mejor letras y números).', 'red'); return; }
+    // PIN NUMÉRICO de 6 a 8 dígitos (decisión de Gabriel, 31-ago).
+    if (!/^\d{6,8}$/.test(p)) { showToast?.('El PIN debe ser numérico, de 6 a 8 dígitos.', 'red'); return; }
     if (p !== pin2.trim()) { showToast?.('Los PIN no coinciden.', 'red'); return; }
     guardandoRef.current = true;
     setBusyPin(true);
@@ -86,14 +87,14 @@ function ConfigPortalAdmin({ empresasTodas, companiesHook, showToast }) {
           <div>
             <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>🔑 PIN de acceso del personal de campo</div>
             <div className="g2">
-              <input className="fi" type="password" autoCapitalize="none" placeholder="Nuevo PIN (mín. 8)" value={pin} onChange={e => setPin(e.target.value)} style={{ fontSize: 16 }} />
-              <input className="fi" type="password" autoCapitalize="none" placeholder="Repetir PIN" value={pin2} onChange={e => setPin2(e.target.value)} style={{ fontSize: 16 }} />
+              <input className="fi" type="password" inputMode="numeric" maxLength={8} placeholder="Nuevo PIN (6 a 8 dígitos)" value={pin} onChange={e => setPin(e.target.value.replace(/\D/g, ''))} style={{ fontSize: 16 }} />
+              <input className="fi" type="password" inputMode="numeric" maxLength={8} placeholder="Repetir PIN" value={pin2} onChange={e => setPin2(e.target.value.replace(/\D/g, ''))} style={{ fontSize: 16 }} />
             </div>
             <button className="btn btn-amber btn-sm" style={{ marginTop: 8 }} disabled={busyPin} onClick={cambiarPin}>
               {busyPin ? 'Cambiando…' : 'Cambiar PIN'}
             </button>
             <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 5 }}>
-              Rotalo cuando alguien deje la obra. Con letras Y números es mucho más difícil de adivinar que solo dígitos.
+              PIN numérico de 6 a 8 dígitos. Rotalo cuando alguien deje la obra (8 dígitos = 100× más difícil de adivinar que 6).
             </div>
           </div>
           <div>

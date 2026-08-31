@@ -250,9 +250,8 @@ function LoginScreen({ onLogin }) {
   const [campoPin, setCampoPin] = uSA('');
 
   const handleCampoLogin = async () => {
-    // trim: los teclados de celular meten espacios al autocompletar/autocorregir.
     const pin = campoPin.trim();
-    if (!pin) { setErr('Ingresá el PIN que te dio el administrador.'); return; }
+    if (!/^\d{6,8}$/.test(pin)) { setErr('El PIN es de 6 a 8 dígitos — pedíselo al administrador.'); return; }
     setErr(''); setLoad(true);
     try {
       await onLogin(CAMPO_EMAIL, pin);
@@ -356,10 +355,10 @@ function LoginScreen({ onLogin }) {
             ) : (
               <div>
                 <label className="flabel">PIN de campo (te lo da el administrador)</label>
-                {/* SIN inputMode numeric: el PIN puede llevar LETRAS y el teclado
-                    numérico de Android impedía escribirlas (bug real, 31-ago). */}
-                <input className="fi" type="password" autoCapitalize="none" autoCorrect="off" placeholder="PIN (letras y/o números)" value={campoPin}
-                  onChange={e=>setCampoPin(e.target.value)} style={{ fontSize:16, textAlign:'center', letterSpacing:'.15em' }}
+                {/* PIN NUMÉRICO de 6-8 dígitos (decisión de Gabriel): teclado
+                    numérico del celular y filtro de solo dígitos. */}
+                <input className="fi" type="password" inputMode="numeric" maxLength={8} placeholder="PIN de 6 a 8 dígitos" value={campoPin}
+                  onChange={e=>setCampoPin(e.target.value.replace(/\D/g, ''))} style={{ fontSize:16, textAlign:'center', letterSpacing:'.3em' }}
                   onKeyDown={e=>e.key==='Enter'&&handleCampoLogin()}/>
                 <div style={{ display:'flex', gap:8, marginTop:8 }}>
                   <button onClick={handleCampoLogin} disabled={loading} className="btn btn-amber" style={{ flex:1, justifyContent:'center', padding:'11px', fontSize:13 }}>
