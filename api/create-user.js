@@ -82,12 +82,19 @@ export default async function handler(req, res) {
     });
     const profArr = await profResp.json();
     const callerProfile = Array.isArray(profArr) ? profArr[0] : null;
-    if (!callerProfile || callerProfile.rol !== 'admin') {
-      return res.status(403).json({ error: 'Solo un administrador puede crear usuarios' });
+    // admin: todo. contador (Contadora Jefe): SOLO set_password y SOLO sobre la
+    // cuenta compartida del portal de campo (se verifica el target más abajo).
+    const rolOk = callerProfile && (
+      callerProfile.rol === 'admin' ||
+      (callerProfile.rol === 'contador' && action === 'set_password')
+    );
+    if (!rolOk) {
+      return res.status(403).json({ error: 'Solo un administrador puede hacer esto' });
     }
     if (callerProfile.activo === false) {
-      return res.status(403).json({ error: 'Tu cuenta de admin está inactiva' });
+      return res.status(403).json({ error: 'Tu cuenta está inactiva' });
     }
+    req._callerRol = callerProfile.rol;
   } catch (e) {
     return res.status(502).json({ error: 'Error validando admin', detail: e.message });
   }
@@ -109,19 +116,54 @@ export default async function handler(req, res) {
       return res.status(422).json({ error: 'Password mínimo 8 caracteres (o PIN numérico de 6 a 8 dígitos)' });
     }
     try {
-      const updResp = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${user_id}`, {
-        method: 'PUT',
-        headers: {
-          apikey: SERVICE_ROLE,
-          Authorization: `Bearer ${SERVICE_ROLE}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ password: newPass, email_confirm: true }),
+      // ¿El target es la cuenta compartida del portal de campo? Su contraseña
+      // está CANDADA por trigger (mig 157: nadie con el PIN puede cambiarla
+      // por el self-service de Auth) → se fija por el RPC admin_set_campo_pin,
+      // el único camino que abre el candado. Además: la Contadora Jefe solo
+      // puede tocar ESTA cuenta; el resto de usuarios, solo el admin.
+      const uResp = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${user_id}`, {
+        headers: { apikey: SERVICE_ROLE, Authorization: `Bearer ${SERVICE_ROLE}` },
       });
-      if (!updResp.ok) {
-        const errBody = await updResp.json().catch(() => ({}));
-        const msg = errBody?.msg || errBody?.error_description || errBody?.error || `HTTP ${updResp.status}`;
-        return res.status(updResp.status).json({ error: 'No se pudo actualizar la contraseña', detail: msg });
+      const uData = uResp.ok ? await uResp.json() : null;
+      const targetEmail = uData?.email || uData?.user?.email || null;
+      const esCampo = targetEmail === 'campo@jarvex.pe';
+
+      if (req._callerRol === 'contador' && !esCampo) {
+        return res.status(403).json({ error: 'La Contadora Jefe solo puede cambiar el PIN del portal de campo' });
+      }
+
+      if (esCampo) {
+        if (!esPinNumerico) {
+          return res.status(422).json({ error: 'El PIN de campo debe ser numérico, de 6 a 8 dígitos' });
+        }
+        const rpcResp = await fetch(`${SUPABASE_URL}/rest/v1/rpc/admin_set_campo_pin`, {
+          method: 'POST',
+          headers: {
+            apikey: SERVICE_ROLE,
+            Authorization: `Bearer ${SERVICE_ROLE}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ new_pin: newPass }),
+        });
+        if (!rpcResp.ok) {
+          const errBody = await rpcResp.json().catch(() => ({}));
+          return res.status(rpcResp.status).json({ error: 'No se pudo fijar el PIN', detail: errBody?.message || `HTTP ${rpcResp.status}` });
+        }
+      } else {
+        const updResp = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${user_id}`, {
+          method: 'PUT',
+          headers: {
+            apikey: SERVICE_ROLE,
+            Authorization: `Bearer ${SERVICE_ROLE}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ password: newPass, email_confirm: true }),
+        });
+        if (!updResp.ok) {
+          const errBody = await updResp.json().catch(() => ({}));
+          const msg = errBody?.msg || errBody?.error_description || errBody?.error || `HTTP ${updResp.status}`;
+          return res.status(updResp.status).json({ error: 'No se pudo actualizar la contraseña', detail: msg });
+        }
       }
     } catch (e) {
       return res.status(502).json({ error: 'Error en Admin API', detail: e.message });

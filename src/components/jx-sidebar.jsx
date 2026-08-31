@@ -598,6 +598,16 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
         </div>
         {!navCollapsed && (
           <>
+            {/* Rol campo (cuenta COMPARTIDA con PIN): sin "Mi Perfil" — cualquiera
+                podría cambiar la contraseña y dejar fuera al resto del personal
+                (hallazgo de Gabriel, 31-ago). Solo nombre visible + Cerrar sesión. */}
+            {profile?.rol === 'campo' ? (
+              <div style={{ flex: 1, overflow: 'hidden' }}>
+                <span style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#BFC7D1', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{fullName}</span>
+                <span style={{ display: 'block', fontSize: 10.5, color: '#4A5A6A' }}>Cuenta de campo</span>
+              </div>
+            ) : (
+            <>
             <button
               onClick={() => setShowPerfil(true)}
               style={{ flex: 1, overflow: 'hidden', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', padding: 0 }}
@@ -613,6 +623,8 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
               onMouseLeave={e => e.currentTarget.style.color = '#4A5A6A'}>
               <JxIcon name="user" size={14} />
             </button>
+            </>
+            )}
             <button
               onClick={() => auth?.logout?.()}
               style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#4A5A6A', padding: 4, display: 'flex' }}
@@ -625,7 +637,7 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
         )}
       </div>
     </aside>
-    {showPerfil && <MiPerfilModal profile={profile} onClose={() => setShowPerfil(false)} />}
+    {showPerfil && profile?.rol !== 'campo' && <MiPerfilModal profile={profile} onClose={() => setShowPerfil(false)} />}
     </>
   );
 }

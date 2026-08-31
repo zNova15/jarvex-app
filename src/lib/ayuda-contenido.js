@@ -67,7 +67,8 @@ const AYUDA = {
     que: 'Guardá la FOTO de la factura de una compra apenas te la den — contabilidad la revisa y la registra después. Así ningún comprobante físico se pierde.',
     como: [
       'Mirá el "torpedo" de arriba: dictale al proveedor el RUC de la empresa del grupo según el rubro de la compra.',
-      'ADMIN: en "⚙️ Configuración del portal" (solo la ve el admin, acá mismo) cambiás el PIN de campo y elegís qué empresas salen en el torpedo y con qué rubro — sin abrir Empresas ni el dashboard de Supabase.',
+      'ADMIN / CONTADORA JEFE: en "⚙️ Configuración del portal" (acá mismo, solo lo ven ellos) se cambia el PIN de campo (numérico, 6-8 dígitos) y se elige qué empresas salen en la tabla de RUCs y con qué rubro.',
+      'La tabla de RUCs es desplegable (botón "▼ Ver tabla") y la cuenta compartida de campo NO puede cambiar su propia contraseña ni salir del portal — solo subir fotos y cerrar sesión.',
       'Elegí la obra, sacá la foto (📷 abre la cámara directo) y "Guardar factura". Listo — no llenás nada más. (Desde la cuenta compartida de campo también se te pide tu nombre; con tu usuario normal ya se sabe que fuiste vos.)',
       'Sin señal también funciona: la foto queda en el teléfono y sube sola al recuperar internet.',
       'NO gastes la foto en apuros: nítida, con el comprobante completo y sin dedos encima — contabilidad la lee con IA tal cual.',

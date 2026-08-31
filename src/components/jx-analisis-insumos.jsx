@@ -187,6 +187,9 @@ function AnalisisInsumosPage({ showToast }) {
   const masBarato = insumoSel ? proveedorMasBarato(insumoSel) : null;
 
   return (
+    // page-wrap = el contenedor con scroll de toda página (mismo fix que el
+    // portal de campo: sin él la página no deslizaba).
+    <div className="page-wrap">
     <div style={{ display: 'grid', gap: 12 }}>
       <div style={{ display: 'flex', gap: 6 }}>
         <button className={`btn btn-sm ${tab === 'comparador' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('comparador')}>🔍 Comparador de precios</button>
@@ -339,6 +342,7 @@ function AnalisisInsumosPage({ showToast }) {
           </div>
         </>
       )}
+    </div>
     </div>
   );
 }

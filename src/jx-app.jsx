@@ -477,7 +477,7 @@ function Header({ page, plano = 'obra', onInicio, onToggleSidebar, onLogout, pro
       {page !== 'inicio' && (
         <button onClick={onToggleSidebar} className="btn btn-ghost btn-icon" aria-label="Abrir menú"><JxIcon name="menu" size={16}/></button>
       )}
-      {page !== 'inicio' && onInicio && (
+      {page !== 'inicio' && onInicio && profile?.rol !== 'campo' && (
         <button onClick={onInicio} className="btn btn-ghost btn-sm" title="Volver al inicio"
                 style={{ display:'flex', alignItems:'center', gap:4, color:'var(--ts)', flexShrink:0 }}>
           <JxIcon name="chevL" size={14}/>{!isMobile && 'Inicio'}
@@ -924,6 +924,13 @@ function App() {
       }
     })();
   }, [auth?.profile?.rol, auth?.profile?.id]);
+  // Rol CAMPO (cuenta compartida con PIN): SOLO el portal de captura. Cualquier
+  // navegación fuera (Inicio con su selector de obra, workspace, etc.) vuelve
+  // al portal — hallazgo de Gabriel 31-ago: la cuenta veía el Inicio completo.
+  uEA(() => {
+    if (auth?.profile?.rol === 'campo' && page !== 'captura-campo') setPage('captura-campo');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auth?.profile?.rol, page]);
   // Contador de versión de permisos. Aumenta cada vez que el admin
   // cambia la matriz desde Roles & Permisos. Lo agregamos al `key` del
   // contenedor de la página para forzar un remount completo de la
