@@ -389,6 +389,21 @@ export function useInsumoCorrelaciones() {
   , []);
 }
 
+// Config global clave→valor (mig 159). Puede haber filas repetidas por clave
+// (dos devices offline) — resolver al leer: updated_at más reciente gana.
+export function useAppConfig() {
+  return useOfflineData('app_config', q =>
+    q.filter(c => !c.deleted_at).toArray()
+  , []);
+}
+export function resolverConfig(rows, clave, porDefecto = null) {
+  const vivas = (rows || []).filter(r => r && !r.deleted_at && r.clave === clave);
+  if (!vivas.length) return porDefecto;
+  vivas.sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
+  const v = vivas[0].valor;
+  return (v === null || v === undefined) ? porDefecto : v;
+}
+
 // Trazabilidad — cadenas de markups intercompany.
 export function useTrazabilidadCadenas(obra_id) {
   return useOfflineData('trazabilidad_cadenas', q =>

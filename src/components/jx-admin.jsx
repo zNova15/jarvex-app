@@ -2452,6 +2452,24 @@ function SistemaTab({ showToast }) {
   const [seedBusy, setSeedBusy] = uSAd(false);
   const [borrarServer, setBorrarServer] = uSAd(false); // checkbox del modal de purga
   const [tzSel, setTzSel] = uSAd(getTZ());
+  // Auto-cierre de sesión por inactividad (app_config 'sesion_timeout_min',
+  // mig 159). El input refleja el valor sincronizado; guarda solo el admin.
+  const appCfgHook = window.__hooks?.useAppConfig ? window.__hooks.useAppConfig() : { data: [], create: async()=>{}, update: async()=>{} };
+  const timeoutCfg = window.__hooks?.resolverConfig ? window.__hooks.resolverConfig(appCfgHook.data, 'sesion_timeout_min', 30) : 30;
+  const [timeoutSel, setTimeoutSel] = uSAd('');
+  const timeoutMostrado = timeoutSel === '' ? String(timeoutCfg) : timeoutSel;
+  const guardarTimeout = async () => {
+    const n = Math.round(Number(timeoutMostrado));
+    if (!Number.isFinite(n) || n < 5 || n > 480) { showToast?.('Elegí un valor entre 5 y 480 minutos', 'red'); return; }
+    try {
+      // Reusar la fila viva más reciente de la clave si existe (evita acumular filas).
+      const vivas = (appCfgHook.data || []).filter(r => !r.deleted_at && r.clave === 'sesion_timeout_min');
+      vivas.sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
+      if (vivas[0]) await appCfgHook.update(vivas[0].id, { valor: n });
+      else await appCfgHook.create({ clave: 'sesion_timeout_min', valor: n });
+      showToast?.(`✓ Cierre por inactividad: ${n} min — rige en cada equipo tras su próximo sync`, 'green');
+    } catch (e) { showToast?.('No se pudo guardar: ' + (e?.message || e), 'red'); }
+  };
 
   uEAd(() => {
     let cancelled = false;
@@ -2750,6 +2768,22 @@ function SistemaTab({ showToast }) {
           <span style={{ fontSize:12, color:'var(--tm)' }}>Ahora: <strong style={{ color:'var(--tx)' }}>{hoyLocal(tzSel)} {horaLocal(tzSel)}</strong></span>
         </div>
         {!isAdmin && <div style={{ fontSize:11, color:'var(--tm)', marginTop:6 }}>Solo el administrador puede cambiarla.</div>}
+      </div>
+      <div className="card card-p" style={{ gridColumn:'1 / -1', borderLeft:'3px solid var(--amber)' }}>
+        <div style={{ fontSize:13, fontWeight:700, display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
+          <JxIcon name="lock" size={14} color="var(--amber)"/> Cierre de sesión por inactividad
+        </div>
+        <div style={{ fontSize:12, color:'var(--tm)', marginBottom:10 }}>
+          Minutos sin interacción (mouse, teclado, toques) antes de cerrar la sesión automáticamente.
+          Es global para todos los usuarios y llega a cada equipo por el sync. Actual: <strong style={{ color:'var(--tx)' }}>{timeoutCfg} min</strong>.
+        </div>
+        <div style={{ display:'flex', gap:12, alignItems:'center', flexWrap:'wrap' }}>
+          <input className="fi" type="number" min={5} max={480} step={5} style={{ maxWidth:120 }}
+            disabled={!isAdmin} value={timeoutMostrado} onChange={e=>setTimeoutSel(e.target.value)}/>
+          <span style={{ fontSize:12, color:'var(--tm)' }}>minutos (entre 5 y 480)</span>
+          {isAdmin && <button className="btn btn-amber btn-sm" onClick={guardarTimeout}>Guardar</button>}
+        </div>
+        {!isAdmin && <div style={{ fontSize:11, color:'var(--tm)', marginTop:6 }}>Solo el administrador puede cambiarlo.</div>}
       </div>
       <div className="card card-p" style={{ gridColumn:'1 / -1', borderLeft: isPrueba ? '3px solid #9B59B6' : isEdicion ? '3px solid var(--amber)' : '3px solid var(--green)' }}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12, flexWrap:'wrap', gap:10 }}>

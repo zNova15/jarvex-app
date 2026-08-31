@@ -117,6 +117,10 @@ const TRANSACTIONAL_TABLES = [
   // Como puente_consultas, NO va en TABLA_TO_MODULO: las filas solo nacen del
   // panel de Análisis de Insumos (gate duro admin/gerente en la UI).
   'insumo_correlaciones',
+  // Config global clave→valor (mig 159). FK-less; NO va en TABLA_TO_MODULO
+  // (solo el admin escribe — RLS lo garantiza en el server) y todos la PULLean
+  // (el rol campo incluido: necesita el timeout de sesión como cualquier device).
+  'app_config',
 ];
 
 // Tablas maestras que se descargan del servidor en cada sync.
@@ -161,6 +165,7 @@ const MASTER_TABLES = [
   { tabla: 'guias_remision',               query: () => supabase.from('guias_remision').select('*').is('deleted_at', null) },
   { tabla: 'puente_consultas',             query: () => supabase.from('puente_consultas').select('*').is('deleted_at', null) },
   { tabla: 'insumo_correlaciones',         query: () => supabase.from('insumo_correlaciones').select('*').is('deleted_at', null) },
+  { tabla: 'app_config',                   query: () => supabase.from('app_config').select('*').is('deleted_at', null) },
   { tabla: 'intercompany_transactions',    query: () => supabase.from('intercompany_transactions').select('*').is('deleted_at', null) },
   // Compras
   { tabla: 'insumos_pendientes',    query: () => supabase.from('insumos_pendientes').select('*').is('deleted_at', null) },
@@ -687,7 +692,7 @@ const PULL_SCOPE_POR_ROL = {
   // (torpedo de RUCs) y evidencias (las suyas — la RLS del
   // server ya filtra). TODO lo demás excluido: el cerco de la mig 155 igual
   // devolvería 0 filas, pero excluirlo evita ~100 consultas vacías por ciclo.
-  campo: new Set(TRANSACTIONAL_TABLES.filter(t => !['companies', 'evidencias'].includes(t))),
+  campo: new Set(TRANSACTIONAL_TABLES.filter(t => !['companies', 'evidencias', 'app_config'].includes(t))),
   // admin / contador / gerente / asistente_admin / resto: bajan TODO (sin entrada acá).
 };
 

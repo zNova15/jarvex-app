@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, createContext, useContext } from 'react';
 import { getCurrentUser, login as authLogin, logout as authLogout } from '../lib/auth';
+import { db } from '../db/jarvex.db';
 import { syncAll } from '../sync/SyncEngine';
 import { identifyUser, resetUser } from '../lib/posthog.js';
 
@@ -22,9 +23,27 @@ function rolEsValido(rol) {
   return typeof rol === 'string' && ROLES_VALIDOS.has(rol);
 }
 
-// Tiempo de inactividad antes de cerrar sesión (30 min). Cualquier interacción
-// del usuario (mouse, teclado, scroll, click) reinicia el contador.
-const INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000;
+// Tiempo de inactividad antes de cerrar sesión. Default 30 min; el admin lo
+// puede cambiar desde Administración (app_config clave 'sesion_timeout_min',
+// mig 159). El valor sincronizado se cachea en localStorage para que el timer
+// lo lea síncrono en cada reinicio (cualquier interacción reinicia el contador,
+// así que un cambio de config rige desde la siguiente interacción).
+const INACTIVITY_DEFAULT_MIN = 30;
+export const INACTIVITY_MIN_MIN = 5;    // piso: evita el lockout de un typo (ej. 0)
+export const INACTIVITY_MAX_MIN = 480;  // techo: 8 h (una jornada)
+const INACTIVITY_LS_KEY = 'jx_sesion_timeout_min';
+export function clampTimeoutMin(v) {
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n)) return INACTIVITY_DEFAULT_MIN;
+  return Math.min(INACTIVITY_MAX_MIN, Math.max(INACTIVITY_MIN_MIN, n));
+}
+export function getInactivityMin() {
+  try {
+    const raw = localStorage.getItem(INACTIVITY_LS_KEY);
+    if (raw !== null && raw !== '') return clampTimeoutMin(raw);
+  } catch {}
+  return INACTIVITY_DEFAULT_MIN;
+}
 
 export function useAuth() {
   return useContext(AuthContext);
@@ -171,7 +190,28 @@ export function useAuthProvider() {
     } catch {}
   }
 
-  // ── Logout por inactividad (30 min sin interacción) ─────────────
+  // Copiar a localStorage el timeout configurado en app_config (llega por el
+  // sync) — de ahí lo lee síncrono el timer de abajo. Se ignoran filas demo
+  // (config editada en modo prueba no rige la sesión real).
+  useEffect(() => {
+    const refrescar = async () => {
+      try {
+        const rows = await db.app_config
+          .filter(r => !r.deleted_at && r.demo !== true && r.clave === 'sesion_timeout_min')
+          .toArray();
+        if (!rows.length) return;
+        rows.sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
+        localStorage.setItem(INACTIVITY_LS_KEY, String(clampTimeoutMin(rows[0].valor)));
+      } catch { /* sin tabla aún (device con schema viejo) o sin localStorage */ }
+    };
+    refrescar();
+    const onChange = (e) => { const t = e?.detail?.tabla; if (!t || t === 'app_config') refrescar(); };
+    window.addEventListener('jx_data_changed', onChange);
+    window.addEventListener('jx_sync_pull', refrescar);
+    return () => { window.removeEventListener('jx_data_changed', onChange); window.removeEventListener('jx_sync_pull', refrescar); };
+  }, []);
+
+  // ── Logout por inactividad (configurable; default 30 min) ───────
   // Reinicia el timer en cada evento de usuario. Si pasa el timeout sin
   // actividad, cierra sesión automáticamente. Esto también ayuda contra
   // sesiones colgadas con datos en cache desactualizados — al volver a
@@ -185,7 +225,7 @@ export function useAuthProvider() {
         console.log('[useAuth] Sesión cerrada por inactividad');
         try { sessionStorage.setItem('jx_logout_reason', 'inactivity'); } catch {}
         logout();
-      }, INACTIVITY_TIMEOUT_MS);
+      }, getInactivityMin() * 60 * 1000);
     };
     const events = ['mousedown', 'keydown', 'scroll', 'touchstart', 'click'];
     events.forEach(ev => window.addEventListener(ev, reset, { passive: true }));

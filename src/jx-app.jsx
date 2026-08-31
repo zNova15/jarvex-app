@@ -234,7 +234,7 @@ function LoginScreen({ onLogin }) {
       const reason = sessionStorage.getItem('jx_logout_reason');
       if (reason === 'inactivity') {
         sessionStorage.removeItem('jx_logout_reason');
-        return 'Tu sesión se cerró por inactividad (30 min). Volvé a iniciar sesión.';
+        return 'Tu sesión se cerró por inactividad. Volvé a iniciar sesión.';
       }
     } catch {}
     return '';

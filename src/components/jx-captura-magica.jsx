@@ -276,7 +276,18 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
     }
   };
 
-  if (!pendientes.length) return null;
+  // SIEMPRE visible aunque no haya fotos (antes se ocultaba y parecía que la
+  // función no existía — reporte de Gabriel del 31-ago: "no hay ningún
+  // apartado que diga Recibidas de campo"). Vacía = una línea discreta.
+  if (!pendientes.length) {
+    return (
+      <div className="card" style={{ marginBottom: 18, padding: '8px 14px', border: '1px dashed rgba(52,152,219,0.35)' }}>
+        <span style={{ fontSize: 11.5, color: 'var(--tm)' }}>
+          📥 <strong style={{ color: 'var(--ts)' }}>Recibidas de campo:</strong> sin fotos pendientes. Las que el personal suba desde el portal 📸 Captura de Campo aparecerán acá para leerlas con IA.
+        </span>
+      </div>
+    );
+  }
   return (
     <div className="card card-p" style={{ marginBottom: 18, background: 'rgba(52,152,219,0.06)', border: '1px solid rgba(52,152,219,0.3)' }}>
       <div className="frow-sb" style={{ cursor: 'pointer' }} onClick={() => setAbierto(a => !a)}>

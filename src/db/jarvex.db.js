@@ -60,6 +60,13 @@ export const db = new Dexie('JarvexDB');
 // Versión 45: correlación de insumos SUPERVISADA (mejora 1c, mig 154). Pares
 // 'mismo'/'distinto' confirmados por admin/gerente en Análisis de Insumos;
 // los grupos se arman al leer (union-find en insumo-correlacion.js). Aditivo.
+// Versión 46: config GLOBAL de la app clave→valor (mig 159). Primera clave:
+// 'sesion_timeout_min' (auto-cierre de sesión por inactividad, editable por
+// admin en Administración). FK-less. Aditivo.
+db.version(46).stores({
+  app_config: 'id, clave, deleted_at, sync_status',
+});
+
 db.version(45).stores({
   insumo_correlaciones: 'id, nombre_a, nombre_b, relacion, deleted_at, sync_status',
 });

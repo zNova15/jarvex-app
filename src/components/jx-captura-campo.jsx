@@ -127,6 +127,8 @@ const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 const FI16 = { fontSize: 16 };
 const MAX_FOTOS_CAMPO = 3;
+// Actualizar en cada deploy que toque este portal (ver sello en el header).
+const PORTAL_BUILD = 'v4 · 31-ago';
 
 // Miniatura + quitar (mismo patrón del Reporte Diario móvil).
 function ThumbFotoCampo({ file, onQuitar }) {
@@ -144,6 +146,87 @@ function ThumbFotoCampo({ file, onQuitar }) {
       <button onClick={onQuitar} title="Quitar foto"
         style={{ position: 'absolute', top: -6, right: -6, width: 20, height: 20, borderRadius: '50%', border: 'none', background: 'var(--red)', color: '#fff', fontSize: 11, lineHeight: '20px', padding: 0, cursor: 'pointer' }}>✕</button>
     </span>
+  );
+}
+
+// ── Estado de las subidas de ESTE dispositivo (agregado 31-ago) ───────
+// La subida real es en 2 pasos (archivo al Storage + fila a la BD) y puede
+// fallar CALLADA (sin señal, RLS, app cerrada a mitad). Antes el portal decía
+// "guardada" y nadie sabía si la foto llegó de verdad — caso real: la prueba
+// de Gabriel del 31-ago nunca apareció en el servidor y no había dónde verlo.
+// Acá se listan las que aún no subieron, con su motivo, y un reintento manual.
+function EstadoSubidasCampo({ showToast }) {
+  const [filas, setFilas] = uS([]);
+  const reintentandoRef = uR(false);   // anti doble-tap (regla crítica 2)
+
+  uE(() => {
+    let cancel = false;
+    const cargar = async () => {
+      try {
+        // Estados de EvidenceUploader: 'pending_upload' (en cola) / 'failed'
+        // (agotó reintentos) / 'uploaded' (ya está en el servidor).
+        const rows = await window.__db.evidencias
+          .filter(e => e.tipo_evidencia === 'factura_campo' && e.demo !== true && !e.deleted_at
+            && (e.sync_status === 'pending_upload' || e.sync_status === 'failed'))
+          .toArray();
+        rows.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+        if (!cancel) setFilas(rows);
+      } catch {}
+    };
+    cargar();
+    const onChange = (e) => {
+      const t = e?.detail?.tabla || e?.detail?.table;
+      if (!t || t === 'evidencias') cargar();
+    };
+    window.addEventListener('jx_data_changed', onChange);
+    window.addEventListener('jx_sync_pull', cargar);
+    const iv = setInterval(cargar, 10000);   // la cola corre en fondo cada 45s
+    return () => { cancel = true; clearInterval(iv); window.removeEventListener('jx_data_changed', onChange); window.removeEventListener('jx_sync_pull', cargar); };
+  }, []);
+
+  const reintentar = async () => {
+    if (reintentandoRef.current) return;
+    reintentandoRef.current = true;
+    try {
+      for (const ev of filas) {
+        if (ev.sync_status === 'failed') {
+          await window.__db.evidencias.update(ev.id, { sync_status: 'pending_upload', upload_retries: 0 });
+        }
+      }
+      await uploadPendingEvidencias();
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'evidencias', source: 'captura-campo-retry' } })); } catch {}
+      showToast?.('Reintento lanzado — si hay señal, en unos segundos se actualiza la lista.', 'amber');
+    } catch (e) {
+      showToast?.('No se pudo reintentar: ' + (e.message || e), 'red');
+    } finally {
+      reintentandoRef.current = false;
+    }
+  };
+
+  if (!filas.length) return null;
+  return (
+    <div className="card card-p" style={{ background: 'rgba(230,126,34,0.08)', border: '1px solid rgba(230,126,34,0.35)' }}>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--amber)' }}>
+        ⬆ {filas.length} foto(s) de este teléfono aún NO llegan al servidor
+      </div>
+      <div style={{ display: 'grid', gap: 6, marginTop: 8 }}>
+        {filas.map(ev => (
+          <div key={ev.id} style={{ fontSize: 11.5, padding: '6px 8px', border: '1px solid var(--bd)', borderRadius: 6 }}>
+            <div style={{ fontWeight: 600 }}>
+              {String(ev.created_at || '').slice(0, 16).replace('T', ' ')} · {ev.nombre_archivo}
+              <span className={`badge ${ev.sync_status === 'failed' ? 'b-red' : 'b-amber'}`} style={{ marginLeft: 6, fontSize: 9 }}>
+                {ev.sync_status === 'failed' ? 'falló' : 'en cola'}
+              </span>
+            </div>
+            {ev._last_error && <div style={{ color: 'var(--red)', marginTop: 2 }}>{ev._last_error}</div>}
+          </div>
+        ))}
+      </div>
+      <button className="btn btn-amber btn-sm" style={{ marginTop: 8 }} onClick={reintentar}>🔄 Reintentar ahora</button>
+      <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 5 }}>
+        Dejá la app abierta con señal hasta que esta caja desaparezca — ahí ya están en el servidor y contabilidad las ve.
+      </div>
+    </div>
   );
 }
 
@@ -240,11 +323,18 @@ function CapturaCampoPage({ showToast }) {
     <div className="page-wrap">
     <div style={{ display: 'grid', gap: 12, maxWidth: 640, margin: '0 auto' }}>
       <div className="card card-p" style={{ background: 'rgba(242,183,5,0.06)', border: '1px solid rgba(242,183,5,0.25)' }}>
-        <div style={{ fontSize: 14.5, fontWeight: 800 }}>📸 Guardar factura de una compra</div>
+        <div className="frow-sb">
+          <div style={{ fontSize: 14.5, fontWeight: 800 }}>📸 Guardar factura de una compra</div>
+          {/* Sello de versión: la PWA cachea builds viejos — con esto se ve al
+              instante si un teléfono corre la versión actual (gotcha deploy). */}
+          <span style={{ fontSize: 9.5, color: 'var(--tm)' }}>{PORTAL_BUILD}</span>
+        </div>
         <div style={{ fontSize: 12, color: 'var(--ts)', marginTop: 4, lineHeight: 1.6 }}>
           Sacale foto al comprobante APENAS te lo den — así no se pierde. Contabilidad la revisa y la registra después; no tenés que llenar nada más.
         </div>
       </div>
+
+      <EstadoSubidasCampo showToast={showToast} />
 
       {(rol === 'admin' || rol === 'contador') && (
         <ConfigPortalAdmin empresasTodas={empresasTodas} companiesHook={companiesHook} showToast={showToast} />

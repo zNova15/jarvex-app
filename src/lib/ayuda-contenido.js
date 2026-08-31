@@ -70,7 +70,7 @@ const AYUDA = {
       'ADMIN / CONTADORA JEFE: en "⚙️ Configuración del portal" (acá mismo, solo lo ven ellos) se cambia el PIN de campo (numérico, 4-8 dígitos) y se elige qué empresas salen en la tabla de RUCs y con qué rubro.',
       'La tabla de RUCs es desplegable (botón "▼ Ver tabla") y la cuenta compartida de campo NO puede cambiar su propia contraseña ni salir del portal — solo subir fotos y cerrar sesión.',
       'Sacá la foto (📷 abre la cámara directo, hasta 3 fotos) y "Guardar factura". Listo — la obra y la empresa las asigna contabilidad al registrarla. (Desde la cuenta compartida de campo se te pide tu nombre; con tu usuario normal ya se sabe que fuiste vos.)',
-      'Sin señal también funciona: la foto queda en el teléfono y sube sola al recuperar internet.',
+      'Sin señal también funciona: la foto queda en el teléfono y sube sola al recuperar internet. Si aparece la caja naranja "⬆ fotos que aún NO llegan al servidor", dejá la app abierta con señal hasta que desaparezca (o tocá 🔄 Reintentar) — recién ahí contabilidad las ve.',
       'NO gastes la foto en apuros: nítida, con el comprobante completo y sin dedos encima — contabilidad la lee con IA tal cual.',
     ],
   },
@@ -372,7 +372,7 @@ const AYUDA = {
       'Al enviar: los campos que se eligen de una lista (ej. la vinculación de una factura) se mandan de una — no hay pantalla de "confirmar". Solo el texto libre pide revisar el cambio antes de enviarlo.',
     ],
   },
-  'configuracion': { titulo: 'Configuración', que: 'Parámetros generales de la app.', como: ['Tras cada actualización de la app, cerrá y reabrila para tomar la versión nueva.'] },
+  'configuracion': { titulo: 'Configuración', que: 'Parámetros generales de la app.', como: ['Tras cada actualización de la app, cerrá y reabrila para tomar la versión nueva.', 'ADMIN: en Sistema podés fijar los minutos de inactividad antes del cierre automático de sesión (5 a 480; default 30). Es global y le llega a cada equipo con el sync — rige desde su próxima interacción.'] },
   'conflictos': { titulo: 'Conflictos de Sincronización', que: 'Registros donde dos dispositivos editaron lo mismo sin conexión.', como: ['Elegí qué versión gana; el resto de dispositivos se actualiza solo.'] },
   'audit-log': { titulo: 'Auditoría', que: 'El registro de quién hizo qué y cuándo en toda la app.', como: ['Buscá por usuario, tabla o registro para reconstruir cualquier cambio.'] },
 };
