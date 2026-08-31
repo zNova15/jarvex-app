@@ -1265,7 +1265,10 @@ const __AYUDANTE_CONTADOR_ITEMS = [
   'conciliacion-insumos', // enlaza facturas ↔ insumos presupuestados (Vinculación 2)
   'solicitudes', // ve "Mis solicitudes" (sus pedidos de cambio); la aprobación es del contador/admin
   'pagos', // pagos al personal (planilla / recibos por honorarios) — registra y sube constancias (pedido 20-jul)
-, 'guias-remision'];
+, 'guias-remision'
+// Libro Diario con la herramienta de descuadre (31-ago): las ayudantes también
+// revisan el cuadre — es una vista derivada de solo lectura, sin riesgo.
+, 'libro-diario'];
 // Residente de Obra: menú NETAMENTE TÉCNICO (pedido 20-jul-2026). Sin almacén,
 // sin bloques de especialistas (los ve resumidos en su Panel), sin pantallas
 // con dinero global (Dashboard general, Control de Consumo, Planificado vs

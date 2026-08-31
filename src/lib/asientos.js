@@ -120,17 +120,88 @@ function resolveMontos(mov) {
 /**
  * Genera el asiento contable para un movimiento.
  * @param {object} movimiento accounting_movements row
- * @returns {{numero:string, fecha:string, glosa:string, type:string, partidas:Array}}
+ * @returns {{numero:string, fecha:string, glosa:string, type:string, partidas:Array,
+ *            sumDebe:number, sumHaber:number, delta:number, cuadra:boolean, extorno:boolean}}
  */
 export function generarAsiento(movimiento) {
+  const m = movimiento || {};
+  const totalCrudo = r2(Number(m.amount || 0));
+
+  // ── NOTA DE CRÉDITO / monto NEGATIVO → asiento de EXTORNO ──────────
+  // Captura Mágica guarda las NC con amount negativo. Antes, el IGV inferido
+  // salía negativo y el `if (igv > 0)` OMITÍA la línea 4011 → el asiento
+  // descuadraba exactamente en el IGV (bug real: Δ S/474.25 de GASOMI 2026,
+  // NC E001-64; aprobado el fix por Gabriel 31-ago). Forma ortodoxa: montos
+  // POSITIVOS con debe↔haber invertidos. La contrapartida es SIEMPRE la
+  // cuenta por cobrar/pagar (121/42/41) y NUNCA caja: Captura Mágica fuerza
+  // payment_status='paid' en toda NC pero no hubo devolución de efectivo.
+  if (totalCrudo < 0) {
+    const base = construirAsiento({
+      ...m,
+      amount: Math.abs(Number(m.amount || 0)),
+      subtotal: m.subtotal != null ? Math.abs(Number(m.subtotal)) : m.subtotal,
+      igv_amount: m.igv_amount != null ? Math.abs(Number(m.igv_amount)) : m.igv_amount,
+      payment_status: 'pending',
+    });
+    const REN = [
+      ['Cobro de ', 'Extorno cobro — '],
+      ['Factura por cobrar — ', 'Extorno cta. por cobrar — '],
+      ['Cuenta por pagar — ', 'Extorno cta. por pagar — '],
+      ['Remuneraciones por pagar — ', 'Extorno remuneraciones — '],
+      ['Pago de ', 'Extorno pago — '],
+      ['IGV ventas', 'Extorno IGV ventas'],
+      ['IGV crédito fiscal', 'Extorno IGV crédito fiscal'],
+    ];
+    const renombrar = (d) => {
+      for (const [de, a] of REN) if (String(d).startsWith(de)) return a + String(d).slice(de.length);
+      return d;
+    };
+    return finalizarAsiento({
+      ...base,
+      extorno: true,
+      partidas: base.partidas.map(p => ({ ...p, debe: p.haber, haber: p.debe, descripcion: renombrar(p.descripcion) })),
+    });
+  }
+
+  return finalizarAsiento(construirAsiento(m));
+}
+
+// Suma final + campos de cuadre POR ASIENTO (herramienta de descuadre,
+// pedido de las contadoras 31-ago): delta = debe − haber del propio asiento.
+function finalizarAsiento(asiento) {
+  const partidas = asiento.partidas.map(p => ({
+    cuenta: p.cuenta,
+    descripcion: p.descripcion,
+    debe: r2(p.debe),
+    haber: r2(p.haber),
+  }));
+  const sumDebe = r2(partidas.reduce((s, p) => s + p.debe, 0));
+  const sumHaber = r2(partidas.reduce((s, p) => s + p.haber, 0));
+  const delta = r2(sumDebe - sumHaber);
+  return {
+    ...asiento,
+    partidas,
+    sumDebe,
+    sumHaber,
+    delta,
+    cuadra: Math.abs(delta) < 0.01,
+    extorno: asiento.extorno === true,
+  };
+}
+
+function construirAsiento(movimiento) {
   const m = movimiento || {};
   const { total, subtotal, igv } = resolveMontos(m);
   const tipo = m.type || 'expense';
   const pagado = m.payment_status === 'paid';
-  const cuentaCaja = cuentaCajaOBanco(m.payment_method);
+  // Columna real: metodo_pago (payment_method no existe en la tabla — antes
+  // TODO caía a la cuenta genérica '10' por leer el campo equivocado).
+  const cuentaCaja = cuentaCajaOBanco(m.metodo_pago || m.payment_method);
   const partidas = [];
   const desc = String(m.description || '').trim() || '(sin descripción)';
-  const docRef = m.documento || m.doc_numero || m.factura || '';
+  // Columna real: document_number (documento/doc_numero/factura no existen —
+  // la glosa nunca mostraba el número del comprobante).
+  const docRef = m.document_number || m.documento || m.doc_numero || m.factura || '';
 
   if (tipo === 'income') {
     // ─── Ingreso (venta) ─────────────────────────────────
@@ -253,6 +324,38 @@ export function generarAsientosBatch(movimientos) {
 }
 
 /**
+ * Explica en lenguaje de contadora POR QUÉ un asiento no cuadra.
+ * Devuelve null si el asiento cuadra. La herramienta de descuadre del Libro
+ * Diario la muestra en la fila del asiento marcado (pedido 31-ago).
+ */
+export function explicarDescuadre(asiento, movimiento) {
+  if (!asiento || asiento.cuadra) return null;
+  const m = movimiento || {};
+  const d = fmtS(Math.abs(asiento.delta));
+  const lado = asiento.delta > 0 ? 'el DEBE excede al HABER' : 'el HABER excede al DEBE';
+  const doc = m.document_number ? ` (${m.document_type || 'doc'} ${m.document_number})` : '';
+
+  // Solo si el asiento NO salió como extorno: un extorno descuadrado viene de
+  // DATOS inconsistentes (rama de base+IGV, abajo), no de una versión vieja.
+  if (Number(m.amount) < 0 && !asiento.extorno) {
+    return `Este movimiento${doc} tiene monto NEGATIVO (${fmtS(m.amount)}) — normalmente una nota de crédito. ` +
+      `El generador debería asentarlo como extorno; si ves este aviso, recargá la app (versión vieja en caché). Δ ${d}: ${lado}.`;
+  }
+  if (m.subtotal != null && m.igv_amount != null) {
+    // Comparar en valor absoluto: en una NC los tres campos vienen negativos y
+    // el signo no debe tapar la inconsistencia.
+    const suma = r2(Math.abs(Number(m.subtotal)) + Math.abs(Number(m.igv_amount)));
+    const total = r2(Math.abs(Number(m.amount || 0)));
+    if (Math.abs(suma - total) >= 0.05) {
+      return `La base imponible (${fmtS(Math.abs(m.subtotal))}) + IGV (${fmtS(Math.abs(m.igv_amount))}) registrados suman ${fmtS(suma)}, ` +
+        `pero el total del movimiento${doc} es ${fmtS(total)}. Corregí la base o el IGV en el movimiento. Δ ${d}: ${lado}.`;
+    }
+  }
+  return `Las líneas de este asiento no suman igual: ${lado} por ${d}. ` +
+    `Revisá el movimiento origen${doc} — monto, base imponible e IGV.`;
+}
+
+/**
  * Vista de texto de un asiento — útil para preview / debug.
  */
 export function formatAsientoTxt(asiento) {
@@ -281,6 +384,7 @@ export default {
   generarAsiento,
   generarAsientosBatch,
   formatAsientoTxt,
+  explicarDescuadre,
   mapTypeToCategoria,
   cuentaCajaOBanco,
 };

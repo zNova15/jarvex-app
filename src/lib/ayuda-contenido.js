@@ -216,7 +216,8 @@ const AYUDA = {
     titulo: 'Movimientos Contables',
     que: 'Todas las compras y ventas del grupo: facturas, estados de pago y bancarizaciones.',
     como: [
-      'Filtrá por OBRA y por EMPRESA con dos desplegables SEPARADOS que se combinan (ej. obra Miraflores + empresa GASOMI a la vez), más compra/venta, estado, EMISOR y RECEPTOR, o buscá por texto.',
+      'FILTROS con etiqueta (31-ago): la barra es una grilla donde cada desplegable dice qué filtra — Obra, Empresa, Período, Compra/Venta, Clasificación, TIPO DE COMPROBANTE (factura, boleta, nota de crédito, recibo… y "Con guía vinculada"), Estado de pago, BANCARIZACIÓN (necesita y no tiene / necesita y tiene / no necesita) y Emisor/Receptor. Todos se combinan; "✕ Limpiar filtros" vuelve a ver todo.',
+      'GUÍA EN LA FILA: si el comprobante tiene guía de remisión vinculada, el chip 📄 abre su PDF al toque si la guía tiene el archivo adjunto (roles contables); si no lo tiene o no hay señal, lleva a la página Guías. El botón ↗ va directo a esa página. Así desde la misma fila ves comprobante (👁), pago/bancarización, detracción y guía.',
       'FACTURAS INTERCO: también se les puede pedir "Solicitar cambio", pero SOLO la VINCULACIÓN (obra/destino) o un pedido descriptivo — monto, fecha, estado de pago y eliminación se cambian desde "Operaciones entre empresas" (tocar un solo lado rompería el par). Al aprobarse la vinculación, el cambio se aplica a la factura Y a su compra espejo automática.',
       '🏷 INSUMOS PARA VENTA (botón arriba): los ítems facturados que NUNCA ingresaron a obra se pueden separar para venderlos. Flujo con doble control: 1) "💬 Comprobar" le pregunta a almacén si el insumo va a ingresar; 2) SOLO con el "No" de ESA consulta (un "No llegó" de la consulta vieja "¿llegó?" no cuenta — significa "todavía no"), la Contadora Jefe o un Admin lo SEPARA (queda en el pool "Disponibles para venta" con su costo de compra como referencia); si almacén responde que SÍ ingresó (total, parcial o en otra fecha) no se puede separar: vinculá el ingreso con 🔎 ¿llegó?; 3) al emitir la factura de venta, se vincula desde el pool → trazabilidad compra→venta. Un ítem separado deja de contar como "pendiente de recepción" en el semáforo y en la bandeja de almacén (aparece como 🏷 para venta). "↩" devuelve un ítem separado por error (también desde Vendidos si la venta se borró).',
       'FILTRO POR PERÍODO (📅): elegí un MES puntual (ej. "Junio 2026" — solo aparecen los meses que tienen comprobantes) o "Personalizado…" para un rango de fechas a medida. Al filtrar, arriba sale el RESUMEN del período: cuántos comprobantes y el total de Ventas y Compras (anulados excluidos; las notas de crédito restan). "✕ Quitar filtro" vuelve a todo el período.',
@@ -267,7 +268,17 @@ const AYUDA = {
   'flujo-caja': { titulo: 'Flujo de Caja / Pagos', que: 'Entradas y salidas de dinero por empresa, con cronograma de pagos.', como: ['Programá los pagos por vencer y marcalos al ejecutarlos.'] },
   'flujo-proyectado': { titulo: 'Flujo de Caja Proyectado', que: 'La proyección de caja de las próximas semanas por empresa.', como: ['Se alimenta del cronograma de pagos y las cobranzas esperadas.'] },
   'plan-cuentas': { titulo: 'Plan de Cuentas (PCGE)', que: 'El plan contable general empresarial usado para clasificar asientos.', como: ['La IA sugiere la cuenta PCGE al categorizar; corregila si no aplica.'] },
-  'libro-diario': { titulo: 'Libro Diario / Asientos', que: 'Los asientos contables generados por los movimientos.', como: ['Revisá que cada movimiento relevante tenga su asiento bien clasificado.'] },
+  'libro-diario': {
+    titulo: 'Libro Diario / Asientos',
+    que: 'Los asientos contables generados automáticamente desde los movimientos (PCGE Perú), con herramienta de cuadre y acceso al comprobante.',
+    como: [
+      'CUADRE: cada asiento que no cuadra solo (debe ≠ haber) sale marcado en rojo con su Δ propio y una explicación de la causa. La tarjeta "Cuadre" y el check "Solo descuadrados" filtran directo a los culpables — ya no hay que buscar el descuadre a mano en Excel.',
+      'OJO 👁 en la glosa: abre el comprobante adjunto del movimiento (la misma factura/imagen que se ve en Movimientos).',
+      'NOTAS DE CRÉDITO: se asientan como EXTORNO (montos positivos con debe y haber invertidos, contrapartida 121/42 — o 41 si es planilla) y llevan el badge "↩ NC · extorno". Por eso los totales Debe/Haber SUBEN en bruto respecto de antes — pero ahora cuadran.',
+      'El export a Excel incluye la columna "Δ asiento": si algo descuadra, el culpable salta solo al ordenar por esa columna.',
+      'OJO: la base e IGV de cada asiento se INFIEREN al 18% del total (la tabla no guarda el desglose real) — si una factura tiene IGV distinto (exonerada, tasa especial), el asiento cuadra pero la repartición 70/4011 puede no reflejar el comprobante.',
+    ],
+  },
   'balance-general': { titulo: 'Balance General', que: 'La foto de activos, pasivos y patrimonio por empresa.', como: ['Elegí empresa y periodo; los números salen de los asientos registrados.'] },
   'estado-resultados': { titulo: 'Estado de Resultados', que: 'Ingresos, costos y gastos del periodo por empresa.', como: ['Compará contra el periodo anterior con "Comparativo Periodos".'] },
   'comprobantes': { titulo: 'Comprobantes Electrónicos SUNAT', que: 'Los comprobantes electrónicos emitidos/recibidos consultados contra SUNAT.', como: ['Validá el estado del comprobante (aceptado/anulado) antes de contabilizarlo.'] },

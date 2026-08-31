@@ -793,7 +793,12 @@ function MovimientosContablesPage({ showToast }) {
   const [guiasPorMov, setGuiasPorMov] = uSC(() => new Map());      // mov_id → [guias]
   const [bancObra, setBancObra] = uSC('');
   const [bancSaving, setBancSaving] = uSC(false);
-  const [soloSinBanc, setSoloSinBanc] = uSC(false); // filtro: ver solo los que faltan bancarización
+  // Bancarización en TRI-ESTADO (pedido contadoras 31-ago): reemplaza al viejo
+  // toggle binario "solo sin bancarización".
+  // 'todos' | 'falta' (necesita y NO tiene) | 'ok' (necesita y tiene) | 'no_aplica' (≤S/2000 o USD)
+  const [filtroBanc, setFiltroBanc] = uSC('todos');
+  // Tipo de comprobante (factura/boleta/NC/recibo/…); '_con_guia' = con guía vinculada.
+  const [filtroTipoDoc, setFiltroTipoDoc] = uSC('todos');
   // DEPÓSITOS multi-factura: un depósito de p.ej. 20,000 cubre facturas de
   // 3,000+7,000+10,000 del mismo pagador→cobrador, consumiendo saldo.
   const [depositos, setDepositos] = uSC([]);                            // depósitos vivos
@@ -814,6 +819,18 @@ function MovimientosContablesPage({ showToast }) {
   const [llegoTarget, setLlegoTarget] = uSC(null);   // { factura, grupos:[{idx,item,candidatos}] }
   const [buscandoLlego, setBuscandoLlego] = uSC(false);
   const vincLlegoRef = uRC(false);                    // guard SÍNCRONO anti-doble-click
+  // Visor de guía abierto al vuelo desde la fila (chip 📄): el onClick es async
+  // — si la página se desmonta durante los await no hay que setear estado ni
+  // fugar el objectURL; y si se navega con el modal abierto, se revoca acá.
+  const montadoMovsRef = uRC(true);
+  const guiaBlobRef = uRC(null);
+  uEC(() => {
+    montadoMovsRef.current = true;
+    return () => {
+      montadoMovsRef.current = false;
+      if (guiaBlobRef.current) { try { URL.revokeObjectURL(guiaBlobRef.current); } catch {} guiaBlobRef.current = null; }
+    };
+  }, []);
   // Fase 2 — hilo de consultas con almacén.
   const [showConsultas, setShowConsultas] = uSC(false);
   const consResumen = useConsultasResumen('contabilidad', null);
@@ -1227,7 +1244,18 @@ function MovimientosContablesPage({ showToast }) {
         || (m.third_party_name||'').toLowerCase().includes(q)
         || (m.document_number||'').toLowerCase().includes(q));
     }
-    if (soloSinBanc) f = f.filter(faltaBancarizacion);
+    // Tipo de comprobante: 'guía' NO es un document_type (las guías viven en
+    // guias_remision) → la opción especial '_con_guia' filtra por vínculo.
+    // document_type null cae en 'otro' para que ningún mov desaparezca de todas
+    // las opciones del selector.
+    if (filtroTipoDoc === '_con_guia') f = f.filter(m => (guiasPorMov.get(m.id) || []).length > 0);
+    else if (filtroTipoDoc !== 'todos') f = f.filter(m => (m.document_type || 'otro') === filtroTipoDoc);
+    if (filtroBanc !== 'todos' && puedeVerBanc) {
+      const necesita = (m) => m.currency === 'PEN' && Number(m.amount) > 2000;
+      if (filtroBanc === 'falta') f = f.filter(faltaBancarizacion);
+      else if (filtroBanc === 'ok') f = f.filter(m => necesita(m) && !faltaBancarizacion(m));
+      else if (filtroBanc === 'no_aplica') f = f.filter(m => !necesita(m));
+    }
     // Período: mes puntual o rango personalizado (fechas en 'YYYY-MM-DD' →
     // comparación lexicográfica segura).
     if (filtroMes === 'custom') {
@@ -1244,10 +1272,31 @@ function MovimientosContablesPage({ showToast }) {
       (b.date||'').localeCompare(a.date||'')
       || cmpComprobante(a.document_number, b.document_number)
       || (a.created_at||'').localeCompare(b.created_at||''));
-  }, [movs, filtroObraSel, filtroEmpresaSel, filtroClase, filtroTipo, filtroEstado, filtroEmisor, filtroReceptor, nombreCompanyDe, busqueda, soloSinBanc, filtroMes, filtroDesde, filtroHasta, bancarizacionPorMov, partesPorMov, depositosById]);
+  }, [movs, filtroObraSel, filtroEmpresaSel, filtroClase, filtroTipo, filtroEstado, filtroEmisor, filtroReceptor, nombreCompanyDe, busqueda, filtroBanc, filtroTipoDoc, guiasPorMov, filtroMes, filtroDesde, filtroHasta, bancarizacionPorMov, partesPorMov, depositosById]);
 
   // Paginación: tabla puede tener miles de movimientos contables.
   const movPg = usePagination(filtered, 100);
+
+  // Barra de filtros reorganizada (31-ago): saber si hay algo filtrado y
+  // poder volver a "ver todo" con un click.
+  const hayFiltrosActivos = busqueda !== '' || filtroObraSel !== 'todas' || filtroEmpresaSel !== 'todas'
+    || filtroClase !== 'todos' || filtroTipo !== 'todos' || filtroEstado !== 'todos'
+    || filtroEmisor !== 'todos' || filtroReceptor !== 'todos' || filtroMes !== 'todos'
+    || filtroTipoDoc !== 'todos' || filtroBanc !== 'todos';
+  const limpiarFiltros = () => {
+    setBusqueda(''); setFiltroObraSel('todas'); setFiltroEmpresaSel('todas');
+    setFiltroClase('todos'); setFiltroTipo('todos'); setFiltroEstado('todos');
+    setFiltroEmisor('todos'); setFiltroReceptor('todos');
+    setFiltroMes('todos'); setFiltroDesde(''); setFiltroHasta('');
+    setFiltroTipoDoc('todos'); setFiltroBanc('todos');
+  };
+  // Los MISMOS labels del modal "Tipo documento" (no inventar tipos: el CHECK
+  // de la mig 021 define el universo; null se muestra/filtra como 'otro').
+  const TIPO_DOC_OPCIONES = [
+    ['factura', 'Factura'], ['boleta', 'Boleta'], ['recibo', 'Recibo'],
+    ['contrato', 'Contrato'], ['nota_credito', 'Nota de crédito'],
+    ['nota_debito', 'Nota de débito'], ['otro', 'Otro / sin tipo'],
+  ];
 
   const openNuevo = () => {
     if (!companiesActivas.length) { showToast('Crea primero una empresa', 'red'); return; }
@@ -1980,57 +2029,115 @@ function MovimientosContablesPage({ showToast }) {
         </div>
       </div>
 
-      <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', marginBottom:14 }}>
-        <div className="search-bar" style={{ flex:'1 1 200px' }}><JxIcon name="search" size={14} color="var(--tm)"/><input placeholder="Buscar descripción / cliente / doc…" value={busqueda} onChange={e=>setBusqueda(e.target.value)}/></div>
-        <select className="fi" value={filtroObraSel} onChange={e=>setFiltroObraSel(e.target.value)} style={{ minWidth:170, maxWidth:240 }}
-          title="Filtrar por OBRA — se combina con el filtro de empresa">
-          <option value="todas">🏗 Todas las obras</option>
-          {obrasParaSelector.map(o => <option key={o.id} value={o.id}>{o.nombre_obra}</option>)}
-        </select>
-        <select className="fi" value={filtroEmpresaSel} onChange={e=>setFiltroEmpresaSel(e.target.value)} style={{ minWidth:170, maxWidth:240 }}
-          title="Filtrar por EMPRESA del grupo — se combina con el filtro de obra">
-          <option value="todas">🏢 Todas las empresas</option>
-          {companiesActivas.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
-        <select className="fi" value={filtroMes} onChange={e=>setFiltroMes(e.target.value)} style={{ minWidth:150 }}
-          title="Ver solo los comprobantes de un mes, o un rango de fechas a medida">
-          <option value="todos">📅 Todo el período</option>
-          {opcionesMes.map(ym => <option key={ym} value={ym}>{mesLabel(ym)}</option>)}
-          <option value="custom">Personalizado…</option>
-        </select>
-        {filtroMes === 'custom' && (
-          <>
-            <label style={{ fontSize:11, color:'var(--tm)' }}>Del</label>
-            <input className="fi" type="date" value={filtroDesde} onChange={e=>setFiltroDesde(e.target.value)} style={{ minWidth:135 }}/>
-            <label style={{ fontSize:11, color:'var(--tm)' }}>al</label>
-            <input className="fi" type="date" value={filtroHasta} onChange={e=>setFiltroHasta(e.target.value)} style={{ minWidth:135 }}/>
-          </>
-        )}
-        <select className="fi" value={filtroClase} onChange={e=>setFiltroClase(e.target.value)} style={{ minWidth:120 }} title="Compras (a proveedoras) vs Ventas (emitidas a la ejecutora)">
-          <option value="todos">Compras y ventas</option>
-          <option value="compra">🛒 Compras</option>
-          <option value="venta">🧾 Ventas</option>
-        </select>
-        <select className="fi" value={filtroTipo} onChange={e=>setFiltroTipo(e.target.value)} style={{ minWidth:120 }}>
-          <option value="todos">Todos</option>
-          <option value="income">Ingresos</option>
-          <option value="cost">Costos</option>
-          <option value="expense">Gastos</option>
-        </select>
-        <select className="fi" value={filtroEstado} onChange={e=>setFiltroEstado(e.target.value)} style={{ minWidth:120 }}>
-          <option value="todos">Todos</option>
-          <option value="paid">Pagados</option>
-          <option value="pending">Pendientes</option>
-          <option value="cancelled">Anulados</option>
-        </select>
-        <select className="fi" value={filtroEmisor} onChange={e=>setFiltroEmisor(e.target.value)} style={{ minWidth:170, maxWidth:240 }} title="Quién EMITIÓ el comprobante (proveedores o nuestras empresas)">
-          <option value="todos">Emisor: todos</option>
-          {opcionesEmisor.map(n => <option key={n} value={n}>{n}</option>)}
-        </select>
-        <select className="fi" value={filtroReceptor} onChange={e=>setFiltroReceptor(e.target.value)} style={{ minWidth:170, maxWidth:240 }} title="Quién RECIBIÓ el comprobante (normalmente nuestras empresas)">
-          <option value="todos">Receptor: todos</option>
-          {opcionesReceptor.map(n => <option key={n} value={n}>{n}</option>)}
-        </select>
+      {/* Barra de filtros REORGANIZADA (pedido contadoras 31-ago): búsqueda +
+          "Limpiar" arriba, y una grilla ETIQUETADA — antes eran 8 selects
+          apilados sin etiqueta y a simple vista no se sabía qué era cada uno. */}
+      <div className="card card-p" style={{ marginBottom:14 }}>
+        <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
+          <div className="search-bar" style={{ flex:'1 1 220px' }}><JxIcon name="search" size={14} color="var(--tm)"/><input placeholder="Buscar descripción / cliente / doc…" value={busqueda} onChange={e=>setBusqueda(e.target.value)}/></div>
+          <span style={{ fontSize:11, color:'var(--tm)' }}>{filtered.length} de {(movs||[]).length} movimientos</span>
+          {hayFiltrosActivos && (
+            <button className="btn btn-ghost btn-sm" onClick={limpiarFiltros} title="Quitar todos los filtros y ver todo">
+              ✕ Limpiar filtros
+            </button>
+          )}
+        </div>
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(175px, 1fr))', gap:10, marginTop:10 }}>
+          <div>
+            <label className="flabel">🏗 Obra</label>
+            <select className="fi" value={filtroObraSel} onChange={e=>setFiltroObraSel(e.target.value)} style={{ width:'100%' }}
+              title="Filtrar por OBRA — se combina con el filtro de empresa">
+              <option value="todas">Todas las obras</option>
+              {obrasParaSelector.map(o => <option key={o.id} value={o.id}>{o.nombre_obra}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="flabel">🏢 Empresa del grupo</label>
+            <select className="fi" value={filtroEmpresaSel} onChange={e=>setFiltroEmpresaSel(e.target.value)} style={{ width:'100%' }}
+              title="Filtrar por EMPRESA del grupo — se combina con el filtro de obra">
+              <option value="todas">Todas las empresas</option>
+              {companiesActivas.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="flabel">📅 Período</label>
+            <select className="fi" value={filtroMes} onChange={e=>setFiltroMes(e.target.value)} style={{ width:'100%' }}
+              title="Ver solo los comprobantes de un mes, o un rango de fechas a medida">
+              <option value="todos">Todo el período</option>
+              {opcionesMes.map(ym => <option key={ym} value={ym}>{mesLabel(ym)}</option>)}
+              <option value="custom">Personalizado…</option>
+            </select>
+            {filtroMes === 'custom' && (
+              <div style={{ display:'flex', gap:6, alignItems:'center', marginTop:6 }}>
+                <span style={{ fontSize:11, color:'var(--tm)' }}>Del</span>
+                <input className="fi" type="date" value={filtroDesde} onChange={e=>setFiltroDesde(e.target.value)} style={{ flex:1, minWidth:0 }}/>
+                <span style={{ fontSize:11, color:'var(--tm)' }}>al</span>
+                <input className="fi" type="date" value={filtroHasta} onChange={e=>setFiltroHasta(e.target.value)} style={{ flex:1, minWidth:0 }}/>
+              </div>
+            )}
+          </div>
+          <div>
+            <label className="flabel">Compra / Venta</label>
+            <select className="fi" value={filtroClase} onChange={e=>setFiltroClase(e.target.value)} style={{ width:'100%' }} title="Compras (a proveedoras) vs Ventas (emitidas a la ejecutora)">
+              <option value="todos">Compras y ventas</option>
+              <option value="compra">🛒 Compras</option>
+              <option value="venta">🧾 Ventas</option>
+            </select>
+          </div>
+          <div>
+            <label className="flabel">Clasificación</label>
+            <select className="fi" value={filtroTipo} onChange={e=>setFiltroTipo(e.target.value)} style={{ width:'100%' }} title="Ingreso / costo / gasto">
+              <option value="todos">Todas</option>
+              <option value="income">Ingresos</option>
+              <option value="cost">Costos</option>
+              <option value="expense">Gastos</option>
+            </select>
+          </div>
+          <div>
+            <label className="flabel">Tipo de comprobante</label>
+            <select className="fi" value={filtroTipoDoc} onChange={e=>setFiltroTipoDoc(e.target.value)} style={{ width:'100%' }}
+              title="Factura, boleta, nota de crédito, recibo… — y 'Con guía vinculada'">
+              <option value="todos">Todos</option>
+              {TIPO_DOC_OPCIONES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+              <option value="_con_guia">📄 Con guía vinculada</option>
+            </select>
+          </div>
+          <div>
+            <label className="flabel">Estado de pago</label>
+            <select className="fi" value={filtroEstado} onChange={e=>setFiltroEstado(e.target.value)} style={{ width:'100%' }}>
+              <option value="todos">Todos</option>
+              <option value="paid">Pagados</option>
+              <option value="pending">Pendientes</option>
+              <option value="cancelled">Anulados</option>
+            </select>
+          </div>
+          {puedeVerBanc && (
+            <div>
+              <label className="flabel">Bancarización</label>
+              <select className="fi" value={filtroBanc} onChange={e=>setFiltroBanc(e.target.value)} style={{ width:'100%' }}
+                title="Solo los >S/2000 en soles necesitan bancarización">
+                <option value="todos">Todas</option>
+                <option value="falta">⚠ Necesita y NO tiene</option>
+                <option value="ok">✓ Necesita y tiene</option>
+                <option value="no_aplica">No necesita (≤S/2000 o USD)</option>
+              </select>
+            </div>
+          )}
+          <div>
+            <label className="flabel">Emisor</label>
+            <select className="fi" value={filtroEmisor} onChange={e=>setFiltroEmisor(e.target.value)} style={{ width:'100%' }} title="Quién EMITIÓ el comprobante (proveedores o nuestras empresas)">
+              <option value="todos">Todos</option>
+              {opcionesEmisor.map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="flabel">Receptor</label>
+            <select className="fi" value={filtroReceptor} onChange={e=>setFiltroReceptor(e.target.value)} style={{ width:'100%' }} title="Quién RECIBIÓ el comprobante (normalmente nuestras empresas)">
+              <option value="todos">Todos</option>
+              {opcionesReceptor.map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </div>
+        </div>
       </div>
 
       {/* Resumen del PERÍODO filtrado: cuántos comprobantes y totales por clase.
@@ -2070,7 +2177,7 @@ function MovimientosContablesPage({ showToast }) {
           entrar a editar el movimiento. */}
       {canWrite && (() => {
         const pend = filtered.filter(faltaBancarizacion);
-        if (!pend.length && !soloSinBanc) return null;
+        if (!pend.length && filtroBanc !== 'falta') return null;
         return (
           <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', padding:'10px 14px', marginBottom:12, borderRadius:8, background: pend.length ? 'rgba(242,183,5,0.08)' : 'rgba(46,204,113,0.08)', border: `1px solid ${pend.length ? 'rgba(242,183,5,0.35)' : 'rgba(46,204,113,0.35)'}` }}>
             <JxIcon name={pend.length ? 'alert' : 'check'} size={16} color={pend.length ? 'var(--amber)' : 'var(--green)'}/>
@@ -2084,8 +2191,8 @@ function MovimientosContablesPage({ showToast }) {
             ) : (
               <span style={{ fontSize:13, color:'var(--green)', fontWeight:600 }}>No quedan movimientos sin bancarización en este filtro.</span>
             )}
-            <button className="btn btn-ghost btn-xs" style={{ marginLeft:'auto' }} onClick={()=>setSoloSinBanc(v=>!v)}>
-              {soloSinBanc ? 'Ver todos' : `Ver los ${pend.length} pendientes`}
+            <button className="btn btn-ghost btn-xs" style={{ marginLeft:'auto' }} onClick={()=>setFiltroBanc(filtroBanc === 'falta' ? 'todos' : 'falta')}>
+              {filtroBanc === 'falta' ? 'Ver todos' : `Ver los ${pend.length} pendientes`}
             </button>
           </div>
         );
@@ -2109,7 +2216,7 @@ function MovimientosContablesPage({ showToast }) {
       {filtered.length === 0 ? (
         <div className="card card-p empty-state">
           <JxIcon name="dollar" size={40} color="var(--tm)"/>
-          <p>No hay movimientos {(movs || []).length > 0 ? (soloSinBanc ? 'sin bancarización con este filtro' : 'que coincidan con el filtro') : 'registrados aún'}.</p>
+          <p>No hay movimientos {(movs || []).length > 0 ? (filtroBanc === 'falta' ? 'sin bancarización con este filtro' : 'que coincidan con el filtro') : 'registrados aún'}.</p>
         </div>
       ) : (
         <div className="card" style={{ overflow:'hidden' }}>
@@ -2287,11 +2394,45 @@ function MovimientosContablesPage({ showToast }) {
                       <td className="col-m" style={{ fontSize:11 }}>
                         {m.document_type ? `${m.document_type} ${m.document_number || ''}` : '—'}
                         {(guiasPorMov.get(m.id) || []).map(g => (
-                          <button key={g.id} className="btn btn-ghost btn-xs" style={{ display:'block', padding:'1px 4px', fontSize:9.5, color:'var(--blue, #3498DB)' }}
-                            title={`Guía de remisión vinculada — click para abrirla`}
-                            onClick={() => { window.__guiasFocusIntent = g.serie_correlativo || ''; window.__navTo?.('guias-remision'); }}>
-                            📄 {g.serie_correlativo || 'guía'}
-                          </button>
+                          <span key={g.id} style={{ display:'flex', alignItems:'center', gap:2 }}>
+                            {/* Click = abrir el PDF de la guía AL TOQUE (pedido 31-ago). Solo
+                                contables: al resto la RLS le niega las evidencias guia_remision
+                                (mig 143) — para ellos el click navega a la página Guías. */}
+                            <button className="btn btn-ghost btn-xs" style={{ padding:'1px 4px', fontSize:9.5, color:'var(--blue, #3498DB)' }}
+                              title={puedeVerBanc ? 'Ver el PDF de la guía de remisión' : 'Ir a la guía de remisión'}
+                              onClick={async () => {
+                                if (puedeVerBanc && g.evidencia_id) {
+                                  try {
+                                    const ev = await window.__db.evidencias.get(g.evidencia_id);
+                                    if (ev && !ev.deleted_at) {
+                                      const src = await getEvidenciaSrc(ev);
+                                      // Carrera: la página se desmontó durante los await →
+                                      // liberar el objectURL recién creado y no tocar estado.
+                                      if (!montadoMovsRef.current) { if (src?.isBlob) { try { URL.revokeObjectURL(src.url); } catch {} } return; }
+                                      // Fallback crudo de getEvidenciaSrc (url sin firmar =
+                                      // sin señal): el modal saldría roto → navegar como antes.
+                                      const crudo = src && !src.isBlob && ev.url_archivo && src.url === ev.url_archivo;
+                                      if (src?.url && !crudo) {
+                                        guiaBlobRef.current = src.isBlob ? src.url : null;
+                                        setEvidenciaModal({ url: src.url, mime: ev.mime_type || 'application/pdf', nombre: ev.nombre_archivo || `Guía ${g.serie_correlativo || ''}`, _blob: !!src.isBlob });
+                                        return;
+                                      }
+                                    }
+                                  } catch {}
+                                }
+                                window.__guiasFocusIntent = g.serie_correlativo || '';
+                                window.__navTo?.('guias-remision');
+                              }}>
+                              📄 {g.serie_correlativo || 'guía'}
+                            </button>
+                            {puedeVerBanc && (
+                              <button className="btn btn-ghost btn-xs" style={{ padding:'1px 3px', fontSize:9.5, color:'var(--tm)' }}
+                                title="Ir a la página Guías de Remisión (vincular / editar)"
+                                onClick={() => { window.__guiasFocusIntent = g.serie_correlativo || ''; window.__navTo?.('guias-remision'); }}>
+                                ↗
+                              </button>
+                            )}
+                          </span>
                         ))}
                       </td>
                       <td style={{ textAlign:'right', fontWeight:700, color:TYPE_COLOR[m.type] }} className="col-num">{fmtCur(m.amount, m.currency)}</td>
@@ -2734,10 +2875,19 @@ function MovimientosContablesPage({ showToast }) {
         </Modal>
       )}
 
-      {/* Visor de factura adjunta (PDF/imagen) */}
-      {evidenciaModal && (
+      {/* Visor de factura adjunta (PDF/imagen). Si la fuente es un objectURL
+          creado al vuelo (guía abierta desde la fila, _blob), se revoca al
+          cerrar — las entradas de los mapas precargados NO llevan _blob (sus
+          objectURLs los administra y revoca el loader del useEffect). */}
+      {evidenciaModal && (() => {
+        const cerrarEvModal = () => {
+          if (evidenciaModal._blob) { try { URL.revokeObjectURL(evidenciaModal.url); } catch {} }
+          guiaBlobRef.current = null;
+          setEvidenciaModal(null);
+        };
+        return (
         <Modal title={`Comprobante: ${evidenciaModal.nombre}`} icon="eye"
-          onClose={() => setEvidenciaModal(null)} wide>
+          onClose={cerrarEvModal} wide>
           <div style={{ minHeight: 480, maxHeight: '70vh', background: '#0E1620', borderRadius: 6, overflow: 'hidden' }}>
             {evidenciaModal.mime?.startsWith('image/') ? (
               <img src={evidenciaModal.url} alt={evidenciaModal.nombre}
@@ -2751,12 +2901,13 @@ function MovimientosContablesPage({ showToast }) {
               className="btn btn-ghost btn-sm">
               <JxIcon name="external" size={12}/> Abrir en nueva pestaña
             </a>
-            <button className="btn btn-amber btn-sm" onClick={() => setEvidenciaModal(null)}>
+            <button className="btn btn-amber btn-sm" onClick={cerrarEvModal}>
               Cerrar
             </button>
           </div>
         </Modal>
-      )}
+        );
+      })()}
 
       {llegoTarget && (() => {
         const fac = llegoTarget.factura;
