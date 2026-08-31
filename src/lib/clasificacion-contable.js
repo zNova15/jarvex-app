@@ -14,11 +14,16 @@
 //        venta  → INGRESO
 //        compra → EGRESO
 //
-//    NIVEL 2 (NO se elige: se DERIVA de la vinculación del movimiento)
+//    NIVEL 2 (se DERIVA de la vinculación; se puede AJUSTAR a mano)
 //        egreso vinculado a una OBRA            → 'cost'    (costo de obra)
 //        egreso a GASTOS GENERALES de la empresa → 'expense' (gasto)
 //        egreso a contabilidad neta / sin clasificar / sin destino → 'cost'
 //        ingreso                                 → 'income'
+//
+//    Override manual (`clasificacion_manual`, mig 163): la contadora puede
+//    forzar costo o gasto sin tocar la vinculación — para los casos que la
+//    vinculación no puede expresar (una compra DE OBRA que igual es un gasto
+//    administrativo). Vale para el egreso; en intercompany se ignora.
 //
 //  ⚠ REGLA DURA — INTERCOMPANY SIEMPRE 'cost'.
 //  El Consolidado (jx-contabilidad, bloque ConsolidadoPage) elimina las
@@ -89,21 +94,54 @@ export function nivelUno(mov) {
 }
 
 /**
+ * Override manual válido de un movimiento (columna `clasificacion_manual`,
+ * mig 163), o null. La contadora la usa para los casos que la vinculación no
+ * puede expresar: una compra DE OBRA que igual es un gasto administrativo
+ * (útiles de oficina de la obra, comida de una reunión). Antes la única forma
+ * de marcarla gasto era desvincularla de la obra — y se perdía la atribución.
+ */
+export function overrideManual(mov) {
+  const v = mov?.clasificacion_manual;
+  return (v === 'cost' || v === 'expense') ? v : null;
+}
+
+/**
  * NIVEL 2: valor definitivo de la columna `type`.
  * Es LA función que deben usar todos los puntos que crean o reclasifican un
  * accounting_movement — así el select de arriba y la vinculación no pueden
  * quedar contradictorios.
  *
- * @param {object} mov  { clase, type, destino_contable, obra_id, is_intercompany }
+ * Orden de precedencia:
+ *   1. clase = venta                → 'income'  (no hay costo/gasto que elegir)
+ *   2. is_intercompany              → 'cost'    (REGLA DURA, ver cabecera)
+ *   3. clasificacion_manual         → lo que dijo la contadora
+ *   4. destino_contable / obra_id   → DESTINO_A_TYPE
+ *
+ * @param {object} mov  { clase, type, destino_contable, obra_id, is_intercompany, clasificacion_manual }
  * @returns {'income'|'cost'|'expense'}
  */
 export function derivarTypeContable(mov) {
   const m = mov || {};
   if (nivelUno(m) === INGRESO) return 'income';
-  // REGLA DURA: operación interna del grupo → siempre costo (ver cabecera).
+  // REGLA DURA: operación interna del grupo → siempre costo, incluso con
+  // override manual (si no, el Consolidado deja de cuadrar).
   if (m.is_intercompany === true) return 'cost';
+  const manual = overrideManual(m);
+  if (manual) return manual;
   const destino = destinoEfectivo(m);
   return DESTINO_A_TYPE[destino] || 'cost';
+}
+
+/**
+ * ¿El override manual está haciendo algo, o coincide con lo que la vinculación
+ * habría dicho igual? Sirve para mostrar el badge "manual" solo cuando importa.
+ */
+export function overrideEfectivo(mov) {
+  const manual = overrideManual(mov);
+  if (!manual) return false;
+  if (nivelUno(mov) === INGRESO) return false;
+  if (mov?.is_intercompany === true) return false;   // la regla dura lo ignora
+  return manual !== (DESTINO_A_TYPE[destinoEfectivo(mov)] || 'cost');
 }
 
 /**
@@ -116,7 +154,17 @@ export function motivoClasificacion(mov) {
   const t = derivarTypeContable(m);
   if (t === 'income') return 'Es una VENTA → cuenta como ingreso.';
   if (m.is_intercompany === true) {
-    return 'Operación entre empresas del grupo → siempre COSTO (el Consolidado las elimina de a pares; marcarla gasto rompería la eliminación).';
+    const extra = overrideManual(m)
+      ? ' (el ajuste manual NO se aplica en operaciones internas).'
+      : '.';
+    return 'Operación entre empresas del grupo → siempre COSTO (el Consolidado las elimina de a pares; marcarla gasto rompería la eliminación)' + extra;
+  }
+  const manual = overrideManual(m);
+  if (manual) {
+    const auto = DESTINO_A_TYPE[destinoEfectivo(m)] || 'cost';
+    return manual === auto
+      ? `Ajustado a mano como ${manual === 'expense' ? 'GASTO' : 'COSTO'} — coincide con lo que decía la vinculación.`
+      : `Ajustado a mano como ${manual === 'expense' ? 'GASTO' : 'COSTO'} (por la vinculación habría sido ${auto === 'expense' ? 'GASTO' : 'COSTO'}). Volvé a "Automático" para que mande la vinculación.`;
   }
   const destino = destinoEfectivo(m);
   if (destino === 'obra') return 'Vinculado a una OBRA → COSTO de obra.';
@@ -140,4 +188,5 @@ export default {
   INGRESO, EGRESO,
   DESTINO_A_TYPE, TYPE_LABEL, TYPE_LABEL_LARGO, NIVEL1_LABEL,
   destinoEfectivo, nivelUno, derivarTypeContable, motivoClasificacion, typeIncoherente,
+  overrideManual, overrideEfectivo,
 };

@@ -150,6 +150,116 @@ Reglas:
   }
 }
 
+// ── COSTO DE OBRA vs GASTO DE LA EMPRESA ────────────────────────────────
+// La vinculación (obra / Gastos Generales) decide bien el 95 % de los casos,
+// pero hay compras vinculadas a una obra que igual son GASTO administrativo
+// (útiles de oficina, atención, comida de reunión) y compras "de empresa" que
+// en realidad son costo directo. Acá la IA opina y la contadora decide: la
+// respuesta NUNCA se aplica sola, alimenta el override manual (mig 163).
+async function clasificarCostoGasto(req, res, apiKey, body) {
+  const description = sanitizeForPrompt(body.description, 500);
+  const category = sanitizeForPrompt(body.category, 100);
+  const tercero = sanitizeForPrompt(body.third_party_name, 200);
+  const documentType = sanitizeForPrompt(body.document_type, 50);
+  const obra = sanitizeForPrompt(body.obra_nombre, 200);
+  const destino = sanitizeForPrompt(body.destino_contable, 40);
+  const items = Array.isArray(body.items)
+    ? body.items.slice(0, 25).map(x => sanitizeForPrompt(String(x), 120)).filter(Boolean)
+    : [];
+  const monto = Number(body.amount);
+  const moneda = sanitizeForPrompt(body.currency, 5) || 'PEN';
+
+  if (!description && !category && items.length === 0) {
+    return res.status(422).json({ error: 'Se requiere description, category o items' });
+  }
+
+  const sys = `Eres un contador peruano con experiencia en empresas CONSTRUCTORAS y consorcios de obra.
+
+Tu tarea: decidir si un comprobante de compra es COSTO DE OBRA o GASTO DE LA EMPRESA.
+
+COSTO DE OBRA ("cost") — lo que se incorpora a la obra o la ejecuta:
+- Materiales e insumos de construcción (cemento, fierro, agregados, tuberías, cables).
+- Combustible y mantenimiento de maquinaria que trabaja en la obra.
+- Subcontratos, alquiler de equipos y maquinaria para la obra.
+- Mano de obra directa y su EPP.
+- Fletes y transporte de materiales a la obra.
+- Ensayos de laboratorio, topografía y servicios técnicos del proyecto.
+
+GASTO DE LA EMPRESA ("expense") — sostiene a la organización, no a la obra:
+- Útiles y suministros de oficina, papelería, tóner.
+- Servicios de oficina: luz, agua, internet, telefonía, alquiler de local administrativo.
+- Honorarios de contabilidad, legales, auditoría, notariales, trámites.
+- Comida, restaurantes, atención a clientes y viáticos administrativos.
+- Publicidad, dominios, software, suscripciones, bancarios.
+- Limpieza y mantenimiento de oficina.
+
+REGLAS DE CRITERIO:
+- Manda el CONCEPTO de la compra, no a qué obra esté vinculada: una caja de útiles de oficina comprada "para la obra X" sigue siendo GASTO.
+- Si el comprobante ya está vinculado a una obra y el concepto es claramente de construcción, es COSTO.
+- Ante duda genuina entre las dos, elegí la que diga la vinculación actual y bajá la confianza por debajo de 0.6.
+- El nombre del proveedor ayuda (ferretería/distribuidora = costo probable; restaurante/estudio contable/librería = gasto probable) pero NO decide solo.
+
+Devolvés SOLO JSON válido (sin markdown):
+{
+  "clasificacion": "cost",
+  "confianza": 0.9,
+  "razonamiento": "una frase corta, en español, dirigida a una contadora",
+  "advertencias": []
+}
+Confianza: 0.85+ concepto inequívoco · 0.6-0.85 probable · <0.6 ambiguo, que lo revise la contadora.`;
+
+  const usr = [
+    'Comprobante:',
+    `- Descripción: "${description || '(vacía)'}"`,
+    category ? `- Categoría: "${category}"` : null,
+    tercero ? `- Proveedor: "${tercero}"` : null,
+    documentType ? `- Tipo de documento: ${documentType}` : null,
+    Number.isFinite(monto) ? `- Importe: ${moneda} ${monto}` : null,
+    obra ? `- Obra vinculada: "${obra}"` : '- Sin obra vinculada',
+    destino ? `- Vinculación contable actual: ${destino}` : null,
+    items.length ? `- Ítems facturados:\n${items.map(i => '  · ' + i).join('\n')}` : null,
+    '',
+    'Devolvé el JSON.',
+  ].filter(Boolean).join('\n');
+
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 30000);
+    const upstream = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST', signal: ctrl.signal,
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 500, system: sys, messages: [{ role: 'user', content: usr }] }),
+    });
+    clearTimeout(timer);
+    if (!upstream.ok) {
+      const t = await upstream.text();
+      console.error('[clasificar-costo-gasto] upstream', upstream.status, t.slice(0, 200));
+      return res.status(upstream.status).json({ error: `Claude respondió ${upstream.status}` });
+    }
+    const data = await upstream.json();
+    const text = data.content?.[0]?.text || '';
+    const jm = text.match(/\{[\s\S]*\}/);
+    if (!jm) return res.status(502).json({ error: 'Claude no devolvió JSON', rawText: text.slice(0, 300) });
+    let parsed; try { parsed = JSON.parse(jm[0]); } catch (e) { return res.status(502).json({ error: 'JSON inválido de Claude', detail: e.message }); }
+    // Anti-alucinación: solo cost|expense. 'income' no se decide acá (lo fija la clase).
+    const clasificacion = (parsed.clasificacion === 'expense') ? 'expense'
+      : (parsed.clasificacion === 'cost') ? 'cost' : null;
+    if (!clasificacion) {
+      return res.status(502).json({ error: 'Claude devolvió una clasificación fuera de cost|expense' });
+    }
+    return res.status(200).json({
+      result: { clasificacion },
+      confianza: typeof parsed.confianza === 'number' ? Math.max(0, Math.min(1, parsed.confianza)) : 0.5,
+      razonamiento: String(parsed.razonamiento || '').slice(0, 400),
+      advertencias: Array.isArray(parsed.advertencias) ? parsed.advertencias.map(a => String(a).slice(0, 200)).slice(0, 4) : [],
+      _model: data.model, _usage: data.usage,
+    });
+  } catch (e) {
+    if (e.name === 'AbortError') return res.status(504).json({ error: 'Claude tardó demasiado (>30s)' });
+    return res.status(502).json({ error: 'Error consultando Claude', detail: e.message });
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Solo POST' });
@@ -176,6 +286,12 @@ export default async function handler(req, res) {
   // (Misma función serverless — el límite de Vercel es 12, así que no se agrega un endpoint.)
   if (body.action === 'sugerir_insumo') {
     return await sugerirInsumoMatch(req, res, apiKey, body);
+  }
+
+  // ── Acción 'clasificar_costo_gasto': COSTO DE OBRA vs GASTO DE LA EMPRESA.
+  // (Misma función serverless — Vercel Hobby está en 12/12.)
+  if (body.action === 'clasificar_costo_gasto') {
+    return await clasificarCostoGasto(req, res, apiKey, body);
   }
 
   const type = ['income', 'cost', 'expense'].includes(body.type) ? body.type : 'expense';

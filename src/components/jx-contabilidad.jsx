@@ -1,12 +1,12 @@
 import React from "react";
 import { RUBROS } from "../lib/rubros.js";
-import { sugerirCuentaPcge } from "../lib/sugerir-cuenta-pcge.js";
+import { sugerirCuentaPcge, sugerirClasificacionContable } from "../lib/sugerir-cuenta-pcge.js";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 import { usePagination } from "../hooks/usePagination.js";
 import { TablePagination } from "./jx-pagination.jsx";
 import { detectarDuplicados, claseDe } from "../lib/dedupe-movs-contables.js";
-import { derivarTypeContable, motivoClasificacion, TYPE_LABEL_LARGO } from "../lib/clasificacion-contable.js";
+import { derivarTypeContable, motivoClasificacion, overrideEfectivo, TYPE_LABEL, TYPE_LABEL_LARGO } from "../lib/clasificacion-contable.js";
 import { cmpComprobante } from "../lib/comparar-comprobante.js";
 import { resumenRecepcion, rankearIngresosParaItem, rankearFacturasParaIngreso, itemsDeFactura, estadoRecepcionDeItems, parseNotas, referenciaSinCostos, reporteRecepcion } from "../lib/cruce-recepcion.js";
 import { ConsultasPanel, useConsultasResumen } from "./jx-consultas.jsx";
@@ -57,7 +57,8 @@ const fmtCurK = (n, currency = 'PEN') => {
   return symbol + v.toFixed(0);
 };
 
-const TYPE_LABEL = { income: 'Ingreso', cost: 'Costo', expense: 'Gasto' };
+// TYPE_LABEL viene de src/lib/clasificacion-contable.js (era una copia local
+// idéntica; con una sola fuente no se pueden desincronizar las etiquetas).
 const TYPE_COLOR = { income: 'var(--green)', cost: 'var(--red)', expense: 'var(--amber)' };
 const TYPE_BADGE = { income: 'b-green', cost: 'b-red', expense: 'b-amber' };
 const STATUS_BADGE = { paid: 'b-green', pending: 'b-amber', credit: 'b-blue', cancelled: 'b-gray' };
@@ -1129,6 +1130,48 @@ function MovimientosContablesPage({ showToast }) {
   // IA: sugerencia de cuenta PCGE
   const [aiSugCuenta, setAiSugCuenta] = uSC(null); // { result, confianza, razonamiento, advertencias }
   const [aiSugLoading, setAiSugLoading] = uSC(false);
+  // IA: opinión COSTO DE OBRA vs GASTO DE LA EMPRESA. NUNCA se aplica sola —
+  // la contadora la acepta y recién ahí queda como ajuste manual (mig 163).
+  const [aiClasif, setAiClasif] = uSC(null);        // { result:{clasificacion}, confianza, razonamiento, advertencias }
+  const [aiClasifLoading, setAiClasifLoading] = uSC(false);
+
+  const sugerirClasificacion = async () => {
+    if (!form.description?.trim() && !form.category?.trim()) {
+      try { window.__showToast?.('Escribí descripción o categoría primero', 'amber'); } catch {}
+      return;
+    }
+    setAiClasifLoading(true);
+    setAiClasif(null);
+    try {
+      // Los ítems de la factura (si Captura Mágica los guardó) son la mejor
+      // señal: "cemento x 40 bolsas" vs "toner + resma de papel".
+      let items = [];
+      try {
+        items = (itemsDeFactura({ notas: form.notas }) || [])
+          .map(it => `${it.descripcion || ''}${it.cantidad ? ` x${it.cantidad}` : ''}`.trim())
+          .filter(Boolean).slice(0, 25);
+      } catch {}
+      const sug = await sugerirClasificacionContable({
+        description: form.description || '',
+        category: form.category || '',
+        third_party_name: form.third_party_name || '',
+        document_type: form.document_type || '',
+        obra_nombre: form.obra_id ? (obraNombre(form.obra_id) || '') : '',
+        destino_contable: form.obra_id ? 'obra' : (form.destino_contable || ''),
+        amount: Number(form.amount) || undefined,
+        currency: form.currency || 'PEN',
+        items,
+      });
+      setAiClasif(sug);
+      try { await window.__logAudit?.({ action:'insert', table:'audit', recordId:'clasificar-costo-gasto',
+        newData: { sugerido: sug.result.clasificacion, confianza: sug.confianza, cached: !!sug._cached },
+        reason:`IA costo/gasto: ${sug.result.clasificacion} (${(sug.confianza*100).toFixed(0)}%)` }); } catch {}
+    } catch (e) {
+      try { window.__showToast?.('No se pudo clasificar: ' + (e.message || e), 'red'); } catch {}
+    } finally {
+      setAiClasifLoading(false);
+    }
+  };
 
   // Política auto-apply: confianza >= 0.85 sin advertencias críticas → aplica directo
   const aplicarSugerenciaAuto = (sug) => {
@@ -1315,6 +1358,7 @@ function MovimientosContablesPage({ showToast }) {
       date: window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0,10),
       clase: 'compra',          // explícito: la mayoría de su flujo son compras
       type: 'cost',
+      clasificacion_manual: '',   // '' = automático (manda la vinculación)
       obra_id: '',
       category: '',
       cuenta_pcge: '',
@@ -1328,6 +1372,7 @@ function MovimientosContablesPage({ showToast }) {
       notas: '',
       _bancFile: null,
     });
+    setAiClasif(null);
     setEditingId(null);
     setModal('nuevo');
   };
@@ -1342,6 +1387,7 @@ function MovimientosContablesPage({ showToast }) {
       date: m.date || '',
       clase: m.clase || (m.type === 'income' ? 'venta' : 'compra'),
       type: m.type,
+      clasificacion_manual: m.clasificacion_manual || '',
       obra_id: m.obra_id || '',
       destino_contable: m.destino_contable || (m.obra_id ? 'obra' : null),
       category: m.category || '',
@@ -1356,6 +1402,7 @@ function MovimientosContablesPage({ showToast }) {
       document_number: m.document_number || '',
       notas: m.notas || '',
     });
+    setAiClasif(null);
     setEditingId(m.id);
     setModal('editar');
   };
@@ -1372,7 +1419,8 @@ function MovimientosContablesPage({ showToast }) {
     try {
       if (editingId) {
         const orig = movs.find(m => m.id === editingId);
-        // COSTO vs GASTO se DERIVA de clase + vinculación (nunca se teclea):
+        // COSTO vs GASTO se DERIVA de clase + vinculación (nunca se teclea) y,
+        // si la contadora lo ajustó a mano, manda su ajuste:
         // src/lib/clasificacion-contable.js. is_intercompany sale de la fila
         // original — el formulario ni siquiera abre movimientos internos.
         const typeDerivado = derivarTypeContable({
@@ -1380,6 +1428,7 @@ function MovimientosContablesPage({ showToast }) {
           type: form.type,
           obra_id: form.obra_id || null,
           destino_contable: form.obra_id ? 'obra' : (form.destino_contable || null),
+          clasificacion_manual: form.clasificacion_manual || null,
           is_intercompany: orig?.is_intercompany === true,
         });
         await window.__db.accounting_movements.update(editingId, {
@@ -1388,6 +1437,8 @@ function MovimientosContablesPage({ showToast }) {
           clase: form.clase || null,
           obra_id: form.obra_id || null,
           destino_contable: form.obra_id ? 'obra' : (form.destino_contable || null),
+          // '' → null: volver a "Automático" borra el ajuste manual (mig 163).
+          clasificacion_manual: form.clasificacion_manual || null,
           type: typeDerivado,
           category: form.category || null,
           cuenta_pcge: form.cuenta_pcge || null,
@@ -1417,12 +1468,14 @@ function MovimientosContablesPage({ showToast }) {
           clase: form.clase || null,
           obra_id: form.obra_id || null,
           destino_contable: form.obra_id ? 'obra' : (form.destino_contable || null),
-          // Derivado de clase + vinculación (ver el UPDATE de arriba).
+          clasificacion_manual: form.clasificacion_manual || null,
+          // Derivado de clase + vinculación + ajuste manual (ver el UPDATE de arriba).
           type: derivarTypeContable({
             clase: form.clase || null,
             type: form.type,
             obra_id: form.obra_id || null,
             destino_contable: form.obra_id ? 'obra' : (form.destino_contable || null),
+            clasificacion_manual: form.clasificacion_manual || null,
             is_intercompany: false,
           }),
           category: form.category || null,
@@ -2288,6 +2341,13 @@ function MovimientosContablesPage({ showToast }) {
                         )}
                         {!m.obra_id && m.destino_contable === 'gastos_generales' && <div style={{ fontSize:10, color:'var(--tm)' }}>🏢 Gastos Generales</div>}
                         {!m.obra_id && m.destino_contable === 'contabilidad_neta' && <div style={{ fontSize:10, color:'var(--tm)' }}>📄 Contabilidad Neta</div>}
+                        {/* Ajuste manual costo/gasto: solo se muestra cuando CONTRADICE
+                            a la vinculación — si coincide, no aporta nada mirarlo. */}
+                        {overrideEfectivo(m) && (
+                          <div><span className="badge b-purple" style={{ fontSize:9 }}
+                            title={`Ajustado a mano como ${TYPE_LABEL[m.type] || m.type}: por su vinculación habría sido lo contrario. Se cambia en Editar Movimiento.`}>
+                            ✋ {TYPE_LABEL[m.type] || m.type} (manual)</span></div>
+                        )}
                         {puedeVerBanc && m.currency === 'PEN' && Number(m.amount) > 2000 && (() => {
                           const evB = bancarizacionPorMov.get(m.id);
                           // Suma de PARTES registradas (bancarización parcial y/o depósitos).
@@ -3359,25 +3419,79 @@ function MovimientosContablesPage({ showToast }) {
               <input className="fi" type="date" value={form.date||''} onChange={e=>setForm({...form, date:e.target.value})}/>
             </div>
             <div>
-              <label className="flabel">Clasificación contable</label>
+              <label className="flabel" style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:6 }}>
+                <span>Clasificación contable</span>
+                <button type="button" className="btn btn-ghost btn-xs"
+                  disabled={aiClasifLoading || (form.clase === 'venta') || (!form.description?.trim() && !form.category?.trim())}
+                  title="Preguntarle a la IA si esto es costo de obra o gasto de la empresa"
+                  onClick={sugerirClasificacion} style={{ fontSize:10 }}>
+                  {aiClasifLoading ? '⏳ Pensando…' : '✨ Costo o gasto'}
+                </button>
+              </label>
               {(() => {
-                // NO es un campo que se teclee: sale de Clase + Vinculación.
-                // Antes era un select y nadie elegía "Gasto" → los S/264 mil de
-                // Gastos Generales quedaban escondidos dentro de "Costos".
+                // Por defecto NO se teclea: sale de Clase + Vinculación (antes era
+                // un select libre y nadie elegía "Gasto" → los S/264 mil de Gastos
+                // Generales quedaban escondidos dentro de "Costos"). El selector de
+                // abajo es el AJUSTE MANUAL para los casos que la vinculación no
+                // puede expresar (una compra DE OBRA que igual es gasto).
+                const esInterco = editingId ? (movs.find(m => m.id === editingId)?.is_intercompany === true) : false;
                 const movForm = {
                   clase: form.clase || 'compra',
                   type: form.type,
                   obra_id: form.obra_id || null,
                   destino_contable: form.obra_id ? 'obra' : (form.destino_contable || null),
-                  is_intercompany: editingId ? (movs.find(m => m.id === editingId)?.is_intercompany === true) : false,
+                  clasificacion_manual: form.clasificacion_manual || null,
+                  is_intercompany: esInterco,
                 };
                 const t = derivarTypeContable(movForm);
+                const esVentaForm = (form.clase || 'compra') === 'venta';
                 const color = t === 'income' ? 'var(--green)' : t === 'expense' ? 'var(--amber)' : 'var(--red)';
+                const sug = aiClasif?.result?.clasificacion;
+                const conf = Number(aiClasif?.confianza || 0);
                 return (<>
-                  <div className="fi" style={{ display:'flex', alignItems:'center', fontWeight:700, color, background:'rgba(255,255,255,0.03)' }}>
+                  <div className="fi" style={{ display:'flex', alignItems:'center', gap:6, fontWeight:700, color, background:'rgba(255,255,255,0.03)' }}>
                     {TYPE_LABEL_LARGO[t] || t}
+                    {overrideEfectivo(movForm) && (
+                      <span className="badge b-purple" style={{ fontSize:9, fontWeight:700 }} title="Ajustado a mano: no es lo que diría la vinculación">✋ manual</span>
+                    )}
                   </div>
+                  {/* Ajuste manual — solo tiene sentido en egresos que no sean internos */}
+                  {!esVentaForm && !esInterco && (
+                    <select className="fi" style={{ marginTop:4 }}
+                      value={form.clasificacion_manual || ''}
+                      onChange={e=>setForm({...form, clasificacion_manual: e.target.value})}>
+                      <option value="">⚙ Automático (lo decide la vinculación)</option>
+                      <option value="cost">✋ Forzar COSTO de obra</option>
+                      <option value="expense">✋ Forzar GASTO de la empresa</option>
+                    </select>
+                  )}
                   <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:3 }}>{motivoClasificacion(movForm)}</div>
+                  {/* Opinión de la IA: se muestra, NO se aplica sola */}
+                  {sug && (
+                    <div style={{ marginTop:5, padding:'6px 8px', borderRadius:6, fontSize:10.5,
+                      background: conf >= 0.85 ? 'rgba(46,204,113,0.08)' : conf >= 0.6 ? 'rgba(242,183,5,0.08)' : 'rgba(231,76,60,0.08)',
+                      border: '1px solid rgba(255,255,255,0.07)' }}>
+                      <div style={{ fontWeight:700, color: sug === 'expense' ? 'var(--amber)' : 'var(--red)' }}>
+                        ✨ La IA dice: {sug === 'expense' ? 'GASTO de la empresa' : 'COSTO de obra'} ({(conf*100).toFixed(0)}% de confianza)
+                        {aiClasif._cached ? ' · ya consultado antes' : ''}
+                      </div>
+                      {aiClasif.razonamiento && <div style={{ color:'var(--tm)', marginTop:2 }}>{aiClasif.razonamiento}</div>}
+                      {(aiClasif.advertencias || []).map((a, i) => (
+                        <div key={i} style={{ color:'var(--amber)', marginTop:2 }}>⚠ {a}</div>
+                      ))}
+                      {conf < 0.6 && <div style={{ color:'var(--tm)', marginTop:2 }}>Confianza baja — decidilo vos.</div>}
+                      <div style={{ display:'flex', gap:6, marginTop:5, flexWrap:'wrap' }}>
+                        {sug !== t && (
+                          <button type="button" className="btn btn-amber btn-xs" style={{ fontSize:10 }}
+                            onClick={()=>{ setForm({...form, clasificacion_manual: sug}); setAiClasif(null); }}>
+                            Aplicar como ajuste manual
+                          </button>
+                        )}
+                        {sug === t && <span style={{ color:'var(--green)' }}>✓ Coincide con la clasificación actual</span>}
+                        <button type="button" className="btn btn-ghost btn-xs" style={{ fontSize:10 }} onClick={()=>setAiClasif(null)}>Descartar</button>
+                      </div>
+                    </div>
+                  )}
                 </>);
               })()}
             </div>

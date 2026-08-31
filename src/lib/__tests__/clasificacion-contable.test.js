@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   derivarTypeContable, nivelUno, destinoEfectivo, motivoClasificacion,
-  typeIncoherente, INGRESO, EGRESO, DESTINO_A_TYPE,
+  typeIncoherente, overrideManual, overrideEfectivo, INGRESO, EGRESO, DESTINO_A_TYPE,
 } from '../clasificacion-contable.js';
 
 describe('nivelUno — ingreso o egreso', () => {
@@ -121,5 +121,64 @@ describe('motivoClasificacion', () => {
       expect(typeof motivoClasificacion(c)).toBe('string');
       expect(motivoClasificacion(c).length).toBeGreaterThan(10);
     });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// OVERRIDE MANUAL (columna clasificacion_manual, mig 163)
+// Pedido de Gabriel: hay compras vinculadas a una OBRA que igual son GASTO
+// administrativo. Antes la única forma de marcarlas gasto era desvincularlas
+// de la obra, y así se perdía la atribución.
+// ─────────────────────────────────────────────────────────────
+describe('derivarTypeContable — ajuste manual', () => {
+  it('fuerza GASTO una compra vinculada a una obra', () => {
+    const mov = { clase: 'compra', destino_contable: 'obra', obra_id: 'o1', clasificacion_manual: 'expense' };
+    expect(derivarTypeContable(mov)).toBe('expense');
+    expect(overrideEfectivo(mov)).toBe(true);
+  });
+
+  it('fuerza COSTO algo vinculado a Gastos Generales', () => {
+    const mov = { clase: 'compra', destino_contable: 'gastos_generales', clasificacion_manual: 'cost' };
+    expect(derivarTypeContable(mov)).toBe('cost');
+    expect(overrideEfectivo(mov)).toBe(true);
+  });
+
+  // ⚠ La regla dura está POR ENCIMA del ajuste manual.
+  it('NO puede convertir un intercompany en gasto', () => {
+    const mov = { clase: 'compra', destino_contable: 'obra', is_intercompany: true, clasificacion_manual: 'expense' };
+    expect(derivarTypeContable(mov)).toBe('cost');
+    expect(overrideEfectivo(mov)).toBe(false);
+    expect(motivoClasificacion(mov)).toMatch(/NO se aplica/i);
+  });
+
+  it('no toca las ventas', () => {
+    const mov = { clase: 'venta', clasificacion_manual: 'expense' };
+    expect(derivarTypeContable(mov)).toBe('income');
+    expect(overrideEfectivo(mov)).toBe(false);
+  });
+
+  it('un valor basura en la columna se ignora (vale la vinculación)', () => {
+    ['', null, undefined, 'income', 'GASTO', 0].forEach(v => {
+      expect(derivarTypeContable({ clase: 'compra', destino_contable: 'gastos_generales', clasificacion_manual: v })).toBe('expense');
+    });
+  });
+
+  it('un ajuste que COINCIDE con la vinculación no se marca como override efectivo', () => {
+    const mov = { clase: 'compra', destino_contable: 'obra', clasificacion_manual: 'cost' };
+    expect(derivarTypeContable(mov)).toBe('cost');
+    expect(overrideEfectivo(mov)).toBe(false);
+    expect(motivoClasificacion(mov)).toMatch(/coincide/i);
+  });
+
+  it('volver a "Automático" (null) devuelve el mando a la vinculación', () => {
+    const conAjuste = { clase: 'compra', destino_contable: 'obra', clasificacion_manual: 'expense' };
+    expect(derivarTypeContable(conAjuste)).toBe('expense');
+    expect(derivarTypeContable({ ...conAjuste, clasificacion_manual: null })).toBe('cost');
+  });
+
+  it('el motivo explica el conflicto con la vinculación', () => {
+    const txt = motivoClasificacion({ clase: 'compra', destino_contable: 'obra', clasificacion_manual: 'expense' });
+    expect(txt).toMatch(/GASTO/);
+    expect(txt).toMatch(/Autom/i);
   });
 });

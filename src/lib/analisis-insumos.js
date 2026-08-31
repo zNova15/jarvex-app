@@ -10,46 +10,72 @@
 // ═══════════════════════════════════════════════════════════════════
 import { normInsumo, claveGrupoDe } from './insumo-correlacion.js';
 
+// Clase efectiva de un movimiento. `clase` manda; `type` es el fallback de las
+// filas viejas que nunca la tuvieron (22 en producción al 31-ago-2026). Es el
+// criterio canónico del repo (insumos-venta.js, jx-compras-categoria.jsx) —
+// mirar solo `type` se equivocaría con una venta registrada como 'cost'.
+export const claseDeMov = (mv) => mv?.clase || (mv?.type === 'income' ? 'venta' : 'compra');
+
+// TODAS las líneas de factura (compras Y ventas, con precio o sin él), con el
+// contexto del movimiento padre. Es el extractor base: el comparador de precios
+// (extraerComprasDeFacturas) y el inventario por empresa (inventario-empresa.js)
+// filtran sobre esto — un solo lugar que parsea notas.items_factura[].
 // movs: filas de accounting_movements (notas puede ser objeto o string JSON).
-// → [{nombre, nombreNorm, proveedorId, proveedorNombre, fecha, precio,
-//     cantidad, unidad, moneda, doc, movId}] — solo líneas con precio > 0.
-// Solo COMPRAS: las VENTAS (type 'income' — third_party_name sería el CLIENTE)
-// y las notas de crédito/débito (ítems con precio positivo pero que restan)
-// distorsionarían el "más barato" — hallazgo de la revisión adversarial.
 // opts.demo espeja el modo prueba (el hook ya entrega solo filas del modo
 // activo; este flag mantiene la lib coherente cuando se le pasan filas crudas).
-export function extraerComprasDeFacturas(movs, opts = {}) {
+export function extraerLineasDeFacturas(movs, opts = {}) {
   const out = [];
   const demo = !!opts.demo;
   for (const mv of (movs || [])) {
     if (!mv || mv.deleted_at) continue;
     if (!!mv.demo !== demo) continue;
-    if (mv.type === 'income') continue;
-    if (['nota_credito', 'nota_debito'].includes(mv.document_type)) continue;
     let notas = mv.notas;
     if (typeof notas === 'string') { try { notas = JSON.parse(notas); } catch { continue; } }
     const items = notas && Array.isArray(notas.items_factura) ? notas.items_factura : null;
     if (!items) continue;
-    for (const it of items) {
+    const clase = claseDeMov(mv);
+    const esNota = ['nota_credito', 'nota_debito'].includes(mv.document_type);
+    items.forEach((it, idx) => {
       const nombre = String(it?.descripcion || '').trim();
-      const precio = Number(it?.precio_unitario) || 0;
-      if (!nombre || precio <= 0) continue;
+      if (!nombre) return;
       out.push({
         nombre,
         nombreNorm: normInsumo(nombre),
+        clase,                                   // 'compra' | 'venta'
+        esNota,                                  // NC/ND: resta, no suma
+        companyId: mv.company_id || null,
+        obraId: mv.obra_id || null,
+        interco: !!mv.is_intercompany,
+        cancelado: mv.payment_status === 'cancelled',
         proveedorId: mv.proveedor_id || null,
         proveedorNombre: mv.third_party_name || null,
         fecha: mv.date || '',
-        precio,
+        precio: Number(it?.precio_unitario) || 0,
         cantidad: Number(it?.cantidad) || 0,
         unidad: it?.unidad || 'und',
+        tipoInsumo: it?.tipo_insumo || null,
+        categoria: it?.categoria || null,
+        destino: it?.destino || null,            // 'obra' | 'empresa' | 'obra_general'
+        ventaStatus: it?.venta_status || null,   // 'para_venta' | 'vendido'
+        recibido: Number(it?.recibido) || 0,
+        tieneRecepcion: !!it && Object.prototype.hasOwnProperty.call(it, 'recibido'),
         moneda: mv.currency || 'PEN',
         doc: mv.document_number || '',
         movId: mv.id,
+        itemIdx: idx,
       });
-    }
+    });
   }
   return out;
+}
+
+// Solo las líneas COMPRADAS y con precio (lo que compara el panel de precios).
+// Las VENTAS (third_party_name sería el CLIENTE) y las notas de crédito/débito
+// (ítems con precio positivo pero que restan) distorsionarían el "más barato"
+// — hallazgo de la revisión adversarial.
+export function extraerComprasDeFacturas(movs, opts = {}) {
+  return extraerLineasDeFacturas(movs, opts)
+    .filter(l => l.clase === 'compra' && !l.esNota && l.precio > 0);
 }
 
 // Agrupa las compras por insumo (clave = grupo de correlación, o el nombre
