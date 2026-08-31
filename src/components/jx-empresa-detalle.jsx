@@ -222,13 +222,18 @@ function EmpresaDetalle({ company, obrasEjecutora = [], onVolver }) {
                           </div>
                         </td>
                         <td style={{ textAlign: 'right' }} className="col-num">
-                          {ins.comprado.cantidades.map(c => (
-                            <div key={c.unidad}>{fmtCant(c.cantidad)} <span style={{ color: 'var(--tm)', fontSize: 10.5 }}>{c.label}</span></div>
-                          ))}
-                          <div style={{ fontSize: 10, color: 'var(--tm)' }}>
-                            {ins.comprado.veces} compra{ins.comprado.veces !== 1 ? 's' : ''}
-                            {ins.comprado.interco > 0 ? ` · ${ins.comprado.interco} interco` : ''}
-                          </div>
+                          {/* Un insumo puede aparecer SOLO vendido (lo facturó sin
+                              tener la compra cargada acá): mostrar "0 compras"
+                              confundiría — va un guión. */}
+                          {ins.comprado.veces === 0 ? <span style={{ color: 'var(--tm)' }}>—</span> : (<>
+                            {ins.comprado.cantidades.map(c => (
+                              <div key={c.unidad}>{fmtCant(c.cantidad)} <span style={{ color: 'var(--tm)', fontSize: 10.5 }}>{c.label}</span></div>
+                            ))}
+                            <div style={{ fontSize: 10, color: 'var(--tm)' }}>
+                              {ins.comprado.veces} compra{ins.comprado.veces !== 1 ? 's' : ''}
+                              {ins.comprado.interco > 0 ? ` · ${ins.comprado.interco} interco` : ''}
+                            </div>
+                          </>)}
                         </td>
                         <td style={{ textAlign: 'right' }} className="col-num">
                           {ins.comprado.montos.length === 0
