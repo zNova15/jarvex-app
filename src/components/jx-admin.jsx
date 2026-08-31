@@ -23,6 +23,7 @@ const ROL_LABELS = {
   ing_social:          'Ing. Social',
   maestro_obra:        'Maestro de Obra',
   solo_lectura:        'Solo Lectura',
+  campo:               'Captura de Campo (PIN compartido)',
 };
 
 const ROL_COLORS_ADM = {
@@ -44,9 +45,10 @@ const ROL_COLORS_ADM = {
   ing_social:          'b-purple',
   maestro_obra:        'b-green',
   solo_lectura:        'b-gray',
+  campo:               'b-orange',
 };
 
-const ROL_KEYS = ['admin','gerente','ingeniero_residente','ingeniero','supervisor','almacenero','asistente_admin','contador','ayudante_contador','tesorero','jefe_compras','rrhh','prevencionista','ing_ambiental','ing_calidad','ing_social','maestro_obra','solo_lectura'];
+const ROL_KEYS = ['admin','gerente','ingeniero_residente','ingeniero','supervisor','almacenero','asistente_admin','contador','ayudante_contador','tesorero','jefe_compras','rrhh','prevencionista','ing_ambiental','ing_calidad','ing_social','maestro_obra','solo_lectura','campo'];
 
 // ── Roles Custom (definidos por el admin, persistidos en localStorage) ──
 // Cada rol custom: { key, label, color }
@@ -211,7 +213,9 @@ function UsuariosPage({ showToast }) {
     // asignada el sync no le baja datos y el user ve la app vacía
     // (era el bug que reportó el almacenero).
     const obrasArr = Array.from(form.obras || []);
-    if (form.rol !== 'admin' && obrasArr.length === 0) {
+    // 'campo' es la cuenta compartida del portal (mejora 2): global, sin obras
+    // asignadas — el portal pide la obra en cada foto.
+    if (form.rol !== 'admin' && form.rol !== 'campo' && obrasArr.length === 0) {
       showToast?.('Asigná al menos 1 obra al usuario (no es admin).','red');
       return;
     }

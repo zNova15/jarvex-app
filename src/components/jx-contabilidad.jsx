@@ -180,6 +180,7 @@ function EmpresasPage({ showToast }) {
     setForm({
       name:'', legal_name:'', ruc:'', company_type:'constructora', status:'activa', notas:'',
       rubro:'otro', rol_grupo:'mixta', regimen_tributario:'RG', margen_objetivo_pct:'',
+      mostrar_torpedo: true,
       direccion:'', telefono:'', email:'', representante_legal:'', inicio_actividades:'',
       actividades_economicas: [],
       logo_dataurl: null, nombre_corto: '', codigo_doc_prefix: '',
@@ -196,6 +197,7 @@ function EmpresasPage({ showToast }) {
       status: c.status || 'activa',
       notas: c.notas || '',
       rubro: c.rubro || 'otro',
+      mostrar_torpedo: c.mostrar_torpedo !== false,
       rol_grupo: c.rol_grupo || 'mixta',
       regimen_tributario: c.regimen_tributario || 'RG',
       margen_objetivo_pct: c.margen_objetivo_pct ?? '',
@@ -227,6 +229,7 @@ function EmpresasPage({ showToast }) {
           status: form.status,
           notas: form.notas?.trim() || null,
           rubro: form.rubro || null,
+          mostrar_torpedo: form.mostrar_torpedo !== false,   // mig 156: torpedo del portal de campo
           rol_grupo: form.rol_grupo || null,
           regimen_tributario: form.regimen_tributario || null,
           margen_objetivo_pct: form.margen_objetivo_pct === '' || form.margen_objetivo_pct == null
@@ -257,6 +260,7 @@ function EmpresasPage({ showToast }) {
           status: form.status,
           notas: form.notas?.trim() || null,
           rubro: form.rubro || null,
+          mostrar_torpedo: form.mostrar_torpedo !== false,   // mig 156: torpedo del portal de campo
           rol_grupo: form.rol_grupo || null,
           regimen_tributario: form.regimen_tributario || null,
           margen_objetivo_pct: form.margen_objetivo_pct === '' || form.margen_objetivo_pct == null
@@ -521,6 +525,13 @@ function EmpresasPage({ showToast }) {
                 {RUBROS.map(r => <option key={r.v} value={r.v}>{r.label}</option>)}
               </select>
               <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>Sirve para sugerir cadenas (ej: importadora → distribuidora → ejecutora).</div>
+              {/* Mig 156: el admin ELIGE qué empresas salen en el torpedo de RUCs
+                  del portal de captura de campo (pedido de Gabriel, 31-ago). */}
+              <label style={{ display:'flex', alignItems:'center', gap:6, marginTop:8, fontSize:11.5, cursor:'pointer' }}>
+                <input type="checkbox" checked={form.mostrar_torpedo !== false}
+                  onChange={e=>setForm({...form, mostrar_torpedo: e.target.checked})}/>
+                📸 Mostrar en el portal de campo (tabla "¿A qué RUC pido la factura?")
+              </label>
             </div>
             <div>
               <label className="flabel">Rol en el grupo</label>

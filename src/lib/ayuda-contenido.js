@@ -66,7 +66,7 @@ const AYUDA = {
     titulo: 'Captura de Campo',
     que: 'Guardá la FOTO de la factura de una compra apenas te la den — contabilidad la revisa y la registra después. Así ningún comprobante físico se pierde.',
     como: [
-      'Mirá el "torpedo" de arriba: dictale al proveedor el RUC de la empresa del grupo según el rubro de la compra.',
+      'Mirá el "torpedo" de arriba: dictale al proveedor el RUC de la empresa del grupo según el rubro de la compra. (El admin elige qué empresas aparecen ahí, desde Empresas.)',
       'Elegí la obra, sacá la foto (📷 abre la cámara directo) y "Guardar factura". Listo — no llenás nada más. (Desde la cuenta compartida de campo también se te pide tu nombre; con tu usuario normal ya se sabe que fuiste vos.)',
       'Sin señal también funciona: la foto queda en el teléfono y sube sola al recuperar internet.',
       'NO gastes la foto en apuros: nítida, con el comprobante completo y sin dedos encima — contabilidad la lee con IA tal cual.',
@@ -254,7 +254,7 @@ const AYUDA = {
     'Es la portada de contabilidad; cada indicador baja a su libro o listado.',
     'INGRESOS SIN SUSTENTO: cuando almacén registra un material sin factura, aparece acá para vincularlo. Al tocar "Vincular factura", arriba salen las 🎯 SUGERENCIAS: las facturas que CUADRAN con ese ingreso (mismo insumo, fecha cercana, cantidad parecida) con su % de coincidencia, el ítem exacto de la factura y el porqué — elegí la correcta con un click y el ítem queda marcado como recibido. Abajo está el resto de facturas del proveedor (con sus ítems visibles) para elegir a mano si ninguna sugerencia aplica.',
   ] },
-  'empresas': { titulo: 'Empresas', que: 'Las entidades legales del grupo (ejecutoras y proveedoras internas).', como: ['El RUC y la clase de cada empresa alimentan el cruce INTERCO y los filtros de emisor/receptor.'] },
+  'empresas': { titulo: 'Empresas', que: 'Las entidades legales del grupo (ejecutoras y proveedoras internas).', como: ['El RUC y la clase de cada empresa alimentan el cruce INTERCO y los filtros de emisor/receptor.', 'El RUBRO y el checkbox "📸 Mostrar en el portal de campo" controlan la tabla de RUCs que ve el personal de obra al subir facturas: solo salen las empresas marcadas.'] },
   'guias-remision': { titulo: 'Guías de Remisión', que: 'Las guías de remisión electrónicas vinculadas a las facturas y al traslado de materiales.', como: ['Se cargan principalmente por Captura Mágica y quedan vinculadas a su factura.', 'Su PDF es material contable: solo contabilidad y admin lo ven en Evidencias.'] },
   'intercompany': { titulo: 'Operaciones entre Empresas', que: 'Las operaciones INTERCO: ventas/compras entre empresas del propio grupo.', como: ['Editá los movimientos INTERCO desde acá (en Movimientos aparecen bloqueados).'] },
   'trazabilidad': { titulo: 'Trazabilidad de Cadenas', que: 'Sigue la cadena de un insumo o dinero a través de las empresas del grupo.', como: ['Útil para sustentar el recorrido proveedor → interco → obra.'] },

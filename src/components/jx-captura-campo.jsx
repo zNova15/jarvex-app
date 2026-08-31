@@ -64,7 +64,10 @@ function CapturaCampoPage({ showToast }) {
 
   const empresas = uM(() =>
     (companiesHook.data || [])
-      .filter(c => !c.deleted_at && (c.status ? c.status === 'activa' : true))
+      .filter(c => !c.deleted_at && (c.status ? c.status === 'activa' : true)
+        // El admin elige cuáles salen en el torpedo (checkbox en Empresas,
+        // mig 156). Tolerante a filas viejas sin la columna: se muestran.
+        && c.mostrar_torpedo !== false)
       .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''))),
     [companiesHook.data]);
   const obras = uM(() =>
