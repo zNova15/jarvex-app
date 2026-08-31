@@ -258,7 +258,17 @@ const AYUDA = {
     'INGRESOS SIN SUSTENTO: cuando almacén registra un material sin factura, aparece acá para vincularlo. Al tocar "Vincular factura", arriba salen las 🎯 SUGERENCIAS: las facturas que CUADRAN con ese ingreso (mismo insumo, fecha cercana, cantidad parecida) con su % de coincidencia, el ítem exacto de la factura y el porqué — elegí la correcta con un click y el ítem queda marcado como recibido. Abajo está el resto de facturas del proveedor (con sus ítems visibles) para elegir a mano si ninguna sugerencia aplica.',
   ] },
   'empresas': { titulo: 'Empresas', que: 'Las entidades legales del grupo (ejecutoras y proveedoras internas).', como: ['El RUC y la clase de cada empresa alimentan el cruce INTERCO y los filtros de emisor/receptor.', 'El RUBRO y el checkbox "📸 Mostrar en el portal de campo" controlan la tabla de RUCs que ve el personal de obra al subir facturas: solo salen las empresas marcadas.'] },
-  'guias-remision': { titulo: 'Guías de Remisión', que: 'Las guías de remisión electrónicas vinculadas a las facturas y al traslado de materiales.', como: ['Se cargan principalmente por Captura Mágica y quedan vinculadas a su factura.', 'Su PDF es material contable: solo contabilidad y admin lo ven en Evidencias.'] },
+  'guias-remision': {
+    titulo: 'Guías de Remisión',
+    que: 'Las guías de remisión electrónicas: emitidas por el grupo o recibidas de proveedores, vinculadas a su factura, con detector de facturas a las que les FALTA la guía.',
+    como: [
+      'PESTAÑAS de origen: "↗ Emitidas" = el RUC emisor es una empresa del grupo; "↘ Recibidas" = la emitió un proveedor. Con filtros de vínculo, empresa, obra y fechas de emisión ("✕ Limpiar" resetea todo).',
+      '🚚 "FACTURAS QUE REQUIEREN GUÍA": lista las facturas con ítems que NO son servicios (los bienes se trasladan con guía) y sin guía vinculada — separadas en VENTAS (nos tocaba emitirla: el riesgo tributario propio) y COMPRAS (reclamarla al proveedor). Por defecto muestra los últimos 90 días; "Ver todo el histórico" abre el backlog completo.',
+      'En esa lista: "🔗 Vincular guía" ofrece las guías sueltas que pueden corresponder (coincidencia de referencia primero; en ventas solo guías emitidas por el grupo — sin mezclar RUCs); "✕ No requiere" saca la factura de la lista (pide confirmación y se puede DESHACER desde el plegado 🚫 "marcadas no requiere"). Las facturas sin detalle de ítems van en su propio plegado: "⚑ Sí requiere" las pasa a pendientes, "✕ No requiere" las descarta.',
+      'Se cargan principalmente por Captura Mágica y quedan vinculadas a su factura.',
+      'Su PDF es material contable: solo contabilidad y admin lo ven en Evidencias.',
+    ],
+  },
   'intercompany': { titulo: 'Operaciones entre Empresas', que: 'Las operaciones INTERCO: ventas/compras entre empresas del propio grupo.', como: ['Editá los movimientos INTERCO desde acá (en Movimientos aparecen bloqueados).'] },
   'trazabilidad': { titulo: 'Trazabilidad de Cadenas', que: 'Sigue la cadena de un insumo o dinero a través de las empresas del grupo.', como: ['Útil para sustentar el recorrido proveedor → interco → obra.'] },
   'compras-categoria': { titulo: 'Compras por Categoría', que: 'Las compras agrupadas por categoría de gasto.', como: ['Sirve para ver en qué se va la plata por rubro y por periodo.'] },
