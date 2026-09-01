@@ -726,6 +726,15 @@ function InsumosPage({ showToast }) {
 
 // ─── COSTOS PAGE ──────────────────────────────────────────
 function CostosPage() {
+  // ChartLine/ChartDoughnut viven en jx-dashboard.jsx (EAGER, no los exporta) y
+  // se consumen como globales — NO importarlos: partiría un chunk con init
+  // circular (regla crítica 1). Antes se los referenciaba "pelados", lo que
+  // funcionaba de casualidad por la cadena de scopes hasta el objeto global;
+  // explicitarlos como window.* es el mismo idioma que window.Modal/window.TemaToggle
+  // y hace visible la dependencia si alguna vez se deja de exponerlos.
+  const ChartLine = window.ChartLine;
+  const ChartDoughnut = window.ChartDoughnut;
+
   const obraId = useObraActiva();
   const { data: partidas } = window.__hooks.usePartidas(obraId);
   const { data: obras } = window.__hooks.useObras();
