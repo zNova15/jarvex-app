@@ -123,7 +123,7 @@ function ActivosPesadosPage({ showToast }) {
   };
   const accionesSA = (tipo, row) => superAdmin ? (
     <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
-      <button className="btn btn-ghost btn-xs" title="⚡ Editar fecha" style={{ color: '#E74C3C', padding: '0 4px' }} onClick={() => { setEditFechaMaq({ tipo, row }); setEditFechaMaqVal((row.fecha || '').slice(0, 10)); }}>📅</button>
+      <button className="btn btn-ghost btn-xs" title="⚡ Editar fecha" style={{ color: 'var(--red)', padding: '0 4px' }} onClick={() => { setEditFechaMaq({ tipo, row }); setEditFechaMaqVal((row.fecha || '').slice(0, 10)); }}>📅</button>
       <button className="btn btn-red btn-xs" title="⚡ Eliminar" onClick={() => borrarHistorial(tipo, row)} style={{ marginLeft: 4 }}><JxIcon name="trash" size={10} /></button>
     </td>
   ) : null;

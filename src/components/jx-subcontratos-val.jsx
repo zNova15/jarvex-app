@@ -576,7 +576,7 @@ function SubcontratoValorizacionesPage({ showToast }) {
           </div>
 
           {/* Resumen totales */}
-          <div className="card card-p" style={{ marginTop:14, background:'rgba(0,0,0,0.18)' }}>
+          <div className="card card-p" style={{ marginTop:14, background:'var(--bg-c2)' }}>
             <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:6, fontSize:12 }}>
               <div>Avance bruto:</div><div style={{ textAlign:'right' }}>{fmtS(form.monto_avance||0)}</div>
               <div>(-) Retención garantía:</div><div style={{ textAlign:'right', color:'var(--orange)' }}>{fmtS(form.retencion_garantia||0)}</div>

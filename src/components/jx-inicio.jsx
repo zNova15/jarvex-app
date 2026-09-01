@@ -36,19 +36,19 @@ const fmtSk = (n) => {
 // tipo 'obra' = opera sobre la obra de trabajo elegida; 'general' = cross-obra.
 const BLOQUES = [
   {
-    id: 'almacen', titulo: 'Almacén', icon: 'package', tipo: 'obra', color: '#F2B705',
+    id: 'almacen', titulo: 'Almacén', icon: 'package', tipo: 'obra', color: 'var(--amber)',
     desc: 'Inventarios, movimientos, ubicaciones y vinculación de compras',
     items: ['materiales', 'mov-materiales', 'herramientas', 'mov-herramientas', 'epps-inventario', 'epp',
       'insumos-emergencia', 'insumos-persona', 'ubicaciones', 'compras-pendientes', 'movimientos-insumos', 'caja-chica',
       'evidencias', 'plantillas'],
   },
   {
-    id: 'logistica', titulo: 'Logística', icon: 'truck', tipo: 'obra', color: '#3498DB',
+    id: 'logistica', titulo: 'Logística', icon: 'truck', tipo: 'obra', color: 'var(--blue)',
     desc: 'Solicitud de insumos, requisiciones y órdenes de compra',
     items: ['solicitud-residente', 'requisiciones', 'ordenes-compra'],
   },
   {
-    id: 'gestion-obra', titulo: 'Gestión de Obra', icon: 'hardHat', tipo: 'obra', color: '#2ECC71',
+    id: 'gestion-obra', titulo: 'Gestión de Obra', icon: 'hardHat', tipo: 'obra', color: 'var(--green)',
     desc: 'Presupuesto, partidas, avance, costos, maquinaria e ingeniería',
     items: ['obras', 'dashboard-gestion', 'panel-residente', 'importar', 'partidas', 'insumos', 'control-consumo', 'versiones',
       'cronograma', 'avance', 'aprobaciones-reporte', 'rendimiento-ingenieros', 'comparativo', 'costos',
@@ -57,34 +57,34 @@ const BLOQUES = [
       'mis-reportes', 'borradores-reporte', 'plan-real', 'emitir-alerta'],
   },
   {
-    id: 'personal', titulo: 'Personal y Subcontratos', icon: 'users', tipo: 'obra', color: '#9B59B6',
+    id: 'personal', titulo: 'Personal y Subcontratos', icon: 'users', tipo: 'obra', color: 'var(--purple)',
     desc: 'RRHH, asistencia, planillas y subcontratos',
     items: ['personal', 'frentes', 'asistencia', 'personal-contratos', 'planillas', 'cts', 'gratificaciones',
       'plame', 'subcontratistas', 'subcontratos', 'subcontrato-valorizaciones'],
   },
   {
-    id: 'ssoma', titulo: 'Seguridad (SSOMA)', icon: 'shield', tipo: 'obra', color: '#E67E22',
+    id: 'ssoma', titulo: 'Seguridad (SSOMA)', icon: 'shield', tipo: 'obra', color: 'var(--orange)',
     desc: 'Reporte diario, charlas, IPERC, inspecciones y EPPs',
     items: ['reporte-especialidad', 'charlas-plan', 'sctr-personal', 'inducciones', 'charlas-seguridad', 'iperc', 'inspecciones-seguridad', 'capacitaciones', 'epps-inventario',
       'epp', 'insumos-persona', 'insumos-emergencia'],
   },
   {
-    id: 'ambiental', titulo: 'Ambiental', icon: 'map', tipo: 'obra', color: '#2ECC71',
+    id: 'ambiental', titulo: 'Ambiental', icon: 'map', tipo: 'obra', color: 'var(--green)',
     desc: 'Reporte diario y evidencias de gestión ambiental (ISO 14001)',
     items: ['reporte-especialidad', 'gestion-ambiental', 'charlas-plan', 'inducciones', 'charlas-seguridad', 'capacitaciones', 'evidencias'],
   },
   {
-    id: 'calidad', titulo: 'Calidad', icon: 'checkCircle', tipo: 'obra', color: '#3498DB',
+    id: 'calidad', titulo: 'Calidad', icon: 'checkCircle', tipo: 'obra', color: 'var(--blue)',
     desc: 'Reporte diario y verificación de insumos (certificados vs expediente)',
     items: ['reporte-especialidad', 'gestion-calidad', 'materiales', 'evidencias'],
   },
   {
-    id: 'social', titulo: 'Social', icon: 'users', tipo: 'obra', color: '#9B59B6',
+    id: 'social', titulo: 'Social', icon: 'users', tipo: 'obra', color: 'var(--purple)',
     desc: 'Compromisos con la comunidad, quejas/reclamos, padrón y charlas',
     items: ['reporte-especialidad', 'gestion-social', 'charlas-plan', 'charlas-seguridad', 'capacitaciones', 'evidencias'],
   },
   {
-    id: 'contabilidad', titulo: 'Contabilidad', icon: 'dollar', tipo: 'general', color: '#F2B705',
+    id: 'contabilidad', titulo: 'Contabilidad', icon: 'dollar', tipo: 'general', color: 'var(--amber)',
     desc: 'Empresas del grupo, movimientos, conciliación, tesorería y SUNAT',
     items: ['cont-dashboard', 'movimientos-contables', 'conciliacion-insumos', 'guias-remision', 'pagos',
       // SCTR vive acá para contabilidad (la contadora sube el trámite) — así no
@@ -96,32 +96,32 @@ const BLOQUES = [
       'comparativo-periodos'],
   },
   {
-    id: 'reportes', titulo: 'Reportes y Dashboards', icon: 'chart', tipo: 'general', color: '#3498DB',
+    id: 'reportes', titulo: 'Reportes y Dashboards', icon: 'chart', tipo: 'general', color: 'var(--blue)',
     desc: 'Visión ejecutiva, KPIs, cumplimiento y alertas',
     items: ['dashboard', 'reportes', 'dashboard-ejecutivo', 'kpis-obra', 'cumplimiento-cronograma', 'alertas'],
   },
   {
-    id: 'ia', titulo: 'Herramientas IA', icon: 'upload', tipo: 'general', color: '#2ECC71',
+    id: 'ia', titulo: 'Herramientas IA', icon: 'upload', tipo: 'general', color: 'var(--green)',
     desc: 'Captura Mágica de comprobantes y búsqueda global',
     items: ['captura-magica', 'captura-campo', 'busqueda'],
   },
   {
-    id: 'empresas-prov', titulo: 'Empresas y Proveedores', icon: 'building', tipo: 'general', color: '#9B59B6',
+    id: 'empresas-prov', titulo: 'Empresas y Proveedores', icon: 'building', tipo: 'general', color: 'var(--purple)',
     desc: 'Entidades del grupo y proveedores (global)',
     items: ['empresas', 'proveedores'],
   },
   {
-    id: 'solicitudes-blq', titulo: 'Solicitudes', icon: 'bell', tipo: 'general', color: '#E67E22',
+    id: 'solicitudes-blq', titulo: 'Solicitudes', icon: 'bell', tipo: 'general', color: 'var(--orange)',
     desc: 'Solicitud de insumos, requisiciones, cambios y conflictos',
     items: ['solicitud-residente', 'requisiciones', 'solicitudes', 'conflictos'],
   },
   {
-    id: 'usuarios-blq', titulo: 'Usuarios y Roles', icon: 'user', tipo: 'general', color: '#EF6B5E',
+    id: 'usuarios-blq', titulo: 'Usuarios y Roles', icon: 'user', tipo: 'general', color: 'var(--red)',
     desc: 'Cuentas, permisos y auditoría',
     items: ['usuarios', 'roles', 'audit-log'],
   },
   {
-    id: 'config-blq', titulo: 'Configuración', icon: 'settings', tipo: 'general', color: '#95A5A6',
+    id: 'config-blq', titulo: 'Configuración', icon: 'settings', tipo: 'general', color: 'var(--tm)',
     desc: 'Ajustes del sistema',
     items: ['configuracion'],
   },
@@ -148,7 +148,7 @@ function BloqueCard({ blq, items, onAbrir }) {
   return (
     <div className="card card-p" style={{ border: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <div style={{ width: 36, height: 36, borderRadius: 9, background: `${blq.color}1f`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        <div style={{ width: 36, height: 36, borderRadius: 9, background: `color-mix(in srgb, ${blq.color} 12%, transparent)`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
           <Icon name={blq.icon} size={17} color={blq.color} />
         </div>
         <div style={{ minWidth: 0 }}>
@@ -160,7 +160,7 @@ function BloqueCard({ blq, items, onAbrir }) {
         {visibles.map(it => (
           <button key={it.id} onClick={() => onAbrir(it.id)} title={it.label}
             style={{ display: 'flex', alignItems: 'center', gap: 7, background: 'none', border: 'none', cursor: 'pointer', padding: '4px 6px', borderRadius: 6, textAlign: 'left', color: 'var(--ts)', fontSize: 12 }}
-            onMouseEnter={e => { e.currentTarget.style.background = `${blq.color}14`; e.currentTarget.style.color = 'var(--tp)'; }}
+            onMouseEnter={e => { e.currentTarget.style.background = `color-mix(in srgb, ${blq.color} 8%, transparent)`; e.currentTarget.style.color = 'var(--tp)'; }}
             onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--ts)'; }}>
             <Icon name={it.icon} size={13} color={blq.color} />
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.label}</span>
@@ -354,7 +354,7 @@ function InicioPage({ onNav, onEnterObra }) {
       ) : (
         <div className="card card-p" style={{ marginBottom: 22, border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
           <div style={{ width: 38, height: 38, borderRadius: 9, background: 'rgba(52,152,219,0.14)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-            <Icon name="building" size={18} color="#3498DB" />
+            <Icon name="building" size={18} color="var(--blue)" />
           </div>
           <div style={{ flex: 1, minWidth: 240 }}>
             {obrasVivas.length === 1 ? (
@@ -367,7 +367,7 @@ function InicioPage({ onNav, onEnterObra }) {
             )}
             {av && (
               <div style={{ display: 'flex', gap: 14, marginTop: 6, fontSize: 11 }}>
-                <span style={{ color: 'var(--tm)' }}>Físico <strong style={{ color: '#3498DB' }}>{av.fisico.toFixed(0)}%</strong></span>
+                <span style={{ color: 'var(--tm)' }}>Físico <strong style={{ color: 'var(--blue)' }}>{av.fisico.toFixed(0)}%</strong></span>
                 <span style={{ color: 'var(--tm)' }}>Facturado <strong style={{ color: 'var(--amber)' }}>{fmtSk(av.facturado)}</strong></span>
               </div>
             )}

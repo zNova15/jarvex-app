@@ -6456,7 +6456,7 @@ function AsistenciaPage({ showToast }) {
           </div>
         ) : (
         <>
-          <div style={{display:'flex', gap:8, marginBottom:10, flexWrap:'wrap', alignItems:'center', padding:'10px 12px', border:'1px dashed var(--border-h)', borderRadius:8, background:'var(--bg-soft, transparent)'}}>
+          <div style={{display:'flex', gap:8, marginBottom:10, flexWrap:'wrap', alignItems:'center', padding:'10px 12px', border:'1px dashed var(--border-h)', borderRadius:8, background:'transparent'}}>
             <span style={{fontSize:11.5, color:'var(--tm)', fontWeight:600}}>Acelerá con IA:</span>
             <label className={`btn btn-amber btn-sm ${ocrBusy ? 'disabled' : ''}`} style={{cursor: ocrBusy ? 'wait' : 'pointer', opacity: ocrBusy ? 0.7 : 1}}>
               <JxIcon name="camera" size={13}/>

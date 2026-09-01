@@ -101,12 +101,12 @@ function ChangeDiff({ changes }) {
           <div key={field} style={{ display: 'flex', flexWrap: 'wrap', gap: 6, fontSize: 12, alignItems: 'center' }}>
             <span style={{ color: 'var(--tm)', fontWeight: 600, minWidth: 100 }}>{fieldLabel}:</span>
             {oldV !== undefined && (
-              <span style={{ background: 'rgba(231,76,60,0.1)', border: '1px solid rgba(231,76,60,0.25)', color: '#EF6B5E', padding: '2px 8px', borderRadius: 4, textDecoration: 'line-through', fontSize: 11.5 }}>
+              <span style={{ background: 'rgba(231,76,60,0.1)', border: '1px solid rgba(231,76,60,0.25)', color: 'var(--red)', padding: '2px 8px', borderRadius: 4, textDecoration: 'line-through', fontSize: 11.5 }}>
                 {String(oldLabel ?? '—')}
               </span>
             )}
             {oldV !== undefined && <span style={{ color: 'var(--tm)' }}>→</span>}
-            <span style={{ background: 'rgba(46,204,113,0.1)', border: '1px solid rgba(46,204,113,0.25)', color: '#2ECC71', padding: '2px 8px', borderRadius: 4, fontSize: 11.5 }}>
+            <span style={{ background: 'rgba(46,204,113,0.1)', border: '1px solid rgba(46,204,113,0.25)', color: 'var(--green)', padding: '2px 8px', borderRadius: 4, fontSize: 11.5 }}>
               {String(newLabel ?? '—')}
             </span>
           </div>
@@ -378,7 +378,7 @@ function EditarSolicitudModal({ req, onClose, onSaved, showToast }) {
       })}
       {esEliminacion ? (
         <div style={{ background: 'rgba(231,76,60,0.08)', border: '1px solid rgba(231,76,60,0.25)', borderRadius: 6, padding: '8px 12px', fontSize: 11.5, color: 'var(--ts)', marginBottom: 10 }}>
-          <strong style={{ color: '#EF6B5E' }}>Solicitud de eliminación</strong> — acá solo se corrige el motivo. Si ya no querés eliminar el registro, anulá la solicitud.
+          <strong style={{ color: 'var(--red)' }}>Solicitud de eliminación</strong> — acá solo se corrige el motivo. Si ya no querés eliminar el registro, anulá la solicitud.
         </div>
       ) : entries.some(([k, v]) => !k.startsWith('__') && !esEditable([k, v])) && (
         <div style={{ background: 'rgba(242,183,5,0.08)', border: '1px solid rgba(242,183,5,0.25)', borderRadius: 6, padding: '8px 12px', fontSize: 11.5, color: 'var(--ts)', marginBottom: 10 }}>
@@ -870,7 +870,7 @@ function SolicitudesPage({ showToast }) {
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 160, overflowY: 'auto' }}>
             {colaLocal.map(c => (
-              <div key={c.id} style={{ fontSize: 11, color: 'var(--ts)', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: '4px 6px', background: 'rgba(0,0,0,0.15)', borderRadius: 4 }}>
+              <div key={c.id} style={{ fontSize: 11, color: 'var(--ts)', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: '4px 6px', background: 'var(--bg-c2)', borderRadius: 4 }}>
                 <span style={{ fontWeight: 600 }}>{c.label}</span>
                 <span style={{ color: 'var(--tm)' }}>{window.__fecha?.fechaHoraLocalDe ? window.__fecha.fechaHoraLocalDe(c.created_at) : String(c.created_at || '').slice(0, 16).replace('T', ' ')}</span>
                 {c.deOtroUsuario && <span className="badge b-amber" style={{ fontSize: 9 }} title={`La creó ${c.requester_email || 'otro usuario'} en esta PC — sube recién cuando esa persona vuelva a iniciar sesión acá`}>de otro usuario</span>}
@@ -1099,7 +1099,7 @@ function SolicitudesPage({ showToast }) {
                             <button className="btn btn-ghost btn-xs" disabled={busy} title="Editar solicitud (valor propuesto / motivo)" onClick={() => setEditando(req)}>
                               <JxIcon name="edit" size={11} />
                             </button>
-                            <button className="btn btn-ghost btn-xs" disabled={busy} title="Anular solicitud" style={{ color: '#EF6B5E' }} onClick={() => handleCancel(req)}>
+                            <button className="btn btn-ghost btn-xs" disabled={busy} title="Anular solicitud" style={{ color: 'var(--red)' }} onClick={() => handleCancel(req)}>
                               <JxIcon name="x" size={11} /> Anular
                             </button>
                           </>
@@ -1411,9 +1411,9 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
               <div style={{ background: 'var(--bg-s)', border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px', marginBottom: 10 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--tm)', marginBottom: 8 }}>{fieldDef?.label || field}</div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', fontSize: 13 }}>
-                  <span style={{ background: 'rgba(231,76,60,0.1)', border: '1px solid rgba(231,76,60,0.25)', color: '#EF6B5E', padding: '4px 10px', borderRadius: 6, textDecoration: 'line-through' }}>{labelDe(oldValue) ?? '—'}</span>
+                  <span style={{ background: 'rgba(231,76,60,0.1)', border: '1px solid rgba(231,76,60,0.25)', color: 'var(--red)', padding: '4px 10px', borderRadius: 6, textDecoration: 'line-through' }}>{labelDe(oldValue) ?? '—'}</span>
                   <span style={{ color: 'var(--tm)' }}>→</span>
-                  <span style={{ background: 'rgba(46,204,113,0.1)', border: '1px solid rgba(46,204,113,0.25)', color: '#2ECC71', padding: '4px 10px', borderRadius: 6, fontWeight: 600 }}>{labelDe(confirmData.parsedNew) ?? '—'}</span>
+                  <span style={{ background: 'rgba(46,204,113,0.1)', border: '1px solid rgba(46,204,113,0.25)', color: 'var(--green)', padding: '4px 10px', borderRadius: 6, fontWeight: 600 }}>{labelDe(confirmData.parsedNew) ?? '—'}</span>
                 </div>
               </div>
               {warnCorto && (
@@ -1488,7 +1488,7 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
       ) : (
         <div>
           <div style={{ background: 'rgba(231,76,60,0.08)', border: '1px solid rgba(231,76,60,0.25)', borderRadius: 6, padding: 10, marginBottom: 12, fontSize: 12, color: 'var(--ts)' }}>
-            <strong style={{ color: '#EF6B5E' }}>⚠ Solicitud de eliminación</strong>
+            <strong style={{ color: 'var(--red)' }}>⚠ Solicitud de eliminación</strong>
             <div style={{ marginTop: 4 }}>El registro quedará marcado como eliminado (soft-delete) cuando el admin apruebe. Los movimientos históricos no se ven afectados.</div>
           </div>
           {delWarn && (

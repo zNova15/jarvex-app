@@ -568,7 +568,7 @@ function ValorizacionesPage({ showToast }) {
           </div>
 
           {/* Resumen totales */}
-          <div className="card card-p" style={{ marginTop:14, background:'rgba(0,0,0,0.18)' }}>
+          <div className="card card-p" style={{ marginTop:14, background:'var(--bg-c2)' }}>
             <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:6, fontSize:12 }}>
               <div>Bruto:</div><div style={{ textAlign:'right' }}>{fmtS(totales.bruto)}</div>
               <div>(-) Adelantos:</div><div style={{ textAlign:'right', color:'var(--orange)' }}>{fmtS(form.adelantos||0)}</div>

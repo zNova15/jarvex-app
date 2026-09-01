@@ -277,7 +277,7 @@ function EmpresaDetalle({ company, obrasEjecutora = [], onVolver }) {
                       </tr>
                       {abiertoEste && (
                         <tr>
-                          <td colSpan={7} style={{ background: 'rgba(255,255,255,0.02)' }}>
+                          <td colSpan={7} style={{ background: 'var(--tint-neutral)' }}>
                             <div style={{ display: 'grid', gap: 4, padding: '6px 2px' }}>
                               {ins.variantes.length > 1 && (
                                 <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
@@ -285,7 +285,7 @@ function EmpresaDetalle({ company, obrasEjecutora = [], onVolver }) {
                                 </div>
                               )}
                               {ins.lineas.map(l => (
-                                <div key={`${l.movId}-${l.itemIdx}`} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', fontSize: 11.5, padding: '4px 6px', background: 'rgba(255,255,255,0.03)', borderRadius: 5 }}>
+                                <div key={`${l.movId}-${l.itemIdx}`} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', fontSize: 11.5, padding: '4px 6px', background: 'var(--tint-neutral)', borderRadius: 5 }}>
                                   <span className={`badge ${l.clase === 'venta' ? 'b-green' : 'b-red'}`} style={{ fontSize: 9 }}>
                                     {l.clase === 'venta' ? 'venta' : 'compra'}
                                   </span>

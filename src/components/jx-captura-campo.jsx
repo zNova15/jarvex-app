@@ -101,7 +101,7 @@ function ConfigPortalAdmin({ empresasTodas, companiesHook, showToast }) {
             <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>🧾 Empresas del torpedo (qué ve el personal y con qué rubro)</div>
             <div style={{ display: 'grid', gap: 5 }}>
               {empresasTodas.map(c => (
-                <div key={c.id} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '6px 8px', background: 'rgba(255,255,255,0.03)', borderRadius: 5 }}>
+                <div key={c.id} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '6px 8px', background: 'var(--tint-neutral)', borderRadius: 5 }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', flex: 1, minWidth: 180, fontSize: 12 }}>
                     <input type="checkbox" checked={c.mostrar_torpedo !== false}
                       onChange={e => actualizarEmpresa(c.id, { mostrar_torpedo: e.target.checked })} />

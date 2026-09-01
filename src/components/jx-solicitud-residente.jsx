@@ -317,7 +317,7 @@ function SolicitudResidentePage({ showToast }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: 16 }}>✨</span>
             <div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: '#9B59B6' }}>Asistente IA · Generar por descripción</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--purple)' }}>Asistente IA · Generar por descripción</div>
               <div style={{ fontSize: 11, color: 'var(--tm)' }}>Describí qué necesitás en lenguaje natural — la IA arma los ítems (materiales), cantidades y prioridad. Podés ajustar el tipo de cada ítem.</div>
             </div>
           </div>

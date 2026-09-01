@@ -33,7 +33,7 @@ export function TooltipIcon({ text, placement = 'top', size = 12 }) {
           width: size + 4, height: size + 4,
           borderRadius:'50%',
           background:'rgba(155,89,182,0.15)',
-          color:'#9B59B6',
+          color:'var(--purple)',
           fontSize: size, fontWeight:700,
           cursor:'help',
           lineHeight: 1,

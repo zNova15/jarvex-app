@@ -6,6 +6,7 @@ import { hoyLocal, fmtFechaCorta } from "../lib/fecha.js";
 import { segmentarAvance, colorIngeniero } from "../lib/color-ingeniero.js";
 import { calcAvanceFinanciero } from "../lib/avance-financiero.js";
 import { esUnidadPorcentaje } from "../lib/apuParser.js";
+import { cssVar } from "../lib/tema.js";
 const { useState: uSG, useMemo: uMG, useEffect: uEG } = React;
 
 const numG = (x) => Number(x || 0).toLocaleString('es-PE');
@@ -606,21 +607,21 @@ function InsumosPage({ showToast }) {
               { lbl: 'Costo real', val: barFinanciero, color: barFinanciero >= 80 ? 'var(--amber)' : 'var(--green)', desc: 'Costo real CONSUMIDO ÷ presupuesto: se llena con las salidas de almacén que los ingenieros imputan a esta partida (columna "Costo Real"). Distinto de "Facturado" (lo comprado).' },
               { lbl: 'Consumo', val: barConsumo, color: barConsumo >= 80 ? 'var(--amber)' : 'var(--green)', desc: 'Mayor % de consumo de un insumo material (cantidad usada ÷ presupuestada), por salidas vinculadas a la partida (columna "Cant. Real").' },
             ].map(b => (
-              <div key={b.lbl} style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 8, padding: '10px 12px' }}>
+              <div key={b.lbl} style={{ background: 'var(--tint-neutral)', borderRadius: 8, padding: '10px 12px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
                   <span style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ts)' }}>{b.lbl}</span>
                   <span style={{ fontSize: 16, fontWeight: 800, color: b.color }}>{Math.round(b.val)}%</span>
                 </div>
                 {b.lbl === 'Reportado' && segAvance.segmentos.length > 0 ? (
                   // Multicolor por ingeniero: cada segmento = lo que avanzó ese responsable (gris = importado).
-                  <div style={{ height: 7, borderRadius: 4, background: 'rgba(255,255,255,0.07)', overflow: 'hidden', margin: '5px 0', display: 'flex' }}>
+                  <div style={{ height: 7, borderRadius: 4, background: 'var(--track-bg)', overflow: 'hidden', margin: '5px 0', display: 'flex' }}>
                     {segAvance.segmentos.map((s, i) => (
                       <div key={s.uid + '_' + i} title={`${nombreIng(s.uid === 'sin' ? null : s.uid)}: ${s.pct.toFixed(1)}%`}
                            style={{ width: s.pct + '%', height: '100%', background: colorIngeniero(s.uid) }} />
                     ))}
                   </div>
                 ) : (
-                  <div style={{ height: 7, borderRadius: 4, background: 'rgba(255,255,255,0.07)', overflow: 'hidden', margin: '5px 0' }}><div style={{ width: Math.min(100, b.val) + '%', height: '100%', background: b.color }} /></div>
+                  <div style={{ height: 7, borderRadius: 4, background: 'var(--track-bg)', overflow: 'hidden', margin: '5px 0' }}><div style={{ width: Math.min(100, b.val) + '%', height: '100%', background: b.color }} /></div>
                 )}
                 {b.lbl === 'Reportado' && segAvance.segmentos.length > 0 && (
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '2px 8px', margin: '0 0 4px', fontSize: 9.5, color: 'var(--tm)' }}>
@@ -708,10 +709,10 @@ function InsumosPage({ showToast }) {
             </tbody>
             <tfoot>
               <tr>
-                <td colSpan={6} style={{padding:'12px 14px',fontWeight:700,color:'var(--ts)',background:'rgba(0,0,0,0.15)'}}>TOTAL</td>
-                <td style={{textAlign:'right',padding:'12px 14px',fontWeight:700,color:'var(--blue)',background:'rgba(0,0,0,0.15)'}} className="col-num">{fmtS(totalPres)}</td>
-                <td style={{textAlign:'right',padding:'12px 14px',fontWeight:700,color:'var(--amber)',background:'rgba(0,0,0,0.15)'}} className="col-num">{fmtS(totalReal)}</td>
-                <td style={{textAlign:'right',padding:'12px 14px',fontWeight:700,color:desv>0?'var(--red)':'var(--green)',background:'rgba(0,0,0,0.15)'}} className="col-num">{desv>0?'+':''}{fmtS(desv)}</td>
+                <td colSpan={6} style={{padding:'12px 14px',fontWeight:700,color:'var(--ts)',background:'var(--bg-c2)'}}>TOTAL</td>
+                <td style={{textAlign:'right',padding:'12px 14px',fontWeight:700,color:'var(--blue)',background:'var(--bg-c2)'}} className="col-num">{fmtS(totalPres)}</td>
+                <td style={{textAlign:'right',padding:'12px 14px',fontWeight:700,color:'var(--amber)',background:'var(--bg-c2)'}} className="col-num">{fmtS(totalReal)}</td>
+                <td style={{textAlign:'right',padding:'12px 14px',fontWeight:700,color:desv>0?'var(--red)':'var(--green)',background:'var(--bg-c2)'}} className="col-num">{desv>0?'+':''}{fmtS(desv)}</td>
               </tr>
             </tfoot>
           </table>
@@ -867,8 +868,8 @@ function CostosPage() {
           {curvaS.labels.length > 0 ? (
             <ChartLine id="curva-s" labels={curvaS.labels}
               datasets={[
-                { label:'Planificado', data: curvaS.plan, borderColor:'#3498DB', backgroundColor:'rgba(52,152,219,0.08)', tension:.4, borderWidth:2, fill:true, pointRadius:4 },
-                { label:'Real', data: curvaS.real, borderColor:'#F2B705', backgroundColor:'rgba(242,183,5,0.08)', tension:.4, borderWidth:2, fill:true, pointRadius:4 },
+                { label:'Planificado', data: curvaS.plan, borderColor:cssVar('--blue','#3498DB'), backgroundColor:'rgba(52,152,219,0.08)', tension:.4, borderWidth:2, fill:true, pointRadius:4 },
+                { label:'Real', data: curvaS.real, borderColor:cssVar('--amber','#F2B705'), backgroundColor:'rgba(242,183,5,0.08)', tension:.4, borderWidth:2, fill:true, pointRadius:4 },
               ]} height={220}/>
           ) : <div className="empty-state" style={{padding:'40px 0'}}>Sin movimientos con precio aún</div>}
         </div>
@@ -879,7 +880,7 @@ function CostosPage() {
             <ChartDoughnut id="cat-cost"
               labels={porCategoria.map(c => c.categoria)}
               data={porCategoria.map(c => c.real || c.pres)}
-              colors={['#3498DB','#F2B705','#2ECC71','#E74C3C','#F28C28','#9B59B6','#1ABC9C','#95A5A6']}
+              colors={[cssVar('--blue','#3498DB'),cssVar('--amber','#F2B705'),cssVar('--green','#2ECC71'),cssVar('--red','#E74C3C'),cssVar('--orange','#F28C28'),cssVar('--purple','#9B59B6'),cssVar('--blue','#1ABC9C'),cssVar('--tm','#95A5A6')]}
               height={220}/>
           ) : <div className="empty-state" style={{padding:'40px 0'}}>Sin datos</div>}
         </div>
@@ -1660,7 +1661,7 @@ function VersionesPage({ showToast }) {
                       }
                       return (
                         <React.Fragment key={row.codigo}>
-                          <tr style={esCapitulo ? { background:'rgba(255,255,255,0.025)', fontWeight:600 } : null}>
+                          <tr style={esCapitulo ? { background:'var(--row-hover)', fontWeight:600 } : null}>
                             <td className="col-m" style={{ fontFamily:'monospace', fontSize:11, paddingLeft: 8 + indent }}>
                               {conHijos && (
                                 <button onClick={()=>toggleExpand(row.codigo)}
@@ -1761,7 +1762,7 @@ function VersionesPage({ showToast }) {
                     })}
                   </tbody>
                   <tfoot>
-                    <tr style={{ background:'rgba(0,0,0,0.18)', fontWeight:700 }}>
+                    <tr style={{ background:'var(--bg-c2)', fontWeight:700 }}>
                       <td colSpan={3} style={{ padding:'10px 14px' }}>TOTAL</td>
                       {versionesSel.map(v => (
                         <td key={v.id} style={{ textAlign:'right', padding:'10px 14px', color: TIPO_COLOR[v.tipo] || 'var(--amber)' }}>

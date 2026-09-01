@@ -508,7 +508,7 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
               letterSpacing: 0.5,
               padding: '5px 8px',
               background: isPrueba ? 'rgba(155,89,182,0.18)' : undefined,
-              color: isPrueba ? '#9B59B6' : undefined,
+              color: isPrueba ? 'var(--purple)' : undefined,
               border: isPrueba ? '1px solid rgba(155,89,182,0.4)' : undefined,
             }}
             title={isPrueba ? 'Modo prueba — datos demo' : isEdicion ? 'Modo edición sobre data real' : 'Modo producción'}>

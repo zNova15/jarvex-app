@@ -161,8 +161,8 @@ function SearchableSelect({
             ...(coords.openUp
               ? { bottom: Math.max(8, (window.innerHeight || 0) - coords.top + 4) }
               : { top: coords.bottom + 4 }),
-            background: 'var(--bg-c, #1A2533)',
-            border: '1px solid var(--bd, #2A3543)',
+            background: 'var(--bg-c)',
+            border: '1px solid var(--border)',
             borderRadius: 6,
             boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
             zIndex: 3000,
@@ -171,7 +171,7 @@ function SearchableSelect({
             flexDirection: 'column',
             overflow: 'hidden',
           }}>
-          <div style={{ padding: 6, borderBottom: '1px solid var(--bd, #2A3543)' }}>
+          <div style={{ padding: 6, borderBottom: '1px solid var(--border)' }}>
             <input
               ref={inputRef}
               className="fi"
@@ -197,7 +197,7 @@ function SearchableSelect({
                   return (
                     <div key={(o.value ?? '') + '-' + i}
                       style={{ width: '100%', padding: '7px 10px', textAlign: 'left', color: 'var(--tm)',
-                        borderBottom: '1px solid rgba(255,255,255,0.04)', fontSize: 12, fontWeight: 600,
+                        borderBottom: '1px solid var(--border)', fontSize: 12, fontWeight: 600,
                         fontFamily: 'inherit', cursor: 'default', opacity: 0.75 }}>
                       {o.label}
                     </div>
@@ -219,7 +219,7 @@ function SearchableSelect({
                       background: esActivo ? 'rgba(242,183,5,0.14)' : 'transparent',
                       color: esActivo ? 'var(--amber, #F2B705)' : 'var(--tp)',
                       border: 'none',
-                      borderBottom: '1px solid rgba(255,255,255,0.04)',
+                      borderBottom: '1px solid var(--border)',
                       cursor: 'pointer',
                       fontSize: 12,
                       fontWeight: esActivo ? 600 : 400,
@@ -227,7 +227,7 @@ function SearchableSelect({
                       transition: 'background 0.1s',
                     }}
                     onMouseEnter={e => {
-                      if (!esActivo) e.currentTarget.style.background = 'rgba(255,255,255,0.05)';
+                      if (!esActivo) e.currentTarget.style.background = 'var(--tint-neutral)';
                     }}
                     onMouseLeave={e => {
                       if (!esActivo) e.currentTarget.style.background = 'transparent';

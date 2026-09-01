@@ -91,20 +91,20 @@ const CAT_ICON = {
 };
 
 const CAT_COLOR = {
-  obras: '#3498DB',
-  personal: '#2ECC71',
-  materiales: '#F2B705',
-  herramientas: '#F28C28',
-  proveedores: '#9B59B6',
-  partidas: '#1ABC9C',
-  requisiciones: '#E67E22',
-  ordenes_compra: '#34495E',
-  valorizaciones: '#27AE60',
-  subcontratistas: '#8E44AD',
-  subcontratos: '#16A085',
-  accounting_movements: '#D35400',
-  incidencias: '#E74C3C',
-  companies: '#3498DB',
+  obras: 'var(--blue)',
+  personal: 'var(--green)',
+  materiales: 'var(--amber)',
+  herramientas: 'var(--orange)',
+  proveedores: 'var(--purple)',
+  partidas: 'var(--blue)',
+  requisiciones: 'var(--orange)',
+  ordenes_compra: 'var(--tm)',
+  valorizaciones: 'var(--green)',
+  subcontratistas: 'var(--purple)',
+  subcontratos: 'var(--blue)',
+  accounting_movements: 'var(--orange)',
+  incidencias: 'var(--red)',
+  companies: 'var(--blue)',
 };
 
 // Mapeo categoría (tabla) → módulo de permisos. Usado para filtrar
@@ -578,7 +578,7 @@ function BusquedaGlobalPage() {
               <div key={cat} className="card card-p" style={{ borderLeft: `3px solid ${color}` }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div style={{ width: 32, height: 32, borderRadius: 8, background: color + '1a', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <div style={{ width: 32, height: 32, borderRadius: 8, background: `color-mix(in srgb, ${color} 10%, transparent)`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                       <JxIcon name={CAT_ICON[cat] || 'list'} size={15} color={color} />
                     </div>
                     <div>

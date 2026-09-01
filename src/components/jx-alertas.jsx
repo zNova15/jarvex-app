@@ -32,9 +32,9 @@ const PLAN_DEFAULT_MANT = [
 
 // Severidad: 'critica' | 'alta' | 'media'
 const SEV_META = {
-  critica: { label: 'Crítica', color: '#E74C3C', badge: 'b-red', order: 0 },
-  alta:    { label: 'Alta',    color: '#F28C28', badge: 'b-amber', order: 1 },
-  media:   { label: 'Media',   color: '#3498DB', badge: 'b-blue', order: 2 },
+  critica: { label: 'Crítica', color: 'var(--red)', badge: 'b-red', order: 0 },
+  alta:    { label: 'Alta',    color: 'var(--orange)', badge: 'b-amber', order: 1 },
+  media:   { label: 'Media',   color: 'var(--blue)', badge: 'b-blue', order: 2 },
 };
 
 // Mapa tipo → icono / página de destino
@@ -65,7 +65,7 @@ function AlertaKpiCard({ label, value, color, icon, big }) {
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
         <div style={{ fontSize: 12, color: 'var(--tm)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em' }}>{label}</div>
         {icon && (
-          <div style={{ width: 36, height: 36, borderRadius: 8, background: color + '1a', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ width: 36, height: 36, borderRadius: 8, background: `color-mix(in srgb, ${color} 10%, transparent)`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <JxIcon name={icon} size={18} color={color} />
           </div>
         )}
@@ -83,7 +83,7 @@ function AlertaFeedItem({ alerta }) {
     <div className="card card-p" style={{ borderLeft: `3px solid ${sev.color}`, padding: '14px 16px' }}>
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
         <div style={{
-          width: 38, height: 38, borderRadius: 10, background: sev.color + '1a',
+          width: 38, height: 38, borderRadius: 10, background: `color-mix(in srgb, ${sev.color} 10%, transparent)`,
           display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
         }}>
           <JxIcon name={tipoMeta.icon} size={17} color={sev.color} />
@@ -479,7 +479,7 @@ function AlertasCentralizadasPage({ showToast }) {
 
       {/* Filtros: tabs por severidad + dropdown por tipo */}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14 }}>
-        <div style={{ display: 'flex', gap: 4, padding: 3, background: 'var(--bg-soft, rgba(0,0,0,0.05))', borderRadius: 8 }}>
+        <div style={{ display: 'flex', gap: 4, padding: 3, background: 'var(--tint-neutral)', borderRadius: 8 }}>
           {[
             { k: 'todas',   l: `Todas (${counts.total})`,   c: 'var(--tp)' },
             { k: 'critica', l: `Críticas (${counts.critica})`, c: SEV_META.critica.color },

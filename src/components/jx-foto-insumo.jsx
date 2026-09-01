@@ -115,7 +115,7 @@ export function FotoInsumoCell({ obraId, tipoEvidencia, modulo, registroId, nomb
              onClick={(e) => { e.stopPropagation(); abrirUrlEvidencia(foto.url); }}
              title="Click para ampliar"/>
       ) : (
-        <span style={{ width:32, height:32, borderRadius:4, background:'rgba(255,255,255,0.04)', border:'1px dashed var(--border)', display:'inline-flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
+        <span style={{ width:32, height:32, borderRadius:4, background:'var(--tint-neutral)', border:'1px dashed var(--border)', display:'inline-flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
               title="Sin foto">
           <JxIcon name="image" size={12} color="var(--tm)"/>
         </span>

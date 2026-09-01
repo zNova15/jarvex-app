@@ -302,7 +302,7 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
           {pendientes.map(ev => {
             const sinArchivo = !ev.url_archivo;
             return (
-              <div key={ev.id} style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6, background: 'rgba(0,0,0,0.15)' }}>
+              <div key={ev.id} style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-c2)' }}>
                 <div style={{ fontSize: 12, fontWeight: 600 }}>
                   {String(ev.created_at || '').slice(0, 10)} · {ev.nombre_archivo}
                   {sinArchivo && <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>⬆ aún subiendo desde el teléfono</span>}
@@ -2416,7 +2416,7 @@ function CapturaMagicaPage({ showToast }) {
       </div>
 
       <div className="card card-p" style={{ marginBottom:14, background:'rgba(155,89,182,0.06)', border:'1px solid rgba(155,89,182,0.25)', fontSize:12, color:'var(--ts)' }}>
-        <strong style={{ color:'#9B59B6' }}>ℹ Cómo funciona:</strong> Arrastrá tus comprobantes (PDF o foto) y Claude AI los lee. Después revisás
+        <strong style={{ color:'var(--purple)' }}>ℹ Cómo funciona:</strong> Arrastrá tus comprobantes (PDF o foto) y Claude AI los lee. Después revisás
         el JSON extraído, confirmás la empresa compradora, y el sistema crea automáticamente:
         proveedor (si es nuevo), movimiento contable de costo, materiales nuevos, movimientos de inventario y guarda el archivo como evidencia.
         Todo se asigna a la <strong>obra activa</strong> seleccionada arriba a la derecha.
@@ -2430,11 +2430,11 @@ function CapturaMagicaPage({ showToast }) {
           onClick={()=>fileInputRef.current?.click()}
           style={{
             border:'2px dashed var(--border)', borderRadius:12, padding:'40px 30px', textAlign:'center',
-            background:'rgba(255,255,255,0.02)', cursor:'pointer', marginBottom:18,
+            background:'var(--tint-neutral)', cursor:'pointer', marginBottom:18,
             transition:'background 0.2s',
           }}
           onDragEnter={(e)=>{ e.preventDefault(); e.currentTarget.style.background = 'rgba(155,89,182,0.08)'; }}
-          onDragLeave={(e)=>{ e.preventDefault(); e.currentTarget.style.background = 'rgba(255,255,255,0.02)'; }}
+          onDragLeave={(e)=>{ e.preventDefault(); e.currentTarget.style.background = 'var(--tint-neutral)'; }}
         >
           <JxIcon name="upload" size={38} color="var(--amber)"/>
           <div style={{ fontSize:14, fontWeight:700, marginTop:10, color:'var(--tp)' }}>
@@ -2638,7 +2638,7 @@ function CapturaMagicaPage({ showToast }) {
                       <tr key={row.id}>
                         <td className="col-m" style={{ fontFamily:'monospace' }}>{row.ruc}</td>
                         <td>{row.actual || <span style={{ color:'var(--tm)' }}>—</span>}</td>
-                        <td style={{ color:'#3498DB', fontWeight:600 }}>{row.sunat}</td>
+                        <td style={{ color:'var(--blue)', fontWeight:600 }}>{row.sunat}</td>
                         <td style={{ textAlign:'center', color: row.similar < 30 ? 'var(--red)' : 'var(--amber)' }}>{row.similar}%</td>
                         <td style={{ textAlign:'center' }}>
                           {row.applied ? (
@@ -2713,8 +2713,8 @@ function VincularPendientesModal({ data, materialesDB, onClose, onConfirm }) {
                 return (
                   <label key={mov.id} style={{
                     display:'flex', alignItems:'center', gap:10, padding:'10px 12px',
-                    background: checked ? 'rgba(46,204,113,0.08)' : 'rgba(0,0,0,0.15)',
-                    border: checked ? '1px solid rgba(46,204,113,0.35)' : '1px solid rgba(255,255,255,0.04)',
+                    background: checked ? 'rgba(46,204,113,0.08)' : 'var(--bg-c2)',
+                    border: checked ? '1px solid rgba(46,204,113,0.35)' : '1px solid var(--border)',
                     borderRadius:6, cursor:'pointer', fontSize:12,
                   }}>
                     <input type="checkbox" checked={checked} onChange={()=>toggle(mov.id)}/>
@@ -2870,7 +2870,7 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
   return (
     <div className="overlay" onClick={(e)=> e.target === e.currentTarget && onClose()}
       style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.65)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:9999, padding:20 }}>
-      <div className="card" style={{ width:'100%', maxWidth:1280, maxHeight:'94vh', display:'flex', flexDirection:'column', background:'#1A2333', border:'1px solid var(--border)', borderRadius:12 }}>
+      <div className="card" style={{ width:'100%', maxWidth:1280, maxHeight:'94vh', display:'flex', flexDirection:'column', background:'var(--bg-c)', border:'1px solid var(--border)', borderRadius:12 }}>
         <div style={{ padding:'14px 18px', borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
           <div style={{ display:'flex', alignItems:'center', gap:10 }}>
             <JxIcon name="eye" size={16} color="var(--amber)"/>
@@ -2899,7 +2899,7 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
 
         <div style={{ flex:1, display:'grid', gridTemplateColumns:'1fr 1.2fr', minHeight:0 }}>
           {/* IZQUIERDA: PREVIEW */}
-          <div style={{ borderRight:'1px solid var(--border)', overflow:'auto', background:'#0E1620', display:'flex', alignItems:'center', justifyContent:'center', padding:8 }}>
+          <div style={{ borderRight:'1px solid var(--border)', overflow:'auto', background:'var(--bg-p)', display:'flex', alignItems:'center', justifyContent:'center', padding:8 }}>
             {isImage && previewUrl && (
               <img src={previewUrl} alt={item.name} style={{ maxWidth:'100%', maxHeight:'100%', objectFit:'contain' }}/>
             )}
@@ -3106,9 +3106,9 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
               )}
               {sunatCheck?.mismatch && (
                 <div style={{ marginBottom:8, padding:'8px 10px', background:'rgba(52,152,219,0.08)', border:'1px solid rgba(52,152,219,0.4)', borderRadius:6, fontSize:11.5, color:'var(--ts)', lineHeight:1.45 }}>
-                  🔎 Según <strong>SUNAT</strong>, el RUC {r.proveedor_ruc} corresponde a <strong style={{ color:'#3498DB' }}>{sunatCheck.razonSocial}</strong> — distinto del nombre capturado (“{r.proveedor_razon_social || '—'}”).
+                  🔎 Según <strong>SUNAT</strong>, el RUC {r.proveedor_ruc} corresponde a <strong style={{ color:'var(--blue)' }}>{sunatCheck.razonSocial}</strong> — distinto del nombre capturado (“{r.proveedor_razon_social || '—'}”).
                   <div style={{ marginTop:6, display:'flex', gap:8, flexWrap:'wrap' }}>
-                    <button type="button" className="btn btn-xs" style={{ background:'#3498DB', color:'#fff' }}
+                    <button type="button" className="btn btn-xs" style={{ background:'var(--blue)', color:'#fff' }}
                       onClick={()=>upd({ proveedor_razon_social: sunatCheck.razonSocial })}>Usar nombre SUNAT</button>
                     <span style={{ fontSize:10.5, color:'var(--tm)', alignSelf:'center' }}>o dejá el nombre comercial de la factura si preferís.</span>
                   </div>
@@ -3138,7 +3138,7 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
             {/* INTERCOMPANY — operación entre nuestras empresas */}
             {r.es_intercompany && (
               <div style={{ marginTop:10, padding:'12px 14px', background:'rgba(52,152,219,0.07)', border:'1px solid rgba(52,152,219,0.4)', borderRadius:8 }}>
-                <div style={{ fontSize:11.5, fontWeight:700, color:'#3498DB', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:6 }}>
+                <div style={{ fontSize:11.5, fontWeight:700, color:'var(--blue)', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:6 }}>
                   🔗 OPERACIÓN INTERCOMPANY DETECTADA
                 </div>
                 <div style={{ fontSize:12.5, color:'var(--ts)', lineHeight:1.5 }}>
@@ -3179,7 +3179,7 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
             {/* OC RELACIONADA — sugerencia de vinculación */}
             {r.oc_match && (
               <div style={{ marginTop:10, padding:'12px 14px', background:'rgba(155,89,182,0.07)', border:'1px solid rgba(155,89,182,0.35)', borderRadius:8 }}>
-                <div style={{ fontSize:11.5, fontWeight:700, color:'#9B59B6', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:6, display:'flex', alignItems:'center', gap:6 }}>
+                <div style={{ fontSize:11.5, fontWeight:700, color:'var(--purple)', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:6, display:'flex', alignItems:'center', gap:6 }}>
                   🔗 OC RELACIONADA DETECTADA
                 </div>
                 <div style={{ fontSize:12.5, color:'var(--ts)', lineHeight:1.5 }}>
@@ -3489,7 +3489,7 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
             {/* NOTA DE CRÉDITO/DÉBITO — factura que modifica + efecto contable */}
             {(r.es_nota_credito || r.es_nota_debito) && (
               <div style={{ marginTop:10, padding:'8px 10px', border:'1px solid rgba(155,89,182,0.35)', borderRadius:8, background:'rgba(155,89,182,0.06)' }}>
-                <div style={{ fontSize:11, fontWeight:700, color:'#B980D6', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:6 }}>
+                <div style={{ fontSize:11, fontWeight:700, color:'var(--purple)', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:6 }}>
                   {r.es_nota_credito ? 'Nota de crédito — RESTA la factura' : 'Nota de débito — SUMA a la factura'}
                 </div>
                 <div className="g2">
