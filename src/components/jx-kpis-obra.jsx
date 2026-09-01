@@ -29,7 +29,7 @@ function KpiCard({ label, value, sub, color = 'var(--tp)', icon, accent }) {
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
         <div style={{ fontSize: 11.5, color: 'var(--tm)', fontWeight: 500 }}>{label}</div>
         {icon && (
-          <div style={{ width: 30, height: 30, borderRadius: 8, background: color + '1a', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ width: 30, height: 30, borderRadius: 8, background: `color-mix(in srgb, ${color} 10%, transparent)`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <JxIcon name={icon} size={14} color={color} />
           </div>
         )}
@@ -44,7 +44,7 @@ function SectionH({ title }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '24px 0 12px' }}>
       <h3 style={{ margin: 0, fontSize: 15, color: 'var(--tp)', fontWeight: 700 }}>{title}</h3>
-      <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.06)' }} />
+      <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
     </div>
   );
 }
@@ -166,7 +166,7 @@ function KPIsObraPage() {
     return { dias, planif, pctTiempo };
   }, [obra]);
 
-  const COLOR = { ok: '#34D399', warn: '#F2B705', bad: '#E74C3C', blue: '#4A90E2' };
+  const COLOR = { ok: 'var(--green)', warn: 'var(--amber)', bad: 'var(--red)', blue: 'var(--blue)' };
   const colorVariacion = Math.abs(costos.pctVariacion) <= 0.1 ? COLOR.ok : Math.abs(costos.pctVariacion) <= 0.2 ? COLOR.warn : COLOR.bad;
   const colorGap = avance.gapStatus === 'alineado' ? COLOR.ok : COLOR.warn;
 

@@ -33,7 +33,7 @@ function KpiCard({ label, value, sub, color = 'var(--tp)', icon, accent }) {
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
         <div style={{ fontSize: 11.5, color: 'var(--tm)', fontWeight: 500 }}>{label}</div>
         {icon && (
-          <div style={{ width: 30, height: 30, borderRadius: 8, background: color + '1a', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ width: 30, height: 30, borderRadius: 8, background: `color-mix(in srgb, ${color} 10%, transparent)`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <JxIcon name={icon} size={14} color={color} />
           </div>
         )}
@@ -48,25 +48,25 @@ function SectionH({ title }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '24px 0 12px' }}>
       <h3 style={{ margin: 0, fontSize: 15, color: 'var(--tp)', fontWeight: 700 }}>{title}</h3>
-      <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.06)' }} />
+      <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
     </div>
   );
 }
 
 function StatusBadge({ status }) {
   const map = {
-    completada:    { color: '#34D399', label: 'Completada' },
-    en_curso:      { color: '#4A90E2', label: 'En curso' },
-    atrasada:      { color: '#E74C3C', label: 'Atrasada' },
-    no_iniciada:   { color: '#9AA0A6', label: 'No iniciada' },
-    adelantada:    { color: '#34D399', label: 'Adelantada' },
+    completada:    { color: 'var(--green)', label: 'Completada' },
+    en_curso:      { color: 'var(--blue)', label: 'En curso' },
+    atrasada:      { color: 'var(--red)', label: 'Atrasada' },
+    no_iniciada:   { color: 'var(--tm)', label: 'No iniciada' },
+    adelantada:    { color: 'var(--green)', label: 'Adelantada' },
   };
   const s = map[status] || map.no_iniciada;
   return (
     <span style={{
       display: 'inline-block', padding: '2px 8px', borderRadius: 10,
       fontSize: 11, fontWeight: 600, color: s.color,
-      background: s.color + '22', border: `1px solid ${s.color}55`
+      background: `color-mix(in srgb, ${s.color} 13%, transparent)`, border: `1px solid color-mix(in srgb, ${s.color} 33%, transparent)`
     }}>{s.label}</span>
   );
 }
@@ -177,7 +177,7 @@ function CumplimientoCronogramaPage() {
     };
   }, [obra, kpis, today]);
 
-  const COLOR = { ok: '#34D399', warn: '#F2B705', bad: '#E74C3C', blue: '#4A90E2' };
+  const COLOR = { ok: 'var(--green)', warn: 'var(--amber)', bad: 'var(--red)', blue: 'var(--blue)' };
   const colorDesv = kpis.desvObra >= 0 ? COLOR.ok : (kpis.desvObra > -0.05 ? COLOR.warn : COLOR.bad);
   const colorProy = !proy ? COLOR.blue
     : proy.sinDatos ? COLOR.warn

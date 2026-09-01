@@ -7,20 +7,20 @@ const { useMemo: uM } = React;
 const pct = (v) => `${Number(v || 0).toFixed(1)}%`;
 const num = (v) => Number(v || 0).toLocaleString('es-PE');
 const ESTADO_PARTIDA = {
-  pendiente:    { label: 'Pendientes',  color: '#7F8C8D' },
-  en_ejecucion: { label: 'En ejecución', color: '#3498DB' },
-  terminado:    { label: 'Terminadas',  color: '#2ECC71' },
-  atrasado:     { label: 'Atrasadas',   color: '#E74C3C' },
-  observado:    { label: 'Observadas',  color: '#F39C12' },
+  pendiente:    { label: 'Pendientes',  color: 'var(--tm)' },
+  en_ejecucion: { label: 'En ejecución', color: 'var(--blue)' },
+  terminado:    { label: 'Terminadas',  color: 'var(--green)' },
+  atrasado:     { label: 'Atrasadas',   color: 'var(--red)' },
+  observado:    { label: 'Observadas',  color: 'var(--orange)' },
 };
-const SEV = { alta: '#E74C3C', media: '#F39C12', baja: '#3498DB' };
+const SEV = { alta: 'var(--red)', media: 'var(--orange)', baja: 'var(--blue)' };
 
 function KpiG({ label, value, sub, color, icon }) {
   return (
     <div className="kpi-card" style={{ borderLeft: color ? `3px solid ${color}` : undefined }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
         <div style={{ fontSize: 11.5, color: 'var(--tm)', fontWeight: 500 }}>{label}</div>
-        {icon && <div style={{ width: 30, height: 30, borderRadius: 8, background: (color || '#3498DB') + '1a', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><JxIcon name={icon} size={14} color={color || '#3498DB'} /></div>}
+        {icon && <div style={{ width: 30, height: 30, borderRadius: 8, background: `color-mix(in srgb, ${color || 'var(--blue)'} 10%, transparent)`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><JxIcon name={icon} size={14} color={color || 'var(--blue)'} /></div>}
       </div>
       <div className="kpi-val" style={{ color: color || 'var(--tp)' }}>{value}</div>
       {sub && <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 2 }}>{sub}</div>}
@@ -144,12 +144,12 @@ function DashboardGestionPage() {
 
       {/* KPIs principales */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))', gap: 12, marginBottom: 18 }}>
-        <KpiG label="Avance físico general" value={pct(kpis.avanceFisico)} sub={`${kpis.nHojas} partidas específicas`} color="#3498DB" icon="trending" />
-        <KpiG label="Avance financiero" value={pct(avanceFin.obraPct)} sub={`S/ ${num(Math.round(avanceFin.obraFacturado))} facturado · vinculado por contabilidad`} color="#F39C12" icon="dollar" />
-        <KpiG label="Presupuesto (CD)" value={`S/ ${num(Math.round(kpis.sumPres))}`} sub={`Real: S/ ${num(Math.round(kpis.sumReal))}`} color="#16A085" icon="dollar" />
-        <KpiG label="Frentes activos" value={kpis.nFrentesActivos} sub={`${kpis.nFrentes} en total`} color="#D35400" icon="flag" />
-        <KpiG label="Reportes de avance" value={kpis.nReportes} sub={kpis.ultimoReporte ? `último: ${kpis.ultimoReporte}` : 'sin reportes'} color="#8E44AD" icon="edit" />
-        <KpiG label="Incidencias abiertas" value={kpis.nIncAbiertas} sub={`${kpis.incPorSev.alta} alta · ${kpis.incPorSev.media} media · ${kpis.incPorSev.baja} baja`} color={kpis.nIncAbiertas > 0 ? '#E74C3C' : '#2ECC71'} icon="alert" />
+        <KpiG label="Avance físico general" value={pct(kpis.avanceFisico)} sub={`${kpis.nHojas} partidas específicas`} color="var(--blue)" icon="trending" />
+        <KpiG label="Avance financiero" value={pct(avanceFin.obraPct)} sub={`S/ ${num(Math.round(avanceFin.obraFacturado))} facturado · vinculado por contabilidad`} color="var(--orange)" icon="dollar" />
+        <KpiG label="Presupuesto (CD)" value={`S/ ${num(Math.round(kpis.sumPres))}`} sub={`Real: S/ ${num(Math.round(kpis.sumReal))}`} color="var(--blue)" icon="dollar" />
+        <KpiG label="Frentes activos" value={kpis.nFrentesActivos} sub={`${kpis.nFrentes} en total`} color="var(--orange)" icon="flag" />
+        <KpiG label="Reportes de avance" value={kpis.nReportes} sub={kpis.ultimoReporte ? `último: ${kpis.ultimoReporte}` : 'sin reportes'} color="var(--purple)" icon="edit" />
+        <KpiG label="Incidencias abiertas" value={kpis.nIncAbiertas} sub={`${kpis.incPorSev.alta} alta · ${kpis.incPorSev.media} media · ${kpis.incPorSev.baja} baja`} color={kpis.nIncAbiertas > 0 ? 'var(--red)' : 'var(--green)'} icon="alert" />
       </div>
 
       {/* Partidas por estado */}
@@ -157,7 +157,7 @@ function DashboardGestionPage() {
         <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--tp)', marginBottom: 10 }}>Partidas por estado</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: 10 }}>
           {Object.entries(ESTADO_PARTIDA).map(([k, cfg]) => (
-            <div key={k} style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 8, padding: '10px 12px' }}>
+            <div key={k} style={{ background: 'var(--tint-neutral)', borderRadius: 8, padding: '10px 12px' }}>
               <div style={{ fontSize: 11, color: 'var(--tm)' }}>{cfg.label}</div>
               <div style={{ fontSize: 22, fontWeight: 800, color: cfg.color }}>{kpis.porEstado[k] || 0}</div>
             </div>

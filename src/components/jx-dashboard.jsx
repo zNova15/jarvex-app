@@ -1,14 +1,16 @@
 import React from "react";
 import { useChart } from "../lib/chart-loader";
+import { cssVar } from "../lib/tema.js";
 const { useEffect, useRef } = React;
 
-// ── Chart defaults ──
+// ── Chart defaults ── Chart.js no lee CSS vars — se resuelven acá con
+// cssVar() (mismo patrón de jx-contabilidad/jx-reportes-shared en Fase A).
 const CHART_DEFAULTS = {
-  color: '#BFC7D1',
-  plugins: { legend: { labels: { color: '#7A8A9A', font: { size: 11, family: 'Inter' }, boxWidth: 12, padding: 16 } } },
+  color: cssVar('--ts', '#BFC7D1'),
+  plugins: { legend: { labels: { color: cssVar('--tm', '#7A8A9A'), font: { size: 11, family: 'Inter' }, boxWidth: 12, padding: 16 } } },
   scales: {
-    x: { ticks: { color: '#5A6A7A', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)', drawBorder: false }, border: { display: false } },
-    y: { ticks: { color: '#5A6A7A', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)', drawBorder: false }, border: { display: false } },
+    x: { ticks: { color: cssVar('--tm', '#5A6A7A'), font: { size: 10 } }, grid: { color: cssVar('--border', 'rgba(255,255,255,0.04)'), drawBorder: false }, border: { display: false } },
+    y: { ticks: { color: cssVar('--tm', '#5A6A7A'), font: { size: 10 } }, grid: { color: cssVar('--border', 'rgba(255,255,255,0.04)'), drawBorder: false }, border: { display: false } },
   },
 };
 
@@ -67,11 +69,11 @@ function ChartDoughnut({ id, labels, data, colors, height = 180 }) {
     if (inst.current) inst.current.destroy();
     inst.current = new Chart(ref.current, {
       type: 'doughnut',
-      data: { labels, datasets: [{ data, backgroundColor: colors, borderWidth: 2, borderColor: '#1C2D40' }] },
+      data: { labels, datasets: [{ data, backgroundColor: colors, borderWidth: 2, borderColor: cssVar('--bg-c', '#1C2D40') }] },
       options: {
         responsive: true, maintainAspectRatio: false,
         cutout: '68%',
-        plugins: { ...CHART_DEFAULTS.plugins, legend: { position: 'right', labels: { color: '#7A8A9A', font: { size: 11 }, boxWidth: 12, padding: 12 } } },
+        plugins: { ...CHART_DEFAULTS.plugins, legend: { position: 'right', labels: { color: cssVar('--tm', '#7A8A9A'), font: { size: 11 }, boxWidth: 12, padding: 12 } } },
       }
     });
     return () => inst.current?.destroy();
@@ -85,7 +87,7 @@ function KpiCard({ label, value, unit, change, icon, color, sub }) {
     <div className="kpi-card">
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
         <div style={{ fontSize: 11.5, color: 'var(--tm)', fontWeight: 500 }}>{label}</div>
-        <div style={{ width: 32, height: 32, borderRadius: 8, background: color + '1a', display: 'flex', alignItems: 'center', justifyContent: 'center', color }}>
+        <div style={{ width: 32, height: 32, borderRadius: 8, background: `color-mix(in srgb, ${color} 10%, transparent)`, display: 'flex', alignItems: 'center', justifyContent: 'center', color }}>
           <JxIcon name={icon} size={15} color={color} />
         </div>
       </div>
@@ -106,7 +108,7 @@ const ACTIVITY = [
   { time: 'Ayer', text: 'Nuevo proveedor registrado: Aceros del Perú SAC', type: 'info', who: 'Admin' },
 ];
 
-const ACT_COLORS = { out: '#F28C28', in: '#2ECC71', ok: '#3498DB', alert: '#E74C3C', info: '#F2B705' };
+const ACT_COLORS = { out: 'var(--orange)', in: 'var(--green)', ok: 'var(--blue)', alert: 'var(--red)', info: 'var(--amber)' };
 const ACT_ICONS  = { out: 'arrowOut', in: 'arrowIn', ok: 'checkCircle', alert: 'alertCircle', info: 'bell' };
 
 const { useState: uSD, useEffect: uED, useMemo: uMD } = React;
@@ -119,16 +121,16 @@ function fmtSoles(n) {
   return 'S/ ' + v.toFixed(0);
 }
 function avanceColor(pct) {
-  if (pct >= 80) return '#2ECC71';
-  if (pct >= 50) return '#F2B705';
-  return '#E74C3C';
+  if (pct >= 80) return 'var(--green)';
+  if (pct >= 50) return 'var(--amber)';
+  return 'var(--red)';
 }
 function diasUrgenciaColor(dias) {
   if (dias == null) return 'var(--tm)';
-  if (dias < 0) return '#E74C3C';
-  if (dias < 15) return '#E74C3C';
-  if (dias <= 30) return '#F2B705';
-  return '#2ECC71';
+  if (dias < 0) return 'var(--red)';
+  if (dias < 15) return 'var(--red)';
+  if (dias <= 30) return 'var(--amber)';
+  return 'var(--green)';
 }
 
 function DashboardPage() {
@@ -382,7 +384,7 @@ function DashboardPage() {
     return items.sort((a,b) => b.ts - a.ts).slice(0, 6);
   }, [movMateriales, movHerramientas, incidencias, materiales, herramientas]);
 
-  const ACT_COLORS = { out:'#F28C28', in:'#2ECC71', alert:'#E74C3C', info:'#F2B705' };
+  const ACT_COLORS = { out:'var(--orange)', in:'var(--green)', alert:'var(--red)', info:'var(--amber)' };
   const ACT_ICONS = { out:'arrowOut', in:'arrowIn', alert:'alertCircle', info:'bell' };
 
   // Top herramientas por uso
@@ -432,17 +434,17 @@ function DashboardPage() {
 
       {canMateriales && kpis.materialesAlerta > 0 && (
         <div className="alert-banner" style={{marginBottom:18}}>
-          <JxIcon name="alert" size={16} color="#E74C3C"/>
+          <JxIcon name="alert" size={16} color="var(--red)"/>
           <span><strong>{kpis.matsSinStock + kpis.matsCritico} material{kpis.matsSinStock+kpis.matsCritico>1?'es':''} en estado crítico:</strong> {kpis.materialesAlertaList.slice(0,3).map(m=>`${m.nombre_material} (${m.stock_actual} ${m.unidad})`).join(' · ')}{kpis.materialesAlerta>3?` · y ${kpis.materialesAlerta-3} más`:''}</span>
         </div>
       )}
 
       {(() => {
         const cards = [];
-        if (canManagement) cards.push(<KpiCard key="o" label="Obras Activas" value={String(kpis.obrasActivas)} icon="building" color="#3498DB" sub={`${obras.length} totales`}/>);
-        if (canAsistencia) cards.push(<KpiCard key="p" label="Personal Presente Hoy" value={String(kpis.presentesHoy)} unit={`/${kpis.personalTotal}`} icon="users" color="#2ECC71" sub={`${kpis.tardanzasHoy} tardanza · ${kpis.faltasHoy} falta`}/>);
-        if (canMateriales) cards.push(<KpiCard key="m" label="Materiales en Alerta" value={String(kpis.materialesAlerta)} icon="package" color={kpis.materialesAlerta>0?'#E74C3C':'#2ECC71'} sub={`${kpis.matsCritico} críticos · ${kpis.matsReponer} por reponer`}/>);
-        if (canHerramientas) cards.push(<KpiCard key="h" label="Herramientas en Uso" value={String(kpis.herrEnUso)} unit={`/${kpis.herrTotal}`} icon="tool" color="#F28C28"/>);
+        if (canManagement) cards.push(<KpiCard key="o" label="Obras Activas" value={String(kpis.obrasActivas)} icon="building" color="var(--blue)" sub={`${obras.length} totales`}/>);
+        if (canAsistencia) cards.push(<KpiCard key="p" label="Personal Presente Hoy" value={String(kpis.presentesHoy)} unit={`/${kpis.personalTotal}`} icon="users" color="var(--green)" sub={`${kpis.tardanzasHoy} tardanza · ${kpis.faltasHoy} falta`}/>);
+        if (canMateriales) cards.push(<KpiCard key="m" label="Materiales en Alerta" value={String(kpis.materialesAlerta)} icon="package" color={kpis.materialesAlerta>0?'var(--red)':'var(--green)'} sub={`${kpis.matsCritico} críticos · ${kpis.matsReponer} por reponer`}/>);
+        if (canHerramientas) cards.push(<KpiCard key="h" label="Herramientas en Uso" value={String(kpis.herrEnUso)} unit={`/${kpis.herrTotal}`} icon="tool" color="var(--orange)"/>);
         if (cards.length === 0) return null;
         return (
           <div style={{ marginBottom: 20, display:'grid', gridTemplateColumns: `repeat(${cards.length},1fr)`, gap:12 }}>
@@ -461,7 +463,7 @@ function DashboardPage() {
             <div className="kpi-card">
               <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between' }}>
                 <div style={{ fontSize: 11.5, color:'var(--tm)', fontWeight: 500 }}>Avance Físico (ponderado)</div>
-                <div style={{ width:32, height:32, borderRadius:8, background: avanceColor(avancePonderadoPct)+'1a', display:'flex', alignItems:'center', justifyContent:'center' }}>
+                <div style={{ width:32, height:32, borderRadius:8, background: `color-mix(in srgb, ${avanceColor(avancePonderadoPct)} 10%, transparent)`, display:'flex', alignItems:'center', justifyContent:'center' }}>
                   <JxIcon name="hardHat" size={15} color={avanceColor(avancePonderadoPct)}/>
                 </div>
               </div>
@@ -481,8 +483,8 @@ function DashboardPage() {
             <div className="kpi-card">
               <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between' }}>
                 <div style={{ fontSize: 11.5, color:'var(--tm)', fontWeight: 500 }}>Costo Ejecutado / Presupuesto</div>
-                <div style={{ width:32, height:32, borderRadius:8, background:'#2ECC711a', display:'flex', alignItems:'center', justifyContent:'center' }}>
-                  <JxIcon name="dollar" size={15} color="#2ECC71"/>
+                <div style={{ width:32, height:32, borderRadius:8, background:'color-mix(in srgb, var(--green) 10%, transparent)', display:'flex', alignItems:'center', justifyContent:'center' }}>
+                  <JxIcon name="dollar" size={15} color="var(--green)"/>
                 </div>
               </div>
               <div className="kpi-val">
@@ -492,7 +494,7 @@ function DashboardPage() {
                 {fmtSoles(kpis.totalReal)} de {fmtSoles(kpis.totalPres)}
               </div>
               <div className="progress-bar">
-                <div className="progress-fill" style={{ width: Math.min(100, kpis.pctPresupuesto) + '%', background: kpis.pctPresupuesto > 100 ? '#E74C3C' : '#2ECC71' }}/>
+                <div className="progress-fill" style={{ width: Math.min(100, kpis.pctPresupuesto) + '%', background: kpis.pctPresupuesto > 100 ? 'var(--red)' : 'var(--green)' }}/>
               </div>
             </div>
 
@@ -500,11 +502,11 @@ function DashboardPage() {
             <div className="kpi-card">
               <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between' }}>
                 <div style={{ fontSize: 11.5, color:'var(--tm)', fontWeight: 500 }}>Partidas Atrasadas</div>
-                <div style={{ width:32, height:32, borderRadius:8, background: (kpis.partidasAtrasadas>0?'#E74C3C':'#2ECC71')+'1a', display:'flex', alignItems:'center', justifyContent:'center' }}>
-                  <JxIcon name="alertCircle" size={15} color={kpis.partidasAtrasadas>0?'#E74C3C':'#2ECC71'}/>
+                <div style={{ width:32, height:32, borderRadius:8, background: `color-mix(in srgb, ${kpis.partidasAtrasadas>0?'var(--red)':'var(--green)'} 10%, transparent)`, display:'flex', alignItems:'center', justifyContent:'center' }}>
+                  <JxIcon name="alertCircle" size={15} color={kpis.partidasAtrasadas>0?'var(--red)':'var(--green)'}/>
                 </div>
               </div>
-              <div className="kpi-val" style={{ color: kpis.partidasAtrasadas > 0 ? '#E74C3C' : 'var(--tp)' }}>
+              <div className="kpi-val" style={{ color: kpis.partidasAtrasadas > 0 ? 'var(--red)' : 'var(--tp)' }}>
                 {kpis.partidasAtrasadas}
               </div>
               <div style={{ fontSize: 11, color: 'var(--tm)' }}>
@@ -516,7 +518,7 @@ function DashboardPage() {
             <div className="kpi-card">
               <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between' }}>
                 <div style={{ fontSize: 11.5, color:'var(--tm)', fontWeight: 500 }}>Días al Vencimiento</div>
-                <div style={{ width:32, height:32, borderRadius:8, background: diasUrgenciaColor(kpis.diasAlVencimiento)+'1a', display:'flex', alignItems:'center', justifyContent:'center' }}>
+                <div style={{ width:32, height:32, borderRadius:8, background: `color-mix(in srgb, ${diasUrgenciaColor(kpis.diasAlVencimiento)} 10%, transparent)`, display:'flex', alignItems:'center', justifyContent:'center' }}>
                   <JxIcon name="calendar" size={15} color={diasUrgenciaColor(kpis.diasAlVencimiento)}/>
                 </div>
               </div>
@@ -536,10 +538,10 @@ function DashboardPage() {
 
           {/* Sobrecosto / extra */}
           <div className="g4" style={{ marginBottom: 22 }}>
-            <KpiCard label="Avance Reportado (obra)" value={kpis.avanceFisico.toFixed(0)} unit="%" icon="chart" color="#3498DB" sub="Reportado manual en obra"/>
-            <KpiCard label={kpis.sobrecosto>=0?"Sobrecosto":"Ahorro"} value={fmtSoles(Math.abs(kpis.sobrecosto))} icon={kpis.sobrecosto>=0?"alert":"checkCircle"} color={kpis.sobrecosto>=0?'#E74C3C':'#2ECC71'} sub={kpis.sobrecosto>=0?"Real > presupuesto":"Bajo presupuesto"}/>
-            <KpiCard label="Partidas en Ejecución" value={String(kpis.partidasEnEjecucion)} icon="hardHat" color="#3498DB" sub={`${kpis.partidasPendientes} pendientes · ${kpis.partidasObservadas} observadas`}/>
-            <KpiCard label="Incidencias Abiertas" value={String(kpis.incAbiertas)} icon="alert" color={kpis.incAbiertas>0?'#F28C28':'#2ECC71'}/>
+            <KpiCard label="Avance Reportado (obra)" value={kpis.avanceFisico.toFixed(0)} unit="%" icon="chart" color="var(--blue)" sub="Reportado manual en obra"/>
+            <KpiCard label={kpis.sobrecosto>=0?"Sobrecosto":"Ahorro"} value={fmtSoles(Math.abs(kpis.sobrecosto))} icon={kpis.sobrecosto>=0?"alert":"checkCircle"} color={kpis.sobrecosto>=0?'var(--red)':'var(--green)'} sub={kpis.sobrecosto>=0?"Real > presupuesto":"Bajo presupuesto"}/>
+            <KpiCard label="Partidas en Ejecución" value={String(kpis.partidasEnEjecucion)} icon="hardHat" color="var(--blue)" sub={`${kpis.partidasPendientes} pendientes · ${kpis.partidasObservadas} observadas`}/>
+            <KpiCard label="Incidencias Abiertas" value={String(kpis.incAbiertas)} icon="alert" color={kpis.incAbiertas>0?'var(--orange)':'var(--green)'}/>
           </div>
 
           {/* ── Top 5 atrasadas + Distribución por estado ── */}
@@ -547,12 +549,12 @@ function DashboardPage() {
             <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16, marginBottom: 16 }}>
               <div className="card card-p">
                 <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <JxIcon name="alertCircle" size={14} color="#E74C3C"/>Top 5 Partidas Atrasadas
+                  <JxIcon name="alertCircle" size={14} color="var(--red)"/>Top 5 Partidas Atrasadas
                 </div>
                 <div style={{ fontSize: 11, color: 'var(--tm)', marginBottom: 12 }}>Ordenadas por días vencidos</div>
                 {kpis.topAtrasadas.length === 0 ? (
                   <div className="empty-state" style={{ padding: '30px 0' }}>
-                    <JxIcon name="checkCircle" size={28} color="#2ECC71"/>
+                    <JxIcon name="checkCircle" size={28} color="var(--green)"/>
                     <p>Ninguna partida atrasada · todo al día</p>
                   </div>
                 ) : (
@@ -578,7 +580,7 @@ function DashboardPage() {
                               <td style={{ padding: '8px', borderBottom: '1px solid var(--border)', color: 'var(--ts)', fontFamily: 'monospace', fontSize: 11 }}>{p.codigo_partida || '—'}</td>
                               <td style={{ padding: '8px', borderBottom: '1px solid var(--border)', color: 'var(--tp)' }}>{p.nombre_partida}</td>
                               <td style={{ padding: '8px', borderBottom: '1px solid var(--border)', color: 'var(--ts)' }}>{p.fecha_fin_planificada || '—'}</td>
-                              <td style={{ padding: '8px', borderBottom: '1px solid var(--border)', textAlign: 'right', color: '#E74C3C', fontWeight: 600 }}>
+                              <td style={{ padding: '8px', borderBottom: '1px solid var(--border)', textAlign: 'right', color: 'var(--red)', fontWeight: 600 }}>
                                 {p._diasVencidos != null ? `+${p._diasVencidos}d` : '—'}
                               </td>
                               <td style={{ padding: '8px', borderBottom: '1px solid var(--border)', textAlign: 'right', color: avanceColor(av), fontWeight: 600 }}>{av.toFixed(0)}%</td>
@@ -601,11 +603,11 @@ function DashboardPage() {
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                     {[
-                      { label: 'Terminadas', n: kpis.partidasTerminadas, color: '#2ECC71' },
-                      { label: 'En ejecución', n: kpis.partidasEnEjecucion, color: '#3498DB' },
-                      { label: 'Pendientes', n: kpis.partidasPendientes, color: '#7A8A9A' },
-                      { label: 'Atrasadas', n: kpis.partidasAtrasadas, color: '#E74C3C' },
-                      { label: 'Observadas', n: kpis.partidasObservadas, color: '#F2B705' },
+                      { label: 'Terminadas', n: kpis.partidasTerminadas, color: 'var(--green)' },
+                      { label: 'En ejecución', n: kpis.partidasEnEjecucion, color: 'var(--blue)' },
+                      { label: 'Pendientes', n: kpis.partidasPendientes, color: 'var(--tm)' },
+                      { label: 'Atrasadas', n: kpis.partidasAtrasadas, color: 'var(--red)' },
+                      { label: 'Observadas', n: kpis.partidasObservadas, color: 'var(--amber)' },
                     ].map(row => {
                       const pct = kpis.partidasTotal > 0 ? (row.n / kpis.partidasTotal * 100) : 0;
                       return (
@@ -660,7 +662,7 @@ function DashboardPage() {
                   <ChartDoughnut id="estado-mat"
                     labels={['Stock OK', 'Por Reponer', 'Crítico', 'Sin Stock']}
                     data={[kpis.matsOk, kpis.matsReponer, kpis.matsCritico, kpis.matsSinStock]}
-                    colors={['#2ECC71', '#F1C40F', '#F28C28', '#E74C3C']}
+                    colors={[cssVar('--green','#2ECC71'), cssVar('--yellow','#F1C40F'), cssVar('--orange','#F28C28'), cssVar('--red','#E74C3C')]}
                     height={210}/>
                 ) : <div className="empty-state" style={{padding:'40px 0'}}>Sin materiales</div>}
               </div>
@@ -697,7 +699,7 @@ function DashboardPage() {
                   kpis.faltasHoy,
                   kpis.asistHoy.filter(a => a.estado_asistencia === 'permiso').length,
                 ]}
-                colors={['#2ECC71','#F1C40F','#E74C3C','#3498DB']}
+                colors={[cssVar('--green','#2ECC71'), cssVar('--yellow','#F1C40F'), cssVar('--red','#E74C3C'), cssVar('--blue','#3498DB')]}
                 height={195}/>
             </div>
           )}
@@ -715,7 +717,7 @@ function DashboardPage() {
               <div className="empty-state" style={{padding:'30px 0'}}>Sin actividad reciente</div>
             ) : movRecientes.map((a, i) => (
               <div key={i} style={{ display: 'flex', gap: 10, paddingBottom: 12, marginBottom: 12, borderBottom: i < movRecientes.length-1 ? '1px solid var(--border)' : 'none' }}>
-                <div style={{ width: 30, height: 30, borderRadius: '50%', background: ACT_COLORS[a.type] + '1a', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 1 }}>
+                <div style={{ width: 30, height: 30, borderRadius: '50%', background: `color-mix(in srgb, ${ACT_COLORS[a.type]} 10%, transparent)`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 1 }}>
                   <JxIcon name={ACT_ICONS[a.type]} size={13} color={ACT_COLORS[a.type]} />
                 </div>
                 <div style={{ flex: 1 }}>

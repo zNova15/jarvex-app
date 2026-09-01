@@ -23,7 +23,7 @@ function KpiCardEj({ label, value, sub, color, icon, accent }) {
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
         <div style={{ fontSize: 11.5, color: 'var(--tm)', fontWeight: 500 }}>{label}</div>
         {icon && (
-          <div style={{ width: 30, height: 30, borderRadius: 8, background: color + '1a', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ width: 30, height: 30, borderRadius: 8, background: `color-mix(in srgb, ${color} 10%, transparent)`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <JxIcon name={icon} size={14} color={color} />
           </div>
         )}
@@ -168,7 +168,7 @@ function DashboardEjecutivoPage() {
     (pagos || []).filter(p => p.estado === 'vencido').forEach(p => {
       list.push({
         type: 'pago_vencido',
-        icon: 'alertCircle', color: '#E74C3C',
+        icon: 'alertCircle', color: 'var(--red)',
         titulo: `Pago vencido — ${p.beneficiario || p.descripcion || 'Sin descripción'}`,
         sub: `${fmtCur(p.monto, p.moneda || 'PEN')} · vence ${p.fecha_vencimiento || '—'}`,
       });
@@ -181,7 +181,7 @@ function DashboardEjecutivoPage() {
     ).forEach(oc => {
       list.push({
         type: 'oc_atrasada',
-        icon: 'package', color: '#F28C28',
+        icon: 'package', color: 'var(--orange)',
         titulo: `OC atrasada — ${oc.numero_oc || oc.id?.slice(0, 8)}`,
         sub: `${oc.proveedor_nombre || oc.proveedor || '—'} · entrega ${oc.fecha_entrega} · ${oc.estado}`,
       });
@@ -194,7 +194,7 @@ function DashboardEjecutivoPage() {
     ).forEach(i => {
       list.push({
         type: 'iperc',
-        icon: 'alert', color: i.clasificacion === 'intolerable' ? '#E74C3C' : '#F28C28',
+        icon: 'alert', color: i.clasificacion === 'intolerable' ? 'var(--red)' : 'var(--orange)',
         titulo: `IPERC ${i.clasificacion} — ${i.peligro || i.actividad || 'Riesgo'}`,
         sub: `Nivel ${i.nivel_riesgo || '—'} · estado ${i.estado || '—'}`,
       });
@@ -215,7 +215,7 @@ function DashboardEjecutivoPage() {
       list.push({
         type: 'stock',
         icon: 'package',
-        color: esAgotado ? '#E74C3C' : esCritico ? '#E74C3C' : '#F2B705',
+        color: esAgotado ? 'var(--red)' : esCritico ? 'var(--red)' : 'var(--amber)',
         titulo: `Stock ${esAgotado ? 'AGOTADO' : esCritico ? 'crítico' : 'en mínimo'} — ${m.nombre_material}`,
         sub: `${m.stock_actual ?? 0} ${m.unidad || ''} · mín ${m.stock_minimo ?? 0}`,
         prioridad: esAgotado ? 1 : esCritico ? 2 : 3, // para ordenar
@@ -229,7 +229,7 @@ function DashboardEjecutivoPage() {
     ).forEach(v => {
       list.push({
         type: 'val',
-        icon: 'fileText', color: '#F2B705',
+        icon: 'fileText', color: 'var(--amber)',
         titulo: `Valorización ${v.estado} sin facturar — N° ${v.numero || '—'}`,
         sub: `${fmtCur(v.monto_total, 'PEN')} · período ${v.periodo_anio || ''}/${v.periodo_mes || ''}`,
       });
@@ -277,12 +277,12 @@ function DashboardEjecutivoPage() {
 
       {/* KPIs principales */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 22 }}>
-        <KpiCardEj label="Empresas activas" value={String(kpis.empresasActivas)} sub={`${kpis.empresasTotal} totales`} color="#3498DB" icon="building" />
-        <KpiCardEj label="Obras activas" value={String(kpis.obrasActivas)} sub={`${kpis.obrasTotal} totales`} color="#F28C28" icon="hardHat" />
-        <KpiCardEj label="Personal activo" value={String(kpis.personalActivo)} sub="Todas las obras" color="#2ECC71" icon="users" />
-        <KpiCardEj label="Cash actual" value={fmtCurK(kpis.cashActual, moneda)} sub={`${kpis.cuentasActivasCount} cuentas activas`} color="#2ECC71" icon="dollar" accent />
-        <KpiCardEj label="Por cobrar" value={fmtCurK(kpis.porCobrar, moneda)} sub="Pendiente de clientes" color="#3498DB" icon="arrowIn" />
-        <KpiCardEj label="Por pagar" value={fmtCurK(kpis.porPagar, moneda)} sub="Pendiente a proveedores" color="#E74C3C" icon="arrowOut" />
+        <KpiCardEj label="Empresas activas" value={String(kpis.empresasActivas)} sub={`${kpis.empresasTotal} totales`} color="var(--blue)" icon="building" />
+        <KpiCardEj label="Obras activas" value={String(kpis.obrasActivas)} sub={`${kpis.obrasTotal} totales`} color="var(--orange)" icon="hardHat" />
+        <KpiCardEj label="Personal activo" value={String(kpis.personalActivo)} sub="Todas las obras" color="var(--green)" icon="users" />
+        <KpiCardEj label="Cash actual" value={fmtCurK(kpis.cashActual, moneda)} sub={`${kpis.cuentasActivasCount} cuentas activas`} color="var(--green)" icon="dollar" accent />
+        <KpiCardEj label="Por cobrar" value={fmtCurK(kpis.porCobrar, moneda)} sub="Pendiente de clientes" color="var(--blue)" icon="arrowIn" />
+        <KpiCardEj label="Por pagar" value={fmtCurK(kpis.porPagar, moneda)} sub="Pendiente a proveedores" color="var(--red)" icon="arrowOut" />
         <KpiCardEj label="Ingresos del rango" value={fmtCurK(kpis.ingresosMes, moneda)} sub="Sin intercompany" color="var(--green)" icon="trendingUp" />
         {/* "Egresos", no "Costos": desde 4a (31-ago) suma costo de obra + gasto
             de la empresa — con la reclasificación real, llamarlo "Costos" era
@@ -384,16 +384,16 @@ function DashboardEjecutivoPage() {
           background: stockCounts.agotado > 0 ? 'rgba(231,76,60,0.12)' : 'rgba(242,183,5,0.10)',
           border: `1px solid ${stockCounts.agotado > 0 ? 'rgba(231,76,60,0.4)' : 'rgba(242,183,5,0.35)'}`,
           display:'flex', gap:14, alignItems:'center' }}>
-          <JxIcon name="package" size={26} color={stockCounts.agotado > 0 ? '#E74C3C' : '#F2B705'}/>
+          <JxIcon name="package" size={26} color={stockCounts.agotado > 0 ? 'var(--red)' : 'var(--amber)'}/>
           <div style={{ flex:1 }}>
             <div style={{ fontSize:13, fontWeight:700, color:'var(--tp)' }}>
               {stockCounts.agotado > 0 ? '⚠ STOCK AGOTADO ' : 'Atención al stock'}
               {stockCounts.agotado > 0 && <span style={{ color:'var(--red)' }}> — {stockCounts.agotado} material{stockCounts.agotado > 1 ? 'es' : ''} sin stock</span>}
             </div>
             <div style={{ fontSize:11.5, color:'var(--tm)', marginTop:4, display:'flex', gap:14, flexWrap:'wrap' }}>
-              {stockCounts.agotado > 0 && <span><strong style={{ color:'#E74C3C' }}>{stockCounts.agotado}</strong> agotados</span>}
-              {stockCounts.critico > 0 && <span><strong style={{ color:'#E74C3C' }}>{stockCounts.critico}</strong> en estado crítico</span>}
-              {stockCounts.reponer > 0 && <span><strong style={{ color:'#F2B705' }}>{stockCounts.reponer}</strong> en mínimo (reponer)</span>}
+              {stockCounts.agotado > 0 && <span><strong style={{ color:'var(--red)' }}>{stockCounts.agotado}</strong> agotados</span>}
+              {stockCounts.critico > 0 && <span><strong style={{ color:'var(--red)' }}>{stockCounts.critico}</strong> en estado crítico</span>}
+              {stockCounts.reponer > 0 && <span><strong style={{ color:'var(--amber)' }}>{stockCounts.reponer}</strong> en mínimo (reponer)</span>}
             </div>
           </div>
           <button className="btn btn-ghost btn-sm" onClick={() => { window.location.hash = '#/materiales'; }}>
@@ -411,7 +411,7 @@ function DashboardEjecutivoPage() {
         </div>
         {alertas.length === 0 ? (
           <div className="card card-p empty-state" style={{ padding: '24px 16px' }}>
-            <JxIcon name="checkCircle" size={28} color="#2ECC71" />
+            <JxIcon name="checkCircle" size={28} color="var(--green)" />
             <p>Sin alertas activas · todo bajo control</p>
           </div>
         ) : (
