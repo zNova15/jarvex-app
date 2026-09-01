@@ -43,6 +43,7 @@ const AYUDA = {
     como: [
       'Arrastrá o seleccioná los archivos; revisá lo que la IA leyó antes de confirmar.',
       '📥 RECIBIDAS DE CAMPO: arriba está la bandeja con lo que el personal sube desde el portal 📸 Captura de Campo (fotos y PDFs), con el NOMBRE de quién lo subió. Tiene dos pestañas: "⏳ Pendientes" (sin trabajar) y "🤖 Trabajadas". Al tocar "Leer con IA" el comprobante se manda al lector y pasa solo a Trabajadas, para que la bandeja principal quede limpia; desde ahí lo cerrás como "✓ Registrada" cuando confirmaste el movimiento, lo "✗ Descartás", o lo devolvés con "↩ A pendientes" si preferís seguir viéndolo.',
+      'VENTA A UN CLIENTE EXTERNO: si el que EMITE la factura es una empresa tuya y el que compra NO lo es, la app lo detecta sola y lo registra como VENTA de esa empresa. En ese caso no te ofrece crear un proveedor (el emisor sos vos) ni sumar al comprador a tus empresas del grupo: el cliente queda guardado como contraparte, y podés corregir su nombre o RUC ahí mismo si el OCR los leyó mal.',
       'El DESTINO es obligatorio: una obra específica, Gastos Generales, Contabilidad Neta u "No sé" (la Contadora Jefe lo clasifica después).',
       'Facturas en soles > S/ 2,000 entran como "Pendiente" y pasan a "Pagado" solas cuando se sube su bancarización completa.',
       'DETRACCIÓN (SPOT): si la factura la tiene, la IA la detecta y te propone el %, el monto y el código — corregilo si hace falta antes de confirmar (el neto a pagar al proveedor se calcula solo). El depósito lo registrás después en Movimientos Contables.',

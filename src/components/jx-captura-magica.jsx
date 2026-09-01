@@ -13,6 +13,10 @@ import {
   parseObservacionCampo, filtrarBandeja, esFaltaMigracion164,
   ESTADO_PENDIENTE, ESTADO_LEIDA, ESTADO_REGISTRADA, ESTADO_DESCARTADA,
 } from "../lib/captura-campo.js";
+import {
+  clasificarPartes, permiteCrearProveedor, permiteCrearEmpresaGrupo,
+  OP_VENTA_EXTERNA, OP_INTERCO,
+} from "../lib/partes-comprobante.js";
 
 // Nombre de persona natural en formato SUNAT ("APELLIDO1 APELLIDO2 NOMBRES"):
 // heurística para pre-llenar apellidos/nombres al crear un trabajador desde un
@@ -948,7 +952,10 @@ function CapturaMagicaPage({ showToast }) {
     // Si no hay match pero la factura sí tiene datos del receptor, autoseteamos
     // el modo "Crear nueva" pre-rellenado para que el usuario solo confirme.
     const hayDatosReceptor = !!(rucRec || ext.receptor?.razon_social_o_nombre);
-    const autoCrearNueva = hayDatosReceptor && !companyMatch;
+    // Si el EMISOR es nuestro, esto es una VENTA y el receptor es un CLIENTE
+    // externo: proponer "crear empresa del grupo" con sus datos incorporaría al
+    // grupo una empresa que no manejamos (reporte de Gabriel, 1-sep).
+    const autoCrearNueva = hayDatosReceptor && !companyMatch && !emisorCompanyMatch;
     // Obra: el contador siempre opera dentro de una obra. No hay selector
     // en la UI — se asume la obra activa del contexto. Fallback: primera
     // obra visible (si nunca se eligió ninguna).
@@ -2908,6 +2915,17 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
 
   // Companies del grupo (filtro: activas)
   const companiesActivas = uMCM(() => companies.filter(c => c.status === 'activa' && !c.deleted_at), [companies]);
+  // Quién es quién en el comprobante (src/lib/partes-comprobante.js): define qué
+  // se puede dar de alta desde acá. En una VENTA a un cliente externo NO se
+  // ofrece crear proveedor (el emisor somos nosotros) ni crear empresa del grupo
+  // (el receptor es un cliente) — bug reportado por Gabriel el 1-sep.
+  const opPartes = clasificarPartes({
+    emisorEsNuestro: !!r.emisor_company_id,
+    receptorEsNuestro: !!(r.receptor_documento && companiesActivas.find(c => c.ruc === r.receptor_documento)),
+  });
+  const emisorNuestro = opPartes === OP_VENTA_EXTERNA || opPartes === OP_INTERCO;
+  const empresaEmisora = emisorNuestro ? (companies || []).find(c => c.id === r.emisor_company_id) : null;
+
   // Obras de la empresa receptora
   const obrasDeEmpresa = uMCM(() => {
     if (!r.company_id) return [];
@@ -3164,6 +3182,25 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
                 Al confirmar se crea el <strong>pago del trabajador</strong> por <strong>S/ {(Number(r.total)||0).toFixed(2)}</strong> ({r.fecha_emision || ''}) con este recibo adjunto. El voucher de la transferencia se sube después en <strong>Pagos</strong>.
               </div>
             </div>
+            ) : emisorNuestro ? (
+            /* EMISOR = UNA DE NUESTRAS EMPRESAS (venta o interco).
+               Acá NO va el bloque de proveedor: dar de alta a nuestra propia
+               empresa en el padrón de proveedores es basura contable (reporte
+               de Gabriel, 1-sep). Solo se muestra quién emite. */
+            <div style={{ marginTop:8, padding:'10px 12px', background:'rgba(46,204,113,0.06)', border:'1px solid rgba(46,204,113,0.25)', borderRadius:8 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:'var(--green)', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:6 }}>
+                Empresa emisora (tu grupo) · {opPartes === OP_INTERCO ? 'operación interna' : 'venta'}
+              </div>
+              <div style={{ fontSize:13, fontWeight:700, color:'var(--tp)' }}>
+                {empresaEmisora?.name || r.proveedor_razon_social || '—'}
+              </div>
+              <div style={{ fontSize:11, color:'var(--tm)', marginTop:2 }}>
+                RUC {empresaEmisora?.ruc || r.proveedor_ruc || '—'} · vos emitís este comprobante
+              </div>
+              <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:6, lineHeight:1.45 }}>
+                Se registra como <strong style={{ color:'var(--green)' }}>venta</strong> de esta empresa. No se crea ningún proveedor.
+              </div>
+            </div>
             ) : (
             /* PROVEEDOR (emisor) */
             <div style={{ marginTop:8, padding:'10px 12px', background:'rgba(52,152,219,0.06)', border:'1px solid rgba(52,152,219,0.2)', borderRadius:8 }}>
@@ -3351,6 +3388,35 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
               </div>
             )}
 
+            {/* RECEPTOR. En una VENTA a un tercero es un CLIENTE EXTERNO: se
+                muestra tal cual, SIN la opción de incorporarlo al grupo (era el
+                bug: "crear nueva" venía pre-seleccionado con los datos del
+                cliente y parecía que se iba a sumar a nuestras empresas). */}
+            {opPartes === OP_VENTA_EXTERNA ? (
+              <div style={{ marginTop:10, padding:'10px 12px', background:'rgba(52,152,219,0.06)', border:'1px solid rgba(52,152,219,0.25)', borderRadius:8 }}>
+                <div style={{ fontSize:11, fontWeight:700, color:'var(--blue)', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:8 }}>Cliente (comprador externo)</div>
+                <div className="g2">
+                  <div>
+                    <label className="flabel">Razón social / nombre</label>
+                    <input className="fi" value={r.receptor_razon_social || ''}
+                           onChange={e=>upd({ receptor_razon_social: e.target.value })}
+                           placeholder="Cliente"/>
+                  </div>
+                  <div>
+                    <label className="flabel">RUC / documento</label>
+                    <input className="fi" value={r.receptor_documento || ''}
+                           onChange={e=>upd({ receptor_documento: e.target.value.replace(/\s/g,'') })}
+                           placeholder="RUC del cliente"/>
+                  </div>
+                </div>
+                <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:8, lineHeight:1.45 }}>
+                  Es un tercero: queda guardado como <strong>contraparte</strong> de la venta.
+                  <strong> No se agrega a tus empresas del grupo ni al padrón de proveedores</strong> —
+                  corregí acá el nombre o el RUC si el OCR los leyó mal.
+                </div>
+              </div>
+            ) : (
+            <>
             {/* RECEPTOR (empresa del grupo) + obra */}
             <div style={{ marginTop:10, padding:'10px 12px', background:'rgba(46,204,113,0.06)', border:'1px solid rgba(46,204,113,0.2)', borderRadius:8 }}>
               <div style={{ fontSize:11, fontWeight:700, color:'var(--green)', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:8 }}>Empresa compradora (tu grupo)</div>
@@ -3491,6 +3557,8 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
                 );
               })()}
             </div>
+            </>
+            )}
 
             {/* ITEMS */}
             <div style={{ marginTop:10 }}>
@@ -3644,7 +3712,10 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
 
         <div style={{ padding:'12px 18px', borderTop:'1px solid var(--border)', display:'flex', justifyContent:'space-between', gap:10 }}>
           <div style={{ fontSize:11, color:'var(--tm)' }}>
-            Al confirmar se crea: {r.proveedor_accion === 'crear_nuevo' && '1 proveedor + '}1 movimiento contable
+            {/* El proveedor solo se crea en una COMPRA: en una venta el emisor
+                es nuestra empresa y el confirmar ya lo saltea (esVenta). Antes el
+                resumen igual anunciaba "1 proveedor +" y asustaba con razón. */}
+            Al confirmar se crea: {permiteCrearProveedor(opPartes) && r.proveedor_accion === 'crear_nuevo' && '1 proveedor + '}1 movimiento contable
             {r.crear_materiales_catalogo && obraDestinoResuelta ? ` + ${r.items.filter(i=>i.accion_material==='crear_nuevo').length} material(es) en catálogo (sin stock)` : ''}
             {r.genera_recepcion_almacen && obraDestinoResuelta && r.items?.length > 0 ? ` + 1 recepción pendiente para almacén` : ''}
             {' + 1 evidencia.'}
