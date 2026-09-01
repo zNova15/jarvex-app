@@ -642,7 +642,7 @@ function UsuariosPage({ showToast }) {
                 <label className="flabel">
                   Obras asignadas * <span style={{ fontWeight:400, color:'var(--tm)' }}>· {form.obras.size} de {obrasActivas.length}</span>
                 </label>
-                <div style={{ maxHeight:180, overflow:'auto', border:'1px solid var(--bd)', borderRadius:6, padding:6, background:'var(--bg2)' }}>
+                <div style={{ maxHeight:180, overflow:'auto', border:'1px solid var(--border)', borderRadius:6, padding:6, background:'var(--bg-c2)' }}>
                   {obrasActivas.map(o => {
                     const checked = form.obras.has(o.id);
                     return (
@@ -686,7 +686,7 @@ function UsuariosPage({ showToast }) {
             <div style={{ marginBottom:8, fontSize:12, color:'var(--ts)' }}>
               Obras asignadas <span style={{ color:'var(--tm)' }}>· {obrasObrasSeleccion.size} de {obrasActivas.length}</span>
             </div>
-            <div style={{ maxHeight:300, overflow:'auto', border:'1px solid var(--bd)', borderRadius:6, padding:6, background:'var(--bg2)' }}>
+            <div style={{ maxHeight:300, overflow:'auto', border:'1px solid var(--border)', borderRadius:6, padding:6, background:'var(--bg-c2)' }}>
               {obrasActivas.length === 0 ? (
                 <div style={{ padding:'12px', color:'var(--tm)', fontSize:12, textAlign:'center' }}>No hay obras activas. Creá una primero.</div>
               ) : obrasActivas.map(o => {
@@ -1594,7 +1594,7 @@ function RolesPage() {
         👁
       </span>
     ) : (
-      <span style={{ width:22, height:22, borderRadius:5, background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)', display:'flex', alignItems:'center', justifyContent:'center', color:'rgba(255,255,255,0.25)', fontSize:12, boxShadow:ring }}>
+      <span style={{ width:22, height:22, borderRadius:5, background:'var(--tint-neutral)', border:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'center', color:'var(--tm)', fontSize:12, boxShadow:ring }}>
         ✗
       </span>
     );
@@ -1705,7 +1705,7 @@ function RolesPage() {
           </div>
           <div style={{ display:'flex', flexWrap:'wrap', gap:8 }}>
             {hiddenBuiltins.map(k => (
-              <div key={k} style={{ display:'flex', alignItems:'center', gap:6, padding:'4px 8px 4px 10px', background:'rgba(255,255,255,0.04)', border:'1px solid var(--border)', borderRadius:8, fontSize:12 }}>
+              <div key={k} style={{ display:'flex', alignItems:'center', gap:6, padding:'4px 8px 4px 10px', background:'var(--tint-neutral)', border:'1px solid var(--border)', borderRadius:8, fontSize:12 }}>
                 <span className={`badge ${ROL_COLORS_ADM[k]||'b-gray'}`}>{ROL_LABELS[k] || k}</span>
                 <button className="btn btn-ghost btn-xs" title="Restaurar este rol" onClick={()=>restaurarBuiltin(k)}>
                   <JxIcon name="refresh" size={11}/> Restaurar
@@ -1758,7 +1758,7 @@ function RolesPage() {
       )}
 
       <div className="card" style={{ overflow:'auto' }}>
-        <div style={{ display:'grid', gridTemplateColumns:`200px repeat(${todasRolKeys.length},minmax(110px,1fr))`, borderBottom:'1px solid var(--border)', background:'rgba(0,0,0,0.18)' }}>
+        <div style={{ display:'grid', gridTemplateColumns:`200px repeat(${todasRolKeys.length},minmax(110px,1fr))`, borderBottom:'1px solid var(--border)', background:'var(--bg-c2)' }}>
           <div style={{ padding:'10px 14px', fontSize:10.5, fontWeight:700, color:'var(--tm)', textTransform:'uppercase', letterSpacing:'.08em' }}>Módulo</div>
           {todasRolKeys.map(r => (
             <div key={r} style={{ padding:'10px 4px', fontSize:10.5, fontWeight:700, color:'var(--tm)', textTransform:'uppercase', textAlign:'center' }}>
@@ -1775,7 +1775,7 @@ function RolesPage() {
             {grp.modules.map((mod) => {
               const i = PERM_MATRIX_MODULES.indexOf(mod);
               return (
-                <div key={mod} style={{ display:'grid', gridTemplateColumns:`200px repeat(${todasRolKeys.length},minmax(110px,1fr))`, borderBottom:'1px solid rgba(255,255,255,0.04)', background:i%2?'rgba(0,0,0,0.06)':'transparent', alignItems:'center' }}>
+                <div key={mod} style={{ display:'grid', gridTemplateColumns:`200px repeat(${todasRolKeys.length},minmax(110px,1fr))`, borderBottom:'1px solid var(--border)', background:i%2?'var(--tint-neutral)':'transparent', alignItems:'center' }}>
                   <div style={{ padding:'10px 14px 10px 24px', fontSize:12.5, color:'var(--ts)' }}>{mod}</div>
                   {todasRolKeys.map(r => {
                     const ovRol = overrides[r] || {};
@@ -1791,7 +1791,7 @@ function RolesPage() {
             })}
           </React.Fragment>
         ))}
-        <div style={{ display:'flex', gap:18, padding:'12px 16px', background:'rgba(0,0,0,0.15)', fontSize:11.5, color:'var(--tm)' }}>
+        <div style={{ display:'flex', gap:18, padding:'12px 16px', background:'var(--bg-c2)', fontSize:11.5, color:'var(--tm)' }}>
           <span style={{ display:'flex', alignItems:'center', gap:6 }}><span style={{ color:'var(--green)' }}>✓</span> Edición</span>
           <span style={{ display:'flex', alignItems:'center', gap:6 }}><span>👁</span> Solo lectura</span>
           <span style={{ display:'flex', alignItems:'center', gap:6 }}><span style={{ color:'var(--tm)' }}>✗</span> Sin acceso</span>
@@ -1935,7 +1935,7 @@ function EmpresaTab() {
             { label:'Personal',  val: stats.personal, color:'var(--green)' },
             { label:'Movimientos', val: stats.movs,   color:'var(--orange)' },
           ].map((s,i)=>(
-            <div key={i} style={{ background:'rgba(0,0,0,0.18)', borderRadius:8, padding:'14px 12px' }}>
+            <div key={i} style={{ background:'var(--bg-c2)', borderRadius:8, padding:'14px 12px' }}>
               <div style={{ fontSize:11, color:'var(--tm)' }}>{s.label}</div>
               <div style={{ fontSize:24, fontWeight:800, color:s.color, marginTop:4 }}>{s.val}</div>
             </div>
@@ -1970,7 +1970,7 @@ function ObrasTab({ showToast, isAdmin }) {
       {obras.map(o => {
         const isActive = o.id === activeId;
         return (
-          <div key={o.id} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'12px 16px', borderBottom:'1px solid rgba(255,255,255,0.04)', background:isActive?'rgba(242,183,5,0.07)':'transparent', cursor:'pointer' }}
+          <div key={o.id} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'12px 16px', borderBottom:'1px solid var(--border)', background:isActive?'rgba(242,183,5,0.07)':'transparent', cursor:'pointer' }}
                onClick={()=>setActive(o.id)}>
             <div>
               <div style={{ fontSize:13, fontWeight:600, color:isActive?'var(--amber)':'var(--ts)' }}>
@@ -2788,11 +2788,11 @@ function SistemaTab({ showToast }) {
         </div>
         {!isAdmin && <div style={{ fontSize:11, color:'var(--tm)', marginTop:6 }}>Solo el administrador puede cambiarlo.</div>}
       </div>
-      <div className="card card-p" style={{ gridColumn:'1 / -1', borderLeft: isPrueba ? '3px solid #9B59B6' : isEdicion ? '3px solid var(--amber)' : '3px solid var(--green)' }}>
+      <div className="card card-p" style={{ gridColumn:'1 / -1', borderLeft: isPrueba ? '3px solid var(--purple)' : isEdicion ? '3px solid var(--amber)' : '3px solid var(--green)' }}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12, flexWrap:'wrap', gap:10 }}>
           <div style={{ fontSize:13, fontWeight:700, display:'flex', alignItems:'center', gap:8 }}>
             <JxIcon name={isPrueba ? 'alert' : isEdicion ? 'edit' : 'lock'} size={14}
-              color={isPrueba ? '#9B59B6' : isEdicion ? 'var(--amber)' : 'var(--green)'}/>
+              color={isPrueba ? 'var(--purple)' : isEdicion ? 'var(--amber)' : 'var(--green)'}/>
             Modo de Operación
             <span className={`badge ${isPrueba ? 'b-purple' : isEdicion ? 'b-amber' : 'b-green'}`} style={{ marginLeft:6 }}>
               {isPrueba ? '🧪 PRUEBA' : isEdicion ? '✏️ EDICIÓN' : '🔒 PRODUCCIÓN'}
@@ -2834,9 +2834,9 @@ function SistemaTab({ showToast }) {
 
         {/* Selector "Ver como rol" — SOLO en modo prueba para admin real */}
         {isPrueba && isAdmin && (
-          <div style={{ marginTop:14, paddingTop:14, borderTop:'1px solid var(--bd)' }}>
+          <div style={{ marginTop:14, paddingTop:14, borderTop:'1px solid var(--border)' }}>
             <div style={{ fontSize:12, fontWeight:700, color:'var(--ts)', marginBottom:6, display:'flex', alignItems:'center', gap:8 }}>
-              <JxIcon name="users" size={13} color="#9B59B6"/>
+              <JxIcon name="users" size={13} color="var(--purple)"/>
               Probar el sistema como otro rol
               {appMode.isImpersonating && <span className="badge b-purple">Impersonando: {appMode.roleOverride}</span>}
             </div>
@@ -2875,7 +2875,7 @@ function SistemaTab({ showToast }) {
 
         {/* Sección Demo Data — visible solo en modo prueba o cuando hay registros demo */}
         {(isPrueba || demoCount > 0) && isAdmin && (
-          <div style={{ marginTop:14, paddingTop:14, borderTop:'1px solid var(--bd)' }}>
+          <div style={{ marginTop:14, paddingTop:14, borderTop:'1px solid var(--border)' }}>
             <div style={{ fontSize:12, fontWeight:700, color:'var(--ts)', marginBottom:8 }}>
               Datos de prueba ({demoCount} registros)
               {seedBusy && <span style={{ marginLeft:10, color:'var(--amber)', fontSize:11 }}>· procesando…</span>}
@@ -2901,7 +2901,7 @@ function SistemaTab({ showToast }) {
       {(demoConfirm === 'seed' || demoConfirm === 'clear') && (
         <div className="overlay" onClick={e => e.target === e.currentTarget && setDemoConfirm(null)}
           style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:9999 }}>
-          <div className="card card-p" style={{ minWidth:380, maxWidth:520, background:'#1A2333', border:'1px solid var(--bd)', borderRadius:10, boxShadow:'0 12px 48px rgba(0,0,0,0.5)' }}>
+          <div className="card card-p" style={{ minWidth:380, maxWidth:520, background:'var(--bg-c)', border:'1px solid var(--border)', borderRadius:10, boxShadow:'0 12px 48px rgba(0,0,0,0.5)' }}>
             <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12 }}>
               <JxIcon name="alert" size={18} color={demoConfirm === 'clear' ? 'var(--red)' : 'var(--amber)'}/>
               <div style={{ fontSize:14, fontWeight:700, color:'var(--tp)' }}>
@@ -2993,7 +2993,7 @@ function SistemaTab({ showToast }) {
             para empezar de cero. Solo se mantienen los profiles de los admins.
             <br/><br/>
             <strong style={{ color:'var(--red)' }}>IRREVERSIBLE.</strong> Hacé un backup
-            local antes (correr <code style={{ background:'rgba(255,255,255,0.05)', padding:'1px 4px', borderRadius:3 }}>node scripts/backup-supabase.mjs</code>
+            local antes (correr <code style={{ background:'var(--tint-neutral)', padding:'1px 4px', borderRadius:3 }}>node scripts/backup-supabase.mjs</code>
             en tu PC) o aceptá que perdés todo.
           </div>
           <button className="btn btn-red btn-sm"
@@ -3011,7 +3011,7 @@ function SistemaTab({ showToast }) {
           {DB_TABLES_LIST.map(t => {
             const n = counts[t] ?? 0;
             return (
-              <div key={t} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'7px 0', borderBottom:'1px solid rgba(255,255,255,0.04)', fontSize:12, gap:8 }}>
+              <div key={t} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'7px 0', borderBottom:'1px solid var(--border)', fontSize:12, gap:8 }}>
                 <span style={{ color:'var(--tm)', fontFamily:'monospace', flex:1, overflow:'hidden', textOverflow:'ellipsis' }}>{t}</span>
                 <span style={{ color:n>0?'var(--ts)':'var(--tm)', fontWeight:n>0?600:400, minWidth:36, textAlign:'right' }}>{n}</span>
                 {isAdmin && (isPrueba || isEdicion) && n > 0 && (
@@ -3076,7 +3076,7 @@ function SistemaTab({ showToast }) {
                 </div>
               </div>
               <div style={{ fontSize:12.5, marginBottom:8 }}>
-                Para confirmar, escribí <code style={{ background:'rgba(255,255,255,0.08)', padding:'2px 6px', borderRadius:4, fontWeight:700 }}>BORRAR TODO</code> abajo:
+                Para confirmar, escribí <code style={{ background:'var(--tint-neutral)', padding:'2px 6px', borderRadius:4, fontWeight:700 }}>BORRAR TODO</code> abajo:
               </div>
               <input
                 className="fi"
@@ -3088,7 +3088,7 @@ function SistemaTab({ showToast }) {
                 style={{ marginBottom:8 }}/>
               <div style={{ fontSize:11, color:'var(--tm)' }}>
                 Hacé un backup primero si no lo hiciste:
-                <code style={{ display:'block', marginTop:4, padding:'4px 6px', background:'rgba(0,0,0,0.3)', borderRadius:4, fontSize:11 }}>node scripts/backup-supabase.mjs</code>
+                <code style={{ display:'block', marginTop:4, padding:'4px 6px', background:'var(--bg-c2)', borderRadius:4, fontSize:11 }}>node scripts/backup-supabase.mjs</code>
               </div>
             </div>
           ) : confirm === 'cache' ? (
@@ -3195,7 +3195,7 @@ function NotifTab({ showToast }) {
               <div style={{ fontSize:11.5, color:'var(--tm)', marginTop:2 }}>{it.desc}</div>
             </div>
             <div onClick={()=>toggle(it.key)}
-                 style={{ width:40, height:22, borderRadius:11, background:on?'var(--amber)':'rgba(255,255,255,0.1)', cursor:'pointer', position:'relative', flexShrink:0, transition:'background .2s' }}>
+                 style={{ width:40, height:22, borderRadius:11, background:on?'var(--amber)':'var(--track-bg)', cursor:'pointer', position:'relative', flexShrink:0, transition:'background .2s' }}>
               <div style={{ position:'absolute', top:3, left:on?20:3, width:16, height:16, borderRadius:'50%', background:'white', transition:'left .2s', boxShadow:'0 1px 4px rgba(0,0,0,0.4)' }}/>
             </div>
           </div>
@@ -3336,8 +3336,8 @@ function AuditoriaTab({ showToast, isAdmin }) {
                 {filtered.map(l => (
                   <tr key={l.id}
                       onClick={()=>setSelected(l)}
-                      style={{ borderTop:'1px solid rgba(255,255,255,0.04)', cursor:'pointer' }}
-                      onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.03)'}
+                      style={{ borderTop:'1px solid var(--border)', cursor:'pointer' }}
+                      onMouseEnter={e=>e.currentTarget.style.background='var(--tint-neutral)'}
                       onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
                     <td style={{ padding:'8px 10px', color:'var(--ts)', whiteSpace:'nowrap' }}>{fmtDateTime(l.created_at)}</td>
                     <td style={{ padding:'8px 10px', color:'var(--ts)' }}>{l.user_email || l.user_id || '—'}</td>
@@ -3375,13 +3375,13 @@ function AuditoriaTab({ showToast, isAdmin }) {
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
             <div>
               <div style={{ fontSize:11, fontWeight:700, color:'var(--tm)', marginBottom:6, textTransform:'uppercase', letterSpacing:0.5 }}>old_data</div>
-              <pre style={{ background:'rgba(0,0,0,0.25)', borderRadius:6, padding:10, fontSize:11, color:'var(--ts)', maxHeight:360, overflow:'auto', margin:0, whiteSpace:'pre-wrap', wordBreak:'break-word' }}>
+              <pre style={{ background:'var(--bg-c2)', borderRadius:6, padding:10, fontSize:11, color:'var(--ts)', maxHeight:360, overflow:'auto', margin:0, whiteSpace:'pre-wrap', wordBreak:'break-word' }}>
 {selected.old_data ? JSON.stringify(selected.old_data, null, 2) : '— (sin datos previos)'}
               </pre>
             </div>
             <div>
               <div style={{ fontSize:11, fontWeight:700, color:'var(--tm)', marginBottom:6, textTransform:'uppercase', letterSpacing:0.5 }}>new_data</div>
-              <pre style={{ background:'rgba(0,0,0,0.25)', borderRadius:6, padding:10, fontSize:11, color:'var(--ts)', maxHeight:360, overflow:'auto', margin:0, whiteSpace:'pre-wrap', wordBreak:'break-word' }}>
+              <pre style={{ background:'var(--bg-c2)', borderRadius:6, padding:10, fontSize:11, color:'var(--ts)', maxHeight:360, overflow:'auto', margin:0, whiteSpace:'pre-wrap', wordBreak:'break-word' }}>
 {selected.new_data ? JSON.stringify(selected.new_data, null, 2) : '— (sin datos nuevos)'}
               </pre>
             </div>

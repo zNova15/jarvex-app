@@ -43,21 +43,21 @@ function useObraActiva() {
 
 // ── SOURCES ──────────────────────────────────────────────────
 const SOURCES = [
-  { id:'excel',     label:'Excel / CSV',     icon:'chart',  color:'#1E7145', desc:'Importa desde hojas de cálculo .xlsx, .xls o archivos .csv', ext:'.xlsx,.xls,.csv', badge:'Universal',  enabled:true  },
-  { id:'s10',       label:'Delphin',         icon:'dollar', color:'#0070C0', desc:'Importa presupuestos, partidas e insumos directamente desde Delphin', ext:'.xlsx, .xls', badge:'Construcción Perú', enabled:true  },
-  { id:'migracion', label:'Migración histórica', icon:'calendar', color:'#9B59B6', desc:'Carga masiva de movimientos en papel/Excel previos a JARVEX, respetando fechas reales', ext:'.xlsx, .xls', badge:'Super Admin', enabled:true, requiresSuperAdmin:true },
+  { id:'excel',     label:'Excel / CSV',     icon:'chart',  color:'var(--green)', desc:'Importa desde hojas de cálculo .xlsx, .xls o archivos .csv', ext:'.xlsx,.xls,.csv', badge:'Universal',  enabled:true  },
+  { id:'s10',       label:'Delphin',         icon:'dollar', color:'var(--blue)', desc:'Importa presupuestos, partidas e insumos directamente desde Delphin', ext:'.xlsx, .xls', badge:'Construcción Perú', enabled:true  },
+  { id:'migracion', label:'Migración histórica', icon:'calendar', color:'var(--purple)', desc:'Carga masiva de movimientos en papel/Excel previos a JARVEX, respetando fechas reales', ext:'.xlsx, .xls', badge:'Super Admin', enabled:true, requiresSuperAdmin:true },
 ];
 
 // ── MODULE DESTINATIONS (real ones for Excel) ────────────────
 const MOD_META = [
-  { id:'materiales',   label:'Materiales / Inventario', icon:'package', color:'#3498DB', desc:'Stock de almacén, unidades, precios estimados y categorías' },
-  { id:'personal',     label:'Personal / Trabajadores', icon:'users',   color:'#2ECC71', desc:'DNI, cargo, área, fecha de ingreso del plantel' },
-  { id:'partidas',     label:'Partidas de Obra',        icon:'list',    color:'#9B59B6', desc:'Códigos, metrados, precios unitarios y cronograma planificado' },
-  { id:'proveedores',  label:'Proveedores',             icon:'truck',   color:'#1ABC9C', desc:'RUC, razón social, contacto y condiciones (global, sin obra)' },
-  { id:'herramientas', label:'Herramientas y Equipos',  icon:'tool',    color:'#F28C28', desc:'Tipo, marca, modelo, serie, estado actual' },
-  { id:'subcontratistas', label:'Subcontratistas',      icon:'users',   color:'#E74C3C', desc:'RUC, razón social, especialidad, contacto (global)' },
-  { id:'companies',    label:'Empresas',                icon:'building', color:'#F2B705', desc:'RUC, razón social, dirección y ubigeo (multi-empresa)' },
-  { id:'activos_pesados', label:'Activos Pesados / Maquinaria', icon:'tool', color:'#8E44AD', desc:'Placa, marca, modelo, año, propietario (global, sin obra)' },
+  { id:'materiales',   label:'Materiales / Inventario', icon:'package', color:'var(--blue)', desc:'Stock de almacén, unidades, precios estimados y categorías' },
+  { id:'personal',     label:'Personal / Trabajadores', icon:'users',   color:'var(--green)', desc:'DNI, cargo, área, fecha de ingreso del plantel' },
+  { id:'partidas',     label:'Partidas de Obra',        icon:'list',    color:'var(--purple)', desc:'Códigos, metrados, precios unitarios y cronograma planificado' },
+  { id:'proveedores',  label:'Proveedores',             icon:'truck',   color:'var(--blue)', desc:'RUC, razón social, contacto y condiciones (global, sin obra)' },
+  { id:'herramientas', label:'Herramientas y Equipos',  icon:'tool',    color:'var(--orange)', desc:'Tipo, marca, modelo, serie, estado actual' },
+  { id:'subcontratistas', label:'Subcontratistas',      icon:'users',   color:'var(--red)', desc:'RUC, razón social, especialidad, contacto (global)' },
+  { id:'companies',    label:'Empresas',                icon:'building', color:'var(--amber)', desc:'RUC, razón social, dirección y ubigeo (multi-empresa)' },
+  { id:'activos_pesados', label:'Activos Pesados / Maquinaria', icon:'tool', color:'var(--purple)', desc:'Placa, marca, modelo, año, propietario (global, sin obra)' },
 ];
 
 const NEEDS_OBRA = (m) => !['proveedores','subcontratistas','companies','activos_pesados'].includes(m);
@@ -127,8 +127,8 @@ function Steps({ current, steps, onJump }) {
               style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:6, cursor:clickable?'pointer':'default' }}>
               <div style={{
                 width:34, height:34, borderRadius:'50%',
-                background: done ? 'var(--green)' : active ? 'var(--amber)' : 'rgba(255,255,255,0.07)',
-                border: `2px solid ${done ? 'var(--green)' : active ? 'var(--amber)' : 'rgba(255,255,255,0.12)'}`,
+                background: done ? 'var(--green)' : active ? 'var(--amber)' : 'var(--tint-neutral)',
+                border: `2px solid ${done ? 'var(--green)' : active ? 'var(--amber)' : 'var(--border-h)'}`,
                 display:'flex', alignItems:'center', justifyContent:'center',
                 fontSize:12, fontWeight:700,
                 color: done||active ? '#0c1118' : 'var(--tm)',
@@ -139,7 +139,7 @@ function Steps({ current, steps, onJump }) {
               <span style={{ fontSize:10.5, fontWeight:active?700:400, color:active?'var(--amber)':done?'var(--green)':'var(--tm)', whiteSpace:'nowrap' }}>{s}</span>
             </div>
             {i < steps.length-1 && (
-              <div style={{ flex:1, height:2, background:i < current?'var(--green)':'rgba(255,255,255,0.07)', margin:'0 8px', marginBottom:20, transition:'background .3s' }}/>
+              <div style={{ flex:1, height:2, background:i < current?'var(--green)':'var(--border)', margin:'0 8px', marginBottom:20, transition:'background .3s' }}/>
             )}
           </React.Fragment>
         );
@@ -1650,9 +1650,9 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
           <div style={{ display:'grid', gridTemplateColumns:'1fr', gap:10, marginBottom:14 }}>
             {!isProject && (
               <>
-                <div className="card card-p" style={{ borderLeft:'3px solid #0070C0' }}>
+                <div className="card card-p" style={{ borderLeft:'3px solid var(--blue)' }}>
                   <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)', marginBottom:4, display:'flex', alignItems:'center', gap:6 }}>
-                    <JxIcon name="dollar" size={13} color="#0070C0"/> Presupuesto APU
+                    <JxIcon name="dollar" size={13} color="var(--blue)"/> Presupuesto APU
                   </div>
                   <div style={{ fontSize:11.5, color:'var(--tm)' }}>
                     "Análisis de Precios Unitarios" o "Consolidado de Materiales del Presupuesto" — partidas + insumos por partida.
@@ -1876,7 +1876,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                             ⚠ {costosArchivoErr}
                           </div>
                         )}
-                        <div style={{ background:'rgba(0,0,0,0.18)', borderRadius:8, padding:'10px 14px' }}>
+                        <div style={{ background:'var(--bg-c2)', borderRadius:8, padding:'10px 14px' }}>
                           <Row label="Costo Directo (suma de partidas)" val={calc.costoDirecto} bold color="var(--amber)"/>
                           <Row label={`Utilidades (${uPct}%)`} val={calc.utilidades}/>
                           <Row label={`Gastos Generales (${gPct}%)`} val={calc.gastosGenerales}/>
@@ -2232,7 +2232,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                     { v:'reemplazar', t:'Reemplazar (recomendado)', d:'El % del archivo es el avance TOTAL de cada partida → reemplaza el avance importado anterior. Re-importar el mismo archivo NO acumula.' },
                     { v:'sumar', t:'Sumar al avance existente', d:'El % del archivo se SUMA al avance ya registrado. Para cargar el avance de un período/mes (ej. "este mes 20%"). Cada importación acumula sobre lo previo.' },
                   ].map(o => (
-                    <label key={o.v} style={{ flex:'1 1 300px', display:'flex', gap:8, alignItems:'flex-start', cursor:'pointer', padding:'9px 11px', borderRadius:6, border:`1px solid ${gantAvanceModo===o.v?'var(--amber)':'var(--bd)'}`, background: gantAvanceModo===o.v?'rgba(242,183,5,0.06)':'transparent' }}>
+                    <label key={o.v} style={{ flex:'1 1 300px', display:'flex', gap:8, alignItems:'flex-start', cursor:'pointer', padding:'9px 11px', borderRadius:6, border:`1px solid ${gantAvanceModo===o.v?'var(--amber)':'var(--border)'}`, background: gantAvanceModo===o.v?'rgba(242,183,5,0.06)':'transparent' }}>
                       <input type="radio" name="gantAvanceModo" checked={gantAvanceModo===o.v} onChange={()=>setGantAvanceModo(o.v)} style={{ marginTop:2 }}/>
                       <span><span style={{ fontSize:12, fontWeight:700, color:'var(--tp)' }}>{o.t}</span><span style={{ display:'block', fontSize:10.5, color:'var(--tm)', marginTop:2 }}>{o.d}</span></span>
                     </label>
@@ -2271,7 +2271,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                           <div style={{ fontSize:10, color:'var(--tm)', textTransform:'uppercase' }}>Match normalizado<br/>(01.01 ↔ 1.01)</div>
                         </div>
                         <div style={{ textAlign:'center', padding:8, background:'rgba(155,89,182,0.14)', borderRadius:6, border:'1px solid rgba(155,89,182,0.35)' }}>
-                          <div style={{ fontSize:20, fontWeight:800, color:'#b07cd6' }}>{gantPreview.capitulos || 0}</div>
+                          <div style={{ fontSize:20, fontWeight:800, color:'var(--purple)' }}>{gantPreview.capitulos || 0}</div>
                           <div style={{ fontSize:10, color:'var(--tm)', textTransform:'uppercase' }}>Capítulos<br/>(crear / nombrar)</div>
                         </div>
                         <div style={{ textAlign:'center', padding:8, background:'rgba(242,183,5,0.12)', borderRadius:6, border:'1px solid rgba(242,183,5,0.3)' }}>
@@ -2285,7 +2285,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                       </div>
                       <div style={{ fontSize:11.5, color:'var(--tm)', lineHeight:1.6 }}>
                         Al importar: las <strong style={{ color:'var(--green)' }}>{gantPreview.exactas + gantPreview.normalizadas}</strong> con match se aplicarán automáticamente.
-                        {gantPreview.capitulos > 0 && <> Los <strong style={{ color:'#b07cd6' }}>{gantPreview.capitulos} capítulos/títulos</strong> se crean (si faltan) o se renombran con su título real, y se les aplican las fechas.</>}
+                        {gantPreview.capitulos > 0 && <> Los <strong style={{ color:'var(--purple)' }}>{gantPreview.capitulos} capítulos/títulos</strong> se crean (si faltan) o se renombran con su título real, y se les aplican las fechas.</>}
                         {gantPreview.sugerencias.length > 0 && <> Las <strong style={{ color:'var(--amber)' }}>{gantPreview.sugerencias.length} sugerencias</strong> se mostrarán en un modal para que las apruebes una por una.</>}
                         {gantPreview.noMatch.length > 0 && <> Las <strong style={{ color:'var(--red)' }}>{gantPreview.noMatch.length} sin match</strong> se reportarán como no encontradas.</>}
                       </div>
@@ -2318,7 +2318,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                           <summary style={{ fontSize:11.5, color:'var(--red)', cursor:'pointer', fontWeight:600 }}>
                             Ver las {gantPreview.noMatch.length} sin match ▾
                           </summary>
-                          <div style={{ maxHeight:200, overflowY:'auto', marginTop:8, fontSize:11, padding:'4px 10px', background:'rgba(0,0,0,0.15)', borderRadius:6 }}>
+                          <div style={{ maxHeight:200, overflowY:'auto', marginTop:8, fontSize:11, padding:'4px 10px', background:'var(--bg-c2)', borderRadius:6 }}>
                             {gantPreview.noMatch.slice(0, 100).map((t, i) => (
                               <div key={i} style={{ padding:'2px 0', borderBottom:'1px solid var(--border)' }}>
                                 <span style={{ fontFamily:'monospace', color:'var(--tm)' }}>{t.tareaCodigo}</span> · {t.tareaDescripcion}
@@ -2401,7 +2401,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                   { label:'Origen', val: parsed.tipo === 'apu' ? `${sourceName} · Presupuesto APU`
                                        : parsed.tipo === 'insumos' ? `${sourceName} · Lista de Insumos`
                                        : `${sourceName} · Cronograma Gantt`,
-                    icon:'dollar', color:'#0070C0' },
+                    icon:'dollar', color:'var(--blue)' },
                   { label:'Archivo', val:file?.name, icon:'file', color:'var(--green)' },
                   { label:'Obra destino', val: obraDestino ? (obraDestino.nombre_obra || obraDestino.nombre) : (obraId ? `${obraId.slice(0,8)}…` : '—'), icon:'building', color:'var(--orange)' },
                 ];
@@ -2428,7 +2428,7 @@ function S10Flow({ obraId: defaultObraId, userId, userName, showToast, onReset, 
                 }
                 return filas.map((r,i)=>(
                   <div key={i} style={{ display:'flex', gap:10, alignItems:'center' }}>
-                    <div style={{ width:32, height:32, borderRadius:7, background:`${r.color}18`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                    <div style={{ width:32, height:32, borderRadius:7, background:`color-mix(in srgb, ${r.color} 10%, transparent)`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
                       <JxIcon name={r.icon} size={14} color={r.color}/>
                     </div>
                     <div>
@@ -3017,7 +3017,7 @@ function ImportarPage({ showToast }) {
                   <button key={s.id} onClick={()=>effEnabled && setSrc(s.id)} disabled={!effEnabled}
                     title={lockedBySA ? 'Activá Super Admin para usar la migración histórica' : undefined}
                     style={{ background:srcId===s.id?'rgba(242,183,5,0.1)':'var(--bg-c)', border:`2px solid ${srcId===s.id?'var(--amber)':'var(--border)'}`, borderRadius:10, padding:'18px 20px', cursor:effEnabled?'pointer':'not-allowed', textAlign:'left', transition:'all .18s', display:'flex', gap:14, alignItems:'flex-start', opacity:effEnabled?1:.5 }}>
-                    <div style={{ width:44, height:44, borderRadius:10, background:`${s.color}20`, border:`1px solid ${s.color}40`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                    <div style={{ width:44, height:44, borderRadius:10, background:`color-mix(in srgb, ${s.color} 12%, transparent)`, border:`1px solid color-mix(in srgb, ${s.color} 25%, transparent)`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
                       <JxIcon name={s.icon} size={20} color={s.color}/>
                     </div>
                     <div style={{ flex:1 }}>
@@ -3055,7 +3055,7 @@ function ImportarPage({ showToast }) {
                   <div key={m.id}
                     style={{ background:modId===m.id?'rgba(242,183,5,0.1)':'var(--bg-c)', border:`1.5px solid ${modId===m.id?'var(--amber)':'var(--border)'}`, borderRadius:8, padding:'14px 18px', display:'flex', alignItems:'center', gap:12, transition:'all .15s' }}>
                     <button onClick={()=>setMod(m.id)} style={{ background:'none', border:'none', cursor:'pointer', display:'flex', alignItems:'center', gap:12, flex:1, textAlign:'left', padding:0 }}>
-                      <div style={{ width:36, height:36, borderRadius:8, background:`${m.color}18`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                      <div style={{ width:36, height:36, borderRadius:8, background:`color-mix(in srgb, ${m.color} 10%, transparent)`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
                         <JxIcon name={m.icon} size={16} color={m.color}/>
                       </div>
                       <div style={{ flex:1 }}>
@@ -3204,7 +3204,7 @@ function ImportarPage({ showToast }) {
                     { label:'Validación', val:`${validation.ok} OK · ${validation.errors} con error`, icon:validation.errors?'alert':'checkCircle', color:validation.errors?'var(--amber)':'var(--green)' },
                   ].map((r,i)=>(
                     <div key={i} style={{ display:'flex', gap:10, alignItems:'center' }}>
-                      <div style={{ width:32, height:32, borderRadius:7, background:`${r.color}18`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                      <div style={{ width:32, height:32, borderRadius:7, background:`color-mix(in srgb, ${r.color} 10%, transparent)`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
                         <JxIcon name={r.icon} size={14} color={r.color}/>
                       </div>
                       <div>
@@ -3323,7 +3323,7 @@ function ImportarPage({ showToast }) {
             {MOD_META.map(m => (
               <div key={m.id} className="card card-p card-hover">
                 <div style={{ display:'flex', gap:12, alignItems:'flex-start', marginBottom:12 }}>
-                  <div style={{ width:40, height:40, borderRadius:10, background:`${m.color}18`, border:`1px solid ${m.color}28`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                  <div style={{ width:40, height:40, borderRadius:10, background:`color-mix(in srgb, ${m.color} 10%, transparent)`, border:`1px solid color-mix(in srgb, ${m.color} 16%, transparent)`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
                     <JxIcon name={m.icon} size={18} color={m.color}/>
                   </div>
                   <div>
@@ -3342,18 +3342,18 @@ function ImportarPage({ showToast }) {
           {/* Importaciones desde Delphin (APU/Presupuesto/Insumos = export nativo; Gantt = plantilla editable) */}
           <div style={{ marginTop:28 }}>
             <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
-              <JxIcon name="gantt" size={16} color="#16A34A"/>
-              <span style={{ fontSize:14, fontWeight:800, color:'#16A34A' }}>Importaciones desde Delphin</span>
+              <JxIcon name="gantt" size={16} color="var(--green)"/>
+              <span style={{ fontSize:14, fontWeight:800, color:'var(--green)' }}>Importaciones desde Delphin</span>
             </div>
             <div className="info-banner" style={{ marginBottom:14, background:'rgba(22,163,74,0.08)', border:'1px solid rgba(22,163,74,0.3)' }}>
-              <JxIcon name="alert" size={14} color="#16A34A"/>
+              <JxIcon name="alert" size={14} color="var(--green)"/>
               <span>El <strong>Presupuesto APU</strong>, el <strong>Presupuesto de obra</strong> y la <strong>Lista de Insumos</strong> se importan directo desde el archivo que <strong>exportás de Delphin</strong> — no necesitan plantilla, la app detecta el formato sola. El <strong>Cronograma Gantt</strong> también, pero acá tenés una plantilla editable para cargar/actualizar fechas y <strong>marcar partidas ya avanzadas o terminadas</strong> a mano (el % de avance fija el estado al importar).</span>
             </div>
             <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14 }}>
               <div className="card card-p card-hover">
                 <div style={{ display:'flex', gap:12, alignItems:'flex-start', marginBottom:12 }}>
                   <div style={{ width:40, height:40, borderRadius:10, background:'rgba(22,163,74,0.15)', border:'1px solid rgba(22,163,74,0.28)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                    <JxIcon name="gantt" size={18} color="#16A34A"/>
+                    <JxIcon name="gantt" size={18} color="var(--green)"/>
                   </div>
                   <div>
                     <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)', lineHeight:1.3, marginBottom:4 }}>Cronograma Gantt (con avance)</div>
@@ -3370,7 +3370,7 @@ function ImportarPage({ showToast }) {
 
           {superAdmin && (
             <div className="info-banner" style={{ marginTop:18, background:'rgba(22,163,74,0.08)', border:'1px solid rgba(22,163,74,0.3)' }}>
-              <JxIcon name="download" size={14} color="#16A34A"/>
+              <JxIcon name="download" size={14} color="var(--green)"/>
               <span>¿Querés <strong>exportar los datos reales</strong> de la obra (movimientos, mantenimientos, inventario, personal…) con filtros? Andá a la pestaña <strong>Exportar</strong>.</span>
             </div>
           )}
@@ -3379,12 +3379,12 @@ function ImportarPage({ showToast }) {
           {superAdmin && (
             <div style={{ marginTop:28 }}>
               <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
-                <JxIcon name="calendar" size={16} color="#9B59B6"/>
-                <span style={{ fontSize:14, fontWeight:800, color:'#9B59B6' }}>Plantillas de Migración Histórica</span>
+                <JxIcon name="calendar" size={16} color="var(--purple)"/>
+                <span style={{ fontSize:14, fontWeight:800, color:'var(--purple)' }}>Plantillas de Migración Histórica</span>
                 <span className="badge b-gray" style={{ fontSize:9.5 }}>Super Admin</span>
               </div>
               <div className="info-banner" style={{ marginBottom:14, background:'rgba(155,89,182,0.08)', border:'1px solid rgba(155,89,182,0.3)' }}>
-                <JxIcon name="download" size={14} color="#9B59B6"/>
+                <JxIcon name="download" size={14} color="var(--purple)"/>
                 <span>Plantillas para cargar el histórico (papel/Excel previo a JARVEX) desde <strong>Migración histórica</strong>. Llenalas y subilas en ese origen.</span>
               </div>
               <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14 }}>
@@ -3392,7 +3392,7 @@ function ImportarPage({ showToast }) {
                   <div key={f.id} className="card card-p card-hover">
                     <div style={{ display:'flex', gap:12, alignItems:'flex-start', marginBottom:12 }}>
                       <div style={{ width:40, height:40, borderRadius:10, background:'rgba(155,89,182,0.15)', border:'1px solid rgba(155,89,182,0.28)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                        <JxIcon name={f.icon} size={18} color="#9B59B6"/>
+                        <JxIcon name={f.icon} size={18} color="var(--purple)"/>
                       </div>
                       <div>
                         <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)', lineHeight:1.3, marginBottom:4 }}>{f.label}</div>
@@ -3415,12 +3415,12 @@ function ImportarPage({ showToast }) {
       {tab === 'exportar' && (
         <div>
           <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
-            <JxIcon name="download" size={16} color="#16A34A"/>
-            <span style={{ fontSize:15, fontWeight:800, color:'#16A34A' }}>Exportar datos de la obra</span>
+            <JxIcon name="download" size={16} color="var(--green)"/>
+            <span style={{ fontSize:15, fontWeight:800, color:'var(--green)' }}>Exportar datos de la obra</span>
             <span className="badge b-gray" style={{ fontSize:9.5 }}>Super Admin</span>
           </div>
           <div className="info-banner" style={{ marginBottom:14, background:'rgba(22,163,74,0.08)', border:'1px solid rgba(22,163,74,0.3)' }}>
-            <JxIcon name="download" size={14} color="#16A34A"/>
+            <JxIcon name="download" size={14} color="var(--green)"/>
             <span>Descargá los <strong>datos reales</strong> de la obra activa en Excel, organizados por categoría (parte por parte o todo junto). Los filtros se aplican a los datasets marcados con ⏱.</span>
           </div>
           {!obraId && <div className="alert-banner" style={{ marginBottom:14, background:'rgba(231,76,60,0.08)', border:'1px solid rgba(231,76,60,0.3)', color:'var(--red)' }}><JxIcon name="alert" size={14} color="var(--red)"/><span>No hay obra activa.</span></div>}
@@ -3451,8 +3451,8 @@ function ImportarPage({ showToast }) {
           {/* Restaurar backup */}
           <div className="card card-p" style={{ marginBottom:16, background:'rgba(155,89,182,0.06)', border:'1px solid rgba(155,89,182,0.3)' }}>
             <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
-              <JxIcon name="refresh" size={15} color="#9B59B6"/>
-              <span style={{ fontSize:13, fontWeight:800, color:'#9B59B6' }}>Restaurar backup</span>
+              <JxIcon name="refresh" size={15} color="var(--purple)"/>
+              <span style={{ fontSize:13, fontWeight:800, color:'var(--purple)' }}>Restaurar backup</span>
             </div>
             <div style={{ fontSize:12, color:'var(--ts)', marginBottom:10 }}>
               Subí el <strong>.xlsx</strong> exportado (y opcional el <strong>.zip</strong> de fotos) para rearmar la obra tras un borrado general. Restaura <strong>frentes, proveedores, subcontratistas, inventario, personal y movimientos</strong> re-resolviendo por nombre, sin duplicar lo que ya existe (podés correrlo varias veces). Las fotos vuelven como galería por categoría (el vínculo a cada registro no se conserva). No restaura partidas, OC ni valorizaciones.
@@ -3474,7 +3474,7 @@ function ImportarPage({ showToast }) {
                 {EXPORT_DATASETS.filter(d=>d.grupo===g).map(d => (
                   <div key={d.id} className="card card-p card-hover">
                     <div style={{ display:'flex', gap:12, alignItems:'flex-start', marginBottom:10 }}>
-                      <div style={{ width:38, height:38, borderRadius:9, background:`${d.color}18`, border:`1px solid ${d.color}30`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                      <div style={{ width:38, height:38, borderRadius:9, background:`color-mix(in srgb, ${d.color} 10%, transparent)`, border:`1px solid color-mix(in srgb, ${d.color} 19%, transparent)`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
                         <JxIcon name={d.icon} size={17} color={d.color}/>
                       </div>
                       <div>
@@ -3491,7 +3491,7 @@ function ImportarPage({ showToast }) {
                   <div className="card card-p card-hover">
                     <div style={{ display:'flex', gap:12, alignItems:'flex-start', marginBottom:10 }}>
                       <div style={{ width:38, height:38, borderRadius:9, background:'rgba(22,163,74,0.10)', border:'1px solid rgba(22,163,74,0.3)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                        <JxIcon name="download" size={17} color="#16A34A"/>
+                        <JxIcon name="download" size={17} color="var(--green)"/>
                       </div>
                       <div>
                         <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)', lineHeight:1.3 }}>Fotos / Archivos (ZIP) <span title="Aplica fecha y nombre">⏱</span></div>

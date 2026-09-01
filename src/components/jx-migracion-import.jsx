@@ -2445,8 +2445,8 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         <div>
           <div className="card card-p" style={{ background: 'rgba(155,89,182,0.08)', border: '1px solid rgba(155,89,182,0.3)', marginBottom: 16 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-              <JxIcon name="alert" size={18} color="#9B59B6" />
-              <span style={{ fontSize: 15, fontWeight: 800, color: '#9B59B6' }}>Migración histórica (Super Admin)</span>
+              <JxIcon name="alert" size={18} color="var(--purple)" />
+              <span style={{ fontSize: 15, fontWeight: 800, color: 'var(--purple)' }}>Migración histórica (Super Admin)</span>
             </div>
             <div style={{ fontSize: 13, color: 'var(--ts)', lineHeight: 1.65 }}>
               Carga masiva de los movimientos que la obra registró en papel/Excel antes de usar JARVEX, <strong>respetando las fechas reales</strong>.
@@ -2520,8 +2520,8 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
 
           {multiHojas && (
             <div className="card card-p" style={{ marginTop: 12, background: 'rgba(155,89,182,0.06)', border: '1px solid rgba(155,89,182,0.3)' }}>
-              <div style={{ fontSize: 12.5, fontWeight: 700, color: '#9B59B6', marginBottom: 8 }}>
-                <JxIcon name="file" size={14} color="#9B59B6" /> Backup con {multiHojas.length} hojas importables. Elegí cuál importar (una por vez):
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--purple)', marginBottom: 8 }}>
+                <JxIcon name="file" size={14} color="var(--purple)" /> Backup con {multiHojas.length} hojas importables. Elegí cuál importar (una por vez):
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                 {multiHojas.map(s => {
@@ -2567,7 +2567,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           {preview.tipo === 'insumos' && (
             <div className="card card-p" style={{ marginBottom: 14 }}>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: 12 }}>
-                {[['Materiales', preview.porTipo.materiales, '#3498DB'], ['Herramientas', preview.porTipo.herramientas, '#F28C28'], ['Maquinaria', preview.porTipo.activos_pesados, '#8E44AD'], ['EPP', preview.porTipo.epps, '#2ECC71'], ['Emergencia', preview.porTipo.insumos_emergencia, '#9B59B6']].map(([lbl, n, c]) => (
+                {[['Materiales', preview.porTipo.materiales, 'var(--blue)'], ['Herramientas', preview.porTipo.herramientas, 'var(--orange)'], ['Maquinaria', preview.porTipo.activos_pesados, 'var(--purple)'], ['EPP', preview.porTipo.epps, 'var(--green)'], ['Emergencia', preview.porTipo.insumos_emergencia, 'var(--purple)']].map(([lbl, n, c]) => (
                   <div key={lbl} style={{ textAlign: 'center' }}>
                     <div style={{ fontSize: 24, fontWeight: 800, color: c }}>{n}</div>
                     <div style={{ fontSize: 11, color: 'var(--tm)' }}>{lbl}</div>
@@ -2584,7 +2584,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           {preview.tipo === 'insumos_emergencia' && (
             <div className="card card-p" style={{ marginBottom: 14 }}>
               <div style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: 24, fontWeight: 800, color: '#2ECC71' }}>{preview.total}</div>
+                <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--green)' }}>{preview.total}</div>
                 <div style={{ fontSize: 11, color: 'var(--tm)' }}>Insumos de emergencia</div>
               </div>
               <div style={{ fontSize: 12, color: 'var(--tm)', marginTop: 10 }}>Se crean en el inventario de Seguridad → Insumos de Emergencia, sin stock ni movimientos. Los que ya existan (por nombre) se saltan.</div>
@@ -2594,17 +2594,17 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           {preview.tipo === 'dataset' && (
             <div className="card card-p" style={{ marginBottom: 14 }}>
               <div style={{ display: 'grid', gridTemplateColumns: `repeat(${formato === 'caja_chica' ? 4 : 3},1fr)`, gap: 12 }}>
-                <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: '#F39C12' }}>{preview.total}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Filas</div></div>
+                <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: 'var(--orange)' }}>{preview.total}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Filas</div></div>
                 <div style={{ textAlign: 'center' }}><div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ts)', marginTop: 6 }}>{preview.resumen.desde || '—'} → {preview.resumen.hasta || '—'}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Rango de fechas</div></div>
                 {formato === 'caja_chica' && (<>
-                  <div style={{ textAlign: 'center' }}><div style={{ fontSize: 18, fontWeight: 800, color: '#27AE60' }}>S/ {Number(preview.resumen.ingresos || 0).toLocaleString('es-PE', { minimumFractionDigits: 2 })}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Ingresos (fondo)</div></div>
-                  <div style={{ textAlign: 'center' }}><div style={{ fontSize: 18, fontWeight: 800, color: '#E74C3C' }}>S/ {Number(preview.resumen.gastos || 0).toLocaleString('es-PE', { minimumFractionDigits: 2 })}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Gastos</div></div>
+                  <div style={{ textAlign: 'center' }}><div style={{ fontSize: 18, fontWeight: 800, color: 'var(--green)' }}>S/ {Number(preview.resumen.ingresos || 0).toLocaleString('es-PE', { minimumFractionDigits: 2 })}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Ingresos (fondo)</div></div>
+                  <div style={{ textAlign: 'center' }}><div style={{ fontSize: 18, fontWeight: 800, color: 'var(--red)' }}>S/ {Number(preview.resumen.gastos || 0).toLocaleString('es-PE', { minimumFractionDigits: 2 })}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Gastos</div></div>
                 </>)}
                 {formato === 'asistencia' && (
-                  <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: '#1ABC9C' }}>{preview.resumen.personas}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Trabajadores distintos</div></div>
+                  <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: 'var(--blue)' }}>{preview.resumen.personas}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Trabajadores distintos</div></div>
                 )}
                 {preview.resumen.equipos != null && (
-                  <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: '#E67E22' }}>{preview.resumen.equipos}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Equipos distintos</div></div>
+                  <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: 'var(--orange)' }}>{preview.resumen.equipos}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Equipos distintos</div></div>
                 )}
               </div>
               {formato === 'caja_chica' && preview.resumen.sinTipo > 0 && (
@@ -2620,8 +2620,8 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
           {preview.tipo === 'personal' && (
             <div className="card card-p" style={{ marginBottom: 14 }}>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12 }}>
-                <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: '#27AE60' }}>{preview.total}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Trabajadores</div></div>
-                <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: '#16A085' }}>{preview.conCuentas}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Con cuenta bancaria</div></div>
+                <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: 'var(--green)' }}>{preview.total}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Trabajadores</div></div>
+                <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: 'var(--blue)' }}>{preview.conCuentas}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Con cuenta bancaria</div></div>
                 <div style={{ textAlign: 'center' }}><div style={{ fontSize: 24, fontWeight: 800, color: preview.sinDni ? 'var(--amber)' : 'var(--tp)' }}>{preview.sinDni}</div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Sin DNI</div></div>
               </div>
               <div style={{ fontSize: 12, color: 'var(--tm)', marginTop: 10 }}>
@@ -2686,7 +2686,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
                                 ? `RENIEC devuelve "${titleCaseNombre(r.reniec?.nombres)} ${titleCaseNombre(r.reniec?.apellidos)}" — no se parece en nada: el DNI probablemente está mal escrito. Verificalo antes de importar.`
                                 : `No se pudo consultar (${r.mensaje || 'error'}).`;
                             return (
-                              <div key={idx} style={{ padding: '8px 10px', background: r.estado === 'error' ? 'rgba(255,255,255,0.03)' : 'rgba(231,76,60,0.06)', border: `1px solid ${r.estado === 'error' ? 'var(--border)' : 'rgba(231,76,60,0.3)'}`, borderRadius: 8, fontSize: 12 }}>
+                              <div key={idx} style={{ padding: '8px 10px', background: r.estado === 'error' ? 'var(--tint-neutral)' : 'rgba(231,76,60,0.06)', border: `1px solid ${r.estado === 'error' ? 'var(--border)' : 'rgba(231,76,60,0.3)'}`, borderRadius: 8, fontSize: 12 }}>
                                 <strong>Fila {idx}</strong> · {it.nombres} {it.apellidos} · DNI {it.dni} — {msg}
                               </div>
                             );
@@ -2765,10 +2765,10 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
         const cuentas = { new: 0, diff: 0, other: 0, same: 0 };
         for (const r of scanRows) cuentas[r.status]++;
         const STATUS_META = {
-          new:   { label: 'Nuevos', color: '#3498DB', desc: 'No existen en ningún inventario' },
-          diff:  { label: 'Con diferencias', color: '#F2B705', desc: 'Existen pero con otra unidad' },
-          other: { label: 'En otro inventario', color: '#9B59B6', desc: 'Existen pero en otra tabla' },
-          same:  { label: 'Iguales', color: '#2ECC71', desc: 'Ya existen — se usan como están' },
+          new:   { label: 'Nuevos', color: 'var(--blue)', desc: 'No existen en ningún inventario' },
+          diff:  { label: 'Con diferencias', color: 'var(--amber)', desc: 'Existen pero con otra unidad' },
+          other: { label: 'En otro inventario', color: 'var(--purple)', desc: 'Existen pero en otra tabla' },
+          same:  { label: 'Iguales', color: 'var(--green)', desc: 'Ya existen — se usan como están' },
         };
         const ordenStatus = ['new', 'diff', 'other', 'same'];
         return (
@@ -2996,7 +2996,7 @@ export function MigracionFlow({ obraId, userId, showToast, onReset, superAdmin }
                       const opciones = r.status === 'matched_personal' ? [['usar_personal', 'Usar (personal existente)'], ['ignorar', 'Ignorar']]
                         : r.status === 'matched_sub' ? [['usar_sub', 'Usar (subcontrato existente)'], ['ignorar', 'Ignorar']]
                         : [['crear_personal', 'Crear como Personal'], ['crear_sub', 'Crear como Subcontrato'], ['ignorar', 'Ignorar']];
-                      const badge = r.status === 'new' ? (r.esProveedor ? { t: 'Es Proveedor', c: '#F2B705' } : { t: 'No existe', c: '#3498DB' }) : r.status === 'matched_sub' ? { t: 'Subcontrato', c: '#9B59B6' } : { t: 'Personal', c: '#2ECC71' };
+                      const badge = r.status === 'new' ? (r.esProveedor ? { t: 'Es Proveedor', c: 'var(--amber)' } : { t: 'No existe', c: 'var(--blue)' }) : r.status === 'matched_sub' ? { t: 'Subcontrato', c: 'var(--purple)' } : { t: 'Personal', c: 'var(--green)' };
                       return (
                         <div key={r.key} style={{ padding: '8px 12px', borderTop: idx > 0 ? '1px solid var(--border)' : 'none', display: 'grid', gridTemplateColumns: '1.6fr 0.8fr 1.4fr', gap: 10, alignItems: 'center' }}>
                           <div>
