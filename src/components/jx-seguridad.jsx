@@ -17,8 +17,8 @@ const { useState: uS, useMemo: uM, useEffect: uE } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 const AREA_POR_ROL = { prevencionista: 'seguridad', ing_ambiental: 'ambiental', ing_social: 'social' };
 const AREAS_PLAN = [
-  { key: 'seguridad', label: 'Seguridad', color: '#E74C3C' },
-  { key: 'ambiental', label: 'Ambiental', color: '#2ECC71' },
+  { key: 'seguridad', label: 'Seguridad', color: 'var(--red)' },
+  { key: 'ambiental', label: 'Ambiental', color: 'var(--green)' },
   { key: 'social', label: 'Social', color: '#9B59B6' },
 ];
 const AREA_META = Object.fromEntries(AREAS_PLAN.map(a => [a.key, a]));
@@ -183,7 +183,7 @@ function CharlasPlanPage({ showToast }) {
                   <tr key={c.id} style={pasada ? { background: 'rgba(231,76,60,0.05)' } : undefined}>
                     <td className="col-m">{c.fecha}{pasada && <div style={{ fontSize: 10, color: 'var(--red)' }}>vencida sin registrar</div>}</td>
                     <td className="col-p" style={{ maxWidth: 300, whiteSpace: 'normal' }}>{c.tema}</td>
-                    <td><span className="badge" style={{ background: `${am.color}22`, color: am.color, border: `1px solid ${am.color}55` }}>{am.label || c.area}</span></td>
+                    <td><span className="badge" style={{ background: `color-mix(in srgb, ${am.color} 13%, transparent)`, color: am.color, border: `1px solid color-mix(in srgb, ${am.color} 33%, transparent)` }}>{am.label || c.area}</span></td>
                     <td style={{ fontSize: 12 }}>{c.expositor || '—'}</td>
                     <td><span className={`badge ${est.cls}`}>{est.lbl}</span></td>
                     <td style={{ fontSize: 11.5, maxWidth: 220, whiteSpace: 'normal', color: 'var(--ts)' }}>{c.notas || '—'}</td>

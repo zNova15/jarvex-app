@@ -439,7 +439,7 @@ function IpercPage({ showToast }) {
                 <option value="5">5 - Catastrófico</option>
               </select>
             </div>
-            <div className="card card-p" style={{ gridColumn:'1/-1', textAlign:'center', background:'rgba(0,0,0,0.18)' }}>
+            <div className="card card-p" style={{ gridColumn:'1/-1', textAlign:'center', background:'var(--bg-c2)' }}>
               <div style={{ fontSize:11, color:'var(--tm)' }}>Nivel de riesgo (Probabilidad × Severidad)</div>
               <div style={{ fontSize:24, fontWeight:800, color: RIESGO_COLOR[clasificar(parseInt(form.probabilidad)||3, parseInt(form.severidad)||3)] }}>
                 {(parseInt(form.probabilidad)||3) * (parseInt(form.severidad)||3)} — {clasificar(parseInt(form.probabilidad)||3, parseInt(form.severidad)||3).toUpperCase()}
@@ -1010,11 +1010,11 @@ function EppPage({ showToast }) {
                             onClick={(ev)=>{ ev.stopPropagation(); abrirSolicitudEpp(e); }}><JxIcon name="alert" size={11}/></button>
                         )}
                         {superAdmin && (
-                          <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar fecha" style={{ marginLeft:4, color:'#E74C3C', padding:'0 4px' }}
+                          <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar fecha" style={{ marginLeft:4, color:'var(--red)', padding:'0 4px' }}
                             onClick={(ev)=>{ ev.stopPropagation(); setEditFechaEpp(e); setEditFechaEppValue(e.fecha || ''); }}>📅</button>
                         )}
                         {superAdmin && e._esMovEpp && (
-                          <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar EPP, cantidad, costo, motivo" style={{ marginLeft:2, color:'#E74C3C', padding:'0 4px' }}
+                          <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar EPP, cantidad, costo, motivo" style={{ marginLeft:2, color:'var(--red)', padding:'0 4px' }}
                             onClick={(ev)=>{ ev.stopPropagation(); abrirEditMov(e); }}>✏️</button>
                         )}
                         {superAdmin && (
@@ -1033,7 +1033,7 @@ function EppPage({ showToast }) {
                           return <span style={{ color: 'var(--tm)' }}>{txt}{txt !== '—' ? ' ⚠' : ''}</span>;
                         })()}
                         {superAdmin && e._esMovEpp && (
-                          <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: asignar trabajador / subcontrato" style={{ marginLeft: 4, color: '#E74C3C', padding: '0 4px' }}
+                          <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: asignar trabajador / subcontrato" style={{ marginLeft: 4, color: 'var(--red)', padding: '0 4px' }}
                             onClick={(ev) => { ev.stopPropagation(); abrirEditDestino(e); }}>👤</button>
                         )}
                       </td>
@@ -1085,11 +1085,11 @@ function EppPage({ showToast }) {
                             onClick={(ev)=>{ ev.stopPropagation(); abrirSolicitudEpp(e); }}><JxIcon name="alert" size={11}/></button>
                         )}
                         {superAdmin && (
-                          <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar fecha" style={{ marginLeft:4, color:'#E74C3C', padding:'0 4px' }}
+                          <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar fecha" style={{ marginLeft:4, color:'var(--red)', padding:'0 4px' }}
                             onClick={(ev)=>{ ev.stopPropagation(); setEditFechaEpp(e); setEditFechaEppValue(e.fecha || ''); }}>📅</button>
                         )}
                         {superAdmin && e._esMovEpp && (
-                          <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar EPP, cantidad, costo, motivo" style={{ marginLeft:2, color:'#E74C3C', padding:'0 4px' }}
+                          <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar EPP, cantidad, costo, motivo" style={{ marginLeft:2, color:'var(--red)', padding:'0 4px' }}
                             onClick={(ev)=>{ ev.stopPropagation(); abrirEditMov(e); }}>✏️</button>
                         )}
                         {superAdmin && (
@@ -1296,7 +1296,7 @@ function EppPage({ showToast }) {
             </tbody>
           </table>
           {detalleOpen.observaciones && (
-            <div style={{ marginTop:10, fontSize:11, color:'var(--ts)', padding:'8px 10px', background:'rgba(255,255,255,0.025)', border:'1px solid var(--border)', borderRadius:6 }}>
+            <div style={{ marginTop:10, fontSize:11, color:'var(--ts)', padding:'8px 10px', background:'var(--row-hover)', border:'1px solid var(--border)', borderRadius:6 }}>
               <strong>Observaciones:</strong> {detalleOpen.observaciones}
             </div>
           )}

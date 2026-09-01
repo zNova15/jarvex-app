@@ -322,7 +322,7 @@ function EppsInventarioPage({ showToast }) {
     const a = ALERTA_STYLE[aler] || ALERTA_STYLE.ok;
     const stockColor = aler === 'critico' || aler === 'agotado' ? 'var(--red)' : aler === 'reponer' ? 'var(--yellow)' : 'var(--tp)';
     return (
-      <tr key={e.id} style={esHijo ? { background: 'rgba(255,255,255,0.015)' } : undefined}>
+      <tr key={e.id} style={esHijo ? { background: 'var(--tint-neutral)' } : undefined}>
         <td className="col-p" style={esHijo ? { paddingLeft: 26 } : undefined}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {esHijo && <span style={{ color: 'var(--tm)' }}>└</span>}
@@ -1214,7 +1214,7 @@ function EppsInventarioPage({ showToast }) {
           </div>
           {superAdmin && editingId && (
             <div style={{ marginTop:10, padding:'10px 12px', background:'rgba(231,76,60,0.06)', border:'1px solid rgba(231,76,60,0.3)', borderRadius:6 }}>
-              <label className="flabel" style={{ color:'#E74C3C' }}>⚡ Fecha de registro (Super Admin)</label>
+              <label className="flabel" style={{ color:'var(--red)' }}>⚡ Fecha de registro (Super Admin)</label>
               <input className="fi" type="date" max={new Date().toISOString().slice(0,10)}
                 value={form.fecha_registro || ''}
                 onChange={e=>setForm({...form, fecha_registro:e.target.value})}/>
