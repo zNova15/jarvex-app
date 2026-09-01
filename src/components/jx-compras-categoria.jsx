@@ -430,7 +430,7 @@ function ComprasCategoriaPage({ showToast }) {
               </div>
               <div style={{ fontSize: 17, fontWeight: 800, color: cid === '__sin__' ? 'var(--amber)' : 'var(--green)', marginBottom: 2 }}>{fmtS(e.total)}</div>
               {filtroObra !== 'todas' && e.aFacturar > 0 && (
-                <div style={{ fontSize: 11, color: '#3498DB', marginBottom: 6 }} title="Valorizado al precio presupuestado del expediente">A facturar (presup.): <strong>{fmtS(e.aFacturar)}</strong></div>
+                <div style={{ fontSize: 11, color: 'var(--blue)', marginBottom: 6 }} title="Valorizado al precio presupuestado del expediente">A facturar (presup.): <strong>{fmtS(e.aFacturar)}</strong></div>
               )}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 4 }}>
                 {e.subcats.sort((a, b) => b.total - a.total).slice(0, 8).map(s => (

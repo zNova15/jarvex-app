@@ -502,7 +502,7 @@ function InsumosEmergenciaPage({ showToast }) {
                   const fila = (it, esHijo) => {
                     const st = Number(it.stock_actual ?? 0);
                     return (
-                      <tr key={it.id} style={esHijo ? { background: 'rgba(255,255,255,0.015)' } : undefined}>
+                      <tr key={it.id} style={esHijo ? { background: 'var(--tint-neutral)' } : undefined}>
                         <td className="col-p" style={esHijo ? { paddingLeft: 26 } : undefined}>
                           <div style={{ display:'flex', alignItems:'center', gap:8 }}>
                             {esHijo && <span style={{ color: 'var(--tm)' }}>└</span>}

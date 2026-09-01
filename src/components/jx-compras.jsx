@@ -986,8 +986,8 @@ function OrdenesCompraPage({ showToast }) {
                   })}
                 </tbody>
                 <tfoot>
-                  <tr style={{ background:'rgba(0,0,0,0.15)' }}><td colSpan={editing ? 4 : 3} style={{ padding:'8px 12px', textAlign:'right', fontWeight:600 }}>Subtotal:</td><td style={{ textAlign:'right', fontWeight:700 }}>{fmtS(totales.subtotal)}</td><td/></tr>
-                  <tr style={{ background:'rgba(0,0,0,0.10)' }}><td colSpan={editing ? 4 : 3} style={{ padding:'6px 12px', textAlign:'right' }}>IGV (18%):</td><td style={{ textAlign:'right' }}>{fmtS(totales.igv)}</td><td/></tr>
+                  <tr style={{ background:'var(--bg-c2)' }}><td colSpan={editing ? 4 : 3} style={{ padding:'8px 12px', textAlign:'right', fontWeight:600 }}>Subtotal:</td><td style={{ textAlign:'right', fontWeight:700 }}>{fmtS(totales.subtotal)}</td><td/></tr>
+                  <tr style={{ background:'var(--tint-neutral)' }}><td colSpan={editing ? 4 : 3} style={{ padding:'6px 12px', textAlign:'right' }}>IGV (18%):</td><td style={{ textAlign:'right' }}>{fmtS(totales.igv)}</td><td/></tr>
                   <tr style={{ background:'rgba(242,183,5,0.15)', fontWeight:700 }}><td colSpan={editing ? 4 : 3} style={{ padding:'8px 12px', textAlign:'right' }}>TOTAL:</td><td style={{ textAlign:'right', color:'var(--amber)' }}>{fmtS(totales.total)}</td><td/></tr>
                 </tfoot>
               </table>

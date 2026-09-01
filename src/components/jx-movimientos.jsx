@@ -200,7 +200,7 @@ function RegistroFisicoModal({ modulo, obraId, onClose, showToast, refreshKey })
     <>
       <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}
         style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:9999, padding:20 }}>
-        <div className="card card-p" style={{ width:'100%', maxWidth:1100, maxHeight:'92vh', overflow:'hidden', display:'flex', flexDirection:'column', background:'#1A2333', border:'1px solid var(--bd)', borderRadius:10 }}>
+        <div className="card card-p" style={{ width:'100%', maxWidth:1100, maxHeight:'92vh', overflow:'hidden', display:'flex', flexDirection:'column', background:'var(--bg-c)', border:'1px solid var(--bd)', borderRadius:10 }}>
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
             <div style={{ fontSize:15, fontWeight:700 }}>
               <JxIconRF name="camera" size={16} color="var(--amber)"/>{' '}
@@ -310,7 +310,7 @@ function RegistroFisicoModal({ modulo, obraId, onClose, showToast, refreshKey })
       {solicitudOpen && (
         <div className="overlay" onClick={e => e.target === e.currentTarget && setSolicitudOpen(null)}
           style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.65)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:10001, padding:20 }}>
-          <div className="card card-p" style={{ width:'100%', maxWidth:520, background:'#1A2333', border:'1px solid var(--bd)', borderRadius:10 }}>
+          <div className="card card-p" style={{ width:'100%', maxWidth:520, background:'var(--bg-c)', border:'1px solid var(--bd)', borderRadius:10 }}>
             <div style={{ fontSize:14, fontWeight:700, marginBottom:10 }}>Solicitar revisión / corrección</div>
             <div style={{ fontSize:12, color:'var(--ts)', marginBottom:12, padding:'8px 10px', background:'rgba(242,183,5,0.08)', borderRadius:6 }}>
               Vas a enviar una solicitud al administrador para que revise este registro físico vs el digital. Si encuentra una diferencia, podrá corregirlo.
@@ -802,7 +802,7 @@ function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast, m
   return (
     <div className="overlay" onClick={e => e.target === e.currentTarget && cerrar()}
       style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:9999, padding:20 }}>
-      <div className="card card-p" style={{ width:'100%', maxWidth:560, background:'#1A2333', border:'1px solid var(--bd)', borderRadius:10 }}>
+      <div className="card card-p" style={{ width:'100%', maxWidth:560, background:'var(--bg-c)', border:'1px solid var(--bd)', borderRadius:10 }}>
         <div style={{ fontSize:14, fontWeight:700, marginBottom:10, display:'flex', alignItems:'center', gap:8 }}>
           <JxIconRF name={modo === 'cambio' ? 'edit' : 'camera'} size={15} color={modo === 'cambio' ? 'var(--blue)' : 'var(--amber)'}/>
           {modo === 'cambio'
@@ -1721,7 +1721,7 @@ function MovMaterialesPage({ showToast }) {
                               setSelDestino(dm.joinDestino(m));
                               setEditRespTarget(m);
                             });
-                          }} style={{ color: '#E74C3C', padding: '0 4px' }}>✎</button>
+                          }} style={{ color: 'var(--red)', padding: '0 4px' }}>✎</button>
                       )}
                     </td>
                     <td>{
@@ -1733,7 +1733,7 @@ function MovMaterialesPage({ showToast }) {
                               : m.frente_zona
                                 ? <span className="badge b-amber" title="Frente / zona al que va">{m.frente_zona}</span>
                                 : <span style={{ color:'var(--tm)', fontSize:12 }}>—</span>}
-                            {isAdmin && <button className="btn btn-ghost btn-xs" title="Editar el frente al que se envió este movimiento" onClick={()=>{ setSelFrente(m.frente_id||''); setAsignarFrenteTarget(m); }} style={{ color:'#E74C3C', padding:'0 4px' }}>✎</button>}
+                            {isAdmin && <button className="btn btn-ghost btn-xs" title="Editar el frente al que se envió este movimiento" onClick={()=>{ setSelFrente(m.frente_id||''); setAsignarFrenteTarget(m); }} style={{ color:'var(--red)', padding:'0 4px' }}>✎</button>}
                           </span>
                     }</td>
                     <td className="col-m">{m.documento_asociado || '—'}</td>
@@ -1828,12 +1828,12 @@ function MovMaterialesPage({ showToast }) {
                       {isAdmin ? (
                         <>
                           {superAdmin && (
-                            <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar fecha/hora del movimiento" onClick={()=>setEditFechaTarget(m)} style={{ marginRight:4, color:'#E74C3C' }}>
+                            <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar fecha/hora del movimiento" onClick={()=>setEditFechaTarget(m)} style={{ marginRight:4, color:'var(--red)' }}>
                               📅
                             </button>
                           )}
                           {superAdmin && (
-                            <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar cantidad (ajusta stock; avisa si deja negativo)" onClick={()=>editarCantidadSA(m)} style={{ marginRight:4, color:'#E74C3C' }}>
+                            <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar cantidad (ajusta stock; avisa si deja negativo)" onClick={()=>editarCantidadSA(m)} style={{ marginRight:4, color:'var(--red)' }}>
                               #️⃣
                             </button>
                           )}
@@ -2478,7 +2478,7 @@ function MovHerramientasPage({ showToast }) {
                       {m.frente_id
                         ? <span className="badge b-amber" title="Frente de trabajo">{frentesById.get(m.frente_id)?.nombre || 'frente'}</span>
                         : <span style={{ color:'var(--tm)', fontSize:12 }}>—</span>}
-                      {isAdmin && <button className="btn btn-ghost btn-xs" title="Editar el frente al que se envió este movimiento" onClick={()=>setEditFrenteTarget(m)} style={{ color:'#E74C3C', padding:'0 4px' }}>✎</button>}
+                      {isAdmin && <button className="btn btn-ghost btn-xs" title="Editar el frente al que se envió este movimiento" onClick={()=>setEditFrenteTarget(m)} style={{ color:'var(--red)', padding:'0 4px' }}>✎</button>}
                     </span></td>
                     <td>{m.estado_salida ? <span className={`badge ${EST_HER[m.estado_salida]||'b-gray'}`} style={{ textTransform:'capitalize' }}>{m.estado_salida}</span> : <span className="col-m">—</span>}</td>
                     <td>{m.estado_devolucion ? <span className={`badge ${EST_HER[m.estado_devolucion]||'b-gray'}`} style={{ textTransform:'capitalize' }}>{m.estado_devolucion}</span> : <span className="col-m">—</span>}</td>
@@ -2498,12 +2498,12 @@ function MovHerramientasPage({ showToast }) {
                       {isAdmin ? (
                         <>
                           {superAdmin && (
-                            <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar fecha/hora del movimiento" onClick={()=>setEditFechaTarget(m)} style={{ marginRight:4, color:'#E74C3C' }}>
+                            <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar fecha/hora del movimiento" onClick={()=>setEditFechaTarget(m)} style={{ marginRight:4, color:'var(--red)' }}>
                               📅
                             </button>
                           )}
                           {superAdmin && (
-                            <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar cantidad (ajusta stock; avisa si deja negativo)" onClick={()=>editarCantidadSA(m)} style={{ marginRight:4, color:'#E74C3C' }}>
+                            <button className="btn btn-ghost btn-xs" title="⚡ Super Admin: editar cantidad (ajusta stock; avisa si deja negativo)" onClick={()=>editarCantidadSA(m)} style={{ marginRight:4, color:'var(--red)' }}>
                               #️⃣
                             </button>
                           )}

@@ -444,7 +444,7 @@ function MaterialesPage({ showToast }) {
       : m.alerta === 'sin_stock' ? 'var(--tm)'
       : m.alerta === 'reponer' ? 'var(--yellow)' : 'var(--tp)';
     return (
-      <tr key={m.id} style={esHijo ? { background: 'rgba(255,255,255,0.015)' } : undefined}>
+      <tr key={m.id} style={esHijo ? { background: 'var(--tint-neutral)' } : undefined}>
         <td className="col-p" style={esHijo ? { paddingLeft: 26 } : undefined}>
           <div style={{ display:'flex', alignItems:'center', gap:8 }}>
             {esHijo && <span style={{ color:'var(--tm)' }}>└</span>}
@@ -2399,7 +2399,7 @@ function MaterialesPage({ showToast }) {
             <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
               <span style={{ fontSize: 18, lineHeight: 1 }}>🧾</span>
               <div style={{ flex: 1, minWidth: 200 }}>
-                <div style={{ fontSize: 12.5, fontWeight: 700, color: '#F2B705' }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--amber)' }}>
                   {facturasPendientes.length} factura(s) pendiente(s) de recepción
                 </div>
                 <div style={{ fontSize: 11, color: 'var(--tm)' }}>
@@ -2444,7 +2444,7 @@ function MaterialesPage({ showToast }) {
                 const pctQty = totalQty > 0 ? Math.min(100, Math.round(prog.qty / totalQty * 100)) : 0;
                 const pct = Math.max(pctItems, pctQty);
                 return (
-                  <div key={f.id} style={{ background:'rgba(0,0,0,0.18)', borderRadius:6, padding:'8px 10px', fontSize:11.5 }}>
+                  <div key={f.id} style={{ background:'var(--bg-c2)', borderRadius:6, padding:'8px 10px', fontSize:11.5 }}>
                     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8, marginBottom:6 }}>
                       <div>
                         <span style={{ fontWeight:700, color:'var(--tp)' }}>{f.document_number || 'sin nº'}</span>
@@ -2467,7 +2467,7 @@ function MaterialesPage({ showToast }) {
                           <span>{prog.items} de {totalItems} items · {prog.qty.toLocaleString()} de {totalQty.toLocaleString()} cantidad</span>
                           <span style={{ color: pct >= 100 ? 'var(--green)' : 'var(--amber)' }}>{pct}%</span>
                         </div>
-                        <div style={{ height:4, background:'rgba(255,255,255,0.06)', borderRadius:2, overflow:'hidden' }}>
+                        <div style={{ height:4, background:'var(--track-bg)', borderRadius:2, overflow:'hidden' }}>
                           <div style={{ width:`${pct}%`, height:'100%', background: pct >= 100 ? 'var(--green)' : 'var(--amber)', transition:'width 0.3s' }}/>
                         </div>
                       </>
@@ -2487,8 +2487,8 @@ function MaterialesPage({ showToast }) {
           <div style={{
             marginBottom: 12,
             padding: '10px 12px',
-            background: loteComunes.sinFactura ? 'rgba(242,183,5,0.10)' : 'rgba(255,255,255,0.03)',
-            border: loteComunes.sinFactura ? '1px solid rgba(242,183,5,0.4)' : '1px dashed rgba(255,255,255,0.15)',
+            background: loteComunes.sinFactura ? 'rgba(242,183,5,0.10)' : 'var(--tint-neutral)',
+            border: loteComunes.sinFactura ? '1px solid rgba(242,183,5,0.4)' : '1px dashed var(--border-h)',
             borderRadius: 6,
           }}>
             <label style={{ display:'flex', alignItems:'center', gap:8, fontSize:12.5, color:'var(--tp)', cursor:'pointer' }}>
@@ -3196,7 +3196,7 @@ function MaterialesPage({ showToast }) {
             <div style={{ marginBottom: 10, padding: '10px 12px', background: 'rgba(242,183,5,0.08)', border: '1px solid rgba(242,183,5,0.4)', borderRadius: 6, display: 'flex', alignItems: 'flex-start', gap: 10 }}>
               <span style={{ fontSize: 18, lineHeight: 1 }}>🦺</span>
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 12.5, fontWeight: 700, color: '#F2B705', marginBottom: 2 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--amber)', marginBottom: 2 }}>
                   Esto parece un EPP ({tipoEpp})
                 </div>
                 <div style={{ fontSize: 11.5, color: 'var(--ts)', lineHeight: 1.4 }}>
@@ -3352,7 +3352,7 @@ function MaterialesPage({ showToast }) {
         {/* Super Admin: fecha de registro editable (solo en edición) */}
         {superAdmin && editingId && (
           <div style={{ marginTop:10, padding:'10px 12px', background:'rgba(231,76,60,0.06)', border:'1px solid rgba(231,76,60,0.3)', borderRadius:6 }}>
-            <label className="flabel" style={{ color:'#E74C3C' }}>⚡ Fecha de registro (Super Admin)</label>
+            <label className="flabel" style={{ color:'var(--red)' }}>⚡ Fecha de registro (Super Admin)</label>
             <input className="fi" type="date" max={new Date().toISOString().slice(0,10)}
               value={form.fecha_registro || ''}
               onChange={e=>setForm({...form, fecha_registro:e.target.value})}/>
@@ -4032,7 +4032,7 @@ function HerramientasPage({ showToast }) {
     const resp = personal.find(p => p.id === h.ultimo_responsable_id);
     const ubicCat = h.ubicacion_id ? ubicacionesByIdH.get(h.ubicacion_id) : null;
     return (
-      <tr key={h.id} style={esHijo ? { background: 'rgba(255,255,255,0.015)' } : undefined}>
+      <tr key={h.id} style={esHijo ? { background: 'var(--tint-neutral)' } : undefined}>
         <td className="col-p" style={esHijo ? { paddingLeft: 26 } : undefined}>
           <div style={{ display:'flex', alignItems:'center', gap:8 }}>
             {esHijo && <span style={{ color:'var(--tm)' }}>└</span>}
@@ -4672,7 +4672,7 @@ function HerramientasPage({ showToast }) {
         </div>
         {superAdmin && editingId && (
           <div style={{ marginTop:10, padding:'10px 12px', background:'rgba(231,76,60,0.06)', border:'1px solid rgba(231,76,60,0.3)', borderRadius:6 }}>
-            <label className="flabel" style={{ color:'#E74C3C' }}>⚡ Fecha de registro (Super Admin)</label>
+            <label className="flabel" style={{ color:'var(--red)' }}>⚡ Fecha de registro (Super Admin)</label>
             <input className="fi" type="date" max={new Date().toISOString().slice(0,10)}
               value={form.fecha_registro || ''}
               onChange={e=>setForm({...form, fecha_registro:e.target.value})}/>
@@ -5534,7 +5534,7 @@ function PersonalPage({ showToast }) {
         <div><div className="pg-title">Personal</div><div className="pg-sub">{baseScoped.length} trabajadores{scopeObrero ? ' (tu alcance)' : ''} · {baseScoped.filter(p=>p.estado==='activo').length} activos · {baseScoped.filter(p=>!p.subcontratista_id).length} directos · {baseScoped.filter(p=>!!p.subcontratista_id).length} en subcontrato</div></div>
         <div style={{display:'flex',gap:8}}>
           {superAdminP && (
-            <button className="btn btn-sm" style={{ background:'rgba(231,76,60,0.12)', color:'#E74C3C', border:'1px solid rgba(231,76,60,0.3)' }}
+            <button className="btn btn-sm" style={{ background:'rgba(231,76,60,0.12)', color:'var(--red)', border:'1px solid rgba(231,76,60,0.3)' }}
               onClick={()=>setFusionOpen(true)} title="⚡ Super Admin: juntar dos nombres que son la misma persona (referencial de migración + nombre real)">
               <JxIcon name="compare" size={13}/>Fusionar nombres
             </button>
@@ -5594,7 +5594,7 @@ function PersonalPage({ showToast }) {
               </button>
             ))}
             {temporales.length > 8 && <span style={{ fontSize:11.5, color:'var(--tm)' }}>+{temporales.length - 8} más</span>}
-            <button className="btn btn-sm" style={{ marginLeft:'auto', background:'rgba(231,76,60,0.15)', color:'#E74C3C', border:'1px solid rgba(231,76,60,0.35)' }} onClick={()=>setFusionOpen(true)}>
+            <button className="btn btn-sm" style={{ marginLeft:'auto', background:'rgba(231,76,60,0.15)', color:'var(--red)', border:'1px solid rgba(231,76,60,0.35)' }} onClick={()=>setFusionOpen(true)}>
               <JxIcon name="compare" size={12}/> Fusionar ahora
             </button>
           </div>
@@ -6617,7 +6617,7 @@ function CerrarRecepcionModal({ factura, progreso, onClose, onConfirm }) {
         Cerrando recepción de <strong>{factura.document_number || 'sin nº'}</strong> · {factura.third_party_name || '—'}.
       </div>
       {totalItems > 0 && (
-        <div style={{ padding:10, background:'rgba(0,0,0,0.18)', borderRadius:6, marginBottom:12, fontSize:11.5 }}>
+        <div style={{ padding:10, background:'var(--bg-c2)', borderRadius:6, marginBottom:12, fontSize:11.5 }}>
           <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
             <span style={{ color:'var(--tm)' }}>Items recibidos</span>
             <span style={{ color: prog.items >= totalItems ? 'var(--green)' : 'var(--amber)' }}>

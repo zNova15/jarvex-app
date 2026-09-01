@@ -332,7 +332,7 @@ function AnalisisInsumosPage({ showToast }) {
             {decisiones.length === 0 && <div style={{ color: 'var(--tm)', fontStyle: 'italic', fontSize: 12 }}>Todavía no confirmaste ninguna correlación.</div>}
             <div style={{ display: 'grid', gap: 5, maxHeight: 340, overflow: 'auto' }}>
               {decisiones.map(f => (
-                <div key={f.id} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 11.5, padding: '5px 8px', background: 'rgba(255,255,255,0.03)', borderRadius: 5 }}>
+                <div key={f.id} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 11.5, padding: '5px 8px', background: 'var(--tint-neutral)', borderRadius: 5 }}>
                   <span className={`badge ${f.relacion === 'mismo' ? 'b-green' : 'b-red'}`} style={{ fontSize: 9 }}>{f.relacion === 'mismo' ? '= mismo' : '≠ distintos'}</span>
                   <span style={{ flex: 1, minWidth: 0 }}>{f.nombre_a} <span style={{ color: 'var(--tm)' }}>↔</span> {f.nombre_b}</span>
                   <button className="btn btn-ghost btn-xs" style={{ fontSize: 10 }} title="Corregir: invierte la decisión" onClick={() => cambiarDecision(f)}>↺ Cambiar</button>
