@@ -459,15 +459,15 @@ function ObrasPage({ showToast }) {
               </div>
 
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:14}}>
-                <div style={{background:'rgba(0,0,0,0.2)',borderRadius:7,padding:'10px 12px'}}>
+                <div style={{background:'var(--bg-c2)',borderRadius:7,padding:'10px 12px'}}>
                   <div style={{fontSize:10,color:'var(--tm)',fontWeight:500,marginBottom:3}}>PRESUPUESTO</div>
                   <div style={{fontSize:14,fontWeight:700,color:'var(--tp)'}}>{fmtSk(pres)}</div>
                 </div>
-                <div style={{background:'rgba(0,0,0,0.2)',borderRadius:7,padding:'10px 12px'}}>
+                <div style={{background:'var(--bg-c2)',borderRadius:7,padding:'10px 12px'}}>
                   <div style={{fontSize:10,color:'var(--tm)',fontWeight:500,marginBottom:3}}>COSTO REAL</div>
                   <div style={{fontSize:14,fontWeight:700,color:over?'var(--red)':'var(--tp)'}}>{fmtSk(real)}</div>
                 </div>
-                <div style={{background:'rgba(0,0,0,0.2)',borderRadius:7,padding:'10px 12px'}}>
+                <div style={{background:'var(--bg-c2)',borderRadius:7,padding:'10px 12px'}}>
                   <div style={{fontSize:10,color:'var(--tm)',fontWeight:500,marginBottom:3}}>MARGEN EST.</div>
                   <div style={{fontSize:14,fontWeight:700,color:over?'var(--red)':'var(--green)'}}>{margen}%</div>
                 </div>
@@ -477,13 +477,13 @@ function ObrasPage({ showToast }) {
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--tm)',marginBottom:5}}>
                   <span>Avance físico</span><span style={{color:'var(--tp)',fontWeight:600}}>{fmtPct(o.avance_fisico)}</span>
                 </div>
-                <div className="progress-bar"><div className="progress-fill" style={{width:`${o.avance_fisico||0}%`,background:`linear-gradient(90deg,#3498DB,#2ECC71)`}}/></div>
+                <div className="progress-bar"><div className="progress-fill" style={{width:`${o.avance_fisico||0}%`,background:`linear-gradient(90deg,var(--blue),var(--green))`}}/></div>
               </div>
               <div>
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--tm)',marginBottom:5}}>
                   <span>Avance financiero</span><span style={{color:'var(--tp)',fontWeight:600}}>{fmtPct(o.avance_financiero)}</span>
                 </div>
-                <div className="progress-bar"><div className="progress-fill" style={{width:`${o.avance_financiero||0}%`,background:`linear-gradient(90deg,#F2B705,#F28C28)`}}/></div>
+                <div className="progress-bar"><div className="progress-fill" style={{width:`${o.avance_financiero||0}%`,background:`linear-gradient(90deg,var(--amber),var(--orange))`}}/></div>
               </div>
 
               <div style={{display:'flex',justifyContent:'space-between',marginTop:14,paddingTop:12,borderTop:'1px solid var(--border)',fontSize:11.5,color:'var(--tm)'}}>
@@ -568,7 +568,7 @@ function ObrasPage({ showToast }) {
               </div>
             );
             return (
-              <div style={{ gridColumn:'1/-1', background:'rgba(0,0,0,0.18)', borderRadius:8, padding:'10px 14px', marginTop:4 }}>
+              <div style={{ gridColumn:'1/-1', background:'var(--bg-c2)', borderRadius:8, padding:'10px 14px', marginTop:4 }}>
                 <div style={{ fontSize:10.5, color:'var(--amber)', fontWeight:700, textTransform:'uppercase', marginBottom:4 }}>Desglose calculado</div>
                 <Row label="Costo Directo" val={calc.costoDirecto}/>
                 <Row label={`Utilidades (${form.utilidad_pct ?? 15}%)`} val={calc.utilidades}/>
@@ -940,7 +940,7 @@ function MiniBar({ value, label, color, title }) {
   const v = Math.max(0, Math.min(100, Number(value) || 0));
   return (
     <div title={title || `${label}: ${v.toFixed(1)}%`} style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 70 }}>
-      <div style={{ flex: 1, height: 5, background: 'rgba(255,255,255,0.08)', borderRadius: 4, overflow: 'hidden' }}>
+      <div style={{ flex: 1, height: 5, background: 'var(--track-bg)', borderRadius: 4, overflow: 'hidden' }}>
         <div style={{ height: '100%', width: `${v}%`, background: color, borderRadius: 4 }}/>
       </div>
       <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--tm)', minWidth: 28, textAlign: 'right' }}>{v.toFixed(0)}%</span>
@@ -979,7 +979,7 @@ function PartidaLeafRow({ partida: p, depth, searchTerms, isAdmin, onEdit, onVer
         alignItems: 'center',
         padding: '8px 12px',
         paddingLeft: 12 + depth * 18,
-        borderBottom: '1px solid rgba(255,255,255,0.04)',
+        borderBottom: '1px solid var(--border)',
         borderLeft: isAtrasada ? '3px solid var(--red)' : '3px solid transparent',
         background: isAtrasada ? 'rgba(231,76,60,0.04)' : 'transparent',
         fontSize: 12,
@@ -1082,7 +1082,7 @@ function TreeNode({ node, visibleCodes, expanded, onToggle, searchTerms, isAdmin
           alignItems: 'center',
           padding: '8px 12px',
           paddingLeft: 12 + depth * 18,
-          borderBottom: '1px solid rgba(255,255,255,0.05)',
+          borderBottom: '1px solid var(--border)',
           background: `rgba(245,158,11,${bgIntensity})`,
           cursor: hasChildren ? 'pointer' : 'default',
           fontSize: 12,
@@ -1825,7 +1825,7 @@ function PartidasPage({ showToast }) {
         <div className="card card-p empty-state"><JxIcon name="filter" size={40} color="var(--tm)"/><p>Ningún resultado con los filtros actuales.</p></div>
       ) : (
         <div className="card" style={{overflow:'hidden'}}>
-          <div style={{padding:'8px 12px',background:'rgba(0,0,0,0.18)',fontSize:11,color:'var(--tm)',fontWeight:600,letterSpacing:0.4,textTransform:'uppercase',borderBottom:'1px solid rgba(255,255,255,0.05)'}}>
+          <div style={{padding:'8px 12px',background:'var(--bg-c2)',fontSize:11,color:'var(--tm)',fontWeight:600,letterSpacing:0.4,textTransform:'uppercase',borderBottom:'1px solid var(--border)'}}>
             <div style={{display:'grid',gridTemplateColumns:'1fr 110px 110px 140px 220px 90px 60px',gap:8,alignItems:'center'}}>
               <div>Código / Partida</div>
               <div style={{textAlign:'right'}}>Presupuesto</div>
@@ -1865,7 +1865,7 @@ function PartidasPage({ showToast }) {
               />
             ))}
           </div>
-          <div style={{padding:'10px 14px',background:'rgba(0,0,0,0.18)',borderTop:'1px solid rgba(255,255,255,0.05)',display:'grid',gridTemplateColumns:'1fr 110px 110px 140px 130px',gap:8,fontSize:12,fontWeight:700,color:'var(--tp)'}}>
+          <div style={{padding:'10px 14px',background:'var(--bg-c2)',borderTop:'1px solid var(--border)',display:'grid',gridTemplateColumns:'1fr 110px 110px 140px 130px',gap:8,fontSize:12,fontWeight:700,color:'var(--tp)'}}>
             <div style={{color:'var(--ts)'}}>TOTALES</div>
             <div style={{textAlign:'right'}}>{fmtS(totalPres)}</div>
             <div style={{textAlign:'right'}}>{fmtS(totalReal)}</div>
@@ -1960,7 +1960,7 @@ function PartidasPage({ showToast }) {
                     const tot = totalGrupo(arr);
                     return (
                       <div key={tipo}>
-                        <div style={{ background:'rgba(0,0,0,0.18)', padding:'8px 14px', display:'flex', justifyContent:'space-between', alignItems:'center', borderTop:'1px solid var(--border)' }}>
+                        <div style={{ background:'var(--bg-c2)', padding:'8px 14px', display:'flex', justifyContent:'space-between', alignItems:'center', borderTop:'1px solid var(--border)' }}>
                           <span style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', color:'var(--amber)' }}>{TIPO_LABEL[tipo]}</span>
                           <span style={{ fontSize:12, fontWeight:700, color:'var(--tp)' }}>{tot.toFixed(2)}</span>
                         </div>
@@ -2068,7 +2068,7 @@ function PartidasPage({ showToast }) {
               <div style={{ padding:24, flex:1, overflowY:'auto' }}>
                 <div style={{
                   border:'2px dashed var(--border)', borderRadius:10, padding:'32px 24px', textAlign:'center',
-                  background:'rgba(255,255,255,0.02)', cursor:'pointer',
+                  background:'var(--tint-neutral)', cursor:'pointer',
                 }}
                   onClick={() => document.getElementById('comp-presup-input')?.click()}
                   onDragOver={(e) => e.preventDefault()}
@@ -2115,7 +2115,7 @@ function PartidasPage({ showToast }) {
               <>
                 <div style={{ padding:'10px 20px', borderBottom:'1px solid var(--border)', display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
                   <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:8, flex:1, minWidth:300 }}>
-                    <div style={{ textAlign:'center', padding:6, background:'rgba(255,255,255,0.04)', borderRadius:6 }}>
+                    <div style={{ textAlign:'center', padding:6, background:'var(--tint-neutral)', borderRadius:6 }}>
                       <div style={{ fontSize:18, fontWeight:800 }}>{comparativoKpis.total}</div>
                       <div style={{ fontSize:9.5, color:'var(--tm)', textTransform:'uppercase' }}>Total Excel</div>
                     </div>
@@ -2168,7 +2168,7 @@ function PartidasPage({ showToast }) {
                 )}
 
                 <div style={{ padding:'10px 20px', borderBottom:'1px solid var(--border)', display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
-                  <div style={{ display:'flex', gap:4, background:'rgba(0,0,0,0.2)', padding:3, borderRadius:6, flexWrap:'wrap' }}>
+                  <div style={{ display:'flex', gap:4, background:'var(--tint-neutral)', padding:3, borderRadius:6, flexWrap:'wrap' }}>
                     {[
                       { k: 'a_cambiar', label: `A actualizar (${comparativoKpis.aCambiar})` },
                       { k: 'a_crear', label: `A crear (${comparativoKpis.aCrear})` },
@@ -2329,9 +2329,12 @@ const ESTADO_CRON_COLOR = {
   en_curso:            { bar:'var(--blue)',   fill:'var(--blue)',   label:'En curso' },
   en_curso_sin_avance: { bar:'var(--amber)',  fill:'var(--amber)',  label:'En curso s/avance' },
   atrasada:            { bar:'var(--red)',    fill:'var(--red)',    label:'Atrasada' },
-  futura:              { bar:'rgba(255,255,255,0.18)', fill:'rgba(255,255,255,0.35)', label:'Futura' },
-  normal:              { bar:'rgba(255,255,255,0.22)', fill:'rgba(255,255,255,0.45)', label:'Normal' },
-  sin_planificar:      { bar:'rgba(255,255,255,0.10)', fill:'rgba(255,255,255,0.25)', label:'Sin planificar' },
+  // Sin color de acento propio (no representan un estado bueno/malo, solo
+  // densidad visual) — se tiñe var(--tm) con color-mix en vez de blanco fijo:
+  // en claro un tinte blanco sobre fondo blanco sería invisible.
+  futura:              { bar:'color-mix(in srgb, var(--tm) 18%, transparent)', fill:'color-mix(in srgb, var(--tm) 35%, transparent)', label:'Futura' },
+  normal:              { bar:'color-mix(in srgb, var(--tm) 22%, transparent)', fill:'color-mix(in srgb, var(--tm) 45%, transparent)', label:'Normal' },
+  sin_planificar:      { bar:'color-mix(in srgb, var(--tm) 10%, transparent)', fill:'color-mix(in srgb, var(--tm) 25%, transparent)', label:'Sin planificar' },
 };
 
 function CronogramaPage() {
@@ -2723,7 +2726,7 @@ function CronogramaPage() {
           <input placeholder="Buscar por código o nombre…" value={q} onChange={e=>setQ(e.target.value)}/>
         </div>
         {/* Tipo de partida: específicas (hojas) vs no específicas (capítulos) */}
-        <div style={{display:'flex',gap:4,background:'rgba(0,0,0,0.2)',padding:3,borderRadius:6}}>
+        <div style={{display:'flex',gap:4,background:'var(--tint-neutral)',padding:3,borderRadius:6}}>
           <button
             className={'btn btn-xs ' + (tipoFilter === 'todas' ? 'btn-amber' : 'btn-ghost')}
             onClick={() => setTipoFilter('todas')}
@@ -2796,7 +2799,7 @@ function CronogramaPage() {
       {/* Gantt */}
       <div className="card" style={{overflow:'hidden',marginTop:12}}>
         {/* Header sticky */}
-        <div style={{display:'flex',borderBottom:'1px solid var(--border)',background:'rgba(0,0,0,0.25)',position:'sticky',top:0,zIndex:5}}>
+        <div style={{display:'flex',borderBottom:'1px solid var(--border)',background:'var(--sticky-bg)',position:'sticky',top:0,zIndex:5}}>
           <div style={{width:labelW,minWidth:labelW,padding:'8px 14px',fontSize:10.5,fontWeight:700,letterSpacing:'.08em',textTransform:'uppercase',color:'var(--tm)',borderRight:'1px solid var(--border)',flexShrink:0,display:'flex',alignItems:'center',gap:6}}>
             <JxIcon name="gantt" size={12} color="var(--amber)"/> Partida
           </div>
@@ -2806,8 +2809,8 @@ function CronogramaPage() {
                 <div key={i} style={{
                   position:'absolute',
                   left:c.left, width:c.width, height:'100%',
-                  borderRight:'1px solid rgba(255,255,255,0.04)',
-                  background: c.isToday ? 'rgba(242,183,5,0.10)' : (c.isWeekend ? 'rgba(0,0,0,0.18)' : 'transparent'),
+                  borderRight:'1px solid var(--border)',
+                  background: c.isToday ? 'rgba(242,183,5,0.10)' : (c.isWeekend ? 'var(--tint-neutral)' : 'transparent'),
                   display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
                   fontSize: zoom === 'mes' ? 11 : 9.5,
                   color: c.isToday ? 'var(--amber)' : 'var(--tm)',
@@ -2836,8 +2839,8 @@ function CronogramaPage() {
                     style={{
                     position:'absolute',top:idx*ROW_H,left:0,right:0,height:ROW_H,
                     padding:'0 12px',display:'flex',alignItems:'center',gap:6,
-                    borderBottom:'1px solid rgba(255,255,255,0.03)',
-                    background: idx % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.015)',
+                    borderBottom:'1px solid var(--border)',
+                    background: idx % 2 === 0 ? 'transparent' : 'var(--tint-neutral)',
                     fontSize:11.5,color:'var(--ts)',whiteSpace:'nowrap',overflow:'hidden',
                     cursor: 'pointer',
                   }}>
@@ -2860,8 +2863,8 @@ function CronogramaPage() {
               {columns.map((c, i) => (
                 <div key={i} style={{
                   position:'absolute',left:c.left,top:0,width:c.width,height:'100%',
-                  borderRight:'1px solid rgba(255,255,255,0.03)',
-                  background: c.isWeekend ? 'rgba(0,0,0,0.12)' : 'transparent',
+                  borderRight:'1px solid var(--border)',
+                  background: c.isWeekend ? 'var(--tint-neutral)' : 'transparent',
                   pointerEvents:'none',
                 }}/>
               ))}
@@ -2897,8 +2900,8 @@ function CronogramaPage() {
                     onClick={() => verInsumosDe(p)}
                     style={{
                       position:'absolute',top:idx*ROW_H,left:0,height:ROW_H,width:'100%',
-                      borderBottom:'1px solid rgba(255,255,255,0.03)',
-                      background: idx % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.015)',
+                      borderBottom:'1px solid var(--border)',
+                      background: idx % 2 === 0 ? 'transparent' : 'var(--tint-neutral)',
                       cursor: 'pointer',
                     }}>
                     <div style={{
@@ -2906,7 +2909,7 @@ function CronogramaPage() {
                       left, width,
                       top:(ROW_H - 16)/2, height:16,
                       borderRadius:4,
-                      background:'rgba(255,255,255,0.04)',
+                      background:'var(--tint-neutral)',
                       border:`1px solid ${col.bar}`,
                       boxShadow: estado === 'atrasada' ? '0 0 0 1px rgba(231,76,60,0.25)' : 'none',
                       overflow:'hidden',

@@ -401,7 +401,7 @@ function PartidaSelector({ partidas, busqueda, onBusqueda, onPick }) {
               style={{
                 display: 'block', width: '100%', textAlign: 'left',
                 padding: '8px 12px', background: 'transparent', border: 'none',
-                borderBottom: '1px solid rgba(255,255,255,0.04)',
+                borderBottom: '1px solid var(--border)',
                 cursor: 'pointer', color: 'var(--ts)',
               }}
               onMouseOver={e => e.currentTarget.style.background = 'rgba(242,183,5,0.08)'}
@@ -442,7 +442,7 @@ function SolicitarCambioModal({ mov, matName, partidaActual, partidas, busqueda,
       <div style={{ fontSize: 12.5, marginBottom: 10, color: 'var(--ts)' }}>
         <strong>{matName}</strong> · {mov.cantidad} {mov.unidad} · {mov.fecha}
       </div>
-      <div style={{ padding: 10, background: 'rgba(0,0,0,0.2)', borderRadius: 6, marginBottom: 12, fontSize: 12 }}>
+      <div style={{ padding: 10, background: 'var(--bg-c2)', borderRadius: 6, marginBottom: 12, fontSize: 12 }}>
         <div style={{ color: 'var(--tm)', fontSize: 10.5, textTransform: 'uppercase' }}>Partida actual</div>
         <div style={{ marginTop: 3 }}>{partidaActual}</div>
       </div>

@@ -86,7 +86,7 @@ const BarraSimple = ({ pct }) => {
   const color = v >= 100 ? 'var(--green)' : v > 0 ? 'var(--blue)' : 'var(--tm)';
   return (
     <div style={{ minWidth: 96 }}>
-      <div style={{ height: 10, borderRadius: 5, overflow: 'hidden', background: 'rgba(255,255,255,0.08)' }}>
+      <div style={{ height: 10, borderRadius: 5, overflow: 'hidden', background: 'var(--track-bg)' }}>
         <div style={{ width: v + '%', height: '100%', background: color }} />
       </div>
       <div style={{ fontSize: 10, color: 'var(--tm)', marginTop: 2 }}>{Math.round(v)}% <span style={{ opacity: 0.7 }}>· capítulo</span></div>
@@ -110,7 +110,7 @@ function BarraAvance({ partida, avancesPartida, nombreUsuario }) {
   const { segmentos, pctTotal } = segmentarAvance(partida, avancesPartida || []);
   return (
     <div style={{ minWidth: 96 }}>
-      <div style={{ display: 'flex', height: 10, borderRadius: 5, overflow: 'hidden', background: 'rgba(255,255,255,0.08)' }}>
+      <div style={{ display: 'flex', height: 10, borderRadius: 5, overflow: 'hidden', background: 'var(--track-bg)' }}>
         {segmentos.map((s, i) => (
           <div key={i} title={`${nombreUsuario ? nombreUsuario(s.uid) : 'ingeniero'} · ${num(s.metrado)} ${partida.unidad || ''}`}
             style={{ width: s.pct + '%', background: colorIngeniero(s.uid) }} />
@@ -832,7 +832,7 @@ function MiFrenteShell({ showToast, vista }) {
           {(q || sugeridas.length > 0) && (
             <div style={{ marginTop: 6, maxHeight: 230, overflow: 'auto', border: '1px solid var(--bd)', borderRadius: 6 }}>
               {sugeridas.map(p => (
-                <button key={p.id} onClick={() => agregarLinea(p.id)} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid var(--bd)', color: 'var(--tx)', padding: '7px 10px', fontSize: 12, cursor: 'pointer' }} onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>
+                <button key={p.id} onClick={() => agregarLinea(p.id)} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid var(--bd)', color: 'var(--tx)', padding: '7px 10px', fontSize: 12, cursor: 'pointer' }} onMouseEnter={e => e.currentTarget.style.background = 'var(--tint-neutral)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>
                   <span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{p.codigo_delfin}</span> {p.nombre_partida}
                   {repTodas && (() => { const fs = frentesNombresDe(p.id); return fs.length ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>{fs.join(', ')}</span> : <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }}>sin frente</span>; })()}
                 </button>
@@ -903,7 +903,7 @@ function MiFrenteShell({ showToast, vista }) {
                   <span key={txt} style={{ color: ok ? 'var(--green)' : 'var(--red)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>{ok ? '✓' : '✗'} {txt}</span>
                 ))}
               </div>
-              <div style={{ marginTop: 8, padding: '7px 10px', borderRadius: 6, background: 'rgba(255,255,255,0.04)', fontSize: 11.5 }}>
+              <div style={{ marginTop: 8, padding: '7px 10px', borderRadius: 6, background: 'var(--tint-neutral)', fontSize: 11.5 }}>
                 {ac && ac.pct != null ? (
                   <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
                     <span>Avance acumulado: <strong>{pctPrev}%</strong> → <strong style={{ color: 'var(--amber)' }}>{Math.round(ac.pct * 10) / 10}%</strong></span>
@@ -1264,7 +1264,7 @@ function MiFrenteShell({ showToast, vista }) {
                           <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: cFrente, marginRight: 5 }} />
                           <span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{p.codigo_delfin}</span> {p.nombre_partida}{atrasada ? <span style={{ color: 'var(--red)' }}> ⚠</span> : null}
                         </div>
-                        <div style={{ position: 'relative', height: 18, background: 'rgba(255,255,255,0.04)', borderRadius: 4 }}>
+                        <div style={{ position: 'relative', height: 18, background: 'var(--track-bg)', borderRadius: 4 }}>
                           {/* barra planificada (color del frente) */}
                           <div style={{ position: 'absolute', left: left + '%', width: width + '%', top: 2, bottom: 2, background: cFrente, opacity: 0.32, borderRadius: 3 }}
                             title={`${num(p.metrado_contratado)} ${p.unidad || ''} · ${p.fecha_inicio_planificada} → ${p.fecha_fin_planificada} · ${pct}% avance`} />
@@ -1635,16 +1635,16 @@ function MiFrenteShell({ showToast, vista }) {
 
       {ctx && (
         <div onClick={e => e.stopPropagation()} onContextMenu={e => e.preventDefault()}
-          style={{ position: 'fixed', left: Math.min(ctx.x, (window.innerWidth || 800) - 260), top: Math.min(ctx.y, (window.innerHeight || 600) - 110), zIndex: 9999, background: '#23232a', border: '1px solid var(--bd)', borderRadius: 8, boxShadow: '0 8px 28px rgba(0,0,0,.45)', minWidth: 240, overflow: 'hidden' }}>
+          style={{ position: 'fixed', left: Math.min(ctx.x, (window.innerWidth || 800) - 260), top: Math.min(ctx.y, (window.innerHeight || 600) - 110), zIndex: 9999, background: 'var(--bg-c)', border: '1px solid var(--bd)', borderRadius: 8, boxShadow: '0 8px 28px rgba(0,0,0,.45)', minWidth: 240, overflow: 'hidden' }}>
           <div style={{ padding: '7px 11px', fontSize: 10.5, color: 'var(--tm)', borderBottom: '1px solid var(--bd)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 260 }}>
             <span style={{ fontFamily: 'monospace' }}>{ctx.partida.codigo_delfin}</span> · {ctx.partida.nombre_partida}
           </div>
-          <button style={ctxBtn} onClick={() => { irACostoUnitario(ctx.partida); setCtx(null); }} onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>📋 Ir al costo unitario de la partida</button>
+          <button style={ctxBtn} onClick={() => { irACostoUnitario(ctx.partida); setCtx(null); }} onMouseEnter={e => e.currentTarget.style.background = 'var(--tint-neutral)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>📋 Ir al costo unitario de la partida</button>
           {!esCapitulo(ctx.partida) && (
-            <button style={ctxBtn} onClick={() => { generarReporteDe(ctx.partida); setCtx(null); }} onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>📝 Agregar reporte de esta partida</button>
+            <button style={ctxBtn} onClick={() => { generarReporteDe(ctx.partida); setCtx(null); }} onMouseEnter={e => e.currentTarget.style.background = 'var(--tint-neutral)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>📝 Agregar reporte de esta partida</button>
           )}
           {frentesNombresDe(ctx.partida.id).length === 0 && (
-            <button style={{ ...ctxBtn, borderTop: '1px solid var(--bd)' }} onClick={() => { solicitarFrente(ctx.partida); setCtx(null); }} onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>🏗️ {solFrentePend(ctx.partida.id) ? 'Frente solicitado (pendiente)' : 'Solicitar crear frente para esta partida'}</button>
+            <button style={{ ...ctxBtn, borderTop: '1px solid var(--bd)' }} onClick={() => { solicitarFrente(ctx.partida); setCtx(null); }} onMouseEnter={e => e.currentTarget.style.background = 'var(--tint-neutral)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>🏗️ {solFrentePend(ctx.partida.id) ? 'Frente solicitado (pendiente)' : 'Solicitar crear frente para esta partida'}</button>
           )}
         </div>
       )}
@@ -1669,7 +1669,7 @@ function MiFrenteShell({ showToast, vista }) {
               HORIZONTAL en el celular justo en el paso final del envío. */}
           <div style={{ maxHeight: 320, overflow: 'auto', display: 'grid', gap: 6, marginTop: 8 }}>
             {confirmRep.map(({ linea, partida, sobre }) => (
-              <div key={linea.partida_id} style={{ padding: '8px 10px', border: '1px solid var(--bd)', borderRadius: 6, background: 'rgba(255,255,255,0.03)' }}>
+              <div key={linea.partida_id} style={{ padding: '8px 10px', border: '1px solid var(--bd)', borderRadius: 6, background: 'var(--tint-neutral)' }}>
                 <div style={{ fontSize: 12, fontWeight: 600 }}>
                   <span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{partida?.codigo_delfin}</span> {partida?.nombre_partida || '—'}
                   {sobre && <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }} title="Reporte sobre una partida ya terminada → alerta a gerencia">⚠ sobre-reporte</span>}

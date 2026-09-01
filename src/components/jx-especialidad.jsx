@@ -26,9 +26,9 @@ export const AREA_POR_ROL = {
   ing_social: 'social',
 };
 const AREAS = [
-  { key: 'seguridad', label: 'Seguridad (SSOMA)', icon: 'shield', color: '#E74C3C' },
-  { key: 'ambiental', label: 'Ambiental', icon: 'map', color: '#2ECC71' },
-  { key: 'calidad', label: 'Calidad', icon: 'checkCircle', color: '#3498DB' },
+  { key: 'seguridad', label: 'Seguridad (SSOMA)', icon: 'shield', color: 'var(--red)' },
+  { key: 'ambiental', label: 'Ambiental', icon: 'map', color: 'var(--green)' },
+  { key: 'calidad', label: 'Calidad', icon: 'checkCircle', color: 'var(--blue)' },
   { key: 'social', label: 'Social', icon: 'users', color: '#9B59B6' },
 ];
 const AREA_META = Object.fromEntries(AREAS.map(a => [a.key, a]));
@@ -204,7 +204,7 @@ function ReporteEspecialidadPage({ showToast }) {
                 return (
                   <tr key={r.id}>
                     <td className="col-m">{r.fecha}</td>
-                    {veTodas && <td><span className="badge" style={{ background: `${meta.color}22`, color: meta.color, border: `1px solid ${meta.color}55` }}>{meta.label || r.area}</span></td>}
+                    {veTodas && <td><span className="badge" style={{ background: `color-mix(in srgb, ${meta.color} 13%, transparent)`, color: meta.color, border: `1px solid color-mix(in srgb, ${meta.color} 33%, transparent)` }}>{meta.label || r.area}</span></td>}
                     <td style={{ maxWidth: 420, whiteSpace: 'normal', fontSize: 12.5 }}>{r.descripcion}</td>
                     <td>{perfiles.get(r.responsable_id) || '—'}</td>
                   </tr>
