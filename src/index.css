@@ -4,6 +4,8 @@
   --bg-s: #172335;
   --bg-c: #1C2D40;
   --bg-c2: #223247;
+  --bg-header: #0D1822;
+  --bg-glass: rgba(28,45,64,0.85);
   --border: rgba(255,255,255,0.07);
   --border-h: rgba(255,255,255,0.12);
   --border-a: rgba(242,183,5,0.3);
@@ -22,15 +24,58 @@
   --red-l: rgba(231,76,60,0.12);
   --blue: #3498DB;
   --blue-l: rgba(52,152,219,0.12);
+  /* Tokens de detalle (antes hardcodeados en las reglas de abajo — necesarios
+     para que el tema claro no rompa cabeceras sticky, scrollbar, filas, etc.) */
+  --scrollbar-thumb: rgba(255,255,255,0.1);
+  --scrollbar-thumb-hover: rgba(255,255,255,0.18);
+  --sticky-bg: #131a23;
+  --tint-neutral: rgba(255,255,255,0.05);
+  --row-hover: rgba(255,255,255,0.025);
+  --track-bg: rgba(255,255,255,0.08);
   --sidebar-w: 252px;
   --header-h: 58px;
+}
+/* ── TEMA CLARO ──────────────────────────────────────────────────────
+   Activado con data-theme="light" en <html> (boot script anti-FOUC en
+   index.html + toggle en MiPerfilModal, localStorage `jx_theme`).
+   Los acentos (amber/green/red/yellow/blue/orange) se OSCURECEN un
+   escalón frente al tema oscuro: los valores brillantes originales no
+   pasan contraste AA como texto sobre blanco. Las variantes "-l" (tintes
+   translúcidos de fondo) se dejan con el mismo matiz — sobre blanco
+   siguen leyendo como un tinte pálido correcto. */
+:root[data-theme="light"] {
+  --bg-p: #F4F5F7;
+  --bg-s: #FFFFFF;
+  --bg-c: #FFFFFF;
+  --bg-c2: #EEF0F3;
+  --bg-header: #FFFFFF;
+  --bg-glass: rgba(255,255,255,0.85);
+  --border: rgba(15,23,32,0.09);
+  --border-h: rgba(15,23,32,0.16);
+  --border-a: rgba(201,149,10,0.4);
+  --tp: #16202C;
+  --ts: #48566A;
+  --tm: #64748B;
+  --amber: #C9950A;
+  --amber-d: #A67908;
+  --orange: #C96A12;
+  --green: #1E9E5A;
+  --yellow: #A16207;
+  --red: #D93A2B;
+  --blue: #1D6FA5;
+  --scrollbar-thumb: rgba(15,23,32,0.16);
+  --scrollbar-thumb-hover: rgba(15,23,32,0.28);
+  --sticky-bg: #F7F8FA;
+  --tint-neutral: rgba(15,23,32,0.045);
+  --row-hover: rgba(15,23,32,0.025);
+  --track-bg: rgba(15,23,32,0.08);
 }
 html, body, #root { height: 100%; overflow: hidden; }
 body { background: var(--bg-p); color: var(--tp); font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); }
+::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
 
 @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
@@ -73,39 +118,42 @@ textarea.fi { resize: vertical; min-height: 80px; }
 
 /* ── TABLES ── */
 .tbl { width: 100%; border-collapse: collapse; }
-.tbl thead th { text-align: left; padding: 11px 14px; font-size: 10.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--tm); border-bottom: 1px solid var(--border); background: rgba(0,0,0,.18); white-space: nowrap; }
+.tbl thead th { text-align: left; padding: 11px 14px; font-size: 10.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--tm); border-bottom: 1px solid var(--border); background: var(--tint-neutral); white-space: nowrap; }
 
 /* Cabecera de columnas FIJA al scrollear (pedido: en listas largas de
    movimientos se perdían los títulos). El wrapper es el scrollport (vertical
    y horizontal) y el thead queda sticky con fondo OPACO (el translúcido
    dejaba ver las filas debajo). */
 .tbl-sticky { overflow: auto; max-height: calc(100vh - 250px); }
-.tbl-sticky .tbl thead th { position: sticky; top: 0; z-index: 6; background: #131a23; box-shadow: 0 1px 0 var(--border); }
-.tbl tbody td { padding: 12px 14px; font-size: 12.5px; color: var(--ts); border-bottom: 1px solid rgba(255,255,255,.04); vertical-align: middle; }
+.tbl-sticky .tbl thead th { position: sticky; top: 0; z-index: 6; background: var(--sticky-bg); box-shadow: 0 1px 0 var(--border); }
+.tbl tbody td { padding: 12px 14px; font-size: 12.5px; color: var(--ts); border-bottom: 1px solid var(--border); vertical-align: middle; }
 .tbl tbody tr:last-child td { border-bottom: none; }
-.tbl tbody tr:hover td { background: rgba(255,255,255,.025); }
+.tbl tbody tr:hover td { background: var(--row-hover); }
 .tbl td.col-p { color: var(--tp); font-weight: 500; }
 .tbl td.col-m { color: var(--tm); font-size: 12px; }
 .tbl td.col-num { font-variant-numeric: tabular-nums; font-weight: 500; }
 
 /* ── FILA DE CARPETA (Insumos por Partida: navegación de capítulos) ── */
 .jx-carpeta-row { transition: background .15s; }
-.jx-carpeta-row:hover { background: rgba(255,255,255,.03); }
+.jx-carpeta-row:hover { background: var(--row-hover); }
 
-/* ── BADGES ── */
+/* ── BADGES ──
+   El texto reutiliza las variables de acento (no hex propios): así hereda
+   automáticamente el oscurecido del tema claro sin declarar una segunda
+   familia de tokens "-fg" solo para esto. */
 .badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 20px; font-size: 10.5px; font-weight: 700; letter-spacing: .03em; white-space: nowrap; }
-.b-green { background: var(--green-l); color: #3DDB82; }
-.b-yellow { background: var(--yellow-l); color: #F4CF1B; }
-.b-red { background: var(--red-l); color: #EF6B5E; }
-.b-blue { background: var(--blue-l); color: #5DADE2; }
-.b-amber { background: var(--amber-l); color: #F2B705; }
-.b-gray { background: rgba(107,122,141,.12); color: #8A9AAD; }
-.b-orange { background: rgba(242,140,40,.12); color: #F28C28; }
+.b-green { background: var(--green-l); color: var(--green); }
+.b-yellow { background: var(--yellow-l); color: var(--yellow); }
+.b-red { background: var(--red-l); color: var(--red); }
+.b-blue { background: var(--blue-l); color: var(--blue); }
+.b-amber { background: var(--amber-l); color: var(--amber); }
+.b-gray { background: rgba(107,122,141,.12); color: var(--tm); }
+.b-orange { background: rgba(242,140,40,.12); color: var(--orange); }
 .b-dot::before { content: '●'; font-size: 7px; margin-right: 2px; }
 
 /* ── MODAL ── */
 .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.68); backdrop-filter: blur(6px); z-index: 900; display: flex; align-items: center; justify-content: center; animation: fadeIn .2s ease; }
-.modal { background: var(--bg-c); border: 1px solid rgba(255,255,255,.1); border-radius: 12px; padding: 26px 28px; width: min(600px,95vw); max-height: 88vh; overflow-y: auto; animation: fadeUp .22s ease; }
+.modal { background: var(--bg-c); border: 1px solid var(--border-h); border-radius: 12px; padding: 26px 28px; width: min(600px,95vw); max-height: 88vh; overflow-y: auto; animation: fadeUp .22s ease; }
 .modal-hd { font-size: 16px; font-weight: 700; color: var(--tp); margin-bottom: 22px; display: flex; align-items: center; justify-content: space-between; }
 .modal-hd-left { display: flex; align-items: center; gap: 10px; }
 .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border); }
@@ -125,7 +173,7 @@ textarea.fi { resize: vertical; min-height: 80px; }
 .search-bar input { background: transparent; border: none; padding: 9px 0; font-size: 13px; color: var(--tp); width: 100%; outline: none; }
 .search-bar input::placeholder { color: var(--tm); }
 .search-bar:focus-within { border-color: var(--amber); }
-.progress-bar { height: 6px; background: rgba(255,255,255,.08); border-radius: 4px; overflow: hidden; }
+.progress-bar { height: 6px; background: var(--track-bg); border-radius: 4px; overflow: hidden; }
 .progress-fill { height: 100%; border-radius: 4px; transition: width .3s; }
 .section-hd { font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--tm); padding: 8px 14px 6px; }
 .kpi-card { border-radius: 10px; padding: 18px 20px; border: 1px solid var(--border); background: var(--bg-c); transition: all .2s; cursor: default; }
@@ -139,8 +187,8 @@ textarea.fi { resize: vertical; min-height: 80px; }
 .chart-card { background: var(--bg-c); border: 1px solid var(--border); border-radius: 10px; padding: 20px; }
 .chart-title { font-size: 13px; font-weight: 700; color: var(--tp); margin-bottom: 3px; }
 .chart-sub { font-size: 11.5px; color: var(--tm); margin-bottom: 16px; }
-.tag { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 4px; font-size: 11px; background: rgba(255,255,255,.05); color: var(--tm); border: 1px solid var(--border); }
-.alert-banner { background: rgba(231,76,60,.1); border: 1px solid rgba(231,76,60,.25); border-radius: 8px; padding: 12px 16px; display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: #EF6B5E; margin-bottom: 16px; }
+.tag { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 4px; font-size: 11px; background: var(--tint-neutral); color: var(--tm); border: 1px solid var(--border); }
+.alert-banner { background: rgba(231,76,60,.1); border: 1px solid rgba(231,76,60,.25); border-radius: 8px; padding: 12px 16px; display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--red); margin-bottom: 16px; }
 .info-banner { background: rgba(242,183,5,.08); border: 1px solid rgba(242,183,5,.2); border-radius: 8px; padding: 11px 16px; display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--amber); }
 .empty-state { text-align: center; padding: 48px 0; color: var(--tm); }
 .empty-state p { font-size: 13px; margin-top: 8px; }
@@ -245,6 +293,8 @@ textarea.fi { resize: vertical; min-height: 80px; }
 
 /* ═══════════════════════════════════════════════════════════════════
    TOOLTIP contextual (componente JxTooltip)
+   Chip SIEMPRE oscuro a propósito (patrón común aun en UIs claras —
+   GitHub/Notion hacen lo mismo): no se tematiza con las vars de arriba.
    ═══════════════════════════════════════════════════════════════════ */
 .jx-tt-wrap { position: relative; display: inline-block; }
 .jx-tt {

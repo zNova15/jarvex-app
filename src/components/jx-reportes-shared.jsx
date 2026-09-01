@@ -1,6 +1,7 @@
 import React from "react";
 import { useChart } from "../lib/chart-loader.js";
 import { hoyLocal } from "../lib/fecha.js";
+import { cssVar } from "../lib/tema.js";
 const { useEffect: uE, useRef: uR } = React;
 
 export const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -32,6 +33,10 @@ export function ChartTop({ chartId, labels, data, color, onInstance, height = 20
   uE(() => {
     if (!Chart || !ref.current || !labels.length) return;
     if (inst.current) inst.current.destroy();
+    // Chart.js no lee CSS vars — se resuelven acá (tema activo en cada
+    // (re)creación del gráfico; no cambia en caliente, el toggle de tema recarga).
+    const tickColor = cssVar('--tm', '#7A8A9A');
+    const gridColor = cssVar('--border', 'rgba(255,255,255,0.05)');
     inst.current = new Chart(ref.current, {
       type: 'bar',
       data: { labels, datasets: [{ data, backgroundColor: color, borderRadius: 4, maxBarThickness: 22 }] },
@@ -39,8 +44,8 @@ export function ChartTop({ chartId, labels, data, color, onInstance, height = 20
         indexAxis: 'y', responsive: true, maintainAspectRatio: false, animation: false,
         plugins: { legend: { display: false }, tooltip: { enabled: true } },
         scales: {
-          x: { ticks: { color: '#7A8A9A', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' }, border: { display: false } },
-          y: { ticks: { color: '#9AA7B4', font: { size: 10 } }, grid: { display: false }, border: { display: false } },
+          x: { ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor }, border: { display: false } },
+          y: { ticks: { color: tickColor, font: { size: 10 } }, grid: { display: false }, border: { display: false } },
         },
       },
     });

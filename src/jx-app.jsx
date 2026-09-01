@@ -20,13 +20,13 @@ function useIsMobileApp() {
 // ── TOAST ─────────────────────────────────────────────────
 function Toast({ message, type, onDone }) {
   uEA(() => { const t = setTimeout(onDone, 3200); return () => clearTimeout(t); }, []);
-  const colors = { green: '#2ECC71', red: '#E74C3C', amber: '#F2B705', blue: '#3498DB' };
+  const colors = { green: 'var(--green)', red: 'var(--red)', amber: 'var(--amber)', blue: 'var(--blue)' };
   const icons  = { green: 'checkCircle', red: 'alertCircle', amber: 'bell', blue: 'alertCircle' };
   const c = colors[type] || colors.amber;
   return (
-    <div style={{ position:'fixed', bottom:24, right:24, zIndex:9999, animation:'fadeUp .3s ease', display:'flex', alignItems:'center', gap:12, background:'#1E2D42', border:`1px solid ${c}40`, borderLeft:`3px solid ${c}`, borderRadius:10, padding:'14px 18px', boxShadow:'0 8px 32px rgba(0,0,0,0.5)', maxWidth:380 }}>
+    <div style={{ position:'fixed', bottom:24, right:24, zIndex:9999, animation:'fadeUp .3s ease', display:'flex', alignItems:'center', gap:12, background:'var(--bg-c2)', border:`1px solid color-mix(in srgb, ${c} 25%, transparent)`, borderLeft:`3px solid ${c}`, borderRadius:10, padding:'14px 18px', boxShadow:'0 8px 32px rgba(0,0,0,0.5)', maxWidth:380 }}>
       <JxIcon name={icons[type]||'checkCircle'} size={16} color={c}/>
-      <span style={{ fontSize:13, color:'#F0F2F5', fontWeight:500 }}>{message}</span>
+      <span style={{ fontSize:13, color:'var(--tp)', fontWeight:500 }}>{message}</span>
     </div>
   );
 }
@@ -90,28 +90,28 @@ function ResetPasswordRequestModal({ initialEmail, onClose }) {
 
   return (
     <div style={{ position:'fixed', inset:0, background:'rgba(8,12,18,0.7)', backdropFilter:'blur(6px)', zIndex:9000, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
-      <div style={{ width:'100%', maxWidth:420, background:'#1C2D40', border:'1px solid rgba(255,255,255,0.1)', borderRadius:14, padding:'28px 28px 22px', boxShadow:'0 24px 80px rgba(0,0,0,0.6)' }}>
+      <div style={{ width:'100%', maxWidth:420, background:'var(--bg-c)', border:'1px solid var(--border-h)', borderRadius:14, padding:'28px 28px 22px', boxShadow:'0 24px 80px rgba(0,0,0,0.6)' }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
-          <div style={{ fontSize:17, fontWeight:800, color:'#F0F2F5' }}>Recuperar Contraseña</div>
-          <button onClick={onClose} style={{ background:'none', border:'none', color:'#5A6A7A', cursor:'pointer', padding:4 }}>
+          <div style={{ fontSize:17, fontWeight:800, color:'var(--tp)' }}>Recuperar Contraseña</div>
+          <button onClick={onClose} style={{ background:'none', border:'none', color:'var(--tm)', cursor:'pointer', padding:4 }}>
             <JxIcon name="x" size={16}/>
           </button>
         </div>
 
         {sent ? (
           <div>
-            <div style={{ background:'rgba(46,204,113,0.08)', border:'1px solid rgba(46,204,113,0.25)', borderRadius:8, padding:'14px 16px', fontSize:12.5, color:'#7BD99B', marginBottom:14, lineHeight:1.5 }}>
+            <div style={{ background:'rgba(46,204,113,0.08)', border:'1px solid rgba(46,204,113,0.25)', borderRadius:8, padding:'14px 16px', fontSize:12.5, color:'var(--green)', marginBottom:14, lineHeight:1.5 }}>
               Te enviamos un enlace a <strong>{email}</strong>. Revisa tu correo (y la carpeta de spam) y sigue las instrucciones.
             </div>
             <button onClick={onClose} className="btn btn-amber" style={{ width:'100%', justifyContent:'center', padding:'12px' }}>Cerrar</button>
           </div>
         ) : (
           <>
-            <div style={{ fontSize:12.5, color:'#5A6A7A', marginBottom:14, lineHeight:1.5 }}>
+            <div style={{ fontSize:12.5, color:'var(--tm)', marginBottom:14, lineHeight:1.5 }}>
               Ingresa tu correo y te enviaremos un enlace para restablecer tu contraseña.
             </div>
-            {err && <div style={{ background:'rgba(231,76,60,0.1)', border:'1px solid rgba(231,76,60,0.25)', borderRadius:8, padding:'10px 14px', fontSize:12.5, color:'#EF6B5E', marginBottom:14, display:'flex', gap:8, alignItems:'center' }}>
-              <JxIcon name="alertCircle" size={14} color="#EF6B5E"/>{err}
+            {err && <div style={{ background:'rgba(231,76,60,0.1)', border:'1px solid rgba(231,76,60,0.25)', borderRadius:8, padding:'10px 14px', fontSize:12.5, color:'var(--red)', marginBottom:14, display:'flex', gap:8, alignItems:'center' }}>
+              <JxIcon name="alertCircle" size={14} color="var(--red)"/>{err}
             </div>}
             <div style={{ marginBottom:18 }}>
               <label className="flabel">Correo Electrónico</label>
@@ -179,26 +179,26 @@ function ResetPasswordScreen() {
   };
 
   return (
-    <div style={{ minHeight:'100vh', background:'#0D1520', display:'flex', alignItems:'center', justifyContent:'center', position:'relative', overflow:'hidden' }}>
+    <div style={{ minHeight:'100vh', background:'var(--bg-p)', display:'flex', alignItems:'center', justifyContent:'center', position:'relative', overflow:'hidden' }}>
       <CircuitBg/>
       <div style={{ position:'relative', zIndex:1, width:'100%', maxWidth:420, padding:'0 20px' }}>
-        <div style={{ background:'rgba(28,45,64,0.85)', backdropFilter:'blur(20px)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:16, padding:'40px 36px', boxShadow:'0 24px 80px rgba(0,0,0,0.6)' }}>
+        <div style={{ background:'var(--bg-glass)', backdropFilter:'blur(20px)', border:'1px solid var(--border-h)', borderRadius:16, padding:'40px 36px', boxShadow:'0 24px 80px rgba(0,0,0,0.6)' }}>
           <div style={{ textAlign:'center', marginBottom:24 }}>
             <img src="/jarvex-logo.png" alt="JARVEX" style={{ height:60, objectFit:'contain', marginBottom:6 }} onError={e=>{ e.target.style.display='none'; }}/>
-            <div style={{ fontSize:11, color:'#405565', letterSpacing:'.16em', fontWeight:600, textTransform:'uppercase' }}>Restablecer Contraseña</div>
+            <div style={{ fontSize:11, color:'var(--tm)', letterSpacing:'.16em', fontWeight:600, textTransform:'uppercase' }}>Restablecer Contraseña</div>
           </div>
 
           {done ? (
-            <div style={{ background:'rgba(46,204,113,0.08)', border:'1px solid rgba(46,204,113,0.25)', borderRadius:8, padding:'14px 16px', fontSize:13, color:'#7BD99B', textAlign:'center', lineHeight:1.5 }}>
+            <div style={{ background:'rgba(46,204,113,0.08)', border:'1px solid rgba(46,204,113,0.25)', borderRadius:8, padding:'14px 16px', fontSize:13, color:'var(--green)', textAlign:'center', lineHeight:1.5 }}>
               Contraseña actualizada. Redirigiendo al inicio de sesión…
             </div>
           ) : (
             <>
-              <div style={{ fontSize:12.5, color:'#5A6A7A', marginBottom:18, textAlign:'center' }}>
+              <div style={{ fontSize:12.5, color:'var(--tm)', marginBottom:18, textAlign:'center' }}>
                 Ingresa tu nueva contraseña dos veces.
               </div>
-              {err && <div style={{ background:'rgba(231,76,60,0.1)', border:'1px solid rgba(231,76,60,0.25)', borderRadius:8, padding:'10px 14px', fontSize:12.5, color:'#EF6B5E', marginBottom:14, display:'flex', gap:8, alignItems:'center' }}>
-                <JxIcon name="alertCircle" size={14} color="#EF6B5E"/>{err}
+              {err && <div style={{ background:'rgba(231,76,60,0.1)', border:'1px solid rgba(231,76,60,0.25)', borderRadius:8, padding:'10px 14px', fontSize:12.5, color:'var(--red)', marginBottom:14, display:'flex', gap:8, alignItems:'center' }}>
+                <JxIcon name="alertCircle" size={14} color="var(--red)"/>{err}
               </div>}
               <div style={{ marginBottom:14 }}>
                 <label className="flabel">Nueva Contraseña</label>
@@ -212,7 +212,7 @@ function ResetPasswordScreen() {
                 {loading ? 'Actualizando…' : (ready ? 'Cambiar Contraseña' : 'Verificando enlace…')}
               </button>
               <div style={{ textAlign:'center', marginTop:14 }}>
-                <a href="#" style={{ fontSize:12, color:'#3498DB', textDecoration:'none' }} onClick={e=>{ e.preventDefault(); window.history.replaceState({}, '', '/'); window.location.reload(); }}>Volver al inicio de sesión</a>
+                <a href="#" style={{ fontSize:12, color:'var(--blue)', textDecoration:'none' }} onClick={e=>{ e.preventDefault(); window.history.replaceState({}, '', '/'); window.location.reload(); }}>Volver al inicio de sesión</a>
               </div>
             </>
           )}
@@ -281,7 +281,7 @@ function LoginScreen({ onLogin }) {
   };
 
   return (
-    <div style={{ minHeight:'100vh', background:'#0D1520', display:'flex', alignItems:'center', justifyContent:'center', position:'relative', overflow:'hidden' }}>
+    <div style={{ minHeight:'100vh', background:'var(--bg-p)', display:'flex', alignItems:'center', justifyContent:'center', position:'relative', overflow:'hidden' }}>
       <CircuitBg/>
 
       {/* Glow orbs */}
@@ -290,29 +290,29 @@ function LoginScreen({ onLogin }) {
 
       <div style={{ position:'relative', zIndex:1, width:'100%', maxWidth:420, padding:'0 20px' }}>
         {/* Card */}
-        <div style={{ background:'rgba(28,45,64,0.85)', backdropFilter:'blur(20px)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:16, padding:'40px 36px', boxShadow:'0 24px 80px rgba(0,0,0,0.6)' }}>
+        <div style={{ background:'var(--bg-glass)', backdropFilter:'blur(20px)', border:'1px solid var(--border-h)', borderRadius:16, padding:'40px 36px', boxShadow:'0 24px 80px rgba(0,0,0,0.6)' }}>
 
           {/* Logo */}
           <div style={{ textAlign:'center', marginBottom:32 }}>
             <img src="/jarvex-logo.png" alt="JARVEX" style={{ height:70, objectFit:'contain', marginBottom:6 }}
               onError={e=>{ e.target.style.display='none'; }}/>
-            <div style={{ fontSize:11, color:'#405565', letterSpacing:'.16em', fontWeight:600, textTransform:'uppercase' }}>Sistema de Gestión de Obras</div>
+            <div style={{ fontSize:11, color:'var(--tm)', letterSpacing:'.16em', fontWeight:600, textTransform:'uppercase' }}>Sistema de Gestión de Obras</div>
           </div>
 
           <div style={{ marginBottom:20 }}>
-            <div style={{ fontSize:22, fontWeight:800, color:'#F0F2F5', letterSpacing:'-.02em', marginBottom:4 }}>Iniciar Sesión</div>
-            <div style={{ fontSize:12.5, color:'#5A6A7A' }}>Accede a tu plataforma de control de obra</div>
+            <div style={{ fontSize:22, fontWeight:800, color:'var(--tp)', letterSpacing:'-.02em', marginBottom:4 }}>Iniciar Sesión</div>
+            <div style={{ fontSize:12.5, color:'var(--tm)' }}>Accede a tu plataforma de control de obra</div>
           </div>
 
-          {err && <div style={{ background:'rgba(231,76,60,0.1)', border:'1px solid rgba(231,76,60,0.25)', borderRadius:8, padding:'10px 14px', fontSize:12.5, color:'#EF6B5E', marginBottom:14, display:'flex', gap:8, alignItems:'center' }}>
-            <JxIcon name="alertCircle" size={14} color="#EF6B5E"/>{err}
+          {err && <div style={{ background:'rgba(231,76,60,0.1)', border:'1px solid rgba(231,76,60,0.25)', borderRadius:8, padding:'10px 14px', fontSize:12.5, color:'var(--red)', marginBottom:14, display:'flex', gap:8, alignItems:'center' }}>
+            <JxIcon name="alertCircle" size={14} color="var(--red)"/>{err}
           </div>}
 
           <div style={{ marginBottom:14 }}>
             <label className="flabel">Correo Electrónico</label>
             <div style={{ position:'relative' }}>
               <span style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', pointerEvents:'none' }}>
-                <JxIcon name="user" size={14} color="#5A6A7A"/>
+                <JxIcon name="user" size={14} color="var(--tm)"/>
               </span>
               <input className="fi" type="email" placeholder="usuario@jarvex.pe" value={email} onChange={e=>setEmail(e.target.value)} style={{ paddingLeft:36 }} onKeyDown={e=>e.key==='Enter'&&handleLogin()}/>
             </div>
@@ -322,10 +322,10 @@ function LoginScreen({ onLogin }) {
             <label className="flabel">Contraseña</label>
             <div style={{ position:'relative' }}>
               <span style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', pointerEvents:'none' }}>
-                <JxIcon name="lock" size={14} color="#5A6A7A"/>
+                <JxIcon name="lock" size={14} color="var(--tm)"/>
               </span>
               <input className="fi" type={showPass?'text':'password'} placeholder="••••••••" value={pass} onChange={e=>setPass(e.target.value)} style={{ paddingLeft:36, paddingRight:40 }} onKeyDown={e=>e.key==='Enter'&&handleLogin()}/>
-              <button onClick={()=>setShow(!showPass)} style={{ position:'absolute', right:12, top:'50%', transform:'translateY(-50%)', background:'none', border:'none', cursor:'pointer', color:'#5A6A7A', display:'flex', padding:2 }}>
+              <button onClick={()=>setShow(!showPass)} style={{ position:'absolute', right:12, top:'50%', transform:'translateY(-50%)', background:'none', border:'none', cursor:'pointer', color:'var(--tm)', display:'flex', padding:2 }}>
                 <JxIcon name="eye" size={14}/>
               </button>
             </div>
@@ -340,14 +340,14 @@ function LoginScreen({ onLogin }) {
           </button>
 
           <div style={{ textAlign:'center', marginTop:16 }}>
-            <a href="#" style={{ fontSize:12, color:'#3498DB', textDecoration:'none' }} onClick={e=>{ e.preventDefault(); setResetOpen(true); }}>¿Olvidaste tu contraseña?</a>
+            <a href="#" style={{ fontSize:12, color:'var(--blue)', textDecoration:'none' }} onClick={e=>{ e.preventDefault(); setResetOpen(true); }}>¿Olvidaste tu contraseña?</a>
           </div>
 
           {/* ── Acceso rápido de CAMPO (mejora 2): la cuenta compartida campo@
               entra solo con el PIN que reparte el admin. Aterriza directo en el
               portal de captura de facturas (resolveLanding) y no ve nada más
               (allowlist + cerco RLS mig 155). ── */}
-          <div style={{ marginTop:18, paddingTop:14, borderTop:'1px solid rgba(255,255,255,0.08)' }}>
+          <div style={{ marginTop:18, paddingTop:14, borderTop:'1px solid var(--border)' }}>
             {!campoOpen ? (
               <button onClick={()=>setCampoOpen(true)} className="btn btn-ghost" style={{ width:'100%', justifyContent:'center', padding:'11px', fontSize:13 }}>
                 📸 Personal de campo: subir factura de una compra
@@ -371,7 +371,7 @@ function LoginScreen({ onLogin }) {
           </div>
         </div>
 
-        <div style={{ textAlign:'center', marginTop:20, fontSize:11, color:'#2A3A4A' }}>
+        <div style={{ textAlign:'center', marginTop:20, fontSize:11, color:'var(--tm)' }}>
           JARVEX Tecnología, Ingeniería y Proyectos E.I.R.L. · v2.0.0 · © 2026
         </div>
       </div>
@@ -473,7 +473,7 @@ function Header({ page, plano = 'obra', onInicio, onToggleSidebar, onLogout, pro
   const obraDisplay = obraHook.obra || obraActiva;
 
   return (
-    <div style={{ height:58, background:'#0D1822', borderBottom:'1px solid rgba(255,255,255,0.06)', display:'flex', alignItems:'center', paddingLeft: isMobile ? 10 : 16, paddingRight: isMobile ? 10 : 20, gap: isMobile ? 8 : 12, flexShrink:0, zIndex:5 }}>
+    <div style={{ height:58, background:'var(--bg-header)', borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', paddingLeft: isMobile ? 10 : 16, paddingRight: isMobile ? 10 : 20, gap: isMobile ? 8 : 12, flexShrink:0, zIndex:5 }}>
       {page !== 'inicio' && (
         <button onClick={onToggleSidebar} className="btn btn-ghost btn-icon" aria-label="Abrir menú"><JxIcon name="menu" size={16}/></button>
       )}
@@ -497,7 +497,7 @@ function Header({ page, plano = 'obra', onInicio, onToggleSidebar, onLogout, pro
             <button
               onClick={canSwitchObra ? (()=>setObraDropdownOpen(o=>!o)) : undefined}
               title={canSwitchObra ? 'Cambiar obra activa' : 'Obra asignada por el administrador'}
-              style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 10px', borderRadius:8, fontSize:12, color:'var(--ts)', background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)', cursor: canSwitchObra ? 'pointer' : 'default' }}>
+              style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 10px', borderRadius:8, fontSize:12, color:'var(--ts)', background:'var(--tint-neutral)', border:'1px solid var(--border)', cursor: canSwitchObra ? 'pointer' : 'default' }}>
               <span className="dot-pulse"/>
               <span style={{ maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>Obra: {obraDisplay.nombre_obra}</span>
               {canSwitchObra && <span style={{ fontSize:10, color:'var(--tm)' }}>▾</span>}
@@ -532,7 +532,7 @@ function Header({ page, plano = 'obra', onInicio, onToggleSidebar, onLogout, pro
                   style={{ position:'relative' }}>
             <JxIcon name="bell" size={16}/>
             {notifs.unreadCount > 0 && (
-              <span style={{ position:'absolute', top:2, right:2, minWidth:14, height:14, borderRadius:7, background:'var(--red)', color:'white', fontSize:9, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center', padding:'0 3px', border:'1.5px solid #0D1822' }}>
+              <span style={{ position:'absolute', top:2, right:2, minWidth:14, height:14, borderRadius:7, background:'var(--red)', color:'white', fontSize:9, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center', padding:'0 3px', border:'1.5px solid var(--bg-header)' }}>
                 {notifs.unreadCount > 9 ? '9+' : notifs.unreadCount}
               </span>
             )}
@@ -797,7 +797,7 @@ function LazyPageSpinner() {
   return (
     <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', gap:14, color:'var(--tm)' }}>
       <style>{`@keyframes jxLazySpin { to { transform: rotate(360deg); } }`}</style>
-      <div style={{ width:48, height:48, borderRadius:'50%', border:'3px solid rgba(242,183,5,0.15)', borderTopColor:'#F2B705', animation:'jxLazySpin 0.8s linear infinite' }}/>
+      <div style={{ width:48, height:48, borderRadius:'50%', border:'3px solid rgba(242,183,5,0.15)', borderTopColor:'var(--amber)', animation:'jxLazySpin 0.8s linear infinite' }}/>
       <div style={{ fontSize:13, color:'var(--tm)' }}>Cargando módulo…</div>
     </div>
   );
@@ -806,7 +806,7 @@ function LazyPageSpinner() {
 function LazyPageError({ chunk, error, onRetry }) {
   return (
     <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', gap:12, color:'var(--tm)', padding:20 }}>
-      <JxIcon name="alertCircle" size={28} color="#EF6B5E"/>
+      <JxIcon name="alertCircle" size={28} color="var(--red)"/>
       <div style={{ fontSize:14, fontWeight:600, color:'var(--ts)' }}>No se pudo cargar el módulo</div>
       <div style={{ fontSize:12, color:'var(--tm)', maxWidth:360, textAlign:'center' }}>
         {chunk} · {(error && error.message) || 'error desconocido'}
@@ -1155,11 +1155,11 @@ function App() {
   // El consejo flageó que mostrar "Sincronizado" mientras hay records
   // en FAILED es la mentira que causó los problemas de producción.
   let syncStatus = null;
-  if (!online) syncStatus = { color:'#F59E0B', label:'Sin conexión', bg:'rgba(245,158,11,0.12)', kind:'offline' };
-  else if (sync.syncing) syncStatus = { color:'#60A5FA', label:'Sincronizando…', bg:'rgba(96,165,250,0.12)', syncing:true, kind:'syncing' };
-  else if (sync.failed > 0) syncStatus = { color:'#EF4444', label:`${sync.failed} con error · click para revisar`, bg:'rgba(239,68,68,0.14)', kind:'failed' };
-  else if (sync.pending > 0) syncStatus = { color:'#F59E0B', label:`${sync.pending} pendiente${sync.pending>1?'s':''}`, bg:'rgba(245,158,11,0.12)', kind:'pending' };
-  else syncStatus = { color:'#34D399', label:'Sincronizado', bg:'rgba(52,211,153,0.1)', kind:'synced' };
+  if (!online) syncStatus = { color:'var(--amber)', label:'Sin conexión', bg:'rgba(245,158,11,0.12)', kind:'offline' };
+  else if (sync.syncing) syncStatus = { color:'var(--blue)', label:'Sincronizando…', bg:'rgba(96,165,250,0.12)', syncing:true, kind:'syncing' };
+  else if (sync.failed > 0) syncStatus = { color:'var(--red)', label:`${sync.failed} con error · click para revisar`, bg:'rgba(239,68,68,0.14)', kind:'failed' };
+  else if (sync.pending > 0) syncStatus = { color:'var(--amber)', label:`${sync.pending} pendiente${sync.pending>1?'s':''}`, bg:'rgba(245,158,11,0.12)', kind:'pending' };
+  else syncStatus = { color:'var(--green)', label:'Sincronizado', bg:'rgba(52,211,153,0.1)', kind:'synced' };
 
   // Guard de acceso por rol: si el rol del usuario no puede ver esta página
   // (según __canSeeSidebarItem / matriz de permisos), mostramos un mensaje
@@ -1232,7 +1232,7 @@ function App() {
 
   if (auth?.loading) {
     return (
-      <div style={{ minHeight:'100vh', background:'#0D1520', display:'flex', alignItems:'center', justifyContent:'center', color:'var(--ts)', fontSize:13 }}>
+      <div style={{ minHeight:'100vh', background:'var(--bg-p)', display:'flex', alignItems:'center', justifyContent:'center', color:'var(--ts)', fontSize:13 }}>
         <div style={{ display:'flex', alignItems:'center', gap:10 }}>
           <span style={{ width:18, height:18, borderRadius:'50%', border:'2px solid rgba(242,183,5,0.3)', borderTopColor:'var(--amber)', display:'inline-block', animation:'spin .7s linear infinite' }}/>
           Cargando JARVEX…

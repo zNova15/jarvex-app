@@ -1,5 +1,6 @@
 import React from "react";
 import { planoDe } from "../lib/nav-planos.js";
+import "../lib/tema.js"; // expone window.__jxTema (no exporta componentes, solo el side-effect)
 const { useState, useEffect } = React;
 
 // Hook: detecta si el viewport es móvil (≤ 768px)
@@ -307,8 +308,8 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
   const sideStyle = isMobile ? {
     width: 280,
     minWidth: 280,
-    background: '#0D1822',
-    borderRight: '1px solid rgba(255,255,255,0.06)',
+    background: 'var(--bg-header)',
+    borderRight: '1px solid var(--border)',
     display: 'flex',
     flexDirection: 'column',
     height: '100%',
@@ -322,8 +323,8 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
   } : {
     width: collapsed ? 58 : 252,
     minWidth: collapsed ? 58 : 252,
-    background: '#0D1822',
-    borderRight: '1px solid rgba(255,255,255,0.06)',
+    background: 'var(--bg-header)',
+    borderRight: '1px solid var(--border)',
     display: 'flex',
     flexDirection: 'column',
     height: '100%',
@@ -358,7 +359,7 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
       )}
     <aside style={sideStyle}>
       {/* Logo */}
-      <div style={{ padding: navCollapsed ? '14px 8px' : '14px 16px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', justifyContent: navCollapsed ? 'center' : 'flex-start', gap: 12, minHeight: 64 }}>
+      <div style={{ padding: navCollapsed ? '14px 8px' : '14px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: navCollapsed ? 'center' : 'flex-start', gap: 12, minHeight: 64 }}>
         <img
           src="/jarvex-icon.png"
           alt="JARVEX"
@@ -374,13 +375,13 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
         />
         {!navCollapsed && (
           <div style={{ overflow: 'hidden', whiteSpace: 'nowrap', flex: 1 }}>
-            <div style={{ fontSize: 15, fontWeight: 800, color: '#F0F2F5', letterSpacing: -.4, lineHeight: 1.1 }}>JARVEX</div>
-            <div style={{ fontSize: 9.5, color: '#6B7A8D', fontWeight: 500, letterSpacing: .04, lineHeight: 1.3, marginTop: 2 }}>TECNOLOGÍA · INGENIERÍA</div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--tp)', letterSpacing: -.4, lineHeight: 1.1 }}>JARVEX</div>
+            <div style={{ fontSize: 9.5, color: 'var(--tm)', fontWeight: 500, letterSpacing: .04, lineHeight: 1.3, marginTop: 2 }}>TECNOLOGÍA · INGENIERÍA</div>
           </div>
         )}
         {isMobile && !navCollapsed && (
           <button onClick={onToggle} aria-label="Cerrar menú"
-                  style={{ background: 'none', border: 'none', color: '#6B7A8D', cursor: 'pointer', padding: 6, display: 'flex' }}>
+                  style={{ background: 'none', border: 'none', color: 'var(--tm)', cursor: 'pointer', padding: 6, display: 'flex' }}>
             <JxIcon name="x" size={16} />
           </button>
         )}
@@ -423,9 +424,9 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
         })().map((item) => {
           const i = item._idx;
           if (item.section) {
-            if (navCollapsed) return <div key={i} style={{ height: 1, background: 'rgba(255,255,255,0.05)', margin: '8px 10px' }} />;
+            if (navCollapsed) return <div key={i} style={{ height: 1, background: 'var(--tint-neutral)', margin: '8px 10px' }} />;
             return (
-              <div key={i} style={{ padding: '14px 16px 5px', fontSize: 9.5, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: '#405060' }}>
+              <div key={i} style={{ padding: '14px 16px 5px', fontSize: 9.5, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--tm)' }}>
                 {item.section}
               </div>
             );
@@ -446,13 +447,13 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
                 alignItems: 'center',
                 gap: 10,
                 width: '100%',
-                background: isActive ? 'rgba(242,183,5,0.1)' : isHov ? 'rgba(255,255,255,0.04)' : 'transparent',
+                background: isActive ? 'var(--amber-l)' : isHov ? 'var(--tint-neutral)' : 'transparent',
                 border: 'none',
-                borderLeft: isActive ? '2.5px solid #F2B705' : '2.5px solid transparent',
+                borderLeft: isActive ? '2.5px solid var(--amber)' : '2.5px solid transparent',
                 borderRadius: navCollapsed ? 0 : '0 6px 6px 0',
                 padding: navCollapsed ? '10px 0' : (isMobile ? '12px 16px' : '9px 14px'),
                 cursor: 'pointer',
-                color: isActive ? '#F2B705' : isHov ? '#BFC7D1' : '#7A8A9A',
+                color: isActive ? 'var(--amber)' : isHov ? 'var(--ts)' : 'var(--tm)',
                 fontSize: isMobile ? 13.5 : 12.5,
                 fontWeight: isActive ? 600 : 400,
                 fontFamily: 'inherit',
@@ -464,29 +465,29 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
                 position: 'relative',
               }}
             >
-              <JxIcon name={item.icon} size={isMobile ? 17 : 15} color={isActive ? '#F2B705' : isHov ? '#BFC7D1' : '#556070'} />
+              <JxIcon name={item.icon} size={isMobile ? 17 : 15} color={isActive ? 'var(--amber)' : isHov ? 'var(--ts)' : 'var(--tm)'} />
               {!navCollapsed && <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.label}</span>}
               {item.id === 'solicitudes' && esRevisorSolic && pendingReqCount > 0 && !navCollapsed && (
-                <span style={{ marginLeft: 'auto', minWidth: 18, height: 18, borderRadius: 9, background: '#F2B705', color: '#0D1822', fontSize: 10, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 6px', flexShrink: 0 }}>
+                <span style={{ marginLeft: 'auto', minWidth: 18, height: 18, borderRadius: 9, background: 'var(--amber)', color: '#0D1822', fontSize: 10, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 6px', flexShrink: 0 }}>
                   {pendingReqCount > 99 ? '99+' : pendingReqCount}
                 </span>
               )}
               {item.id === 'solicitudes' && esRevisorSolic && pendingReqCount > 0 && navCollapsed && (
-                <span style={{ position: 'absolute', top: 6, right: 8, minWidth: 14, height: 14, borderRadius: 7, background: '#F2B705', color: '#0D1822', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px' }}>
+                <span style={{ position: 'absolute', top: 6, right: 8, minWidth: 14, height: 14, borderRadius: 7, background: 'var(--amber)', color: '#0D1822', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px' }}>
                   {pendingReqCount > 9 ? '9+' : pendingReqCount}
                 </span>
               )}
               {item.id === 'alertas' && alertasCount > 0 && !navCollapsed && (
-                <span style={{ marginLeft: 'auto', minWidth: 18, height: 18, borderRadius: 9, background: '#E74C3C', color: '#fff', fontSize: 10, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 6px', flexShrink: 0 }}>
+                <span style={{ marginLeft: 'auto', minWidth: 18, height: 18, borderRadius: 9, background: 'var(--red)', color: '#fff', fontSize: 10, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 6px', flexShrink: 0 }}>
                   {alertasCount > 99 ? '99+' : alertasCount}
                 </span>
               )}
               {item.id === 'alertas' && alertasCount > 0 && navCollapsed && (
-                <span style={{ position: 'absolute', top: 6, right: 8, minWidth: 14, height: 14, borderRadius: 7, background: '#E74C3C', color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px' }}>
+                <span style={{ position: 'absolute', top: 6, right: 8, minWidth: 14, height: 14, borderRadius: 7, background: 'var(--red)', color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px' }}>
                   {alertasCount > 9 ? '9+' : alertasCount}
                 </span>
               )}
-              {item.id !== 'solicitudes' && item.id !== 'alertas' && !navCollapsed && isActive && <div style={{ marginLeft: 'auto', width: 5, height: 5, borderRadius: '50%', background: '#F2B705', flexShrink: 0 }} />}
+              {item.id !== 'solicitudes' && item.id !== 'alertas' && !navCollapsed && isActive && <div style={{ marginLeft: 'auto', width: 5, height: 5, borderRadius: '50%', background: 'var(--amber)', flexShrink: 0 }} />}
             </button>
           );
         })}
@@ -534,9 +535,9 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
               style={{
                 marginTop: 6, width: '100%', cursor: 'pointer',
                 padding: '6px 8px', borderRadius: 6, fontSize: 10.5, fontWeight: 700, letterSpacing: 0.4,
-                background: superAdmin ? 'rgba(231,76,60,0.18)' : 'rgba(255,255,255,0.04)',
-                color: superAdmin ? '#E74C3C' : '#7A8A9A',
-                border: superAdmin ? '1px solid rgba(231,76,60,0.5)' : '1px dashed rgba(255,255,255,0.15)',
+                background: superAdmin ? 'rgba(231,76,60,0.18)' : 'var(--tint-neutral)',
+                color: superAdmin ? 'var(--red)' : 'var(--tm)',
+                border: superAdmin ? '1px solid rgba(231,76,60,0.5)' : '1px dashed var(--border-h)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
               }}
               title={superAdmin ? 'Super Admin ACTIVO — click para desactivar' : 'Activar edición de fechas históricas'}>
@@ -552,7 +553,7 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
               border: '1px solid rgba(231,76,60,0.5)',
               borderRadius: 6,
               fontSize: 10.5,
-              color: '#E74C3C',
+              color: 'var(--red)',
               display: 'flex', flexDirection: 'column', gap: 4,
             }}>
               <div style={{ fontWeight:700, display:'flex', alignItems:'center', gap:6 }}>
@@ -564,7 +565,7 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
                 style={{
                   background: 'transparent',
                   border: '1px solid rgba(231,76,60,0.6)',
-                  color: '#E74C3C',
+                  color: 'var(--red)',
                   fontSize: 10,
                   padding: '3px 6px',
                   borderRadius: 4,
@@ -580,7 +581,7 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
 
       {/* PWA install — solo si el browser lo permite y no está instalada */}
       {pwa.canInstall && !navCollapsed && (
-        <div style={{ padding: '8px 14px', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+        <div style={{ padding: '8px 14px', borderTop: '1px solid var(--border)' }}>
           <button
             onClick={async () => { await pwa.promptInstall(); }}
             className="btn btn-amber btn-sm"
@@ -592,8 +593,8 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
       )}
 
       {/* User profile */}
-      <div style={{ padding: navCollapsed ? '12px 8px' : '12px 14px', borderTop: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', gap: 10 }}>
-        <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'linear-gradient(135deg,#223247,#1C2D40)', border: '1.5px solid rgba(242,183,5,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, color: '#F2B705', flexShrink: 0 }}>
+      <div style={{ padding: navCollapsed ? '12px 8px' : '12px 14px', borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'linear-gradient(135deg,var(--bg-c2),var(--bg-c))', border: '1.5px solid rgba(242,183,5,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, color: 'var(--amber)', flexShrink: 0 }}>
           {initials}
         </div>
         {!navCollapsed && (
@@ -603,8 +604,8 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
                 (hallazgo de Gabriel, 31-ago). Solo nombre visible + Cerrar sesión. */}
             {profile?.rol === 'campo' ? (
               <div style={{ flex: 1, overflow: 'hidden' }}>
-                <span style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#BFC7D1', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{fullName}</span>
-                <span style={{ display: 'block', fontSize: 10.5, color: '#4A5A6A' }}>Cuenta de campo</span>
+                <span style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--ts)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{fullName}</span>
+                <span style={{ display: 'block', fontSize: 10.5, color: 'var(--tm)' }}>Cuenta de campo</span>
               </div>
             ) : (
             <>
@@ -612,25 +613,25 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
               onClick={() => setShowPerfil(true)}
               style={{ flex: 1, overflow: 'hidden', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', padding: 0 }}
               title="Mi perfil — editar mis datos">
-              <span style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#BFC7D1', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={profile?.email}>{fullName}</span>
-              <span style={{ display: 'block', fontSize: 10.5, color: '#4A5A6A', textTransform: 'capitalize' }}>{rolLabel}</span>
+              <span style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--ts)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={profile?.email}>{fullName}</span>
+              <span style={{ display: 'block', fontSize: 10.5, color: 'var(--tm)', textTransform: 'capitalize' }}>{rolLabel}</span>
             </button>
             <button
               onClick={() => setShowPerfil(true)}
-              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#4A5A6A', padding: 4, display: 'flex' }}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--tm)', padding: 4, display: 'flex' }}
               title="Editar mis datos"
-              onMouseEnter={e => e.currentTarget.style.color = '#F2B705'}
-              onMouseLeave={e => e.currentTarget.style.color = '#4A5A6A'}>
+              onMouseEnter={e => e.currentTarget.style.color = 'var(--amber)'}
+              onMouseLeave={e => e.currentTarget.style.color = 'var(--tm)'}>
               <JxIcon name="user" size={14} />
             </button>
             </>
             )}
             <button
               onClick={() => auth?.logout?.()}
-              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#4A5A6A', padding: 4, display: 'flex' }}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--tm)', padding: 4, display: 'flex' }}
               title="Cerrar sesión"
-              onMouseEnter={e => e.currentTarget.style.color = '#E74C3C'}
-              onMouseLeave={e => e.currentTarget.style.color = '#4A5A6A'}>
+              onMouseEnter={e => e.currentTarget.style.color = 'var(--red)'}
+              onMouseLeave={e => e.currentTarget.style.color = 'var(--tm)'}>
               <JxIcon name="logout" size={14} />
             </button>
           </>
@@ -656,7 +657,18 @@ function MiPerfilModal({ profile, onClose }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
+  const [tema, setTema] = useState(() => (window.__jxTema?.get?.() || 'dark'));
   const toast = (m, type) => { try { window.__showToast?.(m, type); } catch {} };
+
+  // Cambia data-theme + localStorage y recarga (patrón de esta modal: cada
+  // cambio de configuración global termina con reload, evita reactividad a
+  // medias en gráficos Chart.js / dropdowns que solo leen la var una vez).
+  const elegirTema = (t) => {
+    if (t === tema) return;
+    setTema(t);
+    window.__jxTema?.set?.(t);
+    setTimeout(() => window.location.reload(), 150);
+  };
 
   const guardarDatos = async () => {
     setErr(''); setMsg('');
@@ -696,15 +708,15 @@ function MiPerfilModal({ profile, onClose }) {
 
   return (
     <div style={{ position:'fixed', inset:0, background:'rgba(8,12,18,0.7)', backdropFilter:'blur(6px)', zIndex:9000, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }} onClick={onClose}>
-      <div style={{ width:'100%', maxWidth:440, background:'#1C2D40', border:'1px solid rgba(255,255,255,0.1)', borderRadius:14, padding:'24px 26px 20px', boxShadow:'0 24px 80px rgba(0,0,0,0.6)' }} onClick={e=>e.stopPropagation()}>
+      <div style={{ width:'100%', maxWidth:440, background:'var(--bg-c)', border:'1px solid var(--border-h)', borderRadius:14, padding:'24px 26px 20px', boxShadow:'0 24px 80px rgba(0,0,0,0.6)' }} onClick={e=>e.stopPropagation()}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
-          <div style={{ fontSize:17, fontWeight:800, color:'#F0F2F5' }}>Mi Perfil</div>
-          <button onClick={onClose} style={{ background:'none', border:'none', color:'#5A6A7A', cursor:'pointer', padding:4 }}><JxIcon name="x" size={16}/></button>
+          <div style={{ fontSize:17, fontWeight:800, color:'var(--tp)' }}>Mi Perfil</div>
+          <button onClick={onClose} style={{ background:'none', border:'none', color:'var(--tm)', cursor:'pointer', padding:4 }}><JxIcon name="x" size={16}/></button>
         </div>
-        <div style={{ fontSize:12, color:'#5A6A7A', marginBottom:16 }}>{profile?.email}</div>
+        <div style={{ fontSize:12, color:'var(--tm)', marginBottom:16 }}>{profile?.email}</div>
 
-        {err && <div style={{ background:'rgba(231,76,60,0.1)', border:'1px solid rgba(231,76,60,0.25)', borderRadius:8, padding:'9px 13px', fontSize:12.5, color:'#EF6B5E', marginBottom:12 }}>{err}</div>}
-        {msg && <div style={{ background:'rgba(46,204,113,0.08)', border:'1px solid rgba(46,204,113,0.25)', borderRadius:8, padding:'9px 13px', fontSize:12.5, color:'#7BD99B', marginBottom:12 }}>{msg}</div>}
+        {err && <div style={{ background:'rgba(231,76,60,0.1)', border:'1px solid rgba(231,76,60,0.25)', borderRadius:8, padding:'9px 13px', fontSize:12.5, color:'var(--red)', marginBottom:12 }}>{err}</div>}
+        {msg && <div style={{ background:'rgba(46,204,113,0.08)', border:'1px solid rgba(46,204,113,0.25)', borderRadius:8, padding:'9px 13px', fontSize:12.5, color:'var(--green)', marginBottom:12 }}>{msg}</div>}
 
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginBottom:12 }}>
           <div><label className="flabel">Nombres</label>
@@ -716,8 +728,25 @@ function MiPerfilModal({ profile, onClose }) {
           {busy ? 'Guardando…' : 'Guardar datos'}
         </button>
 
-        <div style={{ borderTop:'1px solid rgba(255,255,255,0.08)', paddingTop:14 }}>
-          <div style={{ fontSize:12.5, fontWeight:700, color:'#BFC7D1', marginBottom:10 }}>Cambiar mi contraseña</div>
+        <div style={{ borderTop:'1px solid var(--border)', paddingTop:14, marginBottom:18 }}>
+          <div style={{ fontSize:12.5, fontWeight:700, color:'var(--ts)', marginBottom:10 }}>Apariencia</div>
+          <div style={{ display:'flex', gap:8, background:'var(--tint-neutral)', borderRadius:8, padding:4 }}>
+            {[{ v:'dark', lbl:'🌙 Oscuro' }, { v:'light', lbl:'☀️ Claro' }].map(op => (
+              <button key={op.v} onClick={() => elegirTema(op.v)}
+                style={{
+                  flex:1, padding:'8px 10px', borderRadius:6, border:'none', cursor:'pointer',
+                  fontSize:12.5, fontWeight:600, fontFamily:'inherit',
+                  background: tema === op.v ? 'var(--amber)' : 'transparent',
+                  color: tema === op.v ? '#0c1118' : 'var(--tm)',
+                }}>
+                {op.lbl}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ borderTop:'1px solid var(--border)', paddingTop:14 }}>
+          <div style={{ fontSize:12.5, fontWeight:700, color:'var(--ts)', marginBottom:10 }}>Cambiar mi contraseña</div>
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginBottom:10 }}>
             <div><label className="flabel">Nueva (mín 8)</label>
               <input className="fi" type="password" value={pass} onChange={e=>setPass(e.target.value)}/></div>
@@ -743,10 +772,10 @@ function MiPerfilModal({ profile, onClose }) {
 function RealtimeStatusBadge({ status, onReconnect }) {
   if (!status || status === 'idle') return null;
   const cfg = {
-    connected:  { icon: '🟢', label: 'EN VIVO',         bg: 'rgba(46,204,113,0.12)',  fg: '#2ECC71',  border: 'rgba(46,204,113,0.4)',  title: 'Realtime conectado. Los cambios entre dispositivos llegan al instante.' },
-    connecting: { icon: '🟡', label: 'CONECTANDO…',     bg: 'rgba(242,183,5,0.12)',   fg: '#F2B705',  border: 'rgba(242,183,5,0.4)',   title: 'Suscribiendo al canal de cambios en vivo…' },
-    error:      { icon: '🔴', label: 'SIN REALTIME',    bg: 'rgba(231,76,60,0.12)',   fg: '#E74C3C',  border: 'rgba(231,76,60,0.4)',   title: 'El canal cayó. Los cambios pueden tardar hasta 30s. Click para reintentar.' },
-    offline:    { icon: '⚪', label: 'SIN CONEXIÓN',    bg: 'rgba(149,165,166,0.12)', fg: '#95A5A6',  border: 'rgba(149,165,166,0.4)', title: 'Tu dispositivo está offline. Los cambios se sincronizan al volver online.' },
+    connected:  { icon: '🟢', label: 'EN VIVO',         bg: 'rgba(46,204,113,0.12)',  fg: 'var(--green)',  border: 'rgba(46,204,113,0.4)',  title: 'Realtime conectado. Los cambios entre dispositivos llegan al instante.' },
+    connecting: { icon: '🟡', label: 'CONECTANDO…',     bg: 'rgba(242,183,5,0.12)',   fg: 'var(--amber)',  border: 'rgba(242,183,5,0.4)',   title: 'Suscribiendo al canal de cambios en vivo…' },
+    error:      { icon: '🔴', label: 'SIN REALTIME',    bg: 'rgba(231,76,60,0.12)',   fg: 'var(--red)',  border: 'rgba(231,76,60,0.4)',   title: 'El canal cayó. Los cambios pueden tardar hasta 30s. Click para reintentar.' },
+    offline:    { icon: '⚪', label: 'SIN CONEXIÓN',    bg: 'rgba(149,165,166,0.12)', fg: 'var(--tm)',  border: 'rgba(149,165,166,0.4)', title: 'Tu dispositivo está offline. Los cambios se sincronizan al volver online.' },
   }[status] || null;
   if (!cfg) return null;
   const clickable = status === 'error' && typeof onReconnect === 'function';

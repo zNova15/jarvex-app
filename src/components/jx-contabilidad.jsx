@@ -14,6 +14,7 @@ import { crearConsulta } from "../lib/consultas-puente.js";
 import { candidatosSinIngreso, poolParaVenta, vendidosVenta, estadoConsultaItem } from "../lib/insumos-venta.js";
 import { validarVinculoDeposito, saldoDeposito, parMovimiento, parDeposito, mismoPar, movimientoBancarizado, TOL } from "../lib/depositos-bancarizacion.js";
 import { useChart } from "../lib/chart-loader.js";
+import { cssVar } from "../lib/tema.js";
 import { FusionEntidadModal } from "./jx-fusion-entidad.jsx";
 import { EmpresaDetalle } from "./jx-empresa-detalle.jsx";
 const { useState: uSC, useMemo: uMC, useEffect: uEC, useRef: uRC } = React;
@@ -36,13 +37,18 @@ function ChartCanvas({ type, data, options, sig, height = 240 }) {
   }, [Chart, sig]); // eslint-disable-line react-hooks/exhaustive-deps
   return <div style={{ height }}><canvas ref={ref} /></div>;
 }
-// Paleta y estilos consistentes con el tema oscuro (Chart.js no lee CSS vars).
+// Paleta y estilos del tema activo (Chart.js no lee CSS vars — se resuelven UNA
+// vez al cargar el módulo con cssVar(). El boot script anti-FOUC de index.html
+// ya seteó data-theme en <html> antes de que este import corra, así que el
+// valor es correcto para dark Y light sin lógica extra acá).
 const CHART_GREEN = 'rgba(46,204,113,0.72)', CHART_RED = 'rgba(231,76,60,0.72)', CHART_AMBER = 'rgba(242,183,5,0.72)', CHART_BLUE = 'rgba(74,144,226,1)';
+const CHART_TICK = cssVar('--tm', '#5A6A7A');
+const CHART_GRID = cssVar('--border', 'rgba(255,255,255,0.04)');
 const CHART_AXIS = {
-  x: { ticks: { color: '#5A6A7A', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)' }, border: { display: false } },
-  y: { ticks: { color: '#5A6A7A', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)' }, border: { display: false } },
+  x: { ticks: { color: CHART_TICK, font: { size: 10 } }, grid: { color: CHART_GRID }, border: { display: false } },
+  y: { ticks: { color: CHART_TICK, font: { size: 10 } }, grid: { color: CHART_GRID }, border: { display: false } },
 };
-const CHART_LEGEND = { labels: { color: '#7A8A9A', font: { size: 11 }, boxWidth: 12, padding: 14 } };
+const CHART_LEGEND = { labels: { color: CHART_TICK, font: { size: 11 }, boxWidth: 12, padding: 14 } };
 const nombreMes = (ym) => { const [y, m] = (ym || '').split('-'); return ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'][Number(m) - 1] + ' ' + String(y).slice(2); };
 
 // ─── Helpers de formato ──────────────────────────────────────
