@@ -304,13 +304,13 @@ function ConfigSUNATPage({ showToast }) {
       </div>
 
       {error && (
-        <div style={{ padding: 12, background: 'rgba(220,53,69,.12)', color: '#dc3545', borderRadius: 8, marginBottom: 16 }}>
+        <div style={{ padding: 12, background: 'rgba(220,53,69,.12)', color: 'var(--red)', borderRadius: 8, marginBottom: 16 }}>
           {error}
         </div>
       )}
 
       {hasStoredCfg && (
-        <div style={{ padding: 12, background: 'rgba(40,167,69,.10)', color: '#28a745', borderRadius: 8, marginBottom: 16 }}>
+        <div style={{ padding: 12, background: 'rgba(40,167,69,.10)', color: 'var(--green)', borderRadius: 8, marginBottom: 16 }}>
           ✓ Configuración guardada en este dispositivo (cifrada)
         </div>
       )}
@@ -338,12 +338,12 @@ function ConfigSUNATPage({ showToast }) {
         </button>
 
         {certInfo && (
-          <div style={{ marginTop: 14, padding: 12, background: 'rgba(255,255,255,.04)', borderRadius: 8, fontSize: 13 }}>
+          <div style={{ marginTop: 14, padding: 12, background: 'var(--tint-neutral)', borderRadius: 8, fontSize: 13 }}>
             <div><b>Sujeto (CN):</b> {certInfo.cn || certInfo.subject}</div>
             <div><b>Emisor:</b> {certInfo.issuer}</div>
-            <div><b>RUC detectado:</b> {certInfo.ruc || <span style={{color:'#dc3545'}}>no encontrado</span>}</div>
+            <div><b>RUC detectado:</b> {certInfo.ruc || <span style={{color:'var(--red)'}}>no encontrado</span>}</div>
             <div><b>Vigencia:</b> {certInfo.validFrom?.slice(0,10)} → {certInfo.validTo?.slice(0,10)}
-              {' '}<span style={{ color: certValid ? '#28a745' : '#dc3545' }}>
+              {' '}<span style={{ color: certValid ? 'var(--green)' : 'var(--red)' }}>
                 {certValid ? '(vigente)' : '(VENCIDO)'}
               </span>
             </div>
@@ -404,13 +404,13 @@ function ConfigSUNATPage({ showToast }) {
           {testingConn ? 'Probando...' : 'Probar conexión SUNAT'}
         </button>
         {hasStoredCfg && (
-          <button className="btn btn-ghost" onClick={handleClear} style={{ color: '#dc3545' }}>
+          <button className="btn btn-ghost" onClick={handleClear} style={{ color: 'var(--red)' }}>
             Borrar config guardada
           </button>
         )}
       </div>
 
-      <div style={{ marginTop: 24, padding: 12, fontSize: 12, color: '#888', borderTop: '1px solid rgba(255,255,255,.08)' }}>
+      <div style={{ marginTop: 24, padding: 12, fontSize: 12, color: 'var(--tm)', borderTop: '1px solid var(--border)' }}>
         <b>Notas:</b><br/>
         • Modo homologación: usá RUC 20000000001, user MODDATOS, pass moddatos para tests.<br/>
         • El certificado digital tributario cuesta ~S/200/año (Reniec, Camerfirma, Llama.pe).<br/>

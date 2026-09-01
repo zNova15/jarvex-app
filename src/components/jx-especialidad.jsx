@@ -29,7 +29,7 @@ const AREAS = [
   { key: 'seguridad', label: 'Seguridad (SSOMA)', icon: 'shield', color: 'var(--red)' },
   { key: 'ambiental', label: 'Ambiental', icon: 'map', color: 'var(--green)' },
   { key: 'calidad', label: 'Calidad', icon: 'checkCircle', color: 'var(--blue)' },
-  { key: 'social', label: 'Social', icon: 'users', color: '#9B59B6' },
+  { key: 'social', label: 'Social', icon: 'users', color: 'var(--purple)' },
 ];
 const AREA_META = Object.fromEntries(AREAS.map(a => [a.key, a]));
 

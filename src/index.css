@@ -24,6 +24,11 @@
   --red-l: rgba(231,76,60,0.12);
   --blue: #3498DB;
   --blue-l: rgba(52,152,219,0.12);
+  /* Falta histórica: varios jsx ya escribían var(--purple, #9B59B6) /
+     var(--purple, #8b5cf6) esperando que este token existiera — nunca se
+     definió. Se completa acá con el mismo criterio de los demás acentos
+     (mismo valor que el badge .b-purple de más abajo, que se deja intacto). */
+  --purple: #9B59B6;
   /* Tokens de detalle (antes hardcodeados en las reglas de abajo — necesarios
      para que el tema claro no rompa cabeceras sticky, scrollbar, filas, etc.) */
   --scrollbar-thumb: rgba(255,255,255,0.1);
@@ -63,6 +68,7 @@
   --yellow: #A16207;
   --red: #D93A2B;
   --blue: #1D6FA5;
+  --purple: #744389;
   --scrollbar-thumb: rgba(15,23,32,0.16);
   --scrollbar-thumb-hover: rgba(15,23,32,0.28);
   --sticky-bg: #F7F8FA;

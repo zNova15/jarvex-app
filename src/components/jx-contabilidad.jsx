@@ -659,7 +659,7 @@ function EmpresasPage({ showToast }) {
                       <img src={form.logo_dataurl} alt="logo" style={{ maxHeight:70, maxWidth:120, objectFit:'contain' }}/>
                     </div>
                   ) : (
-                    <div style={{ background:'rgba(0,0,0,0.2)', borderRadius:6, padding:'24px 8px', marginBottom:6, fontSize:10, color:'var(--tm)' }}>
+                    <div style={{ background:'var(--bg-c2)', borderRadius:6, padding:'24px 8px', marginBottom:6, fontSize:10, color:'var(--tm)' }}>
                       Sin logo
                     </div>
                   )}
@@ -2323,11 +2323,11 @@ function MovimientosContablesPage({ showToast }) {
       {esRevisorDestino && sinClasificar.length > 0 && (
         <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', padding:'10px 14px', marginBottom:12, borderRadius:8, background:'rgba(155,89,182,0.10)', border:'1px solid rgba(155,89,182,0.4)' }}>
           <span style={{ fontSize:15 }}>🤔</span>
-          <span style={{ fontSize:13, fontWeight:600, color:'#B980D6' }}>
+          <span style={{ fontSize:13, fontWeight:600, color:'var(--purple)' }}>
             {sinClasificar.length} factura{sinClasificar.length > 1 ? 's' : ''} sin clasificar — las asistentes marcaron "No sé"
           </span>
           <span style={{ fontSize:11, color:'var(--tm)' }}>Revisalas y asignales obra, gastos generales o contabilidad neta.</span>
-          <button className="btn btn-sm" style={{ marginLeft:'auto', background:'rgba(155,89,182,0.18)', color:'#B980D6', border:'1px solid rgba(155,89,182,0.4)' }}
+          <button className="btn btn-sm" style={{ marginLeft:'auto', background:'rgba(155,89,182,0.18)', color:'var(--purple)', border:'1px solid rgba(155,89,182,0.4)' }}
             onClick={()=>{ setBandejaSel(new Map()); setBandejaOpen(true); }}>
             Revisar bandeja →
           </button>
@@ -2365,14 +2365,14 @@ function MovimientosContablesPage({ showToast }) {
                         ); })()}
                         <div style={{ marginTop:3 }}><span className={`badge ${TYPE_BADGE[m.type]}`} style={{ fontSize:9 }}>{TYPE_LABEL[m.type]}</span></div>
                         {isIc && <div style={{ marginTop:3 }}><span className="badge b-blue" title="Operación interna entre empresas del grupo" style={{ fontSize:9 }}>INTERCO</span></div>}
-                        {esEspejoAuto && <div style={{ marginTop:3 }}><span className="badge" title="Contraparte generada automáticamente al subir la venta interna. Se puede reemplazar subiendo el comprobante real en Captura Mágica." style={{ fontSize:9, background:'rgba(243,156,18,0.18)', color:'#E39A2B' }}>🔁 AUTO</span></div>}
+                        {esEspejoAuto && <div style={{ marginTop:3 }}><span className="badge" title="Contraparte generada automáticamente al subir la venta interna. Se puede reemplazar subiendo el comprobante real en Captura Mágica." style={{ fontSize:9, background:'rgba(243,156,18,0.18)', color:'var(--orange)' }}>🔁 AUTO</span></div>}
                       </td>
                       <td>
                         {m.description || '—'}
                         {m.category && <div style={{ fontSize:10, color:'var(--tm)' }}>{m.category}</div>}
                         {m.obra_id && <div style={{ fontSize:10, color:'var(--blue)' }}>🏗 {obraNombre(m.obra_id) || 'obra'}</div>}
                         {!m.obra_id && m.destino_contable === 'sin_clasificar' && (
-                          <div><span className="badge" style={{ fontSize:9, background:'rgba(155,89,182,0.18)', color:'#B980D6', cursor: esRevisorDestino ? 'pointer' : 'default' }}
+                          <div><span className="badge" style={{ fontSize:9, background:'rgba(155,89,182,0.18)', color:'var(--purple)', cursor: esRevisorDestino ? 'pointer' : 'default' }}
                             title={esRevisorDestino ? 'Sin clasificar — click para abrir la bandeja y asignarle destino' : 'Sin clasificar — pendiente de la Contadora Jefe'}
                             onClick={()=>{ if (esRevisorDestino) { setBandejaSel(new Map()); setBandejaOpen(true); } }}>🤔 Sin clasificar</span></div>
                         )}
@@ -2502,7 +2502,7 @@ function MovimientosContablesPage({ showToast }) {
                         {(() => {
                           const rr = resumenRecepcion(m);
                           if (!rr.aplica) return null;
-                          const col = rr.tone === 'green' ? 'var(--green)' : rr.tone === 'red' ? '#EF6B5E' : rr.tone === 'muted' ? 'var(--tm)' : 'var(--amber)';
+                          const col = rr.tone === 'green' ? 'var(--green)' : rr.tone === 'red' ? 'var(--red)' : rr.tone === 'muted' ? 'var(--tm)' : 'var(--amber)';
                           const accionable = canWrite && (rr.estado === 'sin_confirmar' || rr.estado === 'parcial');
                           return (
                             <div style={{ fontSize:10, marginTop:2, color: col, display:'flex', alignItems:'center', gap:4, flexWrap:'wrap' }}
@@ -2781,7 +2781,7 @@ function MovimientosContablesPage({ showToast }) {
                       {' '}de {fmtCur(totalMov, bancTarget.currency)}
                     </span>
                   </div>
-                  <div style={{ display:'flex', height:8, borderRadius:4, overflow:'hidden', background:'rgba(255,255,255,0.08)' }}>
+                  <div style={{ display:'flex', height:8, borderRadius:4, overflow:'hidden', background:'var(--track-bg)' }}>
                     <div style={{ width:`${pctCub}%`, background:'var(--green)' }}/>
                     <div style={{ width:`${pctEste}%`, background:'var(--blue)' }}/>
                   </div>
@@ -2797,7 +2797,7 @@ function MovimientosContablesPage({ showToast }) {
                   {partesMov.length > 0 && (
                     <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:4, display:'flex', flexWrap:'wrap', gap:5, alignItems:'center' }}>
                       {partesMov.map((x, i) => (
-                        <span key={x.id || i} style={{ display:'inline-flex', alignItems:'center', gap:3, padding:'1px 7px', borderRadius:4, background:'rgba(255,255,255,0.06)' }}>
+                        <span key={x.id || i} style={{ display:'inline-flex', alignItems:'center', gap:3, padding:'1px 7px', borderRadius:4, background:'var(--tint-neutral)' }}>
                           Pago {i + 1}: {fmtCur(x.monto, bancTarget.currency)} ({x.fecha || 's/fecha'}){x.deposito_id ? ' 🏦' : ''}
                           {(isAdmin || myRol === 'contador') && (
                             <button type="button" className="btn btn-ghost btn-xs" style={{ padding:'0 3px', fontSize:10, color:'var(--red)', lineHeight:1 }}
@@ -2846,7 +2846,7 @@ function MovimientosContablesPage({ showToast }) {
                             <span style={{ fontWeight:600 }}>🏦 {d.referencia || 's/ref'} · {d.fecha || 's/fecha'}</span>
                             <span>total {fmtCur(d.monto_total, d.moneda)}</span>
                           </div>
-                          <div style={{ height:6, borderRadius:3, background:'rgba(255,255,255,0.08)', margin:'6px 0 4px', overflow:'hidden' }}>
+                          <div style={{ height:6, borderRadius:3, background:'var(--track-bg)', margin:'6px 0 4px', overflow:'hidden' }}>
                             <div style={{ width:`${pctUso}%`, height:'100%', background:'var(--tm)' }}/>
                           </div>
                           <div style={{ fontSize:10.5, color:'var(--ts)' }}>
@@ -3016,7 +3016,7 @@ function MovimientosContablesPage({ showToast }) {
         return (
         <Modal title={`Comprobante: ${evidenciaModal.nombre}`} icon="eye"
           onClose={cerrarEvModal} wide>
-          <div style={{ minHeight: 480, maxHeight: '70vh', background: '#0E1620', borderRadius: 6, overflow: 'hidden' }}>
+          <div style={{ minHeight: 480, maxHeight: '70vh', background: 'var(--bg-p)', borderRadius: 6, overflow: 'hidden' }}>
             {evidenciaModal.mime?.startsWith('image/') ? (
               <img src={evidenciaModal.url} alt={evidenciaModal.nombre}
                 style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}/>
@@ -3253,7 +3253,7 @@ function MovimientosContablesPage({ showToast }) {
             <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:12 }}>
               {tarjeta('Ítems facturados', reporte.totales.facturado)}
               {tarjeta('Recibido en obra', reporte.totales.recibido, 'var(--green)')}
-              {tarjeta('Falta llegar', reporte.totales.faltante, reporte.totales.faltante > 0.001 ? '#EF6B5E' : 'var(--tm)')}
+              {tarjeta('Falta llegar', reporte.totales.faltante, reporte.totales.faltante > 0.001 ? 'var(--red)' : 'var(--tm)')}
               {tarjeta('Consumo empresa', reporte.totales.aEmpresa, 'var(--tm)')}
               {tarjeta('Gasto general obra', reporte.totales.aObraGeneral, 'var(--tm)')}
             </div>
@@ -3280,7 +3280,7 @@ function MovimientosContablesPage({ showToast }) {
                         <td className="col-p">{i.nombre} <span style={{ color:'var(--tm)', fontSize:10 }}>· {i.nFacturas} fact.</span></td>
                         <td style={{ textAlign:'right' }}>{i.facturado} {i.unidad}</td>
                         <td style={{ textAlign:'right', color:'var(--green)' }}>{i.recibido}</td>
-                        <td style={{ textAlign:'right', color: i.faltante > 0.001 ? '#EF6B5E' : 'var(--tm)', fontWeight: i.faltante > 0.001 ? 700 : 400 }}>{i.faltante}</td>
+                        <td style={{ textAlign:'right', color: i.faltante > 0.001 ? 'var(--red)' : 'var(--tm)', fontWeight: i.faltante > 0.001 ? 700 : 400 }}>{i.faltante}</td>
                         <td style={{ textAlign:'center' }}>{i.pctRecibido == null ? '—' : `${i.pctRecibido}%`}</td>
                         <td style={{ fontSize:11 }}>
                           {i.aObra > 0.001 && <span title="A obra">🏗 {i.aObra}</span>}
@@ -3302,7 +3302,7 @@ function MovimientosContablesPage({ showToast }) {
                         <td className="col-p">{f.doc}</td>
                         <td style={{ fontSize:11.5 }}>{f.proveedor || '—'}</td>
                         <td className="col-m">{f.fecha || '—'}</td>
-                        <td style={{ fontSize:11.5, color: f.tone==='green'?'var(--green)':f.tone==='red'?'#EF6B5E':f.tone==='muted'?'var(--tm)':'var(--amber)' }}>{f.emoji} {f.label}</td>
+                        <td style={{ fontSize:11.5, color: f.tone==='green'?'var(--green)':f.tone==='red'?'var(--red)':f.tone==='muted'?'var(--tm)':'var(--amber)' }}>{f.emoji} {f.label}</td>
                         <td style={{ textAlign:'center' }}>{f.recibidos}/{f.total}</td>
                       </tr>
                     ))}
@@ -3486,7 +3486,7 @@ function MovimientosContablesPage({ showToast }) {
                 const sug = aiClasif?.result?.clasificacion;
                 const conf = Number(aiClasif?.confianza || 0);
                 return (<>
-                  <div className="fi" style={{ display:'flex', alignItems:'center', gap:6, fontWeight:700, color, background:'rgba(255,255,255,0.03)' }}>
+                  <div className="fi" style={{ display:'flex', alignItems:'center', gap:6, fontWeight:700, color, background:'var(--tint-neutral)' }}>
                     {TYPE_LABEL_LARGO[t] || t}
                     {overrideEfectivo(movForm) && (
                       <span className="badge b-purple" style={{ fontSize:9, fontWeight:700 }} title="Ajustado a mano: no es lo que diría la vinculación">✋ manual</span>
@@ -3507,7 +3507,7 @@ function MovimientosContablesPage({ showToast }) {
                   {sug && (
                     <div style={{ marginTop:5, padding:'6px 8px', borderRadius:6, fontSize:10.5,
                       background: conf >= 0.85 ? 'rgba(46,204,113,0.08)' : conf >= 0.6 ? 'rgba(242,183,5,0.08)' : 'rgba(231,76,60,0.08)',
-                      border: '1px solid rgba(255,255,255,0.07)' }}>
+                      border: '1px solid var(--border)' }}>
                       <div style={{ fontWeight:700, color: sug === 'expense' ? 'var(--amber)' : 'var(--red)' }}>
                         ✨ La IA dice: {sug === 'expense' ? 'GASTO de la empresa' : 'COSTO de obra'} ({(conf*100).toFixed(0)}% de confianza)
                         {aiClasif._cached ? ' · ya consultado antes' : ''}
@@ -4346,13 +4346,13 @@ function ContabilidadDashboardPage({ showToast }) {
           </div>
           <div style={{ display:'flex', flexDirection:'column', gap:6, maxHeight:300, overflowY:'auto' }}>
             {pendientesAgrupados.map(grp => (
-              <div key={grp.proveedor_id || 'sin_prov'} style={{ background:'rgba(0,0,0,0.15)', borderRadius:6, padding:'8px 10px' }}>
+              <div key={grp.proveedor_id || 'sin_prov'} style={{ background:'var(--bg-c2)', borderRadius:6, padding:'8px 10px' }}>
                 <div style={{ fontSize:11, color:'var(--tm)', marginBottom:6, fontWeight:600 }}>
                   Proveedor: <span style={{ color:'var(--tp)' }}>{provName(grp.proveedor_id)}</span>
                   <span style={{ marginLeft:8, opacity:0.6 }}>· {grp.items.length} ítem(s)</span>
                 </div>
                 {grp.items.map(mov => (
-                  <div key={mov.id} style={{ display:'grid', gridTemplateColumns:'1fr 1fr auto auto', gap:8, alignItems:'center', padding:'6px 0', borderTop:'1px solid rgba(255,255,255,0.04)', fontSize:12 }}>
+                  <div key={mov.id} style={{ display:'grid', gridTemplateColumns:'1fr 1fr auto auto', gap:8, alignItems:'center', padding:'6px 0', borderTop:'1px solid var(--border)', fontSize:12 }}>
                     <div>
                       <div style={{ color:'var(--tp)', fontWeight:600 }}>{matName(mov.material_id)}</div>
                       <div style={{ fontSize:10.5, color:'var(--tm)' }}>{mov.fecha} · {mov.cantidad} {mov.unidad}</div>
@@ -4574,7 +4574,7 @@ function ContabilidadDashboardPage({ showToast }) {
           <div style={{ fontSize:12.5, fontWeight:700, color:'var(--ts)', marginBottom:8 }}>Distribución por tipo</div>
           {(kpis.ingresos + kpis.costos + kpis.gastos) > 0 ? (
             <ChartCanvas type="doughnut" height={260} sig={chartData.sig}
-              data={{ labels:['Ingresos','Costos','Gastos'], datasets:[{ data:[kpis.ingresos, kpis.costos, kpis.gastos], backgroundColor:[CHART_GREEN, CHART_RED, CHART_AMBER], borderWidth:2, borderColor:'#1C2D40' }] }}
+              data={{ labels:['Ingresos','Costos','Gastos'], datasets:[{ data:[kpis.ingresos, kpis.costos, kpis.gastos], backgroundColor:[CHART_GREEN, CHART_RED, CHART_AMBER], borderWidth:2, borderColor:cssVar('--bg-c','#1C2D40') }] }}
               options={{ responsive:true, maintainAspectRatio:false, cutout:'62%', plugins:{ legend:{ position:'bottom', ...CHART_LEGEND } } }}/>
           ) : (
             <div className="empty-state" style={{ padding:'34px 0' }}><JxIcon name="chart" size={28} color="var(--tm)"/><p style={{ fontSize:12 }}>Sin datos.</p></div>
@@ -5588,7 +5588,7 @@ function TrazabilidadPage({ showToast }) {
                   ))}
                 </tbody>
                 <tfoot>
-                  <tr style={{ background:'rgba(0,0,0,0.10)', fontWeight:600 }}>
+                  <tr style={{ background:'var(--tint-neutral)', fontWeight:600 }}>
                     <td colSpan={2} style={{ padding:'6px 8px', textAlign:'right' }}>Totales (S/):</td>
                     <td style={{ textAlign:'right' }}>{totalesItems().cant.toFixed(2)}</td>
                     <td style={{ textAlign:'right', color:'var(--blue)' }}>{fmtCur(totalesItems().total_real)}</td>
@@ -5673,8 +5673,8 @@ function TrazabilidadPage({ showToast }) {
                 const rol = isPrim ? 'PRIMARIA' : isUlt ? 'EJECUTORA' : 'SECUNDARIA';
                 const rolColor = isPrim ? 'var(--blue)' : isUlt ? 'var(--green)' : 'var(--amber)';
                 return (
-                  <div key={i} style={{ display:'grid', gridTemplateColumns:'90px minmax(160px, 2fr) minmax(100px, 1fr) 60px minmax(100px, 1fr) 32px', gap:8, alignItems:'center', marginBottom:8, padding:'8px 10px', background:'rgba(255,255,255,0.025)', border:'1px solid var(--border)', borderRadius:8 }}>
-                    <div style={{ fontSize:9.5, fontWeight:700, color:rolColor, textAlign:'center', padding:'2px 4px', background:`${rolColor}1A`, borderRadius:4 }}>
+                  <div key={i} style={{ display:'grid', gridTemplateColumns:'90px minmax(160px, 2fr) minmax(100px, 1fr) 60px minmax(100px, 1fr) 32px', gap:8, alignItems:'center', marginBottom:8, padding:'8px 10px', background:'var(--row-hover)', border:'1px solid var(--border)', borderRadius:8 }}>
+                    <div style={{ fontSize:9.5, fontWeight:700, color:rolColor, textAlign:'center', padding:'2px 4px', background:`color-mix(in srgb, ${rolColor} 10%, transparent)`, borderRadius:4 }}>
                       #{i+1} {rol}
                     </div>
                     <select className="fi" value={es.company_id||''} disabled={isUlt} onChange={e=>{
@@ -5811,7 +5811,7 @@ function TrazabilidadPage({ showToast }) {
                 {iaAnalisis.hallazgos.map((h, i) => (
                   <div key={i} style={{
                     padding: '10px 12px',
-                    background: 'rgba(255,255,255,0.025)',
+                    background: 'var(--row-hover)',
                     border: `1px solid ${h.severidad === 'alta' ? 'rgba(231,76,60,0.4)' : h.severidad === 'media' ? 'rgba(242,183,5,0.3)' : 'var(--border)'}`,
                     borderRadius: 6,
                     fontSize: 12,
@@ -5933,7 +5933,7 @@ function CadenaVisual({ cadena, lookupCompany, lookupObra, calcular }) {
     } catch (e) { alert('Error: ' + (e.message || e)); }
   };
   const Box = ({ titulo, sub, precio, total, color, icono }) => (
-    <div style={{ flex:1, minWidth:140, background:'rgba(255,255,255,0.025)', border:`1px solid ${color}55`, borderTop:`3px solid ${color}`, borderRadius:8, padding:'10px 12px', textAlign:'center' }}>
+    <div style={{ flex:1, minWidth:140, background:'var(--row-hover)', border:`1px solid color-mix(in srgb, ${color} 33%, transparent)`, borderTop:`3px solid ${color}`, borderRadius:8, padding:'10px 12px', textAlign:'center' }}>
       <div style={{ fontSize:10.5, color:'var(--tm)', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:4 }}>{titulo}</div>
       <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)', marginBottom:4 }}>{sub}</div>
       <div style={{ fontSize:18, fontWeight:800, color }}>{fmtCur(precio)}</div>
@@ -5995,7 +5995,7 @@ function CadenaVisual({ cadena, lookupCompany, lookupObra, calcular }) {
                 })}
               </tbody>
               <tfoot>
-                <tr style={{ background:'rgba(0,0,0,0.10)', fontWeight:700 }}>
+                <tr style={{ background:'var(--tint-neutral)', fontWeight:700 }}>
                   <td colSpan={4} style={{ textAlign:'right' }}>TOTALES:</td>
                   <td style={{ textAlign:'right', color:'var(--blue)' }}>{fmtCur(ap(r.costoTotalReal))}</td>
                   <td/>
@@ -6008,7 +6008,7 @@ function CadenaVisual({ cadena, lookupCompany, lookupObra, calcular }) {
       )}
 
       <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
-        <Box titulo="Externo" sub={cadena.proveedor_externo_nombre || 'Proveedor externo'} precio={ap(r.precioReal)} total={ap(r.costoTotalReal)} color="#3498DB"/>
+        <Box titulo="Externo" sub={cadena.proveedor_externo_nombre || 'Proveedor externo'} precio={ap(r.precioReal)} total={ap(r.costoTotalReal)} color="var(--blue)"/>
         {eslabones.map((es, i) => {
           const co = lookupCompany(es.company_id);
           const ant = i === 0 ? r.precioReal : Number(eslabones[i-1].precio_unit || 0);
@@ -6024,7 +6024,7 @@ function CadenaVisual({ cadena, lookupCompany, lookupObra, calcular }) {
                   sub={co?.name || '?'}
                   precio={ap(cur)}
                   total={ap(cur * r.cant)}
-                  color={isUlt ? '#2ECC71' : '#F2B705'}
+                  color={isUlt ? 'var(--green)' : 'var(--amber)'}
                 />
                 <div style={{ textAlign:'center', fontSize:10.5, color: mk>=0?'var(--green)':'var(--red)', marginTop:4 }}>
                   +{mk.toFixed(1)}% markup
@@ -6034,7 +6034,7 @@ function CadenaVisual({ cadena, lookupCompany, lookupObra, calcular }) {
           );
         })}
         <div style={{ color:'var(--tm)', fontSize:18, fontWeight:700 }}>→</div>
-        <Box titulo="Cliente final" sub="Presupuesto contractual" precio={ap(r.presup)} total={ap(r.presupTotal)} color="#9B59B6"/>
+        <Box titulo="Cliente final" sub="Presupuesto contractual" precio={ap(r.presup)} total={ap(r.presupTotal)} color="var(--purple)"/>
       </div>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(200px, 1fr))', gap:10 }}>
         <div className="kpi-card">
@@ -6054,7 +6054,7 @@ function CadenaVisual({ cadena, lookupCompany, lookupObra, calcular }) {
         </div>
       </div>
       {cadena.notas && (
-        <div style={{ fontSize:11.5, color:'var(--ts)', padding:'8px 10px', background:'rgba(255,255,255,0.025)', border:'1px solid var(--border)', borderRadius:6 }}>
+        <div style={{ fontSize:11.5, color:'var(--ts)', padding:'8px 10px', background:'var(--row-hover)', border:'1px solid var(--border)', borderRadius:6 }}>
           <strong>Notas:</strong> {cadena.notas}
         </div>
       )}

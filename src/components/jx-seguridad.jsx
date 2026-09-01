@@ -19,7 +19,7 @@ const AREA_POR_ROL = { prevencionista: 'seguridad', ing_ambiental: 'ambiental', 
 const AREAS_PLAN = [
   { key: 'seguridad', label: 'Seguridad', color: 'var(--red)' },
   { key: 'ambiental', label: 'Ambiental', color: 'var(--green)' },
-  { key: 'social', label: 'Social', color: '#9B59B6' },
+  { key: 'social', label: 'Social', color: 'var(--purple)' },
 ];
 const AREA_META = Object.fromEntries(AREAS_PLAN.map(a => [a.key, a]));
 const EST_CHARLA = { programada: { cls: 'b-amber', lbl: 'Programada' }, realizada: { cls: 'b-green', lbl: 'Realizada' }, cancelada: { cls: 'b-gray', lbl: 'Cancelada' } };

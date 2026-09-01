@@ -963,7 +963,7 @@ function PickInsumoModal({ item, maestra, obraId, vinculos, busy, toast, onVincu
             if (!ins) return null;
             const yaTiene = yaVinc.has(c.codigo);
             return (
-              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderTop: i ? '1px solid rgba(255,255,255,0.05)' : 'none' }}>
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderTop: i ? '1px solid var(--border)' : 'none' }}>
                 <span className="badge b-green" style={{ fontSize: 9 }}>{Math.round((c.confianza || 0) * 100)}%</span>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 12.5, color: 'var(--ts)' }}>{ins.nombre} <span style={{ fontSize: 10, color: 'var(--tm)' }}>· {fmtN(ins.cantPresup)} {ins.unidad}</span></div>

@@ -327,7 +327,7 @@ function LibrosElectronicosPage({ showToast }) {
       <div className="card card-p" style={{ padding: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
           <div style={{
-            width: 8, height: 28, background: 'var(--gold, #f2b705)', borderRadius: 4
+            width: 8, height: 28, background: 'var(--amber)', borderRadius: 4
           }} />
           <div>
             <div style={{ fontWeight: 700, fontSize: 15 }}>PDT 601 — Planilla Mensual</div>
@@ -339,7 +339,7 @@ function LibrosElectronicosPage({ showToast }) {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 10 }}>
           <div>
             <div style={{ fontSize: 11, color: 'var(--tm)' }}>Trabajadores en planilla del período</div>
-            <div style={{ fontWeight: 700, fontSize: 22, color: 'var(--gold, #f2b705)' }}>
+            <div style={{ fontWeight: 700, fontSize: 22, color: 'var(--amber)' }}>
               {planillaPeriodo?.total_trabajadores ?? '—'}
             </div>
           </div>
