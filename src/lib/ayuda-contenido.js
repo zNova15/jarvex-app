@@ -34,6 +34,7 @@ const AYUDA = {
       'Elegí la obra en "Obra de trabajo" — los bloques "de obra" trabajan sobre ella.',
       'Los bloques de "General" (Reportes, Captura Mágica, Empresas…) cruzan todas las obras.',
       'Si te falta un bloque que necesitás, pedile acceso al administrador.',
+      'Arriba a la derecha cambiás entre tema oscuro y claro. La elección es tuya y queda guardada en ese dispositivo (también está en Mi Perfil, abajo en el menú lateral).',
     ],
   },
   'captura-magica': {

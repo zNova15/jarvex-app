@@ -4,6 +4,12 @@ import SyncDetailModal from "./components/SyncDetailModal.jsx";
 import BotonAyuda from "./components/jx-ayuda.jsx";
 import { planoDe, resolveLanding, areaDe } from "./lib/nav-planos.js";
 import { cargarObrasAsignadas } from "./lib/obras-asignadas.js";
+import { tomarPaginaTrasCambioDeTema } from "./lib/tema.js";
+
+// Sección a la que volver tras el reload por cambio de tema. Se lee (y consume)
+// UNA vez por carga de página, acá a nivel de módulo: dentro de un useState
+// initializer el doble render de StrictMode lo consumiría dos veces.
+const __volverTrasTema = tomarPaginaTrasCambioDeTema();
 const { useState: uSA, useEffect: uEA, useCallback: uCA } = React;
 
 // Hook compartido: detecta viewport móvil
@@ -866,19 +872,23 @@ function App() {
   // Aterrizaje: TODOS arrancan en el INICIO (launcher de 2 planos). Desde ahí
   // entran a una sección general o a una obra. (Fase 3: auto-entrar a la obra
   // única para roles operativos, con el filtro de asignación real.)
-  const [page, setPage]             = uSA(() => 'inicio');
+  // Cambiar el tema recarga (ver src/lib/tema.js). Sin esto la recarga te
+  // devolvía al Inicio y perdías la sección donde estabas.
+  const [page, setPage]             = uSA(() => __volverTrasTema?.page || 'inicio');
   // Override de plano para los ítems DUALES (ej. movimientos-contables aparece en
   // el workspace de obra Y en el área general de contabilidad). El sidebar pasa el
   // plano del ítem clickeado; null = usar planoDe(page).
-  const [navPlano, setNavPlano]     = uSA(null);
+  const [navPlano, setNavPlano]     = uSA(__volverTrasTema?.plano || null);
   const irAPagina = React.useCallback((p, planoItem) => { setPage(p); setNavPlano(planoItem || null); }, []);
   window.__navTo = (p, plano) => irAPagina(p, plano); // navegación programática (sin plano → resetea el override)
+  window.__pageActual = page;        // lo lee cambiarTema() para volver acá tras recargar
+  window.__navPlanoActual = navPlano;
 
   // Al cargar el profile (post-login):
   //   1. Redirigir a la home del rol (solo la primera vez).
   //   2. Disparar prefetch de los chunks que el rol va a usar — así su
   //      navegación dentro del menú se siente instantánea.
-  const _homeAplicadaRef = React.useRef(false);
+  const _homeAplicadaRef = React.useRef(!!__volverTrasTema);
   uEA(() => {
     if (_homeAplicadaRef.current) return;
     const rol = auth?.profile?.rol;
@@ -898,7 +908,7 @@ function App() {
   // obra asignada entran DIRECTO a su workspace y su página de siempre, saltando
   // el launcher. Los roles globales (admin/gerente/contador/…) o con varias/ninguna
   // obra se quedan en el Inicio. (Async porque obra_usuarios se consulta a Supabase.)
-  const _landingRef = React.useRef(false);
+  const _landingRef = React.useRef(!!__volverTrasTema);
   uEA(() => {
     if (_landingRef.current) return;
     const rol = auth?.profile?.rol;

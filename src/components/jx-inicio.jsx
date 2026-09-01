@@ -332,9 +332,16 @@ function InicioPage({ onNav, onEnterObra }) {
 
   return (
     <div className="page-wrap" style={{ maxWidth: 1100, margin: '0 auto' }}>
-      <div className="pg-hd">
-        <div className="pg-title">Inicio{nombreUsuario ? ` · ${nombreUsuario}` : ''}</div>
-        <div className="pg-sub">Elegí tu obra de trabajo y entrá a las secciones desde los bloques.</div>
+      <div className="pg-hd" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <div>
+          <div className="pg-title">Inicio{nombreUsuario ? ` · ${nombreUsuario}` : ''}</div>
+          <div className="pg-sub">Elegí tu obra de trabajo y entrá a las secciones desde los bloques.</div>
+        </div>
+        {/* Tema claro/oscuro también acá: el Inicio no muestra sidebar, así que
+            sin esto Mi Perfil (y con él el toggle) era inalcanzable desde esta
+            pantalla — pedido de Gabriel (1-sep). Global expuesto por jx-sidebar
+            (eager); mismo patrón que window.JxIcon, sin import cruzado. */}
+        {window.TemaToggle ? <window.TemaToggle compacto /> : null}
       </div>
 
       {/* ── OBRA DE TRABAJO ── */}

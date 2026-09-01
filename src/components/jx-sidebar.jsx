@@ -649,6 +649,48 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
 // un usuario editar su propia fila de profiles; el cambio de contraseña usa
 // supabase.auth.updateUser (sesión propia). Tras guardar nombres recargamos para
 // refrescar el profile cacheado (useAuth no expone refresh).
+// ── Toggle de tema (🌙/☀️) ─────────────────────────────────────────────
+// Una sola implementación para los dos lugares donde se cambia el tema:
+// Mi Perfil (segmentado, con las dos opciones a la vista) y la cabecera del
+// Inicio (compacto — ahí no hay sidebar ni Mi Perfil, pedido de Gabriel 1-sep).
+// Se expone en window.TemaToggle porque jx-sidebar es EAGER: los chunks lazy
+// (jx-inicio) lo consumen como global, sin import cruzado que parta un chunk
+// nuevo (regla crítica 1 del repo).
+function TemaToggle({ compacto = false }) {
+  const [tema, setTemaUI] = useState(() => (window.__jxTema?.get?.() || 'dark'));
+  const elegir = (t) => {
+    if (t === tema) return;
+    setTemaUI(t);              // feedback inmediato; cambiarTema recarga a los 150ms
+    window.__jxTema?.cambiar?.(t);
+  };
+
+  if (compacto) {
+    const otro = tema === 'light' ? 'dark' : 'light';
+    return (
+      <button className="btn btn-ghost btn-sm" onClick={() => elegir(otro)}
+              title={`Cambiar al tema ${otro === 'light' ? 'claro' : 'oscuro'}`}>
+        {tema === 'light' ? '🌙 Oscuro' : '☀️ Claro'}
+      </button>
+    );
+  }
+
+  return (
+    <div style={{ display:'flex', gap:8, background:'var(--tint-neutral)', borderRadius:8, padding:4 }}>
+      {[{ v:'dark', lbl:'🌙 Oscuro' }, { v:'light', lbl:'☀️ Claro' }].map(op => (
+        <button key={op.v} onClick={() => elegir(op.v)}
+          style={{
+            flex:1, padding:'8px 10px', borderRadius:6, border:'none', cursor:'pointer',
+            fontSize:12.5, fontWeight:600, fontFamily:'inherit',
+            background: tema === op.v ? 'var(--amber)' : 'transparent',
+            color: tema === op.v ? '#0c1118' : 'var(--tm)',
+          }}>
+          {op.lbl}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function MiPerfilModal({ profile, onClose }) {
   const [nombres, setNombres] = useState(profile?.nombres || '');
   const [apellidos, setApellidos] = useState(profile?.apellidos || '');
@@ -657,18 +699,7 @@ function MiPerfilModal({ profile, onClose }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
-  const [tema, setTema] = useState(() => (window.__jxTema?.get?.() || 'dark'));
   const toast = (m, type) => { try { window.__showToast?.(m, type); } catch {} };
-
-  // Cambia data-theme + localStorage y recarga (patrón de esta modal: cada
-  // cambio de configuración global termina con reload, evita reactividad a
-  // medias en gráficos Chart.js / dropdowns que solo leen la var una vez).
-  const elegirTema = (t) => {
-    if (t === tema) return;
-    setTema(t);
-    window.__jxTema?.set?.(t);
-    setTimeout(() => window.location.reload(), 150);
-  };
 
   const guardarDatos = async () => {
     setErr(''); setMsg('');
@@ -730,19 +761,7 @@ function MiPerfilModal({ profile, onClose }) {
 
         <div style={{ borderTop:'1px solid var(--border)', paddingTop:14, marginBottom:18 }}>
           <div style={{ fontSize:12.5, fontWeight:700, color:'var(--ts)', marginBottom:10 }}>Apariencia</div>
-          <div style={{ display:'flex', gap:8, background:'var(--tint-neutral)', borderRadius:8, padding:4 }}>
-            {[{ v:'dark', lbl:'🌙 Oscuro' }, { v:'light', lbl:'☀️ Claro' }].map(op => (
-              <button key={op.v} onClick={() => elegirTema(op.v)}
-                style={{
-                  flex:1, padding:'8px 10px', borderRadius:6, border:'none', cursor:'pointer',
-                  fontSize:12.5, fontWeight:600, fontFamily:'inherit',
-                  background: tema === op.v ? 'var(--amber)' : 'transparent',
-                  color: tema === op.v ? '#0c1118' : 'var(--tm)',
-                }}>
-                {op.lbl}
-              </button>
-            ))}
-          </div>
+          <TemaToggle />
         </div>
 
         <div style={{ borderTop:'1px solid var(--border)', paddingTop:14 }}>
@@ -802,4 +821,4 @@ function RealtimeStatusBadge({ status, onReconnect }) {
   );
 }
 
-Object.assign(window, { Sidebar, NAV });
+Object.assign(window, { Sidebar, NAV, TemaToggle });

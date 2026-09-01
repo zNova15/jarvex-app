@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { getTema, setTema, aplicarTema, TEMA_KEY } from '../tema.js';
+import { getTema, setTema, aplicarTema, cambiarTema, tomarPaginaTrasCambioDeTema, TEMA_KEY } from '../tema.js';
 
 const raiz = resolve(__dirname, '../../..');
 const leer = (p) => readFileSync(resolve(raiz, p), 'utf8');
@@ -15,6 +15,13 @@ function stubDom() {
     setItem: (k, v) => store.set(k, String(v)),
     removeItem: (k) => store.delete(k),
     clear: () => store.clear(),
+  };
+  const sesion = new Map();
+  globalThis.sessionStorage = {
+    getItem: (k) => (sesion.has(k) ? sesion.get(k) : null),
+    setItem: (k, v) => sesion.set(k, String(v)),
+    removeItem: (k) => sesion.delete(k),
+    clear: () => sesion.clear(),
   };
   const attrs = new Map();
   globalThis.document = {
@@ -62,6 +69,51 @@ describe('tema — get/set/aplicar', () => {
     aplicarTema('light');
     expect(document.documentElement.getAttribute('data-theme')).toBe('light');
     expect(localStorage.getItem(TEMA_KEY)).toBe('light');
+  });
+});
+
+// ── Volver a la sección tras el cambio de tema (pedido 1-sep) ────────
+// cambiarTema() recarga (los gráficos resuelven color al crearse), y la
+// recarga arranca en 'inicio'. Guardamos dónde estabas para restaurarlo.
+describe('tema — conservar la sección al recargar', () => {
+  let recargas;
+  beforeEach(() => {
+    stubDom();
+    recargas = 0;
+    globalThis.window = {
+      __pageActual: 'mov-materiales',
+      __navPlanoActual: 'obra',
+      location: { reload: () => { recargas++; } },
+    };
+  });
+
+  it('guarda la sección actual y recarga', async () => {
+    cambiarTema('light');
+    expect(getTema()).toBe('light');
+    await new Promise(r => setTimeout(r, 200));
+    expect(recargas).toBe(1);
+    expect(tomarPaginaTrasCambioDeTema()).toEqual({ page: 'mov-materiales', plano: 'obra' });
+  });
+
+  it('se consume UNA sola vez (una segunda carga ya no restaura nada)', async () => {
+    cambiarTema('light');
+    await new Promise(r => setTimeout(r, 200));   // dejar salir el reload diferido
+    expect(tomarPaginaTrasCambioDeTema()).toBeTruthy();
+    expect(tomarPaginaTrasCambioDeTema()).toBe(null);
+  });
+
+  it('desde el Inicio no guarda nada (ya es la página de arranque)', async () => {
+    globalThis.window.__pageActual = 'inicio';
+    cambiarTema('light');
+    await new Promise(r => setTimeout(r, 200));
+    expect(tomarPaginaTrasCambioDeTema()).toBe(null);
+  });
+
+  it('elegir el tema que ya está puesto no hace nada', async () => {
+    cambiarTema('dark');
+    await new Promise(r => setTimeout(r, 200));
+    expect(recargas).toBe(0);
+    expect(tomarPaginaTrasCambioDeTema()).toBe(null);
   });
 });
 
