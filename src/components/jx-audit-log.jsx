@@ -243,7 +243,7 @@ function AuditLogPage({ showToast }) {
           <div className="pg-sub">Quién cambió qué y cuándo · {filtered.length} de {logs.length} evento{logs.length!==1?'s':''}</div>
         </div>
         <div style={{display:'flex',gap:8,alignItems:'center'}}>
-          <div style={{display:'flex',gap:0,border:'1px solid var(--bd)',borderRadius:8,overflow:'hidden'}}>
+          <div style={{display:'flex',gap:0,border:'1px solid var(--border)',borderRadius:8,overflow:'hidden'}}>
             <button
               className={'btn btn-sm ' + (source==='local' ? 'btn-primary' : 'btn-ghost')}
               style={{borderRadius:0}}
@@ -397,7 +397,7 @@ function AuditLogPage({ showToast }) {
                     </tr>
                     {isOpen && (
                       <tr>
-                        <td colSpan={source==='local'?7:6} style={{background:'var(--bg2,rgba(0,0,0,0.02))'}}>
+                        <td colSpan={source==='local'?7:6} style={{background:'var(--tint-neutral)'}}>
                           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,padding:12}}>
                             <div>
                               <div style={{fontSize:11,fontWeight:700,color:'var(--red)',marginBottom:4}}>OLD DATA</div>
@@ -431,7 +431,7 @@ function AuditLogPage({ showToast }) {
 
           {/* Paginación */}
           {totalPages > 1 && (
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:12,borderTop:'1px solid var(--bd)'}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:12,borderTop:'1px solid var(--border)'}}>
               <div style={{fontSize:11,color:'var(--tm)'}}>
                 Página {page} de {totalPages} · {filtered.length} registros · mostrando {pageRows.length}
               </div>

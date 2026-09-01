@@ -200,7 +200,7 @@ function RegistroFisicoModal({ modulo, obraId, onClose, showToast, refreshKey })
     <>
       <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}
         style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:9999, padding:20 }}>
-        <div className="card card-p" style={{ width:'100%', maxWidth:1100, maxHeight:'92vh', overflow:'hidden', display:'flex', flexDirection:'column', background:'var(--bg-c)', border:'1px solid var(--bd)', borderRadius:10 }}>
+        <div className="card card-p" style={{ width:'100%', maxWidth:1100, maxHeight:'92vh', overflow:'hidden', display:'flex', flexDirection:'column', background:'var(--bg-c)', border:'1px solid var(--border)', borderRadius:10 }}>
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
             <div style={{ fontSize:15, fontWeight:700 }}>
               <JxIconRF name="camera" size={16} color="var(--amber)"/>{' '}
@@ -223,7 +223,7 @@ function RegistroFisicoModal({ modulo, obraId, onClose, showToast, refreshKey })
               <span style={{ fontSize:11, color:'var(--tm)' }}>{filtered.length} registros diarios</span>
             </div>
           </div>
-          <div style={{ flex:1, overflow:'auto', border:'1px solid var(--bd)', borderRadius:6 }}>
+          <div style={{ flex:1, overflow:'auto', border:'1px solid var(--border)', borderRadius:6 }}>
             {loading ? (
               <div style={{ padding:30, textAlign:'center', color:'var(--tm)' }}>Cargando…</div>
             ) : filtered.length === 0 ? (
@@ -251,7 +251,7 @@ function RegistroFisicoModal({ modulo, obraId, onClose, showToast, refreshKey })
                           {thumbs[ev.id]
                             ? <img src={thumbs[ev.id]} alt="thumb"
                                 onClick={()=>verFoto(ev)}
-                                style={{ width:60, height:60, objectFit:'cover', borderRadius:4, cursor:'pointer', border:'1px solid var(--bd)' }}/>
+                                style={{ width:60, height:60, objectFit:'cover', borderRadius:4, cursor:'pointer', border:'1px solid var(--border)' }}/>
                             : <span style={{ color:'var(--tm)' }}>—</span>}
                         </td>
                         <td className="col-m" style={{ fontWeight:600 }}>{ev.fecha || '—'}</td>
@@ -310,7 +310,7 @@ function RegistroFisicoModal({ modulo, obraId, onClose, showToast, refreshKey })
       {solicitudOpen && (
         <div className="overlay" onClick={e => e.target === e.currentTarget && setSolicitudOpen(null)}
           style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.65)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:10001, padding:20 }}>
-          <div className="card card-p" style={{ width:'100%', maxWidth:520, background:'var(--bg-c)', border:'1px solid var(--bd)', borderRadius:10 }}>
+          <div className="card card-p" style={{ width:'100%', maxWidth:520, background:'var(--bg-c)', border:'1px solid var(--border)', borderRadius:10 }}>
             <div style={{ fontSize:14, fontWeight:700, marginBottom:10 }}>Solicitar revisión / corrección</div>
             <div style={{ fontSize:12, color:'var(--ts)', marginBottom:12, padding:'8px 10px', background:'rgba(242,183,5,0.08)', borderRadius:6 }}>
               Vas a enviar una solicitud al administrador para que revise este registro físico vs el digital. Si encuentra una diferencia, podrá corregirlo.
@@ -802,7 +802,7 @@ function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast, m
   return (
     <div className="overlay" onClick={e => e.target === e.currentTarget && cerrar()}
       style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:9999, padding:20 }}>
-      <div className="card card-p" style={{ width:'100%', maxWidth:560, background:'var(--bg-c)', border:'1px solid var(--bd)', borderRadius:10 }}>
+      <div className="card card-p" style={{ width:'100%', maxWidth:560, background:'var(--bg-c)', border:'1px solid var(--border)', borderRadius:10 }}>
         <div style={{ fontSize:14, fontWeight:700, marginBottom:10, display:'flex', alignItems:'center', gap:8 }}>
           <JxIconRF name={modo === 'cambio' ? 'edit' : 'camera'} size={15} color={modo === 'cambio' ? 'var(--blue)' : 'var(--amber)'}/>
           {modo === 'cambio'
@@ -911,7 +911,7 @@ function RegistroDiarioUploader({ modulo, obraId, onClose, onSaved, showToast, m
             disabled={!isAdmin && yaExiste}/>
           {foto?.url && (
             <div style={{ marginTop:8, display:'flex', alignItems:'center', gap:10 }}>
-              <img src={foto.url} alt="preview" style={{ width:120, height:120, objectFit:'cover', borderRadius:6, border:'1px solid var(--bd)' }}/>
+              <img src={foto.url} alt="preview" style={{ width:120, height:120, objectFit:'cover', borderRadius:6, border:'1px solid var(--border)' }}/>
               <div style={{ fontSize:11, color:'var(--tm)' }}>
                 {foto.blob.name || 'Foto'}<br/>{(foto.blob.size/1024).toFixed(0)} KB
               </div>
@@ -1880,7 +1880,7 @@ function MovMaterialesPage({ showToast }) {
         const matName = matsByIdAll.get(mv.material_id)?.nombre_material || matsServer.get(mv.material_id)?.nombre_material || 'material';
         return (
           <Modal title="Buscar comprobante del ingreso" icon="search" onClose={()=>{ setBuscarCompTarget(null); setCandidatosFactura([]); }}>
-            <div style={{ background:'var(--bg-s)', border:'1px solid var(--bd)', borderRadius:8, padding:'8px 12px', marginBottom:12, fontSize:12.5 }}>
+            <div style={{ background:'var(--bg-s)', border:'1px solid var(--border)', borderRadius:8, padding:'8px 12px', marginBottom:12, fontSize:12.5 }}>
               <div style={{ color:'var(--tm)', fontSize:10.5, fontWeight:700, letterSpacing:'.06em', marginBottom:2 }}>TU INGRESO</div>
               <strong>{mv.cantidad} {mv.unidad || ''}</strong> de <strong>{matName}</strong> · {mv.fecha}
             </div>

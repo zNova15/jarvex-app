@@ -268,7 +268,7 @@ function ContextoRegistro({ table, recordId }) {
         <div style={{ fontSize: 12, color: 'var(--ts)', marginTop: 4 }}>📄 {partes.join(' · ')}</div>
       )}
       {verDetalle && (
-        <div style={{ marginTop: 8, background: 'var(--bg-s)', border: '1px solid var(--bd)', borderRadius: 8, padding: '10px 12px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '6px 16px' }}>
+        <div style={{ marginTop: 8, background: 'var(--bg-s)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '6px 16px' }}>
           {Object.entries(reg)
             .filter(([k, v]) => !CTX_OCULTOS.has(k) && !k.startsWith('_') && v !== null && v !== '' && v !== undefined)
             .map(([k, v]) => (
@@ -1378,7 +1378,7 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
       </div>
 
       {allowDelete && (
-        <div style={{ display: 'flex', gap: 6, marginBottom: 12, borderBottom: '1px solid var(--bd)', paddingBottom: 8 }}>
+        <div style={{ display: 'flex', gap: 6, marginBottom: 12, borderBottom: '1px solid var(--border)', paddingBottom: 8 }}>
           <button
             type="button"
             className={mode === 'edit' ? 'btn btn-amber btn-sm' : 'btn btn-ghost btn-sm'}
@@ -1408,7 +1408,7 @@ function RequestChangeModal({ table, record, recordLabel, fields, onClose, showT
           return (
             <div>
               <div style={{ fontSize: 12.5, color: 'var(--ts)', marginBottom: 10 }}>Revisá que el cambio sea EXACTAMENTE lo que querés pedir:</div>
-              <div style={{ background: 'var(--bg-s)', border: '1px solid var(--bd)', borderRadius: 8, padding: '12px 14px', marginBottom: 10 }}>
+              <div style={{ background: 'var(--bg-s)', border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px', marginBottom: 10 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--tm)', marginBottom: 8 }}>{fieldDef?.label || field}</div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', fontSize: 13 }}>
                   <span style={{ background: 'rgba(231,76,60,0.1)', border: '1px solid rgba(231,76,60,0.25)', color: '#EF6B5E', padding: '4px 10px', borderRadius: 6, textDecoration: 'line-through' }}>{labelDe(oldValue) ?? '—'}</span>

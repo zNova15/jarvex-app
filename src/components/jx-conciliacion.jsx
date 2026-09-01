@@ -546,7 +546,7 @@ function ConciliacionInsumosPage({ showToast }) {
       </div>
 
       {/* Pestañas */}
-      <div style={{ display: 'flex', gap: 6, marginBottom: 14, borderBottom: '1px solid var(--bd)' }}>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 14, borderBottom: '1px solid var(--border)' }}>
         {[{ k: 'presupuesto', lbl: 'Por Presupuesto', icon: 'list' }, { k: 'comprados', lbl: 'Insumos Comprados', icon: 'package' }].filter(t => t.k !== 'presupuesto' || puedePresupuesto).map(t => (
           <button key={t.k} onClick={() => setTab(t.k)}
             style={{ background: 'none', border: 'none', borderBottom: tab === t.k ? '2px solid var(--amber)' : '2px solid transparent', color: tab === t.k ? 'var(--tp)' : 'var(--tm)', fontWeight: tab === t.k ? 700 : 500, padding: '8px 14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13.5 }}>
@@ -618,7 +618,7 @@ function ConciliacionInsumosPage({ showToast }) {
               </tbody>
             </table>
           </div>
-          {filas.length > 400 && <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--tm)', borderTop: '1px solid var(--bd)' }}>Mostrando 400 de {fmtN(filas.length)} — refiná los filtros.</div>}
+          {filas.length > 400 && <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--tm)', borderTop: '1px solid var(--border)' }}>Mostrando 400 de {fmtN(filas.length)} — refiná los filtros.</div>}
         </div>
       )}
       </>)}
@@ -757,7 +757,7 @@ function ConciliacionInsumosPage({ showToast }) {
                 </tbody>
               </table>
             </div>
-            {itemsComprados.length > 500 && <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--tm)', borderTop: '1px solid var(--bd)' }}>Mostrando 500 de {fmtN(itemsComprados.length)} — refiná la búsqueda.</div>}
+            {itemsComprados.length > 500 && <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--tm)', borderTop: '1px solid var(--border)' }}>Mostrando 500 de {fmtN(itemsComprados.length)} — refiná la búsqueda.</div>}
           </div>
         )}
       </>)}
@@ -857,7 +857,7 @@ function VincularModal({ insumo, items, vinculos, itemsVinculados, busy, onVincu
 
       {/* Buscar y vincular ítems de factura */}
       <div className="search-bar" style={{ marginBottom: 8 }}><JxIcon name="search" size={14} color="var(--tm)" /><input placeholder="Buscar ítem de factura / proveedor…" value={buscar} onChange={e => setBuscar(e.target.value)} /></div>
-      <div style={{ maxHeight: 320, overflow: 'auto', border: '1px solid var(--bd)', borderRadius: 6 }}>
+      <div style={{ maxHeight: 320, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
         <table className="tbl">
           <thead><tr><th>Ítem de factura</th><th style={{ width: 80 }}>Cant.</th><th style={{ width: 90 }}>P. unit.</th><th style={{ width: 70 }}>Match</th><th style={{ width: 70 }}></th></tr></thead>
           <tbody>
@@ -980,7 +980,7 @@ function PickInsumoModal({ item, maestra, obraId, vinculos, busy, toast, onVincu
       {aiSug && (aiSug.result?.coincidencias || []).length === 0 && !aiLoading && (
         <div style={{ marginBottom: 10, fontSize: 11, color: 'var(--tm)' }}>La IA no encontró coincidencia clara — buscá manualmente abajo.</div>
       )}
-      <div style={{ maxHeight: 320, overflow: 'auto', border: '1px solid var(--bd)', borderRadius: 6 }}>
+      <div style={{ maxHeight: 320, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
         <table className="tbl">
           <thead><tr><th>Insumo presupuestado</th><th style={{ textAlign: 'right', width: 90 }}>Presup.</th><th style={{ width: 70 }}>Match</th><th style={{ width: 70 }}></th></tr></thead>
           <tbody>

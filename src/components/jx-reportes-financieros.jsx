@@ -330,7 +330,7 @@ function FlujoProyectadoPage({ showToast }) {
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
           </select>
-          <div style={{ display:'flex', gap:0, border:'1px solid var(--bd)', borderRadius:6, overflow:'hidden' }}>
+          <div style={{ display:'flex', gap:0, border:'1px solid var(--border)', borderRadius:6, overflow:'hidden' }}>
             <button
               className={horizonte===6 ? 'btn btn-amber btn-sm' : 'btn btn-ghost btn-sm'}
               style={{ borderRadius:0 }}

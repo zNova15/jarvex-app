@@ -307,7 +307,7 @@ function AnalisisInsumosPage({ showToast }) {
               {sugerencias.map(par => {
                 const ma = muestraDe.get(par.nombre_a), mb = muestraDe.get(par.nombre_b);
                 return (
-                  <div key={`${par.nombre_a}|${par.nombre_b}`} style={{ padding: '8px 10px', border: '1px solid var(--bd)', borderRadius: 6 }}>
+                  <div key={`${par.nombre_a}|${par.nombre_b}`} style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6 }}>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', fontSize: 12 }}>
                       <strong>{ma?.nombre || par.nombre_a}</strong>
                       <span style={{ color: 'var(--tm)' }}>≈</span>

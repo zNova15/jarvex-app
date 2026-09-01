@@ -302,7 +302,7 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
           {pendientes.map(ev => {
             const sinArchivo = !ev.url_archivo;
             return (
-              <div key={ev.id} style={{ padding: '8px 10px', border: '1px solid var(--bd)', borderRadius: 6, background: 'rgba(0,0,0,0.15)' }}>
+              <div key={ev.id} style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6, background: 'rgba(0,0,0,0.15)' }}>
                 <div style={{ fontSize: 12, fontWeight: 600 }}>
                   {String(ev.created_at || '').slice(0, 10)} · {ev.nombre_archivo}
                   {sinArchivo && <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>⬆ aún subiendo desde el teléfono</span>}

@@ -668,7 +668,7 @@ function InsumosEmergenciaPage({ showToast }) {
           <div style={{ fontSize: 12.5, color: 'var(--ts)', marginBottom: 12 }}>Se crea el grupo <strong>“{grupoModal.titulo}”</strong> y estos {grupoModal.items.length} insumos pasan a ser sus variantes.</div>
           <label className="flabel">Nombre del grupo</label>
           <input className="fi" value={grupoModal.titulo} onChange={e => setGrupoModal(g => ({ ...g, titulo: e.target.value }))} />
-          <div style={{ maxHeight: 180, overflowY: 'auto', marginTop: 10, border: '1px solid var(--bd)', borderRadius: 6, padding: 8 }}>
+          <div style={{ maxHeight: 180, overflowY: 'auto', marginTop: 10, border: '1px solid var(--border)', borderRadius: 6, padding: 8 }}>
             {grupoModal.items.map(it => <div key={it.id} style={{ fontSize: 12, padding: '3px 0', color: 'var(--ts)' }}>• {it.nombre} <span style={{ color: 'var(--tm)' }}>· stock {Number(it.stock_actual || 0)} {it.unidad}</span></div>)}
           </div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
@@ -684,7 +684,7 @@ function InsumosEmergenciaPage({ showToast }) {
           <div style={{ fontSize: 12.5, color: 'var(--ts)', marginBottom: 12 }}>Elegí cuál se queda. Los demás se dan de baja y sus movimientos + stock pasan al sobreviviente.</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {dupModal.grupo.items.map(it => (
-              <label key={it.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', border: '1px solid var(--bd)', borderRadius: 6, cursor: 'pointer', background: dupModal.survivorId === it.id ? 'rgba(46,204,113,0.08)' : 'transparent' }}>
+              <label key={it.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', background: dupModal.survivorId === it.id ? 'rgba(46,204,113,0.08)' : 'transparent' }}>
                 <input type="radio" name="dup-ie" checked={dupModal.survivorId === it.id} onChange={() => setDupModal(m => ({ ...m, survivorId: it.id }))} style={{ accentColor: 'var(--green)' }} />
                 <span style={{ flex: 1, fontSize: 12.5 }}>{it.nombre}</span>
                 <span style={{ fontSize: 11, color: 'var(--tm)' }}>stock {Number(it.stock_actual || 0)} {it.unidad}</span>

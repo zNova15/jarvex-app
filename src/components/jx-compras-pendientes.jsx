@@ -355,7 +355,7 @@ function ComprasPendientesPage({ showToast }) {
                   </div>
                 </div>
                 {items.length > 0 ? (
-                  <div style={{ marginTop:10, padding:'8px 10px', background:'var(--bg2)', border:'1px solid var(--bd)', borderRadius:6 }}>
+                  <div style={{ marginTop:10, padding:'8px 10px', background:'var(--bg-c2)', border:'1px solid var(--border)', borderRadius:6 }}>
                     <div style={{ fontSize:10.5, color:'var(--tm)', fontWeight:600, marginBottom:4, textTransform:'uppercase', letterSpacing:'.05em' }}>
                       Items a recibir ({items.length})
                     </div>
@@ -1130,7 +1130,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
                             unidades de la FACTURA cubre ese movimiento y queda el registro
                             "2 und = 14 kg (7 kg por und)". */}
                         {it.equiv_mov && (
-                          <div style={{ marginTop: 4, padding: '5px 7px', background: 'var(--bg2)', border: '1px solid var(--bd)', borderRadius: 5, fontSize: 10.5, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                          <div style={{ marginTop: 4, padding: '5px 7px', background: 'var(--bg-c2)', border: '1px solid var(--border)', borderRadius: 5, fontSize: 10.5, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                             <span style={{ color: 'var(--tm)' }}>Equivale a</span>
                             <input className="fi" type="number" min="0" step="0.01" value={it.equiv_factura_cant ?? ''}
                               onChange={e => upd(i, { equiv_factura_cant: e.target.value })}
@@ -1188,7 +1188,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
                           </button>
                         )}
                         {!it.match_id && crearForm?.idx === i && (
-                          <div style={{ marginTop: 4, padding: 6, background: 'var(--bg2)', border: '1px solid var(--bd)', borderRadius: 5, display: 'grid', gap: 4 }}>
+                          <div style={{ marginTop: 4, padding: 6, background: 'var(--bg-c2)', border: '1px solid var(--border)', borderRadius: 5, display: 'grid', gap: 4 }}>
                             <span style={{ fontSize: 9.5, color: 'var(--tm)' }}>Nuevo {TIPOS.find(t => t[0] === it.tipo)?.[1]} — corregí nombre y unidad si hace falta:</span>
                             <input className="fi" value={crearForm.nombre} autoFocus placeholder="Nombre del insumo"
                               onChange={e => setCrearForm(f => ({ ...f, nombre: e.target.value }))} style={{ fontSize: 11, padding: '5px 6px' }} />
@@ -1207,7 +1207,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
                             vincular a un ingreso ya registrado (no suma stock). Antes
                             era un botón escondido y no se entendía la diferencia. */}
                         {it.match_id && (
-                          <div style={{ marginTop: 6, padding: '7px 9px', background: 'var(--bg2)', border: '1px solid var(--bd)', borderRadius: 5 }}>
+                          <div style={{ marginTop: 6, padding: '7px 9px', background: 'var(--bg-c2)', border: '1px solid var(--border)', borderRadius: 5 }}>
                             <div style={{ fontSize: 9.5, color: 'var(--tm)', marginBottom: 5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em' }}>¿Cómo registrar este ingreso?</div>
                             <label style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 10.5, cursor: 'pointer', marginBottom: 5 }}>
                               <input type="radio" name={`modo-${i}`} checked={candOpen !== i} onChange={() => { setCandOpen(null); upd(i, { verificado: !!it.match_id && Number(it.cantidad_recibida) > 0 }); }} style={{ marginTop: 2, flexShrink: 0 }} />
@@ -1229,7 +1229,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
                           const usadosOtras = new Set(recep.filter((r, j) => j !== i && r.modo === 'existente' && r.mov_existente_id).map(r => r.mov_existente_id));
                           const lista = (candCache[k] || []).filter(c => !usadosOtras.has(c.id));
                           return (
-                            <div style={{ marginTop: 4, padding: 6, background: 'var(--bg2)', border: '1px solid var(--bd)', borderRadius: 5 }}>
+                            <div style={{ marginTop: 4, padding: 6, background: 'var(--bg-c2)', border: '1px solid var(--border)', borderRadius: 5 }}>
                               {candLoading[k] ? (
                                 <span style={{ fontSize: 10.5, color: 'var(--tm)' }}>Buscando movimientos…</span>
                               ) : lista.length === 0 ? (

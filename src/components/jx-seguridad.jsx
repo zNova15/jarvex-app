@@ -576,7 +576,7 @@ function SctrPage({ showToast }) {
             <div style={{ fontSize: 11, color: 'var(--amber)', marginBottom: 8 }}>⚠ {preview.advertencias.join(' · ')}</div>
           )}
           {preview.certificado ? (
-            <div style={{ padding: '8px 10px', background: 'var(--bg2)', border: '1px solid var(--bd)', borderRadius: 6, fontSize: 12, marginBottom: 10 }}>
+            <div style={{ padding: '8px 10px', background: 'var(--bg-c2)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, marginBottom: 10 }}>
               <strong>{preview.certificado.aseguradora || 'Aseguradora ¿?'}</strong>
               {preview.certificado.constancia_numero && <> · constancia {preview.certificado.constancia_numero}</>}
               {preview.certificado.poliza_pension && <> · póliza {preview.certificado.poliza_pension}</>}
@@ -586,7 +586,7 @@ function SctrPage({ showToast }) {
             <div style={{ fontSize: 12, color: 'var(--red)', marginBottom: 10 }}>No se detectó la constancia/certificado en el PDF — se guardarán los documentos pero no se vinculará a nadie.</div>
           )}
           {preview.matches.length > 0 && (
-            <div style={{ border: '1px solid var(--bd)', borderRadius: 6, overflow: 'auto', maxHeight: 300, marginBottom: 10 }}>
+            <div style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'auto', maxHeight: 300, marginBottom: 10 }}>
               <table className="tbl" style={{ fontSize: 12 }}>
                 <thead><tr><th style={{ width: 34 }}></th><th>Asegurado (según constancia)</th><th style={{ width: 110 }}>Documento</th><th>Trabajador en JARVEX</th></tr></thead>
                 <tbody>

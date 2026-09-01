@@ -102,7 +102,7 @@ function SignaturePad({ onChange, height = 140 }) {
   return (
     <div>
       <canvas ref={canvasRef} width={500} height={height}
-              style={{ width:'100%', maxWidth:500, height, border:'1px dashed var(--bd)', borderRadius:6, background:'#fff', cursor:'crosshair', touchAction:'none' }}
+              style={{ width:'100%', maxWidth:500, height, border:'1px dashed var(--border)', borderRadius:6, background:'#fff', cursor:'crosshair', touchAction:'none' }}
               onMouseDown={start} onMouseMove={move} onMouseUp={end} onMouseLeave={end}
               onTouchStart={start} onTouchMove={move} onTouchEnd={end}/>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:6 }}>
@@ -1078,7 +1078,7 @@ function EppsInventarioPage({ showToast }) {
             <label className="flabel">Nombre del grupo</label>
             <input className="fi" value={grupoModal.titulo} onChange={ev => setGrupoModal(g => ({ ...g, titulo: ev.target.value }))} />
           </div>
-          <div style={{ maxHeight: 180, overflowY: 'auto', marginTop: 10, border: '1px solid var(--bd)', borderRadius: 6, padding: 8 }}>
+          <div style={{ maxHeight: 180, overflowY: 'auto', marginTop: 10, border: '1px solid var(--border)', borderRadius: 6, padding: 8 }}>
             {grupoModal.items.map(it => (
               <div key={it.id} style={{ fontSize: 12, padding: '3px 0', color: 'var(--ts)' }}>• {it.nombre_epp} <span style={{ color: 'var(--tm)' }}>· stock {stockDe(it)} {it.unidad}</span></div>
             ))}
@@ -1098,7 +1098,7 @@ function EppsInventarioPage({ showToast }) {
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {dupModal.grupo.items.map(it => (
-              <label key={it.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', border: '1px solid var(--bd)', borderRadius: 6, cursor: 'pointer', background: dupModal.survivorId === it.id ? 'rgba(46,204,113,0.08)' : 'transparent' }}>
+              <label key={it.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', background: dupModal.survivorId === it.id ? 'rgba(46,204,113,0.08)' : 'transparent' }}>
                 <input type="radio" name="dup-surv" checked={dupModal.survivorId === it.id} onChange={() => setDupModal(m => ({ ...m, survivorId: it.id }))} style={{ accentColor: 'var(--green)' }} />
                 <span style={{ flex: 1, fontSize: 12.5 }}>{it.nombre_epp}</span>
                 <span style={{ fontSize: 11, color: 'var(--tm)' }}>stock {stockDe(it)} {it.unidad}{it.tipo_epp ? ` · ${it.tipo_epp}` : ''}</span>
@@ -1198,7 +1198,7 @@ function EppsInventarioPage({ showToast }) {
                     )}
                     {tieneExistente && (
                       <div style={{ position:'relative' }}>
-                        <img src={fotoExistente.url} alt="foto actual" style={{ width:80, height:80, objectFit:'cover', borderRadius:6, border:'1px solid var(--bd)' }}/>
+                        <img src={fotoExistente.url} alt="foto actual" style={{ width:80, height:80, objectFit:'cover', borderRadius:6, border:'1px solid var(--border)' }}/>
                         <div style={{ position:'absolute', bottom:-8, left:0, right:0, textAlign:'center', fontSize:9, color:'var(--tm)' }}>ACTUAL</div>
                       </div>
                     )}

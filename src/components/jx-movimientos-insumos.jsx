@@ -243,7 +243,7 @@ function MovimientosInsumosPage({ showToast }) {
       </div>
 
       {/* Pestañas */}
-      <div style={{ display: 'flex', gap: 6, marginBottom: 14, borderBottom: '1px solid var(--bd)' }}>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 14, borderBottom: '1px solid var(--border)' }}>
         {[{ k: 'inventario', lbl: 'Base de datos', icon: 'list' }, { k: 'movimientos', lbl: 'Movimientos', icon: 'inbox' }].map(t => (
           <button key={t.k} className={`tab-btn ${tab === t.k ? 'tab-active' : ''}`} onClick={() => setTab(t.k)}
             style={{ background: 'none', border: 'none', borderBottom: tab === t.k ? '2px solid var(--amber)' : '2px solid transparent', color: tab === t.k ? 'var(--tp)' : 'var(--tm)', fontWeight: tab === t.k ? 700 : 500, padding: '8px 14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13.5 }}>
@@ -342,7 +342,7 @@ function MovimientosInsumosPage({ showToast }) {
                 </tbody>
               </table>
             </div>
-            {invFiltrado.length > TOPE_RENDER && <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--tm)', borderTop: '1px solid var(--bd)' }}>Mostrando los primeros {TOPE_RENDER} de {fmtN(invFiltrado.length)} — refiná los filtros o exportá a Excel para ver todo.</div>}
+            {invFiltrado.length > TOPE_RENDER && <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--tm)', borderTop: '1px solid var(--border)' }}>Mostrando los primeros {TOPE_RENDER} de {fmtN(invFiltrado.length)} — refiná los filtros o exportá a Excel para ver todo.</div>}
           </div>
         )
       ) : (
@@ -380,7 +380,7 @@ function MovimientosInsumosPage({ showToast }) {
                 </tbody>
               </table>
             </div>
-            {movFiltrado.length > TOPE_RENDER && <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--tm)', borderTop: '1px solid var(--bd)' }}>Mostrando los primeros {TOPE_RENDER} de {fmtN(movFiltrado.length)} — refiná los filtros o exportá a Excel para ver todo.</div>}
+            {movFiltrado.length > TOPE_RENDER && <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--tm)', borderTop: '1px solid var(--border)' }}>Mostrando los primeros {TOPE_RENDER} de {fmtN(movFiltrado.length)} — refiná los filtros o exportá a Excel para ver todo.</div>}
           </div>
         )
       )}

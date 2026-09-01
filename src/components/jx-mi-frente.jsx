@@ -36,8 +36,8 @@ function ThumbFoto({ file, onQuitar }) {
   return (
     <span style={{ position: 'relative', display: 'inline-block' }}>
       {url
-        ? <img src={url} alt={file?.name || 'foto'} style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--bd)', display: 'block' }} />
-        : <span style={{ width: 64, height: 64, borderRadius: 6, border: '1px solid var(--bd)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>📷</span>}
+        ? <img src={url} alt={file?.name || 'foto'} style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)', display: 'block' }} />
+        : <span style={{ width: 64, height: 64, borderRadius: 6, border: '1px solid var(--border)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>📷</span>}
       <button onClick={onQuitar} title="Quitar foto"
         style={{ position: 'absolute', top: -6, right: -6, width: 20, height: 20, borderRadius: '50%', border: 'none', background: 'var(--red)', color: '#fff', fontSize: 11, lineHeight: '20px', padding: 0, cursor: 'pointer' }}>✕</button>
     </span>
@@ -830,9 +830,9 @@ function MiFrenteShell({ showToast, vista }) {
           <input className="fi" style={FI16} placeholder={repTodas ? 'Buscar cualquier partida por código o nombre…' : 'Buscar una partida de tus frentes…'} value={addPartQuery} onChange={e => setAddPartQuery(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && q && sugeridas.length) { e.preventDefault(); agregarLinea(sugeridas[0].id); } }} />
           {(q || sugeridas.length > 0) && (
-            <div style={{ marginTop: 6, maxHeight: 230, overflow: 'auto', border: '1px solid var(--bd)', borderRadius: 6 }}>
+            <div style={{ marginTop: 6, maxHeight: 230, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
               {sugeridas.map(p => (
-                <button key={p.id} onClick={() => agregarLinea(p.id)} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid var(--bd)', color: 'var(--tx)', padding: '7px 10px', fontSize: 12, cursor: 'pointer' }} onMouseEnter={e => e.currentTarget.style.background = 'var(--tint-neutral)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>
+                <button key={p.id} onClick={() => agregarLinea(p.id)} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid var(--border)', color: 'var(--tx)', padding: '7px 10px', fontSize: 12, cursor: 'pointer' }} onMouseEnter={e => e.currentTarget.style.background = 'var(--tint-neutral)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>
                   <span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{p.codigo_delfin}</span> {p.nombre_partida}
                   {repTodas && (() => { const fs = frentesNombresDe(p.id); return fs.length ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>{fs.join(', ')}</span> : <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }}>sin frente</span>; })()}
                 </button>
@@ -1472,7 +1472,7 @@ function MiFrenteShell({ showToast, vista }) {
               </div>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 {diasPendientes.slice(-7).map(d => (
-                  <span key={d} style={{ display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 11, background: 'var(--bg2)', border: '1px solid var(--bd)', borderRadius: 6, padding: '3px 6px' }}>
+                  <span key={d} style={{ display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 11, background: 'var(--bg-c2)', border: '1px solid var(--border)', borderRadius: 6, padding: '3px 6px' }}>
                     <strong>{d.slice(5)}</strong>
                     <button className="btn btn-ghost btn-xs" style={{ padding: '1px 5px', fontSize: 10 }} title="Reportar avance de ese día" onClick={() => setRepFecha(d)}>avance</button>
                     <button className="btn btn-ghost btn-xs" style={{ padding: '1px 5px', fontSize: 10, color: 'var(--amber)' }} title="Reportar que ese día no se avanzó" onClick={() => setSinAvanceOpen({ fecha: d })}>sin avance</button>
@@ -1635,8 +1635,8 @@ function MiFrenteShell({ showToast, vista }) {
 
       {ctx && (
         <div onClick={e => e.stopPropagation()} onContextMenu={e => e.preventDefault()}
-          style={{ position: 'fixed', left: Math.min(ctx.x, (window.innerWidth || 800) - 260), top: Math.min(ctx.y, (window.innerHeight || 600) - 110), zIndex: 9999, background: 'var(--bg-c)', border: '1px solid var(--bd)', borderRadius: 8, boxShadow: '0 8px 28px rgba(0,0,0,.45)', minWidth: 240, overflow: 'hidden' }}>
-          <div style={{ padding: '7px 11px', fontSize: 10.5, color: 'var(--tm)', borderBottom: '1px solid var(--bd)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 260 }}>
+          style={{ position: 'fixed', left: Math.min(ctx.x, (window.innerWidth || 800) - 260), top: Math.min(ctx.y, (window.innerHeight || 600) - 110), zIndex: 9999, background: 'var(--bg-c)', border: '1px solid var(--border)', borderRadius: 8, boxShadow: '0 8px 28px rgba(0,0,0,.45)', minWidth: 240, overflow: 'hidden' }}>
+          <div style={{ padding: '7px 11px', fontSize: 10.5, color: 'var(--tm)', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 260 }}>
             <span style={{ fontFamily: 'monospace' }}>{ctx.partida.codigo_delfin}</span> · {ctx.partida.nombre_partida}
           </div>
           <button style={ctxBtn} onClick={() => { irACostoUnitario(ctx.partida); setCtx(null); }} onMouseEnter={e => e.currentTarget.style.background = 'var(--tint-neutral)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>📋 Ir al costo unitario de la partida</button>
@@ -1644,7 +1644,7 @@ function MiFrenteShell({ showToast, vista }) {
             <button style={ctxBtn} onClick={() => { generarReporteDe(ctx.partida); setCtx(null); }} onMouseEnter={e => e.currentTarget.style.background = 'var(--tint-neutral)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>📝 Agregar reporte de esta partida</button>
           )}
           {frentesNombresDe(ctx.partida.id).length === 0 && (
-            <button style={{ ...ctxBtn, borderTop: '1px solid var(--bd)' }} onClick={() => { solicitarFrente(ctx.partida); setCtx(null); }} onMouseEnter={e => e.currentTarget.style.background = 'var(--tint-neutral)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>🏗️ {solFrentePend(ctx.partida.id) ? 'Frente solicitado (pendiente)' : 'Solicitar crear frente para esta partida'}</button>
+            <button style={{ ...ctxBtn, borderTop: '1px solid var(--border)' }} onClick={() => { solicitarFrente(ctx.partida); setCtx(null); }} onMouseEnter={e => e.currentTarget.style.background = 'var(--tint-neutral)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>🏗️ {solFrentePend(ctx.partida.id) ? 'Frente solicitado (pendiente)' : 'Solicitar crear frente para esta partida'}</button>
           )}
         </div>
       )}
@@ -1669,7 +1669,7 @@ function MiFrenteShell({ showToast, vista }) {
               HORIZONTAL en el celular justo en el paso final del envío. */}
           <div style={{ maxHeight: 320, overflow: 'auto', display: 'grid', gap: 6, marginTop: 8 }}>
             {confirmRep.map(({ linea, partida, sobre }) => (
-              <div key={linea.partida_id} style={{ padding: '8px 10px', border: '1px solid var(--bd)', borderRadius: 6, background: 'var(--tint-neutral)' }}>
+              <div key={linea.partida_id} style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--tint-neutral)' }}>
                 <div style={{ fontSize: 12, fontWeight: 600 }}>
                   <span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{partida?.codigo_delfin}</span> {partida?.nombre_partida || '—'}
                   {sobre && <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }} title="Reporte sobre una partida ya terminada → alerta a gerencia">⚠ sobre-reporte</span>}
@@ -1901,7 +1901,7 @@ function EvidenciaViewer({ evidencias, onClose }) {
                 const esHeic = /\.hei[cf]$/i.test(String(s.ev.nombre_archivo || '')) || String(s.ev.mime_type || '').includes('hei');
                 if (esHeic) return (
                   <a key={i} href={s.url} target="_blank" rel="noreferrer" download
-                    style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, height: 160, borderRadius: 8, border: '1px dashed var(--bd)', background: 'var(--bg2)', textDecoration: 'none' }}
+                    style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, height: 160, borderRadius: 8, border: '1px dashed var(--border)', background: 'var(--bg-c2)', textDecoration: 'none' }}
                     title="Foto en formato HEIC (iPhone) — el navegador no la muestra; descargala para verla. Las fotos nuevas ya se convierten solas.">
                     <span style={{ fontSize: 22 }}>📷</span>
                     <span style={{ fontSize: 10.5, color: 'var(--ts)', textAlign: 'center', padding: '0 8px' }}>{String(s.ev.nombre_archivo || 'foto').slice(0, 28)}</span>
@@ -1910,7 +1910,7 @@ function EvidenciaViewer({ evidencias, onClose }) {
                 );
                 return (
                   <a key={i} href={s.url} target="_blank" rel="noreferrer" style={{ display: 'block' }} title={s.ev.nombre_archivo || 'foto'}>
-                    <img src={s.url} alt={s.ev.nombre_archivo || 'foto'} style={{ width: '100%', height: 160, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--bd)' }}
+                    <img src={s.url} alt={s.ev.nombre_archivo || 'foto'} style={{ width: '100%', height: 160, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--border)' }}
                       onError={e => { e.currentTarget.outerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:160px;border:1px dashed #333;border-radius:8px;font-size:11px;color:#889">no se pudo mostrar — usá el link</div>'; }} />
                   </a>
                 );

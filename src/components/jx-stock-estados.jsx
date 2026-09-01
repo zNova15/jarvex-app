@@ -113,11 +113,11 @@ export function EstadosModal({ itemTipo = 'herramienta', item, obraId, userId, s
         <>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {ESTADOS_COND.map(e => (
-              <div key={e.key} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', border: '1px solid var(--bd)', borderRadius: 8 }}>
+              <div key={e.key} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8 }}>
                 {fotos[e.key]?.url ? (
-                  <img src={fotos[e.key].url} alt={e.label} style={{ width: 40, height: 40, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--bd)', cursor: 'pointer', flexShrink: 0 }} onClick={() => abrirUrlEvidencia(fotos[e.key].url)} title="Ampliar" />
+                  <img src={fotos[e.key].url} alt={e.label} style={{ width: 40, height: 40, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)', cursor: 'pointer', flexShrink: 0 }} onClick={() => abrirUrlEvidencia(fotos[e.key].url)} title="Ampliar" />
                 ) : (
-                  <div style={{ width: 40, height: 40, borderRadius: 6, background: 'var(--tint-neutral)', border: '1px dashed var(--bd)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><JxIcon name="image" size={14} color="var(--tm)" /></div>
+                  <div style={{ width: 40, height: 40, borderRadius: 6, background: 'var(--tint-neutral)', border: '1px dashed var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><JxIcon name="image" size={14} color="var(--tm)" /></div>
                 )}
                 <div style={{ flex: 1 }}>
                   <span className={`badge ${e.badge}`}>{e.label}</span>

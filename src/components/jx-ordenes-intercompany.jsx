@@ -401,7 +401,7 @@ function OrdenDetalleModal({ orden, companyNombre, obraNombre, canGestionar, can
         </div>
       )}
 
-      <div style={{ border: '1px solid var(--bd)', borderRadius: 6, overflow: 'auto', maxHeight: 340, marginBottom: 10 }}>
+      <div style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'auto', maxHeight: 340, marginBottom: 10 }}>
         <table className="tbl" style={{ fontSize: 12 }}>
           <thead><tr>
             <th>Insumo</th><th style={{ width: 110 }}>Subcategoría</th>

@@ -934,7 +934,7 @@ function PlantillasModal({ obraId, onClose, showToast, embedded = false }) {
     <>
       <div className={embedded ? '' : 'modal-hd'}
            style={embedded
-             ? { padding:'14px 18px', borderBottom:'1px solid var(--bd)' }
+             ? { padding:'14px 18px', borderBottom:'1px solid var(--border)' }
              : {}}>
         <div>
           <div style={{ fontWeight:700, fontSize:embedded ? 18 : 15 }}>Plantillas para imprimir</div>
@@ -1070,7 +1070,7 @@ function PlantillasModal({ obraId, onClose, showToast, embedded = false }) {
                 const open = expanded === def.id;
                 const o = getOpts(def);
                 return (
-                  <div key={def.id} style={{ border:'1px solid var(--bd)', borderRadius:6, marginBottom:6, background:'var(--bg2)' }}>
+                  <div key={def.id} style={{ border:'1px solid var(--border)', borderRadius:6, marginBottom:6, background:'var(--bg-c2)' }}>
                     <button
                       onClick={()=>setExpanded(open ? null : def.id)}
                       style={{ width:'100%', textAlign:'left', padding:'10px 12px', display:'flex', alignItems:'center', justifyContent:'space-between', background:'none', border:'none', color:'var(--ts)', cursor:'pointer' }}>
@@ -1081,7 +1081,7 @@ function PlantillasModal({ obraId, onClose, showToast, embedded = false }) {
                       <JxIcon name={open ? 'chevronUp' : 'chevronDown'} size={14} color="var(--tm)"/>
                     </button>
                     {open && (
-                      <div style={{ padding:'10px 12px 12px', borderTop:'1px solid var(--bd)', display:'flex', flexDirection:'column', gap:8 }}>
+                      <div style={{ padding:'10px 12px 12px', borderTop:'1px solid var(--border)', display:'flex', flexDirection:'column', gap:8 }}>
                         {def.campos.includes('fecha') && (
                           <label style={{ fontSize:11.5, color:'var(--tm)', display:'flex', alignItems:'center', gap:8 }}>
                             <span style={{ minWidth:80 }}>Fecha:</span>

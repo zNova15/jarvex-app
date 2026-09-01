@@ -3335,7 +3335,7 @@ function MaterialesPage({ showToast }) {
                   )}
                   {tieneExistente && (
                     <div style={{ position:'relative' }}>
-                      <img src={fotoExistente.url} alt="foto actual" style={{ width:80, height:80, objectFit:'cover', borderRadius:6, border:'1px solid var(--bd)' }}/>
+                      <img src={fotoExistente.url} alt="foto actual" style={{ width:80, height:80, objectFit:'cover', borderRadius:6, border:'1px solid var(--border)' }}/>
                       <div style={{ position:'absolute', bottom:-8, left:0, right:0, textAlign:'center', fontSize:9, color:'var(--tm)' }}>ACTUAL</div>
                     </div>
                   )}
@@ -3409,7 +3409,7 @@ function MaterialesPage({ showToast }) {
           <div style={{ fontSize: 12.5, color: 'var(--ts)', marginBottom: 12 }}>Se crea el grupo <strong>“{grupoModal.titulo}”</strong> y estos {grupoModal.items.length} materiales pasan a ser sus variantes.</div>
           <label className="flabel">Nombre del grupo</label>
           <input className="fi" value={grupoModal.titulo} onChange={e => setGrupoModal(g => ({ ...g, titulo: e.target.value }))} />
-          <div style={{ maxHeight: 180, overflowY: 'auto', marginTop: 10, border: '1px solid var(--bd)', borderRadius: 6, padding: 8 }}>
+          <div style={{ maxHeight: 180, overflowY: 'auto', marginTop: 10, border: '1px solid var(--border)', borderRadius: 6, padding: 8 }}>
             {grupoModal.items.map(it => <div key={it.id} style={{ fontSize: 12, padding: '3px 0', color: 'var(--ts)' }}>• {it.nombre_material} <span style={{ color: 'var(--tm)' }}>· stock {Number(it.stock_actual || 0)} {it.unidad}</span></div>)}
           </div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
@@ -3425,7 +3425,7 @@ function MaterialesPage({ showToast }) {
           <div style={{ fontSize: 12.5, color: 'var(--ts)', marginBottom: 12 }}>Elegí cuál se queda. Los demás se dan de baja y sus movimientos + stock pasan al sobreviviente.</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {dupModal.grupo.items.map(it => (
-              <label key={it.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', border: '1px solid var(--bd)', borderRadius: 6, cursor: 'pointer', background: dupModal.survivorId === it.id ? 'rgba(46,204,113,0.08)' : 'transparent' }}>
+              <label key={it.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', background: dupModal.survivorId === it.id ? 'rgba(46,204,113,0.08)' : 'transparent' }}>
                 <input type="radio" name="dup-mat" checked={dupModal.survivorId === it.id} onChange={() => setDupModal(m => ({ ...m, survivorId: it.id }))} style={{ accentColor: 'var(--green)' }} />
                 <span style={{ flex: 1, fontSize: 12.5 }}>{it.nombre_material}</span>
                 <span style={{ fontSize: 11, color: 'var(--tm)' }}>stock {Number(it.stock_actual || 0)} {it.unidad}{it.categoria ? ` · ${it.categoria}` : ''}</span>
@@ -4656,7 +4656,7 @@ function HerramientasPage({ showToast }) {
                   )}
                   {tieneExistente && (
                     <div style={{ position:'relative' }}>
-                      <img src={fotoExistente.url} alt="foto actual" style={{ width:80, height:80, objectFit:'cover', borderRadius:6, border:'1px solid var(--bd)' }}/>
+                      <img src={fotoExistente.url} alt="foto actual" style={{ width:80, height:80, objectFit:'cover', borderRadius:6, border:'1px solid var(--border)' }}/>
                       <div style={{ position:'absolute', bottom:-8, left:0, right:0, textAlign:'center', fontSize:9, color:'var(--tm)' }}>ACTUAL</div>
                     </div>
                   )}
@@ -4696,7 +4696,7 @@ function HerramientasPage({ showToast }) {
           <div style={{ fontSize: 12.5, color: 'var(--ts)', marginBottom: 12 }}>Se crea el grupo <strong>“{grupoModal.titulo}”</strong> y estas {grupoModal.items.length} herramientas pasan a ser sus variantes.</div>
           <label className="flabel">Nombre del grupo</label>
           <input className="fi" value={grupoModal.titulo} onChange={e => setGrupoModal(g => ({ ...g, titulo: e.target.value }))} />
-          <div style={{ maxHeight: 180, overflowY: 'auto', marginTop: 10, border: '1px solid var(--bd)', borderRadius: 6, padding: 8 }}>
+          <div style={{ maxHeight: 180, overflowY: 'auto', marginTop: 10, border: '1px solid var(--border)', borderRadius: 6, padding: 8 }}>
             {grupoModal.items.map(it => <div key={it.id} style={{ fontSize: 12, padding: '3px 0', color: 'var(--ts)' }}>• {it.nombre_herramienta}</div>)}
           </div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
@@ -4712,7 +4712,7 @@ function HerramientasPage({ showToast }) {
           <div style={{ fontSize: 12.5, color: 'var(--ts)', marginBottom: 12 }}>Elegí cuál se queda. Las demás se dan de baja y sus movimientos + stock pasan a la sobreviviente.</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {dupModal.grupo.items.map(it => (
-              <label key={it.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', border: '1px solid var(--bd)', borderRadius: 6, cursor: 'pointer', background: dupModal.survivorId === it.id ? 'rgba(46,204,113,0.08)' : 'transparent' }}>
+              <label key={it.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', background: dupModal.survivorId === it.id ? 'rgba(46,204,113,0.08)' : 'transparent' }}>
                 <input type="radio" name="dup-herr" checked={dupModal.survivorId === it.id} onChange={() => setDupModal(m => ({ ...m, survivorId: it.id }))} style={{ accentColor: 'var(--green)' }} />
                 <span style={{ flex: 1, fontSize: 12.5 }}>{it.nombre_herramienta}</span>
                 <span style={{ fontSize: 11, color: 'var(--tm)' }}>{[it.marca, it.modelo].filter(Boolean).join(' ')}</span>
@@ -4988,7 +4988,7 @@ function HistorialPersonalModal({ persona, onClose }) {
           {rows.map((h, i) => {
             const t = TIPO[h.tipo] || { label: h.tipo, cls: 'b-gray' };
             return (
-              <div key={h.id} style={{ display: 'flex', gap: 10, padding: '8px 0', borderBottom: i < rows.length - 1 ? '1px solid var(--bd)' : 'none', alignItems: 'flex-start' }}>
+              <div key={h.id} style={{ display: 'flex', gap: 10, padding: '8px 0', borderBottom: i < rows.length - 1 ? '1px solid var(--border)' : 'none', alignItems: 'flex-start' }}>
                 <div style={{ minWidth: 84, fontSize: 11, color: 'var(--tm)', fontFamily: 'monospace', paddingTop: 2 }}>{(h.fecha || '').slice(0, 10)}</div>
                 <span className={`badge ${t.cls}`}>{t.label}</span>
                 <div style={{ fontSize: 12.5, color: 'var(--ts)' }}>
@@ -5895,7 +5895,7 @@ function PersonalPage({ showToast }) {
           </div>
           <div><label className="flabel">Fecha de nacimiento</label><input className="fi" type="date" value={form.fecha_nacimiento||''} onChange={e=>setForm({...form, fecha_nacimiento:e.target.value})}/></div>
           <div><label className="flabel">Fecha de ingreso</label><input className="fi" type="date" value={form.fecha_ingreso||''} onChange={e=>setForm({...form, fecha_ingreso:e.target.value})}/></div>
-          <div style={{ gridColumn:'1 / -1', borderTop:'1px solid var(--bd)', paddingTop:10, marginTop:2 }}>
+          <div style={{ gridColumn:'1 / -1', borderTop:'1px solid var(--border)', paddingTop:10, marginTop:2 }}>
             <label className="flabel" style={{ fontWeight:600 }}><JxIcon name="flag" size={11}/> Frente de trabajo y vínculo</label>
             <div className="g2" style={{ marginTop:6 }}>
               <div>

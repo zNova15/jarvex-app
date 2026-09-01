@@ -806,7 +806,7 @@ function PagoDetalleModal({ pago, partes, evidencias, nombre, canGestionar, isAd
           {st.falta > 0 && <span style={{ color: 'var(--amber)' }}> · faltan {fmtS(st.falta)}</span>}
           {st.exceso > 0 && <span style={{ color: 'var(--red)' }}> · exceso {fmtS(st.exceso)}</span>}
         </div>
-        <div style={{ flex: 1, minWidth: 140, height: 8, background: 'var(--bg2)', borderRadius: 6, overflow: 'hidden' }}>
+        <div style={{ flex: 1, minWidth: 140, height: 8, background: 'var(--bg-c2)', borderRadius: 6, overflow: 'hidden' }}>
           <div style={{ width: `${st.pct}%`, height: '100%', background: st.estado === 'pagado' ? 'var(--green)' : 'var(--amber)', transition: 'width .25s' }} />
         </div>
       </div>
@@ -832,7 +832,7 @@ function PagoDetalleModal({ pago, partes, evidencias, nombre, canGestionar, isAd
           : '1️⃣ Documento del pago (opcional)';
         const tipoDoc = esRxh ? 'recibo_honorarios' : 'pago_evidencia';
         return (
-          <div style={{ marginBottom: 12, padding: '8px 10px', background: 'var(--bg2)', border: '1px solid var(--bd)', borderRadius: 6, fontSize: 11.5, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ marginBottom: 12, padding: '8px 10px', background: 'var(--bg-c2)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 11.5, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <strong>{titulo}:</strong>
             {evsDelPago.map(e => (
               <button key={e.id} className="btn btn-ghost btn-xs" onClick={() => abrirEvidencia(e)}>📎 {String(e.nombre_archivo || 'documento').slice(0, 24)}</button>
@@ -849,7 +849,7 @@ function PagoDetalleModal({ pago, partes, evidencias, nombre, canGestionar, isAd
 
       {/* 2️⃣ Partes registradas (transferencias, cada una con su constancia) */}
       <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ts)', marginBottom: 4 }}>2️⃣ Transferencias / constancias del pago <span style={{ fontWeight: 400, color: 'var(--tm)' }}>— una fila por transferencia, cada una con su constancia adjunta</span></div>
-      <div style={{ border: '1px solid var(--bd)', borderRadius: 6, overflow: 'auto', maxHeight: 260, marginBottom: 12 }}>
+      <div style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'auto', maxHeight: 260, marginBottom: 12 }}>
         <table className="tbl" style={{ fontSize: 12 }}>
           <thead><tr>
             <th style={{ width: 100 }}>Fecha</th>
@@ -898,7 +898,7 @@ function PagoDetalleModal({ pago, partes, evidencias, nombre, canGestionar, isAd
 
       {/* Agregar parte */}
       {editable && (
-        <div style={{ padding: '10px 12px', background: 'var(--bg2)', border: '1px solid var(--bd)', borderRadius: 6, marginBottom: 12 }}>
+        <div style={{ padding: '10px 12px', background: 'var(--bg-c2)', border: '1px solid var(--border)', borderRadius: 6, marginBottom: 12 }}>
           <div style={{ fontSize: 11.5, fontWeight: 700, marginBottom: 8 }}>Registrar una parte del pago {st.falta > 0 && <span style={{ color: 'var(--tm)', fontWeight: 400 }}>(faltan {fmtS(st.falta)})</span>}</div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
             <div><label className="flabel">Fecha</label><input className="fi" type="date" value={fecha} onChange={e => setFecha(e.target.value)} style={{ width: 140 }} /></div>

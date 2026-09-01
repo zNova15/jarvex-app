@@ -38,7 +38,7 @@ function Referencia({ datos: r }) {
   const insumos = Array.isArray(r.insumos) ? r.insumos
     : (r.descripcion ? [{ descripcion: r.descripcion, cantidad: r.cantidad, unidad: r.unidad }] : []);
   return (
-    <div style={{ background:'var(--bg-s)', border:'1px solid var(--bd)', borderRadius:6, padding:'6px 10px', fontSize:11.5, marginTop:5 }}>
+    <div style={{ background:'var(--bg-s)', border:'1px solid var(--border)', borderRadius:6, padding:'6px 10px', fontSize:11.5, marginTop:5 }}>
       {r.documento && <div><strong>{r.documento}</strong>{r.proveedor ? ` · ${r.proveedor}` : ''}{r.fecha ? ` · ${r.fecha}` : ''}</div>}
       {insumos.map((it, i) => <div key={i} style={{ color:'var(--ts)' }}>• {it.descripcion} · {it.cantidad} {it.unidad || ''}</div>)}
     </div>

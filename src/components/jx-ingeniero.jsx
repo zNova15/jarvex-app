@@ -390,7 +390,7 @@ function PartidaSelector({ partidas, busqueda, onBusqueda, onPick }) {
         value={busqueda}
         onChange={e => onBusqueda(e.target.value)}
         style={{ marginBottom: 10, width: '100%' }}/>
-      <div style={{ maxHeight: 360, overflowY: 'auto', border: '1px solid var(--bd)', borderRadius: 6 }}>
+      <div style={{ maxHeight: 360, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
         {filtradas.length === 0 ? (
           <div style={{ padding: 20, textAlign: 'center', color: 'var(--tm)', fontSize: 12 }}>Sin resultados</div>
         ) : (

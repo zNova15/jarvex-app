@@ -324,7 +324,7 @@ function GuiasRemisionPage({ showToast }) {
                   <div style={{ fontSize: 11.5, fontWeight: 700, marginBottom: 6, color: 'var(--ts)' }}>{titulo} · {lista.length}</div>
                   <div style={{ display: 'grid', gap: 4, maxHeight: 260, overflow: 'auto' }}>
                     {lista.slice(0, 80).map(m => (
-                      <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 11.5, padding: '5px 8px', border: '1px solid var(--bd)', borderRadius: 6 }}>
+                      <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 11.5, padding: '5px 8px', border: '1px solid var(--border)', borderRadius: 6 }}>
                         <strong>{m.document_number || 's/n'}</strong>
                         <span style={{ color: 'var(--tm)' }}>{m.date || ''}</span>
                         <span style={{ flex: 1, minWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.third_party_name || m.description || ''}</span>

@@ -741,7 +741,7 @@ function EstadoResultadosPage({ showToast }) {
 
       {/* Tabla detalle */}
       <div className="card" style={{ overflow:'hidden' }}>
-        <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--bd)', fontWeight:700, fontSize:13 }}>
+        <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', fontWeight:700, fontSize:13 }}>
           Detalle del periodo
         </div>
         <div style={{ overflowX:'auto' }}>

@@ -715,7 +715,7 @@ function ActivosPesadosPage({ showToast }) {
                 : <span className="badge b-green" style={{ marginLeft:8 }}>Disponible en almacén</span>}
             </div>
             {(!historial.mv || historial.mv.length === 0) ? <div style={{ fontSize:11, color:'var(--tm)' }}>Sin movimientos de custodia. Usá ↗ (salida) / ↙ (devolución) en la lista.</div> : (
-              <div style={{ maxHeight:180, overflow:'auto', border:'1px solid var(--bd)', borderRadius:6 }}>
+              <div style={{ maxHeight:180, overflow:'auto', border:'1px solid var(--border)', borderRadius:6 }}>
                 <table className="tbl"><thead><tr>
                   <th>Fecha</th><th>Movimiento</th><th>Asignado a</th><th>Prueba</th><th>Observaciones</th>{superAdmin && <th style={{textAlign:'center'}}>⚡</th>}
                 </tr></thead><tbody>
@@ -744,7 +744,7 @@ function ActivosPesadosPage({ showToast }) {
           <div style={{ marginBottom:18 }}>
             <div style={{ fontSize:12.5, fontWeight:700, color:'var(--blue)', marginBottom:6 }}>⏱ Registros de Horas-Máquina</div>
             {historial.hm.length === 0 ? <div style={{ fontSize:11, color:'var(--tm)' }}>Sin registros.</div> : (
-              <div style={{ maxHeight:160, overflow:'auto', border:'1px solid var(--bd)', borderRadius:6 }}>
+              <div style={{ maxHeight:160, overflow:'auto', border:'1px solid var(--border)', borderRadius:6 }}>
                 <table className="tbl"><thead><tr>
                   <th>Fecha</th><th>Obra</th><th style={{textAlign:'right'}}>Horas</th><th>Operador</th><th>Notas</th>{superAdmin && <th style={{textAlign:'center'}}>⚡</th>}
                 </tr></thead><tbody>
@@ -767,7 +767,7 @@ function ActivosPesadosPage({ showToast }) {
           <div style={{ marginBottom:18 }}>
             <div style={{ fontSize:12.5, fontWeight:700, color:'var(--orange)', marginBottom:6 }}>⛽ Cargas de Combustible</div>
             {historial.cb.length === 0 ? <div style={{ fontSize:11, color:'var(--tm)' }}>Sin registros.</div> : (
-              <div style={{ maxHeight:160, overflow:'auto', border:'1px solid var(--bd)', borderRadius:6 }}>
+              <div style={{ maxHeight:160, overflow:'auto', border:'1px solid var(--border)', borderRadius:6 }}>
                 <table className="tbl"><thead><tr>
                   <th>Fecha</th><th style={{textAlign:'right'}}>Galones</th><th style={{textAlign:'right'}}>Precio/gal</th><th style={{textAlign:'right'}}>Total</th><th>Grifo</th><th>Notas</th>{superAdmin && <th style={{textAlign:'center'}}>⚡</th>}
                 </tr></thead><tbody>
@@ -791,7 +791,7 @@ function ActivosPesadosPage({ showToast }) {
           <div>
             <div style={{ fontSize:12.5, fontWeight:700, color:'var(--red)', marginBottom:6 }}>🔧 Servicios de Mantenimiento</div>
             {historial.mt.length === 0 ? <div style={{ fontSize:11, color:'var(--tm)' }}>Sin registros.</div> : (
-              <div style={{ maxHeight:160, overflow:'auto', border:'1px solid var(--bd)', borderRadius:6 }}>
+              <div style={{ maxHeight:160, overflow:'auto', border:'1px solid var(--border)', borderRadius:6 }}>
                 <table className="tbl"><thead><tr>
                   <th>Fecha</th><th>Tipo</th><th>Descripción</th><th style={{textAlign:'right'}}>Costo</th><th>Taller</th><th>HM al servicio</th>{superAdmin && <th style={{textAlign:'center'}}>⚡</th>}
                 </tr></thead><tbody>

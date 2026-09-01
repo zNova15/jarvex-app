@@ -141,8 +141,8 @@ function ThumbFotoCampo({ file, onQuitar }) {
   return (
     <span style={{ position: 'relative', display: 'inline-block' }}>
       {url
-        ? <img src={url} alt={file?.name || 'foto'} style={{ width: 76, height: 76, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--bd)', display: 'block' }} />
-        : <span style={{ width: 76, height: 76, borderRadius: 8, border: '1px solid var(--bd)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>📷</span>}
+        ? <img src={url} alt={file?.name || 'foto'} style={{ width: 76, height: 76, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--border)', display: 'block' }} />
+        : <span style={{ width: 76, height: 76, borderRadius: 8, border: '1px solid var(--border)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>📷</span>}
       <button onClick={onQuitar} title="Quitar foto"
         style={{ position: 'absolute', top: -6, right: -6, width: 20, height: 20, borderRadius: '50%', border: 'none', background: 'var(--red)', color: '#fff', fontSize: 11, lineHeight: '20px', padding: 0, cursor: 'pointer' }}>✕</button>
     </span>
@@ -211,7 +211,7 @@ function EstadoSubidasCampo({ showToast }) {
       </div>
       <div style={{ display: 'grid', gap: 6, marginTop: 8 }}>
         {filas.map(ev => (
-          <div key={ev.id} style={{ fontSize: 11.5, padding: '6px 8px', border: '1px solid var(--bd)', borderRadius: 6 }}>
+          <div key={ev.id} style={{ fontSize: 11.5, padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 6 }}>
             <div style={{ fontWeight: 600 }}>
               {String(ev.created_at || '').slice(0, 16).replace('T', ' ')} · {ev.nombre_archivo}
               <span className={`badge ${ev.sync_status === 'failed' ? 'b-red' : 'b-amber'}`} style={{ marginLeft: 6, fontSize: 9 }}>

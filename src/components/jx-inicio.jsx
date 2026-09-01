@@ -146,7 +146,7 @@ function BloqueCard({ blq, items, onAbrir }) {
   const visibles = verTodo ? items : items.slice(0, MAX_VISIBLES);
   const ocultos = items.length - MAX_VISIBLES;
   return (
-    <div className="card card-p" style={{ border: '1px solid var(--bd)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+    <div className="card card-p" style={{ border: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <div style={{ width: 36, height: 36, borderRadius: 9, background: `${blq.color}1f`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
           <Icon name={blq.icon} size={17} color={blq.color} />
@@ -352,7 +352,7 @@ function InicioPage({ onNav, onEnterObra }) {
           )}
         </div>
       ) : (
-        <div className="card card-p" style={{ marginBottom: 22, border: '1px solid var(--bd)', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+        <div className="card card-p" style={{ marginBottom: 22, border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
           <div style={{ width: 38, height: 38, borderRadius: 9, background: 'rgba(52,152,219,0.14)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
             <Icon name="building" size={18} color="#3498DB" />
           </div>
@@ -373,7 +373,7 @@ function InicioPage({ onNav, onEnterObra }) {
             )}
           </div>
           <button className="btn btn-ghost btn-sm" title="Abrir el workspace completo de esta obra (con su menú lateral)"
-            style={{ color: 'var(--amber)', border: '1px solid var(--bd)' }}
+            style={{ color: 'var(--amber)', border: '1px solid var(--border)' }}
             onClick={() => obraSel && onEnterObra?.(obraSel.id)}>
             Entrar al workspace <Icon name="chevR" size={12} color="var(--amber)" />
           </button>

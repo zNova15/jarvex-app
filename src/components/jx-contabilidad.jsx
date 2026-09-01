@@ -2630,7 +2630,7 @@ function MovimientosContablesPage({ showToast }) {
                 sus evidencias/bancarizaciones/guías pasan al conservado y el resto se elimina.
               </div>
               {dupGrupos.map((g, i) => (
-                <div key={i} style={{ border:'1px solid var(--bd)', borderRadius:8, padding:'8px 10px', display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
+                <div key={i} style={{ border:'1px solid var(--border)', borderRadius:8, padding:'8px 10px', display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
                   <div style={{ flex:1, minWidth:220 }}>
                     <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)' }}>
                       {(g.conservar.document_type || 'doc')} {g.conservar.document_number} · {g.conservar.third_party_name || '—'}
@@ -2671,7 +2671,7 @@ function MovimientosContablesPage({ showToast }) {
                 const c = lookupCompany(m.company_id);
                 const sel = bandejaSel.get(m.id) || '';
                 return (
-                  <div key={m.id} style={{ border:'1px solid var(--bd)', borderRadius:8, padding:'8px 10px', display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
+                  <div key={m.id} style={{ border:'1px solid var(--border)', borderRadius:8, padding:'8px 10px', display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
                     <div style={{ flex:'1 1 240px', minWidth:220 }}>
                       <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)' }}>
                         {(m.document_type || 'doc')} {m.document_number || 's/n'} · {m.third_party_name || '—'}
@@ -2750,7 +2750,7 @@ function MovimientosContablesPage({ showToast }) {
               const Card = ({ id, sel, icon, titulo, sub, ejemplo }) => (
                 <button type="button" onClick={() => elegirCaso(id)}
                   style={{ flex:'1 1 155px', textAlign:'left', cursor:'pointer', padding:'10px 12px', borderRadius:8,
-                    border: sel ? '2px solid var(--amber)' : '1px solid var(--bd)',
+                    border: sel ? '2px solid var(--amber)' : '1px solid var(--border)',
                     background: sel ? 'rgba(242,183,5,0.08)' : 'var(--bg-s)', color:'var(--tp)' }}>
                   <div style={{ fontSize:12.5, fontWeight:700 }}>{icon} {titulo}</div>
                   <div style={{ fontSize:10.5, color:'var(--ts)', marginTop:3, lineHeight:1.35 }}>{sub}</div>
@@ -2840,7 +2840,7 @@ function MovimientosContablesPage({ showToast }) {
                         <button key={d.id} type="button"
                           onClick={() => { setBancDepId(d.id); setBancMonto(Math.min(saldo, pendiente > 0 ? pendiente : saldo).toFixed(2)); }}
                           style={{ textAlign:'left', cursor:'pointer', padding:'8px 10px', borderRadius:8,
-                            border: sel ? '2px solid var(--amber)' : '1px solid var(--bd)',
+                            border: sel ? '2px solid var(--amber)' : '1px solid var(--border)',
                             background: sel ? 'rgba(242,183,5,0.08)' : 'var(--bg-s)', color:'var(--tp)' }}>
                           <div style={{ display:'flex', justifyContent:'space-between', gap:8, fontSize:11.5, flexWrap:'wrap' }}>
                             <span style={{ fontWeight:600 }}>🏦 {d.referencia || 's/ref'} · {d.fecha || 's/fecha'}</span>
@@ -3067,7 +3067,7 @@ function MovimientosContablesPage({ showToast }) {
                           const pct = Math.round(c.score*100);
                           const tone = pct>=75?'var(--green)':pct>=50?'var(--amber)':'var(--tm)';
                           return (
-                            <div key={mm.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, borderTop:'1px solid var(--bd)', paddingTop:6 }}>
+                            <div key={mm.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, borderTop:'1px solid var(--border)', paddingTop:6 }}>
                               <div style={{ minWidth:0, flex:1 }}>
                                 <div style={{ fontSize:12 }}><strong>{mm.materialNombre || 'insumo'}</strong> · {mm.cantidad} {mm.unidad||''} · {mm.fecha}</div>
                                 {c.motivos?.length>0 && (
@@ -3242,7 +3242,7 @@ function MovimientosContablesPage({ showToast }) {
 
       {showReporte && (() => {
         const tarjeta = (label, valor, color) => (
-          <div style={{ flex:'1 1 120px', minWidth:110, background:'var(--bg-s)', border:'1px solid var(--bd)', borderRadius:8, padding:'8px 12px' }}>
+          <div style={{ flex:'1 1 120px', minWidth:110, background:'var(--bg-s)', border:'1px solid var(--border)', borderRadius:8, padding:'8px 12px' }}>
             <div style={{ fontSize:10, color:'var(--tm)', letterSpacing:'.04em' }}>{label}</div>
             <div style={{ fontSize:18, fontWeight:700, color: color || 'var(--tp)' }}>{valor}</div>
           </div>
@@ -4457,7 +4457,7 @@ function ContabilidadDashboardPage({ showToast }) {
                 {candidatas.slice(0, 30).map(f => {
                   const items = itemsDeFactura(f);
                   return (
-                    <button key={f.id} className="card card-p" style={{ textAlign:'left', cursor:'pointer', border:'1px solid var(--bd)' }}
+                    <button key={f.id} className="card card-p" style={{ textAlign:'left', cursor:'pointer', border:'1px solid var(--border)' }}
                       onClick={()=>vincularAFactura(vincularModal, f.id)}>
                       <div style={{ display:'flex', justifyContent:'space-between', gap:8, fontSize:12 }}>
                         <div style={{ minWidth:0 }}>

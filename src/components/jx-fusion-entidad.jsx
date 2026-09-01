@@ -121,7 +121,7 @@ export function FusionEntidadModal({ tipo, registros, showToast, onClose, onDone
       )}
 
       {/* Fusión manual */}
-      <div style={{ borderTop: '1px solid var(--bd)', paddingTop: 12 }}>
+      <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12 }}>
         <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--ts)', marginBottom: 8 }}>Fusión manual</div>
         <div className="g2">
           <div>

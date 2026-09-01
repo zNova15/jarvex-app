@@ -111,11 +111,11 @@ export function FotoInsumoCell({ obraId, tipoEvidencia, modulo, registroId, nomb
     <div style={{ display:'flex', alignItems:'center', gap:6, flexShrink:0 }}>
       {foto?.url ? (
         <img src={foto.url} alt="foto"
-             style={{ width:32, height:32, objectFit:'cover', borderRadius:4, border:'1px solid var(--bd)', flexShrink:0, cursor:'pointer' }}
+             style={{ width:32, height:32, objectFit:'cover', borderRadius:4, border:'1px solid var(--border)', flexShrink:0, cursor:'pointer' }}
              onClick={(e) => { e.stopPropagation(); abrirUrlEvidencia(foto.url); }}
              title="Click para ampliar"/>
       ) : (
-        <span style={{ width:32, height:32, borderRadius:4, background:'rgba(255,255,255,0.04)', border:'1px dashed var(--bd)', display:'inline-flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
+        <span style={{ width:32, height:32, borderRadius:4, background:'rgba(255,255,255,0.04)', border:'1px dashed var(--border)', display:'inline-flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
               title="Sin foto">
           <JxIcon name="image" size={12} color="var(--tm)"/>
         </span>

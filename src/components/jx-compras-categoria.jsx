@@ -423,7 +423,7 @@ function ComprasCategoriaPage({ showToast }) {
         <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)', margin: '6px 0 10px' }}>RESUMEN · QUÉ EMITE CADA EMPRESA</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
           {[...porEmisora.entries()].sort((a, b) => b[1].total - a[1].total).map(([cid, e]) => (
-            <div key={cid} className="card card-p" style={{ border: cid === '__sin__' ? '1px solid rgba(242,183,5,0.35)' : '1px solid var(--bd)' }}>
+            <div key={cid} className="card card-p" style={{ border: cid === '__sin__' ? '1px solid rgba(242,183,5,0.35)' : '1px solid var(--border)' }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: cid === '__sin__' ? 'var(--amber)' : 'var(--tp)', marginBottom: 2, display: 'flex', alignItems: 'center', gap: 6 }}>
                 {cid === '__sin__' ? '⚠ Sin designar' : companyNombre(cid) || 'Empresa'}
                 {cid !== '__sin__' && sinActividades(cid) && <span title="Sin actividades económicas registradas — el asistente debe completarlas en Empresas" style={{ cursor: 'help', fontSize: 12 }}>⚠</span>}

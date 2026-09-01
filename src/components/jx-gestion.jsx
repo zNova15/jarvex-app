@@ -1587,7 +1587,7 @@ function VersionesPage({ showToast }) {
                   <JxIcon name="chevR" size={11}/> Colapsar todo
                 </button>
                 {versionesSel.length >= 2 && (
-                  <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:11, color: soloCambios ? 'var(--amber)' : 'var(--tm)', cursor:'pointer', padding:'4px 8px', border:`1px solid ${soloCambios?'var(--amber)':'var(--bd)'}`, borderRadius:6 }}>
+                  <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:11, color: soloCambios ? 'var(--amber)' : 'var(--tm)', cursor:'pointer', padding:'4px 8px', border:`1px solid ${soloCambios?'var(--amber)':'var(--border)'}`, borderRadius:6 }}>
                     <input type="checkbox" checked={soloCambios} onChange={e=>setSoloCambios(e.target.checked)} style={{ accentColor:'var(--amber)' }}/>
                     Solo con cambios
                   </label>
