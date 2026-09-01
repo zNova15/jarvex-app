@@ -9,6 +9,10 @@ import { getCurrentMode } from "../lib/app-mode-core.js";
 import { supabase } from "../lib/supabase";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { derivarTypeContable } from "../lib/clasificacion-contable.js";
+import {
+  parseObservacionCampo, filtrarBandeja, esFaltaMigracion164,
+  ESTADO_PENDIENTE, ESTADO_LEIDA, ESTADO_REGISTRADA, ESTADO_DESCARTADA,
+} from "../lib/captura-campo.js";
 
 // Nombre de persona natural en formato SUNAT ("APELLIDO1 APELLIDO2 NOMBRES"):
 // heurística para pre-llenar apellidos/nombres al crear un trabajador desde un
@@ -206,7 +210,8 @@ const ESTADOS = {
 // tras confirmar, o Descarta las fotos inservibles — ambas quedan en el server
 // para que el que la subió vea el estado desde su portal.
 function RecibidasDeCampo({ onInyectar, showToast }) {
-  const [pendientes, setPendientes] = uSCM([]);
+  const [filas, setFilas] = uSCM([]);
+  const [pestana, setPestana] = uSCM(ESTADO_PENDIENTE);
   const [abierto, setAbierto] = uSCM(true);
   const procesandoRef = uRCM(false);   // anti doble-click (regla crítica 2)
 
@@ -214,11 +219,13 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
     let cancel = false;
     const cargar = async () => {
       try {
+        // Traemos pendientes Y leídas: las pestañas filtran en memoria.
         const rows = await window.__db.evidencias
-          .filter(e => e.tipo_evidencia === 'factura_campo' && e.campo_revision === 'pendiente' && !e.deleted_at)
+          .filter(e => e.tipo_evidencia === 'factura_campo' && !e.deleted_at
+            && (!e.campo_revision || e.campo_revision === ESTADO_PENDIENTE || e.campo_revision === ESTADO_LEIDA))
           .toArray();
         rows.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
-        if (!cancel) setPendientes(rows);
+        if (!cancel) setFilas(rows);
       } catch {}
     };
     cargar();
@@ -231,13 +238,39 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
     return () => { cancel = true; window.removeEventListener('jx_data_changed', onChange); window.removeEventListener('jx_sync_pull', cargar); };
   }, []);
 
+  const pendientes = filtrarBandeja(filas, ESTADO_PENDIENTE);
+  const leidas = filtrarBandeja(filas, ESTADO_LEIDA);
+  const visibles = pestana === ESTADO_LEIDA ? leidas : pendientes;
+
+  // Escribe el estado en el server + Dexie. `silencioso` = no avisar al usuario
+  // (lo usa "Leer con IA": lo importante ahí es la lectura, no la etiqueta).
+  const setEstado = async (ev, estado, { silencioso = false } = {}) => {
+    try {
+      const { error } = await supabase.from('evidencias').update({ campo_revision: estado }).eq('id', ev.id);
+      if (error) throw error;
+      try { await window.__db.evidencias.update(ev.id, { campo_revision: estado }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'evidencias', source: 'campo-revision' } })); } catch {}
+      return true;
+    } catch (e) {
+      // Si la migración 164 todavía no está aplicada, 'leida' rebota en el
+      // CHECK. No es culpa del usuario ni rompe nada: la foto sigue en
+      // Pendientes y la lectura con IA ya ocurrió.
+      if (esFaltaMigracion164(e)) {
+        showToast?.('La foto se mandó a la IA, pero no pude marcarla como trabajada: falta aplicar la migración 164 en Supabase.', 'amber');
+      } else if (!silencioso) {
+        showToast?.('No se pudo actualizar (¿sin señal?): ' + (e.message || e), 'red');
+      }
+      return false;
+    }
+  };
+
   const leerConIA = async (ev) => {
     if (procesandoRef.current) return;
     procesandoRef.current = true;
     try {
       // getEvidenciaSrc devuelve { url, isBlob } (o null) — NO un string.
       const src = await getEvidenciaSrc(ev);
-      if (!src?.url) { showToast?.('Esta foto aún no terminó de subir desde el teléfono — probá en un rato.', 'amber'); return; }
+      if (!src?.url) { showToast?.('Este archivo aún no terminó de subir desde el teléfono — probá en un rato.', 'amber'); return; }
       const resp = await fetch(src.url);
       if (src.isBlob) { try { URL.revokeObjectURL(src.url); } catch {} }
       if (!resp.ok) throw new Error(`descarga falló (${resp.status})`);
@@ -248,13 +281,18 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
       // aceptado por handleFiles → aviso accionable en vez del error genérico.
       const mimeOk = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'].includes(file.type);
       if (!mimeOk || file.size > 3 * 1024 * 1024) {
-        showToast?.(`Esta foto es ${!mimeOk ? 'un formato que la IA no lee (HEIC de iPhone)' : 'muy pesada'} — abrila desde Evidencias, descargala y volvé a subirla comprimida, o cargá la factura a mano.`, 'amber');
+        showToast?.(`Este archivo es ${!mimeOk ? 'un formato que la IA no lee (HEIC de iPhone)' : 'muy pesado'} — abrilo desde Evidencias, descargalo y volvé a subirlo comprimido, o cargá la factura a mano.`, 'amber');
         return;
       }
       await onInyectar([file]);
-      showToast?.('✓ Enviada a la lectura con IA — revisala en la bandeja de abajo y, tras confirmarla, marcala "Registrada" acá.', 'green');
+      // Ya se trabajó → sale de Pendientes y pasa a "Trabajadas" (pedido de
+      // Gabriel 1-sep: antes quedaba ocupando la bandeja hasta marcarla a mano).
+      const movida = await setEstado(ev, ESTADO_LEIDA, { silencioso: true });
+      showToast?.(movida
+        ? '✓ Enviada a la IA y movida a "🤖 Trabajadas" — revisala en la bandeja de abajo y cerrala como Registrada.'
+        : '✓ Enviada a la lectura con IA — revisala en la bandeja de abajo.', 'green');
     } catch (e) {
-      showToast?.('Error al leer la foto de campo: ' + (e.message || e), 'red');
+      showToast?.('Error al leer el archivo de campo: ' + (e.message || e), 'red');
     } finally {
       procesandoRef.current = false;
     }
@@ -262,61 +300,98 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
 
   const marcar = async (ev, estado) => {
     if (procesandoRef.current) return;
-    if (estado === 'descartada' && !confirm('¿Descartar esta foto? El que la subió verá "Descartada" en su portal.')) return;
+    if (estado === ESTADO_DESCARTADA && !confirm('¿Descartar este comprobante? El que lo subió verá "Descartada" en su portal.')) return;
     procesandoRef.current = true;
     try {
-      const { error } = await supabase.from('evidencias').update({ campo_revision: estado }).eq('id', ev.id);
-      if (error) throw new Error(error.message || 'update falló');
-      try { await window.__db.evidencias.update(ev.id, { campo_revision: estado }); } catch {}
-      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'evidencias', source: 'campo-revision' } })); } catch {}
-      showToast?.(estado === 'registrada' ? '✓ Marcada como registrada' : 'Foto descartada', 'green');
-    } catch (e) {
-      showToast?.('No se pudo actualizar (¿sin señal?): ' + (e.message || e), 'red');
+      const ok = await setEstado(ev, estado);
+      if (ok) {
+        showToast?.(estado === ESTADO_REGISTRADA ? '✓ Marcada como registrada'
+          : estado === ESTADO_PENDIENTE ? '↩ Devuelta a Pendientes' : 'Comprobante descartado', 'green');
+      }
     } finally {
       procesandoRef.current = false;
     }
   };
 
-  // SIEMPRE visible aunque no haya fotos (antes se ocultaba y parecía que la
-  // función no existía — reporte de Gabriel del 31-ago: "no hay ningún
-  // apartado que diga Recibidas de campo"). Vacía = una línea discreta.
-  if (!pendientes.length) {
+  // SIEMPRE visible aunque no haya nada (antes se ocultaba y parecía que la
+  // función no existía — reporte de Gabriel del 31-ago).
+  if (!pendientes.length && !leidas.length) {
     return (
       <div className="card" style={{ marginBottom: 18, padding: '8px 14px', border: '1px dashed rgba(52,152,219,0.35)' }}>
         <span style={{ fontSize: 11.5, color: 'var(--tm)' }}>
-          📥 <strong style={{ color: 'var(--ts)' }}>Recibidas de campo:</strong> sin fotos pendientes. Las que el personal suba desde el portal 📸 Captura de Campo aparecerán acá para leerlas con IA.
+          📥 <strong style={{ color: 'var(--ts)' }}>Recibidas de campo:</strong> sin comprobantes pendientes. Los que el personal suba desde el portal 📸 Captura de Campo (foto o PDF) aparecerán acá para leerlos con IA.
         </span>
       </div>
     );
   }
+
+  const tabBtn = (id, texto, n) => (
+    <button key={id} onClick={(e) => { e.stopPropagation(); setPestana(id); }}
+      className={`btn btn-xs ${pestana === id ? 'btn-amber' : 'btn-ghost'}`}>
+      {texto} ({n})
+    </button>
+  );
+
   return (
     <div className="card card-p" style={{ marginBottom: 18, background: 'rgba(52,152,219,0.06)', border: '1px solid rgba(52,152,219,0.3)' }}>
       <div className="frow-sb" style={{ cursor: 'pointer' }} onClick={() => setAbierto(a => !a)}>
         <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--blue)' }}>
-          📥 Recibidas de campo · {pendientes.length} foto(s) por revisar
+          📥 Recibidas de campo · {pendientes.length} por revisar
         </div>
         <span style={{ color: 'var(--tm)', fontSize: 11 }}>{abierto ? '▲ ocultar' : '▼ mostrar'}</span>
       </div>
       {abierto && (
-        <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
-          {pendientes.map(ev => {
-            const sinArchivo = !ev.url_archivo;
-            return (
-              <div key={ev.id} style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-c2)' }}>
-                <div style={{ fontSize: 12, fontWeight: 600 }}>
-                  {String(ev.created_at || '').slice(0, 10)} · {ev.nombre_archivo}
-                  {sinArchivo && <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>⬆ aún subiendo desde el teléfono</span>}
+        <>
+          {/* Dos pestañas: lo que falta trabajar y lo que ya se mandó a la IA
+              pero todavía no se cerró. Así la bandeja principal queda limpia
+              sin perder de vista nada (pedido de Gabriel 1-sep). */}
+          <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
+            {tabBtn(ESTADO_PENDIENTE, '⏳ Pendientes', pendientes.length)}
+            {tabBtn(ESTADO_LEIDA, '🤖 Trabajadas', leidas.length)}
+          </div>
+
+          {!visibles.length && (
+            <div style={{ fontSize: 11.5, color: 'var(--tm)', marginTop: 10 }}>
+              {pestana === ESTADO_LEIDA
+                ? 'Nada trabajado todavía. Lo que mandes a la IA aparece acá hasta que lo cierres como Registrada o Descartada.'
+                : 'Sin pendientes: todo lo recibido ya se trabajó. Mirá la pestaña "🤖 Trabajadas".'}
+            </div>
+          )}
+
+          <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
+            {visibles.map(ev => {
+              const sinArchivo = !ev.url_archivo;
+              const { quien, cuentaCampo, comentario } = parseObservacionCampo(ev.observaciones);
+              return (
+                <div key={ev.id} style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-c2)' }}>
+                  {/* Quién lo subió, DESTACADO: antes iba diluido dentro de la
+                      observación en gris y no se leía (reporte de Gabriel). */}
+                  <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--tp)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                    👤 {quien || 'sin nombre'}
+                    {!cuentaCampo && quien && (
+                      <span className="badge b-blue" style={{ fontSize: 9 }} title="Lo subió un usuario con su propia cuenta">cuenta propia</span>
+                    )}
+                    {sinArchivo && <span className="badge b-amber" style={{ fontSize: 9 }}>⬆ aún subiendo desde el teléfono</span>}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 2 }}>
+                    {String(ev.created_at || '').slice(0, 10)} · {ev.nombre_archivo}
+                  </div>
+                  {comentario && <div style={{ fontSize: 11.5, color: 'var(--ts)', marginTop: 3 }}>💬 {comentario}</div>}
+                  <div style={{ display: 'flex', gap: 6, marginTop: 7, flexWrap: 'wrap' }}>
+                    <button className="btn btn-amber btn-xs" disabled={sinArchivo} onClick={() => leerConIA(ev)}>
+                      {pestana === ESTADO_LEIDA ? '🤖 Leer otra vez' : '🤖 Leer con IA'}
+                    </button>
+                    <button className="btn btn-green btn-xs" onClick={() => marcar(ev, ESTADO_REGISTRADA)} title="Ya la confirmaste en la bandeja de abajo (o la registraste a mano)">✓ Registrada</button>
+                    {pestana === ESTADO_LEIDA && (
+                      <button className="btn btn-ghost btn-xs" onClick={() => marcar(ev, ESTADO_PENDIENTE)} title="Devolverla a la bandeja principal">↩ A pendientes</button>
+                    )}
+                    <button className="btn btn-ghost btn-xs" onClick={() => marcar(ev, ESTADO_DESCARTADA)}>✗ Descartar</button>
+                  </div>
                 </div>
-                {ev.observaciones && <div style={{ fontSize: 11, color: 'var(--ts)', marginTop: 3 }}>{ev.observaciones}</div>}
-                <div style={{ display: 'flex', gap: 6, marginTop: 7, flexWrap: 'wrap' }}>
-                  <button className="btn btn-amber btn-xs" disabled={sinArchivo} onClick={() => leerConIA(ev)}>🤖 Leer con IA</button>
-                  <button className="btn btn-green btn-xs" onClick={() => marcar(ev, 'registrada')} title="Ya la confirmaste en la bandeja de abajo (o la registraste a mano)">✓ Registrada</button>
-                  <button className="btn btn-ghost btn-xs" onClick={() => marcar(ev, 'descartada')}>✗ Descartar</button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        </>
       )}
     </div>
   );

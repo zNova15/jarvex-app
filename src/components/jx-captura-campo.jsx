@@ -18,6 +18,9 @@ import { uploadPendingEvidencias } from "../sync/EvidenceUploader.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 import { supabase } from "../lib/supabase";
 import { RUBROS, rubroLabel } from "../lib/rubros.js";
+import {
+  identidadDePerfil, armarObservacionCampo, ACEPTA_IMAGEN, ACEPTA_PDF, esPdf,
+} from '../lib/captura-campo.js';
 
 // ── Configuración del portal (SOLO ADMIN, pedido de Gabriel 31-ago) ──
 // Acceso rápido sin abrir el form completo de cada Empresa ni el dashboard de
@@ -128,22 +131,32 @@ const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 const FI16 = { fontSize: 16 };
 const MAX_FOTOS_CAMPO = 3;
 // Actualizar en cada deploy que toque este portal (ver sello en el header).
-const PORTAL_BUILD = 'v4 · 31-ago';
+const PORTAL_BUILD = 'v5 · 1-sep';
 
 // Miniatura + quitar (mismo patrón del Reporte Diario móvil).
 function ThumbFotoCampo({ file, onQuitar }) {
   const [url, setUrl] = uS(null);
+  // Un PDF no se puede pintar en un <img> (saldría roto): se muestra su ficha.
+  const pdf = esPdf(file);
   uE(() => {
+    if (pdf) { setUrl(null); return; }
     let u = null;
     try { u = URL.createObjectURL(file); setUrl(u); } catch { setUrl(null); }
     return () => { if (u) { try { URL.revokeObjectURL(u); } catch {} } };
-  }, [file]);
+  }, [file, pdf]);
+  const caja = { width: 76, height: 76, borderRadius: 8, border: '1px solid var(--border)' };
   return (
     <span style={{ position: 'relative', display: 'inline-block' }}>
-      {url
-        ? <img src={url} alt={file?.name || 'foto'} style={{ width: 76, height: 76, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--border)', display: 'block' }} />
-        : <span style={{ width: 76, height: 76, borderRadius: 8, border: '1px solid var(--border)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>📷</span>}
-      <button onClick={onQuitar} title="Quitar foto"
+      {pdf
+        ? <span title={file?.name || 'PDF'}
+                style={{ ...caja, background: 'var(--bg-c2)', display: 'inline-flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2, padding: 4, textAlign: 'center' }}>
+            <span style={{ fontSize: 22, lineHeight: 1 }}>📄</span>
+            <span style={{ fontSize: 8.5, color: 'var(--tm)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 66 }}>{file?.name || 'PDF'}</span>
+          </span>
+        : url
+          ? <img src={url} alt={file?.name || 'foto'} style={{ ...caja, objectFit: 'cover', display: 'block' }} />
+          : <span style={{ ...caja, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>📷</span>}
+      <button onClick={onQuitar} title="Quitar"
         style={{ position: 'absolute', top: -6, right: -6, width: 20, height: 20, borderRadius: '50%', border: 'none', background: 'var(--red)', color: '#fff', fontSize: 11, lineHeight: '20px', padding: 0, cursor: 'pointer' }}>✕</button>
     </span>
   );
@@ -207,7 +220,7 @@ function EstadoSubidasCampo({ showToast }) {
   return (
     <div className="card card-p" style={{ background: 'rgba(230,126,34,0.08)', border: '1px solid rgba(230,126,34,0.35)' }}>
       <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--amber)' }}>
-        ⬆ {filas.length} foto(s) de este teléfono aún NO llegan al servidor
+        ⬆ {filas.length} archivo(s) de este teléfono aún NO llegan al servidor
       </div>
       <div style={{ display: 'grid', gap: 6, marginTop: 8 }}>
         {filas.map(ev => (
@@ -240,7 +253,9 @@ function CapturaCampoPage({ showToast }) {
   // Desde fuera no sabemos quién es → se le PREGUNTA el nombre (obligatorio).
   // Con una cuenta real, ya se sabe quién es → no se pregunta nada.
   const esCuentaCampo = rol === 'campo';
-  const identidadReal = auth?.profile?.nombre || auth?.profile?.full_name || auth?.profile?.email || 'usuario del sistema';
+  // profiles tiene nombres/apellidos (plural): pedir profile.nombre o
+  // full_name devolvía undefined y SIEMPRE se mostraba el email (bug 1-sep).
+  const identidadReal = identidadDePerfil(auth?.profile);
 
   const [quien, setQuien] = uS('');         // solo se usa con la cuenta de campo
   const [comentario, setComentario] = uS('');
@@ -268,7 +283,7 @@ function CapturaCampoPage({ showToast }) {
   const enviar = async () => {
     if (enviandoRef.current) return;
     if (esCuentaCampo && !quien.trim()) { showToast?.('Escribí tu nombre (quién sube la foto)', 'red'); return; }
-    if (!fotos.length) { showToast?.('Tomá o elegí al menos una foto del comprobante', 'red'); return; }
+    if (!fotos.length) { showToast?.('Agregá al menos una foto o un PDF del comprobante', 'red'); return; }
     enviandoRef.current = true;
     setEnviando(true);
     // Quién sube: con cuenta de campo, el nombre tecleado; con cuenta real, su
@@ -276,8 +291,7 @@ function CapturaCampoPage({ showToast }) {
     const quienSube = esCuentaCampo ? quien.trim() : identidadReal;
     const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
     try {
-      const obs = `📸 Captura de campo · De: ${quienSube}${esCuentaCampo ? '' : ' (usuario del sistema)'}`
-        + (comentario.trim() ? ` · ${comentario.trim()}` : '');
+      const obs = armarObservacionCampo({ quienSube, comentario, esCuentaCampo });
       // Guardar quitando cada foto ya persistida: si algo falla a mitad, un
       // reintento NO re-guarda las que ya entraron (evita duplicados).
       let pendientes = [...fotos];
@@ -291,7 +305,7 @@ function CapturaCampoPage({ showToast }) {
           tipo_evidencia: 'factura_campo',
           modulo_relacionado: 'captura_campo',
           registro_relacionado_id: null,
-          nombre_archivo: f.name || 'factura.jpg',
+          nombre_archivo: f.name || (esPdf(f) ? 'factura.pdf' : 'factura.jpg'),
           mime_type: f.type || '',
           blob: f,
           observaciones: obs,
@@ -305,7 +319,7 @@ function CapturaCampoPage({ showToast }) {
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'evidencias', source: 'captura-campo' } })); } catch {}
       // Empujar la subida YA si hay señal (si no, la cola offline la sube sola).
       try { uploadPendingEvidencias(); } catch {}
-      showToast?.(`✓ ${fotos.length} foto(s) guardada(s)${esPrueba ? ' (modo prueba)' : ' — contabilidad las revisará'}. Podés seguir con tu día.`, 'green');
+      showToast?.(`✓ ${fotos.length} archivo(s) guardado(s)${esPrueba ? ' (modo prueba)' : ' — contabilidad las revisará'}. Podés seguir con tu día.`, 'green');
       setComentario('');
     } catch (e) {
       showToast?.('Error al guardar (las fotos ya guardadas se conservan): ' + (e.message || e), 'red');
@@ -346,11 +360,18 @@ function CapturaCampoPage({ showToast }) {
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <label className="btn btn-amber" style={{ ...btnFoto, flex: 1, justifyContent: 'center', opacity: fotos.length >= MAX_FOTOS_CAMPO ? 0.5 : 1 }}>
             📷 Tomar foto
-            <input type="file" accept="image/*" capture="environment" disabled={fotos.length >= MAX_FOTOS_CAMPO} onChange={recibirFotos} style={{ display: 'none' }} />
+            <input type="file" accept={ACEPTA_IMAGEN} capture="environment" disabled={fotos.length >= MAX_FOTOS_CAMPO} onChange={recibirFotos} style={{ display: 'none' }} />
           </label>
           <label className="btn btn-ghost" style={{ ...btnFoto, flex: 1, justifyContent: 'center', opacity: fotos.length >= MAX_FOTOS_CAMPO ? 0.5 : 1 }}>
             🖼️ Galería
-            <input type="file" accept="image/*" multiple disabled={fotos.length >= MAX_FOTOS_CAMPO} onChange={recibirFotos} style={{ display: 'none' }} />
+            <input type="file" accept={ACEPTA_IMAGEN} multiple disabled={fotos.length >= MAX_FOTOS_CAMPO} onChange={recibirFotos} style={{ display: 'none' }} />
+          </label>
+          {/* PDF (1-sep): muchas facturas llegan por WhatsApp ya en PDF y antes
+              había que fotografiar la pantalla. Va en su propio botón porque en
+              el celular el selector de imágenes no ofrece documentos. */}
+          <label className="btn btn-ghost" style={{ ...btnFoto, flex: 1, justifyContent: 'center', opacity: fotos.length >= MAX_FOTOS_CAMPO ? 0.5 : 1 }}>
+            📄 PDF
+            <input type="file" accept={ACEPTA_PDF} multiple disabled={fotos.length >= MAX_FOTOS_CAMPO} onChange={recibirFotos} style={{ display: 'none' }} />
           </label>
         </div>
         {fotos.length > 0 && (

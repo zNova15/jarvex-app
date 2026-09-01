@@ -42,6 +42,7 @@ const AYUDA = {
     que: 'Subís fotos o PDFs de comprobantes (facturas, guías) y la IA extrae los datos para registrarlos como movimientos contables sin tipear.',
     como: [
       'Arrastrá o seleccioná los archivos; revisá lo que la IA leyó antes de confirmar.',
+      '📥 RECIBIDAS DE CAMPO: arriba está la bandeja con lo que el personal sube desde el portal 📸 Captura de Campo (fotos y PDFs), con el NOMBRE de quién lo subió. Tiene dos pestañas: "⏳ Pendientes" (sin trabajar) y "🤖 Trabajadas". Al tocar "Leer con IA" el comprobante se manda al lector y pasa solo a Trabajadas, para que la bandeja principal quede limpia; desde ahí lo cerrás como "✓ Registrada" cuando confirmaste el movimiento, lo "✗ Descartás", o lo devolvés con "↩ A pendientes" si preferís seguir viéndolo.',
       'El DESTINO es obligatorio: una obra específica, Gastos Generales, Contabilidad Neta u "No sé" (la Contadora Jefe lo clasifica después).',
       'Facturas en soles > S/ 2,000 entran como "Pendiente" y pasan a "Pagado" solas cuando se sube su bancarización completa.',
       'DETRACCIÓN (SPOT): si la factura la tiene, la IA la detecta y te propone el %, el monto y el código — corregilo si hace falta antes de confirmar (el neto a pagar al proveedor se calcula solo). El depósito lo registrás después en Movimientos Contables.',
@@ -65,13 +66,14 @@ const AYUDA = {
   'proveedores': { titulo: 'Proveedores', que: 'Directorio de proveedores del grupo: RUC, contacto, dirección y su historial de compras.', como: ['Creá el proveedor una sola vez y reutilizalo en compras y captura mágica.', 'El RUC correcto es clave: con él se cruzan facturas, guías y trazabilidad.', 'La tarjeta muestra contacto, teléfono, dirección y correo; para comparar PRECIOS entre proveedores usá "Análisis de Insumos" (admin/gerencia).'] },
   'captura-campo': {
     titulo: 'Captura de Campo',
-    que: 'Guardá la FOTO de la factura de una compra apenas te la den — contabilidad la revisa y la registra después. Así ningún comprobante físico se pierde.',
+    que: 'Guardá el comprobante de una compra apenas te lo den — foto o PDF — y contabilidad lo revisa y lo registra después. Así ningún comprobante se pierde.',
     como: [
       'Mirá el "torpedo" de arriba: dictale al proveedor el RUC de la empresa del grupo según el rubro de la compra.',
       'ADMIN / CONTADORA JEFE: en "⚙️ Configuración del portal" (acá mismo, solo lo ven ellos) se cambia el PIN de campo (numérico, 4-8 dígitos) y se elige qué empresas salen en la tabla de RUCs y con qué rubro.',
       'La tabla de RUCs es desplegable (botón "▼ Ver tabla") y la cuenta compartida de campo NO puede cambiar su propia contraseña ni salir del portal — solo subir fotos y cerrar sesión.',
-      'Sacá la foto (📷 abre la cámara directo, hasta 3 fotos) y "Guardar factura". Listo — la obra y la empresa las asigna contabilidad al registrarla. (Desde la cuenta compartida de campo se te pide tu nombre; con tu usuario normal ya se sabe que fuiste vos.)',
-      'Sin señal también funciona: la foto queda en el teléfono y sube sola al recuperar internet. Si aparece la caja naranja "⬆ fotos que aún NO llegan al servidor", dejá la app abierta con señal hasta que desaparezca (o tocá 🔄 Reintentar) — recién ahí contabilidad las ve.',
+      'Tres formas de cargarlo, hasta 3 archivos: 📷 Tomar foto (abre la cámara), 🖼️ Galería, y 📄 PDF para las facturas que te llegan por WhatsApp ya en PDF (no hace falta fotografiar la pantalla). Después, "Guardar factura": la obra y la empresa las asigna contabilidad al registrarlo.',
+      'Quién sube queda registrado y contabilidad lo ve en su bandeja: desde la cuenta compartida de campo se te pide tu nombre; con tu usuario normal se usa tu nombre y apellido del sistema.',
+      'Sin señal también funciona: el archivo queda en el teléfono y sube solo al recuperar internet. Si aparece la caja naranja "⬆ archivos que aún NO llegan al servidor", dejá la app abierta con señal hasta que desaparezca (o tocá 🔄 Reintentar) — recién ahí contabilidad los ve.',
       'NO gastes la foto en apuros: nítida, con el comprobante completo y sin dedos encima — contabilidad la lee con IA tal cual.',
     ],
   },
