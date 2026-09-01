@@ -2,6 +2,11 @@
 // para capturar errores de imports y bootstrap. Por eso este import va
 // PRIMERO. Ver src/instrument.js para la configuración.
 import './instrument.js';
+// Tema claro/oscuro: importado ACÁ (y no solo desde jx-sidebar) para que la
+// red de seguridad que aplica el tema guardado corra siempre — también en el
+// login, donde el chunk del sidebar todavía no se cargó. El anti-FOUC real lo
+// hace public/theme-boot.js desde el <head>; esto es el respaldo.
+import './lib/tema.js';
 import * as Sentry from '@sentry/react';
 import { registerSW } from 'virtual:pwa-register';
 // PostHog: telemetría de uso (qué pantallas se usan, clicks, flows).

@@ -7,19 +7,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <meta name="theme-color" content="#0E1620" />
     <!-- Anti-FOUC del tema claro: setea data-theme ANTES del primer paint.
-         Debe ir en el <head>, no en main.jsx (los imports de React se
-         hoistean y correrían después de cualquier lógica ahí). -->
-    <script>
-      (function () {
-        try {
-          if (localStorage.getItem('jx_theme') === 'light') {
-            document.documentElement.setAttribute('data-theme', 'light');
-            var m = document.querySelector('meta[name="theme-color"]');
-            if (m) m.setAttribute('content', '#F4F5F7');
-          }
-        } catch (e) {}
-      })();
-    </script>
+         Va acá en el <head> y NO en main.jsx (los imports de React se hoistean
+         y correrían después). ⚠ Tiene que ser un archivo EXTERNO, no inline:
+         el CSP de vercel.json (script-src 'self', sin 'unsafe-inline') bloquea
+         los scripts inline en todo deploy — ver public/theme-boot.js. -->
+    <script src="/theme-boot.js"></script>
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
