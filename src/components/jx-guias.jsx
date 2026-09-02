@@ -392,6 +392,44 @@ function GuiasRemisionPage({ showToast }) {
         </div>
       </div>
 
+      {/* ── APARTADO: guías esperando su factura (pedido de Gabriel 1-sep) ──
+          La guía YA está registrada acá (Captura Mágica no retiene nada: al
+          confirmarla sale de esa bandeja pase lo que pase); lo que falta es
+          cargar la(s) factura(s) que referencia. Cuando esa factura entre por
+          Captura Mágica el vínculo se cierra solo y la guía sale de esta lista
+          sin tocar nada. */}
+      {guiasConPendiente.length > 0 && (
+        <div className="card" style={{ marginBottom: 12, overflow: 'hidden', border: '1px solid color-mix(in srgb, var(--amber) 40%, transparent)' }}>
+          <div style={{ padding: '10px 14px', background: 'color-mix(in srgb, var(--amber) 8%, transparent)', fontSize: 12.5, fontWeight: 700, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+            <span>⏳ Guías esperando su factura
+              <span style={{ color: 'var(--amber)', marginLeft: 8 }}>{guiasConPendiente.length}</span>
+              <div style={{ fontSize: 10.5, fontWeight: 400, color: 'var(--tm)', marginTop: 2 }}>
+                Referencian facturas que todavía no están cargadas. No hay nada que hacer acá: al subir esa factura por Captura Mágica, el vínculo se cierra solo.
+              </div>
+            </span>
+            <button className="btn btn-ghost btn-xs" onClick={() => { setFiltroVinculo(filtroVinculo === 'esperando' ? 'todos' : 'esperando'); }}>
+              {filtroVinculo === 'esperando' ? 'Ver todas las guías' : 'Filtrar la tabla ↓'}
+            </button>
+          </div>
+          <div style={{ padding: '8px 14px', display: 'grid', gap: 5 }}>
+            {guiasConPendiente.slice(0, 20).map(g => {
+              const o = ORIGEN_BADGE[origenDe.get(g.id)] || ORIGEN_BADGE.desconocida;
+              return (
+                <div key={g.id} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', paddingBottom: 4, borderBottom: '1px solid var(--border)' }}>
+                  <span style={{ fontWeight: 700, fontSize: 11.5 }}>{g.serie_correlativo || '(sin serie)'}</span>
+                  <span className={`badge ${o.cls}`} style={{ fontSize: 8.5 }}>{o.label}</span>
+                  <span style={{ fontSize: 10.5, color: 'var(--tm)', flex: 1, minWidth: 120 }}>{g.emisor_razon_social || ''}</span>
+                  {pendientesDe(g).map(pp => (
+                    <span key={pp.doc} className="badge" style={{ background: 'var(--amber)', color: '#000', fontSize: 9 }}>falta {pp.doc}</span>
+                  ))}
+                </div>
+              );
+            })}
+            {guiasConPendiente.length > 20 && <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>…y {guiasConPendiente.length - 20} más — usá el filtro "Esperando factura".</div>}
+          </div>
+        </div>
+      )}
+
       {/* ── Facturas que REQUIEREN guía y no la tienen (pedido 31-ago) ── */}
       {/* Cobertura incompleta: la factura YA tiene guías, pero las cantidades
           trasladadas no llegan a lo facturado → falta entregar material y, con

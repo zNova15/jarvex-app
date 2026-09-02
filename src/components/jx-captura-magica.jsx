@@ -3260,7 +3260,7 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
                           {guiaPendientes.map(p => p.doc).join(', ')} — todavía no está{guiaPendientes.length === 1 ? '' : 'n'} en el sistema.
                         </div>
                         <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3 }}>
-                          Confirmá igual: la guía queda registrada con lo que sí existe y el resto se vincula SOLO cuando subas esa factura por Captura Mágica.
+                          Confirmá igual: la guía pasa al apartado Guías de Remisión con lo que sí existe (acá no queda nada pendiente) y aparece ahí como "⏳ Esperando factura". Cuando subas esa factura, el vínculo se cierra solo.
                         </div>
                       </div>
                     )}
