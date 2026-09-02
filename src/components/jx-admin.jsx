@@ -2768,7 +2768,7 @@ function SistemaTab({ showToast }) {
           <select className="fi" style={{ maxWidth:320 }} disabled={!isAdmin} value={tzSel} onChange={e=>{ const v=e.target.value; setTzSel(v); setTZ(v); showToast?.('Zona horaria: '+etiquetaTZ(v), 'green'); }}>
             {ZONAS_HORARIAS.map(z => <option key={z.id} value={z.id}>{z.label}</option>)}
           </select>
-          <span style={{ fontSize:12, color:'var(--tm)' }}>Ahora: <strong style={{ color:'var(--tx)' }}>{hoyLocal(tzSel)} {horaLocal(tzSel)}</strong></span>
+          <span style={{ fontSize:12, color:'var(--tm)' }}>Ahora: <strong style={{ color:'var(--tp)' }}>{hoyLocal(tzSel)} {horaLocal(tzSel)}</strong></span>
         </div>
         {!isAdmin && <div style={{ fontSize:11, color:'var(--tm)', marginTop:6 }}>Solo el administrador puede cambiarla.</div>}
       </div>
@@ -2778,7 +2778,7 @@ function SistemaTab({ showToast }) {
         </div>
         <div style={{ fontSize:12, color:'var(--tm)', marginBottom:10 }}>
           Minutos sin interacción (mouse, teclado, toques) antes de cerrar la sesión automáticamente.
-          Es global para todos los usuarios y llega a cada equipo por el sync. Actual: <strong style={{ color:'var(--tx)' }}>{timeoutCfg} min</strong>.
+          Es global para todos los usuarios y llega a cada equipo por el sync. Actual: <strong style={{ color:'var(--tp)' }}>{timeoutCfg} min</strong>.
         </div>
         <div style={{ display:'flex', gap:12, alignItems:'center', flexWrap:'wrap' }}>
           <input className="fi" type="number" min={5} max={480} step={5} style={{ maxWidth:120 }}

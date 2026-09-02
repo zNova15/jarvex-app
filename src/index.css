@@ -325,4 +325,4 @@ textarea.fi { resize: vertical; min-height: 80px; }
 .jx-tt-icon:hover { background: rgba(155,89,182,0.25) !important; transform: scale(1.08); }
 
 /* Badge color púrpura (modo prueba) */
-.b-purple { background: rgba(155,89,182,0.18); color: #9B59B6; border: 1px solid rgba(155,89,182,0.4); }
+.b-purple { background: rgba(155,89,182,0.18); color: var(--purple); border: 1px solid rgba(155,89,182,0.4); }

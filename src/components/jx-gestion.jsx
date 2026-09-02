@@ -889,7 +889,7 @@ function CostosPage() {
             <ChartDoughnut id="cat-cost"
               labels={porCategoria.map(c => c.categoria)}
               data={porCategoria.map(c => c.real || c.pres)}
-              colors={[cssVar('--blue','#3498DB'),cssVar('--amber','#F2B705'),cssVar('--green','#2ECC71'),cssVar('--red','#E74C3C'),cssVar('--orange','#F28C28'),cssVar('--purple','#9B59B6'),cssVar('--blue','#1ABC9C'),cssVar('--tm','#95A5A6')]}
+              colors={[cssVar('--blue','#3498DB'),cssVar('--amber','#F2B705'),cssVar('--green','#2ECC71'),cssVar('--red','#E74C3C'),cssVar('--orange','#F28C28'),cssVar('--purple','#9B59B6'),cssVar('--yellow','#1ABC9C'),cssVar('--tm','#95A5A6')]}
               height={220}/>
           ) : <div className="empty-state" style={{padding:'40px 0'}}>Sin datos</div>}
         </div>
@@ -1072,7 +1072,7 @@ function IncidenciasPage({ showToast }) {
             <div key={i.id} className="card card-p" style={{borderLeft:`3px solid ${sev.color}`,background:sev.bg}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12}}>
                 <div style={{display:'flex',gap:12,flex:1}}>
-                  <div style={{width:36,height:36,borderRadius:8,background:sev.color+'22',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+                  <div style={{width:36,height:36,borderRadius:8,background:`color-mix(in srgb, ${sev.color} 13%, transparent)`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
                     <JxIcon name={TIPO_ICON[i.tipo_incidencia] || 'alertCircle'} size={16} color={sev.color}/>
                   </div>
                   <div style={{flex:1}}>
@@ -1138,7 +1138,7 @@ function IncidenciasPage({ showToast }) {
 // Permite mantener hasta 5 versiones de presupuesto por obra y compararlas
 // lado a lado. La tabla `partidas` actual sigue siendo la versión "Real" en uso.
 const TIPO_LABEL = { inicial:'Inicial', modificado:'Modificado', propuesta:'Propuesta', adicional:'Adicional', real:'Real' };
-const TIPO_COLOR = { inicial:'var(--blue)', modificado:'var(--amber)', propuesta:'var(--ts)', adicional:'var(--orange)', real:'var(--green)' };
+const TIPO_COLOR = { inicial:'var(--blue)', modificado:'var(--amber)', propuesta:'var(--purple)', adicional:'var(--orange)', real:'var(--green)' };
 
 function VersionesPage({ showToast }) {
   const obraId = useObraActiva();
@@ -1504,7 +1504,7 @@ function VersionesPage({ showToast }) {
                   <div key={v.id}
                     style={{ position:'relative', borderRadius:8,
                              border:`1.5px solid ${sel ? TIPO_COLOR[v.tipo] || 'var(--amber)' : 'var(--border)'}`,
-                             background: sel ? `${(TIPO_COLOR[v.tipo] || 'var(--amber)')}14` : 'transparent',
+                             background: sel ? `color-mix(in srgb, ${TIPO_COLOR[v.tipo] || 'var(--amber)'} 8%, transparent)` : 'transparent',
                              padding:10 }}>
                     <label style={{ display:'flex', gap:8, alignItems:'flex-start', cursor:'pointer' }}>
                       <input type="checkbox" checked={sel} onChange={()=>toggleSel(v.id)}/>

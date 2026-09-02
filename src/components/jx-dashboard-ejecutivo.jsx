@@ -423,7 +423,7 @@ function DashboardEjecutivoPage() {
                 alignItems: 'flex-start',
               }}>
                 <div style={{
-                  width: 32, height: 32, borderRadius: 8, background: a.color + '1a',
+                  width: 32, height: 32, borderRadius: 8, background: `color-mix(in srgb, ${a.color} 10%, transparent)`,
                   display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
                 }}>
                   <JxIcon name={a.icon} size={14} color={a.color} />

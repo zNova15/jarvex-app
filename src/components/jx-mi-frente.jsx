@@ -808,7 +808,7 @@ function MiFrenteShell({ showToast, vista }) {
       showToast('Solicitud enviada al administrador/gerente', 'green');
     } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
   };
-  const ctxBtn = { display: 'flex', alignItems: 'center', gap: 8, width: '100%', background: 'none', border: 'none', color: 'var(--tx)', padding: '9px 11px', fontSize: 12.5, textAlign: 'left', cursor: 'pointer' };
+  const ctxBtn = { display: 'flex', alignItems: 'center', gap: 8, width: '100%', background: 'none', border: 'none', color: 'var(--tp)', padding: '9px 11px', fontSize: 12.5, textAlign: 'left', cursor: 'pointer' };
 
   // Editor multi-partida reutilizado por el reporte propio (con foto) y el ajeno (sin foto).
   const editorLineas = (showFoto) => {
@@ -832,7 +832,7 @@ function MiFrenteShell({ showToast, vista }) {
           {(q || sugeridas.length > 0) && (
             <div style={{ marginTop: 6, maxHeight: 230, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
               {sugeridas.map(p => (
-                <button key={p.id} onClick={() => agregarLinea(p.id)} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid var(--border)', color: 'var(--tx)', padding: '7px 10px', fontSize: 12, cursor: 'pointer' }} onMouseEnter={e => e.currentTarget.style.background = 'var(--tint-neutral)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>
+                <button key={p.id} onClick={() => agregarLinea(p.id)} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid var(--border)', color: 'var(--tp)', padding: '7px 10px', fontSize: 12, cursor: 'pointer' }} onMouseEnter={e => e.currentTarget.style.background = 'var(--tint-neutral)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>
                   <span style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{p.codigo_delfin}</span> {p.nombre_partida}
                   {repTodas && (() => { const fs = frentesNombresDe(p.id); return fs.length ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>{fs.join(', ')}</span> : <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }}>sin frente</span>; })()}
                 </button>
@@ -947,7 +947,7 @@ function MiFrenteShell({ showToast, vista }) {
             {puedeExpandir
               ? <button className="btn btn-ghost btn-xs" onClick={(e) => { e.stopPropagation(); toggleExp(nodo.code); }} style={{ padding: '0 4px', color: esCap ? 'var(--amber)' : 'var(--green)' }}>{open ? '▾' : '▸'}</button>
               : <span style={{ display: 'inline-block', width: 18 }} />}
-            <span style={{ fontFamily: 'monospace', fontSize: 11.5, color: esCap ? 'var(--amber)' : (esHoja ? 'var(--green)' : 'var(--tx)'), fontWeight: esCap ? 700 : 500 }}>{esCap ? '📁 ' : '• '}{nodo.code}</span>
+            <span style={{ fontFamily: 'monospace', fontSize: 11.5, color: esCap ? 'var(--amber)' : (esHoja ? 'var(--green)' : 'var(--tp)'), fontWeight: esCap ? 700 : 500 }}>{esCap ? '📁 ' : '• '}{nodo.code}</span>
           </td>
           <td style={{ fontWeight: esCap ? 600 : 400 }}>{p ? <>{p.nombre_partida || '—'}{mostrarFrente && (() => { const fs = frentesNombresDe(p.id); return fs.length ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }} title="Frente(s)">{fs.join(', ')}</span> : <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }} title="No pertenece a ningún frente">sin frente</span>; })()}</> : <span style={{ color: 'var(--tm)', fontStyle: 'italic' }}>capítulo</span>}</td>
           <td style={{ textAlign: 'right' }}>{p ? `${num(p.metrado_contratado)} ${p.unidad || ''}` : ''}</td>
@@ -1663,7 +1663,7 @@ function MiFrenteShell({ showToast, vista }) {
       {confirmRep && (
         <Modal title="Confirmar reporte diario" icon="check" onClose={() => !busyRep && setConfirmRep(null)}>
           <div style={{ fontSize: 12.5, color: 'var(--tm)', marginBottom: 4 }}>
-            Vas a subir el reporte del <strong style={{ color: 'var(--tx)' }}>{repFecha}{repFecha !== hoy ? ' (otro día)' : ''}</strong> con avance en estas <strong style={{ color: 'var(--tx)' }}>{confirmRep.length}</strong> partida(s):
+            Vas a subir el reporte del <strong style={{ color: 'var(--tp)' }}>{repFecha}{repFecha !== hoy ? ' (otro día)' : ''}</strong> con avance en estas <strong style={{ color: 'var(--tp)' }}>{confirmRep.length}</strong> partida(s):
           </div>
           {/* Tarjetas apiladas en vez de tabla: la tabla obligaba a scroll
               HORIZONTAL en el celular justo en el paso final del envío. */}
@@ -1675,7 +1675,7 @@ function MiFrenteShell({ showToast, vista }) {
                   {sobre && <span className="badge b-red" style={{ marginLeft: 6, fontSize: 9 }} title="Reporte sobre una partida ya terminada → alerta a gerencia">⚠ sobre-reporte</span>}
                 </div>
                 <div style={{ fontSize: 11.5, color: 'var(--tm)', marginTop: 3 }}>
-                  Metrado: <strong style={{ color: 'var(--tx)' }}>{num(linea.metrado)} {partida?.unidad || ''}</strong> · 📷 {(linea.fotos || []).length} foto(s)
+                  Metrado: <strong style={{ color: 'var(--tp)' }}>{num(linea.metrado)} {partida?.unidad || ''}</strong> · 📷 {(linea.fotos || []).length} foto(s)
                 </div>
               </div>
             ))}

@@ -297,7 +297,7 @@ function ConfigSUNATPage({ showToast }) {
         </div>
         <div>
           <h2 style={{ margin: 0 }}>Configuración SUNAT</h2>
-          <div style={{ fontSize: 13, color: 'var(--muted, #888)' }}>
+          <div style={{ fontSize: 13, color: 'var(--tm)' }}>
             Certificado digital + credenciales SOL para emisión electrónica
           </div>
         </div>

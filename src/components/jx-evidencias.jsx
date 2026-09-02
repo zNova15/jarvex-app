@@ -136,7 +136,7 @@ function Thumb({ ev, signedRef, blobUrlRef, onClick }) {
 
   const baseStyle = {
     width:'100%', height:160, borderRadius:'10px 10px 0 0',
-    background:'var(--bg-elev)', display:'flex', alignItems:'center', justifyContent:'center',
+    background:'var(--bg-c2)', display:'flex', alignItems:'center', justifyContent:'center',
     overflow:'hidden', cursor:'pointer', position:'relative', flexDirection:'column', gap:6,
     borderBottom:'1px solid var(--border)',
   };

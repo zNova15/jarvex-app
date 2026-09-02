@@ -268,7 +268,7 @@ function FrentesPage({ showToast }) {
         <Modal title={`Partidas · ${asignarFrente.nombre}`} icon="flag" onClose={() => { setModal(null); setAsignarFrente(null); }}>
           <div style={{ fontSize: 12, color: 'var(--tm)', marginBottom: 8 }}>
             Marcá capítulos, subcapítulos o ítems; los hijos se incluyen solos.{' '}
-            <strong style={{ color: 'var(--text)' }}>{coberturaPorFrente[asignarFrente.id] || 0} partidas cubiertas</strong>
+            <strong style={{ color: 'var(--tp)' }}>{coberturaPorFrente[asignarFrente.id] || 0} partidas cubiertas</strong>
             {asignarFrente.ingeniero_user_id ? <> · Ing. {nombreUsuario(asignarFrente.ingeniero_user_id)}</> : null}.
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 2, fontSize: 12, marginBottom: 8, alignItems: 'center' }}>

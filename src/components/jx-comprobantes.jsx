@@ -717,7 +717,7 @@ function ComprobantesElectronicosPage({ showToast }) {
         </div>
         <div className="card card-p" style={{ padding:'10px 14px' }}>
           <div style={{ fontSize:10.5, color:'var(--tm)', textTransform:'uppercase' }}>Anulados</div>
-          <div style={{ fontSize:20, fontWeight:700, color:'var(--gray)' }}>{kpis.anulados}</div>
+          <div style={{ fontSize:20, fontWeight:700, color:'var(--tm)' }}>{kpis.anulados}</div>
         </div>
         <div className="card card-p" style={{ padding:'10px 14px' }}>
           <div style={{ fontSize:10.5, color:'var(--tm)', textTransform:'uppercase' }}>Total PEN</div>

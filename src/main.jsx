@@ -349,7 +349,7 @@ function UpdateBanner() {
   }, []);
   if (!show) return null;
   return (
-    <div style={{ position: 'fixed', bottom: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 99999, background: '#1C2D40', color: '#F0F2F5', border: '1px solid rgba(242,183,5,0.5)', borderRadius: 10, padding: '11px 14px', display: 'flex', alignItems: 'center', gap: 12, boxShadow: '0 6px 24px rgba(0,0,0,0.4)', maxWidth: '92vw', flexWrap: 'wrap' }}>
+    <div style={{ position: 'fixed', bottom: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 99999, background: 'var(--bg-c)', color: 'var(--tp)', border: '1px solid rgba(242,183,5,0.5)', borderRadius: 10, padding: '11px 14px', display: 'flex', alignItems: 'center', gap: 12, boxShadow: '0 6px 24px rgba(0,0,0,0.4)', maxWidth: '92vw', flexWrap: 'wrap' }}>
       <span style={{ fontSize: 13 }}>✨ Hay una versión nueva de JARVEX.</span>
       <button disabled={updating}
         onClick={() => { setUpdating(true); try { window.__jxUpdateSW ? window.__jxUpdateSW() : window.location.reload(); } catch { window.location.reload(); } }}
@@ -428,7 +428,7 @@ function Root() {
   }, []);
 
   const App = window.App;
-  if (!App) return <div style={{ color: '#fff', padding: 20 }}>Cargando JARVEX...</div>;
+  if (!App) return <div style={{ color: 'var(--tp)', padding: 20 }}>Cargando JARVEX...</div>;
 
   return (
     <AppErrorBoundary>
