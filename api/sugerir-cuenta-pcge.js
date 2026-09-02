@@ -247,6 +247,16 @@ Confianza: 0.85+ concepto inequívoco · 0.6-0.85 probable · <0.6 ambiguo, que 
     if (!clasificacion) {
       return res.status(502).json({ error: 'Claude devolvió una clasificación fuera de cost|expense' });
     }
+    // Medición del consumo de IA — misma línea [ia-uso] que captura-magica,
+    // para poder contar tokens reales por día desde los logs de Vercel.
+    try {
+      console.log('[ia-uso]', JSON.stringify({
+        endpoint: 'sugerir-cuenta-pcge', modo: 'clasificar_costo_gasto',
+        model: data.model,
+        in: data.usage?.input_tokens ?? null,
+        out: data.usage?.output_tokens ?? null,
+      }));
+    } catch {}
     return res.status(200).json({
       result: { clasificacion },
       confianza: typeof parsed.confianza === 'number' ? Math.max(0, Math.min(1, parsed.confianza)) : 0.5,

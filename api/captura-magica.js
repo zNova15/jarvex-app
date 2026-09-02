@@ -601,6 +601,20 @@ export default async function handler(req, res) {
       messages: [{ role: 'user', content }],
     }, deadline);
     const { extracted, text } = extractJson(data);
+    // MEDICIÓN DEL CONSUMO DE IA. El endpoint ya devolvía `usage` al cliente,
+    // pero no lo registraba en ningún lado: no había forma de saber cuánto
+    // gasta la app sin entrar a la consola de Anthropic. Una línea por llamada
+    // en los logs de Vercel permite contar tokens reales por día y por modo.
+    // Sin PII: solo modelo, motor y contadores.
+    try {
+      console.log('[ia-uso]', JSON.stringify({
+        endpoint: 'captura-magica', modo: modoAuth, engine,
+        model: data.model,
+        in: data.usage?.input_tokens ?? null,
+        out: data.usage?.output_tokens ?? null,
+        ocr: ocr ? (ocr.usage?.pages_processed ?? 1) : 0,
+      }));
+    } catch {}
     return res.status(200).json({
       extracted,
       ...(esCert ? { tipo: 'certificado_calidad' } : {}),
