@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { normalizarDoc, normalizarDocs, matchFacturaDeGuia, sugerirFacturasParaGuia,
-         sugerirGuiasParaFactura, indexarVinculos } from '../guias.js';
+         sugerirGuiasParaFactura, indexarVinculos, referenciasDeGuia, referenciasPendientes,
+         guiasEsperandoFactura, coberturaDeGuias } from '../guias.js';
 
 describe('normalizarDoc', () => {
   it('parsea F001-025131 quitando ceros del correlativo', () => {
@@ -262,5 +263,124 @@ describe('sugerirGuiasParaFactura con vínculos N:M', () => {
       vinculos: [{ guia_id: 'g1', accounting_movement_id: 'f2' }],
     });
     expect(r).toEqual([]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Pendientes en los dos sentidos (pedido de Gabriel 1-sep).
+// ═══════════════════════════════════════════════════════════════════
+
+const RUC_P = '20536265644';
+
+describe('referenciasDeGuia / referenciasPendientes', () => {
+  // La guía ampara TRES facturas: una ya vinculada, otra cargada sin vincular
+  // y una tercera que todavía no entró al sistema.
+  const guia = { id: 'g1', doc_referencia: 'F001-123, F001-124, F001-125', emisor_ruc: RUC_P };
+  const movs = [
+    { id: 'f1', clase: 'compra', document_number: 'F001-000123', third_party_ruc: RUC_P },
+    { id: 'f2', clase: 'compra', document_number: 'F001-000124', third_party_ruc: RUC_P },
+  ];
+  const vinculos = [{ guia_id: 'g1', accounting_movement_id: 'f1' }];
+
+  it('clasifica cada referencia: vinculada / sin_vincular / ausente', () => {
+    const r = referenciasDeGuia(guia, movs, { vinculos });
+    expect(r.map(x => [x.doc, x.estado])).toEqual([
+      ['F001-123', 'vinculada'],
+      ['F001-124', 'sin_vincular'],
+      ['F001-125', 'ausente'],
+    ]);
+  });
+
+  it('pendiente = solo la factura que NO está en el sistema', () => {
+    expect(referenciasPendientes(guia, movs, { vinculos }).map(x => x.doc)).toEqual(['F001-125']);
+  });
+
+  it('el pendiente se resuelve solo cuando la factura entra', () => {
+    const conLaTercera = [...movs, { id: 'f3', clase: 'compra', document_number: 'F001-000125', third_party_ruc: RUC_P }];
+    expect(referenciasPendientes(guia, conLaTercera, { vinculos })).toEqual([]);
+  });
+
+  it('una factura de OTRO emisor con el mismo número no resuelve el pendiente', () => {
+    // Las series F001-… se repiten entre emisores: si contara, vincularíamos
+    // la guía del proveedor A con la factura del proveedor B.
+    const conImpostora = [...movs, { id: 'x', clase: 'compra', document_number: 'F001-000125', third_party_ruc: '20999999999' }];
+    expect(referenciasPendientes(guia, conImpostora, { vinculos }).map(x => x.doc)).toEqual(['F001-125']);
+  });
+
+  it('sin doc_referencia no hay nada que reclamar', () => {
+    expect(referenciasDeGuia({ id: 'g9', doc_referencia: '', emisor_ruc: RUC_P }, movs, {})).toEqual([]);
+  });
+});
+
+describe('guiasEsperandoFactura', () => {
+  const guias = [
+    { id: 'g1', doc_referencia: 'F001-125', emisor_ruc: RUC_P },
+    { id: 'g2', doc_referencia: 'F001-999', emisor_ruc: RUC_P },              // otra factura
+    { id: 'g3', doc_referencia: 'F001-125', emisor_ruc: '20999999999' },      // otro emisor
+  ];
+  const nueva = { id: 'f3', clase: 'compra', document_number: 'F001-000125', third_party_ruc: RUC_P };
+
+  it('encuentra las guías que esperaban esta factura, con el cerco de emisor', () => {
+    expect(guiasEsperandoFactura(nueva, guias, {}).map(g => g.id)).toEqual(['g1']);
+  });
+  it('no re-propone una guía ya vinculada a esa factura', () => {
+    const r = guiasEsperandoFactura(nueva, guias, { vinculos: [{ guia_id: 'g1', accounting_movement_id: 'f3' }] });
+    expect(r).toEqual([]);
+  });
+});
+
+describe('coberturaDeGuias — ¿falta material por trasladar?', () => {
+  const itemsDe = (m) => m.__items || [];
+  const factura = { id: 'f1', __items: [
+    { descripcion: 'Cemento Sol', unidad: 'bolsa', cantidad: 100, tipo_insumo: 'material' },
+    { descripcion: 'Flete', unidad: 'und', cantidad: 1, tipo_insumo: 'servicio' },   // no se traslada
+  ] };
+
+  it('dos guías parciales: avisa lo que falta', () => {
+    const g = [
+      { id: 'g1', items: [{ descripcion: 'Cemento Sol', unidad: 'bolsa', cantidad: 40 }] },
+      { id: 'g2', items: [{ descripcion: 'Cemento Sol', unidad: 'bolsa', cantidad: 35 }] },
+    ];
+    const c = coberturaDeGuias(factura, g, itemsDe);
+    expect(c.completa).toBe(false);
+    expect(c.faltantes.map(l => [l.descripcion, l.falta])).toEqual([['Cemento Sol', 25]]);
+  });
+
+  it('cuando llega la última guía queda completa', () => {
+    const g = [
+      { id: 'g1', items: [{ descripcion: 'Cemento Sol', unidad: 'bolsa', cantidad: 40 }] },
+      { id: 'g2', items: [{ descripcion: 'Cemento Sol', unidad: 'bolsa', cantidad: 60 }] },
+    ];
+    expect(coberturaDeGuias(factura, g, itemsDe).completa).toBe(true);
+  });
+
+  it('trasladar de MÁS no cuenta como faltante (guía que ampara varias facturas)', () => {
+    const g = [{ id: 'g1', items: [{ descripcion: 'Cemento Sol', unidad: 'bolsa', cantidad: 250 }] }];
+    const c = coberturaDeGuias(factura, g, itemsDe);
+    expect(c.completa).toBe(true);
+    expect(c.lineas[0].falta).toBe(0);
+  });
+
+  it('factura de puros servicios: no aplica', () => {
+    const soloServicio = { id: 'f2', __items: [{ descripcion: 'Asesoría', unidad: 'und', cantidad: 1, tipo_insumo: 'servicio' }] };
+    expect(coberturaDeGuias(soloServicio, [], itemsDe).aplica).toBe(false);
+  });
+
+  it('descripciones que no cruzan → sinCruce, NO una alarma de faltante', () => {
+    // El OCR de la guía escribió otra cosa. Afirmar "falta material" sería
+    // mentir; se marca aparte para que la UI lo diga como lo que es.
+    const g = [{ id: 'g1', items: [{ descripcion: 'CEMENTO SOL TIPO I x42.5kg', unidad: 'bls', cantidad: 100 }] }];
+    const c = coberturaDeGuias(factura, g, itemsDe);
+    expect(c.sinCruce).toBe(true);
+  });
+
+  it('con los normalizadores reales del repo, esas descripciones SÍ cruzan por unidad', () => {
+    const g = [{ id: 'g1', items: [{ descripcion: 'cemento  sol', unidad: 'BOLSA', cantidad: 100 }] }];
+    const c = coberturaDeGuias(factura, g, itemsDe, {
+      normDesc: (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim(),
+      normUnidad: (u) => String(u || '').toLowerCase().trim(),
+    });
+    expect(c.completa).toBe(true);
+    expect(c.sinCruce).toBe(false);
   });
 });

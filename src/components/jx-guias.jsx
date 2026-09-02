@@ -10,7 +10,12 @@
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
 import { matchFacturaDeGuia, normalizarDoc, clasificarOrigenGuia, facturasQueRequierenGuia,
-         sugerirGuiasParaFactura, indexarVinculos } from "../lib/guias.js";
+         sugerirGuiasParaFactura, indexarVinculos, referenciasDeGuia, coberturaDeGuias } from "../lib/guias.js";
+// Normalizadores canónicos del repo (guias.js es puro y no importa nada: se
+// los inyecta). normInsumo quita tildes/puntuación; normUnidad unifica los
+// sinónimos que escribe el OCR ("bolsa"/"bls"/"BOLSA" son la misma unidad).
+import { normInsumo } from "../lib/insumo-correlacion.js";
+import { normUnidad } from "../lib/inventario-empresa.js";
 import { itemsDeFactura, parseNotas } from "../lib/cruce-recepcion.js";
 import { normalizarRuc } from "../lib/doc-id.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
@@ -52,7 +57,7 @@ function GuiasRemisionPage({ showToast }) {
   // Pestaña de origen. Arranca SIEMPRE en 'todas': el deep-link desde el chip
   // 📄 de Movimientos no sabe si la guía es emitida o recibida.
   const [tab, setTab] = uS('todas');
-  const [filtroVinculo, setFiltroVinculo] = uS('todos');   // todos | vinculadas | sin_vincular
+  const [filtroVinculo, setFiltroVinculo] = uS('todos');   // todos | vinculadas | sin_vincular | esperando
   const [filtroEmpresa, setFiltroEmpresa] = uS('todas');   // empresa del grupo
   const [filtroObra, setFiltroObra] = uS('todas');
   const [fDesde, setFDesde] = uS('');
@@ -97,6 +102,8 @@ function GuiasRemisionPage({ showToast }) {
     return lista.map(id => movById.get(id)).filter(Boolean);
   };
   const nVinculos = (g) => (idxVinc.porGuia.get(g.id)?.size) || (g.accounting_movement_id ? 1 : 0);
+  const guiasDeFactura = (movId) => [...(idxVinc.porFactura.get(movId) || [])]
+    .map(gid => guias.find(g => g.id === gid)).filter(Boolean);
   const obraNombre = (id) => (obras || []).find(o => o.id === id)?.nombre_obra || '';
 
   // RUCs del grupo → clasificar cada guía como emitida/recibida (derive puro).
@@ -108,6 +115,35 @@ function GuiasRemisionPage({ showToast }) {
     for (const g of guias) m.set(g.id, clasificarOrigenGuia(g, rucsGrupo));
     return m;
   }, [guias, rucsGrupo]);
+
+  // Opciones comunes del matcher (cercos de emisor y dirección venta/compra).
+  const optsGuia = uM(() => {
+    const rucPorCompany = new Map((companies || []).filter(c => !c.deleted_at).map(c => [c.id, normalizarRuc(c.ruc)]));
+    return { rucsGrupo, rucCompanyDe: (m) => rucPorCompany.get(m.company_id) || '', vinculos };
+  }, [companies, rucsGrupo, vinculos]);
+
+  // ── PENDIENTE guía → factura ──
+  // Facturas que la guía dice amparar y que todavía NO están en el sistema.
+  // Es derivado, no un estado guardado: desaparece solo cuando la factura entra.
+  const pendientesDe = (g) => referenciasDeGuia(g, movs || [], optsGuia).filter(x => x.estado === 'ausente');
+  const guiasConPendiente = uM(() => guias.filter(g => pendientesDe(g).length > 0), [guias, movs, optsGuia]);
+  const idsConPendiente = uM(() => new Set(guiasConPendiente.map(g => g.id)), [guiasConPendiente]);
+
+  // ── PENDIENTE factura → guías ──
+  // La factura ya tiene guía(s), pero las cantidades trasladadas no cubren lo
+  // facturado: todavía falta que entreguen material, o sea falta subir una
+  // guía. Se excluye 'sinCruce' (las descripciones del OCR no matchearon): ahí
+  // no se puede afirmar que falte nada.
+  const parciales = uM(() => {
+    const out = [];
+    for (const movId of idxVinc.porFactura.keys()) {
+      const mov = movById.get(movId);
+      if (!mov || mov.deleted_at) continue;
+      const c = coberturaDeGuias(mov, guiasDeFactura(movId), itemsDeFactura, { normDesc: normInsumo, normUnidad });
+      if (c.aplica && !c.sinGuias && !c.sinCruce && !c.completa) out.push({ mov, cobertura: c });
+    }
+    return out.sort((a, b) => String(b.mov.date || '').localeCompare(String(a.mov.date || '')));
+  }, [idxVinc, movById, guias, movs]);
 
   // ¿A qué empresa del grupo pertenece la guía? Emitida → por RUC del emisor;
   // recibida → la empresa de la factura vinculada (fallback g.company_id, que
@@ -132,6 +168,9 @@ function GuiasRemisionPage({ showToast }) {
       if (tab !== 'todas' && origenDe.get(g.id) !== tab) return false;
       if (filtroVinculo === 'vinculadas' && nVinculos(g) === 0) return false;
       if (filtroVinculo === 'sin_vincular' && nVinculos(g) > 0) return false;
+      // "Esperando factura": la guía referencia comprobantes que todavía no
+      // están cargados (con o sin otras facturas ya vinculadas).
+      if (filtroVinculo === 'esperando' && !idsConPendiente.has(g.id)) return false;
       if (filtroEmpresa !== 'todas' && empresaDeGuia(g) !== filtroEmpresa) return false;
       if (filtroObra !== 'todas' && g.obra_id !== filtroObra) return false;
       const f = String(g.fecha_emision || g.created_at || '').slice(0, 10);
@@ -139,7 +178,7 @@ function GuiasRemisionPage({ showToast }) {
       if (fHasta && f && f > fHasta) return false;
       return true;
     });
-  }, [guias, q, tab, filtroVinculo, filtroEmpresa, filtroObra, fDesde, fHasta, origenDe, movById, companies, idxVinc]);
+  }, [guias, q, tab, filtroVinculo, filtroEmpresa, filtroObra, fDesde, fHasta, origenDe, movById, companies, idxVinc, idsConPendiente]);
 
   // ── Facturas que requieren guía y no la tienen (heurística + override) ──
   // El espejo automático de una venta interco no lleva guía propia (la guía
@@ -325,6 +364,7 @@ function GuiasRemisionPage({ showToast }) {
               <option value="todos">Todas</option>
               <option value="vinculadas">✓ Vinculadas</option>
               <option value="sin_vincular">⚠ Sin vincular</option>
+              <option value="esperando">⏳ Esperando factura ({guiasConPendiente.length})</option>
             </select>
           </div>
           <div>
@@ -353,6 +393,42 @@ function GuiasRemisionPage({ showToast }) {
       </div>
 
       {/* ── Facturas que REQUIEREN guía y no la tienen (pedido 31-ago) ── */}
+      {/* Cobertura incompleta: la factura YA tiene guías, pero las cantidades
+          trasladadas no llegan a lo facturado → falta entregar material y, con
+          eso, falta subir una guía más. */}
+      {parciales.length > 0 && (
+        <div className="card" style={{ marginBottom: 12, overflow: 'hidden', border: '1px solid color-mix(in srgb, var(--orange) 40%, transparent)' }}>
+          <div style={{ padding: '10px 14px', background: 'color-mix(in srgb, var(--orange) 8%, transparent)', fontSize: 12.5, fontWeight: 700 }}>
+            📦 Facturas con guías INCOMPLETAS
+            <span style={{ color: 'var(--orange)', marginLeft: 8 }}>{parciales.length}</span>
+            <div style={{ fontSize: 10.5, fontWeight: 400, color: 'var(--tm)', marginTop: 2 }}>
+              Ya tienen guía, pero lo trasladado no cubre lo facturado: falta que entreguen el resto y suba su guía.
+            </div>
+          </div>
+          <div style={{ padding: '8px 14px', display: 'grid', gap: 6 }}>
+            {parciales.slice(0, 25).map(({ mov, cobertura }) => (
+              <div key={mov.id} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap', paddingBottom: 5, borderBottom: '1px solid var(--border)' }}>
+                <button className="btn btn-ghost btn-xs" title="Ir a la factura en Movimientos Contables"
+                  onClick={() => { window.__movsBuscarIntent = mov.document_number || ''; window.__navTo?.('movimientos-contables'); }}>
+                  🧾 {mov.document_number || 'factura'}
+                </button>
+                <span style={{ fontSize: 10.5, color: 'var(--tm)' }}>{mov.third_party_name || ''} {mov.date ? `· ${mov.date}` : ''}</span>
+                <div style={{ fontSize: 11, flexBasis: '100%' }}>
+                  {cobertura.faltantes.slice(0, 4).map((l, i) => (
+                    <span key={i} style={{ marginRight: 10 }}>
+                      falta <b style={{ color: 'var(--orange)' }}>{Number(l.falta).toLocaleString('es-PE')} {l.unidad || ''}</b> de {String(l.descripcion || '').slice(0, 40)}
+                      <span style={{ color: 'var(--tm)' }}> ({Number(l.trasladado).toLocaleString('es-PE')} de {Number(l.facturado).toLocaleString('es-PE')})</span>
+                    </span>
+                  ))}
+                  {cobertura.faltantes.length > 4 && <span style={{ color: 'var(--tm)' }}>+{cobertura.faltantes.length - 4} más</span>}
+                </div>
+              </div>
+            ))}
+            {parciales.length > 25 && <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>…y {parciales.length - 25} más.</div>}
+          </div>
+        </div>
+      )}
+
       {(comprasPend.length + ventasPend.length + sinDatosPend.length > 0 || panelAbierto) && (
         <div className="card" style={{ marginBottom: 12, overflow: 'hidden', border: '1px solid rgba(242,183,5,0.35)' }}>
           <button onClick={() => setPanelAbierto(a => !a)}
@@ -465,6 +541,7 @@ function GuiasRemisionPage({ showToast }) {
                 {filtradas.map(g => {
                   const movsG = facturasDeGuia(g);
                   const mov = movsG[0] || null;
+                  const pendG = pendientesDe(g);
                   return (
                     <tr key={g.id}>
                       <td style={{ fontWeight: 600, fontSize: 12 }}>{g.serie_correlativo || '—'}
@@ -503,6 +580,19 @@ function GuiasRemisionPage({ showToast }) {
                             <JxIcon name="link" size={10} /> Vincular factura
                           </button>
                         ) : <span style={{ fontSize: 10.5, color: 'var(--amber)' }}>sin vincular</span>}
+                        {/* Fuera de la rama de arriba a propósito: una guía cuyas
+                            referencias están TODAS pendientes no tiene ninguna
+                            factura vinculada y igual tiene que avisar. */}
+                        {pendG.length > 0 && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginTop: 3 }}>
+                            {pendG.map(p => (
+                              <span key={p.doc} className="badge" style={{ background: 'var(--amber)', color: '#000', fontSize: 8.5 }}
+                                title="La guía la referencia pero esa factura todavía no está cargada. Se vinculará sola cuando la subas.">
+                                ⏳ falta {p.doc}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </td>
                       <td style={{ textAlign: 'right' }}>
                         <button className="btn btn-ghost btn-xs" title="Ver el PDF de la guía" onClick={() => abrirEvidencia(g)}>📎</button>

@@ -276,3 +276,144 @@ export function matchFacturaDeGuia(guia, movimientos, opts = {}) {
   if (cands.length > 1 && cands[0].score === cands[1].score) return null;
   return { mov: cands[0].mov, confianza: cands[0].confianza };
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// PENDIENTES EN LOS DOS SENTIDOS (pedido de Gabriel, 1-sep)
+//
+// El vínculo casi nunca se cierra de una sola vez:
+//  · Una guía referencia 3 facturas y solo 2 están cargadas → la 3ª queda
+//    PENDIENTE y se resuelve sola cuando esa factura entre al sistema.
+//  · Una factura se va cubriendo con guías sucesivas → mientras quede
+//    material facturado sin trasladar, FALTA una guía por subir.
+//
+// Nada de esto se persiste: se DERIVA de doc_referencia, de los vínculos y
+// de las cantidades. Así se corrige solo cuando aparece el documento que
+// faltaba, sin estados que se queden viejos (mismo criterio que
+// facturasQueRequierenGuia y que el stock desde movimientos).
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Estado de CADA factura que la guía dice amparar.
+ * @returns [{ serie, correlativo, doc, estado, mov, confianza }]
+ *   estado: 'vinculada'    ya está atada a esta guía
+ *         | 'sin_vincular' la factura existe pero todavía no se vinculó
+ *         | 'ausente'      la factura NO está en el sistema → pendiente
+ * @param opts igual que sugerirFacturasParaGuia (rucsGrupo, rucCompanyDe, vinculos)
+ */
+export function referenciasDeGuia(guia, movimientos, opts = {}) {
+  const refs = normalizarDocs(guia?.doc_referencia);
+  if (!refs.length) return [];
+  const vinculadas = indexarVinculos(opts.vinculos).porGuia.get(guia?.id) || new Set();
+  const movById = new Map((movimientos || []).map(m => [m.id, m]));
+  // Las candidatas ya traen aplicados los cercos de emisor y dirección, así
+  // que una factura del proveedor equivocado con el mismo número NO cuenta
+  // como "la referencia existe".
+  const cands = sugerirFacturasParaGuia(guia, movimientos, opts);
+  const mismoDoc = (mv, ref) => {
+    const d = normalizarDoc(mv?.document_number);
+    return !!d && d.serie === ref.serie && d.correlativo === ref.correlativo;
+  };
+  return refs.map(ref => {
+    const doc = `${ref.serie}-${ref.correlativo}`;
+    for (const id of vinculadas) {
+      const mv = movById.get(id);
+      if (mv && mismoDoc(mv, ref)) return { ...ref, doc, estado: 'vinculada', mov: mv, confianza: null };
+    }
+    const c = cands.find(x => mismoDoc(x.mov, ref));
+    if (c) return { ...ref, doc, estado: 'sin_vincular', mov: c.mov, confianza: c.confianza };
+    return { ...ref, doc, estado: 'ausente', mov: null, confianza: null };
+  });
+}
+
+/** Solo las referencias cuya factura todavía NO está en el sistema. */
+export function referenciasPendientes(guia, movimientos, opts = {}) {
+  return referenciasDeGuia(guia, movimientos, opts).filter(r => r.estado === 'ausente');
+}
+
+/**
+ * El camino inverso, para resolver el pendiente en cuanto aparece: ¿qué guías
+ * estaban esperando ESTA factura? Se llama al confirmar una factura nueva.
+ * Aplica los mismos cercos (emisor coincidente, dirección venta/compra) para
+ * no auto-vincular la guía de otro emisor que reusa la serie.
+ * @returns guías que la referencian y todavía no están vinculadas a ella
+ */
+export function guiasEsperandoFactura(mov, guias, opts = {}) {
+  const doc = normalizarDoc(mov?.document_number);
+  if (!doc) return [];
+  const idx = indexarVinculos(opts.vinculos);
+  return (guias || []).filter(g => {
+    if (!g || g.deleted_at) return false;
+    if ((idx.porGuia.get(g.id) || new Set()).has(mov.id)) return false;   // ya vinculada
+    if (!normalizarDocs(g.doc_referencia).some(r => r.serie === doc.serie && r.correlativo === doc.correlativo)) return false;
+    // El cerco lo aplica el propio matcher: si esta factura no es candidata
+    // válida para la guía (emisor contradicho o dirección equivocada), no la
+    // vinculamos por más que el número coincida.
+    return sugerirFacturasParaGuia(g, [mov], opts).some(c => c.mov.id === mov.id && c.score >= 2);
+  });
+}
+
+const numG = (v) => Number(v) || 0;
+
+/**
+ * ¿La(s) guía(s) vinculadas a una factura cubren todo lo facturado?
+ * Compara CANTIDADES por descripción+unidad: lo que falta por trasladar es la
+ * señal de que todavía falta subir una guía.
+ *
+ * Los normalizadores se INYECTAN (normDesc / normUnidad) para no acoplar esta
+ * lib — que es pura y sin imports — con insumo-correlacion/inventario-empresa.
+ *
+ * @returns {
+ *   aplica       false si la factura no tiene bienes que trasladar (solo servicios o sin ítems)
+ *   sinGuias     no hay ninguna guía vinculada todavía
+ *   sinCruce     hay guías pero NINGUNA línea cruzó por descripción → no se puede
+ *                opinar sobre cantidades (NO afirmamos que falte material)
+ *   completa     todo lo facturado está trasladado
+ *   lineas       [{ descripcion, unidad, facturado, trasladado, falta }]
+ *   faltantes    las líneas con falta > 0
+ * }
+ */
+export function coberturaDeGuias(mov, guiasVinculadas, itemsDe, opts = {}) {
+  const normDesc = opts.normDesc || ((s) => String(s || '').toLowerCase().trim());
+  const normUni = opts.normUnidad || ((u) => String(u || '').toLowerCase().trim());
+  const clave = (d, u) => `${normDesc(d)}|${normUni(u)}`;
+
+  const items = ((itemsDe ? itemsDe(mov) : []) || [])
+    .filter(it => it && it.tipo_insumo !== 'servicio' && numG(it.cantidad) > 0);
+  if (!items.length) return { aplica: false, sinGuias: false, sinCruce: false, completa: true, lineas: [], faltantes: [] };
+
+  const guias = (guiasVinculadas || []).filter(g => g && !g.deleted_at);
+  const trasladado = new Map();
+  for (const g of guias) {
+    for (const it of (g.items || [])) {
+      if (!it) continue;
+      const k = clave(it.descripcion, it.unidad);
+      trasladado.set(k, (trasladado.get(k) || 0) + numG(it.cantidad));
+    }
+  }
+
+  const lineas = items.map(it => {
+    const k = clave(it.descripcion, it.unidad);
+    const facturado = numG(it.cantidad);
+    const tras = trasladado.get(k) || 0;
+    return {
+      descripcion: it.descripcion, unidad: it.unidad,
+      facturado, trasladado: tras,
+      // Traslados de más (guía que ampara varias facturas) no son un faltante.
+      falta: Math.max(0, facturado - tras),
+    };
+  });
+
+  const hayItemsDeGuia = trasladado.size > 0;
+  const cruzoAlguna = lineas.some(l => l.trasladado > 0);
+  const faltantes = lineas.filter(l => l.falta > 0.0001);
+  return {
+    aplica: true,
+    sinGuias: guias.length === 0,
+    // Guías cargadas cuyos ítems no matchean NINGUNA línea de la factura: casi
+    // siempre es que el OCR escribió las descripciones distinto, no que falte
+    // material. Se reporta aparte para no dar una alarma falsa.
+    sinCruce: guias.length > 0 && hayItemsDeGuia && !cruzoAlguna,
+    completa: faltantes.length === 0,
+    lineas, faltantes,
+  };
+}

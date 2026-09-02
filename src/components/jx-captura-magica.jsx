@@ -13,7 +13,8 @@ import { derivarTypeContable } from "../lib/clasificacion-contable.js";
 // dinámico de confirmarGuia y lo comparte con jx-guias, así que traerlo acá no
 // suma chunks y permite calcular las facturas candidatas en un useMemo (la
 // recomendación tiene que estar a la vista ANTES de confirmar, no después).
-import { sugerirFacturasParaGuia, clasificarOrigenGuia } from "../lib/guias.js";
+import { sugerirFacturasParaGuia, clasificarOrigenGuia, guiasEsperandoFactura,
+         referenciasPendientes } from "../lib/guias.js";
 import {
   parseObservacionCampo, filtrarBandeja, esFaltaMigracion164,
   ESTADO_PENDIENTE, ESTADO_LEIDA, ESTADO_REGISTRADA, ESTADO_DESCARTADA,
@@ -56,13 +57,18 @@ function candidatasDeGuia(r, movs, companies) {
   const rucsGrupo = new Set(vivas.filter(c => c.ruc).map(c => normalizarRuc(c.ruc)));
   const rucPorCompany = new Map(vivas.map(c => [c.id, normalizarRuc(c.ruc)]));
   const guia = { id: null, doc_referencia: r?.guia_doc_referencia, emisor_ruc: r?.proveedor_ruc };
+  const opts = {
+    rucsGrupo,
+    // En una VENTA el emisor es NUESTRA empresa (company_id), no el tercero.
+    rucCompanyDe: (m) => rucPorCompany.get(m.company_id) || '',
+  };
   return {
     origen: clasificarOrigenGuia(guia, rucsGrupo),
-    candidatas: sugerirFacturasParaGuia(guia, movs || [], {
-      rucsGrupo,
-      // En una VENTA el emisor es NUESTRA empresa (company_id), no el tercero.
-      rucCompanyDe: (m) => rucPorCompany.get(m.company_id) || '',
-    }),
+    candidatas: sugerirFacturasParaGuia(guia, movs || [], opts),
+    // Facturas que la guía dice amparar y que TODAVÍA no están cargadas: no
+    // son un error ni bloquean nada, quedan pendientes y se vinculan solas
+    // cuando esa factura entre por Captura Mágica.
+    pendientes: referenciasPendientes(guia, movs || [], opts),
   };
 }
 
@@ -1264,6 +1270,51 @@ function CapturaMagicaPage({ showToast }) {
 
   // ── Confirmar e insertar en DB ──────────────────────────────
   const enProcesoRef = uRCM(new Set());   // ids de items en confirmación (anti doble-submit)
+  // Cierra los pendientes del sentido guía → factura: al entrar una factura
+  // nueva, busca las guías que la referenciaban y no podían vincularse porque
+  // todavía no existía, y las vincula. Aplica los mismos cercos que el resto
+  // (emisor coincidente y dirección venta/compra), así que una factura de otro
+  // proveedor que reusa la serie NO cierra el pendiente ajeno.
+  const resolverGuiasPendientes = async (mov, esPrueba) => {
+    const guias = await window.__db.guias_remision
+      .filter(g => !g.deleted_at && (esPrueba ? g.demo === true : g.demo !== true)).toArray();
+    if (!guias.length) return;
+    const vinculos = await window.__db.guia_factura
+      .filter(v => !v.deleted_at && (esPrueba ? v.demo === true : v.demo !== true)).toArray();
+    const vivas = (companies || []).filter(c => !c.deleted_at);
+    const rucsGrupo = new Set(vivas.filter(c => c.ruc).map(c => normalizarRuc(c.ruc)));
+    const rucPorCompany = new Map(vivas.map(c => [c.id, normalizarRuc(c.ruc)]));
+
+    const esperando = guiasEsperandoFactura(mov, guias, {
+      vinculos, rucsGrupo, rucCompanyDe: (m) => rucPorCompany.get(m.company_id) || '',
+    });
+    if (!esperando.length) return;
+
+    const ahora = new Date().toISOString();
+    await window.__db.guia_factura.bulkAdd(esperando.map(g => ({
+      id: window.__newId(), guia_id: g.id, accounting_movement_id: mov.id,
+      origen: 'auto', confianza: 'alta',
+      created_by: userId, updated_by: userId, created_at: ahora, updated_at: ahora, version: 1,
+      idempotency_key: `gf_${g.id}_${mov.id}`,
+      ...(esPrueba ? { demo: true, sync_status: 'synced' } : { sync_status: 'pending_create' }),
+    })));
+    // Espejo legacy solo para las guías que aún no tenían ninguno.
+    for (const g of esperando) {
+      if (g.accounting_movement_id) continue;
+      await window.__db.guias_remision.update(g.id, {
+        accounting_movement_id: mov.id, updated_at: ahora, updated_by: userId,
+        version: (g.version ?? 0) + 1,
+        sync_status: g.demo === true ? 'synced'
+          : (g.sync_status === 'pending_create' ? 'pending_create' : 'pending_update'),
+      });
+    }
+    try { await window.__logAudit?.({ action: 'update', table: 'guia_factura', recordId: mov.id,
+      reason: `Factura ${mov.document_number || ''} cerró el pendiente de ${esperando.length} guía(s): ${esperando.map(g => g.serie_correlativo).join(', ')}` }); } catch {}
+    window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'guia_factura' } }));
+    window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'guias_remision' } }));
+    showToast(`🔗 Esta factura la esperaban ${esperando.length} guía(s) de remisión: ${esperando.map(g => g.serie_correlativo).join(', ')}. Quedaron vinculadas.`, 'green');
+  };
+
   // Confirmar una GUÍA DE REMISIÓN: crea la fila en guias_remision + la
   // evidencia PDF (tipo 'guia_remision') + los vínculos a las facturas que el
   // usuario dejó marcadas en la revisión (tabla guia_factura, N:M — una guía
@@ -2087,6 +2138,15 @@ function CapturaMagicaPage({ showToast }) {
       try { await window.__logAudit?.({ action:'insert', table:'accounting_movements', recordId: accId,
         newData: { tipo: r.tipo_documento, doc: r.serie_correlativo, total: r.total, oc: r.vincular_a_oc },
         reason:'Captura mágica · ingreso comprobante' + (r.vincular_a_oc ? ' (vinculado a OC)' : '') }); } catch {}
+
+      // ── Guías que ESTABAN ESPERANDO esta factura ──
+      // Caso real: una guía ampara 3 facturas, se cargaron 2 y la tercera
+      // quedó pendiente. Al entrar la que faltaba se cierra el vínculo sola,
+      // sin que nadie tenga que acordarse de volver a la guía.
+      try {
+        const movFresh = await window.__db.accounting_movements.get(accId);
+        if (movFresh) await resolverGuiasPendientes(movFresh, esPruebaCM);
+      } catch (e) { console.warn('[guias pendientes]', e?.message); }
 
       // Cierre del reemplazo: la VENTA interna NO se re-apunta al movimiento
       // nuevo. Hacerlo creaba un CICLO de FK (compra real pending_create →
@@ -2946,10 +3006,10 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
   // Guía de remisión: origen (emitida/recibida) y facturas candidatas. Se
   // recalcula al tipear el Doc. Ref. o corregir el RUC del emisor, así que la
   // recomendación se actualiza en vivo mientras se revisa.
-  const { origen: guiaOrigen, candidatas: guiaCands } = uMCM(
+  const { origen: guiaOrigen, candidatas: guiaCands, pendientes: guiaPendientes } = uMCM(
     () => (r?.tipo_documento === 'guia_remision'
       ? candidatasDeGuia(r, movs, companies)
-      : { origen: 'desconocida', candidatas: [] }),
+      : { origen: 'desconocida', candidatas: [], pendientes: [] }),
     [r?.tipo_documento, r?.guia_doc_referencia, r?.proveedor_ruc, movs, companies]);
   // Selección efectiva: lo que el usuario marcó, o la preselección si todavía
   // no tocó nada. NO se persiste con un efecto a propósito — un efecto que
@@ -3186,6 +3246,24 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
                     <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 5 }}>
                       Vienen marcadas solo las de confianza <b>alta</b> (la guía las referencia y el emisor coincide). Las demás se muestran para que sumes las que correspondan — una misma guía puede amparar varias facturas.
                     </div>
+                    {/* Referencias que la guía declara y que todavía NO están en
+                        el sistema: no bloquean nada, quedan pendientes y se
+                        vinculan solas cuando esa factura entre. */}
+                    {guiaPendientes.length > 0 && (
+                      <div style={{ marginTop: 8, padding: '7px 10px', borderRadius: 5,
+                        background: 'color-mix(in srgb, var(--amber) 12%, transparent)',
+                        border: '1px solid color-mix(in srgb, var(--amber) 40%, transparent)' }}>
+                        <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--amber)' }}>
+                          ⏳ {guiaPendientes.length === 1 ? 'Falta 1 factura' : `Faltan ${guiaPendientes.length} facturas`} que esta guía dice amparar
+                        </div>
+                        <div style={{ fontSize: 11, marginTop: 2 }}>
+                          {guiaPendientes.map(p => p.doc).join(', ')} — todavía no está{guiaPendientes.length === 1 ? '' : 'n'} en el sistema.
+                        </div>
+                        <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3 }}>
+                          Confirmá igual: la guía queda registrada con lo que sí existe y el resto se vincula SOLO cuando subas esa factura por Captura Mágica.
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
