@@ -9,6 +9,11 @@ import { getCurrentMode } from "../lib/app-mode-core.js";
 import { supabase } from "../lib/supabase";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { derivarTypeContable } from "../lib/clasificacion-contable.js";
+// Guías: import ESTÁTICO. guias.js ya era un chunk propio por el import()
+// dinámico de confirmarGuia y lo comparte con jx-guias, así que traerlo acá no
+// suma chunks y permite calcular las facturas candidatas en un useMemo (la
+// recomendación tiene que estar a la vista ANTES de confirmar, no después).
+import { sugerirFacturasParaGuia, clasificarOrigenGuia } from "../lib/guias.js";
 import {
   parseObservacionCampo, filtrarBandeja, esFaltaMigracion164,
   ESTADO_PENDIENTE, ESTADO_LEIDA, ESTADO_REGISTRADA, ESTADO_DESCARTADA,
@@ -38,6 +43,33 @@ const RXH_CARGO_OPCIONES = [
 ];
 const RXH_CARGO_LABEL = Object.fromEntries(RXH_CARGO_OPCIONES.map(o => [o.value, o.label]));
 const { useState: uSCM, useMemo: uMCM, useEffect: uECM, useRef: uRCM } = React;
+
+// ── Guías de remisión: candidatas a vincular ──────────────────────
+// Vive a nivel de módulo (no dentro de un componente) porque lo usan DOS
+// lugares que tienen que coincidir exactamente: el panel de revisión, que las
+// muestra, y confirmarGuia, que las persiste cuando el usuario confirmó sin
+// tocar nada (ahí `guia_facturas_sel` viene undefined y hay que reproducir la
+// misma selección por defecto). Si divergieran, se guardaría algo distinto de
+// lo que la persona vio en pantalla.
+function candidatasDeGuia(r, movs, companies) {
+  const vivas = (companies || []).filter(c => !c.deleted_at);
+  const rucsGrupo = new Set(vivas.filter(c => c.ruc).map(c => normalizarRuc(c.ruc)));
+  const rucPorCompany = new Map(vivas.map(c => [c.id, normalizarRuc(c.ruc)]));
+  const guia = { id: null, doc_referencia: r?.guia_doc_referencia, emisor_ruc: r?.proveedor_ruc };
+  return {
+    origen: clasificarOrigenGuia(guia, rucsGrupo),
+    candidatas: sugerirFacturasParaGuia(guia, movs || [], {
+      rucsGrupo,
+      // En una VENTA el emisor es NUESTRA empresa (company_id), no el tercero.
+      rucCompanyDe: (m) => rucPorCompany.get(m.company_id) || '',
+    }),
+  };
+}
+
+// Preselección: SOLO las de confianza alta (la guía las referencia y el emisor
+// coincide). Las medias/bajas se muestran pero no se marcan solas — las series
+// F001-… se repiten entre emisores y un vínculo equivocado ensucia el cruce.
+const seleccionPorDefectoGuia = (cands) => cands.filter(c => c.confianza === 'alta').map(c => c.mov.id);
 
 // ╔════════════════════════════════════════════════════════════╗
 // ║  CAPTURA MÁGICA — bandeja IA de comprobantes               ║
@@ -1233,9 +1265,10 @@ function CapturaMagicaPage({ showToast }) {
   // ── Confirmar e insertar en DB ──────────────────────────────
   const enProcesoRef = uRCM(new Set());   // ids de items en confirmación (anti doble-submit)
   // Confirmar una GUÍA DE REMISIÓN: crea la fila en guias_remision + la
-  // evidencia PDF (tipo 'guia_remision') + auto-match a la factura por el
-  // "Doc. Ref." (vínculo bidireccional; si es ambiguo queda sin vincular y se
-  // resuelve a mano en la página Guías de Remisión).
+  // evidencia PDF (tipo 'guia_remision') + los vínculos a las facturas que el
+  // usuario dejó marcadas en la revisión (tabla guia_factura, N:M — una guía
+  // puede amparar varias facturas). Lo que no se vincule acá se resuelve
+  // después en la página Guías de Remisión.
   const confirmarGuia = async (it, r) => {
     if (!r.serie_correlativo?.trim()) { showToast('Falta la serie de la guía (ej. T001-000309)', 'red'); return; }
     // Anti doble-submit: el lock (enProcesoRef) lo toma y libera el WRAPPER
@@ -1246,7 +1279,6 @@ function CapturaMagicaPage({ showToast }) {
     setItems(prev => prev.map(x => x.id === it.id ? { ...x, status: 'procesando' } : x));
     try {
       const { getCurrentMode } = await import('../lib/app-mode-core.js');
-      const { matchFacturaDeGuia } = await import('../lib/guias.js');
       const isPrueba = getCurrentMode() === 'prueba';
       const now = new Date().toISOString();
       const guiaId = window.__newId();
@@ -1263,9 +1295,14 @@ function CapturaMagicaPage({ showToast }) {
       // Proveedor: SOLO usar existente por RUC (no se crean proveedores desde guías).
       const rucProv = normalizarRuc(r.proveedor_ruc);
       const provMatch = rucProv ? (proveedoresDB || []).find(p => !p.deleted_at && normalizarRuc(p.ruc) === rucProv) : null;
-      // Auto-match a la factura (movs FRESCOS de Dexie, no del hook).
+      // Facturas a vincular (movs FRESCOS de Dexie, no del hook). Se respeta lo
+      // que el usuario marcó en la revisión; si confirmó sin tocar nada, se
+      // reproduce la MISMA preselección que vio en pantalla (solo confianza alta).
       const movsFrescos = await window.__db.accounting_movements.filter(m => !m.deleted_at && (isPrueba ? m.demo === true : m.demo !== true)).toArray();
-      const match = matchFacturaDeGuia({ doc_referencia: r.guia_doc_referencia, emisor_ruc: r.proveedor_ruc }, movsFrescos);
+      const { candidatas } = candidatasDeGuia(r, movsFrescos, companies || []);
+      const idsPorVincular = (r.guia_facturas_sel ?? seleccionPorDefectoGuia(candidatas))
+        .filter(id => movsFrescos.some(m => m.id === id));   // descarta ids que ya no existen
+      const confianzaDe = new Map(candidatas.map(c => [c.mov.id, c.confianza]));
       // Evidencia PDF (tipo guia_remision — visible para almacén, NO contable).
       const evidenciaId = window.__newId();
       let evidenciaOk = false;
@@ -1291,7 +1328,10 @@ function CapturaMagicaPage({ showToast }) {
         punto_partida: r.guia_punto_partida || null, punto_llegada: r.guia_punto_llegada || null,
         motivo_traslado: r.guia_motivo || null,
         doc_referencia: r.guia_doc_referencia || null,
-        accounting_movement_id: match?.mov?.id || null,
+        // Espejo del PRIMER vínculo. La fuente de verdad es guia_factura (mig
+        // 165); esto queda para los clientes PWA con bundle viejo cacheado,
+        // que solo saben leer esta columna.
+        accounting_movement_id: idsPorVincular[0] || null,
         items: (r.items || []).map(x => ({ descripcion: x.descripcion, cantidad: x.cantidad, unidad: x.unidad })),
         transportista: r.guia_transportista || null,
         evidencia_id: evidenciaOk ? evidenciaId : null, observaciones: null,
@@ -1299,8 +1339,23 @@ function CapturaMagicaPage({ showToast }) {
         idempotency_key: `guia_${normalizarRuc(r.proveedor_ruc) || 'x'}_${serieN || guiaId}`,
         ...(isPrueba ? { demo: true, sync_status: 'synced' } : { sync_status: 'pending_create' }),
       });
-      try { await window.__logAudit?.({ action: 'create', table: 'guias_remision', recordId: guiaId, reason: `Guía ${r.serie_correlativo} vía Captura Mágica${match ? ' · vinculada a ' + (match.mov.document_number || 'factura') : ''}` }); } catch {}
+      // Vínculos N:M guía↔factura (mig 165). Una guía puede amparar varias
+      // facturas, así que se escribe una fila por cada una.
+      if (idsPorVincular.length) {
+        const ahora = new Date().toISOString();
+        await window.__db.guia_factura.bulkAdd(idsPorVincular.map(movId => ({
+          id: window.__newId(), guia_id: guiaId, accounting_movement_id: movId,
+          origen: 'captura_magica', confianza: confianzaDe.get(movId) || null,
+          created_by: userId, updated_by: userId, created_at: ahora, updated_at: ahora, version: 1,
+          idempotency_key: `gf_${guiaId}_${movId}`,
+          ...(isPrueba ? { demo: true, sync_status: 'synced' } : { sync_status: 'pending_create' }),
+        })));
+      }
+      const docsVinculados = idsPorVincular
+        .map(id => movsFrescos.find(m => m.id === id)?.document_number || id).join(', ');
+      try { await window.__logAudit?.({ action: 'create', table: 'guias_remision', recordId: guiaId, reason: `Guía ${r.serie_correlativo} vía Captura Mágica${docsVinculados ? ' · vinculada a ' + docsVinculados : ''}` }); } catch {}
       window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'guias_remision' } }));
+      if (idsPorVincular.length) window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'guia_factura' } }));
       try { window.dispatchEvent(new Event('online')); } catch {}
       // 'confirmado' es el estado terminal que la bandeja SÍ conoce (badge ✓) y
       // que saveItemToDB excluye de captura_magica_pending; borrar el item
@@ -2888,6 +2943,20 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
   const upd = (patch) => onChange({ ...r, ...patch });
   const [previewUrl, setPreviewUrl] = uSCM(null);
 
+  // Guía de remisión: origen (emitida/recibida) y facturas candidatas. Se
+  // recalcula al tipear el Doc. Ref. o corregir el RUC del emisor, así que la
+  // recomendación se actualiza en vivo mientras se revisa.
+  const { origen: guiaOrigen, candidatas: guiaCands } = uMCM(
+    () => (r?.tipo_documento === 'guia_remision'
+      ? candidatasDeGuia(r, movs, companies)
+      : { origen: 'desconocida', candidatas: [] }),
+    [r?.tipo_documento, r?.guia_doc_referencia, r?.proveedor_ruc, movs, companies]);
+  // Selección efectiva: lo que el usuario marcó, o la preselección si todavía
+  // no tocó nada. NO se persiste con un efecto a propósito — un efecto que
+  // escribe el review en cada render del modal pisaría ediciones en curso;
+  // confirmarGuia aplica exactamente el mismo default.
+  const guiaSel = r?.guia_facturas_sel ?? seleccionPorDefectoGuia(guiaCands);
+
   // Verificación del RUC del emisor contra SUNAT (cacheada). Si el nombre oficial
   // difiere del capturado por el OCR, recomendamos el cambio — el usuario decide.
   const [sunatCheck, setSunatCheck] = uSCM(null); // { razonSocial, mismatch } | null
@@ -3043,22 +3112,79 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
                 <label className="flabel">Serie - Correlativo</label>
                 <input className="fi" value={r.serie_correlativo} onChange={e=>upd({ serie_correlativo: e.target.value })}/>
               </div>
-              {/* GUÍA DE REMISIÓN: referencia a la factura + preview del auto-match. */}
+              {/* GUÍA DE REMISIÓN: origen (emitida/recibida) + facturas candidatas
+                  a la vista para vincular acá mismo (una guía puede amparar
+                  VARIAS facturas — mig 165). */}
               {r.tipo_documento === 'guia_remision' && (
-                <div style={{ gridColumn: '1/-1', padding: '10px 12px', background: 'rgba(52,152,219,0.08)', border: '1px solid rgba(52,152,219,0.3)', borderRadius: 6 }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>📄 Guía de remisión — se guarda en el apartado "Guías de Remisión" (no crea movimiento contable)</div>
+                <div style={{ gridColumn: '1/-1', padding: '10px 12px', background: 'color-mix(in srgb, var(--blue) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--blue) 30%, transparent)', borderRadius: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700 }}>📄 Guía de remisión — se guarda en "Guías de Remisión" (no crea movimiento contable)</div>
+                    {/* Emitida = la emitió una empresa NUESTRA (por RUC del emisor);
+                        recibida = viene de un proveedor. Determina contra qué
+                        facturas se busca: las ventas o las compras. */}
+                    <span className="badge" style={{
+                      background: guiaOrigen === 'emitida' ? 'var(--green)' : guiaOrigen === 'recibida' ? 'var(--blue)' : 'var(--tm)',
+                      color: '#000', fontSize: 10,
+                    }}>
+                      {guiaOrigen === 'emitida' ? '📤 EMITIDA (empresa del grupo)'
+                        : guiaOrigen === 'recibida' ? '📥 RECIBIDA (proveedor)'
+                        : '❓ ORIGEN SIN DETERMINAR'}
+                    </span>
+                  </div>
+                  {guiaOrigen === 'desconocida' && (
+                    <div style={{ fontSize: 11, color: 'var(--amber)', marginBottom: 6 }}>
+                      Sin RUC de emisor no se puede saber si la emitimos nosotros o la recibimos, y la búsqueda de facturas no se puede acotar. Completá el RUC del emisor más abajo.
+                    </div>
+                  )}
                   <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
                     <div>
-                      <label className="flabel">Factura referenciada (Doc. Ref.)</label>
-                      <input className="fi" value={r.guia_doc_referencia || ''} placeholder="Ej: F001-025131"
-                        onChange={e => upd({ guia_doc_referencia: e.target.value })} style={{ width: 170 }} />
+                      <label className="flabel">Factura(s) referenciada(s) (Doc. Ref.)</label>
+                      <input className="fi" value={r.guia_doc_referencia || ''} placeholder="Ej: F001-025131, F001-025132"
+                        onChange={e => upd({ guia_doc_referencia: e.target.value })} style={{ width: 230 }} />
                     </div>
                     <div>
                       <label className="flabel">Fecha traslado</label>
                       <input className="fi" type="date" value={r.guia_fecha_traslado || ''} onChange={e => upd({ guia_fecha_traslado: e.target.value })} style={{ width: 150 }} />
                     </div>
-                    <div style={{ fontSize: 11, color: 'var(--tm)', flex: 1, minWidth: 180 }}>
-                      Al confirmar se busca la factura por esa referencia y quedan VINCULADAS (ida y vuelta). Si no se encuentra o es ambigua, la vinculás después en Guías de Remisión.
+                  </div>
+
+                  {/* ── Facturas candidatas ── */}
+                  <div style={{ marginTop: 10 }}>
+                    <div style={{ fontSize: 11.5, fontWeight: 700, marginBottom: 4 }}>
+                      Facturas a vincular {guiaCands.length > 0 && <span style={{ color: 'var(--tm)', fontWeight: 500 }}>· {guiaSel.length} de {guiaCands.length} seleccionada(s)</span>}
+                    </div>
+                    {guiaCands.length === 0 ? (
+                      <div style={{ fontSize: 11, color: 'var(--tm)' }}>
+                        No se encontró ninguna factura que coincida. Podés confirmar igual: la guía queda registrada sin vincular y la vinculás después en Guías de Remisión.
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 190, overflowY: 'auto' }}>
+                        {guiaCands.map(c => {
+                          const marcada = guiaSel.includes(c.mov.id);
+                          return (
+                            <label key={c.mov.id} style={{
+                              display: 'flex', alignItems: 'center', gap: 8, padding: '5px 8px', borderRadius: 5,
+                              cursor: 'pointer', background: marcada ? 'color-mix(in srgb, var(--green) 12%, transparent)' : 'var(--bg-c2)',
+                              border: `1px solid ${marcada ? 'color-mix(in srgb, var(--green) 45%, transparent)' : 'var(--border)'}`,
+                            }}>
+                              <input type="checkbox" checked={marcada}
+                                onChange={() => upd({ guia_facturas_sel: marcada ? guiaSel.filter(x => x !== c.mov.id) : [...guiaSel, c.mov.id] })} />
+                              <span style={{ fontWeight: 700, fontSize: 11.5 }}>{c.mov.document_number || '(sin número)'}</span>
+                              <span className="badge" style={{
+                                background: c.confianza === 'alta' ? 'var(--green)' : c.confianza === 'media' ? 'var(--amber)' : 'var(--tm)',
+                                color: '#000', fontSize: 9,
+                              }}>{c.confianza}</span>
+                              <span style={{ fontSize: 10.5, color: 'var(--tm)', flex: 1, minWidth: 120 }}>
+                                {c.motivo} · {c.mov.third_party_name || ''} {c.mov.date ? `· ${c.mov.date}` : ''}
+                              </span>
+                              <span style={{ fontSize: 11, fontWeight: 600 }}>{fmtCurMagic(c.mov.amount, c.mov.currency)}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 5 }}>
+                      Vienen marcadas solo las de confianza <b>alta</b> (la guía las referencia y el emisor coincide). Las demás se muestran para que sumes las que correspondan — una misma guía puede amparar varias facturas.
                     </div>
                   </div>
                 </div>

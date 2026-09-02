@@ -63,6 +63,15 @@ export const db = new Dexie('JarvexDB');
 // Versión 46: config GLOBAL de la app clave→valor (mig 159). Primera clave:
 // 'sesion_timeout_min' (auto-cierre de sesión por inactividad, editable por
 // admin en Administración). FK-less. Aditivo.
+// Versión 47: vínculo N:M guía de remisión ↔ factura (mig 165). Una guía puede
+// amparar varias facturas y una factura necesitar varias guías; la FK única
+// guias_remision.accounting_movement_id solo soportaba la segunda mitad.
+// Esta tabla es la fuente de verdad; la columna vieja queda como espejo del
+// primer vínculo para los clientes PWA con bundle cacheado. Aditivo.
+db.version(47).stores({
+  guia_factura: 'id, guia_id, accounting_movement_id, deleted_at, sync_status',
+});
+
 db.version(46).stores({
   app_config: 'id, clave, deleted_at, sync_status',
 });

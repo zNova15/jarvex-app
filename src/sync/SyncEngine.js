@@ -109,6 +109,8 @@ const TRANSACTIONAL_TABLES = [
   'pagos_partes',
   // Guías de remisión: después de proveedores/companies/accounting_movements.
   'guias_remision',
+  // Vínculo N:M guía↔factura (mig 165): DESPUÉS de guias_remision, que es su FK.
+  'guia_factura',
   // Hilo de consulta almacén↔contabilidad (mig 148). FK-less (soft refs a
   // factura/ingreso) → sin orden ni FK_DEPS. NO va en TABLA_TO_MODULO: así el
   // push no se gatea por permiso de módulo y ambos roles pueden conversar.
@@ -163,6 +165,7 @@ const MASTER_TABLES = [
   { tabla: 'depositos_bancarizacion',      query: () => supabase.from('depositos_bancarizacion').select('*').is('deleted_at', null) },
   { tabla: 'pagos_partes',                 query: () => supabase.from('pagos_partes').select('*').is('deleted_at', null) },
   { tabla: 'guias_remision',               query: () => supabase.from('guias_remision').select('*').is('deleted_at', null) },
+  { tabla: 'guia_factura',                 query: () => supabase.from('guia_factura').select('*').is('deleted_at', null) },
   { tabla: 'puente_consultas',             query: () => supabase.from('puente_consultas').select('*').is('deleted_at', null) },
   { tabla: 'insumo_correlaciones',         query: () => supabase.from('insumo_correlaciones').select('*').is('deleted_at', null) },
   { tabla: 'app_config',                   query: () => supabase.from('app_config').select('*').is('deleted_at', null) },
@@ -965,6 +968,8 @@ const TABLA_TO_MODULO = {
   pagos_partes: 'Movs. Contables',
   // Guías de remisión: las sube Captura (contador/ayudante/admin con Captura-w).
   guias_remision: 'Movs. Contables',
+  // Mismo módulo que su tabla madre: quien puede subir la guía puede vincularla.
+  guia_factura: 'Movs. Contables',
   intercompany_transactions: 'Intercompany',
   trazabilidad_cadenas: 'Trazabilidad',
 };
@@ -1045,6 +1050,7 @@ const FK_DEPS = {
   pagos_partes:              [{ campo: 'pago_id', tabla: 'pagos' }, { campo: 'accounting_movement_id', tabla: 'accounting_movements' }, { campo: 'deposito_id', tabla: 'depositos_bancarizacion' }],
   depositos_bancarizacion:   [{ campo: 'company_id', tabla: 'companies' }],
   guias_remision:            [{ campo: 'company_id', tabla: 'companies' }, { campo: 'proveedor_id', tabla: 'proveedores' }, { campo: 'accounting_movement_id', tabla: 'accounting_movements' }],
+  guia_factura:              [{ campo: 'guia_id', tabla: 'guias_remision' }, { campo: 'accounting_movement_id', tabla: 'accounting_movements' }],
   movimientos_insumos_emergencia: [{ campo: 'insumo_emergencia_id', tabla: 'insumos_emergencia' }, { campo: 'responsable_id', tabla: 'personal' }, { campo: 'subcontratista_id', tabla: 'subcontratistas' }, { campo: 'proveedor_id', tabla: 'proveedores' }],
   asistencia:                [{ campo: 'personal_id', tabla: 'personal' }],
   // Un trabajador puede pertenecer a la cuadrilla de un subcontratista; si ese
@@ -2530,7 +2536,7 @@ async function repairTransactionalWatermarksOnce() {
 const _MASTERFIN_WM_REPAIR_KEY = 'jx_masterfin_wm_repair_v3';
 const _MASTERFIN_TABLES = [
   'accounting_movements', 'companies', 'pagos', 'pagos_partes',
-  'depositos_bancarizacion', 'intercompany_transactions', 'guias_remision',
+  'depositos_bancarizacion', 'intercompany_transactions', 'guias_remision', 'guia_factura',
   'conciliacion_vinculos', 'ordenes_intercompany',
   // Stock (el bug de reloj también ocultaba updates de stock_actual):
   'materiales', 'herramientas', 'stock_ubicaciones', 'stock_estados',

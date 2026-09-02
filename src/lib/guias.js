@@ -16,7 +16,67 @@ export function normalizarDoc(txt) {
   return { serie: m[1].replace(/\s+/g, ''), correlativo: Number(m[2]) };
 }
 
+/**
+ * TODAS las referencias de un "Doc. Ref." — una guía que ampara varias
+ * facturas las lista en el mismo campo ("F001-123, F001-124 y F001-125").
+ * normalizarDoc() se queda con la primera; para el vínculo N:M hacen falta
+ * todas. Deduplica por serie+correlativo preservando el orden de aparición.
+ */
+export function normalizarDocs(txt) {
+  const s = String(txt || '').toUpperCase();
+  const re = /([A-Z]{1,3}\s?\d{1,4})\s*[-/\s]\s*0*(\d{1,10})/g;
+  const out = [], vistos = new Set();
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    const doc = { serie: m[1].replace(/\s+/g, ''), correlativo: Number(m[2]) };
+    const k = `${doc.serie}|${doc.correlativo}`;
+    if (vistos.has(k)) continue;
+    vistos.add(k);
+    out.push(doc);
+  }
+  return out;
+}
+
 const rucLimpio = (r) => String(r || '').replace(/\D/g, '');
+
+/**
+ * Índice de los vínculos N:M (tabla guia_factura, mig 165).
+ * @param vinculos filas { guia_id, accounting_movement_id, deleted_at }
+ * @returns { porGuia: Map<guiaId, Set<movId>>, porFactura: Map<movId, Set<guiaId>> }
+ */
+export function indexarVinculos(vinculos) {
+  const porGuia = new Map(), porFactura = new Map();
+  for (const v of (vinculos || [])) {
+    if (!v || v.deleted_at || !v.guia_id || !v.accounting_movement_id) continue;
+    if (!porGuia.has(v.guia_id)) porGuia.set(v.guia_id, new Set());
+    porGuia.get(v.guia_id).add(v.accounting_movement_id);
+    if (!porFactura.has(v.accounting_movement_id)) porFactura.set(v.accounting_movement_id, new Set());
+    porFactura.get(v.accounting_movement_id).add(v.guia_id);
+  }
+  return { porGuia, porFactura };
+}
+
+/**
+ * ¿Es una VENTA el comprobante? (mismo criterio en todo el repo)
+ */
+const esVentaMov = (m) => (m?.clase || (m?.type === 'income' ? 'venta' : 'compra')) === 'venta';
+
+/**
+ * RUC de QUIEN EMITIÓ la factura. Es la pieza que faltaba para que las guías
+ * EMITIDAS matcheen: `third_party_ruc` es el TERCERO del comprobante, o sea el
+ * PROVEEDOR en una compra pero el CLIENTE en una venta. Comparar el emisor de
+ * la guía contra ese campo daba siempre "RUC contradicho" en las ventas, y las
+ * guías que emitimos nosotros no matcheaban NUNCA su factura.
+ *
+ * El invariante correcto es: quien traslada la mercadería es quien la vendió,
+ * así que el emisor de la guía == el emisor de la factura.
+ * @param rucCompanyDe (mov) => RUC de la empresa del grupo dueña del comprobante
+ */
+function rucEmisorDeFactura(mov, rucCompanyDe) {
+  return rucLimpio(esVentaMov(mov)
+    ? (rucCompanyDe ? rucCompanyDe(mov) : '')   // venta: emite NUESTRA empresa
+    : mov?.third_party_ruc);                    // compra: emite el proveedor
+}
 
 /**
  * Busca la factura que referencia la guía.
@@ -59,9 +119,15 @@ export function clasificarOrigenGuia(guia, rucsGrupo) {
  */
 export function facturasQueRequierenGuia(movs, guias, itemsDe, opts = {}) {
   const esEspejoAuto = opts.esEspejoAuto || (() => false);
-  const vinculadas = new Set(
-    (guias || []).filter(g => g && !g.deleted_at && g.accounting_movement_id).map(g => g.accounting_movement_id)
-  );
+  // Vínculos: la tabla guia_factura (mig 165) es la fuente de verdad. Si no se
+  // pasa, se cae a la columna vieja guias_remision.accounting_movement_id —
+  // hace falta mientras haya clientes PWA con bundle cacheado, y mantiene
+  // válidas las llamadas de dos argumentos.
+  const vinculadas = opts.vinculos
+    ? new Set(indexarVinculos(opts.vinculos).porFactura.keys())
+    : new Set(
+        (guias || []).filter(g => g && !g.deleted_at && g.accounting_movement_id).map(g => g.accounting_movement_id)
+      );
   const compras = [], ventas = [], sinDatos = [];
   for (const m of (movs || [])) {
     if (!m || m.deleted_at) continue;
@@ -97,13 +163,20 @@ export function facturasQueRequierenGuia(movs, guias, itemsDe, opts = {}) {
  *   aunque su doc_referencia coincida por casualidad).
  * @param rucsGrupo Set<string> de RUCs del grupo (obligatorio para ventas)
  */
-export function sugerirGuiasParaFactura(mov, guiasSinVincular, rucsGrupo) {
+export function sugerirGuiasParaFactura(mov, guiasSinVincular, rucsGrupo, opts = {}) {
   const doc = normalizarDoc(mov?.document_number);
   const rucMov = rucLimpio(mov?.third_party_ruc);
   const grupo = rucsGrupo instanceof Set ? rucsGrupo : new Set(rucsGrupo || []);
-  const esVenta = (mov?.clase || (mov?.type === 'income' ? 'venta' : 'compra')) === 'venta';
+  const esVenta = esVentaMov(mov);
+  // Con el vínculo N:M una guía YA vinculada a otra factura sigue siendo
+  // candidata para esta (justamente el caso "una guía ampara varias
+  // facturas"); lo único que se descarta es que ya esté vinculada a ESTA.
+  // Sin la tabla nueva se mantiene el criterio viejo (una guía, un vínculo).
+  const yaAqui = opts.vinculos
+    ? (indexarVinculos(opts.vinculos).porFactura.get(mov?.id) || new Set())
+    : null;
   return (guiasSinVincular || [])
-    .filter(g => g && !g.deleted_at && !g.accounting_movement_id)
+    .filter(g => g && !g.deleted_at && (yaAqui ? !yaAqui.has(g.id) : !g.accounting_movement_id))
     .map(g => {
       const ref = normalizarDoc(g.doc_referencia);
       const rucG = rucLimpio(g.emisor_ruc);
@@ -113,7 +186,11 @@ export function sugerirGuiasParaFactura(mov, guiasSinVincular, rucsGrupo) {
         return null;                                   // RUC contradicho en compras
       }
       let pri = 0;
-      if (doc && ref && ref.correlativo === doc.correlativo) pri = ref.serie === doc.serie ? 3 : 2;
+      // Varias referencias por guía: basta que UNA apunte a esta factura.
+      const refs = normalizarDocs(g.doc_referencia);
+      const hit = doc ? refs.find(r => r.correlativo === doc.correlativo) : null;
+      if (hit) pri = hit.serie === doc.serie ? 3 : 2;
+      else if (doc && ref && ref.correlativo === doc.correlativo) pri = ref.serie === doc.serie ? 3 : 2;
       else if (!esVenta && rucG && rucMov && rucG === rucMov) pri = 1;
       return { guia: g, pri };
     })
@@ -121,29 +198,81 @@ export function sugerirGuiasParaFactura(mov, guiasSinVincular, rucsGrupo) {
     .sort((a, b) => b.pri - a.pri || String(b.guia.fecha_emision || '').localeCompare(String(a.guia.fecha_emision || '')));
 }
 
-export function matchFacturaDeGuia(guia, movimientos) {
-  const ref = normalizarDoc(guia?.doc_referencia);
-  if (!ref) return null;
+/**
+ * TODAS las facturas candidatas de una guía, ordenadas de mejor a peor
+ * (pedido de Gabriel 1-sep: al subir una guía en Captura Mágica hay que
+ * MOSTRAR las facturas a las que debería vincularse, en vez de auto-vincular
+ * en silencio una sola — o ninguna cuando hay empate).
+ *
+ * Una guía puede amparar VARIAS facturas, así que se evalúan todas las
+ * referencias del "Doc. Ref." (normalizarDocs) y se devuelve una candidata
+ * por factura, no una sola ganadora.
+ *
+ * Cercos anti-vínculo-cruzado (las series F001-… se repiten ENTRE emisores):
+ *  - El emisor de la guía debe coincidir con el emisor de la factura
+ *    (ver rucEmisorDeFactura). RUC contradicho → descartada.
+ *  - Guía EMITIDA por el grupo → solo ventas. RECIBIDA → solo compras.
+ *    Si no se puede clasificar el origen, no se restringe la dirección.
+ *
+ * @param guia { id, doc_referencia, emisor_ruc }
+ * @param movimientos filas de accounting_movements
+ * @param opts {
+ *   rucsGrupo?: Set<string>            RUCs del grupo (para el origen y las ventas)
+ *   rucCompanyDe?: (mov) => string     RUC de la empresa dueña del comprobante
+ *   vinculos?: filas de guia_factura   para no re-sugerir lo ya vinculado
+ * }
+ * @returns [{ mov, confianza: 'alta'|'media'|'baja', score, motivo }]
+ */
+export function sugerirFacturasParaGuia(guia, movimientos, opts = {}) {
+  const { rucsGrupo, rucCompanyDe, vinculos } = opts;
+  const refs = normalizarDocs(guia?.doc_referencia);
   const rucGuia = rucLimpio(guia?.emisor_ruc);
-  const candidatos = [];
+  const origen = clasificarOrigenGuia(guia, rucsGrupo || new Set());
+  const yaVinculadas = indexarVinculos(vinculos).porGuia.get(guia?.id) || new Set();
+
+  const out = [];
   for (const mv of (movimientos || [])) {
     if (!mv || mv.deleted_at) continue;
-    const doc = normalizarDoc(mv.document_number);
-    if (!doc || doc.correlativo !== ref.correlativo) continue;
-    const serieOk = doc.serie === ref.serie;
-    const rucMov = rucLimpio(mv.third_party_ruc);
+    if (mv.payment_status === 'cancelled') continue;
+    if (yaVinculadas.has(mv.id)) continue;
+
+    // Dirección: lo que emitimos ampara lo que vendimos, y viceversa.
+    const venta = esVentaMov(mv);
+    if (origen === 'emitida' && !venta) continue;
+    if (origen === 'recibida' && venta) continue;
+
+    const rucMov = rucEmisorDeFactura(mv, rucCompanyDe);
     const ambosRuc = !!rucGuia && !!rucMov;
     const rucOk = ambosRuc && rucGuia === rucMov;
-    // RUC CONTRADICHO (ambos conocidos y distintos) → NO es candidato: las
-    // series (F001-…) se repiten ENTRE emisores; sin este descarte, la guía
-    // del proveedor A se auto-vinculaba a la factura F001-n del proveedor B.
-    if (ambosRuc && !rucOk) continue;
-    if (serieOk) candidatos.push({ mov: mv, score: rucOk ? 3 : 2 });
-    else if (rucOk) candidatos.push({ mov: mv, score: 1 });
+    if (ambosRuc && !rucOk) continue;           // RUC contradicho
+
+    const doc = normalizarDoc(mv.document_number);
+    const refIgual = doc && refs.some(r => r.correlativo === doc.correlativo && r.serie === doc.serie);
+    const refCorrel = doc && refs.some(r => r.correlativo === doc.correlativo);
+
+    let score = 0, motivo = '';
+    if (refIgual && rucOk)      { score = 3; motivo = 'La guía la referencia y el emisor coincide'; }
+    else if (refIgual)          { score = 2; motivo = 'La guía referencia esta factura'; }
+    else if (refCorrel && rucOk){ score = 2; motivo = 'Mismo correlativo y emisor (la serie no coincide)'; }
+    else if (rucOk)             { score = 1; motivo = 'Mismo emisor, pero la guía no la referencia'; }
+    else continue;
+
+    out.push({ mov: mv, score, confianza: score >= 3 ? 'alta' : score === 2 ? 'media' : 'baja', motivo });
   }
-  if (!candidatos.length) return null;
-  candidatos.sort((a, b) => b.score - a.score);
-  // Ambigüedad real (dos candidatos al tope con el mismo score) → mejor no auto-vincular.
-  if (candidatos.length > 1 && candidatos[0].score === candidatos[1].score) return null;
-  return { mov: candidatos[0].mov, confianza: candidatos[0].score >= 3 ? 'alta' : 'media' };
+  return out.sort((a, b) => b.score - a.score
+    || String(b.mov.date || '').localeCompare(String(a.mov.date || '')));
+}
+
+/**
+ * La ÚNICA factura que se puede vincular sola, sin preguntar. Envuelve a
+ * sugerirFacturasParaGuia y mantiene el criterio conservador de siempre: si
+ * hay empate en el tope es ambiguo y NO se auto-vincula (se muestran las
+ * candidatas y decide la persona).
+ */
+export function matchFacturaDeGuia(guia, movimientos, opts = {}) {
+  const cands = sugerirFacturasParaGuia(guia, movimientos, opts)
+    .filter(c => c.score >= 2);   // "mismo emisor" a secas nunca auto-vincula
+  if (!cands.length) return null;
+  if (cands.length > 1 && cands[0].score === cands[1].score) return null;
+  return { mov: cands[0].mov, confianza: cands[0].confianza };
 }

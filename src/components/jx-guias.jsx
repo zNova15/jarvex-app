@@ -9,7 +9,8 @@
 // window.__movsBuscarIntent) + window.__navTo.
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
-import { matchFacturaDeGuia, normalizarDoc, clasificarOrigenGuia, facturasQueRequierenGuia, sugerirGuiasParaFactura } from "../lib/guias.js";
+import { matchFacturaDeGuia, normalizarDoc, clasificarOrigenGuia, facturasQueRequierenGuia,
+         sugerirGuiasParaFactura, indexarVinculos } from "../lib/guias.js";
 import { itemsDeFactura, parseNotas } from "../lib/cruce-recepcion.js";
 import { normalizarRuc } from "../lib/doc-id.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
@@ -37,6 +38,9 @@ function GuiasRemisionPage({ showToast }) {
   const { data: companies } = window.__hooks.useCompanies();
 
   const [guias, setGuias] = uS([]);
+  // Vínculos N:M guía↔factura (mig 165). La columna vieja
+  // guias_remision.accounting_movement_id ya no manda: solo espeja el primero.
+  const [vinculos, setVinculos] = uS([]);
   const [q, setQ] = uS(() => {
     // Deep-link desde Movimientos: pre-filtrar por la serie de la guía.
     const intent = window.__guiasFocusIntent;
@@ -68,19 +72,31 @@ function GuiasRemisionPage({ showToast }) {
       try {
         const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
         const rows = await window.__db.guias_remision.filter(g => !g.deleted_at && (esPrueba ? g.demo === true : g.demo !== true)).toArray();
+        const vins = await window.__db.guia_factura.filter(v => !v.deleted_at && (esPrueba ? v.demo === true : v.demo !== true)).toArray();
         if (cancel) return;
         rows.sort((a, b) => String(b.fecha_emision || b.created_at || '').localeCompare(String(a.fecha_emision || a.created_at || '')));
         setGuias(rows);
+        setVinculos(vins);
       } catch {}
     };
     load();
-    const on = (e) => { const t = e?.detail?.tabla; if (!t || t === 'guias_remision') load(); };
+    const on = (e) => { const t = e?.detail?.tabla; if (!t || t === 'guias_remision' || t === 'guia_factura') load(); };
     window.addEventListener('jx_data_changed', on);
     window.addEventListener('jarvex_master_updated', on);
     return () => { cancel = true; window.removeEventListener('jx_data_changed', on); window.removeEventListener('jarvex_master_updated', on); };
   }, []);
 
   const movById = uM(() => new Map((movs || []).map(m => [m.id, m])), [movs]);
+  const idxVinc = uM(() => indexarVinculos(vinculos), [vinculos]);
+  // Facturas de una guía. Manda la tabla N:M; si la guía es anterior a la mig
+  // 165 (o la creó un cliente con bundle viejo) todavía no tiene filas ahí y
+  // se cae al espejo de la columna, así que nada queda invisible.
+  const facturasDeGuia = (g) => {
+    const ids = idxVinc.porGuia.get(g.id);
+    const lista = ids && ids.size ? [...ids] : (g.accounting_movement_id ? [g.accounting_movement_id] : []);
+    return lista.map(id => movById.get(id)).filter(Boolean);
+  };
+  const nVinculos = (g) => (idxVinc.porGuia.get(g.id)?.size) || (g.accounting_movement_id ? 1 : 0);
   const obraNombre = (id) => (obras || []).find(o => o.id === id)?.nombre_obra || '';
 
   // RUCs del grupo → clasificar cada guía como emitida/recibida (derive puro).
@@ -102,7 +118,7 @@ function GuiasRemisionPage({ showToast }) {
       const ruc = normalizarRuc(g.emisor_ruc);
       return (companies || []).find(c => c.ruc && normalizarRuc(c.ruc) === ruc)?.id || null;
     }
-    const mov = g.accounting_movement_id ? movById.get(g.accounting_movement_id) : null;
+    const mov = facturasDeGuia(g)[0] || null;
     return mov?.company_id || g.company_id || null;
   };
 
@@ -114,8 +130,8 @@ function GuiasRemisionPage({ showToast }) {
         String(g.emisor_razon_social || '').toLowerCase().includes(qn) ||
         String(g.doc_referencia || '').toLowerCase().includes(qn))) return false;
       if (tab !== 'todas' && origenDe.get(g.id) !== tab) return false;
-      if (filtroVinculo === 'vinculadas' && !g.accounting_movement_id) return false;
-      if (filtroVinculo === 'sin_vincular' && g.accounting_movement_id) return false;
+      if (filtroVinculo === 'vinculadas' && nVinculos(g) === 0) return false;
+      if (filtroVinculo === 'sin_vincular' && nVinculos(g) > 0) return false;
       if (filtroEmpresa !== 'todas' && empresaDeGuia(g) !== filtroEmpresa) return false;
       if (filtroObra !== 'todas' && g.obra_id !== filtroObra) return false;
       const f = String(g.fecha_emision || g.created_at || '').slice(0, 10);
@@ -123,14 +139,15 @@ function GuiasRemisionPage({ showToast }) {
       if (fHasta && f && f > fHasta) return false;
       return true;
     });
-  }, [guias, q, tab, filtroVinculo, filtroEmpresa, filtroObra, fDesde, fHasta, origenDe, movById, companies]);
+  }, [guias, q, tab, filtroVinculo, filtroEmpresa, filtroObra, fDesde, fHasta, origenDe, movById, companies, idxVinc]);
 
   // ── Facturas que requieren guía y no la tienen (heurística + override) ──
   // El espejo automático de una venta interco no lleva guía propia (la guía
   // vive en la venta original) → fuera de la lista.
   const requieren = uM(() => facturasQueRequierenGuia(movs || [], guias, itemsDeFactura, {
     esEspejoAuto: (m) => parseNotas(m?.notas)?.intercompany_auto === true,
-  }), [movs, guias]);
+    vinculos,
+  }), [movs, guias, vinculos]);
   const cortePanel = uM(() => {
     // Ventana de 90 días para el panel (backlog viejo a pedido). "Hoy" en zona
     // Lima (regla crítica 7: nunca new Date().toISOString() directo).
@@ -180,7 +197,7 @@ function GuiasRemisionPage({ showToast }) {
     [movs]);
 
   const verFactura = (g) => {
-    const mov = movById.get(g.accounting_movement_id);
+    const mov = facturasDeGuia(g)[0];
     // Movimientos filtra por búsqueda: pasamos el número de documento.
     window.__movsBuscarIntent = mov?.document_number || g.doc_referencia || '';
     window.__navTo?.('movimientos-contables');
@@ -196,23 +213,57 @@ function GuiasRemisionPage({ showToast }) {
     } catch {}
   };
 
-  const setVinculo = async (g, movId) => {
+  // Vincular/desvincular una guía con UNA factura. Con el N:M (mig 165) esto
+  // SUMA o QUITA un vínculo en vez de reemplazar el único que había: una guía
+  // puede amparar varias facturas. movId null = quitar todos (el "Desvincular"
+  // de siempre). La columna vieja de la guía se mantiene espejando el primer
+  // vínculo, para los clientes PWA que todavía tengan bundle cacheado.
+  const setVinculo = async (g, movId, quitar = false) => {
     if (busy) return;
     setBusy(true);
     try {
       const { SYNC_STATUS } = await import('../db/jarvex.db');
       const fresh = await window.__db.guias_remision.get(g.id);
       if (!fresh) return;
+      const ahora = new Date().toISOString();
+      const esDemo = fresh.demo === true;
+      const marcaSync = esDemo ? SYNC_STATUS.SYNCED : SYNC_STATUS.PENDING_UPDATE;
+
+      const existentes = await window.__db.guia_factura
+        .filter(v => !v.deleted_at && v.guia_id === g.id).toArray();
+
+      const borrar = (movId && quitar) ? existentes.filter(v => v.accounting_movement_id === movId)
+        : (!movId ? existentes : []);
+      for (const v of borrar) {
+        await window.__db.guia_factura.update(v.id, {
+          deleted_at: ahora, updated_at: ahora, updated_by: userId,
+          version: (v.version ?? 0) + 1, sync_status: marcaSync,
+        });
+      }
+      if (movId && !quitar && !existentes.some(v => v.accounting_movement_id === movId)) {
+        await window.__db.guia_factura.add({
+          id: window.__newId(), guia_id: g.id, accounting_movement_id: movId,
+          origen: 'manual', confianza: null,
+          created_by: userId, updated_by: userId, created_at: ahora, updated_at: ahora, version: 1,
+          idempotency_key: `gf_${g.id}_${movId}`,
+          ...(esDemo ? { demo: true, sync_status: SYNC_STATUS.SYNCED } : { sync_status: SYNC_STATUS.PENDING_CREATE }),
+        });
+      }
+
+      // Espejo legacy: el primero de los que quedan vivos.
+      const vivos = (await window.__db.guia_factura.filter(v => !v.deleted_at && v.guia_id === g.id).toArray())
+        .map(v => v.accounting_movement_id);
       await window.__db.guias_remision.update(g.id, {
-        accounting_movement_id: movId || null,
-        updated_at: new Date().toISOString(), updated_by: userId,
+        accounting_movement_id: vivos[0] || null,
+        updated_at: ahora, updated_by: userId,
         version: (fresh.version ?? 0) + 1,
-        sync_status: fresh.demo === true ? SYNC_STATUS.SYNCED
+        sync_status: esDemo ? SYNC_STATUS.SYNCED
           : (fresh.sync_status === SYNC_STATUS.PENDING_CREATE ? SYNC_STATUS.PENDING_CREATE : SYNC_STATUS.PENDING_UPDATE),
       });
       window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'guias_remision' } }));
+      window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'guia_factura' } }));
       try { window.dispatchEvent(new Event('online')); } catch {}
-      toast(movId ? 'Guía vinculada a la factura' : 'Vínculo quitado', 'green');
+      toast(!movId || quitar ? 'Vínculo quitado' : `Guía vinculada (${vivos.length} factura${vivos.length === 1 ? '' : 's'})`, 'green');
       setVincular(null);
     } catch (e) { toast('Error: ' + (e.message || e), 'red'); }
     finally { setBusy(false); }
@@ -220,10 +271,16 @@ function GuiasRemisionPage({ showToast }) {
 
   // Candidatos de factura para vincular a mano (sugerencia por Doc.Ref primero).
   const candidatosDe = (g) => {
-    const sug = matchFacturaDeGuia({ doc_referencia: g.doc_referencia, emisor_ruc: g.emisor_ruc }, movs || []);
+    // rucCompanyDe: en una VENTA el emisor es NUESTRA empresa, no third_party_ruc
+    // (sin esto las guías EMITIDAS nunca sugerían su factura).
+    const rucPorCompany = new Map((companies || []).filter(c => !c.deleted_at).map(c => [c.id, normalizarRuc(c.ruc)]));
+    const sug = matchFacturaDeGuia({ id: g.id, doc_referencia: g.doc_referencia, emisor_ruc: g.emisor_ruc }, movs || [], {
+      rucsGrupo, rucCompanyDe: (m) => rucPorCompany.get(m.company_id) || '', vinculos,
+    });
     const ref = normalizarDoc(g.doc_referencia);
+    const yaVinc = idxVinc.porGuia.get(g.id) || new Set();
     const lista = (movs || [])
-      .filter(m => !m.deleted_at && m.document_number)
+      .filter(m => !m.deleted_at && m.document_number && !yaVinc.has(m.id))
       .map(m => ({ m, pri: sug?.mov?.id === m.id ? 2 : (ref && normalizarDoc(m.document_number)?.correlativo === ref.correlativo ? 1 : 0) }))
       .sort((a, b) => b.pri - a.pri || String(b.m.date || '').localeCompare(String(a.m.date || '')))
       .slice(0, 30);
@@ -401,12 +458,13 @@ function GuiasRemisionPage({ showToast }) {
                 <th>Emisor</th>
                 <th>Traslado</th>
                 <th style={{ width: 140 }}>Doc. Ref.</th>
-                <th style={{ width: 210 }}>Factura vinculada</th>
+                <th style={{ width: 210 }}>Facturas vinculadas</th>
                 <th style={{ width: 90 }}></th>
               </tr></thead>
               <tbody>
                 {filtradas.map(g => {
-                  const mov = g.accounting_movement_id ? movById.get(g.accounting_movement_id) : null;
+                  const movsG = facturasDeGuia(g);
+                  const mov = movsG[0] || null;
                   return (
                     <tr key={g.id}>
                       <td style={{ fontWeight: 600, fontSize: 12 }}>{g.serie_correlativo || '—'}
@@ -424,11 +482,21 @@ function GuiasRemisionPage({ showToast }) {
                       <td style={{ fontSize: 11.5 }}>{g.doc_referencia || '—'}</td>
                       <td>
                         {mov ? (
-                          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                            <button className="btn btn-ghost btn-xs" title="Ir a la factura en Movimientos Contables" onClick={() => verFactura(g)}>
-                              🧾 {mov.document_number || 'factura'} · S/ {Number(mov.amount || 0).toLocaleString('es-PE')}
-                            </button>
-                            {canWrite && <button className="btn btn-ghost btn-xs" style={{ color: 'var(--tm)' }} title="Quitar vínculo" disabled={busy} onClick={() => setVinculo(g, null)}>✕</button>}
+                          // Una guía puede amparar VARIAS facturas (mig 165): se
+                          // listan todas, cada una con su ✕ para quitar solo esa.
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                            {movsG.map(mv => (
+                              <div key={mv.id} style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+                                <button className="btn btn-ghost btn-xs" title="Ir a la factura en Movimientos Contables" onClick={() => verFactura(g)}>
+                                  🧾 {mv.document_number || 'factura'} · S/ {Number(mv.amount || 0).toLocaleString('es-PE')}
+                                </button>
+                                {canWrite && <button className="btn btn-ghost btn-xs" style={{ color: 'var(--tm)' }} title="Quitar este vínculo" disabled={busy} onClick={() => setVinculo(g, mv.id, true)}>✕</button>}
+                              </div>
+                            ))}
+                            {canWrite && (
+                              <button className="btn btn-ghost btn-xs" style={{ alignSelf: 'flex-start', color: 'var(--blue)' }}
+                                title="Vincular esta guía a otra factura más" disabled={busy} onClick={() => setVincular(g)}>+ otra factura</button>
+                            )}
                           </div>
                         ) : canWrite ? (
                           <button className="btn btn-amber btn-xs" disabled={busy} onClick={() => setVincular(g)}>
@@ -473,7 +541,7 @@ function GuiasRemisionPage({ showToast }) {
       {/* Camino INVERSO (panel "requieren guía"): elegir una guía suelta para
           esta factura. Sugiere por referencia exacta y descarta RUC contradicho. */}
       {buscarGuiaPara && (() => {
-        const cands = sugerirGuiasParaFactura(buscarGuiaPara, guias, rucsGrupo);
+        const cands = sugerirGuiasParaFactura(buscarGuiaPara, guias, rucsGrupo, { vinculos });
         return (
           <window.Modal title={`Vincular una guía a ${buscarGuiaPara.document_number || 'la factura'}`} icon="link" onClose={() => setBuscarGuiaPara(null)}>
             <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 10 }}>
