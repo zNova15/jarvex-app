@@ -120,6 +120,37 @@ function splitDoc(doc) {
 }
 
 // Tipo doc identidad proveedor/cliente (Tabla 2 SUNAT)
+/**
+ * Documento de REFERENCIA de una nota de crédito/débito: los 4 campos que
+ * SUNAT pide (fecha de emisión, tipo, serie y número del comprobante que la
+ * nota modifica). Iban vacíos y SUNAT observa las notas sin referencia
+ * (decisión de Gabriel 1-sep: "hacé lo que normalmente hacen en contabilidad").
+ *
+ * La factura original se resuelve por related_movement_id — puede ser de un
+ * período ANTERIOR, así que el índice tiene que venir de TODOS los
+ * movimientos, no solo de los del período que se exporta. Si no se la
+ * encuentra, se devuelven los 4 campos vacíos: es preferible a inventar
+ * datos, y la nota sale como salía antes.
+ *
+ * @param m movimiento (la nota)
+ * @param movsById Map<id, movimiento> con todos los movimientos
+ * @returns [fechaEmision, tipoDoc, serie, numero]
+ */
+function docReferenciaNota(m, movsById) {
+  const esNota = ['nota_credito', 'nota_debito'].includes(m?.document_type);
+  if (!esNota) return ['', '', '', ''];
+  const ref = (movsById && m.related_movement_id) ? movsById.get(m.related_movement_id) : null;
+  if (!ref) return ['', '', '', ''];
+  const d = splitDoc(ref.document_number || '');
+  if (!d.serie && !d.nro) return ['', '', '', ''];
+  return [
+    fmtFechaSunat(ref.date || ref.created_at),
+    tipoCompCode(ref.document_type || '', '01'),
+    d.serie,
+    d.nro,
+  ];
+}
+
 function tipoDocIdent(td) {
   const k = String(td || '').toUpperCase();
   if (k === 'RUC')                return '6';
@@ -311,7 +342,10 @@ export function generateLibroMayorPLE(asientos, periodo, ruc) {
 // 29.  Número doc referencia
 // 30.  Estado (1 = incluida, 9 = anulada)
 // ─────────────────────────────────────────────────────────────
-export function generateRegistroComprasPLE(movs_cost_expense, periodo, ruc) {
+export function generateRegistroComprasPLE(movs_cost_expense, periodo, ruc, opts = {}) {
+  // Índice de TODOS los movimientos para resolver el doc. de referencia de las
+  // notas (la factura original suele ser de otro período).
+  const movsById = opts.movsById instanceof Map ? opts.movsById : new Map();
   const movs = Array.isArray(movs_cost_expense) ? movs_cost_expense : [];
   periodo = periodo || { anio: new Date().getFullYear(), mes: new Date().getMonth() + 1 };
   const per = periodoSunat(periodo);
@@ -385,10 +419,7 @@ export function generateRegistroComprasPLE(movs_cost_expense, periodo, ruc) {
       num(total),
       moneda,
       tc,
-      '',                        // fecha emisión doc ref
-      '',                        // tipo doc ref
-      '',                        // serie doc ref
-      '',                        // nro doc ref
+      ...docReferenciaNota(m, movsById),   // 26-29: fecha/tipo/serie/nro del doc que la nota modifica
       estado,
     ].join('|'));
   });
@@ -444,7 +475,8 @@ export function generateRegistroComprasPLE(movs_cost_expense, periodo, ruc) {
 // 30. Número doc referencia
 // 31. Estado (1=incluida, 8=ajuste, 9=anulada)
 // ─────────────────────────────────────────────────────────────
-export function generateRegistroVentasPLE(movs_income, periodo, ruc) {
+export function generateRegistroVentasPLE(movs_income, periodo, ruc, opts = {}) {
+  const movsById = opts.movsById instanceof Map ? opts.movsById : new Map();
   const movs = Array.isArray(movs_income) ? movs_income : [];
   periodo = periodo || { anio: new Date().getFullYear(), mes: new Date().getMonth() + 1 };
   const per = periodoSunat(periodo);
@@ -521,10 +553,7 @@ export function generateRegistroVentasPLE(movs_income, periodo, ruc) {
       num(total),
       moneda,
       tc,
-      '',                        // fecha emisión ref
-      '',                        // tipo doc ref
-      '',                        // serie doc ref
-      '',                        // nro doc ref
+      ...docReferenciaNota(m, movsById),   // 27-30: fecha/tipo/serie/nro del doc que la nota modifica
       estado,
     ].join('|'));
   });

@@ -46,6 +46,10 @@ function LibrosElectronicosPage({ showToast }) {
   );
 
   // Filtro de movimientos por período + empresa
+  // Índice completo (NO filtrado por período): las notas de crédito/débito
+  // referencian facturas que suelen ser de meses anteriores.
+  const movsById = uM(() => new Map((movs || []).map(m => [m.id, m])), [movs]);
+
   const movsPeriodo = uM(() => {
     return (movs || []).filter(m => {
       if (!m || m.deleted_at) return false;
@@ -115,7 +119,7 @@ function LibrosElectronicosPage({ showToast }) {
 
   const handleRegistroCompras = () => {
     if (!rucValid) return showToast?.('La empresa no tiene RUC válido', 'red');
-    const out = generateRegistroComprasPLE(movsCompras, periodo, ruc);
+    const out = generateRegistroComprasPLE(movsCompras, periodo, ruc, { movsById });
     if (!out.content) return showToast?.('Sin compras en el período', 'orange');
     downloadPLE(out.filename, out.content);
     showToast?.(`Registro Compras PLE: ${out.registros} comprobantes`, 'green');
@@ -123,7 +127,7 @@ function LibrosElectronicosPage({ showToast }) {
 
   const handleRegistroVentas = () => {
     if (!rucValid) return showToast?.('La empresa no tiene RUC válido', 'red');
-    const out = generateRegistroVentasPLE(movsVentas, periodo, ruc);
+    const out = generateRegistroVentasPLE(movsVentas, periodo, ruc, { movsById });
     if (!out.content) return showToast?.('Sin ventas en el período', 'orange');
     downloadPLE(out.filename, out.content);
     showToast?.(`Registro Ventas PLE: ${out.registros} comprobantes`, 'green');

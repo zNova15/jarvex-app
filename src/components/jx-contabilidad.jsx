@@ -1288,14 +1288,33 @@ function MovimientosContablesPage({ showToast }) {
   // en movimientos que SÍ la tienen (falsa alarma).
   const puedeVerBanc = isAdmin || myRol === 'contador' || myRol === 'ayudante_contador';
   const depositosById = uMC(() => new Map((depositos || []).map(d => [d.id, d])), [depositos]);
+  // ── PAR INTERCO: una sola bancarización para las dos patas ──
+  // En una operación entre empresas nuestras hay DOS movimientos (la venta y
+  // su compra espejo) por UN solo comprobante y UNA sola transferencia. Cada
+  // pata pedía su propia bancarización, así que la contadora tenía que subir
+  // el MISMO voucher dos veces o dejar una en "⚠ Falta" para siempre.
+  // Decisión de Gabriel (1-sep): la constancia de un lado vale para los dos.
+  // Contra un tercero externo NO aplica: ahí la bancarización es propia.
+  const movsById = uMC(() => new Map((movs || []).map(m => [m.id, m])), [movs]);
+  const bancarizadoDirecto = (m) => {
+    if (!m) return false;
+    const ev = bancarizacionPorMov.get(m.id);
+    if (ev && ev.sync !== 'failed') return true;
+    return movimientoBancarizado({ mov: m, tieneEvidenciaDirecta: false, partes: partesPorMov.get(m.id) || [], depositosById });
+  };
+  /** La otra pata del par interco, si la hay y ya está bancarizada. */
+  const parIntercoBancarizado = (m) => {
+    if (!m?.is_intercompany || !m.related_movement_id) return null;
+    const par = movsById.get(m.related_movement_id);
+    if (!par || par.deleted_at) return null;
+    return bancarizadoDirecto(par) ? par : null;
+  };
   const faltaBancarizacion = (m) => {
     if (!puedeVerBanc) return false;
     if (!(m.currency === 'PEN' && Number(m.amount) > 2000)) return false;
-    const evB = bancarizacionPorMov.get(m.id);
-    if (evB && evB.sync !== 'failed') return false;
-    // También cuenta como bancarizado si las partes cubren el total y las que
-    // usan depósito apuntan a un depósito vivo (su constancia vive allí).
-    return !movimientoBancarizado({ mov: m, tieneEvidenciaDirecta: false, partes: partesPorMov.get(m.id) || [], depositosById });
+    if (bancarizadoDirecto(m)) return false;
+    // La contraparte interco ya la tiene → esta pata está cubierta.
+    return !parIntercoBancarizado(m);
   };
 
   // Emisor / receptor del comprobante (pedido 20-jul): en una VENTA nuestra
@@ -2467,6 +2486,24 @@ function MovimientosContablesPage({ showToast }) {
                           if (_cubiertaPorPartes) return <div style={{ fontSize:10, color:'var(--green)' }}>✅ Bancarizado{_partes.some(x => x.deposito_id) ? ' (depósito)' : ''}{verBanc}{subirBtn}{_tagPartes}</div>;
                           if (evB && evB.sync === 'failed') return <div style={{ fontSize:10, color:'var(--red)' }} title="La evidencia no se pudo subir (revisá que estés asignado a la obra con un rol que no sea solo lectura)">⚠ Bancarización no subió{subirBtn}</div>;
                           if (evB) return <div style={{ fontSize:10, color:'var(--tm)' }} title="Subiendo evidencia de bancarización…">⏳ Subiendo bancarización{subirBtn}</div>;
+                          // El par interco ya la tiene: es el MISMO comprobante y la
+                          // MISMA transferencia, así que esta pata está cubierta.
+                          const _par = parIntercoBancarizado(m);
+                          if (_par) {
+                            const evPar = bancarizacionPorMov.get(_par.id);
+                            return (
+                              <div style={{ fontSize:10, color:'var(--green)' }}>
+                                ✅ Bancarizado <span style={{ color:'var(--tm)' }} title={`La constancia se subió en la contraparte interco (${_par.document_number || 'el otro lado del par'}) — es el mismo comprobante y la misma transferencia.`}>(por la contraparte interco)</span>
+                                {evPar && evPar.url && (
+                                  <button className="btn btn-ghost btn-xs" style={{ marginLeft:4, padding:'0 4px', fontSize:9, color:'var(--blue)', verticalAlign:'middle' }}
+                                    title="Ver la constancia subida en la otra pata del par" onClick={()=>setEvidenciaModal(evPar)}>
+                                    <JxIcon name="eye" size={9}/> Ver
+                                  </button>
+                                )}
+                                {subirBtn}{_tagPartes}
+                              </div>
+                            );
+                          }
                           return <div style={{ fontSize:10, color:'var(--amber)' }} title="Monto > S/2000 sin evidencia de bancarización">⚠ Falta bancarización{subirBtn}{_tagPartes}</div>;
                         })()}
                         {/* ≤ S/2,000 (o moneda extranjera): evidencia de pago OPCIONAL —
@@ -2491,7 +2528,13 @@ function MovimientosContablesPage({ showToast }) {
                             la asistente sube la constancia del depósito (BN) y marca 'depositada'. */}
                         {puedeVerBanc && (() => {
                           const evD = detraccionPorMov.get(m.id);
-                          if (m.detraccion_aplica) {
+                          // Una NOTA no lleva detracción (la lleva el comprobante
+                          // que genera el pago) y una ANULADA ya no exige
+                          // depósito: en ambos casos el "⏳ falta depósito" es
+                          // ruido que nadie puede cerrar. Cerco de vista para
+                          // datos históricos; el alta ya no los deja entrar.
+                          const _esNotaM = ['nota_credito', 'nota_debito'].includes(m.document_type);
+                          if (m.detraccion_aplica && !_esNotaM && m.payment_status !== 'cancelled') {
                             const _monto = Number(m.detraccion_monto) || 0;
                             const _neto = Math.max(0, (Number(m.amount) || 0) - _monto);
                             const depositada = m.detraccion_estado === 'depositada';

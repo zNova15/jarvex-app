@@ -85,3 +85,23 @@ describe('agregarContable — robustez', () => {
     expect(r.kpis.totalCompras).toBe(0); expect(r.consumoPorObra).toEqual([]); expect(r.facturasRecientes).toEqual([]);
   });
 });
+
+describe('faltaBancarizacion — par intercompany', () => {
+  // Una operación entre dos empresas nuestras son DOS movimientos por UN
+  // comprobante y UNA transferencia: la constancia de una pata cubre a la otra.
+  const bancarizadoSet = new Set(['venta1']);
+  const venta = { id: 'venta1', currency: 'PEN', amount: 5000, is_intercompany: true, related_movement_id: 'espejo1' };
+  const espejo = { id: 'espejo1', currency: 'PEN', amount: 5000, is_intercompany: true, related_movement_id: 'venta1' };
+
+  it('la pata sin constancia NO se reclama si su par interco ya la tiene', () => {
+    expect(faltaBancarizacion(venta, bancarizadoSet)).toBe(false);
+    expect(faltaBancarizacion(espejo, bancarizadoSet)).toBe(false);
+  });
+  it('si NINGUNA de las dos la tiene, se reclama igual', () => {
+    expect(faltaBancarizacion(espejo, new Set())).toBe(true);
+  });
+  it('una venta a un tercero EXTERNO no se cubre con nada ajeno', () => {
+    const externa = { id: 'v2', currency: 'PEN', amount: 5000, related_movement_id: 'venta1' }; // sin is_intercompany
+    expect(faltaBancarizacion(externa, bancarizadoSet)).toBe(true);
+  });
+});

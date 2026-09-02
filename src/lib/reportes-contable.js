@@ -53,10 +53,20 @@ const esCompra = (m) => claseDe(m) === 'compra';
 const esVenta = (m) => claseDe(m) === 'venta';
 const inRango = (f, from, to) => (!from || (f && f >= from)) && (!to || (f && f <= to));
 
-/** ¿El movimiento requiere bancarización y le falta? (PEN > S/2000 sin evidencia). */
+/**
+ * ¿El movimiento requiere bancarización y le falta? (PEN > S/2000 sin evidencia).
+ *
+ * PAR INTERCO: una venta entre empresas nuestras genera DOS movimientos (venta
+ * + compra espejo) por UN comprobante y UNA transferencia. La constancia de una
+ * pata vale para las dos, así que el reporte no debe reclamar la otra (espejo
+ * de la regla de jx-contabilidad; decisión de Gabriel 1-sep). Contra un tercero
+ * externo NO aplica: ahí la bancarización es propia de ese movimiento.
+ */
 export function faltaBancarizacion(m, bancarizadoSet) {
   if (!(m.currency === 'PEN' && Number(m.amount) > 2000)) return false;
-  return !bancarizadoSet.has(m.id);
+  if (bancarizadoSet.has(m.id)) return false;
+  if (m.is_intercompany && m.related_movement_id && bancarizadoSet.has(m.related_movement_id)) return false;
+  return true;
 }
 
 /**

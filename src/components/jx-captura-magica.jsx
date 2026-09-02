@@ -2094,11 +2094,14 @@ function CapturaMagicaPage({ showToast }) {
         related_movement_id: esNota ? (r.nota_ref_mov_id || null) : (herenciaEspejo?.ventaId || null),
         // Detracción (SPOT): recomendada por la IA y confirmada/corregida por la asistente.
         // El estado y la constancia del depósito (Banco de la Nación) se registran luego en Contabilidad.
-        detraccion_aplica: !!r.detraccion_aplica,
-        detraccion_pct: r.detraccion_aplica && r.detraccion_pct != null && r.detraccion_pct !== '' ? Number(r.detraccion_pct) : null,
-        detraccion_monto: r.detraccion_aplica && r.detraccion_monto != null && r.detraccion_monto !== '' ? Number(r.detraccion_monto) : null,
-        detraccion_codigo: r.detraccion_aplica ? (String(r.detraccion_codigo || '').trim() || null) : null,
-        detraccion_estado: r.detraccion_aplica ? 'pendiente' : null,
+        // Las notas NUNCA llevan detracción, aunque el review venga marcado
+        // (review viejo, o el usuario cambió el tipo de documento después de
+        // tildarla): sin este cerco quedaban "⏳ falta depósito" eternas.
+        detraccion_aplica: !esNota && !!r.detraccion_aplica,
+        detraccion_pct: !esNota && r.detraccion_aplica && r.detraccion_pct != null && r.detraccion_pct !== '' ? Number(r.detraccion_pct) : null,
+        detraccion_monto: !esNota && r.detraccion_aplica && r.detraccion_monto != null && r.detraccion_monto !== '' ? Number(r.detraccion_monto) : null,
+        detraccion_codigo: !esNota && r.detraccion_aplica ? (String(r.detraccion_codigo || '').trim() || null) : null,
+        detraccion_estado: !esNota && r.detraccion_aplica ? 'pendiente' : null,
         date: r.fecha_emision,
         type: typeFinal,
         category: docLabel,
@@ -3913,7 +3916,12 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
               </div>
             )}
 
-            {/* DETRACCIÓN (SPOT) — recomendada por la IA; la asistente confirma/corrige */}
+            {/* DETRACCIÓN (SPOT) — recomendada por la IA; la asistente confirma/corrige.
+                NO se ofrece en notas de crédito/débito: la detracción es del
+                comprobante que genera el pago, no del ajuste (decisión de
+                Gabriel, 1-sep). Marcarla en una NC dejaba el movimiento
+                "⏳ falta depósito" para siempre, con neto a pagar 0. */}
+            {!(r.es_nota_credito || r.es_nota_debito) && (
             <div style={{ marginTop:10, padding:'8px 10px', border:'1px solid var(--border)', borderRadius:8 }}>
               <label style={{ display:'flex', alignItems:'center', gap:8, cursor:'pointer', fontSize:12.5, fontWeight:600 }}>
                 <input type="checkbox" checked={!!r.detraccion_aplica} onChange={e=>upd({ detraccion_aplica: e.target.checked })}/>
@@ -3932,6 +3940,7 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
                 </>
               )}
             </div>
+            )}
 
             <div style={{ marginTop:10 }}>
               <label className="flabel">Observaciones</label>
