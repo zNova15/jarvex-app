@@ -560,6 +560,8 @@ const HEALTH_TABLES = [
   { tabla: 'movimientos_materiales',  label: 'Movimientos de materiales', soft: true },
   { tabla: 'materiales',              label: 'Materiales (catálogo/stock)', soft: true },
   { tabla: 'movimientos_herramientas',label: 'Movimientos de herramientas', soft: true },
+  { tabla: 'guias_remision',          label: 'Guías de remisión', soft: true },
+  { tabla: 'guia_factura',            label: 'Vínculos guía↔factura', soft: true },
 ];
 
 // Conteo local de filas VIVAS (sin deleted_at). Los tombstones se borran de Dexie
@@ -1011,6 +1013,16 @@ function canPushTabla(tabla) {
     // server ya permite INSERT a cualquier autenticado ('personal: autenticado crea').
     // NO habilita gestionar personal desde su página (esa gatea por 'Personal'-w).
     if (tabla === 'personal') {
+      if (window.__hasPerm?.(rol, 'Captura Mágica', 'w') === true) return true;
+    }
+    // facturas/guías/vínculos de Captura Mágica: misma lógica que companies/
+    // proveedores/personal. Quien puede hacer Captura CONFIRMA facturas y
+    // guías (y sus vínculos guía↔factura), pero esas tablas gatean por
+    // 'Movs. Contables': un rol con Captura-w y contabilidad-x (jefe_compras)
+    // dejaba TODO su trabajo en PENDING eterno client-side aunque la RLS del
+    // server lo acepte (migs 123/165). Mismo bug documentado de pagos_partes.
+    // NO habilita la página Movimientos (esa gatea aparte en la UI).
+    if (tabla === 'accounting_movements' || tabla === 'guias_remision' || tabla === 'guia_factura') {
       if (window.__hasPerm?.(rol, 'Captura Mágica', 'w') === true) return true;
     }
     const modulo = TABLA_TO_MODULO[tabla];

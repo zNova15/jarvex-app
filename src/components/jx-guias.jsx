@@ -280,13 +280,30 @@ function GuiasRemisionPage({ showToast }) {
         });
       }
       if (movId && !quitar && !existentes.some(v => v.accounting_movement_id === movId)) {
-        await window.__db.guia_factura.add({
-          id: window.__newId(), guia_id: g.id, accounting_movement_id: movId,
-          origen: 'manual', confianza: null,
-          created_by: userId, updated_by: userId, created_at: ahora, updated_at: ahora, version: 1,
-          idempotency_key: `gf_${g.id}_${movId}`,
-          ...(esDemo ? { demo: true, sync_status: SYNC_STATUS.SYNCED } : { sync_status: SYNC_STATUS.PENDING_CREATE }),
-        });
+        // Si el par existió y se desvinculó, el tombstone CONSERVA el
+        // idempotency_key global `gf_<guia>_<mov>` (UNIQUE en el server):
+        // crear una fila NUEVA con el mismo key choca 23505 al pushear y el
+        // vínculo queda FAILED para siempre, visible solo en este device.
+        // Se RESUCITA el tombstone en su lugar.
+        const tomb = await window.__db.guia_factura
+          .filter(v => v.guia_id === g.id && v.accounting_movement_id === movId && !!v.deleted_at)
+          .first();
+        if (tomb) {
+          await window.__db.guia_factura.update(tomb.id, {
+            deleted_at: null, origen: 'manual', updated_at: ahora, updated_by: userId,
+            version: (tomb.version ?? 0) + 1,
+            sync_status: esDemo ? SYNC_STATUS.SYNCED
+              : (tomb.sync_status === SYNC_STATUS.PENDING_CREATE ? SYNC_STATUS.PENDING_CREATE : SYNC_STATUS.PENDING_UPDATE),
+          });
+        } else {
+          await window.__db.guia_factura.add({
+            id: window.__newId(), guia_id: g.id, accounting_movement_id: movId,
+            origen: 'manual', confianza: null,
+            created_by: userId, updated_by: userId, created_at: ahora, updated_at: ahora, version: 1,
+            idempotency_key: `gf_${g.id}_${movId}`,
+            ...(esDemo ? { demo: true, sync_status: SYNC_STATUS.SYNCED } : { sync_status: SYNC_STATUS.PENDING_CREATE }),
+          });
+        }
       }
 
       // Espejo legacy: el primero de los que quedan vivos.

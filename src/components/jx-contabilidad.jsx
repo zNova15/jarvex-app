@@ -1662,6 +1662,28 @@ function MovimientosContablesPage({ showToast }) {
             if (gr.demo !== true && gr.sync_status !== 'pending_create') gr.sync_status = 'pending_update';
           });
       } catch { /* guias_remision puede no existir en Dexie viejos */ }
+      try {
+        // Vínculos N:M guía↔factura (mig 165): re-apuntar la FUENTE DE VERDAD,
+        // no solo el espejo legacy de arriba. Sin esto el vínculo quedaba
+        // colgando hacia la factura borrada, la conservada reaparecía en
+        // "requieren guía" y el espejo contradecía la tabla.
+        const paresConservar = new Set((await window.__db.guia_factura
+          .filter(v => v.accounting_movement_id === g.conservar.id && !v.deleted_at).toArray())
+          .map(v => v.guia_id));
+        await window.__db.guia_factura
+          .filter(v => v.accounting_movement_id === dup.id && !v.deleted_at)
+          .modify(v => {
+            if (paresConservar.has(v.guia_id)) {
+              v.deleted_at = now;           // el par con la conservada ya existe: este sobra
+            } else {
+              v.accounting_movement_id = g.conservar.id;
+              // idempotency_key NO se toca: es UNIQUE global en el server y
+              // cambiarlo puede chocar con un tombstone del par destino.
+            }
+            v.updated_at = now; v.version = (v.version ?? 0) + 1;
+            if (v.demo !== true && v.sync_status !== 'pending_create') v.sync_status = 'pending_update';
+          });
+      } catch { /* guia_factura puede no existir en Dexie viejos */ }
       await window.__db.accounting_movements.update(dup.id, {
         deleted_at: now,
         sync_status: dup.demo === true ? 'synced' : (dup.sync_status === 'pending_create' ? 'pending_create' : 'pending_delete'),
