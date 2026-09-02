@@ -1414,8 +1414,8 @@ function CapturaMagicaPage({ showToast }) {
       setItems(prev => prev.map(x => x.id === it.id ? { ...x, status: 'confirmado' } : x));
       deleteItemFromDB(it.id);
       setReviewing(null);
-      showToast(match
-        ? `✓ Guía ${r.serie_correlativo} guardada y VINCULADA a la factura ${match.mov.document_number || ''} (confianza ${match.confianza})`
+      showToast(idsPorVincular.length
+        ? `✓ Guía ${r.serie_correlativo} guardada y VINCULADA a ${idsPorVincular.length === 1 ? 'la factura' : `${idsPorVincular.length} facturas`}: ${docsVinculados}`
         : `✓ Guía ${r.serie_correlativo} guardada — sin factura vinculada aún (vinculála en Guías de Remisión)`, 'green');
     } catch (e) {
       setItems(prev => prev.map(x => x.id === it.id ? { ...x, status: 'error', error: e?.message } : x));
