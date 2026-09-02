@@ -1351,8 +1351,9 @@ function CapturaMagicaPage({ showToast }) {
       // reproduce la MISMA preselección que vio en pantalla (solo confianza alta).
       const movsFrescos = await window.__db.accounting_movements.filter(m => !m.deleted_at && (isPrueba ? m.demo === true : m.demo !== true)).toArray();
       const { candidatas } = candidatasDeGuia(r, movsFrescos, companies || []);
+      const idsCandidatas = new Set(candidatas.map(c => c.mov.id));
       const idsPorVincular = (r.guia_facturas_sel ?? seleccionPorDefectoGuia(candidatas))
-        .filter(id => movsFrescos.some(m => m.id === id));   // descarta ids que ya no existen
+        .filter(id => idsCandidatas.has(id));   // solo lo que sigue siendo candidata A LA VISTA
       const confianzaDe = new Map(candidatas.map(c => [c.mov.id, c.confianza]));
       // Evidencia PDF (tipo guia_remision — visible para almacén, NO contable).
       const evidenciaId = window.__newId();
@@ -2144,8 +2145,10 @@ function CapturaMagicaPage({ showToast }) {
       // quedó pendiente. Al entrar la que faltaba se cierra el vínculo sola,
       // sin que nadie tenga que acordarse de volver a la guía.
       try {
+        // Las NC/ND NO cierran pendientes: el OCR a veces deja como serie el
+        // número de la FACTURA que modifican y la guía se vincularía a la nota.
         const movFresh = await window.__db.accounting_movements.get(accId);
-        if (movFresh) await resolverGuiasPendientes(movFresh, esPruebaCM);
+        if (movFresh && !esNota) await resolverGuiasPendientes(movFresh, esPruebaCM);
       } catch (e) { console.warn('[guias pendientes]', e?.message); }
 
       // Cierre del reemplazo: la VENTA interna NO se re-apunta al movimiento
@@ -3015,7 +3018,8 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
   // no tocó nada. NO se persiste con un efecto a propósito — un efecto que
   // escribe el review en cada render del modal pisaría ediciones en curso;
   // confirmarGuia aplica exactamente el mismo default.
-  const guiaSel = r?.guia_facturas_sel ?? seleccionPorDefectoGuia(guiaCands);
+  const guiaSel = (r?.guia_facturas_sel ?? seleccionPorDefectoGuia(guiaCands))
+    .filter(id => guiaCands.some(c => c.mov.id === id));   // sin fantasmas si cambió el Doc. Ref.
 
   // Verificación del RUC del emisor contra SUNAT (cacheada). Si el nombre oficial
   // difiere del capturado por el OCR, recomendamos el cambio — el usuario decide.
@@ -3050,7 +3054,10 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
   // (el receptor es un cliente) — bug reportado por Gabriel el 1-sep.
   const opPartes = clasificarPartes({
     emisorEsNuestro: !!r.emisor_company_id,
-    receptorEsNuestro: !!(r.receptor_documento && companiesActivas.find(c => c.ruc === r.receptor_documento)),
+    // MISMO matcher que el análisis (RUC normalizado + respaldo por razón
+    // social) — comparar strings crudos hacía que la pantalla dijera "cliente
+    // externo" mientras se guardaba venta interco con espejo, o al revés.
+    receptorEsNuestro: !!matchCompanyGrupo(companies, r.receptor_documento, r.receptor_razon_social),
   });
   const emisorNuestro = opPartes === OP_VENTA_EXTERNA || opPartes === OP_INTERCO;
   const empresaEmisora = emisorNuestro ? (companies || []).find(c => c.id === r.emisor_company_id) : null;

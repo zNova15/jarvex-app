@@ -125,8 +125,19 @@ function GuiasRemisionPage({ showToast }) {
   // ── PENDIENTE guía → factura ──
   // Facturas que la guía dice amparar y que todavía NO están en el sistema.
   // Es derivado, no un estado guardado: desaparece solo cuando la factura entra.
-  const pendientesDe = (g) => referenciasDeGuia(g, movs || [], optsGuia).filter(x => x.estado === 'ausente');
-  const guiasConPendiente = uM(() => guias.filter(g => pendientesDe(g).length > 0), [guias, movs, optsGuia]);
+  // Se computa UNA vez por cambio de datos (guias/movs/vínculos) en un Map:
+  // llamarlo por fila recorría TODOS los movs G veces en CADA render — con el
+  // buscador eso era O(guías × movs) por tecla (hallazgo de la inspección 1-sep).
+  const pendPorGuia = uM(() => {
+    const m = new Map();
+    for (const g of guias) {
+      const p = referenciasDeGuia(g, movs || [], optsGuia).filter(x => x.estado === 'ausente');
+      if (p.length) m.set(g.id, p);
+    }
+    return m;
+  }, [guias, movs, optsGuia]);
+  const pendientesDe = (g) => pendPorGuia.get(g.id) || [];
+  const guiasConPendiente = uM(() => guias.filter(g => pendPorGuia.has(g.id)), [guias, pendPorGuia]);
   const idsConPendiente = uM(() => new Set(guiasConPendiente.map(g => g.id)), [guiasConPendiente]);
 
   // ── PENDIENTE factura → guías ──

@@ -384,3 +384,13 @@ describe('coberturaDeGuias — ¿falta material por trasladar?', () => {
     expect(c.sinCruce).toBe(false);
   });
 });
+
+describe('guiasEsperandoFactura — el cierre automático exige emisor confirmado', () => {
+  it('una guía SIN RUC de emisor no se auto-cierra (el cerco no puede descartar impostoras)', () => {
+    // Serie y correlativo coinciden, pero sin RUC el matcher da score 2:
+    // cualquier factura ajena que reuse F001-125 "cerraría" el pendiente.
+    const guias = [{ id: 'g1', doc_referencia: 'F001-125', emisor_ruc: '' }];
+    const nueva = { id: 'f3', clase: 'compra', document_number: 'F001-000125', third_party_ruc: '20536265644' };
+    expect(guiasEsperandoFactura(nueva, guias, {})).toEqual([]);
+  });
+});

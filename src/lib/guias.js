@@ -345,10 +345,12 @@ export function guiasEsperandoFactura(mov, guias, opts = {}) {
     if (!g || g.deleted_at) return false;
     if ((idx.porGuia.get(g.id) || new Set()).has(mov.id)) return false;   // ya vinculada
     if (!normalizarDocs(g.doc_referencia).some(r => r.serie === doc.serie && r.correlativo === doc.correlativo)) return false;
-    // El cerco lo aplica el propio matcher: si esta factura no es candidata
-    // válida para la guía (emisor contradicho o dirección equivocada), no la
-    // vinculamos por más que el número coincida.
-    return sugerirFacturasParaGuia(g, [mov], opts).some(c => c.mov.id === mov.id && c.score >= 2);
+    // El cerco lo aplica el propio matcher — y para un cierre AUTOMÁTICO se
+    // exige score 3 (referencia exacta Y emisor coincidente). Con score 2 la
+    // guía no tiene RUC de emisor (o la serie difiere): ahí el cerco no puede
+    // descartar una factura ajena que reusa el número, así que el pendiente se
+    // queda esperando resolución manual en vez de cerrarse mal en silencio.
+    return sugerirFacturasParaGuia(g, [mov], opts).some(c => c.mov.id === mov.id && c.score >= 3);
   });
 }
 
