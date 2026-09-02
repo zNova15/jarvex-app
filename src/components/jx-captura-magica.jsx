@@ -326,7 +326,19 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
         showToast?.(`Este archivo es ${!mimeOk ? 'un formato que la IA no lee (HEIC de iPhone)' : 'muy pesado'} — abrilo desde Evidencias, descargalo y volvé a subirlo comprimido, o cargá la factura a mano.`, 'amber');
         return;
       }
-      await onInyectar([file]);
+      const resultados = await onInyectar([file]);
+      // Solo pasa a "Trabajadas" si la lectura TERMINÓ ('revisar' o
+      // 'duplicado'). Antes se marcaba 'leida' incondicionalmente: con la IA
+      // caída (timeout, sin crédito — pasó el 22-jul) la foto desaparecía de
+      // Pendientes con un toast de éxito, y el error quedaba solo en el Dexie
+      // de este dispositivo — desde la otra PC se veía "trabajada" sin
+      // movimiento creado (hallazgo de la inspección 1-sep).
+      const leidaOk = Array.isArray(resultados) && resultados.length > 0
+        && resultados.every(x => x === 'revisar' || x === 'duplicado');
+      if (!leidaOk) {
+        showToast?.('La lectura con IA no terminó bien — la foto SIGUE en "⏳ Pendientes". Mirá el error en la bandeja de abajo y reintentá.', 'amber');
+        return;
+      }
       // Ya se trabajó → sale de Pendientes y pasa a "Trabajadas" (pedido de
       // Gabriel 1-sep: antes quedaba ocupando la bandeja hasta marcarla a mano).
       const movida = await setEstado(ev, ESTADO_LEIDA, { silencioso: true });
@@ -803,13 +815,18 @@ function CapturaMagicaPage({ showToast }) {
         created_at: new Date().toISOString(),
       });
     }
+    const resultados = [];
     if (nuevos.length) {
       setItems(prev => [...nuevos, ...prev]);
       // Procesar cada uno (en serie para no saturar API)
       for (const it of nuevos) {
-        await procesarItem(it.id, it.file);
+        resultados.push(await procesarItem(it.id, it.file));
       }
     }
+    // Estado terminal de cada archivo aceptado ('revisar'|'duplicado'|'error');
+    // vacío si todos fueron rechazados por tipo/peso. Lo usa "Leer con IA" de
+    // la bandeja de campo para NO mover a Trabajadas una foto cuya lectura falló.
+    return resultados;
   };
 
   const onDrop = (e) => {
@@ -908,6 +925,7 @@ function CapturaMagicaPage({ showToast }) {
         duplicate_info: dup ? { doc: dup.document_number, fecha: dup.date, monto: dup.amount, moneda: dup.currency, tercero: dup.third_party_name, tipo: dup.document_type } : null,
         nc_aviso: ncSerieDeFactura ? `La serie leída (${ext.serie_correlativo}) es la de la FACTURA que modifica — verificá la serie real de la nota en el PDF (suele empezar con FC/BC).` : null,
       } : x));
+      return dup ? 'duplicado' : 'revisar';
     } catch (e) {
       // AbortError = se cumplió el timeout del cliente (90 s). El mensaje nativo
       // ("The user aborted a request.") es incomprensible para la usuaria.
@@ -919,6 +937,7 @@ function CapturaMagicaPage({ showToast }) {
         ...x, status: 'error', error: msg, errorCode: esAbort ? 'timeout_cliente' : (e.code || null),
         intentos: (x.intentos || 0) + 1,
       } : x));
+      return 'error';
     } finally {
       enVuelo.current.delete(id);
     }

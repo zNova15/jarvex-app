@@ -136,10 +136,23 @@ function LibroDiarioPage({ showToast }) {
   );
   const movsById = uM(() => new Map(movsFiltrados.map(m => [m.id, m])), [movsFiltrados]);
 
-  // Totales globales
+  // Totales globales — SOLO S/ (hallazgo inspección 1-sep): los asientos en
+  // USD se sumaban como si fueran soles en totales/PDF/Excel. Cada asiento
+  // cuadra internamente, así que la herramienta de descuadre nunca podía
+  // verlo. Sin tipo de cambio no hay conversión honesta: lo extranjero se
+  // separa y se informa aparte, sin mezclar monedas.
   const totales = uM(() => {
     let totDebe = 0, totHaber = 0, lineas = 0;
+    const extranjeras = new Map();   // 'USD' → { debe, asientos }
     asientos.forEach(a => {
+      const cur = movsById.get(a.movimiento_id)?.currency || 'PEN';
+      if (cur !== 'PEN') {
+        const e = extranjeras.get(cur) || { debe: 0, asientos: 0 };
+        a.partidas.forEach(p => { e.debe += p.debe; lineas += 1; });
+        e.asientos += 1;
+        extranjeras.set(cur, e);
+        return;
+      }
       a.partidas.forEach(p => {
         totDebe += p.debe;
         totHaber += p.haber;
@@ -151,8 +164,9 @@ function LibroDiarioPage({ showToast }) {
       totHaber: Math.round(totHaber * 100) / 100,
       lineas,
       cuadra: Math.abs(totDebe - totHaber) < 0.05,
+      extranjeras: [...extranjeras.entries()].map(([cur, e]) => ({ cur, debe: Math.round(e.debe * 100) / 100, asientos: e.asientos })),
     };
-  }, [asientos]);
+  }, [asientos, movsById]);
 
   // Comprobante adjunto por movimiento (el mismo material que Movimientos
   // muestra con el ojo 👁): factura/imagen guardada por Captura Mágica.
@@ -290,7 +304,7 @@ function LibroDiarioPage({ showToast }) {
 
       // Fila total
       body.push([
-        '', '', { content: 'TOTALES', styles: { fontStyle: 'bold', halign: 'right' } },
+        '', '', { content: totales.extranjeras.length ? 'TOTALES (solo S/)' : 'TOTALES', styles: { fontStyle: 'bold', halign: 'right' } },
         '', '',
         { content: fmtS(totales.totDebe), styles: { fontStyle: 'bold', halign: 'right', fillColor: [235, 240, 245] } },
         { content: fmtS(totales.totHaber), styles: { fontStyle: 'bold', halign: 'right', fillColor: [235, 240, 245] } },
@@ -365,7 +379,7 @@ function LibroDiarioPage({ showToast }) {
           ]);
         });
       });
-      filas.push(['', '', '', '', '', '', 'TOTALES', totales.totDebe, totales.totHaber, '']);
+      filas.push(['', '', '', '', '', '', totales.extranjeras.length ? 'TOTALES (solo S/)' : 'TOTALES', totales.totDebe, totales.totHaber, '']);
 
       window.__reports.generateExcel({
         // Máx 31 chars de sheetName en xlsx — 'DESC' marca la vista parcial.
@@ -459,6 +473,12 @@ function LibroDiarioPage({ showToast }) {
         <div className="card card-p" style={{ borderLeft: '3px solid var(--red)' }}>
           <div style={{ fontSize: 11, color: 'var(--tm)', textTransform: 'uppercase' }}>Total Haber</div>
           <div style={{ fontSize: 20, fontWeight: 800, color: 'var(--red)', marginTop: 4 }}>{fmtS(totales.totHaber)}</div>
+          {totales.extranjeras.map(e => (
+            <div key={e.cur} style={{ fontSize: 10.5, color: 'var(--amber)', marginTop: 3 }}
+              title="Sin tipo de cambio no se pueden sumar con los S/. Cada asiento cuadra en su propia moneda.">
+              + {e.asientos} asiento{e.asientos === 1 ? '' : 's'} en {e.cur} ({e.cur === 'USD' ? 'US$ ' : ''}{e.debe.toLocaleString('es-PE', { minimumFractionDigits: 2 })}) aparte
+            </div>
+          ))}
         </div>
         <div className="card card-p"
           style={{ borderLeft: `3px solid ${totales.cuadra ? 'var(--green)' : 'var(--red)'}`, cursor: descuadrados.length ? 'pointer' : 'default' }}
@@ -527,6 +547,12 @@ function LibroDiarioPage({ showToast }) {
                                 <span className={`badge ${TIPO_BADGE[a.type] || 'b-gray'}`} style={{ fontSize: 10 }}>
                                   {TIPO_LABEL[a.type] || a.type}
                                 </span>
+                                {(movsById.get(a.movimiento_id)?.currency || 'PEN') !== 'PEN' && (
+                                  <span className="badge b-blue" style={{ fontSize: 10 }}
+                                    title="Asiento en moneda extranjera: sus montos están en la moneda del comprobante y NO se suman con los totales en S/.">
+                                    {movsById.get(a.movimiento_id)?.currency}
+                                  </span>
+                                )}
                                 {a.extorno && (
                                   <span className="badge b-amber" style={{ fontSize: 10 }} title="Nota de crédito / monto negativo asentado como extorno (debe↔haber invertidos)">
                                     ↩ NC · extorno
@@ -589,7 +615,7 @@ function LibroDiarioPage({ showToast }) {
               </tbody>
               <tfoot>
                 <tr style={{ background: 'var(--bg-s)', fontWeight: 700 }}>
-                  <td colSpan={5} style={{ textAlign: 'right', padding: '10px 12px' }}>TOTALES:</td>
+                  <td colSpan={5} style={{ textAlign: 'right', padding: '10px 12px' }}>{totales.extranjeras.length ? 'TOTALES (solo S/):' : 'TOTALES:'}</td>
                   <td style={{ textAlign: 'right', color: 'var(--green)' }} className="col-num">{fmtS(totales.totDebe)}</td>
                   <td style={{ textAlign: 'right', color: 'var(--red)' }} className="col-num">{fmtS(totales.totHaber)}</td>
                 </tr>

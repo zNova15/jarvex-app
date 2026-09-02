@@ -1,4 +1,7 @@
 import React from "react";
+// identidadDePerfil: profiles tiene nombres/apellidos (PLURAL) — leer profile.nombre
+// mostraba siempre el email (mismo bug que c3540bb arregló en el portal de campo).
+import { identidadDePerfil } from "../lib/captura-campo.js";
 import { detectarEPP, esProbablementeEPP, epppTipo } from "../lib/epp-utils.js";
 import { normalizeCodigo, fuzzyScore } from "../lib/match-helpers.js";
 import { calcularPresupuesto, fmtSoles } from "../lib/presupuesto-obra.js";
@@ -2870,7 +2873,7 @@ function ImportarPage({ showToast }) {
       total: transformedRows.length,
       ok: okCount,
       errores: errorList.length,
-      user: auth?.profile?.nombre || auth?.profile?.email || 'offline',
+      user: identidadDePerfil(auth?.profile) || 'offline',
     };
     const newHist = [entry, ...hist].slice(0, 50);
     setHist(newHist);
@@ -2978,7 +2981,7 @@ function ImportarPage({ showToast }) {
           <S10Flow
             obraId={obraId}
             userId={userId}
-            userName={auth?.profile?.nombre || auth?.profile?.email || 'offline'}
+            userName={identidadDePerfil(auth?.profile) || 'offline'}
             showToast={showToast}
             onReset={reset}
             hist={hist}

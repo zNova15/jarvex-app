@@ -265,12 +265,31 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Solo POST' });
   }
 
+  let authCtx = null;
   try {
-    await requireAuth(req);
+    authCtx = await requireAuth(req);
     rateLimit(req, { windowMs: 60_000, max: 60 });
   } catch (e) {
     const s = sanitizeError(e, 'No autorizado');
     return res.status(s.status).json(s.body);
+  }
+
+  // Blindaje de créditos (espejo del de api/captura-magica.js, hallazgo de la
+  // inspección 1-sep): las 3 acciones de este endpoint (cuenta PCGE, match de
+  // insumo, costo/gasto) queman tokens de Claude y quedaban abiertas a
+  // CUALQUIER autenticado — incluso solo_lectura o la cuenta compartida del
+  // portal de campo, a 60 req/min. Roles espejo del modo 'comprobantes'.
+  // Roles custom y overrides del panel viven en localStorage del cliente —
+  // el server no puede confiar en ellos y quedan fuera a propósito.
+  const ROLES_PERMITIDOS = ['admin', 'gerente', 'contador', 'ayudante_contador', 'asistente_admin', 'jefe_compras'];
+  const rolSolicitante = authCtx?.profile?.rol || null;
+  if (!rolSolicitante) {
+    // profile null = hiccup transitorio consultando profiles. Fail-closed pero
+    // REINTENTABLE: 503, no un 403 que diagnostica mal un problema que se cura solo.
+    return res.status(503).json({ error: 'No se pudo verificar tu rol en este momento — reintentá en unos segundos.' });
+  }
+  if (!ROLES_PERMITIDOS.includes(rolSolicitante)) {
+    return res.status(403).json({ error: 'Tu rol no tiene habilitada la sugerencia con IA.' });
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;

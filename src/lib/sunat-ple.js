@@ -354,7 +354,7 @@ export function generateRegistroComprasPLE(movs_cost_expense, periodo, ruc) {
     const provDoc     = clean(provRuc);
     const provName    = clean(m.third_party_name || '').slice(0, 100);
 
-    const moneda = String(m.moneda || 'PEN').toUpperCase();
+    const moneda = String(m.currency || m.moneda || 'PEN').toUpperCase();
     const tc     = num(Number(m.tipo_cambio || 0), 3);
     const correl = `M${pad4(periodo.anio)}${pad2(periodo.mes)}${String(counter).padStart(5, '0')}`;
     const estado = m.payment_status === 'cancelled' ? '9' : '1';

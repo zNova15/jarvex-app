@@ -1235,6 +1235,10 @@ function MovimientosContablesPage({ showToast }) {
           obra_id: form.obra_id || null,
           destino_contable: form.obra_id ? 'obra' : (form.destino_contable || null),
           is_intercompany: false,
+          // Sin esto, con "Forzar GASTO" sobre una compra de obra la IA recibía
+          // type:'cost' y sugería cuentas de costo — el caso exacto que el
+          // override manual (mig 163) vino a resolver.
+          clasificacion_manual: form.clasificacion_manual || null,
         }),
         description: form.description || '',
         category: form.category || '',
