@@ -566,6 +566,30 @@ export function usePlanillaBoletas(planilla_id) {
   , [planilla_id]);
 }
 
+// ── Registro profesional (mig 171) ────────────────────────────────
+export function useRubrosObra() {
+  return useOfflineData('rubros_obra', q =>
+    q.filter(r => !r.deleted_at).toArray().then(rs =>
+      rs.sort((a, b) => (a.orden ?? 100) - (b.orden ?? 100) || String(a.nombre).localeCompare(String(b.nombre))))
+  , []);
+}
+
+export function usePersonalProfesional(personal_id) {
+  return useOfflineData('personal_profesional', q =>
+    personal_id
+      ? q.where('personal_id').equals(personal_id).filter(f => !f.deleted_at).toArray()
+      : q.filter(f => !f.deleted_at).toArray()
+  , [personal_id]);
+}
+
+export function usePersonalExperiencia(personal_id) {
+  return useOfflineData('personal_experiencia', q =>
+    personal_id
+      ? q.where('personal_id').equals(personal_id).filter(e => !e.deleted_at).toArray()
+      : q.filter(e => !e.deleted_at).toArray()
+  , [personal_id]);
+}
+
 export function useConflicts() {
   const [conflicts, setConflicts] = useState([]);
 

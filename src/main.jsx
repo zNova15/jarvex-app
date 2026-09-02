@@ -34,6 +34,7 @@ import { useRealtimeNotifications } from './hooks/useRealtimeNotifications';
 import { useObraActiva, getObraActivaIdSync, setObraActivaId } from './hooks/useObraActiva';
 import {
   useObras, usePersonal, useMateriales, useHerramientas,
+  useRubrosObra, usePersonalProfesional, usePersonalExperiencia,
   useUbicacionesObra, useFrentesObra, useFrentePartidas,
   useMovimientosMateriales, useMovimientosHerramientas, useMovimientosMaquinaria,
   useAsistencia, usePartidas, useAvanceObra, useAvanceMetas, useSolicitudesReporte, useSolicitudesFrente, useIncidencias,
@@ -101,6 +102,7 @@ window.__getObraActivaId = getObraActivaIdSync;
 window.__setObraActivaId = setObraActivaId;
 window.__hooks = {
   useObras, usePersonal, useMateriales, useHerramientas,
+  useRubrosObra, usePersonalProfesional, usePersonalExperiencia,
   useUbicacionesObra, useFrentesObra, useFrentePartidas,
   useMovimientosMateriales, useMovimientosHerramientas, useMovimientosMaquinaria,
   useAsistencia, usePartidas, useAvanceObra, useAvanceMetas, useSolicitudesReporte, useSolicitudesFrente, useIncidencias,
@@ -217,6 +219,7 @@ const PAGE_CHUNKS = {
   'jx-analisis-insumos':      () => import('./components/jx-analisis-insumos.jsx'),
   'jx-pagos':                 () => import('./components/jx-pagos.jsx'),
   'jx-guias':                 () => import('./components/jx-guias.jsx'),
+  'jx-profesionales':         () => import('./components/jx-profesionales.jsx'),
   'jx-ordenes-intercompany':  () => import('./components/jx-ordenes-intercompany.jsx'),
   'jx-compras':               () => import('./components/jx-compras.jsx'),
   'jx-compras-pendientes':    () => import('./components/jx-compras-pendientes.jsx'),

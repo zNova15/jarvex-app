@@ -23,6 +23,7 @@ const ROL_LABELS = {
   ing_social:          'Ing. Social',
   maestro_obra:        'Maestro de Obra',
   solo_lectura:        'Solo Lectura',
+  licitaciones:        'Licitaciones / Propuestas',
   campo:               'Captura de Campo (PIN compartido)',
 };
 
@@ -45,10 +46,11 @@ const ROL_COLORS_ADM = {
   ing_social:          'b-purple',
   maestro_obra:        'b-green',
   solo_lectura:        'b-gray',
+  licitaciones:        'b-purple',
   campo:               'b-orange',
 };
 
-const ROL_KEYS = ['admin','gerente','ingeniero_residente','ingeniero','supervisor','almacenero','asistente_admin','contador','ayudante_contador','tesorero','jefe_compras','rrhh','prevencionista','ing_ambiental','ing_calidad','ing_social','maestro_obra','solo_lectura','campo'];
+const ROL_KEYS = ['admin','gerente','ingeniero_residente','ingeniero','supervisor','almacenero','asistente_admin','contador','ayudante_contador','tesorero','jefe_compras','rrhh','prevencionista','ing_ambiental','ing_calidad','ing_social','maestro_obra','licitaciones','solo_lectura','campo'];
 
 // ── Roles Custom (definidos por el admin, persistidos en localStorage) ──
 // Cada rol custom: { key, label, color }
@@ -788,7 +790,7 @@ const MODULE_GROUPS = [
   { group: 'Subcontratos', modules: ['Subcontratistas','Subcontratos','Valor. Subcontrato'] },
   { group: 'Maquinaria', modules: ['Activos Pesados','Mantenimiento','Horas Máquina'] },
   { group: 'SSOMA', modules: ['Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones','Insumos de Emergencia','Reporte Especialidad','Gestión Ambiental','Gestión Calidad','Gestión Social'] },
-  { group: 'RRHH', modules: ['Contratos Laborales','Planillas','CTS','Gratificaciones'] },
+  { group: 'RRHH', modules: ['Contratos Laborales','Planillas','CTS','Gratificaciones','Registro Profesional'] },
   { group: 'Contabilidad', modules: ['Empresas','Movs. Contables','Intercompany','Trazabilidad','Consolidado','Plan de Cuentas','Libro Diario','Balance General','Estado Resultados'] },
   { group: 'Tesorería', modules: ['Cuentas Bancarias','Flujo de Caja','Flujo Proyectado','Comparativo Periodos'] },
   { group: 'SUNAT', modules: ['Comprobantes Electrónicos','Libros Electrónicos','PLAME / T-Registro','Config SUNAT'] },
@@ -988,10 +990,21 @@ const PERM_MATRIX = {
 
   // RR.HH.: w en personal, asistencia, contratos, planillas, CTS, gratificaciones, PLAME;
   // r en obras (saber dónde está cada uno), proveedores; x compras/contabilidad/almacén/operaciones
+  // Licitaciones / Propuestas: el equipo que busca obras y arma las cartas del
+  // proceso. Su trabajo es el plantel profesional, así que tiene 'w' SOLO en
+  // Registro Profesional; ve Personal y Obras en consulta (necesita saber a
+  // quién tiene y qué obras ejecutó la empresa) y nada de contabilidad,
+  // almacén ni operación de obra.
+  licitaciones: PERM_MATRIX_MODULES.map(m => {
+    if (m === 'Registro Profesional') return 'w';
+    if (['Personal','Obras','Empresas','Reportes'].includes(m)) return 'r';
+    return 'x';
+  }),
+
   rrhh: PERM_MATRIX_MODULES.map(m => {
     if (m === 'Usuarios/Config') return 'x';
     if (['Personal','Asistencia','Contratos Laborales','Planillas','CTS','Gratificaciones',
-         'PLAME / T-Registro','Capacitaciones'].includes(m)) return 'w';
+         'PLAME / T-Registro','Capacitaciones','Registro Profesional'].includes(m)) return 'w';
     if (['Obras','Subcontratistas','Empresas','Charlas Seguridad','EPP','Inspecciones SSOMA',
          'IPERC','Solicitudes Cambio','Reportes'].includes(m)) return 'r';
     return 'x';
@@ -1109,6 +1122,7 @@ window.__moduleIdMap = {
   // Operaciones
   'obras': 'Obras',
   'personal': 'Personal',
+  'profesionales': 'Registro Profesional',
   'frentes': 'Personal',                         // frentes de trabajo: hereda permiso de Personal
   'asistencia': 'Asistencia',
   'materiales': 'Materiales',
@@ -1234,6 +1248,7 @@ const __ROLES_CANONICOS = new Set([
   'asistente_admin','contador','ayudante_contador','tesorero','jefe_compras','rrhh',
   'prevencionista','maestro_obra','solo_lectura',
   'ing_ambiental','ing_calidad','ing_social',
+  'licitaciones',   // equipo de propuestas / plantel profesional (mig 171)
   'campo',   // portal de captura de campo (mejora 2, mig 155)
 ]);
 

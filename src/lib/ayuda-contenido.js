@@ -316,6 +316,17 @@ const AYUDA = {
     'La línea de GASTOS se alimenta de los comprobantes vinculados a "Gastos Generales de la Empresa"; la de COSTOS, de los vinculados a una obra. Si algo está en la línea equivocada, se corrige cambiando la VINCULACIÓN del movimiento (Movimientos Contables), no un campo de tipo.',
   ] },
   'comprobantes': { titulo: 'Comprobantes Electrónicos SUNAT', que: 'Los comprobantes electrónicos emitidos/recibidos consultados contra SUNAT.', como: ['Validá el estado del comprobante (aceptado/anulado) antes de contabilizarlo.'] },
+  'profesionales': { titulo: 'Registro Profesional', que: 'Qué profesionales tenemos, con cuánta experiencia por rubro y con qué sustento — para armar el plantel de una propuesta.', como: [
+    'PARA QUÉ SIRVE: las bases de un proceso piden un plantel clave (ej. "Residente: Ingeniero Civil con 60 meses en saneamiento"). Esta página contesta en segundos quién califica, en vez de revisar carpetas de CVs a mano.',
+    'FICHA: cada persona del padrón puede tener su ficha profesional — profesión, título, universidad, colegio (CIP/CAP), número de colegiatura y hasta cuándo está HABILITADO. Si la habilidad venció, la persona no se puede presentar y la app lo marca en rojo.',
+    'EXPERIENCIA: se carga como PERIODOS (obra, entidad, cargo, rubro, desde/hasta), no como "5 años". Los meses los calcula la app. Si la experiencia es en una obra nuestra, elegí la obra en el selector y se prellena sola.',
+    'DOS OBRAS A LA VEZ CUENTAN UNA VEZ: si dos periodos se superponen, ese tiempo se cuenta una sola vez. Sumar las constancias por separado infla el total y es una observación segura en la evaluación.',
+    'CONSTANCIA: cada experiencia puede llevar adjunto su certificado. La app lleva DOS totales: lo declarado y lo que tiene constancia. En un proceso solo vale lo segundo, así que el buscador mide por ahí (se puede apagar con "Solo con constancia").',
+    'BUSCAR PLANTEL: cargá los requisitos de las bases (uno por puesto) y la lista muestra ✅ quién califica, ⚠️ a quién le falta algo conseguible (meses o una constancia) y ⛔ quién no aplica por profesión. Cada persona dice exactamente QUÉ le falta.',
+    'CV: se sube en PDF desde la ficha. Falta de CV avisa pero no bloquea; colegiatura vencida sí bloquea.',
+    'QUIÉN ENTRA: el rol Licitaciones (equipo de propuestas), RR.HH., gerencia y admin. Los CVs y constancias son datos personales y no los ve el resto de la app.',
+  ], tips: ['Si un rubro no está en la lista, el admin lo agrega desde la configuración de rubros — no lo escribas a mano en otro campo o deja de sumar en el buscador.'] },
+
   'libros-electronicos': { titulo: 'Libros Electrónicos PLE / PDT', que: 'Generación de los libros electrónicos para SUNAT.', como: [
     'Generá el PLE del periodo cerrado y presentalo según cronograma SUNAT.',
     'IGV REAL (31-ago): los registros de Compras y Ventas declaran el IGV del COMPROBANTE (antes se calculaba siempre al 18%). Lo que no paga IGV —exonerado, inafecto, bolsa— va a su propia columna y no infla la base gravada ni el crédito fiscal.',

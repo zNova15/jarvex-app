@@ -31,6 +31,9 @@ export const TIPOS_CONTABLES = [
 
 // Bloques por función (un tipo puede estar en varios bloques).
 const COMUN      = ['acta', 'documento_general', 'pdf_formato_firmado'];
+// Registro profesional (mig 171): CV y constancias de experiencia. Son datos
+// personales — los ve el equipo de propuestas, RR.HH. y la conducción.
+const PROFESIONAL = ['cv_profesional', 'constancia_experiencia'];
 const ALMACEN    = ['foto_material', 'foto_herramienta', 'foto_herramienta_danada',
                     'foto_estado', 'registro_diario_materiales', 'foto_epp', 'firma_epp'];
 const ASISTENCIA = ['foto_asistencia'];
@@ -57,7 +60,10 @@ const MATRIZ = {
   ing_social:          ['foto_especialidad', ...ASISTENCIA, ...COMUN],
   jefe_compras:        ['oc_firmada', 'foto_material', ...COMUN],
   tesorero:            [...COMUN],
-  rrhh:                [...ASISTENCIA, ...COMUN],
+  rrhh:                [...ASISTENCIA, ...PROFESIONAL, ...COMUN],
+  // Licitaciones: SOLO el material del plantel profesional. Nada de obra,
+  // almacén ni contabilidad.
+  licitaciones:        [...PROFESIONAL, ...COMUN],
   solo_lectura:        BASICO,
   // Rol campo (cuenta compartida con PIN): SOLO sus fotos de factura — y por
   // la regla del autor, únicamente las que él mismo subió (el RLS del server

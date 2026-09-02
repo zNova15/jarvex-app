@@ -172,6 +172,7 @@ const NAV = [
   { id: 'empresas', label: 'Empresas', icon: 'building' },
   { id: 'movimientos-contables', label: 'Movimientos (todas / por obra)', icon: 'dollar', plano: 'general' },
   { id: 'guias-remision', label: 'Guías de Remisión', icon: 'truck' },
+  { id: 'profesionales', label: 'Registro Profesional', icon: 'users' },
   { id: 'intercompany', label: 'Operaciones entre Empresas', icon: 'compare' },
   { id: 'trazabilidad', label: 'Trazabilidad de Cadenas', icon: 'compare' },
   { id: 'compras-categoria', label: 'Compras por Categoría', icon: 'layers' },

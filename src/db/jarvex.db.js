@@ -68,6 +68,16 @@ export const db = new Dexie('JarvexDB');
 // guias_remision.accounting_movement_id solo soportaba la segunda mitad.
 // Esta tabla es la fuente de verdad; la columna vieja queda como espejo del
 // primer vínculo para los clientes PWA con bundle cacheado. Aditivo.
+// Versión 48: REGISTRO PROFESIONAL (mig 171) — ficha 1:1 con personal,
+// experiencia por rubro (los meses se CALCULAN de los periodos, ver
+// src/lib/experiencia-profesional.js) y catálogo de rubros. Para el equipo
+// que arma las propuestas de licitación. Aditivo.
+db.version(48).stores({
+  rubros_obra:          'id, nombre, activo, deleted_at, sync_status',
+  personal_profesional: 'id, personal_id, deleted_at, sync_status',
+  personal_experiencia: 'id, personal_id, rubro_id, obra_id, deleted_at, sync_status',
+});
+
 db.version(47).stores({
   guia_factura: 'id, guia_id, accounting_movement_id, deleted_at, sync_status',
 });
