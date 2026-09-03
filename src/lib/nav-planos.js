@@ -22,7 +22,9 @@ export const GENERAL_ITEMS = new Set([
   // Flujo de caja/proyectado son por-empresa (cronograma_pagos no tiene obra_id).
   // 'trazabilidad' YA NO está acá: la cadena intercompany es de UNA obra
   // (tanda 2, entrega B) → plano obra, dentro del workspace del trabajo.
-  'empresas', 'cont-dashboard', 'intercompany', 'consolidado',
+  // 'contabilidad' es el BLOQUE principal: el resumen de la contabilidad de
+  // cada entidad (empresas y trabajos) con el vínculo a cada una (tanda 2D).
+  'empresas', 'contabilidad', 'cont-dashboard', 'intercompany', 'consolidado',
   // Un bien o servicio NO pertenece a ninguna obra: si no está acá, la app le
   // exige obra activa para abrirlo.
   'bienes-servicios',
@@ -51,7 +53,7 @@ export const planoDe = (id) => GENERAL_ITEMS.has(id) ? 'general' : 'obra';
 // obra) pero también se ofrece en el área 'contabilidad' (vista general con
 // selector) — por eso figura acá.
 const AREA = {
-  contabilidad: new Set(['cont-dashboard', 'empresas', 'bienes-servicios', 'movimientos-contables', 'intercompany',
+  contabilidad: new Set(['contabilidad', 'cont-dashboard', 'empresas', 'bienes-servicios', 'movimientos-contables', 'intercompany',
     'consolidado', 'cuentas-bancarias', 'flujo-caja', 'flujo-proyectado',
     'plan-cuentas', 'libro-diario', 'balance-general', 'estado-resultados', 'comprobantes',
     'libros-electronicos', 'config-sunat', 'comparativo-periodos', 'compras-categoria', 'ordenes-intercompany', 'guias-remision',
@@ -72,22 +74,36 @@ export const areaDe = (id) => {
 };
 
 // Roles que trabajan en lo global o entre varias obras → aterrizan en Inicio.
-const ROLES_GLOBALES = new Set(['admin', 'gerente', 'contador', 'ayudante_contador', 'tesorero']);
+// ESPEJO de ROLES_GLOBALES en obras-asignadas.js (que decide qué obras ve) y
+// de es_rol_global() en la mig 175 (que lo hace cumplir en el servidor).
+const ROLES_GLOBALES = new Set(['admin', 'gerente', 'contador', 'ayudante_contador', 'tesorero', 'licitaciones']);
 
 /**
  * A dónde aterriza un usuario al entrar.
+ *
+ * Reescrito en la tanda 2D (pedido de Gabriel, 3-sep-2026): un usuario de obra
+ * NO tiene por qué pasar por la pantalla de bloques del grupo — de esos cinco
+ * bloques solo puede abrir uno. Entra a lo suyo:
+ *
  * @returns {{ page: string, obraId: string|null }}
- *   - roles globales (admin/gerente/contador/…) → Inicio.
- *   - operativos con UNA obra asignada → su workspace + su página de siempre.
- *   - operativos con 0 ó varias obras → Inicio (que elija).
+ *   - rol campo → su portal de captura (lo único que puede usar).
+ *   - roles GLOBALES (admin/gerente/contadora/…) → Inicio, los cinco bloques.
+ *   - rol de OBRA con UNA obra → DIRECTO al desglose de esa obra (panel-obra).
+ *   - rol de OBRA con varias → la lista de SUS trabajos, para que elija.
+ *   - rol de OBRA sin ninguna → también la lista, que es donde la pantalla le
+ *     dice que no tiene trabajos asignados y a quién pedirle acceso. Nunca al
+ *     Inicio: un almacenero sin obras ahí veía bloques que no puede abrir.
  */
-export function resolveLanding({ rol, obrasAsignadas = [], homePorRol = {} } = {}) {
+export function resolveLanding({ rol, obrasAsignadas = [] } = {}) {
   // Rol campo (cuenta compartida con PIN): aterriza DIRECTO en el portal de
   // captura — es lo único que puede usar.
   if (rol === 'campo') return { page: 'captura-campo', obraId: null };
   if (ROLES_GLOBALES.has(rol)) return { page: 'inicio', obraId: null };
-  if (Array.isArray(obrasAsignadas) && obrasAsignadas.length === 1) {
-    return { page: homePorRol[rol] || 'dashboard-gestion', obraId: obrasAsignadas[0] };
-  }
-  return { page: 'inicio', obraId: null };
+  if (!rol) return { page: 'inicio', obraId: null };
+  const asignadas = Array.isArray(obrasAsignadas) ? obrasAsignadas : [];
+  // Una sola obra: el desglose del trabajo, no la página suelta de su rol. El
+  // panel es un lanzador que ya solo ofrece las secciones que ese rol puede
+  // abrir, así que sirve igual para la almacenera que para la prevencionista.
+  if (asignadas.length === 1) return { page: 'panel-obra', obraId: asignadas[0] };
+  return { page: 'trabajos', obraId: null };
 }

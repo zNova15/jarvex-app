@@ -1192,6 +1192,9 @@ window.__moduleIdMap = {
   'plame': 'PLAME / T-Registro',
   // Contabilidad
   'cont-dashboard': 'Movs. Contables',
+  // Resumen por entidad (tanda 2D): mismo módulo que el resto de la
+  // contabilidad — quien ve los movimientos ve el resumen que los agrupa.
+  'contabilidad': 'Movs. Contables',
   'conciliacion-insumos': 'Movs. Contables',   // conciliación factura↔presupuesto (contabilidad)
   'empresas': 'Empresas',
   'bienes-servicios': 'Bienes y Servicios',
@@ -1289,6 +1292,10 @@ const __AYUDANTE_CONTADOR_ITEMS = [
   // vive en esa área, no tiene tile propio). Con él entra y el sidebar de esa
   // área le muestra Empresas + Movimientos.
   'cont-dashboard',
+  // Resumen por entidad (tanda 2D): la puerta del bloque Contabilidad. Sin él,
+  // el bloque de la pantalla principal caía en 'cont-dashboard' y el ayudante
+  // no veía el listado de contabilidades por empresa y por trabajo.
+  'contabilidad',
   'captura-magica', 'personal', 'empresas', 'proveedores', 'movimientos-contables', 'cuentas-bancarias',
   'trabajos',         // la lista de trabajos: su entrada al área
   'bienes-servicios', // lectura: la matriz le da 'r', sin esta línea no lo vería
@@ -1347,6 +1354,13 @@ window.__canSeeSidebarItem = function(rol, itemId) {
   // de aterrizaje. Como el Inicio, solo deriva: cada tarjeta lista únicamente
   // las secciones que ESE rol puede abrir.
   if (itemId === 'panel-obra') return !!rol;
+  // TRABAJOS: la LISTA de trabajos es la puerta de entrada de todos (tanda 2D).
+  // Con el aterrizaje nuevo, un rol de obra con varias obras (o sin ninguna)
+  // cae acá — si no puede verla, queda en "Sin acceso" en su propia pantalla de
+  // arranque. Como el Panel, no muestra datos ajenos: la lista se acota a las
+  // obras DESIGNADAS al usuario (window.__obrasPermitidas). Va ANTES de las
+  // allowlists exclusivas por el mismo motivo que 'panel-obra'.
+  if (itemId === 'trabajos') return !!rol;
   // SOLICITUDES: cualquier rol que crea solicitudes de cambio (almacenera,
   // ingeniero, etc.) debe poder ver "Mis Solicitudes" para editarlas/anularlas
   // — antes ni sabían qué habían pedido. La pestaña "Pendientes de Revisión"

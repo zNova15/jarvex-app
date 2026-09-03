@@ -170,6 +170,74 @@ que **cortar esa propagación**, y eso toca policies de Storage que filtran por
 entrega C, no un cambio suelto. El Panel del trabajo ya MUESTRA `rol_obra` como
 "el rol en este trabajo".
 
+## 4-bis. Entrega D — Navegación de dos niveles DE VERDAD + aislamiento
+
+> **Escrita el 3-sep-2026, después de que Gabriel probara A/B/C en staging.**
+> Las entregas A-C construyeron las piezas correctas pero la **pantalla
+> principal seguía siendo la vieja**: nada de esto se notaba al entrar.
+
+### Lo que Gabriel encontró al probar
+
+1. *"En la pantalla inicial se supone que solo existirían los 5 bloques; no
+   debería estar Obra de Trabajo ni Trabajo en la Obra."* — el Inicio tenía
+   arriba un **selector de obra** y abajo los **bloques de la obra** (Almacén,
+   Logística…) planos. Eso último es el desglose de un trabajo: vive en el
+   Panel del trabajo (entrega B), no en la pantalla del grupo.
+2. *"Al ingresar a uno de los 5 bloques debería llevarme a otra pantalla, no
+   expandirla nada más."* — los bloques se **desplegaban en el lugar**. Un
+   bloque tiene que navegar: Trabajos → la lista → un trabajo → su desglose.
+3. **Un almacenero designado a UNA obra vio las dos del grupo.**
+
+### Lo que se hizo
+
+**D1. La pantalla principal es solo el primer nivel** (`jx-inicio.jsx`,
+reescrito). Cinco bloques que NAVEGAN; sin selector de obra, sin bloques de
+obra, sin desplegar. Los `BLOQUES` temáticos viejos (~100 líneas) se borraron:
+el desglose de un trabajo ya tiene su fuente única en `desglose-obra.js`.
+Cada bloque declara `entradas` (varias candidatas) y usa la primera que el rol
+puede abrir — así la contadora entra a Configuración por 'configuracion' y el
+admin por 'usuarios', sin bloques muertos.
+
+**D2. Contabilidad, como la definió Gabriel.** Hay una *contabilidad de
+entidad* que llevan **cada empresa del grupo** y **cada trabajo**; el bloque
+Contabilidad es el **resumen de todas ellas con el vínculo a cada una**. Los
+consorcios no figuran como empresa (su contabilidad es la de su trabajo, que
+es donde se mira) y a los terceros no se les llevan libros. Pantalla nueva
+`contabilidad` (`ContabilidadGrupoPage`, dentro del chunk `jx-contabilidad`,
+sin chunk nuevo) sobre `src/lib/contabilidad-entidades.js` (con tests).
+🔴 **Los dos totales NO se suman y la pantalla lo dice:** un comprobante tiene
+`company_id` y además puede tener `obra_id`/`trabajo_id` — aparece en su
+empresa Y en su trabajo. Son dos miradas de la misma plata. Eliminar de verdad
+lo repetido es la **tanda 3**. Las empresas se calculan con la MISMA función
+que su ficha (`resumenFinancieroEmpresa`) para que no haya dos números
+distintos de lo mismo.
+
+**D3. Aislamiento por obra — los tres agujeros.** Medido contra producción
+(2 obras, 17 usuarios) antes de tocar nada:
+- *Cliente 1:* "sin designaciones" devolvía `null` = **ve todas**. Ahora un rol
+  de obra sin designaciones ve un Set **vacío** y la pantalla le dice a quién
+  pedirle acceso (`obras-asignadas.js`, con tests).
+- *Cliente 2:* `window.__obrasPermitidas` se poblaba async y hasta que resolvía
+  valía `undefined`, que todos los consumidores leían como "sin restricción":
+  **en cada arranque había una ventana con todas las obras a la vista**. Ahora
+  arranca del caché local y, si no hay, queda cerrado y en `loading`.
+- *Servidor:* `obras` tenía **dos** policies de SELECT permisivas
+  (`USING(true)` y `uid IS NOT NULL`) que se combinan con OR → cualquier
+  autenticado se bajaba todas. **Mig 175**, validada con ROLLBACK contra los
+  usuarios reales: almacenero 2→**1** obra, ingeniero 2→**1**, contadora/admin
+  siguen viendo 2, la cuenta `campo` 0 (no las usa).
+- ⚠ **Alcance honesto:** la 175 cierra `obras` y `obra_usuarios`. Las tablas
+  HIJAS siguen con la mig 030 laxa — el 🔴 pendiente de siempre, que es su
+  propia tanda.
+
+**D4. Aterrizaje por rol** (`resolveLanding`): un rol de obra ya no pasa por la
+pantalla de bloques del grupo (de los cinco solo puede abrir uno). Con **una**
+obra entra **directo a su desglose** (`panel-obra`); con varias o con ninguna,
+a la lista de **sus** trabajos. Y `trabajos` pasó a ser visible para todo rol
+logueado —como `panel-obra`— porque es la puerta de entrada: mandar ahí a un
+almacenero que no podía verla era dejarlo en "Sin acceso" en su propia pantalla
+de arranque. La lista se acota a las obras designadas.
+
 ## 5. Condición no negociable (del doc original, sigue vigente)
 
 Cualquier cambio de qué rol ve o no ve qué pantalla **debe reflejarse en espejo

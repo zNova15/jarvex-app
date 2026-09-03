@@ -35,13 +35,18 @@ export function useObraActiva() {
     let cancelled = false;
     const load = async () => {
       if (cancelled) return;
+      // AISLAMIENTO POR OBRA (tanda 2D): mientras no sepamos qué obras tiene
+      // designadas el usuario, NO se lista ninguna y el hook queda en loading.
+      // Antes se leía `?? null` = sin restricción, así que en cada arranque
+      // había una ventana en la que un almacenero veía todas las obras del
+      // grupo (bug reportado por Gabriel, 3-sep-2026). El flag lo mantiene
+      // main.jsx, que vuelve a disparar 'obras_permitidas_change' al resolver.
+      // Va ANTES del try a propósito: el finally apagaría el loading.
+      if (window.__obrasPermitidasCargando) return;
       try {
         const all = await window.__db.obras.toArray();
-        // AISLAMIENTO POR OBRA: solo las obras asignadas al usuario
-        // (window.__obrasPermitidas la mantiene main.jsx desde obra_usuarios;
-        // null = sin restricción). Antes el selector mostraba TODAS las obras
-        // a cualquier rol — pedido explícito de Gabriel de separarlas.
-        const permitidas = window.__obrasPermitidas ?? null;
+        // null = rol global (ve todas). Un Set (aunque esté vacío) restringe.
+        const permitidas = window.__obrasPermitidas === undefined ? new Set() : window.__obrasPermitidas;
         const visibles = all.filter(o => !o.deleted_at && (!permitidas || permitidas.has(o.id)));
         if (cancelled) return;
         setObras(visibles);

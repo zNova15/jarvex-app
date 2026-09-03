@@ -32,6 +32,11 @@ import { useOnline } from './hooks/useOnline';
 import { useAppMode } from './hooks/useAppMode';
 import { useRealtimeNotifications } from './hooks/useRealtimeNotifications';
 import { useObraActiva, getObraActivaIdSync, setObraActivaId } from './hooks/useObraActiva';
+// Aislamiento por obra. Import ESTÁTICO a propósito: jx-app y jx-sidebar (los
+// dos eager) ya la importan así, con lo que la lib vive en el chunk principal
+// y el import() dinámico que había acá no separaba nada — solo repetía el
+// patrón que la regla crítica 1 prohíbe. Es una lib pura, sin side effects.
+import { cargarObrasAsignadas, obrasPermitidasIniciales } from './lib/obras-asignadas.js';
 import {
   useObras, usePersonal, useMateriales, useHerramientas,
   useRubrosObra, usePersonalProfesional, usePersonalExperiencia,
@@ -396,12 +401,30 @@ function Root() {
   React.useEffect(() => {
     let cancel = false;
     const uid = auth?.profile?.id; const rol = auth?.profile?.rol;
-    if (!uid) { window.__obrasPermitidas = null; return; }
-    import('./lib/obras-asignadas.js').then(m => m.cargarObrasAsignadas({ userId: uid, rol })).then(set => {
+    // Sin sesión: cerrado, no abierto. `null` acá significaba "ve todas".
+    if (!uid) {
+      window.__obrasPermitidas = new Set();
+      window.__obrasPermitidasCargando = false;
+      return;
+    }
+    // 1) SÍNCRONO: arrancar con el caché (o cerrado) para que no exista la
+    //    ventana en la que el selector muestra TODAS las obras del grupo.
+    const ini = obrasPermitidasIniciales({ userId: uid, rol });
+    window.__obrasPermitidas = ini.permitidas;
+    window.__obrasPermitidasCargando = !ini.confiable;
+    try { window.dispatchEvent(new Event('obras_permitidas_change')); } catch {}
+    // 2) Confirmar contra el servidor.
+    cargarObrasAsignadas({ userId: uid, rol }).then(set => {
       if (cancel) return;
-      window.__obrasPermitidas = set; // Set | null
+      window.__obrasPermitidas = set; // Set | null (null = rol global)
+      window.__obrasPermitidasCargando = false;
       try { window.dispatchEvent(new Event('obras_permitidas_change')); } catch {}
-    }).catch(() => { if (!cancel) window.__obrasPermitidas = null; });
+    }).catch(() => {
+      if (cancel) return;
+      // Un fallo NO abre el acceso: queda lo que dio el paso 1 (caché o cerrado).
+      window.__obrasPermitidasCargando = false;
+      try { window.dispatchEvent(new Event('obras_permitidas_change')); } catch {}
+    });
     return () => { cancel = true; };
   }, [auth?.profile?.id, auth?.profile?.rol]);
 

@@ -401,6 +401,7 @@ function Header({ page, plano = 'obra', onInicio, onToggleSidebar, onLogout, pro
     cronograma:'Cronograma / Gantt',avance:'Avance de Obra',comparativo:'Planificado vs Real',
     costos:'Costos',incidencias:'Incidencias',usuarios:'Usuarios',roles:'Roles y Permisos',
     configuracion:'Configuración',
+    'contabilidad':'Contabilidad',
     'cont-dashboard':'Dashboard Contable', 'conciliacion-insumos':'Conciliación de Insumos', empresas:'Empresas',
     'bienes-servicios':'Bienes y Servicios', trabajos:'Trabajos',
     'panel-obra':'Panel del trabajo',
@@ -679,6 +680,7 @@ const PAGE_REGISTRY = {
   // === jx-captura-magica ===
   'captura-magica':         { chunk: 'jx-captura-magica', component: 'CapturaMagicaPage' },
   // === jx-contabilidad ===
+  'contabilidad':           { chunk: 'jx-contabilidad', component: 'ContabilidadGrupoPage' },
   'cont-dashboard':         { chunk: 'jx-contabilidad', component: 'ContabilidadDashboardPage' },
   'compras-categoria':      { chunk: 'jx-compras-categoria', component: 'ComprasCategoriaPage' },
   'analisis-insumos':       { chunk: 'jx-analisis-insumos', component: 'AnalisisInsumosPage' },

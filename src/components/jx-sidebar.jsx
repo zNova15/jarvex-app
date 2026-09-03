@@ -1,5 +1,6 @@
 import React from "react";
 import { planoDe } from "../lib/nav-planos.js";
+import { esRolGlobal } from "../lib/obras-asignadas.js";
 import "../lib/tema.js"; // expone window.__jxTema (no exporta componentes, solo el side-effect)
 const { useState, useEffect } = React;
 
@@ -186,6 +187,9 @@ const NAV = [
   { id: 'trazabilidad', label: 'Cadenas de esta obra', icon: 'compare' },
 
   { section: 'EMPRESAS Y CONTABILIDAD', area: 'contabilidad' },
+  // Primero el resumen por entidad (tanda 2D): es la puerta del bloque, y desde
+  // ahí se entra a la contabilidad de cada empresa y de cada trabajo.
+  { id: 'contabilidad', label: 'Resumen por entidad', icon: 'list' },
   { id: 'cont-dashboard', label: 'Dashboard Contable', icon: 'dashboard' },
   { id: 'empresas', label: 'Empresas', icon: 'building' },
 
@@ -413,9 +417,20 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
       {/* Volver a la pantalla principal — SIEMPRE visible (tanda 2, entrega A).
           El sidebar muestra solo el área en la que estás; sin una salida fija,
           volver a los bloques de primer nivel dependía de adivinar. */}
-      {current !== 'inicio' && (
-        <button type="button" onClick={() => onNav?.('inicio')}
-          title="Volver a la pantalla principal"
+      {/* Un usuario de OBRA no tiene nada que hacer en la pantalla de bloques
+          del grupo: de los cinco solo puede abrir uno. Su "arriba" es la lista
+          de SUS trabajos (tanda 2D). Para los roles globales no cambia nada. */}
+      {(() => {
+        // El rol `campo` (cuenta compartida con PIN) no tiene "arriba": su
+        // única pantalla es el portal de captura.
+        if (profile?.rol === 'campo') return null;
+        const global = esRolGlobal(profile?.rol);
+        const destino = global ? 'inicio' : 'trabajos';
+        const label = global ? 'Pantalla principal' : 'Mis trabajos';
+        if (current === destino) return null;
+        return (
+        <button type="button" onClick={() => onNav?.(destino, 'general')}
+          title={global ? 'Volver a la pantalla principal' : 'Volver a la lista de mis trabajos'}
           style={{
             display: 'flex', alignItems: 'center', gap: 8, width: '100%',
             padding: collapsed ? '10px 0' : '10px 14px',
@@ -424,9 +439,10 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
             color: 'var(--tm)', cursor: 'pointer', fontSize: 12, fontWeight: 600,
           }}>
           <JxIcon name="chevL" size={14}/>
-          {!collapsed && <span>Pantalla principal</span>}
+          {!collapsed && <span>{label}</span>}
         </button>
-      )}
+        );
+      })()}
 
       {/* Nav items */}
       <nav style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '8px 0' }}>

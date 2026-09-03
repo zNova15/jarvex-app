@@ -1,218 +1,49 @@
 // ═══════════════════════════════════════════════════════════════════
-// JARVEX — Pantalla de INICIO (launcher por BLOQUES, plano GENERAL).
+// JARVEX — PANTALLA PRINCIPAL: los bloques del grupo y nada más.
 //
-// Rediseño (pedido de Gabriel, jul 2026): el Inicio anterior mezclaba
-// mosaicos generales + tarjetas de obra + "Tu trabajo en" y se sentía
-// desordenado. Ahora:
-//  · OBRA DE TRABAJO: un selector arriba fija la obra activa (los bloques
-//    por-obra operan sobre ella). El cambio rápido del header sigue vivo.
-//  · BLOQUES temáticos (Almacén, Logística, Gestión de Obra, Contabilidad…)
-//    que derivan a las secciones. Un bloque puede repetir secciones de otro
-//    (ej. EPPs vive en Almacén y en SSOMA). Cada bloque muestra SOLO las
-//    secciones que el rol puede ver (__canSeeSidebarItem); bloque vacío no
-//    se muestra.
-//  · Bloques "por obra" vs "generales" (Contabilidad, Reportes, IA, Empresas
-//    y Proveedores, Solicitudes, Usuarios y Configuración son cross-obra).
+// Reescrita en la TANDA 2D (prueba de Gabriel en staging, 3-sep-2026). La
+// versión anterior (entrega 2A) tenía tres cosas que él señaló como errores:
 //
-// Usa globales: window.JxIcon, window.__useAuth, window.NAV,
-// window.__canSeeSidebarItem, window.__get/setObraActivaId.
+//   1. Un selector "OBRA DE TRABAJO" arriba. La obra no se elige acá: se
+//      elige DENTRO del bloque Trabajos, que es la lista de trabajos.
+//   2. Una sección "TRABAJO EN LA OBRA" con los bloques de la obra (Almacén,
+//      Logística, Gestión…) planos en el Inicio. Ese es el DESGLOSE DE UN
+//      TRABAJO y vive en el Panel del trabajo (entrega 2B), no acá.
+//   3. Los bloques se EXPANDÍAN en el lugar ("Ver N secciones"). Un bloque
+//      tiene que LLEVARTE A OTRA PANTALLA: Trabajos → la lista de trabajos →
+//      un trabajo → su desglose. Expandir dejaba todo en una sola pantalla
+//      cada vez más larga, que era justo el desorden que veníamos a arreglar.
+//
+// Ahora el Inicio es SOLO el primer nivel: los bloques del grupo, cada uno
+// navegando a su pantalla. Nada de datos de obra, nada de expandir.
+//
+// Los ROLES DE OBRA (almacenero, ingeniero, prevencionista…) ni siquiera
+// llegan acá: `resolveLanding` los manda directo a su trabajo, o a la lista
+// de los suyos si tienen varios (nav-planos.js).
+//
+// Usa globales: window.JxIcon, window.__useAuth, window.__canSeeSidebarItem.
 // Se registra como window.InicioPage.
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
-import { cargarObrasAsignadas } from "../lib/obras-asignadas.js";
-import { planoDe } from "../lib/nav-planos.js";
+// Los bloques viven en una lib pura para que un test pueda atarlos al menú y
+// al registro de páginas REALES: un bloque que apunta a una página inexistente
+// deja una tarjeta muerta en la primera pantalla sin romper nada visible.
+import { bloquesVisibles, atajosVisibles } from "../lib/bloques-inicio.js";
 const { useMemo: uMI, useState: uSI, useEffect: uEI } = React;
 const Icon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
-const fmtSk = (n) => {
-  const v = Number(n || 0);
-  if (v >= 1e6) return 'S/ ' + (v / 1e6).toFixed(1) + 'M';
-  if (v >= 1e3) return 'S/ ' + (v / 1e3).toFixed(0) + 'K';
-  return 'S/ ' + Math.round(v);
-};
 
-// ── BLOQUES del Inicio ──────────────────────────────────────────────
-// items = ids de página (labels/íconos salen del menú real window.NAV — una
-// sola fuente de verdad; si una página se renombra, acá se actualiza sola).
-// tipo 'obra' = opera sobre la obra de trabajo elegida; 'general' = cross-obra.
-const BLOQUES = [
-  {
-    id: 'almacen', grupo: 'trabajos', titulo: 'Almacén', icon: 'package', tipo: 'obra', color: 'var(--amber)',
-    desc: 'Inventarios, movimientos, ubicaciones y vinculación de compras',
-    items: ['materiales', 'mov-materiales', 'herramientas', 'mov-herramientas', 'epps-inventario', 'epp',
-      'insumos-emergencia', 'insumos-persona', 'ubicaciones', 'compras-pendientes', 'movimientos-insumos', 'caja-chica',
-      'evidencias', 'plantillas'],
-  },
-  {
-    id: 'logistica', grupo: 'trabajos', titulo: 'Logística', icon: 'truck', tipo: 'obra', color: 'var(--blue)',
-    desc: 'Solicitud de insumos, requisiciones y órdenes de compra',
-    items: ['solicitud-residente', 'requisiciones', 'ordenes-compra'],
-  },
-  {
-    id: 'gestion-obra', grupo: 'trabajos', titulo: 'Gestión de Obra', icon: 'hardHat', tipo: 'obra', color: 'var(--green)',
-    desc: 'Presupuesto, partidas, avance, costos, maquinaria e ingeniería',
-    items: ['obras', 'dashboard-gestion', 'panel-residente', 'importar', 'partidas', 'insumos', 'control-consumo', 'versiones',
-      'cronograma', 'avance', 'aprobaciones-reporte', 'rendimiento-ingenieros', 'comparativo', 'costos',
-      'valorizaciones', 'incidencias', 'activos-pesados', 'mantenimiento-programado',
-      'dashboard-tecnico', 'mis-partidas', 'cronograma-frente', 'salidas-frente', 'reporte-diario',
-      'mis-reportes', 'borradores-reporte', 'plan-real', 'emitir-alerta'],
-  },
-  {
-    id: 'personal', grupo: 'trabajos', titulo: 'Personal y Subcontratos', icon: 'users', tipo: 'obra', color: 'var(--purple)',
-    desc: 'RRHH, asistencia, planillas y subcontratos',
-    items: ['personal', 'frentes', 'asistencia', 'personal-contratos', 'planillas', 'cts', 'gratificaciones',
-      'plame', 'subcontratistas', 'subcontratos', 'subcontrato-valorizaciones'],
-  },
-  {
-    id: 'ssoma', grupo: 'trabajos', titulo: 'Seguridad (SSOMA)', icon: 'shield', tipo: 'obra', color: 'var(--orange)',
-    desc: 'Reporte diario, charlas, IPERC, inspecciones y EPPs',
-    items: ['reporte-especialidad', 'charlas-plan', 'sctr-personal', 'inducciones', 'charlas-seguridad', 'iperc', 'inspecciones-seguridad', 'capacitaciones', 'epps-inventario',
-      'epp', 'insumos-persona', 'insumos-emergencia'],
-  },
-  {
-    id: 'ambiental', grupo: 'trabajos', titulo: 'Ambiental', icon: 'map', tipo: 'obra', color: 'var(--green)',
-    desc: 'Reporte diario y evidencias de gestión ambiental (ISO 14001)',
-    items: ['reporte-especialidad', 'gestion-ambiental', 'charlas-plan', 'inducciones', 'charlas-seguridad', 'capacitaciones', 'evidencias'],
-  },
-  {
-    id: 'calidad', grupo: 'trabajos', titulo: 'Calidad', icon: 'checkCircle', tipo: 'obra', color: 'var(--blue)',
-    desc: 'Reporte diario y verificación de insumos (certificados vs expediente)',
-    items: ['reporte-especialidad', 'gestion-calidad', 'materiales', 'evidencias'],
-  },
-  {
-    id: 'social', grupo: 'trabajos', titulo: 'Social', icon: 'users', tipo: 'obra', color: 'var(--purple)',
-    desc: 'Compromisos con la comunidad, quejas/reclamos, padrón y charlas',
-    items: ['reporte-especialidad', 'gestion-social', 'charlas-plan', 'charlas-seguridad', 'capacitaciones', 'evidencias'],
-  },
-  {
-    id: 'contabilidad', grupo: 'contabilidad', titulo: 'Contabilidad', icon: 'dollar', tipo: 'general', color: 'var(--amber)',
-    desc: 'Empresas del grupo, movimientos, conciliación, tesorería y SUNAT',
-    items: ['cont-dashboard', 'movimientos-contables', 'bienes-servicios', 'conciliacion-insumos', 'guias-remision', 'pagos',
-      // SCTR vive acá para contabilidad (la contadora sube el trámite) — así no
-      // necesita ver el bloque de Seguridad (pedido 21-jul).
-      'sctr-personal',
-      'compras-categoria', 'ordenes-intercompany', 'intercompany', 'trazabilidad', 'consolidado',
-      'cuentas-bancarias', 'flujo-caja', 'flujo-proyectado', 'plan-cuentas', 'libro-diario',
-      'balance-general', 'estado-resultados', 'comprobantes', 'libros-electronicos', 'config-sunat',
-      'comparativo-periodos'],
-  },
-  {
-    id: 'reportes', grupo: 'direccion', titulo: 'Reportes y Dashboards', icon: 'chart', tipo: 'general', color: 'var(--blue)',
-    desc: 'Visión ejecutiva, KPIs, cumplimiento y alertas',
-    items: ['dashboard', 'reportes', 'dashboard-ejecutivo', 'kpis-obra', 'cumplimiento-cronograma', 'alertas'],
-  },
-  {
-    id: 'ia', grupo: 'contabilidad', titulo: 'Herramientas IA', icon: 'upload', tipo: 'general', color: 'var(--green)',
-    desc: 'Captura Mágica de comprobantes y búsqueda global',
-    items: ['captura-magica', 'captura-campo', 'busqueda'],
-  },
-  {
-    id: 'empresas-prov', grupo: 'empresas', titulo: 'Empresas y Proveedores', icon: 'building', tipo: 'general', color: 'var(--purple)',
-    desc: 'Entidades del grupo y proveedores (global)',
-    items: ['empresas', 'proveedores'],
-  },
-  {
-    id: 'solicitudes-blq', grupo: 'trabajos', titulo: 'Solicitudes', icon: 'bell', tipo: 'general', color: 'var(--orange)',
-    desc: 'Solicitud de insumos, requisiciones, cambios y conflictos',
-    items: ['solicitud-residente', 'requisiciones', 'solicitudes', 'conflictos'],
-  },
-  {
-    id: 'usuarios-blq', grupo: 'config', titulo: 'Usuarios y Roles', icon: 'user', tipo: 'general', color: 'var(--red)',
-    desc: 'Cuentas, permisos y auditoría',
-    items: ['usuarios', 'roles', 'audit-log'],
-  },
-  {
-    id: 'licitaciones-blq', grupo: 'licitaciones', titulo: 'Licitaciones y Propuestas', icon: 'chart', tipo: 'general', color: 'var(--blue)',
-    desc: 'Plantel profesional para postular a procesos de selección',
-    items: ['profesionales'],
-  },
-  {
-    id: 'config-blq', grupo: 'config', titulo: 'Configuración', icon: 'settings', tipo: 'general', color: 'var(--tm)',
-    desc: 'Ajustes del sistema',
-    items: ['configuracion'],
-  },
-];
-
-// ── GRUPOS de primer nivel (tanda 2, entrega A) ─────────────────────
-// Pedido de Gabriel (3-sep): la pantalla principal seccionada en bloques
-// hermanos, en vez de 15 tarjetas temáticas al mismo nivel.
-//
-// `entrada` = la página que abre el tile directo. Trabajos abre la lista de
-// trabajos, que es el camino que faltaba: antes, para llegar a una obra había
-// que pasar por la sección de Empresas.
-// Un grupo sin `entrada` solo expande sus bloques.
-const GRUPOS = [
-  { id: 'trabajos',     titulo: 'Trabajos',      icon: 'hardHat',  color: 'var(--amber)',  entrada: 'trabajos',
-    desc: 'Obras, supervisiones y bienes/servicios' },
-  { id: 'empresas',     titulo: 'Empresas',      icon: 'building', color: 'var(--purple)', entrada: 'empresas',
-    desc: 'Empresas del grupo, consorcios y proveedores' },
-  { id: 'contabilidad', titulo: 'Contabilidad',  icon: 'dollar',   color: 'var(--green)',  entrada: 'cont-dashboard',
-    desc: 'Movimientos, tesorería, SUNAT y consolidado' },
-  { id: 'licitaciones', titulo: 'Licitaciones',  icon: 'chart',    color: 'var(--blue)',   entrada: 'profesionales',
-    desc: 'Trabajos a postular y plantel profesional' },
-  { id: 'direccion',    titulo: 'Resúmenes',     icon: 'dashboard', color: 'var(--blue)',  entrada: 'dashboard-ejecutivo',
-    desc: 'Dashboards, KPIs y alertas' },
-  { id: 'config',       titulo: 'Configuración', icon: 'settings', color: 'var(--tm)',
-    desc: 'Usuarios, roles, permisos y ajustes' },
-];
-
-// Cuántas secciones muestra un bloque antes del "+N más".
-const MAX_VISIBLES = 7;
-
-// ── Bloques de ESPECIALIDAD: cada especialista ve SOLO el suyo ──────
-// Los 4 bloques comparten ids de página (reporte-especialidad, evidencias,
-// charlas-plan…), y como un bloque se muestra si el rol ve ≥1 item, canSee()
-// solo no alcanza: ing_calidad veía también SSOMA/Ambiental/Social (bug
-// reportado por Gabriel). Regla: un ESPECIALISTA solo ve el bloque de su
-// especialidad; los demás roles (admin/gerente/residente/etc.) no cambian —
-// siguen viendo lo que su matriz permita.
-const DUENO_ESPECIALIDAD = { ssoma: 'prevencionista', ambiental: 'ing_ambiental', calidad: 'ing_calidad', social: 'ing_social' };
-const ROLES_ESPECIALISTAS = new Set(Object.values(DUENO_ESPECIALIDAD));
-
-// ── Tarjeta de un bloque ────────────────────────────────────────────
-function BloqueCard({ blq, items, onAbrir }) {
-  const [verTodo, setVerTodo] = uSI(false);
-  const visibles = verTodo ? items : items.slice(0, MAX_VISIBLES);
-  const ocultos = items.length - MAX_VISIBLES;
-  return (
-    <div className="card card-p" style={{ border: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <div style={{ width: 36, height: 36, borderRadius: 9, background: `color-mix(in srgb, ${blq.color} 12%, transparent)`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-          <Icon name={blq.icon} size={17} color={blq.color} />
-        </div>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--tp)' }}>{blq.titulo}</div>
-          <div style={{ fontSize: 10.5, color: 'var(--tm)', lineHeight: 1.3 }}>{blq.desc}</div>
-        </div>
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-        {visibles.map(it => (
-          <button key={it.id} onClick={() => onAbrir(it.id)} title={it.label}
-            style={{ display: 'flex', alignItems: 'center', gap: 7, background: 'none', border: 'none', cursor: 'pointer', padding: '4px 6px', borderRadius: 6, textAlign: 'left', color: 'var(--ts)', fontSize: 12 }}
-            onMouseEnter={e => { e.currentTarget.style.background = `color-mix(in srgb, ${blq.color} 8%, transparent)`; e.currentTarget.style.color = 'var(--tp)'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--ts)'; }}>
-            <Icon name={it.icon} size={13} color={blq.color} />
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.label}</span>
-          </button>
-        ))}
-        {ocultos > 0 && (
-          <button onClick={() => setVerTodo(v => !v)}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px 6px', textAlign: 'left', color: 'var(--tm)', fontSize: 11.5, fontWeight: 600 }}>
-            {verTodo ? '▴ Ver menos' : `+${ocultos} más ▾`}
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function InicioPage({ onNav, onEnterObra }) {
+function InicioPage({ onNav }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
   const rol = auth?.profile?.rol;
-  const { data: obras } = window.__hooks?.useObras?.() || { data: [] };
   // Deny-by-default (igual que el route-guard puedeVerPagina): un profile sin
-  // rol NO ve los bloques llenos para después chocar con "Sin acceso" en cada
-  // click — __canSeeSidebarItem ya deja pasar los utilities (dashboard/búsqueda).
+  // rol NO ve bloques llenos para después chocar con "Sin acceso" en cada click.
   const canSee = (id) => rol === 'admin' ? true : (window.__canSeeSidebarItem?.(rol, id) ?? false);
+
+  // Números de un vistazo (baratos: son los mismos hooks que ya usan las
+  // pantallas de segundo nivel, leídos de Dexie).
+  const { data: obras } = window.__hooks?.useObras?.() || { data: [] };
+  const { data: trabajos } = window.__hooks?.useTrabajos?.() || { data: [] };
+  const { data: companies } = window.__hooks?.useCompanies?.() || { data: [] };
 
   // ── PENDIENTES DE ATENCIÓN (solicitudes / conflictos / sync fallido) ──
   // countPending consulta el server: con el RLS estricto, para un no-revisor
@@ -245,127 +76,35 @@ function InicioPage({ onNav, onEnterObra }) {
     return () => { cancel = true; clearTimeout(deb); window.removeEventListener('jx_data_changed', on); };
   }, []);
 
-  // Obras asignadas (null = ve todas) + avance físico/facturado por obra
-  // (partidas + conciliacion_vinculos — livianas; insumos_partida NO se carga acá).
-  const [misObrasIds, setMisObrasIds] = uSI(null);
-  const [avancePorObra, setAvancePorObra] = uSI(() => new Map());
-  uEI(() => {
-    let cancel = false;
-    cargarObrasAsignadas({ userId: auth?.profile?.id, rol }).then(s => { if (!cancel) setMisObrasIds(s); });
-    return () => { cancel = true; };
-  }, [auth?.profile?.id, rol]);
-  uEI(() => {
-    let cancel = false;
-    const calc = async () => {
-      try {
-        const [partidas, vinculos] = await Promise.all([
-          window.__db.partidas.filter(p => !p.deleted_at && p.codigo_delfin).toArray(),
-          window.__db.conciliacion_vinculos.filter(v => !v.deleted_at).toArray(),
-        ]);
-        const fact = new Map();
-        for (const v of vinculos) fact.set(v.obra_id, (fact.get(v.obra_id) || 0) + (Number(v.cantidad) || 0) * (Number(v.precio_unitario) || 0));
-        // Físico por obra (avance ponderado por costo, solo HOJAS).
-        const porObra = new Map();
-        for (const p of partidas) { const a = porObra.get(p.obra_id) || []; a.push(p); porObra.set(p.obra_id, a); }
-        const m = new Map();
-        for (const [oid, ps] of porObra) {
-          const folders = new Set();
-          for (const p of ps) { const s = String(p.codigo_delfin).trim().split('.'); for (let i = 1; i < s.length; i++) folders.add(s.slice(0, i).join('.')); }
-          let sumPres = 0, sumAv = 0;
-          for (const p of ps) { if (folders.has(String(p.codigo_delfin).trim())) continue; const pres = Number(p.costo_total_presupuestado) || 0; sumPres += pres; sumAv += (Number(p.porcentaje_avance) || 0) * pres; }
-          m.set(oid, { fisico: sumPres > 0 ? sumAv / sumPres : 0, facturado: fact.get(oid) || 0 });
-        }
-        for (const [oid, f] of fact) if (!m.has(oid)) m.set(oid, { fisico: 0, facturado: f });
-        if (!cancel) setAvancePorObra(m);
-      } catch { /* conciliacion_vinculos puede no existir en Dexie viejos */ }
+  // Resumen por bloque: una línea corta, no un dashboard. Si el dato no está
+  // cargado todavía queda vacío en vez de mostrar un 0 que miente.
+  const resumen = uMI(() => {
+    // Respeta el aislamiento: si alguien de obra llega hasta acá, el contador
+    // no puede anunciarle obras que no puede abrir.
+    const permitidas = window.__obrasPermitidas === undefined ? null : window.__obrasPermitidas;
+    const obrasVivas = (obras || []).filter(o => !o.deleted_at && (!permitidas || permitidas.has(o.id)));
+    const bs = (trabajos || []).filter(t => !t.deleted_at);
+    const comps = (companies || []).filter(c => !c.deleted_at);
+    const porTipo = (t) => comps.filter(c => (c.tipo_entidad || 'propia') === t).length;
+    return {
+      trabajos: obrasVivas.length || bs.length
+        ? `${obrasVivas.length} obra${obrasVivas.length === 1 ? '' : 's'}${bs.length ? ` · ${bs.length} bien/servicio` : ''}`
+        : '',
+      empresas: comps.length
+        ? `${porTipo('propia')} del grupo · ${porTipo('consorcio')} consorcio(s) · ${porTipo('tercero')} tercero(s)`
+        : '',
+      contabilidad: comps.length || obrasVivas.length
+        ? `${porTipo('propia') + obrasVivas.length + bs.length} entidad(es) con contabilidad propia`
+        : '',
     };
-    calc();
-    let deb; const on = () => { clearTimeout(deb); deb = setTimeout(calc, 600); };
-    window.addEventListener('jx_data_changed', on);
-    window.addEventListener('jarvex_master_updated', on);
-    return () => { cancel = true; clearTimeout(deb); window.removeEventListener('jx_data_changed', on); window.removeEventListener('jarvex_master_updated', on); };
-  }, []);
+  }, [obras, trabajos, companies]);
 
-  const obrasVivas = uMI(() => (obras || []).filter(o => !o.deleted_at && (!misObrasIds || misObrasIds.has(o.id)))
-    .sort((a, b) => String(a.nombre_obra || '').localeCompare(String(b.nombre_obra || ''))), [obras, misObrasIds]);
-
-  // ── OBRA DE TRABAJO (selector). Arranca en la obra activa persistida; si no
-  // está entre las visibles, cae a la primera. Elegir acá fija la obra activa
-  // global (misma que el cambio rápido del header en las secciones).
-  const [obraSelId, setObraSelId] = uSI(() => window.__getObraActivaId?.() || null);
-  const obraSel = uMI(() => obrasVivas.find(o => o.id === obraSelId) || obrasVivas[0] || null, [obrasVivas, obraSelId]);
-  const elegirObra = (id) => {
-    setObraSelId(id);
-    if (window.__setObraActivaId) window.__setObraActivaId(id);
-  };
-  // Si el id persistido no está entre las obras visibles (obra borrada o ya no
-  // asignada), el display cae a la primera — alinear el GLOBAL con lo que la
-  // pantalla anuncia: si no, los flujos que resuelven la obra por localStorage
-  // (ej. Captura Mágica) operarían sobre una obra distinta a la mostrada.
-  uEI(() => {
-    if (!obraSel) return;
-    const stored = window.__getObraActivaId?.();
-    if (stored !== obraSel.id) elegirObra(obraSel.id);
-  }, [obraSel?.id]);
-
-  // Labels/íconos desde el menú real (window.NAV): una sola fuente de verdad.
-  const navInfo = uMI(() => {
-    const m = new Map();
-    for (const it of (window.NAV || [])) {
-      if (it.id) m.set(it.id, { label: String(it.label || it.id).replace(/^✨\s*/, ''), icon: it.icon });
-    }
-    return m;
-  }, []);
-
-  // Bloques con sus secciones permitidas para el rol (bloque vacío no se
-  // muestra). Además, un ESPECIALISTA no ve los bloques de OTRAS especialidades
-  // aunque comparta páginas con ellas (ver DUENO_ESPECIALIDAD arriba).
-  const bloques = uMI(() => BLOQUES.map(b => ({
-    ...b,
-    items: b.items.filter(id => navInfo.has(id) && canSee(id))
-      .map(id => ({ id, ...navInfo.get(id) })),
-  })).filter(b => {
-    if (b.items.length === 0) return false;
-    const dueno = DUENO_ESPECIALIDAD[b.id];
-    // Bloques de ESPECIALIDAD: solo su especialista y el admin (pedido 21-jul:
-    // la contadora no debe ver el bloque de Seguridad solo por el SCTR — esa
-    // sección vive también en su bloque de Contabilidad).
-    if (dueno) return rol === 'admin' || rol === dueno;
-    return true;
-  }), [rol, navInfo]);
-  const bloquesObra = bloques.filter(b => b.tipo === 'obra');
-  const bloquesGeneral = bloques.filter(b => b.tipo === 'general');
-
-  // Un grupo se muestra si el rol puede ver algo dentro: o alguno de sus
-  // bloques, o su página de entrada. Mismo criterio que ya se usaba para los
-  // bloques (vacío no se muestra), un nivel más arriba.
-  const gruposVisibles = uMI(() => GRUPOS.filter(g => {
-    if (bloques.some(b => b.grupo === g.id)) return true;
-    return !!(g.entrada && navInfo.has(g.entrada) && canSee(g.entrada));
-  }), [bloques, navInfo]);
-
-  // Abrir una sección: las de plano OBRA fijan la obra de trabajo y entran;
-  // las generales navegan directo. 'movimientos-contables' es DUAL (obra y
-  // general): desde el bloque Contabilidad se abre su vista general
-  // ("todas / por obra"), igual que desde el sidebar del área contable.
-  const [grupoAbierto, setGrupoAbierto] = uSI(null);
-
-  const abrir = (pageId) => {
-    if (pageId === 'movimientos-contables') { onNav?.(pageId, 'general'); return; }
-    if (planoDe(pageId) === 'obra') {
-      if (!obraSel) { window.__showToast?.('Primero elegí una obra de trabajo', 'amber'); return; }
-      onEnterObra?.(obraSel.id, pageId);
-    } else {
-      onNav?.(pageId);
-    }
-  };
+  // Un bloque se muestra si el rol puede abrir alguna de sus entradas.
+  const bloques = uMI(() => bloquesVisibles(canSee), [rol]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const atajos = uMI(() => atajosVisibles(canSee), [rol]);     // eslint-disable-line react-hooks/exhaustive-deps
 
   const nombreUsuario = `${auth?.profile?.nombres || ''} ${auth?.profile?.apellidos || ''}`.trim() || auth?.profile?.email || '';
-  const av = obraSel ? avancePorObra.get(obraSel.id) : null;
   const esRevisorSol = rol === 'admin' || rol === 'contador';
-  // Con la MISMA función del route-guard (asistente_admin pasa la matriz de
-  // 'Conflictos Sync' pero su allowlist exclusiva no incluye la página →
-  // chip clickeable que moría en "Sin acceso").
   const puedeConflictos = canSee('conflictos');
 
   return (
@@ -373,7 +112,7 @@ function InicioPage({ onNav, onEnterObra }) {
       <div className="pg-hd" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <div>
           <div className="pg-title">Inicio{nombreUsuario ? ` · ${nombreUsuario}` : ''}</div>
-          <div className="pg-sub">Elegí tu obra de trabajo y entrá a las secciones desde los bloques.</div>
+          <div className="pg-sub">Elegí en qué parte del grupo querés trabajar.</div>
         </div>
         {/* Tema claro/oscuro también acá: el Inicio no muestra sidebar, así que
             sin esto Mi Perfil (y con él el toggle) era inalcanzable desde esta
@@ -381,49 +120,6 @@ function InicioPage({ onNav, onEnterObra }) {
             (eager); mismo patrón que window.JxIcon, sin import cruzado. */}
         {window.TemaToggle ? <window.TemaToggle compacto /> : null}
       </div>
-
-      {/* ── OBRA DE TRABAJO ── */}
-      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)', margin: '6px 0 10px' }}>
-        OBRA DE TRABAJO <span style={{ fontWeight: 400, letterSpacing: 0 }}>· los bloques "de obra" trabajan sobre ella</span>
-      </div>
-      {obrasVivas.length === 0 ? (
-        <div className="card card-p" style={{ marginBottom: 22, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <Icon name="building" size={22} color="var(--tm)" />
-          <div style={{ flex: 1, minWidth: 200, fontSize: 12.5, color: 'var(--ts)' }}>No hay obras todavía (o no tenés obras asignadas).</div>
-          {(rol === 'admin' || (window.__hasPerm?.(rol, 'Obras', 'w') ?? false)) && (
-            <button className="btn btn-amber btn-sm" onClick={() => onNav?.('obras')}>
-              <Icon name="plus" size={13} /> Crear obra
-            </button>
-          )}
-        </div>
-      ) : (
-        <div className="card card-p" style={{ marginBottom: 22, border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
-          <div style={{ width: 38, height: 38, borderRadius: 9, background: 'rgba(52,152,219,0.14)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-            <Icon name="building" size={18} color="var(--blue)" />
-          </div>
-          <div style={{ flex: 1, minWidth: 240 }}>
-            {obrasVivas.length === 1 ? (
-              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--tp)', lineHeight: 1.35 }}>{obraSel?.nombre_obra || '(obra sin nombre)'}</div>
-            ) : (
-              <select className="fi" value={obraSel?.id || ''} onChange={e => elegirObra(e.target.value)}
-                style={{ width: '100%', fontWeight: 600 }}>
-                {obrasVivas.map(o => <option key={o.id} value={o.id}>{o.nombre_obra || '(obra sin nombre)'}</option>)}
-              </select>
-            )}
-            {av && (
-              <div style={{ display: 'flex', gap: 14, marginTop: 6, fontSize: 11 }}>
-                <span style={{ color: 'var(--tm)' }}>Físico <strong style={{ color: 'var(--blue)' }}>{av.fisico.toFixed(0)}%</strong></span>
-                <span style={{ color: 'var(--tm)' }}>Facturado <strong style={{ color: 'var(--amber)' }}>{fmtSk(av.facturado)}</strong></span>
-              </div>
-            )}
-          </div>
-          <button className="btn btn-ghost btn-sm" title="Abrir el Panel del trabajo: sus secciones agrupadas, quién la ejecuta y su equipo"
-            style={{ color: 'var(--amber)', border: '1px solid var(--border)' }}
-            onClick={() => obraSel && onEnterObra?.(obraSel.id, 'panel-obra')}>
-            Entrar al workspace <Icon name="chevR" size={12} color="var(--amber)" />
-          </button>
-        </div>
-      )}
 
       {/* ── PENDIENTES DE ATENCIÓN ── */}
       {(() => {
@@ -450,70 +146,56 @@ function InicioPage({ onNav, onEnterObra }) {
         );
       })()}
 
-      {/* ── GRUPOS DE PRIMER NIVEL ── */}
-      {gruposVisibles.length > 0 && (<>
-        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)', margin: '6px 0 10px' }}>
-          ¿DÓNDE QUERÉS TRABAJAR?
+      {/* ── LOS BLOQUES ── */}
+      {bloques.length === 0 ? (
+        <div className="card card-p empty-state">
+          <Icon name="lock" size={40} color="var(--tm)" />
+          <p>Tu rol no tiene bloques habilitados. Pedile acceso al administrador.</p>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(215px, 1fr))', gap: 12, marginBottom: 22 }}>
-          {gruposVisibles.map(g => {
-            const nBloques = bloques.filter(b => b.grupo === g.id).length;
-            const abiertoAqui = grupoAbierto === g.id;
-            return (
-              <div key={g.id} className="card card-p"
-                style={{ border: `1px solid ${abiertoAqui ? g.color : 'var(--border)'}`, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <button type="button"
-                  onClick={() => { if (g.entrada) abrir(g.entrada); else setGrupoAbierto(x => x === g.id ? null : g.id); }}
-                  style={{ background: 'none', border: 0, padding: 0, textAlign: 'left', cursor: 'pointer', color: 'inherit' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <Icon name={g.icon} size={18} color={g.color}/>
-                    <span style={{ fontWeight: 700, fontSize: 14 }}>{g.titulo}</span>
-                  </div>
-                  <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 4, lineHeight: 1.4 }}>{g.desc}</div>
-                </button>
-                {nBloques > 0 && (
-                  <button type="button" className="btn btn-ghost btn-xs" style={{ alignSelf: 'flex-start' }}
-                    onClick={() => setGrupoAbierto(x => x === g.id ? null : g.id)}>
-                    {abiertoAqui ? '▾ Ocultar' : `▸ Ver ${nBloques} sección${nBloques === 1 ? '' : 'es'}`}
-                  </button>
-                )}
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: 14 }}>
+          {bloques.map(b => (
+            <button key={b.id} type="button" className="card card-p"
+              onClick={() => onNav?.(b.entrada)}
+              title={`Ir a ${b.titulo}`}
+              style={{
+                border: '1px solid var(--border)', textAlign: 'left', cursor: 'pointer',
+                display: 'flex', flexDirection: 'column', gap: 8, minHeight: 132,
+                background: 'var(--bg-c)', color: 'inherit', font: 'inherit',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = b.color; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ width: 38, height: 38, borderRadius: 9, background: `color-mix(in srgb, ${b.color} 12%, transparent)`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <Icon name={b.icon} size={18} color={b.color} />
+                </div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--tp)' }}>{b.titulo}</div>
               </div>
-            );
-          })}
+              <div style={{ fontSize: 11.5, color: 'var(--tm)', lineHeight: 1.45, flex: 1 }}>{b.desc}</div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <span style={{ fontSize: 10.5, color: 'var(--ts)' }}>{resumen[b.id] || ''}</span>
+                <Icon name="chevR" size={14} color={b.color} />
+              </div>
+            </button>
+          ))}
         </div>
-      </>)}
+      )}
 
-      {/* Bloques del grupo desplegado */}
-      {grupoAbierto && (() => {
-        const g = GRUPOS.find(x => x.id === grupoAbierto);
-        const suyos = bloques.filter(b => b.grupo === grupoAbierto);
-        if (!suyos.length) return null;
-        return (
-          <div style={{ marginBottom: 26 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: g?.color || 'var(--tm)', margin: '6px 0 10px' }}>
-              {String(g?.titulo || '').toUpperCase()}
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: 12 }}>
-              {suyos.map(b => <BloqueCard key={b.id} blq={b} items={b.items} onAbrir={abrir} />)}
-            </div>
+      {/* ── ATAJOS ── */}
+      {atajos.length > 0 && (
+        <div style={{ marginTop: 26 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)', marginBottom: 8 }}>
+            ACCESOS RÁPIDOS
           </div>
-        );
-      })()}
-
-      {/* ── BLOQUES DE OBRA ── */}
-      {bloquesObra.length > 0 && obrasVivas.length > 0 && (<>
-        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)', margin: '6px 0 10px', display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
-          TRABAJO EN LA OBRA
-          {obraSel && <span style={{ fontWeight: 400, letterSpacing: 0, textTransform: 'none', color: 'var(--ts)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 520 }}>· {obraSel.nombre_obra}</span>}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {atajos.map(a => (
+              <button key={a.id} className="btn btn-ghost btn-sm" onClick={() => onNav?.(a.id)}>
+                <Icon name={a.icon} size={13} /> {a.label}
+              </button>
+            ))}
+          </div>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: 12, marginBottom: 26 }}>
-          {bloquesObra.map(b => <BloqueCard key={b.id} blq={b} items={b.items} onAbrir={abrir} />)}
-        </div>
-      </>)}
-
-      {/* Los bloques generales ya no se listan planos: se llega por su grupo
-          de primer nivel. Antes eran 15 tarjetas al mismo nivel y era justo lo
-          que Gabriel señaló como desordenado. */}
+      )}
     </div>
   );
 }

@@ -29,12 +29,25 @@ const AYUDA = {
   // ── GENERAL ──────────────────────────────────────────────────────
   'inicio': {
     titulo: 'Inicio',
-    que: 'El punto de partida: elegís tu obra de trabajo y entrás a las secciones desde los bloques. Solo ves los bloques que tu rol puede usar.',
+    que: 'La pantalla principal del grupo: los bloques grandes (Trabajos, Empresas, Contabilidad, Licitaciones y Configuración). Cada uno te LLEVA a su pantalla; no se despliegan acá. Solo ves los bloques que tu rol puede usar.',
     como: [
-      'Elegí la obra en "Obra de trabajo" — los bloques "de obra" trabajan sobre ella.',
-      'Los bloques de "General" (Reportes, Captura Mágica, Empresas…) cruzan todas las obras.',
+      'TRABAJOS es la puerta al día a día: la lista de obras, supervisiones y bienes/servicios. Entrás a uno y ahí está su desglose completo (almacén, logística, gestión, personal, contabilidad de esa obra…).',
+      'La obra ya NO se elige acá. Se elige entrando a un trabajo, que es lo que fija la obra activa.',
+      'CONTABILIDAD muestra el resumen de la contabilidad de cada entidad —cada empresa del grupo y cada trabajo— con el enlace para entrar a la de cada una.',
+      'Si sos personal de obra (almacenera, ingeniero, prevencionista…) no pasás por esta pantalla: entrás directo a tu trabajo, o a la lista si tenés más de uno asignado.',
       'Si te falta un bloque que necesitás, pedile acceso al administrador.',
       'Arriba a la derecha cambiás entre tema oscuro y claro. La elección es tuya y queda guardada en ese dispositivo (también está en Mi Perfil, abajo en el menú lateral).',
+    ],
+  },
+  'contabilidad': {
+    titulo: 'Contabilidad — resumen por entidad',
+    que: 'El resumen de TODAS las contabilidades del grupo: la de cada empresa y la de cada trabajo, con el enlace para entrar a cada una en detalle.',
+    como: [
+      'Cada ENTIDAD lleva su propia contabilidad: las empresas del grupo por un lado y los trabajos (obras, supervisiones, bienes y servicios) por el otro.',
+      'Los CONSORCIOS no salen en la lista de empresas: su contabilidad es la del trabajo que ejecutan y se mira ahí. A los TERCEROS no se les llevan libros. La pantalla te dice cuántos comprobantes quedan fuera del corte por empresa por ese motivo.',
+      'OJO, y es lo más importante: los dos totales NO se suman. Un mismo comprobante pertenece a una empresa (la que lo emite o recibe) y además puede estar imputado a un trabajo. Son dos miradas de la misma plata, no dos gastos.',
+      'Una moneda por vez y sin anulados — el mismo criterio del Consolidado, así que los números coinciden con los de la ficha de cada empresa.',
+      'El aviso de "comprobantes sin imputar a ningún trabajo" no siempre es un error: el alquiler de la oficina es de la empresa, no de una obra. Sirve para encontrar lo que sí quedó suelto por olvido.',
     ],
   },
   'captura-magica': {

@@ -19,6 +19,7 @@ import { FusionEntidadModal } from "./jx-fusion-entidad.jsx";
 import { EmpresaDetalle } from "./jx-empresa-detalle.jsx";
 import { ClasificarEntidadesModal } from "./jx-clasificar-entidades.jsx";
 import { rolDeCompanyEnObra, titularContableDeObra } from "../lib/consorcio.js";
+import { resumenPorEntidad } from "../lib/contabilidad-entidades.js";
 const { useState: uSC, useMemo: uMC, useEffect: uEC, useRef: uRC } = React;
 
 // Etiqueta humana de un mes 'YYYY-MM' → 'Junio 2026' (filtro de período).
@@ -155,6 +156,15 @@ function EmpresasPage({ showToast }) {
   // Detalle de UNA empresa (punto 5): vive DENTRO de esta página (import
   // estático, mismo chunk), no es una página registrada.
   const [detalleId, setDetalleId] = uSC(null);
+  // …y por eso otras pantallas la abren con un INTENT (mismo patrón que
+  // __movsBuscarIntent): la Contabilidad del grupo enlaza a la ficha de cada
+  // empresa, y sin esto el link caía en la lista y había que buscarla a mano.
+  uEC(() => {
+    const id = window.__empresaDetalleIntent;
+    if (!id) return;
+    window.__empresaDetalleIntent = null;
+    setDetalleId(id);
+  }, []);
   const [modal, setModal] = uSC(null); // null | 'nueva' | 'editar'
   const [editingId, setEditingId] = uSC(null);
   const [fusionOpen, setFusionOpen] = uSC(false);
@@ -6336,8 +6346,192 @@ function PdfFrame({ url, nombre }) {
   return <iframe src={src} title={nombre || 'PDF'} style={{ width: '100%', height: '70vh', border: 'none', background: 'white' }} />;
 }
 
+// ╔════════════════════════════════════════════════════════════╗
+// ║  CONTABILIDAD DEL GRUPO — el bloque principal (tanda 2D)    ║
+// ╚════════════════════════════════════════════════════════════╝
+//
+// Lo que pidió Gabriel (3-sep-2026), con sus palabras: «hay una contabilidad
+// de entidad que tienen los trabajos y las empresas del grupo, y está la
+// Contabilidad como bloque principal, que tendrá un resumen de todas esas
+// contabilidades de entidad y un vínculo para ir a la contabilidad de cada
+// una a ver a mayor detalle».
+//
+// Esta pantalla NO calcula nada por su cuenta: el criterio vive en
+// src/lib/contabilidad-entidades.js (con tests), y las empresas se calculan
+// con la MISMA función que su ficha para que nunca haya dos números distintos
+// de lo mismo.
+function ContabilidadGrupoPage({ showToast }) {   // eslint-disable-line no-unused-vars
+  const { data: companies } = window.__hooks.useCompanies();
+  const { data: obras } = window.__hooks.useObras?.() || { data: [] };
+  const { data: trabajosBS } = window.__hooks.useTrabajos?.() || { data: [] };
+  const { data: consorcios } = window.__hooks.useConsorcios?.() || { data: [] };
+  const { data: movs } = window.__hooks.useAccountingMovements();
+  const [moneda, setMoneda] = uSC('PEN');
+
+  const rol = window.__useAuth?.()?.profile?.rol;
+  const canSee = (id) => rol === 'admin' ? true : (window.__canSeeSidebarItem?.(rol, id) ?? false);
+  const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
+
+  const r = uMC(() => resumenPorEntidad({
+    companies, obras, trabajos: trabajosBS, consorcios, movs, moneda, demo: esPrueba,
+  }), [companies, obras, trabajosBS, consorcios, movs, moneda, esPrueba]);
+
+  // Ir a la contabilidad de cada entidad. La ficha de empresa vive DENTRO de
+  // la página Empresas (no es una página registrada), así que se abre con un
+  // intent — mismo patrón que __movsBuscarIntent / __guiasFocusIntent.
+  const irAEmpresa = (id) => { window.__empresaDetalleIntent = id; window.__navTo?.('empresas', 'general'); };
+  const irATrabajo = (fila) => {
+    if (fila.kind === 'obra') {
+      if (window.__setObraActivaId) window.__setObraActivaId(fila.id);
+      window.__navTo?.('panel-obra', 'obra');
+    } else {
+      window.__navTo?.('bienes-servicios', 'general');
+    }
+  };
+
+  const LIBROS = [
+    { id: 'consolidado', label: 'Consolidado del grupo', icon: 'list' },
+    { id: 'cont-dashboard', label: 'Dashboard contable', icon: 'dashboard' },
+    { id: 'movimientos-contables', label: 'Todos los movimientos', icon: 'dollar', plano: 'general' },
+    { id: 'libro-diario', label: 'Libro diario', icon: 'list' },
+    { id: 'estado-resultados', label: 'Estado de resultados', icon: 'chart' },
+    { id: 'balance-general', label: 'Balance general', icon: 'chart' },
+    { id: 'libros-electronicos', label: 'PLE / Libros electrónicos', icon: 'file' },
+    { id: 'comprobantes', label: 'Comprobantes', icon: 'file' },
+    { id: 'cuentas-bancarias', label: 'Tesorería', icon: 'dollar' },
+  ].filter(l => canSee(l.id));
+
+  const Fila = ({ e, onClick, sub }) => (
+    <button type="button" onClick={onClick} className="card card-p"
+      style={{ textAlign: 'left', cursor: 'pointer', border: '1px solid var(--border)', display: 'flex',
+        alignItems: 'center', gap: 12, width: '100%', background: 'var(--bg-c)', color: 'inherit', font: 'inherit' }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--tp)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {e.nombre}
+        </div>
+        <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 2 }}>{sub}</div>
+      </div>
+      <div style={{ textAlign: 'right', flexShrink: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: e.utilidad >= 0 ? 'var(--green)' : 'var(--red)' }}>
+          {fmtCur(e.utilidad, moneda)}
+        </div>
+        <div style={{ fontSize: 10, color: 'var(--tm)' }}>
+          {fmtCur(e.ingresos, moneda)} in · {fmtCur(e.egresos, moneda)} out
+        </div>
+      </div>
+      <JxIcon name="chevR" size={14} color="var(--tm)"/>
+    </button>
+  );
+
+  return (
+    <div className="page-wrap">
+      <div className="pg-hd frow-sb">
+        <div>
+          <div className="pg-title">Contabilidad</div>
+          <div className="pg-sub">
+            La contabilidad de cada entidad del grupo. Entrá a cualquiera para verla en detalle.
+          </div>
+        </div>
+        <select className="fi" style={{ width: 'auto' }} value={moneda} onChange={e => setMoneda(e.target.value)}>
+          <option value="PEN">S/ (PEN)</option>
+          <option value="USD">USD</option>
+        </select>
+      </div>
+
+      {/* La advertencia que evita el malentendido más caro de esta pantalla. */}
+      <div className="card card-p" style={{ marginBottom: 16, borderLeft: '3px solid var(--blue)', fontSize: 11.5, color: 'var(--ts)' }}>
+        Son <strong>dos miradas de la misma plata</strong>, no dos gastos: un comprobante pertenece a una
+        <strong> empresa</strong> (quien lo emite o recibe, y lleva sus libros) y además puede estar imputado a un
+        <strong> trabajo</strong>. Por eso los dos totales van separados y <strong>no se suman</strong>.
+        {' '}Eliminar lo que se repite entre empresas del grupo es lo que falta (tanda 3).
+      </div>
+
+      {/* ── ENTIDAD 1: LAS EMPRESAS ── */}
+      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)', margin: '6px 0 10px' }}>
+        POR EMPRESA <span style={{ fontWeight: 400, letterSpacing: 0 }}>· entidad legal que lleva los libros</span>
+      </div>
+      {r.empresas.length === 0 ? (
+        <div className="card card-p" style={{ color: 'var(--tm)', fontSize: 12, fontStyle: 'italic', marginBottom: 18 }}>
+          No hay empresas del grupo clasificadas. Usá «Revisar clasificación» en Empresas.
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gap: 8, marginBottom: 10 }}>
+          {r.empresas.map(e => (
+            <Fila key={e.id} e={e} onClick={() => irAEmpresa(e.id)}
+              sub={`${e.ruc ? `RUC ${e.ruc} · ` : ''}${e.nMovs} movimiento(s)${e.interco > 0 ? ` · ${fmtCur(e.interco, moneda)} entre empresas del grupo` : ''}`}/>
+          ))}
+        </div>
+      )}
+      <div style={{ fontSize: 11, color: 'var(--tm)', marginBottom: 22, display: 'grid', gap: 3 }}>
+        <div>
+          Total por empresa: <strong style={{ color: 'var(--ts)' }}>{fmtCur(r.totales.empresas.ingresos, moneda)}</strong> de ingresos
+          {' '}y <strong style={{ color: 'var(--ts)' }}>{fmtCur(r.totales.empresas.egresos, moneda)}</strong> de egresos
+          {' '}en {r.totales.empresas.nMovs} comprobante(s).
+        </div>
+        {r.fueraDeEmpresas.nMovs > 0 && (
+          <div>
+            Otros {r.fueraDeEmpresas.nMovs} comprobante(s) están a nombre de un <strong>consorcio</strong> o de un
+            <strong> tercero</strong> y no figuran en esta lista: la contabilidad de un consorcio se mira en el
+            trabajo que ejecuta, y a un tercero no se le llevan libros.
+          </div>
+        )}
+      </div>
+
+      {/* ── ENTIDAD 2: LOS TRABAJOS ── */}
+      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)', margin: '6px 0 10px' }}>
+        POR TRABAJO <span style={{ fontWeight: 400, letterSpacing: 0 }}>· obras, supervisiones y bienes/servicios</span>
+      </div>
+      {r.trabajos.length === 0 ? (
+        <div className="card card-p" style={{ color: 'var(--tm)', fontSize: 12, fontStyle: 'italic', marginBottom: 18 }}>
+          Todavía no hay trabajos cargados.
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gap: 8, marginBottom: 10 }}>
+          {r.trabajos.map(t => (
+            <Fila key={`${t.kind}-${t.id}`} e={t} onClick={() => irATrabajo(t)}
+              sub={`${t.titular ? `Titular: ${t.titular}${t.esConsorcio ? ' (consorcio)' : ''} · ` : ''}${t.nMovs} movimiento(s)`}/>
+          ))}
+        </div>
+      )}
+      <div style={{ fontSize: 11, color: 'var(--tm)', marginBottom: 22, display: 'grid', gap: 3 }}>
+        <div>
+          Total por trabajo: <strong style={{ color: 'var(--ts)' }}>{fmtCur(r.totales.trabajos.ingresos, moneda)}</strong> de ingresos
+          {' '}y <strong style={{ color: 'var(--ts)' }}>{fmtCur(r.totales.trabajos.egresos, moneda)}</strong> de egresos
+          {' '}en {r.totales.trabajos.nMovs} comprobante(s).
+        </div>
+        {r.sinImputar.nMovs > 0 && (
+          <div>
+            <strong>{r.sinImputar.nMovs} comprobante(s)</strong> por {fmtCur(r.sinImputar.egresos + r.sinImputar.ingresos, moneda)}
+            {' '}no están imputados a ningún trabajo (gastos de la empresa, no de una obra).
+            {canSee('movimientos-contables') && (
+              <button className="btn btn-ghost btn-xs" style={{ marginLeft: 6 }}
+                onClick={() => window.__navTo?.('movimientos-contables', 'general')}>
+                Revisarlos →
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── LIBROS DEL GRUPO ── */}
+      {LIBROS.length > 0 && (<>
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)', margin: '6px 0 10px' }}>
+          LIBROS Y REPORTES DEL GRUPO
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {LIBROS.map(l => (
+            <button key={l.id} className="btn btn-ghost btn-sm" onClick={() => window.__navTo?.(l.id, l.plano)}>
+              <JxIcon name={l.icon} size={13}/> {l.label}
+            </button>
+          ))}
+        </div>
+      </>)}
+    </div>
+  );
+}
+
 Object.assign(window, {
   EmpresasPage, MovimientosContablesPage, IntercompanyPage,
   ContabilidadDashboardPage, ConsolidadoPage,
-  TrazabilidadPage,
+  TrazabilidadPage, ContabilidadGrupoPage,
 });

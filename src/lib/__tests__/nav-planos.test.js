@@ -48,25 +48,33 @@ describe('planoDe — clasifica general vs obra', () => {
 });
 
 describe('resolveLanding — a dónde aterriza cada rol', () => {
-  const home = { almacenero: 'mov-materiales', ingeniero: 'dashboard-tecnico', contador: 'cont-dashboard' };
-  it('roles globales (admin/contador/gerente/tesorero) → inicio', () => {
-    expect(resolveLanding({ rol: 'admin', obrasAsignadas: ['a', 'b'], homePorRol: home })).toEqual({ page: 'inicio', obraId: null });
-    expect(resolveLanding({ rol: 'contador', obrasAsignadas: ['a'], homePorRol: home })).toEqual({ page: 'inicio', obraId: null });
-    expect(resolveLanding({ rol: 'gerente', obrasAsignadas: [], homePorRol: home })).toEqual({ page: 'inicio', obraId: null });
+  it('roles globales (admin/contador/gerente/licitaciones) → inicio, los cinco bloques', () => {
+    expect(resolveLanding({ rol: 'admin', obrasAsignadas: ['a', 'b'] })).toEqual({ page: 'inicio', obraId: null });
+    expect(resolveLanding({ rol: 'contador', obrasAsignadas: ['a'] })).toEqual({ page: 'inicio', obraId: null });
+    expect(resolveLanding({ rol: 'gerente', obrasAsignadas: [] })).toEqual({ page: 'inicio', obraId: null });
+    // licitaciones es global: nunca trabaja dentro de una obra, aunque alguien
+    // lo haya designado a una por error.
+    expect(resolveLanding({ rol: 'licitaciones', obrasAsignadas: ['o1'] })).toEqual({ page: 'inicio', obraId: null });
   });
-  it('operativo con UNA obra → entra a su obra y su página', () => {
-    expect(resolveLanding({ rol: 'almacenero', obrasAsignadas: ['o1'], homePorRol: home })).toEqual({ page: 'mov-materiales', obraId: 'o1' });
-    expect(resolveLanding({ rol: 'ingeniero', obrasAsignadas: ['o9'], homePorRol: home })).toEqual({ page: 'dashboard-tecnico', obraId: 'o9' });
+  it('rol de obra con UNA obra → DIRECTO al desglose de esa obra', () => {
+    expect(resolveLanding({ rol: 'almacenero', obrasAsignadas: ['o1'] })).toEqual({ page: 'panel-obra', obraId: 'o1' });
+    expect(resolveLanding({ rol: 'ingeniero', obrasAsignadas: ['o9'] })).toEqual({ page: 'panel-obra', obraId: 'o9' });
+    expect(resolveLanding({ rol: 'prevencionista', obrasAsignadas: ['o3'] })).toEqual({ page: 'panel-obra', obraId: 'o3' });
   });
-  it('operativo con varias o ninguna obra → inicio', () => {
-    expect(resolveLanding({ rol: 'almacenero', obrasAsignadas: ['o1', 'o2'], homePorRol: home })).toEqual({ page: 'inicio', obraId: null });
-    expect(resolveLanding({ rol: 'ingeniero', obrasAsignadas: [], homePorRol: home })).toEqual({ page: 'inicio', obraId: null });
+  it('rol de obra con VARIAS obras → la lista de sus trabajos, para elegir', () => {
+    expect(resolveLanding({ rol: 'almacenero', obrasAsignadas: ['o1', 'o2'] })).toEqual({ page: 'trabajos', obraId: null });
   });
-  it('operativo sin home definido → cae a dashboard-gestion', () => {
-    expect(resolveLanding({ rol: 'supervisor', obrasAsignadas: ['o1'], homePorRol: home })).toEqual({ page: 'dashboard-gestion', obraId: 'o1' });
+  it('rol de obra SIN obras → la lista (que le dice que pida acceso), nunca el Inicio', () => {
+    // Regresión de la tanda 2D: antes iba a 'inicio', donde veía bloques del
+    // grupo que su rol no puede abrir.
+    expect(resolveLanding({ rol: 'ingeniero', obrasAsignadas: [] })).toEqual({ page: 'trabajos', obraId: null });
+    expect(resolveLanding({ rol: 'almacenero', obrasAsignadas: [] })).toEqual({ page: 'trabajos', obraId: null });
   });
   it('rol campo (portal con PIN) → SIEMPRE el portal de captura, sin importar obras', () => {
-    expect(resolveLanding({ rol: 'campo', obrasAsignadas: [], homePorRol: home })).toEqual({ page: 'captura-campo', obraId: null });
-    expect(resolveLanding({ rol: 'campo', obrasAsignadas: ['o1'], homePorRol: home })).toEqual({ page: 'captura-campo', obraId: null });
+    expect(resolveLanding({ rol: 'campo', obrasAsignadas: [] })).toEqual({ page: 'captura-campo', obraId: null });
+    expect(resolveLanding({ rol: 'campo', obrasAsignadas: ['o1'] })).toEqual({ page: 'captura-campo', obraId: null });
+  });
+  it('sin rol todavía (profile a medio cargar) → inicio, que es seguro para todos', () => {
+    expect(resolveLanding({ rol: undefined, obrasAsignadas: ['o1'] })).toEqual({ page: 'inicio', obraId: null });
   });
 });

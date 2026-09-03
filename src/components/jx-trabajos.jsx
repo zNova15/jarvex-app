@@ -617,6 +617,16 @@ function TrabajosPage({ showToast, onNav, onEnterObra }) {
   const [texto, setTexto] = uST('');
   const [filtroTipo, setFiltroTipo] = uST('');     // '' | tipo_trabajo | 'bien' | 'servicio'
   const [soloAbiertos, setSoloAbiertos] = uST(false);
+  // El aislamiento por obra llega ASYNC (main.jsx consulta obra_usuarios). Sin
+  // este tick, la lista se calculaba una vez con lo que hubiera y no se
+  // recalculaba al resolver: el usuario veía la lista equivocada hasta navegar.
+  const [permTick, setPermTick] = uST(0);
+  uET(() => {
+    const on = () => setPermTick(t => t + 1);
+    window.addEventListener('obras_permitidas_change', on);
+    return () => window.removeEventListener('obras_permitidas_change', on);
+  }, []);
+  const restringido = window.__obrasPermitidas instanceof Set;
 
   const lookupCompany = (id) => (companies || []).find(c => c.id === id);
 
@@ -625,7 +635,12 @@ function TrabajosPage({ showToast, onNav, onEnterObra }) {
     const q = texto.trim().toLowerCase();
     const coincide = (...campos) => !q || campos.some(v => String(v || '').toLowerCase().includes(q));
 
-    const deObras = (obras || []).filter(o => !o.deleted_at).map(o => ({
+    // AISLAMIENTO POR OBRA (tanda 2D): esta pantalla es el aterrizaje de los
+    // roles de obra, así que lista SOLO los trabajos designados al usuario.
+    // `null` = rol global (ve todos); un Set —aunque esté vacío— restringe.
+    // Sin esto, mandar acá a un almacenero le mostraba las obras del grupo.
+    const permitidas = window.__obrasPermitidas === undefined ? null : window.__obrasPermitidas;
+    const deObras = (obras || []).filter(o => !o.deleted_at && (!permitidas || permitidas.has(o.id))).map(o => ({
       kind: 'obra',
       id: o.id,
       nombre: o.nombre_obra,
@@ -672,7 +687,7 @@ function TrabajosPage({ showToast, onNav, onEnterObra }) {
       .filter(f => coincide(f.nombre, f.cliente, f.ejecutor))
       .sort((a, b) => (b.abierto ? 1 : 0) - (a.abierto ? 1 : 0)
         || String(a.nombre || '').localeCompare(String(b.nombre || '')));
-  }, [obras, trabajos, companies, consorcios, consorcioSocios, movs, texto, filtroTipo, soloAbiertos]);
+  }, [obras, trabajos, companies, consorcios, consorcioSocios, movs, texto, filtroTipo, soloAbiertos, permTick]);
 
   const totales = uMT(() => ({
     obras: filas.filter(f => f.kind === 'obra').length,
@@ -731,12 +746,24 @@ function TrabajosPage({ showToast, onNav, onEnterObra }) {
 
       {filas.length === 0 ? (
         <div className="card card-p empty-state">
-          <JxIcon name="hardHat" size={40} color="var(--tm)"/>
-          <p>
-            {(obras || []).length || (trabajos || []).length
-              ? 'Ningún trabajo coincide con el filtro.'
-              : 'Todavía no hay trabajos cargados.'}
-          </p>
+          <JxIcon name={restringido && window.__obrasPermitidas?.size === 0 ? 'lock' : 'hardHat'} size={40} color="var(--tm)"/>
+          {/* Un usuario de obra SIN designaciones no está ante una lista vacía:
+              está ante una puerta cerrada, y tiene que saber a quién pedirle la
+              llave. Antes veía TODAS las obras del grupo (bug de la 2A). */}
+          {restringido && window.__obrasPermitidas?.size === 0 ? (
+            <p>
+              No tenés ningún trabajo asignado todavía.<br/>
+              <span style={{ color: 'var(--tm)', fontSize: 12 }}>
+                Pedile al administrador que te designe a la obra o supervisión en la que vas a trabajar.
+              </span>
+            </p>
+          ) : (
+            <p>
+              {(obras || []).length || (trabajos || []).length
+                ? 'Ningún trabajo coincide con el filtro.'
+                : 'Todavía no hay trabajos cargados.'}
+            </p>
+          )}
         </div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(310px, 1fr))', gap: 12 }}>
