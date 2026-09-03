@@ -75,25 +75,31 @@ const NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
   { id: 'reportes', label: 'Reportes', icon: 'chart' },
 
-  { section: 'CONTROL DE ALMACÉN' },
+  // ── EL WORKSPACE DE UN TRABAJO (tanda 2, entrega B) ────────────────
+  // Las secciones del plano OBRA agrupadas como Gabriel las nombró. Antes eran
+  // 11 encabezados (almacén, compras, maquinaria, ingeniería, gestión,
+  // contabilidad, ssoma, ambiental, calidad, social, rrhh): entrar a una obra
+  // no mostraba "la obra", mostraba el menú entero. El orden y la pertenencia
+  // los define src/lib/desglose-obra.js — un test falla si una página de obra
+  // queda sin grupo, porque desaparecería del Panel del trabajo sin avisar.
+  { section: 'ESTE TRABAJO' },
+  { id: 'panel-obra', label: 'Panel del trabajo', icon: 'hardHat' },
+
+  { section: 'ALMACÉN' },
   { id: 'materiales', label: 'Materiales', icon: 'package' },
   { id: 'mov-materiales', label: 'Mov. de Materiales', icon: 'arrowIn' },
   { id: 'herramientas', label: 'Herramientas', icon: 'tool' },
   { id: 'mov-herramientas', label: 'Mov. Herramientas', icon: 'arrowOut' },
-  { id: 'caja-chica', label: 'Caja Chica', icon: 'dollar' },
   { id: 'ubicaciones', label: 'Ubicaciones de Obra', icon: 'map' },
   { id: 'compras-pendientes', label: 'Vinculación de Compras', icon: 'arrowIn' },
+  { id: 'caja-chica', label: 'Caja Chica', icon: 'dollar' },
   { id: 'evidencias', label: 'Evidencias', icon: 'camera' },
   { id: 'plantillas', label: 'Plantillas', icon: 'file' },
 
-  { section: 'COMPRAS / LOGÍSTICA' },
+  { section: 'LOGÍSTICA' },
   { id: 'solicitud-residente', label: 'Solicitud de Insumos', icon: 'plus' },
   { id: 'requisiciones', label: 'Requisiciones', icon: 'list' },
   { id: 'ordenes-compra', label: 'Órdenes de Compra', icon: 'package' },
-
-  { section: 'MAQUINARIA' },
-  { id: 'activos-pesados', label: 'Equipos Pesados', icon: 'tool' },
-  { id: 'mantenimiento-programado', label: 'Mantenimiento Programado', icon: 'tool' },
 
   { section: 'DIRECCIÓN', area: 'direccion' },
   { id: 'dashboard-ejecutivo', label: 'Dashboard Ejecutivo', icon: 'dashboard' },
@@ -102,69 +108,40 @@ const NAV = [
   { id: 'alertas', label: 'Centro de Alertas', icon: 'bell' },
   { id: 'busqueda', label: 'Búsqueda Global', icon: 'search' },
 
-  { section: 'INGENIERÍA' },
-  { id: 'dashboard-tecnico', label: 'Dashboard Técnico', icon: 'dashboard' },
-  { id: 'mis-partidas', label: 'Partidas del Proyecto', icon: 'list' },
-  { id: 'cronograma-frente', label: 'Cronograma de mis Partidas', icon: 'calendar' },
-  { id: 'salidas-frente', label: 'Vinculación de insumos', icon: 'link' },
-  { id: 'reporte-diario', label: 'Reporte Diario', icon: 'edit' },
-  { id: 'mis-reportes', label: 'Mis Reportes', icon: 'list' },
-  { id: 'borradores-reporte', label: 'Borradores', icon: 'copy' },
-  { id: 'plan-real', label: 'Plan vs Real', icon: 'trending' },
-  { id: 'emitir-alerta', label: 'Emitir Alerta', icon: 'alert' },
-  { id: 'vinculacion-salidas', label: 'Vinculación de Salidas', icon: 'link' },
-
+  // Gestión de obra incluye maquinaria y la ingeniería de frente: es la misma
+  // obra mirada desde el frente, no un área aparte (el rol `ingeniero` ve acá
+  // sus 9 pantallas y nada más, igual que antes).
   { section: 'GESTIÓN DE OBRA' },
   { id: 'dashboard-gestion', label: 'Dashboard Gestión de Obra', icon: 'dashboard' },
   { id: 'panel-residente', label: 'Panel del Residente', icon: 'hardHat' },
   { id: 'importar', label: 'Importar Presupuesto', icon: 'upload' },
   { id: 'partidas', label: 'Partidas', icon: 'list' },
-  { id: 'control-consumo', label: 'Control de Consumo', icon: 'trending' },
   { id: 'insumos', label: 'Insumos por Partida', icon: 'layers' },
+  { id: 'control-consumo', label: 'Control de Consumo', icon: 'trending' },
   { id: 'versiones', label: 'Versiones de Presupuesto', icon: 'compare' },
   { id: 'cronograma', label: 'Cronograma / Gantt', icon: 'gantt' },
   { id: 'avance', label: 'Avance de Obra', icon: 'hardHat' },
+  { id: 'movimientos-insumos', label: 'Movimientos de Insumos', icon: 'inbox' },
   { id: 'aprobaciones-reporte', label: 'Aprobación de Frentes', icon: 'flag' },
   { id: 'rendimiento-ingenieros', label: 'Rendimiento de Ingenieros', icon: 'trendUp' },
   { id: 'comparativo', label: 'Planificado vs Real', icon: 'compare' },
   { id: 'costos', label: 'Costos', icon: 'dollar' },
   { id: 'valorizaciones', label: 'Valorizaciones', icon: 'dollar' },
-  { id: 'subcontratistas', label: 'Subcontratistas', icon: 'users' },
-  { id: 'subcontratos', label: 'Subcontratos', icon: 'package' },
-  { id: 'subcontrato-valorizaciones', label: 'Valorizaciones de Subcontrato', icon: 'dollar' },
   { id: 'incidencias', label: 'Incidencias', icon: 'alert' },
-  { id: 'movimientos-insumos', label: 'Movimientos de Insumos', icon: 'inbox' },
+  { id: 'activos-pesados', label: 'Equipos Pesados', icon: 'tool' },
+  { id: 'mantenimiento-programado', label: 'Mantenimiento Programado', icon: 'tool' },
+  { id: 'dashboard-tecnico', label: 'Dashboard Técnico', icon: 'dashboard' },
+  { id: 'mis-partidas', label: 'Partidas del Proyecto', icon: 'list' },
+  { id: 'cronograma-frente', label: 'Cronograma de mis Partidas', icon: 'calendar' },
+  { id: 'salidas-frente', label: 'Vinculación de insumos', icon: 'link' },
+  { id: 'vinculacion-salidas', label: 'Vinculación de Salidas', icon: 'link' },
+  { id: 'reporte-diario', label: 'Reporte Diario', icon: 'edit' },
+  { id: 'borradores-reporte', label: 'Borradores', icon: 'copy' },
+  { id: 'mis-reportes', label: 'Mis Reportes', icon: 'list' },
+  { id: 'plan-real', label: 'Plan vs Real', icon: 'trending' },
+  { id: 'emitir-alerta', label: 'Emitir Alerta', icon: 'alert' },
 
-  { section: 'CONTABILIDAD DE LA OBRA' },
-  { id: 'movimientos-contables', label: 'Movimientos', icon: 'dollar', plano: 'obra' },
-  { id: 'conciliacion-insumos', label: 'Conciliación de Insumos', icon: 'compare' },
-  { id: 'pagos', label: 'Pagos', icon: 'dollar' },
-
-  { section: 'SSOMA / SEGURIDAD' },
-  { id: 'reporte-especialidad', label: 'Reporte Diario (especialidad)', icon: 'edit' },
-  { id: 'charlas-plan', label: 'Planificador de Charlas', icon: 'calendar' },
-  { id: 'sctr-personal', label: 'SCTR del Personal', icon: 'shield' },
-  { id: 'inducciones', label: 'Inducciones', icon: 'check' },
-  { id: 'charlas-seguridad', label: 'Charlas de 5 minutos', icon: 'alert' },
-  { id: 'iperc', label: 'IPERC (riesgos)', icon: 'alert' },
-  { id: 'epps-inventario', label: 'EPPs (inventario)', icon: 'shield' },
-  { id: 'mov-epp', label: 'Mov. de EPPs', icon: 'arrowOut' },
-  { id: 'epp', label: 'Entregas EPP', icon: 'check' },
-  { id: 'insumos-persona', label: 'Insumos por Persona', icon: 'users' },
-  { id: 'inspecciones-seguridad', label: 'Inspecciones', icon: 'shield' },
-  { id: 'capacitaciones', label: 'Capacitaciones', icon: 'users' },
-  { id: 'insumos-emergencia', label: 'Insumos de Emergencia', icon: 'package' },
-
-  { section: 'AMBIENTAL' },
-  { id: 'gestion-ambiental', label: 'Gestión Ambiental (ISO 14001)', icon: 'map' },
-
-  { section: 'CALIDAD' },
-  { id: 'gestion-calidad', label: 'Gestión de Calidad (Certificados)', icon: 'checkCircle' },
-
-  { section: 'SOCIAL' },
-  { id: 'gestion-social', label: 'Gestión Social (Comunidad)', icon: 'users' },
-
-  { section: 'RRHH' },
+  { section: 'PERSONAL Y SUBCONTRATOS' },
   { id: 'personal', label: 'Personal', icon: 'users' },
   { id: 'frentes', label: 'Frentes de Trabajo', icon: 'flag' },
   { id: 'asistencia', label: 'Asistencia', icon: 'calendar' },
@@ -173,6 +150,40 @@ const NAV = [
   { id: 'cts', label: 'CTS', icon: 'dollar' },
   { id: 'gratificaciones', label: 'Gratificaciones', icon: 'dollar' },
   { id: 'plame', label: 'PLAME / T-Registro SUNAT', icon: 'list' },
+  { id: 'subcontratistas', label: 'Subcontratistas', icon: 'users' },
+  { id: 'subcontratos', label: 'Subcontratos', icon: 'package' },
+  { id: 'subcontrato-valorizaciones', label: 'Valorizaciones de Subcontrato', icon: 'dollar' },
+
+  // Seguridad, ambiental, calidad y social bajo un solo encabezado: cada
+  // especialista ve SOLO sus páginas (el gate por rol no cambió), pero el
+  // trabajo ya no aparenta tener cuatro áreas separadas.
+  { section: 'SECCIONES ESPECIALES' },
+  { id: 'reporte-especialidad', label: 'Reporte Diario (especialidad)', icon: 'edit' },
+  { id: 'charlas-plan', label: 'Planificador de Charlas', icon: 'calendar' },
+  { id: 'sctr-personal', label: 'SCTR del Personal', icon: 'shield' },
+  { id: 'inducciones', label: 'Inducciones', icon: 'check' },
+  { id: 'charlas-seguridad', label: 'Charlas de 5 minutos', icon: 'alert' },
+  { id: 'iperc', label: 'IPERC (riesgos)', icon: 'alert' },
+  { id: 'inspecciones-seguridad', label: 'Inspecciones', icon: 'shield' },
+  { id: 'capacitaciones', label: 'Capacitaciones', icon: 'users' },
+  { id: 'epps-inventario', label: 'EPPs (inventario)', icon: 'shield' },
+  { id: 'mov-epp', label: 'Mov. de EPPs', icon: 'arrowOut' },
+  { id: 'epp', label: 'Entregas EPP', icon: 'check' },
+  { id: 'insumos-persona', label: 'Insumos por Persona', icon: 'users' },
+  { id: 'insumos-emergencia', label: 'Insumos de Emergencia', icon: 'package' },
+  { id: 'gestion-ambiental', label: 'Gestión Ambiental (ISO 14001)', icon: 'map' },
+  { id: 'gestion-calidad', label: 'Gestión de Calidad (Certificados)', icon: 'checkCircle' },
+  { id: 'gestion-social', label: 'Gestión Social (Comunidad)', icon: 'users' },
+
+  { section: 'CONTABILIDAD DE LA OBRA' },
+  { id: 'movimientos-contables', label: 'Movimientos de esta obra', icon: 'dollar', plano: 'obra' },
+  { id: 'conciliacion-insumos', label: 'Conciliación de Insumos', icon: 'compare' },
+  { id: 'pagos', label: 'Pagos', icon: 'dollar' },
+
+  // La cadena proveedor → empresas del grupo → ejecutora es DE UNA OBRA: vivía
+  // en el bloque general de contabilidad, donde nunca se usó (0 filas).
+  { section: 'CADENAS INTERCOMPANY' },
+  { id: 'trazabilidad', label: 'Cadenas de esta obra', icon: 'compare' },
 
   { section: 'EMPRESAS Y CONTABILIDAD', area: 'contabilidad' },
   { id: 'cont-dashboard', label: 'Dashboard Contable', icon: 'dashboard' },
@@ -180,9 +191,7 @@ const NAV = [
 
   { id: 'movimientos-contables', label: 'Movimientos (todas / por obra)', icon: 'dollar', plano: 'general' },
   { id: 'guias-remision', label: 'Guías de Remisión', icon: 'truck' },
-  { id: 'profesionales', label: 'Registro Profesional', icon: 'users' },
   { id: 'intercompany', label: 'Operaciones entre Empresas', icon: 'compare' },
-  { id: 'trazabilidad', label: 'Trazabilidad de Cadenas', icon: 'compare' },
   { id: 'compras-categoria', label: 'Compras por Categoría', icon: 'layers' },
   { id: 'analisis-insumos', label: 'Análisis de Insumos', icon: 'compare' },
   { id: 'ordenes-intercompany', label: 'Órdenes Intercompany', icon: 'list' },
@@ -198,6 +207,9 @@ const NAV = [
   { id: 'libros-electronicos', label: 'Libros Electrónicos PLE / PDT', icon: 'list' },
   { id: 'config-sunat', label: 'Configuración SUNAT', icon: 'settings' },
   { id: 'comparativo-periodos', label: 'Comparativo Periodos', icon: 'compare' },
+
+  { section: 'LICITACIONES', area: 'licitaciones' },
+  { id: 'profesionales', label: 'Registro Profesional', icon: 'users' },
 
   { section: 'ADMINISTRACIÓN', area: 'admin' },
   { id: 'usuarios', label: 'Usuarios', icon: 'user' },

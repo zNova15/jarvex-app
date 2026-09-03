@@ -20,7 +20,9 @@ export const GENERAL_ITEMS = new Set([
   'proveedores',
   // Empresas + su contabilidad de empresa (por entidad legal, no por obra).
   // Flujo de caja/proyectado son por-empresa (cronograma_pagos no tiene obra_id).
-  'empresas', 'cont-dashboard', 'intercompany', 'trazabilidad', 'consolidado',
+  // 'trazabilidad' YA NO está acá: la cadena intercompany es de UNA obra
+  // (tanda 2, entrega B) → plano obra, dentro del workspace del trabajo.
+  'empresas', 'cont-dashboard', 'intercompany', 'consolidado',
   // Un bien o servicio NO pertenece a ninguna obra: si no está acá, la app le
   // exige obra activa para abrirlo.
   'bienes-servicios',
@@ -28,6 +30,10 @@ export const GENERAL_ITEMS = new Set([
   'estado-resultados', 'comprobantes', 'libros-electronicos', 'config-sunat',
   'comparativo-periodos', 'flujo-caja', 'flujo-proyectado', 'compras-categoria', 'ordenes-intercompany', 'guias-remision',
   'analisis-insumos',   // análisis global cross-obra de compras por insumo/proveedor
+  // Plantel profesional para postular: es del GRUPO, no de una obra. Sin esta
+  // línea planoDe() lo daba por 'obra' y el sidebar lo filtraba en el plano
+  // general — el ítem existía en el menú y NO se veía nunca.
+  'profesionales',
   // Dirección / Ejecutivo (vistas cross-obra)
   'dashboard-ejecutivo', 'kpis-obra', 'cumplimiento-cronograma', 'alertas', 'busqueda',
   // Administración
@@ -46,17 +52,20 @@ export const planoDe = (id) => GENERAL_ITEMS.has(id) ? 'general' : 'obra';
 // selector) — por eso figura acá.
 const AREA = {
   contabilidad: new Set(['cont-dashboard', 'empresas', 'bienes-servicios', 'movimientos-contables', 'intercompany',
-    'trazabilidad', 'consolidado', 'cuentas-bancarias', 'flujo-caja', 'flujo-proyectado',
+    'consolidado', 'cuentas-bancarias', 'flujo-caja', 'flujo-proyectado',
     'plan-cuentas', 'libro-diario', 'balance-general', 'estado-resultados', 'comprobantes',
     'libros-electronicos', 'config-sunat', 'comparativo-periodos', 'compras-categoria', 'ordenes-intercompany', 'guias-remision',
     'analisis-insumos']),
   // Trabajos y su ficha: el área a la que se entra desde el bloque Trabajos.
   trabajos: new Set(['trabajos', 'obras', 'bienes-servicios']),
+  // Licitaciones: el bloque de primer nivel de la tanda 2. Hoy solo el
+  // Registro Profesional; el buscador de procesos a postular todavía no existe.
+  licitaciones: new Set(['profesionales']),
   direccion: new Set(['dashboard-ejecutivo', 'kpis-obra', 'cumplimiento-cronograma', 'alertas', 'busqueda']),
   admin: new Set(['usuarios', 'roles', 'solicitudes', 'configuracion', 'conflictos', 'audit-log']),
 };
 
-/** Área general de una página: 'contabilidad' | 'direccion' | 'admin' | 'general'. */
+/** Área general de una página: 'contabilidad' | 'trabajos' | 'licitaciones' | 'direccion' | 'admin' | 'general'. */
 export const areaDe = (id) => {
   for (const a in AREA) if (AREA[a].has(id)) return a;
   return 'general';

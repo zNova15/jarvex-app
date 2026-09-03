@@ -7,6 +7,10 @@ describe('areaDe — sub-áreas del plano general', () => {
     expect(areaDe('balance-general')).toBe('contabilidad');
     expect(areaDe('flujo-caja')).toBe('contabilidad');
     expect(areaDe('movimientos-contables')).toBe('contabilidad');
+    expect(areaDe('trabajos')).toBe('trabajos');
+    // Registro Profesional: bloque Licitaciones (antes caía en 'general' y, peor,
+    // planoDe lo daba por 'obra' → el sidebar general nunca lo mostraba).
+    expect(areaDe('profesionales')).toBe('licitaciones');
     expect(areaDe('dashboard-ejecutivo')).toBe('direccion');
     expect(areaDe('usuarios')).toBe('admin');
     expect(areaDe('configuracion')).toBe('admin');
@@ -25,6 +29,7 @@ describe('planoDe — clasifica general vs obra', () => {
     expect(planoDe('captura-magica')).toBe('general');
     expect(planoDe('usuarios')).toBe('general');
     expect(planoDe('inicio')).toBe('general');
+    expect(planoDe('profesionales')).toBe('general');
   });
   it('obra: movimientos/conciliación/partidas/almacén y cualquier no listada', () => {
     expect(planoDe('mov-materiales')).toBe('obra');
@@ -32,6 +37,9 @@ describe('planoDe — clasifica general vs obra', () => {
     expect(planoDe('movimientos-contables')).toBe('obra'); // por defecto obra (workspace); también se ofrece en el área contabilidad vía nav explícito
     expect(planoDe('partidas')).toBe('obra');
     expect(planoDe('personal')).toBe('obra');
+    // La cadena intercompany es de UNA obra (entrega B): salió del plano general.
+    expect(planoDe('trazabilidad')).toBe('obra');
+    expect(planoDe('panel-obra')).toBe('obra');
     expect(planoDe('una-pagina-nueva-cualquiera')).toBe('obra');
   });
   it('GENERAL_ITEMS y planoDe son coherentes', () => {

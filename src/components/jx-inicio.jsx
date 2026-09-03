@@ -417,9 +417,9 @@ function InicioPage({ onNav, onEnterObra }) {
               </div>
             )}
           </div>
-          <button className="btn btn-ghost btn-sm" title="Abrir el workspace completo de esta obra (con su menú lateral)"
+          <button className="btn btn-ghost btn-sm" title="Abrir el Panel del trabajo: sus secciones agrupadas, quién la ejecuta y su equipo"
             style={{ color: 'var(--amber)', border: '1px solid var(--border)' }}
-            onClick={() => obraSel && onEnterObra?.(obraSel.id)}>
+            onClick={() => obraSel && onEnterObra?.(obraSel.id, 'panel-obra')}>
             Entrar al workspace <Icon name="chevR" size={12} color="var(--amber)" />
           </button>
         </div>

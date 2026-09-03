@@ -1337,17 +1337,60 @@ function MovimientosContablesPage({ showToast }) {
 
   const companiesActivas = uMC(() => (companies || []).filter(c => c.status === 'activa'), [companies]);
 
+  // ── ÁMBITO DENTRO DE UNA OBRA (tanda 2, entrega B) ────────────────
+  // En el workspace de un trabajo la OBRA no se elige: es la activa, y el
+  // selector se reemplaza por un cartel. Eso elimina la confusión de mirar otra
+  // obra desde adentro de una obra.
+  //
+  // Lo que el documento pedía y NO se hizo, con el motivo: fijar además la
+  // empresa al TITULAR CONTABLE de la obra. Los datos lo desmienten — en
+  // Miraflores el titular (CONSORCIO EL INCA) tiene 112 de 460 comprobantes; el
+  // resto está a nombre de JARVEX, GASOMI, JADE, JHEENSEG… En San Marcos,
+  // CHUSAAC tiene 32 de 89. Eso NO es un error de carga: es la cadena
+  // intercompany (las empresas del grupo compran y le cargan a la ejecutora).
+  // Fijar el titular habría escondido 3 de cada 4 movimientos de la obra y roto
+  // el criterio de verificación del propio documento ("los totales deben
+  // coincidir con los que hoy da Movimientos filtrando por esa obra").
+  // En su lugar: el selector de empresa se ACOTA a las que realmente tienen
+  // movimientos en esta obra, con el titular marcado y contado.
+  const enObra = window.__plano === 'obra';
+  const { data: consorciosMov } = window.__hooks.useConsorcios?.() || { data: [] };
+  const obraDelWorkspace = uMC(
+    () => (enObra && filtroObraSel !== 'todas') ? (obras || []).find(o => o.id === filtroObraSel) || null : null,
+    [enObra, obras, filtroObraSel]);
+  const titularObraId = uMC(() => titularContableDeObra(obraDelWorkspace, consorciosMov),
+    [obraDelWorkspace, consorciosMov]);
+  const empresasDeLaObra = uMC(() => {
+    if (!obraDelWorkspace) return companiesActivas;
+    const ids = new Set((movs || [])
+      .filter(m => !m.deleted_at && m.obra_id === obraDelWorkspace.id && m.company_id)
+      .map(m => m.company_id));
+    if (titularObraId) ids.add(titularObraId);
+    const lista = companiesActivas.filter(c => ids.has(c.id));
+    // Obra sin movimientos todavía: mejor todas que un desplegable vacío.
+    return lista.length ? lista : companiesActivas;
+  }, [obraDelWorkspace, movs, companiesActivas, titularObraId]);
+  const movsTitular = uMC(() => {
+    if (!obraDelWorkspace || !titularObraId) return null;
+    const deLaObra = (movs || []).filter(m => !m.deleted_at && m.obra_id === obraDelWorkspace.id);
+    const delTitular = deLaObra.filter(m => m.company_id === titularObraId).length;
+    return { total: deLaObra.length, titular: delTitular, otras: deLaObra.length - delTitular };
+  }, [obraDelWorkspace, movs, titularObraId]);
+
   // Reconciliación de los filtros de ámbito: si apuntan a una obra/empresa que YA
   // no figura en su selector (usuario no asignado a esa obra, obra eliminada,
   // empresa inactivada), el <select> controlado mostraría 'Todas' pero `filtered`
   // seguiría filtrando por ese id → tabla vacía/sub-filtrada sin recuperación.
   // Guard: no resetear mientras la fuente aún no cargó (evita reset prematuro).
   uEC(() => {
-    if (filtroObraSel !== 'todas' && (obras || []).length &&
+    // En el workspace de una obra el filtro de obra NO es del usuario: es el
+    // ámbito de la pantalla. Resetearlo a 'todas' mostraría las otras obras.
+    if (!enObra && filtroObraSel !== 'todas' && (obras || []).length &&
         !obrasParaSelector.some(o => o.id === filtroObraSel)) setFiltroObraSel('todas');
+    const universoEmpresas = enObra ? empresasDeLaObra : companiesActivas;
     if (filtroEmpresaSel !== 'todas' && (companies || []).length &&
-        !companiesActivas.some(c => c.id === filtroEmpresaSel)) setFiltroEmpresaSel('todas');
-  }, [filtroObraSel, filtroEmpresaSel, obrasParaSelector, companiesActivas, obras, companies]);
+        !universoEmpresas.some(c => c.id === filtroEmpresaSel)) setFiltroEmpresaSel('todas');
+  }, [enObra, filtroObraSel, filtroEmpresaSel, obrasParaSelector, companiesActivas, empresasDeLaObra, obras, companies]);
 
   // ¿El movimiento (>S/2000 en soles) está sin bancarización (ninguna o falló)?
   // Definida antes de `filtered` porque el useMemo la llama al filtrar por
@@ -1460,12 +1503,13 @@ function MovimientosContablesPage({ showToast }) {
 
   // Barra de filtros reorganizada (31-ago): saber si hay algo filtrado y
   // poder volver a "ver todo" con un click.
-  const hayFiltrosActivos = busqueda !== '' || filtroObraSel !== 'todas' || filtroEmpresaSel !== 'todas'
+  const hayFiltrosActivos = busqueda !== '' || (!enObra && filtroObraSel !== 'todas') || filtroEmpresaSel !== 'todas'
     || filtroClase !== 'todos' || filtroTipo !== 'todos' || filtroEstado !== 'todos'
     || filtroEmisor !== 'todos' || filtroReceptor !== 'todos' || filtroMes !== 'todos'
     || filtroTipoDoc !== 'todos' || filtroBanc !== 'todos';
   const limpiarFiltros = () => {
-    setBusqueda(''); setFiltroObraSel('todas'); setFiltroEmpresaSel('todas');
+    setBusqueda(''); setFiltroEmpresaSel('todas');
+    if (!enObra) setFiltroObraSel('todas');   // dentro de una obra, la obra es el ámbito, no un filtro
     setFiltroClase('todos'); setFiltroTipo('todos'); setFiltroEstado('todos');
     setFiltroEmisor('todos'); setFiltroReceptor('todos');
     setFiltroMes('todos'); setFiltroDesde(''); setFiltroHasta('');
@@ -1482,13 +1526,16 @@ function MovimientosContablesPage({ showToast }) {
   const openNuevo = () => {
     if (!companiesActivas.length) { showToast('Crea primero una empresa', 'red'); return; }
     setForm({
-      company_id: companiesActivas[0].id,
+      // Dentro de una obra, el emisor por defecto es su titular contable (y la
+      // vinculación, esa obra): así el movimiento nuevo nace en el ámbito que
+      // el usuario está mirando y no desaparece de la lista al guardarlo.
+      company_id: (enObra && titularObraId) ? titularObraId : companiesActivas[0].id,
       // Fecha LOCAL (Lima): toISOString es UTC y desde las 19:00 pre-llenaba mañana.
       date: window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0,10),
       clase: 'compra',          // explícito: la mayoría de su flujo son compras
       type: 'cost',
       clasificacion_manual: '',   // '' = automático (manda la vinculación)
-      obra_id: '',
+      obra_id: obraDelWorkspace?.id || '',
       category: '',
       cuenta_pcge: '',
       description: '',
@@ -2287,21 +2334,52 @@ function MovimientosContablesPage({ showToast }) {
           )}
         </div>
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(175px, 1fr))', gap:10, marginTop:10 }}>
-          <div>
-            <label className="flabel">🏗 Obra</label>
-            <select className="fi" value={filtroObraSel} onChange={e=>setFiltroObraSel(e.target.value)} style={{ width:'100%' }}
-              title="Filtrar por OBRA — se combina con el filtro de empresa">
-              <option value="todas">Todas las obras</option>
-              {obrasParaSelector.map(o => <option key={o.id} value={o.id}>{o.nombre_obra}</option>)}
-            </select>
-          </div>
+          {/* Dentro del workspace de un trabajo (tanda 2, entrega B) la obra NO
+              se elige: es el ámbito de la pantalla. Y la empresa se acota a las
+              que tienen movimientos en ESA obra — no a las 16 del grupo. */}
+          {enObra && obraDelWorkspace ? (
+            <div>
+              <label className="flabel">🏗 Obra</label>
+              <div className="fi" style={{ width:'100%', display:'flex', alignItems:'center', gap:6, background:'var(--tint-neutral)', cursor:'default', overflow:'hidden' }}
+                title={obraDelWorkspace.nombre_obra}>
+                <span style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', fontWeight:600 }}>
+                  {obraDelWorkspace.nombre_obra}
+                </span>
+              </div>
+              <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:3 }}>
+                Estás dentro de este trabajo.{' '}
+                <button className="btn btn-ghost btn-xs" onClick={()=>window.__navTo?.('movimientos-contables','general')}
+                  title="Salir del ámbito de la obra y ver los movimientos de todas">
+                  Ver todas las obras →
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <label className="flabel">🏗 Obra</label>
+              <select className="fi" value={filtroObraSel} onChange={e=>setFiltroObraSel(e.target.value)} style={{ width:'100%' }}
+                title="Filtrar por OBRA — se combina con el filtro de empresa">
+                <option value="todas">Todas las obras</option>
+                {obrasParaSelector.map(o => <option key={o.id} value={o.id}>{o.nombre_obra}</option>)}
+              </select>
+            </div>
+          )}
           <div>
             <label className="flabel">🏢 Empresa del grupo</label>
             <select className="fi" value={filtroEmpresaSel} onChange={e=>setFiltroEmpresaSel(e.target.value)} style={{ width:'100%' }}
-              title="Filtrar por EMPRESA del grupo — se combina con el filtro de obra">
-              <option value="todas">Todas las empresas</option>
-              {companiesActivas.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              title={enObra && obraDelWorkspace
+                ? 'Las empresas del grupo que tienen movimientos en esta obra. El titular contable es quien lleva sus libros; las demás le facturan (cadena intercompany).'
+                : 'Filtrar por EMPRESA del grupo — se combina con el filtro de obra'}>
+              <option value="todas">{enObra && obraDelWorkspace ? 'Todas las de esta obra' : 'Todas las empresas'}</option>
+              {(enObra && obraDelWorkspace ? empresasDeLaObra : companiesActivas).map(c => (
+                <option key={c.id} value={c.id}>{c.name}{c.id === titularObraId ? ' · titular contable' : ''}</option>
+              ))}
             </select>
+            {enObra && movsTitular && movsTitular.otras > 0 && (
+              <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:3, lineHeight:1.4 }}>
+                {movsTitular.titular} de {movsTitular.total} a nombre del titular; {movsTitular.otras} de otras empresas del grupo (cadena intercompany).
+              </div>
+            )}
           </div>
           <div>
             <label className="flabel">📅 Período</label>
@@ -5023,7 +5101,13 @@ function TrazabilidadPage({ showToast }) {
     return cid ? (companies?.find(c => c.id === cid) || null) : null;
   }, [obraActiva, companies, consorciosTz]);
 
-  const sorted = uMC(() => [...(cadenas || [])].sort((a,b) => (b.fecha || '').localeCompare(a.fecha || '')), [cadenas]);
+  // La cadena A→B→ejecutora es DE UNA OBRA, no del grupo (tanda 2, entrega B):
+  // esta pantalla dejó el bloque general de contabilidad y vive dentro del
+  // trabajo. Por eso solo lista las cadenas de la obra activa — mezclarlas
+  // volvía a plantear "la cadena de qué obra estoy mirando".
+  const sorted = uMC(() => (cadenas || [])
+    .filter(c => !obraActivaId || c.obra_id === obraActivaId)
+    .sort((a,b) => (b.fecha || '').localeCompare(a.fecha || '')), [cadenas, obraActivaId]);
 
   // ── Cálculos por cadena ──────────────────────────────────────
   const calcular = (c) => {
@@ -5471,10 +5555,14 @@ function TrazabilidadPage({ showToast }) {
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div>
-          <div className="pg-title">Trazabilidad de Cadenas</div>
-          <div className="pg-sub">{sorted.length} cadenas · proveedor externo → empresas del grupo → ejecutora · vs presupuesto</div>
+          <div className="pg-title">Cadenas Intercompany</div>
+          <div className="pg-sub">
+            {sorted.length} cadena{sorted.length === 1 ? '' : 's'} · proveedor externo → empresas del grupo → ejecutora · vs presupuesto
+            {obraActiva && <> · <strong style={{ color:'var(--ts)' }}>{obraActiva.nombre_obra}</strong></>}
+          </div>
         </div>
-        <button className="btn btn-amber btn-sm" onClick={openNueva}>
+        <button className="btn btn-amber btn-sm" onClick={openNueva} disabled={!obraActiva}
+          title={obraActiva ? 'Registrar una cadena de esta obra' : 'Entrá a un trabajo para registrar su cadena'}>
           <JxIcon name="plus" size={13}/>Nueva Cadena
         </button>
       </div>
@@ -5515,9 +5603,12 @@ function TrazabilidadPage({ showToast }) {
         <div className="card card-p empty-state">
           <JxIcon name="compare" size={40} color="var(--tm)"/>
           <p style={{ maxWidth:560 }}>
-            No hay cadenas registradas todavía.<br/>
-            Creá la primera para trazar el flujo de un material o servicio desde el proveedor externo hasta la empresa ejecutora,
-            pasando por todas las empresas intermedias de tu grupo. Útil para presupuestos donde la ganancia debe quedar distribuida.
+            {obraActiva
+              ? <>No hay cadenas registradas en <strong>{obraActiva.nombre_obra}</strong>.<br/>
+                 Creá la primera para trazar el flujo de un material o servicio desde el proveedor externo hasta
+                 la ejecutora de esta obra, pasando por las empresas intermedias del grupo. Es lo que sustenta el
+                 recorrido de la plata ante una fiscalización.</>
+              : <>Esta pantalla trabaja sobre UNA obra: entrá a un trabajo desde la lista de Trabajos y volvé acá.</>}
           </p>
         </div>
       ) : (

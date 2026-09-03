@@ -1244,6 +1244,10 @@ window.__moduleIdMap = {
   'importar': 'Importar',
   'captura-magica': 'Captura Mágica',
   // Items SIN restricción (utilities visibles para todos):
+  // El PANEL DEL TRABAJO (tanda 2, entrega B) es un lanzador dentro de la obra:
+  // no muestra ninguna sección que el rol no pueda abrir, y sus tarjetas
+  // sensibles (ficha contable, equipo) están gateadas dentro del componente.
+  'panel-obra': null,
   'dashboard': null,
   'busqueda': null,
   'configuracion': null, // tabs internas se filtran solas
@@ -1337,6 +1341,12 @@ window.__canSeeSidebarItem = function(rol, itemId) {
   // El INICIO (launcher de 2 planos) es seguro para todos los roles — no muestra
   // datos, solo deriva a las secciones que cada rol sí puede ver.
   if (itemId === 'inicio') return true;
+  // PANEL DEL TRABAJO: el "inicio" de una obra (tanda 2, entrega B). Va ANTES de
+  // las allowlists exclusivas (ingeniero/residente/ayudante/…) porque si no,
+  // esos roles entraban a la obra y caían en "Sin acceso" en su propia pantalla
+  // de aterrizaje. Como el Inicio, solo deriva: cada tarjeta lista únicamente
+  // las secciones que ESE rol puede abrir.
+  if (itemId === 'panel-obra') return !!rol;
   // SOLICITUDES: cualquier rol que crea solicitudes de cambio (almacenera,
   // ingeniero, etc.) debe poder ver "Mis Solicitudes" para editarlas/anularlas
   // — antes ni sabían qué habían pedido. La pestaña "Pendientes de Revisión"

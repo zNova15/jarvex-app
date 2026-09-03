@@ -403,12 +403,13 @@ function Header({ page, plano = 'obra', onInicio, onToggleSidebar, onLogout, pro
     configuracion:'Configuración',
     'cont-dashboard':'Dashboard Contable', 'conciliacion-insumos':'Conciliación de Insumos', empresas:'Empresas',
     'bienes-servicios':'Bienes y Servicios', trabajos:'Trabajos',
+    'panel-obra':'Panel del trabajo',
     pagos:'Pagos',
     'guias-remision':'Guías de Remisión',
     profesionales:'Registro Profesional',
     'movimientos-contables':'Movimientos Contables', intercompany:'Operaciones entre Empresas',
     consolidado:'Consolidado del Grupo',
-    trazabilidad:'Trazabilidad de Cadenas',
+    trazabilidad:'Cadenas Intercompany de la obra',
     'compras-categoria':'Compras por Categoría',
     'analisis-insumos':'Análisis de Insumos',
     'captura-campo':'Captura de Campo',
@@ -1107,7 +1108,13 @@ function App() {
   uEA(() => {
     const onNav = (e) => {
       const p = e?.detail?.page;
-      if (p && typeof p === 'string') irAPagina(p);   // resetea navPlano
+      if (!p || typeof p !== 'string') return;
+      // Los resultados de la Búsqueda Global y las alertas son CROSS-OBRA: un
+      // comprobante encontrado ahí puede ser de otra obra. Desde la entrega B,
+      // 'movimientos-contables' en plano obra queda acotado a la obra activa,
+      // así que estos saltos van explícitamente a su vista general.
+      if (p === 'movimientos-contables') { irAPagina(p, 'general'); return; }
+      irAPagina(p);   // resetea navPlano
     };
     window.addEventListener('jx_navigate', onNav);
     return () => window.removeEventListener('jx_navigate', onNav);
@@ -1210,7 +1217,10 @@ function App() {
         if (it.id && (it.plano || planoDe(it.id)) === 'obra' && (window.__canSeeSidebarItem?.(rolActual, it.id) ?? false)) { destino = it.id; break; }
       }
     }
-    irAPagina(destino || 'dashboard-gestion', 'obra');
+    // Último recurso: el PANEL DEL TRABAJO (entrega B), no 'dashboard-gestion'
+    // — ese era el callejón "Sin acceso" para los roles que no ven Avance. El
+    // panel es un lanzador: solo ofrece las secciones que el rol sí puede abrir.
+    irAPagina(destino || 'panel-obra', 'obra');
   };
   const NoAcceso = () => (
     <div className="page-wrap" style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:'60vh' }}>
@@ -1234,6 +1244,11 @@ function App() {
       // por eso no va por PAGE_REGISTRY, que solo pasa showToast.
       case 'trabajos':      return <LazyPage chunk="jx-trabajos" component="TrabajosPage" showToast={showToast}
                                      onNav={(p, plano)=>irAPagina(p, plano)} onEnterObra={entrarObra}/>;
+      // Panel del trabajo (tanda 2, entrega B): el desglose de la obra activa.
+      // Navega a secciones de los DOS planos (sus grupos son de obra; "cambiar
+      // de trabajo" y "configurar la obra" son generales) → necesita onNav.
+      case 'panel-obra':    return <LazyPage chunk="jx-trabajos" component="PanelObraPage" showToast={showToast}
+                                     onNav={(p, plano)=>irAPagina(p, plano)}/>;
       case 'dashboard':     return <DashboardPage showToast={showToast}/>;
       case 'solicitudes':   return <SolicitudesPage showToast={showToast}/>;
     }

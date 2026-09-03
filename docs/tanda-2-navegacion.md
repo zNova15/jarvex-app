@@ -79,7 +79,7 @@ mostrar solo las de la sección actual **más un acceso siempre visible para
 volver a la pantalla principal**. El mecanismo de áreas de `nav-planos.js` ya
 resuelve la mitad; falta el "volver" fijo.
 
-## 3. Entrega B — Desglose de un trabajo
+## 3. Entrega B — Desglose de un trabajo ✅ HECHA (3-sep-2026)
 
 Al entrar a una obra, sus secciones agrupadas como Gabriel las nombró:
 
@@ -93,20 +93,47 @@ CONTABILIDAD DE LA OBRA    ← nuevo: solo del consorcio que la ejecuta
 CADENAS INTERCOMPANY       ← se mueve acá desde el bloque general
 ```
 
-Dos cosas nuevas de verdad:
+Lo entregado:
 
-**B1. Contabilidad de la obra, scopeada al consorcio.** Hoy
-`MovimientosContablesPage` tiene dos selectores independientes (obra y empresa)
-que arrancan en "todas". Dentro de una obra, la empresa **no se elige**: es el
-titular contable de esa obra, que `titularContableDeObra()`
-(`src/lib/consorcio.js`) ya resuelve. Se deja de poder mirar la contabilidad de
-otra empresa desde dentro de una obra, que es justo la confusión a eliminar.
+**B0. Panel del trabajo** (`panel-obra`, en el chunk `jx-trabajos`): la pantalla
+que faltaba. Al entrar a un trabajo se ve quién lo ejecuta, quién lleva sus
+libros (titular contable + socias con su %), **el equipo designado a ese
+trabajo con su rol** y las 7 tarjetas de secciones. La pertenencia página→grupo
+vive en `src/lib/desglose-obra.js` (con tests) y la usan el panel **y** el
+sidebar: un test falla si una página del plano obra queda sin grupo, porque
+desaparecería del panel sin que nadie lo note. El sidebar del plano obra pasó
+de 11 encabezados sueltos a estos 7.
 
-**B2. Cadenas intercompany dentro de la obra.** La cadena A→B→consorcio ejecutor
-es *de una obra*, no del grupo. Hoy vive en el bloque general y **nunca se usó**
-(0 filas en `trazabilidad_cadenas`). Se rediseña acá, en el contexto donde tiene
-sentido. Las 2 funciones serverless que la asistían se borraron el 3-sep por
-eso mismo: estaban sin estrenar y se rehacen con el diseño nuevo.
+**B1. Contabilidad de la obra — CORREGIDO contra los datos reales.** El plan
+decía: dentro de una obra la empresa no se elige, es su titular contable. **Los
+datos lo desmienten.** En Miraflores, de 460 comprobantes imputados a la obra
+solo **112 están a nombre del titular** (CONSORCIO EL INCA); el resto es de
+JARVEX (133), GASOMI (85), JADE (36), JHEENSEG (34)… En San Marcos, CHUSAAC
+tiene 32 de 89. No es un error de carga: **es la cadena intercompany** — las
+empresas del grupo compran y le facturan a la ejecutora. Fijar el titular
+habría escondido 3 de cada 4 movimientos de la obra y roto el criterio de
+verificación de este mismo documento ("los totales deben coincidir con los que
+hoy da Movimientos filtrando por esa obra").
+
+Lo que se hizo en su lugar:
+- La **obra** sí deja de elegirse dentro del workspace: el selector se
+  reemplaza por un cartel con la obra activa y un enlace "Ver todas las obras →"
+  a la vista general. Esa era la confusión real a eliminar.
+- El selector de **empresa** se acota a las que tienen comprobantes en ESA obra
+  (no a las 16 del grupo), con el titular marcado como "· titular contable" y un
+  contador que dice cuántos son del titular y cuántos de las otras.
+- El panel del trabajo muestra el reparto completo por empresa. Es el número que
+  la **tanda 3** (consolidado con eliminaciones) tiene que hacer desaparecer.
+- Los saltos cross-obra (Búsqueda Global, alertas, Guías) navegan explícitamente
+  a la vista **general** de Movimientos: si no, un comprobante de otra obra
+  quedaba inalcanzable desde el workspace.
+
+**B2. Cadenas intercompany dentro de la obra.** Hecho: `trazabilidad` salió de
+`GENERAL_ITEMS` y del área de contabilidad, y vive en el workspace del trabajo
+(sección "CADENAS INTERCOMPANY"). La lista se acota a la obra activa y "Nueva
+Cadena" se deshabilita sin obra. La última empresa de la cadena sigue siendo la
+ejecutora resuelta por `titularContableDeObra()`. Las 2 funciones serverless que
+la asistían siguen borradas: se rehacen cuando haya uso real (hoy 0 filas).
 
 ## 4. Entrega C — Desglose de una empresa
 
@@ -124,10 +151,24 @@ Al entrar a una empresa del grupo:
 es donde viven.
 
 ⚠ **`personal` no tiene `company_id`** — su único scoping es `obra_id` (mig 001)
-y `UNIQUE(dni, obra_id)`. "El personal que maneja esta empresa" no se puede
-responder hoy sin una decisión de modelo: derivarlo de las obras que la empresa
-ejecuta, o agregarle la columna. **Es la única parte de esta tanda que toca el
-modelo de datos** y conviene decidirla antes de empezar la entrega C.
+y `UNIQUE(dni, obra_id)`.
+
+**DECIDIDO por Gabriel (3-sep): NO se agrega la columna.** El modelo es:
+los **usuarios de la app son globales del programa** y se **designan por rol a
+cada trabajo** (obra, supervisión, bien/servicio); la misma persona puede estar
+en varios trabajos, con roles distintos. Entonces "el personal de esta empresa"
+se **deriva**: los trabajos que la empresa ejecuta (`obras.ejecutora_company_id`,
+`consorcio_socios`, `trabajos.ejecutor_company_id`) → su gente.
+
+Estado real del esquema (verificado 3-sep): `obra_usuarios` YA tiene `rol_obra`
+con el CHECK ampliado a los 18 roles (migs 103/136), y hay 15 personas
+designadas en Miraflores y 3 en San Marcos. **Pero la UI lo mantiene igual al rol
+global**: `handleChangeRol` (jx-admin) propaga `profiles.rol` a `obra_usuarios.rol_obra`
+de todas sus obras. Para que un usuario pueda tener rol distinto por trabajo hay
+que **cortar esa propagación**, y eso toca policies de Storage que filtran por
+`rol_obra <> 'solo_lectura'` (migs 104/106): es la primera decisión de la
+entrega C, no un cambio suelto. El Panel del trabajo ya MUESTRA `rol_obra` como
+"el rol en este trabajo".
 
 ## 5. Condición no negociable (del doc original, sigue vigente)
 
@@ -169,5 +210,5 @@ rol — pero las viejas sí.
 | Entrega | Modelo | Effort | Sesión |
 |---|---|---|---|
 | **A — Flujo de entrada** | Opus 5 | alto | Esta misma. Toca `jx-inicio`, `nav-planos`, `jx-admin` y el arranque: mucho acoplamiento y una pantalla en blanco se paga caro. |
-| **B — Desglose de trabajo** | Opus 5 | alto | **Sesión nueva.** Es la más grande y la que más criterio pide (contabilidad scopeada + rediseño de cadenas). |
+| **B — Desglose de trabajo** | Opus 5 | alto | ✅ Hecha 3-sep-2026. Lección: el criterio de verificación del propio documento ("los totales deben coincidir") fue lo que detectó que B1 estaba mal planteada — vale medir los datos ANTES de escribir la pantalla, no después. |
 | **C — Desglose de empresa** | Sonnet 5 | medio | Sesión nueva, después de decidir lo de `personal.company_id`. Mayormente reagrupar lo que ya existe. |

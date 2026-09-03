@@ -27,8 +27,9 @@ import {
   TIPOS_TRABAJO, ESTADO_OBRA_LBL, ESTADO_OBRA_BADGE, normalizarEstadoObra,
   TIPO_TRABAJO_DEFAULT, ORIGEN_DEFAULT,
 } from "../lib/tipos-trabajo.js";
-import { etiquetaEjecutora } from "../lib/consorcio.js";
-const { useState: uST, useMemo: uMT, useRef: uRT } = React;
+import { etiquetaEjecutora, titularContableDeObra, sociosDeObra, esObraDeConsorcio } from "../lib/consorcio.js";
+import { gruposDelTrabajo } from "../lib/desglose-obra.js";
+const { useState: uST, useMemo: uMT, useRef: uRT, useEffect: uET } = React;
 
 const fmt = (n, moneda = 'PEN') =>
   (moneda === 'USD' ? '$ ' : 'S/ ') +
@@ -681,8 +682,9 @@ function TrabajosPage({ showToast, onNav, onEnterObra }) {
 
   const abrir = (f) => {
     if (f.kind === 'obra') {
-      // Fija la obra activa y entra a su panel: el camino que faltaba.
-      onEnterObra?.(f.id, 'inicio');
+      // Fija la obra activa y entra a su PANEL (entrega B): el desglose del
+      // trabajo, no una sección suelta del menú.
+      onEnterObra?.(f.id, 'panel-obra');
     } else {
       onNav?.('bienes-servicios');
     }
@@ -764,4 +766,327 @@ function TrabajosPage({ showToast, onNav, onEnterObra }) {
   );
 }
 
-Object.assign(window, { BienesServiciosPage, TrabajosPage });
+
+// ═══════════════════════════════════════════════════════════════════
+// PANEL DEL TRABAJO — el desglose de una obra (tanda 2, entrega B)
+//
+// Entrar a una obra mostraba el MENÚ ENTERO: 11 encabezados sueltos y ninguna
+// pantalla que dijera "esto es la obra". Este panel es esa pantalla: quién la
+// ejecuta, quién lleva sus libros, quién trabaja en ella y sus secciones
+// agrupadas en los 7 bloques que definió Gabriel (src/lib/desglose-obra.js).
+//
+// LO QUE APRENDIMOS DE LOS DATOS AL CONSTRUIRLO (3-sep): los movimientos de
+// una obra NO están todos a nombre de su titular contable. En Miraflores el
+// CONSORCIO EL INCA (titular) tiene 112 de 460; el resto está a nombre de
+// JARVEX, GASOMI, JADE, JHEENSEG… — es la cadena intercompany, no un error.
+// Por eso el panel MUESTRA ese reparto en vez de esconderlo: es el número que
+// la tanda 3 (consolidado con eliminaciones) tiene que hacer desaparecer.
+//
+// El panel es un LANZADOR: no muestra nada que la sección de destino no le
+// deje ver al rol. Las tarjetas sensibles (ficha contable, equipo) van
+// gateadas con el MISMO helper del sidebar.
+// ═══════════════════════════════════════════════════════════════════
+
+const ROL_OBRA_LBL = {
+  admin: 'Administrador', gerente: 'Gerente', contador: 'Contador Jefe',
+  ayudante_contador: 'Ayudante de Contabilidad', tesorero: 'Tesorería',
+  ingeniero_residente: 'Ing. Residente', ingeniero: 'Ing. de Frente',
+  supervisor: 'Supervisor', almacenero: 'Almacén', asistente_admin: 'Asist. Administración',
+  jefe_compras: 'Jefe de Compras', rrhh: 'RR.HH.', maestro_obra: 'Maestro de Obra',
+  prevencionista: 'Ing. de Seguridad', ing_ambiental: 'Ing. Ambiental',
+  ing_calidad: 'Ing. de Calidad', ing_social: 'Ing. Social',
+  licitaciones: 'Licitaciones', solo_lectura: 'Solo lectura', campo: 'Portal de campo',
+};
+
+function GrupoCard({ grupo, onAbrir }) {
+  const [verTodo, setVerTodo] = uST(false);
+  const MAX = 7;
+  const visibles = verTodo ? grupo.paginas : grupo.paginas.slice(0, MAX);
+  const ocultos = grupo.paginas.length - MAX;
+  return (
+    <div className="card card-p" style={{ border: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ width: 36, height: 36, borderRadius: 9, background: `color-mix(in srgb, ${grupo.color} 12%, transparent)`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <JxIcon name={grupo.icon} size={17} color={grupo.color}/>
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--tp)' }}>{grupo.titulo}</div>
+          <div style={{ fontSize: 10.5, color: 'var(--tm)', lineHeight: 1.3 }}>{grupo.desc}</div>
+        </div>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+        {visibles.map(pg => (
+          <button key={pg.id} type="button" onClick={() => onAbrir(pg.id)} title={pg.label}
+            style={{ display: 'flex', alignItems: 'center', gap: 7, background: 'none', border: 'none', cursor: 'pointer', padding: '4px 6px', borderRadius: 6, textAlign: 'left', color: 'var(--ts)', fontSize: 12 }}
+            onMouseEnter={e => { e.currentTarget.style.background = `color-mix(in srgb, ${grupo.color} 8%, transparent)`; e.currentTarget.style.color = 'var(--tp)'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--ts)'; }}>
+            <JxIcon name={pg.icon} size={13} color={grupo.color}/>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pg.label}</span>
+          </button>
+        ))}
+        {ocultos > 0 && (
+          <button type="button" onClick={() => setVerTodo(v => !v)}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px 6px', textAlign: 'left', color: 'var(--tm)', fontSize: 11.5, fontWeight: 600 }}>
+            {verTodo ? '▴ Ver menos' : `+${ocultos} más ▾`}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PanelObraPage({ showToast, onNav }) {
+  const { data: obras } = window.__hooks.useObras?.() || { data: [] };
+  const { data: companies } = window.__hooks.useCompanies?.() || { data: [] };
+  const { data: consorcios } = window.__hooks.useConsorcios?.() || { data: [] };
+  const { data: consorcioSocios } = window.__hooks.useConsorcioSocios?.() || { data: [] };
+  const { data: movs } = window.__hooks.useAccountingMovements?.() || { data: [] };
+
+  const auth = window.__useAuth?.();
+  const rol = auth?.profile?.rol;
+  // El MISMO gate del sidebar y del route-guard: el panel nunca ofrece una
+  // sección que después muera en "Sin acceso".
+  const canSee = (id) => rol === 'admin' ? true : (window.__canSeeSidebarItem?.(rol, id) ?? false);
+
+  const obraId = uMT(() => { try { return window.__getObraActivaId?.() || null; } catch { return null; } }, [obras]);
+  const obra = uMT(() => (obras || []).find(o => o.id === obraId && !o.deleted_at) || null, [obras, obraId]);
+
+  const lookupCompany = (id) => (companies || []).find(c => c.id === id);
+  const titularId = uMT(() => titularContableDeObra(obra, consorcios), [obra, consorcios]);
+  const socios = uMT(() => sociosDeObra(obra, consorcios, consorcioSocios), [obra, consorcios, consorcioSocios]);
+  const esConsorcio = uMT(() => esObraDeConsorcio(obra, consorcios), [obra, consorcios]);
+
+  // ── Contabilidad de la obra: cuánto hay y a nombre de quién ──
+  // Solo soles: mezclarlo con dólares daría un total que no es plata de nadie.
+  const conta = uMT(() => {
+    const mios = (movs || []).filter(m => !m.deleted_at && m.obra_id === obraId);
+    const porEmpresa = new Map();
+    let ingresos = 0, egresos = 0, enUsd = 0;
+    for (const m of mios) {
+      const enSoles = (m.currency || 'PEN') === 'PEN';
+      if (!enSoles) { enUsd++; }
+      const monto = enSoles ? Number(m.amount || 0) : 0;
+      const esVenta = (m.clase || (m.type === 'income' ? 'venta' : 'compra')) === 'venta';
+      if (esVenta) ingresos += monto; else egresos += monto;
+      const k = m.company_id || '_sin_';
+      const r = porEmpresa.get(k) || { company_id: m.company_id || null, movs: 0, monto: 0 };
+      r.movs++; r.monto += monto;
+      porEmpresa.set(k, r);
+    }
+    const filas = [...porEmpresa.values()].sort((a, b) => b.monto - a.monto);
+    const delTitular = filas.find(f => f.company_id === titularId);
+    return {
+      total: mios.length, ingresos, egresos, enUsd, filas,
+      movsTitular: delTitular?.movs || 0,
+      movsOtras: mios.length - (delTitular?.movs || 0),
+    };
+  }, [movs, obraId, titularId]);
+
+  // ── Equipo del trabajo (obra_usuarios) ──
+  // El modelo que confirmó Gabriel: los usuarios son GLOBALES del programa y se
+  // designan por rol a cada trabajo — la misma persona puede estar en varias
+  // obras. `rol_obra` es el rol EN ESTE TRABAJO (hoy la UI de Usuarios lo
+  // mantiene igual al rol global; separarlos es una decisión de la entrega C).
+  // obra_usuarios NO se sincroniza a Dexie: se consulta directo a Supabase.
+  const [equipo, setEquipo] = uST(null);   // null = cargando
+  uET(() => {
+    let cancel = false;
+    (async () => {
+      const sb = window.__supabase;
+      if (!sb || !obraId) { if (!cancel) setEquipo([]); return; }
+      try {
+        const { data, error } = await sb.from('obra_usuarios')
+          .select('usuario_id, rol_obra, profiles:usuario_id(nombres, apellidos, email, rol)')
+          .eq('obra_id', obraId).eq('activo', true);
+        if (cancel) return;
+        if (error) { setEquipo([]); return; }
+        setEquipo((data || []).map(r => ({
+          id: r.usuario_id,
+          nombre: `${r.profiles?.nombres || ''} ${r.profiles?.apellidos || ''}`.trim() || r.profiles?.email || '—',
+          rolTrabajo: r.rol_obra || r.profiles?.rol || null,
+          rolGlobal: r.profiles?.rol || null,
+        })).sort((a, b) => String(a.rolTrabajo).localeCompare(String(b.rolTrabajo)) || a.nombre.localeCompare(b.nombre)));
+      } catch { if (!cancel) setEquipo([]); }
+    })();
+    return () => { cancel = true; };
+  }, [obraId]);
+
+  // Labels/íconos del menú real: una sola fuente de verdad con el sidebar.
+  const navInfo = uMT(() => {
+    const m = new Map();
+    for (const it of (window.NAV || [])) {
+      if (it.id) m.set(it.id, { label: String(it.label || it.id).replace(/^✨\s*/, ''), icon: it.icon });
+    }
+    return m;
+  }, []);
+  const grupos = uMT(() => gruposDelTrabajo({ canSee, info: (id) => navInfo.get(id) }), [navInfo, rol]);
+
+  // Las páginas del desglose son todas del plano OBRA (movimientos-contables es
+  // dual: acá SIEMPRE su vista de obra).
+  const abrir = (pageId) => onNav?.(pageId, 'obra');
+
+  const verFicha = canSee('empresas') || canSee('movimientos-contables');
+  const verEquipo = canSee('usuarios') || canSee('personal');
+
+  if (!obra) {
+    return (
+      <div className="page-wrap">
+        <div className="card card-p empty-state">
+          <JxIcon name="hardHat" size={40} color="var(--tm)"/>
+          <p>No hay un trabajo activo. Elegí uno desde la lista de Trabajos.</p>
+          <button className="btn btn-amber btn-sm" onClick={() => onNav?.('trabajos', 'general')}>
+            Ver todos los trabajos
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const tipoLbl = TIPOS_TRABAJO.find(t => t.v === (obra.tipo_trabajo || TIPO_TRABAJO_DEFAULT))?.label || '—';
+  const estado = normalizarEstadoObra(obra.estado);
+  const chip = (label, valor, color) => (
+    <div className="card card-p" style={{ padding: '10px 12px', border: '1px solid var(--border)', minWidth: 150 }}>
+      <div style={{ fontSize: 10, color: 'var(--tm)', fontWeight: 700, letterSpacing: '.06em' }}>{label}</div>
+      <div style={{ fontSize: 15, fontWeight: 700, color: color || 'var(--tp)', marginTop: 2 }}>{valor}</div>
+    </div>
+  );
+
+  return (
+    <div className="page-wrap">
+      <div className="pg-hd">
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginBottom: 4 }}>
+          <span className="badge b-gray" style={{ fontSize: 9.5 }}>{tipoLbl}</span>
+          <span className="badge b-gray" style={{ fontSize: 9.5 }}>{(obra.origen || ORIGEN_DEFAULT) === 'publico' ? 'Pública' : 'Privada'}</span>
+          <span className={`badge ${ESTADO_OBRA_BADGE[estado] || 'b-gray'}`} style={{ fontSize: 9.5 }}>{ESTADO_OBRA_LBL[estado]}</span>
+        </div>
+        <div className="pg-title" style={{ lineHeight: 1.3 }}>{obra.nombre_obra || '(trabajo sin nombre)'}</div>
+        <div className="pg-sub">
+          {[obra.cliente, obra.ubicacion].filter(Boolean).join(' · ') || 'Sin cliente ni ubicación cargados'}
+        </div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+          <button className="btn btn-ghost btn-sm" onClick={() => onNav?.('trabajos', 'general')}>
+            <JxIcon name="chevL" size={12}/> Cambiar de trabajo
+          </button>
+          {canSee('obras') && (
+            <button className="btn btn-ghost btn-sm" onClick={() => onNav?.('obras', 'general')}>
+              <JxIcon name="settings" size={12}/> Configurar esta obra
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* ── DE UN VISTAZO ── */}
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 18 }}>
+        {chip('AVANCE FÍSICO', `${Number(obra.avance_fisico || 0).toFixed(1)}%`, 'var(--blue)')}
+        {chip('PLAZO', obra.fecha_inicio ? `${obra.fecha_inicio}${obra.fecha_fin_estimada ? ' → ' + obra.fecha_fin_estimada : ''}` : 'Sin fechas')}
+        {verFicha && chip('COMPROBANTES', `${conta.total}`, 'var(--amber)')}
+        {verFicha && chip('EGRESOS (S/)', fmt(conta.egresos), 'var(--tp)')}
+        {verEquipo && chip('EQUIPO', equipo === null ? '…' : `${equipo.length}`, 'var(--purple)')}
+      </div>
+
+      {/* ── QUIÉN EJECUTA Y QUIÉN LLEVA LOS LIBROS ── */}
+      {verFicha && (
+        <div className="card card-p" style={{ marginBottom: 18, border: '1px solid var(--border)' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)', marginBottom: 8 }}>
+            QUIÉN EJECUTA ESTE TRABAJO
+          </div>
+          <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--tp)' }}>
+            {etiquetaEjecutora(obra, consorcios, consorcioSocios, lookupCompany)}
+          </div>
+          <div style={{ fontSize: 11.5, color: 'var(--tm)', marginTop: 4 }}>
+            Titular contable: <strong style={{ color: 'var(--ts)' }}>{lookupCompany(titularId)?.name || '— sin asignar —'}</strong>
+            {esConsorcio && ' · es el consorcio quien factura y lleva los libros, no sus socias'}
+          </div>
+          {socios.length > 0 && (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+              {socios.map((s, i) => (
+                <span key={s.company_id || i} className="badge b-gray" style={{ fontSize: 10.5 }}>
+                  {lookupCompany(s.company_id)?.name || '—'} · {Number(s.participacion_pct || 0)}%{s.es_lider ? ' · líder' : ''}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* El reparto real de la contabilidad de la obra entre las empresas
+              del grupo. No se esconde: es la cadena intercompany en números. */}
+          {conta.filas.length > 0 && (
+            <div style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)', marginBottom: 6 }}>
+                CONTABILIDAD DE LA OBRA · a nombre de quién está
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                {conta.filas.slice(0, 6).map((f, i) => (
+                  <div key={f.company_id || i} style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 12 }}>
+                    <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--ts)' }}>
+                      {lookupCompany(f.company_id)?.name || 'Sin empresa'}
+                      {f.company_id === titularId && <span className="badge b-amber" style={{ fontSize: 9, marginLeft: 6 }}>titular</span>}
+                    </span>
+                    <span style={{ color: 'var(--tm)', fontSize: 11 }}>{f.movs} mov.</span>
+                    <span style={{ fontWeight: 600, color: 'var(--tp)' }}>{fmt(f.monto)}</span>
+                  </div>
+                ))}
+              </div>
+              {conta.movsOtras > 0 && (
+                <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 8, lineHeight: 1.5 }}>
+                  {conta.movsOtras} de {conta.total} comprobantes están a nombre de OTRAS empresas del grupo, no del titular.
+                  Eso es la cadena intercompany: las empresas compran y le cargan a la ejecutora.
+                  {canSee('trazabilidad') && (
+                    <button className="btn btn-ghost btn-xs" style={{ marginLeft: 6 }} onClick={() => abrir('trazabilidad')}>
+                      Ver cadenas →
+                    </button>
+                  )}
+                </div>
+              )}
+              {conta.enUsd > 0 && (
+                <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 4 }}>
+                  {conta.enUsd} comprobante(s) en dólares no suman en estos totales (solo S/).
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── EQUIPO DEL TRABAJO ── */}
+      {verEquipo && equipo !== null && equipo.length > 0 && (
+        <div className="card card-p" style={{ marginBottom: 18, border: '1px solid var(--border)' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)', marginBottom: 8 }}>
+            EQUIPO DE ESTE TRABAJO <span style={{ fontWeight: 400, letterSpacing: 0 }}>· {equipo.length} persona(s) designada(s)</span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', gap: 6 }}>
+            {equipo.map(u => (
+              <div key={u.id} style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 12 }}>
+                <span style={{ color: 'var(--ts)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.nombre}</span>
+                <span className="badge b-gray" style={{ fontSize: 9.5, marginLeft: 'auto' }}>
+                  {ROL_OBRA_LBL[u.rolTrabajo] || u.rolTrabajo || '—'}
+                </span>
+              </div>
+            ))}
+          </div>
+          {canSee('usuarios') && (
+            <button className="btn btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={() => onNav?.('usuarios', 'general')}>
+              Designar o quitar gente →
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* ── LAS SECCIONES DEL TRABAJO ── */}
+      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)', margin: '6px 0 10px' }}>
+        SECCIONES DE ESTE TRABAJO
+      </div>
+      {grupos.length === 0 ? (
+        <div className="card card-p empty-state">
+          <JxIcon name="lock" size={32} color="var(--tm)"/>
+          <p>Tu rol no tiene secciones habilitadas dentro de un trabajo.</p>
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: 12 }}>
+          {grupos.map(g => <GrupoCard key={g.id} grupo={g} onAbrir={abrir}/>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+Object.assign(window, { BienesServiciosPage, TrabajosPage, PanelObraPage });

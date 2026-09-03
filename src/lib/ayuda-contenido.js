@@ -223,6 +223,8 @@ const AYUDA = {
     titulo: 'Movimientos Contables',
     que: 'Todas las compras y ventas del grupo: facturas, estados de pago y bancarizaciones.',
     como: [
+      'DÓNDE ESTÁS PARADO (3-sep): esta pantalla tiene DOS vistas. Dentro de un trabajo ("Movimientos de esta obra") la OBRA ya no se elige — es la del workspace — y el desplegable de empresa muestra solo las que tienen comprobantes en esa obra, con el titular contable marcado. La vista general ("Movimientos (todas / por obra)", en Contabilidad) mantiene los dos desplegables libres; el enlace "Ver todas las obras →" te lleva de una a la otra.',
+      'ES NORMAL que la mayoría de los comprobantes de una obra NO estén a nombre de su titular: las empresas del grupo compran y le facturan a la ejecutora (cadena intercompany). El contador arriba del desplegable te dice cuántos son del titular y cuántos de las otras.',
       'FILTROS con etiqueta (31-ago): la barra es una grilla donde cada desplegable dice qué filtra — Obra, Empresa, Período, Compra/Venta, Clasificación, TIPO DE COMPROBANTE (factura, boleta, nota de crédito, recibo… y "Con guía vinculada"), Estado de pago, BANCARIZACIÓN (necesita y no tiene / necesita y tiene / no necesita) y Emisor/Receptor. Todos se combinan; "✕ Limpiar filtros" vuelve a ver todo.',
       'GUÍA EN LA FILA: si el comprobante tiene guía de remisión vinculada, el chip 📄 abre su PDF al toque si la guía tiene el archivo adjunto (roles contables); si no lo tiene o no hay señal, lleva a la página Guías. El botón ↗ va directo a esa página. Así desde la misma fila ves comprobante (👁), pago/bancarización, detracción y guía.',
       'FACTURAS INTERCO: también se les puede pedir "Solicitar cambio", pero SOLO la VINCULACIÓN (obra/destino) o un pedido descriptivo — monto, fecha, estado de pago y eliminación se cambian desde "Operaciones entre empresas" (tocar un solo lado rompería el par). Al aprobarse la vinculación, el cambio se aplica a la factura Y a su compra espejo automática.',
@@ -270,6 +272,18 @@ const AYUDA = {
     'COSTOS vs GASTOS (31-ago): la tarjeta "Gastos" dejó de estar en cero. Los comprobantes vinculados a "Gastos Generales de la Empresa" ahora cuentan como GASTO y salieron de "Costos" — la suma Costos + Gastos y la utilidad NO cambian, cambia el reparto entre las dos tarjetas.',
     'INGRESOS SIN SUSTENTO: cuando almacén registra un material sin factura, aparece acá para vincularlo. Al tocar "Vincular factura", arriba salen las 🎯 SUGERENCIAS: las facturas que CUADRAN con ese ingreso (mismo insumo, fecha cercana, cantidad parecida) con su % de coincidencia, el ítem exacto de la factura y el porqué — elegí la correcta con un click y el ítem queda marcado como recibido. Abajo está el resto de facturas del proveedor (con sus ítems visibles) para elegir a mano si ninguna sugerencia aplica.',
   ] },
+  'panel-obra': {
+    titulo: 'Panel del trabajo',
+    que: 'La pantalla de UNA obra: quién la ejecuta, quién lleva sus libros, quién trabaja en ella y todas sus secciones agrupadas en 7 bloques.',
+    como: [
+      'Es el aterrizaje al entrar a un trabajo desde Trabajos. Antes entrabas directo a una sección suelta y el menú te mostraba las 11 áreas de golpe.',
+      'Los bloques son Almacén, Logística, Gestión de obra, Personal y subcontratos, Secciones especiales, Contabilidad de la obra y Cadenas intercompany. Solo ves los que tu rol puede abrir.',
+      'QUIÉN EJECUTA: si es un consorcio, el titular contable es el consorcio (el que factura y lleva los libros), y abajo salen sus socias con su porcentaje.',
+      'CONTABILIDAD DE LA OBRA: el reparto de los comprobantes por empresa. Es normal que la mayoría NO esté a nombre del titular — es la cadena intercompany (las empresas del grupo compran y le cargan a la ejecutora). El botón te lleva a las cadenas.',
+      'EQUIPO: la gente designada a este trabajo con su rol acá. Los usuarios son globales del programa y se designan por trabajo; se agregan y se quitan desde Usuarios.',
+      '"Cambiar de trabajo" vuelve a la lista; "Configurar esta obra" abre su ficha editable (cliente, plazos, ejecutora).',
+    ],
+  },
   'trabajos': {
     titulo: 'Trabajos',
     que: 'Todo lo que el grupo está haciendo, junto: obras, obras con expediente técnico, supervisiones y bienes/servicios. Es el punto de entrada al trabajo diario.',
@@ -308,7 +322,16 @@ const AYUDA = {
     ],
   },
   'intercompany': { titulo: 'Operaciones entre Empresas', que: 'Las operaciones INTERCO: ventas/compras entre empresas del propio grupo.', como: ['Editá los movimientos INTERCO desde acá (en Movimientos aparecen bloqueados).'] },
-  'trazabilidad': { titulo: 'Trazabilidad de Cadenas', que: 'Sigue la cadena de un insumo o dinero a través de las empresas del grupo.', como: ['Útil para sustentar el recorrido proveedor → interco → obra.'] },
+  'trazabilidad': {
+    titulo: 'Cadenas Intercompany de la obra',
+    que: 'La cadena de un insumo o de la plata a través de las empresas del grupo hasta la ejecutora de ESTA obra: proveedor → empresa(s) del grupo → ejecutora.',
+    como: [
+      'La cadena es DE UNA OBRA, no del grupo: desde 3-sep vive dentro del trabajo (antes estaba en el bloque general de contabilidad y nunca se usó). Muestra solo las cadenas de la obra activa.',
+      'La ÚLTIMA empresa de la cadena es siempre la ejecutora de la obra — en obra de consorcio, el consorcio (su titular contable), no una socia. No se elige a mano.',
+      'Cargá los ítems con su precio real (lo que costó al proveedor) y su precio referencial de contrato; los eslabones intermedios llevan el precio con el que cada empresa factura a la siguiente.',
+      'El resumen te dice cuánto quedó en el grupo y cuánto aparenta ganar la ejecutora. Sirve para sustentar el recorrido ante una fiscalización.',
+    ],
+  },
   'compras-categoria': { titulo: 'Compras por Categoría', que: 'Las compras agrupadas por categoría de gasto.', como: ['Sirve para ver en qué se va la plata por rubro y por periodo.'] },
   'ordenes-intercompany': { titulo: 'Órdenes Intercompany', que: 'Órdenes de venta/compra entre empresas del grupo.', como: ['Generalas para respaldar el flujo INTERCO antes de facturar.'] },
   'consolidado': { titulo: 'Consolidado', que: 'Los números del grupo consolidados (eliminando el efecto INTERCO).', como: ['Es la vista "de verdad" del grupo: sin dobles conteos entre empresas.'] },

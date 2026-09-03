@@ -250,7 +250,7 @@ function GuiasRemisionPage({ showToast }) {
     const mov = facturasDeGuia(g)[0];
     // Movimientos filtra por búsqueda: pasamos el número de documento.
     window.__movsBuscarIntent = mov?.document_number || g.doc_referencia || '';
-    window.__navTo?.('movimientos-contables');
+    window.__navTo?.('movimientos-contables', 'general');
   };
 
   const abrirEvidencia = async (g) => {
@@ -475,7 +475,7 @@ function GuiasRemisionPage({ showToast }) {
             {parciales.slice(0, 25).map(({ mov, cobertura }) => (
               <div key={mov.id} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap', paddingBottom: 5, borderBottom: '1px solid var(--border)' }}>
                 <button className="btn btn-ghost btn-xs" title="Ir a la factura en Movimientos Contables"
-                  onClick={() => { window.__movsBuscarIntent = mov.document_number || ''; window.__navTo?.('movimientos-contables'); }}>
+                  onClick={() => { window.__movsBuscarIntent = mov.document_number || ''; window.__navTo?.('movimientos-contables', 'general'); }}>
                   🧾 {mov.document_number || 'factura'}
                 </button>
                 <span style={{ fontSize: 10.5, color: 'var(--tm)' }}>{mov.third_party_name || ''} {mov.date ? `· ${mov.date}` : ''}</span>
