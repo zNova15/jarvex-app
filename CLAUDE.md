@@ -82,7 +82,7 @@ git checkout staging                    # volver a staging
 - `src/db/jarvex.db.js` — esquema Dexie (versionado `db.version(N)`).
 - `src/sync/SyncEngine.js` — push/pull contra Supabase.
 - `src/hooks/useOfflineData.js` — hooks de datos offline-first.
-- `api/*.js` — funciones serverless de Vercel (**límite 12/12 en plan Hobby**).
+- `api/*.js` — funciones serverless de Vercel (8 en uso; ver abajo).
 - `supabase/migrations/` — migraciones SQL numeradas.
 - `scripts/` — utilidades Node (backups, google-drive [referencia], n8n, reporte-email).
 - `tests/` — e2e (Playwright); los unit tests van junto a cada lib.
