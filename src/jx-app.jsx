@@ -402,7 +402,7 @@ function Header({ page, plano = 'obra', onInicio, onToggleSidebar, onLogout, pro
     costos:'Costos',incidencias:'Incidencias',usuarios:'Usuarios',roles:'Roles y Permisos',
     configuracion:'Configuración',
     'cont-dashboard':'Dashboard Contable', 'conciliacion-insumos':'Conciliación de Insumos', empresas:'Empresas',
-    'bienes-servicios':'Bienes y Servicios',
+    'bienes-servicios':'Bienes y Servicios', trabajos:'Trabajos',
     pagos:'Pagos',
     'guias-remision':'Guías de Remisión',
     profesionales:'Registro Profesional',
@@ -1230,6 +1230,10 @@ function App() {
     // Las páginas de almacén ahora son lazy (PAGE_REGISTRY abajo).
     switch(page) {
       case 'inicio':        return <window.InicioPage onNav={(p, plano)=>irAPagina(p, plano)} onEnterObra={entrarObra}/>;
+      // Trabajos necesita navegar Y fijar la obra activa, igual que Inicio:
+      // por eso no va por PAGE_REGISTRY, que solo pasa showToast.
+      case 'trabajos':      return <LazyPage chunk="jx-trabajos" component="TrabajosPage" showToast={showToast}
+                                     onNav={(p, plano)=>irAPagina(p, plano)} onEnterObra={entrarObra}/>;
       case 'dashboard':     return <DashboardPage showToast={showToast}/>;
       case 'solicitudes':   return <SolicitudesPage showToast={showToast}/>;
     }

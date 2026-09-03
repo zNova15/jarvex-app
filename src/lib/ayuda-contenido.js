@@ -270,6 +270,17 @@ const AYUDA = {
     'COSTOS vs GASTOS (31-ago): la tarjeta "Gastos" dejó de estar en cero. Los comprobantes vinculados a "Gastos Generales de la Empresa" ahora cuentan como GASTO y salieron de "Costos" — la suma Costos + Gastos y la utilidad NO cambian, cambia el reparto entre las dos tarjetas.',
     'INGRESOS SIN SUSTENTO: cuando almacén registra un material sin factura, aparece acá para vincularlo. Al tocar "Vincular factura", arriba salen las 🎯 SUGERENCIAS: las facturas que CUADRAN con ese ingreso (mismo insumo, fecha cercana, cantidad parecida) con su % de coincidencia, el ítem exacto de la factura y el porqué — elegí la correcta con un click y el ítem queda marcado como recibido. Abajo está el resto de facturas del proveedor (con sus ítems visibles) para elegir a mano si ninguna sugerencia aplica.',
   ] },
+  'trabajos': {
+    titulo: 'Trabajos',
+    que: 'Todo lo que el grupo está haciendo, junto: obras, obras con expediente técnico, supervisiones y bienes/servicios. Es el punto de entrada al trabajo diario.',
+    como: [
+      'Hacé clic en una OBRA para fijarla como obra activa y entrar a sus secciones (almacén, gestión, personal…). Antes había que pasar por Empresas para llegar acá.',
+      'El filtro de TIPO separa lo que antes era todo “una obra”: ejecutar una obra no es lo mismo que hacer su expediente, ni que supervisarla. Una supervisión, por ejemplo, no lleva partidas ni estructura de costos.',
+      'Cada tarjeta muestra quién ejecuta el trabajo. Si es un consorcio, aparece con sus empresas socias.',
+      'Los bienes y servicios se listan acá pero se administran en su propia sección: son un flujo corto (cotizás, comprás, vendés) sin partidas ni personal de campo.',
+      '“Solo en curso” esconde lo terminado y lo cancelado, que es casi siempre lo que querés ver.',
+    ],
+  },
   'bienes-servicios': {
     titulo: 'Bienes y Servicios',
     que: 'Los trabajos que NO son una obra: vender un lote de material, o prestar un servicio. Flujo corto — cotizás, comprás, vendés — con un responsable único y sin partidas, cronograma ni personal de campo.',

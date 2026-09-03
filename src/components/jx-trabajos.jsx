@@ -20,9 +20,14 @@
 import React from "react";
 import {
   TIPOS, ESTADOS, ESTADOS_COTIZACION, TIPO_LBL, ESTADO_LBL, ESTADO_BADGE,
-  COT_LBL, COT_BADGE, cotizacionesDe, cotizacionAceptada,
+  COT_LBL, COT_BADGE, cotizacionesDe, cotizacionAceptada, esAbierto,
   resumenEconomico, totales, validarTrabajo, filtrarTrabajos,
 } from "../lib/trabajos.js";
+import {
+  TIPOS_TRABAJO, ESTADO_OBRA_LBL, ESTADO_OBRA_BADGE, normalizarEstadoObra,
+  TIPO_TRABAJO_DEFAULT, ORIGEN_DEFAULT,
+} from "../lib/tipos-trabajo.js";
+import { etiquetaEjecutora } from "../lib/consorcio.js";
 const { useState: uST, useMemo: uMT, useRef: uRT } = React;
 
 const fmt = (n, moneda = 'PEN') =>
@@ -234,7 +239,7 @@ function BienesServiciosPage({ showToast }) {
         <div className="pg-hd frow-sb">
           <div>
             <button className="btn btn-ghost btn-sm" onClick={() => setDetalleId(null)}>
-              <JxIcon name="arrow-left" size={13}/> Volver
+              <JxIcon name="chevL" size={13}/> Volver
             </button>
             <div className="pg-title" style={{ marginTop: 6 }}>{detalle.nombre}</div>
             <div className="pg-sub">
@@ -573,4 +578,190 @@ function BienesServiciosPage({ showToast }) {
   );
 }
 
-Object.assign(window, { BienesServiciosPage });
+
+// ═══════════════════════════════════════════════════════════════════
+// TRABAJOS — la entrada de primer nivel (tanda 2, entrega A)
+//
+// EL PROBLEMA QUE RESUELVE, en palabras de Gabriel (3-sep): "intenté ir a ver
+// la configuración de la obra activa de Miraflores y tuve que ingresar a la
+// sección de Empresas para ahí encontrar el apartado de obras y editarlas".
+//
+// Pasaba porque no había ningún lugar que fuera "los trabajos que hacemos":
+// `obras` vivía en el plano general junto a Empresas y contabilidad, así que el
+// camino a una obra pasaba por un bloque que no tiene nada que ver con ella.
+//
+// Esta pantalla es la vista de la taxonomía que la tanda 1 dejó en el modelo:
+// una obra de ejecución, una de expediente+ejecución, una supervisión y una
+// venta de bienes son TRABAJOS distintos, y hasta ahora las cuatro eran "una
+// obra" indistinguible. Se listan juntas porque para quien busca algo son lo
+// mismo: un trabajo que el grupo está haciendo.
+//
+// Las obras salen de `obras` (con tipo_trabajo, mig 173) y los bienes y
+// servicios de `trabajos` (mig 174). Son tablas distintas a propósito — un
+// flujo corto no tiene partidas ni cronograma — y esta pantalla las une para
+// mirarlas, sin fusionar los modelos.
+// ═══════════════════════════════════════════════════════════════════
+function TrabajosPage({ showToast, onNav, onEnterObra }) {
+  const { data: obras } = window.__hooks.useObras?.() || { data: [] };
+  const { data: trabajos } = window.__hooks.useTrabajos?.() || { data: [] };
+  const { data: companies } = window.__hooks.useCompanies?.() || { data: [] };
+  const { data: consorcios } = window.__hooks.useConsorcios?.() || { data: [] };
+  const { data: consorcioSocios } = window.__hooks.useConsorcioSocios?.() || { data: [] };
+  const { data: movs } = window.__hooks.useAccountingMovements?.() || { data: [] };
+
+  const auth = window.__useAuth?.();
+  const myRol = auth?.profile?.rol;
+  const isAdmin = myRol === 'admin';
+
+  const [texto, setTexto] = uST('');
+  const [filtroTipo, setFiltroTipo] = uST('');     // '' | tipo_trabajo | 'bien' | 'servicio'
+  const [soloAbiertos, setSoloAbiertos] = uST(false);
+
+  const lookupCompany = (id) => (companies || []).find(c => c.id === id);
+
+  // Obras y trabajos normalizados a una sola forma para poder listarlos juntos.
+  const filas = uMT(() => {
+    const q = texto.trim().toLowerCase();
+    const coincide = (...campos) => !q || campos.some(v => String(v || '').toLowerCase().includes(q));
+
+    const deObras = (obras || []).filter(o => !o.deleted_at).map(o => ({
+      kind: 'obra',
+      id: o.id,
+      nombre: o.nombre_obra,
+      tipoV: o.tipo_trabajo || TIPO_TRABAJO_DEFAULT,
+      tipoLbl: TIPOS_TRABAJO.find(t => t.v === (o.tipo_trabajo || TIPO_TRABAJO_DEFAULT))?.corto || '—',
+      origen: o.origen || ORIGEN_DEFAULT,
+      cliente: o.cliente,
+      ejecutor: etiquetaEjecutora(o, consorcios, consorcioSocios, lookupCompany),
+      estado: normalizarEstadoObra(o.estado),
+      estadoLbl: ESTADO_OBRA_LBL[normalizarEstadoObra(o.estado)],
+      estadoBadge: ESTADO_OBRA_BADGE[normalizarEstadoObra(o.estado)],
+      abierto: !['terminado', 'cancelado'].includes(normalizarEstadoObra(o.estado)),
+      // En una obra lo que importa de un pantallazo es el avance.
+      metrica: `${Number(o.avance_fisico || 0).toFixed(0)}% avance`,
+      raw: o,
+    }));
+
+    const deTrabajos = (trabajos || []).filter(t => !t.deleted_at).map(t => {
+      const r = resumenEconomico(t.id, movs, t.moneda || 'PEN');
+      return {
+        kind: 'trabajo',
+        id: t.id,
+        nombre: t.nombre,
+        tipoV: t.tipo,
+        tipoLbl: TIPO_LBL[t.tipo] || '—',
+        origen: t.origen || 'privado',
+        cliente: t.cliente,
+        ejecutor: t.consorcio_id
+          ? ((consorcios || []).find(k => k.id === t.consorcio_id)?.nombre || '—')
+          : (lookupCompany(t.ejecutor_company_id)?.name || '—'),
+        estado: t.estado,
+        estadoLbl: ESTADO_LBL[t.estado],
+        estadoBadge: ESTADO_BADGE[t.estado],
+        abierto: esAbierto(t.estado),
+        // En un bien o servicio lo que importa es el margen.
+        metrica: r.ventas > 0 ? `margen ${fmt(r.margen, t.moneda || 'PEN')}` : 'sin ventas aún',
+        raw: t,
+      };
+    });
+
+    return [...deObras, ...deTrabajos]
+      .filter(f => !filtroTipo || f.tipoV === filtroTipo)
+      .filter(f => !soloAbiertos || f.abierto)
+      .filter(f => coincide(f.nombre, f.cliente, f.ejecutor))
+      .sort((a, b) => (b.abierto ? 1 : 0) - (a.abierto ? 1 : 0)
+        || String(a.nombre || '').localeCompare(String(b.nombre || '')));
+  }, [obras, trabajos, companies, consorcios, consorcioSocios, movs, texto, filtroTipo, soloAbiertos]);
+
+  const totales = uMT(() => ({
+    obras: filas.filter(f => f.kind === 'obra').length,
+    bs: filas.filter(f => f.kind === 'trabajo').length,
+    abiertos: filas.filter(f => f.abierto).length,
+  }), [filas]);
+
+  const abrir = (f) => {
+    if (f.kind === 'obra') {
+      // Fija la obra activa y entra a su panel: el camino que faltaba.
+      onEnterObra?.(f.id, 'inicio');
+    } else {
+      onNav?.('bienes-servicios');
+    }
+  };
+
+  return (
+    <div className="page-wrap">
+      <div className="pg-hd frow-sb">
+        <div>
+          <div className="pg-title">Trabajos</div>
+          <div className="pg-sub">
+            {totales.obras} obra{totales.obras === 1 ? '' : 's'} · {totales.bs} bien{totales.bs === 1 ? '' : 'es'}/servicio{totales.bs === 1 ? '' : 's'} · {totales.abiertos} en curso
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {isAdmin && (
+            <button className="btn btn-ghost btn-sm" onClick={() => onNav?.('obras')} title="Crear o editar obras">
+              <JxIcon name="building" size={13}/> Administrar obras
+            </button>
+          )}
+          <button className="btn btn-ghost btn-sm" onClick={() => onNav?.('bienes-servicios')}>
+            <JxIcon name="package" size={13}/> Bienes y Servicios
+          </button>
+        </div>
+      </div>
+
+      <div className="card card-p" style={{ marginBottom: 12, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <input className="fi" style={{ flex: '1 1 220px' }} placeholder="Buscar por nombre, cliente o quién ejecuta"
+          value={texto} onChange={e => setTexto(e.target.value)}/>
+        <select className="fi" style={{ width: 'auto' }} value={filtroTipo} onChange={e => setFiltroTipo(e.target.value)}>
+          <option value="">Todos los tipos</option>
+          <optgroup label="Obras y supervisiones">
+            {TIPOS_TRABAJO.map(t => <option key={t.v} value={t.v}>{t.label}</option>)}
+          </optgroup>
+          <optgroup label="Bienes y servicios">
+            {TIPOS.map(t => <option key={t.v} value={t.v}>{t.label}</option>)}
+          </optgroup>
+        </select>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: 'var(--tm)', cursor: 'pointer' }}>
+          <input type="checkbox" checked={soloAbiertos} onChange={e => setSoloAbiertos(e.target.checked)}/>
+          Solo en curso
+        </label>
+      </div>
+
+      {filas.length === 0 ? (
+        <div className="card card-p empty-state">
+          <JxIcon name="hardHat" size={40} color="var(--tm)"/>
+          <p>
+            {(obras || []).length || (trabajos || []).length
+              ? 'Ningún trabajo coincide con el filtro.'
+              : 'Todavía no hay trabajos cargados.'}
+          </p>
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(310px, 1fr))', gap: 12 }}>
+          {filas.map(f => (
+            <button key={`${f.kind}-${f.id}`} type="button" onClick={() => abrir(f)}
+              className="card card-p"
+              style={{ textAlign: 'left', cursor: 'pointer', border: '1px solid var(--border)', display: 'block' }}>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 6, flexWrap: 'wrap' }}>
+                <JxIcon name={f.kind === 'obra' ? 'hardHat' : 'package'} size={13} color="var(--amber)"/>
+                <span className="badge b-gray" style={{ fontSize: 9.5 }}>{f.tipoLbl}</span>
+                <span className="badge b-gray" style={{ fontSize: 9.5 }}>{f.origen === 'publico' ? 'Pública' : 'Privada'}</span>
+                <span className={`badge ${f.estadoBadge || 'b-gray'}`} style={{ fontSize: 9.5 }}>{f.estadoLbl}</span>
+              </div>
+              <div style={{ fontWeight: 700, fontSize: 13, lineHeight: 1.35, marginBottom: 4 }}>
+                {String(f.nombre || '').slice(0, 90)}{String(f.nombre || '').length > 90 ? '…' : ''}
+              </div>
+              {f.cliente && <div style={{ fontSize: 11, color: 'var(--tm)' }}>{f.cliente}</div>}
+              <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 4 }}>
+                Ejecuta: {f.ejecutor}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--ts)', marginTop: 6, fontWeight: 600 }}>{f.metrica}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+Object.assign(window, { BienesServiciosPage, TrabajosPage });

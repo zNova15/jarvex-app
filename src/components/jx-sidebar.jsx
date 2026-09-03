@@ -60,12 +60,19 @@ function usePwaInstall() {
 }
 
 const NAV = [
+  // ── TRABAJOS: la entrada de primer nivel (tanda 2, entrega A) ──
+  // Va primera porque es donde arranca el trabajo diario. Antes el camino a una
+  // obra pasaba por la sección de Empresas, que no tiene nada que ver.
+  { section: 'TRABAJOS', area: 'trabajos' },
+  { id: 'trabajos', label: 'Todos los trabajos', icon: 'hardHat' },
+  { id: 'obras', label: 'Obras / Proyectos', icon: 'building' },
+  { id: 'bienes-servicios', label: 'Bienes y Servicios', icon: 'package' },
+
   { section: 'GENERAL', area: 'general' },
   { id: 'captura-magica', label: '✨ Captura Mágica', icon: 'upload' },
   { id: 'captura-campo', label: '📸 Subir Factura (campo)', icon: 'camera' },
   { id: 'proveedores', label: 'Proveedores', icon: 'truck' },
   { id: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
-  { id: 'obras', label: 'Obras / Proyectos', icon: 'building' },
   { id: 'reportes', label: 'Reportes', icon: 'chart' },
 
   { section: 'CONTROL DE ALMACÉN' },
@@ -170,7 +177,7 @@ const NAV = [
   { section: 'EMPRESAS Y CONTABILIDAD', area: 'contabilidad' },
   { id: 'cont-dashboard', label: 'Dashboard Contable', icon: 'dashboard' },
   { id: 'empresas', label: 'Empresas', icon: 'building' },
-  { id: 'bienes-servicios', label: 'Bienes y Servicios', icon: 'package' },
+
   { id: 'movimientos-contables', label: 'Movimientos (todas / por obra)', icon: 'dollar', plano: 'general' },
   { id: 'guias-remision', label: 'Guías de Remisión', icon: 'truck' },
   { id: 'profesionales', label: 'Registro Profesional', icon: 'users' },
@@ -391,6 +398,24 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
 
       {/* Filtra items por permisos del rol y oculta secciones que quedan vacías */}
       {(() => null)()}
+      {/* Volver a la pantalla principal — SIEMPRE visible (tanda 2, entrega A).
+          El sidebar muestra solo el área en la que estás; sin una salida fija,
+          volver a los bloques de primer nivel dependía de adivinar. */}
+      {current !== 'inicio' && (
+        <button type="button" onClick={() => onNav?.('inicio')}
+          title="Volver a la pantalla principal"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+            padding: collapsed ? '10px 0' : '10px 14px',
+            justifyContent: collapsed ? 'center' : 'flex-start',
+            background: 'none', border: 0, borderBottom: '1px solid var(--border)',
+            color: 'var(--tm)', cursor: 'pointer', fontSize: 12, fontWeight: 600,
+          }}>
+          <JxIcon name="chevL" size={14}/>
+          {!collapsed && <span>Pantalla principal</span>}
+        </button>
+      )}
+
       {/* Nav items */}
       <nav style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '8px 0' }}>
         {(() => {

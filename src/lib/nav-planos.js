@@ -14,6 +14,9 @@
 // Páginas del plano GENERAL (todo lo que no esté acá = 'obra').
 export const GENERAL_ITEMS = new Set([
   'inicio', 'captura-magica', 'captura-campo', 'obras', 'dashboard', 'reportes',
+  // Trabajos es la entrada de primer nivel: lista obras, supervisiones y
+  // bienes/servicios. No puede exigir obra activa — es donde se elige.
+  'trabajos',
   'proveedores',
   // Empresas + su contabilidad de empresa (por entidad legal, no por obra).
   // Flujo de caja/proyectado son por-empresa (cronograma_pagos no tiene obra_id).
@@ -47,6 +50,8 @@ const AREA = {
     'plan-cuentas', 'libro-diario', 'balance-general', 'estado-resultados', 'comprobantes',
     'libros-electronicos', 'config-sunat', 'comparativo-periodos', 'compras-categoria', 'ordenes-intercompany', 'guias-remision',
     'analisis-insumos']),
+  // Trabajos y su ficha: el área a la que se entra desde el bloque Trabajos.
+  trabajos: new Set(['trabajos', 'obras', 'bienes-servicios']),
   direccion: new Set(['dashboard-ejecutivo', 'kpis-obra', 'cumplimiento-cronograma', 'alertas', 'busqueda']),
   admin: new Set(['usuarios', 'roles', 'solicitudes', 'configuracion', 'conflictos', 'audit-log']),
 };

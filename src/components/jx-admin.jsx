@@ -1195,6 +1195,9 @@ window.__moduleIdMap = {
   'conciliacion-insumos': 'Movs. Contables',   // conciliación factura↔presupuesto (contabilidad)
   'empresas': 'Empresas',
   'bienes-servicios': 'Bienes y Servicios',
+  // La lista de trabajos usa el módulo Obras: quien puede ver obras puede ver
+  // la lista que las contiene. No es un permiso nuevo.
+  'trabajos': 'Obras',
   'movimientos-contables': 'Movs. Contables',
   'guias-remision': 'Movs. Contables',
   // Pagos de personal/subcontratos con evidencias (área contable sensible).
@@ -1283,6 +1286,7 @@ const __AYUDANTE_CONTADOR_ITEMS = [
   // área le muestra Empresas + Movimientos.
   'cont-dashboard',
   'captura-magica', 'personal', 'empresas', 'proveedores', 'movimientos-contables', 'cuentas-bancarias',
+  'trabajos',         // la lista de trabajos: su entrada al área
   'bienes-servicios', // lectura: la matriz le da 'r', sin esta línea no lo vería
   'conciliacion-insumos', // enlaza facturas ↔ insumos presupuestados (Vinculación 2)
   'solicitudes', // ve "Mis solicitudes" (sus pedidos de cambio); la aprobación es del contador/admin
@@ -1404,17 +1408,21 @@ window.__canSeeSidebarItem = function(rol, itemId) {
 // info que ni le incumbe), abrimos directo en su pantalla principal.
 // Si el rol no tiene permiso al item sugerido por algún custom override,
 // caemos al dashboard utility por seguridad.
+// Los roles CROSS-OBRA aterrizan en 'inicio' (los bloques de primer nivel), no
+// en una pantalla que da por sentada una obra activa: su trabajo abarca todas
+// las obras y todas las empresas. Los roles de OBRA siguen aterrizando en su
+// pantalla de siempre — ese flujo no se toca (tanda 2, entrega A).
 const __HOME_POR_ROL = {
-  admin: 'dashboard',
-  gerente: 'dashboard-ejecutivo',
+  admin: 'inicio',
+  gerente: 'inicio',
   ingeniero_residente: 'avance',
   ingeniero: 'dashboard-tecnico',
   supervisor: 'asistencia',
   almacenero: 'mov-materiales',
   asistente_admin: 'dashboard-gestion',
-  contador: 'cont-dashboard',
-  ayudante_contador: 'movimientos-contables',
-  tesorero: 'cuentas-bancarias',
+  contador: 'inicio',
+  ayudante_contador: 'inicio',
+  tesorero: 'inicio',
   jefe_compras: 'requisiciones',
   rrhh: 'planillas',
   prevencionista: 'reporte-especialidad',
@@ -1423,6 +1431,7 @@ const __HOME_POR_ROL = {
   ing_social: 'reporte-especialidad',
   maestro_obra: 'avance',
   solo_lectura: 'dashboard',
+  licitaciones: 'inicio',
 };
 
 window.__defaultPageForRol = function(rol) {

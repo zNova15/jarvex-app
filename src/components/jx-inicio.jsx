@@ -36,19 +36,19 @@ const fmtSk = (n) => {
 // tipo 'obra' = opera sobre la obra de trabajo elegida; 'general' = cross-obra.
 const BLOQUES = [
   {
-    id: 'almacen', titulo: 'Almacén', icon: 'package', tipo: 'obra', color: 'var(--amber)',
+    id: 'almacen', grupo: 'trabajos', titulo: 'Almacén', icon: 'package', tipo: 'obra', color: 'var(--amber)',
     desc: 'Inventarios, movimientos, ubicaciones y vinculación de compras',
     items: ['materiales', 'mov-materiales', 'herramientas', 'mov-herramientas', 'epps-inventario', 'epp',
       'insumos-emergencia', 'insumos-persona', 'ubicaciones', 'compras-pendientes', 'movimientos-insumos', 'caja-chica',
       'evidencias', 'plantillas'],
   },
   {
-    id: 'logistica', titulo: 'Logística', icon: 'truck', tipo: 'obra', color: 'var(--blue)',
+    id: 'logistica', grupo: 'trabajos', titulo: 'Logística', icon: 'truck', tipo: 'obra', color: 'var(--blue)',
     desc: 'Solicitud de insumos, requisiciones y órdenes de compra',
     items: ['solicitud-residente', 'requisiciones', 'ordenes-compra'],
   },
   {
-    id: 'gestion-obra', titulo: 'Gestión de Obra', icon: 'hardHat', tipo: 'obra', color: 'var(--green)',
+    id: 'gestion-obra', grupo: 'trabajos', titulo: 'Gestión de Obra', icon: 'hardHat', tipo: 'obra', color: 'var(--green)',
     desc: 'Presupuesto, partidas, avance, costos, maquinaria e ingeniería',
     items: ['obras', 'dashboard-gestion', 'panel-residente', 'importar', 'partidas', 'insumos', 'control-consumo', 'versiones',
       'cronograma', 'avance', 'aprobaciones-reporte', 'rendimiento-ingenieros', 'comparativo', 'costos',
@@ -57,34 +57,34 @@ const BLOQUES = [
       'mis-reportes', 'borradores-reporte', 'plan-real', 'emitir-alerta'],
   },
   {
-    id: 'personal', titulo: 'Personal y Subcontratos', icon: 'users', tipo: 'obra', color: 'var(--purple)',
+    id: 'personal', grupo: 'trabajos', titulo: 'Personal y Subcontratos', icon: 'users', tipo: 'obra', color: 'var(--purple)',
     desc: 'RRHH, asistencia, planillas y subcontratos',
     items: ['personal', 'frentes', 'asistencia', 'personal-contratos', 'planillas', 'cts', 'gratificaciones',
       'plame', 'subcontratistas', 'subcontratos', 'subcontrato-valorizaciones'],
   },
   {
-    id: 'ssoma', titulo: 'Seguridad (SSOMA)', icon: 'shield', tipo: 'obra', color: 'var(--orange)',
+    id: 'ssoma', grupo: 'trabajos', titulo: 'Seguridad (SSOMA)', icon: 'shield', tipo: 'obra', color: 'var(--orange)',
     desc: 'Reporte diario, charlas, IPERC, inspecciones y EPPs',
     items: ['reporte-especialidad', 'charlas-plan', 'sctr-personal', 'inducciones', 'charlas-seguridad', 'iperc', 'inspecciones-seguridad', 'capacitaciones', 'epps-inventario',
       'epp', 'insumos-persona', 'insumos-emergencia'],
   },
   {
-    id: 'ambiental', titulo: 'Ambiental', icon: 'map', tipo: 'obra', color: 'var(--green)',
+    id: 'ambiental', grupo: 'trabajos', titulo: 'Ambiental', icon: 'map', tipo: 'obra', color: 'var(--green)',
     desc: 'Reporte diario y evidencias de gestión ambiental (ISO 14001)',
     items: ['reporte-especialidad', 'gestion-ambiental', 'charlas-plan', 'inducciones', 'charlas-seguridad', 'capacitaciones', 'evidencias'],
   },
   {
-    id: 'calidad', titulo: 'Calidad', icon: 'checkCircle', tipo: 'obra', color: 'var(--blue)',
+    id: 'calidad', grupo: 'trabajos', titulo: 'Calidad', icon: 'checkCircle', tipo: 'obra', color: 'var(--blue)',
     desc: 'Reporte diario y verificación de insumos (certificados vs expediente)',
     items: ['reporte-especialidad', 'gestion-calidad', 'materiales', 'evidencias'],
   },
   {
-    id: 'social', titulo: 'Social', icon: 'users', tipo: 'obra', color: 'var(--purple)',
+    id: 'social', grupo: 'trabajos', titulo: 'Social', icon: 'users', tipo: 'obra', color: 'var(--purple)',
     desc: 'Compromisos con la comunidad, quejas/reclamos, padrón y charlas',
     items: ['reporte-especialidad', 'gestion-social', 'charlas-plan', 'charlas-seguridad', 'capacitaciones', 'evidencias'],
   },
   {
-    id: 'contabilidad', titulo: 'Contabilidad', icon: 'dollar', tipo: 'general', color: 'var(--amber)',
+    id: 'contabilidad', grupo: 'contabilidad', titulo: 'Contabilidad', icon: 'dollar', tipo: 'general', color: 'var(--amber)',
     desc: 'Empresas del grupo, movimientos, conciliación, tesorería y SUNAT',
     items: ['cont-dashboard', 'movimientos-contables', 'bienes-servicios', 'conciliacion-insumos', 'guias-remision', 'pagos',
       // SCTR vive acá para contabilidad (la contadora sube el trámite) — así no
@@ -96,35 +96,63 @@ const BLOQUES = [
       'comparativo-periodos'],
   },
   {
-    id: 'reportes', titulo: 'Reportes y Dashboards', icon: 'chart', tipo: 'general', color: 'var(--blue)',
+    id: 'reportes', grupo: 'direccion', titulo: 'Reportes y Dashboards', icon: 'chart', tipo: 'general', color: 'var(--blue)',
     desc: 'Visión ejecutiva, KPIs, cumplimiento y alertas',
     items: ['dashboard', 'reportes', 'dashboard-ejecutivo', 'kpis-obra', 'cumplimiento-cronograma', 'alertas'],
   },
   {
-    id: 'ia', titulo: 'Herramientas IA', icon: 'upload', tipo: 'general', color: 'var(--green)',
+    id: 'ia', grupo: 'contabilidad', titulo: 'Herramientas IA', icon: 'upload', tipo: 'general', color: 'var(--green)',
     desc: 'Captura Mágica de comprobantes y búsqueda global',
     items: ['captura-magica', 'captura-campo', 'busqueda'],
   },
   {
-    id: 'empresas-prov', titulo: 'Empresas y Proveedores', icon: 'building', tipo: 'general', color: 'var(--purple)',
+    id: 'empresas-prov', grupo: 'empresas', titulo: 'Empresas y Proveedores', icon: 'building', tipo: 'general', color: 'var(--purple)',
     desc: 'Entidades del grupo y proveedores (global)',
     items: ['empresas', 'proveedores'],
   },
   {
-    id: 'solicitudes-blq', titulo: 'Solicitudes', icon: 'bell', tipo: 'general', color: 'var(--orange)',
+    id: 'solicitudes-blq', grupo: 'trabajos', titulo: 'Solicitudes', icon: 'bell', tipo: 'general', color: 'var(--orange)',
     desc: 'Solicitud de insumos, requisiciones, cambios y conflictos',
     items: ['solicitud-residente', 'requisiciones', 'solicitudes', 'conflictos'],
   },
   {
-    id: 'usuarios-blq', titulo: 'Usuarios y Roles', icon: 'user', tipo: 'general', color: 'var(--red)',
+    id: 'usuarios-blq', grupo: 'config', titulo: 'Usuarios y Roles', icon: 'user', tipo: 'general', color: 'var(--red)',
     desc: 'Cuentas, permisos y auditoría',
     items: ['usuarios', 'roles', 'audit-log'],
   },
   {
-    id: 'config-blq', titulo: 'Configuración', icon: 'settings', tipo: 'general', color: 'var(--tm)',
+    id: 'licitaciones-blq', grupo: 'licitaciones', titulo: 'Licitaciones y Propuestas', icon: 'chart', tipo: 'general', color: 'var(--blue)',
+    desc: 'Plantel profesional para postular a procesos de selección',
+    items: ['profesionales'],
+  },
+  {
+    id: 'config-blq', grupo: 'config', titulo: 'Configuración', icon: 'settings', tipo: 'general', color: 'var(--tm)',
     desc: 'Ajustes del sistema',
     items: ['configuracion'],
   },
+];
+
+// ── GRUPOS de primer nivel (tanda 2, entrega A) ─────────────────────
+// Pedido de Gabriel (3-sep): la pantalla principal seccionada en bloques
+// hermanos, en vez de 15 tarjetas temáticas al mismo nivel.
+//
+// `entrada` = la página que abre el tile directo. Trabajos abre la lista de
+// trabajos, que es el camino que faltaba: antes, para llegar a una obra había
+// que pasar por la sección de Empresas.
+// Un grupo sin `entrada` solo expande sus bloques.
+const GRUPOS = [
+  { id: 'trabajos',     titulo: 'Trabajos',      icon: 'hardHat',  color: 'var(--amber)',  entrada: 'trabajos',
+    desc: 'Obras, supervisiones y bienes/servicios' },
+  { id: 'empresas',     titulo: 'Empresas',      icon: 'building', color: 'var(--purple)', entrada: 'empresas',
+    desc: 'Empresas del grupo, consorcios y proveedores' },
+  { id: 'contabilidad', titulo: 'Contabilidad',  icon: 'dollar',   color: 'var(--green)',  entrada: 'cont-dashboard',
+    desc: 'Movimientos, tesorería, SUNAT y consolidado' },
+  { id: 'licitaciones', titulo: 'Licitaciones',  icon: 'chart',    color: 'var(--blue)',   entrada: 'profesionales',
+    desc: 'Trabajos a postular y plantel profesional' },
+  { id: 'direccion',    titulo: 'Resúmenes',     icon: 'dashboard', color: 'var(--blue)',  entrada: 'dashboard-ejecutivo',
+    desc: 'Dashboards, KPIs y alertas' },
+  { id: 'config',       titulo: 'Configuración', icon: 'settings', color: 'var(--tm)',
+    desc: 'Usuarios, roles, permisos y ajustes' },
 ];
 
 // Cuántas secciones muestra un bloque antes del "+N más".
@@ -308,10 +336,20 @@ function InicioPage({ onNav, onEnterObra }) {
   const bloquesObra = bloques.filter(b => b.tipo === 'obra');
   const bloquesGeneral = bloques.filter(b => b.tipo === 'general');
 
+  // Un grupo se muestra si el rol puede ver algo dentro: o alguno de sus
+  // bloques, o su página de entrada. Mismo criterio que ya se usaba para los
+  // bloques (vacío no se muestra), un nivel más arriba.
+  const gruposVisibles = uMI(() => GRUPOS.filter(g => {
+    if (bloques.some(b => b.grupo === g.id)) return true;
+    return !!(g.entrada && navInfo.has(g.entrada) && canSee(g.entrada));
+  }), [bloques, navInfo]);
+
   // Abrir una sección: las de plano OBRA fijan la obra de trabajo y entran;
   // las generales navegan directo. 'movimientos-contables' es DUAL (obra y
   // general): desde el bloque Contabilidad se abre su vista general
   // ("todas / por obra"), igual que desde el sidebar del área contable.
+  const [grupoAbierto, setGrupoAbierto] = uSI(null);
+
   const abrir = (pageId) => {
     if (pageId === 'movimientos-contables') { onNav?.(pageId, 'general'); return; }
     if (planoDe(pageId) === 'obra') {
@@ -412,6 +450,56 @@ function InicioPage({ onNav, onEnterObra }) {
         );
       })()}
 
+      {/* ── GRUPOS DE PRIMER NIVEL ── */}
+      {gruposVisibles.length > 0 && (<>
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)', margin: '6px 0 10px' }}>
+          ¿DÓNDE QUERÉS TRABAJAR?
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(215px, 1fr))', gap: 12, marginBottom: 22 }}>
+          {gruposVisibles.map(g => {
+            const nBloques = bloques.filter(b => b.grupo === g.id).length;
+            const abiertoAqui = grupoAbierto === g.id;
+            return (
+              <div key={g.id} className="card card-p"
+                style={{ border: `1px solid ${abiertoAqui ? g.color : 'var(--border)'}`, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <button type="button"
+                  onClick={() => { if (g.entrada) abrir(g.entrada); else setGrupoAbierto(x => x === g.id ? null : g.id); }}
+                  style={{ background: 'none', border: 0, padding: 0, textAlign: 'left', cursor: 'pointer', color: 'inherit' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Icon name={g.icon} size={18} color={g.color}/>
+                    <span style={{ fontWeight: 700, fontSize: 14 }}>{g.titulo}</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 4, lineHeight: 1.4 }}>{g.desc}</div>
+                </button>
+                {nBloques > 0 && (
+                  <button type="button" className="btn btn-ghost btn-xs" style={{ alignSelf: 'flex-start' }}
+                    onClick={() => setGrupoAbierto(x => x === g.id ? null : g.id)}>
+                    {abiertoAqui ? '▾ Ocultar' : `▸ Ver ${nBloques} sección${nBloques === 1 ? '' : 'es'}`}
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </>)}
+
+      {/* Bloques del grupo desplegado */}
+      {grupoAbierto && (() => {
+        const g = GRUPOS.find(x => x.id === grupoAbierto);
+        const suyos = bloques.filter(b => b.grupo === grupoAbierto);
+        if (!suyos.length) return null;
+        return (
+          <div style={{ marginBottom: 26 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: g?.color || 'var(--tm)', margin: '6px 0 10px' }}>
+              {String(g?.titulo || '').toUpperCase()}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: 12 }}>
+              {suyos.map(b => <BloqueCard key={b.id} blq={b} items={b.items} onAbrir={abrir} />)}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ── BLOQUES DE OBRA ── */}
       {bloquesObra.length > 0 && obrasVivas.length > 0 && (<>
         <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)', margin: '6px 0 10px', display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
@@ -423,15 +511,9 @@ function InicioPage({ onNav, onEnterObra }) {
         </div>
       </>)}
 
-      {/* ── BLOQUES GENERALES ── */}
-      {bloquesGeneral.length > 0 && (<>
-        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)', margin: '6px 0 10px' }}>
-          GENERAL <span style={{ fontWeight: 400, letterSpacing: 0 }}>· cruzan todas las obras</span>
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: 12 }}>
-          {bloquesGeneral.map(b => <BloqueCard key={b.id} blq={b} items={b.items} onAbrir={abrir} />)}
-        </div>
-      </>)}
+      {/* Los bloques generales ya no se listan planos: se llega por su grupo
+          de primer nivel. Antes eran 15 tarjetas al mismo nivel y era justo lo
+          que Gabriel señaló como desordenado. */}
     </div>
   );
 }
