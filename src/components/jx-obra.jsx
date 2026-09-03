@@ -9,6 +9,11 @@ import {
   consorcioDeObra, sociosDeObra, etiquetaEjecutora, validarSocios,
   sumaParticipacion, puedeEditarConsorcio,
 } from "../lib/consorcio.js";
+import {
+  TIPOS_TRABAJO, ORIGENES, ESTADOS_OBRA, ESTADO_OBRA_LBL, ESTADO_OBRA_BADGE,
+  normalizarEstadoObra, usaEstructuraCostos, etiquetaTrabajo,
+  TIPO_TRABAJO_DEFAULT, ORIGEN_DEFAULT,
+} from "../lib/tipos-trabajo.js";
 const { useState: uSO, useMemo: uMO, useEffect: uEO } = React;
 
 // Celda de plazo planificado (inicio→fin · N días) o aviso si no se importó del cronograma.
@@ -26,13 +31,9 @@ function PlazoCell({ p }) {
 const EST_PART = { terminado:'b-green', en_ejecucion:'b-blue', atrasado:'b-red', pendiente:'b-gray', observado:'b-yellow' };
 const EST_LBL  = { terminado:'Terminado', en_ejecucion:'En Ejecución', atrasado:'Atrasado', pendiente:'Pendiente', observado:'Observado' };
 
-const EST_OBRA = { activo:'b-green', planificacion:'b-blue', pausado:'b-yellow', terminado:'b-gray', cancelado:'b-red', finalizada:'b-gray', cancelada:'b-red' };
-const EST_OBRA_LBL = { activo:'Activo', planificacion:'Planificación', pausado:'Pausado', terminado:'Terminado', cancelado:'Cancelado', finalizada:'Terminado', cancelada:'Cancelado' };
-// Valores legacy del form viejo que el CHECK del server nunca aceptó (mig 001:
-// solo terminado/cancelado). Quedaron en Dexie (form viejo + demoSeeder) y al
-// editarse re-pusheaban 23514. Se normalizan al abrir el form → el próximo save
-// escribe el valor válido y sana la fila.
-const EST_OBRA_LEGACY = { finalizada: 'terminado', cancelada: 'cancelado' };
+// EST_OBRA / EST_OBRA_LBL / EST_OBRA_LEGACY se mudaron a src/lib/tipos-trabajo.js
+// (mig 173): estaban duplicados contra el CHECK del server y ya se habían
+// desincronizado una vez. Los valores legacy siguen resolviéndose ahí.
 
 // Helper para detectar obra activa con tope de reintentos + reanudar
 // cuando el realtime traiga una obra nueva (evento 'jarvex_master_updated').
@@ -82,6 +83,10 @@ function ObrasPage({ showToast }) {
   // bundle cacheado viejo no tiene estos hooks, y sin él la pantalla de obras
   // reventaría entera en vez de degradar al modelo anterior.
   const { data: consorcios } = window.__hooks.useConsorcios?.() || { data: [] };
+  // rubros_obra existe desde la mig 171 y obras.rubro_id también, pero ningún
+  // formulario lo seteaba nunca: el catálogo estaba muerto y el Registro
+  // Profesional no podía proponer la experiencia en obras propias.
+  const { data: rubrosObra } = window.__hooks.useRubrosObra?.() || { data: [] };
   const { data: consorcioSocios } = window.__hooks.useConsorcioSocios?.() || { data: [] };
   const auth = window.__useAuth ? window.__useAuth() : null;
   const userId = auth?.profile?.id ?? 'offline';
@@ -247,7 +252,10 @@ function ObrasPage({ showToast }) {
       nombre_obra: o.nombre_obra || '',
       cliente: o.cliente || '',
       ubicacion: o.ubicacion || '',
-      estado: EST_OBRA_LEGACY[o.estado] || o.estado || 'planificacion',
+      estado: normalizarEstadoObra(o.estado),
+      tipo_trabajo: o.tipo_trabajo || TIPO_TRABAJO_DEFAULT,
+      origen: o.origen || ORIGEN_DEFAULT,
+      rubro_id: o.rubro_id || '',
       fecha_inicio: o.fecha_inicio || '',
       fecha_fin_estimada: o.fecha_fin_estimada || '',
       presupuesto_total: o.presupuesto_total ?? '',
@@ -281,6 +289,9 @@ function ObrasPage({ showToast }) {
       return;
     }
     setForm({
+      tipo_trabajo: TIPO_TRABAJO_DEFAULT,
+      origen: ORIGEN_DEFAULT,
+      rubro_id: '',
       ejecutora_tipo: 'empresa',
       ejecutora_company_id: companiesActivas[0]?.id || '',
       consorcio_nombre: '',
@@ -481,7 +492,10 @@ function ObrasPage({ showToast }) {
           nombre_obra: form.nombre_obra.trim(),
           cliente: form.cliente || null,
           ubicacion: form.ubicacion || null,
-          estado: form.estado || 'planificacion',
+          estado: normalizarEstadoObra(form.estado),
+          tipo_trabajo: form.tipo_trabajo || TIPO_TRABAJO_DEFAULT,
+          origen: form.origen || ORIGEN_DEFAULT,
+          rubro_id: form.rubro_id || null,
           fecha_inicio: form.fecha_inicio || null,
           fecha_fin_estimada: form.fecha_fin_estimada || null,
           presupuesto_total: parseFloat(form.presupuesto_total) || null,
@@ -509,7 +523,10 @@ function ObrasPage({ showToast }) {
           nombre_obra: form.nombre_obra.trim(),
           cliente: form.cliente || null,
           ubicacion: form.ubicacion || null,
-          estado: form.estado || 'planificacion',
+          estado: normalizarEstadoObra(form.estado),
+          tipo_trabajo: form.tipo_trabajo || TIPO_TRABAJO_DEFAULT,
+          origen: form.origen || ORIGEN_DEFAULT,
+          rubro_id: form.rubro_id || null,
           fecha_inicio: form.fecha_inicio || null,
           fecha_fin_estimada: form.fecha_fin_estimada || null,
           presupuesto_total: parseFloat(form.presupuesto_total) || null,
@@ -590,7 +607,8 @@ function ObrasPage({ showToast }) {
                   )}
                 </div>
                 <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:6,flexShrink:0}}>
-                  <span className={`badge ${EST_OBRA[o.estado]||'b-gray'}`}>{EST_OBRA_LBL[o.estado] || o.estado}</span>
+                  <span className={`badge ${ESTADO_OBRA_BADGE[normalizarEstadoObra(o.estado)]||'b-gray'}`}>{ESTADO_OBRA_LBL[normalizarEstadoObra(o.estado)] || o.estado}</span>
+                  <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>{etiquetaTrabajo(o)}</div>
                   <div style={{ display:'flex', gap:4 }}>
                     <button className="btn btn-ghost btn-xs" title="Editar obra" onClick={(e)=>{ e.stopPropagation(); openEditObra(o); }}>
                       <JxIcon name="edit" size={11}/>
@@ -647,11 +665,36 @@ function ObrasPage({ showToast }) {
           <div style={{gridColumn:'1/-1'}}><label className="flabel">Nombre de la obra *</label><input className="fi" placeholder="Ej: Edificio Las Palmas" value={form.nombre_obra||''} onChange={e=>setForm({...form, nombre_obra:e.target.value})}/></div>
           <div><label className="flabel">Cliente</label><input className="fi" placeholder="Razón social" value={form.cliente||''} onChange={e=>setForm({...form, cliente:e.target.value})}/></div>
           <div><label className="flabel">Estado</label>
-            <select className="fi" value={form.estado||'planificacion'} onChange={e=>setForm({...form, estado:e.target.value})}>
-              <option value="planificacion">Planificación</option><option value="activo">Activo</option>
-              <option value="pausado">Pausado</option><option value="terminado">Terminado</option>
-              <option value="cancelado">Cancelado</option>
+            <select className="fi" value={normalizarEstadoObra(form.estado)} onChange={e=>setForm({...form, estado:e.target.value})}>
+              {ESTADOS_OBRA.map(e => <option key={e.v} value={e.v}>{e.label}</option>)}
             </select>
+          </div>
+          <div>
+            <label className="flabel">Tipo de trabajo</label>
+            <select className="fi" value={form.tipo_trabajo||TIPO_TRABAJO_DEFAULT} onChange={e=>setForm({...form, tipo_trabajo:e.target.value})}>
+              {TIPOS_TRABAJO.map(t => <option key={t.v} value={t.v}>{t.label}</option>)}
+            </select>
+            <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>
+              Ejecutar, hacer el expediente o supervisar no son lo mismo. Una supervisión sola no lleva partidas ni estructura de costos.
+            </div>
+          </div>
+          <div>
+            <label className="flabel">Origen</label>
+            <select className="fi" value={form.origen||ORIGEN_DEFAULT} onChange={e=>setForm({...form, origen:e.target.value})}>
+              {ORIGENES.map(o => <option key={o.v} value={o.v}>{o.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="flabel">Rubro</label>
+            <select className="fi" value={form.rubro_id||''} onChange={e=>setForm({...form, rubro_id:e.target.value})}>
+              <option value="">— Sin clasificar —</option>
+              {(rubrosObra||[]).filter(r => r.activo !== false && !r.deleted_at)
+                .sort((a,b) => (a.orden||100)-(b.orden||100))
+                .map(r => <option key={r.id} value={r.id}>{r.nombre}</option>)}
+            </select>
+            <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>
+              Clasificá la obra para que la experiencia del personal en ella cuente sola en el Registro Profesional.
+            </div>
           </div>
           <div style={{gridColumn:'1/-1'}}><label className="flabel">Ubicación</label><input className="fi" placeholder="Distrito, dirección" value={form.ubicacion||''} onChange={e=>setForm({...form, ubicacion:e.target.value})}/></div>
           <div><label className="flabel">Fecha inicio</label><input className="fi" type="date" value={form.fecha_inicio||''} onChange={e=>setForm({...form, fecha_inicio:e.target.value})}/></div>
@@ -664,7 +707,16 @@ function ObrasPage({ showToast }) {
             <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>= Costo Total del Proyecto. Se calcula automáticamente al importar las partidas (Costo Directo + utilidades + gastos + IGV + otros).</div>
           </div>
 
-          {/* ── Estructura de costos (modelo Delphin/S10) ───────── */}
+          {/* ── Estructura de costos (modelo Delphin/S10) ─────────
+              Una supervisión sola no construye: se cobra por honorarios y este
+              bloque no aplica. Mostrarlo invita a cargar un presupuesto de obra
+              que después contradice lo que realmente se factura. */}
+          {!usaEstructuraCostos(form.tipo_trabajo || TIPO_TRABAJO_DEFAULT) ? (
+            <div style={{ gridColumn:'1/-1', marginTop:6, fontSize:11, color:'var(--tm)', borderTop:'1px dashed var(--border)', paddingTop:10, lineHeight:1.5 }}>
+              Una <strong>supervisión</strong> no lleva estructura de costos ni partidas: se cobra por honorarios.
+              Usá el campo “Presupuesto total” de arriba para el monto del contrato.
+            </div>
+          ) : (<>
           <div style={{gridColumn:'1/-1', marginTop:6, fontSize:11, color:'var(--amber)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em', borderTop:'1px dashed var(--border)', paddingTop:10}}>
             Estructura de costos del presupuesto
           </div>
@@ -729,6 +781,7 @@ function ObrasPage({ showToast }) {
               </div>
             );
           })()}
+          </>)}
 
           <div style={{gridColumn:'1/-1'}}><label className="flabel">Observaciones</label><textarea className="fi" value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})}/></div>
 
