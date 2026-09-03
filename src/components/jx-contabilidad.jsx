@@ -123,6 +123,8 @@ function EmpresasPage({ showToast }) {
   const { data: obras } = window.__hooks.useObras?.() || { data: [] };
   const { data: consorcios } = window.__hooks.useConsorcios?.() || { data: [] };
   const { data: consorcioSocios } = window.__hooks.useConsorcioSocios?.() || { data: [] };
+  // Bienes y servicios (mig 174): pestaña "Trabajos" del detalle de empresa.
+  const { data: trabajosBS } = window.__hooks.useTrabajos?.() || { data: [] };
 
   // Roles efectivos por empresa derivados dinámicamente del estado de las obras.
   // Quién es qué respecto de cada obra lo decide src/lib/consorcio.js (mig
@@ -344,6 +346,10 @@ function EmpresasPage({ showToast }) {
       <EmpresaDetalle
         company={empDetalle}
         obrasEjecutora={(rolesPorObra.get(empDetalle.id) || []).filter(x => x.rol === 'ejecutora' || x.rol === 'miembro_consorcio')}
+        obras={obras}
+        consorcios={consorcios}
+        consorcioSocios={consorcioSocios}
+        trabajosBS={trabajosBS}
         onVolver={() => setDetalleId(null)}
       />
     );
@@ -468,9 +474,24 @@ function EmpresasPage({ showToast }) {
                       {/* Columna propia, NO gateada por isAdmin: las contadoras
                           (contador/ayudante_contador) son las usuarias del detalle. */}
                       <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
-                        <button className="btn btn-ghost btn-xs" title="Ver qué compró y vendió esta empresa" onClick={()=>setDetalleId(c.id)}>
-                          <JxIcon name="eye" size={11}/> Ver detalle
-                        </button>
+                        {/* Un consorcio no se administra acá: vive en su obra
+                            (docs/tanda-2-navegacion.md §4, "Consorcios en este
+                            bloque"). El botón lleva directo a su panel en vez
+                            de abrir un detalle que igual no se puede editar. */}
+                        {c.tipo_entidad === 'consorcio' ? (() => {
+                          const obraId = (consorcios || []).find(k => k.company_id === c.id)?.obra_id;
+                          return (
+                            <button className="btn btn-ghost btn-xs" title="Este consorcio se administra desde su obra"
+                              disabled={!obraId}
+                              onClick={() => { if (window.__setObraActivaId) window.__setObraActivaId(obraId); window.__navTo?.('panel-obra'); }}>
+                              <JxIcon name="hardHat" size={11}/> Ir a su obra
+                            </button>
+                          );
+                        })() : (
+                          <button className="btn btn-ghost btn-xs" title="Ver qué compró y vendió esta empresa" onClick={()=>setDetalleId(c.id)}>
+                            <JxIcon name="eye" size={11}/> Ver detalle
+                          </button>
+                        )}
                       </td>
                       {isAdmin && (
                         <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
