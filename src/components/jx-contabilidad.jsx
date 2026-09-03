@@ -17,6 +17,8 @@ import { useChart } from "../lib/chart-loader.js";
 import { cssVar } from "../lib/tema.js";
 import { FusionEntidadModal } from "./jx-fusion-entidad.jsx";
 import { EmpresaDetalle } from "./jx-empresa-detalle.jsx";
+import { ClasificarEntidadesModal } from "./jx-clasificar-entidades.jsx";
+import { rolDeCompanyEnObra, titularContableDeObra } from "../lib/consorcio.js";
 const { useState: uSC, useMemo: uMC, useEffect: uEC, useRef: uRC } = React;
 
 // Etiqueta humana de un mes 'YYYY-MM' → 'Junio 2026' (filtro de período).
@@ -119,29 +121,34 @@ function EmpresasPage({ showToast }) {
   const { data: companies } = window.__hooks.useCompanies();
   const { data: movs } = window.__hooks.useAccountingMovements();
   const { data: obras } = window.__hooks.useObras?.() || { data: [] };
+  const { data: consorcios } = window.__hooks.useConsorcios?.() || { data: [] };
+  const { data: consorcioSocios } = window.__hooks.useConsorcioSocios?.() || { data: [] };
 
   // Roles efectivos por empresa derivados dinámicamente del estado de las obras.
-  // Una empresa es "ejecutora" en una obra si está asignada como ejecutora_company_id
-  // o aparece en consorcio_miembros. Para el resto (proveedora interna), se infiere
-  // por aparecer como eslabón en cadenas de trazabilidad — pero por ahora solo
-  // mostramos las obras donde es ejecutora (caso más común).
+  // Quién es qué respecto de cada obra lo decide src/lib/consorcio.js (mig
+  // 172), no este componente: la misma respuesta la necesitan comprobantes,
+  // captura mágica y evidencias, y antes cada uno la calculaba a su manera.
+  //
+  // Cambio de la mig 172: en una obra de consorcio la ejecutora es la company
+  // DEL CONSORCIO (su titular contable) y los socios son miembros — antes el
+  // titular no figuraba y los socios salían del jsonb consorcio_miembros.
   const rolesPorObra = uMC(() => {
     const map = new Map(); // company_id → [{ obra_id, nombre, rol }]
+    const add = (cid, o, rol) => {
+      if (!cid) return;
+      if (!map.has(cid)) map.set(cid, []);
+      map.get(cid).push({ obra_id: o.id, nombre: o.nombre_obra, rol });
+    };
     (obras || []).forEach(o => {
       if (o.deleted_at) return;
-      const addRol = (cid, rol) => {
-        if (!cid) return;
-        if (!map.has(cid)) map.set(cid, []);
-        map.get(cid).push({ obra_id: o.id, nombre: o.nombre_obra, rol });
-      };
-      if (o.ejecutora_tipo === 'consorcio' && Array.isArray(o.consorcio_miembros)) {
-        o.consorcio_miembros.forEach(m => addRol(m.company_id, 'miembro_consorcio'));
-      } else if (o.ejecutora_company_id) {
-        addRol(o.ejecutora_company_id, 'ejecutora');
-      }
+      (companies || []).forEach(c => {
+        if (c.deleted_at) return;
+        const rol = rolDeCompanyEnObra(c.id, o, consorcios, consorcioSocios);
+        if (rol) add(c.id, o, rol);
+      });
     });
     return map;
-  }, [obras]);
+  }, [obras, companies, consorcios, consorcioSocios]);
 
   // Detalle de UNA empresa (punto 5): vive DENTRO de esta página (import
   // estático, mismo chunk), no es una página registrada.
@@ -149,6 +156,13 @@ function EmpresasPage({ showToast }) {
   const [modal, setModal] = uSC(null); // null | 'nueva' | 'editar'
   const [editingId, setEditingId] = uSC(null);
   const [fusionOpen, setFusionOpen] = uSC(false);
+  const [clasificarOpen, setClasificarOpen] = uSC(false);
+  // El catálogo muestra las empresas DEL GRUPO. Consorcios y terceros existen y
+  // siguen disponibles en los selectores contables, pero no son hermanas de las
+  // propias: el consorcio se administra desde su obra y el tercero es un
+  // proveedor. Sin este filtro la pantalla mezcla 2 empresas reales con 15 que
+  // no lo son (medido en producción, mig 172).
+  const [verTipo, setVerTipo] = uSC('propia'); // 'propia' | 'consorcio' | 'tercero' | 'todas'
   const [form, setForm] = uSC({});
   // Cuántas empresas comparten RUC (para el badge del botón de fusión).
   const dupsRuc = uMC(() => {
@@ -176,6 +190,7 @@ function EmpresasPage({ showToast }) {
   const openNueva = () => {
     setForm({
       name:'', legal_name:'', ruc:'', company_type:'constructora', status:'activa', notas:'',
+      tipo_entidad:'propia',
       rubro:'otro', rol_grupo:'mixta', regimen_tributario:'RG', margen_objetivo_pct:'',
       mostrar_torpedo: true,
       direccion:'', telefono:'', email:'', representante_legal:'', inicio_actividades:'',
@@ -193,6 +208,7 @@ function EmpresasPage({ showToast }) {
       company_type: c.company_type || 'otro',
       status: c.status || 'activa',
       notas: c.notas || '',
+      tipo_entidad: c.tipo_entidad || 'propia',
       rubro: c.rubro || 'otro',
       mostrar_torpedo: c.mostrar_torpedo !== false,
       rol_grupo: c.rol_grupo || 'mixta',
@@ -225,6 +241,7 @@ function EmpresasPage({ showToast }) {
           company_type: form.company_type,
           status: form.status,
           notas: form.notas?.trim() || null,
+          tipo_entidad: form.tipo_entidad || 'propia',
           rubro: form.rubro || null,
           mostrar_torpedo: form.mostrar_torpedo !== false,   // mig 156: torpedo del portal de campo
           rol_grupo: form.rol_grupo || null,
@@ -256,6 +273,7 @@ function EmpresasPage({ showToast }) {
           company_type: form.company_type,
           status: form.status,
           notas: form.notas?.trim() || null,
+          tipo_entidad: form.tipo_entidad || 'propia',
           rubro: form.rubro || null,
           mostrar_torpedo: form.mostrar_torpedo !== false,   // mig 156: torpedo del portal de campo
           rol_grupo: form.rol_grupo || null,
@@ -310,7 +328,14 @@ function EmpresasPage({ showToast }) {
     } catch (e) { showToast('Error: ' + (e.message||e), 'red'); }
   };
 
-  const sorted = uMC(() => [...(companies || [])].sort((a,b) => (a.name||'').localeCompare(b.name||'')), [companies]);
+  const porTipo = uMC(() => {
+    const cuenta = { propia: 0, consorcio: 0, tercero: 0 };
+    (companies || []).forEach(c => { if (!c.deleted_at) cuenta[c.tipo_entidad || 'propia'] = (cuenta[c.tipo_entidad || 'propia'] || 0) + 1; });
+    return cuenta;
+  }, [companies]);
+  const sorted = uMC(() => (companies || [])
+    .filter(c => verTipo === 'todas' || (c.tipo_entidad || 'propia') === verTipo)
+    .sort((a,b) => (a.name||'').localeCompare(b.name||'')), [companies, verTipo]);
 
   // Detalle: early return DESPUÉS de todos los hooks (regla crítica 3).
   const empDetalle = detalleId ? (companies || []).find(c => c.id === detalleId) : null;
@@ -329,9 +354,27 @@ function EmpresasPage({ showToast }) {
       <div className="pg-hd frow-sb">
         <div>
           <div className="pg-title">Empresas</div>
-          <div className="pg-sub">{sorted.length} empresas registradas · {sorted.filter(c=>c.status==='activa').length} activas</div>
+          <div className="pg-sub">
+            {sorted.length} {verTipo === 'propia' ? 'empresas del grupo' : verTipo === 'consorcio' ? 'consorcios' : verTipo === 'tercero' ? 'terceros' : 'empresas'}
+            {' · '}{sorted.filter(c=>c.status==='activa').length} activas
+            {verTipo === 'consorcio' && ' · se administran desde su obra'}
+          </div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <select className="fi" style={{ width: 'auto', fontSize: 11.5 }}
+            value={verTipo} onChange={e => setVerTipo(e.target.value)}
+            title="Qué parte del catálogo mostrar">
+            <option value="propia">Del grupo ({porTipo.propia || 0})</option>
+            <option value="consorcio">Consorcios ({porTipo.consorcio || 0})</option>
+            <option value="tercero">Terceros ({porTipo.tercero || 0})</option>
+            <option value="todas">Todas</option>
+          </select>
+          {isAdmin && (
+            <button className="btn btn-ghost btn-sm" onClick={() => setClasificarOpen(true)}
+              title="Separar empresas del grupo, consorcios y proveedores">
+              <JxIcon name="filter" size={13}/>Revisar clasificación
+            </button>
+          )}
           {isAdmin && (
             <button className="btn btn-ghost btn-sm" onClick={() => setFusionOpen(true)} title="Fusionar empresas duplicadas (mismo RUC)">
               <JxIcon name="compare" size={13}/>Fusionar{dupsRuc > 0 ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>{dupsRuc}</span> : ''}
@@ -347,11 +390,24 @@ function EmpresasPage({ showToast }) {
         </div>
       </div>
       {fusionOpen && <FusionEntidadModal tipo="companies" registros={companies} showToast={showToast} onClose={() => setFusionOpen(false)} onDone={() => {}} />}
+      {clasificarOpen && (
+        <ClasificarEntidadesModal
+          companies={companies} obras={obras} consorcios={consorcios} movs={movs}
+          userId={userId} showToast={showToast}
+          onClose={() => setClasificarOpen(false)} />
+      )}
 
       {sorted.length === 0 ? (
         <div className="card card-p empty-state">
           <JxIcon name="building" size={40} color="var(--tm)"/>
-          <p>No hay empresas registradas. Crea la primera para empezar a registrar movimientos contables.</p>
+          {(companies || []).filter(c => !c.deleted_at).length > 0 ? (
+            <p>
+              Ninguna empresa está clasificada como <strong>{verTipo === 'propia' ? 'del grupo' : verTipo === 'consorcio' ? 'consorcio' : 'tercero'}</strong>.
+              {isAdmin ? ' Usá “Revisar clasificación” para separarlas, o cambiá la vista de arriba.' : ' Cambiá la vista de arriba para ver el resto.'}
+            </p>
+          ) : (
+            <p>No hay empresas registradas. Crea la primera para empezar a registrar movimientos contables.</p>
+          )}
         </div>
       ) : (
         <div className="card" style={{ overflow:'hidden' }}>
@@ -542,6 +598,18 @@ function EmpresasPage({ showToast }) {
             {/* ── Trazabilidad: Rubro + Rol en el grupo ─────────────── */}
             <div style={{ gridColumn:'1/-1', marginTop:6, fontSize:11, color:'var(--amber)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em', borderTop:'1px dashed var(--border)', paddingTop:10 }}>
               Trazabilidad — define qué hace y qué lugar ocupa en tu grupo
+            </div>
+            <div>
+              <label className="flabel">Qué es para el grupo</label>
+              <select className="fi" value={form.tipo_entidad||'propia'} onChange={e=>setForm({...form, tipo_entidad:e.target.value})}>
+                <option value="propia">Empresa del grupo</option>
+                <option value="consorcio">Consorcio</option>
+                <option value="tercero">Tercero (proveedor o cliente)</option>
+              </select>
+              <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>
+                Solo las del grupo salen en este catálogo. El consorcio se administra desde su obra;
+                el tercero sigue disponible en los selectores contables.
+              </div>
             </div>
             <div>
               <label className="flabel">Rubro / giro principal</label>
@@ -4920,23 +4988,19 @@ function TrazabilidadPage({ showToast }) {
   const lookupObra = (id) => obras?.find(o => o.id === id);
 
   // Obra activa del header — su ejecutora se usa para bloquear el dropdown.
-  // Si es consorcio, devolvemos el primer miembro (caso raro; user puede
-  // ajustar manualmente si necesita otro miembro como ejecutora).
+  // En obra de consorcio la ejecutora es el CONSORCIO (su titular contable),
+  // que es quien factura. Antes se devolvía "el primer miembro", o sea un socio
+  // cualquiera, y la cadena de trazabilidad terminaba en la empresa equivocada.
+  const { data: consorciosTz } = window.__hooks.useConsorcios?.() || { data: [] };
   const obraActivaId = uMC(() => {
     try { return window.__getObraActivaId?.() || null; } catch { return null; }
   }, [obras]);
   const obraActiva = uMC(() => (obras || []).find(o => o.id === obraActivaId) || null, [obras, obraActivaId]);
   const ejecutoraDeObra = uMC(() => {
     if (!obraActiva) return null;
-    if (obraActiva.ejecutora_company_id) {
-      return companies?.find(c => c.id === obraActiva.ejecutora_company_id) || null;
-    }
-    if (obraActiva.ejecutora_tipo === 'consorcio' && Array.isArray(obraActiva.consorcio_miembros)) {
-      const m = obraActiva.consorcio_miembros[0];
-      return m?.company_id ? companies?.find(c => c.id === m.company_id) || null : null;
-    }
-    return null;
-  }, [obraActiva, companies]);
+    const cid = titularContableDeObra(obraActiva, consorciosTz);
+    return cid ? (companies?.find(c => c.id === cid) || null) : null;
+  }, [obraActiva, companies, consorciosTz]);
 
   const sorted = uMC(() => [...(cadenas || [])].sort((a,b) => (b.fecha || '').localeCompare(a.fecha || '')), [cadenas]);
 

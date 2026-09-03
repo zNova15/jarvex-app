@@ -9,6 +9,7 @@ import { getCurrentMode } from "../lib/app-mode-core.js";
 import { supabase } from "../lib/supabase";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { derivarTypeContable } from "../lib/clasificacion-contable.js";
+import { companyIdsDeObra } from "../lib/consorcio.js";
 // Guías: import ESTÁTICO. guias.js ya era un chunk propio por el import()
 // dinámico de confirmarGuia y lo comparte con jx-guias, así que traerlo acá no
 // suma chunks y permite calcular las facturas candidatas en un useMemo (la
@@ -465,6 +466,8 @@ function CapturaMagicaPage({ showToast }) {
 
   const { data: companies } = window.__hooks?.useCompanies?.() || { data: [] };
   const { data: obras } = window.__hooks?.useObras?.() || { data: [] };
+  const { data: consorcios } = window.__hooks?.useConsorcios?.() || { data: [] };
+  const { data: consorcioSocios } = window.__hooks?.useConsorcioSocios?.() || { data: [] };
   const { data: movs } = window.__hooks?.useAccountingMovements?.() || { data: [] };
   // Todo el personal (sin obra_id → todas las obras): para vincular recibos por honorarios.
   const { data: personal } = window.__hooks?.usePersonal?.() || { data: [] };
@@ -1196,8 +1199,7 @@ function CapturaMagicaPage({ showToast }) {
           if (companyMatch && oc.obra_id) {
             // La OC pertenece a una obra cuya ejecutora es la empresa receptora — fuerte
             const obraOC = (obras || []).find(o => o.id === oc.obra_id);
-            if (obraOC && (obraOC.ejecutora_company_id === companyMatch.id ||
-              (obraOC.ejecutora_tipo === 'consorcio' && (obraOC.consorcio_miembros||[]).some(m => m.company_id === companyMatch.id)))) {
+            if (obraOC && companyIdsDeObra(obraOC, consorcios, consorcioSocios).has(companyMatch.id)) {
               scoreFiltro += 0.5;
             }
           }
@@ -1866,6 +1868,10 @@ function CapturaMagicaPage({ showToast }) {
           regimen_tributario: 'RG',
           margen_objetivo_pct: null,
           direccion: r.nueva_company_direccion || null,
+          // Lo que aparece leyendo una factura es la contraparte, no una
+          // empresa del grupo. Sin esto el catálogo de Empresas se vuelve a
+          // llenar de proveedores (13 de 17 filas antes de la mig 172).
+          tipo_entidad: 'tercero',
           notas: 'Creada automáticamente desde Captura Mágica',
           created_by: userId, updated_by: userId,
           created_at: now, updated_at: now,
@@ -2811,6 +2817,8 @@ function CapturaMagicaPage({ showToast }) {
           companies={companies || []}
           personal={personal || []}
           obras={obras || []}
+          consorcios={consorcios || []}
+          consorcioSocios={consorcioSocios || []}
           proveedoresDB={proveedoresDB}
           materialesDB={materialesDB}
           ocsActivasDB={ocsActivasDB}
@@ -2966,7 +2974,7 @@ function VincularPendientesModal({ data, materialesDB, onClose, onConfirm }) {
 }
 
 // ─── MODAL DE REVISIÓN ───────────────────────────────────────
-function ReviewModal({ item, companies, personal, obras, proveedoresDB, materialesDB, ocsActivasDB, movs = [], onChange, onPatch, onConfirm, onClose }) {
+function ReviewModal({ item, companies, personal, obras, consorcios = [], consorcioSocios = [], proveedoresDB, materialesDB, ocsActivasDB, movs = [], onChange, onPatch, onConfirm, onClose }) {
   // Estado del botón Confirmar: sin esto los reclicks se tragaban en silencio
   // (el guard vive en un ref del padre) y lo editado DESPUÉS del clic se
   // descartaba sin que se notara. Va acá arriba por la regla de hooks.
@@ -3087,15 +3095,10 @@ function ReviewModal({ item, companies, personal, obras, proveedoresDB, material
   // Obras de la empresa receptora
   const obrasDeEmpresa = uMCM(() => {
     if (!r.company_id) return [];
-    return obras.filter(o => {
-      if (o.deleted_at) return false;
-      if (o.ejecutora_company_id === r.company_id) return true;
-      if (o.ejecutora_tipo === 'consorcio' && Array.isArray(o.consorcio_miembros)) {
-        return o.consorcio_miembros.some(m => m.company_id === r.company_id);
-      }
-      return false;
-    });
-  }, [obras, r.company_id]);
+    // Titular + socios, vía src/lib/consorcio.js (mig 172).
+    return obras.filter(o => !o.deleted_at &&
+      companyIdsDeObra(o, consorcios, consorcioSocios).has(r.company_id));
+  }, [obras, consorcios, consorcioSocios, r.company_id]);
 
   const updateItem = (idx, patch) => {
     const newItems = r.items.map((it, i) => i === idx ? { ...it, ...patch } : it);

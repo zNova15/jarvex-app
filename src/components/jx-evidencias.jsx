@@ -1,6 +1,32 @@
 import React from "react";
 import { puedeVerEvidencia, TIPOS_CONTABLES as TIPOS_CONTABLES_LIB } from "../lib/evidencias-visibilidad.js";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
+
+/**
+ * Empresa cuyo branding usan las plantillas de esta obra.
+ *
+ * Antes, si la obra estaba en consorcio se tomaba "el primer miembro" — o sea
+ * el logo de UN SOCIO cualquiera en documentos que emite el consorcio. Desde la
+ * mig 172 la obra tiene su titular contable en ejecutora_company_id, y este
+ * helper solo cae a la tabla `consorcios` para las obras que un bundle viejo
+ * dejó sin ejecutora.
+ *
+ * Async y por Dexie (no por hooks) porque los llamadores son handlers de
+ * exportación, no render.
+ */
+async function companyDeBrandingObra(obraId) {
+  if (!obraId) return null;
+  const obra = await window.__db.obras.get(obraId);
+  if (!obra) return null;
+  if (obra.ejecutora_company_id) return obra.ejecutora_company_id;
+  try {
+    const cons = await window.__db.consorcios?.where('obra_id').equals(obraId).toArray();
+    const vivo = (cons || []).find(c => !c.deleted_at);
+    if (vivo?.company_id) return vivo.company_id;
+  } catch {}
+  return null;
+}
+
 const { useState: uSE, useMemo: uME, useEffect: uEE, useRef: uRE, useCallback: uCB } = React;
 
 // ─── CONFIG ─────────────────────────────────────────────
@@ -747,12 +773,7 @@ function PlantillasModal({ obraId, onClose, showToast, embedded = false }) {
 
   const loadEmpresa = uCB(async () => {
     try {
-      const obra = obraId ? await window.__db.obras.get(obraId) : null;
-      let companyId = obra?.ejecutora_company_id || null;
-      if (!companyId && Array.isArray(obra?.consorcio_miembros) && obra.consorcio_miembros.length) {
-        const first = obra.consorcio_miembros[0];
-        companyId = typeof first === 'string' ? first : (first?.company_id || null);
-      }
+      const companyId = await companyDeBrandingObra(obraId);
       if (!companyId) { setEmpresa(null); return; }
       const c = await window.__db.companies.get(companyId);
       if (c && !c.deleted_at) {
@@ -863,15 +884,10 @@ function PlantillasModal({ obraId, onClose, showToast, embedded = false }) {
 
       // Branding por empresa ejecutora: si la obra tiene una ejecutora
       // con logo o nombre comercial, las plantillas lo usan en el header.
-      // Si la obra está en consorcio, se toma el primer miembro como
-      // ejecutora de facto. Si nada está configurado, cae a JARVEX.
+      // En obras de consorcio es el consorcio mismo (su titular contable).
+      // Si nada está configurado, cae a JARVEX.
       try {
-        const obra = obraId ? await window.__db.obras.get(obraId) : null;
-        let companyId = obra?.ejecutora_company_id || null;
-        if (!companyId && Array.isArray(obra?.consorcio_miembros) && obra.consorcio_miembros.length) {
-          const first = obra.consorcio_miembros[0];
-          companyId = typeof first === 'string' ? first : (first?.company_id || null);
-        }
+        const companyId = await companyDeBrandingObra(obraId);
         if (companyId) {
           const empresa = await window.__db.companies.get(companyId);
           if (empresa && !empresa.deleted_at) {

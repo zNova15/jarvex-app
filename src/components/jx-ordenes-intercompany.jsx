@@ -14,6 +14,7 @@
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
 import { getCurrentMode } from "../lib/app-mode-core.js";
+import { titularContableDeObra } from "../lib/consorcio.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -52,6 +53,7 @@ function OrdenesIntercompanyPage({ showToast }) {
   const canAprobar = isAdmin;                            // solo admin aprueba
   const { data: companies } = window.__hooks.useCompanies();
   const { data: obras } = window.__hooks.useObras();
+  const { data: consorcios } = window.__hooks.useConsorcios?.() || { data: [] };
 
   const [ordenes, setOrdenes] = uS([]);
   const [genObra, setGenObra] = uS('');
@@ -87,12 +89,12 @@ function OrdenesIntercompanyPage({ showToast }) {
   const obrasActivas = uM(() => (obras || []).filter(o => !o.deleted_at), [obras]);
 
   // Empresa ejecutora de una obra (destino de las órdenes).
+  // La orden va contra quien FACTURA. Tomar el primer socio (lo que hacía
+  // antes al caer al jsonb) apuntaba la orden a una empresa que no es la que
+  // emite: el titular contable del consorcio es el destino correcto.
   const ejecutoraDe = (obraId) => {
     const o = (obras || []).find(x => x.id === obraId);
-    if (!o) return null;
-    if (o.ejecutora_company_id) return o.ejecutora_company_id;
-    if (o.ejecutora_tipo === 'consorcio' && Array.isArray(o.consorcio_miembros) && o.consorcio_miembros[0]) return o.consorcio_miembros[0].company_id;
-    return null;
+    return o ? titularContableDeObra(o, consorcios) : null;
   };
   const prefijoDe = (id) => {
     const c = (companies || []).find(x => x.id === id);

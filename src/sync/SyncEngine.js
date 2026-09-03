@@ -33,6 +33,10 @@ const TRANSACTIONAL_TABLES = [
   'insumos_partida_versionadas',
   'material_precios_historial',
   'companies',
+  // Consorcio: FK a obras (arriba del todo) y a companies (su titular
+  // contable), así que va después de las dos. Sus socios después de él.
+  'consorcios',
+  'consorcio_socios',
   'accounting_movements',
   'intercompany_transactions',
   'reportes_especialidad',
@@ -151,6 +155,8 @@ const MASTER_TABLES = [
   { tabla: 'insumos_partida_versionadas',  query: () => supabase.from('insumos_partida_versionadas').select('*').is('deleted_at', null) },
   { tabla: 'material_precios_historial',   query: () => supabase.from('material_precios_historial').select('*').is('deleted_at', null) },
   { tabla: 'companies',                    query: () => supabase.from('companies').select('*').is('deleted_at', null) },
+  { tabla: 'consorcios',                   query: () => supabase.from('consorcios').select('*').is('deleted_at', null) },
+  { tabla: 'consorcio_socios',             query: () => supabase.from('consorcio_socios').select('*').is('deleted_at', null) },
   { tabla: 'accounting_movements',         query: () => supabase.from('accounting_movements').select('*').is('deleted_at', null) },
   { tabla: 'conciliacion_vinculos',        query: () => supabase.from('conciliacion_vinculos').select('*').is('deleted_at', null) },
   { tabla: 'clasificacion_catalogo',       query: () => supabase.from('clasificacion_catalogo').select('*').is('deleted_at', null) },
@@ -955,6 +961,12 @@ const TABLA_TO_MODULO = {
   planillas: 'Planillas',
   planilla_boletas: 'Planillas',
   companies: 'Empresas',
+  // Constituir un consorcio y fijar los % es un acto societario, no una
+  // edición de obra: se agrupa con Empresas. El set de roles que puede
+  // escribirlo está en ROLES_ESCRIBEN_CONSORCIO (src/lib/consorcio.js) y debe
+  // seguir siendo espejo de la policy de la mig 172.
+  consorcios: 'Empresas',
+  consorcio_socios: 'Empresas',
   accounting_movements: 'Movs. Contables',
   // Catálogo del clasificador: lo escriben contadora jefe y ayudante (ambos
   // con Movs. Contables 'w') al clasificar/corregir ítems de factura.
@@ -1076,6 +1088,8 @@ const FK_DEPS = {
   depositos_bancarizacion:   [{ campo: 'company_id', tabla: 'companies' }],
   guias_remision:            [{ campo: 'company_id', tabla: 'companies' }, { campo: 'proveedor_id', tabla: 'proveedores' }, { campo: 'accounting_movement_id', tabla: 'accounting_movements' }],
   guia_factura:              [{ campo: 'guia_id', tabla: 'guias_remision' }, { campo: 'accounting_movement_id', tabla: 'accounting_movements' }],
+  consorcios:                [{ campo: 'obra_id', tabla: 'obras' }, { campo: 'company_id', tabla: 'companies' }],
+  consorcio_socios:          [{ campo: 'consorcio_id', tabla: 'consorcios' }, { campo: 'company_id', tabla: 'companies' }],
   personal_profesional:      [{ campo: 'personal_id', tabla: 'personal' }],
   personal_experiencia:      [{ campo: 'personal_id', tabla: 'personal' }, { campo: 'rubro_id', tabla: 'rubros_obra' }, { campo: 'obra_id', tabla: 'obras' }],
   movimientos_insumos_emergencia: [{ campo: 'insumo_emergencia_id', tabla: 'insumos_emergencia' }, { campo: 'responsable_id', tabla: 'personal' }, { campo: 'subcontratista_id', tabla: 'subcontratistas' }, { campo: 'proveedor_id', tabla: 'proveedores' }],

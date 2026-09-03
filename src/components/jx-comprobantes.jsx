@@ -1,6 +1,7 @@
 import React from "react";
 import { validarComprobanteAI } from "../lib/validar-comprobante-ai.js";
 import { derivarTypeContable } from "../lib/clasificacion-contable.js";
+import { companyIdsDeObra } from "../lib/consorcio.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 // Iconos
@@ -116,6 +117,8 @@ function ComprobantesElectronicosPage({ showToast }) {
   const { data: companies } = window.__hooks?.useCompanies?.() || { data: [] };
   const { data: movs } = window.__hooks?.useAccountingMovements?.() || { data: [] };
   const { data: obras } = window.__hooks?.useObras?.() || { data: [] };
+  const { data: consorcios } = window.__hooks?.useConsorcios?.() || { data: [] };
+  const { data: consorcioSocios } = window.__hooks?.useConsorcioSocios?.() || { data: [] };
 
   const lookupObra = (id) => obras?.find(o => o.id === id);
 
@@ -152,15 +155,11 @@ function ComprobantesElectronicosPage({ showToast }) {
   // Obras donde la empresa emisora del form es la ejecutora (o miembro del consorcio).
   const obrasDeEmpresa = uM(() => {
     if (!obras) return [];
-    return obras.filter(o => {
-      if (o.deleted_at) return false;
-      if (o.ejecutora_company_id === form.company_id) return true;
-      if (o.ejecutora_tipo === 'consorcio' && Array.isArray(o.consorcio_miembros)) {
-        return o.consorcio_miembros.some(m => m.company_id === form.company_id);
-      }
-      return false;
-    });
-  }, [obras, form.company_id]);
+    // El conjunto "titular + socios" lo arma src/lib/consorcio.js (mig 172):
+    // así comprobantes, captura mágica y evidencias contestan lo mismo.
+    return obras.filter(o => !o.deleted_at &&
+      companyIdsDeObra(o, consorcios, consorcioSocios).has(form.company_id));
+  }, [obras, consorcios, consorcioSocios, form.company_id]);
 
   // Construir lista visible: ingresos con document_type factura/boleta/NC/ND
   const comprobantes = uM(() => {

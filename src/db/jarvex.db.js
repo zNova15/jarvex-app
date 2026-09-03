@@ -72,6 +72,16 @@ export const db = new Dexie('JarvexDB');
 // experiencia por rubro (los meses se CALCULAN de los periodos, ver
 // src/lib/experiencia-profesional.js) y catálogo de rubros. Para el equipo
 // que arma las propuestas de licitación. Aditivo.
+// Versión 49: CONSORCIOS (mig 172). El consorcio deja de estar disfrazado de
+// empresa: cuelga de su obra (1:1) y sus socios se normalizan en tabla propia.
+// `consorcios.company_id` sigue apuntando a la fila de companies que lleva el
+// RUC y los libros — por eso ningún movimiento contable se mueve. El jsonb
+// obras.consorcio_miembros queda deprecado (ver src/lib/consorcio.js). Aditivo.
+db.version(49).stores({
+  consorcios:       'id, obra_id, company_id, estado, deleted_at, sync_status',
+  consorcio_socios: 'id, consorcio_id, company_id, deleted_at, sync_status',
+});
+
 db.version(48).stores({
   rubros_obra:          'id, nombre, activo, deleted_at, sync_status',
   personal_profesional: 'id, personal_id, deleted_at, sync_status',

@@ -5,6 +5,10 @@ import { parsePresupuestoObra, parseTablaCostos } from "../lib/apuParser.js";
 import { calcularPresupuesto, fmtSoles } from "../lib/presupuesto-obra.js";
 import { ventanaPartida } from "../lib/mi-frente.js";
 import { fmtFechaCorta } from "../lib/fecha.js";
+import {
+  consorcioDeObra, sociosDeObra, etiquetaEjecutora, validarSocios,
+  sumaParticipacion, puedeEditarConsorcio,
+} from "../lib/consorcio.js";
 const { useState: uSO, useMemo: uMO, useEffect: uEO } = React;
 
 // Celda de plazo planificado (inicio→fin · N días) o aviso si no se importó del cronograma.
@@ -74,6 +78,11 @@ const fmtPct = (n) => Number(n || 0).toFixed(1) + '%';
 function ObrasPage({ showToast }) {
   const { data: obras, loading, create: createObra, update: updateObra } = window.__hooks.useObras();
   const { data: companies } = window.__hooks.useCompanies?.() || { data: [] };
+  // Consorcios (mig 172). El `?.()` con fallback es deliberado: una PWA con
+  // bundle cacheado viejo no tiene estos hooks, y sin él la pantalla de obras
+  // reventaría entera en vez de degradar al modelo anterior.
+  const { data: consorcios } = window.__hooks.useConsorcios?.() || { data: [] };
+  const { data: consorcioSocios } = window.__hooks.useConsorcioSocios?.() || { data: [] };
   const auth = window.__useAuth ? window.__useAuth() : null;
   const userId = auth?.profile?.id ?? 'offline';
   const myRol = auth?.profile?.rol;
@@ -81,6 +90,11 @@ function ObrasPage({ showToast }) {
   const appMode = window.__useAppMode ? window.__useAppMode() : { isEdicion: true };
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Obras', 'w') ?? false);
+  // Constituir un consorcio es un acto societario y tiene su propio gate:
+  // ESPEJO de la policy "consorcios: conduccion escribe" (mig 172). Quien puede
+  // editar la obra pero no el consorcio ve el panel en solo lectura — mejor eso
+  // que dejarlo guardar y que el push le rebote con RLS.
+  const canWriteConsorcio = puedeEditarConsorcio(myRol);
   const [busyObra, , setBusyObra] = useBusy();
   const [modal, setModal] = uSO(null);
   const [form, setForm] = uSO({});
@@ -115,14 +129,15 @@ function ObrasPage({ showToast }) {
   }, [userId, myRol, isAdmin]);
 
   const openQuickAdd = (target) => {
+    // Quién nace como consorcio: SOLO el titular, que es la persona jurídica
+    // con RUC propio. Un socio es una empresa común (propia o tercera) — antes
+    // esto estaba invertido y marcaba consorcio a cada miembro.
+    const esTitular = target === 'titular';
     setQuickForm({
-      ruc: '',
-      name: '',
-      legal_name: '',
-      direccion: '',
-      rol_grupo: target === 'ejecutora' ? 'ejecutora' : 'ejecutora',
+      ruc: '', name: '', legal_name: '', direccion: '',
+      rol_grupo: 'ejecutora',
       rubro: 'ejecutora_obra',
-      es_consorcio: target !== 'ejecutora', // si es para slot de consorcio, marcar como consorcio
+      es_consorcio: esTitular,
     });
     setQuickAdd(target);
   };
@@ -144,6 +159,9 @@ function ObrasPage({ showToast }) {
         regimen_tributario: 'RG',
         margen_objetivo_pct: null,
         direccion: quickForm.direccion || null,
+        // Con tipo_entidad (mig 172) el consorcio ya no se distingue por una
+        // nota en texto libre: sale del catálogo de Empresas por su tipo.
+        tipo_entidad: quickForm.es_consorcio ? 'consorcio' : 'propia',
         notas: quickForm.es_consorcio ? 'Consorcio (creado desde Obra)' : 'Creada rápidamente desde Obra',
         created_by: userId, updated_by: userId,
         created_at: now, updated_at: now,
@@ -156,13 +174,13 @@ function ObrasPage({ showToast }) {
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'companies' } })); } catch {}
 
       // Asignar al slot correspondiente
-      if (quickAdd === 'ejecutora') {
+      if (quickAdd === 'ejecutora' || quickAdd === 'titular') {
         setForm(f => ({ ...f, ejecutora_company_id: cid }));
-      } else if (quickAdd && typeof quickAdd === 'object' && quickAdd.tipo === 'miembro') {
+      } else if (quickAdd && typeof quickAdd === 'object' && quickAdd.tipo === 'socio') {
         setForm(f => {
-          const arr = [...(f.consorcio_miembros || [])];
+          const arr = [...(f.consorcio_socios || [])];
           arr[quickAdd.idx] = { ...arr[quickAdd.idx], company_id: cid };
-          return { ...f, consorcio_miembros: arr };
+          return { ...f, consorcio_socios: arr };
         });
       }
       showToast?.(`Empresa "${quickForm.name}" creada`, 'green');
@@ -174,16 +192,7 @@ function ObrasPage({ showToast }) {
 
   const companiesActivas = uMO(() => (companies || []).filter(c => c.status === 'activa' && !c.deleted_at), [companies]);
   const lookupCompany = (id) => companies?.find(c => c.id === id);
-  const ejecutoraDisplay = (o) => {
-    if (o.ejecutora_tipo === 'consorcio') {
-      const miembros = (o.consorcio_miembros || []).map(m => lookupCompany(m.company_id)?.name).filter(Boolean);
-      return o.consorcio_nombre
-        ? `Consorcio ${o.consorcio_nombre}` + (miembros.length ? ` (${miembros.join(' + ')})` : '')
-        : `Consorcio (${miembros.join(' + ') || '—'})`;
-    }
-    if (o.ejecutora_company_id) return lookupCompany(o.ejecutora_company_id)?.name || '—';
-    return '—';
-  };
+  const ejecutoraDisplay = (o) => etiquetaEjecutora(o, consorcios, consorcioSocios, lookupCompany);
 
   const handleDeleteObra = async (o) => {
     if (!canDelete) return;
@@ -243,12 +252,18 @@ function ObrasPage({ showToast }) {
       fecha_fin_estimada: o.fecha_fin_estimada || '',
       presupuesto_total: o.presupuesto_total ?? '',
       observaciones: o.observaciones || '',
-      ejecutora_tipo: o.ejecutora_tipo || 'empresa',
+      ejecutora_tipo: (consorcioDeObra(o.id, consorcios) ? 'consorcio' : (o.ejecutora_tipo || 'empresa')),
+      // En modo consorcio esto es el TITULAR CONTABLE: la company con el RUC
+      // del consorcio, la que ya tiene sus movimientos. Ver src/lib/consorcio.js.
       ejecutora_company_id: o.ejecutora_company_id || '',
-      consorcio_nombre: o.consorcio_nombre || '',
-      consorcio_miembros: Array.isArray(o.consorcio_miembros) && o.consorcio_miembros.length
-        ? o.consorcio_miembros
-        : [{ company_id:'', participacion_pct: '' }, { company_id:'', participacion_pct: '' }],
+      consorcio_nombre: consorcioDeObra(o.id, consorcios)?.nombre || o.consorcio_nombre || '',
+      consorcio_estado: consorcioDeObra(o.id, consorcios)?.estado || 'activo',
+      consorcio_fecha_constitucion: consorcioDeObra(o.id, consorcios)?.fecha_constitucion || '',
+      consorcio_socios: (() => {
+        const cargados = sociosDeObra(o, consorcios, consorcioSocios);
+        return cargados.length ? cargados
+          : [{ company_id:'', participacion_pct:'' }, { company_id:'', participacion_pct:'' }];
+      })(),
       // Estructura de costos (modelo Delphin/S10)
       costo_directo: o.costo_directo ?? '',
       utilidad_pct: o.utilidad_pct ?? 15,
@@ -269,7 +284,9 @@ function ObrasPage({ showToast }) {
       ejecutora_tipo: 'empresa',
       ejecutora_company_id: companiesActivas[0]?.id || '',
       consorcio_nombre: '',
-      consorcio_miembros: [{ company_id:'', participacion_pct:'' }, { company_id:'', participacion_pct:'' }],
+      consorcio_estado: 'activo',
+      consorcio_fecha_constitucion: '',
+      consorcio_socios: [{ company_id:'', participacion_pct:'' }, { company_id:'', participacion_pct:'' }],
       // Estructura de costos con defaults peruanos
       utilidad_pct: 15,
       gastos_generales_pct: 15,
@@ -280,7 +297,122 @@ function ObrasPage({ showToast }) {
     setModal('nueva');
   };
 
+  /**
+   * Escribe el consorcio de la obra y reconcilia sus socios.
+   *
+   * Reconciliar y no "borrar todo y reinsertar": los socios que siguen se
+   * ACTUALIZAN conservando su id. Recrearlos les daría ids nuevos en cada
+   * guardado, y cada uno viajaría como un INSERT más al servidor — basura de
+   * sync y un historial de auditoría ilegible.
+   */
+  const guardarConsorcio = async (obraId, socios) => {
+    const now = new Date().toISOString();
+    const titular = form.ejecutora_company_id || null;
+    const ruc = titular ? (lookupCompany(titular)?.ruc || null) : null;
+    const existente = consorcioDeObra(obraId, consorcios);
+
+    let consorcioId = existente?.id;
+    const campos = {
+      obra_id: obraId,
+      company_id: titular,
+      nombre: form.consorcio_nombre?.trim() || lookupCompany(titular)?.name || 'Consorcio',
+      ruc,
+      estado: form.consorcio_estado || 'activo',
+      fecha_constitucion: form.consorcio_fecha_constitucion || null,
+      updated_at: now, updated_by: userId,
+    };
+
+    if (existente) {
+      await window.__db.consorcios.update(existente.id, {
+        ...campos,
+        version: (existente.version ?? 0) + 1,
+        sync_status: existente.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+    } else {
+      consorcioId = window.__newId();
+      await window.__db.consorcios.add({
+        id: consorcioId, ...campos,
+        created_at: now, created_by: userId,
+        version: 1, sync_status: 'pending_create',
+        idempotency_key: `${userId}_consorcios_${consorcioId}`,
+      });
+    }
+
+    // Socios: actualizar los que siguen, dar de baja los que se fueron.
+    const previos = consorcioSocios.filter(x => x && !x.deleted_at && x.consorcio_id === consorcioId);
+    const vivos = new Set();
+    for (const soc of socios) {
+      const prev = previos.find(x => x.company_id === soc.company_id);
+      const base = {
+        consorcio_id: consorcioId,
+        company_id: soc.company_id,
+        participacion_pct: soc.participacion_pct,
+        es_lider: !!soc.es_lider,
+        updated_at: now, updated_by: userId,
+      };
+      if (prev) {
+        vivos.add(prev.id);
+        await window.__db.consorcio_socios.update(prev.id, {
+          ...base,
+          version: (prev.version ?? 0) + 1,
+          sync_status: prev.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+        });
+      } else {
+        const sid = window.__newId();
+        vivos.add(sid);
+        await window.__db.consorcio_socios.add({
+          id: sid, ...base,
+          created_at: now, created_by: userId,
+          version: 1, sync_status: 'pending_create',
+          idempotency_key: `${userId}_consorcio_socios_${sid}`,
+        });
+      }
+    }
+    for (const prev of previos.filter(x => !vivos.has(x.id))) {
+      await window.__db.consorcio_socios.update(prev.id, {
+        deleted_at: now, updated_at: now, updated_by: userId,
+        version: (prev.version ?? 0) + 1,
+        sync_status: prev.sync_status === 'pending_create' ? 'pending_create' : 'pending_delete',
+      });
+    }
+
+    try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'consorcios' } })); } catch {}
+    try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'consorcio_socios' } })); } catch {}
+  };
+
+  /**
+   * La obra dejó de ejecutarse en consorcio: se da de baja el consorcio y sus
+   * socios. NO se toca su `companies` ni sus movimientos contables — el
+   * histórico de lo que ese consorcio facturó sigue intacto y consultable.
+   */
+  const bajaConsorcioSiExiste = async (obraId) => {
+    const c = consorcioDeObra(obraId, consorcios);
+    if (!c) return;
+    const now = new Date().toISOString();
+    const baja = (row) => ({
+      deleted_at: now, updated_at: now, updated_by: userId,
+      version: (row.version ?? 0) + 1,
+      sync_status: row.sync_status === 'pending_create' ? 'pending_create' : 'pending_delete',
+    });
+    for (const soc of consorcioSocios.filter(x => x && !x.deleted_at && x.consorcio_id === c.id)) {
+      await window.__db.consorcio_socios.update(soc.id, baja(soc));
+    }
+    await window.__db.consorcios.update(c.id, baja(c));
+    try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'consorcios' } })); } catch {}
+    try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'consorcio_socios' } })); } catch {}
+  };
+
+  // Guard anti-doble-click SÍNCRONO. El de estado (busyObra) recién se activa
+  // tras el primer await a Dexie: un segundo click en esa ventana de 35-400 ms
+  // pasa el chequeo y duplica la obra y su consorcio (regla crítica 2).
+  const enCursoRef = React.useRef(false);
   const handleSubmit = async () => {
+    if (enCursoRef.current) return;
+    enCursoRef.current = true;
+    try { await handleSubmitInner(); } finally { enCursoRef.current = false; }
+  };
+
+  const handleSubmitInner = async () => {
     if (busyObra) return; // doble click guard
     if (!form.nombre_obra?.trim()) { showToast('Falta el nombre de la obra', 'red'); return; }
     // ── Validaciones de sentido común ─────────────────────────
@@ -297,7 +429,7 @@ function ObrasPage({ showToast }) {
     let ejecutoraTipo = form.ejecutora_tipo || 'empresa';
     let ejecutoraCompanyId = null;
     let consorcioNombre = null;
-    let consorcioMiembros = null;
+    let sociosAGuardar = null;
     if (ejecutoraTipo === 'empresa') {
       if (!form.ejecutora_company_id) {
         showToast('No podés crear una obra sin empresa ejecutora — seleccioná una.', 'red');
@@ -311,27 +443,35 @@ function ObrasPage({ showToast }) {
       }
       ejecutoraCompanyId = form.ejecutora_company_id;
     } else if (ejecutoraTipo === 'consorcio') {
-      const miembrosRaw = (form.consorcio_miembros || []).filter(m => m.company_id);
-      if (miembrosRaw.length < 2) {
-        showToast('Un consorcio necesita al menos 2 empresas', 'red');
+      if (!canWriteConsorcio) {
+        showToast('Tu rol no puede constituir consorcios ni cambiar participaciones.', 'red');
         return;
       }
-      const ids = miembrosRaw.map(m => m.company_id);
-      if (new Set(ids).size !== ids.length) {
-        showToast('No podés repetir la misma empresa en el consorcio', 'red');
+      if (!form.ejecutora_company_id) {
+        showToast('Falta la empresa del consorcio: la que tiene el RUC y lleva sus libros.', 'red');
         return;
       }
-      const miembros = miembrosRaw.map(m => ({
-        company_id: m.company_id,
-        participacion_pct: Number(m.participacion_pct) || 0,
-      }));
-      const sumaPct = miembros.reduce((s, m) => s + Number(m.participacion_pct || 0), 0);
-      if (Math.abs(sumaPct - 100) > 0.01) {
-        showToast(`Las participaciones deben sumar 100% (van ${sumaPct.toFixed(1)}%)`, 'red');
+      if (!companiesActivas.find(c => c.id === form.ejecutora_company_id)) {
+        showToast('La empresa del consorcio no existe o está inactiva', 'red');
         return;
       }
-      consorcioMiembros = miembros;
+      const socios = (form.consorcio_socios || [])
+        .filter(m => m.company_id)
+        .map(m => ({
+          company_id: m.company_id,
+          participacion_pct: Number(m.participacion_pct) || 0,
+          es_lider: !!m.es_lider,
+        }));
+      // Las reglas de grupo (suma 100, mínimo 2, sin repetidos, un solo líder,
+      // el consorcio no es socio de sí mismo) viven en la lib, con tests.
+      const v = validarSocios(socios, { titularCompanyId: form.ejecutora_company_id });
+      if (!v.ok) { showToast(v.errores[0], 'red'); return; }
+      // INVARIANTE (mig 172): la ejecutora de la obra es la company DEL
+      // CONSORCIO, no null. De eso depende que sus movimientos contables, el
+      // PLE, los EE.FF. y los comprobantes sigan encontrando su titular.
+      ejecutoraCompanyId = form.ejecutora_company_id;
       consorcioNombre = form.consorcio_nombre?.trim() || null;
+      sociosAGuardar = socios;
     }
     setBusyObra(true);
     try {
@@ -349,7 +489,9 @@ function ObrasPage({ showToast }) {
           ejecutora_tipo: ejecutoraTipo,
           ejecutora_company_id: ejecutoraCompanyId,
           consorcio_nombre: consorcioNombre,
-          consorcio_miembros: consorcioMiembros,
+          // consorcio_miembros: DEPRECADA (mig 172) — los socios viven ahora en
+          // consorcio_socios. Se OMITE a propósito: incluirla en null borraría
+          // lo que un bundle PWA viejo hubiera dejado escrito.
           // Estructura de costos
           costo_directo: parseFloat(form.costo_directo) || null,
           utilidad_pct: form.utilidad_pct === '' || form.utilidad_pct == null ? 15 : Number(form.utilidad_pct),
@@ -358,6 +500,8 @@ function ObrasPage({ showToast }) {
           otros_gastos: Array.isArray(form.otros_gastos) ? form.otros_gastos.filter(g => g.concepto || g.monto) : [],
         };
         await updateObra(editingId, newFields);
+        if (ejecutoraTipo === 'consorcio') await guardarConsorcio(editingId, sociosAGuardar || []);
+        else await bajaConsorcioSiExiste(editingId);
         try { await window.__logAudit?.({ action:'update', table:'obras', recordId:editingId, oldData:oldObra, newData:newFields }); } catch(e) {}
         showToast(`Obra "${form.nombre_obra}" actualizada`, 'green');
       } else {
@@ -373,7 +517,6 @@ function ObrasPage({ showToast }) {
           ejecutora_tipo: ejecutoraTipo,
           ejecutora_company_id: ejecutoraCompanyId,
           consorcio_nombre: consorcioNombre,
-          consorcio_miembros: consorcioMiembros,
           // Estructura de costos
           costo_directo: parseFloat(form.costo_directo) || null,
           utilidad_pct: form.utilidad_pct === '' || form.utilidad_pct == null ? 15 : Number(form.utilidad_pct),
@@ -384,6 +527,9 @@ function ObrasPage({ showToast }) {
           avance_financiero: 0,
           costo_real_acumulado: 0,
         });
+        if (created?.id && ejecutoraTipo === 'consorcio') {
+          await guardarConsorcio(created.id, sociosAGuardar || []);
+        }
         try { await window.__logAudit?.({ action:'insert', table:'obras', recordId:created?.id, newData:created }); } catch(e) {}
         if (created?.id) {
           try {
@@ -624,60 +770,117 @@ function ObrasPage({ showToast }) {
             </div>
           ) : (
             <>
+              {!canWriteConsorcio && (
+                <div style={{ gridColumn:'1/-1', fontSize:11, color:'var(--amber)', background:'var(--bg-s)', border:'1px dashed var(--border)', borderRadius:6, padding:'7px 9px' }}>
+                  Solo lectura: constituir un consorcio y fijar participaciones lo hacen Administración, Gerencia o Contabilidad.
+                </div>
+              )}
+
+              {/* El titular contable: la pieza de la que cuelga toda la contabilidad. */}
               <div style={{ gridColumn:'1/-1' }}>
-                <label className="flabel">Nombre del consorcio (opcional)</label>
-                <input className="fi" placeholder="Ej: Consorcio Vial Norte"
+                <label className="flabel">Empresa del consorcio (RUC propio) *</label>
+                <div style={{ display:'flex', gap:6 }}>
+                  <select className="fi" style={{ flex:1 }} disabled={!canWriteConsorcio}
+                    value={form.ejecutora_company_id||''}
+                    onChange={e=>setForm({...form, ejecutora_company_id:e.target.value})}>
+                    <option value="">— Seleccionar —</option>
+                    {companiesActivas.map(c => (
+                      <option key={c.id} value={c.id}>{c.name}{c.ruc ? ` · RUC ${c.ruc}` : ''}</option>
+                    ))}
+                  </select>
+                  <button type="button" className="btn btn-ghost btn-sm" disabled={!canWriteConsorcio}
+                    onClick={()=>openQuickAdd('titular')} title="Registrar el consorcio con su RUC">
+                    <JxIcon name="plus" size={11}/> Nuevo
+                  </button>
+                </div>
+                <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>
+                  Es el consorcio como contribuyente: emite las facturas y lleva sus propios libros (ventas, compras, diario, EE.FF.).
+                  No es ninguno de los socios de abajo.
+                </div>
+              </div>
+
+              <div>
+                <label className="flabel">Nombre del consorcio</label>
+                <input className="fi" placeholder="Ej: Consorcio Vial Norte" disabled={!canWriteConsorcio}
                   value={form.consorcio_nombre||''}
                   onChange={e=>setForm({...form, consorcio_nombre:e.target.value})}/>
               </div>
-              <div style={{ gridColumn:'1/-1' }}>
-                <label className="flabel">Empresas miembros del consorcio</label>
-                {(form.consorcio_miembros || []).map((m, i) => {
-                  const arr = form.consorcio_miembros || [];
+              <div>
+                <label className="flabel">Estado</label>
+                <select className="fi" value={form.consorcio_estado||'activo'} disabled={!canWriteConsorcio}
+                  onChange={e=>setForm({...form, consorcio_estado:e.target.value})}>
+                  <option value="activo">Activo</option>
+                  <option value="disuelto">Disuelto</option>
+                </select>
+                <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>Se disuelve al terminar la obra.</div>
+              </div>
+              <div>
+                <label className="flabel">Fecha de constitución</label>
+                <input className="fi" type="date" disabled={!canWriteConsorcio}
+                  value={form.consorcio_fecha_constitucion||''}
+                  onChange={e=>setForm({...form, consorcio_fecha_constitucion:e.target.value})}/>
+              </div>
+
+              <div style={{ gridColumn:'1/-1', marginTop:4 }}>
+                <label className="flabel">Socios del consorcio</label>
+                <div style={{ fontSize:10, color:'var(--tm)', marginBottom:6 }}>
+                  Empresas que aportan capital o experiencia, con su porcentaje. No son subcontratistas:
+                  el socio no pone mano de obra ni entra a planilla, EPP ni inducción.
+                </div>
+                {(form.consorcio_socios || []).map((m, i) => {
+                  const arr = form.consorcio_socios || [];
+                  const setArr = (nuevos) => setForm({ ...form, consorcio_socios: nuevos });
                   return (
-                    <div key={i} style={{ display:'grid', gridTemplateColumns:'24px 2fr auto 1fr 32px', gap:8, alignItems:'center', marginBottom:8 }}>
+                    <div key={i} style={{ display:'grid', gridTemplateColumns:'24px 2fr auto auto 1fr 32px', gap:8, alignItems:'center', marginBottom:8 }}>
                       <div style={{ fontSize:11, fontWeight:700, color:'var(--amber)', textAlign:'center' }}>#{i+1}</div>
-                      <select className="fi" value={m.company_id||''} onChange={e=>{
-                        const nuevos = [...arr]; nuevos[i] = { ...nuevos[i], company_id: e.target.value };
-                        setForm({...form, consorcio_miembros: nuevos});
+                      <select className="fi" value={m.company_id||''} disabled={!canWriteConsorcio} onChange={e=>{
+                        const nuevos = [...arr]; nuevos[i] = { ...nuevos[i], company_id: e.target.value }; setArr(nuevos);
                       }}>
-                        <option value="">— Empresa —</option>
+                        <option value="">— Empresa socia —</option>
                         {companiesActivas.map(c => <option key={c.id} value={c.id}>{c.name}{c.ruc ? ` · ${c.ruc}` : ''}</option>)}
                       </select>
-                      <button type="button" className="btn btn-ghost btn-xs" title="Crear empresa nueva"
-                        onClick={()=>openQuickAdd({ tipo:'miembro', idx: i })}>
+                      <button type="button" className="btn btn-ghost btn-xs" title="Registrar empresa socia" disabled={!canWriteConsorcio}
+                        onClick={()=>openQuickAdd({ tipo:'socio', idx: i })}>
                         <JxIcon name="plus" size={10}/>
                       </button>
+                      <button type="button" disabled={!canWriteConsorcio}
+                        className={`btn btn-xs ${m.es_lider ? 'btn-amber' : 'btn-ghost'}`}
+                        title={m.es_lider ? 'Líder del consorcio' : 'Marcar como líder'}
+                        onClick={()=>{
+                          // Un solo líder: marcar uno desmarca al resto.
+                          const nuevos = arr.map((x, idx) => ({ ...x, es_lider: idx === i ? !x.es_lider : false }));
+                          setArr(nuevos);
+                        }}>
+                        Líder
+                      </button>
                       <input className="fi" type="number" min="0" max="100" step="0.01" placeholder="% participación"
-                        value={m.participacion_pct ?? ''} onChange={e=>{
-                          const nuevos = [...arr]; nuevos[i] = { ...nuevos[i], participacion_pct: e.target.value };
-                          setForm({...form, consorcio_miembros: nuevos});
+                        value={m.participacion_pct ?? ''} disabled={!canWriteConsorcio} onChange={e=>{
+                          const nuevos = [...arr]; nuevos[i] = { ...nuevos[i], participacion_pct: e.target.value }; setArr(nuevos);
                         }}/>
-                      <button type="button" className="btn btn-ghost btn-xs" title="Quitar"
-                        disabled={arr.length <= 2}
+                      <button type="button" className="btn btn-ghost btn-xs" title="Quitar socio"
+                        disabled={!canWriteConsorcio || arr.length <= 2}
                         onClick={()=>{
                           const nuevos = arr.filter((_, idx) => idx !== i);
-                          setForm({...form, consorcio_miembros: nuevos.length ? nuevos : [{ company_id:'', participacion_pct:'' }, { company_id:'', participacion_pct:'' }]});
+                          setArr(nuevos.length ? nuevos : [{ company_id:'', participacion_pct:'' }, { company_id:'', participacion_pct:'' }]);
                         }}>
                         <JxIcon name="x" size={11}/>
                       </button>
                     </div>
                   );
                 })}
-                <button type="button" className="btn btn-ghost btn-sm"
-                  onClick={()=>{
-                    const arr = [...(form.consorcio_miembros||[])];
-                    arr.push({ company_id:'', participacion_pct:'' });
-                    setForm({ ...form, consorcio_miembros: arr });
-                  }}>
-                  <JxIcon name="plus" size={11}/> Agregar empresa
+                <button type="button" className="btn btn-ghost btn-sm" disabled={!canWriteConsorcio}
+                  onClick={()=>setForm({ ...form, consorcio_socios: [...(form.consorcio_socios||[]), { company_id:'', participacion_pct:'' }] })}>
+                  <JxIcon name="plus" size={11}/> Agregar socio
                 </button>
                 {(() => {
-                  const sum = (form.consorcio_miembros || []).reduce((s, m) => s + (Number(m.participacion_pct) || 0), 0);
-                  const ok = Math.abs(sum - 100) <= 0.01;
+                  const socios = (form.consorcio_socios || []).filter(m => m.company_id)
+                    .map(m => ({ company_id: m.company_id, participacion_pct: Number(m.participacion_pct) || 0, es_lider: !!m.es_lider }));
+                  const v = validarSocios(socios, { titularCompanyId: form.ejecutora_company_id });
+                  const suma = sumaParticipacion(socios);
                   return (
-                    <div style={{ marginTop:8, fontSize:11.5, color: ok ? 'var(--green)' : 'var(--amber)' }}>
-                      {ok ? '✓' : '⚠'} Suma de participaciones: {sum.toFixed(2)}% {ok ? '' : '(debe ser 100%)'}
+                    <div style={{ marginTop:8, fontSize:11.5, color: v.ok ? 'var(--green)' : 'var(--amber)' }}>
+                      <div>{v.ok ? '✓' : '⚠'} Suma de participaciones: {suma.toFixed(2)}%</div>
+                      {!v.ok && v.errores.map((e, i) => <div key={i} style={{ marginTop:2 }}>· {e}</div>)}
                     </div>
                   );
                 })()}

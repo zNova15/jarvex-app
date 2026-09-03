@@ -353,6 +353,18 @@ export function usePersonalCuentas(obra_id) {
 }
 
 // ── Contabilidad ─────────────────────────────────────────────────────
+// Consorcios (mig 172). Van juntos porque casi nunca se necesita uno sin el
+// otro: la pregunta real siempre es "quién ejecuta esta obra y con quién".
+export function useConsorcios() {
+  return useOfflineData('consorcios', q => q.filter(c => !c.deleted_at).toArray(), []);
+}
+
+export function useConsorcioSocios(consorcio_id) {
+  return useOfflineData('consorcio_socios',
+    q => q.filter(s => !s.deleted_at && (!consorcio_id || s.consorcio_id === consorcio_id)).toArray(),
+    [consorcio_id]);
+}
+
 export function useCompanies() {
   return useOfflineData('companies', q =>
     q.filter(c => !c.deleted_at).toArray()
