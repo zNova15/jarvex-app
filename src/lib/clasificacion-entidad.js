@@ -9,15 +9,28 @@
 //
 // POR QUÉ ESTO ES UNA SUGERENCIA Y NO UNA MIGRACIÓN AUTOMÁTICA:
 //
-//   CONSORCIO ESPERANZA y CONSORCIO SAMADAY se llaman consorcio y NO lo son —
-//   son proveedores autocreados. Un UPDATE por `name ILIKE '%consorcio%'` los
-//   reclasificaría mal y ensuciaría la contabilidad de dos obras.
+// La primera versión de este archivo (2-sep) daba por sentado que un consorcio
+// del grupo SIEMPRE es ejecutora de una obra, y mandaba a 'tercero' todo lo que
+// no ejecutara nada. Gabriel lo corrigió el 3-sep: CONSORCIO ESPERANZA
+// (S/209.960 en 47 movimientos) y CONSORCIO SAMADAY (S/47.393 en 12) SÍ son
+// consorcios del grupo — terminaron su obra y siguen abiertos porque les falta
+// bancarizar. Sus obras nunca se cargaron en la app, así que 42 de 47 y 10 de
+// 12 movimientos quedaron sin obra_id.
 //
-// De ahí la regla de diseño del módulo: **el nombre nunca decide solo**. Lo
-// que distingue a un consorcio del grupo es SER EJECUTORA DE UNA OBRA; el
-// nombre solo desempata entre ejecutora-consorcio y ejecutora-empresa propia.
-// Y cada sugerencia viaja con la evidencia que la sustenta, para que la
-// pantalla la muestre y una persona pueda contradecirla.
+// LECCIÓN: "no ejecuta ninguna obra" NO significa "no es del grupo". Un
+// consorcio disuelto es exactamente eso.
+//
+// Y una segunda, más incómoda: NO HAY NINGUNA SEÑAL EN LOS DATOS que separe
+// con seguridad una empresa del grupo de un tercero. Las 17 companies activas
+// tienen movimientos propios como `company_id`, tanto las del grupo como los
+// proveedores que el OCR creó solo; y siete son personas naturales (RUC 10…)
+// del entorno familiar, que bien pueden ser del grupo.
+//
+// De ahí la regla de diseño: **este módulo solo sugiere cuando tiene evidencia
+// fuerte, y calla cuando no la tiene.** Sugerir con confianza algo que no se
+// puede saber es peor que no sugerir: invita a aceptar en lote una
+// clasificación equivocada. Los casos sin evidencia salen con `sugerido: null`
+// para que la pantalla los pida explícitamente.
 //
 // Puro: sin React, sin Dexie, sin imports.
 // ═══════════════════════════════════════════════════════════════════
@@ -50,6 +63,7 @@ function esAutocreada(company) {
  *                        muestre qué se pone en juego al reclasificar)
  */
 export function sugerirTipoEntidad(company, obrasEjecutora = [], movs = 0) {
+  const ruc = String(company?.ruc || '').replace(/\D/g, '');
   const evidencia = {
     movs: Number(movs) || 0,
     obras: obrasEjecutora.map(o => o?.nombre_obra).filter(Boolean),
@@ -57,30 +71,45 @@ export function sugerirTipoEntidad(company, obrasEjecutora = [], movs = 0) {
     nombreDiceConsorcio: NOMBRE_CONSORCIO.test(company?.name || '') ||
                          NOMBRE_CONSORCIO.test(company?.legal_name || ''),
     rolGrupo: company?.rol_grupo || null,
+    // RUC 10… = persona natural, 20… = jurídica. En este grupo hay siete
+    // personas naturales del entorno familiar: el dato ayuda a decidir a mano.
+    personaNatural: ruc.startsWith('10'),
   };
 
-  // 1. Ejecuta una obra → es del grupo. El nombre solo desempata qué clase.
+  // ── Evidencia FUERTE 1: se llama consorcio.
+  // En Perú un consorcio se llama consorcio: es la señal más confiable que hay,
+  // y a diferencia de "ejecuta una obra" sigue valiendo cuando ya se disolvió.
+  // Un proveedor que se llame así es posible, y para eso está la pantalla.
+  if (evidencia.nombreDiceConsorcio) {
+    const cola = obrasEjecutora.length
+      ? ` Ejecuta ${obrasEjecutora.length === 1 ? 'una obra' : `${obrasEjecutora.length} obras`}.`
+      : ' No figura ejecutando ninguna obra: puede ser uno ya terminado.';
+    return { sugerido: 'consorcio', confianza: 'alta', evidencia,
+      motivo: `Su nombre dice consorcio.${cola}` };
+  }
+
+  // ── Evidencia FUERTE 2: ejecuta una obra del grupo y no se llama consorcio.
   if (obrasEjecutora.length) {
-    if (evidencia.nombreDiceConsorcio) {
-      return { sugerido: 'consorcio', evidencia,
-        motivo: `Ejecuta ${obrasEjecutora.length === 1 ? 'una obra' : `${obrasEjecutora.length} obras`} y su nombre dice consorcio.` };
-    }
-    return { sugerido: 'propia', evidencia, motivo: 'Ejecuta una obra del grupo.' };
+    return { sugerido: 'propia', confianza: 'alta', evidencia,
+      motivo: 'Ejecuta una obra del grupo.' };
   }
 
-  // 2. No ejecuta nada y la creó un automatismo → proveedor.
-  //    Acá caen ESPERANZA y SAMADAY, correctamente: se llaman consorcio pero
-  //    no ejecutan ninguna obra nuestra.
-  if (evidencia.autocreada || company?.rol_grupo === 'origen') {
-    const porNombre = evidencia.nombreDiceConsorcio
-      ? ' Se llama consorcio, pero no ejecuta ninguna obra del grupo.' : '';
-    return { sugerido: 'tercero', evidencia,
-      motivo: `Apareció sola desde una factura y no ejecuta obras.${porNombre}` };
-  }
+  // ── Sin evidencia fuerte: NO se sugiere nada.
+  // Que la creara el OCR es un indicio de tercero, no una prueba: también se
+  // autocrearon empresas que sí son del grupo. Se muestra el indicio y decide
+  // una persona.
+  const pistas = [];
+  if (evidencia.autocreada) pistas.push('la creó Captura Mágica al leer una factura');
+  if (company?.rol_grupo === 'origen') pistas.push('está marcada como origen de cadena');
+  if (evidencia.personaNatural) pistas.push('el RUC es de persona natural');
+  if (evidencia.movs) pistas.push(`tiene ${evidencia.movs} movimientos a su nombre`);
 
-  // 3. Cargada a mano y sin obra: probablemente del grupo, pero sin evidencia
-  //    fuerte. Que decida la persona.
-  return { sugerido: 'propia', evidencia, motivo: 'Cargada a mano y sin obra asignada — revisar.' };
+  return {
+    sugerido: null, confianza: 'ninguna', evidencia,
+    motivo: pistas.length
+      ? `Sin evidencia concluyente: ${pistas.join('; ')}.`
+      : 'Sin evidencia concluyente: no ejecuta obras ni tiene movimientos.',
+  };
 }
 
 /**
@@ -103,22 +132,28 @@ export function revisarCatalogo({ companies = [], obras = [], movsPorCompany = {
       company: c,
       actual,
       sugerido: r.sugerido,
+      confianza: r.confianza,
       motivo: r.motivo,
       evidencia: r.evidencia,
       obrasEjecutora: suyas,
-      cambia: r.sugerido !== actual,
+      // Sin sugerencia no hay cambio propuesto: se deja como está hasta que
+      // una persona decida.
+      cambia: r.sugerido != null && r.sugerido !== actual,
+      requiereDecision: r.sugerido == null,
     };
   });
 
   // Primero lo que cambia, y dentro de eso lo que más contabilidad mueve:
   // es el orden en que una persona quiere revisarlo.
-  filas.sort((a, b) => (b.cambia ? 1 : 0) - (a.cambia ? 1 : 0)
+  filas.sort((a, b) => (b.requiereDecision ? 1 : 0) - (a.requiereDecision ? 1 : 0)
+    || (b.cambia ? 1 : 0) - (a.cambia ? 1 : 0)
     || b.evidencia.movs - a.evidencia.movs
     || String(a.company.name || '').localeCompare(String(b.company.name || '')));
 
-  const resumen = { propia: 0, consorcio: 0, tercero: 0, cambian: 0, total: filas.length };
+  const resumen = { propia: 0, consorcio: 0, tercero: 0, cambian: 0, sinDecidir: 0, total: filas.length };
   for (const f of filas) {
-    resumen[f.sugerido] = (resumen[f.sugerido] || 0) + 1;
+    if (f.sugerido) resumen[f.sugerido] = (resumen[f.sugerido] || 0) + 1;
+    else resumen.sinDecidir++;
     if (f.cambia) resumen.cambian++;
   }
 

@@ -11,61 +11,77 @@ const OBRA_INCA = { id: 'o-inca', nombre_obra: 'Los Baños del Inca', ejecutora_
 const OBRA_SM   = { id: 'o-sm',   nombre_obra: 'Obras San Marcos',   ejecutora_company_id: 'c-chusaac' };
 
 const CATALOGO = [
-  // Los 2 consorcios reales: ejecutan una obra Y se llaman consorcio.
+  // Consorcios EN CURSO: ejecutan una obra.
   { id: 'c-inca',    name: 'CONSORCIO EL INCA', ruc: '20615346081', rol_grupo: 'mixta',  notas: null },
   { id: 'c-chusaac', name: 'CONSORCIO CHUSAAC', ruc: '20613408011', rol_grupo: 'mixta',  notas: 'Creada rápidamente desde Obra' },
-  // Las 2 trampas: se llaman consorcio, NO ejecutan nada, las creó el OCR.
-  { id: 'c-esper',   name: 'CONSORCIO ESPERANZA', rol_grupo: 'origen', notas: 'Creada automáticamente desde Captura Mágica' },
-  { id: 'c-samaday', name: 'CONSORCIO SAMADAY',   rol_grupo: 'origen', notas: 'Creada automáticamente desde Captura Mágica' },
-  // Empresa propia cargada a mano.
-  { id: 'c-jarvex',  name: 'JARVEX INGENIERIA, TECNOLOGIA Y PROYECTOS E.I.R.L.', rol_grupo: 'mixta', notas: null },
-  // Proveedor común autocreado.
-  { id: 'c-gasomi',  name: 'GASOMI INGENIEROS E.I.R.L.', rol_grupo: 'origen', notas: 'Creada automáticamente desde Captura Mágica' },
+  // Consorcios YA TERMINADOS. Gabriel corrigió el 3-sep: son del grupo, siguen
+  // abiertos porque falta bancarizar, y su obra nunca se cargó en la app.
+  // La versión anterior de la heurística los mandaba a 'tercero'.
+  { id: 'c-esper',   name: 'CONSORCIO ESPERANZA', ruc: '20611547367', rol_grupo: 'origen', notas: 'Creada automáticamente desde Captura Mágica' },
+  { id: 'c-samaday', name: 'CONSORCIO SAMADAY',   ruc: '20612219479', rol_grupo: 'origen', notas: 'Creada automáticamente desde Captura Mágica' },
+  // Empresa propia cargada a mano, sin obra: NO se puede saber sola.
+  { id: 'c-jarvex',  name: 'JARVEX INGENIERIA, TECNOLOGIA Y PROYECTOS E.I.R.L.', ruc: '20615646505', rol_grupo: 'mixta', notas: null },
+  // Proveedor autocreado: tampoco se puede saber solo.
+  { id: 'c-gasomi',  name: 'GASOMI INGENIEROS E.I.R.L.', ruc: '20600097726', rol_grupo: 'origen', notas: 'Creada automáticamente desde Captura Mágica' },
+  // Persona natural del entorno familiar (RUC 10…).
+  { id: 'c-gabriel', name: 'JULCA SALAZAR GABRIEL JESUS', ruc: '10600375399', rol_grupo: 'origen', notas: 'Creada automáticamente desde Captura Mágica' },
 ];
 const OBRAS = [OBRA_INCA, OBRA_SM];
-const MOVS = { 'c-inca': 125, 'c-chusaac': 42, 'c-esper': 47, 'c-samaday': 12, 'c-jarvex': 160, 'c-gasomi': 296 };
+const MOVS = { 'c-inca': 125, 'c-chusaac': 42, 'c-esper': 47, 'c-samaday': 12, 'c-jarvex': 160, 'c-gasomi': 296, 'c-gabriel': 75 };
 
 const filaDe = (r, id) => r.filas.find(f => f.company.id === id);
 
-describe('sugerirTipoEntidad — el nombre nunca decide solo', () => {
-  it('ejecutar una obra + llamarse consorcio = consorcio', () => {
+describe('sugerirTipoEntidad — solo habla con evidencia fuerte', () => {
+  it('llamarse consorcio Y ejecutar obra = consorcio', () => {
     const r = sugerirTipoEntidad(CATALOGO[0], [OBRA_INCA], 125);
     expect(r.sugerido).toBe('consorcio');
+    expect(r.confianza).toBe('alta');
     expect(r.evidencia.movs).toBe(125);
     expect(r.evidencia.obras).toEqual(['Los Baños del Inca']);
   });
 
-  it('LA TRAMPA: llamarse consorcio SIN ejecutar obra = tercero', () => {
-    // Esto es lo que un UPDATE por name ILIKE '%consorcio%' rompería.
+  it('EL BUG QUE GABRIEL CORRIGIÓ: un consorcio TERMINADO sigue siendo consorcio', () => {
+    // ESPERANZA y SAMADAY no ejecutan ninguna obra viva (la suya nunca se
+    // cargó) y la primera versión los mandaba a 'tercero'. "No ejecuta obra"
+    // no significa "no es del grupo".
     for (const c of [CATALOGO[2], CATALOGO[3]]) {
       const r = sugerirTipoEntidad(c, [], MOVS[c.id]);
-      expect(r.sugerido).toBe('tercero');
-      expect(r.motivo).toContain('no ejecuta ninguna obra del grupo');
+      expect(r.sugerido).toBe('consorcio');
+      expect(r.motivo).toContain('ya terminado');
     }
   });
 
   it('ejecutar una obra sin llamarse consorcio = empresa propia', () => {
     const r = sugerirTipoEntidad({ id: 'x', name: 'CONSTRUCTORA X S.A.C.' }, [OBRA_SM], 10);
     expect(r.sugerido).toBe('propia');
+    expect(r.confianza).toBe('alta');
   });
 
-  it('autocreada por el OCR y sin obra = tercero', () => {
-    expect(sugerirTipoEntidad(CATALOGO[5], [], 296).sugerido).toBe('tercero');
+  it('sin obra y sin nombre de consorcio NO se sugiere nada', () => {
+    // Ni la empresa propia ni el proveedor autocreado se pueden distinguir por
+    // los datos: las 17 companies tienen movimientos propios. Callar es lo
+    // correcto; sugerir invita a aceptar en lote algo equivocado.
+    for (const c of [CATALOGO[4], CATALOGO[5], CATALOGO[6]]) {
+      const r = sugerirTipoEntidad(c, [], MOVS[c.id]);
+      expect(r.sugerido).toBeNull();
+      expect(r.confianza).toBe('ninguna');
+    }
   });
 
-  it('rol_grupo=origen basta aunque las notas estén vacías', () => {
-    expect(sugerirTipoEntidad({ id: 'x', name: 'PROVEEDOR', rol_grupo: 'origen' }, [], 0).sugerido).toBe('tercero');
+  it('el motivo enumera los indicios en vez de decidir por ellos', () => {
+    const r = sugerirTipoEntidad(CATALOGO[5], [], 296);
+    expect(r.motivo).toContain('Captura Mágica');
+    expect(r.motivo).toContain('296 movimientos');
+  });
+
+  it('marca las personas naturales por su RUC 10…', () => {
+    expect(sugerirTipoEntidad(CATALOGO[6], [], 75).evidencia.personaNatural).toBe(true);
+    expect(sugerirTipoEntidad(CATALOGO[5], [], 296).evidencia.personaNatural).toBe(false);
   });
 
   it('detecta "Magica" sin tilde igual que "Mágica"', () => {
     const sin = { id: 'x', name: 'P', notas: 'Creada automaticamente desde Captura Magica' };
     expect(sugerirTipoEntidad(sin, [], 0).evidencia.autocreada).toBe(true);
-  });
-
-  it('cargada a mano y sin obra: propia, pero el motivo pide revisión', () => {
-    const r = sugerirTipoEntidad(CATALOGO[4], [], 160);
-    expect(r.sugerido).toBe('propia');
-    expect(r.motivo).toContain('revisar');
   });
 
   it('el nombre matchea por palabra, no por substring accidental', () => {
@@ -82,29 +98,28 @@ describe('sugerirTipoEntidad — el nombre nunca decide solo', () => {
 describe('revisarCatalogo — sobre el catálogo real', () => {
   const r = revisarCatalogo({ companies: CATALOGO, obras: OBRAS, movsPorCompany: MOVS });
 
-  it('clasifica los 6 casos como corresponde', () => {
-    expect(filaDe(r, 'c-inca').sugerido).toBe('consorcio');
-    expect(filaDe(r, 'c-chusaac').sugerido).toBe('consorcio');
-    expect(filaDe(r, 'c-esper').sugerido).toBe('tercero');
-    expect(filaDe(r, 'c-samaday').sugerido).toBe('tercero');
-    expect(filaDe(r, 'c-jarvex').sugerido).toBe('propia');
-    expect(filaDe(r, 'c-gasomi').sugerido).toBe('tercero');
+  it('los 4 consorcios salen como consorcio, incluidos los terminados', () => {
+    for (const id of ['c-inca', 'c-chusaac', 'c-esper', 'c-samaday']) {
+      expect(filaDe(r, id).sugerido).toBe('consorcio');
+    }
+    expect(r.resumen.consorcio).toBe(4);
   });
 
-  it('el resumen cuenta exactamente 2 consorcios', () => {
-    expect(r.resumen.consorcio).toBe(2);
-    expect(r.resumen.total).toBe(6);
+  it('lo que no se puede saber queda SIN sugerencia y no propone cambio', () => {
+    for (const id of ['c-jarvex', 'c-gasomi', 'c-gabriel']) {
+      const f = filaDe(r, id);
+      expect(f.sugerido).toBeNull();
+      expect(f.requiereDecision).toBe(true);
+      expect(f.cambia).toBe(false);   // no se toca sin que alguien decida
+    }
+    expect(r.resumen.sinDecidir).toBe(3);
+    expect(r.resumen.total).toBe(7);
   });
 
-  it('lo que cambia va primero, y dentro de eso lo que más contabilidad mueve', () => {
-    // Sin tipo_entidad guardado todas parten de 'propia', así que cambian las 5
-    // que no son propias; la de más movimientos (gasomi, 296) encabeza y la
-    // única que NO cambia (JARVEX, propia) queda al final pese a sus 160 movs.
-    expect(r.filas[0].company.id).toBe('c-gasomi');
-    expect(r.filas.slice(0, 5).every(f => f.cambia)).toBe(true);
-    expect(r.resumen.cambian).toBe(5);
-    expect(r.filas[5].company.id).toBe('c-jarvex');
-    expect(r.filas[5].cambia).toBe(false);
+  it('lo que hay que decidir va primero; después lo que cambia', () => {
+    expect(r.filas.slice(0, 3).every(f => f.requiereDecision)).toBe(true);
+    expect(r.filas.slice(3).every(f => f.cambia)).toBe(true);
+    expect(r.resumen.cambian).toBe(4);   // los 4 consorcios
   });
 
   it('una company ya clasificada no figura como cambio', () => {
@@ -116,7 +131,7 @@ describe('revisarCatalogo — sobre el catálogo real', () => {
 
   it('ignora borrados y aguanta que no le pasen nada', () => {
     const conBorrada = revisarCatalogo({ companies: [...CATALOGO, { id: 'z', name: 'Z', deleted_at: 'x' }], obras: OBRAS });
-    expect(conBorrada.resumen.total).toBe(6);
+    expect(conBorrada.resumen.total).toBe(7);
     expect(revisarCatalogo().resumen.total).toBe(0);
     expect(revisarCatalogo({}).filas).toEqual([]);
   });

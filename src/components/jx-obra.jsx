@@ -138,11 +138,16 @@ function ObrasPage({ showToast }) {
     // con RUC propio. Un socio es una empresa común (propia o tercera) — antes
     // esto estaba invertido y marcaba consorcio a cada miembro.
     const esTitular = target === 'titular';
+    const esSocio = !!(target && typeof target === 'object' && target.tipo === 'socio');
     setQuickForm({
       ruc: '', name: '', legal_name: '', direccion: '',
       rol_grupo: 'ejecutora',
       rubro: 'ejecutora_obra',
       es_consorcio: esTitular,
+      // Un SOCIO suele ser una empresa ajena al grupo (el caso de CONSORCIO EL
+      // INCA: sus socias son terceras). Nace 'tercero' y se puede cambiar acá
+      // mismo si resulta ser una del grupo.
+      tipo_entidad: esTitular ? 'consorcio' : (esSocio ? 'tercero' : 'propia'),
     });
     setQuickAdd(target);
   };
@@ -166,7 +171,7 @@ function ObrasPage({ showToast }) {
         direccion: quickForm.direccion || null,
         // Con tipo_entidad (mig 172) el consorcio ya no se distingue por una
         // nota en texto libre: sale del catálogo de Empresas por su tipo.
-        tipo_entidad: quickForm.es_consorcio ? 'consorcio' : 'propia',
+        tipo_entidad: quickForm.tipo_entidad || (quickForm.es_consorcio ? 'consorcio' : 'propia'),
         notas: quickForm.es_consorcio ? 'Consorcio (creado desde Obra)' : 'Creada rápidamente desde Obra',
         created_by: userId, updated_by: userId,
         created_at: now, updated_at: now,
@@ -957,10 +962,23 @@ function ObrasPage({ showToast }) {
           onClose={()=>{ setQuickAdd(null); setQuickForm(null); }}>
           <div style={{ fontSize:11, color:'var(--tm)', marginBottom:10 }}>
             {quickForm.es_consorcio
-              ? 'Un consorcio se trata como una empresa con su propio RUC. Buscá el RUC del consorcio en SUNAT para auto-rellenar.'
+              ? 'El consorcio necesita su propio RUC: es el contribuyente que factura y lleva sus libros. Buscá el RUC en SUNAT para auto-rellenar.'
               : 'Crea rápido una empresa que falte. Podés editar más detalles después en Contabilidad → Empresas.'}
           </div>
           <div className="g2">
+            {!quickForm.es_consorcio && (
+              <div style={{ gridColumn:'1/-1' }}>
+                <label className="flabel">Qué es para el grupo</label>
+                <select className="fi" value={quickForm.tipo_entidad||'tercero'}
+                  onChange={e=>setQuickForm({...quickForm, tipo_entidad:e.target.value})}>
+                  <option value="tercero">Tercero (empresa ajena al grupo)</option>
+                  <option value="propia">Empresa del grupo</option>
+                </select>
+                <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>
+                  Los socios de un consorcio suelen ser empresas ajenas: se registran como terceros y no ensucian el catálogo de Empresas.
+                </div>
+              </div>
+            )}
             <div>
               <label className="flabel">RUC</label>
               <div style={{ display:'flex', gap:6 }}>

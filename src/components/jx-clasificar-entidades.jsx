@@ -5,11 +5,13 @@
 // grupo: dos son consorcios y trece son proveedores que Captura Mágica creó
 // sola al leer una factura. Esta pantalla las separa.
 //
-// POR QUÉ ES UNA PANTALLA Y NO UN UPDATE MASIVO: dos de las companies se
-// llaman "CONSORCIO …" y NO son consorcios del grupo (CONSORCIO ESPERANZA,
-// CONSORCIO SAMADAY: proveedores). Cualquier reclasificación por nombre las
-// rompería. La heurística sugiere — con la evidencia a la vista — y una
-// persona decide.
+// POR QUÉ ES UNA PANTALLA Y NO UN UPDATE MASIVO: no hay ninguna señal en los
+// datos que separe con seguridad una empresa del grupo de un tercero. Las 17
+// tienen movimientos propios, y siete son personas naturales del entorno
+// familiar que bien pueden ser del grupo. La heurística solo habla cuando tiene
+// evidencia fuerte (el nombre dice consorcio, o ejecuta una obra) y CALLA
+// cuando no la tiene: esas filas salen marcadas "hay que decidir" y no se
+// tocan solas.
 //
 // La lógica de sugerencia vive en src/lib/clasificacion-entidad.js, con tests.
 // Acá solo está la interacción y la escritura.
@@ -37,7 +39,7 @@ export function ClasificarEntidadesModal({ companies, obras, consorcios, movs, u
 
   // Arranca con las sugerencias precargadas; el usuario corrige lo que quiera.
   const [decisiones, setDecisiones] = uSK(() =>
-    Object.fromEntries(filas.map(f => [f.company.id, f.sugerido])));
+    Object.fromEntries(filas.map(f => [f.company.id, f.sugerido ?? f.actual])));
   // Para las marcadas como consorcio: a qué obra se vinculan.
   const [obraDe, setObraDe] = uSK(() =>
     Object.fromEntries(filas.filter(f => f.sugerido === 'consorcio')
@@ -152,9 +154,10 @@ export function ClasificarEntidadesModal({ companies, obras, consorcios, movs, u
       </div>
 
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10, fontSize: 11 }}>
-        <span className="badge b-green">Del grupo: {resumen.propia}</span>
         <span className="badge b-amber">Consorcios: {resumen.consorcio}</span>
+        <span className="badge b-green">Del grupo: {resumen.propia}</span>
         <span className="badge b-gray">Terceros: {resumen.tercero}</span>
+        {resumen.sinDecidir > 0 && <span className="badge b-yellow">Hay que decidir: {resumen.sinDecidir}</span>}
         <span className="badge b-blue">Cambian: {cambios.length}</span>
       </div>
 
@@ -181,6 +184,11 @@ export function ClasificarEntidadesModal({ companies, obras, consorcios, movs, u
                   </td>
                   <td className="col-m" style={{ textAlign: 'right' }}>{f.evidencia.movs || '—'}</td>
                   <td style={{ fontSize: 11, maxWidth: 280 }}>
+                    {f.requiereDecision && (
+                      <div style={{ color: 'var(--amber)', fontWeight: 600, marginBottom: 2 }}>
+                        Hay que decidir
+                      </div>
+                    )}
                     <div>{f.motivo}</div>
                     {f.evidencia.obras.length > 0 && (
                       <div style={{ fontSize: 10, color: 'var(--green)', marginTop: 2 }}
@@ -192,6 +200,9 @@ export function ClasificarEntidadesModal({ companies, obras, consorcios, movs, u
                       <span className={`badge ${BADGE[f.actual]}`} style={{ fontSize: 9 }}>
                         hoy: {TIPO_ENTIDAD_LBL[f.actual]}
                       </span>
+                      {f.evidencia.personaNatural && (
+                        <span className="badge b-gray" style={{ fontSize: 9, marginLeft: 4 }}>persona natural</span>
+                      )}
                     </div>
                   </td>
                   <td>
