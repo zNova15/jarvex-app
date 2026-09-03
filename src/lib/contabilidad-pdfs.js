@@ -600,177 +600,185 @@ export function generateValorizacionPdf(val, partidasVal, obra, company) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 4. Consolidado contable
+// 4. Consolidado contable (tanda 3)
 // ─────────────────────────────────────────────────────────────
-export function generateConsolidadoPdf(data, companies, periodo) {
+//
+// Recibe TAL CUAL el resultado de `consolidar()` (src/lib/consolidado.js).
+//
+// ⚠ Antes esta función leía `data.porEmpresa`, `data.consolidado.ingresos_externos`
+// y `data.intercompany`, tres campos que la pantalla nunca le pasó: el PDF salía
+// entero en ceros y nadie lo notó porque el número de la pantalla estaba bien.
+// Ahora consume la misma estructura que se muestra, así que si el PDF miente,
+// miente igual que la pantalla — y eso sí se ve.
+export function generateConsolidadoPdf(r, companies, periodo) {
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
   const pageWidth = 297;
-  data = data || {};
-  companies = Array.isArray(companies) ? companies : [];
+  r = r || {};
+  const libros = r.libros || {};
+  const elim = r.eliminaciones || {};
+  const cons = r.consolidado || {};
+  const sinEspejo = r.sinEspejo || {};
+  const moneda = r.moneda || periodo || 'PEN';
 
   drawHeader(doc, {
     company: { name: 'Grupo Empresarial' },
-    title: 'ESTADO CONSOLIDADO DEL GRUPO',
-    subtitle: periodo ? `Período: ${periodo}` : '',
+    title: 'CONSOLIDADO DEL GRUPO',
+    subtitle: `Moneda: ${moneda}`,
     pageWidth,
-  });
-
-  // Tabla resumen por empresa
-  const porEmpresa = Array.isArray(data.porEmpresa) ? data.porEmpresa : companies.map((c) => {
-    const row = (data.empresas || {})[c.id] || {};
-    return {
-      empresa: c.name || c.legal_name,
-      ruc: c.ruc,
-      ingresos: row.ingresos ?? 0,
-      costos: row.costos ?? 0,
-      gastos: row.gastos ?? 0,
-      utilidad: row.utilidad ?? ((row.ingresos ?? 0) - (row.costos ?? 0) - (row.gastos ?? 0)),
-      margen: row.margen,
-    };
   });
 
   let y = 34;
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(11);
   doc.setTextColor(...COLOR_HEAD);
-  doc.text('Resumen por empresa', 14, y);
+  doc.text('Hoja de trabajo', 14, y);
   doc.setTextColor(0, 0, 0);
 
-  const bodyEmpresas = porEmpresa.map((e) => {
-    const ing = Number(e.ingresos || 0);
-    const cos = Number(e.costos || 0);
-    const gas = Number(e.gastos || 0);
-    const ut = Number(e.utilidad ?? (ing - cos - gas));
-    const mg = e.margen != null ? Number(e.margen) : (ing > 0 ? (ut / ing) * 100 : 0);
-    return [
-      safe(e.empresa, '—'),
-      safe(e.ruc, ''),
-      fmtS(ing),
-      fmtS(cos),
-      fmtS(gas),
-      fmtS(ut),
-      fmtPct(mg),
-    ];
-  });
+  const elimIng = Number(elim.ingresos || 0) + Number(sinEspejo.ingresos || 0);
+  const elimCos = Number(elim.costos || 0) + Number(sinEspejo.costos || 0);
 
   autoTable(doc, {
     startY: y + 3,
-    head: [['Empresa', 'RUC', 'Ingresos', 'Costos', 'Gastos', 'Utilidad', 'Margen %']],
-    body: bodyEmpresas,
-    headStyles: { fillColor: COLOR_HEAD, textColor: 255, fontSize: 9 },
-    bodyStyles: { fontSize: 8 },
-    alternateRowStyles: { fillColor: COLOR_ALT },
-    columnStyles: {
-      0: { cellWidth: 'auto' },
-      1: { cellWidth: 28 },
-      2: { cellWidth: 32, halign: 'right' },
-      3: { cellWidth: 32, halign: 'right' },
-      4: { cellWidth: 32, halign: 'right' },
-      5: { cellWidth: 32, halign: 'right' },
-      6: { cellWidth: 24, halign: 'right' },
-    },
-    margin: { left: 14, right: 14 },
-  });
-
-  let endY = doc.lastAutoTable.finalY + 8;
-
-  // Sección consolidada (eliminando intercompany)
-  const cons = data.consolidado || {};
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(11);
-  doc.setTextColor(...COLOR_HEAD);
-  doc.text('Consolidado real (sin intercompany)', 14, endY);
-  doc.setTextColor(0, 0, 0);
-  endY += 3;
-
-  const ingExt = Number(cons.ingresos_externos ?? 0);
-  const cosExt = Number(cons.costos_externos ?? 0);
-  const gasExt = Number(cons.gastos_externos ?? 0);
-  const utReal = Number(cons.utilidad_real ?? (ingExt - cosExt - gasExt));
-  const mgReal = cons.margen_real != null
-    ? Number(cons.margen_real)
-    : (ingExt > 0 ? (utReal / ingExt) * 100 : 0);
-
-  autoTable(doc, {
-    startY: endY,
-    head: [['Concepto', 'Monto']],
+    head: [['Estado de resultados', 'Suma de libros', 'Eliminaciones', 'Consolidado']],
     body: [
-      ['Ingresos externos', fmtS(ingExt)],
-      ['Costos externos', fmtS(cosExt)],
-      ['Gastos externos', fmtS(gasExt)],
-      ['Utilidad real', fmtS(utReal)],
-      ['Margen real', fmtPct(mgReal)],
+      ['Ingresos', fmtS(libros.ingresos), `(${fmtS(elimIng)})`, fmtS(cons.ingresos)],
+      ['Costos', fmtS(libros.costos), `(${fmtS(elimCos)})`, fmtS(cons.costos)],
+      ['Gastos', fmtS(libros.gastos), '—', fmtS(cons.gastos)],
+      ['Utilidad del grupo', fmtS(libros.utilidad), '—', fmtS(cons.utilidad)],
+      ['Margen', '', '', fmtPct(cons.margen)],
     ],
     headStyles: { fillColor: COLOR_HEAD, textColor: 255, fontSize: 9 },
     bodyStyles: { fontSize: 9 },
+    alternateRowStyles: { fillColor: COLOR_ALT },
     columnStyles: {
-      0: { cellWidth: 120 },
-      1: { cellWidth: 60, halign: 'right' },
+      0: { cellWidth: 'auto' },
+      1: { cellWidth: 45, halign: 'right' },
+      2: { cellWidth: 45, halign: 'right' },
+      3: { cellWidth: 45, halign: 'right' },
     },
     margin: { left: 14, right: 14 },
     didParseCell: (d) => {
       const label = d.row.raw[0];
-      if (label === 'Utilidad real' || label === 'Margen real') {
+      if (label === 'Utilidad del grupo' || label === 'Margen') {
         d.cell.styles.fontStyle = 'bold';
         d.cell.styles.fillColor = [235, 240, 245];
       }
     },
   });
 
-  endY = doc.lastAutoTable.finalY + 8;
+  let endY = doc.lastAutoTable.finalY + 8;
 
-  // Intercompany eliminadas
-  const inter = Array.isArray(data.intercompany) ? data.intercompany : [];
-  const totalInter = inter.reduce((s, it) => s + Number(it.monto || it.amount || 0), 0);
-
-  // Salto de página si no cabe
-  const pageHeight = doc.internal.pageSize.getHeight();
-  if (endY > pageHeight - 50) {
-    doc.addPage();
-    endY = 20;
-  }
-
+  // ── Qué se eliminó contra qué ──────────────────────────────
+  const aristas = Array.isArray(r.aristas) ? r.aristas : [];
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(11);
   doc.setTextColor(...COLOR_HEAD);
-  doc.text(`Operaciones intercompany eliminadas (Total: ${fmtS(totalInter)})`, 14, endY);
+  doc.text(
+    `Operaciones internas eliminadas (${elim.nPares || 0} pares · ${fmtS(elim.ingresos)})`,
+    14, endY,
+  );
   doc.setTextColor(0, 0, 0);
   endY += 3;
 
-  if (inter.length === 0) {
+  if (aristas.length === 0) {
     doc.setFont('helvetica', 'italic');
     doc.setFontSize(9);
     doc.setTextColor(...COLOR_MUTED);
-    doc.text('Sin operaciones intercompany registradas en el período.', 14, endY + 5);
+    doc.text('Sin operaciones internas registradas.', 14, endY + 5);
     doc.setTextColor(0, 0, 0);
+    endY += 12;
   } else {
     autoTable(doc, {
       startY: endY,
-      head: [['Fecha', 'Origen', 'Destino', 'Concepto', 'Monto']],
-      body: inter.map((it) => [
-        fmtDate(it.fecha || it.date),
-        safe(it.origen || it.from_company, '—'),
-        safe(it.destino || it.to_company, '—'),
-        safe(it.concepto || it.descripcion, ''),
-        fmtS(it.monto || it.amount || 0),
+      head: [['Vendió', 'Le compró', 'Documentos', 'Eliminado']],
+      body: aristas.map((a) => [
+        safe(a.vendedorNombre, '—'),
+        safe(a.compradorNombre, '—'),
+        String(a.nPares || 0),
+        fmtS(a.monto),
+      ]),
+      headStyles: { fillColor: COLOR_HEAD, textColor: 255, fontSize: 9 },
+      bodyStyles: { fontSize: 8 },
+      alternateRowStyles: { fillColor: COLOR_ALT },
+      columnStyles: {
+        0: { cellWidth: 'auto' },
+        1: { cellWidth: 'auto' },
+        2: { cellWidth: 26, halign: 'right' },
+        3: { cellWidth: 40, halign: 'right' },
+      },
+      margin: { left: 14, right: 14 },
+    });
+    endY = doc.lastAutoTable.finalY + 8;
+  }
+
+  // ── Cadenas de reventa interna ─────────────────────────────
+  const cadenas = Array.isArray(r.cadenas) ? r.cadenas : [];
+  const pageHeight = doc.internal.pageSize.getHeight();
+  if (cadenas.length > 0) {
+    if (endY > pageHeight - 50) { doc.addPage(); endY = 20; }
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(...COLOR_HEAD);
+    doc.text('Cadenas de reventa dentro del grupo', 14, endY);
+    doc.setTextColor(0, 0, 0);
+    autoTable(doc, {
+      startY: endY + 3,
+      head: [['Cadena', 'Tramos', 'Facturado adentro']],
+      body: cadenas.map((c) => [
+        (c.nombres || []).join('  →  '),
+        String((c.tramos || []).length),
+        fmtS(c.facturadoInterno),
+      ]),
+      headStyles: { fillColor: COLOR_HEAD, textColor: 255, fontSize: 9 },
+      bodyStyles: { fontSize: 8 },
+      alternateRowStyles: { fillColor: COLOR_ALT },
+      columnStyles: {
+        0: { cellWidth: 'auto' },
+        1: { cellWidth: 22, halign: 'right' },
+        2: { cellWidth: 40, halign: 'right' },
+      },
+      margin: { left: 14, right: 14 },
+    });
+    endY = doc.lastAutoTable.finalY + 8;
+  }
+
+  // ── Lo que no cuadra ───────────────────────────────────────
+  const huerfanas = Array.isArray(sinEspejo.movimientos) ? sinEspejo.movimientos : [];
+  if (huerfanas.length > 0) {
+    if (endY > pageHeight - 50) { doc.addPage(); endY = 20; }
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(...COLOR_HEAD);
+    doc.text(`Operaciones internas sin su espejo cargado (${huerfanas.length})`, 14, endY);
+    doc.setTextColor(0, 0, 0);
+    autoTable(doc, {
+      startY: endY + 3,
+      head: [['Fecha', 'Documento', 'Entidad', 'Contraparte', 'Falta', 'Monto']],
+      body: huerfanas.map((m) => [
+        fmtDate(m.fecha),
+        safe(m.documento, '—'),
+        safe(m.entidad, '—'),
+        safe(m.contraparte, '—'),
+        m.tipo === 'ingreso' ? 'el costo' : 'el ingreso',
+        fmtS(m.monto),
       ]),
       headStyles: { fillColor: COLOR_HEAD, textColor: 255, fontSize: 9 },
       bodyStyles: { fontSize: 8 },
       alternateRowStyles: { fillColor: COLOR_ALT },
       columnStyles: {
         0: { cellWidth: 24 },
-        1: { cellWidth: 50 },
-        2: { cellWidth: 50 },
+        1: { cellWidth: 28 },
+        2: { cellWidth: 'auto' },
         3: { cellWidth: 'auto' },
-        4: { cellWidth: 32, halign: 'right' },
+        4: { cellWidth: 24 },
+        5: { cellWidth: 32, halign: 'right' },
       },
       margin: { left: 14, right: 14 },
     });
   }
 
-  drawFooter(doc, `Consolidado ${periodo || ''}`);
-  const filename = `Consolidado_${(periodo || 'periodo').replace(/[^\w-]/g, '-')}.pdf`;
-  doc.save(filename);
+  drawFooter(doc, `Consolidado ${moneda}`);
+  doc.save(`Consolidado_${String(moneda).replace(/[^\w-]/g, '-')}.pdf`);
   return doc;
 }
 

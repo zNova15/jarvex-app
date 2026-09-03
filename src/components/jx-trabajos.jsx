@@ -806,8 +806,10 @@ function TrabajosPage({ showToast, onNav, onEnterObra }) {
 // una obra NO están todos a nombre de su titular contable. En Miraflores el
 // CONSORCIO EL INCA (titular) tiene 112 de 460; el resto está a nombre de
 // JARVEX, GASOMI, JADE, JHEENSEG… — es la cadena intercompany, no un error.
-// Por eso el panel MUESTRA ese reparto en vez de esconderlo: es el número que
-// la tanda 3 (consolidado con eliminaciones) tiene que hacer desaparecer.
+// Por eso el panel MUESTRA ese reparto en vez de esconderlo. Eliminarlo es
+// tarea del Consolidado del grupo (src/lib/consolidado.js, tanda 3), que
+// empareja cada factura interna con su espejo; acá se muestra crudo a
+// propósito, porque para la obra ESA es la plata que se movió.
 //
 // El panel es un LANZADOR: no muestra nada que la sección de destino no le
 // deje ver al rol. Las tarjetas sensibles (ficha contable, equipo) van

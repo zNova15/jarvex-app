@@ -20,6 +20,7 @@ import { EmpresaDetalle } from "./jx-empresa-detalle.jsx";
 import { ClasificarEntidadesModal } from "./jx-clasificar-entidades.jsx";
 import { rolDeCompanyEnObra, titularContableDeObra } from "../lib/consorcio.js";
 import { resumenPorEntidad } from "../lib/contabilidad-entidades.js";
+import { consolidar, MOTIVO_LABEL } from "../lib/consolidado.js";
 import { empresasPorCategoria, CATEGORIAS_EMPRESA } from "../lib/desglose-empresa.js";
 import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
 const { useState: uSC, useMemo: uMC, useEffect: uEC, useRef: uRC } = React;
@@ -4921,190 +4922,317 @@ function ContabilidadDashboardPage({ showToast }) {
 }
 
 // ╔════════════════════════════════════════════════════════════╗
-// ║  CONSOLIDADO                                               ║
+// ║  CONSOLIDADO DEL GRUPO — la hoja de trabajo (tanda 3)       ║
 // ╚════════════════════════════════════════════════════════════╝
+// Un consolidado contable no es un tablero de indicadores lado a lado: es
+// UNA hoja de trabajo con tres columnas —suma de libros, eliminaciones,
+// consolidado— y el detalle de qué se eliminó contra qué.
+//
+// Esta pantalla NO calcula nada por su cuenta: todo el criterio vive en
+// src/lib/consolidado.js (con tests, incluido el caso de referencia
+// A → B → consorcio del documento de la tanda 3).
 function ConsolidadoPage({ showToast }) {
   const { data: companies } = window.__hooks.useCompanies();
+  const { data: consorcios } = window.__hooks.useConsorcios?.() || { data: [] };
+  const { data: socios } = window.__hooks.useConsorcioSocios?.() || { data: [] };
   const { data: movs } = window.__hooks.useAccountingMovements();
 
   const [moneda, setMoneda] = uSC('PEN');
-  const [vista, setVista] = uSC('real'); // 'real' | 'acumulado'
+  const [verPerimetro, setVerPerimetro] = uSC(false);
+  const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
 
-  const data = uMC(() => {
-    const ms = (movs || []).filter(m => m.currency === moneda && m.payment_status !== 'cancelled');
+  const r = uMC(() => consolidar({
+    companies, consorcios, socios, movs, moneda, demo: esPrueba,
+  }), [companies, consorcios, socios, movs, moneda, esPrueba]);
 
-    // Acumulado (incluye internas)
-    let inAcum=0, coAcum=0, gAcum=0;
-    // Externos (excluye internas)
-    let inExt=0, coExt=0, gExt=0;
-    // Internas (separadas)
-    let inInt=0, coInt=0;
+  const { libros, eliminaciones: elim, consolidado: con, sinEspejo, conciliacion } = r;
 
-    ms.forEach(m => {
-      const a = Number(m.amount||0);
-      if (m.type === 'income')  inAcum += a;
-      if (m.type === 'cost')    coAcum += a;
-      if (m.type === 'expense') gAcum += a;
-
-      if (m.is_intercompany) {
-        if (m.type === 'income') inInt += a;
-        // 'expense' NO debería existir en una interna (clasificacion-contable.js
-        // la fuerza a 'cost'), pero si una fila vieja quedó así, se elimina
-        // igual: sin esto se evaporaba de los dos lados y el consolidado
-        // dejaba de cuadrar.
-        if (m.type === 'cost' || m.type === 'expense') coInt += a;
-      } else {
-        if (m.type === 'income')  inExt += a;
-        if (m.type === 'cost')    coExt += a;
-        if (m.type === 'expense') gExt += a;
-      }
-    });
-
-    const utilidadAcum = inAcum - coAcum - gAcum;
-    const margenAcum   = inAcum > 0 ? (utilidadAcum / inAcum * 100) : 0;
-    const utilidadReal = inExt - coExt - gExt;
-    const margenReal   = inExt > 0 ? (utilidadReal / inExt * 100) : 0;
-
-    return {
-      inAcum, coAcum, gAcum, utilidadAcum, margenAcum,
-      inExt, coExt, gExt, utilidadReal, margenReal,
-      inInt, coInt,
-      eliminados: inInt + coInt,
-      activeCount: (companies || []).filter(c => c.status === 'activa').length,
-      totalMovs: ms.length,
-    };
-  }, [movs, companies, moneda]);
+  // Fila de la hoja de trabajo. La columna del medio es lo que se saca, y va
+  // en negativo a propósito: una eliminación resta de los dos lados.
+  const FilaHoja = ({ label, libro, elimina, final, fuerte, color }) => (
+    <tr style={{ borderTop: fuerte ? '2px solid var(--border)' : '1px solid var(--border)' }}>
+      <td style={{ padding: '9px 10px', fontSize: 12.5, fontWeight: fuerte ? 700 : 500, color: 'var(--tp)' }}>{label}</td>
+      <td style={{ padding: '9px 10px', textAlign: 'right', fontSize: 12.5, fontVariantNumeric: 'tabular-nums', color: 'var(--ts)' }}>
+        {fmtCur(libro, moneda)}
+      </td>
+      <td style={{ padding: '9px 10px', textAlign: 'right', fontSize: 12.5, fontVariantNumeric: 'tabular-nums', color: elimina ? 'var(--blue)' : 'var(--tm)' }}>
+        {elimina ? `(${fmtCur(elimina, moneda)})` : '—'}
+      </td>
+      <td style={{ padding: '9px 10px', textAlign: 'right', fontSize: fuerte ? 14 : 12.5, fontWeight: fuerte ? 800 : 600,
+        fontVariantNumeric: 'tabular-nums', color: color || 'var(--tp)' }}>
+        {fmtCur(final, moneda)}
+      </td>
+    </tr>
+  );
 
   return (
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div>
           <div className="pg-title">Consolidado del Grupo</div>
-          <div className="pg-sub">{data.activeCount} empresas activas · {data.totalMovs} movimientos en {moneda}</div>
+          <div className="pg-sub">
+            {r.perimetro.entidades.length} entidades consolidadas · {libros.nMovs} movimientos en {moneda}
+            {elim.nPares > 0 && <> · {elim.nPares} operaciones internas eliminadas</>}
+          </div>
         </div>
-        <div style={{ display:'flex', gap:6, alignItems:'center' }}>
-          <select className="fi" value={moneda} onChange={e=>setMoneda(e.target.value)} style={{ minWidth:100 }}>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <select className="fi" value={moneda} onChange={e => setMoneda(e.target.value)} style={{ minWidth: 100 }}>
             <option value="PEN">S/ (PEN)</option>
             <option value="USD">USD</option>
           </select>
-          <button className="btn btn-ghost btn-sm" title="Descargar PDF" onClick={()=>{
+          <button className="btn btn-ghost btn-sm" title="Descargar PDF" onClick={() => {
             try {
-              window.__pdfs?.generateConsolidadoPdf?.(data, companies, `${moneda} · ${vista}`);
+              window.__pdfs?.generateConsolidadoPdf?.(r, companies, moneda);
               showToast?.('PDF generado', 'green');
-            } catch (e) { showToast?.('Error: '+e.message, 'red'); }
+            } catch (e) { showToast?.('Error: ' + e.message, 'red'); }
           }}>
             <JxIcon name="download" size={13}/>PDF
           </button>
         </div>
       </div>
 
-      {/* Toggle de vista */}
-      <div style={{ display:'flex', gap:6, padding:4, background:'var(--bg-s)', borderRadius:8, marginBottom:18, width:'fit-content' }}>
-        <button
-          className={`btn btn-sm ${vista==='real'?'btn-amber':'btn-ghost'}`}
-          onClick={()=>setVista('real')}
-          style={{ border:'none' }}>
-          Vista consolidada real (sin intercompany)
-        </button>
-        <button
-          className={`btn btn-sm ${vista==='acumulado'?'btn-amber':'btn-ghost'}`}
-          onClick={()=>setVista('acumulado')}
-          style={{ border:'none' }}>
-          Vista acumulada (suma todo)
-        </button>
+      {/* ── LA HOJA DE TRABAJO ─────────────────────────────────── */}
+      <div className="card" style={{ overflowX: 'auto', marginBottom: 14 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 560 }}>
+          <thead>
+            <tr style={{ background: 'var(--bg-s)' }}>
+              <th style={{ padding: '9px 10px', textAlign: 'left', fontSize: 10.5, letterSpacing: '.06em', color: 'var(--tm)', textTransform: 'uppercase' }}>
+                Estado de resultados
+              </th>
+              <th style={{ padding: '9px 10px', textAlign: 'right', fontSize: 10.5, letterSpacing: '.06em', color: 'var(--tm)', textTransform: 'uppercase' }}>
+                Suma de libros
+              </th>
+              <th style={{ padding: '9px 10px', textAlign: 'right', fontSize: 10.5, letterSpacing: '.06em', color: 'var(--blue)', textTransform: 'uppercase' }}>
+                Eliminaciones
+              </th>
+              <th style={{ padding: '9px 10px', textAlign: 'right', fontSize: 10.5, letterSpacing: '.06em', color: 'var(--green)', textTransform: 'uppercase' }}>
+                Consolidado
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <FilaHoja label="Ingresos" libro={libros.ingresos}
+              elimina={elim.ingresos + sinEspejo.ingresos} final={con.ingresos} color="var(--green)"/>
+            <FilaHoja label="Costos" libro={libros.costos}
+              elimina={elim.costos + sinEspejo.costos} final={con.costos} color="var(--red)"/>
+            <FilaHoja label="Gastos" libro={libros.gastos} elimina={0} final={con.gastos} color="var(--amber)"/>
+            <FilaHoja label="Utilidad del grupo" libro={libros.utilidad} elimina={0} final={con.utilidad} fuerte
+              color={con.utilidad >= 0 ? 'var(--blue)' : 'var(--red)'}/>
+          </tbody>
+        </table>
       </div>
 
-      <div style={{ background: vista==='real' ? 'rgba(46,204,113,0.06)' : 'rgba(255,179,0,0.06)',
-        border: `1px solid ${vista==='real' ? 'rgba(46,204,113,0.25)' : 'rgba(255,179,0,0.25)'}`,
-        borderRadius:8, padding:'10px 14px', marginBottom:14, fontSize:12.5, color:'var(--ts)' }}>
-        {vista === 'real' ? (
-          <>
-            <strong style={{ color:'var(--green)' }}>Vista consolidada real:</strong> Resta operaciones internas entre empresas del grupo.
-            Refleja cuánto ganó <strong>realmente</strong> el grupo frente a clientes y proveedores externos. Es el número que reportarías a accionistas o al holding.
-          </>
-        ) : (
-          <>
-            <strong style={{ color:'var(--amber)' }}>Vista acumulada:</strong> Suma todos los movimientos sin descontar operaciones internas.
-            Útil para ver el volumen total de transacciones, pero <strong>infla</strong> los números porque cuenta dos veces lo que se vende entre empresas del grupo.
-          </>
-        )}
+      <div className="card card-p" style={{ marginBottom: 18, borderLeft: '3px solid var(--green)', fontSize: 12, color: 'var(--ts)' }}>
+        La columna <strong style={{ color: 'var(--green)' }}>Consolidado</strong> es lo que el grupo movió
+        frente a <strong>clientes y proveedores de afuera</strong>. La de <strong>Suma de libros</strong> cuenta
+        cada factura interna tantas veces como empresas la tocaron: si una empresa le vende a otra y esa le vende
+        al consorcio, el mismo material aparece tres veces. Las <strong style={{ color: 'var(--blue)' }}>eliminaciones </strong>
+        lo dejan una sola vez. Margen consolidado: <strong>{con.margen.toFixed(1)}%</strong>.
       </div>
 
-      {/* KPIs */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(180px, 1fr))', gap:12, marginBottom:18 }}>
-        {vista === 'real' ? (
-          <>
-            <div className="card card-p" style={{ borderLeft:'3px solid var(--green)' }}>
-              <div style={{ fontSize:11, color:'var(--tm)', textTransform:'uppercase' }}>Ingreso externo real</div>
-              <div style={{ fontSize:22, fontWeight:800, color:'var(--green)', marginTop:4 }}>{fmtCur(data.inExt, moneda)}</div>
+      {/* Cobertura: cuando el ingreso externo cargado no llega a cubrir el
+          costo externo, el problema no es el consolidado sino lo que falta
+          cargar. Decirlo evita leer "el grupo perdió" donde dice "faltan las
+          valorizaciones al cliente". */}
+      {con.ingresos < con.costos && (
+        <div className="card card-p" style={{ marginBottom: 18, borderLeft: '3px solid var(--amber)', fontSize: 12, color: 'var(--ts)' }}>
+          <strong style={{ color: 'var(--amber)' }}>Ojo con leer esto como pérdida:</strong> hay {fmtCur(con.costos, moneda)} de
+          costo externo cargado contra {fmtCur(con.ingresos, moneda)} de ingreso externo. Los cobros al cliente final
+          (valorizaciones, adelantos) se cargan en su propio libro: mientras no estén, la utilidad consolidada muestra
+          el gasto sin su contrapartida.
+        </div>
+      )}
+
+      {/* ── CONCILIACIÓN ───────────────────────────────────────── */}
+      <div className="card card-p" style={{ marginBottom: 18 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--tp)', marginBottom: 8 }}>
+          De la suma de libros al consolidado
+        </div>
+        <div style={{ display: 'grid', gap: 6, fontSize: 12 }}>
+          {[
+            ['Utilidad sumando todos los libros', conciliacion.desdeLibros, 'var(--ts)'],
+            ['(−) Margen de pares con importes distintos', conciliacion.margenParesDescuadrados, 'var(--amber)'],
+            ['(−) Operaciones internas sin espejo cargado', conciliacion.internasSinEspejo, 'var(--amber)'],
+            ['= Utilidad consolidada', conciliacion.haciaConsolidado, con.utilidad >= 0 ? 'var(--blue)' : 'var(--red)'],
+          ].map(([label, valor, color], i, arr) => (
+            <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: 12,
+              paddingTop: i === arr.length - 1 ? 6 : 0,
+              borderTop: i === arr.length - 1 ? '1px solid var(--border)' : 'none' }}>
+              <span style={{ color: 'var(--tm)', fontWeight: i === arr.length - 1 ? 700 : 400 }}>{label}</span>
+              <span style={{ color, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{fmtCur(valor, moneda)}</span>
             </div>
-            <div className="card card-p" style={{ borderLeft:'3px solid var(--red)' }}>
-              <div style={{ fontSize:11, color:'var(--tm)', textTransform:'uppercase' }}>Costo externo real</div>
-              <div style={{ fontSize:22, fontWeight:800, color:'var(--red)', marginTop:4 }}>{fmtCur(data.coExt, moneda)}</div>
-            </div>
-            <div className="card card-p" style={{ borderLeft:'3px solid var(--amber)' }}>
-              <div style={{ fontSize:11, color:'var(--tm)', textTransform:'uppercase' }}>Gastos externos</div>
-              <div style={{ fontSize:22, fontWeight:800, color:'var(--amber)', marginTop:4 }}>{fmtCur(data.gExt, moneda)}</div>
-            </div>
-            <div className="card card-p" style={{ borderLeft:`3px solid ${data.utilidadReal>=0?'var(--blue)':'var(--red)'}` }}>
-              <div style={{ fontSize:11, color:'var(--tm)', textTransform:'uppercase' }}>Utilidad real del grupo</div>
-              <div style={{ fontSize:22, fontWeight:800, color: data.utilidadReal>=0?'var(--blue)':'var(--red)', marginTop:4 }}>{fmtCur(data.utilidadReal, moneda)}</div>
-            </div>
-            <div className="card card-p" style={{ borderLeft:'3px solid var(--ts)' }}>
-              <div style={{ fontSize:11, color:'var(--tm)', textTransform:'uppercase' }}>Margen real</div>
-              <div style={{ fontSize:22, fontWeight:800, color: data.margenReal>=0?'var(--green)':'var(--red)', marginTop:4 }}>{data.margenReal.toFixed(1)}%</div>
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="card card-p" style={{ borderLeft:'3px solid var(--green)' }}>
-              <div style={{ fontSize:11, color:'var(--tm)', textTransform:'uppercase' }}>Ingresos totales</div>
-              <div style={{ fontSize:22, fontWeight:800, color:'var(--green)', marginTop:4 }}>{fmtCur(data.inAcum, moneda)}</div>
-            </div>
-            <div className="card card-p" style={{ borderLeft:'3px solid var(--red)' }}>
-              <div style={{ fontSize:11, color:'var(--tm)', textTransform:'uppercase' }}>Costos totales</div>
-              <div style={{ fontSize:22, fontWeight:800, color:'var(--red)', marginTop:4 }}>{fmtCur(data.coAcum, moneda)}</div>
-            </div>
-            <div className="card card-p" style={{ borderLeft:'3px solid var(--amber)' }}>
-              <div style={{ fontSize:11, color:'var(--tm)', textTransform:'uppercase' }}>Gastos totales</div>
-              <div style={{ fontSize:22, fontWeight:800, color:'var(--amber)', marginTop:4 }}>{fmtCur(data.gAcum, moneda)}</div>
-            </div>
-            <div className="card card-p" style={{ borderLeft:`3px solid ${data.utilidadAcum>=0?'var(--blue)':'var(--red)'}` }}>
-              <div style={{ fontSize:11, color:'var(--tm)', textTransform:'uppercase' }}>Utilidad acumulada</div>
-              <div style={{ fontSize:22, fontWeight:800, color: data.utilidadAcum>=0?'var(--blue)':'var(--red)', marginTop:4 }}>{fmtCur(data.utilidadAcum, moneda)}</div>
-            </div>
-            <div className="card card-p" style={{ borderLeft:'3px solid var(--ts)' }}>
-              <div style={{ fontSize:11, color:'var(--tm)', textTransform:'uppercase' }}>Margen acumulado</div>
-              <div style={{ fontSize:22, fontWeight:800, color: data.margenAcum>=0?'var(--green)':'var(--red)', marginTop:4 }}>{data.margenAcum.toFixed(1)}%</div>
-            </div>
-          </>
-        )}
+          ))}
+        </div>
       </div>
 
-      {/* Detalle de operaciones internas */}
-      {data.eliminados > 0 && (
-        <div className="card card-p" style={{ borderLeft:'3px solid var(--blue)' }}>
-          <div style={{ fontSize:13, fontWeight:700, color:'var(--blue)', marginBottom:8 }}>
-            Operaciones internas (excluidas de la vista real)
+      {/* ── CADENAS A → B → CONSORCIO ──────────────────────────── */}
+      {r.cadenas.length > 0 && (
+        <div className="card card-p" style={{ marginBottom: 18, borderLeft: '3px solid var(--blue)' }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--blue)', marginBottom: 4 }}>
+            Cadenas de reventa dentro del grupo
           </div>
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(180px,1fr))', gap:10 }}>
-            <div>
-              <div style={{ fontSize:10.5, color:'var(--tm)', textTransform:'uppercase' }}>Ingresos internos</div>
-              <div style={{ fontSize:16, fontWeight:700, color:'var(--green)' }}>{fmtCur(data.inInt, moneda)}</div>
-            </div>
-            <div>
-              <div style={{ fontSize:10.5, color:'var(--tm)', textTransform:'uppercase' }}>Costos internos</div>
-              <div style={{ fontSize:16, fontWeight:700, color:'var(--red)' }}>{fmtCur(data.coInt, moneda)}</div>
-            </div>
-            <div>
-              <div style={{ fontSize:10.5, color:'var(--tm)', textTransform:'uppercase' }}>Total eliminado del grupo</div>
-              <div style={{ fontSize:16, fontWeight:700, color:'var(--blue)' }}>{fmtCur(data.eliminados, moneda)}</div>
-            </div>
+          <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 10 }}>
+            El material entra una vez al grupo y se factura varias veces adentro antes de llegar a la ejecutora.
+            El consolidado lo cuenta <strong>una sola vez</strong>.
           </div>
-          <div style={{ fontSize:11, color:'var(--tm)', marginTop:8 }}>
-            Estos importes existen en ambas empresas (vendedor y comprador del grupo) — sumarlos contaría dos veces el mismo dinero.
-            Por eso la <strong>vista real</strong> los excluye.
+          <div style={{ display: 'grid', gap: 10 }}>
+            {r.cadenas.map((c, i) => (
+              <div key={i} style={{ background: 'var(--bg-s)', borderRadius: 8, padding: '10px 12px' }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--tp)' }}>
+                  {c.nombres.map((n, j) => (
+                    <React.Fragment key={j}>
+                      {j > 0 && (
+                        <span style={{ color: 'var(--blue)', fontSize: 11, fontVariantNumeric: 'tabular-nums' }}>
+                          → {fmtCur(c.tramos[j - 1].monto, moneda)} →
+                        </span>
+                      )}
+                      <strong>{n}</strong>
+                    </React.Fragment>
+                  ))}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 6 }}>
+                  Facturado dentro del grupo: <strong>{fmtCur(c.facturadoInterno, moneda)}</strong> en {c.tramos.length} tramos ·
+                  {' '}eliminado entero del consolidado.
+                </div>
+              </div>
+            ))}
           </div>
+        </div>
+      )}
+
+      {/* ── MATRIZ DE ELIMINACIONES ────────────────────────────── */}
+      {r.aristas.length > 0 && (
+        <div className="card" style={{ marginBottom: 18, overflowX: 'auto' }}>
+          <div style={{ padding: '12px 14px 6px', fontSize: 12.5, fontWeight: 700, color: 'var(--tp)' }}>
+            Qué se eliminó contra qué
+            <span style={{ fontWeight: 400, color: 'var(--tm)', fontSize: 11 }}>
+              {' '}· {elim.porVinculo} por vínculo directo, {elim.porDocumento} por número de documento
+            </span>
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 520 }}>
+            <thead>
+              <tr style={{ background: 'var(--bg-s)' }}>
+                <th style={{ padding: '7px 10px', textAlign: 'left', fontSize: 10.5, color: 'var(--tm)', textTransform: 'uppercase' }}>Vendió</th>
+                <th style={{ padding: '7px 10px', textAlign: 'left', fontSize: 10.5, color: 'var(--tm)', textTransform: 'uppercase' }}>Le compró</th>
+                <th style={{ padding: '7px 10px', textAlign: 'right', fontSize: 10.5, color: 'var(--tm)', textTransform: 'uppercase' }}>Docs</th>
+                <th style={{ padding: '7px 10px', textAlign: 'right', fontSize: 10.5, color: 'var(--tm)', textTransform: 'uppercase' }}>Eliminado</th>
+              </tr>
+            </thead>
+            <tbody>
+              {r.aristas.map((a, i) => (
+                <tr key={i} style={{ borderTop: '1px solid var(--border)' }}>
+                  <td style={{ padding: '7px 10px', fontSize: 12, color: 'var(--tp)' }}>{a.vendedorNombre}</td>
+                  <td style={{ padding: '7px 10px', fontSize: 12, color: 'var(--tp)' }}>{a.compradorNombre}</td>
+                  <td style={{ padding: '7px 10px', fontSize: 12, textAlign: 'right', color: 'var(--tm)' }}>{a.nPares}</td>
+                  <td style={{ padding: '7px 10px', fontSize: 12, textAlign: 'right', fontWeight: 700, color: 'var(--blue)', fontVariantNumeric: 'tabular-nums' }}>
+                    {fmtCur(a.monto, moneda)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* ── PARES DESCUADRADOS ─────────────────────────────────── */}
+      {elim.descuadrados.length > 0 && (
+        <div className="card card-p" style={{ marginBottom: 18, borderLeft: '3px solid var(--amber)' }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--amber)', marginBottom: 6 }}>
+            Pares con importes distintos ({elim.descuadrados.length})
+          </div>
+          <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 8 }}>
+            El vendedor y el comprador cargaron la misma factura por montos diferentes. La diferencia no se elimina
+            contra nada y queda dentro de la utilidad consolidada sin ser plata de afuera.
+          </div>
+          <div style={{ display: 'grid', gap: 6 }}>
+            {elim.descuadrados.slice(0, 20).map((p, i) => (
+              <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 11.5 }}>
+                <span style={{ color: 'var(--ts)' }}>
+                  <strong>{p.documento}</strong> · {p.vendedor} → {p.comprador}
+                </span>
+                <span style={{ color: 'var(--amber)', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+                  {fmtCur(p.montoIngreso, moneda)} vs {fmtCur(p.montoEgreso, moneda)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── INTERNAS SIN ESPEJO ────────────────────────────────── */}
+      {sinEspejo.nMovs > 0 && (
+        <div className="card card-p" style={{ marginBottom: 18, borderLeft: '3px solid var(--amber)' }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--amber)', marginBottom: 6 }}>
+            Operaciones internas sin su espejo cargado ({sinEspejo.nMovs})
+          </div>
+          <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 8 }}>
+            Una entidad del grupo facturó a otra y la otra nunca cargó su lado. El consolidado del grupo está bien
+            igual —lo que no existe no hay que eliminarlo—, pero el libro de la contraparte está incompleto por
+            {' '}{fmtCur(Math.abs(sinEspejo.neto), moneda)}.
+          </div>
+          <div style={{ display: 'grid', gap: 6 }}>
+            {sinEspejo.movimientos.slice(0, 25).map((m) => (
+              <div key={m.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 11.5 }}>
+                <span style={{ color: 'var(--ts)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <strong>{m.documento}</strong> · {m.fecha || 's/f'} · {m.entidad} → {m.contraparte}
+                </span>
+                <span style={{ color: 'var(--tm)', fontWeight: 700, fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
+                  {m.tipo === 'ingreso' ? 'falta el costo' : 'falta el ingreso'} · {fmtCur(m.monto, moneda)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── PERÍMETRO ──────────────────────────────────────────── */}
+      {r.perimetro.aClasificar.length > 0 && (
+        <div className="card card-p" style={{ marginBottom: 12, borderLeft: '3px solid var(--amber)', fontSize: 12, color: 'var(--ts)' }}>
+          <strong style={{ color: 'var(--amber)' }}>Falta clasificar {r.perimetro.aClasificar.length} entidad(es):</strong>{' '}
+          {r.perimetro.aClasificar.map(e => e.nombre).join(', ')}. Se consolidan porque ya tienen operaciones
+          marcadas como internas, pero el catálogo las sigue llamando terceros. Marcalas en Empresas → Revisar
+          clasificación para que el perímetro no dependa de cómo se cargó cada factura.
+        </div>
+      )}
+
+      <button type="button" className="btn btn-ghost btn-sm" onClick={() => setVerPerimetro(v => !v)}
+        style={{ marginBottom: 10 }}>
+        <JxIcon name={verPerimetro ? 'chevD' : 'chevR'} size={12}/>
+        {verPerimetro ? 'Ocultar' : 'Ver'} el perímetro de consolidación ({r.perimetro.entidades.length})
+      </button>
+
+      {verPerimetro && (
+        <div className="card card-p" style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 10 }}>
+            Los libros que entran al consolidado. Un tercero (una municipalidad cliente, un proveedor) puede tener
+            movimientos cargados en la app y aun así <strong>no</strong> ser del grupo: sus libros no se suman acá.
+          </div>
+          <div style={{ display: 'grid', gap: 4 }}>
+            {r.perimetro.entidades.map(e => (
+              <div key={e.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 11.5 }}>
+                <span style={{ color: 'var(--ts)' }}>{e.nombre}{e.esConsorcio ? ' · consorcio' : ''}</span>
+                <span style={{ color: e.motivo === 'evidencia' ? 'var(--amber)' : 'var(--tm)', flexShrink: 0 }}>
+                  {MOTIVO_LABEL[e.motivo]}
+                </span>
+              </div>
+            ))}
+          </div>
+          {r.fueraDePerimetro.nMovs > 0 && (
+            <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border)', fontSize: 11.5, color: 'var(--tm)' }}>
+              <strong>Fuera del perímetro:</strong> {r.fueraDePerimetro.nMovs} movimientos por{' '}
+              {fmtCur(r.fueraDePerimetro.ingresos + r.fueraDePerimetro.costos + r.fueraDePerimetro.gastos, moneda)}
+              {' '}en los libros de {r.fueraDePerimetro.entidades.map(e => e.nombre).join(', ')}.
+            </div>
+          )}
+        </div>
+      )}
+
+      {(r.otrasMonedas.length > 0 || r.anulados > 0) && (
+        <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 4 }}>
+          No entran en este cálculo:{' '}
+          {r.otrasMonedas.map(o => `${o.movs} movimiento(s) en ${o.moneda}`).join(', ')}
+          {r.otrasMonedas.length > 0 && r.anulados > 0 && ' · '}
+          {r.anulados > 0 && `${r.anulados} anulado(s)`}.
         </div>
       )}
     </div>
@@ -6387,6 +6515,7 @@ function ContabilidadGrupoPage({ showToast }) {   // eslint-disable-line no-unus
   const { data: obras } = window.__hooks.useObras?.() || { data: [] };
   const { data: trabajosBS } = window.__hooks.useTrabajos?.() || { data: [] };
   const { data: consorcios } = window.__hooks.useConsorcios?.() || { data: [] };
+  const { data: socios } = window.__hooks.useConsorcioSocios?.() || { data: [] };
   const { data: movs } = window.__hooks.useAccountingMovements();
   const [moneda, setMoneda] = uSC('PEN');
 
@@ -6397,6 +6526,13 @@ function ContabilidadGrupoPage({ showToast }) {   // eslint-disable-line no-unus
   const r = uMC(() => resumenPorEntidad({
     companies, obras, trabajos: trabajosBS, consorcios, movs, moneda, demo: esPrueba,
   }), [companies, obras, trabajosBS, consorcios, movs, moneda, esPrueba]);
+
+  // El número del grupo entero, ya con las eliminaciones hechas (tanda 3).
+  // Va acá arriba porque es la pregunta que trae a alguien a esta pantalla:
+  // "¿cuánto ganó el grupo?". Las listas de abajo contestan "¿y cada uno?".
+  const grupo = uMC(() => consolidar({
+    companies, consorcios, socios, movs, moneda, demo: esPrueba,
+  }), [companies, consorcios, socios, movs, moneda, esPrueba]);
 
   // Ir a la contabilidad de cada entidad. La ficha de empresa vive DENTRO de
   // la página Empresas (no es una página registrada), así que se abre con un
@@ -6465,8 +6601,37 @@ function ContabilidadGrupoPage({ showToast }) {   // eslint-disable-line no-unus
         Son <strong>dos miradas de la misma plata</strong>, no dos gastos: un comprobante pertenece a una
         <strong> empresa</strong> (quien lo emite o recibe, y lleva sus libros) y además puede estar imputado a un
         <strong> trabajo</strong>. Por eso los dos totales van separados y <strong>no se suman</strong>.
-        {' '}Eliminar lo que se repite entre empresas del grupo es lo que falta (tanda 3).
       </div>
+
+      {/* ── EL NÚMERO DEL GRUPO, YA CONSOLIDADO ── */}
+      <button type="button" onClick={() => window.__navTo?.('consolidado', 'general')}
+        className="card card-p"
+        style={{ width: '100%', textAlign: 'left', cursor: 'pointer', marginBottom: 16,
+          borderLeft: '3px solid var(--green)', background: 'var(--bg-c)', color: 'inherit', font: 'inherit',
+          display: 'flex', alignItems: 'center', gap: 14 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.08em', color: 'var(--tm)', textTransform: 'uppercase' }}>
+            El grupo consolidado
+          </div>
+          <div style={{ fontSize: 11.5, color: 'var(--ts)', marginTop: 4 }}>
+            Frente a clientes y proveedores de afuera, sin contar dos veces lo que se facturan entre ellas.
+            {grupo.eliminaciones.nPares > 0 && <>
+              {' '}Se eliminaron <strong>{fmtCur(grupo.eliminaciones.total, moneda)}</strong> en
+              {' '}{grupo.eliminaciones.nPares} operaciones internas.
+            </>}
+          </div>
+        </div>
+        <div style={{ textAlign: 'right', flexShrink: 0 }}>
+          <div style={{ fontSize: 18, fontWeight: 800, fontVariantNumeric: 'tabular-nums',
+            color: grupo.consolidado.utilidad >= 0 ? 'var(--green)' : 'var(--red)' }}>
+            {fmtCur(grupo.consolidado.utilidad, moneda)}
+          </div>
+          <div style={{ fontSize: 10, color: 'var(--tm)' }}>
+            {fmtCur(grupo.consolidado.ingresos, moneda)} in · {fmtCur(grupo.consolidado.costos + grupo.consolidado.gastos, moneda)} out
+          </div>
+        </div>
+        <JxIcon name="chevR" size={14} color="var(--tm)"/>
+      </button>
 
       {/* ── ENTIDAD 1: LAS EMPRESAS ── */}
       <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)', margin: '6px 0 10px' }}>

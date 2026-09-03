@@ -19,7 +19,9 @@
 // en su trabajo. Son dos miradas de la misma plata, no dos gastos. Sumar los
 // totales de las dos listas daría el doble de lo que el grupo movió, así que
 // esta librería devuelve los totales SEPARADOS y la pantalla lo dice con
-// todas las letras. Eliminar de verdad lo que se repite es la tanda 3.
+// todas las letras. Eliminar de verdad lo que se repite entre entidades del
+// grupo es otro corte, y vive en `consolidado.js` (tanda 3): la pantalla
+// muestra los dos — el número del grupo arriba, el de cada entidad abajo.
 //
 // CRITERIO ÚNICO, el del Consolidado: una moneda por vez (mezclar soles con
 // dólares da un número que no es plata de nadie), sin anulados, y los tipos
@@ -108,8 +110,10 @@ export function resumenPorEntidad({
         margen: Math.round((r.total.margen || 0) * 10) / 10,
         nMovs: r.nMovs,
         otrasMonedas: (r.otrasMonedas || []).reduce((s, o) => s + (o.movs || 0), 0),
-        // Lo facturado entre empresas del grupo: es lo que la tanda 3 tiene
-        // que eliminar para que el consolidado no infle.
+        // Lo facturado entre empresas del grupo, sin emparejar. Es una señal
+        // de cuánto de esta empresa es interno; el número consolidado de
+        // verdad lo calcula `consolidar()` emparejando cada factura con su
+        // espejo, que no es lo mismo que sumar las dos bolsas.
         interco: r2((r.interco?.ingresos || 0) + (r.interco?.costos || 0)),
       };
     })
