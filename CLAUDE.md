@@ -87,9 +87,31 @@ git checkout staging                    # volver a staging
 - `scripts/` — utilidades Node (backups, google-drive [referencia], n8n, reporte-email).
 - `tests/` — e2e (Playwright); los unit tests van junto a cada lib.
 
-### Vercel Hobby: 12/12 funciones serverless
-**No crear nuevos endpoints en `api/`.** Multiplexar dentro de los existentes
-(ej. `api/captura-magica.js` maneja varios modos por `body.tipo`).
+### Funciones serverless: 8 en uso (el tope de 12 era de Hobby)
+La cuenta está en plan **Pro** (verificado 3-sep-2026): el límite de 12 funciones
+por deployment es de **Hobby** y ya no aplica. La regla vieja ("no crear
+endpoints, 12/12") frenó decisiones sin motivo durante meses.
+
+Aun así, **preferí multiplexar antes que crear** (ej. `api/captura-magica.js`
+maneja varios modos por `body.tipo`): menos superficie que autenticar y menos
+lugares donde se pueden quemar créditos de IA.
+
+Uso real medido el 3-sep-2026 (por datos, no por logs — los de Vercel dan
+timeout):
+- **Vivas:** `captura-magica` (1.249 movs con ítems OCR), `sunat` (378
+  proveedores), `categorize` (343 materiales), `validar-comprobante-ai` (136
+  guías), `create-user`, `reniec` (esporádica).
+- **`sugerir-cuenta-pcge` sirve DOS funciones** en el mismo endpoint:
+  `sugerirCuentaPcge` está muerta (1 solo movimiento con `cuenta_pcge`) pero
+  `sugerirClasificacionContable` no se puede descartar — 1.304 movimientos
+  tienen `clase` y no hay forma de saber cuáles vinieron de ahí. No borrarla sin
+  medir eso primero.
+- **`sentry-tunnel`** solo se activa si `VITE_SENTRY_DSN` está configurado.
+- **Borradas el 3-sep** por 0 uso comprobado: `ocr-asistencia` (0 asistencias),
+  `asistente-solicitud-mat` (0 solicitudes de frente),
+  `sugerir-cadena-trazabilidad` y `analizar-coherencia-cadena` (0 cadenas).
+  Las de cadenas se rehacen con el diseño nuevo cuando la trazabilidad se mueva
+  al desglose de cada obra.
 
 ### Cómo registrar una página o tabla nueva
 - **Página nueva:** `src/main.jsx` (PAGE_CHUNKS) · `src/jx-app.jsx` (títulos +

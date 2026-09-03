@@ -1,5 +1,4 @@
 import React from "react";
-import { asistenteSolicitudMaterialesAI } from "../lib/asistente-solicitud-ai.js";
 import { SearchableSelect } from "./jx-searchable-select.jsx";
 import { TIPOS_INSUMO, TIPO_INSUMO_KEYS, recomendacionesInsumo, matchInsumoReal, registrarInsumoPendiente, normNombre } from "../lib/insumos-catalogo.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
@@ -48,10 +47,6 @@ function SolicitudResidentePage({ showToast }) {
   const [items, setItems] = uS([nuevoItem()]);
   const [submitBusy, setSubmitBusy] = uS(false);
   const [ultimaReq, setUltimaReq] = uS(null);
-  // Asistente IA
-  const [aiPrompt, setAiPrompt] = uS('');
-  const [aiBusy, setAiBusy] = uS(false);
-  const [aiResult, setAiResult] = uS(null);
 
   const sanearNombreItem = (nombre) => {
     if (!nombre) return '';
@@ -141,62 +136,6 @@ function SolicitudResidentePage({ showToast }) {
     return m ? { stock: Number(m.stock_actual || 0), min: Number(m.stock_minimo || 0) } : null;
   };
 
-  // ── Asistente IA (genera items de MATERIAL desde texto libre) ──
-  const aplicarSugerenciaIA = (sug) => {
-    if (!sug?.result?.items) return;
-    const nuevos = sug.result.items.map((it) => {
-      const matCatalogo = it.material_id ? matsArr.find(m => m.id === it.material_id) : null;
-      const nombreLimpio = sanearNombreItem(matCatalogo?.nombre_material || it.nombre_match || '');
-      return {
-        ...nuevoItem(),
-        tipo: 'material',
-        insumo_id: it.material_id || '',
-        nombre: nombreLimpio,
-        unidad: matCatalogo?.unidad || it.unidad || '',
-        cantidad: String(it.cantidad ?? ''),
-        notas: [it.notas, it.accion === 'crear_nuevo' ? '⚠ Nuevo (no en catálogo)' : null].filter(Boolean).join(' · '),
-      };
-    }).filter(x => x.nombre);
-    if (!nuevos.length) return;
-    setItems(nuevos);
-    if (sug.result.descripcion_estructurada && !descripcion.trim()) setDescripcion(sug.result.descripcion_estructurada);
-    if (sug.result.fecha_necesidad_sugerida && /^\d{4}-\d{2}-\d{2}$/.test(sug.result.fecha_necesidad_sugerida)) {
-      const f = sug.result.fecha_necesidad_sugerida;
-      if (f >= new Date().toISOString().slice(0, 10)) setFechaNecesidad(f);
-    }
-    if (sug.result.prioridad_sugerida) setPrioridad(sug.result.prioridad_sugerida);
-    if (!razon.trim() && sug.result.descripcion_estructurada) setRazon(sug.result.descripcion_estructurada);
-  };
-
-  const generarConIA = async () => {
-    if (!obraId) { showToast('Cargando obra activa…', 'amber'); return; }
-    if (aiPrompt.trim().length < 5) { showToast('Escribí qué necesitás (mín 5 caracteres)', 'red'); return; }
-    setAiBusy(true); setAiResult(null);
-    try {
-      const materialesObra = matsArr.map(m => ({ id: m.id, nombre_material: m.nombre_material, unidad: m.unidad, stock_actual: m.stock_actual, stock_minimo: m.stock_minimo, categoria: m.categoria, precio_unitario_estimado: m.precio_unitario_estimado }));
-      let nombreObra = '';
-      try { const obra = await window.__db.obras.get(obraId); nombreObra = obra?.nombre_obra || ''; } catch {}
-      const sug = await asistenteSolicitudMaterialesAI({
-        descripcion: aiPrompt.trim(),
-        materiales_obra: materialesObra,
-        historico_solicitudes: [], partidas_obra: [], proveedores: [],
-        fecha_actual: new Date().toISOString().slice(0, 10),
-        nombre_obra: nombreObra,
-      });
-      setAiResult(sug);
-      const conf = Number(sug.confianza || 0);
-      const advCriticas = (sug.advertencias || []).some(a => /no encontr|inv[aá]lid|critic/i.test(String(a)));
-      if (conf >= 0.85 && !advCriticas && sug.result.items.length > 0) {
-        aplicarSugerenciaIA(sug);
-        showToast(`✓ ${sug.result.items.length} ítems generados por IA (${(conf * 100).toFixed(0)}%)`, 'green');
-        setAiPrompt('');
-      } else {
-        showToast(`Generado con ${(conf * 100).toFixed(0)}% — revisá antes de aplicar`, 'amber');
-      }
-    } catch (e) {
-      showToast('Asistente IA: ' + (e.message || e), 'red');
-    } finally { setAiBusy(false); }
-  };
 
   // ── Envío ──
   const handleSubmit = async () => {
@@ -311,35 +250,6 @@ function SolicitudResidentePage({ showToast }) {
         </div>
       </div>
 
-      {/* ── Asistente IA ── */}
-      <div className="card card-p" style={{ marginBottom: 14, background: 'rgba(155,89,182,0.07)', border: '1px solid rgba(155,89,182,0.3)' }}>
-        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, marginBottom: 8 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 16 }}>✨</span>
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--purple)' }}>Asistente IA · Generar por descripción</div>
-              <div style={{ fontSize: 11, color: 'var(--tm)' }}>Describí qué necesitás en lenguaje natural — la IA arma los ítems (materiales), cantidades y prioridad. Podés ajustar el tipo de cada ítem.</div>
-            </div>
-          </div>
-          {aiResult && <button type="button" className="btn btn-ghost btn-xs" onClick={() => { setAiResult(null); setAiPrompt(''); }} title="Cerrar">✕</button>}
-        </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-          <textarea className="fi" rows={2} value={aiPrompt} onChange={e => setAiPrompt(e.target.value)}
-            placeholder='Ej: "Para vaciado de losa nivel 3 — cemento, fierro 1/2 y 5/8, alambre #16 y triplay para encofrado."'
-            style={{ flex: 1, fontSize: 12.5 }} disabled={aiBusy}/>
-          <button className="btn btn-amber btn-sm" onClick={generarConIA} disabled={aiBusy || aiPrompt.trim().length < 5} style={{ minWidth: 130, alignSelf: 'stretch' }}>
-            {aiBusy ? '⏳ Generando…' : '✨ Generar'}
-          </button>
-        </div>
-        {aiResult && aiResult.result?.items?.length > 0 && (
-          <div style={{ marginTop: 10, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-            <button className="btn btn-ghost btn-sm" onClick={() => setAiResult(null)}>Descartar</button>
-            <button className="btn btn-amber btn-sm" onClick={() => { aplicarSugerenciaIA(aiResult); setAiResult(null); setAiPrompt(''); showToast('Ítems aplicados', 'green'); }}>
-              <JxIcon name="check" size={12}/> Aplicar {aiResult.result.items.length} ítem(s)
-            </button>
-          </div>
-        )}
-      </div>
 
       {/* ── Datos del pedido ── */}
       <div className="card card-p" style={{ marginBottom: 14 }}>

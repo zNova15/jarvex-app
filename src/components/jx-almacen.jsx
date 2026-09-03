@@ -1,6 +1,5 @@
 import React from "react";
 import { calcAlerta } from "../lib/stock-utils.js";
-import { ocrAsistencia } from "../lib/ocr-asistencia.js";
 import { detectarEPP, esProbablementeEPP } from "../lib/epp-utils.js";
 import { usePagination } from "../hooks/usePagination.js";
 import { useBusy } from "../hooks/useBusy.js";
@@ -6039,7 +6038,6 @@ function AsistenciaPage({ showToast }) {
   const [photoUrl, setPhotoUrl] = uS(null);
   const [obraId, setObraId] = uS(null);
   const [busy, setBusy] = uS(false);
-  const [ocrBusy, setOcrBusy] = uS(false);
 
   uE(() => {
     let cancelled = false;
@@ -6153,94 +6151,6 @@ function AsistenciaPage({ showToast }) {
     setRows(prev => prev.map(r => ({ ...r, estado_asistencia: estado })));
   };
 
-  // ── OCR del parte físico ─────────────────────────────────
-  // Lee una foto/PDF del parte de asistencia con Claude Sonnet Vision,
-  // matchea contra el personal activo y precarga el state `rows`.
-  // NUNCA guarda solo: el usuario revisa y luego clickea "Guardar".
-  const handleOcrPicked = async (e) => {
-    const file = e.target.files?.[0];
-    e.target.value = ''; // permitir reintentar mismo archivo
-    if (!file) return;
-    if (file.size > 8 * 1024 * 1024) { showToast('Archivo muy grande (máx 8 MB)', 'red'); return; }
-
-    setOcrBusy(true);
-    try {
-      const personalConocido = (personalConAsistencia || []).map(p => ({
-        id: p.id,
-        nombres: p.nombres || '',
-        apellidos: p.apellidos || '',
-        dni: p.dni || null,
-      }));
-
-      const out = await ocrAsistencia(file, personalConocido, date);
-      const filas = out?.result?.fila_detectada || [];
-      const confianza = typeof out?.confianza === 'number' ? out.confianza : 0;
-
-      // Aplicar al state: para cada fila con match_id, setear horas+estado.
-      // Para filas sin match → agregar al final con flag is_nuevo.
-      setRows(prev => {
-        const next = prev.map(r => ({ ...r }));
-        const nuevos = [];
-        for (const f of filas) {
-          const idx = f.match_id_o_null
-            ? next.findIndex(r => r.personal_id === f.match_id_o_null)
-            : -1;
-          const obs = f.observaciones || '';
-          if (idx >= 0) {
-            const isFalta = f.estado === 'falta';
-            next[idx] = {
-              ...next[idx],
-              estado_asistencia: f.estado || next[idx].estado_asistencia,
-              hora_ingreso: !isFalta && f.hora_entrada ? f.hora_entrada : next[idx].hora_ingreso,
-              hora_salida:  !isFalta && f.hora_salida_o_null ? f.hora_salida_o_null : next[idx].hora_salida,
-              observaciones: obs ? (next[idx].observaciones ? `${next[idx].observaciones} · ${obs}` : obs) : next[idx].observaciones,
-              ocr_confianza: f.confianza_fila,
-            };
-          } else {
-            nuevos.push({
-              personal_id: `__nuevo_${nuevos.length}_${Date.now()}`,
-              nombre: f.nombre_detectado || '(sin nombre)',
-              cargo: f.dni_detectado_o_null ? `DNI ${f.dni_detectado_o_null}` : '—',
-              existing_id: null,
-              estado_asistencia: f.estado || 'asistio',
-              hora_ingreso: f.hora_entrada || '07:00',
-              hora_salida:  f.hora_salida_o_null || '17:00',
-              observaciones: obs || '(detectado por OCR · revisar)',
-              is_nuevo: true,
-              ocr_confianza: f.confianza_fila,
-            });
-          }
-        }
-        return [...next, ...nuevos];
-      });
-
-      const n = filas.length;
-      if (confianza >= 0.85) {
-        (window.__showToast || showToast)?.(`✓ ${n} filas detectadas, listas para revisar`, 'green');
-      } else {
-        (window.__showToast || showToast)?.(`⚠ Confianza baja (${(confianza*100).toFixed(0)}%) · revisar fila por fila`, 'amber');
-      }
-
-      // Audit log de la sugerencia IA
-      try {
-        await window.__logAudit?.({
-          action: 'insert',
-          table: 'audit',
-          recordId: 'ocr-asistencia',
-          tag: 'ai-suggestion',
-          reason: `OCR parte asistencia · ${n} filas · confianza ${confianza.toFixed(2)}`,
-        });
-      } catch (e) {}
-    } catch (err) {
-      console.warn('[ocr-asistencia]', err);
-      const msg = err?.status === 503
-        ? 'OCR no disponible: falta ANTHROPIC_API_KEY en el server'
-        : (err?.message || 'No se pudo leer el parte');
-      showToast(msg, 'red');
-    } finally {
-      setOcrBusy(false);
-    }
-  };
 
   const handleSubmitMasivo = async () => {
     if (rows.length === 0) {
@@ -6456,16 +6366,6 @@ function AsistenciaPage({ showToast }) {
           </div>
         ) : (
         <>
-          <div style={{display:'flex', gap:8, marginBottom:10, flexWrap:'wrap', alignItems:'center', padding:'10px 12px', border:'1px dashed var(--border-h)', borderRadius:8, background:'transparent'}}>
-            <span style={{fontSize:11.5, color:'var(--tm)', fontWeight:600}}>Acelerá con IA:</span>
-            <label className={`btn btn-amber btn-sm ${ocrBusy ? 'disabled' : ''}`} style={{cursor: ocrBusy ? 'wait' : 'pointer', opacity: ocrBusy ? 0.7 : 1}}>
-              <JxIcon name="camera" size={13}/>
-              {ocrBusy ? 'Leyendo parte…' : '📷 Cargar parte (OCR)'}
-              <input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" disabled={ocrBusy}
-                     onChange={handleOcrPicked} style={{display:'none'}}/>
-            </label>
-            <span style={{fontSize:10.5, color:'var(--tm)'}}>Foto/PDF del parte físico · Claude Sonnet Vision</span>
-          </div>
           <div style={{display:'flex', gap:8, marginBottom:12, flexWrap:'wrap', alignItems:'center'}}>
             <span style={{fontSize:11.5, color:'var(--tm)'}}>Aplicar a todos:</span>
             <button className="btn btn-green btn-xs" onClick={()=>aplicarATodos('asistio')}>✓ Asistió</button>

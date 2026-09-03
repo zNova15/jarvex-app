@@ -5104,62 +5104,6 @@ function TrazabilidadPage({ showToast }) {
     showToast(`Precios sugeridos (local). Precio final unit. promedio ${precioCargaObra.toFixed(2)}.`, 'green');
   };
 
-  // ── Análisis IA de coherencia (rubro empresa vs material) ───
-  // Reemplaza al viejo "Sugerir precios con IA" — ese se duplicaba con la
-  // sugerencia local. Ahora la IA hace algo que la heurística NO puede:
-  // analizar si los rubros de las empresas tienen sentido con los items
-  // que están comprando, y advertir sobre riesgos SUNAT.
-  const [iaSugiriendo, setIaSugiriendo] = uSC(false);
-  const [iaAnalisis, setIaAnalisis] = uSC(null);
-  const analizarCoherenciaIA = async () => {
-    if (!form) return;
-    const tots = totalesItems();
-    if (tots.precio_real_prom <= 0) { showToast('Completá items con precio real', 'red'); return; }
-    const eslabones = form.eslabones || [];
-    if (eslabones.length < 2) { showToast('Necesitás al menos 2 eslabones', 'red'); return; }
-    if (eslabones.some(e => !e.company_id)) { showToast('Asigná empresa a cada eslabón antes', 'red'); return; }
-    setIaSugiriendo(true);
-    try {
-      const mod = await import('../lib/analizar-coherencia-ai.js');
-      const ejecutoraId = form.ejecutora_company_id || eslabones[eslabones.length - 1].company_id;
-      const payload = {
-        items: (form.items || []).filter(it => Number(it.cantidad) > 0).map(it => ({
-          descripcion: it.descripcion,
-          unidad: it.unidad,
-          cantidad: Number(it.cantidad),
-          precio_unit: Number(it.precio_real_unitario) || 0,
-        })),
-        eslabones: eslabones.map((e, i) => {
-          const c = lookupCompany(e.company_id);
-          const isUlt = i === eslabones.length - 1;
-          const isPrim = i === 0;
-          return {
-            company_id: e.company_id,
-            name: c?.name || '?',
-            rol_grupo: c?.rol_grupo,
-            // Pasamos el rubro real desde companies — Claude lo cruza con el material.
-            rubro: c?.rubro || c?.actividad_economica || c?.rol_grupo,
-            posicion: isPrim ? 'primaria' : (isUlt || e.company_id === ejecutoraId) ? 'ejecutora' : 'secundaria',
-          };
-        }),
-        proveedor_externo: {
-          nombre: form.proveedor_externo_nombre,
-          ruc: form.proveedor_externo_ruc,
-        },
-        precio_compra: tots.precio_real_prom,
-        precio_objetivo: tots.precio_ref_prom,
-      };
-      const resp = await mod.analizarCoherenciaCadena(payload);
-      setIaAnalisis(resp);
-      const tone = resp.resultado === 'incoherente' ? 'red' : resp.resultado === 'advertencia' ? 'amber' : 'green';
-      const emoji = resp.resultado === 'incoherente' ? '🚨' : resp.resultado === 'advertencia' ? '⚠️' : '✅';
-      showToast(`${emoji} Análisis IA: ${resp.resultado.toUpperCase()} (${resp.hallazgos?.length || 0} hallazgos)`, tone);
-    } catch (e) {
-      showToast('IA falló: ' + (e.message || e), 'red');
-    } finally {
-      setIaSugiriendo(false);
-    }
-  };
 
   // ── Ajuste rápido: "# secundarias intermedias" ──────────────
   const ajustarCantidadSecundarias = (n) => {
@@ -5809,10 +5753,6 @@ function TrazabilidadPage({ showToast }) {
                   title="Distribuir markup automáticamente según margen objetivo de cada empresa">
                   <JxIcon name="refresh" size={11}/> Sugerir precios
                 </button>
-                <button type="button" className="btn btn-amber btn-xs" onClick={analizarCoherenciaIA} disabled={iaSugiriendo}
-                  title="Claude analiza si los rubros de las empresas tienen sentido con los items de la cadena (compliance SUNAT)">
-                  {iaSugiriendo ? '⏳ Analizando…' : '🧠 Análisis IA de coherencia'}
-                </button>
               </div>
             </div>
             <div style={{ gridColumn:'1/-1' }}>
@@ -5931,79 +5871,6 @@ function TrazabilidadPage({ showToast }) {
       )}
 
       {/* Modal de resultado del análisis IA de coherencia */}
-      {iaAnalisis && (
-        <Modal title={
-          iaAnalisis.resultado === 'incoherente' ? '🚨 Cadena INCOHERENTE'
-          : iaAnalisis.resultado === 'advertencia' ? '⚠️ Cadena con advertencias'
-          : '✅ Cadena coherente'
-        } icon="alert" onClose={() => setIaAnalisis(null)} wide>
-          <div style={{
-            padding: '12px 14px',
-            background: iaAnalisis.resultado === 'incoherente' ? 'rgba(231,76,60,0.1)'
-                       : iaAnalisis.resultado === 'advertencia' ? 'rgba(242,183,5,0.1)'
-                       : 'rgba(46,204,113,0.1)',
-            border: `1px solid ${iaAnalisis.resultado === 'incoherente' ? 'rgba(231,76,60,0.4)'
-                       : iaAnalisis.resultado === 'advertencia' ? 'rgba(242,183,5,0.4)'
-                       : 'rgba(46,204,113,0.4)'}`,
-            borderRadius: 8,
-            marginBottom: 12,
-          }}>
-            <div style={{ fontSize: 13, lineHeight: 1.5, color: 'var(--ts)' }}>
-              {iaAnalisis.resumen}
-            </div>
-            <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 6 }}>
-              Confianza del análisis: <strong>{Math.round((iaAnalisis.confianza || 0) * 100)}%</strong>
-            </div>
-          </div>
-
-          {Array.isArray(iaAnalisis.hallazgos) && iaAnalisis.hallazgos.length > 0 && (
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--amber)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
-                Hallazgos ({iaAnalisis.hallazgos.length})
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {iaAnalisis.hallazgos.map((h, i) => (
-                  <div key={i} style={{
-                    padding: '10px 12px',
-                    background: 'var(--row-hover)',
-                    border: `1px solid ${h.severidad === 'alta' ? 'rgba(231,76,60,0.4)' : h.severidad === 'media' ? 'rgba(242,183,5,0.3)' : 'var(--border)'}`,
-                    borderRadius: 6,
-                    fontSize: 12,
-                  }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, flexWrap: 'wrap', gap: 6 }}>
-                      <strong style={{ color: h.severidad === 'alta' ? 'var(--red)' : h.severidad === 'media' ? 'var(--amber)' : 'var(--tp)' }}>
-                        {h.severidad === 'alta' ? '🔴' : h.severidad === 'media' ? '🟡' : '🔵'} {h.empresa}
-                      </strong>
-                      <span style={{ fontSize: 10.5, color: 'var(--tm)' }}>↔ {h.material}</span>
-                    </div>
-                    <div style={{ fontSize: 12, color: 'var(--ts)', marginBottom: 6 }}>{h.motivo}</div>
-                    <div style={{ fontSize: 11.5, color: 'var(--green)', borderTop: '1px dashed var(--border)', paddingTop: 6 }}>
-                      💡 <strong>Sugerencia:</strong> {h.sugerencia}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {Array.isArray(iaAnalisis.advertencias_sunat) && iaAnalisis.advertencias_sunat.length > 0 && (
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--red)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 6 }}>
-                ⚖️ Advertencias SUNAT
-              </div>
-              <ul style={{ fontSize: 12, color: 'var(--ts)', paddingLeft: 20, margin: 0 }}>
-                {iaAnalisis.advertencias_sunat.map((a, i) => (
-                  <li key={i} style={{ marginBottom: 4 }}>{a}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          <div className="modal-actions">
-            <button className="btn btn-amber" onClick={() => setIaAnalisis(null)}>Entendido</button>
-          </div>
-        </Modal>
-      )}
     </div>
   );
 }
