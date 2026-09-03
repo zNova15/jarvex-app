@@ -18,6 +18,9 @@ export const GENERAL_ITEMS = new Set([
   // Empresas + su contabilidad de empresa (por entidad legal, no por obra).
   // Flujo de caja/proyectado son por-empresa (cronograma_pagos no tiene obra_id).
   'empresas', 'cont-dashboard', 'intercompany', 'trazabilidad', 'consolidado',
+  // Un bien o servicio NO pertenece a ninguna obra: si no está acá, la app le
+  // exige obra activa para abrirlo.
+  'bienes-servicios',
   'cuentas-bancarias', 'plan-cuentas', 'libro-diario', 'balance-general',
   'estado-resultados', 'comprobantes', 'libros-electronicos', 'config-sunat',
   'comparativo-periodos', 'flujo-caja', 'flujo-proyectado', 'compras-categoria', 'ordenes-intercompany', 'guias-remision',
@@ -39,7 +42,7 @@ export const planoDe = (id) => GENERAL_ITEMS.has(id) ? 'general' : 'obra';
 // obra) pero también se ofrece en el área 'contabilidad' (vista general con
 // selector) — por eso figura acá.
 const AREA = {
-  contabilidad: new Set(['cont-dashboard', 'empresas', 'movimientos-contables', 'intercompany',
+  contabilidad: new Set(['cont-dashboard', 'empresas', 'bienes-servicios', 'movimientos-contables', 'intercompany',
     'trazabilidad', 'consolidado', 'cuentas-bancarias', 'flujo-caja', 'flujo-proyectado',
     'plan-cuentas', 'libro-diario', 'balance-general', 'estado-resultados', 'comprobantes',
     'libros-electronicos', 'config-sunat', 'comparativo-periodos', 'compras-categoria', 'ordenes-intercompany', 'guias-remision',

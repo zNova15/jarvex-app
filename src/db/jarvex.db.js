@@ -72,6 +72,16 @@ export const db = new Dexie('JarvexDB');
 // experiencia por rubro (los meses se CALCULAN de los periodos, ver
 // src/lib/experiencia-profesional.js) y catálogo de rubros. Para el equipo
 // que arma las propuestas de licitación. Aditivo.
+// Versión 50: TRABAJOS de bienes y servicios (mig 174). Flujo corto
+// (cotización → compra → venta) en tabla APARTE de obras: no tiene partidas,
+// cronograma, avance, personal ni almacén. La compra y la venta son
+// accounting_movements con trabajo_id — el margen se calcula, no se guarda
+// (src/lib/trabajos.js). Aditivo.
+db.version(50).stores({
+  trabajos:             'id, estado, tipo, ejecutor_company_id, deleted_at, sync_status',
+  trabajo_cotizaciones: 'id, trabajo_id, estado, deleted_at, sync_status',
+});
+
 // Versión 49: CONSORCIOS (mig 172). El consorcio deja de estar disfrazado de
 // empresa: cuelga de su obra (1:1) y sus socios se normalizan en tabla propia.
 // `consorcios.company_id` sigue apuntando a la fila de companies que lleva el

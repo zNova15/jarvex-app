@@ -870,6 +870,7 @@ function MovimientosContablesPage({ showToast }) {
     const o = window.__getObraActivaId?.();
     return (window.__plano === 'obra' && o) ? o : 'todas';
   });
+  const { data: trabajosBS } = window.__hooks.useTrabajos?.() || { data: [] };
   const [filtroEmpresaSel, setFiltroEmpresaSel] = uSC('todas');
   const [filtroClase, setFiltroClase] = uSC('todos');
   const [filtroTipo, setFiltroTipo] = uSC('todos');
@@ -1517,6 +1518,7 @@ function MovimientosContablesPage({ showToast }) {
       type: m.type,
       clasificacion_manual: m.clasificacion_manual || '',
       obra_id: m.obra_id || '',
+      trabajo_id: m.trabajo_id || '',
       destino_contable: m.destino_contable || (m.obra_id ? 'obra' : null),
       category: m.category || '',
       cuenta_pcge: m.cuenta_pcge || '',
@@ -1564,6 +1566,10 @@ function MovimientosContablesPage({ showToast }) {
           date: form.date,
           clase: form.clase || null,
           obra_id: form.obra_id || null,
+          // Bienes y servicios (mig 174): etiqueta de a qué trabajo se imputa.
+          // Excluyente con obra_id en la práctica — el selector deja elegir uno
+          // u otro, nunca los dos.
+          trabajo_id: form.trabajo_id || null,
           destino_contable: form.obra_id ? 'obra' : (form.destino_contable || null),
           // '' → null: volver a "Automático" borra el ajuste manual (mig 163).
           clasificacion_manual: form.clasificacion_manual || null,
@@ -1595,6 +1601,10 @@ function MovimientosContablesPage({ showToast }) {
           date: form.date,
           clase: form.clase || null,
           obra_id: form.obra_id || null,
+          // Bienes y servicios (mig 174): etiqueta de a qué trabajo se imputa.
+          // Excluyente con obra_id en la práctica — el selector deja elegir uno
+          // u otro, nunca los dos.
+          trabajo_id: form.trabajo_id || null,
           destino_contable: form.obra_id ? 'obra' : (form.destino_contable || null),
           clasificacion_manual: form.clasificacion_manual || null,
           // Derivado de clase + vinculación + ajuste manual (ver el UPDATE de arriba).
@@ -3550,6 +3560,7 @@ function MovimientosContablesPage({ showToast }) {
                 // Valor combinado: obra real, o los destinos "sin obra".
                 const vincVal = form.obra_id
                   ? form.obra_id
+                  : form.trabajo_id ? `__t__${form.trabajo_id}`
                   : form.destino_contable === 'gastos_generales' ? '__empresa__'
                   : form.destino_contable === 'contabilidad_neta' ? '__otros__'
                   : form.destino_contable === 'sin_clasificar' ? '__nose__'
@@ -3559,15 +3570,25 @@ function MovimientosContablesPage({ showToast }) {
                 return (<>
                   <select className="fi" value={vincVal} onChange={e=>{
                     const v = e.target.value;
-                    if (v === '__empresa__') setForm({...form, obra_id:'', destino_contable:'gastos_generales'});
-                    else if (v === '__otros__') setForm({...form, obra_id:'', destino_contable:'contabilidad_neta'});
-                    else if (v === '__nose__') setForm({...form, obra_id:'', destino_contable:'sin_clasificar'});
-                    else setForm({...form, obra_id:v, destino_contable: v ? 'obra' : null});
+                    if (v === '__empresa__') setForm({...form, obra_id:'', trabajo_id:'', destino_contable:'gastos_generales'});
+                    else if (v === '__otros__') setForm({...form, obra_id:'', trabajo_id:'', destino_contable:'contabilidad_neta'});
+                    else if (v === '__nose__') setForm({...form, obra_id:'', trabajo_id:'', destino_contable:'sin_clasificar'});
+                    // Un bien o servicio no es una obra: va sin obra_id y con
+                    // destino 'contabilidad_neta', que ya deriva a 'cost' — la
+                    // compra de algo que se revende ES costo, no gasto general.
+                    else if (v.startsWith('__t__')) setForm({...form, obra_id:'', trabajo_id: v.slice(5), destino_contable:'contabilidad_neta'});
+                    else setForm({...form, obra_id:v, trabajo_id:'', destino_contable: v ? 'obra' : null});
                   }}>
                     <option value="">— Sin vinculación —</option>
                     <optgroup label="🏗 Obras">
                       {obrasParaSelector.map(o => <option key={o.id} value={o.id}>🏗 {o.nombre_obra}</option>)}
                     </optgroup>
+                    {(trabajosBS||[]).filter(t => !t.deleted_at && t.estado !== 'cancelado').length > 0 && (
+                      <optgroup label="📦 Bienes y Servicios">
+                        {(trabajosBS||[]).filter(t => !t.deleted_at && t.estado !== 'cancelado')
+                          .map(t => <option key={t.id} value={`__t__${t.id}`}>📦 {t.nombre}</option>)}
+                      </optgroup>
+                    )}
                     <optgroup label="Sin obra">
                       <option value="__empresa__">🏢 Gastos Generales de la Empresa</option>
                       <option value="__otros__">📄 Contabilidad Neta (otros)</option>

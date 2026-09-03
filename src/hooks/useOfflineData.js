@@ -353,6 +353,17 @@ export function usePersonalCuentas(obra_id) {
 }
 
 // ── Contabilidad ─────────────────────────────────────────────────────
+// Trabajos de bienes y servicios (mig 174).
+export function useTrabajos() {
+  return useOfflineData('trabajos', q => q.filter(t => !t.deleted_at).toArray(), []);
+}
+
+export function useTrabajoCotizaciones(trabajo_id) {
+  return useOfflineData('trabajo_cotizaciones',
+    q => q.filter(c => !c.deleted_at && (!trabajo_id || c.trabajo_id === trabajo_id)).toArray(),
+    [trabajo_id]);
+}
+
 // Consorcios (mig 172). Van juntos porque casi nunca se necesita uno sin el
 // otro: la pregunta real siempre es "quién ejecuta esta obra y con quién".
 export function useConsorcios() {

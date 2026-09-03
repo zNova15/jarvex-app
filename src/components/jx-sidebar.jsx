@@ -170,6 +170,7 @@ const NAV = [
   { section: 'EMPRESAS Y CONTABILIDAD', area: 'contabilidad' },
   { id: 'cont-dashboard', label: 'Dashboard Contable', icon: 'dashboard' },
   { id: 'empresas', label: 'Empresas', icon: 'building' },
+  { id: 'bienes-servicios', label: 'Bienes y Servicios', icon: 'package' },
   { id: 'movimientos-contables', label: 'Movimientos (todas / por obra)', icon: 'dollar', plano: 'general' },
   { id: 'guias-remision', label: 'Guías de Remisión', icon: 'truck' },
   { id: 'profesionales', label: 'Registro Profesional', icon: 'users' },

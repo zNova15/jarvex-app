@@ -37,6 +37,10 @@ const TRANSACTIONAL_TABLES = [
   // contable), así que va después de las dos. Sus socios después de él.
   'consorcios',
   'consorcio_socios',
+  // Trabajos ANTES de accounting_movements: desde la mig 174 el movimiento
+  // tiene FK trabajo_id, y si sale primero el hijo el INSERT rebota con 23503.
+  'trabajos',
+  'trabajo_cotizaciones',
   'accounting_movements',
   'intercompany_transactions',
   'reportes_especialidad',
@@ -157,6 +161,8 @@ const MASTER_TABLES = [
   { tabla: 'companies',                    query: () => supabase.from('companies').select('*').is('deleted_at', null) },
   { tabla: 'consorcios',                   query: () => supabase.from('consorcios').select('*').is('deleted_at', null) },
   { tabla: 'consorcio_socios',             query: () => supabase.from('consorcio_socios').select('*').is('deleted_at', null) },
+  { tabla: 'trabajos',                     query: () => supabase.from('trabajos').select('*').is('deleted_at', null) },
+  { tabla: 'trabajo_cotizaciones',         query: () => supabase.from('trabajo_cotizaciones').select('*').is('deleted_at', null) },
   { tabla: 'accounting_movements',         query: () => supabase.from('accounting_movements').select('*').is('deleted_at', null) },
   { tabla: 'conciliacion_vinculos',        query: () => supabase.from('conciliacion_vinculos').select('*').is('deleted_at', null) },
   { tabla: 'clasificacion_catalogo',       query: () => supabase.from('clasificacion_catalogo').select('*').is('deleted_at', null) },
@@ -967,6 +973,8 @@ const TABLA_TO_MODULO = {
   // seguir siendo espejo de la policy de la mig 172.
   consorcios: 'Empresas',
   consorcio_socios: 'Empresas',
+  trabajos: 'Bienes y Servicios',
+  trabajo_cotizaciones: 'Bienes y Servicios',
   accounting_movements: 'Movs. Contables',
   // Catálogo del clasificador: lo escriben contadora jefe y ayudante (ambos
   // con Movs. Contables 'w') al clasificar/corregir ítems de factura.
@@ -1090,6 +1098,8 @@ const FK_DEPS = {
   guia_factura:              [{ campo: 'guia_id', tabla: 'guias_remision' }, { campo: 'accounting_movement_id', tabla: 'accounting_movements' }],
   consorcios:                [{ campo: 'obra_id', tabla: 'obras' }, { campo: 'company_id', tabla: 'companies' }],
   consorcio_socios:          [{ campo: 'consorcio_id', tabla: 'consorcios' }, { campo: 'company_id', tabla: 'companies' }],
+  trabajos:                  [{ campo: 'ejecutor_company_id', tabla: 'companies' }, { campo: 'consorcio_id', tabla: 'consorcios' }],
+  trabajo_cotizaciones:      [{ campo: 'trabajo_id', tabla: 'trabajos' }],
   personal_profesional:      [{ campo: 'personal_id', tabla: 'personal' }],
   personal_experiencia:      [{ campo: 'personal_id', tabla: 'personal' }, { campo: 'rubro_id', tabla: 'rubros_obra' }, { campo: 'obra_id', tabla: 'obras' }],
   movimientos_insumos_emergencia: [{ campo: 'insumo_emergencia_id', tabla: 'insumos_emergencia' }, { campo: 'responsable_id', tabla: 'personal' }, { campo: 'subcontratista_id', tabla: 'subcontratistas' }, { campo: 'proveedor_id', tabla: 'proveedores' }],

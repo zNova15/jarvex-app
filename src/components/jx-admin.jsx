@@ -791,6 +791,7 @@ const MODULE_GROUPS = [
   { group: 'Maquinaria', modules: ['Activos Pesados','Mantenimiento','Horas Máquina'] },
   { group: 'SSOMA', modules: ['Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones','Insumos de Emergencia','Reporte Especialidad','Gestión Ambiental','Gestión Calidad','Gestión Social'] },
   { group: 'RRHH', modules: ['Contratos Laborales','Planillas','CTS','Gratificaciones','Registro Profesional'] },
+  { group: 'Comercial', modules: ['Bienes y Servicios'] },
   { group: 'Contabilidad', modules: ['Empresas','Movs. Contables','Intercompany','Trazabilidad','Consolidado','Plan de Cuentas','Libro Diario','Balance General','Estado Resultados'] },
   { group: 'Tesorería', modules: ['Cuentas Bancarias','Flujo de Caja','Flujo Proyectado','Comparativo Periodos'] },
   { group: 'SUNAT', modules: ['Comprobantes Electrónicos','Libros Electrónicos','PLAME / T-Registro','Config SUNAT'] },
@@ -823,6 +824,7 @@ const PERM_MATRIX = {
       'Comprobantes Electrónicos','Libros Electrónicos','PLAME / T-Registro','Config SUNAT',
       'Dashboard Ejecutivo','KPIs por Obra','Cumplimiento Cronograma','Centro Alertas',
       'Reportes','Auditoría','Solicitudes Cambio',
+      'Bienes y Servicios',
     ];
     return wList.includes(m) ? 'w' : 'r';
   }),
@@ -943,6 +945,9 @@ const PERM_MATRIX = {
       'Comprobantes Electrónicos','Libros Electrónicos','PLAME / T-Registro','Config SUNAT',
       // Herramienta de captura (General) + bandeja de solicitudes (aprueba cambios)
       'Captura Mágica','Solicitudes Cambio',
+      // Bienes y servicios: la venta de material y las prestaciones pasan por
+      // sus libros igual que todo lo demás.
+      'Bienes y Servicios',
       // Galería de evidencias: la contadora jefe es (junto al admin) quien ve
       // las evidencias CONTABLES (facturas/bancarización) — pedido de Gabriel.
       'Evidencias',
@@ -960,7 +965,7 @@ const PERM_MATRIX = {
   // sin write acá, la bancarización subida quedaría PENDING para siempre).
   ayudante_contador: PERM_MATRIX_MODULES.map(m => {
     if (['Empresas','Movs. Contables','Cuentas Bancarias','Captura Mágica','Evidencias'].includes(m)) return 'w';
-    if (m === 'Personal' || m === 'Proveedores') return 'r';  // solo lectura (ve qué empresas/proveedores hay)
+    if (m === 'Personal' || m === 'Proveedores' || m === 'Bienes y Servicios') return 'r';  // solo lectura
     return 'x';
   }),
 
@@ -971,7 +976,7 @@ const PERM_MATRIX = {
     if (['Cuentas Bancarias','Flujo de Caja','Flujo Proyectado','Comparativo Periodos'].includes(m)) return 'w';
     if (['Movs. Contables','Plan de Cuentas','Libro Diario','Balance General','Estado Resultados',
          'Empresas','Intercompany','Trazabilidad','Consolidado','Órdenes de Compra','Valorizaciones','Valor. Subcontrato',
-         'Proveedores','Subcontratistas','Subcontratos','Reportes','Obras'].includes(m)) return 'r';
+         'Proveedores','Subcontratistas','Subcontratos','Reportes','Obras','Bienes y Servicios'].includes(m)) return 'r';
     return 'x';
   }),
 
@@ -996,7 +1001,7 @@ const PERM_MATRIX = {
   // quién tiene y qué obras ejecutó la empresa) y nada de contabilidad,
   // almacén ni operación de obra.
   licitaciones: PERM_MATRIX_MODULES.map(m => {
-    if (m === 'Registro Profesional') return 'w';
+    if (m === 'Registro Profesional' || m === 'Bienes y Servicios') return 'w';
     if (['Personal','Obras','Empresas','Reportes'].includes(m)) return 'r';
     return 'x';
   }),
@@ -1189,6 +1194,7 @@ window.__moduleIdMap = {
   'cont-dashboard': 'Movs. Contables',
   'conciliacion-insumos': 'Movs. Contables',   // conciliación factura↔presupuesto (contabilidad)
   'empresas': 'Empresas',
+  'bienes-servicios': 'Bienes y Servicios',
   'movimientos-contables': 'Movs. Contables',
   'guias-remision': 'Movs. Contables',
   // Pagos de personal/subcontratos con evidencias (área contable sensible).
@@ -1277,6 +1283,7 @@ const __AYUDANTE_CONTADOR_ITEMS = [
   // área le muestra Empresas + Movimientos.
   'cont-dashboard',
   'captura-magica', 'personal', 'empresas', 'proveedores', 'movimientos-contables', 'cuentas-bancarias',
+  'bienes-servicios', // lectura: la matriz le da 'r', sin esta línea no lo vería
   'conciliacion-insumos', // enlaza facturas ↔ insumos presupuestados (Vinculación 2)
   'solicitudes', // ve "Mis solicitudes" (sus pedidos de cambio); la aprobación es del contador/admin
   'pagos', // pagos al personal (planilla / recibos por honorarios) — registra y sube constancias (pedido 20-jul)

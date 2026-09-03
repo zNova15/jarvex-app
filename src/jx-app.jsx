@@ -402,6 +402,7 @@ function Header({ page, plano = 'obra', onInicio, onToggleSidebar, onLogout, pro
     costos:'Costos',incidencias:'Incidencias',usuarios:'Usuarios',roles:'Roles y Permisos',
     configuracion:'Configuración',
     'cont-dashboard':'Dashboard Contable', 'conciliacion-insumos':'Conciliación de Insumos', empresas:'Empresas',
+    'bienes-servicios':'Bienes y Servicios',
     pagos:'Pagos',
     'guias-remision':'Guías de Remisión',
     profesionales:'Registro Profesional',
@@ -724,6 +725,8 @@ const PAGE_REGISTRY = {
   'capacitaciones':         { chunk: 'jx-ssoma-extra', component: 'CapacitacionesPage' },
   // === jx-insumos-emergencia ===
   'insumos-emergencia':     { chunk: 'jx-insumos-emergencia', component: 'InsumosEmergenciaPage' },
+  // === jx-trabajos ===
+  'bienes-servicios':       { chunk: 'jx-trabajos', component: 'BienesServiciosPage' },
   // === jx-subcontratos ===
   'subcontratistas':        { chunk: 'jx-subcontratos', component: 'SubcontratistasPage' },
   'subcontratos':           { chunk: 'jx-subcontratos', component: 'SubcontratosPage' },

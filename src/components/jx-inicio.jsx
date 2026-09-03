@@ -86,7 +86,7 @@ const BLOQUES = [
   {
     id: 'contabilidad', titulo: 'Contabilidad', icon: 'dollar', tipo: 'general', color: 'var(--amber)',
     desc: 'Empresas del grupo, movimientos, conciliación, tesorería y SUNAT',
-    items: ['cont-dashboard', 'movimientos-contables', 'conciliacion-insumos', 'guias-remision', 'pagos',
+    items: ['cont-dashboard', 'movimientos-contables', 'bienes-servicios', 'conciliacion-insumos', 'guias-remision', 'pagos',
       // SCTR vive acá para contabilidad (la contadora sube el trámite) — así no
       // necesita ver el bloque de Seguridad (pedido 21-jul).
       'sctr-personal',
