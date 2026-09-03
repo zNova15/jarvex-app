@@ -20,6 +20,7 @@ import { EmpresaDetalle } from "./jx-empresa-detalle.jsx";
 import { ClasificarEntidadesModal } from "./jx-clasificar-entidades.jsx";
 import { rolDeCompanyEnObra, titularContableDeObra } from "../lib/consorcio.js";
 import { resumenPorEntidad } from "../lib/contabilidad-entidades.js";
+import { empresasPorCategoria, CATEGORIAS_EMPRESA } from "../lib/desglose-empresa.js";
 const { useState: uSC, useMemo: uMC, useEffect: uEC, useRef: uRC } = React;
 
 // Etiqueta humana de un mes 'YYYY-MM' → 'Junio 2026' (filtro de período).
@@ -175,6 +176,7 @@ function EmpresasPage({ showToast }) {
   // proveedor. Sin este filtro la pantalla mezcla 2 empresas reales con 15 que
   // no lo son (medido en producción, mig 172).
   const [verTipo, setVerTipo] = uSC('propia'); // 'propia' | 'consorcio' | 'tercero' | 'todas'
+  const [busca, setBusca] = uSC('');
   const [form, setForm] = uSC({});
   // Cuántas empresas comparten RUC (para el badge del botón de fusión).
   const dupsRuc = uMC(() => {
@@ -239,6 +241,19 @@ function EmpresasPage({ showToast }) {
     setEditingId(c.id);
     setModal('editar');
   };
+
+  // La sección "Ficha" del desglose de la empresa manda a editar acá: el
+  // formulario es este, no vale la pena mantener dos. El intent espera a que
+  // `companies` esté cargado (por eso la dep) porque openEditar necesita la fila.
+  uEC(() => {
+    const id = window.__empresaEditarIntent;
+    if (!id || !(companies || []).length) return;
+    const c = companies.find(x => x.id === id);
+    if (!c) return;
+    window.__empresaEditarIntent = null;
+    openEditar(c);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companies]);
 
   const guardar = async () => {
     if (!form.name?.trim()) { showToast('Nombre requerido', 'red'); return; }
@@ -345,9 +360,9 @@ function EmpresasPage({ showToast }) {
     (companies || []).forEach(c => { if (!c.deleted_at) cuenta[c.tipo_entidad || 'propia'] = (cuenta[c.tipo_entidad || 'propia'] || 0) + 1; });
     return cuenta;
   }, [companies]);
-  const sorted = uMC(() => (companies || [])
-    .filter(c => verTipo === 'todas' || (c.tipo_entidad || 'propia') === verTipo)
-    .sort((a,b) => (a.name||'').localeCompare(b.name||'')), [companies, verTipo]);
+  // El catálogo agrupado en las 3 clases (mig 172), que es como Gabriel quiere
+  // verlo: en bloques, no en una tabla. La agrupación vive en desglose-empresa.js.
+  const grupos = uMC(() => empresasPorCategoria(companies, { texto: busca }), [companies, busca]);
 
   // Detalle: early return DESPUÉS de todos los hooks (regla crítica 3).
   const empDetalle = detalleId ? (companies || []).find(c => c.id === detalleId) : null;
@@ -371,20 +386,10 @@ function EmpresasPage({ showToast }) {
         <div>
           <div className="pg-title">Empresas</div>
           <div className="pg-sub">
-            {sorted.length} {verTipo === 'propia' ? 'empresas del grupo' : verTipo === 'consorcio' ? 'consorcios' : verTipo === 'tercero' ? 'terceros' : 'empresas'}
-            {' · '}{sorted.filter(c=>c.status==='activa').length} activas
-            {verTipo === 'consorcio' && ' · se administran desde su obra'}
+            Entrá a una empresa para ver su desglose: ficha, contabilidad, compras, personal, trabajos, tesorería y equipos.
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <select className="fi" style={{ width: 'auto', fontSize: 11.5 }}
-            value={verTipo} onChange={e => setVerTipo(e.target.value)}
-            title="Qué parte del catálogo mostrar">
-            <option value="propia">Del grupo ({porTipo.propia || 0})</option>
-            <option value="consorcio">Consorcios ({porTipo.consorcio || 0})</option>
-            <option value="tercero">Terceros ({porTipo.tercero || 0})</option>
-            <option value="todas">Todas</option>
-          </select>
           {isAdmin && (
             <button className="btn btn-ghost btn-sm" onClick={() => setClasificarOpen(true)}
               title="Separar empresas del grupo, consorcios y proveedores">
@@ -413,113 +418,123 @@ function EmpresasPage({ showToast }) {
           onClose={() => setClasificarOpen(false)} />
       )}
 
-      {sorted.length === 0 ? (
+      {/* La "partecita para clasificarlas" que pidió Gabriel: las tres clases
+          a la vista con su conteo, en vez de un select que las escondía. */}
+      <div className="card card-p" style={{ marginBottom: 14, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <input className="fi" style={{ flex: '1 1 220px' }} placeholder="Buscar por nombre, razón social o RUC"
+          value={busca} onChange={e => setBusca(e.target.value)}/>
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+          {[{ v: 'todas', label: `Todas (${(porTipo.propia||0)+(porTipo.consorcio||0)+(porTipo.tercero||0)})` },
+            ...CATEGORIAS_EMPRESA.map(c => ({ v: c.v, label: `${c.label} (${porTipo[c.v] || 0})` }))].map(op => (
+            <button key={op.v} className={`btn btn-xs ${verTipo === op.v ? 'btn-amber' : 'btn-ghost'}`}
+              onClick={() => setVerTipo(op.v)}>{op.label}</button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── LAS EMPRESAS, EN BLOQUES POR CATEGORÍA ──────────────────
+          Pedido de Gabriel (3-sep-2026): «se supone que debería estar en
+          bloques las empresas, tal vez con una partecita para clasificarlas
+          entre las tres». Antes era una tabla de 10 columnas, igual que en la
+          app vieja. Cada tarjeta entra al DESGLOSE de esa empresa. */}
+      {grupos.every(g => g.empresas.length === 0) ? (
         <div className="card card-p empty-state">
           <JxIcon name="building" size={40} color="var(--tm)"/>
           {(companies || []).filter(c => !c.deleted_at).length > 0 ? (
             <p>
-              Ninguna empresa está clasificada como <strong>{verTipo === 'propia' ? 'del grupo' : verTipo === 'consorcio' ? 'consorcio' : 'tercero'}</strong>.
-              {isAdmin ? ' Usá “Revisar clasificación” para separarlas, o cambiá la vista de arriba.' : ' Cambiá la vista de arriba para ver el resto.'}
+              {busca
+                ? <>Ninguna empresa coincide con «{busca}».</>
+                : <>No hay empresas en esta clasificación.{isAdmin ? ' Usá “Revisar clasificación” para separarlas.' : ''}</>}
             </p>
           ) : (
-            <p>No hay empresas registradas. Crea la primera para empezar a registrar movimientos contables.</p>
+            <p>No hay empresas registradas. Creá la primera para empezar a registrar movimientos contables.</p>
           )}
         </div>
       ) : (
-        <div className="card" style={{ overflow:'hidden' }}>
-          <div style={{ overflowX:'auto' }}>
-            <table className="tbl">
-              <thead><tr>
-                <th>Empresa</th><th>RUC</th><th>Rubro · Rol</th>
-                <th style={{ textAlign:'right' }}>Margen</th>
-                <th style={{ textAlign:'right' }}>Ingresos</th>
-                {/* "Egresos" = costo de obra + gasto de la empresa. Antes decía
-                    "Costos" mostrando SOLO r.costos mientras Utilidad restaba
-                    los dos — desde el backfill de 4a (31-ago) el gasto es real
-                    y esa columna dejaba de reconciliar (Ingresos−Costos≠Utilidad
-                    sin explicación visible). Esta tabla es un resumen; el
-                    desglose Costo/Gasto detallado vive en Movimientos Contables. */}
-                <th style={{ textAlign:'right' }}>Egresos</th>
-                <th style={{ textAlign:'right' }}>Utilidad</th>
-                <th>Estado</th>
-                <th style={{ textAlign:'center' }}>Detalle</th>
-                {isAdmin && <th style={{ textAlign:'center' }}>Acciones</th>}
-              </tr></thead>
-              <tbody>
-                {sorted.map(c => {
+        grupos.filter(g => verTipo === 'todas' ? g.empresas.length > 0 : g.v === verTipo).map(g => (
+          <div key={g.v} style={{ marginBottom: 26 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)', margin: '6px 0 4px' }}>
+              {g.label.toUpperCase()} <span style={{ fontWeight: 400, letterSpacing: 0 }}>· {g.empresas.length}</span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--tm)', marginBottom: 10 }}>{g.desc}</div>
+            {g.empresas.length === 0 ? (
+              <div className="card card-p" style={{ color: 'var(--tm)', fontSize: 12, fontStyle: 'italic' }}>
+                Todavía no hay empresas en esta categoría.
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
+                {g.empresas.map(c => {
                   const r = resumenes.get(c.id) || { ingresos:0, costos:0, gastos:0 };
                   const egresos = r.costos + r.gastos;
                   const utilidad = r.ingresos - egresos;
-                  const rubroLabel = RUBROS.find(t => t.v === c.rubro)?.label || (COMPANY_TYPES.find(t => t.v === c.company_type)?.label || '—');
-                  const rolLabel = ROLES_GRUPO.find(rr => rr.v === c.rol_grupo)?.label?.split('(')[0]?.trim() || '—';
-                  const rolBadge = c.rol_grupo === 'origen' ? 'b-blue'
-                    : c.rol_grupo === 'intermediaria' ? 'b-amber'
-                    : c.rol_grupo === 'ejecutora' ? 'b-green' : 'b-gray';
                   const obrasDeRol = rolesPorObra.get(c.id) || [];
                   const obrasEjecutora = obrasDeRol.filter(x => x.rol === 'ejecutora' || x.rol === 'miembro_consorcio');
+                  // Un consorcio no se administra acá: vive en su obra
+                  // (docs/tanda-2-navegacion.md §4). Su tarjeta lleva allá.
+                  const obraDelConsorcio = c.tipo_entidad === 'consorcio'
+                    ? (consorcios || []).find(k => k.company_id === c.id)?.obra_id : null;
+                  const entrar = () => {
+                    if (c.tipo_entidad === 'consorcio') {
+                      if (!obraDelConsorcio) { showToast('Este consorcio no tiene obra asociada todavía', 'amber'); return; }
+                      if (window.__setObraActivaId) window.__setObraActivaId(obraDelConsorcio);
+                      window.__navTo?.('panel-obra', 'obra');
+                      return;
+                    }
+                    setDetalleId(c.id);
+                  };
                   return (
-                    <tr key={c.id}>
-                      <td className="col-p">
-                        <strong>{c.name}</strong>
-                        {c.legal_name && <div style={{ fontSize:11, color:'var(--tm)' }}>{c.legal_name}</div>}
-                        {c.regimen_tributario && <div style={{ fontSize:10, color:'var(--tm)', marginTop:2 }}>{c.regimen_tributario}</div>}
-                      </td>
-                      <td className="col-m">{c.ruc || '—'}</td>
-                      <td>
-                        <div style={{ fontSize:11.5 }}>{rubroLabel}</div>
-                        <span className={`badge ${rolBadge}`} style={{ marginTop:3, fontSize:10 }}>Global: {rolLabel}</span>
+                    <div key={c.id} className="card card-p" style={{ border:'1px solid var(--border)', display:'flex', flexDirection:'column', gap:8 }}>
+                      <button type="button" onClick={entrar}
+                        title={c.tipo_entidad === 'consorcio' ? 'Ir a la obra de este consorcio' : 'Abrir el desglose de esta empresa'}
+                        style={{ background:'none', border:0, padding:0, textAlign:'left', cursor:'pointer', color:'inherit', font:'inherit' }}>
+                        <div style={{ display:'flex', gap:6, alignItems:'center', flexWrap:'wrap', marginBottom:4 }}>
+                          <span className={`badge ${g.badge}`} style={{ fontSize:9.5 }}>{g.label.replace(' del grupo','')}</span>
+                          <span className={`badge ${c.status==='activa'?'b-green':'b-gray'}`} style={{ fontSize:9.5 }}>{c.status}</span>
+                          {c.regimen_tributario && <span className="badge b-gray" style={{ fontSize:9.5 }}>{c.regimen_tributario}</span>}
+                        </div>
+                        <div style={{ fontSize:13.5, fontWeight:700, color:'var(--tp)', lineHeight:1.3 }}>{c.name}</div>
+                        <div style={{ fontSize:11, color:'var(--tm)', marginTop:2 }}>
+                          {c.ruc ? `RUC ${c.ruc}` : 'sin RUC'}{c.legal_name ? ` · ${c.legal_name}` : ''}
+                        </div>
                         {obrasEjecutora.length > 0 && (
-                          <div style={{ marginTop:4, fontSize:10, color:'var(--green)' }} title={obrasEjecutora.map(x => x.nombre).join('\n')}>
-                            ✓ Ejecutora en {obrasEjecutora.length} obra{obrasEjecutora.length !== 1 ? 's' : ''}
+                          <div style={{ fontSize:10.5, color:'var(--green)', marginTop:4 }} title={obrasEjecutora.map(x => x.nombre).join('\n')}>
+                            ✓ Ejecuta {obrasEjecutora.length} trabajo{obrasEjecutora.length !== 1 ? 's' : ''}
                           </div>
                         )}
-                      </td>
-                      <td style={{ textAlign:'right', color: c.margen_objetivo_pct ? 'var(--amber)' : 'var(--tm)' }} className="col-num">
-                        {c.margen_objetivo_pct != null ? `${Number(c.margen_objetivo_pct).toFixed(1)}%` : '—'}
-                      </td>
-                      <td style={{ textAlign:'right' }} className="col-num">{fmtCurK(r.ingresos)}</td>
-                      <td style={{ textAlign:'right' }} className="col-num">{fmtCurK(egresos)}</td>
-                      <td style={{ textAlign:'right', fontWeight:700, color: utilidad>=0?'var(--green)':'var(--red)' }} className="col-num">{fmtCurK(utilidad)}</td>
-                      <td><span className={`badge ${c.status==='activa'?'b-green':'b-gray'}`}>{c.status}</span></td>
-                      {/* Columna propia, NO gateada por isAdmin: las contadoras
-                          (contador/ayudante_contador) son las usuarias del detalle. */}
-                      <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
-                        {/* Un consorcio no se administra acá: vive en su obra
-                            (docs/tanda-2-navegacion.md §4, "Consorcios en este
-                            bloque"). El botón lleva directo a su panel en vez
-                            de abrir un detalle que igual no se puede editar. */}
-                        {c.tipo_entidad === 'consorcio' ? (() => {
-                          const obraId = (consorcios || []).find(k => k.company_id === c.id)?.obra_id;
-                          return (
-                            <button className="btn btn-ghost btn-xs" title="Este consorcio se administra desde su obra"
-                              disabled={!obraId}
-                              onClick={() => { if (window.__setObraActivaId) window.__setObraActivaId(obraId); window.__navTo?.('panel-obra'); }}>
-                              <JxIcon name="hardHat" size={11}/> Ir a su obra
-                            </button>
-                          );
-                        })() : (
-                          <button className="btn btn-ghost btn-xs" title="Ver qué compró y vendió esta empresa" onClick={()=>setDetalleId(c.id)}>
-                            <JxIcon name="eye" size={11}/> Ver detalle
-                          </button>
-                        )}
-                      </td>
-                      {isAdmin && (
-                        <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
-                          <button className="btn btn-ghost btn-xs" title="Editar" onClick={()=>openEditar(c)}>
-                            <JxIcon name="edit" size={11}/>
-                          </button>
-                          <button className="btn btn-red btn-xs" title="Desactivar" onClick={()=>eliminar(c)} style={{ marginLeft:4 }}>
-                            <JxIcon name="trash" size={11}/>
-                          </button>
-                        </td>
+                      </button>
+                      {/* A un TERCERO no se le llevan libros: mostrarle una
+                          utilidad sería inventarle una contabilidad nuestra. */}
+                      {c.tipo_entidad !== 'tercero' && (
+                        <div style={{ display:'flex', gap:12, flexWrap:'wrap', fontSize:11, borderTop:'1px solid var(--border)', paddingTop:8 }}>
+                          <span style={{ color:'var(--tm)' }}>Ingresos <strong style={{ color:'var(--green)' }}>{fmtCurK(r.ingresos)}</strong></span>
+                          <span style={{ color:'var(--tm)' }}>Egresos <strong style={{ color:'var(--red)' }}>{fmtCurK(egresos)}</strong></span>
+                          <span style={{ color:'var(--tm)' }}>Utilidad <strong style={{ color: utilidad>=0?'var(--blue)':'var(--red)' }}>{fmtCurK(utilidad)}</strong></span>
+                        </div>
                       )}
-                    </tr>
+                      <div style={{ display:'flex', gap:6, alignItems:'center', marginTop:'auto' }}>
+                        <button className="btn btn-ghost btn-xs" onClick={entrar}>
+                          {c.tipo_entidad === 'consorcio'
+                            ? <><JxIcon name="hardHat" size={11}/> Ir a su obra</>
+                            : <><JxIcon name="eye" size={11}/> Abrir desglose</>}
+                        </button>
+                        {isAdmin && (
+                          <>
+                            <button className="btn btn-ghost btn-xs" title="Editar" onClick={()=>openEditar(c)} style={{ marginLeft:'auto' }}>
+                              <JxIcon name="edit" size={11}/>
+                            </button>
+                            <button className="btn btn-red btn-xs" title="Desactivar" onClick={()=>eliminar(c)}>
+                              <JxIcon name="trash" size={11}/>
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
                   );
                 })}
-              </tbody>
-            </table>
+              </div>
+            )}
           </div>
-        </div>
+        ))
       )}
 
       {(modal === 'nueva' || modal === 'editar') && (

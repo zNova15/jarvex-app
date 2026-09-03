@@ -238,6 +238,48 @@ logueado —como `panel-obra`— porque es la puerta de entrada: mandar ahí a u
 almacenero que no podía verla era dejarlo en "Sin acceso" en su propia pantalla
 de arranque. La lista se acota a las obras designadas.
 
+## 4-ter. Entrega E — El desglose de la empresa (y el de la obra, afinado)
+
+> Segunda prueba de Gabriel, el mismo 3-sep. La 2D arregló la puerta de
+> entrada; esto arregla lo que había detrás de dos de los bloques.
+
+### E1. Empresas: bloques y desglose, no una tabla con pestañas
+*"Cuando ingresas a empresas te sale lo que siempre me ha salido […] Se supone
+que debería estar en bloques […] y cuando yo dé clic debería darme el
+desglosado, pero de la empresa en general. Tú estás haciendo simplemente el
+desglose de la parte contable y eso está mal."*
+
+- El catálogo pasa de **tabla de 10 columnas a tarjetas agrupadas por las tres
+  clases** (grupo · consorcios · terceros), con buscador y filtros por clase.
+  A un TERCERO no se le muestran números: no le llevamos libros.
+- Cada empresa abre un **PANEL, hermano del Panel del trabajo**, con sus
+  **8 secciones** en tarjetas y el conteo de cada una: Ficha · Contabilidad ·
+  Compras e inventario · Personal · Trabajos · Tesorería · Equipos ·
+  Documentos y SUNAT. Definidas en `src/lib/desglose-empresa.js` (con tests
+  que las atan al menú real), espejo de `desglose-obra.js`.
+- Tres secciones son nuevas y salen de datos que ya existían y no se veían:
+  **Ficha** (los datos legales solo se podían mirar abriendo el formulario de
+  edición), **Tesorería** (`cuentas_bancarias` + `cronograma_pagos` por
+  `company_id`) y **Equipos** (`activos_pesados.company_id`).
+- **EMPRESAS gana área propia en el menú.** Era la otra mitad de la queja
+  ("en la parte izquierda me sale como siempre"): entrar al catálogo mostraba
+  las 22 secciones contables. Ahora Empresas y Contabilidad son áreas
+  hermanas, como los bloques que son.
+
+### E2. Ingenieros ≠ especialistas (desglose del trabajo)
+Definición de Gabriel: el **ingeniero de campo** es civil, sigue el avance por
+**zonas y frentes**, y se lo designa **líder de un frente**; el **especialista**
+se encarga de seguridad, calidad o ambiental **a nivel macro de toda la obra**.
+Eran un solo bloque. Ahora el desglose del trabajo tiene **8 grupos**: se
+separó **"Ingenieros y frentes"** de "Gestión de obra" (se llevó `frentes`,
+las 9 pantallas de frente, la aprobación de frentes y el rendimiento de
+ingenieros), y "Secciones especiales" pasó a llamarse **"Especialistas"**.
+
+### E3. La contadora jefe ve subcontratos
+*"Sí debería ver los subcontratos, porque es parte de la contabilidad también."*
+`contador` gana `w` en Subcontratistas, Subcontratos y Valor. Subcontrato:
+lo que factura un subcontratista entra por sus libros como cualquier costo.
+
 ## 5. Condición no negociable (del doc original, sigue vigente)
 
 Cualquier cambio de qué rol ve o no ve qué pantalla **debe reflejarse en espejo

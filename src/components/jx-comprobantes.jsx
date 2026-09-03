@@ -137,7 +137,15 @@ function ComprobantesElectronicosPage({ showToast }) {
   const clientes = uM(() => provs.filter(p => !p.tipo_proveedor || /cliente/i.test(p.tipo_proveedor)), [provs]);
 
   // Filtros
-  const [filtroEmpresa, setFiltroEmpresa] = uS('todas');
+  // El desglose de una empresa (sección "Documentos y SUNAT") entra acá con la
+  // empresa ya elegida — mismo patrón de intent que __guiasFocusIntent. Se lee
+  // en el initializer (no en un efecto) para que el primer render ya llegue
+  // filtrado y no se vea la lista entera un instante.
+  const [filtroEmpresa, setFiltroEmpresa] = uS(() => {
+    const it = window.__comprobantesEmpresaIntent;
+    if (it) { window.__comprobantesEmpresaIntent = null; return String(it); }
+    return 'todas';
+  });
   const [filtroTipo, setFiltroTipo] = uS('todos');     // todos | 01 | 03 | 07 | 08
   const [filtroEstado, setFiltroEstado] = uS('todos'); // todos | pendiente_emision | emitido | anulado | rechazado
   const [busqueda, setBusqueda] = uS('');

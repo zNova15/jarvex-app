@@ -936,6 +936,12 @@ const PERM_MATRIX = {
     const wList = [
       // RRHH (sección completa del menú)
       'Personal','Asistencia','Contratos Laborales','Planillas','CTS','Gratificaciones',
+      // SUBCONTRATOS: pedido de Gabriel (3-sep-2026) — «sí debería ver los
+      // subcontratos, porque es parte de la contabilidad también». Lo que le
+      // factura un subcontratista entra por sus libros como cualquier otro
+      // costo de la obra; sin esto, la contadora entraba a un trabajo y el
+      // bloque "Personal y subcontratos" le mostraba solo la mitad.
+      'Subcontratistas','Subcontratos','Valor. Subcontrato',
       // Contabilidad
       'Empresas','Proveedores','Movs. Contables','Intercompany','Trazabilidad','Consolidado',
       'Plan de Cuentas','Libro Diario','Balance General','Estado Resultados',

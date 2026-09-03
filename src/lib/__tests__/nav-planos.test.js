@@ -3,10 +3,10 @@ import { planoDe, GENERAL_ITEMS, resolveLanding, areaDe } from '../nav-planos.js
 
 describe('areaDe — sub-áreas del plano general', () => {
   it('contabilidad / direccion / admin / general', () => {
-    expect(areaDe('empresas')).toBe('contabilidad');
     expect(areaDe('balance-general')).toBe('contabilidad');
     expect(areaDe('flujo-caja')).toBe('contabilidad');
     expect(areaDe('movimientos-contables')).toBe('contabilidad');
+    expect(areaDe('contabilidad')).toBe('contabilidad');
     expect(areaDe('trabajos')).toBe('trabajos');
     // Registro Profesional: bloque Licitaciones (antes caía en 'general' y, peor,
     // planoDe lo daba por 'obra' → el sidebar general nunca lo mostraba).
@@ -14,8 +14,15 @@ describe('areaDe — sub-áreas del plano general', () => {
     expect(areaDe('dashboard-ejecutivo')).toBe('direccion');
     expect(areaDe('usuarios')).toBe('admin');
     expect(areaDe('configuracion')).toBe('admin');
-    expect(areaDe('proveedores')).toBe('general');
     expect(areaDe('captura-magica')).toBe('general');
+  });
+
+  it('EMPRESAS tiene área propia: es un bloque hermano, no una parte de Contabilidad', () => {
+    // Al entrar al catálogo, el menú mostraba las 22 secciones contables
+    // (libros, PLE, tesorería…). Gabriel: «me sale como siempre, un disgregado
+    // como en la anterior aplicación».
+    expect(areaDe('empresas')).toBe('empresas');
+    expect(areaDe('proveedores')).toBe('empresas');
   });
 });
 

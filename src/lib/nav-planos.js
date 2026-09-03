@@ -53,7 +53,12 @@ export const planoDe = (id) => GENERAL_ITEMS.has(id) ? 'general' : 'obra';
 // obra) pero también se ofrece en el área 'contabilidad' (vista general con
 // selector) — por eso figura acá.
 const AREA = {
-  contabilidad: new Set(['contabilidad', 'cont-dashboard', 'empresas', 'bienes-servicios', 'movimientos-contables', 'intercompany',
+  // EMPRESAS es un bloque hermano de Contabilidad, no una parte de ella: al
+  // entrar al catálogo, el menú tiene que mostrar el catálogo — no los 22
+  // ítems de libros, PLE y tesorería. Era la queja de Gabriel: «en la parte
+  // izquierda me sale como siempre, un disgregado como en la app anterior».
+  empresas: new Set(['empresas', 'proveedores']),
+  contabilidad: new Set(['contabilidad', 'cont-dashboard', 'bienes-servicios', 'movimientos-contables', 'intercompany',
     'consolidado', 'cuentas-bancarias', 'flujo-caja', 'flujo-proyectado',
     'plan-cuentas', 'libro-diario', 'balance-general', 'estado-resultados', 'comprobantes',
     'libros-electronicos', 'config-sunat', 'comparativo-periodos', 'compras-categoria', 'ordenes-intercompany', 'guias-remision',

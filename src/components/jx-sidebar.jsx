@@ -69,10 +69,17 @@ const NAV = [
   { id: 'obras', label: 'Obras / Proyectos', icon: 'building' },
   { id: 'bienes-servicios', label: 'Bienes y Servicios', icon: 'package' },
 
+  // ── EMPRESAS: bloque hermano de Contabilidad, con área propia ──
+  // Entrar al catálogo de empresas mostraba las 22 secciones contables en el
+  // menú. El catálogo es su propio bloque: empresas y las entidades externas
+  // con las que operan.
+  { section: 'EMPRESAS', area: 'empresas' },
+  { id: 'empresas', label: 'Todas las empresas', icon: 'building' },
+  { id: 'proveedores', label: 'Proveedores', icon: 'truck' },
+
   { section: 'GENERAL', area: 'general' },
   { id: 'captura-magica', label: '✨ Captura Mágica', icon: 'upload' },
   { id: 'captura-campo', label: '📸 Subir Factura (campo)', icon: 'camera' },
-  { id: 'proveedores', label: 'Proveedores', icon: 'truck' },
   { id: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
   { id: 'reportes', label: 'Reportes', icon: 'chart' },
 
@@ -123,14 +130,19 @@ const NAV = [
   { id: 'cronograma', label: 'Cronograma / Gantt', icon: 'gantt' },
   { id: 'avance', label: 'Avance de Obra', icon: 'hardHat' },
   { id: 'movimientos-insumos', label: 'Movimientos de Insumos', icon: 'inbox' },
-  { id: 'aprobaciones-reporte', label: 'Aprobación de Frentes', icon: 'flag' },
-  { id: 'rendimiento-ingenieros', label: 'Rendimiento de Ingenieros', icon: 'trendUp' },
   { id: 'comparativo', label: 'Planificado vs Real', icon: 'compare' },
   { id: 'costos', label: 'Costos', icon: 'dollar' },
   { id: 'valorizaciones', label: 'Valorizaciones', icon: 'dollar' },
   { id: 'incidencias', label: 'Incidencias', icon: 'alert' },
   { id: 'activos-pesados', label: 'Equipos Pesados', icon: 'tool' },
   { id: 'mantenimiento-programado', label: 'Mantenimiento Programado', icon: 'tool' },
+
+  // Los INGENIEROS DE CAMPO (civiles que siguen el avance por zonas y frentes,
+  // y lideran el frente que se apertura) tienen bloque propio desde el
+  // 3-sep-2026: es un nivel distinto del de los especialistas, que miran la
+  // obra entera. El orden y la pertenencia los define desglose-obra.js.
+  { section: 'INGENIEROS Y FRENTES' },
+  { id: 'frentes', label: 'Frentes de Trabajo', icon: 'flag' },
   { id: 'dashboard-tecnico', label: 'Dashboard Técnico', icon: 'dashboard' },
   { id: 'mis-partidas', label: 'Partidas del Proyecto', icon: 'list' },
   { id: 'cronograma-frente', label: 'Cronograma de mis Partidas', icon: 'calendar' },
@@ -141,10 +153,11 @@ const NAV = [
   { id: 'mis-reportes', label: 'Mis Reportes', icon: 'list' },
   { id: 'plan-real', label: 'Plan vs Real', icon: 'trending' },
   { id: 'emitir-alerta', label: 'Emitir Alerta', icon: 'alert' },
+  { id: 'aprobaciones-reporte', label: 'Aprobación de Frentes', icon: 'flag' },
+  { id: 'rendimiento-ingenieros', label: 'Rendimiento de Ingenieros', icon: 'trendUp' },
 
   { section: 'PERSONAL Y SUBCONTRATOS' },
   { id: 'personal', label: 'Personal', icon: 'users' },
-  { id: 'frentes', label: 'Frentes de Trabajo', icon: 'flag' },
   { id: 'asistencia', label: 'Asistencia', icon: 'calendar' },
   { id: 'personal-contratos', label: 'Contratos Laborales', icon: 'shield' },
   { id: 'planillas', label: 'Planillas / Sueldos', icon: 'user' },
@@ -191,7 +204,6 @@ const NAV = [
   // ahí se entra a la contabilidad de cada empresa y de cada trabajo.
   { id: 'contabilidad', label: 'Resumen por entidad', icon: 'list' },
   { id: 'cont-dashboard', label: 'Dashboard Contable', icon: 'dashboard' },
-  { id: 'empresas', label: 'Empresas', icon: 'building' },
 
   { id: 'movimientos-contables', label: 'Movimientos (todas / por obra)', icon: 'dollar', plano: 'general' },
   { id: 'guias-remision', label: 'Guías de Remisión', icon: 'truck' },

@@ -55,31 +55,51 @@ export const GRUPOS_TRABAJO = [
     desc: 'Presupuesto, partidas, cronograma, avance, costos y valorizaciones',
     items: ['dashboard-gestion', 'panel-residente', 'importar', 'partidas', 'insumos',
       'control-consumo', 'versiones', 'cronograma', 'avance', 'movimientos-insumos',
-      'aprobaciones-reporte', 'rendimiento-ingenieros', 'comparativo', 'costos',
-      'valorizaciones', 'incidencias', 'activos-pesados', 'mantenimiento-programado',
-      // Ingeniería de frente: el mundo entero del rol `ingeniero`. Va en Gestión
-      // de Obra porque es la misma obra mirada desde el frente, no otra área.
-      'dashboard-tecnico', 'mis-partidas', 'cronograma-frente', 'salidas-frente',
-      'vinculacion-salidas', 'reporte-diario', 'borradores-reporte', 'mis-reportes',
-      'plan-real', 'emitir-alerta'],
+      'comparativo', 'costos',
+      'valorizaciones', 'incidencias', 'activos-pesados', 'mantenimiento-programado'],
+  },
+  {
+    // Separado de "Gestión de obra" por pedido de Gabriel (3-sep-2026), con su
+    // definición: los INGENIEROS DE CAMPO son civiles que siguen el avance por
+    // ZONAS y FRENTES, y a cada uno se lo designa LÍDER de un frente que se
+    // apertura. Es un nivel distinto del de los especialistas, que miran la
+    // obra entera (ver el grupo 'especiales'): acá se trabaja frente por
+    // frente. Antes todo esto vivía dentro de Gestión de obra y no se
+    // distinguía una cosa de la otra.
+    id: 'ingenieria',
+    titulo: 'Ingenieros y frentes',
+    icon: 'flag',
+    color: 'var(--blue)',
+    desc: 'Frentes de trabajo, sus líderes y el avance que cada uno reporta',
+    items: ['frentes', 'dashboard-tecnico', 'mis-partidas', 'cronograma-frente',
+      'salidas-frente', 'vinculacion-salidas', 'reporte-diario', 'borradores-reporte',
+      'mis-reportes', 'plan-real', 'emitir-alerta',
+      // La revisión de lo que reportan los frentes y el rendimiento de cada
+      // ingeniero: es sobre ellos, no sobre el presupuesto de la obra.
+      'aprobaciones-reporte', 'rendimiento-ingenieros'],
   },
   {
     id: 'personal',
     titulo: 'Personal y subcontratos',
     icon: 'users',
     color: 'var(--purple)',
-    desc: 'Obreros, frentes, asistencia, planillas y subcontratos',
-    items: ['personal', 'frentes', 'asistencia', 'personal-contratos', 'planillas',
+    // 'frentes' se fue a "Ingenieros y frentes": el frente es la unidad de
+    // trabajo del ingeniero de campo, no una sección de RRHH.
+    desc: 'Obreros, asistencia, planillas y subcontratos',
+    items: ['personal', 'asistencia', 'personal-contratos', 'planillas',
       'cts', 'gratificaciones', 'plame',
       'subcontratistas', 'subcontratos', 'subcontrato-valorizaciones'],
     extra: ['pagos'],
   },
   {
     id: 'especiales',
-    titulo: 'Secciones especiales',
+    titulo: 'Especialistas',
     icon: 'shield',
     color: 'var(--orange)',
-    desc: 'Seguridad · Ambiental · Calidad · Social',
+    // La otra mitad de la distinción de Gabriel: el especialista mira la obra
+    // ENTERA a nivel macro (seguridad, calidad, ambiental, social), mientras
+    // el ingeniero de campo trabaja frente por frente.
+    desc: 'Seguridad · Ambiental · Calidad · Social, a nivel de toda la obra',
     items: ['reporte-especialidad', 'charlas-plan', 'sctr-personal', 'inducciones',
       'charlas-seguridad', 'iperc', 'inspecciones-seguridad', 'capacitaciones',
       'epps-inventario', 'mov-epp', 'epp', 'insumos-persona', 'insumos-emergencia',

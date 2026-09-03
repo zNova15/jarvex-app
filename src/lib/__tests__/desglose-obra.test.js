@@ -34,11 +34,24 @@ describe('desglose-obra — estructura de los grupos', () => {
     }
   });
 
-  it('los grupos son los 7 que definió Gabriel, en orden', () => {
+  it('los grupos son los 8 que definió Gabriel, en orden', () => {
+    // 8 desde el 3-sep-2026: Gabriel separó a los INGENIEROS DE CAMPO (que
+    // trabajan frente por frente y lideran el frente que se apertura) de los
+    // ESPECIALISTAS (seguridad/calidad/ambiental/social, que miran la obra
+    // entera). Antes la ingeniería de frente vivía dentro de "Gestión de obra".
     expect(GRUPOS_TRABAJO.map(g => g.id)).toEqual([
-      'almacen', 'logistica', 'gestion', 'personal', 'especiales',
+      'almacen', 'logistica', 'gestion', 'ingenieria', 'personal', 'especiales',
       'contabilidad-obra', 'cadenas',
     ]);
+  });
+
+  it('los frentes son del bloque de ingenieros, no del de personal', () => {
+    expect(grupoDePagina('frentes')).toBe('ingenieria');
+    expect(grupoDePagina('reporte-diario')).toBe('ingenieria');
+    expect(grupoDePagina('aprobaciones-reporte')).toBe('ingenieria');
+    // Y lo macro sigue con los especialistas.
+    expect(grupoDePagina('iperc')).toBe('especiales');
+    expect(grupoDePagina('gestion-calidad')).toBe('especiales');
   });
 
   it('una página pertenece a UN SOLO grupo (canónico)', () => {

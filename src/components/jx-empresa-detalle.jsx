@@ -1,31 +1,46 @@
 // ═══════════════════════════════════════════════════════════════════
-// JARVEX — Detalle de UNA empresa (punto 5 del pedido de las contadoras, sep-2026;
-// entrega C de la tanda 2, docs/tanda-2-navegacion.md §4).
+// JARVEX — EL DESGLOSE DE UNA EMPRESA (tanda 2E).
 //
-// Se abre desde la tabla de Empresas con "Ver detalle" y vive DENTRO de esa
-// página (import estático, mismo chunk: no es una página registrada, no toca
-// main/sidebar/admin y no viola la regla anti-import-dinámico).
+// Empezó como "el detalle de una empresa" (punto 5 de las contadoras) y en la
+// entrega 2C se le agregaron pestañas. Gabriel lo probó y fue tajante:
+//   «cada empresa va a tener su desglose al igual que las obras que tienen sus
+//    propias secciones […] tú estás haciendo simplemente el desglose de la
+//    parte contable y eso está mal».
 //
-// Cuatro pestañas, las que pide el documento:
-//   1) CONTABILIDAD — KPIs con el criterio EXACTO del Consolidado (una moneda
-//      por vez, sin anulados, con lo interco separado).
-//   2) INVENTARIO — QUÉ compró: el detalle de las facturas (notas.items_factura)
-//      agrupado por insumo: cantidades, gasto, proveedores, última compra y, si
-//      además revende, cuánto de eso volvió a salir vendido.
-//   3) PERSONAL — DERIVADO, no una columna nueva: `personal` no tiene
-//      company_id (decisión de Gabriel, 3-sep-2026, ver
-//      docs/tanda-2-navegacion.md §4) — es la gente de las obras que esta
-//      empresa ejecuta o de las que es socia de consorcio, agrupada por forma
-//      de pago (planilla / recibo por honorarios / sin definir).
-//   4) TRABAJOS — obras (como ejecutora o socia) y bienes/servicios
-//      (`trabajos.ejecutor_company_id` o vía `trabajos.consorcio_id`) que esta
-//      empresa ejecuta o de los que es parte.
+// Así que ahora es un PANEL, hermano del Panel del trabajo: al entrar se ven
+// las SECCIONES de la empresa como tarjetas (con cuántas cosas hay en cada
+// una), y desde ahí se entra a cada una. Las secciones y su gate por rol
+// viven en `src/lib/desglose-empresa.js` (con tests), igual que
+// `desglose-obra.js` manda en el desglose de un trabajo.
+//
+// Las secciones, y de dónde sale cada una:
+//   FICHA        datos legales de la company (RUC, régimen, representante…)
+//   CONTABILIDAD accounting_movements.company_id — criterio EXACTO del
+//                Consolidado (una moneda por vez, sin anulados, interco aparte)
+//   INVENTARIO   notas.items_factura de sus facturas: qué compró
+//   PERSONAL     DERIVADO: no existe personal.company_id (decisión de Gabriel).
+//                Es la gente de los trabajos que ejecuta o de los que es socia,
+//                agrupada por forma de pago (planilla / RxH / sin definir)
+//   TRABAJOS     obras.ejecutora_company_id + consorcio_socios +
+//                trabajos.ejecutor_company_id
+//   TESORERÍA    cuentas_bancarias.company_id + cronograma_pagos.company_id
+//   EQUIPOS      activos_pesados.company_id
+//   DOCUMENTOS   navega a Comprobantes con la empresa preseleccionada (única
+//                sección que sale del panel: esa pantalla ya existe entera)
+//
+// Vive DENTRO de la página Empresas (import estático, mismo chunk: no es una
+// página registrada, no toca main/sidebar/admin y no viola la regla
+// anti-import-dinámico).
 //
 // ⚠ El inventario es lo COMPRADO, NO stock: los consumos de obra viven en
 //   almacén por obra. La UI lo dice explícitamente para no crear una
 //   expectativa falsa.
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
+import {
+  seccionesDeEmpresa, seccionEmpresa, CATEGORIAS_EMPRESA,
+  CATEGORIA_EMPRESA_LABEL, categoriaDeEmpresa,
+} from "../lib/desglose-empresa.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 import { extraerLineasDeFacturas } from "../lib/analisis-insumos.js";
 import { resolverPares, construirGrupos } from "../lib/insumo-correlacion.js";
@@ -66,8 +81,15 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
   const movsHook = window.__hooks.useAccountingMovements(company?.id);
   const corrHook = window.__hooks.useInsumoCorrelaciones();
   const personalHook = window.__hooks.usePersonal?.() || { data: [] };
+  // Secciones nuevas del desglose (tanda 2E): los hooks ya aceptan company_id,
+  // así que la vista se arma acá en vez de mandar al usuario a otra pantalla.
+  const cuentasHook = window.__hooks.useCuentasBancarias?.(company?.id) || { data: [] };
+  const cronogramaHook = window.__hooks.useCronogramaPagos?.(company?.id) || { data: [] };
+  const activosHook = window.__hooks.useActivosPesados?.() || { data: [] };
   const [moneda, setMoneda] = uSD('PEN');
-  const [tab, setTab] = uSD('contabilidad');     // 'contabilidad' | 'inventario' | 'personal' | 'trabajos'
+  // `seccion` = null → las TARJETAS del desglose (como el Panel del trabajo).
+  // Un id de sección → esa vista, con "volver al panel".
+  const [seccion, setSeccion] = uSD(null);
   const [vista, setVista] = uSD('acumulado');    // 'acumulado' | 'externo'
   const [busca, setBusca] = uSD('');
   const [tipoFiltro, setTipoFiltro] = uSD('');
@@ -77,6 +99,7 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
 
   const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
   const movs = movsHook.data || [];
+  const rol = window.__useAuth?.()?.profile?.rol;
 
   // ── Personal (entrega C, bloque 3): DERIVADO, no personal.company_id ──
   // Los trabajos que la empresa ejecuta o de los que es socia (obrasEjecutora,
@@ -118,6 +141,20 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
         || String(a.obra.nombre_obra || '').localeCompare(String(b.obra.nombre_obra || '')));
   }, [obrasEjecutora, obraById, consorcios, consorcioSocios, company?.id]);
 
+  // ── Tesorería y equipos: lo demás que una empresa TIENE ──────────
+  const cuentasDeEmpresa = uMD(
+    () => (cuentasHook.data || []).filter(c => !c.deleted_at && c.company_id === company?.id),
+    [cuentasHook.data, company?.id]
+  );
+  const pagosProgramados = uMD(
+    () => (cronogramaHook.data || []).filter(p => !p.deleted_at && p.company_id === company?.id),
+    [cronogramaHook.data, company?.id]
+  );
+  const equiposDeEmpresa = uMD(
+    () => (activosHook.data || []).filter(a => !a.deleted_at && a.company_id === company?.id),
+    [activosHook.data, company?.id]
+  );
+
   const trabajosBSDeEmpresa = uMD(() => (trabajosBS || []).filter(t => {
     if (t.deleted_at) return false;
     if (t.ejecutor_company_id === company?.id) return true;
@@ -152,51 +189,130 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
   const k = vista === 'externo' ? resumen.externo : resumen.total;
   const hayInterco = resumen.interco.ingresos > 0 || resumen.interco.costos > 0;
 
-  return (
-    <div className="page-wrap">
-      {/* ── Cabecera ─────────────────────────────────────────────── */}
-      <div className="pg-hd frow-sb">
-        <div style={{ minWidth: 0 }}>
-          <button className="btn btn-ghost btn-sm" onClick={onVolver} style={{ marginBottom: 6 }}>
-            <JxIcon name="chevL" size={13} />Volver a Empresas
-          </button>
-          <div className="pg-title" style={{ wordBreak: 'break-word' }}>{company.name}</div>
-          <div className="pg-sub">
-            {company.ruc ? `RUC ${company.ruc}` : 'sin RUC'}
-            {company.legal_name ? ` · ${company.legal_name}` : ''}
-            {company.regimen_tributario ? ` · ${company.regimen_tributario}` : ''}
-          </div>
-          {obrasEjecutora.length > 0 && (
-            <div style={{ fontSize: 11, color: 'var(--green)', marginTop: 4 }}>
-              ✓ Ejecutora en: {obrasEjecutora.map(o => o.nombre).join(' · ')}
-            </div>
-          )}
+  // Gate por rol: el MISMO del sidebar, así ninguna tarjeta muere en "Sin
+  // acceso" (idéntico al Panel del trabajo).
+  const canSee = (id) => rol === 'admin' ? true : (window.__canSeeSidebarItem?.(rol, id) ?? false);
+  const secciones = seccionesDeEmpresa({ canSee });
+  // Cuántas cosas hay en cada sección: una tarjeta que dice "12 movimientos"
+  // informa; una que no dice nada obliga a entrar para saber si vale la pena.
+  const CUENTAS = {
+    contabilidad: resumen.nMovs ? `${resumen.nMovs} movimiento(s) en ${moneda === 'USD' ? 'USD' : 'S/'}` : 'sin movimientos',
+    inventario: inv.insumos.length ? `${inv.insumos.length} insumo(s) comprados` : 'sin facturas con detalle',
+    personal: personalDeEmpresa.length ? `${personalDeEmpresa.length} persona(s)` : 'sin personal derivado',
+    trabajos: (obrasDeEmpresa.length + trabajosBSDeEmpresa.length)
+      ? `${obrasDeEmpresa.length + trabajosBSDeEmpresa.length} trabajo(s)` : 'no ejecuta trabajos',
+    tesoreria: cuentasDeEmpresa.length
+      ? `${cuentasDeEmpresa.length} cuenta(s)${pagosProgramados.length ? ` · ${pagosProgramados.length} pago(s) programado(s)` : ''}`
+      : 'sin cuentas cargadas',
+    equipos: equiposDeEmpresa.length ? `${equiposDeEmpresa.length} equipo(s)` : 'sin equipos a su nombre',
+    ficha: company.ruc ? `RUC ${company.ruc}` : 'sin RUC cargado',
+    documentos: 'comprobantes y guías',
+  };
+
+  const abrirSeccion = (s) => {
+    if (s.tipo === 'pagina') {
+      // La empresa queda elegida para que la pantalla destino la preseleccione.
+      try { window.__empresaActivaId = company.id; } catch {}
+      window.__comprobantesEmpresaIntent = company.id;
+      window.__navTo?.(s.pagina, 'general');
+      return;
+    }
+    setSeccion(s.id);
+  };
+
+  const cabecera = (
+    <div className="pg-hd frow-sb">
+      <div style={{ minWidth: 0 }}>
+        <button className="btn btn-ghost btn-sm" onClick={() => (seccion ? setSeccion(null) : onVolver?.())} style={{ marginBottom: 6 }}>
+          <JxIcon name="chevL" size={13} />{seccion ? 'Volver al panel de la empresa' : 'Volver a Empresas'}
+        </button>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginBottom: 2 }}>
+          <span className={`badge ${CATEGORIAS_EMPRESA.find(c => c.v === categoriaDeEmpresa(company))?.badge || 'b-gray'}`} style={{ fontSize: 9.5 }}>
+            {CATEGORIA_EMPRESA_LABEL[categoriaDeEmpresa(company)]}
+          </span>
+          {company.status && <span className={`badge ${company.status === 'activa' ? 'b-green' : 'b-gray'}`} style={{ fontSize: 9.5 }}>{company.status}</span>}
+          {seccion && <span className="badge b-blue" style={{ fontSize: 9.5 }}>{seccionEmpresa(seccion)?.titulo}</span>}
         </div>
-        {tab === 'contabilidad' && (
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <select className="fi" value={moneda} onChange={e => setMoneda(e.target.value)} style={{ minWidth: 100 }}>
-              <option value="PEN">S/ (PEN)</option>
-              <option value="USD">USD</option>
-            </select>
+        <div className="pg-title" style={{ wordBreak: 'break-word' }}>{company.name}</div>
+        <div className="pg-sub">
+          {company.ruc ? `RUC ${company.ruc}` : 'sin RUC'}
+          {company.legal_name ? ` · ${company.legal_name}` : ''}
+          {company.regimen_tributario ? ` · ${company.regimen_tributario}` : ''}
+        </div>
+        {obrasEjecutora.length > 0 && (
+          <div style={{ fontSize: 11, color: 'var(--green)', marginTop: 4 }}>
+            ✓ Ejecutora en: {obrasEjecutora.map(o => o.nombre).join(' · ')}
           </div>
         )}
       </div>
+      {seccion === 'contabilidad' && (
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <select className="fi" value={moneda} onChange={e => setMoneda(e.target.value)} style={{ minWidth: 100 }}>
+            <option value="PEN">S/ (PEN)</option>
+            <option value="USD">USD</option>
+          </select>
+        </div>
+      )}
+    </div>
+  );
 
-      {/* ── Las 4 secciones del documento (docs/tanda-2-navegacion.md §4) ── */}
-      <div style={{ display: 'flex', gap: 6, padding: 4, background: 'var(--bg-s)', borderRadius: 8, marginBottom: 16, width: 'fit-content', flexWrap: 'wrap' }}>
-        {[
-          { v: 'contabilidad', label: 'Contabilidad' },
-          { v: 'inventario', label: 'Inventario' },
-          { v: 'personal', label: `Personal${personalDeEmpresa.length ? ` (${personalDeEmpresa.length})` : ''}` },
-          { v: 'trabajos', label: `Trabajos${(obrasDeEmpresa.length + trabajosBSDeEmpresa.length) ? ` (${obrasDeEmpresa.length + trabajosBSDeEmpresa.length})` : ''}` },
-        ].map(t => (
-          <button key={t.v} className={`btn btn-sm ${tab === t.v ? 'btn-amber' : 'btn-ghost'}`} style={{ border: 'none' }} onClick={() => setTab(t.v)}>
-            {t.label}
-          </button>
-        ))}
+  // ── EL PANEL: las secciones de la empresa, como el desglose de una obra ──
+  if (!seccion) {
+    return (
+      <div className="page-wrap">
+        {cabecera}
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)', margin: '6px 0 10px' }}>
+          SECCIONES DE ESTA EMPRESA
+        </div>
+        {secciones.length === 0 ? (
+          <div className="card card-p empty-state">
+            <JxIcon name="lock" size={32} color="var(--tm)" />
+            <p>Tu rol no tiene secciones habilitadas dentro de una empresa.</p>
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: 12 }}>
+            {secciones.map(s => (
+              <button key={s.id} type="button" className="card card-p" onClick={() => abrirSeccion(s)}
+                style={{ textAlign: 'left', cursor: 'pointer', border: '1px solid var(--border)', display: 'flex',
+                  flexDirection: 'column', gap: 8, minHeight: 124, background: 'var(--bg-c)', color: 'inherit', font: 'inherit' }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = s.color; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{ width: 34, height: 34, borderRadius: 9, background: `color-mix(in srgb, ${s.color} 12%, transparent)`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    <JxIcon name={s.icon} size={16} color={s.color} />
+                  </div>
+                  <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--tp)' }}>{s.titulo}</div>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--tm)', lineHeight: 1.4, flex: 1 }}>{s.desc}</div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                  <span style={{ fontSize: 10.5, color: 'var(--ts)', fontWeight: 600 }}>{CUENTAS[s.id] || ''}</span>
+                  <JxIcon name="chevR" size={13} color={s.color} />
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
+    );
+  }
 
-      {tab === 'contabilidad' && (<>
+  return (
+    <div className="page-wrap">
+      {cabecera}
+
+      {seccion === 'ficha' && (
+        <FichaEmpresa company={company} obrasDeEmpresa={obrasDeEmpresa} />
+      )}
+
+      {seccion === 'tesoreria' && (
+        <TesoreriaEmpresa cuentas={cuentasDeEmpresa} pagos={pagosProgramados} canSee={canSee} />
+      )}
+
+      {seccion === 'equipos' && (
+        <EquiposEmpresa equipos={equiposDeEmpresa} obraById={obraById} canSee={canSee} />
+      )}
+
+      {seccion === 'contabilidad' && (<>
       {/* ── Resumen financiero (criterio del Consolidado) ─────────── */}
       <div style={{ display: 'flex', gap: 6, padding: 4, background: 'var(--bg-s)', borderRadius: 8, marginBottom: 12, width: 'fit-content', flexWrap: 'wrap' }}>
         <button className={`btn btn-sm ${vista === 'acumulado' ? 'btn-amber' : 'btn-ghost'}`} style={{ border: 'none' }} onClick={() => setVista('acumulado')}>
@@ -247,7 +363,7 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
       </div>
       </>)}
 
-      {tab === 'inventario' && (<>
+      {seccion === 'inventario' && (<>
       {/* ── Inventario comprado ──────────────────────────────────── */}
       <div className="card card-p" style={{ marginBottom: 10, borderLeft: '3px solid var(--blue)', fontSize: 11.5, color: 'var(--ts)' }}>
         <strong style={{ color: 'var(--blue)' }}>Qué compró esta empresa</strong> — sale del detalle de las
@@ -417,14 +533,14 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
       </div>
       </>)}
 
-      {tab === 'personal' && (
+      {seccion === 'personal' && (
         <div className="card card-p" style={{ borderLeft: '3px solid var(--purple)', fontSize: 11.5, color: 'var(--ts)', marginBottom: 10 }}>
           <strong style={{ color: 'var(--purple)' }}>Personal de esta empresa</strong> — se DERIVA, no es una
           columna nueva: es la gente designada en las obras que esta empresa ejecuta o de las que es socia de
           consorcio. Agrupado por forma de pago (definida en Pagos), no por cargo.
         </div>
       )}
-      {tab === 'personal' && (
+      {seccion === 'personal' && (
         obraIdsRelacionadas.size === 0 ? (
           <div className="card card-p empty-state">
             <JxIcon name="users" size={40} color="var(--tm)" />
@@ -485,14 +601,14 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
         )
       )}
 
-      {tab === 'trabajos' && (
+      {seccion === 'trabajos' && (
         <div className="card card-p" style={{ borderLeft: '3px solid var(--blue)', fontSize: 11.5, color: 'var(--ts)', marginBottom: 10 }}>
           <strong style={{ color: 'var(--blue)' }}>Qué ejecuta esta empresa</strong> — obras donde es ejecutora o
           socia de consorcio (<code>obras.ejecutora_company_id</code>, <code>consorcio_socios</code>) y bienes/servicios
           que presta o vende (<code>trabajos.ejecutor_company_id</code>).
         </div>
       )}
-      {tab === 'trabajos' && (
+      {seccion === 'trabajos' && (
         (obrasDeEmpresa.length === 0 && trabajosBSDeEmpresa.length === 0) ? (
           <div className="card card-p empty-state">
             <JxIcon name="hardHat" size={40} color="var(--tm)" />
@@ -554,6 +670,164 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
       )}
     </div>
   );
+}
+
+// ── SECCIÓN: FICHA ─────────────────────────────────────────────────
+// La identidad legal de la empresa. Estaba solo dentro del modal de edición:
+// para MIRAR el RUC o el representante legal había que abrir un formulario.
+function FichaEmpresa({ company, obrasDeEmpresa }) {
+  const dato = (label, valor, ancho = 1) => (
+    <div style={{ gridColumn: `span ${ancho}` }}>
+      <div style={{ fontSize: 10, color: 'var(--tm)', fontWeight: 700, letterSpacing: '.06em' }}>{label}</div>
+      <div style={{ fontSize: 13, color: valor ? 'var(--tp)' : 'var(--tm)', marginTop: 2, wordBreak: 'break-word' }}>
+        {valor || '— sin cargar —'}
+      </div>
+    </div>
+  );
+  const actividades = Array.isArray(company.actividades_economicas) ? company.actividades_economicas : [];
+  return (<>
+    <div className="card card-p" style={{ marginBottom: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 14 }}>
+        {dato('RUC', company.ruc)}
+        {dato('RAZÓN SOCIAL', company.legal_name, 2)}
+        {dato('NOMBRE COMERCIAL', company.name)}
+        {dato('RÉGIMEN TRIBUTARIO', company.regimen_tributario)}
+        {dato('REPRESENTANTE LEGAL', company.representante_legal, 2)}
+        {dato('DOMICILIO FISCAL', company.direccion, 2)}
+        {dato('TELÉFONO', company.telefono)}
+        {dato('EMAIL', company.email)}
+        {dato('INICIO DE ACTIVIDADES', company.inicio_actividades ? fmtFecha(company.inicio_actividades) : null)}
+        {dato('CLASIFICACIÓN', CATEGORIA_EMPRESA_LABEL[categoriaDeEmpresa(company)])}
+        {dato('TRABAJOS QUE EJECUTA', obrasDeEmpresa.length ? `${obrasDeEmpresa.length}` : '0')}
+      </div>
+      {actividades.length > 0 && (
+        <div style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+          <div style={{ fontSize: 10, color: 'var(--tm)', fontWeight: 700, letterSpacing: '.06em', marginBottom: 6 }}>
+            ACTIVIDADES ECONÓMICAS (SUNAT)
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {actividades.map((a, i) => (
+              <span key={i} className="badge b-gray" style={{ fontSize: 10 }}>{typeof a === 'string' ? a : (a?.descripcion || JSON.stringify(a))}</span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+    <button className="btn btn-ghost btn-sm"
+      title="Abre el formulario de la empresa en el catálogo"
+      onClick={() => { window.__empresaEditarIntent = company.id; window.__navTo?.('empresas', 'general'); }}>
+      <JxIcon name="edit" size={13} /> Editar estos datos
+    </button>
+  </>);
+}
+
+// ── SECCIÓN: TESORERÍA ─────────────────────────────────────────────
+function TesoreriaEmpresa({ cuentas, pagos, canSee }) {
+  const pendientes = pagos.filter(p => p.estado !== 'pagado');
+  return (<>
+    <div className="card card-p" style={{ marginBottom: 10, borderLeft: '3px solid var(--blue)', fontSize: 11.5, color: 'var(--ts)' }}>
+      <strong style={{ color: 'var(--blue)' }}>La plata de esta empresa</strong> — sus cuentas bancarias y los pagos
+      que tiene programados. Para registrar movimientos bancarios o conciliar, entrá a Tesorería.
+    </div>
+    <div className="card" style={{ overflow: 'hidden', marginBottom: 14 }}>
+      <div style={{ padding: 10, borderBottom: '1px solid var(--border)', fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)' }}>
+        CUENTAS BANCARIAS · {cuentas.length}
+      </div>
+      {cuentas.length === 0 ? (
+        <div className="card-p" style={{ color: 'var(--tm)', fontSize: 12, fontStyle: 'italic' }}>
+          Esta empresa no tiene cuentas bancarias cargadas.
+        </div>
+      ) : (
+        <div style={{ overflowX: 'auto' }}>
+          <table className="tbl">
+            <thead><tr><th>Banco</th><th>Número</th><th>Moneda</th><th>Tipo</th><th>Estado</th></tr></thead>
+            <tbody>
+              {cuentas.map(c => (
+                <tr key={c.id}>
+                  <td className="col-p"><strong>{c.banco || '—'}</strong></td>
+                  <td className="col-m">{c.numero_cuenta || c.cci || '—'}</td>
+                  <td>{c.moneda || 'PEN'}</td>
+                  <td>{c.tipo_cuenta || '—'}</td>
+                  <td><span className={`badge ${c.estado === 'activa' ? 'b-green' : 'b-gray'}`} style={{ fontSize: 9 }}>{c.estado || '—'}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+    {pagos.length > 0 && (
+      <div className="card" style={{ overflow: 'hidden', marginBottom: 14 }}>
+        <div style={{ padding: 10, borderBottom: '1px solid var(--border)', fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)' }}>
+          PAGOS PROGRAMADOS · {pendientes.length} pendiente(s) de {pagos.length}
+        </div>
+        <div style={{ overflowX: 'auto' }}>
+          <table className="tbl">
+            <thead><tr><th>Concepto</th><th>Fecha</th><th style={{ textAlign: 'right' }}>Monto</th><th>Estado</th></tr></thead>
+            <tbody>
+              {pagos.slice(0, 25).map(p => (
+                <tr key={p.id}>
+                  <td className="col-p">{p.concepto || p.descripcion || '—'}</td>
+                  <td>{fmtFecha(p.fecha_programada)}</td>
+                  <td style={{ textAlign: 'right' }} className="col-num">{fmtMonto(p.monto, p.moneda || 'PEN')}</td>
+                  <td><span className={`badge ${p.estado === 'pagado' ? 'b-green' : 'b-amber'}`} style={{ fontSize: 9 }}>{p.estado || 'pendiente'}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )}
+    {canSee('cuentas-bancarias') && (
+      <button className="btn btn-ghost btn-sm" onClick={() => window.__navTo?.('cuentas-bancarias', 'general')}>
+        Ir a Tesorería <JxIcon name="chevR" size={12} />
+      </button>
+    )}
+  </>);
+}
+
+// ── SECCIÓN: EQUIPOS Y MAQUINARIA ──────────────────────────────────
+function EquiposEmpresa({ equipos, obraById, canSee }) {
+  return (<>
+    <div className="card card-p" style={{ marginBottom: 10, borderLeft: '3px solid var(--orange)', fontSize: 11.5, color: 'var(--ts)' }}>
+      <strong style={{ color: 'var(--orange)' }}>Los equipos a nombre de esta empresa</strong> — activos pesados
+      con su propietaria registrada. Dónde está cada uno y sus horas de trabajo se llevan en la obra donde opera.
+    </div>
+    {equipos.length === 0 ? (
+      <div className="card card-p empty-state">
+        <JxIcon name="tool" size={36} color="var(--tm)" />
+        <p>Ningún equipo pesado está registrado a nombre de esta empresa.</p>
+      </div>
+    ) : (
+      <div className="card" style={{ overflow: 'hidden', marginBottom: 14 }}>
+        <div style={{ overflowX: 'auto' }}>
+          <table className="tbl">
+            <thead><tr><th>Equipo</th><th>Placa</th><th>Tipo</th><th>Obra actual</th><th>Estado</th></tr></thead>
+            <tbody>
+              {equipos.map(a => (
+                <tr key={a.id}>
+                  <td className="col-p"><strong>{a.nombre || a.descripcion || '—'}</strong></td>
+                  <td className="col-m">{a.placa || '—'}</td>
+                  <td>{a.tipo || '—'}</td>
+                  <td style={{ fontSize: 11.5 }}>
+                    {a.obra_actual_id
+                      ? (obraById.get(a.obra_actual_id)?.nombre_obra || '(otra obra)')
+                      : <span style={{ color: 'var(--tm)' }}>sin asignar</span>}
+                  </td>
+                  <td><span className="badge b-gray" style={{ fontSize: 9 }}>{a.estado || '—'}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )}
+    {canSee('activos-pesados') && (
+      <button className="btn btn-ghost btn-sm" onClick={() => window.__navTo?.('activos-pesados', 'obra')}>
+        Ir a Equipos Pesados <JxIcon name="chevR" size={12} />
+      </button>
+    )}
+  </>);
 }
 
 Object.assign(window, { EmpresaDetalle });
