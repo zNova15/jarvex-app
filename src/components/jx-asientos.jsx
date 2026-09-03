@@ -6,6 +6,7 @@ import { describirIgv, igvDestacable } from "../lib/igv-desglose.js";
 import { PCGE_DEFAULT } from "../lib/pcge-default";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { fmtFechaLarga, ymdDe } from "../lib/fecha.js";
+import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 
@@ -88,7 +89,8 @@ function LibroDiarioPage({ showToast }) {
   const { data: movs } = (window.__hooks?.useAccountingMovements?.() ?? { data: [] });
 
   const ahora = new Date();
-  const [empresaId, setEmpresaId] = uS('all');
+  // 'all' es el "sin filtro" de ESTA pantalla (no 'todas').
+  const [empresaId, setEmpresaId] = uS(() => filtroInicialEmpresa('all'));
   const [anio, setAnio] = uS(String(ahora.getFullYear()));
   const [mes, setMes] = uS('all');
   const [tipoFiltro, setTipoFiltro] = uS('all');
@@ -397,6 +399,9 @@ function LibroDiarioPage({ showToast }) {
   // ─── Render ────────────────────────────────────────────────
   return (
     <div className="page-wrap">
+      {/* Cartel de contexto: esta pantalla puede estar acotada a UNA empresa
+          (tanda 2F). Sin él, la lista se ve más corta y nadie sabe por qué. */}
+      {window.EmpresaActivaBanner ? <window.EmpresaActivaBanner onSalir={() => setEmpresaId('all')}/> : null}
       <div className="pg-hd frow-sb">
         <div>
           <div className="pg-title">Libro Diario</div>

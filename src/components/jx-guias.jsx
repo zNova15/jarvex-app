@@ -19,6 +19,7 @@ import { normUnidad } from "../lib/inventario-empresa.js";
 import { itemsDeFactura, parseNotas } from "../lib/cruce-recepcion.js";
 import { normalizarRuc } from "../lib/doc-id.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
+import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -58,7 +59,7 @@ function GuiasRemisionPage({ showToast }) {
   // 📄 de Movimientos no sabe si la guía es emitida o recibida.
   const [tab, setTab] = uS('todas');
   const [filtroVinculo, setFiltroVinculo] = uS('todos');   // todos | vinculadas | sin_vincular | esperando
-  const [filtroEmpresa, setFiltroEmpresa] = uS('todas');   // empresa del grupo
+  const [filtroEmpresa, setFiltroEmpresa] = uS(() => filtroInicialEmpresa('todas'));   // empresa del grupo
   const [filtroObra, setFiltroObra] = uS('todas');
   const [fDesde, setFDesde] = uS('');
   const [fHasta, setFHasta] = uS('');
@@ -356,6 +357,9 @@ function GuiasRemisionPage({ showToast }) {
 
   return (
     <div className="page-wrap">
+      {/* Cartel de contexto: esta pantalla puede estar acotada a UNA empresa
+          (tanda 2F). Sin él, la lista se ve más corta y nadie sabe por qué. */}
+      {window.EmpresaActivaBanner ? <window.EmpresaActivaBanner onSalir={() => setFiltroEmpresa('todas')}/> : null}
       <div className="pg-hd frow-sb">
         <div>
           <div className="pg-title">Guías de Remisión</div>

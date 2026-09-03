@@ -58,6 +58,10 @@ const AREA = {
   // ítems de libros, PLE y tesorería. Era la queja de Gabriel: «en la parte
   // izquierda me sale como siempre, un disgregado como en la app anterior».
   empresas: new Set(['empresas', 'proveedores']),
+  // 'empresa' (singular) NO se deriva de la página: lo decide jx-app cuando hay
+  // una EMPRESA ACTIVA, porque las mismas páginas contables son del grupo o de
+  // una empresa según el contexto. Por eso no lleva páginas propias acá.
+  empresa: new Set([]),
   contabilidad: new Set(['contabilidad', 'cont-dashboard', 'bienes-servicios', 'movimientos-contables', 'intercompany',
     'consolidado', 'cuentas-bancarias', 'flujo-caja', 'flujo-proyectado',
     'plan-cuentas', 'libro-diario', 'balance-general', 'estado-resultados', 'comprobantes',

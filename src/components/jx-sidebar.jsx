@@ -77,6 +77,27 @@ const NAV = [
   { id: 'empresas', label: 'Todas las empresas', icon: 'building' },
   { id: 'proveedores', label: 'Proveedores', icon: 'truck' },
 
+  // ── DENTRO DE UNA EMPRESA (tanda 2F) ──────────────────────────────
+  // Con una empresa activa, estas MISMAS páginas son su contabilidad, no la
+  // del grupo: el menú lo dice y no ofrece el resto. Los ids se repiten a
+  // propósito con la sección de abajo — el filtro por área muestra una u
+  // otra, nunca las dos (mismo recurso que usa 'movimientos-contables' para
+  // vivir en los dos planos).
+  { section: 'CONTABILIDAD DE ESTA EMPRESA', area: 'empresa' },
+  { id: 'empresas', label: '← Volver a la empresa', icon: 'building' },
+  { id: 'cont-dashboard', label: 'Dashboard contable', icon: 'dashboard' },
+  { id: 'movimientos-contables', label: 'Movimientos', icon: 'dollar', plano: 'general' },
+  { id: 'comprobantes', label: 'Comprobantes electrónicos', icon: 'file' },
+  { id: 'guias-remision', label: 'Guías de Remisión', icon: 'truck' },
+  { id: 'compras-categoria', label: 'Compras por Categoría', icon: 'layers' },
+  { id: 'libro-diario', label: 'Libro Diario / Asientos', icon: 'list' },
+  { id: 'plan-cuentas', label: 'Plan de Cuentas (PCGE)', icon: 'list' },
+  { id: 'estado-resultados', label: 'Estado de Resultados', icon: 'chart' },
+  { id: 'balance-general', label: 'Balance General', icon: 'chart' },
+  { id: 'libros-electronicos', label: 'Libros Electrónicos PLE', icon: 'file' },
+  { id: 'flujo-caja', label: 'Flujo de Caja / Pagos', icon: 'calendar' },
+  { id: 'intercompany', label: 'Operaciones entre Empresas', icon: 'compare' },
+
   { section: 'GENERAL', area: 'general' },
   { id: 'captura-magica', label: '✨ Captura Mágica', icon: 'upload' },
   { id: 'captura-campo', label: '📸 Subir Factura (campo)', icon: 'camera' },

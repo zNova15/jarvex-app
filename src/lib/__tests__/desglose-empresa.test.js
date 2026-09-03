@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import {
   SECCIONES_EMPRESA, SECCIONES_INTERNAS, seccionEmpresa, seccionesDeEmpresa,
   CATEGORIAS_EMPRESA, categoriaDeEmpresa, empresasPorCategoria,
+  BLOQUES_CONTABILIDAD_EMPRESA, bloquesContabilidadEmpresa, esPaginaDeEmpresa,
 } from '../desglose-empresa.js';
 
 /** Ids de página del NAV real (jx-sidebar.jsx). */
@@ -34,12 +35,14 @@ describe('desglose-empresa — estructura', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it('una empresa se desglosa en las 8 secciones que pidió Gabriel', () => {
+  it('una empresa se desglosa en las 7 secciones que pidió Gabriel', () => {
     // «cada empresa va a tener su desglose al igual que las obras que tienen
     // sus propias secciones» — no solo la parte contable.
+    // 'documentos' se fue DENTRO de contabilidad: «pienso que eso debería
+    // estar dentro de contabilidad».
     expect(SECCIONES_EMPRESA.map(s => s.id)).toEqual([
       'ficha', 'contabilidad', 'inventario', 'personal', 'trabajos',
-      'tesoreria', 'equipos', 'documentos',
+      'tesoreria', 'equipos',
     ]);
   });
 
@@ -76,12 +79,63 @@ describe('desglose-empresa — estructura', () => {
   });
 });
 
+describe('contabilidad de la empresa — el sub-panel', () => {
+  it('la contabilidad es un panel de bloques, no una vista con cinco números', () => {
+    // «Contabilidad debería ser la parte que esté MÁS DESARROLLADA en cada
+    // empresa»: movimientos, comprobantes, guías, compras por categoría,
+    // libro diario…
+    const ids = BLOQUES_CONTABILIDAD_EMPRESA.map(b => b.id);
+    for (const imprescindible of ['movimientos-contables', 'comprobantes', 'guias-remision',
+      'compras-categoria', 'libro-diario', 'plan-cuentas', 'flujo-caja']) {
+      expect(ids, `falta el bloque ${imprescindible}`).toContain(imprescindible);
+    }
+  });
+
+  it('el libro diario está: era lo que Gabriel no encontraba y llamó "importantísimo"', () => {
+    expect(BLOQUES_CONTABILIDAD_EMPRESA.some(b => b.id === 'libro-diario')).toBe(true);
+  });
+
+  it('cada bloque apunta a una página real del menú y tiene título e ícono', () => {
+    const nav = idsDelNav();
+    for (const b of BLOQUES_CONTABILIDAD_EMPRESA) {
+      expect(nav.has(b.id), `el bloque "${b.id}" no está en el NAV`).toBe(true);
+      expect(b.titulo, b.id).toBeTruthy();
+      expect(b.icon, b.id).toBeTruthy();
+      expect(b.desc, b.id).toBeTruthy();
+    }
+  });
+
+  it('los ids de bloque son únicos', () => {
+    const ids = BLOQUES_CONTABILIDAD_EMPRESA.map(b => b.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('el gate por rol usa la página destino', () => {
+    expect(bloquesContabilidadEmpresa({ canSee: () => false })).toEqual([]);
+    const soloDiario = bloquesContabilidadEmpresa({ canSee: (id) => id === 'libro-diario' });
+    expect(soloDiario.map(b => b.id)).toEqual(['libro-diario']);
+  });
+
+  it('esPaginaDeEmpresa deja AFUERA lo que es del grupo por definición', () => {
+    // Con una empresa activa, estas SÍ son "su" contabilidad…
+    expect(esPaginaDeEmpresa('movimientos-contables')).toBe(true);
+    expect(esPaginaDeEmpresa('libro-diario')).toBe(true);
+    expect(esPaginaDeEmpresa('comprobantes')).toBe(true);
+    // …pero estas comparan o consolidan TODAS: mirarlas "desde una empresa" no
+    // significa nada, así que el menú no entra en contexto.
+    expect(esPaginaDeEmpresa('contabilidad')).toBe(false);   // resumen por entidad
+    expect(esPaginaDeEmpresa('consolidado')).toBe(false);
+    expect(esPaginaDeEmpresa('analisis-insumos')).toBe(false);
+    expect(esPaginaDeEmpresa('trabajos')).toBe(false);
+  });
+});
+
 describe('seccionesDeEmpresa — gate por rol', () => {
   it('sin permisos no se muestra ninguna sección', () => {
     expect(seccionesDeEmpresa({ canSee: () => false })).toEqual([]);
   });
-  it('con todo se muestran las 8', () => {
-    expect(seccionesDeEmpresa({ canSee: () => true }).length).toBe(8);
+  it('con todo se muestran las 7', () => {
+    expect(seccionesDeEmpresa({ canSee: () => true }).length).toBe(7);
   });
   it('un rol que solo ve empresas obtiene ficha e inventario', () => {
     const v = seccionesDeEmpresa({ canSee: (id) => id === 'empresas' });

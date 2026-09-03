@@ -21,6 +21,7 @@ import { ClasificarEntidadesModal } from "./jx-clasificar-entidades.jsx";
 import { rolDeCompanyEnObra, titularContableDeObra } from "../lib/consorcio.js";
 import { resumenPorEntidad } from "../lib/contabilidad-entidades.js";
 import { empresasPorCategoria, CATEGORIAS_EMPRESA } from "../lib/desglose-empresa.js";
+import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
 const { useState: uSC, useMemo: uMC, useEffect: uEC, useRef: uRC } = React;
 
 // Etiqueta humana de un mes 'YYYY-MM' → 'Junio 2026' (filtro de período).
@@ -917,7 +918,10 @@ function MovimientosContablesPage({ showToast }) {
     return (window.__plano === 'obra' && o) ? o : 'todas';
   });
   const { data: trabajosBS } = window.__hooks.useTrabajos?.() || { data: [] };
-  const [filtroEmpresaSel, setFiltroEmpresaSel] = uSC('todas');
+  // Si venís del desglose de una empresa, esta pantalla arranca mostrando
+  // SOLO la suya (tanda 2F). Sin esto, salir del panel a Movimientos te
+  // devolvía los de todas: «aquí tienes nuevamente todo mezclado».
+  const [filtroEmpresaSel, setFiltroEmpresaSel] = uSC(() => filtroInicialEmpresa('todas'));
   const [filtroClase, setFiltroClase] = uSC('todos');
   const [filtroTipo, setFiltroTipo] = uSC('todos');
   const [filtroEstado, setFiltroEstado] = uSC('todos');
@@ -2336,6 +2340,9 @@ function MovimientosContablesPage({ showToast }) {
 
   return (
     <div className="page-wrap">
+      {/* Cartel de contexto: esta pantalla puede estar acotada a UNA empresa
+          (tanda 2F). Sin él, la lista se ve más corta y nadie sabe por qué. */}
+      {window.EmpresaActivaBanner ? <window.EmpresaActivaBanner onSalir={() => setFiltroEmpresaSel('todas')}/> : null}
       <div className="pg-hd frow-sb">
         <div>
           <div className="pg-title">Movimientos Contables</div>
@@ -4362,7 +4369,7 @@ function ContabilidadDashboardPage({ showToast }) {
     return () => { cancelled = true; window.removeEventListener('jx_data_changed', onChange); };
   }, []);
 
-  const [filtroEmpresa, setFiltroEmpresa] = uSC('todas');
+  const [filtroEmpresa, setFiltroEmpresa] = uSC(() => filtroInicialEmpresa('todas'));
   const [filtroMoneda, setFiltroMoneda] = uSC('PEN');
   const [filtroDesde, setFiltroDesde] = uSC('');
   const [filtroHasta, setFiltroHasta] = uSC('');

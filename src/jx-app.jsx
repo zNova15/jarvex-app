@@ -3,6 +3,8 @@ import { trackPageView } from "./lib/posthog.js";
 import SyncDetailModal from "./components/SyncDetailModal.jsx";
 import BotonAyuda from "./components/jx-ayuda.jsx";
 import { planoDe, resolveLanding, areaDe } from "./lib/nav-planos.js";
+import { getEmpresaActivaId, EMPRESA_ACTIVA_EVENT } from "./lib/empresa-activa.js";
+import { esPaginaDeEmpresa } from "./lib/desglose-empresa.js";
 import { cargarObrasAsignadas } from "./lib/obras-asignadas.js";
 import { tomarPaginaTrasCambioDeTema } from "./lib/tema.js";
 
@@ -955,6 +957,16 @@ function App() {
   // pantalla actual — así las variables `canWrite` que calculan sus
   // valores en el render inicial vuelven a calcularse con los nuevos
   // permisos sin que cada pantalla tenga que suscribirse al evento.
+  // Empresa activa: define si el sidebar muestra la contabilidad DEL GRUPO o
+  // la de una empresa (tanda 2F). Reactivo, para que entrar o salir del
+  // contexto reordene el menú al instante.
+  const [empresaActivaId, setEmpresaActivaId_] = uSA(() => getEmpresaActivaId());
+  uEA(() => {
+    const on = (e) => setEmpresaActivaId_(e?.detail?.id ?? getEmpresaActivaId());
+    window.addEventListener(EMPRESA_ACTIVA_EVENT, on);
+    return () => window.removeEventListener(EMPRESA_ACTIVA_EVENT, on);
+  }, []);
+
   const [permsVer, setPermsVer] = uSA(0);
   uEA(() => {
     const onPerms = () => setPermsVer(v => v + 1);
@@ -1290,7 +1302,16 @@ function App() {
   // que sigue respetando navPlano='general' al entrar desde Contabilidad.
   const planoBase = page === 'inicio' ? 'general' : planoDe(page);
   const planoActual = planoBase === 'general' ? 'general' : (navPlano || planoBase);
-  const areaActual = planoActual === 'general' ? (page === 'inicio' ? null : areaDe(page)) : null;
+  // ÁREA DEL SIDEBAR. Con una EMPRESA ACTIVA, las pantallas contables se
+  // muestran como lo que son en ese momento: la contabilidad de ESA empresa.
+  // Si no, el menú volvía a listar las 22 secciones del grupo y, como dijo
+  // Gabriel, «aquí tienes nuevamente todo mezclado» — entrabas por una empresa
+  // y al tocar Movimientos veías los de todas.
+  const areaBase = planoActual === 'general' ? (page === 'inicio' ? null : areaDe(page)) : null;
+  // Solo las páginas que SON la contabilidad de una empresa entran al contexto.
+  // El "Resumen por entidad" y el Consolidado siguen siendo del GRUPO aunque
+  // haya una empresa activa: ahí se comparan todas, no se mira una.
+  const areaActual = (empresaActivaId && esPaginaDeEmpresa(page)) ? 'empresa' : areaBase;
   window.__plano = planoActual;   // lo leen páginas lazy (ej. Movimientos: scope por obra)
   return (
     <div style={{ display:'flex', height:'100vh', overflow:'hidden' }}>

@@ -9,6 +9,7 @@ import {
 import { generatePDT601, buildPDT601Filename } from '../lib/sunat-pdt601.js';
 import { generarAsientosBatch } from '../lib/asientos.js';
 import { enPeriodo } from '../lib/fecha.js';
+import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
@@ -24,7 +25,9 @@ function LibrosElectronicosPage({ showToast }) {
   const today = new Date();
   const [anio, setAnio] = uS(today.getFullYear());
   const [mes,  setMes]  = uS(today.getMonth() + 1);
-  const [companyId, setCompanyId] = uS('');
+  // Acá la empresa es OBLIGATORIA: '' = ninguna elegida. El efecto de abajo
+  // autoselecciona la primera si esto queda vacío.
+  const [companyId, setCompanyId] = uS(() => filtroInicialEmpresa(''));
   const [busy, setBusy] = uS(false);
 
   const { data: companies = [] } = window.__hooks.useCompanies();

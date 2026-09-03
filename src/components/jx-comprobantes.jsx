@@ -2,6 +2,7 @@ import React from "react";
 import { validarComprobanteAI } from "../lib/validar-comprobante-ai.js";
 import { derivarTypeContable } from "../lib/clasificacion-contable.js";
 import { companyIdsDeObra } from "../lib/consorcio.js";
+import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 // Iconos
@@ -137,15 +138,10 @@ function ComprobantesElectronicosPage({ showToast }) {
   const clientes = uM(() => provs.filter(p => !p.tipo_proveedor || /cliente/i.test(p.tipo_proveedor)), [provs]);
 
   // Filtros
-  // El desglose de una empresa (sección "Documentos y SUNAT") entra acá con la
-  // empresa ya elegida — mismo patrón de intent que __guiasFocusIntent. Se lee
-  // en el initializer (no en un efecto) para que el primer render ya llegue
-  // filtrado y no se vea la lista entera un instante.
-  const [filtroEmpresa, setFiltroEmpresa] = uS(() => {
-    const it = window.__comprobantesEmpresaIntent;
-    if (it) { window.__comprobantesEmpresaIntent = null; return String(it); }
-    return 'todas';
-  });
+  // Si venís del desglose de una empresa, esta pantalla arranca mostrando solo
+  // los comprobantes de ELLA (tanda 2F). Se lee en el initializer, no en un
+  // efecto, para que el primer render ya llegue filtrado.
+  const [filtroEmpresa, setFiltroEmpresa] = uS(() => filtroInicialEmpresa('todas'));
   const [filtroTipo, setFiltroTipo] = uS('todos');     // todos | 01 | 03 | 07 | 08
   const [filtroEstado, setFiltroEstado] = uS('todos'); // todos | pendiente_emision | emitido | anulado | rechazado
   const [busqueda, setBusqueda] = uS('');
@@ -702,6 +698,9 @@ function ComprobantesElectronicosPage({ showToast }) {
 
   return (
     <div className="page-wrap">
+      {/* Cartel de contexto: esta pantalla puede estar acotada a UNA empresa
+          (tanda 2F). Sin él, la lista se ve más corta y nadie sabe por qué. */}
+      {window.EmpresaActivaBanner ? <window.EmpresaActivaBanner onSalir={() => setFiltroEmpresa('todas')}/> : null}
       <div className="pg-hd frow-sb">
         <div>
           <div className="pg-title">Comprobantes Electrónicos</div>

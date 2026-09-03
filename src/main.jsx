@@ -37,6 +37,10 @@ import { useObraActiva, getObraActivaIdSync, setObraActivaId } from './hooks/use
 // y el import() dinámico que había acá no separaba nada — solo repetía el
 // patrón que la regla crítica 1 prohíbe. Es una lib pura, sin side effects.
 import { cargarObrasAsignadas, obrasPermitidasIniciales } from './lib/obras-asignadas.js';
+// Cartel de "estás dentro de una empresa". Va EAGER (chunk principal) porque
+// lo usan páginas de varios chunks vía window.EmpresaActivaBanner — el mismo
+// patrón que window.JxIcon, y sin import cruzado entre chunks lazy.
+import './components/jx-empresa-banner.jsx';
 import {
   useObras, usePersonal, useMateriales, useHerramientas,
   useRubrosObra, usePersonalProfesional, usePersonalExperiencia,

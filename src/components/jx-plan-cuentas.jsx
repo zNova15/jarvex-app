@@ -9,6 +9,7 @@ import {
   loadCustomCuentas,
   saveCustomCuentas,
 } from '../lib/pcge-default';
+import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
 
 const { useState: uSP, useMemo: uMP, useEffect: uEP } = React;
 
@@ -335,7 +336,7 @@ function BalanceGeneralPage({ showToast }) {
   const { data: movs }      = window.__hooks.useAccountingMovements();
   const { data: pagos }     = window.__hooks.useCronogramaPagos();
 
-  const [companyId, setCompanyId] = uSP('todas');
+  const [companyId, setCompanyId] = uSP(() => filtroInicialEmpresa('todas'));
   const [moneda, setMoneda] = uSP('PEN');
 
   const data = uMP(() => {
@@ -546,7 +547,7 @@ function EstadoResultadosPage({ showToast }) {
   const { data: movs }      = window.__hooks.useAccountingMovements();
 
   const hoy = new Date();
-  const [companyId, setCompanyId] = uSP('todas');
+  const [companyId, setCompanyId] = uSP(() => filtroInicialEmpresa('todas'));
   const [moneda, setMoneda]       = uSP('PEN');
   const [anio, setAnio]           = uSP(hoy.getFullYear());
   const [mes, setMes]             = uSP(0); // 0 = todo el año

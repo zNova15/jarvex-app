@@ -1,4 +1,5 @@
 import React from "react";
+import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -494,7 +495,7 @@ function FlujoCajaPage({ showToast }) {
   const [editing, setEditing] = uS(null);
   const [form, setForm] = uS({});
   const [filtroEstado, setFiltroEstado] = uS('todos');
-  const [filtroCompany, setFiltroCompany] = uS('todas');
+  const [filtroCompany, setFiltroCompany] = uS(() => filtroInicialEmpresa('todas'));
 
   const lookupCo = (id) => companies?.find(c => c.id === id);
   const lookupCu = (id) => cuentas?.find(c => c.id === id);

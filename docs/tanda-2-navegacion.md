@@ -280,6 +280,47 @@ ingenieros), y "Secciones especiales" pasó a llamarse **"Especialistas"**.
 `contador` gana `w` en Subcontratistas, Subcontratos y Valor. Subcontrato:
 lo que factura un subcontratista entra por sus libros como cualquier costo.
 
+## 4-quater. Entrega F — La empresa activa
+
+> Tercera prueba de Gabriel. Le gustó el panel de empresa, pero encontró que
+> **al salir de él se perdía la empresa**: *"si luego tú presionas movimientos,
+> ahí te va a salir de todos […] aquí tienes nuevamente todo mezclado"*.
+
+### F1. La contabilidad de una empresa es un panel, no cinco números
+*"Contabilidad debería ser la parte que esté MÁS DESARROLLADA en cada empresa.
+Ahí debería salir movimientos […] guías de remisión […] compras por categoría
+[…] flujo de caja, cuentas, plan de cuentas, libro diario mismo, que no lo he
+visto, y eso es importantísimo."*
+
+La sección Contabilidad del panel de empresa muestra arriba su resumen y abajo
+**12 bloques** que abren cada pantalla contable: Dashboard, Movimientos,
+Comprobantes, Guías, Compras por categoría, Libro diario, Plan de cuentas,
+Estado de resultados, Balance, PLE, Flujo de caja y Operaciones entre
+empresas. `Documentos y SUNAT` dejó de ser sección hermana y vive acá adentro,
+como él pidió.
+
+### F2. EMPRESA ACTIVA — el mecanismo que faltaba
+Hermana de la **obra activa**, y por el mismo motivo. `src/lib/empresa-activa.js`
+(con tests) guarda en qué empresa estás parado, y con eso:
+- **cada pantalla contable arranca filtrada por ella** — una línea por
+  pantalla: `useState(() => filtroInicialEmpresa('todas'))`. Aplicado en
+  Movimientos, Dashboard contable, Comprobantes, Guías, Compras por categoría,
+  Libro diario, Balance, EE.RR., PLE y Flujo de caja;
+- **el menú de la izquierda cambia**: con empresa activa, las secciones
+  contables se agrupan bajo "CONTABILIDAD DE ESTA EMPRESA" en vez de listar
+  las 22 del grupo;
+- **un cartel** (`window.EmpresaActivaBanner`, eager) dice en qué empresa
+  estás y da la salida: "Ver todas las empresas →". Sin él, una lista más
+  corta de lo normal no tendría explicación.
+
+Quedan FUERA del contexto a propósito: el **Resumen por entidad**, el
+**Consolidado** y el **Análisis de insumos** — comparan o consolidan el grupo
+entero, y mirarlos "desde una empresa" no significa nada (`esPaginaDeEmpresa`).
+
+`compras-categoria` no tenía filtro de empresa y se le agregó: era parte del
+pedido — *"en la empresa también se puede categorizar qué compras está
+haciendo"*.
+
 ## 5. Condición no negociable (del doc original, sigue vigente)
 
 Cualquier cambio de qué rol ve o no ve qué pantalla **debe reflejarse en espejo

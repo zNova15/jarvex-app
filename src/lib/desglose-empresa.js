@@ -95,19 +95,99 @@ export const SECCIONES_EMPRESA = [
     permiso: 'activos-pesados',
     verMas: 'activos-pesados',
   },
+];
+
+// ── LA CONTABILIDAD DE UNA EMPRESA, POR DENTRO ─────────────────────
+//
+// Gabriel, viendo la primera versión (que solo mostraba ingresos/costos/
+// gastos/utilidad/margen):
+//   «Contabilidad debería ser la parte que esté MÁS DESARROLLADA en cada
+//    empresa. Ahí debería salir movimientos […] facturas, boletas y
+//    comprobantes de pago. Luego guías de remisión […] compras por categoría
+//    […] flujo de caja, cuentas, plan de cuentas, libro diario mismo, que no
+//    lo he visto, y eso es importantísimo.»
+//
+// Así que la sección Contabilidad no es una vista: es OTRO PANEL de bloques,
+// y cada bloque abre la pantalla que ya existe CON LA EMPRESA ACTIVA FIJADA
+// (ver `src/lib/empresa-activa.js`). Sin eso, salir del panel a Movimientos
+// mostraba los de todas las empresas — «aquí tienes nuevamente todo mezclado».
+//
+// `documentos` (comprobantes) vive acá y NO como sección hermana, también por
+// pedido suyo: «ingresé a Documentos y SUNAT, y pienso que eso debería estar
+// dentro de contabilidad».
+export const BLOQUES_CONTABILIDAD_EMPRESA = [
   {
-    id: 'documentos',
-    titulo: 'Documentos y SUNAT',
-    icon: 'file',
-    color: 'var(--blue)',
-    desc: 'Comprobantes electrónicos y guías de remisión de esta empresa',
-    // Única sección que NAVEGA: los comprobantes tienen su propia pantalla con
-    // filtros, descargas y validación — replicarla acá sería mantener dos.
-    tipo: 'pagina',
-    pagina: 'comprobantes',
-    permiso: 'comprobantes',
+    id: 'cont-dashboard', titulo: 'Dashboard contable', icon: 'dashboard', color: 'var(--green)',
+    desc: 'El tablero de la empresa: pendientes, alertas y sus números del período',
+  },
+  {
+    id: 'movimientos-contables', titulo: 'Movimientos', icon: 'dollar', color: 'var(--amber)',
+    desc: 'Todas sus facturas, boletas y comprobantes de pago, con su detalle',
+  },
+  {
+    id: 'comprobantes', titulo: 'Comprobantes electrónicos', icon: 'file', color: 'var(--blue)',
+    desc: 'Los que EMITE la empresa: facturas, boletas y notas para SUNAT',
+  },
+  {
+    id: 'guias-remision', titulo: 'Guías de remisión', icon: 'truck', color: 'var(--blue)',
+    desc: 'El traslado de la mercadería y su vínculo con la factura',
+  },
+  {
+    id: 'compras-categoria', titulo: 'Compras por categoría', icon: 'layers', color: 'var(--amber)',
+    desc: 'En qué gasta: qué revende, qué transforma y qué consume',
+  },
+  {
+    id: 'libro-diario', titulo: 'Libro diario', icon: 'list', color: 'var(--purple)',
+    desc: 'Los asientos contables de la empresa, con su debe y su haber',
+  },
+  {
+    id: 'plan-cuentas', titulo: 'Plan de cuentas (PCGE)', icon: 'list', color: 'var(--purple)',
+    desc: 'Las cuentas contables con las que se registran sus operaciones',
+  },
+  {
+    id: 'estado-resultados', titulo: 'Estado de resultados', icon: 'chart', color: 'var(--green)',
+    desc: 'Ingresos menos gastos del período: cómo le fue',
+  },
+  {
+    id: 'balance-general', titulo: 'Balance general', icon: 'chart', color: 'var(--green)',
+    desc: 'Qué tiene y qué debe a una fecha',
+  },
+  {
+    id: 'libros-electronicos', titulo: 'Libros electrónicos (PLE)', icon: 'file', color: 'var(--blue)',
+    desc: 'Los archivos que se le presentan a SUNAT',
+  },
+  {
+    id: 'flujo-caja', titulo: 'Flujo de caja', icon: 'calendar', color: 'var(--amber)',
+    desc: 'Lo que entra y sale, y lo que está programado pagar',
+  },
+  {
+    id: 'intercompany', titulo: 'Operaciones entre empresas', icon: 'compare', color: 'var(--purple)',
+    desc: 'Lo que le factura a otras empresas del grupo y viceversa',
   },
 ];
+
+/**
+ * Los bloques de contabilidad que este usuario ve.
+ * El id del bloque ES la página destino, así que el gate es directo.
+ */
+export function bloquesContabilidadEmpresa({ canSee } = {}) {
+  const ver = typeof canSee === 'function' ? canSee : () => true;
+  return BLOQUES_CONTABILIDAD_EMPRESA.filter(b => ver(b.id));
+}
+
+const IDS_CONTABILIDAD_EMPRESA = new Set(BLOQUES_CONTABILIDAD_EMPRESA.map(b => b.id));
+
+/**
+ * ¿Esta página es "la contabilidad de UNA empresa" cuando hay una activa?
+ *
+ * Decide si el menú entra en contexto de empresa. Deja AFUERA, a propósito,
+ * las pantallas que son del GRUPO por definición y no significan lo mismo
+ * miradas desde una sola empresa: el Resumen por entidad (compara todas), el
+ * Consolidado (elimina lo interco del grupo) y el Análisis de insumos.
+ */
+export function esPaginaDeEmpresa(pageId) {
+  return IDS_CONTABILIDAD_EMPRESA.has(pageId);
+}
 
 /** Las secciones INTERNAS, que son las pestañas del detalle de empresa. */
 export const SECCIONES_INTERNAS = SECCIONES_EMPRESA

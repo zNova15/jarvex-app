@@ -13,6 +13,7 @@
 // el ayudante NO participa de la designación).
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
+import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
@@ -45,6 +46,10 @@ function ComprasCategoriaPage({ showToast }) {
   const [fechaDesde, setFechaDesde] = uS('');
   const [fechaHasta, setFechaHasta] = uS('');
   const [filtroObra, setFiltroObra] = uS('todas');
+  // Compras POR EMPRESA (tanda 2F): Gabriel lo pidió dentro del desglose de
+  // cada empresa — «en la empresa también se puede categorizar qué compras
+  // está haciendo». Arranca en la empresa activa si venís de su panel.
+  const [filtroEmpresa, setFiltroEmpresa] = uS(() => filtroInicialEmpresa('todas'));
   const [filtroCat, setFiltroCat] = uS('todas');
   const [busyRegla, setBusyRegla] = uS(false);
 
@@ -137,6 +142,7 @@ function ComprasCategoriaPage({ showToast }) {
       if (fechaDesde && (mv.date || '') < fechaDesde) continue;
       if (fechaHasta && (mv.date || '') > fechaHasta) continue;
       if (filtroObra !== 'todas' && mv.obra_id !== filtroObra) continue;
+      if (filtroEmpresa !== 'todas' && mv.company_id !== filtroEmpresa) continue;
       let notas; try { notas = typeof mv.notas === 'string' ? JSON.parse(mv.notas) : mv.notas; } catch { notas = null; }
       const arr = notas && Array.isArray(notas.items_factura) ? notas.items_factura : null;
       if (!arr) continue;
@@ -155,7 +161,7 @@ function ComprasCategoriaPage({ showToast }) {
       });
     }
     return out;
-  }, [movs, fechaDesde, fechaHasta, filtroObra, filtroCat]);
+  }, [movs, fechaDesde, fechaHasta, filtroObra, filtroCat, filtroEmpresa]);
 
   // Agrupación por SUBCATEGORÍA (los clasificados sin subcategoría se agrupan
   // por su categoría; los sin clasificar quedan en su propio bucket).
@@ -290,6 +296,7 @@ function ComprasCategoriaPage({ showToast }) {
 
   return (
     <div className="page-wrap">
+      {window.EmpresaActivaBanner ? <window.EmpresaActivaBanner onSalir={() => setFiltroEmpresa('todas')}/> : null}
       <div className="pg-hd frow-sb">
         <div>
           <div className="pg-title">Compras por Categoría</div>
@@ -302,6 +309,10 @@ function ComprasCategoriaPage({ showToast }) {
 
       {/* Filtros */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
+        <select className="fi" value={filtroEmpresa} onChange={e => setFiltroEmpresa(e.target.value)} style={{ minWidth: 180, maxWidth: 300 }}>
+          <option value="todas">Todas las empresas</option>
+          {(companies || []).filter(c => !c.deleted_at).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
         <select className="fi" value={filtroObra} onChange={e => setFiltroObra(e.target.value)} style={{ minWidth: 200, maxWidth: 320 }}>
           <option value="todas">Todas las obras</option>
           {(obras || []).filter(o => !o.deleted_at).map(o => <option key={o.id} value={o.id}>{o.nombre_obra}</option>)}

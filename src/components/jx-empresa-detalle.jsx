@@ -39,8 +39,9 @@
 import React from "react";
 import {
   seccionesDeEmpresa, seccionEmpresa, CATEGORIAS_EMPRESA,
-  CATEGORIA_EMPRESA_LABEL, categoriaDeEmpresa,
+  CATEGORIA_EMPRESA_LABEL, categoriaDeEmpresa, bloquesContabilidadEmpresa,
 } from "../lib/desglose-empresa.js";
+import { setEmpresaActivaId, limpiarEmpresaActiva } from "../lib/empresa-activa.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 import { extraerLineasDeFacturas } from "../lib/analisis-insumos.js";
 import { resolverPares, construirGrupos } from "../lib/insumo-correlacion.js";
@@ -193,6 +194,7 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
   // acceso" (idéntico al Panel del trabajo).
   const canSee = (id) => rol === 'admin' ? true : (window.__canSeeSidebarItem?.(rol, id) ?? false);
   const secciones = seccionesDeEmpresa({ canSee });
+  const bloquesConta = bloquesContabilidadEmpresa({ canSee });
   // Cuántas cosas hay en cada sección: una tarjeta que dice "12 movimientos"
   // informa; una que no dice nada obliga a entrar para saber si vale la pena.
   const CUENTAS = {
@@ -211,19 +213,33 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
 
   const abrirSeccion = (s) => {
     if (s.tipo === 'pagina') {
-      // La empresa queda elegida para que la pantalla destino la preseleccione.
-      try { window.__empresaActivaId = company.id; } catch {}
-      window.__comprobantesEmpresaIntent = company.id;
+      setEmpresaActivaId(company.id);
       window.__navTo?.(s.pagina, 'general');
       return;
     }
     setSeccion(s.id);
   };
 
+  // Abrir una pantalla contable SIN perder la empresa: el filtro de esa
+  // pantalla arranca en ella (filtroInicialEmpresa) y el cartel de contexto
+  // dice dónde estás parado y cómo salir.
+  const abrirContabilidad = (b) => {
+    setEmpresaActivaId(company.id);
+    window.__navTo?.(b.id, 'general');
+  };
+
   const cabecera = (
     <div className="pg-hd frow-sb">
       <div style={{ minWidth: 0 }}>
-        <button className="btn btn-ghost btn-sm" onClick={() => (seccion ? setSeccion(null) : onVolver?.())} style={{ marginBottom: 6 }}>
+        <button className="btn btn-ghost btn-sm" style={{ marginBottom: 6 }}
+          onClick={() => {
+            if (seccion) { setSeccion(null); return; }
+            // Salir de la empresa SALE del contexto: si no, abrir después
+            // Movimientos desde el menú seguiría mostrando solo la suya sin
+            // que nadie recuerde por qué.
+            limpiarEmpresaActiva();
+            onVolver?.();
+          }}>
           <JxIcon name="chevL" size={13} />{seccion ? 'Volver al panel de la empresa' : 'Volver a Empresas'}
         </button>
         <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginBottom: 2 }}>
@@ -361,6 +377,41 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
           </div>
         )}
       </div>
+
+      {/* ── LA CONTABILIDAD, POR DENTRO ──────────────────────────────
+          Los cinco números de arriba son el resumen; acá está el resto, que
+          es lo que Gabriel echó de menos: «no sale los movimientos, acá no
+          puedo ver nada de eso». Cada bloque abre su pantalla CON ESTA
+          EMPRESA FIJADA, así la contabilidad de una no se mezcla con la de
+          las otras. */}
+      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)', margin: '18px 0 4px' }}>
+        LA CONTABILIDAD DE {String(company.name || '').toUpperCase()}
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--tm)', marginBottom: 12 }}>
+        Cada pantalla se abre mostrando solo lo de esta empresa. Para volver a ver el grupo entero,
+        usá «Ver todas las empresas» en el cartel de arriba de cada una.
+      </div>
+      {bloquesConta.length === 0 ? (
+        <div className="card card-p" style={{ color: 'var(--tm)', fontSize: 12, fontStyle: 'italic' }}>
+          Tu rol no tiene acceso a las pantallas contables.
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', gap: 10 }}>
+          {bloquesConta.map(b => (
+            <button key={b.id} type="button" className="card card-p" onClick={() => abrirContabilidad(b)}
+              style={{ textAlign: 'left', cursor: 'pointer', border: '1px solid var(--border)', display: 'flex',
+                flexDirection: 'column', gap: 6, background: 'var(--bg-c)', color: 'inherit', font: 'inherit' }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = b.color; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <JxIcon name={b.icon} size={15} color={b.color} />
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--tp)' }}>{b.titulo}</div>
+              </div>
+              <div style={{ fontSize: 10.5, color: 'var(--tm)', lineHeight: 1.4 }}>{b.desc}</div>
+            </button>
+          ))}
+        </div>
+      )}
       </>)}
 
       {seccion === 'inventario' && (<>
