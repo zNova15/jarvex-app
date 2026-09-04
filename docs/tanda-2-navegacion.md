@@ -226,9 +226,10 @@ distintos de lo mismo.
   autenticado se bajaba todas. **Mig 175**, validada con ROLLBACK contra los
   usuarios reales: almacenero 2→**1** obra, ingeniero 2→**1**, contadora/admin
   siguen viendo 2, la cuenta `campo` 0 (no las usa).
-- ⚠ **Alcance honesto:** la 175 cierra `obras` y `obra_usuarios`. Las tablas
-  HIJAS siguen con la mig 030 laxa — el 🔴 pendiente de siempre, que es su
-  propia tanda.
+- ⚠ **Alcance honesto (al 3-sep):** la 175 cierra `obras` y `obra_usuarios`.
+  Las tablas HIJAS seguían con la mig 030 laxa — el 🔴 pendiente de siempre.
+  **CERRADO el 4-sep** por las migs **177** (cerco de obra en las 71 tablas
+  hijas) y **178** (cerco de módulo por rol). Ver `docs/cercos-rls.md`.
 
 **D4. Aterrizaje por rol** (`resolveLanding`): un rol de obra ya no pasa por la
 pantalla de bloques del grupo (de los cinco solo puede abrir uno). Con **una**
@@ -327,10 +328,16 @@ Cualquier cambio de qué rol ve o no ve qué pantalla **debe reflejarse en espej
 en RLS de Postgres**, no solo en el cliente o el menú. Las allowlists de
 `jx-admin.jsx` son UI: no protegen datos.
 
-Pesa especialmente porque la mig `030_rls_bulk_authenticated.sql` sigue laxa
+Pesaba especialmente porque la mig `030_rls_bulk_authenticated.sql` es laxa
 (~40 tablas con `USING(true)` para cualquier autenticado, `accounting_movements`
 incluida). Las tablas de la tanda 1 no la heredan — nacieron con policies por
 rol — pero las viejas sí.
+
+**Las migs 177 y 178 (4-sep) no borran la 030: la envuelven.** Le suman policies
+RESTRICTIVE, que se combinan con AND, así que el permiso viejo sigue ahí y
+encima hay que ser de la obra (177) y del módulo (178). Lo que la 030 abrió ya
+no alcanza para leer nada ajeno. Detalle y lo que queda abierto:
+`docs/cercos-rls.md`.
 
 ## Roles (referencia al ajustar rutas y menús)
 - **Administrador:** control total del grupo.

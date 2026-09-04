@@ -702,9 +702,19 @@ const PULL_SCOPE_POR_ROL = {
     'social_compromisos', 'social_quejas', 'solicitudes_frente', 'solicitudes_reporte',
   ]),
   // ── Almacenera: sin familia financiera NI SSOMA. CONSERVA accounting_movements
-  // (Compras Pendientes cruza facturas) y calidad_* (certificados en recepción).
+  // (Compras Pendientes cruza facturas), calidad_* (certificados en recepción) y
+  // caja_chica_movimientos.
+  //
+  // CAJA CHICA — corregido el 4-sep-2026. La lista de agosto se la excluyó por
+  // "familia financiera" y estaba mal: medido contra producción, 39 de las 56
+  // filas de caja_chica_movimientos las creó y editó la ALMACENERA (la última,
+  // del 1-sep). El push nunca se filtra, así que sus registros sí llegaban al
+  // server; lo que se rompía era la vuelta — en otro dispositivo, o después de
+  // que el navegador limpie el caché, no veía ni lo suyo ni los 17 movimientos
+  // que cargó el admin. Regla que deja esto: una tabla NO se excluye del pull de
+  // un rol que la ESCRIBE.
   almacenero: new Set([
-    'ambiental_registros', 'caja_chica_movimientos', 'capacitaciones', 'charla_asistentes',
+    'ambiental_registros', 'capacitaciones', 'charla_asistentes',
     'charlas_plan', 'charlas_seguridad', 'cronograma_pagos', 'depositos_bancarizacion',
     'emision_reglas', 'inducciones', 'inspecciones_seguridad', 'insumos_partida_versionadas',
     'intercompany_transactions', 'movimientos_bancarios', 'ordenes_intercompany', 'pagos',
