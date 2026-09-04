@@ -70,6 +70,45 @@ const irAObra = (obraId) => {
   window.__navTo?.('panel-obra');
 };
 
+// AGREGAR desde el panel de la empresa. Gabriel, 4-sep-2026: «actualmente
+// sale como algo creado, pero que no te permite agregar, no puedo todavía
+// agregar personal si es que yo quisiera […] también debería tener su sistema
+// donde yo pueda agregar nuevos trabajos a los que estoy adhiriéndome».
+//
+// El panel NO duplica los formularios: lleva al lugar donde el dato ya se
+// crea, con el contexto puesto. Duplicarlos sería tener dos altas del mismo
+// registro con reglas distintas — el error que ya se pagó con las guías.
+//
+// PERSONAL: no existe `personal.company_id` (decisión de Gabriel). Una
+// persona se da de alta EN UN TRABAJO, así que el botón pregunta en cuál de
+// los trabajos de esta empresa y entra a ese plano.
+const irAPersonalDeObra = (obraId) => {
+  if (!obraId) return;
+  try { window.__setObraActivaId?.(obraId); } catch {}
+  window.__navTo?.('personal', 'obra');
+};
+
+// TRABAJOS: un bien/servicio SÍ es de una empresa (`ejecutor_company_id`), así
+// que el alta se abre con ella ya elegida.
+const irANuevoBienServicio = (companyId) => {
+  window.__trabajoNuevoIntent = { ejecutorCompanyId: companyId || null };
+  window.__navTo?.('bienes-servicios', 'general');
+};
+
+// Abrir LA FACTURA de la que salió una línea de insumo (pedido de Gabriel,
+// 4-sep-2026: «me gustaría ver si aquí se puede mejorar un hipervínculo que
+// nos lleve hacia la factura, en caso de que queramos verla»).
+//
+// No se abre un visor nuevo: se va a Movimientos Contables —donde la factura
+// ya tiene su fila con el 👁 del PDF, la bancarización, la guía y la
+// recepción— con el contexto de la empresa puesto, el buscador en ese
+// documento y la fila marcada. Una sola forma de mirar un comprobante.
+const irAFactura = (companyId, movId, doc) => {
+  if (companyId) setEmpresaActivaId(companyId);
+  window.__movFocoIntent = { id: movId || null, doc: doc || null };
+  window.__navTo?.('movimientos-contables', 'general');
+};
+
 const TIPO_BADGE = {
   material: 'b-blue', servicio: 'b-gray', epp: 'b-green',
   herramienta: 'b-amber', maquinaria: 'b-red',
@@ -321,7 +360,7 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
       )}
 
       {seccion === 'tesoreria' && (
-        <TesoreriaEmpresa cuentas={cuentasDeEmpresa} pagos={pagosProgramados} canSee={canSee} />
+        <TesoreriaEmpresa cuentas={cuentasDeEmpresa} pagos={pagosProgramados} canSee={canSee} companyId={company.id} />
       )}
 
       {seccion === 'equipos' && (
@@ -553,7 +592,16 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                                   </span>
                                   {l.interco && <span className="badge b-blue" style={{ fontSize: 9 }}>interco</span>}
                                   <span style={{ color: 'var(--tm)' }}>{fmtFecha(l.fecha)}</span>
-                                  <span className="col-m">{l.doc || 's/n'}</span>
+                                  {l.movId ? (
+                                    <button type="button" className="btn btn-ghost btn-xs"
+                                      style={{ padding: '0 5px', fontSize: 11, color: 'var(--blue)', textDecoration: 'underline' }}
+                                      title={`Abrir el comprobante ${l.doc || ''} en Movimientos Contables`}
+                                      onClick={() => irAFactura(company.id, l.movId, l.doc)}>
+                                      {l.doc || 's/n'} <JxIcon name="external" size={10} />
+                                    </button>
+                                  ) : (
+                                    <span className="col-m">{l.doc || 's/n'}</span>
+                                  )}
                                   <span style={{ flex: 1, minWidth: 120 }} title={l.nombre}>
                                     {l.proveedorNombre || '(sin nombre)'}
                                   </span>
@@ -589,6 +637,31 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
           <strong style={{ color: 'var(--purple)' }}>Personal de esta empresa</strong> — se DERIVA, no es una
           columna nueva: es la gente designada en las obras que esta empresa ejecuta o de las que es socia de
           consorcio. Agrupado por forma de pago (definida en Pagos), no por cargo.
+          <div style={{ marginTop: 6, color: 'var(--tm)' }}>
+            Por eso se agrega <strong>dentro de un trabajo</strong>: una persona entra a la obra en la que va a
+            trabajar, y desde ahí aparece acá.
+          </div>
+          {canSee('personal') && (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
+              {obrasDeEmpresa.length === 0 ? (
+                <span style={{ color: 'var(--tm)' }}>
+                  Esta empresa todavía no tiene ningún trabajo: agregá uno primero (sección <strong>Trabajos</strong>).
+                </span>
+              ) : (<>
+                <span style={{ color: 'var(--tm)' }}>Agregar personal en:</span>
+                {obrasDeEmpresa.slice(0, 6).map(({ obra }) => (
+                  <button key={obra.id} className="btn btn-ghost btn-xs"
+                    title={`Ir al Personal de ${obra.nombre_obra || 'este trabajo'} para darlo de alta`}
+                    onClick={() => irAPersonalDeObra(obra.id)}>
+                    <JxIcon name="plus" size={11} /> {obra.nombre_obra || '(sin nombre)'}
+                  </button>
+                ))}
+                {obrasDeEmpresa.length > 6 && (
+                  <span style={{ color: 'var(--tm)' }}>y {obrasDeEmpresa.length - 6} trabajo(s) más</span>
+                )}
+              </>)}
+            </div>
+          )}
         </div>
       )}
       {seccion === 'personal' && (
@@ -596,6 +669,11 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
           <div className="card card-p empty-state">
             <JxIcon name="users" size={40} color="var(--tm)" />
             <p>Esta empresa no ejecuta ni es socia de ningún trabajo: no tiene personal para mostrar.</p>
+            {canSee('trabajos') && (
+              <button className="btn btn-amber btn-sm" style={{ marginTop: 10 }} onClick={() => setSeccion('trabajos')}>
+                Ir a Trabajos para agregar el primero
+              </button>
+            )}
           </div>
         ) : (
           <div className="card" style={{ overflow: 'hidden' }}>
@@ -657,6 +735,25 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
           <strong style={{ color: 'var(--blue)' }}>Qué ejecuta esta empresa</strong> — obras donde es ejecutora o
           socia de consorcio (<code>obras.ejecutora_company_id</code>, <code>consorcio_socios</code>) y bienes/servicios
           que presta o vende (<code>trabajos.ejecutor_company_id</code>).
+          <div style={{ marginTop: 6, color: 'var(--tm)' }}>
+            Un <strong>bien o servicio</strong> es de una empresa: se crea acá mismo, ya a su nombre. Una{' '}
+            <strong>obra</strong> nace con su buena pro y la empresa se le adhiere como ejecutora o como socia del
+            consorcio, así que esa parte se hace desde la obra.
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+            {canSee('bienes-servicios') && (
+              <button className="btn btn-amber btn-xs" onClick={() => irANuevoBienServicio(company.id)}
+                title="Abre el alta de Bienes y Servicios con esta empresa como ejecutora">
+                <JxIcon name="plus" size={11} /> Nuevo bien o servicio de esta empresa
+              </button>
+            )}
+            {canSee('obras') && (
+              <button className="btn btn-ghost btn-xs" onClick={() => window.__navTo?.('obras', 'general')}
+                title="Las obras se crean y se les asigna ejecutora/socias desde Obras">
+                Ir a Obras para adherirla a una <JxIcon name="chevR" size={10} />
+              </button>
+            )}
+          </div>
         </div>
       )}
       {seccion === 'trabajos' && (
@@ -664,6 +761,11 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
           <div className="card card-p empty-state">
             <JxIcon name="hardHat" size={40} color="var(--tm)" />
             <p>Esta empresa todavía no ejecuta ni participa en ningún trabajo registrado.</p>
+            {canSee('bienes-servicios') && (
+              <button className="btn btn-amber btn-sm" style={{ marginTop: 10 }} onClick={() => irANuevoBienServicio(company.id)}>
+                <JxIcon name="plus" size={13} /> Agregar el primero
+              </button>
+            )}
           </div>
         ) : (
           <div className="card" style={{ overflow: 'hidden' }}>
@@ -773,20 +875,37 @@ function FichaEmpresa({ company, obrasDeEmpresa }) {
 }
 
 // ── SECCIÓN: TESORERÍA ─────────────────────────────────────────────
-function TesoreriaEmpresa({ cuentas, pagos, canSee }) {
+function TesoreriaEmpresa({ cuentas, pagos, canSee, companyId }) {
   const pendientes = pagos.filter(p => p.estado !== 'pagado');
+  // Las cuentas se dan de alta en Tesorería, que es donde vive el formulario
+  // (y la conciliación). Entrar con la empresa activa deja el alta clavada en
+  // ella: «no me permite agregar cuentas bancarias» era esto — el panel las
+  // mostraba y no decía dónde se crean.
+  const irACuentas = () => {
+    if (companyId) setEmpresaActivaId(companyId);
+    window.__navTo?.('cuentas-bancarias', 'general');
+  };
   return (<>
     <div className="card card-p" style={{ marginBottom: 10, borderLeft: '3px solid var(--blue)', fontSize: 11.5, color: 'var(--ts)' }}>
       <strong style={{ color: 'var(--blue)' }}>La plata de esta empresa</strong> — sus cuentas bancarias y los pagos
       que tiene programados. Para registrar movimientos bancarios o conciliar, entrá a Tesorería.
     </div>
     <div className="card" style={{ overflow: 'hidden', marginBottom: 14 }}>
-      <div style={{ padding: 10, borderBottom: '1px solid var(--border)', fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)' }}>
-        CUENTAS BANCARIAS · {cuentas.length}
+      <div style={{ padding: 10, borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--tm)' }}>
+          CUENTAS BANCARIAS · {cuentas.length}
+        </span>
+        {canSee('cuentas-bancarias') && (
+          <button className="btn btn-amber btn-xs" style={{ marginLeft: 'auto' }} onClick={irACuentas}
+            title="Abre Tesorería con esta empresa fijada: la cuenta se crea a su nombre">
+            <JxIcon name="plus" size={11} /> Agregar cuenta
+          </button>
+        )}
       </div>
       {cuentas.length === 0 ? (
         <div className="card-p" style={{ color: 'var(--tm)', fontSize: 12, fontStyle: 'italic' }}>
-          Esta empresa no tiene cuentas bancarias cargadas.
+          Esta empresa no tiene cuentas bancarias cargadas. Con <strong>Agregar cuenta</strong> entrás a
+          Tesorería con la empresa ya fijada.
         </div>
       ) : (
         <div style={{ overflowX: 'auto' }}>
@@ -830,7 +949,7 @@ function TesoreriaEmpresa({ cuentas, pagos, canSee }) {
       </div>
     )}
     {canSee('cuentas-bancarias') && (
-      <button className="btn btn-ghost btn-sm" onClick={() => window.__navTo?.('cuentas-bancarias', 'general')}>
+      <button className="btn btn-ghost btn-sm" onClick={irACuentas}>
         Ir a Tesorería <JxIcon name="chevR" size={12} />
       </button>
     )}

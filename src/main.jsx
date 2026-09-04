@@ -287,6 +287,40 @@ window.__loadChunk = (name) => {
   return p;
 };
 
+// LIMPIAR CACHE Y RECARGAR — la salida real cuando el navegador se quedó con
+// un index.html viejo apuntando a chunks que ya no existen (el gotcha de la
+// PWA: tras cada deploy la app instalada sigue cacheada). Vive acá y se expone
+// para que la use también <LazyPage>: un módulo que no carga por eso mismo se
+// resuelve así, no reintentando el mismo import que va a volver a fallar.
+window.__hardReload = async () => {
+  try {
+    if ('caches' in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k)));
+    }
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map(r => r.unregister()));
+    }
+  } catch {}
+  window.location.replace(window.location.pathname + '?cb=' + Date.now());
+};
+
+/**
+ * ¿Este error es "el bundle que el navegador tiene ya no existe en el server"?
+ * Es un fallo de RED sobre un import dinámico, no un bug de la pantalla, y el
+ * mensaje cambia según el navegador — de ahí la lista.
+ */
+window.__esChunkViejo = (err) => {
+  const m = String(err?.message || err || '').toLowerCase();
+  return m.includes('dynamically imported module')
+    || m.includes('failed to fetch dynamically')
+    || m.includes('error loading dynamically imported module')
+    || m.includes('importing a module script failed')
+    || m.includes('failed to load module script')
+    || m.includes('chunkloaderror');
+};
+
 // Error Boundary — atrapa cualquier error de render que rompa el árbol y
 // muestra una pantalla de fallback en vez de pantalla negra. El user puede
 // recargar (limpia caches) o ver el detalle del error.
@@ -302,21 +336,7 @@ class AppErrorBoundary extends React.Component {
     console.error('[AppErrorBoundary]', error, info);
     // En prod podemos enviarlo a un endpoint de logging si lo configuramos.
   }
-  hardReload = async () => {
-    try {
-      // Limpia caches del SW + service worker registrations
-      if ('caches' in window) {
-        const keys = await caches.keys();
-        await Promise.all(keys.map(k => caches.delete(k)));
-      }
-      if ('serviceWorker' in navigator) {
-        const regs = await navigator.serviceWorker.getRegistrations();
-        await Promise.all(regs.map(r => r.unregister()));
-      }
-    } catch {}
-    // Cache-bust del HTML
-    window.location.replace(window.location.pathname + '?cb=' + Date.now());
-  };
+  hardReload = () => window.__hardReload();
   render() {
     if (this.state.error) {
       return (

@@ -820,14 +820,36 @@ function LazyPageSpinner() {
 }
 
 function LazyPageError({ chunk, error, onRetry }) {
+  // CASO FRECUENTE Y CONFUNDIBLE: la pantalla "no deja entrar" no porque tenga
+  // un bug, sino porque el navegador (PWA instalada) se quedó con un
+  // index.html viejo que pide chunks que el deploy nuevo ya borró. Reintentar
+  // el mismo import falla siempre; lo que lo arregla es limpiar el cache.
+  const viejo = !!window.__esChunkViejo?.(error);
   return (
     <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', gap:12, color:'var(--tm)', padding:20 }}>
       <JxIcon name="alertCircle" size={28} color="var(--red)"/>
-      <div style={{ fontSize:14, fontWeight:600, color:'var(--ts)' }}>No se pudo cargar el módulo</div>
-      <div style={{ fontSize:12, color:'var(--tm)', maxWidth:360, textAlign:'center' }}>
-        {chunk} · {(error && error.message) || 'error desconocido'}
+      <div style={{ fontSize:14, fontWeight:600, color:'var(--ts)' }}>
+        {viejo ? 'Tu app quedó con una versión vieja' : 'No se pudo cargar el módulo'}
       </div>
-      <button className="btn btn-ghost" onClick={onRetry} style={{ marginTop:6 }}>Reintentar</button>
+      <div style={{ fontSize:12, color:'var(--tm)', maxWidth:400, textAlign:'center', lineHeight:1.5 }}>
+        {viejo
+          ? <>Se publicó una versión nueva y esta pantalla ya no está en la copia que tenés guardada.
+              Limpiá el cache y volvé a entrar — no se pierde nada de lo cargado.</>
+          : <>{chunk} · {(error && error.message) || 'error desconocido'}</>}
+      </div>
+      <div style={{ display:'flex', gap:8, flexWrap:'wrap', justifyContent:'center', marginTop:6 }}>
+        {viejo && (
+          <button className="btn btn-amber" onClick={() => window.__hardReload?.()}>
+            🔄 Limpiar cache y recargar
+          </button>
+        )}
+        <button className="btn btn-ghost" onClick={onRetry}>Reintentar</button>
+      </div>
+      {viejo && (
+        <div style={{ fontSize:10.5, color:'var(--tm)', maxWidth:400, textAlign:'center' }}>
+          {chunk} · {(error && error.message) || 'error desconocido'}
+        </div>
+      )}
     </div>
   );
 }

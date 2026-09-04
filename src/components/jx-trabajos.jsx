@@ -57,6 +57,18 @@ function BienesServiciosPage({ showToast }) {
   const [cotModal, setCotModal] = uST(null);  // null | {} | cotización a editar
   const [guardando, setGuardando] = uST(false);
 
+  const openNuevoRef = uRT(null);
+  uET(() => {
+    const intent = window.__trabajoNuevoIntent;
+    if (!intent) return;
+    window.__trabajoNuevoIntent = null;
+    if (!canWrite) return;
+    // Se difiere un tick: `openNuevo` usa companiesPropias, que se calcula más
+    // abajo en este mismo render.
+    const id = intent.ejecutorCompanyId || null;
+    queueMicrotask(() => openNuevoRef.current?.(id));
+  }, [canWrite]);
+
   // Solo empresas del grupo: quien vende es una empresa nuestra, no un proveedor.
   const companiesPropias = uMT(
     () => (companies || []).filter(c => !c.deleted_at && c.status === 'activa' && (c.tipo_entidad || 'propia') === 'propia'),
@@ -189,16 +201,19 @@ function BienesServiciosPage({ showToast }) {
     } catch (e) { showToast?.('Error: ' + (e.message || e), 'red'); }
   };
 
-  const openNuevo = () => {
+  const openNuevo = (ejecutorId) => {
     setForm({
       nombre: '', codigo: '', tipo: 'bien', origen: 'privado', estado: 'cotizacion',
       cliente: '', cliente_ruc: '',
-      ejecutor_company_id: companiesPropias[0]?.id || '',
+      ejecutor_company_id: (ejecutorId && companiesPropias.some(c => c.id === ejecutorId))
+        ? ejecutorId : (companiesPropias[0]?.id || ''),
       consorcio_id: '', monto_estimado: '', moneda: 'PEN',
       fecha_inicio: '', fecha_fin: '', observaciones: '',
     });
     setEditingId(null); setModal('nuevo');
   };
+
+  openNuevoRef.current = openNuevo;
 
   const openEditar = (t) => {
     setForm({
@@ -496,7 +511,7 @@ function BienesServiciosPage({ showToast }) {
             <option value="PEN">Soles</option><option value="USD">Dólares</option>
           </select>
           {canWrite ? (
-            <button className="btn btn-amber btn-sm" onClick={openNuevo}><JxIcon name="plus" size={13}/> Nuevo</button>
+            <button className="btn btn-amber btn-sm" onClick={() => openNuevo()}><JxIcon name="plus" size={13}/> Nuevo</button>
           ) : <span className="badge b-gray">Solo lectura</span>}
         </div>
       </div>

@@ -957,6 +957,12 @@ function MovimientosContablesPage({ showToast }) {
   const [filtroEmisor, setFiltroEmisor] = uSC('todos');     // quién EMITIÓ el comprobante
   const [filtroReceptor, setFiltroReceptor] = uSC('todos'); // quién lo RECIBIÓ
   const [busqueda, setBusqueda] = uSC('');
+  // FOCO: llegar acá desde otra pantalla que nombra un comprobante (hoy, el
+  // desglose de insumos de una empresa: «me gustaría un hipervínculo que nos
+  // lleve hacia la factura» — Gabriel, 4-sep-2026). El que navega deja el
+  // intent en window y esta pantalla lo consume UNA vez: busca el documento y
+  // deja la fila marcada. Mismo mecanismo que __empresaDetalleIntent.
+  const [focoMovId, setFocoMovId] = uSC(null);
   // Período: un MES puntual ("¿puedo ver solo los comprobantes de Junio?") o un
   // rango personalizado desde/hasta. 'todos' = sin filtro de fecha.
   const [filtroMes, setFiltroMes] = uSC('todos');   // 'todos' | 'YYYY-MM' | 'custom'
@@ -986,6 +992,20 @@ function MovimientosContablesPage({ showToast }) {
   const [filtroBanc, setFiltroBanc] = uSC('todos');
   // Tipo de comprobante (factura/boleta/NC/recibo/…); '_con_guia' = con guía vinculada.
   const [filtroTipoDoc, setFiltroTipoDoc] = uSC('todos');
+  uEC(() => {
+    const intent = window.__movFocoIntent;
+    if (!intent) return;
+    window.__movFocoIntent = null;
+    // El número de comprobante es lo que la contadora reconoce; el id sirve
+    // para marcar la fila exacta cuando dos empresas comparten el número.
+    if (intent.doc) setBusqueda(String(intent.doc));
+    setFocoMovId(intent.id || null);
+    // Los filtros que podrían esconderla se sueltan: llegar a una factura y
+    // no verla porque el período estaba en otro mes es peor que no llegar.
+    setFiltroMes('todos'); setFiltroDesde(''); setFiltroHasta('');
+    setFiltroClase('todos'); setFiltroTipo('todos'); setFiltroEstado('todos');
+    setFiltroTipoDoc('todos'); setFiltroBanc('todos');
+  }, []);
   // Dentro de una obra: además de lo IMPUTADO a ella, poder ver lo que el
   // titular contable (el consorcio) movió sin imputar a ninguna. Gabriel:
   // «cuando hablamos de mis movimientos, ahí van a estar todos los
@@ -2764,9 +2784,11 @@ function MovimientosContablesPage({ showToast }) {
                   let esEspejoAuto = false;
                   try { esEspejoAuto = !!(JSON.parse(m.notas || '{}')?.intercompany_auto); } catch {}
                   return (
-                    <tr key={m.id} style={reflejo
-                      ? { background:'rgba(155,89,182,0.06)' }
-                      : (isIc ? { background:'rgba(52,152,219,0.04)' } : null)}>
+                    <tr key={m.id} style={m.id === focoMovId
+                      ? { background:'rgba(242,183,5,0.14)', outline:'2px solid var(--amber)' }
+                      : (reflejo
+                        ? { background:'rgba(155,89,182,0.06)' }
+                        : (isIc ? { background:'rgba(52,152,219,0.04)' } : null))}>
                       <td className="col-m">{m.date}</td>
                       <td className="col-p">
                         {c?.name || '—'}
@@ -4180,16 +4202,26 @@ function IntercompanyPage({ showToast }) {
   const companiesActivas = uMC(() => (companies || []).filter(c => c.status === 'activa'), [companies]);
   const lookupCompany = (id) => companies?.find(c => c.id === id);
 
-  const sorted = uMC(() => [...(ictx || [])].sort((a,b) => (b.date || '').localeCompare(a.date || '')), [ictx]);
+  // ÁMBITO, no filtro: parado dentro de una empresa esta pantalla muestra las
+  // operaciones internas EN LAS QUE ELLA PARTICIPA (como vendedora o como
+  // compradora), no las del grupo entero. Una operación interna tiene dos
+  // dueños, así que las dos puntas cuentan.
+  const empresaFija = useEmpresaBloqueada();
+  const sorted = uMC(() => (ictx || [])
+    .filter(t => !empresaFija
+      || t.seller_company_id === empresaFija || t.buyer_company_id === empresaFija)
+    .sort((a,b) => (b.date || '').localeCompare(a.date || '')), [ictx, empresaFija]);
 
   const openNueva = () => {
     if (companiesActivas.length < 2) {
       showToast('Necesitas al menos 2 empresas activas para registrar una operación interna', 'red');
       return;
     }
+    const vendedora = (empresaFija && companiesActivas.some(c => c.id === empresaFija))
+      ? empresaFija : companiesActivas[0].id;
     setForm({
-      seller_company_id: companiesActivas[0].id,
-      buyer_company_id: companiesActivas[1].id,
+      seller_company_id: vendedora,
+      buyer_company_id: companiesActivas.find(c => c.id !== vendedora)?.id || companiesActivas[1].id,
       date: window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0,10),
       operation_type: 'materiales',
       description: '',
@@ -4356,7 +4388,7 @@ function IntercompanyPage({ showToast }) {
       <div className="pg-hd frow-sb">
         <div>
           <div className="pg-title">Operaciones entre Empresas</div>
-          <div className="pg-sub">{sorted.length} operaciones internas · cada una crea 2 movimientos contables enlazados (ingreso + costo)</div>
+          <div className="pg-sub">{sorted.length} operaciones internas{empresaFija ? ' de esta empresa (compre o venda)' : ''} · cada una crea 2 movimientos contables enlazados (ingreso + costo)</div>
         </div>
         {canWrite ? (
           <button className="btn btn-amber btn-sm" onClick={openNueva}>
@@ -4366,6 +4398,8 @@ function IntercompanyPage({ showToast }) {
           <span className="badge b-gray" title="Tu rol es solo lectura para Intercompany">Solo lectura</span>
         )}
       </div>
+
+      {window.EmpresaActivaBanner ? <window.EmpresaActivaBanner/> : null}
 
       {sorted.length === 0 ? (
         <div className="card card-p empty-state">
@@ -4537,7 +4571,14 @@ function ContabilidadDashboardPage({ showToast }) {
     return () => { cancelled = true; window.removeEventListener('jx_data_changed', onChange); };
   }, []);
 
-  const [filtroEmpresa, setFiltroEmpresa] = uSC(() => filtroInicialEmpresa('todas'));
+  const [filtroEmpresaRaw, setFiltroEmpresa] = uSC(() => filtroInicialEmpresa('todas'));
+  // EXCLUSIVIDAD, la misma de las otras 9 pantallas contables (Gabriel,
+  // 4-sep-2026): «no sé si faltaría allí que, en el caso del dashboard
+  // contable, tú bloquees igual aquí el cambiar la empresa, ya que igual me
+  // deja cambiar de empresa, y pues obviamente así no debería ser». Con
+  // contexto de empresa el selector no es un filtro: es el ámbito.
+  const empresaFija = useEmpresaBloqueada();
+  const filtroEmpresa = empresaFija || filtroEmpresaRaw;
   const [filtroMoneda, setFiltroMoneda] = uSC('PEN');
   const [filtroDesde, setFiltroDesde] = uSC('');
   const [filtroHasta, setFiltroHasta] = uSC('');
@@ -4788,6 +4829,8 @@ function ContabilidadDashboardPage({ showToast }) {
         </div>
       </div>
 
+      {window.EmpresaActivaBanner ? <window.EmpresaActivaBanner onSalir={() => setFiltroEmpresa('todas')}/> : null}
+
       {/* ── Ingresos sin sustento (flujo inverso almacén → contabilidad) ── */}
       {pendientesSustento.length > 0 && (
         <div className="card" style={{ marginBottom:16, padding:'14px 16px', background:'rgba(242,183,5,0.06)', border:'1px solid rgba(242,183,5,0.35)' }}>
@@ -4954,9 +4997,14 @@ function ContabilidadDashboardPage({ showToast }) {
 
       {/* Filtros */}
       <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', marginBottom:14 }}>
-        <select className="fi" value={filtroEmpresa} onChange={e=>setFiltroEmpresa(e.target.value)} style={{ minWidth:180 }}>
-          <option value="todas">Todas las empresas</option>
-          {(companies || []).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+        <select className="fi" value={filtroEmpresa} onChange={e=>setFiltroEmpresa(e.target.value)} style={{ minWidth:180 }}
+          disabled={!!empresaFija}
+          title={empresaFija
+            ? 'Estás dentro de la contabilidad de esta empresa: el tablero es solo suyo. Para ver otra, salí del contexto desde el cartel de arriba.'
+            : 'Filtrar el tablero por empresa'}>
+          {!empresaFija && <option value="todas">Todas las empresas</option>}
+          {(empresaFija ? (companies || []).filter(c => c.id === empresaFija) : (companies || []))
+            .map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
         <select className="fi" value={filtroMoneda} onChange={e=>setFiltroMoneda(e.target.value)} style={{ minWidth:100 }}>
           <option value="PEN">S/ (PEN)</option>
@@ -4966,8 +5014,10 @@ function ContabilidadDashboardPage({ showToast }) {
         <input className="fi" type="date" value={filtroDesde} onChange={e=>setFiltroDesde(e.target.value)} style={{ minWidth:140 }}/>
         <label style={{ fontSize:11, color:'var(--tm)' }}>Hasta:</label>
         <input className="fi" type="date" value={filtroHasta} onChange={e=>setFiltroHasta(e.target.value)} style={{ minWidth:140 }}/>
-        {(filtroEmpresa!=='todas' || filtroDesde || filtroHasta) && (
-          <button className="btn btn-ghost btn-sm" onClick={()=>{ setFiltroEmpresa('todas'); setFiltroDesde(''); setFiltroHasta(''); }}>
+        {/* La empresa activa NO cuenta como "filtro puesto": es el ámbito, y
+            "Limpiar" no puede sacarla (se sale desde el cartel). */}
+        {((!empresaFija && filtroEmpresa!=='todas') || filtroDesde || filtroHasta) && (
+          <button className="btn btn-ghost btn-sm" onClick={()=>{ if (!empresaFija) setFiltroEmpresa('todas'); setFiltroDesde(''); setFiltroHasta(''); }}>
             <JxIcon name="x" size={11}/> Limpiar
           </button>
         )}

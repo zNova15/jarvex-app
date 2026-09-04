@@ -32,6 +32,15 @@ function CuentasBancariasPage({ showToast }) {
   // (trabajadores — tabla propia, no entra al flujo de caja).
   const [tab, setTab] = uS('empresas'); // 'empresas' | 'personal'
 
+  // ÁMBITO por empresa activa (Gabriel, 4-sep-2026): desde el panel de una
+  // empresa se llega acá a AGREGAR su cuenta. Sin esto la lista mostraba las
+  // de todo el grupo y "Nueva Cuenta" arrancaba en companies[0] — con dos
+  // clicks de distracción la cuenta quedaba a nombre de otra empresa.
+  const empresaFija = useEmpresaBloqueada();
+  const cuentasVisibles = uM(
+    () => (cuentas || []).filter(c => !empresaFija || c.company_id === empresaFija),
+    [cuentas, empresaFija]);
+
   const [modal, setModal] = uS(null);
   const [editing, setEditing] = uS(null);
   const [form, setForm] = uS({});
@@ -52,7 +61,8 @@ function CuentasBancariasPage({ showToast }) {
   const openNueva = () => {
     if (!(companies||[]).length) { showToast('Crea primero una empresa', 'red'); return; }
     setForm({
-      company_id: companies[0].id,
+      company_id: (empresaFija && companies.some(c => c.id === empresaFija))
+        ? empresaFija : companies[0].id,
       banco: '',
       numero_cuenta: '',
       cci: '',
@@ -126,7 +136,7 @@ function CuentasBancariasPage({ showToast }) {
         <div>
           <div className="pg-title">Cuentas Bancarias</div>
           <div className="pg-sub">{tab === 'empresas'
-            ? `${(cuentas||[]).length} cuentas · saldo total ${fmtSk((cuentas||[]).reduce((s,c)=>s+(saldoPorCuenta.get(c.id)||0),0))}`
+            ? `${cuentasVisibles.length} cuenta(s) · saldo total ${fmtSk(cuentasVisibles.reduce((s,c)=>s+(saldoPorCuenta.get(c.id)||0),0))}`
             : 'Cuentas de abono de los trabajadores (sueldo, CTS) — no entran al flujo de caja'}</div>
         </div>
         {tab === 'empresas' && (canWrite ? (
@@ -143,12 +153,21 @@ function CuentasBancariasPage({ showToast }) {
         <button className={`btn btn-sm ${tab==='personal'?'btn-amber':'btn-ghost'}`} onClick={()=>setTab('personal')}><JxIcon name="users" size={13}/>Personal (trabajadores)</button>
       </div>
 
+      {tab === 'empresas' && window.EmpresaActivaBanner ? <window.EmpresaActivaBanner/> : null}
+
       {tab === 'personal' ? (
         <CuentasPersonalSection showToast={showToast} />
-      ) : (cuentas||[]).length === 0 ? (
+      ) : cuentasVisibles.length === 0 ? (
         <div className="card card-p empty-state">
           <JxIcon name="dollar" size={40} color="var(--tm)"/>
-          <p>No hay cuentas bancarias. Crea una para empezar a registrar movimientos y programar pagos.</p>
+          <p>{empresaFija
+            ? 'Esta empresa todavía no tiene cuentas bancarias. Creá la primera con “Nueva Cuenta” — queda a su nombre.'
+            : 'No hay cuentas bancarias. Crea una para empezar a registrar movimientos y programar pagos.'}</p>
+          {canWrite && (
+            <button className="btn btn-amber btn-sm" onClick={openNueva} style={{ marginTop:10 }}>
+              <JxIcon name="plus" size={13}/>Nueva Cuenta
+            </button>
+          )}
         </div>
       ) : (
         <div className="card" style={{ overflow:'hidden' }}>
@@ -162,7 +181,7 @@ function CuentasBancariasPage({ showToast }) {
               {isAdmin && <th style={{ textAlign:'center' }}>Acciones</th>}
             </tr></thead>
             <tbody>
-              {(cuentas||[]).map(c => {
+              {cuentasVisibles.map(c => {
                 const saldo = saldoPorCuenta.get(c.id) || 0;
                 return (
                   <tr key={c.id}>
@@ -193,8 +212,11 @@ function CuentasBancariasPage({ showToast }) {
           <div className="g2">
             <div>
               <label className="flabel">Empresa *</label>
-              <select className="fi" value={form.company_id||''} onChange={e=>setForm({...form, company_id:e.target.value})} disabled={!!editing}>
-                {(companies||[]).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              <select className="fi" value={form.company_id||''} onChange={e=>setForm({...form, company_id:e.target.value})}
+                disabled={!!editing || !!empresaFija}
+                title={empresaFija ? 'Estás dentro de esta empresa: la cuenta se crea a su nombre.' : undefined}>
+                {(empresaFija && !editing ? (companies||[]).filter(c => c.id === empresaFija) : (companies||[]))
+                  .map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
             </div>
             <div>

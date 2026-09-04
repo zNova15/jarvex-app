@@ -19,6 +19,18 @@ function idsDelNav() {
   return new Set([...src.slice(ini, fin).matchAll(/\{\s*id:\s*'([^']+)'/g)].map(m => m[1]));
 }
 
+/** { pageId → { chunk, component } } leído del PAGE_REGISTRY real. */
+function registroDePaginas() {
+  const src = readFileSync(new URL('../../jx-app.jsx', import.meta.url), 'utf8');
+  const ini = src.indexOf('const PAGE_REGISTRY = {');
+  const fin = src.indexOf('\n};', ini);
+  const out = {};
+  for (const m of src.slice(ini, fin).matchAll(/'([^']+)':\s*\{\s*chunk:\s*'([^']+)',\s*component:\s*'([^']+)'/g)) {
+    out[m[1]] = { chunk: m[2], component: m[3] };
+  }
+  return out;
+}
+
 describe('desglose-empresa — estructura', () => {
   it('cada sección tiene id, título, ícono, descripción, tipo y permiso', () => {
     for (const s of SECCIONES_EMPRESA) {
@@ -260,5 +272,58 @@ describe('MENU_EMPRESA_ACTIVA — el desglose de la izquierda', () => {
     // Y las que SÍ lo son.
     expect(esPaginaDeEmpresa('movimientos-contables')).toBe(true);
     expect(esPaginaDeEmpresa('planillas')).toBe(true);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// EXCLUSIVIDAD: dentro de una empresa, la pantalla es SOLO de esa empresa.
+//
+// Gabriel lo pidió dos veces. El 3-sep: «aquí no va a estar que cambio un
+// filtro y voy a ir a otra empresa, sino netamente y exclusivamente de esa
+// empresa seleccionada». Y el 4-sep, probando, encontró la que faltaba: «en
+// el caso del dashboard contable, tú bloquees igual aquí el cambiar la
+// empresa, ya que igual me deja cambiar de empresa».
+//
+// El mecanismo es siempre el mismo: `useEmpresaBloqueada()`. Este test lo ata
+// a la LISTA de bloques, para que agregar un bloque nuevo al menú de la
+// empresa obligue a decidir qué hace con el contexto — en vez de descubrirlo
+// cuando un usuario cambia de empresa sin querer.
+// ═══════════════════════════════════════════════════════════════════
+describe('cada bloque contable de la empresa obedece el contexto', () => {
+  // Exenciones EXPLÍCITAS, con su motivo. No es una lista para engordar.
+  const SIN_CONTEXTO = {
+    // El PCGE es UN catálogo compartido por todo el grupo (vive en
+    // localStorage, no en una tabla por empresa): no hay "plan de cuentas de
+    // JARVEX" que separar del de GASOMI.
+    'plan-cuentas': 'catálogo único del grupo, no hay versión por empresa',
+  };
+
+  const registry = registroDePaginas();
+
+  it('todo bloque del menú de empresa está registrado como página real', () => {
+    for (const b of BLOQUES_CONTABILIDAD_EMPRESA) {
+      expect(registry[b.id], `el bloque "${b.id}" no está en PAGE_REGISTRY`).toBeTruthy();
+    }
+  });
+
+  it('el componente de cada bloque usa useEmpresaBloqueada()', () => {
+    const faltan = [];
+    for (const b of BLOQUES_CONTABILIDAD_EMPRESA) {
+      if (SIN_CONTEXTO[b.id]) continue;
+      const info = registry[b.id];
+      if (!info) continue;   // lo cubre el test de arriba
+      const src = readFileSync(
+        new URL(`../../components/${info.chunk}.jsx`, import.meta.url), 'utf8');
+      // El archivo puede tener varias páginas: se busca DENTRO de la suya,
+      // desde su `function X(` hasta la siguiente declaración de nivel 0.
+      const desde = src.indexOf(`function ${info.component}(`);
+      if (desde < 0) { faltan.push(`${b.id}: no se encontró ${info.component}`); continue; }
+      const sig = src.indexOf('\nfunction ', desde + 1);
+      const cuerpo = src.slice(desde, sig < 0 ? src.length : sig);
+      if (!cuerpo.includes('useEmpresaBloqueada()')) {
+        faltan.push(`${b.id} (${info.component} en ${info.chunk}.jsx)`);
+      }
+    }
+    expect(faltan, 'bloque del menú de empresa que NO obedece el contexto').toEqual([]);
   });
 });
