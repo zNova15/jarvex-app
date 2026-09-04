@@ -20,6 +20,7 @@ import { EmpresaDetalle } from "./jx-empresa-detalle.jsx";
 import { ClasificarEntidadesModal } from "./jx-clasificar-entidades.jsx";
 import { rolDeCompanyEnObra, titularContableDeObra } from "../lib/consorcio.js";
 import { comprobantesImputacionCruzada } from "../lib/imputacion-cruzada.js";
+import { librosDeObra, LIBRO_CONSORCIO, LIBRO_GRUPO, LIBRO_TODOS } from "../lib/libros-de-obra.js";
 import { resumenPorEntidad } from "../lib/contabilidad-entidades.js";
 import { consolidar, MOTIVO_LABEL } from "../lib/consolidado.js";
 import { empresasPorCategoria, CATEGORIAS_EMPRESA } from "../lib/desglose-empresa.js";
@@ -1473,6 +1474,13 @@ function MovimientosContablesPage({ showToast }) {
     () => comprobantesImputacionCruzada({ movs, companies, obras, consorcios: consorciosMov, socios: sociosMov }),
     [movs, companies, obras, consorciosMov, sociosMov]);
   const [soloCruces, setSoloCruces] = uSC(false);
+  // Los DOS LIBROS de la obra (tanda 4, A1) — src/lib/libros-de-obra.js.
+  // Arranca en el libro del titular porque es la pregunta que trajo Gabriel
+  // («la contabilidad de la obra debería mostrar los del consorcio ejecutor»),
+  // pero el aporte del grupo NO se esconde: está en la pestaña de al lado, con
+  // su cuenta y su total a la vista. Es el ÁMBITO de la pantalla, no un filtro:
+  // por eso no entra en "Limpiar filtros" (igual que la obra dentro de la obra).
+  const [libroObra, setLibroObra] = uSC(LIBRO_CONSORCIO);
   const obraDelWorkspace = uMC(
     () => (enObra && filtroObraSel !== 'todas') ? (obras || []).find(o => o.id === filtroObraSel) || null : null,
     [enObra, obras, filtroObraSel]);
@@ -1494,6 +1502,27 @@ function MovimientosContablesPage({ showToast }) {
     const delTitular = deLaObra.filter(m => m.company_id === titularObraId).length;
     return { total: deLaObra.length, titular: delTitular, otras: deLaObra.length - delTitular };
   }, [obraDelWorkspace, movs, titularObraId]);
+
+  // ── LOS DOS LIBROS DE LA OBRA (tanda 4, A1) ───────────────────────
+  // Mismo ámbito que usa `filtered` para la obra (incluida la casilla "+ lo del
+  // titular sin imputar"), para que las cuentas de las pestañas sean EXACTAMENTE
+  // las filas que la grilla va a mostrar.
+  // ⚠ VA ANTES de `filtered`: ese useMemo nombra `librosObra` en sus deps, que se
+  // evalúan en cada render — declararlo después daba TDZ y mataba la pantalla
+  // (el bug que ya nos costó Movimientos Contables una vez).
+  const movsDeLaObra = uMC(() => {
+    if (!enObra || !obraDelWorkspace) return null;
+    const sumaTitular = incluirTitularSinObra && titularObraId;
+    return (movs || []).filter(m => !m.deleted_at && (m.obra_id === obraDelWorkspace.id
+      || (sumaTitular && !m.obra_id && !m.trabajo_id && m.company_id === titularObraId)));
+  }, [enObra, obraDelWorkspace, movs, incluirTitularSinObra, titularObraId]);
+  const librosObra = uMC(() => {
+    // Con empresa clavada (entraste por el panel de una empresa) la pantalla ya
+    // es el libro de ESA empresa: partir la obra en dos no significa nada.
+    if (!movsDeLaObra || empresaFija) return null;
+    return librosDeObra({ movs: movsDeLaObra, titularId: titularObraId, companies: companies || [] });
+  }, [movsDeLaObra, titularObraId, companies, empresaFija]);
+  const hayDosLibros = !!librosObra?.hayDosLibros;
 
   // Reconciliación de los filtros de ámbito: si apuntan a una obra/empresa que YA
   // no figura en su selector (usuario no asignado a esa obra, obra eliminada,
@@ -1624,6 +1653,14 @@ function MovimientosContablesPage({ showToast }) {
         // sin esto no se ve desde ninguna pantalla del plano obra.
         || (sumaTitular && !m.obra_id && !m.trabajo_id && m.company_id === titularObraId));
     }
+    // Los dos libros de la obra: el libro del titular contable (lo suyo + lo que
+    // el grupo le emitió) vs el aporte de las empresas del grupo. Se aplica
+    // ANTES del filtro de empresa para que los dos se combinen: "GASOMI, dentro
+    // del libro del consorcio" = lo que GASOMI le facturó a la ejecutora.
+    if (hayDosLibros && libroObra !== LIBRO_TODOS) {
+      const ids = libroObra === LIBRO_CONSORCIO ? librosObra.consorcio.ids : librosObra.grupo.ids;
+      f = f.filter(m => ids.has(m.id));
+    }
     if (filtroEmpresaSel !== 'todas') f = f.filter(m => m.company_id === filtroEmpresaSel
       || (verOtroLado && reflejoActual.ids.has(m.id)));
     if (soloCruces) f = f.filter(m => cruceImputacion.has(m.id));
@@ -1666,7 +1703,7 @@ function MovimientosContablesPage({ showToast }) {
       (b.date||'').localeCompare(a.date||'')
       || cmpComprobante(a.document_number, b.document_number)
       || (a.created_at||'').localeCompare(b.created_at||''));
-  }, [movs, filtroObraSel, filtroEmpresaSel, filtroClase, filtroTipo, filtroEstado, filtroEmisor, filtroReceptor, nombreCompanyDe, busqueda, filtroBanc, filtroTipoDoc, guiasPorMov, filtroMes, filtroDesde, filtroHasta, bancarizacionPorMov, partesPorMov, depositosById, enObra, incluirTitularSinObra, titularObraId, reflejoActual, verOtroLado, soloCruces, cruceImputacion]);
+  }, [movs, filtroObraSel, filtroEmpresaSel, filtroClase, filtroTipo, filtroEstado, filtroEmisor, filtroReceptor, nombreCompanyDe, busqueda, filtroBanc, filtroTipoDoc, guiasPorMov, filtroMes, filtroDesde, filtroHasta, bancarizacionPorMov, partesPorMov, depositosById, enObra, incluirTitularSinObra, titularObraId, reflejoActual, verOtroLado, soloCruces, cruceImputacion, hayDosLibros, libroObra, librosObra]);
 
   // Paginación: tabla puede tener miles de movimientos contables.
   const movPg = usePagination(filtered, 100);
@@ -2512,6 +2549,84 @@ function MovimientosContablesPage({ showToast }) {
         </div>
       </div>
 
+      {/* ── LOS DOS LIBROS DE LA OBRA (tanda 4, A1) ────────────────────
+          Gabriel: «la contabilidad de la obra me muestra movimientos de varias
+          empresas». Es cierto, y las dos cosas hacen falta — pero son DOS
+          LIBROS, no uno mezclado. Acá se nombran, se cuentan y se dice con
+          todas las letras que NO se suman (misma regla que Resumen por entidad).
+          Medido en Miraflores: 121 del consorcio (112 suyos + 9 recibidos) y
+          339 de aporte del grupo, sobre 460. */}
+      {hayDosLibros && (() => {
+        const fmtSum = (obj) => {
+          const parts = Object.entries(obj).filter(([, v]) => Math.abs(v) > 0.004)
+            .map(([c, v]) => `${c === 'USD' ? '$' : 'S/'} ${v.toLocaleString('es-PE', { maximumFractionDigits: 0 })}`);
+          return parts.length ? parts.join(' · ') : 'S/ 0';
+        };
+        const nombreTitular = nombreCompanyDe(titularObraId);
+        const pestanas = [
+          {
+            id: LIBRO_CONSORCIO, color: 'var(--amber)', icon: '📕',
+            titulo: `Libro de ${nombreTitular}`,
+            sub: `${librosObra.consorcio.propios} suyos + ${librosObra.consorcio.recibidos} que el grupo le emitió`,
+            libro: librosObra.consorcio,
+            title: `Lo que entra en la contabilidad de ${nombreTitular}: los comprobantes cargados en su libro más los que las empresas del grupo le facturaron A ÉL.`,
+          },
+          {
+            id: LIBRO_GRUPO, color: 'var(--blue)', icon: '📗',
+            titulo: 'Aporte de las empresas del grupo',
+            sub: 'Compras a proveedores de afuera, imputadas a esta obra',
+            libro: librosObra.grupo,
+            title: 'Lo que JARVEX, GASOMI, JHEENSEG, JADE… compraron afuera y le imputaron a esta obra. Es plata de la obra, pero está en el libro de cada una de ellas — todavía no en el del titular.',
+          },
+          {
+            id: LIBRO_TODOS, color: 'var(--tm)', icon: '📚',
+            titulo: 'Los dos juntos',
+            sub: 'Todo lo imputado a la obra, sin separar',
+            libro: { n: librosObra.total, venta: {}, compra: {} },
+            title: 'Las filas de los dos libros en una sola lista. Sirve para buscar un comprobante sin saber de qué lado está; los montos NO se muestran acá porque sumarlos contaría dos veces lo que el grupo le traslada a la ejecutora.',
+          },
+        ];
+        return (
+          <div className="card card-p" style={{ marginBottom:12 }}>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(210px, 1fr))', gap:8 }}>
+              {pestanas.map(p => {
+                const activa = libroObra === p.id;
+                return (
+                  <button key={p.id} onClick={() => setLibroObra(p.id)} title={p.title}
+                    style={{ textAlign:'left', cursor:'pointer', padding:'9px 12px', borderRadius:8,
+                      border: `1px solid ${activa ? p.color : 'var(--border)'}`,
+                      background: activa ? 'var(--tint-neutral)' : 'transparent',
+                      boxShadow: activa ? `inset 3px 0 0 ${p.color}` : 'none' }}>
+                    <div style={{ fontSize:12, fontWeight:700, color: activa ? p.color : 'var(--ts)' }}>
+                      {p.icon} {p.titulo}
+                    </div>
+                    <div style={{ fontSize:16, fontWeight:800, color:'var(--ts)', marginTop:2 }}>
+                      {p.libro.n} <span style={{ fontSize:11, fontWeight:500, color:'var(--tm)' }}>comprobante{p.libro.n === 1 ? '' : 's'}</span>
+                    </div>
+                    {p.id !== LIBRO_TODOS && (
+                      <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2 }}>
+                        🛒 {fmtSum(p.libro.compra)} · 🧾 {fmtSum(p.libro.venta)}
+                      </div>
+                    )}
+                    <div style={{ fontSize:10, color:'var(--tm)', marginTop:3, lineHeight:1.35 }}>{p.sub}</div>
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:8, lineHeight:1.45 }}>
+              ⚠ <strong>Los dos totales no se suman.</strong> Son dos preguntas
+              distintas sobre la misma obra: lo que está en la contabilidad de{' '}
+              <strong>{nombreTitular}</strong>, y lo que el grupo puso desde sus
+              propios libros. Sumarlos contaría dos veces cada compra que después
+              se le traslada a la ejecutora — es la misma regla del Resumen por entidad.
+              {librosObra.grupo.n > 0 && librosObra.consorcio.recibidos === 0 && (
+                <> Hoy el grupo <strong>no le facturó nada</strong> al titular por esta obra.</>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Barra de filtros REORGANIZADA (pedido contadoras 31-ago): búsqueda +
           "Limpiar" arriba, y una grilla ETIQUETADA — antes eran 8 selects
           apilados sin etiqueta y a simple vista no se sabía qué era cada uno. */}
@@ -2786,6 +2901,17 @@ function MovimientosContablesPage({ showToast }) {
         <div className="card card-p empty-state">
           <JxIcon name="dollar" size={40} color="var(--tm)"/>
           <p>No hay movimientos {(movs || []).length > 0 ? (filtroBanc === 'falta' ? 'sin bancarización con este filtro' : 'que coincidan con el filtro') : 'registrados aún'}.</p>
+          {/* Estás parado en UN libro de la obra: lo que buscás puede estar en
+              el otro. Sin esto, la pestaña por defecto parecería "no hay nada". */}
+          {hayDosLibros && libroObra !== LIBRO_TODOS && (
+            <p style={{ fontSize:12 }}>
+              Estás viendo <strong>{libroObra === LIBRO_CONSORCIO ? `el libro de ${nombreCompanyDe(titularObraId)}` : 'el aporte de las empresas del grupo'}</strong>.
+              {' '}
+              <button className="btn btn-ghost btn-sm" onClick={() => setLibroObra(LIBRO_TODOS)}>
+                Buscar en los dos libros →
+              </button>
+            </p>
+          )}
         </div>
       ) : (
         <div className="card" style={{ overflow:'hidden' }}>

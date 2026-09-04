@@ -10,12 +10,21 @@
 > mudado al menú de la obra. Ver `docs/cercos-rls.md` no — esto va sin doc
 > aparte, quedó documentado en el propio commit y en `ayuda-contenido.js`.
 >
-> **🔲 PENDIENTE, sesión nueva y dedicada — B1+B2+B3 (órdenes de compra y
-> servicio) y A1+A2 (los dos libros de la contabilidad de obra):** Gabriel ya
-> dejó el material en `Modelos/` en la raíz del repo (`ordenes.xlsx`, el
-> registro de activos, una foto de referencia) — **leerlo antes de tocar
-> código**. Con eso alcanza para arrancar diciendo solo "Realiza la nueva
-> tanda de órdenes".
+> **✅ B1+B2+B3+B4 HECHAS** en la tanda 5 — ver
+> `docs/tanda-5-ordenes-y-activos.md`.
+>
+> **✅ A1 HECHA (4-sep, staging):** los dos libros de la obra, con nombre y
+> con cuenta. `src/lib/libros-de-obra.js` (15 tests) + tres pestañas en
+> Movimientos Contables dentro de un trabajo. Detalle abajo, en "A1 — cómo
+> quedó".
+>
+> **⏸ A2 EN ESPERA A PROPÓSITO — decisión de Gabriel del 4-sep-2026:** la
+> *barra de la cadena* (cuánto imputó el grupo a la obra vs cuánto se le
+> facturó al consorcio) **se hace después de emitir varias órdenes de compra
+> y de servicio reales**. Hoy el número saldría de una base sin una sola
+> orden emitida: mediría el hueco de la carga histórica, no el de la
+> facturación. Cuando Gabriel haya emitido su primer lote, el número empieza
+> a significar algo y ahí se construye. **Sesión nueva, Opus 5, effort alto.**
 
 ---
 
@@ -287,3 +296,62 @@ una en su propia sesión nueva (ver abajo).
 - **C1:** entrar desde Resumen por entidad a una empresa y volver tiene que
   devolver a Resumen por entidad, no al catálogo.
 - **Green gate** de siempre antes de cada promoción.
+
+---
+
+## A1 — cómo quedó (4-sep-2026, staging)
+
+**`src/lib/libros-de-obra.js`** — librería pura, 15 tests. Parte los
+comprobantes de una obra en sus dos libros:
+
+- **Libro del titular** = los cargados en su libro (`company_id === titular`)
+  **más** los que el grupo le emitió A ÉL (contraparte identificada por
+  `related_company_id` o por RUC de 11 dígitos contra `companies`).
+- **Aporte de las empresas del grupo** = todo lo demás.
+
+**Verificado contra producción antes de escribir una línea de UI**, con SQL de
+solo lectura:
+
+| Obra | Total | Libro del titular | Aporte del grupo |
+|---|---:|---:|---:|
+| Plan Miraflores (CONSORCIO EL INCA) | 460 | **121** (112 propios + 9 recibidos) · S/ 287.190 | **339** · S/ 3.054.764 |
+| Obras San Marcos (CONSORCIO CHUSAAC) | 89 | **64** · S/ 2.044.077 | **25** · S/ 179.477 |
+
+Los 121 y los 339 salen **exactos** contra los números medidos el 4-sep.
+
+**Por qué la regla NO exige `vinculoAfirmado`** (a diferencia de
+`documento-dos-lados.js`): allá un reflejo *afirma algo sobre la contabilidad
+de otra empresa* y por eso pide una afirmación explícita en el dato. Acá solo
+se decide **en qué columna de la misma obra** va una fila que ya está a la
+vista. Un RUC que coincide con el del titular alcanza para decir "esto va
+dirigido al consorcio".
+
+**En la pantalla** (Movimientos Contables, dentro de un trabajo): tres
+pestañas arriba de los filtros — *Libro de [titular]*, *Aporte de las empresas
+del grupo*, *Los dos juntos* — cada una con su cuenta de comprobantes y sus
+totales de compras/ventas separados por moneda. Abre en el libro del titular.
+Debajo, la frase que faltaba: **los dos totales no se suman**, porque sumarlos
+contaría dos veces cada compra que después se le traslada a la ejecutora (la
+misma regla del Resumen por entidad). "Los dos juntos" **no muestra montos** a
+propósito, por lo mismo.
+
+Decisiones de borde:
+- Las pestañas **se combinan** con el filtro de empresa: *GASOMI* dentro del
+  libro del titular = lo que GASOMI le facturó a la ejecutora.
+- Es **ámbito, no filtro**: no entra en "✕ Limpiar filtros" (mismo criterio que
+  la obra dentro de la obra y que la empresa clavada).
+- Con **empresa clavada** (entraste por el panel de una empresa) no aparecen:
+  esa pantalla ya es el libro de esa empresa.
+- Sin titular contable no hay dos libros: la pantalla se comporta como antes.
+- Si el filtro deja la tabla vacía, el vacío ofrece **"Buscar en los dos
+  libros →"**: la pestaña por defecto nunca puede parecer "no hay nada".
+
+## A2 — por qué espera (y qué la destraba)
+
+La barra pide comparar **lo que el grupo imputó a la obra** contra **lo que se
+le facturó al consorcio**. Ese segundo número hoy es S/ 59.684 sobre millones
+imputados — pero eso mide la carga histórica, no un proceso. Emitidas las
+órdenes de compra y de servicio (tanda 5), la diferencia pasa a ser
+*"respaldo emitido vs respaldo facturado"*, que es una pregunta accionable y
+la que Gabriel realmente quiere responder. **Se retoma cuando haya un lote
+real de órdenes emitidas.**
