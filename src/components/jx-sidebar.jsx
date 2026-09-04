@@ -230,6 +230,11 @@ const NAV = [
   { id: 'cont-dashboard', label: 'Dashboard Contable', icon: 'dashboard' },
 
   { id: 'movimientos-contables', label: 'Movimientos (todas / por obra)', icon: 'dollar', plano: 'general' },
+  // Tanda 5: las órdenes que respaldan las compras del grupo. Están acá, y no
+  // solo en Logística de la obra, porque es donde Gabriel las fue a buscar:
+  // «las necesito para respaldar las compras». La de Logística sigue siendo
+  // el circuito requisición→OC→recepción de almacén.
+  { id: 'ordenes', label: 'Órdenes de Compra y Servicio', icon: 'package' },
   { id: 'guias-remision', label: 'Guías de Remisión', icon: 'truck' },
   { id: 'compras-categoria', label: 'Compras por Categoría', icon: 'layers' },
   { id: 'analisis-insumos', label: 'Análisis de Insumos', icon: 'compare' },

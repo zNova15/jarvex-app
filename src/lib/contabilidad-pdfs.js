@@ -1,5 +1,6 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { textosDeTipo, totalesDesdeItems } from './ordenes.js';
 
 // ─────────────────────────────────────────────────────────────
 // Helpers
@@ -969,6 +970,241 @@ export function generateFacturaInternaPdf(factura, items, emisor, adquiriente, {
   return { doc, filename };
 }
 
+// ─────────────────────────────────────────────────────────────
+// 6. Orden de Compra / de Servicio — el formato del modelo
+// ─────────────────────────────────────────────────────────────
+//
+// El documento que Gabriel emitía a mano en Excel (Modelos/ordenes.xlsx),
+// hecho por la app. NO es el `generateOCPdf` de arriba con otro título: ese
+// era el PDF interno de la app (banda negra JARVEX, "generado el…"); éste es
+// el papel que se le manda al proveedor y que se firma en tres lugares.
+//
+// LAS DOS COSAS QUE LO HACEN DISTINTO:
+//  · LA CABECERA ES DE LA EMPRESA QUE EMITE, no de JARVEX. Ocho empresas del
+//    grupo emiten órdenes; cada una con su nombre, su RUC y su logo
+//    (`companies.logo_dataurl` / `nombre_corto`, que estaban sin usar).
+//  · COMPRA Y SERVICIO SON EL MISMO CUERPO con distinto rótulo — eso lo
+//    decide `textosDeTipo()` en lib/ordenes.js, que es donde está testeado.
+//
+// `download: false` devuelve el doc sin bajarlo: es lo que permite emitir 200
+// órdenes en lote sin disparar 200 descargas.
+//
+function ordenSeccion(doc, y, texto, pageWidth = 210) {
+  doc.setFillColor(230, 234, 238);
+  doc.setDrawColor(150, 160, 170);
+  doc.rect(14, y, pageWidth - 28, 6, 'FD');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8.5);
+  doc.setTextColor(...COLOR_HEAD);
+  doc.text(String(texto), 16.5, y + 4.2);
+  doc.setTextColor(0, 0, 0);
+  return y + 6;
+}
+
+// Una fila «Etiqueta: valor» que hace wrap sin pisar la siguiente. Devuelve
+// la Y de abajo. El nombre de una inversión pública ocupa cinco renglones:
+// si no hiciera wrap, se comería el bloque del proveedor.
+function ordenCampo(doc, y, etiqueta, valor, { pageWidth = 210, xEtiqueta = 16.5, xValor = 45 } = {}) {
+  if (valor === null || valor === undefined || valor === '') return y;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8);
+  doc.text(String(etiqueta), xEtiqueta, y + 3.6);
+  doc.setFont('helvetica', 'normal');
+  const lineas = doc.splitTextToSize(String(valor), pageWidth - 14 - xValor - 2);
+  doc.text(lineas, xValor, y + 3.6);
+  return y + 3.6 + Math.max(1, lineas.length) * 3.6;
+}
+
+export function generateOrdenPdf(orden, items, ctx = {}, { download = true } = {}) {
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const pageWidth = 210;
+  orden = orden || {};
+  items = Array.isArray(items) ? items : [];
+  const { company = {}, obra = null, proveedor = null } = ctx;
+  const tipo = orden.tipo === 'servicio' ? 'servicio' : 'compra';
+  const T = textosDeTipo(tipo);
+  const moneda = (orden.moneda || 'PEN') === 'USD' ? 'DÓLARES (US$)' : 'SOLES (S/)';
+
+  // ── Cabecera: logo a la izquierda, identidad a la derecha ────
+  const logoOk = drawCompanyLogo(doc, company) > 0;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor(...COLOR_HEAD);
+  const nombreEmpresa = safe(company.nombre_corto || company.name || company.legal_name, '').toUpperCase();
+  doc.text(doc.splitTextToSize(nombreEmpresa, 120)[0] || '', pageWidth - 14, 10, { align: 'right' });
+  doc.setFontSize(14);
+  doc.setTextColor(0, 0, 0);
+  doc.text(T.titulo, pageWidth - 14, 17, { align: 'right' });
+  doc.setFontSize(10);
+  doc.text(`N°  ${safe(orden.codigo, '—')}`, pageWidth - 14, 23, { align: 'right' });
+  if (!logoOk && company.ruc) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.text(`RUC: ${company.ruc}`, 14, 12);
+  }
+
+  let y = 28;
+  if (orden.titulo) {
+    doc.setFillColor(...COLOR_HEAD);
+    doc.rect(14, y, pageWidth - 28, 6, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.text(String(orden.titulo).toUpperCase(), pageWidth / 2, y + 4.2, { align: 'center' });
+    doc.setTextColor(0, 0, 0);
+    y += 8;
+  } else { y += 2; }
+
+  // ── Obra / contratante ───────────────────────────────────────
+  const obraTexto = orden.obra_descripcion || obra?.nombre_obra || null;
+  if (obraTexto || orden.contrato_ref || orden.ejecutor_ref) {
+    y = ordenSeccion(doc, y, 'DATOS DE LA OBRA / CONTRATANTE', pageWidth);
+    y = ordenCampo(doc, y, 'Obra:', obraTexto, { pageWidth });
+    y = ordenCampo(doc, y, 'Contrato:', orden.contrato_ref, { pageWidth });
+    y = ordenCampo(doc, y, 'Ejecutor:', orden.ejecutor_ref
+      || [safe(company.name), company.ruc ? `(RUC ${company.ruc})` : null].filter(Boolean).join('  '), { pageWidth });
+    y += 3;
+  }
+
+  // ── Datos de la orden ────────────────────────────────────────
+  y = ordenSeccion(doc, y, 'DATOS DE LA ORDEN', pageWidth);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(8);
+  doc.text('Fecha de emisión:', 16.5, y + 3.6);
+  doc.setFont('helvetica', 'normal');
+  doc.text(fmtDate(orden.fecha || orden.created_at), 55, y + 3.6);
+  doc.setFont('helvetica', 'bold');
+  doc.text('Moneda:', 120, y + 3.6);
+  doc.setFont('helvetica', 'normal');
+  doc.text(moneda, 140, y + 3.6);
+  y += 3.6;
+  y = ordenCampo(doc, y, 'Forma de pago:', safe(orden.condicion_pago, '—'), { pageWidth, xValor: 55 });
+  y += 3;
+
+  // ── Proveedor ────────────────────────────────────────────────
+  y = ordenSeccion(doc, y, 'DATOS DEL PROVEEDOR', pageWidth);
+  y = ordenCampo(doc, y, 'Proveedor:', safe(orden.proveedor_nombre || proveedor?.razon_social, '—'), { pageWidth });
+  y = ordenCampo(doc, y, 'RUC:', orden.proveedor_ruc || proveedor?.ruc, { pageWidth });
+  y = ordenCampo(doc, y, 'Dirección:', orden.proveedor_direccion || proveedor?.direccion, { pageWidth });
+  y += 3;
+
+  // ── El detalle ───────────────────────────────────────────────
+  y = ordenSeccion(doc, y, T.detalle, pageWidth);
+  const body = items.map((it, i) => {
+    const cant = Number(it.cantidad ?? 0);
+    const pu = Number(it.precio_unitario ?? 0);
+    const sub = (it.subtotal !== undefined && it.subtotal !== null && it.subtotal !== '')
+      ? Number(it.subtotal) : cant * pu;
+    return [
+      String(i + 1),
+      safe(it.nombre || it.descripcion || it.nombre_libre, '—'),
+      safe(it.unidad, T.unidadPorDefecto),
+      fmtNum(cant, 2),
+      fmtNum(pu, 2),
+      fmtNum(sub, 2),
+    ];
+  });
+
+  autoTable(doc, {
+    startY: y + 1,
+    head: [['Ítem', T.columnaDescripcion, 'Unidad', 'Cant.', 'Precio Unit.', `Importe Total (${(orden.moneda || 'PEN') === 'USD' ? 'US$' : 'S/'})`]],
+    body,
+    theme: 'grid',
+    headStyles: { fillColor: COLOR_HEAD, textColor: 255, fontSize: 8, halign: 'center' },
+    bodyStyles: { fontSize: 7.5, cellPadding: 1.2 },
+    alternateRowStyles: { fillColor: COLOR_ALT },
+    columnStyles: {
+      0: { cellWidth: 11, halign: 'center' },
+      1: { cellWidth: 'auto' },
+      2: { cellWidth: 16, halign: 'center' },
+      3: { cellWidth: 16, halign: 'right' },
+      4: { cellWidth: 22, halign: 'right' },
+      5: { cellWidth: 26, halign: 'right' },
+    },
+    margin: { left: 14, right: 14 },
+  });
+
+  // ── Totales ──────────────────────────────────────────────────
+  // El total de la orden MANDA sobre la suma de los ítems cuando la orden
+  // respalda un comprobante ya emitido: si se recalculara desde los ítems,
+  // una orden retroactiva podría cerrar distinto de la factura que respalda.
+  const calc = totalesDesdeItems(items, { igvPct: orden.igv_pct ?? 18 });
+  const valorVenta = orden.monto_subtotal != null ? Number(orden.monto_subtotal) : calc.valorVenta;
+  const igv = orden.monto_igv != null ? Number(orden.monto_igv) : calc.igv;
+  const total = orden.monto_total != null ? Number(orden.monto_total) : calc.total;
+
+  let ey = doc.lastAutoTable.finalY;
+  const filaTotal = (etiqueta, valor, fuerte) => {
+    doc.setDrawColor(150, 160, 170);
+    if (fuerte) { doc.setFillColor(...COLOR_HEAD); doc.rect(110, ey, pageWidth - 124, 6, 'F'); doc.setTextColor(255, 255, 255); }
+    else { doc.setFillColor(245, 246, 248); doc.rect(110, ey, pageWidth - 124, 6, 'FD'); doc.setTextColor(0, 0, 0); }
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(fuerte ? 9 : 8);
+    doc.text(etiqueta, 112.5, ey + 4.2);
+    doc.text(fmtNum(valor, 2), pageWidth - 16.5, ey + 4.2, { align: 'right' });
+    doc.setTextColor(0, 0, 0);
+    ey += 6;
+  };
+  filaTotal('Valor de Venta:', valorVenta, false);
+  filaTotal(`IGV (${fmtNum(orden.igv_pct ?? 18, 0)}%):`, igv, false);
+  filaTotal(`${T.total}:`, total, true);
+  let y2 = ey + 5;
+
+  // Si lo que queda no entra, se pasa a la página siguiente antes de dibujar
+  // el bloque de pago: partir la firma a la mitad es lo que hace que un
+  // documento se vea improvisado.
+  const necesita = 74;
+  if (y2 + necesita > 280) { doc.addPage(); y2 = 20; }
+
+  // ── Pago y despacho ──────────────────────────────────────────
+  const hayPago = orden.banco || orden.cuenta_numero || orden.cuenta_cci
+    || orden.fecha_pago_ref || orden.lugar_entrega || orden.fecha_entrega_ref || orden.fecha_entrega;
+  if (hayPago) {
+    y2 = ordenSeccion(doc, y2, 'DATOS DE PAGO Y DESPACHO', pageWidth);
+    y2 = ordenCampo(doc, y2, 'Banco:', orden.banco, { pageWidth, xValor: 60 });
+    y2 = ordenCampo(doc, y2, 'N° de Cuenta:', orden.cuenta_numero, { pageWidth, xValor: 60 });
+    y2 = ordenCampo(doc, y2, 'N° CCI:', orden.cuenta_cci, { pageWidth, xValor: 60 });
+    y2 = ordenCampo(doc, y2, 'Forma de pago:', orden.condicion_pago, { pageWidth, xValor: 60 });
+    y2 = ordenCampo(doc, y2, 'Fecha de pago / venc.:', orden.fecha_pago_ref, { pageWidth, xValor: 60 });
+    y2 = ordenCampo(doc, y2, 'Lugar de entrega:', orden.lugar_entrega, { pageWidth, xValor: 60 });
+    y2 = ordenCampo(doc, y2, 'Fecha de entrega:', orden.fecha_entrega_ref || (orden.fecha_entrega ? fmtDate(orden.fecha_entrega) : null), { pageWidth, xValor: 60 });
+    y2 += 3;
+  }
+
+  // ── Notas ────────────────────────────────────────────────────
+  const notas = orden.notas_proveedor || orden.observaciones;
+  if (notas) {
+    y2 = ordenSeccion(doc, y2, 'NOTAS / OBSERVACIONES DEL PROVEEDOR', pageWidth);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    const lineas = doc.splitTextToSize(String(notas), pageWidth - 33);
+    doc.text(lineas, 16.5, y2 + 4);
+    y2 += 4 + lineas.length * 3.6 + 3;
+  }
+
+  // ── Las tres firmas del modelo ───────────────────────────────
+  if (y2 + 26 > 285) { doc.addPage(); y2 = 30; }
+  const firmas = [
+    ctx.firmaElaboradoPor || 'Elaborado por / Área Administrativa',
+    ctx.firmaAprobadoPor || `Aprobado por / Rep. Legal${company.name ? ' — ' + safe(company.nombre_corto || company.name) : ''}`,
+    'PROVEEDOR',
+  ];
+  const anchoFirma = (pageWidth - 28) / 3;
+  y2 += 14;
+  doc.setDrawColor(80, 80, 80);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7);
+  firmas.forEach((f, i) => {
+    const cx = 14 + anchoFirma * i + anchoFirma / 2;
+    doc.line(cx - anchoFirma / 2 + 6, y2, cx + anchoFirma / 2 - 6, y2);
+    doc.text(doc.splitTextToSize(String(f), anchoFirma - 4), cx, y2 + 4, { align: 'center' });
+  });
+
+  drawFooter(doc, `${T.titulo} ${safe(orden.codigo, '')} · ${safe(company.nombre_corto || company.name, '')}`);
+  const filename = `${T.prefijo}_${safe(orden.codigo, 'sin-codigo')}.pdf`.replace(/[\/\\:*?"<>|]/g, '-');
+  if (download) doc.save(filename);
+  return { doc, filename };
+}
+
 // Conversor número → letras simplificado (limitado a millones)
 function montoEnLetras(n) {
   const num = Math.floor(Number(n) || 0);
@@ -1017,6 +1253,7 @@ function montoEnLetras(n) {
 // ─── Export agrupado para conveniencia ───────────────────────
 export default {
   generateOCPdf,
+  generateOrdenPdf,
   generateRequisicionPdf,
   generateValorizacionPdf,
   generateConsolidadoPdf,

@@ -453,6 +453,18 @@ export function useOrdenesCompra(obra_id) {
   , [obra_id]);
 }
 
+// Las órdenes de UNA empresa (tanda 5). Hermana de la de arriba y no la misma
+// con un filtro encima: la pantalla de la contabilidad pregunta por empresa
+// («las órdenes que emitió el CONSORCIO EL INCA»), la de logística por obra.
+// Sin company_id devuelve todas — es como la usa el bloque general del grupo.
+export function useOrdenesEmpresa(company_id) {
+  return useOfflineData('ordenes_compra', q =>
+    company_id
+      ? q.where('company_id').equals(company_id).filter(o => !o.deleted_at).toArray()
+      : q.filter(o => !o.deleted_at).toArray()
+  , [company_id]);
+}
+
 // ── Valorizaciones ──────────────────────────────────────────────────
 export function useValorizaciones(obra_id) {
   return useOfflineData('valorizaciones', q =>

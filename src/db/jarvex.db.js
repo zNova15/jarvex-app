@@ -77,6 +77,17 @@ export const db = new Dexie('JarvexDB');
 // cronograma, avance, personal ni almacén. La compra y la venta son
 // accounting_movements con trabajo_id — el margen se calcula, no se guarda
 // (src/lib/trabajos.js). Aditivo.
+// Versión 51: ÓRDENES CON DUEÑO Y CON TIPO (mig 179, tanda 5). `ordenes_compra`
+// se RE-INDEXA — no es aditivo como las anteriores: la pantalla nueva lista
+// "las órdenes de ESTA empresa" y "las de tipo servicio", y sin índice eso es
+// un full scan de la tabla en cada render. `accounting_movement_id` indexado es
+// lo que permite preguntar "¿esta factura ya tiene orden?" sin recorrerlas
+// todas. Las columnas nuevas sin índice (titulo, banco, cci, snapshot del
+// proveedor…) son props y no necesitan declararse.
+db.version(51).stores({
+  ordenes_compra: 'id, obra_id, company_id, tipo, trabajo_id, accounting_movement_id, proveedor_id, estado, fecha, deleted_at, sync_status',
+});
+
 db.version(50).stores({
   trabajos:             'id, estado, tipo, ejecutor_company_id, deleted_at, sync_status',
   trabajo_cotizaciones: 'id, trabajo_id, estado, deleted_at, sync_status',

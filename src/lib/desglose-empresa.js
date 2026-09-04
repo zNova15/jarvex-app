@@ -137,6 +137,14 @@ export const BLOQUES_CONTABILIDAD_EMPRESA = [
     desc: 'En qué gasta: qué revende, qué transforma y qué consume',
   },
   {
+    // Tanda 5. Gabriel: «no encuentro las órdenes de compra ni las de
+    // servicio». Vivían SOLO en la logística de una obra; el papel que
+    // respalda una compra se busca acá, en los libros de la empresa que la
+    // hizo — y cada empresa numera su propia serie (OC-001-2026).
+    id: 'ordenes', titulo: 'Órdenes de compra y servicio', icon: 'package', color: 'var(--amber)',
+    desc: 'Las órdenes que emite para respaldar sus compras, y las que le faltan',
+  },
+  {
     id: 'libro-diario', titulo: 'Libro diario', icon: 'list', color: 'var(--purple)',
     desc: 'Los asientos contables de la empresa, con su debe y su haber',
   },

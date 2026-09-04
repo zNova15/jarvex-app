@@ -1,5 +1,7 @@
 import React from "react";
 import { useBusy } from "../hooks/useBusy.js";
+import { proximoCodigo, TIPO_ORDEN_LABEL } from "../lib/ordenes.js";
+import { titularContableDeObra } from "../lib/consorcio.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -64,10 +66,20 @@ function useObraActiva() {
 async function generarOCDesdeRequisicionAprobada(req, reqItems, obraId, userId) {
   const validos = (reqItems || []).filter(it => !it.deleted_at && Number(it.cantidad_aprobada ?? it.cantidad) > 0);
   if (!validos.length) return null;
+  // Tanda 5: la OC nace con DUEÑO. Antes el código era global (`OC-2026-001`
+  // contando todas las órdenes del grupo) y no decía qué RUC la emite — con lo
+  // cual no había plantilla ni serie posible. El titular contable de la obra
+  // (el consorcio ejecutor, o la empresa si es de una sola) es quien la emite.
   const yr = new Date().getFullYear();
-  const todasOC = await window.__db.ordenes_compra.toArray();
-  const count = todasOC.filter(o => (o.codigo || '').startsWith(`OC-${yr}`)).length + 1;
-  const codigo = `OC-${yr}-${String(count).padStart(3, '0')}`;
+  const todasOC = (await window.__db.ordenes_compra.toArray()).filter(o => !o.deleted_at);
+  let company = null;
+  try {
+    const obra = await window.__db.obras.get(obraId);
+    const consorcios = await window.__db.consorcios.toArray();
+    const cid = titularContableDeObra(obra, consorcios);
+    if (cid) company = await window.__db.companies.get(cid);
+  } catch { /* sin empresa la orden igual se crea: la numera la serie sin dueño */ }
+  const { codigo, correlativo, anio } = proximoCodigo(todasOC, { company, tipo: 'compra', anio: yr });
   const ocId = window.__newId();
   const now = new Date().toISOString();
   let subtotal = 0;
@@ -75,7 +87,9 @@ async function generarOCDesdeRequisicionAprobada(req, reqItems, obraId, userId) 
   const igv = +(subtotal * 0.18).toFixed(2);
   await window.__db.ordenes_compra.add({
     id: ocId, obra_id: obraId,
-    codigo,
+    codigo, correlativo, anio,
+    tipo: 'compra',
+    company_id: company?.id || null,
     requisicion_id: req.id,
     requisicion_codigo: req.codigo,
     proveedor_id: null,
@@ -593,6 +607,24 @@ const OC_ESTADO_LABEL = {
   anulada: 'Anulada', cancelada: 'Anulada',
 };
 const OC_ANULADA = new Set(['anulada', 'cancelada']);
+
+// La empresa cuya marca lleva el PDF: la que EMITE la orden. Se prefiere el
+// `company_id` de la propia orden (las nuevas lo traen); para las viejas cae
+// en la ejecutora de la obra, y recién si no hay ninguna, en la primera activa
+// del grupo — que es lo que hacía SIEMPRE antes de la tanda 5.
+async function companyDeOC(oc, fallback) {
+  try {
+    if (oc?.company_id) {
+      const c = await window.__db.companies.get(oc.company_id);
+      if (c) return c;
+    }
+  } catch {}
+  if (fallback) return fallback;
+  try {
+    const companies = await window.__db.companies.toArray();
+    return companies.find(c => !c.deleted_at && c.status === 'activa') || companies[0] || {};
+  } catch { return {}; }
+}
 // Estados a los que un delegado puede llevar la OC MANUALMENTE (dropdown). No
 // incluye 'anulada'/'aceptada'/'borrador': anular tiene su propio botón (pide
 // motivo + libera la requisición) y aceptada/borrador son estados de origen.
@@ -610,6 +642,17 @@ function OrdenesCompraPage({ showToast }) {
   const { data: materiales } = window.__hooks.useMateriales(obraId);
   const [proveedores, setProveedores] = uS([]);
   uE(() => { window.__db.proveedores.toArray().then(setProveedores); }, []);
+  // La empresa que EMITE: el titular contable de la obra (el consorcio
+  // ejecutor, o la empresa si la obra es de una sola). Define la serie del
+  // correlativo y la marca del PDF — tanda 5.
+  const { data: obrasTodas } = window.__hooks.useObras();
+  const { data: consorcios } = window.__hooks.useConsorcios?.() || { data: [] };
+  const { data: companies } = window.__hooks.useCompanies();
+  const obraActual = uM(() => (obrasTodas || []).find(o => o.id === obraId) || null, [obrasTodas, obraId]);
+  const companyEmisora = uM(() => {
+    const cid = titularContableDeObra(obraActual, consorcios || []);
+    return cid ? ((companies || []).find(c => c.id === cid) || null) : null;
+  }, [obraActual, consorcios, companies]);
   const fileInputRef = React.useRef(null);
 
   const confirmarOC = async (oc) => {
@@ -629,9 +672,11 @@ function OrdenesCompraPage({ showToast }) {
         const proveedor = lookupProv(oc.proveedor_id);
         const obras = await window.__db.obras.toArray();
         const obra = obras.find(o => o.id === oc.obra_id);
-        const companies = await window.__db.companies.toArray();
-        const company = companies.find(c => !c.deleted_at && c.status === 'activa') || companies[0];
-        window.__pdfs?.generateOCPdf?.(oc, items, proveedor, obra, company);
+        // La marca del PDF es la de la empresa que EMITE la orden (tanda 5).
+        // Antes era «la primera empresa activa del grupo»: una OC del
+        // CONSORCIO EL INCA salía con el logo de la que estuviera primero.
+        const company = await companyDeOC(oc, companyEmisora);
+        window.__pdfs?.generateOrdenPdf?.(oc, items, { company, obra, proveedor });
       } catch (e) { console.warn('[OC confirmar] PDF', e); }
       try { await window.__logAudit?.({ action:'update', table:'ordenes_compra', recordId: oc.id, oldData:{ estado: oc.estado }, newData:{ estado: 'por_confirmar' }, reason:`OC ${oc.codigo} confirmada — PDF para firma` }); } catch {}
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'ordenes_compra' } })); } catch {}
@@ -721,22 +766,23 @@ function OrdenesCompraPage({ showToast }) {
 
   const lookupProv = (id) => proveedores.find(p => p.id === id);
 
-  const nextCodigo = uM(() => {
-    const yr = new Date().getFullYear();
-    const count = (ocs || []).filter(o => (o.codigo || '').startsWith(`OC-${yr}`)).length + 1;
-    return `OC-${yr}-${String(count).padStart(3,'0')}`;
-  }, [ocs]);
+  // El correlativo es POR EMPRESA, TIPO y AÑO (tanda 5): el mismo cálculo que
+  // usa el registro documental, para que las dos puertas no numeren distinto.
+  const nextCodigo = uM(
+    () => proximoCodigo(ocs || [], { company: companyEmisora, tipo: form.tipo || 'compra' }).codigo,
+    [ocs, companyEmisora, form.tipo]
+  );
 
   const openNueva = () => {
     if (!proveedores.length) { showToast('Creá proveedores primero', 'red'); return; }
-    setForm({ codigo: nextCodigo, proveedor_id: proveedores[0].id, fecha: new Date().toISOString().slice(0,10), fecha_entrega: '', moneda: 'PEN', condicion_pago: 'contado', estado: 'aceptada', observaciones: '' });
+    setForm({ codigo: nextCodigo, tipo: 'compra', proveedor_id: proveedores[0].id, fecha: new Date().toISOString().slice(0,10), fecha_entrega: '', moneda: 'PEN', condicion_pago: 'contado', estado: 'aceptada', observaciones: '' });
     setItems([{ material_id:'', nombre:'', unidad:'', cantidad:'', precio_unitario:'', tipo_insumo:'material' }]);
     setEditing(null); setModal(true);
   };
 
   const verDetalle = async (oc) => {
     setEditing(oc);
-    setForm({ codigo: oc.codigo, proveedor_id: oc.proveedor_id, fecha: oc.fecha, fecha_entrega: oc.fecha_entrega || '', moneda: oc.moneda, condicion_pago: oc.condicion_pago || '', estado: oc.estado, observaciones: oc.observaciones || '' });
+    setForm({ codigo: oc.codigo, tipo: oc.tipo || 'compra', proveedor_id: oc.proveedor_id, fecha: oc.fecha, fecha_entrega: oc.fecha_entrega || '', moneda: oc.moneda, condicion_pago: oc.condicion_pago || '', estado: oc.estado, observaciones: oc.observaciones || '' });
     try { setItems(await window.__db.oc_items.where('orden_compra_id').equals(oc.id).filter(x=>!x.deleted_at).toArray()); } catch { setItems([]); }
     try {
       const recs = await window.__db.recepciones.where('orden_compra_id').equals(oc.id).filter(x=>!x.deleted_at).toArray();
@@ -772,7 +818,8 @@ function OrdenesCompraPage({ showToast }) {
         for (const oi of oldItems) await window.__db.oc_items.update(oi.id, { deleted_at: now, sync_status: 'pending_delete' });
       } else {
         ocId = window.__newId();
-        await window.__db.ordenes_compra.add({ id: ocId, obra_id: obraId, codigo: form.codigo, proveedor_id: form.proveedor_id, fecha: form.fecha, fecha_entrega: form.fecha_entrega || null, monto_subtotal: totales.subtotal, monto_igv: totales.igv, monto_total: totales.total, moneda: form.moneda, condicion_pago: form.condicion_pago || null, estado: form.estado, observaciones: form.observaciones || null, created_by: userId, updated_by: userId, created_at: now, updated_at: now, version: 1, sync_status: 'pending_create', last_synced_at: null, idempotency_key: `${userId}_oc_${ocId}` });
+        const num = proximoCodigo(ocs || [], { company: companyEmisora, tipo: form.tipo || 'compra' });
+        await window.__db.ordenes_compra.add({ id: ocId, obra_id: obraId, codigo: form.codigo || num.codigo, correlativo: num.correlativo, anio: num.anio, tipo: form.tipo || 'compra', company_id: companyEmisora?.id || null, proveedor_id: form.proveedor_id, fecha: form.fecha, fecha_entrega: form.fecha_entrega || null, monto_subtotal: totales.subtotal, monto_igv: totales.igv, monto_total: totales.total, moneda: form.moneda, condicion_pago: form.condicion_pago || null, estado: form.estado, observaciones: form.observaciones || null, created_by: userId, updated_by: userId, created_at: now, updated_at: now, version: 1, sync_status: 'pending_create', last_synced_at: null, idempotency_key: `${userId}_oc_${ocId}` });
       }
       for (const i of itemsValidos) {
         const id = window.__newId();
@@ -805,9 +852,8 @@ function OrdenesCompraPage({ showToast }) {
       const proveedor = lookupProv(oc.proveedor_id);
       const obras = await window.__db.obras.toArray();
       const obra = obras.find(o => o.id === oc.obra_id);
-      const companies = await window.__db.companies.toArray();
-      const company = companies.find(c => !c.deleted_at && c.status === 'activa') || companies[0];
-      window.__pdfs?.generateOCPdf?.(oc, its, proveedor, obra, company);
+      const company = await companyDeOC(oc, companyEmisora);
+      window.__pdfs?.generateOrdenPdf?.(oc, its, { company, obra, proveedor });
       showToast('PDF generado', 'green');
     } catch (e) { showToast('Error PDF: '+e.message, 'red'); }
   };
@@ -935,6 +981,18 @@ function OrdenesCompraPage({ showToast }) {
         <Modal title={editing ? `OC ${form.codigo}` : 'Nueva Orden de Compra'} icon="package" onClose={()=>{setModal(null); setEditing(null); setItems([]); setRecepciones([]); setEvidenciasOC([]);}} wide>
           <div className="g2">
             <div><label className="flabel">Código</label><input className="fi" value={form.codigo||''} onChange={e=>setForm({...form, codigo:e.target.value})}/></div>
+            <div>
+              <label className="flabel">Tipo de orden</label>
+              <select className="fi" value={form.tipo || 'compra'} disabled={!!editing}
+                onChange={e=>setForm({...form, tipo:e.target.value, codigo: proximoCodigo(ocs || [], { company: companyEmisora, tipo: e.target.value }).codigo })}>
+                <option value="compra">{TIPO_ORDEN_LABEL.compra}</option>
+                <option value="servicio">{TIPO_ORDEN_LABEL.servicio}</option>
+              </select>
+            </div>
+            <div style={{ gridColumn:'1/-1', fontSize:11, color:'var(--tm)', marginTop:-4 }}>
+              Emite: <strong style={{ color:'var(--tp)' }}>{companyEmisora?.name || 'sin empresa ejecutora definida en la obra'}</strong>
+              {' '}— su logo y su RUC van en el PDF, y el correlativo es de SU serie.
+            </div>
             <div>
               <label className="flabel">Proveedor *</label>
               <select className="fi" value={form.proveedor_id||''} onChange={e=>setForm({...form, proveedor_id:e.target.value})}>

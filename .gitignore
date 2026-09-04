@@ -47,3 +47,9 @@ credenciales*.json
 scripts/google-drive/.drive-config.json
 oauth-client*.json
 scripts/google-drive/oauth-client.json
+
+# Modelos de referencia que deja Gabriel (Excel/fotos de órdenes, activos…).
+# NO se commitean: el repo es PÚBLICO y esos archivos traen N° de cuenta, CCI,
+# DNI del representante legal y RUCs del grupo. Para pasarlos a la otra PC:
+# Drive/WhatsApp, no git. (Tanda 5, 4-sep-2026.)
+Modelos/

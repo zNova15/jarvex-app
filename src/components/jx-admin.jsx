@@ -1165,6 +1165,7 @@ window.__moduleIdMap = {
   'solicitud-residente': 'Requisiciones',
   'requisiciones': 'Requisiciones',
   'ordenes-compra': 'Órdenes de Compra',
+  'ordenes': 'Órdenes de Compra',              // mismo módulo/permiso, otra puerta (tanda 5)
   'compras-pendientes': 'Recepciones',
   // Subcontratos
   'subcontratistas': 'Subcontratistas',
@@ -1408,6 +1409,11 @@ window.__canSeeSidebarItem = function(rol, itemId) {
   // defecto solo admin — la almacenera crea solicitudes pero no ve las OCs; ve
   // el resultado (aceptada/rechazada) en Requisiciones → Mis Solicitudes.
   if (itemId === 'ordenes-compra') return rol === 'admin' || (window.__hasPerm?.(rol, 'Órdenes de Compra', 'w') ?? false);
+  // El REGISTRO DOCUMENTAL (tanda 5) es contable, no logístico: lo abren quienes
+  // llevan los libros. Con 'r' alcanza para mirarlo; emitir pide 'w' y lo
+  // vuelve a chequear la pantalla.
+  if (itemId === 'ordenes') return ['admin', 'gerente', 'contador', 'ayudante_contador'].includes(rol)
+    || (window.__hasPerm?.(rol, 'Órdenes de Compra', 'r') ?? false);
   // Panel del Residente: tablero de cumplimiento (admin y residente).
   if (itemId === 'panel-residente') return rol === 'admin' || rol === 'ingeniero_residente';
   // Los módulos del ingeniero solo los ven el ingeniero (y admin).
@@ -2535,6 +2541,25 @@ function SistemaTab({ showToast }) {
     } catch (e) { showToast?.('No se pudo guardar: ' + (e?.message || e), 'red'); }
   };
 
+  // Umbral de respaldo por orden (app_config 'orden_umbral_monto', mig 179).
+  // Gabriel lo propuso en S/ 2.000 midiendo contra la base: con el 17% de los
+  // comprobantes de compra se respalda el 97% del monto. Es configurable y no
+  // constante porque ese número depende del tamaño de la obra, no del código.
+  const umbralCfg = window.__hooks?.resolverConfig ? window.__hooks.resolverConfig(appCfgHook.data, 'orden_umbral_monto', 2000) : 2000;
+  const [umbralSel, setUmbralSel] = uSAd('');
+  const umbralMostrado = umbralSel === '' ? String(umbralCfg) : umbralSel;
+  const guardarUmbral = async () => {
+    const n = Math.round(Number(umbralMostrado));
+    if (!Number.isFinite(n) || n < 100 || n > 1000000) { showToast?.('Elegí un monto entre S/ 100 y S/ 1.000.000', 'red'); return; }
+    try {
+      const vivas = (appCfgHook.data || []).filter(r => !r.deleted_at && r.clave === 'orden_umbral_monto');
+      vivas.sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
+      if (vivas[0]) await appCfgHook.update(vivas[0].id, { valor: n });
+      else await appCfgHook.create({ clave: 'orden_umbral_monto', valor: n });
+      showToast?.(`✓ Umbral de respaldo: S/ ${n.toLocaleString('es-PE')}`, 'green');
+    } catch (e) { showToast?.('No se pudo guardar: ' + (e?.message || e), 'red'); }
+  };
+
   uEAd(() => {
     let cancelled = false;
     const refresh = async () => {
@@ -2846,6 +2871,23 @@ function SistemaTab({ showToast }) {
             disabled={!isAdmin} value={timeoutMostrado} onChange={e=>setTimeoutSel(e.target.value)}/>
           <span style={{ fontSize:12, color:'var(--tm)' }}>minutos (entre 5 y 480)</span>
           {isAdmin && <button className="btn btn-amber btn-sm" onClick={guardarTimeout}>Guardar</button>}
+        </div>
+        {!isAdmin && <div style={{ fontSize:11, color:'var(--tm)', marginTop:6 }}>Solo el administrador puede cambiarlo.</div>}
+      </div>
+      <div className="card card-p" style={{ gridColumn:'1 / -1', borderLeft:'3px solid var(--blue)' }}>
+        <div style={{ fontSize:13, fontWeight:700, display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
+          <JxIcon name="package" size={14} color="var(--blue)"/> Umbral de respaldo por orden
+        </div>
+        <div style={{ fontSize:12, color:'var(--tm)', marginBottom:10 }}>
+          Monto desde el cual una compra necesita una orden (de compra o de servicio) que la respalde.
+          Es el número que manda en «Órdenes de Compra y Servicio → Sin respaldo».
+          Actual: <strong style={{ color:'var(--tp)' }}>S/ {Number(umbralCfg).toLocaleString('es-PE')}</strong>.
+        </div>
+        <div style={{ display:'flex', gap:12, alignItems:'center', flexWrap:'wrap' }}>
+          <input className="fi" type="number" min={100} step={100} style={{ maxWidth:140 }}
+            disabled={!isAdmin} value={umbralMostrado} onChange={e=>setUmbralSel(e.target.value)}/>
+          <span style={{ fontSize:12, color:'var(--tm)' }}>soles</span>
+          {isAdmin && <button className="btn btn-amber btn-sm" onClick={guardarUmbral}>Guardar</button>}
         </div>
         {!isAdmin && <div style={{ fontSize:11, color:'var(--tm)', marginTop:6 }}>Solo el administrador puede cambiarlo.</div>}
       </div>

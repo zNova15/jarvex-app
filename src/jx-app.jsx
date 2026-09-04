@@ -427,6 +427,7 @@ function Header({ page, plano = 'obra', onInicio, onVolver, puedeVolver, onToggl
     'gestion-calidad':'Gestión de Calidad',
     'gestion-social':'Gestión Social',
     requisiciones:'Requisiciones', 'ordenes-compra':'Órdenes de Compra',
+    ordenes:'Órdenes de Compra y Servicio',
     valorizaciones:'Valorizaciones', 'activos-pesados':'Activos Pesados / Maquinaria',
     'charlas-seguridad':'Charlas de Seguridad', iperc:'IPERC — Matriz de Riesgos',
     epp:'Entregas de EPP',
@@ -707,6 +708,8 @@ const PAGE_REGISTRY = {
   // === jx-compras ===
   'requisiciones':          { chunk: 'jx-compras', component: 'RequisicionesPage' },
   'ordenes-compra':         { chunk: 'jx-compras', component: 'OrdenesCompraPage' },
+  // === jx-ordenes (registro documental por empresa, tanda 5) ===
+  'ordenes':                { chunk: 'jx-ordenes', component: 'OrdenesPage' },
   'compras-pendientes':     { chunk: 'jx-compras-pendientes', component: 'ComprasPendientesPage' },
   // === jx-valorizaciones ===
   'valorizaciones':         { chunk: 'jx-valorizaciones', component: 'ValorizacionesPage' },
