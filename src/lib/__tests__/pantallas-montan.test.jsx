@@ -76,6 +76,7 @@ function montarBrowserFalso() {
 // Los chunks que se cargan on-demand. Cada uno expone sus pantallas en
 // `window.*Page` al importarse: no hace falta listarlas a mano.
 const CHUNKS = [
+  '../../components/jx-activos-fijos.jsx',
   '../../components/jx-activos.jsx',
   '../../components/jx-admin.jsx',
   '../../components/jx-alertas.jsx',

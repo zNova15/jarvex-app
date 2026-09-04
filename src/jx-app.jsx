@@ -429,6 +429,7 @@ function Header({ page, plano = 'obra', onInicio, onVolver, puedeVolver, onToggl
     requisiciones:'Requisiciones', 'ordenes-compra':'Órdenes de Compra',
     ordenes:'Órdenes de Compra y Servicio',
     valorizaciones:'Valorizaciones', 'activos-pesados':'Activos Pesados / Maquinaria',
+    'activos-fijos':'Activos Fijos de la empresa',
     'charlas-seguridad':'Charlas de Seguridad', iperc:'IPERC — Matriz de Riesgos',
     epp:'Entregas de EPP',
     'mov-epp':'Movimientos de EPPs',
@@ -718,6 +719,8 @@ const PAGE_REGISTRY = {
   'flujo-caja':             { chunk: 'jx-tesoreria', component: 'FlujoCajaPage' },
   // === jx-activos ===
   'activos-pesados':        { chunk: 'jx-activos', component: 'ActivosPesadosPage' },
+  // Registro CONTABLE de activos (formato SUNAT 7.1) — hermano del operativo.
+  'activos-fijos':          { chunk: 'jx-activos-fijos', component: 'ActivosFijosPage' },
   // === jx-ssoma ===
   'reporte-especialidad':   { chunk: 'jx-especialidad', component: 'ReporteEspecialidadPage' },
   'charlas-plan':           { chunk: 'jx-seguridad', component: 'CharlasPlanPage' },

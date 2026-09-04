@@ -77,6 +77,17 @@ export const db = new Dexie('JarvexDB');
 // cronograma, avance, personal ni almacén. La compra y la venta son
 // accounting_movements con trabajo_id — el margen se calcula, no se guarda
 // (src/lib/trabajos.js). Aditivo.
+// Versión 52: REGISTRO DE ACTIVOS FIJOS — formato SUNAT 7.1 (mig 180). Es
+// HERMANA de `activos_pesados`, no su reemplazo: aquélla es operativa y de obra
+// (horómetro, combustible, mantenimiento), ésta es contable y de EMPRESA
+// (cuenta del PCGE, tasa, depreciación del ejercicio, valor en libros). El
+// puente opcional es `activo_pesado_id`. Los derivados (valor histórico,
+// depreciación, valor en libros) NO se guardan: se calculan al leer, en
+// src/lib/activos-fijos.js. Aditivo.
+db.version(52).stores({
+  activos_fijos: 'id, company_id, periodo, cuenta_contable, activo_pesado_id, estado, deleted_at, sync_status',
+});
+
 // Versión 51: ÓRDENES CON DUEÑO Y CON TIPO (mig 179, tanda 5). `ordenes_compra`
 // se RE-INDEXA — no es aditivo como las anteriores: la pantalla nueva lista
 // "las órdenes de ESTA empresa" y "las de tipo servicio", y sin índice eso es

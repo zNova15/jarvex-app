@@ -499,6 +499,20 @@ export function useMovimientosBancarios(cuenta_id) {
   , [cuenta_id]);
 }
 
+// ── Activos FIJOS (registro contable, formato SUNAT 7.1) ────────────
+// Se pide por (empresa, período) porque así se presenta el formato: un
+// ejercicio de una empresa. Sin período trae todos los años de esa empresa
+// (la pantalla los usa para el selector y para el cierre de ejercicio).
+export function useActivosFijos(company_id, periodo) {
+  return useOfflineData('activos_fijos', q => {
+    const base = company_id
+      ? q.where('company_id').equals(company_id)
+      : q;
+    return base.filter(a => !a.deleted_at
+      && (periodo === undefined || periodo === null || Number(a.periodo) === Number(periodo))).toArray();
+  }, [company_id, periodo]);
+}
+
 // ── Activos pesados ─────────────────────────────────────────────────
 export function useActivosPesados() {
   return useOfflineData('activos_pesados', q =>

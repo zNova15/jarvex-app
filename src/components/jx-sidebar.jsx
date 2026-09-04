@@ -235,6 +235,10 @@ const NAV = [
   // «las necesito para respaldar las compras». La de Logística sigue siendo
   // el circuito requisición→OC→recepción de almacén.
   { id: 'ordenes', label: 'Órdenes de Compra y Servicio', icon: 'package' },
+  // El registro CONTABLE de activos (formato SUNAT 7.1): cuenta del PCGE,
+  // depreciación y valor en libros. «Equipos Pesados», en el menú de la obra,
+  // es el OPERATIVO (horómetro, combustible) y son cosas distintas.
+  { id: 'activos-fijos', label: 'Activos Fijos (formato 7.1)', icon: 'tool' },
   { id: 'guias-remision', label: 'Guías de Remisión', icon: 'truck' },
   { id: 'compras-categoria', label: 'Compras por Categoría', icon: 'layers' },
   { id: 'analisis-insumos', label: 'Análisis de Insumos', icon: 'compare' },

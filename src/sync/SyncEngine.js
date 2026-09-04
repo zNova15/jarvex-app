@@ -62,6 +62,10 @@ const TRANSACTIONAL_TABLES = [
   // Activos pesados
   'activos_pesados', 'horas_maquina', 'consumos_combustible', 'mantenimientos_maquinaria',
   'movimientos_maquinaria',
+  // Registro de activos fijos (formato SUNAT 7.1, mig 180). Va DESPUÉS de
+  // activos_pesados: puede referenciarlo (activo_pesado_id) cuando la misma
+  // máquina está en los dos registros.
+  'activos_fijos',
   // SSOMA
   'charlas_seguridad', 'charla_asistentes', 'iperc',
   'epp_entregas', 'inspecciones_seguridad', 'capacitaciones',
@@ -213,6 +217,7 @@ const MASTER_TABLES = [
   { tabla: 'horas_maquina',          query: () => supabase.from('horas_maquina').select('*').is('deleted_at', null) },
   { tabla: 'consumos_combustible',   query: () => supabase.from('consumos_combustible').select('*').is('deleted_at', null) },
   { tabla: 'mantenimientos_maquinaria', query: () => supabase.from('mantenimientos_maquinaria').select('*').is('deleted_at', null) },
+  { tabla: 'activos_fijos',          query: () => supabase.from('activos_fijos').select('*').is('deleted_at', null) },
   // SSOMA
   { tabla: 'charlas_seguridad',         query: () => supabase.from('charlas_seguridad').select('*').is('deleted_at', null) },
   { tabla: 'charla_asistentes',         query: () => supabase.from('charla_asistentes').select('*').is('deleted_at', null) },
@@ -641,7 +646,7 @@ const PULL_SCOPE_POR_ROL = {
   // (jx-busqueda / jx-solicitudes referencian alguna de estas tablas solo para
   // pintar resultados de módulos que estos roles no pueden abrir — verificado.)
   ingeniero: new Set([
-    'accounting_movements', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
+    'accounting_movements', 'activos_fijos', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
     'cotizacion_items', 'cotizaciones', 'cronograma_pagos', 'depositos_bancarizacion',
     'emision_reglas', 'horas_maquina', 'insumos_partida_versionadas', 'insumos_pendientes',
     'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
@@ -651,7 +656,7 @@ const PULL_SCOPE_POR_ROL = {
     'valorizacion_adicionales', 'valorizacion_partidas', 'valorizaciones',
   ]),
   prevencionista: new Set([
-    'accounting_movements', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
+    'accounting_movements', 'activos_fijos', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
     'cotizacion_items', 'cotizaciones', 'cronograma_pagos', 'depositos_bancarizacion',
     'emision_reglas', 'horas_maquina', 'insumos_partida_versionadas', 'insumos_pendientes',
     'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
@@ -661,7 +666,7 @@ const PULL_SCOPE_POR_ROL = {
     'valorizacion_adicionales', 'valorizacion_partidas', 'valorizaciones',
   ]),
   ing_ambiental: new Set([
-    'accounting_movements', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
+    'accounting_movements', 'activos_fijos', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
     'cotizacion_items', 'cotizaciones', 'cronograma_pagos', 'depositos_bancarizacion',
     'emision_reglas', 'horas_maquina', 'insumos_partida_versionadas', 'insumos_pendientes',
     'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
@@ -671,7 +676,7 @@ const PULL_SCOPE_POR_ROL = {
     'valorizacion_adicionales', 'valorizacion_partidas', 'valorizaciones',
   ]),
   ing_calidad: new Set([
-    'accounting_movements', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
+    'accounting_movements', 'activos_fijos', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
     'cotizacion_items', 'cotizaciones', 'cronograma_pagos', 'depositos_bancarizacion',
     'emision_reglas', 'horas_maquina', 'insumos_partida_versionadas', 'insumos_pendientes',
     'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
@@ -681,7 +686,7 @@ const PULL_SCOPE_POR_ROL = {
     'valorizacion_adicionales', 'valorizacion_partidas', 'valorizaciones',
   ]),
   ing_social: new Set([
-    'accounting_movements', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
+    'accounting_movements', 'activos_fijos', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
     'cotizacion_items', 'cotizaciones', 'cronograma_pagos', 'depositos_bancarizacion',
     'emision_reglas', 'horas_maquina', 'insumos_partida_versionadas', 'insumos_pendientes',
     'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
@@ -1096,6 +1101,7 @@ const FK_DEPS = {
   horas_maquina:             [{ campo: 'activo_id', tabla: 'activos_pesados' }, { campo: 'operador_id', tabla: 'personal' }],
   consumos_combustible:      [{ campo: 'activo_id', tabla: 'activos_pesados' }, { campo: 'operador_id', tabla: 'personal' }],
   mantenimientos_maquinaria: [{ campo: 'activo_id', tabla: 'activos_pesados' }],
+  activos_fijos:             [{ campo: 'company_id', tabla: 'companies' }, { campo: 'activo_pesado_id', tabla: 'activos_pesados' }, { campo: 'accounting_movement_id', tabla: 'accounting_movements' }, { campo: 'obra_id', tabla: 'obras' }],
   caja_chica_movimientos:    [{ campo: 'responsable_id', tabla: 'personal' }],
   // La regla de emisión referencia la empresa emisora + intermediarias (FKs reales).
   emision_reglas:            [{ campo: 'company_id', tabla: 'companies' }, { campo: 'intermediaria1_company_id', tabla: 'companies' }, { campo: 'intermediaria2_company_id', tabla: 'companies' }],

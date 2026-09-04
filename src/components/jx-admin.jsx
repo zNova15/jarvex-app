@@ -1173,6 +1173,7 @@ window.__moduleIdMap = {
   'subcontrato-valorizaciones': 'Valor. Subcontrato',
   // Maquinaria
   'activos-pesados': 'Activos Pesados',
+  'activos-fijos': 'Movs. Contables',        // es contabilidad, no maquinaria (tanda 5)
   'mantenimiento-programado': 'Mantenimiento',
   // SSOMA
   'charlas-seguridad': 'Charlas Seguridad',
@@ -1414,6 +1415,9 @@ window.__canSeeSidebarItem = function(rol, itemId) {
   // vuelve a chequear la pantalla.
   if (itemId === 'ordenes') return ['admin', 'gerente', 'contador', 'ayudante_contador'].includes(rol)
     || (window.__hasPerm?.(rol, 'Órdenes de Compra', 'r') ?? false);
+  // Activos fijos: el registro que se le presenta a SUNAT. Lo llevan las
+  // contadoras y la tesorería; no es una pantalla de maquinaria.
+  if (itemId === 'activos-fijos') return ['admin', 'gerente', 'contador', 'ayudante_contador', 'tesorero'].includes(rol);
   // Panel del Residente: tablero de cumplimiento (admin y residente).
   if (itemId === 'panel-residente') return rol === 'admin' || rol === 'ingeniero_residente';
   // Los módulos del ingeniero solo los ven el ingeniero (y admin).

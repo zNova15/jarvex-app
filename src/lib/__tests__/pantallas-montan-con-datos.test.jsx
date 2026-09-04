@@ -164,6 +164,7 @@ function montarBrowserFalso(store) {
 }
 
 const CHUNKS = [
+  '../../components/jx-activos-fijos.jsx',
   '../../components/jx-activos.jsx', '../../components/jx-admin.jsx',
   '../../components/jx-almacen.jsx', '../../components/jx-analisis-insumos.jsx',
   '../../components/jx-asientos.jsx', '../../components/jx-caja-chica.jsx',

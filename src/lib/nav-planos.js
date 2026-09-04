@@ -41,6 +41,8 @@ export const GENERAL_ITEMS = new Set([
   // obra: una orden la emite un RUC y lleva su numeración. 'ordenes-compra'
   // (el circuito de logística de almacén) sigue siendo plano obra.
   'ordenes',
+  // El activo fijo es de la EMPRESA (su RUC lo declara), no de una obra.
+  'activos-fijos',
   'analisis-insumos',   // análisis global cross-obra de compras por insumo/proveedor
   // Plantel profesional para postular: es del GRUPO, no de una obra. Sin esta
   // línea planoDe() lo daba por 'obra' y el sidebar lo filtraba en el plano
@@ -79,7 +81,7 @@ const AREA = {
     'consolidado', 'cuentas-bancarias', 'flujo-caja', 'flujo-proyectado',
     'plan-cuentas', 'libro-diario', 'balance-general', 'estado-resultados', 'comprobantes',
     'libros-electronicos', 'config-sunat', 'comparativo-periodos', 'compras-categoria', 'guias-remision',
-    'ordenes', 'analisis-insumos']),
+    'ordenes', 'activos-fijos', 'analisis-insumos']),
   // Trabajos y su ficha: el área a la que se entra desde el bloque Trabajos.
   trabajos: new Set(['trabajos', 'obras', 'bienes-servicios']),
   // Licitaciones: el bloque de primer nivel de la tanda 2. Hoy solo el

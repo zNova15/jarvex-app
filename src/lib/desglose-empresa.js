@@ -161,6 +161,13 @@ export const BLOQUES_CONTABILIDAD_EMPRESA = [
     desc: 'Qué tiene y qué debe a una fecha',
   },
   {
+    // Tanda 5, pedido de las contadoras: el «FORMATO 7.1 — REGISTRO DE ACTIVOS
+    // FIJOS» que hoy llevan en un Excel suelto. Es de la EMPRESA: su RUC lo
+    // declara, y la depreciación del ejercicio va a SU estado de resultados.
+    id: 'activos-fijos', titulo: 'Activos fijos (formato 7.1)', icon: 'tool', color: 'var(--orange)',
+    desc: 'Sus bienes con cuenta del PCGE, depreciación del ejercicio y valor en libros',
+  },
+  {
     id: 'libros-electronicos', titulo: 'Libros electrónicos (PLE)', icon: 'file', color: 'var(--blue)',
     desc: 'Los archivos que se le presentan a SUNAT',
   },
