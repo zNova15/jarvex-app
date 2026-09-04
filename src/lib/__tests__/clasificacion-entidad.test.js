@@ -129,6 +129,26 @@ describe('revisarCatalogo — sobre el catálogo real', () => {
     expect(yaOk.filas[0].cambia).toBe(false);
   });
 
+  it('una decisión del catálogo NO se propone deshacer (ESPERANZA como tercero)', () => {
+    // Gabriel decidió el 3-sep tratar a CONSORCIO ESPERANZA y CONSORCIO
+    // SAMADAY como terceros. La heurística sigue viendo "se llama consorcio",
+    // pero no puede proponer el cambio en bucle: 'tercero' no es el default de
+    // la columna, alguien lo eligió. Revertirlo es un acto manual.
+    const decidido = revisarCatalogo({
+      companies: [
+        { ...CATALOGO.find(c => c.id === 'c-esper'), tipo_entidad: 'tercero' },
+        { ...CATALOGO.find(c => c.id === 'c-samaday'), tipo_entidad: 'tercero' },
+      ],
+      obras: OBRAS, movsPorCompany: MOVS,
+    });
+    expect(decidido.filas.every(f => f.decidido)).toBe(true);
+    expect(decidido.filas.every(f => f.cambia)).toBe(false);
+    expect(decidido.resumen.cambian).toBe(0);
+    // La sugerencia se sigue mostrando, con el motivo diciendo quién manda.
+    expect(decidido.filas[0].sugerido).toBe('consorcio');
+    expect(decidido.filas[0].motivo).toContain('manda esa decisión');
+  });
+
   it('ignora borrados y aguanta que no le pasen nada', () => {
     const conBorrada = revisarCatalogo({ companies: [...CATALOGO, { id: 'z', name: 'Z', deleted_at: 'x' }], obras: OBRAS });
     expect(conBorrada.resumen.total).toBe(7);

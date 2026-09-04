@@ -101,6 +101,74 @@ export function clasificarOrigenGuia(guia, rucsGrupo) {
 }
 
 /**
+ * LOS DOS LADOS DE UNA GUÍA (pedido de Gabriel, 3-sep-2026).
+ *
+ * Entre empresas del grupo hay traslados reales: GASOMI le vende material a
+ * JHEENSEG y emite su guía. Esa guía es UNA sola —el papel que viajó con el
+ * camión— pero tiene dos dueños: la EMITIÓ una empresa del grupo y la RECIBIÓ
+ * otra. Hasta ahora la app le asignaba un solo lado (el emisor), así que al
+ * filtrar por la empresa compradora la guía desaparecía y parecía faltar.
+ *
+ * La corrección es de LECTURA, no de datos: se resuelven los dos lados y la
+ * misma fila se muestra desde ambos. Deliberadamente NO se crea una segunda
+ * guía "espejo": la operación interna ya está registrada dos veces en
+ * contabilidad (el ingreso del vendedor y el costo del comprador, que el
+ * consolidado elimina de a pares). Duplicar también la guía haría que la
+ * factura del comprador reclamara su propia guía, que el panel "requieren
+ * guía" contara doble y que un traslado apareciera dos veces en el cruce con
+ * almacén. Un traslado, un papel, una fila.
+ *
+ * @param guia      fila de guias_remision
+ * @param facturas  facturas vinculadas a esa guía (accounting_movements)
+ * @param opts {
+ *   companyIdPorRuc: Map<ruc, companyId>   solo empresas del GRUPO
+ *   esDelGrupo: (companyId) => boolean     idem
+ * }
+ * @returns { emisor, destinatario, interna, origen }
+ */
+export function ladosDeGuia(guia, facturas = [], opts = {}) {
+  const { companyIdPorRuc, esDelGrupo } = opts;
+  const delGrupo = typeof esDelGrupo === 'function' ? esDelGrupo : () => false;
+  const ruc = rucLimpio(guia?.emisor_ruc);
+  const emisor = (companyIdPorRuc && ruc) ? (companyIdPorRuc.get(ruc) || null) : null;
+  const emitida = emisor != null;
+
+  let destinatario = null;
+  for (const f of facturas || []) {
+    if (!f || f.deleted_at) continue;
+    if (emitida) {
+      // La emitimos nosotros: el otro lado es el CLIENTE de la venta, y solo
+      // hay segundo lado si ese cliente también es del grupo.
+      if (!esVentaMov(f)) continue;
+      const rel = f.related_company_id;
+      if (rel && rel !== emisor && delGrupo(rel)) { destinatario = rel; break; }
+    } else {
+      // La recibimos de un proveedor: el lado del grupo es quien compró.
+      if (esVentaMov(f)) continue;
+      if (f.company_id && delGrupo(f.company_id)) { destinatario = f.company_id; break; }
+    }
+  }
+
+  return {
+    emisor,
+    destinatario,
+    // Interna = los dos lados son del grupo. Con emisor externo nunca lo es.
+    interna: !!(emitida && destinatario),
+    origen: emitida ? 'emitida' : (ruc ? 'recibida' : 'desconocida'),
+  };
+}
+
+/**
+ * Las empresas del grupo a las que pertenece una guía: una si es de/para un
+ * tercero, dos si el traslado fue interno. Es lo que tiene que mirar el filtro
+ * por empresa para que la guía no se pierda del lado del comprador.
+ */
+export function empresasDeGuia(guia, facturas = [], opts = {}) {
+  const l = ladosDeGuia(guia, facturas, opts);
+  return [l.emisor, l.destinatario].filter(Boolean);
+}
+
+/**
  * Facturas que DEBERÍAN tener guía de remisión y no la tienen (pedido
  * contadoras 31-ago). Heurística: factura (no NC/boleta/recibo) con al menos
  * un ítem que NO es servicio (los bienes se trasladan) y sin guía vinculada.

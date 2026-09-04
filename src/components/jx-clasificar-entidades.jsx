@@ -38,11 +38,17 @@ export function ClasificarEntidadesModal({ companies, obras, consorcios, movs, u
     [companies, obras, movsPorCompany]);
 
   // Arranca con las sugerencias precargadas; el usuario corrige lo que quiera.
+  // Una fila YA decidida ('tercero' o 'consorcio' en el catálogo: no son el
+  // default de la columna, alguien los eligió) arranca con lo que está
+  // guardado, aunque la heurística sugiera otra cosa. Si no, CONSORCIO
+  // ESPERANZA y CONSORCIO SAMADAY —terceros por decisión de Gabriel— vendrían
+  // pre-marcados como consorcio y un "Aplicar" distraído revertiría la
+  // decisión y movería el consolidado del grupo.
   const [decisiones, setDecisiones] = uSK(() =>
-    Object.fromEntries(filas.map(f => [f.company.id, f.sugerido ?? f.actual])));
+    Object.fromEntries(filas.map(f => [f.company.id, f.decidido ? f.actual : (f.sugerido ?? f.actual)])));
   // Para las marcadas como consorcio: a qué obra se vinculan.
   const [obraDe, setObraDe] = uSK(() =>
-    Object.fromEntries(filas.filter(f => f.sugerido === 'consorcio')
+    Object.fromEntries(filas.filter(f => !f.decidido && f.sugerido === 'consorcio')
       .map(f => [f.company.id, f.obrasEjecutora[0]?.id || ''])));
   const [aplicando, setAplicando] = uSK(false);
 

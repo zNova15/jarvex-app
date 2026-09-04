@@ -36,6 +36,14 @@
 //    GRUPO, y el archivo dice de dónde salió cada una (catálogo, titular de
 //    consorcio, socio de consorcio, o evidencia). Los libros de un tercero
 //    (una municipalidad cliente) no entran al consolidado del grupo.
+//    EL CATÁLOGO MANDA sobre la evidencia (decisión de Gabriel, 3-sep-2026):
+//    si una empresa está marcada 'tercero', queda AFUERA por más facturas
+//    marcadas "interna" que tenga encima. Caso real: CONSORCIO ESPERANZA y
+//    CONSORCIO SAMADAY —consorcios que terminaron su obra— se tratan como
+//    terceros para no arrastrar la migración de sus socias. Lo que NO cede
+//    ante el catálogo son los hechos duros: ser titular o socia de un
+//    consorcio del grupo (una fila de `consorcios`/`consorcio_socios` es una
+//    afirmación, no una casilla marcada al vuelo en una factura).
 //
 // 2. SE ELIMINA DE A PARES. Un movimiento interno solo se elimina contra su
 //    espejo. Lo que no encuentra espejo NO se esconde: sale por
@@ -115,15 +123,21 @@ export function perimetroGrupo({ companies = [], consorcios = [], socios = [], m
   for (const s of vivos(socios)) meter(s.company_id, MOTIVO.SOCIO);
 
   // 3) Evidencia: si ya hay movimientos marcados is_intercompany contra una
-  //    entidad, las contadoras la están tratando como interna aunque el
-  //    catálogo diga 'tercero' (CONSORCIO ESPERANZA y CONSORCIO SAMADAY, que
-  //    Gabriel confirmó que SON del grupo y siguen sin marcar). Se respeta la
-  //    práctica —si no, el consolidado cambiaría de número al aplicar esta
-  //    tanda— y se listan aparte para que alguien las clasifique.
+  //    entidad que el catálogo todavía no clasificó, las contadoras la están
+  //    tratando como interna. Se respeta la práctica y se lista aparte para
+  //    que alguien la clasifique.
+  //    PERO una casilla marcada en una factura NO revierte una decisión del
+  //    catálogo: si `tipo_entidad` dice 'tercero', la entidad queda AFUERA y
+  //    sus operaciones "internas" pasan a `terceros` para que la pantalla las
+  //    muestre (son ingresos externos del grupo, no eliminaciones).
+  const terceroMarcadoInterno = new Set();
   for (const m of movs || []) {
     if (!m || m.deleted_at || m.is_intercompany !== true) continue;
-    meter(m.company_id, MOTIVO.EVIDENCIA);
-    meter(m.related_company_id, MOTIVO.EVIDENCIA);
+    for (const id of [m.company_id, m.related_company_id]) {
+      if (!id || !byId.has(id) || motivos.has(id)) continue;
+      if ((byId.get(id).tipo_entidad || 'propia') === 'tercero') { terceroMarcadoInterno.add(id); continue; }
+      meter(id, MOTIVO.EVIDENCIA);
+    }
   }
 
   const entidades = [...motivos.entries()].map(([id, motivo]) => {
@@ -143,13 +157,34 @@ export function perimetroGrupo({ companies = [], consorcios = [], socios = [], m
     if (rucValido(e.ruc)) porRuc.set(String(e.ruc).trim(), e.id);
   }
 
+  // Índice de las entidades de AFUERA. Sirve para lo contrario del perímetro:
+  // saber que una contraparte está identificada y NO es del grupo, para que el
+  // flag `is_intercompany` de una factura no la meta al consolidado por la
+  // ventana (ver esInterna).
+  const fueraIds = new Set();
+  const fueraPorRuc = new Map();
+  for (const c of comps) {
+    if (motivos.has(c.id)) continue;
+    fueraIds.add(c.id);
+    if (rucValido(c.ruc)) fueraPorRuc.set(String(c.ruc).trim(), c.id);
+  }
+
   return {
     ids: new Set(motivos.keys()),
     entidades,
     porRuc,
-    // Las que entraron SOLO por evidencia: el catálogo todavía las llama
-    // terceros. Es trabajo pendiente de una persona, no un bug del cálculo.
+    fueraIds,
+    fueraPorRuc,
+    // Las que entraron SOLO por evidencia: el catálogo todavía no las
+    // clasificó. Es trabajo pendiente de una persona, no un bug del cálculo.
     aClasificar: entidades.filter(e => e.motivo === MOTIVO.EVIDENCIA),
+    // Terceros del catálogo que TIENEN operaciones marcadas como internas.
+    // Están afuera a propósito (el catálogo manda); la pantalla lo dice para
+    // que nadie crea que la casilla "interna" quedó haciendo algo.
+    terceros: [...terceroMarcadoInterno].map(id => {
+      const c = byId.get(id);
+      return { id, nombre: c?.name || '(entidad sin nombre)', ruc: c?.ruc || null };
+    }).sort((a, b) => a.nombre.localeCompare(b.nombre)),
   };
 }
 
@@ -170,15 +205,44 @@ export function contraparteInterna(mov, perimetro) {
 }
 
 /**
+ * La contraparte de este movimiento, cuando es una entidad IDENTIFICADA que
+ * está FUERA del perímetro. Devuelve su id o null.
+ *
+ * Es la pieza que hace que el catálogo mande: un proveedor cualquiera (RUC que
+ * no está en `companies`) devuelve null —ahí no sabemos nada y el flag de la
+ * contadora sigue valiendo—, pero una empresa cargada y clasificada 'tercero'
+ * devuelve su id, y eso desarma el flag.
+ */
+export function contraparteFuera(mov, perimetro) {
+  if (!mov || !perimetro) return null;
+  const rel = mov.related_company_id;
+  if (rel && perimetro.fueraIds?.has(rel)) return rel;
+  const ruc = String(mov.third_party_ruc || '').trim();
+  if (rucValido(ruc)) {
+    const id = perimetro.fueraPorRuc?.get(ruc);
+    if (id && id !== mov.company_id) return id;
+  }
+  return null;
+}
+
+/**
  * ¿Este movimiento es una operación INTERNA del grupo?
  * Su dueño tiene que estar en el perímetro (si no, no se consolida) y la
- * contraparte también. El flag `is_intercompany` alcanza por sí solo: es lo
- * que marcó la contadora y no se le lleva la contra.
+ * contraparte también.
+ *
+ * El flag `is_intercompany` alcanza por sí solo MIENTRAS la contraparte no
+ * esté identificada como alguien de afuera. Si el catálogo dice que la
+ * contraparte es un tercero, gana el catálogo: si no, marcar ESPERANZA como
+ * tercero no serviría de nada —sus 35 facturas seguirían saliendo del ingreso
+ * externo por el flag, y el grupo mostraría S/214.071 de venta que no cuenta
+ * en ningún lado (ni eliminada contra un libro del grupo, ni facturada a un
+ * cliente). Ese es el "duplicar/triplicar" al revés: hacer desaparecer plata.
  */
 export function esInterna(mov, perimetro) {
   if (!mov || !perimetro?.ids.has(mov.company_id)) return false;
-  if (mov.is_intercompany === true) return true;
-  return contraparteInterna(mov, perimetro) != null;
+  if (contraparteInterna(mov, perimetro) != null) return true;
+  if (mov.is_intercompany === true) return contraparteFuera(mov, perimetro) == null;
+  return false;
 }
 
 /** Bucket contable de un movimiento: 'ingresos' | 'costos' | 'gastos'. */
@@ -358,6 +422,10 @@ export function consolidar({
   const libros = { ingresos: 0, costos: 0, gastos: 0, nMovs: 0 };
   const fuera  = { ingresos: 0, costos: 0, gastos: 0, nMovs: 0, ids: new Set() };
   const internas = [];
+  // Marcadas "interna" con la contraparte identificada como TERCERO: no se
+  // eliminan (cuentan como operación externa) y van a la pantalla con nombre y
+  // documento, porque la casilla marcada dice otra cosa.
+  const contraTercero = [];
   const otrasMonedas = new Map();
   let anulados = 0;
 
@@ -381,7 +449,11 @@ export function consolidar({
     }
 
     libros[bucket] += a; libros.nMovs++;
-    if (esInterna(m, perimetro)) internas.push(m);
+    if (esInterna(m, perimetro)) { internas.push(m); continue; }
+    if (m.is_intercompany === true) {
+      const idFuera = contraparteFuera(m, perimetro);
+      if (idFuera) contraTercero.push({ mov: m, idFuera });
+    }
   }
 
   const { pares, huerfanas } = emparejarInternas(internas);
@@ -446,6 +518,19 @@ export function consolidar({
   const margenParesDescuadrados = r2(elim.ingresos - elim.costos);
   const internasSinEspejo = r2(huerf.ingresos - huerf.costos - huerf.gastos);
 
+  // Las que quedaron afuera por decisión del catálogo, agrupadas por tercero.
+  const ct = { ingresos: 0, costos: 0 };
+  const ctPorEntidad = new Map();
+  for (const { mov, idFuera } of contraTercero) {
+    const monto = num(mov.amount);
+    if (mov.type === 'income') ct.ingresos += monto; else ct.costos += monto;
+    if (!ctPorEntidad.has(idFuera)) {
+      ctPorEntidad.set(idFuera, { id: idFuera, nombre: nombreDe(idFuera), nMovs: 0, monto: 0 });
+    }
+    const e = ctPorEntidad.get(idFuera);
+    e.nMovs++; e.monto = r2(e.monto + monto);
+  }
+
   return {
     perimetro, moneda,
     libros: libAcum,
@@ -487,6 +572,27 @@ export function consolidar({
           documento: m.document_number || '—',
           tipo: m.type === 'income' ? 'ingreso' : 'egreso',
           monto: r2(m.amount),
+        }))
+        .sort((a, b) => Math.abs(b.monto) - Math.abs(a.monto)),
+    },
+    // Operaciones marcadas como internas cuya contraparte el catálogo llama
+    // TERCERO. No se eliminan: cuentan como ingreso/costo externo del grupo.
+    // Si alguna de esas entidades sí es del grupo, la corrección es marcarla
+    // en Empresas — no tocar factura por factura.
+    contraTerceros: {
+      ingresos: r2(ct.ingresos),
+      costos: r2(ct.costos),
+      nMovs: contraTercero.length,
+      entidades: [...ctPorEntidad.values()].sort((a, b) => b.monto - a.monto),
+      movimientos: contraTercero
+        .map(({ mov, idFuera }) => ({
+          id: mov.id,
+          fecha: mov.date || null,
+          entidad: nombreDe(mov.company_id),
+          contraparte: nombreDe(idFuera) || mov.third_party_name || '—',
+          documento: mov.document_number || '—',
+          tipo: mov.type === 'income' ? 'ingreso' : 'egreso',
+          monto: r2(mov.amount),
         }))
         .sort((a, b) => Math.abs(b.monto) - Math.abs(a.monto)),
     },

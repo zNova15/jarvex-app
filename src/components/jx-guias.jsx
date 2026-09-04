@@ -9,7 +9,7 @@
 // window.__movsBuscarIntent) + window.__navTo.
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
-import { matchFacturaDeGuia, normalizarDoc, clasificarOrigenGuia, facturasQueRequierenGuia,
+import { matchFacturaDeGuia, normalizarDoc, ladosDeGuia, facturasQueRequierenGuia,
          sugerirGuiasParaFactura, indexarVinculos, referenciasDeGuia, coberturaDeGuias } from "../lib/guias.js";
 // Normalizadores canónicos del repo (guias.js es puro y no importa nada: se
 // los inyecta). normInsumo quita tildes/puntuación; normUnidad unifica los
@@ -30,6 +30,9 @@ const ORIGEN_BADGE = {
   emitida:     { label: '↗ Emitida',  cls: 'b-green', title: 'La emitió una empresa del grupo' },
   recibida:    { label: '↘ Recibida', cls: 'b-blue',  title: 'La emitió un proveedor' },
   desconocida: { label: '? Sin RUC',  cls: 'b-gray',  title: 'La guía no tiene RUC de emisor' },
+  // Traslado ENTRE empresas del grupo: una sola fila que vale para los dos
+  // lados. No se duplica a propósito — ver ladosDeGuia() en lib/guias.js.
+  interna:     { label: '⇄ Interna',  cls: 'b-purple', title: 'Traslado entre dos empresas del grupo: la misma guía vale para el que la emitió y para el que la recibió (no se carga dos veces)' },
 };
 
 function GuiasRemisionPage({ showToast }) {
@@ -106,16 +109,44 @@ function GuiasRemisionPage({ showToast }) {
   const guiasDeFactura = (movId) => [...(idxVinc.porFactura.get(movId) || [])]
     .map(gid => guias.find(g => g.id === gid)).filter(Boolean);
   const obraNombre = (id) => (obras || []).find(o => o.id === id)?.nombre_obra || '';
+  const nombreEmpresa = (id) => (companies || []).find(c => c.id === id)?.name || '—';
 
-  // RUCs del grupo → clasificar cada guía como emitida/recibida (derive puro).
+  // Empresas del GRUPO. Un 'tercero' del catálogo (una municipalidad cliente,
+  // o CONSORCIO ESPERANZA / SAMADAY desde el 3-sep) emite guías como cualquier
+  // proveedor: si entrara acá, sus guías se darían por "emitidas por nosotros"
+  // y el matcher solo las buscaría contra ventas, nunca contra la compra.
+  const delGrupo = uM(() => (companies || [])
+    .filter(c => !c.deleted_at && (c.tipo_entidad || 'propia') !== 'tercero'), [companies]);
   const rucsGrupo = uM(() =>
-    new Set((companies || []).filter(c => !c.deleted_at && c.ruc).map(c => normalizarRuc(c.ruc))),
-    [companies]);
+    new Set(delGrupo.filter(c => c.ruc).map(c => normalizarRuc(c.ruc))), [delGrupo]);
+  const companyIdPorRuc = uM(() =>
+    new Map(delGrupo.filter(c => c.ruc).map(c => [normalizarRuc(c.ruc), c.id])), [delGrupo]);
+  const idsGrupo = uM(() => new Set(delGrupo.map(c => c.id)), [delGrupo]);
+
+  // Los DOS lados de cada guía (emisor y destinatario). Un traslado interno
+  // pertenece a las dos empresas: se muestra desde ambas SIN duplicar la fila.
+  const ladosPorGuia = uM(() => {
+    const opts = { companyIdPorRuc, esDelGrupo: (id) => idsGrupo.has(id) };
+    const m = new Map();
+    for (const g of guias) m.set(g.id, ladosDeGuia(g, facturasDeGuia(g), opts));
+    return m;
+  }, [guias, companyIdPorRuc, idsGrupo, idxVinc, movById]);
+  const ladosDe = (g) => ladosPorGuia.get(g.id) || { emisor: null, destinatario: null, interna: false, origen: 'desconocida' };
+  const empresasDe = (g) => { const l = ladosDe(g); return [l.emisor, l.destinatario].filter(Boolean); };
   const origenDe = uM(() => {
     const m = new Map();
-    for (const g of guias) m.set(g.id, clasificarOrigenGuia(g, rucsGrupo));
+    for (const g of guias) m.set(g.id, ladosPorGuia.get(g.id)?.origen || 'desconocida');
     return m;
-  }, [guias, rucsGrupo]);
+  }, [guias, ladosPorGuia]);
+  // Origen RELATIVO a la empresa que se está mirando: la misma guía interna es
+  // "emitida" para el vendedor y "recibida" para el comprador. Sin filtro de
+  // empresa se muestra como interna, que es lo que de verdad es.
+  const origenVisible = (g) => {
+    const l = ladosDe(g);
+    if (!l.interna) return l.origen;
+    if (filtroEmpresa === 'todas') return 'interna';
+    return filtroEmpresa === l.destinatario ? 'recibida' : 'emitida';
+  };
 
   // Opciones comunes del matcher (cercos de emisor y dirección venta/compra).
   const optsGuia = uM(() => {
@@ -157,18 +188,23 @@ function GuiasRemisionPage({ showToast }) {
     return out.sort((a, b) => String(b.mov.date || '').localeCompare(String(a.mov.date || '')));
   }, [idxVinc, movById, guias, movs]);
 
-  // ¿A qué empresa del grupo pertenece la guía? Emitida → por RUC del emisor;
-  // recibida → la empresa de la factura vinculada (fallback g.company_id, que
-  // Captura Mágica solo llena a veces).
-  const empresaDeGuia = (g) => {
-    const origen = origenDe.get(g.id);
-    if (origen === 'emitida') {
-      const ruc = normalizarRuc(g.emisor_ruc);
-      return (companies || []).find(c => c.ruc && normalizarRuc(c.ruc) === ruc)?.id || null;
-    }
+  // ¿A qué empresa(s) del grupo pertenece la guía? Los dos lados salen de
+  // ladosDeGuia; si no pudo resolver ninguno (guía suelta, sin factura), se cae
+  // a g.company_id, que Captura Mágica llena a veces.
+  const empresasDeGuiaFiltro = (g) => {
+    const e = empresasDe(g);
+    if (e.length) return e;
     const mov = facturasDeGuia(g)[0] || null;
-    return mov?.company_id || g.company_id || null;
+    const id = mov?.company_id || g.company_id || null;
+    return id ? [id] : [];
   };
+
+  // La pestaña "Internas" solo existe sin filtro de empresa (con una empresa
+  // elegida, la misma guía se ve desde su lado). Si se elige empresa estando
+  // ahí, la tabla quedaría vacía sin motivo → volver a "Todas".
+  uE(() => {
+    if (tab === 'interna' && filtroEmpresa !== 'todas') setTab('todas');
+  }, [tab, filtroEmpresa]);
 
   const filtradas = uM(() => {
     const qn = q.trim().toLowerCase();
@@ -177,20 +213,23 @@ function GuiasRemisionPage({ showToast }) {
         String(g.serie_correlativo || '').toLowerCase().includes(qn) ||
         String(g.emisor_razon_social || '').toLowerCase().includes(qn) ||
         String(g.doc_referencia || '').toLowerCase().includes(qn))) return false;
-      if (tab !== 'todas' && origenDe.get(g.id) !== tab) return false;
+      if (tab !== 'todas' && origenVisible(g) !== tab) return false;
       if (filtroVinculo === 'vinculadas' && nVinculos(g) === 0) return false;
       if (filtroVinculo === 'sin_vincular' && nVinculos(g) > 0) return false;
       // "Esperando factura": la guía referencia comprobantes que todavía no
       // están cargados (con o sin otras facturas ya vinculadas).
       if (filtroVinculo === 'esperando' && !idsConPendiente.has(g.id)) return false;
-      if (filtroEmpresa !== 'todas' && empresaDeGuia(g) !== filtroEmpresa) return false;
+      // Un traslado interno pertenece a las dos empresas: filtrar por la
+      // compradora tiene que ENCONTRARLO, no esconderlo (era el reclamo: del
+      // lado del comprador la guía parecía no existir).
+      if (filtroEmpresa !== 'todas' && !empresasDeGuiaFiltro(g).includes(filtroEmpresa)) return false;
       if (filtroObra !== 'todas' && g.obra_id !== filtroObra) return false;
       const f = String(g.fecha_emision || g.created_at || '').slice(0, 10);
       if (fDesde && f && f < fDesde) return false;
       if (fHasta && f && f > fHasta) return false;
       return true;
     });
-  }, [guias, q, tab, filtroVinculo, filtroEmpresa, filtroObra, fDesde, fHasta, origenDe, movById, companies, idxVinc, idsConPendiente]);
+  }, [guias, q, tab, filtroVinculo, filtroEmpresa, filtroObra, fDesde, fHasta, origenDe, ladosPorGuia, movById, companies, idxVinc, idsConPendiente]);
 
   // ── Facturas que requieren guía y no la tienen (heurística + override) ──
   // El espejo automático de una venta interco no lleva guía propia (la guía
@@ -368,11 +407,16 @@ function GuiasRemisionPage({ showToast }) {
       </div>
 
       {/* Pestañas de ORIGEN (pedido 31-ago): emitida = el RUC emisor es de una
-          empresa del grupo; recibida = de un proveedor. */}
+          empresa del grupo; recibida = de un proveedor. INTERNAS (3-sep) = el
+          traslado fue entre dos empresas del grupo, así que la guía es de las
+          dos: mientras no se filtre por empresa se muestra como interna, y al
+          elegir una empresa pasa a verse desde SU lado (emitida o recibida). */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
-        {[['todas', 'Todas'], ['emitida', '↗ Emitidas (nuestras)'], ['recibida', '↘ Recibidas (proveedores)']].map(([v, l]) => (
+        {[['todas', 'Todas'], ['emitida', '↗ Emitidas (nuestras)'], ['recibida', '↘ Recibidas (proveedores)'],
+          ...(guias.some(g => ladosDe(g).interna) && filtroEmpresa === 'todas'
+            ? [['interna', '⇄ Internas del grupo']] : [])].map(([v, l]) => (
           <button key={v} className={`btn btn-sm ${tab === v ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab(v)}>
-            {l} <span style={{ opacity: 0.7, fontSize: 10 }}>({v === 'todas' ? guias.length : guias.filter(g => origenDe.get(g.id) === v).length})</span>
+            {l} <span style={{ opacity: 0.7, fontSize: 10 }}>({v === 'todas' ? guias.length : guias.filter(g => origenVisible(g) === v).length})</span>
           </button>
         ))}
       </div>
@@ -445,7 +489,7 @@ function GuiasRemisionPage({ showToast }) {
           </div>
           <div style={{ padding: '8px 14px', display: 'grid', gap: 5 }}>
             {guiasConPendiente.slice(0, 20).map(g => {
-              const o = ORIGEN_BADGE[origenDe.get(g.id)] || ORIGEN_BADGE.desconocida;
+              const o = ORIGEN_BADGE[origenVisible(g)] || ORIGEN_BADGE.desconocida;
               return (
                 <div key={g.id} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', paddingBottom: 4, borderBottom: '1px solid var(--border)' }}>
                   <span style={{ fontWeight: 700, fontSize: 11.5 }}>{g.serie_correlativo || '(sin serie)'}</span>
@@ -616,8 +660,12 @@ function GuiasRemisionPage({ showToast }) {
                     <tr key={g.id}>
                       <td style={{ fontWeight: 600, fontSize: 12 }}>{g.serie_correlativo || '—'}
                         <div style={{ fontSize: 10, color: 'var(--tm)' }}>{g.fecha_emision || ''}</div>
-                        {(() => { const o = ORIGEN_BADGE[origenDe.get(g.id)] || ORIGEN_BADGE.desconocida;
-                          return <span className={`badge ${o.cls}`} style={{ fontSize: 8.5 }} title={o.title}>{o.label}</span>; })()}
+                        {(() => { const o = ORIGEN_BADGE[origenVisible(g)] || ORIGEN_BADGE.desconocida;
+                          const l = ladosDe(g);
+                          const detalle = l.interna
+                            ? `${o.title} · ${nombreEmpresa(l.emisor)} → ${nombreEmpresa(l.destinatario)}`
+                            : o.title;
+                          return <span className={`badge ${o.cls}`} style={{ fontSize: 8.5 }} title={detalle}>{o.label}</span>; })()}
                       </td>
                       <td style={{ fontSize: 11.5 }}>{g.emisor_razon_social || '—'}
                         {g.obra_id && <div style={{ fontSize: 10, color: 'var(--tm)' }}>🏗 {String(obraNombre(g.obra_id)).slice(0, 40)}</div>}

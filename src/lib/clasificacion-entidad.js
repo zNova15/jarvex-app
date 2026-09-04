@@ -128,18 +128,29 @@ export function revisarCatalogo({ companies = [], obras = [], movsPorCompany = {
     const suyas = obrasVivas.filter(o => o.ejecutora_company_id === c.id);
     const r = sugerirTipoEntidad(c, suyas, movsPorCompany[c.id] || 0);
     const actual = c.tipo_entidad || 'propia';
+    // 'tercero' y 'consorcio' NO son el default de la columna: alguien los
+    // eligió. La heurística no vuelve a proponer lo contrario sobre una
+    // decisión tomada — si no, CONSORCIO ESPERANZA y CONSORCIO SAMADAY, que
+    // Gabriel decidió tratar como terceros el 3-sep, reaparecerían para
+    // siempre como "cambiar a consorcio", y un click distraído movería el
+    // consolidado del grupo en S/253.554,82. Cambiarlo sigue siendo posible:
+    // se hace a mano desde la pantalla, que es donde vive la decisión.
+    const decidido = actual === 'tercero' || actual === 'consorcio';
     return {
       company: c,
       actual,
       sugerido: r.sugerido,
       confianza: r.confianza,
-      motivo: r.motivo,
+      motivo: decidido && r.sugerido && r.sugerido !== actual
+        ? `${r.motivo} Aun así el catálogo la tiene como ${actual}: manda esa decisión.`
+        : r.motivo,
       evidencia: r.evidencia,
       obrasEjecutora: suyas,
+      decidido,
       // Sin sugerencia no hay cambio propuesto: se deja como está hasta que
       // una persona decida.
-      cambia: r.sugerido != null && r.sugerido !== actual,
-      requiereDecision: r.sugerido == null,
+      cambia: !decidido && r.sugerido != null && r.sugerido !== actual,
+      requiereDecision: !decidido && r.sugerido == null,
     };
   });
 

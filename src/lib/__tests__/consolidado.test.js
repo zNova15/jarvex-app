@@ -131,21 +131,97 @@ describe('consolidado — el consorcio es contraparte eliminable', () => {
     expect(r.sinEspejo.nMovs).toBe(1);
   });
 
-  it('un consorcio del grupo mal clasificado como tercero entra por evidencia', () => {
-    // CONSORCIO ESPERANZA: Gabriel confirmó que es del grupo y sigue en
-    // tipo_entidad='tercero'. Sus operaciones ya vienen marcadas.
-    const ESP = { id: 'esp', name: 'CONSORCIO ESPERANZA', ruc: '20611547367', tipo_entidad: 'tercero' };
+  it('una entidad SIN clasificar en el catálogo entra por evidencia', () => {
+    // El default de tipo_entidad es 'propia': una fila que nadie tocó y ya
+    // tiene operaciones marcadas como internas se consolida y se lista para
+    // que alguien la clasifique.
+    const NUEVA = { id: 'nueva', name: 'EMPRESA SIN CLASIFICAR', ruc: '20999000111' };
     const movs = [
       mov({ id: 'y1', company_id: 'a', type: 'income', amount: 96000, is_intercompany: true,
-        related_company_id: 'esp', document_number: 'E001-60' }),
-      mov({ id: 'y2', company_id: 'esp', type: 'cost', amount: 96000, is_intercompany: true,
+        related_company_id: 'nueva', document_number: 'E001-60' }),
+      mov({ id: 'y2', company_id: 'nueva', type: 'cost', amount: 96000, is_intercompany: true,
         related_company_id: 'a', related_movement_id: 'y1', document_number: 'E001-60' }),
     ];
-    const r = consolidar({ companies: [A, B, C, ESP], consorcios: [], socios: [], movs });
-    expect(r.perimetro.ids.has('esp')).toBe(true);
-    expect(r.perimetro.aClasificar.map(e => e.nombre)).toContain('CONSORCIO ESPERANZA');
+    const r = consolidar({ companies: [A, B, C, NUEVA], consorcios: [], socios: [], movs });
+    expect(r.perimetro.ids.has('nueva')).toBe(true);
     expect(r.eliminaciones.nPares).toBe(1);
     expect(r.consolidado.ingresos).toBe(0);
+  });
+});
+
+// ── El catálogo manda sobre la casilla marcada (decisión Gabriel 3-sep) ──
+//
+// CONSORCIO ESPERANZA y CONSORCIO SAMADAY ejecutaron su obra y quedaron
+// abiertos. Se los trata como TERCEROS para no arrastrar la migración de sus
+// socias. Consecuencia contable, medida en producción: sus 35 facturas
+// recibidas del grupo (S/214.071) dejan de eliminarse y pasan a ser ingreso
+// externo, y los gastos de sus libros salen del consolidado.
+describe('consolidado — un tercero del catálogo NO entra por evidencia', () => {
+  const ESP = { id: 'esp', name: 'CONSORCIO ESPERANZA', ruc: '20611547367', tipo_entidad: 'tercero' };
+  const movs = [
+    // A le vende a ESPERANZA, marcada como interna por la contadora.
+    mov({ id: 'y1', company_id: 'a', type: 'income', amount: 96000, is_intercompany: true,
+      related_company_id: 'esp', document_number: 'E001-60' }),
+    // El espejo en el libro de ESPERANZA.
+    mov({ id: 'y2', company_id: 'esp', type: 'cost', amount: 96000, is_intercompany: true,
+      related_company_id: 'a', related_movement_id: 'y1', document_number: 'E001-60' }),
+    // Y un gasto propio de ESPERANZA contra un proveedor de la calle.
+    mov({ id: 'y3', company_id: 'esp', type: 'expense', amount: 1500,
+      third_party_ruc: '20999999999', document_number: 'F900-1' }),
+  ];
+  const r = consolidar({ companies: [A, B, C, ESP], consorcios: [], socios: [], movs });
+
+  it('queda fuera del perímetro aunque tenga operaciones marcadas internas', () => {
+    expect(r.perimetro.ids.has('esp')).toBe(false);
+    expect(r.perimetro.aClasificar.map(e => e.nombre)).not.toContain('CONSORCIO ESPERANZA');
+    expect(r.perimetro.terceros.map(e => e.nombre)).toContain('CONSORCIO ESPERANZA');
+  });
+
+  it('la venta deja de eliminarse: es ingreso EXTERNO del grupo', () => {
+    expect(r.eliminaciones.nPares).toBe(0);
+    expect(r.sinEspejo.nMovs).toBe(0);          // no es una huérfana: es una venta real
+    expect(r.consolidado.ingresos).toBe(96000);
+    expect(r.consolidado.utilidad).toBe(96000);
+  });
+
+  it('sus libros salen del consolidado y se informan aparte', () => {
+    expect(r.fueraDePerimetro.nMovs).toBe(2);   // el espejo y el gasto propio
+    expect(r.fueraDePerimetro.entidades.map(e => e.nombre)).toContain('CONSORCIO ESPERANZA');
+    expect(r.consolidado.gastos).toBe(0);
+  });
+
+  it('la casilla "interna" que quedó sin efecto se muestra, no se ignora en silencio', () => {
+    expect(r.contraTerceros.nMovs).toBe(1);
+    expect(r.contraTerceros.ingresos).toBe(96000);
+    expect(r.contraTerceros.entidades[0].nombre).toBe('CONSORCIO ESPERANZA');
+    expect(r.contraTerceros.movimientos[0].documento).toBe('E001-60');
+  });
+
+  it('un proveedor de la calle NO desarma el flag: ahí el catálogo no sabe nada', () => {
+    // La contraparte no está en `companies`: no hay decisión que respetar, y
+    // la marca de la contadora sigue mandando (queda como interna sin espejo).
+    const sueltos = [
+      mov({ id: 'w1', company_id: 'a', type: 'income', amount: 500, is_intercompany: true,
+        third_party_ruc: '20888888888', third_party_name: 'DESCONOCIDA', document_number: 'E001-70' }),
+    ];
+    const r2 = consolidar({ companies: [A, B, C, ESP], consorcios: [], socios: [], movs: sueltos });
+    expect(r2.consolidado.ingresos).toBe(0);
+    expect(r2.sinEspejo.nMovs).toBe(1);
+    expect(r2.contraTerceros.nMovs).toBe(0);
+  });
+
+  it('ser socia de un consorcio del grupo SÍ gana sobre el catálogo', () => {
+    // Un hecho duro (una fila de consorcio_socios) no es una casilla marcada
+    // al vuelo: PERSEIDAS es 'tercero' en el catálogo y aun así se consolida.
+    const PER = { id: 'per', name: 'PERSEIDAS', ruc: '20610241191', tipo_entidad: 'tercero' };
+    const r3 = consolidar({
+      companies: [A, B, C, PER], consorcios: [], socios: [{ company_id: 'per', consorcio_id: 'k' }],
+      movs: [mov({ id: 'v1', company_id: 'a', type: 'income', amount: 25000, is_intercompany: true,
+        related_company_id: 'per', document_number: 'E001-80' })],
+    });
+    expect(r3.perimetro.ids.has('per')).toBe(true);
+    expect(r3.consolidado.ingresos).toBe(0);   // venta interna, no ingreso del grupo
+    expect(r3.contraTerceros.nMovs).toBe(0);
   });
 });
 

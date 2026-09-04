@@ -949,7 +949,7 @@ function MovimientosContablesPage({ showToast }) {
   const [bancMetodo, setBancMetodo] = uSC('transferencia');
   const [bancRef, setBancRef] = uSC('');
   const [partesPorMov, setPartesPorMov] = uSC(() => new Map());   // mov_id → [{monto,...}]
-  const [guiasPorMov, setGuiasPorMov] = uSC(() => new Map());      // mov_id → [guias]
+  const [guiasPorMovRaw, setGuiasPorMovRaw] = uSC(() => new Map());  // mov_id → [guias] (vínculo directo)
   const [bancObra, setBancObra] = uSC('');
   const [bancSaving, setBancSaving] = uSC(false);
   // Bancarización en TRI-ESTADO (pedido contadoras 31-ago): reemplaza al viejo
@@ -1991,19 +1991,55 @@ function MovimientosContablesPage({ showToast }) {
       } catch { /* Dexie viejo sin la tabla (pre-v43) */ }
       try {
         const _esP = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
-        const gs = await window.__db.guias_remision.filter(g => !g.deleted_at && g.accounting_movement_id && (_esP ? g.demo === true : g.demo !== true)).toArray();
+        const gs = await window.__db.guias_remision.filter(g => !g.deleted_at && (_esP ? g.demo === true : g.demo !== true)).toArray();
         if (cancel) return;
         const gm = new Map();
-        for (const g of gs) { const a = gm.get(g.accounting_movement_id) || []; a.push(g); gm.set(g.accounting_movement_id, a); }
-        setGuiasPorMov(gm);
+        const porId = new Map(gs.map(g => [g.id, g]));
+        const meter = (movId, g) => {
+          if (!movId || !g) return;
+          const a = gm.get(movId) || [];
+          if (a.some(x => x.id === g.id)) return;
+          a.push(g); gm.set(movId, a);
+        };
+        // La fuente de verdad es guia_factura (mig 165, N:M): una guía puede
+        // amparar varias facturas y hasta ahora el chip solo salía en la
+        // PRIMERA (la que espeja la columna vieja).
+        try {
+          const vs = await window.__db.guia_factura
+            .filter(v => !v.deleted_at && (_esP ? v.demo === true : v.demo !== true)).toArray();
+          for (const v of vs) meter(v.accounting_movement_id, porId.get(v.guia_id));
+        } catch { /* Dexie viejo sin la tabla */ }
+        for (const g of gs) meter(g.accounting_movement_id, g);
+        setGuiasPorMovRaw(gm);
       } catch {}
     };
     load();
-    const on = (e) => { const t = e?.detail?.tabla; if (!t || t === 'pagos_partes' || t === 'guias_remision' || t === 'depositos_bancarizacion') load(); };
+    const on = (e) => { const t = e?.detail?.tabla; if (!t || t === 'pagos_partes' || t === 'guias_remision' || t === 'guia_factura' || t === 'depositos_bancarizacion') load(); };
     window.addEventListener('jx_data_changed', on);
     window.addEventListener('jarvex_master_updated', on);
     return () => { cancel = true; window.removeEventListener('jx_data_changed', on); window.removeEventListener('jarvex_master_updated', on); };
   }, []);
+
+  // La guía de una operación INTERNA vale para los dos lados. La carga quien la
+  // emitió y queda vinculada a SU venta; el comprador tiene la compra espejo
+  // (related_movement_id → la venta) y hasta ahora no veía ninguna guía, como
+  // si el traslado no existiera. Se muestra la MISMA fila desde su lado: crear
+  // una segunda guía duplicaría el traslado (y con él el panel "requieren
+  // guía" y el cruce con almacén) sobre una operación que en contabilidad ya
+  // está registrada dos veces a propósito.
+  const guiasPorMov = uMC(() => {
+    const out = new Map(guiasPorMovRaw);
+    for (const m of movs || []) {
+      if (!m || m.deleted_at || !m.related_movement_id) continue;
+      const delOtroLado = guiasPorMovRaw.get(m.related_movement_id);
+      if (!delOtroLado?.length) continue;
+      const ya = out.get(m.id) || [];
+      const ids = new Set(ya.map(g => g.id));
+      const suma = delOtroLado.filter(g => !ids.has(g.id)).map(g => ({ ...g, _espejo: true }));
+      if (suma.length) out.set(m.id, [...ya, ...suma]);
+    }
+    return out;
+  }, [guiasPorMovRaw, movs]);
 
   // Deep-link desde Guías de Remisión: pre-cargar la búsqueda con el documento.
   uEC(() => {
@@ -2805,8 +2841,10 @@ function MovimientosContablesPage({ showToast }) {
                             {/* Click = abrir el PDF de la guía AL TOQUE (pedido 31-ago). Solo
                                 contables: al resto la RLS le niega las evidencias guia_remision
                                 (mig 143) — para ellos el click navega a la página Guías. */}
-                            <button className="btn btn-ghost btn-xs" style={{ padding:'1px 4px', fontSize:9.5, color:'var(--blue, #3498DB)' }}
-                              title={puedeVerBanc ? 'Ver el PDF de la guía de remisión' : 'Ir a la guía de remisión'}
+                            <button className="btn btn-ghost btn-xs" style={{ padding:'1px 4px', fontSize:9.5, color: g._espejo ? 'var(--purple, #9B59B6)' : 'var(--blue, #3498DB)' }}
+                              title={g._espejo
+                                ? 'Guía del traslado interno — la emitió la otra empresa del par y ampara esta compra (es la misma guía, no una copia)'
+                                : (puedeVerBanc ? 'Ver el PDF de la guía de remisión' : 'Ir a la guía de remisión')}
                               onClick={async () => {
                                 if (puedeVerBanc && g.evidencia_id) {
                                   try {
@@ -2830,7 +2868,7 @@ function MovimientosContablesPage({ showToast }) {
                                 window.__guiasFocusIntent = g.serie_correlativo || '';
                                 window.__navTo?.('guias-remision');
                               }}>
-                              📄 {g.serie_correlativo || 'guía'}
+                              {g._espejo ? '⇄' : '📄'} {g.serie_correlativo || 'guía'}
                             </button>
                             {puedeVerBanc && (
                               <button className="btn btn-ghost btn-xs" style={{ padding:'1px 3px', fontSize:9.5, color:'var(--tm)' }}
@@ -5185,12 +5223,46 @@ function ConsolidadoPage({ showToast }) {
         </div>
       )}
 
+      {/* ── MARCADAS INTERNAS CONTRA UN TERCERO ────────────────── */}
+      {r.contraTerceros.nMovs > 0 && (
+        <div className="card card-p" style={{ marginBottom: 12, borderLeft: '3px solid var(--blue)' }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--tp)', marginBottom: 4 }}>
+            {r.contraTerceros.nMovs} operación(es) marcadas como internas contra un TERCERO ·{' '}
+            {fmtCur(r.contraTerceros.ingresos + r.contraTerceros.costos, moneda)}
+          </div>
+          <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 8 }}>
+            El catálogo dice que {r.contraTerceros.entidades.map(e => e.nombre).join(', ')}{' '}
+            {r.contraTerceros.entidades.length === 1 ? 'es un tercero' : 'son terceros'}, así que estas facturas{' '}
+            <strong>no se eliminan</strong>: cuentan como operación externa del grupo aunque tengan la casilla
+            &quot;interna&quot; marcada. Manda el catálogo, no la casilla. Si alguna de esas entidades sí es del
+            grupo, se corrige marcándola en <strong>Empresas → Revisar clasificación</strong> — no factura por factura.
+          </div>
+          <div style={{ display: 'grid', gap: 6 }}>
+            {r.contraTerceros.movimientos.slice(0, 25).map((m) => (
+              <div key={m.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 11.5 }}>
+                <span style={{ color: 'var(--ts)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <strong>{m.documento}</strong> · {m.fecha || 's/f'} · {m.entidad} → {m.contraparte}
+                </span>
+                <span style={{ color: 'var(--tm)', fontWeight: 700, fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
+                  {m.tipo === 'ingreso' ? 'ingreso externo' : 'costo externo'} · {fmtCur(m.monto, moneda)}
+                </span>
+              </div>
+            ))}
+            {r.contraTerceros.movimientos.length > 25 && (
+              <div style={{ fontSize: 11, color: 'var(--tm)' }}>
+                … y {r.contraTerceros.movimientos.length - 25} más.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* ── PERÍMETRO ──────────────────────────────────────────── */}
       {r.perimetro.aClasificar.length > 0 && (
         <div className="card card-p" style={{ marginBottom: 12, borderLeft: '3px solid var(--amber)', fontSize: 12, color: 'var(--ts)' }}>
           <strong style={{ color: 'var(--amber)' }}>Falta clasificar {r.perimetro.aClasificar.length} entidad(es):</strong>{' '}
           {r.perimetro.aClasificar.map(e => e.nombre).join(', ')}. Se consolidan porque ya tienen operaciones
-          marcadas como internas, pero el catálogo las sigue llamando terceros. Marcalas en Empresas → Revisar
+          marcadas como internas, pero nadie las clasificó todavía en el catálogo. Marcalas en Empresas → Revisar
           clasificación para que el perímetro no dependa de cómo se cargó cada factura.
         </div>
       )}

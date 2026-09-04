@@ -55,7 +55,12 @@ const { useState: uSCM, useMemo: uMCM, useEffect: uECM, useRef: uRCM } = React;
 // lo que la persona vio en pantalla.
 function candidatasDeGuia(r, movs, companies) {
   const vivas = (companies || []).filter(c => !c.deleted_at);
-  const rucsGrupo = new Set(vivas.filter(c => c.ruc).map(c => normalizarRuc(c.ruc)));
+  // Solo propias y consorcios: un 'tercero' del catálogo (municipalidad
+  // cliente, o CONSORCIO ESPERANZA / SAMADAY desde el 3-sep) emite guías como
+  // cualquier proveedor. Contarlo como "del grupo" haría que su guía se
+  // buscara solo contra VENTAS y nunca encontrara la compra que ampara.
+  const rucsGrupo = new Set(vivas.filter(c => c.ruc && (c.tipo_entidad || 'propia') !== 'tercero')
+    .map(c => normalizarRuc(c.ruc)));
   const rucPorCompany = new Map(vivas.map(c => [c.id, normalizarRuc(c.ruc)]));
   const guia = { id: null, doc_referencia: r?.guia_doc_referencia, emisor_ruc: r?.proveedor_ruc };
   const opts = {
@@ -1303,7 +1308,9 @@ function CapturaMagicaPage({ showToast }) {
     const vinculos = await window.__db.guia_factura
       .filter(v => !v.deleted_at && (esPrueba ? v.demo === true : v.demo !== true)).toArray();
     const vivas = (companies || []).filter(c => !c.deleted_at);
-    const rucsGrupo = new Set(vivas.filter(c => c.ruc).map(c => normalizarRuc(c.ruc)));
+    // Mismo cerco que candidatasDeGuia: 'tercero' del catálogo NO es del grupo.
+    const rucsGrupo = new Set(vivas.filter(c => c.ruc && (c.tipo_entidad || 'propia') !== 'tercero')
+      .map(c => normalizarRuc(c.ruc)));
     const rucPorCompany = new Map(vivas.map(c => [c.id, normalizarRuc(c.ruc)]));
 
     const esperando = guiasEsperandoFactura(mov, guias, {

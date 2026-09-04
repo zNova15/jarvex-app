@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { normalizarDoc, normalizarDocs, matchFacturaDeGuia, sugerirFacturasParaGuia,
          sugerirGuiasParaFactura, indexarVinculos, referenciasDeGuia, referenciasPendientes,
-         guiasEsperandoFactura, coberturaDeGuias } from '../guias.js';
+         guiasEsperandoFactura, coberturaDeGuias, ladosDeGuia, empresasDeGuia } from '../guias.js';
 
 describe('normalizarDoc', () => {
   it('parsea F001-025131 quitando ceros del correlativo', () => {
@@ -392,5 +392,84 @@ describe('guiasEsperandoFactura — el cierre automático exige emisor confirmad
     const guias = [{ id: 'g1', doc_referencia: 'F001-125', emisor_ruc: '' }];
     const nueva = { id: 'f3', clase: 'compra', document_number: 'F001-000125', third_party_ruc: '20536265644' };
     expect(guiasEsperandoFactura(nueva, guias, {})).toEqual([]);
+  });
+});
+
+
+// ── Los dos lados de una guía interna (pedido Gabriel 3-sep-2026) ──────
+describe('ladosDeGuia — un traslado interno se ve de los dos lados', () => {
+  const GASOMI = 'g-id', JHEENSEG = 'j-id', ESPERANZA = 'e-id';
+  const companyIdPorRuc = new Map([['20600097726', GASOMI], ['20610349359', JHEENSEG]]);
+  const esDelGrupo = (id) => id === GASOMI || id === JHEENSEG;
+  const opts = { companyIdPorRuc, esDelGrupo };
+
+  // GASOMI le vende a JHEENSEG: la venta del vendedor y su compra espejo.
+  const venta = { id: 'v1', company_id: GASOMI, clase: 'venta', type: 'income',
+    document_number: 'E001-10', related_company_id: JHEENSEG, is_intercompany: true };
+  const compraEspejo = { id: 'c1', company_id: JHEENSEG, clase: 'compra', type: 'cost',
+    document_number: 'E001-10', related_company_id: GASOMI, related_movement_id: 'v1', is_intercompany: true };
+  const guiaInterna = { id: 'g1', emisor_ruc: '20600097726', serie_correlativo: 'T001-309',
+    doc_referencia: 'E001-10' };
+
+  it('resuelve emisor y destinatario, y la marca interna', () => {
+    const l = ladosDeGuia(guiaInterna, [venta], opts);
+    expect(l.emisor).toBe(GASOMI);
+    expect(l.destinatario).toBe(JHEENSEG);
+    expect(l.interna).toBe(true);
+    expect(l.origen).toBe('emitida');
+  });
+
+  it('la guía pertenece a las DOS empresas: el filtro del comprador la encuentra', () => {
+    const empresas = empresasDeGuia(guiaInterna, [venta], opts);
+    expect(empresas).toContain(GASOMI);
+    expect(empresas).toContain(JHEENSEG);
+    expect(empresas).toHaveLength(2);
+  });
+
+  it('una venta a un cliente EXTERNO tiene un solo lado', () => {
+    const ventaExterna = { ...venta, id: 'v2', related_company_id: null, is_intercompany: false,
+      third_party_ruc: '20143625681' };
+    const l = ladosDeGuia({ ...guiaInterna, id: 'g2' }, [ventaExterna], opts);
+    expect(l.emisor).toBe(GASOMI);
+    expect(l.destinatario).toBeNull();
+    expect(l.interna).toBe(false);
+  });
+
+  it('una venta a un TERCERO del catálogo tampoco es interna', () => {
+    // ESPERANZA pasó a tratarse como tercero: su guía no tiene segundo lado
+    // del grupo aunque la factura tenga related_company_id.
+    const ventaEsp = { ...venta, id: 'v3', related_company_id: ESPERANZA };
+    const l = ladosDeGuia({ ...guiaInterna, id: 'g3' }, [ventaEsp], opts);
+    expect(l.destinatario).toBeNull();
+    expect(l.interna).toBe(false);
+    expect(empresasDeGuia({ ...guiaInterna, id: 'g3' }, [ventaEsp], opts)).toEqual([GASOMI]);
+  });
+
+  it('una guía RECIBIDA de un proveedor pertenece a quien compró', () => {
+    const guiaProv = { id: 'g4', emisor_ruc: '20536265644', serie_correlativo: 'T002-8',
+      doc_referencia: 'F001-500' };
+    const compra = { id: 'c9', company_id: JHEENSEG, clase: 'compra', type: 'cost',
+      document_number: 'F001-500', third_party_ruc: '20536265644' };
+    const l = ladosDeGuia(guiaProv, [compra], opts);
+    expect(l.origen).toBe('recibida');
+    expect(l.emisor).toBeNull();
+    expect(l.destinatario).toBe(JHEENSEG);
+    expect(l.interna).toBe(false);
+  });
+
+  it('el lado del comprador sale de la VENTA, no de la compra espejo', () => {
+    // Si alguien vinculara la guía también a la compra espejo, el resultado
+    // tiene que ser el mismo par de empresas — nunca tres lados ni un doble.
+    const l = ladosDeGuia(guiaInterna, [venta, compraEspejo], opts);
+    expect(l.emisor).toBe(GASOMI);
+    expect(l.destinatario).toBe(JHEENSEG);
+    expect(empresasDeGuia(guiaInterna, [venta, compraEspejo], opts)).toHaveLength(2);
+  });
+
+  it('sin facturas vinculadas queda con un lado solo (no inventa el otro)', () => {
+    const l = ladosDeGuia(guiaInterna, [], opts);
+    expect(l.emisor).toBe(GASOMI);
+    expect(l.destinatario).toBeNull();
+    expect(l.interna).toBe(false);
   });
 });
