@@ -7,6 +7,7 @@ import { getEmpresaActivaId, EMPRESA_ACTIVA_EVENT } from "./lib/empresa-activa.j
 import { esPaginaDeEmpresa } from "./lib/desglose-empresa.js";
 import { cargarObrasAsignadas } from "./lib/obras-asignadas.js";
 import { tomarPaginaTrasCambioDeTema } from "./lib/tema.js";
+import { empujarHistorial, sacarHistorial, puedeVolver } from "./lib/nav-historial.js";
 
 // Sección a la que volver tras el reload por cambio de tema. Se lee (y consume)
 // UNA vez por carga de página, acá a nivel de módulo: dentro de un useState
@@ -391,7 +392,7 @@ function LoginScreen({ onLogin }) {
 }
 
 // ── HEADER BAR ────────────────────────────────────────────
-function Header({ page, plano = 'obra', onInicio, onToggleSidebar, onLogout, profile, obraActiva, syncStatus, onSync, isMobile, notifs: notifsProp }) {
+function Header({ page, plano = 'obra', onInicio, onVolver, puedeVolver, onToggleSidebar, onLogout, profile, obraActiva, syncStatus, onSync, isMobile, notifs: notifsProp }) {
   const pageLabels = {
     inicio:'Inicio',
     dashboard:'Dashboard',obras:'Obras / Proyectos',reportes:'Reportes',
@@ -489,10 +490,16 @@ function Header({ page, plano = 'obra', onInicio, onToggleSidebar, onLogout, pro
       {page !== 'inicio' && (
         <button onClick={onToggleSidebar} className="btn btn-ghost btn-icon" aria-label="Abrir menú"><JxIcon name="menu" size={16}/></button>
       )}
-      {page !== 'inicio' && onInicio && profile?.rol !== 'campo' && (
-        <button onClick={onInicio} className="btn btn-ghost btn-sm" title="Volver al inicio"
+      {page !== 'inicio' && puedeVolver && onVolver && profile?.rol !== 'campo' && (
+        <button onClick={onVolver} className="btn btn-ghost btn-sm" title="Volver a la pantalla anterior"
                 style={{ display:'flex', alignItems:'center', gap:4, color:'var(--ts)', flexShrink:0 }}>
-          <JxIcon name="chevL" size={14}/>{!isMobile && 'Inicio'}
+          <JxIcon name="chevL" size={14}/>{!isMobile && 'Volver'}
+        </button>
+      )}
+      {page !== 'inicio' && onInicio && profile?.rol !== 'campo' && (
+        <button onClick={onInicio} className="btn btn-ghost btn-sm" title="Ir al inicio"
+                style={{ display:'flex', alignItems:'center', gap:4, color:'var(--ts)', flexShrink:0 }}>
+          <JxIcon name="dashboard" size={14}/>{!isMobile && 'Inicio'}
         </button>
       )}
       <div style={{ fontSize: isMobile ? 13 : 14, fontWeight:600, color:'var(--tp)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', minWidth:0 }}>{pageLabels[page] || page}</div>
@@ -911,7 +918,28 @@ function App() {
   // el workspace de obra Y en el área general de contabilidad). El sidebar pasa el
   // plano del ítem clickeado; null = usar planoDe(page).
   const [navPlano, setNavPlano]     = uSA(__volverTrasTema?.plano || null);
-  const irAPagina = React.useCallback((p, planoItem) => { setPage(p); setNavPlano(planoItem || null); }, []);
+  // Historial de navegación (src/lib/nav-historial.js) — el botón «← Volver»
+  // del Header. UN solo punto de entrada (irAPagina) cubre TODA la app: el
+  // sidebar, los atajos, los CustomEvents cross-página y el hash pasan todos
+  // por acá, así que empujar la pantalla que se deja alcanza sin tocar cada
+  // pantalla una por una. No sobrevive a un F5 (arranca en []) a propósito:
+  // es estado de sesión de navegación, no de negocio.
+  const [navHistorial, setNavHistorial] = uSA([]);
+  // OJO StrictMode: `setNavHistorial` se llama SUELTA acá, nunca anidada
+  // dentro del updater de otro setState — su propio updater (empujarHistorial)
+  // es puro, así que el doble-invoke de dev de React no duplica la entrada.
+  const irAPagina = React.useCallback((p, planoItem) => {
+    if (p !== page) setNavHistorial(h => empujarHistorial(h, { page, plano: navPlano }));
+    setPage(p);
+    setNavPlano(planoItem || null);
+  }, [page, navPlano]);
+  const volver = React.useCallback(() => {
+    const { entrada, pila } = sacarHistorial(navHistorial);
+    if (!entrada) return;
+    setPage(entrada.page);
+    setNavPlano(entrada.plano || null);
+    setNavHistorial(pila);
+  }, [navHistorial]);
   window.__navTo = (p, plano) => irAPagina(p, plano); // navegación programática (sin plano → resetea el override)
   window.__pageActual = page;        // lo lee cambiarTema() para volver acá tras recargar
   window.__navPlanoActual = navPlano;
@@ -1355,6 +1383,8 @@ function App() {
         <Header page={page}
                 plano={planoActual}
                 onInicio={()=>irAPagina('inicio')}
+                onVolver={volver}
+                puedeVolver={puedeVolver(navHistorial)}
                 onToggleSidebar={()=>setCollapsed(c=>!c)}
                 onLogout={()=>auth.logout()}
                 profile={auth.profile}

@@ -120,8 +120,18 @@ export const GRUPOS_TRABAJO = [
     // herramientas que habíamos creado, que era de trazabilidad, que era para
     // hacer un análisis de insumos». Un solo grupo: la plata de la obra y las
     // herramientas para leerla.
+    //
+    // 'intercompany' y 'ordenes-intercompany' ENTRARON ACÁ (tanda 4, D1).
+    // Vivían en el bloque general de Contabilidad —al lado de Consolidado—
+    // pero una jugada intercompany es de una obra concreta, no del grupo.
+    // Gabriel, 4-sep-2026: «eso no creo que sería buena idea que se mantenga
+    // aquí, porque eso sería, más que todo, ya dentro de las obras […] lo que
+    // sí me gusta es que esté el consolidado». El panel de una empresa sigue
+    // ofreciendo una vista de lo suyo (desglose-empresa.js, sin tocar): arma
+    // la jugada la obra, la mira también la empresa.
     desc: 'Los movimientos del consorcio en esta obra, y las herramientas para analizarlos',
-    items: ['movimientos-contables', 'conciliacion-insumos', 'pagos', 'trazabilidad'],
+    items: ['movimientos-contables', 'conciliacion-insumos', 'pagos', 'trazabilidad',
+      'intercompany', 'ordenes-intercompany'],
   },
 ];
 

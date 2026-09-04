@@ -22,15 +22,21 @@ export const GENERAL_ITEMS = new Set([
   // Flujo de caja/proyectado son por-empresa (cronograma_pagos no tiene obra_id).
   // 'trazabilidad' YA NO está acá: la cadena intercompany es de UNA obra
   // (tanda 2, entrega B) → plano obra, dentro del workspace del trabajo.
+  // 'intercompany' y 'ordenes-intercompany' TAMPOCO (tanda 4, D1): el mismo
+  // motivo — «las jugadas intercompany […] ya dentro de las obras» (Gabriel,
+  // 4-sep-2026). Quedan como ítems DUALES: plano 'obra' por defecto (el
+  // workspace del trabajo, en desglose-obra.js) y el panel de una empresa los
+  // sigue abriendo con override explícito a 'general' (misma mecánica que
+  // 'movimientos-contables').
   // 'contabilidad' es el BLOQUE principal: el resumen de la contabilidad de
   // cada entidad (empresas y trabajos) con el vínculo a cada una (tanda 2D).
-  'empresas', 'contabilidad', 'cont-dashboard', 'intercompany', 'consolidado',
+  'empresas', 'contabilidad', 'cont-dashboard', 'consolidado',
   // Un bien o servicio NO pertenece a ninguna obra: si no está acá, la app le
   // exige obra activa para abrirlo.
   'bienes-servicios',
   'cuentas-bancarias', 'plan-cuentas', 'libro-diario', 'balance-general',
   'estado-resultados', 'comprobantes', 'libros-electronicos', 'config-sunat',
-  'comparativo-periodos', 'flujo-caja', 'flujo-proyectado', 'compras-categoria', 'ordenes-intercompany', 'guias-remision',
+  'comparativo-periodos', 'flujo-caja', 'flujo-proyectado', 'compras-categoria', 'guias-remision',
   'analisis-insumos',   // análisis global cross-obra de compras por insumo/proveedor
   // Plantel profesional para postular: es del GRUPO, no de una obra. Sin esta
   // línea planoDe() lo daba por 'obra' y el sidebar lo filtraba en el plano
@@ -62,10 +68,13 @@ const AREA = {
   // una EMPRESA ACTIVA, porque las mismas páginas contables son del grupo o de
   // una empresa según el contexto. Por eso no lleva páginas propias acá.
   empresa: new Set([]),
-  contabilidad: new Set(['contabilidad', 'cont-dashboard', 'bienes-servicios', 'movimientos-contables', 'intercompany',
+  // 'intercompany' y 'ordenes-intercompany' salieron de acá en la tanda 4
+  // (D1): dejaron de ser del bloque general — solo quedan Consolidado y
+  // Resumen por entidad. Se arman DENTRO de la obra (ver GENERAL_ITEMS).
+  contabilidad: new Set(['contabilidad', 'cont-dashboard', 'bienes-servicios', 'movimientos-contables',
     'consolidado', 'cuentas-bancarias', 'flujo-caja', 'flujo-proyectado',
     'plan-cuentas', 'libro-diario', 'balance-general', 'estado-resultados', 'comprobantes',
-    'libros-electronicos', 'config-sunat', 'comparativo-periodos', 'compras-categoria', 'ordenes-intercompany', 'guias-remision',
+    'libros-electronicos', 'config-sunat', 'comparativo-periodos', 'compras-categoria', 'guias-remision',
     'analisis-insumos']),
   // Trabajos y su ficha: el área a la que se entra desde el bloque Trabajos.
   trabajos: new Set(['trabajos', 'obras', 'bienes-servicios']),

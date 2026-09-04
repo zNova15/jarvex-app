@@ -217,6 +217,11 @@ const NAV = [
   { id: 'conciliacion-insumos', label: 'Conciliación de Insumos', icon: 'compare' },
   { id: 'pagos', label: 'Pagos', icon: 'dollar' },
   { id: 'trazabilidad', label: 'Trazabilidad de insumos (cadenas)', icon: 'compare' },
+  // Mudados del bloque general (tanda 4, D1): una jugada intercompany es de
+  // UNA obra, no del grupo. desglose-obra.js con test. El panel de la
+  // empresa las sigue mostrando (solo lectura): desglose-empresa.js.
+  { id: 'intercompany', label: 'Operaciones entre Empresas de esta obra', icon: 'compare' },
+  { id: 'ordenes-intercompany', label: 'Órdenes Intercompany de esta obra', icon: 'list' },
 
   { section: 'EMPRESAS Y CONTABILIDAD', area: 'contabilidad' },
   // Primero el resumen por entidad (tanda 2D): es la puerta del bloque, y desde
@@ -226,10 +231,8 @@ const NAV = [
 
   { id: 'movimientos-contables', label: 'Movimientos (todas / por obra)', icon: 'dollar', plano: 'general' },
   { id: 'guias-remision', label: 'Guías de Remisión', icon: 'truck' },
-  { id: 'intercompany', label: 'Operaciones entre Empresas', icon: 'compare' },
   { id: 'compras-categoria', label: 'Compras por Categoría', icon: 'layers' },
   { id: 'analisis-insumos', label: 'Análisis de Insumos', icon: 'compare' },
-  { id: 'ordenes-intercompany', label: 'Órdenes Intercompany', icon: 'list' },
   { id: 'consolidado', label: 'Consolidado', icon: 'list' },
   { id: 'cuentas-bancarias', label: 'Cuentas Bancarias', icon: 'dollar' },
   { id: 'flujo-caja', label: 'Flujo de Caja / Pagos', icon: 'calendar' },

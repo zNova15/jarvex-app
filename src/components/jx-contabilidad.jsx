@@ -19,6 +19,7 @@ import { FusionEntidadModal } from "./jx-fusion-entidad.jsx";
 import { EmpresaDetalle } from "./jx-empresa-detalle.jsx";
 import { ClasificarEntidadesModal } from "./jx-clasificar-entidades.jsx";
 import { rolDeCompanyEnObra, titularContableDeObra } from "../lib/consorcio.js";
+import { comprobantesImputacionCruzada } from "../lib/imputacion-cruzada.js";
 import { resumenPorEntidad } from "../lib/contabilidad-entidades.js";
 import { consolidar, MOTIVO_LABEL } from "../lib/consolidado.js";
 import { empresasPorCategoria, CATEGORIAS_EMPRESA } from "../lib/desglose-empresa.js";
@@ -1461,6 +1462,17 @@ function MovimientosContablesPage({ showToast }) {
   // movimientos en esta obra, con el titular marcado y contado.
   const enObra = window.__plano === 'obra';
   const { data: consorciosMov } = window.__hooks.useConsorcios?.() || { data: [] };
+  const { data: sociosMov } = window.__hooks.useConsorcioSocios?.() || { data: [] };
+  // Imputación cruzada (tanda 4, A3): comprobantes cuya contraparte es un
+  // consorcio/tercero del catálogo sin relación con la obra a la que están
+  // imputados — src/lib/imputacion-cruzada.js. Medido 4-sep-2026: 17 en toda
+  // la base, los 17 facturados a otro consorcio ejecutor o a un tercero puro.
+  // Se calcula sobre TODOS los movimientos (no solo los filtrados): la
+  // pantalla necesita saber si hay cruces aunque el filtro actual los tape.
+  const cruceImputacion = uMC(
+    () => comprobantesImputacionCruzada({ movs, companies, obras, consorcios: consorciosMov, socios: sociosMov }),
+    [movs, companies, obras, consorciosMov, sociosMov]);
+  const [soloCruces, setSoloCruces] = uSC(false);
   const obraDelWorkspace = uMC(
     () => (enObra && filtroObraSel !== 'todas') ? (obras || []).find(o => o.id === filtroObraSel) || null : null,
     [enObra, obras, filtroObraSel]);
@@ -1614,6 +1626,7 @@ function MovimientosContablesPage({ showToast }) {
     }
     if (filtroEmpresaSel !== 'todas') f = f.filter(m => m.company_id === filtroEmpresaSel
       || (verOtroLado && reflejoActual.ids.has(m.id)));
+    if (soloCruces) f = f.filter(m => cruceImputacion.has(m.id));
     if (filtroClase !== 'todos') f = f.filter(m => (m.clase || (m.type === 'income' ? 'venta' : 'compra')) === filtroClase);
     if (filtroTipo !== 'todos') f = f.filter(m => m.type === filtroTipo);
     if (filtroEstado !== 'todos') f = f.filter(m => m.payment_status === filtroEstado);
@@ -1653,7 +1666,7 @@ function MovimientosContablesPage({ showToast }) {
       (b.date||'').localeCompare(a.date||'')
       || cmpComprobante(a.document_number, b.document_number)
       || (a.created_at||'').localeCompare(b.created_at||''));
-  }, [movs, filtroObraSel, filtroEmpresaSel, filtroClase, filtroTipo, filtroEstado, filtroEmisor, filtroReceptor, nombreCompanyDe, busqueda, filtroBanc, filtroTipoDoc, guiasPorMov, filtroMes, filtroDesde, filtroHasta, bancarizacionPorMov, partesPorMov, depositosById, enObra, incluirTitularSinObra, titularObraId, reflejoActual, verOtroLado]);
+  }, [movs, filtroObraSel, filtroEmpresaSel, filtroClase, filtroTipo, filtroEstado, filtroEmisor, filtroReceptor, nombreCompanyDe, busqueda, filtroBanc, filtroTipoDoc, guiasPorMov, filtroMes, filtroDesde, filtroHasta, bancarizacionPorMov, partesPorMov, depositosById, enObra, incluirTitularSinObra, titularObraId, reflejoActual, verOtroLado, soloCruces, cruceImputacion]);
 
   // Paginación: tabla puede tener miles de movimientos contables.
   const movPg = usePagination(filtered, 100);
@@ -1667,14 +1680,14 @@ function MovimientosContablesPage({ showToast }) {
     || (!empresaFija && filtroEmpresaSel !== 'todas')
     || filtroClase !== 'todos' || filtroTipo !== 'todos' || filtroEstado !== 'todos'
     || filtroEmisor !== 'todos' || filtroReceptor !== 'todos' || filtroMes !== 'todos'
-    || filtroTipoDoc !== 'todos' || filtroBanc !== 'todos';
+    || filtroTipoDoc !== 'todos' || filtroBanc !== 'todos' || soloCruces;
   const limpiarFiltros = () => {
     setBusqueda(''); setFiltroEmpresaSel('todas');
     if (!enObra) setFiltroObraSel('todas');   // dentro de una obra, la obra es el ámbito, no un filtro
     setFiltroClase('todos'); setFiltroTipo('todos'); setFiltroEstado('todos');
     setFiltroEmisor('todos'); setFiltroReceptor('todos');
     setFiltroMes('todos'); setFiltroDesde(''); setFiltroHasta('');
-    setFiltroTipoDoc('todos'); setFiltroBanc('todos');
+    setFiltroTipoDoc('todos'); setFiltroBanc('todos'); setSoloCruces(false);
   };
   // Los MISMOS labels del modal "Tipo documento" (no inventar tipos: el CHECK
   // de la mig 021 define el universo; null se muestra/filtra como 'otro').
@@ -2506,6 +2519,14 @@ function MovimientosContablesPage({ showToast }) {
         <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
           <div className="search-bar" style={{ flex:'1 1 220px' }}><JxIcon name="search" size={14} color="var(--tm)"/><input placeholder="Buscar descripción / cliente / doc…" value={busqueda} onChange={e=>setBusqueda(e.target.value)}/></div>
           <span style={{ fontSize:11, color:'var(--tm)' }}>{filtered.length} de {(movs||[]).length} movimientos</span>
+          {cruceImputacion.size > 0 && (
+            <button className={`badge ${soloCruces ? 'b-red' : ''}`}
+              style={{ fontSize:10.5, cursor:'pointer', border: soloCruces ? 'none' : '1px solid var(--red)', color: soloCruces ? undefined : 'var(--red)', background: soloCruces ? undefined : 'transparent' }}
+              onClick={() => setSoloCruces(v => !v)}
+              title="Comprobantes facturados a un consorcio ejecutor de OTRA obra, o a un tercero sin relación con esta — probablemente imputados a la obra equivocada. Click para ver solo estos.">
+              ⚠ {cruceImputacion.size} imputación cruzada{cruceImputacion.size !== 1 ? 's' : ''}{soloCruces ? ' · viendo solo estos ✕' : ''}
+            </button>
+          )}
           {hayFiltrosActivos && (
             <button className="btn btn-ghost btn-sm" onClick={limpiarFiltros} title="Quitar todos los filtros y ver todo">
               ✕ Limpiar filtros
@@ -2813,6 +2834,23 @@ function MovimientosContablesPage({ showToast }) {
                         {m.description || '—'}
                         {m.category && <div style={{ fontSize:10, color:'var(--tm)' }}>{m.category}</div>}
                         {m.obra_id && <div style={{ fontSize:10, color:'var(--blue)' }}>🏗 {obraNombre(m.obra_id) || 'obra'}</div>}
+                        {cruceImputacion.has(m.id) && (() => {
+                          const { contraparte } = cruceImputacion.get(m.id);
+                          return (
+                            <div style={{ marginTop:3 }}>
+                              <span className="badge b-red" style={{ fontSize:9 }}
+                                title={`Facturado a ${contraparte?.name || 'una entidad'}, que no tiene relación con esta obra — ni es su titular ni un socio de su consorcio. Probablemente imputado a la obra equivocada.`}>
+                                ⚠ Imputación cruzada
+                              </span>
+                              {canEditExisting && !isIc && (
+                                <button className="btn btn-ghost btn-xs" style={{ marginLeft:4, padding:'0 4px', fontSize:9, color:'var(--red)' }}
+                                  title="Abrir para reimputar a la obra correcta, o quitarle la obra" onClick={()=>openEditar(m)}>
+                                  Reimputar
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })()}
                         {!m.obra_id && m.destino_contable === 'sin_clasificar' && (
                           <div><span className="badge" style={{ fontSize:9, background:'rgba(155,89,182,0.18)', color:'var(--purple)', cursor: esRevisorDestino ? 'pointer' : 'default' }}
                             title={esRevisorDestino ? 'Sin clasificar — click para abrir la bandeja y asignarle destino' : 'Sin clasificar — pendiente de la Contadora Jefe'}
