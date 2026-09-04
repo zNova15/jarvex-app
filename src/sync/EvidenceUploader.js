@@ -5,7 +5,14 @@ import { captureException } from '../instrument.js';
 
 const MAX_RETRIES = 5;
 const MAX_PHOTO_BYTES = 8 * 1024 * 1024; // 8 MB
-const TARGET_PHOTO_BYTES = 2 * 1024 * 1024; // comprimir a 2 MB
+// Red de contención, NO el compresor principal: el camino normal ya pasó por
+// optimizarImagenEvidencia() en saveEvidenciaLocal (1600 px con objetivo de
+// tamaño). Esto solo agarra lo que entró por otro lado — evidencias viejas
+// reencoladas, o un blob que llegó sin pasar por el guardado local.
+// Estaba en 2 MB, o sea que en la práctica no se activaba nunca: las fotos de
+// avance de 1,2 MB pasaban enteras. 800 KB es un techo que sí muerde sin
+// re-degradar lo que ya viene optimizado (~350 KB).
+const TARGET_PHOTO_BYTES = 800 * 1024;
 
 // ── Comprimir imagen antes de subir ──────────────────────────────────
 

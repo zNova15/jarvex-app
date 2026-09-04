@@ -157,6 +157,7 @@ const AYUDA = {
       'Lo que subís vos siempre lo ves, aunque sea de otro ámbito.',
       'Ordená la galería con las pestañas de categoría y el selector "Tipo" (muestra cada tipo con su cantidad — útil cuando hay decenas de firmas EPP).',
       'Subí archivos con "Subir Archivo" eligiendo el tipo correcto — de eso depende quién puede verlo.',
+      'LAS FOTOS SE ACHICAN SOLAS AL CAPTURAR (4-sep): antes de guardarse, cada foto se reescala a 1600 px y se comprime apuntando a 400 KB — la app va bajando la calidad hasta llegar, así que una foto simple queda nítida y una llena de texto se aprieta más. Se lee igual un RUC, un importe o un metrado. Sirve para dos cosas concretas: el almacenamiento del servidor deja de llenarse (era el 13 % con solo 67 fotos de avance) y subir desde obra con señal mala tarda un tercio. Los PDF NO se tocan: se suben tal cual llegan del proveedor.',
       'FOTOS DE IPHONE ANTIGUAS (.heic): si una foto vieja no se ve en la PC, el admin puede convertirlas todas a JPEG desde el badge de sincronización → "Mantenimiento: fotos HEIC antiguas" (correrlo en Safari; las nuevas ya se convierten solas al capturar).',
     ],
     rol: {
