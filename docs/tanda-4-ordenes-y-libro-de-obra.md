@@ -2,8 +2,20 @@
 
 > Análisis del feedback de Gabriel del 4-sep-2026, después de probar en
 > producción la tanda 3. Todo lo de acá está **medido contra la base real**,
-> no razonado en el aire. Nada de esto está implementado todavía: es el
-> documento para decidir qué se hace y en qué orden.
+> no razonado en el aire.
+>
+> **✅ DEPLOYADO el 4-sep (`79bb20f`), la tanda chica — C1, A3, D1:** pila de
+> navegación («← Volver»), alerta de imputación cruzada en Movimientos
+> Contables (17 detectados, con filtro y botón «Reimputar») e Intercompany
+> mudado al menú de la obra. Ver `docs/cercos-rls.md` no — esto va sin doc
+> aparte, quedó documentado en el propio commit y en `ayuda-contenido.js`.
+>
+> **🔲 PENDIENTE, sesión nueva y dedicada — B1+B2+B3 (órdenes de compra y
+> servicio) y A1+A2 (los dos libros de la contabilidad de obra):** Gabriel ya
+> dejó el material en `Modelos/` en la raíz del repo (`ordenes.xlsx`, el
+> registro de activos, una foto de referencia) — **leerlo antes de tocar
+> código**. Con eso alcanza para arrancar diciendo solo "Realiza la nueva
+> tanda de órdenes".
 
 ---
 
@@ -231,24 +243,26 @@ jugada pasa a ser la obra.
 
 ## Orden recomendado
 
-| # | Qué | Por qué en ese lugar | Tamaño |
-|---|---|---|---|
-| 1 | **C1** — pila de navegación | Barato, se nota en toda la app, no depende de nada | chico |
-| 2 | **A1 + A3** — dos vistas con nombre + alerta de imputación cruzada | Es la queja principal y no necesita esquema nuevo | mediano |
-| 3 | **B1** — `company_id` + `tipo` en órdenes | Desbloquea todo lo demás de órdenes | mediano (migración) |
-| 4 | **B2 + B3** — emisión masiva + plantilla por empresa | El valor real: 297 documentos respaldados | grande |
-| 5 | **A2** — barra de la cadena | Se apoya en B2 para ser exacta | chico |
-| 6 | **D1** — mudar intercompany | Cosmético hasta que se use; sin datos, sin riesgo | chico |
+| # | Qué | Por qué en ese lugar | Tamaño | Estado |
+|---|---|---|---|---|
+| 1 | **C1** — pila de navegación | Barato, se nota en toda la app, no depende de nada | chico | ✅ `79bb20f` |
+| 2 | **A1** — dos vistas con nombre (Libro del consorcio / Aporte del grupo) | Es la queja principal, no necesita esquema nuevo | mediano | 🔲 pendiente |
+| — | **A3** — alerta de imputación cruzada | Se pudo adelantar: no dependía de A1 | chico | ✅ `79bb20f` (chip + botón «Reimputar» en Movimientos Contables) |
+| 3 | **B1** — `company_id` + `tipo` en órdenes | Desbloquea todo lo demás de órdenes | mediano (migración) | 🔲 pendiente |
+| 4 | **B2 + B3** — emisión masiva + plantilla por empresa | El valor real: 297 documentos respaldados | grande | 🔲 pendiente |
+| 5 | **A2** — barra de la cadena | Se apoya en B2 para ser exacta | chico | 🔲 pendiente |
+| 6 | **D1** — mudar intercompany | Cosmético hasta que se use; sin datos, sin riesgo | chico | ✅ `79bb20f` |
 
-**A3 se puede hacer ya** aunque el resto espere: son 17 comprobantes de plata
-real mal imputados.
+**Queda por hacer:** A1 + A2 (los dos libros de la contabilidad de obra) y
+B1 + B2 + B3 (órdenes de compra y servicio) — las dos tandas grandes, cada
+una en su propia sesión nueva (ver abajo).
 
 ---
 
 ## Modelo, effort y sesión recomendados
 
-- **C1, A3, D1** — Sonnet 5, effort medio. Cambios acotados con criterio claro.
-  Entran en **esta misma sesión** sin problema.
+- **C1, A3, D1** — ✅ HECHO el 4-sep (`79bb20f`) con Sonnet 5, effort medio, en
+  la misma sesión que escribió este documento.
 - **A1 + A2** — Opus 5, effort alto, **sesión nueva**. Toca
   `jx-contabilidad.jsx`, que es el archivo más grande de la app (~7.000
   líneas), y hay que releerlo entero con la cabeza puesta en el libro del
@@ -256,8 +270,9 @@ real mal imputados.
 - **B1 + B2 + B3** — Opus 5, effort alto, **sesión nueva y dedicada**. Es
   migración + esquema Dexie + SyncEngine + dos pantallas + PDF. Es la tanda más
   grande de las cuatro; mezclarla con otra cosa es cómo se rompen las pantallas.
-  Conviene arrancarla **con el modelo de orden de servicio de Gabriel en la
-  mano**, para no hacer B3 dos veces.
+  Gabriel ya dejó el modelo en `Modelos/` (raíz del repo): `ordenes.xlsx`, el
+  registro de activos y una foto de referencia — **leerlos antes de escribir
+  código**, para no hacer B3 dos veces.
 
 ---
 
