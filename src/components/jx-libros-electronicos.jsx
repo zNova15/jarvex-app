@@ -10,6 +10,7 @@ import { generatePDT601, buildPDT601Filename } from '../lib/sunat-pdt601.js';
 import { generarAsientosBatch } from '../lib/asientos.js';
 import { enPeriodo } from '../lib/fecha.js';
 import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
+import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
@@ -27,7 +28,12 @@ function LibrosElectronicosPage({ showToast }) {
   const [mes,  setMes]  = uS(today.getMonth() + 1);
   // Acá la empresa es OBLIGATORIA: '' = ninguna elegida. El efecto de abajo
   // autoselecciona la primera si esto queda vacío.
-  const [companyId, setCompanyId] = uS(() => filtroInicialEmpresa(''));
+  const [companyIdRaw, setCompanyId] = uS(() => filtroInicialEmpresa(''));
+  // ÁMBITO, no filtro: con una empresa activa esta pantalla es la contabilidad
+  // de ESA empresa y el selector va clavado (Gabriel: «netamente y
+  // exclusivamente de esa empresa seleccionada»).
+  const empresaFija = useEmpresaBloqueada();
+  const companyId = empresaFija || companyIdRaw;
   const [busy, setBusy] = uS(false);
 
   const { data: companies = [] } = window.__hooks.useCompanies();
@@ -226,6 +232,7 @@ function LibrosElectronicosPage({ showToast }) {
           <div className="pg-sub">Exportación SUNAT — PLE 5.x y Planilla Mensual</div>
         </div>
       </div>
+      {window.EmpresaActivaBanner ? <window.EmpresaActivaBanner/> : null}
 
       {/* Selector empresa + período */}
       <div className="card card-p" style={{ marginBottom: 16, display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 12 }}>
@@ -235,6 +242,8 @@ function LibrosElectronicosPage({ showToast }) {
             className="fi"
             value={companyId}
             onChange={e => setCompanyId(e.target.value)}
+            disabled={!!empresaFija}
+            title={empresaFija ? 'Estás dentro de la contabilidad de esta empresa: los PLE se generan para ella.' : undefined}
           >
             {companies.length === 0 && <option value="">— sin empresas —</option>}
             {companies.map(c => (

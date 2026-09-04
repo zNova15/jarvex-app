@@ -1,5 +1,6 @@
 import React from "react";
 import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
+import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -495,7 +496,12 @@ function FlujoCajaPage({ showToast }) {
   const [editing, setEditing] = uS(null);
   const [form, setForm] = uS({});
   const [filtroEstado, setFiltroEstado] = uS('todos');
-  const [filtroCompany, setFiltroCompany] = uS(() => filtroInicialEmpresa('todas'));
+  const [filtroCompanyRaw, setFiltroCompany] = uS(() => filtroInicialEmpresa('todas'));
+  // ÁMBITO, no filtro: con una empresa activa esta pantalla es la contabilidad
+  // de ESA empresa y el selector va clavado (Gabriel: «netamente y
+  // exclusivamente de esa empresa seleccionada»).
+  const empresaFija = useEmpresaBloqueada();
+  const filtroCompany = empresaFija || filtroCompanyRaw;
 
   const lookupCo = (id) => companies?.find(c => c.id === id);
   const lookupCu = (id) => cuentas?.find(c => c.id === id);
@@ -666,6 +672,7 @@ function FlujoCajaPage({ showToast }) {
           <span className="badge b-gray" title="Tu rol es solo lectura para Flujo de Caja">Solo lectura</span>
         )}
       </div>
+      {window.EmpresaActivaBanner ? <window.EmpresaActivaBanner/> : null}
 
       {/* KPIs */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(180px,1fr))', gap:12, marginBottom:14 }}>
@@ -682,9 +689,11 @@ function FlujoCajaPage({ showToast }) {
       </div>
 
       <div style={{ display:'flex', gap:8, marginBottom:14 }}>
-        <select className="fi" value={filtroCompany} onChange={e=>setFiltroCompany(e.target.value)} style={{ minWidth:160 }}>
-          <option value="todas">Todas las empresas</option>
-          {(companies||[]).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+        <select className="fi" value={filtroCompany} onChange={e=>setFiltroCompany(e.target.value)} style={{ minWidth:160 }}
+          disabled={!!empresaFija}
+          title={empresaFija ? 'Estás dentro de la contabilidad de esta empresa: son SUS cuentas y pagos.' : undefined}>
+          {!empresaFija && <option value="todas">Todas las empresas</option>}
+          {(companies||[]).filter(c => !empresaFija || c.id === empresaFija).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
         <select className="fi" value={filtroEstado} onChange={e=>setFiltroEstado(e.target.value)} style={{ minWidth:140 }}>
           <option value="todos">Todos</option>

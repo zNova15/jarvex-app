@@ -34,14 +34,19 @@ describe('desglose-obra — estructura de los grupos', () => {
     }
   });
 
-  it('los grupos son los 8 que definió Gabriel, en orden', () => {
-    // 8 desde el 3-sep-2026: Gabriel separó a los INGENIEROS DE CAMPO (que
-    // trabajan frente por frente y lideran el frente que se apertura) de los
-    // ESPECIALISTAS (seguridad/calidad/ambiental/social, que miran la obra
+  it('los grupos son los 7 que definió Gabriel, en orden', () => {
+    // 8 el 3-sep-2026 por la mañana: Gabriel separó a los INGENIEROS DE CAMPO
+    // (que trabajan frente por frente y lideran el frente que se apertura) de
+    // los ESPECIALISTAS (seguridad/calidad/ambiental/social, que miran la obra
     // entera). Antes la ingeniería de frente vivía dentro de "Gestión de obra".
+    //
+    // 7 esa misma tarde: 'cadenas' se fusionó con 'contabilidad-obra'. La
+    // trazabilidad es la herramienta con la que se leen los movimientos del
+    // consorcio, no un área aparte — «cuando hablamos de mis movimientos […]
+    // allí también van a estar las herramientas […] de trazabilidad».
     expect(GRUPOS_TRABAJO.map(g => g.id)).toEqual([
       'almacen', 'logistica', 'gestion', 'ingenieria', 'personal', 'especiales',
-      'contabilidad-obra', 'cadenas',
+      'contabilidad-obra',
     ]);
   });
 
@@ -62,7 +67,7 @@ describe('desglose-obra — estructura de los grupos', () => {
 
   it('grupoDePagina resuelve las nuevas de la entrega B', () => {
     expect(grupoDePagina('movimientos-contables')).toBe('contabilidad-obra');
-    expect(grupoDePagina('trazabilidad')).toBe('cadenas');
+    expect(grupoDePagina('trazabilidad')).toBe('contabilidad-obra');
     expect(grupoDePagina('materiales')).toBe('almacen');
     expect(grupoDePagina('no-existe')).toBeNull();
   });

@@ -61,6 +61,28 @@ const JxIcon = ({ name, size = 16, color = 'currentColor', strokeWidth = 1.6 }) 
     trending:     <><polyline points="23 6 13.5 15.5 8.5 10.5 1 18" {...p}/><polyline points="17 6 23 6 23 12" {...p}/></>,
     link:         <><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" {...p}/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" {...p}/></>,
     copy:         <><rect x="9" y="9" width="13" height="13" rx="2" {...p}/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" {...p}/></>,
+
+    // ── Los 12 que se usaban SIN existir (baseline de la tanda 3) ──────
+    // `icons[name] || icons.dashboard` los dibujaba a todos como la grilla de
+    // cuadraditos: el botón "Analizar con IA", el de "Reintentar", el de
+    // "Enviar solicitud" y nueve más mostraban el mismo ícono equivocado en
+    // silencio. Definirlos es el arreglo — no hay call site que tocar.
+    archive:      <><rect x="2" y="4" width="20" height="5" rx="1" {...p}/><path d="M4 9v10a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9" {...p}/><line x1="10" y1="13" x2="14" y2="13" {...p}/></>,
+    barChart:     <><rect x="4" y="12" width="4" height="8" rx="1" {...p}/><rect x="10" y="7" width="4" height="13" rx="1" {...p}/><rect x="16" y="3" width="4" height="17" rx="1" {...p}/></>,
+    book:         <><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" {...p}/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" {...p}/></>,
+    clock:        <><circle cx="12" cy="12" r="9" {...p}/><polyline points="12 7 12 12 15.5 14" {...p}/></>,
+    external:     <><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" {...p}/><polyline points="15 3 21 3 21 9" {...p}/><line x1="10" y1="14" x2="21" y2="3" {...p}/></>,
+    fileText:     <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" {...p}/><polyline points="14 2 14 8 20 8" {...p}/><line x1="8" y1="13" x2="16" y2="13" {...p}/><line x1="8" y1="17" x2="13" y2="17" {...p}/></>,
+    info:         <><circle cx="12" cy="12" r="10" {...p}/><line x1="12" y1="11" x2="12" y2="16" {...p}/><line x1="12" y1="8" x2="12.01" y2="8" {...p}/></>,
+    refresh:      <><polyline points="21 3 21 9 15 9" {...p}/><polyline points="3 21 3 15 9 15" {...p}/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L3 8" {...p}/><path d="M3.51 15a9 9 0 0 0 14.85 3.36L21 16" {...p}/></>,
+    send:         <><line x1="22" y1="2" x2="11" y2="13" {...p}/><polygon points="22 2 15 22 11 13 2 9 22 2" {...p}/></>,
+    zap:          <><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" {...p}/></>,
+    // Los dos chevrons "largos": `chevronUp`/`chevronDown` se escribieron así
+    // en jx-evidencias; el resto de la app usa chevD/chevU. Los cuatro nombres
+    // apuntan al mismo dibujo — renombrar 40 call sites no arregla nada.
+    chevU:        <><polyline points="18 15 12 9 6 15" {...p}/></>,
+    chevronUp:    <><polyline points="18 15 12 9 6 15" {...p}/></>,
+    chevronDown:  <><polyline points="6 9 12 15 18 9" {...p}/></>,
   };
 
   return (

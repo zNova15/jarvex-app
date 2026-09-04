@@ -2,6 +2,7 @@ import React from "react";
 import { planoDe } from "../lib/nav-planos.js";
 import { esRolGlobal } from "../lib/obras-asignadas.js";
 import "../lib/tema.js"; // expone window.__jxTema (no exporta componentes, solo el side-effect)
+import { MENU_EMPRESA_ACTIVA } from "../lib/desglose-empresa.js";
 const { useState, useEffect } = React;
 
 // Hook: detecta si el viewport es móvil (≤ 768px)
@@ -77,26 +78,23 @@ const NAV = [
   { id: 'empresas', label: 'Todas las empresas', icon: 'building' },
   { id: 'proveedores', label: 'Proveedores', icon: 'truck' },
 
-  // ── DENTRO DE UNA EMPRESA (tanda 2F) ──────────────────────────────
+  // ── DENTRO DE UNA EMPRESA (tanda 2F, completado en 2G) ────────────
   // Con una empresa activa, estas MISMAS páginas son su contabilidad, no la
   // del grupo: el menú lo dice y no ofrece el resto. Los ids se repiten a
   // propósito con la sección de abajo — el filtro por área muestra una u
   // otra, nunca las dos (mismo recurso que usa 'movimientos-contables' para
   // vivir en los dos planos).
+  //
+  // ⚠ La lista NO se escribe acá: sale de MENU_EMPRESA_ACTIVA
+  // (src/lib/desglose-empresa.js), que es la misma que arma los bloques del
+  // panel. Escrita a mano se desincronizó enseguida — el panel ofrecía
+  // "Cuentas bancarias" y el menú no, y ninguno de los dos tenía Planilla.
   { section: 'CONTABILIDAD DE ESTA EMPRESA', area: 'empresa' },
-  { id: 'empresas', label: '← Volver a la empresa', icon: 'building' },
-  { id: 'cont-dashboard', label: 'Dashboard contable', icon: 'dashboard' },
-  { id: 'movimientos-contables', label: 'Movimientos', icon: 'dollar', plano: 'general' },
-  { id: 'comprobantes', label: 'Comprobantes electrónicos', icon: 'file' },
-  { id: 'guias-remision', label: 'Guías de Remisión', icon: 'truck' },
-  { id: 'compras-categoria', label: 'Compras por Categoría', icon: 'layers' },
-  { id: 'libro-diario', label: 'Libro Diario / Asientos', icon: 'list' },
-  { id: 'plan-cuentas', label: 'Plan de Cuentas (PCGE)', icon: 'list' },
-  { id: 'estado-resultados', label: 'Estado de Resultados', icon: 'chart' },
-  { id: 'balance-general', label: 'Balance General', icon: 'chart' },
-  { id: 'libros-electronicos', label: 'Libros Electrónicos PLE', icon: 'file' },
-  { id: 'flujo-caja', label: 'Flujo de Caja / Pagos', icon: 'calendar' },
-  { id: 'intercompany', label: 'Operaciones entre Empresas', icon: 'compare' },
+  ...MENU_EMPRESA_ACTIVA.map(m => (
+    // Las páginas DUALES o de plano obra (movimientos-contables, planillas)
+    // se fuerzan a 'general': acá se miran por EMPRESA, no por obra.
+    { ...m, plano: 'general' }
+  )),
 
   { section: 'GENERAL', area: 'general' },
   { id: 'captura-magica', label: '✨ Captura Mágica', icon: 'upload' },
@@ -210,15 +208,15 @@ const NAV = [
   { id: 'gestion-calidad', label: 'Gestión de Calidad (Certificados)', icon: 'checkCircle' },
   { id: 'gestion-social', label: 'Gestión Social (Comunidad)', icon: 'users' },
 
-  { section: 'CONTABILIDAD DE LA OBRA' },
+  // Un solo encabezado: los movimientos del consorcio en esta obra Y las
+  // herramientas con las que se leen (la trazabilidad tenía sección aparte y
+  // quedaba lejos de lo único con lo que se usa). El orden lo manda
+  // desglose-obra.js, con test.
+  { section: 'MOVIMIENTOS Y CONTABILIDAD DE LA OBRA' },
   { id: 'movimientos-contables', label: 'Movimientos de esta obra', icon: 'dollar', plano: 'obra' },
   { id: 'conciliacion-insumos', label: 'Conciliación de Insumos', icon: 'compare' },
   { id: 'pagos', label: 'Pagos', icon: 'dollar' },
-
-  // La cadena proveedor → empresas del grupo → ejecutora es DE UNA OBRA: vivía
-  // en el bloque general de contabilidad, donde nunca se usó (0 filas).
-  { section: 'CADENAS INTERCOMPANY' },
-  { id: 'trazabilidad', label: 'Cadenas de esta obra', icon: 'compare' },
+  { id: 'trazabilidad', label: 'Trazabilidad de insumos (cadenas)', icon: 'compare' },
 
   { section: 'EMPRESAS Y CONTABILIDAD', area: 'contabilidad' },
   // Primero el resumen por entidad (tanda 2D): es la puerta del bloque, y desde

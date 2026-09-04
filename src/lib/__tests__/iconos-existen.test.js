@@ -8,12 +8,9 @@
 // literales usados en el código: si alguien escribe uno que no existe, falla
 // acá con el archivo y el nombre.
 //
-// ⚠ BASELINE CONGELADA: al escribir el test aparecieron 12 nombres fantasma
-// que ya estaban en el código. Elegir el reemplazo de cada uno es decidir qué
-// quiso dibujar quien lo escribió (¿qué ícono es 'consorcio'? ¿'cambio'?), y
-// eso es su propia pasada, no un arreglo al pasar. Se congelan acá para que
-// no crezcan: si agregás uno nuevo, el test falla; si arreglás uno viejo,
-// borralo de esta lista.
+// ⚠ La baseline quedó VACÍA el 3-sep-2026: cero íconos fantasma en el código.
+// A partir de acá el test es un gate duro — si escribís un nombre que no
+// existe, falla. No lo agregues a FANTASMAS_CONOCIDOS: definí el ícono.
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -53,9 +50,19 @@ function nombresUsados() {
     const src = readFileSync(file, 'utf8');
     const rel = file.slice(SRC.length);
     for (const m of src.matchAll(/<JxIcon[^>]*?\sname=(?:"([^"]+)"|\{([^}]*)\})/g)) {
+      // En `name={x === 'consorcio' ? 'users' : 'building'}` los nombres de
+      // ícono son 'users' y 'building'; 'consorcio' es el valor con el que se
+      // COMPARA — y en `name={m.includes('pdf') ? 'file' : 'camera'}`, 'pdf'
+      // es el argumento del test. Contarlos daba cuatro fantasmas que nunca
+      // existieron ('cambio', 'consorcio', 'obra', 'pdf').
+      const expr = m[2]
+        // `.includes('pdf')`, `.startsWith('x')`: argumento de un test, no ícono.
+        ? m[2].replace(/\.\w+\(\s*(?:'[^']*'|"[^"]*")\s*\)/g, '')
+              .replace(/[!=]==?\s*(?:'[^']*'|"[^"]*")/g, '')
+        : '';
       const literales = m[1]
         ? [m[1]]
-        : [...m[2].matchAll(/'([^']+)'|"([^"]+)"/g)].map(x => x[1] || x[2]);
+        : [...expr.matchAll(/'([^']+)'|"([^"]+)"/g)].map(x => x[1] || x[2]);
       for (const n of literales) {
         if (!usos.has(n)) usos.set(n, new Set());
         usos.get(n).add(rel);
@@ -71,9 +78,12 @@ function nombresUsados() {
  * se congelan para que la lista solo pueda achicarse.
  */
 const FANTASMAS_CONOCIDOS = new Set([
-  'archive', 'barChart', 'book', 'cambio', 'chevronDown', 'chevronUp',
-  'clock', 'consorcio', 'external', 'fileText', 'info', 'obra', 'pdf',
-  'refresh', 'send', 'zap',
+  // VACÍA desde el 3-sep-2026. Los 12 fantasmas reales se definieron en
+  // jx-icons.jsx (archive, barChart, book, clock, external, fileText, info,
+  // refresh, send, zap, chevronUp, chevronDown) y los 4 restantes
+  // —'cambio', 'consorcio', 'obra', 'pdf'— nunca fueron íconos: eran el lado
+  // izquierdo de una comparación que el extractor de arriba leía mal.
+  // Si volvés a agregar algo acá, dejá dicho por qué no se puede arreglar hoy.
 ]);
 
 describe('íconos', () => {

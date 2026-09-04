@@ -161,9 +161,37 @@ export const BLOQUES_CONTABILIDAD_EMPRESA = [
     desc: 'Lo que entra y sale, y lo que está programado pagar',
   },
   {
+    id: 'cuentas-bancarias', titulo: 'Cuentas bancarias', icon: 'dollar', color: 'var(--blue)',
+    desc: 'Sus cuentas, los depósitos y la bancarización de lo que paga',
+  },
+  {
+    // Pedido explícito de Gabriel (3-sep-2026): «va a estar el libro diario y
+    // planilla y muchas cosas que debería tener la empresa». La planilla es
+    // de la EMPRESA EMPLEADORA (planillas.company_id), aunque se arme obra por
+    // obra: es ella la que paga sueldos, retiene y declara en PLAME.
+    id: 'planillas', titulo: 'Planilla y sueldos', icon: 'user', color: 'var(--purple)',
+    desc: 'Lo que paga a su gente: períodos, netos y aportes de la empresa',
+  },
+  {
     id: 'intercompany', titulo: 'Operaciones entre empresas', icon: 'compare', color: 'var(--purple)',
     desc: 'Lo que le factura a otras empresas del grupo y viceversa',
   },
+];
+
+/**
+ * El menú de la izquierda cuando hay una empresa activa, en orden.
+ *
+ * Es EXACTAMENTE la lista de arriba con el panel de la empresa a la cabeza:
+ * el sidebar y el panel no pueden decir cosas distintas. Un test lo ata al
+ * NAV real, como `bloques-inicio.js`.
+ *
+ * Gabriel, 3-sep-2026: «cuando doy ahí en esa sección de contabilidad, sí me
+ * debería desglosar como hemos tenido antes —movimientos, guías de remisión,
+ * libro diario, planilla— pero exclusivamente de la empresa seleccionada».
+ */
+export const MENU_EMPRESA_ACTIVA = [
+  { id: 'empresas', label: 'Panel de la empresa', icon: 'building' },
+  ...BLOQUES_CONTABILIDAD_EMPRESA.map(b => ({ id: b.id, label: b.titulo, icon: b.icon })),
 ];
 
 /**

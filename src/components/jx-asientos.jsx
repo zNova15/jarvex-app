@@ -7,6 +7,7 @@ import { PCGE_DEFAULT } from "../lib/pcge-default";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { fmtFechaLarga, ymdDe } from "../lib/fecha.js";
 import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
+import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 
@@ -90,7 +91,12 @@ function LibroDiarioPage({ showToast }) {
 
   const ahora = new Date();
   // 'all' es el "sin filtro" de ESTA pantalla (no 'todas').
-  const [empresaId, setEmpresaId] = uS(() => filtroInicialEmpresa('all'));
+  const [empresaIdRaw, setEmpresaId] = uS(() => filtroInicialEmpresa('all'));
+  // ÁMBITO, no filtro: con una empresa activa esta pantalla es la contabilidad
+  // de ESA empresa y el selector va clavado (Gabriel: «netamente y
+  // exclusivamente de esa empresa seleccionada»).
+  const empresaFija = useEmpresaBloqueada();
+  const empresaId = empresaFija || empresaIdRaw;
   const [anio, setAnio] = uS(String(ahora.getFullYear()));
   const [mes, setMes] = uS('all');
   const [tipoFiltro, setTipoFiltro] = uS('all');
@@ -424,9 +430,11 @@ function LibroDiarioPage({ showToast }) {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
           <div>
             <label style={{ fontSize: 11, color: 'var(--tm)', textTransform: 'uppercase' }}>Empresa</label>
-            <select className="fi" value={empresaId} onChange={e => setEmpresaId(e.target.value)} style={{ width: '100%' }}>
-              <option value="all">Todas las empresas</option>
-              {(companies || []).filter(c => !c.deleted_at).map(c => (
+            <select className="fi" value={empresaId} onChange={e => setEmpresaId(e.target.value)} style={{ width: '100%' }}
+              disabled={!!empresaFija}
+              title={empresaFija ? 'Estás dentro de la contabilidad de esta empresa: es SU libro diario.' : undefined}>
+              {!empresaFija && <option value="all">Todas las empresas</option>}
+              {(companies || []).filter(c => !c.deleted_at && (!empresaFija || c.id === empresaFija)).map(c => (
                 <option key={c.id} value={c.id}>{c.name}</option>
               ))}
             </select>

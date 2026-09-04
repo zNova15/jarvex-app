@@ -20,6 +20,7 @@ import { itemsDeFactura, parseNotas } from "../lib/cruce-recepcion.js";
 import { normalizarRuc } from "../lib/doc-id.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
+import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -62,7 +63,12 @@ function GuiasRemisionPage({ showToast }) {
   // 📄 de Movimientos no sabe si la guía es emitida o recibida.
   const [tab, setTab] = uS('todas');
   const [filtroVinculo, setFiltroVinculo] = uS('todos');   // todos | vinculadas | sin_vincular | esperando
-  const [filtroEmpresa, setFiltroEmpresa] = uS(() => filtroInicialEmpresa('todas'));   // empresa del grupo
+  const [filtroEmpresaRaw, setFiltroEmpresa] = uS(() => filtroInicialEmpresa('todas'));   // empresa del grupo
+  // ÁMBITO, no filtro: con una empresa activa esta pantalla es la contabilidad
+  // de ESA empresa y el selector va clavado (Gabriel: «netamente y
+  // exclusivamente de esa empresa seleccionada»).
+  const empresaFija = useEmpresaBloqueada();
+  const filtroEmpresa = empresaFija || filtroEmpresaRaw;
   const [filtroObra, setFiltroObra] = uS('todas');
   const [fDesde, setFDesde] = uS('');
   const [fHasta, setFHasta] = uS('');
@@ -446,9 +452,13 @@ function GuiasRemisionPage({ showToast }) {
           <div>
             <label className="flabel">🏢 Empresa del grupo</label>
             <select className="fi" value={filtroEmpresa} onChange={e => setFiltroEmpresa(e.target.value)} style={{ width: '100%' }}
-              title="Emitidas: por el RUC emisor. Recibidas: la empresa de la factura vinculada.">
-              <option value="todas">Todas</option>
-              {(companies || []).filter(c => !c.deleted_at).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              disabled={!!empresaFija}
+              title={empresaFija
+                ? 'Estás dentro de la contabilidad de esta empresa: se muestran solo sus guías (emitidas y recibidas).'
+                : 'Emitidas: por el RUC emisor. Recibidas: la empresa de la factura vinculada.'}>
+              {!empresaFija && <option value="todas">Todas</option>}
+              {(companies || []).filter(c => !c.deleted_at && (!empresaFija || c.id === empresaFija))
+                .map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </div>
           <div>

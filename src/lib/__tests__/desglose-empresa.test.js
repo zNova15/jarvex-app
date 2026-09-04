@@ -8,6 +8,7 @@ import {
   SECCIONES_EMPRESA, SECCIONES_INTERNAS, seccionEmpresa, seccionesDeEmpresa,
   CATEGORIAS_EMPRESA, categoriaDeEmpresa, empresasPorCategoria,
   BLOQUES_CONTABILIDAD_EMPRESA, bloquesContabilidadEmpresa, esPaginaDeEmpresa,
+  MENU_EMPRESA_ACTIVA,
 } from '../desglose-empresa.js';
 
 /** Ids de página del NAV real (jx-sidebar.jsx). */
@@ -186,5 +187,78 @@ describe('categorías del catálogo', () => {
   it('sin datos no explota', () => {
     expect(empresasPorCategoria(null).length).toBe(3);
     expect(empresasPorCategoria(undefined)[0].empresas).toEqual([]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// EL MENÚ DE LA EMPRESA ACTIVA (tanda 2G)
+//
+// Gabriel, 3-sep-2026: «cuando doy ahí en esa sección de contabilidad, sí me
+// debería desglosar como hemos tenido antes —con movimientos, con guías de
+// remisiones, con un libro diario, con planilla— pero exclusivamente de la
+// empresa seleccionada».
+//
+// El menú se escribía a mano en jx-sidebar.jsx y el panel salía de este
+// archivo: se desincronizaron (el panel ofrecía cosas que el menú no, y
+// ninguno tenía Planilla). Ahora el sidebar CONSUME MENU_EMPRESA_ACTIVA, y
+// estos tests atan esa lista a las páginas que la app sabe renderizar.
+// ═══════════════════════════════════════════════════════════════════
+describe('MENU_EMPRESA_ACTIVA — el desglose de la izquierda', () => {
+  const leerSrc = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8');
+
+  /** Ids que jx-app.jsx sabe RENDERIZAR (PAGE_REGISTRY + el switch). */
+  function idsRenderizables() {
+    const src = leerSrc('../../jx-app.jsx');
+    const ids = new Set();
+    const ini = src.indexOf('const PAGE_REGISTRY = {');
+    const fin = src.indexOf('\n};', ini);
+    expect(ini, 'no se encontró PAGE_REGISTRY en jx-app.jsx').toBeGreaterThan(-1);
+    for (const m of src.slice(ini, fin).matchAll(/^\s*'([^']+)':\s*\{/gm)) ids.add(m[1]);
+    for (const m of src.matchAll(/case\s+'([^']+)':/g)) ids.add(m[1]);
+    return ids;
+  }
+
+  it('arranca por el panel de la empresa y sigue con su contabilidad', () => {
+    expect(MENU_EMPRESA_ACTIVA[0].id).toBe('empresas');
+    expect(MENU_EMPRESA_ACTIVA.slice(1).map(m => m.id))
+      .toEqual(BLOQUES_CONTABILIDAD_EMPRESA.map(b => b.id));
+  });
+
+  it('tiene lo que Gabriel nombró uno por uno', () => {
+    const ids = MENU_EMPRESA_ACTIVA.map(m => m.id);
+    for (const pedido of ['movimientos-contables', 'guias-remision', 'libro-diario', 'planillas']) {
+      expect(ids, `Gabriel lo pidió por su nombre: ${pedido}`).toContain(pedido);
+    }
+  });
+
+  it('cada entrada es una página que la app sabe abrir', () => {
+    const renderizables = idsRenderizables();
+    const muertas = MENU_EMPRESA_ACTIVA.filter(m => !renderizables.has(m.id)).map(m => m.id);
+    expect(muertas, 'ítem del menú que no lleva a ninguna pantalla').toEqual([]);
+  });
+
+  it('cada entrada tiene etiqueta e ícono', () => {
+    for (const m of MENU_EMPRESA_ACTIVA) {
+      expect(m.label, m.id).toBeTruthy();
+      expect(m.icon, m.id).toBeTruthy();
+    }
+  });
+
+  it('el sidebar NO vuelve a escribir la lista a mano', () => {
+    // Si alguien re-escribe los ítems en jx-sidebar.jsx, las dos listas se
+    // separan otra vez y el panel y el menú vuelven a contradecirse.
+    const src = leerSrc('../../components/jx-sidebar.jsx');
+    expect(src).toContain('MENU_EMPRESA_ACTIVA');
+  });
+
+  it('el Consolidado y el Análisis de insumos NO son de una empresa', () => {
+    // Son del GRUPO por definición: mirarlos "desde una empresa" no significa
+    // nada. Por eso quedan fuera del contexto (esPaginaDeEmpresa).
+    expect(esPaginaDeEmpresa('consolidado')).toBe(false);
+    expect(esPaginaDeEmpresa('analisis-insumos')).toBe(false);
+    expect(esPaginaDeEmpresa('contabilidad')).toBe(false);
+    // Y las que SÍ lo son.
+    expect(esPaginaDeEmpresa('movimientos-contables')).toBe(true);
+    expect(esPaginaDeEmpresa('planillas')).toBe(true);
   });
 });

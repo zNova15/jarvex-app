@@ -14,6 +14,7 @@
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
 import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
+import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
@@ -49,7 +50,12 @@ function ComprasCategoriaPage({ showToast }) {
   // Compras POR EMPRESA (tanda 2F): Gabriel lo pidió dentro del desglose de
   // cada empresa — «en la empresa también se puede categorizar qué compras
   // está haciendo». Arranca en la empresa activa si venís de su panel.
-  const [filtroEmpresa, setFiltroEmpresa] = uS(() => filtroInicialEmpresa('todas'));
+  const [filtroEmpresaRaw, setFiltroEmpresa] = uS(() => filtroInicialEmpresa('todas'));
+  // ÁMBITO, no filtro: con una empresa activa esta pantalla es la contabilidad
+  // de ESA empresa y el selector va clavado (Gabriel: «netamente y
+  // exclusivamente de esa empresa seleccionada»).
+  const empresaFija = useEmpresaBloqueada();
+  const filtroEmpresa = empresaFija || filtroEmpresaRaw;
   const [filtroCat, setFiltroCat] = uS('todas');
   const [busyRegla, setBusyRegla] = uS(false);
 
@@ -309,9 +315,12 @@ function ComprasCategoriaPage({ showToast }) {
 
       {/* Filtros */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
-        <select className="fi" value={filtroEmpresa} onChange={e => setFiltroEmpresa(e.target.value)} style={{ minWidth: 180, maxWidth: 300 }}>
-          <option value="todas">Todas las empresas</option>
-          {(companies || []).filter(c => !c.deleted_at).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+        <select className="fi" value={filtroEmpresa} onChange={e => setFiltroEmpresa(e.target.value)} style={{ minWidth: 180, maxWidth: 300 }}
+          disabled={!!empresaFija}
+          title={empresaFija ? 'Estás dentro de la contabilidad de esta empresa: son SUS compras.' : undefined}>
+          {!empresaFija && <option value="todas">Todas las empresas</option>}
+          {(companies || []).filter(c => !c.deleted_at && (!empresaFija || c.id === empresaFija))
+            .map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
         <select className="fi" value={filtroObra} onChange={e => setFiltroObra(e.target.value)} style={{ minWidth: 200, maxWidth: 320 }}>
           <option value="todas">Todas las obras</option>

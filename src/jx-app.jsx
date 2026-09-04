@@ -1311,7 +1311,16 @@ function App() {
   // Solo las páginas que SON la contabilidad de una empresa entran al contexto.
   // El "Resumen por entidad" y el Consolidado siguen siendo del GRUPO aunque
   // haya una empresa activa: ahí se comparan todas, no se mira una.
-  const areaActual = (empresaActivaId && esPaginaDeEmpresa(page)) ? 'empresa' : areaBase;
+  // 'empresas' entra también: parado en el PANEL de una empresa, el menú de la
+  // izquierda tiene que ser el desglose de ESA empresa. Mostrando el catálogo
+  // (área 'empresas') el desglose aparecía recién después de saltar a una
+  // pantalla contable — «cuando doy ahí en esa sección de contabilidad, sí me
+  // debería desglosar […] en la parte izquierda».
+  // Solo en el plano GENERAL: dentro de una obra manda la obra, aunque haya
+  // una empresa activa guardada (el mismo corte que hace useEmpresaBloqueada).
+  const areaActual = (planoActual === 'general' && empresaActivaId
+      && (page === 'empresas' || esPaginaDeEmpresa(page)))
+    ? 'empresa' : areaBase;
   window.__plano = planoActual;   // lo leen páginas lazy (ej. Movimientos: scope por obra)
   return (
     <div style={{ display:'flex', height:'100vh', overflow:'hidden' }}>

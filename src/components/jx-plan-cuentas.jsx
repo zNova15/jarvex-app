@@ -10,6 +10,7 @@ import {
   saveCustomCuentas,
 } from '../lib/pcge-default';
 import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
+import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 
 const { useState: uSP, useMemo: uMP, useEffect: uEP } = React;
 
@@ -336,7 +337,11 @@ function BalanceGeneralPage({ showToast }) {
   const { data: movs }      = window.__hooks.useAccountingMovements();
   const { data: pagos }     = window.__hooks.useCronogramaPagos();
 
-  const [companyId, setCompanyId] = uSP(() => filtroInicialEmpresa('todas'));
+  const [companyIdRaw, setCompanyId] = uSP(() => filtroInicialEmpresa('todas'));
+  // ÁMBITO, no filtro: con una empresa activa este es SU balance / SU estado
+  // de resultados, y el selector va clavado.
+  const empresaFija = useEmpresaBloqueada();
+  const companyId = empresaFija || companyIdRaw;
   const [moneda, setMoneda] = uSP('PEN');
 
   const data = uMP(() => {
@@ -413,9 +418,11 @@ function BalanceGeneralPage({ showToast }) {
             className="fi"
             value={companyId}
             onChange={e=>setCompanyId(e.target.value)}
+            disabled={!!empresaFija}
+            title={empresaFija ? 'Estás dentro de la contabilidad de esta empresa: el reporte es solo suyo.' : undefined}
             style={{ minWidth:180 }}>
-            <option value="todas">Todas las empresas</option>
-            {(companies || []).filter(c=>c.status==='activa').map(c => (
+            {!empresaFija && <option value="todas">Todas las empresas</option>}
+            {(companies || []).filter(c=>c.status==='activa' && (!empresaFija || c.id === empresaFija)).map(c => (
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
           </select>
@@ -429,6 +436,7 @@ function BalanceGeneralPage({ showToast }) {
           </select>
         </div>
       </div>
+      {window.EmpresaActivaBanner ? <window.EmpresaActivaBanner/> : null}
 
       {/* KPIs */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(200px, 1fr))', gap:12, marginBottom:18 }}>
@@ -547,7 +555,11 @@ function EstadoResultadosPage({ showToast }) {
   const { data: movs }      = window.__hooks.useAccountingMovements();
 
   const hoy = new Date();
-  const [companyId, setCompanyId] = uSP(() => filtroInicialEmpresa('todas'));
+  const [companyIdRaw, setCompanyId] = uSP(() => filtroInicialEmpresa('todas'));
+  // ÁMBITO, no filtro: con una empresa activa este es SU balance / SU estado
+  // de resultados, y el selector va clavado.
+  const empresaFija = useEmpresaBloqueada();
+  const companyId = empresaFija || companyIdRaw;
   const [moneda, setMoneda]       = uSP('PEN');
   const [anio, setAnio]           = uSP(hoy.getFullYear());
   const [mes, setMes]             = uSP(0); // 0 = todo el año
@@ -670,9 +682,11 @@ function EstadoResultadosPage({ showToast }) {
             className="fi"
             value={companyId}
             onChange={e=>setCompanyId(e.target.value)}
+            disabled={!!empresaFija}
+            title={empresaFija ? 'Estás dentro de la contabilidad de esta empresa: el reporte es solo suyo.' : undefined}
             style={{ minWidth:160 }}>
-            <option value="todas">Todas las empresas</option>
-            {(companies || []).filter(c=>c.status==='activa').map(c => (
+            {!empresaFija && <option value="todas">Todas las empresas</option>}
+            {(companies || []).filter(c=>c.status==='activa' && (!empresaFija || c.id === empresaFija)).map(c => (
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
           </select>
@@ -704,6 +718,7 @@ function EstadoResultadosPage({ showToast }) {
           </button>
         </div>
       </div>
+      {window.EmpresaActivaBanner ? <window.EmpresaActivaBanner/> : null}
 
       {/* Cards visuales con números grandes */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(200px, 1fr))', gap:12, marginBottom:18 }}>

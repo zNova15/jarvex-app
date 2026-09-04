@@ -1,4 +1,5 @@
 import React from "react";
+import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -40,7 +41,19 @@ function useObraActiva() {
 }
 
 function PlanillasPage({ showToast }) {
-  const obraId = useObraActiva();
+  // DOS MODOS, y la diferencia es de quién es la planilla:
+  //  · por OBRA (el de siempre): las planillas del trabajo activo, y acá se
+  //    crean y se calculan.
+  //  · por EMPRESA (tanda 2G): entraste por la contabilidad de una empresa, así
+  //    que se ven TODAS sus planillas —de todos sus trabajos— con la obra en
+  //    cada fila. Pedido de Gabriel: «va a estar el libro diario y planilla y
+  //    muchas cosas que debería tener la empresa». Es de LECTURA: una planilla
+  //    se arma dentro del trabajo, que es donde están la asistencia y los
+  //    contratos; crearla desde acá dejaría una planilla sin obra.
+  const empresaFija = useEmpresaBloqueada();   // ya devuelve null dentro de una obra
+  const modoEmpresa = !!empresaFija;
+  const obraActivaId = useObraActiva();
+  const obraId = modoEmpresa ? null : obraActivaId;
   const auth = window.__useAuth?.();
   const userId = auth?.profile?.id ?? 'offline';
   const isAdmin = auth?.profile?.rol === 'admin';
@@ -49,9 +62,14 @@ function PlanillasPage({ showToast }) {
   // gerente y asistente_admin (todos con 'w' en Planillas) pueden gestionar.
   const puedeGestionar = isAdmin || (window.__hasPerm?.(myRol, 'Planillas', 'w') ?? false);
 
-  const { data: planillas } = window.__hooks.usePlanillas(obraId);
+  const { data: planillasRaw } = window.__hooks.usePlanillas(obraId);
   const { data: personal } = window.__hooks.usePersonal(obraId);
   const { data: companies } = window.__hooks.useCompanies();
+  const { data: obrasTodas } = window.__hooks.useObras();
+  const planillas = uM(
+    () => (modoEmpresa ? (planillasRaw || []).filter(p => p.company_id === empresaFija) : planillasRaw),
+    [planillasRaw, modoEmpresa, empresaFija]);
+  const nombreObra = (id) => (obrasTodas || []).find(o => o.id === id)?.nombre_obra || '(sin trabajo)';
 
   const [modal, setModal] = uS(null); // null | 'nueva' | 'detalle'
   const [editing, setEditing] = uS(null);
@@ -258,19 +276,30 @@ function PlanillasPage({ showToast }) {
     } catch (e) {}
   };
 
-  if (!obraId) return <div className="page-wrap"><div className="empty-state"><p>Selecciona una obra.</p></div></div>;
+  if (!modoEmpresa && !obraId) return <div className="page-wrap"><div className="empty-state"><p>Selecciona una obra.</p></div></div>;
 
   return (
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div>
           <div className="pg-title">Planillas / Sueldos</div>
-          <div className="pg-sub">{sorted.length} planillas · {(personal||[]).filter(p=>p.estado==='activo').length} trabajadores activos</div>
+          <div className="pg-sub">
+            {modoEmpresa
+              ? `${sorted.length} planilla(s) de esta empresa, de todos sus trabajos`
+              : `${sorted.length} planillas · ${(personal||[]).filter(p=>p.estado==='activo').length} trabajadores activos`}
+          </div>
         </div>
-        {puedeGestionar && (
+        {puedeGestionar && !modoEmpresa && (
           <button className="btn btn-amber btn-sm" onClick={openNueva}><JxIcon name="plus" size={13}/>Nueva Planilla</button>
         )}
       </div>
+      {modoEmpresa && window.EmpresaActivaBanner ? <window.EmpresaActivaBanner/> : null}
+      {modoEmpresa && (
+        <div className="card card-p" style={{ marginBottom: 12, borderLeft: '3px solid var(--blue)', fontSize: 11.5, color: 'var(--ts)' }}>
+          Estas son las planillas donde <strong>esta empresa es la empleadora</strong>, sumando todos sus trabajos.
+          Para crear o recalcular una, entrá al trabajo: ahí están la asistencia y los contratos con los que se arma.
+        </div>
+      )}
 
       {sorted.length === 0 ? (
         <div className="card card-p empty-state">
@@ -285,6 +314,7 @@ function PlanillasPage({ showToast }) {
           <table className="tbl">
             <thead><tr>
               <th>Periodo</th>
+              {modoEmpresa && <th>Trabajo</th>}
               <th style={{ textAlign:'right' }}>Trabajadores</th>
               <th style={{ textAlign:'right' }}>Bruto</th>
               <th style={{ textAlign:'right' }}>Descuentos</th>
@@ -297,6 +327,7 @@ function PlanillasPage({ showToast }) {
               {sorted.map(p => (
                 <tr key={p.id}>
                   <td className="col-m"><strong>{MESES[p.periodo_mes-1]} {p.periodo_anio}</strong></td>
+                  {modoEmpresa && <td style={{ fontSize:11.5, color:'var(--tm)' }}>{nombreObra(p.obra_id)}</td>}
                   <td style={{ textAlign:'right' }}>{p.total_trabajadores}</td>
                   <td style={{ textAlign:'right' }}>{fmtS(p.total_remuneraciones)}</td>
                   <td style={{ textAlign:'right', color:'var(--orange)' }}>{fmtS(p.total_descuentos)}</td>

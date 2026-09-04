@@ -22,7 +22,8 @@ import { rolDeCompanyEnObra, titularContableDeObra } from "../lib/consorcio.js";
 import { resumenPorEntidad } from "../lib/contabilidad-entidades.js";
 import { consolidar, MOTIVO_LABEL } from "../lib/consolidado.js";
 import { empresasPorCategoria, CATEGORIAS_EMPRESA } from "../lib/desglose-empresa.js";
-import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
+import { filtroInicialEmpresa, setEmpresaActivaId, limpiarEmpresaActiva, getEmpresaActivaId } from "../lib/empresa-activa.js";
+import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 const { useState: uSC, useMemo: uMC, useEffect: uEC, useRef: uRC } = React;
 
 // Etiqueta humana de un mes 'YYYY-MM' → 'Junio 2026' (filtro de período).
@@ -158,15 +159,29 @@ function EmpresasPage({ showToast }) {
 
   // Detalle de UNA empresa (punto 5): vive DENTRO de esta página (import
   // estático, mismo chunk), no es una página registrada.
-  const [detalleId, setDetalleId] = uSC(null);
+  // ENTRAR a una empresa fija el contexto (y salir lo suelta): a partir de ahí
+  // el menú de la izquierda es SU contabilidad y las pantallas contables
+  // muestran solo lo suyo. Antes el contexto se fijaba recién al saltar a una
+  // pantalla contable, así que estando parado en el panel el menú seguía
+  // mostrando el catálogo — no había desglose de la empresa donde Gabriel lo
+  // esperaba, «igual en la parte izquierda».
+  const [detalleId, setDetalleIdRaw] = uSC(null);
+  const setDetalleId = (id) => {
+    if (id) setEmpresaActivaId(id); else limpiarEmpresaActiva();
+    setDetalleIdRaw(id);
+  };
   // …y por eso otras pantallas la abren con un INTENT (mismo patrón que
   // __movsBuscarIntent): la Contabilidad del grupo enlaza a la ficha de cada
   // empresa, y sin esto el link caía en la lista y había que buscarla a mano.
   uEC(() => {
     const id = window.__empresaDetalleIntent;
-    if (!id) return;
-    window.__empresaDetalleIntent = null;
-    setDetalleId(id);
+    if (id) { window.__empresaDetalleIntent = null; setDetalleId(id); return; }
+    // Volver del menú a "Panel de la empresa" con contexto vivo tiene que
+    // devolverte a ESA empresa, no al catálogo (es el ítem del menú de la
+    // empresa activa).
+    const activa = getEmpresaActivaId();
+    if (activa) setDetalleIdRaw(activa);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [modal, setModal] = uSC(null); // null | 'nueva' | 'editar'
   const [editingId, setEditingId] = uSC(null);
@@ -922,7 +937,13 @@ function MovimientosContablesPage({ showToast }) {
   // Si venís del desglose de una empresa, esta pantalla arranca mostrando
   // SOLO la suya (tanda 2F). Sin esto, salir del panel a Movimientos te
   // devolvía los de todas: «aquí tienes nuevamente todo mezclado».
-  const [filtroEmpresaSel, setFiltroEmpresaSel] = uSC(() => filtroInicialEmpresa('todas'));
+  const [filtroEmpresaSelRaw, setFiltroEmpresaSel] = uSC(() => filtroInicialEmpresa('todas'));
+  // EXCLUSIVIDAD. Gabriel, 3-sep-2026: «aquí no va a estar que cambio un
+  // filtro y voy a ir a otra empresa, sino netamente y exclusivamente de esa
+  // empresa seleccionada». Con contexto de empresa el filtro no es un filtro:
+  // es el ÁMBITO de la pantalla, y el <select> va clavado (disabled).
+  const empresaFija = useEmpresaBloqueada();
+  const filtroEmpresaSel = empresaFija || filtroEmpresaSelRaw;
   const [filtroClase, setFiltroClase] = uSC('todos');
   const [filtroTipo, setFiltroTipo] = uSC('todos');
   const [filtroEstado, setFiltroEstado] = uSC('todos');
@@ -958,6 +979,13 @@ function MovimientosContablesPage({ showToast }) {
   const [filtroBanc, setFiltroBanc] = uSC('todos');
   // Tipo de comprobante (factura/boleta/NC/recibo/…); '_con_guia' = con guía vinculada.
   const [filtroTipoDoc, setFiltroTipoDoc] = uSC('todos');
+  // Dentro de una obra: además de lo IMPUTADO a ella, poder ver lo que el
+  // titular contable (el consorcio) movió sin imputar a ninguna. Gabriel:
+  // «cuando hablamos de mis movimientos, ahí van a estar todos los
+  // movimientos, pero del consorcio». Va como opción VISIBLE y apagada por
+  // defecto: prendida de fábrica cambiaría en silencio los totales de la obra
+  // que la contadora viene cuadrando.
+  const [incluirTitularSinObra, setIncluirTitularSinObra] = uSC(false);
   // DEPÓSITOS multi-factura: un depósito de p.ej. 20,000 cubre facturas de
   // 3,000+7,000+10,000 del mismo pagador→cobrador, consumiendo saldo.
   const [depositos, setDepositos] = uSC([]);                            // depósitos vivos
@@ -1438,10 +1466,13 @@ function MovimientosContablesPage({ showToast }) {
     // ámbito de la pantalla. Resetearlo a 'todas' mostraría las otras obras.
     if (!enObra && filtroObraSel !== 'todas' && (obras || []).length &&
         !obrasParaSelector.some(o => o.id === filtroObraSel)) setFiltroObraSel('todas');
+    // Con empresa activa el ámbito lo fija el contexto, no el selector: si se
+    // reseteara acá, entrar a una empresa sin movimientos en la obra te
+    // devolvía las de todas — justo lo contrario de "exclusivamente esa".
     const universoEmpresas = enObra ? empresasDeLaObra : companiesActivas;
-    if (filtroEmpresaSel !== 'todas' && (companies || []).length &&
+    if (!empresaFija && filtroEmpresaSel !== 'todas' && (companies || []).length &&
         !universoEmpresas.some(c => c.id === filtroEmpresaSel)) setFiltroEmpresaSel('todas');
-  }, [enObra, filtroObraSel, filtroEmpresaSel, obrasParaSelector, companiesActivas, empresasDeLaObra, obras, companies]);
+  }, [enObra, filtroObraSel, filtroEmpresaSel, empresaFija, obrasParaSelector, companiesActivas, empresasDeLaObra, obras, companies]);
 
   // ¿El movimiento (>S/2000 en soles) está sin bancarización (ninguna o falló)?
   // Definida antes de `filtered` porque el useMemo la llama al filtrar por
@@ -1502,11 +1533,43 @@ function MovimientosContablesPage({ showToast }) {
   const opcionesEmisor = uMC(() => [...new Set((movs || []).map(emisorDe).filter(n => n && n !== '—'))].sort((a, b) => a.localeCompare(b)), [movs, nombreCompanyDe]);
   const opcionesReceptor = uMC(() => [...new Set((movs || []).map(receptorDe).filter(n => n && n !== '—'))].sort((a, b) => a.localeCompare(b)), [movs, nombreCompanyDe]);
 
+  // ⚠ VA ANTES de `filtered`: ese useMemo lo nombra en su array de deps, que
+  // se evalúa en CADA render. Declarado más abajo daba
+  // "Cannot access 'guiasPorMov' before initialization" (TDZ) y la pantalla
+  // de Movimientos Contables no abría nunca — el error que reportó Gabriel.
+  //
+  // La guía de una operación INTERNA vale para los dos lados. La carga quien la
+  // emitió y queda vinculada a SU venta; el comprador tiene la compra espejo
+  // (related_movement_id → la venta) y hasta ahora no veía ninguna guía, como
+  // si el traslado no existiera. Se muestra la MISMA fila desde su lado: crear
+  // una segunda guía duplicaría el traslado (y con él el panel "requieren
+  // guía" y el cruce con almacén) sobre una operación que en contabilidad ya
+  // está registrada dos veces a propósito.
+  const guiasPorMov = uMC(() => {
+    const out = new Map(guiasPorMovRaw);
+    for (const m of movs || []) {
+      if (!m || m.deleted_at || !m.related_movement_id) continue;
+      const delOtroLado = guiasPorMovRaw.get(m.related_movement_id);
+      if (!delOtroLado?.length) continue;
+      const ya = out.get(m.id) || [];
+      const ids = new Set(ya.map(g => g.id));
+      const suma = delOtroLado.filter(g => !ids.has(g.id)).map(g => ({ ...g, _espejo: true }));
+      if (suma.length) out.set(m.id, [...ya, ...suma]);
+    }
+    return out;
+  }, [guiasPorMovRaw, movs]);
+
   const filtered = uMC(() => {
     if (!movs) return [];
     let f = [...movs];
     // Ámbito: por OBRA (m.obra_id) o por EMPRESA (m.company_id).
-    if (filtroObraSel !== 'todas') f = f.filter(m => m.obra_id === filtroObraSel);
+    if (filtroObraSel !== 'todas') {
+      const sumaTitular = enObra && incluirTitularSinObra && titularObraId;
+      f = f.filter(m => m.obra_id === filtroObraSel
+        // Lo del consorcio que nadie imputó a un trabajo: existe, es suyo, y
+        // sin esto no se ve desde ninguna pantalla del plano obra.
+        || (sumaTitular && !m.obra_id && !m.trabajo_id && m.company_id === titularObraId));
+    }
     if (filtroEmpresaSel !== 'todas') f = f.filter(m => m.company_id === filtroEmpresaSel);
     if (filtroClase !== 'todos') f = f.filter(m => (m.clase || (m.type === 'income' ? 'venta' : 'compra')) === filtroClase);
     if (filtroTipo !== 'todos') f = f.filter(m => m.type === filtroTipo);
@@ -1547,14 +1610,18 @@ function MovimientosContablesPage({ showToast }) {
       (b.date||'').localeCompare(a.date||'')
       || cmpComprobante(a.document_number, b.document_number)
       || (a.created_at||'').localeCompare(b.created_at||''));
-  }, [movs, filtroObraSel, filtroEmpresaSel, filtroClase, filtroTipo, filtroEstado, filtroEmisor, filtroReceptor, nombreCompanyDe, busqueda, filtroBanc, filtroTipoDoc, guiasPorMov, filtroMes, filtroDesde, filtroHasta, bancarizacionPorMov, partesPorMov, depositosById]);
+  }, [movs, filtroObraSel, filtroEmpresaSel, filtroClase, filtroTipo, filtroEstado, filtroEmisor, filtroReceptor, nombreCompanyDe, busqueda, filtroBanc, filtroTipoDoc, guiasPorMov, filtroMes, filtroDesde, filtroHasta, bancarizacionPorMov, partesPorMov, depositosById, enObra, incluirTitularSinObra, titularObraId]);
 
   // Paginación: tabla puede tener miles de movimientos contables.
   const movPg = usePagination(filtered, 100);
 
   // Barra de filtros reorganizada (31-ago): saber si hay algo filtrado y
   // poder volver a "ver todo" con un click.
-  const hayFiltrosActivos = busqueda !== '' || (!enObra && filtroObraSel !== 'todas') || filtroEmpresaSel !== 'todas'
+  // La empresa activa NO cuenta como "filtro puesto": es el ámbito. Si contara,
+  // "Limpiar filtros" prometería sacarla y no puede — el contexto se sale desde
+  // el cartel, que es donde dice cómo.
+  const hayFiltrosActivos = busqueda !== '' || (!enObra && filtroObraSel !== 'todas')
+    || (!empresaFija && filtroEmpresaSel !== 'todas')
     || filtroClase !== 'todos' || filtroTipo !== 'todos' || filtroEstado !== 'todos'
     || filtroEmisor !== 'todos' || filtroReceptor !== 'todos' || filtroMes !== 'todos'
     || filtroTipoDoc !== 'todos' || filtroBanc !== 'todos';
@@ -2020,27 +2087,6 @@ function MovimientosContablesPage({ showToast }) {
     return () => { cancel = true; window.removeEventListener('jx_data_changed', on); window.removeEventListener('jarvex_master_updated', on); };
   }, []);
 
-  // La guía de una operación INTERNA vale para los dos lados. La carga quien la
-  // emitió y queda vinculada a SU venta; el comprador tiene la compra espejo
-  // (related_movement_id → la venta) y hasta ahora no veía ninguna guía, como
-  // si el traslado no existiera. Se muestra la MISMA fila desde su lado: crear
-  // una segunda guía duplicaría el traslado (y con él el panel "requieren
-  // guía" y el cruce con almacén) sobre una operación que en contabilidad ya
-  // está registrada dos veces a propósito.
-  const guiasPorMov = uMC(() => {
-    const out = new Map(guiasPorMovRaw);
-    for (const m of movs || []) {
-      if (!m || m.deleted_at || !m.related_movement_id) continue;
-      const delOtroLado = guiasPorMovRaw.get(m.related_movement_id);
-      if (!delOtroLado?.length) continue;
-      const ya = out.get(m.id) || [];
-      const ids = new Set(ya.map(g => g.id));
-      const suma = delOtroLado.filter(g => !ids.has(g.id)).map(g => ({ ...g, _espejo: true }));
-      if (suma.length) out.set(m.id, [...ya, ...suma]);
-    }
-    return out;
-  }, [guiasPorMovRaw, movs]);
-
   // Deep-link desde Guías de Remisión: pre-cargar la búsqueda con el documento.
   uEC(() => {
     const intent = window.__movsBuscarIntent;
@@ -2443,6 +2489,14 @@ function MovimientosContablesPage({ showToast }) {
                   Ver todas las obras →
                 </button>
               </div>
+              {titularObraId && (
+                <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:10.5, color:'var(--tm)', marginTop:5, cursor:'pointer' }}
+                  title="Comprobantes a nombre del titular contable que no están imputados a ninguna obra ni trabajo. Sin esto no se ven desde acá.">
+                  <input type="checkbox" checked={incluirTitularSinObra}
+                    onChange={e => setIncluirTitularSinObra(e.target.checked)} />
+                  <span>+ lo de <strong>{nombreCompanyDe(titularObraId)}</strong> sin imputar a un trabajo</span>
+                </label>
+              )}
             </div>
           ) : (
             <div>
@@ -2457,11 +2511,16 @@ function MovimientosContablesPage({ showToast }) {
           <div>
             <label className="flabel">🏢 Empresa del grupo</label>
             <select className="fi" value={filtroEmpresaSel} onChange={e=>setFiltroEmpresaSel(e.target.value)} style={{ width:'100%' }}
-              title={enObra && obraDelWorkspace
-                ? 'Las empresas del grupo que tienen movimientos en esta obra. El titular contable es quien lleva sus libros; las demás le facturan (cadena intercompany).'
-                : 'Filtrar por EMPRESA del grupo — se combina con el filtro de obra'}>
-              <option value="todas">{enObra && obraDelWorkspace ? 'Todas las de esta obra' : 'Todas las empresas'}</option>
-              {(enObra && obraDelWorkspace ? empresasDeLaObra : companiesActivas).map(c => (
+              disabled={!!empresaFija}
+              title={empresaFija
+                ? 'Estás dentro de la contabilidad de esta empresa: la pantalla muestra solo lo suyo. Para ver otra, salí del contexto desde el cartel de arriba.'
+                : (enObra && obraDelWorkspace
+                  ? 'Las empresas del grupo que tienen movimientos en esta obra. El titular contable es quien lleva sus libros; las demás le facturan (cadena intercompany).'
+                  : 'Filtrar por EMPRESA del grupo — se combina con el filtro de obra')}>
+              {!empresaFija && <option value="todas">{enObra && obraDelWorkspace ? 'Todas las de esta obra' : 'Todas las empresas'}</option>}
+              {(empresaFija
+                ? (companies || []).filter(c => c.id === empresaFija)
+                : (enObra && obraDelWorkspace ? empresasDeLaObra : companiesActivas)).map(c => (
                 <option key={c.id} value={c.id}>{c.name}{c.id === titularObraId ? ' · titular contable' : ''}</option>
               ))}
             </select>

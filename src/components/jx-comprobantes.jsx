@@ -3,6 +3,7 @@ import { validarComprobanteAI } from "../lib/validar-comprobante-ai.js";
 import { derivarTypeContable } from "../lib/clasificacion-contable.js";
 import { companyIdsDeObra } from "../lib/consorcio.js";
 import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
+import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 // Iconos
@@ -141,7 +142,12 @@ function ComprobantesElectronicosPage({ showToast }) {
   // Si venís del desglose de una empresa, esta pantalla arranca mostrando solo
   // los comprobantes de ELLA (tanda 2F). Se lee en el initializer, no en un
   // efecto, para que el primer render ya llegue filtrado.
-  const [filtroEmpresa, setFiltroEmpresa] = uS(() => filtroInicialEmpresa('todas'));
+  const [filtroEmpresaRaw, setFiltroEmpresa] = uS(() => filtroInicialEmpresa('todas'));
+  // ÁMBITO, no filtro: con una empresa activa esta pantalla es la contabilidad
+  // de ESA empresa y el selector va clavado (Gabriel: «netamente y
+  // exclusivamente de esa empresa seleccionada»).
+  const empresaFija = useEmpresaBloqueada();
+  const filtroEmpresa = empresaFija || filtroEmpresaRaw;
   const [filtroTipo, setFiltroTipo] = uS('todos');     // todos | 01 | 03 | 07 | 08
   const [filtroEstado, setFiltroEstado] = uS('todos'); // todos | pendiente_emision | emitido | anulado | rechazado
   const [busqueda, setBusqueda] = uS('');
@@ -737,9 +743,11 @@ function ComprobantesElectronicosPage({ showToast }) {
           <Icon name="search" size={14} color="var(--tm)"/>
           <input placeholder="Buscar serie / cliente / descripción…" value={busqueda} onChange={e=>setBusqueda(e.target.value)}/>
         </div>
-        <select className="fi" value={filtroEmpresa} onChange={e=>setFiltroEmpresa(e.target.value)} style={{ minWidth:160 }}>
-          <option value="todas">Todas las empresas</option>
-          {(companies || []).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+        <select className="fi" value={filtroEmpresa} onChange={e=>setFiltroEmpresa(e.target.value)} style={{ minWidth:160 }}
+          disabled={!!empresaFija}
+          title={empresaFija ? 'Estás dentro de la contabilidad de esta empresa: se muestran solo sus comprobantes.' : undefined}>
+          {!empresaFija && <option value="todas">Todas las empresas</option>}
+          {(companies || []).filter(c => !empresaFija || c.id === empresaFija).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
         <select className="fi" value={filtroTipo} onChange={e=>setFiltroTipo(e.target.value)} style={{ minWidth:140 }}>
           <option value="todos">Todos los tipos</option>

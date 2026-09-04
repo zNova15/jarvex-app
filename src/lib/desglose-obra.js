@@ -107,21 +107,21 @@ export const GRUPOS_TRABAJO = [
   },
   {
     id: 'contabilidad-obra',
-    titulo: 'Contabilidad de la obra',
+    titulo: 'Movimientos y contabilidad de la obra',
     icon: 'dollar',
     color: 'var(--amber)',
     // La frase corta que explica el cambio: dentro de una obra no se elige
-    // empresa a mano — la obra ya tiene su titular contable.
-    desc: 'Los movimientos imputados a esta obra, con su titular contable',
-    items: ['movimientos-contables', 'conciliacion-insumos', 'pagos'],
-  },
-  {
-    id: 'cadenas',
-    titulo: 'Cadenas intercompany',
-    icon: 'compare',
-    color: 'var(--purple)',
-    desc: 'Proveedor → empresas del grupo → la ejecutora de esta obra',
-    items: ['trazabilidad'],
+    // empresa a mano — la obra ya tiene su titular contable (el consorcio).
+    //
+    // 'trazabilidad' ENTRÓ ACÁ (tanda 2G). Tenía grupo propio ("Cadenas
+    // intercompany") y quedaba lejos de lo único con lo que se usa. Gabriel,
+    // 3-sep-2026: «cuando hablamos de mis movimientos, ahí van a estar todos
+    // los movimientos, pero del consorcio, y allí también van a estar las
+    // herramientas que habíamos creado, que era de trazabilidad, que era para
+    // hacer un análisis de insumos». Un solo grupo: la plata de la obra y las
+    // herramientas para leerla.
+    desc: 'Los movimientos del consorcio en esta obra, y las herramientas para analizarlos',
+    items: ['movimientos-contables', 'conciliacion-insumos', 'pagos', 'trazabilidad'],
   },
 ];
 
