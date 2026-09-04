@@ -22,6 +22,7 @@ import { rolDeCompanyEnObra, titularContableDeObra } from "../lib/consorcio.js";
 import { resumenPorEntidad } from "../lib/contabilidad-entidades.js";
 import { consolidar, MOTIVO_LABEL } from "../lib/consolidado.js";
 import { empresasPorCategoria, CATEGORIAS_EMPRESA } from "../lib/desglose-empresa.js";
+import { reflejosPorEmpresa, reflejosDe } from "../lib/documento-dos-lados.js";
 import { filtroInicialEmpresa, setEmpresaActivaId, limpiarEmpresaActiva, getEmpresaActivaId } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 const { useState: uSC, useMemo: uMC, useEffect: uEC, useRef: uRC } = React;
@@ -944,6 +945,12 @@ function MovimientosContablesPage({ showToast }) {
   // es el ÁMBITO de la pantalla, y el <select> va clavado (disabled).
   const empresaFija = useEmpresaBloqueada();
   const filtroEmpresaSel = empresaFija || filtroEmpresaSelRaw;
+  // UN COMPROBANTE, DOS LIBROS (pedido de Gabriel, 4-sep-2026). Una nota de
+  // crédito que anula una factura mal emitida nombra a dos entidades del grupo,
+  // se carga de un solo lado y del otro no se ve. Prendido de fábrica: es lo
+  // que pidió («será visible desde la contabilidad de cada una de ellas»), y no
+  // mueve un solo total — el reflejo queda fuera de las sumas.
+  const [verOtroLado, setVerOtroLado] = uSC(true);
   const [filtroClase, setFiltroClase] = uSC('todos');
   const [filtroTipo, setFiltroTipo] = uSC('todos');
   const [filtroEstado, setFiltroEstado] = uSC('todos');
@@ -1559,6 +1566,21 @@ function MovimientosContablesPage({ showToast }) {
     return out;
   }, [guiasPorMovRaw, movs]);
 
+  // Los comprobantes que esta empresa tiene que VER aunque no estén en su
+  // libro: la MISMA fila, mostrada desde el otro lado. No se crea un
+  // movimiento espejo (eso sumaría plata que nadie movió) y no entra en
+  // ningún total: el detalle vive en documento-dos-lados.js.
+  // ⚠ VA ANTES de `filtered`, que lo nombra en su array de deps (un const no
+  // se hoistea → TDZ en el primer render, el bug que mató la pantalla).
+  const reflejos = uMC(() => reflejosPorEmpresa({ movs: movs || [], companies: companies || [] }),
+    [movs, companies]);
+  const reflejoActual = uMC(
+    () => reflejosDe(filtroEmpresaSel === 'todas' ? null : filtroEmpresaSel, reflejos),
+    [filtroEmpresaSel, reflejos]);
+  // ¿Esta fila está acá porque es de la empresa, o porque la nombra?
+  const esReflejo = (m) => filtroEmpresaSel !== 'todas'
+    && m?.company_id !== filtroEmpresaSel && reflejoActual.ids.has(m?.id);
+
   const filtered = uMC(() => {
     if (!movs) return [];
     let f = [...movs];
@@ -1570,7 +1592,8 @@ function MovimientosContablesPage({ showToast }) {
         // sin esto no se ve desde ninguna pantalla del plano obra.
         || (sumaTitular && !m.obra_id && !m.trabajo_id && m.company_id === titularObraId));
     }
-    if (filtroEmpresaSel !== 'todas') f = f.filter(m => m.company_id === filtroEmpresaSel);
+    if (filtroEmpresaSel !== 'todas') f = f.filter(m => m.company_id === filtroEmpresaSel
+      || (verOtroLado && reflejoActual.ids.has(m.id)));
     if (filtroClase !== 'todos') f = f.filter(m => (m.clase || (m.type === 'income' ? 'venta' : 'compra')) === filtroClase);
     if (filtroTipo !== 'todos') f = f.filter(m => m.type === filtroTipo);
     if (filtroEstado !== 'todos') f = f.filter(m => m.payment_status === filtroEstado);
@@ -1610,7 +1633,7 @@ function MovimientosContablesPage({ showToast }) {
       (b.date||'').localeCompare(a.date||'')
       || cmpComprobante(a.document_number, b.document_number)
       || (a.created_at||'').localeCompare(b.created_at||''));
-  }, [movs, filtroObraSel, filtroEmpresaSel, filtroClase, filtroTipo, filtroEstado, filtroEmisor, filtroReceptor, nombreCompanyDe, busqueda, filtroBanc, filtroTipoDoc, guiasPorMov, filtroMes, filtroDesde, filtroHasta, bancarizacionPorMov, partesPorMov, depositosById, enObra, incluirTitularSinObra, titularObraId]);
+  }, [movs, filtroObraSel, filtroEmpresaSel, filtroClase, filtroTipo, filtroEstado, filtroEmisor, filtroReceptor, nombreCompanyDe, busqueda, filtroBanc, filtroTipoDoc, guiasPorMov, filtroMes, filtroDesde, filtroHasta, bancarizacionPorMov, partesPorMov, depositosById, enObra, incluirTitularSinObra, titularObraId, reflejoActual, verOtroLado]);
 
   // Paginación: tabla puede tener miles de movimientos contables.
   const movPg = usePagination(filtered, 100);
@@ -2611,13 +2634,42 @@ function MovimientosContablesPage({ showToast }) {
         </div>
       </div>
 
+      {/* UN COMPROBANTE, DOS LIBROS. Cuando la empresa elegida NO cargó el
+          documento pero el documento la nombra, la fila se muestra igual desde
+          su lado (⇄ Del otro lado), fuera de todo total. Es el pedido de
+          Gabriel del 4-sep sobre las notas de crédito: la nota que anula una
+          factura mal emitida involucra a dos entidades del grupo y es evidencia
+          de las dos. Se puede apagar: el interruptor está acá, a la vista. */}
+      {filtroEmpresaSel !== 'todas' && reflejoActual.filas.length > 0 && (
+        <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', padding:'10px 14px', marginBottom:12, borderRadius:8, background:'rgba(155,89,182,0.08)', border:'1px solid rgba(155,89,182,0.32)' }}>
+          <span style={{ fontSize:15 }}>⇄</span>
+          <span style={{ fontSize:13, fontWeight:600, color:'var(--purple)' }}>
+            {reflejoActual.filas.length} comprobante{reflejoActual.filas.length > 1 ? 's' : ''} que nombra{reflejoActual.filas.length > 1 ? 'n' : ''} a esta empresa y está{reflejoActual.filas.length > 1 ? 'n' : ''} cargado{reflejoActual.filas.length > 1 ? 's' : ''} en otro libro
+          </span>
+          <span style={{ fontSize:11, color:'var(--tm)', flex:'1 1 260px', lineHeight:1.45 }}>
+            {reflejoActual.filas.slice(0, 3).map(f => `${f.mov.document_number || 's/n'} · ${f.titularNombre || 'otra empresa'}`).join(' · ')}
+            {reflejoActual.filas.length > 3 ? ` · y ${reflejoActual.filas.length - 3} más` : ''}
+            {' — '}es el mismo papel, no una copia: se ve y sirve de evidencia, pero no suma en los totales de esta empresa.
+          </span>
+          <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:11.5, color:'var(--ts)', cursor:'pointer', marginLeft:'auto' }}
+            title="Apagalo para ver solo los comprobantes cargados en el libro de esta empresa.">
+            <input type="checkbox" checked={verOtroLado} onChange={e => setVerOtroLado(e.target.checked)} />
+            <span>Ver los del otro lado</span>
+          </label>
+        </div>
+      )}
+
       {/* Resumen del PERÍODO filtrado: cuántos comprobantes y totales por clase.
           Le responde a la asistente "¿cuánto compramos/vendimos en Junio?" sin
           tener que sumar a mano. Anulados excluidos; NC restan (monto negativo). */}
       {filtroMes !== 'todos' && (() => {
         const sum = { venta: {}, compra: {} };
+        let nReflejos = 0;
         for (const m of filtered) {
           if (m.payment_status === 'cancelled') continue;
+          // El comprobante del otro lado se VE acá, pero es plata del libro
+          // que lo tiene cargado: sumarlo daría un total que no es de nadie.
+          if (esReflejo(m)) { nReflejos++; continue; }
           const cl = (m.clase || (m.type === 'income' ? 'venta' : 'compra')) === 'venta' ? 'venta' : 'compra';
           const cur = m.currency || 'PEN';
           sum[cl][cur] = (sum[cl][cur] || 0) + (Number(m.amount) || 0);
@@ -2632,7 +2684,12 @@ function MovimientosContablesPage({ showToast }) {
         return (
           <div style={{ display:'flex', gap:14, flexWrap:'wrap', alignItems:'center', padding:'8px 14px', marginBottom:12, borderRadius:8, background:'rgba(59,130,246,0.07)', border:'1px solid rgba(59,130,246,0.3)', fontSize:12 }}>
             <span style={{ fontWeight:700, color:'var(--blue)' }}>📅 {label}</span>
-            <span style={{ color:'var(--ts)' }}>{filtered.length} comprobante{filtered.length === 1 ? '' : 's'}</span>
+            <span style={{ color:'var(--ts)' }}>{filtered.length - nReflejos} comprobante{(filtered.length - nReflejos) === 1 ? '' : 's'}</span>
+            {nReflejos > 0 && (
+              <span style={{ color:'var(--tm)', fontSize:11 }} title="Comprobantes que nombran a esta empresa pero están cargados en otro libro: se ven, no se suman.">
+                + {nReflejos} del otro lado (no suman)
+              </span>
+            )}
             <span style={{ color:'var(--green)' }}>🧾 Ventas: <strong>{fmtSum(sum.venta)}</strong></span>
             <span style={{ color:'var(--amber)' }}>🛒 Compras: <strong>{fmtSum(sum.compra)}</strong></span>
             <button className="btn btn-ghost btn-xs" style={{ marginLeft:'auto' }} title="Volver a ver todo el período"
@@ -2647,7 +2704,7 @@ function MovimientosContablesPage({ showToast }) {
           escritura (incluido el ayudante de contabilidad) puede subirlas sin
           entrar a editar el movimiento. */}
       {canWrite && (() => {
-        const pend = filtered.filter(faltaBancarizacion);
+        const pend = filtered.filter(m => !esReflejo(m) && faltaBancarizacion(m));
         if (!pend.length && filtroBanc !== 'falta') return null;
         return (
           <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', padding:'10px 14px', marginBottom:12, borderRadius:8, background: pend.length ? 'rgba(242,183,5,0.08)' : 'rgba(46,204,113,0.08)', border: `1px solid ${pend.length ? 'rgba(242,183,5,0.35)' : 'rgba(46,204,113,0.35)'}` }}>
@@ -2703,12 +2760,25 @@ function MovimientosContablesPage({ showToast }) {
                 {movPg.pagedItems.map(m => {
                   const c = lookupCompany(m.company_id);
                   const isIc = m.is_intercompany;
+                  const reflejo = esReflejo(m);
                   let esEspejoAuto = false;
                   try { esEspejoAuto = !!(JSON.parse(m.notas || '{}')?.intercompany_auto); } catch {}
                   return (
-                    <tr key={m.id} style={isIc ? { background:'rgba(52,152,219,0.04)' } : null}>
+                    <tr key={m.id} style={reflejo
+                      ? { background:'rgba(155,89,182,0.06)' }
+                      : (isIc ? { background:'rgba(52,152,219,0.04)' } : null)}>
                       <td className="col-m">{m.date}</td>
-                      <td className="col-p">{c?.name || '—'}</td>
+                      <td className="col-p">
+                        {c?.name || '—'}
+                        {reflejo && (
+                          <div style={{ marginTop:3 }}>
+                            <span className="badge b-purple" style={{ fontSize:9 }}
+                              title={`El mismo comprobante, visto desde el otro lado: está cargado en el libro de ${c?.name || 'la otra empresa'} y nombra a esta empresa. No suma en sus totales — para que sume hay que cargar el comprobante en este libro.`}>
+                              ⇄ Del otro lado
+                            </span>
+                          </div>
+                        )}
+                      </td>
                       <td>
                         {(() => { const cl = m.clase || (m.type === 'income' ? 'venta' : 'compra'); return (
                           <span className={`badge ${cl === 'venta' ? 'b-green' : 'b-amber'}`} title={cl === 'venta' ? 'Venta (emitida a la ejecutora)' : 'Compra (a proveedora)'}>{cl === 'venta' ? '🧾 Venta' : '🛒 Compra'}</span>
@@ -5267,6 +5337,11 @@ function ConsolidadoPage({ showToast }) {
             igual —lo que no existe no hay que eliminarlo—, pero el libro de la contraparte está incompleto por
             {' '}{fmtCur(Math.abs(sinEspejo.neto), moneda)}.
           </div>
+          <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 8 }}>
+            ⇄ Mientras tanto se ven igual: en <strong>Movimientos Contables</strong>, filtrando por la contraparte,
+            el comprobante aparece marcado <em>“Del otro lado”</em>. Verlo no lo carga — el libro sigue incompleto
+            hasta que se registre de ese lado.
+          </div>
           <div style={{ display: 'grid', gap: 6 }}>
             {sinEspejo.movimientos.slice(0, 25).map((m) => (
               <div key={m.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 11.5 }}>
@@ -5295,6 +5370,16 @@ function ConsolidadoPage({ showToast }) {
             <strong>no se eliminan</strong>: cuentan como operación externa del grupo aunque tengan la casilla
             &quot;interna&quot; marcada. Manda el catálogo, no la casilla. Si alguna de esas entidades sí es del
             grupo, se corrige marcándola en <strong>Empresas → Revisar clasificación</strong> — no factura por factura.
+          </div>
+          {/* Consolidar y VER no son la misma pregunta (Gabriel, 4-sep-2026):
+              la nota de crédito que anula una factura mal emitida nombra a dos
+              entidades del grupo y es evidencia de las dos, aunque para el
+              consolidado una de ellas sea un tercero. */}
+          <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 8 }}>
+            ⇄ Que no se eliminen no las esconde del otro lado: en{' '}
+            <strong>Movimientos Contables</strong>, filtrando por la contraparte, cada uno de estos comprobantes
+            aparece marcado <em>“Del otro lado”</em> — el mismo papel, sirve de evidencia para las dos, y no suma
+            en los totales de la que no lo cargó.
           </div>
           <div style={{ display: 'grid', gap: 6 }}>
             {r.contraTerceros.movimientos.slice(0, 25).map((m) => (
