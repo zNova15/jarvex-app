@@ -2,6 +2,7 @@ import { db, UPLOAD_STATUS } from '../db/jarvex.db';
 import { supabase } from '../lib/supabase';
 import { optimizarImagenEvidencia } from '../lib/optimizar-imagen';
 import { captureException } from '../instrument.js';
+import { uploadToR2, r2WriteEnabled } from '../lib/r2-storage';
 
 const MAX_RETRIES = 5;
 const MAX_PHOTO_BYTES = 8 * 1024 * 1024; // 8 MB
@@ -78,33 +79,47 @@ export async function uploadEvidencia(evidenciaId) {
   // carpeta fija 'captura-campo' — tiene su propia política de subida (mig 158).
   const storagePath = `${evidencia.obra_id || 'captura-campo'}/${yyyy_mm}/${evidenciaId}.${ext}`;
 
-  // upsert:true → re-subir el mismo path es idempotente (no 409 en reintentos).
-  const { error } = await supabase.storage
-    .from('evidencias')
-    .upload(storagePath, fileBlob, {
-      contentType: fileBlob.type ?? 'application/octet-stream',
-      upsert: true,
-      // 30 días: una evidencia es INMUTABLE (el path incluye su id; el upsert
-      // solo re-sube el mismo contenido en reintentos). Sin esto viajaba con
-      // el default de 1 hora y el HTTP cache del navegador re-validaba/re-bajaba.
-      cacheControl: '2592000',
-    });
+  // Subida del archivo. Con R2 activo (VITE_R2_EVIDENCIAS='on') el archivo va a
+  // Cloudflare R2 (egress $0); si no, a Supabase Storage. El path dentro del
+  // "bucket" es el MISMO en ambos, y en `url_archivo` guardamos algo que contiene
+  // `/evidencias/<path>` para que el visor lo extraiga con pathDeEvidencia() y lo
+  // re-firme (R2 o Supabase, según el flag de lectura).
+  let publicUrl;
+  let uploadError = null;
+  if (r2WriteEnabled()) {
+    const contentType = fileBlob.type || 'application/octet-stream';
+    const r = await uploadToR2(storagePath, fileBlob, contentType);
+    if (r.ok) publicUrl = `/evidencias/${storagePath}`;
+    else uploadError = { message: r.error };
+  } else {
+    // upsert:true → re-subir el mismo path es idempotente (no 409 en reintentos).
+    const { error } = await supabase.storage
+      .from('evidencias')
+      .upload(storagePath, fileBlob, {
+        contentType: fileBlob.type ?? 'application/octet-stream',
+        upsert: true,
+        // 30 días: una evidencia es INMUTABLE (el path incluye su id; el upsert
+        // solo re-sube el mismo contenido en reintentos). Sin esto viajaba con
+        // el default de 1 hora y el HTTP cache del navegador re-validaba/re-bajaba.
+        cacheControl: '2592000',
+      });
+    uploadError = error;
+    if (!error) {
+      publicUrl = supabase.storage.from('evidencias').getPublicUrl(storagePath).data.publicUrl;
+    }
+  }
 
-  if (error) {
+  if (uploadError) {
     const retries = (evidencia.upload_retries ?? 0) + 1;
     const alcanzoTope = retries >= MAX_RETRIES;
     await db.evidencias.update(evidenciaId, {
       upload_retries: retries,
       sync_status: alcanzoTope ? UPLOAD_STATUS.FAILED : UPLOAD_STATUS.PENDING,
-      _last_error: `Subida de archivo al Storage falló: ${error.message || error}`,
+      _last_error: `Subida de archivo al Storage falló: ${uploadError.message || uploadError}`,
     });
-    if (alcanzoTope) { try { captureException(error, { tags:{ area:'evidencias-storage' }, extra:{ id: evidenciaId, tipo: evidencia.tipo_evidencia } }); } catch {} }
+    if (alcanzoTope) { try { captureException(uploadError, { tags:{ area:'evidencias-storage' }, extra:{ id: evidenciaId, tipo: evidencia.tipo_evidencia } }); } catch {} }
     return;
   }
-
-  const { data: { publicUrl } } = supabase.storage
-    .from('evidencias')
-    .getPublicUrl(storagePath);
 
   // Sincronizar metadata al servidor. CRÍTICO: si esto falla NO borramos el blob
   // (si no, la evidencia se pierde: estaría en Storage pero ningún device la vería

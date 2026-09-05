@@ -13,6 +13,7 @@
 // ═══════════════════════════════════════════════════════════════════
 import { db } from '../db/jarvex.db';
 import { supabase } from './supabase';
+import { getR2SignedGetUrl } from './r2-storage';
 
 // Saca el path dentro del bucket de una url_archivo de evidencia
 // (.../object/(public|sign)/evidencias/<obra>/<aaaa-mm>/<id>.<ext>?token=…).
@@ -83,6 +84,19 @@ export async function getEvidenciaSrc(ev, expiresIn = _SIGNED_TTL) {
     if (hit && hit.url && hit.exp - 300000 > now) {
       return { url: hit.url, isBlob: false };
     }
+    // R2 primero (si VITE_R2_EVIDENCIAS está activo): URL prefirmada de 7 días,
+    // cacheada IGUAL que la de Supabase (misma clave por path → el navegador y el
+    // Service Worker cachean la imagen). Si R2 no responde (no configurado, o la
+    // foto aún no se migró) devuelve null → caemos al camino Supabase de abajo y
+    // la vista nunca se rompe.
+    try {
+      const r2url = await getR2SignedGetUrl(path);
+      if (r2url) {
+        cache[path] = { url: r2url, exp: now + expiresIn * 1000 };
+        _saveSigned();
+        return { url: r2url, isBlob: false };
+      }
+    } catch {}
     try {
       const { data } = await supabase.storage.from('evidencias').createSignedUrl(path, expiresIn);
       if (data?.signedUrl) {
