@@ -33,14 +33,12 @@
 //                                    sin borrar la key. default 'openrouter'.
 //   OPENROUTER_STRUCT_MODEL / _FALLBACK / OPENROUTER_DATA_POLICY — ver lib/openrouter.js
 //   MISTRAL_API_KEY    (opcional)  — activa el motor híbrido/OCR barato.
-//   MISTRAL_OCR_MODEL  (opcional)  — default 'mistral-ocr-latest', que desde el
-//                                    16-jul-2026 apunta a OCR 4.1 (USD 4/1000
-//                                    págs). 'mistral-ocr-2512' es OCR 3, la
-//                                    mitad de precio, y alcanza para facturas
-//                                    digitales. OCR 4.1 conviene en documentos
-//                                    difíciles (certificados de calidad).
-//   MISTRAL_OCR_MODEL_CERT (opcional) — modelo de OCR SOLO para certificados de
-//                                    calidad. default 'mistral-ocr-latest'.
+//   MISTRAL_OCR_MODEL / _CERT (opcional) — SOLO snapshots. El default está FIJO
+//                                    en 'mistral-ocr-2512' (OCR 3, USD 2/1000
+//                                    págs) y un alias móvil como
+//                                    'mistral-ocr-latest' se IGNORA a propósito.
+//                                    Ver lib/mistral-ocr.js.
+//   MISTRAL_OCR_PERMITIR_ALIAS='1' (opcional) — deja pasar el alias móvil.
 //   CLAUDE_STRUCT_MODEL (opcional) — modelo Claude de RESPALDO para estructurar
 //                                    facturas/guías. default 'claude-haiku-4-5-20251001'.
 //   CLAUDE_VISION_MODEL (opcional) — modelo fuerte: fallback de visión + certifi-
@@ -65,15 +63,18 @@ const CLAUDE_VISION_MODEL = process.env.CLAUDE_VISION_MODEL || 'claude-sonnet-4-
 const CLAUDE_STRUCT_MODEL = process.env.CLAUDE_STRUCT_MODEL || 'claude-haiku-4-5-20251001';
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const MISTRAL_OCR_URL = 'https://api.mistral.ai/v1/ocr';
-// Alias móvil siempre válido por default; overridable a un snapshot barato.
-// OJO: el alias SE MUEVE SOLO. El 16-jul-2026 'mistral-ocr-latest' pasó de OCR
-// 3 a OCR 4.1 y el precio se duplicó (USD 2 → 4 / 1000 páginas) sin que nadie
-// lo eligiera. Si el costo importa, fijá un snapshot; no dejes que decida el alias.
-const MISTRAL_OCR_MODEL = process.env.MISTRAL_OCR_MODEL || 'mistral-ocr-latest';
-// Los certificados de calidad son el documento DIFÍCIL (tablas de laboratorio,
-// escaneos, a veces manuscrito) y el de MENOR volumen: ahí el OCR bueno se
-// paga solo. Por eso puede fijarse aparte del de facturas.
-const MISTRAL_OCR_MODEL_CERT = process.env.MISTRAL_OCR_MODEL_CERT || 'mistral-ocr-latest';
+// El modelo de OCR se FIJA a un snapshot y una regla impide que un alias móvil
+// lo mueva. Ver lib/mistral-ocr.js: el 16-jul-2026 'mistral-ocr-latest' pasó
+// solo de OCR 3 a OCR 4.1 y duplicó el precio (USD 2 → 4 / 1000 págs).
+const OCR_FACTURAS = modeloOcr(process.env);
+const OCR_CERTIFICADOS = modeloOcr(process.env, { cert: true });
+for (const [modo, r] of [['facturas', OCR_FACTURAS], ['certificados', OCR_CERTIFICADOS]]) {
+  if (r.motivo === 'alias-rechazado') {
+    console.warn(`[captura-magica] OCR ${modo}: se ignoró el alias móvil "${r.rechazado}" y se usa el snapshot fijo "${r.modelo}". Para forzarlo, MISTRAL_OCR_PERMITIR_ALIAS=1.`);
+  }
+}
+const MISTRAL_OCR_MODEL = OCR_FACTURAS.modelo;
+const MISTRAL_OCR_MODEL_CERT = OCR_CERTIFICADOS.modelo;
 
 const SYSTEM_PROMPT = `Eres un experto parser de documentos peruanos emitidos bajo SUNAT (factura electrónica, boleta de venta, nota de crédito, nota de débito, recibo por honorarios, y GUÍAS DE REMISIÓN remitente/transportista). Tu tarea es leer el documento (PDF o imagen) y extraer los datos a JSON estructurado.
 
@@ -201,6 +202,7 @@ exacta es la siguiente (se muestra indentada SOLO para que la leas, tu salida va
 
 import { requireAuth, rateLimit, sanitizeError, validateFileBytes } from '../lib/api-helpers.js';
 import { leerConfig as leerConfigOR, construirCuerpo as construirCuerpoOR, normalizarRespuesta as normalizarRespuestaOR, openrouterChat, presupuestoSalida } from '../lib/openrouter.js';
+import { modeloOcr } from '../lib/mistral-ocr.js';
 
 // El híbrido encadena 2 upstreams (Mistral OCR + Claude). Damos margen explícito
 // para que el peor caso no lo mate el default de la plataforma (~10s en Hobby).

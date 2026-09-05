@@ -16,7 +16,16 @@ describe('leerConfig — el motor no se prende solo', () => {
     const c = leerConfig({ OPENROUTER_API_KEY: 'sk-or-x' });
     expect(c.activo).toBe(true);
     expect(c.modelo).toBe(MODELO_DEFAULT);
-    expect(c.respaldos).toEqual([MODELO_FALLBACK_DEFAULT]);
+    expect(c.respaldos).toEqual(MODELO_FALLBACK_DEFAULT.split(','));
+  });
+
+  it('la cadena por defecto termina en el auto-router, que sobrevive a la rotación', () => {
+    // Ningún modelo gratuito es permanente (los :free de DeepSeek, Llama y Qwen
+    // ya desaparecieron). 'openrouter/free' elige entre los gratuitos VIVOS, así
+    // que es el último eslabón antes de caer a Claude.
+    const c = leerConfig({ OPENROUTER_API_KEY: 'k' });
+    expect(c.respaldos.at(-1)).toBe('openrouter/free');
+    expect(c.respaldos.length).toBeGreaterThanOrEqual(2);
   });
 
   it('IA_POSTPROCESO=anthropic revierte SIN borrar la key (rollback de un env var)', () => {

@@ -105,15 +105,68 @@ etiquetas de bloque y puntaje de confianza por bloque**. Eso importa en tablas
 de laboratorio y escaneos — o sea, en **certificados de calidad**, no en una
 factura electrónica nítida.
 
-**Por eso el modelo de OCR ahora se puede fijar por separado:**
+**Decisión de Gabriel (5-sep-2026): volver a OCR 3 y que se quede ahí.**
+El default del código está **fijo en `mistral-ocr-2512`** y `lib/mistral-ocr.js`
+**ignora un alias móvil** aunque alguien lo ponga en Vercel — avisa en el log y
+usa el snapshot. Escape explícito: `MISTRAL_OCR_PERMITIR_ALIAS=1`.
+Hay un test que falla si alguien reintroduce `mistral-ocr-latest` en el endpoint.
 
-```
-MISTRAL_OCR_MODEL=mistral-ocr-2512      # facturas y guías → la mitad de precio
-MISTRAL_OCR_MODEL_CERT=mistral-ocr-latest  # certificados → el OCR bueno
-```
+Certificados de calidad usan hoy el mismo snapshot barato: el módulo **no tiene
+ni un certificado cargado** (0 filas en `calidad_certificados`, medido el
+5-sep-2026). Cuando se use y OCR 3 se quede corto con las tablas de laboratorio,
+se sube con `MISTRAL_OCR_MODEL_CERT=mistral-ocr-4-1` — un snapshot, no un alias.
 
 A 134 comprobantes/mes la diferencia es de centavos (USD 0,54 → 0,27). El punto
-no es el ahorro: es **dejar de que un alias decida por vos**.
+no es el ahorro: es **dejar de que un alias decida la compra por vos**.
+
+---
+
+## 4 bis. Ningún modelo gratuito es permanente
+
+Es el riesgo estructural de esta arquitectura y hay que mirarlo de frente:
+
+- Los `:free` de **DeepSeek** fueron los más usados de 2025 → a mediados de 2026
+  estaban **todos en pago**.
+- Los tiers gratuitos de **Llama y Qwen** desaparecieron antes de agosto de 2026.
+- El total de gratuitos se movió entre ~14 y ~29 en pocos meses.
+
+**Antigüedad de los gratuitos que nos importan** (fecha de listado, medido el
+5-sep-2026):
+
+| Modelo | Listado hace | Rol |
+|---|---|---|
+| `openrouter/free` | **217 días** | auto-router — el único diseñado para sobrevivir la rotación |
+| `minimax/minimax-m3:free` | 97 días | respaldo asentado |
+| `inclusionai/ling-3.0-flash-fin:free` | **9 días** | el mejor medido… y un recién llegado |
+
+Por eso la cadena por defecto va **del mejor al que va a seguir estando**, y
+termina fuera de OpenRouter:
+
+```
+ling-3.0-flash-fin:free → minimax-m3:free → openrouter/free → Claude Haiku (pago)
+```
+
+`openrouter/free` es el auto-router de OpenRouter: elige solo entre los
+gratuitos **vivos**, así que sigue funcionando después de una rotación.
+
+**La cadena degrada sola, no rompe.** Verificado: con `zdr` puesto y un modelo
+sin endpoint ZDR primero en la lista, OpenRouter **saltea** y sirve el
+siguiente que sí cumple. Ojo con esto: bajo `zdr`, `minimax-m3:free` queda
+afuera y el pool del auto-router es **variable** (a veces tiene un gratuito ZDR,
+a veces no). Ése es el costo real de exigir ZDR — con `deny` entran los tres.
+
+**Cómo enterarse de que rotó, sin esperar la factura:**
+
+```bash
+node --env-file=.env.local scripts/revisar-modelos-openrouter.mjs --probar
+```
+
+Dice si cada modelo de la cadena sigue listado, sigue gratis y sigue
+respondiendo con la política puesta, y lista las alternativas ordenadas por
+antigüedad. Sale con código 2 si algo se cayó.
+
+La otra señal, la que no hay que ir a buscar: **filas en ámbar con "(respaldo)"
+en la bandeja de Captura Mágica.**
 
 ---
 
