@@ -19,15 +19,30 @@
 //      MISTRAL_API_KEY o si Mistral falla por cualquier motivo. Producción nunca
 //      se rompe: sin key válida, corre exactamente como antes.
 //
+// POSTPROCESAMIENTO EN OPENROUTER (5-sep-2026): el paso "texto OCR → JSON" de
+// facturas y guías —el de alto volumen— lo hace un modelo GRATUITO de
+// OpenRouter con política de datos exigida en cada llamada, y Claude Haiku
+// queda de RESPALDO automático. Detalle, medición y trampas: lib/openrouter.js.
+// Certificados de calidad, SCTR y el fallback de visión siguen en Claude Sonnet.
+//
 // Env vars:
-//   ANTHROPIC_API_KEY  (requerida) — estructuración + fallback de visión.
+//   ANTHROPIC_API_KEY  (requerida para visión/certificados/SCTR y como respaldo).
+//   OPENROUTER_API_KEY (opcional)  — activa el postprocesamiento gratuito.
+//                                    Sin ella, todo corre como antes en Claude.
+//   IA_POSTPROCESO     (opcional)  — 'anthropic' revierte a Haiku al instante
+//                                    sin borrar la key. default 'openrouter'.
+//   OPENROUTER_STRUCT_MODEL / _FALLBACK / OPENROUTER_DATA_POLICY — ver lib/openrouter.js
 //   MISTRAL_API_KEY    (opcional)  — activa el motor híbrido/OCR barato.
-//   MISTRAL_OCR_MODEL  (opcional)  — default 'mistral-ocr-latest'. Poné
-//                                    'mistral-ocr-2512' para pagar la mitad
-//                                    ($2 vs $4 / 1000 págs) con igual lectura.
-//   CLAUDE_STRUCT_MODEL (opcional) — modelo que estructura facturas/guías desde
-//                                    texto OCR. default 'claude-haiku-4-5-20251001'
-//                                    (~67% más barato). 'claude-sonnet-4-6' revierte.
+//   MISTRAL_OCR_MODEL  (opcional)  — default 'mistral-ocr-latest', que desde el
+//                                    16-jul-2026 apunta a OCR 4.1 (USD 4/1000
+//                                    págs). 'mistral-ocr-2512' es OCR 3, la
+//                                    mitad de precio, y alcanza para facturas
+//                                    digitales. OCR 4.1 conviene en documentos
+//                                    difíciles (certificados de calidad).
+//   MISTRAL_OCR_MODEL_CERT (opcional) — modelo de OCR SOLO para certificados de
+//                                    calidad. default 'mistral-ocr-latest'.
+//   CLAUDE_STRUCT_MODEL (opcional) — modelo Claude de RESPALDO para estructurar
+//                                    facturas/guías. default 'claude-haiku-4-5-20251001'.
 //   CLAUDE_VISION_MODEL (opcional) — modelo fuerte: fallback de visión + certifi-
 //                                    cados de calidad + SCTR. default 'claude-sonnet-4-6'.
 
@@ -51,7 +66,14 @@ const CLAUDE_STRUCT_MODEL = process.env.CLAUDE_STRUCT_MODEL || 'claude-haiku-4-5
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const MISTRAL_OCR_URL = 'https://api.mistral.ai/v1/ocr';
 // Alias móvil siempre válido por default; overridable a un snapshot barato.
+// OJO: el alias SE MUEVE SOLO. El 16-jul-2026 'mistral-ocr-latest' pasó de OCR
+// 3 a OCR 4.1 y el precio se duplicó (USD 2 → 4 / 1000 páginas) sin que nadie
+// lo eligiera. Si el costo importa, fijá un snapshot; no dejes que decida el alias.
 const MISTRAL_OCR_MODEL = process.env.MISTRAL_OCR_MODEL || 'mistral-ocr-latest';
+// Los certificados de calidad son el documento DIFÍCIL (tablas de laboratorio,
+// escaneos, a veces manuscrito) y el de MENOR volumen: ahí el OCR bueno se
+// paga solo. Por eso puede fijarse aparte del de facturas.
+const MISTRAL_OCR_MODEL_CERT = process.env.MISTRAL_OCR_MODEL_CERT || 'mistral-ocr-latest';
 
 const SYSTEM_PROMPT = `Eres un experto parser de documentos peruanos emitidos bajo SUNAT (factura electrónica, boleta de venta, nota de crédito, nota de débito, recibo por honorarios, y GUÍAS DE REMISIÓN remitente/transportista). Tu tarea es leer el documento (PDF o imagen) y extraer los datos a JSON estructurado.
 
@@ -178,6 +200,7 @@ exacta es la siguiente (se muestra indentada SOLO para que la leas, tu salida va
 }`;
 
 import { requireAuth, rateLimit, sanitizeError, validateFileBytes } from '../lib/api-helpers.js';
+import { leerConfig as leerConfigOR, construirCuerpo as construirCuerpoOR, normalizarRespuesta as normalizarRespuestaOR, openrouterChat, presupuestoSalida } from '../lib/openrouter.js';
 
 // El híbrido encadena 2 upstreams (Mistral OCR + Claude). Damos margen explícito
 // para que el peor caso no lo mate el default de la plataforma (~10s en Hobby).
@@ -238,7 +261,7 @@ async function anthropicMessages(apiKey, body, deadline) {
 
 // ── Mistral OCR: base64 (PDF o imagen) → markdown ──
 // Devuelve { texto, usage, model }. Lanza ante fallo (el caller cae a visión).
-async function mistralOcr(cleanBase64, mimeType, apiKey, deadline) {
+async function mistralOcr(cleanBase64, mimeType, apiKey, deadline, modelo = MISTRAL_OCR_MODEL) {
   // El data URI (con prefijo data:<mime>;base64,) es OBLIGATORIO; base64 pelado
   // se rechaza. PDF va en document_url; imagen en image_url (campos distintos:
   // cruzarlos es el error #1). El MIME ya fue validado contra los bytes reales.
@@ -246,7 +269,7 @@ async function mistralOcr(cleanBase64, mimeType, apiKey, deadline) {
   const document = mimeType === 'application/pdf'
     ? { type: 'document_url', document_url: dataUri }
     : { type: 'image_url', image_url: dataUri };
-  const body = { model: MISTRAL_OCR_MODEL, document, include_image_base64: false };
+  const body = { model: modelo, document, include_image_base64: false };
 
   let upstream = null;
   let errText = '';
@@ -307,7 +330,7 @@ async function mistralOcr(cleanBase64, mimeType, apiKey, deadline) {
   return {
     texto,
     usage: (data && data.usage_info) || null,
-    model: (data && data.model) || MISTRAL_OCR_MODEL,
+    model: (data && data.model) || modelo,
   };
 }
 
@@ -362,10 +385,25 @@ function respondError(e, res, isProd) {
     });
   }
   if (e && e.message === 'no-json') {
-    return res.status(502).json({ error: 'Claude no devolvió JSON parseable', rawText: (e.rawText || '').slice(0, 500) });
+    return res.status(502).json({ error: 'La IA no devolvió JSON parseable', rawText: (e.rawText || '').slice(0, 500) });
   }
   if (e && e.message === 'bad-json') {
-    return res.status(502).json({ error: 'JSON inválido de Claude', detail: e.detail, rawText: (e.rawText || '').slice(0, 500) });
+    return res.status(502).json({ error: 'La IA devolvió un JSON inválido', detail: e.detail, rawText: (e.rawText || '').slice(0, 500) });
+  }
+  // ── Fallos propios de OpenRouter que NO se arreglan reintentando ──
+  if (e && e.openrouter && e.politicaImposible) {
+    console.error('[captura-magica] OpenRouter: ningún proveedor cumple la política de datos exigida');
+    return res.status(503).json({
+      error: 'La lectura automática está mal configurada: ningún proveedor de IA cumple hoy la política de privacidad exigida. Avisa al administrador (hay que revisar OPENROUTER_DATA_POLICY o el modelo elegido en Vercel).',
+      code: 'ia_politica_datos',
+    });
+  }
+  if (e && e.openrouter && e.sinCredito) {
+    console.error('[captura-magica] OpenRouter sin crédito');
+    return res.status(402).json({
+      error: 'El servicio de IA no tiene crédito disponible. Avisa al administrador para que recargue el saldo.',
+      code: 'ia_sin_credito',
+    });
   }
   if (e && e.upstreamStatus === 400 && /credit balance is too low|insufficient.*credit|billing/i.test(e.upstreamText || '')) {
     console.error('[captura-magica] Anthropic sin crédito');
@@ -375,11 +413,12 @@ function respondError(e, res, isProd) {
     });
   }
   if (e && e.upstreamStatus) {
-    console.error('[captura-magica] upstream error:', e.upstreamStatus, (e.upstreamText || '').slice(0, 200));
+    const motor = e.openrouter ? 'OpenRouter' : 'Claude';
+    console.error(`[captura-magica] upstream error (${motor}):`, e.upstreamStatus, (e.upstreamText || '').slice(0, 200));
     return res.status(e.upstreamStatus).json({
       error: e.upstreamStatus === 429
         ? 'El servicio de IA está saturado (429) — reintenta en un minuto (la fila tiene botón Reintentar)'
-        : `Claude API respondió ${e.upstreamStatus}`,
+        : `El servicio de IA (${motor}) respondió ${e.upstreamStatus}`,
       ...(isProd ? {} : { detail: (e.upstreamText || '').slice(0, 500) }),
     });
   }
@@ -438,9 +477,14 @@ export default async function handler(req, res) {
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
+  // Con el postprocesamiento en OpenRouter, Claude dejó de ser obligatorio para
+  // el camino común (factura/guía por OCR) pero SIGUE siéndolo para visión,
+  // certificados y SCTR. Acá solo exigimos que haya AL MENOS un motor; la
+  // exigencia fina se hace donde se sabe qué camino se tomó.
+  const cfgOR = leerConfigOR();
+  if (!apiKey && !cfgOR.activo) {
     return res.status(503).json({
-      error: 'ANTHROPIC_API_KEY no configurada en Vercel. Pídele al admin que la agregue en Project Settings → Environment Variables.',
+      error: 'No hay ningún motor de IA configurado en Vercel (ANTHROPIC_API_KEY u OPENROUTER_API_KEY). Pídele al admin que agregue una en Project Settings → Environment Variables.',
     });
   }
 
@@ -550,7 +594,7 @@ export default async function handler(req, res) {
   // en QUÉ PÁGINA está cada cosa, y el texto plano del OCR pierde esa fidelidad.
   if (mistralKey && !esSctr) {
     try {
-      const r = await mistralOcr(cleanBase64, mimeType, mistralKey, deadline);
+      const r = await mistralOcr(cleanBase64, mimeType, mistralKey, deadline, esCert ? MISTRAL_OCR_MODEL_CERT : MISTRAL_OCR_MODEL);
       if (r.texto && r.texto.length >= 20) {
         ocr = r;
       } else {
@@ -576,7 +620,6 @@ export default async function handler(req, res) {
   // hubo, barato) o sobre el documento por visión (fallback). Sus errores van a
   // respondError (429/502/504 correctos), sin re-disparar otra llamada. ──
   try {
-    const engine = ocr ? 'mistral-ocr+claude' : 'claude-vision';
     const content = ocr
       ? [{ type: 'text', text: esCert
           ? `${reqTexto}\n\nA continuación está el TEXTO extraído por OCR (formato markdown) del CERTIFICADO. Extrae sus datos y compáralo contra el requisito de arriba. Basáte ÚNICAMENTE en este texto; si un dato no aparece, es "no_determinable". Responde SOLO con el JSON, sin markdown ni texto adicional.\n\n===== TEXTO OCR DEL DOCUMENTO =====\n${ocr.texto}`
@@ -592,14 +635,74 @@ export default async function handler(req, res) {
     const filasOcr = ocr ? ((ocr.texto || '').match(/^\s*\|.*\|\s*$/gm) || []).length : 0;
     const itemsEstimados = Math.max(0, filasOcr - 2);   // menos header y separador
     const maxTokensCalc = Math.min(16000, Math.max(4000, 900 + itemsEstimados * 55));
-    const data = await anthropicMessages(apiKey, {
-      // Facturas/guías desde texto OCR → Haiku (barato, alto volumen). Certificados
-      // de calidad y SCTR (razonamiento) + fallback de visión → Sonnet (fuerte).
-      model: (ocr && !esCert && !esSctr) ? CLAUDE_STRUCT_MODEL : CLAUDE_VISION_MODEL,
+
+    // ── ¿Quién estructura? ──────────────────────────────────────────
+    // Facturas y guías desde texto OCR = el camino de alto volumen y el más
+    // fácil (texto limpio → llenar un formulario). Ese va a OpenRouter con un
+    // modelo gratuito. Certificados de calidad, SCTR y el fallback de visión
+    // necesitan criterio o mirar el PDF: siguen en Claude Sonnet.
+    const caminoBarato = !!ocr && !esCert && !esSctr;
+    const usaOpenRouter = caminoBarato && cfgOR.activo;
+    // Sin OpenRouter y sin Claude no hay con qué leer este documento.
+    if (!usaOpenRouter && !apiKey) {
+      return res.status(503).json({
+        error: 'ANTHROPIC_API_KEY no configurada en Vercel. Pídele al admin que la agregue en Project Settings → Environment Variables.',
+      });
+    }
+
+    const llamarClaude = () => anthropicMessages(apiKey, {
+      model: caminoBarato ? CLAUDE_STRUCT_MODEL : CLAUDE_VISION_MODEL,
       max_tokens: maxTokensCalc,
       system: systemPrompt,
       messages: [{ role: 'user', content }],
     }, deadline);
+
+    let data;
+    let engine = ocr ? 'mistral-ocr+claude' : 'claude-vision';
+    let proveedorIa = null;
+    let respaldoUsado = null;
+
+    if (usaOpenRouter) {
+      // Presupuesto REPARTIDO: si OpenRouter se cuelga y se come todo el
+      // reloj, el respaldo de Claude no llega a correr y la asistente espera
+      // 55 s para recibir un error igual. Le damos poco más de la mitad de lo
+      // que queda y guardamos el resto para el respaldo.
+      const restante = Math.max(deadline - Date.now(), 1000);
+      const deadlineOR = Math.min(deadline, Date.now() + Math.max(20000, Math.floor(restante * 0.55)));
+      try {
+        const cruda = await openrouterChat(cfgOR.apiKey, construirCuerpoOR({
+          modelo: cfgOR.modelo,
+          respaldos: cfgOR.respaldos,
+          politica: cfgOR.politica,
+          system: systemPrompt,
+          user: content[0].text,
+          // Techo PROPIO: los gratuitos razonan en voz alta y el de Claude los
+          // corta a la mitad en facturas largas. Ver presupuestoSalida().
+          maxTokens: presupuestoSalida(itemsEstimados),
+        }), deadlineOR);
+        data = normalizarRespuestaOR(cruda);
+        engine = 'mistral-ocr+openrouter';
+        proveedorIa = data.proveedor;
+      } catch (e) {
+        // El respaldo NO es opcional: los modelos gratuitos tienen tope de 20
+        // requests/minuto compartido, así que un lote de facturas puede
+        // toparse. Que se caiga a Claude es la diferencia entre "tardó un
+        // poco más" y "la fila quedó en Error".
+        // Un AbortError acá NO significa "se acabó el tiempo": significa que se
+        // acabó la MITAD que le tocaba a OpenRouter. La otra mitad es
+        // justamente para esto, así que el único guard válido es el reloj real.
+        const puedeRespaldar = !!apiKey && (deadline - Date.now()) > 12000;
+        console.warn('[captura-magica] OpenRouter falló:', (e && (e.upstreamStatus || e.message)) || e,
+          puedeRespaldar ? '— caigo a Claude' : '— sin margen para respaldo');
+        if (!puedeRespaldar) throw e;
+        respaldoUsado = `openrouter:${e?.upstreamStatus || 'error'}`;
+        data = await llamarClaude();
+        engine = 'mistral-ocr+claude(respaldo)';
+      }
+    } else {
+      data = await llamarClaude();
+    }
+
     const { extracted, text } = extractJson(data);
     // MEDICIÓN DEL CONSUMO DE IA. El endpoint ya devolvía `usage` al cliente,
     // pero no lo registraba en ningún lado: no había forma de saber cuánto
@@ -613,6 +716,12 @@ export default async function handler(req, res) {
         in: data.usage?.input_tokens ?? null,
         out: data.usage?.output_tokens ?? null,
         ocr: ocr ? (ocr.usage?.pages_processed ?? 1) : 0,
+        ocr_model: ocr ? ocr.model : null,
+        // Con qué proveedor de cómputo se resolvió, y por qué se cayó al
+        // respaldo si pasó. Es lo que permite contestar "¿por qué esta factura
+        // tardó/costó distinto?" sin adivinar.
+        ...(proveedorIa ? { proveedor: proveedorIa } : {}),
+        ...(respaldoUsado ? { respaldo: respaldoUsado } : {}),
       }));
     } catch {}
     return res.status(200).json({
@@ -622,6 +731,7 @@ export default async function handler(req, res) {
       model: data.model,
       usage: data.usage,
       engine,
+      ...(proveedorIa ? { proveedor: proveedorIa } : {}),
       ...(ocr ? { ocr_model: ocr.model } : {}),
       ...(isProd ? {} : {
         raw_text_preview: text.slice(0, 300),

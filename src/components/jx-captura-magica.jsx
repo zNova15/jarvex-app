@@ -10,6 +10,7 @@ import { supabase } from "../lib/supabase";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { derivarTypeContable } from "../lib/clasificacion-contable.js";
 import { companyIdsDeObra } from "../lib/consorcio.js";
+import { etiquetaMotorIa } from "../lib/ia-motor.js";
 // Guías: import ESTÁTICO. guias.js ya era un chunk propio por el import()
 // dinámico de confirmarGuia y lo comparte con jx-guias, así que traerlo acá no
 // suma chunks y permite calcular las facturas candidatas en un useMemo (la
@@ -858,6 +859,10 @@ function CapturaMagicaPage({ showToast }) {
     try {
       const base64 = await fileToBase64(file);
       const { apiFetch, apiParse } = await import('../lib/api-client');
+      // Cuánto tardó la lectura, para mostrarlo en la fila: desde que se
+      // implementó el postprocesamiento en OpenRouter hay más de un motor
+      // posible y conviene ver cuál leyó cada comprobante y en cuánto.
+      const t0Lectura = Date.now();
       const resp = await apiFetch('/api/captura-magica', {
         method: 'POST',
         timeout: 90000,
@@ -932,6 +937,7 @@ function CapturaMagicaPage({ showToast }) {
         // (antes solo decía "Ya existe en la DB" y la asistente no podía verificar).
         duplicate_info: dup ? { doc: dup.document_number, fecha: dup.date, monto: dup.amount, moneda: dup.currency, tercero: dup.third_party_name, tipo: dup.document_type } : null,
         nc_aviso: ncSerieDeFactura ? `La serie leída (${ext.serie_correlativo}) es la de la FACTURA que modifica — verificá la serie real de la nota en el PDF (suele empezar con FC/BC).` : null,
+        motor: { engine: data.engine || null, model: data.model || null, proveedor: data.proveedor || null, ms: Date.now() - t0Lectura },
       } : x));
       return dup ? 'duplicado' : 'revisar';
     } catch (e) {
@@ -2740,6 +2746,20 @@ function CapturaMagicaPage({ showToast }) {
                         <span className={`badge ${est.color}`}>
                           <JxIcon name={est.icon} size={10}/> {est.label}
                         </span>
+                        {(() => {
+                          // QUÉ motor leyó este comprobante y en cuánto tardó. Desde que
+                          // el postprocesamiento salió de Claude, hay más de un camino
+                          // posible: si las filas empiezan a salir todas "(respaldo)", el
+                          // motor titular está fallando y hay que mirarlo — antes eso era
+                          // invisible y solo se notaba en la factura de Anthropic.
+                          const mot = etiquetaMotorIa(it.motor);
+                          if (!mot) return null;
+                          return (
+                            <div title={mot.detalle} style={{ fontSize:9.5, color: mot.respaldo ? 'var(--amber)' : 'var(--tm)', marginTop:3, lineHeight:1.3 }}>
+                              {mot.respaldo ? '⚠ ' : ''}{mot.texto}{mot.tiempo ? ` · ${mot.tiempo}` : ''}
+                            </div>
+                          );
+                        })()}
                         {it.error && <div style={{ fontSize:10, color: (it.errorCode==='ia_sin_credito' || it.errorCode==='servicio_deshabilitado') ? 'var(--amber)' : 'var(--red)', marginTop:3, maxWidth:280, lineHeight:1.4 }}>{it.error}</div>}
                         {it.status === 'duplicado' && (() => {
                           // Resolver SIEMPRE contra movs por duplicate_of (cubre también los
