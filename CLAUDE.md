@@ -101,11 +101,15 @@ timeout):
 - **Vivas:** `captura-magica` (1.249 movs con ítems OCR), `sunat` (378
   proveedores), `categorize` (343 materiales), `validar-comprobante-ai` (136
   guías), `create-user`, `reniec` (esporádica).
-- **`sugerir-cuenta-pcge` sirve DOS funciones** en el mismo endpoint:
-  `sugerirCuentaPcge` está muerta (1 solo movimiento con `cuenta_pcge`) pero
-  `sugerirClasificacionContable` no se puede descartar — 1.304 movimientos
-  tienen `clase` y no hay forma de saber cuáles vinieron de ahí. No borrarla sin
-  medir eso primero.
+- **`sugerir-cuenta-pcge` sirve TRES funciones** en el mismo endpoint, y las dos
+  primeras están MUERTAS (medido el 5-sep-2026, ya sin la duda que había):
+  `sugerirCuentaPcge` → **1 de 1.395** movimientos tiene `cuenta_pcge`;
+  `sugerirClasificacionContable` → **0 de 1.395** tienen `clasificacion_manual`,
+  que es el campo donde aterriza su respuesta. `clase` (1.373 movs) **NO viene
+  de la IA** — es un campo normal del movimiento; esa confusión es lo que antes
+  hacía parecer que el clasificador se usaba. Ambas son BOTONES manuales que la
+  contadora nunca presiona. La tercera (`action:'sugerir_insumo'`, vía
+  `src/lib/sugerir-insumo-match.js`) es la única con uso posible.
 - **`sentry-tunnel`** solo se activa si `VITE_SENTRY_DSN` está configurado.
 - **Borradas el 3-sep** por 0 uso comprobado: `ocr-asistencia` (0 asistencias),
   `asistente-solicitud-mat` (0 solicitudes de frente),
