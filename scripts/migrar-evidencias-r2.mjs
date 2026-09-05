@@ -24,7 +24,12 @@ const DRY_RUN = argv.includes('--dry-run');
 const FORCE = argv.includes('--force');
 const CONCURRENCY = Number((argv.find(a => a.startsWith('--concurrency=')) || '').split('=')[1]) || 8;
 
-const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+// Normalizar: la variable a veces viene con el sufijo '/rest/v1/' pegado. El
+// cliente necesita la URL BASE del proyecto; con el sufijo, las llamadas a
+// Storage terminaban en '/rest/v1/storage/v1/...' y contestaba PostgREST con
+// "Invalid path specified in request URL" (PGRST125).
+const SUPABASE_URL = (process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '')
+  .replace(/\/+$/, '').replace(/\/rest\/v1$/, '');
 const SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
 const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;

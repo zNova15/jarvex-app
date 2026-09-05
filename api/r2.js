@@ -134,7 +134,10 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Solo POST' });
   }
 
-  const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+  // Normalizar: si la variable trae '/rest/v1/' pegado (pasa), las llamadas
+  // quedarían en '/rest/v1/auth/v1/user' y TODA firma fallaría con 401.
+  const SUPABASE_URL = (process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '')
+    .replace(/\/+$/, '').replace(/\/rest\/v1$/, '');
   const SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE_KEY;
   const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
   const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
