@@ -103,6 +103,24 @@ export default defineConfig({
               cacheableResponse: { statuses: [0, 200] },
             },
           },
+          {
+            // Evidencias servidas desde Cloudflare R2 (VITE_R2_EVIDENCIAS).
+            // MISMAS opciones y MISMO cacheName que la regla de Supabase de
+            // arriba: sin esta entrada las URLs de R2 no matchean ninguna regla,
+            // Workbox las deja pasar a red sin cachear y se pierde el offline
+            // (una foto ya vista dejaba de abrirse en obra sin señal). Reusar
+            // 'evidencias-cache' mantiene el purgado del logout (useAuth.js).
+            // ignoreSearch es seguro acá: el path embebe el id INMUTABLE de la
+            // evidencia y lo único que rota es la firma (?X-Amz-…) cada 7 días.
+            urlPattern: /^https:\/\/[a-z0-9]+\.r2\.cloudflarestorage\.com\/.*/,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'evidencias-cache',
+              expiration: { maxEntries: 400, maxAgeSeconds: 30 * 24 * 60 * 60 },
+              matchOptions: { ignoreSearch: true },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
           // SUNAT/RENIEC y otros endpoints serverless propios: NO cachear
           // (las respuestas vienen del proxy /api/*, siempre frescas).
           {

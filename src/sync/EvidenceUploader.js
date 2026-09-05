@@ -73,7 +73,13 @@ export async function uploadEvidencia(evidenciaId) {
     fileBlob = await compressImage(fileBlob);
   }
 
-  const ext = evidencia.nombre_archivo.split('.').pop() ?? 'bin';
+  // Normalizar la extensión: `nombre_archivo` es el nombre CRUDO del archivo
+  // (cámara, compartir, WhatsApp). Un archivo sin punto ("DOC-20260905-WA0012")
+  // devolvía el nombre entero como extensión, y "foto.JPG (1)" devolvía
+  // "JPG (1)" → path con espacios/guiones que el firmador de R2 rechaza (422)
+  // y, como la subida no tiene fallback, la evidencia quedaba FAILED.
+  const ext = ((evidencia.nombre_archivo || '').split('.').pop() || '')
+    .toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10) || 'bin';
   const yyyy_mm = new Date().toISOString().slice(0, 7);
   // Sin obra (fotos del portal de campo, que la asigna contabilidad después):
   // carpeta fija 'captura-campo' — tiene su propia política de subida (mig 158).

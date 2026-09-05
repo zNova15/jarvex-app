@@ -13,7 +13,7 @@
 // ═══════════════════════════════════════════════════════════════════
 import { db } from '../db/jarvex.db';
 import { supabase } from './supabase';
-import { getR2SignedGetUrl } from './r2-storage';
+import { getR2SignedGetUrl, r2ReadEnabled } from './r2-storage';
 
 // Saca el path dentro del bucket de una url_archivo de evidencia
 // (.../object/(public|sign)/evidencias/<obra>/<aaaa-mm>/<id>.<ext>?token=…).
@@ -60,6 +60,17 @@ function _saveSigned() {
   try { localStorage.setItem(_SIGNED_LS_KEY, JSON.stringify(_signedCache || {})); } catch {}
 }
 
+// Descarta la URL firmada cacheada de un path para que el próximo render la
+// vuelva a firmar. Úsalo desde el onError de un visor: sin esto, una URL que
+// quedó muerta (objeto borrado, credenciales rotadas) sigue cacheada hasta 7
+// días y la imagen se ve rota todo ese tiempo sin recuperarse sola.
+export function invalidarSignedUrl(urlOPath) {
+  const path = urlOPath && urlOPath.includes('/evidencias/') ? pathDeEvidencia(urlOPath) : urlOPath;
+  if (!path) return;
+  const cache = _loadSigned();
+  if (cache[path]) { delete cache[path]; _saveSigned(); }
+}
+
 // Devuelve { url, isBlob } mostrable, o null si no hay nada que mostrar.
 // Si isBlob, el caller debería revokeObjectURL(url) al desmontar.
 // expiresIn 24h: los visores cachean la URL firmada en mapas que solo se
@@ -80,19 +91,23 @@ export async function getEvidenciaSrc(ev, expiresIn = _SIGNED_TTL) {
     const cache = _loadSigned();
     const now = Date.now();
     const hit = cache[path];
-    // margen de 5 min para no devolver una URL a punto de expirar
-    if (hit && hit.url && hit.exp - 300000 > now) {
+    // margen de 5 min para no devolver una URL a punto de expirar.
+    // Si la entrada es de R2 pero el flag ya no lo permite (rollback a 'off'
+    // porque R2 fallaba), la ignoramos y re-firmamos en Supabase: si no, cada
+    // dispositivo seguiría sirviendo URLs rotas hasta 7 días y el rollback no
+    // arreglaba nada.
+    if (hit && hit.url && hit.exp - 300000 > now && (hit.src !== 'r2' || r2ReadEnabled())) {
       return { url: hit.url, isBlob: false };
     }
     // R2 primero (si VITE_R2_EVIDENCIAS está activo): URL prefirmada de 7 días,
     // cacheada IGUAL que la de Supabase (misma clave por path → el navegador y el
-    // Service Worker cachean la imagen). Si R2 no responde (no configurado, o la
-    // foto aún no se migró) devuelve null → caemos al camino Supabase de abajo y
-    // la vista nunca se rompe.
+    // Service Worker cachean la imagen). El endpoint verifica que el objeto EXISTA
+    // en R2 y devuelve 404 si no (evidencia aún no migrada) → acá llega null y
+    // caemos al camino Supabase de abajo: la vista nunca se rompe.
     try {
       const r2url = await getR2SignedGetUrl(path);
       if (r2url) {
-        cache[path] = { url: r2url, exp: now + expiresIn * 1000 };
+        cache[path] = { url: r2url, exp: now + expiresIn * 1000, src: 'r2' };
         _saveSigned();
         return { url: r2url, isBlob: false };
       }
@@ -100,7 +115,7 @@ export async function getEvidenciaSrc(ev, expiresIn = _SIGNED_TTL) {
     try {
       const { data } = await supabase.storage.from('evidencias').createSignedUrl(path, expiresIn);
       if (data?.signedUrl) {
-        cache[path] = { url: data.signedUrl, exp: now + expiresIn * 1000 };
+        cache[path] = { url: data.signedUrl, exp: now + expiresIn * 1000, src: 'sb' };
         _saveSigned();
         return { url: data.signedUrl, isBlob: false };
       }

@@ -64,11 +64,35 @@ function presignR2(method, key, expires = 3600) {
   return `https://${host}${canonicalUri}?${canonicalQuery}&X-Amz-Signature=${signature}`;
 }
 
+// ¿Ya está en R2? Distingue 404 (no está: hay que subirlo) de CUALQUIER otro
+// error. Si tratáramos un 403 como "no está", una credencial o un bucket mal
+// escritos harían que el script se descargue el bucket ENTERO de Supabase
+// (pagando justo el egress que queremos eliminar) para no subir nada.
 async function existeEnR2(key) {
-  try {
-    const resp = await fetch(presignR2('HEAD', key), { method: 'HEAD' });
-    return resp.ok;
-  } catch { return false; }
+  const resp = await fetch(presignR2('HEAD', key), { method: 'HEAD' });
+  if (resp.status === 404) return false;
+  if (resp.ok) return true;
+  throw new Error(`HEAD a R2 devolvió ${resp.status}. Revisá R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET.`);
+}
+
+// Reintento con backoff para errores transitorios (red, 429, 5xx).
+async function conReintento(fn, intentos = 3) {
+  let ultimo;
+  for (let i = 0; i < intentos; i++) {
+    try { return await fn(); } catch (e) {
+      ultimo = e;
+      if (i < intentos - 1) await new Promise(r => setTimeout(r, 1000 * Math.pow(3, i)));
+    }
+  }
+  throw ultimo;
+}
+
+// Comprueba credenciales/bucket ANTES de tocar Supabase. Un HEAD a una clave
+// centinela inexistente debe dar 404; cualquier otra cosa aborta la corrida.
+async function verificarAccesoR2() {
+  const resp = await fetch(presignR2('HEAD', '_preflight/0000-00/ping.txt'), { method: 'HEAD' });
+  if (resp.status === 404 || resp.ok) return;
+  throw new Error(`No hay acceso al bucket '${R2_BUCKET}' (HTTP ${resp.status}). Revisá las variables R2_* en .env.local y que el token tenga permiso 'Object Read & Write' sobre ese bucket.`);
 }
 
 // ── Listar recursivamente el bucket de Supabase ───────────────────────
@@ -98,25 +122,56 @@ async function listarTodo(prefix = '') {
 }
 
 // ── Migrar un objeto ──────────────────────────────────────────────────
+// Migra un objeto. NUNCA tira: un fallo puntual no puede abortar la corrida
+// entera (supabase-js RE-TIRA los errores que no son StorageError, y un
+// ECONNRESET en el PUT también) — sin este try/catch, Promise.all rechazaba en
+// el acto y se perdían el resumen y los objetos ya procesados.
 async function migrarUno(obj) {
-  if (!FORCE && await existeEnR2(obj.path)) return { path: obj.path, estado: 'ya-estaba' };
-  const { data: blob, error } = await supabase.storage.from(BUCKET_SB).download(obj.path);
-  if (error || !blob) return { path: obj.path, estado: 'error', detalle: `download: ${error?.message || 'sin blob'}` };
-  const buf = Buffer.from(await blob.arrayBuffer());
-  const contentType = blob.type || 'application/octet-stream';
-  const resp = await fetch(presignR2('PUT', obj.path), {
-    method: 'PUT',
-    body: buf,
-    headers: { 'Content-Type': contentType },
-  });
-  if (!resp.ok) return { path: obj.path, estado: 'error', detalle: `PUT R2: HTTP ${resp.status} ${await resp.text().catch(() => '')}` };
-  return { path: obj.path, estado: 'subido', bytes: buf.length };
+  try {
+    if (!FORCE && await existeEnR2(obj.path)) return { path: obj.path, estado: 'ya-estaba' };
+    const { data: blob, error } = await conReintento(async () => {
+      const r = await supabase.storage.from(BUCKET_SB).download(obj.path);
+      if (r.error) throw new Error(r.error.message || 'download falló');
+      return r;
+    });
+    if (error || !blob) return { path: obj.path, estado: 'error', detalle: `download: ${error?.message || 'sin blob'}` };
+    const buf = Buffer.from(await blob.arrayBuffer());
+    // Verificación de integridad: si Supabase cortó el cuerpo a mitad, el
+    // tamaño no coincide → mejor fallar que subir un archivo truncado y darlo
+    // por migrado (el HEAD del próximo pase lo daría por bueno para siempre).
+    if (obj.size != null && buf.length !== obj.size) {
+      return { path: obj.path, estado: 'error', detalle: `tamaño no coincide: bajó ${buf.length} B, esperaba ${obj.size} B` };
+    }
+    const contentType = blob.type || 'application/octet-stream';
+    const resp = await conReintento(async () => {
+      const r = await fetch(presignR2('PUT', obj.path), {
+        method: 'PUT',
+        body: buf,
+        headers: {
+          'Content-Type': contentType,
+          // 30 días: la evidencia es inmutable. R2 lo guarda como metadata y lo
+          // devuelve en cada GET (igual que el cacheControl que usaba Supabase).
+          'Cache-Control': 'public, max-age=2592000, immutable',
+        },
+      });
+      // 5xx/429 = transitorio → reintentar. 4xx = definitivo → devolver.
+      if (r.status >= 500 || r.status === 429) throw new Error(`HTTP ${r.status}`);
+      return r;
+    });
+    if (!resp.ok) return { path: obj.path, estado: 'error', detalle: `PUT R2: HTTP ${resp.status} ${await resp.text().catch(() => '')}` };
+    return { path: obj.path, estado: 'subido', bytes: buf.length };
+  } catch (e) {
+    return { path: obj.path, estado: 'error', detalle: e?.message || String(e) };
+  }
 }
 
 // ── Correr con límite de concurrencia + progreso visible ──────────────
 async function main() {
   console.log(`\n🚚 Migración de evidencias Supabase → R2 (bucket destino: ${R2_BUCKET})`);
   console.log(`   modo: ${DRY_RUN ? 'DRY-RUN (no sube)' : FORCE ? 'FORCE (re-sube todo)' : 'normal (salta existentes)'} · concurrencia: ${CONCURRENCY}\n`);
+  process.stdout.write('🔑 Verificando acceso a R2… ');
+  await verificarAccesoR2();
+  console.log('OK\n');
   console.log('📋 Listando el bucket de Supabase…');
   const objetos = await listarTodo('');
   const totalBytes = objetos.reduce((a, o) => a + (o.size || 0), 0);

@@ -32,16 +32,19 @@ async function accessToken() {
 
 // Pide al endpoint una URL prefirmada. Devuelve la URL (string) o null si algo
 // falla (para que el caller decida el fallback). Nunca tira.
-async function firmar(action, path, contentType) {
+// Un 404 significa "el objeto no está en R2" (evidencia aún no migrada) → null
+// → el caller cae a Supabase. 503 = R2 no configurado. 401/403 = sesión o
+// permiso. En todos los casos el caller decide, acá nunca se rompe.
+async function firmar(action, path, extra) {
   const token = await accessToken();
   if (!token) return null;
   try {
     const resp = await fetch('/api/r2', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ action, path, contentType }),
+      body: JSON.stringify({ action, path, ...(extra || {}) }),
     });
-    if (!resp.ok) return null;   // 503 (R2 no configurado), 401, etc. → fallback
+    if (!resp.ok) return null;
     const data = await resp.json().catch(() => null);
     return data?.url || null;
   } catch { return null; }
@@ -55,14 +58,23 @@ export async function getR2SignedGetUrl(path) {
 
 // Sube un blob a R2 en `path`. Devuelve { ok } o { ok:false, error }.
 // Pide una URL prefirmada de PUT y hace el PUT directo al bucket.
+// Manda tipo y tamaño al firmar para que el servidor los valide (sin eso se
+// podía dejar cualquier objeto de hasta 5 GB en el bucket).
 export async function uploadToR2(path, blob, contentType) {
-  const url = await firmar('sign_put', path, contentType);
+  const url = await firmar('sign_put', path, { contentType, size: blob?.size });
   if (!url) return { ok: false, error: 'No se pudo firmar la subida a R2' };
   try {
     const resp = await fetch(url, {
       method: 'PUT',
       body: blob,
-      headers: { 'Content-Type': contentType || 'application/octet-stream' },
+      headers: {
+        'Content-Type': contentType || 'application/octet-stream',
+        // 30 días: la evidencia es INMUTABLE (el path embebe su id). R2 guarda
+        // este header como metadata y lo devuelve en cada GET. Sin él el
+        // navegador usa frescura heurística y revalida casi en cada carga
+        // (era justo lo que `cacheControl: '2592000'` evitaba en Supabase).
+        'Cache-Control': 'public, max-age=2592000, immutable',
+      },
     });
     if (!resp.ok) return { ok: false, error: `PUT a R2 falló: HTTP ${resp.status}` };
     return { ok: true };
