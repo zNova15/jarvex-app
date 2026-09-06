@@ -8,6 +8,12 @@ import { TablePagination } from "./jx-pagination.jsx";
 import { detectarDuplicados, claseDe } from "../lib/dedupe-movs-contables.js";
 import { derivarTypeContable, motivoClasificacion, overrideEfectivo, TYPE_LABEL, TYPE_LABEL_LARGO } from "../lib/clasificacion-contable.js";
 import { movimientosConParRegistrado, puedeEditarMovimiento, puedeEliminarMovimiento, avisoDeEspejo } from "../lib/interco-edicion.js";
+import { notaHumana, fusionarNota, resumenEstructurado } from "../lib/notas-movimiento.js";
+
+// Umbral del SPOT: una operación de S/ 700 o menos NO está sujeta a detracción.
+// Criterio de la contadora (6-sep-2026), a raíz de F001-000818 — S/ 54 con 12%
+// de detracción cargada. Se usa para avisar, nunca para borrar el dato solo.
+const UMBRAL_DETRACCION = 700;
 import { cmpComprobante } from "../lib/comparar-comprobante.js";
 import { resumenRecepcion, rankearIngresosParaItem, rankearFacturasParaIngreso, itemsDeFactura, estadoRecepcionDeItems, parseNotas, referenciaSinCostos, reporteRecepcion } from "../lib/cruce-recepcion.js";
 import { ConsultasPanel, useConsultasResumen } from "./jx-consultas.jsx";
@@ -1855,6 +1861,7 @@ function MovimientosContablesPage({ showToast }) {
       document_type: 'factura',
       document_number: '',
       notas: '',
+      _notasOriginal: null,
       _bancFile: null,
     });
     setAiClasif(null);
@@ -1894,7 +1901,10 @@ function MovimientosContablesPage({ showToast }) {
       payment_status: m.payment_status || 'pending',
       document_type: m.document_type || 'factura',
       document_number: m.document_number || '',
-      notas: m.notas || '',
+      // SOLO la nota humana: el resto del payload (items_factura, IGV, espejo
+      // interco…) se conserva al guardar vía fusionarNota. Ver notas-movimiento.js.
+      notas: notaHumana(m.notas),
+      _notasOriginal: m.notas || null,
     });
     setAiClasif(null);
     setEditingId(m.id);
@@ -1948,7 +1958,9 @@ function MovimientosContablesPage({ showToast }) {
           payment_status: form.payment_status,
           document_type: form.document_type || null,
           document_number: form.document_number || null,
-          notas: form.notas || null,
+          // fusionarNota conserva items_factura / IGV / espejo interco: el textarea
+          // solo manda el texto de la persona, nunca el payload.
+          notas: fusionarNota(form._notasOriginal, form.notas),
           updated_at: now, updated_by: userId,
           version: (orig?.version ?? 0) + 1,
           sync_status: orig?.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
@@ -1994,7 +2006,9 @@ function MovimientosContablesPage({ showToast }) {
           is_intercompany: false,
           related_company_id: null,
           related_movement_id: null,
-          notas: form.notas || null,
+          // Mismo formato que el resto: JSON con la clave `nota`. Así abrir este
+          // comprobante para editarlo lo lee igual que a los de Captura Mágica.
+          notas: fusionarNota(null, form.notas),
           created_by: userId, updated_by: userId,
           created_at: now, updated_at: now,
           version: 1,
@@ -3719,6 +3733,16 @@ function MovimientosContablesPage({ showToast }) {
           <div style={{ fontSize:12, color:'var(--tm)', marginBottom:10 }}>
             {detrTarget.description || 'Movimiento'} · Total {fmtCur(detrTarget.amount, detrTarget.currency)} ({claseDe(detrTarget) === 'venta' ? 'venta' : 'compra'})
           </div>
+          {/* Umbral SPOT: por debajo de S/ 700 la operación no está sujeta a
+              detracción. Avisa, no bloquea — el dato histórico se corrige a
+              mano y una regla dura borraría casos legítimos en otra moneda. */}
+          {(detrTarget.currency || 'PEN') === 'PEN' && (Number(detrTarget.amount) || 0) <= UMBRAL_DETRACCION && (
+            <div className="card card-p" style={{ marginBottom:10, borderLeft:'3px solid var(--amber)', fontSize:11.5, color:'var(--ts)' }}>
+              Esta operación es de {fmtCur(detrTarget.amount, detrTarget.currency)}. Las de
+              S/ {UMBRAL_DETRACCION.toLocaleString('es-PE')} o menos <strong>no están sujetas a detracción</strong>,
+              así que lo normal es dejar la casilla de abajo desmarcada.
+            </div>
+          )}
           <label style={{ display:'flex', alignItems:'center', gap:8, cursor:'pointer', fontSize:13, fontWeight:600, marginBottom:10 }}>
             <input type="checkbox" checked={detrAplica} onChange={e=>setDetrAplica(e.target.checked)}/>
             Esta factura tiene detracción
@@ -4476,9 +4500,65 @@ function MovimientosContablesPage({ showToast }) {
                 <option value="cancelled">Anulado</option>
               </select>
             </div>
+            {/* DETRACCIÓN — se muestra ACÁ porque es donde Gabriel la fue a buscar
+                («he tratado de ir a editar un comprobante y no puedo editar el
+                doce por ciento»). El botón abre el modal de detracción, que es el
+                ÚNICO que la escribe: dos formularios editando el mismo dato es
+                cómo se terminan contradiciendo. */}
+            {editingId && (() => {
+              const orig = movs.find(mm => mm.id === editingId);
+              if (!orig) return null;
+              const montoM = Number(orig.amount) || 0;
+              // Umbral SPOT: por debajo de S/ 700 la operación no está sujeta a
+              // detracción (criterio de la contadora, 6-sep-2026).
+              const bajoUmbral = (orig.currency || 'PEN') === 'PEN' && montoM <= UMBRAL_DETRACCION;
+              return (
+                <div style={{ gridColumn:'1/-1', border:'1px solid var(--border)', borderRadius:8, padding:'10px 12px' }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+                    <div style={{ flex:1, minWidth:200, fontSize:12 }}>
+                      <span className="flabel" style={{ marginRight:6 }}>Detracción (SPOT)</span>
+                      {orig.detraccion_aplica ? (
+                        <span style={{ color:'var(--ts)' }}>
+                          {fmtCur(orig.detraccion_monto || 0, orig.currency)}
+                          {orig.detraccion_pct != null ? ` · ${orig.detraccion_pct}%` : ''}
+                          {orig.detraccion_codigo ? ` · código ${orig.detraccion_codigo}` : ' · sin código'}
+                          {orig.detraccion_estado === 'depositada' ? ' · depositada' : ' · falta depósito'}
+                        </span>
+                      ) : (
+                        <span style={{ color:'var(--tm)' }}>sin detracción registrada</span>
+                      )}
+                    </div>
+                    {canWrite && (
+                      <button type="button" className="btn btn-ghost btn-sm"
+                        onClick={() => { const t = orig; setModal(null); openDetraccion(t); }}
+                        title="Abre el registro de detracción: porcentaje, código, monto y constancia del depósito">
+                        {orig.detraccion_aplica ? 'Corregir detracción' : 'Registrar detracción'}
+                      </button>
+                    )}
+                  </div>
+                  {bajoUmbral && orig.detraccion_aplica && (
+                    <div style={{ fontSize:11, color:'var(--amber)', marginTop:6 }}>
+                      Este comprobante es de {fmtCur(montoM, orig.currency)} y las operaciones
+                      de S/ {UMBRAL_DETRACCION.toLocaleString('es-PE')} o menos no están sujetas a detracción.
+                      Revisa si corresponde quitarla.
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
             <div style={{ gridColumn:'1/-1' }}>
               <label className="flabel">Notas</label>
-              <textarea className="fi" rows={2} value={form.notas||''} onChange={e=>setForm({...form, notas:e.target.value})}/>
+              <textarea className="fi" rows={2} value={form.notas||''} onChange={e=>setForm({...form, notas:e.target.value})}
+                placeholder="Una nota para quien lea este comprobante después"/>
+              {/* Antes acá se volcaba el JSON crudo del comprobante —los 1.402
+                  movimientos lo tienen— y editarlo BORRABA los ítems de la
+                  factura. Ahora el textarea es solo la nota humana y el payload
+                  se conserva solo (notas-movimiento.js). Este cartel existe para
+                  que se vea que hay datos detrás, sin poder romperlos. */}
+              {(() => {
+                const r = resumenEstructurado(form._notasOriginal);
+                return r ? <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:4 }}>{r}</div> : null;
+              })()}
             </div>
             {(() => {
               const monto = parseFloat(form.amount);

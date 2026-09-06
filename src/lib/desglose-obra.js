@@ -121,7 +121,14 @@ export const GRUPOS_TRABAJO = [
     // hacer un análisis de insumos». Un solo grupo: la plata de la obra y las
     // herramientas para leerla.
     //
-    // 'intercompany' y 'ordenes-intercompany' ENTRARON ACÁ (tanda 4, D1).
+    // 'ordenes-intercompany' SALIÓ del desglose el 6-sep-2026, por decisión de
+    // Gabriel: «eso de ahí lo vamos a quitar por ahorita, órdenes intercompany
+    // en la sección de trabajos no va a tener. Luego lo vamos a reestructurar
+    // mejor». La pantalla sigue existiendo y `ordenes_intercompany` sigue
+    // sincronizando: solo se saca la puerta del workspace del trabajo hasta que
+    // se rediseñe junto con las órdenes de compra y servicio.
+    //
+    // 'intercompany' ENTRÓ ACÁ (tanda 4, D1).
     // Vivían en el bloque general de Contabilidad —al lado de Consolidado—
     // pero una jugada intercompany es de una obra concreta, no del grupo.
     // Gabriel, 4-sep-2026: «eso no creo que sería buena idea que se mantenga
@@ -138,7 +145,7 @@ export const GRUPOS_TRABAJO = [
     // almacén; ésta es el documento contable que respalda una compra ya hecha.
     desc: 'Los movimientos del consorcio en esta obra, y las herramientas para analizarlos',
     items: ['movimientos-contables', 'conciliacion-insumos', 'pagos', 'trazabilidad',
-      'intercompany', 'ordenes-intercompany', 'ordenes'],
+      'intercompany', 'ordenes'],
   },
 ];
 

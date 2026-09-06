@@ -217,11 +217,13 @@ const NAV = [
   { id: 'conciliacion-insumos', label: 'Conciliación de Insumos', icon: 'compare' },
   { id: 'pagos', label: 'Pagos', icon: 'dollar' },
   { id: 'trazabilidad', label: 'Trazabilidad de insumos (cadenas)', icon: 'compare' },
-  // Mudados del bloque general (tanda 4, D1): una jugada intercompany es de
+  // Mudado del bloque general (tanda 4, D1): una jugada intercompany es de
   // UNA obra, no del grupo. desglose-obra.js con test. El panel de la
   // empresa las sigue mostrando (solo lectura): desglose-empresa.js.
   { id: 'intercompany', label: 'Operaciones entre Empresas de esta obra', icon: 'compare' },
-  { id: 'ordenes-intercompany', label: 'Órdenes Intercompany de esta obra', icon: 'list' },
+  // 'ordenes-intercompany' se sacó del menú de la obra el 6-sep-2026 (Gabriel):
+  // se rediseña junto con las órdenes de compra y servicio. La página sigue
+  // registrada y alcanzable para el admin; solo no tiene puerta acá.
   // Dual, como 'movimientos-contables' (tanda 6): acá son las órdenes que
   // respaldan las compras de ESTA obra; abajo, en el bloque del grupo, las de
   // todas. Gabriel las buscó desde el trabajo y la app lo mandó a la
