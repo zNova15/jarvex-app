@@ -20,6 +20,7 @@ import { EmpresaDetalle } from "./jx-empresa-detalle.jsx";
 import { ClasificarEntidadesModal } from "./jx-clasificar-entidades.jsx";
 import { rolDeCompanyEnObra, titularContableDeObra } from "../lib/consorcio.js";
 import { comprobantesImputacionCruzada } from "../lib/imputacion-cruzada.js";
+import { impactoDeReclasificar, avisoDeReclasificacion } from "../lib/reclasificar-entidad.js";
 import { DESTINOS_REIMPUTACION, validarReimputacion, cambiosDeReimputacion, explicarReimputacion } from "../lib/reimputacion.js";
 import { librosDeObra, filtroEmpresaSegunLibro, LIBRO_CONSORCIO, LIBRO_GRUPO, LIBRO_TODOS } from "../lib/libros-de-obra.js";
 import { resumenPorEntidad } from "../lib/contabilidad-entidades.js";
@@ -282,6 +283,18 @@ function EmpresasPage({ showToast }) {
     try {
       if (editingId) {
         const orig = companies.find(c => c.id === editingId);
+        // 🔴 CAMBIAR EL TIPO DE ENTIDAD RECLASIFICA PLATA. El catálogo manda
+        // sobre el flag `is_intercompany` de cada factura (regla de
+        // consolidado.js), así que este selector de una línea decide qué se
+        // elimina del Consolidado y qué no. Pasó de verdad: ESPERANZA y
+        // SAMADAY salieron del grupo y 35 comprobantes por S/ 214.071
+        // cambiaron de tratamiento sin que nadie viera el número moverse.
+        if (orig && (orig.tipo_entidad || 'propia') !== (form.tipo_entidad || 'propia')) {
+          const aviso = avisoDeReclasificacion(
+            impactoDeReclasificar({ company: orig, tipoNuevo: form.tipo_entidad || 'propia', movs }),
+            orig.name || 'Esta entidad');
+          if (aviso && !confirm(`${aviso}\n\n¿Guardar el cambio?`)) return;
+        }
         await window.__db.companies.update(editingId, {
           name: form.name.trim(),
           legal_name: form.legal_name?.trim() || null,
