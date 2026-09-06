@@ -121,12 +121,11 @@ export const GRUPOS_TRABAJO = [
     // hacer un análisis de insumos». Un solo grupo: la plata de la obra y las
     // herramientas para leerla.
     //
-    // 'ordenes-intercompany' SALIÓ del desglose el 6-sep-2026, por decisión de
-    // Gabriel: «eso de ahí lo vamos a quitar por ahorita, órdenes intercompany
-    // en la sección de trabajos no va a tener. Luego lo vamos a reestructurar
-    // mejor». La pantalla sigue existiendo y `ordenes_intercompany` sigue
-    // sincronizando: solo se saca la puerta del workspace del trabajo hasta que
-    // se rediseñe junto con las órdenes de compra y servicio.
+    // 'ordenes-intercompany' se BORRÓ el 6-sep-2026 («quiero que literalmente
+    // las elimines»). La pantalla, su chunk, su registro en Dexie y su pull del
+    // SyncEngine ya no existen; la tabla `ordenes_intercompany` quedó en el
+    // servidor con 0 filas, que es donde estuvo desde la mig 116. El circuito
+    // se rehace dentro del rediseño de órdenes de compra y servicio.
     //
     // 'intercompany' ENTRÓ ACÁ (tanda 4, D1).
     // Vivían en el bloque general de Contabilidad —al lado de Consolidado—

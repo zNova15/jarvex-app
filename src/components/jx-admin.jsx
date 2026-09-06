@@ -1225,7 +1225,6 @@ window.__moduleIdMap = {
   // Ejecutivo' no es 'x' (admin/gerente); la página ADEMÁS tiene gate duro por rol.
   'analisis-insumos': 'Dashboard Ejecutivo',
   // Órdenes de compra/servicio entre empresas del grupo (Fase 4) — mismo módulo.
-  'ordenes-intercompany': 'Intercompany',
   'consolidado': 'Consolidado',
   'plan-cuentas': 'Plan de Cuentas',
   'libro-diario': 'Libro Diario',

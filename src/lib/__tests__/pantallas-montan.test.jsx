@@ -123,7 +123,6 @@ const CHUNKS = [
   '../../components/jx-movimientos-insumos.jsx',
   '../../components/jx-movimientos.jsx',
   '../../components/jx-obra.jsx',
-  '../../components/jx-ordenes-intercompany.jsx',
   '../../components/jx-ordenes.jsx',
   '../../components/jx-pagos.jsx',
   '../../components/jx-personal-contratos.jsx',

@@ -229,7 +229,6 @@ const PAGE_CHUNKS = {
   'jx-pagos':                 () => import('./components/jx-pagos.jsx'),
   'jx-guias':                 () => import('./components/jx-guias.jsx'),
   'jx-profesionales':         () => import('./components/jx-profesionales.jsx'),
-  'jx-ordenes-intercompany':  () => import('./components/jx-ordenes-intercompany.jsx'),
   'jx-compras':               () => import('./components/jx-compras.jsx'),
   'jx-ordenes':               () => import('./components/jx-ordenes.jsx'),
   'jx-compras-pendientes':    () => import('./components/jx-compras-pendientes.jsx'),

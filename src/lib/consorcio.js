@@ -5,7 +5,7 @@
 // a mano en SIETE archivos distintos, cada uno leyendo el jsonb
 // `obras.consorcio_miembros` con su propia interpretación: jx-obra,
 // jx-contabilidad (rolesPorObra), jx-comprobantes, jx-captura-magica,
-// jx-evidencias, jx-ordenes-intercompany.
+// jx-evidencias.
 //
 // EL MODELO, EN UNA FRASE: el consorcio cuelga de la obra (1:1), y su
 // TITULAR CONTABLE es una fila de `companies` con el RUC del consorcio.

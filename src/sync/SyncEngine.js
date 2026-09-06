@@ -110,7 +110,6 @@ const TRANSACTIONAL_TABLES = [
   // Después de companies (FK company_id).
   'emision_reglas',
   // Órdenes intercompany (Fase 4). Después de obras + companies (FKs).
-  'ordenes_intercompany',
   // Reporte "día sin avance" del ingeniero. Después de obras + frentes_obra.
   'reportes_dia',
   // Pagos (compromisos) y sus partes. Después de personal/subcontratos/
@@ -171,7 +170,6 @@ const MASTER_TABLES = [
   { tabla: 'conciliacion_vinculos',        query: () => supabase.from('conciliacion_vinculos').select('*').is('deleted_at', null) },
   { tabla: 'clasificacion_catalogo',       query: () => supabase.from('clasificacion_catalogo').select('*').is('deleted_at', null) },
   { tabla: 'emision_reglas',               query: () => supabase.from('emision_reglas').select('*').is('deleted_at', null) },
-  { tabla: 'ordenes_intercompany',         query: () => supabase.from('ordenes_intercompany').select('*').is('deleted_at', null) },
   { tabla: 'reportes_dia',                 query: () => supabase.from('reportes_dia').select('*').is('deleted_at', null) },
   { tabla: 'reportes_especialidad',        query: () => supabase.from('reportes_especialidad').select('*').is('deleted_at', null) },
   { tabla: 'charlas_plan',                 query: () => supabase.from('charlas_plan').select('*').is('deleted_at', null) },
@@ -650,7 +648,7 @@ const PULL_SCOPE_POR_ROL = {
     'cotizacion_items', 'cotizaciones', 'cronograma_pagos', 'depositos_bancarizacion',
     'emision_reglas', 'horas_maquina', 'insumos_partida_versionadas', 'insumos_pendientes',
     'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
-    'oc_items', 'ordenes_compra', 'ordenes_intercompany', 'pagos',
+    'oc_items', 'ordenes_compra', 'pagos',
     'pagos_partes', 'partidas_versionadas', 'planilla_boletas', 'planillas',
     'presupuestos_versiones', 'requisicion_items', 'requisiciones', 'trazabilidad_cadenas',
     'valorizacion_adicionales', 'valorizacion_partidas', 'valorizaciones',
@@ -660,7 +658,7 @@ const PULL_SCOPE_POR_ROL = {
     'cotizacion_items', 'cotizaciones', 'cronograma_pagos', 'depositos_bancarizacion',
     'emision_reglas', 'horas_maquina', 'insumos_partida_versionadas', 'insumos_pendientes',
     'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
-    'oc_items', 'ordenes_compra', 'ordenes_intercompany', 'pagos',
+    'oc_items', 'ordenes_compra', 'pagos',
     'pagos_partes', 'partidas_versionadas', 'planilla_boletas', 'planillas',
     'presupuestos_versiones', 'requisicion_items', 'requisiciones', 'trazabilidad_cadenas',
     'valorizacion_adicionales', 'valorizacion_partidas', 'valorizaciones',
@@ -670,7 +668,7 @@ const PULL_SCOPE_POR_ROL = {
     'cotizacion_items', 'cotizaciones', 'cronograma_pagos', 'depositos_bancarizacion',
     'emision_reglas', 'horas_maquina', 'insumos_partida_versionadas', 'insumos_pendientes',
     'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
-    'oc_items', 'ordenes_compra', 'ordenes_intercompany', 'pagos',
+    'oc_items', 'ordenes_compra', 'pagos',
     'pagos_partes', 'partidas_versionadas', 'planilla_boletas', 'planillas',
     'presupuestos_versiones', 'requisicion_items', 'requisiciones', 'trazabilidad_cadenas',
     'valorizacion_adicionales', 'valorizacion_partidas', 'valorizaciones',
@@ -680,7 +678,7 @@ const PULL_SCOPE_POR_ROL = {
     'cotizacion_items', 'cotizaciones', 'cronograma_pagos', 'depositos_bancarizacion',
     'emision_reglas', 'horas_maquina', 'insumos_partida_versionadas', 'insumos_pendientes',
     'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
-    'oc_items', 'ordenes_compra', 'ordenes_intercompany', 'pagos',
+    'oc_items', 'ordenes_compra', 'pagos',
     'pagos_partes', 'partidas_versionadas', 'planilla_boletas', 'planillas',
     'presupuestos_versiones', 'requisicion_items', 'requisiciones', 'trazabilidad_cadenas',
     'valorizacion_adicionales', 'valorizacion_partidas', 'valorizaciones',
@@ -690,7 +688,7 @@ const PULL_SCOPE_POR_ROL = {
     'cotizacion_items', 'cotizaciones', 'cronograma_pagos', 'depositos_bancarizacion',
     'emision_reglas', 'horas_maquina', 'insumos_partida_versionadas', 'insumos_pendientes',
     'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
-    'oc_items', 'ordenes_compra', 'ordenes_intercompany', 'pagos',
+    'oc_items', 'ordenes_compra', 'pagos',
     'pagos_partes', 'partidas_versionadas', 'planilla_boletas', 'planillas',
     'presupuestos_versiones', 'requisicion_items', 'requisiciones', 'trazabilidad_cadenas',
     'valorizacion_adicionales', 'valorizacion_partidas', 'valorizaciones',
@@ -722,7 +720,7 @@ const PULL_SCOPE_POR_ROL = {
     'ambiental_registros', 'capacitaciones', 'charla_asistentes',
     'charlas_plan', 'charlas_seguridad', 'cronograma_pagos', 'depositos_bancarizacion',
     'emision_reglas', 'inducciones', 'inspecciones_seguridad', 'insumos_partida_versionadas',
-    'intercompany_transactions', 'movimientos_bancarios', 'ordenes_intercompany', 'pagos',
+    'intercompany_transactions', 'movimientos_bancarios', 'pagos',
     'pagos_partes', 'partidas_versionadas', 'planilla_boletas', 'planillas',
     'presupuestos_versiones', 'reportes_especialidad', 'social_actores', 'social_compromisos',
     'social_quejas', 'trazabilidad_cadenas', 'valorizacion_adicionales', 'valorizacion_partidas',
@@ -998,7 +996,6 @@ const TABLA_TO_MODULO = {
   // Intercompany 'w' (contadora jefe/admin; el ayudante NO).
   emision_reglas: 'Intercompany',
   // Órdenes intercompany: las escriben jefe/admin (aprobación admin en UI).
-  ordenes_intercompany: 'Intercompany',
   // Reporte "día sin avance": lo escribe el ingeniero (mismo módulo que avance_obra).
   reportes_dia: 'Avance',
   // Pagos de personal/subcontratos: área contable. Con 'Planillas' el push del
@@ -1105,7 +1102,6 @@ const FK_DEPS = {
   caja_chica_movimientos:    [{ campo: 'responsable_id', tabla: 'personal' }],
   // La regla de emisión referencia la empresa emisora + intermediarias (FKs reales).
   emision_reglas:            [{ campo: 'company_id', tabla: 'companies' }, { campo: 'intermediaria1_company_id', tabla: 'companies' }, { campo: 'intermediaria2_company_id', tabla: 'companies' }],
-  ordenes_intercompany:      [{ campo: 'obra_id', tabla: 'obras' }, { campo: 'company_id', tabla: 'companies' }, { campo: 'intermediaria1_company_id', tabla: 'companies' }, { campo: 'intermediaria2_company_id', tabla: 'companies' }, { campo: 'ejecutora_company_id', tabla: 'companies' }],
   reportes_dia:              [{ campo: 'frente_id', tabla: 'frentes_obra' }],
   pagos:                     [{ campo: 'personal_id', tabla: 'personal' }, { campo: 'subcontrato_id', tabla: 'subcontratos' }, { campo: 'company_id', tabla: 'companies' }],
   pagos_partes:              [{ campo: 'pago_id', tabla: 'pagos' }, { campo: 'accounting_movement_id', tabla: 'accounting_movements' }, { campo: 'deposito_id', tabla: 'depositos_bancarizacion' }],
@@ -2612,7 +2608,7 @@ const _MASTERFIN_WM_REPAIR_KEY = 'jx_masterfin_wm_repair_v3';
 const _MASTERFIN_TABLES = [
   'accounting_movements', 'companies', 'pagos', 'pagos_partes',
   'depositos_bancarizacion', 'intercompany_transactions', 'guias_remision', 'guia_factura',
-  'conciliacion_vinculos', 'ordenes_intercompany',
+  'conciliacion_vinculos',
   // Stock (el bug de reloj también ocultaba updates de stock_actual):
   'materiales', 'herramientas', 'stock_ubicaciones', 'stock_estados',
 ];

@@ -210,7 +210,6 @@ db.version(34).stores({
 // Versión 33: órdenes de compra/servicio intercompany (Fase 4). Borrador de la
 // contadora jefe → aprobación del admin → lista para emitir. Aditivo.
 db.version(33).stores({
-  ordenes_intercompany: 'id, obra_id, company_id, estado, deleted_at, sync_status',
 });
 
 // Versión 32: reglas de designación de empresa emisora por subcategoría
