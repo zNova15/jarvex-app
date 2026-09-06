@@ -412,6 +412,25 @@ export function useInsumoCorrelaciones() {
   , []);
 }
 
+// Insumos del presupuesto de una obra (el catálogo canónico: `insumo_codigo`).
+// Por índice `obra_id` — nunca un filter() sobre las 6.722 filas.
+export function useInsumosPartida(obra_id) {
+  return useOfflineData('insumos_partida', q =>
+    obra_id
+      ? q.where('obra_id').equals(obra_id).filter(i => !i.deleted_at).toArray()
+      : Promise.resolve([])
+  , [obra_id]);
+}
+
+// Mapeo de descripciones de factura al catálogo canónico del presupuesto
+// (mig 183). Puede haber varias filas por `norm` (dos devices offline) —
+// resolverMapeos() elige cuál manda al leer.
+export function useInsumoMapeos() {
+  return useOfflineData('insumo_mapeo', q =>
+    q.filter(c => !c.deleted_at).toArray()
+  , []);
+}
+
 // Config global clave→valor (mig 159). Puede haber filas repetidas por clave
 // (dos devices offline) — resolver al leer: updated_at más reciente gana.
 export function useAppConfig() {

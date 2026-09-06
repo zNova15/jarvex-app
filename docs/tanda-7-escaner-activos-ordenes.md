@@ -200,7 +200,16 @@ emite la orden por esas 700 y a GASOMI se le descuentan del inventario.
 Tu ejemplo se quedó corto por un factor de diez. Y el acero: la obra necesita
 **29.856 kg** de ACERO CORRUGADO fy=4200 (código `30020002`) en 33 partidas.
 
-### 🔴 EL HALLAZGO QUE BLOQUEA: las 318 bolsas de GASOMI **ya son costo de Miraflores**
+### ~~🔴 EL HALLAZGO QUE BLOQUEA~~ — RESUELTO el 6-sep: **modelo B**
+
+> ⚠️ Lo que sigue se escribió antes de que Gabriel decidiera. **Ya no bloquea**:
+> vincular una compra a una obra es trazabilidad, no imputación de costo — el
+> costo entra recién con la venta a la ejecutora. Se deja el análisis porque la
+> consecuencia sigue viva: **todo reporte que hoy sume costo de obra a partir de
+> `obra_id` está sumando compras que todavía no son costo**, y eso hay que
+> revisarlo en la entrega 6. Ver el apartado 7.
+
+### El planteo original: las 318 bolsas de GASOMI y el doble conteo
 
 Las tres compras de cemento de GASOMI están cargadas con `obra_id = Miraflores`.
 O sea que **el costo ya entró a la obra en el momento de la compra**.
@@ -268,14 +277,15 @@ Y del lado de la empresa vendedora, esas unidades salen de su stock disponible.
 
 ## 5. El orden que propongo
 
-| # | Entrega | Depende de | Por qué en ese orden |
+| # | Entrega | Estado | Por qué en ese orden |
 |---|---|---|---|
-| 1 | **Escáner, nivel 1** | nada | 4 reglas ya validadas, cero criterio contable, valor inmediato |
-| 2 | **Recomendador de activos** | nada | Responde tu pedido con nombre propio; nada de lo que escribe es irreversible |
-| 3 | **Sugeridor de código SPOT** | 1 | Se cuelga del escáner; las 8 familias por reglas |
-| 4 | **Decisión modelo A vs B** | — | **No es código.** Tuya con la contadora. Bloquea la 5 |
-| 5 | **Mapeo insumo → código canónico** | 4 | El trabajo de fondo. Sin esto no hay abastecimiento |
-| 6 | **Abastecimiento + órdenes que nacen antes** | 5 | El rediseño de verdad |
+| 1 | **Escáner, nivel 1** | ✅ staging (`f0c987b`) | 4 reglas ya validadas, cero criterio contable, valor inmediato |
+| 2 | **Recomendador de activos** | ✅ staging (`f27a6c0`) | Responde tu pedido con nombre propio; nada de lo que escribe es irreversible |
+| 3 | **Sugeridor de código SPOT** | ✅ staging (`5f95250`) | Se cuelga del escáner; las 8 familias por reglas |
+| 4 | **Decisión modelo A vs B** | ✅ **modelo B**, decidido por Gabriel el 6-sep | No era código. Ver apartado 7 |
+| 5 | **Mapeo insumo → código canónico** | ✅ staging, mig 183 | El trabajo de fondo. Ver apartado 8 |
+| 5b | **Los 3 bloqueantes de la tanda 5** | ⏳ pendiente | Ver apartado 9. Bloquean la 6 |
+| 6 | **Abastecimiento + órdenes que nacen antes** | ⏳ pendiente | El rediseño de verdad |
 
 **Arrancaría por la 1 y la 2 en paralelo**: son las dos que no dependen de
 ninguna decisión y las dos que ya tienen los datos.
@@ -290,23 +300,270 @@ ninguna decisión y las dos que ya tienen los datos.
 | **2 — Recomendador de activos** (mig 182, lib + tests, panel, enlace con Equipos Pesados) | **Opus 5** | medio-alto | **Sí.** Hay que tener a la vista `jx-activos-fijos.jsx`, `activos-fijos.js` y el patrón de escritura sobre `items_factura[idx]` |
 | **3 — Sugeridor SPOT** (reglas + contexto de obra) | Sonnet 5 | medio | No. Va con la 1 |
 | **4 — Decisión A vs B** | — | — | **No es de un modelo.** Tuya con la contadora |
-| **5 — Mapeo al catálogo canónico** (434 insumos, conversión de unidades) | **Opus 5** | **alto** | **Sí, y sola.** Es donde se decide si todo lo demás funciona. Incluye la IA de mapeo con revisión humana |
+| ~~5 — Mapeo al catálogo canónico~~ **HECHO** (Opus 5, effort alto) | — | — | Salió sin IA: medido, hoy no rinde (apartado 8) |
+| **5b — Los 3 bloqueantes de la tanda 5** | Sonnet 5 | medio | **No.** Tanda chica: están localizados y medidos (apartado 9) |
 | **6 — Abastecimiento y órdenes** | **Opus 5** | **alto** | **Sí, y sola.** Produce correlativos irreversibles y toca contabilidad viva |
 
 **Nota sobre la 6:** antes de emitir un solo número hay que cerrar los tres
-bloqueantes de la tanda 5 que ya están identificados (el tipo se clasifica por
-el nombre del proveedor, el IGV 0 no se detecta, y el correlativo corre al revés
-del tiempo), y el permiso de la contadora, que hoy **no puede subir órdenes**
-porque «Órdenes de Compra» no está en su matriz.
+bloqueantes de la tanda 5, que ahora están **especificados y medidos** en el
+apartado 9, y destrabar el permiso de la contadora, que hoy **no puede subir
+órdenes** porque «Órdenes de Compra» no está en su matriz.
 
 ---
 
-## 7. Lo que no sé
+## 7. Lo que no sabía — RESUELTO el 6-sep con Gabriel
 
-1. **La UIT 2026.** Todo el umbral cuelga de eso.
-2. **Modelo A o B**, o cuál en qué caso.
-3. **La tabla de conversión del acero** (kg por varilla y calibre): hay valores
-   estándar, pero los confirma la obra.
-4. **Si el presupuesto de Miraflores está vigente.** `cantidad_real_usada` está
-   en **0,00 en las 6.722 filas**: nadie registró consumo contra las partidas,
-   así que «lo que falta» hoy es presupuesto, no presupuesto menos consumido.
+**1. La UIT 2026 = S/ 5.500.** Decreto Supremo 301-2025-EF; subió S/ 150 desde
+los 5.350 de 2025. El valor que estaba puesto como supuesto era el correcto, así
+que **ninguna propuesta del recomendador cambia**.
+
+Y hay que decir algo más, porque Gabriel preguntó por qué esto importaba tanto:
+**para su caso, importa poco.** El umbral de 1/4 de UIT (S/ 1.375) solo decide si
+un bien barato **puede** mandarse a gasto en vez de activarse; es una facultad,
+no una obligación, y no dice qué es la cosa. Ya estaba medido que por sí solo no
+sirve: de las 2.440 líneas, 27 pasan el umbral y once no son bienes, y JARVEX no
+tiene ni una línea por encima —los generadores KAILI, que es el caso que él
+pidió con nombre propio, no aparecerían nunca. Por eso el recomendador clasifica
+**por destino del bien** y el monto es un dato más. Lo único que el umbral
+cambia de verdad es el aviso «este bien es tan barato que podés mandarlo a gasto
+directo». Nada más. Gabriel tenía razón en no verlo importante.
+
+**2. Modelo B**, decidido por Gabriel:
+
+> «Nosotros registramos y vinculamos algunas compras con la empresa; eso no
+> quiere decir que directamente se le cargue a la obra. Para que pase eso tiene
+> que haber una venta de la empresa que compra hacia el Consorcio.»
+
+O sea: **vincular una compra a una obra no la carga a la contabilidad de la
+obra.** El costo entra a la obra recién con la venta de la empresa del grupo a
+la ejecutora. Eso ordena todo lo que sigue y **desactiva el bloqueante rojo**
+del apartado 4: las 318 bolsas de cemento de GASOMI **no se pagan dos veces**,
+porque estar marcadas con `obra_id = Miraflores` es un vínculo de trazabilidad,
+no una imputación de costo.
+
+⚠️ **Pero deja una consecuencia que hay que mirar**: si el vínculo a obra no es
+costo, entonces las 756 líneas «ya imputadas a una obra» tampoco lo son, y todo
+reporte que hoy sume costo de obra a partir de `obra_id` está sumando compras
+que todavía no son costo. Es lo primero que hay que revisar en la entrega 6.
+
+**3. La tabla de conversión del acero** — Gabriel: *«esto se va a encargar de
+completarlo la contadora, ella lo adecuará»*. Hecho así: la app propone el valor
+de la norma (NTP 341.031 / ASTM A615) y **el factor es editable en cada fila**,
+guardando de dónde salió. Ver el apartado 8.
+
+**4. El presupuesto de Miraflores puede cambiar** — Gabriel: *«al inicio yo
+coloqué un presupuesto, luego fue variando hasta el que ahora se tiene, y
+entiendo que es el último. Pero tenga en cuenta que puede llegar a cambiar.»*
+El diseño lo aguanta: el mapeo se guarda contra el **código** del insumo, no
+contra la cantidad. Si mañana el presupuesto pide 15.000 bolsas en vez de
+11.269, el mapeo sigue valiendo y solo se mueve el lado de la demanda. Lo que sí
+rompe un cambio de presupuesto es que **desaparezca un código**: esos mapeos
+quedarían apuntando a la nada y hay que revisarlos.
+
+---
+
+## 8. Entrega 5 — el mapeo al catálogo canónico: HECHO
+
+**Está en staging**: pestaña **🎯 Mapeo al presupuesto** dentro de Análisis de
+Insumos (Contabilidad → Análisis de Insumos), migración **183**, lib pura
+`src/lib/mapeo-insumos.js` con 44 tests y la pestaña con 12 más.
+
+### Lo primero que se midió, y que descartó el plan obvio
+
+**No hay Pareto.** Las 2.440 líneas de compra son **1.852 descripciones
+distintas** ya normalizadas, y las 100 más caras son apenas el **70%** del valor;
+las 200, el 84%. No alcanza con mapear a mano las de arriba, y 1.852 a mano no
+las mapea nadie. Tenía que haber motor.
+
+Y el motor se topó con tres cosas que obligaron el diseño:
+
+| Trampa | Qué pasa | Ejemplo real |
+|---|---|---|
+| **`unidad` no sirve** | Dice `UNIDAD` para bolsas, metros y kilos por igual | El cemento y el acero vienen los dos en «und» |
+| **`tipo_insumo` miente** | Viene de la captura, no de la verdad | «LIMPIEZA Y ACONDICIONAMIENTO DE LOCAL» está tipada `material` |
+| **El scorer que ya existía no alcanza** | `scoreNombres()` anula si los números difieren, y compara nombres de factura entre sí | El par correcto más caro de la base daba **0** |
+
+Ese par correcto más caro es el que ordenó todo el diseño:
+
+```
+factura   «TUBO PVC-U 200 mm S-25 UF ALCANTARILLADO»          2.470 und
+catálogo  «TUBERIA PVC UF S25 DE 8"(200mm) x 6m ISO 4435»  14.088,7 m
+```
+
+Comparten 200 y S25, difieren en 8, 6 y 4435, y «tubo» ni siquiera es prefijo de
+«tuberia». Por eso el motor lee los números como **magnitudes con unidad** (no
+como tokens), aplica sinónimos de obra, y sabe que **8" ≡ 200 mm en tubería
+pero 8 mm ≠ 8" en acero corrugado** — la tabla de diámetro nominal es por
+familia, porque una sola tabla se equivocaría siempre en una de las dos.
+
+### Las dos decisiones que le dieron precisión
+
+**La compuerta de familia.** Antes de puntuar se decide de qué familia es cada
+lado y solo se compara dentro. Sin eso, «GUANTE DE ACERO ANTICORTE» y «PERFIL DE
+ACERO ASTM A992» competían por el código del acero corrugado, y «POR EL SERVICIO
+DE TRANSPORTE DE … CEMENTO DISOLVENTE» competía por el del cemento. Las tres
+están en producción. Un servicio nunca mapea a un material.
+
+**El puntaje es Dice ponderado por IDF**, no cobertura del catálogo. La primera
+versión miraba el máximo de las dos coberturas y **se llevaba plata de verdad**:
+
+| Descripción de la factura | Se llevaba | Importe |
+|---|---|---:|
+| CAJA Y MARCO Y TAPA PARA AGUA PVC | «AGUA» (código de una sola palabra), 77% | S/ 20.648 |
+| ESCRITORIO DE MADERA 1.80 × 0.80 | «MADERA ROLLIZA … EUCALIPTO», 70% | S/ 10.169 |
+| PNATON EN BOLSA X 900 GR | «YESO BOLSA 10 kg», 63% | S/ 6.864 |
+| TINAS DE PLASTICO MEDIANAS | «PLASTICO DOBLE ANCHO», 73% | S/ 2.390 |
+
+Los cuatro salieron del tramo confiable con tres correcciones medidas: puntaje
+simétrico, el sustantivo cabeza vale doble **solo si es cabeza de los dos
+lados**, y las palabras que el catálogo no conoce («pnaton», «escritorio»,
+«tinas») pesan el **promedio** del catálogo en vez del mínimo — antes eran
+gratis, y por eso una línea llena de palabras ajenas al presupuesto no pagaba
+nada por serlo.
+
+También se sacaron del juego los **47 códigos `equipo` (en hm) y los 5 de
+`mano_obra` (en hh)**: comprar un vibrador no abastece horas de vibrador, y
+proponerlo hacía que S/ 14.110 de una MAKITA se ofrecieran como si cubrieran el
+alquiler presupuestado.
+
+### Cómo queda, medido sobre las 1.852 descripciones
+
+| | Descripciones | Importe | % |
+|---|---:|---:|---:|
+| **Con propuesta confiable** | 118 | S/ 232.982 | 12,9% |
+| **Dudosas (decide la persona)** | 233 | S/ 319.125 | 17,6% |
+| **Servicios** (no consumen insumos) | 130 | S/ 337.896 | 18,6% |
+| **Sin candidato** | 1.371 | S/ 921.960 | 50,9% |
+
+**Ese 50,9% no es una falla: es la respuesta correcta.** Se revisaron las 22 más
+caras y son perfiles de acero ASTM A992, planchas, tubos inoxidables, laptops
+LENOVO, niveles láser DEWALT y carretillas — el rubro metalmecánico propio de
+GASOMI y herramientas de empresa, que el presupuesto de Miraflores no contempla.
+Y hay un hallazgo dentro: se compraron **S/ 12.288 de tubería PVC de 12" (315
+mm)** y **el presupuesto no tiene ningún código de 12"** — solo 6" y 8".
+
+El motor tarda **0,6 s** para las 1.852 × 433 comparaciones, así que corre entero
+en el navegador sin endpoint ni IA.
+
+### Lo que sale del otro lado — oferta contra demanda, en unidades del presupuesto
+
+Aceptando lo propuesto y lo dudoso (que es lo que haría alguien revisando de
+arriba hacia abajo):
+
+| Insumo del presupuesto | Necesita | Comprado | Cubre |
+|---|---:|---:|---:|
+| TUBERIA PVC UF S25 8" (200 mm) | 14.089 m | 14.820 m | 105% |
+| ACERO CORRUGADO fy=4200 | 29.856 kg | 23.923 kg | 80% |
+| CEMENTO PORTLAND TIPO I | 11.269 bol | 2.620 bol | 23% |
+| MEDIDOR DE AGUA | 443 und | 449 und | 101% |
+
+Las **2.620 bolsas** salen por un camino distinto al de la primera medición de
+esta tanda (2.250 + 318 + 42 = 2.610) y dan lo mismo: el motor se valida solo.
+Y el medidor de agua da 449 contra 443 necesarios, que es casi exacto.
+
+Las filas absurdas —una válvula al 2.500%— son justamente las que caen en
+«dudosas» y que una persona corrige. Para eso está la pantalla.
+
+### Lo que la pantalla hace
+
+- Se decide **por descripción, no por factura**: el mismo texto aparece en
+  facturas de varias empresas y se decide una vez para todas, las de ayer y las
+  que entren mañana.
+- Ordenado **por plata**: decidir las primeras veinte filas ya mueve la aguja.
+- **«No está en el presupuesto» también se guarda.** Es la respuesta correcta
+  para la mitad del gasto, y sin recordarla esas 1.371 descripciones volverían a
+  preguntarse en cada visita. Es la lección del escáner de facturas.
+- **El factor de conversión es editable siempre**, y muestra de dónde salió:
+  `norma` (NTP 341.031: 1/2" = 0,994 kg/m × 9 m = **8,946 kg**), `de la factura`
+  (cuando la propia factura dice el largo), o `supuesto` en ámbar. Ningún
+  `supuesto` se consolida solo.
+- **Hereda de las correlaciones que Gabriel ya confirmó**: si en la pestaña 🤝 ya
+  dijo que «VARILLA DE ACERO CORRUGADO DE 1/2» y «FIERRO CORRUGADO 1/2' NTP
+  341.031 SIDERPERU» son el mismo insumo, mapear una mapea las dos.
+- Y arriba, **el avance en plata**: qué % del gasto ya está traducido.
+
+### Por qué NO se enganchó la IA todavía
+
+El plan decía que la IA entraba acá. Medido, hoy no rinde: la IA solo puede
+elegir entre los 381 códigos de material, y la cola sin candidato está dominada
+por cosas que **no tienen código**. Serían ~1.371 llamadas para que conteste
+«no está en el presupuesto» 1.300 veces, con el saldo de Anthropic que ya se
+agotó una vez y no tiene recarga automática. El enganche está listo —
+`insumo_mapeo.fuente` ya acepta `'ia'` y pisa a la regla — y conviene prenderlo
+**cuando entre una segunda obra con su propio presupuesto**, porque ahí la cola
+se achica y la IA sí tendría dónde acertar.
+
+### Un bug que apareció escribiendo los tests
+
+`cantidadCanonica(10, null)` devolvía **0** en vez de `null`, porque
+`Number(null)` es 0. Una línea sin factor habría dicho «de este insumo no hay
+nada» cuando la verdad es «no sabemos cuánto hay» — y eso hace comprar de más.
+Corregido y con test.
+
+---
+
+## 9. Los tres bloqueantes de la tanda 5, especificados y medidos
+
+Son los que hay que cerrar **antes** de la entrega 6, porque la 6 emite
+correlativos irreversibles y toca contabilidad viva.
+
+### 🔴 B-1 — El tipo de orden se decide por el TEXTO, y el texto suele ser el proveedor
+
+`tipoSugerido()` en `src/lib/ordenes.js:308` arma su decisión con
+`clase + category + description` y busca palabras como *transporte*, *servicio*,
+*alquiler*. Pero `description` muy seguido **es el nombre del proveedor**, así
+que una compra de materiales a «TRANSPORTES … S.A.C.» sale como Orden de
+**Servicio**.
+
+**Medido sobre los 204 comprobantes en soles por encima de S/ 2.000:** 50
+saldrían tipados como servicio, y **11 de esos traen bienes de verdad en sus
+ítems** (`tipo_insumo` material / herramienta / EPP / maquinaria). Son 11
+documentos formales emitidos con el rótulo equivocado, en la serie equivocada.
+
+**Cómo se arregla:** mirar los ÍTEMS, que ya están y son la verdad —si el
+comprobante trae bienes es compra— y usar el texto solo cuando no hay ítems.
+Chico y con test.
+
+### 🔴 B-2 — El IGV se asume 18% siempre, salvo recibo por honorarios
+
+`borradorDesdeMovimiento()` (`ordenes.js:322`) pone `igvPct = 0` únicamente si
+`document_type === 'recibo_honorarios'`. **Y no hay ni uno solo sobre S/ 2.000**,
+o sea que la única salida implementada nunca se usa.
+
+**Medido sobre los 123 comprobantes con ítems por encima de S/ 2.000:**
+
+- **117** son coherentes con IGV 18% — la suposición funciona.
+- **3** tienen los ítems iguales al total: son **operaciones sin IGV**
+  (exoneradas o inafectas). La orden les inventa un IGV que no existe y
+  **subvalúa el valor de venta en 15,25%**.
+- **3** no cierran con ninguna de las dos hipótesis: hay otra cosa mal ahí y
+  conviene mirarlas de a una antes de emitir.
+
+**Cómo se arregla:** cuando el comprobante trae ítems, la suma de los ítems
+manda sobre la suposición, y el IGV sale de la diferencia. Cuando no los trae,
+que la contadora pueda poner el % en la grilla (el campo ya existe).
+
+### 🔴 B-3 — El correlativo se reparte por MONTO, no por fecha
+
+`comprobantesSinOrden()` (`ordenes.js:235`) devuelve la lista ordenada
+`por amount descendente`, y el lote de emisión (`jx-ordenes.jsx:232`) va pidiendo
+`proximoCodigo()` en ese mismo orden. **Resultado: la OC-001 se la lleva el
+comprobante más caro, no el más antiguo**, y el libro de órdenes queda con la
+numeración saltando en el tiempo. No es «al revés del tiempo»: es que no tiene
+ninguna relación con el tiempo.
+
+El correlativo en sí está bien resuelto —toma el máximo, así que una orden
+anulada no libera su número, que es lo correcto—; lo que está mal es **el orden
+en que se recorre el lote**.
+
+**Cómo se arregla:** ordenar por `fecha` ascendente al momento de emitir
+(y dejar el orden por monto solo para MIRAR la lista, que es donde sirve).
+Una línea, más su test.
+
+**Los tres juntos:** Sonnet 5, effort medio, una tanda chica. No hace falta
+sesión nueva ni Opus: están localizados, medidos y las tres correcciones son de
+pocas líneas en una lib que ya tiene 43 tests.
+
+**Y falta uno que no es código:** la contadora **no puede subir órdenes** porque
+«Órdenes de Compra» no está en su matriz de permisos. Eso lo destraba Gabriel en
+Admin → Permisos, y sin eso la entrega 6 no la puede usar quien tiene que usarla.

@@ -6,6 +6,12 @@
 //    correlaciones confirmadas), qué proveedor vendió cada una, a qué precio
 //    (último/mín/máx), el más barato comparable y el gráfico de evolución.
 //    Todo sale RETROACTIVO de las facturas ya registradas (items_factura).
+//  · 🎯 Mapeo al presupuesto: traduce lo que dicen las facturas a los códigos
+//    canónicos del presupuesto de la obra (tanda 7, entrega 5). Es el paso que
+//    habilita comparar lo que la obra NECESITA contra lo que el grupo ya
+//    COMPRÓ — sin esto no hay Abastecimiento ni órdenes que nazcan antes del
+//    comprobante. Reusa las correlaciones de la pestaña de al lado: mapear un
+//    nombre mapea a todos sus hermanos ya confirmados.
 //  · 🤝 Correlaciones: el sistema PROPONE pares de nombres que parecen el
 //    mismo insumo; acá se confirma ("mismo") o se rechaza ("distintos") y la
 //    decisión queda grabada en insumo_correlaciones (sincronizada) para NO
@@ -24,6 +30,7 @@ import {
 import {
   extraerComprasDeFacturas, agruparComprasPorInsumo, proveedorMasBarato, seriePrecios,
 } from "../lib/analisis-insumos.js";
+import { MapeoInsumosTab } from "./jx-mapeo-insumos.jsx";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -196,6 +203,9 @@ function AnalisisInsumosPage({ showToast }) {
         <button className={`btn btn-sm ${tab === 'correlaciones' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('correlaciones')}>
           🤝 Correlaciones{sugerencias.length ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>{sugerencias.length}</span> : null}
         </button>
+        <button className={`btn btn-sm ${tab === 'mapeo' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('mapeo')}>
+          🎯 Mapeo al presupuesto
+        </button>
       </div>
 
       {tab === 'comparador' && (
@@ -292,6 +302,10 @@ function AnalisisInsumosPage({ showToast }) {
             </>
           )}
         </>
+      )}
+
+      {tab === 'mapeo' && (
+        <MapeoInsumosTab compras={compras} grupoDe={grupoDe} showToast={showToast} />
       )}
 
       {tab === 'correlaciones' && (

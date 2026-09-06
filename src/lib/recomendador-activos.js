@@ -72,9 +72,10 @@ export const PISO_ACTIVO = 300;
  * 1/4 de UIT — el monto del art. 23 del Reglamento de la LIR por debajo del
  * cual un bien PUEDE mandarse a gasto (es facultad, no obligación).
  *
- * ⚠️ La UIT 2026 hay que CONFIRMARLA con la contadora. Se deja configurable a
- * propósito: un número legal que cambia cada año no puede vivir hardcodeado, y
- * equivocarlo movería la propuesta de cada fila.
+ * UIT 2026 = S/ 5.500, CONFIRMADA: Decreto Supremo 301-2025-EF (subió S/ 150
+ * desde los 5.350 de 2025). El valor que estaba puesto como supuesto era el
+ * correcto, así que ninguna propuesta cambia. Sigue configurable a propósito:
+ * un número legal que se actualiza cada diciembre no puede vivir hardcodeado.
  */
 export const UIT_POR_ANIO = { 2024: 5150, 2025: 5350, 2026: 5500 };
 export function umbralActivoFijo(anio, uitPorAnio = UIT_POR_ANIO) {

@@ -82,6 +82,14 @@ export const db = new Dexie('JarvexDB');
 // dos laptops y una impresora. Sin el índice de línea, aceptar una marcaría la
 // factura entera como resuelta. Aditivo: re-declara activos_fijos sumando
 // accounting_item_idx.
+// Versión 55: MAPEO DE FACTURAS AL CATÁLOGO CANÓNICO (mig 183, tanda 7). La
+// clave es la DESCRIPCIÓN NORMALIZADA, no el comprobante: el mismo texto
+// aparece en facturas de varias empresas y se decide UNA vez para todas.
+// Aditivo.
+db.version(55).stores({
+  insumo_mapeo: 'id, norm, insumo_codigo, decision, fuente, deleted_at, sync_status',
+});
+
 db.version(54).stores({
   activos_fijos: 'id, company_id, periodo, cuenta_contable, activo_pesado_id, accounting_movement_id, accounting_item_idx, estado, deleted_at, sync_status',
 });
