@@ -3,8 +3,8 @@ import {
   textosDeTipo, prefijoDeOrden, siguienteCorrelativo, formatearCodigo, proximoCodigo,
   totalesDesdeItems, totalesDesdeTotal, repartirSobreItems,
   necesitaOrden, comprobantesSinOrden, agruparPorEmpresa, resumenRespaldo,
-  tipoSugerido, borradorDesdeMovimiento, recalcularBorrador,
-  UMBRAL_POR_DEFECTO,
+  tipoSugerido, igvSugeridoDesdeItems, borradorDesdeMovimiento, recalcularBorrador,
+  ordenarParaEmitir, UMBRAL_POR_DEFECTO,
 } from '../ordenes.js';
 
 // Datos de producción: el modelo que dejó Gabriel es del CONSORCIO EL INCA,
@@ -14,6 +14,10 @@ const JARVEX = { id: 'c-jarvex', name: 'JARVEX INGENIERIA', codigo_doc_prefix: '
 
 const orden = (o = {}) => ({ id: 'o1', company_id: INCA.id, tipo: 'compra', anio: 2026, correlativo: 1, estado: 'enviada', ...o });
 const mov = (o = {}) => ({ id: 'm1', company_id: INCA.id, type: 'cost', currency: 'PEN', amount: 5000, date: '2026-05-04', ...o });
+// Comprobante con ítems de items_factura (Captura Mágica), como los que
+// mide § 9 del doc de la tanda 7 sobre los 204/123 comprobantes reales.
+const movConItems = (items, o = {}) => mov({ ...o, notas: JSON.stringify({ items_factura: items }) });
+const item = (o = {}) => ({ descripcion: 'ítem', cantidad: 1, precio_unitario: 100, tipo_insumo: 'material', ...o });
 
 describe('textos por tipo', () => {
   it('la orden de servicio solo cambia el rótulo, no el cuerpo', () => {
@@ -276,7 +280,7 @@ describe('resumenRespaldo', () => {
 });
 
 describe('tipoSugerido', () => {
-  it('detecta servicio por la clase, la categoría o la descripción', () => {
+  it('detecta servicio por la clase, la categoría o la descripción — SIN ítems', () => {
     expect(tipoSugerido({ clase: 'Servicios de terceros' })).toBe('servicio');
     expect(tipoSugerido({ category: 'Alquiler de maquinaria' })).toBe('servicio');
     expect(tipoSugerido({ description: 'MANTENIMIENTO DE VOLQUETE' })).toBe('servicio');
@@ -286,6 +290,57 @@ describe('tipoSugerido', () => {
     expect(tipoSugerido({ description: 'FIERRO CORRUGADO DE 1/2"' })).toBe('compra');
     expect(tipoSugerido({})).toBe('compra');
     expect(tipoSugerido(null)).toBe('compra');
+  });
+
+  // 🔴 Bloqueante B-1 de la tanda 5, cerrado en la tanda 7: medido sobre
+  // producción, 11 de 204 comprobantes >umbral traían BIENES en sus ítems
+  // pero el texto (a menudo el nombre del proveedor) los tipaba «servicio».
+  it('los ÍTEMS mandan: un bien es compra aunque el proveedor se llame TRANSPORTES', () => {
+    const m = movConItems([item({ tipo_insumo: 'material' })], { description: 'TRANSPORTES DEL SUR S.A.C.' });
+    expect(tipoSugerido(m)).toBe('compra');
+  });
+  it('con un solo bien entre varios ítems ya alcanza — no hace falta que sean todos', () => {
+    const m = movConItems([item({ tipo_insumo: 'servicio' }), item({ tipo_insumo: 'herramienta' })],
+      { description: 'ALQUILER Y VENTA S.A.C.' });
+    expect(tipoSugerido(m)).toBe('compra');
+  });
+  it('todos los ítems servicio → servicio, aunque el texto no diga nada', () => {
+    const m = movConItems([item({ tipo_insumo: 'servicio' }), item({ tipo_insumo: 'servicio' })],
+      { description: 'FACTURA 001-234' });
+    expect(tipoSugerido(m)).toBe('servicio');
+  });
+  it('ítems sin tipo_insumo clasificado cae al texto (no se inventa nada)', () => {
+    const m = movConItems([{ descripcion: 'x', cantidad: 1, precio_unitario: 10 }], { description: 'ALQUILER DE ANDAMIOS' });
+    expect(tipoSugerido(m)).toBe('servicio');
+  });
+  it('comprobante sin items_factura sigue decidiendo por texto, sin romper', () => {
+    expect(tipoSugerido(mov({ notas: '', description: 'CEMENTO' }))).toBe('compra');
+    expect(tipoSugerido(mov({ notas: 'esto no es json', description: 'FLETE' }))).toBe('servicio');
+  });
+});
+
+describe('igvSugeridoDesdeItems', () => {
+  // 🔴 Bloqueante B-2 de la tanda 5, cerrado en la tanda 7: medido sobre 123
+  // comprobantes >umbral con ítems, 117 son coherentes con IGV 18% (suma de
+  // ítems ≈ total/1,18) y 3 tienen la suma de ítems IGUAL al total —
+  // operaciones sin IGV que el 18% por defecto subvaluaba 15,25%.
+  it('detecta la operación SIN IGV: la suma de ítems ya es el total', () => {
+    const m = movConItems([item({ cantidad: 1, precio_unitario: 5000 })], { amount: 5000 });
+    expect(igvSugeridoDesdeItems(m)).toBe(0);
+  });
+  it('NO toca nada cuando la suma es coherente con 18% (el caso mayoritario)', () => {
+    // 21.174 (valor de venta) × 1,18 = 24.985,32 — el modelo real de Gabriel.
+    const m = movConItems([item({ cantidad: 1, precio_unitario: 21174 })], { amount: 24985.32 });
+    expect(igvSugeridoDesdeItems(m)).toBeNull();
+  });
+  it('tolera el redondeo por céntimo del prorrateo, no lo confunde con "sin IGV"', () => {
+    const m = movConItems([item({ cantidad: 3, precio_unitario: 1666.67 })], { amount: 5000.01 });
+    expect(igvSugeridoDesdeItems(m)).toBe(0);
+  });
+  it('sin ítems, o sin monto, no puede afirmar nada — null, nunca 0 por defecto', () => {
+    expect(igvSugeridoDesdeItems(mov({ notas: '' }))).toBeNull();
+    expect(igvSugeridoDesdeItems(movConItems([item()], { amount: 0 }))).toBeNull();
+    expect(igvSugeridoDesdeItems(null)).toBeNull();
   });
 });
 
@@ -319,9 +374,57 @@ describe('borradorDesdeMovimiento', () => {
     expect(b.unidad).toBe('SERV');
   });
 
+  // 🔴 Bloqueante B-2: una operación cuyos ítems ya suman el total (exonerada
+  // o inafecta) ya no se infla al 18% — antes SOLO se detectaba por
+  // document_type === 'recibo_honorarios', que no cubría este caso.
+  it('una operación sin IGV detectada por los ítems no se infla al 18%', () => {
+    const b = borradorDesdeMovimiento(movConItems([item({ cantidad: 1, precio_unitario: 5000 })], { amount: 5000 }));
+    expect(b.igvPct).toBe(0);
+    expect(b.valorVenta).toBe(5000);
+    expect(b.igv).toBe(0);
+  });
+  // Un bien tipado por sus ítems también corrige el `tipo` de la orden.
+  it('el tipo Y el IGV se corrigen juntos cuando el texto engañaba', () => {
+    const b = borradorDesdeMovimiento(movConItems(
+      [item({ tipo_insumo: 'material', cantidad: 1, precio_unitario: 5000 })],
+      { amount: 5000, description: 'TRANSPORTES DEL SUR S.A.C.' },
+    ));
+    expect(b.tipo).toBe('compra');
+    expect(b.igvPct).toBe(0);
+  });
+
   it('recalcular tras editar el monto rehace valor de venta e IGV', () => {
     const b = recalcularBorrador({ total: 11800, igvPct: 18 });
     expect(b.valorVenta).toBe(10000);
     expect(b.igv).toBe(1800);
+  });
+});
+
+describe('ordenarParaEmitir', () => {
+  // 🔴 Bloqueante B-3 de la tanda 5, cerrado en la tanda 7: el lote llegaba
+  // ordenado por MONTO (el orden de `comprobantesSinOrden`, correcto para
+  // MIRAR la lista) y se emitía en ese mismo orden — la OC-001 se la llevaba
+  // el comprobante más caro, no el más antiguo.
+  it('reordena por fecha ascendente, sin importar el orden de entrada por monto', () => {
+    const caro = { movimiento_id: 'm-caro', fecha: '2026-08-20', total: 90000 };
+    const viejo = { movimiento_id: 'm-viejo', fecha: '2026-01-05', total: 500 };
+    const medio = { movimiento_id: 'm-medio', fecha: '2026-04-10', total: 5000 };
+    const out = ordenarParaEmitir([caro, viejo, medio]);   // entra por monto desc
+    expect(out.map(b => b.movimiento_id)).toEqual(['m-viejo', 'm-medio', 'm-caro']);
+  });
+  it('una fecha vacía va al final: no se puede ordenar un dato que no está', () => {
+    const sinFecha = { movimiento_id: 'm-sf', fecha: null };
+    const conFecha = { movimiento_id: 'm-cf', fecha: '2026-03-01' };
+    expect(ordenarParaEmitir([sinFecha, conFecha]).map(b => b.movimiento_id)).toEqual(['m-cf', 'm-sf']);
+  });
+  it('no muta el array de entrada — la grilla por monto sigue viéndose igual', () => {
+    const lista = [{ movimiento_id: 'b', fecha: '2026-02-01' }, { movimiento_id: 'a', fecha: '2026-01-01' }];
+    const copia = [...lista];
+    ordenarParaEmitir(lista);
+    expect(lista).toEqual(copia);
+  });
+  it('vacío o nulo no explota', () => {
+    expect(ordenarParaEmitir([])).toEqual([]);
+    expect(ordenarParaEmitir(null)).toEqual([]);
   });
 });

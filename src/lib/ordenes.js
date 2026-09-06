@@ -27,8 +27,25 @@
 //    desde cero) y `totalesDesdeTotal` (la orden respalda un total que ya
 //    existe y no se toca).
 //
-// Puro: sin React, sin Dexie, sin imports. Testeado en __tests__/ordenes.test.js
+// LOS TRES BLOQUEANTES DE LA TANDA 5, cerrados en la tanda 7 (6-sep-2026,
+// medidos contra producción antes de tocar código — ver
+// docs/tanda-7-escaner-activos-ordenes.md § 9):
+//   B-1 `tipoSugerido` decidía SOLO por texto, y `description` suele ser el
+//       NOMBRE DEL PROVEEDOR — 11 de 204 comprobantes >umbral traían bienes
+//       de verdad y salían tipados "servicio". Ahora los ÍTEMS mandan primero.
+//   B-2 El IGV se asumía 18% siempre salvo recibo por honorarios (0 casos
+//       >umbral) — 3 de 123 comprobantes con ítems son operaciones SIN IGV y
+//       la orden les subvaluaba el valor de venta 15,25%. Ahora
+//       `igvSugeridoDesdeItems` lo detecta por la suma de los ítems.
+//   B-3 El lote de emisión recorría `comprobantesSinOrden()` en su orden por
+//       MONTO (correcto para MIRAR) y pedía los correlativos en ESE orden: la
+//       OC-001 se la llevaba el comprobante más caro, no el más antiguo.
+//       `ordenarParaEmitir()` los recorre por fecha ascendente al emitir.
+//
+// Puro: sin React, sin Dexie. Testeado en __tests__/ordenes.test.js
 // ═══════════════════════════════════════════════════════════════════
+
+import { itemsDeFactura } from './cruce-recepcion.js';
 
 export const TIPOS_ORDEN = ['compra', 'servicio'];
 
@@ -235,6 +252,31 @@ export function comprobantesSinOrden(movs, ordenes, { umbral = UMBRAL_POR_DEFECT
   return out.sort((a, b) => num(b.amount) - num(a.amount));
 }
 
+/**
+ * El orden en que se RECORRE un lote al emitir: por fecha ascendente.
+ *
+ * 🔴 Bloqueante B-3 de la tanda 5, corregido en la tanda 7: `comprobantesSinOrden()`
+ * devuelve la lista por MONTO descendente —correcto para MIRAR, es donde el
+ * respaldo importa más— pero el lote de emisión pedía `proximoCodigo()` en
+ * ese mismo orden. Resultado: la OC-001 se la llevaba el comprobante más
+ * caro, no el más antiguo, y el libro de órdenes quedaba con la numeración
+ * saltando en el tiempo sin ninguna relación con él.
+ *
+ * El correlativo en sí está bien resuelto (toma el máximo ya emitido, así
+ * que una orden anulada no libera su número); lo único que estaba mal era el
+ * orden en que se RECORRÍA el lote antes de pedirlo. Fecha vacía va al
+ * final: no se puede ordenar por un dato que no está.
+ */
+export function ordenarParaEmitir(borradores) {
+  return [...(borradores || [])].sort((a, b) => {
+    const fa = a?.fecha || '', fb = b?.fecha || '';
+    if (!fa && !fb) return 0;
+    if (!fa) return 1;
+    if (!fb) return -1;
+    return fa < fb ? -1 : fa > fb ? 1 : 0;
+  });
+}
+
 /** Los mismos comprobantes, en grupos por empresa. */
 export function agruparPorEmpresa(movs, companies) {
   const porId = new Map((companies || []).map(c => [c.id, c]));
@@ -296,20 +338,76 @@ export function resumenRespaldo(movs, ordenes, { umbral = UMBRAL_POR_DEFECTO, co
 
 // ── EL BORRADOR RETROACTIVO ────────────────────────────────────────
 
+// Los `tipo_insumo` de items_factura que son un BIEN (nunca un servicio).
+// Mismo vocabulario que insumos-venta.js / mapeo-insumos.js.
+const TIPO_INSUMO_ES_BIEN = new Set(['material', 'herramienta', 'epp', 'maquinaria']);
+
 /**
  * El tipo que le corresponde a un comprobante según lo que compró.
  *
- * No es adivinanza fina: `clase` y `destino_contable` ya los llena la app
- * (1.304 movimientos tienen `clase`), y un servicio no lleva unidades ni
- * cantidades en el documento. Si no hay señal, `compra` — que es el caso
- * mayoritario y el que la contadora corrige de un click.
+ * 🔴 Bloqueante B-1 de la tanda 5, corregido en la tanda 7 (6-sep-2026):
+ * la versión anterior decidía SOLO por texto (`clase + category +
+ * description`), y `description` muy seguido es el NOMBRE DEL PROVEEDOR
+ * («TRANSPORTES … S.A.C.»), no lo que se compró. Medido sobre los 204
+ * comprobantes en soles por encima del umbral: 50 salían tipados «servicio»
+ * por el texto, y 11 de esos TRAÍAN BIENES DE VERDAD en sus ítems — 11
+ * documentos formales que habrían salido con el rótulo y la serie
+ * equivocados.
+ *
+ * Los ÍTEMS son la verdad y mandan primero: si el comprobante trae aunque
+ * sea un material/herramienta/EPP/maquinaria, es una compra, sin importar de
+ * qué transportista o alquiladora venga el nombre. El texto solo decide
+ * cuando no hay ítems que lo digan mejor (comprobantes sin `items_factura`,
+ * el caso de los que no pasaron por Captura Mágica).
  */
 export function tipoSugerido(mov) {
+  const items = itemsDeFactura(mov);
+  if (items.length) {
+    if (items.some(it => TIPO_INSUMO_ES_BIEN.has(String(it?.tipo_insumo || '')))) return 'compra';
+    if (items.some(it => String(it?.tipo_insumo || '') === 'servicio')) return 'servicio';
+    // Ítems presentes pero sin `tipo_insumo` clasificado: cae al texto de abajo.
+  }
   const texto = `${mov?.clase || ''} ${mov?.category || ''} ${mov?.description || ''}`.toLowerCase();
   if (/servicio|alquiler|flete|honorario|asesor|consultor|manten|reparaci|transporte|hospedaje|aliment|combustible\s*serv/.test(texto)) {
     return 'servicio';
   }
   return 'compra';
+}
+
+/**
+ * ¿La suma de los ítems de la factura ya ES el total, sin margen para el
+ * IGV? → operación exonerada/inafecta.
+ *
+ * 🔴 Bloqueante B-2 de la tanda 5, corregido en la tanda 7: `borradorDesdeMovimiento`
+ * asumía IGV 18% siempre, salvo `document_type === 'recibo_honorarios'` — y
+ * no hay NI UNO por encima del umbral, así que esa salida nunca se usaba.
+ * Medido sobre los 123 comprobantes con ítems por encima del umbral: 117 son
+ * coherentes con 18% (la suposición funciona), pero 3 tienen los ítems
+ * IGUALES al total — son operaciones sin IGV, y asumirles 18% subvalúa el
+ * valor de venta en 15,25%. Los otros 3 no cierran con ninguna hipótesis: se
+ * dejan en el default (18%) para que la contadora los mire de a uno, que es
+ * lo correcto cuando el dato no alcanza para decidir solo.
+ *
+ * Devuelve `0` cuando detecta la operación sin IGV, o `null` cuando no hay
+ * con qué decidir (sin ítems, sin monto, o ninguna hipótesis cierra) — nunca
+ * inventa un IGV a partir de nada.
+ */
+export function igvSugeridoDesdeItems(mov) {
+  const items = itemsDeFactura(mov);
+  const total = num(mov?.amount);
+  if (!items.length || total <= 0) return null;
+  let suma = 0;
+  for (const it of items) {
+    if (!it) continue;
+    suma += (it.subtotal !== undefined && it.subtotal !== null && it.subtotal !== '')
+      ? num(it.subtotal)
+      : num(it.cantidad) * num(it.precio_unitario);
+  }
+  if (suma <= 0) return null;
+  // Tolerancia de 2%: cubre el redondeo por céntimo del prorrateo de ítems
+  // (repartirSobreItems), no una IMPOSICIÓN silenciosa de IGV en 0.
+  const TOL = 0.02;
+  return Math.abs(suma - total) <= TOL * total ? 0 : null;
 }
 
 /**
@@ -319,7 +417,8 @@ export function tipoSugerido(mov) {
  */
 export function borradorDesdeMovimiento(mov, { company, proveedor, obra } = {}) {
   const tipo = tipoSugerido(mov);
-  const igvPct = num(mov?.amount) > 0 && mov?.document_type === 'recibo_honorarios' ? 0 : IGV_POR_DEFECTO;
+  const sinIgv = mov?.document_type === 'recibo_honorarios' || igvSugeridoDesdeItems(mov) === 0;
+  const igvPct = sinIgv ? 0 : IGV_POR_DEFECTO;
   const t = totalesDesdeTotal(mov?.amount, { igvPct });
   return {
     movimiento_id: mov?.id || null,

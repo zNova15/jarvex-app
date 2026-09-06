@@ -32,7 +32,7 @@ import React from "react";
 import {
   TIPO_ORDEN_LABEL, textosDeTipo, proximoCodigo,
   comprobantesSinOrden, agruparPorEmpresa, resumenRespaldo,
-  borradorDesdeMovimiento, recalcularBorrador,
+  borradorDesdeMovimiento, recalcularBorrador, ordenarParaEmitir,
   UMBRAL_POR_DEFECTO,
 } from "../lib/ordenes.js";
 import { filtroInicialEmpresa, setEmpresaActivaId } from "../lib/empresa-activa.js";
@@ -210,6 +210,13 @@ function OrdenesPage({ showToast }) {
   // El correlativo se calcula sobre un acumulador LOCAL (`emitidasAhora`) y
   // no releyendo Dexie en cada vuelta: en un lote de 200, releer daría el
   // mismo número dos veces hasta que la escritura anterior se vea.
+  //
+  // 🔴 Bloqueante B-3 (tanda 5, cerrado en la tanda 7): `seleccionados` hereda
+  // el orden de `pendientes` (por MONTO — correcto para MIRAR la lista), pero
+  // recorrerlo así al EMITIR repartía la OC-001 al comprobante más caro, no
+  // al más antiguo. `ordenarParaEmitir()` recorre por fecha ascendente SOLO
+  // acá, en el momento de pedir los correlativos — la grilla que ve la
+  // contadora sigue mostrando lo caro primero, que es donde sirve mirar.
   const emitirLote = async () => {
     if (emitiendoRef.current) return;
     if (!seleccionados.length) { toast('No hay comprobantes seleccionados', 'amber'); return; }
@@ -220,12 +227,13 @@ function OrdenesPage({ showToast }) {
 
     emitiendoRef.current = true;
     setEmitiendo(true);
-    setProgreso({ hechas: 0, total: seleccionados.length });
+    const porFecha = ordenarParaEmitir(seleccionados);
+    setProgreso({ hechas: 0, total: porFecha.length });
     const emitidasAhora = [...ordenes];
     let ok = 0; const errores = [];
 
     try {
-      for (const b of seleccionados) {
+      for (const b of porFecha) {
         try {
           const company = lookupCompany(b.company_id);
           const anio = b.fecha ? Number(String(b.fecha).slice(0, 4)) : new Date().getFullYear();
@@ -300,7 +308,7 @@ function OrdenesPage({ showToast }) {
 
           emitidasAhora.push(fila);
           ok++;
-          setProgreso({ hechas: ok, total: seleccionados.length });
+          setProgreso({ hechas: ok, total: porFecha.length });
         } catch (e) {
           errores.push(`${b.documento || b.movimiento_id}: ${e.message || e}`);
         }

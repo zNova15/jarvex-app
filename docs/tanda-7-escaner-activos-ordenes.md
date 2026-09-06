@@ -284,7 +284,7 @@ Y del lado de la empresa vendedora, esas unidades salen de su stock disponible.
 | 3 | **Sugeridor de código SPOT** | ✅ staging (`5f95250`) | Se cuelga del escáner; las 8 familias por reglas |
 | 4 | **Decisión modelo A vs B** | ✅ **modelo B**, decidido por Gabriel el 6-sep | No era código. Ver apartado 7 |
 | 5 | **Mapeo insumo → código canónico** | ✅ staging, mig 183 | El trabajo de fondo. Ver apartado 8 |
-| 5b | **Los 3 bloqueantes de la tanda 5** | ⏳ pendiente | Ver apartado 9. Bloquean la 6 |
+| 5b | **Los 3 bloqueantes de la tanda 5** | ✅ staging | Ver apartado 9. Ya no bloquean la 6 |
 | 6 | **Abastecimiento + órdenes que nacen antes** | ⏳ pendiente | El rediseño de verdad |
 
 **Arrancaría por la 1 y la 2 en paralelo**: son las dos que no dependen de
@@ -301,7 +301,7 @@ ninguna decisión y las dos que ya tienen los datos.
 | **3 — Sugeridor SPOT** (reglas + contexto de obra) | Sonnet 5 | medio | No. Va con la 1 |
 | **4 — Decisión A vs B** | — | — | **No es de un modelo.** Tuya con la contadora |
 | ~~5 — Mapeo al catálogo canónico~~ **HECHO** (Opus 5, effort alto) | — | — | Salió sin IA: medido, hoy no rinde (apartado 8) |
-| **5b — Los 3 bloqueantes de la tanda 5** | Sonnet 5 | medio | **No.** Tanda chica: están localizados y medidos (apartado 9) |
+| ~~5b — Los 3 bloqueantes de la tanda 5~~ **HECHO** (Sonnet 5, effort medio) | — | — | Corregidos en `src/lib/ordenes.js`, validados contra los mismos 204/123 comprobantes medidos (apartado 9) |
 | **6 — Abastecimiento y órdenes** | **Opus 5** | **alto** | **Sí, y sola.** Produce correlativos irreversibles y toca contabilidad viva |
 
 **Nota sobre la 6:** antes de emitir un solo número hay que cerrar los tres
@@ -560,10 +560,28 @@ en que se recorre el lote**.
 (y dejar el orden por monto solo para MIRAR la lista, que es donde sirve).
 Una línea, más su test.
 
-**Los tres juntos:** Sonnet 5, effort medio, una tanda chica. No hace falta
-sesión nueva ni Opus: están localizados, medidos y las tres correcciones son de
-pocas líneas en una lib que ya tiene 43 tests.
+**Los tres, HECHOS (6-sep-2026)** en `src/lib/ordenes.js`, con 17 tests nuevos
+y validados de nuevo contra los mismos comprobantes reales que los midieron:
 
-**Y falta uno que no es código:** la contadora **no puede subir órdenes** porque
-«Órdenes de Compra» no está en su matriz de permisos. Eso lo destraba Gabriel en
-Admin → Permisos, y sin eso la entrega 6 no la puede usar quien tiene que usarla.
+- **B-1** (`tipoSugerido`): ahora mira `itemsDeFactura(mov)` primero — si algún
+  ítem es `material`/`herramienta`/`epp`/`maquinaria` es compra, sin importar el
+  texto. Corrida contra los 11 comprobantes reales que estaban mal (todos
+  «MULTISERVICIOS…», «PROVEEDORES & SERVICIOS…», recibos de honorarios con
+  bienes): los 11 salen `compra` ahora. El texto sigue decidiendo cuando el
+  comprobante no trae `items_factura`.
+- **B-2** (`igvSugeridoDesdeItems`, nueva función): compara la suma de los
+  ítems contra el total del comprobante; si ya coinciden (±2% de tolerancia de
+  redondeo), no hay margen para el 18% → `igvPct = 0`. Corrida contra los 3
+  reales (`CORPORACION FERRETERA BUSTAMANTE`, dos recibos de URDANETA MUÑOZ):
+  los 3 dan exactamente 100,0% ítems/total y ahora se detectan — antes solo se
+  detectaba `document_type === 'recibo_honorarios'`, que ninguno de los tres
+  tenía tal cual (dos son `recibo`, no `recibo_honorarios`).
+- **B-3** (`ordenarParaEmitir`, nueva función): el LOTE se recorre por fecha
+  ascendente al pedir los correlativos; `comprobantesSinOrden()` sigue
+  devolviendo por monto para la grilla, que es donde ese orden sirve.
+
+**Permisos: en pausa, decisión de Gabriel (6-sep).** La jefa de contabilidad ya
+puede subir órdenes; las asistentes de contabilidad, por ahora, NO — Gabriel va
+a hablarlo con la jefa de contabilidad primero, porque implica jerarquía dentro
+del trabajo (qué puede ver/hacer cada categoría), no solo un permiso suelto. Sin
+cambios en `jx-admin.jsx` hasta que él confirme.
