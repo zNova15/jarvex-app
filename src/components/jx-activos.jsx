@@ -211,6 +211,15 @@ function ActivosPesadosPage({ showToast }) {
           hm_acumuladas: parseFloat(form.hm_acumuladas)||0,
           company_id: form.company_id || null,
           obra_actual_id: form.obra_actual_id || null,
+          // `obra_id` ADEMÁS de `obra_actual_id`, y no es cosmético: el cerco de
+          // obra de la mig 177 filtra por `obra_id`, y su primera cláusula es
+          // `obra_id IS NULL OR …` — o sea, NULL = fila del grupo, visible para
+          // TODOS. Esta pantalla escribía solo `obra_actual_id`, así que cada
+          // equipo dado de alta aquí nacía fuera del cerco y lo veían los
+          // usuarios de todas las obras. (Las 2 filas reales de producción no
+          // tienen el problema porque entraron por Compras Pendientes, que sí
+          // escribe obra_id.)
+          obra_id: form.obra_actual_id || null,
           ubicacion_id: form.ubicacion_id || null,
           updated_at: now, updated_by: userId,
           version: (editing.version ?? 0) + 1,
@@ -234,6 +243,7 @@ function ActivosPesadosPage({ showToast }) {
           estado: form.estado || 'operativo',
           company_id: form.company_id || null,
           obra_actual_id: form.obra_actual_id || null,
+          obra_id: form.obra_actual_id || null,   // ver el comentario de arriba: cerco RLS de la mig 177
           ubicacion_id: form.ubicacion_id || null,
           notas: form.notas || null,
           created_by: userId, updated_by: userId,
