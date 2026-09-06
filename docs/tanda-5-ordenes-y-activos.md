@@ -238,5 +238,5 @@ tesorero; los roles de campo y de especialidad quedan afuera por RLS
 - **El PLE 7.1 en TXT:** Sonnet 5, effort medio, tanda chica — **pero recién
   cuando esté la especificación oficial de campos**. Sin eso no se empieza.
 - **El 🔴 abierto de la tanda 3** («movimientos a veces no me deja ingresar»)
-  no se tocó acá. Sonnet 5, effort alto, sesión propia: es un bug de
+  no se tocó aquí. Sonnet 5, effort alto, sesión propia: es un bug de
   reproducción intermitente y necesita el detalle de Gabriel sobre cuándo pasa.

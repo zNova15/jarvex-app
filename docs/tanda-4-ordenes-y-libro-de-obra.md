@@ -1,7 +1,7 @@
 # Tanda 4 — El libro de la obra, y las órdenes que faltan
 
 > Análisis del feedback de Gabriel del 4-sep-2026, después de probar en
-> producción la tanda 3. Todo lo de acá está **medido contra la base real**,
+> producción la tanda 3. Todo lo de aquí está **medido contra la base real**,
 > no razonado en el aire.
 >
 > **✅ DEPLOYADO el 4-sep (`79bb20f`), la tanda chica — C1, A3, D1:** pila de
@@ -175,7 +175,7 @@ Con el umbral de S/ 2.000 que Gabriel propuso, sobre todo lo cargado en soles:
 | **Compras** | **200** de 1.205 | S/ 3.911.606 | **97%** del dinero |
 | **Ventas** | **97** de 120 | S/ 2.451.936 | **99,9%** del dinero |
 
-**297 documentos cubren prácticamente toda la plata del grupo.** El umbral está
+**297 documentos cubren prácticamente toda la dinero del grupo.** El umbral está
 bien elegido: con el 17% de los comprobantes de compra se respalda el 97% del
 monto. Y 297 es una cantidad que se puede emitir en lote.
 
@@ -321,7 +321,7 @@ Los 121 y los 339 salen **exactos** contra los números medidos el 4-sep.
 
 **Por qué la regla NO exige `vinculoAfirmado`** (a diferencia de
 `documento-dos-lados.js`): allá un reflejo *afirma algo sobre la contabilidad
-de otra empresa* y por eso pide una afirmación explícita en el dato. Acá solo
+de otra empresa* y por eso pide una afirmación explícita en el dato. Aquí solo
 se decide **en qué columna de la misma obra** va una fila que ya está a la
 vista. Un RUC que coincide con el del titular alcanza para decir "esto va
 dirigido al consorcio".

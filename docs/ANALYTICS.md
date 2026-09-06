@@ -1,6 +1,6 @@
 # JARVEX — Analytics con PostHog
 
-Guía para crear los 4 dashboards que el Council recomendó. La idea: en 5 minutos por dashboard tenés métricas reales del uso de la app, no impresiones de "creo que se usa mucho".
+Guía para crear los 4 dashboards que el Council recomendó. La idea: en 5 minutos por dashboard tienes métricas reales del uso de la app, no impresiones de "creo que se usa mucho".
 
 ## Eventos que la app emite
 
@@ -43,7 +43,7 @@ Super-properties que van en TODOS los eventos:
 - **Tipo**: Trends → Trends
 - **Series**: `$pageview`
 - **Breakdown**: `Event property` → `page` (filtrar Top 20)
-- **Filter**: agregá filter `user_rol = almacenero` y duplicá la serie con `user_rol = admin`. O usá un breakdown adicional por `user_rol`.
+- **Filter**: agrega filter `user_rol = almacenero` y duplica la serie con `user_rol = admin`. O usa un breakdown adicional por `user_rol`.
 - **Display**: `Bar` o `Table`
 
 ### Insight 1.3 — Tiempo en cada pantalla
@@ -74,7 +74,7 @@ Super-properties que van en TODOS los eventos:
 ### Insight 2.3 — Top usuarios por volumen de cambios
 - **Tipo**: Trends → Trends
 - **Series**: `record_pushed` math = `Unique users`... no, mejor: math = `Total count`
-- **Breakdown**: `Person property` → `distinct_id` (si querés ver per-user) o `user_rol` para ver agregado por rol
+- **Breakdown**: `Person property` → `distinct_id` (si quieres ver per-user) o `user_rol` para ver agregado por rol
 - **Date range**: `Last 30 days`
 
 ---
@@ -85,7 +85,7 @@ Super-properties que van en TODOS los eventos:
 
 ### Insight 3.1 — Errores capturados (Sentry)
 > Los errores propiamente dichos los ves en Sentry — PostHog NO captura errores JS automáticamente en JARVEX (porque ya tenemos Sentry).
-> Lo que sí podés hacer: trackear eventos custom en `catch` blocks críticos. Por ahora, este insight queda como **placeholder**: linkear a `https://novvx-proyect.sentry.io/issues`.
+> Lo que sí puedes hacer: trackear eventos custom en `catch` blocks críticos. Por ahora, este insight queda como **placeholder**: linkear a `https://novvx-proyect.sentry.io/issues`.
 
 ### Insight 3.2 — Sync failures (proxy: ausencia de record_pushed)
 - **Tipo**: Trends → Trends
@@ -130,7 +130,7 @@ Super-properties que van en TODOS los eventos:
 ## Cómo iterar
 
 - Si una métrica te da curiosidad, en PostHog click en el panel → te abre el insight → "Show events" → ves los eventos individuales con todas las properties → entendés qué hay detrás del número.
-- Si querés trackear algo nuevo (ej: "alguien intentó entrar a `/contabilidad` siendo almacenero"), agregá una llamada a `trackEvent('intento_acceso_bloqueado', { pantalla: 'contabilidad' })` en el código.
+- Si quieres trackear algo nuevo (ej: "alguien intentó entrar a `/contabilidad` siendo almacenero"), agrega una llamada a `trackEvent('intento_acceso_bloqueado', { pantalla: 'contabilidad' })` en el código.
 - **NO trackees PII**. El módulo `posthog.js` ya scrubea DNIs/RUCs/emails/JWT, pero la mejor defensa es no mandarlos en primer lugar.
 
 ## Alertas de PostHog (opcional)

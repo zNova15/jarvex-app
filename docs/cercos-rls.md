@@ -1,7 +1,7 @@
 # Los cercos de RLS — qué protege el servidor y qué todavía no
 
 > 4-sep-2026. Cierra el 🔴 que la mig 175 dejó escrito ("las tablas HIJAS
-> siguen con la mig 030 laxa"). Todo lo de acá está medido contra producción
+> siguen con la mig 030 laxa"). Todo lo de aquí está medido contra producción
 > con los JWT reales de los usuarios, no razonado en el aire.
 
 ## El problema, en una línea
@@ -27,7 +27,7 @@ de antes sigue valiendo, y encima hay que pasar el cerco.
 
 | Cerco | Mig | Pregunta que hace | Alcance |
 |---|---|---|---|
-| **campo** | 155 / 167 | ¿sos la cuenta compartida del portal? | 99 tablas, las 4 operaciones |
+| **campo** | 155 / 167 | ¿eres la cuenta compartida del portal? | 99 tablas, las 4 operaciones |
 | **obra** | **177** | ¿la fila es de una obra tuya? | 71 tablas con `obra_id`, las 4 operaciones |
 | **módulo** | **178** | ¿tu rol tiene alguna pantalla que lea esta tabla? | 51 tablas, solo SELECT |
 

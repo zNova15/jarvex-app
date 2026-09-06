@@ -4,7 +4,7 @@ Guía corta para detectar y reaccionar a problemas en producción. Pensada para 
 
 ---
 
-## Tableros que tenés que mirar
+## Tableros que tienes que mirar
 
 | Qué | Dónde | Cuándo |
 |---|---|---|
@@ -28,7 +28,7 @@ node scripts/backup-supabase.mjs
 **Si el workflow no corrió en >24h**: Actions tab → "Backup diario Supabase" → "Run workflow" para disparar manual. Si sigue fallando, revisar:
 1. ¿Los secrets `VITE_SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` están seteados en Settings → Secrets?
 2. ¿El service_role_key sigue válido? Probalo localmente con `node scripts/backup-supabase.mjs`.
-3. ¿Supabase está caído? Mirá supabase.com/status.
+3. ¿Supabase está caído? Mira supabase.com/status.
 
 **Restaurar de un backup**: el backup es JSONL. Para reimportar tabla por tabla:
 ```bash
@@ -46,9 +46,9 @@ cat jarvex-YYYYMMDD-HHMM/materiales.jsonl | \
 ## Cuando llega alerta de Sentry
 
 1. Click en el link del mail/Discord → te lleva al issue.
-2. Mirá el **stacktrace**: la primera línea de `src/...` es el código nuestro (lo demás suele ser node_modules).
-3. Mirá **Tags** → `module`, `operation`, `table` te dicen qué subsistema falló.
-4. Mirá **Extra Data** → contexto serializado del error.
+2. Mira el **stacktrace**: la primera línea de `src/...` es el código nuestro (lo demás suele ser node_modules).
+3. Mira **Tags** → `module`, `operation`, `table` te dicen qué subsistema falló.
+4. Mira **Extra Data** → contexto serializado del error.
 5. Si tiene **Session Replay**, abrilo: vas a ver exactamente qué hizo el usuario.
 6. Para análisis de causa-raíz automatizado: en Sentry, botón "Analyze with Seer" (toma ~3 min).
 
@@ -59,10 +59,10 @@ cat jarvex-YYYYMMDD-HHMM/materiales.jsonl | \
 
 ## Cuando un almacenero reporta "esperando sincronización"
 
-1. **Pedile que recargue la app** (Cmd/Ctrl+Shift+R, o cerrar y volver a abrir Chrome).
+1. **Pídele que recargue la app** (Cmd/Ctrl+Shift+R, o cerrar y volver a abrir Chrome).
 2. En su DevTools (F12) → Console → buscá errores en rojo. Si hay `PGRST204` o `RLS bloqueando`, mandalos por captura.
 3. Si los errores son de sync engine, después del recargo el `self-heal` reintenta automáticamente los records bloqueados.
-4. Si persiste, abrí Sentry, filtrá por `user.email:<el-email>` last 24h, y mirá qué le sale.
+4. Si persiste, abre Sentry, filtra por `user.email:<el-email>` last 24h, y mira qué le sale.
 
 **Si todos los almaceneros lo reportan a la vez**: probablemente Supabase está caído o RLS bloqueando. Plan rápido:
 1. ¿Supabase está up? supabase.com/status.
@@ -80,7 +80,7 @@ node scripts/verify-rls.mjs
 # 2. ¿Hay duplicados nuevos?
 node scripts/detect-duplicates.mjs
 
-# 3. Si hay duplicados que querés borrar:
+# 3. Si hay duplicados que quieres borrar:
 node scripts/clean-duplicates.mjs            # dry-run
 node scripts/clean-duplicates.mjs --apply    # ejecuta
 ```

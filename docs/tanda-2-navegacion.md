@@ -71,7 +71,7 @@ Lo que el doc original ya pedía y sigue en pie:
   salen del paso "fijar obra de trabajo" del arranque. Entran a la pantalla de
   los cinco bloques, sin obra fija de fondo.
 - `src/components/jx-admin.jsx` — `__HOME_POR_ROL` (~línea 1396) ya define el
-  aterrizaje por rol: acá se ajusta.
+  aterrizaje por rol: aquí se ajusta.
 
 ### A4. Atajos contextuales
 El sidebar hoy lista todas las secciones sin importar dónde estás. Pasa a
@@ -90,7 +90,7 @@ GESTIÓN DE OBRA  partidas, cronograma, avance, valorizaciones, costos
 PERSONAL Y SUBCONTRATOS
 SECCIONES ESPECIALES   seguridad · ambiental · calidad · social
 CONTABILIDAD DE LA OBRA    ← nuevo: solo del consorcio que la ejecuta
-CADENAS INTERCOMPANY       ← se mueve acá desde el bloque general
+CADENAS INTERCOMPANY       ← se mueve aquí desde el bloque general
 ```
 
 Lo entregado:
@@ -147,7 +147,7 @@ Al entrar a una empresa del grupo:
 | **Trabajos** | Qué está ejecutando o de qué es parte | Nuevo: se deriva de `obras.ejecutora_company_id`, `consorcio_socios` y `trabajos.ejecutor_company_id` |
 
 **Consorcios en este bloque:** se listan (ya separados por `tipo_entidad`) pero
-**no se editan acá**. Llevan un hipervínculo a la contabilidad de su obra, que
+**no se editan aquí**. Llevan un hipervínculo a la contabilidad de su obra, que
 es donde viven.
 
 ⚠ **`personal` no tiene `company_id`** — su único scoping es `obra_id` (mig 001)
@@ -207,7 +207,7 @@ es donde se mira) y a los terceros no se les llevan libros. Pantalla nueva
 sin chunk nuevo) sobre `src/lib/contabilidad-entidades.js` (con tests).
 🔴 **Los dos totales NO se suman y la pantalla lo dice:** un comprobante tiene
 `company_id` y además puede tener `obra_id`/`trabajo_id` — aparece en su
-empresa Y en su trabajo. Son dos miradas de la misma plata. Eliminar de verdad
+empresa Y en su trabajo. Son dos miradas de la misma dinero. Eliminar de verdad
 lo repetido es la **tanda 3**. Las empresas se calculan con la MISMA función
 que su ficha (`resumenFinancieroEmpresa`) para que no haya dos números
 distintos de lo mismo.
@@ -297,7 +297,7 @@ La sección Contabilidad del panel de empresa muestra arriba su resumen y abajo
 **12 bloques** que abren cada pantalla contable: Dashboard, Movimientos,
 Comprobantes, Guías, Compras por categoría, Libro diario, Plan de cuentas,
 Estado de resultados, Balance, PLE, Flujo de caja y Operaciones entre
-empresas. `Documentos y SUNAT` dejó de ser sección hermana y vive acá adentro,
+empresas. `Documentos y SUNAT` dejó de ser sección hermana y vive aquí adentro,
 como él pidió.
 
 ### F2. EMPRESA ACTIVA — el mecanismo que faltaba

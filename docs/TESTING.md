@@ -67,7 +67,7 @@ Si un test falla, dejará un screenshot en `tests/screenshots/fail-*.png` con el
 
 ### Agregar un test nuevo
 
-1. Copiá un test existente que se parezca al flow que querés cubrir (`06-sync-no-leak-local-fields.test.mjs` es buen template).
+1. Copia un test existente que se parezca al flow que quieres cubrir (`06-sync-no-leak-local-fields.test.mjs` es buen template).
 2. Ajustá la lógica.
 3. Asegurate de exportar `run()` y agregar el `if (import.meta.url === ...)` final para correrlo standalone.
 4. Agregalo a `tests/e2e/run-all.mjs`:
