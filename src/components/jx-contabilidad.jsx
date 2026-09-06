@@ -24,6 +24,8 @@ import { useChart } from "../lib/chart-loader.js";
 import { cssVar } from "../lib/tema.js";
 import { FusionEntidadModal } from "./jx-fusion-entidad.jsx";
 import { EmpresaDetalle } from "./jx-empresa-detalle.jsx";
+import { RevisionFacturasModal } from "./jx-revision-facturas.jsx";
+import { revisarLote as revisarLoteLib, resumenRevision as resumenRevisionLib, claveDescarte as claveDescarteRev } from "../lib/revision-facturas.js";
 import { ClasificarEntidadesModal } from "./jx-clasificar-entidades.jsx";
 import { rolDeCompanyEnObra, titularContableDeObra } from "../lib/consorcio.js";
 import { comprobantesImputacionCruzada } from "../lib/imputacion-cruzada.js";
@@ -1016,6 +1018,17 @@ function MovimientosContablesPage({ showToast }) {
   // intent en window y esta pantalla lo consume UNA vez: busca el documento y
   // deja la fila marcada. Mismo mecanismo que __empresaDetalleIntent.
   const [focoMovId, setFocoMovId] = uSC(null);
+  // ── ESCÁNER DE INCOHERENCIAS (tanda 7) ──────────────────────────
+  const [showRevision, setShowRevision] = uSC(false);
+  const { data: revDescartes } = window.__hooks.useRevisionDescartes?.() || { data: [] };
+  const revisionResumen = uMC(() => {
+    try {
+      const hoy = window.__fecha?.hoyLocal?.() || null;
+      const fuera = new Set((revDescartes || []).filter(d => !d.deleted_at)
+        .map(d => claveDescarteRev(d.movimiento_id, d.regla)));
+      return resumenRevisionLib(revisarLoteLib(movs || [], { hoy, descartados: fuera }));
+    } catch { return { total: 0, contradicciones: 0, revisar: 0, porRegla: {} }; }
+  }, [movs, revDescartes]);
   // Período: un MES puntual ("¿puedo ver solo los comprobantes de Junio?") o un
   // rango personalizado desde/hasta. 'todos' = sin filtro de fecha.
   const [filtroMes, setFiltroMes] = uSC('todos');   // 'todos' | 'YYYY-MM' | 'custom'
@@ -2659,6 +2672,19 @@ function MovimientosContablesPage({ showToast }) {
               <JxIcon name="search" size={13}/> Duplicados
             </button>
           )}
+          {/* Escáner de incoherencias (tanda 7). El contador del badge son las
+              CONTRADICCIONES: lo que se desmiente solo. Lo de "revisar" no va
+              en el badge a propósito — 143 avisos que pueden estar bien
+              convertirían el número en ruido permanente. */}
+          {puedeVerBanc && (() => {
+            const n = revisionResumen.contradicciones;
+            return (
+              <button className="btn btn-ghost btn-sm" onClick={()=>setShowRevision(true)}
+                title="Revisar los comprobantes: cuentas que no cierran, códigos de detracción que no existen, IGV fuera del 18%…">
+                🔎 Revisión{n ? <span className="badge b-red" style={{ marginLeft:4 }}>{n}</span> : ''}
+              </button>
+            );
+          })()}
           {canWrite ? (
             <button className="btn btn-amber btn-sm" onClick={openNuevo}>
               <JxIcon name="plus" size={13}/>Nuevo Movimiento
@@ -3381,6 +3407,14 @@ function MovimientosContablesPage({ showToast }) {
           </div>
           <TablePagination {...movPg} />
         </div>
+      )}
+
+      {showRevision && (
+        <RevisionFacturasModal
+          movs={movs || []} descartes={revDescartes || []} companies={companies || []}
+          canWrite={canWrite} showToast={showToast}
+          onClose={()=>setShowRevision(false)}
+          onAbrirMov={(m)=>{ setShowRevision(false); setFocoMovId(m.id); setBusqueda(m.document_number || ''); }}/>
       )}
 
       {/* Duplicados: comprobantes registrados 2+ veces (fusión admin/contador) */}

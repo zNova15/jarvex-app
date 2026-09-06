@@ -77,6 +77,15 @@ export const db = new Dexie('JarvexDB');
 // cronograma, avance, personal ni almacén. La compra y la venta son
 // accounting_movements con trabajo_id — el margen se calcula, no se guarda
 // (src/lib/trabajos.js). Aditivo.
+// Versión 53: DESCARTES DE LA REVISIÓN DE FACTURAS (mig 181, tanda 7). El
+// escáner NO guarda hallazgos —los recalcula al abrir, como el stock sale de
+// los movimientos—; lo único que se persiste es la decisión humana de «esto lo
+// revisé y está bien». Sin eso los 143 avisos de nivel REVISAR vuelven cada vez
+// y la pantalla se abandona. Aditivo.
+db.version(53).stores({
+  revision_descartes: 'id, movimiento_id, regla, deleted_at, sync_status',
+});
+
 // Versión 52: REGISTRO DE ACTIVOS FIJOS — formato SUNAT 7.1 (mig 180). Es
 // HERMANA de `activos_pesados`, no su reemplazo: aquélla es operativa y de obra
 // (horómetro, combustible, mantenimiento), ésta es contable y de EMPRESA

@@ -503,6 +503,16 @@ export function useMovimientosBancarios(cuenta_id) {
 // Se pide por (empresa, período) porque así se presenta el formato: un
 // ejercicio de una empresa. Sin período trae todos los años de esa empresa
 // (la pantalla los usa para el selector y para el cierre de ejercicio).
+/**
+ * Los descartes de la revisión de facturas (tanda 7).
+ * `revision_descartes` guarda SOLO «esto lo revisé y está bien»: los hallazgos
+ * no se persisten, se recalculan (src/lib/revision-facturas.js).
+ */
+export function useRevisionDescartes() {
+  return useOfflineData('revision_descartes', q =>
+    q.filter(d => !d.deleted_at).toArray());
+}
+
 export function useActivosFijos(company_id, periodo) {
   return useOfflineData('activos_fijos', q => {
     const base = company_id

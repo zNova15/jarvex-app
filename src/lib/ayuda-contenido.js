@@ -241,6 +241,9 @@ const AYUDA = {
     titulo: 'Movimientos Contables',
     que: 'Todas las compras y ventas del grupo: facturas, estados de pago y bancarizaciones.',
     como: [
+      '🔎 REVISIÓN (nuevo, 6-sep): el botón de arriba revisa TODOS los comprobantes y lista los que tienen algo raro. Se recalcula cada vez que lo abres, así que nunca muestra un aviso viejo de algo que ya corregiste.',
+      'HAY DOS LISTAS Y NO SIGNIFICAN LO MISMO. «Se contradicen»: el comprobante se desmiente a sí mismo — el subtotal más el IGV no da el total, el monto de la detracción no cuadra con su propio porcentaje, el código no existe. Eso hay que corregirlo sí o sí. «Para revisar»: puede estar perfectamente bien — una factura exonerada no lleva IGV al 18%, y decide la contadora.',
+      'MARCAR «ESTÁ BIEN» es definitivo para ese comprobante y ese motivo, pero no para los demás: decir que el IGV de una factura está bien no tapa que le falte el código de detracción. El contador rojo del botón cuenta solo las contradicciones.',
       'EDITAR UN COMPROBANTE (corregido el 6-sep): el lápiz abre el formulario con TODO lo editable, incluida la DETRACCIÓN — el porcentaje, el código y el monto, con el botón que abre su registro. Antes había que buscarla en un botón chiquito de la fila y mucha gente no la encontraba.',
       'EL CAMPO "NOTAS" YA NO MUESTRA CÓDIGO: cada comprobante guarda por dentro los ítems de la factura, el desglose de IGV y su vínculo con la contraparte. Eso se volcaba crudo en el campo Notas y editarlo BORRABA los ítems. Ahora ese campo es solo tu nota, y debajo dice qué datos se están conservando.',
       'DETRACCIÓN Y EL UMBRAL DE S/ 700: una operación de S/ 700 o menos no está sujeta a detracción. Si registras una por debajo de ese monto, la app te avisa — no te lo impide, porque un dato viejo hay que poder corregirlo.',

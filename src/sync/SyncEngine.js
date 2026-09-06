@@ -42,6 +42,8 @@ const TRANSACTIONAL_TABLES = [
   'trabajos',
   'trabajo_cotizaciones',
   'accounting_movements',
+  // Descartes de la revisión: FK a accounting_movements, va después.
+  'revision_descartes',
   'intercompany_transactions',
   'reportes_especialidad',
   'charlas_plan', 'inducciones', 'ambiental_registros',
@@ -167,6 +169,7 @@ const MASTER_TABLES = [
   { tabla: 'trabajos',                     query: () => supabase.from('trabajos').select('*').is('deleted_at', null) },
   { tabla: 'trabajo_cotizaciones',         query: () => supabase.from('trabajo_cotizaciones').select('*').is('deleted_at', null) },
   { tabla: 'accounting_movements',         query: () => supabase.from('accounting_movements').select('*').is('deleted_at', null) },
+  { tabla: 'revision_descartes',           query: () => supabase.from('revision_descartes').select('*').is('deleted_at', null) },
   { tabla: 'conciliacion_vinculos',        query: () => supabase.from('conciliacion_vinculos').select('*').is('deleted_at', null) },
   { tabla: 'clasificacion_catalogo',       query: () => supabase.from('clasificacion_catalogo').select('*').is('deleted_at', null) },
   { tabla: 'emision_reglas',               query: () => supabase.from('emision_reglas').select('*').is('deleted_at', null) },
@@ -644,7 +647,7 @@ const PULL_SCOPE_POR_ROL = {
   // (jx-busqueda / jx-solicitudes referencian alguna de estas tablas solo para
   // pintar resultados de módulos que estos roles no pueden abrir — verificado.)
   ingeniero: new Set([
-    'accounting_movements', 'activos_fijos', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
+    'accounting_movements', 'revision_descartes', 'activos_fijos', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
     'cotizacion_items', 'cotizaciones', 'cronograma_pagos', 'depositos_bancarizacion',
     'emision_reglas', 'horas_maquina', 'insumos_partida_versionadas', 'insumos_pendientes',
     'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
@@ -654,7 +657,7 @@ const PULL_SCOPE_POR_ROL = {
     'valorizacion_adicionales', 'valorizacion_partidas', 'valorizaciones',
   ]),
   prevencionista: new Set([
-    'accounting_movements', 'activos_fijos', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
+    'accounting_movements', 'revision_descartes', 'activos_fijos', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
     'cotizacion_items', 'cotizaciones', 'cronograma_pagos', 'depositos_bancarizacion',
     'emision_reglas', 'horas_maquina', 'insumos_partida_versionadas', 'insumos_pendientes',
     'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
@@ -664,7 +667,7 @@ const PULL_SCOPE_POR_ROL = {
     'valorizacion_adicionales', 'valorizacion_partidas', 'valorizaciones',
   ]),
   ing_ambiental: new Set([
-    'accounting_movements', 'activos_fijos', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
+    'accounting_movements', 'revision_descartes', 'activos_fijos', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
     'cotizacion_items', 'cotizaciones', 'cronograma_pagos', 'depositos_bancarizacion',
     'emision_reglas', 'horas_maquina', 'insumos_partida_versionadas', 'insumos_pendientes',
     'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
@@ -674,7 +677,7 @@ const PULL_SCOPE_POR_ROL = {
     'valorizacion_adicionales', 'valorizacion_partidas', 'valorizaciones',
   ]),
   ing_calidad: new Set([
-    'accounting_movements', 'activos_fijos', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
+    'accounting_movements', 'revision_descartes', 'activos_fijos', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
     'cotizacion_items', 'cotizaciones', 'cronograma_pagos', 'depositos_bancarizacion',
     'emision_reglas', 'horas_maquina', 'insumos_partida_versionadas', 'insumos_pendientes',
     'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
@@ -684,7 +687,7 @@ const PULL_SCOPE_POR_ROL = {
     'valorizacion_adicionales', 'valorizacion_partidas', 'valorizaciones',
   ]),
   ing_social: new Set([
-    'accounting_movements', 'activos_fijos', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
+    'accounting_movements', 'revision_descartes', 'activos_fijos', 'activos_pesados', 'caja_chica_movimientos', 'consumos_combustible',
     'cotizacion_items', 'cotizaciones', 'cronograma_pagos', 'depositos_bancarizacion',
     'emision_reglas', 'horas_maquina', 'insumos_partida_versionadas', 'insumos_pendientes',
     'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
@@ -989,6 +992,7 @@ const TABLA_TO_MODULO = {
   trabajos: 'Bienes y Servicios',
   trabajo_cotizaciones: 'Bienes y Servicios',
   accounting_movements: 'Movs. Contables',
+  revision_descartes: 'Movs. Contables',   // el escáner vive dentro de Movimientos
   // Catálogo del clasificador: lo escriben contadora jefe y ayudante (ambos
   // con Movs. Contables 'w') al clasificar/corregir ítems de factura.
   clasificacion_catalogo: 'Movs. Contables',
@@ -1183,6 +1187,7 @@ const FK_DEPS = {
   // lote de la tanda 5 escribe los dos lados a la vez, así que la PRIMERA vez que
   // se emita el respaldo de una obra, se caen todos los movimientos del lote.
   accounting_movements:      [{ campo: 'company_id', tabla: 'companies' }, { campo: 'related_company_id', tabla: 'companies' }, { campo: 'related_movement_id', tabla: 'accounting_movements' }, { campo: 'obra_id', tabla: 'obras' }, { campo: 'proveedor_id', tabla: 'proveedores' }, { campo: 'orden_compra_id', tabla: 'ordenes_compra' }],
+  revision_descartes:        [{ campo: 'movimiento_id', tabla: 'accounting_movements' }],
   intercompany_transactions: [{ campo: 'seller_company_id', tabla: 'companies' }, { campo: 'buyer_company_id', tabla: 'companies' }, { campo: 'seller_movement_id', tabla: 'accounting_movements' }, { campo: 'buyer_movement_id', tabla: 'accounting_movements' }],
 };
 
