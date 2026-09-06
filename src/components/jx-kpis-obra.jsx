@@ -1,6 +1,7 @@
 import React from "react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import { costoDeObra, NOTA_NO_SE_SUMAN } from "../lib/costo-obra.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 const fmtCur = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -77,6 +78,8 @@ function KPIsObraPage() {
   const { data: requisiciones = [] } = (window.__hooks?.useRequisiciones?.(obraId) ?? { data: [] });
   const { data: ocs = [] } = (window.__hooks?.useOrdenesCompra?.(obraId) ?? { data: [] });
   const { data: subcontratos = [] } = (window.__hooks?.useSubcontratos?.() ?? { data: [] });
+  const { data: consorcios = [] } = (window.__hooks?.useConsorcios?.() ?? { data: [] });
+  const { data: companies = [] } = (window.__hooks?.useCompanies?.() ?? { data: [] });
 
   // ── Sección 1: Avance ──
   const avance = uM(() => {
@@ -97,9 +100,27 @@ function KPIsObraPage() {
   }, [partidas, valorizaciones]);
 
   // ── Sección 2: Costos ──
+  //
+  // 🔴 MODELO B (Gabriel, 6-sep-2026). Hasta la tanda 7 este KPI sumaba TODO
+  // lo imputado a la obra por `obra_id`, y eso no es el costo de la obra: el
+  // `obra_id` de una compra es trazabilidad, no imputación. Medido en Plan
+  // Miraflores el 6-sep-2026, la diferencia no era un detalle —
+  //
+  //     lo que mostraba «Costo ejecutado»   S/ 2.255.308,67
+  //     lo que compró la ejecutora           S/   227.805,65   ← el costo
+  //     lo que puso el grupo, sin facturar   S/ 2.027.503,02   ← otra cosa
+  //
+  // — el número estaba inflado casi 10×. `costoDeObra()` los separa con la
+  // misma regla de los dos libros, y la pantalla los muestra SIN SUMARLOS.
+  const reparto = uM(() => costoDeObra({
+    movs: (movs || []).filter(m => m.obra_id === obraId),
+    obra, consorcios, companies,
+  }), [movs, obraId, obra, consorcios, companies]);
+
   const costos = uM(() => {
-    const movsObra = (movs || []).filter(m => !m.deleted_at && m.obra_id === obraId && (m.type === 'cost' || m.type === 'expense'));
-    const ejecutado = movsObra.reduce((s, m) => s + Number(m.amount || 0), 0);
+    const movsObra = (movs || []).filter(m => !m.deleted_at && m.obra_id === obraId
+      && (m.type === 'cost' || m.type === 'expense') && reparto.costo.ids.has(m.id));
+    const ejecutado = reparto.costo.monto;
     const planificadoAlAvance = avance.presupuesto * avance.fisico;
     const variacion = ejecutado - planificadoAlAvance;
     const pctVariacion = planificadoAlAvance > 0 ? variacion / planificadoAlAvance : 0;
@@ -114,7 +135,7 @@ function KPIsObraPage() {
       else cats.otros += Number(m.amount || 0);
     });
     return { ejecutado, planificadoAlAvance, variacion, pctVariacion, cats, count: movsObra.length };
-  }, [movs, obraId, avance]);
+  }, [movs, obraId, avance, reparto]);
 
   // ── Sección 3: Personal ──
   const rrhh = uM(() => {
@@ -196,7 +217,11 @@ function KPIsObraPage() {
       ['Días transcurridos / planif.', `${tiempoObra.dias} / ${tiempoObra.planif}`],
     ]);
     sec('Costos', [
-      ['Ejecutado', fmtCur(costos.ejecutado)],
+      ['Costo de la obra (libro de la ejecutora)', fmtCur(costos.ejecutado)],
+      ...(reparto.hayTitular && reparto.aporte.n > 0
+        ? [['Aporte del grupo, no facturado aún (no se suma)', fmtCur(reparto.aporte.monto)]] : []),
+      ...(reparto.porEspejar.n > 0
+        ? [['Facturado a la ejecutora sin compra espejo', fmtCur(reparto.porEspejar.monto)]] : []),
       ['Planificado al avance', fmtCur(costos.planificadoAlAvance)],
       ['Variación', `${fmtCur(costos.variacion)} (${(costos.pctVariacion * 100).toFixed(1)}%)`],
       ['Materiales', fmtCur(costos.cats.materiales)],
@@ -265,10 +290,49 @@ function KPIsObraPage() {
 
           <SectionH title="Costos" />
           <div className="kpi-grid">
-            <KpiCard label="Costo ejecutado" value={fmtCurK(costos.ejecutado)} sub={`${costos.count} movimientos`} color={COLOR.bad} icon="dollar" accent />
+            <KpiCard label="Costo de la obra" value={fmtCurK(costos.ejecutado)} sub={`${costos.count} comprobantes${reparto.hayTitular ? ' de la ejecutora' : ''}`} color={COLOR.bad} icon="dollar" accent />
             <KpiCard label="Planificado al avance" value={fmtCurK(costos.planificadoAlAvance)} color={COLOR.blue} accent />
             <KpiCard label="Variación" value={fmtCurK(costos.variacion)} sub={`${(costos.pctVariacion * 100).toFixed(1)}%`} color={colorVariacion} accent />
           </div>
+
+          {/* ── LAS DOS CIFRAS QUE NO SE SUMAN ──────────────────────
+              El aporte del grupo es plata que ya está en la obra pero que
+              todavía no es COSTO de la obra: lo será cuando la empresa le
+              facture a la ejecutora. Va abajo y aparte, nunca sumado al de
+              arriba — misma regla que los dos libros de Movimientos. */}
+          {reparto.hayTitular && (reparto.aporte.n > 0 || reparto.porEspejar.n > 0) && (
+            <div className="card card-p" style={{ marginTop: 8, borderLeft: `3px solid ${COLOR.warn}` }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'flex-start' }}>
+                <div>
+                  <div style={{ fontSize: 11.5, color: 'var(--tm)', fontWeight: 500 }}>Aporte del grupo, todavía no facturado a la obra</div>
+                  <div className="kpi-val" style={{ color: COLOR.warn }}>{fmtCurK(reparto.aporte.monto)}</div>
+                  <div style={{ fontSize: 11, color: 'var(--tm)' }}>{reparto.aporte.n} comprobantes de {reparto.aporte.porEmpresa.length} empresa(s)</div>
+                </div>
+                {reparto.porEspejar.n > 0 && (
+                  <div>
+                    <div style={{ fontSize: 11.5, color: 'var(--tm)', fontWeight: 500 }}>Ya facturado a la ejecutora, sin su compra espejo</div>
+                    <div className="kpi-val" style={{ color: COLOR.bad }}>{fmtCurK(reparto.porEspejar.monto)}</div>
+                    <div style={{ fontSize: 11, color: 'var(--tm)' }}>{reparto.porEspejar.n} venta(s) — este costo falta en el libro de la ejecutora</div>
+                  </div>
+                )}
+              </div>
+              {reparto.aporte.porEmpresa.length > 0 && (
+                <table className="tbl" style={{ marginTop: 10 }}>
+                  <thead><tr><th>Empresa que puso la plata</th><th style={{ textAlign: 'right' }}>N°</th><th style={{ textAlign: 'right' }}>Monto</th></tr></thead>
+                  <tbody>
+                    {reparto.aporte.porEmpresa.map(e => (
+                      <tr key={e.company_id || 'sin'}>
+                        <td className="col-p">{e.nombre}</td>
+                        <td style={{ textAlign: 'right', color: 'var(--tm)' }}>{e.n}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>{fmtCur(e.monto)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              <p style={{ fontSize: 11, color: 'var(--tm)', margin: '10px 0 0' }}>⚠ {NOTA_NO_SE_SUMAN}</p>
+            </div>
+          )}
           <div className="card card-p" style={{ marginTop: 8 }}>
             <table className="tbl">
               <thead><tr><th>Categoría</th><th style={{ textAlign: 'right' }}>Monto</th><th style={{ textAlign: 'right' }}>%</th></tr></thead>

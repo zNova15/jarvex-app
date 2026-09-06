@@ -14,6 +14,8 @@
 //  · pagos: beneficiario_tipo (personal|subcontrato), monto_acordado, estado.
 // ═══════════════════════════════════════════════════════════════════
 
+import { consumoPorObraModeloB } from './costo-obra.js';
+
 /** Set de ids de movimientos bancarizados: con evidencia directa (no fallida)
  * O cubiertos al 100% por partes cuyos depósitos multi-factura siguen vivos
  * (mig 137 — la constancia vive en el depósito, no en el movimiento). */
@@ -75,7 +77,7 @@ export function faltaBancarizacion(m, bancarizadoSet) {
  */
 export function agregarContable({
   movimientos = [], bancarizadoSet = new Set(), pagos = [],
-  companiesById = new Map(), obrasById = new Map(),
+  companiesById = new Map(), obrasById = new Map(), consorcios = [],
   from = null, to = null, topN = 10,
 } = {}) {
   const movs = movimientos.filter(m => !m.deleted_at && inRango(m.date, from, to));
@@ -94,7 +96,22 @@ export function agregarContable({
     for (const m of arr) { const k = keyFn(m) || 'sin'; const e = g.get(k) || { key: k, nombre: nameFn(m, k), monto: 0, n: 0 }; e.monto += amt(m); e.n += 1; g.set(k, e); }
     return [...g.values()].sort((a, b) => b.monto - a.monto);
   };
-  const consumoPorObra = groupSum(compras, m => m.obra_id, (m) => nomObra(m.obra_id));
+  // ── CONSUMO POR OBRA, BAJO EL MODELO B ──────────────────────────
+  // Antes de la tanda 7 esto era un `groupSum(compras, obra_id)` y por eso
+  // Plan Miraflores figuraba con S/ 2,25 M cuando la ejecutora había comprado
+  // S/ 227.805,65: sumaba en la misma bolsa las compras de la ejecutora y las
+  // de las demás empresas del grupo, que todavía NO son costo de la obra
+  // (decisión de Gabriel, 6-sep-2026). Ahora son dos columnas y no se suman.
+  // Los índices llegan como Map<id, fila> y las filas no siempre traen el `id`
+  // adentro (el caller las arma desde Dexie por clave). Reinyectarlo acá es lo
+  // que hace que `costoDeObra` pueda resolver el titular de cada obra.
+  const conId = (m) => [...m.entries()].map(([id, v]) => ({ id, ...v }));
+  const consumoPorObra = consumoPorObraModeloB({
+    movs: compras,
+    obras: conId(obrasById),
+    consorcios,
+    companies: conId(companiesById),
+  }).map(f => ({ ...f, key: f.obra_id, monto: f.costo, n: f.nCosto }));
   const consumoPorEmpresa = groupSum(compras, m => m.company_id, (m) => nomEmp(m.company_id));
   const topProveedores = groupSum(compras, m => m.proveedor_id || m.third_party_ruc || m.third_party_name, (m) => m.third_party_name || '(sin proveedor)').slice(0, topN);
   const topCategorias = groupSum(compras, m => m.category, (m) => m.category || '(sin categoría)').slice(0, topN);

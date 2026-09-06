@@ -48,9 +48,28 @@ describe('agregarContable — KPIs', () => {
 
 describe('agregarContable — agrupaciones', () => {
   const r = agregarContable(base);
-  it('consumo por obra', () => {
+  // ── MODELO B (tanda 7, entrega 6) ───────────────────────────────
+  // `consumoPorObra` dejó de ser una sola cifra por obra. Sin ejecutora
+  // declarada no hay costo que separar: todo cae en «aporte del grupo», que es
+  // lo honesto — no sabemos quién ejecuta, así que no afirmamos que nada de
+  // eso sea ya costo de la obra.
+  it('consumo por obra: sin ejecutora declarada, todo es aporte', () => {
     const o1 = r.consumoPorObra.find(x => x.nombre === 'Obra Uno');
-    expect(o1.monto).toBe(5000 + 1500); // f1+f2
+    expect(o1.hayTitular).toBe(false);
+    expect(o1.costo).toBe(0);
+    expect(o1.aporte).toBe(5000 + 1500); // f1+f2
+    expect(o1.nAporte).toBe(2);
+  });
+
+  it('consumo por obra: con ejecutora, separa costo de aporte', () => {
+    const r2 = agregarContable({
+      ...base,
+      consorcios: [{ id: 'k1', obra_id: 'o1', company_id: 'c1' }],
+    });
+    const o1 = r2.consumoPorObra.find(x => x.nombre === 'Obra Uno');
+    expect(o1.hayTitular).toBe(true);
+    expect(o1.costo).toBe(5000);   // f1 — lo compró la ejecutora c1
+    expect(o1.aporte).toBe(1500);  // f2 — lo puso c2, todavía no es costo
   });
   it('consumo por empresa del grupo', () => {
     const c1 = r.consumoPorEmpresa.find(x => x.nombre === 'Empresa A');

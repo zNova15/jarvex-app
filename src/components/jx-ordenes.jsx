@@ -34,6 +34,7 @@ import {
   comprobantesSinOrden, agruparPorEmpresa, resumenRespaldo,
   borradorDesdeMovimiento, recalcularBorrador, ordenarParaEmitir,
   UMBRAL_POR_DEFECTO,
+  nuevaOrdenBorrador, numerarOrden, pasosDeOrden, estaNumerada,
 } from "../lib/ordenes.js";
 import { filtroInicialEmpresa, setEmpresaActivaId } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
@@ -107,6 +108,17 @@ function OrdenesPage({ showToast }) {
   const [detalle, setDetalle] = uS(null);
   const [detalleItems, setDetalleItems] = uS([]);
   const emitiendoRef = uR(false);
+  // ── LA ORDEN QUE NACE ANTES DEL COMPROBANTE (tanda 7, entrega 6) ──
+  // `pedido` llega de Abastecimiento por `window.__pedidoAbastecimiento`: un
+  // buzón en memoria, no la base. Nada se escribe hasta que alguien confirma,
+  // así que abandonar la pantalla no deja basura ni gasta un correlativo.
+  const [pedido, setPedido] = uS(null);
+  const [nuevaEmpresa, setNuevaEmpresa] = uS('');
+  const [nuevaTipo, setNuevaTipo] = uS('compra');
+  const [nuevaIgv, setNuevaIgv] = uS(18);
+  const [precios, setPrecios] = uS({});     // `${proveedorId}|${codigo}` → precio unitario
+  const [creandoProv, setCreandoProv] = uS(null);
+  const creandoRef = uR(false);
 
   const umbral = uM(() => {
     const v = Number(resolverConfig?.(cfg, 'orden_umbral_monto', UMBRAL_POR_DEFECTO));
@@ -185,6 +197,121 @@ function OrdenesPage({ showToast }) {
     if (tab === 'respaldo' && borradores.length === 0 && pendientes.length > 0) prepararBorradores();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, pendientes.length]);
+
+  // ── EL PEDIDO QUE LLEGA DE ABASTECIMIENTO ───────────────────────
+  // Se lee UNA vez y se limpia el buzón: si quedara puesto, volver a esta
+  // pantalla más tarde reviviría un pedido que ya se emitió.
+  uE(() => {
+    const p = window.__pedidoAbastecimiento;
+    if (!p || !p.lineas?.length) return;
+    delete window.__pedidoAbastecimiento;
+    setPedido(p);
+    setTab('nueva');
+    // La empresa que EMITE la orden es la ejecutora de la obra: es ella la que
+    // le compra al resto del grupo. Si no está declarada, la elige el usuario.
+    if (p.titular_id) setNuevaEmpresa(p.titular_id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  // El pedido, partido POR EMPRESA PROVEEDORA: cada orden tiene un proveedor,
+  // así que pedirle cemento a GASOMI y fierro a JHEENSEG son DOS órdenes.
+  const gruposPedido = uM(() => {
+    if (!pedido?.lineas?.length) return [];
+    const g = new Map();
+    for (const l of pedido.lineas) {
+      const k = l.company_id || 'sin_empresa';
+      const e = g.get(k) || { company_id: l.company_id || null, empresa: l.empresa, lineas: [] };
+      e.lineas.push(l);
+      g.set(k, e);
+    }
+    return [...g.values()];
+  }, [pedido]);
+
+  const precioDe = (provId, codigo) => Number(precios[`${provId}|${codigo}`] ?? 0);
+  const setPrecio = (provId, codigo, v) => setPrecios(p => ({ ...p, [`${provId}|${codigo}`]: v }));
+
+  // ── CREAR LA ORDEN QUE NACE ANTES DEL COMPROBANTE ───────────────
+  //
+  // Guard SÍNCRONO (regla crítica #2): esto consume un correlativo, y un doble
+  // click en «Confirmar y numerar» dejaría dos órdenes con dos números para el
+  // mismo pedido.
+  const crearOrden = async (grupo, { numerar }) => {
+    if (creandoRef.current) return;
+    if (!nuevaEmpresa) { toast('Elige la empresa que emite la orden', 'red'); return; }
+    if (!canEmitir) { toast('No tienes permiso para emitir órdenes', 'red'); return; }
+    const company = lookupCompany(nuevaEmpresa);
+    const proveedorCompany = grupo.company_id ? lookupCompany(grupo.company_id) : null;
+    const items = grupo.lineas.map(l => ({
+      nombre: l.nombre, unidad: l.unidad, cantidad: l.cantidad,
+      precio_unitario: precioDe(grupo.company_id || 'sin_empresa', l.insumo_codigo),
+      insumo_codigo: l.insumo_codigo, company_id: l.company_id,
+    }));
+    if (items.some(i => !(i.precio_unitario > 0))) {
+      toast('Falta el precio unitario de alguna línea', 'amber'); return;
+    }
+    if (numerar && !window.confirm(
+      `Confirmar la orden a ${grupo.empresa}?\n\nSe le asigna un número de la serie de ${company?.name || 'la empresa'} y ese número no se libera aunque después se anule.`
+    )) return;
+
+    creandoRef.current = true;
+    try {
+      const hoy = window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10);
+      const { fila, items: lineas } = nuevaOrdenBorrador({
+        companyId: nuevaEmpresa,
+        tipo: nuevaTipo,
+        obraId: pedido?.obra_id || null,
+        proveedor: {
+          id: null,
+          nombre: proveedorCompany?.name || grupo.empresa || null,
+          ruc: proveedorCompany?.ruc || null,
+          direccion: proveedorCompany?.address || null,
+        },
+        items,
+        igvPct: Number(nuevaIgv),
+        fecha: hoy,
+        obraDescripcion: pedido?.obra_nombre || null,
+        observaciones: `Nace de Abastecimiento de la obra — stock del grupo en ${grupo.empresa}`,
+      });
+
+      const definitiva = numerar
+        ? numerarOrden({ ...fila }, ordenes, { company, anio: Number(hoy.slice(0, 4)) })
+        : fila;
+
+      const ocId = window.__newId();
+      const now = new Date().toISOString();
+      await window.__db.ordenes_compra.add({
+        ...definitiva,
+        id: ocId,
+        created_by: userId, updated_by: userId,
+        created_at: now, updated_at: now,
+        version: 1, sync_status: 'pending_create', last_synced_at: null,
+        idempotency_key: `${userId}_oc_${ocId}`,
+      });
+      for (const l of lineas) {
+        const itemId = window.__newId();
+        await window.__db.oc_items.add({
+          ...l,
+          id: itemId, orden_compra_id: ocId,
+          created_at: now, updated_at: now,
+          version: 1, sync_status: 'pending_create', last_synced_at: null,
+          idempotency_key: `${userId}_oc_item_${itemId}`,
+        });
+      }
+
+      // Este grupo ya se convirtió en orden: sale del pedido para que no se
+      // emita dos veces si quedan otros proveedores pendientes.
+      setPedido(p => {
+        const resto = (p?.lineas || []).filter(l => (l.company_id || 'sin_empresa') !== (grupo.company_id || 'sin_empresa'));
+        return resto.length ? { ...p, lineas: resto } : null;
+      });
+      await recargarOrdenes();
+      toast(numerar ? `Orden ${definitiva.codigo} creada` : 'Borrador guardado (todavía sin número)', 'green');
+      if (gruposPedido.length <= 1) setTab('emitidas');
+    } catch (e) {
+      console.error('[ordenes] no se pudo crear la orden:', e);
+      toast('No se pudo crear la orden: ' + (e.message || e), 'red');
+    } finally { creandoRef.current = false; }
+  };
 
   const actualizarBorrador = (idx, patch) => {
     setBorradores(bs => bs.map((b, i) => {
@@ -473,6 +600,10 @@ function OrdenesPage({ showToast }) {
         <button className={`btn btn-sm ${tab === 'respaldo' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('respaldo')}>
           Sin respaldo ({resumen.sinRespaldo})
         </button>
+        {/* La puerta que faltaba: una orden que nace ANTES del comprobante. */}
+        <button className={`btn btn-sm ${tab === 'nueva' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('nueva')}>
+          Nueva orden{gruposPedido.length ? ` (${gruposPedido.length})` : ''}
+        </button>
       </div>
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
@@ -509,7 +640,121 @@ function OrdenesPage({ showToast }) {
         )}
       </div>
 
-      {tab === 'emitidas' ? (
+      {/* ═══ NUEVA ORDEN — la que nace antes del comprobante (tanda 7) ═══ */}
+      {tab === 'nueva' ? (
+        <div>
+          {gruposPedido.length === 0 ? (
+            <div className="card card-p empty-state">
+              <JxIcon name="package" size={40} color="var(--tm)" />
+              <p><b>Una orden empieza en el Abastecimiento de la obra.</b></p>
+              <p style={{ fontSize: 12, color: 'var(--tm)', maxWidth: 560 }}>
+                Ahí se ve qué necesita la obra, qué compró ya la ejecutora y qué tienen las otras empresas del grupo.
+                Eliges cuánto le pides a cada una y desde ahí se arma la orden — con su detalle, y sin que exista todavía
+                ninguna factura. Esta pestaña se llena sola cuando llegas de ahí.
+              </p>
+              <button className="btn btn-amber btn-sm" onClick={() => window.__navTo?.('abastecimiento')}>
+                <JxIcon name="layers" size={14} /> Ir a Abastecimiento de la obra
+              </button>
+            </div>
+          ) : (
+            <>
+              <div className="card card-p" style={{ marginBottom: 12 }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: 'var(--tm)' }}>Empresa que EMITE la orden</div>
+                    <select className="fi" value={nuevaEmpresa} onChange={e => setNuevaEmpresa(e.target.value)} style={{ minWidth: 260 }}>
+                      <option value="">— Elige la empresa —</option>
+                      {(companies || []).filter(c => !c.deleted_at).map(c => (
+                        <option key={c.id} value={c.id}>{c.name || c.legal_name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, color: 'var(--tm)' }}>Tipo</div>
+                    <select className="fi" value={nuevaTipo} onChange={e => setNuevaTipo(e.target.value)}>
+                      <option value="compra">Orden de Compra</option>
+                      <option value="servicio">Orden de Servicio</option>
+                    </select>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, color: 'var(--tm)' }}>IGV %</div>
+                    <input className="fi" type="number" min="0" max="18" step="any" style={{ width: 80 }}
+                      value={nuevaIgv} onChange={e => setNuevaIgv(e.target.value)} />
+                  </div>
+                  <button className="btn btn-sm" style={{ marginLeft: 'auto' }} onClick={() => { setPedido(null); setPrecios({}); }}>
+                    Descartar el pedido
+                  </button>
+                </div>
+                {pedido?.obra_nombre && (
+                  <p style={{ fontSize: 11.5, color: 'var(--tm)', margin: '8px 0 0' }}>
+                    Para <b>{String(pedido.obra_nombre).slice(0, 90)}</b>. El número se asigna al confirmar, no ahora:
+                    un borrador que se abandona no deja huecos en la numeración.
+                  </p>
+                )}
+              </div>
+
+              {gruposPedido.map(g => {
+                const provKey = g.company_id || 'sin_empresa';
+                const subtotal = g.lineas.reduce((s, l) => s + Number(l.cantidad || 0) * precioDe(provKey, l.insumo_codigo), 0);
+                const igv = subtotal * (Number(nuevaIgv) || 0) / 100;
+                const listo = g.lineas.every(l => precioDe(provKey, l.insumo_codigo) > 0);
+                return (
+                  <div key={provKey} className="card" style={{ overflow: 'hidden', marginBottom: 12 }}>
+                    <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                      <b>Se le compra a {g.empresa}</b>
+                      <span className="badge b-gray">{g.lineas.length} línea(s)</span>
+                      <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--tm)' }}>
+                        Valor de venta <b style={{ color: 'var(--tp)' }}>{fmtS(subtotal)}</b> · IGV {fmtS(igv)} · Total <b style={{ color: 'var(--tp)' }}>{fmtS(subtotal + igv)}</b>
+                      </span>
+                    </div>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table className="tbl">
+                        <thead><tr>
+                          <th>Insumo</th><th style={{ textAlign: 'right' }}>Cantidad</th><th>Unidad</th>
+                          <th style={{ textAlign: 'right' }}>Precio unitario</th><th style={{ textAlign: 'right' }}>Subtotal</th>
+                        </tr></thead>
+                        <tbody>
+                          {g.lineas.map(l => {
+                            const pu = precioDe(provKey, l.insumo_codigo);
+                            return (
+                              <tr key={l.insumo_codigo}>
+                                <td className="col-p">
+                                  <div style={{ fontWeight: 600 }}>{l.nombre}</div>
+                                  <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>{l.insumo_codigo} · tiene {Number(l.topeDisponible).toLocaleString('es-PE')}</div>
+                                </td>
+                                <td style={{ textAlign: 'right', fontWeight: 600 }}>{Number(l.cantidad).toLocaleString('es-PE')}</td>
+                                <td>{l.unidad}</td>
+                                <td style={{ textAlign: 'right' }}>
+                                  <input className="fi" type="number" min="0" step="any" style={{ width: 110, textAlign: 'right' }}
+                                    placeholder="S/ 0,00" value={precios[`${provKey}|${l.insumo_codigo}`] ?? ''}
+                                    onChange={e => setPrecio(provKey, l.insumo_codigo, e.target.value)} />
+                                </td>
+                                <td style={{ textAlign: 'right', fontWeight: 600 }}>{fmtS(Number(l.cantidad || 0) * pu)}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div style={{ padding: '10px 14px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <button className="btn btn-sm" disabled={!listo || !nuevaEmpresa}
+                        onClick={() => crearOrden(g, { numerar: false })}>
+                        Guardar como borrador
+                      </button>
+                      <button className="btn btn-amber btn-sm" disabled={!listo || !nuevaEmpresa || !canEmitir}
+                        onClick={() => crearOrden(g, { numerar: true })}>
+                        <JxIcon name="check" size={14} /> Confirmar y numerar
+                      </button>
+                      {!listo && <span style={{ fontSize: 11.5, color: 'var(--amber)' }}>Falta el precio unitario de alguna línea.</span>}
+                      {!nuevaEmpresa && <span style={{ fontSize: 11.5, color: 'var(--amber)' }}>Elige arriba la empresa que emite.</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </>
+          )}
+        </div>
+      ) : tab === 'emitidas' ? (
         emitidas.length === 0 ? (
           <div className="card card-p empty-state">
             <JxIcon name="package" size={40} color="var(--tm)" />

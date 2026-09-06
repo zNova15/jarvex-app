@@ -80,6 +80,7 @@ const CHUNKS = [
   '../../components/jx-activos.jsx',
   '../../components/jx-admin.jsx',
   '../../components/jx-alertas.jsx',
+  '../../components/jx-abastecimiento.jsx',
   '../../components/jx-almacen.jsx',
   '../../components/jx-ambiental.jsx',
   '../../components/jx-analisis-insumos.jsx',

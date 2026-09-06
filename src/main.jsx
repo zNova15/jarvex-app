@@ -231,6 +231,7 @@ const PAGE_CHUNKS = {
   'jx-profesionales':         () => import('./components/jx-profesionales.jsx'),
   'jx-compras':               () => import('./components/jx-compras.jsx'),
   'jx-ordenes':               () => import('./components/jx-ordenes.jsx'),
+  'jx-abastecimiento':        () => import('./components/jx-abastecimiento.jsx'),
   'jx-compras-pendientes':    () => import('./components/jx-compras-pendientes.jsx'),
   'jx-ingeniero':             () => import('./components/jx-ingeniero.jsx'),
   'jx-control-consumo':       () => import('./components/jx-control-consumo.jsx'),

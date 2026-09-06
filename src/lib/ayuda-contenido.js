@@ -174,6 +174,19 @@ const AYUDA = {
   'solicitud-residente': { titulo: 'Solicitud de Insumos', que: 'El pedido técnico de materiales del frente/residente hacia logística.', como: ['Pedí lo que la obra necesita con cantidades y fecha requerida.', 'Logística lo convierte en requisición u orden de compra — acá no se maneja dinero.'] },
   'requisiciones': { titulo: 'Requisiciones', que: 'Consolidación de solicitudes en pedidos formales de compra.', como: ['Agrupá solicitudes, definí cantidades finales y pasalas a cotización u orden de compra.'] },
   'ordenes-compra': { titulo: 'Órdenes de Compra', que: 'Las OC emitidas a proveedores, con sus ítems, montos y recepciones.', como: ['Emití la OC al proveedor elegido y registrá las recepciones contra ella.', 'La OC firmada se puede subir como evidencia (tipo "OC Firmada").'] },
+  'abastecimiento': {
+    titulo: 'Abastecimiento de la obra',
+    que: 'El cruce entre lo que el presupuesto de la obra NECESITA y lo que el grupo YA TIENE comprado. Desde aquí se decide qué pedir y a quién, y nace la orden de compra — antes de que exista la factura.',
+    como: [
+      'Cuatro columnas, una pregunta cada una. NECESITA sale del presupuesto (suma el insumo en todas sus partidas: el cemento de Plan Miraflores está en 191). YA COMPRADO es lo que compró la empresa que ejecuta la obra. DISPONIBLE EN EL GRUPO es lo que tienen las otras empresas y todavía no le facturaron. FALTA es lo que no tiene nadie.',
+      'La columna del grupo descuenta lo que cada empresa YA VENDIÓ: nadie puede ofrecer dos veces la misma bolsa de cemento.',
+      'Escribe la cantidad que le vas a pedir a cada empresa y pulsa «Armar la orden». La app no te deja pedir más de lo que esa empresa tiene ni más de lo que la obra necesita.',
+      'Si la columna del grupo aparece vacía, es porque todavía no se tradujeron las descripciones de las facturas a los códigos del presupuesto. Eso se hace en Contabilidad → Análisis de Insumos → «Mapeo al presupuesto». Hasta entonces la pantalla no puede saber qué stock hay, y prefiere decirlo antes que mostrar ceros.',
+      'Una línea mapeada SIN factor de conversión no cuenta como stock y se avisa aparte: no sabemos cuántas unidades del presupuesto trae cada unidad de la factura, y suponerlo haría comprar mal.',
+      'El interruptor «incluir propuestas del motor» deja ver lo que el mapeo sugiere sin que nadie lo haya confirmado. Sirve para explorar; con él encendido no se puede emitir una orden.',
+    ],
+    dueno: ['contador', 'gerente'],
+  },
   'ordenes': { titulo: 'Órdenes de Compra y Servicio', que: 'El registro documental de las órdenes que emite cada empresa del grupo — de compra y de servicio — y de las compras que todavía no tienen una que las respalde.', como: ['Pestaña «Emitidas»: todas las órdenes de la empresa, con su PDF (lleva SU logo, SU RUC y SU numeración: OC-001-2026 / OS-001-2026).', 'Pestaña «Sin respaldo»: los comprobantes por encima del umbral (S/ 2.000 por defecto, configurable) que no tienen orden. Revisá el nombre de lo comprado, el tipo y el monto en la grilla y emitilas en lote.', 'Al emitir, cada orden queda atada a su comprobante para siempre; anularla (con motivo) devuelve el comprobante a la lista de pendientes.', 'Es distinta de «Órdenes de Compra» del menú de la obra: aquella es el circuito de logística (solicitud → OC → recepción); ésta es el papel contable de la empresa.', 'Se abre desde DOS lados: dentro de un trabajo («Órdenes de Compra y Servicio de esta obra») muestra solo lo de esa obra, con las de todas las empresas del grupo que le compran; desde Contabilidad o el panel de una empresa, las del grupo o las de esa empresa. Un cartel dice siempre en qué ámbito estás y cómo salir.'] },
 
   // ── MAQUINARIA ───────────────────────────────────────────────────

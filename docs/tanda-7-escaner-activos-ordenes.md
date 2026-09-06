@@ -285,7 +285,7 @@ Y del lado de la empresa vendedora, esas unidades salen de su stock disponible.
 | 4 | **Decisión modelo A vs B** | ✅ **modelo B**, decidido por Gabriel el 6-sep | No era código. Ver apartado 7 |
 | 5 | **Mapeo insumo → código canónico** | ✅ staging, mig 183 | El trabajo de fondo. Ver apartado 8 |
 | 5b | **Los 3 bloqueantes de la tanda 5** | ✅ staging | Ver apartado 9. Ya no bloquean la 6 |
-| 6 | **Abastecimiento + órdenes que nacen antes** | ⏳ pendiente | El rediseño de verdad |
+| 6 | **Abastecimiento + órdenes que nacen antes** | ✅ staging, mig 184 | Ver apartado 10 |
 
 **Arrancaría por la 1 y la 2 en paralelo**: son las dos que no dependen de
 ninguna decisión y las dos que ya tienen los datos.
@@ -585,3 +585,132 @@ puede subir órdenes; las asistentes de contabilidad, por ahora, NO — Gabriel 
 a hablarlo con la jefa de contabilidad primero, porque implica jerarquía dentro
 del trabajo (qué puede ver/hacer cada categoría), no solo un permiso suelto. Sin
 cambios en `jx-admin.jsx` hasta que él confirme.
+
+
+---
+
+## 10. Entrega 6 — Abastecimiento y las órdenes que nacen antes: HECHA
+
+**En staging**, migración **184** (ya aplicada en producción: dos columnas
+aditivas y nullable). Tres cosas, en el orden en que había que hacerlas.
+
+### 10.1 Lo primero: el costo de la obra estaba inflado 9,9×
+
+El apartado 7 avisaba que había que revisarlo «antes de mostrar márgenes».
+Medido el 6-set-2026 contra producción, Plan Miraflores:
+
+| | N° | Monto |
+|---|---:|---:|
+| Lo que mostraba «Costo ejecutado» en KPIs de obra | 415 | **S/ 2,255,308.67** |
+| Compras de la ejecutora (CONSORCIO EL INCA) — **eso es el costo** | 113 | **S/ 227,805.65** |
+| Compras de las demás empresas, imputadas a la obra — **todavía no es costo** | 302 | S/ 2,027,503.02 |
+| Ventas del grupo AL titular | 9 | S/ 59,684.12 |
+| …de esas, **sin su compra espejo** (2 de JARVEX) | 2 | **S/ 31,948.68** |
+
+No era un bug de suma: sumaba bien algo que no era costo. Y la regla para
+separarlo **ya existía y estaba en producción** desde la tanda 5
+(`libros-de-obra.js`); lo que faltaba era que los KPIs y los reportes la
+usaran en vez de sumar por `obra_id` a secas.
+
+`src/lib/costo-obra.js` (16 tests) devuelve **tres** cifras y ningún total
+general que invite a sumarlas:
+
+- **`costo`** — compras cargadas en el libro del titular.
+- **`aporte`** — compras del resto del grupo imputadas a la obra, desglosadas
+  por empresa.
+- **`porEspejar`** — ventas del grupo al titular sin su compra espejo. Costo
+  real que hoy **no está en ningún libro**, y que confirma por otro camino lo
+  que la mig 176 dejó pendiente de correr.
+
+**Por qué el costo es `company_id === titular` y no «el libro del consorcio»:**
+`librosDeObra()` manda al libro del titular también los comprobantes que el
+grupo le EMITIÓ, que allá son ventas. Contarlas como costo las sumaría una vez
+ahí y otra cuando el titular registre su compra espejo. Para pintar una fila
+está perfecto; para sumar costo, no.
+
+Aplicado en **KPIs de obra** (dos cifras, con el desglose por empresa y la
+frase «no se suman») y en **Reportes contables → Consumo por obra**, que pasó
+de una columna a dos.
+
+### 10.2 Abastecimiento de la obra — la pantalla nueva
+
+`src/lib/abastecimiento.js` (24 tests) + `src/components/jx-abastecimiento.jsx`
+(6 tests de pantalla). Entra en **Logística**, antes de las órdenes: primero se
+decide qué comprar, la orden es la consecuencia.
+
+```
+Insumo                        Necesita   Ya comprado   Disponible en el grupo   Falta
+CEMENTO PORTLAND TIPO I      11,269.16       2,250      318 GASOMI · 42 JHEENSEG  8,659.16
+```
+
+Tres reglas que la hacen confiable, y las tres tienen test:
+
+1. **«Disponible» resta lo que la empresa ya vendió.** Nadie ofrece dos veces
+   la misma bolsa; y esas unidades ya están contadas del otro lado.
+2. **«Disponible» resta lo que ya reservó una orden viva** (sin comprobante
+   todavía). Sin esto, volver a la pantalla mostraría las mismas 318 bolsas y
+   la orden siguiente las comprometería otra vez.
+3. **Sin factor de conversión, la línea NO cuenta como stock.** Se reporta
+   aparte. Un cero silencioso diría «no hay nada» cuando la verdad es «no
+   sabemos cuánto hay», y haría comprar de más.
+
+**Y arranca vacía, a propósito.** `insumo_mapeo` tiene **0 filas** al
+6-set-2026 — la entrega 5 está en staging y nadie mapeó todavía. La pantalla lo
+**dice con un cartel** en vez de mostrar una tabla de ceros que se leería como
+«el grupo no tiene nada». El interruptor «incluir propuestas del motor» deja
+explorar lo que el mapeo sugiere sin confirmar, marcado como tal, y **con él
+encendido no se puede emitir**.
+
+### 10.3 La orden que nace ANTES del comprobante
+
+Lo que pidió la jefa de contabilidad: «solamente se puede generar una orden en
+base a su respaldo, lo cual está mal». Ahora hay una pestaña **«Nueva orden»**
+en el registro de órdenes, que se llena desde Abastecimiento.
+
+**No hizo falta esquema nuevo para el cuerpo de la orden:** `oc_items` ya
+existía con cantidad, unidad y precio, y la escalera de estados
+(`borrador → por_confirmar → firmada → enviada → aceptada → recibida_parcial →
+recibida`) ya estaba en el CHECK de la tabla. Lo que faltaba era la puerta.
+La mig 184 solo agrega a la línea `insumo_codigo` (a qué insumo del presupuesto
+responde) y `proveedor_company_id` (de qué empresa del grupo sale), que es lo
+que permite el descuento del punto 10.2.
+
+**El número se pide al CONFIRMAR, no al crear** (decisión de Gabriel,
+6-set-2026). Un correlativo es irreversible —una orden anulada no libera su
+número, a propósito— así que un borrador que se abandona no debe dejar un hueco
+que después haya que explicar. `numerarOrden()` es el único lugar que consume
+un correlativo, es idempotente, y un borrador sin número **no empuja el
+contador de nadie** (hay test).
+
+Un pedido con material de dos empresas produce **dos órdenes**, porque cada
+orden tiene un proveedor. La pantalla las muestra separadas y se confirman una
+por una.
+
+`pasosDeOrden()` arma la lista de lo que le falta a cada orden para estar
+respaldada — comprobante → bancarización si pasa el umbral → detracción si
+corresponde → guía de remisión — **sin bloquear nada**: es una lista de
+pendientes, no una validación. «Progresivo, no un requisito de golpe», como
+pidió Gabriel.
+
+### 10.4 Lo que quedó afuera, y por qué
+
+- **El permiso del residente.** `abastecimiento` hereda exactamente los roles
+  de `ordenes` y no suma ninguno. El ingeniero residente sería el candidato
+  natural —es quien sabe qué falta en campo— pero eso amplía un permiso, y
+  Gabriel dejó los permisos de este módulo **en pausa** hasta hablarlos con la
+  jefa de contabilidad. Sumarlo es una línea en `__canSeeSidebarItem` y otra en
+  `__RESIDENTE_ITEMS`.
+- **La pantalla no sirve de verdad hasta que se mapee.** Es la dependencia
+  real: sin mapeos confirmados, la columna «disponible en el grupo» está vacía
+  para todo. Lo primero que conviene hacer después de promover esto es sentarse
+  un rato con «Mapeo al presupuesto» — el motor deja el 12.9% del gasto con
+  propuesta confiable y las primeras veinte filas ya mueven la aguja.
+
+### 10.5 Modelo, effort y sesión para lo que sigue
+
+| Qué | Modelo | Effort | Sesión nueva |
+|---|---|---|---|
+| Mapear los insumos (es trabajo humano, no de un modelo) | — | — | Es de Gabriel y la contadora |
+| Correr el SQL de la mig 176 (espejo JARVEX→EL INCA, S/ 31,948.68) | — | — | Se lo lleva Gabriel al SQL Editor |
+| Descontar el stock del ALMACÉN además del de facturas | Opus 5 | medio | Sí, cuando haya mapeos |
+| Permiso del residente en Abastecimiento | Sonnet 5 | bajo | No — dos líneas, cuando Gabriel decida |

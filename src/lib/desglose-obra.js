@@ -45,7 +45,7 @@ export const GRUPOS_TRABAJO = [
     icon: 'truck',
     color: 'var(--blue)',
     desc: 'Solicitudes de insumos, requisiciones y órdenes de compra',
-    items: ['solicitud-residente', 'requisiciones', 'ordenes-compra'],
+    items: ['abastecimiento', 'solicitud-residente', 'requisiciones', 'ordenes-compra'],
   },
   {
     id: 'gestion',

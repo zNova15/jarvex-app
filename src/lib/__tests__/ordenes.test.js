@@ -5,6 +5,7 @@ import {
   necesitaOrden, comprobantesSinOrden, agruparPorEmpresa, resumenRespaldo,
   tipoSugerido, igvSugeridoDesdeItems, borradorDesdeMovimiento, recalcularBorrador,
   ordenarParaEmitir, UMBRAL_POR_DEFECTO,
+  nuevaOrdenBorrador, numerarOrden, pasosDeOrden, esBorrador, estaNumerada,
 } from '../ordenes.js';
 
 // Datos de producción: el modelo que dejó Gabriel es del CONSORCIO EL INCA,
@@ -426,5 +427,152 @@ describe('ordenarParaEmitir', () => {
   it('vacío o nulo no explota', () => {
     expect(ordenarParaEmitir([])).toEqual([]);
     expect(ordenarParaEmitir(null)).toEqual([]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// LA ORDEN QUE NACE ANTES DEL COMPROBANTE (tanda 7, entrega 6)
+// ═══════════════════════════════════════════════════════════════════
+
+describe('nuevaOrdenBorrador — nace sin número y sin comprobante', () => {
+  const base = {
+    companyId: 'c-inca', tipo: 'compra', obraId: 'o1',
+    proveedor: { nombre: 'FERRETERIA X', ruc: '20512345678' },
+    items: [
+      { nombre: 'CEMENTO PORTLAND TIPO I', unidad: 'bol', cantidad: 300, precio_unitario: 27.5, insumo_codigo: '210020001' },
+      { nombre: 'ACERO CORRUGADO 1/2"', unidad: 'kg', cantidad: 100, precio_unitario: 4.2 },
+    ],
+  };
+
+  it('el borrador NO gasta un correlativo', () => {
+    const { fila } = nuevaOrdenBorrador(base);
+    expect(fila.correlativo).toBe(null);
+    expect(fila.codigo).toBe(null);
+    expect(fila.estado).toBe('borrador');
+    expect(esBorrador(fila)).toBe(true);
+    expect(estaNumerada(fila)).toBe(false);
+  });
+
+  it('nace SIN comprobante — es lo nuevo de esta entrega', () => {
+    const { fila } = nuevaOrdenBorrador(base);
+    expect(fila.accounting_movement_id).toBe(null);
+    expect(fila.emitida_retroactiva).toBe(false);
+  });
+
+  it('los totales salen de los ítems, con el IGV SUMADO (no despejado)', () => {
+    const { fila, totales } = nuevaOrdenBorrador(base);
+    // 300×27,50 = 8.250 + 100×4,20 = 420 → 8.670 + 18% = 10.230,60
+    expect(totales.valorVenta).toBe(8670);
+    expect(totales.igv).toBe(1560.6);
+    expect(fila.monto_total).toBe(10230.6);
+  });
+
+  it('descarta las líneas sin cantidad', () => {
+    const { items } = nuevaOrdenBorrador({ ...base, items: [...base.items, { nombre: 'X', cantidad: 0, precio_unitario: 9 }] });
+    expect(items).toHaveLength(2);
+  });
+
+  it('guarda de qué empresa del grupo sale cada línea', () => {
+    const { items } = nuevaOrdenBorrador({
+      ...base,
+      items: [{ nombre: 'CEMENTO', unidad: 'bol', cantidad: 318, precio_unitario: 27.5, company_id: 'c-gasomi' }],
+    });
+    expect(items[0].proveedor_company_id).toBe('c-gasomi');
+  });
+
+  it('una orden de servicio usa la unidad por defecto de su hoja', () => {
+    const { items } = nuevaOrdenBorrador({ ...base, tipo: 'servicio', items: [{ nombre: 'Alquiler', cantidad: 1, precio_unitario: 500 }] });
+    expect(items[0].unidad).toBe('SERV');
+    expect(items[0].tipo_insumo).toBe('servicio');
+  });
+});
+
+describe('numerarOrden — el único lugar que consume un correlativo', () => {
+  const company = { id: 'c-inca', name: 'CONSORCIO EL INCA' };
+  const emitidas = [
+    { id: 'x', company_id: 'c-inca', tipo: 'compra', anio: 2026, correlativo: 26, estado: 'recibida' },
+  ];
+
+  it('le da el siguiente número y lo pasa a por_confirmar', () => {
+    const { fila } = nuevaOrdenBorrador({ companyId: 'c-inca', fecha: '2026-09-06', items: [{ nombre: 'X', cantidad: 1, precio_unitario: 100 }] });
+    const n = numerarOrden(fila, emitidas, { company });
+    expect(n.correlativo).toBe(27);
+    expect(n.codigo).toMatch(/-027-2026$/);
+    expect(n.estado).toBe('por_confirmar');
+  });
+
+  it('un borrador SIN numerar no empuja el contador de nadie', () => {
+    const { fila } = nuevaOrdenBorrador({ companyId: 'c-inca', fecha: '2026-09-06', items: [{ nombre: 'X', cantidad: 1, precio_unitario: 1 }] });
+    // El borrador entra en la lista, pero como no tiene correlativo el
+    // siguiente número sigue siendo el 27 y no el 28.
+    expect(siguienteCorrelativo([...emitidas, fila], { companyId: 'c-inca', tipo: 'compra', anio: 2026 })).toBe(27);
+  });
+
+  it('es idempotente: no re-numera una orden que ya tiene número', () => {
+    const ya = { tipo: 'compra', correlativo: 5, codigo: 'OC-005-2026', anio: 2026, estado: 'enviada' };
+    expect(numerarOrden(ya, emitidas, { company })).toBe(ya);
+  });
+
+  it('en lote, el acumulador local evita repetir el número', () => {
+    const acc = [...emitidas];
+    const codigos = [];
+    for (let i = 0; i < 3; i++) {
+      const { fila } = nuevaOrdenBorrador({ companyId: 'c-inca', fecha: '2026-09-06', items: [{ nombre: 'X', cantidad: 1, precio_unitario: 1 }] });
+      const n = numerarOrden(fila, acc, { company });
+      acc.push(n); codigos.push(n.correlativo);
+    }
+    expect(codigos).toEqual([27, 28, 29]);
+  });
+});
+
+describe('pasosDeOrden — el respaldo se completa de a poco', () => {
+  const orden = { tipo: 'compra', correlativo: 27, codigo: 'OC-027-2026', monto_total: 10230.6 };
+
+  it('un borrador sin nada arranca con el número y el comprobante pendientes', () => {
+    const r = pasosDeOrden({ tipo: 'compra', monto_total: 500 });
+    expect(r.pasos.find(p => p.id === 'numero').hecho).toBe(false);
+    expect(r.pasos.find(p => p.id === 'comprobante').hecho).toBe(false);
+    expect(r.completa).toBe(false);
+  });
+
+  it('pide bancarización solo cuando el monto pasa el umbral', () => {
+    const grande = pasosDeOrden(orden, { movimiento: { amount: 10230.6, currency: 'PEN' } });
+    expect(grande.pasos.some(p => p.id === 'bancarizacion')).toBe(true);
+    const chica = pasosDeOrden({ ...orden, monto_total: 500 }, { movimiento: { amount: 500, currency: 'PEN' } });
+    expect(chica.pasos.some(p => p.id === 'bancarizacion')).toBe(false);
+  });
+
+  it('no pide bancarización en moneda extranjera', () => {
+    const r = pasosDeOrden(orden, { movimiento: { amount: 9000, currency: 'USD' } });
+    expect(r.pasos.some(p => p.id === 'bancarizacion')).toBe(false);
+  });
+
+  it('la detracción se pide solo si el comprobante la trae', () => {
+    const sin = pasosDeOrden(orden, { movimiento: { amount: 100, currency: 'PEN' } });
+    expect(sin.pasos.some(p => p.id === 'detraccion')).toBe(false);
+    const con = pasosDeOrden(orden, { movimiento: { amount: 100, currency: 'PEN', detraccion_monto: 40 } });
+    const d = con.pasos.find(p => p.id === 'detraccion');
+    expect(d.hecho).toBe(false);           // tiene monto pero le falta el código
+    expect(d.detalle).toMatch(/Anexo 3/);
+  });
+
+  it('una orden de servicio no pide guía de remisión', () => {
+    const r = pasosDeOrden({ ...orden, tipo: 'servicio' }, { movimiento: { amount: 100, currency: 'PEN' } });
+    expect(r.pasos.some(p => p.id === 'guia')).toBe(false);
+  });
+
+  it('completa cuando están todos los pasos', () => {
+    const r = pasosDeOrden(orden, {
+      movimiento: { amount: 10230.6, currency: 'PEN', document_number: 'F001-99', detraccion_monto: 400, detraccion_codigo: '030' },
+      bancarizado: true,
+      guias: [{ id: 'g1' }],
+    });
+    expect(r.completa).toBe(true);
+    expect(r.pct).toBe(1);
+  });
+
+  it('las guías borradas no cuentan', () => {
+    const r = pasosDeOrden(orden, { movimiento: { amount: 100, currency: 'PEN' }, guias: [{ id: 'g1', deleted_at: '2026-09-01' }] });
+    expect(r.pasos.find(p => p.id === 'guia').hecho).toBe(false);
   });
 });

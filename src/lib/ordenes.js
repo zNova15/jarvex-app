@@ -451,10 +451,205 @@ export function recalcularBorrador(b) {
   return { ...b, ...t, igvPct: t.igvPct };
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// LA ORDEN QUE NACE ANTES DEL COMPROBANTE (tanda 7, entrega 6)
+//
+// EL PEDIDO, de la jefa de contabilidad: «solamente se puede generar una orden
+// de compra y servicio en base a su respaldo, lo cual está mal».
+//
+// Tenía razón. Hasta acá la única puerta era «Sin respaldo»: se partía de una
+// factura que YA existía y se le fabricaba la orden hacia atrás. Eso sirve
+// para regularizar el pasado y no sirve para trabajar — una orden real nace
+// antes, y el comprobante llega después.
+//
+// ── EL NÚMERO SE PIDE AL CONFIRMAR, NO AL CREAR ───────────────────
+// Decisión de Gabriel, 6-sep-2026. Un correlativo es irreversible: una orden
+// anulada NO libera su número (`siguienteCorrelativo` toma el máximo emitido,
+// a propósito). Si el borrador numerara al nacer, cada pedido que se arma y se
+// abandona dejaría un hueco permanente en el libro de la empresa, y en un
+// documento que puede terminar en SUNAT los huecos hay que explicarlos.
+//
+// Entonces el borrador vive SIN correlativo —`siguienteCorrelativo` lo ignora
+// solo porque `Number(null || 0)` es 0, así que un borrador nunca empuja el
+// contador— y `numerarOrden()` es el único lugar donde se pide el número.
+//
+// ── EL RESPALDO SE COMPLETA DE A POCO ─────────────────────────────
+// Gabriel: «progresivo, no un requisito de golpe». La orden nace con lo que se
+// sabe (a quién, qué, cuánto) y después se le van colgando el comprobante, la
+// bancarización si pasa el umbral, la detracción si corresponde y la guía de
+// remisión. `pasosDeOrden()` dice qué falta sin bloquear nada: es una lista de
+// pendientes, no una validación que impide guardar.
+// ═══════════════════════════════════════════════════════════════════
+
+/** La escalera de estados que ya acepta la base (check `ordenes_compra_estado_check`). */
+export const ESTADOS_ORDEN = ['borrador', 'por_confirmar', 'firmada', 'enviada', 'aceptada', 'recibida_parcial', 'recibida', 'anulada', 'cancelada'];
+
+export const ESTADO_ORDEN_LABEL = {
+  borrador: 'Borrador (sin número)',
+  por_confirmar: 'Por confirmar',
+  firmada: 'Firmada',
+  enviada: 'Enviada al proveedor',
+  aceptada: 'Aceptada',
+  recibida_parcial: 'Recibida parcial',
+  recibida: 'Recibida',
+  anulada: 'Anulada',
+  cancelada: 'Cancelada',
+};
+
+/** Un borrador es una orden que todavía no gastó un número. */
+export function esBorrador(orden) {
+  return !!orden && orden.estado === 'borrador' && !orden.correlativo;
+}
+
+/** ¿Ya tiene número propio? */
+export function estaNumerada(orden) {
+  return !!(orden && orden.correlativo);
+}
+
+/**
+ * El borrador de una orden que NACE ANTES del comprobante.
+ *
+ * Devuelve la fila y sus ítems por separado, sin ids ni timestamps: los pone
+ * la pantalla, que es la que tiene `window.__newId()` y el usuario. Acá solo
+ * vive la decisión de qué campos lleva y con qué valores arranca.
+ *
+ * Los totales salen de los ÍTEMS (`totalesDesdeItems`), no de un total dado:
+ * es el caso inverso al retroactivo, donde el total ya existía y no se tocaba.
+ */
+export function nuevaOrdenBorrador({
+  companyId, tipo = 'compra', obraId = null, trabajoId = null,
+  proveedor = {}, items = [], igvPct = IGV_POR_DEFECTO,
+  fecha = null, titulo = null, obraDescripcion = null, observaciones = null,
+  lugarEntrega = null, fechaEntrega = null, condicionPago = null,
+} = {}) {
+  const T = textosDeTipo(tipo);
+  const lineas = (items || [])
+    .filter(it => it && num(it.cantidad) > 0)
+    .map(it => ({
+      tipo_insumo: tipo === 'servicio' ? 'servicio' : (it.tipo_insumo || 'material'),
+      material_id: it.material_id || null,
+      insumo_id: it.insumo_id || null,
+      insumo_codigo: it.insumo_codigo || null,
+      nombre: it.nombre || it.descripcion || '',
+      nombre_libre: it.nombre || it.descripcion || '',
+      unidad: it.unidad || T.unidadPorDefecto,
+      cantidad: num(it.cantidad),
+      cantidad_recibida: 0,
+      precio_unitario: num(it.precio_unitario),
+      subtotal: round2(num(it.cantidad) * num(it.precio_unitario)),
+      // De qué empresa del grupo sale este material, cuando la orden se armó
+      // desde Abastecimiento. Es lo que después permite descontarle el stock.
+      proveedor_company_id: it.company_id || null,
+    }));
+
+  const t = totalesDesdeItems(lineas, { igvPct });
+
+  return {
+    fila: {
+      tipo,
+      company_id: companyId || null,
+      obra_id: obraId || null,
+      trabajo_id: trabajoId || null,
+      // 🔴 El borrador NO toma número. Se lo pide `numerarOrden()` al confirmar.
+      codigo: null, correlativo: null, anio: null,
+      estado: 'borrador',
+      proveedor_id: proveedor.id || null,
+      proveedor_nombre: proveedor.nombre || null,
+      proveedor_ruc: proveedor.ruc || null,
+      proveedor_direccion: proveedor.direccion || null,
+      banco: proveedor.banco || null,
+      cuenta_numero: proveedor.cuenta || null,
+      cuenta_cci: proveedor.cci || null,
+      fecha: fecha || null,
+      fecha_entrega: fechaEntrega || null,
+      lugar_entrega: lugarEntrega || null,
+      condicion_pago: condicionPago || null,
+      titulo: titulo || null,
+      obra_descripcion: obraDescripcion || null,
+      observaciones: observaciones || null,
+      moneda: 'PEN',
+      igv_pct: t.igvPct,
+      monto_subtotal: t.valorVenta,
+      monto_igv: t.igv,
+      monto_total: t.total,
+      // Nace SIN comprobante: eso es exactamente lo nuevo de esta entrega.
+      accounting_movement_id: null,
+      emitida_retroactiva: false,
+    },
+    items: lineas,
+    totales: t,
+  };
+}
+
+/**
+ * Le da número a un borrador. ÚNICO lugar donde se consume un correlativo.
+ *
+ * `ordenes` tiene que incluir las ya emitidas MÁS las numeradas en esta misma
+ * pasada (acumulador local): releer la base en cada vuelta de un lote devuelve
+ * el mismo número dos veces hasta que la escritura anterior se vea. Es la
+ * misma regla que ya respeta la emisión retroactiva.
+ */
+export function numerarOrden(borrador, ordenes, { company, anio = null } = {}) {
+  if (!borrador) return null;
+  if (estaNumerada(borrador)) return borrador;   // idempotente: no re-numera
+  const year = anio
+    || (borrador.fecha ? Number(String(borrador.fecha).slice(0, 4)) : null)
+    || new Date().getFullYear();
+  const { correlativo, codigo } = proximoCodigo(ordenes, { company, tipo: borrador.tipo || 'compra', anio: year });
+  return { ...borrador, correlativo, codigo, anio: year, estado: 'por_confirmar' };
+}
+
+/**
+ * Qué le falta a una orden para estar completamente respaldada.
+ *
+ * NO bloquea nada: devuelve una lista de pendientes para que la pantalla la
+ * muestre. El orden es el del flujo real — primero llega el comprobante, y
+ * recién ahí tiene sentido preguntar por la bancarización o la detracción.
+ */
+export function pasosDeOrden(orden, { movimiento = null, bancarizado = false, guias = [], umbral = UMBRAL_POR_DEFECTO } = {}) {
+  const pasos = [];
+  const push = (id, label, hecho, detalle) => pasos.push({ id, label, hecho: !!hecho, detalle: detalle || '' });
+
+  push('numero', 'Número de orden', estaNumerada(orden),
+    estaNumerada(orden) ? orden.codigo : 'Se asigna al confirmar el borrador');
+
+  const mov = movimiento || null;
+  push('comprobante', 'Comprobante del proveedor', !!mov,
+    mov ? (mov.document_number || 'cargado') : 'Todavía no llegó la factura');
+
+  // De acá para abajo, nada tiene sentido sin el comprobante: se muestran
+  // igual (para que se vea el camino completo) pero sin marcarlos como
+  // pendientes urgentes hasta que la factura exista.
+  const montoRef = num(mov?.amount) || num(orden?.monto_total);
+  const requiereBanc = montoRef > num(umbral) && (mov?.currency || 'PEN') === 'PEN';
+  if (requiereBanc) {
+    push('bancarizacion', 'Bancarización', bancarizado,
+      bancarizado ? 'Constancia cargada' : `Supera ${fmtUmbral(umbral)} — necesita constancia`);
+  }
+
+  const detr = num(mov?.detraccion_monto) > 0 || !!mov?.detraccion_codigo;
+  if (detr) {
+    push('detraccion', 'Detracción', num(mov?.detraccion_monto) > 0 && !!mov?.detraccion_codigo,
+      mov?.detraccion_codigo ? `Código ${mov.detraccion_codigo}` : 'Falta el código del Anexo 3');
+  }
+
+  if ((orden?.tipo || 'compra') === 'compra') {
+    const conGuia = (guias || []).some(g => g && !g.deleted_at);
+    push('guia', 'Guía de remisión', conGuia, conGuia ? 'Vinculada' : 'Falta la guía del traslado');
+  }
+
+  const faltan = pasos.filter(p => !p.hecho);
+  return { pasos, faltan, completa: faltan.length === 0, pct: pasos.length ? (pasos.length - faltan.length) / pasos.length : 0 };
+}
+
+const fmtUmbral = (u) => 'S/ ' + Number(u || 0).toLocaleString('es-PE');
+
 export default {
   TIPOS_ORDEN, TIPO_ORDEN_LABEL, TIPO_ORDEN_TEXTOS, UMBRAL_POR_DEFECTO,
   textosDeTipo, prefijoDeOrden, siguienteCorrelativo, formatearCodigo, proximoCodigo,
   totalesDesdeItems, totalesDesdeTotal, repartirSobreItems,
   necesitaOrden, comprobantesSinOrden, agruparPorEmpresa, resumenRespaldo,
   tipoSugerido, borradorDesdeMovimiento, recalcularBorrador,
+  ESTADOS_ORDEN, ESTADO_ORDEN_LABEL, esBorrador, estaNumerada,
+  nuevaOrdenBorrador, numerarOrden, pasosDeOrden,
 };

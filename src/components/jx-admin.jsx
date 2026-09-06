@@ -1166,6 +1166,7 @@ window.__moduleIdMap = {
   'requisiciones': 'Requisiciones',
   'ordenes-compra': 'Órdenes de Compra',
   'ordenes': 'Órdenes de Compra',              // mismo módulo/permiso, otra puerta (tanda 5)
+  'abastecimiento': 'Órdenes de Compra',       // decide QUÉ pedir; la orden es su consecuencia (tanda 7)
   'compras-pendientes': 'Recepciones',
   // Subcontratos
   'subcontratistas': 'Subcontratistas',
@@ -1413,6 +1414,16 @@ window.__canSeeSidebarItem = function(rol, itemId) {
   // llevan los libros. Con 'r' alcanza para mirarlo; emitir pide 'w' y lo
   // vuelve a chequear la pantalla.
   if (itemId === 'ordenes') return ['admin', 'gerente', 'contador', 'ayudante_contador'].includes(rol)
+    || (window.__hasPerm?.(rol, 'Órdenes de Compra', 'r') ?? false);
+  // ABASTECIMIENTO (tanda 7, entrega 6): cruza el presupuesto de la obra con el
+  // stock del grupo y desde ahí nace la orden.
+  //
+  // Hereda EXACTAMENTE los roles de 'ordenes' y no suma ninguno. El residente
+  // sería el candidato natural —es quien sabe qué falta en campo— pero
+  // agregarlo ampliaría un permiso, y Gabriel dejó los permisos de este módulo
+  // EN PAUSA el 6-sep-2026 para hablarlos primero con la jefa de contabilidad.
+  // Sumarlo es una línea acá más una en __RESIDENTE_ITEMS, cuando él lo decida.
+  if (itemId === 'abastecimiento') return ['admin', 'gerente', 'contador', 'ayudante_contador'].includes(rol)
     || (window.__hasPerm?.(rol, 'Órdenes de Compra', 'r') ?? false);
   // Activos fijos: el registro que se le presenta a SUNAT. Lo llevan las
   // contadoras y la tesorería; no es una pantalla de maquinaria.

@@ -124,6 +124,10 @@ const NAV = [
   { id: 'plantillas', label: 'Plantillas', icon: 'file' },
 
   { section: 'LOGÍSTICA' },
+  // Tanda 7, entrega 6. Va PRIMERO en Logística a propósito: es la pantalla
+  // donde se decide qué comprar y a quién, y la orden es la consecuencia de
+  // esa decisión, no el punto de partida.
+  { id: 'abastecimiento', label: 'Abastecimiento de la obra', icon: 'layers' },
   { id: 'solicitud-residente', label: 'Solicitud de Insumos', icon: 'plus' },
   { id: 'requisiciones', label: 'Requisiciones', icon: 'list' },
   { id: 'ordenes-compra', label: 'Órdenes de Compra', icon: 'package' },

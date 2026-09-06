@@ -14,6 +14,10 @@ export function ContableView({ ctx }) {
   const [movs, setMovs] = uS([]);
   const [banc, setBanc] = uS(() => new Set());
   const [pagos, setPagos] = uS([]);
+  // El consumo por obra se parte por modelo B y para eso hace falta saber
+  // quién EJECUTA cada obra (`consorcios`). Se lee acá y no por `ctx` para no
+  // tocar la firma que comparten los otros reportes.
+  const { data: consorcios = [] } = (window.__hooks?.useConsorcios?.() ?? { data: [] });
   const chartInsts = uRf({});
   const onInstance = (id, inst) => { if (inst) chartInsts.current[id] = inst; else delete chartInsts.current[id]; };
 
@@ -42,7 +46,7 @@ export function ContableView({ ctx }) {
 
   const movsAmbito = uM(() => ambito === 'todas' ? movs : movs.filter(m => m.obra_id === ambito), [movs, ambito]);
   const pagosAmbito = uM(() => ambito === 'todas' ? pagos : pagos.filter(p => p.obra_id === ambito), [pagos, ambito]);
-  const agg = uM(() => agregarContable({ movimientos: movsAmbito, bancarizadoSet: banc, pagos: pagosAmbito, companiesById, obrasById, from: period.from, to: period.to, topN: 10 }), [movsAmbito, banc, pagosAmbito, companiesById, obrasById, period]);
+  const agg = uM(() => agregarContable({ movimientos: movsAmbito, bancarizadoSet: banc, pagos: pagosAmbito, companiesById, obrasById, consorcios, from: period.from, to: period.to, topN: 10 }), [movsAmbito, banc, pagosAmbito, companiesById, obrasById, consorcios, period]);
 
   const ambitoLbl = ambito === 'todas' ? 'Todas las obras' : (obrasById.get(ambito)?.nombre_obra || obrasById.get(ambito)?.nombre || 'Obra');
 
@@ -57,7 +61,7 @@ export function ContableView({ ctx }) {
       ];
       const charts = chartsToPNG(chartInsts, [['ch-emp', 'Consumo por empresa'], ['ch-prov', 'TOP proveedores'], ['ch-cat', 'TOP categorías']]);
       const tablas = [
-        { titulo: 'Consumo por obra', columnas: ['Obra', 'N°', 'Monto'], filas: agg.consumoPorObra.map(o => [o.nombre, o.n, fmtS(o.monto)]) },
+        { titulo: 'Consumo por obra (las dos columnas NO se suman)', columnas: ['Obra', 'N°', 'Costo de la obra', 'Aporte del grupo'], filas: agg.consumoPorObra.map(o => [o.nombre, o.nCosto, o.hayTitular ? fmtS(o.costo) : '—', fmtS(o.aporte)]) },
         { titulo: 'Consumo por empresa del grupo', columnas: ['Empresa', 'N°', 'Monto'], filas: agg.consumoPorEmpresa.map(c => [c.nombre, c.n, fmtS(c.monto)]) },
         { titulo: 'Facturas recientes', columnas: ['Fecha', 'Proveedor', 'Doc.', 'Empresa', 'Monto', 'Estado', 'Bancariz.'], filas: agg.facturasRecientes.map(f => [f.fecha, f.proveedor, f.doc, f.empresa, fmtS(f.monto), (EST_PAGO[f.estado]?.lbl || f.estado), f.faltaBanc ? 'FALTA' : 'ok']) },
       ];
@@ -104,9 +108,12 @@ export function ContableView({ ctx }) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14, marginBottom: 16 }}>
         <div className="card" style={{ overflow: 'hidden' }}>
           <div style={{ padding: '10px 14px', fontSize: 13, fontWeight: 700, color: 'var(--tp)', borderBottom: '1px solid var(--border)' }}>Consumo por obra</div>
-          <div style={{ overflowX: 'auto' }}><table className="tbl"><thead><tr><th>Obra</th><th style={{ textAlign: 'right' }}>N°</th><th style={{ textAlign: 'right' }}>Monto</th></tr></thead><tbody>
-            {agg.consumoPorObra.length === 0 ? (<tr><td colSpan={3} style={{ textAlign: 'center', padding: 16, color: 'var(--tm)' }}>Sin consumo</td></tr>) : agg.consumoPorObra.map((o, i) => (<tr key={i}><td className="col-p">{o.nombre}</td><td style={{ textAlign: 'right', color: 'var(--tm)' }}>{o.n}</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmtS(o.monto)}</td></tr>))}
+          <div style={{ overflowX: 'auto' }}><table className="tbl"><thead><tr><th>Obra</th><th style={{ textAlign: 'right' }}>N°</th><th style={{ textAlign: 'right' }}>Costo de la obra</th><th style={{ textAlign: 'right' }}>Aporte del grupo</th></tr></thead><tbody>
+            {agg.consumoPorObra.length === 0 ? (<tr><td colSpan={4} style={{ textAlign: 'center', padding: 16, color: 'var(--tm)' }}>Sin consumo</td></tr>) : agg.consumoPorObra.map((o, i) => (<tr key={i}><td className="col-p">{o.nombre}</td><td style={{ textAlign: 'right', color: 'var(--tm)' }}>{o.nCosto}</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{o.hayTitular ? fmtS(o.costo) : '—'}</td><td style={{ textAlign: 'right', color: 'var(--tm)' }} title={`${o.nAporte} comprobante(s)`}>{fmtS(o.aporte)}</td></tr>))}
           </tbody></table></div>
+          <p style={{ fontSize: 10.5, color: 'var(--tm)', margin: 0, padding: '8px 14px', borderTop: '1px solid var(--border)' }}>
+            ⚠ Las dos columnas no se suman: el aporte del grupo recién es costo de la obra cuando la empresa le factura a la ejecutora.
+          </p>
         </div>
         <div className="card" style={{ overflow: 'hidden' }}>
           <div style={{ padding: '10px 14px', fontSize: 13, fontWeight: 700, color: 'var(--tp)', borderBottom: '1px solid var(--border)' }}>Consumo por empresa del grupo</div>
