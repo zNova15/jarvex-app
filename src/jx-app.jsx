@@ -3,7 +3,7 @@ import { trackPageView } from "./lib/posthog.js";
 import SyncDetailModal from "./components/SyncDetailModal.jsx";
 import BotonAyuda from "./components/jx-ayuda.jsx";
 import { planoDe, resolveLanding, areaDe } from "./lib/nav-planos.js";
-import { getEmpresaActivaId, EMPRESA_ACTIVA_EVENT } from "./lib/empresa-activa.js";
+import { getEmpresaActivaId, limpiarEmpresaActiva, EMPRESA_ACTIVA_EVENT } from "./lib/empresa-activa.js";
 import { esPaginaDeEmpresa } from "./lib/desglose-empresa.js";
 import { cargarObrasAsignadas } from "./lib/obras-asignadas.js";
 import { tomarPaginaTrasCambioDeTema } from "./lib/tema.js";
@@ -1276,6 +1276,15 @@ function App() {
     // AISLAMIENTO: no entrar a una obra que no está asignada al usuario.
     const perm = window.__obrasPermitidas;
     if (oid && perm && !perm.has(oid)) { showToast('No tenés asignada esa obra', 'red'); return; }
+    // ENTRAR A UN TRABAJO SALE DE LA EMPRESA (tanda 6). El contexto de empresa
+    // vive en localStorage y sobrevive al F5: sin esto, una empresa activa
+    // vieja seguía puesta dentro del trabajo, invisible (useEmpresaBloqueada la
+    // tapa en el plano obra) hasta que tocabas una pantalla contable general —
+    // y ahí el menú entero se volvía «CONTABILIDAD DE ESTA EMPRESA». Gabriel,
+    // 5-sep-2026: «quise entrar a órdenes de compra y servicios para un trabajo
+    // (Miraflores) y me llevó a contabilidad de JARVEX». Los dos ámbitos son
+    // hermanos y excluyentes: estás parado en un trabajo o en una empresa.
+    if (oid) limpiarEmpresaActiva();
     if (oid && window.__setObraActivaId) window.__setObraActivaId(oid);
     let destino = pageDestino && planoDe(pageDestino) === 'obra' ? pageDestino : null;
     if (!destino) { const h = window.__defaultPageForRol?.(rolActual) || 'dashboard-gestion'; if (planoDe(h) === 'obra') destino = h; }

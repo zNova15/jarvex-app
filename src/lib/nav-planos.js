@@ -37,10 +37,15 @@ export const GENERAL_ITEMS = new Set([
   'cuentas-bancarias', 'plan-cuentas', 'libro-diario', 'balance-general',
   'estado-resultados', 'comprobantes', 'libros-electronicos', 'config-sunat',
   'comparativo-periodos', 'flujo-caja', 'flujo-proyectado', 'compras-categoria', 'guias-remision',
-  // El REGISTRO DOCUMENTAL de órdenes (tanda 5) es de la EMPRESA, no de la
-  // obra: una orden la emite un RUC y lleva su numeración. 'ordenes-compra'
-  // (el circuito de logística de almacén) sigue siendo plano obra.
-  'ordenes',
+  // 'ordenes' (el registro documental de la tanda 5) YA NO está acá: pasó a
+  // ítem DUAL, como 'movimientos-contables' (tanda 6). La orden la sigue
+  // emitiendo un RUC y numerando por empresa —eso no cambió—, pero además
+  // respalda la compra de UNA obra, y ésa es la pregunta con la que Gabriel
+  // la fue a buscar: «quise entrar a órdenes de compra y servicios para un
+  // trabajo (Miraflores) y me llevó a contabilidad de JARVEX». Plano 'obra'
+  // por defecto (el workspace del trabajo, en desglose-obra.js); el área de
+  // contabilidad y el panel de una empresa la abren con override a 'general'.
+  // 'ordenes-compra' (el circuito de logística de almacén) es otra pantalla.
   // El activo fijo es de la EMPRESA (su RUC lo declara), no de una obra.
   'activos-fijos',
   'analisis-insumos',   // análisis global cross-obra de compras por insumo/proveedor

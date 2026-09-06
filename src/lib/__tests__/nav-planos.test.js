@@ -46,6 +46,13 @@ describe('planoDe — clasifica general vs obra', () => {
     expect(planoDe('personal')).toBe('obra');
     // La cadena intercompany es de UNA obra (entrega B): salió del plano general.
     expect(planoDe('trazabilidad')).toBe('obra');
+    // El registro documental de órdenes pasó a DUAL (tanda 6): por defecto es
+    // del trabajo —«las órdenes que respaldan las compras de ESTA obra»— y el
+    // área de contabilidad / el panel de empresa lo abren con override
+    // explícito a 'general'. Antes era solo general y buscarlo desde un
+    // trabajo te sacaba a la contabilidad de otra empresa.
+    expect(planoDe('ordenes')).toBe('obra');
+    expect(areaDe('ordenes')).toBe('contabilidad');
     expect(planoDe('panel-obra')).toBe('obra');
     expect(planoDe('una-pagina-nueva-cualquiera')).toBe('obra');
   });

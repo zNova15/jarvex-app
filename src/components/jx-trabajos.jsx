@@ -30,6 +30,7 @@ import {
 import { etiquetaEjecutora, titularContableDeObra, sociosDeObra, esObraDeConsorcio } from "../lib/consorcio.js";
 import { puedeVerFichaTrabajo, puedeVerEquipoTrabajo } from "../lib/panel-trabajo-visibilidad.js";
 import { gruposDelTrabajo } from "../lib/desglose-obra.js";
+import { planoDe } from "../lib/nav-planos.js";
 const { useState: uST, useMemo: uMT, useRef: uRT, useEffect: uET } = React;
 
 const fmt = (n, moneda = 'PEN') =>
@@ -957,10 +958,18 @@ function PanelObraPage({ showToast, onNav }) {
   }, [obraId]);
 
   // Labels/íconos del menú real: una sola fuente de verdad con el sidebar.
+  // Los ítems DUALES ('movimientos-contables', 'ordenes') están dos o tres
+  // veces en el NAV, y el último ganaba: el panel del TRABAJO terminaba
+  // rotulando su tarjeta con el nombre de la vista del GRUPO ("Movimientos
+  // (todas / por obra)"). Acá manda la entrada del plano obra, que es la que
+  // este panel abre.
   const navInfo = uMT(() => {
     const m = new Map();
     for (const it of (window.NAV || [])) {
-      if (it.id) m.set(it.id, { label: String(it.label || it.id).replace(/^✨\s*/, ''), icon: it.icon });
+      if (!it.id) continue;
+      const esDeObra = (it.plano || planoDe(it.id)) === 'obra';
+      if (m.has(it.id) && !esDeObra) continue;
+      m.set(it.id, { label: String(it.label || it.id).replace(/^✨\s*/, ''), icon: it.icon });
     }
     return m;
   }, []);

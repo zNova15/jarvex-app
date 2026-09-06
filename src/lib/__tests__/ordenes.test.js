@@ -191,6 +191,27 @@ describe('comprobantesSinOrden', () => {
     const movs = [mov({ id: 'a', amount: 9000 }), mov({ id: 'b', amount: 8000, company_id: JARVEX.id })];
     expect(comprobantesSinOrden(movs, [], { companyId: JARVEX.id }).map(m => m.id)).toEqual(['b']);
   });
+
+  // Tanda 6: la misma pantalla abierta desde el workspace de un trabajo.
+  it('acota por OBRA cuando se pide, sin mirar de qué empresa es', () => {
+    const movs = [
+      mov({ id: 'a', amount: 9000, obra_id: 'mira' }),
+      mov({ id: 'b', amount: 8000, obra_id: 'mira', company_id: JARVEX.id }),
+      mov({ id: 'c', amount: 7000, obra_id: 'sanmarcos' }),
+      mov({ id: 'd', amount: 6000 }),   // sin obra: gasto de empresa, no de la obra
+    ];
+    // Los DOS de Miraflores, aunque uno sea de JARVEX y no del titular: es la
+    // cadena intercompany, y acotar por titular escondería 3 de cada 4.
+    expect(comprobantesSinOrden(movs, [], { obraId: 'mira' }).map(m => m.id)).toEqual(['a', 'b']);
+  });
+
+  it('obra y empresa se combinan con AND', () => {
+    const movs = [
+      mov({ id: 'a', amount: 9000, obra_id: 'mira' }),
+      mov({ id: 'b', amount: 8000, obra_id: 'mira', company_id: JARVEX.id }),
+    ];
+    expect(comprobantesSinOrden(movs, [], { obraId: 'mira', companyId: JARVEX.id }).map(m => m.id)).toEqual(['b']);
+  });
 });
 
 describe('agruparPorEmpresa', () => {
@@ -235,6 +256,17 @@ describe('resumenRespaldo', () => {
 
   it('sin nada sobre el umbral no divide por cero', () => {
     expect(resumenRespaldo([], []).pctRespaldado).toBe(0);
+  });
+
+  it('la barra del respaldo también se acota a la obra', () => {
+    const movs = [
+      mov({ id: 'a', amount: 10000, obra_id: 'mira' }),
+      mov({ id: 'b', amount: 90000, obra_id: 'sanmarcos' }),
+    ];
+    const r = resumenRespaldo(movs, [], { obraId: 'mira' });
+    expect(r.sobreUmbral).toBe(1);
+    expect(r.montoSobreUmbral).toBe(10000);
+    expect(r.montoSinRespaldo).toBe(10000);
   });
 
   it('usa el umbral por defecto documentado', () => {

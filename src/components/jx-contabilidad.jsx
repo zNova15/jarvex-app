@@ -536,8 +536,12 @@ function EmpresasPage({ showToast }) {
                   const entrar = () => {
                     if (c.tipo_entidad === 'consorcio') {
                       if (!obraDelConsorcio) { showToast('Este consorcio no tiene obra asociada todavía', 'amber'); return; }
+                      // A la CONTABILIDAD de su obra, que es donde vive (§4 de
+                      // docs/tanda-2-navegacion.md: «llevan un hipervínculo a la
+                      // contabilidad de su obra»). Llevaba al panel del trabajo.
+                      limpiarEmpresaActiva();
                       if (window.__setObraActivaId) window.__setObraActivaId(obraDelConsorcio);
-                      window.__navTo?.('panel-obra', 'obra');
+                      window.__navTo?.('movimientos-contables', 'obra');
                       return;
                     }
                     setDetalleId(c.id);
@@ -545,7 +549,7 @@ function EmpresasPage({ showToast }) {
                   return (
                     <div key={c.id} className="card card-p" style={{ border:'1px solid var(--border)', display:'flex', flexDirection:'column', gap:8 }}>
                       <button type="button" onClick={entrar}
-                        title={c.tipo_entidad === 'consorcio' ? 'Ir a la obra de este consorcio' : 'Abrir el desglose de esta empresa'}
+                        title={c.tipo_entidad === 'consorcio' ? 'Ir a la contabilidad de la obra de este consorcio' : 'Abrir el desglose de esta empresa'}
                         style={{ background:'none', border:0, padding:0, textAlign:'left', cursor:'pointer', color:'inherit', font:'inherit' }}>
                         <div style={{ display:'flex', gap:6, alignItems:'center', flexWrap:'wrap', marginBottom:4 }}>
                           <span className={`badge ${g.badge}`} style={{ fontSize:9.5 }}>{g.label.replace(' del grupo','')}</span>
@@ -7111,10 +7115,19 @@ function ContabilidadGrupoPage({ showToast }) {   // eslint-disable-line no-unus
   // la página Empresas (no es una página registrada), así que se abre con un
   // intent — mismo patrón que __movsBuscarIntent / __guiasFocusIntent.
   const irAEmpresa = (id) => { window.__empresaDetalleIntent = id; window.__navTo?.('empresas', 'general'); };
+  //
+  // A LA CONTABILIDAD DE LA OBRA, NO AL ÍNDICE DEL TRABAJO (tanda 6).
+  // Antes esta fila —que muestra ingresos, egresos y utilidad— llevaba a
+  // `panel-obra`, el desglose con Almacén, Gestión de obra y Especialistas.
+  // Gabriel, 5-sep-2026: «intenté entrar por contabilidad a la contabilidad de
+  // la obra y terminé en la pestaña de trabajo de la obra con almacén, gestión
+  // de obra, etc.». Entrás por los libros: te tienen que dar los libros.
+  // Y se SALE del contexto de empresa: los dos ámbitos no se cruzan.
   const irATrabajo = (fila) => {
     if (fila.kind === 'obra') {
+      limpiarEmpresaActiva();
       if (window.__setObraActivaId) window.__setObraActivaId(fila.id);
-      window.__navTo?.('panel-obra', 'obra');
+      window.__navTo?.('movimientos-contables', 'obra');
     } else {
       window.__navTo?.('bienes-servicios', 'general');
     }

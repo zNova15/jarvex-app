@@ -193,4 +193,31 @@ describe('cada pantalla abre', () => {
     }
     expect(fallos, 'pantalla que revienta al abrir').toEqual([]);
   });
+
+  // El MISMO barrido, pero parado DENTRO de un trabajo. Las pantallas DUALES
+  // (Movimientos de esta obra, Órdenes de esta obra…) toman otro camino según
+  // `window.__plano`, y ese camino no lo tocaba ningún test: en el plano
+  // general se montaban las 114 y la rama de obra podía estar rota igual.
+  it('ninguna tira un error abierta desde el workspace de una obra', () => {
+    const planoAntes = globalThis.__plano;
+    const getObraAntes = globalThis.__getObraActivaId;
+    globalThis.__plano = 'obra';
+    globalThis.__getObraActivaId = () => 'obra-1';
+    const fallos = [];
+    try {
+      for (const nombre of pantallas) {
+        try {
+          renderToString(React.createElement(globalThis[nombre], {
+            showToast: () => {}, onNav: () => {}, onEnterObra: () => {}, onVolver: () => {},
+          }));
+        } catch (e) {
+          fallos.push(`${nombre}: ${e.message}`);
+        }
+      }
+    } finally {
+      globalThis.__plano = planoAntes;
+      globalThis.__getObraActivaId = getObraAntes;
+    }
+    expect(fallos, 'pantalla que revienta dentro de una obra').toEqual([]);
+  });
 });

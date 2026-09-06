@@ -66,6 +66,10 @@ const fmtFecha = (f) => (f ? String(f).split('-').reverse().join('/') : '—');
 // y solo se listan acá obras donde la empresa YA participa.
 const irAObra = (obraId) => {
   if (!obraId) return;
+  // Entrar al trabajo SALE de la empresa (tanda 6): los dos ámbitos son
+  // hermanos y excluyentes. Sin esto, el contexto de esta empresa quedaba
+  // pegado y reaparecía al abrir cualquier pantalla contable general.
+  limpiarEmpresaActiva();
   try { window.__setObraActivaId?.(obraId); } catch {}
   window.__navTo?.('panel-obra');
 };
@@ -84,6 +88,7 @@ const irAObra = (obraId) => {
 // los trabajos de esta empresa y entra a ese plano.
 const irAPersonalDeObra = (obraId) => {
   if (!obraId) return;
+  limpiarEmpresaActiva();   // mismo corte que irAObra: se entra al trabajo
   try { window.__setObraActivaId?.(obraId); } catch {}
   window.__navTo?.('personal', 'obra');
 };

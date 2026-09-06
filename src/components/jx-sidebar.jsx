@@ -222,6 +222,11 @@ const NAV = [
   // empresa las sigue mostrando (solo lectura): desglose-empresa.js.
   { id: 'intercompany', label: 'Operaciones entre Empresas de esta obra', icon: 'compare' },
   { id: 'ordenes-intercompany', label: 'Órdenes Intercompany de esta obra', icon: 'list' },
+  // Dual, como 'movimientos-contables' (tanda 6): acá son las órdenes que
+  // respaldan las compras de ESTA obra; abajo, en el bloque del grupo, las de
+  // todas. Gabriel las buscó desde el trabajo y la app lo mandó a la
+  // contabilidad de JARVEX.
+  { id: 'ordenes', label: 'Órdenes de Compra y Servicio de esta obra', icon: 'package', plano: 'obra' },
 
   { section: 'EMPRESAS Y CONTABILIDAD', area: 'contabilidad' },
   // Primero el resumen por entidad (tanda 2D): es la puerta del bloque, y desde
@@ -234,7 +239,7 @@ const NAV = [
   // solo en Logística de la obra, porque es donde Gabriel las fue a buscar:
   // «las necesito para respaldar las compras». La de Logística sigue siendo
   // el circuito requisición→OC→recepción de almacén.
-  { id: 'ordenes', label: 'Órdenes de Compra y Servicio', icon: 'package' },
+  { id: 'ordenes', label: 'Órdenes de Compra y Servicio', icon: 'package', plano: 'general' },
   // El registro CONTABLE de activos (formato SUNAT 7.1): cuenta del PCGE,
   // depreciación y valor en libros. «Equipos Pesados», en el menú de la obra,
   // es el OPERATIVO (horómetro, combustible) y son cosas distintas.

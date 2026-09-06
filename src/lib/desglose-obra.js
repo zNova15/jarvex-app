@@ -129,9 +129,16 @@ export const GRUPOS_TRABAJO = [
     // sí me gusta es que esté el consolidado». El panel de una empresa sigue
     // ofreciendo una vista de lo suyo (desglose-empresa.js, sin tocar): arma
     // la jugada la obra, la mira también la empresa.
+    //
+    // 'ordenes' ENTRÓ ACÁ (tanda 6). Es el papel que RESPALDA esos mismos
+    // movimientos, y hasta ahora solo se llegaba a él por la contabilidad del
+    // grupo o por el panel de una empresa: buscarlo desde un trabajo te sacaba
+    // del trabajo. Va con los movimientos y no en Logística a propósito —
+    // 'ordenes-compra' (Logística) es el CIRCUITO requisición→OC→recepción del
+    // almacén; ésta es el documento contable que respalda una compra ya hecha.
     desc: 'Los movimientos del consorcio en esta obra, y las herramientas para analizarlos',
     items: ['movimientos-contables', 'conciliacion-insumos', 'pagos', 'trazabilidad',
-      'intercompany', 'ordenes-intercompany'],
+      'intercompany', 'ordenes-intercompany', 'ordenes'],
   },
 ];
 

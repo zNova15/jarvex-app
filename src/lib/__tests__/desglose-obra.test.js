@@ -68,6 +68,11 @@ describe('desglose-obra — estructura de los grupos', () => {
   it('grupoDePagina resuelve las nuevas de la entrega B', () => {
     expect(grupoDePagina('movimientos-contables')).toBe('contabilidad-obra');
     expect(grupoDePagina('trazabilidad')).toBe('contabilidad-obra');
+    // Tanda 6: el registro documental de órdenes va con los movimientos que
+    // respalda, NO en Logística — ahí vive 'ordenes-compra', que es el
+    // circuito requisición→OC→recepción del almacén y es otra pantalla.
+    expect(grupoDePagina('ordenes')).toBe('contabilidad-obra');
+    expect(grupoDePagina('ordenes-compra')).toBe('logistica');
     expect(grupoDePagina('materiales')).toBe('almacen');
     expect(grupoDePagina('no-existe')).toBeNull();
   });

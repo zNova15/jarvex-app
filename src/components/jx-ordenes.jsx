@@ -85,7 +85,18 @@ function OrdenesPage({ showToast }) {
   // regla de la tanda 2G («netamente y exclusivamente de esa empresa
   // seleccionada»), y una orden mal atribuida se numera en la serie de otro RUC.
   const empresaFija = useEmpresaBloqueada();
-  const [filtroEmpresaRaw, setFiltroEmpresa] = uS(() => filtroInicialEmpresa('todas'));
+  // ÁMBITO DE OBRA (tanda 6). La misma pantalla, abierta desde el workspace de
+  // un trabajo, es «las órdenes que respaldan las compras de ESTA obra».
+  // No se acota la EMPRESA junto con la obra a propósito: en Miraflores, de
+  // 460 comprobantes solo 112 son del titular (CONSORCIO EL INCA) — el resto
+  // es la cadena intercompany, y fijar el titular escondería 3 de cada 4.
+  // Mismo criterio que Movimientos de esta obra (docs/tanda-2-navegacion.md B1).
+  const enObra = window.__plano === 'obra';
+  const obraScopeId = enObra ? (() => { try { return window.__getObraActivaId?.() || null; } catch { return null; } })() : null;
+  // Dentro de una obra el filtro arranca en TODAS: acotar además por la
+  // empresa activa (que puede ser vieja, de la última vez que se entró a un
+  // panel de empresa) escondería la mayor parte de la obra sin decir por qué.
+  const [filtroEmpresaRaw, setFiltroEmpresa] = uS(() => (enObra ? 'todas' : filtroInicialEmpresa('todas')));
   const filtroEmpresa = empresaFija || filtroEmpresaRaw;
   const [filtroTipo, setFiltroTipo] = uS('todos');
   const [busqueda, setBusqueda] = uS('');
@@ -127,14 +138,15 @@ function OrdenesPage({ showToast }) {
   const lookupObra = React.useCallback((id) => (obras || []).find(o => o.id === id) || null, [obras]);
 
   const resumen = uM(
-    () => resumenRespaldo(movs || [], ordenes, { umbral, companyId }),
-    [movs, ordenes, umbral, companyId]
+    () => resumenRespaldo(movs || [], ordenes, { umbral, companyId, obraId: obraScopeId }),
+    [movs, ordenes, umbral, companyId, obraScopeId]
   );
 
   // ── Pestaña 1: las emitidas ─────────────────────────────────────
   const emitidas = uM(() => {
     let f = (ordenes || []).filter(o => !o.deleted_at);
     if (companyId) f = f.filter(o => o.company_id === companyId);
+    if (obraScopeId) f = f.filter(o => o.obra_id === obraScopeId);
     if (filtroTipo !== 'todos') f = f.filter(o => (o.tipo || 'compra') === filtroTipo);
     if (!verAnuladas) f = f.filter(o => !ANULADA.has(o.estado));
     if (busqueda) {
@@ -145,12 +157,12 @@ function OrdenesPage({ showToast }) {
         (o.titulo || '').toLowerCase().includes(q));
     }
     return f.sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
-  }, [ordenes, companyId, filtroTipo, verAnuladas, busqueda]);
+  }, [ordenes, companyId, obraScopeId, filtroTipo, verAnuladas, busqueda]);
 
   // ── Pestaña 2: lo que falta respaldar ───────────────────────────
   const pendientes = uM(
-    () => comprobantesSinOrden(movs || [], ordenes, { umbral, companyId }),
-    [movs, ordenes, umbral, companyId]
+    () => comprobantesSinOrden(movs || [], ordenes, { umbral, companyId, obraId: obraScopeId }),
+    [movs, ordenes, umbral, companyId, obraScopeId]
   );
   const gruposPendientes = uM(
     () => agruparPorEmpresa(pendientes, companies || []),
@@ -376,6 +388,7 @@ function OrdenesPage({ showToast }) {
   }, [companies, movs, ordenes]);
 
   const Banner = window.EmpresaActivaBanner;
+  const obraScope = obraScopeId ? lookupObra(obraScopeId) : null;
 
   return (
     <div className="pg">
@@ -384,12 +397,35 @@ function OrdenesPage({ showToast }) {
           <div className="pg-title">Órdenes de compra y servicio</div>
           <div className="pg-sub">
             {emitidas.length} órdenes · {fmtSk(emitidas.reduce((s, o) => s + Number(o.monto_total || 0), 0))}
-            {companyId ? ` · ${lookupCompany(companyId)?.name || ''}` : ' · todo el grupo'}
+            {obraScope ? ' · esta obra' : (companyId ? ` · ${lookupCompany(companyId)?.name || ''}` : ' · todo el grupo')}
           </div>
         </div>
       </div>
 
-      {Banner && <Banner onSalir={() => { setFiltroEmpresa('todas'); setBorradores([]); }} />}
+      {/* EL CARTEL DE LA OBRA (tanda 6). Hermano del de empresa y del de
+          Movimientos de esta obra: sin él, una lista más corta de lo normal no
+          tendría explicación — y no habría forma de salir del ámbito. */}
+      {obraScope && (
+        <div className="card card-p" style={{
+          marginBottom: 12, borderLeft: '3px solid var(--amber)',
+          display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+        }}>
+          <JxIcon name="hardHat" size={16} color="var(--amber)" />
+          <div style={{ flex: 1, minWidth: 200, fontSize: 12, color: 'var(--ts)' }}>
+            Las órdenes que respaldan las compras de <strong style={{ color: 'var(--tp)' }}>{obraScope.nombre_obra}</strong>
+            <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 2 }}>
+              Cada orden la numera la empresa que la emite (OC-001-2026 por RUC), pero aquí solo se ven
+              las de este trabajo — incluidas las de las otras empresas del grupo que le compran.
+            </div>
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={() => window.__navTo?.('ordenes', 'general')}
+            title="Salir del ámbito de la obra y ver las órdenes de todo el grupo">
+            Ver las de todo el grupo →
+          </button>
+        </div>
+      )}
+
+      {!obraScope && Banner && <Banner onSalir={() => { setFiltroEmpresa('todas'); setBorradores([]); }} />}
 
       {/* ── LA BARRA DEL RESPALDO ───────────────────────────────────
           El número que Gabriel fue a buscar y no estaba: cuánto del dinero
@@ -436,7 +472,11 @@ function OrdenesPage({ showToast }) {
           title={empresaFija ? 'Estás dentro de la contabilidad de esta empresa: son SUS órdenes.' : undefined}
           onChange={e => {
             setFiltroEmpresa(e.target.value);
-            setEmpresaActivaId(e.target.value === 'todas' ? null : e.target.value);
+            // Dentro de una obra, filtrar por empresa es UN FILTRO de esta
+            // pantalla, no entrar a la contabilidad de esa empresa. Sin este
+            // corte, elegir JARVEX acá dejaba el contexto pegado y el menú
+            // entero pasaba a ser el de JARVEX al salir del trabajo.
+            if (!enObra) setEmpresaActivaId(e.target.value === 'todas' ? null : e.target.value);
             setBorradores([]);
           }} style={{ minWidth: 220 }}>
           {!empresaFija && <option value="todas">Todas las empresas</option>}

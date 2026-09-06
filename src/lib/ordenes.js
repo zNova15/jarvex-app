@@ -217,7 +217,7 @@ export function necesitaOrden(mov, { umbral = UMBRAL_POR_DEFECTO } = {}) {
  * la orden puede estar creada y el movimiento todavía sin actualizar. Se
  * mira el vínculo por los DOS lados, igual que el espejo guía↔factura.
  */
-export function comprobantesSinOrden(movs, ordenes, { umbral = UMBRAL_POR_DEFECTO, companyId = null } = {}) {
+export function comprobantesSinOrden(movs, ordenes, { umbral = UMBRAL_POR_DEFECTO, companyId = null, obraId = null } = {}) {
   const conOrden = new Set();
   for (const o of ordenes || []) {
     if (!o || o.deleted_at) continue;
@@ -229,6 +229,7 @@ export function comprobantesSinOrden(movs, ordenes, { umbral = UMBRAL_POR_DEFECT
     if (!necesitaOrden(m, { umbral })) continue;
     if (conOrden.has(m.id)) continue;
     if (companyId && m.company_id !== companyId) continue;
+    if (obraId && m.obra_id !== obraId) continue;
     out.push(m);
   }
   return out.sort((a, b) => num(b.amount) - num(a.amount));
@@ -259,19 +260,25 @@ export function agruparPorEmpresa(movs, companies) {
 /**
  * El número que va arriba de la pantalla: cuánto del dinero de este ámbito
  * está respaldado por una orden y cuánto no.
+ *
+ * `obraId` acota el ámbito al de UN TRABAJO (tanda 6): la misma pantalla,
+ * abierta desde el workspace de una obra, contesta «¿cuánto de lo que gastó
+ * ESTA obra tiene su papel?». Sin ese corte, entrar por Miraflores devolvía
+ * las 402 compras del grupo entero — el síntoma que reportó Gabriel.
  */
-export function resumenRespaldo(movs, ordenes, { umbral = UMBRAL_POR_DEFECTO, companyId = null } = {}) {
+export function resumenRespaldo(movs, ordenes, { umbral = UMBRAL_POR_DEFECTO, companyId = null, obraId = null } = {}) {
   let sobreUmbral = 0, montoSobreUmbral = 0;
   for (const m of movs || []) {
     if (!m || m.deleted_at) continue;
     if (!TIPOS_COMPRA.has(m.type)) continue;
     if ((m.currency || 'PEN') !== 'PEN') continue;
     if (companyId && m.company_id !== companyId) continue;
+    if (obraId && m.obra_id !== obraId) continue;
     if (num(m.amount) <= num(umbral)) continue;
     sobreUmbral++;
     montoSobreUmbral = round2(montoSobreUmbral + num(m.amount));
   }
-  const pendientes = comprobantesSinOrden(movs, ordenes, { umbral, companyId });
+  const pendientes = comprobantesSinOrden(movs, ordenes, { umbral, companyId, obraId });
   const montoPendiente = round2(pendientes.reduce((s, m) => s + num(m.amount), 0));
   return {
     umbral: num(umbral),
