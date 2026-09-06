@@ -714,3 +714,88 @@ pidió Gabriel.
 | Correr el SQL de la mig 176 (espejo JARVEX→EL INCA, S/ 31,948.68) | — | — | Se lo lleva Gabriel al SQL Editor |
 | Descontar el stock del ALMACÉN además del de facturas | Opus 5 | medio | Sí, cuando haya mapeos |
 | Permiso del residente en Abastecimiento | Sonnet 5 | bajo | No — dos líneas, cuando Gabriel decida |
+
+
+---
+
+## 11. Entrega 6b — la corrección de Gabriel: no es Logística, y hay cadena
+
+**Gabriel, 6-set-2026**, apenas vio la entrega 6:
+
+> «Creo que aquí está existiendo una confusión grande. […] Las órdenes de compra
+> que existían eran supuestamente cuando personal que está en el campo hace un
+> requerimiento, entonces la almacenera entraba a requerimientos, generaba un
+> nuevo requerimiento con IA […] y con eso se veía qué es lo que faltaba y luego
+> se generaba una orden de compra. Pero esa orden de compra es algo nada más
+> interno […] necesitamos tener una sección netamente de órdenes y compras
+> (área de Contabilidad, no logística).»
+
+**Tenía razón, y el error era de ubicación.** Yo había puesto «Abastecimiento
+de la obra» en el bloque de **Logística**, pegada a `ordenes-compra` — que es
+justo la que NO es. Son dos cosas que se llaman parecido y no lo son:
+
+| | Órdenes de Compra (Logística) | Abastecimiento + Órdenes (Contabilidad) |
+|---|---|---|
+| Quién la origina | El campo pide, la almacenera arma | La ejecutora de la obra |
+| Contra qué se arma | El stock del almacén de la obra | El presupuesto y el stock del grupo |
+| Para qué sirve | Avisar «faltan estos materiales» | Que la empresa le **facture** a la ejecutora |
+| Vale ante una auditoría | No | **Sí — es el punto** |
+
+**Corregido:** `abastecimiento` pasó al grupo `contabilidad` de
+`desglose-obra.js`, junto a `movimientos-contables`, `intercompany` y
+`ordenes`; en el sidebar quedó en el bloque contable (dual: dentro de la obra y
+en el general), y la de Logística se rotuló **«Órdenes de Compra (interna de
+almacén)»** para que el nombre solo no las vuelva a confundir.
+
+### 11.1 Por qué esto importa más que un menú
+
+Gabriel lo dijo con todas las letras, y es la frase que justifica la entrega
+entera:
+
+> «Cuando nosotros introducimos estas facturas que contienen el tema del
+> cemento, colocamos vinculación a obra, es correcto […] pero eso es algo que
+> nosotros sabemos por trazabilidad nada más. Ahora tenemos que hacer la
+> conexión real, y la conexión real se hace cuando emitimos una orden de compra
+> a la empresa tal y dicha empresa le emite una factura al consorcio ejecutor.
+> Con eso ya tenemos trazado y el consorcio puede demostrar que ha comprado los
+> insumos para la obra.»
+
+Es exactamente el modelo B visto desde el papel: el `obra_id` es lo que
+**nosotros sabemos**; la orden + la factura es lo que **se puede demostrar**.
+
+### 11.2 La cadena con intermediario — migración 185
+
+> «Incluso que hay un intermediario, que en este caso sería que la empresa A le
+> vende a la empresa B, y la empresa B le vende a la ejecutora o el consorcio.»
+
+Y sobre la frecuencia: *«suele pasar, normalmente si existen los
+intermediarios, incluso con alguna empresa que sería un tercero que hace el
+favor y hace de intermediario. Eso no quita que existan compras directas sin
+intermediario.»*
+
+Decidió **dos órdenes encadenadas**, no una con la cadena anotada:
+
+```
+OC-014-2026   EL INCA  →  JHEENSEG        la que pide la obra
+OC-003-2026   JHEENSEG →  GASOMI          la que respalda a la de arriba
+```
+
+Cada una toma el número de la serie de **su propia** empresa. La mig 185 agrega
+`orden_origen_id` (la hija apunta a la madre), `intermediario_company_id` e
+`intermediario_externo`. Las tres nullable: una compra directa las deja en NULL
+y se comporta igual que antes.
+
+**🔴 Cuando el intermediario es un TERCERO, la cadena tiene un solo papel.**
+JARVEX no puede emitir la orden de B hacia A si B no es nuestra: sería fabricar
+un documento a nombre de alguien que no controlamos, y ese papel no vale.
+`cadenaDeOrdenes()` devuelve UNA orden y un aviso que explica que la segunda la
+tiene que emitir el intermediario; queda anotado que hubo un tercero en el
+medio para que la cadena se lea completa aunque falte su papel. La pantalla lo
+dice antes de emitir, no después.
+
+**El margen del intermediario sube el precio de la orden de ARRIBA, no la de
+abajo**: es lo que B gana, no lo que le paga a A. Con margen 0 pasa el material
+a costo. Hay test de las dos cosas.
+
+`cadenaDeOrdenes()`, `eslabonesDeCadena()` y `tieneIntermediario()` viven en
+`src/lib/ordenes.js` con 10 tests nuevos (88 en total en ese archivo).

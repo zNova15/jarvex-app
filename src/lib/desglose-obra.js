@@ -45,7 +45,7 @@ export const GRUPOS_TRABAJO = [
     icon: 'truck',
     color: 'var(--blue)',
     desc: 'Solicitudes de insumos, requisiciones y órdenes de compra',
-    items: ['abastecimiento', 'solicitud-residente', 'requisiciones', 'ordenes-compra'],
+    items: ['solicitud-residente', 'requisiciones', 'ordenes-compra'],
   },
   {
     id: 'gestion',
@@ -143,8 +143,26 @@ export const GRUPOS_TRABAJO = [
     // 'ordenes-compra' (Logística) es el CIRCUITO requisición→OC→recepción del
     // almacén; ésta es el documento contable que respalda una compra ya hecha.
     desc: 'Los movimientos del consorcio en esta obra, y las herramientas para analizarlos',
+    // 'abastecimiento' ENTRÓ ACÁ y NO en Logística (tanda 7, entrega 6).
+    // Gabriel, 6-set-2026, corrigiendo dónde lo había puesto: «necesitamos
+    // tener una sección netamente de órdenes y compras (área de Contabilidad,
+    // no logística)». Y tiene razón, porque son dos cosas que se llaman igual
+    // y no lo son:
+    //
+    //   · 'ordenes-compra' (LOGÍSTICA) — el circuito interno del día a día:
+    //     el campo pide, la almacenera arma la requisición contra el stock del
+    //     almacén y sale una OC chica que dice «faltan estos materiales». Es
+    //     un aviso entre nosotros; no va a SUNAT ni respalda nada.
+    //   · 'abastecimiento' + 'ordenes' (CONTABILIDAD) — la orden GRANDE que la
+    //     ejecutora le emite a una empresa del grupo para que ésta le facture.
+    //     Es lo que convierte el `obra_id` de una compra (que es solo
+    //     trazabilidad) en una compra DEMOSTRABLE de la obra, con papel, ante
+    //     una auditoría.
+    //
+    // Ponerla en Logística la dejaba pegada a la OC chica, que es exactamente
+    // la confusión que hay que evitar.
     items: ['movimientos-contables', 'conciliacion-insumos', 'pagos', 'trazabilidad',
-      'intercompany', 'ordenes'],
+      'intercompany', 'abastecimiento', 'ordenes'],
   },
 ];
 

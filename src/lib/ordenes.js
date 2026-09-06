@@ -457,7 +457,7 @@ export function recalcularBorrador(b) {
 // EL PEDIDO, de la jefa de contabilidad: «solamente se puede generar una orden
 // de compra y servicio en base a su respaldo, lo cual está mal».
 //
-// Tenía razón. Hasta acá la única puerta era «Sin respaldo»: se partía de una
+// Tenía razón. Hasta aquí la única puerta era «Sin respaldo»: se partía de una
 // factura que YA existía y se le fabricaba la orden hacia atrás. Eso sirve
 // para regularizar el pasado y no sirve para trabajar — una orden real nace
 // antes, y el comprobante llega después.
@@ -521,6 +521,7 @@ export function nuevaOrdenBorrador({
   proveedor = {}, items = [], igvPct = IGV_POR_DEFECTO,
   fecha = null, titulo = null, obraDescripcion = null, observaciones = null,
   lugarEntrega = null, fechaEntrega = null, condicionPago = null,
+  ordenOrigenId = null, intermediarioCompanyId = null, intermediarioExterno = null,
 } = {}) {
   const T = textosDeTipo(tipo);
   const lineas = (items || [])
@@ -575,6 +576,10 @@ export function nuevaOrdenBorrador({
       // Nace SIN comprobante: eso es exactamente lo nuevo de esta entrega.
       accounting_movement_id: null,
       emitida_retroactiva: false,
+      // La cadena (mig 185). NULL las tres en una compra directa.
+      orden_origen_id: ordenOrigenId || null,
+      intermediario_company_id: intermediarioCompanyId || null,
+      intermediario_externo: intermediarioExterno || null,
     },
     items: lineas,
     totales: t,
@@ -617,7 +622,7 @@ export function pasosDeOrden(orden, { movimiento = null, bancarizado = false, gu
   push('comprobante', 'Comprobante del proveedor', !!mov,
     mov ? (mov.document_number || 'cargado') : 'Todavía no llegó la factura');
 
-  // De acá para abajo, nada tiene sentido sin el comprobante: se muestran
+  // De aquí para abajo, nada tiene sentido sin el comprobante: se muestran
   // igual (para que se vea el camino completo) pero sin marcarlos como
   // pendientes urgentes hasta que la factura exista.
   const montoRef = num(mov?.amount) || num(orden?.monto_total);
@@ -642,6 +647,112 @@ export function pasosDeOrden(orden, { movimiento = null, bancarizado = false, gu
   return { pasos, faltan, completa: faltan.length === 0, pct: pasos.length ? (pasos.length - faltan.length) / pasos.length : 0 };
 }
 
+/**
+ * La CADENA con intermediario: A tiene el material, B lo revende, la ejecutora
+ * lo compra. Devuelve las órdenes que hay que emitir, en el orden en que se
+ * numeran.
+ *
+ * EL PEDIDO (Gabriel, 6-set-2026): «la empresa A le vende a la empresa B, y la
+ * empresa B le vende a la ejecutora». Eligió DOS ÓRDENES ENCADENADAS y no una
+ * con la cadena anotada: cada empresa emite su propio papel, con su propia
+ * numeración, y así la cadena se sostiene sola ante una auditoría.
+ *
+ *   [0]  ejecutora → B    la que pide la obra          (siempre)
+ *   [1]  B        → A     la que respalda a la de arriba (solo si B es NUESTRA)
+ *
+ * ⚠️ SI EL INTERMEDIARIO ES UN TERCERO, LA CADENA TIENE UN SOLO PAPEL.
+ * Gabriel: «incluso con alguna empresa que sería un tercero que hace el favor
+ * y hace de intermediario». A ese no le podemos emitir su orden hacia A: sería
+ * fabricar un documento a nombre de alguien que no controlamos, y ese papel no
+ * vale nada. Se emite solo la primera, queda anotado que hubo un tercero en el
+ * medio, y `avisos` dice por qué falta la otra — en vez de simularla.
+ *
+ * SIN intermediario devuelve UNA orden, la de siempre: la compra directa sigue
+ * existiendo y no paga ningún costo por esto.
+ *
+ * @param {Object} o
+ * @param {string} o.ejecutoraId      quién pide (el consorcio que ejecuta).
+ * @param {string} o.origenCompanyId  quién TIENE el material (A).
+ * @param {Object} [o.intermediario]  {companyId} si es del grupo, o {nombre, ruc} si es un tercero.
+ * @param {Array}  o.items            las líneas, ya con cantidad y precio.
+ * @param {Object} [o.companiesById]  Map para poner el nombre del proveedor en cada orden.
+ * @param {number} [o.margenPct]      cuánto le carga el intermediario encima. 0 = pasa a costo.
+ *
+ * @returns {{ordenes:Array, avisos:Array<string>}}
+ */
+export function cadenaDeOrdenes({
+  ejecutoraId, origenCompanyId, intermediario = null, items = [],
+  companiesById = new Map(), margenPct = 0, ...comunes
+} = {}) {
+  const nombre = (id) => companiesById.get(id)?.name || companiesById.get(id)?.legal_name || null;
+  const ruc = (id) => companiesById.get(id)?.ruc || null;
+  const avisos = [];
+
+  const interCompanyId = intermediario?.companyId || null;
+  const interExterno = !interCompanyId && intermediario?.nombre ? String(intermediario.nombre).trim() : null;
+  const hayIntermediario = !!(interCompanyId || interExterno);
+
+  // A quién le compra la ejecutora: al intermediario si lo hay, si no al que
+  // tiene el material.
+  const proveedorDeArriba = hayIntermediario
+    ? (interCompanyId
+      ? { id: null, nombre: nombre(interCompanyId), ruc: ruc(interCompanyId) }
+      : { id: intermediario.proveedorId || null, nombre: interExterno, ruc: intermediario.ruc || null })
+    : { id: null, nombre: nombre(origenCompanyId), ruc: ruc(origenCompanyId) };
+
+  // El intermediario carga su margen: la ejecutora paga más de lo que A cobra.
+  const conMargen = (its, pct) => its.map(it => ({
+    ...it,
+    precio_unitario: round2(num(it.precio_unitario) * (1 + num(pct) / 100)),
+  }));
+
+  const arriba = nuevaOrdenBorrador({
+    ...comunes,
+    companyId: ejecutoraId,
+    proveedor: proveedorDeArriba,
+    items: hayIntermediario ? conMargen(items, margenPct) : items,
+    intermediarioCompanyId: interCompanyId,
+    intermediarioExterno: interExterno,
+  });
+
+  if (!hayIntermediario) return { ordenes: [arriba], avisos };
+
+  if (!interCompanyId) {
+    avisos.push(
+      `${interExterno} no es una empresa del grupo, así que la orden hacia ${nombre(origenCompanyId) || 'quien tiene el material'} la tiene que emitir ${interExterno}. JARVEX no puede firmar un documento a su nombre: queda anotado que hubo un intermediario y se emite solo la orden de la ejecutora.`
+    );
+    return { ordenes: [arriba], avisos };
+  }
+
+  // B es nuestra: emite su propia orden hacia A, a precio SIN el margen (el
+  // margen es lo que B gana, no lo que le paga a A).
+  const abajo = nuevaOrdenBorrador({
+    ...comunes,
+    companyId: interCompanyId,
+    proveedor: { id: null, nombre: nombre(origenCompanyId), ruc: ruc(origenCompanyId) },
+    items,
+    observaciones: `Abastece la orden de ${nombre(ejecutoraId) || 'la ejecutora'}`,
+  });
+
+  return { ordenes: [arriba, abajo], avisos };
+}
+
+/**
+ * Cómo se lee una cadena ya emitida, para pintarla.
+ * Devuelve los eslabones de arriba hacia abajo.
+ */
+export function eslabonesDeCadena(orden, ordenes) {
+  if (!orden) return [];
+  const vivas = (ordenes || []).filter(o => o && !o.deleted_at);
+  const hijas = vivas.filter(o => o.orden_origen_id === orden.id);
+  return [orden, ...hijas.flatMap(h => eslabonesDeCadena(h, vivas))];
+}
+
+/** ¿Esta orden es parte de una cadena con intermediario? */
+export function tieneIntermediario(orden) {
+  return !!(orden && (orden.intermediario_company_id || orden.intermediario_externo));
+}
+
 const fmtUmbral = (u) => 'S/ ' + Number(u || 0).toLocaleString('es-PE');
 
 export default {
@@ -652,4 +763,5 @@ export default {
   tipoSugerido, borradorDesdeMovimiento, recalcularBorrador,
   ESTADOS_ORDEN, ESTADO_ORDEN_LABEL, esBorrador, estaNumerada,
   nuevaOrdenBorrador, numerarOrden, pasosDeOrden,
+  cadenaDeOrdenes, eslabonesDeCadena, tieneIntermediario,
 };

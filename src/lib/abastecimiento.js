@@ -172,7 +172,7 @@ export function abastecimientoDeObra({
 
   // ── LO YA COMPROMETIDO POR UNA ORDEN ────────────────────────────
   // Una orden emitida reserva unidades que TODAVÍA no se facturaron: la venta
-  // que las descontaría llega después. Sin restarlas acá, volver a esta
+  // que las descontaría llega después. Sin restarlas aquí, volver a esta
   // pantalla mostraría las mismas 318 bolsas de GASOMI como disponibles y la
   // siguiente orden las comprometería otra vez.
   //

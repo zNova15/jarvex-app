@@ -35,6 +35,7 @@ import {
   borradorDesdeMovimiento, recalcularBorrador, ordenarParaEmitir,
   UMBRAL_POR_DEFECTO,
   nuevaOrdenBorrador, numerarOrden, pasosDeOrden, estaNumerada,
+  cadenaDeOrdenes,
 } from "../lib/ordenes.js";
 import { filtroInicialEmpresa, setEmpresaActivaId } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
@@ -117,6 +118,9 @@ function OrdenesPage({ showToast }) {
   const [nuevaTipo, setNuevaTipo] = uS('compra');
   const [nuevaIgv, setNuevaIgv] = uS(18);
   const [precios, setPrecios] = uS({});     // `${proveedorId}|${codigo}` → precio unitario
+  // La cadena con intermediario (mig 185). Por grupo proveedor:
+  //   `${provKey}` → { modo:'directo'|'grupo'|'tercero', companyId, nombre, ruc, margenPct }
+  const [intermediarios, setIntermediarios] = uS({});
   const [creandoProv, setCreandoProv] = uS(null);
   const creandoRef = uR(false);
 
@@ -235,77 +239,112 @@ function OrdenesPage({ showToast }) {
   // Guard SÍNCRONO (regla crítica #2): esto consume un correlativo, y un doble
   // click en «Confirmar y numerar» dejaría dos órdenes con dos números para el
   // mismo pedido.
+  const interDe = (provKey) => intermediarios[provKey] || { modo: 'directo' };
+  const setInter = (provKey, patch) => setIntermediarios(m => ({
+    ...m, [provKey]: { ...(m[provKey] || { modo: 'directo' }), ...patch },
+  }));
+
   const crearOrden = async (grupo, { numerar }) => {
     if (creandoRef.current) return;
     if (!nuevaEmpresa) { toast('Elige la empresa que emite la orden', 'red'); return; }
     if (!canEmitir) { toast('No tienes permiso para emitir órdenes', 'red'); return; }
-    const company = lookupCompany(nuevaEmpresa);
-    const proveedorCompany = grupo.company_id ? lookupCompany(grupo.company_id) : null;
+    const provKey = grupo.company_id || 'sin_empresa';
+    const inter = interDe(provKey);
     const items = grupo.lineas.map(l => ({
       nombre: l.nombre, unidad: l.unidad, cantidad: l.cantidad,
-      precio_unitario: precioDe(grupo.company_id || 'sin_empresa', l.insumo_codigo),
+      precio_unitario: precioDe(provKey, l.insumo_codigo),
       insumo_codigo: l.insumo_codigo, company_id: l.company_id,
     }));
     if (items.some(i => !(i.precio_unitario > 0))) {
       toast('Falta el precio unitario de alguna línea', 'amber'); return;
     }
-    if (numerar && !window.confirm(
-      `Confirmar la orden a ${grupo.empresa}?\n\nSe le asigna un número de la serie de ${company?.name || 'la empresa'} y ese número no se libera aunque después se anule.`
-    )) return;
+    if (inter.modo === 'grupo' && !inter.companyId) { toast('Elige la empresa intermediaria', 'amber'); return; }
+    if (inter.modo === 'tercero' && !String(inter.nombre || '').trim()) { toast('Escribe el nombre del intermediario', 'amber'); return; }
+
+    const companiesById = new Map((companies || []).filter(c => !c.deleted_at).map(c => [c.id, c]));
+    const hoy = window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10);
+    const anio = Number(hoy.slice(0, 4));
+
+    const { ordenes: cadena, avisos } = cadenaDeOrdenes({
+      ejecutoraId: nuevaEmpresa,
+      origenCompanyId: grupo.company_id,
+      intermediario: inter.modo === 'grupo' ? { companyId: inter.companyId }
+        : inter.modo === 'tercero' ? { nombre: inter.nombre, ruc: inter.ruc } : null,
+      items,
+      companiesById,
+      margenPct: Number(inter.margenPct) || 0,
+      tipo: nuevaTipo,
+      obraId: pedido?.obra_id || null,
+      igvPct: Number(nuevaIgv),
+      fecha: hoy,
+      obraDescripcion: pedido?.obra_nombre || null,
+    });
+
+    if (numerar) {
+      const cuantas = cadena.length === 2
+        ? `Se van a emitir DOS órdenes encadenadas:\n  · ${lookupCompany(nuevaEmpresa)?.name || 'la ejecutora'} → ${cadena[0].fila.proveedor_nombre}\n  · ${cadena[0].fila.proveedor_nombre} → ${cadena[1].fila.proveedor_nombre}`
+        : `Se va a emitir la orden a ${cadena[0].fila.proveedor_nombre}.`;
+      if (!window.confirm(`${cuantas}\n\nCada una toma un número de la serie de la empresa que la emite, y ese número no se libera aunque después se anule.`)) return;
+    }
 
     creandoRef.current = true;
     try {
-      const hoy = window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10);
-      const { fila, items: lineas } = nuevaOrdenBorrador({
-        companyId: nuevaEmpresa,
-        tipo: nuevaTipo,
-        obraId: pedido?.obra_id || null,
-        proveedor: {
-          id: null,
-          nombre: proveedorCompany?.name || grupo.empresa || null,
-          ruc: proveedorCompany?.ruc || null,
-          direccion: proveedorCompany?.address || null,
-        },
-        items,
-        igvPct: Number(nuevaIgv),
-        fecha: hoy,
-        obraDescripcion: pedido?.obra_nombre || null,
-        observaciones: `Nace de Abastecimiento de la obra — stock del grupo en ${grupo.empresa}`,
-      });
-
-      const definitiva = numerar
-        ? numerarOrden({ ...fila }, ordenes, { company, anio: Number(hoy.slice(0, 4)) })
-        : fila;
-
-      const ocId = window.__newId();
       const now = new Date().toISOString();
-      await window.__db.ordenes_compra.add({
-        ...definitiva,
-        id: ocId,
-        created_by: userId, updated_by: userId,
-        created_at: now, updated_at: now,
-        version: 1, sync_status: 'pending_create', last_synced_at: null,
-        idempotency_key: `${userId}_oc_${ocId}`,
-      });
-      for (const l of lineas) {
-        const itemId = window.__newId();
-        await window.__db.oc_items.add({
-          ...l,
-          id: itemId, orden_compra_id: ocId,
+      // Acumulador LOCAL de correlativos: las dos órdenes de una cadena son de
+      // empresas distintas, pero si mañana fueran de la misma, releer Dexie
+      // entre una y otra daría el mismo número dos veces.
+      const emitidasAhora = [...ordenes];
+      let padreId = null;
+      const codigos = [];
+
+      for (let i = 0; i < cadena.length; i++) {
+        const { fila, items: lineas } = cadena[i];
+        const company = lookupCompany(fila.company_id);
+        const definitiva = numerar
+          ? numerarOrden({ ...fila }, emitidasAhora, { company, anio })
+          : fila;
+        const ocId = window.__newId();
+        const row = {
+          ...definitiva,
+          id: ocId,
+          // La segunda de la cadena cuelga de la primera (mig 185).
+          orden_origen_id: i === 0 ? null : padreId,
+          observaciones: definitiva.observaciones
+            || `Nace de Abastecimiento de la obra — stock del grupo en ${grupo.empresa}`,
+          created_by: userId, updated_by: userId,
           created_at: now, updated_at: now,
           version: 1, sync_status: 'pending_create', last_synced_at: null,
-          idempotency_key: `${userId}_oc_item_${itemId}`,
-        });
+          idempotency_key: `${userId}_oc_${ocId}`,
+        };
+        await window.__db.ordenes_compra.add(row);
+        emitidasAhora.push(row);
+        if (i === 0) padreId = ocId;
+        if (definitiva.codigo) codigos.push(definitiva.codigo);
+
+        for (const l of lineas) {
+          const itemId = window.__newId();
+          await window.__db.oc_items.add({
+            ...l,
+            id: itemId, orden_compra_id: ocId,
+            created_at: now, updated_at: now,
+            version: 1, sync_status: 'pending_create', last_synced_at: null,
+            idempotency_key: `${userId}_oc_item_${itemId}`,
+          });
+        }
       }
 
-      // Este grupo ya se convirtió en orden: sale del pedido para que no se
-      // emita dos veces si quedan otros proveedores pendientes.
       setPedido(p => {
-        const resto = (p?.lineas || []).filter(l => (l.company_id || 'sin_empresa') !== (grupo.company_id || 'sin_empresa'));
+        const resto = (p?.lineas || []).filter(l => (l.company_id || 'sin_empresa') !== provKey);
         return resto.length ? { ...p, lineas: resto } : null;
       });
       await recargarOrdenes();
-      toast(numerar ? `Orden ${definitiva.codigo} creada` : 'Borrador guardado (todavía sin número)', 'green');
+      for (const a of avisos) toast(a, 'amber');
+      toast(
+        numerar
+          ? (codigos.length > 1 ? `Cadena emitida: ${codigos.join(' → ')}` : `Orden ${codigos[0]} creada`)
+          : `${cadena.length} borrador(es) guardado(s), todavía sin número`,
+        'green'
+      );
       if (gruposPedido.length <= 1) setTab('emitidas');
     } catch (e) {
       console.error('[ordenes] no se pudo crear la orden:', e);
@@ -736,6 +775,61 @@ function OrdenesPage({ showToast }) {
                         </tbody>
                       </table>
                     </div>
+                    {/* ── LA CADENA CON INTERMEDIARIO (mig 185) ──────────
+                        Gabriel, 6-set-2026: «suele pasar, normalmente si
+                        existen los intermediarios, incluso con alguna empresa
+                        que sería un tercero que hace el favor». Por eso está a
+                        la vista y no escondido — pero arranca en DIRECTO,
+                        porque la compra sin intermediario también existe. */}
+                    <div style={{ padding: '10px 14px', borderTop: '1px solid var(--border)', background: 'var(--bg-s)' }}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+                        <span style={{ fontSize: 11.5, color: 'var(--tm)' }}>¿Se lo compra directo o pasa por un intermediario?</span>
+                        <select className="fi" value={interDe(provKey).modo}
+                          onChange={e => setInter(provKey, { modo: e.target.value })}>
+                          <option value="directo">Directo a {g.empresa}</option>
+                          <option value="grupo">Por una empresa del grupo</option>
+                          <option value="tercero">Por un tercero (hace el favor)</option>
+                        </select>
+                        {interDe(provKey).modo === 'grupo' && (
+                          <select className="fi" value={interDe(provKey).companyId || ''}
+                            onChange={e => setInter(provKey, { companyId: e.target.value })} style={{ minWidth: 220 }}>
+                            <option value="">— Elige la intermediaria —</option>
+                            {(companies || []).filter(c => !c.deleted_at && c.id !== g.company_id && c.id !== nuevaEmpresa)
+                              .map(c => <option key={c.id} value={c.id}>{c.name || c.legal_name}</option>)}
+                          </select>
+                        )}
+                        {interDe(provKey).modo === 'tercero' && (
+                          <>
+                            <input className="fi" placeholder="Nombre del intermediario" style={{ minWidth: 220 }}
+                              value={interDe(provKey).nombre || ''} onChange={e => setInter(provKey, { nombre: e.target.value })} />
+                            <input className="fi" placeholder="RUC" style={{ width: 130 }}
+                              value={interDe(provKey).ruc || ''} onChange={e => setInter(provKey, { ruc: e.target.value })} />
+                          </>
+                        )}
+                        {interDe(provKey).modo !== 'directo' && (
+                          <label style={{ fontSize: 11.5, color: 'var(--tm)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                            margen
+                            <input className="fi" type="number" min="0" step="any" style={{ width: 70 }}
+                              value={interDe(provKey).margenPct ?? ''} placeholder="0"
+                              onChange={e => setInter(provKey, { margenPct: e.target.value })} />%
+                          </label>
+                        )}
+                      </div>
+                      {interDe(provKey).modo === 'grupo' && interDe(provKey).companyId && (
+                        <p style={{ fontSize: 11.5, color: 'var(--tm)', margin: '8px 0 0' }}>
+                          Se emiten <b>dos órdenes</b>: {lookupCompany(nuevaEmpresa)?.name || 'la ejecutora'} → {lookupCompany(interDe(provKey).companyId)?.name},
+                          y {lookupCompany(interDe(provKey).companyId)?.name} → {g.empresa}. Cada una toma un número de la serie de su propia empresa.
+                        </p>
+                      )}
+                      {interDe(provKey).modo === 'tercero' && (
+                        <p style={{ fontSize: 11.5, color: 'var(--amber)', margin: '8px 0 0' }}>
+                          ⚠ Solo se emite <b>una</b> orden, la de {lookupCompany(nuevaEmpresa)?.name || 'la ejecutora'} hacia el intermediario.
+                          La orden del intermediario hacia {g.empresa} la tiene que emitir él: JARVEX no puede firmar un documento a nombre
+                          de una empresa que no es nuestra. Queda anotado que hubo un tercero en el medio.
+                        </p>
+                      )}
+                    </div>
+
                     <div style={{ padding: '10px 14px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                       <button className="btn btn-sm" disabled={!listo || !nuevaEmpresa}
                         onClick={() => crearOrden(g, { numerar: false })}>
@@ -822,7 +916,7 @@ function OrdenesPage({ showToast }) {
           <>
             <div className="card card-p" style={{ marginBottom: 12, background: 'var(--tint-neutral)' }}>
               <div style={{ fontSize: 12, color: 'var(--ts)', lineHeight: 1.55 }}>
-                Cada fila genera <strong>una orden</strong> atada a ese comprobante. Revisá el
+                Cada fila genera <strong>una orden</strong> atada a ese comprobante. Revisa el
                 nombre de lo comprado, el tipo y el monto antes de emitir — después la orden
                 queda ligada a la factura y solo se puede anular con motivo.
                 {gruposPendientes.length > 1 && (

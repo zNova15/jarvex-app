@@ -6,6 +6,7 @@ import {
   tipoSugerido, igvSugeridoDesdeItems, borradorDesdeMovimiento, recalcularBorrador,
   ordenarParaEmitir, UMBRAL_POR_DEFECTO,
   nuevaOrdenBorrador, numerarOrden, pasosDeOrden, esBorrador, estaNumerada,
+  cadenaDeOrdenes, eslabonesDeCadena, tieneIntermediario,
 } from '../ordenes.js';
 
 // Datos de producción: el modelo que dejó Gabriel es del CONSORCIO EL INCA,
@@ -574,5 +575,109 @@ describe('pasosDeOrden — el respaldo se completa de a poco', () => {
   it('las guías borradas no cuentan', () => {
     const r = pasosDeOrden(orden, { movimiento: { amount: 100, currency: 'PEN' }, guias: [{ id: 'g1', deleted_at: '2026-09-01' }] });
     expect(r.pasos.find(p => p.id === 'guia').hecho).toBe(false);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// LA CADENA CON INTERMEDIARIO: A → B → ejecutora (tanda 7, entrega 6b)
+// ═══════════════════════════════════════════════════════════════════
+
+describe('cadenaDeOrdenes', () => {
+  const EL_INCA = 'c-inca', GASOMI = 'c-gasomi', JHEENSEG = 'c-jheenseg';
+  const companiesById = new Map([
+    [EL_INCA, { id: EL_INCA, name: 'CONSORCIO EL INCA', ruc: '20615346081' }],
+    [GASOMI, { id: GASOMI, name: 'GASOMI INGENIEROS E.I.R.L.', ruc: '20600097726' }],
+    [JHEENSEG, { id: JHEENSEG, name: 'JHEENSEG INGENIEROS', ruc: '20610349359' }],
+  ]);
+  const items = [{ nombre: 'CEMENTO PORTLAND TIPO I', unidad: 'bol', cantidad: 318, precio_unitario: 27.5 }];
+  const base = { ejecutoraId: EL_INCA, origenCompanyId: GASOMI, items, companiesById, fecha: '2026-09-06' };
+
+  it('SIN intermediario emite UNA sola orden, directo a quien tiene el material', () => {
+    const { ordenes, avisos } = cadenaDeOrdenes(base);
+    expect(ordenes).toHaveLength(1);
+    expect(avisos).toEqual([]);
+    expect(ordenes[0].fila.company_id).toBe(EL_INCA);
+    expect(ordenes[0].fila.proveedor_nombre).toBe('GASOMI INGENIEROS E.I.R.L.');
+    expect(ordenes[0].fila.orden_origen_id).toBe(null);
+    expect(ordenes[0].fila.intermediario_company_id).toBe(null);
+  });
+
+  it('con intermediario NUESTRO emite DOS órdenes encadenadas', () => {
+    const { ordenes, avisos } = cadenaDeOrdenes({ ...base, intermediario: { companyId: JHEENSEG } });
+    expect(ordenes).toHaveLength(2);
+    expect(avisos).toEqual([]);
+    // Arriba: la ejecutora le compra al intermediario.
+    expect(ordenes[0].fila.company_id).toBe(EL_INCA);
+    expect(ordenes[0].fila.proveedor_nombre).toBe('JHEENSEG INGENIEROS');
+    expect(ordenes[0].fila.intermediario_company_id).toBe(JHEENSEG);
+    // Abajo: el intermediario le compra a quien tiene el material.
+    expect(ordenes[1].fila.company_id).toBe(JHEENSEG);
+    expect(ordenes[1].fila.proveedor_nombre).toBe('GASOMI INGENIEROS E.I.R.L.');
+  });
+
+  it('el margen del intermediario sube el precio de ARRIBA, no el de abajo', () => {
+    const { ordenes } = cadenaDeOrdenes({ ...base, intermediario: { companyId: JHEENSEG }, margenPct: 10 });
+    expect(ordenes[0].items[0].precio_unitario).toBe(30.25);   // 27,50 + 10%
+    expect(ordenes[1].items[0].precio_unitario).toBe(27.5);    // lo que JHEENSEG le paga a GASOMI
+    expect(ordenes[0].totales.valorVenta).toBeGreaterThan(ordenes[1].totales.valorVenta);
+  });
+
+  it('sin margen, el intermediario pasa el material a costo', () => {
+    const { ordenes } = cadenaDeOrdenes({ ...base, intermediario: { companyId: JHEENSEG } });
+    expect(ordenes[0].totales.valorVenta).toBe(ordenes[1].totales.valorVenta);
+  });
+
+  it('🔴 con un intermediario TERCERO emite UNA sola y explica por qué', () => {
+    // Gabriel: «incluso con alguna empresa que sería un tercero que hace el
+    // favor». No podemos firmar un documento a nombre de alguien de afuera.
+    const { ordenes, avisos } = cadenaDeOrdenes({
+      ...base, intermediario: { nombre: 'DISTRIBUIDORA EL AMIGO SAC', ruc: '20512345678' },
+    });
+    expect(ordenes).toHaveLength(1);
+    expect(ordenes[0].fila.proveedor_nombre).toBe('DISTRIBUIDORA EL AMIGO SAC');
+    expect(ordenes[0].fila.proveedor_ruc).toBe('20512345678');
+    expect(ordenes[0].fila.intermediario_externo).toBe('DISTRIBUIDORA EL AMIGO SAC');
+    expect(ordenes[0].fila.intermediario_company_id).toBe(null);
+    expect(avisos).toHaveLength(1);
+    expect(avisos[0]).toMatch(/no puede firmar un documento a su nombre/i);
+  });
+
+  it('las dos órdenes de la cadena nacen SIN número, como cualquier borrador', () => {
+    const { ordenes } = cadenaDeOrdenes({ ...base, intermediario: { companyId: JHEENSEG } });
+    expect(ordenes.every(o => o.fila.correlativo === null)).toBe(true);
+    expect(ordenes.every(o => o.fila.estado === 'borrador')).toBe(true);
+  });
+
+  it('cada orden de la cadena se numera en la serie de SU empresa', () => {
+    const previas = [
+      { id: 'a', company_id: EL_INCA, tipo: 'compra', anio: 2026, correlativo: 26 },
+      { id: 'b', company_id: JHEENSEG, tipo: 'compra', anio: 2026, correlativo: 2 },
+    ];
+    const { ordenes } = cadenaDeOrdenes({ ...base, intermediario: { companyId: JHEENSEG } });
+    const arriba = numerarOrden(ordenes[0].fila, previas, { company: companiesById.get(EL_INCA) });
+    const abajo = numerarOrden(ordenes[1].fila, previas, { company: companiesById.get(JHEENSEG) });
+    expect(arriba.correlativo).toBe(27);
+    expect(abajo.correlativo).toBe(3);
+  });
+});
+
+describe('eslabonesDeCadena / tieneIntermediario', () => {
+  it('recorre la cadena de arriba hacia abajo', () => {
+    const madre = { id: 'oc1', codigo: 'OC-014-2026' };
+    const hija = { id: 'oc2', codigo: 'OC-003-2026', orden_origen_id: 'oc1' };
+    expect(eslabonesDeCadena(madre, [madre, hija]).map(o => o.codigo))
+      .toEqual(['OC-014-2026', 'OC-003-2026']);
+  });
+
+  it('una orden borrada no aparece en la cadena', () => {
+    const madre = { id: 'oc1', codigo: 'OC-014-2026' };
+    const hija = { id: 'oc2', codigo: 'OC-003-2026', orden_origen_id: 'oc1', deleted_at: '2026-09-06' };
+    expect(eslabonesDeCadena(madre, [madre, hija])).toHaveLength(1);
+  });
+
+  it('reconoce las dos formas de intermediario', () => {
+    expect(tieneIntermediario({ intermediario_company_id: 'x' })).toBe(true);
+    expect(tieneIntermediario({ intermediario_externo: 'EL AMIGO SAC' })).toBe(true);
+    expect(tieneIntermediario({})).toBe(false);
   });
 });

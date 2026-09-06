@@ -124,13 +124,14 @@ const NAV = [
   { id: 'plantillas', label: 'Plantillas', icon: 'file' },
 
   { section: 'LOGÍSTICA' },
-  // Tanda 7, entrega 6. Va PRIMERO en Logística a propósito: es la pantalla
-  // donde se decide qué comprar y a quién, y la orden es la consecuencia de
-  // esa decisión, no el punto de partida.
-  { id: 'abastecimiento', label: 'Abastecimiento de la obra', icon: 'layers' },
   { id: 'solicitud-residente', label: 'Solicitud de Insumos', icon: 'plus' },
   { id: 'requisiciones', label: 'Requisiciones', icon: 'list' },
-  { id: 'ordenes-compra', label: 'Órdenes de Compra', icon: 'package' },
+  // OJO: ésta es la OC CHICA, la interna del día a día — el campo pide, la
+  // almacenera la arma contra el stock del almacén. NO es la orden contable
+  // que la ejecutora le emite a una empresa del grupo: ésa vive en
+  // Contabilidad, junto a «Abastecimiento de la obra». Se llaman parecido y
+  // son cosas distintas; el rótulo lo dice para que no se confundan.
+  { id: 'ordenes-compra', label: 'Órdenes de Compra (interna de almacén)', icon: 'package' },
 
   { section: 'DIRECCIÓN', area: 'direccion' },
   { id: 'dashboard-ejecutivo', label: 'Dashboard Ejecutivo', icon: 'dashboard' },
@@ -231,6 +232,10 @@ const NAV = [
   // respaldan las compras de ESTA obra; abajo, en el bloque del grupo, las de
   // todas. Gabriel las buscó desde el trabajo y la app lo mandó a la
   // contabilidad de JARVEX.
+  // Tanda 7, entrega 6. Va ACÁ y no en Logística (corrección de Gabriel,
+  // 6-set-2026): es contabilidad, no almacén. Primero se ve qué falta y quién
+  // del grupo lo tiene; la orden que se le emite es la consecuencia.
+  { id: 'abastecimiento', label: 'Abastecimiento de esta obra', icon: 'layers', plano: 'obra' },
   { id: 'ordenes', label: 'Órdenes de Compra y Servicio de esta obra', icon: 'package', plano: 'obra' },
 
   { section: 'EMPRESAS Y CONTABILIDAD', area: 'contabilidad' },
@@ -244,6 +249,8 @@ const NAV = [
   // solo en Logística de la obra, porque es donde Gabriel las fue a buscar:
   // «las necesito para respaldar las compras». La de Logística sigue siendo
   // el circuito requisición→OC→recepción de almacén.
+  // Dual, como 'ordenes' y 'movimientos-contables': acá con selector de obra.
+  { id: 'abastecimiento', label: 'Abastecimiento (qué falta y quién lo tiene)', icon: 'layers', plano: 'general' },
   { id: 'ordenes', label: 'Órdenes de Compra y Servicio', icon: 'package', plano: 'general' },
   // El registro CONTABLE de activos (formato SUNAT 7.1): cuenta del PCGE,
   // depreciación y valor en libros. «Equipos Pesados», en el menú de la obra,
