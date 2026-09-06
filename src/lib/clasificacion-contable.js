@@ -58,6 +58,29 @@ export const DESTINO_A_TYPE = {
   sin_clasificar:    'cost',
 };
 
+/**
+ * El selector "Destino de la factura" de Captura Mágica usa valores
+ * especiales para las opciones sin obra. Traducirlos al `destino_contable`
+ * real vivía SUELTO dentro del handler de confirmación; extraerlo acá evita
+ * que la sugerencia de costo/gasto (que necesita el mismo mapeo para saber qué
+ * type produciría la elección) se desincronice de lo que se termina guardando.
+ *
+ * @param {string} valor  el value del <select>
+ * @param {(id:string)=>boolean} obraExiste  para no vincular a una obra borrada
+ * @returns {{destino_contable:string, obra_id:string}}
+ */
+export function destinoDesdeSelector(valor, obraExiste = () => true) {
+  const dest = valor ?? '';
+  if (dest === '__empresa__') return { destino_contable: 'gastos_generales', obra_id: '' };
+  if (dest === '__otros__')   return { destino_contable: 'contabilidad_neta', obra_id: '' };
+  if (dest === '__nose__')    return { destino_contable: 'sin_clasificar', obra_id: '' };
+  const valida = !!dest && obraExiste(dest);
+  if (valida) return { destino_contable: 'obra', obra_id: dest };
+  // Una obra elegida que ya no existe cae a contabilidad neta, no a "obra"
+  // sin obra — eso sería una vinculación que no vincula.
+  return { destino_contable: dest ? 'contabilidad_neta' : 'obra', obra_id: '' };
+}
+
 export const TYPE_LABEL  = { income: 'Ingreso', cost: 'Costo', expense: 'Gasto' };
 export const NIVEL1_LABEL = { [INGRESO]: 'Ingreso', [EGRESO]: 'Egreso' };
 
@@ -187,6 +210,6 @@ export function typeIncoherente(mov) {
 export default {
   INGRESO, EGRESO,
   DESTINO_A_TYPE, TYPE_LABEL, TYPE_LABEL_LARGO, NIVEL1_LABEL,
-  destinoEfectivo, nivelUno, derivarTypeContable, motivoClasificacion, typeIncoherente,
+  destinoEfectivo, nivelUno, derivarTypeContable, motivoClasificacion, typeIncoherente, destinoDesdeSelector,
   overrideManual, overrideEfectivo,
 };

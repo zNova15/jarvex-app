@@ -1,4 +1,5 @@
 import { requireAuth, rateLimit, sanitizeError, sanitizeForPrompt } from '../lib/api-helpers.js';
+import { leerConfig as leerConfigOR, construirCuerpo as construirCuerpoOR, normalizarRespuesta as normalizarRespuestaOR, openrouterChat } from '../lib/openrouter.js';
 
 // Vercel serverless function: POST /api/sugerir-cuenta-pcge
 //
@@ -134,8 +135,8 @@ Reglas:
     const data = await upstream.json();
     const text = data.content?.[0]?.text || '';
     const jm = text.match(/\{[\s\S]*\}/);
-    if (!jm) return res.status(502).json({ error: 'Claude no devolvió JSON', rawText: text.slice(0, 300) });
-    let parsed; try { parsed = JSON.parse(jm[0]); } catch (e) { return res.status(502).json({ error: 'JSON inválido de Claude', detail: e.message }); }
+    if (!jm) return res.status(502).json({ error: 'La IA no devolvió JSON', rawText: text.slice(0, 300) });
+    let parsed; try { parsed = JSON.parse(jm[0]); } catch (e) { return res.status(502).json({ error: 'La IA devolvió un JSON inválido', detail: e.message }); }
     const coincidencias = Array.isArray(parsed.coincidencias)
       ? parsed.coincidencias
           .map(c => ({ codigo: String(c.codigo || ''), confianza: typeof c.confianza === 'number' ? Math.max(0, Math.min(1, c.confianza)) : 0.5, razon: String(c.razon || '').slice(0, 200) }))
@@ -223,20 +224,43 @@ Confianza: 0.85+ concepto inequívoco · 0.6-0.85 probable · <0.6 ambiguo, que 
   ].filter(Boolean).join('\n');
 
   try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 30000);
-    const upstream = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST', signal: ctrl.signal,
-      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 500, system: sys, messages: [{ role: 'user', content: usr }] }),
-    });
-    clearTimeout(timer);
-    if (!upstream.ok) {
-      const t = await upstream.text();
-      console.error('[clasificar-costo-gasto] upstream', upstream.status, t.slice(0, 200));
-      return res.status(upstream.status).json({ error: `Claude respondió ${upstream.status}` });
+    // Mismo criterio que captura-magica: el paso barato va a OpenRouter (gratis)
+    // y Claude queda de respaldo. Acá importa más que en la captura, porque esta
+    // sugerencia se dispara SOLA en cada comprobante: si costara, nadie la
+    // dejaría prendida.
+    const cfgOR = leerConfigOR();
+    const deadline = Date.now() + 30000;
+    let data = null;
+    let motor = 'claude';
+    if (cfgOR.activo) {
+      try {
+        const cruda = await openrouterChat(cfgOR.apiKey, construirCuerpoOR({
+          modelo: cfgOR.modelo, respaldos: cfgOR.respaldos, politica: cfgOR.politica,
+          system: sys, user: usr, maxTokens: 2000,
+        }), Math.min(deadline, Date.now() + 18000));
+        data = normalizarRespuestaOR(cruda);
+        motor = 'openrouter';
+      } catch (e) {
+        console.warn('[clasificar-costo-gasto] OpenRouter falló:', (e && (e.upstreamStatus || e.message)) || e);
+      }
     }
-    const data = await upstream.json();
+    if (!data) {
+      if (!apiKey) return res.status(503).json({ error: 'No hay motor de IA configurado' });
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 30000);
+      const upstream = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST', signal: ctrl.signal,
+        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 500, system: sys, messages: [{ role: 'user', content: usr }] }),
+      });
+      clearTimeout(timer);
+      if (!upstream.ok) {
+        const t = await upstream.text();
+        console.error('[clasificar-costo-gasto] upstream', upstream.status, t.slice(0, 200));
+        return res.status(upstream.status).json({ error: `El servicio de IA respondió ${upstream.status}` });
+      }
+      data = await upstream.json();
+    }
     const text = data.content?.[0]?.text || '';
     const jm = text.match(/\{[\s\S]*\}/);
     if (!jm) return res.status(502).json({ error: 'Claude no devolvió JSON', rawText: text.slice(0, 300) });
@@ -245,13 +269,13 @@ Confianza: 0.85+ concepto inequívoco · 0.6-0.85 probable · <0.6 ambiguo, que 
     const clasificacion = (parsed.clasificacion === 'expense') ? 'expense'
       : (parsed.clasificacion === 'cost') ? 'cost' : null;
     if (!clasificacion) {
-      return res.status(502).json({ error: 'Claude devolvió una clasificación fuera de cost|expense' });
+      return res.status(502).json({ error: 'La IA devolvió una clasificación fuera de cost|expense' });
     }
     // Medición del consumo de IA — misma línea [ia-uso] que captura-magica,
     // para poder contar tokens reales por día desde los logs de Vercel.
     try {
       console.log('[ia-uso]', JSON.stringify({
-        endpoint: 'sugerir-cuenta-pcge', modo: 'clasificar_costo_gasto',
+        endpoint: 'sugerir-cuenta-pcge', modo: 'clasificar_costo_gasto', engine: motor,
         model: data.model,
         in: data.usage?.input_tokens ?? null,
         out: data.usage?.output_tokens ?? null,

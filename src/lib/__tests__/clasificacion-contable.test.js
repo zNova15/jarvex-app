@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   derivarTypeContable, nivelUno, destinoEfectivo, motivoClasificacion,
-  typeIncoherente, overrideManual, overrideEfectivo, INGRESO, EGRESO, DESTINO_A_TYPE,
+  typeIncoherente, overrideManual, overrideEfectivo, INGRESO, EGRESO, DESTINO_A_TYPE, destinoDesdeSelector,
 } from '../clasificacion-contable.js';
 
 describe('nivelUno — ingreso o egreso', () => {
@@ -180,5 +180,39 @@ describe('derivarTypeContable — ajuste manual', () => {
     const txt = motivoClasificacion({ clase: 'compra', destino_contable: 'obra', clasificacion_manual: 'expense' });
     expect(txt).toMatch(/GASTO/);
     expect(txt).toMatch(/Autom/i);
+  });
+});
+
+// ── destinoDesdeSelector: el mapeo compartido con Captura Mágica ──────────
+// Extraído del handler de confirmación (5-sep) para que la sugerencia de
+// costo/gasto del modal no se desincronice de lo que se termina guardando.
+describe('destinoDesdeSelector — las opciones sin obra del selector', () => {
+  const existe = (id) => id === 'obra-viva';
+
+  it('las tres opciones especiales limpian la obra', () => {
+    expect(destinoDesdeSelector('__empresa__', existe)).toEqual({ destino_contable: 'gastos_generales', obra_id: '' });
+    expect(destinoDesdeSelector('__otros__', existe)).toEqual({ destino_contable: 'contabilidad_neta', obra_id: '' });
+    expect(destinoDesdeSelector('__nose__', existe)).toEqual({ destino_contable: 'sin_clasificar', obra_id: '' });
+  });
+
+  it('una obra que existe vincula de verdad', () => {
+    expect(destinoDesdeSelector('obra-viva', existe)).toEqual({ destino_contable: 'obra', obra_id: 'obra-viva' });
+  });
+
+  it('una obra BORRADA no deja una vinculación que no vincula', () => {
+    const r = destinoDesdeSelector('obra-borrada', existe);
+    expect(r.obra_id).toBe('');
+    expect(r.destino_contable).toBe('contabilidad_neta');
+  });
+
+  it('sin elegir nada queda el default histórico', () => {
+    expect(destinoDesdeSelector('', existe)).toEqual({ destino_contable: 'obra', obra_id: '' });
+  });
+
+  it('lo que devuelve alimenta derivarTypeContable sin sorpresas', () => {
+    const d = destinoDesdeSelector('__empresa__', existe);
+    expect(derivarTypeContable({ clase: 'compra', ...d })).toBe('expense');
+    const o = destinoDesdeSelector('obra-viva', existe);
+    expect(derivarTypeContable({ clase: 'compra', ...o })).toBe('cost');
   });
 });

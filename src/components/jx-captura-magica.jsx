@@ -8,7 +8,8 @@ import { matchAsegurados } from "../lib/sctr-paquete.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 import { supabase } from "../lib/supabase";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
-import { derivarTypeContable } from "../lib/clasificacion-contable.js";
+import { derivarTypeContable, destinoDesdeSelector } from "../lib/clasificacion-contable.js";
+import { valeLaPenaConsultar, compararSugerencia } from "../lib/sugerencia-clasificacion.js";
 import { companyIdsDeObra } from "../lib/consorcio.js";
 import { etiquetaMotorIa } from "../lib/ia-motor.js";
 // Guías: import ESTÁTICO. guias.js ya era un chunk propio por el import()
@@ -1620,18 +1621,11 @@ function CapturaMagicaPage({ showToast }) {
     // Destino de la factura: OBRA / Gastos Generales ('__empresa__') /
     // Contabilidad Neta ('__otros__') / "No sé" ('__nose__' → bandeja de la
     // Contadora Jefe). Si la obra elegida ya no existe, cae a contabilidad neta.
-    let destinoContable = 'obra';
-    {
-      const dest = r.obra_destino;
-      if (dest === '__empresa__') { r = { ...r, obra_id: '' }; destinoContable = 'gastos_generales'; }
-      else if (dest === '__otros__') { r = { ...r, obra_id: '' }; destinoContable = 'contabilidad_neta'; }
-      else if (dest === '__nose__') { r = { ...r, obra_id: '' }; destinoContable = 'sin_clasificar'; }
-      else {
-        const valida = dest && (obras || []).some(o => o.id === dest && !o.deleted_at);
-        r = { ...r, obra_id: valida ? dest : '' };
-        if (!valida && dest) destinoContable = 'contabilidad_neta';
-      }
-    }
+    // El mapeo vive en src/lib/clasificacion-contable.js para que la sugerencia
+    // de costo/gasto del modal use EXACTAMENTE el mismo criterio que esto.
+    const destinoResuelto = destinoDesdeSelector(r.obra_destino, (id) => (obras || []).some(o => o.id === id && !o.deleted_at));
+    const destinoContable = destinoResuelto.destino_contable;
+    r = { ...r, obra_id: destinoResuelto.obra_id };
 
     // ── GUÍA DE REMISIÓN: flujo PROPIO ──
     // No es comprobante de pago: NO crea movimiento contable ni recepción ni
@@ -3010,6 +3004,13 @@ function ReviewModal({ item, companies, personal, obras, consorcios = [], consor
   // (el guard vive en un ref del padre) y lo editado DESPUÉS del clic se
   // descartaba sin que se notara. Va acá arriba por la regla de hooks.
   const [confirmando, setConfirmando] = uSCM(false);
+  // ── SUGERENCIA COSTO vs GASTO (5-sep, pedido de Gabriel) ──────────
+  // La herramienta ya existía pero vivía en un botón que nadie apretaba
+  // (0 de 1.395 movimientos). Ahora se dispara sola cuando la asistente elige
+  // el destino, y SOLO interrumpe si contradice lo elegido — confirmar lo que
+  // la pantalla ya muestra es ruido. Ver src/lib/sugerencia-clasificacion.js.
+  const [sugClasif, setSugClasif] = uSCM(null);      // { cargando } | { sug } | { error }
+  const sugPedidaRef = uRCM('');
   // La obra destino SIGUE a la obra activa del header (decisión de producto:
   // todos los módulos operan sobre la obra activa). Al abrir el modal,
   // sincronizar el review con la obra activa actual — cubre reviews viejos
@@ -3066,6 +3067,68 @@ function ReviewModal({ item, companies, personal, obras, consorcios = [], consor
     : (r.obra_destino && (obras || []).some(o => o.id === r.obra_destino && !o.deleted_at) ? r.obra_destino : '');
   const upd = (patch) => onChange({ ...r, ...patch });
   const [previewUrl, setPreviewUrl] = uSCM(null);
+
+  // ── La sugerencia de costo/gasto, en vivo ─────────────────────────
+  // El movimiento TAL COMO QUEDARÍA con lo elegido ahora mismo: mismo mapeo
+  // que usa el confirmar (destinoDesdeSelector), para que la sugerencia no
+  // opine sobre una vinculación distinta de la que se va a guardar.
+  const movParaSugerencia = uMCM(() => {
+    const d = destinoDesdeSelector(r?.obra_destino, (id) => (obras || []).some(o => o.id === id && !o.deleted_at));
+    return {
+      clase: r?.tipo_documento === 'nota_credito' || r?.tipo_documento === 'nota_debito' ? 'compra' : 'compra',
+      destino_contable: d.destino_contable,
+      obra_id: d.obra_id || null,
+      is_intercompany: !!r?.es_intercompany,
+      description: r?.descripcion || r?.glosa || '',
+      category: r?.categoria || '',
+      third_party_name: r?.proveedor_razon_social || '',
+      items: (r?.items || []).map(i => i?.descripcion).filter(Boolean).slice(0, 20),
+      type: undefined,
+    };
+  }, [r?.obra_destino, r?.descripcion, r?.glosa, r?.categoria, r?.proveedor_razon_social, r?.items, r?.es_intercompany, r?.tipo_documento, obras]);
+
+  // Se consulta UNA vez por combinación relevante. Sin esto, cada tecleo en la
+  // descripción dispararía una llamada.
+  uECM(() => {
+    // Las ventas y los recibos por honorarios no se clasifican acá, y una guía
+    // no es un comprobante de pago.
+    const esCompraNormal = ['factura', 'boleta', 'nota_credito', 'nota_debito'].includes(r?.tipo_documento);
+    if (!esCompraNormal || r?.es_venta || !r?.obra_destino || !valeLaPenaConsultar(movParaSugerencia)) {
+      setSugClasif(null); return;
+    }
+    const clave = [movParaSugerencia.destino_contable, movParaSugerencia.obra_id,
+      movParaSugerencia.description, movParaSugerencia.third_party_name].join('|');
+    if (sugPedidaRef.current === clave) return;
+    sugPedidaRef.current = clave;
+    let cancel = false;
+    setSugClasif({ cargando: true });
+    (async () => {
+      try {
+        const { sugerirClasificacionContable } = await import('../lib/sugerir-cuenta-pcge.js');
+        const sug = await sugerirClasificacionContable({
+          description: movParaSugerencia.description,
+          category: movParaSugerencia.category,
+          third_party_name: movParaSugerencia.third_party_name,
+          document_type: r?.tipo_documento,
+          obra_nombre: movParaSugerencia.obra_id ? ((obras || []).find(o => o.id === movParaSugerencia.obra_id)?.nombre_obra || '') : '',
+          destino_contable: movParaSugerencia.destino_contable,
+          amount: Number(r?.total) || undefined,
+          currency: r?.moneda || 'PEN',
+          items: movParaSugerencia.items,
+        });
+        if (!cancel) setSugClasif({ sug });
+      } catch (e) {
+        // Silencioso a propósito: es una AYUDA. Si la IA no está, la pantalla
+        // sigue funcionando igual que antes y nadie se entera.
+        if (!cancel) setSugClasif({ error: e?.message || String(e) });
+      }
+    })();
+    return () => { cancel = true; };
+  }, [movParaSugerencia, r?.tipo_documento, r?.es_venta, r?.obra_destino, r?.total, r?.moneda, obras]);
+
+  const veredictoClasif = uMCM(
+    () => (sugClasif?.sug ? compararSugerencia(movParaSugerencia, sugClasif.sug) : null),
+    [sugClasif, movParaSugerencia]);
 
   // Guía de remisión: origen (emitida/recibida) y facturas candidatas. Se
   // recalcula al tipear el Doc. Ref. o corregir el RUC del emisor, así que la
@@ -3809,6 +3872,41 @@ function ReviewModal({ item, companies, personal, obras, consorcios = [], consor
                         ? '🏗 Va a esta obra: aparece en su Conciliación de Insumos y, si marcás recepción, en su almacén.'
                         : '⚠ Obligatorio: elegí una obra, gastos generales, contabilidad neta — o "No sé" si tenés dudas.'}
               </div>
+              {/* ── SUGERENCIA COSTO vs GASTO ──────────────────────────
+                  Solo INTERRUMPE cuando contradice lo elegido. Si coincide,
+                  una marca discreta; si la IA no está segura, lo dice. */}
+              {sugClasif?.cargando && (
+                <div style={{ marginTop: 6, fontSize: 11, color: 'var(--tm)' }}>🤖 Revisando si es costo de obra o gasto de la empresa…</div>
+              )}
+              {veredictoClasif?.estado === 'contradice' && (
+                <div style={{ marginTop: 6, fontSize: 11.5, padding: '8px 10px', borderRadius: 6,
+                  background: 'rgba(242,183,5,0.10)', border: '1px solid rgba(242,183,5,0.45)', lineHeight: 1.5 }}>
+                  <div style={{ fontWeight: 700, color: 'var(--amber)' }}>🤖 {veredictoClasif.titulo}</div>
+                  <div style={{ color: 'var(--ts)', marginTop: 3 }}>{veredictoClasif.detalle}</div>
+                  <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    <button className="btn btn-amber btn-xs" onClick={() => {
+                      // Aplicar = mover el DESTINO, que es de donde sale la
+                      // clasificación. No se toca `type` a mano: lo deriva el
+                      // confirmar desde la vinculación, como siempre.
+                      if (veredictoClasif.accion?.destino_contable === 'gastos_generales') upd({ obra_destino: '__empresa__' });
+                      else upd({ clasificacion_manual: 'cost' });
+                    }}>
+                      ✓ Sí, corregilo
+                    </button>
+                    <button className="btn btn-ghost btn-xs" onClick={() => setSugClasif(null)}>Dejarlo como está</button>
+                  </div>
+                </div>
+              )}
+              {veredictoClasif?.estado === 'coincide' && (
+                <div style={{ marginTop: 6, fontSize: 10.5, color: 'var(--green)' }} title={veredictoClasif.detalle}>
+                  🤖 ✓ {veredictoClasif.titulo}
+                </div>
+              )}
+              {veredictoClasif?.estado === 'sin_confianza' && (
+                <div style={{ marginTop: 6, fontSize: 10.5, color: 'var(--tm)' }} title={veredictoClasif.detalle}>
+                  🤖 {veredictoClasif.titulo} — decidilo vos.
+                </div>
+              )}
               {/* Filtro de facturación: factura ANTERIOR al inicio de la obra elegida.
                   Advierte (no bloquea): hay compras anticipadas legítimas, pero el
                   caso típico es histórico de la empresa vinculado a la obra por apuro. */}
