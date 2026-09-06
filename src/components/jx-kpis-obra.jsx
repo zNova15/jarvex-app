@@ -80,6 +80,9 @@ function KPIsObraPage() {
   const { data: subcontratos = [] } = (window.__hooks?.useSubcontratos?.() ?? { data: [] });
   const { data: consorcios = [] } = (window.__hooks?.useConsorcios?.() ?? { data: [] });
   const { data: companies = [] } = (window.__hooks?.useCompanies?.() ?? { data: [] });
+  // Lo que ya se activó como bien depreciable deja de ser costo de la obra:
+  // si no, los mismos soles cuentan en el margen Y en el balance.
+  const { data: activosFijos = [] } = (window.__hooks?.useActivosFijos?.() ?? { data: [] });
 
   // ── Sección 1: Avance ──
   const avance = uM(() => {
@@ -114,8 +117,8 @@ function KPIsObraPage() {
   // misma regla de los dos libros, y la pantalla los muestra SIN SUMARLOS.
   const reparto = uM(() => costoDeObra({
     movs: (movs || []).filter(m => m.obra_id === obraId),
-    obra, consorcios, companies,
-  }), [movs, obraId, obra, consorcios, companies]);
+    obra, consorcios, companies, activosFijos,
+  }), [movs, obraId, obra, consorcios, companies, activosFijos]);
 
   const costos = uM(() => {
     const movsObra = (movs || []).filter(m => !m.deleted_at && m.obra_id === obraId

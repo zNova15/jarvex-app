@@ -75,8 +75,36 @@ function RecomendadorActivosModal({
     [activosPesados]
   );
 
+  // ── LA CONFIRMACIÓN QUE FALTABA ─────────────────────────────────
+  //
+  // Gabriel, 6-set-2026: «si yo le doy clic a "es activo" y lo activo como un
+  // activo fijo, se supone que me deberías dar aquí una ventana adicional donde
+  // me confirmes que quiero hacerlo, ya que al hacerlo lo que voy a hacer
+  // también es quitar esto al generador del costo de una obra».
+  //
+  // Tiene razón: activar un bien NO es solo agregar una fila a otro registro —
+  // cambia el margen de una obra. Un botón que hace dos cosas y solo anuncia
+  // una es un botón que sorprende. La ventana dice las DOS antes de tocar nada.
   const aceptar = async (c) => {
     if (!puedeEditar || ocupado) return;
+    const costo = Number(c.precio_unitario || 0) * Number(c.cantidad || 1);
+    const lineas = [
+      `¿Registrar «${c.descripcion}» como activo fijo?`,
+      '',
+      `Entra al registro 7.1 con la cuenta ${c.cuenta} y ${c.tasa}% de depreciación anual, por ${fmt(costo)}.`,
+    ];
+    if (c.yaEsCostoDeObra) {
+      lineas.push(
+        '',
+        'Y ADEMÁS — esto es lo importante:',
+        `Esta compra está vinculada a una obra. Al activarla, esos ${fmt(costo)} DEJAN de contar como costo de esa obra`,
+        'y pasan a depreciarse en la empresa. Es lo correcto (si no, los mismos soles contarían dos veces), pero',
+        'el margen de esa obra va a cambiar.',
+        '',
+        'La vinculación a la obra NO se borra: se conserva la trazabilidad de para qué se compró.',
+      );
+    }
+    if (!window.confirm(lineas.join('\n'))) return;
     setOcupado(claveLinea(c.movimiento_id, c.item_idx));
     try {
       await onAceptar(c);
@@ -157,9 +185,9 @@ function RecomendadorActivosModal({
                     {/* 🔴 El aviso que evita contar la misma plata dos veces. */}
                     {c.yaEsCostoDeObra && (
                       <div style={{ fontSize: 11, color: 'var(--amber)', marginTop: 5 }}>
-                        ⚠ Esta compra ya está cargada como <strong>costo de una obra</strong>. Si además la activas,
-                        los mismos soles cuentan dos veces: en el margen de la obra y como bien depreciable.
-                        Hay que sacarla del costo.
+                        ⚠ Esta compra está vinculada a una obra y hoy suma en su costo. Al activarla,
+                        esos soles <strong>salen solos</strong> del costo de la obra y pasan a depreciarse en la empresa —
+                        si no, contarían dos veces. La vinculación a la obra se conserva; lo que cambia es el margen.
                       </div>
                     )}
                   </div>

@@ -190,7 +190,13 @@ beforeAll(async () => {
   const antes = new Set(Object.keys(globalThis));
   for (const c of CHUNKS) { await import(c); }
   pantallas = Object.keys(globalThis).filter(k => !antes.has(k) && /Page$/.test(k)).sort();
-});
+// 🔴 TIMEOUT EXPLÍCITO, igual que en pantallas-montan.test.jsx (y por lo mismo).
+// Este hook importa ~40 chunks; con la suite completa en paralelo se pasa del
+// default de 10 s de vitest y el archivo entero se marca FAILED sin que falle
+// una sola aserción. Le pasó el 6-set-2026 al sumar un chunk más. Un guard que
+// falla al azar se termina ignorando, y éste es justo el que no puede ser
+// ruido: es el que monta las pantallas CON datos.
+}, 60000);
 
 function montarTodas() {
   const fallos = [];

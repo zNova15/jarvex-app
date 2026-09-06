@@ -217,3 +217,85 @@ describe('las cifras reales de Miraflores (6-sep-2026)', () => {
     expect(KPI_VIEJO / r.costo.monto).toBeCloseTo(9.9, 1);
   });
 });
+
+describe('lo activado como activo fijo deja de ser costo de la obra', () => {
+  // Gabriel, 6-set-2026: «si yo le doy clic a "es activo" […] lo que voy a
+  // hacer también es quitar esto al generador del costo de una obra».
+  const conItems = (o, items) => ({
+    ...mov(o),
+    notas: JSON.stringify({ items_factura: items }),
+  });
+  const li = (desc, cant, pu) => ({ descripcion: desc, cantidad: cant, precio_unitario: pu, unidad: 'und' });
+
+  it('una factura de UN solo bien activado sale entera del costo', () => {
+    const m = conItems({ id: 'm-kaili', company_id: EL_INCA, amount: 11800 }, [li('GENERADOR KAILI', 1, 10000)]);
+    const r = costoDeObra({
+      movs: [m], obra, consorcios, companies,
+      activosFijos: [{ id: 'af1', accounting_movement_id: 'm-kaili', accounting_item_idx: 0 }],
+    });
+    expect(r.costo.monto).toBe(0);
+    expect(r.activados.monto).toBe(11800);
+    expect(r.activados.n).toBe(1);
+  });
+
+  it('descuenta la parte PROPORCIONAL, con su IGV, no el neto suelto', () => {
+    // 10.000 de generador + 10.000 de cemento = 20.000 neto → 23.600 con IGV.
+    // Activar el generador saca la MITAD del total, no 10.000 de 23.600.
+    const m = conItems({ id: 'm2', company_id: EL_INCA, amount: 23600 },
+      [li('GENERADOR KAILI', 1, 10000), li('CEMENTO', 400, 25)]);
+    const r = costoDeObra({
+      movs: [m], obra, consorcios, companies,
+      activosFijos: [{ id: 'af1', accounting_movement_id: 'm2', accounting_item_idx: 0 }],
+    });
+    expect(r.activados.monto).toBe(11800);
+    expect(r.costo.monto).toBe(11800);
+  });
+
+  it('también descuenta del APORTE del grupo, no solo del costo', () => {
+    const m = conItems({ id: 'm3', company_id: JARVEX, amount: 11800 }, [li('GENERADOR KAILI', 1, 10000)]);
+    const r = costoDeObra({
+      movs: [m], obra, consorcios, companies,
+      activosFijos: [{ id: 'af1', accounting_movement_id: 'm3', accounting_item_idx: 0 }],
+    });
+    expect(r.aporte.monto).toBe(0);
+    expect(r.aporte.porEmpresa[0].monto).toBe(0);
+  });
+
+  it('la misma línea activada dos veces NO descuenta dos veces', () => {
+    const m = conItems({ id: 'm4', company_id: EL_INCA, amount: 23600 },
+      [li('GENERADOR KAILI', 1, 10000), li('CEMENTO', 400, 25)]);
+    const r = costoDeObra({
+      movs: [m], obra, consorcios, companies,
+      activosFijos: [
+        { id: 'af1', accounting_movement_id: 'm4', accounting_item_idx: 0 },
+        { id: 'af2', accounting_movement_id: 'm4', accounting_item_idx: 0 },
+      ],
+    });
+    expect(r.activados.monto).toBe(11800);
+    expect(r.costo.monto).toBe(11800);
+  });
+
+  it('un activo fijo BORRADO devuelve la compra al costo', () => {
+    const m = conItems({ id: 'm5', company_id: EL_INCA, amount: 11800 }, [li('GENERADOR KAILI', 1, 10000)]);
+    const r = costoDeObra({
+      movs: [m], obra, consorcios, companies,
+      activosFijos: [{ id: 'af1', accounting_movement_id: 'm5', accounting_item_idx: 0, deleted_at: '2026-09-06' }],
+    });
+    expect(r.costo.monto).toBe(11800);
+    expect(r.activados.n).toBe(0);
+  });
+
+  it('sin activos fijos, nada cambia respecto de antes', () => {
+    const m = conItems({ id: 'm6', company_id: EL_INCA, amount: 11800 }, [li('GENERADOR KAILI', 1, 10000)]);
+    expect(costoDeObra({ movs: [m], obra, consorcios, companies }).costo.monto).toBe(11800);
+  });
+
+  it('un activo sin ítems en la factura no descuenta a ciegas', () => {
+    const r = costoDeObra({
+      movs: [mov({ id: 'm7', company_id: EL_INCA, amount: 5000 })], obra, consorcios, companies,
+      activosFijos: [{ id: 'af1', accounting_movement_id: 'm7', accounting_item_idx: 0 }],
+    });
+    expect(r.costo.monto).toBe(5000);
+    expect(r.activados.n).toBe(0);
+  });
+});

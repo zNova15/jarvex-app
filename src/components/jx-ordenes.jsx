@@ -30,12 +30,12 @@
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
 import {
-  TIPO_ORDEN_LABEL, textosDeTipo, proximoCodigo,
+  TIPO_ORDEN_LABEL, textosDeTipo, proximoCodigo, totalesDesdeItems,
   comprobantesSinOrden, agruparPorEmpresa, resumenRespaldo,
   borradorDesdeMovimiento, recalcularBorrador, ordenarParaEmitir,
   UMBRAL_POR_DEFECTO,
   nuevaOrdenBorrador, numerarOrden, pasosDeOrden, estaNumerada,
-  cadenaDeOrdenes,
+  formatearCodigo,
 } from "../lib/ordenes.js";
 import { filtroInicialEmpresa, setEmpresaActivaId } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
@@ -109,19 +109,41 @@ function OrdenesPage({ showToast }) {
   const [detalle, setDetalle] = uS(null);
   const [detalleItems, setDetalleItems] = uS([]);
   const emitiendoRef = uR(false);
-  // ── LA ORDEN QUE NACE ANTES DEL COMPROBANTE (tanda 7, entrega 6) ──
-  // `pedido` llega de Abastecimiento por `window.__pedidoAbastecimiento`: un
-  // buzón en memoria, no la base. Nada se escribe hasta que alguien confirma,
-  // así que abandonar la pantalla no deja basura ni gasta un correlativo.
-  const [pedido, setPedido] = uS(null);
-  const [nuevaEmpresa, setNuevaEmpresa] = uS('');
-  const [nuevaTipo, setNuevaTipo] = uS('compra');
-  const [nuevaIgv, setNuevaIgv] = uS(18);
-  const [precios, setPrecios] = uS({});     // `${proveedorId}|${codigo}` → precio unitario
-  // La cadena con intermediario (mig 185). Por grupo proveedor:
-  //   `${provKey}` → { modo:'directo'|'grupo'|'tercero', companyId, nombre, ruc, margenPct }
-  const [intermediarios, setIntermediarios] = uS({});
-  const [creandoProv, setCreandoProv] = uS(null);
+  // ── LA ORDEN QUE NACE ANTES DEL COMPROBANTE (tanda 7, entrega 6c) ──
+  //
+  // Gabriel, 6-set-2026, después de probar la primera versión: «¿qué pasa si
+  // quiero emitir ahorita mismo una orden de compra o una orden de servicio a
+  // un tercero, a una empresa que tal vez aún no está dentro del sistema?
+  // ¿Cómo lo hago? En esta sección no me permite».
+  //
+  // Tenía razón: la primera versión SOLO se llenaba viniendo de Abastecimiento,
+  // o sea que sin obra y sin presupuesto no había forma de emitir nada. Y el
+  // caso más común de una EMPRESA (sin obra) es justamente ése: comprarle a un
+  // tercero. Ahora el formulario se abre vacío y se llena a mano; Abastecimiento
+  // pasó a ser una AYUDA que agrega líneas, no la puerta de entrada.
+  //
+  // Su regla, textual: «centrarnos en que una empresa emita una orden de compra
+  // o de servicios. Cualquier empresa, la de nuestro grupo o una de terceros. Y
+  // en el caso de la obra, lo mismo prácticamente, pero con la ayuda de tener
+  // el inventario de las empresas del grupo, y teniendo a la mano también qué
+  // es lo que necesita [la obra]».
+  const ordenVacia = () => ({
+    companyId: '', tipo: 'compra', igvPct: 18,
+    // A quién se le compra. Tres formas, porque las tres pasan:
+    //   'grupo'      — otra empresa nuestra
+    //   'registrado' — un proveedor que ya está en el sistema
+    //   'nuevo'      — uno que NO está: se escribe a mano acá mismo
+    provModo: 'nuevo', provCompanyId: '', provId: '',
+    provNombre: '', provRuc: '', provDireccion: '',
+    fecha: '', fechaEntrega: '', lugarEntrega: '', condicionPago: '',
+    titulo: '', notas: '', obraId: '', obraDescripcion: '',
+    guardarProveedor: false,
+  });
+  const [nueva, setNueva] = uS(ordenVacia);
+  const [lineas, setLineas] = uS([]);
+  const setNu = (patch) => setNueva(n => ({ ...n, ...patch }));
+  // El ayudante de la obra: 'necesita' (presupuesto) | 'grupo' (stock) | null
+  const [ayuda, setAyuda] = uS(null);
   const creandoRef = uR(false);
 
   const umbral = uM(() => {
@@ -202,150 +224,164 @@ function OrdenesPage({ showToast }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, pendientes.length]);
 
-  // ── EL PEDIDO QUE LLEGA DE ABASTECIMIENTO ───────────────────────
-  // Se lee UNA vez y se limpia el buzón: si quedara puesto, volver a esta
-  // pantalla más tarde reviviría un pedido que ya se emitió.
+  // ── LO QUE LLEGA DE ABASTECIMIENTO ──────────────────────────────
+  // Ya NO es la puerta: es una de las formas de llenar las líneas. Se lee UNA
+  // vez y se limpia el buzón, para que volver a esta pantalla más tarde no
+  // reviva un pedido que ya se emitió.
   uE(() => {
     const p = window.__pedidoAbastecimiento;
     if (!p || !p.lineas?.length) return;
     delete window.__pedidoAbastecimiento;
-    setPedido(p);
     setTab('nueva');
-    // La empresa que EMITE la orden es la ejecutora de la obra: es ella la que
-    // le compra al resto del grupo. Si no está declarada, la elige el usuario.
-    if (p.titular_id) setNuevaEmpresa(p.titular_id);
+    setNueva(n => ({
+      ...n,
+      companyId: p.titular_id || n.companyId,
+      obraId: p.obra_id || '',
+      obraDescripcion: p.obra_nombre || '',
+      fecha: n.fecha || (window.__fecha?.hoyLocal?.() || ''),
+      // Viene de un solo proveedor por vez; si trae varios, se toma el primero
+      // y las demás líneas quedan igual para que la persona decida.
+      provModo: 'grupo',
+      provCompanyId: p.lineas[0]?.company_id || '',
+    }));
+    setLineas(p.lineas.map(l => ({
+      key: window.__newId(),
+      descripcion: l.nombre, unidad: l.unidad || 'UND',
+      cantidad: l.cantidad, precio_unitario: '',
+      insumo_codigo: l.insumo_codigo || null,
+      origen_company_id: l.company_id || null,
+      tope: l.topeDisponible ?? null,
+    })));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
-  // El pedido, partido POR EMPRESA PROVEEDORA: cada orden tiene un proveedor,
-  // así que pedirle cemento a GASOMI y fierro a JHEENSEG son DOS órdenes.
-  const gruposPedido = uM(() => {
-    if (!pedido?.lineas?.length) return [];
-    const g = new Map();
-    for (const l of pedido.lineas) {
-      const k = l.company_id || 'sin_empresa';
-      const e = g.get(k) || { company_id: l.company_id || null, empresa: l.empresa, lineas: [] };
-      e.lineas.push(l);
-      g.set(k, e);
+  // ── EL EDITOR DE LÍNEAS ─────────────────────────────────────────
+  const lineaVacia = () => ({
+    key: window.__newId(), descripcion: '', unidad: 'UND',
+    cantidad: '', precio_unitario: '', insumo_codigo: null,
+    origen_company_id: null, tope: null,
+  });
+  const addLinea = () => setLineas(ls => [...ls, lineaVacia()]);
+  const setLinea = (key, patch) => setLineas(ls => ls.map(l => (l.key === key ? { ...l, ...patch } : l)));
+  const delLinea = (key) => setLineas(ls => ls.filter(l => l.key !== key));
+  const addLineas = (nuevas) => setLineas(ls => [...ls, ...nuevas.map(n => ({ ...lineaVacia(), ...n, key: window.__newId() }))]);
+
+  const totalesNueva = uM(() => {
+    const items = lineas.map(l => ({ cantidad: l.cantidad, precio_unitario: l.precio_unitario }));
+    return totalesDesdeItems(items, { igvPct: Number(nueva.igvPct) });
+  }, [lineas, nueva.igvPct]);
+
+  const proveedorDeNueva = uM(() => {
+    if (nueva.provModo === 'grupo') {
+      const c = lookupCompany(nueva.provCompanyId);
+      return { id: null, nombre: c?.name || c?.legal_name || '', ruc: c?.ruc || '', direccion: c?.address || '' };
     }
-    return [...g.values()];
-  }, [pedido]);
+    if (nueva.provModo === 'registrado') {
+      const pv = lookupProv(nueva.provId);
+      return { id: nueva.provId || null, nombre: pv?.razon_social || pv?.nombre || '', ruc: pv?.ruc || '', direccion: pv?.direccion || '' };
+    }
+    return { id: null, nombre: nueva.provNombre.trim(), ruc: nueva.provRuc.trim(), direccion: nueva.provDireccion.trim() };
+  }, [nueva, companies, proveedores]);
 
-  const precioDe = (provId, codigo) => Number(precios[`${provId}|${codigo}`] ?? 0);
-  const setPrecio = (provId, codigo, v) => setPrecios(p => ({ ...p, [`${provId}|${codigo}`]: v }));
+  const faltaNueva = uM(() => {
+    const f = [];
+    if (!nueva.companyId) f.push('la empresa que emite');
+    if (!proveedorDeNueva.nombre) f.push('a quién se le compra');
+    const vivas = lineas.filter(l => String(l.descripcion || '').trim() && Number(l.cantidad) > 0);
+    if (!vivas.length) f.push('al menos una línea con descripción y cantidad');
+    else if (vivas.some(l => !(Number(l.precio_unitario) > 0))) f.push('el precio de cada línea');
+    return f;
+  }, [nueva, proveedorDeNueva, lineas]);
 
-  // ── CREAR LA ORDEN QUE NACE ANTES DEL COMPROBANTE ───────────────
+  const limpiarNueva = () => { setNueva(ordenVacia()); setLineas([]); setAyuda(null); };
+
+  // ── CREAR LA ORDEN ──────────────────────────────────────────────
   //
-  // Guard SÍNCRONO (regla crítica #2): esto consume un correlativo, y un doble
-  // click en «Confirmar y numerar» dejaría dos órdenes con dos números para el
-  // mismo pedido.
-  const interDe = (provKey) => intermediarios[provKey] || { modo: 'directo' };
-  const setInter = (provKey, patch) => setIntermediarios(m => ({
-    ...m, [provKey]: { ...(m[provKey] || { modo: 'directo' }), ...patch },
-  }));
-
-  const crearOrden = async (grupo, { numerar }) => {
+  // Guard SÍNCRONO (regla crítica #2): confirmar consume un correlativo, y un
+  // doble click dejaría dos órdenes numeradas para el mismo pedido.
+  const crearOrden = async ({ numerar }) => {
     if (creandoRef.current) return;
-    if (!nuevaEmpresa) { toast('Elige la empresa que emite la orden', 'red'); return; }
     if (!canEmitir) { toast('No tienes permiso para emitir órdenes', 'red'); return; }
-    const provKey = grupo.company_id || 'sin_empresa';
-    const inter = interDe(provKey);
-    const items = grupo.lineas.map(l => ({
-      nombre: l.nombre, unidad: l.unidad, cantidad: l.cantidad,
-      precio_unitario: precioDe(provKey, l.insumo_codigo),
-      insumo_codigo: l.insumo_codigo, company_id: l.company_id,
-    }));
-    if (items.some(i => !(i.precio_unitario > 0))) {
-      toast('Falta el precio unitario de alguna línea', 'amber'); return;
-    }
-    if (inter.modo === 'grupo' && !inter.companyId) { toast('Elige la empresa intermediaria', 'amber'); return; }
-    if (inter.modo === 'tercero' && !String(inter.nombre || '').trim()) { toast('Escribe el nombre del intermediario', 'amber'); return; }
+    if (faltaNueva.length) { toast('Falta ' + faltaNueva.join(', '), 'amber'); return; }
 
-    const companiesById = new Map((companies || []).filter(c => !c.deleted_at).map(c => [c.id, c]));
-    const hoy = window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10);
-    const anio = Number(hoy.slice(0, 4));
-
-    const { ordenes: cadena, avisos } = cadenaDeOrdenes({
-      ejecutoraId: nuevaEmpresa,
-      origenCompanyId: grupo.company_id,
-      intermediario: inter.modo === 'grupo' ? { companyId: inter.companyId }
-        : inter.modo === 'tercero' ? { nombre: inter.nombre, ruc: inter.ruc } : null,
-      items,
-      companiesById,
-      margenPct: Number(inter.margenPct) || 0,
-      tipo: nuevaTipo,
-      obraId: pedido?.obra_id || null,
-      igvPct: Number(nuevaIgv),
-      fecha: hoy,
-      obraDescripcion: pedido?.obra_nombre || null,
-    });
+    const company = lookupCompany(nueva.companyId);
+    const hoy = nueva.fecha || window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10);
+    const anio = Number(String(hoy).slice(0, 4));
+    const items = lineas
+      .filter(l => String(l.descripcion || '').trim() && Number(l.cantidad) > 0)
+      .map(l => ({
+        nombre: l.descripcion.trim(), unidad: l.unidad || 'UND',
+        cantidad: Number(l.cantidad), precio_unitario: Number(l.precio_unitario),
+        insumo_codigo: l.insumo_codigo || null,
+        company_id: l.origen_company_id || null,
+      }));
 
     if (numerar) {
-      const cuantas = cadena.length === 2
-        ? `Se van a emitir DOS órdenes encadenadas:\n  · ${lookupCompany(nuevaEmpresa)?.name || 'la ejecutora'} → ${cadena[0].fila.proveedor_nombre}\n  · ${cadena[0].fila.proveedor_nombre} → ${cadena[1].fila.proveedor_nombre}`
-        : `Se va a emitir la orden a ${cadena[0].fila.proveedor_nombre}.`;
-      if (!window.confirm(`${cuantas}\n\nCada una toma un número de la serie de la empresa que la emite, y ese número no se libera aunque después se anule.`)) return;
+      const { correlativo } = proximoCodigo(ordenes, { company, tipo: nueva.tipo, anio });
+      const cod = formatearCodigo(correlativo, { company, tipo: nueva.tipo, anio });
+      if (!window.confirm(
+        `Emitir ${cod} a ${proveedorDeNueva.nombre}?\n\n${items.length} línea(s) · ${fmtS(totalesNueva.total)}\n\n`
+        + `Ese número queda tomado en la serie de ${company?.name || 'la empresa'} y no se libera aunque después se anule.`
+      )) return;
     }
 
     creandoRef.current = true;
     try {
       const now = new Date().toISOString();
-      // Acumulador LOCAL de correlativos: las dos órdenes de una cadena son de
-      // empresas distintas, pero si mañana fueran de la misma, releer Dexie
-      // entre una y otra daría el mismo número dos veces.
-      const emitidasAhora = [...ordenes];
-      let padreId = null;
-      const codigos = [];
-
-      for (let i = 0; i < cadena.length; i++) {
-        const { fila, items: lineas } = cadena[i];
-        const company = lookupCompany(fila.company_id);
-        const definitiva = numerar
-          ? numerarOrden({ ...fila }, emitidasAhora, { company, anio })
-          : fila;
-        const ocId = window.__newId();
-        const row = {
-          ...definitiva,
-          id: ocId,
-          // La segunda de la cadena cuelga de la primera (mig 185).
-          orden_origen_id: i === 0 ? null : padreId,
-          observaciones: definitiva.observaciones
-            || `Nace de Abastecimiento de la obra — stock del grupo en ${grupo.empresa}`,
-          created_by: userId, updated_by: userId,
-          created_at: now, updated_at: now,
-          version: 1, sync_status: 'pending_create', last_synced_at: null,
-          idempotency_key: `${userId}_oc_${ocId}`,
-        };
-        await window.__db.ordenes_compra.add(row);
-        emitidasAhora.push(row);
-        if (i === 0) padreId = ocId;
-        if (definitiva.codigo) codigos.push(definitiva.codigo);
-
-        for (const l of lineas) {
-          const itemId = window.__newId();
-          await window.__db.oc_items.add({
-            ...l,
-            id: itemId, orden_compra_id: ocId,
-            created_at: now, updated_at: now,
+      // Un proveedor nuevo se guarda en el catálogo SOLO si se pidió: no
+      // ensuciamos la lista de 378 proveedores con cada nombre tipeado a mano.
+      let provId = proveedorDeNueva.id;
+      if (nueva.provModo === 'nuevo' && nueva.guardarProveedor && proveedorDeNueva.nombre) {
+        try {
+          provId = window.__newId();
+          await window.__db.proveedores.add({
+            id: provId, razon_social: proveedorDeNueva.nombre, ruc: proveedorDeNueva.ruc || null,
+            direccion: proveedorDeNueva.direccion || null, estado: 'activo',
+            created_by: userId, updated_by: userId, created_at: now, updated_at: now,
             version: 1, sync_status: 'pending_create', last_synced_at: null,
-            idempotency_key: `${userId}_oc_item_${itemId}`,
+            idempotency_key: `${userId}_prov_${provId}`,
           });
-        }
+          setProveedores(ps => [...ps, { id: provId, razon_social: proveedorDeNueva.nombre, ruc: proveedorDeNueva.ruc }]);
+        } catch (e) { console.warn('[ordenes] no se pudo guardar el proveedor:', e); provId = null; }
       }
 
-      setPedido(p => {
-        const resto = (p?.lineas || []).filter(l => (l.company_id || 'sin_empresa') !== provKey);
-        return resto.length ? { ...p, lineas: resto } : null;
+      const { fila, items: filasItems } = nuevaOrdenBorrador({
+        companyId: nueva.companyId,
+        tipo: nueva.tipo,
+        obraId: nueva.obraId || obraScopeId || null,
+        proveedor: { ...proveedorDeNueva, id: provId },
+        items,
+        igvPct: Number(nueva.igvPct),
+        fecha: hoy,
+        fechaEntrega: nueva.fechaEntrega || null,
+        lugarEntrega: nueva.lugarEntrega || null,
+        condicionPago: nueva.condicionPago || null,
+        titulo: nueva.titulo || null,
+        obraDescripcion: nueva.obraDescripcion || lookupObra(nueva.obraId || obraScopeId)?.nombre_obra || null,
+        observaciones: nueva.notas || null,
       });
+
+      const definitiva = numerar ? numerarOrden({ ...fila }, ordenes, { company, anio }) : fila;
+      const ocId = window.__newId();
+      await window.__db.ordenes_compra.add({
+        ...definitiva, id: ocId,
+        created_by: userId, updated_by: userId, created_at: now, updated_at: now,
+        version: 1, sync_status: 'pending_create', last_synced_at: null,
+        idempotency_key: `${userId}_oc_${ocId}`,
+      });
+      for (const l of filasItems) {
+        const itemId = window.__newId();
+        await window.__db.oc_items.add({
+          ...l, id: itemId, orden_compra_id: ocId,
+          created_at: now, updated_at: now,
+          version: 1, sync_status: 'pending_create', last_synced_at: null,
+          idempotency_key: `${userId}_oc_item_${itemId}`,
+        });
+      }
       await recargarOrdenes();
-      for (const a of avisos) toast(a, 'amber');
-      toast(
-        numerar
-          ? (codigos.length > 1 ? `Cadena emitida: ${codigos.join(' → ')}` : `Orden ${codigos[0]} creada`)
-          : `${cadena.length} borrador(es) guardado(s), todavía sin número`,
-        'green'
-      );
-      if (gruposPedido.length <= 1) setTab('emitidas');
+      limpiarNueva();
+      toast(numerar ? `Orden ${definitiva.codigo} emitida` : 'Borrador guardado (todavía sin número)', 'green');
+      if (numerar) setTab('emitidas');
     } catch (e) {
       console.error('[ordenes] no se pudo crear la orden:', e);
       toast('No se pudo crear la orden: ' + (e.message || e), 'red');
@@ -641,7 +677,7 @@ function OrdenesPage({ showToast }) {
         </button>
         {/* La puerta que faltaba: una orden que nace ANTES del comprobante. */}
         <button className={`btn btn-sm ${tab === 'nueva' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('nueva')}>
-          Nueva orden{gruposPedido.length ? ` (${gruposPedido.length})` : ''}
+          Nueva orden{lineas.length ? ` (${lineas.length})` : ''}
         </button>
       </div>
 
@@ -682,171 +718,211 @@ function OrdenesPage({ showToast }) {
       {/* ═══ NUEVA ORDEN — la que nace antes del comprobante (tanda 7) ═══ */}
       {tab === 'nueva' ? (
         <div>
-          {gruposPedido.length === 0 ? (
-            <div className="card card-p empty-state">
-              <JxIcon name="package" size={40} color="var(--tm)" />
-              <p><b>Una orden empieza en el Abastecimiento de la obra.</b></p>
-              <p style={{ fontSize: 12, color: 'var(--tm)', maxWidth: 560 }}>
-                Ahí se ve qué necesita la obra, qué compró ya la ejecutora y qué tienen las otras empresas del grupo.
-                Eliges cuánto le pides a cada una y desde ahí se arma la orden — con su detalle, y sin que exista todavía
-                ninguna factura. Esta pestaña se llena sola cuando llegas de ahí.
-              </p>
-              <button className="btn btn-amber btn-sm" onClick={() => window.__navTo?.('abastecimiento')}>
-                <JxIcon name="layers" size={14} /> Ir a Abastecimiento de la obra
-              </button>
+          {/* ── LA CABECERA: quién emite, a quién, y con qué condiciones ── */}
+          <div className="card card-p" style={{ marginBottom: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
+              <label>
+                <div style={{ fontSize: 11, color: 'var(--tm)' }}>Empresa que EMITE la orden *</div>
+                <select className="fi" style={{ width: '100%' }} value={nueva.companyId}
+                  disabled={!!empresaFija}
+                  onChange={e => setNu({ companyId: e.target.value })}>
+                  <option value="">— Elige la empresa —</option>
+                  {(companies || []).filter(c => !c.deleted_at).map(c => (
+                    <option key={c.id} value={c.id}>{c.name || c.legal_name}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <div style={{ fontSize: 11, color: 'var(--tm)' }}>Tipo</div>
+                <select className="fi" style={{ width: '100%' }} value={nueva.tipo} onChange={e => setNu({ tipo: e.target.value })}>
+                  <option value="compra">Orden de Compra</option>
+                  <option value="servicio">Orden de Servicio</option>
+                </select>
+              </label>
+              <label>
+                <div style={{ fontSize: 11, color: 'var(--tm)' }}>Fecha</div>
+                <input className="fi" type="date" style={{ width: '100%' }} value={nueva.fecha}
+                  onChange={e => setNu({ fecha: e.target.value })} />
+              </label>
+              <label>
+                <div style={{ fontSize: 11, color: 'var(--tm)' }}>IGV %</div>
+                <input className="fi" type="number" min="0" max="18" step="any" style={{ width: '100%' }}
+                  value={nueva.igvPct} onChange={e => setNu({ igvPct: e.target.value })} />
+              </label>
             </div>
-          ) : (
-            <>
-              <div className="card card-p" style={{ marginBottom: 12 }}>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
-                  <div>
-                    <div style={{ fontSize: 11, color: 'var(--tm)' }}>Empresa que EMITE la orden</div>
-                    <select className="fi" value={nuevaEmpresa} onChange={e => setNuevaEmpresa(e.target.value)} style={{ minWidth: 260 }}>
-                      <option value="">— Elige la empresa —</option>
-                      {(companies || []).filter(c => !c.deleted_at).map(c => (
-                        <option key={c.id} value={c.id}>{c.name || c.legal_name}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 11, color: 'var(--tm)' }}>Tipo</div>
-                    <select className="fi" value={nuevaTipo} onChange={e => setNuevaTipo(e.target.value)}>
-                      <option value="compra">Orden de Compra</option>
-                      <option value="servicio">Orden de Servicio</option>
-                    </select>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 11, color: 'var(--tm)' }}>IGV %</div>
-                    <input className="fi" type="number" min="0" max="18" step="any" style={{ width: 80 }}
-                      value={nuevaIgv} onChange={e => setNuevaIgv(e.target.value)} />
-                  </div>
-                  <button className="btn btn-sm" style={{ marginLeft: 'auto' }} onClick={() => { setPedido(null); setPrecios({}); }}>
-                    Descartar el pedido
-                  </button>
-                </div>
-                {pedido?.obra_nombre && (
-                  <p style={{ fontSize: 11.5, color: 'var(--tm)', margin: '8px 0 0' }}>
-                    Para <b>{String(pedido.obra_nombre).slice(0, 90)}</b>. El número se asigna al confirmar, no ahora:
-                    un borrador que se abandona no deja huecos en la numeración.
-                  </p>
+
+            {/* A QUIÉN SE LE COMPRA. Las tres formas, porque las tres pasan —
+                y la tercera es la que faltaba: un tercero que NO está cargado. */}
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                <span style={{ fontSize: 11.5, color: 'var(--tm)' }}>¿A quién se le compra? *</span>
+                {[['nuevo', 'Escribirlo (no está en el sistema)'], ['registrado', 'Un proveedor ya cargado'], ['grupo', 'Una empresa del grupo']].map(([v, lbl]) => (
+                  <button key={v} className={`btn btn-sm ${nueva.provModo === v ? 'btn-amber' : 'btn-ghost'}`}
+                    onClick={() => setNu({ provModo: v })}>{lbl}</button>
+                ))}
+              </div>
+              <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'flex-end' }}>
+                {nueva.provModo === 'grupo' && (
+                  <select className="fi" style={{ minWidth: 280 }} value={nueva.provCompanyId}
+                    onChange={e => setNu({ provCompanyId: e.target.value })}>
+                    <option value="">— Elige la empresa —</option>
+                    {(companies || []).filter(c => !c.deleted_at && c.id !== nueva.companyId).map(c => (
+                      <option key={c.id} value={c.id}>{c.name || c.legal_name}</option>
+                    ))}
+                  </select>
+                )}
+                {nueva.provModo === 'registrado' && (
+                  <select className="fi" style={{ minWidth: 320 }} value={nueva.provId}
+                    onChange={e => setNu({ provId: e.target.value })}>
+                    <option value="">— Elige el proveedor —</option>
+                    {[...(proveedores || [])]
+                      .sort((a, b) => String(a.razon_social || a.nombre || '').localeCompare(String(b.razon_social || b.nombre || '')))
+                      .map(pv => <option key={pv.id} value={pv.id}>{pv.razon_social || pv.nombre}{pv.ruc ? ` · ${pv.ruc}` : ''}</option>)}
+                  </select>
+                )}
+                {nueva.provModo === 'nuevo' && (
+                  <>
+                    <label>
+                      <div style={{ fontSize: 11, color: 'var(--tm)' }}>Razón social *</div>
+                      <input className="fi" style={{ minWidth: 260 }} value={nueva.provNombre}
+                        onChange={e => setNu({ provNombre: e.target.value })} placeholder="DISTRIBUIDORA ... SAC" />
+                    </label>
+                    <label>
+                      <div style={{ fontSize: 11, color: 'var(--tm)' }}>RUC</div>
+                      <input className="fi" style={{ width: 140 }} value={nueva.provRuc}
+                        onChange={e => setNu({ provRuc: e.target.value })} placeholder="20512345678" />
+                    </label>
+                    <label>
+                      <div style={{ fontSize: 11, color: 'var(--tm)' }}>Dirección</div>
+                      <input className="fi" style={{ minWidth: 220 }} value={nueva.provDireccion}
+                        onChange={e => setNu({ provDireccion: e.target.value })} />
+                    </label>
+                    <label style={{ fontSize: 11.5, display: 'flex', alignItems: 'center', gap: 5, color: 'var(--tm)', paddingBottom: 6 }}>
+                      <input type="checkbox" checked={nueva.guardarProveedor}
+                        onChange={e => setNu({ guardarProveedor: e.target.checked })} />
+                      guardarlo en el catálogo
+                    </label>
+                  </>
                 )}
               </div>
+            </div>
 
-              {gruposPedido.map(g => {
-                const provKey = g.company_id || 'sin_empresa';
-                const subtotal = g.lineas.reduce((s, l) => s + Number(l.cantidad || 0) * precioDe(provKey, l.insumo_codigo), 0);
-                const igv = subtotal * (Number(nuevaIgv) || 0) / 100;
-                const listo = g.lineas.every(l => precioDe(provKey, l.insumo_codigo) > 0);
-                return (
-                  <div key={provKey} className="card" style={{ overflow: 'hidden', marginBottom: 12 }}>
-                    <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-                      <b>Se le compra a {g.empresa}</b>
-                      <span className="badge b-gray">{g.lineas.length} línea(s)</span>
-                      <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--tm)' }}>
-                        Valor de venta <b style={{ color: 'var(--tp)' }}>{fmtS(subtotal)}</b> · IGV {fmtS(igv)} · Total <b style={{ color: 'var(--tp)' }}>{fmtS(subtotal + igv)}</b>
-                      </span>
-                    </div>
-                    <div style={{ overflowX: 'auto' }}>
-                      <table className="tbl">
-                        <thead><tr>
-                          <th>Insumo</th><th style={{ textAlign: 'right' }}>Cantidad</th><th>Unidad</th>
-                          <th style={{ textAlign: 'right' }}>Precio unitario</th><th style={{ textAlign: 'right' }}>Subtotal</th>
-                        </tr></thead>
-                        <tbody>
-                          {g.lineas.map(l => {
-                            const pu = precioDe(provKey, l.insumo_codigo);
-                            return (
-                              <tr key={l.insumo_codigo}>
-                                <td className="col-p">
-                                  <div style={{ fontWeight: 600 }}>{l.nombre}</div>
-                                  <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>{l.insumo_codigo} · tiene {Number(l.topeDisponible).toLocaleString('es-PE')}</div>
-                                </td>
-                                <td style={{ textAlign: 'right', fontWeight: 600 }}>{Number(l.cantidad).toLocaleString('es-PE')}</td>
-                                <td>{l.unidad}</td>
-                                <td style={{ textAlign: 'right' }}>
-                                  <input className="fi" type="number" min="0" step="any" style={{ width: 110, textAlign: 'right' }}
-                                    placeholder="S/ 0,00" value={precios[`${provKey}|${l.insumo_codigo}`] ?? ''}
-                                    onChange={e => setPrecio(provKey, l.insumo_codigo, e.target.value)} />
-                                </td>
-                                <td style={{ textAlign: 'right', fontWeight: 600 }}>{fmtS(Number(l.cantidad || 0) * pu)}</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                    {/* ── LA CADENA CON INTERMEDIARIO (mig 185) ──────────
-                        Gabriel, 6-set-2026: «suele pasar, normalmente si
-                        existen los intermediarios, incluso con alguna empresa
-                        que sería un tercero que hace el favor». Por eso está a
-                        la vista y no escondido — pero arranca en DIRECTO,
-                        porque la compra sin intermediario también existe. */}
-                    <div style={{ padding: '10px 14px', borderTop: '1px solid var(--border)', background: 'var(--bg-s)' }}>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
-                        <span style={{ fontSize: 11.5, color: 'var(--tm)' }}>¿Se lo compra directo o pasa por un intermediario?</span>
-                        <select className="fi" value={interDe(provKey).modo}
-                          onChange={e => setInter(provKey, { modo: e.target.value })}>
-                          <option value="directo">Directo a {g.empresa}</option>
-                          <option value="grupo">Por una empresa del grupo</option>
-                          <option value="tercero">Por un tercero (hace el favor)</option>
-                        </select>
-                        {interDe(provKey).modo === 'grupo' && (
-                          <select className="fi" value={interDe(provKey).companyId || ''}
-                            onChange={e => setInter(provKey, { companyId: e.target.value })} style={{ minWidth: 220 }}>
-                            <option value="">— Elige la intermediaria —</option>
-                            {(companies || []).filter(c => !c.deleted_at && c.id !== g.company_id && c.id !== nuevaEmpresa)
-                              .map(c => <option key={c.id} value={c.id}>{c.name || c.legal_name}</option>)}
-                          </select>
-                        )}
-                        {interDe(provKey).modo === 'tercero' && (
-                          <>
-                            <input className="fi" placeholder="Nombre del intermediario" style={{ minWidth: 220 }}
-                              value={interDe(provKey).nombre || ''} onChange={e => setInter(provKey, { nombre: e.target.value })} />
-                            <input className="fi" placeholder="RUC" style={{ width: 130 }}
-                              value={interDe(provKey).ruc || ''} onChange={e => setInter(provKey, { ruc: e.target.value })} />
-                          </>
-                        )}
-                        {interDe(provKey).modo !== 'directo' && (
-                          <label style={{ fontSize: 11.5, color: 'var(--tm)', display: 'flex', alignItems: 'center', gap: 4 }}>
-                            margen
-                            <input className="fi" type="number" min="0" step="any" style={{ width: 70 }}
-                              value={interDe(provKey).margenPct ?? ''} placeholder="0"
-                              onChange={e => setInter(provKey, { margenPct: e.target.value })} />%
-                          </label>
-                        )}
-                      </div>
-                      {interDe(provKey).modo === 'grupo' && interDe(provKey).companyId && (
-                        <p style={{ fontSize: 11.5, color: 'var(--tm)', margin: '8px 0 0' }}>
-                          Se emiten <b>dos órdenes</b>: {lookupCompany(nuevaEmpresa)?.name || 'la ejecutora'} → {lookupCompany(interDe(provKey).companyId)?.name},
-                          y {lookupCompany(interDe(provKey).companyId)?.name} → {g.empresa}. Cada una toma un número de la serie de su propia empresa.
-                        </p>
-                      )}
-                      {interDe(provKey).modo === 'tercero' && (
-                        <p style={{ fontSize: 11.5, color: 'var(--amber)', margin: '8px 0 0' }}>
-                          ⚠ Solo se emite <b>una</b> orden, la de {lookupCompany(nuevaEmpresa)?.name || 'la ejecutora'} hacia el intermediario.
-                          La orden del intermediario hacia {g.empresa} la tiene que emitir él: JARVEX no puede firmar un documento a nombre
-                          de una empresa que no es nuestra. Queda anotado que hubo un tercero en el medio.
-                        </p>
-                      )}
-                    </div>
+            <details style={{ marginTop: 12 }}>
+              <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--tm)' }}>Condiciones y datos del documento (opcional)</summary>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10, marginTop: 10 }}>
+                <label><div style={{ fontSize: 11, color: 'var(--tm)' }}>Título / rubro</div>
+                  <input className="fi" style={{ width: '100%' }} value={nueva.titulo} onChange={e => setNu({ titulo: e.target.value })} /></label>
+                <label><div style={{ fontSize: 11, color: 'var(--tm)' }}>Fecha de entrega</div>
+                  <input className="fi" type="date" style={{ width: '100%' }} value={nueva.fechaEntrega} onChange={e => setNu({ fechaEntrega: e.target.value })} /></label>
+                <label><div style={{ fontSize: 11, color: 'var(--tm)' }}>Lugar de entrega</div>
+                  <input className="fi" style={{ width: '100%' }} value={nueva.lugarEntrega} onChange={e => setNu({ lugarEntrega: e.target.value })} /></label>
+                <label><div style={{ fontSize: 11, color: 'var(--tm)' }}>Condición de pago</div>
+                  <input className="fi" style={{ width: '100%' }} value={nueva.condicionPago} onChange={e => setNu({ condicionPago: e.target.value })} placeholder="Contado / 30 días" /></label>
+                <label style={{ gridColumn: '1 / -1' }}><div style={{ fontSize: 11, color: 'var(--tm)' }}>Notas para el proveedor</div>
+                  <input className="fi" style={{ width: '100%' }} value={nueva.notas} onChange={e => setNu({ notas: e.target.value })} /></label>
+              </div>
+              <p style={{ fontSize: 11, color: 'var(--tm)', margin: '8px 0 0' }}>
+                El PDF sale con el logo, el RUC y la numeración de la empresa que emite.
+              </p>
+            </details>
+          </div>
 
-                    <div style={{ padding: '10px 14px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                      <button className="btn btn-sm" disabled={!listo || !nuevaEmpresa}
-                        onClick={() => crearOrden(g, { numerar: false })}>
-                        Guardar como borrador
-                      </button>
-                      <button className="btn btn-amber btn-sm" disabled={!listo || !nuevaEmpresa || !canEmitir}
-                        onClick={() => crearOrden(g, { numerar: true })}>
-                        <JxIcon name="check" size={14} /> Confirmar y numerar
-                      </button>
-                      {!listo && <span style={{ fontSize: 11.5, color: 'var(--amber)' }}>Falta el precio unitario de alguna línea.</span>}
-                      {!nuevaEmpresa && <span style={{ fontSize: 11.5, color: 'var(--amber)' }}>Elige arriba la empresa que emite.</span>}
-                    </div>
-                  </div>
-                );
-              })}
-            </>
+          {/* ── LOS AYUDANTES DE LA OBRA ─────────────────────────────
+              Solo dentro de un trabajo, y solo como ATAJOS: agregan líneas al
+              mismo formulario de arriba. Sin obra no hay presupuesto contra
+              qué comparar, y la orden se llena a mano — que es el caso normal
+              de una empresa comprándole a un tercero. */}
+          {obraScopeId && (
+            <div className="card card-p" style={{ marginBottom: 12 }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                <span style={{ fontSize: 11.5, color: 'var(--tm)' }}>Ayudas de esta obra:</span>
+                <button className="btn btn-sm btn-ghost" onClick={() => window.__navTo?.('abastecimiento')}>
+                  <JxIcon name="layers" size={13} /> Ver qué necesita y quién lo tiene
+                </button>
+                <span style={{ fontSize: 11, color: 'var(--tm)' }}>
+                  desde ahí eliges cantidades y vuelves acá con las líneas puestas
+                </span>
+              </div>
+            </div>
           )}
+
+          {/* ── LAS LÍNEAS ───────────────────────────────────────────── */}
+          <div className="card" style={{ overflow: 'hidden', marginBottom: 12 }}>
+            <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <b>{textosDeTipo(nueva.tipo).detalle}</b>
+              <button className="btn btn-sm" onClick={addLinea}><JxIcon name="plus" size={13} /> Agregar línea</button>
+              <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--tm)' }}>
+                Valor de venta <b style={{ color: 'var(--tp)' }}>{fmtS(totalesNueva.valorVenta)}</b>
+                {' · '}IGV {fmtS(totalesNueva.igv)}
+                {' · '}Total <b style={{ color: 'var(--tp)' }}>{fmtS(totalesNueva.total)}</b>
+              </span>
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <table className="tbl">
+                <thead><tr>
+                  <th style={{ minWidth: 240 }}>{textosDeTipo(nueva.tipo).columnaDescripcion}</th>
+                  <th style={{ width: 90 }}>Unidad</th>
+                  <th style={{ width: 110, textAlign: 'right' }}>Cantidad</th>
+                  <th style={{ width: 120, textAlign: 'right' }}>Precio unit.</th>
+                  <th style={{ width: 110, textAlign: 'right' }}>Subtotal</th>
+                  <th style={{ width: 40 }}></th>
+                </tr></thead>
+                <tbody>
+                  {lineas.length === 0 ? (
+                    <tr><td colSpan={6} style={{ textAlign: 'center', padding: 18, color: 'var(--tm)' }}>
+                      Sin líneas todavía. Pulsa «Agregar línea» y escribe qué estás comprando.
+                    </td></tr>
+                  ) : lineas.map(l => (
+                    <tr key={l.key}>
+                      <td>
+                        <input className="fi" style={{ width: '100%' }} value={l.descripcion}
+                          placeholder="CEMENTO PORTLAND TIPO I 42.5 kg"
+                          onChange={e => setLinea(l.key, { descripcion: e.target.value })} />
+                        {l.origen_company_id && (
+                          <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+                            sale del stock de {lookupCompany(l.origen_company_id)?.name || 'una empresa del grupo'}
+                            {l.tope != null ? ` · tiene ${Number(l.tope).toLocaleString('es-PE')}` : ''}
+                          </div>
+                        )}
+                      </td>
+                      <td><input className="fi" style={{ width: '100%' }} value={l.unidad}
+                        onChange={e => setLinea(l.key, { unidad: e.target.value })} /></td>
+                      <td><input className="fi" type="number" min="0" step="any" style={{ width: '100%', textAlign: 'right' }}
+                        value={l.cantidad} onChange={e => setLinea(l.key, { cantidad: e.target.value })} /></td>
+                      <td><input className="fi" type="number" min="0" step="any" style={{ width: '100%', textAlign: 'right' }}
+                        value={l.precio_unitario} placeholder="0.00"
+                        onChange={e => setLinea(l.key, { precio_unitario: e.target.value })} /></td>
+                      <td style={{ textAlign: 'right', fontWeight: 600 }}>
+                        {fmtS(Number(l.cantidad || 0) * Number(l.precio_unitario || 0))}
+                      </td>
+                      <td style={{ textAlign: 'center' }}>
+                        <button className="btn btn-xs btn-ghost" title="Quitar la línea" onClick={() => delLinea(l.key)}>✕</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="card card-p" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <button className="btn btn-sm" onClick={limpiarNueva}>Limpiar</button>
+            <button className="btn btn-sm" disabled={!!faltaNueva.length} onClick={() => crearOrden({ numerar: false })}>
+              Guardar como borrador
+            </button>
+            <button className="btn btn-amber btn-sm" disabled={!!faltaNueva.length || !canEmitir}
+              onClick={() => crearOrden({ numerar: true })}>
+              <JxIcon name="check" size={14} /> Confirmar y numerar
+            </button>
+            {faltaNueva.length > 0 && (
+              <span style={{ fontSize: 11.5, color: 'var(--amber)' }}>Falta {faltaNueva.join(', ')}.</span>
+            )}
+            {!faltaNueva.length && (
+              <span style={{ fontSize: 11.5, color: 'var(--tm)' }}>
+                El número se asigna al confirmar: un borrador que se abandona no deja huecos en la numeración.
+              </span>
+            )}
+          </div>
         </div>
       ) : tab === 'emitidas' ? (
         emitidas.length === 0 ? (

@@ -648,6 +648,20 @@ export function pasosDeOrden(orden, { movimiento = null, bancarizado = false, gu
 }
 
 /**
+ * ⏸ APARCADA el 6-set-2026, por decisión de Gabriel — la lógica queda y los
+ * tests también, pero NINGUNA pantalla la llama todavía.
+ *
+ * Sus palabras: «lo que te mencionaba antes del tema de las cadenas […] pienso
+ * que también debemos olvidarnos un poco esta parte, porque si no se vuelve muy
+ * complejo, y terminamos haciendo cosas que… todavía ni siquiera logramos hacer
+ * bien una orden de compra y de servicio, y ahora queremos colocar un
+ * intermediario».
+ *
+ * Tenía razón: la orden simple todavía no estaba resuelta cuando esto se armó.
+ * Se conserva porque está medida y testeada, y porque el caso existe de verdad
+ * — cuando la orden simple esté rodada, volver a enchufarla es una pantalla, no
+ * un rediseño. Las columnas de la mig 185 quedan sin usar y no molestan.
+ *
  * La CADENA con intermediario: A tiene el material, B lo revende, la ejecutora
  * lo compra. Devuelve las órdenes que hay que emitir, en el orden en que se
  * numeran.

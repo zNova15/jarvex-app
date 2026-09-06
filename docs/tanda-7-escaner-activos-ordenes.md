@@ -799,3 +799,112 @@ a costo. Hay test de las dos cosas.
 
 `cadenaDeOrdenes()`, `eslabonesDeCadena()` y `tieneIntermediario()` viven en
 `src/lib/ordenes.js` con 10 tests nuevos (88 en total en ese archivo).
+
+
+---
+
+## 12. Entrega 6c — probándola, Gabriel encontró el hueco central
+
+**Primero, un error de proceso mío:** nunca promoví a `main`. Gabriel abrió
+producción y vio la versión SIN las entregas 5, 5b y 6. Parte de su feedback
+era sobre código que no podía ver — pero **no todo**, y lo que sí era real era
+lo más importante.
+
+### 12.1 No se podía emitir una orden desde cero
+
+> «¿Qué pasa si quiero emitir ahorita mismo una orden de compra o una orden de
+> servicio, a un tercero, a una empresa que tal vez aún no está dentro del
+> sistema? ¿Cómo lo hago? En esta sección no me permite.»
+
+**Tenía razón, y era el hueco central.** La pestaña «Nueva orden» de la entrega
+6 SOLO se llenaba viniendo de Abastecimiento: sin obra y sin presupuesto no
+había forma de emitir nada. Y el caso más común de una EMPRESA es justamente
+ése — comprarle a un tercero, sin obra de por medio:
+
+> «Lo mismo pasa con las empresas que en su parte de contabilidad también
+> tienen el área de órdenes de compra y servicio. No pueden emitir, no tienen
+> ahí la interfaz para ir colocando qué insumos quieren.»
+
+**Su regla, textual, que es la que ordena el rediseño:**
+
+> «Por ahora, lo que vamos a hacer es centrarnos en que una empresa emita una
+> orden de compra o una orden de servicios. Cualquier empresa, la empresa de
+> nuestro grupo o una empresa de terceros. Y en el caso de la obra, lo mismo
+> prácticamente, pero con la ayuda de tener el inventario de las empresas del
+> grupo, y teniendo a la mano también qué es lo que necesita [la obra].»
+
+**Rehecha así.** El formulario se abre vacío y se llena a mano:
+
+- **Empresa que emite** · tipo (compra/servicio) · **fecha editable** · IGV %
+- **A quién se le compra**, en tres formas porque las tres pasan:
+  *escribirlo* (no está en el sistema — con la opción de guardarlo en el
+  catálogo), *un proveedor ya cargado* (de los 378), o *una empresa del grupo*.
+- **Líneas libres**: descripción, unidad, cantidad, precio. Se agregan y se
+  quitan.
+- Condiciones del documento en un desplegable: título/rubro, fecha y lugar de
+  entrega, condición de pago, notas. El PDF sale con el logo y la numeración de
+  la empresa que emite.
+
+**Abastecimiento dejó de ser la puerta y pasó a ser una AYUDA**: dentro de una
+obra hay un atajo que lleva allá, se eligen cantidades, y se vuelve con las
+líneas puestas en este mismo formulario. Sin obra no aparece — no hay
+presupuesto contra qué comparar, y la orden se llena a mano.
+
+### 12.2 La cadena con intermediario: APARCADA
+
+> «Lo que te mencionaba antes del tema de las cadenas […] pienso que también
+> debemos olvidarnos un poco esta parte, porque si no se vuelve muy complejo, y
+> terminamos haciendo cosas que… todavía ni siquiera logramos hacer bien una
+> orden de compra y de servicio, y ahora queremos colocar un intermediario.»
+
+Sacada de la pantalla. `cadenaDeOrdenes()` y sus 10 tests **quedan en la lib**,
+marcados como aparcados, y las columnas de la mig 185 quedan sin usar: cuando
+la orden simple esté rodada, volver a enchufarla es una pantalla, no un
+rediseño. Mientras tanto, una cadena se hace emitiendo cada orden por separado.
+
+### 12.3 Activar un bien ahora avisa que cambia el margen de la obra
+
+> «Si yo le doy clic a "es activo" y lo activo como un activo fijo, se supone
+> que me deberías dar aquí una ventana adicional donde me confirmes que quiero
+> hacerlo, ya que al hacerlo lo que voy a hacer también es quitar esto al
+> generador del costo de una obra.»
+
+Verificado en el código: `aceptarCandidato` **no pedía confirmación** y **no
+sacaba nada del costo**. Las dos cosas, corregidas:
+
+1. **Ventana de confirmación** que dice las DOS consecuencias antes de tocar
+   nada — que entra al 7.1 con su cuenta y su tasa, y que esos soles dejan de
+   contar como costo de la obra. Un botón que hace dos cosas y anuncia una es
+   un botón que sorprende.
+2. **`costoDeObra()` descuenta lo activado**, con 7 tests. Descuenta la parte
+   **proporcional** y no la línea suelta: `amount` es el total con IGV y el
+   precio de la línea es neto, así que restar el neto del bruto dejaría el IGV
+   del generador contado como costo de obra. Se usa el vínculo que la mig 182
+   ya guardaba (`accounting_movement_id` + `accounting_item_idx`), así que **no
+   hizo falta migración nueva**.
+
+**El `obra_id` NO se borra**: la trazabilidad se conserva («este generador se
+compró para Miraflores» sigue siendo verdad). Lo que cambia es que deja de
+sumar como costo — que es exactamente la distinción del modelo B.
+
+### 12.4 Lo que Gabriel dijo y conviene no perder
+
+> «Nada más es una trazabilidad, pero esa trazabilidad se tiene que volver
+> efectiva con documentos, como en este caso un comprobante de pago con su
+> bancarización, su orden de compra, sus detracciones, su guía.»
+
+Es `pasosDeOrden()`, que ya está escrito. Todavía no tiene pantalla propia: hoy
+la lista de pendientes existe en la librería y se muestra por orden. Ponerla
+como un tablero de «qué le falta a cada orden» es la continuación natural.
+
+### 12.5 Lo que queda abierto
+
+- **Ver el inventario del grupo desde el panel de una EMPRESA** (no de una
+  obra). Gabriel: «no creo que pase mucho […] normalmente, para el tema de las
+  empresas y sus órdenes, va a pasar más con empresas de terceros». Queda
+  pendiente por eso: es el caso raro.
+- **El comprobante de GASOMI emitido por JHEENSEG dentro de la obra**, que le
+  llamó la atención en «Sin respaldo». Es la decisión de la tanda 6 —dentro de
+  una obra NO se acota por empresa, porque en Miraflores solo 113 de 415
+  comprobantes son del titular y fijarlo escondería 3 de cada 4—. Vale
+  revisarlo con él ahora que las órdenes se emiten desde el otro lado.

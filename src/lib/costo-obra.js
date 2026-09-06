@@ -54,6 +54,7 @@
 
 import { indiceEmpresas, rucLimpio } from './documento-dos-lados.js';
 import { titularContableDeObra } from './consorcio.js';
+import { itemsDeFactura } from './cruce-recepcion.js';
 
 const vivos = (arr) => (Array.isArray(arr) ? arr.filter(x => x && !x.deleted_at) : []);
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
@@ -122,7 +123,58 @@ function tieneEspejo(venta, comprasTitularPorClave) {
  *
  * NO devuelve un total sumado: `costo` y `aporte` no se suman.
  */
-export function costoDeObra({ movs = [], obra = null, consorcios = [], companies = [], titularId = null } = {}) {
+/**
+ * Lo que hay que DESCONTAR de un comprobante porque esas líneas dejaron de ser
+ * consumo de la obra y pasaron a ser un ACTIVO FIJO que se deprecia.
+ *
+ * EL PEDIDO (Gabriel, 6-set-2026): «si yo le doy clic a "es activo" y lo activo
+ * como un activo fijo […] lo que voy a hacer también es quitar esto al
+ * generador del costo de una obra». Tiene razón: si el generador KAILI suma
+ * como costo de la obra Y además se deprecia en el balance, los mismos soles
+ * cuentan dos veces.
+ *
+ * Se descuenta la PARTE PROPORCIONAL, no la línea suelta: `amount` es el total
+ * CON IGV y el precio de la línea es neto, así que restar el neto del bruto
+ * dejaría el IGV del generador contado como costo de obra. Se calcula qué
+ * fracción de los ítems representa lo activado y se aplica esa fracción al
+ * total — que es exacto sin importar el IGV ni los redondeos.
+ *
+ * NO se toca el `obra_id` del comprobante: la trazabilidad se conserva («este
+ * generador se compró para Miraflores» sigue siendo verdad). Lo que cambia es
+ * que deja de sumar como costo.
+ */
+export function descuentoPorActivosFijos(mov, activosPorMovimiento) {
+  const activos = activosPorMovimiento?.get(mov?.id);
+  if (!activos || !activos.length) return 0;
+  const items = itemsDeFactura(mov);
+  if (!items.length) return 0;
+  const valorDe = (it) => num(it?.cantidad) * num(it?.precio_unitario);
+  const total = items.reduce((s, it) => s + valorDe(it), 0);
+  if (!(total > 0)) return 0;
+  // Un índice repetido (la misma línea activada dos veces por error) no puede
+  // descontar dos veces: se cuenta cada línea una sola vez.
+  const idx = new Set(activos.map(a => Number(a.accounting_item_idx)).filter(n => Number.isInteger(n) && n >= 0));
+  let activado = 0;
+  for (const i of idx) { if (items[i]) activado += valorDe(items[i]); }
+  if (!(activado > 0)) return 0;
+  const fraccion = Math.min(1, activado / total);
+  return r2(num(mov.amount) * fraccion);
+}
+
+/** Índice movimiento → activos fijos que salieron de él (mig 182). */
+export function indiceActivosPorMovimiento(activosFijos = []) {
+  const m = new Map();
+  for (const a of vivos(activosFijos)) {
+    const mid = a.accounting_movement_id;
+    if (!mid) continue;
+    const arr = m.get(mid) || [];
+    arr.push(a);
+    m.set(mid, arr);
+  }
+  return m;
+}
+
+export function costoDeObra({ movs = [], obra = null, consorcios = [], companies = [], titularId = null, activosFijos = [] } = {}) {
   const titular = titularId || titularContableDeObra(obra, consorcios) || null;
   const idx = indiceEmpresas(companies);
   const filas = vivos(movs);
@@ -130,6 +182,9 @@ export function costoDeObra({ movs = [], obra = null, consorcios = [], companies
   const costo = { n: 0, monto: 0, ids: new Set() };
   const aporte = { n: 0, monto: 0, ids: new Set(), porEmpresa: [] };
   const porEspejar = { n: 0, monto: 0, ids: new Set() };
+  // Lo que salió del costo por haberse activado como bien depreciable.
+  const activados = { n: 0, monto: 0, ids: new Set() };
+  const activosIdx = indiceActivosPorMovimiento(activosFijos);
   let anulados = 0;
 
   // Índice de las compras del titular, para saber después qué venta del grupo
@@ -144,8 +199,12 @@ export function costoDeObra({ movs = [], obra = null, consorcios = [], companies
     const esDelTitular = !!titular && m.company_id === titular;
 
     if (esCompraMov(m)) {
+      // Lo que se activó como bien depreciable deja de ser costo de la obra.
+      const descuento = descuentoPorActivosFijos(m, activosIdx);
+      const aporteNeto = num(m.amount) - descuento;
+      if (descuento > 0) { activados.n++; activados.monto += descuento; activados.ids.add(m.id); }
       if (esDelTitular) {
-        costo.n++; costo.monto += num(m.amount); costo.ids.add(m.id);
+        costo.n++; costo.monto += aporteNeto; costo.ids.add(m.id);
         const ruc = rucLimpio(m.third_party_ruc);
         if (ruc) {
           const k = `${ruc}|${r2(m.amount)}`;
@@ -154,9 +213,9 @@ export function costoDeObra({ movs = [], obra = null, consorcios = [], companies
       } else {
         // Sin titular resuelto no hay dos cosas que separar: todo es aporte y
         // el costo queda en cero, que es lo honesto (no sabemos quién ejecuta).
-        aporte.n++; aporte.monto += num(m.amount); aporte.ids.add(m.id);
+        aporte.n++; aporte.monto += aporteNeto; aporte.ids.add(m.id);
         const e = porEmpresa.get(m.company_id) || { company_id: m.company_id, n: 0, monto: 0 };
-        e.n++; e.monto += num(m.amount);
+        e.n++; e.monto += aporteNeto;
         porEmpresa.set(m.company_id, e);
       }
       continue;
@@ -192,6 +251,7 @@ export function costoDeObra({ movs = [], obra = null, consorcios = [], companies
     costo: { ...costo, monto: r2(costo.monto) },
     aporte: { ...aporte, monto: r2(aporte.monto) },
     porEspejar: { ...porEspejar, monto: r2(porEspejar.monto) },
+    activados: { ...activados, monto: r2(activados.monto) },
     anulados,
   };
 }
