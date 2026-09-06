@@ -108,9 +108,17 @@ Medido contra producción el 5-sep-2026 (compras en soles, > S/ 2.000):
 
 | Obra | Comprobantes sin respaldo | Monto |
 |---|---:|---:|
-| **Plan Miraflores** (CUI 2293464) | **139** | S/ 3.192.140 |
-| Obras San Marcos | 65 | S/ 2.218.597 |
-| Sin obra (gasto de empresa) | 98 | S/ 1.040.787 |
+| **Plan Miraflores** (CUI 2293464) | **94** | S/ 2.035.152 |
+| Obras San Marcos | 33 | S/ 1.110.949 |
+| Sin obra (gasto de empresa) | 77 | S/ 791.488 |
+
+> ⚠️ **Corregido el 6-sep.** La primera versión de esta tabla decía 139 / 65 / 98
+> y S/ 3.192.140 en Miraflores. Estaba mal: la consulta no filtraba por `type` e
+> incluía las VENTAS. El filtro real es el de `necesitaOrden()` en
+> `src/lib/ordenes.js` — `type IN ('cost','expense')`, moneda PEN, sin orden ya
+> asignada, y monto > el umbral. Los números de arriba son con ese filtro. El
+> mensaje del commit `bacf1ea` conserva la cifra vieja: quedó escrita antes de
+> detectarlo.
 
 `ordenes_compra` sigue en **0 filas**: nunca se emitió una. La pestaña «Sin
 respaldo», ahora acotada a la obra, es la que tiene trabajo real que hacer.
@@ -139,7 +147,7 @@ respaldo», ahora acotada a la obra, es la que tiene trabajo real que hacer.
 - **A mano, lo que reportó Gabriel:**
   1. Entrar a Miraflores → menú de la obra → «Órdenes de Compra y Servicio de
      esta obra»: tiene que quedarse en la obra, con su cartel ámbar, y mostrar
-     139 comprobantes sin respaldo (no los 302 del grupo).
+     94 comprobantes sin respaldo (no los 204 del grupo).
   2. Contabilidad → Resumen por entidad → la fila de Miraflores: tiene que
      abrir **Movimientos de esta obra**, no el panel con Almacén y Gestión.
   3. Entrar al panel de JARVEX, salir por el menú, entrar a un trabajo y

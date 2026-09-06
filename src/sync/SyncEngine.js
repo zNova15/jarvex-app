@@ -1178,7 +1178,15 @@ const FK_DEPS = {
   // en schema: company_id/related_company_id/related_movement_id/obra_id/proveedor_id
   // y seller_/buyer_company_id/movement_id), así el self-heal 23503 también aplica.
   // Las FKs null se saltan solas (guard `if (!id) continue` en fkDepsReady).
-  accounting_movements:      [{ campo: 'company_id', tabla: 'companies' }, { campo: 'related_company_id', tabla: 'companies' }, { campo: 'related_movement_id', tabla: 'accounting_movements' }, { campo: 'obra_id', tabla: 'obras' }, { campo: 'proveedor_id', tabla: 'proveedores' }],
+  // `orden_compra_id` FALTABA (agregado 6-sep-2026). La FK existe en el servidor
+  // desde la mig 041 —accounting_movements_orden_compra_id_fkey → ordenes_compra—
+  // pero en el orden de push accounting_movements va DOCE posiciones antes que
+  // ordenes_compra, así que un movimiento que ya apunta a su orden llegaba antes
+  // que la orden: 23503, 5 reintentos, FAILED y el cartel rojo de sync.
+  // Dormido hasta hoy porque ordenes_compra tiene 0 filas — pero la emisión en
+  // lote de la tanda 5 escribe los dos lados a la vez, así que la PRIMERA vez que
+  // se emita el respaldo de una obra, se caen todos los movimientos del lote.
+  accounting_movements:      [{ campo: 'company_id', tabla: 'companies' }, { campo: 'related_company_id', tabla: 'companies' }, { campo: 'related_movement_id', tabla: 'accounting_movements' }, { campo: 'obra_id', tabla: 'obras' }, { campo: 'proveedor_id', tabla: 'proveedores' }, { campo: 'orden_compra_id', tabla: 'ordenes_compra' }],
   intercompany_transactions: [{ campo: 'seller_company_id', tabla: 'companies' }, { campo: 'buyer_company_id', tabla: 'companies' }, { campo: 'seller_movement_id', tabla: 'accounting_movements' }, { campo: 'buyer_movement_id', tabla: 'accounting_movements' }],
 };
 
