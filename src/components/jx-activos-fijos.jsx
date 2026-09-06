@@ -37,6 +37,8 @@ import {
 } from "../lib/activos-fijos.js";
 import { filtroInicialEmpresa, setEmpresaActivaId } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
+import { RecomendadorActivosModal } from "./jx-recomendador-activos.jsx";
+import { candidatosActivo, claveLinea } from "../lib/recomendador-activos.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -75,12 +77,30 @@ function ActivosFijosPage({ showToast }) {
 
   const { data: companies } = window.__hooks.useCompanies();
   const { data: activosPesados } = window.__hooks.useActivosPesados();
+  // ── RECOMENDADOR (tanda 7): qué de lo comprado parece activo ──────
+  const { data: movsCompra } = window.__hooks.useAccountingMovements?.() || { data: [] };
+  const [showReco, setShowReco] = uS(false);
 
   const empresaFija = useEmpresaBloqueada();
   const [filtroEmpresaRaw, setFiltroEmpresa] = uS(() => filtroInicialEmpresa(''));
   const filtroEmpresa = empresaFija || filtroEmpresaRaw;
   const [periodo, setPeriodo] = uS(ANIO_ACTUAL);
   const [activos, setActivos] = uS([]);
+  // ⚠ Estos dos memos van DESPUÉS de `activos`: leerlo antes es un TDZ, y el
+  // array de deps se evalúa en cada render. Es el mismo error que dejó
+  // Movimientos Contables muerto el 3-sep con el green gate en verde; acá lo
+  // cazó pantallas-montan.test.jsx antes de salir.
+  const yaCargadosLinea = uM(() => {
+    const set = new Set();
+    for (const a of activos || []) {
+      if (a.deleted_at || !a.accounting_movement_id || a.accounting_item_idx == null) continue;
+      set.add(claveLinea(a.accounting_movement_id, a.accounting_item_idx));
+    }
+    return set;
+  }, [activos]);
+  const nCandidatos = uM(() => filtroEmpresa
+    ? candidatosActivo(movsCompra || [], { companyId: filtroEmpresa, yaCargados: yaCargadosLinea }).length
+    : 0, [movsCompra, filtroEmpresa, yaCargadosLinea]);
   const [modal, setModal] = uS(null);      // 'alta' | 'importar' | 'cierre'
   const [form, setForm] = uS(() => FORM_VACIO(ANIO_ACTUAL, null));
   const [editando, setEditando] = uS(null);
@@ -237,6 +257,78 @@ function ActivosFijosPage({ showToast }) {
     } catch (e) { toast('Error: ' + (e.message || e), 'red'); }
   };
 
+  // ── Aceptar un candidato del recomendador (tanda 7) ──────────────
+  // Crea la fila del 7.1 con lo que la factura ya sabe: descripción, costo
+  // unitario × cantidad, fecha, y la cuenta + tasa que propone la lib. Guarda
+  // de qué LÍNEA salió (mig 182) para no volver a proponerla, y enlaza con
+  // Equipos Pesados si el nombre coincide — si no, el botón «Traer de Equipos
+  // Pesados» lo ofrecería otra vez y quedaría registrado dos veces.
+  const aceptarCandidato = async (c) => {
+    const now = new Date().toISOString();
+    const id = window.__newId();
+    const costo = Number(c.precio_unitario || 0) * Number(c.cantidad || 1);
+    const normalizar = (t) => String(t || '').toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .split(/[^a-z0-9]+/).filter(w => w.length > 3);
+    const tokens = new Set(normalizar(c.descripcion));
+    const pesado = (activosPesados || []).find(ap => {
+      if (ap.deleted_at) return false;
+      const t = normalizar(ap.nombre);
+      if (!t.length) return false;
+      const comunes = t.filter(w => tokens.has(w)).length;
+      return comunes >= Math.min(2, t.length);
+    }) || null;
+
+    await window.__db.activos_fijos.add({
+      id,
+      company_id: c.company_id || filtroEmpresa,
+      periodo: Number(periodo),
+      codigo_relacionado: c.documento || '',
+      cuenta_contable: c.cuenta,
+      descripcion: c.descripcion,
+      marca: '', modelo: '', serie_placa: '',
+      saldo_inicial: 0,
+      adquisiciones: costo,
+      mejoras: 0, retiros: 0, otros_ajustes: 0, ajuste_inflacion: 0,
+      fecha_adquisicion: c.fecha || '',
+      fecha_inicio_uso: c.fecha || '',
+      metodo_depreciacion: 'linea_recta',
+      doc_autorizacion: '',
+      porcentaje_depreciacion: c.tasa,
+      meses_uso: 12,
+      deprec_acum_anterior: 0, deprec_retiros: 0, deprec_otros_ajustes: 0, ajuste_inflacion_deprec: 0,
+      estado: 'activo',
+      activo_pesado_id: pesado ? pesado.id : null,
+      accounting_movement_id: c.movimiento_id,
+      accounting_item_idx: c.item_idx,
+      obra_id: c.obra_id || null,
+      notas: pesado ? `Enlazado con el equipo «${pesado.nombre}» del registro operativo.` : '',
+      created_by: userId, updated_by: userId, created_at: now, updated_at: now,
+      deleted_at: null,
+      version: 1, sync_status: 'pending_create', last_synced_at: null,
+      idempotency_key: `${userId}_af_${id}`,
+    });
+    // Si el equipo operativo no tenía costo ni fecha, se los completa: era una
+    // de las razones por las que el 7.1 estaba vacío.
+    if (pesado && pesado.costo_adquisicion == null) {
+      try {
+        await window.__db.activos_pesados.update(pesado.id, {
+          costo_adquisicion: Number(c.precio_unitario) || null,
+          fecha_adquisicion: c.fecha || null,
+          company_id: pesado.company_id || c.company_id || null,
+          updated_at: now, updated_by: userId,
+          version: (pesado.version ?? 0) + 1,
+          sync_status: pesado.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+        });
+      } catch (e) { console.warn('[recomendador] no se pudo completar el equipo pesado:', e); }
+    }
+    try { await window.__logAudit?.({ action: 'create', table: 'activos_fijos', recordId: id,
+      newData: { descripcion: c.descripcion, adquisiciones: costo, cuenta_contable: c.cuenta },
+      reason: `Aceptado desde el recomendador (${c.documento || 's/doc'})` }); } catch {}
+    try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'activos_fijos' } })); } catch {}
+    await recargar();
+  };
+
   // ── Importar desde el registro operativo ────────────────────────
   const importarPesados = async () => {
     if (guardandoRef.current) return;
@@ -323,6 +415,14 @@ function ActivosFijosPage({ showToast }) {
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           <button className="btn btn-ghost btn-sm" onClick={exportar}><JxIcon name="download" size={13} />Exportar formato 7.1</button>
+          {/* Recomendador (tanda 7): lee lo que compró la empresa y propone qué
+              parece un bien que dura. NADA entra solo — cada fila la acepta una
+              persona, que fue la condición de Gabriel. */}
+          <button className="btn btn-ghost btn-sm" onClick={() => setShowReco(true)}
+            title="Revisar las compras de esta empresa y ver qué parece activo fijo">
+            <JxIcon name="search" size={13} />Revisar compras
+            {nCandidatos ? <span className="badge b-amber" style={{ marginLeft: 4 }}>{nCandidatos}</span> : ''}
+          </button>
           {puedeEditar && <button className="btn btn-amber btn-sm" onClick={abrirAlta}><JxIcon name="plus" size={13} />Nuevo activo</button>}
         </div>
       </div>
@@ -566,6 +666,16 @@ function ActivosFijosPage({ showToast }) {
             </button>
           </div>
         </Modal>
+      )}
+
+      {showReco && (
+        <RecomendadorActivosModal
+          movs={movsCompra || []} activos={activos || []} companies={companies || []}
+          activosPesados={activosPesados || []}
+          companyId={filtroEmpresa} periodo={periodo}
+          puedeEditar={puedeEditar} showToast={toast}
+          onAceptar={aceptarCandidato}
+          onClose={() => setShowReco(false)}/>
       )}
 
       {/* ── Traer desde Equipos Pesados ─────────────────────────── */}

@@ -77,6 +77,15 @@ export const db = new Dexie('JarvexDB');
 // cronograma, avance, personal ni almacén. La compra y la venta son
 // accounting_movements con trabajo_id — el margen se calcula, no se guarda
 // (src/lib/trabajos.js). Aditivo.
+// Versión 54: DE QUÉ LÍNEA DE FACTURA SALIÓ UN ACTIVO (mig 182, tanda 7). El
+// recomendador propone por LÍNEA, no por comprobante: una misma factura trae
+// dos laptops y una impresora. Sin el índice de línea, aceptar una marcaría la
+// factura entera como resuelta. Aditivo: re-declara activos_fijos sumando
+// accounting_item_idx.
+db.version(54).stores({
+  activos_fijos: 'id, company_id, periodo, cuenta_contable, activo_pesado_id, accounting_movement_id, accounting_item_idx, estado, deleted_at, sync_status',
+});
+
 // Versión 53: DESCARTES DE LA REVISIÓN DE FACTURAS (mig 181, tanda 7). El
 // escáner NO guarda hallazgos —los recalcula al abrir, como el stock sale de
 // los movimientos—; lo único que se persiste es la decisión humana de «esto lo
