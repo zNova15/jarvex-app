@@ -7,6 +7,7 @@ import { usePagination } from "../hooks/usePagination.js";
 import { TablePagination } from "./jx-pagination.jsx";
 import { detectarDuplicados, claseDe } from "../lib/dedupe-movs-contables.js";
 import { derivarTypeContable, motivoClasificacion, overrideEfectivo, TYPE_LABEL, TYPE_LABEL_LARGO } from "../lib/clasificacion-contable.js";
+import { movimientosConParRegistrado, puedeEditarMovimiento, puedeEliminarMovimiento, avisoDeEspejo } from "../lib/interco-edicion.js";
 import { cmpComprobante } from "../lib/comparar-comprobante.js";
 import { resumenRecepcion, rankearIngresosParaItem, rankearFacturasParaIngreso, itemsDeFactura, estadoRecepcionDeItems, parseNotas, referenciaSinCostos, reporteRecepcion } from "../lib/cruce-recepcion.js";
 import { ConsultasPanel, useConsultasResumen } from "./jx-consultas.jsx";
@@ -1645,6 +1646,13 @@ function MovimientosContablesPage({ showToast }) {
   // Decisión de Gabriel (1-sep): la constancia de un lado vale para los dos.
   // Contra un tercero externo NO aplica: ahí la bancarización es propia.
   const movsById = uMC(() => new Map((movs || []).map(m => [m.id, m])), [movs]);
+  // Los movimientos que SON pata de un par intercompany registrado. Es la señal
+  // que decide si el lápiz está vivo (src/lib/interco-edicion.js). Medido el
+  // 6-sep-2026: intercompany_transactions tiene 0 filas y hay 171 movimientos
+  // marcados is_intercompany — 76 de ellos ventas por S/ 2.188.404,52 que
+  // estaban secuestrados porque el gate miraba el flag y no el par.
+  const { data: intercoTx } = window.__hooks.useIntercompanyTransactions?.() || { data: [] };
+  const movsConParInterco = uMC(() => movimientosConParRegistrado(intercoTx), [intercoTx]);
   const bancarizadoDirecto = (m) => {
     if (!m) return false;
     const ev = bancarizacionPorMov.get(m.id);
@@ -1855,10 +1863,18 @@ function MovimientosContablesPage({ showToast }) {
   };
 
   const openEditar = (m) => {
-    if (m.is_intercompany) {
-      showToast('Los movimientos generados desde Operaciones entre empresas se editan desde esa pantalla', 'amber');
-      return;
-    }
+    // Se condiciona en si el movimiento es PATA DE UN PAR REGISTRADO, no en el
+    // flag `is_intercompany` (ver src/lib/interco-edicion.js). El flag es un
+    // atributo contable que pone Captura Mágica; el par es lo que obliga a
+    // mover los dos lados juntos. Con intercompany_transactions en 0 filas,
+    // esto destraba los 171 marcados sin aflojar la garantía.
+    const gate = puedeEditarMovimiento(m, movsConParInterco);
+    if (!gate.puede) { showToast(gate.motivo, 'amber'); return; }
+    // El espejo NO bloquea: avisa. La contadora tiene que saber, antes de tocar
+    // el monto, que el mismo comprobante está cargado del otro lado y que
+    // editar aquí no lo mueve allá.
+    const aviso = avisoDeEspejo(m, movsById, (id) => lookupCompany(id)?.name || null);
+    if (aviso) showToast(aviso, 'amber');
     setForm({
       company_id: m.company_id,
       date: m.date || '',
@@ -2014,10 +2030,10 @@ function MovimientosContablesPage({ showToast }) {
 
   const eliminar = async (m) => {
     if (!isAdmin) return;
-    if (m.is_intercompany) {
-      showToast('Para eliminar este movimiento, elimina la operación entre empresas correspondiente', 'amber');
-      return;
-    }
+    let espejoAuto = false;
+    try { espejoAuto = !!(JSON.parse(m.notas || '{}')?.intercompany_auto); } catch {}
+    const gate = puedeEliminarMovimiento(m, movsConParInterco, { esEspejoAuto: espejoAuto });
+    if (!gate.puede) { showToast(gate.motivo, 'amber'); return; }
     if (!confirm(`¿Eliminar movimiento de ${fmtCur(m.amount, m.currency)}?`)) return;
     try {
       await window.__db.accounting_movements.update(m.id, {
@@ -3026,7 +3042,10 @@ function MovimientosContablesPage({ showToast }) {
               <tbody>
                 {movPg.pagedItems.map(m => {
                   const c = lookupCompany(m.company_id);
-                  const isIc = m.is_intercompany;
+                  const isIc = m.is_intercompany;   // solo para el badge y el tinte de la fila
+                  // El LÁPIZ y la PAPELERA se deciden por el par registrado, no
+                  // por el flag: src/lib/interco-edicion.js.
+                  const gateEditar = puedeEditarMovimiento(m, movsConParInterco);
                   const reflejo = esReflejo(m);
                   let esEspejoAuto = false;
                   try { esEspejoAuto = !!(JSON.parse(m.notas || '{}')?.intercompany_auto); } catch {}
@@ -3298,7 +3317,7 @@ function MovimientosContablesPage({ showToast }) {
                       </td>
                       <td style={{ textAlign:'right', fontWeight:700, color:TYPE_COLOR[m.type] }} className="col-num">{fmtCur(m.amount, m.currency)}</td>
                       <td>
-                        <select className="fi" value={m.payment_status} disabled={esAyudante || isIc} title={esAyudante ? 'Solo lectura — usá "Solicitar" para pedir un cambio' : undefined} onChange={e=>cambiarEstadoPago(m, e.target.value)} style={{ fontSize:11, padding:'4px 6px', minWidth:110 }}>
+                        <select className="fi" value={m.payment_status} disabled={esAyudante || !gateEditar.puede} title={esAyudante ? 'Solo lectura — usa «Solicitar» para pedir un cambio' : (gateEditar.motivo || undefined)} onChange={e=>cambiarEstadoPago(m, e.target.value)} style={{ fontSize:11, padding:'4px 6px', minWidth:110 }}>
                           <option value="pending">⏱ Pendiente</option>
                           <option value="paid">✓ Pagado</option>
                           <option value="cancelled">✗ Anulado</option>
@@ -3327,7 +3346,7 @@ function MovimientosContablesPage({ showToast }) {
                             <JxIcon name="edit" size={11}/> Solicitar
                           </button>
                         ) : (
-                          <button className="btn btn-ghost btn-xs" title={isIc?'Editar desde Operaciones entre empresas':'Editar'} onClick={()=>openEditar(m)} disabled={isIc || !canEditExisting}>
+                          <button className="btn btn-ghost btn-xs" title={gateEditar.motivo || 'Editar'} onClick={()=>openEditar(m)} disabled={!gateEditar.puede || !canEditExisting}>
                             <JxIcon name="edit" size={11}/>
                           </button>
                         )}
@@ -3335,7 +3354,7 @@ function MovimientosContablesPage({ showToast }) {
                           <button className="btn btn-red btn-xs"
                             title={esEspejoAuto ? 'Eliminar la contraparte automática (para reemplazarla por el comprobante real)' : 'Eliminar'}
                             onClick={()=> esEspejoAuto ? eliminarEspejoAuto(m) : eliminar(m)}
-                            style={{ marginLeft:4 }} disabled={isIc && !esEspejoAuto}>
+                            style={{ marginLeft:4 }} disabled={!puedeEliminarMovimiento(m, movsConParInterco, { esEspejoAuto }).puede}>
                             <JxIcon name="trash" size={11}/>
                           </button>
                         )}
@@ -4054,13 +4073,14 @@ function MovimientosContablesPage({ showToast }) {
           table="accounting_movements"
           record={solicitarTarget}
           recordLabel={`${solicitarTarget.document_type || 'doc'} ${solicitarTarget.document_number || ''} · ${fmtCur(solicitarTarget.amount, solicitarTarget.currency)}`}
-          // INTERCO (no espejo AUTO): el par se edita/elimina desde "Operaciones
-          // entre empresas" — acá solo se permite pedir la VINCULACIÓN (obra/destino,
-          // que SÍ se propaga al espejo) y pedidos descriptivos. Sin allowDelete:
-          // aprobar un borrado/monto/estado tocaría UN solo lado del par.
-          allowDelete={!solicitarTarget.is_intercompany}
+          // El recorte se aplica cuando el movimiento es PATA DE UN PAR REGISTRADO
+          // (intercompany_transactions), no cuando lleva el flag is_intercompany:
+          // ahí sí aprobar un cambio de monto/estado tocaría un solo lado del par.
+          // Con la tabla en 0 filas, la ayudante recupera los 6 campos que el
+          // flag le recortaba de más. Ver src/lib/interco-edicion.js.
+          allowDelete={puedeEditarMovimiento(solicitarTarget, movsConParInterco).puede}
           fields={[
-            ...(solicitarTarget.is_intercompany ? [] : [
+            ...(!puedeEditarMovimiento(solicitarTarget, movsConParInterco).puede ? [] : [
             { key: 'amount', label: 'Monto', type: 'number' },
             { key: 'date', label: 'Fecha', type: 'date' },
             { key: 'description', label: 'Descripción' },
