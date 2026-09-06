@@ -161,7 +161,14 @@ beforeAll(async () => {
   const antes = new Set(Object.keys(globalThis));
   for (const c of CHUNKS) { try { await import(c); } catch (e) { fallosImport.push(`${c}: ${e.message}`); } }
   pantallas = Object.keys(globalThis).filter(k => !antes.has(k) && /Page$/.test(k)).sort();
-});
+// 🔴 TIMEOUT EXPLÍCITO (5-sep-2026). Este hook importa ~40 chunks de la app;
+// solo tarda ~6 s, pero con la suite completa corriendo en paralelo se pasaba
+// del default de 10 s de vitest y el archivo entero se marcaba FAILED sin que
+// fallara una sola aserción. Ése era "el test flaky" que el handoff de R2
+// mandaba volver a correr — y es JUSTO el que no puede ser ruido: es el que
+// atrapó el TDZ que dejó Movimientos Contables muerto con el green gate en
+// verde. Un guard que falla al azar se termina ignorando.
+}, 60000);
 
 describe('cada pantalla abre', () => {
   it('se encontraron las pantallas de los chunks importados', () => {

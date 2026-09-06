@@ -19,7 +19,7 @@ import { sugerirFacturasParaGuia, clasificarOrigenGuia, guiasEsperandoFactura,
          referenciasPendientes } from "../lib/guias.js";
 import {
   parseObservacionCampo, filtrarBandeja, esFaltaMigracion164,
-  ESTADO_PENDIENTE, ESTADO_LEIDA, ESTADO_REGISTRADA, ESTADO_DESCARTADA,
+  ESTADO_PENDIENTE, ESTADO_LEIDA, ESTADO_REGISTRADA, ESTADO_DESCARTADA, yaLeidaConIA,
 } from "../lib/captura-campo.js";
 import {
   clasificarPartes, permiteCrearProveedor, permiteCrearEmpresaGrupo,
@@ -346,12 +346,11 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
         showToast?.('La lectura con IA no terminó bien — la foto SIGUE en "⏳ Pendientes". Mirá el error en la bandeja de abajo y reintentá.', 'amber');
         return;
       }
-      // Ya se trabajó → sale de Pendientes y pasa a "Trabajadas" (pedido de
-      // Gabriel 1-sep: antes quedaba ocupando la bandeja hasta marcarla a mano).
-      const movida = await setEstado(ev, ESTADO_LEIDA, { silencioso: true });
-      showToast?.(movida
-        ? '✓ Enviada a la IA y movida a "🤖 Trabajadas" — revisala en la bandeja de abajo y cerrala como Registrada.'
-        : '✓ Enviada a la lectura con IA — revisala en la bandeja de abajo.', 'green');
+      // Se MARCA como leída, pero NO sale de Pendientes (5-sep): leerla no es
+      // decidir sobre ella. Sale cuando la contadora la cierra como Registrada
+      // o Descartada. Ver la cabecera de src/lib/captura-campo.js.
+      await setEstado(ev, ESTADO_LEIDA, { silencioso: true });
+      showToast?.('✓ Leída con IA — quedó marcada 🤖 y SIGUE en Pendientes. Revisala en la bandeja de abajo y cerrala como "✓ Registrada" o "✗ Descartar".', 'green');
     } catch (e) {
       showToast?.('Error al leer el archivo de campo: ' + (e.message || e), 'red');
     } finally {
@@ -408,14 +407,14 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
               sin perder de vista nada (pedido de Gabriel 1-sep). */}
           <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
             {tabBtn(ESTADO_PENDIENTE, '⏳ Pendientes', pendientes.length)}
-            {tabBtn(ESTADO_LEIDA, '🤖 Trabajadas', leidas.length)}
+            {tabBtn(ESTADO_LEIDA, '🤖 Ya leídas', leidas.length)}
           </div>
 
           {!visibles.length && (
             <div style={{ fontSize: 11.5, color: 'var(--tm)', marginTop: 10 }}>
               {pestana === ESTADO_LEIDA
-                ? 'Nada trabajado todavía. Lo que mandes a la IA aparece acá hasta que lo cierres como Registrada o Descartada.'
-                : 'Sin pendientes: todo lo recibido ya se trabajó. Mirá la pestaña "🤖 Trabajadas".'}
+                ? 'Nada leído todavía. Acá queda el historial de lo que pasó por la IA.'
+                : 'Sin pendientes: todo lo recibido se cerró como Registrada o Descartada.'}
             </div>
           )}
 
@@ -433,6 +432,11 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
                       <span className="badge b-blue" style={{ fontSize: 9 }} title="Lo subió un usuario con su propia cuenta">cuenta propia</span>
                     )}
                     {sinArchivo && <span className="badge b-amber" style={{ fontSize: 9 }}>⬆ aún subiendo desde el teléfono</span>}
+                    {/* Ya pasó por la IA pero sigue abierta: la decisión de
+                        cerrarla es de la contadora, no de la lectura. */}
+                    {yaLeidaConIA(ev) && pestana !== ESTADO_LEIDA && (
+                      <span className="badge b-green" style={{ fontSize: 9 }} title="Ya se leyó con IA. Revisá el resultado en la bandeja de abajo y cerrala como Registrada o Descartada.">🤖 ya leída</span>
+                    )}
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 2 }}>
                     {String(ev.created_at || '').slice(0, 10)} · {ev.nombre_archivo}
@@ -440,7 +444,7 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
                   {comentario && <div style={{ fontSize: 11.5, color: 'var(--ts)', marginTop: 3 }}>💬 {comentario}</div>}
                   <div style={{ display: 'flex', gap: 6, marginTop: 7, flexWrap: 'wrap' }}>
                     <button className="btn btn-amber btn-xs" disabled={sinArchivo} onClick={() => leerConIA(ev)}>
-                      {pestana === ESTADO_LEIDA ? '🤖 Leer otra vez' : '🤖 Leer con IA'}
+                      {(pestana === ESTADO_LEIDA || yaLeidaConIA(ev)) ? '🤖 Leer otra vez' : '🤖 Leer con IA'}
                     </button>
                     <button className="btn btn-green btn-xs" onClick={() => marcar(ev, ESTADO_REGISTRADA)} title="Ya la confirmaste en la bandeja de abajo (o la registraste a mano)">✓ Registrada</button>
                     {pestana === ESTADO_LEIDA && (

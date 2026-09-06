@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  identidadDePerfil, armarObservacionCampo, parseObservacionCampo, filtrarBandeja,
+  identidadDePerfil, armarObservacionCampo, parseObservacionCampo, filtrarBandeja, yaLeidaConIA,
   esFaltaMigracion164, esPdf, ESTADO_LEIDA, ESTADO_PENDIENTE,
 } from '../captura-campo.js';
 
@@ -69,10 +69,18 @@ describe('pestañas de la bandeja', () => {
   ];
 
   it('Pendientes: incluye las viejas sin estado y excluye borradas/ajenas', () => {
-    expect(filtrarBandeja(filas, ESTADO_PENDIENTE).map(f => f.id)).toEqual([1, 5]);
+    // 5-sep: la LEÍDA (2) también sigue acá. Leer con IA marca, no resuelve.
+    expect(filtrarBandeja(filas, ESTADO_PENDIENTE).map(f => f.id)).toEqual([1, 2, 5]);
   });
 
-  it('Leídas: solo las ya mandadas a la IA', () => {
+  it('una foto leída con IA NO sale de Pendientes: la saca la contadora, no la IA', () => {
+    const ids = filtrarBandeja(filas, ESTADO_PENDIENTE).map(f => f.id);
+    expect(ids).toContain(2);          // campo_revision = 'leida'
+    expect(yaLeidaConIA(filas[1])).toBe(true);
+    expect(yaLeidaConIA(filas[0])).toBe(false);
+  });
+
+  it('Leídas: sigue siendo el historial de lo que pasó por la IA', () => {
     expect(filtrarBandeja(filas, ESTADO_LEIDA).map(f => f.id)).toEqual([2]);
   });
 

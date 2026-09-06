@@ -45,9 +45,22 @@ export function parseObservacionCampo(obs) {
 
 // ── Estados de la bandeja ───────────────────────────────────────────
 // 'pendiente' → nadie la tocó · 'leida' → ya se mandó a la IA (mig 164)
-// 'registrada' / 'descartada' → cerrada. Antes "Leer con IA" no cambiaba el
-// estado: la foto seguía en la bandeja aunque ya estuviera trabajada y había
-// que acordarse de marcarla a mano (pedido de Gabriel 1-sep).
+// 'registrada' / 'descartada' → cerrada.
+//
+// 🔴 QUIÉN DECIDE QUE UNA FOTO SALE DE PENDIENTES (5-sep-2026)
+// El 1-sep 'leida' sacaba la foto de Pendientes: se mandaba a la IA y
+// desaparecía. Gabriel: «cuando le doy a leer con IA debería salirme como que
+// ya fue leído, y con eso yo tengo la potestad de elegir si quiero acoplarla o
+// descartarla». Tiene razón: leerla no es decidir sobre ella, y sacarla de la
+// lista convertía una lectura en una resolución que él no tomó.
+//
+// Ahora 'leida' es una MARCA, no una salida: la foto sigue en Pendientes con
+// el sello "🤖 ya leída" hasta que alguien la cierra como registrada o
+// descartada. La pestaña "Trabajadas" sigue existiendo como historial de lo
+// que ya pasó por la IA.
+//
+// Consecuencia aceptada a propósito: Pendientes vuelve a acumular las ya
+// leídas. Es el precio de que nadie más que la contadora cierre un comprobante.
 export const ESTADO_PENDIENTE = 'pendiente';
 export const ESTADO_LEIDA = 'leida';
 export const ESTADO_REGISTRADA = 'registrada';
@@ -58,7 +71,16 @@ export const ESTADO_DESCARTADA = 'descartada';
 export function filtrarBandeja(filas, pestana) {
   const rows = (filas || []).filter(e => !e.deleted_at && e.tipo_evidencia === 'factura_campo');
   if (pestana === ESTADO_LEIDA) return rows.filter(e => e.campo_revision === ESTADO_LEIDA);
-  return rows.filter(e => !e.campo_revision || e.campo_revision === ESTADO_PENDIENTE);
+  // Pendientes = todo lo que sigue ABIERTO, leído o no. Sale solo cuando se
+  // cierra como registrada/descartada.
+  return rows.filter(e => !e.campo_revision
+    || e.campo_revision === ESTADO_PENDIENTE
+    || e.campo_revision === ESTADO_LEIDA);
+}
+
+/** ¿Esta foto ya pasó por la IA? Marca visual dentro de Pendientes. */
+export function yaLeidaConIA(ev) {
+  return ev?.campo_revision === ESTADO_LEIDA;
 }
 
 // ¿El error del UPDATE es "falta aplicar la migración 164"? Postgres devuelve
