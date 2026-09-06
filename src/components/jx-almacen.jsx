@@ -1136,10 +1136,24 @@ function MaterialesPage({ showToast }) {
     let cancelled = false;
     const load = async () => {
       try {
-        const rows = await window.__db.accounting_movements
-          .where('obra_id').equals(obraId)
-          .filter(m => PENDIENTE_STATUSES.includes(m.recepcion_status) && !m.deleted_at)
-          .toArray();
+        // ⚠ `accounting_movements` NO indexa `obra_id` en Dexie (jarvex.db.js: el
+        // índice es 'id, company_id, type, date, payment_status, is_intercompany,
+        // related_movement_id, deleted_at, sync_status'). Un .where('obra_id')
+        // tira SchemaError, la promesa rechaza, y el catch de abajo se lo tragaba
+        // en silencio: esta lista estuvo VACÍA desde el 15-may-2026 mientras
+        // producción tenía 78 facturas en pendiente_recepcion con obra.
+        //
+        // Prueba independiente de que este bloque nunca corrió: `recepcion_status`
+        // = 'parcial' tiene 0 filas en toda la historia de la base, y el único
+        // código que lo escribe cuelga de esta lista.
+        //
+        // Mismo arreglo que ya tiene la pantalla hermana (jx-compras-pendientes):
+        // toArray() + filtro en memoria. Son ~1.400 filas.
+        // OJO: la consulta de movimientos_materiales de más abajo SÍ está
+        // indexada por obra_id ('id, obra_id, material_id, …') — no la toques.
+        const todos = await window.__db.accounting_movements.toArray();
+        const rows = todos.filter(m => m.obra_id === obraId
+          && PENDIENTE_STATUSES.includes(m.recepcion_status) && !m.deleted_at);
         rows.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
 
         // Cargar progreso: para cada factura, sumar cantidad ingresada.
@@ -1164,7 +1178,10 @@ function MaterialesPage({ showToast }) {
           setFacturasPendientes(rows);
           setProgresoPorFactura(progresoMap);
         }
-      } catch {}
+      } catch (e) {
+        // Nunca más un catch mudo acá: fue lo que dejó el bug vivo 4 meses.
+        console.warn('[almacen] no se pudieron cargar las facturas pendientes de recepción:', e);
+      }
     };
     load();
     const onChange = (e) => {
