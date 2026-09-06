@@ -20,6 +20,7 @@ import { EmpresaDetalle } from "./jx-empresa-detalle.jsx";
 import { ClasificarEntidadesModal } from "./jx-clasificar-entidades.jsx";
 import { rolDeCompanyEnObra, titularContableDeObra } from "../lib/consorcio.js";
 import { comprobantesImputacionCruzada } from "../lib/imputacion-cruzada.js";
+import { DESTINOS_REIMPUTACION, validarReimputacion, cambiosDeReimputacion, explicarReimputacion } from "../lib/reimputacion.js";
 import { librosDeObra, filtroEmpresaSegunLibro, LIBRO_CONSORCIO, LIBRO_GRUPO, LIBRO_TODOS } from "../lib/libros-de-obra.js";
 import { resumenPorEntidad } from "../lib/contabilidad-entidades.js";
 import { consolidar, MOTIVO_LABEL } from "../lib/consolidado.js";
@@ -1474,6 +1475,37 @@ function MovimientosContablesPage({ showToast }) {
     () => comprobantesImputacionCruzada({ movs, companies, obras, consorcios: consorciosMov, socios: sociosMov }),
     [movs, companies, obras, consorciosMov, sociosMov]);
   const [soloCruces, setSoloCruces] = uSC(false);
+  // REIMPUTAR (5-sep): acción ACOTADA que cambia solo obra + destino contable.
+  // Existe porque los 17 comprobantes con imputación cruzada están TODOS
+  // marcados is_intercompany, y openEditar() corta al entrar con "se editan
+  // desde Operaciones entre empresas" → la app señalaba un problema y bloqueaba
+  // la pantalla que lo arregla. Ver src/lib/reimputacion.js: mover la
+  // vinculación NO descuadra el Consolidado (elimina por empresa, no por obra)
+  // y en un intercompany el `type` queda fijo por derivarTypeContable().
+  const [reimputando, setReimputando] = uSC(null);   // { mov, destino_contable, obra_id }
+
+  const guardarReimputacion = async () => {
+    if (!reimputando) return;
+    const { mov } = reimputando;
+    const err = validarReimputacion(reimputando);
+    if (err) { showToast(err, 'amber'); return; }
+    const patch = cambiosDeReimputacion(mov, reimputando);
+    if (!patch) { showToast('No hay cambios que guardar', 'amber'); setReimputando(null); return; }
+    try {
+      const now = new Date().toISOString();
+      await window.__db.accounting_movements.update(mov.id, {
+        ...patch,
+        updated_at: now,
+        sync_status: mov.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      try { await window.__logAudit?.({ action:'update', table:'accounting_movements', recordId: mov.id,
+        oldData: { obra_id: mov.obra_id, destino_contable: mov.destino_contable, type: mov.type },
+        newData: patch, reason: 'Reimputación de vinculación' }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'accounting_movements' } })); } catch {}
+      showToast('✓ Reimputado', 'green');
+      setReimputando(null);
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
   // Los DOS LIBROS de la obra (tanda 4, A1) — src/lib/libros-de-obra.js.
   // Arranca en el libro del titular porque es la pregunta que trajo Gabriel
   // («la contabilidad de la obra debería mostrar los del consorcio ejecutor»),
@@ -2993,9 +3025,10 @@ function MovimientosContablesPage({ showToast }) {
                                 title={`Facturado a ${contraparte?.name || 'una entidad'}, que no tiene relación con esta obra — ni es su titular ni un socio de su consorcio. Probablemente imputado a la obra equivocada.`}>
                                 ⚠ Imputación cruzada
                               </span>
-                              {canEditExisting && !isIc && (
+                              {canEditExisting && (
                                 <button className="btn btn-ghost btn-xs" style={{ marginLeft:4, padding:'0 4px', fontSize:9, color:'var(--red)' }}
-                                  title="Abrir para reimputar a la obra correcta, o quitarle la obra" onClick={()=>openEditar(m)}>
+                                  title="Cambiar a qué obra pertenece, o sacarlo de la obra (Contabilidad Neta, Gastos Generales…)"
+                                  onClick={()=>setReimputando({ mov: m, destino_contable: m.destino_contable || (m.obra_id ? 'obra' : 'sin_clasificar'), obra_id: m.obra_id || '' })}>
                                   Reimputar
                                 </button>
                               )}
@@ -4022,6 +4055,52 @@ function MovimientosContablesPage({ showToast }) {
           showToast={showToast}
           onClose={() => setSolicitarTarget(null)}
         />
+      )}
+      {/* ── REIMPUTAR: cambiar SOLO la vinculación ────────────────────
+          Acotado a propósito (obra + destino contable). El editor completo
+          sigue bloqueado para intercompany porque el par tiene dos lados;
+          la vinculación no. Ver src/lib/reimputacion.js. */}
+      {reimputando && (
+        <Modal title="Reimputar comprobante" icon="edit" onClose={()=>setReimputando(null)}>
+          <div style={{ fontSize:12, color:'var(--tm)', marginBottom:10, lineHeight:1.5 }}>
+            <strong style={{ color:'var(--tp)' }}>{reimputando.mov.document_number || 'Comprobante'}</strong>
+            {reimputando.mov.third_party_name ? ` · ${reimputando.mov.third_party_name}` : ''}
+            {reimputando.mov.is_intercompany && (
+              <div style={{ marginTop:4, color:'var(--amber)' }}>
+                Marcado como operación entre empresas del grupo: acá solo se cambia a qué pertenece,
+                no el monto ni las empresas.
+              </div>
+            )}
+          </div>
+          <div className="fg">
+            <label className="flabel">¿A qué pertenece este comprobante?</label>
+            <select className="fi" value={reimputando.destino_contable || ''}
+              onChange={e=>setReimputando(r => ({ ...r, destino_contable: e.target.value }))}>
+              {DESTINOS_REIMPUTACION.map(d => <option key={d.v} value={d.v}>{d.label}</option>)}
+            </select>
+            <div style={{ fontSize:11, color:'var(--tm)', marginTop:4 }}>
+              {DESTINOS_REIMPUTACION.find(d => d.v === reimputando.destino_contable)?.ayuda || ''}
+            </div>
+          </div>
+          {reimputando.destino_contable === 'obra' && (
+            <div className="fg">
+              <label className="flabel">Obra</label>
+              <select className="fi" value={reimputando.obra_id || ''}
+                onChange={e=>setReimputando(r => ({ ...r, obra_id: e.target.value }))}>
+                <option value="">— elegí la obra —</option>
+                {obrasParaSelector.map(o => <option key={o.id} value={o.id}>{o.nombre_obra}</option>)}
+              </select>
+            </div>
+          )}
+          <div style={{ fontSize:11.5, color:'var(--ts)', background:'var(--bg-c2)', border:'1px solid var(--border)',
+            borderRadius:6, padding:'8px 10px', marginTop:8, lineHeight:1.5 }}>
+            {explicarReimputacion(reimputando.mov, reimputando, obraNombre)}
+          </div>
+          <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:14 }}>
+            <button className="btn btn-ghost btn-sm" onClick={()=>setReimputando(null)}>Cancelar</button>
+            <button className="btn btn-amber btn-sm" onClick={guardarReimputacion}>Guardar</button>
+          </div>
+        </Modal>
       )}
       {(modal === 'nuevo' || modal === 'editar') && (
         <Modal title={editingId ? 'Editar Movimiento' : 'Nuevo Movimiento'} icon="dollar" onClose={()=>{setModal(null); setEditingId(null);}} wide>
