@@ -2945,7 +2945,7 @@ function VincularPendientesModal({ data, materialesDB, onClose, onConfirm }) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose} style={{ background:'rgba(0,0,0,0.7)' }}>
+    <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={e=>e.stopPropagation()} style={{ maxWidth:680, width:'92%', maxHeight:'88vh', display:'flex', flexDirection:'column' }}>
         <div className="modal-hd">
           <div>

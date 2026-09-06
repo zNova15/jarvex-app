@@ -277,7 +277,7 @@ function PlamePage({ showToast }) {
                 Descargar T-Registro Alta (.txt)
               </button>
               <button
-                className="btn btn-primary"
+                className="btn btn-amber"
                 onClick={handleExportBoletas}
                 disabled={busy || loading || totales.validas === 0}
               >

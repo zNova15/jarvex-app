@@ -360,7 +360,7 @@ function LibrosElectronicosPage({ showToast }) {
             </div>
           </div>
           <button
-            className="btn btn-primary"
+            className="btn btn-amber"
             onClick={handlePDT601}
             disabled={busy || !rucValid || !planillaPeriodo}
           >

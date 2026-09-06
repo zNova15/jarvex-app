@@ -258,15 +258,15 @@ function PlanCuentasPage({ showToast }) {
 
       {/* Modal nueva cuenta custom */}
       {modal === 'nueva' && (
-        <div className="modal-bg" onClick={()=>setModal(null)}>
+        <div className="overlay" onClick={()=>setModal(null)}>
           <div className="modal" onClick={e=>e.stopPropagation()} style={{ maxWidth:520 }}>
             <div className="modal-hd">
-              <div className="modal-title">Nueva cuenta custom</div>
+              <div className="modal-hd-left">Nueva cuenta custom</div>
               <button className="btn btn-ghost btn-xs" onClick={()=>setModal(null)}>
                 <JxIcon name="x" size={13}/>
               </button>
             </div>
-            <div className="modal-bd" style={{ display:'grid', gap:10 }}>
+            <div style={{ display:'grid', gap:10 }}>
               <label className="fl">
                 <span>Código *</span>
                 <input
@@ -316,7 +316,7 @@ function PlanCuentasPage({ showToast }) {
                   placeholder="Ej. 10 (deja vacío si es de primer nivel)"/>
               </label>
             </div>
-            <div className="modal-ft">
+            <div className="modal-actions">
               <button className="btn btn-ghost btn-sm" onClick={()=>setModal(null)}>Cancelar</button>
               <button className="btn btn-amber btn-sm" onClick={guardarCustom}>
                 <JxIcon name="check" size={13}/>Guardar cuenta

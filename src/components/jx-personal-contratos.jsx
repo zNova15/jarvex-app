@@ -291,7 +291,7 @@ function PersonalContratosPage({ showToast }) {
       </div>
 
       {/* KPIs */}
-      <div className="kpi-row" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 14 }}>
         <div className="card card-p">
           <div style={{ fontSize: 11, color: 'var(--tm)' }}>Trabajadores activos</div>
           <div style={{ fontSize: 22, fontWeight: 700, marginTop: 4 }}>{kpis.total}</div>

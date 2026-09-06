@@ -290,7 +290,7 @@ function ConfigSUNATPage({ showToast }) {
   const certValid = certInfo?.validTo && new Date(certInfo.validTo) > new Date();
 
   return (
-    <div className="page" style={{ padding: 20, maxWidth: 900 }}>
+    <div className="page-wrap" style={{ padding: 20, maxWidth: 900 }}>
       <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:20 }}>
         <div style={{ width:40, height:40, borderRadius:10, background:'rgba(242,183,5,.12)', display:'flex', alignItems:'center', justifyContent:'center' }}>
           <Icon name="shield" size={20} color="var(--amber)" />
@@ -329,7 +329,7 @@ function ConfigSUNATPage({ showToast }) {
           </div>
         </div>
         <button
-          className="btn btn-primary"
+          className="btn btn-amber"
           style={{ marginTop: 12 }}
           onClick={handlePfxLoad}
           disabled={loadingCert || !pfxFile}
@@ -397,7 +397,7 @@ function ConfigSUNATPage({ showToast }) {
 
       {/* ── Acciones ── */}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-        <button className="btn btn-primary" onClick={handleSave} disabled={savingCfg || !certInfo}>
+        <button className="btn btn-amber" onClick={handleSave} disabled={savingCfg || !certInfo}>
           {savingCfg ? 'Guardando...' : 'Guardar configuración'}
         </button>
         <button className="btn" onClick={handleTestConnection} disabled={testingConn || !solUser || !solPassword}>

@@ -182,6 +182,18 @@ textarea.fi { resize: vertical; min-height: 80px; }
 .progress-bar { height: 6px; background: var(--track-bg); border-radius: 4px; overflow: hidden; }
 .progress-fill { height: 100%; border-radius: 4px; transition: width .3s; }
 .section-hd { font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--tm); padding: 8px 14px 6px; }
+/* Contenedor de tarjetas KPI. Existía como `className="kpi-grid"` en 8 lugares
+   (jx-kpis-obra, jx-cumplimiento-cronograma) SIN estar definido: las tarjetas se
+   apilaban en una columna en vez de formar la grilla. Ver el test
+   css-clases-existen.test.js, que ahora falla si alguien inventa otra clase. */
+.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 16px; }
+
+/* Grupo de campo: etiqueta + control apilados. `.fg` es un <div> envolvente y
+   `.fl` un <label> que envuelve a los dos (su <span> hace de etiqueta). */
+.fg { margin-bottom: 14px; }
+.fl { display: grid; gap: 5px; }
+.fl > span { font-size: 11.5px; font-weight: 600; color: var(--ts); }
+
 .kpi-card { border-radius: 10px; padding: 18px 20px; border: 1px solid var(--border); background: var(--bg-c); transition: all .2s; cursor: default; }
 .kpi-card:hover { border-color: var(--border-h); transform: translateY(-1px); box-shadow: 0 6px 24px rgba(0,0,0,.3); }
 .kpi-val { font-size: 28px; font-weight: 800; letter-spacing: -.03em; line-height: 1; color: var(--tp); margin: 8px 0 4px; }

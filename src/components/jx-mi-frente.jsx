@@ -2221,7 +2221,7 @@ function RendimientoIngenierosPage() {
                 <tr key={a.id}>
                   <td style={{ whiteSpace: 'nowrap' }}>{a.fecha || '—'}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>{nombreUsuario(a.responsable_id)}</td>
-                  <td>{p ? <button className="lnk-partida" title="Ver en Insumos por Partida →" onClick={() => irAInsumosPartida(p)} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--blue)', textAlign: 'left' }}><span style={{ fontFamily: 'monospace' }}>{p.codigo_delfin}</span> {p.nombre_partida} ›</button> : '—'}</td>
+                  <td>{p ? <button title="Ver en Insumos por Partida →" onClick={() => irAInsumosPartida(p)} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--blue)', textAlign: 'left' }}><span style={{ fontFamily: 'monospace' }}>{p.codigo_delfin}</span> {p.nombre_partida} ›</button> : '—'}</td>
                   <td style={{ textAlign: 'right', fontWeight: 600 }}>{num(a.metrado_ejecutado)} {p?.unidad || ''}</td>
                   <td style={{ maxWidth: 340, fontSize: 11, color: 'var(--ts)' }}>{a.motivo_sobrereporte || a.descripcion || <span style={{ color: 'var(--tm)', fontStyle: 'italic' }}>—</span>}</td>
                   <td style={{ textAlign: 'center' }}>{evs.length > 0 ? <button className="btn btn-ghost btn-xs" onClick={() => setVerFotos(evs)}>📷 {evs.length}</button> : <span style={{ color: 'var(--tm)' }}>—</span>}</td>
@@ -2264,7 +2264,7 @@ function RendimientoIngenierosPage() {
                     {reportesDetalle.slice(0, 300).map(a => { const p = partById.get(a.partida_id); const evs = eviPorAvance.get(a.id) || []; return (
                       <tr key={a.id}>
                         <td style={{ whiteSpace: 'nowrap' }}>{a.fecha || '—'}</td>
-                        <td>{p ? <button className="lnk-partida" title="Ver en Insumos por Partida →" onClick={() => irAInsumosPartida(p)} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--blue)', textAlign: 'left' }}><span style={{ fontFamily: 'monospace' }}>{p.codigo_delfin}</span> {p.nombre_partida} ›</button> : '—'}</td>
+                        <td>{p ? <button title="Ver en Insumos por Partida →" onClick={() => irAInsumosPartida(p)} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--blue)', textAlign: 'left' }}><span style={{ fontFamily: 'monospace' }}>{p.codigo_delfin}</span> {p.nombre_partida} ›</button> : '—'}</td>
                         <td style={{ textAlign: 'right', fontWeight: 600 }}>{num(a.metrado_ejecutado)} {p?.unidad || ''}</td>
                         <td style={{ maxWidth: 340, fontSize: 11, color: 'var(--ts)' }}>{a.descripcion || <span style={{ color: 'var(--tm)', fontStyle: 'italic' }}>—</span>}</td>
                         <td style={{ textAlign: 'center' }}>{evs.length > 0 ? <button className="btn btn-ghost btn-xs" onClick={() => setVerFotos(evs)}>📷 {evs.length}</button> : <span style={{ color: 'var(--tm)' }}>—</span>}</td>
@@ -2287,7 +2287,7 @@ function RendimientoIngenierosPage() {
                     {partidasSelFiltradas.map(p => { const r = rendimientoPartida(p, avances || [], hoy); return (
                       <tr key={p.id}>
                         <td style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--tm)' }}>{p.codigo_delfin}</td>
-                        <td><button className="lnk-partida" title="Ver en Insumos por Partida →" onClick={() => irAInsumosPartida(p)} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--blue)', textAlign: 'left' }}>{p.nombre_partida} ›</button></td>
+                        <td><button title="Ver en Insumos por Partida →" onClick={() => irAInsumosPartida(p)} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--blue)', textAlign: 'left' }}>{p.nombre_partida} ›</button></td>
                         <td style={{ textAlign: 'right' }}>{num(p.metrado_contratado)} {p.unidad || ''}</td>
                         <td style={{ textAlign: 'right' }}>{r.metaDiaria > 0 ? `${num(r.metaDiaria)} ${p.unidad || ''}/día` : '—'}</td>
                         <td style={{ textAlign: 'right' }}>{r.indice != null ? `${num(r.realAcum)} / ${num(r.esperadoAcum)}` : '—'}</td>
@@ -2310,7 +2310,7 @@ function RendimientoIngenierosPage() {
                   <tr key={a.id}>
                     <td style={{ whiteSpace: 'nowrap' }}>{a.fecha || '—'}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>{nombreUsuario(a.responsable_id)}</td>
-                    <td>{p ? <button className="lnk-partida" title="Ver en Insumos por Partida →" onClick={() => irAInsumosPartida(p)} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--blue)', textAlign: 'left' }}><span style={{ fontFamily: 'monospace' }}>{p.codigo_delfin}</span> {p.nombre_partida} ›</button> : '—'}</td>
+                    <td>{p ? <button title="Ver en Insumos por Partida →" onClick={() => irAInsumosPartida(p)} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--blue)', textAlign: 'left' }}><span style={{ fontFamily: 'monospace' }}>{p.codigo_delfin}</span> {p.nombre_partida} ›</button> : '—'}</td>
                     <td style={{ textAlign: 'right', fontWeight: 600 }}>{num(a.metrado_ejecutado)} {p?.unidad || ''}</td>
                     <td style={{ maxWidth: 340, fontSize: 11, color: 'var(--ts)' }}>{a.descripcion || <span style={{ color: 'var(--tm)', fontStyle: 'italic' }}>—</span>}</td>
                     <td style={{ textAlign: 'center' }}>{evs.length > 0 ? <button className="btn btn-ghost btn-xs" onClick={() => setVerFotos(evs)}>📷 {evs.length}</button> : <span style={{ color: 'var(--tm)' }}>—</span>}</td>

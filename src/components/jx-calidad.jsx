@@ -333,7 +333,7 @@ function CalidadPage({ showToast }) {
       </div>
 
       {/* ── KPIs semáforo ── */}
-      <div className="kpi-row" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 14 }}>
         {[['total', 'Requisitos', 'var(--tp)'], ['cumple', 'Cumplen', 'var(--green)'], ['observado', 'Observados', 'var(--amber)'], ['no_cumple', 'No cumplen', 'var(--red)'], ['sin_certificado', 'Sin certificado', 'var(--tm)']].map(([k, lbl, color]) => (
           <div key={k} className="card card-p" style={{ textAlign: 'center', cursor: k === 'total' ? 'default' : 'pointer', outline: estFiltro === k ? '1px solid var(--amber)' : 'none' }}
             onClick={() => k !== 'total' && setEstFiltro(estFiltro === k ? 'todos' : k)}>

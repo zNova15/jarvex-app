@@ -312,8 +312,8 @@ function ActivosFijosPage({ showToast }) {
   const avisoTasa = alertaDeForm(form);
 
   return (
-    <div className="pg">
-      <div className="pg-head">
+    <div className="page-wrap">
+      <div className="pg-hd">
         <div>
           <div className="pg-title">Activos Fijos de la empresa</div>
           <div className="pg-sub">

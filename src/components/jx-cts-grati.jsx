@@ -231,7 +231,7 @@ function CTSPage({ showToast }) {
             <option value="noviembre">Periodo Noviembre (May–Oct)</option>
           </select>
           <input className="fi" type="number" value={anio} onChange={e=>setAnio(Number(e.target.value)||hoy.getFullYear())} style={{ width:90 }}/>
-          <button className="btn btn-primary btn-sm" onClick={calcular}>Calcular CTS Periodo</button>
+          <button className="btn btn-amber btn-sm" onClick={calcular}>Calcular CTS Periodo</button>
           <button className="btn btn-ghost btn-sm" onClick={exportar}>Exportar Excel</button>
         </div>
       </div>
@@ -302,7 +302,7 @@ function CTSPage({ showToast }) {
                       {pagadoFlag ? (
                         <button className="btn btn-ghost btn-xs" onClick={()=>desmarcarPagado(personal.id)}>Desmarcar</button>
                       ) : (
-                        <button className="btn btn-primary btn-xs" onClick={()=>marcarPagado(personal, contrato)} disabled={c.cts == null}>Marcar depositado</button>
+                        <button className="btn btn-amber btn-xs" onClick={()=>marcarPagado(personal, contrato)} disabled={c.cts == null}>Marcar depositado</button>
                       )}
                     </td>
                   </tr>
@@ -450,7 +450,7 @@ function GratificacionesPage({ showToast }) {
             <option value="diciembre">Periodo Diciembre (Jul–Dic)</option>
           </select>
           <input className="fi" type="number" value={anio} onChange={e=>setAnio(Number(e.target.value)||hoy.getFullYear())} style={{ width:90 }}/>
-          <button className="btn btn-primary btn-sm" onClick={calcular}>Calcular Gratificación Periodo</button>
+          <button className="btn btn-amber btn-sm" onClick={calcular}>Calcular Gratificación Periodo</button>
           <button className="btn btn-ghost btn-sm" onClick={exportar}>Exportar Excel</button>
         </div>
       </div>
@@ -516,7 +516,7 @@ function GratificacionesPage({ showToast }) {
                       {pagadoFlag ? (
                         <button className="btn btn-ghost btn-xs" onClick={()=>desmarcarPagado(personal.id)}>Desmarcar</button>
                       ) : (
-                        <button className="btn btn-primary btn-xs" onClick={()=>marcarPagado(personal)} disabled={c.total == null}>Marcar pagado</button>
+                        <button className="btn btn-amber btn-xs" onClick={()=>marcarPagado(personal)} disabled={c.total == null}>Marcar pagado</button>
                       )}
                     </td>
                   </tr>

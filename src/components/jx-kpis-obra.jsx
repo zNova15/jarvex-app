@@ -245,7 +245,7 @@ function KPIsObraPage() {
             ))}
           </select>
           <div style={{ flex: 1 }} />
-          <button className="btn btn-primary" onClick={exportPDF} disabled={!obra}>
+          <button className="btn btn-amber" onClick={exportPDF} disabled={!obra}>
             <JxIcon name="download" size={14} /> Exportar PDF
           </button>
         </div>

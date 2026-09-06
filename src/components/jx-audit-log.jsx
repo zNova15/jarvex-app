@@ -245,18 +245,18 @@ function AuditLogPage({ showToast }) {
         <div style={{display:'flex',gap:8,alignItems:'center'}}>
           <div style={{display:'flex',gap:0,border:'1px solid var(--border)',borderRadius:8,overflow:'hidden'}}>
             <button
-              className={'btn btn-sm ' + (source==='local' ? 'btn-primary' : 'btn-ghost')}
+              className={'btn btn-sm ' + (source==='local' ? 'btn-amber' : 'btn-ghost')}
               style={{borderRadius:0}}
               onClick={()=>setSource('local')}>Local pendiente</button>
             <button
-              className={'btn btn-sm ' + (source==='remote' ? 'btn-primary' : 'btn-ghost')}
+              className={'btn btn-sm ' + (source==='remote' ? 'btn-amber' : 'btn-ghost')}
               style={{borderRadius:0}}
               onClick={()=>setSource('remote')}>Histórico Supabase</button>
           </div>
           <button className="btn btn-ghost btn-sm" onClick={loadLogs}>
             <JxIcon name="refresh" size={14}/> Refrescar
           </button>
-          <button className="btn btn-primary btn-sm" onClick={exportExcel}>
+          <button className="btn btn-amber btn-sm" onClick={exportExcel}>
             <JxIcon name="download" size={14}/> Exportar Excel
           </button>
         </div>
@@ -286,7 +286,7 @@ function AuditLogPage({ showToast }) {
             {stats.topTables.map(([t,c]) => (
               <button
                 key={t}
-                className={'btn btn-sm ' + (fTabla===t ? 'btn-primary' : 'btn-ghost')}
+                className={'btn btn-sm ' + (fTabla===t ? 'btn-amber' : 'btn-ghost')}
                 onClick={()=> fTabla===t ? setFTabla('') : quickFilterTable(t)}>
                 {t} · <strong style={{marginLeft:4}}>{c}</strong>
               </button>
@@ -300,22 +300,22 @@ function AuditLogPage({ showToast }) {
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))',gap:10,alignItems:'end'}}>
           <div>
             <label style={{fontSize:11,color:'var(--tm)',fontWeight:700}}>DESDE</label>
-            <input type="date" className="inp" value={fDesde} onChange={e=>{setFDesde(e.target.value); setPage(1);}}/>
+            <input type="date" className="fi" value={fDesde} onChange={e=>{setFDesde(e.target.value); setPage(1);}}/>
           </div>
           <div>
             <label style={{fontSize:11,color:'var(--tm)',fontWeight:700}}>HASTA</label>
-            <input type="date" className="inp" value={fHasta} onChange={e=>{setFHasta(e.target.value); setPage(1);}}/>
+            <input type="date" className="fi" value={fHasta} onChange={e=>{setFHasta(e.target.value); setPage(1);}}/>
           </div>
           <div>
             <label style={{fontSize:11,color:'var(--tm)',fontWeight:700}}>TABLA</label>
-            <select className="inp" value={fTabla} onChange={e=>{setFTabla(e.target.value); setPage(1);}}>
+            <select className="fi" value={fTabla} onChange={e=>{setFTabla(e.target.value); setPage(1);}}>
               <option value="">Todas</option>
               {tablesAll.map(t => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
           <div>
             <label style={{fontSize:11,color:'var(--tm)',fontWeight:700}}>OPERACIÓN</label>
-            <select className="inp" value={fAccion} onChange={e=>{setFAccion(e.target.value); setPage(1);}}>
+            <select className="fi" value={fAccion} onChange={e=>{setFAccion(e.target.value); setPage(1);}}>
               <option value="">Todas</option>
               <option value="insert">CREATE</option>
               <option value="update">UPDATE</option>
@@ -324,7 +324,7 @@ function AuditLogPage({ showToast }) {
           </div>
           <div>
             <label style={{fontSize:11,color:'var(--tm)',fontWeight:700}}>USUARIO</label>
-            <select className="inp" value={fUser} onChange={e=>{setFUser(e.target.value); setPage(1);}}>
+            <select className="fi" value={fUser} onChange={e=>{setFUser(e.target.value); setPage(1);}}>
               <option value="">Todos</option>
               {usersAll.map(([id,nm]) => <option key={id} value={id}>{nm}</option>)}
             </select>

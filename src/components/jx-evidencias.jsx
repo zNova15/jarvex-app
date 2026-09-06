@@ -1044,7 +1044,7 @@ function PlantillasModal({ obraId, onClose, showToast, embedded = false }) {
                 <div style={{ display:'grid', gap:8 }}>
                   <div>
                     <label style={{ fontSize:10.5, color:'var(--tm)', display:'block', marginBottom:3 }}>Nombre corto</label>
-                    <input className="input" style={{ width:'100%' }}
+                    <input className="fi" style={{ width:'100%' }}
                       placeholder={empresa.name || 'CONSORCIO EL INCA'}
                       value={brandingForm.nombre_corto}
                       maxLength={80}
@@ -1053,7 +1053,7 @@ function PlantillasModal({ obraId, onClose, showToast, embedded = false }) {
                   </div>
                   <div>
                     <label style={{ fontSize:10.5, color:'var(--tm)', display:'block', marginBottom:3 }}>Código de formato</label>
-                    <input className="input" style={{ width:'100%' }}
+                    <input className="fi" style={{ width:'100%' }}
                       placeholder="F-SSO-05"
                       value={brandingForm.codigo_doc_prefix}
                       maxLength={20}
@@ -1101,7 +1101,7 @@ function PlantillasModal({ obraId, onClose, showToast, embedded = false }) {
                         {def.campos.includes('fecha') && (
                           <label style={{ fontSize:11.5, color:'var(--tm)', display:'flex', alignItems:'center', gap:8 }}>
                             <span style={{ minWidth:80 }}>Fecha:</span>
-                            <input type="date" className="input"
+                            <input type="date" className="fi"
                               value={o.fecha}
                               onChange={e => updateOpt(def.id, { fecha: e.target.value })}
                               style={{ flex:1 }}/>
@@ -1112,7 +1112,7 @@ function PlantillasModal({ obraId, onClose, showToast, embedded = false }) {
                             <span style={{ minWidth:80 }}>
                               {def.campos.includes('recibidoPor') ? 'Recibe / Proveedor:' : 'Quien retira:'}
                             </span>
-                            <input type="text" className="input"
+                            <input type="text" className="fi"
                               placeholder="Nombre (opcional, queda en blanco si no se llena)"
                               value={o.persona}
                               onChange={e => updateOpt(def.id, { persona: e.target.value })}
@@ -1156,7 +1156,7 @@ function PlantillasModal({ obraId, onClose, showToast, embedded = false }) {
     );
   }
   return (
-    <div className="modal-backdrop" onClick={onClose} style={{ background:'rgba(0,0,0,0.7)' }}>
+    <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={e=>e.stopPropagation()} style={{ maxWidth:640, width:'92%', maxHeight:'88vh', display:'flex', flexDirection:'column' }}>
         {contenido}
       </div>

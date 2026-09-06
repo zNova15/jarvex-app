@@ -391,8 +391,8 @@ function OrdenesPage({ showToast }) {
   const obraScope = obraScopeId ? lookupObra(obraScopeId) : null;
 
   return (
-    <div className="pg">
-      <div className="pg-head">
+    <div className="page-wrap">
+      <div className="pg-hd">
         <div>
           <div className="pg-title">Órdenes de compra y servicio</div>
           <div className="pg-sub">
