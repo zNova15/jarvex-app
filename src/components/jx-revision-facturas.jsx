@@ -13,6 +13,8 @@ import React from "react";
 import {
   revisarLote, resumenRevision, claveDescarte, REGLAS, NIVEL,
 } from "../lib/revision-facturas.js";
+import { itemsDeFactura } from "../lib/cruce-recepcion.js";
+import { sugerirCodigoSpot } from "../lib/sugerir-codigo-spot.js";
 
 const { useState, useMemo } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -125,6 +127,25 @@ function RevisionFacturasModal({ movs, descartes, companies, onClose, onAbrirMov
                     {h.sugerencia && (
                       <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 3, fontStyle: 'italic' }}>{h.sugerencia}</div>
                     )}
+                    {/* Sugerencia de CÓDIGO (tanda 7, entrega 3), solo para el
+                        hallazgo al que le falta el código — no inventa una
+                        tasa cuando es ambigua (el caso del alquiler).
+                        src/lib/sugerir-codigo-spot.js. */}
+                    {h.regla === 'detraccion-sin-codigo' && m && (() => {
+                      const primerItem = (itemsDeFactura(m) || [])[0] || null;
+                      const sug = sugerirCodigoSpot(primerItem?.descripcion || m.description || '', {
+                        tipoInsumo: primerItem?.tipo_insumo, tasaActual: m.detraccion_pct,
+                      });
+                      if (!sug) return null;
+                      return (
+                        <div style={{ fontSize: 11, color: 'var(--ts)', marginTop: 5, padding: '5px 8px',
+                          borderLeft: `2px solid ${sug.confianza === 'alta' ? 'var(--blue)' : 'var(--amber)'}` }}>
+                          Código sugerido: <strong>{sug.codigo}</strong>
+                          {sug.tasaUnica != null ? <> al <strong>{sug.tasaUnica}%</strong></> : <> (la tasa depende del proveedor, revisala aparte)</>}
+                          {sug.confianza === 'media' && <span className="badge b-gray" style={{ marginLeft: 5, fontSize: 9 }}>confirmá</span>}
+                        </div>
+                      );
+                    })()}
                     <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 6 }}>
                       {m?.document_type || 'doc'} <strong>{m?.document_number || '—'}</strong>
                       {' · '}{m?.date || '—'}

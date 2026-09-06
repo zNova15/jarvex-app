@@ -9,6 +9,7 @@ import { detectarDuplicados, claseDe } from "../lib/dedupe-movs-contables.js";
 import { derivarTypeContable, motivoClasificacion, overrideEfectivo, TYPE_LABEL, TYPE_LABEL_LARGO } from "../lib/clasificacion-contable.js";
 import { movimientosConParRegistrado, puedeEditarMovimiento, puedeEliminarMovimiento, avisoDeEspejo } from "../lib/interco-edicion.js";
 import { notaHumana, fusionarNota, resumenEstructurado } from "../lib/notas-movimiento.js";
+import { sugerirCodigoSpot } from "../lib/sugerir-codigo-spot.js";
 
 // Umbral del SPOT: una operación de S/ 700 o menos NO está sujeta a detracción.
 // Criterio de la contadora (6-sep-2026), a raíz de F001-000818 — S/ 54 con 12%
@@ -1332,6 +1333,11 @@ function MovimientosContablesPage({ showToast }) {
   const [detrPct, setDetrPct] = uSC('');
   const [detrMonto, setDetrMonto] = uSC('');
   const [detrCodigo, setDetrCodigo] = uSC('');
+  // Sugerencia de código SPOT (tanda 7, entrega 3): { codigo, confianza,
+  // motivo, tasaUnica, tasasPosibles, avisoTasa, avisoTasaInusual } | null. Se
+  // calcula al abrir el modal y SOLO precarga `detrCodigo` si estaba vacío —
+  // nunca pisa un código que ya cargó alguien. src/lib/sugerir-codigo-spot.js.
+  const [detrSugerencia, setDetrSugerencia] = uSC(null);
   const [detrFecha, setDetrFecha] = uSC('');
   const [detrSaving, setDetrSaving] = uSC(false);
 
@@ -2345,8 +2351,23 @@ function MovimientosContablesPage({ showToast }) {
     setDetrAplica(m.detraccion_aplica !== false); // si la abren, por defecto aplica
     setDetrPct(m.detraccion_pct != null ? String(m.detraccion_pct) : '');
     setDetrMonto(m.detraccion_monto != null ? String(m.detraccion_monto) : '');
-    setDetrCodigo(m.detraccion_codigo || '');
+    const codigoActual = m.detraccion_codigo || '';
     setDetrFecha(m.detraccion_constancia_fecha || window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10));
+
+    // Sugerencia de código SPOT (tanda 7, entrega 3). Se lee del primer ítem
+    // de la factura si hay detalle (más específico que el "Factura E001-… ·
+    // Proveedor" genérico de `description`), y se le pasa la tasa YA cargada:
+    // es la señal que distingue "SERVICIO DE ALIMENTACIÓN" de un material —
+    // ver src/lib/sugerir-codigo-spot.js.
+    const primerItem = (itemsDeFactura(m) || [])[0] || null;
+    const textoParaSugerir = primerItem?.descripcion || m.description || '';
+    const sug = sugerirCodigoSpot(textoParaSugerir, {
+      tipoInsumo: primerItem?.tipo_insumo,
+      tasaActual: m.detraccion_pct,
+    });
+    setDetrSugerencia(sug);
+    // Precarga SOLO si el código venía vacío: nunca pisa lo que ya cargaron.
+    setDetrCodigo(codigoActual || (sug ? sug.codigo : ''));
   };
 
   const subirDetraccion = async () => {
@@ -3763,7 +3784,7 @@ function MovimientosContablesPage({ showToast }) {
 
       {/* Modal: registrar DETRACCIÓN + subir la constancia del depósito (Banco de la Nación) */}
       {detrTarget && (
-        <Modal title="Detracción (SPOT)" icon="upload" onClose={()=>{ setDetrTarget(null); setDetrFile(null); }}>
+        <Modal title="Detracción (SPOT)" icon="upload" onClose={()=>{ setDetrTarget(null); setDetrFile(null); setDetrSugerencia(null); }}>
           <div style={{ fontSize:12, color:'var(--tm)', marginBottom:10 }}>
             {detrTarget.description || 'Movimiento'} · Total {fmtCur(detrTarget.amount, detrTarget.currency)} ({claseDe(detrTarget) === 'venta' ? 'venta' : 'compra'})
           </div>
@@ -3788,6 +3809,30 @@ function MovimientosContablesPage({ showToast }) {
                 <div><label className="flabel">Monto detraído (S/)</label><input className="fi" type="number" step="0.01" value={detrMonto} onChange={e=>setDetrMonto(e.target.value)}/></div>
                 <div><label className="flabel">Código SPOT</label><input className="fi" value={detrCodigo} onChange={e=>setDetrCodigo(e.target.value)} placeholder="ej. 037"/></div>
               </div>
+              {/* Sugerencia de código (tanda 7, entrega 3): recomendación leída
+                  de la descripción, nunca autoaplicada por sí sola — se
+                  precargó arriba solo si el campo estaba vacío. */}
+              {detrSugerencia && (
+                <div className="card card-p" style={{ marginTop:8, borderLeft: `3px solid ${detrSugerencia.confianza === 'alta' ? 'var(--blue)' : 'var(--amber)'}`, fontSize:11.5, color:'var(--ts)' }}>
+                  Sugerencia: código <strong>{detrSugerencia.codigo}</strong>
+                  {detrSugerencia.tasaUnica != null ? <> al <strong>{detrSugerencia.tasaUnica}%</strong></> : null}
+                  {' — '}{detrSugerencia.motivo}
+                  {detrSugerencia.confianza === 'media' && (
+                    <span className="badge b-gray" style={{ marginLeft:5, fontSize:9 }}>confirmá con la contadora</span>
+                  )}
+                  {detrSugerencia.tasasPosibles && (
+                    <div style={{ marginTop:4, color:'var(--tm)' }}>
+                      {detrSugerencia.tasasPosibles.map(t => `${t.tasa}% — ${t.cuando}`).join(' · ')}
+                    </div>
+                  )}
+                  {detrSugerencia.avisoTasa && (
+                    <div style={{ marginTop:4, color:'var(--amber)' }}>⚠ {detrSugerencia.avisoTasa}</div>
+                  )}
+                  {detrSugerencia.avisoTasaInusual && (
+                    <div style={{ marginTop:4, color:'var(--amber)' }}>⚠ {detrSugerencia.avisoTasaInusual}</div>
+                  )}
+                </div>
+              )}
               <div style={{ marginTop:6, fontSize:11, color:'var(--tm)' }}>
                 Neto a pagar al proveedor: <b>{fmtCur(Math.max(0, (Number(detrTarget.amount)||0) - (Number(detrMonto)||0)), detrTarget.currency)}</b>
               </div>
