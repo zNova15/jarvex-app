@@ -16,11 +16,21 @@
 // consolidado.js, decidida el 3-sep). Es decir: este selector de una sola
 // línea reclasifica plata. Merece decir cuánta ANTES de guardar.
 //
-// ── LO QUE ESTA LIBRERÍA NO HACE ──────────────────────────────────
-// No toca ningún movimiento. Cambiar `tipo_entidad` ya alcanza: el Consolidado
-// lee el catálogo en cada cálculo. Desmarcar el `is_intercompany` de las
-// facturas sería un cambio de datos innecesario —y peligroso, porque ese flag
-// SÍ manda cuando la contraparte no está identificada en el catálogo—.
+// ── Y POR QUÉ SÍ SE DESMARCAN LAS FACTURAS (Gabriel, 5-sep) ───────
+// «Si una entidad que era parte de nuestro grupo pasa a ser tercero, ya no
+// sería una operación intercompany, ya que intercompany sería DENTRO de las
+// empresas del grupo.» Es la definición, y el dato tiene que respetarla.
+//
+// El Consolidado ya daba el número correcto sin esto (el catálogo manda sobre
+// el flag), pero el flag quedaba MINTIENDO en la fila: una venta a alguien de
+// afuera decía «operación entre empresas del grupo». Y eso se notaba en otras
+// pantallas — el Dashboard Ejecutivo excluye los intercompany de sus ingresos,
+// así que esas ventas reales no sumaban ahí aunque el Consolidado sí las
+// contara. Dos pantallas en desacuerdo por un flag viejo.
+//
+// Por eso reclasificar a 'tercero' ahora DESMARCA las facturas afectadas.
+// Solo se desmarcan las que apuntan a esa entidad: el flag sigue mandando
+// cuando la contraparte no está identificada en el catálogo.
 //
 // Puro: sin React, sin Dexie.
 // ═══════════════════════════════════════════════════════════════════
@@ -68,6 +78,18 @@ export function impactoDeReclasificar({ company, tipoNuevo, movs = [] } = {}) {
   return base;
 }
 
+/**
+ * Los movimientos que hay que DESMARCAR cuando la entidad sale del grupo.
+ * Devuelve solo ids: quien los escribe decide cómo (Dexie, SQL, lo que sea).
+ */
+export function movimientosADesmarcar({ company, tipoNuevo, movs = [] } = {}) {
+  const desde = company?.tipo_entidad || 'propia';
+  if (!company || desde === 'tercero' || tipoNuevo !== 'tercero') return [];
+  return vivos(movs)
+    .filter(m => m.is_intercompany === true && apuntaA(m, company.id, company.ruc))
+    .map(m => m.id);
+}
+
 /** El aviso a mostrar antes de guardar, o null si no hace falta avisar nada. */
 export function avisoDeReclasificacion(impacto, nombre = 'esta entidad') {
   if (!impacto?.cambia) return null;
@@ -80,12 +102,13 @@ export function avisoDeReclasificacion(impacto, nombre = 'esta entidad') {
 
   if (impacto.salenDelConsolidado) {
     return `${nombre} pasa a ser un TERCERO: deja de ser parte del grupo.\n\n`
-      + `${n} comprobante(s) por ${plata} que hoy se ELIMINAN como operación interna van a pasar a contar como operación con alguien de AFUERA.\n\n`
-      + `El Consolidado del grupo va a cambiar. Es lo correcto si esa entidad ya no es del grupo — pero el número se mueve.`;
+      + `${n} comprobante(s) por ${plata} van a DEJAR DE ESTAR MARCADOS como "operación entre empresas del grupo", porque ya no lo son.\n\n`
+      + `Pasan a contar como operación con alguien de afuera: salen de "Operaciones entre empresas" y empiezan a sumar en el Dashboard Ejecutivo. `
+      + `No se borra ni se modifica ningún importe.`;
   }
   return `${nombre} entra al GRUPO.\n\n`
     + `${n} comprobante(s) por ${plata} que hoy cuentan como operación externa van a pasar a ELIMINARSE contra su espejo interno.\n\n`
     + `El Consolidado del grupo va a cambiar.`;
 }
 
-export default { impactoDeReclasificar, avisoDeReclasificacion };
+export default { impactoDeReclasificar, movimientosADesmarcar, avisoDeReclasificacion };

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { impactoDeReclasificar, avisoDeReclasificacion } from '../reclasificar-entidad.js';
+import { impactoDeReclasificar, movimientosADesmarcar, avisoDeReclasificacion } from '../reclasificar-entidad.js';
 
 // El caso real (medido contra producción el 5-sep-2026): CONSORCIO ESPERANZA
 // y CONSORCIO SAMADAY pasaron a 'tercero' y 35 comprobantes por S/ 214.071
@@ -61,13 +61,16 @@ describe('impactoDeReclasificar — el selector que mueve plata', () => {
 describe('avisoDeReclasificacion — dice cuánta plata se mueve, antes de guardar', () => {
   const movs = [mov({ amount: 20000, document_number: 'E001-21' })];
 
-  it('al salir del grupo nombra el monto y que el Consolidado cambia', () => {
+  it('al salir del grupo nombra el monto y qué les pasa a las facturas', () => {
     const t = avisoDeReclasificacion(
       impactoDeReclasificar({ company: esperanza, tipoNuevo: 'tercero', movs }), 'CONSORCIO ESPERANZA');
     expect(t).toMatch(/CONSORCIO ESPERANZA/);
     expect(t).toMatch(/20,000\.00/);
-    expect(t).toMatch(/Consolidado/);
     expect(t).toMatch(/TERCERO/);
+    // Ya no promete "el Consolidado va a cambiar": ese número NO se mueve
+    // (el catálogo ya mandaba). Lo que cambia es la marca de las facturas.
+    expect(t).toMatch(/DEJAR DE ESTAR MARCADOS/);
+    expect(t).not.toMatch(/Consolidado del grupo va a cambiar/);
   });
 
   it('al entrar al grupo lo dice al revés', () => {
@@ -80,5 +83,35 @@ describe('avisoDeReclasificacion — dice cuánta plata se mueve, antes de guard
   it('un cambio sin plata detrás no molesta con un aviso', () => {
     expect(avisoDeReclasificacion({ cambia: true, salenDelConsolidado: 0, entranAlConsolidado: 0 })).toBe(null);
     expect(avisoDeReclasificacion(null)).toBe(null);
+  });
+});
+
+// ── Desmarcar las facturas (Gabriel, 5-sep) ──────────────────────────────
+// «Si una entidad que era parte del grupo pasa a tercero, ya no sería una
+// operación intercompany, ya que intercompany sería DENTRO del grupo.»
+describe('movimientosADesmarcar — el dato tiene que respetar la definición', () => {
+  const movs = [
+    mov({ id: 'a' }), mov({ id: 'b' }),
+    mov({ id: 'c', is_intercompany: false }),        // no estaba marcado
+    mov({ id: 'd', related_company_id: 'otra' }),    // otra contraparte
+    mov({ id: 'e', deleted_at: 'x' }),               // borrado
+    mov({ id: 'f', related_company_id: null, third_party_ruc: '20611547367' }), // por RUC
+  ];
+
+  it('salir del grupo desmarca solo las que apuntan a esa entidad', () => {
+    expect(movimientosADesmarcar({ company: esperanza, tipoNuevo: 'tercero', movs }).sort())
+      .toEqual(['a', 'b', 'f']);
+  });
+
+  it('los otros cambios de tipo NO desmarcan nada', () => {
+    expect(movimientosADesmarcar({ company: esperanza, tipoNuevo: 'propia', movs })).toEqual([]);
+    expect(movimientosADesmarcar({ company: { ...esperanza, tipo_entidad: 'tercero' }, tipoNuevo: 'consorcio', movs })).toEqual([]);
+  });
+
+  it('el aviso ya no promete que el Consolidado cambia — promete lo que sí pasa', () => {
+    const t = avisoDeReclasificacion(
+      impactoDeReclasificar({ company: esperanza, tipoNuevo: 'tercero', movs }), 'CONSORCIO ESPERANZA');
+    expect(t).toMatch(/DEJAR DE ESTAR MARCADOS/);
+    expect(t).toMatch(/No se borra ni se modifica ningún importe/);
   });
 });

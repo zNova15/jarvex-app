@@ -20,7 +20,7 @@ import { EmpresaDetalle } from "./jx-empresa-detalle.jsx";
 import { ClasificarEntidadesModal } from "./jx-clasificar-entidades.jsx";
 import { rolDeCompanyEnObra, titularContableDeObra } from "../lib/consorcio.js";
 import { comprobantesImputacionCruzada } from "../lib/imputacion-cruzada.js";
-import { impactoDeReclasificar, avisoDeReclasificacion } from "../lib/reclasificar-entidad.js";
+import { impactoDeReclasificar, movimientosADesmarcar, avisoDeReclasificacion } from "../lib/reclasificar-entidad.js";
 import { DESTINOS_REIMPUTACION, validarReimputacion, cambiosDeReimputacion, explicarReimputacion } from "../lib/reimputacion.js";
 import { librosDeObra, filtroEmpresaSegunLibro, LIBRO_CONSORCIO, LIBRO_GRUPO, LIBRO_TODOS } from "../lib/libros-de-obra.js";
 import { resumenPorEntidad } from "../lib/contabilidad-entidades.js";
@@ -289,11 +289,15 @@ function EmpresasPage({ showToast }) {
         // elimina del Consolidado y qué no. Pasó de verdad: ESPERANZA y
         // SAMADAY salieron del grupo y 35 comprobantes por S/ 214.071
         // cambiaron de tratamiento sin que nadie viera el número moverse.
+        let aDesmarcar = [];
         if (orig && (orig.tipo_entidad || 'propia') !== (form.tipo_entidad || 'propia')) {
           const aviso = avisoDeReclasificacion(
             impactoDeReclasificar({ company: orig, tipoNuevo: form.tipo_entidad || 'propia', movs }),
             orig.name || 'Esta entidad');
           if (aviso && !confirm(`${aviso}\n\n¿Guardar el cambio?`)) return;
+          // Intercompany = operación DENTRO del grupo. Si la entidad sale del
+          // grupo, sus facturas dejan de serlo por definición (Gabriel, 5-sep).
+          aDesmarcar = movimientosADesmarcar({ company: orig, tipoNuevo: form.tipo_entidad || 'propia', movs });
         }
         await window.__db.companies.update(editingId, {
           name: form.name.trim(),
@@ -322,8 +326,30 @@ function EmpresasPage({ showToast }) {
           version: (orig?.version ?? 0) + 1,
           sync_status: orig?.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
         });
-        try { await window.__logAudit?.({ action:'update', table:'companies', recordId:editingId, oldData:orig, newData:form, reason:'Edición empresa' }); } catch {}
-        showToast(`Empresa "${form.name}" actualizada`, 'green');
+        // Desmarcar las facturas que dejaron de ser intercompany. Va DESPUÉS de
+        // guardar la empresa: si esto falla, el catálogo ya quedó bien y el
+        // Consolidado da el número correcto igual (manda el catálogo) — solo
+        // queda la marca vieja, que es lo que se puede reintentar.
+        let desmarcadas = 0;
+        for (const mid of aDesmarcar) {
+          try {
+            const mv = (movs || []).find(x => x.id === mid);
+            await window.__db.accounting_movements.update(mid, {
+              is_intercompany: false,
+              updated_at: now,
+              sync_status: mv?.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+            });
+            desmarcadas++;
+          } catch (e) { console.warn('[reclasificar] no se pudo desmarcar', mid, e); }
+        }
+        if (desmarcadas) {
+          try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'accounting_movements' } })); } catch {}
+        }
+        try { await window.__logAudit?.({ action:'update', table:'companies', recordId:editingId, oldData:orig, newData:form,
+          reason: desmarcadas ? `Edición empresa · ${desmarcadas} comprobante(s) dejaron de ser intercompany` : 'Edición empresa' }); } catch {}
+        showToast(desmarcadas
+          ? `Empresa "${form.name}" actualizada · ${desmarcadas} comprobante(s) ya no figuran como operación entre empresas`
+          : `Empresa "${form.name}" actualizada`, 'green');
       } else {
         const id = window.__newId();
         const rec = {
