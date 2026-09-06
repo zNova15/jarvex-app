@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  librosDeObra, libroDeMovimiento, contraparteCatalogo,
-  LIBRO_CONSORCIO, LIBRO_GRUPO,
+  librosDeObra, libroDeMovimiento, contraparteCatalogo, filtroEmpresaSegunLibro,
+  LIBRO_CONSORCIO, LIBRO_GRUPO, LIBRO_TODOS,
 } from '../libros-de-obra.js';
 
 // Caso de producción (medido el 4-sep-2026 contra la base real): Plan
@@ -136,5 +136,55 @@ describe('librosDeObra — la partición completa', () => {
     const r = librosDeObra({});
     expect(r.total).toBe(0);
     expect(r.consorcio.n).toBe(0);
+  });
+});
+
+// ── El filtro de empresa depende del libro (pedido de Gabriel, 5-sep-2026) ──
+describe('filtroEmpresaSegunLibro — dos filtros que responden lo mismo no se apilan', () => {
+  const movsObra = [
+    mov({ id: 'p1', company_id: EL_INCA }),                              // propio del titular
+    mov({ id: 'r1', company_id: JARVEX, related_company_id: EL_INCA }),  // JARVEX le emitió al titular
+    mov({ id: 'g1', company_id: JARVEX }),                               // aporte de JARVEX
+    mov({ id: 'g2', company_id: GASOMI }),                               // aporte de GASOMI
+  ];
+
+  it('📕 libro del titular: el filtro de empresa se BLOQUEA', () => {
+    const r = filtroEmpresaSegunLibro({ libro: LIBRO_CONSORCIO, movs: movsObra, titularId: EL_INCA, companies });
+    expect(r.bloqueado).toBe(true);
+    expect(r.motivo).toMatch(/ya es el filtro/i);
+  });
+
+  it('📗 aporte del grupo: se acota a las empresas que APORTARON, sin el titular', () => {
+    const r = filtroEmpresaSegunLibro({ libro: LIBRO_GRUPO, movs: movsObra, titularId: EL_INCA, companies });
+    expect(r.bloqueado).toBe(false);
+    expect([...r.empresasPermitidas].sort()).toEqual([GASOMI, JARVEX].sort());
+    // El titular NO puede estar: por definición sus filas viven en el otro libro.
+    expect(r.empresasPermitidas.has(EL_INCA)).toBe(false);
+  });
+
+  it('la fila que JARVEX le EMITIÓ al titular no lo hace aparecer como aportante', () => {
+    // 'r1' es de JARVEX pero pertenece al libro del consorcio: no debe contar
+    // como aporte. JARVEX igual aparece por 'g1', así que probamos sin él.
+    const soloEmitido = [mov({ id: 'p1', company_id: EL_INCA }), mov({ id: 'r1', company_id: JARVEX, related_company_id: EL_INCA })];
+    const r = filtroEmpresaSegunLibro({ libro: LIBRO_GRUPO, movs: soloEmitido, titularId: EL_INCA, companies });
+    expect(r.empresasPermitidas.has(JARVEX)).toBe(false);
+    expect(r.empresasPermitidas.size).toBe(0);
+  });
+
+  it('📚 los dos juntos: filtro libre, como siempre', () => {
+    const r = filtroEmpresaSegunLibro({ libro: LIBRO_TODOS, movs: movsObra, titularId: EL_INCA, companies });
+    expect(r.bloqueado).toBe(false);
+    expect(r.empresasPermitidas).toBe(null);
+  });
+
+  it('sin titular no hay dos libros: nada se bloquea', () => {
+    const r = filtroEmpresaSegunLibro({ libro: LIBRO_CONSORCIO, movs: movsObra, titularId: null, companies });
+    expect(r.bloqueado).toBe(false);
+    expect(r.empresasPermitidas).toBe(null);
+  });
+
+  it('sin movimientos no explota', () => {
+    const r = filtroEmpresaSegunLibro({ libro: LIBRO_GRUPO, titularId: EL_INCA, companies });
+    expect(r.empresasPermitidas.size).toBe(0);
   });
 });

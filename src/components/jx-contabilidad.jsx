@@ -20,7 +20,7 @@ import { EmpresaDetalle } from "./jx-empresa-detalle.jsx";
 import { ClasificarEntidadesModal } from "./jx-clasificar-entidades.jsx";
 import { rolDeCompanyEnObra, titularContableDeObra } from "../lib/consorcio.js";
 import { comprobantesImputacionCruzada } from "../lib/imputacion-cruzada.js";
-import { librosDeObra, LIBRO_CONSORCIO, LIBRO_GRUPO, LIBRO_TODOS } from "../lib/libros-de-obra.js";
+import { librosDeObra, filtroEmpresaSegunLibro, LIBRO_CONSORCIO, LIBRO_GRUPO, LIBRO_TODOS } from "../lib/libros-de-obra.js";
 import { resumenPorEntidad } from "../lib/contabilidad-entidades.js";
 import { consolidar, MOTIVO_LABEL } from "../lib/consolidado.js";
 import { empresasPorCategoria, CATEGORIAS_EMPRESA } from "../lib/desglose-empresa.js";
@@ -1523,6 +1523,18 @@ function MovimientosContablesPage({ showToast }) {
     return librosDeObra({ movs: movsDeLaObra, titularId: titularObraId, companies: companies || [] });
   }, [movsDeLaObra, titularObraId, companies, empresaFija]);
   const hayDosLibros = !!librosObra?.hayDosLibros;
+  // El filtro de EMPRESA depende del libro elegido (pedido de Gabriel,
+  // 5-sep-2026): en el libro del titular se BLOQUEA —el libro ya es el filtro,
+  // apilar los dos daba "libro del consorcio + GASOMI = 9 filas" que se leía
+  // como si el consorcio tuviera un libro de 9 comprobantes—; en el aporte del
+  // grupo se acota a las que realmente aportaron. Ver src/lib/libros-de-obra.js.
+  const modoFiltroEmpresa = uMC(
+    () => filtroEmpresaSegunLibro({
+      libro: libroObra, movs: movsDeLaObra || [],
+      titularId: hayDosLibros ? titularObraId : null, companies: companies || [],
+    }),
+    [libroObra, movsDeLaObra, hayDosLibros, titularObraId, companies]);
+  const empresaBloqueadaPorLibro = hayDosLibros && modoFiltroEmpresa.bloqueado;
 
   // Reconciliación de los filtros de ámbito: si apuntan a una obra/empresa que YA
   // no figura en su selector (usuario no asignado a esa obra, obra eliminada,
@@ -1661,7 +1673,10 @@ function MovimientosContablesPage({ showToast }) {
       const ids = libroObra === LIBRO_CONSORCIO ? librosObra.consorcio.ids : librosObra.grupo.ids;
       f = f.filter(m => ids.has(m.id));
     }
-    if (filtroEmpresaSel !== 'todas') f = f.filter(m => m.company_id === filtroEmpresaSel
+    // Con el libro del titular seleccionado el filtro de empresa NO se aplica:
+    // el libro ya delimitó el conjunto, y volver a filtrar por empresa adentro
+    // esconde justamente los comprobantes que el grupo le emitió al titular.
+    if (!empresaBloqueadaPorLibro && filtroEmpresaSel !== 'todas') f = f.filter(m => m.company_id === filtroEmpresaSel
       || (verOtroLado && reflejoActual.ids.has(m.id)));
     if (soloCruces) f = f.filter(m => cruceImputacion.has(m.id));
     if (filtroClase !== 'todos') f = f.filter(m => (m.clase || (m.type === 'income' ? 'venta' : 'compra')) === filtroClase);
@@ -1703,7 +1718,7 @@ function MovimientosContablesPage({ showToast }) {
       (b.date||'').localeCompare(a.date||'')
       || cmpComprobante(a.document_number, b.document_number)
       || (a.created_at||'').localeCompare(b.created_at||''));
-  }, [movs, filtroObraSel, filtroEmpresaSel, filtroClase, filtroTipo, filtroEstado, filtroEmisor, filtroReceptor, nombreCompanyDe, busqueda, filtroBanc, filtroTipoDoc, guiasPorMov, filtroMes, filtroDesde, filtroHasta, bancarizacionPorMov, partesPorMov, depositosById, enObra, incluirTitularSinObra, titularObraId, reflejoActual, verOtroLado, soloCruces, cruceImputacion, hayDosLibros, libroObra, librosObra]);
+  }, [movs, filtroObraSel, filtroEmpresaSel, filtroClase, filtroTipo, filtroEstado, filtroEmisor, filtroReceptor, nombreCompanyDe, busqueda, filtroBanc, filtroTipoDoc, guiasPorMov, filtroMes, filtroDesde, filtroHasta, bancarizacionPorMov, partesPorMov, depositosById, enObra, incluirTitularSinObra, titularObraId, reflejoActual, verOtroLado, soloCruces, cruceImputacion, hayDosLibros, libroObra, librosObra, empresaBloqueadaPorLibro]);
 
   // Paginación: tabla puede tener miles de movimientos contables.
   const movPg = usePagination(filtered, 100);
@@ -2689,17 +2704,27 @@ function MovimientosContablesPage({ showToast }) {
           )}
           <div>
             <label className="flabel">🏢 Empresa del grupo</label>
-            <select className="fi" value={filtroEmpresaSel} onChange={e=>setFiltroEmpresaSel(e.target.value)} style={{ width:'100%' }}
-              disabled={!!empresaFija}
+            <select className="fi" value={empresaBloqueadaPorLibro ? 'todas' : filtroEmpresaSel} onChange={e=>setFiltroEmpresaSel(e.target.value)} style={{ width:'100%' }}
+              disabled={!!empresaFija || empresaBloqueadaPorLibro}
               title={empresaFija
                 ? 'Estás dentro de la contabilidad de esta empresa: la pantalla muestra solo lo suyo. Para ver otra, salí del contexto desde el cartel de arriba.'
-                : (enObra && obraDelWorkspace
-                  ? 'Las empresas del grupo que tienen movimientos en esta obra. El titular contable es quien lleva sus libros; las demás le facturan (cadena intercompany).'
-                  : 'Filtrar por EMPRESA del grupo — se combina con el filtro de obra')}>
-              {!empresaFija && <option value="todas">{enObra && obraDelWorkspace ? 'Todas las de esta obra' : 'Todas las empresas'}</option>}
+                : empresaBloqueadaPorLibro
+                  ? modoFiltroEmpresa.motivo
+                  : (enObra && obraDelWorkspace
+                    ? 'Las empresas del grupo que tienen movimientos en esta obra. El titular contable es quien lleva sus libros; las demás le facturan (cadena intercompany).'
+                    : 'Filtrar por EMPRESA del grupo — se combina con el filtro de obra')}>
+              {empresaBloqueadaPorLibro
+                ? <option value="todas">Libro completo de {nombreCompanyDe(titularObraId) || 'el titular'}</option>
+                : (!empresaFija && <option value="todas">{enObra && obraDelWorkspace ? 'Todas las de esta obra' : 'Todas las empresas'}</option>)}
               {(empresaFija
                 ? (companies || []).filter(c => c.id === empresaFija)
-                : (enObra && obraDelWorkspace ? empresasDeLaObra : companiesActivas)).map(c => (
+                : empresaBloqueadaPorLibro
+                  ? []
+                  : (enObra && obraDelWorkspace ? empresasDeLaObra : companiesActivas)
+                      // 📗 Aporte del grupo: solo las que realmente compraron para
+                      // esta obra (el titular no está: lo suyo va en el otro libro).
+                      .filter(c => !modoFiltroEmpresa.empresasPermitidas || modoFiltroEmpresa.empresasPermitidas.has(c.id))
+                ).map(c => (
                 <option key={c.id} value={c.id}>{c.name}{c.id === titularObraId ? ' · titular contable' : ''}</option>
               ))}
             </select>

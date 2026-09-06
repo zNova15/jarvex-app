@@ -113,6 +113,51 @@ const libroVacio = () => ({ ids: new Set(), n: 0, anulados: 0, venta: {}, compra
  *   `anulados` y los montos por moneda de venta/compra.
  *   NO hay total sumado de los dos: no se suman.
  */
+// ── EL FILTRO DE EMPRESA DEPENDE DEL LIBRO ────────────────────────
+// EL PEDIDO (Gabriel, 5-sep-2026): «si yo tengo seleccionado solo el libro de
+// consorcio, debe estar bloqueado esta parte, porque aquí nada más voy a ver
+// todos los movimientos contables de ese consorcio».
+//
+// Tiene razón, y la razón es más fuerte que la que él dio: el libro del
+// consorcio YA ES un filtro por empresa —el más fino de los dos, porque
+// incluye lo suyo Y lo que el grupo le emitió a él—. Dejar encima el selector
+// de empresa producía combinaciones que se leen mal: "libro del consorcio +
+// empresa GASOMI" mostraba 9 filas y parecía que el consorcio tuviera un libro
+// de 9 comprobantes. Dos filtros que responden la misma pregunta, uno tapando
+// al otro.
+//
+// La regla por pestaña:
+//   📕 Libro del titular  → filtro BLOQUEADO. El libro es el filtro.
+//   📗 Aporte del grupo   → filtro acotado a las empresas que aportaron
+//                           (el titular no está: sus comprobantes están en el
+//                           otro libro por definición).
+//   📚 Los dos juntos     → libre, como siempre.
+export function filtroEmpresaSegunLibro({ libro, movs = [], titularId = null, companies = [] } = {}) {
+  if (!titularId || libro === LIBRO_TODOS) {
+    return { bloqueado: false, empresasPermitidas: null, motivo: '' };
+  }
+  if (libro === LIBRO_CONSORCIO) {
+    return {
+      bloqueado: true,
+      empresasPermitidas: null,
+      motivo: 'El libro del titular ya es el filtro: incluye sus propios comprobantes y los que el grupo le emitió. Cambiá a "Los dos juntos" para filtrar por empresa.',
+    };
+  }
+  // LIBRO_GRUPO: solo las empresas que realmente aportaron en esta obra.
+  const idx = indiceEmpresas(companies);
+  const permitidas = new Set();
+  for (const m of vivos(movs)) {
+    if (libroDeMovimiento(m, titularId, idx) !== LIBRO_GRUPO) continue;
+    if (m.company_id) permitidas.add(m.company_id);
+  }
+  permitidas.delete(titularId);
+  return {
+    bloqueado: false,
+    empresasPermitidas: permitidas,
+    motivo: 'Solo las empresas del grupo que compraron para esta obra. El titular no está: lo suyo vive en su propio libro.',
+  };
+}
+
 export function librosDeObra({ movs = [], titularId = null, companies = [] } = {}) {
   const idx = indiceEmpresas(companies);
   const filas = vivos(movs);

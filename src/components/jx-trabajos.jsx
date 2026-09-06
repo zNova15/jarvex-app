@@ -28,6 +28,7 @@ import {
   TIPO_TRABAJO_DEFAULT, ORIGEN_DEFAULT,
 } from "../lib/tipos-trabajo.js";
 import { etiquetaEjecutora, titularContableDeObra, sociosDeObra, esObraDeConsorcio } from "../lib/consorcio.js";
+import { puedeVerFichaTrabajo, puedeVerEquipoTrabajo } from "../lib/panel-trabajo-visibilidad.js";
 import { gruposDelTrabajo } from "../lib/desglose-obra.js";
 const { useState: uST, useMemo: uMT, useRef: uRT, useEffect: uET } = React;
 
@@ -969,8 +970,13 @@ function PanelObraPage({ showToast, onNav }) {
   // dual: acá SIEMPRE su vista de obra).
   const abrir = (pageId) => onNav?.(pageId, 'obra');
 
-  const verFicha = canSee('empresas') || canSee('movimientos-contables');
-  const verEquipo = canSee('usuarios') || canSee('personal');
+  // Bloques SENSIBLES del panel (pedido de Gabriel, 5-sep-2026): quién ejecuta
+  // el trabajo, el reparto de plata entre empresas y el equipo designado son
+  // solo para el administrador y la Contadora Jefe. Antes se gateaban por
+  // permiso de MENÚ, que es una puerta mucho más ancha: cualquiera con acceso a
+  // Personal veía el equipo completo. Ver src/lib/panel-trabajo-visibilidad.js.
+  const verFicha = puedeVerFichaTrabajo(rol);
+  const verEquipo = puedeVerEquipoTrabajo(rol);
 
   if (!obra) {
     return (
