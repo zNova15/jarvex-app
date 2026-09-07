@@ -134,6 +134,18 @@ function _firmarPath(path, expiresIn) {
   return p;
 }
 
+// Calienta la URL firmada de una evidencia sin devolver nada y —sobre todo—
+// SIN crear objectURLs (los de un blob local no tendría quién revocarlos).
+// Se llama al pasar el mouse por encima del 👁: cuando el usuario hace clic, la
+// firma ya está en el caché y el comprobante abre de una. Si nunca hace clic,
+// lo único que se gastó es una firma, que además queda cacheada 7 días.
+export function precargarEvidencia(ev) {
+  try {
+    const path = pathDeEvidencia(ev?.url_archivo);
+    if (path) _firmarPath(path, _SIGNED_TTL);   // fire-and-forget; nunca tira
+  } catch {}
+}
+
 // Devuelve { url, isBlob } mostrable, o null si no hay nada que mostrar.
 // Si isBlob, el caller debería revokeObjectURL(url) al desmontar.
 // expiresIn 24h: los visores cachean la URL firmada en mapas que solo se

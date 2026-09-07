@@ -1,7 +1,7 @@
 import React from "react";
 import { RUBROS } from "../lib/rubros.js";
 import { sugerirCuentaPcge, sugerirClasificacionContable } from "../lib/sugerir-cuenta-pcge.js";
-import { getEvidenciaSrc } from "../lib/evidencias-url.js";
+import { getEvidenciaSrc, precargarEvidencia } from "../lib/evidencias-url.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 import { usePagination } from "../hooks/usePagination.js";
 import { TablePagination } from "./jx-pagination.jsx";
@@ -1413,15 +1413,22 @@ function MovimientosContablesPage({ showToast }) {
   const [detrFecha, setDetrFecha] = uSC('');
   const [detrSaving, setDetrSaving] = uSC(false);
 
+  // ─── Los 👁 de las facturas: aparecen YA, el archivo se firma al abrirlo ───
+  // «Cuando entro en diferentes PC, los ojos para ver facturas no se muestran,
+  // o tardan mucho en aparecer» (Gabriel, 7-sep-2026).
+  //
+  // Antes este efecto FIRMABA la URL de CADA evidencia —hoy 1.302 en
+  // producción— una detrás de otra, y recién con las 1.302 listas hacía el
+  // primer setState: hasta entonces no había un solo ojo en la tabla. En una PC
+  // con el caché de firmas vacío (es por equipo, vive en localStorage) eso son
+  // 1.302 viajes en fila al endpoint → minutos de espera.
+  //
+  // Ahora el mapa se arma SOLO con lo que ya está en Dexie (local, instantáneo):
+  // el ojo aparece apenas carga la tabla. La URL se firma cuando alguien abre el
+  // comprobante — un viaje, el del archivo que de verdad se va a mirar.
   uEC(() => {
     let cancelled = false;
-    let blobUrlsActuales = [];   // objectURLs de la corrida vigente (se revocan antes de recrear)
     const cargar = async () => {
-      // Revocar la tanda anterior ANTES de crear nuevos objectURLs: sin esto, cada
-      // reload (sync/Captura Mágica/guardar) acumulaba objectURLs nunca revocados → fuga.
-      blobUrlsActuales.forEach(u => { try { URL.revokeObjectURL(u); } catch {} });
-      blobUrlsActuales = [];
-      const nuevos = [];
       try {
         const evs = await window.__db.evidencias
           .filter(e =>
@@ -1452,22 +1459,18 @@ function MovimientosContablesPage({ showToast }) {
           const esDetr = ev.tipo_evidencia === 'constancia_detraccion';
           const target = esDeposito ? mapDep : (esBanc ? mapBanc : (esDetr ? mapDetr : map));
           if (target.has(ev.registro_relacionado_id)) continue;
-          // Blob local si existe; si no, signed URL del bucket privado (la
-          // url_archivo cruda NO sirve en un bucket privado → factura no abre).
-          const src = await getEvidenciaSrc(ev);
-          if (src?.url) {
-            if (src.isBlob) nuevos.push(src.url);
-            target.set(ev.registro_relacionado_id, {
-              url: src.url,
-              mime: ev.mime_type || 'application/pdf',
-              nombre: ev.nombre_archivo || (esBanc ? 'bancarizacion' : 'comprobante'),
-              sync: estadoEv(ev),   // subido vs pendiente/falló ('synced' con URL = subido)
-            });
-          }
+          // Solo METADATOS. El archivo (blob local o signed URL del bucket
+          // privado) lo resuelve VisorEvidenciaModal al abrirlo: firmar acá las
+          // 1.302 evidencias era lo que dejaba la tabla sin ojos por minutos.
+          target.set(ev.registro_relacionado_id, {
+            ev,                     // la evidencia cruda: con esto se firma después
+            mime: ev.mime_type || 'application/pdf',
+            nombre: ev.nombre_archivo || (esBanc ? 'bancarizacion' : 'comprobante'),
+            sync: estadoEv(ev),   // subido vs pendiente/falló ('synced' con URL = subido)
+          });
         }
-        if (!cancelled) { setEvidenciasPorMov(map); setBancarizacionPorMov(mapBanc); setBancPorDeposito(mapDep); setDetraccionPorMov(mapDetr); blobUrlsActuales = nuevos; }
-        else nuevos.forEach(u => { try { URL.revokeObjectURL(u); } catch {} });
-      } catch (e) { console.warn('[contab evidencias]', e?.message); nuevos.forEach(u => { try { URL.revokeObjectURL(u); } catch {} }); }
+        if (!cancelled) { setEvidenciasPorMov(map); setBancarizacionPorMov(mapBanc); setBancPorDeposito(mapDep); setDetraccionPorMov(mapDetr); }
+      } catch (e) { console.warn('[contab evidencias]', e?.message); }
     };
     cargar();
     const onChange = (e) => {
@@ -1480,7 +1483,6 @@ function MovimientosContablesPage({ showToast }) {
       cancelled = true;
       window.removeEventListener('jx_data_changed', onChange);
       window.removeEventListener('jarvex_master_updated', onChange);
-      blobUrlsActuales.forEach(u => { try { URL.revokeObjectURL(u); } catch {} });
     };
   }, []);
   // IA: sugerencia de cuenta PCGE
@@ -3282,7 +3284,9 @@ function MovimientosContablesPage({ showToast }) {
                             </button>
                           );
                           // Ver la constancia de bancarización (pedido 20-jul).
-                          const verBanc = (evB && evB.url) ? (
+                          // Sin `&& evB.url`: la URL ya no viene precargada (se
+                          // firma al abrir), y ese gate dejaba el «Ver» invisible.
+                          const verBanc = evB ? (
                             <button className="btn btn-ghost btn-xs" style={{ marginLeft:4, padding:'0 4px', fontSize:9, verticalAlign:'middle', color:'var(--blue)' }}
                               title="Ver la constancia de bancarización" onClick={()=>setEvidenciaModal(evB)}>
                               <JxIcon name="eye" size={9}/> Ver
@@ -3321,7 +3325,7 @@ function MovimientosContablesPage({ showToast }) {
                             return (
                               <div style={{ fontSize:10, color:'var(--green)' }}>
                                 ✅ Bancarizado <span style={{ color:'var(--tm)' }} title={`La constancia se subió en la contraparte interco (${_par.document_number || 'el otro lado del par'}) — es el mismo comprobante y la misma transferencia.`}>(por la contraparte interco)</span>
-                                {evPar && evPar.url && (
+                                {evPar && (
                                   <button className="btn btn-ghost btn-xs" style={{ marginLeft:4, padding:'0 4px', fontSize:9, color:'var(--blue)', verticalAlign:'middle' }}
                                     title="Ver la constancia subida en la otra pata del par" onClick={()=>setEvidenciaModal(evPar)}>
                                     <JxIcon name="eye" size={9}/> Ver
@@ -3495,6 +3499,8 @@ function MovimientosContablesPage({ showToast }) {
                             <button className="btn btn-ghost btn-xs"
                               title="Ver factura adjunta"
                               onClick={() => setEvidenciaModal(ev)}
+                              onMouseEnter={() => precargarEvidencia(ev.ev)}
+                              onFocus={() => precargarEvidencia(ev.ev)}
                               style={{ marginRight: 4, color: 'var(--blue)' }}>
                               <JxIcon name="eye" size={11}/>
                             </button>
@@ -3606,6 +3612,7 @@ function MovimientosContablesPage({ showToast }) {
                     </div>
                     {evidenciasPorMov.has(m.id) && (
                       <button className="btn btn-ghost btn-xs" title="Ver la factura adjunta" style={{ color:'var(--blue)' }}
+                        onMouseEnter={()=>precargarEvidencia(evidenciasPorMov.get(m.id)?.ev)}
                         onClick={()=>setEvidenciaModal(evidenciasPorMov.get(m.id))}>
                         <JxIcon name="eye" size={11}/>
                       </button>
@@ -3971,39 +3978,14 @@ function MovimientosContablesPage({ showToast }) {
         </Modal>
       )}
 
-      {/* Visor de factura adjunta (PDF/imagen). Si la fuente es un objectURL
-          creado al vuelo (guía abierta desde la fila, _blob), se revoca al
-          cerrar — las entradas de los mapas precargados NO llevan _blob (sus
-          objectURLs los administra y revoca el loader del useEffect). */}
-      {evidenciaModal && (() => {
-        const cerrarEvModal = () => {
-          if (evidenciaModal._blob) { try { URL.revokeObjectURL(evidenciaModal.url); } catch {} }
-          guiaBlobRef.current = null;
-          setEvidenciaModal(null);
-        };
-        return (
-        <Modal title={`Comprobante: ${evidenciaModal.nombre}`} icon="eye"
-          onClose={cerrarEvModal} wide>
-          <div style={{ minHeight: 480, maxHeight: '70vh', background: 'var(--bg-p)', borderRadius: 6, overflow: 'hidden' }}>
-            {evidenciaModal.mime?.startsWith('image/') ? (
-              <img src={evidenciaModal.url} alt={evidenciaModal.nombre}
-                style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}/>
-            ) : (
-              <PdfFrame url={evidenciaModal.url} nombre={evidenciaModal.nombre} />
-            )}
-          </div>
-          <div className="modal-actions">
-            <a href={evidenciaModal.url} target="_blank" rel="noopener noreferrer"
-              className="btn btn-ghost btn-sm">
-              <JxIcon name="external" size={12}/> Abrir en nueva pestaña
-            </a>
-            <button className="btn btn-amber btn-sm" onClick={cerrarEvModal}>
-              Cerrar
-            </button>
-          </div>
-        </Modal>
-        );
-      })()}
+      {/* Visor de factura adjunta (PDF/imagen). El `entry` normalmente trae solo
+          metadatos y el visor firma el archivo al abrirse; la guía de remisión
+          es la excepción: llega con `url` ya resuelta y `_blob`, y ese objectURL
+          se revoca al cerrar (lo creó quien abrió la guía, no el visor). */}
+      {evidenciaModal && (
+        <VisorEvidenciaModal entry={evidenciaModal}
+          onClose={() => { guiaBlobRef.current = null; setEvidenciaModal(null); }} />
+      )}
 
       {llegoTarget && (() => {
         const fac = llegoTarget.factura;
@@ -7363,6 +7345,74 @@ function PdfFrame({ url, nombre }) {
   );
   if (!src) return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '60vh', color: 'var(--tm)', fontSize: 12 }}>Cargando PDF…</div>;
   return <iframe src={src} title={nombre || 'PDF'} style={{ width: '100%', height: '70vh', border: 'none', background: 'white' }} />;
+}
+
+// ─── Visor de un comprobante — firma el archivo AL ABRIRLO ───────────
+// El `entry` viene de los mapas de evidencias (evidenciasPorMov y compañía),
+// que ahora guardan SOLO metadatos: `{ ev, mime, nombre, sync }`. La URL
+// mostrable (blob local o signed URL del bucket privado) se resuelve acá, en el
+// único momento en que hace falta de verdad: cuando alguien abre el documento.
+// Así el 👁 de cada fila aparece al instante en vez de esperar a que se firmen
+// las 1.302 evidencias de la base (ver el comentario del loader).
+//
+// También acepta un `entry` que YA trae `url` (la guía de remisión la abre así,
+// con `_blob`): en ese caso no firma nada y respeta el revoke de siempre.
+function VisorEvidenciaModal({ entry, onClose }) {
+  const [url, setUrl] = uSC(entry?.url || null);
+  const [error, setError] = uSC(false);
+  const propioBlobRef = uRC(null);   // objectURL creado ACÁ (hay que revocarlo)
+  uEC(() => {
+    if (entry?.url) { setUrl(entry.url); return; }
+    let cancel = false;
+    (async () => {
+      try {
+        const src = await getEvidenciaSrc(entry?.ev);
+        if (!src?.url) { if (!cancel) setError(true); return; }
+        if (cancel) { if (src.isBlob) { try { URL.revokeObjectURL(src.url); } catch {} } return; }
+        if (src.isBlob) propioBlobRef.current = src.url;
+        setUrl(src.url);
+      } catch { if (!cancel) setError(true); }
+    })();
+    return () => { cancel = true; };
+  }, [entry]);   // eslint-disable-line react-hooks/exhaustive-deps
+  // Revocar SOLO lo que creó este visor. Los objectURL que llegan de afuera
+  // (la guía, con `_blob`) los sigue administrando quien los creó.
+  uEC(() => () => {
+    if (propioBlobRef.current) { try { URL.revokeObjectURL(propioBlobRef.current); } catch {} }
+  }, []);
+  const cerrar = () => {
+    if (entry?._blob && entry?.url) { try { URL.revokeObjectURL(entry.url); } catch {} }
+    onClose?.();
+  };
+  return (
+    <Modal title={`Comprobante: ${entry?.nombre || ''}`} icon="eye" onClose={cerrar} wide>
+      <div style={{ minHeight: 480, maxHeight: '70vh', background: 'var(--bg-p)', borderRadius: 6, overflow: 'hidden' }}>
+        {error ? (
+          <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'60vh', gap:8, color:'var(--tm)', fontSize:12 }}>
+            <JxIcon name="file" size={40}/>
+            <div>No se pudo abrir el archivo. Si acaba de subirse, probá en un minuto.</div>
+          </div>
+        ) : !url ? (
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'60vh', color:'var(--tm)', fontSize:12 }}>
+            Abriendo el comprobante…
+          </div>
+        ) : entry?.mime?.startsWith('image/') ? (
+          <img src={url} alt={entry?.nombre || ''}
+            style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}/>
+        ) : (
+          <PdfFrame url={url} nombre={entry?.nombre} />
+        )}
+      </div>
+      <div className="modal-actions">
+        {url && (
+          <a href={url} target="_blank" rel="noopener noreferrer" className="btn btn-ghost btn-sm">
+            <JxIcon name="external" size={12}/> Abrir en nueva pestaña
+          </a>
+        )}
+        <button className="btn btn-amber btn-sm" onClick={cerrar}>Cerrar</button>
+      </div>
+    </Modal>
+  );
 }
 
 // ╔════════════════════════════════════════════════════════════╗
