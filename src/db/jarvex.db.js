@@ -86,6 +86,20 @@ export const db = new Dexie('JarvexDB');
 // clave es la DESCRIPCIÓN NORMALIZADA, no el comprobante: el mismo texto
 // aparece en facturas de varias empresas y se decide UNA vez para todas.
 // Aditivo.
+// Versión 56: EL BUZÓN DE ÓRDENES RECIBIDAS (mig 186, tanda 8). Una orden
+// emitida a una empresa DEL GRUPO tiene que aparecerle a ella, y hasta ahora el
+// destinatario era solo texto (`proveedor_nombre`): comparar «GASOMI» con
+// «GASOMI E.I.R.L.» deja órdenes sin entregar. `proveedor_company_id` es el
+// vínculo duro y va INDEXADO porque el buzón pregunta exactamente eso —«las que
+// me llegaron a mí»— y sin índice es un full scan por cada empresa.
+// Re-declara `ordenes_compra` sumando ese índice; el resto queda igual. Las
+// columnas del carril de la receptora (respuesta_estado, respuesta_nota,
+// respuesta_movimiento_id…) son props sin índice: se leen de la fila que ya se
+// trajo, nunca se consultan por sí solas.
+db.version(56).stores({
+  ordenes_compra: 'id, obra_id, company_id, proveedor_company_id, tipo, trabajo_id, accounting_movement_id, proveedor_id, estado, fecha, deleted_at, sync_status',
+});
+
 db.version(55).stores({
   insumo_mapeo: 'id, norm, insumo_codigo, decision, fuente, deleted_at, sync_status',
 });

@@ -612,6 +612,11 @@ export function nuevaOrdenBorrador({
       codigo: null, correlativo: null, anio: null,
       estado: 'borrador',
       proveedor_id: proveedor.id || null,
+      // A CUÁL de nuestras empresas se le emitió (mig 186). NULL si es un
+      // tercero. Es lo único que hace que la orden le llegue a su buzón: el
+      // snapshot de texto de abajo no sirve para eso porque el mismo RUC está
+      // escrito de tres formas distintas en el catálogo.
+      proveedor_company_id: proveedor.companyId || null,
       proveedor_nombre: proveedor.nombre || null,
       proveedor_ruc: proveedor.ruc || null,
       proveedor_direccion: proveedor.direccion || null,
@@ -765,11 +770,15 @@ export function cadenaDeOrdenes({
 
   // A quién le compra la ejecutora: al intermediario si lo hay, si no al que
   // tiene el material.
+  // `companyId` cuando el destinatario es del grupo (mig 186): la orden le tiene
+  // que aparecer en SU buzón, y en una cadena las dos patas van a empresas
+  // nuestras. El intermediario externo es el único que va sin companyId — no es
+  // nuestro y no tiene buzón.
   const proveedorDeArriba = hayIntermediario
     ? (interCompanyId
-      ? { id: null, nombre: nombre(interCompanyId), ruc: ruc(interCompanyId) }
-      : { id: intermediario.proveedorId || null, nombre: interExterno, ruc: intermediario.ruc || null })
-    : { id: null, nombre: nombre(origenCompanyId), ruc: ruc(origenCompanyId) };
+      ? { id: null, companyId: interCompanyId, nombre: nombre(interCompanyId), ruc: ruc(interCompanyId) }
+      : { id: intermediario.proveedorId || null, companyId: null, nombre: interExterno, ruc: intermediario.ruc || null })
+    : { id: null, companyId: origenCompanyId || null, nombre: nombre(origenCompanyId), ruc: ruc(origenCompanyId) };
 
   // El intermediario carga su margen: la ejecutora paga más de lo que A cobra.
   const conMargen = (its, pct) => its.map(it => ({
@@ -800,7 +809,7 @@ export function cadenaDeOrdenes({
   const abajo = nuevaOrdenBorrador({
     ...comunes,
     companyId: interCompanyId,
-    proveedor: { id: null, nombre: nombre(origenCompanyId), ruc: ruc(origenCompanyId) },
+    proveedor: { id: null, companyId: origenCompanyId || null, nombre: nombre(origenCompanyId), ruc: ruc(origenCompanyId) },
     items,
     observaciones: `Abastece la orden de ${nombre(ejecutoraId) || 'la ejecutora'}`,
   });
