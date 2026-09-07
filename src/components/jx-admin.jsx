@@ -1233,6 +1233,10 @@ window.__moduleIdMap = {
   'estado-resultados': 'Estado Resultados',
   // Tesorería
   'cuentas-bancarias': 'Cuentas Bancarias',
+  // Mismo módulo que las cuentas: quien puede ver una cuenta puede ver lo que
+  // se movió en ella. Separarlos daría un rol que ve el saldo pero no de dónde
+  // salió, que no le sirve a nadie.
+  'movimientos-bancarios': 'Cuentas Bancarias',
   'flujo-caja': 'Flujo de Caja',
   'flujo-proyectado': 'Flujo Proyectado',
   'comparativo-periodos': 'Comparativo Periodos',

@@ -161,8 +161,15 @@ export const GRUPOS_TRABAJO = [
     //
     // Ponerla en Logística la dejaba pegada a la OC chica, que es exactamente
     // la confusión que hay que evitar.
-    items: ['movimientos-contables', 'conciliacion-insumos', 'pagos', 'trazabilidad',
-      'intercompany', 'abastecimiento', 'ordenes'],
+    //
+    // 'movimientos-bancarios' ENTRÓ ACÁ (tanda 12). Gabriel, 7-sep-2026: «para
+    // obras sería movimiento bancario de las cuentas de consorcio EL INCA».
+    // Una obra NO tiene cuenta bancaria propia: la plata de la obra se mueve
+    // por las cuentas del consorcio que la ejecuta. Por eso acá el titular no
+    // se elige — es `obras.ejecutora_company_id`, clavado como el resto del
+    // workspace.
+    items: ['movimientos-contables', 'conciliacion-insumos', 'pagos', 'movimientos-bancarios',
+      'trazabilidad', 'intercompany', 'abastecimiento', 'ordenes'],
   },
 ];
 

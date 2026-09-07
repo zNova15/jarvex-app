@@ -23,6 +23,7 @@ import { candidatosSinIngreso, poolParaVenta, vendidosVenta, estadoConsultaItem 
 import { validarVinculoDeposito, saldoDeposito, parMovimiento, parDeposito, mismoPar, movimientoBancarizado, TOL } from "../lib/depositos-bancarizacion.js";
 import { useChart } from "../lib/chart-loader.js";
 import { cssVar } from "../lib/tema.js";
+import { nombreCuenta as nombreCuentaBanco } from "../lib/bancos.js";
 import { FusionEntidadModal } from "./jx-fusion-entidad.jsx";
 import { EmpresaDetalle } from "./jx-empresa-detalle.jsx";
 import { RevisionFacturasModal } from "./jx-revision-facturas.jsx";
@@ -1111,6 +1112,15 @@ function MovimientosContablesPage({ showToast }) {
   const [bancMonto, setBancMonto] = uSC('');
   const [bancMetodo, setBancMetodo] = uSC('transferencia');
   const [bancRef, setBancRef] = uSC('');
+  // De qué cuenta salió (o entró) la plata — tanda 12. Sin esto la
+  // bancarización no puede aparecer en el estado de cuenta de la empresa.
+  const [bancCuenta, setBancCuenta] = uSC('');
+  // Las cuentas vivas de la empresa del movimiento que se está bancarizando.
+  // Sin `bancTarget` todavía no hay a quién preguntarle: lista vacía, no error.
+  const { data: cuentasBancoTodas } = window.__hooks.useCuentasBancarias?.() || { data: [] };
+  const cuentasBancoBanc = uMC(() => (cuentasBancoTodas || []).filter(c =>
+    c.estado !== 'cerrada' && (!bancTarget?.company_id || c.company_id === bancTarget.company_id)),
+    [cuentasBancoTodas, bancTarget]);
   const [partesPorMov, setPartesPorMov] = uSC(() => new Map());   // mov_id → [{monto,...}]
   const [guiasPorMovRaw, setGuiasPorMovRaw] = uSC(() => new Map());  // mov_id → [guias] (vínculo directo)
   const [bancObra, setBancObra] = uSC('');
@@ -2611,6 +2621,7 @@ function MovimientosContablesPage({ showToast }) {
         tercero_nombre: bancTarget.third_party_name || null,
         fecha: hoy, monto_total: total, moneda: bancTarget.currency || 'PEN',
         metodo: bancMetodo || 'transferencia', referencia: bancRef || null,
+        cuenta_id: bancCuenta || null,
         evidencia_id: null, observaciones: 'Depósito de bancarización multi-factura',
         created_by: userId, updated_by: userId, created_at: now, updated_at: now, version: 1,
         idempotency_key: newIdempotencyKey(userId, 'depositos_bancarizacion'),
@@ -2687,6 +2698,7 @@ function MovimientosContablesPage({ showToast }) {
             fecha: hoy,
             monto: montoAplicar, metodo: bancMetodo || 'transferencia',
             referencia: esDepExistente ? (depositoElegido.referencia || null) : (bancRef || null),
+            cuenta_id: esDepExistente ? (depositoElegido.cuenta_id || null) : (bancCuenta || null),
             evidencia_id: esDepNuevo ? evidenciaId : null,
             observaciones: (esDepNuevo || esDepExistente) ? 'Cubierto por voucher multi-factura'
               : bancModo === 'exacto' ? 'Pago exacto de la factura' : 'Pago parcial (bancarización en partes)',
@@ -3823,6 +3835,17 @@ function MovimientosContablesPage({ showToast }) {
                         </select></div>
                       <div><label className="flabel">N° operación</label>
                         <input className="fi" value={bancRef} placeholder="opcional" onChange={e=>setBancRef(e.target.value)} style={{ width:130 }}/></div>
+                      {/* De qué cuenta salió: es lo que hace que esta
+                          bancarización aparezca después en Movimientos
+                          Bancarios y se pueda cuadrar contra el extracto. */}
+                      <div><label className="flabel">Sale de la cuenta</label>
+                        <select className="fi" value={bancCuenta} onChange={e=>setBancCuenta(e.target.value)} style={{ width:190 }}
+                          title="Si no la sabes ahora, se completa sola al conciliar el extracto en Movimientos Bancarios.">
+                          <option value="">— la elijo al conciliar —</option>
+                          {(cuentasBancoBanc || []).map(c => (
+                            <option key={c.id} value={c.id}>{nombreCuentaBanco(c)} · {c.moneda}</option>
+                          ))}
+                        </select></div>
                     </>)}
                   </div>
                   {bancModo === 'dep_nuevo' && Number(bancTotalDep) > 0 && montoNum > 0 && (

@@ -96,6 +96,26 @@ export const db = new Dexie('JarvexDB');
 // columnas del carril de la receptora (respuesta_estado, respuesta_nota,
 // respuesta_movimiento_id…) son props sin índice: se leen de la fila que ya se
 // trajo, nunca se consultan por sí solas.
+// Versión 57: MOVIMIENTOS BANCARIOS DE VERDAD (mig 191, tanda 12). La tabla
+// existía desde la v1 y nunca se leyó por otra cosa que el saldo: ahora es un
+// estado de cuenta que se concilia contra lo ya registrado, y eso cambia las
+// preguntas que se le hacen. `origen` separa la línea del banco de la tecleada
+// a mano; `pago_parte_id` y `deposito_id` son el cruce (y el índice es lo que
+// permite preguntar «¿esta constancia ya cuadró?» sin recorrer la tabla);
+// `obra_id` responde «¿qué movió el consorcio en esta obra?». `import_hash` es
+// la huella que evita duplicar al reimportar el mismo extracto.
+//
+// `pagos_partes` y `depositos_bancarizacion` se RE-INDEXAN por `cuenta_id`: la
+// constancia decía el método y el n° de operación pero nunca DE QUÉ CUENTA
+// salió la plata, y sin eso no hay estado de cuenta posible. Aditivo en
+// columnas, re-declarativo en índices.
+db.version(57).stores({
+  movimientos_bancarios:   'id, cuenta_id, fecha, conciliado, origen, obra_id, pago_parte_id, deposito_id, import_hash, deleted_at, sync_status',
+  pagos_partes:            'id, pago_id, accounting_movement_id, deposito_id, cuenta_id, obra_id, deleted_at, sync_status',
+  depositos_bancarizacion: 'id, obra_id, company_id, cuenta_id, referencia, deleted_at, sync_status',
+  cuentas_bancarias:       'id, company_id, banco_codigo, estado, deleted_at, sync_status',
+});
+
 db.version(56).stores({
   ordenes_compra: 'id, obra_id, company_id, proveedor_company_id, tipo, trabajo_id, accounting_movement_id, proveedor_id, estado, fecha, deleted_at, sync_status',
 });

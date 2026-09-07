@@ -717,6 +717,7 @@ const PAGE_REGISTRY = {
   'valorizaciones':         { chunk: 'jx-valorizaciones', component: 'ValorizacionesPage' },
   // === jx-tesoreria ===
   'cuentas-bancarias':      { chunk: 'jx-tesoreria', component: 'CuentasBancariasPage' },
+  'movimientos-bancarios':  { chunk: 'jx-tesoreria', component: 'MovimientosBancariosPage' },
   'flujo-caja':             { chunk: 'jx-tesoreria', component: 'FlujoCajaPage' },
   // === jx-activos ===
   'activos-pesados':        { chunk: 'jx-activos', component: 'ActivosPesadosPage' },

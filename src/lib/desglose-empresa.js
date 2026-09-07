@@ -180,6 +180,13 @@ export const BLOQUES_CONTABILIDAD_EMPRESA = [
     desc: 'Sus cuentas, los depósitos y la bancarización de lo que paga',
   },
   {
+    // Hermana de la anterior y separada a propósito: «Cuentas bancarias» es el
+    // catálogo (qué cuentas tiene), esto es el DINERO que pasó por ellas —el
+    // estado de cuenta— y el cruce contra lo que ya se registró al trabajar.
+    id: 'movimientos-bancarios', titulo: 'Movimientos bancarios', icon: 'list', color: 'var(--blue)',
+    desc: 'Lo que entró y salió de sus cuentas, banco por banco, cuadrado contra sus pagos',
+  },
+  {
     // Pedido explícito de Gabriel (3-sep-2026): «va a estar el libro diario y
     // planilla y muchas cosas que debería tener la empresa». La planilla es
     // de la EMPRESA EMPLEADORA (planillas.company_id), aunque se arme obra por

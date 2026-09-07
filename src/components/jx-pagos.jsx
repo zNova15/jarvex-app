@@ -21,6 +21,7 @@ import { MODOS_PAGO, MODO_PAGO_LABEL, METODOS_PARTE, METODO_PARTE_LABEL, ESTADOS
 import { etiquetaPersona } from "../lib/destino-mov.js";
 import { categoriaDe } from "../lib/personal-categoria.js";
 import { coincideTokens } from "../lib/buscar-tokens.js";
+import { nombreCuenta } from "../lib/bancos.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -243,7 +244,7 @@ function PagosPage({ showToast }) {
     } catch {}
   };
 
-  const agregarParte = async (pago, { fecha, monto, metodo, referencia, archivo }) => {
+  const agregarParte = async (pago, { fecha, monto, metodo, referencia, archivo, cuenta_id }) => {
     if (busy) return;
     setBusy(true);
     try {
@@ -271,6 +272,12 @@ function PagosPage({ showToast }) {
       await window.__db.pagos_partes.add({
         id: parteId, pago_id: pago.id, accounting_movement_id: null, obra_id: obraId,
         fecha, monto: Number(monto), metodo, referencia: referencia || null,
+        // DE QUÉ CUENTA SALIÓ (tanda 12). Hasta hoy la constancia decía el
+        // método y el n° de operación pero no la cuenta, y por eso los pagos
+        // no podían entrar a ningún estado de cuenta. Sigue siendo opcional:
+        // si no se elige acá, se completa al conciliar en Movimientos
+        // Bancarios. En efectivo no aplica.
+        cuenta_id: (metodo !== 'efectivo' && cuenta_id) ? cuenta_id : null,
         evidencia_id: evidenciaId, observaciones: null,
         created_by: userId, updated_by: userId, created_at: now, updated_at: now, version: 1,
         idempotency_key: newIdempotencyKey(userId, 'pagos_partes'),
@@ -775,6 +782,14 @@ function PagoDetalleModal({ pago, partes, evidencias, nombre, canGestionar, isAd
   const [monto, setMonto] = uS(() => (st.falta > 0 ? String(st.falta) : ''));
   const [metodo, setMetodo] = uS('transferencia');
   const [referencia, setReferencia] = uS('');
+  const [cuentaId, setCuentaId] = uS('');
+  // Las cuentas de la EMPRESA QUE PAGA. Si el pago no tiene empresa asignada
+  // (los de obra viejos), se ofrecen todas las vivas antes que ninguna: mejor
+  // que el tesorero elija una a que el campo no sirva.
+  const { data: cuentasBanco } = window.__hooks.useCuentasBancarias?.() || { data: [] };
+  const cuentasDelPagador = uM(() => (cuentasBanco || []).filter(c =>
+    c.estado !== 'cerrada' && (!pago.company_id || c.company_id === pago.company_id)),
+    [cuentasBanco, pago.company_id]);
   const [archivo, setArchivo] = uS(null);
   const archivoRef = React.useRef(null);   // para limpiar el <input file> tras agregar
   const [verEv, setVerEv] = uS(null);   // evidencia abierta
@@ -908,6 +923,18 @@ function PagoDetalleModal({ pago, partes, evidencias, nombre, canGestionar, isAd
                 {METODOS_PARTE.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
               </select></div>
             <div><label className="flabel">N° operación</label><input className="fi" value={referencia} placeholder="opcional" onChange={e => setReferencia(e.target.value)} style={{ width: 130 }} /></div>
+            {/* De qué cuenta salió: sin esto el pago no puede aparecer en el
+                estado de cuenta de la empresa. En efectivo no hay cuenta. */}
+            {metodo !== 'efectivo' && (
+              <div><label className="flabel">Sale de la cuenta</label>
+                <select className="fi" value={cuentaId} onChange={e => setCuentaId(e.target.value)} style={{ width: 190 }}
+                  title="Si no la sabes ahora, se completa sola al conciliar el extracto en Movimientos Bancarios.">
+                  <option value="">— la elijo al conciliar —</option>
+                  {cuentasDelPagador.map(c => (
+                    <option key={c.id} value={c.id}>{nombreCuenta(c)} · {c.moneda}</option>
+                  ))}
+                </select></div>
+            )}
             <div>
               <label className="flabel">Constancia {metodo !== 'efectivo' ? '(recomendada)' : '(opcional)'}</label>
               <input className="fi" type="file" accept="image/*,application/pdf" style={{ fontSize: 10.5, maxWidth: 210 }}
@@ -916,7 +943,7 @@ function PagoDetalleModal({ pago, partes, evidencias, nombre, canGestionar, isAd
             </div>
             <button className="btn btn-amber btn-sm" disabled={busy || !(Number(monto) > 0)}
               onClick={async () => {
-                await onAgregarParte(pago, { fecha, monto, metodo, referencia, archivo });
+                await onAgregarParte(pago, { fecha, monto, metodo, referencia, archivo, cuenta_id: cuentaId });
                 setMonto(''); setReferencia(''); setArchivo(null);
                 // Limpiar el value del input: si no, muestra el archivo anterior
                 // (que NO se adjuntará) y re-elegir el MISMO archivo no dispara

@@ -83,7 +83,7 @@ const AREA = {
   // (D1): dejaron de ser del bloque general — solo quedan Consolidado y
   // Resumen por entidad. Se arman DENTRO de la obra (ver GENERAL_ITEMS).
   contabilidad: new Set(['contabilidad', 'cont-dashboard', 'bienes-servicios', 'movimientos-contables',
-    'consolidado', 'cuentas-bancarias', 'flujo-caja', 'flujo-proyectado',
+    'consolidado', 'cuentas-bancarias', 'movimientos-bancarios', 'flujo-caja', 'flujo-proyectado',
     'plan-cuentas', 'libro-diario', 'balance-general', 'estado-resultados', 'comprobantes',
     'libros-electronicos', 'config-sunat', 'comparativo-periodos', 'compras-categoria', 'guias-remision',
     'ordenes', 'activos-fijos', 'analisis-insumos']),

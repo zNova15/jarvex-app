@@ -237,6 +237,10 @@ const NAV = [
   // del grupo lo tiene; la orden que se le emite es la consecuencia.
   { id: 'abastecimiento', label: 'Abastecimiento de esta obra', icon: 'layers', plano: 'obra' },
   { id: 'ordenes', label: 'Órdenes de Compra y Servicio de esta obra', icon: 'package', plano: 'obra' },
+  // La mitad de OBRA del ítem dual: acá el titular no se elige, es el
+  // consorcio que ejecuta el trabajo. La otra mitad (plano 'general', con
+  // selector de entidad) está más abajo, en el área de Contabilidad.
+  { id: 'movimientos-bancarios', label: 'Movimientos Bancarios del consorcio', icon: 'list', plano: 'obra' },
 
   { section: 'EMPRESAS Y CONTABILIDAD', area: 'contabilidad' },
   // Primero el resumen por entidad (tanda 2D): es la puerta del bloque, y desde
@@ -261,6 +265,10 @@ const NAV = [
   { id: 'analisis-insumos', label: 'Análisis de Insumos', icon: 'compare' },
   { id: 'consolidado', label: 'Consolidado', icon: 'list' },
   { id: 'cuentas-bancarias', label: 'Cuentas Bancarias', icon: 'dollar' },
+  // Dual, como 'ordenes' y 'movimientos-contables': acá se mira por EMPRESA
+  // (con selector de entidad titular) y dentro de una obra se mira la cuenta
+  // del consorcio que la ejecuta, sin selector.
+  { id: 'movimientos-bancarios', label: 'Movimientos Bancarios', icon: 'list', plano: 'general' },
   { id: 'flujo-caja', label: 'Flujo de Caja / Pagos', icon: 'calendar' },
   { id: 'flujo-proyectado', label: 'Flujo de Caja Proyectado', icon: 'calendar' },
   { id: 'plan-cuentas', label: 'Plan de Cuentas (PCGE)', icon: 'list' },
