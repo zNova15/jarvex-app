@@ -229,14 +229,27 @@ function AbastecimientoPage() {
       </div>
 
       {/* ── EL CARTEL QUE EVITA LEER CEROS COMO DATOS ─────────────── */}
-      {obraId && !resumen.hayMapeos && (
+      {/* ── EL CARTEL SE APAGA POR COBERTURA, NO POR «HAY UNO» ────
+          Antes bastaba UNA decisión para que desapareciera. Con 2 mapeos de
+          1.875 descripciones el cuadro sigue siendo casi todo ciego, y
+          callarlo hace leer los ceros como si fueran datos. */}
+      {obraId && resumen.cobertura < 0.8 && (
         <div className="card card-p" style={{ marginBottom: 12, borderLeft: '3px solid var(--amber)' }}>
-          <b>Todavía no hay ningún insumo mapeado al presupuesto.</b>
+          <b>
+            {resumen.lineasMapeadas === 0
+              ? 'Todavía no hay ningún insumo mapeado al presupuesto.'
+              : `El mapeo va por el ${Math.round(resumen.cobertura * 100)}% de las líneas de compra.`}
+          </b>
           <p style={{ fontSize: 12, color: 'var(--tm)', margin: '6px 0 0' }}>
-            La columna «en el grupo» sale de traducir las descripciones de las facturas a los códigos del presupuesto, y esa
-            traducción todavía no empezó. Hasta que se haga, la pantalla muestra lo que la obra necesita y lo que compró la
-            ejecutora, y no puede saber qué stock tiene el grupo. Se mapea en <b>Contabilidad → Análisis de Insumos → 🎯 Mapeo al presupuesto</b>.
+            La columna «en el grupo» sale de traducir las descripciones de las facturas a los códigos del presupuesto.
+            {resumen.lineasMapeadas > 0
+              ? ` De ${resumen.lineasLeidas.toLocaleString('es-PE')} líneas leídas, ${resumen.lineasMapeadas.toLocaleString('es-PE')} ya se entienden; el resto todavía no cuenta como stock.`
+              : ' Esa traducción todavía no empezó, así que la pantalla no puede saber qué stock tiene el grupo.'}
+            {' '}Se mapea en <b>Contabilidad → Análisis de Insumos → 🎯 Mapeo al presupuesto</b>.
           </p>
+          <div style={{ marginTop: 8, height: 6, background: 'var(--border)', borderRadius: 3, overflow: 'hidden' }}>
+            <div style={{ width: `${Math.max(1, Math.round(resumen.cobertura * 100))}%`, height: '100%', background: 'var(--amber)' }} />
+          </div>
         </div>
       )}
 

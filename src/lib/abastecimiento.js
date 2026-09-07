@@ -226,6 +226,17 @@ export function abastecimientoDeObra({
       conDisponibleEnGrupo: filas.filter(f => f.disponible > 0).length,
       sinFactor, lineasLeidas, lineasMapeadas, lineasPropuestas,
       ordenesQueReservan: ordenesVivas.size,
+      // ── CUÁNTO FALTA MAPEAR ───────────────────────────────────────
+      // Gabriel, 6-set-2026: «mapeé dos y luego ahora corroboro y ya no me
+      // sale el mensaje de mapeo, y pienso que todavía me debería salir
+      // porque es importante hacer el mapeo completo».
+      //
+      // Tenía razón y el error era mío: el cartel se apagaba con `mapeos.size
+      // > 0`, o sea con UNA sola decisión. Lo que importa no es si hay
+      // mapeos, es qué PROPORCIÓN de las líneas se está pudiendo leer. Con 2
+      // de 1.875 descripciones, el cuadro sigue siendo casi todo ciego y hay
+      // que decirlo.
+      cobertura: lineasLeidas ? lineasMapeadas / lineasLeidas : 0,
       hayMapeos: mapeos instanceof Map ? mapeos.size > 0 : false,
       titularId,
     },

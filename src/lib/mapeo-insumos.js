@@ -101,7 +101,24 @@ const STOP = new Set(['de', 'del', 'la', 'el', 'los', 'las', 'con', 'para', 'por
   'y', 'a', 'un', 'una', 'x', 'al', 'su', 'o', 'e', 'inc', 'incl', 'c', 's', 'p', 'tipo',
   // Las unidades ya se leen como magnitudes (extraerMagnitudes); como tokens
   // solo hacen ruido: «ESCRITORIO 1.80 M» pegaba con «MADERA ROLLIZA x5m».
-  'm', 'mm', 'cm', 'kg', 'gr', 'g', 'gal', 'l', 'lt', 'ml', 'plg', 'und', 'bol', 'm2', 'm3']);
+  'm', 'mm', 'cm', 'kg', 'gr', 'g', 'gal', 'l', 'lt', 'ml', 'plg', 'und', 'bol', 'm2', 'm3',
+  // ── NORMAS Y ESPECIFICACIONES (medido el 6-set-2026) ────────────
+  // Estas palabras aparecen en UN lado y casi nunca en el otro, y como el
+  // puntaje es un Dice simétrico, cada una que sobra en el catálogo BAJA el
+  // parecido. El caso más caro: «ACERO CORRUGADO fy = 4200 kg/cm2 GRADO 60»
+  // —los 29.856 kg de acero de Miraflores, el insumo más pesado de la obra—
+  // llevaba `fy` y `grado`, que ninguna factura escribe jamás. Contra
+  // «VARILLA DE ACERO CORRUGADO DE 3/8» daba 0,51: se quedaba para siempre en
+  // «dudosas» y nadie lo mapeaba. Sacándolas, los dos nombres se comparan por
+  // lo que de verdad los distingue.
+  'ntp', 'iso', 'astm', 'din', 'ansi', 'sae', 'itintec', 'norma',
+  'fy', 'grado', 'calidad', 'clase', 'segun', 'detalle', 'plano',
+  // ── MARCAS ──────────────────────────────────────────────────────
+  // Una marca no distingue un insumo de otro: el cemento de Pacasmayo y el de
+  // otro fabricante son el mismo código del presupuesto. Como token solo suma
+  // masa del lado de la factura y baja el parecido.
+  'siderperu', 'sider', 'pacasmayo', 'tuboplast', 'vencedor', 'bahco',
+  'truper', 'makita', 'dewalt', 'nilfisk', 'lenovo', 'stanley', 'karcher']);
 
 /** Tokens con peso (sin stopwords, sin puros números: esos son magnitudes). */
 export function tokensDe(norm) {
@@ -124,12 +141,23 @@ const numDe = (tok) => (frac(tok) ?? (/^\d+(?:\.\d+)?$/.test(tok) ? Number(tok) 
  * → { plg:[], mm:[], m:[], kg:[], sueltos:[] }
  * Maneja el entero+fracción del habla de obra: «1 1/2 plg» = 1,5.
  */
+// Palabras tras las cuales un número es un CÓDIGO DE NORMA, no una medida.
+// «FIERRO CORRUGADO 1/2" (NTP 341.031) SIDERPERU» traía 341.031 como número
+// suelto; el catálogo traía 60 (del «GRADO 60»), no coincidían, y el castigo
+// por «números que no coinciden» lo tiraba de 0,53 a 0,399 — por debajo del
+// umbral, o sea SIN CANDIDATO. Una norma no es una medida: identifica al mismo
+// insumo, no lo distingue de otro.
+const ANTES_DE_NORMA = new Set(['ntp', 'iso', 'astm', 'din', 'ansi', 'sae', 'itintec', 'norma', 'grado', 'fy', 'clase']);
+
 export function extraerMagnitudes(norm) {
   const t = String(norm || '').split(' ').filter(Boolean);
-  const out = { plg: [], mm: [], m: [], kg: [], sueltos: [] };
+  const out = { plg: [], mm: [], m: [], kg: [], sueltos: [], normas: [] };
   for (let i = 0; i < t.length; i++) {
     let v = numDe(t[i]);
     if (v == null) continue;
+    // El número que sigue a una norma se guarda aparte: sirve para reconocer,
+    // nunca para descartar.
+    if (i > 0 && ANTES_DE_NORMA.has(t[i - 1])) { out.normas.push(v); continue; }
     // «1 1/2» → 1,5 (entero seguido de fracción).
     const f = i + 1 < t.length ? frac(t[i + 1]) : null;
     if (f != null && Number.isInteger(v) && v >= 1 && v <= 12) { v += f; i++; }

@@ -281,3 +281,88 @@ describe('umbrales', () => {
     expect(puntuar(l, cat, prep.idf).score).toBe(0);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// LAS NORMAS Y LAS MARCAS NO DISTINGUEN UN INSUMO (6-set-2026)
+//
+// Gabriel, probando el mapeo en producción: «me percaté que hay muy poquitas
+// con propuesta, y hay bastantes, más de mil trescientas que están sin
+// candidato». Medido contra el catálogo real, la causa del caso más caro no
+// era el motor de parecido sino DOS palabras y UN número:
+//
+//   · `fy` y `grado` viven en el nombre del catálogo («ACERO CORRUGADO fy =
+//     4200 kg/cm2 GRADO 60») y NINGUNA factura las escribe. Como el puntaje es
+//     un Dice simétrico, cada palabra que sobra de un lado baja el parecido.
+//   · `NTP 341.031` entraba como número suelto, no coincidía con el `60` del
+//     catálogo, y el castigo por «números que no coinciden» tiraba el puntaje
+//     de 0,53 a 0,399 — por debajo del umbral, o sea SIN CANDIDATO.
+//
+// Los 29.856 kg de acero son el insumo MÁS PESADO de Miraflores. Con esto,
+// las cinco escrituras distintas del fierro pasan de «dudosa / sin candidato»
+// a propuesta con confianza, y el factor kg/varilla ya estaba resuelto.
+// ═══════════════════════════════════════════════════════════════════
+describe('normas, especificaciones y marcas', () => {
+  const prep = prepararCatalogo(CAT);
+  const acero = prep.items.find(i => i.codigo === '30020002');
+  const score = (d, u = 'und') => puntuar(prepararLinea({ descripcion: d, unidad: u, cantidad: 1 }), acero, prep.idf).score;
+
+  it('`fy` y `grado` no cuentan como palabras del insumo', () => {
+    expect([...acero.toks]).toEqual(['acero', 'corrugado']);
+  });
+
+  it('el número de una norma se guarda aparte, no como medida suelta', () => {
+    const m = extraerMagnitudes(normMapeo('FIERRO CORRUGADO 1/2" (NTP 341.031) SIDERPERU'));
+    expect(m.normas).toContain(341.031);
+    expect(m.sueltos).not.toContain(341.031);
+  });
+
+  it('el 4200 y el 60 del acero son norma, no medidas', () => {
+    expect(acero.mag.normas).toEqual([4200, 60]);
+    expect(acero.mag.kg).toEqual([]);
+  });
+
+  it('las cinco escrituras del fierro ahora se PROPONEN, no quedan en dudosas', () => {
+    for (const d of [
+      'VARILLA DE ACERO CORRUGADO DE 3/8',
+      'VARILLA DE ACERO CORRUGADO DE 1/2',
+      'VARILLA DE ACERO CORRUGADO DE 5/8',
+      "FIERRO CORRUGADO 1/2' (NTP 341.031) SIDERPERU",
+      'FIERRO CORRUGADO DE 5/8 SIDER PERU X 9M',
+    ]) {
+      expect(score(d), `${d} debería proponerse`).toBeGreaterThanOrEqual(UMBRAL_ALTO);
+    }
+  });
+
+  it('la que antes desaparecía por la norma ahora es la mejor de todas', () => {
+    // 0,399 antes → por debajo de UMBRAL_BAJO → sin candidato.
+    expect(score("FIERRO CORRUGADO 1/2' (NTP 341.031) SIDERPERU")).toBeGreaterThan(0.9);
+  });
+
+  it('la marca no cambia de qué insumo se trata', () => {
+    const s = sugerirMapeo({ descripcion: 'CEMENTO PORTLAND TIPO I 425 KG - PACASMAYO-BOLSA', unidad: 'UNIDAD', cantidad: 1 }, prep);
+    expect(s.estado).toBe('propuesto');
+    expect(s.candidatos[0].cat.codigo).toBe('210020001');
+  });
+
+  it('y la propuesta viene con su factor de conversión ya resuelto', () => {
+    // Es lo que pidió Gabriel: «compré una varilla por kilo de tres octavos […]
+    // se puede hacer algún supuesto y se puede tener aproximadamente un largo».
+    const s = sugerirMapeo({ descripcion: 'VARILLA DE ACERO CORRUGADO DE 3/8', unidad: 'und', cantidad: 100 }, prep);
+    expect(s.estado).toBe('propuesto');
+    const f = s.candidatos[0].factor;
+    expect(f.unidad_destino).toBe('kg');
+    expect(f.factor).toBeCloseTo(0.560 * LARGO_VARILLA_M, 3);   // 5,04 kg por varilla de 9 m
+    expect(f.fuente).toBe('supuesto');
+    expect(f.nota).toMatch(/9 m/);
+  });
+
+  it('NO afloja la compuerta: un perfil estructural sigue sin ser corrugado', () => {
+    expect(score('PERFIL DE ACERO ESTRUCTURAL AL CARBONO LAMINADO ASTM A992')).toBe(0);
+  });
+
+  it('NO afloja el diámetro: 3/8" sigue sin ser 1/2" cuando los dos lo declaran', () => {
+    const tuberia = prep.items.find(i => i.codigo === '660020050');   // 8" (200mm)
+    const s = puntuar(prepararLinea({ descripcion: 'TUBO PVC-U 160 MM S-25 UF ALCANTARILLADO', unidad: 'und', cantidad: 1 }), tuberia, prep.idf);
+    expect(s.score).toBe(0);
+  });
+});

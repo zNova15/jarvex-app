@@ -39,6 +39,7 @@ import {
 } from "../lib/ordenes.js";
 import { filtroInicialEmpresa, setEmpresaActivaId } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
+import { titularContableDeObra } from "../lib/consorcio.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -77,6 +78,7 @@ function OrdenesPage({ showToast }) {
   const { data: movs } = window.__hooks.useAccountingMovements();
   const { data: obras } = window.__hooks.useObras();
   const { data: cfg } = window.__hooks.useAppConfig();
+  const { data: consorcios } = window.__hooks.useConsorcios();
   const resolverConfig = window.__hooks.resolverConfig;
 
   // ── Estado (TODOS los hooks antes de cualquier return: regla #3) ──
@@ -175,9 +177,37 @@ function OrdenesPage({ showToast }) {
   const lookupProv = React.useCallback((id) => (proveedores || []).find(p => p.id === id) || null, [proveedores]);
   const lookupObra = React.useCallback((id) => (obras || []).find(o => o.id === id) || null, [obras]);
 
+  // ── QUIÉN EMITE NO SE PREGUNTA: SE SABE ─────────────────────────
+  //
+  // Gabriel, 6-set-2026: «empresa que emite la orden, esto de aquí no debería
+  // estar preguntándome porque es muy obvio. Si yo ingreso a órdenes de compra
+  // desde JARVEX, la empresa que emite obviamente es JARVEX y debería estar
+  // limitado a que yo lo haga con JARVEX».
+  //
+  // Y dentro de una obra, la que emite es la que EJECUTA: «aquí lo que me
+  // debería salir es que la orden la está emitiendo la entidad que está
+  // ejecutando esta obra, que en este caso es CONSORCIO EL INCA, y eso debería
+  // estar bloqueado».
+  //
+  // Tiene razón por partida doble: además de ser obvio, dejarlo abierto
+  // permitía numerar una orden en la serie de OTRO RUC, que es un error que
+  // después no se arregla.
+  const titularObra = uM(
+    () => (obraScopeId ? titularContableDeObra(lookupObra(obraScopeId), consorcios || []) : null),
+    [obraScopeId, obras, consorcios] // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  // La empresa emisora queda FIJA cuando el ámbito la determina.
+  const emisoraFija = empresaFija || titularObra || null;
+
+  // «Sin respaldo» sigue el mismo criterio que la pestaña de una empresa: son
+  // los comprobantes de ESA empresa. Dentro de una obra, los de su ejecutora —
+  // que es lo que Gabriel esperaba ver y no veía (le salían los de GASOMI
+  // emitidos por JHEENSEG, que no le tocan a EL INCA respaldar).
+  const companyIdRespaldo = emisoraFija || companyId;
+
   const resumen = uM(
-    () => resumenRespaldo(movs || [], ordenes, { umbral, companyId, obraId: obraScopeId }),
-    [movs, ordenes, umbral, companyId, obraScopeId]
+    () => resumenRespaldo(movs || [], ordenes, { umbral, companyId: companyIdRespaldo, obraId: obraScopeId }),
+    [movs, ordenes, umbral, companyIdRespaldo, obraScopeId]
   );
 
   // ── Pestaña 1: las emitidas ─────────────────────────────────────
@@ -199,8 +229,8 @@ function OrdenesPage({ showToast }) {
 
   // ── Pestaña 2: lo que falta respaldar ───────────────────────────
   const pendientes = uM(
-    () => comprobantesSinOrden(movs || [], ordenes, { umbral, companyId, obraId: obraScopeId }),
-    [movs, ordenes, umbral, companyId, obraScopeId]
+    () => comprobantesSinOrden(movs || [], ordenes, { umbral, companyId: companyIdRespaldo, obraId: obraScopeId }),
+    [movs, ordenes, umbral, companyIdRespaldo, obraScopeId]
   );
   const gruposPendientes = uM(
     () => agruparPorEmpresa(pendientes, companies || []),
@@ -285,13 +315,13 @@ function OrdenesPage({ showToast }) {
 
   const faltaNueva = uM(() => {
     const f = [];
-    if (!nueva.companyId) f.push('la empresa que emite');
+    if (!(emisoraFija || nueva.companyId)) f.push('la empresa que emite');
     if (!proveedorDeNueva.nombre) f.push('a quién se le compra');
     const vivas = lineas.filter(l => String(l.descripcion || '').trim() && Number(l.cantidad) > 0);
     if (!vivas.length) f.push('al menos una línea con descripción y cantidad');
     else if (vivas.some(l => !(Number(l.precio_unitario) > 0))) f.push('el precio de cada línea');
     return f;
-  }, [nueva, proveedorDeNueva, lineas]);
+  }, [nueva, proveedorDeNueva, lineas, emisoraFija]);
 
   const limpiarNueva = () => { setNueva(ordenVacia()); setLineas([]); setAyuda(null); };
 
@@ -304,7 +334,8 @@ function OrdenesPage({ showToast }) {
     if (!canEmitir) { toast('No tienes permiso para emitir órdenes', 'red'); return; }
     if (faltaNueva.length) { toast('Falta ' + faltaNueva.join(', '), 'amber'); return; }
 
-    const company = lookupCompany(nueva.companyId);
+    const emisoraId = emisoraFija || nueva.companyId;
+    const company = lookupCompany(emisoraId);
     const hoy = nueva.fecha || window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10);
     const anio = Number(String(hoy).slice(0, 4));
     const items = lineas
@@ -346,7 +377,7 @@ function OrdenesPage({ showToast }) {
       }
 
       const { fila, items: filasItems } = nuevaOrdenBorrador({
-        companyId: nueva.companyId,
+        companyId: emisoraId,
         tipo: nueva.tipo,
         obraId: nueva.obraId || obraScopeId || null,
         proveedor: { ...proveedorDeNueva, id: provId },
@@ -723,14 +754,23 @@ function OrdenesPage({ showToast }) {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
               <label>
                 <div style={{ fontSize: 11, color: 'var(--tm)' }}>Empresa que EMITE la orden *</div>
-                <select className="fi" style={{ width: '100%' }} value={nueva.companyId}
-                  disabled={!!empresaFija}
-                  onChange={e => setNu({ companyId: e.target.value })}>
-                  <option value="">— Elige la empresa —</option>
-                  {(companies || []).filter(c => !c.deleted_at).map(c => (
-                    <option key={c.id} value={c.id}>{c.name || c.legal_name}</option>
-                  ))}
-                </select>
+                {emisoraFija ? (
+                  <div className="fi" style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 6, opacity: 0.85 }}
+                    title={obraScopeId
+                      ? 'La orden la emite la empresa que ejecuta esta obra. No se elige: si se numerara en la serie de otra, sería un error que después no se arregla.'
+                      : 'Estás dentro de la contabilidad de esta empresa: la orden es suya.'}>
+                    <JxIcon name="lock" size={12} />
+                    <b>{lookupCompany(emisoraFija)?.name || lookupCompany(emisoraFija)?.legal_name || '—'}</b>
+                  </div>
+                ) : (
+                  <select className="fi" style={{ width: '100%' }} value={nueva.companyId}
+                    onChange={e => setNu({ companyId: e.target.value })}>
+                    <option value="">— Elige la empresa —</option>
+                    {(companies || []).filter(c => !c.deleted_at).map(c => (
+                      <option key={c.id} value={c.id}>{c.name || c.legal_name}</option>
+                    ))}
+                  </select>
+                )}
               </label>
               <label>
                 <div style={{ fontSize: 11, color: 'var(--tm)' }}>Tipo</div>
@@ -766,7 +806,7 @@ function OrdenesPage({ showToast }) {
                   <select className="fi" style={{ minWidth: 280 }} value={nueva.provCompanyId}
                     onChange={e => setNu({ provCompanyId: e.target.value })}>
                     <option value="">— Elige la empresa —</option>
-                    {(companies || []).filter(c => !c.deleted_at && c.id !== nueva.companyId).map(c => (
+                    {(companies || []).filter(c => !c.deleted_at && c.id !== (emisoraFija || nueva.companyId)).map(c => (
                       <option key={c.id} value={c.id}>{c.name || c.legal_name}</option>
                     ))}
                   </select>
