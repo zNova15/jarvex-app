@@ -43,7 +43,8 @@ import { titularContableDeObra } from "../lib/consorcio.js";
 import { itemsDeFactura } from "../lib/cruce-recepcion.js";
 import {
   abastecimientoDeObra, buscarEnPresupuesto, buscarComprasDelGrupo, mapeoImplicito,
-  ofertaPorEmpresa,
+  ofertaPorEmpresa, catalogoDelGrupo, lineasDeFamilia, insumosPorMonto, insumoParaFamilia,
+  esUnidadPorcentual,
 } from "../lib/abastecimiento.js";
 import { resolverMapeos } from "../lib/mapeo-insumos.js";
 import {
@@ -188,6 +189,13 @@ function OrdenesPage({ showToast }) {
   // por descripción (lo de antes). Y qué fila tiene el detalle desplegado.
   const [vistaGrupo, setVistaGrupo] = uS('empresa');
   const [detalleOferta, setDetalleOferta] = uS(null);
+  // ── EL CATÁLOGO SIN BUSCAR (tanda 13) ───────────────────────────
+  // Gabriel: «¿qué tiene JARVEX? De tal manera que veamos, ah, mira, JARVEX ha
+  // comprado un montón de herramientas». Antes había que escribir «martillo»
+  // para descubrir que los tenía. Ahora el bloque abre con el inventario del
+  // grupo, empresa por empresa y familia por familia; el buscador sigue ahí
+  // para cuando ya se sabe qué se quiere. `famAbierta` es «empresa|familia».
+  const [famAbierta, setFamAbierta] = uS(null);
   // El presupuesto se acota al tipo de orden, con escape a «ver todo».
   const [necTodoTipo, setNecTodoTipo] = uS(false);
   const [lineaFoco, setLineaFoco] = uS(null);   // línea a la que se le asigna el origen
@@ -559,6 +567,25 @@ function OrdenesPage({ showToast }) {
   // diferentes nombres». Es un pivoteo: no cambia un solo número.
   const ofertaGrupo = uM(() => ofertaPorEmpresa(sugGrupoVisible), [sugGrupoVisible]);
 
+  // ── EL CATÁLOGO DEL GRUPO, SIN ESCRIBIR NADA (tanda 13) ──────────
+  // Lo mismo que ofrece el buscador, pero al revés: primero se ve QUÉ HAY
+  // —empresa → familia → ítems— y recién después se elige. Solo se calcula
+  // cuando el bloque está sin búsqueda, que es cuando se muestra.
+  const catalogo = uM(() => (buscaGrupo.trim() ? [] : catalogoDelGrupo({
+    movs: movs || [], companies: companies || [], titularId: titularObra,
+    obraId: obraScopeId,
+    companyId: nueva.provModo === 'grupo' ? (nueva.provCompanyId || null) : null,
+  })), [buscaGrupo, movs, companies, titularObra, obraScopeId, nueva.provModo, nueva.provCompanyId]);
+
+  // ── LOS INSUMOS QUE EL PRESUPUESTO MIDE EN PLATA ─────────────────
+  // «HERRAMIENTAS MANUALES» de Miraflores está en 1.115 partidas con unidad
+  // %mo: su cantidad no significa nada, su monto sí (S/ 132.492,97). Es contra
+  // eso que cuadra una orden de herramientas — ver el encabezado de la lib.
+  const insumosMonto = uM(() => (obraScopeId ? insumosPorMonto({
+    insumosPartida: insumosPartida || [], ordenes, ocItems, obraId: obraScopeId,
+  }) : []), [obraScopeId, insumosPartida, ordenes, ocItems]);
+  const montoDeInsumo = (codigo) => insumosMonto.find(i => i.codigo === codigo) || null;
+
   // ── EL CORPUS DEL AUTOCOMPLETADO ─────────────────────────────────
   // Todo lo que la app vio escrito alguna vez, con lo que compró ESTA empresa
   // pesando más. No se acota por tipo de orden: ver el porqué en el encabezado
@@ -634,6 +661,30 @@ function OrdenesPage({ showToast }) {
       tope: it.disponible,
     });
     setNu({ provModo: 'grupo', provCompanyId: emp.company_id });
+  };
+
+  /**
+   * TODO UN BLOQUE DE UNA VEZ: «vamos a hacerle una orden a JARVEX por todo lo
+   * que es herramientas».
+   *
+   * Hace las tres cosas que son la misma decisión: mete las líneas, apunta la
+   * orden a esa empresa (igual que `enlazarOferta`: si el material sale de
+   * JARVEX, la orden es PARA JARVEX) y, cuando la obra presupuesta esa familia,
+   * deja cada línea enlazada al insumo del presupuesto. Eso último es lo que
+   * hace que la orden cuente después como consumo: el mapeo se aprende
+   * trabajando, no en una tarea aparte.
+   */
+  const agregarFamilia = (emp, fam) => {
+    const insumo = obraScopeId ? insumoParaFamilia(fam.familia, insumosMonto) : null;
+    const nuevas = lineasDeFamilia(fam.items, { companyId: emp.company_id, insumo });
+    if (!nuevas.length) return;
+    addLineas(nuevas);
+    setNu({ provModo: 'grupo', provCompanyId: emp.company_id });
+    toast(
+      `${nuevas.length} ${nuevas.length === 1 ? 'línea agregada' : 'líneas agregadas'} de ${emp.nombre}`
+      + (insumo ? ` · van contra «${insumo.nombre}» del presupuesto` : ''),
+      'green'
+    );
   };
 
   const totalesNueva = uM(
@@ -1818,19 +1869,41 @@ function OrdenesPage({ showToast }) {
                     <div key={f.codigo} style={{ padding: '7px 12px', borderBottom: '1px solid var(--border)', display: 'flex', gap: 8, alignItems: 'center' }}>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 11.5, fontWeight: 600 }}>{f.nombre}</div>
-                        <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
-                          necesita {cantF(f.necesita)} {f.unidad}
-                          {f.yaComprado > 0 && <> · ya compró {cantF(f.yaComprado)}</>}
-                          {' · '}<b style={{ color: f.falta > 0 ? 'var(--red)' : 'var(--green)' }}>falta {cantF(f.falta)}</b>
-                        </div>
+                        {/* ⚠️ HAY INSUMOS QUE EL PRESUPUESTO NO MIDE EN CANTIDAD.
+                            «HERRAMIENTAS MANUALES» viene en %mo —un porcentaje de
+                            la mano de obra— repartido en 1.115 partidas: sumar sus
+                            cantidades da 33,34, que no son 33 de nada. Su avance se
+                            lee en plata, que es lo único que ahí significa algo. */}
+                        {esUnidadPorcentual(f.unidad) && montoDeInsumo(f.codigo) ? (() => {
+                          const im = montoDeInsumo(f.codigo);
+                          return (
+                            <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+                              presupuesta <b style={{ color: 'var(--tp)' }}>{fmtS(im.presupuestado)}</b>
+                              {im.cubierto > 0 && <> · ya en órdenes {fmtS(im.cubierto)}</>}
+                              {' · '}<b style={{ color: im.falta > 0 ? 'var(--red)' : 'var(--green)' }}>falta {fmtS(im.falta)}</b>
+                              {' · '}<span title={`El presupuesto lo pide como ${f.unidad} en ${im.partidas} partidas, así que su avance se mide en soles y no en cantidad`}>se mide en plata</span>
+                            </div>
+                          );
+                        })() : (
+                          <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+                            necesita {cantF(f.necesita)} {f.unidad}
+                            {f.yaComprado > 0 && <> · ya compró {cantF(f.yaComprado)}</>}
+                            {' · '}<b style={{ color: f.falta > 0 ? 'var(--red)' : 'var(--green)' }}>falta {cantF(f.falta)}</b>
+                          </div>
+                        )}
                       </div>
                       <button className="btn btn-xs btn-amber" title="Agregar al detalle de la orden"
                         onClick={() => {
                           const k = window.__newId();
+                          const im = esUnidadPorcentual(f.unidad) ? montoDeInsumo(f.codigo) : null;
                           setLineas(ls => [...ls, {
                             ...lineaVacia(), key: k,
-                            descripcion: f.nombre, unidad: f.unidad || 'UND',
-                            cantidad: f.falta > 0 ? f.falta : '',
+                            descripcion: f.nombre,
+                            // Un insumo en %mo no se pide «33,34 %mo»: se pide una
+                            // vez, por lo que falta en soles.
+                            unidad: im ? 'GLB' : (f.unidad || 'UND'),
+                            cantidad: im ? 1 : (f.falta > 0 ? f.falta : ''),
+                            precio_unitario: im && im.falta > 0 ? im.falta : '',
                             insumo_codigo: f.codigo, insumo_nombre: f.nombre, insumo_unidad: f.unidad,
                           }]);
                           setLineaFoco(k);
@@ -1868,18 +1941,108 @@ function OrdenesPage({ showToast }) {
                   </div>
                 </div>
                 <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
-                  Busca sobre lo que dicen las facturas, sin necesitar el mapeo.
-                  {lineaFoco ? ' Al elegir uno se enlaza con la línea marcada.' : ' Marca una línea del detalle para enlazarla.'}
+                  {!buscaGrupo.trim() && vistaGrupo === 'empresa' ? (
+                    <>Todo lo que el grupo compró y todavía no vendió, por empresa y por familia.
+                    {' '}Con <b>+ agregar los N</b> entra el bloque entero al detalle de la orden.</>
+                  ) : (
+                    <>Busca sobre lo que dicen las facturas, sin necesitar el mapeo.
+                    {lineaFoco ? ' Al elegir uno se enlaza con la línea marcada.' : ' Marca una línea del detalle para enlazarla.'}</>
+                  )}
                 </div>
                 <input className="fi" style={{ width: '100%', marginTop: 6, fontSize: 12 }}
                   placeholder="Buscar en las compras: cemento, fierro, tubo…"
                   value={buscaGrupo} onChange={e => { setBuscaGrupo(e.target.value); setDetalleOferta(null); }} />
               </div>
 
-              <div style={{ maxHeight: 300, overflowY: 'auto' }}>
-                {(vistaGrupo === 'empresa' ? ofertaGrupo.length : sugGrupoVisible.length) === 0 ? (
+              <div style={{ maxHeight: 340, overflowY: 'auto' }}>
+                {/* ══ EL CATÁLOGO, SIN BUSCAR NADA (tanda 13) ═══════════
+                    «¿qué tiene JARVEX?». Con el buscador vacío el bloque abre
+                    con el inventario del grupo por empresa y por familia, que
+                    es la forma de DESCUBRIR que JARVEX tiene 54 líneas de
+                    herramientas. Apenas se escribe algo, manda la búsqueda. */}
+                {!buscaGrupo.trim() && vistaGrupo === 'empresa' ? (
+                  catalogo.length === 0 ? (
+                    <div style={{ padding: 14, fontSize: 11.5, color: 'var(--tm)', textAlign: 'center' }}>
+                      {nueva.provModo === 'grupo' && proveedorDeNueva.nombre
+                        ? `${proveedorDeNueva.nombre} no tiene nada disponible: todo lo que compró ya lo vendió.`
+                        : 'Ninguna empresa del grupo tiene nada disponible todavía.'}
+                    </div>
+                  ) : catalogo.map(emp => (
+                    <div key={emp.company_id || 'sin'} style={{ borderBottom: '1px solid var(--border)' }}>
+                      <div style={{
+                        padding: '7px 12px', display: 'flex', gap: 8, alignItems: 'center',
+                        background: 'var(--tint-neutral)', flexWrap: 'wrap',
+                      }}>
+                        <JxIcon name="building" size={13} color="var(--blue)" />
+                        <b style={{ fontSize: 12 }}>{emp.nombre}</b>
+                        <span style={{ fontSize: 11, color: 'var(--tm)' }}>
+                          <b style={{ color: 'var(--tp)' }}>{fmtS(emp.montoDisponible)}</b> disponibles
+                          {' '}en {emp.nItems} ítem{emp.nItems === 1 ? '' : 's'}
+                        </span>
+                      </div>
+                      {emp.familias.map(fam => {
+                        const clave = `${emp.company_id}|${fam.familia}`;
+                        const abierta = famAbierta === clave;
+                        // El insumo del presupuesto que le calza a esta familia
+                        // —«herramientas manuales» ↔ herramientas— para que la
+                        // orden nazca ya contando como consumo de la obra.
+                        const ins = obraScopeId ? insumoParaFamilia(fam.familia, insumosMonto) : null;
+                        return (
+                          <React.Fragment key={clave}>
+                            <div style={{ padding: '6px 12px 6px 20px', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                              <button className="btn btn-xs btn-ghost" style={{ minWidth: 26 }}
+                                title={abierta ? 'Cerrar el detalle' : 'Ver los ítems de este bloque'}
+                                onClick={() => setFamAbierta(abierta ? null : clave)}>
+                                {abierta ? '▾' : '▸'}
+                              </button>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: 11.5, fontWeight: 600 }}>
+                                  {fam.label}
+                                  <span style={{ fontWeight: 400, color: 'var(--tm)' }}>
+                                    {' · '}{fam.nItems} ítem{fam.nItems === 1 ? '' : 's'}
+                                    {' · '}<b style={{ color: 'var(--tp)' }}>{fmtS(fam.montoDisponible)}</b>
+                                  </span>
+                                </div>
+                                {ins && (
+                                  <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+                                    📋 va contra <b>{ins.nombre}</b>
+                                    {' · falta '}<b style={{ color: ins.falta > 0 ? 'var(--amber)' : 'var(--green)' }}>{fmtS(ins.falta)}</b>
+                                    {' de '}{fmtS(ins.presupuestado)}
+                                  </div>
+                                )}
+                              </div>
+                              <button className="btn btn-xs btn-amber"
+                                title={`Agregar al detalle los ${fam.nItems} ítems de este bloque`}
+                                onClick={() => agregarFamilia(emp, fam)}>
+                                + agregar los {fam.nItems}
+                              </button>
+                            </div>
+                            {abierta && fam.items.map((it, k) => (
+                              <div key={k} style={{ padding: '5px 12px 5px 46px', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ fontSize: 11 }}>
+                                    {it.descripcion}
+                                    {it.obraVinculada && <span className="badge b-blue" style={{ marginLeft: 5, fontSize: 9 }}>ya vinculado a esta obra</span>}
+                                  </div>
+                                  <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+                                    <b style={{ color: 'var(--tp)' }}>{cantF(it.disponible)}</b> {it.unidad}
+                                    {it.ultimoPrecio != null
+                                      ? <> · último {fmtS(it.ultimoPrecio)} el {it.ultimoPrecioFecha}</>
+                                      : <> · <span style={{ color: 'var(--amber)' }}>sin precio en la factura</span></>}
+                                  </div>
+                                </div>
+                                <button className="btn btn-xs btn-ghost" title="Enlazar con la línea marcada del detalle"
+                                  onClick={() => enlazarOferta(emp, it)}>usar</button>
+                              </div>
+                            ))}
+                          </React.Fragment>
+                        );
+                      })}
+                    </div>
+                  ))
+                ) : (vistaGrupo === 'empresa' ? ofertaGrupo.length : sugGrupoVisible.length) === 0 ? (
                   <div style={{ padding: 14, fontSize: 11.5, color: 'var(--tm)', textAlign: 'center' }}>
-                    {!buscaGrupo ? 'Escribe qué estás buscando.'
+                    {!buscaGrupo.trim() ? 'Escribe qué estás buscando, o cambia a «por empresa» para ver todo lo que hay.'
                       : (nueva.provModo === 'grupo' && proveedorDeNueva.nombre
                         ? `${proveedorDeNueva.nombre} no tiene nada así disponible.`
                         : 'Ninguna empresa del grupo tiene algo así disponible.')}

@@ -51,6 +51,7 @@
 
 import { itemsDeFactura } from './cruce-recepcion.js';
 import { buscarMapeo, cantidadCanonica, normMapeo } from './mapeo-insumos.js';
+import { clasificarInsumo, TIPO_INSUMO_LABEL } from './insumo-clasificador.js';
 import { esCompraMov, esVentaMov } from './costo-obra.js';
 
 const vivos = (arr) => (Array.isArray(arr) ? arr.filter(x => x && !x.deleted_at) : []);
@@ -528,4 +529,281 @@ export function ofertaPorEmpresa(resultados = []) {
   }
   // La que más tiene primero: es a la que más sentido tiene pedirle.
   return out.sort((a, b) => b.disponibleBusqueda - a.disponibleBusqueda);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  EL CATÁLOGO DEL GRUPO, POR EMPRESA Y POR FAMILIA (tanda 13)
+//
+//  EL PEDIDO (Gabriel, 7-set-2026): «me gustaría que le agreguemos la parte de
+//  ordenarlo por empresa: ¿qué tiene JARVEX? De tal manera que veamos, ah,
+//  mira, JARVEX ha comprado un montón de herramientas […] entonces ya podemos
+//  decir, ok, vamos a hacerle una orden a JARVEX por todo lo que es
+//  herramientas».
+//
+//  Lo que había (tanda 9) pivoteaba por empresa PERO seguía colgado del
+//  buscador: sin escribir una palabra el bloque decía «escribe qué estás
+//  buscando», y para descubrir que JARVEX tiene herramientas hay que saber
+//  antes que las tiene. Esto invierte la pregunta: primero se ve el inventario
+//  del grupo entero, empresa por empresa y familia por familia, y recién ahí
+//  se elige.
+//
+//  MEDIDO CONTRA PRODUCCIÓN el 7-set-2026 (2.863 líneas de factura vivas):
+//    JARVEX  → herramienta 54 líneas, material 176, servicio 72, maquinaria 4
+//    GASOMI  → material 586, servicio 91, herramienta 19, epp 25
+//  o sea que el `tipo_insumo` que ya viaja en cada línea alcanza para armar
+//  esto sin pedirle nada nuevo a nadie. Cuando la línea no lo trae (facturas
+//  viejas), se cae a `clasificarInsumo(descripcion)`, el mismo criterio que usa
+//  el almacén.
+//
+//  ⚠️ LAS CANTIDADES NO SE SUMAN ENTRE FAMILIAS NI DENTRO DE ELLAS: 30 palanas
+//  y 12 galones de aceite no son 42 de nada (misma regla que
+//  inventario-empresa.js). Lo que sí se suma a nivel familia es la PLATA, y por
+//  eso el bloque se ordena y se rotula en soles. Las cantidades viven donde
+//  significan algo: en cada ítem, con su unidad al lado.
+// ═══════════════════════════════════════════════════════════════════
+
+// El orden en que se muestran: primero lo que se compra por cantidad y termina
+// en un almacén, al final lo que no tiene stock que ofrecer.
+const FAMILIAS = ['material', 'herramienta', 'epp', 'maquinaria', 'servicio'];
+const ORDEN_FAMILIA = new Map(FAMILIAS.map((f, i) => [f, i]));
+
+/** La familia de una línea de factura: la que trae, o la que dice su nombre. */
+export function familiaDeItem(it) {
+  const t = String(it?.tipo_insumo || '').trim();
+  if (ORDEN_FAMILIA.has(t)) return t;
+  return clasificarInsumo(it?.descripcion || '');
+}
+
+/**
+ * TODO lo que tienen las empresas del grupo, sin buscar nada.
+ *
+ * Mismo criterio de disponible que `buscarComprasDelGrupo` —comprado menos
+ * vendido, nunca negativo— y mismas exclusiones: anulados fuera, y la ejecutora
+ * de la obra no se ofrece a sí misma (lo suyo ya está en «ya comprado»).
+ *
+ * @param {Object} o
+ * @param {Array}  o.movs        comprobantes del grupo CON sus ítems.
+ * @param {Array}  [o.companies] catálogo, para poner nombres.
+ * @param {string} [o.titularId] la ejecutora de la obra, que se excluye.
+ * @param {string} [o.obraId]    para marcar lo que ya está vinculado a la obra.
+ * @param {string} [o.companyId] acotar a UNA empresa (la destinataria elegida).
+ * @param {number} [o.minMonto]  ruido de fondo: ítems por debajo no se listan.
+ *
+ * @returns [{ company_id, nombre, montoDisponible, nItems, familias:[
+ *             { familia, label, montoDisponible, nItems, items:[...] } ] }]
+ */
+export function catalogoDelGrupo({
+  movs = [], companies = [], titularId = null, obraId = null,
+  companyId = null, minMonto = 0,
+} = {}) {
+  const nombreEmpresa = new Map(vivos(companies).map(c => [c.id, c.name || c.legal_name || '(sin nombre)']));
+  // `${companyId}|${descripcion normalizada}` → acumulado
+  const porItem = new Map();
+
+  for (const m of vivos(movs)) {
+    if (m.payment_status === 'cancelled') continue;
+    const esCompra = esCompraMov(m), esVenta = esVentaMov(m);
+    if (!esCompra && !esVenta) continue;
+    if (titularId && m.company_id === titularId) continue;
+    if (companyId && m.company_id !== companyId) continue;
+    for (const it of itemsDeFactura(m)) {
+      const desc = String(it?.descripcion || '').trim();
+      if (!desc) continue;
+      const k = `${m.company_id || 'sin_empresa'}|${normBusca(desc)}`;
+      let e = porItem.get(k);
+      if (!e) {
+        e = {
+          company_id: m.company_id || null, descripcion: desc, unidad: it.unidad || '',
+          familia: familiaDeItem(it), comprado: 0, vendido: 0, compras: [], obraVinculada: false,
+        };
+        porItem.set(k, e);
+      }
+      if (obraId && m.obra_id === obraId) e.obraVinculada = true;
+      if (esCompra) {
+        e.comprado += num(it.cantidad);
+        e.compras.push({
+          fecha: String(m.date || ''),
+          documento: m.document_number || null,
+          cantidad: num(it.cantidad),
+          precio_unitario: num(it.precio_unitario) || null,
+          descripcion: desc,
+        });
+      } else e.vendido += num(it.cantidad);
+    }
+  }
+
+  const porEmpresa = new Map();
+  for (const e of porItem.values()) {
+    const disponible = Math.max(0, r2(e.comprado - e.vendido));
+    if (disponible <= 0) continue;
+    // Lo más reciente primero: el precio que sirve es el último, no el promedio
+    // de dos años (mismo criterio que sugerir-descripcion.js).
+    const compras = e.compras.slice().sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
+    const conPrecio = compras.find(x => x.precio_unitario > 0) || null;
+    const ultimoPrecio = conPrecio ? r2(conPrecio.precio_unitario) : null;
+    // Valorizado al último precio conocido. Sin precio NO se inventa un cero
+    // disfrazado: el ítem se lista igual, marcado `sinPrecio`, porque existe.
+    const montoDisponible = ultimoPrecio != null ? r2(disponible * ultimoPrecio) : 0;
+    if (minMonto && montoDisponible < minMonto) continue;
+    const item = {
+      descripcion: e.descripcion, unidad: e.unidad, familia: e.familia,
+      comprado: r2(e.comprado), vendido: r2(e.vendido), disponible,
+      ultimoPrecio, ultimoPrecioFecha: conPrecio ? conPrecio.fecha : '',
+      ultimaFecha: compras[0]?.fecha || '',
+      sinPrecio: ultimoPrecio == null,
+      montoDisponible, obraVinculada: e.obraVinculada, compras,
+    };
+    const ck = e.company_id || 'sin_empresa';
+    let emp = porEmpresa.get(ck);
+    if (!emp) {
+      emp = {
+        company_id: e.company_id || null,
+        nombre: nombreEmpresa.get(e.company_id) || '(sin empresa)',
+        montoDisponible: 0, nItems: 0, familias: new Map(),
+      };
+      porEmpresa.set(ck, emp);
+    }
+    let fam = emp.familias.get(e.familia);
+    if (!fam) {
+      fam = { familia: e.familia, label: TIPO_INSUMO_LABEL[e.familia] || e.familia, montoDisponible: 0, nItems: 0, items: [] };
+      emp.familias.set(e.familia, fam);
+    }
+    fam.items.push(item);
+    fam.nItems += 1;
+    fam.montoDisponible += montoDisponible;
+    emp.nItems += 1;
+    emp.montoDisponible += montoDisponible;
+  }
+
+  const out = [...porEmpresa.values()].map(emp => ({
+    ...emp,
+    montoDisponible: r2(emp.montoDisponible),
+    familias: [...emp.familias.values()]
+      .map(f => ({ ...f, montoDisponible: r2(f.montoDisponible), items: f.items.sort((a, b) => b.montoDisponible - a.montoDisponible) }))
+      .sort((a, b) => (ORDEN_FAMILIA.get(a.familia) ?? 9) - (ORDEN_FAMILIA.get(b.familia) ?? 9)),
+  }));
+  // La que más tiene primero: es a la que más sentido tiene pedirle.
+  return out.sort((a, b) => b.montoDisponible - a.montoDisponible);
+}
+
+/**
+ * Un bloque entero (todas las herramientas de JARVEX) convertido en líneas de
+ * orden, ya enlazadas al insumo del presupuesto que la persona eligió.
+ *
+ * La cantidad arranca en TODO lo disponible y el precio en el último conocido:
+ * las dos son editables en el detalle. El `insumo_codigo` es lo que hace que
+ * esta orden después cuente como consumo del presupuesto — es el mapeo que se
+ * aprende trabajando, no una tarea aparte.
+ */
+export function lineasDeFamilia(items = [], { companyId = null, insumo = null } = {}) {
+  return (items || []).map(it => ({
+    descripcion: it.descripcion,
+    unidad: it.unidad || 'UND',
+    cantidad: it.disponible,
+    precio_unitario: it.ultimoPrecio != null ? it.ultimoPrecio : '',
+    origen_company_id: companyId ?? it.company_id ?? null,
+    origen_descripcion: it.descripcion,
+    origen_unidad: it.unidad || null,
+    tope: it.disponible,
+    insumo_codigo: insumo?.codigo || null,
+    insumo_nombre: insumo?.nombre || null,
+    insumo_unidad: insumo?.unidad || null,
+  }));
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  LOS INSUMOS QUE EL PRESUPUESTO MIDE EN PLATA, NO EN CANTIDAD
+//
+//  Gabriel: «si revisas dentro de los insumos del presupuesto de Miraflores,
+//  sale herramientas manuales; entonces ahí como que cuadra, y se va rellenando
+//  una parte del consumo de lo que se está presupuestando».
+//
+//  Cuadra, pero NO por cantidad. Medido en producción el 7-set-2026, el insumo
+//  370020009 «HERRAMIENTAS MANUALES» de Miraflores está en 1.115 partidas con
+//  unidad **%mo** —un porcentaje de la mano de obra, el 3% del análisis de
+//  precios unitarios— y la suma de sus cantidades da 33,34, que no son 33
+//  martillos ni 33 de nada. Sumarlas y mostrar «necesita 33,34 %mo» es
+//  aritmética sin sentido puesta en pantalla.
+//
+//  Lo que SÍ significa algo es la plata: esas 1.115 filas presupuestan
+//  S/ 132.492,97 sobre una mano de obra de S/ 4.474.595,11. Contra eso se
+//  compara una orden de herramientas a JARVEX, y por eso el avance de estos
+//  insumos se mide en soles.
+// ═══════════════════════════════════════════════════════════════════
+
+/** ¿La unidad de este insumo es un porcentaje (%mo, %MO, %EQ)? */
+export const esUnidadPorcentual = (u) => /^\s*%/.test(String(u || ''));
+
+/**
+ * Los insumos del presupuesto que se controlan por MONTO, con lo que ya está
+ * cubierto por órdenes emitidas.
+ *
+ * `cubierto` sale de las ÓRDENES, no de las facturas, y a propósito: medido el
+ * 7-set-2026, ninguna de las 2.863 líneas de factura de la base trae
+ * `insumo_codigo` —la factura la escribe el proveedor, no el presupuesto— y en
+ * cambio la orden nace acá adentro con el insumo ya elegido. Es lo que hace que
+ * el cuadro se llene desde la primera orden que se emita así.
+ *
+ * @returns [{ codigo, nombre, unidad, presupuestado, cubierto, falta, partidas }]
+ */
+export function insumosPorMonto({
+  insumosPartida = [], ordenes = [], ocItems = [], obraId = null,
+} = {}) {
+  const porCodigo = new Map();
+  for (const ip of vivos(insumosPartida)) {
+    const cod = ip.insumo_codigo && String(ip.insumo_codigo).trim();
+    if (!cod || !esUnidadPorcentual(ip.unidad)) continue;
+    const e = porCodigo.get(cod) || {
+      codigo: cod, nombre: ip.nombre_insumo || cod, unidad: ip.unidad || '',
+      tipo_insumo: ip.tipo_insumo || null, presupuestado: 0, partidas: 0,
+    };
+    e.presupuestado += num(ip.costo_presupuestado);
+    e.partidas += 1;
+    porCodigo.set(cod, e);
+  }
+  if (!porCodigo.size) return [];
+
+  // Mismo criterio de «orden viva» que el cuadro de abastecimiento: una anulada
+  // no cubre nada, y una que ya tiene su factura tampoco cuenta dos veces.
+  const vivas = new Set(
+    vivos(ordenes)
+      .filter(o => o.estado !== 'anulada' && o.estado !== 'cancelada')
+      .filter(o => !obraId || o.obra_id === obraId)
+      .map(o => o.id)
+  );
+  const cubierto = new Map();
+  for (const it of vivos(ocItems)) {
+    if (!vivas.has(it.orden_compra_id)) continue;
+    const cod = it.insumo_codigo && String(it.insumo_codigo).trim();
+    if (!cod || !porCodigo.has(cod)) continue;
+    cubierto.set(cod, (cubierto.get(cod) || 0) + num(it.cantidad) * num(it.precio_unitario));
+  }
+
+  return [...porCodigo.values()].map(e => {
+    const cub = r2(cubierto.get(e.codigo) || 0);
+    const presupuestado = r2(e.presupuestado);
+    return {
+      ...e, presupuestado, cubierto: cub,
+      falta: Math.max(0, r2(presupuestado - cub)),
+      avance: presupuestado > 0 ? Math.min(1, cub / presupuestado) : 0,
+    };
+  }).sort((a, b) => b.presupuestado - a.presupuestado);
+}
+
+// Qué familia de compra le corresponde a cada insumo por monto, para
+// proponerlo solo: «herramientas manuales» ↔ las herramientas del grupo.
+const FAMILIA_POR_NOMBRE = [
+  [/herramienta/i, 'herramienta'],
+  [/equipo|maquinaria|maquina/i, 'maquinaria'],
+  [/epp|seguridad|implemento/i, 'epp'],
+];
+
+/** El insumo por monto que mejor le calza a una familia de compras, si hay. */
+export function insumoParaFamilia(familia, insumosMonto = []) {
+  for (const ins of (insumosMonto || [])) {
+    for (const [re, fam] of FAMILIA_POR_NOMBRE) {
+      if (fam === familia && re.test(ins.nombre || '')) return ins;
+    }
+  }
+  return null;
 }
