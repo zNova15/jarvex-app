@@ -387,8 +387,22 @@ export function buscarComprasDelGrupo({
       // ya dijo «esto es para acá», aunque todavía no haya papel que lo pruebe.
       if (obraId && m.obra_id === obraId) e.obraVinculada = true;
       const ck = m.company_id || 'sin_empresa';
-      const c = e.porEmpresa.get(ck) || { company_id: m.company_id || null, comprado: 0, vendido: 0 };
-      if (esCompra) c.comprado += num(it.cantidad); else c.vendido += num(it.cantidad);
+      const c = e.porEmpresa.get(ck) || { company_id: m.company_id || null, comprado: 0, vendido: 0, compras: [] };
+      if (esCompra) {
+        c.comprado += num(it.cantidad);
+        // El DETALLE que pidió Gabriel: «un desplegable de detalles, como la
+        // fecha de las facturas que compraron cemento y también el precio
+        // unitario». Solo de las COMPRAS: el precio al que la empresa lo
+        // compró es lo que sirve para negociar; a cuánto se lo vendió a otro
+        // es su margen, y no es asunto de quien está armando la orden.
+        c.compras.push({
+          fecha: String(m.date || ''),
+          documento: m.document_number || null,
+          cantidad: num(it.cantidad),
+          precio_unitario: num(it.precio_unitario) || null,
+          descripcion: desc,
+        });
+      } else c.vendido += num(it.cantidad);
       e.porEmpresa.set(ck, c);
     }
   }
@@ -396,12 +410,22 @@ export function buscarComprasDelGrupo({
   const out = [];
   for (const e of porDesc.values()) {
     const porEmpresa = [...e.porEmpresa.values()]
-      .map(c => ({
-        ...c,
-        nombre: nombreEmpresa.get(c.company_id) || '(sin empresa)',
-        comprado: r2(c.comprado), vendido: r2(c.vendido),
-        disponible: Math.max(0, r2(c.comprado - c.vendido)),
-      }))
+      .map(c => {
+        // Lo más reciente primero: el precio que sirve es el último, no el
+        // promedio de dos años (mismo criterio que sugerir-descripcion.js).
+        const compras = c.compras.slice().sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
+        const conPrecio = compras.find(x => x.precio_unitario > 0) || null;
+        return {
+          ...c,
+          compras,
+          ultimoPrecio: conPrecio ? r2(conPrecio.precio_unitario) : null,
+          ultimoPrecioFecha: conPrecio ? conPrecio.fecha : '',
+          ultimaFecha: compras[0]?.fecha || '',
+          nombre: nombreEmpresa.get(c.company_id) || '(sin empresa)',
+          comprado: r2(c.comprado), vendido: r2(c.vendido),
+          disponible: Math.max(0, r2(c.comprado - c.vendido)),
+        };
+      })
       .filter(c => c.disponible > 0)
       .sort((a, b) => b.disponible - a.disponible);
     if (!porEmpresa.length) continue;
@@ -448,4 +472,60 @@ export function mapeoImplicito({ descripcionCompra, insumoCodigo, unidadCompra, 
     fuente: 'manual',
     nota: nota || 'Decidido al armar una orden de compra',
   };
+}
+
+/**
+ * LO MISMO, PERO VISTO POR EMPRESA (tanda 9).
+ *
+ * Gabriel, 7-set-2026: «me gustaría que se pudiera mostrar por bloque (opción
+ * seleccionable) de tal manera que me salgan el bloque de cemento que compró
+ * GASOMI (aunque sean con diferentes nombres), y un desplegable de detalles,
+ * como la fecha de las facturas que compraron cemento y también el precio
+ * unitario».
+ *
+ * `buscarComprasDelGrupo` devuelve una fila por DESCRIPCIÓN, y en producción el
+ * mismo cemento está escrito de cuatro formas: la lista sale con «CEMENTO SOL»,
+ * «CEMENTO HOLCIM», «CEMENTO INKA» y «cemento extra forte» sueltas, cada una con
+ * su chip de empresa. Para decidir a quién comprarle eso está al revés: la
+ * pregunta es «¿cuánto cemento tiene GASOMI, se llame como se llame?».
+ *
+ * Esto pivotea. NO cambia ni un número: agrupa lo que ya vino. Y las
+ * descripciones NO se fusionan entre sí —siguen listadas una por una dentro de
+ * cada empresa— porque decir que cuatro nombres son el mismo insumo es una
+ * decisión de mapeo, y ésa la toma una persona (ver mapeoImplicito). Sumar el
+ * total por empresa es distinto: ahí sí se suma lo que el buscador ya dijo que
+ * se parece a lo mismo, y por eso el total viaja como `disponibleBusqueda` —
+ * «de lo que buscaste», no «de este insumo».
+ *
+ * @returns [{ company_id, nombre, disponibleBusqueda, items:[...], ultimaFecha }]
+ */
+export function ofertaPorEmpresa(resultados = []) {
+  const porEmpresa = new Map();
+  for (const r of (resultados || [])) {
+    for (const c of (r.porEmpresa || [])) {
+      const k = c.company_id || 'sin_empresa';
+      let e = porEmpresa.get(k);
+      if (!e) {
+        e = { company_id: c.company_id || null, nombre: c.nombre, disponibleBusqueda: 0, items: [], ultimaFecha: '' };
+        porEmpresa.set(k, e);
+      }
+      e.disponibleBusqueda += num(c.disponible);
+      if (c.ultimaFecha > e.ultimaFecha) e.ultimaFecha = c.ultimaFecha;
+      e.items.push({
+        descripcion: r.descripcion,
+        unidad: r.unidad || '',
+        obraVinculada: !!r.obraVinculada,
+        comprado: c.comprado, vendido: c.vendido, disponible: c.disponible,
+        ultimoPrecio: c.ultimoPrecio, ultimoPrecioFecha: c.ultimoPrecioFecha,
+        compras: c.compras || [],
+      });
+    }
+  }
+  const out = [...porEmpresa.values()];
+  for (const e of out) {
+    e.disponibleBusqueda = r2(e.disponibleBusqueda);
+    e.items.sort((a, b) => b.disponible - a.disponible);
+  }
+  // La que más tiene primero: es a la que más sentido tiene pedirle.
+  return out.sort((a, b) => b.disponibleBusqueda - a.disponibleBusqueda);
 }

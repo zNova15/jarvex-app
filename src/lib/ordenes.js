@@ -845,3 +845,34 @@ export default {
   nuevaOrdenBorrador, numerarOrden, pasosDeOrden,
   cadenaDeOrdenes, eslabonesDeCadena, tieneIntermediario,
 };
+
+/**
+ * EL NOMBRE DEL ARCHIVO DE UNA ORDEN (tanda 9).
+ *
+ * Gabriel, 7-set-2026: «los nombres que se generan con las órdenes de compra,
+ * quiero que sean distintos pues se me han generado pero con nombres igual al
+ * descargar el PDF».
+ *
+ * Eran DOS choques y los dos reales:
+ *   1. El correlativo es POR EMPRESA (mig 179). JARVEX y GASOMI tienen las dos
+ *      su OC-001-2026, y el archivo se llamaba `OC_OC-001-2026.pdf` en las dos.
+ *      El navegador guarda el segundo como «(1)» y después nadie sabe cuál es.
+ *   2. Un BORRADOR todavía no tiene código, así que TODOS caían en
+ *      `OC_sin-codigo.pdf`: el mismo nombre para cada borrador que se baja.
+ *
+ * Entra la empresa (su prefijo de documento, su nombre corto o su RUC) y,
+ * cuando no hay código, la fecha más un trozo del id — dos borradores del mismo
+ * día siguen siendo dos archivos.
+ */
+export function nombreArchivoOrden(orden = {}, company = {}) {
+  const prefijo = textosDeTipo(orden.tipo).prefijo;
+  const marca = String(
+    company.codigo_doc_prefix || company.nombre_corto || company.ruc || company.name || ''
+  ).trim().replace(/\s+/g, '-').slice(0, 18);
+  const idCorto = String(orden.id || '').replace(/-/g, '').slice(0, 6);
+  const cuerpo = orden.codigo
+    ? String(orden.codigo)
+    : `borrador-${String(orden.fecha || '').slice(0, 10) || 'sin-fecha'}${idCorto ? `-${idCorto}` : ''}`;
+  return [prefijo, marca, cuerpo].filter(Boolean).join('_')
+    .replace(/[/\\:*?"<>|]/g, '-') + '.pdf';
+}

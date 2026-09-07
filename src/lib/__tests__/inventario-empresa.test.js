@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   normUnidad, labelUnidad, resumenFinancieroEmpresa, inventarioDeEmpresa, filtrarInventario,
+  saldosNegativos, tieneSaldoNegativo,
 } from '../inventario-empresa';
 import { extraerLineasDeFacturas } from '../analisis-insumos';
 import { resolverPares, construirGrupos } from '../insumo-correlacion';
@@ -224,5 +225,39 @@ describe('filtrarInventario', () => {
     expect(filtrarInventario(inv.insumos, 'CEMENTO sol')).toHaveLength(1);
     expect(filtrarInventario(inv.insumos, 'cemento clavo')).toHaveLength(0);
     expect(filtrarInventario(inv.insumos, '')).toBe(inv.insumos);
+  });
+});
+
+// ── TANDA 9: el stock negativo se ve, no se corrige ─────────────────
+describe('saldosNegativos', () => {
+  const ins = (display, saldo) => ({ display, saldo });
+
+  it('encuentra los que quedaron en rojo', () => {
+    const r = saldosNegativos([
+      ins('CLAVOS 3"', [{ unidad: 'kg', label: 'kg', cantidad: -458 }]),
+      ins('CEMENTO', [{ unidad: 'bol', label: 'bol', cantidad: 318 }]),
+    ]);
+    expect(r.total).toBe(1);
+    expect(r.insumos[0].display).toBe('CLAVOS 3"');
+    expect(r.unidades.get('kg')).toBe(-458);
+  });
+
+  it('🔴 un saldo VACÍO no es negativo: sin ventas el saldo no significa nada', () => {
+    expect(saldosNegativos([ins('CEMENTO', [])]).total).toBe(0);
+  });
+
+  it('el cero exacto no cuenta como rojo', () => {
+    expect(saldosNegativos([ins('X', [{ unidad: 'u', label: 'u', cantidad: 0 }])]).total).toBe(0);
+  });
+
+  it('tieneSaldoNegativo responde lo mismo por fila', () => {
+    expect(tieneSaldoNegativo(ins('A', [{ unidad: 'u', label: 'u', cantidad: -1 }]))).toBe(true);
+    expect(tieneSaldoNegativo(ins('B', [{ unidad: 'u', label: 'u', cantidad: 5 }]))).toBe(false);
+    expect(tieneSaldoNegativo(null)).toBe(false);
+  });
+
+  it('con una lista vacía no revienta', () => {
+    expect(saldosNegativos([]).total).toBe(0);
+    expect(saldosNegativos().total).toBe(0);
   });
 });

@@ -45,7 +45,10 @@ import { setEmpresaActivaId, limpiarEmpresaActiva } from "../lib/empresa-activa.
 import { getCurrentMode } from "../lib/app-mode-core.js";
 import { extraerLineasDeFacturas } from "../lib/analisis-insumos.js";
 import { resolverPares, construirGrupos } from "../lib/insumo-correlacion.js";
-import { inventarioDeEmpresa, resumenFinancieroEmpresa, filtrarInventario } from "../lib/inventario-empresa.js";
+import {
+  inventarioDeEmpresa, resumenFinancieroEmpresa, filtrarInventario,
+  saldosNegativos, tieneSaldoNegativo,
+} from "../lib/inventario-empresa.js";
 import { sociosDeObra } from "../lib/consorcio.js";
 import { TIPO_LBL as TRABAJO_TIPO_LBL, ESTADO_LBL as TRABAJO_ESTADO_LBL, ESTADO_BADGE as TRABAJO_ESTADO_BADGE, esAbierto as trabajoAbierto } from "../lib/trabajos.js";
 import { TIPOS_TRABAJO, TIPO_TRABAJO_DEFAULT, normalizarEstadoObra, ESTADO_OBRA_LBL, ESTADO_OBRA_BADGE } from "../lib/tipos-trabajo.js";
@@ -224,10 +227,19 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
     inv.insumos.forEach(i => i.tipos.forEach(t => s.add(t)));
     return [...s].sort();
   }, [inv]);
+  // ── LOS INSUMOS EN ROJO (tanda 9) ────────────────────────────────
+  // Gabriel, 7-set-2026: facturar una orden sin tener el stock se puede, «pero
+  // en el inventario de la empresa que emitió la factura se mostrará que tienen
+  // un stock negativo». La columna Saldo ya pintaba el número en rojo; lo que
+  // faltaba era poder VERLOS: entre 400 insumos, tres en rojo no se encuentran
+  // scrolleando.
+  const negativos = uMD(() => saldosNegativos(inv.insumos), [inv]);
+  const [soloNegativos, setSoloNegativos] = uSD(false);
   const filtrados = uMD(() => {
     const porTexto = filtrarInventario(inv.insumos, busca);
-    return tipoFiltro ? porTexto.filter(i => i.tipos.includes(tipoFiltro)) : porTexto;
-  }, [inv, busca, tipoFiltro]);
+    const porTipo = tipoFiltro ? porTexto.filter(i => i.tipos.includes(tipoFiltro)) : porTexto;
+    return soloNegativos ? porTipo.filter(tieneSaldoNegativo) : porTipo;
+  }, [inv, busca, tipoFiltro, soloNegativos]);
 
   if (!company) return null;
 
@@ -482,8 +494,31 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
               <button key={t} className={`btn btn-xs ${tipoFiltro === t ? 'btn-amber' : 'btn-ghost'}`} onClick={() => { setTipoFiltro(t); setTope(PASO_LISTA); }}>{t}</button>
             ))}
           </div>
+          {/* EL BOTÓN ROJO: entre 400 insumos, tres en rojo no se encuentran
+              scrolleando. Solo aparece si hay alguno — un filtro que siempre
+              devuelve cero es ruido. */}
+          {negativos.total > 0 && (
+            <button className={`btn btn-xs ${soloNegativos ? 'btn-red' : 'btn-ghost'}`}
+              onClick={() => { setSoloNegativos(v => !v); setTope(PASO_LISTA); }}
+              title="Vendió más de lo que compró: puede ser que la compra todavía no esté cargada, que esté en otra empresa del grupo, o que esté escrita con otro nombre">
+              {soloNegativos ? 'ver todos' : `${negativos.total} en rojo`}
+            </button>
+          )}
           <span style={{ fontSize: 11, color: 'var(--tm)' }}>{filtrados.length} insumo(s)</span>
         </div>
+
+        {/* Un saldo negativo no es un error de la app: es un hecho que hay que
+            ver. Tres causas, todas reales — se facturó lo que no se compró
+            todavía, la compra está en otra empresa del grupo, o está escrita con
+            otro nombre y sin mapear. Redondear a cero taparía las tres. */}
+        {negativos.total > 0 && !soloNegativos && (
+          <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', fontSize: 11.5, color: 'var(--ts)', lineHeight: 1.5, background: 'var(--tint-neutral)' }}>
+            <b style={{ color: 'var(--red)' }}>{negativos.total} insumo(s) con saldo negativo</b> — esta empresa
+            facturó más de lo que tiene comprado. Suele pasar cuando se emite una factura contra una orden
+            sin tener el stock: la compra que la respalda todavía no está cargada, está en otra empresa del
+            grupo, o está escrita con otro nombre y sin mapear.
+          </div>
+        )}
 
         {filtrados.length === 0 ? (
           <div className="card-p" style={{ color: 'var(--tm)', fontSize: 12, fontStyle: 'italic' }}>
@@ -523,6 +558,11 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                             {ins.recepcion.conDato > 0 && (
                               <span className="badge b-green" style={{ fontSize: 9 }} title="Almacén confirmó recepción de estas líneas">
                                 ✓ {fmtCant(ins.recepcion.recibido)} recibido
+                              </span>
+                            )}
+                            {tieneSaldoNegativo(ins) && (
+                              <span className="badge b-red" style={{ fontSize: 9 }} title="Vendió más de lo que compró: falta cargar la compra, está en otra empresa del grupo, o está escrita con otro nombre">
+                                stock negativo
                               </span>
                             )}
                           </div>

@@ -322,3 +322,44 @@ export function filtrarInventario(insumos, texto) {
     return toks.every(t => heno.includes(t));
   });
 }
+
+/**
+ * LOS INSUMOS EN ROJO: la empresa vendió más de lo que compró (tanda 9).
+ *
+ * Gabriel, 7-set-2026, sobre facturar una orden por más de lo que hay:
+ *   «se puede hacer la factura si realmente no tenemos dicha cantidad? Sí, se
+ *    puede, pero también advirtiendo de esto a la persona que realiza la
+ *    factura. En caso se realice a pesar de las advertencias, en el inventario
+ *    de la empresa que emitió la factura se mostrará […] que tienen un stock
+ *    negativo.»
+ *
+ * ── UN SALDO NEGATIVO NO ES UN ERROR DE LA APP ────────────────────
+ * Es un hecho contable que hay que ver. Las tres causas, todas reales:
+ *   1. Se facturó lo que todavía no se compró (se compra después para entregar).
+ *   2. La compra existe pero está cargada en otra empresa del grupo.
+ *   3. La compra está escrita con otro nombre y todavía no se mapeó.
+ *
+ * Por eso esto no bloquea nada ni «corrige» el saldo: lo cuenta y lo muestra.
+ * Redondear a cero sería tapar las tres.
+ *
+ * ⚠️ Solo mira los insumos que la empresa VENDIÓ: sin ventas, `saldo` viene
+ * vacío a propósito (sería la columna Comprado repetida) y un «negativo» ahí no
+ * significaría nada.
+ *
+ * @returns { insumos:[...], total, unidades:Map(unidad→cantidad) }
+ */
+export function saldosNegativos(insumos = []) {
+  const out = [];
+  const unidades = new Map();
+  for (const ins of insumos) {
+    const rojos = (ins?.saldo || []).filter(s => Number(s.cantidad) < -0.0001);
+    if (!rojos.length) continue;
+    out.push({ ...ins, negativos: rojos });
+    for (const r of rojos) unidades.set(r.unidad, (unidades.get(r.unidad) || 0) + Number(r.cantidad));
+  }
+  return { insumos: out, total: out.length, unidades };
+}
+
+/** ¿Este insumo está en rojo? Para pintar la fila sin recorrer la lista aparte. */
+export const tieneSaldoNegativo = (ins) =>
+  (ins?.saldo || []).some(s => Number(s.cantidad) < -0.0001);

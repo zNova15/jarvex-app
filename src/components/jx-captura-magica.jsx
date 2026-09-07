@@ -12,6 +12,7 @@ import { derivarTypeContable, destinoDesdeSelector } from "../lib/clasificacion-
 import { valeLaPenaConsultar, compararSugerencia } from "../lib/sugerencia-clasificacion.js";
 import { companyIdsDeObra } from "../lib/consorcio.js";
 import { etiquetaMotorIa } from "../lib/ia-motor.js";
+import { totalesConModoIgv, precioSinIgv } from "../lib/precios-igv.js";
 // Guías: import ESTÁTICO. guias.js ya era un chunk propio por el import()
 // dinámico de confirmarGuia y lo comparte con jx-guias, así que traerlo acá no
 // suma chunks y permite calcular las facturas candidatas en un useMemo (la
@@ -1160,6 +1161,13 @@ function CapturaMagicaPage({ showToast }) {
       // Totales. En RxH, total = NETO a pagar al trabajador (bruto − retención).
       subtotal: Number(ext.totales?.subtotal || 0),
       igv: esRxh ? 0 : Number(ext.totales?.igv || 0),
+      // ── ¿LOS PRECIOS DE LOS ÍTEMS YA TRAEN IGV? (tanda 9) ──────────
+      // Gabriel, 7-set-2026: «a veces hay facturas donde te las generan con
+      // costo sin IGV y se lo agregan al final, y en otras ocasiones colocan
+      // los precios con IGV y simplemente al final sale el desagregado».
+      // Arranca en false —que es lo que hace el 80 % de las facturas y lo que
+      // asumía el botón «Recalcular» sin decirlo— y se marca a mano.
+      precios_con_igv: false,
       total: esRxh ? rxhNeto : Number(ext.totales?.total || 0),
       rxh_bruto: esRxh ? rxhBruto : null,
       rxh_retencion: esRxh ? rxhRetencion : null,
@@ -2160,12 +2168,22 @@ function CapturaMagicaPage({ showToast }) {
           // Persistimos los items detectados con sus material_id (los
           // recién creados ya tienen el id). El almacenero los usa para
           // pre-llenar el modal de ingreso cuando confirma la recepción.
+          // 🔴 El precio que se guarda es SIEMPRE valor de venta, marque la
+          // asistente el checkbox o no. De acá comen el inventario de la
+          // empresa, el cuadro de abastecimiento y el historial de precios: si
+          // la mitad de las líneas estuvieran con IGV, comparar dos compras del
+          // mismo insumo dependería de cómo estaba el checkbox ese día.
+          precios_con_igv: !!r.precios_con_igv || undefined,
           items_factura: (r.items || []).map(it => ({
             material_id: it.material_id || null,
             descripcion: it.descripcion || it.nombre || '',
             unidad: it.unidad || 'und',
             cantidad: Number(it.cantidad) || 0,
-            precio_unitario: Number(it.precio_unitario) || 0,
+            precio_unitario: precioSinIgv(it.precio_unitario, {
+              igvPct: Number(r.subtotal) > 0 ? (Number(r.igv) || 0) / Number(r.subtotal) * 100 : 18,
+              preciosIncluyenIgv: !!r.precios_con_igv,
+            }),
+            precio_ingresado: r.precios_con_igv ? (Number(it.precio_unitario) || 0) : undefined,
             tipo_insumo: it.tipo_insumo || 'material',
             // 'destino' (obra/empresa) lo clasifica el contador en "Insumos Comprados".
           })),
@@ -3205,9 +3223,17 @@ function ReviewModal({ item, companies, personal, obras, consorcios = [], consor
     // IGV: recalcular lo pisaba con subtotal+18% y rompía la relación con los
     // campos Honorarios/Retención.
     if (r.es_rxh) return;
-    const sub = r.items.reduce((s, it) => s + (Number(it.cantidad)||0) * (Number(it.precio_unitario)||0), 0);
-    const igv = +(sub * 0.18).toFixed(2);
-    upd({ subtotal: sub, igv, total: sub + igv });
+    // ⚠️ El 18 % hardcodeado era un segundo error escondido: en producción hay
+    // 54 comprobantes al 10/10,5 % (la tasa de comida: 8 % IGV + 2 % IPM) y 58
+    // sin IGV. Si el comprobante YA trae su desglose, esa es la tasa buena;
+    // recién si no lo trae se cae al 18 %. Mismo criterio que igv-desglose.js.
+    const subPrevio = Number(r.subtotal) || 0;
+    const igvPrevio = Number(r.igv) || 0;
+    const tasa = subPrevio > 0 && igvPrevio >= 0 && Number(r.total) > 0
+      ? Math.round((igvPrevio / subPrevio) * 1000) / 10
+      : 18;
+    const t = totalesConModoIgv(r.items, { igvPct: tasa, preciosIncluyenIgv: !!r.precios_con_igv });
+    upd({ subtotal: t.valorVenta, igv: t.igv, total: t.total });
   };
 
   const isImage = item.mimeType.startsWith('image/');
@@ -3986,13 +4012,28 @@ function ReviewModal({ item, companies, personal, obras, consorcios = [], consor
 
             {/* TOTALES (para RxH se usan los campos Honorarios/Retención/Neto del bloque de
                 arriba; las guías de remisión no llevan montos → sin grid de totales) */}
-            {!r.es_rxh && r.tipo_documento !== 'guia_remision' && (
+            {!r.es_rxh && r.tipo_documento !== 'guia_remision' && (<>
             <div style={{ marginTop:10, display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8 }}>
               <div><label className="flabel">Subtotal</label><input className="fi" type="number" step="0.01" value={r.subtotal} onChange={e=>upd({ subtotal: e.target.value })}/></div>
               <div><label className="flabel">IGV</label><input className="fi" type="number" step="0.01" value={r.igv} onChange={e=>upd({ igv: e.target.value })}/></div>
               <div><label className="flabel">Total *</label><input className="fi" type="number" step="0.01" value={r.total} onChange={e=>upd({ total: e.target.value })} style={{ fontWeight:700 }}/></div>
             </div>
-            )}
+            {/* Qué está escrito en la COLUMNA DE PRECIO de esta factura. Solo
+                cambia lo que hace «Recalcular» y lo que se guarda por ítem: el
+                Subtotal / IGV / Total de arriba siguen siendo los del papel. */}
+            <label style={{ marginTop:8, display:'flex', gap:7, alignItems:'flex-start', fontSize:11.5, cursor:'pointer' }}>
+              <input type="checkbox" checked={!!r.precios_con_igv} style={{ marginTop:2 }}
+                onChange={e=>upd({ precios_con_igv: e.target.checked })}/>
+              <span>
+                Los precios unitarios de los ítems <b>ya incluyen IGV</b>
+                <div style={{ fontSize:10.5, color:'var(--tm)' }}>
+                  {r.precios_con_igv
+                    ? 'Al recalcular, el total sale de las líneas y el subtotal se despeja hacia atrás. Cada ítem se guarda con su precio SIN IGV.'
+                    : 'Cada precio es valor de venta y el IGV se suma al final (lo de siempre).'}
+                </div>
+              </span>
+            </label>
+            </>)}
 
             {/* NOTA DE CRÉDITO/DÉBITO — factura que modifica + efecto contable */}
             {(r.es_nota_credito || r.es_nota_debito) && (

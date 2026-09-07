@@ -42,6 +42,23 @@
 // acepta. Un precio metido a la fuerza en una orden que se firma es peor que
 // una casilla vacía.
 //
+// ── CADA EMPRESA NOMBRA SUS INSUMOS COMO QUIERE (tanda 9) ─────────
+// Gabriel, 7-set-2026: «ese autoguardado se llevaría para la base de datos de
+// la empresa a la que se le emite la orden […] Otras empresas pueden variar un
+// poco su descripción y guardarse en su propia base de datos».
+//
+// No hay «base de datos por empresa» ni hace falta inventarla: cada entrada del
+// corpus ya sabe QUIÉN VENDIÓ eso (`proveedores`), y `buscarDescripcion` acepta
+// un `proveedorId` que sube al tope lo que esa empresa ya vendió. GASOMI ve
+// primero «CEMENTO SOL TIPO I» y JHEENSEG primero «CEMENTO INKA X 42.5 KG»,
+// sobre el MISMO corpus.
+//
+// Se hace así y no con listas separadas porque el corpus separado envejece: una
+// descripción nueva de GASOMI tendría que copiarse a mano a las otras el día que
+// alguien más se la compra. Un solo corpus con preferencia no tiene ese problema
+// — y sigue mostrando lo de las demás más abajo, que es lo correcto cuando la
+// empresa recién arranca y su lista propia está vacía.
+//
 // ── POR QUÉ NO SE FILTRA POR TIPO DE ORDEN ────────────────────────
 // La primera versión escondía los materiales en una orden de SERVICIO. Se cayó
 // sola al probarla: `tipo_insumo` está cargado en algunas líneas de orden y
@@ -80,7 +97,7 @@ export function corpusDeDescripciones({
 } = {}) {
   const porNorm = new Map();
 
-  const poner = (texto, { unidad, precio, fecha, origen, insumoCodigo, companyIdLinea, propio }) => {
+  const poner = (texto, { unidad, precio, fecha, origen, insumoCodigo, vendedorId, propio }) => {
     const desc = String(texto || '').trim();
     if (desc.length < 3) return;
     const k = normNombre(desc);
@@ -90,14 +107,16 @@ export function corpusDeDescripciones({
       e = {
         norm: k, descripcion: desc, unidad: unidad || '', veces: 0,
         precio: null, precioFecha: '', insumoCodigo: null,
-        origenes: new Set(), empresas: new Set(), propio: false,
+        // `proveedores` = quién VENDIÓ eso alguna vez. Es el vocabulario de esa
+        // empresa, y lo que permite ordenar distinto según a quién le compras.
+        origenes: new Set(), proveedores: new Set(), propio: false,
       };
       porNorm.set(k, e);
     }
     e.veces += 1;
     e.origenes.add(origen);
     if (propio) e.propio = true;
-    if (companyIdLinea) e.empresas.add(companyIdLinea);
+    if (vendedorId) e.proveedores.add(vendedorId);
     // El texto que se muestra es el de la fuente de MÁS peso; a igual peso,
     // el más largo (suele ser el que trae la especificación completa).
     if (!e.mejorPeso || PESO_ORIGEN[origen] > e.mejorPeso
@@ -123,7 +142,8 @@ export function corpusDeDescripciones({
     poner(it.nombre || it.nombre_libre, {
       unidad: it.unidad, precio: it.precio_unitario, fecha: it.created_at || '',
       origen: 'orden', insumoCodigo: it.insumo_codigo || null,
-      companyIdLinea: it.proveedor_company_id || null,
+      // En una orden, quien vende es el destinatario: `proveedor_company_id`.
+      vendedorId: it.proveedor_company_id || null,
       propio: false,
     });
   }
@@ -135,7 +155,7 @@ export function corpusDeDescripciones({
     poner(nombre, {
       unidad: ip.unidad, precio: ip.precio_unitario, fecha: '',
       origen: 'presupuesto', insumoCodigo: ip.insumo_codigo || null,
-      companyIdLinea: null, propio: false,
+      vendedorId: null, propio: false,
     });
   }
 
@@ -144,11 +164,17 @@ export function corpusDeDescripciones({
     if (m.payment_status === 'cancelled') continue;
     if (!esCompraMov(m)) continue;
     const propio = !!(companyId && m.company_id === companyId);
+    // ⚠️ En una COMPRA, `company_id` es quien COMPRÓ. El vocabulario que
+    // interesa es el de quien VENDIÓ, y eso solo se sabe cuando la contraparte
+    // es una empresa nuestra (`related_company_id` de una interna). Con un
+    // tercero no hay a quién atribuírselo, y forzarlo con `company_id` diría lo
+    // contrario de la verdad: que el comprador nombra así lo que vende.
+    const vendedorId = m.is_intercompany ? (m.related_company_id || null) : null;
     for (const it of itemsDeFactura(m)) {
       poner(it?.descripcion, {
         unidad: it?.unidad, precio: it?.precio_unitario, fecha: m.date || '',
         origen: 'factura', insumoCodigo: null,
-        companyIdLinea: m.company_id || null, propio,
+        vendedorId, propio,
       });
     }
   }
@@ -162,7 +188,7 @@ export function corpusDeDescripciones({
     precioFecha: e.precioFecha,
     insumoCodigo: e.insumoCodigo,
     origenes: [...e.origenes],
-    empresas: [...e.empresas],
+    proveedores: [...e.proveedores],
     propio: e.propio,
   }));
 }
@@ -178,7 +204,7 @@ export function corpusDeDescripciones({
  * Desde 2 caracteres: con uno solo el resultado es ruido y encima recorre todo
  * el corpus en cada tecla.
  */
-export function buscarDescripcion(corpus = [], texto = '', { limite = 8, minimo = 2 } = {}) {
+export function buscarDescripcion(corpus = [], texto = '', { limite = 8, minimo = 2, proveedorId = null } = {}) {
   const q = normNombre(texto);
   if (q.length < minimo) return [];
   const tokens = q.split(' ').filter(Boolean);
@@ -199,7 +225,11 @@ export function buscarDescripcion(corpus = [], texto = '', { limite = 8, minimo 
     p += Math.max(...e.origenes.map(o => PESO_ORIGEN[o] || 0)) / 10;
     if (e.propio) p += 30;                      // lo que compró ESTA empresa
     if (e.insumoCodigo) p += 15;                // trae código: deja mapeo
-    out.push({ ...e, puntaje: p });
+    // El vocabulario de la empresa a la que se le está comprando manda: es la
+    // que va a emitir la factura y la que tiene el insumo con ESE nombre.
+    const delProveedor = !!(proveedorId && e.proveedores.includes(proveedorId));
+    if (delProveedor) p += 120;
+    out.push({ ...e, puntaje: p, delProveedor });
   }
 
   out.sort((a, b) => b.puntaje - a.puntaje || b.veces - a.veces

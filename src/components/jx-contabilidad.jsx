@@ -242,6 +242,7 @@ function EmpresasPage({ showToast }) {
       direccion:'', telefono:'', email:'', representante_legal:'', inicio_actividades:'',
       actividades_economicas: [],
       logo_dataurl: null, nombre_corto: '', codigo_doc_prefix: '',
+      serie_factura: '', serie_boleta: '', doc_color: '', doc_pie: '',
     });
     setEditingId(null);
     setModal('nueva');
@@ -269,6 +270,10 @@ function EmpresasPage({ showToast }) {
       logo_dataurl: c.logo_dataurl || null,
       nombre_corto: c.nombre_corto || '',
       codigo_doc_prefix: c.codigo_doc_prefix || '',
+      serie_factura: c.serie_factura || '',
+      serie_boleta: c.serie_boleta || '',
+      doc_color: c.doc_color || '',
+      doc_pie: c.doc_pie || '',
     });
     setEditingId(c.id);
     setModal('editar');
@@ -332,6 +337,12 @@ function EmpresasPage({ showToast }) {
           logo_dataurl: form.logo_dataurl || null,
           nombre_corto: form.nombre_corto?.trim() || null,
           codigo_doc_prefix: form.codigo_doc_prefix?.trim() || null,
+          // Mig 187. La serie va en MAYÚSCULAS o el CHECK del servidor la
+          // rechaza y el registro termina en conflictos manuales.
+          serie_factura: form.serie_factura?.trim().toUpperCase() || null,
+          serie_boleta: form.serie_boleta?.trim().toUpperCase() || null,
+          doc_color: form.doc_color?.trim() || null,
+          doc_pie: form.doc_pie?.trim() || null,
           updated_at: now, updated_by: userId,
           version: (orig?.version ?? 0) + 1,
           sync_status: orig?.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
@@ -386,6 +397,10 @@ function EmpresasPage({ showToast }) {
           logo_dataurl: form.logo_dataurl || null,
           nombre_corto: form.nombre_corto?.trim() || null,
           codigo_doc_prefix: form.codigo_doc_prefix?.trim() || null,
+          serie_factura: form.serie_factura?.trim().toUpperCase() || null,
+          serie_boleta: form.serie_boleta?.trim().toUpperCase() || null,
+          doc_color: form.doc_color?.trim() || null,
+          doc_pie: form.doc_pie?.trim() || null,
           created_by: userId, updated_by: userId,
           created_at: now, updated_at: now,
           version: 1, sync_status: 'pending_create', last_synced_at: null,
@@ -914,7 +929,53 @@ function EmpresasPage({ showToast }) {
                   <div>
                     <label className="flabel">Código de formato (opcional)</label>
                     <input className="fi" value={form.codigo_doc_prefix||''} placeholder="Ej: F-SSO-05" maxLength={20} onChange={e=>setForm({...form, codigo_doc_prefix:e.target.value})}/>
-                    <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>Aparece arriba a la derecha en la plantilla de EPPs.</div>
+                    <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>Aparece arriba a la derecha en la plantilla de EPPs, y en el nombre del PDF de sus órdenes.</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* ══ SERIES Y DISEÑO DE SUS DOCUMENTOS (mig 187) ═══════════
+                  Gabriel, 7-set-2026: «quisiera que se pueda personalizar y
+                  pueda incluso ser distinto para cada empresa del grupo».
+
+                  La SERIE la asigna SUNAT y se escribe una vez. El CORRELATIVO
+                  NO se guarda: la app lo calcula mirando lo que esta empresa ya
+                  emitió en esa serie — un contador en columna se desincroniza el
+                  día que alguien carga a mano una factura vieja, y un correlativo
+                  repetido es un rechazo de SUNAT. */}
+              <div style={{ marginTop:14, paddingTop:12, borderTop:'1px solid var(--border)', display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(160px, 1fr))', gap:10 }}>
+                <div>
+                  <label className="flabel">Serie de sus facturas</label>
+                  <input className="fi" style={{ fontFamily:'monospace' }} value={form.serie_factura||''} placeholder="F001" maxLength={4}
+                    onChange={e=>setForm({...form, serie_factura:e.target.value.toUpperCase()})}/>
+                  <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>La que le asignó SUNAT. Vacío = F001.</div>
+                </div>
+                <div>
+                  <label className="flabel">Serie de sus boletas</label>
+                  <input className="fi" style={{ fontFamily:'monospace' }} value={form.serie_boleta||''} placeholder="B001" maxLength={4}
+                    onChange={e=>setForm({...form, serie_boleta:e.target.value.toUpperCase()})}/>
+                  <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>Vacío = B001.</div>
+                </div>
+                <div>
+                  <label className="flabel">Color de sus documentos</label>
+                  <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                    <input type="color" value={form.doc_color || '#F2B705'} style={{ width:42, height:32, padding:0, border:'1px solid var(--border)', borderRadius:6, background:'none' }}
+                      onChange={e=>setForm({...form, doc_color:e.target.value})}/>
+                    <input className="fi" style={{ flex:1, fontFamily:'monospace' }} value={form.doc_color||''} placeholder="#F2B705" maxLength={7}
+                      onChange={e=>setForm({...form, doc_color:e.target.value})}/>
+                    {form.doc_color && (
+                      <button type="button" className="btn btn-ghost btn-xs" onClick={()=>setForm({...form, doc_color:''})}>quitar</button>
+                    )}
+                  </div>
+                  <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>El acento de sus órdenes en PDF. Vacío = el dorado JARVEX.</div>
+                </div>
+                <div style={{ gridColumn:'1/-1' }}>
+                  <label className="flabel">Pie de sus documentos (opcional)</label>
+                  <input className="fi" value={form.doc_pie||''} maxLength={160} placeholder="Av. ... · Cajamarca · ventas@empresa.pe · (076) 000000"
+                    onChange={e=>setForm({...form, doc_pie:e.target.value})}/>
+                  <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>
+                    Se personaliza la marca, no la estructura: un documento contable tiene bloques
+                    obligatorios (RUC, numeración, desglose de IGV, firmas) y moverlos daría un papel inválido.
                   </div>
                 </div>
               </div>

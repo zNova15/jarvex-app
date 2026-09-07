@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   abastecimientoDeObra, demandaDeObra, lineasParaOrden,
-  buscarEnPresupuesto, buscarComprasDelGrupo, mapeoImplicito,
+  buscarEnPresupuesto, buscarComprasDelGrupo, mapeoImplicito, ofertaPorEmpresa,
 } from '../abastecimiento.js';
 import { normMapeo } from '../mapeo-insumos.js';
 
@@ -354,5 +354,52 @@ describe('mapeoImplicito — el mapeo sale de armar la orden', () => {
     const m = mapeoImplicito({ descripcionCompra: 'FIERRO 1/2', insumoCodigo: ACERO });
     expect(m.factor).toBe(null);
     expect(m.factor_fuente).toBe(null);
+  });
+});
+
+// ── TANDA 9: el bloque del grupo, visto por EMPRESA ─────────────────
+describe('ofertaPorEmpresa', () => {
+  const movs = [
+    { id: 'a', company_id: 'c-gasomi', clase: 'compra', type: 'cost', date: '2026-03-01', document_number: 'F001-1',
+      notas: JSON.stringify({ items_factura: [{ descripcion: 'CEMENTO SOL TIPO I', cantidad: 200, unidad: 'BOL', precio_unitario: 26 }] }) },
+    { id: 'b', company_id: 'c-gasomi', clase: 'compra', type: 'cost', date: '2026-08-01', document_number: 'F001-9',
+      notas: JSON.stringify({ items_factura: [{ descripcion: 'CEMENTO HOLCIM TIPO I', cantidad: 112, unidad: 'BOL', precio_unitario: 29.5 }] }) },
+    { id: 'c', company_id: 'c-jheenseg', clase: 'compra', type: 'cost', date: '2026-05-01',
+      notas: JSON.stringify({ items_factura: [{ descripcion: 'CEMENTO INKA X 42.5 KG', cantidad: 40, unidad: 'BOL', precio_unitario: 31 }] }) },
+  ];
+  const companies = [
+    { id: 'c-gasomi', name: 'GASOMI INGENIEROS' },
+    { id: 'c-jheenseg', name: 'JHEENSEG INGENIERO' },
+  ];
+  const res = buscarComprasDelGrupo({ movs, texto: 'cemento', companies });
+  const oferta = ofertaPorEmpresa(res);
+
+  it('junta los cuatro nombres del cemento bajo la empresa que los tiene', () => {
+    const gasomi = oferta.find(e => e.company_id === 'c-gasomi');
+    expect(gasomi.items.map(i => i.descripcion).sort())
+      .toEqual(['CEMENTO HOLCIM TIPO I', 'CEMENTO SOL TIPO I']);
+    expect(gasomi.disponibleBusqueda).toBe(312);
+  });
+
+  it('la que más tiene va primero: es a la que más sentido tiene pedirle', () => {
+    expect(oferta[0].company_id).toBe('c-gasomi');
+  });
+
+  it('🔴 NO fusiona las descripciones entre sí: decir que son el mismo insumo es una decisión de mapeo', () => {
+    const gasomi = oferta.find(e => e.company_id === 'c-gasomi');
+    expect(gasomi.items).toHaveLength(2);
+  });
+
+  it('trae el detalle que se despliega: fecha, documento y precio unitario', () => {
+    const gasomi = oferta.find(e => e.company_id === 'c-gasomi');
+    const holcim = gasomi.items.find(i => /HOLCIM/.test(i.descripcion));
+    expect(holcim.ultimoPrecio).toBe(29.5);
+    expect(holcim.ultimoPrecioFecha).toBe('2026-08-01');
+    expect(holcim.compras[0]).toMatchObject({ fecha: '2026-08-01', documento: 'F001-9', cantidad: 112 });
+  });
+
+  it('sin resultados devuelve una lista vacía, no revienta', () => {
+    expect(ofertaPorEmpresa([])).toEqual([]);
+    expect(ofertaPorEmpresa(null)).toEqual([]);
   });
 });

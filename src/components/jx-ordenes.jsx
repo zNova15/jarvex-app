@@ -30,7 +30,7 @@
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
 import {
-  TIPO_ORDEN_LABEL, textosDeTipo, proximoCodigo, totalesDesdeItems,
+  TIPO_ORDEN_LABEL, textosDeTipo, proximoCodigo,
   comprobantesSinOrden, agruparPorEmpresa, resumenRespaldo,
   borradorDesdeMovimiento, recalcularBorrador, ordenarParaEmitir,
   UMBRAL_POR_DEFECTO,
@@ -43,6 +43,7 @@ import { titularContableDeObra } from "../lib/consorcio.js";
 import { itemsDeFactura } from "../lib/cruce-recepcion.js";
 import {
   abastecimientoDeObra, buscarEnPresupuesto, buscarComprasDelGrupo, mapeoImplicito,
+  ofertaPorEmpresa,
 } from "../lib/abastecimiento.js";
 import { resolverMapeos } from "../lib/mapeo-insumos.js";
 import {
@@ -53,13 +54,15 @@ import {
   corpusDeDescripciones, buscarDescripcion, origenPrincipal, ETIQUETA_ORIGEN,
 } from "../lib/sugerir-descripcion.js";
 import {
-  buzonDeEmpresa, resumenBuzon, estadoRespuesta, respuestaCerrada,
+  buzonDeEmpresa, resumenBuzon, estadoRespuesta, respuestaCerrada, lineasQueExcedenElStock,
   RESPUESTA_LABEL, RESPUESTA_BADGE,
   inventarioTextualDeEmpresa, cruzarOrdenConInventario, borradorDeFacturaDesdeOrden,
   totalesDeBorrador, avisosDeFactura, itemsFacturaDeBorrador,
 } from "../lib/ordenes-recibidas.js";
 import { derivarTypeContable } from "../lib/clasificacion-contable.js";
 import { consultarRUC } from "../lib/identity.js";
+import { totalesConModoIgv, lineasNormalizadas } from "../lib/precios-igv.js";
+import { siguienteComprobante, documentoYaUsado, partirDocumento } from "../lib/serie-comprobante.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -154,6 +157,9 @@ function OrdenesPage({ showToast }) {
   // es lo que necesita [la obra]».
   const ordenVacia = () => ({
     companyId: '', tipo: 'compra', igvPct: 18,
+    // ¿Los precios que estoy escribiendo YA traen IGV? (tanda 9). Por defecto
+    // NO, que es como se cargó todo lo que ya existe.
+    igvIncluido: false,
     // A quién se le compra. La clase ya NO se elige antes de buscar (tanda 8):
     // sale del resultado que se eligió en el buscador de RUC / razón social.
     //   ''           — todavía no se eligió a nadie
@@ -178,6 +184,12 @@ function OrdenesPage({ showToast }) {
   // de las dos depende del mapeo: el mapeo es lo que sale de usarlas.
   const [buscaNec, setBuscaNec] = uS('');
   const [buscaGrupo, setBuscaGrupo] = uS('');
+  // Cómo se agrupa el bloque del grupo: por EMPRESA (lo que pidió Gabriel) o
+  // por descripción (lo de antes). Y qué fila tiene el detalle desplegado.
+  const [vistaGrupo, setVistaGrupo] = uS('empresa');
+  const [detalleOferta, setDetalleOferta] = uS(null);
+  // El presupuesto se acota al tipo de orden, con escape a «ver todo».
+  const [necTodoTipo, setNecTodoTipo] = uS(false);
   const [lineaFoco, setLineaFoco] = uS(null);   // línea a la que se le asigna el origen
   const creandoRef = uR(false);
   // ── EL BUSCADOR DEL DESTINATARIO (tanda 8, entrega 1) ───────────
@@ -402,10 +414,27 @@ function OrdenesPage({ showToast }) {
     ordenes,
   }) : { filas: [], resumen: {} }), [obraScopeId, insumosPartida, movs, insumoMapeos, titularObra, companies, ordenes]);
 
-  const sugNecesita = uM(
-    () => (obraScopeId ? buscarEnPresupuesto(abastecimiento.filas, buscaNec, { limite: 10 }) : []),
-    [obraScopeId, abastecimiento, buscaNec]
-  );
+  // ── QUÉ NECESITA LA OBRA, ACOTADO AL TIPO DE ORDEN (tanda 9) ────
+  //
+  // Medido contra producción el 7-set-2026, `insumos_partida` tiene exactamente
+  // tres tipos: material (2.958), mano_obra (2.287) y equipo (1.477). O sea que
+  // en una ORDEN DE SERVICIO —mano de obra, alquiler de maquinaria, fletes— más
+  // de la mitad del presupuesto sí aplica, y en una de COMPRA no aplica nada de
+  // eso. Filtrar por tipo no es cosmético: es la diferencia entre una lista útil
+  // y 6.722 filas revueltas.
+  //
+  // Con escape: «ver todo» está siempre a un clic, porque el tipo del
+  // presupuesto lo cargó otra persona y puede estar mal puesto.
+  const TIPOS_DE_ORDEN = { compra: ['material'], servicio: ['mano_obra', 'equipo'] };
+  const sugNecesita = uM(() => {
+    if (!obraScopeId) return [];
+    const permitidos = necTodoTipo ? null : TIPOS_DE_ORDEN[nueva.tipo];
+    const filas = permitidos
+      ? abastecimiento.filas.filter(f => !f.tipo_insumo || permitidos.includes(f.tipo_insumo))
+      : abastecimiento.filas;
+    return buscarEnPresupuesto(filas, buscaNec, { limite: 10 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [obraScopeId, abastecimiento, buscaNec, nueva.tipo, necTodoTipo]);
   const sugGrupo = uM(() => buscarComprasDelGrupo({
     movs: movs || [], texto: buscaGrupo, companies: companies || [],
     titularId: titularObra, obraId: obraScopeId, limite: 10,
@@ -525,6 +554,11 @@ function OrdenesPage({ showToast }) {
       .filter(g => g.porEmpresa.length);
   }, [sugGrupo, nueva.provModo, nueva.provCompanyId]);
 
+  // ── LO MISMO, VISTO POR EMPRESA (tanda 9, Acote 1) ───────────────
+  // «que me salgan el bloque de cemento que compró GASOMI, aunque sean con
+  // diferentes nombres». Es un pivoteo: no cambia un solo número.
+  const ofertaGrupo = uM(() => ofertaPorEmpresa(sugGrupoVisible), [sugGrupoVisible]);
+
   // ── EL CORPUS DEL AUTOCOMPLETADO ─────────────────────────────────
   // Todo lo que la app vio escrito alguna vez, con lo que compró ESTA empresa
   // pesando más. No se acota por tipo de orden: ver el porqué en el encabezado
@@ -535,7 +569,8 @@ function OrdenesPage({ showToast }) {
   }), [ocItems, movs, insumosPartida, emisoraId]);
 
   const lineaVacia = () => ({
-    key: window.__newId(), descripcion: '', unidad: 'UND',
+    // La unidad por defecto la decide el TIPO: «SERV» en una orden de servicio.
+    key: window.__newId(), descripcion: '', unidad: textosDeTipo(nueva.tipo).unidadPorDefecto,
     cantidad: '', precio_unitario: '', insumo_codigo: null,
     origen_company_id: null, tope: null,
     // Las dos mitades del mapeo implícito: de qué insumo del presupuesto sale
@@ -551,8 +586,13 @@ function OrdenesPage({ showToast }) {
     if (!sugFoco) return [];
     const l = lineas.find(x => x.key === sugFoco);
     if (!l) return [];
-    return buscarDescripcion(corpus, l.descripcion, { limite: 7 });
-  }, [sugFoco, lineas, corpus]);
+    return buscarDescripcion(corpus, l.descripcion, {
+      limite: 7,
+      // Acote 2: el nombre que usa la empresa a la que le estás comprando va
+      // primero. Es la que va a emitir la factura con ESE nombre.
+      proveedorId: nueva.provModo === 'grupo' ? (nueva.provCompanyId || null) : null,
+    });
+  }, [sugFoco, lineas, corpus, nueva.provModo, nueva.provCompanyId]);
 
   /**
    * Aceptar una recomendación.
@@ -577,10 +617,29 @@ function OrdenesPage({ showToast }) {
   const delLinea = (key) => setLineas(ls => ls.filter(l => l.key !== key));
   const addLineas = (nuevas) => setLineas(ls => [...ls, ...nuevas.map(n => ({ ...lineaVacia(), ...n, key: window.__newId() }))]);
 
-  const totalesNueva = uM(() => {
-    const items = lineas.map(l => ({ cantidad: l.cantidad, precio_unitario: l.precio_unitario }));
-    return totalesDesdeItems(items, { igvPct: Number(nueva.igvPct) });
-  }, [lineas, nueva.igvPct]);
+  /**
+   * Enlazar una oferta del grupo con la línea marcada.
+   *
+   * Hace las dos cosas a la vez porque son la misma decisión: si el material
+   * sale de GASOMI, la orden es PARA GASOMI. Dejarlas separadas permitía
+   * enlazar el stock de una empresa en una orden dirigida a otra, y esa orden
+   * después no respalda nada.
+   */
+  const enlazarOferta = (emp, it) => {
+    if (!lineaFoco) { toast('Marca primero la línea del detalle a la que enlazar esto', 'amber'); return; }
+    setLinea(lineaFoco, {
+      origen_company_id: emp.company_id,
+      origen_descripcion: it.descripcion,
+      origen_unidad: it.unidad || null,
+      tope: it.disponible,
+    });
+    setNu({ provModo: 'grupo', provCompanyId: emp.company_id });
+  };
+
+  const totalesNueva = uM(
+    () => totalesConModoIgv(lineas, { igvPct: Number(nueva.igvPct), preciosIncluyenIgv: !!nueva.igvIncluido }),
+    [lineas, nueva.igvPct, nueva.igvIncluido]
+  );
 
   const faltaNueva = uM(() => {
     const f = [];
@@ -591,6 +650,25 @@ function OrdenesPage({ showToast }) {
     else if (vivas.some(l => !(Number(l.precio_unitario) > 0))) f.push('el precio de cada línea');
     return f;
   }, [nueva, proveedorDeNueva, lineas, emisoraFija]);
+
+  // ── ¿LE ESTOY PIDIENDO MÁS DE LO QUE TIENE? (tanda 9) ───────────
+  //
+  // Gabriel, 7-set-2026: «no es que la orden no se pueda emitir, se emitirá,
+  // pero nos arrojará un aviso que la empresa del grupo a la que le estamos
+  // solicitando no tiene dicha cantidad».
+  //
+  // SOLO con empresas del grupo. De un tercero no sabemos qué stock tiene —sus
+  // compras no están en nuestros libros— y avisar «la ferretería no tiene 500 kg
+  // de clavos» sería inventar un dato.
+  const inventarioDestinatario = uM(
+    () => (nueva.provModo === 'grupo' && nueva.provCompanyId
+      ? inventarioTextualDeEmpresa({ movs: movs || [], companyId: nueva.provCompanyId })
+      : new Map()),
+    [nueva.provModo, nueva.provCompanyId, movs]
+  );
+  const excesos = uM(() => lineasQueExcedenElStock({
+    lineas, inventario: inventarioDestinatario, mapeos: resolverMapeos(insumoMapeos || []),
+  }), [lineas, inventarioDestinatario, insumoMapeos]);
 
   const limpiarNueva = () => {
     setNueva(ordenVacia()); setLineas([]); setAyuda(null);
@@ -609,20 +687,33 @@ function OrdenesPage({ showToast }) {
     const company = lookupCompany(emisoraId);
     const hoy = nueva.fecha || window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10);
     const anio = Number(String(hoy).slice(0, 4));
-    const items = lineas
-      .filter(l => String(l.descripcion || '').trim() && Number(l.cantidad) > 0)
-      .map(l => ({
-        nombre: l.descripcion.trim(), unidad: l.unidad || 'UND',
-        cantidad: Number(l.cantidad), precio_unitario: Number(l.precio_unitario),
-        insumo_codigo: l.insumo_codigo || null,
-        company_id: l.origen_company_id || null,
-      }));
+    // 🔴 Lo que se GUARDA es siempre VALOR DE VENTA, escriba la persona con IGV
+    // o sin él (tanda 9). Guardar unas líneas con IGV y otras sin haría que
+    // comparar dos compras del mismo insumo dependa de cómo estaba el checkbox
+    // ese día — y de ahí comen el historial de precios y el abastecimiento.
+    const items = lineasNormalizadas(
+      lineas.filter(l => String(l.descripcion || '').trim() && Number(l.cantidad) > 0),
+      { igvPct: Number(nueva.igvPct), preciosIncluyenIgv: !!nueva.igvIncluido }
+    ).map(l => ({
+      nombre: l.descripcion.trim(), unidad: l.unidad || 'UND',
+      cantidad: Number(l.cantidad), precio_unitario: Number(l.precio_unitario),
+      insumo_codigo: l.insumo_codigo || null,
+      // De quién sale el material. Si la orden va a una empresa del grupo, sale
+      // de ELLA aunque nadie haya usado el bloque de abastecimiento: es lo que
+      // hace que su nombre quede en SU vocabulario para la próxima vez
+      // (Acote 2 de Gabriel, 7-set-2026).
+      company_id: l.origen_company_id || proveedorDeNueva.companyId || null,
+    }));
 
     if (numerar) {
       const { correlativo } = proximoCodigo(ordenes, { company, tipo: nueva.tipo, anio });
       const cod = formatearCodigo(correlativo, { company, tipo: nueva.tipo, anio });
       if (!window.confirm(
         `Emitir ${cod} a ${proveedorDeNueva.nombre}?\n\n${items.length} línea(s) · ${fmtS(totalesNueva.total)}\n\n`
+        + (excesos.length
+          ? `${excesos.length} línea(s) piden más de lo que ${proveedorDeNueva.nombre} tiene según sus facturas. `
+            + 'Se puede emitir igual: tendrá que comprarlo para atenderte.\n\n'
+          : '')
         + `Ese número queda tomado en la serie de ${company?.name || 'la empresa'} y no se libera aunque después se anule.`
       )) return;
     }
@@ -954,10 +1045,19 @@ function OrdenesPage({ showToast }) {
         items, inventario, mapeos: resolverMapeos(insumoMapeos || []),
       });
       setAtCruce(cruce);
+      // ── EL CORRELATIVO, PROPUESTO ──────────────────────────────
+      // No lo sabe SUNAT: el correlativo lo lleva el CONTRIBUYENTE y SUNAT solo
+      // valida que no se repita. Así que la app lo puede saber HOY, sin
+      // certificado ni clave SOL, mirando lo que esta empresa ya emitió en esa
+      // serie. Ver el porqué completo en lib/serie-comprobante.js.
+      const vendedora = lookupCompany(o.proveedor_company_id);
+      const sig = siguienteComprobante(movs || [], { companyId: o.proveedor_company_id, company: vendedora });
       setAtBorrador({
         ...borradorDeFacturaDesdeOrden({ orden: o, items, cruce }),
         fecha: window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10),
-        documento: '',
+        documento: sig.documento,
+        serieSugerida: sig,
+        igvIncluido: false,
         nota: '',
       });
       setAtendiendo({ orden: o, items, inventario });
@@ -1012,6 +1112,14 @@ function OrdenesPage({ showToast }) {
     () => (atBorrador && atendiendo ? avisosDeFactura({ borrador: atBorrador, orden: atendiendo.orden }) : []),
     [atBorrador, atendiendo]
   );
+  // Se puede tipear el número a mano —porque ya se emitió en el sistema del
+  // contador externo— y ahí hay que avisar ANTES de duplicarlo, no después.
+  const docRepetido = uM(
+    () => (atBorrador?.documento && atendiendo
+      ? documentoYaUsado(movs || [], { companyId: atendiendo.orden.proveedor_company_id, documento: atBorrador.documento })
+      : null),
+    [atBorrador, atendiendo, movs]
+  );
 
   /**
    * EMITIR LA FACTURA CONTRA LA ORDEN.
@@ -1042,6 +1150,11 @@ function OrdenesPage({ showToast }) {
     if (lineas.some(l => !(Number(l.cantidad) > 0) || !(Number(l.precio_unitario) > 0))) {
       toast('Cada línea incluida necesita cantidad y precio', 'amber'); return;
     }
+    if (docRepetido && !window.confirm(
+      `El número ${atBorrador.documento} YA lo usó ${vendedora.name}.\n\n`
+      + 'Repetir un correlativo es un rechazo de SUNAT que después hay que anular con nota de crédito.\n\n'
+      + '¿Emitir igual?'
+    )) return;
     const graves = avisosAt.filter(a => a.nivel === 'alto');
     if (!window.confirm(
       `Emitir la factura de ${vendedora.name} a ${compradora?.name || 'quien emitió la orden'}?\n\n`
@@ -1368,6 +1481,40 @@ function OrdenesPage({ showToast }) {
       {/* ═══ NUEVA ORDEN — la que nace antes del comprobante (tanda 7) ═══ */}
       {tab === 'nueva' ? (
         <div>
+          {/* ══ QUÉ ESTOY EMITIENDO — LO PRIMERO Y EN GRANDE ═════════
+              Gabriel, 7-set-2026: «nos hemos centrado mucho en las Órdenes de
+              Compra que esta sección parece que no tuviera para Órdenes de
+              Servicio, te puedes fijar por qué en la captura sale como órdenes
+              de compra y no agrega servicios».
+
+              El tipo SÍ existía —desde la mig 179— pero era el segundo de
+              cuatro <select> apretados arriba, y todo lo de abajo hablaba de
+              compras. Un campo que decide el título del documento, la serie
+              (OC/OS), la unidad por defecto y qué ayuda tiene sentido no puede
+              estar escondido entre la fecha y el IGV. */}
+          <div className="card card-p" style={{ marginBottom: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            <span style={{ fontSize: 12, color: 'var(--tm)' }}>Qué vas a emitir:</span>
+            {[['compra', 'Orden de Compra', 'package', 'bienes y materiales'],
+              ['servicio', 'Orden de Servicio', 'tool', 'mano de obra, alquileres, fletes']].map(([v, lbl, ic, sub]) => (
+              <button key={v} className={`btn ${nueva.tipo === v ? 'btn-amber' : 'btn-ghost'}`}
+                onClick={() => setNueva(n => ({
+                  ...n, tipo: v,
+                  // La unidad por defecto de las líneas VACÍAS acompaña al tipo:
+                  // «SERV» en una orden de servicio, «UND» en una de compra.
+                }))}
+                style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 1, padding: '7px 14px' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700 }}>
+                  <JxIcon name={ic} size={14} /> {lbl}
+                </span>
+                <span style={{ fontSize: 10, opacity: 0.75 }}>{sub}</span>
+              </button>
+            ))}
+            <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--tm)' }}>
+              Se numera como <b style={{ fontFamily: 'monospace' }}>{textosDeTipo(nueva.tipo).prefijo}-001-{new Date().getFullYear()}</b>,
+              en la serie propia de la empresa que emite.
+            </span>
+          </div>
+
           {/* ── LA CABECERA: quién emite, a quién, y con qué condiciones ── */}
           <div className="card card-p" style={{ marginBottom: 12 }}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
@@ -1392,13 +1539,6 @@ function OrdenesPage({ showToast }) {
                 )}
               </label>
               <label>
-                <div style={{ fontSize: 11, color: 'var(--tm)' }}>Tipo</div>
-                <select className="fi" style={{ width: '100%' }} value={nueva.tipo} onChange={e => setNu({ tipo: e.target.value })}>
-                  <option value="compra">Orden de Compra</option>
-                  <option value="servicio">Orden de Servicio</option>
-                </select>
-              </label>
-              <label>
                 <div style={{ fontSize: 11, color: 'var(--tm)' }}>Fecha</div>
                 <input className="fi" type="date" style={{ width: '100%' }} value={nueva.fecha}
                   onChange={e => setNu({ fecha: e.target.value })} />
@@ -1409,6 +1549,30 @@ function OrdenesPage({ showToast }) {
                   value={nueva.igvPct} onChange={e => setNu({ igvPct: e.target.value })} />
               </label>
             </div>
+
+            {/* ══ ¿LOS PRECIOS QUE ESCRIBO YA TRAEN IGV? (tanda 9) ══════
+                Gabriel: «a veces hay facturas donde te las generan con costo
+                sin IGV y se lo agregan al final, y en otras ocasiones colocan
+                los precios con IGV y simplemente al final sale el desagregado».
+                Las dos son verdad. Lo que no puede pasar es que la app asuma
+                una mientras la persona tipea la otra: ahí el total sale 18 %
+                corrido y nadie se entera hasta que reclama el proveedor. */}
+            <label style={{
+              marginTop: 10, display: 'flex', gap: 8, alignItems: 'flex-start',
+              fontSize: 12, cursor: 'pointer',
+            }}>
+              <input type="checkbox" checked={!!nueva.igvIncluido} style={{ marginTop: 2 }}
+                onChange={e => setNu({ igvIncluido: e.target.checked })} />
+              <span>
+                <b>Los precios que escribo ya incluyen IGV</b>
+                <div style={{ fontSize: 11, color: 'var(--tm)' }}>
+                  {nueva.igvIncluido
+                    ? `El total es lo que sumen las líneas y el valor de venta se despeja hacia atrás (÷ ${(1 + Number(nueva.igvPct || 0) / 100).toFixed(2)}).`
+                    : `Cada precio es valor de venta y el IGV del ${Number(nueva.igvPct || 0)} % se suma al final.`}
+                  {' '}En la orden se guarda siempre el valor de venta, para que dos compras del mismo insumo se puedan comparar.
+                </div>
+              </span>
+            </label>
 
             {/* ══ A QUIÉN SE LE COMPRA — UN BUSCADOR, NO TRES LISTAS ══════
                 Gabriel, 6-set-2026: «buscar rápidamente el RUC, si es que me
@@ -1621,8 +1785,26 @@ function OrdenesPage({ showToast }) {
             {obraScopeId && (
               <div className="card" style={{ overflow: 'hidden' }}>
                 <div style={{ padding: '9px 12px', borderBottom: '1px solid var(--border)' }}>
-                  <b style={{ fontSize: 12.5 }}>Qué necesita la obra</b>
-                  <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>Del presupuesto. Al elegir uno se agrega al detalle, y ahí puedes cambiarle el nombre, la cantidad y el precio.</div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <b style={{ fontSize: 12.5 }}>Qué necesita la obra</b>
+                    {/* El presupuesto de producción tiene tres tipos: material,
+                        mano_obra y equipo. En una orden de SERVICIO no sirve
+                        ofrecer materiales, y al revés tampoco — pero el tipo lo
+                        cargó otra persona y puede estar mal puesto, así que el
+                        escape está siempre a un clic. */}
+                    <button className="btn btn-xs btn-ghost" style={{ marginLeft: 'auto' }}
+                      onClick={() => setNecTodoTipo(v => !v)}
+                      title={necTodoTipo ? 'Volver a mostrar solo lo que aplica a este tipo de orden' : 'Mostrar todo el presupuesto, sin acotar por tipo'}>
+                      {necTodoTipo ? 'acotar al tipo' : 'ver todo el presupuesto'}
+                    </button>
+                  </div>
+                  <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+                    Del presupuesto. Al elegir uno se agrega al detalle, y ahí puedes cambiarle el nombre, la cantidad y el precio.
+                    {!necTodoTipo && (
+                      <> Mostrando solo <b>{nueva.tipo === 'servicio' ? 'mano de obra y equipos' : 'materiales'}</b>, que es lo que
+                      aplica a una {textosDeTipo(nueva.tipo).titulo.toLowerCase()}.</>
+                    )}
+                  </div>
                   <input className="fi" style={{ width: '100%', marginTop: 6, fontSize: 12 }}
                     placeholder="Buscar en el presupuesto: cemento, fierro, tubería…"
                     value={buscaNec} onChange={e => setBuscaNec(e.target.value)} />
@@ -1662,53 +1844,137 @@ function OrdenesPage({ showToast }) {
             {mostrarBloqueGrupo && (
             <div className="card" style={{ overflow: 'hidden' }}>
               <div style={{ padding: '9px 12px', borderBottom: '1px solid var(--border)' }}>
-                <b style={{ fontSize: 12.5 }}>
-                  {nueva.provModo === 'grupo' && proveedorDeNueva.nombre
-                    ? `Qué tiene ${proveedorDeNueva.nombre}`
-                    : 'Qué tienen las empresas del grupo'}
-                </b>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <b style={{ fontSize: 12.5 }}>
+                    {nueva.provModo === 'grupo' && proveedorDeNueva.nombre
+                      ? `Qué tiene ${proveedorDeNueva.nombre}`
+                      : 'Qué tienen las empresas del grupo'}
+                  </b>
+                  {/* ══ POR EMPRESA O POR NOMBRE (tanda 9, Acote 1) ═══════
+                      Gabriel: «me gustaría que se pudiera mostrar por bloque
+                      (opción seleccionable) de tal manera que me salgan el
+                      bloque de cemento que compró GASOMI, aunque sean con
+                      diferentes nombres».
+
+                      En producción el mismo cemento está escrito de cuatro
+                      formas, y la lista salía con las cuatro sueltas. Para
+                      decidir a quién comprarle eso está al revés: la pregunta
+                      es «¿cuánto cemento tiene GASOMI?». */}
+                  <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
+                    {[['empresa', 'por empresa'], ['nombre', 'por nombre']].map(([v, lbl]) => (
+                      <button key={v} className={`btn btn-xs ${vistaGrupo === v ? 'btn-amber' : 'btn-ghost'}`}
+                        onClick={() => { setVistaGrupo(v); setDetalleOferta(null); }}>{lbl}</button>
+                    ))}
+                  </div>
+                </div>
                 <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
                   Busca sobre lo que dicen las facturas, sin necesitar el mapeo.
                   {lineaFoco ? ' Al elegir uno se enlaza con la línea marcada.' : ' Marca una línea del detalle para enlazarla.'}
                 </div>
                 <input className="fi" style={{ width: '100%', marginTop: 6, fontSize: 12 }}
                   placeholder="Buscar en las compras: cemento, fierro, tubo…"
-                  value={buscaGrupo} onChange={e => setBuscaGrupo(e.target.value)} />
+                  value={buscaGrupo} onChange={e => { setBuscaGrupo(e.target.value); setDetalleOferta(null); }} />
               </div>
-              <div style={{ maxHeight: 240, overflowY: 'auto' }}>
-                {sugGrupoVisible.length === 0 ? (
+
+              <div style={{ maxHeight: 300, overflowY: 'auto' }}>
+                {(vistaGrupo === 'empresa' ? ofertaGrupo.length : sugGrupoVisible.length) === 0 ? (
                   <div style={{ padding: 14, fontSize: 11.5, color: 'var(--tm)', textAlign: 'center' }}>
                     {!buscaGrupo ? 'Escribe qué estás buscando.'
                       : (nueva.provModo === 'grupo' && proveedorDeNueva.nombre
                         ? `${proveedorDeNueva.nombre} no tiene nada así disponible.`
                         : 'Ninguna empresa del grupo tiene algo así disponible.')}
                   </div>
-                ) : sugGrupoVisible.map((g, i) => (
-                  <div key={i} style={{ padding: '7px 12px', borderBottom: '1px solid var(--border)' }}>
-                    <div style={{ fontSize: 11.5, fontWeight: 600 }}>
-                      {g.descripcion}
-                      {g.obraVinculada && <span className="badge b-blue" style={{ marginLeft: 5, fontSize: 9 }}>ya vinculado a esta obra</span>}
+                ) : vistaGrupo === 'empresa' ? (
+                  // ── AGRUPADO POR EMPRESA ──────────────────────────────
+                  ofertaGrupo.map(emp => (
+                    <div key={emp.company_id || 'sin'} style={{ borderBottom: '1px solid var(--border)' }}>
+                      <div style={{
+                        padding: '7px 12px', display: 'flex', gap: 8, alignItems: 'center',
+                        background: 'var(--tint-neutral)', flexWrap: 'wrap',
+                      }}>
+                        <JxIcon name="building" size={13} color="var(--blue)" />
+                        <b style={{ fontSize: 12 }}>{emp.nombre}</b>
+                        <span style={{ fontSize: 11, color: 'var(--tm)' }}>
+                          {/* «de lo que buscaste», no «de este insumo»: sumar
+                              cuatro nombres distintos como si fueran uno es una
+                              decisión de mapeo, y ésa la toma una persona. */}
+                          <b style={{ color: 'var(--tp)' }}>{cantF(emp.disponibleBusqueda)}</b> disponibles
+                          {' '}en {emp.items.length} nombre{emp.items.length === 1 ? '' : 's'}
+                        </span>
+                        {emp.ultimaFecha && (
+                          <span style={{ fontSize: 10.5, color: 'var(--tm)' }}>última compra {emp.ultimaFecha}</span>
+                        )}
+                      </div>
+                      {emp.items.map(it => {
+                        const clave = `${emp.company_id}|${it.descripcion}`;
+                        const abierto = detalleOferta === clave;
+                        return (
+                          <React.Fragment key={clave}>
+                            <div style={{ padding: '6px 12px 6px 26px', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: 11.5 }}>
+                                  {it.descripcion}
+                                  {it.obraVinculada && <span className="badge b-blue" style={{ marginLeft: 5, fontSize: 9 }}>ya vinculado a esta obra</span>}
+                                </div>
+                                <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+                                  <b style={{ color: 'var(--tp)' }}>{cantF(it.disponible)}</b> {it.unidad}
+                                  {' · compró '}{cantF(it.comprado)}{it.vendido ? ` · vendió ${cantF(it.vendido)}` : ''}
+                                  {it.ultimoPrecio != null && <> · último {fmtS(it.ultimoPrecio)} el {it.ultimoPrecioFecha}</>}
+                                </div>
+                              </div>
+                              <button className="btn btn-xs btn-ghost" title="Ver las facturas donde se compró"
+                                onClick={() => setDetalleOferta(abierto ? null : clave)}>
+                                {abierto ? '▾' : '▸'} {it.compras.length}
+                              </button>
+                              <button className="btn btn-xs btn-amber" title="Enlazar con la línea marcada del detalle"
+                                onClick={() => enlazarOferta(emp, it)}>usar</button>
+                            </div>
+                            {abierto && (
+                              <div style={{ padding: '4px 12px 8px 26px', background: 'var(--bg-c2)' }}>
+                                <table className="tbl" style={{ fontSize: 10.5 }}>
+                                  <thead><tr>
+                                    <th>Fecha</th><th>Comprobante</th>
+                                    <th style={{ textAlign: 'right' }}>Cantidad</th>
+                                    <th style={{ textAlign: 'right' }}>P. unitario</th>
+                                  </tr></thead>
+                                  <tbody>
+                                    {it.compras.map((c, k) => (
+                                      <tr key={k}>
+                                        <td>{c.fecha || '—'}</td>
+                                        <td style={{ fontFamily: 'monospace' }}>{c.documento || '—'}</td>
+                                        <td style={{ textAlign: 'right' }}>{cantF(c.cantidad)}</td>
+                                        <td style={{ textAlign: 'right' }}>{c.precio_unitario != null ? fmtS(c.precio_unitario) : '—'}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
                     </div>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
-                      {g.porEmpresa.map(e => (
-                        <button key={e.company_id || 'sin'} className="btn btn-xs btn-ghost"
-                          title={`Comprado ${cantF(e.comprado)}${e.vendido ? ` · vendido ${cantF(e.vendido)}` : ''}`}
-                          onClick={() => {
-                            if (!lineaFoco) { toast('Marca primero la línea del detalle a la que enlazar esto', 'amber'); return; }
-                            setLinea(lineaFoco, {
-                              origen_company_id: e.company_id,
-                              origen_descripcion: g.descripcion,
-                              origen_unidad: g.unidad || null,
-                              tope: e.disponible,
-                            });
-                            setNu({ provModo: 'grupo', provCompanyId: e.company_id });
-                          }}>
-                          <b>{cantF(e.disponible)}</b>&nbsp;{(e.nombre || '').slice(0, 18)}
-                        </button>
-                      ))}
+                  ))
+                ) : (
+                  // ── AGRUPADO POR NOMBRE (como estaba) ─────────────────
+                  sugGrupoVisible.map((g, i) => (
+                    <div key={i} style={{ padding: '7px 12px', borderBottom: '1px solid var(--border)' }}>
+                      <div style={{ fontSize: 11.5, fontWeight: 600 }}>
+                        {g.descripcion}
+                        {g.obraVinculada && <span className="badge b-blue" style={{ marginLeft: 5, fontSize: 9 }}>ya vinculado a esta obra</span>}
+                      </div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+                        {g.porEmpresa.map(e => (
+                          <button key={e.company_id || 'sin'} className="btn btn-xs btn-ghost"
+                            title={`Comprado ${cantF(e.comprado)}${e.vendido ? ` · vendido ${cantF(e.vendido)}` : ''}${e.ultimoPrecio != null ? ` · último ${fmtS(e.ultimoPrecio)}` : ''}`}
+                            onClick={() => enlazarOferta({ company_id: e.company_id }, { descripcion: g.descripcion, unidad: g.unidad, disponible: e.disponible })}>
+                            <b>{cantF(e.disponible)}</b>&nbsp;{(e.nombre || '').slice(0, 18)}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))
+                )}
               </div>
             </div>
             )}
@@ -1723,6 +1989,9 @@ function OrdenesPage({ showToast }) {
                 Valor de venta <b style={{ color: 'var(--tp)' }}>{fmtS(totalesNueva.valorVenta)}</b>
                 {' · '}IGV {fmtS(totalesNueva.igv)}
                 {' · '}Total <b style={{ color: 'var(--tp)' }}>{fmtS(totalesNueva.total)}</b>
+                {nueva.igvIncluido && (
+                  <span className="badge b-blue" style={{ marginLeft: 6, fontSize: 9 }}>precios con IGV</span>
+                )}
               </span>
             </div>
             <div style={{ overflowX: 'auto' }}>
@@ -1731,7 +2000,12 @@ function OrdenesPage({ showToast }) {
                   <th style={{ minWidth: 240 }}>{textosDeTipo(nueva.tipo).columnaDescripcion}</th>
                   <th style={{ width: 90 }}>Unidad</th>
                   <th style={{ width: 110, textAlign: 'right' }}>Cantidad</th>
-                  <th style={{ width: 120, textAlign: 'right' }}>Precio unit.</th>
+                  <th style={{ width: 130, textAlign: 'right' }}>
+                    Precio unit.
+                    <div style={{ fontSize: 9, fontWeight: 400, color: 'var(--tm)' }}>
+                      {nueva.igvIncluido ? 'con IGV' : 'sin IGV'}
+                    </div>
+                  </th>
                   <th style={{ width: 110, textAlign: 'right' }}>Subtotal</th>
                   <th style={{ width: 40 }}></th>
                 </tr></thead>
@@ -1834,6 +2108,30 @@ function OrdenesPage({ showToast }) {
               </table>
             </div>
           </div>
+
+          {/* AVISA, NO BLOQUEA. Comprar para atender el pedido es lo normal,
+              no la excepcion - y el disponible sale de comprado menos vendido,
+              asi que puede estar desactualizado. */}
+          {excesos.length > 0 && (
+            <div className="card card-p" style={{ marginBottom: 12, borderLeft: '3px solid var(--amber)' }}>
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>
+                {proveedorDeNueva.nombre} no tiene todo lo que le estas pidiendo
+              </div>
+              {excesos.map((e, i) => (
+                <div key={i} style={{ fontSize: 11.5, color: 'var(--ts)', lineHeight: 1.5 }}>
+                  {'\u00b7 '}<b>{e.descripcion}</b>: pides {cantF(e.pedido)} {e.unidad} y segun sus facturas
+                  {' '}tiene <b style={{ color: 'var(--amber)' }}>{cantF(e.disponible)}</b>
+                  {' '}{'\u2014'} faltan {cantF(e.faltante)}
+                  {e.seLlama && e.seLlama !== e.descripcion && <> (ella lo tiene como {'\u00ab'}{e.seLlama}{'\u00bb'})</>}.
+                </div>
+              ))}
+              <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 6, lineHeight: 1.5 }}>
+                La orden se emite igual: puede comprarlo para atenderte. Al facturarla se le vuelve a
+                avisar, y si la emite sin tenerlo, ese insumo le queda en <b>stock negativo</b> en su
+                inventario {'\u2014'} que es la verdad, no un error.
+              </div>
+            </div>
+          )}
 
           <div className="card card-p" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
             <button className="btn btn-sm" onClick={limpiarNueva}>Limpiar</button>
@@ -2194,7 +2492,7 @@ function OrdenesPage({ showToast }) {
         const compradora = lookupCompany(o.company_id);
         const porKey = new Map(atCruce.map(c => [c.item?.id, c]));
         return (
-          <Modal title={`Orden recibida ${o.codigo || ''}`.trim()} icon="inbox" size="lg" wide onClose={cerrarAtencion}>
+          <Modal title={`Orden recibida ${o.codigo || ''}`.trim()} icon="inbox" size="xl" onClose={cerrarAtencion}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, marginBottom: 12 }}>
               <div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Te la emite</div><b>{compradora?.name || o.proveedor_nombre || '—'}</b></div>
               <div><div style={{ fontSize: 11, color: 'var(--tm)' }}>La recibe</div><b>{vendedora?.name || '—'}</b></div>
@@ -2231,7 +2529,12 @@ function OrdenesPage({ showToast }) {
                   <th style={{ minWidth: 210 }}>Cómo lo tienes tú (va a la factura)</th>
                   <th style={{ width: 80 }}>Unidad</th>
                   <th style={{ width: 96, textAlign: 'right' }}>Cantidad</th>
-                  <th style={{ width: 104, textAlign: 'right' }}>Precio</th>
+                  <th style={{ width: 110, textAlign: 'right' }}>
+                    Precio
+                    <div style={{ fontSize: 9, fontWeight: 400, color: 'var(--tm)' }}>
+                      {atBorrador.igvIncluido ? 'con IGV' : 'sin IGV'}
+                    </div>
+                  </th>
                   <th style={{ width: 96, textAlign: 'right' }}>Subtotal</th>
                 </tr></thead>
                 <tbody>
@@ -2321,12 +2624,52 @@ function OrdenesPage({ showToast }) {
               <label><div style={{ fontSize: 11, color: 'var(--tm)' }}>Fecha de la factura</div>
                 <input className="fi" type="date" value={atBorrador.fecha || ''}
                   onChange={e => setAtBorrador(b => ({ ...b, fecha: e.target.value }))} /></label>
-              <label><div style={{ fontSize: 11, color: 'var(--tm)' }}>Serie-correlativo (si ya la tienes)</div>
-                <input className="fi" style={{ width: 160 }} value={atBorrador.documento || ''} placeholder="F001-000123"
+              <label><div style={{ fontSize: 11, color: 'var(--tm)' }}>Serie-correlativo</div>
+                <input className="fi" style={{ width: 170, fontFamily: 'monospace' }} value={atBorrador.documento || ''} placeholder="F001-00000123"
                   onChange={e => setAtBorrador(b => ({ ...b, documento: e.target.value }))} /></label>
               <label><div style={{ fontSize: 11, color: 'var(--tm)' }}>IGV %</div>
                 <input className="fi" type="number" min="0" max="18" step="any" style={{ width: 80 }}
                   value={atBorrador.igvPct} onChange={e => setAtBorrador(b => ({ ...b, igvPct: e.target.value }))} /></label>
+              {/* El mismo checkbox que en la orden, por la misma razón. */}
+              <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 11.5, paddingBottom: 7, cursor: 'pointer' }}>
+                <input type="checkbox" checked={!!atBorrador.igvIncluido}
+                  onChange={e => setAtBorrador(b => ({ ...b, igvIncluido: e.target.checked }))} />
+                los precios ya incluyen IGV
+              </label>
+            </div>
+
+            {/* ── DE DÓNDE SALE ESE NÚMERO ──────────────────────────────
+                Gabriel: «puede suceder que la empresa que emitirá la factura ya
+                tenga otra factura que emitió. ¿O es que acaso eso se ve cuando
+                se configure bien el sistema de la SUNAT?».
+
+                Las dos cosas, en este orden: la SERIE la asigna SUNAT y se
+                configura una vez por empresa; el CORRELATIVO lo lleva el
+                contribuyente, así que la app lo sabe HOY mirando lo ya emitido.
+                Se muestra de dónde salió en vez de un número pelado: un
+                correlativo que no se puede explicar no se puede defender. */}
+            <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 6, lineHeight: 1.55 }}>
+              {atBorrador.serieSugerida && (
+                <>Serie <b>{atBorrador.serieSugerida.serie}</b>
+                  {lookupCompany(o.proveedor_company_id)?.serie_factura
+                    ? ' (la configurada para esta empresa)'
+                    : ' (la de por defecto — configúrala en el panel de la empresa si SUNAT le asignó otra)'}.
+                  {atBorrador.serieSugerida.ultimo > 0
+                    ? ` La última que emitió fue la ${atBorrador.serieSugerida.ultimo} de ${atBorrador.serieSugerida.usados} registradas, así que le toca la ${atBorrador.serieSugerida.correlativo}.`
+                    : ' No tiene ninguna registrada en esa serie: le toca la 1.'}
+                </>
+              )}
+              {docRepetido && (
+                <div style={{ color: 'var(--red)', marginTop: 4 }}>
+                  Ese número YA lo usó esta empresa (en {docRepetido.date || 'una factura anterior'}
+                  {docRepetido.third_party_name ? `, a ${docRepetido.third_party_name}` : ''}). Repetirlo es un rechazo de SUNAT.
+                </div>
+              )}
+              {!docRepetido && atBorrador.documento && !partirDocumento(atBorrador.documento) && (
+                <div style={{ color: 'var(--amber)', marginTop: 4 }}>
+                  «{atBorrador.documento}» no tiene forma de comprobante (F001-00000123). Se guarda igual, pero SUNAT no lo va a aceptar así.
+                </div>
+              )}
             </div>
 
             <p style={{ fontSize: 11, color: 'var(--tm)', margin: '10px 0 0', lineHeight: 1.55 }}>

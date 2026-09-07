@@ -7,6 +7,7 @@ import {
   ordenarParaEmitir, UMBRAL_POR_DEFECTO,
   nuevaOrdenBorrador, numerarOrden, pasosDeOrden, esBorrador, estaNumerada,
   cadenaDeOrdenes, eslabonesDeCadena, tieneIntermediario,
+  nombreArchivoOrden,
 } from '../ordenes.js';
 
 // Datos de producción: el modelo que dejó Gabriel es del CONSORCIO EL INCA,
@@ -679,5 +680,44 @@ describe('eslabonesDeCadena / tieneIntermediario', () => {
     expect(tieneIntermediario({ intermediario_company_id: 'x' })).toBe(true);
     expect(tieneIntermediario({ intermediario_externo: 'EL AMIGO SAC' })).toBe(true);
     expect(tieneIntermediario({})).toBe(false);
+  });
+});
+
+// ── TANDA 9: el nombre del archivo tiene que ser ÚNICO ──────────────
+describe('nombreArchivoOrden', () => {
+  const JARVEX = { codigo_doc_prefix: 'JVX', nombre_corto: 'JARVEX', ruc: '20615646505' };
+  const GASOMI = { nombre_corto: 'GASOMI', ruc: '20601234567' };
+
+  it('🔴 dos empresas con el MISMO correlativo dan archivos distintos', () => {
+    const a = nombreArchivoOrden({ codigo: 'OC-001-2026', tipo: 'compra' }, JARVEX);
+    const b = nombreArchivoOrden({ codigo: 'OC-001-2026', tipo: 'compra' }, GASOMI);
+    expect(a).not.toBe(b);
+    expect(a).toBe('OC_JVX_OC-001-2026.pdf');
+    expect(b).toBe('OC_GASOMI_OC-001-2026.pdf');
+  });
+
+  it('🔴 dos borradores sin código tampoco chocan', () => {
+    const a = nombreArchivoOrden({ tipo: 'compra', fecha: '2026-09-07', id: 'aaaaaaaa-1111' }, JARVEX);
+    const b = nombreArchivoOrden({ tipo: 'compra', fecha: '2026-09-07', id: 'bbbbbbbb-2222' }, JARVEX);
+    expect(a).not.toBe(b);
+    expect(a).toContain('borrador-2026-09-07');
+  });
+
+  it('la orden de servicio lleva su prefijo', () => {
+    expect(nombreArchivoOrden({ codigo: 'OS-003-2026', tipo: 'servicio' }, GASOMI)).toBe('OS_GASOMI_OS-003-2026.pdf');
+  });
+
+  it('sin prefijo ni nombre corto usa el RUC', () => {
+    expect(nombreArchivoOrden({ codigo: 'OC-002-2026' }, { ruc: '20611547367' }))
+      .toBe('OC_20611547367_OC-002-2026.pdf');
+  });
+
+  it('sin empresa no revienta ni deja separadores sueltos', () => {
+    expect(nombreArchivoOrden({ codigo: 'OC-009-2026' }, {})).toBe('OC_OC-009-2026.pdf');
+  });
+
+  it('lo que el sistema de archivos no acepta se reemplaza', () => {
+    expect(nombreArchivoOrden({ codigo: 'OC/001:2026' }, { nombre_corto: 'A B' }))
+      .toBe('OC_A-B_OC-001-2026.pdf');
   });
 });

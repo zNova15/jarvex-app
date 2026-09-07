@@ -47,7 +47,7 @@
 import { itemsDeFactura } from './cruce-recepcion.js';
 import { esCompraMov, esVentaMov } from './costo-obra.js';
 import { normMapeo, tokensDe, buscarMapeo } from './mapeo-insumos.js';
-import { totalesDesdeItems } from './ordenes.js';
+import { totalesConModoIgv } from './precios-igv.js';
 
 const vivos = (arr) => (Array.isArray(arr) ? arr.filter(x => x && !x.deleted_at) : []);
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
@@ -314,12 +314,19 @@ export function borradorDeFacturaDesdeOrden({ orden = null, items = [], cruce = 
   };
 }
 
-/** Totales del borrador. Solo cuentan las líneas incluidas. */
+/**
+ * Totales del borrador. Solo cuentan las líneas incluidas.
+ *
+ * `igvIncluido` (tanda 9) dice si los precios que la contadora está escribiendo
+ * ya traen IGV. Es la misma pregunta que en la orden, y por la misma razón: hay
+ * proveedores que cotizan con IGV y otros sin él, y asumir uno corre el total un
+ * 18 %.
+ */
 export function totalesDeBorrador(borrador) {
-  const items = (borrador?.lineas || [])
-    .filter(l => l.incluir)
-    .map(l => ({ cantidad: l.cantidad, precio_unitario: l.precio_unitario }));
-  return totalesDesdeItems(items, { igvPct: Number(borrador?.igvPct ?? 18) });
+  return totalesConModoIgv(
+    (borrador?.lineas || []).filter(l => l.incluir),
+    { igvPct: Number(borrador?.igvPct ?? 18), preciosIncluyenIgv: !!borrador?.igvIncluido }
+  );
 }
 
 /**
@@ -359,8 +366,12 @@ export function avisosDeFactura({ borrador = null, orden = null } = {}) {
     });
   }
 
+  // ⚠️ El costo guardado es valor de venta; si la contadora está escribiendo
+  // precios CON IGV, hay que comparar peras con peras o el aviso saltaría en
+  // toda línea con margen menor al 18 %.
+  const f = borrador?.igvIncluido ? 1 + Math.max(0, num(borrador?.igvPct ?? 18)) / 100 : 1;
   const bajoCosto = lineas.filter(l => l.costoUnitario != null && l.costoUnitario > 0
-    && l.precio_unitario > 0 && l.precio_unitario < l.costoUnitario);
+    && l.precio_unitario > 0 && (l.precio_unitario / f) < l.costoUnitario);
   if (bajoCosto.length) {
     avisos.push({
       nivel: 'alto', clave: 'bajo_costo',
@@ -387,16 +398,68 @@ export function avisosDeFactura({ borrador = null, orden = null } = {}) {
   return avisos;
 }
 
-/** Las líneas del borrador, listas para `items_factura` del movimiento. */
+/**
+ * Las líneas del borrador, listas para `items_factura` del movimiento.
+ *
+ * El precio se guarda SIN IGV pase lo que pase con el checkbox: de acá comen el
+ * inventario, el abastecimiento y el historial de precios, y si la mitad de las
+ * líneas estuvieran con IGV, comparar dos compras del mismo insumo dependería
+ * de cómo estaba el checkbox ese día.
+ */
 export function itemsFacturaDeBorrador(borrador) {
+  const f = borrador?.igvIncluido ? 1 + Math.max(0, num(borrador?.igvPct ?? 18)) / 100 : 1;
   return (borrador?.lineas || []).filter(l => l.incluir).map(l => ({
     descripcion: l.nombre,
     // Qué decía el pedido. Es lo que después permite cuadrar los dos papeles.
     descripcion_orden: l.nombreOrden !== l.nombre ? l.nombreOrden : undefined,
     unidad: l.unidad || 'UND',
     cantidad: num(l.cantidad),
-    precio_unitario: num(l.precio_unitario),
+    precio_unitario: Math.round((num(l.precio_unitario) / f + Number.EPSILON) * 1e6) / 1e6,
+    precio_ingresado: f !== 1 ? num(l.precio_unitario) : undefined,
     tipo_insumo: l.tipo_insumo || undefined,
     insumo_codigo: l.insumo_codigo || undefined,
   }));
+}
+
+/**
+ * ¿LE ESTOY PIDIENDO MÁS DE LO QUE TIENE? (tanda 9)
+ *
+ * Gabriel, 7-set-2026: «Qué pasa si hago una orden de compra por una cantidad
+ * superior a la que se sabe que se tiene de dicho insumo en la empresa de
+ * nuestro grupo (solo para el caso de empresas del grupo, terceros no). No es
+ * que la orden no se pueda emitir, se emitirá, pero nos arrojará un aviso.»
+ *
+ * ── SOLO PARA EMPRESAS DEL GRUPO, Y ES LA PARTE IMPORTANTE ────────
+ * De un tercero no sabemos —ni tenemos por qué saber— qué stock tiene: sus
+ * facturas de compra no están en nuestros libros. Avisar «la ferretería no
+ * tiene 500 kg de clavos» sería inventar un dato. Por eso esta función devuelve
+ * lista vacía sin `companyId`, y la pantalla no muestra nada.
+ *
+ * Avisa, no bloquea. La orden se emite igual: comprar para atender el pedido es
+ * lo normal, no la excepción.
+ *
+ * @returns [{ descripcion, pedido, disponible, faltante, unidad }]
+ */
+export function lineasQueExcedenElStock({ lineas = [], inventario = new Map(), mapeos = null } = {}) {
+  if (!inventario || !inventario.size) return [];
+  const items = (lineas || [])
+    .filter(l => String(l.descripcion || l.nombre || '').trim() && num(l.cantidad) > 0)
+    .map((l, i) => ({
+      id: l.key ?? l.id ?? `l${i}`,
+      nombre: l.descripcion || l.nombre,
+      unidad: l.unidad || '',
+      cantidad: num(l.cantidad),
+      insumo_codigo: l.insumo_codigo || null,
+    }));
+  const cruce = cruzarOrdenConInventario({ items, inventario, mapeos });
+  return cruce
+    .filter(c => c.cubre === false)      // false = «medí y no alcanza». null = «no sé», y no se avisa.
+    .map(c => ({
+      descripcion: c.nombre,
+      unidad: c.item.unidad || c.mejor?.unidad || '',
+      pedido: c.pedido,
+      disponible: c.disponible,
+      faltante: c.faltante,
+      seLlama: c.mejor?.descripcion || null,
+    }));
 }

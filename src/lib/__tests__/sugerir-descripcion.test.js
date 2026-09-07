@@ -90,9 +90,13 @@ describe('buscarDescripcion', () => {
   });
 
   it('lo que EMPIEZA por el texto va antes que lo que lo tiene en el medio', () => {
+    const entrada = (norm, descripcion, veces) => ({
+      norm, descripcion, veces, origenes: ['factura'], unidad: '',
+      precio: null, precioFecha: '', insumoCodigo: null, proveedores: [], propio: false,
+    });
     const c = [
-      { norm: 'bolsa de cemento', descripcion: 'BOLSA DE CEMENTO', veces: 9, origenes: ['factura'], unidad: '', precio: null, precioFecha: '', insumoCodigo: null, empresas: [], propio: false },
-      { norm: 'cemento portland', descripcion: 'CEMENTO PORTLAND', veces: 1, origenes: ['factura'], unidad: '', precio: null, precioFecha: '', insumoCodigo: null, empresas: [], propio: false },
+      entrada('bolsa de cemento', 'BOLSA DE CEMENTO', 9),
+      entrada('cemento portland', 'CEMENTO PORTLAND', 1),
     ];
     expect(buscarDescripcion(c, 'cem')[0].descripcion).toBe('CEMENTO PORTLAND');
   });
@@ -119,5 +123,53 @@ describe('origenPrincipal', () => {
     expect(origenPrincipal({ origenes: ['factura', 'orden'] })).toBe('orden');
     expect(origenPrincipal({ origenes: ['factura', 'presupuesto'] })).toBe('presupuesto');
     expect(origenPrincipal({ origenes: ['factura'] })).toBe('factura');
+  });
+});
+
+// ── TANDA 9: cada empresa nombra sus insumos como quiere (Acote 2) ──
+describe('el vocabulario de la empresa a la que se le compra', () => {
+  const OC = [
+    // Ya se le compró a GASOMI con SU nombre.
+    { id: 'g1', nombre: 'CEMENTO SOL TIPO I 42.5KG', unidad: 'BOL', precio_unitario: 29, proveedor_company_id: 'c-gasomi', created_at: '2026-08-01' },
+    // Y a JHEENSEG con el suyo.
+    { id: 'j1', nombre: 'CEMENTO INKA X 42.5 KG', unidad: 'BOL', precio_unitario: 31, proveedor_company_id: 'c-jheenseg', created_at: '2026-08-02' },
+  ];
+  const c = corpusDeDescripciones({ ocItems: OC, movs: [], insumosPartida: [] });
+
+  it('cada descripción sabe quién la vendió', () => {
+    expect(c.find(e => /SOL/.test(e.descripcion)).proveedores).toEqual(['c-gasomi']);
+    expect(c.find(e => /INKA/.test(e.descripcion)).proveedores).toEqual(['c-jheenseg']);
+  });
+
+  it('🔴 comprándole a GASOMI, SU nombre va primero — y el otro sigue visible', () => {
+    const r = buscarDescripcion(c, 'cemento', { proveedorId: 'c-gasomi' });
+    expect(r[0].descripcion).toMatch(/SOL/);
+    expect(r[0].delProveedor).toBe(true);
+    expect(r).toHaveLength(2);
+  });
+
+  it('comprándole a JHEENSEG se da vuelta el orden, sobre el MISMO corpus', () => {
+    expect(buscarDescripcion(c, 'cemento', { proveedorId: 'c-jheenseg' })[0].descripcion).toMatch(/INKA/);
+  });
+
+  it('sin destinatario elegido no se prefiere a nadie', () => {
+    expect(buscarDescripcion(c, 'cemento').every(r => !r.delProveedor)).toBe(true);
+  });
+
+  it('⚠️ en una compra a un TERCERO no se le atribuye vocabulario a nadie', () => {
+    const cc = corpusDeDescripciones({ ocItems: [], insumosPartida: [], movs: [
+      { id: 'm', type: 'cost', clase: 'compra', company_id: 'c-inca', date: '2026-05-01', deleted_at: null,
+        notas: JSON.stringify({ items_factura: [{ descripcion: 'CEMENTO DE FERRETERIA', cantidad: 1, precio_unitario: 30 }] }) },
+    ] });
+    expect(cc[0].proveedores).toEqual([]);
+  });
+
+  it('en una compra INTERNA sí: quien vendió es la contraparte del grupo', () => {
+    const cc = corpusDeDescripciones({ ocItems: [], insumosPartida: [], movs: [
+      { id: 'm', type: 'cost', clase: 'compra', company_id: 'c-inca', date: '2026-05-01', deleted_at: null,
+        is_intercompany: true, related_company_id: 'c-gasomi',
+        notas: JSON.stringify({ items_factura: [{ descripcion: 'CEMENTO SOL TIPO I', cantidad: 1, precio_unitario: 30 }] }) },
+    ] });
+    expect(cc[0].proveedores).toEqual(['c-gasomi']);
   });
 });

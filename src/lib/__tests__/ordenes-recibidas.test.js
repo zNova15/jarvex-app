@@ -5,7 +5,7 @@ import {
   estadoRespuesta, respuestaCerrada, buzonDeEmpresa, resumenBuzon,
   inventarioTextualDeEmpresa, parecido, cruzarOrdenConInventario,
   borradorDeFacturaDesdeOrden, totalesDeBorrador, avisosDeFactura,
-  itemsFacturaDeBorrador,
+  itemsFacturaDeBorrador, lineasQueExcedenElStock,
 } from '../ordenes-recibidas.js';
 
 const GASOMI = 'c-gasomi';
@@ -249,5 +249,48 @@ describe('avisosDeFactura', () => {
 
   it('una factura que cuadra con el pedido no genera ruido', () => {
     expect(av(base, { monto_total: totalesDeBorrador(base).total })).toEqual([]);
+  });
+});
+
+// ── TANDA 9: pedirle a una empresa del grupo más de lo que tiene ────
+describe('lineasQueExcedenElStock', () => {
+  const inventario = inventarioTextualDeEmpresa({ movs: MOVS, companyId: GASOMI });
+
+  it('avisa cuando piden más de lo disponible, con cuánto falta', () => {
+    const av = lineasQueExcedenElStock({
+      lineas: [{ key: 'a', descripcion: 'CEMENTO PORTLAND TIPO I', unidad: 'BOL', cantidad: 500 }],
+      inventario,
+    });
+    expect(av).toHaveLength(1);
+    expect(av[0]).toMatchObject({ pedido: 500, disponible: 318, faltante: 182 });
+    expect(av[0].seLlama).toBe('CEMENTO SOL TIPO I 42.5KG');
+  });
+
+  it('no avisa cuando alcanza', () => {
+    expect(lineasQueExcedenElStock({
+      lineas: [{ key: 'a', descripcion: 'CEMENTO PORTLAND TIPO I', unidad: 'BOL', cantidad: 10 }],
+      inventario,
+    })).toHaveLength(0);
+  });
+
+  it('🔴 lo que NO encuentra no se avisa: «no sé» no es «no tienes»', () => {
+    expect(lineasQueExcedenElStock({
+      lineas: [{ key: 'a', descripcion: 'TUBERIA PVC 4 PULGADAS', unidad: 'UND', cantidad: 900 }],
+      inventario,
+    })).toHaveLength(0);
+  });
+
+  it('⚠️ con un TERCERO no hay inventario: no se inventa un aviso', () => {
+    expect(lineasQueExcedenElStock({
+      lineas: [{ key: 'a', descripcion: 'CEMENTO PORTLAND TIPO I', cantidad: 9999 }],
+      inventario: new Map(),
+    })).toEqual([]);
+  });
+
+  it('una línea sin cantidad o sin nombre no genera ruido', () => {
+    expect(lineasQueExcedenElStock({
+      lineas: [{ key: 'a', descripcion: '', cantidad: 500 }, { key: 'b', descripcion: 'CEMENTO', cantidad: 0 }],
+      inventario,
+    })).toEqual([]);
   });
 });

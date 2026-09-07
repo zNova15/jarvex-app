@@ -1,6 +1,6 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { textosDeTipo, totalesDesdeItems } from './ordenes.js';
+import { textosDeTipo, totalesDesdeItems, nombreArchivoOrden } from './ordenes.js';
 
 // ─────────────────────────────────────────────────────────────
 // Helpers
@@ -8,6 +8,27 @@ import { textosDeTipo, totalesDesdeItems } from './ordenes.js';
 const COLOR_DARK = [14, 22, 32];
 const COLOR_GOLD = [242, 183, 5];
 const COLOR_HEAD = [28, 45, 64];
+
+/**
+ * EL ACENTO DE LOS DOCUMENTOS DE UNA EMPRESA (mig 187, tanda 9).
+ *
+ * Gabriel, 7-set-2026: «quisiera que se pueda personalizar y pueda incluso ser
+ * distinto para cada empresa del grupo».
+ *
+ * Se personaliza la MARCA (color y pie), no la ESTRUCTURA. Un documento
+ * contable tiene bloques obligatorios —RUC, numeración, desglose de IGV,
+ * firmas— y dejar moverlos termina en un papel que SUNAT no acepta.
+ *
+ * Un hex mal escrito NO rompe el PDF: cae al color de siempre. Un documento que
+ * no se puede imprimir por una letra de más en un color sería un cambio que
+ * empeora todo lo que toca.
+ */
+function colorDeEmpresa(company, porDefecto = COLOR_HEAD) {
+  const hex = String(company?.doc_color || '').trim();
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  if (!m) return porDefecto;
+  return [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)];
+}
 const COLOR_ALT = [248, 248, 248];
 const COLOR_MUTED = [128, 128, 128];
 
@@ -1023,13 +1044,15 @@ export function generateOrdenPdf(orden, items, ctx = {}, { download = true } = {
   const { company = {}, obra = null, proveedor = null } = ctx;
   const tipo = orden.tipo === 'servicio' ? 'servicio' : 'compra';
   const T = textosDeTipo(tipo);
+  // El acento de ESTA empresa. Vacío o mal escrito = el azul de siempre.
+  const ACENTO = colorDeEmpresa(company);
   const moneda = (orden.moneda || 'PEN') === 'USD' ? 'DÓLARES (US$)' : 'SOLES (S/)';
 
   // ── Cabecera: logo a la izquierda, identidad a la derecha ────
   const logoOk = drawCompanyLogo(doc, company) > 0;
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(11);
-  doc.setTextColor(...COLOR_HEAD);
+  doc.setTextColor(...ACENTO);
   const nombreEmpresa = safe(company.nombre_corto || company.name || company.legal_name, '').toUpperCase();
   doc.text(doc.splitTextToSize(nombreEmpresa, 120)[0] || '', pageWidth - 14, 10, { align: 'right' });
   doc.setFontSize(14);
@@ -1045,7 +1068,7 @@ export function generateOrdenPdf(orden, items, ctx = {}, { download = true } = {
 
   let y = 28;
   if (orden.titulo) {
-    doc.setFillColor(...COLOR_HEAD);
+    doc.setFillColor(...ACENTO);
     doc.rect(14, y, pageWidth - 28, 6, 'F');
     doc.setTextColor(255, 255, 255);
     doc.setFont('helvetica', 'bold');
@@ -1109,7 +1132,7 @@ export function generateOrdenPdf(orden, items, ctx = {}, { download = true } = {
     head: [['Ítem', T.columnaDescripcion, 'Unidad', 'Cant.', 'Precio Unit.', `Importe Total (${(orden.moneda || 'PEN') === 'USD' ? 'US$' : 'S/'})`]],
     body,
     theme: 'grid',
-    headStyles: { fillColor: COLOR_HEAD, textColor: 255, fontSize: 8, halign: 'center' },
+    headStyles: { fillColor: ACENTO, textColor: 255, fontSize: 8, halign: 'center' },
     bodyStyles: { fontSize: 7.5, cellPadding: 1.2 },
     alternateRowStyles: { fillColor: COLOR_ALT },
     columnStyles: {
@@ -1135,7 +1158,7 @@ export function generateOrdenPdf(orden, items, ctx = {}, { download = true } = {
   let ey = doc.lastAutoTable.finalY;
   const filaTotal = (etiqueta, valor, fuerte) => {
     doc.setDrawColor(150, 160, 170);
-    if (fuerte) { doc.setFillColor(...COLOR_HEAD); doc.rect(110, ey, pageWidth - 124, 6, 'F'); doc.setTextColor(255, 255, 255); }
+    if (fuerte) { doc.setFillColor(...ACENTO); doc.rect(110, ey, pageWidth - 124, 6, 'F'); doc.setTextColor(255, 255, 255); }
     else { doc.setFillColor(245, 246, 248); doc.rect(110, ey, pageWidth - 124, 6, 'FD'); doc.setTextColor(0, 0, 0); }
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(fuerte ? 9 : 8);
@@ -1199,8 +1222,12 @@ export function generateOrdenPdf(orden, items, ctx = {}, { download = true } = {
     doc.text(doc.splitTextToSize(String(f), anchoFirma - 4), cx, y2 + 4, { align: 'center' });
   });
 
-  drawFooter(doc, `${T.titulo} ${safe(orden.codigo, '')} · ${safe(company.nombre_corto || company.name, '')}`);
-  const filename = `${T.prefijo}_${safe(orden.codigo, 'sin-codigo')}.pdf`.replace(/[\/\\:*?"<>|]/g, '-');
+  // El pie que configuró la empresa; si no configuró ninguno, el de siempre.
+  drawFooter(doc, safe(company.doc_pie, '').trim()
+    || `${T.titulo} ${safe(orden.codigo, '')} · ${safe(company.nombre_corto || company.name, '')}`);
+  // El nombre tiene que ser ÚNICO: el correlativo es por empresa, así que
+  // JARVEX y GASOMI tienen las dos su OC-001-2026. Ver nombreArchivoOrden().
+  const filename = nombreArchivoOrden(orden, company);
   if (download) doc.save(filename);
   return { doc, filename };
 }
