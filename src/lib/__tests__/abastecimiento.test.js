@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { abastecimientoDeObra, demandaDeObra, lineasParaOrden } from '../abastecimiento.js';
+import {
+  abastecimientoDeObra, demandaDeObra, lineasParaOrden,
+  buscarEnPresupuesto, buscarComprasDelGrupo, mapeoImplicito,
+} from '../abastecimiento.js';
 import { normMapeo } from '../mapeo-insumos.js';
 
 // ── LOS DATOS SON LOS REALES ──────────────────────────────────────
@@ -241,5 +244,115 @@ describe('abastecimientoDeObra — el stock que una orden ya comprometió', () =
       ordenes: [oc()], ocItems: [li()],
     });
     expect(lineasParaOrden(filas, { [CEMENTO]: { [GASOMI]: 300 } })[0].cantidad).toBe(118);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// LOS DOS BLOQUES DE AYUDA, Y EL MAPEO QUE SALE DE REGALO
+// ═══════════════════════════════════════════════════════════════════
+describe('buscarEnPresupuesto — el bloque de «qué necesita la obra»', () => {
+  const mapeos = mapeosDe([mapManual('CEMENTO PORTLAND TIPO I', CEMENTO, 1, 'bol')]);
+  const movs = [mov(EL_INCA, 'compra', [item('CEMENTO PORTLAND TIPO I', 2250)])];
+  const { filas } = abastecimientoDeObra({ insumosPartida, movs, mapeos, titularId: EL_INCA, companies });
+
+  it('encuentra por texto y trae cuánto falta', () => {
+    const r = buscarEnPresupuesto(filas, 'cemento');
+    expect(r).toHaveLength(1);
+    expect(r[0].codigo).toBe(CEMENTO);
+    expect(r[0].falta).toBe(9019.16);   // 11.269,16 − 2.250
+  });
+
+  it('busca también por código', () => {
+    expect(buscarEnPresupuesto(filas, '30020002')[0].codigo).toBe(ACERO);
+  });
+
+  it('sin texto devuelve todo, lo que más falta primero', () => {
+    const r = buscarEnPresupuesto(filas, '');
+    expect(r[0].codigo).toBe(ACERO);   // 29.856 falta > 9.019 del cemento
+  });
+
+  it('puede acotarse a lo que todavía falta', () => {
+    const cubierto = abastecimientoDeObra({
+      insumosPartida, mapeos, titularId: EL_INCA, companies,
+      movs: [mov(EL_INCA, 'compra', [item('CEMENTO PORTLAND TIPO I', 99999)])],
+    }).filas;
+    expect(buscarEnPresupuesto(cubierto, 'cemento', { soloFaltantes: true })).toHaveLength(0);
+  });
+});
+
+describe('buscarComprasDelGrupo — el bloque de «quién lo tiene»', () => {
+  const movs = [
+    mov(GASOMI, 'compra', [item('CEMENTO PORTLAND TIPO I 425 KG - PACASMAYO-BOLSA', 500)]),
+    mov(GASOMI, 'compra', [item('CEMENTO PORTLAND TIPO I 425 KG - PACASMAYO-BOLSA', 300)]),
+    mov(JHEENSEG, 'compra', [item('CEMENTO PORTLAND TIPO I', 42)]),
+    mov(EL_INCA, 'compra', [item('CEMENTO PORTLAND TIPO I', 2250)]),
+    mov(GASOMI, 'compra', [item('VARILLA DE ACERO CORRUGADO DE 1/2', 1148)]),
+  ];
+  const buscar = (t, extra = {}) => buscarComprasDelGrupo({ movs, texto: t, companies, titularId: EL_INCA, ...extra });
+
+  it('NO necesita el mapeo: busca sobre el texto crudo de las facturas', () => {
+    const r = buscar('cemento');
+    expect(r.length).toBeGreaterThan(0);
+    // Es el ejemplo de Gabriel: JARVEX compró 500 y después 300 → tiene 800.
+    const pacasmayo = r.find(x => x.descripcion.includes('PACASMAYO'));
+    expect(pacasmayo.porEmpresa[0].nombre).toBe('GASOMI INGENIEROS E.I.R.L.');
+    expect(pacasmayo.porEmpresa[0].disponible).toBe(800);
+  });
+
+  it('la ejecutora no se ofrece a sí misma', () => {
+    const r = buscar('cemento');
+    expect(r.some(x => x.porEmpresa.some(e => e.company_id === EL_INCA))).toBe(false);
+  });
+
+  it('descuenta lo ya vendido', () => {
+    const r = buscarComprasDelGrupo({
+      movs: [...movs, mov(GASOMI, 'venta', [item('CEMENTO PORTLAND TIPO I 425 KG - PACASMAYO-BOLSA', 300)])],
+      texto: 'cemento', companies, titularId: EL_INCA,
+    });
+    expect(r.find(x => x.descripcion.includes('PACASMAYO')).porEmpresa[0].disponible).toBe(500);
+  });
+
+  it('marca lo que ya está vinculado a esta obra', () => {
+    const conObra = [{ ...mov(GASOMI, 'compra', [item('CEMENTO X', 10)]), obra_id: 'o1' }];
+    const r = buscarComprasDelGrupo({ movs: conObra, texto: 'cemento', companies, titularId: EL_INCA, obraId: 'o1' });
+    expect(r[0].obraVinculada).toBe(true);
+  });
+
+  it('sin texto no devuelve nada — es una búsqueda, no un listado', () => {
+    expect(buscar('')).toEqual([]);
+  });
+
+  it('lo que nadie tiene disponible no aparece', () => {
+    const r = buscarComprasDelGrupo({
+      movs: [mov(GASOMI, 'compra', [item('YESO', 10)]), mov(GASOMI, 'venta', [item('YESO', 10)])],
+      texto: 'yeso', companies, titularId: EL_INCA,
+    });
+    expect(r).toEqual([]);
+  });
+});
+
+describe('mapeoImplicito — el mapeo sale de armar la orden', () => {
+  it('arma la fila de insumo_mapeo con las dos mitades', () => {
+    const m = mapeoImplicito({
+      descripcionCompra: 'CEMENTO PORTLAND TIPO I 425 KG - PACASMAYO-BOLSA',
+      insumoCodigo: CEMENTO, unidadCompra: 'und', unidadInsumo: 'bol', factor: 1,
+    });
+    expect(m.insumo_codigo).toBe(CEMENTO);
+    expect(m.decision).toBe('mapeado');
+    expect(m.norm).toBe(normMapeo('CEMENTO PORTLAND TIPO I 425 KG - PACASMAYO-BOLSA'));
+    // Es la decisión de una persona: manda sobre cualquier propuesta del motor.
+    expect(m.fuente).toBe('manual');
+    expect(m.factor_fuente).toBe('manual');
+  });
+
+  it('sin una de las dos mitades no inventa nada', () => {
+    expect(mapeoImplicito({ descripcionCompra: 'CEMENTO', insumoCodigo: null })).toBe(null);
+    expect(mapeoImplicito({ descripcionCompra: '', insumoCodigo: CEMENTO })).toBe(null);
+  });
+
+  it('sin factor lo deja explícitamente vacío, no en 1', () => {
+    const m = mapeoImplicito({ descripcionCompra: 'FIERRO 1/2', insumoCodigo: ACERO });
+    expect(m.factor).toBe(null);
+    expect(m.factor_fuente).toBe(null);
   });
 });

@@ -40,11 +40,17 @@ import {
 import { filtroInicialEmpresa, setEmpresaActivaId } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 import { titularContableDeObra } from "../lib/consorcio.js";
+import { itemsDeFactura } from "../lib/cruce-recepcion.js";
+import {
+  abastecimientoDeObra, buscarEnPresupuesto, buscarComprasDelGrupo, mapeoImplicito,
+} from "../lib/abastecimiento.js";
+import { resolverMapeos } from "../lib/mapeo-insumos.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 const Modal = (p) => (window.Modal ? <window.Modal {...p} /> : null);
 
+const cantF = (n) => Number(n || 0).toLocaleString('es-PE', { maximumFractionDigits: 2 });
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtSk = (n) => {
   const v = Number(n || 0);
@@ -79,6 +85,8 @@ function OrdenesPage({ showToast }) {
   const { data: obras } = window.__hooks.useObras();
   const { data: cfg } = window.__hooks.useAppConfig();
   const { data: consorcios } = window.__hooks.useConsorcios();
+  const { data: insumosPartida } = window.__hooks.useInsumosPartida(window.__plano === 'obra' ? (window.__getObraActivaId?.() || null) : null);
+  const { data: insumoMapeos } = window.__hooks.useInsumoMapeos();
   const resolverConfig = window.__hooks.resolverConfig;
 
   // ── Estado (TODOS los hooks antes de cualquier return: regla #3) ──
@@ -146,6 +154,14 @@ function OrdenesPage({ showToast }) {
   const setNu = (patch) => setNueva(n => ({ ...n, ...patch }));
   // El ayudante de la obra: 'necesita' (presupuesto) | 'grupo' (stock) | null
   const [ayuda, setAyuda] = uS(null);
+  const [verMov, setVerMov] = uS(null);   // id del comprobante a mirar desde «Sin respaldo»
+  // ── EL AYUDANTE DE DOS BLOQUES ──────────────────────────────────
+  // A la izquierda lo que la obra NECESITA (presupuesto); a la derecha lo que
+  // las empresas del grupo YA COMPRARON (texto crudo de las facturas). Ninguna
+  // de las dos depende del mapeo: el mapeo es lo que sale de usarlas.
+  const [buscaNec, setBuscaNec] = uS('');
+  const [buscaGrupo, setBuscaGrupo] = uS('');
+  const [lineaFoco, setLineaFoco] = uS(null);   // línea a la que se le asigna el origen
   const creandoRef = uR(false);
 
   const umbral = uM(() => {
@@ -286,10 +302,33 @@ function OrdenesPage({ showToast }) {
   }, [tab]);
 
   // ── EL EDITOR DE LÍNEAS ─────────────────────────────────────────
+  // El cuadro de abastecimiento alimenta el bloque izquierdo: trae de una vez
+  // cuánto pide el presupuesto, cuánto compró la ejecutora y cuánto falta.
+  const abastecimiento = uM(() => (obraScopeId ? abastecimientoDeObra({
+    insumosPartida: insumosPartida || [],
+    movs: movs || [],
+    mapeos: resolverMapeos(insumoMapeos || []),
+    titularId: titularObra,
+    companies: companies || [],
+    ordenes,
+  }) : { filas: [], resumen: {} }), [obraScopeId, insumosPartida, movs, insumoMapeos, titularObra, companies, ordenes]);
+
+  const sugNecesita = uM(
+    () => (obraScopeId ? buscarEnPresupuesto(abastecimiento.filas, buscaNec, { limite: 10 }) : []),
+    [obraScopeId, abastecimiento, buscaNec]
+  );
+  const sugGrupo = uM(() => buscarComprasDelGrupo({
+    movs: movs || [], texto: buscaGrupo, companies: companies || [],
+    titularId: titularObra, obraId: obraScopeId, limite: 10,
+  }), [movs, buscaGrupo, companies, titularObra, obraScopeId]);
+
   const lineaVacia = () => ({
     key: window.__newId(), descripcion: '', unidad: 'UND',
     cantidad: '', precio_unitario: '', insumo_codigo: null,
     origen_company_id: null, tope: null,
+    // Las dos mitades del mapeo implícito: de qué insumo del presupuesto sale
+    // la línea, y contra qué descripción de compra se la está cruzando.
+    insumo_nombre: null, insumo_unidad: null, origen_descripcion: null, origen_unidad: null,
   });
   const addLinea = () => setLineas(ls => [...ls, lineaVacia()]);
   const setLinea = (key, patch) => setLineas(ls => ls.map(l => (l.key === key ? { ...l, ...patch } : l)));
@@ -409,9 +448,36 @@ function OrdenesPage({ showToast }) {
           idempotency_key: `${userId}_oc_item_${itemId}`,
         });
       }
+      // ── EL MAPEO QUE SALE DE REGALO ─────────────────────────────
+      // Gabriel: «el mapeo lo vamos a lograr aquí cuando la contadora lo haga
+      // manualmente». Cada línea que cruza un insumo del presupuesto con una
+      // compra real ES una decisión de mapeo, y se guarda sola. Nadie se
+      // sienta a mapear 1.875 descripciones: se aprenden trabajando.
+      let aprendidos = 0;
+      for (const l of lineas) {
+        const fila = mapeoImplicito({
+          descripcionCompra: l.origen_descripcion,
+          insumoCodigo: l.insumo_codigo,
+          unidadCompra: l.origen_unidad,
+          unidadInsumo: l.insumo_unidad,
+        });
+        if (!fila) continue;
+        try {
+          const mid = window.__newId();
+          await window.__db.insumo_mapeo.add({
+            ...fila, id: mid, demo: false,
+            created_by: userId, updated_by: userId, created_at: now, updated_at: now,
+            version: 1, sync_status: 'pending_create', last_synced_at: null,
+            idempotency_key: `${userId}_mapeo_${mid}`,
+          });
+          aprendidos++;
+        } catch (e) { console.warn('[ordenes] no se pudo guardar el mapeo aprendido:', e); }
+      }
+
       await recargarOrdenes();
       limpiarNueva();
       toast(numerar ? `Orden ${definitiva.codigo} emitida` : 'Borrador guardado (todavía sin número)', 'green');
+      if (aprendidos) toast(`${aprendidos} equivalencia(s) aprendida(s) para el mapeo`, 'blue');
       if (numerar) setTab('emitidas');
     } catch (e) {
       console.error('[ordenes] no se pudo crear la orden:', e);
@@ -472,7 +538,6 @@ function OrdenesPage({ showToast }) {
           const anio = b.fecha ? Number(String(b.fecha).slice(0, 4)) : new Date().getFullYear();
           const { correlativo, codigo } = proximoCodigo(emitidasAhora, { company, tipo: b.tipo, anio });
           const ocId = window.__newId();
-          const itemId = window.__newId();
           const now = new Date().toISOString();
           const obra = lookupObra(b.obra_id);
           const T = textosDeTipo(b.tipo);
@@ -511,22 +576,36 @@ function OrdenesPage({ showToast }) {
           };
 
           await window.__db.ordenes_compra.add(fila);
-          await window.__db.oc_items.add({
-            id: itemId,
-            orden_compra_id: ocId,
-            tipo_insumo: b.tipo === 'servicio' ? 'servicio' : 'material',
-            material_id: null, insumo_id: null, insumo_pendiente_id: null,
+          // Las líneas REALES del comprobante, no un «Insumos y materiales»
+          // genérico: `borradorDesdeMovimiento` ya las sacó de `items_factura`
+          // y `repartirSobreItems` las cuadró contra el total emitido.
+          const lineas = (b.lineas?.length ? b.lineas : [{
             nombre: b.descripcion || 'Insumos y materiales',
-            nombre_libre: b.descripcion || 'Insumos y materiales',
             unidad: b.unidad || T.unidadPorDefecto,
             cantidad: Number(b.cantidad || 1),
-            cantidad_recibida: Number(b.cantidad || 1),
-            precio_unitario: Number(b.valorVenta || 0) / Math.max(1, Number(b.cantidad || 1)),
             subtotal: Number(b.valorVenta || 0),
-            created_at: now, updated_at: now,
-            version: 1, sync_status: 'pending_create', last_synced_at: null,
-            idempotency_key: `${userId}_oc_item_${itemId}`,
-          });
+          }]);
+          for (const l of lineas) {
+            const liId = window.__newId();
+            const cant = Number(l.cantidad || 1) || 1;
+            const sub = Number(l.subtotal ?? (cant * Number(l.precio_unitario || 0)));
+            await window.__db.oc_items.add({
+              id: liId,
+              orden_compra_id: ocId,
+              tipo_insumo: l.tipo_insumo || (b.tipo === 'servicio' ? 'servicio' : 'material'),
+              material_id: null, insumo_id: null, insumo_pendiente_id: null,
+              insumo_codigo: null, proveedor_company_id: null,
+              nombre: l.nombre, nombre_libre: l.nombre,
+              unidad: l.unidad || T.unidadPorDefecto,
+              cantidad: cant,
+              cantidad_recibida: cant,
+              precio_unitario: Number((sub / cant).toFixed(6)),
+              subtotal: sub,
+              created_at: now, updated_at: now,
+              version: 1, sync_status: 'pending_create', last_synced_at: null,
+              idempotency_key: `${userId}_oc_item_${liId}`,
+            });
+          }
 
           // El otro lado del vínculo. Sin esto la factura sigue "sin respaldo".
           const mv = await window.__db.accounting_movements.get(b.movimiento_id);
@@ -872,19 +951,98 @@ function OrdenesPage({ showToast }) {
               mismo formulario de arriba. Sin obra no hay presupuesto contra
               qué comparar, y la orden se llena a mano — que es el caso normal
               de una empresa comprándole a un tercero. */}
-          {obraScopeId && (
-            <div className="card card-p" style={{ marginBottom: 12 }}>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-                <span style={{ fontSize: 11.5, color: 'var(--tm)' }}>Ayudas de esta obra:</span>
-                <button className="btn btn-sm btn-ghost" onClick={() => window.__navTo?.('abastecimiento')}>
-                  <JxIcon name="layers" size={13} /> Ver qué necesita y quién lo tiene
-                </button>
-                <span style={{ fontSize: 11, color: 'var(--tm)' }}>
-                  desde ahí eliges cantidades y vuelves acá con las líneas puestas
-                </span>
+          {/* ══ LOS DOS BLOQUES DE AYUDA ══════════════════════════════
+              A la izquierda lo que la obra NECESITA; a la derecha lo que las
+              empresas del grupo YA COMPRARON. Ninguno depende del mapeo — el
+              mapeo es lo que se GENERA al cruzarlos, que es exactamente lo que
+              pidió la jefa de contabilidad. */}
+          <div style={{ display: 'grid', gridTemplateColumns: obraScopeId ? 'repeat(auto-fit, minmax(320px, 1fr))' : '1fr', gap: 12, marginBottom: 12 }}>
+            {obraScopeId && (
+              <div className="card" style={{ overflow: 'hidden' }}>
+                <div style={{ padding: '9px 12px', borderBottom: '1px solid var(--border)' }}>
+                  <b style={{ fontSize: 12.5 }}>Qué necesita la obra</b>
+                  <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>Del presupuesto. Al elegir uno se agrega al detalle, y ahí puedes cambiarle el nombre, la cantidad y el precio.</div>
+                  <input className="fi" style={{ width: '100%', marginTop: 6, fontSize: 12 }}
+                    placeholder="Buscar en el presupuesto: cemento, fierro, tubería…"
+                    value={buscaNec} onChange={e => setBuscaNec(e.target.value)} />
+                </div>
+                <div style={{ maxHeight: 240, overflowY: 'auto' }}>
+                  {sugNecesita.length === 0 ? (
+                    <div style={{ padding: 14, fontSize: 11.5, color: 'var(--tm)', textAlign: 'center' }}>
+                      {buscaNec ? 'Nada del presupuesto coincide con eso.' : 'Escribe qué estás buscando.'}
+                    </div>
+                  ) : sugNecesita.map(f => (
+                    <div key={f.codigo} style={{ padding: '7px 12px', borderBottom: '1px solid var(--border)', display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 11.5, fontWeight: 600 }}>{f.nombre}</div>
+                        <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+                          necesita {cantF(f.necesita)} {f.unidad}
+                          {f.yaComprado > 0 && <> · ya compró {cantF(f.yaComprado)}</>}
+                          {' · '}<b style={{ color: f.falta > 0 ? 'var(--red)' : 'var(--green)' }}>falta {cantF(f.falta)}</b>
+                        </div>
+                      </div>
+                      <button className="btn btn-xs btn-amber" title="Agregar al detalle de la orden"
+                        onClick={() => {
+                          const k = window.__newId();
+                          setLineas(ls => [...ls, {
+                            ...lineaVacia(), key: k,
+                            descripcion: f.nombre, unidad: f.unidad || 'UND',
+                            cantidad: f.falta > 0 ? f.falta : '',
+                            insumo_codigo: f.codigo, insumo_nombre: f.nombre, insumo_unidad: f.unidad,
+                          }]);
+                          setLineaFoco(k);
+                        }}>+ agregar</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="card" style={{ overflow: 'hidden' }}>
+              <div style={{ padding: '9px 12px', borderBottom: '1px solid var(--border)' }}>
+                <b style={{ fontSize: 12.5 }}>Qué tienen las empresas del grupo</b>
+                <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+                  Busca sobre lo que dicen las facturas, sin necesitar el mapeo.
+                  {lineaFoco ? ' Al elegir uno se enlaza con la línea marcada.' : ' Marca una línea del detalle para enlazarla.'}
+                </div>
+                <input className="fi" style={{ width: '100%', marginTop: 6, fontSize: 12 }}
+                  placeholder="Buscar en las compras: cemento, fierro, tubo…"
+                  value={buscaGrupo} onChange={e => setBuscaGrupo(e.target.value)} />
+              </div>
+              <div style={{ maxHeight: 240, overflowY: 'auto' }}>
+                {sugGrupo.length === 0 ? (
+                  <div style={{ padding: 14, fontSize: 11.5, color: 'var(--tm)', textAlign: 'center' }}>
+                    {buscaGrupo ? 'Ninguna empresa del grupo tiene algo así disponible.' : 'Escribe qué estás buscando.'}
+                  </div>
+                ) : sugGrupo.map((g, i) => (
+                  <div key={i} style={{ padding: '7px 12px', borderBottom: '1px solid var(--border)' }}>
+                    <div style={{ fontSize: 11.5, fontWeight: 600 }}>
+                      {g.descripcion}
+                      {g.obraVinculada && <span className="badge b-blue" style={{ marginLeft: 5, fontSize: 9 }}>ya vinculado a esta obra</span>}
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+                      {g.porEmpresa.map(e => (
+                        <button key={e.company_id || 'sin'} className="btn btn-xs btn-ghost"
+                          title={`Comprado ${cantF(e.comprado)}${e.vendido ? ` · vendido ${cantF(e.vendido)}` : ''}`}
+                          onClick={() => {
+                            if (!lineaFoco) { toast('Marca primero la línea del detalle a la que enlazar esto', 'amber'); return; }
+                            setLinea(lineaFoco, {
+                              origen_company_id: e.company_id,
+                              origen_descripcion: g.descripcion,
+                              origen_unidad: g.unidad || null,
+                              tope: e.disponible,
+                            });
+                            setNu({ provModo: 'grupo', provCompanyId: e.company_id });
+                          }}>
+                          <b>{cantF(e.disponible)}</b>&nbsp;{(e.nombre || '').slice(0, 18)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
-          )}
+          </div>
 
           {/* ── LAS LÍNEAS ───────────────────────────────────────────── */}
           <div className="card" style={{ overflow: 'hidden', marginBottom: 12 }}>
@@ -913,17 +1071,31 @@ function OrdenesPage({ showToast }) {
                       Sin líneas todavía. Pulsa «Agregar línea» y escribe qué estás comprando.
                     </td></tr>
                   ) : lineas.map(l => (
-                    <tr key={l.key}>
+                    <tr key={l.key}
+                      style={lineaFoco === l.key ? { outline: '2px solid var(--amber)', outlineOffset: -2 } : undefined}
+                      onClick={() => setLineaFoco(l.key)}>
                       <td>
                         <input className="fi" style={{ width: '100%' }} value={l.descripcion}
                           placeholder="CEMENTO PORTLAND TIPO I 42.5 kg"
+                          onFocus={() => setLineaFoco(l.key)}
                           onChange={e => setLinea(l.key, { descripcion: e.target.value })} />
-                        {l.origen_company_id && (
-                          <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
-                            sale del stock de {lookupCompany(l.origen_company_id)?.name || 'una empresa del grupo'}
-                            {l.tope != null ? ` · tiene ${Number(l.tope).toLocaleString('es-PE')}` : ''}
-                          </div>
-                        )}
+                        <div style={{ fontSize: 10.5, color: 'var(--tm)', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                          {l.insumo_codigo && <span title="Insumo del presupuesto">📋 {l.insumo_codigo}</span>}
+                          {l.origen_company_id && (
+                            <span title={l.origen_descripcion || ''}>
+                              📦 {lookupCompany(l.origen_company_id)?.name || 'del grupo'}
+                              {l.tope != null ? ` · tiene ${cantF(l.tope)}` : ''}
+                            </span>
+                          )}
+                          {l.insumo_codigo && l.origen_descripcion && (
+                            <span style={{ color: 'var(--green)' }} title="Al emitir, esta equivalencia queda aprendida para las próximas facturas">
+                              ✓ el mapeo queda aprendido
+                            </span>
+                          )}
+                          {lineaFoco === l.key && !l.origen_descripcion && (
+                            <span style={{ color: 'var(--amber)' }}>← elige a la derecha quién lo tiene</span>
+                          )}
+                        </div>
                       </td>
                       <td><input className="fi" style={{ width: '100%' }} value={l.unidad}
                         onChange={e => setLinea(l.key, { unidad: e.target.value })} /></td>
@@ -1063,12 +1235,12 @@ function OrdenesPage({ showToast }) {
                 <table className="tbl" style={{ fontSize: 11.5 }}>
                   <thead><tr>
                     <th style={{ width: 32 }}></th>
-                    <th>Comprobante</th>
-                    <th>Empresa / Proveedor</th>
-                    <th style={{ minWidth: 220 }}>Qué se compró (editable)</th>
-                    <th style={{ width: 110 }}>Tipo</th>
-                    <th style={{ width: 70 }}>IGV</th>
-                    <th style={{ width: 120, textAlign: 'right' }}>Importe total</th>
+                    <th style={{ width: 128 }}>Comprobante</th>
+                    <th style={{ width: 170 }}>Proveedor</th>
+                    <th style={{ minWidth: 240 }}>Qué se compró (editable)</th>
+                    <th style={{ width: 108 }}>Tipo</th>
+                    <th style={{ width: 92 }}>IGV</th>
+                    <th style={{ width: 140, textAlign: 'right' }}>Importe total</th>
                   </tr></thead>
                   <tbody>
                     {borradores.map((b, idx) => (
@@ -1076,17 +1248,35 @@ function OrdenesPage({ showToast }) {
                         <td style={{ textAlign: 'center' }}>
                           <input type="checkbox" checked={!!b.incluir} onChange={e => actualizarBorrador(idx, { incluir: e.target.checked })} />
                         </td>
-                        <td className="col-m" style={{ fontFamily: 'monospace', fontSize: 10.5 }}>
-                          {b.documento || '—'}
-                          <div style={{ color: 'var(--tm)', fontFamily: 'inherit' }}>{b.fecha || ''}</div>
+                        <td className="col-m" style={{ fontSize: 10.5 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                            {/* El ojo que pidió Gabriel: ver de qué factura se
+                                está hablando sin salir de la pantalla. */}
+                            <button className="btn btn-xs btn-ghost" title="Ver el comprobante"
+                              onClick={() => setVerMov(b.movimiento_id)}>
+                              <JxIcon name="eye" size={13} />
+                            </button>
+                            <span style={{ fontFamily: 'monospace' }}>{b.documento || '—'}</span>
+                          </div>
+                          <div style={{ color: 'var(--tm)' }}>{b.fecha || ''}</div>
                         </td>
-                        <td style={{ maxWidth: 190, fontSize: 10.5 }}>
+                        <td style={{ maxWidth: 170, fontSize: 10.5 }}>
                           <div style={{ fontWeight: 600 }}>{b.proveedor_nombre || '—'}</div>
                           <div style={{ color: 'var(--tm)' }}>emite: {lookupCompany(b.company_id)?.name || '⚠ sin empresa'}</div>
                         </td>
                         <td>
-                          <input className="fi" style={{ fontSize: 11 }} value={b.descripcion || ''}
+                          <input className="fi" style={{ fontSize: 11, width: '100%' }} value={b.descripcion || ''}
                             onChange={e => actualizarBorrador(idx, { descripcion: e.target.value })} />
+                          {b.lineas?.length > 1 && (
+                            <div style={{ fontSize: 9.5, color: 'var(--tm)', marginTop: 2 }}>
+                              {b.lineas.length} líneas de la factura — van todas al detalle de la orden
+                            </div>
+                          )}
+                          {b.lineas?.length === 1 && b.lineas[0].cantidad > 1 && (
+                            <div style={{ fontSize: 9.5, color: 'var(--tm)', marginTop: 2 }}>
+                              {Number(b.lineas[0].cantidad).toLocaleString('es-PE')} {b.lineas[0].unidad}
+                            </div>
+                          )}
                         </td>
                         <td>
                           <select className="fi" style={{ fontSize: 11 }} value={b.tipo}
@@ -1096,17 +1286,18 @@ function OrdenesPage({ showToast }) {
                           </select>
                         </td>
                         <td>
-                          <select className="fi" style={{ fontSize: 11 }} value={String(b.igvPct)}
+                          <select className="fi" style={{ fontSize: 11, width: '100%' }} value={String(b.igvPct)}
                             onChange={e => actualizarBorrador(idx, { igvPct: Number(e.target.value) })}>
                             <option value="18">18%</option>
                             <option value="0">Sin IGV</option>
                           </select>
                         </td>
                         <td>
-                          <input className="fi" type="number" min="0" step="0.01" style={{ fontSize: 11, textAlign: 'right' }}
+                          <input className="fi" type="number" min="0" step="0.01"
+                            style={{ fontSize: 11, textAlign: 'right', width: '100%' }}
                             value={b.total} onChange={e => actualizarBorrador(idx, { total: e.target.value })} />
-                          <div style={{ fontSize: 9.5, color: 'var(--tm)', textAlign: 'right' }}>
-                            v.venta {fmtS(b.valorVenta)} + IGV {fmtS(b.igv)}
+                          <div style={{ fontSize: 9.5, color: 'var(--tm)', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                            {fmtS(b.valorVenta)} + {fmtS(b.igv)}
                           </div>
                         </td>
                       </tr>
@@ -1123,6 +1314,57 @@ function OrdenesPage({ showToast }) {
           </>
         )
       )}
+
+      {/* ── EL COMPROBANTE, VISTO DESDE «SIN RESPALDO» ────────────
+          Gabriel: «me gustaría que esté el ojito que me permita abrir y ver
+          de qué factura estamos hablando». Muestra lo que la factura DICE —
+          sus ítems— que es justo lo que la columna de al lado no mostraba. */}
+      {verMov && (() => {
+        const mv = (movs || []).find(m => m.id === verMov);
+        if (!mv) return null;
+        const items = itemsDeFactura(mv);
+        return (
+          <Modal title={`${mv.category || 'Comprobante'} ${mv.document_number || ''}`.trim()} icon="file" size="lg" onClose={() => setVerMov(null)}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginBottom: 12 }}>
+              <div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Proveedor</div><b>{mv.third_party_name || '—'}</b>
+                <div style={{ fontSize: 11, color: 'var(--tm)' }}>{mv.third_party_ruc || ''}</div></div>
+              <div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Cargado en el libro de</div><b>{lookupCompany(mv.company_id)?.name || '—'}</b></div>
+              <div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Fecha</div><b>{mv.date || '—'}</b></div>
+              <div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Importe</div><b>{fmtS(mv.amount)}</b>
+                <div style={{ fontSize: 11, color: 'var(--tm)' }}>{mv.currency || 'PEN'}</div></div>
+            </div>
+            {mv.obra_id && (
+              <p style={{ fontSize: 11.5, color: 'var(--tm)', margin: '0 0 10px' }}>
+                Vinculado a <b>{lookupObra(mv.obra_id)?.nombre_obra?.slice(0, 70) || 'una obra'}</b>.
+              </p>
+            )}
+            <div className="card" style={{ overflow: 'hidden' }}>
+              <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', fontWeight: 700, fontSize: 12 }}>
+                Lo que dice la factura
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table className="tbl" style={{ fontSize: 11.5 }}>
+                  <thead><tr><th>Descripción</th><th style={{ width: 90, textAlign: 'right' }}>Cantidad</th><th style={{ width: 70 }}>Unidad</th><th style={{ width: 110, textAlign: 'right' }}>P. unitario</th></tr></thead>
+                  <tbody>
+                    {items.length === 0 ? (
+                      <tr><td colSpan={4} style={{ textAlign: 'center', padding: 14, color: 'var(--tm)' }}>
+                        Este comprobante no tiene el detalle cargado.
+                      </td></tr>
+                    ) : items.map((it, i) => (
+                      <tr key={i}>
+                        <td className="col-p">{it.descripcion || '—'}</td>
+                        <td style={{ textAlign: 'right' }}>{Number(it.cantidad || 0).toLocaleString('es-PE')}</td>
+                        <td>{it.unidad || '—'}</td>
+                        <td style={{ textAlign: 'right' }}>{fmtS(it.precio_unitario)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </Modal>
+        );
+      })()}
 
       {detalle && (
         <Modal title={`${TIPO_ORDEN_LABEL[detalle.tipo || 'compra']} ${detalle.codigo || ''}`} icon="package"

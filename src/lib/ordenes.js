@@ -415,11 +415,64 @@ export function igvSugeridoDesdeItems(mov) {
  * puede tocar ANTES de emitir (Gabriel pidió poder cambiar el nombre del
  * insumo y el monto), ya prellenado con lo que el comprobante sabe.
  */
+// ── QUÉ SE COMPRÓ, DE VERDAD ──────────────────────────────────────
+//
+// Gabriel, 6-set-2026, mirando la grilla de «Sin respaldo»: «donde sale qué se
+// compró no se está colocando lo que realmente está en la factura.
+// Literalmente estás mezclando el nombre de la factura y el nombre de la
+// empresa, que no es lo que se compró ni el servicio que se brinda».
+//
+// Tenía razón, y la causa estaba medida desde el bloqueante B-1: `description`
+// NO es lo que se compró. En producción es literalmente
+// «Factura FF01-7884 · FERRETERIA HUAMAN EIRL» — el tipo de documento, el
+// número y el proveedor. Lo que se compró está en los ÍTEMS, y ahí dice
+// «CEMENTO PORTLAND TIPO I 42.5 KG · 750 bolsas».
+//
+// Por eso ahora la orden retroactiva nace con las LÍNEAS REALES del
+// comprobante, no con una sola que dice «Insumos y materiales». El total no se
+// toca —lo reparte `repartirSobreItems` sobre las líneas— porque una orden que
+// respalda una factura ya emitida no puede cerrar distinto de ella.
+function lineasDeComprobante(mov, tipo) {
+  const items = itemsDeFactura(mov);
+  const T = textosDeTipo(tipo);
+  const vivas = items
+    .filter(it => it && String(it.descripcion || '').trim())
+    .map(it => ({
+      nombre: String(it.descripcion).trim(),
+      unidad: it.unidad || T.unidadPorDefecto,
+      cantidad: num(it.cantidad) || 1,
+      precio_unitario: num(it.precio_unitario),
+      tipo_insumo: it.tipo_insumo || null,
+    }));
+  if (vivas.length) return vivas;
+  // Sin ítems no se inventa un detalle: se deja el rótulo neutro de siempre.
+  return [{ nombre: 'Insumos y materiales', unidad: T.unidadPorDefecto, cantidad: 1, precio_unitario: 0, tipo_insumo: null }];
+}
+
+/**
+ * El RUBRO de la orden, que NO es el tipo de documento.
+ *
+ * `category` vale «Factura» en 878 de 878 compras de producción, así que
+ * ponerlo de título imprimía FACTURA en grande en el medio de una ORDEN DE
+ * COMPRA — que es justo lo que Gabriel no quería ver en el PDF. El rubro sale
+ * de lo que se compró; si no se puede saber, va vacío antes que mentir.
+ */
+const TIPOS_DOCUMENTO = new Set(['factura', 'boleta', 'recibo honorarios', 'recibo por honorarios', 'nota de credito', 'nota de débito', 'nota de debito', 'ticket']);
+export function rubroDeOrden(mov, lineas) {
+  const cat = String(mov?.category || '').trim();
+  const norm = cat.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (cat && !TIPOS_DOCUMENTO.has(norm)) return cat.toUpperCase();
+  const primera = lineas?.[0]?.nombre;
+  if (!primera || primera === 'Insumos y materiales') return null;
+  return String(primera).slice(0, 60).toUpperCase();
+}
+
 export function borradorDesdeMovimiento(mov, { company, proveedor, obra } = {}) {
   const tipo = tipoSugerido(mov);
   const sinIgv = mov?.document_type === 'recibo_honorarios' || igvSugeridoDesdeItems(mov) === 0;
   const igvPct = sinIgv ? 0 : IGV_POR_DEFECTO;
   const t = totalesDesdeTotal(mov?.amount, { igvPct });
+  const lineas = repartirSobreItems(lineasDeComprobante(mov, tipo), t.valorVenta);
   return {
     movimiento_id: mov?.id || null,
     company_id: mov?.company_id || company?.id || null,
@@ -427,10 +480,14 @@ export function borradorDesdeMovimiento(mov, { company, proveedor, obra } = {}) 
     trabajo_id: mov?.trabajo_id || null,
     tipo,
     fecha: mov?.date || null,
-    titulo: (mov?.category || mov?.clase || '').toUpperCase() || null,
-    descripcion: mov?.description || mov?.category || 'Insumos y materiales',
-    unidad: textosDeTipo(tipo).unidadPorDefecto,
-    cantidad: 1,
+    titulo: rubroDeOrden(mov, lineas),
+    // Lo que se compró, de la factura. Varias líneas se resumen para la grilla
+    // y van completas a la orden (`lineas`).
+    descripcion: lineas.map(l => l.nombre).join(' · ').slice(0, 140),
+    lineas,
+    documento_tipo: mov?.category || null,
+    unidad: lineas.length === 1 ? lineas[0].unidad : textosDeTipo(tipo).unidadPorDefecto,
+    cantidad: lineas.length === 1 ? lineas[0].cantidad : 1,
     proveedor_nombre: mov?.third_party_name || proveedor?.razon_social || '',
     proveedor_ruc: mov?.third_party_ruc || proveedor?.ruc || '',
     proveedor_direccion: proveedor?.direccion || '',

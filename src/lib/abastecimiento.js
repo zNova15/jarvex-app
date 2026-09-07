@@ -50,7 +50,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import { itemsDeFactura } from './cruce-recepcion.js';
-import { buscarMapeo, cantidadCanonica } from './mapeo-insumos.js';
+import { buscarMapeo, cantidadCanonica, normMapeo } from './mapeo-insumos.js';
 import { esCompraMov, esVentaMov } from './costo-obra.js';
 
 const vivos = (arr) => (Array.isArray(arr) ? arr.filter(x => x && !x.deleted_at) : []);
@@ -275,4 +275,177 @@ export function lineasParaOrden(filas, seleccion = {}) {
     }
   }
   return out;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// LOS DOS BLOQUES DE AYUDA PARA ARMAR UNA ORDEN (tanda 7, entrega 6d)
+//
+// EL PEDIDO, de la jefa de contabilidad a través de Gabriel (6-set-2026):
+//
+//   «Le gustaría que tenga una ventana de ayuda donde pueda visualizar qué se
+//    está necesitando, y ella pueda ir agregando en el detalle de la compra un
+//    insumo de la partida, que se cargue la descripción real, la unidad, y que
+//    sea editable […] Por otro lado va a tener un cuadrito donde pueda buscar
+//    cemento y que le haga las referencias de compras que más se vinculen con
+//    el nombre.»
+//
+// ── LA IDEA QUE LO CAMBIA TODO ────────────────────────────────────
+// Gabriel: «el mapeo lo vamos a lograr aquí cuando la contadora lo haga
+// manualmente». Y tiene toda la razón: pedirle a alguien que se siente a mapear
+// 1.875 descripciones sueltas es un trabajo que nadie termina. Pero mientras
+// arma una orden, ella YA está haciendo esa decisión —«necesito CEMENTO
+// PORTLAND del presupuesto y se lo compro a GASOMI, que tiene esto»— y el mapeo
+// sale de regalo, sin una tarea aparte.
+//
+// Por eso estas dos búsquedas NO dependen del mapeo: si dependieran, no
+// servirían justo cuando hacen falta (al 6-set-2026 el mapeo cubre el 1%).
+// La de la izquierda lee el presupuesto; la de la derecha lee el texto crudo de
+// las facturas. El mapeo es la CONSECUENCIA de usarlas, no su requisito.
+// ═══════════════════════════════════════════════════════════════════
+
+/** Normaliza para buscar: sin tildes, sin puntuación, en minúsculas. */
+const normBusca = (s) => String(s || '')
+  .normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+/** Cuántas de las palabras buscadas aparecen en el texto (0..1). */
+function relevancia(texto, palabras) {
+  if (!palabras.length) return 1;
+  const t = ` ${normBusca(texto)} `;
+  let hits = 0;
+  for (const p of palabras) if (t.includes(p)) hits++;
+  return hits / palabras.length;
+}
+
+/**
+ * BLOQUE IZQUIERDO — qué necesita la obra.
+ *
+ * Sale del cuadro de abastecimiento que ya se calcula, así que trae de una vez
+ * cuánto pide el presupuesto, cuánto compró la ejecutora y cuánto falta. Lo
+ * que se elige acá entra al detalle de la orden con la descripción del
+ * PRESUPUESTO —que es la que la contadora reconoce— y editable, porque el
+ * proveedor casi nunca la escribe igual.
+ */
+export function buscarEnPresupuesto(filas, texto = '', { limite = 12, soloFaltantes = false } = {}) {
+  const palabras = normBusca(texto).split(' ').filter(Boolean);
+  const out = [];
+  for (const f of (filas || [])) {
+    if (soloFaltantes && f.falta <= 0) continue;
+    const r = relevancia(`${f.nombre} ${f.codigo}`, palabras);
+    if (palabras.length && r === 0) continue;
+    out.push({ ...f, relevancia: r });
+  }
+  // Lo más parecido primero; a igual parecido, lo que más falta.
+  out.sort((a, b) => b.relevancia - a.relevancia || b.falta - a.falta);
+  return out.slice(0, limite);
+}
+
+/**
+ * BLOQUE DERECHO — qué compraron las empresas del grupo, por TEXTO.
+ *
+ * Deliberadamente NO usa `insumo_mapeo`: busca sobre la descripción cruda de
+ * las facturas. Es lo que permite que sirva desde el primer día y que, al
+ * elegir una, se pueda escribir el mapeo.
+ *
+ * Cada resultado es una DESCRIPCIÓN (no una factura): el mismo cemento aparece
+ * en muchas facturas y lo que interesa es cuánto hay en total y en manos de
+ * quién. Se descuenta lo vendido, igual que en el cuadro de abastecimiento:
+ * nadie puede ofrecer dos veces la misma bolsa.
+ *
+ * @returns [{ descripcion, unidad, porEmpresa:[{company_id,nombre,disponible,comprado,vendido}],
+ *             disponible, obraVinculada, relevancia }]
+ */
+export function buscarComprasDelGrupo({
+  movs = [], texto = '', companies = [], titularId = null,
+  obraId = null, limite = 12,
+} = {}) {
+  const palabras = normBusca(texto).split(' ').filter(Boolean);
+  if (!palabras.length) return [];
+  const nombreEmpresa = new Map(vivos(companies).map(c => [c.id, c.name || c.legal_name || '(sin nombre)']));
+  // clave = descripción normalizada; se conserva un texto de muestra legible.
+  const porDesc = new Map();
+
+  for (const m of vivos(movs)) {
+    if (m.payment_status === 'cancelled') continue;
+    const esCompra = esCompraMov(m), esVenta = esVentaMov(m);
+    if (!esCompra && !esVenta) continue;
+    // La ejecutora no se ofrece a sí misma: lo suyo ya está en «ya comprado».
+    if (titularId && m.company_id === titularId) continue;
+    for (const it of itemsDeFactura(m)) {
+      const desc = String(it?.descripcion || '').trim();
+      if (!desc) continue;
+      const r = relevancia(desc, palabras);
+      if (r === 0) continue;
+      const k = normBusca(desc);
+      let e = porDesc.get(k);
+      if (!e) {
+        e = { descripcion: desc, unidad: it.unidad || '', relevancia: r, obraVinculada: false, porEmpresa: new Map() };
+        porDesc.set(k, e);
+      }
+      if (r > e.relevancia) { e.relevancia = r; e.descripcion = desc; }
+      // Que la compra esté vinculada a ESTA obra es una señal fuerte: alguien
+      // ya dijo «esto es para acá», aunque todavía no haya papel que lo pruebe.
+      if (obraId && m.obra_id === obraId) e.obraVinculada = true;
+      const ck = m.company_id || 'sin_empresa';
+      const c = e.porEmpresa.get(ck) || { company_id: m.company_id || null, comprado: 0, vendido: 0 };
+      if (esCompra) c.comprado += num(it.cantidad); else c.vendido += num(it.cantidad);
+      e.porEmpresa.set(ck, c);
+    }
+  }
+
+  const out = [];
+  for (const e of porDesc.values()) {
+    const porEmpresa = [...e.porEmpresa.values()]
+      .map(c => ({
+        ...c,
+        nombre: nombreEmpresa.get(c.company_id) || '(sin empresa)',
+        comprado: r2(c.comprado), vendido: r2(c.vendido),
+        disponible: Math.max(0, r2(c.comprado - c.vendido)),
+      }))
+      .filter(c => c.disponible > 0)
+      .sort((a, b) => b.disponible - a.disponible);
+    if (!porEmpresa.length) continue;
+    out.push({
+      descripcion: e.descripcion,
+      unidad: e.unidad,
+      relevancia: e.relevancia,
+      obraVinculada: e.obraVinculada,
+      porEmpresa,
+      disponible: r2(porEmpresa.reduce((s, c) => s + c.disponible, 0)),
+    });
+  }
+  // Lo más parecido primero; después lo que ya está vinculado a la obra (es
+  // más probable que sea lo que se busca) y por último lo que más hay.
+  out.sort((a, b) => b.relevancia - a.relevancia
+    || (b.obraVinculada ? 1 : 0) - (a.obraVinculada ? 1 : 0)
+    || b.disponible - a.disponible);
+  return out.slice(0, limite);
+}
+
+/**
+ * El mapeo que queda IMPLÍCITO cuando la contadora arma una línea eligiendo un
+ * insumo del presupuesto y una compra del grupo.
+ *
+ * Devuelve la fila lista para `insumo_mapeo`, o null si falta una de las dos
+ * mitades. La pantalla decide si escribirla; esta función solo dice qué diría.
+ *
+ * `fuente: 'manual'` a propósito: no es una propuesta de un motor, es la
+ * decisión de una persona haciendo su trabajo — y por eso manda sobre
+ * cualquier sugerencia automática al resolver (manual > ia > regla).
+ */
+export function mapeoImplicito({ descripcionCompra, insumoCodigo, unidadCompra, unidadInsumo, factor = null, nota = null } = {}) {
+  const desc = String(descripcionCompra || '').trim();
+  if (!desc || !insumoCodigo) return null;
+  return {
+    norm: normMapeo(desc),
+    muestra: desc.slice(0, 200),
+    decision: 'mapeado',
+    insumo_codigo: String(insumoCodigo),
+    factor: factor == null ? null : Number(factor),
+    factor_fuente: factor == null ? null : 'manual',
+    unidad_origen: unidadCompra || null,
+    unidad_destino: unidadInsumo || null,
+    fuente: 'manual',
+    nota: nota || 'Decidido al armar una orden de compra',
+  };
 }
