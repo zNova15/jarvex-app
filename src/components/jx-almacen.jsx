@@ -8,7 +8,7 @@ import { SearchableSelect } from "./jx-searchable-select.jsx";
 import { opcionesDestinoFlat, splitDestino } from "../lib/destino-mov.js";
 import { getDesgloseBulk, aplicarDelta, traspasar, baseSalidaUbicacion } from "../lib/stock-ubicaciones.js";
 import { validarSalidaCronologica, agruparCantidades } from "../lib/stock-cronologia.js";
-import { stockDisponibleConfiable, stockSegunMovimientos } from "../lib/stock-conciliacion.js";
+import { stockDisponibleConfiable, stockSegunMovimientos, diagnosticoStock } from "../lib/stock-conciliacion.js";
 import { DesglosePopup, TraspasoStockModal, ubicacionAutoOrigen } from "./jx-stock-ubic.jsx";
 import { hoyLocal, horaLocal } from "../lib/fecha.js";
 import { rolScopeObrero } from "../lib/personal-scope.js";
@@ -3703,10 +3703,112 @@ function HerramientasPage({ showToast }) {
   // moverse — ya no se separa "serializada" vs "por cantidad". Las pocas que
   // quedaron serializadas (creadas antes del fix) se sanan a cantidad en el submit.
   const herrMovibles = uM(() => (herramientas || []).filter(h => !h.deleted_at && !h.es_grupo), [herramientas]);
-  const stockDeHerr = (h) => h?.maneja_cantidad ? Number(h?.stock_actual || 0) : (h?.disponible !== false ? 1 : 0);
+  // ── El stock de una herramienta: contador vs. historial ─────────────
+  // Desde la mig 190 el contador lo deriva el SERVIDOR del historial, igual
+  // que materiales y EPP. Mientras un equipo esté offline (o venga de una
+  // versión vieja cacheada) las dos señales pueden discrepar, así que la
+  // pantalla usa el mismo diagnóstico que EPPs: `diagnosticoStock` compara
+  // contador e historial, elige el número CONFIABLE y —lo importante para la
+  // almacenera— explica el descuadre en vez de decir "no hay stock" a secas.
+  const movHerrLive = movHook.data || [];
+  const movsPorHerr = uM(() => {
+    const m = new Map();
+    for (const mv of movHerrLive) {
+      if (!mv?.herramienta_id) continue;
+      const arr = m.get(mv.herramienta_id) || [];
+      arr.push(mv);
+      m.set(mv.herramienta_id, arr);
+    }
+    return m;
+  }, [movHerrLive]);
+  const diagPorHerr = uM(() => {
+    const m = new Map();
+    for (const h of (herramientas || [])) {
+      if (!h?.id || !h.maneja_cantidad) continue;
+      m.set(h.id, diagnosticoStock({ stockActual: h.stock_actual, movimientos: movsPorHerr.get(h.id) || [] }));
+    }
+    return m;
+  }, [herramientas, movsPorHerr]);
+  // Snapshot CRUDO: lo usa el submit del lote, que relee la fila de Dexie en
+  // cada vuelta. Ahí no sirve el mapa del render (dos filas del mismo ítem
+  // partirían de la misma base vieja y la segunda quedaría mal).
+  const stockCrudoDeHerr = (h) => h?.maneja_cantidad ? Number(h?.stock_actual || 0) : (h?.disponible !== false ? 1 : 0);
+  const stockDeHerr = (h) => h?.maneja_cantidad
+    ? (diagPorHerr.get(h?.id)?.stock ?? Number(h?.stock_actual || 0))
+    : (h?.disponible !== false ? 1 : 0);
+  const descuadreDeHerr = (h) => {
+    const d = diagPorHerr.get(h?.id);
+    return d && d.explicacion ? d : null;
+  };
   // "Fuera de almacén" = lo que el badge muestra En Uso (o no disponible). Es
   // lo que se puede devolver. Respeta el estado importado del registro histórico.
   const herrFueraDeAlmacen = uM(() => (herramientas || []).filter(h => !h.deleted_at && !h.es_grupo && (h.ubicacion_actual === 'en_uso' || h.ubicacion_actual === 'mantenimiento' || h.disponible === false)), [herramientas]);
+  // ── Recalcular el stock de herramientas desde los movimientos ───────
+  // Espejo del botón de Materiales. Con conexión lo hace EL SERVIDOR (RPC
+  // recalcular_stock_herramientas_obra, mig 190): `stock_actual` ya no se
+  // pushea —lo maneja el trigger—, así que un recálculo solo local lo
+  // revertiría el próximo pull. Sin conexión se corrige este equipo y se avisa.
+  const [recalcHerrBusy, setRecalcHerrBusy] = uS(false);
+  const recalcularStocksHerr = async () => {
+    if (recalcHerrBusy || !obraId) return;
+    const cuantas = (herramientas || []).filter(h => h.maneja_cantidad && !h.es_grupo && !h.deleted_at).length;
+    if (!cuantas) { showToast('No hay herramientas por cantidad en esta obra', 'amber'); return; }
+    if (!confirm(
+      `¿Recalcular el stock de las ${cuantas} herramientas de esta obra?\n\n` +
+      `Se recorren los movimientos (entradas − salidas, sin contar reversas ni borrados) ` +
+      `y se reescribe el contador de cada herramienta.\n\n` +
+      `No toca ningún movimiento — solo el contador.`
+    )) return;
+    setRecalcHerrBusy(true);
+    const esDemoLocal = (() => { try { return window.__appMode?.isPrueba || getCurrentMode?.() === 'prueba'; } catch { return false; } })();
+    if (navigator.onLine && window.__supabase && !esDemoLocal) {
+      try {
+        const { data, error } = await window.__supabase.rpc('recalcular_stock_herramientas_obra', { p_obra_id: obraId });
+        if (error) throw error;
+        try { await window.__logAudit?.({ action:'alert', table:'herramientas', reason:`Recálculo de stock de herramientas EN SERVER obra ${obraId}: ${data ?? '?'} ajustadas` }); } catch {}
+        try { await window.__syncAll?.(); } catch {}
+        try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'herramientas' } })); } catch {}
+        refresh?.();
+        showToast(`✓ Stock recalculado en el SERVIDOR: ${data ?? 0} herramienta(s) ajustada(s) — ya actualizado aquí y llega al resto con su próximo sync`, 'green');
+        setRecalcHerrBusy(false);
+        return;
+      } catch (e) {
+        console.warn('[recalcular herr] RPC del server falló — sigo con recálculo local:', e?.message);
+      }
+    }
+    let ajustadas = 0, iguales = 0, errores = 0;
+    try {
+      const now = new Date().toISOString();
+      const userId = auth?.profile?.id || 'admin';
+      for (const h of (herramientas || [])) {
+        if (h.deleted_at || h.es_grupo || !h.maneja_cantidad) continue;
+        try {
+          const movs = movsPorHerr.get(h.id);
+          // Sin historial NO se toca: una herramienta importada con stock y sin
+          // movimientos quedaría en 0 (mismo criterio que el RPC del server).
+          if (!movs || !movs.length) { iguales++; continue; }
+          const calculado = Math.max(0, stockSegunMovimientos(movs));
+          if (Math.abs(calculado - Number(h.stock_actual ?? 0)) < 0.001) { iguales++; continue; }
+          await window.__db.herramientas.update(h.id, {
+            stock_actual: calculado,
+            alerta: calcAlerta(calculado, Number(h.stock_minimo || 0)),
+            updated_at: now, updated_by: userId,
+            version: (h.version ?? 0) + 1,
+            sync_status: h.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+          });
+          ajustadas++;
+        } catch (e) { console.warn('[recalcular herr]', h.nombre_herramienta, e?.message); errores++; }
+      }
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'herramientas' } })); } catch {}
+      try { await window.__logAudit?.({ action:'alert', table:'herramientas', reason:`Recálculo local de stock de herramientas obra ${obraId}: ${ajustadas} ajustadas, ${iguales} ya correctas, ${errores} fallidas` }); } catch {}
+      refresh?.();
+      showToast(`✓ Recálculo LOCAL: ${ajustadas} ajustada(s) · ${iguales} sin cambios${errores ? ` · ${errores} con error` : ''}. Sin conexión se aplicó solo en este equipo — repítelo con internet para corregir el servidor.`,
+        ajustadas > 0 ? 'green' : 'amber');
+    } catch (e) {
+      showToast('Error: ' + (e.message || e), 'red');
+    } finally { setRecalcHerrBusy(false); }
+  };
+
   const ubicDefaultH = () => (ubicacionesActivasH.length === 1 ? ubicacionesActivasH[0].id : '');
   const updateLoteCantItem = (id, patch) => setLoteCantItems(items => items.map(it => it.id === id ? { ...it, ...patch } : it));
   // Cada fila lleva además `condicion` (estado de origen en salida / de retorno
@@ -3756,7 +3858,14 @@ function HerramientasPage({ showToast }) {
         const tieneDesglose = dgItem && Array.from(dgItem.values()).some(c => Number(c) > 0);
         const base = proyec.has(it.herramienta_id) ? proyec.get(it.herramienta_id) : (tieneDesglose ? baseSalidaUbicacion(dgItem, ubicMov, stockDeHerr(h)).base : stockDeHerr(h));
         const cant = parseFloat(it.cantidad) || 0;
-        if (base - cant < 0) { showToast(`❌ Stock insuficiente de "${h?.nombre_herramienta}" en ${ubicacionesByIdH.get(ubicMov)?.nombre || 'ese almacén'}: hay ${base}, pedís ${cant}.`, 'red'); return; }
+        if (base - cant < 0) {
+          // Si lo que bloquea es un descuadre conocido, decirlo: "no hay stock"
+          // a secas manda a la almacenera a reportar un bug que es un dato viejo.
+          const d = descuadreDeHerr(h);
+          showToast(`❌ Stock insuficiente de "${h?.nombre_herramienta}" en ${ubicacionesByIdH.get(ubicMov)?.nombre || 'ese almacén'}: hay ${base}, pides ${cant}.`
+            + (d ? ` ⚠ ${d.explicacion}` : ''), 'red');
+          return;
+        }
         proyec.set(it.herramienta_id, base - cant);
       }
     }
@@ -3798,7 +3907,9 @@ function HerramientasPage({ showToast }) {
         try { hist = await window.__db.movimientos_herramientas.filter(m => m.herramienta_id === hid).toArray(); } catch {}
         const rc = validarSalidaCronologica({ movimientos: hist, fecha: loteCantForm.fecha, hora: loteCantForm.hora, cantidad: cantTotal, stockActualHoy: stockDeHerr(h) });
         if (!rc.ok) {
-          showToast(`❌ Incongruencia de fechas: al ${loteCantForm.fecha}, "${h?.nombre_herramienta}" solo tenía ${rc.disponible} disponible(s) — las entradas posteriores a esa fecha no cuentan. Corregí la fecha de la salida o la cantidad.`, 'red');
+          const d = descuadreDeHerr(h);
+          showToast(`❌ Incongruencia de fechas: al ${loteCantForm.fecha}, "${h?.nombre_herramienta}" solo tenía ${rc.disponible} disponible(s) — las entradas posteriores a esa fecha no cuentan. Corrige la fecha de la salida o la cantidad.`
+            + (d ? ` ⚠ ${d.explicacion}` : ''), 'red');
           return;
         }
       }
@@ -3884,7 +3995,7 @@ function HerramientasPage({ showToast }) {
             idempotency_key: `${loteKey}_${idx}_${it.herramienta_id}`,
           });
           if (ubicMov) { try { await aplicarDelta({ obraId, itemTipo: 'herramienta', itemId: it.herramienta_id, ubicacionId: ubicMov, delta: esEntrada ? cant : -cant, userId: auth?.profile?.id || null }); } catch (err) { console.warn('[herr aplicarDelta]', err?.message); } }
-          const base = stockDeHerr(h);
+          const base = stockCrudoDeHerr(h);
           const nuevoStock = Math.max(0, base + (esEntrada ? cant : -cant));
           // Saneo + estado: toda herramienta queda "por cantidad" y su badge
           // refleja la última acción (salida → En Uso, entrada → Almacén).
@@ -3896,8 +4007,13 @@ function HerramientasPage({ showToast }) {
             disponible: esEntrada ? true : nuevoStock > 0,
             ultimo_responsable_id: tipo === 'salida' ? (dest.responsable_id || null) : (tipo === 'devolucion' ? null : (h.ultimo_responsable_id || null)),
             fecha_ultimo_movimiento: loteCantForm.fecha,
-            // Sync: marcar pending para que el cambio de stock/estado viaje al
-            // servidor (el lote viejo usaba db.update "pelado" → NO sincronizaba).
+            // Sync: marcar pending para que el cambio viaje al servidor (el lote
+            // viejo usaba db.update "pelado" → NO sincronizaba). OJO: desde la
+            // mig 190 `stock_actual`/`alerta` NO se pushean (van en
+            // TRIGGER_MANAGED_FIELDS) — acá se escriben solo para que la pantalla
+            // responda al instante; el número bueno lo deriva el trigger del
+            // servidor desde el historial y baja en el próximo pull. Lo que sí
+            // viaja de este update es el responsable y la fecha del movimiento.
             sync_status: h.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
             updated_at: new Date().toISOString(),
             updated_by: auth?.profile?.id || 'offline',
@@ -4067,14 +4183,28 @@ function HerramientasPage({ showToast }) {
         <td><span className={`badge ${u.class}`}>{u.label}</span></td>
         <td>{h.maneja_cantidad
           ? (() => {
-              const st = Number(h.stock_actual ?? 0);
-              const cls = (h.alerta === 'agotado' || h.alerta === 'critico') ? 'b-red'
-                : (h.alerta === 'reponer' || h.alerta === 'cerca') ? 'b-amber' : 'b-green';
+              // El número que se muestra es el CONFIABLE (contador vs. historial),
+              // no el contador crudo — y la alerta se calcula sobre ese mismo
+              // número para que el color no contradiga a la cifra de al lado.
+              const st = stockDeHerr(h);
+              const alertaSt = calcAlerta(st, Number(h.stock_minimo || 0));
+              const cls = (alertaSt === 'agotado' || alertaSt === 'critico') ? 'b-red'
+                : (alertaSt === 'reponer' || alertaSt === 'cerca') ? 'b-amber' : 'b-green';
+              const desc = descuadreDeHerr(h);
               const em = estadosMap.get(h.id);
               const resumen = em ? ESTADOS_COND.filter(e => Number(em.get(e.key) || 0) > 0) : [];
               return (
                 <span style={{ display:'inline-flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
                   <span className={`badge ${cls}`} title={`Stock por cantidad${h.stock_minimo ? ` · mín ${h.stock_minimo}` : ''}`}>{st.toLocaleString('es-PE')} {h.unidad || 'und'}</span>
+                  {/* El descuadre entre el contador y el historial deja de ser
+                      invisible: hasta hoy la única señal era que la salida se
+                      bloqueaba sin decir por qué. Acá se ve, se explica y se
+                      llega al historial de un clic. */}
+                  {desc && (
+                    <button className="btn btn-ghost btn-xs" title={desc.explicacion + '\n\nClic para ver el historial completo de esta herramienta.'}
+                      onClick={()=>{ try { window.__movHerrBuscar = h.nombre_herramienta || ''; } catch {} window.__navTo?.('mov-herramientas'); }}
+                      style={{ color:'var(--amber)', padding:'0 3px' }}>⚠</button>
+                  )}
                   <button className="btn btn-ghost btn-xs" title="Ver stock por ubicación" onClick={()=>setPopupHerr(h)}><JxIcon name="map" size={11}/></button>
                   <button className="btn btn-ghost btn-xs" title="Condición / estado de las unidades (nuevo, bueno, reparar, baja)" onClick={()=>setEstadosItem(h)}><JxIcon name="layers" size={11}/></button>
                   {resumen.length > 0 && (
@@ -4460,6 +4590,12 @@ function HerramientasPage({ showToast }) {
           {canWriteMov && <button className="btn btn-ghost btn-sm" onClick={()=>openLoteCant('salida')} title="Salida de herramientas (entrega a responsable)"><JxIcon name="arrowOut" size={13}/>Registrar Salida</button>}
           {canWriteMov && <button className="btn btn-blue btn-sm" onClick={()=>openLoteCant('devolucion')} title="Devolución de herramientas que están fuera de almacén"><JxIcon name="arrowIn" size={13}/>Registrar Devolución</button>}
           {canWriteMov && ubicacionesActivasH.length >= 2 && <button className="btn btn-ghost btn-sm" onClick={()=>{ setTraspasoPreIdH(''); setModal('traspaso-herr'); }} title="Mover stock entre almacenes"><JxIcon name="compare" size={13}/>Traspaso</button>}
+          {/* Herramientas ya tiene el mismo botón que Materiales: el contador se
+              vuelve a derivar del historial. Antes solo existía para materiales
+              y una herramienta descuadrada no tenía forma de arreglarse. */}
+          {isAdmin && <button className="btn btn-ghost btn-sm" disabled={recalcHerrBusy} onClick={recalcularStocksHerr}
+            title="Vuelve a calcular el stock de cada herramienta desde sus movimientos (entradas − salidas). No toca los movimientos.">
+            <JxIcon name="refresh" size={13}/>{recalcHerrBusy ? 'Recalculando…' : 'Recalcular stocks'}</button>}
           {canWrite ? (
             <button className="btn btn-amber btn-sm" onClick={()=>{setForm({}); setModal('nuevo');}}><JxIcon name="plus" size={13}/>Nueva Herramienta</button>
           ) : (

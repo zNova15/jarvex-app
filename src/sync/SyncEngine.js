@@ -1769,6 +1769,15 @@ export const TRIGGER_MANAGED_FIELDS = {
   herramientas: new Set([
     'disponible', 'ubicacion_actual',
     'estado_actual',
+    // stock_actual/alerta desde la mig 190: hasta entonces herramientas era la
+    // ÚNICA de las tres (materiales/EPP/herramientas) sin trigger de stock en
+    // el server, así que el cliente empujaba el contador como número ABSOLUTO
+    // — dos equipos offline sobre la misma herramienta y el último en
+    // sincronizar pisaba al otro, sin rastro. Ahora el server lo deriva del
+    // historial en cada movimiento. El cliente lo sigue escribiendo LOCAL
+    // (pantalla inmediata) pero ya no lo pushea: el valor bueno baja en el
+    // siguiente pull, igual que en materiales.
+    'stock_actual', 'alerta',
     // OJO: 'ultimo_responsable_id' NO se striplea. El trigger del server lo
     // setea en cada INSERT de movimiento (misma fuente que el cliente), así
     // que pushearlo es inofensivo — y la FUSIÓN de personas necesita que el

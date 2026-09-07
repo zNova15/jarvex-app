@@ -2141,7 +2141,10 @@ function MovHerramientasPage({ showToast }) {
     }
   };
 
-  const [q, setQ] = uSM('');
+  // Pre-filtro vía window.__movHerrBuscar: el ⚠ del inventario de herramientas
+  // (descuadre contador vs. historial) trae acá con la herramienta ya buscada,
+  // igual que el 📜 de materiales y de EPPs.
+  const [q, setQ] = uSM(() => { try { const v = window.__movHerrBuscar; if (v) { delete window.__movHerrBuscar; return v; } } catch {} return ''; });
   const [accion, setAccion] = uSM('todas');
   const [regFisicoOpen, setRegFisicoOpen] = uSM(false);
   const [regDiarioOpen, setRegDiarioOpen] = uSM(false);
