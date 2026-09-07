@@ -53,6 +53,9 @@ import { sociosDeObra } from "../lib/consorcio.js";
 import { TIPO_LBL as TRABAJO_TIPO_LBL, ESTADO_LBL as TRABAJO_ESTADO_LBL, ESTADO_BADGE as TRABAJO_ESTADO_BADGE, esAbierto as trabajoAbierto } from "../lib/trabajos.js";
 import { TIPOS_TRABAJO, TIPO_TRABAJO_DEFAULT, normalizarEstadoObra, ESTADO_OBRA_LBL, ESTADO_OBRA_BADGE } from "../lib/tipos-trabajo.js";
 import { categoriaDe, CATEGORIA_LABEL, CATEGORIA_BADGE } from "../lib/personal-categoria.js";
+import { DOCS_EMPRESA, documentosDeEmpresa, resumenDocsEmpresa, serializarMetaDoc } from "../lib/documentos-empresa.js";
+import { getEvidenciaSrc, abrirUrlEvidencia } from "../lib/evidencias-url.js";
+import { uploadPendingEvidencias } from "../sync/EvidenceUploader.js";
 import { MODO_PAGO_LABEL } from "../lib/pagos.js";
 
 const { useState: uSD, useMemo: uMD } = React;
@@ -134,6 +137,9 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
   const cuentasHook = window.__hooks.useCuentasBancarias?.(company?.id) || { data: [] };
   const cronogramaHook = window.__hooks.useCronogramaPagos?.(company?.id) || { data: [] };
   const activosHook = window.__hooks.useActivosPesados?.() || { data: [] };
+  // Los papeles de la empresa (ficha RUC, vigencia de poder, testimonio, RNP).
+  // Son evidencias SIN obra: se piden todas y se filtran por empresa en la lib.
+  const evidenciasHook = window.__hooks.useEvidencias?.(null) || { data: [], refresh: null };
   const [moneda, setMoneda] = uSD('PEN');
   // `seccion` = null → las TARJETAS del desglose (como el Panel del trabajo).
   // Un id de sección → esa vista, con "volver al panel".
@@ -263,7 +269,16 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
       ? `${cuentasDeEmpresa.length} cuenta(s)${pagosProgramados.length ? ` · ${pagosProgramados.length} pago(s) programado(s)` : ''}`
       : 'sin cuentas cargadas',
     equipos: equiposDeEmpresa.length ? `${equiposDeEmpresa.length} equipo(s)` : 'sin equipos a su nombre',
-    ficha: company.ruc ? `RUC ${company.ruc}` : 'sin RUC cargado',
+    ficha: (() => {
+      // La tarjeta dice cuántos papeles faltan: si no, hay que entrar para
+      // enterarse de que el RNP venció.
+      const rd = resumenDocsEmpresa(evidenciasHook.data || [], company.id,
+        { hoy: (() => { try { return window.__fecha.hoyLocal(); } catch { return undefined; } })() });
+      const base = company.ruc ? `RUC ${company.ruc}` : 'sin RUC cargado';
+      if (rd.vencidos) return `${base} · ⚠ ${rd.vencidos} documento(s) VENCIDO(S)`;
+      if (rd.porVencer) return `${base} · ${rd.porVencer} por vencer`;
+      return `${base} · ${rd.cargados}/${rd.total} documentos`;
+    })(),
     documentos: 'comprobantes y guías',
   };
 
@@ -373,7 +388,8 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
       {cabecera}
 
       {seccion === 'ficha' && (
-        <FichaEmpresa company={company} obrasDeEmpresa={obrasDeEmpresa} />
+        <FichaEmpresa company={company} obrasDeEmpresa={obrasDeEmpresa}
+          evidencias={evidenciasHook.data || []} refreshEvidencias={evidenciasHook.refresh} />
       )}
 
       {seccion === 'tesoreria' && (
@@ -873,7 +889,7 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
 // ── SECCIÓN: FICHA ─────────────────────────────────────────────────
 // La identidad legal de la empresa. Estaba solo dentro del modal de edición:
 // para MIRAR el RUC o el representante legal había que abrir un formulario.
-function FichaEmpresa({ company, obrasDeEmpresa }) {
+function FichaEmpresa({ company, obrasDeEmpresa, evidencias = [], refreshEvidencias }) {
   const dato = (label, valor, ancho = 1) => (
     <div style={{ gridColumn: `span ${ancho}` }}>
       <div style={{ fontSize: 10, color: 'var(--tm)', fontWeight: 700, letterSpacing: '.06em' }}>{label}</div>
@@ -916,7 +932,180 @@ function FichaEmpresa({ company, obrasDeEmpresa }) {
       onClick={() => { window.__empresaEditarIntent = company.id; window.__navTo?.('empresas', 'general'); }}>
       <JxIcon name="edit" size={13} /> Editar estos datos
     </button>
+
+    <DocumentosEmpresa company={company} evidencias={evidencias} refresh={refreshEvidencias} />
   </>);
+}
+
+// ── LOS PAPELES DE LA EMPRESA ───────────────────────────────────────
+// Pedido de la contadora (7-sep-2026): poder subir y guardar, de cada empresa,
+// la FICHA RUC, la VIGENCIA DE PODER, el TESTIMONIO y el RNP. Son los mismos
+// cuatro que se adjuntan en cada propuesta y que hasta hoy vivían en un correo.
+//
+// Dos de ellos caducan (vigencia de poder y RNP): esos piden fecha de
+// vencimiento y la ficha avisa cuando falta menos de un mes. Subir la
+// renovación NO pisa la anterior — queda de historial, porque una vigencia
+// vencida sigue probando quién firmaba en su momento.
+function DocumentosEmpresa({ company, evidencias, refresh }) {
+  const auth = window.__useAuth?.();
+  const userId = auth?.profile?.id ?? null;
+  const rol = auth?.profile?.rol;
+  const puedeSubir = rol === 'admin' || rol === 'contador' || rol === 'ayudante_contador'
+    || rol === 'gerente' || rol === 'asistente_admin';
+  const showToast = window.__showToast || (() => {});
+  const hoy = (() => { try { return window.__fecha.hoyLocal(); } catch { return undefined; } })();
+  const docs = uMD(() => documentosDeEmpresa(evidencias, company?.id, { hoy }),
+    [evidencias, company?.id, hoy]);
+  const [subiendo, setSubiendo] = uSD(null);   // id del doc en curso
+  const [metaEdit, setMetaEdit] = uSD({});     // docId → { numero, emision, vencimiento }
+  const enCursoRef = React.useRef(false);
+
+  const archivoDe = async (docDef, file) => {
+    // Guard SÍNCRONO (regla crítica 2): sin esto, dos clicks en el input
+    // guardan el mismo papel dos veces.
+    if (enCursoRef.current || !file) return;
+    enCursoRef.current = true;
+    setSubiendo(docDef.id);
+    try {
+      const meta = metaEdit[docDef.id] || {};
+      await window.__saveEvidenciaLocal({
+        id: window.__newId(),
+        obra_id: null,                       // es de la EMPRESA, no de una obra
+        tipo_evidencia: docDef.tipo,
+        modulo_relacionado: 'companies',
+        registro_relacionado_id: company.id,
+        nombre_archivo: file.name || `${docDef.id}.pdf`,
+        mime_type: file.type || '',
+        blob: file,
+        observaciones: serializarMetaDoc(meta),
+        created_by: userId,
+        ...((() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })() ? { demo: true } : {}),
+      });
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'evidencias' } })); } catch {}
+      try { uploadPendingEvidencias(); } catch {}   // empujar ya si hay señal; si no, la cola offline la sube sola
+      showToast(`✓ ${docDef.titulo} guardado`, 'green');
+      setMetaEdit(m => ({ ...m, [docDef.id]: {} }));
+      refresh?.();
+    } catch (e) {
+      showToast('No se pudo guardar: ' + (e.message || e), 'red');
+    } finally {
+      enCursoRef.current = false;
+      setSubiendo(null);
+    }
+  };
+
+  const ver = async (ev) => {
+    try {
+      const src = await getEvidenciaSrc(ev);
+      if (src?.url) await abrirUrlEvidencia(src.url);
+      else showToast('El archivo todavía se está subiendo — probá en un minuto.', 'amber');
+    } catch { showToast('No se pudo abrir el archivo', 'red'); }
+  };
+
+  const quitar = async (ev, docDef) => {
+    if (!window.confirm(`¿Quitar «${docDef.titulo}» (${ev.nombre_archivo})?\n\nEl archivo deja de figurar en la ficha. Si era una renovación, vuelve a quedar vigente el anterior.`)) return;
+    try {
+      await window.__db.evidencias.update(ev.id, {
+        deleted_at: new Date().toISOString(),
+        sync_status: ev.sync_status === 'pending_create' ? 'pending_create' : 'pending_delete',
+      });
+      try { await window.__logAudit?.({ action: 'delete', table: 'evidencias', recordId: ev.id, reason: `Quitar ${docDef.titulo} de ${company.name || company.legal_name || 'la empresa'}` }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'evidencias' } })); } catch {}
+      showToast(`${docDef.titulo} quitado`, 'amber');
+      refresh?.();
+    } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
+  };
+
+  const ESTADO_UI = {
+    vencido:    { badge: 'b-red',   texto: 'VENCIDO' },
+    por_vencer: { badge: 'b-amber', texto: 'vence pronto' },
+    vigente:    { badge: 'b-green', texto: 'vigente' },
+  };
+
+  return (
+    <div style={{ marginTop: 18 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.08em', color: 'var(--tm)', marginBottom: 8 }}>
+        DOCUMENTOS DE LA EMPRESA
+      </div>
+      <div style={{ fontSize: 11.5, color: 'var(--ts)', marginBottom: 10, lineHeight: 1.5 }}>
+        Los papeles que se piden en cada propuesta. La <strong>vigencia de poder</strong> y el
+        {' '}<strong>RNP</strong> caducan: cargales la fecha de vencimiento y la ficha avisa antes de que venzan.
+        Subir una renovación no borra la anterior — queda de historial.
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 10 }}>
+        {DOCS_EMPRESA.map(def => {
+          const d = docs.get(def.id);
+          const ev = d?.vigente;
+          const est = ESTADO_UI[d?.estado];
+          const meta = metaEdit[def.id] || {};
+          return (
+            <div key={def.id} className="card card-p" style={{ borderLeft: `3px solid ${ev ? 'var(--green)' : 'var(--border)'}` }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <strong style={{ fontSize: 12.5 }}>{def.titulo}</strong>
+                {est && <span className={`badge ${est.badge}`} style={{ fontSize: 9 }}>{est.texto}</span>}
+                {ev && ev.sync_status && ev.sync_status !== 'uploaded' && ev.sync_status !== 'synced' && (
+                  <span className="badge b-amber" style={{ fontSize: 9 }} title="Todavía subiendo — se guarda igual y sube sola cuando haya señal">⏱ subiendo</span>
+                )}
+              </div>
+              <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3, lineHeight: 1.4 }}>{def.desc}</div>
+
+              {ev ? (
+                <div style={{ marginTop: 8 }}>
+                  <div style={{ fontSize: 11.5, wordBreak: 'break-word' }}>
+                    <button className="btn btn-ghost btn-xs" style={{ padding: '1px 5px' }} onClick={() => ver(ev)}
+                      title="Abrir el archivo">
+                      <JxIcon name="eye" size={11} /> {ev.nombre_archivo}
+                    </button>
+                  </div>
+                  <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3 }}>
+                    {d.meta.numero ? `N.º ${d.meta.numero} · ` : ''}
+                    {d.meta.vencimiento ? `vence ${fmtFecha(d.meta.vencimiento)} · ` : ''}
+                    subido {ev.fecha ? fmtFecha(ev.fecha) : '—'}
+                    {d.historial.length > 0 && ` · ${d.historial.length} anterior(es)`}
+                  </div>
+                  {puedeSubir && (
+                    <button className="btn btn-ghost btn-xs" style={{ marginTop: 6, color: 'var(--red)' }}
+                      onClick={() => quitar(ev, def)}>
+                      <JxIcon name="trash" size={10} /> Quitar
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div style={{ fontSize: 11.5, color: 'var(--tm)', fontStyle: 'italic', marginTop: 8 }}>
+                  Sin cargar
+                </div>
+              )}
+
+              {puedeSubir && (
+                <div style={{ marginTop: 8, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
+                  {def.venceUsualmente && (
+                    <label style={{ display: 'block', fontSize: 10, color: 'var(--tm)', marginBottom: 4 }}>
+                      Vence el
+                      <input className="fi" type="date" style={{ fontSize: 11, padding: '4px 6px', marginTop: 2 }}
+                        value={meta.vencimiento || ''}
+                        onChange={e => setMetaEdit(m => ({ ...m, [def.id]: { ...(m[def.id] || {}), vencimiento: e.target.value } }))} />
+                    </label>
+                  )}
+                  <label className="btn btn-ghost btn-xs" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    <JxIcon name="upload" size={11} />
+                    {subiendo === def.id ? 'Guardando…' : (ev ? 'Subir uno nuevo' : 'Subir archivo')}
+                    <input type="file" accept="application/pdf,image/*" style={{ display: 'none' }}
+                      disabled={subiendo === def.id}
+                      onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; archivoDe(def, f); }} />
+                  </label>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {!puedeSubir && (
+        <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 8, fontStyle: 'italic' }}>
+          Tu rol puede consultar estos documentos, pero no cargarlos.
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── SECCIÓN: TESORERÍA ─────────────────────────────────────────────

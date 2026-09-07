@@ -37,6 +37,7 @@ import { resumenPorEntidad } from "../lib/contabilidad-entidades.js";
 import { consolidar, MOTIVO_LABEL } from "../lib/consolidado.js";
 import { empresasPorCategoria, CATEGORIAS_EMPRESA } from "../lib/desglose-empresa.js";
 import { reflejosPorEmpresa, reflejosDe } from "../lib/documento-dos-lados.js";
+import { notasPorFactura } from "../lib/notas-credito.js";
 import { filtroInicialEmpresa, setEmpresaActivaId, limpiarEmpresaActiva, getEmpresaActivaId } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 const { useState: uSC, useMemo: uMC, useEffect: uEC, useRef: uRC } = React;
@@ -1808,6 +1809,17 @@ function MovimientosContablesPage({ showToast }) {
     return out;
   }, [guiasPorMovRaw, movs]);
 
+  // ── LA FACTURA QUE UNA NOTA DE CRÉDITO ANULA ────────────────────────
+  // Gabriel, 7-sep-2026: «cuando se vincule la nota de crédito me gustaría que
+  // sobre la factura que anula salga un cuadrito que me permita diferenciar
+  // que dicha factura está anulada por la nota de crédito X». El vínculo ya
+  // estaba en el dato (related_movement_id de la nota) pero solo se veía
+  // entrando a la nota: desde la factura no había ninguna señal y seguía
+  // figurando como una factura viva.
+  // ⚠ Va ANTES de cualquier cosa que lo nombre en sus deps (regla anti-TDZ de
+  // esta pantalla, la misma que mató Movimientos Contables con guiasPorMov).
+  const notasDeFactura = uMC(() => notasPorFactura(movs || []), [movs]);
+
   // Los comprobantes que esta empresa tiene que VER aunque no estén en su
   // libro: la MISMA fila, mostrada desde el otro lado. No se crea un
   // movimiento espejo (eso sumaría plata que nadie movió) y no entra en
@@ -3393,6 +3405,23 @@ function MovimientosContablesPage({ showToast }) {
                       <td>{m.third_party_name || '—'}</td>
                       <td className="col-m" style={{ fontSize:11 }}>
                         {m.document_type ? `${m.document_type} ${m.document_number || ''}` : '—'}
+                        {/* El cuadrito que pidió Gabriel: desde la factura se ve
+                            que una nota de crédito la anuló (o la rebajó), con
+                            qué nota y por cuánto. Click = ir a esa nota. */}
+                        {(() => {
+                          const nc = notasDeFactura.get(m.id);
+                          if (!nc) return null;
+                          const anul = nc.anulada;
+                          return (
+                            <button
+                              className={`badge ${anul ? 'b-red' : 'b-amber'}`}
+                              style={{ display:'block', marginTop:3, fontSize:9, cursor:'pointer', border:'none', textAlign:'left', lineHeight:1.3 }}
+                              title={`${nc.etiqueta}.\nFactura S/ ${nc.totalFactura.toFixed(2)} · nota(s) S/ ${nc.totalNotas.toFixed(2)}${anul ? ' — queda sin efecto.' : ' — el saldo vigente es S/ ' + (nc.totalFactura - nc.totalNotas).toFixed(2) + '.'}\n\nClic para buscar la nota.`}
+                              onClick={(e) => { e.stopPropagation(); setBusqueda(nc.notas[0]?.document_number || ''); }}>
+                              {anul ? '🚫 ' : '↘ '}{nc.etiqueta}
+                            </button>
+                          );
+                        })()}
                         {(guiasPorMov.get(m.id) || []).map(g => (
                           <span key={g.id} style={{ display:'flex', alignItems:'center', gap:2 }}>
                             {/* Click = abrir el PDF de la guía AL TOQUE (pedido 31-ago). Solo

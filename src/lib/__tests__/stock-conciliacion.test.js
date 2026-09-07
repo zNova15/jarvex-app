@@ -71,3 +71,71 @@ describe('stock-conciliacion — stockDisponibleConfiable', () => {
     expect(stockDisponibleConfiable({ stockActual: 3, movimientos: [ENT(5), SAL(2)] })).toBe(3);
   });
 });
+
+// ── Sobregiro absorbido por el GREATEST(0,…) del servidor ────────────
+import { saldoMinimoHistorico, diagnosticoStock } from '../stock-conciliacion.js';
+
+const F = (fecha) => ({ fecha, created_at: fecha + 'T00:00:00Z' });
+
+describe('stock-conciliacion — saldoMinimoHistorico', () => {
+  it('sin sobregiro el mínimo es 0', () => {
+    expect(saldoMinimoHistorico([ENT(5, F('2026-01-01')), SAL(3, F('2026-01-02'))]).minimo).toBe(0);
+  });
+  it('detecta el punto más bajo y su fecha', () => {
+    const r = saldoMinimoHistorico([
+      ENT(9, F('2026-05-11')), SAL(2, F('2026-05-11')),
+      SAL(5, F('2026-05-15')), SAL(3, F('2026-06-18')),
+    ]);
+    expect(r.minimo).toBe(-1);
+    expect(r.fecha).toBe('2026-06-18');
+  });
+  it('ordena por fecha aunque lleguen desordenados', () => {
+    const r = saldoMinimoHistorico([SAL(3, F('2026-06-18')), ENT(9, F('2026-05-11'))]);
+    expect(r.minimo).toBe(0);   // la entrada es ANTERIOR: nunca hubo negativo
+  });
+  it('ignora borrados y reversados', () => {
+    const r = saldoMinimoHistorico([ENT(1, F('2026-01-01')), SAL(5, { ...F('2026-01-02'), deleted_at: 'x' })]);
+    expect(r.minimo).toBe(0);
+  });
+});
+
+describe('stock-conciliacion — diagnosticoStock (caso ZAPATOS 38)', () => {
+  // Historial real: 9 entran, 10 salen (3 de ellas duplicadas por multi-click),
+  // el servidor clampa el snapshot en 0; después ingresa 1 par más.
+  const zapatos38 = [
+    ENT(9, F('2026-05-11')), SAL(1, F('2026-05-11')), SAL(1, F('2026-05-11')),
+    SAL(1, F('2026-05-15')), SAL(1, F('2026-05-15')), SAL(1, F('2026-05-15')),
+    SAL(1, F('2026-05-15')), SAL(1, F('2026-05-15')),
+    SAL(1, F('2026-06-18')), SAL(1, F('2026-06-18')), SAL(1, F('2026-06-18')),
+    ENT(1, F('2026-09-04')),
+  ];
+  it('el historial suma 0 pero el par ingresado SÍ está disponible', () => {
+    const d = diagnosticoStock({ stockActual: 1, movimientos: zapatos38 });
+    expect(d.rawSegunMovs).toBe(0);
+    expect(d.snapshot).toBe(1);
+    expect(d.stock).toBe(1);          // ← lo que desbloquea la salida
+  });
+  it('marca el sobregiro con su fecha y lo explica', () => {
+    const d = diagnosticoStock({ stockActual: 1, movimientos: zapatos38 });
+    expect(d.huboSobregiro).toBe(true);
+    expect(d.fechaSobregiro).toBe('2026-06-18');
+    expect(d.explicacion).toMatch(/salidas sin stock/);
+  });
+  it('sin historial el snapshot manda y NO se reporta descuadre', () => {
+    const d = diagnosticoStock({ stockActual: 7, movimientos: [] });
+    expect(d.stock).toBe(7);
+    expect(d.sinHistorial).toBe(true);
+    expect(d.explicacion).toBe(null);
+  });
+  it('snapshot atrasado → gana el historial (no bloquea la salida legítima)', () => {
+    const d = diagnosticoStock({ stockActual: 0, movimientos: [ENT(5, F('2026-01-01'))] });
+    expect(d.stock).toBe(5);
+    expect(d.snapshotBajo).toBe(true);
+    expect(d.explicacion).toMatch(/contador quedó atrás/);
+  });
+  it('cuadrado → sin explicación', () => {
+    const d = diagnosticoStock({ stockActual: 3, movimientos: [ENT(5, F('2026-01-01')), SAL(2, F('2026-01-02'))] });
+    expect(d.stock).toBe(3);
+    expect(d.explicacion).toBe(null);
+  });
+});

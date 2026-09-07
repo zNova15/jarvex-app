@@ -34,6 +34,15 @@ const COMUN      = ['acta', 'documento_general', 'pdf_formato_firmado'];
 // Registro profesional (mig 171): CV y constancias de experiencia. Son datos
 // personales — los ve el equipo de propuestas, RR.HH. y la conducción.
 const PROFESIONAL = ['cv_profesional', 'constancia_experiencia'];
+// Papeles societarios de la EMPRESA (tanda 10, mig 189): ficha RUC, vigencia de
+// poder, testimonio y RNP. Traen datos del representante legal y son los que se
+// adjuntan en cada licitación → los ve la conducción, contabilidad, tesorería y
+// el equipo de propuestas. NO el personal de obra.
+export const TIPOS_DOC_EMPRESA_VIS = [
+  'doc_empresa_ficha_ruc', 'doc_empresa_vigencia_poder',
+  'doc_empresa_testimonio', 'doc_empresa_rnp', 'doc_empresa_otro',
+];
+const ROLES_DOC_EMPRESA = ['admin', 'gerente', 'contador', 'ayudante_contador', 'tesorero', 'licitaciones', 'asistente_admin'];
 const ALMACEN    = ['foto_material', 'foto_herramienta', 'foto_herramienta_danada',
                     'foto_estado', 'registro_diario_materiales', 'foto_epp', 'firma_epp'];
 const ASISTENCIA = ['foto_asistencia'];
@@ -59,11 +68,11 @@ const MATRIZ = {
   ing_calidad:         ['certificado_calidad', 'foto_especialidad', 'foto_material', ...COMUN],
   ing_social:          ['foto_especialidad', ...ASISTENCIA, ...COMUN],
   jefe_compras:        ['oc_firmada', 'foto_material', ...COMUN],
-  tesorero:            [...COMUN],
+  tesorero:            [...TIPOS_DOC_EMPRESA_VIS, ...COMUN],
   rrhh:                [...ASISTENCIA, ...PROFESIONAL, ...COMUN],
   // Licitaciones: SOLO el material del plantel profesional. Nada de obra,
   // almacén ni contabilidad.
-  licitaciones:        [...PROFESIONAL, ...COMUN],
+  licitaciones:        [...PROFESIONAL, ...TIPOS_DOC_EMPRESA_VIS, ...COMUN],
   solo_lectura:        BASICO,
   // Rol campo (cuenta compartida con PIN): SOLO sus fotos de factura — y por
   // la regla del autor, únicamente las que él mismo subió (el RLS del server
@@ -83,6 +92,10 @@ export function puedeVerEvidencia({ rol, userId, ev }) {
   const regla = MATRIZ[rol];
   if (regla === 'todo') return true;
   if (TIPOS_CONTABLES.includes(ev.tipo_evidencia)) return false; // contable: nadie más
+  // Papeles societarios: lista cerrada de roles, igual que el CASE del RLS.
+  // Va ANTES del 'operativo' porque ingenieros y supervisores son operativos y
+  // no tienen por qué ver el testimonio ni la vigencia de poder.
+  if (TIPOS_DOC_EMPRESA_VIS.includes(ev.tipo_evidencia)) return ROLES_DOC_EMPRESA.includes(rol);
   if (regla === 'operativo') return true;
   const lista = Array.isArray(regla) ? regla : BASICO;
   return lista.includes(ev.tipo_evidencia);

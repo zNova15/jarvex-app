@@ -202,6 +202,7 @@ exacta es la siguiente (se muestra indentada SOLO para que la leas, tu salida va
 
 import { requireAuth, rateLimit, sanitizeError, validateFileBytes } from '../lib/api-helpers.js';
 import { leerConfig as leerConfigOR, construirCuerpo as construirCuerpoOR, normalizarRespuesta as normalizarRespuestaOR, openrouterChat, presupuestoSalida } from '../lib/openrouter.js';
+import { estimarItems } from '../lib/ocr-items.js';
 import { modeloOcr } from '../lib/mistral-ocr.js';
 
 // El híbrido encadena 2 upstreams (Mistral OCR + Claude). Damos margen explícito
@@ -371,7 +372,7 @@ function extractJson(data) {
 function respondError(e, res, isProd) {
   if (e && e.name === 'AbortError') {
     return res.status(504).json({
-      error: 'La lectura automática tardó demasiado. Suele pasar con comprobantes de MUCHAS líneas de detalle: probá de nuevo con "Reintentar" o cargalo a mano desde Movimientos Contables → Nuevo Movimiento.',
+      error: 'La lectura automática tardó demasiado. Suele pasar con comprobantes de MUCHAS líneas de detalle: prueba de nuevo con "Reintentar" o cárgalo a mano desde Movimientos Contables → Nuevo Movimiento.',
       code: 'timeout_ia',
     });
   }
@@ -381,7 +382,7 @@ function respondError(e, res, isProd) {
   if (e && e.message === 'truncado') {
     console.error('[captura-magica] respuesta TRUNCADA por extensión', { outputTokens: e.outputTokens || null, len: (e.rawText || '').length });
     return res.status(502).json({
-      error: 'Este comprobante tiene demasiadas líneas de detalle y la lectura automática no pudo completarse. Reintentá una vez; si vuelve a fallar, cargalo a mano desde Movimientos Contables → Nuevo Movimiento (los datos de cabecera y el total sí podés copiarlos del PDF).',
+      error: 'Este comprobante tiene tantas líneas de detalle que no se pudo leer ni siquiera su cabecera. Vuelve a intentarlo una vez; si falla de nuevo, cárgalo a mano desde Movimientos Contables → Nuevo Movimiento (la cabecera y el total los puedes copiar del PDF).',
       code: 'doc_muy_extenso',
       ...(isProd ? {} : { rawTextFin: (e.rawText || '').slice(-300) }),
     });
@@ -410,7 +411,7 @@ function respondError(e, res, isProd) {
   if (e && e.upstreamStatus === 400 && /credit balance is too low|insufficient.*credit|billing/i.test(e.upstreamText || '')) {
     console.error('[captura-magica] Anthropic sin crédito');
     return res.status(402).json({
-      error: 'El servicio de IA no tiene crédito disponible. Avisá al administrador para que recargue el saldo.',
+      error: 'El servicio de IA no tiene crédito disponible. Avisa al administrador para que recargue el saldo.',
       code: 'ia_sin_credito',
     });
   }
@@ -610,7 +611,7 @@ export default async function handler(req, res) {
       const sinTiempo = e?.name === 'AbortError' || (deadline - Date.now()) < RESERVA_STRUCT_MS;
       if (sinTiempo) {
         return res.status(504).json({
-          error: 'No se pudo leer este comprobante automáticamente en el tiempo disponible (suele pasar con documentos de muchas páginas o muchas líneas de detalle). Probá "Reintentar"; si vuelve a fallar, cargalo a mano desde Movimientos Contables → Nuevo Movimiento.',
+          error: 'No se pudo leer este comprobante automáticamente en el tiempo disponible (suele pasar con documentos de muchas páginas o muchas líneas de detalle). Prueba con "Reintentar"; si vuelve a fallar, cárgalo a mano desde Movimientos Contables → Nuevo Movimiento.',
           code: 'timeout_ocr',
         });
       }
@@ -634,8 +635,14 @@ export default async function handler(req, res) {
     // Estimamos los ítems contando las filas de la tabla que devolvió el OCR y
     // damos ~55 tokens por ítem (JSON minificado, precios de 10 decimales) más
     // 900 de cabecera/totales, con techo de 16k (modelo) y piso de 4000.
-    const filasOcr = ocr ? ((ocr.texto || '').match(/^\s*\|.*\|\s*$/gm) || []).length : 0;
-    const itemsEstimados = Math.max(0, filasOcr - 2);   // menos header y separador
+    // 🔴 Contar SOLO las filas de tabla markdown dejaba en 0 la estimación de
+    // toda FOTO: el OCR de una imagen devuelve el detalle como texto corrido,
+    // sin grilla, así que el presupuesto caía al piso justo en el documento
+    // más largo. Caso del 7-sep-2026: una image.jpg de 894 KB fallando con
+    // "demasiadas líneas de detalle". `estimarItems` mira varias señales
+    // (tabla, líneas que arrancan con cantidad, unidades de medida) y toma la
+    // mayor — sobrestimar no cuesta nada, el techo es un tope, no una reserva.
+    const itemsEstimados = ocr ? estimarItems(ocr.texto) : 0;
     const maxTokensCalc = Math.min(16000, Math.max(4000, 900 + itemsEstimados * 55));
 
     // ── ¿Quién estructura? ──────────────────────────────────────────
@@ -705,7 +712,48 @@ export default async function handler(req, res) {
       data = await llamarClaude();
     }
 
-    const { extracted, text } = extractJson(data);
+    // ── RESCATE DE LA CABECERA ────────────────────────────────────
+    // Si la respuesta llegó CORTADA, hasta hoy la fila moría en Error y la
+    // asistente tenía que cargar la factura entera a mano. Pero lo que se
+    // corta es siempre la COLA (las líneas de detalle): la cabecera, el
+    // emisor y los totales ya venían completos y son justamente lo que ella
+    // copiaba del PDF. Antes de rendirse, se pide una segunda lectura SIN
+    // ítems — un JSON corto que entra seguro en cualquier presupuesto — y el
+    // comprobante se devuelve utilizable, con la advertencia de que el
+    // detalle hay que cargarlo aparte.
+    let extraccion;
+    let rescatado = false;
+    try {
+      extraccion = extractJson(data);
+    } catch (eTrunc) {
+      const hayMargen = (deadline - Date.now()) > 12000;
+      if (eTrunc?.message !== 'truncado' || !hayMargen || !ocr || esCert || esSctr) throw eTrunc;
+      console.warn('[captura-magica] respuesta truncada — reintento SIN ítems para rescatar la cabecera');
+      const contentSinItems = [{ type: 'text', text:
+        `A continuación está el TEXTO extraído por OCR de un comprobante peruano MUY LARGO. `
+        + `Su detalle NO entra en la respuesta, así que esta vez devuelve "items": [] (array VACÍO) y NO intentes listar las líneas. `
+        + `Todo lo demás —tipo de documento, serie-correlativo, fechas, moneda, emisor, receptor, TOTALES, detracción y nota_ref— extraelo completo y con precisión. `
+        + `Responde SOLO con el JSON minificado.\n\n===== TEXTO OCR DEL DOCUMENTO =====\n${ocr.texto}` }];
+      const dataRescate = usaOpenRouter
+        ? normalizarRespuestaOR(await openrouterChat(cfgOR.apiKey, construirCuerpoOR({
+            modelo: cfgOR.modelo, respaldos: cfgOR.respaldos, politica: cfgOR.politica,
+            system: systemPrompt, user: contentSinItems[0].text, maxTokens: 4000,
+          }), deadline))
+        : await anthropicMessages(apiKey, {
+            model: CLAUDE_STRUCT_MODEL, max_tokens: 4000,
+            system: systemPrompt, messages: [{ role: 'user', content: contentSinItems }],
+          }, deadline);
+      extraccion = extractJson(dataRescate);   // si ESTO se corta, sí es un error real
+      rescatado = true;
+      data = dataRescate;
+      extraccion.extracted.items = [];
+      extraccion.extracted.confianza = 'media';
+      extraccion.extracted.advertencias = [
+        ...(Array.isArray(extraccion.extracted.advertencias) ? extraccion.extracted.advertencias : []),
+        `Este comprobante tiene demasiadas líneas de detalle para leerlas automáticamente (se estimaron ${itemsEstimados}). Se leyeron la cabecera y los totales, que es lo que define el movimiento contable; el detalle de los ítems quedó vacío y se puede cargar a mano si hace falta.`,
+      ];
+    }
+    const { extracted, text } = extraccion;
     // MEDICIÓN DEL CONSUMO DE IA. El endpoint ya devolvía `usage` al cliente,
     // pero no lo registraba en ningún lado: no había forma de saber cuánto
     // gasta la app sin entrar a la consola de Anthropic. Una línea por llamada
@@ -728,6 +776,7 @@ export default async function handler(req, res) {
     } catch {}
     return res.status(200).json({
       extracted,
+      ...(rescatado ? { items_no_leidos: true } : {}),
       ...(esCert ? { tipo: 'certificado_calidad' } : {}),
       ...(esSctr ? { tipo: 'sctr_paquete' } : {}),
       model: data.model,

@@ -13,6 +13,7 @@ import { CATALOGO_EPP, epppTipo, detectarEPP } from "../lib/epp-utils.js";
 import { calcAlerta } from "../lib/stock-utils.js";
 import { getDesgloseBulk, aplicarDelta, traspasar, baseSalidaUbicacion } from "../lib/stock-ubicaciones.js";
 import { validarSalidaCronologica, agruparCantidades } from "../lib/stock-cronologia.js";
+import { diagnosticoStock } from "../lib/stock-conciliacion.js";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { useFotosEvidencias, FotoInsumoCell } from "./jx-foto-insumo.jsx";
 import { DesglosePopup, TraspasoStockModal, ubicacionAutoOrigen, validarSalidaUbic } from "./jx-stock-ubic.jsx";
@@ -193,26 +194,38 @@ function EppsInventarioPage({ showToast }) {
   // que el inventario NUNCA muestre 0 habiendo movimientos, mostramos y validamos
   // contra el stock vivo y dejamos stock_actual solo como respaldo.
   const movEppLive = movHook.data || [];
-  const liveStockById = uM(() => {
+  // Historial POR EPP: el diagnóstico necesita los movimientos, no un número.
+  const movsPorEpp = uM(() => {
     const m = new Map();
     for (const mv of movEppLive) {
-      if (mv.deleted_at) continue;
-      const c = Number(mv.cantidad || 0);
-      if (!c) continue;
-      const prev = m.get(mv.epp_id) || 0;
-      if (mv.tipo_movimiento === 'entrada') m.set(mv.epp_id, prev + c);
-      else if (mv.tipo_movimiento === 'salida') m.set(mv.epp_id, prev - c);
+      if (!mv?.epp_id) continue;
+      const arr = m.get(mv.epp_id) || [];
+      arr.push(mv);
+      m.set(mv.epp_id, arr);
     }
     return m;
   }, [movEppLive]);
-  // Si el balance vivo queda NEGATIVO, el historial tiene huecos o duplicados
-  // (caso real 22-jul: ZAPATOS 41 con 3 salidas de triple-click el 13-jul →
-  // vivo -1 → mostraba 0 aunque el server decía 2 tras la entrada nueva). En
-  // ese caso el denormalizado del server (con sus clamps) es mejor señal.
-  const stockDe = (e) => {
-    if (!liveStockById.has(e?.id)) return Number(e?.stock_actual ?? 0);
-    const live = liveStockById.get(e.id);
-    return live < 0 ? Number(e?.stock_actual ?? 0) : live;
+  // ── El stock que se muestra Y con el que se valida ────────────────────
+  // Antes se calculaba a mano sumando entrada/salida y solo se caía al
+  // snapshot del server cuando el balance vivo salía NEGATIVO. Esa regla dejó
+  // afuera el caso que rompió el almacén el 7-sep (ZAPATOS 38): tras el
+  // sobregiro del 13-jul el server clampó su contador en 0 con GREATEST(0,…),
+  // así que el balance vivo quedó EXACTAMENTE en 0 —no negativo— y la entrada
+  // del par nuevo nunca se vio: la almacenera registró el ingreso y la salida
+  // le decía "no hay stock". `diagnosticoStock` compara las dos señales,
+  // reconoce la huella del clamp y además explica el descuadre.
+  const diagPorEpp = uM(() => {
+    const m = new Map();
+    for (const e of (epps || [])) {
+      if (!e?.id) continue;
+      m.set(e.id, diagnosticoStock({ stockActual: e.stock_actual, movimientos: movsPorEpp.get(e.id) || [] }));
+    }
+    return m;
+  }, [epps, movsPorEpp]);
+  const stockDe = (e) => diagPorEpp.get(e?.id)?.stock ?? Number(e?.stock_actual ?? 0);
+  const descuadreDe = (e) => {
+    const d = diagPorEpp.get(e?.id);
+    return d && d.explicacion ? d : null;
   };
   const alertaDe = (e) => calcAlerta(stockDe(e), Number(e?.stock_minimo || 0));
 
@@ -346,6 +359,18 @@ function EppsInventarioPage({ showToast }) {
         <td style={{textAlign:'right'}} className="col-num">
           <span style={{ color: stockColor, fontWeight: 600 }}>{stockDe(e).toLocaleString('es-PE')}</span>
           <span style={{ color:'var(--tm)', fontSize:10.5, marginLeft:4 }}>{e.unidad}</span>
+          {/* El descuadre entre el contador y el historial dejó de ser invisible:
+              hasta hoy la única señal era que la salida se bloqueaba sin decir
+              por qué. Acá se ve, se explica y se llega al historial de un click. */}
+          {(() => {
+            const d = descuadreDe(e);
+            if (!d) return null;
+            return (
+              <button className="btn btn-ghost btn-xs" title={d.explicacion + '\n\nClic para ver el historial completo de este EPP.'}
+                onClick={() => { try { window.__movEppBuscar = e.nombre_epp || ''; } catch {} window.__navTo?.('mov-epp'); }}
+                style={{ color: 'var(--amber)', marginLeft: 4, padding: '0 3px' }}>⚠</button>
+            );
+          })()}
         </td>
         <td style={{textAlign:'right'}} className="col-num">{Number(e.stock_minimo ?? 0).toLocaleString('es-PE')}</td>
         <td className="col-m">{e.vida_util_dias ? `${e.vida_util_dias} días` : '—'}</td>
@@ -376,12 +401,19 @@ function EppsInventarioPage({ showToast }) {
   const recalcularStockManual = async () => {
     if (recalcBusy) return;
     setRecalcBusy(true);
-    let n = 0;
+    let n = 0, protegidos = 0;
     try {
       for (const e of (epps || [])) {
         if (e.es_grupo || e.deleted_at) continue;
-        if (!liveStockById.has(e.id)) continue;
-        const live = Math.max(0, liveStockById.get(e.id));
+        const diag = diagPorEpp.get(e.id);
+        if (!diag || diag.sinHistorial) continue;
+        // 🔴 NO pisar el snapshot cuando el historial pasó por NEGATIVO: ahí el
+        // incompleto es el historial (salidas duplicadas o un ingreso que nunca
+        // se registró), no el contador. Recalcular a ciegas en ese caso BORRA
+        // stock que está físicamente en el almacén — con ZAPATOS 38 habría
+        // dejado en 0 el par que la almacenera acababa de ingresar.
+        if (diag.huboSobregiro) { protegidos++; continue; }
+        const live = Math.max(0, diag.rawSegunMovs);
         if (live === Number(e.stock_actual ?? 0)) continue;
         await window.__db.epps.update(e.id, {
           stock_actual: live, alerta: calcAlerta(live, Number(e.stock_minimo || 0)),
@@ -391,7 +423,11 @@ function EppsInventarioPage({ showToast }) {
         n++;
       }
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'epps' } })); } catch {}
-      showToast(n ? `✓ Stock recalculado en ${n} EPP` : 'El stock ya estaba al día', 'green');
+      const aviso = protegidos
+        ? ` · ${protegidos} sin tocar: su historial tiene salidas sin respaldo (mirá el aviso ⚠ en la fila)`
+        : '';
+      showToast((n ? `✓ Stock recalculado en ${n} EPP` : 'El stock ya estaba al día') + aviso,
+        protegidos ? 'amber' : 'green');
       refresh?.();
     } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
     finally { setRecalcBusy(false); }
@@ -757,7 +793,9 @@ function EppsInventarioPage({ showToast }) {
           : (tieneDesglose ? baseSalidaUbicacion(dgItem, ubicMov, stockDe(epp)).base : stockDe(epp));
         const cant = parseFloat(it.cantidad) || 0;
         if (base - cant < 0) {
-          showToast(`❌ Stock insuficiente de "${epp?.nombre_epp}" en ${ubicacionesById.get(ubicMov)?.nombre || 'ese almacén'}: hay ${base}, pedís ${cant}.`, 'red');
+          const d = descuadreDe(epp);
+          showToast(`❌ Stock insuficiente de "${epp?.nombre_epp}" en ${ubicacionesById.get(ubicMov)?.nombre || 'ese almacén'}: hay ${base}, pedís ${cant}.`
+            + (d ? ` ⚠ ${d.explicacion}` : ''), 'red');
           return;
         }
         proyec.set(it.epp_id, base - cant);
@@ -774,7 +812,11 @@ function EppsInventarioPage({ showToast }) {
         try { hist = await window.__db.movimientos_epp.filter(m => m.epp_id === eid).toArray(); } catch {}
         const rc = validarSalidaCronologica({ movimientos: hist, fecha: form.fecha, cantidad: cantTotal, stockActualHoy: stockDe(epp) });
         if (!rc.ok) {
-          showToast(`❌ Incongruencia de fechas: al ${form.fecha}, "${epp?.nombre_epp}" solo tenía ${rc.disponible} disponible(s) — las entradas posteriores a esa fecha no cuentan. Corregí la fecha de la salida o la cantidad.`, 'red');
+          // Si lo que bloquea es un descuadre conocido, decirlo: "no hay stock"
+          // a secas mandó a la almacenera a reportar un bug que era un dato viejo.
+          const d = descuadreDe(epp);
+          showToast(`❌ Incongruencia de fechas: al ${form.fecha}, "${epp?.nombre_epp}" solo tenía ${rc.disponible} disponible(s) — las entradas posteriores a esa fecha no cuentan. Corregí la fecha de la salida o la cantidad.`
+            + (d ? ` ⚠ ${d.explicacion}` : ''), 'red');
           return;
         }
       }

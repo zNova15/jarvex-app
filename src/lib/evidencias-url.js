@@ -71,6 +71,69 @@ export function invalidarSignedUrl(urlOPath) {
   if (cache[path]) { delete cache[path]; _saveSigned(); }
 }
 
+// ─── Firmas EN VUELO: una sola petición por path ────────────────────
+// «Cuando entro en diferentes PC, los ojos para ver facturas no se muestran, o
+// tardan mucho en aparecer» (Gabriel, 7-sep-2026).
+//
+// La causa: el caché de URLs firmadas vive en el localStorage de CADA equipo.
+// En una PC donde nunca se abrió esa pantalla está vacío, así que cada ojo
+// tiene que firmar su archivo de cero — y firmar cuesta dos viajes (el POST a
+// /api/r2 y, si el objeto todavía no migró, el createSignedUrl de Supabase).
+// Con una tabla de 20 comprobantes eso son hasta 40 llamadas disparadas a la
+// vez, y la primera carga se arrastra.
+//
+// Lo que arregla este mapa: la MISMA factura suele pedirse varias veces a la
+// vez (la miniatura de la fila, el visor, el modal), y antes cada pedido
+// firmaba por su cuenta. Ahora el primero firma y los demás esperan esa misma
+// promesa. Menos viajes, menos cold starts del endpoint y menos cuota.
+const _enVuelo = new Map();   // path → Promise<string|null>
+
+function _firmarPath(path, expiresIn) {
+  const cache = _loadSigned();
+  const now = Date.now();
+  const hit = cache[path];
+  // margen de 5 min para no devolver una URL a punto de expirar.
+  // Si la entrada es de R2 pero el flag ya no lo permite (rollback a 'off'
+  // porque R2 fallaba), la ignoramos y re-firmamos en Supabase: si no, cada
+  // dispositivo seguiría sirviendo URLs rotas hasta 7 días y el rollback no
+  // arreglaba nada.
+  if (hit && hit.url && hit.exp - 300000 > now && (hit.src !== 'r2' || r2ReadEnabled())) {
+    return Promise.resolve(hit.url);
+  }
+  const yaPedida = _enVuelo.get(path);
+  if (yaPedida) return yaPedida;
+
+  const p = (async () => {
+    // R2 primero (si VITE_R2_EVIDENCIAS está activo): URL prefirmada de 7 días,
+    // cacheada IGUAL que la de Supabase (misma clave por path → el navegador y el
+    // Service Worker cachean la imagen). El endpoint verifica que el objeto EXISTA
+    // en R2 y devuelve 404 si no (evidencia aún no migrada) → acá llega null y
+    // caemos al camino Supabase de abajo: la vista nunca se rompe.
+    try {
+      const r2url = await getR2SignedGetUrl(path);
+      if (r2url) {
+        const c = _loadSigned();
+        c[path] = { url: r2url, exp: Date.now() + expiresIn * 1000, src: 'r2' };
+        _saveSigned();
+        return r2url;
+      }
+    } catch {}
+    try {
+      const { data } = await supabase.storage.from('evidencias').createSignedUrl(path, expiresIn);
+      if (data?.signedUrl) {
+        const c = _loadSigned();
+        c[path] = { url: data.signedUrl, exp: Date.now() + expiresIn * 1000, src: 'sb' };
+        _saveSigned();
+        return data.signedUrl;
+      }
+    } catch {}
+    return null;
+  })().finally(() => { _enVuelo.delete(path); });
+
+  _enVuelo.set(path, p);
+  return p;
+}
+
 // Devuelve { url, isBlob } mostrable, o null si no hay nada que mostrar.
 // Si isBlob, el caller debería revokeObjectURL(url) al desmontar.
 // expiresIn 24h: los visores cachean la URL firmada en mapas que solo se
@@ -88,38 +151,8 @@ export async function getEvidenciaSrc(ev, expiresIn = _SIGNED_TTL) {
   // cacheada mientras siga válida (URL estable = el navegador cachea la imagen).
   const path = pathDeEvidencia(ev.url_archivo);
   if (path) {
-    const cache = _loadSigned();
-    const now = Date.now();
-    const hit = cache[path];
-    // margen de 5 min para no devolver una URL a punto de expirar.
-    // Si la entrada es de R2 pero el flag ya no lo permite (rollback a 'off'
-    // porque R2 fallaba), la ignoramos y re-firmamos en Supabase: si no, cada
-    // dispositivo seguiría sirviendo URLs rotas hasta 7 días y el rollback no
-    // arreglaba nada.
-    if (hit && hit.url && hit.exp - 300000 > now && (hit.src !== 'r2' || r2ReadEnabled())) {
-      return { url: hit.url, isBlob: false };
-    }
-    // R2 primero (si VITE_R2_EVIDENCIAS está activo): URL prefirmada de 7 días,
-    // cacheada IGUAL que la de Supabase (misma clave por path → el navegador y el
-    // Service Worker cachean la imagen). El endpoint verifica que el objeto EXISTA
-    // en R2 y devuelve 404 si no (evidencia aún no migrada) → acá llega null y
-    // caemos al camino Supabase de abajo: la vista nunca se rompe.
-    try {
-      const r2url = await getR2SignedGetUrl(path);
-      if (r2url) {
-        cache[path] = { url: r2url, exp: now + expiresIn * 1000, src: 'r2' };
-        _saveSigned();
-        return { url: r2url, isBlob: false };
-      }
-    } catch {}
-    try {
-      const { data } = await supabase.storage.from('evidencias').createSignedUrl(path, expiresIn);
-      if (data?.signedUrl) {
-        cache[path] = { url: data.signedUrl, exp: now + expiresIn * 1000, src: 'sb' };
-        _saveSigned();
-        return { url: data.signedUrl, isBlob: false };
-      }
-    } catch {}
+    const url = await _firmarPath(path, expiresIn);
+    if (url) return { url, isBlob: false };
   }
   // 3) Último recurso: la url guardada tal cual (sirve solo si el bucket fuera público).
   return ev.url_archivo ? { url: ev.url_archivo, isBlob: false } : null;

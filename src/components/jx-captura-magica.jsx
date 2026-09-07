@@ -13,6 +13,7 @@ import { valeLaPenaConsultar, compararSugerencia } from "../lib/sugerencia-clasi
 import { companyIdsDeObra } from "../lib/consorcio.js";
 import { etiquetaMotorIa } from "../lib/ia-motor.js";
 import { totalesConModoIgv, precioSinIgv } from "../lib/precios-igv.js";
+import { avisoSerieRepetida, anulaFacturaCompleta, motivoEsAnulacion } from "../lib/notas-credito.js";
 // Guías: import ESTÁTICO. guias.js ya era un chunk propio por el import()
 // dinámico de confirmarGuia y lo comparte con jx-guias, así que traerlo acá no
 // suma chunks y permite calcular las facturas candidatas en un useMemo (la
@@ -942,7 +943,7 @@ function CapturaMagicaPage({ showToast }) {
         // Para mostrar EN LA FILA qué registro existente lo marcó como duplicado
         // (antes solo decía "Ya existe en la DB" y la asistente no podía verificar).
         duplicate_info: dup ? { doc: dup.document_number, fecha: dup.date, monto: dup.amount, moneda: dup.currency, tercero: dup.third_party_name, tipo: dup.document_type } : null,
-        nc_aviso: ncSerieDeFactura ? `La serie leída (${ext.serie_correlativo}) es la de la FACTURA que modifica — verificá la serie real de la nota en el PDF (suele empezar con FC/BC).` : null,
+        nc_aviso: ncSerieDeFactura ? avisoSerieRepetida({ serieNota: ext.serie_correlativo, serieFactura: ncSerieDeFactura.document_number }) : null,
         motor: { engine: data.engine || null, model: data.model || null, proveedor: data.proveedor || null, ms: Date.now() - t0Lectura },
       } : x));
       return dup ? 'duplicado' : 'revisar';
@@ -1690,14 +1691,14 @@ function CapturaMagicaPage({ showToast }) {
     }
     if (!r.serie_correlativo) { showToast('Falta serie-correlativo', 'red'); return; }
     if (!(Number(r.total) > 0)) { showToast('El total debe ser mayor a 0', 'red'); return; }
-    // NC/ND: la serie de la NOTA no puede ser la misma que la de la factura que
-    // modifica — es la señal de que el OCR leyó el "Doc. que modifica" como serie.
-    // Registrarla así la dejaría con el número de la factura (y chocaría luego).
-    if (esNota && r.nota_doc_modifica &&
-        normalizarComprobante(r.serie_correlativo) === normalizarComprobante(r.nota_doc_modifica)) {
-      showToast(`La serie de la nota (${r.serie_correlativo}) es la MISMA que la de la factura que modifica. Corregí "Serie-correlativo" con la serie propia de la nota (en el PDF, suele empezar con FC/BC).`, 'red');
-      return;
-    }
+    // NC/ND con el MISMO número que la factura que modifica: esto se bloqueaba
+    // como si fuera un error de lectura, con el consejo de "corregí la serie,
+    // suele empezar con FC/BC" — una regla que no existe. SUNAT numera cada
+    // TIPO de comprobante por separado, así que la factura E001-1 y la nota de
+    // crédito E001-1 conviven, y JARVEX emite justamente así. Ahora se avisa en
+    // la ficha de la nota (avisoSerieRepetida) y se deja registrar: el
+    // duplicado real lo sigue atrapando el guard de comprobantes, que compara
+    // dentro del mismo tipo de documento.
 
     // Decisión de reemplazo de la contraparte automática (se ejecuta recién al
     // crear el movimiento real, con guard y validaciones ya pasadas).
@@ -3217,6 +3218,25 @@ function ReviewModal({ item, companies, personal, obras, consorcios = [], consor
     upd({ items: newItems });
   };
 
+  // ── NOTA DE CRÉDITO QUE ANULA LA FACTURA ENTERA ────────────────────
+  // Gabriel, 7-sep-2026: «cuando esta nota de crédito sirve para anular una
+  // factura completa no hace falta ir a revisar estos datos o editarlos».
+  // Sus ítems son una copia de los de la factura original —ya revisada— así
+  // que pedir que se verifiquen 20 líneas es trabajo repetido. Cuando el
+  // motivo dice anulación Y el importe cuadra con la factura vinculada, los
+  // ítems se muestran de SOLO LECTURA y la revisión se limita a confirmar.
+  const esNotaCD = !!(r.es_nota_credito || r.es_nota_debito);
+  const facturaAnulada = esNotaCD && r.nota_ref_mov_id
+    ? (movs || []).find(mv => mv.id === r.nota_ref_mov_id) || null
+    : null;
+  const anulacion = esNotaCD
+    ? anulaFacturaCompleta({ total: r.total, motivo: r.nota_motivo, factura: facturaAnulada })
+    : { esAnulacionTotal: false, montoCuadra: false, porMotivo: false, totalFactura: 0 };
+  const itemsSoloLectura = anulacion.esAnulacionTotal;
+  const avisoSerieNota = esNotaCD
+    ? avisoSerieRepetida({ serieNota: r.serie_correlativo, serieFactura: r.nota_doc_modifica })
+    : null;
+
   // Recalcula total al editar items
   const recalcular = () => {
     // En un RxH el "total" es el NETO a pagar (bruto − retención) y NO lleva
@@ -3965,7 +3985,8 @@ function ReviewModal({ item, companies, personal, obras, consorcios = [], consor
                     Genera ingreso al almacén (esperar recepción física)
                   </label>
                   )}
-                  {!r.es_rxh && <button type="button" className="btn btn-ghost btn-xs" onClick={recalcular}>↻ Recalcular total</button>}
+                  {!r.es_rxh && !itemsSoloLectura && <button type="button" className="btn btn-ghost btn-xs" onClick={recalcular}>↻ Recalcular total</button>}
+                  {itemsSoloLectura && <span className="badge b-green" style={{ fontSize:10 }}>Solo lectura · anulación total</span>}
                 </div>
               </div>
               {/* La columna "Material" (crear/vincular insumo) se quitó a propósito:
@@ -3982,7 +4003,19 @@ function ReviewModal({ item, companies, personal, obras, consorcios = [], consor
                     <th style={{ textAlign:'right', width:100 }}>Subt</th>
                   </tr></thead>
                   <tbody>
-                    {r.items.map((it, i) => (
+                    {/* Anulación total de una factura: los ítems se MUESTRAN (para
+                        poder cotejarlos contra el PDF) pero no se editan — son los
+                        de la factura original, que ya pasó por revisión. */}
+                    {itemsSoloLectura ? r.items.map((it, i) => (
+                      <tr key={i}>
+                        <td style={{ color:'var(--ts)' }}>{it.descripcion || '—'}</td>
+                        <td style={{ color:'var(--tm)' }}>{TIPO_INSUMO_LABEL[it.tipo_insumo || 'material'] || 'Material'}</td>
+                        <td style={{ textAlign:'right' }} className="col-num">{Number(it.cantidad)||0}</td>
+                        <td className="col-m">{it.unidad || '—'}</td>
+                        <td style={{ textAlign:'right' }} className="col-num">{(Number(it.precio_unitario)||0).toFixed(2)}</td>
+                        <td style={{ textAlign:'right' }} className="col-num">{((Number(it.cantidad)||0) * (Number(it.precio_unitario)||0)).toFixed(2)}</td>
+                      </tr>
+                    )) : r.items.map((it, i) => (
                       <tr key={i}>
                         <td><input className="fi" style={{ fontSize:12, padding:'6px 8px' }} value={it.descripcion||''} onChange={e=>updateItem(i, { descripcion: e.target.value })}/></td>
                         <td>
@@ -4078,9 +4111,35 @@ function ReviewModal({ item, companies, personal, obras, consorcios = [], consor
                 </div>
                 <div style={{ fontSize:11, marginTop:6, color: r.nota_ref_mov_id ? 'var(--green)' : 'var(--amber)' }}>
                   {r.nota_ref_mov_id
-                    ? '✓ Vinculada a la factura original que ya está en el sistema.'
+                    ? `✓ Vinculada a la factura ${facturaAnulada?.document_number || ''} que ya está en el sistema${anulacion.totalFactura ? ` (S/ ${anulacion.totalFactura.toFixed(2)})` : ''}.`
                     : 'No encontré esa factura en el sistema — la nota se registra igual (verificá la serie).'}
                 </div>
+                {/* La serie repetida ya no bloquea: SUNAT numera por tipo de
+                    comprobante, así que la nota E001-1 y la factura E001-1 son
+                    dos documentos distintos y válidos. */}
+                {avisoSerieNota && (
+                  <div style={{ fontSize:11, marginTop:4, color:'var(--blue)', lineHeight:1.45 }}>ℹ {avisoSerieNota}</div>
+                )}
+                {/* ANULACIÓN TOTAL: el importe cuadra con la factura entera. */}
+                {anulacion.esAnulacionTotal && (
+                  <div style={{ fontSize:11.5, marginTop:8, padding:'7px 9px', borderRadius:6, lineHeight:1.5,
+                                color:'var(--green)', background:'rgba(46,204,113,0.08)', border:'1px solid rgba(46,204,113,0.35)' }}>
+                    <strong>Anula por completo la factura {facturaAnulada?.document_number}</strong> — el importe de la nota
+                    (S/ {(Number(r.total)||0).toFixed(2)}) es exactamente el de la factura.
+                    Sus {r.items.length} ítem(s) son copia de los de esa factura, que ya se revisó: quedan de
+                    <strong> solo lectura</strong> y no hace falta verificarlos. Confirmá y listo.
+                  </div>
+                )}
+                {/* El motivo dice anulación pero el monto NO cuadra: es un ajuste
+                    parcial y ahí sí hay que mirar las líneas. */}
+                {!anulacion.esAnulacionTotal && anulacion.porMotivo && anulacion.totalFactura > 0 && (
+                  <div style={{ fontSize:11.5, marginTop:8, padding:'7px 9px', borderRadius:6, lineHeight:1.5,
+                                color:'var(--amber)', background:'rgba(242,183,5,0.08)', border:'1px solid rgba(242,183,5,0.35)' }}>
+                    ⚠ El motivo dice anulación, pero la nota es de S/ {(Number(r.total)||0).toFixed(2)} y la factura
+                    {' '}{facturaAnulada?.document_number} es de S/ {anulacion.totalFactura.toFixed(2)}. Como no cuadra,
+                    se registra como <strong>rebaja parcial</strong> — revisá los ítems y el importe.
+                  </div>
+                )}
                 <div style={{ fontSize:11, marginTop:4, color:'var(--tm)' }}>
                   {r.es_nota_credito
                     ? `Se registrará como −S/ ${(Number(r.total)||0).toFixed(2)} (reduce ${r.emisor_company_id ? 'las ventas' : 'el costo del proveedor'}). No pide bancarización ni recepción.`
