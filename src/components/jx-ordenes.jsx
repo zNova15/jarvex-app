@@ -38,6 +38,7 @@ import {
   UMBRAL_POR_DEFECTO,
   nuevaOrdenBorrador, numerarOrden, pasosDeOrden, estaNumerada,
   formatearCodigo,
+  puedeFusionar, fusionarBorradores, previsualizarCorrelativos, ordenarPendientes,
 } from "../lib/ordenes.js";
 import { filtroInicialEmpresa, setEmpresaActivaId } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
@@ -212,6 +213,12 @@ function OrdenesPage({ showToast }) {
   // Gabriel del 7-set-2026).
   const [respProveedor, setRespProveedor] = uS('todos');
   const [respBusca, setRespBusca] = uS('');
+  // EL ORDEN DE LA LISTA. Gabriel, 8-set-2026: «que nos muestre las facturas
+  // de la fecha más antigua a la nueva, para que se vaya ordenando todo de
+  // manera correcta». El número de la orden sigue a la fecha, así que la
+  // lista con la que se trabaja tiene que estar en ese mismo orden. Se puede
+  // volver a «lo caro primero», que es como se MIRA dónde pesa el respaldo.
+  const [respOrden, setRespOrden] = uS('fecha');
   const [verBajoUmbral, setVerBajoUmbral] = uS(false);
   const [respAbierta, setRespAbierta] = uS(null);   // movimiento_id con el detalle desplegado
   // ── EL AYUDANTE DE DOS BLOQUES ──────────────────────────────────
@@ -400,6 +407,22 @@ function OrdenesPage({ showToast }) {
   // sola línea que dice «Insumos y materiales». Se hidrata SOLO EN MEMORIA.
   const movsPorId = uM(() => indexarMovs(movs || []), [movs]);
 
+  // Los comprobantes que respalda cada orden. Son varios cuando la orden se
+  // emitió fusionada (un pedido partido en N facturas): la lista no vive en la
+  // orden, se deriva de los punteros de los movimientos, que es lo único que
+  // no se puede desincronizar.
+  const comprobantesPorOrden = uM(() => {
+    const m = new Map();
+    for (const mv of movs || []) {
+      if (!mv || mv.deleted_at || !mv.orden_compra_id) continue;
+      const arr = m.get(mv.orden_compra_id) || [];
+      arr.push(mv);
+      m.set(mv.orden_compra_id, arr);
+    }
+    for (const arr of m.values()) arr.sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+    return m;
+  }, [movs]);
+
   // ── LA VENTA INTERNA A LA QUE LE FALTA SU COMPRA ────────────────
   // Si el espejo no existe, en «Sin respaldo» no hay NADA que respaldar y la
   // factura desaparece de la pestaña sin decir por qué. Es lo que pasaba con la
@@ -572,7 +595,7 @@ function OrdenesPage({ showToast }) {
 
   const borradoresVisibles = uM(() => {
     const q = respBusca.trim().toLowerCase();
-    return borradores
+    const filtrados = borradores
       .map((b, idx) => ({ b, idx }))
       .filter(({ b }) => {
         if (respProveedor !== 'todos') {
@@ -582,7 +605,12 @@ function OrdenesPage({ showToast }) {
         if (!q) return true;
         return `${b.documento || ''} ${b.proveedor_nombre || ''} ${b.descripcion || ''}`.toLowerCase().includes(q);
       });
-  }, [borradores, respProveedor, respBusca]);
+    // El `idx` viaja con la fila: es la posición en `borradores` y es lo que
+    // usan las ediciones. Reordenar la VISTA no puede reordenar el estado.
+    return ordenarPendientes(filtrados, respOrden, {
+      fechaDe: (x) => x.b.fecha, montoDe: (x) => x.b.total,
+    });
+  }, [borradores, respProveedor, respBusca, respOrden]);
   const hayFiltroResp = respProveedor !== 'todos' || !!respBusca.trim();
 
   // ── LO QUE LLEGA DE ABASTECIMIENTO ──────────────────────────────
@@ -1134,6 +1162,31 @@ function OrdenesPage({ showToast }) {
     return seleccionados.filter(b => !visibles.has(b.movimiento_id)).length;
   }, [hayFiltroResp, borradoresVisibles, seleccionados]);
 
+  // ── EL NÚMERO QUE LE VA A TOCAR A CADA UNA ──────────────────────
+  // Se calcula con el MISMO recorrido de la emisión (por fecha ascendente,
+  // sobre un acumulador local), así que lo que se ve en la columna es lo que
+  // se va a escribir. Desmarcar una fila corre los números de las de abajo:
+  // «si no queremos hacerle la orden a la más antigua, se descarta y el código
+  // pasa a la siguiente» (Gabriel, 8-set-2026).
+  const numeracionPrevista = uM(
+    () => previsualizarCorrelativos(seleccionados, ordenes, { companyDe: lookupCompany }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [seleccionados, ordenes, companies]
+  );
+  // Las que quedarían con un número mayor y una fecha ANTERIOR a una orden ya
+  // emitida. El orden interno del lote no lo puede arreglar: un correlativo
+  // emitido no se renumera nunca, así que esto se avisa y lo decide la persona.
+  const fueraDeCronologia = uM(
+    () => seleccionados.filter(b => numeracionPrevista.get(b.movimiento_id)?.fueraDeOrden),
+    [seleccionados, numeracionPrevista]
+  );
+
+  // ── UNA SOLA ORDEN PARA VARIAS FACTURAS ─────────────────────────
+  // El caso de JARVEX → EL INCA: un pedido partido en tres facturas por el
+  // límite de 20 ítems del facturador. `puedeFusionar` dice por qué no, cuando
+  // no se puede, para que el botón deshabilitado explique el motivo.
+  const fusion = uM(() => puedeFusionar(seleccionados), [seleccionados]);
+
   // ── CREAR LA COMPRA ESPEJO QUE FALTA ────────────────────────────
   //
   // Gabriel / la jefa de contabilidad, 8-set-2026: «falta la E001-2 — problema
@@ -1223,18 +1276,40 @@ function OrdenesPage({ showToast }) {
   // al más antiguo. `ordenarParaEmitir()` recorre por fecha ascendente SOLO
   // acá, en el momento de pedir los correlativos — la grilla que ve la
   // contadora sigue mostrando lo caro primero, que es donde sirve mirar.
-  const emitirLote = async () => {
+  //
+  // `filas` permite emitir algo distinto de la selección cruda: es por donde
+  // entra la orden FUSIONADA (una sola fila que respalda N comprobantes).
+  const emitirLote = async (filas = null) => {
     if (emitiendoRef.current) return;
-    if (!seleccionados.length) { toast('No hay comprobantes seleccionados', 'amber'); return; }
+    const lote = (Array.isArray(filas) && filas.length) ? filas : seleccionados;
+    if (!lote.length) { toast('No hay comprobantes seleccionados', 'amber'); return; }
     if (!canEmitir) { toast('No tienes permiso para emitir órdenes', 'red'); return; }
-    const sinEmpresa = seleccionados.filter(b => !b.company_id);
+    const sinEmpresa = lote.filter(b => !b.company_id);
     if (sinEmpresa.length) { toast(`${sinEmpresa.length} comprobante(s) sin empresa emisora — no se pueden numerar`, 'red'); return; }
-    const extra = selOtraMoneda > 0 ? ` (+ ${selOtraMoneda} en otra moneda)` : '';
-    if (!window.confirm(`Emitir ${seleccionados.length} órdenes por ${fmtS(montoSeleccionado)}${extra}?\n\nCada comprobante queda atado a su orden.`)) return;
+    const montoLote = lote.filter(b => (b.moneda || 'PEN') === 'PEN').reduce((t, b) => t + Number(b.total || 0), 0);
+    const otraMonedaLote = lote.filter(b => (b.moneda || 'PEN') !== 'PEN').length;
+    const extra = otraMonedaLote > 0 ? ` (+ ${otraMonedaLote} en otra moneda)` : '';
+    const nComprobantes = lote.reduce((t, b) => t + (b.movimientos_ids?.length || 1), 0);
+    const esFusion = lote.length === 1 && (lote[0].movimientos_ids?.length || 0) > 1;
+    // La numeración que se va a escribir, dicha antes de escribirla.
+    const previa = previsualizarCorrelativos(lote, ordenes, { companyDe: lookupCompany });
+    const detalleNums = ordenarParaEmitir(lote).slice(0, 6)
+      .map(b => `· ${previa.get(b.movimiento_id)?.codigo || '—'} — ${b.fecha || 's/f'} — ${b.documento || ''}`).join('\n');
+    const cola = ordenarParaEmitir(lote).length > 6 ? `\n· … y ${ordenarParaEmitir(lote).length - 6} más` : '';
+    const desalineadas = lote.filter(b => previa.get(b.movimiento_id)?.fueraDeOrden);
+    const avisoOrden = desalineadas.length
+      ? `\n\n⚠ ${desalineadas.length} quedaría(n) con un número MAYOR y una fecha ANTERIOR a una orden ya emitida `
+        + `(${previa.get(desalineadas[0].movimiento_id)?.refCodigo} es del ${previa.get(desalineadas[0].movimiento_id)?.refFecha}). `
+        + `Un correlativo emitido no se renumera: si importa el orden, emite primero las más antiguas.`
+      : '';
+    const cabecera = esFusion
+      ? `Emitir UNA sola orden que respalde ${nComprobantes} comprobantes por ${fmtS(montoLote)}${extra}?`
+      : `Emitir ${lote.length} órdenes por ${fmtS(montoLote)}${extra}?\n\nCada comprobante queda atado a su orden.`;
+    if (!window.confirm(`${cabecera}\n\n${detalleNums}${cola}${avisoOrden}`)) return;
 
     emitiendoRef.current = true;
     setEmitiendo(true);
-    const porFecha = ordenarParaEmitir(seleccionados);
+    const porFecha = ordenarParaEmitir(lote);
     setProgreso({ hechas: 0, total: porFecha.length });
     const emitidasAhora = [...ordenes];
     let ok = 0; const errores = [];
@@ -1318,9 +1393,15 @@ function OrdenesPage({ showToast }) {
           }
 
           // El otro lado del vínculo. Sin esto la factura sigue "sin respaldo".
-          const mv = await window.__db.accounting_movements.get(b.movimiento_id);
-          if (mv) {
-            await window.__db.accounting_movements.update(b.movimiento_id, {
+          // En una orden FUSIONADA son varios: los N comprobantes apuntan a la
+          // misma orden y `comprobantesSinOrden` los saca a todos de la lista
+          // (filtra por `m.orden_compra_id`). La orden guarda como ancla el más
+          // antiguo, y la lista completa se deriva de estos punteros.
+          for (const movId of (b.movimientos_ids?.length ? b.movimientos_ids : [b.movimiento_id])) {
+            if (!movId) continue;
+            const mv = await window.__db.accounting_movements.get(movId);
+            if (!mv) continue;
+            await window.__db.accounting_movements.update(movId, {
               orden_compra_id: ocId,
               updated_at: now, updated_by: userId,
               version: (mv.version ?? 0) + 1,
@@ -1339,8 +1420,10 @@ function OrdenesPage({ showToast }) {
       try {
         await window.__logAudit?.({
           action: 'create', table: 'ordenes_compra', recordId: null,
-          newData: { emitidas: ok, monto: montoSeleccionado },
-          reason: `Emisión masiva de respaldo — ${ok} órdenes por ${fmtS(montoSeleccionado)} (umbral S/ ${umbral})`,
+          newData: { emitidas: ok, monto: montoLote, comprobantes: nComprobantes, fusionada: esFusion },
+          reason: esFusion
+            ? `Orden única de respaldo para ${nComprobantes} comprobantes por ${fmtS(montoLote)}`
+            : `Emisión masiva de respaldo — ${ok} órdenes por ${fmtS(montoLote)} (umbral S/ ${umbral})`,
         });
       } catch {}
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'ordenes_compra' } })); } catch {}
@@ -1350,8 +1433,10 @@ function OrdenesPage({ showToast }) {
       if (errores.length) {
         console.warn('[órdenes] errores de emisión', errores);
         toast(`${ok} órdenes emitidas · ${errores.length} con error (ver consola)`, 'amber');
+      } else if (esFusion) {
+        toast(`✓ 1 orden emitida por ${nComprobantes} comprobantes · ${fmtS(montoLote)} respaldados`, 'green');
       } else {
-        toast(`✓ ${ok} órdenes emitidas · ${fmtS(montoSeleccionado)} respaldados`, 'green');
+        toast(`✓ ${ok} órdenes emitidas · ${fmtS(montoLote)} respaldados`, 'green');
       }
       setTab('emitidas');
     } finally {
@@ -1361,14 +1446,42 @@ function OrdenesPage({ showToast }) {
     }
   };
 
+  // ── UNA SOLA ORDEN PARA LAS QUE ESTÁN MARCADAS ──────────────────
+  // «Realmente era así, era una orden de compra y se emitieron tres facturas
+  // por el límite de 20 ítems de la zona» (Gabriel, 8-set-2026). La fusión no
+  // inventa nada: junta las líneas de las N facturas, suma los totales y las
+  // ata a UNA orden fechada con el comprobante más antiguo.
+  const emitirFusionada = async () => {
+    if (emitiendoRef.current) return;
+    if (!fusion.ok) { toast(fusion.motivo || 'No se pueden fusionar', 'amber'); return; }
+    const unica = fusionarBorradores(seleccionados);
+    if (!unica) return;
+    await emitirLote([unica]);
+  };
+
   // ── PDF ─────────────────────────────────────────────────────────
   const descargarPdf = async (o) => {
     try {
       const items = await window.__db.oc_items.where('orden_compra_id').equals(o.id).filter(x => !x.deleted_at).toArray();
+      // A qué comprobante(s) respalda, derivado de los movimientos que la
+      // apuntan: en una orden fusionada son varios y el papel tiene que
+      // decirlos. El ancla se agrega igual si el movimiento todavía no tiene
+      // el puntero escrito (offline, o una orden vieja).
+      const ligados = (movs || []).filter(m => !m.deleted_at && m.orden_compra_id === o.id);
+      const ids = new Set(ligados.map(m => m.id));
+      if (o.accounting_movement_id && !ids.has(o.accounting_movement_id)) {
+        const ancla = (movs || []).find(m => m.id === o.accounting_movement_id);
+        if (ancla) ligados.unshift(ancla);
+      }
+      const comprobantes = ligados
+        .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')))
+        .map(m => [m.document_type, m.document_number].filter(Boolean).join(' ').trim())
+        .filter(Boolean);
       window.__pdfs?.generateOrdenPdf?.(o, items, {
         company: lookupCompany(o.company_id) || {},
         obra: lookupObra(o.obra_id),
         proveedor: lookupProv(o.proveedor_id),
+        comprobantes,
       });
     } catch (e) { toast('Error generando el PDF: ' + (e.message || e), 'red'); }
   };
@@ -1392,17 +1505,23 @@ function OrdenesPage({ showToast }) {
         version: (o.version ?? 0) + 1,
         sync_status: o.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
       });
-      // El comprobante vuelve a quedar sin respaldo — que es la verdad.
-      if (o.accounting_movement_id) {
-        const mv = await window.__db.accounting_movements.get(o.accounting_movement_id);
-        if (mv && mv.orden_compra_id === o.id) {
-          await window.__db.accounting_movements.update(mv.id, {
-            orden_compra_id: null,
-            updated_at: now, updated_by: userId,
-            version: (mv.version ?? 0) + 1,
-            sync_status: mv.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
-          });
-        }
+      // El comprobante vuelve a quedar sin respaldo — que es la verdad. Si la
+      // orden respaldaba VARIOS (orden fusionada), vuelven TODOS: soltar solo
+      // el ancla dejaría a los otros marcados como respaldados por una orden
+      // anulada, y ya no volverían a aparecer en «Sin respaldo».
+      const ligados = await window.__db.accounting_movements
+        .filter(m => !m.deleted_at && m.orden_compra_id === o.id).toArray();
+      const idsSoltar = new Set(ligados.map(m => m.id));
+      if (o.accounting_movement_id) idsSoltar.add(o.accounting_movement_id);
+      for (const movId of idsSoltar) {
+        const mv = await window.__db.accounting_movements.get(movId);
+        if (!mv || mv.orden_compra_id !== o.id) continue;
+        await window.__db.accounting_movements.update(mv.id, {
+          orden_compra_id: null,
+          updated_at: now, updated_by: userId,
+          version: (mv.version ?? 0) + 1,
+          sync_status: mv.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+        });
       }
       try { await window.__logAudit?.({ action: 'update', table: 'ordenes_compra', recordId: o.id, oldData: { estado: o.estado }, newData: { estado: 'anulada', motivo }, reason: `Anulación ${o.codigo}: ${motivo}` }); } catch {}
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'ordenes_compra' } })); } catch {}
@@ -2718,6 +2837,12 @@ function OrdenesPage({ showToast }) {
                         <td className="col-m" style={{ fontFamily: 'monospace', fontWeight: 700 }}>
                           {o.codigo || '—'}
                           {o.emitida_retroactiva && <div style={{ fontSize: 9.5, color: 'var(--tm)', fontFamily: 'inherit' }}>respaldo retroactivo</div>}
+                          {(comprobantesPorOrden.get(o.id)?.length || 0) > 1 && (
+                            <div style={{ fontSize: 9.5, color: 'var(--blue)', fontFamily: 'inherit' }}
+                              title={comprobantesPorOrden.get(o.id).map(m => [m.document_type, m.document_number].filter(Boolean).join(' ')).join('  ·  ')}>
+                              respalda {comprobantesPorOrden.get(o.id).length} comprobantes
+                            </div>
+                          )}
                         </td>
                         <td>
                           <span className={`badge ${(o.tipo || 'compra') === 'servicio' ? 'b-purple' : 'b-blue'}`}>
@@ -2956,6 +3081,18 @@ function OrdenesPage({ showToast }) {
                 onClick={() => { const v = new Set(borradoresVisibles.map(x => x.idx)); setBorradores(bs => bs.map((b, i) => (v.has(i) ? { ...b, incluir: false } : b))); }}>
                 Desmarcar {hayFiltroResp ? 'las visibles' : 'todas'}
               </button>
+              {/* El orden con el que se trabaja. Por fecha, porque el número
+                  de la orden sigue a la fecha; «lo caro primero» queda a un
+                  clic, que es como se mira dónde pesa el respaldo. */}
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: 'var(--tm)' }}>
+                Ordenar por
+                <select className="fi" style={{ fontSize: 11.5, padding: '3px 6px', width: 'auto' }}
+                  value={respOrden} onChange={e => setRespOrden(e.target.value)}
+                  title="El correlativo se reparte por fecha ascendente. Trabajar la lista en ese mismo orden es lo que mantiene la numeración alineada con el tiempo.">
+                  <option value="fecha">Fecha · la más antigua primero</option>
+                  <option value="monto">Importe · el más alto primero</option>
+                </select>
+              </label>
               <div style={{ flex: 1 }} />
               <div style={{ fontSize: 12, color: 'var(--tm)' }}>
                 {seleccionados.length} seleccionadas · <strong style={{ color: 'var(--amber)' }}>{fmtS(montoSeleccionado)}</strong>
@@ -2970,8 +3107,22 @@ function OrdenesPage({ showToast }) {
                   </span>
                 )}
               </div>
+              {/* UNA SOLA ORDEN PARA VARIAS FACTURAS. El pedido de la
+                  asistente y la contadora jefe: tres facturas que salieron de
+                  un mismo pedido (partido por el límite de 20 ítems del
+                  facturador) se respaldan con UNA orden, no con tres. */}
+              {canEmitir && seleccionados.length > 1 && (
+                <button className="btn btn-ghost btn-sm" disabled={emitiendo || !fusion.ok}
+                  onClick={emitirFusionada}
+                  title={fusion.ok
+                    ? `Junta los ${seleccionados.length} comprobantes en una sola orden, con la fecha del más antiguo y el detalle de todos.`
+                    : fusion.motivo}>
+                  <JxIcon name="link" size={13} />
+                  Emitir 1 sola orden
+                </button>
+              )}
               {canEmitir && (
-                <button className="btn btn-amber btn-sm" disabled={emitiendo || !seleccionados.length} onClick={emitirLote}>
+                <button className="btn btn-amber btn-sm" disabled={emitiendo || !seleccionados.length} onClick={() => emitirLote()}>
                   <JxIcon name="check" size={13} />
                   {emitiendo
                     ? `Emitiendo ${progreso?.hechas ?? 0}/${progreso?.total ?? 0}…`
@@ -2980,6 +3131,25 @@ function OrdenesPage({ showToast }) {
               )}
             </div>
 
+            {/* EL NÚMERO NO PUEDE IR CONTRA EL TIEMPO. Un correlativo emitido
+                no se renumera nunca, así que esto se avisa antes y lo decide
+                quien emite: emitir primero las más antiguas, o aceptarlo. */}
+            {fueraDeCronologia.length > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '9px 14px', marginBottom: 10, borderRadius: 8, background: 'rgba(245,158,11,0.09)', border: '1px solid rgba(245,158,11,0.35)' }}>
+                <span style={{ fontSize: 15 }}>⚠</span>
+                <span style={{ fontSize: 12.5, color: 'var(--ts)', flex: '1 1 320px', lineHeight: 1.45 }}>
+                  <strong style={{ color: 'var(--amber)' }}>{fueraDeCronologia.length} orden(es) quedarían con un número mayor y una fecha anterior</strong>
+                  {' '}a otra ya emitida
+                  {(() => {
+                    const p = numeracionPrevista.get(fueraDeCronologia[0].movimiento_id);
+                    return p?.refCodigo ? ` (${p.refCodigo} es del ${p.refFecha})` : '';
+                  })()}
+                  {' — '}el correlativo se reparte por fecha, pero solo dentro de lo que se emite ahora.
+                  Emite primero los comprobantes más antiguos si quieres que la serie quede alineada con el tiempo.
+                </span>
+              </div>
+            )}
+
             <div className="card" style={{ overflow: 'hidden' }}>
               <div style={{ overflowX: 'auto' }}>
                 <table className="tbl" style={{ fontSize: 11.5 }}>
@@ -2987,6 +3157,7 @@ function OrdenesPage({ showToast }) {
                     <th style={{ width: 32 }}></th>
                     <th style={{ width: 128 }}>Comprobante</th>
                     <th style={{ width: 116 }}>Fecha de la orden</th>
+                    <th style={{ width: 108 }} title="El número que le va a tocar si se emite la selección tal como está. Se corre solo al marcar o desmarcar filas.">N° que le toca</th>
                     <th style={{ width: 170 }}>Proveedor</th>
                     <th style={{ minWidth: 240 }}>Qué se compró</th>
                     <th style={{ width: 108 }}>Tipo</th>
@@ -3033,6 +3204,28 @@ function OrdenesPage({ showToast }) {
                               El AÑO de esta fecha es el que numera la serie. */}
                           <input className="fi" type="date" style={{ fontSize: 11, width: '100%' }}
                             value={b.fecha || ''} onChange={e => actualizarBorrador(idx, { fecha: e.target.value })} />
+                        </td>
+                        {/* EL NÚMERO, ANTES DE EMITIRLO. Sale del mismo
+                            recorrido que la emisión (fecha ascendente sobre un
+                            acumulador local): lo que se ve es lo que se
+                            escribe. Si esta fila se desmarca, el número pasa a
+                            la siguiente — pedido literal de Gabriel. */}
+                        <td style={{ fontSize: 11 }}>
+                          {(() => {
+                            const prev = numeracionPrevista.get(b.movimiento_id);
+                            if (!prev) return <span style={{ color: 'var(--tm)' }}>—</span>;
+                            return (
+                              <div>
+                                <div style={{ fontWeight: 600, fontFamily: 'ui-monospace, monospace' }}>{prev.codigo}</div>
+                                {prev.fueraDeOrden && (
+                                  <div style={{ fontSize: 9.5, color: 'var(--amber)' }}
+                                    title={`${prev.refCodigo} ya está emitida con fecha ${prev.refFecha}, posterior a esta. El número emitido no se puede renumerar.`}>
+                                    ⚠ posterior a {prev.refCodigo}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </td>
                         <td style={{ maxWidth: 170, fontSize: 10.5 }}>
                           <div style={{ fontWeight: 600 }}>{b.proveedor_nombre || '—'}</div>
@@ -3086,7 +3279,7 @@ function OrdenesPage({ showToast }) {
                           resumen que la emisión descartaba. */}
                       {abierta && (
                         <tr>
-                          <td colSpan={8} style={{ background: 'var(--bg-c2)', padding: '10px 14px' }}>
+                          <td colSpan={9} style={{ background: 'var(--bg-c2)', padding: '10px 14px' }}>
                             <div style={{ fontSize: 10.5, color: 'var(--tm)', marginBottom: 6 }}>
                               Lo que dice la factura, línea por línea. Se puede renombrar, cambiar la
                               unidad, la cantidad y el importe, partir una línea en dos o quitar la que no va.

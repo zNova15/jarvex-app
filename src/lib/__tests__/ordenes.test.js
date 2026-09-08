@@ -11,6 +11,8 @@ import {
   exigeOrdenesDeRespaldo, motivoNoExigido,
   conLineaEditada, conLineaNueva, conLineaQuitada, lineasParaEmitir,
   sumaDeLineas, resumenDeLineas,
+  rubroDeOrden, tituloImprimible, puedeFusionar, fusionarBorradores,
+  previsualizarCorrelativos, ultimaOrdenNumerada, ordenarPendientes,
 } from '../ordenes.js';
 
 // Datos de producción: el modelo que dejó Gabriel es del CONSORCIO EL INCA,
@@ -949,5 +951,145 @@ describe('el borrador nace sin observaciones', () => {
   it('en blanco, no con el texto automático de antes', () => {
     const b = borradorDesdeMovimiento(mov({ amount: 5000 }), { company: INCA });
     expect(b.observaciones).toBe('');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// TANDA 16 — el título del PDF, la orden única y el número que sigue a la
+// fecha. Los tres pedidos de Gabriel del 8-set-2026 sobre el PDF que salió
+// titulado «PICOS M/TRAMONTINA-BELLOTA».
+// ═══════════════════════════════════════════════════════════════════
+
+describe('rubroDeOrden — el título del PDF ya no es el primer ítem', () => {
+  it('«Factura» no es un rubro: no se imprime', () => {
+    expect(rubroDeOrden({ category: 'Factura' })).toBe(null);
+    expect(rubroDeOrden({ category: 'Recibo por Honorarios' })).toBe(null);
+  });
+
+  it('un rubro de verdad escrito en el comprobante sí se respeta', () => {
+    expect(rubroDeOrden({ category: 'Alquiler de maquinaria' })).toBe('ALQUILER DE MAQUINARIA');
+  });
+
+  // Medido en producción el 8-set-2026: de 8 órdenes emitidas, 3 tienen título
+  // y las 3 son basura heredada (dos «PICOS M/TRAMONTINA-BELLOTA», una «FACTURA»).
+  it('el PDF de una orden YA emitida no reimprime el título heredado', () => {
+    const items = [{ nombre: 'PICOS M/TRAMONTINA-BELLOTA' }, { nombre: 'BALDE VACIO DE 19 LTS' }];
+    expect(tituloImprimible('PICOS M/TRAMONTINA-BELLOTA', items)).toBe(null);
+    expect(tituloImprimible('FACTURA', items)).toBe(null);
+    expect(tituloImprimible('', items)).toBe(null);
+    // Un rubro escrito a mano sí se imprime.
+    expect(tituloImprimible('Alquiler de maquinaria', items)).toBe('Alquiler de maquinaria');
+  });
+
+  it('el primer ítem de la factura YA NO titula la orden entera', () => {
+    // El caso real: una factura de 20 líneas salía titulada con la primera.
+    const b = borradorDesdeMovimiento({
+      id: 'm1', company_id: 'c-inca', type: 'cost', amount: 19028.68, date: '2026-07-06',
+      category: 'Factura', document_type: 'factura', document_number: 'E001-2',
+      notas: JSON.stringify({ items_factura: [
+        { descripcion: 'PICOS M/TRAMONTINA-BELLOTA', cantidad: 2, precio_unitario: 50 },
+        { descripcion: 'BALDE VACIO DE 19 LTS', cantidad: 3, precio_unitario: 20 },
+      ] }),
+    });
+    expect(b.titulo).toBe(null);
+    expect(b.lineas.length).toBe(2);          // el detalle sigue completo
+  });
+});
+
+describe('fusionar — una sola orden para varias facturas del mismo pedido', () => {
+  const base = (o = {}) => ({
+    movimiento_id: o.id, company_id: 'c-inca', obra_id: 'ob1', tipo: 'compra',
+    moneda: 'PEN', igvPct: 18, proveedor_ruc: '20615646505', proveedor_nombre: 'JARVEX',
+    fecha: o.fecha, documento: o.doc, total: o.total,
+    valorVenta: round2(o.total / 1.18), igv: round2(o.total - o.total / 1.18),
+    lineas: o.lineas || [{ nombre: o.doc + ' item', unidad: 'UND', cantidad: 1, subtotal: round2(o.total / 1.18) }],
+    incluir: true, ...o.extra,
+  });
+  function round2(n) { return Math.round(n * 100) / 100; }
+  // El caso real: un pedido partido en tres por el límite de 20 ítems.
+  const e2 = base({ id: 'm2', fecha: '2026-07-06', doc: 'factura E001-2', total: 19028.68 });
+  const e3 = base({ id: 'm3', fecha: '2026-07-07', doc: 'factura E001-3', total: 2551.16 });
+  const e4 = base({ id: 'm4', fecha: '2026-07-07', doc: 'factura E001-4', total: 4184.28 });
+
+  it('junta las tres en una: fecha de la más antigua, totales sumados', () => {
+    const u = fusionarBorradores([e3, e2, e4]);   // desordenadas a propósito
+    expect(u.fecha).toBe('2026-07-06');
+    expect(u.movimiento_id).toBe('m2');            // el ancla es la más antigua
+    expect(u.movimientos_ids).toEqual(['m2', 'm3', 'm4']);
+    expect(u.total).toBeCloseTo(25764.12, 2);      // el total de la captura
+    expect(round2(u.valorVenta + u.igv)).toBeCloseTo(u.total, 2);
+    expect(u.lineas.length).toBe(3);
+    expect(u.documentos).toEqual(['factura E001-2', 'factura E001-3', 'factura E001-4']);
+    expect(u.titulo).toBe(null);
+    expect(u.fusionada).toBe(3);
+  });
+
+  it('las líneas fusionadas cuadran contra el valor de venta de la orden', () => {
+    const u = fusionarBorradores([e2, e3, e4]);
+    const emitidas = lineasParaEmitir(u);
+    expect(sumaDeLineas(emitidas)).toBeCloseTo(u.valorVenta, 2);
+  });
+
+  it('no fusiona lo que no es un mismo pedido, y dice por qué', () => {
+    expect(puedeFusionar([e2]).ok).toBe(false);
+    const otraEmpresa = { ...e3, company_id: 'c-jarvex' };
+    expect(puedeFusionar([e2, otraEmpresa]).motivo).toMatch(/empresas emisoras/);
+    const otroProv = { ...e3, proveedor_ruc: '20999999999' };
+    expect(puedeFusionar([e2, otroProv]).motivo).toMatch(/proveedores distintos/);
+    expect(puedeFusionar([e2, { ...e3, moneda: 'USD' }]).motivo).toMatch(/monedas/);
+    expect(puedeFusionar([e2, { ...e3, igvPct: 0 }]).motivo).toMatch(/IGV/);
+    expect(puedeFusionar([e2, { ...e3, tipo: 'servicio' }]).motivo).toMatch(/servicio/);
+    expect(puedeFusionar([e2, { ...e3, obra_id: 'ob2' }]).motivo).toMatch(/obras/);
+    expect(puedeFusionar([e2, e3, e4]).ok).toBe(true);
+  });
+});
+
+describe('el número sigue a la fecha', () => {
+  const b = (id, fecha) => ({ movimiento_id: id, company_id: 'c-inca', tipo: 'compra', fecha, total: 100 });
+
+  it('reparte los correlativos por fecha ascendente, no por el orden de la lista', () => {
+    const prev = previsualizarCorrelativos(
+      [b('m1', '2026-07-20'), b('m2', '2026-07-05'), b('m3', '2026-07-11')], [],
+      { companyDe: () => INCA });
+    expect(prev.get('m2').codigo).toBe('OC-001-2026');   // la más antigua
+    expect(prev.get('m3').codigo).toBe('OC-002-2026');
+    expect(prev.get('m1').codigo).toBe('OC-003-2026');
+  });
+
+  it('desmarcar una corre el número a la siguiente', () => {
+    const sinLaAntigua = previsualizarCorrelativos(
+      [b('m1', '2026-07-20'), b('m3', '2026-07-11')], [], { companyDe: () => INCA });
+    expect(sinLaAntigua.get('m3').codigo).toBe('OC-001-2026');
+    expect(sinLaAntigua.get('m1').codigo).toBe('OC-002-2026');
+  });
+
+  it('continúa la serie de la empresa y avisa cuando la fecha retrocede', () => {
+    const emitidas = [{ id: 'o1', company_id: 'c-inca', tipo: 'compra', correlativo: 6, codigo: 'OC-006-2026', anio: 2026, fecha: '2026-07-20' }];
+    const prev = previsualizarCorrelativos([b('m9', '2026-07-05')], emitidas, { companyDe: () => INCA });
+    expect(prev.get('m9').codigo).toBe('OC-007-2026');
+    expect(prev.get('m9').fueraDeOrden).toBe(true);
+    expect(prev.get('m9').refCodigo).toBe('OC-006-2026');
+    // Emitida después de la última, no hay nada que avisar.
+    const ok = previsualizarCorrelativos([b('m10', '2026-07-25')], emitidas, { companyDe: () => INCA });
+    expect(ok.get('m10').fueraDeOrden).toBe(false);
+  });
+
+  it('ultimaOrdenNumerada ignora borradores y otras empresas', () => {
+    const ords = [
+      { id: 'a', company_id: 'c-inca', tipo: 'compra', correlativo: 2, codigo: 'OC-002-2026', anio: 2026, fecha: '2026-05-01' },
+      { id: 'b', company_id: 'c-inca', tipo: 'compra', correlativo: null, anio: 2026, fecha: '2026-09-01' },
+      { id: 'c', company_id: 'c-jarvex', tipo: 'compra', correlativo: 9, anio: 2026, fecha: '2026-09-01' },
+    ];
+    expect(ultimaOrdenNumerada(ords, { companyId: 'c-inca', tipo: 'compra', anio: 2026 }).id).toBe('a');
+  });
+
+  it('ordenarPendientes: fecha antigua primero, o el importe más alto', () => {
+    const lista = [
+      { id: 'x', date: '2026-07-20', amount: 10 },
+      { id: 'y', date: '2026-07-05', amount: 999 },
+      { id: 'z', date: null, amount: 500 },
+    ];
+    expect(ordenarPendientes(lista, 'fecha').map(m => m.id)).toEqual(['y', 'x', 'z']);
+    expect(ordenarPendientes(lista, 'monto').map(m => m.id)).toEqual(['y', 'z', 'x']);
   });
 });

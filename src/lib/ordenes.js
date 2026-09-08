@@ -520,15 +520,44 @@ function lineasDeComprobante(mov, tipo) {
  * ponerlo de título imprimía FACTURA en grande en el medio de una ORDEN DE
  * COMPRA — que es justo lo que Gabriel no quería ver en el PDF. El rubro sale
  * de lo que se compró; si no se puede saber, va vacío antes que mentir.
+ *
+ * 🔴 8-set-2026: la banda del PDF salía «PICOS M/TRAMONTINA-BELLOTA» — el
+ * PRIMER ítem de una factura de 20 líneas, puesto de título de todo el
+ * documento. Gabriel: «sale un título extraño donde salen los picos y eso no
+ * tiene nada que ver; quítalo si no se puede colocar algo relevante». El
+ * primer ítem NO representa a la orden: en una compra de 20 insumos es tan
+ * arbitrario como el último. Se cae esa rama y el título queda vacío salvo que
+ * alguien lo escriba (o que `category` traiga un rubro de verdad). Lo
+ * relevante —a qué comprobante respalda— va en DATOS DE LA ORDEN, con su
+ * rótulo, que es donde se lee sin adivinar.
  */
 const TIPOS_DOCUMENTO = new Set(['factura', 'boleta', 'recibo honorarios', 'recibo por honorarios', 'nota de credito', 'nota de débito', 'nota de debito', 'ticket']);
-export function rubroDeOrden(mov, lineas) {
+const normRubro = (x) => String(x || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+/**
+ * ¿El título guardado en una orden merece imprimirse en el PDF?
+ *
+ * Las órdenes emitidas ANTES del 8-set-2026 llevan guardado lo que ya no se
+ * guarda: el primer ítem de la factura («PICOS M/TRAMONTINA-BELLOTA») o, las
+ * más viejas todavía, el tipo de documento («FACTURA»). Esas órdenes siguen
+ * emitidas y su papel se vuelve a descargar. No se les toca el dato —una orden
+ * emitida no se reescribe— pero el PDF no repite el error.
+ *
+ * Medido en producción el 8-set-2026: de 8 órdenes, 3 tienen título y las 3
+ * son de este tipo (dos «PICOS M/TRAMONTINA-BELLOTA» y una «FACTURA»).
+ */
+export function tituloImprimible(titulo, items = []) {
+  const t = String(titulo || '').trim();
+  if (!t) return null;
+  if (TIPOS_DOCUMENTO.has(normRubro(t))) return null;
+  const esUnItem = (items || []).some(it => normRubro(it?.nombre || it?.descripcion || it?.nombre_libre) === normRubro(t));
+  return esUnItem ? null : t;
+}
+
+export function rubroDeOrden(mov) {
   const cat = String(mov?.category || '').trim();
-  const norm = cat.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  if (cat && !TIPOS_DOCUMENTO.has(norm)) return cat.toUpperCase();
-  const primera = lineas?.[0]?.nombre;
-  if (!primera || primera === 'Insumos y materiales') return null;
-  return String(primera).slice(0, 60).toUpperCase();
+  if (cat && !TIPOS_DOCUMENTO.has(normRubro(cat))) return cat.toUpperCase();
+  return null;
 }
 
 export function borradorDesdeMovimiento(mov, { company, proveedor, obra } = {}) {
@@ -544,7 +573,7 @@ export function borradorDesdeMovimiento(mov, { company, proveedor, obra } = {}) 
     trabajo_id: mov?.trabajo_id || null,
     tipo,
     fecha: mov?.date || null,
-    titulo: rubroDeOrden(mov, lineas),
+    titulo: rubroDeOrden(mov),
     // Lo que se compró, de la factura. Varias líneas se resumen para la grilla
     // y van completas a la orden (`lineas`).
     descripcion: lineas.map(l => l.nombre).join(' · ').slice(0, 140),
@@ -652,6 +681,184 @@ export function lineasParaEmitir(b) {
     subtotal: num(b?.valorVenta),
   }];
   return repartirSobreItems(base, num(b?.valorVenta));
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// UNA SOLA ORDEN PARA VARIAS FACTURAS (tanda 16)
+//
+// EL PEDIDO, de la asistente de contabilidad y la contadora jefe (8-set-2026):
+// «voy a JARVEX y veo que hay tres órdenes de compra por hacerle; en lugar de
+// hacer tres, le hago una sola». Gabriel: «realmente era así, era UNA orden de
+// compra y se emitieron tres facturas por el límite de 20 ítems de la zona».
+//
+// Es el caso real de JARVEX → CONSORCIO EL INCA: E001-2 (20 ítems), E001-4
+// (14) y E001-3 (12) son un solo pedido partido por un límite del sistema de
+// facturación, no tres compras. Tres órdenes de respaldo para un solo pedido
+// es papel que no representa lo que pasó.
+//
+// CÓMO SE GUARDA, sin migración: una orden ya se relaciona con su comprobante
+// por los DOS lados —`ordenes_compra.accounting_movement_id` y
+// `accounting_movements.orden_compra_id`—. En la fusión, los N comprobantes
+// apuntan a la MISMA orden y la orden guarda como ancla el más antiguo. La
+// lista completa se deriva de los movimientos que la apuntan, que es la única
+// fuente que no se puede desincronizar. Por eso `comprobantesSinOrden` ya los
+// da por respaldados a los N: filtra por `m.orden_compra_id`.
+//
+// QUÉ NO SE FUSIONA, y por qué: distinta empresa emisora (cada una numera su
+// propia serie), distinto proveedor (la orden se le emite a UNO), distinta
+// moneda (el PDF sale con un solo símbolo), distinto tipo (compra ≠ servicio)
+// o distinto IGV (una orden tiene un solo `igv_pct`; mezclarlos falsearía el
+// valor de venta de las dos partes).
+// ═══════════════════════════════════════════════════════════════════
+
+const rucNorm = (v) => String(v || '').replace(/\D+/g, '');
+/** La identidad del proveedor para agrupar: el RUC si lo hay, si no el nombre. */
+function claveProveedor(b) {
+  const r = rucNorm(b?.proveedor_ruc);
+  return r || String(b?.proveedor_nombre || '').trim().toLowerCase() || '—';
+}
+
+/**
+ * ¿Estos borradores pueden salir en UNA sola orden?
+ * @returns {{ ok: boolean, motivo: string|null }} — el motivo se muestra tal cual.
+ */
+export function puedeFusionar(borradores) {
+  const bs = (borradores || []).filter(Boolean);
+  if (bs.length < 2) return { ok: false, motivo: 'Hay que marcar al menos dos comprobantes.' };
+  const distinto = (fn, etiqueta) => {
+    const vals = new Set(bs.map(fn));
+    return vals.size > 1 ? etiqueta : null;
+  };
+  const motivo =
+       distinto(b => b.company_id || '', 'son de dos empresas emisoras distintas (cada una numera su propia serie)')
+    || distinto(b => claveProveedor(b), 'son de proveedores distintos (una orden se le emite a uno solo)')
+    || distinto(b => b.moneda || 'PEN', 'están en monedas distintas')
+    || distinto(b => b.tipo || 'compra', 'una es de compra y otra de servicio')
+    || distinto(b => String(Number(b.igvPct ?? 18)), 'tienen IGV distinto (una orden lleva un solo porcentaje)')
+    || distinto(b => b.obra_id || '', 'son de obras distintas');
+  return motivo ? { ok: false, motivo: `No se pueden fusionar: ${motivo}.` } : { ok: true, motivo: null };
+}
+
+/**
+ * Los N borradores, convertidos en UNO.
+ *
+ * La fecha es la del comprobante MÁS ANTIGUO: la orden nació antes que todas
+ * las facturas que respalda, así que fecharla con la última la dejaría
+ * emitida después de lo que ordenó. El total manda sobre la suma de las
+ * líneas (misma regla que la orden retroactiva de siempre): las líneas se
+ * concatenan y `lineasParaEmitir` las cuadra contra el valor de venta.
+ */
+export function fusionarBorradores(borradores) {
+  const bs = ordenarParaEmitir((borradores || []).filter(Boolean));
+  if (!bs.length) return null;
+  if (bs.length === 1) return bs[0];
+  const primero = bs[0];
+  const igvPct = Number(primero.igvPct ?? 18);
+  const total = round2(bs.reduce((t, b) => t + num(b.total), 0));
+  const t = totalesDesdeTotal(total, { igvPct });
+  const lineas = bs.flatMap(b => (b.lineas || []).filter(l => l && String(l.nombre || '').trim()));
+  const documentos = bs.map(b => b.documento).filter(Boolean);
+  return {
+    ...primero,
+    // El ancla que va en `ordenes_compra.accounting_movement_id`, y la lista
+    // completa que la pantalla escribe en los N `accounting_movements`.
+    movimiento_id: primero.movimiento_id,
+    movimientos_ids: bs.map(b => b.movimiento_id).filter(Boolean),
+    documento: documentos.join(' · '),
+    documentos,
+    fecha: primero.fecha || null,
+    lineas,
+    descripcion: resumenDeLineas(lineas),
+    // Un rubro heredado de una de las tres facturas no describe a las tres.
+    titulo: null,
+    igvPct: t.igvPct,
+    valorVenta: t.valorVenta,
+    igv: t.igv,
+    total: t.total,
+    fusionada: bs.length,
+    incluir: true,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// EL NÚMERO SIGUE A LA FECHA (tanda 16)
+//
+// Gabriel, 8-set-2026: «no puede estar la orden de compra uno emitida el 5 de
+// julio y la número dos el 3 de julio; tienen que ir correctamente
+// estructuradas». Y: «que cuando se haga el respaldo nos muestre las facturas
+// de la fecha más antigua a la nueva, y si no queremos hacerle la orden a la
+// más antigua, se descarta y el código pasa a la siguiente».
+//
+// LO QUE YA ESTABA: `ordenarParaEmitir` recorre el lote por fecha ascendente
+// (bloqueante B-3 de la tanda 5), así que DENTRO de un lote la numeración ya
+// sale cronológica. LO QUE FALTABA: verlo antes de emitir, y que avise cuando
+// el lote de hoy mete una fecha ANTERIOR a la última orden ya emitida — eso el
+// orden interno del lote no lo puede arreglar, porque un correlativo emitido
+// no se renumera nunca.
+// ═══════════════════════════════════════════════════════════════════
+
+/** La última orden numerada de (empresa, tipo, año): la del correlativo más alto. */
+export function ultimaOrdenNumerada(ordenes, { companyId, tipo = 'compra', anio } = {}) {
+  const year = anio || new Date().getFullYear();
+  let mejor = null;
+  for (const o of ordenes || []) {
+    if (!o || o.deleted_at || !o.correlativo) continue;
+    if (o.company_id !== companyId) continue;
+    if ((o.tipo || 'compra') !== tipo) continue;
+    const oAnio = o.anio || (o.fecha ? Number(String(o.fecha).slice(0, 4)) : null);
+    if (oAnio !== year) continue;
+    if (!mejor || Number(o.correlativo) > Number(mejor.correlativo)) mejor = o;
+  }
+  return mejor;
+}
+
+/**
+ * Qué número le va a tocar a cada borrador seleccionado, ANTES de emitir.
+ *
+ * Recorre el lote en el mismo orden en que lo va a recorrer la emisión (por
+ * fecha ascendente) y sobre el mismo acumulador local, así que lo que se
+ * muestra es exactamente lo que se va a escribir. Desmarcar una fila corre
+ * los números de las de abajo, que es justo lo que pidió Gabriel.
+ *
+ * @param companyDe (id) => company, para el prefijo del código.
+ * @returns Map<movimiento_id, { codigo, correlativo, anio, fueraDeOrden, refCodigo, refFecha }>
+ */
+export function previsualizarCorrelativos(borradores, ordenes, { companyDe = () => null } = {}) {
+  const out = new Map();
+  const acumulado = [...(ordenes || [])];
+  for (const b of ordenarParaEmitir(borradores || [])) {
+    if (!b?.movimiento_id) continue;
+    const company = companyDe(b.company_id);
+    const tipo = b.tipo || 'compra';
+    const anio = b.fecha ? Number(String(b.fecha).slice(0, 4)) : new Date().getFullYear();
+    // La referencia se toma ANTES de sumar esta orden al acumulador: es contra
+    // lo ya emitido (o contra lo que el propio lote acaba de numerar) que se
+    // mide si la fecha retrocede.
+    const previa = ultimaOrdenNumerada(acumulado, { companyId: b.company_id, tipo, anio });
+    const { correlativo, codigo } = proximoCodigo(acumulado, { company, tipo, anio });
+    const fueraDeOrden = !!(previa?.fecha && b.fecha && String(b.fecha) < String(previa.fecha));
+    out.set(b.movimiento_id, {
+      codigo, correlativo, anio, fueraDeOrden,
+      refCodigo: fueraDeOrden ? previa.codigo : null,
+      refFecha: fueraDeOrden ? previa.fecha : null,
+    });
+    acumulado.push({
+      id: `__preview_${correlativo}`, company_id: b.company_id, tipo,
+      correlativo, codigo, anio, fecha: b.fecha || null,
+    });
+  }
+  return out;
+}
+
+/** Los pendientes ordenados para trabajar: 'fecha' (antigua→nueva) o 'monto'. */
+export function ordenarPendientes(lista, criterio = 'fecha', { fechaDe = (x) => x?.date, montoDe = (x) => x?.amount } = {}) {
+  const arr = [...(lista || [])];
+  if (criterio === 'monto') return arr.sort((a, b) => num(montoDe(b)) - num(montoDe(a)));
+  return arr.sort((a, b) => {
+    const fa = fechaDe(a) || '', fb = fechaDe(b) || '';
+    if (fa !== fb) { if (!fa) return 1; if (!fb) return -1; return fa < fb ? -1 : 1; }
+    return num(montoDe(b)) - num(montoDe(a));
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════

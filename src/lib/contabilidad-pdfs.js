@@ -1,6 +1,6 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { textosDeTipo, totalesDesdeItems, nombreArchivoOrden } from './ordenes.js';
+import { textosDeTipo, totalesDesdeItems, nombreArchivoOrden, tituloImprimible } from './ordenes.js';
 
 // ─────────────────────────────────────────────────────────────
 // Helpers
@@ -1066,14 +1066,22 @@ export function generateOrdenPdf(orden, items, ctx = {}, { download = true } = {
     doc.text(`RUC: ${company.ruc}`, 14, 12);
   }
 
+  // EL TÍTULO QUE ERA UN ÍTEM. Las órdenes emitidas antes del 8-set-2026
+  // llevan guardado como `titulo` el PRIMER ítem de la factura (el
+  // «PICOS M/TRAMONTINA-BELLOTA» que Gabriel vio en grande en medio de una
+  // ORDEN DE COMPRA). El origen ya está cerrado, pero esas órdenes siguen
+  // emitidas y su papel se vuelve a descargar: si el título es literalmente
+  // uno de los ítems del detalle, no es un rubro — no se imprime.
+  const tituloOrden = tituloImprimible(orden.titulo, items);
+
   let y = 28;
-  if (orden.titulo) {
+  if (tituloOrden) {
     doc.setFillColor(...ACENTO);
     doc.rect(14, y, pageWidth - 28, 6, 'F');
     doc.setTextColor(255, 255, 255);
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(9);
-    doc.text(String(orden.titulo).toUpperCase(), pageWidth / 2, y + 4.2, { align: 'center' });
+    doc.text(String(tituloOrden).toUpperCase(), pageWidth / 2, y + 4.2, { align: 'center' });
     doc.setTextColor(0, 0, 0);
     y += 8;
   } else { y += 2; }
@@ -1101,6 +1109,17 @@ export function generateOrdenPdf(orden, items, ctx = {}, { download = true } = {
   doc.text(moneda, 140, y + 3.6);
   y += 3.6;
   y = ordenCampo(doc, y, 'Forma de pago:', safe(orden.condicion_pago, '—'), { pageWidth, xValor: 55 });
+  // A QUÉ COMPROBANTE(S) RESPALDA. Es el dato que la orden retroactiva no
+  // decía en ninguna parte del papel —y el único que vuelve legible a la orden
+  // que respalda VARIAS facturas (el pedido de 8-set-2026: un solo pedido
+  // partido en tres por el límite de 20 ítems del facturador). Va con su
+  // rótulo, en DATOS DE LA ORDEN: es donde se lee sin adivinar, a diferencia
+  // de la banda de título que imprimía el primer ítem de la factura.
+  const comprobantes = (ctx.comprobantes || []).filter(Boolean);
+  if (comprobantes.length) {
+    y = ordenCampo(doc, y, comprobantes.length > 1 ? 'Comprobantes:' : 'Comprobante:',
+      comprobantes.join('  ·  '), { pageWidth, xValor: 55 });
+  }
   y += 3;
 
   // ── Proveedor ────────────────────────────────────────────────
