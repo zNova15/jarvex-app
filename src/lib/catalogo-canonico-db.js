@@ -290,3 +290,72 @@ export async function olvidarEquivalencia(id) {
   else await db.catalogo_familia_mapeo.update(id, { deleted_at: ahora(), sync_status: SYNC_STATUS.PENDING_DELETE });
   return true;
 }
+
+// ── LA REVISIÓN DEL CATÁLOGO (mig 194) ─────────────────────────────
+
+/**
+ * Acepta la recomendación de mover insumos a otra familia. Se guarda también la
+ * subfamilia que motivó la movida: es el dato que la justifica, y perderlo
+ * dejaría al insumo en la familia nueva sin nadie que recuerde por qué.
+ */
+export async function moverDeFamilia(items, { userId = null } = {}) {
+  const esPrueba = esModoPrueba();
+  let n = 0;
+  await db.transaction('rw', db.catalogo_insumos, async () => {
+    for (const it of items || []) {
+      const prev = await db.catalogo_insumos.get(it.id);
+      if (!prev || !it.familiaSugerida) continue;
+      await db.catalogo_insumos.update(it.id, parcheDeUpdate({
+        familia: it.familiaSugerida,
+        subfamilia: it.subfamilia || prev.subfamilia || null,
+        revisado: true,
+        origen: 'manual',
+      }, prev, esPrueba, userId));
+      n++;
+    }
+  });
+  return n;
+}
+
+/**
+ * «Está bien donde está.» Se marca `revisado` y esa recomendación no vuelve.
+ * Sin esto, las mismas propuestas reaparecen en cada visita y la pantalla se
+ * deja de abrir — la lección de los 143 avisos de la revisión de facturas.
+ */
+export async function descartarRecomendaciones(ids, { userId = null } = {}) {
+  const esPrueba = esModoPrueba();
+  let n = 0;
+  await db.transaction('rw', db.catalogo_insumos, async () => {
+    for (const id of ids || []) {
+      const prev = await db.catalogo_insumos.get(id);
+      if (!prev) continue;
+      await db.catalogo_insumos.update(id, parcheDeUpdate({ revisado: true }, prev, esPrueba, userId));
+      n++;
+    }
+  });
+  return n;
+}
+
+/**
+ * Graba las subfamilias PROPUESTAS que todavía nadie confirmó. Es un solo
+ * botón para las 422 filas que el motor ya sabe clasificar; lo que ya tenía
+ * subfamilia grabada no se toca.
+ *
+ * Es opcional a propósito: mientras no se acepten, las propuestas se calculan
+ * al leer, así que mejorar el vocabulario mejora todo el catálogo sin migrar
+ * nada. Aceptarlas sirve para congelar lo revisado.
+ */
+export async function aceptarSubfamilias(propuestas, { userId = null } = {}) {
+  const esPrueba = esModoPrueba();
+  let n = 0;
+  await db.transaction('rw', db.catalogo_insumos, async () => {
+    for (const p of propuestas || []) {
+      if (!p?.subfamilia) continue;
+      const prev = await db.catalogo_insumos.get(p.id);
+      if (!prev || prev.subfamilia) continue;
+      await db.catalogo_insumos.update(p.id, parcheDeUpdate({ subfamilia: p.subfamilia }, prev, esPrueba, userId));
+      n++;
+    }
+  });
+  return n;
+}

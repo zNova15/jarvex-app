@@ -109,6 +109,14 @@ export const db = new Dexie('JarvexDB');
 // constancia decía el método y el n° de operación pero nunca DE QUÉ CUENTA
 // salió la plata, y sin eso no hay estado de cuenta posible. Aditivo en
 // columnas, re-declarativo en índices.
+// Versión 60: SUBFAMILIA — EL SEGUNDO NIVEL DEL CATÁLOGO (mig 194). Diez
+// familias son muy generales: «implementos de seguridad» son 64 cosas en una
+// bolsa. Se indexa porque la pantalla filtra por ahí. `revisado` es prop sin
+// índice: se lee de la fila que ya se trajo. Aditivo.
+db.version(60).stores({
+  catalogo_insumos: 'id, norm, familia, subfamilia, tipo, origen, activo, company_id, [company_id+norm], deleted_at, sync_status',
+});
+
 // Versión 59: EL CATÁLOGO TIENE DUEÑO (mig 193). `company_id` NULL = catálogo
 // GENERAL del grupo; con valor = el de esa entidad. Va INDEXADO junto a `norm`
 // porque toda lectura pregunta exactamente eso —«lo de esta entidad más lo

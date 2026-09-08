@@ -39,8 +39,12 @@ import {
   entidadesConCatalogo,
 } from "../lib/catalogo-canonico.js";
 import {
+  revisarCatalogo, etiquetaSubfamilia, sugerirSubfamilia, SUBFAMILIAS, SUBFAMILIAS_TECNICAS,
+} from "../lib/catalogo-subfamilias.js";
+import {
   previsualizarImportacion, aplicarImportacion, corregirFactor,
   corregirEnLote, adoptarEnEntidad, decidirEquivalencia,
+  moverDeFamilia, descartarRecomendaciones, aceptarSubfamilias,
 } from "../lib/catalogo-canonico-db.js";
 
 const { useState: uS, useMemo: uM, useRef: uR } = React;
@@ -87,6 +91,9 @@ function CatalogoCanonicoTab({ showToast }) {
   const [leyendo, setLeyendo] = uS(false);
   const [factorEdit, setFactorEdit] = uS({});
   const [eqElegida, setEqElegida] = uS({});    // familia local → slug canónico
+  const [subSel, setSubSel] = uS('todas');
+  const [subLote, setSubLote] = uS('');
+  const [recMarcadas, setRecMarcadas] = uS({});
   // Anti doble-click (regla crítica de la casa): ref SÍNCRONO. Un doble tap no
   // puede escribir el catálogo dos veces.
   const enCursoRef = uR(false);
@@ -117,14 +124,32 @@ function CatalogoCanonicoTab({ showToast }) {
   );
   const matriz = uM(() => matrizCategorias(crudo, eqHook.data || []), [crudo, eqHook.data]);
 
+  // La revisión: qué subfamilia le toca a cada fila y cuáles parecen estar en
+  // la familia equivocada. Se calcula al LEER —no se guarda nada hasta que
+  // alguien acepta—, así que mejorar el vocabulario mejora todo el catálogo sin
+  // migrar una fila.
+  const revision = uM(() => revisarCatalogo(activas), [activas]);
+  const subDe = uM(() => {
+    const m = new Map();
+    for (const r of activas) m.set(r.id, r.subfamilia || sugerirSubfamilia(r.nombre, r.familia)?.subfamilia || null);
+    return m;
+  }, [activas]);
+  const subfamiliasPresentes = uM(
+    () => [...revision.porSubfamilia.entries()].sort((a, b) => b[1] - a[1]),
+    [revision.porSubfamilia],
+  );
+  const idsRec = uM(() => Object.keys(recMarcadas).filter(k => recMarcadas[k]), [recMarcadas]);
+
   const visibles = uM(() => {
     const q = busca.trim().toLowerCase();
     return (verInactivos ? todas : activas)
       .filter(r => famSel === 'todas' || r.familia === famSel)
+      .filter(r => subSel === 'todas'
+        || (subSel === '__sin__' ? !subDe.get(r.id) : subDe.get(r.id) === subSel))
       .filter(r => tipoSel === 'todos' || r.tipo === tipoSel)
       .filter(r => !q || String(r.nombre || '').toLowerCase().includes(q))
       .sort((a, b) => String(a.nombre).localeCompare(String(b.nombre), 'es'));
-  }, [todas, activas, verInactivos, famSel, tipoSel, busca]);
+  }, [todas, activas, verInactivos, famSel, subSel, subDe, tipoSel, busca]);
 
   const disgregacion = uM(() => {
     const porPadre = new Map();
@@ -211,6 +236,39 @@ function CatalogoCanonicoTab({ showToast }) {
     } finally {
       enCursoRef.current = false;
     }
+  };
+
+  const aceptarMovidas = async () => {
+    if (enCursoRef.current || !idsRec.length) return;
+    enCursoRef.current = true;
+    try {
+      const n = await moverDeFamilia(revision.recomendaciones.filter(r => recMarcadas[r.id]), { userId });
+      await refrescar(); setRecMarcadas({});
+      showToast?.(`${n} ${n === 1 ? 'insumo movido' : 'insumos movidos'} de familia.`, 'success');
+    } catch (err) { showToast?.(`No se pudo mover: ${err?.message || err}`, 'error'); }
+    finally { enCursoRef.current = false; }
+  };
+
+  const descartarMovidas = async (ids) => {
+    if (enCursoRef.current || !ids.length) return;
+    enCursoRef.current = true;
+    try {
+      const n = await descartarRecomendaciones(ids, { userId });
+      await refrescar(); setRecMarcadas({});
+      showToast?.(`${n} ${n === 1 ? 'quedó' : 'quedaron'} donde ${n === 1 ? 'estaba' : 'estaban'}. No se vuelve a proponer.`, 'success');
+    } catch (err) { showToast?.(`No se pudo guardar: ${err?.message || err}`, 'error'); }
+    finally { enCursoRef.current = false; }
+  };
+
+  const congelarSubfamilias = async () => {
+    if (enCursoRef.current) return;
+    enCursoRef.current = true;
+    try {
+      const n = await aceptarSubfamilias(revision.propuestas.filter(p => p.subfamilia && !p.familiaSugerida), { userId });
+      await refrescar();
+      showToast?.(`${n} subfamilias guardadas.`, 'success');
+    } catch (err) { showToast?.(`No se pudo guardar: ${err?.message || err}`, 'error'); }
+    finally { enCursoRef.current = false; }
   };
 
   const guardarFactor = async (d) => {
@@ -360,6 +418,57 @@ function CatalogoCanonicoTab({ showToast }) {
         </div>
       ) : (
         <>
+          {/* ── La revisión: lo que parece estar en otra familia ─ */}
+          {revision.recomendaciones.length > 0 && (
+            <div className="card card-p" style={{ borderLeft: '3px solid var(--amber)' }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 4 }}>
+                {revision.recomendaciones.length} {revision.recomendaciones.length === 1
+                  ? 'insumo parece estar en otra familia' : 'insumos parecen estar en otra familia'}
+              </div>
+              <div style={{ fontSize: 11.5, color: 'var(--ts)', marginBottom: 8, lineHeight: 1.55 }}>
+                No son errores seguros: son propuestas. Solo se proponen cuando el nombre <em>empieza</em>{' '}
+                diciendo otra cosa —si la pista está en un adjetivo del final no se pregunta, porque así
+                un «pantalón con cinta reflectiva» terminaba en ferretería—. Lo que dejes donde está no
+                se vuelve a proponer.
+              </div>
+              <table className="tbl" style={{ fontSize: 11.5 }}>
+                <tbody>
+                  {revision.recomendaciones.slice(0, 60).map(r => (
+                    <tr key={r.id}>
+                      <td style={{ width: 26 }}>
+                        <input type="checkbox" checked={!!recMarcadas[r.id]}
+                          onChange={e => setRecMarcadas(p => {
+                            const n = { ...p };
+                            if (e.target.checked) n[r.id] = true; else delete n[r.id];
+                            return n;
+                          })} />
+                      </td>
+                      <td>{r.nombre}</td>
+                      <td style={{ whiteSpace: 'nowrap', color: 'var(--tm)' }}>
+                        {etiquetaFamilia(r.familia)} → <strong style={{ color: 'var(--tp)' }}>{etiquetaFamilia(r.familiaSugerida)}</strong>
+                      </td>
+                      <td style={{ color: 'var(--tm)', fontSize: 11 }}>{r.motivo}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        <button className="btn btn-xs btn-ghost" onClick={() => descartarMovidas([r.id])}>Está bien así</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                <button className="btn btn-amber btn-sm" disabled={!idsRec.length} onClick={aceptarMovidas}>
+                  Mover {idsRec.length || ''} {idsRec.length === 1 ? 'insumo' : 'insumos'}
+                </button>
+                <button className="btn btn-ghost btn-sm" disabled={!idsRec.length}
+                  onClick={() => descartarMovidas(idsRec)}>Dejar donde están</button>
+                <button className="btn btn-ghost btn-sm"
+                  onClick={() => setRecMarcadas(Object.fromEntries(revision.recomendaciones.map(r => [r.id, true])))}>
+                  Marcar todas
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* ── Familias ──────────────────────────────────────── */}
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             <button className={`btn btn-xs ${famSel === 'todas' ? 'btn-amber' : 'btn-ghost'}`}
@@ -375,6 +484,18 @@ function CatalogoCanonicoTab({ showToast }) {
 
           {/* ── Filtros ───────────────────────────────────────── */}
           <div className="card card-p" style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <div style={{ minWidth: 210 }}>
+              <label className="flabel" style={{ fontSize: 10.5 }}>
+                Subfamilia <span style={{ color: 'var(--tm)' }}>({subfamiliasPresentes.length} en uso)</span>
+              </label>
+              <select className="fi" style={{ width: '100%', fontSize: 12 }} value={subSel} onChange={e => setSubSel(e.target.value)}>
+                <option value="todas">Todas</option>
+                {subfamiliasPresentes.map(([k, n]) => (
+                  <option key={k} value={k}>{etiquetaSubfamilia(k)} ({n})</option>
+                ))}
+                {revision.sinSubfamilia > 0 && <option value="__sin__">Sin subfamilia ({revision.sinSubfamilia})</option>}
+              </select>
+            </div>
             <div style={{ flex: 1, minWidth: 200 }}>
               <label className="flabel" style={{ fontSize: 10.5 }}>Buscar</label>
               <input className="fi" style={{ width: '100%', fontSize: 12 }} value={busca}
@@ -421,10 +542,29 @@ function CatalogoCanonicoTab({ showToast }) {
               <button className="btn btn-amber btn-sm" disabled={!uniLote.trim()} onClick={() => corregirLote({ unidad: uniLote.trim() })}>
                 Aplicar unidad
               </button>
+              <div>
+                <label className="flabel" style={{ fontSize: 10.5 }}>o la subfamilia a</label>
+                <select className="fi" style={{ fontSize: 12 }} value={subLote} onChange={e => setSubLote(e.target.value)}>
+                  <option value="">— elegir —</option>
+                  {[...SUBFAMILIAS.map(x => x.slug), ...Object.keys(SUBFAMILIAS_TECNICAS)]
+                    .map(k => <option key={k} value={k}>{etiquetaSubfamilia(k)}</option>)}
+                </select>
+              </div>
+              <button className="btn btn-amber btn-sm" disabled={!subLote} onClick={() => corregirLote({ subfamilia: subLote })}>
+                Aplicar subfamilia
+              </button>
               <button className="btn btn-ghost btn-sm" onClick={() => corregirLote({ activo: false })}>
                 Desactivar
               </button>
               <button className="btn btn-ghost btn-sm" onClick={() => setMarcados({})}>Desmarcar todo</button>
+            </div>
+          )}
+
+          {revision.propuestas.some(p => p.subfamilia && !p.familiaSugerida) && (
+            <div style={{ fontSize: 11.5, color: 'var(--ts)' }}>
+              {revision.propuestas.filter(p => p.subfamilia && !p.familiaSugerida).length} subfamilias están
+              PROPUESTAS (salen del nombre y se recalculan solas).{' '}
+              <button className="btn btn-xs btn-ghost" onClick={congelarSubfamilias}>Confirmarlas todas</button>
             </div>
           )}
 
@@ -448,6 +588,7 @@ function CatalogoCanonicoTab({ showToast }) {
                   <th>Nombre</th>
                   <th>Unidad</th>
                   <th>Familia</th>
+                  <th title="El segundo nivel: dentro de la familia, qué clase de cosa es">Subfamilia</th>
                   <th title="A qué inventario iría si se da de alta">Va a</th>
                   <th title="Cómo lo agrupa contabilidad">Categoría de gasto</th>
                   <th></th>
@@ -471,6 +612,11 @@ function CatalogoCanonicoTab({ showToast }) {
                       <td style={{ fontFamily: 'monospace' }}>{r.unidad || '—'}</td>
                       <td title={propia ? 'Categoría propia de esta entidad' : undefined}>
                         {propia ? '◆ ' : ''}{etiquetaFamilia(r.familia)}
+                      </td>
+                      <td style={{ color: r.subfamilia ? undefined : 'var(--tm)' }}
+                        title={r.subfamilia ? 'Confirmada' : 'Propuesta: se calcula del nombre y se puede cambiar.'}>
+                        {subDe.get(r.id) ? etiquetaSubfamilia(subDe.get(r.id)) : '—'}
+                        {!r.subfamilia && subDe.get(r.id) ? ' ·' : ''}
                       </td>
                       <td><span className={`badge ${BADGE_DESTINO[destino] || 'b-gray'}`} style={{ fontSize: 9 }}>{TIPO_DESTINO[destino] || destino}</span></td>
                       <td style={{ color: 'var(--tm)' }}>{categoriaItemDe(r, equivalencias)}</td>

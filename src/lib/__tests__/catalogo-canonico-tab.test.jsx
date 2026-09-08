@@ -188,3 +188,47 @@ describe('el ámbito y las categorías entre entidades (mig 193)', () => {
     expect(h).toContain('FIERROS Y ACEROS');   // sale en la matriz, como alias
   });
 });
+
+describe('la revisión del catálogo (mig 194)', () => {
+  // Un catálogo con dos cosas mal puestas, como el archivo real.
+  const MAL = [
+    { id: 'r1', tipo: 'insumo', nombre: 'CEMENTO PORTLAND TIPO I (42.5 kg)', norm: 'cemento portland tipo i 42 5 kg', unidad: 'bolsa', familia: 'ferreteria', origen: 'xlsx', activo: true },
+    { id: 'r2', tipo: 'insumo', nombre: 'TRANSPORTE DE RESIDUOS DE OBRA DURANTE LA EJECUCION', norm: 'transporte de residuos de obra durante la ejecucion', unidad: 'glb', familia: 'seguridad', origen: 'xlsx', activo: true },
+    { id: 'r3', tipo: 'insumo', nombre: 'CASCOS DE SEGURIDAD', norm: 'casco de seguridad', unidad: 'und', familia: 'seguridad', origen: 'xlsx', activo: true },
+  ];
+
+  it('avisa cuántos parecen estar en otra familia, con el destino a la vista', () => {
+    const h = conDatos(MAL, []);
+    expect(h).toContain('parecen estar en otra familia');
+    expect(h).toContain('CEMENTO PORTLAND TIPO I');
+    expect(h).toContain('Agregados');
+    expect(h).toContain('Servicios');
+  });
+
+  it('explica que son propuestas y no errores seguros', () => {
+    expect(conDatos(MAL, [])).toContain('No son errores seguros');
+  });
+
+  it('lo que está bien puesto NO aparece como recomendación', () => {
+    const h = conDatos([MAL[2]], []);
+    expect(h).not.toContain('parecen estar en otra familia');
+    expect(h).not.toContain('parece estar en otra familia');
+  });
+
+  it('lo ya revisado deja de proponerse', () => {
+    const h = conDatos([{ ...MAL[0], revisado: true }], []);
+    expect(h).not.toContain('parece estar en otra familia');
+  });
+
+  it('muestra la subfamilia de cada fila, que es el nivel que faltaba', () => {
+    const h = conDatos(MAL, []);
+    expect(h).toContain('Subfamilia');
+    expect(h).toContain('EPP · cabeza');
+  });
+
+  it('deja filtrar por subfamilia y dice cuántas hay en uso', () => {
+    const h = conDatos(MAL, []);
+    expect(h).toMatch(/Subfamilia <span[^>]*>\(<!-- -->3<!-- --> en uso\)/);
+    expect(h).toContain('Transporte y fletes');
+  });
+});
