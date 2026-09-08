@@ -109,6 +109,20 @@ export const db = new Dexie('JarvexDB');
 // constancia decía el método y el n° de operación pero nunca DE QUÉ CUENTA
 // salió la plata, y sin eso no hay estado de cuenta posible. Aditivo en
 // columnas, re-declarativo en índices.
+// Versión 59: EL CATÁLOGO TIENE DUEÑO (mig 193). `company_id` NULL = catálogo
+// GENERAL del grupo; con valor = el de esa entidad. Va INDEXADO junto a `norm`
+// porque toda lectura pregunta exactamente eso —«lo de esta entidad más lo
+// general»— y sin índice sería un full scan del catálogo entero en cada
+// propuesta. `catalogo_familia_mapeo` es el mapeo NUEVO: la familia local de
+// una entidad contra la familia canónica del grupo (que GASOMI le diga
+// «FIERROS Y ACEROS» y EL INCA «MATERIAL DE FIERRO» a lo mismo se decide una
+// vez). Re-declara las dos tablas de la v58 sumando el índice; aditivo.
+db.version(59).stores({
+  catalogo_insumos:       'id, norm, familia, tipo, origen, activo, company_id, [company_id+norm], deleted_at, sync_status',
+  catalogo_disgregacion:  'id, padre_norm, hijo_norm, company_id, deleted_at, sync_status',
+  catalogo_familia_mapeo: 'id, company_id, familia_local, familia_canonica, decision, deleted_at, sync_status',
+});
+
 // Versión 58: EL CATÁLOGO CANÓNICO DE INSUMOS Y SERVICIOS (mig 192, tanda 14).
 // 444 insumos en 10 familias comerciales + 34 servicios + la disgregación del
 // acero, importados del xlsx de Gabriel. Es GLOBAL al grupo: no tiene obra ni

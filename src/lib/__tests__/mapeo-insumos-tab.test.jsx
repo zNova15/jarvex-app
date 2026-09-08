@@ -40,7 +40,7 @@ function montarBrowserFalso() {
       (options || []).find(o => o.value === value)?.label || '—');
   const datos = {
     useInsumoMapeos: () => ({ data: globalThis.__FILAS_MAPEO || [], loading: false, create: async () => {}, update: async () => {} }),
-    useObras: () => ({ data: [{ id: 'o1', nombre_obra: 'MIRAFLORES' }], loading: false }),
+    useObras: () => ({ data: [{ id: 'o1', nombre_obra: 'MIRAFLORES', ejecutora_company_id: 'elinca' }], loading: false }),
     useInsumosPartida: () => ({ data: globalThis.__PRESUPUESTO_VACIO ? [] : PRESUPUESTO, loading: false }),
   };
   g.__hooks = new Proxy({}, {
@@ -55,13 +55,23 @@ const PRESUPUESTO = [
   { id: 'c', obra_id: 'o1', insumo_codigo: '660020050', nombre_insumo: 'TUBERIA PVC UF S25 DE 8"(200mm) x 6m ISO 4435', unidad: 'm', tipo_insumo: 'material', cantidad_presupuestada: 14088.72 },
 ];
 
-// Compras como las entrega extraerComprasDeFacturas().
+// Compras como las entrega extraerComprasDeFacturas(). `companyId` = quien las
+// registró: acá el consorcio que ejecuta la obra, que es el alcance por defecto.
 const COMPRAS = [
-  { nombre: 'CEMENTO PORTLAND TIPO I 425 KG - PACASMAYO-BOLSA', cantidad: 2250, precio: 27.71, unidad: 'und', proveedorNombre: 'GASOMI', clase: 'compra' },
-  { nombre: 'VARILLA DE ACERO CORRUGADO DE 1/2', cantidad: 592, precio: 29.4, unidad: 'und', proveedorNombre: 'GASOMI', clase: 'compra' },
-  { nombre: 'POR EL SERVICIO DE TRANSPORTE DE TUBO HOPE 100', cantidad: 1, precio: 3000, unidad: 'und', proveedorNombre: 'X', clase: 'compra' },
-  { nombre: 'LENOVO LOQ GEN 10 (15" INTEL)', cantidad: 2, precio: 5284, unidad: 'und', proveedorNombre: 'SIGLO XXII', clase: 'compra' },
+  { nombre: 'CEMENTO PORTLAND TIPO I 425 KG - PACASMAYO-BOLSA', cantidad: 2250, precio: 27.71, unidad: 'und', proveedorNombre: 'GASOMI', clase: 'compra', companyId: 'elinca', obraId: 'o1' },
+  { nombre: 'VARILLA DE ACERO CORRUGADO DE 1/2', cantidad: 592, precio: 29.4, unidad: 'und', proveedorNombre: 'GASOMI', clase: 'compra', companyId: 'elinca', obraId: 'o1' },
+  { nombre: 'POR EL SERVICIO DE TRANSPORTE DE TUBO HOPE 100', cantidad: 1, precio: 3000, unidad: 'und', proveedorNombre: 'X', clase: 'compra', companyId: 'elinca', obraId: 'o1' },
+  { nombre: 'LENOVO LOQ GEN 10 (15" INTEL)', cantidad: 2, precio: 5284, unidad: 'und', proveedorNombre: 'SIGLO XXII', clase: 'compra', companyId: 'elinca', obraId: 'o1' },
 ];
+
+// La línea REAL que Gabriel vio el 7-set-2026 y que no tiene nada que hacer
+// acá: una factura de GASOMI, de otro proyecto (una I.E. en Nuevo Chimbote) y
+// sin obra asignada, pidiendo ser mapeada contra una obra de agua en Cajamarca.
+const AJENA = {
+  nombre: 'POR EL SALDO DE TARRAJEO DE LA OBRA: SALDO DE LA DE LA I.E. 040 NUEVA ESPERANZA DEL DISTRITO DE NUEVO CHIMBOTE',
+  cantidad: 1, precio: 12000, unidad: 'und', proveedorNombre: 'SUBCONTRATISTA', clase: 'compra',
+  companyId: 'gasomi', obraId: null,
+};
 
 let MapeoInsumosTab;
 beforeAll(async () => {
@@ -139,5 +149,33 @@ describe('lo que la pestaña efectivamente dibuja', () => {
     const h = html();
     expect(h).not.toContain('undefined');
     expect(h).not.toContain('NaN');
+  });
+});
+
+// ── El alcance (7-set-2026) ────────────────────────────────────────
+// Medido contra producción ese día: 2.490 líneas de compra repartidas en 24
+// entidades, y solo 157 son del consorcio que ejecuta Miraflores. La pestaña
+// las tiraba TODAS contra el presupuesto de esa obra.
+describe('qué compras se piden mapear', () => {
+  it('por defecto NO pide decidir la factura de otra empresa y otro proyecto', () => {
+    const h = pintar({ compras: [...COMPRAS, AJENA], grupoDe: new Map() });
+    expect(h).not.toContain('NUEVA ESPERANZA');
+    expect(h).toContain('CEMENTO PORTLAND TIPO I 425 KG');
+  });
+
+  it('dice cuántas quedan afuera, para que no parezca que se perdieron', () => {
+    const h = pintar({ compras: [...COMPRAS, AJENA], grupoDe: new Map() });
+    expect(h).toContain('De esta obra y su ejecutora (<!-- -->4');
+    expect(h).toContain('De todo el grupo (<!-- -->5');
+  });
+
+  it('explica por qué, en vez de filtrar en silencio', () => {
+    const h = pintar({ compras: COMPRAS, grupoDe: new Map() });
+    expect(h).toContain('no tienen contra qué mapearse acá');
+  });
+
+  it('sin ejecutora ni obra en las compras no inventa: no muestra nada en ese alcance', () => {
+    const h = pintar({ compras: [{ ...AJENA, companyId: 'otra' }], grupoDe: new Map() });
+    expect(h).toContain('No queda nada por decidir');
   });
 });

@@ -24,6 +24,7 @@ import {
   prepararCatalogo, sugerirMapeo, resolverMapeos, buscarMapeo, indicePorGrupo,
   claveMapeo, proponerFactor, prepararLinea, cantidadCanonica,
 } from "../lib/mapeo-insumos.js";
+import { titularContableDeObra } from "../lib/consorcio.js";
 
 const { useState: uS, useMemo: uM, useRef: uR } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -51,9 +52,19 @@ const FILTROS = [
 function MapeoInsumosTab({ compras, grupoDe, showToast }) {
   const mapHook = window.__hooks.useInsumoMapeos();
   const obrasHook = window.__hooks.useObras();
+  const consorciosHook = window.__hooks.useConsorcios();
   const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
 
   const [obraSel, setObraId] = uS('');
+  // 🔴 EL ALCANCE (7-set-2026). Esta pestaña tiraba las 2.490 líneas de compra
+  // de las 24 entidades del grupo contra el presupuesto de UNA obra. A Gabriel
+  // le aparecía «POR EL SALDO DE TARRAJEO DE LA OBRA: I.E. 040 NUEVA ESPERANZA,
+  // NUEVO CHIMBOTE» —una factura de GASOMI, de otro proyecto y sin obra—
+  // pidiendo ser mapeada contra una obra de agua potable en Cajamarca. Eso no
+  // es una decisión que alguien pueda tomar: es ruido, y el ruido hace que la
+  // pantalla se abandone. Por defecto se mira SOLO lo de la ejecutora de esa
+  // obra más lo que esté cargado a la obra; «todo el grupo» sigue a un clic.
+  const [alcance, setAlcance] = uS('obra');
   const [filtro, setFiltro] = uS('pendientes');
   const [busca, setBusca] = uS('');
 
@@ -95,10 +106,21 @@ function MapeoInsumosTab({ compras, grupoDe, showToast }) {
 
   const mapeos = uM(() => resolverMapeos(mapHook.data || [], { demo: esPrueba }), [mapHook.data, esPrueba]);
 
+  // Quién ejecuta esta obra: el consorcio si lo hay, si no la empresa titular.
+  const ejecutoraId = uM(
+    () => titularContableDeObra(obras.find(o => o.id === obraId), consorciosHook.data || []),
+    [obras, obraId, consorciosHook.data],
+  );
+  const comprasDeLaObra = uM(
+    () => (compras || []).filter(c => (obraId && c.obraId === obraId) || (ejecutoraId && c.companyId === ejecutoraId)),
+    [compras, obraId, ejecutoraId],
+  );
+  const comprasEnAlcance = alcance === 'grupo' ? (compras || []) : comprasDeLaObra;
+
   // Una fila por DESCRIPCIÓN, con lo que esa descripción movió en total.
   const descripciones = uM(() => {
     const porNorm = new Map();
-    for (const c of (compras || [])) {
+    for (const c of (comprasEnAlcance || [])) {
       if (c.clase && c.clase !== 'compra') continue;
       const k = claveMapeo(c.nombre);
       if (!k) continue;
@@ -111,7 +133,7 @@ function MapeoInsumosTab({ compras, grupoDe, showToast }) {
       porNorm.set(k, cur);
     }
     return [...porNorm.values()].sort((a, b) => b.importe - a.importe);
-  }, [compras]);
+  }, [comprasEnAlcance]);
 
   const porGrupo = uM(
     () => indicePorGrupo(mapeos, descripciones.map(d => ({ descripcion: d.muestra })), grupoDe),
@@ -244,11 +266,26 @@ function MapeoInsumosTab({ compras, grupoDe, showToast }) {
               {obras.map(o => <option key={o.id} value={o.id}>{o.nombre_obra || o.nombre || o.id}</option>)}
             </select>
           </div>
+          <div style={{ minWidth: 200, flex: 1 }}>
+            <label style={{ fontSize: 11, color: 'var(--tm)' }}>Compras a mapear</label>
+            <select className="fi" value={alcance} onChange={e => setAlcance(e.target.value)}>
+              <option value="obra">De esta obra y su ejecutora ({comprasDeLaObra.length})</option>
+              <option value="grupo">De todo el grupo ({(compras || []).length})</option>
+            </select>
+          </div>
           <div style={{ minWidth: 240, flex: 2 }}>
             <label style={{ fontSize: 11, color: 'var(--tm)' }}>Buscar en las descripciones</label>
             <input className="fi" value={busca} onChange={e => setBusca(e.target.value)} placeholder="cemento, fierro, tubo…" />
           </div>
         </div>
+
+        {alcance === 'obra' && (
+          <div style={{ marginTop: 8, fontSize: 11.5, color: 'var(--tm)', lineHeight: 1.5 }}>
+            Se mapea contra el presupuesto de ESTA obra, así que por defecto solo se pide decidir lo
+            que compró su ejecutora o lo que está cargado a ella. Las compras de las otras empresas
+            —otros proyectos, otros años— no tienen contra qué mapearse acá.
+          </div>
+        )}
 
         {catalogo === null && <div style={{ marginTop: 10, fontSize: 12, color: 'var(--tm)' }}>Leyendo el presupuesto…</div>}
         {catalogo && catalogo.items.length === 0 && (

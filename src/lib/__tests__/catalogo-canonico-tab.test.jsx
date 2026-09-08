@@ -36,6 +36,12 @@ function montarBrowserFalso() {
   const datos = {
     useCatalogoInsumos: () => ({ data: g.__CATALOGO || [], loading: false, refresh: async () => {} }),
     useCatalogoDisgregacion: () => ({ data: g.__DISGREGACION || [], loading: false, refresh: async () => {} }),
+    useCatalogoFamiliaMapeo: () => ({ data: g.__EQUIVALENCIAS || [], loading: false, refresh: async () => {} }),
+    useCompanies: () => ({ data: [
+      { id: 'gasomi', name: 'GASOMI INGENIEROS E.I.R.L.', tipo_entidad: 'propia' },
+      { id: 'elinca', name: 'CONSORCIO EL INCA', tipo_entidad: 'consorcio' },
+      { id: 'tercero', name: 'PROVEEDOR CUALQUIERA', tipo_entidad: 'tercero' },
+    ], loading: false, refresh: async () => {} }),
   };
   g.__hooks = new Proxy({}, {
     get: (_, k) => datos[k] || (() => ({ data: [], loading: false, refresh: async () => {} })),
@@ -76,9 +82,9 @@ beforeAll(async () => {
 
 const pintar = () => renderToString(React.createElement(CatalogoCanonicoTab, { showToast: () => {} }));
 
-const conDatos = (cat = CATALOGO, disg = DISGREGACION) => {
-  globalThis.__CATALOGO = cat; globalThis.__DISGREGACION = disg;
-  try { return pintar(); } finally { globalThis.__CATALOGO = []; globalThis.__DISGREGACION = []; }
+const conDatos = (cat = CATALOGO, disg = DISGREGACION, eq = []) => {
+  globalThis.__CATALOGO = cat; globalThis.__DISGREGACION = disg; globalThis.__EQUIVALENCIAS = eq;
+  try { return pintar(); } finally { globalThis.__CATALOGO = []; globalThis.__DISGREGACION = []; globalThis.__EQUIVALENCIAS = []; }
 };
 
 describe('la pestaña del catálogo abre', () => {
@@ -136,5 +142,49 @@ describe('lo que la pestaña dibuja', () => {
     const h = conDatos();
     expect(h).toContain('sin factor');
     expect(h).not.toContain('1 var = 0 kg');
+  });
+});
+
+describe('el ámbito y las categorías entre entidades (mig 193)', () => {
+  const DE_ENTIDADES = [
+    ...CATALOGO,
+    { id: 'e1', tipo: 'insumo', nombre: 'FIERRO 1/2', norm: 'fierro 1_2', unidad: 'var', familia: 'FIERROS Y ACEROS', origen: 'xlsx', activo: true, company_id: 'gasomi' },
+    { id: 'e2', tipo: 'insumo', nombre: 'VARILLA', norm: 'varilla', unidad: 'var', familia: 'perfiles_metalicos', origen: 'xlsx', activo: true, company_id: 'elinca' },
+  ];
+
+  it('ofrece el catálogo general y el de cada entidad del grupo, no el de un tercero', () => {
+    const h = conDatos(DE_ENTIDADES);
+    expect(h).toContain('General del grupo');
+    expect(h).toContain('GASOMI INGENIEROS E.I.R.L.');
+    expect(h).toContain('CONSORCIO EL INCA');
+    expect(h).not.toContain('PROVEEDOR CUALQUIERA');
+  });
+
+  it('dice cuántos insumos propios tiene ya cada entidad', () => {
+    expect(conDatos(DE_ENTIDADES)).toContain('1 propios');
+  });
+
+  it('parado en el general NO se ven los catálogos de las entidades', () => {
+    const h = conDatos(DE_ENTIDADES);
+    expect(h).not.toContain('FIERRO 1/2');
+    expect(h).not.toContain('VARILLA');
+  });
+
+  it('la matriz muestra quién usa cada categoría del grupo', () => {
+    const h = conDatos(DE_ENTIDADES);
+    expect(h).toContain('Cómo le dice cada uno a lo mismo');
+    expect(h).toContain('Perfiles y estructuras metálicas');
+  });
+
+  it('avisa de las categorías propias que todavía no equivalen a ninguna', () => {
+    const h = conDatos(DE_ENTIDADES);
+    expect(h).toMatch(/categoría propia todavía no equivale/);
+  });
+
+  it('decidida la equivalencia, la categoría propia deja de figurar como pendiente', () => {
+    const eq = [{ id: 'm1', company_id: 'gasomi', familia_local: 'FIERROS Y ACEROS', familia_canonica: 'perfiles_metalicos', decision: 'mapeada', updated_at: '2026-09-07' }];
+    const h = conDatos(DE_ENTIDADES, DISGREGACION, eq);
+    expect(h).not.toMatch(/categoría propia todavía no equivale/);
+    expect(h).toContain('FIERROS Y ACEROS');   // sale en la matriz, como alias
   });
 });

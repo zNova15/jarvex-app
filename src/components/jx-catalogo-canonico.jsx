@@ -3,29 +3,44 @@
 // gate admin/gerente heredado del panel.
 //
 // Es la puerta de entrada del catálogo canónico: acá se importa
-// «Categorizacion Simple.xlsx», se ve qué quedó cargado y se corrige lo que el
-// archivo dejó mal. Sin esta pantalla el catálogo sería una tabla que nadie
-// puede tocar.
+// «Categorizacion Simple.xlsx», se ve qué quedó cargado, se corrige lo que el
+// archivo dejó mal y se dice qué categoría de una empresa equivale a cuál de
+// otra. Sin esta pantalla el catálogo sería una tabla que nadie puede tocar.
 //
-// LA IMPORTACIÓN MUESTRA EL DIFF ANTES DE ESCRIBIR. Son ~480 filas de una
-// sola pasada: si el archivo viene recortado o con una familia renombrada, hay
-// que poder verlo ANTES y no después. Por eso el botón que importa no escribe:
-// calcula. El que escribe es el segundo, y dice exactamente cuántas altas,
-// cuántos cambios y cuántas desapariciones va a aplicar.
+// TRES COSAS QUE ESTA PANTALLA TIENE QUE HACER BIEN, Y POR QUÉ
 //
-// LO QUE FALTA NO SE BORRA. Un insumo que salió del archivo puede estar mapeado
-// contra el presupuesto o ser el nombre de una línea de una orden ya emitida.
-// Se DESACTIVA, y solo si se marca la casilla: importar media hoja no puede
-// apagar la otra media en silencio.
+// 1. EL ÁMBITO (mig 193). Gabriel: «la categorización pueda ser independiente
+//    en cada entidad, para que cada empresa vaya manejando una base de datos, y
+//    a la vez tener una base de datos general». El selector de arriba elige
+//    entre el catálogo GENERAL del grupo y el de cada entidad. Parado en una
+//    entidad se ve lo suyo MÁS el general; corregir algo que venía del general
+//    NO lo cambia para todos: le hace a esa entidad su propia copia.
+//
+// 2. CORREGIR EN LOTE. Gabriel, sobre el xlsx: «no es que esté perfecto, hace
+//    falta una revisión». Son 444 filas. Revisar de a una no se hace nunca;
+//    marcar veinte y decir «todas estas son ferretería» sí. Sin esto, importar
+//    y corregir serían dos promesas y solo la primera se cumpliría.
+//
+// 3. LAS EQUIVALENCIAS DE CATEGORÍAS. Solo se pregunta por las familias PROPIAS
+//    —las que una entidad escribió a su manera—; si dos usan las del grupo, ya
+//    coinciden y no hay nada que decidir. «Es propia y no equivale a ninguna»
+//    también es respuesta y también se recuerda.
+//
+// LA IMPORTACIÓN MUESTRA EL DIFF ANTES DE ESCRIBIR: si el archivo viene
+// recortado o con una familia renombrada, hay que poder verlo ANTES. Lo que
+// falta no se borra, se desactiva, y solo si se marca la casilla.
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
 import { parseExcelFile } from "../lib/excel.js";
 import {
   parseCatalogoXlsx, resolverCatalogo, resumenDiff, contarPorFamilia,
-  etiquetaFamilia, tipoInsumoDe, categoriaItemDe,
+  etiquetaFamilia, tipoInsumoDe, categoriaItemDe, esFamiliaCanonica,
+  FAMILIAS_CATALOGO, familiasPropias, equivalenciasDe, matrizCategorias,
+  entidadesConCatalogo,
 } from "../lib/catalogo-canonico.js";
 import {
   previsualizarImportacion, aplicarImportacion, corregirFactor,
+  corregirEnLote, adoptarEnEntidad, decidirEquivalencia,
 } from "../lib/catalogo-canonico-db.js";
 
 const { useState: uS, useMemo: uM, useRef: uR } = React;
@@ -45,34 +60,62 @@ const ETIQUETA_FACTOR = {
   supuesto: { txt: 'supuesto', color: 'b-amber' },
   manual: { txt: 'tuyo', color: 'b-blue' },
 };
+const UNIDADES_SUGERIDAS = ['und', 'm', 'm2', 'm3', 'kg', 'bolsa', 'gal', 'par', 'juego', 'rollo', 'caja', 'p2', 'var', 'glb', 'mes', 'dia', 'hm'];
 
 const num = (n) => Number(n || 0).toLocaleString('es-PE', { maximumFractionDigits: 3 });
 
 function CatalogoCanonicoTab({ showToast }) {
   const catHook = window.__hooks.useCatalogoInsumos();
   const disgHook = window.__hooks.useCatalogoDisgregacion();
+  const eqHook = window.__hooks.useCatalogoFamiliaMapeo();
+  const compHook = window.__hooks.useCompanies();
   const auth = window.__useAuth ? window.__useAuth() : {};
   const userId = auth?.profile?.id || null;
 
+  const [ambito, setAmbito] = uS('');          // '' = catálogo general del grupo
   const [busca, setBusca] = uS('');
   const [famSel, setFamSel] = uS('todas');
   const [tipoSel, setTipoSel] = uS('todos');
   const [verInactivos, setVerInactivos] = uS(false);
   const [limite, setLimite] = uS(80);
-  const [leido, setLeido] = uS(null);        // { insumos, disgregacion, avisos, ... }
+  const [marcados, setMarcados] = uS({});      // id → true
+  const [famLote, setFamLote] = uS('');
+  const [uniLote, setUniLote] = uS('');
+  const [leido, setLeido] = uS(null);
   const [diff, setDiff] = uS(null);
   const [desactivar, setDesactivar] = uS(false);
   const [leyendo, setLeyendo] = uS(false);
   const [factorEdit, setFactorEdit] = uS({});
-  // Anti doble-click (regla crítica de la casa): ref SÍNCRONO. Un doble tap en
-  // «Aplicar» no puede escribir el catálogo dos veces.
-  const aplicandoRef = uR(false);
+  const [eqElegida, setEqElegida] = uS({});    // familia local → slug canónico
+  // Anti doble-click (regla crítica de la casa): ref SÍNCRONO. Un doble tap no
+  // puede escribir el catálogo dos veces.
+  const enCursoRef = uR(false);
   const inputRef = uR(null);
 
-  const todas = uM(() => resolverCatalogo(catHook.data || []), [catHook.data]);
+  const companyId = ambito || null;
+
+  // Entidades que pueden tener catálogo propio: las del grupo y los consorcios
+  // ejecutores. Un tercero no arma catálogo — le compramos, no lo administramos.
+  const entidades = uM(() => (compHook.data || [])
+    .filter(c => !c.deleted_at && ['propia', 'consorcio'].includes(c.tipo_entidad || 'propia'))
+    .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'es')),
+  [compHook.data]);
+  const nombreDe = uM(() => new Map(entidades.map(c => [c.id, c.name])), [entidades]);
+
+  const crudo = uM(() => catHook.data || [], [catHook.data]);
+  const conCatalogo = uM(() => new Map(entidadesConCatalogo(crudo).map(e => [e.company_id, e.n])), [crudo]);
+
+  const equivalencias = uM(() => equivalenciasDe(eqHook.data || [], companyId), [eqHook.data, companyId]);
+  const todas = uM(() => resolverCatalogo(crudo, { companyId }), [crudo, companyId]);
   const activas = uM(() => todas.filter(r => r.activo !== false), [todas]);
-  const familias = uM(() => contarPorFamilia(todas), [todas]);
+  const familias = uM(() => contarPorFamilia(crudo, { companyId }), [crudo, companyId]);
   const inactivas = todas.length - activas.length;
+
+  const propias = uM(
+    () => (companyId ? familiasPropias(crudo, eqHook.data || [], companyId) : []),
+    [crudo, eqHook.data, companyId],
+  );
+  const matriz = uM(() => matrizCategorias(crudo, eqHook.data || []), [crudo, eqHook.data]);
 
   const visibles = uM(() => {
     const q = busca.trim().toLowerCase();
@@ -85,16 +128,20 @@ function CatalogoCanonicoTab({ showToast }) {
 
   const disgregacion = uM(() => {
     const porPadre = new Map();
-    for (const d of (disgHook.data || []).filter(r => !r.deleted_at && r.activo !== false)) {
+    for (const d of (disgHook.data || [])) {
+      if (!d || d.deleted_at || d.activo === false) continue;
+      if ((d.company_id || null) !== companyId) continue;
       if (!porPadre.has(d.padre_norm)) {
         porPadre.set(d.padre_norm, { nombre: d.padre_nombre, unidad: d.padre_unidad, hijos: [] });
       }
       porPadre.get(d.padre_norm).hijos.push(d);
     }
     return [...porPadre.values()];
-  }, [disgHook.data]);
+  }, [disgHook.data, companyId]);
 
   const resumen = uM(() => (diff ? resumenDiff(diff) : null), [diff]);
+  const idsMarcados = uM(() => Object.keys(marcados).filter(k => marcados[k]), [marcados]);
+  const refrescar = async () => { await catHook.refresh?.(); await disgHook.refresh?.(); await eqHook.refresh?.(); };
 
   // ── Leer el archivo (NO escribe: solo calcula el diff) ────────────
   const elegirArchivo = async (e) => {
@@ -110,7 +157,7 @@ function CatalogoCanonicoTab({ showToast }) {
         return;
       }
       setLeido(r);
-      setDiff(await previsualizarImportacion(r.insumos));
+      setDiff(await previsualizarImportacion(r.insumos, { companyId }));
       setDesactivar(false);
     } catch (err) {
       showToast?.(`No se pudo leer el archivo: ${err?.message || err}`, 'error');
@@ -121,12 +168,11 @@ function CatalogoCanonicoTab({ showToast }) {
   };
 
   const aplicar = async () => {
-    if (aplicandoRef.current || !diff || !leido) return;
-    aplicandoRef.current = true;
+    if (enCursoRef.current || !diff || !leido) return;
+    enCursoRef.current = true;
     try {
-      const hecho = await aplicarImportacion(diff, leido.disgregacion, { userId, desactivarAusentes: desactivar });
-      await catHook.refresh?.();
-      await disgHook.refresh?.();
+      const hecho = await aplicarImportacion(diff, leido.disgregacion, { userId, desactivarAusentes: desactivar, companyId });
+      await refrescar();
       setLeido(null); setDiff(null);
       showToast?.(
         `Catálogo actualizado: ${hecho.altas} nuevos, ${hecho.cambios} corregidos`
@@ -136,7 +182,34 @@ function CatalogoCanonicoTab({ showToast }) {
     } catch (err) {
       showToast?.(`No se pudo aplicar: ${err?.message || err}`, 'error');
     } finally {
-      aplicandoRef.current = false;
+      enCursoRef.current = false;
+    }
+  };
+
+  // ── Corregir en lote ─────────────────────────────────────────────
+  // Parado en una entidad, corregir una fila que viene del GENERAL no cambia el
+  // catálogo de todos: le hace a esa entidad su propia copia con el cambio.
+  const corregirLote = async (cambios) => {
+    if (enCursoRef.current || !idsMarcados.length) return;
+    enCursoRef.current = true;
+    try {
+      const porId = new Map(todas.map(r => [r.id, r]));
+      const suyas = idsMarcados.filter(id => (porId.get(id)?.company_id || null) === companyId);
+      const heredadas = idsMarcados.filter(id => (porId.get(id)?.company_id || null) !== companyId);
+      let n = await corregirEnLote(suyas, cambios, { userId });
+      for (const id of heredadas) {
+        if (await adoptarEnEntidad(id, companyId, cambios, { userId })) n++;
+      }
+      await refrescar();
+      setMarcados({}); setFamLote(''); setUniLote('');
+      showToast?.(
+        `${n} ${n === 1 ? 'corregido' : 'corregidos'}`
+        + (heredadas.length ? ` (${heredadas.length} quedaron como versión propia de esta entidad)` : '')
+        + '.', 'success');
+    } catch (err) {
+      showToast?.(`No se pudo corregir: ${err?.message || err}`, 'error');
+    } finally {
+      enCursoRef.current = false;
     }
   };
 
@@ -149,8 +222,50 @@ function CatalogoCanonicoTab({ showToast }) {
     showToast?.('Factor guardado. Desde ahora manda el tuyo.', 'success');
   };
 
+  const guardarEquivalencia = async (familiaLocal, decision) => {
+    if (enCursoRef.current) return;
+    const canonica = eqElegida[familiaLocal] || null;
+    if (decision === 'mapeada' && !canonica) { showToast?.('Elige a qué categoría del grupo equivale.', 'error'); return; }
+    enCursoRef.current = true;
+    try {
+      await decidirEquivalencia(companyId, familiaLocal, { familiaCanonica: canonica, decision, userId });
+      await eqHook.refresh?.();
+      setEqElegida(p => { const n = { ...p }; delete n[familiaLocal]; return n; });
+      showToast?.(decision === 'mapeada'
+        ? `«${familiaLocal}» queda como ${etiquetaFamilia(canonica)}. No se vuelve a preguntar.`
+        : `«${familiaLocal}» queda como categoría propia de esta entidad.`, 'success');
+    } catch (err) {
+      showToast?.(`No se pudo guardar: ${err?.message || err}`, 'error');
+    } finally {
+      enCursoRef.current = false;
+    }
+  };
+
+  const etiquetaAmbito = companyId ? (nombreDe.get(companyId) || 'esta entidad') : 'el grupo';
+
   return (
     <div style={{ display: 'grid', gap: 12 }}>
+
+      {/* ── El ámbito ───────────────────────────────────────────── */}
+      <div className="card card-p" style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <div style={{ minWidth: 300 }}>
+          <label className="flabel" style={{ fontSize: 10.5 }}>Catálogo de</label>
+          <select className="fi" style={{ width: '100%', fontSize: 12 }} value={ambito}
+            onChange={e => { setAmbito(e.target.value); setMarcados({}); setFamSel('todas'); setLeido(null); setDiff(null); }}>
+            <option value="">📚 General del grupo</option>
+            {entidades.map(c => (
+              <option key={c.id} value={c.id}>
+                {c.name}{conCatalogo.get(c.id) ? ` · ${conCatalogo.get(c.id)} propios` : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div style={{ fontSize: 11.5, color: 'var(--ts)', flex: 1, minWidth: 260, lineHeight: 1.5 }}>
+          {companyId
+            ? <>Estás viendo lo de <strong>{etiquetaAmbito}</strong> más el catálogo general como base. Lo que corrijas acá queda <strong>solo para esta entidad</strong>: el general no se mueve.</>
+            : <>Es la <strong>base común</strong> del programa. Cada empresa o consorcio puede tener después la suya, y la suya manda sobre ésta.</>}
+        </div>
+      </div>
 
       {/* ── Qué es esto ─────────────────────────────────────────── */}
       <div className="card card-p" style={{ fontSize: 11.5, color: 'var(--ts)', lineHeight: 1.6 }}>
@@ -158,8 +273,9 @@ function CatalogoCanonicoTab({ showToast }) {
         das de alta un insumo o armas una orden. Sale de tu archivo{' '}
         <code>Categorizacion Simple.xlsx</code>, se puede volver a importar cuando lo corrijas
         —actualiza, no duplica— y lo que edites aquí a mano ya no lo pisa ninguna importación.
-        La familia comercial no reemplaza a nada: <strong>traduce</strong> a la tabla de inventario
-        que le toca a cada cosa y a la categoría de gasto que ve contabilidad.
+        <strong> Importar no categoriza nada por su cuenta:</strong> carga los nombres con la familia
+        que tenga el archivo, tal cual. Lo que esté mal se corrige acá, y para eso están las casillas
+        de la izquierda: marcas varias filas y les cambias la familia de una sola vez.
       </div>
 
       {/* ── Importar ────────────────────────────────────────────── */}
@@ -170,7 +286,7 @@ function CatalogoCanonicoTab({ showToast }) {
           {leyendo && <span style={{ fontSize: 11.5, color: 'var(--tm)' }}>Leyendo el archivo…</span>}
           {!leido && !leyendo && (
             <span style={{ fontSize: 11.5, color: 'var(--tm)' }}>
-              Elige el xlsx y te muestro qué cambiaría <strong>antes</strong> de escribir nada.
+              Se importa al catálogo de <strong>{etiquetaAmbito}</strong>. Elige el xlsx y te muestro qué cambiaría <strong>antes</strong> de escribir nada.
             </span>
           )}
         </div>
@@ -227,7 +343,7 @@ function CatalogoCanonicoTab({ showToast }) {
 
             <div style={{ display: 'flex', gap: 8 }}>
               <button className="btn btn-amber btn-sm" onClick={aplicar} disabled={!resumen.hayCambios && !leido.disgregacion.length}>
-                {resumen.hayCambios ? 'Aplicar al catálogo' : 'Nada que cambiar'}
+                {resumen.hayCambios ? `Aplicar al catálogo de ${etiquetaAmbito}` : 'Nada que cambiar'}
               </button>
               <button className="btn btn-ghost btn-sm" onClick={() => { setLeido(null); setDiff(null); }}>Cancelar</button>
             </div>
@@ -239,7 +355,7 @@ function CatalogoCanonicoTab({ showToast }) {
       {todas.length === 0 ? (
         <div className="card card-p empty-state">
           <JxIcon name="package" size={40} color="var(--tm)" />
-          <p>Todavía no hay catálogo cargado. Importa <code>Categorizacion Simple.xlsx</code> con el
+          <p>Todavía no hay catálogo cargado para {etiquetaAmbito}. Importa <code>Categorizacion Simple.xlsx</code> con el
             botón de arriba: son 444 insumos en 10 familias, 34 servicios y la disgregación del acero.</p>
         </div>
       ) : (
@@ -250,8 +366,9 @@ function CatalogoCanonicoTab({ showToast }) {
               onClick={() => setFamSel('todas')}>Todas ({activas.length})</button>
             {familias.map(f => (
               <button key={f.slug} className={`btn btn-xs ${famSel === f.slug ? 'btn-amber' : 'btn-ghost'}`}
-                onClick={() => setFamSel(f.slug)} title={`Va a ${TIPO_DESTINO[f.tipo]}`}>
-                {f.label} ({f.n})
+                onClick={() => setFamSel(f.slug)}
+                title={f.propia ? 'Categoría propia de esta entidad: falta decir a cuál del grupo equivale.' : `Va a ${TIPO_DESTINO[f.tipo]}`}>
+                {f.propia ? '◆ ' : ''}{f.label} ({f.n})
               </button>
             ))}
           </div>
@@ -277,11 +394,57 @@ function CatalogoCanonicoTab({ showToast }) {
             </label>
           </div>
 
+          {/* ── Corregir en lote ──────────────────────────────── */}
+          {idsMarcados.length > 0 && (
+            <div className="card card-p" style={{ background: 'var(--amber-l)', display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600, alignSelf: 'center' }}>
+                {idsMarcados.length} {idsMarcados.length === 1 ? 'marcado' : 'marcados'}
+              </div>
+              <div>
+                <label className="flabel" style={{ fontSize: 10.5 }}>Cambiar la familia a</label>
+                <select className="fi" style={{ fontSize: 12 }} value={famLote} onChange={e => setFamLote(e.target.value)}>
+                  <option value="">— elegir —</option>
+                  {FAMILIAS_CATALOGO.map(f => <option key={f.slug} value={f.slug}>{f.label}</option>)}
+                </select>
+              </div>
+              <button className="btn btn-amber btn-sm" disabled={!famLote} onClick={() => corregirLote({ familia: famLote })}>
+                Aplicar familia
+              </button>
+              <div>
+                <label className="flabel" style={{ fontSize: 10.5 }}>o la unidad a</label>
+                <input className="fi" list="jx-unidades-cat" style={{ fontSize: 12, width: 110 }} value={uniLote}
+                  placeholder="und, m, kg…" onChange={e => setUniLote(e.target.value)} />
+                <datalist id="jx-unidades-cat">
+                  {UNIDADES_SUGERIDAS.map(u => <option key={u} value={u} />)}
+                </datalist>
+              </div>
+              <button className="btn btn-amber btn-sm" disabled={!uniLote.trim()} onClick={() => corregirLote({ unidad: uniLote.trim() })}>
+                Aplicar unidad
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={() => corregirLote({ activo: false })}>
+                Desactivar
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setMarcados({})}>Desmarcar todo</button>
+            </div>
+          )}
+
           {/* ── La lista ──────────────────────────────────────── */}
           <div className="card" style={{ overflowX: 'auto' }}>
             <table className="tbl" style={{ fontSize: 11.5 }}>
               <thead>
                 <tr>
+                  <th style={{ width: 28 }}>
+                    <input type="checkbox"
+                      checked={visibles.length > 0 && visibles.slice(0, limite).every(r => marcados[r.id])}
+                      onChange={e => {
+                        const on = e.target.checked;
+                        setMarcados(p => {
+                          const n = { ...p };
+                          for (const r of visibles.slice(0, limite)) { if (on) n[r.id] = true; else delete n[r.id]; }
+                          return n;
+                        });
+                      }} />
+                  </th>
                   <th>Nombre</th>
                   <th>Unidad</th>
                   <th>Familia</th>
@@ -292,16 +455,28 @@ function CatalogoCanonicoTab({ showToast }) {
               </thead>
               <tbody>
                 {visibles.slice(0, limite).map(r => {
-                  const destino = tipoInsumoDe(r);
+                  const destino = tipoInsumoDe(r, equivalencias);
+                  const propia = !esFamiliaCanonica(r.familia);
                   return (
                     <tr key={r.id} style={r.activo === false ? { opacity: 0.5 } : undefined}>
+                      <td>
+                        <input type="checkbox" checked={!!marcados[r.id]}
+                          onChange={e => setMarcados(p => {
+                            const n = { ...p };
+                            if (e.target.checked) n[r.id] = true; else delete n[r.id];
+                            return n;
+                          })} />
+                      </td>
                       <td>{r.nombre}</td>
                       <td style={{ fontFamily: 'monospace' }}>{r.unidad || '—'}</td>
-                      <td>{etiquetaFamilia(r.familia)}</td>
+                      <td title={propia ? 'Categoría propia de esta entidad' : undefined}>
+                        {propia ? '◆ ' : ''}{etiquetaFamilia(r.familia)}
+                      </td>
                       <td><span className={`badge ${BADGE_DESTINO[destino] || 'b-gray'}`} style={{ fontSize: 9 }}>{TIPO_DESTINO[destino] || destino}</span></td>
-                      <td style={{ color: 'var(--tm)' }}>{categoriaItemDe(r)}</td>
-                      <td>
+                      <td style={{ color: 'var(--tm)' }}>{categoriaItemDe(r, equivalencias)}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
                         {r.origen === 'manual' && <span className="badge b-blue" style={{ fontSize: 8.5 }} title="Editado a mano: la importación no lo pisa.">tuyo</span>}
+                        {companyId && !r.company_id && <span className="badge b-gray" style={{ fontSize: 8.5 }} title="Viene del catálogo general del grupo.">del grupo</span>}
                         {r.activo === false && <span className="badge b-gray" style={{ fontSize: 8.5 }}>desactivado</span>}
                       </td>
                     </tr>
@@ -323,6 +498,87 @@ function CatalogoCanonicoTab({ showToast }) {
             )}
           </div>
         </>
+      )}
+
+      {/* ── Equivalencias de categorías de esta entidad ─────────── */}
+      {companyId && propias.length > 0 && (
+        <div className="card card-p">
+          <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 4 }}>
+            Categorías propias de {etiquetaAmbito}
+          </div>
+          <div style={{ fontSize: 11.5, color: 'var(--ts)', marginBottom: 8, lineHeight: 1.55 }}>
+            Estas categorías no son de las del grupo. Dile a cuál equivalen y se hace el match con las
+            demás empresas: lo que aquí se llama de una forma y en otra empresa de otra pasa a ser la
+            misma cosa. Solo se pregunta por éstas — las que ya usan el vocabulario del grupo
+            coinciden solas y no dan trabajo.
+          </div>
+          <table className="tbl" style={{ fontSize: 11.5 }}>
+            <tbody>
+              {propias.map(f => (
+                <tr key={f.familia_local}>
+                  <td><strong>{f.familia_local}</strong> <span style={{ color: 'var(--tm)' }}>· {f.n} {f.n === 1 ? 'insumo' : 'insumos'}</span></td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    {f.decision === 'mapeada'
+                      ? <span className="badge b-green" style={{ fontSize: 9 }}>= {etiquetaFamilia(f.familia_canonica)}</span>
+                      : f.decision === 'propia'
+                        ? <span className="badge b-gray" style={{ fontSize: 9 }}>propia, no equivale a ninguna</span>
+                        : <span className="badge b-amber" style={{ fontSize: 9 }}>sin decidir</span>}
+                  </td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    <select className="fi" style={{ fontSize: 11 }} value={eqElegida[f.familia_local] || ''}
+                      onChange={e => setEqElegida(p => ({ ...p, [f.familia_local]: e.target.value }))}>
+                      <option value="">— equivale a —</option>
+                      {FAMILIAS_CATALOGO.map(c => <option key={c.slug} value={c.slug}>{c.label}</option>)}
+                    </select>
+                    <button className="btn btn-xs btn-amber" style={{ marginLeft: 4 }}
+                      disabled={!eqElegida[f.familia_local]}
+                      onClick={() => guardarEquivalencia(f.familia_local, 'mapeada')}>Guardar</button>
+                    <button className="btn btn-xs btn-ghost" style={{ marginLeft: 4 }}
+                      onClick={() => guardarEquivalencia(f.familia_local, 'propia')}>Es propia</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* ── La matriz del grupo ─────────────────────────────────── */}
+      {matriz.filas.length > 0 && (
+        <div className="card card-p">
+          <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 4 }}>Cómo le dice cada uno a lo mismo</div>
+          <div style={{ fontSize: 11.5, color: 'var(--ts)', marginBottom: 8, lineHeight: 1.55 }}>
+            Por cada categoría del grupo, con qué nombre la maneja cada entidad. Es la correlación que
+            deja comparar lo que compró una con lo que compró otra.
+          </div>
+          <table className="tbl" style={{ fontSize: 11.5 }}>
+            <thead>
+              <tr><th>Categoría del grupo</th><th>Insumos</th><th>Quién la usa, y cómo la llama</th></tr>
+            </thead>
+            <tbody>
+              {matriz.filas.map(f => (
+                <tr key={f.slug}>
+                  <td><strong>{f.label}</strong></td>
+                  <td style={{ fontFamily: 'monospace' }}>{f.n}</td>
+                  <td>
+                    {[...f.entidades.entries()].map(([cid, locales]) => (
+                      <span key={String(cid)} style={{ marginRight: 10, color: 'var(--ts)' }}>
+                        {cid ? (nombreDe.get(cid) || 'entidad') : 'General'}
+                        {locales.some(l => !esFamiliaCanonica(l)) && <span style={{ color: 'var(--tm)' }}> («{locales.filter(l => !esFamiliaCanonica(l)).join('», «')}»)</span>}
+                      </span>
+                    ))}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {matriz.sinMapear.length > 0 && (
+            <div style={{ fontSize: 11.5, color: 'var(--amber)', marginTop: 8 }}>
+              ◆ {matriz.sinMapear.length} {matriz.sinMapear.length === 1 ? 'categoría propia todavía no equivale' : 'categorías propias todavía no equivalen'} a
+              ninguna del grupo — entra al catálogo de esa entidad para decidirlo.
+            </div>
+          )}
+        </div>
       )}
 
       {/* ── Disgregación ────────────────────────────────────────── */}

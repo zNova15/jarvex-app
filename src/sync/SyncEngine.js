@@ -149,6 +149,9 @@ const TRANSACTIONAL_TABLES = [
   // proponerle nombres a la almacenera y al ingeniero igual que al contador.
   'catalogo_insumos',
   'catalogo_disgregacion',
+  // Mapeo de categorías entre entidades (mig 193): la familia local de una
+  // empresa contra la familia canónica del grupo.
+  'catalogo_familia_mapeo',
   // Config global clave→valor (mig 159). FK-less; NO va en TABLA_TO_MODULO
   // (solo el admin escribe — RLS lo garantiza en el server) y todos la PULLean
   // (el rol campo incluido: necesita el timeout de sesión como cualquier device).
@@ -208,6 +211,7 @@ const MASTER_TABLES = [
   { tabla: 'insumo_mapeo',                 query: () => supabase.from('insumo_mapeo').select('*').is('deleted_at', null) },
   { tabla: 'catalogo_insumos',             query: () => supabase.from('catalogo_insumos').select('*').is('deleted_at', null) },
   { tabla: 'catalogo_disgregacion',        query: () => supabase.from('catalogo_disgregacion').select('*').is('deleted_at', null) },
+  { tabla: 'catalogo_familia_mapeo',       query: () => supabase.from('catalogo_familia_mapeo').select('*').is('deleted_at', null) },
   { tabla: 'app_config',                   query: () => supabase.from('app_config').select('*').is('deleted_at', null) },
   { tabla: 'intercompany_transactions',    query: () => supabase.from('intercompany_transactions').select('*').is('deleted_at', null) },
   // Compras
@@ -1120,6 +1124,10 @@ const FK_DEPS = {
   activos_fijos:             [{ campo: 'company_id', tabla: 'companies' }, { campo: 'activo_pesado_id', tabla: 'activos_pesados' }, { campo: 'accounting_movement_id', tabla: 'accounting_movements' }, { campo: 'obra_id', tabla: 'obras' }],
   caja_chica_movimientos:    [{ campo: 'responsable_id', tabla: 'personal' }],
   // La regla de emisión referencia la empresa emisora + intermediarias (FKs reales).
+  // El catálogo por entidad (mig 193): `company_id` es FK real a companies.
+  catalogo_insumos:          [{ campo: 'company_id', tabla: 'companies' }],
+  catalogo_disgregacion:     [{ campo: 'company_id', tabla: 'companies' }],
+  catalogo_familia_mapeo:    [{ campo: 'company_id', tabla: 'companies' }],
   emision_reglas:            [{ campo: 'company_id', tabla: 'companies' }, { campo: 'intermediaria1_company_id', tabla: 'companies' }, { campo: 'intermediaria2_company_id', tabla: 'companies' }],
   reportes_dia:              [{ campo: 'frente_id', tabla: 'frentes_obra' }],
   pagos:                     [{ campo: 'personal_id', tabla: 'personal' }, { campo: 'subcontrato_id', tabla: 'subcontratos' }, { campo: 'company_id', tabla: 'companies' }],

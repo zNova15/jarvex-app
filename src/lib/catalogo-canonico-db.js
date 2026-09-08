@@ -33,9 +33,13 @@ export async function leerCatalogoCrudo() {
   } catch { return []; }
 }
 
-/** El catálogo ya resuelto (una fila por `norm`) y solo lo activo. */
-export async function leerCatalogo({ incluirInactivos = false } = {}) {
-  const filas = resolverCatalogo(await leerCatalogoCrudo());
+/**
+ * El catálogo ya resuelto (una fila por `norm`) y solo lo activo, en el ámbito
+ * pedido: `companyId: null` es el catálogo GENERAL del grupo; con valor, el de
+ * esa entidad más el general como base (mig 193).
+ */
+export async function leerCatalogo({ incluirInactivos = false, companyId = null } = {}) {
+  const filas = resolverCatalogo(await leerCatalogoCrudo(), { companyId });
   return incluirInactivos ? filas : filas.filter(r => r.activo !== false);
 }
 
@@ -52,12 +56,13 @@ export async function leerDisgregacion() {
  * y recién entonces Gabriel decide. Importar a ciegas un xlsx editado mal es de
  * las pocas cosas que pueden ensuciar el catálogo entero de una sola pasada.
  */
-export async function previsualizarImportacion(importados) {
-  return diffCatalogo(await leerCatalogoCrudo(), importados || []);
+export async function previsualizarImportacion(importados, { companyId = null } = {}) {
+  return diffCatalogo(await leerCatalogoCrudo(), importados || [], { companyId });
 }
 
-const campoNuevo = (fila, esPrueba, userId) => ({
+const campoNuevo = (fila, esPrueba, userId, companyId = null) => ({
   id: newId(),
+  company_id: companyId,
   tipo: fila.tipo || 'insumo',
   nombre: fila.nombre,
   norm: fila.norm,
@@ -92,14 +97,17 @@ const parcheDeUpdate = (fila, prev, esPrueba, userId) => ({
  * hoja recortada (solo la familia que estaba corrigiendo), desactivar todo lo
  * que falta sería un desastre silencioso. La pantalla lo pregunta con el
  * número adelante.
+ *
+ * `companyId` es el DESTINO (mig 193): null = el catálogo general del grupo,
+ * con valor = el catálogo propio de esa entidad.
  */
-export async function aplicarImportacion(diff, disgregacion, { userId = null, desactivarAusentes = false } = {}) {
+export async function aplicarImportacion(diff, disgregacion, { userId = null, desactivarAusentes = false, companyId = null } = {}) {
   const esPrueba = esModoPrueba();
   const hecho = { altas: 0, cambios: 0, reactivados: 0, desactivados: 0, disgregacion: 0 };
 
   await db.transaction('rw', db.catalogo_insumos, db.catalogo_disgregacion, async () => {
     for (const f of diff?.altas || []) {
-      await db.catalogo_insumos.add(campoNuevo(f, esPrueba, userId));
+      await db.catalogo_insumos.add(campoNuevo(f, esPrueba, userId, companyId));
       hecho.altas++;
     }
     for (const f of diff?.cambios || []) {
@@ -133,7 +141,7 @@ export async function aplicarImportacion(diff, disgregacion, { userId = null, de
     for (const d of disgregacion || []) {
       const previas = await db.catalogo_disgregacion
         .filter(r => !r.deleted_at && r.padre_norm === d.padre_norm && r.hijo_norm === d.hijo_norm
-          && filaDelModo(r, esPrueba)).toArray();
+          && (r.company_id || null) === companyId && filaDelModo(r, esPrueba)).toArray();
       const manual = previas.find(r => r.origen === 'manual' || r.factor_fuente === 'manual');
       if (manual) continue;                       // lo que ella grabó, manda
       const prev = previas[0];
@@ -147,6 +155,7 @@ export async function aplicarImportacion(diff, disgregacion, { userId = null, de
       } else {
         await db.catalogo_disgregacion.add({
           id: newId(),
+          company_id: companyId,
           padre_norm: d.padre_norm, padre_nombre: d.padre_nombre, padre_unidad: d.padre_unidad || null,
           hijo_norm: d.hijo_norm, hijo_nombre: d.hijo_nombre, hijo_unidad: d.hijo_unidad || null,
           factor: d.factor, factor_fuente: d.factor_fuente || null, nota: d.nota || null,
@@ -190,5 +199,94 @@ export async function corregirFactor(id, factor, { userId = null } = {}) {
     factor_fuente: Number.isFinite(n) && n > 0 ? 'manual' : null,
     origen: 'manual',
   }, prev, esPrueba, userId));
+  return true;
+}
+
+/**
+ * Corrige VARIAS entradas de una vez (familia, unidad o lo que sea).
+ *
+ * Existe porque son 444 filas y Gabriel dijo lo que hay que oír: «no es que
+ * esté perfecto, hace falta una revisión». Revisar de a una fila no se hace
+ * nunca; marcar veinte y decir «todas estas son ferretería» sí. Todas quedan
+ * `origen: 'manual'` y ninguna importación las vuelve a pisar.
+ */
+export async function corregirEnLote(ids, cambios, { userId = null } = {}) {
+  const esPrueba = esModoPrueba();
+  let n = 0;
+  await db.transaction('rw', db.catalogo_insumos, async () => {
+    for (const id of ids || []) {
+      const prev = await db.catalogo_insumos.get(id);
+      if (!prev) continue;
+      await db.catalogo_insumos.update(id, parcheDeUpdate({ ...cambios, origen: 'manual' }, prev, esPrueba, userId));
+      n++;
+    }
+  });
+  return n;
+}
+
+/**
+ * Copia una entrada del catálogo GENERAL al catálogo de una entidad, para
+ * poder corregirla ahí sin tocar la del grupo. Es lo que hace que «cada empresa
+ * maneje su base»: la entidad se queda con SU versión y el general no se mueve.
+ */
+export async function adoptarEnEntidad(id, companyId, cambios = {}, { userId = null } = {}) {
+  const base = await db.catalogo_insumos.get(id);
+  if (!base || !companyId) return null;
+  if ((base.company_id || null) === companyId) {          // ya es suya: se corrige
+    await corregirEntrada(id, cambios, { userId });
+    return id;
+  }
+  const esPrueba = esModoPrueba();
+  const fila = {
+    ...campoNuevo({ tipo: base.tipo, nombre: base.nombre, norm: base.norm, unidad: base.unidad, familia: base.familia }, esPrueba, userId, companyId),
+    ...cambios,
+    origen: 'manual',
+  };
+  await db.catalogo_insumos.add(fila);
+  return fila.id;
+}
+
+// ── EL MAPEO DE CATEGORÍAS ENTRE ENTIDADES (mig 193) ───────────────
+
+/**
+ * Guarda que la familia local de una entidad equivale a una del grupo, o que es
+ * PROPIA y no equivale a ninguna. Las dos son respuestas y las dos se recuerdan
+ * — sin guardar el «es propia», la pregunta vuelve en cada visita y la pantalla
+ * se abandona (la lección de mig 183).
+ */
+export async function decidirEquivalencia(companyId, familiaLocal, { familiaCanonica = null, decision = 'mapeada', userId = null } = {}) {
+  if (!companyId || !familiaLocal) return null;
+  if (decision === 'mapeada' && !familiaCanonica) return null;
+  const esPrueba = esModoPrueba();
+  const previas = await db.catalogo_familia_mapeo
+    .filter(r => !r.deleted_at && r.company_id === companyId && r.familia_local === familiaLocal
+      && filaDelModo(r, esPrueba)).toArray();
+  const campos = {
+    familia_canonica: decision === 'mapeada' ? familiaCanonica : null,
+    decision,
+  };
+  const prev = previas[0];
+  if (prev) {
+    await db.catalogo_familia_mapeo.update(prev.id, parcheDeUpdate(campos, prev, esPrueba, userId));
+    return prev.id;
+  }
+  const id = newId();
+  await db.catalogo_familia_mapeo.add({
+    id, company_id: companyId, familia_local: familiaLocal, ...campos,
+    created_by: userId || null, updated_by: userId || null,
+    created_at: ahora(), updated_at: ahora(),
+    version: 1,
+    idempotency_key: newIdempotencyKey(userId || 'anon', 'catalogo_familia_mapeo'),
+    ...(esPrueba ? { demo: true, sync_status: SYNC_STATUS.SYNCED } : { sync_status: SYNC_STATUS.PENDING_CREATE }),
+  });
+  return id;
+}
+
+/** Deshace una equivalencia: vuelve a quedar pendiente de decidir. */
+export async function olvidarEquivalencia(id) {
+  const prev = await db.catalogo_familia_mapeo.get(id);
+  if (!prev) return false;
+  if (prev.sync_status === SYNC_STATUS.PENDING_CREATE) await db.catalogo_familia_mapeo.delete(id);
+  else await db.catalogo_familia_mapeo.update(id, { deleted_at: ahora(), sync_status: SYNC_STATUS.PENDING_DELETE });
   return true;
 }

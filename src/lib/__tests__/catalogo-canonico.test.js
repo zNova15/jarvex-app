@@ -14,7 +14,9 @@ import { describe, it, expect } from 'vitest';
 import {
   parseCatalogoXlsx, slugFamilia, normUnidad, tipoInsumoDe, categoriaItemDe,
   diffCatalogo, resumenDiff, resolverCatalogo, indexarCatalogo, buscarCatalogo,
-  contarPorFamilia, factorDisgregacion, etiquetaFamilia,
+  contarPorFamilia, factorDisgregacion, etiquetaFamilia, esFamiliaCanonica,
+  familiaEfectiva, familiasPropias, equivalenciasDe, matrizCategorias,
+  entidadesConCatalogo,
 } from '../catalogo-canonico.js';
 
 // ── Fixtures ───────────────────────────────────────────────────────
@@ -105,12 +107,15 @@ describe('leer el xlsx', () => {
     expect(normUnidad('')).toBe('');
   });
 
-  it('una familia que no conoce NO la inventa: avisa y manda a Otros', () => {
+  it('una familia que no es del grupo se GUARDA con su nombre, no se tira a Otros', () => {
+    // Antes caía en «otros» y se perdía lo único que había: cómo la llama esa
+    // empresa. Ahora queda como familia propia, esperando su equivalencia.
     const r = leer([hojaInsumos([
       ['MATERIALES ELECTROMECANICOS', null],
       ['MOTOR TRIFASICO 5 HP', 'und'],
     ])]);
-    expect(porNombre(r, 'MOTOR TRIFASICO 5 HP').familia).toBe('otros');
+    expect(porNombre(r, 'MOTOR TRIFASICO 5 HP').familia).toBe('MATERIALES ELECTROMECANICOS');
+    expect(esFamiliaCanonica('MATERIALES ELECTROMECANICOS')).toBe(false);
     expect(r.avisos.join(' ')).toContain('MATERIALES ELECTROMECANICOS');
   });
 
@@ -341,5 +346,120 @@ describe('buscar en el catálogo', () => {
 
   it('respeta el límite pedido', () => {
     expect(buscarCatalogo(idx(), 'acero corrugado de', { limite: 1 }).length).toBeLessThanOrEqual(1);
+  });
+});
+
+// ── 7. El catálogo tiene dueño (mig 193) ───────────────────────────
+describe('cada entidad maneja su base, con el general como referencia', () => {
+  const gen = (norm, extra = {}) => ({ id: `g-${norm}`, norm, nombre: norm.toUpperCase(), unidad: 'und', familia: 'ferreteria', tipo: 'insumo', origen: 'xlsx', activo: true, company_id: null, updated_at: '2026-09-01', ...extra });
+  const dePropia = (norm, companyId, extra = {}) => gen(norm, { id: `p-${companyId}-${norm}`, company_id: companyId, ...extra });
+
+  const FILAS = [
+    gen('cemento'), gen('clavo'),
+    dePropia('cemento', 'gasomi', { unidad: 'bolsa', familia: 'agregados' }),
+    dePropia('fierro', 'gasomi'),
+    dePropia('pintura', 'elinca'),
+  ];
+
+  it('el catálogo general es SOLO el general: no se le cuelan las entidades', () => {
+    expect(resolverCatalogo(FILAS).map(r => r.norm).sort()).toEqual(['cemento', 'clavo']);
+    expect(resolverCatalogo(FILAS)[0].company_id).toBeNull();
+  });
+
+  it('una entidad ve lo suyo MÁS el general como base', () => {
+    const r = resolverCatalogo(FILAS, { companyId: 'gasomi' });
+    expect(r.map(x => x.norm).sort()).toEqual(['cemento', 'clavo', 'fierro']);
+    // Y NO ve el catálogo de la otra entidad.
+    expect(r.find(x => x.norm === 'pintura')).toBeUndefined();
+  });
+
+  it('donde el mismo insumo está en los dos, MANDA el de la entidad', () => {
+    const r = resolverCatalogo(FILAS, { companyId: 'gasomi' });
+    const cemento = r.find(x => x.norm === 'cemento');
+    expect(cemento.company_id).toBe('gasomi');
+    expect(cemento.unidad).toBe('bolsa');
+  });
+
+  it('y le gana incluso a una fila general corregida a mano', () => {
+    const filas = [gen('cemento', { origen: 'manual', updated_at: '2026-09-30' }), dePropia('cemento', 'gasomi')];
+    expect(resolverCatalogo(filas, { companyId: 'gasomi' })[0].company_id).toBe('gasomi');
+  });
+
+  it('importar en una entidad no marca como ausente lo del general', () => {
+    // Se importa solo «fierro» en GASOMI: el general no se toca.
+    const d = diffCatalogo(FILAS, [{ tipo: 'insumo', nombre: 'FIERRO', norm: 'fierro', unidad: 'und', familia: 'ferreteria', origen: 'xlsx' }], { companyId: 'gasomi' });
+    expect(d.ausentes.map(a => a.norm)).toEqual(['cemento']);   // solo lo de GASOMI
+    expect(d.altas).toHaveLength(0);
+  });
+
+  it('dice qué entidades ya tienen catálogo propio', () => {
+    expect(entidadesConCatalogo(FILAS).sort((a, b) => a.company_id.localeCompare(b.company_id)))
+      .toEqual([{ company_id: 'elinca', n: 1 }, { company_id: 'gasomi', n: 2 }]);
+  });
+});
+
+// ── 8. El mapeo de categorías entre entidades ──────────────────────
+describe('el mapeo de categorías entre entidades', () => {
+  const ins = (companyId, familia, norm) => ({ id: `${companyId}-${norm}`, norm, nombre: norm.toUpperCase(), unidad: 'und', familia, tipo: 'insumo', origen: 'xlsx', activo: true, company_id: companyId });
+  const CATALOGO = [
+    ins('gasomi', 'FIERROS Y ACEROS', 'fierro 1_2'),
+    ins('gasomi', 'FIERROS Y ACEROS', 'fierro 3_8'),
+    ins('gasomi', 'ferreteria', 'clavo'),
+    ins('elinca', 'MATERIAL DE FIERRO', 'varilla'),
+    ins('elinca', 'ferreteria', 'alambre'),
+    ins(null, 'ferreteria', 'tornillo'),
+  ];
+
+  it('solo pregunta por las familias PROPIAS: las del grupo ya coinciden solas', () => {
+    const p = familiasPropias(CATALOGO, [], 'gasomi');
+    expect(p.map(x => x.familia_local)).toEqual(['FIERROS Y ACEROS']);
+    expect(p[0].n).toBe(2);
+    expect(p[0].decision).toBeNull();
+  });
+
+  it('decidida la equivalencia, deja de preguntar y la familia empieza a mandar', () => {
+    const mapeo = [{ id: 'm1', company_id: 'gasomi', familia_local: 'FIERROS Y ACEROS', familia_canonica: 'perfiles_metalicos', decision: 'mapeada', updated_at: '2026-09-07' }];
+    const p = familiasPropias(CATALOGO, mapeo, 'gasomi');
+    expect(p[0].familia_canonica).toBe('perfiles_metalicos');
+    // Y a partir de ahí, un insumo de esa familia se comporta como del grupo.
+    const eq = equivalenciasDe(mapeo, 'gasomi');
+    expect(familiaEfectiva('FIERROS Y ACEROS', eq)).toBe('perfiles_metalicos');
+    expect(tipoInsumoDe({ nombre: 'FIERRO 1/2', familia: 'FIERROS Y ACEROS' }, eq)).toBe('material');
+    expect(categoriaItemDe({ nombre: 'FIERRO 1/2', familia: 'FIERROS Y ACEROS' }, eq)).toBe('materiales');
+  });
+
+  it('«es propia y no equivale a ninguna» es una respuesta que se recuerda', () => {
+    const mapeo = [{ id: 'm1', company_id: 'gasomi', familia_local: 'FIERROS Y ACEROS', familia_canonica: null, decision: 'propia', updated_at: '2026-09-07' }];
+    expect(familiasPropias(CATALOGO, mapeo, 'gasomi')[0].decision).toBe('propia');
+    expect(equivalenciasDe(mapeo, 'gasomi').size).toBe(0);
+  });
+
+  it('la equivalencia de una entidad NO se le aplica a otra', () => {
+    const mapeo = [{ id: 'm1', company_id: 'gasomi', familia_local: 'FIERROS Y ACEROS', familia_canonica: 'perfiles_metalicos', decision: 'mapeada', updated_at: '2026-09-07' }];
+    expect(equivalenciasDe(mapeo, 'elinca').size).toBe(0);
+    expect(familiasPropias(CATALOGO, mapeo, 'elinca')[0]).toMatchObject({ familia_local: 'MATERIAL DE FIERRO', decision: null });
+  });
+
+  it('la matriz muestra cómo llama cada entidad a la misma categoría del grupo', () => {
+    const mapeo = [
+      { id: 'm1', company_id: 'gasomi', familia_local: 'FIERROS Y ACEROS', familia_canonica: 'perfiles_metalicos', decision: 'mapeada', updated_at: '2026-09-07' },
+      { id: 'm2', company_id: 'elinca', familia_local: 'MATERIAL DE FIERRO', familia_canonica: 'perfiles_metalicos', decision: 'mapeada', updated_at: '2026-09-07' },
+    ];
+    const { filas, sinMapear } = matrizCategorias(CATALOGO, mapeo);
+    const perfiles = filas.find(f => f.slug === 'perfiles_metalicos');
+    expect(perfiles.entidades.get('gasomi')).toEqual(['FIERROS Y ACEROS']);
+    expect(perfiles.entidades.get('elinca')).toEqual(['MATERIAL DE FIERRO']);
+    expect(perfiles.n).toBe(3);
+    // Ferretería la comparten las tres sin haber mapeado nada.
+    const ferr = filas.find(f => f.slug === 'ferreteria');
+    expect([...ferr.entidades.keys()].sort()).toEqual(['elinca', 'gasomi', null].sort());
+    expect(sinMapear).toEqual([]);
+  });
+
+  it('lo que nadie mapeó todavía queda listado, no se cuenta en ninguna categoría', () => {
+    const { filas, sinMapear } = matrizCategorias(CATALOGO, []);
+    expect(filas.find(f => f.slug === 'perfiles_metalicos')).toBeUndefined();
+    expect(sinMapear).toHaveLength(2);
+    expect(sinMapear.map(x => x.familia_local).sort()).toEqual(['FIERROS Y ACEROS', 'MATERIAL DE FIERRO']);
   });
 });

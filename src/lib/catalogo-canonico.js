@@ -32,6 +32,23 @@
 // aunque la regla no reconozca «TRAJE DE PROTECCION TYBEK» — el xlsx lo escribió
 // una persona que sabe, la regex no.
 //
+// EL CATÁLOGO TIENE DUEÑO (mig 193, pedido de Gabriel el 7-set-2026)
+// «La categorización pueda ser independiente en cada entidad, como empresa o
+// consorcio ejecutor, para que cada empresa vaya manejando una base de datos.
+// Y a la vez tener una base de datos general de todo el programa».
+// Entonces: `company_id = null` es el CATÁLOGO GENERAL DEL GRUPO y con valor es
+// el de esa entidad. Al leer para una entidad se juntan los dos y, si el mismo
+// nombre está en los dos, MANDA EL DE LA ENTIDAD — el general es la referencia
+// común, no una imposición.
+//
+// LA FAMILIA PUEDE SER PROPIA DE UNA ENTIDAD. Las 10 del xlsx son el vocabulario
+// CANÓNICO del grupo, pero una entidad puede llamarle a lo suyo como quiera: una
+// familia que no está en la lista NO se tira a «Otros» —eso era perder
+// información escrita por una persona—, se guarda con su nombre tal cual y queda
+// esperando una equivalencia. Ese es el mapeo nuevo: familia local → familia del
+// grupo, decidida una vez y para siempre (`decision: 'propia'` también es una
+// respuesta válida y se recuerda igual).
+//
 // LA IMPORTACIÓN ES REPETIBLE
 // La clave lógica es la DESCRIPCIÓN NORMALIZADA (`normMapeo`, la misma que usa
 // el motor de mapeo, para que catálogo y línea de factura compartan espacio de
@@ -119,6 +136,19 @@ export function slugFamilia(texto) {
   return ALIAS_FAMILIA.get(k) || null;
 }
 
+/** ¿Es una de las 10 del vocabulario del grupo, o una familia propia de una
+ *  entidad? Lo segundo es lo que el mapeo de categorías tiene que resolver. */
+export const esFamiliaCanonica = (f) => FAMILIA_POR_SLUG.has(f);
+
+/**
+ * La familia con la que se GUARDA una fila. Si el nombre es una de las del
+ * grupo, su slug; si no, el nombre limpio tal como lo escribieron. Guardarla
+ * como «otros» perdía la única información que había: cómo la llama esa empresa.
+ */
+export function familiaDeTexto(texto) {
+  return slugFamilia(texto) || limpiarNombre(texto).toUpperCase() || 'otros';
+}
+
 export const etiquetaFamilia = (slug) => FAMILIA_POR_SLUG.get(slug)?.label || slug || '—';
 
 // ── 2. UNIDADES ────────────────────────────────────────────────────
@@ -153,13 +183,26 @@ export function normUnidad(u) {
 // ── 3. EL PUENTE A LOS OTROS DOS VOCABULARIOS ──────────────────────
 
 /**
+ * La familia del GRUPO que le corresponde a una familia local, si alguien ya
+ * decidió la equivalencia. Sin equivalencia, la familia local se devuelve tal
+ * cual y las dos funciones de abajo caen en la regla de siempre — que es lo
+ * correcto: no se adivina a qué categoría del grupo pertenece.
+ */
+export function familiaEfectiva(familia, equivalencias = null) {
+  if (!familia || esFamiliaCanonica(familia)) return familia;
+  const eq = equivalencias instanceof Map ? equivalencias.get(familia) : equivalencias?.[familia];
+  const destino = typeof eq === 'string' ? eq : eq?.familia_canonica;
+  return (destino && esFamiliaCanonica(destino)) ? destino : familia;
+}
+
+/**
  * A qué TABLA de inventario va una entrada del catálogo — el vocabulario de
  * `insumo-clasificador.js`. La familia da la compuerta; adentro de las
  * familias que admiten más de una respuesta, decide la regla que ya existe
  * (y la unidad `hm`, que es lo que separa una retroexcavadora de un martillo).
  */
-export function tipoInsumoDe(entrada) {
-  const fam = FAMILIA_POR_SLUG.get(entrada?.familia);
+export function tipoInsumoDe(entrada, equivalencias = null) {
+  const fam = FAMILIA_POR_SLUG.get(familiaEfectiva(entrada?.familia, equivalencias));
   if (!fam) return clasificarInsumo(entrada?.nombre || '');
   if (!fam.refina) return fam.tipo;
   // `hm` (hora-máquina) solo la factura un equipo que se alquila operado.
@@ -173,11 +216,11 @@ export function tipoInsumoDe(entrada) {
  * es el que ve la contadora. Se deriva del tipo cuando la familia refina, para
  * que las dos respuestas no se contradigan entre sí.
  */
-export function categoriaItemDe(entrada) {
-  const fam = FAMILIA_POR_SLUG.get(entrada?.familia);
+export function categoriaItemDe(entrada, equivalencias = null) {
+  const fam = FAMILIA_POR_SLUG.get(familiaEfectiva(entrada?.familia, equivalencias));
   if (!fam) return 'otros';
   if (!fam.refina) return fam.categoria;
-  const tipo = tipoInsumoDe(entrada);
+  const tipo = tipoInsumoDe(entrada, equivalencias);
   return ({
     material: 'materiales', herramienta: 'herramientas', epp: 'epp',
     maquinaria: 'maquinaria', servicio: 'gastos_generales',
@@ -233,11 +276,10 @@ function leerHojaInsumos(filas, { familiaFija = null, tipo = 'insumo' } = {}) {
     }
     if (!unidad) {
       if (familiaFija) { avisos.push(`«${nombre}» no tiene unidad y se ignoró.`); continue; }
-      const slug = slugFamilia(nombre);
-      if (!slug) {
-        avisos.push(`No conozco la familia «${nombre}»: sus insumos quedaron en «Otros».`);
-        familia = 'otros';
-      } else familia = slug;
+      familia = familiaDeTexto(nombre);
+      if (!esFamiliaCanonica(familia)) {
+        avisos.push(`«${nombre}» no es una de las familias del grupo: queda como familia propia de esta entidad, esperando que digas a cuál del grupo equivale.`);
+      }
       continue;
     }
     if (!familia) { avisos.push(`«${nombre}» aparece antes de cualquier familia y quedó en «Otros».`); familia = 'otros'; }
@@ -339,17 +381,28 @@ export function parseCatalogoXlsx(hojas) {
 // ── 5. RESOLUCIÓN Y DIFF ───────────────────────────────────────────
 
 /**
- * Una fila por `norm`. Como en `insumo_mapeo`, la tabla NO tiene UNIQUE sobre
- * la clave lógica —Gabriel alterna dos PCs y la app es offline-first—, así que
- * el duplicado benigno se resuelve al LEER: gana `origen: 'manual'` sobre
+ * Una fila por `norm`, dentro de un ÁMBITO.
+ *
+ * `companyId: null` (por defecto) = el catálogo GENERAL del grupo, y solo él.
+ * `companyId: '…'` = el de esa entidad MÁS el general como base; si el mismo
+ * nombre está en los dos, manda el de la entidad — cada empresa maneja su base
+ * y el general es la referencia común, no una imposición.
+ *
+ * Adentro del mismo ámbito, como en `insumo_mapeo`, la tabla NO tiene UNIQUE
+ * sobre la clave lógica —Gabriel alterna dos PCs y la app es offline-first—,
+ * así que el duplicado benigno se resuelve acá: gana `origen: 'manual'` sobre
  * `'xlsx'` (alguien lo corrigió a mano después de importar) y, a igual origen,
  * la fila más reciente.
  */
-export function resolverCatalogo(rows) {
+export function resolverCatalogo(rows, { companyId = null } = {}) {
   const porNorm = new Map();
-  const rank = (r) => (r?.origen === 'manual' ? 2 : 1);
+  // El ámbito pesa MÁS que el origen: una fila general corregida a mano no
+  // puede pisar la que la propia entidad tiene cargada.
+  const rank = (r) => ((r?.company_id ? 4 : 0) + (r?.origen === 'manual' ? 2 : 1));
   for (const r of rows || []) {
     if (!r || r.deleted_at || !r.norm) continue;
+    const propia = r.company_id || null;
+    if (propia && propia !== companyId) continue;      // catálogo de otra entidad
     const prev = porNorm.get(r.norm);
     if (!prev) { porNorm.set(r.norm, r); continue; }
     const mejor = rank(r) !== rank(prev)
@@ -358,6 +411,16 @@ export function resolverCatalogo(rows) {
     porNorm.set(r.norm, mejor);
   }
   return [...porNorm.values()];
+}
+
+/** Las entidades que ya tienen catálogo propio, con cuántas filas cada una. */
+export function entidadesConCatalogo(rows) {
+  const m = new Map();
+  for (const r of rows || []) {
+    if (!r || r.deleted_at || !r.company_id) continue;
+    m.set(r.company_id, (m.get(r.company_id) || 0) + 1);
+  }
+  return [...m.entries()].map(([company_id, n]) => ({ company_id, n }));
 }
 
 const CAMPOS_COMPARADOS = ['nombre', 'unidad', 'familia', 'tipo'];
@@ -376,8 +439,11 @@ const CAMPOS_COMPARADOS = ['nombre', 'unidad', 'familia', 'tipo'];
  * Lo cargado a mano (`origen: 'manual'`) queda intacto y ni siquiera se cuenta
  * como ausente: el archivo no manda sobre lo que una persona escribió después.
  */
-export function diffCatalogo(actuales, importados) {
-  const vivos = resolverCatalogo(actuales);
+export function diffCatalogo(actuales, importados, { companyId = null } = {}) {
+  // Solo se compara contra el MISMO ámbito: importar el catálogo de GASOMI no
+  // puede marcar como «ausente» nada del general ni del de otra entidad.
+  const vivos = resolverCatalogo(actuales, { companyId })
+    .filter(r => (r.company_id || null) === companyId);
   const porNorm = new Map(vivos.map(r => [r.norm, r]));
   const altas = [], cambios = [], reactivar = [];
   let iguales = 0;
@@ -411,8 +477,8 @@ export function resumenDiff(diff) {
 // ── 6. BÚSQUEDA (lo que hace que el catálogo se note al escribir) ───
 
 /** Índice liviano para proponer. Se arma una vez y se reusa. */
-export function indexarCatalogo(rows) {
-  return resolverCatalogo(rows)
+export function indexarCatalogo(rows, opts = {}) {
+  return resolverCatalogo(rows, opts)
     .filter(r => r.activo !== false)
     .map(r => ({ ...r, toks: normMapeo(r.nombre).split(' ').filter(Boolean) }));
 }
@@ -450,11 +516,115 @@ export function buscarCatalogo(indice, texto, { limite = 8, tipo = null, familia
 }
 
 /** Conteo por familia, para las fichas de la pantalla. */
-export function contarPorFamilia(rows) {
-  const vivos = resolverCatalogo(rows).filter(r => r.activo !== false);
+export function contarPorFamilia(rows, opts = {}) {
+  const vivos = resolverCatalogo(rows, opts).filter(r => r.activo !== false);
   const m = new Map();
   for (const r of vivos) m.set(r.familia, (m.get(r.familia) || 0) + 1);
-  return FAMILIAS_CATALOGO
-    .map(f => ({ ...f, n: m.get(f.slug) || 0 }))
+  const canonicas = FAMILIAS_CATALOGO
+    .map(f => ({ ...f, n: m.get(f.slug) || 0, propia: false }))
     .filter(f => f.n > 0);
+  // Las familias propias de la entidad van DESPUÉS y marcadas: son las que
+  // todavía no tienen equivalencia con ninguna del grupo.
+  const propias = [...m.keys()]
+    .filter(k => !esFamiliaCanonica(k))
+    .sort((a, b) => String(a).localeCompare(String(b), 'es'))
+    .map(k => ({ slug: k, label: k, tipo: null, categoria: null, n: m.get(k), propia: true }));
+  return [...canonicas, ...propias];
+}
+
+// ── 7. EL MAPEO DE CATEGORÍAS ENTRE ENTIDADES (mig 193) ────────────
+//
+// Gabriel, 7-set-2026: «que el mapeo sea un mapeo de categorías en el que
+// vayamos haciendo match entre las categorías que tenemos en la empresa A, con
+// la empresa B o incluso de la empresa ejecutora o consorcio ejecutor A».
+//
+// Solo hay trabajo donde de verdad difieren: si dos entidades usan las familias
+// del grupo, sus slugs ya coinciden y no se pregunta nada. Lo que aparece en la
+// bandeja son las familias PROPIAS —las que una entidad escribió a su manera— y
+// nada más.
+
+/** Una fila por familia local, con el mismo criterio de siempre: lo más
+ *  reciente gana (dos PCs offline pueden decidir la misma equivalencia). */
+export function resolverEquivalencias(rows, { companyId = undefined } = {}) {
+  const m = new Map();
+  for (const r of rows || []) {
+    if (!r || r.deleted_at || !r.familia_local || !r.company_id) continue;
+    if (companyId !== undefined && r.company_id !== companyId) continue;
+    const k = `${r.company_id}|${r.familia_local}`;
+    const prev = m.get(k);
+    if (!prev || String(r.updated_at || '') >= String(prev.updated_at || '')) m.set(k, r);
+  }
+  return m;
+}
+
+/** Map<familia_local, familia_canonica> para UNA entidad. Las decididas como
+ *  `propia` NO entran: su familia no equivale a ninguna del grupo, y eso es una
+ *  respuesta, no un pendiente. */
+export function equivalenciasDe(rows, companyId) {
+  const out = new Map();
+  for (const r of resolverEquivalencias(rows, { companyId }).values()) {
+    if (r.decision === 'mapeada' && r.familia_canonica) out.set(r.familia_local, r.familia_canonica);
+  }
+  return out;
+}
+
+/** Las familias PROPIAS de una entidad (las que no son del vocabulario del
+ *  grupo), con cuántos insumos tiene cada una y qué se decidió sobre ella. */
+export function familiasPropias(catalogoRows, mapeoRows, companyId) {
+  const cuenta = new Map();
+  for (const r of catalogoRows || []) {
+    if (!r || r.deleted_at || r.activo === false) continue;
+    if ((r.company_id || null) !== companyId) continue;
+    if (esFamiliaCanonica(r.familia)) continue;
+    cuenta.set(r.familia, (cuenta.get(r.familia) || 0) + 1);
+  }
+  const decidido = resolverEquivalencias(mapeoRows, { companyId });
+  return [...cuenta.entries()]
+    .map(([familia_local, n]) => {
+      const d = decidido.get(`${companyId}|${familia_local}`);
+      return {
+        familia_local, n,
+        decision: d?.decision || null,
+        familia_canonica: d?.decision === 'mapeada' ? d.familia_canonica : null,
+        id: d?.id || null,
+      };
+    })
+    .sort((a, b) => (a.decision ? 1 : 0) - (b.decision ? 1 : 0) || b.n - a.n);
+}
+
+/**
+ * La matriz que pidió: por cada familia del grupo, cómo la llama cada entidad.
+ * Es la vista que hace visible el match entre la empresa A y la empresa B.
+ * Devuelve [{ slug, label, entidades: Map<company_id, [familia_local…]>, n }].
+ */
+export function matrizCategorias(catalogoRows, mapeoRows) {
+  const eq = resolverEquivalencias(mapeoRows);
+  const canonicaDe = (companyId, familia) => {
+    if (esFamiliaCanonica(familia)) return familia;
+    const d = eq.get(`${companyId}|${familia}`);
+    return d?.decision === 'mapeada' ? d.familia_canonica : null;
+  };
+  const filas = new Map();          // slug canónico → { entidades: Map, n }
+  const sinMapear = [];
+  for (const r of catalogoRows || []) {
+    if (!r || r.deleted_at || r.activo === false) continue;
+    const dueño = r.company_id || null;
+    const canon = canonicaDe(dueño, r.familia);
+    if (!canon) { sinMapear.push({ company_id: dueño, familia_local: r.familia }); continue; }
+    if (!filas.has(canon)) filas.set(canon, { entidades: new Map(), n: 0 });
+    const f = filas.get(canon);
+    f.n++;
+    if (!f.entidades.has(dueño)) f.entidades.set(dueño, new Set());
+    f.entidades.get(dueño).add(r.familia);
+  }
+  const orden = FAMILIAS_CATALOGO.map(f => f.slug);
+  return {
+    filas: [...filas.entries()]
+      .map(([slug, v]) => ({
+        slug, label: etiquetaFamilia(slug), n: v.n,
+        entidades: new Map([...v.entidades].map(([k, set]) => [k, [...set]])),
+      }))
+      .sort((a, b) => orden.indexOf(a.slug) - orden.indexOf(b.slug)),
+    sinMapear: [...new Map(sinMapear.map(x => [`${x.company_id}|${x.familia_local}`, x])).values()],
+  };
 }

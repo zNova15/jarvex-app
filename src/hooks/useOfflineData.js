@@ -450,6 +450,15 @@ export function useCatalogoDisgregacion() {
   , []);
 }
 
+// El mapeo de categorías entre entidades (mig 193): la familia local de una
+// empresa contra la familia canónica del grupo. Chico y global; se resuelve al
+// leer con `resolverEquivalencias()`.
+export function useCatalogoFamiliaMapeo() {
+  return useOfflineData('catalogo_familia_mapeo', q =>
+    q.filter(c => !c.deleted_at).toArray()
+  , []);
+}
+
 // Config global clave→valor (mig 159). Puede haber filas repetidas por clave
 // (dos devices offline) — resolver al leer: updated_at más reciente gana.
 export function useAppConfig() {
