@@ -227,6 +227,43 @@ export function necesitaOrden(mov, { umbral = UMBRAL_POR_DEFECTO } = {}) {
 }
 
 /**
+ * ¿A esta entidad le toca llevar órdenes de respaldo?
+ *
+ * Gabriel, 7-set-2026: «en las empresas no debería salirme esta pestaña de sin
+ * respaldo, solo en consorcios ejecutores de obra».
+ *
+ * Y tiene sentido más allá del gusto: el respaldo por orden es una exigencia
+ * de la obra pública que ejecuta el consorcio, no del giro de una empresa del
+ * grupo comprándole a su ferretería. Mostrarle la pestaña a las empresas les
+ * ponía enfrente una lista de "pendientes" que nadie tenía que cerrar.
+ *
+ * `tipo_entidad` es el mismo CHECK de la mig 172 ('propia' | 'consorcio' |
+ * 'tercero'); sin dato se asume 'propia', igual que el DEFAULT de la columna.
+ */
+export function exigeOrdenesDeRespaldo(entidad) {
+  return (entidad?.tipo_entidad || 'propia') === 'consorcio';
+}
+
+/**
+ * Por qué un comprobante NO figura entre los exigidos, para poder mostrarlo
+ * igual y rotulado en vez de esconderlo.
+ *
+ * Medido el 7-set-2026 en la obra Miraflores: de las 114 compras de CONSORCIO
+ * EL INCA solo 20 pasan el umbral. Las otras 94 —S/ 11.581,68 en total— no se
+ * veían por ningún lado, y eso es lo que Gabriel leía como «faltan cosas».
+ * No hay que EXIGIRLAS (debajo del umbral la orden no es obligatoria), pero
+ * tiene que poder verlas y emitir la que quiera.
+ *
+ * @returns 'bajo_umbral' | 'moneda_extranjera' | null (null = sí es exigido)
+ */
+export function motivoNoExigido(mov, { umbral = UMBRAL_POR_DEFECTO } = {}) {
+  if (!mov || mov.deleted_at) return null;
+  if ((mov.currency || 'PEN') !== 'PEN') return 'moneda_extranjera';
+  if (num(mov.amount) <= num(umbral)) return 'bajo_umbral';
+  return null;
+}
+
+/**
  * Los comprobantes sin respaldo, agrupados por empresa emisora y ordenados
  * por monto (lo caro primero: es donde el respaldo vale más).
  *
@@ -234,7 +271,14 @@ export function necesitaOrden(mov, { umbral = UMBRAL_POR_DEFECTO } = {}) {
  * la orden puede estar creada y el movimiento todavía sin actualizar. Se
  * mira el vínculo por los DOS lados, igual que el espejo guía↔factura.
  */
-export function comprobantesSinOrden(movs, ordenes, { umbral = UMBRAL_POR_DEFECTO, companyId = null, obraId = null } = {}) {
+export function comprobantesSinOrden(movs, ordenes, {
+  umbral = UMBRAL_POR_DEFECTO, companyId = null, obraId = null,
+  // Las dos aperturas de la vista (tanda 14). NO cambian qué es exigible —
+  // `resumenRespaldo` sigue contando solo lo de siempre, en soles, para que el
+  // «% respaldado» de arriba signifique lo mismo con la vista abierta o
+  // cerrada: solo dejan MIRAR y emitir lo que quedaba fuera de la lista.
+  incluirBajoUmbral = false, incluirOtrasMonedas = false,
+} = {}) {
   const conOrden = new Set();
   for (const o of ordenes || []) {
     if (!o || o.deleted_at) continue;
@@ -243,7 +287,17 @@ export function comprobantesSinOrden(movs, ordenes, { umbral = UMBRAL_POR_DEFECT
   }
   const out = [];
   for (const m of movs || []) {
-    if (!necesitaOrden(m, { umbral })) continue;
+    if (!m || m.deleted_at) continue;
+    if (!TIPOS_COMPRA.has(m.type)) continue;
+    if (m.orden_compra_id) continue;
+    const fuera = motivoNoExigido(m, { umbral });
+    if (fuera === 'moneda_extranjera' && !incluirOtrasMonedas) continue;
+    // En moneda extranjera el umbral (que está en soles) no se compara: se
+    // muestra la compra entera y quien mira decide. Convertirla con un tipo de
+    // cambio inventado sería peor que no mostrarla.
+    if (fuera === 'bajo_umbral' && !incluirBajoUmbral) continue;
+    if (!fuera && !necesitaOrden(m, { umbral })) continue;
+    if (num(m.amount) <= 0) continue;
     if (conOrden.has(m.id)) continue;
     if (companyId && m.company_id !== companyId) continue;
     if (obraId && m.obra_id !== obraId) continue;
@@ -498,6 +552,11 @@ export function borradorDesdeMovimiento(mov, { company, proveedor, obra } = {}) 
     valorVenta: t.valorVenta,
     igv: t.igv,
     total: t.total,
+    // En blanco a propósito (tanda 14). Antes se escribía siempre «Respaldo
+    // retroactivo del comprobante …» y salía impreso en el PDF de una orden
+    // que ya de por sí dice a qué comprobante respalda. Gabriel: «cuando se
+    // emite, en observaciones no debería salir nada si no se coloca».
+    observaciones: '',
     incluir: true,
   };
 }
@@ -506,6 +565,83 @@ export function borradorDesdeMovimiento(mov, { company, proveedor, obra } = {}) 
 export function recalcularBorrador(b) {
   const t = totalesDesdeTotal(b?.total, { igvPct: b?.igvPct });
   return { ...b, ...t, igvPct: t.igvPct };
+}
+
+// ── EL DETALLE, EDITABLE ──────────────────────────────────────────
+//
+// Gabriel, 7-set-2026: «no se colocan los insumos reales que se facturaron».
+//
+// La orden retroactiva YA nacía con las líneas de `items_factura` (tanda 7),
+// pero la única casilla editable de la grilla era `descripcion` — un resumen
+// que `emitirLote` DESCARTA en cuanto el comprobante trae ítems. O sea: se
+// podía escribir ahí todo el día y no cambiaba nada de lo que se emitía.
+// Ahora se editan las líneas de verdad, y el resumen se deriva de ellas.
+
+/** El texto de una línea de resumen a partir del detalle. */
+export function resumenDeLineas(lineas) {
+  return (lineas || [])
+    .map(l => String(l?.nombre || '').trim())
+    .filter(Boolean)
+    .join(' · ')
+    .slice(0, 140);
+}
+
+/** Lo que suman los importes del detalle, tal como están escritos. */
+export function sumaDeLineas(lineas) {
+  return round2((lineas || []).reduce((t, l) => t + num(l?.subtotal), 0));
+}
+
+/**
+ * Aplica un cambio a UNA línea del detalle y devuelve el borrador nuevo.
+ *
+ * Los importes quedan como los escribe la persona —no se re-reparten a cada
+ * tecla, que haría imposible tipear— y el cuadre contra el comprobante se
+ * aplica al emitir (`repartirSobreItems`), avisando antes de la diferencia.
+ * Una línea sin nombre no se emite: `lineasParaEmitir` la descarta.
+ */
+export function conLineaEditada(b, idx, patch) {
+  const lineas = [...(b?.lineas || [])];
+  if (!lineas[idx]) return b;
+  const l = { ...lineas[idx], ...patch };
+  if (patch && ('cantidad' in patch || 'precio_unitario' in patch) && !('subtotal' in patch)) {
+    // Si tocó cantidad o precio, el importe se recalcula solo — pero únicamente
+    // cuando los dos datos están: al revés borraría un importe válido.
+    const c = num(l.cantidad), pu = num(l.precio_unitario);
+    if (c > 0 && pu > 0) l.subtotal = round2(c * pu);
+  }
+  lineas[idx] = l;
+  return { ...b, lineas, descripcion: resumenDeLineas(lineas) };
+}
+
+/** Agrega una línea vacía al detalle (para partir una factura en dos). */
+export function conLineaNueva(b, tipo) {
+  const T = textosDeTipo(tipo || b?.tipo);
+  const lineas = [...(b?.lineas || []), { nombre: '', unidad: T.unidadPorDefecto, cantidad: 1, precio_unitario: 0, subtotal: 0, tipo_insumo: null }];
+  return { ...b, lineas };
+}
+
+/** Quita una línea del detalle. Nunca deja el detalle vacío. */
+export function conLineaQuitada(b, idx) {
+  const lineas = (b?.lineas || []).filter((_, i) => i !== idx);
+  if (!lineas.length) return b;
+  return { ...b, lineas, descripcion: resumenDeLineas(lineas) };
+}
+
+/**
+ * Las líneas que se emiten: sin las vacías y CUADRADAS contra el valor de
+ * venta del comprobante. Una orden que respalda una factura ya emitida no
+ * puede cerrar distinto de ella, así que el cuadre no es opcional — lo que sí
+ * es obligatorio es que la pantalla lo diga antes de aplicarlo.
+ */
+export function lineasParaEmitir(b) {
+  const vivas = (b?.lineas || []).filter(l => l && String(l.nombre || '').trim());
+  const base = vivas.length ? vivas : [{
+    nombre: b?.descripcion || 'Insumos y materiales',
+    unidad: b?.unidad || textosDeTipo(b?.tipo).unidadPorDefecto,
+    cantidad: num(b?.cantidad) || 1,
+    subtotal: num(b?.valorVenta),
+  }];
+  return repartirSobreItems(base, num(b?.valorVenta));
 }
 
 // ═══════════════════════════════════════════════════════════════════

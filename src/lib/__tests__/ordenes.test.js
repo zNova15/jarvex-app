@@ -8,6 +8,9 @@ import {
   nuevaOrdenBorrador, numerarOrden, pasosDeOrden, esBorrador, estaNumerada,
   cadenaDeOrdenes, eslabonesDeCadena, tieneIntermediario,
   nombreArchivoOrden,
+  exigeOrdenesDeRespaldo, motivoNoExigido,
+  conLineaEditada, conLineaNueva, conLineaQuitada, lineasParaEmitir,
+  sumaDeLineas, resumenDeLineas,
 } from '../ordenes.js';
 
 // Datos de producción: el modelo que dejó Gabriel es del CONSORCIO EL INCA,
@@ -719,5 +722,216 @@ describe('nombreArchivoOrden', () => {
   it('lo que el sistema de archivos no acepta se reemplaza', () => {
     expect(nombreArchivoOrden({ codigo: 'OC/001:2026' }, { nombre_corto: 'A B' }))
       .toBe('OC_A-B_OC-001-2026.pdf');
+  });
+});
+
+
+// ═══════════════════════════════════════════════════════════════════
+// TANDA 14 — «SIN RESPALDO», REPARADA
+// ═══════════════════════════════════════════════════════════════════
+
+describe('a quién le toca llevar órdenes de respaldo', () => {
+  it('un consorcio ejecutor sí', () => {
+    expect(exigeOrdenesDeRespaldo({ name: 'CONSORCIO EL INCA', tipo_entidad: 'consorcio' })).toBe(true);
+  });
+
+  it('una empresa del grupo no', () => {
+    expect(exigeOrdenesDeRespaldo({ name: 'GASOMI', tipo_entidad: 'propia' })).toBe(false);
+  });
+
+  it('sin tipo_entidad se asume propia (el DEFAULT de la mig 172)', () => {
+    expect(exigeOrdenesDeRespaldo({ name: 'X' })).toBe(false);
+    expect(exigeOrdenesDeRespaldo(null)).toBe(false);
+  });
+
+  it('un tercero tampoco', () => {
+    expect(exigeOrdenesDeRespaldo({ tipo_entidad: 'tercero' })).toBe(false);
+  });
+});
+
+describe('por qué un comprobante no figuraba', () => {
+  it('debajo del umbral', () => {
+    expect(motivoNoExigido(mov({ amount: 1500 }))).toBe('bajo_umbral');
+  });
+
+  it('exactamente el umbral tampoco es exigido (el criterio es > , no >=)', () => {
+    expect(motivoNoExigido(mov({ amount: UMBRAL_POR_DEFECTO }))).toBe('bajo_umbral');
+  });
+
+  it('en dólares, aunque el monto sea alto', () => {
+    expect(motivoNoExigido(mov({ amount: 90000, currency: 'USD' }))).toBe('moneda_extranjera');
+  });
+
+  it('la moneda gana sobre el monto: un USD chico no dice «bajo umbral»', () => {
+    expect(motivoNoExigido(mov({ amount: 10, currency: 'USD' }))).toBe('moneda_extranjera');
+  });
+
+  it('null cuando sí es exigido', () => {
+    expect(motivoNoExigido(mov({ amount: 5000 }))).toBe(null);
+  });
+});
+
+describe('las dos aperturas de la vista', () => {
+  // Réplica del caso real: en la obra Miraflores CONSORCIO EL INCA tiene 114
+  // compras y solo 20 pasan el umbral. Las otras no se veían por ningún lado.
+  const chica = mov({ id: 'm-chica', amount: 120 });
+  const grande = mov({ id: 'm-grande', amount: 5000 });
+  const dolares = mov({ id: 'm-usd', amount: 8000, currency: 'USD' });
+  const todas = [chica, grande, dolares];
+
+  it('cerrada muestra solo lo exigido, como siempre', () => {
+    const r = comprobantesSinOrden(todas, []);
+    expect(r.map(m => m.id)).toEqual(['m-grande']);
+  });
+
+  it('abrir el umbral suma las chicas sin tocar las de otra moneda', () => {
+    const r = comprobantesSinOrden(todas, [], { incluirBajoUmbral: true });
+    expect(r.map(m => m.id).sort()).toEqual(['m-chica', 'm-grande']);
+  });
+
+  it('abrir la moneda suma las de dólares sin tocar las chicas', () => {
+    const r = comprobantesSinOrden(todas, [], { incluirOtrasMonedas: true });
+    expect(r.map(m => m.id).sort()).toEqual(['m-grande', 'm-usd']);
+  });
+
+  it('las dos abiertas muestran todo, siempre por monto descendente', () => {
+    const r = comprobantesSinOrden(todas, [], { incluirBajoUmbral: true, incluirOtrasMonedas: true });
+    expect(r.map(m => m.id)).toEqual(['m-usd', 'm-grande', 'm-chica']);
+  });
+
+  it('una venta no entra ni con todo abierto: se respalda con la orden del cliente', () => {
+    const venta = mov({ id: 'm-venta', type: 'income', amount: 50 });
+    const r = comprobantesSinOrden([venta], [], { incluirBajoUmbral: true, incluirOtrasMonedas: true });
+    expect(r).toEqual([]);
+  });
+
+  it('una que ya tiene orden no reaparece por abrir la vista', () => {
+    const conOrden = mov({ id: 'm-ok', amount: 40, orden_compra_id: 'o1' });
+    const r = comprobantesSinOrden([conOrden], [], { incluirBajoUmbral: true });
+    expect(r).toEqual([]);
+  });
+
+  it('un monto en cero no entra: no hay nada que respaldar', () => {
+    const cero = mov({ id: 'm-0', amount: 0 });
+    const r = comprobantesSinOrden([cero], [], { incluirBajoUmbral: true });
+    expect(r).toEqual([]);
+  });
+
+  it('el resumen NO se mueve con las aperturas: el % respaldado sigue en soles', () => {
+    const r = resumenRespaldo(todas, []);
+    expect(r.sinRespaldo).toBe(1);
+    expect(r.montoSinRespaldo).toBe(5000);
+  });
+});
+
+describe('el detalle editable', () => {
+  const base = () => ({
+    tipo: 'compra',
+    valorVenta: 1000,
+    lineas: [
+      { nombre: 'CEMENTO PORTLAND TIPO I', unidad: 'bls', cantidad: 10, precio_unitario: 40, subtotal: 400 },
+      { nombre: 'ARENA GRUESA', unidad: 'm3', cantidad: 6, precio_unitario: 100, subtotal: 600 },
+    ],
+  });
+
+  it('renombrar una línea actualiza el resumen que se ve en la grilla', () => {
+    const b = conLineaEditada(base(), 0, { nombre: 'CEMENTO TIPO V' });
+    expect(b.lineas[0].nombre).toBe('CEMENTO TIPO V');
+    expect(b.descripcion).toBe('CEMENTO TIPO V · ARENA GRUESA');
+  });
+
+  it('cambiar la cantidad recalcula el importe de esa línea', () => {
+    const b = conLineaEditada(base(), 0, { cantidad: 20 });
+    expect(b.lineas[0].subtotal).toBe(800);
+    expect(b.lineas[1].subtotal).toBe(600);   // las demás no se tocan
+  });
+
+  it('escribir el importe a mano manda sobre cantidad × precio', () => {
+    const b = conLineaEditada(base(), 0, { subtotal: 333.33 });
+    expect(b.lineas[0].subtotal).toBe(333.33);
+  });
+
+  it('una cantidad sin precio no borra el importe que ya estaba', () => {
+    const sinPu = { ...base(), lineas: [{ nombre: 'FLETE', unidad: 'glb', cantidad: 1, precio_unitario: 0, subtotal: 900 }] };
+    const b = conLineaEditada(sinPu, 0, { cantidad: 2 });
+    expect(b.lineas[0].subtotal).toBe(900);
+  });
+
+  it('un índice que no existe devuelve el borrador intacto', () => {
+    const b = base();
+    expect(conLineaEditada(b, 9, { nombre: 'X' })).toBe(b);
+  });
+
+  it('se puede partir una factura en dos y quitar la que sobra', () => {
+    let b = conLineaNueva(base(), 'compra');
+    expect(b.lineas).toHaveLength(3);
+    b = conLineaQuitada(b, 2);
+    expect(b.lineas).toHaveLength(2);
+  });
+
+  it('nunca deja el detalle vacío', () => {
+    const una = { ...base(), lineas: [base().lineas[0]] };
+    expect(conLineaQuitada(una, 0).lineas).toHaveLength(1);
+  });
+
+  it('suma el detalle tal como está escrito', () => {
+    expect(sumaDeLineas(base().lineas)).toBe(1000);
+    expect(sumaDeLineas([])).toBe(0);
+  });
+
+  it('el resumen ignora las líneas sin nombre', () => {
+    expect(resumenDeLineas([{ nombre: 'A' }, { nombre: '  ' }, { nombre: 'B' }])).toBe('A · B');
+  });
+});
+
+describe('las líneas que se emiten', () => {
+  it('cuadran EXACTO contra el valor de venta aunque el detalle sume otra cosa', () => {
+    const b = {
+      tipo: 'compra', valorVenta: 1000, descripcion: 'x',
+      lineas: [
+        { nombre: 'A', unidad: 'und', cantidad: 1, subtotal: 300 },
+        { nombre: 'B', unidad: 'und', cantidad: 1, subtotal: 300 },
+      ],
+    };
+    const out = lineasParaEmitir(b);
+    expect(out.reduce((t, l) => t + l.subtotal, 0)).toBe(1000);
+  });
+
+  it('descarta las líneas sin nombre en vez de emitirlas vacías', () => {
+    const b = {
+      tipo: 'compra', valorVenta: 500, descripcion: 'x',
+      lineas: [{ nombre: 'A', cantidad: 1, subtotal: 500 }, { nombre: '', cantidad: 1, subtotal: 0 }],
+    };
+    const out = lineasParaEmitir(b);
+    expect(out).toHaveLength(1);
+    expect(out[0].subtotal).toBe(500);
+  });
+
+  it('sin ninguna línea con nombre cae al rótulo neutro y cuadra igual', () => {
+    const b = { tipo: 'compra', valorVenta: 750, descripcion: '', lineas: [] };
+    const out = lineasParaEmitir(b);
+    expect(out).toHaveLength(1);
+    expect(out[0].nombre).toBe('Insumos y materiales');
+    expect(out[0].subtotal).toBe(750);
+  });
+
+  it('el céntimo del redondeo va a la última línea, no al aire', () => {
+    const b = {
+      tipo: 'compra', valorVenta: 100,
+      lineas: [
+        { nombre: 'A', cantidad: 1, subtotal: 1 },
+        { nombre: 'B', cantidad: 1, subtotal: 1 },
+        { nombre: 'C', cantidad: 1, subtotal: 1 },
+      ],
+    };
+    const out = lineasParaEmitir(b);
+    expect(out.reduce((t, l) => t + l.subtotal, 0)).toBe(100);
+  });
+});
+
+describe('el borrador nace sin observaciones', () => {
+  it('en blanco, no con el texto automático de antes', () => {
+    const b = borradorDesdeMovimiento(mov({ amount: 5000 }), { company: INCA });
+    expect(b.observaciones).toBe('');
   });
 });

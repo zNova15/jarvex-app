@@ -33,6 +33,8 @@ import {
   TIPO_ORDEN_LABEL, textosDeTipo, proximoCodigo,
   comprobantesSinOrden, agruparPorEmpresa, resumenRespaldo,
   borradorDesdeMovimiento, recalcularBorrador, ordenarParaEmitir,
+  exigeOrdenesDeRespaldo, motivoNoExigido,
+  conLineaEditada, conLineaNueva, conLineaQuitada, lineasParaEmitir, sumaDeLineas,
   UMBRAL_POR_DEFECTO,
   nuevaOrdenBorrador, numerarOrden, pasosDeOrden, estaNumerada,
   formatearCodigo,
@@ -71,6 +73,12 @@ const Modal = (p) => (window.Modal ? <window.Modal {...p} /> : null);
 
 const cantF = (n) => Number(n || 0).toLocaleString('es-PE', { maximumFractionDigits: 2 });
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// El mismo número con SU moneda. Desde la tanda 14 la lista de «Sin respaldo»
+// puede mostrar compras en dólares: imprimirles «S/» sería decir algo falso
+// justo en la columna del importe.
+const fmtMon = (n, moneda) => (!moneda || moneda === 'PEN')
+  ? fmtS(n)
+  : `${moneda} ` + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtSk = (n) => {
   const v = Number(n || 0);
   if (v >= 1e6) return 'S/ ' + (v / 1e6).toFixed(2) + 'M';
@@ -179,6 +187,17 @@ function OrdenesPage({ showToast }) {
   // El ayudante de la obra: 'necesita' (presupuesto) | 'grupo' (stock) | null
   const [ayuda, setAyuda] = uS(null);
   const [verMov, setVerMov] = uS(null);   // id del comprobante a mirar desde «Sin respaldo»
+  // ── LA VISTA DE «SIN RESPALDO» (tanda 14) ───────────────────────
+  // Gabriel, 7-set-2026: «en esa pestaña no se puede filtrar bien por empresa
+  // que le facturó al consorcio» y «en el caso de consorcio EL INCA incluso
+  // faltan cosas». Las dos cosas se arreglan acá: un filtro por PROVEEDOR (el
+  // de arriba es el de la empresa que EMITE, que no es lo mismo) y dos
+  // aperturas para ver lo que el umbral y la moneda dejaban afuera.
+  const [respProveedor, setRespProveedor] = uS('todos');
+  const [respBusca, setRespBusca] = uS('');
+  const [verBajoUmbral, setVerBajoUmbral] = uS(false);
+  const [verOtrasMonedas, setVerOtrasMonedas] = uS(false);
+  const [respAbierta, setRespAbierta] = uS(null);   // movimiento_id con el detalle desplegado
   // ── EL AYUDANTE DE DOS BLOQUES ──────────────────────────────────
   // A la izquierda lo que la obra NECESITA (presupuesto); a la derecha lo que
   // las empresas del grupo YA COMPRARON (texto crudo de las facturas). Ninguna
@@ -286,9 +305,22 @@ function OrdenesPage({ showToast }) {
   // emitidos por JHEENSEG, que no le tocan a EL INCA respaldar).
   const companyIdRespaldo = emisoraFija || companyId;
 
+  // Sin ámbito (la vista del grupo entero) la regla es la misma que con él:
+  // solo los consorcios ejecutores llevan órdenes de respaldo. Sin este corte,
+  // la vista del grupo seguía listando las compras de GASOMI o JARVEX como
+  // «pendientes» — una lista que nadie tiene que cerrar.
+  const idsConsorcios = uM(
+    () => new Set((companies || []).filter(exigeOrdenesDeRespaldo).map(c => c.id)),
+    [companies]
+  );
+  const movsRespaldo = uM(
+    () => (companyIdRespaldo ? (movs || []) : (movs || []).filter(m => idsConsorcios.has(m.company_id))),
+    [movs, companyIdRespaldo, idsConsorcios]
+  );
+
   const resumen = uM(
-    () => resumenRespaldo(movs || [], ordenes, { umbral, companyId: companyIdRespaldo, obraId: obraScopeId }),
-    [movs, ordenes, umbral, companyIdRespaldo, obraScopeId]
+    () => resumenRespaldo(movsRespaldo, ordenes, { umbral, companyId: companyIdRespaldo, obraId: obraScopeId }),
+    [movsRespaldo, ordenes, umbral, companyIdRespaldo, obraScopeId]
   );
 
   // ── Pestaña 1: las emitidas ─────────────────────────────────────
@@ -309,9 +341,27 @@ function OrdenesPage({ showToast }) {
   }, [ordenes, companyId, obraScopeId, filtroTipo, verAnuladas, busqueda]);
 
   // ── Pestaña 2: lo que falta respaldar ───────────────────────────
+  //
+  // LA PESTAÑA ES SOLO DE CONSORCIOS EJECUTORES (tanda 14). Gabriel: «en las
+  // empresas no debería salirme esta pestaña de sin respaldo, solo en
+  // consorcios ejecutores de obra». La entidad del ámbito es la emisora fija
+  // (la empresa por la que se entró, o la ejecutora de la obra); sin ámbito
+  // —la vista del grupo entero— se sigue mostrando, porque ahí es justamente
+  // donde se ve el consorcio junto con todo lo demás.
+  const entidadDelAmbito = uM(
+    () => (emisoraFija ? lookupCompany(emisoraFija) : null),
+    [emisoraFija, lookupCompany]
+  );
+  const hayPestanaRespaldo = entidadDelAmbito
+    ? exigeOrdenesDeRespaldo(entidadDelAmbito)
+    : idsConsorcios.size > 0;
+
   const pendientes = uM(
-    () => comprobantesSinOrden(movs || [], ordenes, { umbral, companyId: companyIdRespaldo, obraId: obraScopeId }),
-    [movs, ordenes, umbral, companyIdRespaldo, obraScopeId]
+    () => comprobantesSinOrden(movsRespaldo, ordenes, {
+      umbral, companyId: companyIdRespaldo, obraId: obraScopeId,
+      incluirBajoUmbral: verBajoUmbral, incluirOtrasMonedas: verOtrasMonedas,
+    }),
+    [movsRespaldo, ordenes, umbral, companyIdRespaldo, obraScopeId, verBajoUmbral, verOtrasMonedas]
   );
   const gruposPendientes = uM(
     () => agruparPorEmpresa(pendientes, companies || []),
@@ -365,19 +415,68 @@ function OrdenesPage({ showToast }) {
   // Los borradores se arman al entrar a la pestaña y se conservan mientras se
   // editan: recalcularlos en cada render tiraría abajo lo que la contadora
   // acaba de escribir en la grilla.
-  const prepararBorradores = () => {
-    const b = pendientes.slice(0, 400).map(m => borradorDesdeMovimiento(m, {
-      company: lookupCompany(m.company_id),
-      proveedor: lookupProv(m.proveedor_id),
-      obra: lookupObra(m.obra_id),
-    }));
-    setBorradores(b);
+  //
+  // Se SINCRONIZAN, no se rehacen (tanda 14): al abrir «ver también los de
+  // menos de S/ X» la lista crece, y rehacerla de cero borraría las fechas y
+  // los detalles que ya se editaron en las filas de arriba. Cada movimiento
+  // que ya tenía borrador conserva el suyo tal cual.
+  const sincronizarBorradores = () => {
+    setBorradores(prev => {
+      const porMov = new Map((prev || []).map(b => [b.movimiento_id, b]));
+      return pendientes.slice(0, 400).map(m => porMov.get(m.id) || {
+        ...borradorDesdeMovimiento(m, {
+          company: lookupCompany(m.company_id),
+          proveedor: lookupProv(m.proveedor_id),
+          obra: lookupObra(m.obra_id),
+        }),
+        // De dónde salió la fila: para rotularla y para no emitir una orden en
+        // soles por un comprobante que estaba en dólares.
+        moneda: m.currency || 'PEN',
+        fuera: motivoNoExigido(m, { umbral }),
+      });
+    });
   };
 
   uE(() => {
-    if (tab === 'respaldo' && borradores.length === 0 && pendientes.length > 0) prepararBorradores();
+    if (tab === 'respaldo' && pendientes.length > 0) sincronizarBorradores();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, pendientes.length]);
+  }, [tab, pendientes.length, verBajoUmbral, verOtrasMonedas]);
+
+  // Si el ámbito es una empresa del grupo, esta pestaña no existe para ella:
+  // volver a «Emitidas» en vez de dejar una pantalla vacía sin explicación.
+  uE(() => {
+    if (tab === 'respaldo' && !hayPestanaRespaldo) setTab('emitidas');
+  }, [tab, hayPestanaRespaldo]);
+
+  // ── La grilla que se ve, después de los filtros de la pestaña ────
+  // El filtro de arriba de la pantalla es el de la empresa que EMITE; éste es
+  // el de quién FACTURÓ, que es como se busca de verdad («qué le falta
+  // respaldar a EL INCA de lo que le vendió tal ferretería»).
+  const proveedoresPendientes = uM(() => {
+    const m = new Map();
+    for (const b of borradores) {
+      const k = (b.proveedor_nombre || '').trim() || '— sin proveedor —';
+      const g = m.get(k) || { nombre: k, n: 0, monto: 0 };
+      g.n++; g.monto += Number(b.total) || 0;
+      m.set(k, g);
+    }
+    return [...m.values()].sort((a, b) => b.monto - a.monto);
+  }, [borradores]);
+
+  const borradoresVisibles = uM(() => {
+    const q = respBusca.trim().toLowerCase();
+    return borradores
+      .map((b, idx) => ({ b, idx }))
+      .filter(({ b }) => {
+        if (respProveedor !== 'todos') {
+          const k = (b.proveedor_nombre || '').trim() || '— sin proveedor —';
+          if (k !== respProveedor) return false;
+        }
+        if (!q) return true;
+        return `${b.documento || ''} ${b.proveedor_nombre || ''} ${b.descripcion || ''}`.toLowerCase().includes(q);
+      });
+  }, [borradores, respProveedor, respBusca]);
+  const hayFiltroResp = respProveedor !== 'todos' || !!respBusca.trim();
 
   // ── LO QUE LLEGA DE ABASTECIMIENTO ──────────────────────────────
   // Ya NO es la puerta: es una de las formas de llenar las líneas. Se lee UNA
@@ -867,11 +966,32 @@ function OrdenesPage({ showToast }) {
     }));
   };
 
+  // Editar UNA línea del detalle de un borrador (tanda 14).
+  const actualizarLinea = (idx, li, patch) =>
+    setBorradores(bs => bs.map((b, i) => (i === idx ? conLineaEditada(b, li, patch) : b)));
+  const agregarLinea = (idx) =>
+    setBorradores(bs => bs.map((b, i) => (i === idx ? conLineaNueva(b, b.tipo) : b)));
+  const quitarLinea = (idx, li) =>
+    setBorradores(bs => bs.map((b, i) => (i === idx ? conLineaQuitada(b, li) : b)));
+
   const seleccionados = uM(() => borradores.filter(b => b.incluir), [borradores]);
+  // Solo lo que está EN SOLES: sumar dólares y soles en un mismo número daría
+  // un total que no existe. Las de otra moneda se cuentan aparte.
   const montoSeleccionado = uM(
-    () => seleccionados.reduce((s, b) => s + Number(b.total || 0), 0),
+    () => seleccionados.filter(b => (b.moneda || 'PEN') === 'PEN').reduce((s, b) => s + Number(b.total || 0), 0),
     [seleccionados]
   );
+  const selOtraMoneda = uM(
+    () => seleccionados.filter(b => (b.moneda || 'PEN') !== 'PEN').length,
+    [seleccionados]
+  );
+  // Seleccionadas que el filtro de la pestaña está escondiendo: emitir un lote
+  // que incluye filas que no se ven es la forma más fácil de emitir de más.
+  const seleccionadasOcultas = uM(() => {
+    if (!hayFiltroResp) return 0;
+    const visibles = new Set(borradoresVisibles.map(v => v.b.movimiento_id));
+    return seleccionados.filter(b => !visibles.has(b.movimiento_id)).length;
+  }, [hayFiltroResp, borradoresVisibles, seleccionados]);
 
   // ── LA EMISIÓN EN LOTE ──────────────────────────────────────────
   //
@@ -896,7 +1016,8 @@ function OrdenesPage({ showToast }) {
     if (!canEmitir) { toast('No tienes permiso para emitir órdenes', 'red'); return; }
     const sinEmpresa = seleccionados.filter(b => !b.company_id);
     if (sinEmpresa.length) { toast(`${sinEmpresa.length} comprobante(s) sin empresa emisora — no se pueden numerar`, 'red'); return; }
-    if (!window.confirm(`Emitir ${seleccionados.length} órdenes por ${fmtS(montoSeleccionado)}?\n\nCada comprobante queda atado a su orden.`)) return;
+    const extra = selOtraMoneda > 0 ? ` (+ ${selOtraMoneda} en otra moneda)` : '';
+    if (!window.confirm(`Emitir ${seleccionados.length} órdenes por ${fmtS(montoSeleccionado)}${extra}?\n\nCada comprobante queda atado a su orden.`)) return;
 
     emitiendoRef.current = true;
     setEmitiendo(true);
@@ -929,7 +1050,10 @@ function OrdenesPage({ showToast }) {
             proveedor_direccion: b.proveedor_direccion || null,
             fecha: b.fecha || now.slice(0, 10),
             fecha_entrega: null,
-            moneda: 'PEN',
+            // La del comprobante que respalda. Con la vista abierta a moneda
+            // extranjera (tanda 14) emitir todo en soles habría puesto un
+            // símbolo falso en el PDF de una compra en dólares.
+            moneda: b.moneda || 'PEN',
             condicion_pago: b.condicion_pago || null,
             estado: 'recibida',   // el bien/servicio YA se recibió: la orden es el respaldo de algo que pasó
             titulo: b.titulo || null,
@@ -942,7 +1066,10 @@ function OrdenesPage({ showToast }) {
             monto_total: Number(b.total || 0),
             accounting_movement_id: b.movimiento_id,
             emitida_retroactiva: true,
-            observaciones: `Respaldo retroactivo del comprobante ${b.documento || ''}`.trim(),
+            // Vacío si nadie escribió nada (tanda 14). Antes se imprimía
+            // siempre «Respaldo retroactivo del comprobante …» en el PDF de una
+            // orden que ya dice a qué comprobante respalda.
+            observaciones: (b.observaciones || '').trim() || null,
             created_by: userId, updated_by: userId,
             created_at: now, updated_at: now,
             version: 1, sync_status: 'pending_create', last_synced_at: null,
@@ -950,15 +1077,11 @@ function OrdenesPage({ showToast }) {
           };
 
           await window.__db.ordenes_compra.add(fila);
-          // Las líneas REALES del comprobante, no un «Insumos y materiales»
-          // genérico: `borradorDesdeMovimiento` ya las sacó de `items_factura`
-          // y `repartirSobreItems` las cuadró contra el total emitido.
-          const lineas = (b.lineas?.length ? b.lineas : [{
-            nombre: b.descripcion || 'Insumos y materiales',
-            unidad: b.unidad || T.unidadPorDefecto,
-            cantidad: Number(b.cantidad || 1),
-            subtotal: Number(b.valorVenta || 0),
-          }]);
+          // Las líneas REALES del comprobante —y desde la tanda 14, las que la
+          // contadora dejó escritas en el detalle—, cuadradas contra el valor
+          // de venta emitido: una orden que respalda una factura ya emitida no
+          // puede cerrar distinto de ella.
+          const lineas = lineasParaEmitir(b);
           for (const l of lineas) {
             const liId = window.__newId();
             const cant = Number(l.cantidad || 1) || 1;
@@ -1436,9 +1559,14 @@ function OrdenesPage({ showToast }) {
         <button className={`btn btn-sm ${tab === 'emitidas' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('emitidas')}>
           Emitidas ({emitidas.length})
         </button>
-        <button className={`btn btn-sm ${tab === 'respaldo' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('respaldo')}>
-          Sin respaldo ({resumen.sinRespaldo})
-        </button>
+        {/* Solo para consorcios ejecutores (tanda 14): el respaldo por orden es
+            exigencia de la obra que ejecuta el consorcio, no del giro de una
+            empresa del grupo comprándole a su ferretería. */}
+        {hayPestanaRespaldo && (
+          <button className={`btn btn-sm ${tab === 'respaldo' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('respaldo')}>
+            Sin respaldo ({resumen.sinRespaldo})
+          </button>
+        )}
         {/* La puerta que faltaba: una orden que nace ANTES del comprobante. */}
         <button className={`btn btn-sm ${tab === 'nueva' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('nueva')}>
           Nueva orden{lineas.length ? ` (${lineas.length})` : ''}
@@ -2473,18 +2601,61 @@ function OrdenesPage({ showToast }) {
         )
       ) : (
         // ── PESTAÑA «SIN RESPALDO» ────────────────────────────────
-        pendientes.length === 0 ? (
-          <div className="card card-p empty-state">
-            <JxIcon name="checkCircle" size={40} color="var(--green)" />
-            <p>Todos los comprobantes por encima de {fmtS(umbral)} tienen su orden.</p>
+        <>
+          {/* LOS FILTROS VAN ANTES DE LA LISTA Y NO DESAPARECEN CUANDO ESTÁ
+              VACÍA: si fue un filtro el que la vació, hay que poder desarmarlo
+              desde donde se está mirando. */}
+          <div className="card card-p" style={{ marginBottom: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <div>
+              <label className="flabel" style={{ fontSize: 10.5 }}>Quién facturó</label>
+              <select className="fi" style={{ minWidth: 230, fontSize: 12 }}
+                value={respProveedor} onChange={e => setRespProveedor(e.target.value)}>
+                <option value="todos">Todos los proveedores ({proveedoresPendientes.length})</option>
+                {proveedoresPendientes.map(p => (
+                  <option key={p.nombre} value={p.nombre}>{p.nombre} · {p.n} · {fmtS(p.monto)}</option>
+                ))}
+              </select>
+            </div>
+            <div style={{ flex: 1, minWidth: 180 }}>
+              <label className="flabel" style={{ fontSize: 10.5 }}>Buscar</label>
+              <input className="fi" style={{ width: '100%', fontSize: 12 }} value={respBusca}
+                placeholder="comprobante, proveedor o qué se compró"
+                onChange={e => setRespBusca(e.target.value)} />
+            </div>
+            {hayFiltroResp && (
+              <button className="btn btn-ghost btn-sm" onClick={() => { setRespProveedor('todos'); setRespBusca(''); }}>
+                Limpiar filtros
+              </button>
+            )}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11.5, color: 'var(--ts)' }}>
+              <label style={{ display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}
+                title={`Debajo de ${fmtS(umbral)} la orden no es obligatoria, pero se puede emitir igual.`}>
+                <input type="checkbox" checked={verBajoUmbral} onChange={e => setVerBajoUmbral(e.target.checked)} />
+                Ver también los de menos de {fmtS(umbral)}
+              </label>
+              <label style={{ display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}
+                title="El umbral está en soles, así que estas compras no se comparan contra él: se muestran enteras.">
+                <input type="checkbox" checked={verOtrasMonedas} onChange={e => setVerOtrasMonedas(e.target.checked)} />
+                Ver los que están en otra moneda
+              </label>
+            </div>
           </div>
-        ) : (
+
+          {borradoresVisibles.length === 0 ? (
+            <div className="card card-p empty-state">
+              <JxIcon name="checkCircle" size={40} color="var(--green)" />
+              {hayFiltroResp
+                ? <p>Ningún comprobante coincide con el filtro. Límpialo para ver los {borradores.length} pendientes.</p>
+                : <p>Todos los comprobantes por encima de {fmtS(umbral)} tienen su orden.{!verBajoUmbral && <> Marca «ver también los de menos de {fmtS(umbral)}» si quieres emitir alguno de los chicos.</>}</p>}
+            </div>
+          ) : (
           <>
             <div className="card card-p" style={{ marginBottom: 12, background: 'var(--tint-neutral)' }}>
               <div style={{ fontSize: 12, color: 'var(--ts)', lineHeight: 1.55 }}>
-                Cada fila genera <strong>una orden</strong> atada a ese comprobante. Revisa el
-                nombre de lo comprado, el tipo y el monto antes de emitir — después la orden
-                queda ligada a la factura y solo se puede anular con motivo.
+                Cada fila genera <strong>una orden</strong> atada a ese comprobante. Abre el
+                detalle con <strong>«Ver detalle»</strong> para corregir los insumos, la fecha y las
+                observaciones antes de emitir — después la orden queda ligada a la factura y solo
+                se puede anular con motivo.
                 {gruposPendientes.length > 1 && (
                   <> Hay <strong>{gruposPendientes.length} empresas</strong> emitiendo: cada una numera su propia serie.</>
                 )}
@@ -2492,11 +2663,29 @@ function OrdenesPage({ showToast }) {
             </div>
 
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
-              <button className="btn btn-ghost btn-sm" onClick={() => setBorradores(bs => bs.map(b => ({ ...b, incluir: true })))}>Marcar todas</button>
-              <button className="btn btn-ghost btn-sm" onClick={() => setBorradores(bs => bs.map(b => ({ ...b, incluir: false })))}>Desmarcar todas</button>
+              {/* Marcan y desmarcan SOLO lo que se está viendo: con un filtro
+                  puesto, «marcar todas» no puede alcanzar filas invisibles. */}
+              <button className="btn btn-ghost btn-sm"
+                onClick={() => { const v = new Set(borradoresVisibles.map(x => x.idx)); setBorradores(bs => bs.map((b, i) => (v.has(i) ? { ...b, incluir: true } : b))); }}>
+                Marcar {hayFiltroResp ? 'las visibles' : 'todas'}
+              </button>
+              <button className="btn btn-ghost btn-sm"
+                onClick={() => { const v = new Set(borradoresVisibles.map(x => x.idx)); setBorradores(bs => bs.map((b, i) => (v.has(i) ? { ...b, incluir: false } : b))); }}>
+                Desmarcar {hayFiltroResp ? 'las visibles' : 'todas'}
+              </button>
               <div style={{ flex: 1 }} />
               <div style={{ fontSize: 12, color: 'var(--tm)' }}>
                 {seleccionados.length} seleccionadas · <strong style={{ color: 'var(--amber)' }}>{fmtS(montoSeleccionado)}</strong>
+                {selOtraMoneda > 0 && (
+                  <span title="No se suman con los soles: cada orden sale en la moneda de su comprobante.">
+                    {' '}+ {selOtraMoneda} en otra moneda
+                  </span>
+                )}
+                {seleccionadasOcultas > 0 && (
+                  <span style={{ color: 'var(--amber)' }} title="Están marcadas pero el filtro no las muestra. Se emiten igual.">
+                    {' '}· {seleccionadasOcultas} fuera del filtro
+                  </span>
+                )}
               </div>
               {canEmitir && (
                 <button className="btn btn-amber btn-sm" disabled={emitiendo || !seleccionados.length} onClick={emitirLote}>
@@ -2514,15 +2703,21 @@ function OrdenesPage({ showToast }) {
                   <thead><tr>
                     <th style={{ width: 32 }}></th>
                     <th style={{ width: 128 }}>Comprobante</th>
+                    <th style={{ width: 116 }}>Fecha de la orden</th>
                     <th style={{ width: 170 }}>Proveedor</th>
-                    <th style={{ minWidth: 240 }}>Qué se compró (editable)</th>
+                    <th style={{ minWidth: 240 }}>Qué se compró</th>
                     <th style={{ width: 108 }}>Tipo</th>
                     <th style={{ width: 92 }}>IGV</th>
                     <th style={{ width: 140, textAlign: 'right' }}>Importe total</th>
                   </tr></thead>
                   <tbody>
-                    {borradores.map((b, idx) => (
-                      <tr key={b.movimiento_id} style={b.incluir ? undefined : { opacity: 0.45 }}>
+                    {borradoresVisibles.map(({ b, idx }) => {
+                      const abierta = respAbierta === b.movimiento_id;
+                      const suma = sumaDeLineas(b.lineas);
+                      const desc = Math.abs(suma - Number(b.valorVenta || 0)) > 0.01;
+                      return (
+                    <React.Fragment key={b.movimiento_id}>
+                      <tr style={b.incluir ? undefined : { opacity: 0.45 }}>
                         <td style={{ textAlign: 'center' }}>
                           <input type="checkbox" checked={!!b.incluir} onChange={e => actualizarBorrador(idx, { incluir: e.target.checked })} />
                         </td>
@@ -2536,24 +2731,39 @@ function OrdenesPage({ showToast }) {
                             </button>
                             <span style={{ fontFamily: 'monospace' }}>{b.documento || '—'}</span>
                           </div>
-                          <div style={{ color: 'var(--tm)' }}>{b.fecha || ''}</div>
+                          {/* Por qué esta fila estaba escondida hasta ahora. */}
+                          {b.fuera === 'bajo_umbral' && (
+                            <span className="badge b-gray" style={{ fontSize: 8.5 }} title={`Debajo de ${fmtS(umbral)} la orden no es obligatoria — se puede emitir igual.`}>
+                              bajo el umbral
+                            </span>
+                          )}
+                          {b.fuera === 'moneda_extranjera' && (
+                            <span className="badge b-purple" style={{ fontSize: 8.5 }} title="El umbral está en soles: esta compra no se compara contra él.">
+                              {b.moneda}
+                            </span>
+                          )}
+                        </td>
+                        <td>
+                          {/* Editable (tanda 14): antes salía la del comprobante
+                              y no se podía tocar en ningún punto del camino.
+                              El AÑO de esta fecha es el que numera la serie. */}
+                          <input className="fi" type="date" style={{ fontSize: 11, width: '100%' }}
+                            value={b.fecha || ''} onChange={e => actualizarBorrador(idx, { fecha: e.target.value })} />
                         </td>
                         <td style={{ maxWidth: 170, fontSize: 10.5 }}>
                           <div style={{ fontWeight: 600 }}>{b.proveedor_nombre || '—'}</div>
                           <div style={{ color: 'var(--tm)' }}>emite: {lookupCompany(b.company_id)?.name || '⚠ sin empresa'}</div>
                         </td>
                         <td>
-                          <input className="fi" style={{ fontSize: 11, width: '100%' }} value={b.descripcion || ''}
-                            onChange={e => actualizarBorrador(idx, { descripcion: e.target.value })} />
-                          {b.lineas?.length > 1 && (
-                            <div style={{ fontSize: 9.5, color: 'var(--tm)', marginTop: 2 }}>
-                              {b.lineas.length} líneas de la factura — van todas al detalle de la orden
-                            </div>
-                          )}
-                          {b.lineas?.length === 1 && b.lineas[0].cantidad > 1 && (
-                            <div style={{ fontSize: 9.5, color: 'var(--tm)', marginTop: 2 }}>
-                              {Number(b.lineas[0].cantidad).toLocaleString('es-PE')} {b.lineas[0].unidad}
-                            </div>
+                          <div style={{ fontSize: 11, lineHeight: 1.4 }}>{b.descripcion || '—'}</div>
+                          <button className="btn btn-ghost btn-xs" style={{ padding: '1px 6px', fontSize: 9.5, marginTop: 3 }}
+                            onClick={() => setRespAbierta(abierta ? null : b.movimiento_id)}>
+                            {abierta ? '▾ Cerrar detalle' : `▸ Ver detalle (${b.lineas?.length || 0})`}
+                          </button>
+                          {desc && !abierta && (
+                            <span style={{ fontSize: 9.5, color: 'var(--amber)', marginLeft: 6 }} title="Al emitir se ajusta para cuadrar contra el comprobante.">
+                              ⚠ el detalle no suma el total
+                            </span>
                           )}
                         </td>
                         <td>
@@ -2575,11 +2785,72 @@ function OrdenesPage({ showToast }) {
                             style={{ fontSize: 11, textAlign: 'right', width: '100%' }}
                             value={b.total} onChange={e => actualizarBorrador(idx, { total: e.target.value })} />
                           <div style={{ fontSize: 9.5, color: 'var(--tm)', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                            {fmtS(b.valorVenta)} + {fmtS(b.igv)}
+                            {fmtMon(b.valorVenta, b.moneda)} + {fmtMon(b.igv, b.moneda)}
                           </div>
                         </td>
                       </tr>
-                    ))}
+                      {/* ── EL DETALLE REAL DE LA FACTURA, EDITABLE ────────
+                          Gabriel: «no se colocan los insumos reales que se
+                          facturaron». Nacían de `items_factura` pero no había
+                          dónde corregirlos: la única casilla editable era un
+                          resumen que la emisión descartaba. */}
+                      {abierta && (
+                        <tr>
+                          <td colSpan={8} style={{ background: 'var(--bg-c2)', padding: '10px 14px' }}>
+                            <div style={{ fontSize: 10.5, color: 'var(--tm)', marginBottom: 6 }}>
+                              Lo que dice la factura, línea por línea. Se puede renombrar, cambiar la
+                              unidad, la cantidad y el importe, partir una línea en dos o quitar la que no va.
+                            </div>
+                            <table className="tbl" style={{ fontSize: 11, marginBottom: 8 }}>
+                              <thead><tr>
+                                <th style={{ minWidth: 220 }}>Insumo o servicio</th>
+                                <th style={{ width: 80 }}>Unidad</th>
+                                <th style={{ width: 90 }}>Cantidad</th>
+                                <th style={{ width: 120, textAlign: 'right' }}>Importe</th>
+                                <th style={{ width: 34 }}></th>
+                              </tr></thead>
+                              <tbody>
+                                {(b.lineas || []).map((l, li) => (
+                                  <tr key={li}>
+                                    <td><input className="fi" style={{ fontSize: 11, width: '100%' }} value={l.nombre || ''}
+                                      onChange={e => actualizarLinea(idx, li, { nombre: e.target.value })} /></td>
+                                    <td><input className="fi" style={{ fontSize: 11, width: '100%' }} value={l.unidad || ''}
+                                      onChange={e => actualizarLinea(idx, li, { unidad: e.target.value })} /></td>
+                                    <td><input className="fi" type="number" min="0" step="0.01" style={{ fontSize: 11, width: '100%', textAlign: 'right' }}
+                                      value={l.cantidad ?? ''} onChange={e => actualizarLinea(idx, li, { cantidad: e.target.value })} /></td>
+                                    <td><input className="fi" type="number" min="0" step="0.01" style={{ fontSize: 11, width: '100%', textAlign: 'right' }}
+                                      value={l.subtotal ?? ''} onChange={e => actualizarLinea(idx, li, { subtotal: e.target.value })} /></td>
+                                    <td style={{ textAlign: 'center' }}>
+                                      {(b.lineas || []).length > 1 && (
+                                        <button className="btn btn-ghost btn-xs" title="Quitar esta línea"
+                                          onClick={() => quitarLinea(idx, li)}>×</button>
+                                      )}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 }}>
+                              <button className="btn btn-ghost btn-xs" onClick={() => agregarLinea(idx)}>+ Agregar línea</button>
+                              <div style={{ fontSize: 11, color: desc ? 'var(--amber)' : 'var(--tm)' }}>
+                                El detalle suma <strong>{fmtMon(suma, b.moneda)}</strong> contra un valor de venta de <strong>{fmtMon(b.valorVenta, b.moneda)}</strong>
+                                {desc && <> {'—'} al emitir se ajusta la última línea para cuadrar contra el comprobante.</>}
+                              </div>
+                            </div>
+                            <div>
+                              <label className="flabel" style={{ fontSize: 10.5 }}>
+                                Observaciones (opcional {'—'} si lo dejas vacío, el PDF no imprime nada)
+                              </label>
+                              <input className="fi" style={{ fontSize: 11, width: '100%' }}
+                                value={b.observaciones || ''} placeholder="En blanco por defecto"
+                                onChange={e => actualizarBorrador(idx, { observaciones: e.target.value })} />
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -2589,8 +2860,14 @@ function OrdenesPage({ showToast }) {
                 Mostrando las {borradores.length} más caras de {pendientes.length}. Emitidas éstas, aparecen las siguientes.
               </div>
             )}
+            {hayFiltroResp && (
+              <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 4 }}>
+                Viendo {borradoresVisibles.length} de {borradores.length} con el filtro puesto.
+              </div>
+            )}
           </>
-        )
+          )}
+        </>
       )}
 
       {/* ── EL COMPROBANTE, VISTO DESDE «SIN RESPALDO» ────────────
