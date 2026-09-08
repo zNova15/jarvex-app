@@ -487,11 +487,15 @@ function MaterialesPage({ showToast }) {
           })()}
         </td>
         <td className="col-m">{m.unidad}</td>
-        {veDinero && <td style={{textAlign:'right'}} className="col-num">
-          {Number(m.precio_unitario_estimado || 0) > 0
-            ? <span>S/ {Number(m.precio_unitario_estimado).toFixed(2)}</span>
-            : <span style={{ color:'var(--tm)' }}>—</span>}
-        </td>}
+        {/* LA COLUMNA DE PRECIO SE FUE DEL CATÁLOGO (8-set-2026). Gabriel, tras
+            el feedback de la almacenera: «en las secciones de almacén no
+            debería salir el costo unitario». El catálogo de almacén es de
+            CONTEO —qué hay, dónde y cuánto falta—; el dinero de cada insumo se
+            mira en Movimientos, en Compras y en Análisis de Insumos, que es
+            donde significa algo. El dato NO se borró: sigue en
+            `precio_unitario_estimado` y se consulta a propósito con el botón
+            de historial de precios (y se corrige con el de actualizar), que
+            siguen con su gate de rol de siempre. */}
         <td style={{textAlign:'right'}} className="col-num">
           <span style={{ color: stockColor, fontWeight: 600 }}>{Number(m.stock_actual ?? 0).toLocaleString('es-PE')}</span>
         </td>
@@ -2368,7 +2372,6 @@ function MaterialesPage({ showToast }) {
           <table className="tbl">
             <thead><tr>
               <th>Material</th><th>Categoría</th><th>Ubicación</th><th>Unidad</th>
-              {veDinero && <th style={{textAlign:'right'}}>Precio est.</th>}
               <th style={{textAlign:'right'}}>Stock Actual</th><th style={{textAlign:'right'}}>Stock Mín.</th>
               <th style={{textAlign:'right'}}>Entradas</th><th style={{textAlign:'right'}}>Salidas</th>
               <th>Estado</th><th>Sync</th><th style={{textAlign:'center'}}>Acciones</th>
@@ -2388,7 +2391,6 @@ function MaterialesPage({ showToast }) {
                       <td><span className="tag">{m.categoria || '—'}</span></td>
                       <td style={{ fontSize:11, color:'var(--tm)' }}>—</td>
                       <td className="col-m">{m.unidad}</td>
-                      <td style={{textAlign:'right'}} className="col-num"><span style={{color:'var(--tm)'}}>—</span></td>
                       <td style={{textAlign:'right'}} className="col-num"><span style={{fontWeight:700}}>{stockDeNodo(m).toLocaleString('es-PE')}</span></td>
                       <td style={{textAlign:'right'}} className="col-num">{Number(m.stock_minimo ?? 0).toLocaleString('es-PE')}</td>
                       <td style={{textAlign:'right'}} className="col-num">—</td>

@@ -85,9 +85,21 @@ export const GRUPOS_TRABAJO = [
     color: 'var(--purple)',
     // 'frentes' se fue a "Ingenieros y frentes": el frente es la unidad de
     // trabajo del ingeniero de campo, no una sección de RRHH.
-    desc: 'Obreros, asistencia, planillas y subcontratos',
-    items: ['personal', 'asistencia', 'personal-contratos', 'planillas',
-      'cts', 'gratificaciones', 'plame',
+    //
+    // EL ORDEN ES EL DE LOS SUB-BLOQUES DEL MENÚ (tanda 17): la persona, lo
+    // que se le paga, con qué está asegurada, con qué está contratada, y los
+    // subcontratos. Acá no hay subtítulos —el panel dibuja una tarjeta por
+    // grupo— pero el orden tiene que ser el mismo que el del sidebar: son las
+    // dos puertas al mismo trabajo y contradecirse es peor que no agrupar.
+    //
+    // 'sctr-personal' ENTRÓ ACÁ, viniendo de «Especialistas». Lo consulta la
+    // prevencionista pero lo SUBE la contadora jefe, y para ella vivía
+    // escondido entre las pantallas de los especialistas.
+    desc: 'Personal, sus pagos, sus seguros, sus contratos y los subcontratos',
+    items: ['personal', 'asistencia',
+      'planillas', 'cts', 'gratificaciones', 'plame',
+      'sctr-personal',
+      'personal-contratos',
       'subcontratistas', 'subcontratos', 'subcontrato-valorizaciones'],
     extra: ['pagos'],
   },
@@ -100,10 +112,18 @@ export const GRUPOS_TRABAJO = [
     // ENTERA a nivel macro (seguridad, calidad, ambiental, social), mientras
     // el ingeniero de campo trabaja frente por frente.
     desc: 'Seguridad · Ambiental · Calidad · Social, a nivel de toda la obra',
-    items: ['reporte-especialidad', 'charlas-plan', 'sctr-personal', 'inducciones',
+    // 'sctr-personal' se fue a «Personal y subcontratos» (tanda 17). Queda como
+    // `extra` para que la prevencionista lo siga teniendo a mano en SU tarjeta:
+    // ella lo consulta todos los días aunque no lo cargue.
+    items: ['reporte-especialidad', 'charlas-plan', 'inducciones',
       'charlas-seguridad', 'iperc', 'inspecciones-seguridad', 'capacitaciones',
-      'epps-inventario', 'mov-epp', 'epp', 'insumos-persona', 'insumos-emergencia',
+      // 'epp' (Entregas EPP) salió del menú el 8-set-2026: ahora es una pestaña
+      // dentro de 'mov-epp'. Sacarla de acá es obligatorio — un test cruza el
+      // desglose contra el NAV real y una página que el sidebar ya no ofrece
+      // deja el panel del trabajo ofreciendo una puerta que no existe.
+      'epps-inventario', 'mov-epp', 'insumos-persona', 'insumos-emergencia',
       'gestion-ambiental', 'gestion-calidad', 'gestion-social'],
+    extra: ['sctr-personal'],
   },
   {
     id: 'contabilidad-obra',

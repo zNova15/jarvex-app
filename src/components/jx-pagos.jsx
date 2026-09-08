@@ -403,8 +403,11 @@ function PagosPage({ showToast }) {
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div>
-          <div className="pg-title">Pagos</div>
-          <div className="pg-sub">Cómo se paga a cada trabajador y los pagos a subcontratos — con evidencia de cada transferencia</div>
+          {/* «Pagos» a secas hacía entrar buscando los pagos a PROVEEDORES.
+              Son los pagos AL PERSONAL (planilla, recibos por honorarios) y a
+              subcontratos, y el rótulo lo dice desde el 8-set-2026. */}
+          <div className="pg-title">Pagos a Personal</div>
+          <div className="pg-sub">Cómo se paga a cada trabajador y los pagos a subcontratos — con evidencia de cada transferencia. No es acá donde se pagan las facturas de proveedores.</div>
         </div>
         <div style={{ display: 'flex', gap: 4 }}>
           <button className={`btn btn-sm ${tab === 'personal' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('personal')}>Personal</button>

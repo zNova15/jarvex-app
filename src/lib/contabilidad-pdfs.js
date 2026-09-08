@@ -1109,17 +1109,19 @@ export function generateOrdenPdf(orden, items, ctx = {}, { download = true } = {
   doc.text(moneda, 140, y + 3.6);
   y += 3.6;
   y = ordenCampo(doc, y, 'Forma de pago:', safe(orden.condicion_pago, '—'), { pageWidth, xValor: 55 });
-  // A QUÉ COMPROBANTE(S) RESPALDA. Es el dato que la orden retroactiva no
-  // decía en ninguna parte del papel —y el único que vuelve legible a la orden
-  // que respalda VARIAS facturas (el pedido de 8-set-2026: un solo pedido
-  // partido en tres por el límite de 20 ítems del facturador). Va con su
-  // rótulo, en DATOS DE LA ORDEN: es donde se lee sin adivinar, a diferencia
-  // de la banda de título que imprimía el primer ítem de la factura.
-  const comprobantes = (ctx.comprobantes || []).filter(Boolean);
-  if (comprobantes.length) {
-    y = ordenCampo(doc, y, comprobantes.length > 1 ? 'Comprobantes:' : 'Comprobante:',
-      comprobantes.join('  ·  '), { pageWidth, xValor: 55 });
-  }
+  // ⛔ LA LÍNEA «Comprobantes:» YA NO SE IMPRIME (8-set-2026).
+  // Se había agregado en la tanda 16 para que la orden dijera a qué factura
+  // respalda. Gabriel, viendo el PDF de la OC-008-2026 del CONSORCIO DEL INCA:
+  // «elimina esa sección del PDF donde salen los comprobantes, eso no debe
+  // estar». Y es correcto de fondo: una orden de compra se EMITE ANTES de que
+  // exista la factura. Un papel que dice «factura E001-2 · E001-3 · E001-4» en
+  // el encabezado se delata como emitido después, y ése es justo el documento
+  // que se muestra en una revisión.
+  //
+  // El vínculo NO se perdió: sigue en `accounting_movements.orden_compra_id` y
+  // se ve en la pantalla de Órdenes. Lo que se fue es del PAPEL.
+  // `ctx.comprobantes` se sigue aceptando sin usarse: quien llama no tiene por
+  // qué cambiar y el dato queda disponible si alguna vez se quiere un anexo.
   y += 3;
 
   // ── Proveedor ────────────────────────────────────────────────
@@ -1223,12 +1225,30 @@ export function generateOrdenPdf(orden, items, ctx = {}, { download = true } = {
     y2 += 4 + lineas.length * 3.6 + 3;
   }
 
-  // ── Las tres firmas del modelo ───────────────────────────────
+  // ── Las tres firmas ──────────────────────────────────────────
+  // QUIÉN FIRMA NO ES IGUAL EN TODAS LAS EMPRESAS (8-set-2026). La contadora
+  // jefe: en las órdenes del CONSORCIO EL INCA la firma del medio no es
+  // «Rep. Legal», es «Representante Común». En un consorcio esa figura existe
+  // y la del representante legal no, así que el rótulo fijo decía algo falso.
+  // Gabriel: «asumo que para otras obras sería bueno tener eso personalizable».
+  //
+  // Se resuelve en dos niveles, del más específico al más general:
+  //   1. la ORDEN (`orden.firma_*`) — para el documento puntual;
+  //   2. la EMPRESA (`companies.doc_firma_*`, mig 200) — su valor de siempre,
+  //      al lado del color y el pie que ya se configuraban ahí;
+  //   3. el texto del modelo, si nadie configuró nada.
+  // `ctx.firma*` se mantiene como override de quien llama (compat).
   if (y2 + 26 > 285) { doc.addPage(); y2 = 30; }
+  const rotuloFirma = (deOrden, deEmpresa, deCtx, porDefecto) => {
+    const v = [deOrden, deCtx, deEmpresa].map((x) => String(x ?? '').trim()).find(Boolean);
+    return v || porDefecto;
+  };
   const firmas = [
-    ctx.firmaElaboradoPor || 'Elaborado por / Área Administrativa',
-    ctx.firmaAprobadoPor || `Aprobado por / Rep. Legal${company.name ? ' — ' + safe(company.nombre_corto || company.name) : ''}`,
-    'PROVEEDOR',
+    rotuloFirma(orden.firma_elaborado_por, company.doc_firma_elaborado, ctx.firmaElaboradoPor,
+      'Elaborado por / Área Administrativa'),
+    rotuloFirma(orden.firma_aprobado_por, company.doc_firma_aprobado, ctx.firmaAprobadoPor,
+      `Aprobado por / Rep. Legal${company.name ? ' — ' + safe(company.nombre_corto || company.name) : ''}`),
+    rotuloFirma(orden.firma_receptor, company.doc_firma_receptor, ctx.firmaReceptor, 'PROVEEDOR'),
   ];
   const anchoFirma = (pageWidth - 28) / 3;
   y2 += 14;

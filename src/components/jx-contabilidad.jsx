@@ -246,6 +246,7 @@ function EmpresasPage({ showToast }) {
       actividades_economicas: [],
       logo_dataurl: null, nombre_corto: '', codigo_doc_prefix: '',
       serie_factura: '', serie_boleta: '', doc_color: '', doc_pie: '',
+      doc_firma_elaborado: '', doc_firma_aprobado: '', doc_firma_receptor: '',
     });
     setEditingId(null);
     setModal('nueva');
@@ -277,6 +278,9 @@ function EmpresasPage({ showToast }) {
       serie_boleta: c.serie_boleta || '',
       doc_color: c.doc_color || '',
       doc_pie: c.doc_pie || '',
+      doc_firma_elaborado: c.doc_firma_elaborado || '',
+      doc_firma_aprobado: c.doc_firma_aprobado || '',
+      doc_firma_receptor: c.doc_firma_receptor || '',
     });
     setEditingId(c.id);
     setModal('editar');
@@ -348,6 +352,9 @@ function EmpresasPage({ showToast }) {
           serie_boleta: form.serie_boleta?.trim().toUpperCase() || null,
           doc_color: form.doc_color?.trim() || null,
           doc_pie: form.doc_pie?.trim() || null,
+          doc_firma_elaborado: form.doc_firma_elaborado?.trim() || null,
+          doc_firma_aprobado: form.doc_firma_aprobado?.trim() || null,
+          doc_firma_receptor: form.doc_firma_receptor?.trim() || null,
           updated_at: now, updated_by: userId,
           version: (orig?.version ?? 0) + 1,
           sync_status: orig?.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
@@ -406,6 +413,9 @@ function EmpresasPage({ showToast }) {
           serie_boleta: form.serie_boleta?.trim().toUpperCase() || null,
           doc_color: form.doc_color?.trim() || null,
           doc_pie: form.doc_pie?.trim() || null,
+          doc_firma_elaborado: form.doc_firma_elaborado?.trim() || null,
+          doc_firma_aprobado: form.doc_firma_aprobado?.trim() || null,
+          doc_firma_receptor: form.doc_firma_receptor?.trim() || null,
           created_by: userId, updated_by: userId,
           created_at: now, updated_at: now,
           version: 1, sync_status: 'pending_create', last_synced_at: null,
@@ -973,6 +983,36 @@ function EmpresasPage({ showToast }) {
                     )}
                   </div>
                   <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>El acento de sus órdenes en PDF. Vacío = el dorado JARVEX.</div>
+                </div>
+                {/* LOS TRES RÓTULOS DE FIRMA (mig 200). La contadora jefe, 8-set-2026:
+                    en el CONSORCIO EL INCA la del medio no es «Rep. Legal», es
+                    «Representante Común» — en un consorcio esa figura existe y la
+                    otra no. Se configura por empresa porque es de la empresa, no
+                    de la obra; una orden puntual lo puede pisar al emitirla. */}
+                <div style={{ gridColumn:'1/-1', marginTop:4 }}>
+                  <div style={{ fontSize:11.5, fontWeight:700, color:'var(--ts)', marginBottom:6 }}>Quién firma sus órdenes</div>
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(190px, 1fr))', gap:10 }}>
+                    <div>
+                      <label className="flabel">Firma izquierda</label>
+                      <input className="fi" maxLength={80} value={form.doc_firma_elaborado||''}
+                        placeholder="Elaborado por / Área Administrativa"
+                        onChange={e=>setForm({...form, doc_firma_elaborado:e.target.value})}/>
+                    </div>
+                    <div>
+                      <label className="flabel">Firma del medio</label>
+                      <input className="fi" maxLength={80} value={form.doc_firma_aprobado||''}
+                        placeholder={`Aprobado por / Rep. Legal — ${form.nombre_corto || form.name || 'la empresa'}`}
+                        onChange={e=>setForm({...form, doc_firma_aprobado:e.target.value})}/>
+                    </div>
+                    <div>
+                      <label className="flabel">Firma derecha</label>
+                      <input className="fi" maxLength={80} value={form.doc_firma_receptor||''} placeholder="PROVEEDOR"
+                        onChange={e=>setForm({...form, doc_firma_receptor:e.target.value})}/>
+                    </div>
+                  </div>
+                  <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>
+                    Vacío = el rótulo del modelo. Ej. para un consorcio: «Representante Común — CONSORCIO EL INCA».
+                  </div>
                 </div>
                 <div style={{ gridColumn:'1/-1' }}>
                   <label className="flabel">Pie de sus documentos (opcional)</label>

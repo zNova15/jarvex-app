@@ -180,14 +180,46 @@ const NAV = [
   { id: 'aprobaciones-reporte', label: 'Aprobación de Frentes', icon: 'flag' },
   { id: 'rendimiento-ingenieros', label: 'Rendimiento de Ingenieros', icon: 'trendUp' },
 
+  // ── PERSONAL, EN CUATRO SUB-BLOQUES (tanda 17) ────────────────────
+  // Eran once páginas planas: Personal, Asistencia, Contratos, Planillas, CTS,
+  // Gratificaciones, PLAME y los tres de subcontratos, con «Pagos» y «SCTR» en
+  // OTROS dos bloques del menú. Gabriel, 8-set-2026: «podría ser bueno acoplar
+  // varias secciones en la de Pagos de Personal […] o tal vez esté bien en la
+  // sección de Personal, y allí se disgrega: entraría lo de Pagos a personal
+  // con recibos por honorarios, planillas o sueldos, CTS, Gratificaciones; otro
+  // bloque de seguros, ahí estaría el SCTR […]; y otro bloque de Contratos
+  // Laborales».
+  //
+  // El criterio del corte es QUÉ SE HACE con cada página: se le paga, se lo
+  // asegura, se lo contrata. La persona (con su historia: inhabilitado, cambio
+  // de rol) sigue arriba, porque es de lo que dependen las tres.
   { section: 'PERSONAL Y SUBCONTRATOS' },
   { id: 'personal', label: 'Personal', icon: 'users' },
   { id: 'asistencia', label: 'Asistencia', icon: 'calendar' },
-  { id: 'personal-contratos', label: 'Contratos Laborales', icon: 'shield' },
+
+  // 'pagos' aparece ACÁ **y** en contabilidad de la obra, a propósito y por
+  // pedido de Gabriel: la contadora lo busca por contabilidad y RR.HH. por
+  // personal. Es el único ítem duplicado dentro de un mismo plano — el render
+  // usa `${id}-${idx}` como key justamente por esto.
+  { subsection: 'Pagos a personal' },
+  { id: 'pagos', label: 'Pagos a Personal', icon: 'dollar' },
   { id: 'planillas', label: 'Planillas / Sueldos', icon: 'user' },
   { id: 'cts', label: 'CTS', icon: 'dollar' },
   { id: 'gratificaciones', label: 'Gratificaciones', icon: 'dollar' },
   { id: 'plame', label: 'PLAME / T-Registro SUNAT', icon: 'list' },
+
+  // Hoy el bloque tiene una sola página. Está igual porque el SCTR estaba
+  // perdido entre las pantallas de los especialistas —donde la contadora, que
+  // es quien lo sube, no lo iba a buscar nunca— y porque Vida Ley y EsSalud van
+  // acá cuando existan (hoy son cálculos dentro de Planillas y Contratos, no
+  // pantallas propias).
+  { subsection: 'Seguros' },
+  { id: 'sctr-personal', label: 'SCTR del Personal', icon: 'shield' },
+
+  { subsection: 'Contratos laborales' },
+  { id: 'personal-contratos', label: 'Contratos Laborales', icon: 'shield' },
+
+  { subsection: 'Subcontratos' },
   { id: 'subcontratistas', label: 'Subcontratistas', icon: 'users' },
   { id: 'subcontratos', label: 'Subcontratos', icon: 'package' },
   { id: 'subcontrato-valorizaciones', label: 'Valorizaciones de Subcontrato', icon: 'dollar' },
@@ -198,15 +230,22 @@ const NAV = [
   { section: 'SECCIONES ESPECIALES' },
   { id: 'reporte-especialidad', label: 'Reporte Diario (especialidad)', icon: 'edit' },
   { id: 'charlas-plan', label: 'Planificador de Charlas', icon: 'calendar' },
-  { id: 'sctr-personal', label: 'SCTR del Personal', icon: 'shield' },
+  // 'sctr-personal' SE MUDÓ a «Personal y subcontratos › Seguros» (tanda 17).
+  // Estaba acá porque la prevencionista lo CONSULTA, pero quien lo SUBE es la
+  // contadora jefe, y para ella vivía escondido entre las pantallas de los
+  // especialistas. Sigue viéndolo la prevencionista: el gate por rol no cambió.
   { id: 'inducciones', label: 'Inducciones', icon: 'check' },
   { id: 'charlas-seguridad', label: 'Charlas de 5 minutos', icon: 'alert' },
   { id: 'iperc', label: 'IPERC (riesgos)', icon: 'alert' },
   { id: 'inspecciones-seguridad', label: 'Inspecciones', icon: 'shield' },
   { id: 'capacitaciones', label: 'Capacitaciones', icon: 'users' },
   { id: 'epps-inventario', label: 'EPPs (inventario)', icon: 'shield' },
-  { id: 'mov-epp', label: 'Mov. de EPPs', icon: 'arrowOut' },
-  { id: 'epp', label: 'Entregas EPP', icon: 'check' },
+  // «Entregas EPP» SE FUE DEL MENÚ (8-set-2026). Era una TERCERA puerta a lo
+  // mismo —inventario, movimientos y entregas— y la almacenera reportó que
+  // molestaba. Su contenido no se borró: es la segunda pestaña de esta misma
+  // pantalla (PanelEntregasEpp en jx-epps.jsx). La página 'epp' sigue
+  // registrada para que un enlace viejo o un hash guardado no muera.
+  { id: 'mov-epp', label: 'Mov. y Entregas de EPPs', icon: 'arrowOut' },
   { id: 'insumos-persona', label: 'Insumos por Persona', icon: 'users' },
   { id: 'insumos-emergencia', label: 'Insumos de Emergencia', icon: 'package' },
   { id: 'gestion-ambiental', label: 'Gestión Ambiental (ISO 14001)', icon: 'map' },
@@ -220,7 +259,11 @@ const NAV = [
   { section: 'MOVIMIENTOS Y CONTABILIDAD DE LA OBRA' },
   { id: 'movimientos-contables', label: 'Movimientos de esta obra', icon: 'dollar', plano: 'obra' },
   { id: 'conciliacion-insumos', label: 'Conciliación de Insumos', icon: 'compare' },
-  { id: 'pagos', label: 'Pagos', icon: 'dollar' },
+  // El mismo ítem que en «Personal › Pagos a personal». Se llamaba «Pagos» a
+  // secas y eso era el problema: la contadora entraba esperando los pagos a
+  // proveedores. Son los pagos AL PERSONAL (planilla, recibos por honorarios) y
+  // a subcontratos, y el rótulo ahora lo dice.
+  { id: 'pagos', label: 'Pagos a Personal', icon: 'dollar' },
   { id: 'trazabilidad', label: 'Trazabilidad de insumos (cadenas)', icon: 'compare' },
   // Mudado del bloque general (tanda 4, D1): una jugada intercompany es de
   // UNA obra, no del grupo. desglose-obra.js con test. El panel de la
@@ -531,15 +574,29 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
             : ((id) => window.__canSeeSidebarItem?.(userRol, id) ?? true);
           const items = [];
           let curSecArea;   // área de la sección en curso (solo definida en el plano general)
+          // `subsection` = encabezado MENOR dentro de una sección (tanda 17).
+          // El bloque de Personal tenía 11 páginas planas y encontrar «CTS» o
+          // «SCTR» era leerlas todas; ahora se agrupan por lo que se hace con
+          // ellas (pagar, asegurar, contratar) sin partir la sección en cuatro.
+          const esEncabezado = (x) => !!(x.section || x.subsection);
           for (let i = 0; i < NAV.length; i++) {
             const it = NAV[i];
-            if (it.section) {
-              curSecArea = it.area;
-              if (area && curSecArea !== area) continue;   // sección de otra área → oculta (con sus ítems)
-              // Mirar adelante hasta la próxima sección — si hay >=1 ítem visible, agrego.
+            if (esEncabezado(it)) {
+              if (it.section) {
+                curSecArea = it.area;
+                if (area && curSecArea !== area) continue; // sección de otra área → oculta (con sus ítems)
+              } else if (area && curSecArea !== area) {
+                continue;                                   // subsección de otra área
+              }
+              // Mirar adelante hasta el próximo encabezado del MISMO nivel o
+              // mayor: una sección abarca sus subsecciones, una subsección no.
               let hasVisible = false;
-              for (let j = i + 1; j < NAV.length && !NAV[j].section; j++) {
-                if (esPlano(NAV[j]) && canSee(NAV[j].id)) { hasVisible = true; break; }
+              for (let j = i + 1; j < NAV.length; j++) {
+                const sig = NAV[j];
+                if (sig.section) break;                     // otra sección: se acabó
+                if (it.subsection && sig.subsection) break;  // otra subsección hermana
+                if (sig.subsection) continue;                // subsección hija (solo si `it` es sección)
+                if (esPlano(sig) && canSee(sig.id)) { hasVisible = true; break; }
               }
               if (hasVisible) items.push({ ...it, _idx: i });
             } else {
@@ -558,13 +615,28 @@ function Sidebar({ current, onNav, collapsed, onToggle, realtimeStatus = 'idle',
               </div>
             );
           }
+          if (item.subsection) {
+            // Colapsado no se dibuja: sin texto sería otra rayita indistinguible
+            // de la que separa secciones, y son cosas de distinto peso.
+            if (navCollapsed) return null;
+            return (
+              <div key={i} style={{ padding: '9px 16px 3px 22px', fontSize: 9, fontWeight: 700, letterSpacing: '.09em', textTransform: 'uppercase', color: 'var(--tm)', opacity: 0.75 }}>
+                {item.subsection}
+              </div>
+            );
+          }
 
           const isActive = current === item.id;
           const isHov = hovered === item.id;
 
           return (
             <button
-              key={item.id}
+              // El índice va en la key porque un id puede aparecer DOS VECES en
+              // el mismo plano a propósito: «Pagos a Personal» está en el bloque
+              // de Personal y también en el de contabilidad de la obra, que es
+              // como lo pidió Gabriel — la contadora lo busca por un lado y
+              // RR.HH. por el otro. Con `key={item.id}` React vería duplicados.
+              key={`${item.id}-${i}`}
               onClick={() => handleNav(item.id, item.plano || planoDe(item.id))}
               onMouseEnter={() => setHovered(item.id)}
               onMouseLeave={() => setHovered(null)}

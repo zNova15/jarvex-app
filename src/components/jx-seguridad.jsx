@@ -283,6 +283,37 @@ function SctrPage({ showToast }) {
   const [form, setForm] = uS({});
   const [busy, setBusy] = uS(false);
   const [evidencias, setEvidencias] = uS(() => new Map());
+  // BUSCAR, FILTRAR Y ORDENAR (8-set-2026). Gabriel: «permite filtrar u ordenar
+  // mejor la sección de SCTR». La tabla salía completa y ordenada de una sola
+  // forma —peor estado primero— y con 40 trabajadores hay que poder pedirle
+  // «los vencidos», «este señor» o «los que vencen en octubre».
+  const [qSctr, setQSctr] = uS('');
+  const [filtroEstado, setFiltroEstado] = uS('todos');   // todos|vencido|sin|por_vencer|vigente
+  const [verInactivos, setVerInactivos] = uS(false);
+  const [ordenSctr, setOrdenSctr] = uS('estado');        // estado|nombre|vence
+
+  const listaSctr = uM(() => {
+    const q = qSctr.trim().toLowerCase();
+    let out = conEstado;
+    // Un retirado con SCTR vencido no es una alerta: por eso los KPI ya lo
+    // excluían. La TABLA los seguía mostrando, mezclados con los activos.
+    if (!verInactivos) out = out.filter(p => !ESTADOS_NO_ACTIVOS.has(p.estado));
+    if (filtroEstado !== 'todos') out = out.filter(p => p._sctr === filtroEstado);
+    if (q) out = out.filter(p => `${p.nombres || ''} ${p.apellidos || ''} ${p.dni || ''} ${p.cargo || ''} ${p.sctr_aseguradora || ''}`.toLowerCase().includes(q));
+    const peso = { vencido: 0, sin: 1, por_vencer: 2, vigente: 3 };
+    const porNombre = (a, b) => String(a.apellidos || '').localeCompare(String(b.apellidos || ''));
+    return [...out].sort((a, b) => {
+      if (ordenSctr === 'nombre') return porNombre(a, b);
+      // Sin vencimiento al FINAL: ordenar por una fecha que no está pondría a
+      // los «sin SCTR» primeros y esconde a los vencidos, que es lo urgente.
+      if (ordenSctr === 'vence') {
+        const fa = a.sctr_vencimiento || '9999-12-31';
+        const fb = b.sctr_vencimiento || '9999-12-31';
+        return fa.localeCompare(fb) || porNombre(a, b);
+      }
+      return (peso[a._sctr] - peso[b._sctr]) || porNombre(a, b);
+    });
+  }, [conEstado, qSctr, filtroEstado, verInactivos, ordenSctr]);
 
   uE(() => {
     let cancel = false;
@@ -366,18 +397,49 @@ function SctrPage({ showToast }) {
     return () => window.removeEventListener('jx_data_changed', on);
   }, [cargarDocs]);
 
+  // ORDENAR Y FILTRAR LAS ENTREGAS DE DOCUMENTOS (8-set-2026). Gabriel:
+  // «ordena mejor las entregas de documentos». Salían en el orden en que
+  // volvían de Dexie —sin garantía ninguna— y sin forma de buscar: con un año
+  // de trámites, encontrar «el de MAPFRE de julio» era leer la lista entera.
+  const [qDocs, setQDocs] = uS('');
+  const [ordenDocs, setOrdenDocs] = uS('reciente');   // reciente | antiguo | aseguradora
+
   // Paquetes agrupados (registro_relacionado_id = id del paquete subido).
   const paquetes = uM(() => {
     const m = new Map();
     for (const e of docs) { const a = m.get(e.registro_relacionado_id) || []; a.push(e); m.set(e.registro_relacionado_id, a); }
     const ORDEN = { sctr_cotizacion: 0, sctr: 1, sctr_pago: 2, sctr_factura: 3, sctr_otro: 4 };
-    return [...m.entries()].map(([id, evs]) => ({
-      id,
-      evs: evs.sort((a, b) => (ORDEN[a.tipo_evidencia] ?? 9) - (ORDEN[b.tipo_evidencia] ?? 9)),
-      fecha: evs[0]?.fecha || String(evs[0]?.created_at || '').slice(0, 10),
-      resumen: evs.find(e => e.tipo_evidencia === 'sctr')?.observaciones || null,
-    }));
+    return [...m.entries()].map(([id, evs]) => {
+      const ordenados = evs.sort((a, b) => (ORDEN[a.tipo_evidencia] ?? 9) - (ORDEN[b.tipo_evidencia] ?? 9));
+      const resumen = ordenados.find(e => e.tipo_evidencia === 'sctr')?.observaciones || null;
+      // El resumen del certificado se escribe con un formato conocido:
+      // «Constancia N · ASEGURADORA · vigencia D → H · K asegurado(s)». De ahí
+      // salen la aseguradora y la vigencia para poder buscar y ordenar sin
+      // agregar columnas nuevas a la base.
+      const partes = String(resumen || '').split('·').map(x => x.trim());
+      return {
+        id,
+        evs: ordenados,
+        // La fecha del paquete es la MÁS TEMPRANA de sus documentos, no la del
+        // primero de la lista: ésa depende del orden por tipo, no del tiempo.
+        fecha: ordenados.map(e => e.fecha || String(e.created_at || '').slice(0, 10)).filter(Boolean).sort()[0] || '',
+        resumen,
+        aseguradora: partes[1] || '',
+        vigencia: (partes.find(x => x.toLowerCase().startsWith('vigencia')) || '').replace(/^vigencia\s*/i, ''),
+      };
+    });
   }, [docs]);
+
+  const paquetesVisibles = uM(() => {
+    const q = qDocs.trim().toLowerCase();
+    let out = paquetes;
+    if (q) out = out.filter(p => `${p.resumen || ''} ${p.fecha || ''} ${p.evs.map(e => e.nombre_archivo || '').join(' ')}`.toLowerCase().includes(q));
+    return [...out].sort((a, b) => {
+      if (ordenDocs === 'antiguo') return String(a.fecha).localeCompare(String(b.fecha));
+      if (ordenDocs === 'aseguradora') return String(a.aseguradora).localeCompare(String(b.aseguradora)) || String(b.fecha).localeCompare(String(a.fecha));
+      return String(b.fecha).localeCompare(String(a.fecha));
+    });
+  }, [paquetes, qDocs, ordenDocs]);
 
   const procesarPaquete = async (file) => {
     if (!file) return;
@@ -397,6 +459,10 @@ function SctrPage({ showToast }) {
         confianza: ia.confianza || 'baja',
         advertencias: ia.advertencias || [],
         matches,
+        // Con qué se leyó el paquete. Cuando uno sale raro, lo primero que hay
+        // que saber es quién lo leyó (OpenRouter, el respaldo de Claude, o la
+        // visión del PDF si el OCR no pudo).
+        engine: ia._engine || null,
         sel: new Set(matches.filter(x => x.persona).map(x => x.persona.id)),
       });
     } catch (e) { toast('No se pudo analizar el paquete: ' + (e.message || e), 'red'); }
@@ -497,15 +563,36 @@ function SctrPage({ showToast }) {
               Consulta de <strong>certificados/constancias</strong> del SCTR (los demás documentos del trámite son del área contable).
             </div>
           )}
+          {paquetes.length > 1 && (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+              <input className="fi" style={{ flex: 1, minWidth: 220 }} value={qDocs}
+                placeholder="Buscar por aseguradora, constancia, vigencia o fecha…"
+                onChange={e => setQDocs(e.target.value)} />
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: 'var(--tm)' }}>
+                Ordenar por
+                <select className="fi" style={{ width: 'auto', fontSize: 11.5, padding: '3px 6px' }}
+                  value={ordenDocs} onChange={e => setOrdenDocs(e.target.value)}>
+                  <option value="reciente">El más reciente primero</option>
+                  <option value="antiguo">El más antiguo primero</option>
+                  <option value="aseguradora">Aseguradora</option>
+                </select>
+              </label>
+              {qDocs && <button className="btn btn-ghost btn-sm" onClick={() => setQDocs('')}>Limpiar</button>}
+            </div>
+          )}
           {paquetes.length === 0 ? (
             <div className="card card-p empty-state"><JxIcon name="shield" size={32} color="var(--tm)" /><p>Aún no hay documentos de SCTR subidos.</p></div>
-          ) : paquetes.map(pq => {
+          ) : paquetesVisibles.length === 0 ? (
+            <div className="card card-p empty-state"><JxIcon name="shield" size={32} color="var(--tm)" /><p>Ningún paquete coincide con la búsqueda. Limpiala para ver los {paquetes.length}.</p></div>
+          ) : paquetesVisibles.map(pq => {
             const visibles = pq.evs.filter(e => puedeSubir || e.tipo_evidencia === 'sctr');
             if (!visibles.length) return null;
             return (
               <div key={pq.id} className="card card-p" style={{ marginBottom: 10 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: pq.resumen ? 4 : 0 }}>
                   <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--tp)' }}>📦 Paquete del {pq.fecha || '—'}</span>
+                  {pq.aseguradora && <span className="badge b-blue" style={{ fontSize: 9.5 }}>{pq.aseguradora}</span>}
+                  {pq.vigencia && <span className="badge b-gray" style={{ fontSize: 9.5 }} title="Vigencia de la constancia">{pq.vigencia}</span>}
                   {visibles.map(ev => (
                     <button key={ev.id} className="btn btn-ghost btn-xs" title={`${ev.observaciones || ev.nombre_archivo} — click para ver`} onClick={() => verDoc(ev)}>
                       {ev.tipo_evidencia === 'sctr_cotizacion' ? '📋 Cotización' : ev.tipo_evidencia === 'sctr' ? '🛡️ Certificado' : ev.tipo_evidencia === 'sctr_pago' ? '💳 Pago' : ev.tipo_evidencia === 'sctr_factura' ? '🧾 Factura' : '📄 Otro'}
@@ -522,13 +609,48 @@ function SctrPage({ showToast }) {
       )}
 
       {tab === 'trabajadores' && (<>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 16 }}>
-        {[['VENCIDOS', kpis.vencidos, 'var(--red)'], ['SIN SCTR', kpis.sin, 'var(--tm)'], ['POR VENCER (30d)', kpis.porVencer, 'var(--amber)'], ['VIGENTES', kpis.vigentes, 'var(--green)']].map(([l, v, c], i) => (
-          <div key={i} className="card card-p" style={{ borderLeft: `3px solid ${c}` }}>
-            <div style={{ fontSize: 10.5, color: 'var(--tm)', letterSpacing: '.05em' }}>{l}</div>
-            <div style={{ fontSize: 20, fontWeight: 800, color: c, marginTop: 4 }}>{v}</div>
-          </div>
-        ))}
+      {/* EL SEMÁFORO FILTRA. Era el resumen y nada más: se leía «7 vencidos» y
+          después había que buscarlos a ojo en la tabla. Un clic los deja solos;
+          otro vuelve a todos. */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 12 }}>
+        {[['VENCIDOS', kpis.vencidos, 'var(--red)', 'vencido'], ['SIN SCTR', kpis.sin, 'var(--tm)', 'sin'], ['POR VENCER (30d)', kpis.porVencer, 'var(--amber)', 'por_vencer'], ['VIGENTES', kpis.vigentes, 'var(--green)', 'vigente']].map(([l, v, c, key]) => {
+          const activo = filtroEstado === key;
+          return (
+            <button key={key} type="button" className="card card-p"
+              onClick={() => setFiltroEstado(activo ? 'todos' : key)}
+              title={activo ? 'Quitar el filtro' : `Ver solo: ${l.toLowerCase()}`}
+              style={{ borderLeft: `3px solid ${c}`, textAlign: 'left', cursor: 'pointer', font: 'inherit',
+                background: activo ? 'var(--tint-neutral)' : undefined, borderWidth: activo ? '1px 1px 1px 3px' : undefined }}>
+              <div style={{ fontSize: 10.5, color: 'var(--tm)', letterSpacing: '.05em' }}>{l}{activo ? ' ·  ✕' : ''}</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: c, marginTop: 4 }}>{v}</div>
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+        <input className="fi" style={{ flex: 1, minWidth: 220 }} value={qSctr}
+          placeholder="Buscar por nombre, DNI, cargo o aseguradora…"
+          onChange={e => setQSctr(e.target.value)} />
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: 'var(--tm)' }}>
+          Ordenar por
+          <select className="fi" style={{ width: 'auto', fontSize: 11.5, padding: '3px 6px' }}
+            value={ordenSctr} onChange={e => setOrdenSctr(e.target.value)}>
+            <option value="estado">Estado · lo urgente primero</option>
+            <option value="vence">Fecha de vencimiento</option>
+            <option value="nombre">Apellido</option>
+          </select>
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: 'var(--tm)', cursor: 'pointer' }}
+          title="El personal retirado o inhabilitado conserva su historial, pero su SCTR vencido no es una alerta.">
+          <input type="checkbox" checked={verInactivos} onChange={e => setVerInactivos(e.target.checked)} />
+          Ver también al personal que ya no está
+        </label>
+        {(qSctr || filtroEstado !== 'todos' || verInactivos) && (
+          <button className="btn btn-ghost btn-sm" onClick={() => { setQSctr(''); setFiltroEstado('todos'); setVerInactivos(false); }}>
+            Limpiar filtros
+          </button>
+        )}
       </div>
 
       <div className="card" style={{ overflow: 'hidden' }}>
@@ -536,9 +658,13 @@ function SctrPage({ showToast }) {
           <table className="tbl">
             <thead><tr><th>Trabajador</th><th>Cargo</th><th>Aseguradora</th><th>Vence</th><th>Estado</th><th>Evidencia</th><th style={{ textAlign: 'center' }}>Acciones</th></tr></thead>
             <tbody>
-              {conEstado.length === 0 ? (
-                <tr><td colSpan={7} style={{ textAlign: 'center', padding: 22, color: 'var(--tm)' }}>No hay personal en obra para SCTR.</td></tr>
-              ) : conEstado.map(p => {
+              {listaSctr.length === 0 ? (
+                <tr><td colSpan={7} style={{ textAlign: 'center', padding: 22, color: 'var(--tm)' }}>
+                  {conEstado.length === 0
+                    ? 'No hay personal en obra para SCTR.'
+                    : 'Ningún trabajador coincide con el filtro. Límpialo para ver los ' + conEstado.length + ' de la obra.'}
+                </td></tr>
+              ) : listaSctr.map(p => {
                 const est = EST_SCTR[p._sctr];
                 return (
                   <tr key={p.id} style={ESTADOS_NO_ACTIVOS.has(p.estado) ? { opacity: 0.55 } : undefined}>
@@ -557,6 +683,9 @@ function SctrPage({ showToast }) {
             </tbody>
           </table>
         </div>
+        <div style={{ padding: '8px 14px', fontSize: 11, color: 'var(--tm)', borderTop: '1px solid var(--border)' }}>
+          Mostrando {listaSctr.length} de {conEstado.length} trabajadores
+        </div>
       </div>
       </>)}
 
@@ -565,6 +694,15 @@ function SctrPage({ showToast }) {
         <Modal title="✨ Corroborar paquete SCTR" icon="shield" onClose={() => !procesando && setPreview(null)} size="xl">
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10, fontSize: 11.5 }}>
             <span className={`badge ${preview.confianza === 'alta' ? 'b-green' : preview.confianza === 'media' ? 'b-amber' : 'b-red'}`}>confianza {preview.confianza}</span>
+            {preview.engine && (
+              <span className="badge b-gray" style={{ fontSize: 10 }}
+                title="Con qué se leyó el paquete. Si sale raro, es lo primero que hay que mirar.">
+                {preview.engine.includes('openrouter') ? 'leído por OpenRouter'
+                  : preview.engine.includes('respaldo') ? 'leído por el respaldo (Claude)'
+                  : preview.engine === 'claude-vision' ? 'leído mirando el PDF (Claude)'
+                  : preview.engine}
+              </span>
+            )}
             <span style={{ color: 'var(--tm)' }}>{preview.totalPaginas} página(s) → {preview.secciones.length} documento(s):</span>
             {preview.secciones.map((s, i) => (
               <span key={i} className="badge b-blue" style={{ fontSize: 10 }}>

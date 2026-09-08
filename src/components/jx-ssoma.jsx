@@ -468,7 +468,11 @@ function IpercPage({ showToast }) {
 // ╔════════════════════════════════════════════════════════════╗
 // ║  ENTREGAS DE EPP                                          ║
 // ╚════════════════════════════════════════════════════════════╝
-function EppPage({ showToast }) {
+// `embebida` = se está dibujando DENTRO de «Mov. y Entregas de EPPs» (tanda
+// 17), que ya puso su propio título y su barra de pestañas. En ese caso esta
+// pantalla no repite el encabezado ni el margen de página: sigue siendo la
+// misma vista, pero deja de parecer una pantalla adentro de otra.
+function EppPage({ showToast, embebida = false }) {
   const obraId = useObraActiva();
   const auth = window.__useAuth?.();
   const userId = auth?.profile?.id ?? 'offline';
@@ -888,7 +892,7 @@ function EppPage({ showToast }) {
     } catch (e) { showToast('Error: '+e.message, 'red'); }
   };
 
-  if (!obraId) return <div className="page-wrap"><div className="empty-state"><p>Selecciona una obra.</p></div></div>;
+  if (!obraId) return <div className={embebida ? '' : 'page-wrap'}><div className="empty-state"><p>Selecciona una obra.</p></div></div>;
 
   // Costo total
   const costoEntregas = entregasFiltradas.reduce((s,e)=>s+entregaTotalCosto(e),0);
@@ -896,10 +900,10 @@ function EppPage({ showToast }) {
   const stockTotal = Object.values(stockPorTipo).reduce((s, x) => s + Math.max(0, x.stock), 0);
 
   return (
-    <div className="page-wrap">
-      <div className="pg-hd frow-sb">
+    <div className={embebida ? '' : 'page-wrap'}>
+      <div className="pg-hd frow-sb" style={embebida ? { marginTop: 0 } : undefined}>
         <div>
-          <div className="pg-title">Equipos de Protección Personal (EPP)</div>
+          {!embebida && <div className="pg-title">Equipos de Protección Personal (EPP)</div>}
           <div className="pg-sub">
             {entradasFiltradas.length} compras · {entregasFiltradas.length} entregas · stock {stockTotal} unid · costo entradas {fmtS(costoEntradas)}
           </div>

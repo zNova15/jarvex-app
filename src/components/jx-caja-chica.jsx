@@ -9,7 +9,21 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import React from "react";
-const { useState: uS, useMemo: uM } = React;
+import { exportarDataset } from "../lib/export-historico.js";
+import { getEvidenciaSrc, abrirUrlEvidencia } from "../lib/evidencias-url.js";
+import { getCurrentMode } from "../lib/app-mode-core.js";
+const { useState: uS, useMemo: uM, useEffect: uE } = React;
+
+// EL RESPALDO DE UN GASTO DE CAJA CHICA (8-set-2026). Pedido de Gabriel con el
+// feedback de la almacenera: «caja chica con descarga de Excel y también para
+// agregar foto de movimientos (puede ser facturas, PDF, foto de evidencia)».
+// Hasta hoy el gasto se anotaba con un número de boleta escrito a mano y el
+// papel no estaba en ningún lado: al cerrar la caja no había con qué cotejar.
+// Tipo propio —no 'factura'— porque la boleta de caja chica NO es un
+// comprobante contable del libro; y con visibilidad propia (mig 200), porque
+// con el ELSE true de la policy la vería cualquier usuario autenticado.
+const TIPO_EVI_CAJA = 'caja_chica_respaldo';
+const MAX_RESPALDO_MB = 10;
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const hoyISO = () => new Date().toISOString().slice(0, 10);
@@ -33,6 +47,85 @@ function CajaChicaPage({ showToast }) {
   const [form, setForm] = uS({});
   const [busy, setBusy] = uS(false);
   const [requestTarget, setRequestTarget] = uS(null); // movimiento para "Solicitar Cambio" (rol almacén)
+  // Respaldos adjuntos: Map(movimiento_id → [evidencia]). Se leen de Dexie, que
+  // es lo que hay offline; el archivo en sí lo sube el EvidenceUploader.
+  const [respaldos, setRespaldos] = uS(() => new Map());
+  const [subiendo, setSubiendo] = uS(null);   // id del movimiento cuyo archivo se está guardando
+
+  const cargarRespaldos = React.useCallback(async () => {
+    if (!obraId) { setRespaldos(new Map()); return; }
+    try {
+      const evs = await window.__db.evidencias
+        .filter(e => !e.deleted_at && e.obra_id === obraId && e.modulo_relacionado === 'caja_chica_movimientos')
+        .toArray();
+      const m = new Map();
+      for (const e of evs.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))) {
+        const arr = m.get(e.registro_relacionado_id) || [];
+        arr.push(e);
+        m.set(e.registro_relacionado_id, arr);
+      }
+      setRespaldos(m);
+    } catch { /* sin respaldos: la tabla se ve igual, solo sin el clip */ }
+  }, [obraId]);
+  uE(() => { cargarRespaldos(); }, [cargarRespaldos]);
+  uE(() => {
+    const on = (e) => { const t = e?.detail?.tabla; if (!t || t === 'evidencias') cargarRespaldos(); };
+    window.addEventListener('jx_data_changed', on);
+    return () => window.removeEventListener('jx_data_changed', on);
+  }, [cargarRespaldos]);
+
+  // Adjuntar la foto / el PDF de un movimiento. Acepta imagen y PDF: el gasto
+  // se respalda con lo que le hayan dado en el mostrador — a veces una boleta
+  // fotografiada, a veces la factura en PDF que llegó por correo.
+  const adjuntarRespaldo = async (mov, file) => {
+    if (!file || subiendo) return;
+    // En modo PRUEBA no se sube nada: __saveEvidenciaLocal crearía una
+    // evidencia PENDING que el uploader mandaría al bucket REAL. Mismo guard
+    // que SSOMA y Ambiental.
+    if (getCurrentMode() === 'prueba') { showToast('En modo PRUEBA no se suben archivos reales', 'amber'); return; }
+    const esImagen = String(file.type || '').startsWith('image/');
+    const esPdf = file.type === 'application/pdf';
+    if (!esImagen && !esPdf) { showToast('Solo se aceptan imágenes o PDF', 'red'); return; }
+    if (file.size > MAX_RESPALDO_MB * 1024 * 1024) { showToast(`El archivo supera los ${MAX_RESPALDO_MB} MB`, 'red'); return; }
+    setSubiendo(mov.id);
+    try {
+      await window.__saveEvidenciaLocal?.({
+        id: window.__newId(),
+        obra_id: obraId,
+        tipo_evidencia: TIPO_EVI_CAJA,
+        modulo_relacionado: 'caja_chica_movimientos',
+        registro_relacionado_id: mov.id,
+        nombre_archivo: file.name || `caja_chica_${mov.id}.${esPdf ? 'pdf' : 'jpg'}`,
+        mime_type: file.type || (esPdf ? 'application/pdf' : 'image/jpeg'),
+        blob: file,
+        fecha: mov.fecha || hoyISO(),
+        observaciones: `Respaldo de caja chica · ${mov.tipo_movimiento === 'entrada' ? 'ingreso' : 'gasto'} ${fmtS(mov.monto)}${mov.concepto ? ' · ' + mov.concepto : ''}`,
+        created_by: userId,
+      });
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'evidencias' } })); } catch {}
+      showToast('Respaldo adjuntado', 'green');
+      cargarRespaldos();
+    } catch (e) {
+      showToast('Error con el archivo: ' + (e?.message || e), 'red');
+    } finally { setSubiendo(null); }
+  };
+
+  const verRespaldo = async (ev) => {
+    try {
+      const src = await getEvidenciaSrc(ev);
+      if (src?.url) abrirUrlEvidencia(src.url);
+      else showToast('El archivo todavía se está subiendo — probá en unos segundos', 'amber');
+    } catch (e) { showToast('Error: ' + (e?.message || e), 'red'); }
+  };
+
+  const exportarExcel = async () => {
+    if (!obraId) { showToast('No hay obra activa', 'red'); return; }
+    try {
+      const obra = await window.__db.obras.get(obraId);
+      const r = await exportarDataset('caja_chica', obraId, obra?.nombre_obra || obra?.nombre || 'obra', {}, { porModo: true });
+      showToast(`Exportado: ${r.filas} movimientos → ${r.archivo}`, 'green');
+    } catch (e) { showToast('Error al exportar: ' + (e.message || e), 'red'); }
+  };
 
   // El almacén puede pedir cambios (no editar directo); el admin/super admin edita.
   const puedeSolicitar = canWrite && !isAdmin;
@@ -138,12 +231,18 @@ function CajaChicaPage({ showToast }) {
           <div className="pg-title">Caja Chica</div>
           <div className="pg-sub">Fondo para compras urgentes que maneja la almacenera</div>
         </div>
-        {canWrite ? (
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn btn-green btn-sm" onClick={() => abrir('entrada')}><JxIcon name="arrowIn" size={13} />Ingreso de fondo</button>
-            <button className="btn btn-ghost btn-sm" onClick={() => abrir('salida')}><JxIcon name="arrowOut" size={13} />Registrar gasto</button>
-          </div>
-        ) : <span className="badge b-gray" title="Tu rol es solo lectura para Caja Chica">Solo lectura</span>}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn btn-ghost btn-sm" onClick={exportarExcel}
+            title="Descargar el libro de caja chica en Excel, con el saldo acumulado y si cada movimiento tiene respaldo">
+            <JxIcon name="download" size={13} />Exportar Excel
+          </button>
+          {canWrite ? (
+            <>
+              <button className="btn btn-green btn-sm" onClick={() => abrir('entrada')}><JxIcon name="arrowIn" size={13} />Ingreso de fondo</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => abrir('salida')}><JxIcon name="arrowOut" size={13} />Registrar gasto</button>
+            </>
+          ) : <span className="badge b-gray" title="Tu rol es solo lectura para Caja Chica">Solo lectura</span>}
+        </div>
       </div>
 
       {/* Tarjetas resumen */}
@@ -172,6 +271,7 @@ function CajaChicaPage({ showToast }) {
                 <th>Fecha</th><th>Tipo</th><th>Concepto</th>
                 <th style={{ textAlign: 'right' }}>Monto</th>
                 <th>Responsable</th><th>Proveedor / Doc.</th>
+                <th style={{ textAlign: 'center' }} title="La foto o el PDF de la boleta/factura del movimiento">Respaldo</th>
                 <th style={{ textAlign: 'right' }}>Saldo</th>
                 {mostrarAcciones && <th style={{ textAlign: 'center' }}>{superAdmin ? '⚡ Acciones' : 'Acciones'}</th>}
               </tr></thead>
@@ -187,6 +287,24 @@ function CajaChicaPage({ showToast }) {
                       <td style={{ textAlign: 'right', fontWeight: 700, color: esEntrada ? 'var(--green)' : 'var(--red)' }}>{esEntrada ? '+' : '−'} {fmtS(m.monto)}</td>
                       <td className="col-m">{resp ? `${resp.nombres} ${resp.apellidos || ''}`.trim() : '—'}</td>
                       <td className="col-m" style={{ fontSize: 11 }}>{[m.proveedor, m.documento_asociado].filter(Boolean).join(' · ') || '—'}</td>
+                      <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
+                        {(respaldos.get(m.id) || []).map(ev => (
+                          <button key={ev.id} className="btn btn-ghost btn-xs" style={{ padding: '1px 5px' }}
+                            title={`${ev.nombre_archivo || 'respaldo'}${ev.sync_status && ev.sync_status !== 'synced' ? ' (subiendo)' : ''} — clic para abrir`}
+                            onClick={() => verRespaldo(ev)}>
+                            <JxIcon name={ev.mime_type === 'application/pdf' ? 'file' : 'image'} size={11} />
+                          </button>
+                        ))}
+                        {canWrite && (
+                          <label className="btn btn-ghost btn-xs" style={{ padding: '1px 5px', cursor: subiendo === m.id ? 'wait' : 'pointer', opacity: subiendo === m.id ? 0.5 : 1 }}
+                            title="Adjuntar la boleta, la factura o una foto del gasto (imagen o PDF)">
+                            <JxIcon name="camera" size={11} />
+                            <input type="file" accept="image/*,application/pdf" style={{ display: 'none' }} disabled={!!subiendo}
+                              onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; adjuntarRespaldo(m, f); }} />
+                          </label>
+                        )}
+                        {!canWrite && !(respaldos.get(m.id) || []).length && <span style={{ color: 'var(--tm)', fontSize: 11 }}>—</span>}
+                      </td>
                       <td style={{ textAlign: 'right', fontWeight: 600, color: m._saldo < 0 ? 'var(--red)' : 'var(--ts)' }}>{fmtS(m._saldo)}</td>
                       {mostrarAcciones && (
                         <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>

@@ -2,11 +2,15 @@ import React from "react";
 import { calcAlerta } from "../lib/stock-utils.js";
 import { getEvidenciaSrc, abrirUrlEvidencia } from "../lib/evidencias-url.js";
 import { aplicarDelta } from "../lib/stock-ubicaciones.js";
-import { revertirEstadoMovHerr } from "../lib/stock-estados.js";
+import { revertirEstadoMovHerr, ESTADOS_COND } from "../lib/stock-estados.js";
 import { eliminarMovimiento } from "../lib/eliminar-movimiento.js";
 import { stockTrasEditar, dejaNegativo } from "../lib/stock-guard.js";
 import { hoyLocal, horaLocal } from "../lib/fecha.js";
 import { exportarDataset } from "../lib/export-historico.js";
+// Extraídas de acá a una lib compartida (8-set-2026): el Excel de estos
+// mismos movimientos exportaba una sola columna «Almacén» y perdía la mitad
+// de un traspaso. Ahora la pantalla y el Excel leen el movimiento igual.
+import { almacenesDeMov, obsLegible } from "../lib/almacenes-mov.js";
 import { FusionEntidadModal } from "./jx-fusion-entidad.jsx";
 import { rankearFacturasParaIngreso, estadoRecepcionDeItems, parseNotas } from "../lib/cruce-recepcion.js";
 import { ConsultasPanel, useConsultasResumen } from "./jx-consultas.jsx";
@@ -367,43 +371,6 @@ function useObraActiva() {
     };
   }, []);
   return obraId;
-}
-
-// Almacenes de una fila de movimiento (materiales/herramientas): la fila
-// guarda UNA ubicación (salida = de dónde sale; entrada/devolución = a dónde
-// llega). Si es pata de un TRASPASO, el otro lado viene anotado en
-// observaciones ('Traspaso → X' / 'Traspaso ← Y'). Formato legado del
-// traspaso de materiales: 'Traspaso Origen → Destino' (ambos lados en la
-// observación, fila sin ubicacion_id).
-function almacenesDeMov(m, ubicNombre) {
-  const ubic = m.ubicacion_id ? (ubicNombre.get(m.ubicacion_id) || null) : null;
-  const obs = String(m.observaciones || '');
-  const haciaTr = obs.match(/Traspaso → ([^·]+)/);
-  const desdeTr = obs.match(/Traspaso ← ([^·]+)/);
-  if (!haciaTr && !desdeTr) {
-    const par = obs.match(/Traspaso ([^·→←]+) → ([^·]+)/);
-    if (par) return { salida: par[1].trim(), llegada: par[2].trim(), esTraspaso: true };
-  }
-  const tipo = m.accion || m.tipo_movimiento;
-  // 'baja' y 'mantenimiento' (acciones legales del CHECK de herramientas,
-  // hoy solo en data legacy/reversos) también son stock que SALE del almacén.
-  const esSalida = tipo === 'salida' || tipo === 'merma' || tipo === 'baja' || tipo === 'mantenimiento';
-  return {
-    salida: esSalida ? ubic : (desdeTr ? desdeTr[1].trim() : null),
-    llegada: !esSalida ? ubic : (haciaTr ? haciaTr[1].trim() : null),
-    esTraspaso: !!(haciaTr || desdeTr),
-  };
-}
-
-// La observación legible de un movimiento: saca la codificación de traspaso
-// ('Traspaso A → B' / 'Traspaso → X' / 'Traspaso ← Y'), que ya se ve en las
-// columnas de almacén, y deja la nota humana que escribió quien lo registró.
-function obsLegible(m) {
-  let s = String(m?.observaciones || '');
-  s = s.replace(/Traspaso\s+[^·→←]*→\s*[^·]+/g, '')
-       .replace(/Traspaso\s*→\s*[^·]+/g, '')
-       .replace(/Traspaso\s*←\s*[^·]+/g, '');
-  return s.split('·').map(x => x.trim()).filter(Boolean).join(' · ');
 }
 
 // Celda de observación compartida (truncada con tooltip del texto completo).
@@ -2549,10 +2516,21 @@ function MovHerramientasPage({ showToast }) {
         <RequestChangeModal
           table="movimientos_herramientas"
           record={requestTarget}
-          recordLabel={`${requestTarget.accion} · ${lookupHerr(requestTarget.herramienta_id)?.nombre_herramienta || 'herramienta'}`}
+          recordLabel={`${requestTarget.accion} · ${lookupHerr(requestTarget.herramienta_id)?.nombre_herramienta || 'herramienta'} ×${requestTarget.cantidad ?? '?'} · ${requestTarget.fecha || ''}`}
           allowDelete
+          // Los campos que de verdad se equivocan (8-set-2026). Antes solo se
+          // podía pedir corregir la fecha o la observación: si la cantidad
+          // estaba mal, o la herramienta volvió rota y se cargó como buena, la
+          // única salida era pedir que la borraran entera.
           fields={[
+            { key: 'cantidad', label: 'Cantidad', type: 'number' },
             { key: 'fecha', label: 'Fecha', type: 'date' },
+            // Las opciones salen de ESTADOS_COND (src/lib/stock-estados.js), que
+            // es la lista con la que se llevan los buckets de stock por
+            // condición: escribir otra acá haría que una devolución aprobada
+            // no cayera en ningún bucket.
+            { key: 'estado_salida', label: 'Estado de salida', options: ESTADOS_COND.map(e => ({ value: e.key, label: e.label })) },
+            { key: 'estado_devolucion', label: 'Estado de devolución', options: ESTADOS_COND.map(e => ({ value: e.key, label: e.label })) },
             { key: 'observaciones', label: 'Observaciones' },
           ]}
           showToast={showToast}

@@ -6,6 +6,13 @@
 //  1) analizarPaqueteSctr(file): manda el PDF a /api/captura-magica con
 //     tipo 'sctr_paquete' → la IA clasifica las páginas en secciones y extrae
 //     los datos de la constancia (aseguradora, pólizas, vigencia, asegurados).
+//     Desde el 8-set-2026 ese paso lo resuelve el MISMO camino barato que
+//     Captura Mágica: Mistral OCR lee el PDF página por página y OpenRouter
+//     estructura, con Claude de respaldo. Antes iba siempre por visión de
+//     Claude y se caía cada vez que se agotaba el saldo de Anthropic (22-jul,
+//     4-set). Ver `textoPaginadoSctr` en lib/mistral-ocr.js: la fidelidad de
+//     página —que es lo que después corta el PDF— se conserva rotulando cada
+//     página, no mirándola.
 //  2) separarPdf(bytes, secciones): con pdf-lib corta el PDF en un PDF por
 //     sección — NECESARIO para la visibilidad por rol: la ing. de seguridad
 //     solo puede ver el CERTIFICADO (cotización/pago/factura son contables).
@@ -96,7 +103,10 @@ export async function analizarPaqueteSctr(file) {
   });
   const data = await apiParse(resp);   // tolera respuestas no-JSON (402 de la plataforma)
   if (!resp.ok) throw new Error(data?.error || `IA respondió ${resp.status}`);
-  return data.extracted || {};
+  // `engine` dice con qué se resolvió ('mistral-ocr+openrouter',
+  // 'mistral-ocr+claude(respaldo)', 'claude-vision'). La pantalla lo muestra:
+  // cuando un paquete sale raro, lo primero que hay que saber es quién lo leyó.
+  return { ...(data.extracted || {}), _engine: data.engine || null };
 }
 
 /**

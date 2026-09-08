@@ -43,6 +43,14 @@ export const TIPOS_DOC_EMPRESA_VIS = [
   'doc_empresa_testimonio', 'doc_empresa_rnp', 'doc_empresa_otro',
 ];
 const ROLES_DOC_EMPRESA = ['admin', 'gerente', 'contador', 'ayudante_contador', 'tesorero', 'licitaciones', 'asistente_admin'];
+// Respaldo de un movimiento de CAJA CHICA (mig 200): la boleta, la factura o
+// la foto del gasto. No es contable —la caja chica no entra al libro por acá—
+// pero tampoco es de todos: lo ve quien lleva la caja (almacén), quien la
+// controla (contabilidad, admin) y la conducción. Sin esta lista caería en el
+// `ELSE true` de la policy y lo vería cualquier usuario autenticado.
+// ⚠ Regla crítica 5: espejo exacto de la policy «evidencias: ver segun tipo».
+export const TIPOS_CAJA_CHICA_VIS = ['caja_chica_respaldo'];
+const ROLES_CAJA_CHICA = ['admin', 'gerente', 'contador', 'ayudante_contador', 'tesorero', 'almacenero', 'asistente_admin'];
 const ALMACEN    = ['foto_material', 'foto_herramienta', 'foto_herramienta_danada',
                     'foto_estado', 'registro_diario_materiales', 'foto_epp', 'firma_epp'];
 const ASISTENCIA = ['foto_asistencia'];
@@ -96,6 +104,10 @@ export function puedeVerEvidencia({ rol, userId, ev }) {
   // Va ANTES del 'operativo' porque ingenieros y supervisores son operativos y
   // no tienen por qué ver el testimonio ni la vigencia de poder.
   if (TIPOS_DOC_EMPRESA_VIS.includes(ev.tipo_evidencia)) return ROLES_DOC_EMPRESA.includes(rol);
+  // Igual que los papeles societarios: lista cerrada, ANTES del 'operativo'.
+  // El almacenero no es 'operativo' (tiene lista propia) y sí tiene que verlos:
+  // es quien lleva la caja.
+  if (TIPOS_CAJA_CHICA_VIS.includes(ev.tipo_evidencia)) return ROLES_CAJA_CHICA.includes(rol);
   if (regla === 'operativo') return true;
   const lista = Array.isArray(regla) ? regla : BASICO;
   return lista.includes(ev.tipo_evidencia);

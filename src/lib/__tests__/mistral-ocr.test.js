@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { modeloOcr, esAliasMovil, OCR_FIJO, OCR_FIJO_CERT } from '../../../lib/mistral-ocr.js';
+import { modeloOcr, esAliasMovil, OCR_FIJO, OCR_FIJO_CERT, textoPaginadoSctr } from '../../../lib/mistral-ocr.js';
 
 // El 16-jul-2026 Mistral repuntó el alias 'mistral-ocr-latest' de OCR 3 a OCR
 // 4.1 y el precio se DUPLICÓ (USD 2 → 4 / 1000 págs) sin que nadie lo eligiera.
@@ -80,5 +80,34 @@ describe('el endpoint no puede volver a colgarse de un alias', () => {
       .join('\n');
     expect(sinComentarios).not.toMatch(/['"`]mistral-ocr-latest['"`]/);
     expect(sinComentarios).toMatch(/modeloOcr\(/);
+  });
+});
+
+// ── EL PAQUETE SCTR POR TEXTO (8-set-2026) ──────────────────────────
+// El modo sctr_paquete dejó la visión de Claude y pasó al mismo camino barato
+// que Captura Mágica (Mistral OCR → OpenRouter). Lo único que lo hacía posible
+// es este rotulado: los números que devuelve el modelo son los que después
+// cortan el PDF con pdf-lib, así que una página corrida es un documento mal
+// separado — y la ing. de seguridad terminaría viendo la factura.
+describe('textoPaginadoSctr — la fidelidad de página que el texto corrido perdía', () => {
+  it('rotula cada página con su número y el total', () => {
+    const t = textoPaginadoSctr(['cotización mapfre', 'constancia n° 123', 'voucher']);
+    expect(t).toContain('===== PÁGINA 1 de 3 =====');
+    expect(t).toContain('===== PÁGINA 2 de 3 =====');
+    expect(t).toContain('===== PÁGINA 3 de 3 =====');
+    expect(t).toContain('constancia n° 123');
+  });
+
+  it('una página ilegible NO se saltea — correría la numeración de las siguientes', () => {
+    const t = textoPaginadoSctr(['cotización', '   ', 'constancia']);
+    expect(t).toContain('===== PÁGINA 2 de 3 =====\n(página sin texto legible)');
+    // La constancia sigue siendo la 3, que es lo que se le pedirá a pdf-lib.
+    expect(t).toContain('===== PÁGINA 3 de 3 =====\nconstancia');
+  });
+
+  it('null / vacío no rompen (el endpoint cae a visión en ese caso)', () => {
+    expect(textoPaginadoSctr(null)).toBe('');
+    expect(textoPaginadoSctr([])).toBe('');
+    expect(textoPaginadoSctr([null])).toBe('===== PÁGINA 1 de 1 =====\n(página sin texto legible)');
   });
 });

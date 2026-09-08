@@ -13,6 +13,7 @@ import {
   sumaDeLineas, resumenDeLineas,
   rubroDeOrden, tituloImprimible, puedeFusionar, fusionarBorradores,
   previsualizarCorrelativos, ultimaOrdenNumerada, ordenarPendientes,
+  descartadoDelRespaldo,
 } from '../ordenes.js';
 
 // Datos de producción: el modelo que dejó Gabriel es del CONSORCIO EL INCA,
@@ -1091,5 +1092,56 @@ describe('el número sigue a la fecha', () => {
     ];
     expect(ordenarPendientes(lista, 'fecha').map(m => m.id)).toEqual(['y', 'x', 'z']);
     expect(ordenarPendientes(lista, 'monto').map(m => m.id)).toEqual(['y', 'z', 'x']);
+  });
+});
+
+// ── EL COMPROBANTE QUE NO LLEVA ORDEN (8-set-2026) ──────────────────
+// Gabriel: «permite que se pueda eliminar las que no consideremos que se
+// deban respaldar». No se borra el movimiento (es el libro): se marca.
+describe('descartar un comprobante del respaldo', () => {
+  const descartado = (o = {}) => mov({ respaldo_no_requerido: true, respaldo_no_requerido_motivo: 'ya respaldado por contrato', ...o });
+
+  it('descartadoDelRespaldo lee la marca', () => {
+    expect(descartadoDelRespaldo(mov())).toBe(false);
+    expect(descartadoDelRespaldo(descartado())).toBe(true);
+    expect(descartadoDelRespaldo(null)).toBe(false);
+    // `false` explícito (lo que deja el «devolver a la lista») no descarta.
+    expect(descartadoDelRespaldo(mov({ respaldo_no_requerido: false }))).toBe(false);
+  });
+
+  it('sale de la lista de pendientes y no vuelve ni abriendo el umbral', () => {
+    const movs = [mov({ id: 'm1' }), descartado({ id: 'm2' })];
+    expect(comprobantesSinOrden(movs, []).map(m => m.id)).toEqual(['m1']);
+    expect(comprobantesSinOrden(movs, [], { incluirBajoUmbral: true }).map(m => m.id)).toEqual(['m1']);
+  });
+
+  it('soloDescartados devuelve exactamente los que se sacaron a mano', () => {
+    const movs = [mov({ id: 'm1' }), descartado({ id: 'm2' })];
+    expect(comprobantesSinOrden(movs, [], { soloDescartados: true }).map(m => m.id)).toEqual(['m2']);
+  });
+
+  it('necesitaOrden deja de exigirla', () => {
+    expect(necesitaOrden(mov({ amount: 9000 }))).toBe(true);
+    expect(necesitaOrden(descartado({ amount: 9000 }))).toBe(false);
+  });
+
+  it('sale del DENOMINADOR del % — no cuenta como respaldado', () => {
+    // Dos compras de 5.000: una pendiente, una descartada. Si el descarte
+    // contara como respaldo, el % daría 50; lo correcto es que el exigible
+    // sea uno solo y siga 100% sin respaldar.
+    const r = resumenRespaldo([mov({ id: 'm1' }), descartado({ id: 'm2' })], []);
+    expect(r.sobreUmbral).toBe(1);
+    expect(r.montoSobreUmbral).toBe(5000);
+    expect(r.sinRespaldo).toBe(1);
+    expect(r.pctRespaldado).toBe(0);
+    expect(r.descartados).toBe(1);
+    expect(r.montoDescartado).toBe(5000);
+  });
+
+  it('con la orden emitida el % cierra en 100 aunque haya descartados', () => {
+    const movs = [mov({ id: 'm1', orden_compra_id: 'o1' }), descartado({ id: 'm2' })];
+    const r = resumenRespaldo(movs, [orden({ accounting_movement_id: 'm1' })]);
+    expect(r.pctRespaldado).toBe(100);
+    expect(r.descartados).toBe(1);
   });
 });

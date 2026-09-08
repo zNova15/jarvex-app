@@ -200,6 +200,12 @@ function OrdenesPage({ showToast }) {
   // El ayudante de la obra: 'necesita' (presupuesto) | 'grupo' (stock) | null
   const [ayuda, setAyuda] = uS(null);
   const [verMov, setVerMov] = uS(null);   // id del comprobante a mirar desde «Sin respaldo»
+  // QUIÉN FIRMA ESTA ORDEN (8-set-2026). Los rótulos salen de la empresa
+  // (`companies.doc_firma_*`) y este modal los pisa para UN documento: la
+  // orden de una obra puntual puede firmarla otra persona sin cambiar el
+  // criterio de la empresa entera. Vacío = vuelve al de la empresa.
+  const [firmasOrden, setFirmasOrden] = uS(null);   // { orden, elaborado, aprobado, receptor }
+
   // El archivo del comprobante (el PDF de verdad), buscado al abrir el 👁.
   const [evidenciaMov, setEvidenciaMov] = uS(null);
   const [abriendoPdf, setAbriendoPdf] = uS(false);
@@ -397,6 +403,19 @@ function OrdenesPage({ showToast }) {
   const gruposPendientes = uM(
     () => agruparPorEmpresa(pendientes, companies || []),
     [pendientes, companies]
+  );
+
+  // ── LOS QUE SE SACARON A MANO DE LA LISTA ───────────────────────
+  // Gabriel: «permite que se pueda eliminar las que no consideremos que se
+  // deban respaldar». No se borra el movimiento —es el libro contable— se
+  // marca. Y la decisión queda VISIBLE acá, con su motivo, para poder
+  // revisarla y deshacerla: un descarte escondido es peor que una lista larga.
+  const descartados = uM(
+    () => comprobantesSinOrden(movsRespaldo, ordenes, {
+      umbral, companyId: companyIdRespaldo, obraId: obraScopeId,
+      incluirBajoUmbral: true, soloDescartados: true,
+    }),
+    [movsRespaldo, ordenes, umbral, companyIdRespaldo, obraScopeId]
   );
 
   // ── EL DESGLOSE HEREDADO ────────────────────────────────────────
@@ -1491,6 +1510,88 @@ function OrdenesPage({ showToast }) {
       const items = await window.__db.oc_items.where('orden_compra_id').equals(o.id).filter(x => !x.deleted_at).toArray();
       setDetalleItems(items);
       setDetalle(o);
+    } catch (e) { toast('Error: ' + (e.message || e), 'red'); }
+  };
+
+  // ── SACAR UN COMPROBANTE DE «SIN RESPALDO» (y devolverlo) ───────
+  // El movimiento NO se toca más allá de la marca: sigue en el libro, con su
+  // importe y su fecha. Lo único que cambia es que deja de exigírsele una
+  // orden. El motivo es obligatorio porque dentro de un año nadie se va a
+  // acordar de por qué esta factura de S/ 40.000 no lleva papel.
+  const [descartando, setDescartando] = uS(null);   // { mov, motivo }
+  const descartarRef = uR(false);
+  const confirmarDescarte = async () => {
+    if (descartarRef.current || !descartando) return;
+    const motivo = (descartando.motivo || '').trim();
+    if (motivo.length < 5) { toast('Escribí por qué esta compra no lleva orden (mín. 5 caracteres)', 'red'); return; }
+    descartarRef.current = true;
+    try {
+      const mv = descartando.mov;
+      const now = new Date().toISOString();
+      await window.__db.accounting_movements.update(mv.id, {
+        respaldo_no_requerido: true,
+        respaldo_no_requerido_motivo: motivo,
+        respaldo_no_requerido_por: userId,
+        respaldo_no_requerido_at: now,
+        updated_at: now, updated_by: userId,
+        version: (mv.version ?? 0) + 1,
+        sync_status: mv.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      try { await window.__logAudit?.({ action: 'update', table: 'accounting_movements', recordId: mv.id, newData: { respaldo_no_requerido: true, motivo }, reason: 'Comprobante excluido del respaldo por orden' }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'accounting_movements' } })); } catch {}
+      setDescartando(null);
+      toast('✓ Sacado de la lista — se puede devolver desde «excluidos»', 'green');
+    } catch (e) {
+      toast('Error: ' + (e.message || e), 'red');
+    } finally { descartarRef.current = false; }
+  };
+  const devolverALaLista = async (mv) => {
+    try {
+      const now = new Date().toISOString();
+      await window.__db.accounting_movements.update(mv.id, {
+        respaldo_no_requerido: false,
+        respaldo_no_requerido_motivo: null,
+        respaldo_no_requerido_por: null,
+        respaldo_no_requerido_at: null,
+        updated_at: now, updated_by: userId,
+        version: (mv.version ?? 0) + 1,
+        sync_status: mv.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      try { await window.__logAudit?.({ action: 'update', table: 'accounting_movements', recordId: mv.id, newData: { respaldo_no_requerido: false }, reason: 'Comprobante devuelto a la lista de respaldo' }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'accounting_movements' } })); } catch {}
+      toast('✓ Vuelve a la lista de comprobantes a respaldar', 'green');
+    } catch (e) { toast('Error: ' + (e.message || e), 'red'); }
+  };
+
+  const abrirFirmas = (o) => setFirmasOrden({
+    orden: o,
+    elaborado: o.firma_elaborado_por || '',
+    aprobado: o.firma_aprobado_por || '',
+    receptor: o.firma_receptor || '',
+    // La observación también se edita acá. Se podía escribir ANTES de emitir
+    // (en «Ver detalle» de Sin respaldo) y nunca después — pero el PDF se
+    // vuelve a descargar mil veces, y la aclaración casi siempre aparece
+    // cuando alguien ya miró el papel.
+    observaciones: o.observaciones || '',
+  });
+  const guardarFirmas = async () => {
+    if (!firmasOrden) return;
+    const o = firmasOrden.orden;
+    try {
+      const limpio = (v) => (String(v ?? '').trim() || null);
+      await window.__db.ordenes_compra.update(o.id, {
+        firma_elaborado_por: limpio(firmasOrden.elaborado),
+        firma_aprobado_por: limpio(firmasOrden.aprobado),
+        firma_receptor: limpio(firmasOrden.receptor),
+        observaciones: limpio(firmasOrden.observaciones),
+        updated_at: new Date().toISOString(), updated_by: userId,
+        version: (o.version ?? 0) + 1,
+        sync_status: o.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'ordenes_compra' } })); } catch {}
+      await recargarOrdenes();
+      setFirmasOrden(null);
+      toast('✓ Guardado — vuelve a descargar el PDF para verlo', 'green');
     } catch (e) { toast('Error: ' + (e.message || e), 'red'); }
   };
 
@@ -2899,6 +3000,11 @@ function OrdenesPage({ showToast }) {
                           <button className="btn btn-ghost btn-xs" title="Ver detalle" onClick={() => verDetalle(o)}><JxIcon name="eye" size={11} /></button>
                           <button className="btn btn-ghost btn-xs" title="Descargar el PDF con la marca de la empresa" onClick={() => descargarPdf(o)} style={{ marginLeft: 4 }}><JxIcon name="download" size={11} /></button>
                           {canEmitir && !anulada && (
+                            <button className="btn btn-ghost btn-xs" style={{ marginLeft: 4 }}
+                              title="Editar lo que sale en el PDF de esta orden: las observaciones impresas y los rótulos de las tres firmas"
+                              onClick={() => abrirFirmas(o)}>✍</button>
+                          )}
+                          {canEmitir && !anulada && (
                             <button className="btn btn-red btn-xs" title="Anular (con motivo)" onClick={() => anular(o)} style={{ marginLeft: 4 }}><JxIcon name="x" size={11} /></button>
                           )}
                           {canEmitir && anulada && (
@@ -3091,6 +3197,56 @@ function OrdenesPage({ showToast }) {
             </div>
           )}
 
+          {/* ── LOS QUE SE EXCLUYERON A MANO ──────────────────────────
+              Plegado, con el conteo a la vista. La decisión se toma una vez y
+              se revisa cuando hace falta; que esté acá (y no escondida) es lo
+              que permite auditarla y deshacerla. */}
+          {descartados.length > 0 && (
+            <details className="card card-p" style={{ marginBottom: 12 }}>
+              <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--ts)' }}>
+                <strong>{descartados.length} comprobante{descartados.length === 1 ? '' : 's'} excluido{descartados.length === 1 ? '' : 's'} del respaldo</strong>
+                {/* Solo los soles se suman: mezclar monedas en un total es
+                    decir un número que no existe (la misma regla del % de
+                    arriba y de la lista de pendientes). */}
+                {' '}({fmtS(descartados.filter(m => (m.currency || 'PEN') === 'PEN').reduce((t, m) => t + Number(m.amount || 0), 0))}
+                {descartados.some(m => (m.currency || 'PEN') !== 'PEN') ? ' + los que están en otra moneda' : ''}) — alguien decidió que no llevan orden
+              </summary>
+              <div style={{ overflowX: 'auto', marginTop: 10 }}>
+                <table className="tbl" style={{ fontSize: 11.5 }}>
+                  <thead><tr>
+                    <th>Comprobante</th><th>Fecha</th><th>Proveedor</th>
+                    <th style={{ textAlign: 'right' }}>Importe</th><th>Por qué se excluyó</th>
+                    {canEmitir && <th style={{ textAlign: 'center' }}>Acción</th>}
+                  </tr></thead>
+                  <tbody>
+                    {descartados.map(m => (
+                      <tr key={m.id}>
+                        <td style={{ fontFamily: 'monospace' }}>
+                          <button className="btn btn-xs btn-ghost" title="Ver el comprobante" onClick={() => setVerMov(m.id)}>
+                            <JxIcon name="eye" size={12} />
+                          </button>
+                          {[m.document_type, m.document_number].filter(Boolean).join(' ') || '—'}
+                        </td>
+                        <td className="col-m">{m.date || '—'}</td>
+                        <td style={{ maxWidth: 180 }}>{m.third_party_name || '—'}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>{fmtMon(m.amount, m.currency)}</td>
+                        <td style={{ maxWidth: 260, color: 'var(--tm)' }}>{m.respaldo_no_requerido_motivo || '—'}</td>
+                        {canEmitir && (
+                          <td style={{ textAlign: 'center' }}>
+                            <button className="btn btn-ghost btn-xs" onClick={() => devolverALaLista(m)}
+                              title="Volver a exigirle orden: reaparece en la lista de arriba">
+                              Devolver a la lista
+                            </button>
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          )}
+
           {borradoresVisibles.length === 0 ? (
             <div className="card card-p empty-state">
               <JxIcon name="checkCircle" size={40} color="var(--green)" />
@@ -3103,9 +3259,11 @@ function OrdenesPage({ showToast }) {
             <div className="card card-p" style={{ marginBottom: 12, background: 'var(--tint-neutral)' }}>
               <div style={{ fontSize: 12, color: 'var(--ts)', lineHeight: 1.55 }}>
                 Cada fila genera <strong>una orden</strong> atada a ese comprobante. Abre el
-                detalle con <strong>«Ver detalle»</strong> para corregir los insumos, la fecha y las
-                observaciones antes de emitir — después la orden queda ligada a la factura y solo
-                se puede anular con motivo.
+                detalle con <strong>«Ver detalle»</strong> para corregir los insumos y escribir las
+                observaciones que van impresas en el PDF; la que no lleve orden se saca con la
+                <strong> ✕</strong> del final, con su motivo. Después de emitida, la orden queda
+                ligada a la factura y solo se puede anular con motivo — pero las observaciones y
+                las firmas del papel se siguen editando con el <strong>✍</strong> de «Emitidas».
                 {gruposPendientes.length > 1 && (
                   <> Hay <strong>{gruposPendientes.length} empresas</strong> emitiendo: cada una numera su propia serie.</>
                 )}
@@ -3205,6 +3363,7 @@ function OrdenesPage({ showToast }) {
                     <th style={{ width: 108 }}>Tipo</th>
                     <th style={{ width: 92 }}>IGV</th>
                     <th style={{ width: 140, textAlign: 'right' }}>Importe total</th>
+                    {canEmitir && <th style={{ width: 40 }}></th>}
                   </tr></thead>
                   <tbody>
                     {borradoresVisibles.map(({ b, idx }) => {
@@ -3279,6 +3438,21 @@ function OrdenesPage({ showToast }) {
                             onClick={() => setRespAbierta(abierta ? null : b.movimiento_id)}>
                             {abierta ? '▾ Cerrar detalle' : `▸ Ver detalle (${b.lineas?.length || 0})`}
                           </button>
+                          {/* LA OBSERVACIÓN, A LA VISTA. Se podía escribir desde
+                              la tanda 14, pero SOLO adentro de «Ver detalle»:
+                              Gabriel la pidió de nuevo el 8-set porque no
+                              existía para quien no abre el detalle. Acá se ve
+                              si la hay, y el lápiz lleva a escribirla. */}
+                          {!abierta && (
+                            b.observaciones
+                              ? <div style={{ fontSize: 9.5, color: 'var(--tm)', marginTop: 3, fontStyle: 'italic' }}
+                                  title={`Sale impreso en el PDF: ${b.observaciones}`}>
+                                  ✎ {b.observaciones.slice(0, 60)}{b.observaciones.length > 60 ? '…' : ''}
+                                </div>
+                              : <button className="btn btn-ghost btn-xs" style={{ padding: '1px 6px', fontSize: 9.5, marginTop: 3, marginLeft: 4, color: 'var(--tm)' }}
+                                  title="Agregar una observación que salga impresa en el PDF de esta orden"
+                                  onClick={() => setRespAbierta(b.movimiento_id)}>✎ observación</button>
+                          )}
                           {b.heredadoDe && (
                             <span className="badge b-blue" style={{ fontSize: 8.5, marginLeft: 6 }}
                               title="Es el espejo de una operación interna: el detalle se leyó de la misma factura en el libro de la empresa que vendió.">
@@ -3313,6 +3487,18 @@ function OrdenesPage({ showToast }) {
                             {fmtMon(b.valorVenta, b.moneda)} + {fmtMon(b.igv, b.moneda)}
                           </div>
                         </td>
+                        {/* SACARLO DE LA LISTA. No borra el comprobante: lo
+                            marca como «no lleva orden», con motivo, y se puede
+                            devolver desde el panel de excluidos. */}
+                        {canEmitir && (
+                          <td style={{ textAlign: 'center' }}>
+                            <button className="btn btn-ghost btn-xs" style={{ color: 'var(--red)', padding: '1px 5px' }}
+                              title="Esta compra no lleva orden de respaldo — sacarla de la lista (con motivo, y se puede deshacer)"
+                              onClick={() => setDescartando({ mov: (movs || []).find(m => m.id === b.movimiento_id) || { id: b.movimiento_id }, motivo: '' })}>
+                              <JxIcon name="x" size={11} />
+                            </button>
+                          </td>
+                        )}
                       </tr>
                       {/* ── EL DETALLE REAL DE LA FACTURA, EDITABLE ────────
                           Gabriel: «no se colocan los insumos reales que se
@@ -3321,7 +3507,7 @@ function OrdenesPage({ showToast }) {
                           resumen que la emisión descartaba. */}
                       {abierta && (
                         <tr>
-                          <td colSpan={9} style={{ background: 'var(--bg-c2)', padding: '10px 14px' }}>
+                          <td colSpan={canEmitir ? 10 : 9} style={{ background: 'var(--bg-c2)', padding: '10px 14px' }}>
                             <div style={{ fontSize: 10.5, color: 'var(--tm)', marginBottom: 6 }}>
                               Lo que dice la factura, línea por línea. Se puede renombrar, cambiar la
                               unidad, la cantidad y el importe, partir una línea en dos o quitar la que no va.
@@ -3399,6 +3585,96 @@ function OrdenesPage({ showToast }) {
           Gabriel: «me gustaría que esté el ojito que me permita abrir y ver
           de qué factura estamos hablando». Muestra lo que la factura DICE —
           sus ítems— que es justo lo que la columna de al lado no mostraba. */}
+      {/* ── POR QUÉ ESTA COMPRA NO LLEVA ORDEN ────────────────────
+          El motivo es obligatorio: es lo único que va a quedar cuando dentro
+          de un año alguien pregunte por qué esta factura no tiene papel. */}
+      {descartando && (() => {
+        const mv = descartando.mov || {};
+        return (
+          <Modal title="Sacar este comprobante de la lista" icon="x" onClose={() => setDescartando(null)}>
+            <div style={{ fontSize: 12, color: 'var(--ts)', lineHeight: 1.55, marginBottom: 12 }}>
+              <div style={{ fontFamily: 'monospace', fontWeight: 700 }}>
+                {[mv.document_type, mv.document_number].filter(Boolean).join(' ') || '(sin documento)'}
+              </div>
+              {mv.third_party_name && <div>{mv.third_party_name}</div>}
+              <div><strong>{fmtMon(mv.amount, mv.currency)}</strong>{mv.date ? ` · ${mv.date}` : ''}</div>
+            </div>
+            <div style={{ fontSize: 11.5, color: 'var(--tm)', lineHeight: 1.55, marginBottom: 10 }}>
+              El comprobante <strong>no se borra</strong>: sigue en el libro con su importe y su fecha.
+              Lo único que cambia es que deja de exigírsele una orden de respaldo, y sale del
+              porcentaje de arriba. Se puede devolver cuando quieras.
+            </div>
+            <label className="flabel">Por qué no lleva orden *</label>
+            <input className="fi" autoFocus maxLength={200} value={descartando.motivo}
+              placeholder="Ej.: ya está respaldado por el contrato marco · reembolso interno · error de carga"
+              onChange={e => setDescartando(d => ({ ...d, motivo: e.target.value }))}
+              onKeyDown={e => { if (e.key === 'Enter') confirmarDescarte(); }} />
+            <div className="modal-actions">
+              <button className="btn btn-ghost" onClick={() => setDescartando(null)}>Cancelar</button>
+              <button className="btn btn-red" onClick={confirmarDescarte}>
+                <JxIcon name="x" size={13} /> Sacar de la lista
+              </button>
+            </div>
+          </Modal>
+        );
+      })()}
+
+      {/* ── LOS RÓTULOS DE LAS FIRMAS, PARA ESTA ORDEN ────────────
+          Tres campos y nada más. Lo que se escribe acá vale SOLO para este
+          documento; en blanco vuelve al rótulo de la empresa (que se
+          configura en su ficha) y, si tampoco tiene, al del modelo. */}
+      {firmasOrden && (() => {
+        const emp = lookupCompany(firmasOrden.orden.company_id) || {};
+        const ph = (deEmpresa, porDefecto) => (String(deEmpresa || '').trim() || porDefecto);
+        return (
+          <Modal title={`Lo que sale en el PDF de ${firmasOrden.orden.codigo || 'la orden'}`} icon="edit" onClose={() => setFirmasOrden(null)}>
+            <div style={{ marginBottom: 14 }}>
+              <label className="flabel">Observaciones (salen impresas en el PDF)</label>
+              <textarea className="fi" rows={2} maxLength={500} value={firmasOrden.observaciones}
+                placeholder="En blanco = el PDF no imprime el bloque de notas"
+                onChange={e => setFirmasOrden(f => ({ ...f, observaciones: e.target.value }))} />
+              <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3 }}>
+                Aparecen bajo el título «NOTAS / OBSERVACIONES DEL PROVEEDOR», antes de las firmas.
+              </div>
+            </div>
+            <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ts)', marginBottom: 6 }}>Quién firma</div>
+            <div style={{ fontSize: 11.5, color: 'var(--tm)', lineHeight: 1.5, marginBottom: 12 }}>
+              Cambian solo en <strong>esta</strong> orden. Déjalos en blanco para usar los de{' '}
+              <strong>{emp.nombre_corto || emp.name || 'la empresa'}</strong>, que se configuran una vez en su ficha.
+            </div>
+            <div style={{ display: 'grid', gap: 10 }}>
+              <div>
+                <label className="flabel">Firma izquierda</label>
+                <input className="fi" maxLength={80} value={firmasOrden.elaborado}
+                  placeholder={ph(emp.doc_firma_elaborado, 'Elaborado por / Área Administrativa')}
+                  onChange={e => setFirmasOrden(f => ({ ...f, elaborado: e.target.value }))} />
+              </div>
+              <div>
+                <label className="flabel">Firma del medio</label>
+                <input className="fi" maxLength={80} value={firmasOrden.aprobado}
+                  placeholder={ph(emp.doc_firma_aprobado, `Aprobado por / Rep. Legal — ${emp.nombre_corto || emp.name || ''}`)}
+                  onChange={e => setFirmasOrden(f => ({ ...f, aprobado: e.target.value }))} />
+                <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3 }}>
+                  En un consorcio suele ser «Representante Común — {emp.nombre_corto || emp.name || 'CONSORCIO'}».
+                </div>
+              </div>
+              <div>
+                <label className="flabel">Firma derecha</label>
+                <input className="fi" maxLength={80} value={firmasOrden.receptor}
+                  placeholder={ph(emp.doc_firma_receptor, 'PROVEEDOR')}
+                  onChange={e => setFirmasOrden(f => ({ ...f, receptor: e.target.value }))} />
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button className="btn btn-ghost" onClick={() => setFirmasOrden(null)}>Cancelar</button>
+              <button className="btn btn-amber" onClick={guardarFirmas}>
+                <JxIcon name="check" size={13} /> Guardar
+              </button>
+            </div>
+          </Modal>
+        );
+      })()}
+
       {verMov && (() => {
         const mv = (movs || []).find(m => m.id === verMov);
         if (!mv) return null;

@@ -203,7 +203,7 @@ exacta es la siguiente (se muestra indentada SOLO para que la leas, tu salida va
 import { requireAuth, rateLimit, sanitizeError, validateFileBytes } from '../lib/api-helpers.js';
 import { leerConfig as leerConfigOR, construirCuerpo as construirCuerpoOR, normalizarRespuesta as normalizarRespuestaOR, openrouterChat, presupuestoSalida } from '../lib/openrouter.js';
 import { estimarItems } from '../lib/ocr-items.js';
-import { modeloOcr } from '../lib/mistral-ocr.js';
+import { modeloOcr, textoPaginadoSctr } from '../lib/mistral-ocr.js';
 
 // El híbrido encadena 2 upstreams (Mistral OCR + Claude). Damos margen explícito
 // para que el peor caso no lo mate el default de la plataforma (~10s en Hobby).
@@ -323,15 +323,19 @@ async function mistralOcr(cleanBase64, mimeType, apiKey, deadline, modelo = MIST
   // El texto vive SIEMPRE en pages[].markdown — iterar y concatenar (una factura
   // suele ser 1 página, pero no lo asumimos).
   const pages = Array.isArray(data && data.pages) ? data.pages : [];
-  let texto = pages
-    .map((p) => (p && typeof p.markdown === 'string' ? p.markdown : ''))
-    .join('\n\n')
-    .trim();
   // Quitar placeholders de imagen (![img-0.jpeg](img-0.jpeg)) que Mistral inserta
-  // con include_image_base64:false — a Claude no le aportan y pueden confundir.
-  texto = texto.replace(/!\[[^\]]*\]\([^)]*\)/g, '').trim();
+  // con include_image_base64:false — al modelo no le aportan y pueden confundir.
+  const limpiar = (t) => String(t || '').replace(/!\[[^\]]*\]\([^)]*\)/g, '').trim();
+  const paginas = pages.map((p) => limpiar(p && p.markdown));
+  const texto = paginas.join('\n\n').trim();
   return {
     texto,
+    // EL TEXTO PÁGINA POR PÁGINA. Lo agregó el modo SCTR (8-set-2026): ese
+    // paquete no se lee para extraer datos sino para decir EN QUÉ PÁGINA
+    // empieza y termina cada documento, y el markdown concatenado pierde
+    // justamente eso. Con las páginas separadas se le puede pasar al modelo
+    // un texto rotulado («PÁGINA 3 de 9») y deja de hacer falta la visión.
+    paginas,
     usage: (data && data.usage_info) || null,
     model: (data && data.model) || modelo,
   };
@@ -593,15 +597,33 @@ export default async function handler(req, res) {
   // tanda de llamadas a Claude — si no, un lote de facturas durante un storm de
   // 429 duplicaría la carga sobre Claude, justo lo que el híbrido busca evitar.
   let ocr = null;
-  // Modo SCTR: SIEMPRE visión directa de Claude sobre el PDF — necesita saber
-  // en QUÉ PÁGINA está cada cosa, y el texto plano del OCR pierde esa fidelidad.
-  if (mistralKey && !esSctr) {
+  // SCTR TAMBIÉN PASA POR EL OCR desde el 8-set-2026. Hasta hoy iba SIEMPRE por
+  // visión directa de Claude sobre el PDF, con este motivo: «necesita saber en
+  // QUÉ PÁGINA está cada cosa, y el texto plano del OCR pierde esa fidelidad».
+  // Era cierto del texto CONCATENADO, no del OCR: Mistral devuelve `pages[]` y
+  // siempre las tuvo. Rotulando cada una («PÁGINA 3 de 9») la fidelidad de
+  // página se conserva y el paquete puede estructurarse desde texto — que es lo
+  // que permite sacarlo de Claude.
+  //
+  // POR QUÉ IMPORTA: Gabriel, 8-set-2026 — «como hicimos el cambio para Captura
+  // Mágica a OpenRouter, quiero que apliques ese cambio a esa sección». El
+  // fondo del pedido no es el precio (son pocos paquetes al año) sino el
+  // INCIDENTE: cada vez que se agota el saldo de Anthropic (22-jul, 4-set) el
+  // botón deja de funcionar. Con OpenRouter de titular y Claude de respaldo, el
+  // camino común deja de depender de ese saldo.
+  //
+  // Si el OCR falla o devuelve pocas páginas, se cae a la visión de siempre.
+  if (mistralKey) {
     try {
       const r = await mistralOcr(cleanBase64, mimeType, mistralKey, deadline, esCert ? MISTRAL_OCR_MODEL_CERT : MISTRAL_OCR_MODEL);
-      if (r.texto && r.texto.length >= 20) {
+      // Para SCTR el texto no alcanza: lo que se pide es en QUÉ PÁGINA está
+      // cada documento, así que sin `paginas` el OCR no sirve y hay que ir por
+      // visión igual que antes.
+      const sirveParaSctr = !esSctr || (Array.isArray(r.paginas) && r.paginas.length > 0);
+      if (r.texto && r.texto.length >= 20 && sirveParaSctr) {
         ocr = r;
       } else {
-        console.warn('[captura-magica] Mistral OCR devolvió texto vacío/insuficiente — uso Claude visión');
+        console.warn('[captura-magica] Mistral OCR sin texto/páginas utilizables — uso Claude visión');
       }
     } catch (e) {
       console.warn('[captura-magica] Mistral OCR falló, uso Claude visión:', (e && (e.upstreamStatus || e.message)) || e);
@@ -611,7 +633,9 @@ export default async function handler(req, res) {
       const sinTiempo = e?.name === 'AbortError' || (deadline - Date.now()) < RESERVA_STRUCT_MS;
       if (sinTiempo) {
         return res.status(504).json({
-          error: 'No se pudo leer este comprobante automáticamente en el tiempo disponible (suele pasar con documentos de muchas páginas o muchas líneas de detalle). Prueba con "Reintentar"; si vuelve a fallar, cárgalo a mano desde Movimientos Contables → Nuevo Movimiento.',
+          error: esSctr
+            ? 'No se pudo leer el paquete SCTR en el tiempo disponible (suele pasar con PDF de muchas páginas). Prueba de nuevo; si vuelve a fallar, subí los documentos por separado y cargá la vigencia a mano.'
+            : 'No se pudo leer este comprobante automáticamente en el tiempo disponible (suele pasar con documentos de muchas páginas o muchas líneas de detalle). Prueba con "Reintentar"; si vuelve a fallar, cárgalo a mano desde Movimientos Contables → Nuevo Movimiento.',
           code: 'timeout_ocr',
         });
       }
@@ -623,8 +647,19 @@ export default async function handler(req, res) {
   // hubo, barato) o sobre el documento por visión (fallback). Sus errores van a
   // respondError (429/502/504 correctos), sin re-disparar otra llamada. ──
   try {
+    // EL PAQUETE SCTR, PÁGINA POR PÁGINA. Es la única forma de pedirle rangos
+    // de página a un modelo que solo ve texto: cada página va rotulada con su
+    // número y el total, y el modelo contesta con los `pagina_desde`/`hasta`
+    // que después usa `separarPdf` (pdf-lib) para cortar el PDF de verdad.
+    // Sin los rótulos, un paquete de 9 páginas se lee como un texto corrido y
+    // los rangos salen inventados.
+    const textoSctrPaginado = (esSctr && ocr && Array.isArray(ocr.paginas))
+      ? textoPaginadoSctr(ocr.paginas)
+      : '';
     const content = ocr
-      ? [{ type: 'text', text: esCert
+      ? [{ type: 'text', text: esSctr
+          ? `A continuación está el TEXTO del PAQUETE SCTR extraído por OCR, PÁGINA POR PÁGINA. El paquete tiene ${ocr.paginas.length} página(s) y cada una viene rotulada con su número. Clasifica esas páginas en secciones contiguas por tipo de documento (los números que devuelvas son los de estos rótulos, de 1 a ${ocr.paginas.length}) y extrae los datos de la constancia de aseguramiento. Basáte ÚNICAMENTE en este texto; si un dato no aparece, devuelve null. Responde SOLO con el JSON, sin markdown ni texto adicional.\n\n${textoSctrPaginado}`
+          : esCert
           ? `${reqTexto}\n\nA continuación está el TEXTO extraído por OCR (formato markdown) del CERTIFICADO. Extrae sus datos y compáralo contra el requisito de arriba. Basáte ÚNICAMENTE en este texto; si un dato no aparece, es "no_determinable". Responde SOLO con el JSON, sin markdown ni texto adicional.\n\n===== TEXTO OCR DEL DOCUMENTO =====\n${ocr.texto}`
           : `A continuación está el TEXTO extraído por OCR (formato markdown) de un documento peruano (comprobante o guía de remisión). Extrae los datos al JSON estructurado descrito en las instrucciones del sistema. Basáte ÚNICAMENTE en este texto; si un dato no aparece, devuelve null. Responde SOLO con el JSON, sin markdown ni texto adicional.\n\n===== TEXTO OCR DEL DOCUMENTO =====\n${ocr.texto}` }]
       : [fileBlock, { type: 'text', text: userInstruction }];
@@ -646,11 +681,14 @@ export default async function handler(req, res) {
     const maxTokensCalc = Math.min(16000, Math.max(4000, 900 + itemsEstimados * 55));
 
     // ── ¿Quién estructura? ──────────────────────────────────────────
-    // Facturas y guías desde texto OCR = el camino de alto volumen y el más
-    // fácil (texto limpio → llenar un formulario). Ese va a OpenRouter con un
-    // modelo gratuito. Certificados de calidad, SCTR y el fallback de visión
-    // necesitan criterio o mirar el PDF: siguen en Claude Sonnet.
-    const caminoBarato = !!ocr && !esCert && !esSctr;
+    // Lo que llega como TEXTO LIMPIO del OCR va a OpenRouter con un modelo
+    // gratuito: facturas, guías y —desde el 8-set-2026— el paquete SCTR, que
+    // es la misma tarea (leer texto rotulado y llenar un formulario). El
+    // certificado de calidad NO: ahí no se transcribe, se JUZGA si el
+    // certificado cumple una especificación técnica, y esa comparación es
+    // exactamente donde un modelo chico se equivoca caro. El fallback de
+    // visión tampoco: los gratuitos ZDR de la cadena no leen PDF.
+    const caminoBarato = !!ocr && !esCert;
     const usaOpenRouter = caminoBarato && cfgOR.activo;
     // Sin OpenRouter y sin Claude no hay con qué leer este documento.
     if (!usaOpenRouter && !apiKey) {
@@ -660,7 +698,11 @@ export default async function handler(req, res) {
     }
 
     const llamarClaude = () => anthropicMessages(apiKey, {
-      model: caminoBarato ? CLAUDE_STRUCT_MODEL : CLAUDE_VISION_MODEL,
+      // El respaldo del paquete SCTR se queda en el modelo grande aunque vaya
+      // por texto: clasificar en qué página empieza cada documento del trámite
+      // es criterio, no transcripción, y son poquísimos paquetes al año — la
+      // diferencia de costo es irrelevante y la de acierto no.
+      model: (caminoBarato && !esSctr) ? CLAUDE_STRUCT_MODEL : CLAUDE_VISION_MODEL,
       max_tokens: maxTokensCalc,
       system: systemPrompt,
       messages: [{ role: 'user', content }],

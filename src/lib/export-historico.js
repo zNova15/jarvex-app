@@ -11,6 +11,10 @@
 import { db } from '../db/jarvex.db.js';
 import { getEvidenciaSrc } from './evidencias-url.js';
 import { getCurrentMode } from './app-mode-core.js';
+// La MISMA lectura que hacen las tablas de Mov. de Materiales/Herramientas:
+// almacén de salida y de llegada (un traspaso tiene los dos) y la observación
+// sin el ruido con el que se codifica el traspaso.
+import { almacenesDeMov, obsLegible } from './almacenes-mov.js';
 
 // Predicado de modo — espejo de filterByMode (useOfflineData.js): en 'prueba'
 // solo registros demo (demo === true); en 'edicion'/'produccion' solo reales.
@@ -75,13 +79,18 @@ async function cargarContexto(obraId, { porModo = false } = {}) {
   const porObraSinIndice = (t) => db[t].filter((r) => !r.deleted_at && r.obra_id === obraId && pasaModo(r)).toArray();
   const todos = (t) => db[t].filter((r) => !r.deleted_at && pasaModo(r)).toArray();
   const [
-    movMat, movHerr, movEpp, movMaq, movEmer,
+    movMat, movHerr, movEpp, eppEntregas, movMaq, movEmer,
     mantsAll, horas, comb, caja, asist,
     mats, herrs, epps, activos, insEmer,
     personal, subs, provs, ubic, evid, fren, pcb,
-    partidas, companies, accMovs, avances, obra,
+    partidas, companies, accMovs, avances, obra, perfiles,
   ] = await Promise.all([
     porObra('movimientos_materiales'), porObra('movimientos_herramientas'), porObra('movimientos_epp'),
+    // LAS ENTREGAS VIEJAS DE EPP. `epp_entregas` es el flujo anterior a
+    // `movimientos_epp` y sigue teniendo filas reales; el Excel de EPP las
+    // ignoraba por completo. Ése es el «no trae todos los datos» que reportó
+    // la almacenera: no faltaban columnas, faltaban ENTREGAS enteras.
+    porObra('epp_entregas').catch(() => []),
     porObra('movimientos_maquinaria'), porObra('movimientos_insumos_emergencia'),
     todos('mantenimientos_maquinaria').catch(() => []), porObra('horas_maquina').catch(() => []),
     porObraSinIndice('consumos_combustible').catch(() => []), porObra('caja_chica_movimientos').catch(() => []),
@@ -94,6 +103,9 @@ async function cargarContexto(obraId, { porModo = false } = {}) {
     porObra('partidas').catch(() => []), todos('companies').catch(() => []),
     porObraSinIndice('accounting_movements').catch(() => []), porObra('avance_obra').catch(() => []),
     db.obras.get(obraId).catch(() => null),
+    // Quién registró cada movimiento: `created_by` es un uuid y sin esto el
+    // Excel no permitía preguntarle nada a nadie.
+    db.profiles.toArray().catch(() => []),
   ]);
   // mantenimientos_maquinaria NO tiene obra_id → lo scopeamos a los activos de
   // esta obra (asignados a la obra o que tienen movimientos en ella).
@@ -108,14 +120,17 @@ async function cargarContexto(obraId, { porModo = false } = {}) {
     if (!pcbByPersonal.has(c.personal_id)) pcbByPersonal.set(c.personal_id, []);
     pcbByPersonal.get(c.personal_id).push(c);
   });
+  // Map(ubicacion_id → nombre) para almacenesDeMov (lee por nombre, no por fila).
+  const ubicNombre = new Map((ubic || []).map((u) => [u.id, u.nombre]));
+  const perfilById = byId(perfiles);
   return {
-    movMat, movHerr, movEpp, movMaq, movEmer, mants, horas, comb, caja, asist,
+    movMat, movHerr, movEpp, eppEntregas, movMaq, movEmer, mants, horas, comb, caja, asist,
     mats, herrs, epps, activos, insEmer, personal, subs, provs, ubic, evid, fren, pcb,
-    partidas, companies, accMovs, avances, obra,
+    partidas, companies, accMovs, avances, obra, perfiles,
     matById: byId(mats), herrById: byId(herrs), eppById: byId(epps), activoById: byId(activos),
     insEmerById: byId(insEmer), personalById: byId(personal), subsById: byId(subs),
     provById: byId(provs), ubicById: byId(ubic), frenById: byId(fren), pcbByPersonal,
-    partById: byId(partidas), companyById: byId(companies),
+    partById: byId(partidas), companyById: byId(companies), ubicNombre, perfilById,
   };
 }
 
@@ -136,39 +151,115 @@ function filtrarMovs(rows, filtros, nombreItem) {
 
 const sumImporte = (cant, precio) => (cant != null && precio != null && precio !== '') ? Number(cant) * Number(precio) : '';
 
+// Quién registró la fila. `created_by` es el uuid de auth.users; `profiles`
+// tiene el nombre. Sin esto, una cantidad rara en el Excel no se le podía
+// preguntar a nadie.
+const quien = (m, perfilById) => {
+  const pf = perfilById && perfilById.get(m?.created_by);
+  return pf ? `${pf.nombres || ''} ${pf.apellidos || ''}`.trim() : '';
+};
+// Estado de reverso de un movimiento, en palabras. Una salida revertida sigue
+// en la tabla y en el Excel salía idéntica a una vigente: sumaba dos veces.
+const reversoLabel = (m) => (
+  m?.reverses_id ? 'Es un reverso'
+  : m?.reversed_by_id ? 'Revertido'
+  : ''
+);
+
 // ── DATASETS: cada uno define cómo construir su hoja desde el contexto ──
 // build(ctx, filtros) → { headers, rows }
 export const DATASETS = [
+  // LAS COLUMNAS QUE FALTABAN (8-set-2026). La tabla de la pantalla mostraba
+  // «Almacén salida» y «Almacén llegada» y el Excel una sola «Almacén»: en un
+  // traspaso perdía la mitad. Tampoco traía el FRENTE resuelto (solo el texto
+  // libre `frente_zona`), la partida a la que se vinculó la salida, quién
+  // registró la fila, ni si el movimiento estaba REVERTIDO — y un reverso que
+  // sale igual que un movimiento vigente se suma dos veces.
   { id: 'mov_materiales', label: 'Movimientos de Materiales', icon: 'package', color: '#3498DB', grupo: 'Movimientos', filtrable: true,
     build: (c, f) => {
       const nombre = (m) => c.matById.get(m.material_id)?.nombre_material || '';
       const rows = filtrarMovs(c.movMat, f, nombre).map((m, i) => {
         const d = destino(m, c.personalById, c.subsById);
         const mat = c.matById.get(m.material_id);
+        const alm = almacenesDeMov(m, c.ubicNombre);
+        const part = c.partById.get(m.partida_id);
         return [i + 1, isoFecha(m.fecha), hhmm(m.hora), nombre(m) || '(eliminado)', mat?.categoria || '', m.unidad || mat?.unidad || '', n2(m.cantidad), tipoLabel(m.tipo_movimiento),
-          c.ubicById.get(m.ubicacion_id)?.nombre || '', c.provById.get(m.proveedor_id)?.razon_social || '', d.responsable, d.subcontrato, m.frente_zona || '', m.documento_asociado || '', n2(m.precio_unitario_real), sumImporte(m.cantidad, m.precio_unitario_real), m.observaciones || ''];
+          alm.salida || '', alm.llegada || '', c.provById.get(m.proveedor_id)?.razon_social || '', d.responsable, d.subcontrato,
+          c.frenById.get(m.frente_id)?.nombre || '', m.frente_zona || '',
+          m.vinculacion_general ? '(General al frente)' : (part?.codigo_delfin || ''), m.vinculacion_general ? '' : (part?.nombre_partida || ''),
+          m.documento_asociado || '', n2(m.precio_unitario_real), sumImporte(m.cantidad, m.precio_unitario_real),
+          reversoLabel(m), quien(m, c.perfilById), obsLegible(m)];
       });
-      return { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Material', 'Categoría', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Almacén', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente / Zona', 'Documento', 'Precio Unit. (S/)', 'Importe (S/)', 'Observaciones'], rows };
+      return { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Material', 'Categoría', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Almacén salida', 'Almacén llegada', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente', 'Frente / Zona (texto)', 'Código Partida', 'Partida', 'Documento', 'Precio Unit. (S/)', 'Importe (S/)', 'Reverso', 'Registrado por', 'Observaciones'], rows };
     } },
+  // Mismo arreglo que materiales, más: el estado de SALIDA y el de DEVOLUCIÓN
+  // en columnas separadas (se pisaban en una sola, así que una herramienta que
+  // salió buena y volvió rota decía una sola cosa), el documento asociado, la
+  // unidad y el tipo de herramienta.
   { id: 'mov_herramientas', label: 'Movimientos de Herramientas', icon: 'tool', color: '#F28C28', grupo: 'Movimientos', filtrable: true,
     build: (c, f) => {
       const nombre = (m) => c.herrById.get(m.herramienta_id)?.nombre_herramienta || '';
       const rows = filtrarMovs(c.movHerr, f, nombre).map((m, i) => {
         const d = destino(m, c.personalById, c.subsById);
-        return [i + 1, isoFecha(m.fecha), hhmm(m.hora), nombre(m) || '(eliminado)', m.estado_salida || m.estado_devolucion || '', n2(m.cantidad), tipoLabel(m.tipo_movimiento || m.accion),
-          c.ubicById.get(m.ubicacion_id)?.nombre || '', c.provById.get(m.proveedor_id)?.razon_social || '', d.responsable, d.subcontrato, m.frente_zona || '', m.observaciones || ''];
+        const h = c.herrById.get(m.herramienta_id);
+        const alm = almacenesDeMov(m, c.ubicNombre);
+        return [i + 1, isoFecha(m.fecha), hhmm(m.hora), nombre(m) || '(eliminado)', h?.tipo_herramienta || '', h?.marca || '',
+          m.unidad || h?.unidad || '', n2(m.cantidad), tipoLabel(m.tipo_movimiento || m.accion),
+          m.estado_salida || '', m.estado_devolucion || '',
+          alm.salida || '', alm.llegada || '', c.provById.get(m.proveedor_id)?.razon_social || '', d.responsable, d.subcontrato,
+          c.frenById.get(m.frente_id)?.nombre || '', m.frente_zona || '', m.documento_asociado || '',
+          reversoLabel(m), quien(m, c.perfilById), obsLegible(m)];
       });
-      return { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Herramientas', 'Estado', 'Cantidad', 'Tipo de Movimiento', 'Almacén', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente / Zona', 'Observaciones'], rows };
+      return { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Herramientas', 'Tipo', 'Marca', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Estado de salida', 'Estado de devolución', 'Almacén salida', 'Almacén llegada', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente', 'Frente / Zona (texto)', 'Documento', 'Reverso', 'Registrado por', 'Observaciones'], rows };
     } },
+  // EL EXCEL DE EPP TRAÍA MEDIA HISTORIA. Los EPP se registran por DOS tablas:
+  // `movimientos_epp` (el inventario de hoy) y `epp_entregas` (el flujo
+  // anterior, que sigue teniendo filas y que la pantalla «Entregas EPP» ya
+  // mostraba unificado con la otra). El Excel exportaba solo la primera. Acá
+  // salen las dos, con una columna «Origen» que dice de cuál viene cada fila,
+  // y una entrega multi-ítem se abre en UNA FILA POR EPP: contarla como una
+  // sola línea de «6 unidades» perdía qué se entregó.
   { id: 'mov_epp', label: 'Movimientos de EPP', icon: 'shield', color: '#2ECC71', grupo: 'Movimientos', filtrable: true,
     build: (c, f) => {
       const nombre = (m) => c.eppById.get(m.epp_id)?.nombre_epp || '';
-      const rows = filtrarMovs(c.movEpp, f, nombre).map((m, i) => {
+      const filaMov = (m) => {
         const d = destino(m, c.personalById, c.subsById);
-        return [i + 1, isoFecha(m.fecha), hhmm(m.hora), nombre(m) || '(eliminado)', m.unidad || '', n2(m.cantidad), tipoLabel(m.tipo_movimiento),
-          c.ubicById.get(m.ubicacion_id)?.nombre || '', c.provById.get(m.proveedor_id)?.razon_social || '', d.responsable, d.subcontrato, m.motivo || '', m.documento_asociado || '', n2(m.precio_unitario_real), m.observaciones || ''];
-      });
-      return { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'EPP', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Almacén', 'Proveedor', 'Responsable', 'Subcontrato', 'Motivo', 'Documento', 'Precio Unit. (S/)', 'Observaciones'], rows };
+        const epp = c.eppById.get(m.epp_id);
+        const alm = almacenesDeMov(m, c.ubicNombre);
+        return [isoFecha(m.fecha), hhmm(m.hora), 'Inventario', nombre(m) || '(eliminado)', epp?.tipo_epp || '', epp?.talla || '',
+          m.unidad || epp?.unidad || '', n2(m.cantidad), tipoLabel(m.tipo_movimiento),
+          alm.salida || '', alm.llegada || '', c.provById.get(m.proveedor_id)?.razon_social || '', d.responsable, d.subcontrato,
+          c.frenById.get(m.frente_id)?.nombre || '', m.motivo || '', m.documento_asociado || '',
+          n2(m.precio_unitario_real), sumImporte(m.cantidad, m.precio_unitario_real),
+          m.firma_url ? 'Sí' : '', quien(m, c.perfilById), obsLegible(m)];
+      };
+      // Una entrega vieja puede traer varios EPP en `items`; si no los trae,
+      // los campos legacy (tipo_epp/cantidad/costo_unitario) son la única línea.
+      const filasEntrega = (e) => {
+        const d = destino(e, c.personalById, c.subsById);
+        const items = Array.isArray(e.items) && e.items.length
+          ? e.items
+          : [{ tipo_epp: e.tipo_epp, nombre: e.tipo_epp, cantidad: e.cantidad, costo_unitario: e.costo_unitario }];
+        return items.map((it) => [
+          isoFecha(e.fecha), '', 'Entrega (histórico)', it.nombre || it.tipo_epp || '', it.tipo_epp || '', it.talla || '',
+          'Und', n2(it.cantidad), e.tipo_movimiento === 'entrada' ? 'Ingreso' : 'Entrega',
+          '', '', c.provById.get(e.proveedor_id)?.razon_social || '', d.responsable, d.subcontrato,
+          '', e.motivo || '', e.documento_asociado || '',
+          n2(it.costo_unitario), sumImporte(it.cantidad, it.costo_unitario),
+          e.firma_url ? 'Sí' : '', quien(e, c.perfilById), e.observaciones || '',
+        ]);
+      };
+      const movs = filtrarMovs(c.movEpp, f, nombre).map(filaMov);
+      // Las entregas viejas pasan por el MISMO filtro de fecha/responsable; el
+      // de texto mira los EPP que lleva adentro.
+      const nombreEnt = (e) => (Array.isArray(e.items) && e.items.length
+        ? e.items.map((i) => `${i.nombre || ''} ${i.tipo_epp || ''}`).join(' ')
+        : String(e.tipo_epp || ''));
+      const entregas = filtrarMovs(c.eppEntregas || [], f, nombreEnt).flatMap(filasEntrega);
+      const rows = [...movs, ...entregas]
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0])) || String(a[1]).localeCompare(String(b[1])))
+        .map((r, i) => [i + 1, ...r]);
+      return { headers: ['ID', 'Fecha de Movimiento', 'Hora', 'Origen', 'EPP', 'Tipo', 'Talla', 'Unidad', 'Cantidad', 'Tipo de Movimiento', 'Almacén salida', 'Almacén llegada', 'Proveedor', 'Responsable', 'Subcontrato', 'Frente', 'Motivo', 'Documento', 'Precio Unit. (S/)', 'Importe (S/)', 'Firmado', 'Registrado por', 'Observaciones'], rows };
     } },
   { id: 'mov_maquinaria', label: 'Movimientos de Maquinaria', icon: 'tool', color: '#8E44AD', grupo: 'Movimientos', filtrable: true,
     build: (c, f) => {
@@ -294,7 +385,19 @@ export const DATASETS = [
       if (q) rows = rows.filter((m) => `${m.concepto || ''} ${m.proveedor || ''}`.toLowerCase().includes(q.toLowerCase()));
       if (responsable && !responsable.startsWith('sub:')) { const id = responsable.startsWith('p:') ? responsable.slice(2) : responsable; rows = rows.filter((m) => m.responsable_id === id); }
       rows = rows.slice().sort((a, b) => isoFecha(a.fecha).localeCompare(isoFecha(b.fecha)) || String(a.hora || '').localeCompare(String(b.hora || '')));
-      return { headers: ['ID', 'Fecha', 'Hora', 'Tipo', 'Monto (S/)', 'Concepto', 'Responsable', 'Proveedor', 'Documento', 'Observaciones'], rows: rows.map((m, i) => [i + 1, isoFecha(m.fecha), hhmm(m.hora), m.tipo_movimiento === 'entrada' ? 'Ingreso' : 'Gasto', n2(m.monto), m.concepto || '', nombrePersona(c.personalById.get(m.responsable_id)), m.proveedor || '', m.documento_asociado || '', m.observaciones || '']) };
+      // El SALDO acumulado va en el Excel porque es la única columna que la
+      // pantalla calcula y el archivo no tenía: sin ella, cuadrar la caja en
+      // Excel obligaba a rehacer la suma a mano. Y el respaldo (la foto o el
+      // PDF del gasto) se dice sí/no: es lo que se revisa al cerrar la caja.
+      const nEvi = (id) => (c.evid || []).filter((e) => !e.deleted_at
+        && e.modulo_relacionado === 'caja_chica_movimientos'
+        && String(e.registro_relacionado_id) === String(id)).length;
+      let saldo = 0;
+      return { headers: ['ID', 'Fecha', 'Hora', 'Tipo', 'Monto (S/)', 'Saldo (S/)', 'Concepto', 'Responsable', 'Proveedor', 'Documento', 'Respaldo', 'Registrado por', 'Observaciones'], rows: rows.map((m, i) => {
+        const monto = Number(m.monto || 0);
+        saldo += m.tipo_movimiento === 'entrada' ? monto : -monto;
+        return [i + 1, isoFecha(m.fecha), hhmm(m.hora), m.tipo_movimiento === 'entrada' ? 'Ingreso' : 'Gasto', n2(m.monto), Number(saldo.toFixed(2)), m.concepto || '', nombrePersona(c.personalById.get(m.responsable_id)), m.proveedor || '', m.documento_asociado || '', nEvi(m.id) ? `Sí (${nEvi(m.id)})` : 'No', quien(m, c.perfilById), m.observaciones || ''];
+      }) };
     } },
   { id: 'evidencias', label: 'Evidencias (registro)', icon: 'image', color: '#7F8C8D', grupo: 'Evidencias', filtrable: true,
     build: (c, f) => {

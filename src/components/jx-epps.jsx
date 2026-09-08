@@ -1740,6 +1740,51 @@ function EntregasPorTrabajadorModal({ movs, epps, personal, subcontratistas, onV
 // chips por tipo, y pre-filtro vía window.__movEppBuscar (botón 📜 del
 // inventario y "Ver en Movimientos" de la ventana por trabajador).
 // ═══════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
+// LA TERCERA PANTALLA DE EPP SE FUE (8-set-2026)
+//
+// Gabriel, con el feedback de la almacenera: «EPPs con inventario y
+// movimientos, pero las "Entregas de EPPs" están molestando. Fusiónala o
+// métela dentro de movimientos de EPPs».
+//
+// Y era verdad: los EPP tenían TRES puertas —inventario, movimientos y
+// entregas— y las dos últimas miraban lo mismo desde ángulos distintos.
+// Ahora son DOS: el inventario (qué hay) y los movimientos (qué pasó), y
+// las entregas a trabajadores son una PESTAÑA de los movimientos.
+//
+// La vista de entregas NO se copió acá: es `EppPage`, que sigue viviendo en
+// `jx-seguridad` con su stock por tipo, sus alertas de vida útil y su
+// formulario con firma. Se carga su chunk y se renderiza. No es un import
+// dinámico prohibido: `jx-seguridad` YA es un chunk lazy con su entrada en
+// PAGE_CHUNKS (la regla #1 del CLAUDE.md prohíbe partir un módulo EAGER,
+// que no es el caso).
+// ═══════════════════════════════════════════════════════════════════
+function PanelEntregasEpp({ showToast }) {
+  const [, setTick] = uS(0);
+  const [error, setError] = uS(null);
+  const listo = !!window.EppPage;
+  uE(() => {
+    if (listo) return;
+    let cancelado = false;
+    window.__loadChunk?.('jx-seguridad')
+      .then(() => { if (!cancelado) setTick(t => t + 1); })
+      .catch((e) => { if (!cancelado) setError(e); });
+    return () => { cancelado = true; };
+  }, [listo]);
+  if (error) {
+    return (
+      <div className="card card-p empty-state">
+        <JxIcon name="alert" size={32} color="var(--red)"/>
+        <p>No se pudo cargar la vista de entregas.</p>
+        <button className="btn btn-ghost btn-sm" onClick={() => { setError(null); setTick(t => t + 1); }}>Reintentar</button>
+      </div>
+    );
+  }
+  const Comp = window.EppPage;
+  if (!Comp) return <div className="card card-p empty-state"><p>Cargando entregas…</p></div>;
+  return <Comp showToast={showToast} embebida/>;
+}
+
 function MovEppPage({ showToast }) {
   const [obraId, setObraId] = uS(null);
   uE(() => {
@@ -1777,6 +1822,17 @@ function MovEppPage({ showToast }) {
   // Pre-filtro que dejan el 📜 del inventario y la ventana por trabajador.
   const [q, setQ] = uS(() => { try { const v = window.__movEppBuscar; if (v) { delete window.__movEppBuscar; return v; } } catch {} return ''; });
   const [filtroTipo, setFiltroTipo] = uS('todos');
+  // Las dos mitades de la pantalla fusionada: el historial crudo del
+  // inventario y la vista de entregas a trabajadores (la ex «Entregas EPP»).
+  const [seccion, setSeccion] = uS('movimientos');   // 'movimientos' | 'entregas'
+  // Solicitar cambio: la almacenera no edita un movimiento ya registrado —
+  // pide la corrección (o la eliminación) y la aprueba el admin. Es el mismo
+  // botón que Mov. de Materiales y Mov. de Herramientas ya tenían y que acá
+  // faltaba: si se equivocaba en una cantidad de EPP no tenía NINGUNA salida.
+  const [requestTarget, setRequestTarget] = uS(null);
+  const authEpp = window.__useAuth ? window.__useAuth() : null;
+  const rolEpp = authEpp?.profile?.rol || '';
+  const puedePedirCambio = rolEpp === 'admin' || (window.__hasPerm?.(rolEpp, 'EPP', 'w') ?? false);
 
   const destinoDe = (m) => {
     if (m.personal_id) { const p = persById.get(m.personal_id); return p ? `${p.nombres || ''} ${p.apellidos || ''}`.trim() : ''; }
@@ -1818,15 +1874,44 @@ function MovEppPage({ showToast }) {
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div>
-          <div className="pg-title">Movimientos de EPPs</div>
-          <div className="pg-sub">Historial completo · {sorted.length} movimientos registrados</div>
+          <div className="pg-title">Movimientos y Entregas de EPPs</div>
+          <div className="pg-sub">Historial completo · {sorted.length} movimientos registrados · las entregas a trabajadores están en la segunda pestaña</div>
         </div>
         <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
           <button className="btn btn-ghost btn-sm" onClick={() => window.__navTo?.('epps-inventario')} title="Volver al inventario de EPPs">
             <JxIcon name="shield" size={13}/> Inventario
           </button>
+          {/* El Excel de EPP se pedía desde el inventario y no desde acá, que es
+              donde se está mirando el historial. Ahora trae también las
+              entregas viejas de `epp_entregas` (ver export-historico.js). */}
+          <button className="btn btn-ghost btn-sm" title="Descargar el Excel de estos movimientos, con las entregas a trabajadores incluidas"
+            onClick={async () => {
+              if (!obraId) { showToast?.('No hay obra activa', 'red'); return; }
+              try {
+                const obra = await window.__db.obras.get(obraId);
+                const r = await exportarDataset('mov_epp', obraId, obra?.nombre_obra || obra?.nombre || 'obra', {}, { porModo: true });
+                showToast?.(`Exportado: ${r.filas} registros → ${r.archivo}`, 'green');
+              } catch (e) { showToast?.('Error al exportar: ' + (e.message || e), 'red'); }
+            }}>
+            <JxIcon name="download" size={13}/> Exportar Excel
+          </button>
         </div>
       </div>
+
+      {/* LAS DOS MITADES. «Entregas EPP» era una pantalla suelta en el menú y
+          ahora es esta pestaña: mismo contenido, una puerta menos. */}
+      <div style={{ display:'flex', gap:6, marginBottom:14, borderBottom:'1px solid var(--border)' }}>
+        <button className={seccion === 'movimientos' ? 'btn btn-amber btn-sm' : 'btn btn-ghost btn-sm'}
+          style={{ borderRadius:'6px 6px 0 0' }} onClick={() => setSeccion('movimientos')}>
+          Movimientos del inventario ({sorted.length})
+        </button>
+        <button className={seccion === 'entregas' ? 'btn btn-amber btn-sm' : 'btn btn-ghost btn-sm'}
+          style={{ borderRadius:'6px 6px 0 0' }} onClick={() => setSeccion('entregas')}>
+          Entregas a trabajadores y compras
+        </button>
+      </div>
+
+      {seccion === 'entregas' ? <PanelEntregasEpp showToast={showToast}/> : (<>
 
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(170px, 1fr))', gap:10, marginBottom:14 }}>
         <div className="card card-p"><div style={{ fontSize:11, color:'var(--tm)' }}>Total Movimientos</div><div style={{ fontSize:22, fontWeight:800, color:'var(--blue)' }}>{stats.total.toLocaleString('es-PE')}</div></div>
@@ -1855,6 +1940,7 @@ function MovEppPage({ showToast }) {
                 <th>Fecha / Hora</th><th>Tipo</th><th>EPP</th>
                 <th style={{ textAlign:'right' }}>Cantidad</th>
                 <th>Trabajador / Destino</th><th>Almacén</th><th>Frente</th><th>Motivo</th><th>Doc.</th>
+                {puedePedirCambio && <th style={{ textAlign:'center' }}>Acción</th>}
               </tr></thead>
               <tbody>
                 {movPg.pagedItems.map(m => {
@@ -1871,6 +1957,14 @@ function MovEppPage({ showToast }) {
                       <td style={{ fontSize:11 }}>{frenteById.get(m.frente_id)?.nombre ? <span className="badge b-amber" style={{ fontSize:10 }}>{frenteById.get(m.frente_id).nombre}</span> : <span style={{ color:'var(--tm)' }}>—</span>}</td>
                       <td style={{ fontSize:11, color:'var(--ts)' }}>{m.motivo || '—'}</td>
                       <td style={{ fontSize:11, color:'var(--tm)' }}>{m.documento_asociado || '—'}</td>
+                      {puedePedirCambio && (
+                        <td style={{ textAlign:'center' }}>
+                          <button className="btn btn-ghost btn-xs" title="Solicitar cambio o eliminación de este movimiento (lo aprueba el admin)"
+                            onClick={() => setRequestTarget(m)}>
+                            <JxIcon name="edit" size={10}/> Solicitar
+                          </button>
+                        </td>
+                      )}
                     </tr>
                   );
                 })}
@@ -1882,6 +1976,28 @@ function MovEppPage({ showToast }) {
             Mostrando {filtered.length} de {sorted.length} movimientos
           </div>
         </div>
+      )}
+      </>)}
+
+      {/* Solicitar cambio sobre un movimiento de EPP ya registrado. `allowDelete`
+          porque el caso real es ese: la cantidad quedó mal y hay que borrar la
+          fila, no maquillarla. */}
+      {requestTarget && (
+        <RequestChangeModal
+          table="movimientos_epp"
+          record={requestTarget}
+          recordLabel={`${requestTarget.tipo_movimiento === 'entrada' ? 'Entrada' : requestTarget.tipo_movimiento === 'devolucion' ? 'Devolución' : 'Entrega'} · ${eppById.get(requestTarget.epp_id)?.nombre_epp || 'EPP'} ×${requestTarget.cantidad ?? '?'} · ${requestTarget.fecha || ''}`}
+          allowDelete
+          fields={[
+            { key: 'cantidad', label: 'Cantidad', type: 'number' },
+            { key: 'fecha', label: 'Fecha', type: 'date' },
+            { key: 'motivo', label: 'Motivo' },
+            { key: 'documento_asociado', label: 'Documento' },
+            { key: 'observaciones', label: 'Observaciones' },
+          ]}
+          showToast={showToast}
+          onClose={() => setRequestTarget(null)}
+        />
       )}
     </div>
   );

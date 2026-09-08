@@ -223,7 +223,28 @@ export function necesitaOrden(mov, { umbral = UMBRAL_POR_DEFECTO } = {}) {
   if (!TIPOS_COMPRA.has(mov.type)) return false;
   if ((mov.currency || 'PEN') !== 'PEN') return false;
   if (mov.orden_compra_id) return false;
+  if (descartadoDelRespaldo(mov)) return false;
   return num(mov.amount) > num(umbral);
+}
+
+/**
+ * ¿A este comprobante alguien decidió que NO le corresponde orden?
+ *
+ * Gabriel, 8-set-2026: «con el tema de facturas a respaldar, permite que se
+ * pueda eliminar las que no consideremos que se deban respaldar».
+ *
+ * El umbral y el tipo de operación son reglas automáticas y aciertan casi
+ * siempre, pero no siempre: un servicio de la propia contadora, un reembolso,
+ * una compra que ya está respaldada por otro papel. Hasta hoy esas filas se
+ * quedaban en «Sin respaldo» para siempre y el «% respaldado» nunca llegaba a
+ * cerrar — así que la lista dejaba de mirarse, que es peor que no tenerla.
+ *
+ * Es un DESCARTE, no un borrado: la fila del comprobante no se toca (es un
+ * movimiento contable, y borrarlo sería falsear el libro). Se marca con el
+ * motivo, quién y cuándo (mig 200) y se puede deshacer.
+ */
+export function descartadoDelRespaldo(mov) {
+  return !!(mov && mov.respaldo_no_requerido);
 }
 
 /**
@@ -278,6 +299,9 @@ export function comprobantesSinOrden(movs, ordenes, {
   // «% respaldado» de arriba signifique lo mismo con la vista abierta o
   // cerrada: solo deja MIRAR y emitir lo que quedaba fuera de la lista.
   incluirBajoUmbral = false,
+  // Al revés: devuelve SOLO los que se descartaron a mano, para poder
+  // revisarlos y devolverlos a la lista.
+  soloDescartados = false,
 } = {}) {
   const conOrden = new Set();
   for (const o of ordenes || []) {
@@ -298,8 +322,16 @@ export function comprobantesSinOrden(movs, ordenes, {
     // está en soles) no se les compara: se muestra la compra entera y quien
     // mira decide; convertirla con un tipo de cambio inventado sería peor.
     // Lo que NO cambia: no se suman con los soles en ningún total.
+    // Descartado a mano: no vuelve a aparecer ni siquiera con la vista abierta.
+    // Para verlos hay que pedirlos explícitamente (`soloDescartados`), que es
+    // como se deshace la decisión.
+    if (descartadoDelRespaldo(m) !== soloDescartados) continue;
     if (fuera === 'bajo_umbral' && !incluirBajoUmbral) continue;
-    if (!fuera && !necesitaOrden(m, { umbral })) continue;
+    // La marca de descarte ya se resolvió arriba; acá `necesitaOrden` solo
+    // tiene que contestar por tipo/moneda/umbral. Sin neutralizarla, con
+    // `soloDescartados` la lista salía vacía: el mismo predicado los volvía
+    // a sacar.
+    if (!fuera && !necesitaOrden({ ...m, respaldo_no_requerido: false }, { umbral })) continue;
     if (num(m.amount) <= 0) continue;
     if (conOrden.has(m.id)) continue;
     if (companyId && m.company_id !== companyId) continue;
@@ -367,6 +399,7 @@ export function agruparPorEmpresa(movs, companies) {
  */
 export function resumenRespaldo(movs, ordenes, { umbral = UMBRAL_POR_DEFECTO, companyId = null, obraId = null } = {}) {
   let sobreUmbral = 0, montoSobreUmbral = 0;
+  let descartados = 0, montoDescartado = 0;
   for (const m of movs || []) {
     if (!m || m.deleted_at) continue;
     if (!TIPOS_COMPRA.has(m.type)) continue;
@@ -374,6 +407,11 @@ export function resumenRespaldo(movs, ordenes, { umbral = UMBRAL_POR_DEFECTO, co
     if (companyId && m.company_id !== companyId) continue;
     if (obraId && m.obra_id !== obraId) continue;
     if (num(m.amount) <= num(umbral)) continue;
+    // Los descartados a mano salen del DENOMINADOR, no del numerador. Dejarlos
+    // adentro los contaría como «respaldados» sin tener orden, que es
+    // exactamente lo que el % no debe decir: lo que se decidió es que no
+    // corresponde exigirles una, no que la tengan.
+    if (descartadoDelRespaldo(m)) { descartados++; montoDescartado = round2(montoDescartado + num(m.amount)); continue; }
     sobreUmbral++;
     montoSobreUmbral = round2(montoSobreUmbral + num(m.amount));
   }
@@ -394,6 +432,10 @@ export function resumenRespaldo(movs, ordenes, { umbral = UMBRAL_POR_DEFECTO, co
     montoSinRespaldo: montoPendiente,
     respaldados: sobreUmbral - pendientes.length,
     montoRespaldado: round2(montoSobreUmbral - montoPendiente),
+    // Cuántos se sacaron a mano de la lista y por cuánto. Se muestran para que
+    // la decisión quede a la vista y se pueda revisar, no escondida.
+    descartados,
+    montoDescartado,
     pctRespaldado: montoSobreUmbral > 0
       ? round2(((montoSobreUmbral - montoPendiente) / montoSobreUmbral) * 100)
       : 0,
