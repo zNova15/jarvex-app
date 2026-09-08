@@ -24,8 +24,8 @@ import {
 } from './bases-triage.js';
 import {
   indiceDeSecciones, resumenIndice, textoDeRango,
-  verificarResultado, costoDelAnalisis, aFilasRequisitos, aCabeceraLicitacion,
-  normalizar,
+  verificarResultado, costoDelAnalisis, aFilasRequisitos, aFilasEmpresa,
+  aCabeceraLicitacion, aCronograma, sugerenciasDe, normalizar,
 } from './bases-extraccion.js';
 
 /** Páginas por request de OCR. Debe coincidir con MAX_PAGINAS_TANDA del endpoint. */
@@ -36,9 +36,13 @@ export const PAGINAS_POR_TANDA = 6;
  *  de mejorar: más resolución solo engorda el base64 y hace fallar la tanda. */
 export const ESCALA_OCR = 2;
 
-/** Familias que se extraen. `proceso` va primero: si el documento no es unas
- *  bases, se nota ahí y no después de pagar 94 páginas de OCR. */
-export const FAMILIAS_EXTRAIBLES = ['personal', 'empresa'];
+/** Familias que se extraen, en este orden. `proceso` va primero y se lee con
+ *  el prompt del proceso entero (montos, CUI, plazo, calendario, consorcio):
+ *  es lo que hace que una convocatoria de El Peruano alcance para CREAR la
+ *  postulación. `personal` es el plantel; `empresa`, lo que descalifica al
+ *  postor. El calendario no es una pasada aparte: sus páginas se suman a las
+ *  de `proceso`, porque en una convocatoria están en el mismo texto. */
+export const FAMILIAS_EXTRAIBLES = ['proceso', 'personal', 'empresa'];
 
 const esPdf = (file) => /\.pdf$/i.test(file?.name || '') || file?.type === 'application/pdf';
 const esDocx = (file) => /\.docx$/i.test(file?.name || '')
@@ -67,8 +71,10 @@ export async function rasterizarPagina(page, escala = ESCALA_OCR, calidad = 0.82
   return url;
 }
 
-/** Los bloques de un archivo, sin gastar un centavo todavía. */
-export async function leerDocumento(file, { onProgreso = null } = {}) {
+/** Los bloques de un archivo, sin gastar un centavo todavía.
+ *  `minAlfa` sube el piso de texto nativo por página (el CV con encabezado
+ *  impreso sobre cada constancia escaneada; ver bases-triage). */
+export async function leerDocumento(file, { onProgreso = null, minAlfa = undefined } = {}) {
   if (esPdf(file)) {
     const pdfjsLib = await import('pdfjs-dist');
     const workerSrc = (await import('pdfjs-dist/build/pdf.worker.min.mjs?url')).default;
@@ -80,6 +86,7 @@ export async function leerDocumento(file, { onProgreso = null } = {}) {
     // JPEG en memoria.
     const bloques = await bloquesDePdf(pdf, {
       onProgreso: onProgreso ? (p) => onProgreso({ paso: 'leyendo', ...p }) : null,
+      ...(minAlfa != null ? { minAlfa } : {}),
     });
     return { bloques, tipo: 'pdf', paginas: pdf.numPages };
   }
@@ -153,9 +160,10 @@ export function presupuestar(bloques) {
  * @param onProgreso     ({ paso, hecho, total, detalle })
  * @returns { markdown, indice, rangos, resultado, costo, modelos, alertas }
  */
-export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null } = {}) {
-  const avisar = (p) => { if (onProgreso) onProgreso(p); };
-  const pedir = async (body, timeout = 90000) => {
+/** El cliente HTTP del endpoint, con el error ya desarmado. Se exporta porque
+ *  el lector de CV (cv-analisis.js) habla con el mismo endpoint. */
+export function crearPedidor(apiFetch, apiParse) {
+  return async (body, timeout = 90000) => {
     const resp = await apiFetch('/api/bases-analizar', {
       method: 'POST', timeout,
       headers: { 'Content-Type': 'application/json' },
@@ -169,12 +177,15 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null 
     }
     return data;
   };
+}
 
-  const alertas = [];
-  const modelos = new Set();
-  let usdPasadas = 0;
-
-  // ── 1. OCR de las páginas que lo necesitan, de a seis ────────────
+/**
+ * OCR de las páginas que lo necesitan, de a seis. Compartido con el lector de
+ * CV: es exactamente el mismo trabajo sobre otro documento.
+ *
+ * @returns { ocrPorMedia, leidas }  — y agrega a `alertas` y `modelos`
+ */
+export async function ocrDeBloques(bloques, { pedir, avisar = () => {}, alertas = [], modelos = new Set() }) {
   const aOcr = bloques.filter(b => b.tipo === 'imagen' && b.necesitaOcr && (b.imagen || b._page));
   const sinImagen = bloques.filter(b => b.tipo === 'imagen' && b.necesitaOcr && !b.imagen && !b._page);
   if (sinImagen.length) {
@@ -203,6 +214,19 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null 
     for (const b of tanda) b.imagen = null;
   }
   avisar({ paso: 'ocr', hecho: leidas, total: aOcr.length });
+  return { ocrPorMedia, leidas };
+}
+
+export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null } = {}) {
+  const avisar = (p) => { if (onProgreso) onProgreso(p); };
+  const pedir = crearPedidor(apiFetch, apiParse);
+
+  const alertas = [];
+  const modelos = new Set();
+  let usdPasadas = 0;
+
+  // ── 1. OCR de las páginas que lo necesitan, de a seis ────────────
+  const { ocrPorMedia, leidas } = await ocrDeBloques(bloques, { pedir, avisar, alertas, modelos });
 
   // ── 2. El documento híbrido y su índice, sin IA ──────────────────
   const markdown = bloquesAMarkdown(bloques, ocrPorMedia);
@@ -214,8 +238,8 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null 
   if (!hayAlgo) {
     alertas.push('No se reconoció ninguna sección típica de unas bases. Puede que el documento no sea unas bases, o que el OCR haya salido ilegible.');
     return { markdown, indice, rangos: null, resultado: { requisitos: [], alertas }, alertas,
-      filas: [], cabecera: null, paginasOcr: leidas,
-      costo: costoDelAnalisis({ paginasOcr: leidas, usdPasadas }), modelos: [...modelos] };
+      filas: [], filasEmpresa: [], cabecera: null, cronograma: [], sugerencias: { tipo_trabajo: null },
+      paginasOcr: leidas, costo: costoDelAnalisis({ paginasOcr: leidas, usdPasadas }), modelos: [...modelos] };
   }
 
   // ── 3. Pase 1: la IA elige rangos entre lo que el índice encontró ─
@@ -234,7 +258,8 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null 
 
   // ── 4. Pase 2: extraer, solo sobre los rangos elegidos ───────────
   const requisitos = [];
-  const extras = { factores_evaluacion: [], cronograma: [], proceso: null };
+  const requisitosEmpresa = [];
+  const extras = { factores_evaluacion: [], cronograma: [], proceso: null, consorcio: null };
   // UN MISMO REQUISITO NO SE PROPONE DOS VECES. Los rangos de dos familias se
   // pisan seguido —«...en obras similares» dentro del párrafo del Residente
   // cae en el índice de `personal` Y en el de `empresa`— y sin esto la persona
@@ -242,9 +267,22 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null 
   // La identidad es el texto de donde salió, que es lo único que no cambia
   // entre una pasada y la otra.
   const vistos = new Set();
-  const huella = (r) => `${normalizar(r.cargo)}|${normalizar(r.fuente_cita).slice(0, 120)}`;
+  const huella = (r) => `${normalizar(r.cargo || r.tipo)}|${normalizar(r.fuente_cita || r.descripcion).slice(0, 120)}`;
+  // El proceso se arma campo a campo: la primera pasada que trae un dato lo
+  // fija, las siguientes solo llenan lo que falta. Así la convocatoria de una
+  // página y las bases de 96 se complementan en vez de pisarse.
+  const fundirProceso = (p) => {
+    if (!p || typeof p !== 'object') return;
+    if (!extras.proceso) { extras.proceso = { ...p }; return; }
+    for (const [k, v] of Object.entries(p)) {
+      if (v != null && v !== '' && (extras.proceso[k] == null || extras.proceso[k] === '')) extras.proceso[k] = v;
+    }
+  };
   for (const familia of FAMILIAS_EXTRAIBLES) {
-    const trozos = rangosDeFamilia(rangos, resumen, familia);
+    const trozos = familia === 'proceso'
+      // El calendario vive con los datos del proceso: sus rangos se suman.
+      ? fusionarRangos([...rangosDeFamilia(rangos, resumen, 'proceso'), ...rangosDeFamilia(rangos, resumen, 'cronograma')])
+      : rangosDeFamilia(rangos, resumen, familia);
     for (const { desde, hasta } of trozos) {
       const texto = textoDeRango(markdown, desde, hasta);
       if (!texto.trim()) continue;
@@ -255,15 +293,26 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null 
         if (data.model) modelos.add(data.model);
         usdPasadas += Number(data.costo) || 0;
         for (const req of (Array.isArray(r.requisitos) ? r.requisitos : [])) {
+          // Con el prompt del proceso, un "requisito" suelto es de la empresa.
+          if (familia !== 'personal' && !req.cargo) { requisitosEmpresa.push(req); continue; }
           const h = huella(req);
           if (vistos.has(h)) continue;
           vistos.add(h);
-          requisitos.push({ ...req, clase: familia === 'empresa' ? 'empresa' : (req.clase || 'personal') });
+          requisitos.push({ ...req, clase: 'personal' });
+        }
+        for (const req of (Array.isArray(r.requisitos_empresa) ? r.requisitos_empresa : [])) {
+          const h = huella(req);
+          if (vistos.has(h)) continue;
+          vistos.add(h);
+          requisitosEmpresa.push(req);
         }
         for (const a of (Array.isArray(r.alertas) ? r.alertas : [])) alertas.push(a);
         if (Array.isArray(r.factores_evaluacion)) extras.factores_evaluacion.push(...r.factores_evaluacion);
         if (Array.isArray(r.cronograma)) extras.cronograma.push(...r.cronograma);
-        if (!extras.proceso && r.proceso && Object.values(r.proceso).some(v => v != null)) extras.proceso = r.proceso;
+        fundirProceso(r.proceso);
+        if (r.consorcio && typeof r.consorcio === 'object' && (extras.consorcio == null || (extras.consorcio.permitido == null && r.consorcio.permitido != null))) {
+          extras.consorcio = r.consorcio;
+        }
       } catch (e) {
         alertas.push(`No se pudo extraer ${familia} (páginas ${desde}–${hasta}): ${e.message}`);
       }
@@ -272,7 +321,8 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null 
 
   // ── 5. Verificar cada cita contra el documento ───────────────────
   avisar({ paso: 'verificar' });
-  const verificado = verificarResultado({ ...extras, requisitos, alertas }, markdown);
+  const verificado = verificarResultado({ ...extras, requisitos, requisitos_empresa: requisitosEmpresa, alertas }, markdown);
+  const filas = aFilasRequisitos(verificado);
 
   return {
     markdown, indice, rangos,
@@ -280,13 +330,30 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null 
     // Ya traducido a lo que la pantalla guarda: la fila de licitacion_requisitos
     // y los campos de cabecera. Que la traducción viva acá y no en el
     // componente es lo que la deja cubierta por tests.
-    filas: aFilasRequisitos(verificado),
+    filas,
+    filasEmpresa: aFilasEmpresa(verificado, { desde: filas.length }),
     cabecera: aCabeceraLicitacion(verificado),
+    cronograma: aCronograma(verificado),
+    sugerencias: sugerenciasDe(verificado),
     alertas: verificado.alertas,
     costo: costoDelAnalisis({ paginasOcr: leidas, usdPasadas }),
     modelos: [...modelos],
     paginasOcr: leidas,
   };
+}
+
+/** Une rangos que se tocan o se pisan; el resto queda ordenado. */
+export function fusionarRangos(rangos) {
+  const ordenados = (rangos || [])
+    .filter(r => Number.isFinite(r?.desde) && Number.isFinite(r?.hasta) && r.hasta >= r.desde)
+    .sort((a, b) => a.desde - b.desde);
+  const out = [];
+  for (const r of ordenados) {
+    const u = out[out.length - 1];
+    if (u && r.desde <= u.hasta + 1) u.hasta = Math.max(u.hasta, r.hasta);
+    else out.push({ desde: r.desde, hasta: r.hasta });
+  }
+  return out;
 }
 
 /**
@@ -319,4 +386,7 @@ export function rangosDeFamilia(rangos, resumen, familia) {
   return fusionadas.slice(0, 3);
 }
 
-export default { leerDocumento, presupuestar, analizar, rangosDeFamilia, rasterizarPagina, rotarImagen };
+export default {
+  leerDocumento, presupuestar, analizar, rangosDeFamilia, fusionarRangos,
+  rasterizarPagina, rotarImagen, ocrDeBloques, crearPedidor,
+};

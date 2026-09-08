@@ -242,3 +242,150 @@ describe('rangosDeFamilia — el Pase 1 elige, y si falla el índice salva', () 
     expect(rangosDeFamilia(null, resumen, 'empresa')).toEqual([]);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// ENTREGA 4 — el proceso entero, la convocatoria de El Peruano y la empresa
+// ═══════════════════════════════════════════════════════════════════
+import {
+  aFilaRequisitoEmpresa, aFilasEmpresa, aCronograma, fechaPresentacionDe, fechaISO, sugerenciasDe,
+  TIPO_REQ_EMPRESA_LBL,
+} from '../bases-extraccion.js';
+
+// Renglones LITERALES de PUBLICADO_PERUANO_P-S N° 021-2026.pdf (8-set-2026),
+// tal como los reconstruye el triage (las dos columnas del diario se mezclan
+// en la misma línea: así llega el texto y así tiene que encontrarlo el índice).
+const PERUANO = `<!-- página 1 -->
+MODELO DE CONVOCATORIA AL PROCESO DE SELECCIÓN DE LA EMPRESA PRIVADA calendario, en el horario de 07:30 a 13:00 horas y de 14:30 a 17:00 horas.
+CONVOCATORIA DEL PROCESO DE SELECCIÓN N° 021-2026-CEPIP-GRDE-OXI-GORECAJ-
+PRIMERA CONVOCATORIA.
+CONTRATACIÓN DE LA EMPRESA PRIVADA PARA EJECUCIÓN Y FINANCIAMIENTO
+DEL PROYECTO DE INVERSIÓN: "MEJORAMIENTO Y AMPLIACION DEL SERVICIO DE
+MERCADO DE ABASTOS DE LA LOCALIDAD DE CHILETE DISTRITO DE CHILETE DE LA
+PROVINCIA DE CONTUMAZA DEL DEPARTAMENTO DE CAJAMARCA" con CUI N° 2611946.
+1. Entidad pública que convoca el proceso de selección:
+2. Objeto de la convocatoria y descripción la(s) inversión(es)
+Código de Monto referencial del
+N° Nombre de la Inversión ejecución
+"MEJORAMIENTO Y AMPLIACION DEL SERVICIO DE S/ 15,804,472.36
+*El monto referencial del Convenio de Inversión contempla el financiamiento de la ejecución del proyecto
+3. Calendario del proceso de selección:
+1 Convocatoria y publicación de Bases. 08/09/2026
+2 Presentación de Expresiones de interés (1) 09/09/2026 17/09/2026
+6 Presentación de Propuestas, a través de los Sobres N° 1, N° 2 y N° 3 (5) 23/09/2026 24/09/2026
+9 Consentimiento de la Buena Pro (8) 30/09/2026 12/10/2026
+Empresa Privada o Consorcio (9)`;
+
+describe('indiceDeSecciones — la convocatoria de El Peruano (Obras por Impuestos)', () => {
+  it('encuentra los datos del proceso: antes daba 0 aciertos en esta familia', () => {
+    const idx = indiceDeSecciones(PERUANO);
+    expect(idx.proceso.length).toBeGreaterThan(0);
+    expect(idx.proceso.some(h => h.clave === 'MONTO REFERENCIAL')).toBe(true);
+    expect(idx.proceso.some(h => h.clave === 'CUI N')).toBe(true);
+  });
+  it('encuentra el calendario aunque diga «proceso» y «propuestas» en vez de «procedimiento» y «ofertas»', () => {
+    const idx = indiceDeSecciones(PERUANO);
+    expect(idx.cronograma.some(h => h.clave === 'CALENDARIO DEL PROCESO')).toBe(true);
+    expect(idx.cronograma.some(h => h.clave === 'PRESENTACION DE PROPUESTAS')).toBe(true);
+  });
+  it('«Empresa Privada o Consorcio» cae en la familia de la empresa', () => {
+    expect(indiceDeSecciones(PERUANO).empresa.some(h => h.clave === 'EMPRESA PRIVADA O CONSORCIO')).toBe(true);
+  });
+});
+
+describe('fechaISO / aCronograma / fechaPresentacionDe', () => {
+  it('acepta ISO y da vuelta el DD/MM/YYYY de la entidad', () => {
+    expect(fechaISO('2026-09-23')).toBe('2026-09-23');
+    expect(fechaISO('23/09/2026')).toBe('2026-09-23');
+    expect(fechaISO('23 de setiembre')).toBeNull();
+  });
+  it('arma el calendario ordenado, sin repetir y sin etapas sin fecha', () => {
+    const c = aCronograma({ cronograma: [
+      { etapa: 'Presentación de Propuestas', desde: '23/09/2026', hasta: '24/09/2026', fuente_pagina: 1 },
+      { etapa: 'Convocatoria y publicación de Bases', desde: '2026-09-08' },
+      { etapa: 'Presentación de Propuestas', desde: '2026-09-23', hasta: '2026-09-24' },   // repetida
+      { etapa: 'Otorgamiento de la Buena Pro', desde: 'por definir' },
+    ] });
+    expect(c.map(e => e.etapa)).toEqual(['Convocatoria y publicación de Bases', 'Presentación de Propuestas']);
+    expect(c[1]).toMatchObject({ desde: '2026-09-23', hasta: '2026-09-24', fuente_pagina: 1 });
+  });
+  it('la fecha que manda es el ÚLTIMO día de la presentación de propuestas (no la expresión de interés)', () => {
+    const c = aCronograma({ cronograma: [
+      { etapa: 'Presentación de Expresiones de interés', desde: '2026-09-09', hasta: '2026-09-17' },
+      { etapa: 'Presentación de Propuestas, a través de los Sobres', desde: '2026-09-23', hasta: '2026-09-24' },
+    ] });
+    expect(fechaPresentacionDe(c)).toBe('2026-09-24');
+    expect(fechaPresentacionDe([])).toBeNull();
+  });
+});
+
+describe('aCabeceraLicitacion — el proceso entero (mig 199)', () => {
+  const RES = { proceso: {
+    nomenclatura: 'PROCESO DE SELECCIÓN N° 021-2026-CEPIP-GRDE-OXI-GORECAJ-PRIMERA CONVOCATORIA',
+    objeto: 'Ejecución y financiamiento del proyecto', nombre_inversion: 'MEJORAMIENTO Y AMPLIACION DEL SERVICIO…',
+    cui: '2611946', mecanismo: 'oxi', valor_referencial: 15804472.36, monto_ejecucion: 15051878.44,
+    monto_supervision: 735343.92, plazo_ejecucion_dias: 240, tipo_objeto_sugerido: 'obra_ejecucion',
+  }, cronograma: [{ etapa: 'Presentación de Propuestas', desde: '2026-09-23', hasta: '2026-09-24' }],
+  consorcio: { permitido: true, reglas: 'Promesa formal de consorcio; representante común.' } };
+
+  it('toma CUI, mecanismo, desglose, plazo y consorcio', () => {
+    const c = aCabeceraLicitacion(RES);
+    expect(c).toMatchObject({
+      cui: '2611946', mecanismo: 'oxi', valor_referencial: 15804472.36, monto_ejecucion: 15051878.44,
+      monto_supervision: 735343.92, plazo_ejecucion_dias: 240, consorcio_permitido: true,
+    });
+    expect(c.consorcio_reglas).toMatch(/Promesa formal/);
+  });
+  it('sin fecha_presentacion explícita la saca del calendario', () => {
+    expect(aCabeceraLicitacion(RES).fecha_presentacion).toBe('2026-09-24');
+  });
+  it('un CUI que no parece CUI y un mecanismo desconocido caen a null', () => {
+    const c = aCabeceraLicitacion({ proceso: { cui: 'CUI-XYZ', mecanismo: 'magia' } });
+    expect(c.cui).toBeNull();
+    expect(c.mecanismo).toBeNull();
+    expect(c.consorcio_permitido).toBeNull();
+  });
+  it('el tipo va como SUGERENCIA aparte, nunca en la cabecera', () => {
+    expect(aCabeceraLicitacion(RES).tipo_trabajo).toBeUndefined();
+    expect(sugerenciasDe(RES).tipo_trabajo).toBe('obra_ejecucion');
+    expect(sugerenciasDe({ proceso: { tipo_objeto_sugerido: 'cualquier cosa' } }).tipo_trabajo).toBeNull();
+  });
+});
+
+describe('aFilaRequisitoEmpresa — lo que descalifica al postor', () => {
+  it('guarda tipo, descripción, múltiplo y ventana con la forma de la fila', () => {
+    const f = aFilaRequisitoEmpresa({
+      tipo: 'experiencia_postor', descripcion: 'Monto facturado acumulado en obras similares',
+      multiplo_valor_referencial: 1, ventana_anios: 8, fuente_pagina: 48, fuente_cita: 'equivalente a una (1) vez el valor referencial',
+    }, { orden: 10 });
+    expect(f).toMatchObject({
+      clase: 'empresa', cargo: TIPO_REQ_EMPRESA_LBL.experiencia_postor, multiplo_valor_referencial: 1,
+      ventana_anios: 8, monto_minimo: null, fuente: 'extraccion', fuente_pagina: 48, exige_colegiatura: false,
+    });
+  });
+  it('un tipo desconocido cae a «otro» y un monto imposible a null', () => {
+    const f = aFilaRequisitoEmpresa({ tipo: 'xx', monto_minimo: 'mucho' });
+    expect(f.cargo).toBe(TIPO_REQ_EMPRESA_LBL.otro);
+    expect(f.monto_minimo).toBeNull();
+  });
+  it('numera DESPUÉS de los puestos de personal', () => {
+    const fs = aFilasEmpresa({ requisitos_empresa: [{ tipo: 'rnp' }, { tipo: 'facturacion' }] }, { desde: 3 });
+    expect(fs.map(f => f.orden)).toEqual([40, 50]);
+  });
+});
+
+describe('verificarResultado — la aduana también pasa por empresa, calendario y consorcio', () => {
+  it('marca lo no verificado en los tres, sin borrarlo', () => {
+    const md = '<!-- página 1 -->\nPresentación de Propuestas 23/09/2026 24/09/2026\nEmpresa Privada o Consorcio';
+    const r = verificarResultado({
+      requisitos: [],
+      requisitos_empresa: [{ tipo: 'rnp', fuente_pagina: 1, fuente_cita: 'Registro Nacional de Proveedores vigente' }],
+      cronograma: [{ etapa: 'Presentación de Propuestas', desde: '2026-09-23', fuente_pagina: 1, fuente_cita: 'Presentación de Propuestas 23/09/2026 24/09/2026' }],
+      consorcio: { permitido: true, fuente_pagina: 1, fuente_cita: 'Empresa Privada o Consorcio' },
+    }, md);
+    expect(r.requisitos_empresa[0].verificada).toBe(false);
+    expect(r.cronograma[0].verificada).toBe(true);
+    expect(r.consorcio.verificada).toBe(true);
+    expect(r.requisitos_empresa).toHaveLength(1);
+    expect(r.alertas.join(' ')).toMatch(/rnp|requisito de empresa/i);
+  });
+});

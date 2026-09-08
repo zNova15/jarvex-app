@@ -18,10 +18,21 @@
 // Lo que sí se comparte es `lib/mistral-ocr.js`: la REGLA del snapshot fijo
 // (nunca un alias móvil) es una sola para toda la app.
 //
-// ACCIONES (una sola función, tres pasos del mismo trabajo):
-//   'ocr'       → { paginas:[{n, imagen}] }        → texto por página
-//   'localizar' → { indice }                       → en qué páginas está cada cosa
-//   'extraer'   → { texto, seccion }               → los requisitos, con su cita
+// ACCIONES (una sola función, los pasos del mismo trabajo):
+//   'ocr'        → { paginas:[{n, imagen}] }        → texto por página
+//   'localizar'  → { indice }                       → en qué páginas está cada cosa
+//   'extraer'    → { texto, seccion }               → los requisitos, con su cita
+//                  seccion 'personal' → el plantel (SYSTEM_EXTRAER)
+//                  seccion 'proceso' | 'empresa' | 'cronograma' → el proceso
+//                  entero: montos, CUI, plazo, calendario, consorcio y los
+//                  requisitos de la EMPRESA (SYSTEM_PROCESO). Entrega 4.
+//   'extraer_cv' → { texto, parte }                 → la ficha de un profesional
+//                  parte 'ficha' (las páginas de currículum) o 'constancias'
+//                  (las escaneadas: qué certifica cada una). Entrega 4.
+//
+// EL CV ENTRA POR ACÁ Y NO POR UN ENDPOINT PROPIO porque es el mismo trabajo
+// —triage, OCR de lo escaneado, extracción con cita, verificación— sobre otro
+// documento. Comparten el OCR, el cliente de OpenRouter y la regla de la cita.
 //
 // El cliente manda las páginas de a poco: 96 páginas rasterizadas no entran en
 // un request (Vercel corta ~4,5 MB) ni en 60 segundos de función.
@@ -40,6 +51,9 @@ const OCR = modeloOcr(process.env);
 
 /** Quién puede analizar unas bases: el mismo trío que ve el módulo (mig 197). */
 const ROLES = ['admin', 'gerente', 'licitaciones'];
+/** Quién puede leer un CV: los que escriben la ficha profesional (mig 171):
+ *  el trío de arriba más RR.HH. El OCR se comparte, así que también lo usan. */
+const ROLES_CV = [...ROLES, 'rrhh'];
 
 // Tope por tanda. 6 páginas a 150 dpi en JPEG rondan 1,8 MB en base64 — bien
 // por debajo del corte de la plataforma, y entran en el minuto de la función.
@@ -106,6 +120,108 @@ Responde SOLO con este JSON, sin markdown:
   "factores_evaluacion": [ { "factor": "...", "puntaje_maximo": 20, "fuente_pagina": 51, "fuente_cita": "..." } ],
   "cronograma": [ { "etapa": "Presentación de ofertas", "fecha": "2026-10-15", "fuente_pagina": 12, "fuente_cita": "..." } ],
   "alertas": ["lo que una persona tiene que revisar"]
+}`;
+
+// ── El proceso entero: lo que la convocatoria y las bases dicen del
+//    trabajo, del dinero, del calendario y de CÓMO se puede participar. ──
+//
+// Gabriel (8-set-2026): «las bases tienen mucha información… el costo
+// estimado, el nombre que ellos agarran y te piden… y sé más abierto con cómo
+// empezar a participar: usualmente se hacen consorcios». Este prompt es esa
+// apertura: además del plantel, saca los requisitos de la EMPRESA y las reglas
+// de consorcio, que son la forma real de llegar a la experiencia o al capital.
+const SYSTEM_PROCESO = `Eres un analista de licitaciones públicas peruanas (Ley de Contrataciones del Estado, Obras por Impuestos Ley 29230 y procesos privados). Te doy el TEXTO de unas páginas de una convocatoria o de unas bases (con marcadores "<!-- página N -->") y extraes los DATOS DEL PROCESO, el CALENDARIO, las REGLAS DE CONSORCIO y los REQUISITOS DE LA EMPRESA postora. NO extraes el plantel profesional: eso lo hace otra pasada.
+
+LA REGLA QUE MANDA: cada dato con número o fecha viene con "fuente_cita" —una frase COPIADA LITERAL del texto, palabra por palabra— y "fuente_pagina". Un programa la busca en el documento; si no aparece tal cual, el dato se marca para revisión. NO inventes citas.
+
+QUÉ ES CADA COSA:
+- "nombre_inversion": el nombre LARGO del proyecto tal como lo escribe la entidad, entre comillas en el documento («MEJORAMIENTO Y AMPLIACION DEL SERVICIO DE…»). Cópialo completo: las cartas del expediente lo citan textual.
+- "objeto": qué se contrata, en una línea corta (ej. «Ejecución y financiamiento del proyecto…» o «Supervisión de la ejecución hasta la liquidación…»).
+- "cui": Código Único de Inversión, 7 dígitos («CUI N° 2611946»).
+- "nomenclatura": el número del proceso («PROCESO DE SELECCIÓN N° 021-2026-CEPIP-GRDE-OXI-GORECAJ-PRIMERA CONVOCATORIA», «LP-SM-1-2026-MDCH-1»).
+- "mecanismo": "oxi" si es Obras por Impuestos / Ley 29230 / convenio de inversión / CIPRL; "ley_contrataciones" si es licitación, concurso o adjudicación bajo la Ley de Contrataciones (OSCE/OECE, SEACE); "privado" si convoca una empresa privada; si no se sabe, null.
+- "valor_referencial": el monto TOTAL del proceso (en OxI: «monto referencial del convenio de inversión»). Número sin separadores: «S/ 15,804,472.36» = 15804472.36.
+- "monto_ejecucion" y "monto_supervision": el DESGLOSE cuando existe («contempla el financiamiento de la ejecución S/ 15,051,878.44, la supervisión S/ 735,343.92 y la liquidación S/ 17,250.00»). Si la convocatoria es de SUPERVISIÓN, el valor_referencial es el costo de la supervisión.
+- "plazo_ejecucion_dias": en días calendario. Si dice meses, conviértelo (1 mes = 30 días) y dilo en alertas.
+- "tipo_objeto_sugerido": "obra_ejecucion" (empresa que ejecuta/financia la obra) · "supervision" (entidad privada supervisora, supervisión de obra) · "obra_expediente" (solo elaborar el expediente técnico) · "bienes_servicios" · null si no está claro. Es una SUGERENCIA: una persona la confirma.
+- "fecha_presentacion": la fecha de PRESENTACIÓN DE PROPUESTAS u OFERTAS (no la de expresión de interés ni la de consultas). Formato YYYY-MM-DD.
+- "definicion_obras_similares": el texto con el que ESTA entidad define qué cuenta como obra igual o similar, si está.
+
+CALENDARIO: cada etapa con "desde" y "hasta" (YYYY-MM-DD; si es un solo día, hasta = null). Copia el nombre de la etapa como está («Presentación de Expresiones de interés», «Absolución de consultas», «Integración de bases», «Presentación de Propuestas», «Otorgamiento de la Buena Pro», «Suscripción del Convenio»). Un rango «09/09/2026 – 17/09/2026» es desde=2026-09-09, hasta=2026-09-17.
+
+CONSORCIO: si el documento dice que puede participar «Empresa Privada o Consorcio», «persona natural o jurídica o consorcio», o describe la promesa formal de consorcio, "permitido" es true. Copia en "reglas" lo que exija: porcentaje mínimo de participación, máximo de integrantes, que la experiencia se acredite por el consorciado que la aporta, que el representante común firme, etc. Si no dice nada, "permitido": null (no inventes que está prohibido).
+
+REQUISITOS DE LA EMPRESA (lo que descalifica al POSTOR, no a su personal): experiencia del postor en obras similares o en la especialidad (monto acumulado, a veces «X veces el valor referencial», con ventana de años), facturación, capacidad libre de contratación, RNP vigente, patrimonio neto, no tener impedimento, habilitación. Cada uno con "tipo", "descripcion" (la exigencia en una línea), "monto_minimo" (número o null), "multiplo_valor_referencial" (el X de «X veces el valor referencial», o null), "ventana_anios" (o null) y su cita. Un FACTOR DE EVALUACIÓN (da puntaje) NO es un requisito: no lo pongas acá.
+
+NO INVENTES: si un dato no está en el texto que te di, va en null. Si un monto es ilegible por el OCR, dilo en "alertas". Si el texto es una publicación con varias convocatorias, quédate con la que corresponde al proceso principal del texto y avísalo.
+
+Responde SOLO con este JSON, sin markdown:
+{
+  "proceso": {
+    "nomenclatura": null, "objeto": null, "nombre_inversion": null, "cui": null,
+    "entidad_convocante": null, "entidad_ruc": null, "mecanismo": null, "tipo_objeto_sugerido": null,
+    "valor_referencial": null, "moneda": "PEN", "monto_ejecucion": null, "monto_supervision": null,
+    "plazo_ejecucion_dias": null, "lugar": null, "sistema_contratacion": null,
+    "fecha_presentacion": null, "definicion_obras_similares": null,
+    "fuente_pagina": 1, "fuente_cita": "la frase donde está el monto referencial"
+  },
+  "cronograma": [ { "etapa": "Presentación de Propuestas", "desde": "2026-09-23", "hasta": "2026-09-24", "fuente_pagina": 1, "fuente_cita": "..." } ],
+  "consorcio": { "permitido": true, "max_integrantes": null, "porcentaje_minimo": null, "reglas": "...", "fuente_pagina": 1, "fuente_cita": "..." },
+  "requisitos_empresa": [ { "tipo": "experiencia_postor", "descripcion": "...", "monto_minimo": null, "multiplo_valor_referencial": 1, "ventana_anios": 8, "fuente_pagina": 48, "fuente_cita": "..." } ],
+  "alertas": ["lo que una persona tiene que revisar"]
+}`;
+
+// ── El CV de un profesional → su ficha. ────────────────────────────
+//
+// Medido sobre el CV real (8-set-2026): 8 páginas de currículum nativo y 31 de
+// constancias escaneadas. Son dos lecturas distintas: la primera saca la
+// ficha y la lista de experiencias DECLARADAS; la segunda lee cada constancia
+// y dice qué certifica. El código las cruza: una experiencia con constancia
+// es SUSTENTADA (evidencia_id + página), y en un proceso solo vale lo
+// sustentado. Sin este cruce el padrón se llenaría de meses que nadie puede
+// presentar.
+const SYSTEM_CV_FICHA = `Eres un analista de RR.HH. de una constructora peruana. Te doy el TEXTO de un currículum (con marcadores "<!-- página N -->") y extraes la FICHA PROFESIONAL y la lista de EXPERIENCIAS LABORALES, cada una como un periodo con fechas.
+
+LA REGLA QUE MANDA: cada experiencia trae "fuente_cita", una frase COPIADA LITERAL del texto (por ejemplo la línea del cargo o del periodo, tal como está escrita) y "fuente_pagina". Un programa la busca en el documento; si no aparece, se marca para revisión. NO inventes citas ni fechas.
+
+FECHAS: siempre YYYY-MM-DD. «09/04/2026» es 2026-04-09 (día/mes/año, formato peruano). «abril de 2013» es 2013-04-01. «a la fecha», «actualidad» o sin fecha de fin = null. Si solo hay año, usa 01-01 y dilo en "alertas".
+
+PERSONA: nombres y apellidos por separado (en Perú van dos apellidos; «Jaime Nelson Ayay Valdez» = nombres «Jaime Nelson», apellidos «Ayay Valdez»). DNI de 8 dígitos, RUC de 11 (10 + DNI + dígito, si es persona natural), celular y correo.
+
+FICHA: "profesion" tal como se presenta («Ingeniero de Sistemas», «Ingeniero Civil», «Arquitecto»); "titulo" (título profesional, si lo dice), "universidad", "anio_egreso"; "colegio": "CIP" (ingenieros), "CAP" (arquitectos), "OTRO" o null; "colegiatura_numero" (el número CIP/CAP); "colegiatura_fecha" (fecha de incorporación al colegio, si aparece; si no, null) y "colegiatura_habil_hasta" (vigencia de la habilidad, si aparece). "especialidades": lista corta de áreas que domina. "capacitaciones": diplomados, cursos y especializaciones, cada uno con nombre, institución, horas (número o null), desde y hasta.
+
+EXPERIENCIAS: una por periodo. "entidad" es quién contrató (institución o empresa) con su "entidad_ruc" si figura; "obra_nombre" el proyecto u obra si se nombra (si no, null); "cargo" tal como está escrito; "monto" y "moneda" si el CV lo dice (casi nunca). Periodos repetidos con la misma entidad y cargo son experiencias DISTINTAS: no las fusiones, el programa sabe sumarlas.
+
+NO INVENTES: lo que no esté en el texto va en null. No completes un apellido, un DNI ni una fecha «probable».
+
+Responde SOLO con este JSON, sin markdown:
+{
+  "persona": { "nombres": null, "apellidos": null, "dni": null, "ruc": null, "celular": null, "email": null, "direccion": null, "fecha_nacimiento": null },
+  "ficha": { "profesion": null, "titulo": null, "universidad": null, "anio_egreso": null, "colegio": null, "colegiatura_numero": null, "colegiatura_fecha": null, "colegiatura_habil_hasta": null, "resumen": null, "especialidades": [], "capacitaciones": [ { "nombre": "...", "institucion": "...", "horas": 384, "desde": "2024-01-20", "hasta": "2024-03-27" } ] },
+  "experiencias": [ { "entidad": "...", "entidad_ruc": null, "obra_nombre": null, "cargo": "...", "fecha_inicio": "2026-04-09", "fecha_fin": "2026-07-09", "monto": null, "moneda": "PEN", "fuente_pagina": 2, "fuente_cita": "Periodo: 09/04/2026 hasta el 09/07/2026" } ],
+  "alertas": []
+}`;
+
+const SYSTEM_CV_CONSTANCIAS = `Eres un analista de RR.HH. de una constructora peruana. Te doy el TEXTO (leído por OCR) de las páginas escaneadas que acompañan un currículum: constancias y certificados de trabajo, contratos, órdenes de servicio, conformidades, diplomas, certificados de cursos, DNI, ficha RUC, constancia del RNP. Cada página empieza con "<!-- página N -->".
+
+Tu tarea: decir QUÉ ES cada documento y QUÉ CERTIFICA, para que un programa lo cruce con la experiencia declarada en el currículum. Un documento puede ocupar más de una página ("pagina_desde"/"pagina_hasta").
+
+LA REGLA QUE MANDA: cada documento trae "fuente_cita", una frase COPIADA LITERAL del texto OCR (aunque tenga errores de OCR, cópiala tal cual). NO inventes.
+
+TIPOS: "constancia_trabajo" (constancia o certificado de trabajo/servicios/prestación), "contrato" (contrato de trabajo o de locación de servicios), "conformidad" (conformidad de servicio, acta), "orden_servicio", "diploma_colegiatura" (diploma de incorporación al colegio profesional), "habilidad_colegio" (certificado de habilidad vigente), "titulo" (título profesional o diploma universitario), "grado" (bachiller, maestría), "certificado_curso" (diplomado, curso, capacitación), "dni", "rnp" (constancia del Registro Nacional de Proveedores), "ruc" (ficha RUC / CIR de SUNAT), "otro".
+
+Para los de trabajo (constancia_trabajo, contrato, conformidad, orden_servicio): "emisor" (quién lo firma o emite, la entidad o empresa), "emisor_ruc", "persona_nombre" (a quién certifica), "cargo", "obra_nombre" (el proyecto u obra, si se nombra), "fecha_inicio" y "fecha_fin" del periodo certificado (YYYY-MM-DD; «09/04/2026» = 2026-04-09), "monto" si el documento lo dice.
+Para diploma_colegiatura / habilidad_colegio: "colegiatura_numero", "colegiatura_fecha" (incorporación) o "habil_hasta".
+Para certificado_curso: "curso_nombre", "curso_institucion", "curso_horas", "fecha_inicio", "fecha_fin".
+Para dni: "dni". Para ruc/rnp: "ruc".
+"fecha_emision": cuándo se emitió el documento, si está.
+
+Responde SOLO con este JSON, sin markdown:
+{
+  "documentos": [
+    { "tipo": "constancia_trabajo", "pagina_desde": 12, "pagina_hasta": 12, "emisor": "...", "emisor_ruc": null, "persona_nombre": "...", "cargo": "...", "obra_nombre": null, "fecha_inicio": "2025-05-01", "fecha_fin": "2025-07-29", "monto": null, "moneda": "PEN", "fecha_emision": null, "colegiatura_numero": null, "colegiatura_fecha": null, "habil_hasta": null, "curso_nombre": null, "curso_institucion": null, "curso_horas": null, "dni": null, "ruc": null, "fuente_cita": "..." }
+  ],
+  "alertas": []
 }`;
 
 // ── Mistral OCR de UNA página (imagen). Ver el comentario de arriba sobre
@@ -183,15 +299,20 @@ export default async function handler(req, res) {
 
   try {
     const { profile } = await requireAuth(req);
-    if (!ROLES.includes(profile?.rol)) {
-      return res.status(403).json({ error: 'Solo licitaciones, gerencia o administración pueden analizar bases' });
+    const body = req.body || {};
+    const accion = String(body.accion || '').trim();
+    // El OCR y la lectura de CV los usa también RR.HH. (escribe la ficha
+    // profesional, mig 171); las bases siguen siendo del equipo de propuestas.
+    const rolesDeAccion = (accion === 'ocr' || accion === 'extraer_cv') ? ROLES_CV : ROLES;
+    if (!rolesDeAccion.includes(profile?.rol)) {
+      return res.status(403).json({ error: accion === 'extraer_cv'
+        ? 'Solo RR.HH., licitaciones, gerencia o administración pueden leer un CV'
+        : 'Solo licitaciones, gerencia o administración pueden analizar bases' });
     }
     // Una base de 96 páginas son ~16 tandas de OCR más 2 pasadas: el tope deja
     // pasar dos documentos completos por minuto y corta el abuso.
     rateLimit(req, { windowMs: 60_000, max: 40, key: `bases:${profile?.id || 'anon'}` });
 
-    const body = req.body || {};
-    const accion = String(body.accion || '').trim();
     const deadline = Date.now() + 52_000;
 
     // ── OCR de una tanda de páginas ────────────────────────────────
@@ -250,10 +371,17 @@ export default async function handler(req, res) {
       if (texto.length > MAX_TEXTO_PASADA) {
         return res.status(422).json({ error: `El rango es demasiado grande (${texto.length} caracteres). Achica el rango de páginas.` });
       }
+      // La familia elige el prompt: el plantel tiene sus cinco criterios; el
+      // proceso, la empresa y el calendario van juntos porque en una
+      // convocatoria de una página están en el mismo texto.
+      const seccion = String(body.seccion || 'personal');
+      const esProceso = seccion === 'proceso' || seccion === 'empresa' || seccion === 'cronograma';
       const r = await pasadaDeTexto({
-        system: SYSTEM_EXTRAER,
+        system: esProceso ? SYSTEM_PROCESO : SYSTEM_EXTRAER,
         user: `TEXTO DE LAS BASES:\n\n${texto}\n\nExtrae el JSON. Recuerda: cada dato con su cita literal y su página.`,
-        deadline, maxTokens: 4000,
+        // Los gratuitos razonan en voz alta antes del JSON y eso también
+        // cuenta contra el techo (ver presupuestoSalida en lib/openrouter.js).
+        deadline, maxTokens: esProceso ? 6000 : 4000,
       });
       if (r.cortado) {
         return res.status(422).json({
@@ -263,6 +391,33 @@ export default async function handler(req, res) {
       }
       if (!r.json) return res.status(502).json({ error: 'El modelo no devolvió un JSON legible', code: 'respuesta_ilegible' });
       return res.status(200).json({ resultado: r.json, model: r.model, usage: r.usage, costo: r.costo });
+    }
+
+    // ── El CV: la ficha declarada, o lo que certifica cada constancia ──
+    if (accion === 'extraer_cv') {
+      const texto = String(body.texto || '');
+      if (!texto.trim()) return res.status(422).json({ error: 'No mandaste texto para extraer' });
+      if (texto.length > MAX_TEXTO_PASADA) {
+        return res.status(422).json({ error: `El tramo es demasiado grande (${texto.length} caracteres). Manda menos páginas por tanda.` });
+      }
+      const parte = body.parte === 'constancias' ? 'constancias' : 'ficha';
+      const r = await pasadaDeTexto({
+        system: parte === 'constancias' ? SYSTEM_CV_CONSTANCIAS : SYSTEM_CV_FICHA,
+        user: parte === 'constancias'
+          ? `PÁGINAS ESCANEADAS DEL CV (texto OCR):\n\n${texto}\n\nDi qué es cada documento. Recuerda: cada uno con su cita literal.`
+          : `TEXTO DEL CURRÍCULUM:\n\n${texto}\n\nExtrae el JSON. Recuerda: cada experiencia con su cita literal y su página; fechas YYYY-MM-DD.`,
+        // Un CV con 12 periodos y 10 cursos son ~3.000 tokens de JSON, más el
+        // razonamiento del modelo. Pedir de más cuesta USD 0; cortar, la lectura.
+        deadline, maxTokens: 8000,
+      });
+      if (r.cortado) {
+        return res.status(422).json({
+          error: 'La respuesta se cortó por tamaño. Manda menos páginas por tanda.',
+          code: 'respuesta_cortada',
+        });
+      }
+      if (!r.json) return res.status(502).json({ error: 'El modelo no devolvió un JSON legible', code: 'respuesta_ilegible' });
+      return res.status(200).json({ resultado: r.json, model: r.model, usage: r.usage, costo: r.costo, parte });
     }
 
     return res.status(422).json({ error: `Acción desconocida: "${accion}"` });

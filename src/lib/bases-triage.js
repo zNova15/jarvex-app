@@ -75,10 +75,15 @@ export const contarAlfabeticos = (texto) =>
  * @param textoNativo lo que devolvió la extracción directa de la página
  * @returns { nativa, necesitaOcr, motivo, alfa, ratio }
  */
-export function clasificarPaginaPdf(textoNativo) {
+export function clasificarPaginaPdf(textoNativo, { minAlfa = MIN_ALFA_NATIVA } = {}) {
   const alfa = contarAlfabeticos(textoNativo);
   const ratio = ratioAlfabetico(textoNativo);
-  if (alfa < MIN_ALFA_NATIVA) {
+  // `minAlfa` sube el piso cuando el documento trae un ENCABEZADO nativo en
+  // todas las páginas (el CV de 39 páginas: «Nombre · INGENIERO · celular ·
+  // e-mail» son 69 letras impresas SOBRE cada constancia escaneada). Con el
+  // piso de unas bases, una cabecera un poco más larga daría la página por
+  // nativa y la constancia quedaría sin leer.
+  if (alfa < minAlfa) {
     return { nativa: false, necesitaOcr: true, alfa, ratio,
       motivo: alfa === 0 ? 'sin texto extraíble (página imagen)' : `solo ${alfa} letras` };
   }
@@ -285,14 +290,14 @@ export function renglonesDeItems(items) {
  * @param onProgreso ({ pagina, total }) — la barra de la pantalla.
  * @returns [{ tipo:'texto'|'imagen', pagina, ... }]
  */
-export async function bloquesDePdf(pdf, { rasterizar = null, onProgreso = null } = {}) {
+export async function bloquesDePdf(pdf, { rasterizar = null, onProgreso = null, minAlfa = MIN_ALFA_NATIVA } = {}) {
   const bloques = [];
   const total = pdf?.numPages || 0;
   for (let n = 1; n <= total; n++) {
     const page = await pdf.getPage(n);
     const contenido = await page.getTextContent();
     const texto = renglonesDeItems(contenido?.items).join('\n');
-    const c = clasificarPaginaPdf(texto);
+    const c = clasificarPaginaPdf(texto, { minAlfa });
     if (c.nativa) {
       bloques.push({ tipo: 'texto', pagina: n, texto });
     } else {
@@ -301,6 +306,9 @@ export async function bloquesDePdf(pdf, { rasterizar = null, onProgreso = null }
         // La llave del OCR. `pdf:pN` es estable y legible en los logs.
         media: `pdf:p${n}`,
         necesitaOcr: true, rotacionCorreccion: 0, motivo: c.motivo,
+        // Lo poco de texto nativo que tenía (un encabezado, un folio) se
+        // conserva: sirve para identificar de quién es la página.
+        textoNativo: texto || '',
         imagen: rasterizar ? await rasterizar(page, n) : null,
         // La página de pdf.js queda a mano para rasterizarla DESPUÉS, de a
         // tandas. Guardar 94 JPEG en memoria son ~40 MB y una laptop de obra

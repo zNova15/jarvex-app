@@ -87,6 +87,38 @@ y el test `bases-extraccion.test.js` los verifica sobre el requisito literal.
   bases y errarlo desarma la postulación entera — mismo criterio que
   `ejecutora_tipo` en la entrega 1.
 
+## Entrega 4 — tres prompts más, la misma regla
+
+| Prompt | Cuándo | Qué devuelve |
+|---|---|---|
+| `SYSTEM_EXTRAER` | familia `personal` | el plantel, con sus cinco criterios (igual que antes) |
+| `SYSTEM_PROCESO` | familias `proceso`, `empresa`, `cronograma` | datos del proceso (nombre de la inversión, CUI, mecanismo, montos con desglose, plazo, lugar), el calendario etapa por etapa, si se admite consorcio y con qué reglas, y los requisitos de la EMPRESA (experiencia del postor, facturación, capacidad, RNP) |
+| `SYSTEM_CV_FICHA` | acción `extraer_cv`, parte `ficha` | persona, ficha profesional, cursos, y cada experiencia como periodo |
+| `SYSTEM_CV_CONSTANCIAS` | acción `extraer_cv`, parte `constancias` | qué es cada página escaneada y qué certifica (emisor, cargo, periodo) |
+
+Reglas que se repiten en los tres nuevos, porque son las que evitan el error caro:
+
+- **La cita literal manda.** Un requisito de empresa, una etapa del calendario,
+  la regla de consorcio y cada experiencia del CV vienen con `fuente_cita` y
+  pasan por `verificarCita()`. Lo no verificado se marca, no se borra.
+- **Fechas en YYYY-MM-DD, día/mes/año al leer.** «09/04/2026» es 9 de abril.
+  El código vuelve a comprobar cada fecha (`normalizarFechaCv`, `fechaISO`):
+  lo que no parsea queda vacío y se avisa, nunca se inventa.
+- **El tipo de proceso es una SUGERENCIA** (`tipo_objeto_sugerido`): se
+  prellena en el formulario con una etiqueta que lo dice y una persona lo
+  confirma. Con qué empresa postulamos y el `rubro_id` siguen sin proponerse.
+- **Consorcio: si el documento no lo dice, `permitido: null`.** No se inventa
+  que está prohibido.
+- **Un factor de evaluación NO es un requisito de empresa.** Da puntaje, no
+  descalifica. Va a otra lista.
+- **En el CV, periodos repetidos con la misma entidad son experiencias
+  distintas.** Los meses se fusionan al contar; las participaciones no.
+
+Cuando la convocatoria de El Peruano no encuentra la sección `proceso`, el
+ajuste es el mismo de siempre: **agregar el rótulo a `SECCIONES`** (los de OxI
+son «monto referencial», «CUI N°», «calendario del proceso», «presentación de
+propuestas», «entidad pública que convoca»).
+
 ## Qué modelo
 
 El de `docs/ia-postproceso-openrouter.md`: titular gratuito con **ZDR**, cadena

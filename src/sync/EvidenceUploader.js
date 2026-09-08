@@ -6,6 +6,13 @@ import { uploadToR2, r2WriteEnabled } from '../lib/r2-storage';
 
 const MAX_RETRIES = 5;
 const MAX_PHOTO_BYTES = 8 * 1024 * 1024; // 8 MB
+// Un DOCUMENTO (PDF) puede pesar más que una foto: el CV real de un
+// profesional con sus 31 constancias escaneadas adentro pesa 18 MB (medido el
+// 8-set-2026). Los bytes van navegador → R2 directo, así que el tope no toca a
+// Vercel; el espejo del servidor está en api/r2.js (MAX_PUT_BYTES_DOC).
+const MAX_DOC_BYTES = 30 * 1024 * 1024;  // 30 MB
+const esDocumento = (mime, nombre) =>
+  String(mime || '').toLowerCase() === 'application/pdf' || /\.pdf$/i.test(String(nombre || ''));
 // Red de contención, NO el compresor principal: el camino normal ya pasó por
 // optimizarImagenEvidencia() en saveEvidenciaLocal (1600 px con objetivo de
 // tamaño). Esto solo agarra lo que entró por otro lado — evidencias viejas
@@ -339,8 +346,9 @@ export async function saveEvidenciaLocal({ id, obra_id, tipo_evidencia, modulo_r
       if (opt.convertida && opt.nombre) nombre_archivo = opt.nombre;
     }
   } catch { /* si la optimización falla, se guarda el original tal cual */ }
-  if (blob.size > MAX_PHOTO_BYTES) {
-    throw new Error(`Archivo muy grande (${(blob.size / 1024 / 1024).toFixed(1)} MB). Máximo 8 MB.`);
+  const tope = esDocumento(mime_type, nombre_archivo) ? MAX_DOC_BYTES : MAX_PHOTO_BYTES;
+  if (blob.size > tope) {
+    throw new Error(`Archivo muy grande (${(blob.size / 1024 / 1024).toFixed(1)} MB). Máximo ${tope / 1024 / 1024} MB.`);
   }
 
   await db.evidencias.put({

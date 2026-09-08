@@ -1530,6 +1530,43 @@ function OrdenesPage({ showToast }) {
     } catch (e) { toast('Error: ' + (e.message || e), 'red'); }
   };
 
+  // ── Eliminar una orden ANULADA ────────────────────────────────────
+  //
+  // Gabriel (8-set-2026): «hay algunas anuladas que simplemente han sido de
+  // prueba y no las quiero tener». Anular deja la orden como historial (con su
+  // motivo); eliminar la saca de la lista para siempre. Solo se puede eliminar
+  // lo que YA está anulado: una orden vigente primero se anula con motivo, y
+  // ahí se decide si además se borra. Es un borrado lógico (deleted_at), como
+  // todo en la app: el sync lo propaga y queda en la auditoría.
+  const eliminarAnulada = async (o) => {
+    if (!ANULADA.has(o.estado)) { toast('Solo se eliminan órdenes anuladas', 'amber'); return; }
+    if (!window.confirm(
+      `¿Eliminar definitivamente la orden ${o.codigo}?\n\n`
+      + `Está anulada${o.motivo_anulacion ? ` («${o.motivo_anulacion}»)` : ''}. `
+      + 'Desaparece de la lista y de los reportes; queda solo en la auditoría.\n\n'
+      + 'Si la quieres como historial, déjala anulada y no la elimines.')) return;
+    try {
+      const now = new Date().toISOString();
+      const marca = (row) => ({
+        deleted_at: now, updated_at: now, updated_by: userId,
+        version: (row.version ?? 0) + 1,
+        sync_status: row.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      // Sus ítems se van con ella: sin la orden no significan nada, y el
+      // autocompletado de descripciones no debe seguir proponiendo lo que se
+      // escribió en una prueba.
+      const items = await window.__db.oc_items.where('orden_compra_id').equals(o.id)
+        .filter(x => !x.deleted_at).toArray();
+      for (const it of items) await window.__db.oc_items.update(it.id, marca(it));
+      await window.__db.ordenes_compra.update(o.id, marca(o));
+      try { await window.__logAudit?.({ action: 'delete', table: 'ordenes_compra', recordId: o.id, oldData: { codigo: o.codigo, estado: o.estado, monto_total: o.monto_total, motivo_anulacion: o.motivo_anulacion }, reason: `Eliminación de orden anulada ${o.codigo} (${items.length} ítems)` }); } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'ordenes_compra' } })); } catch {}
+      try { window.dispatchEvent(new Event('online')); } catch {}
+      await recargarOrdenes();
+      toast(`${o.codigo} eliminada`, 'green');
+    } catch (e) { toast('Error: ' + (e.message || e), 'red'); }
+  };
+
   // ══════════════════════════════════════════════════════════════════
   // ATENDER UNA ORDEN RECIBIDA
   //
@@ -1982,7 +2019,8 @@ function OrdenesPage({ showToast }) {
               <JxIcon name="search" size={14} color="var(--tm)" />
               <input placeholder="Buscar código, proveedor o rubro…" value={busqueda} onChange={e => setBusqueda(e.target.value)} />
             </div>
-            <label style={{ fontSize: 11.5, display: 'flex', alignItems: 'center', gap: 5, color: 'var(--tm)' }}>
+            <label style={{ fontSize: 11.5, display: 'flex', alignItems: 'center', gap: 5, color: 'var(--tm)' }}
+              title="Las anuladas se muestran atenuadas; cada una trae un tacho para eliminarla definitivamente">
               <input type="checkbox" checked={verAnuladas} onChange={e => setVerAnuladas(e.target.checked)} /> ver anuladas
             </label>
           </>
@@ -2862,6 +2900,10 @@ function OrdenesPage({ showToast }) {
                           <button className="btn btn-ghost btn-xs" title="Descargar el PDF con la marca de la empresa" onClick={() => descargarPdf(o)} style={{ marginLeft: 4 }}><JxIcon name="download" size={11} /></button>
                           {canEmitir && !anulada && (
                             <button className="btn btn-red btn-xs" title="Anular (con motivo)" onClick={() => anular(o)} style={{ marginLeft: 4 }}><JxIcon name="x" size={11} /></button>
+                          )}
+                          {canEmitir && anulada && (
+                            <button className="btn btn-ghost btn-xs" title="Eliminar definitivamente esta orden anulada" onClick={() => eliminarAnulada(o)}
+                              style={{ marginLeft: 4, color: 'var(--red)' }}><JxIcon name="trash" size={11} /></button>
                           )}
                         </td>
                       </tr>

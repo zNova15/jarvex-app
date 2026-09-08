@@ -65,6 +65,11 @@ export const SECCIONES = {
       'FACTURACION', 'OBRAS SIMILARES', 'MONTO FACTURADO ACUMULADO',
       'CAPACIDAD LIBRE DE CONTRATACION', 'REGISTRO NACIONAL DE PROVEEDORES',
       'RNP', 'HABILITACION', 'CAPACIDAD DE CONTRATACION',
+      // Los rótulos de las bases de Obras por Impuestos (Anexo 12 de Chilete,
+      // medido el 8-set-2026): el postor es «la Empresa Privada o Consorcio».
+      'REQUISITOS DE LA EMPRESA PRIVADA', 'PROMESA FORMAL DE CONSORCIO',
+      'EMPRESA PRIVADA O CONSORCIO', 'PATRIMONIO NETO',
+      'REQUISITOS DEL POSTOR', 'CONSORCIO',
     ],
   },
   cronograma: {
@@ -73,6 +78,13 @@ export const SECCIONES = {
       'CRONOGRAMA', 'CALENDARIO DEL PROCEDIMIENTO', 'ETAPAS DEL PROCEDIMIENTO',
       'PRESENTACION DE OFERTAS', 'ABSOLUCION DE CONSULTAS',
       'INTEGRACION DE BASES', 'BUENA PRO', 'REGISTRO DE PARTICIPANTES',
+      // La convocatoria de El Peruano (OxI) habla de «proceso de selección»,
+      // «propuestas» y «expresiones de interés», no de «procedimiento» ni
+      // «ofertas» (medido: PUBLICADO_PERUANO 021 y 022-2026).
+      'CALENDARIO DEL PROCESO', 'PRESENTACION DE PROPUESTAS',
+      'EXPRESION DE INTERES', 'EXPRESIONES DE INTERES',
+      'CONSENTIMIENTO DE LA BUENA PRO', 'SUSCRIPCION DEL CONVENIO',
+      'CONVOCATORIA Y PUBLICACION DE BASES',
     ],
   },
   evaluacion: {
@@ -96,6 +108,14 @@ export const SECCIONES = {
       'VALOR REFERENCIAL', 'VALOR ESTIMADO', 'OBJETO DE LA CONVOCATORIA',
       'ENTIDAD CONVOCANTE', 'NOMENCLATURA', 'SISTEMA DE CONTRATACION',
       'PLAZO DE EJECUCION',
+      // Obras por Impuestos (Ley 29230): el dinero se llama «monto referencial
+      // del convenio de inversión», el proyecto lleva CUI y la entidad es la
+      // «que convoca». Sin estos rótulos, la convocatoria de El Peruano daba
+      // 0 aciertos en esta familia.
+      'MONTO REFERENCIAL', 'CONVOCATORIA DEL PROCESO DE SELECCION',
+      'ENTIDAD PUBLICA QUE CONVOCA', 'CUI N', 'CODIGO UNICO DE INVERSION',
+      'OBRAS POR IMPUESTOS', 'LEY N° 29230', 'LEY N 29230', 'NOMBRE DE LA INVERSION',
+      'PROCESO DE SELECCION N', 'MONTO DE INVERSION',
     ],
   },
 };
@@ -243,19 +263,29 @@ export function verificarCita(markdown, cita, pagina = null) {
 export function verificarResultado(resultado, markdown) {
   const r = resultado && typeof resultado === 'object' ? resultado : {};
   const alertas = Array.isArray(r.alertas) ? [...r.alertas] : [];
-  const requisitos = (Array.isArray(r.requisitos) ? r.requisitos : []).map((req) => {
-    const v = verificarCita(markdown, req.fuente_cita, req.fuente_pagina);
-    if (!v.verificada) {
-      alertas.push(`«${req.cargo || 'requisito sin cargo'}»: ${v.motivo}. Revisar en las bases antes de usarlo.`);
-    }
+  const marcar = (item, rotulo) => {
+    const v = verificarCita(markdown, item.fuente_cita, item.fuente_pagina);
+    if (!v.verificada) alertas.push(`«${rotulo}»: ${v.motivo}. Revisar en las bases antes de usarlo.`);
     return {
-      ...req,
-      fuente_pagina: v.paginaReal != null ? v.paginaReal : (req.fuente_pagina ?? null),
+      ...item,
+      fuente_pagina: v.paginaReal != null ? v.paginaReal : (item.fuente_pagina ?? null),
       verificada: v.verificada,
       verificacion_motivo: v.motivo,
     };
-  });
-  return { ...r, requisitos, alertas };
+  };
+  const requisitos = (Array.isArray(r.requisitos) ? r.requisitos : [])
+    .map(req => marcar(req, req.cargo || 'requisito sin cargo'));
+  // Lo de la entrega 4 pasa por la misma aduana: un requisito de empresa, una
+  // etapa del calendario o una regla de consorcio inventados cuestan lo mismo
+  // que un puesto inventado.
+  const requisitos_empresa = (Array.isArray(r.requisitos_empresa) ? r.requisitos_empresa : [])
+    .map(req => marcar(req, req.descripcion || req.tipo || 'requisito de empresa'));
+  const cronograma = (Array.isArray(r.cronograma) ? r.cronograma : [])
+    .map(et => marcar(et, et.etapa || 'etapa del calendario'));
+  const consorcio = r.consorcio && typeof r.consorcio === 'object' && r.consorcio.fuente_cita
+    ? marcar(r.consorcio, 'reglas de consorcio')
+    : (r.consorcio || null);
+  return { ...r, requisitos, requisitos_empresa, cronograma, consorcio, alertas };
 }
 
 // ── Del resultado a las filas que la app ya sabe evaluar ───────────
@@ -313,26 +343,147 @@ export function aFilasRequisitos(resultado) {
 }
 
 /**
+ * Un requisito de la EMPRESA (clase 'empresa', mig 199): no se mide en meses
+ * de un cargo sino en montos, múltiplos del valor referencial y papeles (RNP,
+ * capacidad de contratación). `cargo` guarda el rótulo corto del tipo para que
+ * la lista lo muestre igual que a un puesto.
+ */
+export const TIPO_REQ_EMPRESA_LBL = {
+  experiencia_postor: 'Experiencia del postor',
+  facturacion: 'Facturación',
+  capacidad_contratacion: 'Capacidad de contratación',
+  rnp: 'RNP vigente',
+  patrimonio: 'Patrimonio neto',
+  habilitacion: 'Habilitación',
+  otro: 'Otro requisito de la empresa',
+};
+
+export function aFilaRequisitoEmpresa(req = {}, { orden = 100 } = {}) {
+  const tipo = TIPO_REQ_EMPRESA_LBL[req.tipo] ? req.tipo : 'otro';
+  const monto = Number(req.monto_minimo);
+  const mult = Number(req.multiplo_valor_referencial);
+  return {
+    clase: 'empresa',
+    orden,
+    cargo: TIPO_REQ_EMPRESA_LBL[tipo],
+    profesion: null,
+    descripcion: req.descripcion ? String(req.descripcion).trim().slice(0, 600) : null,
+    monto_minimo: Number.isFinite(monto) && monto > 0 ? monto : null,
+    multiplo_valor_referencial: Number.isFinite(mult) && mult > 0 ? mult : null,
+    ventana_anios: req.ventana_anios != null ? Math.round(num(req.ventana_anios)) || null : null,
+    meses_minimos: 0, meses_generales_minimos: 0, participaciones_minimas: 0, meses_por_participacion: 0,
+    cargos_equivalentes: [],
+    exige_colegiatura: false, exige_sustento: true,
+    rubro_id: null, candidato_personal_id: null,
+    fuente: 'extraccion',
+    fuente_pagina: req.fuente_pagina != null ? Math.round(num(req.fuente_pagina)) || null : null,
+    fuente_cita: req.fuente_cita ? String(req.fuente_cita).trim().slice(0, 1200) : null,
+    notas: null,
+  };
+}
+
+/** Las filas de empresa, numeradas después de las de personal. */
+export function aFilasEmpresa(resultado, { desde = 0 } = {}) {
+  const reqs = Array.isArray(resultado?.requisitos_empresa) ? resultado.requisitos_empresa : [];
+  return reqs.map((r, i) => ({
+    ...aFilaRequisitoEmpresa(r, { orden: (desde + i + 1) * 10 }),
+    verificada: r.verificada !== false,
+    verificacion_motivo: r.verificacion_motivo || null,
+  }));
+}
+
+/** 'YYYY-MM-DD' si lo es; también acepta 'DD/MM/YYYY' (como escribe la
+ *  entidad) y lo da vuelta. Cualquier otra cosa → null. */
+export function fechaISO(v) {
+  const s = String(v || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  return null;
+}
+
+const MECANISMOS = new Set(['oxi', 'ley_contrataciones', 'privado', 'otro']);
+const TIPOS_SUGERIBLES = new Set(['obra_ejecucion', 'obra_expediente', 'supervision', 'supervision_expediente', 'bienes_servicios']);
+
+/**
+ * El calendario del proceso como se guarda en `licitaciones.cronograma`:
+ * [{ etapa, desde, hasta, fuente_pagina }]. Sin fecha válida no hay etapa.
+ */
+export function aCronograma(resultado = {}) {
+  const etapas = Array.isArray(resultado.cronograma) ? resultado.cronograma : [];
+  const vistas = new Set();
+  const out = [];
+  for (const e of etapas) {
+    const desde = fechaISO(e?.desde) || fechaISO(e?.fecha);
+    if (!desde) continue;
+    const etapa = String(e?.etapa || '').trim().slice(0, 160);
+    if (!etapa) continue;
+    const k = normalizar(etapa) + '|' + desde;
+    if (vistas.has(k)) continue;
+    vistas.add(k);
+    out.push({
+      etapa, desde,
+      hasta: fechaISO(e?.hasta),
+      fuente_pagina: e?.fuente_pagina != null ? Math.round(num(e.fuente_pagina)) || null : null,
+      verificada: e?.verificada !== false,
+    });
+  }
+  return out.sort((a, b) => a.desde.localeCompare(b.desde));
+}
+
+/** La etapa del calendario que manda: la presentación de propuestas/ofertas. */
+export function fechaPresentacionDe(cronograma) {
+  const et = (cronograma || []).find(e => /PRESENTACION DE (PROPUESTAS|OFERTAS)/.test(normalizar(e.etapa)));
+  return et ? (et.hasta || et.desde) : null;
+}
+
+/**
  * Los datos de cabecera que se pueden proponer para `licitaciones`.
  * Solo lo que el modelo puede saber leyendo: nada de tipo_trabajo ni de con
  * qué empresa postulamos — eso lo decide una persona y errarlo desarma la
  * postulación entera (mismo criterio que `ejecutora_tipo` en la entrega 1).
+ * Lo que el documento SÍ dice del tipo (ejecución vs supervisión) viaja
+ * aparte, en `sugerenciasDe()`, y la pantalla lo muestra como sugerencia.
  */
 export function aCabeceraLicitacion(resultado = {}) {
   const p = resultado.proceso || {};
   const limpio = (v, max = 300) => (v ? String(v).trim().slice(0, max) : null);
+  const monto = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : null);
+  const cronograma = aCronograma(resultado);
+  const cons = resultado.consorcio && typeof resultado.consorcio === 'object' ? resultado.consorcio : {};
   return {
-    nomenclatura: limpio(p.nomenclatura, 80),
+    nomenclatura: limpio(p.nomenclatura, 160),
     objeto: limpio(p.objeto, 400),
+    nombre_inversion: limpio(p.nombre_inversion, 600),
+    cui: /^\d{6,8}$/.test(String(p.cui || '').trim()) ? String(p.cui).trim() : null,
     entidad_convocante: limpio(p.entidad_convocante, 200),
     entidad_ruc: /^\d{11}$/.test(String(p.entidad_ruc || '').trim())
       ? String(p.entidad_ruc).trim() : null,
-    valor_referencial: Number.isFinite(Number(p.valor_referencial)) && Number(p.valor_referencial) > 0
-      ? Number(p.valor_referencial) : null,
+    mecanismo: MECANISMOS.has(p.mecanismo) ? p.mecanismo : null,
+    valor_referencial: monto(p.valor_referencial),
+    monto_ejecucion: monto(p.monto_ejecucion),
+    monto_supervision: monto(p.monto_supervision),
     moneda: p.moneda === 'USD' ? 'USD' : 'PEN',
-    fecha_presentacion: /^\d{4}-\d{2}-\d{2}$/.test(String(p.fecha_presentacion || ''))
-      ? p.fecha_presentacion : null,
+    plazo_ejecucion_dias: Number.isInteger(Number(p.plazo_ejecucion_dias)) && Number(p.plazo_ejecucion_dias) > 0
+      ? Number(p.plazo_ejecucion_dias) : null,
+    lugar: limpio(p.lugar, 200),
+    sistema_contratacion: limpio(p.sistema_contratacion, 120),
+    // La fecha que manda: la del proceso, o la etapa de presentación del calendario.
+    fecha_presentacion: fechaISO(p.fecha_presentacion) || fechaPresentacionDe(cronograma),
     definicion_obras_similares: limpio(p.definicion_obras_similares, 2000),
+    consorcio_permitido: typeof cons.permitido === 'boolean' ? cons.permitido : null,
+    consorcio_reglas: limpio(cons.reglas, 1500),
+  };
+}
+
+/**
+ * Lo que el documento sugiere pero una persona decide. Va aparte de la
+ * cabecera a propósito: se PRELLENA en el formulario, no se guarda solo.
+ */
+export function sugerenciasDe(resultado = {}) {
+  const p = resultado.proceso || {};
+  return {
+    tipo_trabajo: TIPOS_SUGERIBLES.has(p.tipo_objeto_sugerido) ? p.tipo_objeto_sugerido : null,
   };
 }
 
@@ -360,6 +511,7 @@ export function costoDelAnalisis({ paginasOcr = 0, usdPasadas = 0 } = {}) {
 export default {
   SECCIONES, normalizar, fragmentosPorPagina, indiceDeSecciones, resumenIndice,
   textoDeRango, verificarCita, verificarResultado,
-  aFilaRequisito, aFilasRequisitos, aCabeceraLicitacion,
-  costoDelAnalisis, USD_POR_PAGINA_OCR,
+  aFilaRequisito, aFilasRequisitos, aFilaRequisitoEmpresa, aFilasEmpresa,
+  aCabeceraLicitacion, aCronograma, fechaPresentacionDe, fechaISO, sugerenciasDe,
+  TIPO_REQ_EMPRESA_LBL, costoDelAnalisis, USD_POR_PAGINA_OCR,
 };

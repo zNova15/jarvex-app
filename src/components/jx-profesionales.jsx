@@ -16,6 +16,13 @@
 //
 // La persona es la de `personal` (DNI único): un profesional que además está
 // en planilla es UNA sola persona, no dos padrones que reconciliar.
+//
+// EL CV SE LEE CON IA (tanda 15, entrega 4 — 8-set-2026). El padrón estaba
+// vacío porque tipear 12 periodos con fechas por persona es justo el trabajo
+// que nadie hace. «Cargar CV con IA» sube el PDF, dice cuánto cuesta leer las
+// páginas escaneadas ANTES de gastar, y propone persona + ficha + experiencias,
+// cada una con la página de la constancia que la sustenta. Nada se guarda
+// solo: se revisa y se tilda. La cadena vive en src/lib/cv-analisis.js.
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
 import {
@@ -24,6 +31,7 @@ import {
 } from "../lib/experiencia-profesional.js";
 import { categoriaDe } from "../lib/personal-categoria.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
+import { filaLimpia } from "../lib/cv-extraccion.js";
 
 const { useState: uS, useMemo: uM, useRef: uR } = React;
 
@@ -54,6 +62,7 @@ function ProfesionalesPage({ showToast }) {
   const [q, setQ] = uS('');
   const [soloProfesionales, setSoloProfesionales] = uS(true);
   const [detalle, setDetalle] = uS(null);      // persona abierta
+  const [cvIa, setCvIa] = uS(null);            // { personaFija } → el lector de CV
   const [busy, setBusy] = uS(false);
   // Guard SÍNCRONO contra doble click (regla crítica 2: el guard por estado
   // llega tarde, después del primer await a Dexie).
@@ -208,6 +217,123 @@ function ProfesionalesPage({ showToast }) {
     } catch (e) { toast('No se pudo abrir: ' + (e?.message || e), 'red'); }
   };
 
+  /**
+   * Lo que aprobó el lector de CV, guardado de una sola vez (entrega 4).
+   *
+   * NO reusa guardarFicha/guardarExperiencia en bucle: tienen el guard
+   * síncrono (regla crítica 2) que cortaría la segunda llamada en silencio.
+   * Orden: persona → CV como evidencia → ficha → experiencias. Si la persona
+   * ya existe (por DNI), se completa su ficha en vez de crear otra.
+   */
+  const aplicarCv = async ({ persona, personaExistente = null, ficha, experiencias = [], archivo = null, costo = null, modelos = [], paginasOcr = null }) => {
+    if (enCursoRef.current) return null;
+    enCursoRef.current = true;
+    setBusy(true);
+    try {
+      const ahora = new Date().toISOString();
+      // 1. La persona: la existente, la que coincide por DNI, o una nueva SIN obra.
+      let personaRow = personaExistente
+        || (persona?.dni ? (personal || []).find(p => !p.deleted_at && String(p.dni) === String(persona.dni)) : null)
+        || null;
+      if (!personaRow) {
+        if (!persona?.dni) throw new Error('Sin DNI no se puede crear la persona en el padrón');
+        const pid = window.__newId();
+        personaRow = {
+          id: pid, ...persona,
+          created_by: userId, updated_by: userId, created_at: ahora, updated_at: ahora, version: 1,
+          idempotency_key: `${userId}_pers_${pid}`,
+          ...marcaModo,
+        };
+        await window.__db.personal.add(personaRow);
+        try { await window.__logAudit?.({ action: 'create', table: 'personal', recordId: pid, reason: `Profesional creado desde su CV (IA) · DNI ${persona.dni}` }); } catch {}
+        window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'personal' } }));
+      } else {
+        // Los datos de contacto que le faltaban, sin pisar los que tenía.
+        const patch = {};
+        for (const k of ['telefono', 'email', 'direccion', 'fecha_nacimiento']) {
+          if (!personaRow[k] && persona?.[k]) patch[k] = persona[k];
+        }
+        if (Object.keys(patch).length) {
+          await window.__db.personal.update(personaRow.id, {
+            ...patch, updated_at: ahora, updated_by: userId,
+            version: (personaRow.version ?? 0) + 1,
+            sync_status: personaRow.demo === true ? 'synced'
+              : (personaRow.sync_status === 'pending_create' ? 'pending_create' : 'pending_update'),
+          });
+          window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'personal' } }));
+        }
+      }
+
+      // 2. El CV, como evidencia. Es el mismo archivo que sustenta cada
+      //    experiencia (por página), así que se sube UNA vez.
+      const existente = fichaPorPersona.get(personaRow.id);
+      let evId = existente?.cv_evidencia_id || null;
+      if (archivo) {
+        evId = await adjuntar(archivo, { tipo: 'cv_profesional', registroId: personaRow.id, obs: `CV de ${nombreDe(personaRow)} (leído con IA)` });
+      }
+
+      // 3. La ficha. `rnp_inscrito` y lo que empieza con `_` son de la
+      //    pantalla, no columnas: no viajan.
+      const { rnp_inscrito, ...camposFicha } = filaLimpia(ficha || {});
+      void rnp_inscrito;
+      const analisis = { fecha: ahora, archivo: archivo?.name || null, costo: costo?.total ?? null, modelos, paginasOcr };
+      if (existente) {
+        // Lo leído completa lo vacío; lo que la ficha ya tenía se respeta.
+        const patch = {};
+        for (const [k, v] of Object.entries(camposFicha)) {
+          if (v == null || v === '' || (Array.isArray(v) && !v.length)) continue;
+          const actual = existente[k];
+          if (actual == null || actual === '' || (Array.isArray(actual) && !actual.length)) patch[k] = v;
+        }
+        await window.__db.personal_profesional.update(existente.id, {
+          ...patch, cv_evidencia_id: evId, cv_analisis: analisis,
+          updated_at: ahora, updated_by: userId,
+          version: (existente.version ?? 0) + 1,
+          sync_status: existente.demo === true ? 'synced'
+            : (existente.sync_status === 'pending_create' ? 'pending_create' : 'pending_update'),
+        });
+      } else {
+        const fid = window.__newId();
+        await window.__db.personal_profesional.add({
+          id: fid, personal_id: personaRow.id, ...camposFicha,
+          especialidades: camposFicha.especialidades || [],
+          capacitaciones: camposFicha.capacitaciones || [],
+          cv_evidencia_id: evId, cv_analisis: analisis, fuente: 'cv_ia',
+          created_by: userId, updated_by: userId, created_at: ahora, updated_at: ahora, version: 1,
+          idempotency_key: `prof_${personaRow.id}`,
+          ...marcaModo,
+        });
+      }
+
+      // 4. Las experiencias, en lote. `evidencia_id` SOLO si hay constancia en
+      //    el archivo: una experiencia declarada sin constancia se guarda sin
+      //    evidencia, que es la verdad.
+      const filas = experiencias.map((e) => {
+        const nid = window.__newId();
+        const f = filaLimpia(e);
+        return {
+          id: nid, personal_id: personaRow.id, ...f,
+          evidencia_id: f.sustento_pagina != null && evId ? evId : null,
+          created_by: userId, updated_by: userId, created_at: ahora, updated_at: ahora, version: 1,
+          idempotency_key: `exp_${nid}`,
+          ...marcaModo,
+        };
+      });
+      if (filas.length) await window.__db.personal_experiencia.bulkAdd(filas);
+
+      for (const t of ['personal_profesional', 'personal_experiencia']) {
+        window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: t } }));
+      }
+      try { window.dispatchEvent(new Event('online')); } catch {}
+      const plata = costo?.total ? ` · la lectura costó USD ${Number(costo.total).toFixed(3)}` : '';
+      toast(`✓ Ficha de ${nombreDe(personaRow)} guardada con ${filas.length} experiencia(s)${plata}`, 'green');
+      return personaRow.id;
+    } catch (e) {
+      toast('No se pudo guardar la ficha: ' + (e?.message || e), 'red');
+      return null;
+    } finally { setBusy(false); enCursoRef.current = false; }
+  };
+
   return (
     <div className="page-wrap">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
@@ -217,13 +343,19 @@ function ProfesionalesPage({ showToast }) {
             Qué profesionales tenemos, con cuánta experiencia por rubro y con qué sustento — para armar el plantel de una propuesta.
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           <button className={`btn btn-sm ${tab === 'profesionales' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('profesionales')}>
             👷 Profesionales <span style={{ opacity: .7 }}>({listado.length})</span>
           </button>
           <button className={`btn btn-sm ${tab === 'plantel' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('plantel')}>
             🔎 Buscar plantel
           </button>
+          {canWrite && (
+            <button className="btn btn-blue btn-sm" onClick={() => setCvIa({ personaFija: null })}
+              title="Sube un CV en PDF: se lee, se arma la ficha con sus experiencias y sus constancias, y tú la revisas antes de guardar">
+              🤖 Cargar CV con IA
+            </button>
+          )}
         </div>
       </div>
 
@@ -248,7 +380,7 @@ function ProfesionalesPage({ showToast }) {
                 <tbody>
                   {listado.length === 0 && (
                     <tr><td colSpan={6} className="empty-state" style={{ padding: '30px 0' }}>
-                      {q ? 'Nadie coincide con la búsqueda.' : 'Todavía no hay profesionales cargados.'}
+                      {q ? 'Nadie coincide con la búsqueda.' : <>Todavía no hay profesionales cargados. Sube un CV con <b>«Cargar CV con IA»</b>: la ficha y sus experiencias salen del PDF.</>}
                     </td></tr>
                   )}
                   {listado.map(c => {
@@ -310,10 +442,340 @@ function ProfesionalesPage({ showToast }) {
           onBorrarExperiencia={borrarExperiencia}
           onAdjuntar={adjuntar}
           onVerEvidencia={verEvidencia}
+          onLeerCv={canWrite ? () => setCvIa({ personaFija: detalle.persona }) : null}
           toast={toast}
         />
       )}
+
+      {cvIa && (
+        <AnalisisCvModal
+          personaFija={cvIa.personaFija} personal={personal || []} rubros={rubros || []}
+          busy={busy} toast={toast}
+          onClose={() => setCvIa(null)}
+          onAplicar={async (payload) => {
+            const id = await aplicarCv(payload);
+            if (id) {
+              setCvIa(null);
+              const c = candidatos.find(x => x.persona.id === id);
+              if (c) setDetalle(c);
+              else setDetalle({ persona: (personal || []).find(p => p.id === id) || { id, ...payload.persona }, ficha: null, experiencias: [] });
+            }
+            return id;
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// EL LECTOR DE CV (tanda 15, entrega 4)
+//
+// Mismo contrato que el lector de bases: el precio ANTES de cobrarlo, nada se
+// guarda solo, lo no verificado se ve destildado. Y lo propio del CV: cada
+// experiencia dice si tiene constancia y en qué página del PDF está.
+// ═══════════════════════════════════════════════════════════════════
+const PASO_CV_LBL = {
+  leyendo: 'Abriendo el CV',
+  ocr: 'Leyendo las constancias escaneadas',
+  ficha: 'Leyendo el currículum',
+  constancias: 'Leyendo qué certifica cada constancia',
+  verificar: 'Cruzando constancias con experiencias y verificando citas',
+};
+const usd = (n) => `USD ${Number(n || 0).toFixed(3)}`;
+
+function AnalisisCvModal({ personaFija, personal, rubros, busy, onClose, onAplicar, toast }) {
+  const Modal = window.Modal;
+  const [archivo, setArchivo] = uS(null);
+  const [fase, setFase] = uS('elegir');
+  const [progreso, setProgreso] = uS(null);
+  const [presupuesto, setPresupuesto] = uS(null);
+  const [bloques, setBloques] = uS(null);
+  const [salida, setSalida] = uS(null);
+  const [persona, setPersona] = uS(null);
+  const [ficha, setFicha] = uS(null);
+  const [exps, setExps] = uS([]);
+  const [marcadas, setMarcadas] = uS(() => new Set());
+  const [guardando, setGuardando] = uS(false);
+  const guardandoRef = uR(false);
+
+  const rubrosVivos = uM(() => (rubros || []).filter(r => r.activo !== false), [rubros]);
+  // ¿Ya está en el padrón? Por DNI, que es la identidad de `personal`.
+  const existente = uM(() => {
+    if (personaFija) return personaFija;
+    const dni = persona?.dni;
+    return dni ? (personal || []).find(p => !p.deleted_at && String(p.dni) === String(dni)) || null : null;
+  }, [personaFija, persona, personal]);
+
+  if (!Modal) return null;
+
+  const elegirArchivo = async (file) => {
+    if (!file) return;
+    setArchivo(file);
+    setFase('corriendo');
+    setProgreso({ paso: 'leyendo' });
+    try {
+      const { leerCv, presupuestarCv } = await import('../lib/cv-analisis.js');
+      const { bloques: bs } = await leerCv(file, { onProgreso: setProgreso });
+      setBloques(bs);
+      setPresupuesto(presupuestarCv(bs));
+      setFase('presupuesto');
+    } catch (e) {
+      toast('No se pudo abrir el CV: ' + (e?.message || e), 'red');
+      setFase('elegir');
+      setArchivo(null);
+    }
+  };
+
+  const correr = async () => {
+    setFase('corriendo');
+    try {
+      const { analizarCv } = await import('../lib/cv-analisis.js');
+      const { apiFetch, apiParse } = await import('../lib/api-client');
+      const r = await analizarCv(bloques, { apiFetch, apiParse, rubros: rubrosVivos, onProgreso: setProgreso });
+      setSalida(r);
+      setPersona({ ...r.persona });
+      setFicha({ ...r.ficha });
+      setExps(r.experiencias);
+      // Arrancan tildadas las que tienen fecha de inicio y cita verificada.
+      setMarcadas(new Set(r.experiencias.map((e, i) => (e.fecha_inicio && e._verificada ? i : -1)).filter(i => i >= 0)));
+      setFase('revisar');
+    } catch (e) {
+      toast('La lectura falló: ' + (e?.message || e), 'red');
+      setFase('presupuesto');
+    }
+  };
+
+  const upP = (patch) => setPersona(p => ({ ...p, ...patch }));
+  const upF = (patch) => setFicha(f => ({ ...f, ...patch }));
+  const upE = (i, patch) => setExps(es => es.map((e, k) => (k === i ? { ...e, ...patch } : e)));
+  const alternar = (i) => setMarcadas(prev => { const s = new Set(prev); if (s.has(i)) s.delete(i); else s.add(i); return s; });
+
+  const puedeGuardar = fase === 'revisar' && !guardando && (existente || (persona?.dni && /^\d{8}$/.test(persona.dni)))
+    && (persona?.nombres || existente);
+
+  const guardar = async () => {
+    if (guardandoRef.current) return;
+    guardandoRef.current = true;
+    setGuardando(true);
+    try {
+      await onAplicar({
+        persona: { ...persona, dni: String(persona?.dni || '').replace(/\D/g, '') || null },
+        personaExistente: existente || null,
+        ficha,
+        experiencias: exps.filter((_, i) => marcadas.has(i)),
+        archivo,
+        costo: salida?.costo || null, modelos: salida?.modelos || [], paginasOcr: salida?.paginasOcr ?? null,
+      });
+    } finally {
+      guardandoRef.current = false;
+      setGuardando(false);
+    }
+  };
+
+  return (
+    <Modal title={personaFija ? `Leer el CV con IA — ${nombreDe(personaFija)}` : 'Cargar un profesional desde su CV'} onClose={onClose} size="xl">
+
+      {fase === 'elegir' && (
+        <div style={{ padding: '18px 4px' }}>
+          <div style={{ fontSize: 12, marginBottom: 10, lineHeight: 1.5 }}>
+            Sube el <b>CV en PDF</b>, con sus constancias adentro si las tiene. Primero se revisa en tu computadora
+            —gratis— y te digo cuántas páginas escaneadas hay y cuánto cuesta leerlas, antes de leerlas.
+          </div>
+          <input type="file" className="fi" accept=".pdf,application/pdf" onChange={e => elegirArchivo(e.target.files?.[0])} />
+          <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 10, lineHeight: 1.5 }}>
+            Del currículum salen la persona, la ficha y las experiencias declaradas. De las constancias escaneadas sale
+            qué periodo certifica cada una: la app las cruza y cada experiencia queda con la <b>página</b> de su constancia.
+            {personaFija ? ' Como la persona ya está en el padrón, se completa su ficha.' : ' Si la persona ya está en el padrón (por DNI), se completa su ficha en vez de duplicarla.'}
+          </div>
+        </div>
+      )}
+
+      {fase === 'presupuesto' && presupuesto && (
+        <div style={{ padding: '10px 4px' }}>
+          <div className="card card-p" style={{ marginBottom: 12 }}>
+            <b style={{ fontSize: 12.5 }}>Esto es lo que hay en {archivo?.name}</b>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 10, marginTop: 10, fontSize: 12 }}>
+              <div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--green)' }}>{presupuesto.paginasNativas}</div>
+                <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>páginas de currículum (texto) · gratis</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--amber)' }}>{presupuesto.paginasOcr}</div>
+                <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>páginas escaneadas (constancias) · hay que leerlas</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 20, fontWeight: 700 }}>{usd(presupuesto.costo.total)}</div>
+                <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>lo que cuesta leer este CV</div>
+              </div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button className="btn btn-ghost btn-sm" onClick={() => { setFase('elegir'); setArchivo(null); }}>Elegir otro archivo</button>
+            <button className="btn btn-blue btn-sm" onClick={correr}>Leer el CV · {usd(presupuesto.costo.total)}</button>
+          </div>
+        </div>
+      )}
+
+      {fase === 'corriendo' && (
+        <div style={{ padding: '28px 10px', textAlign: 'center' }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{PASO_CV_LBL[progreso?.paso] || 'Trabajando'}…</div>
+          {(progreso?.paso === 'ocr' || progreso?.paso === 'constancias') && progreso.total > 0 && (
+            <>
+              <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 8 }}>{progreso.hecho} de {progreso.total} páginas</div>
+              <div style={{ height: 6, borderRadius: 3, background: 'var(--bg-c2)', overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${Math.round((progreso.hecho / progreso.total) * 100)}%`, background: 'var(--blue)' }} />
+              </div>
+            </>
+          )}
+          {progreso?.paso === 'leyendo' && progreso.total > 0 && (
+            <div style={{ fontSize: 11.5, color: 'var(--tm)' }}>página {progreso.pagina} de {progreso.total}</div>
+          )}
+          {progreso?.detalle && typeof progreso.detalle === 'string' && (
+            <div style={{ fontSize: 11.5, color: 'var(--tm)' }}>{progreso.detalle}</div>
+          )}
+          <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 14 }}>No cierres esta ventana: el CV se está leyendo en tu computadora.</div>
+        </div>
+      )}
+
+      {fase === 'revisar' && salida && persona && ficha && (
+        <div style={{ display: 'grid', gap: 10 }}>
+          <div className="card card-p" style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+            <div><div style={{ fontSize: 18, fontWeight: 700 }}>{exps.length}</div><div style={{ fontSize: 10.5, color: 'var(--tm)' }}>experiencias encontradas</div></div>
+            <div><div style={{ fontSize: 18, fontWeight: 700, color: 'var(--green)' }}>{exps.filter(e => e.sustento_pagina != null).length}</div><div style={{ fontSize: 10.5, color: 'var(--tm)' }}>con constancia en el archivo</div></div>
+            <div><div style={{ fontSize: 18, fontWeight: 700 }}>{(ficha.capacitaciones || []).length}</div><div style={{ fontSize: 10.5, color: 'var(--tm)' }}>cursos y diplomados</div></div>
+            <div><div style={{ fontSize: 18, fontWeight: 700 }}>{usd(salida.costo?.total)}</div><div style={{ fontSize: 10.5, color: 'var(--tm)' }}>costó de verdad · {salida.paginasOcr} páginas leídas</div></div>
+            {salida.modelos?.length > 0 && <div style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--tm)', textAlign: 'right' }}>leído por<br />{salida.modelos.join(' · ')}</div>}
+          </div>
+
+          {salida.alertas?.length > 0 && (
+            <div style={{ padding: '9px 12px', borderRadius: 8, fontSize: 11, background: 'rgba(245,158,11,0.09)', border: '1px solid rgba(245,158,11,0.35)' }}>
+              <b style={{ color: 'var(--amber)' }}>⚠ Para revisar ({salida.alertas.length})</b>
+              <ul style={{ margin: '6px 0 0 16px', padding: 0, lineHeight: 1.5 }}>
+                {salida.alertas.slice(0, 10).map((a, i) => <li key={i}>{a}</li>)}
+              </ul>
+            </div>
+          )}
+
+          {/* La persona */}
+          <div className="card card-p">
+            <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>
+              {existente
+                ? <>Persona: <span style={{ color: 'var(--green)' }}>{nombreDe(existente)} ya está en el padrón</span> <span style={{ fontWeight: 400, fontSize: 10.5, color: 'var(--tm)' }}>(DNI {existente.dni}) — se completa su ficha</span></>
+                : <>Persona nueva <span style={{ fontWeight: 400, fontSize: 10.5, color: 'var(--tm)' }}>— se crea en el padrón como profesional, sin obra</span></>}
+            </div>
+            {!existente && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
+                <div><label className="flabel">Nombres *</label><input className="fi" value={persona.nombres || ''} onChange={e => upP({ nombres: e.target.value })} /></div>
+                <div><label className="flabel">Apellidos *</label><input className="fi" value={persona.apellidos || ''} onChange={e => upP({ apellidos: e.target.value })} /></div>
+                <div><label className="flabel">DNI * {!/^\d{8}$/.test(String(persona.dni || '')) && <span style={{ color: 'var(--red)' }}>(8 dígitos)</span>}</label>
+                  <input className="fi" value={persona.dni || ''} onChange={e => upP({ dni: e.target.value.replace(/\D/g, '').slice(0, 8) })} /></div>
+                <div><label className="flabel">Celular</label><input className="fi" value={persona.telefono || ''} onChange={e => upP({ telefono: e.target.value })} /></div>
+                <div><label className="flabel">Correo</label><input className="fi" value={persona.email || ''} onChange={e => upP({ email: e.target.value })} /></div>
+              </div>
+            )}
+          </div>
+
+          {/* La ficha */}
+          <div className="card card-p">
+            <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>Ficha profesional</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
+              <div><label className="flabel">Profesión</label><input className="fi" value={ficha.profesion || ''} onChange={e => upF({ profesion: e.target.value })} /></div>
+              <div><label className="flabel">Título</label><input className="fi" value={ficha.titulo || ''} onChange={e => upF({ titulo: e.target.value })} /></div>
+              <div><label className="flabel">Universidad</label><input className="fi" value={ficha.universidad || ''} onChange={e => upF({ universidad: e.target.value })} /></div>
+              <div><label className="flabel">Año de egreso</label><input className="fi" type="number" value={ficha.anio_egreso ?? ''} onChange={e => upF({ anio_egreso: e.target.value === '' ? null : Number(e.target.value) })} /></div>
+              <div><label className="flabel">Colegio</label>
+                <select className="fi" value={ficha.colegio || ''} onChange={e => upF({ colegio: e.target.value || null })}>
+                  <option value="">—</option><option value="CIP">CIP (Ingenieros)</option><option value="CAP">CAP (Arquitectos)</option><option value="OTRO">Otro</option>
+                </select></div>
+              <div><label className="flabel">N° de colegiatura</label><input className="fi" value={ficha.colegiatura_numero || ''} onChange={e => upF({ colegiatura_numero: e.target.value })} /></div>
+              <div><label className="flabel" title="Con esto se acredita la experiencia general que piden las bases">Colegiado desde</label>
+                <input className="fi" type="date" value={ficha.colegiatura_fecha || ''} onChange={e => upF({ colegiatura_fecha: e.target.value || null })} /></div>
+              <div><label className="flabel">Habilitado hasta</label>
+                <input className="fi" type="date" value={ficha.colegiatura_habil_hasta || ''} onChange={e => upF({ colegiatura_habil_hasta: e.target.value || null })} /></div>
+              <div><label className="flabel">RUC</label><input className="fi" value={ficha.ruc || ''} onChange={e => upF({ ruc: e.target.value.replace(/\D/g, '').slice(0, 11) })} /></div>
+            </div>
+            {(ficha.capacitaciones || []).length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                <div style={{ fontSize: 10.5, color: 'var(--tm)', marginBottom: 3 }}>Cursos y diplomados ({ficha.capacitaciones.length}) — se guardan con la ficha</div>
+                <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                  {ficha.capacitaciones.map((c, i) => (
+                    <span key={i} className="badge b-blue" style={{ fontSize: 9.5 }} title={`${c.institucion || ''}${c.horas ? ` · ${c.horas} h` : ''}${c.desde ? ` · ${c.desde}` : ''}`}>
+                      {c.nombre.slice(0, 60)}{c.horas ? ` · ${c.horas} h` : ''}{c.sustento_pagina ? ' 📎' : ''}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Las experiencias */}
+          <div>
+            <div style={{ fontSize: 12.5, fontWeight: 700, margin: '2px 0 6px' }}>
+              Experiencias ({marcadas.size} de {exps.length} se guardan)
+              <span style={{ fontWeight: 400, fontSize: 10.5, color: 'var(--tm)', marginLeft: 8 }}>
+                Las que tienen 📎 quedan sustentadas con esa página del CV; las demás se guardan como declaradas.
+              </span>
+            </div>
+            <div style={{ display: 'grid', gap: 6 }}>
+              {exps.map((e, i) => (
+                <div key={i} className="card card-p" style={{ display: 'flex', gap: 10, alignItems: 'flex-start',
+                  borderLeft: `3px solid ${e.sustento_pagina != null ? 'var(--green)' : (e._verificada ? 'var(--tm)' : 'var(--amber)')}` }}>
+                  <input type="checkbox" checked={marcadas.has(i)} onChange={() => alternar(i)} style={{ marginTop: 4 }} />
+                  <div style={{ flex: 1, minWidth: 0, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 6 }}>
+                    <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <b style={{ fontSize: 12 }}>{e.cargo || '(sin cargo)'}</b>
+                      <span style={{ fontSize: 11, color: 'var(--tm)' }}>· {e.entidad || 'entidad sin nombre'}</span>
+                      {e.sustento_pagina != null
+                        ? <span className="badge b-green" style={{ fontSize: 9 }}>📎 constancia pág. {e.sustento_pagina}</span>
+                        : <span className="badge b-gray" style={{ fontSize: 9 }}>sin constancia</span>}
+                      {!e._verificada && <span className="badge b-amber" style={{ fontSize: 9 }}>cita sin verificar</span>}
+                      {e.observaciones && <span style={{ fontSize: 10, color: 'var(--blue)' }}>{e.observaciones}</span>}
+                    </div>
+                    <div><label className="flabel" style={{ fontSize: 10 }}>Obra / proyecto</label>
+                      <input className="fi" style={{ fontSize: 11 }} value={e.obra_nombre || ''} onChange={ev => upE(i, { obra_nombre: ev.target.value })} /></div>
+                    <div><label className="flabel" style={{ fontSize: 10 }}>Desde</label>
+                      <input className="fi" style={{ fontSize: 11 }} type="date" value={e.fecha_inicio || ''} onChange={ev => upE(i, { fecha_inicio: ev.target.value || null })} /></div>
+                    <div><label className="flabel" style={{ fontSize: 10 }}>Hasta (vacío = en curso)</label>
+                      <input className="fi" style={{ fontSize: 11 }} type="date" value={e.fecha_fin || ''} onChange={ev => upE(i, { fecha_fin: ev.target.value || null })} /></div>
+                    <div><label className="flabel" style={{ fontSize: 10 }}>Rubro {e._rubroPropuesto && e.rubro_id && <span style={{ color: 'var(--blue)' }}>(propuesto)</span>}</label>
+                      <select className="fi" style={{ fontSize: 11 }} value={e.rubro_id || ''} onChange={ev => upE(i, { rubro_id: ev.target.value || null })}>
+                        <option value="">(sin rubro)</option>
+                        {rubrosVivos.map(r => <option key={r.id} value={r.id}>{r.nombre}</option>)}
+                      </select></div>
+                    {(e._alertas?.length > 0 || (!e._verificada && e._verificacionMotivo)) && (
+                      <div style={{ gridColumn: '1 / -1', fontSize: 10.5, color: 'var(--amber)' }}>
+                        {[...(e._alertas || []), ...(!e._verificada && e._verificacionMotivo ? [e._verificacionMotivo] : [])].join(' · ')}
+                      </div>
+                    )}
+                    {e.fuente_cita && (
+                      <div style={{ gridColumn: '1 / -1', fontSize: 10.5, padding: '4px 8px', borderRadius: 5, background: 'var(--bg-c2)', fontStyle: 'italic' }}>
+                        «{e.fuente_cita.slice(0, 200)}»{e.fuente_pagina != null && <b style={{ fontStyle: 'normal' }}> — pág. {e.fuente_pagina}</b>}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {exps.length === 0 && (
+                <div className="empty-state" style={{ padding: '16px', textAlign: 'center', fontSize: 11.5 }}>
+                  No se encontraron experiencias. La ficha se guarda igual; las experiencias se pueden cargar a mano después.
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' }}>
+            {!existente && !/^\d{8}$/.test(String(persona.dni || '')) && (
+              <span style={{ fontSize: 11, color: 'var(--red)', marginRight: 'auto' }}>Falta el DNI (8 dígitos): sin él no se puede crear la persona.</span>
+            )}
+            <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={guardando}>Cancelar</button>
+            <button className="btn btn-blue btn-sm" onClick={guardar} disabled={!puedeGuardar || busy}>
+              {guardando ? 'Guardando…' : `Guardar ficha y ${marcadas.size} experiencia${marcadas.size === 1 ? '' : 's'}`}
+            </button>
+          </div>
+        </div>
+      )}
+    </Modal>
   );
 }
 
@@ -437,7 +899,7 @@ const EXP_VACIA = { entidad: '', obra_nombre: '', cargo: '', rubro_id: '', monto
 
 function FichaModal({ candidato, rubros, rubroById, obras, hoy, canWrite, busy,
                       onClose, onGuardarFicha, onGuardarExperiencia, onBorrarExperiencia,
-                      onAdjuntar, onVerEvidencia, toast }) {
+                      onAdjuntar, onVerEvidencia, onLeerCv = null, toast }) {
   const Modal = window.Modal;
   const { persona, ficha, experiencias } = candidato;
   // TODOS los hooks antes de cualquier early return (regla crítica 3).
@@ -446,6 +908,7 @@ function FichaModal({ candidato, rubros, rubroById, obras, hoy, canWrite, busy,
     universidad: ficha?.universidad || '', anio_egreso: ficha?.anio_egreso || '',
     colegio: ficha?.colegio || 'CIP', colegiatura_numero: ficha?.colegiatura_numero || '',
     colegiatura_habil_hasta: ficha?.colegiatura_habil_hasta || '',
+    colegiatura_fecha: ficha?.colegiatura_fecha || '',
     resumen: ficha?.resumen || '',
   }));
   const [nueva, setNueva] = uS({ ...EXP_VACIA });
@@ -521,6 +984,9 @@ function FichaModal({ candidato, rubros, rubroById, obras, hoy, canWrite, busy,
             <div><label className="flabel">N° de colegiatura</label>
               <input className="fi" value={f.colegiatura_numero} disabled={!canWrite}
                 onChange={e => setF({ ...f, colegiatura_numero: e.target.value })} /></div>
+            <div><label className="flabel" title="Fecha de incorporación al colegio: con esto se acredita la experiencia GENERAL que piden las bases (mig 198)">Colegiado desde</label>
+              <input className="fi" type="date" value={f.colegiatura_fecha} disabled={!canWrite}
+                onChange={e => setF({ ...f, colegiatura_fecha: e.target.value })} /></div>
             <div><label className="flabel">Habilitado hasta</label>
               <input className="fi" type="date" value={f.colegiatura_habil_hasta} disabled={!canWrite}
                 onChange={e => setF({ ...f, colegiatura_habil_hasta: e.target.value })} />
@@ -543,6 +1009,17 @@ function FichaModal({ candidato, rubros, rubroById, obras, hoy, canWrite, busy,
                 <input type="file" accept="application/pdf,image/*" style={{ display: 'none' }}
                   disabled={subiendo} onChange={e => { subirCV(e.target.files?.[0]); e.target.value = ''; }} />
               </label>
+            )}
+            {onLeerCv && (
+              <button className="btn btn-blue btn-sm" disabled={busy} onClick={onLeerCv}
+                title="Sube el CV en PDF y la IA propone la ficha y las experiencias, con la página de cada constancia">
+                🤖 Leer el CV con IA
+              </button>
+            )}
+            {ficha?.cv_analisis?.fecha && (
+              <span style={{ fontSize: 10, color: 'var(--tm)' }}>
+                leído con IA el {String(ficha.cv_analisis.fecha).slice(0, 10)}{ficha.cv_analisis.costo != null ? ` · USD ${Number(ficha.cv_analisis.costo).toFixed(3)}` : ''}
+              </span>
             )}
           </div>
         </div>
@@ -588,7 +1065,10 @@ function FichaModal({ candidato, rubros, rubroById, obras, hoy, canWrite, busy,
                       <tr key={x.id}>
                         <td style={{ fontSize: 11.5 }}>
                           <div style={{ fontWeight: 600 }}>{x.obra_nombre || '—'}</div>
-                          <div style={{ fontSize: 10, color: 'var(--tm)' }}>{x.entidad || ''}{x.obra_id ? ' · obra del grupo' : ''}</div>
+                          <div style={{ fontSize: 10, color: 'var(--tm)' }}>
+                            {x.entidad || ''}{x.obra_id ? ' · obra del grupo' : ''}
+                            {x.fuente === 'cv_ia' && <span className="badge b-blue" style={{ fontSize: 8.5, marginLeft: 4 }} title={x.fuente_cita ? `«${x.fuente_cita}»${x.fuente_pagina ? ` — pág. ${x.fuente_pagina} del CV` : ''}` : 'Leída del CV'}>del CV</span>}
+                          </div>
                         </td>
                         <td style={{ fontSize: 11.5 }}>{x.cargo || '—'}</td>
                         <td style={{ fontSize: 11 }}>{rubroById.get(x.rubro_id)?.nombre || <span style={{ color: 'var(--amber)' }}>sin rubro</span>}</td>
@@ -596,7 +1076,10 @@ function FichaModal({ candidato, rubros, rubroById, obras, hoy, canWrite, busy,
                         <td style={{ fontSize: 11 }}>{formatearMeses(t.meses)}</td>
                         <td>
                           {x.evidencia_id
-                            ? <button className="btn btn-ghost btn-xs" style={{ color: 'var(--blue)' }} onClick={() => onVerEvidencia(x.evidencia_id)}>📎 Ver</button>
+                            ? <button className="btn btn-ghost btn-xs" style={{ color: 'var(--blue)' }} onClick={() => onVerEvidencia(x.evidencia_id)}
+                                title={x.sustento_pagina ? `La constancia está en la página ${x.sustento_pagina} del CV` : ''}>
+                                📎 Ver{x.sustento_pagina ? ` (pág. ${x.sustento_pagina})` : ''}
+                              </button>
                             : canWrite ? (
                               <label className="btn btn-ghost btn-xs" style={{ color: 'var(--amber)', cursor: 'pointer' }}>
                                 ⬆ Adjuntar

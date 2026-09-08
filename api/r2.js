@@ -64,6 +64,9 @@ const PATH_RE = /^[A-Za-z0-9_-]+\/\d{4}-\d{2}\/[0-9a-fA-F-]{36}\.[A-Za-z0-9]{1,1
 const PUT_EXT_RE = /\.(jpg|jpeg|png|webp|heic|heif|pdf)$/i;
 const PUT_MIME_RE = /^(image\/(jpeg|jpg|png|webp|heic|heif)|application\/pdf|application\/octet-stream)$/i;
 const MAX_PUT_BYTES = 8 * 1024 * 1024;   // espejo de MAX_PHOTO_BYTES del cliente
+// Un PDF puede pesar más que una foto (un CV con sus constancias escaneadas
+// adentro: 18 MB medidos). Espejo de MAX_DOC_BYTES de EvidenceUploader.
+const MAX_PUT_BYTES_DOC = 30 * 1024 * 1024;
 const CARPETA_CAMPO = 'captura-campo';
 
 function hmac(key, data) {
@@ -245,8 +248,10 @@ export default async function handler(req, res) {
       return res.status(422).json({ error: `Tipo de archivo no permitido: ${contentType}` });
     }
     const size = Number(body.size);
-    if (Number.isFinite(size) && size > MAX_PUT_BYTES) {
-      return res.status(422).json({ error: `Archivo muy grande (máximo ${MAX_PUT_BYTES / 1024 / 1024} MB)` });
+    const esPdf = /\.pdf$/i.test(path) || /^application\/pdf$/i.test(contentType);
+    const tope = esPdf ? MAX_PUT_BYTES_DOC : MAX_PUT_BYTES;
+    if (Number.isFinite(size) && size > tope) {
+      return res.status(422).json({ error: `Archivo muy grande (máximo ${tope / 1024 / 1024} MB)` });
     }
 
     // El nombre del archivo ES el id de la evidencia. Si esa fila YA existe,

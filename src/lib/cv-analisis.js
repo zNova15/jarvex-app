@@ -1,0 +1,149 @@
+// ═══════════════════════════════════════════════════════════════════
+// JARVEX — LEER UN CV DE PUNTA A PUNTA (tanda 15, entrega 4).
+//
+// La misma cadena que las bases (bases-analisis.js), sobre otro documento y
+// con otras dos pasadas:
+//
+//   0   triage       qué páginas son texto y cuáles escaneadas     gratis
+//   1   OCR          solo las escaneadas (las constancias)          USD 0,002 c/u
+//   2   ficha        la IA lee las páginas de currículum            ~USD 0
+//   3   constancias  la IA dice qué certifica cada página escaneada ~USD 0
+//   4   cruce        código: qué constancia sustenta qué periodo    gratis
+//   5   verificar    ¿la cita existe en el documento?               gratis
+//
+// Medido sobre el CV real (39 páginas, 8-set-2026): 31 páginas a OCR =
+// USD 0,062. Las pasadas van a un gratuito con ZDR (lib/openrouter.js).
+//
+// EL TRIAGE DEL CV TIENE OTRO PISO. El CV trae un encabezado nativo impreso
+// sobre cada constancia escaneada («Nombre · INGENIERO · celular · e-mail»,
+// 69 letras). Con el piso de las bases (80) quedaba a 11 letras de dar esas
+// páginas por nativas y no leerlas. Para un CV el piso es 250: una página de
+// currículum de verdad tiene más de 900 letras.
+//
+// Corre en el CLIENTE, igual que las bases: el archivo se abre en el
+// navegador, se decide qué páginas pagar y se mandan de a seis.
+// ═══════════════════════════════════════════════════════════════════
+
+import { bloquesAMarkdown, resumenTriage } from './bases-triage.js';
+import { fragmentosPorPagina, costoDelAnalisis } from './bases-extraccion.js';
+import { leerDocumento, ocrDeBloques, crearPedidor, PAGINAS_POR_TANDA } from './bases-analisis.js';
+import { armarFicha } from './cv-extraccion.js';
+
+/** Piso de letras nativas para dar una página de CV por texto. */
+export const MIN_ALFA_CV = 250;
+
+/** Páginas escaneadas por pasada de constancias: ~8 constancias son ~25.000
+ *  caracteres de OCR, cómodo bajo el tope del endpoint (120.000). */
+export const PAGINAS_POR_PASADA_CONSTANCIAS = 8;
+
+/** Los bloques del CV, sin gastar. */
+export async function leerCv(file, { onProgreso = null } = {}) {
+  return leerDocumento(file, { onProgreso, minAlfa: MIN_ALFA_CV });
+}
+
+/** El presupuesto antes de gastar, igual que en las bases. */
+export function presupuestarCv(bloques) {
+  const r = resumenTriage(bloques);
+  const nativas = (bloques || []).filter(b => b.tipo === 'texto').length;
+  return {
+    ...r,
+    paginasNativas: nativas,
+    tandas: Math.ceil(r.paginasOcr / PAGINAS_POR_TANDA),
+    costo: costoDelAnalisis({ paginasOcr: r.paginasOcr }),
+  };
+}
+
+/** Texto de un conjunto de páginas, con su ancla, para mandarlo a una pasada. */
+function textoDePaginas(markdown, paginas) {
+  const set = new Set(paginas);
+  return fragmentosPorPagina(markdown)
+    .filter(f => f.pagina != null && set.has(f.pagina))
+    .map(f => `<!-- página ${f.pagina} -->\n${f.texto}`)
+    .join('\n\n');
+}
+
+/**
+ * El análisis completo del CV.
+ *
+ * @param bloques  lo que devolvió leerCv()
+ * @param rubros   filas de rubros_obra (para PROPONER el rubro de cada obra)
+ * @returns { persona, ficha, experiencias, documentos, alertas, costo, modelos, paginasOcr, markdown }
+ */
+export async function analizarCv(bloques, { apiFetch, apiParse, rubros = [], onProgreso = null } = {}) {
+  const avisar = (p) => { if (onProgreso) onProgreso(p); };
+  const pedir = crearPedidor(apiFetch, apiParse);
+  const alertas = [];
+  const modelos = new Set();
+  let usdPasadas = 0;
+
+  // ── 1. OCR de las constancias ────────────────────────────────────
+  const { ocrPorMedia, leidas } = await ocrDeBloques(bloques, { pedir, avisar, alertas, modelos });
+  const markdown = bloquesAMarkdown(bloques, ocrPorMedia);
+
+  const paginasNativas = bloques.filter(b => b.tipo === 'texto' && b.pagina != null).map(b => b.pagina);
+  const paginasOcr = bloques
+    .filter(b => b.tipo === 'imagen' && b.necesitaOcr && b.pagina != null && ocrPorMedia[b.media])
+    .map(b => b.pagina);
+
+  // ── 2. La ficha declarada ────────────────────────────────────────
+  // Si el CV entero está escaneado (pasa), la ficha se lee de las primeras
+  // páginas OCR: son las de currículum, las constancias vienen después.
+  const paginasFicha = paginasNativas.length ? paginasNativas : paginasOcr.slice(0, 6);
+  let resFicha = null;
+  if (paginasFicha.length) {
+    avisar({ paso: 'ficha', detalle: `páginas ${paginasFicha[0]}–${paginasFicha[paginasFicha.length - 1]}` });
+    try {
+      const texto = textoDePaginas(markdown, paginasFicha).slice(0, 110_000);
+      const data = await pedir({ accion: 'extraer_cv', parte: 'ficha', texto });
+      resFicha = data.resultado || null;
+      if (data.model) modelos.add(data.model);
+      usdPasadas += Number(data.costo) || 0;
+    } catch (e) {
+      alertas.push(`No se pudo leer el currículum: ${e.message}`);
+    }
+  } else {
+    alertas.push('El archivo no tiene páginas con texto ni páginas que se hayan podido leer por OCR.');
+  }
+
+  // ── 3. Qué certifica cada constancia ─────────────────────────────
+  const paginasConstancias = paginasNativas.length ? paginasOcr : paginasOcr.slice(6);
+  const documentos = [];
+  for (let i = 0; i < paginasConstancias.length; i += PAGINAS_POR_PASADA_CONSTANCIAS) {
+    const tanda = paginasConstancias.slice(i, i + PAGINAS_POR_PASADA_CONSTANCIAS);
+    avisar({ paso: 'constancias', hecho: i, total: paginasConstancias.length,
+      detalle: `páginas ${tanda[0]}–${tanda[tanda.length - 1]}` });
+    const texto = textoDePaginas(markdown, tanda);
+    if (!texto.trim()) continue;
+    try {
+      const data = await pedir({ accion: 'extraer_cv', parte: 'constancias', texto });
+      const r = data.resultado || {};
+      if (data.model) modelos.add(data.model);
+      usdPasadas += Number(data.costo) || 0;
+      for (const d of (Array.isArray(r.documentos) ? r.documentos : [])) {
+        // La página la afirma el modelo; si se salió de la tanda, se corrige a
+        // la primera de la tanda antes de creerle.
+        const pd = Number(d?.pagina_desde);
+        documentos.push({ ...d, pagina_desde: tanda.includes(pd) ? pd : tanda[0] });
+      }
+      for (const a of (Array.isArray(r.alertas) ? r.alertas : [])) alertas.push(a);
+    } catch (e) {
+      alertas.push(`No se pudieron leer las constancias de las páginas ${tanda[0]}–${tanda[tanda.length - 1]}: ${e.message}`);
+    }
+  }
+
+  // ── 4 y 5. Cruce y verificación, sin IA ──────────────────────────
+  avisar({ paso: 'verificar' });
+  const armado = armarFicha({ ficha: resFicha, documentos, markdown, rubros });
+
+  return {
+    ...armado,
+    alertas: [...alertas, ...armado.alertas],
+    markdown,
+    costo: costoDelAnalisis({ paginasOcr: leidas, usdPasadas }),
+    modelos: [...modelos],
+    paginasOcr: leidas,
+    paginasTotal: bloques.filter(b => b.pagina != null).length,
+  };
+}
+
+export default { leerCv, presupuestarCv, analizarCv, MIN_ALFA_CV, PAGINAS_POR_PASADA_CONSTANCIAS };

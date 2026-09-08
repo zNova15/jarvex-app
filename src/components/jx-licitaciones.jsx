@@ -20,6 +20,16 @@
 // EL PASO A TRABAJOS ES UN BOTÓN, NO UN AUTOMATISMO. Al ganar se prellena el
 // borrador de la obra (src/lib/licitaciones.js → prefillObraDesde) y una
 // persona confirma. Prellenar no es crear.
+//
+// LA POSTULACIÓN NACE DEL DOCUMENTO, NO AL REVÉS (entrega 4, 8-set-2026).
+// Gabriel: «esa herramienta para leer las bases y las fechas de inscripción me
+// debería ayudar a crear una nueva postulación, no al revés». En la entrega 3
+// el lector vivía DENTRO de una postulación ya creada a mano. Ahora la puerta
+// principal es «Leer bases o convocatoria»: se sube el aviso de El Peruano o
+// las bases, se revisa lo que salió y recién ahí se crea la postulación con
+// sus datos, su calendario, sus puestos y sus requisitos de empresa. El
+// lector sigue disponible adentro para COMPLEMENTAR (primero la convocatoria,
+// después las bases integradas).
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
 import {
@@ -38,6 +48,15 @@ const hoyLocal = () => (window.__fecha?.hoyLocal?.() || new Date().toISOString()
 const money = (n, mon = 'PEN') => n == null || n === ''
   ? '—'
   : `${mon === 'USD' ? 'US$' : 'S/'} ${Number(n).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+const MECANISMO_LBL = {
+  oxi: 'Obras por Impuestos (Ley 29230)',
+  ley_contrataciones: 'Ley de Contrataciones del Estado',
+  privado: 'Privado',
+  otro: 'Otro',
+};
+const MECANISMOS = Object.entries(MECANISMO_LBL).map(([v, label]) => ({ v, label }));
+const dias = (n) => (n == null ? '—' : `${n} días`);
 
 const URG_COLOR = {
   vencida: 'var(--red)', hoy: 'var(--red)', alta: 'var(--amber)',
@@ -62,7 +81,8 @@ function LicitacionesPage({ showToast }) {
   const [q, setQ] = uS('');
   const [filtroEtapa, setFiltroEtapa] = uS('abiertas');
   const [abierta, setAbierta] = uS(null);      // id de la postulación abierta
-  const [creando, setCreando] = uS(false);
+  const [creando, setCreando] = uS(false);     // alta a mano
+  const [leyendoNueva, setLeyendoNueva] = uS(false);   // alta desde el documento
   const [busy, setBusy] = uS(false);
   // Regla crítica 2: el guard por estado llega tarde (se activa recién tras el
   // await a Dexie). El ref corta el segundo click en el mismo tick.
@@ -214,7 +234,36 @@ function LicitacionesPage({ showToast }) {
    * otros ocho EN SILENCIO. Un lote es una escritura, con un guard, y avisa
    * una vez al final.
    */
-  const aplicarAnalisis = async (licitacionId, { requisitos = [], cabecera = null, costo = null }) => {
+  /** Las filas de requisitos (personal Y empresa) listas para bulkAdd. */
+  const filasParaInsertar = (licitacionId, requisitos, base, ahora) => requisitos.map((campos, i) => {
+    const nid = window.__newId();
+    // `verificada` y su motivo son de la pantalla, no columnas de la tabla:
+    // si viajan al insert, Dexie los guarda y el push a Supabase falla.
+    const { verificada, verificacion_motivo, ...fila } = campos;
+    void verificada; void verificacion_motivo;
+    return {
+      id: nid, licitacion_id: licitacionId,
+      ...fila,
+      orden: (base + i + 1) * 10,
+      created_by: userId, updated_by: userId, created_at: ahora, updated_at: ahora,
+      version: 1, idempotency_key: `licreq_${nid}`,
+      ...marcaModo,
+    };
+  });
+
+  /** La entrada de la bitácora `licitaciones.analisis` de esta lectura. */
+  const entradaBitacora = ({ archivo, costo, modelos, paginasOcr, requisitos }) => ({
+    fecha: new Date().toISOString(),
+    archivo: archivo || null,
+    costo: costo?.total ?? null,
+    modelos: modelos || [],
+    paginasOcr: paginasOcr ?? null,
+    requisitos: requisitos ?? 0,
+  });
+
+  const aplicarAnalisis = async (licitacionId, {
+    requisitos = [], requisitosEmpresa = [], cabecera = null, cronograma = null, costo = null, bitacora = null,
+  }) => {
     if (enCursoRef.current) return;
     enCursoRef.current = true;
     setBusy(true);
@@ -225,26 +274,19 @@ function LicitacionesPage({ showToast }) {
       const base = (await window.__db.licitacion_requisitos
         .where('licitacion_id').equals(licitacionId).toArray())
         .filter(r => !r.deleted_at).length;
-      const filas = requisitos.map((campos, i) => {
-        const nid = window.__newId();
-        // `verificada` y su motivo son de la pantalla, no columnas de la tabla:
-        // si viajan al insert, Dexie los guarda y el push a Supabase falla.
-        const { verificada, verificacion_motivo, ...fila } = campos;
-        void verificada; void verificacion_motivo;
-        return {
-          id: nid, licitacion_id: licitacionId,
-          ...fila,
-          orden: (base + i + 1) * 10,
-          created_by: userId, updated_by: userId, created_at: ahora, updated_at: ahora,
-          version: 1, idempotency_key: `licreq_${nid}`,
-          ...marcaModo,
-        };
-      });
+      const filas = filasParaInsertar(licitacionId, [...requisitos, ...requisitosEmpresa], base, ahora);
       if (filas.length) await window.__db.licitacion_requisitos.bulkAdd(filas);
-      if (cabecera && Object.keys(cabecera).length) {
-        const prev = vivas.find(l => l.id === licitacionId);
+      const prev = vivas.find(l => l.id === licitacionId);
+      const patch = { ...(cabecera || {}) };
+      // El calendario se guarda solo si la postulación todavía no tiene uno:
+      // pisar uno cargado a mano con una lectura automática es peor que no leer.
+      if (Array.isArray(cronograma) && cronograma.length && !(Array.isArray(prev?.cronograma) && prev.cronograma.length)) {
+        patch.cronograma = cronograma;
+      }
+      if (bitacora) patch.analisis = [...(Array.isArray(prev?.analisis) ? prev.analisis : []), entradaBitacora({ ...bitacora, costo, requisitos: filas.length })];
+      if (Object.keys(patch).length) {
         await window.__db.licitaciones.update(licitacionId, {
-          ...cabecera, updated_at: ahora, updated_by: userId,
+          ...patch, updated_at: ahora, updated_by: userId,
           version: (prev?.version ?? 0) + 1,
           sync_status: prev?.demo === true ? 'synced'
             : (prev?.sync_status === 'pending_create' ? 'pending_create' : 'pending_update'),
@@ -253,10 +295,63 @@ function LicitacionesPage({ showToast }) {
       }
       avisar('licitacion_requisitos');
       const plata = costo?.total ? ` · costó USD ${Number(costo.total).toFixed(3)}` : '';
-      toast(`✓ ${filas.length} puesto(s) cargados desde las bases${plata}`, 'green');
+      toast(`✓ ${requisitos.length} puesto(s) y ${requisitosEmpresa.length} requisito(s) de empresa cargados desde el documento${plata}`, 'green');
     } catch (e) {
       toast('No se pudieron guardar los requisitos: ' + (e?.message || e), 'red');
     } finally { setBusy(false); enCursoRef.current = false; }
+  };
+
+  /**
+   * La postulación que NACE del documento (entrega 4). Una sola escritura con
+   * un guard: la cabecera ya revisada, el calendario, los puestos y los
+   * requisitos de empresa que la persona tildó.
+   */
+  const crearDesdeAnalisis = async ({
+    cabecera = {}, requisitos = [], requisitosEmpresa = [], cronograma = [], costo = null, bitacora = null,
+  }) => {
+    if (enCursoRef.current) return null;
+    enCursoRef.current = true;
+    setBusy(true);
+    try {
+      const ahora = new Date().toISOString();
+      const nid = window.__newId();
+      const filas = filasParaInsertar(nid, [...requisitos, ...requisitosEmpresa], 0, ahora);
+      await window.__db.licitaciones.add({
+        id: nid, etapa: 'requisitos', moneda: 'PEN',
+        tipo_trabajo: TIPO_PROCESO_DEFAULT, origen: 'publico',
+        ...cabecera,
+        cronograma: Array.isArray(cronograma) ? cronograma : [],
+        consorcio: [],
+        analisis: bitacora ? [entradaBitacora({ ...bitacora, costo, requisitos: filas.length })] : [],
+        fuente: 'extraccion',
+        created_by: userId, updated_by: userId, created_at: ahora, updated_at: ahora, version: 1,
+        idempotency_key: `lic_${nid}`,
+        ...marcaModo,
+      });
+      if (filas.length) await window.__db.licitacion_requisitos.bulkAdd(filas);
+      avisar('licitaciones'); avisar('licitacion_requisitos');
+      const plata = costo?.total ? ` · la lectura costó USD ${Number(costo.total).toFixed(3)}` : '';
+      toast(`✓ Postulación creada desde el documento con ${filas.length} requisito(s)${plata}`, 'green');
+      return nid;
+    } catch (e) {
+      toast('No se pudo crear la postulación: ' + (e?.message || e), 'red');
+      return null;
+    } finally { setBusy(false); enCursoRef.current = false; }
+  };
+
+  /** Cambios sueltos de una postulación abierta (consorcio, notas) sin toast. */
+  const patchLicitacion = async (id, campos) => {
+    try {
+      const prev = vivas.find(l => l.id === id);
+      const ahora = new Date().toISOString();
+      await window.__db.licitaciones.update(id, {
+        ...campos, updated_at: ahora, updated_by: userId,
+        version: (prev?.version ?? 0) + 1,
+        sync_status: prev?.demo === true ? 'synced'
+          : (prev?.sync_status === 'pending_create' ? 'pending_create' : 'pending_update'),
+      });
+      avisar('licitaciones');
+    } catch (e) { toast('No se pudo guardar: ' + (e?.message || e), 'red'); }
   };
 
   const borrarRequisito = async (row) => {
@@ -305,7 +400,15 @@ function LicitacionesPage({ showToast }) {
           </div>
         </div>
         {canWrite && (
-          <button className="btn btn-amber btn-sm" onClick={() => setCreando(true)}>+ Nueva postulación</button>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {/* LA PUERTA PRINCIPAL (entrega 4): la postulación nace del
+                documento. El alta a mano queda para lo que no tiene papel. */}
+            <button className="btn btn-blue btn-sm" onClick={() => setLeyendoNueva(true)}
+              title="Sube el aviso de El Peruano o las bases: se leen y la postulación se crea con sus datos, su calendario y sus requisitos">
+              🔎 Leer bases o convocatoria
+            </button>
+            <button className="btn btn-ghost btn-sm" onClick={() => setCreando(true)}>+ A mano</button>
+          </div>
         )}
       </div>
 
@@ -322,7 +425,8 @@ function LicitacionesPage({ showToast }) {
       {listado.length === 0 ? (
         <div className="card card-p empty-state" style={{ padding: '34px 0', textAlign: 'center' }}>
           {vivas.length === 0
-            ? 'Todavía no hay postulaciones. Creá una y cargale los requisitos que piden las bases.'
+            ? <>Todavía no hay postulaciones. Sube la <b>convocatoria</b> (el aviso de El Peruano) o las <b>bases</b> con
+              «Leer bases o convocatoria»: la postulación se crea desde ahí, con su calendario y sus requisitos.</>
             : 'Ninguna postulación coincide con el filtro.'}
         </div>
       ) : (
@@ -386,6 +490,18 @@ function LicitacionesPage({ showToast }) {
         />
       )}
 
+      {leyendoNueva && (
+        <AnalisisBasesModal
+          lic={null} rubros={rubros || []} companies={companies || []} toast={toast}
+          onClose={() => setLeyendoNueva(false)}
+          onCrear={async (payload) => {
+            const id = await crearDesdeAnalisis(payload);
+            if (id) { setLeyendoNueva(false); setAbierta(id); }
+            return id;
+          }}
+        />
+      )}
+
       {licAbierta && (
         <DetalleModal
           lic={licAbierta}
@@ -395,6 +511,7 @@ function LicitacionesPage({ showToast }) {
           hoy={hoy} canWrite={canWrite} busy={busy}
           onClose={() => setAbierta(null)}
           onGuardarLic={(campos) => guardarLicitacion(campos, licAbierta.id)}
+          onPatchLic={(campos) => patchLicitacion(licAbierta.id, campos)}
           onGuardarReq={(campos, id) => guardarRequisito(licAbierta.id, campos, id)}
           onBorrarReq={borrarRequisito}
           onAplicarAnalisis={(payload) => aplicarAnalisis(licAbierta.id, payload)}
@@ -422,6 +539,12 @@ function PostulacionModal({ lic, rubros, companies, canWrite, busy, onClose, onG
     moneda: lic?.moneda || 'PEN',
     fecha_presentacion: lic?.fecha_presentacion || '',
     postulante_company_id: lic?.postulante_company_id || '',
+    // Entrega 4: lo que la convocatoria dice del proyecto.
+    nombre_inversion: lic?.nombre_inversion || '',
+    cui: lic?.cui || '',
+    mecanismo: lic?.mecanismo || '',
+    plazo_ejecucion_dias: lic?.plazo_ejecucion_dias ?? '',
+    lugar: lic?.lugar || '',
   }));
   const up = (patch) => setF(x => ({ ...x, ...patch }));
   if (!Modal) return null;
@@ -489,13 +612,43 @@ function PostulacionModal({ lic, rubros, companies, canWrite, busy, onClose, onG
           </div>
         </div>
         <div>
+          <label className="flabel">Nombre de la inversión (como lo escribe la entidad)</label>
+          <textarea className="fi" rows={2} value={f.nombre_inversion} onChange={e => up({ nombre_inversion: e.target.value })}
+            placeholder="«MEJORAMIENTO Y AMPLIACION DEL SERVICIO DE … DE LA LOCALIDAD DE CHILETE …»" />
+          <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3 }}>
+            Las cartas y anexos del expediente lo citan textual, con su CUI.
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <div style={{ flex: '0 1 130px' }}>
+            <label className="flabel">CUI</label>
+            <input className="fi" value={f.cui} onChange={e => up({ cui: e.target.value.replace(/\D/g, '').slice(0, 8) })} placeholder="2611946" />
+          </div>
+          <div style={{ flex: '1 1 220px' }}>
+            <label className="flabel">Mecanismo</label>
+            <select className="fi" value={f.mecanismo} onChange={e => up({ mecanismo: e.target.value })}>
+              <option value="">Sin definir</option>
+              {MECANISMOS.map(m => <option key={m.v} value={m.v}>{m.label}</option>)}
+            </select>
+          </div>
+          <div style={{ flex: '0 1 130px' }}>
+            <label className="flabel">Plazo (días)</label>
+            <input className="fi" type="number" min="0" value={f.plazo_ejecucion_dias}
+              onChange={e => up({ plazo_ejecucion_dias: e.target.value })} />
+          </div>
+          <div style={{ flex: '1 1 200px' }}>
+            <label className="flabel">Lugar</label>
+            <input className="fi" value={f.lugar} onChange={e => up({ lugar: e.target.value })} placeholder="Chilete, Contumazá, Cajamarca" />
+          </div>
+        </div>
+        <div>
           <label className="flabel">Postulamos con</label>
           <select className="fi" value={f.postulante_company_id} onChange={e => up({ postulante_company_id: e.target.value })}>
             <option value="">Sin definir</option>
             {companies.filter(c => !c.deleted_at).map(c => <option key={c.id} value={c.id}>{c.name || c.nombre}</option>)}
           </select>
           <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3 }}>
-            La empresa del grupo que lleva el RUC. Si va en consorcio, la que lo lidera.
+            La empresa del grupo que lleva el RUC. Si va en consorcio, la que lo lidera; los socios se arman abajo, en «Cómo participar».
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
@@ -507,6 +660,11 @@ function PostulacionModal({ lic, rubros, companies, canWrite, busy, onClose, onG
               postulante_company_id: f.postulante_company_id || null,
               fecha_presentacion: f.fecha_presentacion || null,
               valor_referencial: f.valor_referencial === '' ? null : Number(f.valor_referencial),
+              nombre_inversion: f.nombre_inversion.trim() || null,
+              cui: f.cui || null,
+              mecanismo: f.mecanismo || null,
+              plazo_ejecucion_dias: f.plazo_ejecucion_dias === '' ? null : Number(f.plazo_ejecucion_dias),
+              lugar: f.lugar.trim() || null,
             })}>
             {lic ? 'Guardar' : 'Crear postulación'}
           </button>
@@ -521,7 +679,7 @@ function PostulacionModal({ lic, rubros, companies, canWrite, busy, onClose, onG
 // ═══════════════════════════════════════════════════════════════════
 function DetalleModal({
   lic, requisitos, veredicto, candidatos, rubros, companies, hoy, canWrite, busy,
-  onClose, onGuardarLic, onGuardarReq, onBorrarReq, onBorrarLic, onAplicarAnalisis, toast,
+  onClose, onGuardarLic, onPatchLic, onGuardarReq, onBorrarReq, onBorrarLic, onAplicarAnalisis, toast,
 }) {
   const Modal = window.Modal;
   const [editando, setEditando] = uS(false);
@@ -530,7 +688,12 @@ function DetalleModal({
   if (!Modal) return null;
 
   const v = veredicto;
-  const filas = [...requisitos].sort((a, b) => (a.orden ?? 100) - (b.orden ?? 100));
+  const ordenadas = [...requisitos].sort((a, b) => (a.orden ?? 100) - (b.orden ?? 100));
+  // El plantel se evalúa contra el padrón; los requisitos de la EMPRESA
+  // (clase 'empresa', mig 199) se muestran en «Cómo participar».
+  const filas = ordenadas.filter(r => (r.clase || 'personal') === 'personal');
+  const filasEmpresa = ordenadas.filter(r => r.clase === 'empresa');
+  const cronograma = Array.isArray(lic.cronograma) ? lic.cronograma : [];
   const empresa = companies.find(c => c.id === lic.postulante_company_id);
   const u = urgencia(lic, hoy);
   const destino = destinoAlGanar(lic.tipo_trabajo);
@@ -576,12 +739,27 @@ function DetalleModal({
           <b style={{ fontSize: 12.5 }}>Datos del proceso</b>
           {canWrite && <button className="btn btn-ghost btn-xs" onClick={() => setEditando(true)}>Editar</button>}
         </div>
+        {lic.nombre_inversion && (
+          <div style={{ fontSize: 11, marginBottom: 8, padding: '6px 8px', borderRadius: 6, background: 'var(--bg-c2)', lineHeight: 1.4 }}>
+            <span style={{ color: 'var(--tm)' }}>Inversión:</span> «{lic.nombre_inversion}»{lic.cui ? <> · <b>CUI {lic.cui}</b></> : ''}
+          </div>
+        )}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))', gap: 8 }}>
           <div><span style={{ color: 'var(--tm)' }}>Nomenclatura:</span> {lic.nomenclatura || '—'}</div>
           <div><span style={{ color: 'var(--tm)' }}>Entidad:</span> {lic.entidad_convocante || '—'}</div>
           <div><span style={{ color: 'var(--tm)' }}>Tipo:</span> {TIPO_PROCESO_LBL[lic.tipo_trabajo] || lic.tipo_trabajo}</div>
-          <div><span style={{ color: 'var(--tm)' }}>Valor referencial:</span> {money(lic.valor_referencial, lic.moneda)}</div>
+          <div><span style={{ color: 'var(--tm)' }}>Mecanismo:</span> {MECANISMO_LBL[lic.mecanismo] || '—'}</div>
+          <div><span style={{ color: 'var(--tm)' }}>Valor referencial:</span> <b>{money(lic.valor_referencial, lic.moneda)}</b></div>
+          {(lic.monto_ejecucion || lic.monto_supervision) && (
+            <div style={{ fontSize: 10.5 }}>
+              <span style={{ color: 'var(--tm)' }}>Desglose:</span> ejecución {money(lic.monto_ejecucion, lic.moneda)}
+              {lic.monto_supervision ? ` · supervisión ${money(lic.monto_supervision, lic.moneda)}` : ''}
+            </div>
+          )}
+          <div><span style={{ color: 'var(--tm)' }}>Plazo:</span> {dias(lic.plazo_ejecucion_dias)}</div>
           <div><span style={{ color: 'var(--tm)' }}>Presentación:</span> {lic.fecha_presentacion || '—'}</div>
+          {lic.cui && !lic.nombre_inversion && <div><span style={{ color: 'var(--tm)' }}>CUI:</span> {lic.cui}</div>}
+          {lic.lugar && <div><span style={{ color: 'var(--tm)' }}>Lugar:</span> {lic.lugar}</div>}
           <div><span style={{ color: 'var(--tm)' }}>Postulamos con:</span> {empresa?.name || empresa?.nombre || '—'}</div>
         </div>
 
@@ -603,11 +781,18 @@ function DetalleModal({
 
       {analizando && (
         <AnalisisBasesModal
-          lic={lic} toast={toast}
+          lic={lic} rubros={rubros} companies={companies} toast={toast}
           onClose={() => setAnalizando(false)}
           onAplicar={onAplicarAnalisis}
         />
       )}
+
+      {/* ── Calendario del proceso (entrega 4) ── */}
+      {cronograma.length > 0 && <CalendarioProceso cronograma={cronograma} hoy={hoy} />}
+
+      {/* ── Cómo participar: la empresa y el consorcio (entrega 4) ── */}
+      <ComoParticipar lic={lic} filasEmpresa={filasEmpresa} companies={companies}
+        canWrite={canWrite} busy={busy} onPatch={onPatchLic} onBorrarReq={onBorrarReq} />
 
       {/* ── Requisitos de personal ── */}
       <div className="card" style={{ marginBottom: 10, overflow: 'hidden' }}>
@@ -644,7 +829,9 @@ function DetalleModal({
 
         {filas.length === 0 && !nuevo && (
           <div className="empty-state" style={{ padding: '26px 14px', textAlign: 'center', fontSize: 11.5 }}>
-            Todavía no hay puestos cargados. Léelas con «Leer las bases», o cópialos a mano.
+            Todavía no hay puestos cargados. {lic.fuente === 'extraccion' && cronograma.length
+              ? 'La convocatoria trajo el calendario y los datos del proceso; el plantel está en las BASES: súbelas con «Leer las bases».'
+              : 'Léelas con «Leer las bases», o cópialos a mano.'}
           </div>
         )}
 
@@ -778,14 +965,233 @@ const PASO_LBL = {
 const usd = (n) => `USD ${Number(n || 0).toFixed(3)}`;
 
 const CAMPO_CABECERA_LBL = {
-  nomenclatura: 'Nomenclatura', objeto: 'Objeto', entidad_convocante: 'Entidad',
-  entidad_ruc: 'RUC de la entidad', valor_referencial: 'Valor referencial',
-  moneda: 'Moneda', fecha_presentacion: 'Presentación de ofertas',
-  definicion_obras_similares: 'Definición de obra similar',
+  nomenclatura: 'Nomenclatura', objeto: 'Objeto', nombre_inversion: 'Nombre de la inversión', cui: 'CUI',
+  entidad_convocante: 'Entidad', entidad_ruc: 'RUC de la entidad', mecanismo: 'Mecanismo',
+  valor_referencial: 'Valor referencial', monto_ejecucion: 'Monto de ejecución', monto_supervision: 'Monto de supervisión',
+  moneda: 'Moneda', plazo_ejecucion_dias: 'Plazo (días)', lugar: 'Lugar', sistema_contratacion: 'Sistema de contratación',
+  fecha_presentacion: 'Presentación de propuestas', definicion_obras_similares: 'Definición de obra similar',
+  consorcio_permitido: 'Consorcio permitido', consorcio_reglas: 'Reglas de consorcio',
+};
+const mostrarValor = (k, v) => {
+  if (k === 'mecanismo') return MECANISMO_LBL[v] || v;
+  if (k === 'consorcio_permitido') return v ? 'Sí' : 'No';
+  if (/^(valor_referencial|monto_)/.test(k)) return money(v);
+  return String(v).slice(0, 110);
 };
 
+// ── El calendario que trajo la convocatoria ────────────────────────
+function CalendarioProceso({ cronograma, hoy }) {
+  const proxima = cronograma.find(e => (e.hasta || e.desde) >= hoy);
+  return (
+    <div className="card" style={{ marginBottom: 10, overflow: 'hidden' }}>
+      <div style={{ padding: '9px 14px', background: 'var(--bg-c2)' }}>
+        <b style={{ fontSize: 12.5 }}>Calendario del proceso</b>
+        <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+          {proxima ? <>Lo que corre ahora: <b>{proxima.etapa}</b> ({proxima.desde}{proxima.hasta ? ` → ${proxima.hasta}` : ''}).</> : 'Todas las etapas ya pasaron.'}
+        </div>
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table className="tbl">
+          <thead><tr><th>Etapa</th><th>Desde</th><th>Hasta</th><th></th></tr></thead>
+          <tbody>
+            {cronograma.map((e, i) => {
+              const pasada = (e.hasta || e.desde) < hoy;
+              const esProxima = proxima && proxima === e;
+              return (
+                <tr key={i} style={{ opacity: pasada ? 0.55 : 1, fontWeight: esProxima ? 700 : 400 }}>
+                  <td style={{ fontSize: 11.5 }}>{e.etapa}</td>
+                  <td style={{ fontSize: 11 }}>{e.desde}</td>
+                  <td style={{ fontSize: 11 }}>{e.hasta || '—'}</td>
+                  <td style={{ fontSize: 10, color: 'var(--tm)' }}>
+                    {esProxima ? <span className="badge b-blue" style={{ fontSize: 9 }}>en curso / próxima</span>
+                      : (e.fuente_pagina ? `pág. ${e.fuente_pagina}` : '')}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 
-function AnalisisBasesModal({ lic, onClose, onAplicar, toast }) {
+// ── Cómo participar: la empresa, y el consorcio como camino ────────
+//
+// Gabriel (8-set-2026): «usualmente se hacen consorcios, se mezclan empresas
+// para lograr la experiencia o también el capital para participar». Esta
+// tarjeta junta lo que las bases piden del POSTOR, si permiten consorcio y
+// con qué reglas, y el plan nuestro: quiénes vamos, con qué porcentaje y qué
+// aporta cada uno. No evalúa a las empresas (eso es la entrega 5, cuando el
+// grupo tenga cargada su experiencia): ordena la decisión.
+const APORTES = ['experiencia', 'capital', 'personal', 'RNP / capacidad', 'equipos', 'otro'];
+
+function ComoParticipar({ lic, filasEmpresa, companies, canWrite, busy, onPatch, onBorrarReq }) {
+  const inicial = () => (Array.isArray(lic.consorcio) ? lic.consorcio : []).map(m => ({ ...m }));
+  const [socios, setSocios] = uS(inicial);
+  const [notas, setNotas] = uS(lic.participacion_notas || '');
+  const [sucio, setSucio] = uS(false);
+  const [abierto, setAbierto] = uS(true);
+
+  const vr = Number(lic.valor_referencial) || 0;
+  const total = socios.reduce((t, m) => t + (Number(m.porcentaje) || 0), 0);
+  const grupo = (companies || []).filter(c => !c.deleted_at);
+
+  const up = (i, patch) => { setSucio(true); setSocios(ss => ss.map((m, k) => (k === i ? { ...m, ...patch } : m))); };
+  const agregar = () => { setSucio(true); setSocios(ss => [...ss, { company_id: '', nombre: '', ruc: '', porcentaje: '', aporta: 'experiencia', notas: '' }]); };
+  const quitar = (i) => { setSucio(true); setSocios(ss => ss.filter((_, k) => k !== i)); };
+  const guardar = async () => {
+    await onPatch({
+      consorcio: socios.map(m => ({
+        company_id: m.company_id || null,
+        nombre: (m.nombre || grupo.find(c => c.id === m.company_id)?.name || '').trim(),
+        ruc: String(m.ruc || '').replace(/\D/g, '').slice(0, 11) || null,
+        porcentaje: m.porcentaje === '' ? null : Number(m.porcentaje),
+        aporta: m.aporta || null,
+        notas: (m.notas || '').trim() || null,
+      })).filter(m => m.nombre || m.company_id),
+      participacion_notas: notas.trim() || null,
+    });
+    setSucio(false);
+  };
+
+  const permitido = lic.consorcio_permitido;
+  return (
+    <div className="card" style={{ marginBottom: 10, overflow: 'hidden' }}>
+      <div style={{ padding: '9px 14px', background: 'var(--bg-c2)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <div>
+          <b style={{ fontSize: 12.5 }}>Cómo participar</b>
+          <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+            Lo que las bases piden de la EMPRESA, y si se puede ir en consorcio para sumar experiencia o capital.
+          </div>
+        </div>
+        <button className="btn btn-ghost btn-xs" onClick={() => setAbierto(a => !a)}>{abierto ? 'Ocultar' : 'Ver'}</button>
+      </div>
+
+      {abierto && (
+        <div style={{ padding: '10px 14px', display: 'grid', gap: 10 }}>
+          {/* Consorcio: lo que dicen las bases */}
+          <div style={{ fontSize: 11.5, display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <span className={`badge ${permitido === true ? 'b-green' : (permitido === false ? 'b-red' : 'b-gray')}`} style={{ fontSize: 9.5 }}>
+              {permitido === true ? 'Consorcio permitido' : (permitido === false ? 'Consorcio NO permitido' : 'Consorcio: las bases no lo dicen (todavía)')}
+            </span>
+            {lic.consorcio_reglas && <div style={{ flex: '1 1 260px', fontSize: 10.5, color: 'var(--tm)', lineHeight: 1.45 }}>{lic.consorcio_reglas}</div>}
+            {canWrite && permitido == null && (
+              <div style={{ display: 'flex', gap: 4 }}>
+                <button className="btn btn-ghost btn-xs" disabled={busy} onClick={() => onPatch({ consorcio_permitido: true })}>Sí se puede</button>
+                <button className="btn btn-ghost btn-xs" disabled={busy} onClick={() => onPatch({ consorcio_permitido: false })}>No se puede</button>
+              </div>
+            )}
+          </div>
+
+          {/* Requisitos de la empresa */}
+          <div>
+            <div style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 4 }}>Requisitos del postor</div>
+            {filasEmpresa.length === 0 ? (
+              <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+                Todavía no hay requisitos de empresa cargados. Salen de las bases con «Leer las bases» (experiencia en obras similares, facturación, capacidad de contratación, RNP).
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gap: 5 }}>
+                {filasEmpresa.map(r => {
+                  const montoCalc = r.monto_minimo || (r.multiplo_valor_referencial && vr ? r.multiplo_valor_referencial * vr : null);
+                  return (
+                    <div key={r.id} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', padding: '6px 8px', borderRadius: 6, background: 'var(--bg-c2)', fontSize: 11 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <b>{r.cargo || 'Requisito de la empresa'}</b>
+                        {montoCalc ? <span style={{ color: 'var(--blue)' }}> · {money(montoCalc, lic.moneda)}</span> : ''}
+                        {r.multiplo_valor_referencial ? <span style={{ color: 'var(--tm)' }}> ({r.multiplo_valor_referencial}× el valor referencial)</span> : ''}
+                        {r.ventana_anios ? <span style={{ color: 'var(--tm)' }}> · últimos {r.ventana_anios} años</span> : ''}
+                        {r.descripcion && <div style={{ color: 'var(--tm)', marginTop: 2 }}>{r.descripcion}</div>}
+                        {r.fuente_cita && <div style={{ fontStyle: 'italic', fontSize: 10, marginTop: 2, color: 'var(--tm)' }}>«{r.fuente_cita.slice(0, 220)}»{r.fuente_pagina ? ` — pág. ${r.fuente_pagina}` : ''}</div>}
+                      </div>
+                      {canWrite && <button className="btn btn-ghost btn-xs" style={{ color: 'var(--red)' }} onClick={() => onBorrarReq(r)}>✕</button>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* El plan de consorcio nuestro */}
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 4 }}>
+              <div style={{ fontSize: 11.5, fontWeight: 600 }}>
+                Con quién vamos
+                {socios.length > 0 && (
+                  <span style={{ fontWeight: 400, marginLeft: 6, fontSize: 10.5, color: Math.abs(total - 100) < 0.01 ? 'var(--green)' : 'var(--amber)' }}>
+                    {total}% {Math.abs(total - 100) < 0.01 ? '' : '(debería sumar 100%)'}
+                  </span>
+                )}
+              </div>
+              {canWrite && <button className="btn btn-ghost btn-xs" onClick={agregar}>+ Agregar socio</button>}
+            </div>
+            {socios.length === 0 && (
+              <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+                Sin socios cargados = postula la empresa sola. Si falta experiencia o capital, agrega con quién completarlo y qué aporta.
+              </div>
+            )}
+            <div style={{ display: 'grid', gap: 6 }}>
+              {socios.map((m, i) => (
+                <div key={i} style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                  <div style={{ flex: '1 1 180px' }}>
+                    <label className="flabel" style={{ fontSize: 10 }}>Empresa</label>
+                    <select className="fi" style={{ fontSize: 11 }} disabled={!canWrite} value={m.company_id || ''}
+                      onChange={e => up(i, { company_id: e.target.value, nombre: e.target.value ? '' : m.nombre })}>
+                      <option value="">Otra empresa (escribir)</option>
+                      {grupo.map(c => <option key={c.id} value={c.id}>{c.name || c.nombre}</option>)}
+                    </select>
+                  </div>
+                  {!m.company_id && (
+                    <>
+                      <div style={{ flex: '1 1 160px' }}>
+                        <label className="flabel" style={{ fontSize: 10 }}>Razón social</label>
+                        <input className="fi" style={{ fontSize: 11 }} disabled={!canWrite} value={m.nombre || ''} onChange={e => up(i, { nombre: e.target.value })} />
+                      </div>
+                      <div style={{ width: 120 }}>
+                        <label className="flabel" style={{ fontSize: 10 }}>RUC</label>
+                        <input className="fi" style={{ fontSize: 11 }} disabled={!canWrite} value={m.ruc || ''} onChange={e => up(i, { ruc: e.target.value.replace(/\D/g, '').slice(0, 11) })} />
+                      </div>
+                    </>
+                  )}
+                  <div style={{ width: 80 }}>
+                    <label className="flabel" style={{ fontSize: 10 }}>%</label>
+                    <input className="fi" style={{ fontSize: 11 }} type="number" min="0" max="100" disabled={!canWrite} value={m.porcentaje ?? ''} onChange={e => up(i, { porcentaje: e.target.value })} />
+                  </div>
+                  <div style={{ width: 140 }}>
+                    <label className="flabel" style={{ fontSize: 10 }}>Aporta</label>
+                    <select className="fi" style={{ fontSize: 11 }} disabled={!canWrite} value={m.aporta || 'experiencia'} onChange={e => up(i, { aporta: e.target.value })}>
+                      {APORTES.map(a => <option key={a} value={a}>{a}</option>)}
+                    </select>
+                  </div>
+                  {canWrite && <button className="btn btn-ghost btn-xs" style={{ color: 'var(--red)' }} onClick={() => quitar(i)}>✕</button>}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="flabel" style={{ fontSize: 10 }}>Notas de la participación (por qué así, qué falta, quién consigue qué)</label>
+            <textarea className="fi" rows={2} disabled={!canWrite} value={notas} style={{ fontSize: 11 }}
+              onChange={e => { setNotas(e.target.value); setSucio(true); }} />
+          </div>
+          {canWrite && sucio && (
+            <div style={{ textAlign: 'right' }}>
+              <button className="btn btn-amber btn-sm" disabled={busy} onClick={guardar}>Guardar cómo participamos</button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * El lector. Con `lic` COMPLEMENTA una postulación (propone lo que le falta);
+ * sin `lic` la CREA: la cabecera se muestra editable, la persona la revisa y
+ * recién ahí nace la postulación con su calendario y sus requisitos.
+ */
+function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplicar, onCrear, toast }) {
   const Modal = window.Modal;
   const [archivo, setArchivo] = uS(null);
   const [fase, setFase] = uS('elegir');        // elegir · presupuesto · corriendo · revisar
@@ -793,13 +1199,17 @@ function AnalisisBasesModal({ lic, onClose, onAplicar, toast }) {
   const [presupuesto, setPresupuesto] = uS(null);
   const [bloques, setBloques] = uS(null);
   const [salida, setSalida] = uS(null);
-  const [marcados, setMarcados] = uS(() => new Set());
+  const [marcados, setMarcados] = uS(() => new Set());        // puestos (personal)
+  const [marcadosEmp, setMarcadosEmp] = uS(() => new Set());  // requisitos de empresa
   const [aplicarCabecera, setAplicarCabecera] = uS(true);
+  const [aplicarCronograma, setAplicarCronograma] = uS(true);
+  const [form, setForm] = uS(null);           // la cabecera editable (alta)
   const [guardando, setGuardando] = uS(false);
   // Guard SÍNCRONO: el doble clic en «Guardar» duplicaría todos los puestos.
   const guardandoRef = uR(false);
 
   if (!Modal) return null;
+  const creando = !lic;
 
   // ── Paso 0: leer y presupuestar, sin gastar ──────────────────────
   const elegirArchivo = async (file) => {
@@ -831,6 +1241,36 @@ function AnalisisBasesModal({ lic, onClose, onAplicar, toast }) {
       // Arrancan tildados SOLO los que pasaron la verificación de cita. Lo que
       // no se pudo comprobar se ve, pero no se guarda sin que alguien lo mire.
       setMarcados(new Set((r.filas || []).map((f, i) => (f.verificada ? i : -1)).filter(i => i >= 0)));
+      setMarcadosEmp(new Set((r.filasEmpresa || []).map((f, i) => (f.verificada ? i : -1)).filter(i => i >= 0)));
+      if (creando) {
+        const c = r.cabecera || {};
+        setForm({
+          objeto: c.objeto || c.nombre_inversion || '',
+          nomenclatura: c.nomenclatura || '',
+          entidad_convocante: c.entidad_convocante || '',
+          entidad_ruc: c.entidad_ruc || '',
+          nombre_inversion: c.nombre_inversion || '',
+          cui: c.cui || '',
+          mecanismo: c.mecanismo || '',
+          // Sugerido por el documento, confirmado por la persona.
+          tipo_trabajo: r.sugerencias?.tipo_trabajo || TIPO_PROCESO_DEFAULT,
+          tipoSugerido: r.sugerencias?.tipo_trabajo || null,
+          origen: c.mecanismo === 'privado' ? 'privado' : 'publico',
+          rubro_id: '',
+          valor_referencial: c.valor_referencial ?? '',
+          moneda: c.moneda || 'PEN',
+          monto_ejecucion: c.monto_ejecucion ?? '',
+          monto_supervision: c.monto_supervision ?? '',
+          plazo_ejecucion_dias: c.plazo_ejecucion_dias ?? '',
+          lugar: c.lugar || '',
+          sistema_contratacion: c.sistema_contratacion || '',
+          fecha_presentacion: c.fecha_presentacion || '',
+          definicion_obras_similares: c.definicion_obras_similares || '',
+          consorcio_permitido: c.consorcio_permitido,
+          consorcio_reglas: c.consorcio_reglas || '',
+          postulante_company_id: '',
+        });
+      }
       setFase('revisar');
     } catch (e) {
       toast('El análisis falló: ' + (e?.message || e), 'red');
@@ -839,19 +1279,26 @@ function AnalisisBasesModal({ lic, onClose, onAplicar, toast }) {
   };
 
   const filas = salida?.filas || [];
+  const filasEmp = salida?.filasEmpresa || [];
+  const cronograma = salida?.cronograma || [];
   // Solo se propone lo que la postulación TODAVÍA NO TIENE: pisar con una
   // lectura automática un dato que alguien cargó a mano es peor que no leer.
   const cabecera = uM(() => {
+    if (creando) return null;
     const prop = salida?.cabecera;
     if (!prop) return null;
     const falta = {};
     for (const [k, v] of Object.entries(prop)) {
       if (v == null || v === '') continue;
+      if (k === 'moneda') continue;
       const actual = lic[k];
       if (actual == null || actual === '') falta[k] = v;
     }
     return Object.keys(falta).length ? falta : null;
-  }, [salida, lic]);
+  }, [salida, lic, creando]);
+  const licTieneCalendario = !creando && Array.isArray(lic.cronograma) && lic.cronograma.length > 0;
+
+  const bitacora = () => ({ archivo: archivo?.name || null, modelos: salida?.modelos || [], paginasOcr: salida?.paginasOcr ?? null });
 
   const guardar = async () => {
     if (guardandoRef.current) return;
@@ -859,10 +1306,46 @@ function AnalisisBasesModal({ lic, onClose, onAplicar, toast }) {
     setGuardando(true);
     try {
       const elegidas = filas.filter((_, i) => marcados.has(i));
+      const elegidasEmp = filasEmp.filter((_, i) => marcadosEmp.has(i));
+      if (creando) {
+        if (!form || form.objeto.trim().length < 3) { toast('La postulación necesita un objeto (qué se convoca)', 'red'); return; }
+        const num = (v) => (v === '' || v == null ? null : Number(v));
+        const { tipoSugerido, ...f } = form;
+        void tipoSugerido;
+        await onCrear({
+          cabecera: {
+            ...f,
+            objeto: f.objeto.trim(),
+            nomenclatura: f.nomenclatura.trim() || null,
+            entidad_convocante: f.entidad_convocante.trim() || null,
+            entidad_ruc: /^\d{11}$/.test(f.entidad_ruc) ? f.entidad_ruc : null,
+            nombre_inversion: f.nombre_inversion.trim() || null,
+            cui: f.cui || null,
+            mecanismo: f.mecanismo || null,
+            rubro_id: f.rubro_id || null,
+            valor_referencial: num(f.valor_referencial),
+            monto_ejecucion: num(f.monto_ejecucion),
+            monto_supervision: num(f.monto_supervision),
+            plazo_ejecucion_dias: num(f.plazo_ejecucion_dias),
+            lugar: f.lugar.trim() || null,
+            sistema_contratacion: f.sistema_contratacion.trim() || null,
+            fecha_presentacion: f.fecha_presentacion || null,
+            definicion_obras_similares: f.definicion_obras_similares.trim() || null,
+            consorcio_permitido: typeof f.consorcio_permitido === 'boolean' ? f.consorcio_permitido : null,
+            consorcio_reglas: f.consorcio_reglas.trim() || null,
+            postulante_company_id: f.postulante_company_id || null,
+          },
+          requisitos: elegidas, requisitosEmpresa: elegidasEmp,
+          cronograma: aplicarCronograma ? cronograma : [],
+          costo: salida?.costo || null, bitacora: bitacora(),
+        });
+        return;   // el padre cierra y abre la postulación nueva
+      }
       await onAplicar({
-        requisitos: elegidas,
+        requisitos: elegidas, requisitosEmpresa: elegidasEmp,
         cabecera: aplicarCabecera ? cabecera : null,
-        costo: salida?.costo || null,
+        cronograma: aplicarCronograma && !licTieneCalendario ? cronograma : null,
+        costo: salida?.costo || null, bitacora: bitacora(),
       });
       onClose();
     } finally {
@@ -871,28 +1354,32 @@ function AnalisisBasesModal({ lic, onClose, onAplicar, toast }) {
     }
   };
 
-  const alternar = (i) => setMarcados(prev => {
+  const alternar = (set, i) => set(prev => {
     const s = new Set(prev);
     if (s.has(i)) s.delete(i); else s.add(i);
     return s;
   });
+  const upForm = (patch) => setForm(f => ({ ...f, ...patch }));
+  const aGuardar = marcados.size + marcadosEmp.size;
+  const puedeGuardar = creando ? (form && form.objeto.trim().length >= 3) : (aGuardar > 0 || (aplicarCabecera && cabecera) || (aplicarCronograma && !licTieneCalendario && cronograma.length));
 
   return (
-    <Modal title={`Analizar las bases · ${lic.objeto || 'postulación'}`} onClose={onClose} size="xl">
+    <Modal title={creando ? 'Nueva postulación desde las bases o la convocatoria' : `Analizar las bases · ${lic.objeto || 'postulación'}`} onClose={onClose} size="xl">
 
       {/* ── Elegir el archivo ── */}
       {fase === 'elegir' && (
         <div style={{ padding: '18px 4px' }}>
           <div style={{ fontSize: 12, marginBottom: 10, lineHeight: 1.5 }}>
-            Sube las bases en <b>PDF</b> o <b>Word (.docx)</b>. Primero se revisa el documento
-            en tu propia computadora —eso no cuesta nada— y recién después te digo cuánto sale
-            leer las páginas escaneadas, antes de leerlas.
+            Sube la <b>convocatoria</b> (el aviso de El Peruano en PDF) o las <b>bases</b> en <b>PDF</b> o <b>Word (.docx)</b>.
+            Primero se revisa el documento en tu propia computadora —eso no cuesta nada— y recién después te digo
+            cuánto sale leer las páginas escaneadas, antes de leerlas.
           </div>
           <input type="file" className="fi" accept=".pdf,.docx,application/pdf"
             onChange={e => elegirArchivo(e.target.files?.[0])} />
           <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 10, lineHeight: 1.5 }}>
-            Las páginas que ya son texto se leen gratis. Solo se paga el OCR de las escaneadas,
-            que en unas bases suelen ser los Términos de Referencia.
+            {creando
+              ? 'De la convocatoria salen el nombre de la inversión, el CUI, el monto referencial con su desglose, el plazo, el calendario completo y si se admite consorcio. De las bases, además, el plantel que piden y los requisitos de la empresa. Puedes subir primero una y después la otra: la segunda complementa.'
+              : 'Las páginas que ya son texto se leen gratis. Solo se paga el OCR de las escaneadas, que en unas bases suelen ser los Términos de Referencia.'}
           </div>
         </div>
       )}
@@ -920,6 +1407,11 @@ function AnalisisBasesModal({ lic, onClose, onAplicar, toast }) {
                 </div>
               </div>
             </div>
+            {presupuesto.paginasOcr === 0 && (
+              <div style={{ fontSize: 10.5, color: 'var(--green)', marginTop: 8 }}>
+                Todo el documento es texto: la lectura sale prácticamente gratis (solo las pasadas de IA, que van a un modelo sin costo).
+              </div>
+            )}
             {presupuesto.decorativas > 0 && (
               <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 8 }}>
                 {presupuesto.decorativas} imagen(es) son logos o sellos y no se mandan a leer.
@@ -971,13 +1463,21 @@ function AnalisisBasesModal({ lic, onClose, onAplicar, toast }) {
           <div className="card card-p" style={{ marginBottom: 10, display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
             <div>
               <div style={{ fontSize: 18, fontWeight: 700 }}>{filas.length}</div>
-              <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>requisitos encontrados</div>
+              <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>puestos del plantel</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 700 }}>{filasEmp.length}</div>
+              <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>requisitos de la empresa</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 700 }}>{cronograma.length}</div>
+              <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>etapas del calendario</div>
             </div>
             <div>
               <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--green)' }}>
-                {filas.filter(f => f.verificada).length}
+                {filas.filter(f => f.verificada).length + filasEmp.filter(f => f.verificada).length}
               </div>
-              <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>con su cita comprobada en el documento</div>
+              <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>con su cita comprobada</div>
             </div>
             <div>
               <div style={{ fontSize: 18, fontWeight: 700 }}>{usd(salida.costo?.total)}</div>
@@ -997,12 +1497,114 @@ function AnalisisBasesModal({ lic, onClose, onAplicar, toast }) {
               background: 'rgba(245,158,11,0.09)', border: '1px solid rgba(245,158,11,0.35)' }}>
               <b style={{ color: 'var(--amber)' }}>⚠ Para revisar a mano ({salida.alertas.length})</b>
               <ul style={{ margin: '6px 0 0 16px', padding: 0, lineHeight: 1.5 }}>
-                {salida.alertas.slice(0, 8).map((a, i) => <li key={i}>{a}</li>)}
+                {salida.alertas.slice(0, 10).map((a, i) => <li key={i}>{a}</li>)}
               </ul>
             </div>
           )}
 
-          {cabecera && (
+          {/* ── La cabecera: editable si se está creando ── */}
+          {creando && form && (
+            <div className="card card-p" style={{ marginBottom: 10 }}>
+              <b style={{ fontSize: 12.5 }}>La postulación que se va a crear</b>
+              <div style={{ fontSize: 10.5, color: 'var(--tm)', marginBottom: 8 }}>
+                Lo leído del documento ya está puesto. Revísalo, corrige lo que haga falta y elige con qué empresa postulamos.
+              </div>
+              <div style={{ display: 'grid', gap: 8 }}>
+                <div>
+                  <label className="flabel">Objeto del proceso *</label>
+                  <input className="fi" value={form.objeto} onChange={e => upForm({ objeto: e.target.value })} />
+                </div>
+                {form.nombre_inversion && (
+                  <div>
+                    <label className="flabel">Nombre de la inversión (textual)</label>
+                    <textarea className="fi" rows={2} value={form.nombre_inversion} onChange={e => upForm({ nombre_inversion: e.target.value })} />
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <div style={{ flex: '2 1 240px' }}>
+                    <label className="flabel">Nomenclatura</label>
+                    <input className="fi" value={form.nomenclatura} onChange={e => upForm({ nomenclatura: e.target.value })} />
+                  </div>
+                  <div style={{ flex: '2 1 220px' }}>
+                    <label className="flabel">Entidad convocante</label>
+                    <input className="fi" value={form.entidad_convocante} onChange={e => upForm({ entidad_convocante: e.target.value })} />
+                  </div>
+                  <div style={{ flex: '0 1 120px' }}>
+                    <label className="flabel">CUI</label>
+                    <input className="fi" value={form.cui} onChange={e => upForm({ cui: e.target.value.replace(/\D/g, '').slice(0, 8) })} />
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <div style={{ flex: '1 1 200px' }}>
+                    <label className="flabel">
+                      Tipo de proceso {form.tipoSugerido && <span className="badge b-blue" style={{ fontSize: 8.5, marginLeft: 4 }}>sugerido por el documento</span>}
+                    </label>
+                    <select className="fi" value={form.tipo_trabajo} onChange={e => upForm({ tipo_trabajo: e.target.value })}>
+                      {TIPOS_PROCESO.map(t => <option key={t.v} value={t.v}>{t.label}</option>)}
+                    </select>
+                  </div>
+                  <div style={{ flex: '1 1 200px' }}>
+                    <label className="flabel">Mecanismo</label>
+                    <select className="fi" value={form.mecanismo} onChange={e => upForm({ mecanismo: e.target.value })}>
+                      <option value="">Sin definir</option>
+                      {MECANISMOS.map(m => <option key={m.v} value={m.v}>{m.label}</option>)}
+                    </select>
+                  </div>
+                  <div style={{ flex: '1 1 180px' }}>
+                    <label className="flabel">Rubro</label>
+                    <select className="fi" value={form.rubro_id} onChange={e => upForm({ rubro_id: e.target.value })}>
+                      <option value="">Sin rubro</option>
+                      {rubros.filter(r => r.activo !== false).map(r => <option key={r.id} value={r.id}>{r.nombre}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <div style={{ flex: '1 1 150px' }}>
+                    <label className="flabel">Valor referencial</label>
+                    <input className="fi" type="number" step="0.01" value={form.valor_referencial} onChange={e => upForm({ valor_referencial: e.target.value })} />
+                  </div>
+                  <div style={{ flex: '1 1 150px' }}>
+                    <label className="flabel">Monto de ejecución</label>
+                    <input className="fi" type="number" step="0.01" value={form.monto_ejecucion} onChange={e => upForm({ monto_ejecucion: e.target.value })} />
+                  </div>
+                  <div style={{ flex: '1 1 150px' }}>
+                    <label className="flabel">Monto de supervisión</label>
+                    <input className="fi" type="number" step="0.01" value={form.monto_supervision} onChange={e => upForm({ monto_supervision: e.target.value })} />
+                  </div>
+                  <div style={{ flex: '0 1 110px' }}>
+                    <label className="flabel">Plazo (días)</label>
+                    <input className="fi" type="number" value={form.plazo_ejecucion_dias} onChange={e => upForm({ plazo_ejecucion_dias: e.target.value })} />
+                  </div>
+                  <div style={{ flex: '1 1 150px' }}>
+                    <label className="flabel">Presentación de propuestas</label>
+                    <input className="fi" type="date" value={form.fecha_presentacion} onChange={e => upForm({ fecha_presentacion: e.target.value })} />
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <div style={{ flex: '1 1 200px' }}>
+                    <label className="flabel">Lugar</label>
+                    <input className="fi" value={form.lugar} onChange={e => upForm({ lugar: e.target.value })} />
+                  </div>
+                  <div style={{ flex: '2 1 240px' }}>
+                    <label className="flabel">Postulamos con</label>
+                    <select className="fi" value={form.postulante_company_id} onChange={e => upForm({ postulante_company_id: e.target.value })}>
+                      <option value="">Sin definir todavía</option>
+                      {companies.filter(c => !c.deleted_at).map(c => <option key={c.id} value={c.id}>{c.name || c.nombre}</option>)}
+                    </select>
+                  </div>
+                </div>
+                {(form.consorcio_permitido != null || form.consorcio_reglas) && (
+                  <div style={{ fontSize: 11, padding: '6px 8px', borderRadius: 6, background: 'var(--bg-c2)' }}>
+                    <b>Consorcio:</b> {form.consorcio_permitido === true ? 'permitido' : (form.consorcio_permitido === false ? 'NO permitido' : 'sin definir')}
+                    {form.consorcio_reglas && <div style={{ color: 'var(--tm)', marginTop: 2 }}>{form.consorcio_reglas.slice(0, 400)}</div>}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ── Datos que faltaban (complemento) ── */}
+          {!creando && cabecera && (
             <label className="card card-p" style={{ display: 'flex', gap: 10, alignItems: 'flex-start',
               marginBottom: 10, cursor: 'pointer' }}>
               <input type="checkbox" checked={aplicarCabecera} style={{ marginTop: 3 }}
@@ -1016,7 +1618,7 @@ function AnalisisBasesModal({ lic, onClose, onAplicar, toast }) {
                   {Object.entries(cabecera).map(([k, v]) => (
                     <div key={k}>
                       <span style={{ color: 'var(--tm)' }}>{CAMPO_CABECERA_LBL[k] || k}:</span>{' '}
-                      <b>{String(v).slice(0, 90)}</b>
+                      <b>{mostrarValor(k, v)}</b>
                     </div>
                   ))}
                 </div>
@@ -1024,18 +1626,41 @@ function AnalisisBasesModal({ lic, onClose, onAplicar, toast }) {
             </label>
           )}
 
-          {filas.length === 0 && (
-            <div className="empty-state" style={{ padding: '24px 14px', textAlign: 'center', fontSize: 11.5 }}>
-              No se encontró ningún requisito de plantel. Puede que estén en una parte del
-              documento que el OCR no pudo leer, o que estas bases no los detallen.
+          {/* ── El calendario ── */}
+          {cronograma.length > 0 && (
+            <label className="card card-p" style={{ display: 'flex', gap: 10, alignItems: 'flex-start', marginBottom: 10, cursor: 'pointer' }}>
+              <input type="checkbox" checked={aplicarCronograma && !licTieneCalendario} disabled={licTieneCalendario} style={{ marginTop: 3 }}
+                onChange={() => setAplicarCronograma(v => !v)} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <b style={{ fontSize: 12.5 }}>Calendario del proceso ({cronograma.length} etapas)</b>
+                <div style={{ fontSize: 10.5, color: 'var(--tm)', marginBottom: 5 }}>
+                  {licTieneCalendario ? 'Esta postulación ya tiene calendario cargado: no se pisa.' : 'Se guarda con la postulación para no tipearlo dos veces.'}
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(230px,1fr))', gap: 3, fontSize: 10.5 }}>
+                  {cronograma.map((e, i) => (
+                    <div key={i} style={{ color: e.verificada === false ? 'var(--amber)' : 'inherit' }}>
+                      <b>{e.desde}</b>{e.hasta ? ` → ${e.hasta}` : ''} · {e.etapa}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </label>
+          )}
+
+          {filas.length === 0 && filasEmp.length === 0 && (
+            <div className="empty-state" style={{ padding: '18px 14px', textAlign: 'center', fontSize: 11.5 }}>
+              {creando
+                ? 'Este documento no trae requisitos de plantel ni de empresa (una convocatoria normalmente no los trae: están en las bases). La postulación se crea igual con los datos y el calendario; después súbele las bases desde adentro.'
+                : 'No se encontró ningún requisito. Puede que estén en una parte del documento que el OCR no pudo leer, o que estas bases no los detallen.'}
             </div>
           )}
 
+          {filas.length > 0 && <div style={{ fontSize: 12, fontWeight: 700, margin: '6px 0 4px' }}>Plantel clave ({filas.length})</div>}
           <div style={{ display: 'grid', gap: 8 }}>
             {filas.map((f, i) => (
               <label key={i} className="card card-p" style={{ display: 'flex', gap: 10, alignItems: 'flex-start',
                 cursor: 'pointer', borderLeft: `3px solid ${f.verificada ? 'var(--green)' : 'var(--amber)'}` }}>
-                <input type="checkbox" checked={marcados.has(i)} onChange={() => alternar(i)} style={{ marginTop: 3 }} />
+                <input type="checkbox" checked={marcados.has(i)} onChange={() => alternar(setMarcados, i)} style={{ marginTop: 3 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontWeight: 700, fontSize: 12.5 }}>
                     {f.cargo || '(sin cargo)'}
@@ -1071,13 +1696,42 @@ function AnalisisBasesModal({ lic, onClose, onAplicar, toast }) {
             ))}
           </div>
 
+          {filasEmp.length > 0 && <div style={{ fontSize: 12, fontWeight: 700, margin: '12px 0 4px' }}>Requisitos de la empresa ({filasEmp.length})</div>}
+          <div style={{ display: 'grid', gap: 8 }}>
+            {filasEmp.map((f, i) => (
+              <label key={i} className="card card-p" style={{ display: 'flex', gap: 10, alignItems: 'flex-start',
+                cursor: 'pointer', borderLeft: `3px solid ${f.verificada ? 'var(--green)' : 'var(--amber)'}` }}>
+                <input type="checkbox" checked={marcadosEmp.has(i)} onChange={() => alternar(setMarcadosEmp, i)} style={{ marginTop: 3 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, fontSize: 12.5 }}>
+                    {f.cargo}
+                    {f.monto_minimo && <span style={{ fontWeight: 400, color: 'var(--blue)' }}> · {money(f.monto_minimo)}</span>}
+                    {f.multiplo_valor_referencial && <span style={{ fontWeight: 400, color: 'var(--tm)' }}> · {f.multiplo_valor_referencial}× el valor referencial</span>}
+                    {f.ventana_anios && <span style={{ fontWeight: 400, color: 'var(--tm)' }}> · últimos {f.ventana_anios} años</span>}
+                    {!f.verificada && <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>sin verificar</span>}
+                  </div>
+                  {f.descripcion && <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 3 }}>{f.descripcion}</div>}
+                  {f.fuente_cita && (
+                    <div style={{ fontSize: 10.5, marginTop: 5, padding: '5px 8px', borderRadius: 5,
+                      background: 'var(--bg-c2)', fontStyle: 'italic', lineHeight: 1.45 }}>
+                      «{f.fuente_cita}»
+                      {f.fuente_pagina != null && <b style={{ fontStyle: 'normal' }}> — página {f.fuente_pagina}</b>}
+                    </div>
+                  )}
+                </div>
+              </label>
+            ))}
+          </div>
+
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14, alignItems: 'center' }}>
             <span style={{ fontSize: 11, color: 'var(--tm)', marginRight: 'auto' }}>
-              Se guardan {marcados.size} de {filas.length}. Los puestos que ya tenías cargados no se tocan.
+              {creando
+                ? `Se crea la postulación con ${aGuardar} requisito(s)${aplicarCronograma && cronograma.length ? ' y su calendario' : ''}.`
+                : `Se guardan ${aGuardar} de ${filas.length + filasEmp.length}. Lo que ya tenías cargado no se toca.`}
             </span>
             <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={guardando}>Cancelar</button>
-            <button className="btn btn-blue btn-sm" onClick={guardar} disabled={guardando || marcados.size === 0}>
-              {guardando ? 'Guardando…' : `Guardar ${marcados.size} puesto${marcados.size === 1 ? '' : 's'}`}
+            <button className="btn btn-blue btn-sm" onClick={guardar} disabled={guardando || !puedeGuardar}>
+              {guardando ? 'Guardando…' : (creando ? 'Crear la postulación' : `Guardar ${aGuardar} requisito${aGuardar === 1 ? '' : 's'}`)}
             </button>
           </div>
         </div>

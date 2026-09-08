@@ -43,8 +43,8 @@ al cerrar la pestaña. Servía para una consulta suelta, no para trabajar.
 | 1 | **La postulación existe como dato** — tablas, pantalla, requisitos guardados por proceso, veredicto y paso a Trabajos | ✅ hecha |
 | 2 | **El requisito como lo piden las bases** + **motor de triage** (mig 198) | ✅ hecha |
 | 3 | **Herramienta de análisis de documentos** — pasadas de extracción sobre el markdown híbrido | ✅ hecha |
-| 4 | **CV → ficha con IA** — llenar el padrón, que hoy está vacío | siguiente |
-| 5 | **Requisitos de empresa** — obras similares, facturación, CDC/RNP | pendiente |
+| 4 | **CV → ficha con IA** + **la postulación nace del documento** + el proceso entero (montos, CUI, calendario, consorcio, requisitos de empresa) | ✅ hecha |
+| 5 | **Requisitos de empresa** — *evaluar* a las empresas del grupo contra lo que ya se extrae (falta cargar su experiencia) | pendiente |
 | 6 | Calendario del proceso + kanban con documentos por etapa | pendiente |
 | 7 | Oferta económica | módulo propio, no un vínculo |
 
@@ -347,10 +347,149 @@ sola para toda la app.
   que entra solo descalifica gente que sí calificaba.
 - **No pisa lo que ya cargaste**: de los datos del proceso solo propone los
   campos vacíos.
-- **No propone `rubro_id`, `tipo_trabajo` ni con qué empresa postulamos.** Eso
-  no se lee de las bases y errarlo desarma la postulación.
+- **No propone `rubro_id` ni con qué empresa postulamos.** Eso no se lee de
+  las bases y errarlo desarma la postulación. El `tipo_trabajo` (ejecución vs
+  supervisión) sí se lee del documento desde la entrega 4, pero viaja como
+  **sugerencia** que se prellena en el formulario y una persona confirma.
 - **No corre desde el servidor.** Un PDF de 96 páginas no entra en una
   serverless, ni por tamaño ni por tiempo.
+
+---
+
+## Entrega 4 — El CV se vuelve ficha, y la postulación nace del documento
+
+> 8-set-2026. Migración **199** aplicada. Tres pedidos de Gabriel en una tanda:
+> el lector de CVs (el padrón seguía en 0 fichas), la aclaración de que
+> **el lector de bases debe CREAR la postulación, no vivir dentro de una**, y
+> «sé más abierto con cómo empezar a participar: usualmente se hacen
+> consorcios». Más el borrado de órdenes anuladas, que es de otra pantalla.
+
+### La aclaración que reordenó la pantalla
+
+En la entrega 3 el botón «Leer las bases» estaba dentro de una postulación que
+había que crear a mano primero. Gabriel lo entendió al revés, y tenía razón:
+la convocatoria de El Peruano trae **todo lo necesario para crear** la
+postulación (nombre, CUI, monto, calendario) y las bases traen el resto.
+
+Ahora la lista tiene dos botones: **«🔎 Leer bases o convocatoria»** (el
+principal) y «+ A mano». El modal es el mismo que antes con una diferencia:
+sin `lic` muestra la **cabecera editable** —lo leído ya puesto, el tipo de
+proceso *sugerido* por el documento y marcado como tal, y el selector de con
+qué empresa postulamos— y al confirmar crea la postulación con su calendario,
+sus puestos y sus requisitos de empresa en **una sola escritura**
+(`crearDesdeAnalisis`). Con `lic` sigue *complementando*: propone solo lo
+vacío, agrega el calendario si no había, suma lo que se tilde. El flujo real
+es **primero la convocatoria, después las bases** desde adentro.
+
+### Lo que el documento dice del proceso (mig 199 sobre `licitaciones`)
+
+Medido sobre PUBLICADO_PERUANO 021 y 022-2026 (Obras por Impuestos, Chilete):
+
+| Dato | Ejemplo real | Columna |
+|---|---|---|
+| Nombre textual de la inversión | «MEJORAMIENTO Y AMPLIACION DEL SERVICIO DE ACCESIBILIDAD… DE CHILETE…» | `nombre_inversion` |
+| CUI | 2611946 | `cui` |
+| Mecanismo | Ley 29230 | `mecanismo = 'oxi'` |
+| Monto referencial | S/ 15,804,472.36 | `valor_referencial` |
+| Desglose | ejecución 15,051,878.44 · supervisión 735,343.92 | `monto_ejecucion`, `monto_supervision` |
+| Calendario | 10 etapas del 08/09 al 12/10/2026 | `cronograma` (jsonb) |
+| Consorcio | «Empresa Privada o Consorcio», promesa formal | `consorcio_permitido`, `consorcio_reglas` |
+
+**La fecha que manda** (`fecha_presentacion`) sale de la etapa *Presentación
+de Propuestas* del calendario cuando el proceso no la dice suelto — y es el
+**último** día del rango, no la expresión de interés.
+
+**El índice de secciones (`SECCIONES`) daba 0 aciertos en `proceso` con la
+convocatoria**: las bases de OxI dicen «monto referencial del convenio», «CUI
+N°», «entidad pública que convoca», «calendario del proceso» y «presentación
+de propuestas», no «valor referencial» ni «cronograma del procedimiento». Se
+agregaron los rótulos reales; hay un test con los renglones literales del PDF.
+
+**La familia `proceso` es ahora una pasada propia** con su prompt
+(`SYSTEM_PROCESO` en `api/bases-analizar.js`), y absorbe los rangos de
+`cronograma` (en una convocatoria están en el mismo texto). El proceso se arma
+**campo a campo**: la primera pasada que trae un dato lo fija; las siguientes
+solo llenan lo vacío. Así la convocatoria de una página y las bases de 96 se
+complementan en vez de pisarse.
+
+### Cómo participar: la empresa y el consorcio
+
+La tarjeta nueva del detalle junta tres cosas:
+
+1. **Requisitos del postor** (clase `'empresa'` en `licitacion_requisitos`,
+   con `descripcion`, `monto_minimo`, `multiplo_valor_referencial` de la mig
+   199): experiencia en obras similares —«X veces el valor referencial», y la
+   pantalla calcula el monto—, facturación, capacidad de contratación, RNP.
+   Los extrae `SYSTEM_PROCESO` y pasan por la misma verificación de cita.
+2. **Consorcio según las bases**: permitido / no permitido / no lo dicen, con
+   las reglas textuales (porcentajes, promesa formal, representante común).
+3. **El plan nuestro** (`licitaciones.consorcio`, jsonb): con quién vamos
+   (empresa del grupo o tercero por RUC), qué % y qué **aporta** cada uno
+   (experiencia, capital, personal, RNP, equipos), más notas. Sin socios =
+   postula la empresa sola.
+
+**Lo que NO hace todavía:** evaluar si las empresas del grupo cumplen. No hay
+dato de experiencia de empresa cargado (obras similares por monto, facturación
+anual): eso es la entrega 5 y ahora ya tiene contra qué medirse.
+
+### El CV → la ficha (mig 199 sobre `personal*`)
+
+Medido sobre el CV real (39 páginas: 8 nativas, 31 constancias escaneadas):
+
+- **«El CV» son dos documentos.** Las páginas nativas *declaran*; las
+  escaneadas *certifican*. La cadena (`src/lib/cv-analisis.js`) hace OCR solo
+  de las escaneadas (31 × USD 0,002 = **USD 0,062**), lee la ficha en una
+  pasada (`SYSTEM_CV_FICHA`) y qué certifica cada página en otra
+  (`SYSTEM_CV_CONSTANCIAS`, de a 8 páginas), y **el código cruza**
+  (`emparejarConstancias`): cada constancia sustenta a lo sumo una experiencia
+  —la de fechas más cercanas, misma entidad por RUC o por nombre tolerante,
+  45 días de tolerancia— y le pone la **página**. Una declarada sin constancia
+  se guarda sin `evidencia_id` (no cuenta como sustentada); una constancia sin
+  declaración entra como experiencia nueva.
+- **`personal.obra_id` pasó a nullable.** Un profesional del banco de
+  propuestas no está en ninguna obra. Los cercos RLS (migs 177/178) ya
+  trataban `obra_id IS NULL` como fila global; se agregó un índice único
+  parcial por DNI para el caso sin obra (el de `(dni, obra_id)` no dedupe con
+  NULL).
+- **`personal_experiencia.sustento_pagina`** + `fuente`/`fuente_pagina`/
+  `fuente_cita`: la constancia es la página N del mismo PDF, no 31 archivos.
+- **La ficha gana `ruc`, `capacitaciones` (jsonb), `fuente`, `cv_analisis`.**
+  El diploma de colegiatura llena `colegiatura_fecha` (la experiencia general
+  de la mig 198); el certificado de habilidad, `colegiatura_habil_hasta`.
+- **El rubro se PROPONE por palabras clave del nombre de la obra** (nunca de
+  la entidad: «Municipalidad» no dice nada del rubro) y la persona confirma.
+- **Fechas como las escribe la gente:** «09/04/2026» es día/mes/año,
+  «abril de 2013» es aproximada, «26/07!2011» es un tipeo real que se lee.
+  Lo que no parsea **no se inventa**: queda vacío y se avisa.
+- **El triage del CV tiene otro piso** (`MIN_ALFA_CV = 250`): el CV imprime un
+  encabezado nativo de 69 letras sobre cada constancia escaneada y el piso de
+  las bases (80) estaba a 11 letras de darlas por nativas y no leerlas.
+- **El tope de evidencias subió a 30 MB para PDF** (cliente y `api/r2.js`):
+  el CV real pesa 18 MB. Los bytes van navegador → R2, no tocan a Vercel.
+
+La pantalla (`jx-profesionales.jsx`): «🤖 Cargar CV con IA» arriba y «Leer el
+CV con IA» dentro de la ficha. Busca por DNI para no duplicar; sin DNI legible
+no crea. El guardado es una sola escritura (`aplicarCv`) por la misma razón
+que en las bases: los guards síncronos cortarían un bucle en silencio.
+
+### Órdenes anuladas
+
+`jx-ordenes.jsx`: con «ver anuladas» prendido, cada anulada trae un tacho que
+la elimina (borrado lógico) junto con sus ítems, con confirmación y auditoría.
+Solo se elimina lo ya anulado.
+
+### Archivos
+
+- `supabase/migrations/199_cv_a_ficha_y_proceso_completo.sql`
+- `api/bases-analizar.js` — `SYSTEM_PROCESO`, `SYSTEM_CV_FICHA`,
+  `SYSTEM_CV_CONSTANCIAS`; acción `extraer_cv`; RR.HH. puede leer CVs.
+- `src/lib/bases-extraccion.js` — rótulos de OxI, `aFilaRequisitoEmpresa`,
+  `aCronograma`, `fechaPresentacionDe`, cabecera extendida, `sugerenciasDe`.
+- `src/lib/bases-analisis.js` — `ocrDeBloques` y `crearPedidor` compartidos,
+  familia `proceso`, fusión campo a campo.
+- `src/lib/cv-extraccion.js` (puro, 44 tests) y `src/lib/cv-analisis.js`.
+- `src/components/jx-licitaciones.jsx`, `jx-profesionales.jsx`, `jx-ordenes.jsx`.
+- `src/sync/EvidenceUploader.js`, `api/r2.js` — tope de 30 MB para PDF.
 
 ---
 

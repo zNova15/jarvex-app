@@ -178,3 +178,101 @@ describe('presupuestar — el precio ANTES de gastar', () => {
     expect(p.costo.total).toBe(0);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// ENTREGA 4 — la familia `proceso` y la convocatoria que alcanza para crear
+// ═══════════════════════════════════════════════════════════════════
+import { fusionarRangos, ocrDeBloques, crearPedidor } from '../bases-analisis.js';
+
+const PERUANO_NATIVO = `CONVOCATORIA DEL PROCESO DE SELECCIÓN N° 021-2026-CEPIP-GRDE-OXI-GORECAJ
+Monto referencial del Convenio de Inversión S/ 15,804,472.36 con CUI N° 2611946
+3. Calendario del proceso de selección:
+6 Presentación de Propuestas 23/09/2026 24/09/2026
+Empresa Privada o Consorcio`;
+
+describe('analizar — una convocatoria de UNA página nativa crea la postulación sin gastar OCR', () => {
+  it('manda la familia proceso con seccion="proceso" y devuelve cabecera, calendario y sugerencia', async () => {
+    const { apiFetch, apiParse, llamadas } = apiFalso({
+      localizar: { rangos: { proceso: { encontrada: true, rangos: [{ desde: 1, hasta: 1 }] }, cronograma: { encontrada: true, rangos: [{ desde: 1, hasta: 1 }] } } },
+      extraer: (body) => body.seccion === 'proceso' ? {
+        resultado: {
+          proceso: { nomenclatura: 'PROCESO DE SELECCIÓN N° 021-2026-CEPIP-GRDE-OXI-GORECAJ', cui: '2611946', mecanismo: 'oxi',
+            valor_referencial: 15804472.36, tipo_objeto_sugerido: 'obra_ejecucion', fuente_pagina: 1, fuente_cita: 'Monto referencial del Convenio de Inversión S/ 15,804,472.36' },
+          cronograma: [{ etapa: 'Presentación de Propuestas', desde: '2026-09-23', hasta: '2026-09-24', fuente_pagina: 1, fuente_cita: 'Presentación de Propuestas 23/09/2026 24/09/2026' }],
+          consorcio: { permitido: true, reglas: 'Empresa Privada o Consorcio', fuente_pagina: 1, fuente_cita: 'Empresa Privada o Consorcio' },
+          requisitos_empresa: [], alertas: [],
+        }, costo: 0,
+      } : { resultado: { requisitos: [] } },
+    });
+    const r = await analizar([{ tipo: 'texto', pagina: 1, texto: PERUANO_NATIVO }], { apiFetch, apiParse });
+    expect(llamadas.some(l => l.accion === 'ocr')).toBe(false);
+    const proceso = llamadas.filter(l => l.accion === 'extraer' && l.seccion === 'proceso');
+    expect(proceso).toHaveLength(1);       // proceso + cronograma en UNA pasada, no dos
+    expect(r.cabecera).toMatchObject({ cui: '2611946', mecanismo: 'oxi', valor_referencial: 15804472.36, fecha_presentacion: '2026-09-24', consorcio_permitido: true });
+    expect(r.cronograma).toHaveLength(1);
+    expect(r.sugerencias.tipo_trabajo).toBe('obra_ejecucion');
+    expect(r.costo.total).toBe(0);
+  });
+
+  it('los requisitos de empresa salen aparte y numerados después del plantel', async () => {
+    const { apiFetch, apiParse } = apiFalso({
+      ocr: ocrQueDevuelve(`REQUISITOS DE CALIFICACION\nPersonal clave\n${CITA}.\nEXPERIENCIA DEL POSTOR: monto facturado acumulado equivalente a una vez el valor referencial`),
+      localizar: { rangos: {
+        personal: { encontrada: true, rangos: [{ desde: 1, hasta: 1 }] },
+        empresa: { encontrada: true, rangos: [{ desde: 1, hasta: 1 }] },
+      } },
+      extraer: (body) => body.seccion === 'empresa' ? {
+        resultado: { requisitos_empresa: [{ tipo: 'experiencia_postor', descripcion: 'Experiencia del postor', multiplo_valor_referencial: 1,
+          fuente_pagina: 1, fuente_cita: 'monto facturado acumulado equivalente a una vez el valor referencial' }] },
+      } : {
+        resultado: { requisitos: [{ cargo: 'Residente de Obra', meses_minimos: 36, fuente_pagina: 1, fuente_cita: CITA }] },
+      },
+    });
+    const r = await analizar(bloquesEscaneados(1), { apiFetch, apiParse });
+    expect(r.filas).toHaveLength(1);
+    expect(r.filasEmpresa).toHaveLength(1);
+    expect(r.filasEmpresa[0]).toMatchObject({ clase: 'empresa', verificada: true, orden: 20, multiplo_valor_referencial: 1 });
+  });
+
+  it('el proceso se arma campo a campo: la segunda pasada solo llena lo que la primera no trajo', async () => {
+    const { apiFetch, apiParse } = apiFalso({
+      ocr: ocrQueDevuelve('VALOR REFERENCIAL\nREQUISITOS DE CALIFICACION del personal clave'),
+      localizar: { rangos: {
+        proceso: { encontrada: true, rangos: [{ desde: 1, hasta: 1 }] },
+        personal: { encontrada: true, rangos: [{ desde: 1, hasta: 1 }] },
+      } },
+      extraer: (body) => body.seccion === 'proceso'
+        ? { resultado: { proceso: { cui: '2643390', valor_referencial: null } } }
+        : { resultado: { requisitos: [], proceso: { cui: '9999999', valor_referencial: 8460000 } } },
+    });
+    const r = await analizar(bloquesEscaneados(1), { apiFetch, apiParse });
+    expect(r.cabecera.cui).toBe('2643390');                 // el primero manda
+    expect(r.cabecera.valor_referencial).toBe(8460000);     // lo vacío se completa
+  });
+});
+
+describe('fusionarRangos', () => {
+  it('une lo que se toca y ordena', () => {
+    expect(fusionarRangos([{ desde: 5, hasta: 6 }, { desde: 1, hasta: 2 }, { desde: 3, hasta: 4 }])).toEqual([{ desde: 1, hasta: 6 }]);
+    expect(fusionarRangos([{ desde: 1, hasta: 2 }, { desde: 9, hasta: 9 }])).toEqual([{ desde: 1, hasta: 2 }, { desde: 9, hasta: 9 }]);
+  });
+  it('tolera basura', () => {
+    expect(fusionarRangos([{ desde: 'x' }, null, { desde: 3, hasta: 1 }])).toEqual([]);
+  });
+});
+
+describe('ocrDeBloques — compartido con el lector de CV', () => {
+  it('lee de a seis, devuelve lo leído y deja las alertas de lo que falló', async () => {
+    const { apiFetch, apiParse, llamadas } = apiFalso({
+      ocr: (body) => ({
+        textos: Object.fromEntries(body.paginas.slice(0, -1).map(p => [p.clave, 'texto'])),
+        fallidas: [{ clave: body.paginas[body.paginas.length - 1].clave, motivo: 'OCR 500' }],
+      }),
+    });
+    const alertas = [];
+    const r = await ocrDeBloques(bloquesEscaneados(7), { pedir: crearPedidor(apiFetch, apiParse), alertas });
+    expect(llamadas).toHaveLength(2);
+    expect(r.leidas).toBe(5);        // 5 de la primera tanda + 0 de la segunda (una sola página, y falló)
+    expect(alertas).toHaveLength(2);
+  });
+});
